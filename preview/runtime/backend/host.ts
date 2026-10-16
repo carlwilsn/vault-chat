@@ -12,6 +12,7 @@ export type BoxReport = {
   message: string;
   committed: boolean;
   merged: boolean;
+  merged_paths?: string[];
   conflict: { files: string[]; since: number } | null;
   error: string | null;
   error_kind: "unreachable" | "git" | null;
@@ -57,6 +58,9 @@ export type BoxStep = {
   append?: Record<string, unknown[]>;
   meta?: Record<string, Record<string, unknown>>;
   status?: Record<string, "running" | "idle">;
+  /** Files the box's agent changed (vault-relative → text): they reach the
+   *  laptop's working copy on its next vault_box_sync, as a merge would. */
+  merge?: Record<string, string | ((old: string | null) => string)>;
 };
 export type BoxChatScript = {
   convs: Record<string, BoxConv>;
@@ -91,6 +95,8 @@ let cfg: HostConfig = {};
 let boxConvs: Record<string, BoxConv> = {};
 let boxQueue: unknown[] = [];
 let boxStep = 0;
+/** The box's published edits the laptop has not merged yet (BoxStep.merge). */
+let boxMerge: NonNullable<BoxStep["merge"]> = {};
 /** Play the box script's next step (a scenario/tour step calls it). */
 export function boxNext(): boolean {
   const st = cfg.sync?.boxChat?.steps?.[boxStep];
@@ -99,6 +105,7 @@ export function boxNext(): boolean {
   for (const [id, msgs] of Object.entries(st.append ?? {})) if (boxConvs[id]) boxConvs[id].messages = [...boxConvs[id].messages, ...msgs];
   for (const [id, m] of Object.entries(st.meta ?? {})) if (boxConvs[id]) boxConvs[id].meta = { ...(boxConvs[id].meta ?? {}), ...m };
   for (const [id, v] of Object.entries(st.status ?? {})) if (boxConvs[id]) boxConvs[id].status = v;
+  Object.assign(boxMerge, st.merge ?? {});
   boxQueue.push(...(st.events ?? []));
   return true;
 }
@@ -118,6 +125,7 @@ export function setHostConfig(c: HostConfig, now: () => number): void {
   tailscaleOpened = false;
   boxConvs = JSON.parse(JSON.stringify(cfg.sync?.boxChat?.convs ?? {}));
   boxQueue = [];
+  boxMerge = {};
   boxStep = 0;
   boxPosts.length = 0;
   keys.clear();
@@ -219,12 +227,23 @@ function boxVoiceTool(name: string, args: any): string {
 export const hostCommands: Record<string, (a: Record<string, any>) => unknown> = {
   // ---- sync ----
   vault_box_config: () => cfg.sync?.box ?? null,
-  vault_box_sync: async () => {
+  vault_box_sync: async ({ vault }) => {
     const list = cfg.sync?.reports ?? [];
     const r = list.length ? list[Math.min(boxCalls, list.length - 1)] : {};
     boxCalls++;
     await sleep(250);
     if (!cfg.sync?.box) return { ...okBox(), configured: false };
+    const merged = Object.keys(boxMerge);
+    if (merged.length && vault) {
+      // The merge gate let the box's commit in: its files land in the working copy.
+      for (const rel of merged) {
+        const m = boxMerge[rel]!;
+        fs.writeFileSync(`${vault}/${rel}`, typeof m === "function" ? m(fs.readText(`${vault}/${rel}`)) : m);
+      }
+      boxMerge = {};
+      report("info", `box sync merged ${merged.join(", ")}`);
+      return { ...okBox(), ...r, merged: true, merged_paths: merged, message: "merged box into master; pushed" };
+    }
     if (tailscaleOpened) return okBox();
     return { ...okBox(), ...r };
   },

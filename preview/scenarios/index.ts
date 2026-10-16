@@ -9,6 +9,7 @@ import { convFullScenarios } from "./convFull";
 import { voiceScenarios } from "./voice";
 import { steerScenarios } from "./steer";
 import { markdownScenarios } from "./markdown";
+import { liveEditScenarios } from "./liveEdit";
 import type { Script } from "../runtime/llm";
 
 const MIN = 60_000;
@@ -905,6 +906,7 @@ export const scenarios: Scenario[] = [
   ...voiceScenarios,
   ...steerScenarios,
   ...markdownScenarios,
+  ...liveEditScenarios,
 ];
 
 // ---- History (P3-history) ------------------------------------------------------
