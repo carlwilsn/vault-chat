@@ -11,6 +11,7 @@ import { listen } from "@tauri-apps/api/event";
 import { buildPhoneVoiceContext, buildClientToolHandlers, ensureVoiceConversation, resetAgentCreateBreaker } from "./voice-elevenlabs";
 import { useStore } from "./store";
 import { vlog } from "./debugLog";
+import { afterVaultReady } from "./bootTiming";
 
 // The box relays each phone tool call here; we run the EXACT same handler the
 // desktop voice agent uses (full parity — file ops, git, schedules, etc.) and
@@ -175,8 +176,9 @@ export async function startPhoneVoiceHost(): Promise<void> {
   // (getPhoneChatLink/getPhoneVoiceLink) — so until the user happened to open
   // Settings, the .ts.net host pointed nowhere and phone voice looped
   // "connecting…". Idempotent on the Rust side, so this is safe to fire on
-  // every boot; fire-and-forget since `tailscale serve` can take a beat.
-  void invoke("voice_server_url", { port: PORT }).catch(() => {});
+  // every boot; fire-and-forget since `tailscale serve` can take a beat — and
+  // after the vault is on screen: the two tailscale CLI runs take 1–3 s each.
+  void afterVaultReady().then(() => invoke("voice_server_url", { port: PORT }).catch(() => {}));
   // Push the instant the vault opens/switches or the ElevenLabs key changes —
   // that's the moment the host first has something to serve, and waiting for the
   // next heartbeat is exactly what caused the phone's transient 503s.

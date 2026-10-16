@@ -12,7 +12,6 @@ import "@fontsource/inter/500.css";
 import "@fontsource/inter/600.css";
 import "@fontsource/jetbrains-mono/400.css";
 import "@fontsource/jetbrains-mono/500.css";
-import "./monaco-setup";
 import { applyHljsTheme } from "./hljsTheme";
 import App from "./App";
 import { ChatWindow } from "./ChatWindow";
@@ -24,7 +23,7 @@ import {
   useStore,
 } from "./store";
 import { installDebugLog, flushDebugLogToDisk, vlog } from "./debugLog";
-import { bootMark, installBootTiming } from "./bootTiming";
+import { afterVaultReady, bootMark, installBootTiming } from "./bootTiming";
 import { installAutosaveNet } from "./autosave";
 import { startPhoneVoiceHost } from "./phoneVoice";
 import { startPhoneAppHost } from "./phoneApp";
@@ -91,6 +90,13 @@ if (isPopout) {
   // close-to-tray gate and the OS login item. Main window only; popouts must
   // never register autostart or hold the app alive on close.
   void initBackgroundMode();
+  // Warm the editor chunk (Monaco, lazy in MarkdownView) once the first screen
+  // is up, so the first code edit doesn't wait on it.
+  void afterVaultReady(8000).then(() => {
+    const warm = () => void import("./MonacoEditor").catch(() => {});
+    if ("requestIdleCallback" in window) window.requestIdleCallback(warm, { timeout: 5000 });
+    else setTimeout(warm, 1000);
+  });
 }
 
 const Root = isPopout ? ChatWindow : App;

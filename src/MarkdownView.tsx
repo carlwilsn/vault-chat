@@ -1,9 +1,8 @@
-import { memo, startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { lazy, memo, startTransition, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ComponentPropsWithoutRef, MouseEvent as ReactMouseEvent } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { FileText, Eye, Pencil, X } from "lucide-react";
 import { useStore } from "./store";
-import { MonacoEditor } from "./MonacoEditor";
 import { LiveEditor } from "./LiveEditor";
 import { CodeView } from "./CodeView";
 import { NotebookView } from "./NotebookView";
@@ -24,6 +23,11 @@ import { applyDiskContent, pendingBoxText, registerDirty, setDiskChanged, useLiv
 
 import { Markdown } from "./Markdown";
 import { flipNthTaskCheckbox, localPathFromUrl } from "./mdPipeline";
+
+// Monaco (with its languages) is most of the bundle and only edits non-markdown
+// files, so it loads on first use (main.tsx prefetches it once startup settles)
+// instead of being parsed before the first paint on every launch.
+const MonacoEditor = lazy(() => import("./MonacoEditor").then((m) => ({ default: m.MonacoEditor })));
 
 function resolveRelative(baseFile: string, rel: string): string {
   const sep = baseFile.includes("\\") ? "\\" : "/";
@@ -705,7 +709,9 @@ export function MarkdownView({ paneId }: Props) {
         </div>
       ) : showingEditor ? (
         <div className="flex-1 min-h-0">
-          <MonacoEditor value={content} onChange={onChange} ext={ext} path={file} />
+          <Suspense fallback={null}>
+            <MonacoEditor value={content} onChange={onChange} ext={ext} path={file} />
+          </Suspense>
         </div>
       ) : kind === "markdown" ? (
         <div

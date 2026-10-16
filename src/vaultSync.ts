@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { useStore, type FileEntry } from "./store";
 import { prepareVaultProjects } from "./projects";
 import { refreshOpenFiles } from "./liveReload";
-import { bootMark } from "./bootTiming";
+import { afterVaultReady, bootMark } from "./bootTiming";
 
 // After a pull pulls in commits from another machine, the file tree
 // should reflect new/renamed/deleted files without a manual refresh. We
@@ -361,7 +361,11 @@ function startAutosaveLoop(vault: string): void {
   const commitInterval = window.setInterval(() => {
     void commitPass();
   }, AUTOSAVE_INTERVAL_MS);
-  void commitPass().finally(() => markSyncIdle(vault, "autosave")); // initial pass on open
+  // Initial pass on open — at launch once the vault is on screen (≤ 4 s), so its
+  // git runs don't compete with the file walk and the chats load.
+  void afterVaultReady()
+    .then(commitPass)
+    .finally(() => markSyncIdle(vault, "autosave"));
   loops.set(vault, {
     vault,
     cancel: () => {
@@ -903,9 +907,11 @@ function startBoxSyncLoop(vault: string, cfg: BoxConfig): void {
       if (boxKick.get(vaultKey(vault)) === kick) boxKick.delete(vaultKey(vault));
     },
   });
-  void cycle().finally(() =>
-    markSyncIdle(vault, "box", { ok: boxStates.get(vault)?.report?.ok ?? null }),
-  );
+  // First cycle at launch once the vault is on screen (≤ 4 s): its commit, fetch
+  // and push don't compete with the file walk and the chats load.
+  void afterVaultReady()
+    .then(cycle)
+    .finally(() => markSyncIdle(vault, "box", { ok: boxStates.get(vault)?.report?.ok ?? null }));
 }
 
 // The boot log's "sync idle": the open vault's first sync / autosave pass is done.
