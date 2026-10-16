@@ -15,7 +15,7 @@ import { isGitPath, handleGitHttp } from "./gitHttp";
 import { validVaultName } from "./sync";
 import { validKeyName } from "./keys";
 import { projectsList, setProject } from "./projectRoutes";
-import { voiceTool, voiceSession, voiceTranscript, type VoiceDeps } from "./voice";
+import { voiceTool, voiceSession, voiceTranscript, voicePath, type VoiceDeps } from "./voice";
 import { activityImageRoute, activityPost, activitySummaryRoute } from "./activity";
 import PHONE_PAGE_INLINE from "../src-tauri/assets/phone.html";
 import VOICE_PAGE_INLINE from "../src-tauri/assets/voice.html";
@@ -346,6 +346,10 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
     return json(res, out.status, out.body);
   }
 
+  // Live edits (server/liveEdits.ts): a file the agent just wrote, as it is on
+  // the box now — the laptop shows it in the open pane before the sync lands.
+  if (path === "/api/v1/vault/file" && method === "GET") return vaultFileRoute(res, vault, url.searchParams.get("path"));
+
   const q = (k: string) => url.searchParams.get(k) ?? "";
 
   // The shared context stream (server/activity.ts): this vault's log only.
@@ -553,6 +557,28 @@ async function poll(res: ServerResponse, url: URL, want: string, main: string): 
     }
     after = got.next;
     await ring.wait(Math.min(1000, deadline - Date.now()));
+  }
+}
+
+/** GET /api/v1/vault/file?path= → {path, size, mtimeMs, base64}: one file's
+ * bytes, inside the vault only (realpath; never .git or a denied entry). */
+const VAULT_FILE_CAP = 25 * 1024 * 1024;
+function vaultFileRoute(res: ServerResponse, vault: string, p: string | null): void {
+  if (!p || !p.trim()) return json(res, 400, { error: "missing path" });
+  let abs: string;
+  let rel: string;
+  try {
+    ({ abs, rel } = voicePath(vault, p, "read"));
+  } catch (e) {
+    return json(res, 403, { error: String(e) });
+  }
+  try {
+    const st = statSync(abs);
+    if (!st.isFile()) return json(res, 404, { error: "not a file" });
+    if (st.size > VAULT_FILE_CAP) return json(res, 413, { error: "file too large" });
+    return json(res, 200, { path: rel, size: st.size, mtimeMs: st.mtimeMs, base64: readFileSync(abs).toString("base64") });
+  } catch (e) {
+    return json(res, 404, { error: (e as Error).message });
   }
 }
 

@@ -3,6 +3,10 @@
 // committed and published (a sync cycle: commit box, push it to the bare repo
 // the laptop fetches), then the clients hear `vault_changed` on /poll and run
 // their own sync at once. A burst of edits is one cycle (debounced).
+// Before any of that, each write is announced at once as `file_changed`
+// {vault, type, path}: a laptop showing that file fetches the box's bytes
+// (GET /api/v1/vault/file) and shows them in place — display only, the sync
+// catches the disk up behind it.
 import { isAbsolute, relative, resolve } from "node:path";
 
 /** The tools whose success means a file in the vault changed. */
@@ -37,6 +41,8 @@ export class LiveEdits {
 
   /** `vault`: the vault's name on the box; `paths` vault-relative. */
   note(vault: string, paths: string[]): void {
+    // No debounce, no commit to wait for: the open pane shows the edit now.
+    for (const path of new Set(paths)) this.d.broadcast({ vault, type: "file_changed", path });
     const delay = this.d.delayMs ?? 1000;
     const maxWait = this.d.maxWaitMs ?? 3000;
     const p = this.pending.get(vault);

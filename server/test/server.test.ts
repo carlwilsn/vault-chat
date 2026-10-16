@@ -62,6 +62,20 @@ describe("auth", () => {
     expect(j.ok).toBe(true);
     expect(j.sent).toBe(0); // no push subscriptions in the temp home
   });
+  it("/api/v1/vault/file: a file's current bytes, inside the vault only, behind auth", async () => {
+    const get = (p: string, h: Record<string, string> = {}) => fetch(`${srv.base}/api/v1/vault/file?path=${encodeURIComponent(p)}`, { headers: h });
+    const r = await get("notes/ideas.md");
+    expect(r.status).toBe(200);
+    const j = await r.json();
+    expect(j.path).toBe("notes/ideas.md");
+    expect(Buffer.from(j.base64, "base64").toString("utf8")).toBe("- an idea
+");
+    expect((await get("../outside.md")).status).toBe(403);
+    expect((await get(join(home, "phone-token"))).status).toBe(403);
+    expect((await get(".git/config")).status).toBe(403);
+    expect((await get("notes/missing.md")).status).toBe(404);
+    expect((await get("notes/ideas.md", viaServe)).status).toBe(401);
+  });
 });
 
 describe("/poll sequence across a restart", () => {

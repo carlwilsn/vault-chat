@@ -70,6 +70,8 @@ const until = async (fn: () => Promise<boolean> | boolean, ms = 10_000) => {
 let engine: any;
 let backend: FakeBackend;
 const written: string[][] = [];
+/** main.ts wires the engine's onFilesWritten to LiveEdits.note; a test plugs in here. */
+let onWritten: ((paths: string[]) => void) | null = null;
 
 beforeAll(async () => {
   await import("../shims/globals");
@@ -95,7 +97,10 @@ beforeAll(async () => {
     notify: async () => "sent",
     broadcast: () => {},
     log: () => {},
-    onFilesWritten: (paths) => written.push(paths),
+    onFilesWritten: (paths) => {
+      written.push(paths);
+      onWritten?.(paths);
+    },
   });
   engine.start();
 });
@@ -144,6 +149,7 @@ describe("live edits", () => {
       delayMs: 300,
       flush: () => sync.flush(),
       broadcast: (ev) => {
+        if (ev.type !== "vault_changed") return; // file_changed goes out at once (below)
         // What a laptop fetching now would get.
         publishedAtEvent = sh(bare, "git", ["show", "box:notes/ideas.md"]);
         events.push(ev);
@@ -169,6 +175,54 @@ describe("live edits", () => {
       live.stop();
       sync.stop();
       cleanup(r2);
+    }
+  });
+});
+
+describe("file_changed: the open pane hears of a write at once", () => {
+  const recorder = () => {
+    const events: { at: number; ev: any }[] = [];
+    let flushed = 0;
+    const live = new LiveEdits({ delayMs: 10_000, flush: async () => void flushed++, broadcast: (ev) => events.push({ at: Date.now(), ev }) });
+    return { events, live, flushed: () => flushed };
+  };
+
+  it("a voice-route Edit emits file_changed immediately (no debounce, no commit first)", async () => {
+    const { events, live, flushed } = recorder();
+    try {
+      writeFileSync(join(vault, "dog.svg"), '<svg><rect fill="gold"/></svg>');
+      const voice = await import("../voice");
+      const t0 = Date.now();
+      const r = await voice.voiceTool({ vault, name: "v", main: true, shell: null, onWrite: (paths) => paths?.length && live.note("v", paths) }, {
+        name: "Edit",
+        args: { path: "dog.svg", old_string: "gold", new_string: "purple" },
+      });
+      expect(String(r.result)).toContain("edited");
+      const fc = events.filter((e) => e.ev.type === "file_changed");
+      expect(fc.map((e) => e.ev)).toEqual([{ vault: "v", type: "file_changed", path: "dog.svg" }]);
+      expect(fc[0]!.at - t0).toBeLessThan(500);
+      expect(flushed()).toBe(0); // the sync cycle is still debounced behind it
+      expect(JSON.stringify(fc[0]!.ev).startsWith('{"vault":"v"')).toBe(true); // /poll scopes by it
+    } finally {
+      live.stop();
+    }
+  });
+
+  it("an engine Write emits file_changed immediately", async () => {
+    const { events, live } = recorder();
+    onWritten = (paths) => live.note("v", paths);
+    try {
+      const at = written.length;
+      await engine.message({ text: "Draw a dog." });
+      await until(() => backend.turns.length >= 2);
+      const tid = backend.turns.at(-1).threadId;
+      backend.ev(tid, { kind: "tool", itemId: "w1", name: "Write", input: { path: "pics/dog.svg", content: "<svg/>" } });
+      backend.ev(tid, { kind: "tool", itemId: "w1", name: "Write", input: undefined, result: "Successfully wrote 6 bytes" });
+      await until(() => written.length > at);
+      expect(events.map((e) => e.ev)).toEqual([{ vault: "v", type: "file_changed", path: "pics/dog.svg" }]);
+    } finally {
+      onWritten = null;
+      live.stop();
     }
   });
 });
