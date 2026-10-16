@@ -937,6 +937,17 @@ fn github_backup(vault: &str, report: &mut BoxSyncReport) {
 
 /// One full sync cycle. Blocking; call from a worker thread.
 pub fn box_sync_cycle(vault: &str) -> BoxSyncReport {
+    cycle(vault, true)
+}
+
+/// The box just published an edit (`vault_changed` on /poll): commit, fetch,
+/// merge — and stop there. The pushes (box, GitHub) wait for the next full
+/// cycle, so the box's edit lands on this disk seconds sooner.
+pub fn box_pull_cycle(vault: &str) -> BoxSyncReport {
+    cycle(vault, false)
+}
+
+fn cycle(vault: &str, push: bool) -> BoxSyncReport {
     let mut r = BoxSyncReport::default();
     let Some(cfg) = box_config(vault) else {
         r.message = "no box configured".into();
@@ -1022,6 +1033,19 @@ pub fn box_sync_cycle(vault: &str) -> BoxSyncReport {
         save_state(vault, &st);
     }
     r.conflict = st.conflict.clone();
+
+    if !push {
+        r.ok = r.error.is_none();
+        r.changes_waiting = changes_waiting(vault);
+        r.message = match (&r.error, &r.conflict, r.merged) {
+            (Some(_), _, _) => "sync failed".into(),
+            (None, Some(c), _) => format!("merge gate closed: conflict in {}", c.files.join(", ")),
+            (None, None, true) => "merged box into master".into(),
+            (None, None, false) if hand_merge => r.message.clone(),
+            _ => "synced".into(),
+        };
+        return r;
+    }
 
     // 4. Push master, and only master.
     match run_git_timeout(

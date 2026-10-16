@@ -88,8 +88,20 @@ struct ShellKind {
     path: Option<String>,
 }
 
+// Every command that touches the disk, spawns a process or waits on the network
+// is `async` and does that work on the blocking pool. A plain `fn` command runs
+// on the main thread, and while it runs the window pumps no messages: a second
+// of git or `tailscale` there is a frozen window, five is Windows' "Not
+// responding". Keep plain `fn` commands for in-memory work only.
+
 #[tauri::command]
-fn bash_shell_kind() -> ShellKind {
+async fn bash_shell_kind() -> ShellKind {
+    tauri::async_runtime::spawn_blocking(bash_shell_kind_sync)
+        .await
+        .unwrap_or(ShellKind { kind: "cmd".into(), path: None })
+}
+
+fn bash_shell_kind_sync() -> ShellKind {
     #[cfg(windows)]
     {
         if let Some(p) = find_git_bash() {
@@ -1505,7 +1517,13 @@ async fn read_binary_file(path: String) -> Result<Vec<u8>, String> {
 }
 
 #[tauri::command]
-fn open_terminal(cwd: Option<String>) -> Result<(), String> {
+async fn open_terminal(cwd: Option<String>) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || open_terminal_sync(cwd))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn open_terminal_sync(cwd: Option<String>) -> Result<(), String> {
     let dir = cwd.unwrap_or_else(|| ".".to_string());
 
     #[cfg(windows)]
@@ -1704,9 +1722,11 @@ fn launch_in_new_terminal(argv: &[String]) -> Result<(), String> {
 
 /// A terminal on the box, in a vault's working copy, over SSH (the tailnet).
 #[tauri::command]
-fn open_box_terminal(host: String, user: String, path: String) -> Result<(), String> {
+async fn open_box_terminal(host: String, user: String, path: String) -> Result<(), String> {
     let argv = box_ssh_argv(&host, &user, &path)?;
-    launch_in_new_terminal(&argv)
+    tauri::async_runtime::spawn_blocking(move || launch_in_new_terminal(&argv))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -2689,11 +2709,15 @@ fn run_git_as(
 // to a single lock. Created lazily on first use.
 static REPO_LOCKS: OnceLock<Mutex<HashMap<String, Arc<Mutex<()>>>>> = OnceLock::new();
 
-fn repo_lock_for(vault: &str) -> Arc<Mutex<()>> {
-    let key = std::path::Path::new(vault)
+fn repo_key(vault: &str) -> String {
+    std::path::Path::new(vault)
         .canonicalize()
         .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or_else(|_| vault.to_string());
+        .unwrap_or_else(|_| vault.to_string())
+}
+
+fn repo_lock_for(vault: &str) -> Arc<Mutex<()>> {
+    let key = repo_key(vault);
     let map = REPO_LOCKS.get_or_init(|| Mutex::new(HashMap::new()));
     let mut guard = map.lock().unwrap_or_else(|e| e.into_inner());
     guard
@@ -2742,12 +2766,98 @@ fn abort_stuck_merge_or_rebase(vault: &str) {
 fn with_repo_lock<T>(vault: &str, f: impl FnOnce() -> T) -> T {
     let lock = repo_lock_for(vault);
     let _g = lock.lock().unwrap_or_else(|e| e.into_inner());
+    let _held = HeldRepoLock::mark(repo_key(vault));
     clear_stale_index_lock(vault);
     f()
 }
 
+thread_local! {
+    /// The repo locks this thread holds (by `repo_key`): git run inside
+    /// `with_repo_lock` does not take its own repo's lock again.
+    static HELD_REPO_LOCKS: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+struct HeldRepoLock(String);
+impl HeldRepoLock {
+    fn mark(key: String) -> Self {
+        HELD_REPO_LOCKS.with(|h| h.borrow_mut().push(key.clone()));
+        HeldRepoLock(key)
+    }
+}
+impl Drop for HeldRepoLock {
+    fn drop(&mut self) {
+        HELD_REPO_LOCKS.with(|h| {
+            let mut h = h.borrow_mut();
+            if let Some(i) = h.iter().rposition(|k| k == &self.0) {
+                h.remove(i);
+            }
+        });
+    }
+}
+
+/// The git subcommand in `args` (past `-c k=v` / `-C dir` and other leading flags).
+fn git_subcommand<'a>(args: &[&'a str]) -> &'a str {
+    let mut i = 0;
+    while i < args.len() {
+        let a = args[i];
+        if a == "-c" || a == "-C" {
+            i += 2;
+        } else if a.starts_with('-') {
+            i += 1;
+        } else {
+            return a;
+        }
+    }
+    ""
+}
+
+/// Network-only git: no index, no work tree — it never collides with a commit.
+fn git_is_network_only(args: &[&str]) -> bool {
+    matches!(git_subcommand(args), "fetch" | "push" | "ls-remote")
+}
+
+/// How long a git run waits for its repo's lock before going ahead anyway
+/// (a holder stuck past this is a bug elsewhere; never wedge the app on it).
+const GIT_SERIAL_WAIT: Duration = Duration::from_secs(120);
+
+/// Every git process the app starts in a repo runs one at a time, through the
+/// same per-repo lock the writers hold (`with_repo_lock`) — reads too: on
+/// Windows a commit cannot swap in its new index while another git has the old
+/// one open ("fatal: unable to write new index file"). Network-only commands
+/// (fetch, push, ls-remote) stay outside it, so a slow box never holds up a
+/// commit. Inside `with_repo_lock` (any repo) it never takes a second lock.
+fn git_serialized<T>(cwd: &str, args: &[&str], f: impl FnOnce() -> T) -> T {
+    if git_is_network_only(args) || HELD_REPO_LOCKS.with(|h| !h.borrow().is_empty()) {
+        return f();
+    }
+    let lock = repo_lock_for(cwd);
+    let start = std::time::Instant::now();
+    loop {
+        match lock.try_lock() {
+            Ok(_g) => {
+                let _held = HeldRepoLock::mark(repo_key(cwd));
+                return f();
+            }
+            Err(std::sync::TryLockError::Poisoned(p)) => {
+                let _g = p.into_inner();
+                let _held = HeldRepoLock::mark(repo_key(cwd));
+                return f();
+            }
+            Err(std::sync::TryLockError::WouldBlock) => {
+                if start.elapsed() >= GIT_SERIAL_WAIT {
+                    eprintln!("[git] {} waited {}s for its repo lock; running anyway", git_subcommand(args), GIT_SERIAL_WAIT.as_secs());
+                    return f();
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+    }
+}
+
 fn is_index_lock_error(stderr: &str) -> bool {
-    stderr.contains("index.lock")
+    // A foreign git (or a virus scanner) holding the index: "index.lock: File
+    // exists", or on Windows the swap-in of the new index refused.
+    stderr.contains("index.lock") || stderr.contains("unable to write new index file")
 }
 
 /// Materialize registered submodules after a successful pull. Nested work
@@ -3495,7 +3605,14 @@ fn get_gh_token() -> Option<String> {
     GH_TOKEN
         .get_or_init(|| {
             let gh = find_gh()?;
-            let out = Command::new(&gh).arg("auth").arg("token").output().ok()?;
+            let mut cmd = Command::new(&gh);
+            cmd.arg("auth").arg("token");
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::CommandExt;
+                cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW: no console flash
+            }
+            let out = cmd.output().ok()?;
             if !out.status.success() {
                 return None;
             }
@@ -3669,6 +3786,14 @@ fn kill_tree_by_pid(pid: u32) {
 /// can legitimately run far longer than a normal git command — notably the
 /// first `submodule update --init`, which clones whole sub-repos.
 fn run_git_timeout(
+    cwd: &str,
+    args: &[&str],
+    timeout_secs: u64,
+) -> Result<(String, String, i32), String> {
+    git_serialized(cwd, args, || run_git_timeout_now(cwd, args, timeout_secs))
+}
+
+fn run_git_timeout_now(
     cwd: &str,
     args: &[&str],
     timeout_secs: u64,
@@ -5177,21 +5302,33 @@ fn is_sync_follower(vault: &str) -> bool {
 
 /// The sync role for the frontend (scheduler + mission-routing gates).
 #[tauri::command]
-fn vault_sync_role(vault: String) -> String {
+async fn vault_sync_role(vault: String) -> String {
     // A vault whose sync.json names a box is a follower: the box hosts its
-    // missions and fires its schedules; this machine relays to it.
-    if is_sync_follower(&vault) || box_sync::box_config(&vault).is_some() {
-        "follower".into()
-    } else {
-        "writer".into()
-    }
+    // missions and fires its schedules; this machine relays to it. (A git
+    // process: off the main thread.)
+    tauri::async_runtime::spawn_blocking(move || {
+        if is_sync_follower(&vault) || box_sync::box_config(&vault).is_some() {
+            "follower".to_string()
+        } else {
+            "writer".to_string()
+        }
+    })
+    .await
+    .unwrap_or_else(|_| "writer".into())
 }
 
 /// One box-sync cycle (sync.json mode): commit, fetch `box`, merge gate, push
-/// `master`, GitHub backup. See box_sync.rs.
+/// `master`, GitHub backup. `pull`: stop after the merge (the box just
+/// published an edit; the next full cycle pushes). See box_sync.rs.
 #[tauri::command]
-async fn vault_box_sync(vault: String) -> Result<box_sync::BoxSyncReport, String> {
-    tauri::async_runtime::spawn_blocking(move || box_sync::box_sync_cycle(&vault))
+async fn vault_box_sync(vault: String, pull: Option<bool>) -> Result<box_sync::BoxSyncReport, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        if pull.unwrap_or(false) {
+            box_sync::box_pull_cycle(&vault)
+        } else {
+            box_sync::box_sync_cycle(&vault)
+        }
+    })
         .await
         .map_err(|e| e.to_string())
 }
@@ -5206,8 +5343,13 @@ struct BoxConfigOut {
 
 /// The box this vault syncs with, from `.vault-chat/sync.json` (None = old mode).
 #[tauri::command]
-fn vault_box_config(vault: String) -> Option<BoxConfigOut> {
-    box_sync::box_config(&vault).map(|c| BoxConfigOut { box_url: c.box_url, vault: c.vault, name: c.name })
+async fn vault_box_config(vault: String) -> Option<BoxConfigOut> {
+    tauri::async_runtime::spawn_blocking(move || {
+        box_sync::box_config(&vault).map(|c| BoxConfigOut { box_url: c.box_url, vault: c.vault, name: c.name })
+    })
+    .await
+    .ok()
+    .flatten()
 }
 
 /// Settings → Box: the tailnet machines that answer as a vault-chat server.
@@ -5229,21 +5371,27 @@ async fn tailscale_check() -> Result<box_sync::TailscaleState, String> {
 
 /// The sync chip's "Open Tailscale" (Windows, macOS).
 #[tauri::command]
-fn tailscale_open() -> Result<(), String> {
-    box_sync::open_tailscale()
+async fn tailscale_open() -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(box_sync::open_tailscale)
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 /// Settings → Box: this vault syncs with (and chats on) `box_url` from now on.
 /// The frontend restarts its sync loop, whose first cycle pushes master.
 #[tauri::command]
-fn vault_box_connect(vault: String, box_url: String, box_vault: String, name: String) -> Result<(), String> {
-    box_sync::connect_box(&vault, &box_url, &box_vault, &name)
+async fn vault_box_connect(vault: String, box_url: String, box_vault: String, name: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || box_sync::connect_box(&vault, &box_url, &box_vault, &name))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 /// Settings → Box: back to this laptop (the box keeps its copy).
 #[tauri::command]
-fn vault_box_disconnect(vault: String) -> Result<(), String> {
-    box_sync::disconnect_box(&vault)
+async fn vault_box_disconnect(vault: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || box_sync::disconnect_box(&vault))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[derive(Serialize)]
@@ -5860,6 +6008,50 @@ mod keystore_tests {
 }
 
 #[cfg(test)]
+mod git_serial_tests {
+    use super::{git_is_network_only, git_subcommand, run_git, with_repo_lock};
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn subcommand_skips_config_overrides() {
+        assert_eq!(git_subcommand(&["-c", "user.name=x", "-c", "user.email=y", "commit", "-q"]), "commit");
+        assert!(git_is_network_only(&["-c", "credential.interactive=false", "fetch", "box"]));
+        assert!(git_is_network_only(&["push", "--porcelain", "box", "refs/heads/master:refs/heads/master"]));
+        assert!(!git_is_network_only(&["status", "--porcelain"]));
+        assert!(!git_is_network_only(&["commit", "-m", "fetch"]));
+    }
+
+    /// A read waits for a writer holding the repo lock (never overlaps it); a
+    /// git run inside the lock does not deadlock on its own lock.
+    #[test]
+    fn git_in_a_repo_waits_for_the_repo_lock() {
+        let dir = std::env::temp_dir().join(format!("vc-git-serial-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let d = dir.to_string_lossy().to_string();
+        assert_eq!(run_git(&d, &["init", "-q"]).unwrap().2, 0);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let d2 = d.clone();
+        let writer = std::thread::spawn(move || {
+            with_repo_lock(&d2, || {
+                // Inside the lock: git runs (no second lock taken).
+                assert_eq!(run_git(&d2, &["status", "--porcelain"]).unwrap().2, 0);
+                tx.send(Instant::now()).unwrap();
+                std::thread::sleep(Duration::from_millis(400));
+                Instant::now()
+            })
+        });
+        let held_at = rx.recv().unwrap();
+        assert_eq!(run_git(&d, &["status", "--porcelain"]).unwrap().2, 0);
+        let read_done = Instant::now();
+        let released = writer.join().unwrap();
+        assert!(read_done >= released, "the read ran while the writer held the lock");
+        assert!(read_done.duration_since(held_at) >= Duration::from_millis(390));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
 mod repo_class_tests {
     use super::{repo_name, repo_owner};
 
@@ -6417,8 +6609,10 @@ fn run_script_sync(
 }
 
 #[tauri::command]
-fn path_exists(path: String) -> bool {
-    std::path::Path::new(&path).exists()
+async fn path_exists(path: String) -> bool {
+    tauri::async_runtime::spawn_blocking(move || std::path::Path::new(&path).exists())
+        .await
+        .unwrap_or(false)
 }
 
 
@@ -6439,11 +6633,13 @@ fn app_ready(window: tauri::WebviewWindow) -> Result<(), String> {
 // freshly-generated token. Stage 1 surfaces only start/stop/status.
 
 #[tauri::command]
-fn voice_server_start(app: tauri::AppHandle, port: u16, token: String) -> Result<u16, String> {
+async fn voice_server_start(app: tauri::AppHandle, port: u16, token: String) -> Result<u16, String> {
     // Hand the server the app handle so it can relay phone tool calls to the
     // running app's real handlers (full parity with desktop voice).
     voice_server::set_app(app);
-    voice_server::start(port, token)
+    tauri::async_runtime::spawn_blocking(move || voice_server::start(port, token))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 /// The desktop app's answer to a relayed phone tool call (voice_server::run_tool).
@@ -6488,9 +6684,18 @@ fn voice_set_context(
 /// Best-effort phone link base for the Settings note. Prefers the secure
 /// Tailscale **HTTPS** URL (the one a phone's mic will accept); falls back to the
 /// http IP (localhost-only). The frontend appends `/voice?token=…`.
+///
+/// Two or three `tailscale` CLI runs (`serve --bg`, `status`, maybe `ip`), each
+/// 0.7-6 s here, on every launch: on the main thread they were the "Not
+/// responding" window.
 #[tauri::command]
-fn voice_server_url(port: u16) -> Option<String> {
-    voice_server::https_url(port).or_else(|| voice_server::tailscale_url(port))
+async fn voice_server_url(port: u16) -> Option<String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        voice_server::https_url(port).or_else(|| voice_server::tailscale_url(port))
+    })
+    .await
+    .ok()
+    .flatten()
 }
 
 // ----- phone chat PWA: SSE broadcast + Web Push plumbing -----
@@ -6513,21 +6718,29 @@ fn phone_set_vapid(key: String) {
 
 /// Stored Web Push subscriptions (JSON array string).
 #[tauri::command]
-fn phone_push_subs() -> String {
-    voice_server::push_subs_list()
+async fn phone_push_subs() -> String {
+    tauri::async_runtime::spawn_blocking(voice_server::push_subs_list)
+        .await
+        .unwrap_or_else(|_| "[]".into())
 }
 
 /// Drop a dead subscription (push endpoint answered 404/410).
 #[tauri::command]
-fn phone_push_unsub(endpoint: String) {
-    voice_server::push_subs_remove(&endpoint);
+async fn phone_push_unsub(endpoint: String) {
+    let _ = tauri::async_runtime::spawn_blocking(move || voice_server::push_subs_remove(&endpoint)).await;
 }
 
 /// Append one notification line to <vault>/.vault-chat/notifications.jsonl —
 /// the agent→you feed behind the phone app's Alerts tab.
 #[tauri::command]
-fn notification_add(vault: String, json: String) {
-    voice_server::notification_append(&vault, &json);
+async fn notification_add(vault: String, json: String) {
+    // One append at a time, as when this ran on the main thread.
+    static APPEND: Mutex<()> = Mutex::new(());
+    let _ = tauri::async_runtime::spawn_blocking(move || {
+        let _g = APPEND.lock().unwrap_or_else(|e| e.into_inner());
+        voice_server::notification_append(&vault, &json);
+    })
+    .await;
 }
 
 /// Raw Web Push delivery: POST the webview-encrypted body to the push service.

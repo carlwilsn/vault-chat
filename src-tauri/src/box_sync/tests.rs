@@ -558,3 +558,23 @@ fn tailscale_state_from_status_json() {
     assert!(!none.installed && !none.connected && !none.can_open);
     assert_eq!(up.can_open, cfg!(any(windows, target_os = "macos")));
 }
+
+/// vault_changed's pull: the box's commit is merged here, nothing is pushed
+/// yet (the next full cycle does it).
+#[test]
+fn pull_cycle_merges_without_pushing() {
+    let r = rig("pull");
+    let master_on_box = git(&r.bare, &["rev-parse", "refs/heads/master"]);
+    r.box_commit(&[("dog.svg", "<svg fill=\"purple\"/>\n")], "voice edit");
+    r.laptop_commit(&[("mine.md", "laptop\n")], "laptop work");
+    let rep = box_pull_cycle(&s(&r.laptop));
+    assert!(rep.ok, "pull: {:?}", rep.error);
+    assert!(rep.merged);
+    assert_eq!(rep.merged_paths, vec!["dog.svg".to_string()]);
+    assert_eq!(read(&r.laptop, "dog.svg"), "<svg fill=\"purple\"/>\n");
+    assert_eq!(git(&r.bare, &["rev-parse", "refs/heads/master"]), master_on_box, "no push in a pull");
+    let full = r.cycle();
+    assert!(full.ok, "full: {:?}", full.error);
+    assert_eq!(git(&r.bare, &["rev-parse", "refs/heads/master"]), r.head(), "the next full cycle pushes");
+    r.done();
+}
