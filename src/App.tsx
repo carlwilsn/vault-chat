@@ -7,7 +7,7 @@ import { FileTree } from "./FileTree";
 import { MarkdownArea } from "./MarkdownArea";
 import { ChatPane } from "./ChatPane";
 import { SettingsPane } from "./SettingsPane";
-import { Titlebar } from "./Titlebar";
+import { Titlebar, WindowControls } from "./Titlebar";
 import { NotePopup } from "./NotePopup";
 import { VoiceTextPanel } from "./VoiceTextPanel";
 import { NotesPanel } from "./NotesPanel";
@@ -509,7 +509,7 @@ export default function App() {
   // popped out (the popout window owns its own surface).
   if (chatFullscreen && !popoutOpen) {
     return (
-      <div className="h-full w-full bg-background flex flex-col">
+      <div className="h-full w-full bg-background flex flex-col relative">
         <div
           data-tauri-drag-region
           className="h-1.5 shrink-0 bg-background"
@@ -532,6 +532,7 @@ export default function App() {
             <ChatPane />
           </div>
         </div>
+        <WindowControls className="absolute top-0 right-0 z-30" />
         {captureOver && (
           <div className="fixed inset-0 z-40 flex flex-col bg-background" data-el="fullscreen-capture">
             <div className="h-8 shrink-0 flex items-center justify-center gap-2 border-b border-border text-[11.5px] text-muted-foreground">

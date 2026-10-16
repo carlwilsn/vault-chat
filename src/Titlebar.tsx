@@ -30,12 +30,10 @@ export function Titlebar() {
     showHistory,
     setShowHistory,
   } = useStore();
-  const [maximized, setMaximized] = useState(false);
   const [hiddenOpen, setHiddenOpen] = useState(false);
   const [hiddenLines, setHiddenLines] = useState<string[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [refreshSpin, setRefreshSpin] = useState(false);
-  const win = getCurrentWindow();
 
   const refreshTree = async () => {
     if (!vaultPath || refreshSpin) return;
@@ -51,18 +49,6 @@ export function Titlebar() {
     }
   };
 
-  useEffect(() => {
-    let unlisten: (() => void) | undefined;
-    (async () => {
-      setMaximized(await win.isMaximized());
-      unlisten = await win.onResized(async () => {
-        setMaximized(await win.isMaximized());
-      });
-    })();
-    return () => {
-      if (unlisten) unlisten();
-    };
-  }, []);
 
   const pickVault = async () => {
     const picked = await open({ directory: true, multiple: false });
@@ -240,31 +226,7 @@ export function Titlebar() {
         >
           <Settings className="h-3.5 w-3.5" />
         </button>
-        {!isMac && (
-          <>
-            <button
-              onClick={() => win.minimize()}
-              className="h-9 w-11 flex items-center justify-center hover:bg-accent/60 text-muted-foreground"
-              title="Minimize"
-            >
-              <Minus className="h-3.5 w-3.5" />
-            </button>
-            <button
-              onClick={() => win.toggleMaximize()}
-              className="h-9 w-11 flex items-center justify-center hover:bg-accent/60 text-muted-foreground"
-              title={maximized ? "Restore" : "Maximize"}
-            >
-              {maximized ? <Copy className="h-3 w-3" /> : <Square className="h-3 w-3" />}
-            </button>
-            <button
-              onClick={() => win.close()}
-              className="h-9 w-11 flex items-center justify-center hover:bg-destructive hover:text-destructive-foreground text-muted-foreground"
-              title="Close"
-            >
-              <X className="h-3.5 w-3.5" />
-            </button>
-          </>
-        )}
+        <WindowControls />
       </div>
     </div>
     {hiddenOpen && (
@@ -425,6 +387,53 @@ function SyncChip() {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+/** Minimize / maximize-restore / close (Windows and Linux; macOS has its own
+ *  traffic lights). In the titlebar, and top-right in fullscreen chat. */
+export function WindowControls({ className = "" }: { className?: string }) {
+  const isMac = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.userAgent);
+  const win = getCurrentWindow();
+  const [maximized, setMaximized] = useState(false);
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    (async () => {
+      setMaximized(await win.isMaximized());
+      unlisten = await win.onResized(async () => {
+        setMaximized(await win.isMaximized());
+      });
+    })();
+    return () => {
+      if (unlisten) unlisten();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  if (isMac) return null;
+  return (
+    <div className={`flex items-center ${className}`} data-el="window-controls">
+      <button
+        onClick={() => win.minimize()}
+        className="h-9 w-11 flex items-center justify-center hover:bg-accent/60 text-muted-foreground"
+        title="Minimize"
+      >
+        <Minus className="h-3.5 w-3.5" />
+      </button>
+      <button
+        onClick={() => win.toggleMaximize()}
+        className="h-9 w-11 flex items-center justify-center hover:bg-accent/60 text-muted-foreground"
+        title={maximized ? "Restore" : "Maximize"}
+      >
+        {maximized ? <Copy className="h-3 w-3" /> : <Square className="h-3 w-3" />}
+      </button>
+      <button
+        onClick={() => win.close()}
+        className="h-9 w-11 flex items-center justify-center hover:bg-destructive hover:text-destructive-foreground text-muted-foreground"
+        title="Close"
+      >
+        <X className="h-3.5 w-3.5" />
+      </button>
     </div>
   );
 }
