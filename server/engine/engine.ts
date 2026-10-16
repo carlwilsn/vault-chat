@@ -86,6 +86,8 @@ type Live = {
   /** The turn was ended by the engine after a ScheduleWake (the model kept going): not "stopped". */
   endedAfterWake: boolean;
   ask: { resolve: (answer: string) => void; question: string } | null;
+  /** Rows shown for calls the model is still writing (toolStarting), not run yet. */
+  starting?: Set<string>;
   /** Tool calls in flight (started, no result yet): while one is open the watchdog waits for its own timeout. */
   open: Map<string, { name: string; input: any }>;
   /** The message that carried the last question (its tool calls were moved there): a late result lands on it. */
@@ -829,7 +831,9 @@ export class Engine {
       case "tool":
         // A call the model made after its ScheduleWake (a new id; the refusal goes back to it).
         // Past AFTER_WAKE_MAX it is not listening: the engine ends the turn.
-        if (l.flags.wake && e.result === undefined && !l.toolIndex.has(e.itemId) && !AFTER_WAKE_OK.has(e.name) && !(l.asked?.ids.has(e.itemId))) {
+        // A row shown while the model wrote the call (toolStarting) is still a new call here.
+        const early = !!l.starting?.delete(e.itemId);
+        if (l.flags.wake && e.result === undefined && (early || !l.toolIndex.has(e.itemId)) && !AFTER_WAKE_OK.has(e.name) && !(l.asked?.ids.has(e.itemId))) {
           l.afterWake++;
           if (l.afterWake >= AFTER_WAKE_MAX && !l.endedAfterWake && l.turnId) {
             l.endedAfterWake = true;
@@ -847,6 +851,14 @@ export class Engine {
         }
         if (this.toAskedMessage(l, e.itemId, { name: e.name, input: e.input, result: e.result })) return;
         this.upsertTool(l, e.itemId, { name: e.name, input: e.input, result: e.result });
+        this.pushRuntime(l);
+        return;
+      case "toolStarting":
+        // The model is still writing this call (a long Write's content): its row shows now, under
+        // the id the real `tool` event upserts. Display only: no wake count, no ask, no files written.
+        if ((l.toolIndex.has(e.itemId) && !l.starting?.has(e.itemId)) || l.asked?.ids.has(e.itemId)) return;
+        (l.starting ??= new Set()).add(e.itemId);
+        this.upsertTool(l, e.itemId, { name: e.name, input: e.input });
         this.pushRuntime(l);
         return;
       case "toolProgress":

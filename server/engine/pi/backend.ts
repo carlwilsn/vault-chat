@@ -27,6 +27,9 @@ export type BackendEvent =
   | { kind: "text"; threadId: string; itemId: string; text: string }
   /** A tool the runtime ran (shell, file edit, our dynamic tools …); `result` once finished. */
   | { kind: "tool"; threadId: string; itemId: string; name: string; input: unknown; result?: string }
+  /** A tool call the model is still writing (its arguments stream in): its name and small identifying
+   *  args, under the id the later `tool` event uses. Display only — nothing runs yet. */
+  | { kind: "toolStarting"; threadId: string; itemId: string; name: string; input: Record<string, string> }
   /** A running tool reported progress (pi's tool_execution_update: streamed output): the turn is alive. */
   | { kind: "toolProgress"; threadId: string; itemId: string }
   | { kind: "reasoning"; threadId: string; text: string }
@@ -128,7 +131,21 @@ type Thread = {
   crashes: number[];
   /** A model set for one turn only (images on a model that can't see). */
   restoreModel: string | null;
+  /** Tool calls being written now: what was last reported of each (toolStarting fires on a change only). */
+  starting?: Map<string, string>;
 };
+
+/** The small args that name what a call is about — never its content. */
+const SMALL_ARGS = ["path", "file_path", "command", "pattern", "url"];
+export function smallArgs(args: unknown): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (!args || typeof args !== "object") return out;
+  for (const k of SMALL_ARGS) {
+    const v = (args as any)[k];
+    if (typeof v === "string" && v) out[k] = v.length > 300 ? v.slice(0, 300) + "…" : v;
+  }
+  return out;
+}
 
 /** Events: "event" (BackendEvent), "up" (ready; the engine resumes cut turns). */
 export class PiBackend extends EventEmitter {
@@ -557,6 +574,19 @@ export class PiBackend extends EventEmitter {
         if (ev.type === "text_delta") this.ev({ kind: "textDelta", threadId, itemId, delta: String(ev.delta ?? "") });
         else if (ev.type === "text_end" && typeof ev.content === "string") this.ev({ kind: "text", threadId, itemId, text: ev.content });
         else if (ev.type === "thinking_delta" && typeof ev.delta === "string" && ev.delta) this.ev({ kind: "reasoningDelta", threadId, delta: ev.delta });
+        else if ((ev.type === "toolcall_start" || ev.type === "toolcall_delta") && ev.partial) {
+          // The call is shown while the model writes it (a long Write runs for many seconds before
+          // tool_execution_start): its name, then its path once parsed. Only on a change.
+          const c = Array.isArray(ev.partial.content) ? ev.partial.content[ev.contentIndex ?? -1] : null;
+          if (c?.type !== "toolCall" || !c.id || !c.name) return;
+          const name = TOOL_NAMES[c.name] ?? String(c.name);
+          const input = smallArgs(c.arguments);
+          const sig = name + " " + JSON.stringify(input);
+          const seen = (t.starting ??= new Map());
+          if (seen.get(c.id) === sig) return;
+          seen.set(c.id, sig);
+          this.ev({ kind: "toolStarting", threadId, itemId: String(c.id), name, input });
+        }
         else if (ev.type === "thinking_end" && typeof ev.content === "string" && ev.content.trim()) this.ev({ kind: "reasoning", threadId, text: ev.content.trim() });
         return;
       }
@@ -581,6 +611,7 @@ export class PiBackend extends EventEmitter {
         return;
       }
       case "tool_execution_start":
+        t.starting?.delete(String(e.toolCallId));
         return this.ev({ kind: "tool", threadId, itemId: String(e.toolCallId), name: TOOL_NAMES[e.toolName] ?? String(e.toolName ?? "tool"), input: e.args ?? {} });
       case "tool_execution_update":
         return this.ev({ kind: "toolProgress", threadId, itemId: String(e.toolCallId) });
@@ -596,6 +627,7 @@ export class PiBackend extends EventEmitter {
         this.log(`extension error (${e.event}): ${String(e.error ?? "").slice(0, 300)}`);
         return;
       case "agent_settled": {
+        t.starting = undefined;
         const turnId = t.turnId;
         t.turnId = null;
         t.lastUsed = Date.now();
