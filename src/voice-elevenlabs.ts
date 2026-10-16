@@ -955,6 +955,7 @@ ${shared}` : "");
         resetAgentEnvelope();
       },
       onConnect: () => {
+        useStore.setState({ voiceError: null });
         useStore.getState().setVoiceConnecting(false);
         useStore.getState().setVoiceListening(false);
         useStore.getState().setVoiceSpeaking(false);
@@ -1063,6 +1064,8 @@ ${shared}` : "");
       },
       onError: (message: string) => {
         console.warn("[voice-eleven] session error:", message);
+        // The composer's waves turn red until the next start or connect.
+        useStore.setState({ voiceError: message });
         // Surface to the chat pane so a silent drop has SOMETHING the
         // user can show us — otherwise "the convo dropped" is impossible
         // to diagnose without a dev console open.
@@ -1205,6 +1208,9 @@ function looksLikeEnd(text: string): boolean {
 
 function reportVoiceError(message: string): void {
   console.warn("[voice-eleven]", message);
+  // The composer's waves turn red (VoiceCockpit's InlineVoiceWaves) until the
+  // next start attempt or a successful connect.
+  useStore.setState({ voiceError: message });
   voiceAppend({
     role: "assistant",
     content: `⚠️ Voice mode: ${message}`,
@@ -1257,7 +1263,8 @@ export async function endElevenLabsSession(): Promise<void> {
  *  onDisconnect turn it off again. */
 export function toggleVoice(): void {
   if (!useStore.getState().voiceMode) {
-    useStore.setState({ voiceMode: true });
+    // A retry: the red waves go back to normal while it connects.
+    useStore.setState({ voiceMode: true, voiceError: null });
     void startElevenLabsSession();
   } else {
     void endElevenLabsSession();

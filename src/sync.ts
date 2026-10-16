@@ -49,6 +49,7 @@ type StateSnapshot = {
     voiceSpeaking: boolean;
     voiceListening: boolean;
     voiceMicMuted: boolean;
+    voiceError: string | null;
   };
 };
 
@@ -119,6 +120,7 @@ function takeStateSnapshot(): StateSnapshot {
       voiceSpeaking: s.voiceSpeaking,
       voiceListening: s.voiceListening,
       voiceMicMuted: s.voiceMicMuted,
+      voiceError: s.voiceError,
     },
   };
 }
@@ -221,7 +223,8 @@ export async function installMainSync() {
       state.voiceConnecting !== prev.voiceConnecting ||
       state.voiceSpeaking !== prev.voiceSpeaking ||
       state.voiceListening !== prev.voiceListening ||
-      state.voiceMicMuted !== prev.voiceMicMuted;
+      state.voiceMicMuted !== prev.voiceMicMuted ||
+      state.voiceError !== prev.voiceError;
     if (stateChanged) broadcastState();
 
     const streamChanged =

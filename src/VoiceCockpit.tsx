@@ -105,11 +105,32 @@ export function VoiceMicGroup() {
 export function InlineVoiceWaves() {
   const voiceMode = useStore((s) => s.voiceMode);
   const connecting = useStore((s) => s.voiceConnecting);
+  const error = useStore((s) => s.voiceError);
+  // Voice failed (to start, or mid-session): flat bars in the destructive
+  // colour, until the next start attempt or a successful connect.
+  if (error && !connecting) {
+    return (
+      <span data-el="voice-waves" data-error="1" className="flex items-center h-7 px-1" title={`Voice failed: ${error}`}>
+        <FlatBars colorClass="bg-destructive" />
+      </span>
+    );
+  }
   if (!voiceMode) return null;
   return (
     <span data-el="voice-waves" className="flex items-center h-7 px-1">
       {connecting ? <span className="text-[10.5px] text-muted-foreground animate-pulse">Connecting…</span> : <VoiceBars />}
     </span>
+  );
+}
+
+/** The waves at rest (no audio): the bars' floor height, in `colorClass`. */
+function FlatBars({ count = NUM_BARS, height = 14, colorClass }: { count?: number; height?: number; colorClass: string }) {
+  return (
+    <div className="flex items-center gap-[2px]" style={{ height: height + 2 }}>
+      {Array.from({ length: count }).map((_, i) => (
+        <div key={i} className={`w-[2px] rounded-sm ${colorClass}`} style={{ height: `${height}px`, transformOrigin: "center", transform: "scaleY(0.3)" }} />
+      ))}
+    </div>
   );
 }
 

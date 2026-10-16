@@ -542,6 +542,9 @@ type State = {
   // The voice session's mic is muted (the fullscreen voice bar's mute, the
   // typed-reply panel). Set by setVoiceMicMuted; cleared when the session ends.
   voiceMicMuted: boolean;
+  // The last voice failure (start or mid-session), shown as red waves by the
+  // composer's mic until the next start attempt or a successful connect.
+  voiceError: string | null;
   // True between mic-click and the ElevenLabs session reporting ready
   // — covers agent provisioning, signed-URL fetch, and the WebRTC
   // handshake. The cockpit shows "Connecting…" during this window.
@@ -790,7 +793,7 @@ type State = {
     conversations?: Conversation[];
     activeConversationId?: string | null;
     // Voice runs in the main window; the popout's mic and waves show it.
-    voice?: Pick<State, "voiceMode" | "voiceConnecting" | "voiceSpeaking" | "voiceListening" | "voiceMicMuted">;
+    voice?: Pick<State, "voiceMode" | "voiceConnecting" | "voiceSpeaking" | "voiceListening" | "voiceMicMuted" | "voiceError">;
   }) => void;
   saveCurrentChat: () => void;
   loadSavedChat: (id: string) => void;
@@ -995,6 +998,7 @@ export const useStore = create<State>((set) => ({
   voiceConnecting: false,
   voiceCurrentTool: null,
   voiceMicMuted: false,
+  voiceError: null,
   viewport: null,
   tokenUsage: { prompt: 0, completion: 0, total: 0 },
   lastContext: 0,

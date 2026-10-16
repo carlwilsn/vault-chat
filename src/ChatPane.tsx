@@ -347,6 +347,7 @@ export function ChatPane() {
   const chatsShown = chatFullscreen ? chatSidebarOpen : showChatsPanel;
   // Fullscreen chat: voice replaces the composer with its waves (VoiceCockpit).
   const voiceMode = useStore((s) => s.voiceMode);
+  const voiceError = useStore((s) => s.voiceError);
   // The empty chat's greeting, like the phone's — one per conversation.
   const greeting = useMemo(() => {
     const g = ["Welcome back!", "He returns!", "Ready to work?", "Welcome, sir.", "At your service."];
@@ -1219,7 +1220,7 @@ export function ChatPane() {
                 placeholder={archived ? ARCHIVED_THREAD : boxDown ? BOX_UNREACHABLE : !ready ? "Open a vault first" : busy ? "Enter to steer · Tab to queue · Esc to stop" : "Ask anything, or / for commands…"}
                 disabled={!ready}
                 rows={1}
-                className={cn("border-0 bg-transparent min-h-0 max-h-[200px] focus-visible:ring-0 shadow-none !py-2", chatFullscreen && voiceMode ? "!pr-32" : "!pr-20", "!pl-11")}
+                className={cn("border-0 bg-transparent min-h-0 max-h-[200px] focus-visible:ring-0 shadow-none !py-2", chatFullscreen && (voiceMode || voiceError) ? "!pr-32" : "!pr-20", "!pl-11")}
               />
               <div className="absolute right-3 bottom-2 flex items-center gap-1">
                 {chatFullscreen && <InlineVoiceWaves />}

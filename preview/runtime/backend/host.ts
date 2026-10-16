@@ -74,7 +74,7 @@ export type BoxChatScript = {
   /** Voice on the box (server/voice.ts): POST /api/v1/voice/tool answers
    *  `results[name]` (else "(ran <name> on the box)"); AskAgent starts a box
    *  chat (running, the task as its first message) and AgentStatus reads it. */
-  voice?: { results?: Record<string, string> };
+  voice?: { results?: Record<string, string>; /** GET /api/v1/voice/session answers this error (the box couldn't start voice). */ sessionError?: { status: number; body: string } };
 };
 /** `vault`: the vault the laptop named (?vault=), as the real box scopes it. */
 export type BoxPost = { path: string; body: any; vault?: string | null };
@@ -317,6 +317,8 @@ export const hostCommands: Record<string, (a: Record<string, any>) => unknown> =
       };
     }
     if (u.pathname.endsWith("/api/v1/voice/session")) {
+      const err = cfg.sync?.boxChat?.voice?.sessionError;
+      if (err) return { status: err.status, body: err.body };
       // The box's session (server/voice.ts): no ElevenLabs in the preview, so a URL nothing dials.
       return { status: 200, body: JSON.stringify({ signedUrl: "wss://preview.invalid/voice", systemPrompt: "(the box's voice prompt)", toolNames: [], vaultRoot: "/home/carl/vaults/summer-demo", onBox: true }) };
     }

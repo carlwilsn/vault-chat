@@ -677,6 +677,36 @@ export const convFullScenarios: Scenario[] = [
       ],
     };
   })(),
+  {
+    id: "voice-error",
+    title: "Voice fails to start — the waves turn red",
+    group: "Voice · Fullscreen",
+    notes:
+      "Fullscreen chat on a box vault; the mic is clicked and the box can't start voice (GET /api/v1/voice/session answers HTTP 503). The chat gets its line (“Voice mode: The box couldn't start voice: HTTP 503 …”) and the waves beside the mic stay, flat and in the destructive colour (hover: the error), until the next try or a successful start. The preview has no microphone: getUserMedia is stubbed to grant one. Before: the line only; the waves vanished with voice mode.",
+    clock: "2026-10-13T10:00:00",
+    build: buildA,
+    host: (now: number) => {
+      const h = hostA(now);
+      return { sync: { ...h.sync, boxChat: { ...h.sync.boxChat, voice: { sessionError: { status: 503, body: JSON.stringify({ error: "voice is not configured on this box (ElevenLabs refused the agent: 503)" }) } } } } };
+    },
+    activeConversation: CONV,
+    localStorage: lsFor(DEFAULTS),
+    open: [
+      { key: "ctrl+shift+F" },
+      { wait: "[data-el='chats-sidebar']" },
+      { sleep: 400 },
+      {
+        run: () => {
+          const md = navigator.mediaDevices as any;
+          if (md) md.getUserMedia = async () => ({ getTracks: () => [] });
+        },
+      },
+      { click: "[data-el='composer-voice']" },
+      { wait: "[data-el='voice-waves'][data-error]", timeout: 10000 },
+      { sleep: 300 },
+    ],
+    surfaces: ["desktop"],
+  },
   ...Object.entries(CHOICE_OPTIONS).flatMap(([choice, opts]) =>
     opts.map((opt) =>
       scenarioA(
