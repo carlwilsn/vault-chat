@@ -56,16 +56,26 @@ const thread = () =>
 test("steer into the running turn, queue after it; a taken-back one never goes", async () => {
   // While the first model call is answered (the turn is running), Carl sends:
   // a steer (Enter), a queued follow-up (Tab), and one more he takes back.
+  // All of it happens inside that call, before its answer goes out: the turn
+  // takes the steer at its very next step, a few milliseconds later, so a test
+  // polling from outside could miss the moment the three are pending.
+  const seen: { running?: string; sent?: string[][]; kept?: string[][] } = {};
+  const kinds = () => pending.pendingFor(convId).map((p) => [p.kind, p.text]);
   onRequest.push(() => {
+    seen.running = useStore.getState().conversations.find((c) => c.id === convId)?.status;
     void cc.sendMidTurn("steer", "Only look in courses/.");
     void cc.sendMidTurn("queue", "Then summarise them.");
     void cc.sendMidTurn("queue", "And email it.");
+    seen.sent = kinds();
+    const takeBack = pending.pendingFor(convId).find((p) => p.text === "And email it.");
+    if (takeBack) void cc.cancelPending(takeBack.id);
+    seen.kept = kinds();
   });
   const first = cc.sendMessage("Find the notes about eigenvectors.");
-  await until(() => pending.pendingFor(convId).length === 3, "three pending");
-  const takeBack = pending.pendingFor(convId).find((p) => p.text === "And email it.")!;
-  await cc.cancelPending(takeBack.id);
-  assert.deepEqual(pending.pendingFor(convId).map((p) => [p.kind, p.text]), [["steer", "Only look in courses/."], ["queue", "Then summarise them."]]);
+  await until(() => seen.kept !== undefined, "the first model call");
+  assert.equal(seen.running, "running");
+  assert.deepEqual(seen.sent, [["steer", "Only look in courses/."], ["queue", "Then summarise them."], ["queue", "And email it."]]);
+  assert.deepEqual(seen.kept, [["steer", "Only look in courses/."], ["queue", "Then summarise them."]]);
 
   await first;
   await until(() => thread().some((l) => l === "assistant: ack: Then summarise them."), "the queued turn ran");
