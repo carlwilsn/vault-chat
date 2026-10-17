@@ -246,7 +246,9 @@ export function voiceUnfitReason(v: VoiceDetail): string | null {
   const cat = String(v.category ?? "");
   const v3Only = hq.length > 0 && hq.every((m) => /v3/.test(m));
   if (v3Only) return "Made for Eleven v3 only — the voice agent runs Flash v2";
-  if (cat === "professional" || cat === "famous") return "Not trained for the voice agent's model (Flash v2) yet";
+  // A professional clone says which models it was trained for; one that names
+  // others (and not Flash v2) can't be the agent's. One that says nothing is let through.
+  if ((cat === "professional" || cat === "famous") && (hq.length > 0 || Object.keys(ft).length > 0)) return "Not trained for the voice agent's model (Flash v2) yet";
   return null;
 }
 

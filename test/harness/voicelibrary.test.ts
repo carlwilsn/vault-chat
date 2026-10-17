@@ -181,6 +181,7 @@ test("a voice the agent can't speak with: one plain line at pick time, not selec
   assert.equal(L.voiceUnfitReason({ voice_id: "es", category: "professional", verified_languages: [{ language: "es" }] }), "Speaks Spanish only — the voice agent speaks English");
   // Premade, cloned, a list record with nothing to say: fine.
   assert.equal(L.voiceUnfitReason({ voice_id: "p", category: "premade" }), null);
+  assert.equal(L.voiceUnfitReason({ voice_id: "pvc-quiet", category: "professional" }), null, "a clone that says nothing is let through");
   assert.equal(L.voiceUnfitReason({ voice_id: "c", category: "cloned", verified_languages: [{ language: "en" }, { language: "fr" }] }), null);
 });
 

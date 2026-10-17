@@ -594,7 +594,14 @@ function addLibraryVoice(owner: string, id: string, bodyText: string): Response 
     return json({ detail: { status: "voice_limit_reached", message: `You have reached your maximum amount of custom voices (${custom} / ${limit}). You can upgrade your subscription to increase your custom voice limit.` } }, 400);
   const name = (JSON.parse(bodyText || "{}") as { new_name?: string }).new_name ?? v.name;
   if (!EL_VOICES.some((x) => x.voice_id === id))
-    EL_VOICES.push({ voice_id: id, name, category: "professional", labels: { accent: v.accent as string, gender: v.gender as string, description: v.description as string } });
+    EL_VOICES.push({
+      voice_id: id,
+      name,
+      category: "professional",
+      // The models it was trained for (a library clone runs on Flash v2, the agent's).
+      high_quality_base_model_ids: ["eleven_flash_v2", "eleven_turbo_v2", "eleven_multilingual_v2"],
+      labels: { accent: v.accent as string, gender: v.gender as string, description: v.description as string },
+    } as (typeof EL_VOICES)[number]);
   return json({ voice_id: id });
 }
 
