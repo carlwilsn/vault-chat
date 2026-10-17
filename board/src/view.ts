@@ -21,10 +21,12 @@ import { HL_ALPHA, drawGrid, drawItem, drawStroke, inkStyle, itemBox, strokeInfo
 import { Arbiter, type Action, type Hand, type PEvent } from "./palm";
 import * as api from "./api";
 import { icon, toolIcon, type IconName, type Weight } from "./icons";
-import { Items, isDom, measureMath, fetchText } from "./items";
+import { Items, isDom, measureMath, fetchText, renderPdfPage } from "./items";
 import { openInbox, inboxBadge, type InboxHost } from "./inbox";
 import { placeParts } from "./place";
 
+/** A PDF page's stored PNG: this many px on its long side (sharp up to about a screen's width on a 2× iPad). */
+const PDF_SNAP_PX = 1600;
 const TOP = 76; // css px kept clear for the floating controls (12 + 56 + a little air)
 const TILE = 512; // px
 const LMIN = -5, LMAX = 5;
@@ -99,6 +101,18 @@ const TITLES: Record<Mode, string> = { pen: "Pen", hl: "Highlighter", erase: "St
 const rid = () => Math.random().toString(36).slice(2, 10);
 const clamp = (v: number, a: number, b: number) => Math.max(a, Math.min(b, v));
 const DEBUG_TOUCH = /[?&]debug=touch\b/.test(location.search);
+
+/** A canvas as a PNG, base64 (no data: prefix). */
+async function canvasPng(c: HTMLCanvasElement): Promise<string> {
+  const blob = await new Promise<Blob>((res, rej) => c.toBlob((x) => (x ? res(x) : rej(new Error("toBlob failed"))), "image/png"));
+  const url = await new Promise<string>((res, rej) => {
+    const fr = new FileReader();
+    fr.onload = () => res(String(fr.result));
+    fr.onerror = () => rej(fr.error);
+    fr.readAsDataURL(blob);
+  });
+  return url.slice(url.indexOf(",") + 1);
+}
 
 function store<T>(key: string, fallback: T): T {
   try {
@@ -444,7 +458,9 @@ export class BoardView {
       return;
     }
     if (it.kind === "pdf") {
-      drawItem(ctx, it, this.items.pdfBitmap(it));
+      // The sharper of pdf.js's render and the page's stored PNG (shown at once on opening).
+      const bm = this.items.pdfBitmap(it), snap = this.pdfSnap(it);
+      drawItem(ctx, it, bm && (!snap || bm.width >= snap.naturalWidth) ? bm : (snap ?? bm));
       // A sheet of paper on the paper: a hairline edge.
       ctx.save();
       ctx.strokeStyle = "rgba(0,0,0,0.14)";
@@ -480,7 +496,7 @@ export class BoardView {
   /** Visible PDF pages, rendered as sharp as the zoom they are seen at (after the camera settles). */
   private sharpenPdfs(): void {
     const view: Box = { x0: this.cam.x, y0: this.cam.y, x1: this.cam.x + this.W / this.cam.z, y1: this.cam.y + this.H / this.cam.z };
-    for (const it of this.board.items) if (it.kind === "pdf" && boxesMeet(itemBox(it), view)) this.items.wantPdf(it, it.w * this.cam.z * this.dpr);
+    for (const it of this.board.items) if (it.kind === "pdf" && boxesMeet(itemBox(it), view)) this.wantPdf(it, it.w * this.cam.z * this.dpr);
   }
 
   private queueBase(): void {
@@ -633,19 +649,80 @@ export class BoardView {
 
   // ------------------------------------------------------------ images
 
+  /** A PDF page's stored PNG, once loaded. */
+  private pdfSnap(it: Item): HTMLImageElement | null {
+    return typeof it.snap === "string" ? (this.images.get(it.snap) ?? null) : null;
+  }
+
+  /** pdf.js renders the page only when the stored PNG is not sharp enough for `px` device px (or there is none yet). */
+  private wantPdf(it: Item, px: number): void {
+    if (typeof it.snap === "string" && this.images.has(it.snap)) {
+      const img = this.images.get(it.snap);
+      if (!img || px <= img.naturalWidth) return; // loading, or sharp enough
+    }
+    this.items.wantPdf(it, px);
+  }
+
+  /**
+   * A PDF page's PNG in the board's assets (`snap`, PDF_SNAP_PX on its long side): what opening the board shows at once,
+   * before pdf.js has loaded; pdf.js renders it sharper only when it is zoomed past that. Made when the page is added,
+   * and for a page that has none yet (an older board) the first time the board opens. Not an undo step.
+   */
+  private snapPending = new Set<string>();
+  private async ensurePdfSnap(it: Item): Promise<void> {
+    if (it.kind !== "pdf" || typeof it.snap === "string" || !it.src) return;
+    const key = `${it.src}#${it.page ?? 1}`;
+    if (this.snapPending.has(key)) return;
+    this.snapPending.add(key);
+    try {
+      const long = Math.max(Number(it.lw) || 1, Number(it.lh) || 1);
+      const c = await renderPdfPage(api.assetUrl(this.slug, it.src), Number(it.page) || 1, Math.round((PDF_SNAP_PX * (Number(it.lw) || 1)) / long));
+      const png = await canvasPng(c);
+      c.width = c.height = 0;
+      const { src } = await api.addAsset(this.slug, png);
+      if (this.disposed) return;
+      let n = 0;
+      for (const x of this.board.items) if (x.kind === "pdf" && x.src === it.src && (x.page ?? 1) === (it.page ?? 1) && typeof x.snap !== "string") (x.snap = src), n++;
+      if (!n) return;
+      this.loadImage(it);
+      this.changed();
+    } catch {
+      /* the page keeps its pdf.js render; tried again next time the board opens */
+    } finally {
+      this.snapPending.delete(key);
+    }
+  }
+
   private loadImage(it: Item): void {
-    // Images draw their file; math and widgets keep a snapshot for the overview; a PDF page is pdf.js's (items.ts).
-    if (it.kind === "pdf") return this.items.wantPdf(it, Math.max(512, it.w * this.cam.z * this.dpr));
-    const src = isDom(it) ? (typeof it.snap === "string" ? it.snap : null) : it.src;
+    // Images draw their file; math and widgets keep a snapshot for the overview; a PDF page shows its stored PNG
+    // at once and pdf.js's render when that is not sharp enough (items.ts).
+    if (it.kind === "pdf") {
+      if (typeof it.snap !== "string") {
+        this.items.wantPdf(it, Math.max(512, it.w * this.cam.z * this.dpr));
+        void this.ensurePdfSnap(it);
+        return;
+      }
+    }
+    const src = isDom(it) || it.kind === "pdf" ? (typeof it.snap === "string" ? it.snap : null) : it.src;
     if (!src || this.images.has(src)) return;
     this.images.set(src, null);
     const img = new Image();
     img.decoding = "async";
-    img.onload = () => {
+    const ready = () => {
+      if (this.disposed) return;
       this.images.set(src, img);
       for (const x of this.board.items) if (x.src === src || x.snap === src) this.invalidate(itemBox(x));
-      this.renderBase();
+      // One redraw for the images that land in the same frame.
+      this.queueBase();
       this.queueLive();
+      // A PDF page seen closer than its PNG is sharp: pdf.js takes over.
+      for (const x of this.board.items) if (x.kind === "pdf" && x.snap === src) this.wantPdf(x, x.w * this.cam.z * this.dpr);
+    };
+    // Decoded off the main thread before the first draw (a drawImage of an undecoded 1600 px PNG decodes it in the frame).
+    img.onload = () => void img.decode().then(ready, ready);
+    // A PNG that will not load: pdf.js renders the page instead.
+    img.onerror = () => {
+      for (const x of this.board.items) if (x.kind === "pdf" && x.snap === src) this.items.wantPdf(x, Math.max(512, x.w * this.cam.z * this.dpr));
     };
     img.src = api.assetUrl(this.slug, src);
   }
@@ -1417,7 +1494,7 @@ export class BoardView {
   private async exportOverview(): Promise<string | undefined> {
     const b = contentBounds(this.board);
     if (!b) return undefined;
-    await this.items.pdfsReady(this.board.items);
+    await this.items.pdfsReady(this.board.items.filter((it) => !this.pdfSnap(it)));
     const pad = 40, w = b.x1 - b.x0 + pad * 2, h = b.y1 - b.y0 + pad * 2;
     const s = Math.min(1.5, OVERVIEW_MAX / Math.max(w, h));
     const c = document.createElement("canvas");
@@ -1430,15 +1507,9 @@ export class BoardView {
     for (const it of this.board.items) this.paintItem(ctx, it, "overview");
     // At least 1.5 px wide: a whole-board snapshot of fine writing stays readable.
     for (const st of this.board.strokes) drawStroke(ctx, st, 1.5 / s);
-    const blob = await new Promise<Blob>((res, rej) => c.toBlob((x) => (x ? res(x) : rej(new Error("toBlob failed"))), "image/png"));
-    const url = await new Promise<string>((res, rej) => {
-      const fr = new FileReader();
-      fr.onload = () => res(String(fr.result));
-      fr.onerror = () => rej(fr.error);
-      fr.readAsDataURL(blob);
-    });
+    const png = await canvasPng(c);
     c.width = c.height = 0;
-    return url.slice(url.indexOf(",") + 1);
+    return png;
   }
 
   save(): Promise<void> {

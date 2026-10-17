@@ -214,7 +214,9 @@ export function assetFile(vault: string, slug: string, name: string): Out {
     // the math and the bundle are plain text the app puts in place itself.
     const mime = ASSET_MIME[/\.[a-z0-9]+$/i.exec(name)?.[0]?.toLowerCase() ?? ""];
     if (!mime) return { status: 404, body: { error: "not found" } };
-    return { status: 200, body: null, file: readFileSync(join(dir, ASSETS_DIR, name)), mime, headers: INERT_HEADERS };
+    // An asset never changes under its name (a new upload, or a name from its content): the browser keeps it,
+    // so a board opens on what it already has (a PDF page's PNG, its PDF) without asking again.
+    return { status: 200, body: null, file: readFileSync(join(dir, ASSETS_DIR, name)), mime, headers: { ...INERT_HEADERS, "Cache-Control": "private, max-age=31536000, immutable" } };
   } catch {
     return { status: 404, body: { error: "not found" } };
   }

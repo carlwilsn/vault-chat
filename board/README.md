@@ -44,8 +44,11 @@ stretches), write on top of it. Ink lying wholly inside an item moves and scales
 step); ink that only crosses its edge stays. The erasers never touch items. Kinds (`src/items.ts`):
 
 - `image`: PNG/JPEG/WebP/SVG, drawn in the tiles.
-- `pdf` (`page`, `lw`×`lh` in points): pdf.js renders the page for the zoom it is seen at, and again
-  sharper when the camera settles zoomed in.
+- `pdf` (`page`, `lw`×`lh` in points, `snap`): the page's PNG (1600 px on its long side, made by pdf.js when the
+  page is added, or the first time an older board opens) is what opening the board shows, at once; pdf.js renders
+  the page only when it is seen closer than that PNG is sharp, and again sharper when the camera settles zoomed in.
+  Board assets never change under their name, so the browser keeps them (`immutable`). Opening a board: its pages are
+  on screen in about 0.2–0.3 s (pdf.js alone took 0.8–1.2 s).
 - `math`: the box's typeset markdown (KaTeX HTML, `assets/*.html`), as DOM: vector at any zoom.
 - `widget`: the bundle in an iframe (`sandbox="allow-scripts"`, CSP `default-src 'none'`), laid out
   once at `lw`×`lh` css px and zoomed as a whole; it takes touches only after **Interact** (Done, or a
