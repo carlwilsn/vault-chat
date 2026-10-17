@@ -294,13 +294,13 @@ export class PiMapper {
         const b = this.blocks.get(i);
         if (!b && !c.text.trim()) return;
         const id = b?.id ?? this.ensureBlock(i, "assistant");
-        this.complete(id, { text: c.text });
+        this.complete(id, { text: c.text, ...(m.stopReason === "aborted" ? { status: "stopped" as const } : {}) });
         if (c.text.trim()) this.replies.push(c.text);
       } else if (c?.type === "thinking" && typeof c.thinking === "string") {
         const b = this.blocks.get(i);
         if (!b && !c.thinking.trim()) return;
         const id = b?.id ?? this.ensureBlock(i, "thinking");
-        this.complete(id, { text: c.thinking });
+        this.complete(id, { text: c.thinking, ...(m.stopReason === "aborted" ? { status: "stopped" as const } : {}) });
       } else if (c?.type === "toolCall" && c.id) {
         const id = String(c.id);
         if (!this.started.has(id)) this.start({ id, kind: "tool", status: "pending", name: toolName(c.name), args: c.arguments ?? {} });

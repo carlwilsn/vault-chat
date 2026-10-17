@@ -139,6 +139,8 @@ export class ConvLog {
   readonly dir: string;
   readonly epoch: string;
   private next = 1;
+  /** The highest seq written (the head a client sees); new seqs start above the reserved floor. */
+  private last = 0;
   private reservedUpTo = 0;
   private convs = new Map<string, Conv>();
   private signalsFile: string;
@@ -178,6 +180,7 @@ export class ConvLog {
     } catch {
       floor = 0;
     }
+    this.last = max;
     this.next = Math.max(max, floor) + 1;
     this.reserve();
     this.refreshLegacy();
@@ -257,6 +260,7 @@ export class ConvLog {
     const seq = this.next++;
     if (seq >= this.reservedUpTo) this.reserve();
     const rec = { seq, conv, at, ...body } as LogRecord;
+    this.last = seq;
     const line = JSON.stringify(rec) + "\n";
     if (conv === null) {
       appendFileSync(this.signalsFile, line);
@@ -309,7 +313,7 @@ export class ConvLog {
   // ---------------------------------------------------------------- reading
 
   latest(): number {
-    return this.next - 1;
+    return this.last;
   }
 
   /** In the log (or an older file the importer can bring in). */
