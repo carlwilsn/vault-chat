@@ -381,3 +381,44 @@ test("a checkpoint on disk is exactly the fold; a log reopened (a restart) folds
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// ---------------------------------------------------------------- a real pi recording
+
+test("a real pi 1.1.0 recording (3 turns on the box: thinking, 9 shell/read calls, a steer, a queued follow-up): the log has every block and call pi stored, in pi's order", () => {
+  // Recorded on the box's throwaway instance (VC_PI_RECORD); every letter and digit
+  // of the content replaced by "x" (no vault content), structure and ids intact.
+  const evs = fs.readFileSync(path.join(import.meta.dirname, "fixtures", "pi-real-3turns.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
+  const runs: any[][] = [[]];
+  for (const e of evs) {
+    runs.at(-1)!.push(e);
+    if (e.type === "agent_settled") runs.push([]);
+  }
+  runs.pop();
+  assert.equal(runs.length, 3);
+  const log = new Log();
+  created(log);
+  const userTexts = (run: any[]) => run.filter((e) => e.type === "message_start" && e.message?.role === "user").map((e) => (typeof e.message.content === "string" ? e.message.content : e.message.content.map((c: any) => c.text ?? "").join("\n")));
+  runs.forEach((run, i) => {
+    const turnId = `t${i + 1}`;
+    const [prompt, ...later] = userTexts(run);
+    // Turn 2 had a steer, turn 3 a queued follow-up: what the engine expected pi to deliver.
+    const expect = later.map((text, j) => ({ kind: (i === 1 ? "steer" : "queue") as "steer" | "queue", id: `carl-${i}-${j}`, text }));
+    turn(log, turnId, prompt!, run.filter((e) => e.type !== "agent_settled"), { expect });
+  });
+  const p = fold(log.recs, C);
+  const ends = evs.filter((e) => e.type === "message_end" && e.message?.role === "assistant").map((e) => e.message);
+  const piText = ends.flatMap((m: any) => m.content.filter((c: any) => c.type === "text" && c.text.trim()).map((c: any) => c.text));
+  const piThinking = ends.flatMap((m: any) => m.content.filter((c: any) => c.type === "thinking" && c.thinking.trim()).map((c: any) => c.thinking));
+  const piCalls = ends.flatMap((m: any) => m.content.filter((c: any) => c.type === "toolCall").map((c: any) => c.id));
+  assert.deepEqual(p.items.filter((x) => x.kind === "assistant" && x.text?.trim()).map((x) => x.text), piText);
+  assert.deepEqual(p.items.filter((x) => x.kind === "thinking" && x.text?.trim()).map((x) => x.text), piThinking);
+  assert.deepEqual(p.items.filter((x) => x.kind === "tool").map((x) => x.id), piCalls);
+  assert.equal(piCalls.length, 9);
+  assert.ok(p.items.filter((x) => x.kind === "tool").every((x) => x.status === "done" && typeof x.result === "string"));
+  assert.ok(log.recs.some((r) => r.type === "item.delta" && (r as any).field === "argsText"), "arguments streamed");
+  assert.deepEqual(p.items.filter((x) => x.kind === "user").map((x) => x.via), ["chat", "chat", "steer", "chat", "queue"]);
+  assert.deepEqual(p.pending, []);
+  assert.ok(!p.items.some(isOpen));
+  // The same properties as any log: every cut folds to the same picture.
+  for (let k = 0; k <= log.recs.length; k += 3) assert.deepEqual(foldInto(fold(log.recs.slice(0, k), C), log.recs.slice(k)), p);
+});

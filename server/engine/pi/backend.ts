@@ -6,7 +6,7 @@
 // every model call is OpenRouter's own figure, which the extension writes into
 // the session as `vc-cost` entries (usageCalls reads them back).
 import { EventEmitter } from "node:events";
-import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, relative } from "node:path";
 import type { CallRecord } from "../ledger";
 import type { ThreadTokenUsage } from "../context";
@@ -553,6 +553,16 @@ export class PiBackend extends EventEmitter {
 
   private onPiEvent(t: Thread, e: any): void {
     const threadId = t.id;
+    // Test instances only: pi's raw events, one file per session (the reducer's recorded fixtures).
+    const rec = process.env.VC_PI_RECORD;
+    if (rec) {
+      try {
+        mkdirSync(rec, { recursive: true });
+        appendFileSync(join(rec, `${threadId}.jsonl`), JSON.stringify(e) + "\n");
+      } catch {
+        /* best effort */
+      }
+    }
     // Every session event goes to the engine as pi sent it.
     if (e?.type !== "agent_settled" && e?.type !== "extension_error") this.ev({ kind: "pi", threadId, ev: e });
     switch (e?.type) {
