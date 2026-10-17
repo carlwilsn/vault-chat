@@ -435,6 +435,14 @@ export async function answerModelRequest(url: URL, init: RequestInit | undefined
     if (add && method === "POST") return addLibraryVoice(decodeURIComponent(add[1]), decodeURIComponent(add[2]), bodyText);
     if (path.startsWith("/v1/text-to-speech/")) return new Response(chime(), { headers: { "content-type": "audio/wav" } });
     if (path === "/v1/convai/agents/create") return json({ agent_id: "preview-agent" });
+    // A picked voice becomes the agent's own (src/voice-elevenlabs setAgentVoice).
+    if (/^\/v1\/convai\/agents\/[^/]+$/.test(path) && method === "PATCH") return json({});
+    // One voice's record (Settings checks a pick fits the agent's model).
+    const one = /^\/v1\/voices\/([^/]+)$/.exec(path);
+    if (one && method === "GET") {
+      const v = EL_VOICES.find((x) => x.voice_id === decodeURIComponent(one[1]));
+      return v ? json(v) : json({ detail: { status: "voice_not_found" } }, 404);
+    }
     // The voice models ElevenLabs runs and what each takes (src/voiceLlms.ts reads it). Faked.
     if (path === "/v1/convai/llm/list")
       return json({

@@ -110,7 +110,8 @@ export function selectVoice(id: string): void {
 }
 
 /** Pick a library voice: already in the account → just selected; else added,
- *  then selected. A refusal selects nothing and comes back as one line. */
+ *  then selected. A refusal, or a voice the agent can't speak with
+ *  (checkVoiceFits), selects nothing and comes back as one line. */
 export async function pickLibraryVoice(
   key: string,
   v: SharedVoice,
@@ -118,6 +119,9 @@ export async function pickLibraryVoice(
   f: typeof fetch = fetch,
 ): Promise<{ voiceId: string; added: boolean } | { error: string }> {
   if (owned.has(v.voice_id) || v.is_added_by_user) {
+    // A voice the agent can't speak with is not selected (one plain line why).
+    const unfit = await checkVoiceFits(key, v.voice_id, f);
+    if (unfit) return { error: unfit };
     unhideVoice(v.voice_id);
     selectVoice(v.voice_id);
     return { voiceId: v.voice_id, added: false };
@@ -137,6 +141,9 @@ export async function pickLibraryVoice(
   const id = typeof j.voice_id === "string" && j.voice_id ? j.voice_id : v.voice_id;
   // A voice added from the library shows by default.
   unhideVoice(id);
+  // Added, but the agent can't speak with it: in the account, not selected.
+  const unfit = await checkVoiceFits(key, id, f);
+  if (unfit) return { error: unfit };
   selectVoice(id);
   return { voiceId: id, added: true };
 }
@@ -199,4 +206,58 @@ export function voiceHints<T extends Labeled>(voices: readonly T[]): Map<string,
     out.set(v.voice_id, twins.some((o) => base(o) === h) ? [h, v.voice_id.slice(0, 6)].filter(Boolean).join(" · ") : h);
   }
   return out;
+}
+
+// ---- Does a voice work with the voice agent? --------------------------------
+// The agent speaks English with eleven_flash_v2 (an English agent must use
+// flash or turbo v2: buildAgentCreateBody). Premade, cloned and designed v2
+// voices run on any model; a professional clone runs only on the models it was
+// trained for (high_quality_base_model_ids / fine_tuning.state), and a voice
+// made for Eleven v3 runs only there. A voice verified only in other languages
+// is not the English agent's. Fields from GET /v1/voices and /v1/voices/{id}.
+
+/** The agent's TTS model (src/voice-elevenlabs buildAgentCreateBody). */
+export const AGENT_TTS_MODEL = "eleven_flash_v2";
+/** The ids ElevenLabs uses for the models an English agent may run. */
+const AGENT_MODELS = new Set(["eleven_flash_v2", "eleven_v2_flash", "eleven_turbo_v2", "eleven_v2_turbo"]);
+
+export type VoiceDetail = {
+  voice_id: string;
+  name?: string;
+  category?: string | null;
+  high_quality_base_model_ids?: string[] | null;
+  fine_tuning?: { state?: Record<string, string> | null } | null;
+  verified_languages?: { language?: string | null; model_id?: string | null }[] | null;
+};
+
+const LANG: Record<string, string> = { es: "Spanish", fr: "French", de: "German", it: "Italian", pt: "Portuguese", pl: "Polish", hi: "Hindi", ja: "Japanese", zh: "Chinese", ko: "Korean", nl: "Dutch", ru: "Russian", ar: "Arabic", tr: "Turkish", sv: "Swedish" };
+
+/** Why this voice can't be the voice agent's, in one plain line — or null (it can). */
+export function voiceUnfitReason(v: VoiceDetail): string | null {
+  const langs = (v.verified_languages ?? []).map((l) => String(l?.language ?? "").toLowerCase()).filter(Boolean);
+  if (langs.length && !langs.some((l) => l === "en" || l.startsWith("en-") || l === "english")) {
+    const names = [...new Set(langs.map((l) => LANG[l.slice(0, 2)] ?? l))].join(", ");
+    return `Speaks ${names} only — the voice agent speaks English`;
+  }
+  const hq = Array.isArray(v.high_quality_base_model_ids) ? v.high_quality_base_model_ids : [];
+  const ft = v.fine_tuning?.state ?? {};
+  const trained = hq.some((m) => AGENT_MODELS.has(m)) || Object.entries(ft).some(([m, s]) => AGENT_MODELS.has(m) && s === "fine_tuned");
+  if (trained) return null;
+  const cat = String(v.category ?? "");
+  const v3Only = hq.length > 0 && hq.every((m) => /v3/.test(m));
+  if (v3Only) return "Made for Eleven v3 only — the voice agent runs Flash v2";
+  if (cat === "professional" || cat === "famous") return "Not trained for the voice agent's model (Flash v2) yet";
+  return null;
+}
+
+/** GET /v1/voices/{id} and say whether it can be the agent's voice. A failed
+ *  lookup does not block (null): the agent's own update says why at start. */
+export async function checkVoiceFits(key: string, id: string, f: typeof fetch = fetch): Promise<string | null> {
+  try {
+    const res = await f(`${API}/v1/voices/${encodeURIComponent(id)}`, { headers: { "xi-api-key": key } });
+    if (!res.ok) return null;
+    return voiceUnfitReason((await res.json()) as VoiceDetail);
+  } catch {
+    return null;
+  }
 }

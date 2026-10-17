@@ -35,7 +35,10 @@ import {
   visibleVoices,
   VOICE_STORAGE,
   voiceHints,
+  voiceUnfitReason,
+  checkVoiceFits,
   type SharedVoice,
+  type VoiceDetail,
 } from "./voiceLibraryBrowse";
 
 // Five sections: Models, Keys, Voice, Box, Appearance.
@@ -92,7 +95,8 @@ export function SettingsPane() {
 
 const VOICE_OPTIONS: PickOption[] = VOICE_LLMS.map((m) => ({ value: m.id, label: m.label }));
 
-type PickOption = { value: string; label: string; hint?: string };
+/** `disabled`: shown, not pickable (its hint says why). */
+type PickOption = { value: string; label: string; hint?: string; disabled?: boolean };
 
 /** The chat pane's model menu, as a Settings field: one tight row; open it and
  *  type to search, or scroll. */
@@ -163,9 +167,9 @@ function Picker({
                 if (e.key === "Escape") {
                   e.preventDefault();
                   setOpen(false);
-                } else if (e.key === "Enter" && shown.length > 0) {
+                } else if (e.key === "Enter" && shown.some((o) => !o.disabled)) {
                   e.preventDefault();
-                  pick(shown[0].value);
+                  pick(shown.find((o) => !o.disabled)!.value);
                 }
               }}
               placeholder={placeholder}
@@ -179,11 +183,13 @@ function Picker({
               shown.map((o) => (
                 <button
                   key={o.value}
-                  onClick={() => pick(o.value)}
-                  className={`block w-full text-left px-3 py-1.5 text-[11px] hover:bg-accent transition-colors truncate ${
-                    o.value === value ? "text-foreground font-medium" : "text-muted-foreground"
-                  }`}
-                  title={o.value}
+                  onClick={() => !o.disabled && pick(o.value)}
+                  disabled={o.disabled}
+                  aria-disabled={o.disabled || undefined}
+                  className={`block w-full text-left px-3 py-1.5 text-[11px] transition-colors truncate ${
+                    o.disabled ? "opacity-50 cursor-not-allowed" : "hover:bg-accent"
+                  } ${o.value === value ? "text-foreground font-medium" : "text-muted-foreground"}`}
+                  title={o.disabled && o.hint ? o.hint : o.value}
                   data-option={o.value}
                 >
                   {o.label}
@@ -558,7 +564,7 @@ function KeysSection() {
 
 // ---- Voice -------------------------------------------------------------------
 
-type ElVoice = { voice_id: string; name: string; category?: string; labels?: Record<string, string> };
+type ElVoice = VoiceDetail & { name: string; category?: string; labels?: Record<string, string> };
 
 const DEFAULT_VOICE = "nPczCjzI2devNBz1zQrb";
 
@@ -594,9 +600,19 @@ function VoiceSection() {
     };
   }, [key]);
 
-  const choose = (id: string) => {
+  // A voice the agent can't speak with (voiceUnfitReason) is never selected:
+  // the list marks it, and a pick asks ElevenLabs for the voice's own record first.
+  const choose = async (id: string) => {
+    setError(null);
+    const listed = voices?.find((v) => v.voice_id === id);
+    const unfit = (listed && voiceUnfitReason(listed)) || (key ? await checkVoiceFits(key, id) : null);
+    if (unfit) {
+      setError(`${listed?.name ?? "That voice"}: ${unfit}.`);
+      return;
+    }
     selectVoice(id);
     setVoiceId(id);
+    if (useStore.getState().voiceMode) setError("The new voice starts with the next voice session.");
   };
   const [browsing, setBrowsing] = useState(false);
   // Hidden voices (ids, never names): a one-time snapshot of the account's
@@ -651,7 +667,10 @@ function VoiceSection() {
 
   const listed = visibleVoices(voices ?? [], hidden, voiceId);
   const hints = voiceHints(listed);
-  const options: PickOption[] = listed.map((v) => ({ value: v.voice_id, label: v.name, hint: hints.get(v.voice_id) }));
+  const options: PickOption[] = listed.map((v) => {
+    const unfit = voiceUnfitReason(v);
+    return { value: v.voice_id, label: v.name, hint: unfit ?? hints.get(v.voice_id), disabled: !!unfit && v.voice_id !== voiceId };
+  });
   const current = voices?.find((v) => v.voice_id === voiceId)?.name ?? (voices ? "Pick a voice" : "Loading voices…");
 
   return (
@@ -673,7 +692,7 @@ function VoiceSection() {
                 label={current}
                 options={options}
                 placeholder="Search voices…"
-                onChange={choose}
+                onChange={(id) => void choose(id)}
                 footer={{ label: "Browse the voice library…", onClick: () => setBrowsing(true) }}
               />
             )}

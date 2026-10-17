@@ -604,7 +604,13 @@ export async function voiceSession(
     const err = v.getLastAgentCreateError();
     return {
       status: 503,
-      body: { error: err ? `ElevenLabs agent could not be provisioned (HTTP ${err.status})` : "voice is not ready on the box (no ElevenLabs key — the laptop's Settings sends it)" },
+      body: {
+        error: err
+          ? /^voice [A-Za-z0-9]+: /.test(err.body)
+            ? `ElevenLabs won't use the picked ${err.body.slice(0, 400)} — pick another voice in Settings → Voice`
+            : `ElevenLabs agent could not be provisioned (HTTP ${err.status})`
+          : "voice is not ready on the box (no ElevenLabs key — the laptop's Settings sends it)",
+      },
     };
   }
   // The builder already carries this thread's recent turns when it found them: then not its last exchange again.

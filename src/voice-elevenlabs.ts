@@ -126,6 +126,11 @@ const AGENT_VERSION_KEY = "vault_chat_elevenlabs_agent_config_version";
 // an LLM or config-version change does — otherwise voice keeps offering the old
 // set. Mismatch with the live signature triggers a rebuild on next ensureAgent.
 const AGENT_TOOLS_SIG_KEY = "vault_chat_elevenlabs_agent_tools_sig";
+// The voice the provisioned agent speaks with. The session also overrides it
+// (platform_settings allows tts.voice_id), but the agent's own voice is set too
+// (PATCH), so the voice never rests on the override alone and ElevenLabs says
+// at once, in words, when it refuses a voice.
+const AGENT_VOICE_KEY = "vault_chat_elevenlabs_agent_voice";
 
 // Custom voice tools per vault, refreshed on every ensureAgent (the
 // provisioning authority). buildClientToolHandlers / buildSystemPrompt read
@@ -839,6 +844,11 @@ export async function startElevenLabsSession(): Promise<void> {
   if (!agentId) {
     useStore.getState().setVoiceConnecting(false);
     const err = getLastAgentCreateError();
+    const refusedVoice = err && /^voice [A-Za-z0-9]+: /.exec(err.body);
+    if (err && refusedVoice && !err.body.includes("voice_not_found")) {
+      reportVoiceError(`ElevenLabs won't use the voice you picked (${err.body.slice(6, refusedVoice[0].length - 2)}) for the voice agent: ${truncate(err.body.slice(refusedVoice[0].length), 400)}. Pick another voice in Settings → Voice.`);
+      return;
+    }
     if (err && err.body.includes("voice_not_found")) {
       const failedVoice =
         localStorage.getItem(VOICE_ID_STORAGE) ?? DEFAULT_VOICE_ID;
@@ -917,6 +927,9 @@ export async function startElevenLabsSession(): Promise<void> {
 
 ${shared}` : "");
   const dynamicVariables = buildDynamicVariables(voiceState);
+  const voiceId = boxSession?.voiceId ?? localStorage.getItem(VOICE_ID_STORAGE) ?? DEFAULT_VOICE_ID;
+  // One line per start, so a report of "the voice didn't work" has the voice it asked for.
+  console.info(`[voice-eleven] starting: voice ${voiceId}, ${boxSession ? "the box's agent" : "this laptop's agent"}`);
 
   try {
     activeConversation = await Conversation.startSession({
@@ -927,10 +940,7 @@ ${shared}` : "");
           firstMessage: "",
           language: "en",
         },
-        tts: {
-          voiceId:
-            boxSession?.voiceId ?? localStorage.getItem(VOICE_ID_STORAGE) ?? DEFAULT_VOICE_ID,
-        },
+        tts: { voiceId },
       },
       dynamicVariables,
       clientTools: buildClientToolHandlers(remote ?? undefined, boxSession?.toolNames),
@@ -961,7 +971,14 @@ ${shared}` : "");
         useStore.getState().setVoiceSpeaking(false);
         useStore.getState().setVoiceThinking(false);
       },
-      onDisconnect: () => {
+      onDisconnect: (details?: { reason?: string; message?: string; closeCode?: number; closeReason?: string }) => {
+        // A close that wasn't ours says why (a refused voice or override closes
+        // the socket with a reason, and it used to end with no trace at all).
+        const why = disconnectReason(details);
+        if (why) {
+          console.error("[voice-eleven] session closed:", why);
+          voiceAppend({ role: "assistant", content: `Voice session closed by ElevenLabs: ${why}`, system: true });
+        }
         // Stop any native agent audio still playing/queued (Linux).
         stopAgentAudioNative();
         resetAgentEnvelope();
@@ -1206,8 +1223,16 @@ function looksLikeEnd(text: string): boolean {
   return END_PHRASES.has(cleaned);
 }
 
+/** Why ElevenLabs closed the session, or "" for a normal end (ours, or the agent's 1000). */
+export function disconnectReason(d?: { reason?: string; message?: string; closeCode?: number; closeReason?: string }): string {
+  if (!d || d.reason === "user") return "";
+  if (d.reason === "agent" && (d.closeCode === undefined || d.closeCode === 1000) && !d.closeReason) return "";
+  return [d.message, d.closeReason, d.closeCode !== undefined ? `code ${d.closeCode}` : ""].filter(Boolean).join(" — ") || String(d.reason ?? "unknown");
+}
+
 function reportVoiceError(message: string): void {
-  console.warn("[voice-eleven]", message);
+  // An error line on every failed start (the app log mirrors console.error).
+  console.error("[voice-eleven] voice start failed:", message);
   // The composer's waves turn red (VoiceCockpit's InlineVoiceWaves) until the
   // next start attempt or a successful connect.
   useStore.setState({ voiceError: message });
@@ -2472,6 +2497,8 @@ async function ensureAgent(apiKey: string, opts?: { vault?: string; slot?: strin
   const AGENT_LLM_AT_PROVISION = slotKey(AGENT_LLM_KEY, opts?.slot);
   const AGENT_VERSION_STORAGE = slotKey(AGENT_VERSION_KEY, opts?.slot);
   const AGENT_TOOLS_SIG_STORAGE = slotKey(AGENT_TOOLS_SIG_KEY, opts?.slot);
+  const AGENT_VOICE_STORAGE = slotKey(AGENT_VOICE_KEY, opts?.slot);
+  const wantedVoice = localStorage.getItem(VOICE_ID_STORAGE) ?? DEFAULT_VOICE_ID;
   // Refresh the custom-tool snapshot first — this also warms the cache that
   // buildClientToolHandlers / buildSystemPrompt read synchronously, and the
   // signature joins the staleness check so adding a vault tool re-provisions.
@@ -2491,7 +2518,26 @@ async function ensureAgent(apiKey: string, opts?: { vault?: string; slot?: strin
     (provisionedWith !== wantedLlm ||
       provisionedVersion !== AGENT_CONFIG_VERSION ||
       provisionedTools !== toolsSig);
-  if (cached && !stale) return cached;
+  if (cached && !stale) {
+    if (localStorage.getItem(AGENT_VOICE_STORAGE) === wantedVoice) return cached;
+    // Another voice was picked: make it the agent's own.
+    const r = await setAgentVoice(apiKey, cached, wantedVoice);
+    if (r.ok) {
+      localStorage.setItem(AGENT_VOICE_STORAGE, wantedVoice);
+      return cached;
+    }
+    if (r.status === 404) localStorage.removeItem(AGENT_ID_STORAGE); // gone: a fresh agent below
+    else if (r.status >= 400 && r.status < 500 && !isTransientStatus(r.status)) {
+      // ElevenLabs refuses this voice for this agent: say so; never start with another voice silently.
+      lastAgentCreateError = { status: r.status, body: `voice ${wantedVoice}: ${r.body}` };
+      console.error("[voice-eleven] the agent's voice was refused:", wantedVoice, r.status, r.body);
+      return null;
+    } else {
+      // Unreachable or a server error: the session's override still carries the voice.
+      console.warn("[voice-eleven] couldn't set the agent's voice (the session override carries it):", r.status, r.body);
+      return cached;
+    }
+  }
   // Breaker is open: a recent payload kept failing non-transiently. Don't
   // re-POST the same body. lastAgentCreateError is preserved so a user-facing
   // path can describe it.
@@ -2508,7 +2554,7 @@ async function ensureAgent(apiKey: string, opts?: { vault?: string; slot?: strin
         "xi-api-key": apiKey,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify(buildAgentCreateBody({ llm: wantedLlm, info: llmInfo(llmList, wantedLlm), customTools, voiceId: localStorage.getItem(VOICE_ID_STORAGE) ?? DEFAULT_VOICE_ID })),
+      body: JSON.stringify(buildAgentCreateBody({ llm: wantedLlm, info: llmInfo(llmList, wantedLlm), customTools, voiceId: wantedVoice })),
     });
     if (!res.ok) {
       const body = await res.text().catch(() => "");
@@ -2543,11 +2589,26 @@ async function ensureAgent(apiKey: string, opts?: { vault?: string; slot?: strin
     localStorage.setItem(AGENT_LLM_AT_PROVISION, wantedLlm);
     localStorage.setItem(AGENT_VERSION_STORAGE, AGENT_CONFIG_VERSION);
     localStorage.setItem(AGENT_TOOLS_SIG_STORAGE, toolsSig);
+    localStorage.setItem(AGENT_VOICE_STORAGE, wantedVoice);
     return json.agent_id;
   } catch (e) {
     console.error("[voice-eleven] agent create exception:", e);
     lastAgentCreateError = { status: 0, body: (e as any)?.message ?? String(e) };
     return null;
+  }
+}
+
+/** PATCH the provisioned agent's voice (conversation_config.tts.voice_id). */
+async function setAgentVoice(apiKey: string, agentId: string, voiceId: string): Promise<{ ok: boolean; status: number; body: string }> {
+  try {
+    const res = await fetch(`https://api.elevenlabs.io/v1/convai/agents/${encodeURIComponent(agentId)}`, {
+      method: "PATCH",
+      headers: { "xi-api-key": apiKey, "Content-Type": "application/json" },
+      body: JSON.stringify({ conversation_config: { tts: { voice_id: voiceId } } }),
+    });
+    return { ok: res.ok, status: res.status, body: res.ok ? "" : await res.text().catch(() => "") };
+  } catch (e) {
+    return { ok: false, status: 0, body: (e as Error)?.message ?? String(e) };
   }
 }
 

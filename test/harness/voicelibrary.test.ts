@@ -78,7 +78,8 @@ test("picking a library voice adds it to the account, then selects it — and th
   const f = respond(() => json({ voice_id: "lib-new-1" }));
   const r = await L.pickLibraryVoice("el-test", v("lib-new-1", "Juniper"), new Set(["nPczCjzI2devNBz1zQrb"]), f);
   assert.deepEqual(r, { voiceId: "lib-new-1", added: true });
-  assert.equal(calls.length, 1);
+  assert.equal(calls.length, 2, "the add, then the voice's own record (does the agent's model take it?)");
+  assert.equal(calls[1].url, "https://api.elevenlabs.io/v1/voices/lib-new-1");
   assert.equal(calls[0].method, "POST");
   assert.equal(calls[0].url, "https://api.elevenlabs.io/v1/voices/add/owner-lib-new-1/lib-new-1");
   assert.deepEqual(JSON.parse(calls[0].body!), { new_name: "Juniper" });
@@ -122,7 +123,7 @@ test("a voice already in the account is just selected (no add)", async () => {
   assert.deepEqual(r, { voiceId: "owned-1", added: false });
   const r2 = await L.pickLibraryVoice("el-test", v("lib-2", "Iris", { is_added_by_user: true }), new Set(), f);
   assert.deepEqual(r2, { voiceId: "lib-2", added: false }, "ElevenLabs says it's added");
-  assert.equal(calls.length, 0);
+  assert.equal(calls.filter((c) => c.method === "POST").length, 0, "no add (only the fit lookups, which failed and don't block)");
   assert.equal(localStorage.getItem(L.VOICE_STORAGE), "lib-2");
 });
 
@@ -162,6 +163,25 @@ test("a voice picked from the library shows, even one the snapshot hid", async (
   assert.deepEqual([...L.readHidden()], ["owned-h"]);
   await L.pickLibraryVoice("el-test", v("owned-h", "Brian"), new Set(["owned-h"]), respond(() => json({})));
   assert.deepEqual([...L.readHidden()], []);
+});
+
+test("a voice the agent can't speak with: one plain line at pick time, not selected", async () => {
+  localStorage.setItem(L.VOICE_STORAGE, "nPczCjzI2devNBz1zQrb");
+  // A professional clone trained only for multilingual v2 (the agent runs Flash v2).
+  const pvc = { voice_id: "pvc-1", category: "professional", high_quality_base_model_ids: ["eleven_multilingual_v2"], fine_tuning: { state: { eleven_multilingual_v2: "fine_tuned" } } };
+  const f = respond((c) => (c.method === "POST" ? json({ voice_id: "pvc-1" }) : json(pvc)));
+  const r = await L.pickLibraryVoice("el-test", v("pvc-1", "Orla"), new Set(), f);
+  assert.deepEqual(r, { error: "Not trained for the voice agent's model (Flash v2) yet" });
+  assert.equal(localStorage.getItem(L.VOICE_STORAGE), "nPczCjzI2devNBz1zQrb", "the old voice stays");
+  // The same voice once trained for Flash v2: fine.
+  assert.equal(L.voiceUnfitReason({ ...pvc, high_quality_base_model_ids: ["eleven_multilingual_v2", "eleven_flash_v2"] }), null);
+  assert.equal(L.voiceUnfitReason({ ...pvc, high_quality_base_model_ids: [], fine_tuning: { state: { eleven_flash_v2: "fine_tuned" } } }), null);
+  // Eleven v3 only, and another language only.
+  assert.match(L.voiceUnfitReason({ voice_id: "g", category: "generated", high_quality_base_model_ids: ["eleven_v3"] })!, /Eleven v3 only/);
+  assert.equal(L.voiceUnfitReason({ voice_id: "es", category: "professional", verified_languages: [{ language: "es" }] }), "Speaks Spanish only — the voice agent speaks English");
+  // Premade, cloned, a list record with nothing to say: fine.
+  assert.equal(L.voiceUnfitReason({ voice_id: "p", category: "premade" }), null);
+  assert.equal(L.voiceUnfitReason({ voice_id: "c", category: "cloned", verified_languages: [{ language: "en" }, { language: "fr" }] }), null);
 });
 
 test("no hide UI: the module has no hide action and Settings renders none", async () => {

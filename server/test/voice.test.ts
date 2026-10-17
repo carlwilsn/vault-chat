@@ -346,6 +346,58 @@ describe("GET /api/v1/voice/session (ElevenLabs faked)", () => {
     }
   });
 
+  it("a non-default voice is the session's and the agent's (overrides on; a voice change PATCHes the agent; a refusal says so)", async () => {
+    const calls: { url: string; method: string; body: any }[] = [];
+    let refuse = false;
+    const real = globalThis.fetch;
+    globalThis.fetch = (async (input: any, init?: any) => {
+      const url = String(typeof input === "string" ? input : input.url);
+      if (!url.startsWith("https://api.elevenlabs.io/")) return real(input, init);
+      const method = init?.method ?? "GET";
+      calls.push({ url, method, body: init?.body ? JSON.parse(init.body) : null });
+      if (url.includes("/convai/agents/create")) return new Response(JSON.stringify({ agent_id: "agent_voice" }), { status: 200 });
+      if (method === "PATCH" && url.endsWith("/convai/agents/agent_voice"))
+        return refuse ? new Response(JSON.stringify({ detail: "voice is not available for eleven_flash_v2" }), { status: 422 }) : new Response("{}", { status: 200 });
+      if (url.includes("/get_signed_url")) return new Response(JSON.stringify({ signed_url: "wss://fake.elevenlabs/v" }), { status: 200 });
+      return new Response("{}", { status: 404 });
+    }) as typeof fetch;
+    try {
+      store.setState({ serviceKeys: { elevenlabs: "el-canary-key" } });
+      localStorage.removeItem("vault_chat_elevenlabs_agent_id");
+      // The laptop's pick (voiceBox sends ?voice=): a fresh agent speaks with it, and the session carries it.
+      const a = await voice.voiceSession(null, deps, { voice: "LibVoiceJuniper0001" });
+      expect(a.status).toBe(200);
+      expect(a.body.voiceId).toBe("LibVoiceJuniper0001");
+      const create = calls.find((c) => c.url.includes("/agents/create"))!;
+      expect(create.body.conversation_config.tts.voice_id).toBe("LibVoiceJuniper0001");
+      expect(create.body.conversation_config.tts.model_id).toBe("eleven_flash_v2");
+      expect(create.body.platform_settings.overrides.conversation_config_override.tts.voice_id).toBe(true);
+      // Another voice: the same agent, its voice PATCHed; no new agent.
+      const n = calls.length;
+      const b = await voice.voiceSession(null, deps, { voice: "LibVoiceRowan000002" });
+      expect(b.body.voiceId).toBe("LibVoiceRowan000002");
+      const after = calls.slice(n);
+      expect(after.some((c) => c.url.includes("/agents/create"))).toBe(false);
+      const patch = after.find((c) => c.method === "PATCH")!;
+      expect(patch.url).toBe("https://api.elevenlabs.io/v1/convai/agents/agent_voice");
+      expect(patch.body).toEqual({ conversation_config: { tts: { voice_id: "LibVoiceRowan000002" } } });
+      // The same voice again: nothing to change.
+      const m = calls.length;
+      await voice.voiceSession(null, deps, { voice: "LibVoiceRowan000002" });
+      expect(calls.slice(m).some((c) => c.method === "PATCH")).toBe(false);
+      // A voice ElevenLabs refuses: no session with another voice, and the reason in words.
+      refuse = true;
+      const r = await voice.voiceSession(null, deps, { voice: "LibVoiceV3only00003" });
+      expect(r.status).toBe(503);
+      expect(String(r.body.error)).toContain("LibVoiceV3only00003");
+      expect(String(r.body.error)).toContain("not available for eleven_flash_v2");
+      refuse = false;
+      expect((await voice.voiceSession(null, deps, { voice: "nPczCjzI2devNBz1zQrb" })).body.voiceId).toBe("nPczCjzI2devNBz1zQrb");
+    } finally {
+      globalThis.fetch = real;
+    }
+  });
+
   it("two vaults' sessions started at once each get only their own tools", async () => {
     const creates: { slotTools: string[] }[] = [];
     const real = globalThis.fetch;
