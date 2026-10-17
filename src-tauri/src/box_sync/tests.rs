@@ -168,19 +168,14 @@ fn clean_merge_brings_box_into_master() {
     );
     // Uncommitted laptop edits: the cycle commits them first, then merges.
     write(&r.laptop, "note.md", "line one\nline two\nline three\nlaptop line\n");
-    write(
-        &r.laptop,
-        ".vault-chat/conversations/chat1.jsonl",
-        "{\"id\":\"chat1\",\"source\":\"manual\"}\n{\"role\":\"user\",\"content\":\"hi\"}\n{\"role\":\"user\",\"content\":\"from the laptop\"}\n",
-    );
     let rep = r.cycle();
     assert!(rep.ok, "{:?}", rep.error);
     assert!(rep.committed && rep.merged, "{:?}", rep);
     assert!(rep.conflict.is_none());
     assert_eq!(read(&r.laptop, "from-box.md"), "box\n");
     assert!(read(&r.laptop, "note.md").contains("laptop line"));
-    let chat = read(&r.laptop, ".vault-chat/conversations/chat1.jsonl");
-    assert!(chat.contains("from the phone") && chat.contains("from the laptop"), "union keeps both: {}", chat);
+    // An older box commit of a conversation file still merges like any file (nothing is deleted).
+    assert!(read(&r.laptop, ".vault-chat/conversations/chat1.jsonl").contains("from the phone"));
     assert_eq!(git_code(&r.laptop, &["merge-base", "--is-ancestor", BOX_REF, "HEAD"]), 0);
     assert_eq!(git(&r.bare, &["rev-parse", "refs/heads/master"]), r.head(), "merge pushed");
     assert_eq!(git(&r.laptop, &["status", "--porcelain"]), "");
@@ -273,14 +268,16 @@ fn mission_zone_is_never_written_by_the_laptop() {
     }
     assert!(git(&r.bare, &["show", "master:note.md"]).contains("note edit"), "content still flows");
 
-    // conversations_write_all in box mode never writes a mission thread.
+    // conversations_write_all in box mode never writes a mission thread. (The
+    // scribble above was never staged: conversations don't go through git here.)
+    let before_m1 = read(&r.laptop, ".vault-chat/conversations/m1.jsonl");
     let v = s(&r.laptop);
     let lines = vec![
         "{\"id\":\"m1\",\"source\":\"mission\",\"missionState\":\"KILLED\",\"messages\":[]}".to_string(),
         "{\"id\":\"chat2\",\"source\":\"manual\",\"messages\":[{\"role\":\"user\",\"content\":\"x\"}]}".to_string(),
     ];
     tauri::async_runtime::block_on(crate::conversations_write_all(v.clone(), lines)).unwrap();
-    assert_eq!(read(&r.laptop, ".vault-chat/conversations/m1.jsonl"), mission);
+    assert_eq!(read(&r.laptop, ".vault-chat/conversations/m1.jsonl"), before_m1);
     // [phase 2] …nor any other conversation: the box authors every one.
     assert!(!r.laptop.join(".vault-chat/conversations/chat2.jsonl").exists());
     assert_eq!(crate::vault_sync_role_sync(v), "follower", "box mode = follower: no local scheduler/missions");
@@ -459,15 +456,20 @@ fn box_mode_never_writes_conversations() {
     assert!(r.laptop.join(".vault-chat/conversations/c9.jsonl").exists());
     assert!(read(&r.laptop, ".vault-chat/conversations-deleted.jsonl").contains("\"c9\""));
 
-    // 3. A stray laptop edit to a CHAT (not a mission) is reset to the box's
-    //    before the commit: master carries the box's bytes; the tombstone flows.
-    write(&r.laptop, ".vault-chat/conversations/c9.jsonl", "{\"id\":\"c9\",\"source\":\"manual\"}\n{\"role\":\"user\",\"content\":\"stray\"}\n");
+    // 3. Conversations never go through git from here: a stray edit to a
+    //    conversation file is never staged (kept on disk, never deleted), and the
+    //    box's log, were it here, is never committed. The tombstone still flows.
+    let stray = "{\"id\":\"c9\",\"source\":\"manual\"}\n{\"role\":\"user\",\"content\":\"stray\"}\n";
+    write(&r.laptop, ".vault-chat/conversations/c9.jsonl", stray);
+    write(&r.laptop, ".vault-chat/events/c9.jsonl", "{\"seq\":1}\n");
     let rep = r.cycle();
     assert!(rep.ok, "{:?}", rep.error);
     assert_eq!(
         git(&r.bare, &["show", "master:.vault-chat/conversations/c9.jsonl"]),
         git(&r.bare, &["show", "box:.vault-chat/conversations/c9.jsonl"]),
     );
+    assert_eq!(read(&r.laptop, ".vault-chat/conversations/c9.jsonl"), stray);
+    assert_eq!(git(&r.laptop, &["ls-files", ".vault-chat/events"]), "");
     assert!(git(&r.bare, &["show", "master:.vault-chat/conversations-deleted.jsonl"]).contains("\"c9\""));
 
     no_sidecars(&r.laptop);

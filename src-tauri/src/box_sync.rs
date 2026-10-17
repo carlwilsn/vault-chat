@@ -540,19 +540,35 @@ fn path_in_zone_dirs(path: &str) -> bool {
         .any(|z| path == *z || path.starts_with(&format!("{}/", z)))
 }
 
-/// Is `rel` a mission-zone path? [phase 2] In box mode every agent turn runs
-/// on the box, so EVERY conversation file is the box's (not just
-/// mission/worker/ask threads): the laptop resets them all to the box before a
-/// commit, and a conflict on one resolves to the box's side.
+/// Is `rel` a mission-zone path? (The conversations are not: in box mode they
+/// are the box's event log, never synced by git — see NEVER_STAGED.)
 fn is_zone_path(_vault: &str, rel: &str, _authority: &str) -> bool {
-    if path_in_zone_dirs(rel) {
-        return true;
-    }
-    is_conversation_file(rel)
+    path_in_zone_dirs(rel)
 }
 
-fn is_conversation_file(rel: &str) -> bool {
-    rel.starts_with(".vault-chat/conversations/") && (rel.ends_with(".jsonl") || rel.ends_with(".json"))
+/// Never committed from this laptop in box mode: the box's conversation log
+/// (`.vault-chat/events/`, never even present here) and the conversation files
+/// from before it (kept as they are, never staged, never deleted). Conversations
+/// reach the laptop through the box's /poll, not through git.
+pub const NEVER_STAGED: [&str; 2] = [".vault-chat/conversations", ".vault-chat/events"];
+
+/// `.git/info/exclude` holds `line` (outside the managed block).
+fn ensure_exclude_line(vault: &str, line: &str) {
+    let file = git_dir(vault).join("info").join("exclude");
+    let cur = std::fs::read_to_string(&file).unwrap_or_default();
+    if cur.lines().any(|l| l == line) {
+        return;
+    }
+    let mut next = cur.clone();
+    if !next.is_empty() && !next.ends_with('\n') {
+        next.push('\n');
+    }
+    next.push_str(line);
+    next.push('\n');
+    if let Some(dir) = file.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::fs::write(&file, next);
 }
 
 /// Reset every mission-zone path that differs from `authority` (box/box) back
@@ -735,11 +751,16 @@ fn unstage_large(vault: &str) -> Vec<BigFile> {
 /// box, nothing over 50 MB. Caller holds the repo lock. Returns the big files.
 pub fn box_stage_all(vault: &str, name: &str, email: &str) -> Result<Vec<BigFile>, String> {
     sanitize_zone_to(vault, BOX_REF);
+    ensure_exclude_line(vault, "/.vault-chat/events/");
     let mut big = exclude_large_untracked(vault);
     let (o, e, c) = run_git_as(vault, name, email, &["add", "-A"])?;
     if c != 0 {
         return Err(full_err(&o, &e, c, "git add -A"));
     }
+    // The conversations never go through git in box mode (unstaged again, whatever was there).
+    let mut reset: Vec<&str> = vec!["reset", "-q", "--"];
+    reset.extend(NEVER_STAGED.iter().copied());
+    let _ = run_git_mut(vault, &reset);
     for b in unstage_large(vault) {
         if !big.iter().any(|x| x.path == b.path) {
             big.push(b);
