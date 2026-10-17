@@ -100,3 +100,15 @@ default view is 1000 wide. Without one, a part lands 60% of the view wide.
 - **An object:** every added part is an object on the canvas. Carl drags it, scales it, and writes on top of it with the pen (ink always lies above objects).
 - **Scaling:** always uniform. Nothing ever stretches, and there is no free-form resize.
 - **Widgets:** a widget scales as a whole too. It is laid out once at its send size, then zoomed like an image. Reshaping a widget, so its layout reflows, is a possible later option; it is not built.
+
+## Sending never blocks the conversation (Carl, 2026-10-16)
+
+Carl keeps talking while things are made. The rule:
+
+- **Ready → send directly.** When everything already exists, the agent sends it itself, in about a second. That covers a PDF and its pages, math it has already written, or an image file that exists. Validation is the only wait.
+- **Needs making → delegate.** When something must be made first (a problem set, a graph, a widget), the agent hands it to a background sub-agent with one call (`BoardMake {request, title}`). The call returns at once ("making it, it'll land in your inbox"), and the conversation continues.
+  - The sub-agent works in the same vault with the same context summary. It makes the files, sends them through the same validated send, and fixes refusals itself.
+  - When it finishes, the inbox badge appears, and voice says it in a short line at the next natural pause.
+- **Voice** follows the same rule, and never waits on a make.
+- **Several makes** can run at once. Each appears in the inbox as "being made" with its title, so nothing is invisible.
+- **A make that fails** after its own retries shows in the inbox as "couldn't make: <reason>". It never fails silently.
