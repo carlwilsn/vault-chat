@@ -3,7 +3,7 @@
 // the ones whose first user message starts with "Task:"; parents and children
 // are keyed by marker words.
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmp, cleanup, makeVault, makeKeyStore, startServer, waitFor, type Running } from "./helpers";
 import { fakeChat, lastUser, lastToolResult, CHAT_COST, type FakeChat, type ChatStep } from "./fakeChat";
@@ -56,6 +56,10 @@ describe.skipIf(!PI_DIR)("pi subagents (real pi children, fake OpenRouter)", () 
         },
       };
     }
+    if (has("CHILDBOARD")) {
+      const make = /make: "([^"]+)"/.exec(task)?.[1];
+      return out === null ? { call: { name: "BoardSend", args: { make, title: "Cauchy set", note: "two", parts: [{ kind: "math", label: "Problem 1", markdown: "Show $\\frac{1}{n} \\to 0$." }] } } } : { text: `board sent: ${out}` };
+    }
     if (has("CHILDASK")) return out === null ? { call: { name: "AskUser", args: { question: "may I?" } } } : { text: `asked: ${out}` };
     return { text: "child default" };
   };
@@ -78,6 +82,10 @@ describe.skipIf(!PI_DIR)("pi subagents (real pi children, fake OpenRouter)", () 
     if (user.includes("box restarted")) return { text: "resumed after the crash" };
     const all = (body.messages ?? []).map((m: any) => (typeof m.content === "string" ? m.content : JSON.stringify(m.content))).join("\n");
     const key = Object.keys(parentCalls).filter((k) => all.includes(k)).sort((a, b) => all.lastIndexOf(b) - all.lastIndexOf(a))[0];
+    if (all.includes("BOARDMAKE")) {
+      const out0 = lastToolResult(body);
+      return out0 === null ? { call: { name: "BoardMake", args: { title: "Cauchy set", request: "CHILDBOARD write two problems" } } } : { text: `BOARDMAKE done: ${out0.slice(0, 300)}` };
+    }
     if (!key) return { text: "hello from the parent" };
     const out = lastToolResult(body);
     if (out === null) return { call: { name: "subagent", args: parentCalls[key] } };
@@ -187,6 +195,22 @@ describe.skipIf(!PI_DIR)("pi subagents (real pi children, fake OpenRouter)", () 
     expect(c.state).not.toBe("waiting_user");
     expect(c.pendingAsk).toBeUndefined();
     expect(c.messages.filter((m: any) => m.role === "assistant").pop().content).toMatch(/AskUser|not found|Tool|tool/);
+  });
+
+  it("BoardMake returns at once; its background maker sends through BoardSend and the entry lands (being made → unread)", async () => {
+    const r = await post("/message", { text: "BOARDMAKE a problem set" });
+    await says(r.convId, /BOARDMAKE done: Making it in the background/);
+    const dir = join(vault, "boards", ".inbox");
+    const entry = await waitFor(() => {
+      for (const id of existsSync(dir) ? readdirSync(dir) : []) {
+        const e = JSON.parse(readFileSync(join(dir, id, "entry.json"), "utf8"));
+        if (e.title === "Cauchy set" && !e.making) return e;
+      }
+      return null;
+    }, 60_000);
+    expect(entry.parts).toEqual([expect.objectContaining({ kind: "math", label: "Problem 1" })]);
+    expect(entry.status).toBe("unread");
+    expect(entry.failed).toBeUndefined();
   });
 
   it("too many tasks in one call is refused (8 per call)", async () => {

@@ -717,6 +717,11 @@ class BoxChatSession {
         // only — the sync brings the commit behind it (vault_changed).
         if (typeof e.path === "string") boxFileChanged({ vault: this.vault, rel: e.path, fetch: (rel) => fetchBoxFile(this.link, rel) });
         return;
+      case "inbox":
+        // Something landed in the board inbox (or a make failed): a live voice
+        // session mentions it in one short line at its next pause.
+        if (typeof e.say === "string" && e.say) void import("./voice-elevenlabs").then((v) => v.announceAtNextPause(e.say)).catch(() => {});
+        return;
       case "vault_changed":
         // The agent on the box edited files and published them: fetch + merge
         // them now (the gate's rules as ever); the merge reloads open panes.

@@ -1648,6 +1648,23 @@ export function sendVoiceTypingHint(kind: "opened" | "still-typing"): void {
   });
 }
 
+/** A short line for the voice agent to say at the next natural pause (the board
+ *  inbox: "<title> is in your board inbox"). Held while the agent speaks
+ *  (quietGate), then handed over as a contextual update asking for one short
+ *  sentence; it never interrupts and is never a user turn. No session: dropped. */
+export function announceAtNextPause(line: string): void {
+  const conv = activeConversation;
+  if (!conv || !line.trim()) return;
+  quietGate.run(`announce:${line}`, () => {
+    if (activeConversation !== conv) return;
+    try {
+      conv.sendContextualUpdate(`Heads-up for Carl, to mention in one short sentence at the next natural pause (do not interrupt him): ${line.trim()}`);
+    } catch (e) {
+      console.warn("[voice-eleven] announce failed:", e);
+    }
+  });
+}
+
 export function isVoiceSessionActive(): boolean {
   return activeConversation !== null;
 }

@@ -440,7 +440,7 @@ export function loadEsbuild(stateDir?: string): Promise<any> {
       const m = tryDir(d);
       if (m) return m;
     }
-    const dir = join(stateDir ?? join(process.env.HOME ?? ".", ".local", "state", "vault-chat-server"), "esbuild", ESBUILD_PIN);
+    const dir = join(stateDir ?? process.env.VC_STATE_DIR ?? join(process.env.HOME ?? ".", ".local", "state", "vault-chat-server"), "esbuild", ESBUILD_PIN);
     const have = tryDir(dir);
     if (have) return have;
     mkdirSync(dir, { recursive: true });

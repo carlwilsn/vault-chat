@@ -27,6 +27,8 @@ import { appendMessage, patchMeta, readConv, allConvs, createConv, mutateConv, s
 import { addWake, readWakes, removeWakes, nextWakeFor, parseDelay, type Wake } from "./wakes";
 import { Ledger } from "./ledger";
 import { pdfRead, webSearch } from "./extraTools";
+import { failMake, listEntries, readEntry, sendEntry, startMake, type InboxEvent } from "../inbox";
+import { BOARD_MAKER_PROMPT, boardMakeTask } from "./boardTools";
 import { startJob, jobStatus, jobList, jobStop, reapJobs, type PiJobEnv } from "./pi/jobs";
 import { ENGINE_ROLE_PROMPT } from "./prompt";
 import { capabilitiesOf, capabilityNote, learn } from "./capabilities";
@@ -233,6 +235,44 @@ export const ENGINE_TOOL_SPECS = [
     name: "JobStatus",
     description: "State and last output lines of a job started with StartJob.",
     inputSchema: { type: "object", properties: { id: { type: "string" }, tail: { type: "number" } }, required: ["id"], additionalProperties: false },
+  },
+  {
+    type: "function",
+    name: "BoardSend",
+    description:
+      "Send something to Carl's iPad whiteboard inbox (he adds it to a board himself). Use it directly only when everything already exists: PDF pages, math you have written, an image or widget file already in the vault. Parts (ordered, each addable on its own): {kind:\"pdf\", path, pages:[3,4,5] (1-based, ≤20)} | {kind:\"math\", markdown (with $…$ / $…$), label?} | {kind:\"image\", path (PNG/JPEG/WebP/SVG in the vault), alt} | {kind:\"widget\", path (one TypeScript module exporting mount(el, api); api: size(), onResize(fn), theme; no network), alt, layout?:{w,h}}. Optional width (canvas units; the view is 1000 wide) and label per part. A problem set is one math part per problem. A bad send is refused with every reason: fix them and send again. Returns the entry id.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        title: { type: "string" },
+        note: { type: "string" },
+        parts: { type: "array", items: { type: "object" } },
+        make: { type: "string", description: "Only inside a BoardMake: the id of the entry being made." },
+      },
+      required: ["title", "parts"],
+      additionalProperties: false,
+    },
+  },
+  {
+    type: "function",
+    name: "BoardMake",
+    description:
+      "Have something made for Carl's whiteboard in the background (a problem set, a graph, a widget) and land in his iPad inbox. Returns at once; a sub-agent in this vault makes the files, sends them through BoardSend and fixes refusals itself. The inbox shows it as being made, then the result or why it couldn't be made. Never wait for it: tell Carl it's on its way and carry on.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        request: { type: "string", description: "What to make, with everything the maker needs (the maker does not see this conversation)." },
+        title: { type: "string", description: "The inbox title, one line." },
+      },
+      required: ["request", "title"],
+      additionalProperties: false,
+    },
+  },
+  {
+    type: "function",
+    name: "BoardInbox",
+    description: "The whiteboard inbox: each entry's title, status (unread / read / added / being made / couldn't make) and, for added parts, the board and whether its items are still there. Give id for one entry.",
+    inputSchema: { type: "object", properties: { id: { type: "string" } }, additionalProperties: false },
   },
   {
     type: "function",
@@ -1230,8 +1270,9 @@ export class Engine {
     if (!convId || !conv) return { success: false, contentItems: [{ type: "inputText", text: "No conversation for this thread." }] };
     const a = p?.arguments ?? {};
     const name = String(p?.tool ?? "");
-    // After ScheduleWake the turn is over: only Done or Blocked may still end it differently.
-    if (l?.flags.wake && l.wakeAt && !AFTER_WAKE_OK.has(name)) return { success: false, contentItems: [{ type: "inputText", text: wakeRefusal(l.wakeAt) }] };
+    // After ScheduleWake the turn is over: only Done or Blocked may still end it differently
+    // (a background make's BoardSend is the maker's, not this turn's).
+    if (l?.flags.wake && l.wakeAt && !AFTER_WAKE_OK.has(name) && !(name === "BoardSend" && a?.make)) return { success: false, contentItems: [{ type: "inputText", text: wakeRefusal(l.wakeAt) }] };
     try {
       if (isContextTool(name)) {
         return await handleContextTool(name, a, {
@@ -1316,6 +1357,31 @@ export class Engine {
           const sent = await this.d.notify({ kind: "info", title: String(a.title ?? "vault-chat").slice(0, 90), body: String(a.body ?? "").slice(0, 2000), convId });
           return text(sent ? "Notified." : "Recorded in the feed (no phone subscribed).");
         }
+        case "BoardSend": {
+          const r = await sendEntry(vault, a, { conversation: convId, emit: (ev) => this.inboxEvent(ev) });
+          if (!r.ok) return { success: false, contentItems: [{ type: "inputText", text: `Refused (nothing reached the inbox):\n- ${r.refusals.join("\n- ")}` }] };
+          return text(JSON.stringify({ id: r.id, parts: r.parts }) + " — in Carl's whiteboard inbox.");
+        }
+        case "BoardMake": {
+          const request = String(a.request ?? "").trim();
+          const title = String(a.title ?? "").trim();
+          if (!request || !title) return text("BoardMake needs a request and a title.");
+          const entry = startMake(vault, { title, request }, { conversation: convId, emit: (ev) => this.inboxEvent(ev) });
+          const started = this.d.backend.background(p.threadId, {
+            agent: { name: "board-maker", systemPrompt: BOARD_MAKER_PROMPT, tools: ["read", "bash", "edit", "write", "BoardSend"] },
+            task: boardMakeTask(entry.id, title, request),
+          });
+          void started
+            .then((r: any) => {
+              // Landed: the send cleared `making`. Otherwise it failed: say why in the inbox.
+              const e = readEntry(vault, entry.id);
+              if (e?.making) failMake(vault, entry.id, r?.ok ? "the maker finished without sending anything" : String(r?.text ?? r?.state ?? "the maker failed").split("\n")[0]!, { emit: (ev) => this.inboxEvent(ev) });
+            })
+            .catch((err: Error) => failMake(vault, entry.id, err.message, { emit: (ev) => this.inboxEvent(ev) }));
+          return text(`Making it in the background (inbox entry ${entry.id}, shown as being made). It lands in Carl's inbox when ready; don't wait for it.`);
+        }
+        case "BoardInbox":
+          return text(boardInboxText(vault, a.id ? String(a.id) : null));
         case "PdfRead":
           return text(await pdfRead(vault, a));
         case "WebSearch":
@@ -1361,6 +1427,11 @@ export class Engine {
     } catch (e) {
       return { success: false, contentItems: [{ type: "inputText", text: `${name} failed: ${(e as Error).message}` }] };
     }
+  }
+
+  /** An inbox change on /poll (the iPad's badge); a landed entry carries a short line for a live voice session to say at its next pause (src/voice-elevenlabs.ts). */
+  private inboxEvent(ev: InboxEvent): void {
+    this.d.broadcast?.({ ...ev, ...(ev.landed ? { say: `"${ev.title}" is in your board inbox.` } : ev.failed ? { say: `I couldn't make "${ev.title}": ${ev.failed}.` } : {}) });
   }
 
   /** Park the turn on a question until Carl answers (via /message or /answer). */
@@ -1550,3 +1621,31 @@ function errText(e: any): string {
   return String(e.message ?? JSON.stringify(e)).slice(0, 500);
 }
 
+
+/** BoardInbox's answer: entries, their status, and whether added items are still on their boards. */
+function boardInboxText(vault: string, id: string | null): string {
+  const { entries } = listEntries(vault);
+  const pick = id ? entries.filter((e) => e.id === id) : entries.slice(0, 20);
+  if (!pick.length) return id ? `No inbox entry ${id}.` : "The inbox is empty.";
+  return pick
+    .map((s) => {
+      const e = readEntry(vault, s.id);
+      const state = s.failed ? `couldn't make: ${s.failed}` : s.making ? "being made" : s.status;
+      const lines = [`${s.id} — "${s.title}" (${state}; ${s.parts.length} part${s.parts.length === 1 ? "" : "s"})`];
+      for (const [k, v] of Object.entries(e?.added ?? {})) {
+        let still = "?";
+        try {
+          const b = JSON.parse(readFileSync(join(vault, "boards", v.board, "board.json"), "utf8"));
+          const have = new Set((b.items ?? []).map((x: any) => x.id));
+          const n = v.items.filter((x) => have.has(x)).length;
+          still = n === v.items.length ? "still on the board" : n ? `${n} of ${v.items.length} still on the board` : "removed from the board";
+        } catch {
+          still = "board not found";
+        }
+        const label = e?.parts[Number(k)]?.label;
+        lines.push(`  part ${Number(k) + 1}${label ? ` (${label})` : ""}: added to ${v.board}, ${still}`);
+      }
+      return lines.join("\n");
+    })
+    .join("\n");
+}

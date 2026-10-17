@@ -346,7 +346,8 @@ export class PiBackend extends EventEmitter {
   }
 
   private async makeRoom(): Promise<void> {
-    const idle = [...this.threads.values()].filter((t) => !t.turnId).sort((a, b) => a.lastUsed - b.lastUsed);
+    // A parent with children running (a background make, BoardMake) is not idle: closing it would take them down.
+    const idle = [...this.threads.values()].filter((t) => !t.turnId && !this.subs.childrenOf(t.id).length).sort((a, b) => a.lastUsed - b.lastUsed);
     while (this.threads.size >= this.o.maxProcs && idle.length) await this.close(idle.shift()!);
   }
 
@@ -358,7 +359,7 @@ export class PiBackend extends EventEmitter {
 
   private async reapIdle(): Promise<void> {
     const now = Date.now();
-    for (const t of [...this.threads.values()]) if (!t.turnId && now - t.lastUsed > this.o.idleMs) await this.close(t);
+    for (const t of [...this.threads.values()]) if (!t.turnId && !this.subs.childrenOf(t.id).length && now - t.lastUsed > this.o.idleMs) await this.close(t);
   }
 
   private onExit(t: Thread, x: { code: number | null; signal: string | null }): void {
@@ -551,6 +552,12 @@ export class PiBackend extends EventEmitter {
   }
 
   /** Steer or stop one running subagent (POST /api/v1/conversations/:id/subagents/:sid/{steer,stop}). */
+  /** A child that outlives its parent's turn (BoardMake): started now, resolves with its report when it ends. It
+   *  is not stopped with the parent's turn, only with the parent's process; it may call BoardSend. */
+  background(parentThreadId: string, a: Record<string, unknown>): Promise<Record<string, unknown>> {
+    return this.subs.run(parentThreadId, { ...a, background: true });
+  }
+
   subagentControl(childId: string, op: "steer" | "stop", text?: string): Promise<{ ok: boolean; error?: string }> {
     return this.subs.control(childId, op, text);
   }

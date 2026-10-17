@@ -44,12 +44,14 @@ type Child = {
   error: string | null;
   summary: string | null;
   stopped: ChildState | null;
+  /** Started by BoardMake: outlives the parent's turn (only the parent's process ending stops it). */
+  background: boolean;
   settle: (aborted: boolean) => void;
 };
 
 const PI_BUILTINS = ["read", "bash", "edit", "write", "grep", "find", "ls"];
 /** Host tools a child may have; AskUser, subagent, ScheduleWake, KeepWorking, Blocked, StartJob… never. */
-const CHILD_HOST_TOOLS = ["Done", "Notify", "PdfRead", "WebSearch"];
+const CHILD_HOST_TOOLS = ["Done", "Notify", "PdfRead", "WebSearch", "BoardSend"];
 const DEFAULT_TOOLS = ["read", "bash", "edit", "write", "Done", "Notify"];
 
 const PREAMBLE = `You are a subagent: a helper that vault-chat's agent started for one task, in a context of your own.
@@ -162,6 +164,7 @@ export class Subagents {
       error: null,
       summary: null,
       stopped: null,
+      background: a?.background === true,
       settle: (aborted) => {
         if (settled) return;
         settled = true;
@@ -259,6 +262,7 @@ export class Subagents {
   stopAll(parentId: string, reason: string, hard: boolean): void {
     for (const c of [...this.children.values()]) {
       if (c.parent !== parentId) continue;
+      if (c.background && !hard) continue; // a make keeps going when Carl stops a later turn
       this.log(`subagent ${c.id}: ${reason}`);
       void this.stop(c, hard ? "killed" : "stopped", hard);
     }
