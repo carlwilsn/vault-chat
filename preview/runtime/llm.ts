@@ -429,6 +429,10 @@ export async function answerModelRequest(url: URL, init: RequestInit | undefined
   }
   if (host === "api.elevenlabs.io") {
     if (path === "/v1/voices") return json({ voices: EL_VOICES });
+    // The voice library (Settings → Voice → Browse the voice library…).
+    if (path === "/v1/shared-voices" && method === "GET") return json(sharedVoices(url.searchParams));
+    const add = /^\/v1\/voices\/add\/([^/]+)\/([^/]+)$/.exec(path);
+    if (add && method === "POST") return addLibraryVoice(decodeURIComponent(add[1]), decodeURIComponent(add[2]), bodyText);
     if (path.startsWith("/v1/text-to-speech/")) return new Response(chime(), { headers: { "content-type": "audio/wav" } });
     if (path === "/v1/convai/agents/create") return json({ agent_id: "preview-agent" });
     // The voice models ElevenLabs runs and what each takes (src/voiceLlms.ts reads it). Faked.
@@ -514,7 +518,77 @@ const EL_VOICES = [
   ["pFZP5JQG7iQjIQuC4Bku", "Lily", "british", "female", "warm"],
   ["TX3LPaxmHKxFdv7VOQHJ", "Liam", "american", "male", "articulate"],
   ["XrExE9yKIg1WjnnlVkGX", "Matilda", "american", "female", "friendly"],
+  // A second Brian, as on Carl's account: told apart by accent and description.
+  ["bR1anTw0xxxxxxxxxxxx", "Brian", "british", "male", "calm"],
 ].map(([voice_id, name, accent, gender, description]) => ({ voice_id, name, category: "premade", labels: { accent, gender, description } }));
+
+// ---- The ElevenLabs voice library (GET /v1/shared-voices, POST /v1/voices/add) --
+// A few English voices, each with a silent preview (a data: WAV — nothing
+// leaves the page). Adding one puts it in EL_VOICES; the scenario's library
+// limit (localStorage preview_el_voice_limit) refuses adds past it like
+// ElevenLabs does.
+
+const SILENT_WAV = (() => {
+  const n = 2205;
+  const buf = new Uint8Array(44 + n * 2);
+  const v = new DataView(buf.buffer);
+  const str = (o: number, t: string) => [...t].forEach((c, i) => v.setUint8(o + i, c.charCodeAt(0)));
+  str(0, "RIFF"); v.setUint32(4, 36 + n * 2, true); str(8, "WAVE"); str(12, "fmt ");
+  v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+  v.setUint32(24, 22050, true); v.setUint32(28, 44100, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+  str(36, "data"); v.setUint32(40, n * 2, true);
+  let bin = "";
+  for (const b of buf) bin += String.fromCharCode(b);
+  return `data:audio/wav;base64,${btoa(bin)}`;
+})();
+
+const LIB = [
+  ["lIbJun1perxxxxxxxxxx", "Juniper", "female", "young", "american", "conversational", true, "Warm, upbeat and clear; made for back-and-forth talk."],
+  ["lIbMarcusxxxxxxxxxxx", "Marcus", "male", "middle_aged", "american", "conversational", true, "Steady, friendly tutor voice with an easy pace."],
+  ["lIbAmeliaxxxxxxxxxxx", "Amelia", "female", "young", "british", "conversational", false, "Bright British voice, crisp and expressive."],
+  ["lIbHarlanxxxxxxxxxxx", "Harlan", "male", "old", "american", "narrative_story", false, "Gravelly storyteller for long reads."],
+  ["lIbPriyaxxxxxxxxxxxx", "Priya", "female", "middle_aged", "indian", "conversational", false, "Calm and precise, good for explanations."],
+  ["lIbTheoxxxxxxxxxxxxx", "Theo", "male", "young", "australian", "conversational", false, "Relaxed and casual, like a study buddy."],
+].map(([voice_id, name, gender, age, accent, use_case, featured, description]) => ({
+  voice_id: voice_id as string,
+  public_owner_id: `owner${(voice_id as string).slice(3, 9)}`,
+  name: name as string,
+  gender,
+  age,
+  accent,
+  use_case,
+  featured: featured as boolean,
+  description,
+  language: "en",
+  category: "professional",
+  preview_url: SILENT_WAV,
+}));
+
+function sharedVoices(q: URLSearchParams) {
+  const size = Number(q.get("page_size") ?? 30);
+  const page = Number(q.get("page") ?? 0);
+  const terms = (q.get("search") ?? "").toLowerCase().split(/\s+/).filter(Boolean);
+  const list = LIB.filter(
+    (v) =>
+      (q.get("featured") !== "true" || v.featured) &&
+      (!q.get("use_cases") || q.get("use_cases") === v.use_case) &&
+      terms.every((t) => `${v.name} ${v.description}`.toLowerCase().includes(t)),
+  ).map((v) => ({ ...v, is_added_by_user: EL_VOICES.some((a) => a.voice_id === v.voice_id) }));
+  return { voices: list.slice(page * size, (page + 1) * size), has_more: (page + 1) * size < list.length, total_count: list.length };
+}
+
+function addLibraryVoice(owner: string, id: string, bodyText: string): Response {
+  const v = LIB.find((x) => x.voice_id === id && x.public_owner_id === owner);
+  if (!v) return json({ detail: { status: "voice_not_found", message: "A voice with that id was not found." } }, 400);
+  const limit = Number(localStorage.getItem("preview_el_voice_limit") ?? "30");
+  const custom = EL_VOICES.filter((x) => x.category !== "premade").length;
+  if (custom >= limit)
+    return json({ detail: { status: "voice_limit_reached", message: `You have reached your maximum amount of custom voices (${custom} / ${limit}). You can upgrade your subscription to increase your custom voice limit.` } }, 400);
+  const name = (JSON.parse(bodyText || "{}") as { new_name?: string }).new_name ?? v.name;
+  if (!EL_VOICES.some((x) => x.voice_id === id))
+    EL_VOICES.push({ voice_id: id, name, category: "professional", labels: { accent: v.accent as string, gender: v.gender as string, description: v.description as string } });
+  return json({ voice_id: id });
+}
 
 /** A short two-note chime as a WAV: what "Test" plays in the preview. */
 function chime(): Blob {

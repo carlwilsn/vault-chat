@@ -273,6 +273,71 @@ function checkScenario(): Scenario {
     open: [{ click: "[title='Settings']" }, { sleep: 600 }],
   };
 }
+/** Settings → Voice: the dropdown shows only the selected Brian (the
+ *  one-time snapshot hides the rest, the other Brian too), then Browse the
+ *  voice library…: Recommended on top, a silent preview played, Marcus picked
+ *  (added to the fake account, then selected) — and he shows in the dropdown. */
+function voiceLibraryScenario(): Scenario {
+  const MARCUS = "lIbMarcusxxxxxxxxxxx";
+  const until = async (what: string, ok: () => boolean, ms = 6000) => {
+    const t0 = Date.now();
+    while (!ok()) {
+      if (Date.now() - t0 > ms) throw new Error(`voice-library: ${what}`);
+      await new Promise((r) => setTimeout(r, 60));
+    }
+  };
+  const voiceSection = () => [...document.querySelectorAll("h3")].find((h) => h.textContent === "Voice")?.closest("section") as HTMLElement | null;
+  const trigger = () => voiceSection()?.querySelector("button") as HTMLButtonElement | null;
+  // The open menu's rows, by voice id; and no hide control anywhere.
+  const rows = (want: string[]) => {
+    const got = [...document.querySelectorAll<HTMLElement>("[data-option]")].map((r) => r.dataset.option ?? "").sort();
+    if (JSON.stringify(got) !== JSON.stringify([...want].sort())) throw new Error(`voice-library: menu rows ${got.join(", ")} (want ${want.join(", ")})`);
+    if ([...voiceSection()!.querySelectorAll("button")].some((b) => /hide|keep only/i.test(b.textContent ?? ""))) throw new Error("voice-library: a hide control is shown");
+  };
+  const openPicker: Step = {
+    run: async () => {
+      voiceSection()?.scrollIntoView({ block: "start" });
+      await until("the voice picker", () => !!trigger() && trigger()!.textContent !== "Loading voices…");
+      trigger()!.click();
+    },
+  };
+  return {
+    id: "voice-library",
+    title: "Settings — pick a voice from the ElevenLabs library",
+    group: "Settings",
+    notes:
+      "Settings → Voice: the menu shows only the selected voice (Brian, American): the first load hid the account's other voices once (the British Brian too; by id). Browse the voice library… at its bottom: Recommended (ElevenLabs' featured English conversational voices) on top, then the most used lately; search by name or description, All uses widens past conversational. ▶ plays a voice's preview (silent here); a click adds it to the account and selects it: Marcus becomes the voice, and the menu now holds Brian and Marcus.",
+    build: (c: BuildCtx) => world(c),
+    host: { sync: { box: BOX } },
+    localStorage: { vault_chat_elevenlabs_voice: "nPczCjzI2devNBz1zQrb" },
+    open: [
+      { click: "[title='Settings']" },
+      { sleep: 600 },
+      openPicker,
+      { run: () => rows(["nPczCjzI2devNBz1zQrb"]) },
+      { click: "button", text: /^Browse the voice library/ },
+      { wait: "[data-voice-library] [data-voice]" },
+      {
+        run: async (api) => {
+          await until("Recommended", () => !!api.byText("Recommended", "div"));
+        },
+      },
+      { click: "[data-voice-library] button[title='Play a sample']" },
+      { sleep: 300 },
+      { click: `[data-voice-library] [data-voice='${MARCUS}'] button:nth-of-type(2)` },
+      {
+        run: async () => {
+          await until("Marcus selected", () => trigger()?.textContent === "Marcus" && localStorage.getItem("vault_chat_elevenlabs_voice") === MARCUS);
+          if (document.querySelector("[data-voice-library]")) throw new Error("voice-library: the library stayed open");
+        },
+      },
+      openPicker,
+      { run: () => rows(["nPczCjzI2devNBz1zQrb", MARCUS]) },
+      { key: "Escape", target: "input[type=search]" },
+    ],
+  };
+}
+
 const syncTimers = { 15000: 1500, 30000: 1500 };
 
 export const scenarios: Scenario[] = [
@@ -442,6 +507,7 @@ export const scenarios: Scenario[] = [
     open: [{ click: "[title='Settings']" }],
   },
   checkScenario(),
+  voiceLibraryScenario(),
   {
     id: "settings-fresh",
     title: "Settings (fresh install, no keys)",
