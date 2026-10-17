@@ -104,6 +104,40 @@ const MARQUEE_BRIDGE = `<script>(function(){
         parent.postMessage({ __vc_marquee_result: { text: '', before: '', after: '' } }, '*');
       }
     }
+    if (data.__vc_look) {
+      // LookAtScreen (src/screenLook.ts): the page as it is on screen — the
+      // text in view, each image and canvas in view drawn as shown, the scroll.
+      var W = innerWidth, H = innerHeight;
+      var out = { id: data.__vc_look, text: '', images: [], failed: [], above: false, below: false, region: 'the whole page' };
+      try { out.text = collectText(document.body, { left: 0, top: 0, right: W, bottom: H }); } catch(_) {}
+      var els = document.querySelectorAll('img, canvas');
+      for (var i = 0; i < els.length && out.images.length < 5; i++) {
+        var el = els[i], b = el.getBoundingClientRect();
+        if (b.width < 32 || b.height < 32 || b.right <= 0 || b.bottom <= 0 || b.left >= W || b.top >= H) continue;
+        var label = el.tagName === 'CANVAS' ? ('drawing ' + (i + 1)) : ((el.getAttribute('alt') || (el.getAttribute('src') || '').split('/').pop() || ('image ' + (i + 1))).slice(0, 80));
+        try {
+          var url;
+          if (el.tagName === 'CANVAS') url = el.toDataURL('image/png');
+          else {
+            var c = document.createElement('canvas');
+            var s = Math.min(1, 2048 / Math.max(el.naturalWidth || 1, el.naturalHeight || 1));
+            c.width = Math.max(1, Math.round((el.naturalWidth || b.width) * s));
+            c.height = Math.max(1, Math.round((el.naturalHeight || b.height) * s));
+            c.getContext('2d').drawImage(el, 0, 0, c.width, c.height);
+            url = c.toDataURL('image/png');
+          }
+          out.images.push({ label: label, dataUrl: url, partial: b.left < 0 || b.top < 0 || b.right > W || b.bottom > H });
+        } catch (err) {
+          out.failed.push(label + ': the page may not read it (' + (err && err.name || 'error') + ')');
+        }
+      }
+      var sh = document.documentElement.scrollHeight, y = scrollY;
+      if (sh > H + 2) {
+        out.above = y > 2; out.below = y + H < sh - 2;
+        out.region = 'about ' + Math.round(y / sh * 100) + '%–' + Math.round((y + H) / sh * 100) + '% of the page';
+      }
+      parent.postMessage({ __vc_look_result: out }, '*');
+    }
   });
 })();</script>`;
 
@@ -403,6 +437,7 @@ export function HtmlView({ content, path }: { content: string; path?: string | n
       <div className="flex-1 relative">
         <iframe
           ref={iframeRef}
+          data-look-frame
           sandbox="allow-scripts"
           srcDoc={srcDoc}
           // Pages render as authored for a normal (light) browser: the app's dark

@@ -149,6 +149,8 @@ class ImageWidget extends WidgetType {
     wrap.className = "cm-image-widget";
     const img = document.createElement("img");
     img.alt = this.alt;
+    // The file it shows (LookAtScreen names the images in view by it).
+    img.setAttribute("data-src", this.src);
     wrap.appendChild(img);
     const fallback = () => {
       const el = document.createElement("span");

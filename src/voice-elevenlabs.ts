@@ -12,7 +12,7 @@ import { loadSessionContext } from "./context";
 import { loadSkills, skillPromptIndex } from "./skills";
 import { voiceLineEntry, voiceToolEntry } from "./activityCore";
 import { cachedVoiceMath, displayVoiceMath, prefetchVoiceMath } from "./voiceMath";
-import { VoiceImagePusher, lookingAtNote, thumbDataUrl, voiceImageMime, type PushResult } from "./voiceImages";
+import { MAX_IMAGE_UPLOAD_BYTES, VoiceImagePusher, lookingAtNote, shrinkImage, thumbDataUrl, voiceImageMime, type PushResult } from "./voiceImages";
 import { fileKind, isUnreadableAsText } from "./fileKind";
 import { stripAudioTags } from "./voiceTags";
 import { QuietGate } from "./voiceQuiet";
@@ -58,7 +58,7 @@ const AGENT_NAME = "vault-chat";
 let transcriptMirror: { push: (m: ChatMessage) => unknown; id?: () => string; done?: () => Promise<unknown> } | null = null;
 // The live session's chats: its own thread (box mode: the box's id once the
 // first line made it) and the one it started from — SetProject's target.
-let voiceChats: { own: () => string | null; from: string | null } | null = null;
+let voiceChats: { own: () => string | null; from: string | null; local?: string } | null = null;
 // The box's vault root (absolute paths in the box's prompt) — mapped back to
 // this vault for ScrollTo.
 let boxVaultRoot: string | null = null;
@@ -118,7 +118,7 @@ const AGENT_ID_KEY = "vault_chat_elevenlabs_agent_id";
 // the agent itself — tool schema, expects_response flags, override
 // permissions. Mismatch with the cached agent triggers re-provision
 // on next session, so updates roll out without manual intervention.
-const AGENT_CONFIG_VERSION = "v25-flash2";
+const AGENT_CONFIG_VERSION = "v26-look";
 const AGENT_VERSION_KEY = "vault_chat_elevenlabs_agent_config_version";
 // Signature of the per-vault custom tools baked into the cached agent. Custom
 // tools are part of the agent's tool schema (provisioned at create time), so a
@@ -488,7 +488,7 @@ export const CLIENT_TOOL_DEFINITIONS = [
   {
     name: "LookAtScreen",
     description:
-      "See what the user is looking at right now — call it for 'what's this?', 'look at this', 'can you see it?'. Attaches the open image (or the PDF page on screen) to your context, or returns the text in view.",
+      "See the user's screen right now, read on their machine at call time — call it for 'what's this?', 'look at this', 'can you see it?', and whenever they say they pasted, wrote or changed something. Returns the open file's path and the part in view (with whether there is more above/below), the text in view, and attaches every image in view exactly as shown (unsaved and unsynced edits included). Earlier looks may be out of date; look again after a change.",
     parameters: {
       type: "object" as const,
       properties: {},
@@ -902,7 +902,7 @@ export async function startElevenLabsSession(): Promise<void> {
   transcriptMirror = box ? voiceTranscriptMirror(box, voiceConvId, fromConvId) : null;
   {
     const mirror = transcriptMirror;
-    voiceChats = { own: () => mirror?.id?.() ?? voiceConvId, from: fromConvId };
+    voiceChats = { own: () => mirror?.id?.() ?? voiceConvId, from: fromConvId, local: voiceConvId };
   }
   boxVaultRoot = boxSession?.vaultRoot ?? null;
   startViewportWatch();
@@ -1093,6 +1093,13 @@ ${shared}` : "");
         });
       },
     });
+    // The thread's recent images (its own, or — a fresh voice thread — the chat
+    // it started from): this ElevenLabs conversation has never seen them.
+    {
+      const st = useStore.getState();
+      const own = st.messages.some((m) => !m.system) ? st.messages : (st.conversations.find((c) => c.id === fromConvId)?.messages ?? []);
+      void pushThreadImages(own, st.vaultPath).catch((e) => console.warn("[voice-eleven] thread images:", e));
+    }
   } catch (e) {
     console.error("[voice-eleven] session start failed:", e);
     activeConversation = null;
@@ -1307,6 +1314,9 @@ export function adoptVoiceSessionForPreview(conv: unknown): { line: (role: "user
   };
   if (conv) {
     activeConversation = conv as ActiveConversation;
+    // The session runs in the conversation that is open (as a desktop start continues it).
+    const id = useStore.getState().activeConversationId;
+    voiceChats = { own: () => id, from: id, local: id ?? undefined };
     sentPdfPaths.clear();
     imagePusher.reset();
     useStore.setState({ voiceMode: true, voiceMicMuted: false });
@@ -1314,6 +1324,7 @@ export function adoptVoiceSessionForPreview(conv: unknown): { line: (role: "user
     startViewportWatch();
   } else {
     activeConversation = null;
+    voiceChats = null;
     stopViewportWatch();
     useStore.setState({ voiceMode: false, voiceMicMuted: false });
   }
@@ -1505,10 +1516,11 @@ export function sendFilesMessage(conv: FileConv, text: string | undefined, fileI
 }
 
 /** The image pusher's sink: uploads through the SDK, sends in the current shape. */
-function fileSink(conv: FileConv): import("./voiceImages").VoiceImageSink {
+function fileSink(conv: FileConv): import("./voiceImages").VoiceImageSink & { sendFiles(text: string | undefined, ids: string[]): void } {
   return {
     uploadFile: (b) => conv.uploadFile(b),
     sendMultimodalMessage: (m) => sendFilesMessage(conv, m.text, [m.fileId]),
+    sendFiles: (text, ids) => sendFilesMessage(conv, text, ids),
   };
 }
 // Our own pushes (contextual updates, uploads) wait while the agent speaks — an
@@ -1564,6 +1576,53 @@ export async function pushVoiceImageDataUrl(key: string, dataUrl: string, name: 
     console.warn("[voice-eleven] capture push failed:", e);
     return "failed";
   }
+}
+
+/** Several captured images (data URLs) to the live session in one message, each
+ *  once (by content: a changed picture is new). One result per item. */
+export async function pushVoiceImagesNow(items: { key: string; dataUrl: string }[], note: string): Promise<PushResult[] | "no-session"> {
+  const conv = activeConversation;
+  if (!conv) return "no-session";
+  await quietGate.quiet(TOOL_PUSH_WAIT_MS);
+  if (activeConversation !== conv) return items.map(() => "failed");
+  const blobs = await Promise.all(items.map(async (it) => ({ key: it.key, blob: await (await fetch(it.dataUrl)).blob() })));
+  return imagePusher.pushMany(fileSink(conv), blobs, note, () => activeConversation === conv);
+}
+
+/** LookAtScreen from the page: the focused pane as it is on screen now (screenLook.ts). */
+async function lookAtScreenFromPane(pane: import("./screenLook").LookEl): Promise<string> {
+  const { lookInPane, imageKey } = await import("./screenLook");
+  const look = await lookInPane(pane);
+  const file = look.file || useStore.getState().currentFile || "";
+  const name = relPath(file) || "the open file";
+  const more = look.above && look.below ? " There is more above and below: this is only the part in view." : look.above ? " There is more above: this is only the part in view." : look.below ? " There is more below: this is only the part in view." : "";
+  const lines = [`The user's screen right now (read off their screen on this machine just now — not a synced copy): ${name} is open${look.mode ? ` (${look.mode})` : ""}, showing ${look.region}.${more}`];
+  lines.push(look.text ? `Text in view:\n${look.text}` : "No text in view.");
+  if (!look.images.length) lines.push("No images in view.");
+  else if (!seesImages(getCurrentLlm())) {
+    lines.push(`${look.images.length} image(s) in view (${look.images.map((i) => i.label).join(", ")}), but the voice model can't see images — ask the user what they show, or switch to a model that can.`);
+  } else {
+    const n = look.images.length;
+    const res = await pushVoiceImagesNow(
+      look.images.map((i) => ({ key: imageKey(i.dataUrl), dataUrl: i.dataUrl })),
+      `[The user's screen now: ${name}, ${look.region} — the ${n === 1 ? "image" : `${n} images`} in view, top to bottom, attached. You can see them. Don't describe them unless asked.]`,
+    );
+    const why = (r: PushResult | "no-session") => (r === "too-large" ? "too large to upload" : r === "unsupported" ? "not an image the model takes" : r === "no-session" ? "no live voice session" : "the upload to ElevenLabs failed");
+    lines.push(
+      `Images in view, top to bottom (${n}):\n` +
+        look.images
+          .map((im, i) => {
+            const r = res === "no-session" ? "no-session" : res[i]!;
+            const state = r === "sent" ? "attached now" : r === "duplicate" ? "already in your context, unchanged" : `couldn't attach (${why(r)})`;
+            return `${i + 1}. ${im.label}${im.partial ? " (partly in view)" : ""} — ${state}`;
+          })
+          .join("\n"),
+    );
+  }
+  if (look.failed.length) lines.push(`Couldn't capture: ${look.failed.join("; ")}.`);
+  lines.push("This is exactly what is on the screen now; an image you saw earlier may be out of date.");
+  if (fileKind(file).kind === "pdf") void pushPdfIfNeeded();
+  return lines.join("\n");
 }
 
 // An absolute path on this machine for a path the agent gave: the box's vault
@@ -1645,6 +1704,49 @@ export function pushViewportContextDebounced(): void {
   }, SCROLL_DEBOUNCE_MS);
 }
 
+/** At a session's start (a new start, a reconnect, a resumed thread): the most
+ *  recent images in the thread — sent by Carl, or shown in it — go to the new
+ *  ElevenLabs conversation, which has never seen them (the prompt carries the
+ *  words only). One message, ≤ 3 images, newest last. */
+export async function pushThreadImages(messages: ChatMessage[], vault: string | null): Promise<PushResult[] | "no-session" | "none"> {
+  const picked: { att: import("./store").ChatAttachment; who: string }[] = [];
+  for (const m of messages.slice(-24).reverse()) {
+    for (const a of m.attachments ?? []) {
+      if (picked.length >= 3) break;
+      picked.push({ att: a, who: m.role === "user" ? "the user sent" : "shown in the chat" });
+    }
+    if (picked.length >= 3) break;
+  }
+  picked.reverse();
+  const items: { key: string; dataUrl: string }[] = [];
+  const { imageKey } = await import("./screenLook");
+  for (const p of picked) {
+    let url = p.att.imageDataUrl && p.att.imageDataUrl.startsWith("data:image/") ? p.att.imageDataUrl : "";
+    const rel = p.att.capturedFilePath ?? p.att.sourcePath;
+    if (!url && rel && vault) {
+      const abs = /^([a-z]:[\\/]|[\\/])/i.test(rel) ? rel : `${vault.replace(/[\\/]+$/, "")}/${rel}`;
+      const mime = voiceImageMime(abs);
+      try {
+        if (mime) url = bytesToDataUrl(new Uint8Array(await invoke<number[]>("read_binary_file", { path: abs })), mime);
+      } catch {
+        /* not on this machine (yet): left out */
+      }
+    }
+    if (url) items.push({ key: imageKey(url), dataUrl: url });
+  }
+  if (!items.length) return "none";
+  return pushVoiceImagesNow(
+    items,
+    `[Earlier in this conversation (before this call), ${items.length === 1 ? "this image was" : `these ${items.length} images were`} shared in the chat, oldest first — attached so you can see them. Say nothing about them now; wait for the user.]`,
+  );
+}
+
+function bytesToDataUrl(bytes: Uint8Array, mime: string): string {
+  let bin = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return `data:${mime};base64,${btoa(bin)}`;
+}
+
 // Voice text panel uses these to send a typed reply into the live
 // session (instead of speaking aloud) and to silence the mic while
 // the panel is open. The agent still responds with TTS — only the
@@ -1692,6 +1794,65 @@ export function announceAtNextPause(line: string): void {
 
 export function isVoiceSessionActive(): boolean {
   return activeConversation !== null;
+}
+
+/** A live voice session runs in conversation `id` (its own thread; box mode: the box's id or the local one before the rekey). */
+export function voiceSessionOn(id: string | null | undefined): boolean {
+  if (!activeConversation || !voiceChats || !id) return false;
+  return id === voiceChats.own() || id === voiceChats.local;
+}
+
+/** Carl's composer send while voice is live on this conversation: one agent,
+ *  so it is HIS TURN in the voice conversation — text as a user message,
+ *  images uploaded and sent with it (one multimodal message), and written to
+ *  the thread like any of his lines (the text agent reads it later). The text
+ *  agent starts no turn. False when there is no session (the caller sends as
+ *  usual). */
+export async function sendComposerToVoice(text: string, attachments?: import("./store").ChatAttachment[]): Promise<boolean> {
+  const conv = activeConversation;
+  if (!conv) return false;
+  // The composer's "[attached: @x → path]" footer stays: it names the files for the agent.
+  const said = text.trim();
+  const images = (attachments ?? []).filter((a) => typeof a.imageDataUrl === "string" && a.imageDataUrl.startsWith("data:image/")).slice(0, 5);
+  if (!said && !images.length) return false;
+  const shown = said || (images.length === 1 ? "[image]" : `[${images.length} images]`);
+  // The thread first: his line shows at once, the image with it.
+  voiceAppend({ role: "user", content: shown, ...(attachments?.length ? { attachments } : {}) });
+  if (sessionFirstUserText === null) sessionFirstUserText = shown;
+  let problem = "";
+  try {
+    if (images.length && seesImages(getCurrentLlm())) {
+      const ids: string[] = [];
+      for (const im of images) {
+        try {
+          const blob = await (await fetch(im.imageDataUrl)).blob();
+          const body = blob.size > MAX_IMAGE_UPLOAD_BYTES ? await shrinkImage(blob) : blob;
+          if (!body) throw new Error("too large to upload");
+          if (activeConversation !== conv) return true;
+          ids.push((await conv.uploadFile(body)).fileId);
+        } catch (e) {
+          problem = `an image couldn't be uploaded to the voice session (${(e as Error)?.message ?? String(e)})`;
+        }
+      }
+      if (activeConversation !== conv) return true;
+      if (ids.length) {
+        const note = problem ? `${said ? `${said}\n\n` : ""}[${problem}.]` : said || `[The user sent ${ids.length === 1 ? "this image" : "these images"} in the chat.]`;
+        sendFilesMessage(conv, note, ids);
+      } else conv.sendUserMessage(`${said ? `${said}\n\n` : ""}[The user sent ${images.length === 1 ? "an image" : `${images.length} images`} in the chat, but ${problem || "it couldn't be uploaded"}. Tell them that plainly.]`);
+    } else if (images.length) {
+      conv.sendUserMessage(`${said ? `${said}\n\n` : ""}[The user sent ${images.length === 1 ? "an image" : `${images.length} images`} in the chat; the voice model can't see images. Say so, and ask what it shows.]`);
+    } else {
+      conv.sendUserMessage(said);
+    }
+  } catch (e) {
+    console.error("[voice-eleven] composer → voice failed:", e);
+    voiceAppend({ role: "assistant", content: `Couldn't hand that to the voice session: ${(e as Error)?.message ?? String(e)}`, system: true });
+    return true;
+  }
+  if (problem) voiceAppend({ role: "assistant", content: `Voice: ${problem}.`, system: true });
+  useStore.getState().setVoiceThinking(true);
+  armThinkingSafetyTimeout();
+  return true;
 }
 
 export function setVoiceMicMuted(muted: boolean): void {
@@ -2226,7 +2387,9 @@ export function buildSystemPrompt(
     "Seeing what the user sees:",
     "- When the user opens an image, it is attached to your context with a short note — you can see it.",
     "- ShowFile opens a file for the user ('pull up the figure'). An image you show is attached for you too.",
-    "- LookAtScreen when they say 'what's this?' / 'look at this' and you can't already see it.",
+    "- LookAtScreen reads their screen right now, on their machine: the open file, the part in view, its text and every image in view (attached as shown — typing and pastes not yet saved or synced included). Call it whenever they say 'look at this', 'what's this?', or that they pasted, wrote or changed something; call it again after any change — an image you saw earlier may be out of date. It is newer than any file you Read.",
+    "- Anything they send in this chat while you talk (typed text, pasted images, files) comes to you as their turn; images arrive attached — you can see them.",
+    "- You can see images and their screen. Never ask them to refresh, re-paste, re-attach, or 'send it in the chat' — look (LookAtScreen) instead. If a look fails, say exactly what failed (the tool's words); never blame syncing.",
     "",
     "Math: what you say is spoken AND shown in the chat, where spoken math is rendered as notation automatically. Say equations in words ('alpha plus beta squared', 'x sub i over n'); never write LaTeX, symbols or dollar signs — they are read aloud literally.",
     "",
@@ -2336,9 +2499,12 @@ function formatRecentHistory(messages: ChatMessage[], take: number): string {
     .filter((m) => !m.system && (m.role === "user" || m.role === "assistant"))
     .slice(-take);
   if (recent.length === 0) return "";
-  const lines = recent.map(
-    (m) => `${m.role === "user" ? "User" : "You"}: ${truncate(m.content.trim(), 400)}`,
-  );
+  const lines = recent.map((m) => {
+    const n = m.attachments?.length ?? 0;
+    // An image sent with the line is said (its pixels arrive as an attachment at the start: pushThreadImages).
+    const att = n ? ` [sent ${n === 1 ? "an image" : `${n} images`}]` : "";
+    return `${m.role === "user" ? "User" : "You"}: ${truncate(m.content.trim(), 400)}${att}`;
+  });
   // Trim from the front (oldest) until the newest turns fit the budget.
   let total = lines.reduce((a, l) => a + l.length + 1, 0);
   let start = 0;
@@ -3137,6 +3303,17 @@ export function buildClientToolHandlers(
     LookAtScreen: withTracking("LookAtScreen", async () => {
       const state = useStore.getState();
       const file = state.currentFile;
+      // The focused pane as it is on screen, read here at call time.
+      const { focusedPane } = await import("./screenLook");
+      const pane = focusedPane(file);
+      if (pane) {
+        try {
+          return await lookAtScreenFromPane(pane);
+        } catch (e) {
+          console.error("[voice-eleven] LookAtScreen capture failed:", e);
+          return `Error: the screen capture failed on the user's machine (${(e as Error)?.message ?? String(e)}). Tell the user it failed; it isn't a sync problem.`;
+        }
+      }
       if (!file) return "Nothing is open on the user's screen.";
       const name = file.split(/[\\/]/).pop() ?? file;
       const kind = fileKind(file).kind;

@@ -13,7 +13,7 @@
 // Bash runs in the engine's shell sandbox (bubblewrap: own pid namespace, the
 // key store hidden). AskAgent / AgentStatus hand heavy work to the engine.
 import { spawn } from "node:child_process";
-import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fsCommands } from "./commands/fs";
 import { netCommands } from "./commands/net";
@@ -444,7 +444,11 @@ export async function voiceTranscript(d: VoiceDeps, b: any): Promise<{ status: n
   }
   const ended = b?.ended === true || (b?.system === true && ENDED_LINE.test(text));
   voiceActivity(d.vault, ended);
-  const msg = { role: b?.role === "user" ? ("user" as const) : ("assistant" as const), content: text.slice(0, 20_000), ...(b?.system === true ? { system: true } : {}) };
+  const msg: Record<string, unknown> & { role: "user" | "assistant"; content: string; system?: boolean } = {
+    role: b?.role === "user" ? ("user" as const) : ("assistant" as const),
+    content: text.slice(0, 20_000),
+    ...(b?.system === true ? { system: true } : {}),
+  };
   const { readConv, createConv, appendMessage } = await import("./engine/convs");
   let id = s(b?.convId);
   const cur = id ? await readConv(d.vault, id) : null;
@@ -456,13 +460,38 @@ export async function voiceTranscript(d: VoiceDeps, b: any): Promise<{ status: n
     const c = await createConv(d.vault, { source: "voice", ...(project ? { project } : {}) }, msg.role === "user" ? text : "Voice");
     id = c.id;
   }
-  await appendMessage(d.vault, id, msg);
+  // Images Carl sent in the chat while voice was on (the voice agent got them):
+  // saved like any chat capture, so the text agent sees them in the thread later.
+  if (msg.role === "user" && Array.isArray(b?.images) && b.images.length) {
+    const attachments = saveTranscriptImages(d.vault, id, b.images);
+    if (attachments.length) msg.attachments = attachments;
+  }
+  await appendMessage(d.vault, id, msg as any);
   if (!msg.system) {
     const e = voiceLineEntry(msg.role, text, id);
     if (e) appendActivity(d.vault, { ...e, ...(cur && typeof cur.project === "string" && cur.project ? { project: cur.project } : {}) });
   }
   d.onWrite?.();
   return { status: 200, body: { ok: true, convId: id } };
+}
+
+/** Save a voice line's images under .vault-chat/captures/ (≤ 5, ≤ 15 MB each), as the engine saves a chat's. */
+function saveTranscriptImages(vault: string, convId: string, images: unknown[]): { imageDataUrl: string; capturedFilePath: string }[] {
+  const out: { imageDataUrl: string; capturedFilePath: string }[] = [];
+  images.slice(0, 5).forEach((raw, i) => {
+    const img = (raw ?? {}) as { mime?: unknown; dataBase64?: unknown };
+    const mime = s(img.mime) || "image/png";
+    if (!/^image\/(png|jpe?g|webp|gif)$/i.test(mime)) return;
+    const b64 = s(img.dataBase64).replace(/^data:[^,]*,/, "");
+    const buf = Buffer.from(b64, "base64");
+    if (!buf.length || buf.length > 15 * 1024 * 1024) return;
+    const ext = /jpe?g/i.test(mime) ? ".jpg" : /webp/i.test(mime) ? ".webp" : /gif/i.test(mime) ? ".gif" : ".png";
+    const rel = `.vault-chat/captures/${new Date().toISOString().replace(/[:.]/g, "-")}-${convId.slice(0, 8)}-v${i}${ext}`;
+    mkdirSync(join(vault, ".vault-chat", "captures"), { recursive: true });
+    writeFileSync(join(vault, rel), buf);
+    out.push({ imageDataUrl: buf.length < 400_000 ? `data:${mime};base64,${b64}` : "", capturedFilePath: rel });
+  });
+  return out;
 }
 
 /** SetProject {name}: the session's chat into that project, created when new (an empty name takes it out).

@@ -175,7 +175,7 @@ const VaultImage = memo(function VaultImage({ src, alt, ...rest }: ComponentProp
     );
   }
   if (!url) return <span className="text-muted-foreground italic">[{alt || src}]</span>;
-  return <img src={url} alt={alt} {...rest} />;
+  return <img src={url} alt={alt} data-src={src} {...rest} />;
 });
 
 // Publishes the visible-text window for follow-along voice mode.
@@ -317,6 +317,9 @@ export function MarkdownView({ paneId }: Props) {
     // boosting-loop.md's content.
     if (value === content) return;
     lastUserValue.current = value;
+    // What's in view changed with the typing (a paste, an edit): voice's
+    // follow-along sees it now, not at the next scroll.
+    publishTextViewport(file, value, scrollRatioRef.current);
     if (paneId) {
       updatePaneContent(paneId, value);
     } else {
@@ -595,12 +598,18 @@ export function MarkdownView({ paneId }: Props) {
         showActiveOutline ? "ring-1 ring-primary/40 ring-inset" : ""
       }`}
       onClick={onPaneClick}
+      // LookAtScreen reads the focused pane off the page (screenLook.ts).
+      data-look-pane={paneId ?? "main"}
+      data-file={file}
+      data-active={isActive ? "true" : "false"}
+      data-mode={showToggle ? (mode === "edit" ? "editing" : "viewing") : ""}
     >
       {/* PDFs (and .tex in preview mode, which renders a PDF) own their
           own toolbar — file path, page count, zoom, source toggle. Skip
           the generic header so there's only one bar across the top. */}
       {kind !== "pdf" && !(kind === "tex" && mode === "view") && (
       <div
+        data-look-skip
         className={`flex items-center justify-between px-6 py-2.5 border-b border-border/60 ${
           paneId ? "cursor-grab active:cursor-grabbing" : ""
         }`}
@@ -717,6 +726,7 @@ export function MarkdownView({ paneId }: Props) {
         <div
           ref={viewScrollRef}
           onScroll={onViewScroll}
+          data-look-scroll
           className="flex-1 overflow-auto py-10 px-8"
         >
           <div className="prose-md mx-auto">

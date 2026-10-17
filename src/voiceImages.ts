@@ -96,6 +96,63 @@ export class VoiceImagePusher {
     return this.sent.has(key);
   }
 
+  /** Several images in ONE message (≤ 5 files, ElevenLabs' cap) with one note:
+   *  each new key is uploaded; a key already sent is "duplicate" (it is in the
+   *  conversation). Nothing new → nothing sent. Results in the items' order. */
+  async pushMany(
+    sink: VoiceImageSink & { sendFiles(text: string | undefined, fileIds: string[]): void },
+    items: { key: string; blob: Blob }[],
+    note: string,
+    still: () => boolean = () => true,
+  ): Promise<PushResult[]> {
+    const out: PushResult[] = [];
+    const ids: string[] = [];
+    const keys: string[] = [];
+    for (const it of items.slice(0, 5)) {
+      if (this.sent.has(it.key) || this.inFlight.has(it.key) || keys.includes(it.key)) {
+        out.push("duplicate");
+        continue;
+      }
+      if (!it.blob.type.startsWith("image/")) {
+        out.push("unsupported");
+        continue;
+      }
+      this.inFlight.add(it.key);
+      try {
+        let body: Blob | null = it.blob;
+        if (body.size > this.max) body = await this.shrink(body, this.max);
+        if (!body || body.size > this.max) {
+          out.push("too-large");
+          continue;
+        }
+        if (!still()) {
+          out.push("failed");
+          continue;
+        }
+        const { fileId } = await sink.uploadFile(body);
+        ids.push(fileId);
+        keys.push(it.key);
+        out.push("sent");
+      } catch (e) {
+        console.warn("[voice-image] upload failed:", (e as Error)?.message ?? e);
+        out.push("failed");
+      } finally {
+        this.inFlight.delete(it.key);
+      }
+    }
+    if (ids.length) {
+      if (!still()) return out.map((r) => (r === "sent" ? "failed" : r));
+      try {
+        sink.sendFiles(note, ids);
+      } catch (e) {
+        console.warn("[voice-image] send failed:", (e as Error)?.message ?? e);
+        return out.map((r) => (r === "sent" ? "failed" : r));
+      }
+      for (const k of keys) this.sent.add(k);
+    }
+    return out;
+  }
+
   /** Upload `blob` once per key and send it with `note`. */
   async push(sink: VoiceImageSink, key: string, blob: Blob, note: string, still: () => boolean = () => true): Promise<PushResult> {
     if (this.sent.has(key) || this.inFlight.has(key)) return "duplicate";

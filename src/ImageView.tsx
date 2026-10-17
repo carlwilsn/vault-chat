@@ -382,6 +382,7 @@ export function ImageView({ path, rev = 0 }: { path: string; rev?: number }) {
           ref={imgRef}
           src={url}
           alt={path.split("/").pop() ?? "image"}
+          data-src={path}
           className="max-w-full max-h-full object-contain pointer-events-none"
           draggable={false}
           style={{

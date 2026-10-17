@@ -107,12 +107,19 @@ export function voiceTranscriptMirror(b: BoxVoice, localId: string, fromConvId: 
     const text = String(m.content ?? "").trim();
     if (!text) return chain;
     chain = chain.then(async () => {
+      // Images Carl sent in the chat while voice was on: saved with his line on the box.
+      const images = (m.attachments ?? [])
+        .map((a) => /^data:(image\/[a-z0-9.+-]+);base64,(.+)$/i.exec(a.imageDataUrl ?? ""))
+        .filter((x): x is RegExpExecArray => !!x)
+        .slice(0, 5)
+        .map((x) => ({ mime: x[1]!, dataBase64: x[2]! }));
       const r = await post(b.link, "/api/v1/voice/transcript", {
         convId: id,
         ...(fromConvId && fromConvId !== id ? { fromConvId } : {}),
         role: m.role === "user" ? "user" : "assistant",
         text,
         ...(m.system ? { system: true } : {}),
+        ...(images.length ? { images } : {}),
       });
       const next = typeof r.data?.convId === "string" ? r.data.convId : null;
       if (r.ok && next && next !== id) {

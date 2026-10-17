@@ -5,7 +5,7 @@ import { sendMessage, stopAgent, clearChat, setModel, interruptAndSend, sendMidT
 import type { Conversation } from "./conversations";
 import { newConversationId } from "./conversations";
 import { listProjects, routeProjectChangesTo, setConversationProject } from "./projects";
-import { toggleVoice, voiceBarLevels } from "./voice-elevenlabs";
+import { sendComposerToVoice, toggleVoice, voiceBarLevels, voiceSessionOn } from "./voice-elevenlabs";
 import { isPopout } from "./windowKind";
 
 const POPOUT_LABEL = "chat-popout";
@@ -137,6 +137,13 @@ function takeStreamSnapshot(): StreamSnapshot {
 }
 
 function applyActionLocal(a: ChatAction) {
+  // One agent, many modes: while voice is live on this conversation, what Carl
+  // sends from its composer is his turn in the voice conversation (images
+  // included); the text agent starts no turn of its own.
+  if ((a.kind === "send" || a.kind === "interrupt" || a.kind === "steer" || a.kind === "queue") && voiceSessionOn(useStore.getState().activeConversationId)) {
+    void sendComposerToVoice(a.text, a.attachments);
+    return;
+  }
   if (a.kind === "send") sendMessage(a.text, a.contextPreamble, a.attachments);
   else if (a.kind === "interrupt") interruptAndSend(a.text, a.contextPreamble, a.attachments);
   else if (a.kind === "steer" || a.kind === "queue") void sendMidTurn(a.kind, a.text, a.contextPreamble, a.attachments);

@@ -980,6 +980,7 @@ export function PdfView({
       <div
         ref={scrollRef}
         onScroll={onScroll}
+        data-look-scroll
         className={cn(
           "flex-1 overflow-auto p-4 relative",
           marqueeOn && "cursor-crosshair select-none",

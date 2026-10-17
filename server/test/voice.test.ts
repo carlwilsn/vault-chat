@@ -280,6 +280,19 @@ describe("POST /api/v1/voice/transcript", () => {
     expect(after?.messages.slice(-1).map((m: any) => m.content)).toEqual(["Yes, it absolutely does!"]);
     expect(after?.messages.length).toBe(4);
   });
+
+  it("an image Carl sent in the chat while voice was on is saved with his line (the text agent sees it later)", async () => {
+    const { readConv } = await import("../engine/convs");
+    const pngB64 = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]).toString("base64");
+    const a = await voice.voiceTranscript(deps, { convId: "local-img", role: "user", text: "this one", images: [{ mime: "image/png", dataBase64: pngB64 }, { mime: "text/html", dataBase64: "PGgxPg==" }] });
+    const c = await readConv(vault, String(a.body.convId));
+    const m = c?.messages[0] as any;
+    expect(m.content).toBe("this one");
+    expect(m.attachments).toHaveLength(1);
+    expect(m.attachments[0].capturedFilePath).toMatch(/^\.vault-chat\/captures\/.+\.png$/);
+    expect(readFileSync(join(vault, m.attachments[0].capturedFilePath)).toString("base64")).toBe(pngB64);
+    expect(m.attachments[0].imageDataUrl).toBe(`data:image/png;base64,${pngB64}`);
+  });
 });
 
 describe("GET /api/v1/voice/session (ElevenLabs faked)", () => {

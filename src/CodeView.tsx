@@ -123,6 +123,7 @@ export function CodeView({
     <div
       ref={scrollRef}
       onScroll={onScroll}
+      data-look-scroll
       className="flex-1 overflow-auto py-6 px-6"
     >
       <div ref={codeRef} className="prose-md mx-auto max-w-[920px]">
