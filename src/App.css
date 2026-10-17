@@ -376,6 +376,23 @@
      onto a predictable rhythm. Core uses a lub-dub shape — two quick
      expansions followed by a rest — so each individual heartbeat
      still reads as alive. */
+  /* A word that is working: a soft highlight sweeping through muted text. */
+  .vc-shimmer {
+    color: transparent;
+    background: linear-gradient(90deg, hsl(var(--muted-foreground)) 0%, hsl(var(--muted-foreground)) 40%, hsl(var(--foreground)) 50%, hsl(var(--muted-foreground)) 60%, hsl(var(--muted-foreground)) 100%);
+    background-size: 250% 100%;
+    -webkit-background-clip: text;
+    background-clip: text;
+    animation: vc-shimmer 2.2s linear infinite;
+  }
+  @keyframes vc-shimmer {
+    from { background-position: 100% 0; }
+    to   { background-position: -150% 0; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .vc-shimmer { animation: none; color: hsl(var(--muted-foreground)); background: none; }
+  }
+
   .vc-pulse-drift {
     animation: vc-pulse-drift 4.3s ease-in-out infinite;
     transform-origin: center;
