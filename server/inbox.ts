@@ -44,7 +44,9 @@ import {
 } from "../src/inboxFormat";
 import { mathDocument, widgetDocument } from "../src/widgetHost";
 import { boardDir, ensureBoardsHidden, type Out } from "./boards";
-import { voicePath } from "./voice";
+// voice.ts (the vault path guard) is loaded on first use, not with this module: the engine imports this
+// one, and voice.ts brings the app's command modules with it.
+const voicePath = async (vault: string, p: unknown, mode: "read" | "write") => (await import("./voice")).voicePath(vault, p, mode);
 import { writeAtomic, renameRetry } from "./atomic";
 import { findBrowser, headless } from "./headless";
 import { katexCss } from "./katexCss";
@@ -253,11 +255,11 @@ async function checkPart(vault: string, p: any, n: number, where: string): Promi
   void where;
 }
 
-function vaultFile(vault: string, p: unknown): { abs: string; rel: string } | string {
+async function vaultFile(vault: string, p: unknown): Promise<{ abs: string; rel: string } | string> {
   if (typeof p !== "string" || !p.trim()) return "path: a file in the vault is required";
   let r: { abs: string; rel: string };
   try {
-    r = voicePath(vault, p, "read");
+    r = await voicePath(vault, p, "read");
   } catch (e) {
     return `path: ${String(e).replace(/^Refused: /, "")}`;
   }
@@ -275,7 +277,7 @@ async function pdfDoc(data: Uint8Array): Promise<any> {
 }
 
 async function checkPdf(vault: string, p: any, base: object): Promise<Checked> {
-  const f = vaultFile(vault, p.path);
+  const f = await vaultFile(vault, p.path);
   if (typeof f === "string") return f;
   if (extname(f.rel).toLowerCase() !== ".pdf") return `path: ${f.rel} is not a .pdf`;
   const pages = parsePages(p.pages);
@@ -400,7 +402,7 @@ export function svgCheck(text: string): { w: number; h: number } | string {
 
 async function checkImage(vault: string, p: any, base: object): Promise<Checked> {
   const alt = oneLine(p.alt, 300);
-  const f = vaultFile(vault, p.path);
+  const f = await vaultFile(vault, p.path);
   if (typeof f === "string") return f;
   if (!alt) return "alt: one line saying what it shows is required";
   const ext = extname(f.rel).toLowerCase();
@@ -495,7 +497,7 @@ export async function checkWidgetMount(js: string, layout: { w: number; h: numbe
 
 async function checkWidget(vault: string, p: any, base: object, n: number): Promise<Checked> {
   const alt = oneLine(p.alt, 300);
-  const f = vaultFile(vault, p.path);
+  const f = await vaultFile(vault, p.path);
   if (typeof f === "string") return f;
   if (!alt) return "alt: one line saying what it shows is required";
   if (![".ts", ".js", ".mts", ".mjs"].includes(extname(f.rel).toLowerCase())) return `path: ${f.rel} is not a TypeScript (or JavaScript) module`;
@@ -536,13 +538,13 @@ const MIME: Record<string, string> = {
 export const INERT = { "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; img-src data:; sandbox", "X-Content-Type-Options": "nosniff" };
 
 /** GET …/inbox/<id>/part/<n>[/<what>]: the part's file (pdf, image), `html` (math), `bundle` (widget), `snapshot`. */
-export function partFile(vault: string, id: string, n: number, what: string | undefined): Out {
+export async function partFile(vault: string, id: string, n: number, what: string | undefined): Promise<Out> {
   const e = readEntry(vault, id);
   const p = e?.parts[n];
   if (!e || !p) return { status: 404, body: { error: "not found" } };
   let abs: string | null = null;
   try {
-    if (!what && (p.kind === "pdf" || p.kind === "image")) abs = voicePath(vault, p.path, "read").abs;
+    if (!what && (p.kind === "pdf" || p.kind === "image")) abs = (await voicePath(vault, p.path, "read")).abs;
     else if (what === "html" && p.kind === "math" && p.html) abs = join(entryPath(vault, id)!, p.html);
     else if (what === "bundle" && p.kind === "widget" && p.bundle) abs = join(entryPath(vault, id)!, p.bundle);
     else if (what === "snapshot" && (p.kind === "math" || p.kind === "widget") && p.snapshot) abs = join(entryPath(vault, id)!, p.snapshot);
@@ -588,7 +590,7 @@ export async function addToBoard(vault: string, slug: string, b: any): Promise<O
     const p = e.parts[i]!;
     const common = { inbox: { id: e.id, part: i }, ...(p.label ? { label: p.label } : {}), ...(p.width ? { width: p.width } : {}) };
     if (p.kind === "pdf") {
-      const data = readFileSync(voicePath(vault, p.path, "read").abs);
+      const data = readFileSync((await voicePath(vault, p.path, "read")).abs);
       const src = copyAsset(folder, data, ".pdf");
       const doc = await pdfDoc(new Uint8Array(data));
       for (const pg of p.pages) {
@@ -597,7 +599,7 @@ export async function addToBoard(vault: string, slug: string, b: any): Promise<O
       }
       await doc.destroy?.();
     } else if (p.kind === "image") {
-      const abs = voicePath(vault, p.path, "read").abs;
+      const abs = (await voicePath(vault, p.path, "read")).abs;
       const src = copyAsset(folder, readFileSync(abs), extname(abs).toLowerCase().replace(".jpeg", ".jpg"));
       items.push({ kind: "image", src, lw: p.w ?? 1000, lh: p.h ?? 750, alt: p.alt, ...common });
     } else if (p.kind === "math") {

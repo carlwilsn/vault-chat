@@ -415,7 +415,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
     else if (sub === undefined && method === "GET") out = getEntry(vault, id, ictx);
     else if (sub === "read" && n === undefined && method === "POST") out = markRead(vault, id, ictx);
     else if (sub === "added" && n === undefined && method === "POST") out = markAdded(vault, id, await jsonBody(req), ictx);
-    else if (sub === "part" && n !== undefined && /^\d+$/.test(n) && method === "GET") out = partFile(vault, id, Number(n), what);
+    else if (sub === "part" && n !== undefined && /^\d+$/.test(n) && method === "GET") out = await partFile(vault, id, Number(n), what);
     else out = { status: 404, body: { error: "not found" } };
     if (out.file) return send(res, 200, out.mime ?? "application/octet-stream", out.file, out.headers ?? { "X-Content-Type-Options": "nosniff" });
     return json(res, out.status, out.body);
