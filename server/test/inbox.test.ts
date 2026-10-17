@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { tmp, cleanup, makeVault, makeKeyStore, startServer, type Running } from "./helpers";
 import { makePdf, textPage } from "./pdfgen";
 import { findBrowser } from "../headless";
-import { failMake, listEntries, readEntry, sendEntry, startMake, svgCheck } from "../inbox";
+import { failMake, listEntries, mathErrors, readEntry, sendEntry, startMake, svgCheck } from "../inbox";
 
 const PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==", "base64");
 /** A PNG header claiming 5000 × 10 (only the header is read). */
@@ -55,6 +55,7 @@ describe("board inbox", () => {
     writeFileSync(join(vault, "w", "broken.ts"), "export function mount(el: HTMLElement) { el.appendChild(document.createElement('div') }\n");
     writeFileSync(join(vault, "w", "throws.ts"), "export function mount(el: HTMLElement): void { throw new Error('gamma out of range'); }\n");
     writeFileSync(join(vault, "w", "nomount.ts"), "export const x = 1;\n");
+    writeFileSync(join(vault, "w", "tex.ts"), 'export function mount(el: HTMLElement): void { el.textContent = "discount $\\\\gamma$ = 0.9"; }\n');
     writeFileSync(join(vault, "w", "imports.ts"), "import * as d3 from 'd3';\nexport function mount(el: HTMLElement) { el.textContent = String(d3); }\n");
     const secrets = await makeKeyStore(join(home, "secrets"), { "api.openrouter": "sk-or-canary" });
     srv = await startServer({ home, vault, secrets, token: "canary-inbox-token" });
@@ -97,6 +98,16 @@ describe("board inbox", () => {
     await refused({ kind: "math", markdown: "Show $\\frac{1}{n$ is small." }, /KaTeX: .*expected '}'/i);
     await refused({ kind: "math", markdown: "$$\\notacommand{x}$$" }, /KaTeX: Undefined control sequence: \\notacommand/);
     await refused({ kind: "math", markdown: "  " }, /markdown: the text is required/);
+  });
+
+  it("math: refuses TeX written outside $…$ (it would show raw), not delimited or code TeX", async () => {
+    await refused({ kind: "math", markdown: "Show that V^*(s) = \\max_a \\sum_{s'} P(s'|s,a) V^*(s')." }, /TeX outside math \(\\max, \\sum, _\{\) would show raw: wrap each formula in \$…\$/);
+    await refused({ kind: "math", markdown: "Let x_{n} be Cauchy." }, /TeX outside math \(_\{\)/);
+    expect(await mathErrors("Show $V^*(s) = \\max_a Q(s,a)$, and \\(x_{n}\\) too:\n\n\\[\\sum_k a_k\\]\n\n`\\frac` in code is code.")).toEqual([]);
+  });
+
+  it("widget: refuses one that writes TeX it would show raw", async () => {
+    await refused({ kind: "widget", path: "w/tex.ts", alt: "x" }, /w\/tex\.ts writes TeX \(\\gamma\) that a widget would show raw: use Unicode/);
   });
 
   it("image: refuses a missing alt, a wrong type, a bitmap over 4096 px, an SVG with script", async () => {

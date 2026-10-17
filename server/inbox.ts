@@ -309,7 +309,10 @@ export async function mathErrors(markdown: string): Promise<string[]> {
   ]);
   const tree: any = unified().use(remarkParse).use(remarkGfm, { singleTilde: false }).use(remarkMath).parse(prepareMarkdown(markdown));
   const errs: string[] = [];
+  const bare = new Set<string>();
   const walk = (node: any) => {
+    // TeX written outside $…$ would show as raw TeX: refused, so every formula on the board is typeset.
+    if (node.type === "text") for (const m of String(node.value).matchAll(BARE_TEX)) bare.add(m[0]);
     if (node.type === "math" || node.type === "inlineMath") {
       try {
         (katex as any).default.renderToString(node.value, { displayMode: node.type === "math", throwOnError: true, strict: "ignore", trust: false });
@@ -321,8 +324,18 @@ export async function mathErrors(markdown: string): Promise<string[]> {
     for (const c of node.children ?? []) walk(c);
   };
   walk(tree);
+  if (bare.size) errs.push(`TeX outside math (${[...bare].slice(0, 3).join(", ")}) would show raw: wrap each formula in $…$ (inline) or $$…$$ (display)`);
   return errs;
 }
+
+/** TeX in plain text: a control word (\frac, \alpha), or a braced sub/superscript (x_{n}, e^{x}). */
+const BARE_TEX = /\\[A-Za-z]{2,}|[_^]\{/g;
+
+/**
+ * TeX in a widget's strings (in its source "\\frac", "$\\gamma$", or String.raw`\frac`) would show raw — a widget
+ * has no typesetter. The common commands only, so a regex or a path in a string does not trip it.
+ */
+const WIDGET_TEX = /\\{1,2}(?:frac|dfrac|sum|prod|int|sqrt|alpha|beta|gamma|Gamma|delta|Delta|epsilon|varepsilon|theta|lambda|mu|sigma|Sigma|pi|infty|leq?|geq?|neq|cdot|times|mathbb|mathcal|mathbf|mathrm|left|right|lVert|rVert|partial|nabla|max|min|lim|operatorname|text)(?![A-Za-z])/;
 
 /** The markdown typeset as everywhere else in vault-chat (the chat profile: GFM, math, safe HTML). */
 export async function typesetMath(markdown: string): Promise<string> {
@@ -508,6 +521,8 @@ async function checkWidget(vault: string, p: any, base: object, n: number): Prom
     if (!(w >= 120 && w <= 2000 && h >= 80 && h <= 2000)) return "layout: {w, h} in css px, 120–2000 × 80–2000";
     layout = { w: Math.round(w), h: Math.round(h) };
   }
+  const tex = WIDGET_TEX.exec(readFileSync(f.abs, "utf8"));
+  if (tex) return `${f.rel} writes TeX (${tex[0].replace(/^\\+/, "\\")}) that a widget would show raw: use Unicode (γ, ‖V‖∞, Vₖ₊₁, ≤) in the widget, or send the formula as a math part beside it`;
   const b = await bundleWidget(f.abs);
   if ("error" in b) return `it does not build: ${b.error}`;
   if (!findBrowser()) return "widgets can't be checked: there is no headless browser on the box (install Chromium or set VC_HEADLESS_BROWSER)";

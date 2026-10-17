@@ -52,7 +52,7 @@ default view is 1000 wide. Without one, a part lands 60% of the view wide.
 - **It's rendered:** to vector (KaTeX → SVG) in a clean printed style, black on transparent, at a fixed reading size.
 - **On the board:** one item per part, sharp at any zoom.
 - **A problem set** is several `math` parts, one per problem, so each problem can be added and placed on its own with room to work around it.
-- **Fails when:** the TeX has an error. The send is refused, with KaTeX's message.
+- **Fails when:** the TeX has an error (the send is refused, with KaTeX's message), or TeX is written outside `$…$` (`\max`, `x_{n}` in plain text would show raw).
 
 ### 3. `image`: a picture or a graph
 
@@ -78,7 +78,7 @@ default view is 1000 wide. Without one, a part lands 60% of the view wide.
 - **It's built and run:** the box bundles it (esbuild), and it runs in a sandboxed iframe (`sandbox="allow-scripts"`, CSP `default-src 'none'`).
 - **On the board:** a live item that is interactive when tapped into ("Interact"). Otherwise the pen writes over it like any item, so ink and widget never fight over touches.
 - **What the agent sees:** a PNG snapshot taken when the widget renders and when Carl leaves interact mode, plus `alt`.
-- **Fails when:** it doesn't build, or throws on mount. The send is refused with the error, so a broken widget never reaches the inbox.
+- **Fails when:** it doesn't build, or throws on mount. The send is refused with the error, so a broken widget never reaches the inbox. Also when its strings carry TeX (`"$\gamma$"`): a widget has no typesetter, so it writes Unicode (γ, ‖V‖∞, Vₖ₊₁) or the formula goes in a `math` part beside it.
 - This is the test bed for the original "show me" idea: if widgets on the board turn out good and fast enough, the same kind can later open as its own window on the laptop.
 
 ## What the agent gets back
