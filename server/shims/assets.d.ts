@@ -19,3 +19,9 @@ declare module "vc:phone-app" {
   const files: Record<string, string>;
   export default files;
 }
+
+/** The bundled whiteboard app (server/build.mjs --board-app): path → base64. */
+declare module "vc:board-app" {
+  const files: Record<string, string>;
+  export default files;
+}

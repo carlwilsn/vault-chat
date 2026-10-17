@@ -36,15 +36,16 @@ const ALIASES = {
   "pdfjs-dist": join(shims, "pdfjs.ts"),
 };
 
-/** The phone app's built files (phone/dist), embedded as "vc:phone-app" =
- * { "index.html": base64, "assets/…": base64 }. Empty unless --phone-app, so
- * by default /phone keeps serving phone.html. */
-const wantPhoneApp = process.argv.includes("--phone-app");
-function phoneAppFiles() {
-  if (!wantPhoneApp) return {};
-  const dist = join(root, "phone", "dist");
+/** A web app's built files (<dir>/dist), embedded as "vc:<name>" =
+ * { "index.html": base64, "assets/…": base64 }. Empty unless its flag is given:
+ *   --phone-app → phone/dist as vc:phone-app (else /phone keeps serving phone.html)
+ *   --board-app → board/dist as vc:board-app (else /board says it isn't built) */
+const APPS = { "phone-app": "phone", "board-app": "board" };
+function appFiles(name) {
+  if (!process.argv.includes(`--${name}`)) return {};
+  const dist = join(root, APPS[name], "dist");
   if (!existsSync(join(dist, "index.html"))) {
-    console.error("build: --phone-app needs phone/dist — run `npm run build:phone` first");
+    console.error(`build: --${name} needs ${APPS[name]}/dist — run \`npm run build:${APPS[name]}\` first`);
     process.exit(1);
   }
   const out = {};
@@ -58,11 +59,11 @@ function phoneAppFiles() {
   walk(dist);
   return out;
 }
-const phoneApp = {
-  name: "vc-phone-app",
+const webApps = {
+  name: "vc-web-apps",
   setup(b) {
-    b.onResolve({ filter: /^vc:phone-app$/ }, () => ({ path: "phone-app", namespace: "vc-phone-app" }));
-    b.onLoad({ filter: /.*/, namespace: "vc-phone-app" }, () => ({ contents: `export default ${JSON.stringify(phoneAppFiles())};`, loader: "js" }));
+    b.onResolve({ filter: /^vc:(phone|board)-app$/ }, (a) => ({ path: a.path.slice(3), namespace: "vc-web-app" }));
+    b.onLoad({ filter: /.*/, namespace: "vc-web-app" }, (a) => ({ contents: `export default ${JSON.stringify(appFiles(a.path))};`, loader: "js" }));
   },
 };
 
@@ -101,7 +102,7 @@ const result = await build({
   metafile: wantMeta,
   logLevel: "warning",
   loader: { ".md": "text", ".html": "text", ".png": "binary" },
-  plugins: [viteCompat, phoneApp],
+  plugins: [viteCompat, webApps],
   // CJS deps bundled into ESM need a real require for node builtins.
   banner: {
     js: "import { createRequire as __vcCreateRequire } from 'node:module'; const require = __vcCreateRequire(import.meta.url);",
@@ -118,4 +119,4 @@ const result = await build({
 
 if (wantMeta) writeFileSync(join(outdir, "meta.json"), JSON.stringify(result.metafile, null, 1));
 writeFileSync(join(outdir, "server-version.json"), JSON.stringify({ version: pkg.version, rev }) + "\n");
-console.log(`built dist-server/vault-chat-server.mjs (v${pkg.version} ${rev})${wantPhoneApp ? " with the phone app" : ""}`);
+console.log(`built dist-server/vault-chat-server.mjs (v${pkg.version} ${rev})${Object.keys(APPS).filter((a) => process.argv.includes(`--${a}`)).map((a) => ` with --${a}`).join("")}`);

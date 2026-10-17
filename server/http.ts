@@ -22,6 +22,8 @@ import VOICE_PAGE_INLINE from "../src-tauri/assets/voice.html";
 import PHONE_SW_INLINE from "../src-tauri/assets/phone-sw.js?raw";
 import ICON_PNG_INLINE from "../src-tauri/assets/icon-apple-touch.png";
 import PHONE_APP from "vc:phone-app";
+import BOARD_APP from "vc:board-app";
+import { createBoard, getBoard, listBoards, pagePng, saveBoard } from "./boards";
 
 /** A vault on this box, as the routes see it (engine/index.ts VaultRef). */
 export type VaultScope = { name: string; path: string; bare: string; main: boolean };
@@ -133,6 +135,31 @@ function phonePage(): string | Buffer {
   const app = PHONE_APP["index.html"];
   return app ? Buffer.from(app, "base64") : asset("phone.html", PHONE_PAGE_INLINE);
 }
+/** The whiteboard (board/): its own manifest, so a Home Screen launch opens /board fullscreen. */
+const BOARD_MANIFEST = `{
+  "name": "Whiteboard",
+  "short_name": "Board",
+  "start_url": "/board",
+  "scope": "/board",
+  "display": "fullscreen",
+  "orientation": "any",
+  "background_color": "#ececef",
+  "theme_color": "#ececef",
+  "icons": [
+    { "src": "/apple-touch-icon.png", "sizes": "512x512", "type": "image/png", "purpose": "any" }
+  ]
+}`;
+const BOARD_NOT_BUILT = `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Whiteboard</title><p style="font:15px system-ui;padding:24px">The whiteboard isn't in this build (build:server builds it with <code>--board-app</code>).</p>`;
+function boardPage(): string | Buffer {
+  const app = BOARD_APP["index.html"];
+  return app ? Buffer.from(app, "base64") : BOARD_NOT_BUILT;
+}
+/** The cookie the phone shell provisions (voice_server.rs resp_phone_shell): the board shares it. */
+function tokenCookie(): Record<string, string> {
+  const t = phoneToken();
+  return t ? { "Set-Cookie": `vc_token=${t}; Path=/; HttpOnly; SameSite=Lax; Max-Age=34560000` } : {};
+}
+
 const ASSET_MIME: Record<string, string> = {
   ".js": "text/javascript; charset=utf-8",
   ".css": "text/css; charset=utf-8",
@@ -226,17 +253,19 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
   if (path === "/manifest.webmanifest") return send(res, 200, "application/manifest+json", PHONE_MANIFEST);
   if (path === "/phone" && method === "GET") {
     // voice_server.rs:276 resp_phone_shell — provisions the token cookie.
-    const t = phoneToken();
-    const extra: Record<string, string> = {};
-    if (t) extra["Set-Cookie"] = `vc_token=${t}; Path=/; HttpOnly; SameSite=Lax; Max-Age=34560000`;
-    return send(res, 200, "text/html; charset=utf-8", phonePage(), extra);
+    return send(res, 200, "text/html; charset=utf-8", phonePage(), tokenCookie());
   }
-  if (path.startsWith("/phone/assets/") && method === "GET") {
-    // The phone app's hashed files: immutable, so cached for good.
-    const f = PHONE_APP[path.slice("/phone/".length)];
-    if (!f) return json(res, 404, { error: "not found" });
-    const ext = path.slice(path.lastIndexOf("."));
-    return send(res, 200, ASSET_MIME[ext] ?? "application/octet-stream", Buffer.from(f, "base64"), { "Cache-Control": "public, max-age=31536000, immutable" });
+  // The whiteboard's shell: the same model as the phone's (token-free page, the cookie provisioned).
+  if ((path === "/board" || path === "/board/") && method === "GET") return send(res, 200, "text/html; charset=utf-8", boardPage(), tokenCookie());
+  if (path === "/board/manifest.webmanifest") return send(res, 200, "application/manifest+json", BOARD_MANIFEST);
+  for (const [prefix, files] of [["/phone/", PHONE_APP], ["/board/", BOARD_APP]] as const) {
+    if (path.startsWith(`${prefix}assets/`) && method === "GET") {
+      // An app's hashed files: immutable, so cached for good.
+      const f = files[path.slice(prefix.length)];
+      if (!f) return json(res, 404, { error: "not found" });
+      const ext = path.slice(path.lastIndexOf("."));
+      return send(res, 200, ASSET_MIME[ext] ?? "application/octet-stream", Buffer.from(f, "base64"), { "Cache-Control": "public, max-age=31536000, immutable" });
+    }
   }
 
   const auth = authorize(req, url);
@@ -362,6 +391,27 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
   }
   if (path === "/api/v1/activity/image" && method === "POST") {
     return json(res, 200, activityImageRoute(vault, await jsonBody(req)));
+  }
+
+  // The whiteboard (server/boards.ts): boards/<slug>/ in this vault.
+  if (path === "/api/v1/boards" || path.startsWith("/api/v1/boards/")) {
+    const [slugRaw, file, more] = path.slice("/api/v1/boards/".length).split("/");
+    let slug = "";
+    try {
+      slug = decodeURIComponent(slugRaw ?? "");
+    } catch {
+      /* invalid escape: an invalid slug */
+    }
+    let out: { status: number; body: unknown; png?: Buffer };
+    if (path === "/api/v1/boards" && method === "GET") out = { status: 200, body: { boards: listBoards(vault) } };
+    else if (path === "/api/v1/boards" && method === "POST") out = createBoard(vault, (await jsonBody(req)).name);
+    else if (more !== undefined) out = { status: 404, body: { error: "not found" } };
+    else if (file === undefined && method === "GET") out = getBoard(vault, slug);
+    else if (file === undefined && method === "POST") out = await saveBoard(vault, slug, await jsonBody(req));
+    else if (file && /^page-\d+\.png$/.test(file) && method === "GET") out = pagePng(vault, slug, Number(file.slice(5, -4)));
+    else out = { status: 404, body: { error: "not found" } };
+    if (out.png) return send(res, 200, "image/png", out.png);
+    return json(res, out.status, out.body);
   }
 
   switch (`${method} ${path}`) {
