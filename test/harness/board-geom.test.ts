@@ -54,6 +54,14 @@ test("untouched strokes come back null; a fully covered one comes back empty; sl
   assert.equal(cutStroke(horiz(0, 100), 2, dot(11.2, 0, 10))!.length, 1);
 });
 
+test("a graze (the eraser touching a wide stroke's edge) cuts nothing; a real cut through it does", () => {
+  const hl = horiz(0, 200);
+  // Width 18: the circle (r 10) dips 2 into the band — the centreline gap would be ~12 < 18.
+  assert.equal(cutStroke(hl, 18, dot(100, 17, 10)), null);
+  const through = cutStroke(hl, 18, dot(100, 0, 10))!;
+  assert.equal(through.length, 2);
+});
+
 test("the stroke eraser hits along the sweep, not just at samples", () => {
   const xy = [0, 0, 0, 100];
   assert.equal(capsuleHits(xy, 2, dot(50, 50, 5)), false);

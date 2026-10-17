@@ -105,7 +105,7 @@ async function drawThumb(box: HTMLElement, slug: string): Promise<void> {
     const ctx = c.getContext("2d")!;
     ctx.setTransform(s, 0, 0, s, (c.width - w * s) / 2 + (pad - b.x0) * s, (c.height - h * s) / 2 + (pad - b.y0) * s);
     for (const it of board.items) drawItem(ctx, it, null);
-    for (const st of board.strokes) drawStroke(ctx, st);
+    for (const st of board.strokes) drawStroke(ctx, st, 1.2 / s);
     box.appendChild(c);
   } catch {
     /* no thumbnail */

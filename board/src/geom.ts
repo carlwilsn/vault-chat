@@ -71,7 +71,8 @@ const len = (xy: number[]) => {
 /**
  * Cut the capsule out of a stroke's centreline. Returns null when the stroke
  * is untouched, else the pieces left (possibly none), each a flat [x, y, …].
- * Pieces shorter than `minLen` are dropped (a sliver would draw as a dot).
+ * Pieces shorter than `minLen` are dropped (a sliver would draw as a dot);
+ * a graze (a gap narrower than the stroke) cuts nothing.
  */
 export function cutStroke(xy: ArrayLike<number>, w: number, c: Capsule, minLen = 0.5): number[][] | null {
   if (!capsuleHits(xy, w, c)) return null;
@@ -129,8 +130,18 @@ export function cutStroke(xy: ArrayLike<number>, w: number, c: Capsule, minLen =
     // a && b: the whole segment is inside (convexity), nothing kept.
   }
   if (cur) pieces.push(cur);
+  // A graze: a gap narrower than the stroke would leave the two caps
+  // overlapping (a dark spot under a highlighter's multiply), and no real
+  // eraser cuts a line it only touched. Rejoin across it.
+  const joined: number[][] = [];
+  for (const p of pieces) {
+    const q = joined[joined.length - 1];
+    if (q && Math.hypot(p[0]! - q[q.length - 2]!, p[1]! - q[q.length - 1]!) < w) q.push(...p);
+    else joined.push(p);
+  }
+  if (joined.length === 1 && !inside[0] && !inside[n - 1]) return null;
   const r1 = (v: number) => Math.round(v * 10) / 10;
-  return pieces.map((p) => p.map(r1)).filter((p) => p.length >= 4 && len(p) >= minLen);
+  return joined.map((p) => p.map(r1)).filter((p) => p.length >= 4 && len(p) >= minLen);
 }
 
 export function pointInPoly(x: number, y: number, poly: ReadonlyArray<XY>): boolean {

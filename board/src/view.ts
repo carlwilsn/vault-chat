@@ -1173,7 +1173,8 @@ export class BoardView {
     ctx.fillRect(0, 0, c.width, c.height);
     ctx.setTransform(s, 0, 0, s, (pad - b.x0) * s, (pad - b.y0) * s);
     for (const it of this.board.items) drawItem(ctx, it, this.imageFor(it));
-    for (const st of this.board.strokes) drawStroke(ctx, st);
+    // At least 1.5 px wide: a whole-board snapshot of fine writing stays readable.
+    for (const st of this.board.strokes) drawStroke(ctx, st, 1.5 / s);
     const blob = await new Promise<Blob>((res, rej) => c.toBlob((x) => (x ? res(x) : rej(new Error("toBlob failed"))), "image/png"));
     const url = await new Promise<string>((res, rej) => {
       const fr = new FileReader();

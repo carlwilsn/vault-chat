@@ -49,10 +49,10 @@ export function inkStyle(ctx: Ctx, tool: Stroke["tool"], color: string, w: numbe
   }
 }
 
-/** Stroke one stroke (ctx already transformed to canvas units). */
-export function drawStroke(ctx: Ctx, s: Stroke, path = strokeInfo(s).path): void {
+/** Stroke one stroke (ctx already transformed to canvas units); `minW` keeps ink legible in a small snapshot. */
+export function drawStroke(ctx: Ctx, s: Stroke, minW = 0, path = strokeInfo(s).path): void {
   ctx.save();
-  inkStyle(ctx, s.tool, s.color, s.w);
+  inkStyle(ctx, s.tool, s.color, Math.max(s.w, minW));
   ctx.stroke(path);
   ctx.restore();
 }
