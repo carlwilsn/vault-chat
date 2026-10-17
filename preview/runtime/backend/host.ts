@@ -61,6 +61,13 @@ export type BoxStep = {
   /** Files the box's agent changed (vault-relative → text): they reach the
    *  laptop's working copy on its next vault_box_sync, as a merge would. */
   merge?: Record<string, string | ((old: string | null) => string)>;
+  /** The box process restarts: /poll answers with a new boot id (the laptop resyncs whole). */
+  restart?: boolean;
+  /** /conversation reads `status` from the file, as the real box does ("idle"
+   *  through most of a run): true = it says idle from now on, false = the live status. */
+  fileIdle?: boolean;
+  /** /conversation answers this many ms late from now on (the tailnet). */
+  detailDelayMs?: number;
 };
 export type BoxChatScript = {
   convs: Record<string, BoxConv>;
@@ -113,8 +120,15 @@ export function boxPlay(st: BoxStep): void {
   for (const [id, m] of Object.entries(st.meta ?? {})) if (boxConvs[id]) boxConvs[id].meta = { ...(boxConvs[id].meta ?? {}), ...m };
   for (const [id, v] of Object.entries(st.status ?? {})) if (boxConvs[id]) boxConvs[id].status = v;
   Object.assign(boxMerge, st.merge ?? {});
+  if (st.restart) boxBoot = `preview-${Math.random().toString(36).slice(2, 8)}`;
+  if (st.fileIdle !== undefined) boxFileIdle = st.fileIdle;
+  if (st.detailDelayMs !== undefined) boxDetailDelay = st.detailDelayMs;
   boxQueue.push(...(st.events ?? []));
 }
+/** The fake box process (/poll's `boot`), the file-status mode and the detail latency. */
+let boxBoot = "preview-1";
+let boxFileIdle = false;
+let boxDetailDelay = 0;
 let boxCalls = 0;
 let tailscaleOpened = false;
 const boxPosts: BoxPost[] = [];
@@ -132,6 +146,9 @@ export function setHostConfig(c: HostConfig, now: () => number): void {
   boxConvs = JSON.parse(JSON.stringify(cfg.sync?.boxChat?.convs ?? {}));
   boxQueue = [];
   boxMerge = {};
+  boxBoot = "preview-1";
+  boxFileIdle = false;
+  boxDetailDelay = 0;
   laptopVault = null;
   boxStep = 0;
   boxPosts.length = 0;
@@ -358,11 +375,14 @@ export const hostCommands: Record<string, (a: Record<string, any>) => unknown> =
     const ok = (v: unknown) => ({ status: 200, body: JSON.stringify(v) });
     if (p === "/poll") {
       const after = u.searchParams.get("after");
-      if (after === "latest") return ok({ next: 0, events: [] });
+      if (after === "latest") return ok({ next: 0, events: [], boot: boxBoot });
       const n = Number(after) || 0;
-      for (let t = 0; t < 125 && !boxQueue.length; t++) await sleep(200);
+      const boot = boxBoot;
+      for (let t = 0; t < 125 && !boxQueue.length && boot === boxBoot; t++) await sleep(200);
+      // A restart: the old process's events are gone; the new one answers.
+      if (boot !== boxBoot) return ok({ next: 0, events: [], boot: boxBoot });
       const events = boxQueue.splice(0);
-      return ok({ next: n + events.length, events });
+      return ok({ next: n + events.length, events, boot: boxBoot });
     }
     if (p === "/conversations")
       return ok({
@@ -373,7 +393,11 @@ export const hostCommands: Record<string, (a: Record<string, any>) => unknown> =
       const id = u.searchParams.get("id") ?? "";
       const c = boxConvs[id];
       if (!c) return { status: 404, body: JSON.stringify({ error: "not found" }) };
-      return ok({ id, title: c.title, source: c.source ?? "phone", status: c.status ?? "idle", full: true, meta: c.meta ?? {}, messages: c.messages });
+      // Like server/phoneData.ts: the last n (≤ 200) messages, hidden ones included.
+      const n = Math.min(Math.max(Number(u.searchParams.get("n")) || 60, 1), 200);
+      const body = { id, title: c.title, source: c.source ?? "phone", status: boxFileIdle ? "idle" : c.status ?? "idle", full: true, meta: c.meta ?? {}, messages: c.messages.slice(-n) };
+      if (boxDetailDelay) await sleep(boxDetailDelay);
+      return ok(JSON.parse(JSON.stringify(body)));
     }
     return { status: 404, body: JSON.stringify({ error: "not found" }) };
   },
