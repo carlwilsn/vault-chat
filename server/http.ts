@@ -24,6 +24,7 @@ import ICON_PNG_INLINE from "../src-tauri/assets/icon-apple-touch.png";
 import PHONE_APP from "vc:phone-app";
 import BOARD_APP from "vc:board-app";
 import { addAsset, assetFile, createBoard, getBoard, listBoards, overviewPng, saveBoard } from "./boards";
+import { addToBoard, getEntry, listEntries, markAdded, markRead, partFile, sendEntry, type InboxCtx } from "./inbox";
 
 /** A vault on this box, as the routes see it (engine/index.ts VaultRef). */
 export type VaultScope = { name: string; path: string; bare: string; main: boolean };
@@ -393,6 +394,32 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
     return json(res, 200, activityImageRoute(vault, await jsonBody(req)));
   }
 
+  // The board inbox (server/inbox.ts, board/INBOX.md): what the agent sends the iPad.
+  //   GET  /api/v1/inbox                     → {entries:[summary], unread}
+  //   POST /api/v1/inbox {title,note,parts}  → {ok,id,parts} | 422 {ok:false, refusals:[…]} (the validated send)
+  //   GET  /api/v1/inbox/<id>                → the entry
+  //   POST /api/v1/inbox/<id>/read           → mark read
+  //   POST /api/v1/inbox/<id>/added {part, board, items}
+  //   GET  /api/v1/inbox/<id>/part/<n>[/html|bundle|snapshot]
+  // Every change: {type:"inbox", id, status, title, landed?, failed?} on /poll.
+  if (path === "/api/v1/inbox" || path.startsWith("/api/v1/inbox/")) {
+    const ictx: InboxCtx = { stateDir: cfg.stateDir, emit: (ev) => getRing().push(tagged(ev)) };
+    const [id = "", sub, n, what, ...rest] = path.slice("/api/v1/inbox/".length).split("/");
+    let out: { status: number; body: unknown; file?: Buffer; mime?: string; headers?: Record<string, string> };
+    if (path === "/api/v1/inbox" && method === "GET") out = { status: 200, body: listEntries(vault, ictx) };
+    else if (path === "/api/v1/inbox" && method === "POST") {
+      const r = await sendEntry(vault, await jsonBody(req), ictx);
+      out = { status: r.ok ? 200 : 422, body: r };
+    } else if (rest.length) out = { status: 404, body: { error: "not found" } };
+    else if (sub === undefined && method === "GET") out = getEntry(vault, id, ictx);
+    else if (sub === "read" && n === undefined && method === "POST") out = markRead(vault, id, ictx);
+    else if (sub === "added" && n === undefined && method === "POST") out = markAdded(vault, id, await jsonBody(req), ictx);
+    else if (sub === "part" && n !== undefined && /^\d+$/.test(n) && method === "GET") out = partFile(vault, id, Number(n), what);
+    else out = { status: 404, body: { error: "not found" } };
+    if (out.file) return send(res, 200, out.mime ?? "application/octet-stream", out.file, out.headers ?? { "X-Content-Type-Options": "nosniff" });
+    return json(res, out.status, out.body);
+  }
+
   // The whiteboard (server/boards.ts): boards/<slug>/ in this vault.
   if (path === "/api/v1/boards" || path.startsWith("/api/v1/boards/")) {
     const [slugRaw, file, more, ...rest] = path.slice("/api/v1/boards/".length).split("/");
@@ -402,17 +429,18 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
     } catch {
       /* invalid escape: an invalid slug */
     }
-    let out: { status: number; body: unknown; file?: Buffer; mime?: string };
+    let out: { status: number; body: unknown; file?: Buffer; mime?: string; headers?: Record<string, string> };
     if (path === "/api/v1/boards" && method === "GET") out = { status: 200, body: { boards: listBoards(vault) } };
     else if (path === "/api/v1/boards" && method === "POST") out = createBoard(vault, (await jsonBody(req)).name);
     else if (file === "assets" && more && rest.length === 0 && method === "GET") out = assetFile(vault, slug, more);
     else if (file === "assets" && more === undefined && method === "POST") out = addAsset(vault, slug, await jsonBody(req));
+    else if (file === "from-inbox" && more === undefined && method === "POST") out = await addToBoard(vault, slug, await jsonBody(req));
     else if (more !== undefined) out = { status: 404, body: { error: "not found" } };
     else if (file === undefined && method === "GET") out = getBoard(vault, slug);
     else if (file === undefined && method === "POST") out = await saveBoard(vault, slug, await jsonBody(req));
     else if (file === "overview.png" && method === "GET") out = overviewPng(vault, slug);
     else out = { status: 404, body: { error: "not found" } };
-    if (out.file) return send(res, 200, out.mime ?? "application/octet-stream", out.file, { "X-Content-Type-Options": "nosniff" });
+    if (out.file) return send(res, 200, out.mime ?? "application/octet-stream", out.file, out.headers ?? { "X-Content-Type-Options": "nosniff" });
     return json(res, out.status, out.body);
   }
 

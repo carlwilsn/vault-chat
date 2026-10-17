@@ -1,5 +1,6 @@
 import { defineConfig } from "vitest/config";
 import { fileURLToPath } from "node:url";
+import { inlinedKatexCss } from "./katexCssGen.mjs";
 
 const shim = (f: string) => fileURLToPath(new URL(`./shims/${f}`, import.meta.url));
 
@@ -13,9 +14,11 @@ export default defineConfig({
       resolveId(id: string) {
         if (id.endsWith("?url")) return "\0vc-url";
         if (id === "pdfjs-dist") return shim("pdfjs.ts");
+        if (id === "vc:katex-css") return "\0vc-katex";
         return null;
       },
       load(id: string) {
+        if (id === "\0vc-katex") return `export default ${JSON.stringify(inlinedKatexCss(fileURLToPath(new URL("..", import.meta.url))))};`;
         return id === "\0vc-url" ? "export default '';" : null;
       },
     },

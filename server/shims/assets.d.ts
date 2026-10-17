@@ -25,3 +25,9 @@ declare module "vc:board-app" {
   const files: Record<string, string>;
   export default files;
 }
+
+/** KaTeX's CSS with its fonts inlined (server/katexCssGen.mjs). */
+declare module "vc:katex-css" {
+  const css: string;
+  export default css;
+}

@@ -7,6 +7,7 @@ import { readFileSync, mkdirSync, writeFileSync, existsSync, readdirSync, statSy
 import { execSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, join, relative } from "node:path";
+import { inlinedKatexCss } from "./katexCssGen.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const shims = join(root, "server", "shims");
@@ -63,6 +64,8 @@ const webApps = {
   name: "vc-web-apps",
   setup(b) {
     b.onResolve({ filter: /^vc:(phone|board)-app$/ }, (a) => ({ path: a.path.slice(3), namespace: "vc-web-app" }));
+    b.onResolve({ filter: /^vc:katex-css$/ }, () => ({ path: "katex-css", namespace: "vc-katex" }));
+    b.onLoad({ filter: /.*/, namespace: "vc-katex" }, () => ({ contents: `export default ${JSON.stringify(inlinedKatexCss(root))};`, loader: "js" }));
     b.onLoad({ filter: /.*/, namespace: "vc-web-app" }, (a) => ({ contents: `export default ${JSON.stringify(appFiles(a.path))};`, loader: "js" }));
   },
 };
@@ -103,6 +106,8 @@ const result = await build({
   logLevel: "warning",
   loader: { ".md": "text", ".html": "text", ".png": "binary" },
   plugins: [viteCompat, webApps],
+  // esbuild itself (the inbox bundles widgets): native, never bundled — the repo's, or one the server installs (server/inbox.ts).
+  external: ["esbuild"],
   // CJS deps bundled into ESM need a real require for node builtins.
   banner: {
     js: "import { createRequire as __vcCreateRequire } from 'node:module'; const require = __vcCreateRequire(import.meta.url);",

@@ -101,9 +101,13 @@ describe("boards", () => {
     expect((await post("/api/v1/boards/lecture-3-fourier", { board, base: board.rev })).status).toBe(200);
     const ghost = { ...board, items: [{ id: "i2", kind: "image", x: 0, y: 0, w: 1, h: 1, src: "assets/missing.png" }] };
     expect((await post("/api/v1/boards/lecture-3-fourier", { board: ghost, base: board.rev + 1 })).status).toBe(400);
-    // Only images are served from assets/.
+    // Nothing in assets/ runs on the box's origin: typeset math (.html) comes as sandboxed plain text; other types are not served.
     writeFileSync(join(vault, "boards", "lecture-3-fourier", "assets", "x.html"), "<script>1</script>");
-    expect((await get("/api/v1/boards/lecture-3-fourier/assets/x.html")).status).toBe(404);
+    const html = await get("/api/v1/boards/lecture-3-fourier/assets/x.html");
+    expect(html.headers.get("content-type")).toMatch(/^text\/plain/);
+    expect(html.headers.get("content-security-policy")).toMatch(/sandbox/);
+    writeFileSync(join(vault, "boards", "lecture-3-fourier", "assets", "x.exe"), "MZ");
+    expect((await get("/api/v1/boards/lecture-3-fourier/assets/x.exe")).status).toBe(404);
     expect((await get("/api/v1/boards/lecture-3-fourier/assets/..%2F..%2F..%2Fsecret.md")).status).toBe(404);
   });
 

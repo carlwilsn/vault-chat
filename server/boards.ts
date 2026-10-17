@@ -19,7 +19,7 @@ import { ASSETS_DIR, ASSET_RE, BOARDS_DIR, BOARD_VERSION, BOARD_FILE, OVERVIEW_F
 import { HIDE_DEFAULTS_FILE, HIDE_FILE, hideOnce } from "../src/agentProjects";
 import { renameRetry, writeAtomic } from "./atomic";
 
-export type Out = { status: number; body: unknown; file?: Buffer; mime?: string };
+export type Out = { status: number; body: unknown; file?: Buffer; mime?: string; headers?: Record<string, string> };
 
 const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 const PNG_CAP = 8 * 1024 * 1024;
@@ -146,6 +146,7 @@ function saveNow(vault: string, slug: string, body: any): Out {
   }
   for (const it of next.items) {
     if (it.src && !existsSync(join(dir, it.src))) return { status: 400, body: { error: `item ${it.id}: ${it.src} is not in the board folder` } };
+    if (typeof it.snap === "string" && (!ASSET_RE.test(it.snap) || it.snap.includes("..") || !existsSync(join(dir, it.snap)))) return { status: 400, body: { error: `item ${it.id}: its snapshot is not in the board folder` } };
   }
   next.rev = (cur?.rev ?? 0) + 1;
   next.updated = Date.now();
@@ -183,14 +184,28 @@ export function assetFile(vault: string, slug: string, name: string): Out {
   const src = `${ASSETS_DIR}/${name}`;
   if (!dir || !ASSET_RE.test(src) || name.includes("..")) return { status: 404, body: { error: "not found" } };
   try {
-    // Only images are served (an SVG or HTML file in assets/ would be script on the box's origin).
-    const mime = /\.png$/i.test(name) ? "image/png" : /\.jpe?g$/i.test(name) ? "image/jpeg" : /\.webp$/i.test(name) ? "image/webp" : "";
+    // Images, and the inbox's kinds (a PDF, typeset math, a widget's bundle).
+    // Nothing runs on the box's origin: an SVG or a PDF is sandboxed by CSP,
+    // the math and the bundle are plain text the app puts in place itself.
+    const mime = ASSET_MIME[/\.[a-z0-9]+$/i.exec(name)?.[0]?.toLowerCase() ?? ""];
     if (!mime) return { status: 404, body: { error: "not found" } };
-    return { status: 200, body: null, file: readFileSync(join(dir, ASSETS_DIR, name)), mime };
+    return { status: 200, body: null, file: readFileSync(join(dir, ASSETS_DIR, name)), mime, headers: INERT_HEADERS };
   } catch {
     return { status: 404, body: { error: "not found" } };
   }
 }
+
+const ASSET_MIME: Record<string, string> = {
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".webp": "image/webp",
+  ".svg": "image/svg+xml",
+  ".pdf": "application/pdf",
+  ".html": "text/plain; charset=utf-8",
+  ".js": "text/plain; charset=utf-8",
+};
+const INERT_HEADERS = { "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; img-src data:; sandbox", "X-Content-Type-Options": "nosniff" };
 
 export function overviewPng(vault: string, slug: string): Out {
   const dir = boardDir(vault, slug);
