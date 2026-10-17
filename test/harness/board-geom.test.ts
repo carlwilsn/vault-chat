@@ -89,3 +89,15 @@ test("the smoother follows the pen and skips tiny steps", () => {
   assert.deepEqual(s.push(10, 0), { x: 5, y: 0 });
   assert.equal(s.push(5.2, 0), null);
 });
+
+test("ink written on an item moves with it; ink that crosses its edge stays", async () => {
+  const { carriedInk } = await import("../../board/src/geom.ts");
+  const item = { x: 100, y: 100, w: 200, h: 100 };
+  const on = { xy: [120, 120, 180, 150, 290, 190] };
+  const crossing = { xy: [150, 150, 350, 150] };
+  const outside = { xy: [0, 0, 10, 10] };
+  const selected = { xy: [110, 110, 120, 120] };
+  const got = carriedInk([on, crossing, outside, selected], new Set([selected]), [item]);
+  assert.deepEqual(got, [on]);
+  assert.deepEqual(carriedInk([on], new Set(), []), []);
+});

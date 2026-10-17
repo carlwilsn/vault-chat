@@ -11,6 +11,23 @@
 export type XY = { x: number; y: number };
 export type Box = { x0: number; y0: number; x1: number; y1: number };
 
+/**
+ * Ink written on items: the strokes (not already in `skip`) whose every point
+ * lies inside one of the boxes. Moving or scaling an item carries them along;
+ * a stroke that only crosses the item's edge stays where it is.
+ */
+export function carriedInk<S extends { xy: ArrayLike<number> }>(strokes: readonly S[], skip: { has(s: S): boolean }, boxes: ReadonlyArray<{ x: number; y: number; w: number; h: number }>): S[] {
+  if (!boxes.length) return [];
+  const qs = boxes.map((b) => ({ x0: b.x, y0: b.y, x1: b.x + b.w, y1: b.y + b.h }));
+  return strokes.filter((s) => {
+    if (skip.has(s) || !s.xy.length) return false;
+    return qs.some((q) => {
+      for (let k = 0; k + 1 < s.xy.length; k += 2) if (s.xy[k]! < q.x0 || s.xy[k]! > q.x1 || s.xy[k + 1]! < q.y0 || s.xy[k + 1]! > q.y1) return false;
+      return true;
+    });
+  });
+}
+
 /** Distance from p to segment ab. */
 export function ptSeg(px: number, py: number, ax: number, ay: number, bx: number, by: number): number {
   const dx = bx - ax, dy = by - ay;

@@ -16,12 +16,13 @@
 // palms do nothing. Everything that changes the board is one undoable edit: a
 // diff of the strokes and items lists from the gesture's start to its end.
 import { contentBounds, packXY, type Board, type Grid, type Item, type Stroke, type Tool } from "../../src/boardFormat";
-import { Smoother, boxesMeet, capsuleHits, cutStroke, lassoedBox, lassoedXY, unionBox, type Box, type XY } from "./geom";
+import { Smoother, boxesMeet, capsuleHits, carriedInk, cutStroke, lassoedBox, lassoedXY, unionBox, type Box, type XY } from "./geom";
 import { HL_ALPHA, drawGrid, drawItem, drawStroke, inkStyle, itemBox, strokeInfo, translated, xyPath } from "./ink";
 import { Arbiter, type Action, type Hand, type PEvent } from "./palm";
 import * as api from "./api";
+import { icon, type IconName } from "./icons";
 
-const TOP = 60; // css px kept clear for the toolbar
+const TOP = 68; // css px kept clear for the toolbar (8 + its 52)
 const TILE = 512; // px
 const LMIN = -5, LMAX = 5;
 const TILE_CACHE = 72;
@@ -41,8 +42,10 @@ const SIZES: Record<SizeKey, { presets: number[]; min: number; max: number }> = 
   erase: { presets: [6, 12, 24], min: 4, max: 48 },
   cut: { presets: [4, 8, 16], min: 3, max: 40 },
 };
-type Prefs = { mode: Mode; pen: number; hl: number; penColor: string; hlColor: string; erase: number; cut: number; hand: Hand; pan1: boolean };
-const DEFAULTS: Prefs = { mode: "pen", pen: 2.4, hl: 18, penColor: PENS[0]!, hlColor: HLS[0]!, erase: 12, cut: 8, hand: "left", pan1: false };
+/** `eraser`: which eraser the one eraser button picks (the stroke or the precise one), remembered. */
+type Prefs = { mode: Mode; eraser: "erase" | "cut"; pen: number; hl: number; penColor: string; hlColor: string; erase: number; cut: number; hand: Hand; pan1: boolean };
+const DEFAULTS: Prefs = { mode: "pen", eraser: "erase", pen: 2.4, hl: 18, penColor: PENS[0]!, hlColor: HLS[0]!, erase: 12, cut: 8, hand: "left", pan1: false };
+const isEraser = (m: Mode): m is "erase" | "cut" => m === "erase" || m === "cut";
 
 type Diff<T> = { removed: { i: number; v: T }[]; added: { i: number; v: T }[] };
 type Op = { strokes?: Diff<Stroke>; items?: Diff<Item>; grid?: [Grid, Grid] };
@@ -69,18 +72,9 @@ type ToolG =
   | { k: "lasso"; id: number; touch: boolean; poly: XY[]; sx: number; sy: number; far: number }
   | { k: "xf"; id: number; touch: boolean; mode: "move" | "scale"; x0: number; y0: number; anchor: XY; c0: XY; xf: Xf };
 
-const ICON: Record<string, string> = {
-  back: '<path d="M15 5l-7 7 7 7"/>',
-  pen: '<path d="M4 20l1-4L16 5l3 3L8 19z"/><path d="M14 7l3 3"/>',
-  hl: '<path d="M6 20h7"/><path d="M8 16l-2-2 9-9 4 4-9 9z"/><path d="M6 14l-2 4 4-2"/>',
-  erase: '<path d="M8 20h12"/><path d="M4.5 15.5l9-9a2 2 0 0 1 2.8 0l2.2 2.2a2 2 0 0 1 0 2.8L11 19H8z"/><path d="M9 11l5 5"/>',
-  cut: '<circle cx="12" cy="12" r="5" stroke-dasharray="2.2 2"/><path d="M2.5 12h3.5M18 12h3.5"/>',
-  lasso: '<ellipse cx="12" cy="10" rx="8" ry="5.5" stroke-dasharray="3 2.6"/><path d="M8 15c-1 2 0 4 2 5"/>',
-  undo: '<path d="M9 14L4 9l5-5"/><path d="M4 9h10a6 6 0 0 1 0 12h-3"/>',
-  redo: '<path d="M15 14l5-5-5-5"/><path d="M20 9H10a6 6 0 0 0 0 12h3"/>',
-  more: '<circle cx="5.5" cy="12" r="1.3"/><circle cx="12" cy="12" r="1.3"/><circle cx="18.5" cy="12" r="1.3"/>',
-};
-const svg = (name: string) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">${ICON[name]}</svg>`;
+/** Toolbar icons (Lucide, board/src/icons.ts). */
+const ICONS: Record<string, IconName> = { back: "chevron-left", pen: "pen-line", hl: "highlighter", erase: "eraser", cut: "eraser", lasso: "lasso-select", undo: "undo-2", redo: "redo-2", more: "ellipsis", inbox: "inbox" };
+const svg = (name: string) => icon(ICONS[name] ?? (name as IconName));
 const TITLES: Record<Mode, string> = { pen: "Pen", hl: "Highlighter", erase: "Stroke eraser", cut: "Precise eraser", lasso: "Select" };
 
 const rid = () => Math.random().toString(36).slice(2, 10);
@@ -135,6 +129,8 @@ export class BoardView {
   private txn: { strokes: Stroke[]; items: Item[] } | null = null;
   private sel: { strokes: Set<Stroke>; items: Set<Item> } | null = null;
   private lifted = false;
+  /** Ink written on a selected item (every point inside its box), carried along when it moves or scales. */
+  private carry = new Set<Stroke>();
   private undoStack: Op[] = [];
   private redoStack: Op[] = [];
 
@@ -161,17 +157,20 @@ export class BoardView {
     private onBack: () => void,
   ) {
     this.rev = board.rev;
+    if (isEraser(this.prefs.mode)) this.prefs.eraser = this.prefs.mode;
     this.arb = new Arbiter({ hand: this.prefs.hand, pan1: this.prefs.pan1, penSeen });
     this.el = document.createElement("div");
     this.el.className = "board";
     const tool = (m: Mode) => `<button class="ic" data-mode="${m}" title="${TITLES[m]}" aria-label="${TITLES[m]}">${svg(m)}</button>`;
+    // One eraser button: it picks the remembered eraser; tapped again while active, it opens the eraser's popover.
+    const eraser = `<button class="ic" data-mode="eraser" title="Eraser" aria-label="Eraser">${svg(this.prefs.eraser)}</button>`;
     this.el.innerHTML = `
       <div class="stage"><canvas class="base"></canvas><canvas class="live"></canvas></div>
       <div class="tb">
         <button class="ic back" data-act="back" title="Boards" aria-label="Boards">${svg("back")}</button>
         <div class="tb-name"></div>
         <div class="tb-tools">
-          ${(["pen", "hl", "erase", "cut", "lasso"] as Mode[]).map(tool).join("")}
+          ${tool("pen")}${tool("hl")}${eraser}${tool("lasso")}
           <span class="sep"></span>
           <button class="sz" data-pop="size" title="Size" aria-label="Size"><i></i></button>
           <button class="sw" data-pop="color" title="Colour" aria-label="Colour"><i></i></button>
@@ -325,7 +324,7 @@ export class BoardView {
     drawGrid(ctx, this.board.grid, box, s);
     const lifted = this.lifted ? this.sel : null;
     for (const it of this.board.items) if (!lifted?.items.has(it) && boxesMeet(itemBox(it), box)) drawItem(ctx, it, this.imageFor(it));
-    for (const st of this.board.strokes) if (!lifted?.strokes.has(st) && boxesMeet(strokeInfo(st).box, box)) drawStroke(ctx, st);
+    for (const st of this.board.strokes) if (!(lifted && (lifted.strokes.has(st) || this.carry.has(st))) && boxesMeet(strokeInfo(st).box, box)) drawStroke(ctx, st);
     return c;
   }
 
@@ -440,7 +439,7 @@ export class BoardView {
         ctx.save();
         ctx.transform(xf.s, 0, 0, xf.s, xf.ox, xf.oy);
         for (const it of this.board.items) if (sel.items.has(it)) drawItem(ctx, it, this.imageFor(it));
-        for (const s of this.board.strokes) if (sel.strokes.has(s)) drawStroke(ctx, s);
+        for (const s of this.board.strokes) if (sel.strokes.has(s) || this.carry.has(s)) drawStroke(ctx, s);
         ctx.restore();
       }
       const b = this.selBox();
@@ -451,13 +450,18 @@ export class BoardView {
         ctx.strokeStyle = "#1f5bd6";
         ctx.strokeRect(q.x0, q.y0, q.x1 - q.x0, q.y1 - q.y0);
         ctx.setLineDash([]);
-        const hs = 9 / z;
+        // 12 px handles (their hit area is 44 px: selHit), drawn over a soft halo so they read on ink and images.
         ctx.fillStyle = "#fff";
-        ctx.lineWidth = 1.5 / z;
         for (const [hx, hy] of [[q.x0, q.y0], [q.x1, q.y0], [q.x0, q.y1], [q.x1, q.y1]] as const) {
           ctx.beginPath();
-          ctx.arc(hx, hy, hs / 2 + 1 / z, 0, Math.PI * 2);
+          ctx.arc(hx, hy, 9 / z, 0, Math.PI * 2);
+          ctx.fillStyle = "rgba(31,91,214,0.14)";
           ctx.fill();
+          ctx.beginPath();
+          ctx.arc(hx, hy, 6 / z, 0, Math.PI * 2);
+          ctx.fillStyle = "#fff";
+          ctx.fill();
+          ctx.lineWidth = 2 / z;
           ctx.stroke();
         }
       }
@@ -704,13 +708,17 @@ export class BoardView {
       const sel = this.sel!;
       const xf = g.xf;
       this.lifted = false;
+      const carry = this.carry;
+      this.carry = new Set();
       if (!drop && (xf.s !== 1 || Math.abs(xf.ox) + Math.abs(xf.oy) > 0.3)) {
         this.begin();
         const strokes = new Set<Stroke>(), items = new Set<Item>();
+        // The selection and the ink written on its items: one edit, one undo step.
         this.board.strokes = this.board.strokes.map((s) => {
-          if (!sel.strokes.has(s)) return s;
+          const mine = sel.strokes.has(s);
+          if (!mine && !carry.has(s)) return s;
           const n = xf.s === 1 ? translated(s, xf.ox, xf.oy) : scaled(s, xf);
-          strokes.add(n);
+          if (mine) strokes.add(n);
           return n;
         });
         this.board.items = this.board.items.map((it) => {
@@ -722,7 +730,10 @@ export class BoardView {
         });
         this.sel = { strokes, items };
         this.commit();
-      } else this.invalidate(this.selBox());
+      } else {
+        this.invalidate(this.selBox());
+        for (const s of carry) this.invalidate(strokeInfo(s).box);
+      }
       this.renderBase();
       this.queueLive();
     }
@@ -857,10 +868,12 @@ export class BoardView {
     return sx >= a.x - 12 && sx <= c.x + 12 && sy >= a.y - 12 && sy <= c.y + 12 ? "move" : null;
   }
 
-  /** Lift the selection off the tiles onto the live canvas while it moves. */
+  /** Lift the selection off the tiles onto the live canvas while it moves, with the ink written on its items. */
   private lift(): void {
+    this.carry = this.sel ? new Set(carriedInk(this.board.strokes, this.sel.strokes, [...this.sel.items])) : new Set();
     this.lifted = true;
     this.invalidate(this.selBox());
+    for (const s of this.carry) this.invalidate(strokeInfo(s).box);
     this.renderBase();
   }
 
@@ -1007,10 +1020,21 @@ export class BoardView {
       return;
     }
     const d = t.dataset;
-    if (d.mode) {
+    if (d.mode === "eraser") {
+      if (isEraser(this.prefs.mode)) this.togglePop("eraser", t);
+      else {
+        this.setMode(this.prefs.eraser);
+        this.closePop();
+      }
+    } else if (d.mode) {
       this.setMode(d.mode as Mode);
       this.closePop();
-    } else if (d.pop) this.togglePop(d.pop, t);
+    } else if (d.eraser) {
+      this.prefs.eraser = d.eraser === "cut" ? "cut" : "erase";
+      this.prefs.mode = this.prefs.eraser;
+      this.savePrefs();
+      this.renderPop();
+    } else if (d.pop) this.togglePop(d.pop === "size" && isEraser(this.prefs.mode) ? "eraser" : d.pop, d.pop === "size" && isEraser(this.prefs.mode) ? (this.el.querySelector('[data-mode="eraser"]') as HTMLElement) : t);
     else if (d.size) {
       const k = this.sizeKey();
       if (k) this.prefs[k] = Number(d.size);
@@ -1059,7 +1083,7 @@ export class BoardView {
   private openPop: string | null = null;
   private togglePop(name: string, btn: HTMLElement): void {
     if (this.openPop === name) return this.closePop();
-    if (name === "size" && !this.sizeKey()) return;
+    if ((name === "size" || name === "eraser") && !this.sizeKey()) return;
     if (name === "color" && this.prefs.mode !== "pen" && this.prefs.mode !== "hl") return;
     this.openPop = name;
     const pop = this.el.querySelector(".pop") as HTMLElement;
@@ -1084,12 +1108,13 @@ export class BoardView {
   private renderPop(): void {
     const pop = this.el.querySelector(".pop") as HTMLElement;
     const p = this.prefs;
-    if (this.openPop === "size") {
+    if (this.openPop === "size" || this.openPop === "eraser") {
       const k = this.sizeKey()!;
       const spec = SIZES[k];
       const ink = k === "pen" || k === "hl";
       const dot = (v: number) => (ink ? clamp(v * this.homeZ, 2, 26) : clamp(v * 0.9, 5, 26));
-      pop.innerHTML = `
+      const kind = this.openPop === "eraser" ? `<div class="seg">${(["erase", "cut"] as const).map((e) => `<button data-eraser="${e}" class="${p.eraser === e ? "on" : ""}">${e === "erase" ? "Stroke" : "Precise"}</button>`).join("")}</div>` : "";
+      pop.innerHTML = `${kind}
         <div class="row">${spec.presets.map((v) => `<button class="szp${v === p[k] ? " on" : ""}" data-size="${v}" title="${v}"><i class="${ink ? "" : "ring"}" style="width:${dot(v)}px;height:${dot(v)}px;${ink ? `background:${k === "hl" ? p.hlColor : p.penColor}` : ""}"></i></button>`).join("")}</div>
         <div class="row"><input type="range" data-range min="${spec.min}" max="${spec.max}" step="0.1" value="${p[k]}"><span class="val">${this.sizeLabel(k)}</span></div>`;
     } else if (this.openPop === "color") {
@@ -1108,7 +1133,13 @@ export class BoardView {
 
   private syncToolbar(): void {
     const p = this.prefs;
-    this.el.querySelectorAll<HTMLElement>("[data-mode]").forEach((b) => b.classList.toggle("on", b.dataset.mode === p.mode));
+    this.el.querySelectorAll<HTMLElement>("[data-mode]").forEach((b) => b.classList.toggle("on", b.dataset.mode === p.mode || (b.dataset.mode === "eraser" && isEraser(p.mode))));
+    const er = this.el.querySelector('.tb [data-mode="eraser"]') as HTMLElement;
+    if (er.dataset.shows !== p.eraser) {
+      er.dataset.shows = p.eraser;
+      er.innerHTML = svg(p.eraser);
+      er.title = er.ariaLabel = TITLES[p.eraser];
+    }
     const k = this.sizeKey();
     const sz = this.el.querySelector(".tb .sz") as HTMLButtonElement;
     sz.disabled = !k;
