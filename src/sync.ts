@@ -51,6 +51,9 @@ type StateSnapshot = {
     voiceMicMuted: boolean;
     voiceError: string | null;
   };
+  /** Sent along when the stream changed in the same update (a reply landing as
+   *  its message): the popout applies both at once — no frame without either. */
+  stream?: StreamSnapshot;
 };
 
 type StreamSnapshot = {
@@ -191,8 +194,10 @@ async function installThemeSync() {
   });
 }
 
-async function broadcastState() {
-  await emitTo(POPOUT_LABEL, "chat:state", takeStateSnapshot()).catch(() => {});
+async function broadcastState(withStream = false) {
+  const snap = takeStateSnapshot();
+  if (withStream) snap.stream = takeStreamSnapshot();
+  await emitTo(POPOUT_LABEL, "chat:state", snap).catch(() => {});
 }
 
 async function broadcastStream() {
@@ -232,15 +237,14 @@ export async function installMainSync() {
       state.voiceListening !== prev.voiceListening ||
       state.voiceMicMuted !== prev.voiceMicMuted ||
       state.voiceError !== prev.voiceError;
-    if (stateChanged) broadcastState();
-
     const streamChanged =
       state.busy !== prev.busy ||
       state.streamingText !== prev.streamingText ||
       state.streamingReasoning !== prev.streamingReasoning ||
       state.liveTools !== prev.liveTools ||
       state.agentTodos !== prev.agentTodos;
-    if (streamChanged) broadcastStream();
+    if (stateChanged) broadcastState(streamChanged);
+    else if (streamChanged) broadcastStream();
 
     // Chat-pane Capture bridge: when a viewer divert lands an image
     // in chatPaneLastCapture on main while the popout is open,
@@ -316,6 +320,8 @@ export async function installPopoutSync() {
   await listen<StateSnapshot>("chat:state", (e) => {
     gotSnapshot = true;
     useStore.getState().applyChatState(e.payload);
+    // Same task: React shows the message and the emptied stream in one frame.
+    if (e.payload.stream) useStore.getState().applyChatStream(e.payload.stream);
   });
   await listen<StreamSnapshot>("chat:stream", (e) => {
     useStore.getState().applyChatStream(e.payload);
