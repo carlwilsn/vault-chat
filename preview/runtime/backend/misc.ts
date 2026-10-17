@@ -126,6 +126,9 @@ export const miscCommands: Record<string, (a: Record<string, any>) => unknown> =
   },
   run_script: ({ path }) => ({ stdout: "", stderr: `preview: scripts don't run in the preview (${path})`, code: 1, timed_out: false }),
 
+  // ---- boot timing (src/bootTiming.ts): no main-thread watcher in a browser ----
+  boot_timing: () => ({ uptime_ms: Math.round(performance.now()), stalls: [] }),
+
   // ---- voice / phone host (inert: no server, no audio) ----
   voice_server_start: ({ port }) => port ?? 8848,
   voice_server_stop: () => null,
