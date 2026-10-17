@@ -379,11 +379,11 @@
   /* A word that is working: a soft highlight sweeping through muted text. */
   .vc-shimmer {
     color: transparent;
-    background: linear-gradient(90deg, hsl(var(--muted-foreground)) 0%, hsl(var(--muted-foreground)) 40%, hsl(var(--foreground)) 50%, hsl(var(--muted-foreground)) 60%, hsl(var(--muted-foreground)) 100%);
-    background-size: 250% 100%;
+    background: linear-gradient(90deg, hsl(var(--muted-foreground)) 0%, hsl(var(--muted-foreground)) 30%, hsl(var(--foreground)) 50%, hsl(var(--muted-foreground)) 70%, hsl(var(--muted-foreground)) 100%);
+    background-size: 200% 100%;
     -webkit-background-clip: text;
     background-clip: text;
-    animation: vc-shimmer 2.2s linear infinite;
+    animation: vc-shimmer 1.8s linear infinite;
   }
   @keyframes vc-shimmer {
     from { background-position: 100% 0; }
