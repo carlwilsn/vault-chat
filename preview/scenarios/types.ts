@@ -96,6 +96,9 @@ export type Scenario = {
   activeConversation?: string;
   /** Phone scenario: adjust the phone's MockDB (built from the same world). */
   phone?: { page?: string; clicks?: string[]; db?: (db: any, now: number) => void; narrate?: Beat<PhoneStep>[] };
+  /** Console errors the scenario provokes on purpose (regex sources). The
+   *  self-test lets these through, and fails if one of them never appears. */
+  expectedErrors?: string[];
   /** Surfaces this scenario is meant for. */
   surfaces?: Array<"desktop" | "phone">;
 };

@@ -177,6 +177,8 @@ export function boot(base: Base): void {
     tourPause: (p: boolean) => void (tourCtl.paused = p),
     tourAbort: () => void (tourCtl.aborted = true),
     stepError: null as string | null,
+    /** Console errors this scenario provokes on purpose (regex sources). */
+    expectedErrors: () => sc.expectedErrors ?? [],
   };
   (window as any).__preview = api;
 

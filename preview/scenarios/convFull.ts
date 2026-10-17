@@ -691,6 +691,8 @@ export const convFullScenarios: Scenario[] = [
     },
     activeConversation: CONV,
     localStorage: lsFor(DEFAULTS),
+    // Every failed start logs an error line (the app log mirrors console.error).
+    expectedErrors: ["^\\[voice-eleven\\] voice start failed: The box couldn't start voice: HTTP 503"],
     open: [
       { key: "ctrl+shift+F" },
       { wait: "[data-el='chats-sidebar']" },

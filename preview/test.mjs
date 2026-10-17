@@ -52,6 +52,7 @@ for (const side of targets) {
       const { browser, page, log } = await launch(phone ? { width: 390, height: 844, isMobile: true, deviceScaleFactor: 2 } : { width: 1400, height: 900 });
       const url = (phone ? `${origin}/phone?scenario=${sc.id}&base=${base}` : `${origin}/?scenario=${sc.id}&side=${side}&base=${base}`) + (narrated ? "&narrate=1&speed=2" : "&narrate=0");
       const problems = [];
+      let st = null;
       try {
         await page.goto(url, { timeout: 30000 });
         if (phone) {
@@ -73,9 +74,9 @@ for (const side of targets) {
           const m = /^(\d+)\/(\d+)$/.exec(card?.n ?? "");
           if (!card || !m || m[1] !== m[2] || !/whole conversation/.test(card.t ?? "")) problems.push(`narration did not reach its end: ${JSON.stringify(card)}`);
         }
-        const st = await page.evaluate(() => {
+        st = await page.evaluate(() => {
           const p = window.__preview;
-          return p ? { unknown: p.unknown(), refused: p.refused().map((r) => `${r.kind} ${r.url}`), stepError: p.stepError, reports: p.reports().filter((r) => r.kind === "error").map((r) => r.text) } : null;
+          return p ? { expected: p.expectedErrors?.() ?? [], unknown: p.unknown(), refused: p.refused().map((r) => `${r.kind} ${r.url}`), stepError: p.stepError, reports: p.reports().filter((r) => r.kind === "error").map((r) => r.text) } : null;
         });
         if (st) {
           if (st.unknown.length) problems.push(`not faked: ${st.unknown.join(", ")}`);
@@ -87,7 +88,10 @@ for (const side of targets) {
       } catch (e) {
         problems.push(`load: ${String(e?.message ?? e).split("\n")[0]}`);
       }
-      const errs = log.console.filter((m) => m.type === "error" && !ALLOWED_ERRORS.some((r) => r.test(m.text)));
+      // A scenario's own expected errors pass — and each must have appeared.
+      const expected = (st?.expected ?? []).map((s) => new RegExp(s));
+      for (const r of expected) if (!log.console.some((m) => m.type === "error" && r.test(m.text))) problems.push(`expected console error never came: ${r.source}`);
+      const errs = log.console.filter((m) => m.type === "error" && ![...ALLOWED_ERRORS, ...expected].some((r) => r.test(m.text)));
       for (const e of errs) problems.push(`console: ${e.text.split("\n")[0].slice(0, 220)}`);
       for (const e of log.pageErrors) problems.push(`pageerror: ${e.text.split("\n")[0].slice(0, 220)}`);
       for (const u of log.outbound) problems.push(`outbound: ${u}`);
