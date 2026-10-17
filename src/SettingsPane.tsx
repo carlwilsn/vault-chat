@@ -1224,7 +1224,7 @@ function BoxSyncPanel({ vault, box, onDisconnected }: { vault: string; box: BoxC
 /** The phone app's one home is the box (always on): its fixed https link, no
  *  token — the box knows the phone by its Tailscale login. */
 function PhoneLink({ box }: { box: BoxConfig | null }) {
-  const [copied, setCopied] = useState(false);
+  const [copied, setCopied] = useState<"phone" | "board" | null>(null);
   const link = box ? `${box.box.replace(/\/+$/, "")}/phone` : null;
   return (
     <div className="space-y-1.5">
@@ -1237,14 +1237,30 @@ function PhoneLink({ box }: { box: BoxConfig | null }) {
               className="text-[11px] px-2.5 py-1 rounded border border-border hover:bg-muted shrink-0"
               onClick={() => {
                 void navigator.clipboard?.writeText(link);
-                setCopied(true);
-                setTimeout(() => setCopied(false), 1500);
+                setCopied("phone");
+                setTimeout(() => setCopied(null), 1500);
               }}
             >
-              {copied ? "copied" : "copy"}
+              {copied === "phone" ? "copied" : "copy"}
             </button>
           </div>
           <p className="text-[11px] text-muted-foreground/70">Open it on your phone (signed in to Tailscale) and add it to the Home Screen.</p>
+          {/* The whiteboard (board/README.md): the same box, at /board. */}
+          <h4 className="text-[10.5px] font-semibold uppercase tracking-wider text-muted-foreground/70 pt-2">Whiteboard (iPad)</h4>
+          <div className="flex items-center gap-2">
+            <code className="text-[11px] font-mono bg-muted px-2 py-1 rounded truncate flex-1 min-w-0">{link.replace(/\/phone$/, "/board")}</code>
+            <button
+              className="text-[11px] px-2.5 py-1 rounded border border-border hover:bg-muted shrink-0"
+              onClick={() => {
+                void navigator.clipboard?.writeText(link.replace(/\/phone$/, "/board"));
+                setCopied("board");
+                setTimeout(() => setCopied(null), 1500);
+              }}
+            >
+              {copied === "board" ? "copied" : "copy"}
+            </button>
+          </div>
+          <p className="text-[11px] text-muted-foreground/70">Open it on the iPad (signed in to Tailscale) and add it to the Home Screen; boards are saved in the vault's hidden boards/ folder.</p>
         </>
       ) : (
         <p className="text-[11px] text-muted-foreground/70">The phone app runs on a box — connect one above.</p>
