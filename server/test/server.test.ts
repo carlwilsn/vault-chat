@@ -77,43 +77,7 @@ describe("auth", () => {
   });
 });
 
-describe("/poll sequence across a restart", () => {
-  it("a cursor taken before a restart still receives events after it", async () => {
-    const home = tmp();
-    const vault = makeVault(join(home, "vault"));
-    const secrets = await makeKeyStore(join(home, "secrets"), { "api.openrouter": "sk-or-canary" });
-    let srv = await startServer({ home, vault, secrets });
-    try {
-      const kill = () =>
-        fetch(srv.base + "/kill", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ convId: "no-such-thread" }) });
-      const first = await (await fetch(srv.base + "/poll?after=latest")).json();
-      await kill(); // broadcasts {type:"status", convId, status:"idle"}
-      const got = await (await fetch(`${srv.base}/poll?after=${first.next}`)).json();
-      expect(got.events.length).toBe(1);
-      expect(got.events[0]).toMatchObject({ type: "status", convId: "no-such-thread", status: "idle" });
-      const cursor = got.next as number;
-      expect(cursor).toBeGreaterThan(first.next);
-
-      await srv.stop();
-      srv = await startServer({ home, vault, secrets });
-      const fresh = await (await fetch(srv.base + "/poll?after=latest")).json();
-      expect(fresh.next).toBeGreaterThanOrEqual(cursor);
-      // Each process says who it is: a client sees the restart and resyncs whole.
-      expect(typeof first.boot).toBe("string");
-      expect(fresh.boot).not.toBe(first.boot);
-      expect(got.boot).toBe(first.boot);
-      await kill();
-      const t0 = Date.now();
-      const after = await (await fetch(`${srv.base}/poll?after=${cursor}`)).json();
-      expect(Date.now() - t0).toBeLessThan(5000); // not a 25 s empty hold
-      expect(after.events.length).toBe(1);
-      expect(after.next).toBeGreaterThan(cursor);
-    } finally {
-      await srv.stop();
-      cleanup(home);
-    }
-  });
-
+describe("/poll cursors (the restart itself: convlogServer.test.ts)", () => {
   it("a cursor from the future comes back at once with the real one", async () => {
     const home = tmp();
     const vault = makeVault(join(home, "vault"));

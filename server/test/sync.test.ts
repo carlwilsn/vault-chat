@@ -52,6 +52,25 @@ describe("box sync loop", () => {
     expect(sync.status.steps.commit?.detail).toMatch(/committed 1 file/);
   });
 
+  it("never commits the conversation log, nor an older conversation file (kept, never deleted)", async () => {
+    // An older conversation file already in git, then changed; the log written beside it.
+    mkdirSync(join(box, ".vault-chat", "conversations"), { recursive: true });
+    writeFileSync(join(box, ".vault-chat", "conversations", "old.jsonl"), '{"id":"old"}\n');
+    git(box, "add", "-A");
+    git(box, "commit", "-q", "-m", "an older conversation");
+    writeFileSync(join(box, ".vault-chat", "conversations", "old.jsonl"), '{"id":"old"}\n{"role":"user","content":"x"}\n');
+    mkdirSync(join(box, ".vault-chat", "events"), { recursive: true });
+    writeFileSync(join(box, ".vault-chat", "events", "c1.jsonl"), '{"seq":1}\n');
+    writeFileSync(join(box, "notes", "real.md"), "a real change\n");
+    await sync.runOnce();
+    expect(sync.status.ok, JSON.stringify(sync.status.steps)).toBe(true);
+    const files = git(box, "show", "--name-only", "--format=", "HEAD").trim().split("\n");
+    expect(files).toEqual(["notes/real.md"]);
+    expect(git(box, "ls-files", ".vault-chat/events").trim()).toBe("");
+    expect(git(box, "ls-files", ".vault-chat/conversations").trim()).toBe(".vault-chat/conversations/old.jsonl");
+    expect(existsSync(join(box, ".vault-chat", "conversations", "old.jsonl"))).toBe(true);
+  });
+
   it("fast-forwards box to master once master contains it, and never merges", async () => {
     await sync.runOnce(); // publish box
     cloneLaptop();

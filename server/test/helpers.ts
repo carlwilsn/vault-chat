@@ -2,7 +2,7 @@
 // a scripted fake OpenRouter, and the built server bundle as a real child
 // process.
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, copyFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join, resolve, dirname } from "node:path";
@@ -10,6 +10,16 @@ import { Encrypter } from "age-encryption";
 
 export const ROOT = resolve(__dirname, "..", "..");
 export const BUNDLE = join(ROOT, "dist-server", "vault-chat-server.mjs");
+
+/** An npm prefix holding the fake pi (server/test/fakePiCli.mjs) as @earendil-works/pi-coding-agent@1.1.0 (VC_PI_DIR). */
+export function fakePiDir(home: string): string {
+  const dir = join(home, "fakepi");
+  const pkg = join(dir, "node_modules", "@earendil-works", "pi-coding-agent");
+  mkdirSync(join(pkg, "dist", "bundle"), { recursive: true });
+  writeFileSync(join(pkg, "package.json"), JSON.stringify({ name: "@earendil-works/pi-coding-agent", version: "1.1.0", type: "module" }));
+  copyFileSync(join(ROOT, "server", "test", "fakePiCli.mjs"), join(pkg, "dist", "bundle", "cli.js"));
+  return dir;
+}
 
 export function tmp(prefix = "vcs-"): string {
   return mkdtempSync(join(tmpdir(), prefix));
@@ -235,8 +245,12 @@ export async function startServer(e: ServerEnv & { bundle?: string }): Promise<R
     VC_TOKEN_FILE: tokenFile,
     VC_STATE_DIR: join(e.home, "state"),
     VC_SYNC: e.bare ? "1" : "0",
-    // The old loop unless a test boots the engine (piEngine.test.ts sets VC_ENGINE and VC_PI_DIR).
-    VC_ENGINE: "0",
+    // The engine on the fake pi (server/test/fakePiCli.mjs) unless a test names another (piEngine.test.ts: the real pi).
+    VC_ENGINE: "pi",
+    VC_PI_DIR: fakePiDir(e.home),
+    VC_ENGINE_MODEL: "openai/gpt-5.6-sol",
+    VC_PI_UNSAFE: "1",
+    VC_BWRAP: join(e.home, "no-bwrap"),
     ...(e.openrouter ? { VC_OPENROUTER_BASE: e.openrouter } : {}),
     ...(e.extra ?? {}),
   };
@@ -248,7 +262,9 @@ export async function startServer(e: ServerEnv & { bundle?: string }): Promise<R
   await new Promise<void>((resolve, reject) => {
     const t = setTimeout(() => reject(new Error(`server did not start:\n${out}`)), 60_000);
     const check = setInterval(() => {
-      if (out.includes("listening on")) {
+      // Listening, and the engine started (or said why not), unless it is off.
+      const engineReady = env.VC_ENGINE === "0" || /engine (up|not running|failed)/.test(out);
+      if (out.includes("listening on") && engineReady) {
         clearTimeout(t);
         clearInterval(check);
         resolve();

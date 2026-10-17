@@ -2,6 +2,7 @@
 // of its turn: a successful Write/Edit (engine, on a fake pi) names the file;
 // a burst of them is one debounced sync cycle that commits and publishes box
 // to the bare repo, and only then the clients hear /poll "vault_changed".
+import { piOf } from "./fakePi";
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { EventEmitter } from "node:events";
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -55,7 +56,7 @@ class FakeBackend extends EventEmitter {
     return { ok: true };
   }
   ev(threadId: string, e: any) {
-    this.emit("event", { threadId, ...e });
+    for (const x of piOf(e)) this.emit("event", { threadId: threadId, ...x });
   }
 }
 

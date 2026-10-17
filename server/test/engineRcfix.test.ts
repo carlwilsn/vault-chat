@@ -7,6 +7,7 @@
 //  F  answering an AskUser marks its ask notification answered (no notifId needed);
 //  G  the AskUser call is stored once, with its answer on it;
 //  and a failed keep-going turn goes straight to blocked (never "idle" on the way).
+import { piOf } from "./fakePi";
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { EventEmitter } from "node:events";
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -52,6 +53,9 @@ class FakeBackend extends EventEmitter {
   }
   async steer() {}
   async followUp() {}
+  async clearQueue() {
+    return { steering: [], followUp: [] };
+  }
   async interrupt(threadId: string) {
     this.interrupts.push(threadId);
   }
@@ -65,7 +69,7 @@ class FakeBackend extends EventEmitter {
     return { ok: true };
   }
   ev(threadId: string, e: any) {
-    this.emit("event", { threadId, ...e });
+    for (const x of piOf(e)) this.emit("event", { threadId: threadId, ...x });
   }
 }
 
@@ -263,8 +267,11 @@ describe("F + G: one AskUser entry, and its notification answered", () => {
     expect(calls).toHaveLength(1);
     expect(calls[0].input).toEqual({ question: "apple or pear?", options: ["apple", "pear"] });
     expect(calls[0].result).toBe("Carl answered: pear");
-    const asking = c.messages.find((m: any) => /apple or pear/.test(m.content ?? ""));
-    expect(asking.toolCalls.map((t: any) => t.name)).toEqual(["AskUser"]);
+    // The question is an item of its own (its options as cards), answered by Carl's message right after it.
+    const at = c.messages.findIndex((m: any) => /apple or pear/.test(m.content ?? "") && m.askOptions);
+    expect(c.messages[at].askOptions.map((o: any) => o.answer)).toEqual(["apple", "pear"]);
+    expect(c.messages[at + 1]).toMatchObject({ role: "user", content: "pear", decision: true });
+    expect(c.messages.filter((m: any) => m.askOptions)).toHaveLength(1);
   });
 
   it("an answer after a restart (no live ask) marks the card too", async () => {
@@ -392,17 +399,18 @@ describe("C: one restart, one resume", () => {
     c = await readConv(vault, convId);
     expect(c.messages.filter((m: any) => /Interrupted by a restart/.test(m.content ?? ""))).toHaveLength(1);
     expect(next.backend.turns.filter((t) => t.threadId === c.threadId)).toHaveLength(1);
-    // A boot that finds the marker already written (an older server wrote it) does not add another.
-    const { patchMeta } = await import("../engine/convs");
-    await patchMeta(vault, convId, { state: "running" });
+    // The resume turn is cut by the next restart too: one more marker (one per cut), one more resume.
+    engineShuttingDown();
     next.engine.stop();
+    engineShuttingDown(false);
     const third = makeEngine("m");
     third.engine.start();
-    // The last message is now the resume prompt: no new marker either.
     third.backend.emit("up");
     await until(() => third.backend.turns.some((t) => t.threadId === c.threadId), 8_000);
+    await sleep(300);
     c = await readConv(vault, convId);
-    expect(c.messages.filter((m: any) => /Interrupted by a restart/.test(m.content ?? ""))).toHaveLength(1);
+    expect(c.messages.filter((m: any) => /Interrupted by a restart/.test(m.content ?? ""))).toHaveLength(2);
+    expect(third.backend.turns.filter((t) => t.threadId === c.threadId)).toHaveLength(1);
     third.engine.stop();
   });
 });

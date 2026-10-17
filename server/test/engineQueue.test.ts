@@ -1,7 +1,10 @@
-// Messages sent while a turn runs: a plain /message steers the running turn
-// (pi's steer, at its next step); /message {queue: true} is held by the engine
-// and runs as the next turn when this one ends, in order; {unqueue: qid} takes
-// one back. The conversation's `queued` mirrors what waits, for the clients.
+// Messages sent while a turn runs are pi's own: a plain /message is pi's steer
+// (delivered after the current tool calls), /message {queue: true} is pi's
+// follow_up (delivered when the agent would stop); until pi delivers one it is
+// pending in the log, and it enters the transcript where pi puts it (its user
+// message_start), under the client's id. {unqueue: id} takes one back: pi's
+// clear_queue, then the others go back in, in order.
+import { piOf, userMsg, assistant, toolStart, toolEnd } from "./fakePi";
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { EventEmitter } from "node:events";
 import { mkdirSync } from "node:fs";
@@ -45,6 +48,19 @@ class FakeBackend extends EventEmitter {
   async steer(threadId: string, turnId: string, o: any) {
     this.steers.push({ threadId, turnId, ...o });
   }
+  followUps: any[] = [];
+  clears = 0;
+  async followUp(threadId: string, o: any) {
+    this.followUps.push({ threadId, ...o });
+  }
+  async clearQueue() {
+    this.clears++;
+    return { steering: [], followUp: [] };
+  }
+  /** Raw pi events. */
+  pi(threadId: string, evs: any[]) {
+    for (const ev of evs) this.emit("event", { threadId, kind: "pi", ev });
+  }
   async interrupt() {}
   usageCalls() {
     return [];
@@ -56,7 +72,7 @@ class FakeBackend extends EventEmitter {
     return { ok: true };
   }
   ev(threadId: string, e: any) {
-    this.emit("event", { threadId, ...e });
+    for (const x of piOf(e)) this.emit("event", { threadId: threadId, ...x });
   }
 }
 
@@ -109,82 +125,100 @@ const until = async (fn: () => Promise<boolean> | boolean, ms = 10_000) => {
 const userTexts = async (id: string) => ((await readConv(vault, id))?.messages ?? []).filter((m: any) => m.role === "user" && !m.system).map((m: any) => m.content);
 
 describe("steer and queue", () => {
-  it("steers a running turn; queued messages wait for the end, then run in order; one can be taken back", async () => {
+  it("steers a running turn; queued messages are pi's follow-ups, pending until pi delivers them, in order; one can be taken back", async () => {
     const r = await engine.message({ text: "Write the section." });
     await until(() => backend.turns.length === 1);
     const tid = backend.turns[0].threadId;
 
-    // Enter while it runs: a steer into the turn, shown at once.
-    const s = await engine.message({ convId: r.convId, text: "Keep it under a page." });
-    expect(s.steered).toBe(true);
+    // Enter while it runs: pi's steer. Pending (a chip), not in the transcript yet.
+    const s1 = await engine.message({ convId: r.convId, text: "Keep it under a page.", clientMsgId: "c-steer" });
+    expect(s1.steered).toBe(true);
     expect(backend.steers.map((x) => x.texts.join())).toEqual(["Keep it under a page."]);
 
-    // Tab: held, listed on the conversation, not in the thread yet.
-    const q1 = await engine.message({ convId: r.convId, text: "Then check the build.", queue: true });
-    const q2 = await engine.message({ convId: r.convId, text: "And open a PR.", queue: true });
-    const q3 = await engine.message({ convId: r.convId, text: "Never mind this one.", queue: true });
+    // Tab: pi's follow-ups.
+    const q1 = await engine.message({ convId: r.convId, text: "Then check the build.", queue: true, clientMsgId: "c-q1" });
+    const q2 = await engine.message({ convId: r.convId, text: "And open a PR.", queue: true, clientMsgId: "c-q2" });
+    const q3 = await engine.message({ convId: r.convId, text: "Never mind this one.", queue: true, clientMsgId: "c-q3" });
     expect([q1.queued, q2.queued, q3.queued]).toEqual([true, true, true]);
+    expect(backend.followUps.map((x) => x.texts.join())).toEqual(["Then check the build.", "And open a PR.", "Never mind this one."]);
     let c = await readConv(vault, r.convId);
     expect(c.queued.map((q: any) => q.text)).toEqual(["Then check the build.", "And open a PR.", "Never mind this one."]);
-    expect(await userTexts(r.convId)).toEqual(["Write the section.", "Keep it under a page."]);
+    expect(await userTexts(r.convId)).toEqual(["Write the section."]);
+    // The same message again (a retry): nothing new.
+    expect((await engine.message({ convId: r.convId, text: "And open a PR.", queue: true, clientMsgId: "c-q2" })).duplicate).toBe(true);
 
-    // Taken back before delivery.
+    // Taken back before delivery: pi's queue is cleared and the others go back in, in order.
     expect((await engine.message({ convId: r.convId, unqueue: q3.qid })).ok).toBe(true);
+    expect(backend.clears).toBe(1);
+    expect(backend.steers.map((x) => x.texts.join())).toEqual(["Keep it under a page.", "Keep it under a page."]);
+    expect(backend.followUps.slice(3).map((x) => x.texts.join())).toEqual(["Then check the build.", "And open a PR."]);
     c = await readConv(vault, r.convId);
-    expect(c.queued.map((q: any) => q.id)).toEqual([q1.qid, q2.qid]);
+    expect(c.queued.map((q: any) => q.id)).toEqual(["c-q1", "c-q2"]);
 
-    // The turn ends: the first queued message runs as the next turn.
-    backend.ev(tid, { kind: "turnCompleted", turnId: "pt-1", status: "completed" });
-    await until(() => backend.turns.length === 2);
-    expect(backend.turns[1].texts.join("\n")).toMatch(/Then check the build\./);
+    // pi delivers: the steer after the current step, the follow-ups when the agent would stop.
+    backend.pi(tid, [...userMsg("Write the section."), ...assistant([{ text: "Drafting." }]), ...userMsg("Keep it under a page."), ...assistant([{ text: "Short then." }])]);
+    backend.pi(tid, [...userMsg("Then check the build."), ...assistant([{ text: "Build is green." }])]);
+    await new Promise((res) => setTimeout(res, 200));
     c = await readConv(vault, r.convId);
     expect(c.queued.map((q: any) => q.text)).toEqual(["And open a PR."]);
-
     // Already delivered: can't be taken back.
     expect((await engine.message({ convId: r.convId, unqueue: q1.qid })).ok).toBe(false);
-
-    backend.ev(tid, { kind: "turnCompleted", turnId: "pt-2", status: "completed" });
-    await until(() => backend.turns.length === 3);
-    expect(backend.turns[2].texts.join("\n")).toMatch(/And open a PR\./);
-    backend.ev(tid, { kind: "turnCompleted", turnId: "pt-3", status: "completed" });
+    backend.pi(tid, [...userMsg("And open a PR."), ...assistant([{ text: "PR opened." }])]);
+    backend.ev(tid, { kind: "turnCompleted", turnId: "pt-1", status: "completed" });
     await until(async () => (await readConv(vault, r.convId))?.state === "idle");
     c = await readConv(vault, r.convId);
     expect(c.queued ?? []).toEqual([]);
-    expect(await userTexts(r.convId)).toEqual(["Write the section.", "Keep it under a page.", "Then check the build.", "And open a PR."]);
+    // One turn, in pi's order, each message under its client's id.
+    expect(backend.turns).toHaveLength(1);
+    expect(c.messages.filter((m: any) => !m.system).map((m: any) => [m.role, m.content])).toEqual([
+      ["user", "Write the section."],
+      ["assistant", "Drafting."],
+      ["user", "Keep it under a page."],
+      ["assistant", "Short then."],
+      ["user", "Then check the build."],
+      ["assistant", "Build is green."],
+      ["user", "And open a PR."],
+      ["assistant", "PR opened."],
+    ]);
+    expect(c.messages.filter((m: any) => m.role === "user").map((m: any) => m.mid).slice(1)).toEqual(["c-steer", "c-q1", "c-q2"]);
   });
 
-  it("a steer lands after what the turn already showed: the reply so far closes as its own message, the rest follows", async () => {
+  it("a steer lands where pi delivers it: after the tool calls in flight, in the log's order", async () => {
     const r = await engine.message({ text: "Go through the three chapters." });
     await until(() => backend.turns.some((t) => t.texts?.join(" ").includes("three chapters")));
     const turn = backend.turns.length;
     const tid = backend.turns[turn - 1].threadId;
-    const turnId = `pt-${turn}`;
-    backend.ev(tid, { kind: "turnStarted", turnId });
-    backend.ev(tid, { kind: "textDelta", itemId: "x1", delta: "Reading chapter one" });
-    backend.ev(tid, { kind: "tool", itemId: "c1", name: "Read", input: { path: "ch1.md" }, result: "text" });
-    backend.ev(tid, { kind: "tool", itemId: "c2", name: "subagent", input: { task: "ch2" } }); // in flight
+    backend.pi(tid, [
+      ...userMsg("Go through the three chapters."),
+      ...assistant([{ text: "Reading chapter one" }, { toolCall: { id: "c1", name: "read", arguments: { path: "ch1.md" } } }, { toolCall: { id: "c2", name: "subagent", arguments: { task: "ch2" } } }]),
+      toolStart("c1", "read", { path: "ch1.md" }),
+      toolStart("c2", "subagent", { task: "ch2" }),
+      toolEnd("c1", "read", "text"),
+    ]);
     await new Promise((res) => setTimeout(res, 50));
-    const s = await engine.message({ convId: r.convId, text: "still working?" });
-    expect(s.steered).toBe(true);
-    // The in-flight call finishes on the message it was closed into; its children too.
+    const s1 = await engine.message({ convId: r.convId, text: "still working?", clientMsgId: "c-still" });
+    expect(s1.steered).toBe(true);
     backend.ev(tid, { kind: "subagents", itemId: "c2", children: ["sa1"], op: "spawnAgent", done: true, ok: true });
-    backend.ev(tid, { kind: "tool", itemId: "c2", name: "subagent", result: "spawned" });
-    // The rest of the turn: the same text item finishes (whole), then more.
-    backend.ev(tid, { kind: "text", itemId: "x1", text: "Reading chapter one, then two." });
-    backend.ev(tid, { kind: "textDelta", itemId: "x2", delta: "Yes — on chapter three now." });
-    backend.ev(tid, { kind: "tool", itemId: "c3", name: "Read", input: { path: "ch3.md" }, result: "text" });
-    backend.ev(tid, { kind: "turnCompleted", turnId, status: "completed" });
+    backend.pi(tid, [
+      toolEnd("c2", "subagent", "spawned"),
+      ...userMsg("still working?"),
+      ...assistant([{ text: "Yes — on chapter three now." }, { toolCall: { id: "c3", name: "read", arguments: { path: "ch3.md" } } }]),
+      toolStart("c3", "read", { path: "ch3.md" }),
+      toolEnd("c3", "read", "text"),
+    ]);
+    backend.ev(tid, { kind: "turnCompleted", turnId: "x", status: "completed" });
     await until(async () => (await readConv(vault, r.convId))?.state === "idle");
     const msgs = ((await readConv(vault, r.convId))?.messages ?? []).filter((m: any) => !m.system);
-    expect(msgs.map((m: any) => [m.role, m.content])).toEqual([
-      ["user", "Go through the three chapters."],
-      ["assistant", "Reading chapter one"],
-      ["user", "still working?"],
-      ["assistant", ", then two.\n\nYes — on chapter three now."],
+    expect(msgs.map((m: any) => [m.role, m.content, (m.toolCalls ?? []).map((t: any) => t.id)])).toEqual([
+      ["user", "Go through the three chapters.", []],
+      ["assistant", "Reading chapter one", []],
+      ["assistant", "", ["c1", "c2"]],
+      ["user", "still working?", []],
+      ["assistant", "Yes — on chapter three now.", []],
+      ["assistant", "", ["c3"]],
     ]);
-    expect(msgs[1].toolCalls.map((t: any) => [t.id, t.result])).toEqual([["c1", "text"], ["c2", "spawned"]]);
-    expect(msgs[1].toolCalls[1].subagents).toEqual(["sa1"]);
-    expect(msgs[3].toolCalls.map((t: any) => t.id)).toEqual(["c3"]);
+    expect(msgs[2].toolCalls.map((t: any) => [t.name, t.result])).toEqual([["Read", "text"], ["subagent", "spawned"]]);
+    expect(msgs[2].toolCalls[1].subagents).toEqual(["sa1"]);
   });
 
   it("queue with nothing running is an ordinary message", async () => {

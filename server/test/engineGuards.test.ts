@@ -2,6 +2,7 @@
 // process on a fake pi: a keep-going conversation whose turn fails ends
 // blocked with a ping (never a silent idle), and the agent's Notify pings are
 // capped per conversation per hour (no "still training normally" floods).
+import { piOf } from "./fakePi";
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { EventEmitter } from "node:events";
 import { mkdirSync } from "node:fs";
@@ -53,7 +54,7 @@ class FakeBackend extends EventEmitter {
     return { ok: true };
   }
   ev(threadId: string, e: any) {
-    this.emit("event", { threadId, ...e });
+    for (const x of piOf(e)) this.emit("event", { threadId: threadId, ...x });
   }
 }
 

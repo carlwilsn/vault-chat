@@ -58,7 +58,7 @@ describe("bundle alone (no node_modules)", () => {
       }),
     );
     or = await fakeOpenRouter("ok");
-    srv = await startServer({ home, vault, bare, secrets, openrouter: or.url, bundle, extra: { NODE_PATH: "", VC_ENGINE: "0" } }); // this test drives the old loop's PdfExtract
+    srv = await startServer({ home, vault, bare, secrets, openrouter: or.url, bundle, extra: { NODE_PATH: "" } }); // the engine on the fake pi: PdfRead is a host call, run by the bundle alone
   });
 
   afterAll(async () => {
@@ -103,10 +103,10 @@ describe("bundle alone (no node_modules)", () => {
     expect(git(dst, "show", "origin/box:README.md")).toBe("# Test vault\n");
   });
 
-  it("PdfExtract reads a PDF's text inside a real agent turn", async () => {
+  it("PdfRead reads a PDF's text inside a real agent turn (the engine's host tool)", async () => {
     const pdf = join(vault, "notes", "slides.pdf");
     writeFileSync(pdf, tinyPdf("Hello from the PDF"));
-    or.script.push({ toolCall: { name: "PdfExtract", args: { path: pdf.replace(/\\/g, "/") } } }, { text: "The PDF says hello." });
+    or.script.push({ toolCall: { name: "PdfRead", args: { path: "notes/slides.pdf" } } }, { text: "The PDF says hello." });
     const before = or.calls.length;
     const r = await fetch(srv.base + "/message", {
       method: "POST",

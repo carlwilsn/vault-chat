@@ -1,6 +1,7 @@
 // In-process rig for the long-run tests: a fake pi backend (threads, turns and
 // tool calls driven by the test), the engine on a temp vault, and a fake
 // OpenRouter for the Done verifier.
+import { piOf } from "./fakePi";
 import { EventEmitter } from "node:events";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
@@ -52,7 +53,7 @@ export class FakeBackend extends EventEmitter {
     return { ok: true };
   }
   ev(threadId: string, e: any) {
-    this.emit("event", { threadId, ...e });
+    for (const x of piOf(e)) this.emit("event", { threadId: threadId, ...x });
   }
   /** End a turn of a thread. */
   end(threadId: string, status = "completed") {

@@ -159,7 +159,8 @@ describe("board inbox", () => {
     expect(list.entries[0]).toMatchObject({ id, title: "Cauchy sequences: problem set", status: "unread", making: false });
     expect(list.entries[0].parts.map((p: any) => p.kind)).toEqual(parts.map((p) => p.kind));
     const ev = await (await get(`/poll?after=${cursor}`)).json();
-    expect(ev.events.some((e: any) => e.type === "inbox" && e.id === id && e.landed === true)).toBe(true);
+    // A vault-level signal in the vault's log.
+    expect(ev.events.some((e: any) => e.type === "signal" && e.signal.type === "inbox" && e.signal.id === id && e.signal.landed === true)).toBe(true);
     const entry = await (await get(`/api/v1/inbox/${id}`)).json();
     expect(entry.parts[0].pages).toEqual([3, 4, 5]);
     expect(entry.parts[2]).toMatchObject({ w: 400, h: 300 });

@@ -4,6 +4,7 @@
 // only the latest per chat); the capture itself going with a request that is
 // about it (box chat turn → the turn's images; Ctrl+K/L → the image route),
 // once, capped; the "Now" working set at the top of the summary.
+import { piOf } from "./fakePi";
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { EventEmitter } from "node:events";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -58,7 +59,7 @@ class FakeBackend extends EventEmitter {
   }
   reply(text: string) {
     const t = this.turns[this.turns.length - 1]!;
-    if (text) this.emit("event", { threadId: t.threadId, kind: "text", itemId: `${t.turnId}:0`, text });
+    if (text) for (const x of piOf({ kind: "text", text })) this.emit("event", { threadId: t.threadId, ...x });
     this.emit("event", { threadId: t.threadId, kind: "turnCompleted", turnId: t.turnId, status: "completed", error: null });
   }
 }

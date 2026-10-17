@@ -9,6 +9,7 @@
 // estimate and the duplication found, to preview-proof/context-audit/.
 // Assertions: no section of a prompt says the same thing twice, the removed
 // long-run features are nowhere, and the shared block keeps its caps.
+import { piOf } from "./fakePi";
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { EventEmitter } from "node:events";
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -68,7 +69,7 @@ class FakeBackend extends EventEmitter {
   }
   reply(text: string) {
     const t = this.turns[this.turns.length - 1]!;
-    this.emit("event", { threadId: t.threadId, kind: "text", itemId: `${t.turnId}:0`, text });
+    for (const x of piOf({ kind: "text", text })) this.emit("event", { threadId: t.threadId, ...x });
     this.emit("event", { threadId: t.threadId, kind: "turnCompleted", turnId: t.turnId, status: "completed", error: null });
   }
 }
@@ -269,12 +270,11 @@ describe("what each mode sends", () => {
   });
 
   it("box chat after a roll-over: the new thread's instructions carry the recap", async () => {
-    const { mutateConv } = await import("../engine/convs");
-    await mutateConv(vault, convId, (c: any) => {
-      c.messages.push({ role: "assistant", system: true, content: "Rolled over to a fresh session", mid: "roll1", rollover: { at: Date.now(), fromThread: c.threadId, recap: "## Goal\n\nDetect coconuts; v3 training.\n\n## Decided\n\n- Decoupled head for v4.\n\n## Project memory at roll-over (Coconut)\n\n# Memory\n\n## Decisions\n\n- YOLOv8 at 640px; tiles of 1024 with 128 overlap." } });
-      c.threadId = undefined;
-      c.threadPath = undefined;
-    });
+    // The roll-over as the engine writes it: the divider item, and the thread retired with its recap.
+    const { emitTo } = await import("../engine/convs");
+    const recap = "## Goal\n\nDetect coconuts; v3 training.\n\n## Decided\n\n- Decoupled head for v4.\n\n## Project memory at roll-over (Coconut)\n\n# Memory\n\n## Decisions\n\n- YOLOv8 at 640px; tiles of 1024 with 128 overlap.";
+    emitTo(vault, convId, { type: "item.started", item: { id: "roll1", kind: "compaction", status: "done", rollover: true, text: recap, at: 0 } });
+    emitTo(vault, convId, { type: "conv.updated", patch: { recap, threadId: null, threadPath: null } });
     const r = await turn({ text: "Where are we?", convId }, "v3 is training; v4 gets the decoupled head.");
     expect(r.instructions).toBeTruthy();
     const rep = await audit("box-chat-rollover-turn", [

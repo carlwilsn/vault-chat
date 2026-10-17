@@ -1,7 +1,7 @@
 // Boot the real bundle on a temp vault with a fake OpenRouter, then drive the
 // phone routes the way the phone does.
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmp, cleanup, makeVault, makeKeyStore, fakeOpenRouter, fakePushService, startServer, waitFor, type Running, type FakeOpenRouter } from "./helpers";
 
@@ -87,24 +87,28 @@ describe("boot + phone routes", () => {
 
   let missionId = "";
 
-  it("/message starts a chat that runs one scripted turn and writes its file", async () => {
+  it("/message starts a chat that runs one scripted turn into its log (never a conversation file)", async () => {
     const r = await post("/message", { text: "Write a haiku." });
     expect(r.status).toBe(200);
     const j = await r.json();
     expect(j.ok).toBe(true);
     missionId = j.convId;
     expect(missionId).toBeTruthy();
-    // The scripted reply lands in the conversation file on disk.
-    const file = await waitFor(() => {
-      const dir = join(vault, ".vault-chat", "conversations");
-      // The mission's own file (an "ask" conversation that mentions the mission id may sort first).
-      const f = readdirSync(dir).find((n) => n === `${missionId}.jsonl`);
-      if (!f) return null;
-      const body = readFileSync(join(dir, f), "utf8");
-      return body.includes("Acknowledged. I have the brief") ? body : null;
+    // The scripted reply lands in the conversation's log on disk.
+    const recs = await waitFor(() => {
+      const f = join(vault, ".vault-chat", "events", `${missionId}.jsonl`);
+      let body = "";
+      try {
+        body = readFileSync(f, "utf8");
+      } catch {
+        return null;
+      }
+      const rs = body.trim().split("\n").map((l) => JSON.parse(l));
+      return rs.some((x) => x.type === "turn.ended") ? rs : null;
     }, 60_000);
-    const meta = JSON.parse(file.split("\n")[0]!);
-    expect(meta.source).toBe("phone");
+    expect(recs[0]).toMatchObject({ type: "conv.created", conv: missionId, meta: { source: "phone" } });
+    expect(recs.filter((x: any) => x.type === "item.delta").map((x: any) => x.delta).join("")).toContain("Acknowledged. I have the brief");
+    expect(existsSync(join(vault, ".vault-chat", "conversations", `${missionId}.jsonl`))).toBe(false);
     expect(or.calls.length).toBeGreaterThan(0);
     // And the phone sees it.
     const list = await (await get("/conversations")).json();

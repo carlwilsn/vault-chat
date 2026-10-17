@@ -3,9 +3,10 @@
 // text, thinking kept, the live context with the model's window, TodoWrite on
 // the conversation, pi's compaction as the summarized divider — the phone's
 // shape of it, the stream's pieces, and the box's model checks.
+import { piOf } from "./fakePi";
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { EventEmitter } from "node:events";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmp, cleanup } from "./helpers";
 
@@ -53,7 +54,7 @@ class FakeBackend extends EventEmitter {
     return { ok: true };
   }
   ev(e: any) {
-    this.emit("event", { threadId: "t1", ...e });
+    for (const x of piOf(e)) this.emit("event", { threadId: "t1", ...x });
   }
 }
 
@@ -73,6 +74,8 @@ beforeAll(async () => {
   store = (await import("../../src/store")).useStore;
   store.setState({ vaultPath: vault, conversationsLoaded: true });
   readConv = (await import("../engine/convs")).readConv;
+  const { setLegacySource } = await import("../convlog/log");
+  setLegacySource((await import("../convlog/importer")).legacySource);
   const { configureContext } = await import("../context");
   configureContext({ vault, agentModel: "openai/gpt-6.1-sol", apiKey: () => null, verifierDeny: [] } as any);
   const { Engine } = await import("../engine/engine");
@@ -109,11 +112,16 @@ const LONG = Array.from({ length: 120 }, (_, i) => `Line ${i}: the KV cache at 4
 
 describe("the box's full conversation (engine on a fake pi)", () => {
   let convId = "";
+  const pi = (...evs: any[]) => {
+    for (const ev of evs) backend.emit("event", { threadId: "t1", kind: "pi", ev });
+  };
+  const upd = (e: any) => ({ type: "message_update", assistantMessageEvent: e });
 
-  it("runs a turn: one entry per spawn, thinking, the whole text, the window, the plan, the divider", async () => {
+  it("runs a turn: one entry per spawn, thinking and text streamed whole into the log, the window, the plan, the divider", async () => {
     const r = await engine.message({ text: "Write the KV-cache section." });
     convId = r.convId;
     await until(() => backend.turns.length === 1);
+    const { pictureOf } = await import("../engine/convs");
 
     // Two children from ONE `subagent` call (parallel mode): the call carries both.
     backend.ev({ kind: "tool", itemId: "call_sub", name: "subagent", input: { tasks: [{ agent: "researcher", task: "one" }, { agent: "researcher", task: "two" }] } });
@@ -125,11 +133,10 @@ describe("the box's full conversation (engine on a fake pi)", () => {
     backend.ev({ kind: "subagentStatus", child: "c1", status: "completed", patch: { state: "completed", costUsd: 0.09, summary: "six methods" } });
     backend.ev({ kind: "tool", itemId: "call_sub", name: "subagent", input: undefined, result: "Parallel: 2/2 succeeded" });
 
-    // Thinking as it streams, then final.
-    backend.ev({ kind: "reasoningDelta", delta: "Check the memory " });
-    backend.ev({ kind: "reasoningDelta", delta: "factors." });
-    await until(() => (store.getState().convRuntime[convId]?.streamingReasoning ?? "").includes("Check the memory factors."));
-    backend.ev({ kind: "reasoning", text: "Check the memory factors." });
+    // Thinking as it streams: in the log while it streams, then final.
+    pi({ type: "message_start", message: { role: "assistant", content: [] } }, upd({ type: "thinking_start", contentIndex: 0 }), upd({ type: "thinking_delta", contentIndex: 0, delta: "Check the memory " }), upd({ type: "thinking_delta", contentIndex: 0, delta: "factors." }));
+    await until(() => !!pictureOf(vault, convId)?.items.some((x) => x.kind === "thinking" && x.status === "streaming" && x.text === "Check the memory factors."));
+    pi(upd({ type: "thinking_end", contentIndex: 0, content: "Check the memory factors." }));
 
     // The plan, through the host tool.
     const todo = await backend.h.toolCall("t1", "TodoWrite", { todos: [{ content: "Read", status: "completed" }, { content: "Write", status: "in_progress", activeForm: "Writing" }] });
@@ -137,36 +144,35 @@ describe("the box's full conversation (engine on a fake pi)", () => {
 
     // The live context and the model's window.
     backend.ev({ kind: "usage", usage: { last: { inputTokens: 182_000, outputTokens: 10, totalTokens: 182_010 }, modelContextWindow: 200_000 } });
-    // A long reply: the runtime mirror holds all of it.
-    backend.ev({ kind: "textDelta", itemId: "pt-1:1:0", delta: LONG.slice(0, 3000) });
-    backend.ev({ kind: "textDelta", itemId: "pt-1:1:0", delta: LONG.slice(3000) });
-    const rt = store.getState().convRuntime[convId];
+    // A long reply: the log holds every character while it streams.
+    pi(upd({ type: "text_start", contentIndex: 1 }), upd({ type: "text_delta", contentIndex: 1, delta: LONG.slice(0, 3000) }), upd({ type: "text_delta", contentIndex: 1, delta: LONG.slice(3000) }));
     expect(LONG.length).toBeGreaterThan(6000);
-    expect(rt.streamingText).toBe(LONG);
-    expect(rt.lastContext).toBe(182_000);
-    expect(rt.contextWindow).toBe(200_000);
+    await until(() => !!pictureOf(vault, convId)?.items.some((x) => x.kind === "assistant" && x.status === "streaming" && x.text === LONG));
+    pi(upd({ type: "text_end", contentIndex: 1, content: LONG }), { type: "message_end", message: { role: "assistant", content: [{ type: "thinking", thinking: "Check the memory factors." }, { type: "text", text: LONG }], stopReason: "stop", usage: { input: 182_000, output: 10 } } });
+    expect(pictureOf(vault, convId)!.usage).toEqual({ context: 182_000, window: 200_000 });
 
     // pi compacted its context mid-turn: the summarized divider, not a tool step.
     backend.ev({ kind: "compaction", summary: "Earlier: the survey's section 4." });
     await new Promise((r) => setTimeout(r, 200));
 
     backend.ev({ kind: "turnCompleted", turnId: "pt-1", status: "completed", error: null });
-    await until(async () => (await readConv(vault, convId))?.messages.some((m: any) => m.role === "assistant" && !m.system));
+    await until(async () => (await readConv(vault, convId))?.state === "idle");
 
     const c = await readConv(vault, convId);
-    const reply = c.messages.filter((m: any) => m.role === "assistant" && !m.system).pop();
-    expect(reply.content).toBe(LONG);
-    expect(reply.thinking).toBe("Check the memory factors.");
-    expect(reply.usage.window).toBe(200_000);
-    expect(reply.usage.context).toBe(182_000);
-    const calls = reply.toolCalls ?? [];
+    const replies = c.messages.filter((m: any) => m.role === "assistant" && !m.system && m.content);
+    expect(replies.pop().content).toBe(LONG);
+    expect(c.messages.find((m: any) => m.thinking).thinking).toBe("Check the memory factors.");
+    // In the log's order: the call, the thinking, the reply, the divider.
+    const order = c.messages.filter((m: any) => m.role === "assistant").map((m: any) => (m.toolCalls ? "tools" : m.thinking ? "thinking" : m.compaction || m.rollover ? "divider" : m.system ? "notice" : "text"));
+    // pi's compaction, then the roll-over the full context (182k of 200k) triggers at the turn's end.
+    expect(order).toEqual(["tools", "thinking", "text", "divider", "divider"]);
+    const calls = c.messages.flatMap((m: any) => m.toolCalls ?? []);
     expect(calls.filter((t: any) => t.name === "subagent")).toHaveLength(1);
     expect(calls.some((t: any) => t.name === "Subagent")).toBe(false);
     const sub = calls.find((t: any) => t.name === "subagent");
     expect(sub.subagents).toEqual(["c1", "c2"]);
     expect(sub.input.tasks).toHaveLength(2); // tool_execution_end's empty input never wipes it
     expect(sub.result).toMatch(/2\/2/);
-    expect(calls.some((t: any) => t.name === "Compaction")).toBe(false);
     const divider = c.messages.find((m: any) => m.system && m.compaction);
     expect(divider.content).toBe("Earlier conversation summarized");
     expect(divider.compaction.summary).toMatch(/section 4/);
@@ -184,16 +190,15 @@ describe("the box's full conversation (engine on a fake pi)", () => {
     backend.ev({ kind: "tool", itemId: "call_sub2", name: "subagent", input: undefined, result: "done" });
     backend.ev({ kind: "textDelta", itemId: "pt-1:2:0", delta: "ok" });
     backend.ev({ kind: "turnCompleted", turnId: "pt-1", status: "completed", error: null });
-    await until(async () => (await readConv(vault, convId))?.messages.filter((m: any) => m.role === "assistant" && !m.system).length === 2);
+    await until(async () => (await readConv(vault, convId))?.messages.some((m: any) => m.content === "ok"));
     const c = await readConv(vault, convId);
-    const reply = c.messages.filter((m: any) => m.role === "assistant" && !m.system).pop();
-    expect(reply.toolCalls).toHaveLength(1);
-    expect(reply.toolCalls[0]).toMatchObject({ name: "subagent", subagents: ["c3"] });
+    const call = c.messages.flatMap((m: any) => m.toolCalls ?? []).find((t: any) => t.id === "call_sub2");
+    expect(call).toMatchObject({ name: "subagent", subagents: ["c3"] });
   });
 
-  it("the phone's shape carries thinking, cost, the divider, the spawns, the plan and the subagents; no legacy duplicates", async () => {
+  it("the phone's shape carries thinking, cost, the divider, the spawns, the plan and the subagents; an older file reads the same, no legacy duplicates", async () => {
     const { conversationDetail } = await import("../phoneData");
-    // A legacy turn (before 2026-10-13) with the per-child "Subagent" records.
+    // A legacy turn (before 2026-10-13) with the per-child "Subagent" records, in an older file: imported on first read.
     const legacy = {
       id: "legacy1",
       title: "old",
@@ -207,19 +212,27 @@ describe("the box's full conversation (engine on a fake pi)", () => {
         { role: "assistant", system: true, content: "Rolled over to a fresh session", rollover: { at: 4, recap: "## Where we are" } },
       ],
     };
-    writeFileSync(join(vault, ".vault-chat", "conversations", "legacy1.jsonl"), [JSON.stringify({ ...legacy, messages: undefined }), ...legacy.messages.map((m) => JSON.stringify(m))].join("\n") + "\n");
+    const file = join(vault, ".vault-chat", "conversations", "legacy1.jsonl");
+    const raw = [JSON.stringify({ ...legacy, messages: undefined }), ...legacy.messages.map((m) => JSON.stringify(m))].join("\n") + "\n";
+    writeFileSync(file, raw);
+    const { logOf } = await import("../engine/convs");
+    logOf(vault).rescanLegacy();
     const old: any = conversationDetail(vault, "legacy1", 50);
-    expect(old.messages[1].tools).toEqual(["subagent"]);
+    expect(old.messages.map((m: any) => [m.role, m.content, m.tools])).toEqual([
+      ["user", "go", []],
+      ["assistant", "done", []],
+      ["assistant", "", ["subagent"]],
+      ["assistant", "Earlier conversation summarized", []],
+    ]);
     expect(old.messages[1].costUsd).toBe(0.2);
-    expect(old.messages[2].divider).toBe("## Where we are");
+    expect(old.messages[3].divider).toBe("## Where we are");
     expect(old.verdict.verdict).toBe("pass");
+    // The older file is never touched.
+    expect(readFileSync(file, "utf8")).toBe(raw);
 
     const d: any = conversationDetail(vault, convId, 50);
-    const reply = d.messages.find((m: any) => m.thinking);
-    expect(reply.thinking).toBe("Check the memory factors.");
-    expect(reply.spawns).toEqual(["c1", "c2"]);
-    expect(reply.context).toBe(182_000);
-    expect(reply.window).toBe(200_000);
+    expect(d.messages.find((m: any) => m.thinking).thinking).toBe("Check the memory factors.");
+    expect(d.messages.find((m: any) => m.spawns?.length).spawns).toEqual(["c1", "c2"]);
     expect(d.messages.some((m: any) => m.divider && /section 4/.test(m.divider))).toBe(true);
     expect(d.todos).toHaveLength(2);
     expect(d.subagents.map((s: any) => s.threadId).sort()).toEqual(["c1", "c2", "c3"]);
