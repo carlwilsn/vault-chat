@@ -1,5 +1,5 @@
 // Spend per project: the sum of costUsd over the conversations tagged with it.
-import { readConversationObjects } from "../commands/conversations";
+import { conversationObjects as readConversationObjects } from "../engine/convs";
 import { ctxConfig } from "./config";
 import { findProject } from "./projects";
 import type { ContextConv } from "./types";

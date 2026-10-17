@@ -18,7 +18,7 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fsCommands } from "./commands/fs";
 import { netCommands } from "./commands/net";
 import { killTree } from "./commands/proc";
-import { readConversationObjects } from "./commands/conversations";
+import { conversationObjects as readConversationObjects } from "./engine/convs";
 import { keychainCommands, agentKeyEnv } from "./keys";
 import { runGit } from "./git";
 import { conversationDetail, dispatchVoiceTool } from "./phoneData";

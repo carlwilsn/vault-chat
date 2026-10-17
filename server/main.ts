@@ -5,13 +5,12 @@
 import "./shims/globals";
 import { spawnSync } from "node:child_process";
 import { existsSync, statSync } from "node:fs";
-import { join } from "node:path";
 import { loadConfig, SERVER_VERSION, SERVER_REV } from "./config";
 import { registerCommands } from "./commands";
-import { initRing } from "./ring";
 import { loadKeyStore, hasKey, keychainCommands, saveKeys, keyNames } from "./keys";
 import { hostname, userInfo } from "node:os";
-import { getRing } from "./ring";
+import { setLegacySource, signal, convLog } from "./convlog/log";
+import { legacySource } from "./convlog/importer";
 
 function fatal(msg: string, code = 2): never {
   console.error(`[vault-chat-server] FATAL: ${msg}`);
@@ -47,7 +46,8 @@ async function main(): Promise<void> {
   }
 
   registerCommands();
-  initRing(join(cfg.stateDir, "poll-seq"));
+  // Every vault's conversations are its event log; an older conversation file is imported when first opened.
+  setLegacySource(legacySource);
 
   // Keys: in-process from the box's encrypted store. No OpenRouter key, no
   // missions — refuse to start rather than run turns with zero keys.
@@ -71,9 +71,8 @@ async function main(): Promise<void> {
   const { useStore } = store;
   useStore.getState().setVault(cfg.vault);
   await store.hydrateKeychain();
-  await useStore.getState().loadConversations();
-  const loaded = useStore.getState().conversations.length;
-  console.log(`[vault-chat-server] ${loaded} conversation(s) loaded; keys: ${Object.keys(useStore.getState().apiKeys).join(", ") || "none"}`);
+  const loaded = convLog(cfg.vault).rows().length;
+  console.log(`[vault-chat-server] ${loaded} conversation(s) in the log; keys: ${Object.keys(useStore.getState().apiKeys).join(", ") || "none"}`);
 
   const { startPhoneAppHost, sendPush } = await import("../src/phoneApp");
   await startPhoneAppHost();
@@ -85,13 +84,17 @@ async function main(): Promise<void> {
   const { startBoxSync, syncStatus, syncSummary, triggerSync, syncNow, listVaults, addVault, vaultPaths } = await import("./sync");
   // An agent's edits reach the laptop's open file in seconds: commit + publish, then /poll "vault_changed".
   const { LiveEdits } = await import("./liveEdits");
-  const liveEdits = new LiveEdits({
-    flush: (name) => syncNow(name === cfg.vaultName ? undefined : name),
-    broadcast: (ev) => getRing().push(JSON.stringify(ev)),
-  });
   // Every vault on the box; the main one keeps its own paths (config).
   const vaultRefs = () =>
     listVaults().map((v) => (v.main ? { name: v.name, path: cfg.vault, bare: cfg.bareRepo, main: true } : { name: v.name, path: vaultPaths(v.name).vault, bare: vaultPaths(v.name).bare, main: false }));
+  const liveEdits = new LiveEdits({
+    flush: (name) => syncNow(name === cfg.vaultName ? undefined : name),
+    // A signal in that vault's log.
+    broadcast: ({ vault, ...ev }) => {
+      const v = !vault || vault === cfg.vaultName ? cfg.vault : vaultRefs().find((x) => x.name === vault)?.path;
+      if (v) signal(v, ev);
+    },
+  });
   const { modelsList, boxModelChecks } = await import("./engine/capabilities");
   // The engine starts in the background (a first start installs pi with npm,
   // which can take minutes): the server answers at once, health says
@@ -119,7 +122,6 @@ async function main(): Promise<void> {
     },
     sendPush: (title, body, url, tag) => sendPush(title, body, url, tag),
     notificationAppend,
-    broadcast: (ev) => getRing().push(JSON.stringify(ev)),
   });
   const ready = () => {
     if (engine.engine) return engine.engine;
@@ -158,22 +160,6 @@ async function main(): Promise<void> {
     }
   };
 
-  // After each turn ends, run a sync cycle so results reach the laptop fast.
-  let running = new Set<string>();
-  useStore.subscribe((s) => {
-    const now = new Set<string>([
-      ...Object.keys(s.convRuntime ?? {}),
-      ...s.conversations.filter((c) => c.status === "running").map((c) => c.id),
-    ]);
-    for (const id of running) {
-      if (!now.has(id)) {
-        triggerSync();
-        break;
-      }
-    }
-    running = now;
-  });
-
   const { startHttpServer } = await import("./http");
   const { activeVoiceSessions } = await import("./voice");
   const server = await startHttpServer({
@@ -204,7 +190,7 @@ async function main(): Promise<void> {
         const voice = activeVoiceSessions();
         return { runs: agent + voice, agent, voice };
       })(),
-      conversations: useStore.getState().conversations.length,
+      conversations: convLog(cfg.vault).rows().length,
       sync: syncSummary(),
       engine: engine.error ? { error: engine.error } : engine.health(),
     }),
@@ -248,6 +234,7 @@ async function main(): Promise<void> {
           answer: async (v, b) => (await engineOf(v)).answerRoute(b),
           kill: async (v, b) => (await engineOf(v)).kill(b),
           subagent: async (v, c, sid, op, b) => (await engineOf(v)).subagent(c, sid, op, b),
+          intent: async (v, b) => (await engineOf(v)).intent(b),
         },
     // Voice (server/voice.ts) in the request's vault: its working copy, its
     // engine (AskAgent), its sandbox (Bash, vault tools), its sync.

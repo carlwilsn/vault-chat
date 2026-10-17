@@ -3,14 +3,10 @@
 //   POST /conversation/project {convId, project: name|slug|null}
 //                                          → {ok, project: slug|null}
 // The layout and the create-or-attach rule are CONTEXT's
-// (server/context/projects.ts); the box authors every conversation, so the
-// tag is a locked read-modify-write of that one conversation, mirrored into
-// the headless store so its persist never writes the old value back.
+// (server/context/projects.ts); the tag is a record in the conversation's log.
 import { configureContext, ctxConfig, withVault } from "./context/config";
 import { listProjects, ensureProject } from "./context/projects";
-import { useStore } from "../src/store";
-import { readConversations, writeConversations, withConvLock } from "../src/conversations";
-import { mirrorPatch } from "./engine/convs";
+import { patchMeta } from "./engine/convs";
 
 function ready(vault: string): void {
   let v = "";
@@ -44,20 +40,7 @@ export async function setProject(
       return { error: String((e as Error)?.message ?? e) };
     }
   }
-  const done = await withConvLock(async () => {
-    const list = await readConversations(vault);
-    const cur = list.find((c) => c.id === convId);
-    if (!cur) return false;
-    const next = { ...cur, project: slug ?? undefined };
-    await writeConversations(vault, [next]);
-    // Only the main vault's conversations live in the headless store.
-    if (useStore.getState().vaultPath === vault) {
-      useStore.setState((s) => ({
-        conversations: s.conversations.map((c) => (c.id === convId ? { ...c, project: slug ?? undefined } : c)),
-      }));
-    } else mirrorPatch(vault, convId, { project: slug ?? undefined });
-    return true;
-  });
+  const done = !!(await patchMeta(vault, convId, { project: slug ?? undefined }));
   if (!done) return { error: "conversation not found" };
   return { ok: true, project: slug };
 }

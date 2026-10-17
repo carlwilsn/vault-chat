@@ -5,7 +5,7 @@
 import { readFileSync, writeFileSync, mkdirSync, appendFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { respondTo } from "../bus";
-import { getRing } from "../ring";
+import { signal } from "../convlog/log";
 import { loadConfig } from "../config";
 import type { CommandFn } from "./registry";
 
@@ -72,8 +72,17 @@ export const phoneCommands: Record<string, CommandFn> = {
     return null;
   },
   // lib.rs:6812
+  // The headless app's events: a vault-level signal (the notification feed). Conversation events never
+  // come from here — a conversation is its event log, written by the engine alone.
   phone_broadcast: ({ json }) => {
-    getRing().push(String(json));
+    let ev: Record<string, unknown> = {};
+    try {
+      ev = JSON.parse(String(json));
+    } catch {
+      return null;
+    }
+    if (["message", "status", "runtime", "title", "meta", "chat"].includes(String(ev.type))) return null;
+    signal(loadConfig().vault, ev);
     return null;
   },
   // lib.rs:6819

@@ -2,7 +2,7 @@
 // the phone sees exactly the JSON shapes it saw from the desktop app.
 import { readFileSync, realpathSync, statSync } from "node:fs";
 import { isAbsolute, join, basename } from "node:path";
-import { readConversationObjects } from "./commands/conversations";
+import { conversationObjects as readConversationObjects, conversationObject } from "./engine/convs";
 import { globFiles } from "./commands/glob";
 import { runGit } from "./git";
 
@@ -121,7 +121,7 @@ function phoneExtras(m: any): Record<string, unknown> {
 
 /** voice_server.rs:2168 conversation_json. */
 export function conversationDetail(vault: string, id: string, n: number, full = false): unknown | null {
-  const c = readConversationObjects(vault).find((x) => x.id === id);
+  const c = conversationObject(vault, id);
   if (!c) return null;
   const take = Math.min(Math.max(n, 1), 200);
   const msgs: any[] = Array.isArray(c.messages) ? c.messages : [];

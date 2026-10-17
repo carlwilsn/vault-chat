@@ -282,6 +282,8 @@ export const conversationCommands: Record<string, CommandFn> = {
   conversations_read: ({ vault }) => conversationsRead(vault),
   // lib.rs:1225
   conversations_write_all: ({ vault, lines: ls }) => {
+    // The box never writes a conversation file: its conversations are the event log (server/convlog).
+    if ((globalThis as { __VC_HEADLESS__?: unknown }).__VC_HEADLESS__) return null;
     conversationsWriteAll(vault, ls ?? []);
     return null;
   },

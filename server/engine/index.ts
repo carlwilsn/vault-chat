@@ -16,7 +16,8 @@ import { initCapabilities } from "./capabilities";
 import { ensurePi, findBwrap, type PiInstall } from "./pi/install";
 import { listPiModels, modelWindow, piPaths, vaultPiPaths, writePiConfig, type PiPaths } from "./pi/config";
 import { PiBackend, outerWith, type PiSandbox } from "./pi/backend";
-import { allConvs, openMirror } from "./convs";
+import { logOf } from "./convs";
+import { signal } from "../convlog/log";
 import { agentKeyEnv } from "../keys";
 
 /** A vault on this box: its working copy and bare repo. The main one keeps the paths it always had. */
@@ -42,7 +43,6 @@ export type EngineBoot = {
   apiKey: () => string | null;
   sendPush: (title: string, body: string, url: string, tag: string) => Promise<number>;
   notificationAppend: (vault: string, line: string) => void;
-  broadcast: (ev: Record<string, unknown>) => void;
 };
 
 export type EngineHandle = {
@@ -88,7 +88,7 @@ export function engineNotify(b: EngineBoot, v?: VaultRef) {
     } catch {
       /* feed is best effort */
     }
-    b.broadcast(v && !v.main ? { vault: v.name, type: "notif" } : { type: "notif" });
+    signal(vault, { type: "notif" });
     // One push per conversation: the tag is the conversation id (a newer push replaces the older one).
     const sent = await b.sendPush(n.title.slice(0, 90), n.body.slice(0, 180), `/phone?conv=${encodeURIComponent(n.convId)}${q}`, n.convId).catch(() => 0);
     return sent ? id : null;
@@ -192,7 +192,7 @@ export function buildSandbox(o: {
   const creds = HOME_CREDENTIALS.map((p) => join(o.home, p));
   const envFile = o.envFile ?? serverEnvFile(o.home);
   const denyRead = [o.secretsDir, ...o.hideFiles, envFile, ...creds, "/proc", ...(o.uid >= 0 ? [`/run/user/${o.uid}`] : [])];
-  const denyWrite = [o.stateDir, join(o.vault, ".vault-chat", "conversations"), join(o.vault, ".vault-chat", "local")];
+  const denyWrite = [o.stateDir, join(o.vault, ".vault-chat", "conversations"), join(o.vault, ".vault-chat", "events"), join(o.vault, ".vault-chat", "local")];
   if (!o.bwrap) return { outer: null, shell: null, denyRead, denyWrite };
   const work = o.workDir ?? agentWorkDir(o.home, o.vault);
   const roots = [...new Set((o.vaultRoots ?? [dirname(o.vault), join(o.home, "vaults")]).map((r) => r.replace(/[\\/]+$/, "")))]
@@ -206,8 +206,8 @@ export function buildSandbox(o: {
   if (isDir(o.stateDir)) mounts.push("--ro-bind", o.stateDir, o.stateDir);
   for (const d of [o.vault, o.sessionsDir, o.agentDir, ...(o.jobsDir ? [o.jobsDir] : []), work]) if (isDir(d)) mounts.push("--bind", d, d);
   for (const f of ["settings.json", "models.json"]) if (isFile(join(o.agentDir, f))) mounts.push("--ro-bind", join(o.agentDir, f), join(o.agentDir, f));
-  // The conversation files and wakes are the server's to write.
-  for (const d of [join(o.vault, ".vault-chat", "conversations"), join(o.vault, ".vault-chat", "local")]) if (isDir(d)) mounts.push("--ro-bind", d, d);
+  // The conversation log (and the older conversation files) and wakes are the server's to write.
+  for (const d of [join(o.vault, ".vault-chat", "conversations"), join(o.vault, ".vault-chat", "events"), join(o.vault, ".vault-chat", "local")]) if (isDir(d)) mounts.push("--ro-bind", d, d);
   const hide = (p: string) => {
     if (isDir(p)) mounts.push("--tmpfs", p);
     else if (isFile(p)) mounts.push("--ro-bind", "/dev/null", p);
@@ -278,7 +278,9 @@ export async function startEngine(b: EngineBoot): Promise<EngineHandle> {
     // Projects moved out of .vault-chat/ into agent-projects/ (hidden by default): move this vault's now.
     prepareProjects(v.path);
     // The sandbox read-only-binds these; they must exist when it is built.
-    for (const d of [join(v.path, ".vault-chat", "conversations"), join(v.path, ".vault-chat", "local"), st.jobs, st.pi.sessionsDir, st.pi.instrDir]) mkdirSync(d, { recursive: true });
+    for (const d of [join(v.path, ".vault-chat", "conversations"), join(v.path, ".vault-chat", "events"), join(v.path, ".vault-chat", "local"), st.jobs, st.pi.sessionsDir, st.pi.instrDir]) mkdirSync(d, { recursive: true });
+    // Its conversation log is open (older files are imported as they are opened).
+    logOf(v.path);
     // Its work area outside the vault, writable in the sandbox (the rest of the home is read-only there).
     const workDir = agentWorkDir(home, v.path);
     if (bwrap) mkdirSync(workDir, { recursive: true });
@@ -341,7 +343,8 @@ export async function startEngine(b: EngineBoot): Promise<EngineHandle> {
       model: engineModel,
       webSearchModel: process.env.VC_WEBSEARCH_MODEL || "google/gemini-2.5-flash-lite",
       apiKey: b.apiKey,
-      broadcast: v.main ? b.broadcast : (ev) => b.broadcast({ vault: v.name, ...ev }),
+      broadcast: (ev) => signal(v.path, ev),
+      onTurnEnded: () => b.onTurnEnded?.(v.name),
       visionModel,
       stallMs: Number(process.env.VC_ENGINE_STALL_MS) || 30 * 60_000,
       notify: engineNotify(b, v.main ? undefined : v),
@@ -362,12 +365,11 @@ export async function startEngine(b: EngineBoot): Promise<EngineHandle> {
     const hit = opening.get(v.name);
     if (hit) return hit;
     const p = (async () => {
-      // Its conversations in a mirror of their own (never the store: its persist writes the main vault).
-      const seed = await allConvs(v.path).catch(() => []);
-      openMirror(v.path, seed, (ev) => b.broadcast({ vault: v.name, ...ev }), () => b.onTurnEnded?.(v.name));
+      // Its conversations: its own event log.
+      const n = logOf(v.path).rows().length;
       const e = make(v);
       engines.set(v.name, e);
-      console.log(`[engine:pi] vault ${v.name}: engine started (${seed.length} conversation(s))`);
+      console.log(`[engine:pi] vault ${v.name}: engine started (${n} conversation(s))`);
       return e;
     })();
     opening.set(v.name, p);

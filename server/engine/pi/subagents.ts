@@ -180,7 +180,7 @@ export class Subagents {
 
     proc.on("event", (e: any) => {
       // Any child activity keeps the parent's turn alive for the watchdog.
-      this.b.ev({ kind: "tool", threadId: id, itemId: "child", name: "child", input: {} });
+      this.b.ev({ kind: "alive", threadId: id });
       if (e?.type === "message_end" && e.message?.role === "assistant") {
         child.stopReason = e.message.stopReason ?? null;
         child.error = e.message.stopReason === "error" ? String(e.message.errorMessage ?? "error").slice(0, 500) : null;

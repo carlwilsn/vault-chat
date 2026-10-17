@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { loadConfig, SERVER_VERSION, SERVER_REV } from "./config";
 import { authorize, phoneToken } from "./auth";
 import { relay, emitLocal } from "./bus";
-import { getRing } from "./ring";
+import { convLog, signal } from "./convlog/log";
 import { conversationsSummary, conversationDetail, notificationsFeed, notesFeed, withinVault, mimeFor, dispatchVoiceTool } from "./phoneData";
 import { notificationAppend, pushSubsAdd, pushSubsRemove, vapidPublicKey } from "./commands/phone";
 import { isGitPath, handleGitHttp } from "./gitHttp";
@@ -52,6 +52,8 @@ export type ServerHooks = {
     answer: (v: VaultScope, b: any) => Promise<Record<string, unknown> | null>;
     kill: (v: VaultScope, b: any) => Promise<Record<string, unknown> | null>;
     subagent: (v: VaultScope, convId: string, sid: string, op: "steer" | "stop", b: any) => Promise<Record<string, unknown>>;
+    /** POST /api/v2/intent: every client intent (src/convlog/protocol.ts Intent). */
+    intent: (v: VaultScope, b: any) => Promise<Record<string, unknown>>;
   };
   /** Voice (server/voice.ts) for the request's vault: its working copy, its
    * engine and sandbox — or why not. */
@@ -94,12 +96,6 @@ async function engineRoute(
   }
   if (!v.main) return json(res, handler ? 404 : 503, { error: handler ? "not found in this vault" : "engine not running" });
   return relayRoute(res, event, body, timeoutMs, fail);
-}
-
-/** A /poll event's vault: the name a vault other than the main one puts first ({"vault":"<name>",…}), else the main one. */
-const VAULT_TAG = /^\{"vault":"([A-Za-z0-9._-]+)"/;
-export function eventVault(line: string, main: string): string {
-  return VAULT_TAG.exec(line)?.[1] ?? main;
 }
 
 // voice_server.rs:45 PHONE_MANIFEST / 62 ICON_SVG
@@ -337,8 +333,8 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
   const scope: VaultScope | null = hooks.vault ? hooks.vault(want) : !want || want === cfg.vaultName ? { name: cfg.vaultName, path: cfg.vault, bare: cfg.bareRepo, main: true } : null;
   if (!scope) return json(res, 404, { error: `no vault ${String(want).slice(0, 64)} on this box` });
   const vault = scope.path;
-  // Another vault's /poll events carry its name first; the main vault's carry none.
-  const tagged = (ev: Record<string, unknown>) => JSON.stringify(scope.main ? ev : { vault: scope.name, ...ev });
+  // A vault-level signal in this vault's log (/poll).
+  const tagged = (ev: Record<string, unknown>) => signal(scope.path, ev);
   // The old app (the relay) knows only the main vault.
   const mainOnly = () => json(res, 409, { error: `only on the box's main vault (${cfg.vaultName})` });
 
@@ -404,7 +400,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
   //   GET  /api/v1/inbox/<id>/part/<n>[/html|bundle|snapshot]
   // Every change: {type:"inbox", id, status, title, landed?, failed?} on /poll.
   if (path === "/api/v1/inbox" || path.startsWith("/api/v1/inbox/")) {
-    const ictx: InboxCtx = { stateDir: cfg.stateDir, emit: (ev) => getRing().push(tagged(ev)) };
+    const ictx: InboxCtx = { stateDir: cfg.stateDir, emit: (ev) => tagged(ev) };
     const [id = "", sub, n, what, ...rest] = path.slice("/api/v1/inbox/".length).split("/");
     let out: { status: number; body: unknown; file?: Buffer; mime?: string; headers?: Record<string, string> };
     if (path === "/api/v1/inbox" && method === "GET") out = { status: 200, body: listEntries(vault, ictx) };
@@ -447,6 +443,38 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
     return json(res, out.status, out.body);
   }
 
+  // ---- the conversation log (src/convlog/protocol.ts) ----
+  //   GET  /api/v2/conversations                → {rows, seq, epoch}: every list row, folded up to `seq`
+  //   GET  /api/v2/conversations/<id>/events?after=N → {events, next, epoch}: that conversation's records after N
+  //   GET  /api/v2/conversations/<id>/checkpoint     → {seq, picture, events, next}: a materialised picture plus the tail
+  //   POST /api/v2/intent {type, …}            → {ok, convId, …}: the box does it; its effect arrives in the log
+  if (path === "/api/v2/conversations" && method === "GET") {
+    const log = convLog(vault);
+    const seq = log.latest();
+    return json(res, 200, { rows: log.rows().filter((r) => !(r as any).deleted), seq, epoch: log.epoch });
+  }
+  const v2 = /^\/api\/v2\/conversations\/([^/]+)\/(events|checkpoint)$/.exec(path);
+  if (v2 && method === "GET") {
+    const log = convLog(vault);
+    const id = decodeURIComponent(v2[1]!);
+    // Read the head first: every record of this conversation up to it is in the answer.
+    const next = log.latest();
+    const pic = log.picture(id);
+    if (!pic) return json(res, 404, { error: "conversation not found" });
+    if (v2[2] === "checkpoint") {
+      const snap = JSON.parse(JSON.stringify(pic));
+      return json(res, 200, { seq: snap.seq, picture: snap, events: [], next: Math.max(next, snap.seq), epoch: log.epoch });
+    }
+    const after = Math.max(0, Number.parseInt(q("after") || "0", 10) || 0);
+    return json(res, 200, { events: log.eventsOf(id, after).filter((r) => r.seq <= Math.max(next, pic.seq)), next: Math.max(next, pic.seq), epoch: log.epoch });
+  }
+  if (path === "/api/v2/intent" && method === "POST") {
+    if (!hooks.engine) return json(res, 503, { error: "engine not running" });
+    const b = await jsonBody(req);
+    const out = await hooks.engine.intent(scope, b).catch((e) => ({ error: String((e as Error)?.message ?? e) }));
+    return json(res, (out as any).error ? 409 : 200, out);
+  }
+
   switch (`${method} ${path}`) {
     case "GET /voice":
       return send(res, 200, "text/html; charset=utf-8", asset("voice.html", VOICE_PAGE_INLINE));
@@ -467,7 +495,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
     case "GET /file":
       return serveVaultFile(res, vault, url);
     case "GET /poll":
-      return poll(res, url, scope.name, cfg.vaultName);
+      return poll(res, url, scope.path);
     case "GET /notifications":
       return json(res, 200, notificationsFeed(vault));
     case "GET /notes":
@@ -525,7 +553,9 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
       if (!scope.main) return mainOnly();
       return relayRoute(res, "phone:schedule", await jsonBody(req), 10_000, "app not answering");
     case "GET /status":
-      if (!scope.main) return hooks.vaultStatus ? json(res, 200, await hooks.vaultStatus(scope)) : json(res, 503, { error: "engine not running" });
+      // Every vault's runs are its engine's.
+      if (hooks.vaultStatus) return json(res, 200, await hooks.vaultStatus(scope));
+      if (!scope.main) return json(res, 503, { error: "engine not running" });
       return relayRoute(res, "phone:status", {}, 10_000, "app not answering — is a vault open?");
     case "POST /message": {
       const b = await jsonBody(req);
@@ -538,7 +568,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
         if (typeof b.notifId === "string" && b.notifId) {
           const answer = b.defer ? "Not now" : String(b.text ?? "");
           notificationAppend(vault, JSON.stringify({ type: "answered", id: b.notifId, answer: [...answer].slice(0, 160).join(""), ts: Date.now() }));
-          getRing().push(tagged({ type: "notif" }));
+          tagged({ type: "notif" });
         }
       });
     }
@@ -606,7 +636,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
     case "POST /conversation/project": {
       const b = await jsonBody(req);
       const out = await setProject(vault, b);
-      if ("ok" in out) getRing().push(tagged({ type: "project", convId: b.convId, project: out.project }));
+      if ("ok" in out) tagged({ type: "project", convId: b.convId, project: out.project });
       return json(res, "ok" in out ? 200 : 400, out);
     }
     default:
@@ -617,29 +647,25 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
 /** The old voice page's current voice conversation, per vault. */
 const legacyVoice = new Map<string, { id: string | null; at: number }>();
 
-/** voice_server.rs:884 — long-poll up to 25 s for events after `after`. One
- * ring for the box; a client gets its own vault's events (`want`). */
-async function poll(res: ServerResponse, url: URL, want: string, main: string): Promise<void> {
-  const ring = getRing();
+/** GET /poll?after=N[&epoch=E] — exactly the vault log's records after N, long-polled up to 25 s.
+ * `after=latest` (or none) → the head, no records. A cursor from another log (its epoch) or from
+ * beyond the head → `reset`: start over from 0. */
+async function poll(res: ServerResponse, url: URL, vault: string): Promise<void> {
+  const log = convLog(vault);
   const raw = url.searchParams.get("after") ?? "";
-  const boot = JSON.stringify(ring.boot);
-  if (raw === "" || raw === "latest") return json(res, 200, `{"next":${ring.latest()},"events":[],"boot":${boot}}`);
-  let after = Number.parseInt(raw, 10);
-  if (!Number.isFinite(after)) after = ring.latest();
-  // A cursor from the future (state lost): hand back the real cursor at once
-  // so the client resyncs instead of waiting forever.
-  if (after > ring.latest()) return json(res, 200, `{"next":${ring.latest()},"events":[],"boot":${boot}}`);
+  const epoch = url.searchParams.get("epoch");
+  const head = (extra: Record<string, unknown> = {}) => json(res, 200, { next: log.latest(), events: [], epoch: log.epoch, ...extra });
+  if (raw === "" || raw === "latest") return head();
+  const after = Number.parseInt(raw, 10);
+  if (!Number.isFinite(after) || after < 0) return head({ reset: true });
+  if (epoch && epoch !== log.epoch) return head({ reset: true });
   const deadline = Date.now() + 25_000;
   let closed = false;
   res.on("close", () => (closed = true));
   for (;;) {
-    const got = ring.after(after);
-    const events = got.events.filter((l) => eventVault(l, main) === want);
-    if (events.length || Date.now() >= deadline || closed) {
-      return json(res, 200, `{"next":${got.next},"events":[${events.join(",")}],"boot":${boot}}`);
-    }
-    after = got.next;
-    await ring.wait(Math.min(1000, deadline - Date.now()));
+    const got = log.after(after);
+    if (got.reset || got.events.length || Date.now() >= deadline || closed) return json(res, 200, { ...got, epoch: log.epoch });
+    await log.wait(Math.min(1000, deadline - Date.now()));
   }
 }
 

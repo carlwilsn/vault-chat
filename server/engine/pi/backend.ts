@@ -23,20 +23,11 @@ export type ToolSpec = { type: "function"; name: string; description: string; in
  * them to the parent conversation from the `subagents` event). */
 export type BackendEvent =
   | { kind: "turnStarted"; threadId: string; turnId: string }
-  | { kind: "textDelta"; threadId: string; itemId: string; delta: string }
-  | { kind: "text"; threadId: string; itemId: string; text: string }
-  /** A tool the runtime ran (shell, file edit, our dynamic tools …); `result` once finished. */
-  | { kind: "tool"; threadId: string; itemId: string; name: string; input: unknown; result?: string }
-  /** A tool call the model is still writing (its arguments stream in): its name and small identifying
-   *  args, under the id the later `tool` event uses. Display only — nothing runs yet. */
-  | { kind: "toolStarting"; threadId: string; itemId: string; name: string; input: Record<string, string> }
-  /** A running tool reported progress (pi's tool_execution_update: streamed output): the turn is alive. */
-  | { kind: "toolProgress"; threadId: string; itemId: string }
-  | { kind: "reasoning"; threadId: string; text: string }
-  /** Thinking as it streams (the finished block arrives as `reasoning`). */
-  | { kind: "reasoningDelta"; threadId: string; delta: string }
-  /** The runtime summarized the thread's earlier context (pi auto-compaction). */
-  | { kind: "compaction"; threadId: string; summary: string }
+  /** One of pi's own RPC session events, as pi sent it (the engine maps it into the log, 1:1: ../piMap.ts). */
+  | { kind: "pi"; threadId: string; ev: any }
+  /** A thread (a subagent's) is working: keeps its parent's turn alive. */
+  | { kind: "alive"; threadId: string }
+  /** The context size of the last model call, and the model's window. */
   | { kind: "usage"; threadId: string; usage: ThreadTokenUsage }
   /** The parent spawned/messaged subagents. */
   | { kind: "subagents"; threadId: string; itemId: string; children: string[]; op: string; prompt?: string; model?: string | null; done: boolean; ok: boolean }
@@ -113,11 +104,6 @@ export type PiBackendOptions = {
   log?: (s: string) => void;
 };
 
-/** pi's tool names → the names the renderers already know. */
-const TOOL_NAMES: Record<string, string> = { bash: "Bash", read: "Read", write: "Write", edit: "Edit", grep: "Grep", find: "Glob", ls: "LS" };
-const RESULT_CAP = 4_000;
-const cap = (s: string, n = RESULT_CAP) => (s.length > n ? s.slice(0, n) + `\n…[${s.length - n} more chars]` : s);
-
 type Thread = {
   id: string;
   /** Subagents may be spawned from this thread (the `subagent` tool is registered). */
@@ -131,21 +117,9 @@ type Thread = {
   crashes: number[];
   /** A model set for one turn only (images on a model that can't see). */
   restoreModel: string | null;
-  /** Tool calls being written now: what was last reported of each (toolStarting fires on a change only). */
-  starting?: Map<string, string>;
+  /** The provider's error on the last assistant message (stopReason "error"). */
+  lastError?: string | null;
 };
-
-/** The small args that name what a call is about — never its content. */
-const SMALL_ARGS = ["path", "file_path", "command", "pattern", "url"];
-export function smallArgs(args: unknown): Record<string, string> {
-  const out: Record<string, string> = {};
-  if (!args || typeof args !== "object") return out;
-  for (const k of SMALL_ARGS) {
-    const v = (args as any)[k];
-    if (typeof v === "string" && v) out[k] = v.length > 300 ? v.slice(0, 300) + "…" : v;
-  }
-  return out;
-}
 
 /** Events: "event" (BackendEvent), "up" (ready; the engine resumes cut turns). */
 export class PiBackend extends EventEmitter {
@@ -469,12 +443,12 @@ export class PiBackend extends EventEmitter {
     return !!r?.success;
   }
 
-  async startTurn(threadId: string, o: { texts: string[]; images: string[]; model: string }): Promise<{ turnId: string | null }> {
+  async startTurn(threadId: string, o: { texts: string[]; images: string[]; model: string; turnId?: string }): Promise<{ turnId: string | null }> {
     const t = this.live(threadId);
     t.lastUsed = Date.now();
     const prev = t.model;
     if (o.model !== t.model && (await this.setModel(t, o.model)) && o.images.length) t.restoreModel = prev;
-    const turnId = `pt-${Date.now().toString(36)}-${++this.seq}`;
+    const turnId = o.turnId ?? `pt-${Date.now().toString(36)}-${++this.seq}`;
     t.turnId = turnId;
     const imgs = this.images(o.images);
     const r = await t.proc.request({ type: "prompt", message: o.texts.filter(Boolean).join("\n\n"), ...(imgs.length ? { images: imgs } : {}) }, 60_000).catch((e) => ({ success: false, error: (e as Error).message }));
@@ -494,10 +468,19 @@ export class PiBackend extends EventEmitter {
   }
 
   /** Queue a message for when the turn's work is done (pi's follow_up). */
-  async followUp(threadId: string, o: { texts: string[] }): Promise<void> {
+  async followUp(threadId: string, o: { texts: string[]; images?: string[] }): Promise<void> {
     const t = this.live(threadId);
-    const r = await t.proc.request({ type: "follow_up", message: o.texts.filter(Boolean).join("\n\n") }, 30_000);
+    const imgs = this.images(o.images ?? []);
+    const r = await t.proc.request({ type: "follow_up", message: o.texts.filter(Boolean).join("\n\n"), ...(imgs.length ? { images: imgs } : {}) }, 30_000);
     if (!r?.success) throw new Error(String(r?.error ?? "follow_up rejected"));
+  }
+
+  /** pi's clear_queue: every steering and follow-up message not delivered yet is dropped (their texts are returned). */
+  async clearQueue(threadId: string): Promise<{ steering: string[]; followUp: string[] }> {
+    const t = this.live(threadId);
+    const r = await t.proc.request({ type: "clear_queue" }, 10_000);
+    if (!r?.success) throw new Error(String(r?.error ?? "clear_queue rejected"));
+    return { steering: r.data?.steering ?? [], followUp: r.data?.followUp ?? [] };
   }
 
   async interrupt(threadId: string, _turnId: string): Promise<void> {
@@ -570,33 +553,9 @@ export class PiBackend extends EventEmitter {
 
   private onPiEvent(t: Thread, e: any): void {
     const threadId = t.id;
-    const turn = t.turnId ?? "x";
+    // Every session event goes to the engine as pi sent it.
+    if (e?.type !== "agent_settled" && e?.type !== "extension_error") this.ev({ kind: "pi", threadId, ev: e });
     switch (e?.type) {
-      case "message_start":
-        if (e.message?.role === "assistant") t.msgIndex++;
-        return;
-      case "message_update": {
-        const ev = e.assistantMessageEvent ?? {};
-        const itemId = `${turn}:${t.msgIndex}:${ev.contentIndex ?? 0}`;
-        if (ev.type === "text_delta") this.ev({ kind: "textDelta", threadId, itemId, delta: String(ev.delta ?? "") });
-        else if (ev.type === "text_end" && typeof ev.content === "string") this.ev({ kind: "text", threadId, itemId, text: ev.content });
-        else if (ev.type === "thinking_delta" && typeof ev.delta === "string" && ev.delta) this.ev({ kind: "reasoningDelta", threadId, delta: ev.delta });
-        else if ((ev.type === "toolcall_start" || ev.type === "toolcall_delta") && ev.partial) {
-          // The call is shown while the model writes it (a long Write runs for many seconds before
-          // tool_execution_start): its name, then its path once parsed. Only on a change.
-          const c = Array.isArray(ev.partial.content) ? ev.partial.content[ev.contentIndex ?? -1] : null;
-          if (c?.type !== "toolCall" || !c.id || !c.name) return;
-          const name = TOOL_NAMES[c.name] ?? String(c.name);
-          const input = smallArgs(c.arguments);
-          const sig = name + " " + JSON.stringify(input);
-          const seen = (t.starting ??= new Map());
-          if (seen.get(c.id) === sig) return;
-          seen.set(c.id, sig);
-          this.ev({ kind: "toolStarting", threadId, itemId: String(c.id), name, input });
-        }
-        else if (ev.type === "thinking_end" && typeof ev.content === "string" && ev.content.trim()) this.ev({ kind: "reasoning", threadId, text: ev.content.trim() });
-        return;
-      }
       case "message_end": {
         const m = e.message ?? {};
         if (m.role !== "assistant") return;
@@ -611,35 +570,18 @@ export class PiBackend extends EventEmitter {
             modelContextWindow: modelWindow(t.model, this.o.catalog),
           },
         });
-        (Array.isArray(m.content) ? m.content : []).forEach((c: any, i: number) => {
-          if (c?.type === "text" && typeof c.text === "string") this.ev({ kind: "text", threadId, itemId: `${turn}:${t.msgIndex}:${i}`, text: c.text });
-        });
-        (t as any).lastError = m.stopReason === "error" && m.errorMessage ? String(m.errorMessage).slice(0, 500) : null;
+        t.lastError = m.stopReason === "error" && m.errorMessage ? String(m.errorMessage).slice(0, 500) : null;
         return;
       }
-      case "tool_execution_start":
-        t.starting?.delete(String(e.toolCallId));
-        return this.ev({ kind: "tool", threadId, itemId: String(e.toolCallId), name: TOOL_NAMES[e.toolName] ?? String(e.toolName ?? "tool"), input: e.args ?? {} });
-      case "tool_execution_update":
-        return this.ev({ kind: "toolProgress", threadId, itemId: String(e.toolCallId) });
-      case "tool_execution_end": {
-        const txt = (e.result?.content ?? []).map((c: any) => (c?.type === "text" ? c.text : "")).join("\n");
-        return this.ev({ kind: "tool", threadId, itemId: String(e.toolCallId), name: TOOL_NAMES[e.toolName] ?? String(e.toolName ?? "tool"), input: undefined, result: cap(`${e.isError ? "[error] " : ""}${txt}`) });
-      }
-      case "compaction_end":
-        // Shown as the transcript's "Earlier conversation summarized" divider, not a tool step.
-        if (e.result) this.ev({ kind: "compaction", threadId, summary: typeof e.result.summary === "string" ? e.result.summary : "" });
-        return;
       case "extension_error":
         this.log(`extension error (${e.event}): ${String(e.error ?? "").slice(0, 300)}`);
         return;
       case "agent_settled": {
-        t.starting = undefined;
         const turnId = t.turnId;
         t.turnId = null;
         t.lastUsed = Date.now();
-        const err = (t as any).lastError as string | null;
-        (t as any).lastError = null;
+        const err = t.lastError ?? null;
+        t.lastError = null;
         if (t.restoreModel) {
           const back = t.restoreModel;
           t.restoreModel = null;
