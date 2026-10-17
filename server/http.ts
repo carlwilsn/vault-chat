@@ -23,7 +23,7 @@ import PHONE_SW_INLINE from "../src-tauri/assets/phone-sw.js?raw";
 import ICON_PNG_INLINE from "../src-tauri/assets/icon-apple-touch.png";
 import PHONE_APP from "vc:phone-app";
 import BOARD_APP from "vc:board-app";
-import { addAsset, assetFile, createBoard, getBoard, listBoards, overviewPng, saveBoard } from "./boards";
+import { addAsset, assetFile, createBoard, deleteBoard, getBoard, listBoards, overviewPng, renameBoard, saveBoard } from "./boards";
 import { addToBoard, getEntry, listEntries, markAdded, markRead, partFile, sendEntry, type InboxCtx } from "./inbox";
 
 /** A vault on this box, as the routes see it (engine/index.ts VaultRef). */
@@ -163,6 +163,7 @@ function tokenCookie(): Record<string, string> {
 
 const ASSET_MIME: Record<string, string> = {
   ".js": "text/javascript; charset=utf-8",
+  ".mjs": "text/javascript; charset=utf-8", // the board's pdf.js worker
   ".css": "text/css; charset=utf-8",
   ".woff2": "font/woff2",
   ".woff": "font/woff",
@@ -434,6 +435,8 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
     else if (path === "/api/v1/boards" && method === "POST") out = createBoard(vault, (await jsonBody(req)).name);
     else if (file === "assets" && more && rest.length === 0 && method === "GET") out = assetFile(vault, slug, more);
     else if (file === "assets" && more === undefined && method === "POST") out = addAsset(vault, slug, await jsonBody(req));
+    else if (file === "rename" && more === undefined && method === "POST") out = renameBoard(vault, slug, await jsonBody(req));
+    else if (file === "delete" && more === undefined && method === "POST") out = deleteBoard(vault, slug);
     else if (file === "from-inbox" && more === undefined && method === "POST") out = await addToBoard(vault, slug, await jsonBody(req));
     else if (more !== undefined) out = { status: 404, body: { error: "not found" } };
     else if (file === undefined && method === "GET") out = getBoard(vault, slug);

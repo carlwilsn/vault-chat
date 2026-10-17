@@ -2,7 +2,7 @@
 // the overview snapshot, item files, the rev guard, the path guard, the
 // hide-once, the shell, and a version-1 board migrating.
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { existsSync, readFileSync, mkdirSync, writeFileSync, symlinkSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, mkdirSync, writeFileSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { tmp, cleanup, makeVault, makeKeyStore, startServer, type Running } from "./helpers";
 
@@ -109,6 +109,18 @@ describe("boards", () => {
     writeFileSync(join(vault, "boards", "lecture-3-fourier", "assets", "x.exe"), "MZ");
     expect((await get("/api/v1/boards/lecture-3-fourier/assets/x.exe")).status).toBe(404);
     expect((await get("/api/v1/boards/lecture-3-fourier/assets/..%2F..%2F..%2Fsecret.md")).status).toBe(404);
+  });
+
+  it("renames a board, and deletes one by moving it to boards/.trash", async () => {
+    const { slug } = (await (await post("/api/v1/boards", { name: "To go" })).json()) as any;
+    expect((await (await post(`/api/v1/boards/${slug}/rename`, { name: "Renamed" })).json()).name).toBe("Renamed");
+    expect(((await (await get(`/api/v1/boards/${slug}`)).json()) as any).name).toBe("Renamed");
+    expect((await post(`/api/v1/boards/${slug}/rename`, { name: " " })).status).toBe(400);
+    expect((await post(`/api/v1/boards/${slug}/delete`, {})).status).toBe(200);
+    expect((await get(`/api/v1/boards/${slug}`)).status).toBe(404);
+    const trash = readdirSync(join(vault, "boards", ".trash"));
+    expect(trash.some((n) => n.startsWith(`${slug}-`))).toBe(true);
+    expect((await (await get("/api/v1/boards")).json()).boards.some((b: any) => b.slug === slug)).toBe(false);
   });
 
   it("a version-1 board arrives migrated (pages stacked) and says it wants a save", async () => {

@@ -66,7 +66,8 @@ export type Entry = {
 /** What the inbox list shows. */
 export type EntrySummary = Pick<Entry, "id" | "title" | "note" | "createdAt" | "status" | "failed"> & {
   making: boolean;
-  parts: { kind: PartKind; label?: string }[];
+  /** `n`: how many board items the part becomes (a PDF part's pages). */
+  parts: { kind: PartKind; label?: string; n: number }[];
   added: number;
 };
 
@@ -79,7 +80,7 @@ export function summarize(e: Entry): EntrySummary {
     status: e.status,
     ...(e.failed ? { failed: e.failed } : {}),
     making: !!e.making && !e.failed,
-    parts: e.parts.map((p) => ({ kind: p.kind, ...(p.label ? { label: p.label } : {}) })),
+    parts: e.parts.map((p) => ({ kind: p.kind, ...(p.label ? { label: p.label } : {}), n: p.kind === "pdf" ? p.pages.length : 1 })),
     added: Object.keys(e.added ?? {}).length,
   };
 }

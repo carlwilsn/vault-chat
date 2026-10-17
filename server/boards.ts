@@ -4,6 +4,8 @@
 //   GET  /api/v1/boards/<slug>                → the board (a version-1 board arrives migrated)
 //   POST /api/v1/boards/<slug> {board, base, overview?: base64 PNG}
 //                                             → {ok, rev, updated} | 409 {error, rev} when base ≠ the file's rev
+//   POST /api/v1/boards/<slug>/rename {name}  → {ok, name}
+//   POST /api/v1/boards/<slug>/delete         → {ok} — moved to boards/.trash/<slug>-<time>, never removed
 //   GET  /api/v1/boards/<slug>/overview.png   → the snapshot of the whole board
 //   POST /api/v1/boards/<slug>/assets {data: base64 PNG/JPEG}
 //                                             → {src: "assets/<name>", w, h} — a file for an item
@@ -160,6 +162,29 @@ function saveNow(vault: string, slug: string, body: any): Out {
   // Version 1's page snapshots are gone with its pages.
   for (const f of readdirSync(dir)) if (/^page-\d+\.png$/.test(f)) rmSync(join(dir, f), { force: true });
   return { status: 200, body: { ok: true, rev: next.rev, updated: next.updated } };
+}
+
+/** A board's new name (its folder keeps its slug). */
+export function renameBoard(vault: string, slug: string, body: any): Out {
+  const dir = boardDir(vault, slug);
+  if (!dir) return { status: validSlug(slug) ? 404 : 400, body: { error: "no such board" } };
+  const name = typeof body?.name === "string" ? body.name.trim().slice(0, 120) : "";
+  if (!name) return { status: 400, body: { error: "a name is required" } };
+  const b = readBoard(dir);
+  if (!b) return { status: 500, body: { error: "board.json unreadable" } };
+  b.name = name;
+  writeAtomic(join(dir, BOARD_FILE), serializeBoard(b));
+  return { status: 200, body: { ok: true, name } };
+}
+
+/** Delete = move the folder to boards/.trash/ (the vault's history keeps it too); nothing is removed. */
+export function deleteBoard(vault: string, slug: string): Out {
+  const dir = boardDir(vault, slug);
+  if (!dir) return { status: validSlug(slug) ? 404 : 400, body: { error: "no such board" } };
+  const trash = join(vault, BOARDS_DIR, ".trash");
+  mkdirSync(trash, { recursive: true });
+  renameRetry(dir, join(trash, `${slug}-${Date.now().toString(36)}`));
+  return { status: 200, body: { ok: true } };
 }
 
 /** A file for an item: a PNG or JPEG, named by its content's random id. */
