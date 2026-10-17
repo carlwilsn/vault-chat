@@ -1,4 +1,5 @@
 // The whiteboard app: #/b/<slug> is a board, anything else the list.
+import "katex/dist/katex.min.css";
 import "./style.css";
 import * as api from "./api";
 import { renderList } from "./list";
@@ -25,7 +26,7 @@ async function route(): Promise<void> {
     renderList(app, (s) => (location.hash = `#/b/${s}`));
     return;
   }
-  app.innerHTML = `<div class="list"><p class="muted">Opening…</p></div>`;
+  app.innerHTML = `<div class="grid h-full place-items-center bg-sys-grouped text-subhead text-sys-secondary/60">Opening…</div>`;
   try {
     const board = await api.getBoard(slug);
     if (slugOf() !== slug) return;
@@ -37,7 +38,7 @@ async function route(): Promise<void> {
     current = v;
     (window as unknown as { __board: BoardView }).__board = v;
   } catch (e) {
-    app.innerHTML = `<div class="list"><p class="muted">Couldn't open this board: ${String((e as Error)?.message ?? e)}</p><p><a href="#">All boards</a></p></div>`;
+    app.innerHTML = `<div class="grid h-full place-items-center bg-sys-grouped p-8 text-center"><div><p class="text-subhead text-sys-secondary/70">Couldn't open this board: ${String((e as Error)?.message ?? e)}</p><p class="mt-3"><a class="text-subhead font-semibold text-sys-blue" href="#">All boards</a></p></div></div>`;
   }
 }
 

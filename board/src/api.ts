@@ -3,6 +3,7 @@
 // authorizes the data calls. A ?token= (an old phone link) is remembered like the
 // phone remembers it (same origin, same key).
 import type { Board, BoardSummary } from "../../src/boardFormat";
+import type { Entry, EntrySummary } from "../../src/inboxFormat";
 
 const qs = new URLSearchParams(location.search);
 let TOKEN = qs.get("token") || "";
@@ -62,3 +63,42 @@ export const overviewUrl = (slug: string, v: number) => withToken(inVault(`/api/
 
 /** An item's file (`assets/<name>`) for an <img>. */
 export const assetUrl = (slug: string, src: string) => withToken(inVault(`/api/v1/boards/${enc(slug)}/${src.split("/").map(enc).join("/")}`));
+
+export const renameBoard = (slug: string, name: string) => call<{ ok: true; name: string }>(`/api/v1/boards/${enc(slug)}/rename`, { method: "POST", body: JSON.stringify({ name }) });
+/** Moves the board to boards/.trash on the box (nothing is removed). */
+export const deleteBoard = (slug: string) => call<{ ok: true }>(`/api/v1/boards/${enc(slug)}/delete`, { method: "POST", body: "{}" });
+
+// ---- the inbox (board/INBOX.md, server/inbox.ts)
+export const listInbox = () => call<{ entries: EntrySummary[]; unread: number }>("/api/v1/inbox");
+export const getEntry = (id: string) => call<Entry>(`/api/v1/inbox/${enc(id)}`);
+export const markRead = (id: string) => call<{ ok: true }>(`/api/v1/inbox/${enc(id)}/read`, { method: "POST", body: "{}" });
+export const markAdded = (id: string, part: number, board: string, items: string[]) =>
+  call<{ ok: true }>(`/api/v1/inbox/${enc(id)}/added`, { method: "POST", body: JSON.stringify({ part, board, items }) });
+/** A part's files for the viewer: the PDF or image itself, `html` (math), `bundle` (widget). */
+export const partUrl = (id: string, n: number, what?: "html" | "bundle" | "snapshot") => withToken(inVault(`/api/v1/inbox/${enc(id)}/part/${n}${what ? `/${what}` : ""}`));
+/** Copy a part (or every part) into the board; the items to place come back. */
+export const fromInbox = (slug: string, id: string, part?: number) =>
+  call<{ items: ItemTemplate[] }>(`/api/v1/boards/${enc(slug)}/from-inbox`, { method: "POST", body: JSON.stringify(part === undefined ? { id } : { id, part }) });
+export type ItemTemplate = Record<string, unknown> & { kind: string; src: string; lw: number; lh: number; label?: string; width?: number; inbox: { id: string; part: number } };
+
+/** Text (typeset math, a widget's bundle) from a URL above. */
+export async function text(url: string): Promise<string> {
+  const headers: Record<string, string> = TOKEN ? { "X-Vault-Token": TOKEN } : {};
+  const r = await fetch(url, { headers });
+  if (!r.ok) throw new HttpError(r.status, `HTTP ${r.status}`);
+  return r.text();
+}
+
+/** The box's event ring (/poll): `fn` gets this vault's events; resolves never. */
+export async function watch(fn: (ev: any) => void): Promise<void> {
+  let cursor: number | null = null;
+  for (;;) {
+    try {
+      const r: { next: number; events: any[] } = await call(`/poll?after=${cursor ?? "latest"}`);
+      if (cursor !== null) for (const e of r.events) fn(e);
+      cursor = r.next;
+    } catch {
+      await new Promise((res) => setTimeout(res, 4000));
+    }
+  }
+}

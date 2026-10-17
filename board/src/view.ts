@@ -21,8 +21,11 @@ import { HL_ALPHA, drawGrid, drawItem, drawStroke, inkStyle, itemBox, strokeInfo
 import { Arbiter, type Action, type Hand, type PEvent } from "./palm";
 import * as api from "./api";
 import { icon, type IconName } from "./icons";
+import { Items, isDom, measureMath, fetchText } from "./items";
+import { openInbox, inboxBadge, type InboxHost } from "./inbox";
+import { placeParts } from "./place";
 
-const TOP = 68; // css px kept clear for the toolbar (8 + its 52)
+const TOP = 76; // css px kept clear for the floating controls (12 + 56 + a little air)
 const TILE = 512; // px
 const LMIN = -5, LMAX = 5;
 const TILE_CACHE = 72;
@@ -75,6 +78,15 @@ type ToolG =
 /** Toolbar icons (Lucide, board/src/icons.ts). */
 const ICONS: Record<string, IconName> = { back: "chevron-left", pen: "pen-line", hl: "highlighter", erase: "eraser", cut: "eraser", lasso: "lasso-select", undo: "undo-2", redo: "redo-2", more: "ellipsis", inbox: "inbox" };
 const svg = (name: string) => icon(ICONS[name] ?? (name as IconName));
+
+// The chrome's Tailwind classes (board/tailwind.config.js: the desktop's tokens, iPadOS colours).
+const BTN = "relative grid h-11 w-11 shrink-0 place-items-center rounded-full text-sys-label/80 transition-colors duration-150 active:bg-sys-fill/20 disabled:opacity-25 aria-pressed:bg-sys-blue/15 aria-pressed:text-sys-blue aria-expanded:bg-sys-fill/15";
+const FLOAT = "material hairline shadow-float absolute z-10 flex items-center rounded-full";
+const SEP = '<span class="mx-1 h-6 w-px shrink-0 bg-sys-separator/30"></span>';
+const POP = "pop material hairline shadow-pop absolute z-20 flex min-w-[220px] flex-col gap-3 rounded-[14px] p-3 text-foreground animate-pop-in origin-top";
+const SEG = "flex rounded-[9px] bg-sys-fill/15 p-0.5";
+const SEG_BTN = "h-8 flex-1 rounded-[7px] px-3 text-footnote font-medium text-sys-label/70 transition aria-pressed:bg-card aria-pressed:text-sys-label aria-pressed:shadow-sm";
+const PILL = "inline-flex h-10 items-center gap-1.5 rounded-full px-4 text-subhead font-semibold transition active:scale-95";
 const TITLES: Record<Mode, string> = { pen: "Pen", hl: "Highlighter", erase: "Stroke eraser", cut: "Precise eraser", lasso: "Select" };
 
 const rid = () => Math.random().toString(36).slice(2, 10);
@@ -131,6 +143,10 @@ export class BoardView {
   private lifted = false;
   /** Ink written on a selected item (every point inside its box), carried along when it moves or scales. */
   private carry = new Set<Stroke>();
+  /** The inbox's kinds on the board (items.ts) and the widget taking touches, if any. */
+  private items: Items;
+  private interact: string | null = null;
+  private inboxClose: (() => void) | null = null;
   private undoStack: Op[] = [];
   private redoStack: Op[] = [];
 
@@ -161,34 +177,50 @@ export class BoardView {
     this.arb = new Arbiter({ hand: this.prefs.hand, pan1: this.prefs.pan1, penSeen });
     this.el = document.createElement("div");
     this.el.className = "board";
-    const tool = (m: Mode) => `<button class="ic" data-mode="${m}" title="${TITLES[m]}" aria-label="${TITLES[m]}">${svg(m)}</button>`;
+    const tool = (m: Mode, extra = "") => `<button class="${BTN}" data-mode="${m}" title="${TITLES[m]}" aria-label="${TITLES[m]}" aria-pressed="false">${svg(m)}${extra}</button>`;
+    // The pen and the highlighter show their colour as a small dot under the icon.
+    const dot = '<i class="ink-dot pointer-events-none absolute bottom-[5px] left-1/2 h-[5px] w-[5px] -translate-x-1/2 rounded-full"></i>';
     // One eraser button: it picks the remembered eraser; tapped again while active, it opens the eraser's popover.
-    const eraser = `<button class="ic" data-mode="eraser" title="Eraser" aria-label="Eraser">${svg(this.prefs.eraser)}</button>`;
+    const top = "top-[max(12px,env(safe-area-inset-top))]";
     this.el.innerHTML = `
-      <div class="stage"><canvas class="base"></canvas><canvas class="live"></canvas></div>
-      <div class="tb">
-        <button class="ic back" data-act="back" title="Boards" aria-label="Boards">${svg("back")}</button>
-        <div class="tb-name"></div>
-        <div class="tb-tools">
-          ${tool("pen")}${tool("hl")}${eraser}${tool("lasso")}
-          <span class="sep"></span>
-          <button class="sz" data-pop="size" title="Size" aria-label="Size"><i></i></button>
-          <button class="sw" data-pop="color" title="Colour" aria-label="Colour"><i></i></button>
-          <span class="sep"></span>
-          <button class="ic" data-act="undo" title="Undo" aria-label="Undo">${svg("undo")}</button>
-          <button class="ic" data-act="redo" title="Redo" aria-label="Redo">${svg("redo")}</button>
-          <span class="sep"></span>
-          <button class="ic" data-pop="menu" title="Board" aria-label="Board menu">${svg("more")}</button>
-        </div>
-        <div class="tb-status"></div>
+      <div class="stage"><div class="items"></div><canvas class="base"></canvas><canvas class="live"></canvas></div>
+      <div class="${FLOAT} ${top} left-[max(12px,env(safe-area-inset-left))] h-14 max-w-[26%] gap-0.5 pl-1.5 pr-5">
+        <button class="${BTN} text-sys-blue" data-act="back" title="Boards" aria-label="Boards">${svg("back")}</button>
+        <div class="tb-name min-w-0 truncate text-subhead font-semibold text-sys-label"></div>
       </div>
-      <div class="pop" hidden></div>
-      <div class="selbar" hidden><button data-act="delete">Delete</button></div>
+      <div class="tb ${FLOAT} ${top} left-1/2 h-14 -translate-x-1/2 gap-0.5 px-1.5">
+        ${tool("pen", dot)}${tool("hl", dot)}<button class="${BTN}" data-mode="eraser" title="Eraser" aria-label="Eraser" aria-pressed="false">${svg("erase")}</button>${tool("lasso")}
+        ${SEP}
+        <button class="sz ${BTN}" data-pop="size" title="Size" aria-label="Size" aria-expanded="false"><svg width="26" height="26" viewBox="0 0 26 26"><path d="M4 17c4-8 7-8 9-3s5 5 9-3" fill="none" stroke-linecap="round"/></svg></button>
+        <button class="sw ${BTN}" data-pop="color" title="Colour" aria-label="Colour" aria-expanded="false"><i class="block h-[22px] w-[22px] rounded-full shadow-[inset_0_0_0_1px_rgb(0_0_0/0.12)]"></i></button>
+        ${SEP}
+        <button class="${BTN}" data-act="undo" title="Undo" aria-label="Undo">${svg("undo")}</button>
+        <button class="${BTN}" data-act="redo" title="Redo" aria-label="Redo">${svg("redo")}</button>
+      </div>
+      <div class="${FLOAT} ${top} right-[max(12px,env(safe-area-inset-right))] h-14 gap-0.5 px-1.5">
+        <button class="${BTN}" data-act="inbox" title="Inbox" aria-label="Inbox" aria-expanded="false">${svg("inbox")}<span class="badge pointer-events-none absolute right-0.5 top-0.5 hidden min-w-[18px] rounded-full bg-sys-red px-1 text-center text-[11px] font-semibold leading-[18px] text-white tabular-nums shadow"></span></button>
+        <button class="${BTN}" data-pop="menu" title="Board" aria-label="Board menu" aria-expanded="false">${svg("more")}</button>
+      </div>
+      <div class="empty pointer-events-none absolute inset-0 z-[2] hidden place-items-center">
+        <div class="text-center animate-fade-in">
+          <div class="text-title3 font-semibold text-black/25">Write anywhere</div>
+          <div class="mt-1.5 text-footnote text-black/25">Two fingers to move and zoom · two-finger tap to undo · what the agent sends waits in the inbox</div>
+        </div>
+      </div>
+      <div class="tb-status material hairline shadow-float absolute left-[max(12px,env(safe-area-inset-left))] top-[calc(max(12px,env(safe-area-inset-top))+64px)] z-10 hidden rounded-full px-3.5 py-1.5 text-footnote font-medium text-[rgb(var(--sys-red))]"></div>
+      <div class="${POP}" hidden></div>
+      <div class="selbar absolute z-10 flex -translate-x-1/2 gap-1 rounded-full bg-[rgb(28_28_30/0.92)] p-1 text-white shadow-pop backdrop-blur-xl animate-pop-in" hidden></div>
       <input class="file" type="file" accept="image/*" hidden>`;
     this.stage = this.el.querySelector(".stage")!;
     this.base = this.el.querySelector("canvas.base")!;
     this.live = this.el.querySelector("canvas.live")!;
-    this.bctx = this.base.getContext("2d", { alpha: false })!;
+    // Transparent where a DOM item (math, a widget) is: it shows through from below, the ink stays above it.
+    this.bctx = this.base.getContext("2d")!;
+    this.items = new Items(slug, this.el.querySelector(".items")!, (src, page) => {
+      for (const it of this.board.items) if (it.src === src && (it.page ?? 1) === page) this.invalidate(itemBox(it));
+      this.renderBase();
+      this.queueLive();
+    });
     this.lctx = this.live.getContext("2d", { desynchronized: true } as CanvasRenderingContext2DSettings)!;
     this.statusEl = this.el.querySelector(".tb-status")!;
     this.selbar = this.el.querySelector(".selbar")!;
@@ -206,13 +238,15 @@ export class BoardView {
     this.stage.addEventListener("wheel", (e) => this.wheel(e), { passive: false });
     // No iOS selection, callout, magnifier, double-tap zoom or rubber-band anywhere on the board.
     for (const t of ["touchstart", "dblclick", "contextmenu", "selectstart"]) this.stage.addEventListener(t, (e) => e.preventDefault(), { passive: false });
-    for (const t of ["touchmove", "dblclick", "contextmenu", "selectstart"]) this.el.addEventListener(t, (e) => (e.target as HTMLElement).tagName !== "INPUT" && e.preventDefault(), { passive: false });
+    // Text fields and the scrolling panels (the inbox, its viewer, the popovers) keep their own touches.
+    for (const t of ["touchmove", "dblclick", "contextmenu", "selectstart"]) this.el.addEventListener(t, (e) => (e.target as HTMLElement).tagName !== "INPUT" && !(e.target as HTMLElement).closest?.("[data-scroll]") && e.preventDefault(), { passive: false });
     window.addEventListener("resize", this.onResize);
     window.addEventListener("keydown", this.onKey);
     document.addEventListener("visibilitychange", this.onHide);
     window.addEventListener("pagehide", this.onHide);
     this.syncToolbar();
     this.setStatus("saved");
+    inboxBadge(this.el.querySelector(".badge") as HTMLElement);
   }
 
   /** After the element is in the document. */
@@ -236,6 +270,8 @@ export class BoardView {
     window.removeEventListener("pagehide", this.onHide);
     cancelAnimationFrame(this.momentum);
     this.tiles.clear();
+    this.items.dispose();
+    this.inboxClose?.();
   }
 
   // ------------------------------------------------------------ layout & camera
@@ -299,6 +335,7 @@ export class BoardView {
       this.drawLevel = this.levelFor();
       this.renderBase();
       this.saveCam();
+      this.sharpenPdfs();
     }, 140);
   }
 
@@ -323,7 +360,7 @@ export class BoardView {
     ctx.setTransform(s, 0, 0, s, -box.x0 * s, -box.y0 * s);
     drawGrid(ctx, this.board.grid, box, s);
     const lifted = this.lifted ? this.sel : null;
-    for (const it of this.board.items) if (!lifted?.items.has(it) && boxesMeet(itemBox(it), box)) drawItem(ctx, it, this.imageFor(it));
+    for (const it of this.board.items) if (!lifted?.items.has(it) && boxesMeet(itemBox(it), box)) this.paintItem(ctx, it, "tile");
     for (const st of this.board.strokes) if (!(lifted && (lifted.strokes.has(st) || this.carry.has(st))) && boxesMeet(strokeInfo(st).box, box)) drawStroke(ctx, st);
     return c;
   }
@@ -344,8 +381,7 @@ export class BoardView {
     if (!this.gesturing || Math.abs(Math.log2(z * d) - this.drawLevel) > 1.4) this.drawLevel = this.levelFor();
     const L = this.drawLevel, tw = this.tileWorld(L);
     ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.fillStyle = "#fff";
-    ctx.fillRect(0, 0, this.base.width, this.base.height);
+    ctx.clearRect(0, 0, this.base.width, this.base.height);
     ctx.imageSmoothingQuality = "high";
     const tx0 = Math.floor(x / tw), tx1 = Math.floor((x + this.W / z) / tw);
     const ty0 = Math.floor(y / tw), ty1 = Math.floor((y + this.H / z) / tw);
@@ -370,6 +406,74 @@ export class BoardView {
     }
     while (this.tiles.size > TILE_CACHE) this.tiles.delete(this.tiles.keys().next().value!);
     if (missing) this.queueBase();
+    this.layoutDom();
+    // A fresh board says how it works, until the first stroke or item.
+    const empty = !this.board.strokes.length && !this.board.items.length && !this.g;
+    const hint = this.el.querySelector(".empty") as HTMLElement;
+    hint.classList.toggle("hidden", !empty);
+    hint.classList.toggle("grid", empty);
+  }
+
+  /** An item into a context in canvas units: `tile` (a DOM item leaves a hole), `live` (lifted; a DOM item moves itself), `overview` (its snapshot). */
+  private paintItem(ctx: CanvasRenderingContext2D, it: Item, how: "tile" | "live" | "overview"): void {
+    if (isDom(it)) {
+      if (how === "tile") ctx.clearRect(it.x, it.y, it.w, it.h);
+      else if (how === "overview") {
+        const snap = typeof it.snap === "string" ? (this.images.get(it.snap) ?? null) : null;
+        if (snap) ctx.drawImage(snap, it.x, it.y, it.w, it.h);
+        else {
+          ctx.save();
+          ctx.fillStyle = "#fff";
+          ctx.fillRect(it.x, it.y, it.w, it.h);
+          ctx.strokeStyle = "#d0d0d6";
+          ctx.lineWidth = Math.max(1, it.w / 300);
+          ctx.strokeRect(it.x, it.y, it.w, it.h);
+          ctx.fillStyle = "#555";
+          ctx.font = `${Math.max(8, it.w / 22)}px -apple-system, system-ui, sans-serif`;
+          ctx.fillText(String(it.label ?? it.alt ?? it.kind).slice(0, 60), it.x + it.w / 30, it.y + it.w / 14);
+          ctx.restore();
+        }
+      }
+      return;
+    }
+    if (it.kind === "pdf") {
+      drawItem(ctx, it, this.items.pdfBitmap(it));
+      // A sheet of paper on the paper: a hairline edge.
+      ctx.save();
+      ctx.strokeStyle = "rgba(0,0,0,0.14)";
+      ctx.lineWidth = 1 / (ctx.getTransform().a || 1);
+      ctx.strokeRect(it.x, it.y, it.w, it.h);
+      ctx.restore();
+      return;
+    }
+    drawItem(ctx, it, this.imageFor(it));
+  }
+
+  /** Where each DOM item is on screen (the selection's live transform applied while it moves). */
+  private layoutDom(): void {
+    if (this.disposed) return;
+    const g = this.g, xf = g?.k === "xf" ? g.xf : ID;
+    const lifted = this.lifted && this.sel ? this.sel.items : null;
+    const view: Box = { x0: this.cam.x, y0: this.cam.y, x1: this.cam.x + this.W / this.cam.z, y1: this.cam.y + this.H / this.cam.z };
+    this.items.layout(
+      this.board.items,
+      (it) => {
+        const moving = lifted?.has(it);
+        const b = itemBox(it);
+        const q = moving ? { x0: b.x0 * xf.s + xf.ox, y0: b.y0 * xf.s + xf.oy, x1: b.x1 * xf.s + xf.ox, y1: b.y1 * xf.s + xf.oy } : b;
+        if (!boxesMeet(q, view) && this.interact !== it.id) return null;
+        const sp = this.toScreen(q.x0, q.y0);
+        return { x: sp.x, y: sp.y, s: ((q.x1 - q.x0) * this.cam.z) / (Number(it.lw) || it.w) };
+      },
+      (it) => !!lifted?.has(it),
+      this.interact,
+    );
+  }
+
+  /** Visible PDF pages, rendered as sharp as the zoom they are seen at (after the camera settles). */
+  private sharpenPdfs(): void {
+    const view: Box = { x0: this.cam.x, y0: this.cam.y, x1: this.cam.x + this.W / this.cam.z, y1: this.cam.y + this.H / this.cam.z };
+    for (const it of this.board.items) if (it.kind === "pdf" && boxesMeet(itemBox(it), view)) this.items.wantPdf(it, it.w * this.cam.z * this.dpr);
   }
 
   private queueBase(): void {
@@ -438,24 +542,23 @@ export class BoardView {
       if (this.lifted) {
         ctx.save();
         ctx.transform(xf.s, 0, 0, xf.s, xf.ox, xf.oy);
-        for (const it of this.board.items) if (sel.items.has(it)) drawItem(ctx, it, this.imageFor(it));
+        for (const it of this.board.items) if (sel.items.has(it)) this.paintItem(ctx, it, "live");
         for (const s of this.board.strokes) if (sel.strokes.has(s) || this.carry.has(s)) drawStroke(ctx, s);
         ctx.restore();
       }
       const b = this.selBox();
       if (b) {
         const q = { x0: b.x0 * xf.s + xf.ox, y0: b.y0 * xf.s + xf.oy, x1: b.x1 * xf.s + xf.ox, y1: b.y1 * xf.s + xf.oy };
-        ctx.lineWidth = 1.2 / z;
-        ctx.setLineDash([5 / z, 4 / z]);
-        ctx.strokeStyle = "#1f5bd6";
+        // A systemBlue outline with round white handles in a blue ring.
+        ctx.lineWidth = 1.5 / z;
+        ctx.strokeStyle = "#007aff";
         ctx.strokeRect(q.x0, q.y0, q.x1 - q.x0, q.y1 - q.y0);
-        ctx.setLineDash([]);
         // 12 px handles (their hit area is 44 px: selHit), drawn over a soft halo so they read on ink and images.
         ctx.fillStyle = "#fff";
         for (const [hx, hy] of [[q.x0, q.y0], [q.x1, q.y0], [q.x0, q.y1], [q.x1, q.y1]] as const) {
           ctx.beginPath();
           ctx.arc(hx, hy, 9 / z, 0, Math.PI * 2);
-          ctx.fillStyle = "rgba(31,91,214,0.14)";
+          ctx.fillStyle = "rgba(0,122,255,0.14)";
           ctx.fill();
           ctx.beginPath();
           ctx.arc(hx, hy, 6 / z, 0, Math.PI * 2);
@@ -467,6 +570,7 @@ export class BoardView {
       }
     }
     this.placeSelbar();
+    if (this.g?.k === "xf") this.layoutDom();
     if (DEBUG_TOUCH) {
       ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
       const st = this.arb.state();
@@ -484,28 +588,55 @@ export class BoardView {
   }
 
   private placeSelbar(): void {
-    const b = this.sel && !(this.g?.k === "xf") ? this.selBox() : null;
+    const b = this.sel && !(this.g?.k === "xf") ? this.selBox() : this.interact ? this.interactBox() : null;
     if (!b) {
       this.selbar.hidden = true;
+      this.selbar.dataset.k = "";
       return;
+    }
+    // Delete, and Interact when the selection is one widget; Done while a widget is being used.
+    const one = this.sel && this.sel.items.size === 1 && !this.sel.strokes.size ? [...this.sel.items][0]! : null;
+    const k = this.interact ? "done" : one?.kind === "widget" ? "widget" : "plain";
+    if (this.selbar.dataset.k !== k) {
+      this.selbar.dataset.k = k;
+      const pill = (act: string, ic: IconName, label: string, tone = "") => `<button data-act="${act}" class="${PILL} ${tone}">${icon(ic, 18)}<span>${label}</span></button>`;
+      this.selbar.innerHTML =
+        k === "done" ? pill("interact-done", "check", "Done", "bg-sys-blue text-white") : (k === "widget" ? pill("interact", "hand", "Interact") : "") + pill("delete", "trash-2", "Delete", "text-[rgb(255_105_97)]");
     }
     const p = this.toScreen((b.x0 + b.x1) / 2, b.y0);
     this.selbar.hidden = false;
-    this.selbar.style.left = `${clamp(p.x, 50, this.W - 50)}px`;
-    this.selbar.style.top = `${clamp(p.y - 46, TOP, this.H - 50)}px`;
+    this.selbar.style.left = `${clamp(p.x, 110, this.W - 110)}px`;
+    // Above the selection, or just inside its top edge when that is under the toolbar.
+    this.selbar.style.top = `${clamp(p.y - 58, TOP + 6, this.H - 56)}px`;
+  }
+
+  private interactBox(): Box | null {
+    const it = this.board.items.find((x) => x.id === this.interact);
+    return it ? itemBox(it) : null;
+  }
+
+  /** A widget takes touches (its iframe rises above the canvases) until Done or a touch elsewhere. */
+  private setInteract(id: string | null): void {
+    if (this.interact === id) return;
+    this.interact = id;
+    if (id) this.sel = null;
+    this.layoutDom();
+    this.queueLive();
   }
 
   // ------------------------------------------------------------ images
 
   private loadImage(it: Item): void {
-    if (!it.src || this.images.has(it.src)) return;
-    const src = it.src;
+    // Images draw their file; math and widgets keep a snapshot for the overview; a PDF page is pdf.js's (items.ts).
+    if (it.kind === "pdf") return this.items.wantPdf(it, Math.max(512, it.w * this.cam.z * this.dpr));
+    const src = isDom(it) ? (typeof it.snap === "string" ? it.snap : null) : it.src;
+    if (!src || this.images.has(src)) return;
     this.images.set(src, null);
     const img = new Image();
     img.decoding = "async";
     img.onload = () => {
       this.images.set(src, img);
-      for (const x of this.board.items) if (x.src === src) this.invalidate(itemBox(x));
+      for (const x of this.board.items) if (x.src === src || x.snap === src) this.invalidate(itemBox(x));
       this.renderBase();
       this.queueLive();
     };
@@ -533,6 +664,7 @@ export class BoardView {
       }
       e.preventDefault();
       this.closePop();
+      if (this.interact) this.setInteract(null);
       cancelAnimationFrame(this.momentum);
     }
     this.domEv = e;
@@ -667,6 +799,11 @@ export class BoardView {
     const g = this.g;
     if (!g || g.id !== id) return;
     this.g = null;
+    // A pen down postponed the save (startTool); a gesture that changes nothing must not leave it unscheduled.
+    if (this.dirty && !this.conflict) {
+      clearTimeout(this.saveT);
+      this.saveT = window.setTimeout(() => void this.save(), SAVE_DELAY);
+    }
     if (g.k === "draw") {
       if (drop) return this.queueLive();
       const stroke: Stroke = { id: rid(), tool: g.tool, color: g.color, w: g.w, xy: packXY(g.pts) };
@@ -994,6 +1131,60 @@ export class BoardView {
     }
   }
 
+  // ------------------------------------------------------------ the inbox
+
+  private toggleInbox(btn: HTMLElement): void {
+    if (this.inboxClose) return this.inboxClose();
+    this.closePop();
+    btn.setAttribute("aria-expanded", "true");
+    const host: InboxHost = {
+      add: (id, part) => this.addFromInbox(id, part),
+      closed: () => {
+        this.inboxClose = null;
+        btn.setAttribute("aria-expanded", "false");
+      },
+    };
+    this.inboxClose = openInbox(this.el, host);
+  }
+
+  /** "Add to board": the part (or every part) lands at the centre of the view, selected, ready to move and scale. */
+  async addFromInbox(id: string, part?: number): Promise<string[]> {
+    const { items: tpl } = await api.fromInbox(this.slug, id, part);
+    // Typeset math's height as this iPad lays it out (the fonts it has).
+    for (const t of tpl) {
+      if (t.kind === "math") {
+        try {
+          t.lh = await measureMath(await fetchText(api.assetUrl(this.slug, t.src)), t.lw);
+        } catch {
+          t.lh = t.lh || t.lw * 0.4;
+        }
+      }
+    }
+    const vw = this.W / this.cam.z, vh = (this.H - TOP) / this.cam.z;
+    const c = this.toWorld(this.W / 2, TOP + (this.H - TOP) / 2);
+    const boxes = placeParts(tpl, { cx: c.x, cy: c.y, w: vw, h: vh });
+    const made: Item[] = tpl.map((t, i) => {
+      const { width: _w, ...rest } = t;
+      void _w;
+      return { ...rest, id: rid(), ...boxes[i]!, lw: t.lw, lh: t.lh } as Item;
+    });
+    this.begin();
+    this.board.items.push(...made);
+    this.commit();
+    for (const it of made) this.loadImage(it);
+    this.renderBase();
+    this.setMode("lasso");
+    this.setSel({ strokes: new Set(), items: new Set(made) });
+    // Which part became which items (the agent reads it with BoardInbox).
+    const byPart = new Map<number, string[]>();
+    for (const it of made) {
+      const n = (it.inbox as { part: number }).part;
+      byPart.set(n, [...(byPart.get(n) ?? []), it.id]);
+    }
+    for (const [n, ids] of byPart) void api.markAdded(id, n, this.slug, ids).catch(() => {});
+    return made.map((x) => x.id);
+  }
+
   // ------------------------------------------------------------ toolbar & popovers
 
   private setMode(m: Mode): void {
@@ -1061,6 +1252,11 @@ export class BoardView {
     } else if (d.act === "undo") this.undo();
     else if (d.act === "redo") this.redo();
     else if (d.act === "delete") this.deleteSel();
+    else if (d.act === "interact") {
+      const one = this.sel && [...this.sel.items][0];
+      if (one) this.setInteract(one.id);
+    } else if (d.act === "interact-done") this.setInteract(null);
+    else if (d.act === "inbox") this.toggleInbox(t);
     else if (d.act === "back") this.onBack();
     else if (d.act === "reload") location.reload();
     if (d.grid || d.hand || d.pan1) this.renderPop();
@@ -1077,7 +1273,7 @@ export class BoardView {
     this.syncToolbar();
     const out = this.el.querySelector(".pop .val");
     if (out) out.textContent = this.sizeLabel(k);
-    this.el.querySelectorAll<HTMLElement>(".pop [data-size]").forEach((b) => b.classList.toggle("on", Number(b.dataset.size) === this.prefs[k]));
+    this.el.querySelectorAll<HTMLElement>(".pop [data-size]").forEach((b) => b.setAttribute("aria-pressed", String(Number(b.dataset.size) === this.prefs[k])));
   }
 
   private openPop: string | null = null;
@@ -1089,10 +1285,18 @@ export class BoardView {
     const pop = this.el.querySelector(".pop") as HTMLElement;
     this.renderPop();
     pop.hidden = false;
+    // Restart the open animation.
+    pop.classList.remove("animate-pop-in");
+    void pop.offsetWidth;
+    pop.classList.add("animate-pop-in");
     const r = btn.getBoundingClientRect(), root = this.el.getBoundingClientRect();
     const w = pop.offsetWidth;
-    pop.style.left = `${clamp(r.left + r.width / 2 - w / 2 - root.left, 8, root.width - w - 8)}px`;
-    pop.style.top = `${r.bottom - root.top + 8}px`;
+    const left = clamp(r.left + r.width / 2 - w / 2 - root.left, 12, root.width - w - 12);
+    pop.style.left = `${left}px`;
+    pop.style.top = `${r.bottom - root.top + 12}px`;
+    pop.style.transformOrigin = `${r.left + r.width / 2 - root.left - left}px 0`;
+    const arrow = pop.querySelector(".pop-arrow") as HTMLElement | null;
+    if (arrow) arrow.style.left = `${r.left + r.width / 2 - root.left - left - 7}px`;
     this.syncToolbar();
   }
   private closePop(): void {
@@ -1108,61 +1312,70 @@ export class BoardView {
   private renderPop(): void {
     const pop = this.el.querySelector(".pop") as HTMLElement;
     const p = this.prefs;
+    const arrow = '<span class="pop-arrow material"></span>';
+    const label = (t: string) => `<div class="px-1 text-footnote font-medium text-sys-secondary/60">${t}</div>`;
+    const seg = (attr: string, opts: [string, string][], cur: string) => `<div class="${SEG}">${opts.map(([v, l]) => `<button data-${attr}="${v}" aria-pressed="${v === cur}" class="${SEG_BTN}">${l}</button>`).join("")}</div>`;
     if (this.openPop === "size" || this.openPop === "eraser") {
       const k = this.sizeKey()!;
       const spec = SIZES[k];
       const ink = k === "pen" || k === "hl";
-      const dot = (v: number) => (ink ? clamp(v * this.homeZ, 2, 26) : clamp(v * 0.9, 5, 26));
-      const kind = this.openPop === "eraser" ? `<div class="seg">${(["erase", "cut"] as const).map((e) => `<button data-eraser="${e}" class="${p.eraser === e ? "on" : ""}">${e === "erase" ? "Stroke" : "Precise"}</button>`).join("")}</div>` : "";
-      pop.innerHTML = `${kind}
-        <div class="row">${spec.presets.map((v) => `<button class="szp${v === p[k] ? " on" : ""}" data-size="${v}" title="${v}"><i class="${ink ? "" : "ring"}" style="width:${dot(v)}px;height:${dot(v)}px;${ink ? `background:${k === "hl" ? p.hlColor : p.penColor}` : ""}"></i></button>`).join("")}</div>
-        <div class="row"><input type="range" data-range min="${spec.min}" max="${spec.max}" step="0.1" value="${p[k]}"><span class="val">${this.sizeLabel(k)}</span></div>`;
+      const color = k === "hl" ? p.hlColor : p.penColor;
+      // Real samples: the stroke at that width (as it lands at the board's home zoom), or the eraser's circle.
+      const sample = (v: number) =>
+        ink
+          ? `<svg width="40" height="28" viewBox="0 0 40 28"><path d="M5 19c5-11 9-11 12-4s7 7 13-4" fill="none" stroke="${color}" stroke-opacity="${k === "hl" ? HL_ALPHA * 1.6 : 1}" stroke-width="${clamp(v * this.homeZ, 1, 16)}" stroke-linecap="round"/></svg>`
+          : `<svg width="40" height="28" viewBox="0 0 40 28"><circle cx="20" cy="14" r="${clamp(v * 0.55, 2, 13)}" fill="rgb(120 120 128 / 0.16)" stroke="currentColor" stroke-opacity="0.55" stroke-width="1.2"/></svg>`;
+      const kind = this.openPop === "eraser" ? seg("eraser", [["erase", "Stroke"], ["cut", "Precise"]], p.eraser) : "";
+      pop.innerHTML = `${arrow}${kind}
+        <div class="flex items-center gap-1">${spec.presets.map((v) => `<button class="grid h-11 flex-1 place-items-center rounded-[10px] text-sys-label transition aria-pressed:bg-sys-blue/15" data-size="${v}" aria-pressed="${v === p[k]}" title="${v}">${sample(v)}</button>`).join("")}</div>
+        <div class="flex items-center gap-3 px-1"><input type="range" data-range class="h-7 flex-1 accent-[rgb(var(--sys-blue))]" min="${spec.min}" max="${spec.max}" step="0.1" value="${p[k]}"><span class="val w-12 text-right text-footnote text-sys-secondary/60 tabular-nums">${this.sizeLabel(k)}</span></div>`;
     } else if (this.openPop === "color") {
       const hl = p.mode === "hl";
       const cur = hl ? p.hlColor : p.penColor;
-      pop.innerHTML = `<div class="row">${(hl ? HLS : PENS).map((c) => `<button class="swp${c === cur ? " on" : ""}" data-color="${c}" title="${c}"><i style="background:${c}"></i></button>`).join("")}</div>`;
+      pop.innerHTML = `${arrow}<div class="flex items-center gap-1.5">${(hl ? HLS : PENS).map((c) => `<button class="grid h-11 w-11 place-items-center rounded-full ring-sys-blue transition aria-pressed:ring-2" data-color="${c}" aria-pressed="${c === cur}" title="${c}"><i class="block h-7 w-7 rounded-full shadow-[inset_0_0_0_1px_rgb(0_0_0/0.12)]" style="background:${c}"></i></button>`).join("")}</div>`;
     } else if (this.openPop === "menu") {
-      const seg = (attr: string, opts: [string, string][], cur: string) => `<div class="seg">${opts.map(([v, l]) => `<button data-${attr}="${v}" class="${v === cur ? "on" : ""}">${l}</button>`).join("")}</div>`;
-      pop.innerHTML = `
-        <button class="item" data-act="insert">Insert image…</button>
-        <label>Background</label>${seg("grid", [["plain", "Plain"], ["dots", "Dots"], ["grid", "Grid"]], this.board.grid)}
-        <label>Writing hand</label>${seg("hand", [["left", "Left"], ["right", "Right"]], p.hand)}
-        <label>One-finger scroll</label>${seg("pan1", [["off", "Off"], ["on", "On"]], p.pan1 ? "on" : "off")}`;
+      pop.innerHTML = `${arrow}
+        <button class="flex h-11 items-center gap-3 rounded-[10px] px-2 text-body text-sys-label transition active:bg-sys-fill/20" data-act="insert">${icon("image-plus")}<span>Insert image…</span></button>
+        <div class="h-px bg-sys-separator/20"></div>
+        ${label("Background")}${seg("grid", [["plain", "Plain"], ["dots", "Dots"], ["grid", "Grid"]], this.board.grid)}
+        ${label("Writing hand")}${seg("hand", [["left", "Left"], ["right", "Right"]], p.hand)}
+        ${label("One-finger scroll")}${seg("pan1", [["off", "Off"], ["on", "On"]], p.pan1 ? "on" : "off")}`;
     }
   }
 
   private syncToolbar(): void {
     const p = this.prefs;
-    this.el.querySelectorAll<HTMLElement>("[data-mode]").forEach((b) => b.classList.toggle("on", b.dataset.mode === p.mode || (b.dataset.mode === "eraser" && isEraser(p.mode))));
+    this.el.querySelectorAll<HTMLElement>("[data-mode]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.mode === p.mode || (b.dataset.mode === "eraser" && isEraser(p.mode)))));
     const er = this.el.querySelector('.tb [data-mode="eraser"]') as HTMLElement;
-    if (er.dataset.shows !== p.eraser) {
-      er.dataset.shows = p.eraser;
-      er.innerHTML = svg(p.eraser);
-      er.title = er.ariaLabel = TITLES[p.eraser];
-    }
+    er.title = er.ariaLabel = `Eraser (${p.eraser === "cut" ? "precise" : "stroke"})`;
+    // The pen and highlighter carry their colour.
+    (this.el.querySelector('[data-mode="pen"] .ink-dot') as HTMLElement).style.background = p.penColor;
+    (this.el.querySelector('[data-mode="hl"] .ink-dot') as HTMLElement).style.background = p.hlColor;
     const k = this.sizeKey();
     const sz = this.el.querySelector(".tb .sz") as HTMLButtonElement;
     sz.disabled = !k;
     const ink = k === "pen" || k === "hl";
-    const v = k ? p[k] : 0;
-    const dot = ink ? clamp(v * this.homeZ, 3, 18) : clamp(v * 0.7, 5, 18);
-    const i = sz.querySelector("i") as HTMLElement;
-    i.style.width = i.style.height = `${dot}px`;
-    i.className = ink ? "" : "ring";
+    const path = sz.querySelector("path") as SVGPathElement;
+    path.setAttribute("stroke", ink ? (p.mode === "hl" ? p.hlColor : p.penColor) : "currentColor");
+    path.setAttribute("stroke-opacity", p.mode === "hl" ? "0.6" : "1");
+    // A stroke sample for the pen and highlighter; the eraser's circle at its size.
+    path.setAttribute("d", ink || !k ? "M4 17c4-8 7-8 9-3s5 5 9-3" : `M${13 - clamp(p[k] * 0.4, 3, 10)} 13a${clamp(p[k] * 0.4, 3, 10)} ${clamp(p[k] * 0.4, 3, 10)} 0 1 0 ${2 * clamp(p[k] * 0.4, 3, 10)} 0a${clamp(p[k] * 0.4, 3, 10)} ${clamp(p[k] * 0.4, 3, 10)} 0 1 0 -${2 * clamp(p[k] * 0.4, 3, 10)} 0`);
+    path.setAttribute("stroke-width", String(k ? (ink ? clamp(p[k] * this.homeZ, 1.5, 9) : 1.6) : 2));
     const sw = this.el.querySelector(".tb .sw") as HTMLButtonElement;
     sw.disabled = !ink;
     (sw.querySelector("i") as HTMLElement).style.background = p.mode === "hl" ? p.hlColor : p.penColor;
-    this.el.querySelectorAll<HTMLElement>("[data-pop]").forEach((b) => b.classList.toggle("open", b.dataset.pop === this.openPop));
+    this.el.querySelectorAll<HTMLElement>("[data-pop]").forEach((b) => b.setAttribute("aria-expanded", String(b.dataset.pop === this.openPop || (b.dataset.pop === "size" && this.openPop === "eraser"))));
     (this.el.querySelector('[data-act="undo"]') as HTMLButtonElement).disabled = !this.undoStack.length;
     (this.el.querySelector('[data-act="redo"]') as HTMLButtonElement).disabled = !this.redoStack.length;
   }
 
   private setStatus(s: "saved" | "unsaved" | "saving" | "offline" | "conflict", text?: string): void {
     this.el.dataset.save = s;
+    // Saving is quiet; only a failure shows.
+    const show = s === "offline" || s === "conflict" || (!!text && s !== "saving" && s !== "saved");
+    this.statusEl.classList.toggle("hidden", !show);
     this.statusEl.innerHTML =
-      s === "conflict"
-        ? `Changed elsewhere · <button class="link" data-act="reload">reload</button>`
-        : (text ?? { saved: "Saved", unsaved: "Edited", saving: "Saving…", offline: "Not saved · retrying" }[s]);
+      s === "conflict" ? `Changed elsewhere · <button class="underline" data-act="reload">Reload</button>` : show ? (text ?? "Not saved · retrying") : "";
   }
 
   // ------------------------------------------------------------ saving
@@ -1194,6 +1407,7 @@ export class BoardView {
   private async exportOverview(): Promise<string | undefined> {
     const b = contentBounds(this.board);
     if (!b) return undefined;
+    await this.items.pdfsReady(this.board.items);
     const pad = 40, w = b.x1 - b.x0 + pad * 2, h = b.y1 - b.y0 + pad * 2;
     const s = Math.min(1.5, OVERVIEW_MAX / Math.max(w, h));
     const c = document.createElement("canvas");
@@ -1203,7 +1417,7 @@ export class BoardView {
     ctx.fillStyle = "#fff";
     ctx.fillRect(0, 0, c.width, c.height);
     ctx.setTransform(s, 0, 0, s, (pad - b.x0) * s, (pad - b.y0) * s);
-    for (const it of this.board.items) drawItem(ctx, it, this.imageFor(it));
+    for (const it of this.board.items) this.paintItem(ctx, it, "overview");
     // At least 1.5 px wide: a whole-board snapshot of fine writing stays readable.
     for (const st of this.board.strokes) drawStroke(ctx, st, 1.5 / s);
     const blob = await new Promise<Blob>((res, rej) => c.toBlob((x) => (x ? res(x) : rej(new Error("toBlob failed"))), "image/png"));
@@ -1273,6 +1487,9 @@ export class BoardView {
       prefs: { ...this.prefs },
       selection: this.sel ? { strokes: this.sel.strokes.size, items: this.sel.items.size } : null,
       undo: this.undoStack.length,
+      interact: this.interact,
+      itemsList: this.board.items.map((it) => ({ id: it.id, kind: it.kind, x: it.x, y: it.y, w: it.w, h: it.h, page: it.page })),
+      strokesList: this.board.strokes.map((st) => ({ id: st.id, x0: st.xy[0], y0: st.xy[1] })),
       arbiter: this.arb.state(),
     };
   }

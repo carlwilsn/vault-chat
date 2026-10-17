@@ -1,130 +1,137 @@
-:root {
-  --desk: #ececef;
-  --ink: #1f1f24;
-  --muted: #7a7a85;
-  --line: rgba(0, 0, 0, 0.08);
-  --bar: rgba(250, 250, 252, 0.86);
-  --accent: #1f5bd6;
-  --sel: rgba(31, 91, 214, 0.12);
-  font: 15px/1.35 -apple-system, BlinkMacSystemFont, "Inter", system-ui, sans-serif;
-  color: var(--ink);
-  -webkit-text-size-adjust: 100%;
-}
-* { box-sizing: border-box; }
-html, body {
-  margin: 0;
-  height: 100%;
-  background: var(--desk);
-  overflow: hidden;
-  overscroll-behavior: none;
-  /* No selection, callout or magnifier anywhere but the name field. */
-  -webkit-user-select: none;
-  user-select: none;
-  -webkit-touch-callout: none;
-  -webkit-tap-highlight-color: transparent;
-}
-body { position: fixed; inset: 0; }
-#app { position: absolute; inset: 0; }
-input { -webkit-user-select: text; user-select: text; font: inherit; }
-button { font: inherit; color: inherit; touch-action: manipulation; }
+/* The whiteboard's styles. The chrome (toolbar, popovers, list, inbox, viewer,
+   selection pill) is Tailwind utilities in the markup (board/tailwind.config.js,
+   the desktop's tokens). What is here is what Tailwind can't say: the tokens'
+   values, the canvas layers and their items, touch handling, the popover arrow. */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
 
-/* ---------------- a board ---------------- */
+@layer base {
+  /* The desktop's tokens (src/App.css, light) and iPadOS system colours. */
+  :root {
+    --background: 0 0% 98%;
+    --foreground: 0 0% 12%;
+    --card: 0 0% 100%;
+    --card-foreground: 0 0% 12%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 0 0% 12%;
+    --primary: 0 0% 20%;
+    --primary-foreground: 0 0% 98%;
+    --secondary: 0 0% 94%;
+    --secondary-foreground: 0 0% 12%;
+    --muted: 0 0% 94%;
+    --muted-foreground: 0 0% 42%;
+    --accent: 0 0% 90%;
+    --accent-foreground: 0 0% 12%;
+    --destructive: 0 72% 50%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 0 0% 88%;
+    --input: 0 0% 92%;
+    --ring: 0 0% 40%;
+    --radius: 0.75rem;
+
+    --sys-blue: 0 122 255;
+    --sys-red: 255 59 48;
+    --sys-green: 52 199 89;
+    --sys-label: 0 0 0;
+    --sys-secondary: 60 60 67; /* used at 60% */
+    --sys-tertiary: 60 60 67; /* used at 30% */
+    --sys-fill: 120 120 128; /* used at 12–20% */
+    --sys-separator: 60 60 67; /* used at 29% */
+    --sys-grouped: 242 242 247;
+    --sys-material: 249 249 251;
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --background: 0 0% 10%;
+      --foreground: 0 0% 92%;
+      --card: 0 0% 13%;
+      --card-foreground: 0 0% 92%;
+      --popover: 0 0% 18%;
+      --popover-foreground: 0 0% 92%;
+      --primary: 0 0% 85%;
+      --primary-foreground: 0 0% 10%;
+      --secondary: 0 0% 16%;
+      --secondary-foreground: 0 0% 92%;
+      --muted: 0 0% 14%;
+      --muted-foreground: 0 0% 60%;
+      --accent: 0 0% 20%;
+      --accent-foreground: 0 0% 95%;
+      --destructive: 0 72% 58%;
+      --destructive-foreground: 0 0% 100%;
+      --border: 0 0% 22%;
+      --input: 0 0% 18%;
+      --ring: 0 0% 60%;
+
+      --sys-blue: 10 132 255;
+      --sys-red: 255 69 58;
+      --sys-green: 48 209 88;
+      --sys-label: 255 255 255;
+      --sys-secondary: 235 235 245;
+      --sys-tertiary: 235 235 245;
+      --sys-fill: 120 120 128;
+      --sys-separator: 84 84 88;
+      --sys-grouped: 0 0 0;
+      --sys-material: 30 30 32;
+      color-scheme: dark;
+    }
+  }
+
+  html, body {
+    height: 100%;
+    margin: 0;
+    overflow: hidden;
+    overscroll-behavior: none;
+    /* No selection, callout or magnifier anywhere but text fields. */
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-touch-callout: none;
+    -webkit-tap-highlight-color: transparent;
+    -webkit-text-size-adjust: 100%;
+  }
+  body { position: fixed; inset: 0; font-family: theme("fontFamily.sans"); }
+  #app { position: absolute; inset: 0; }
+  /* `hidden` wins over a display utility (flex, grid) on the same element. */
+  [hidden] { display: none !important; }
+  input { -webkit-user-select: text; user-select: text; }
+  button { touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
+}
+
+@layer components {
+  /* The translucent iPadOS material (bars, popovers, the inbox sheet). */
+  .material {
+    background: rgb(var(--sys-material) / 0.78);
+    -webkit-backdrop-filter: blur(20px) saturate(180%);
+    backdrop-filter: blur(20px) saturate(180%);
+  }
+  .hairline { box-shadow: inset 0 0 0 0.5px rgb(var(--sys-separator) / 0.29); }
+}
+
+/* ---------------- the canvas layers (not Tailwind) ----------------
+   stage: the DOM items (typeset math, widgets) → the base canvas (paper, the
+   other items and the ink; transparent where a DOM item is, so ink lies over
+   it) → the live canvas. A lifted DOM item rides above the base while it moves;
+   a widget in Interact sits above everything. */
 .board { position: absolute; inset: 0; touch-action: none; }
-.stage { position: absolute; inset: 0; touch-action: none; }
+.stage { position: absolute; inset: 0; touch-action: none; background: #fff; overflow: hidden; }
 .stage canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
+.stage canvas.base { z-index: 1; }
+.stage canvas.live { z-index: 3; }
+.items { position: absolute; inset: 0; pointer-events: none; }
+.items > .it { position: absolute; left: 0; top: 0; transform-origin: 0 0; background: #fff; overflow: hidden; }
+.items > .it.lifted { z-index: 2; }
+.items > .it.interact { z-index: 5; pointer-events: auto; box-shadow: 0 0 0 3px rgb(var(--sys-blue)), 0 10px 30px rgb(0 0 0 / 0.18); }
+.items > .it iframe { border: 0; display: block; width: 100%; height: 100%; pointer-events: none; background: #fff; }
+.items > .it.interact iframe { pointer-events: auto; }
+.items > .it.math { background: transparent; }
 
-.tb {
-  position: absolute;
-  top: max(8px, env(safe-area-inset-top));
-  left: max(8px, env(safe-area-inset-left));
-  right: max(8px, env(safe-area-inset-right));
-  height: 52px;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 0 4px;
-  border-radius: 14px;
-  background: var(--bar);
-  -webkit-backdrop-filter: blur(14px);
-  backdrop-filter: blur(14px);
-  box-shadow: 0 0 0 0.5px var(--line), 0 2px 10px rgba(0, 0, 0, 0.05);
+/* The popover's arrow (a rotated square of the same material, under the panel's edge). */
+.pop-arrow { position: absolute; width: 14px; height: 14px; transform: rotate(45deg); border-radius: 3px; top: -6px; }
+
+/* "Being made": the shimmer across its card. */
+.shimmer { background-image: linear-gradient(90deg, transparent 0%, rgb(var(--sys-blue) / 0.12) 50%, transparent 100%); background-size: 200% 100%; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 1ms !important; animation-iteration-count: 1 !important; transition-duration: 1ms !important; }
 }
-.tb-name { flex: 1 1 0; min-width: 0; font-size: 14px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.tb-tools { display: flex; align-items: center; gap: 1px; flex: none; }
-.tb-status { flex: 1 1 0; min-width: 0; text-align: right; font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding-right: 6px; }
-.board[data-save="offline"] .tb-status, .board[data-save="conflict"] .tb-status { color: #b4541c; }
-.tb .sep { width: 1px; height: 24px; background: var(--line); margin: 0 4px; }
-/* 44 px targets (Apple's minimum), 22 px icons: the highlight is a 36 px pill inside the target, so the bar stays light. */
-.tb button { border: 0; background: none; padding: 0; width: 44px; height: 44px; border-radius: 12px; display: grid; place-items: center; cursor: pointer; position: relative; }
-.tb button::before { content: ""; position: absolute; inset: 4px; border-radius: 10px; background: transparent; transition: background 0.12s; }
-.tb button > * { position: relative; }
-.tb button:disabled { opacity: 0.3; cursor: default; }
-.tb .ic svg { width: 22px; height: 22px; }
-.tb .ic.on { color: var(--accent); }
-.tb .ic.on::before, .tb button.open::before { background: var(--sel); }
-.tb button:not(:disabled):active::before { background: rgba(0, 0, 0, 0.06); }
-.tb .sw i { width: 18px; height: 18px; border-radius: 50%; display: block; box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.12); }
-.tb .sz i { display: block; border-radius: 50%; background: #55555d; }
-.tb .sz i.ring { background: none; box-shadow: inset 0 0 0 1.5px #55555d; }
-.tb .link { width: auto; height: auto; display: inline; text-decoration: underline; color: inherit; }
-.tb .link::before { display: none; }
-
-/* popovers: size, colour, the board menu */
-.pop {
-  position: absolute;
-  min-width: 150px;
-  padding: 10px;
-  border-radius: 12px;
-  background: rgba(252, 252, 253, 0.97);
-  box-shadow: 0 0 0 0.5px var(--line), 0 8px 28px rgba(0, 0, 0, 0.14);
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  z-index: 3;
-}
-.pop[hidden] { display: none; }
-.pop .row { display: flex; align-items: center; gap: 6px; }
-.pop button { border: 0; background: none; padding: 0; cursor: pointer; touch-action: manipulation; }
-.pop .szp, .pop .swp { width: 44px; height: 44px; border-radius: 10px; display: grid; place-items: center; }
-.pop .szp i { display: block; border-radius: 50%; background: #55555d; }
-.pop .szp i.ring { background: none; box-shadow: inset 0 0 0 1.5px #55555d; }
-.pop .szp.on, .pop .swp.on { background: var(--sel); }
-.pop .swp i { width: 24px; height: 24px; border-radius: 50%; display: block; box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.12); }
-.pop input[type="range"] { flex: 1; min-width: 120px; accent-color: var(--accent); }
-.pop .val { font-size: 12px; color: var(--muted); min-width: 40px; text-align: right; font-variant-numeric: tabular-nums; }
-.pop label { font-size: 12px; color: var(--muted); margin: 4px 2px -4px; }
-.pop .item { text-align: left; padding: 0 10px; min-height: 44px; border-radius: 9px; font-weight: 500; }
-.pop .item:active { background: var(--sel); }
-.pop .seg { display: flex; background: #ececf0; border-radius: 9px; padding: 2px; }
-.pop .seg button { flex: 1; min-height: 40px; padding: 0 12px; border-radius: 7px; font-size: 14px; color: var(--muted); }
-.pop .seg button.on { background: #fff; color: var(--ink); box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1); }
-
-/* the selection's action */
-.selbar { position: absolute; transform: translateX(-50%); z-index: 2; }
-.selbar[hidden] { display: none; }
-.selbar { display: flex; gap: 6px; }
-.selbar button { border: 0; min-height: 40px; padding: 0 16px; border-radius: 10px; background: var(--ink); color: #fff; font-size: 13px; font-weight: 600; cursor: pointer; box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18); touch-action: manipulation; }
-
-/* ---------------- the list ---------------- */
-.list { position: absolute; inset: 0; overflow-y: auto; -webkit-overflow-scrolling: touch; padding: max(20px, env(safe-area-inset-top)) max(24px, env(safe-area-inset-right)) 40px max(24px, env(safe-area-inset-left)); }
-.list header { display: flex; align-items: center; justify-content: space-between; margin: 8px 0 22px; }
-.list h1 { font-size: 26px; font-weight: 700; margin: 0; letter-spacing: -0.01em; }
-.muted { color: var(--muted); }
-.primary { border: 0; background: var(--ink); color: #fff !important; padding: 9px 16px; border-radius: 10px; font-weight: 600; cursor: pointer; }
-.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 22px; }
-.card { border: 0; background: none; padding: 0; text-align: left; cursor: pointer; }
-.thumb { aspect-ratio: 4 / 3; background: #fff; position: relative; border-radius: 8px; overflow: hidden; box-shadow: 0 0 0 0.5px var(--line), 0 2px 8px rgba(0, 0, 0, 0.06); }
-.thumb img, .thumb canvas { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; display: block; }
-.card .meta { padding: 8px 2px 0; display: flex; flex-direction: column; gap: 1px; }
-.card .meta b { font-size: 14px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.card .meta span { font-size: 12px; color: var(--muted); }
-
-.dlg { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.18); display: grid; place-items: start center; padding-top: 18vh; }
-.dlg form { width: min(420px, calc(100vw - 32px)); background: #fff; border-radius: 14px; padding: 18px; box-shadow: 0 10px 40px rgba(0, 0, 0, 0.18); display: flex; flex-direction: column; gap: 12px; }
-.dlg label { font-weight: 600; }
-.dlg input { border: 1px solid #d8d8de; border-radius: 9px; padding: 10px 12px; font-size: 16px; outline: none; }
-.dlg input:focus { border-color: var(--accent); }
-.dlg .row { display: flex; justify-content: flex-end; gap: 8px; }
-.dlg .row button:not(.primary) { border: 0; background: none; padding: 9px 12px; border-radius: 10px; cursor: pointer; color: var(--muted); }
-.dlg .err { margin: 0; color: #b4541c; font-size: 13px; }
-.dlg .err:empty { display: none; }

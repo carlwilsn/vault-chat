@@ -13,5 +13,5 @@
     "noUnusedLocals": true,
     "types": []
   },
-  "include": ["src", "../src/boardFormat.ts"]
+  "include": ["src", "../src/boardFormat.ts", "../src/inboxFormat.ts", "../src/widgetHost.ts"]
 }
