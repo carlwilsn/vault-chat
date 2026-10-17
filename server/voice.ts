@@ -448,6 +448,8 @@ export async function voiceTranscript(d: VoiceDeps, b: any): Promise<{ status: n
     role: b?.role === "user" ? ("user" as const) : ("assistant" as const),
     content: text.slice(0, 20_000),
     ...(b?.system === true ? { system: true } : {}),
+    // The client's id for the line: the item's id in the log (a repeat is a no-op; the client confirms its copy in place).
+    ...(s(b?.clientId) ? { mid: s(b.clientId).slice(0, 80) } : {}),
   };
   const { readConv, createConv, appendMessage } = await import("./engine/convs");
   let id = s(b?.convId);

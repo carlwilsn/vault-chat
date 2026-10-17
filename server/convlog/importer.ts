@@ -136,9 +136,16 @@ export function legacySource(vault: string): LegacySource {
     return cache.list;
   };
   return {
-    rows: () => list().filter((c) => typeof c?.id === "string").map(rowOfLegacy),
+    rows: () => {
+      cache = null; // a fresh read: the list is asked for at boot and on a rescan
+      return list().filter((c) => typeof c?.id === "string").map(rowOfLegacy);
+    },
     records: (id) => {
-      const c = list().find((x) => x?.id === id);
+      let c = list().find((x) => x?.id === id);
+      if (!c) {
+        cache = null; // a file that arrived since the last read
+        c = list().find((x) => x?.id === id);
+      }
       return c ? legacyRecords(c) : null;
     },
     at: (id) => {

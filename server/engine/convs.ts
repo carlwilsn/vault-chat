@@ -8,7 +8,6 @@
 import type { ChatMessage } from "../../src/store";
 import { newMessageId } from "../../src/conversations";
 import type { EventBody, Item, ItemImage, LogRecord } from "../../src/convlog/protocol";
-import { META_FIELDS } from "../../src/convlog/protocol";
 import { openAsk, planOf, type Picture } from "../../src/convlog/reduce";
 import { messagesOf } from "../../src/convlog/view";
 import { convLog, type ConvLog } from "../convlog/log";
@@ -72,10 +71,13 @@ export async function allConvs(vault: string): Promise<EngineConv[]> {
   return out;
 }
 
-/** Only the fields a conv.updated may carry (undefined → null: removes it). */
+/** What the log derives itself (items, turns, cost, subagents …): never set by a conv.updated. */
+const DERIVED = new Set(["id", "messages", "status", "runStartedAt", "pendingAsk", "todos", "queued", "subagents", "costUsd", "createdAt", "lastActivityAt", "unread"]);
+
+/** The conversation fields of a patch (undefined → null: removes it). */
 function metaPatch(meta: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = {};
-  for (const k of META_FIELDS) if (k in meta) out[k] = meta[k] === undefined ? null : meta[k];
+  for (const [k, v] of Object.entries(meta)) if (!DERIVED.has(k)) out[k] = v === undefined ? null : v;
   return out;
 }
 

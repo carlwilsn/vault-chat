@@ -18,7 +18,7 @@
 // record a client has seen is on disk, and a restart loses nothing it showed.
 // The importer (./importer.ts) turns an older conversation file into records
 // the first time it is opened; the original file is never touched.
-import { appendFileSync, closeSync, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, ftruncateSync, writeFileSync } from "node:fs";
+import { appendFileSync, closeSync, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, ftruncateSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { renameRetry } from "../atomic";
@@ -231,7 +231,16 @@ export class ConvLog {
     return { id: pic.id, file, maxSeq: Math.max(pic.seq, fileMax), picture: pic, row: rowFromPicture(pic), sinceCkpt: tail.length };
   }
 
+  private legacyAt = -1;
+  private legacyStamp(): number {
+    try {
+      return statSync(join(this.vault, ".vault-chat", "conversations")).mtimeMs;
+    } catch {
+      return 0;
+    }
+  }
   private refreshLegacy(): void {
+    this.legacyAt = this.legacyStamp();
     this.legacyRows.clear();
     if (!this.legacy) return;
     try {
@@ -305,14 +314,15 @@ export class ConvLog {
 
   /** In the log (or an older file the importer can bring in). */
   has(id: string): boolean {
-    return this.convs.has(id) || this.legacyRows.has(id);
+    return this.convs.has(id) || this.legacyRows.has(id) || !!this.picture(id);
   }
 
   /** A conversation's picture; an older file is imported first. Null: unknown. */
   picture(id: string): Picture | null {
     const c = this.convs.get(id);
     if (c) return c.picture;
-    if (!this.legacyRows.has(id)) return null;
+    // An older file, listed or one that arrived since (the importer reads it fresh).
+    if (!this.legacy) return null;
     this.importLegacy(id);
     return this.convs.get(id)?.picture ?? null;
   }
@@ -329,6 +339,8 @@ export class ConvLog {
 
   /** Every conversation's list row (older files included, not imported yet). */
   rows(): RowState[] {
+    // An older conversation file that appeared since (the folder changed): listed too.
+    if (this.legacyStamp() !== this.legacyAt) this.refreshLegacy();
     const out: RowState[] = [...this.legacyRows.values()];
     for (const c of this.convs.values()) if (c.picture.exists) out.push(c.row);
     return out.sort((a, b) => b.lastActivityAt - a.lastActivityAt);

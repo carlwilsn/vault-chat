@@ -174,14 +174,19 @@ export function makeChatView(): (p: Picture, opts?: { split?: boolean }) => Chat
       use(it.id, [it], () => messageOf(it));
       i++;
     }
-    // Each turn's cost on its last reply.
+    // Each turn's cost on its last reply (its last text, else its last step).
     if (Object.keys(p.turnCost).length) {
+      const byId = new Map(items.map((x) => [x.id, x]));
       const lastOf = new Map<string, number>();
+      const lastText = new Map<string, number>();
       messages.forEach((m, idx) => {
         if (m.role !== "assistant" || m.system) return;
-        const it = items.find((x) => x.id === m.items?.[0]);
-        if (it?.turn) lastOf.set(it.turn, idx);
+        const it = byId.get(m.items?.[0] ?? "");
+        if (!it?.turn) return;
+        lastOf.set(it.turn, idx);
+        if (m.content.trim()) lastText.set(it.turn, idx);
       });
+      for (const [t, i] of lastText) lastOf.set(t, i);
       for (const [turn, idx] of lastOf) {
         const usd = p.turnCost[turn];
         if (typeof usd === "number" && messages[idx]!.costUsd !== usd) messages[idx] = { ...messages[idx]!, costUsd: usd };

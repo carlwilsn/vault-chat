@@ -144,6 +144,9 @@ async function changedPaths(repo: string): Promise<{ path: string; deleted: bool
 export async function stageAllExceptLarge(repo: string, gitArgs: string[] = []): Promise<string[]> {
   const skipped: string[] = [];
   const trackedSkips: string[] = [];
+  // The conversations are the server's event log, never synced by git: the log stays out of it
+  // for good, and the older conversation files (tracked from before) are never staged (nor deleted).
+  excludeLocally(repo, CONV_LOG_DIR + "/", true);
   for (const c of await changedPaths(repo)) {
     if (c.deleted) continue;
     try {
@@ -161,10 +164,29 @@ export async function stageAllExceptLarge(repo: string, gitArgs: string[] = []):
   }
   const pathspec = ["--", ".", ...trackedSkips.map((p) => `:(exclude,literal)${p}`)];
   await git(repo, [...gitArgs, "add", "-A", ...pathspec]);
+  // Unstaged again, whatever ignore rules say about them (a pathspec naming an ignored path makes `add` fail).
+  await runGit(repo, ["reset", "-q", "--", ...NEVER_STAGED]);
   return skipped;
 }
 
-function excludeLocally(repo: string, rel: string): void {
+/** The conversation event log (server/convlog). */
+export const CONV_LOG_DIR = ".vault-chat/events";
+/** Never committed by the box: the log, and the conversation files from before it. */
+export const NEVER_STAGED = [CONV_LOG_DIR, ".vault-chat/conversations"];
+
+function excludeLocally(repo: string, rel: string, dir = false): void {
+  if (dir) {
+    const p = join(repo, ".git", "info", "exclude");
+    let cur = "";
+    try {
+      cur = readFileSync(p, "utf8");
+    } catch {
+      mkdirSync(dirname(p), { recursive: true });
+    }
+    const line = "/" + rel.replace(/\\/g, "/");
+    if (!cur.split(/\r?\n/).includes(line)) appendFileSync(p, (cur && !cur.endsWith("\n") ? "\n" : "") + line + "\n");
+    return;
+  }
   const p = join(repo, ".git", "info", "exclude");
   let cur = "";
   try {

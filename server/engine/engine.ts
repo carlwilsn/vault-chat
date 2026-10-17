@@ -109,6 +109,7 @@ const NUDGE_TEXT = "You're in keep-going mode: schedule your next check (Schedul
 const RESUME_TEXT =
   "The box restarted (or the engine stopped) while your last turn was running, so any command it was running was killed and may not have finished. Re-check reality (files, processes, logs), then continue from where you were.";
 const LEGACY_SOURCES = new Set(["mission", "worker", "ask"]);
+const ARCHIVED = "This is an archived mission thread (the old missions system): readable, never run. Start a new chat.";
 const INTERRUPTED_TEXT = "⚠️ Interrupted by a restart — the command it was running was killed and may not have finished.";
 /** Tool calls a turn may still make after ScheduleWake: only ending it differently. */
 const AFTER_WAKE_OK = new Set(["Done", "Blocked"]);
@@ -506,7 +507,7 @@ export class Engine {
           conv = await createConv(this.d.vault, body.source === "voice" ? { source: "voice" } : {}, textIn || "Image", body.convId);
         } else return { error: `conversation ${body.convId} not found` };
       }
-      if (LEGACY_SOURCES.has(conv.source)) return null;
+      if (LEGACY_SOURCES.has(conv.source)) return { error: ARCHIVED };
     } else {
       conv = await createConv(this.d.vault, body.source === "voice" ? { source: "voice" } : {}, textIn || "Image");
     }
@@ -550,6 +551,12 @@ export class Engine {
     if (this.live.get(id)?.ask || conv.pendingAsk) {
       await this.answer(id, shown, clientId);
       return { ok: true, convId: id, answered: true };
+    }
+    // A turn still starting (pi not prompted yet): it is about to run, so the message goes into it.
+    for (let t = 0; t < 600; t++) {
+      const s = this.live.get(id);
+      if (!s || s.finished || s.started) break;
+      await new Promise((r) => setTimeout(r, 100));
     }
     const l = this.live.get(id);
     const sent = context ? `${context}\n\n${shown}` : shown;
@@ -629,7 +636,8 @@ export class Engine {
     const id = String(body?.convId ?? "");
     if (!id) return null;
     const conv = await readConv(this.d.vault, id);
-    if (!conv || LEGACY_SOURCES.has(conv.source)) return null;
+    if (!conv) return null;
+    if (LEGACY_SOURCES.has(conv.source)) return { error: ARCHIVED };
     const t = body.defer
       ? "Not now — I'm not picking an option. Take the default you named if there is a safe one; otherwise hold, and don't do anything irreversible or that spends money."
       : String(body?.text ?? "").trim();
@@ -714,10 +722,22 @@ export class Engine {
       const existing = this.live.get(convId);
       if (existing && !existing.finished) {
         if (existing.started && !existing.ask) {
+          const b = this.d.backend;
+          if (kind === "user" && !opts.alreadyAppended) {
+            // Carl's message that raced the turn's start: a steer (pending until pi delivers it).
+            const id = opts.clientId ?? newMessageId();
+            const sent = opts.context ? `${opts.context}\n\n${input}` : input;
+            this.emit(convId, { type: "pending.added", pending: { id, kind: "steer", text: input, at: 0, ...(opts.itemImages?.length ? { images: opts.itemImages } : {}) } });
+            existing.mapper.expect({ kind: "steer", text: sent, id, shown: input, images: opts.itemImages });
+            await b.steer(existing.threadId, existing.turnId, { texts: [sent], images: opts.images ?? [] }).catch(() => {
+              existing.mapper.forget(id);
+              this.emit(convId, { type: "pending.removed", id, reason: "failed" });
+            });
+            return;
+          }
           // An engine input while a turn runs: shown now, delivered when pi takes it.
           this.wakeItem(convId, input, kind, existing.turnId);
           existing.mapper.expect({ kind: "silent", text: input });
-          const b = this.d.backend;
           await b.followUp(existing.threadId, { texts: [input], images: [] }).catch(() => undefined);
         }
         return;
