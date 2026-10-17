@@ -61,21 +61,19 @@ let seq = 0;
 fake.setHandler("box_get_json", async ({ url }) => {
   const u = new URL(String(url));
   const ok = (v: unknown) => ({ status: 200, body: JSON.stringify(v) });
+  // The vault's log (src/convlog/protocol.ts): a vault-level signal is a record with conv null.
   if (u.pathname === "/poll") {
-    if (u.searchParams.get("after") === "latest") return ok({ next: seq, events: [] });
     for (let i = 0; i < 20 && !queue.length; i++) await new Promise((r) => setTimeout(r, 25));
-    const events = queue.splice(0);
-    seq += events.length;
-    return ok({ next: seq, events });
+    const events = queue.splice(0).map(({ vault: _v, ...signal }) => ({ seq: ++seq, conv: null, at: Date.now(), type: "signal", signal }));
+    return ok({ next: seq, events, epoch: "e1" });
   }
+  if (u.pathname === "/api/v2/conversations") return ok({ rows: [], seq, epoch: "e1" });
   if (u.pathname === "/api/v1/vault/file") {
     const rel = u.searchParams.get("path") ?? "";
     fileFetches.push(rel);
     if (!(rel in boxFiles)) return { status: 404, body: '{"error":"no"}' };
     return ok({ path: rel, size: boxFiles[rel]!.length, base64: Buffer.from(boxFiles[rel]!).toString("base64") });
   }
-  if (u.pathname === "/conversations") return ok({ conversations: [] });
-  if (u.pathname === "/status") return ok({ runs: [] });
   return { status: 404, body: "{}" };
 });
 
