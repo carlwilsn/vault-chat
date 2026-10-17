@@ -20,10 +20,10 @@ export type InboxHost = {
 
 const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]!);
 const KIND: Record<string, { icon: IconName; tint: string; one: string; many: string }> = {
-  pdf: { icon: "file-text", tint: "bg-[rgb(255_59_48/0.12)] text-[rgb(var(--sys-red))]", one: "PDF page", many: "PDF pages" },
+  pdf: { icon: "file-pdf", tint: "bg-[rgb(255_59_48/0.12)] text-[rgb(var(--sys-red))]", one: "PDF page", many: "PDF pages" },
   math: { icon: "sigma", tint: "bg-sys-blue/15 text-sys-blue", one: "problem", many: "problems" },
-  image: { icon: "image", tint: "bg-[rgb(52_199_89/0.14)] text-[rgb(var(--sys-green))]", one: "image", many: "images" },
-  widget: { icon: "blocks", tint: "bg-[rgb(175_82_222/0.14)] text-[rgb(175_82_222)]", one: "widget", many: "widgets" },
+  image: { icon: "image-square", tint: "bg-[rgb(52_199_89/0.14)] text-[rgb(var(--sys-green))]", one: "image", many: "images" },
+  widget: { icon: "puzzle-piece", tint: "bg-[rgb(175_82_222/0.14)] text-[rgb(175_82_222)]", one: "widget", many: "widgets" },
 };
 
 function ago(t: number): string {
@@ -127,11 +127,11 @@ export function openInbox(root: HTMLElement, host: InboxHost): () => void {
     sheet.style.width = "";
     const cards = entries
       .map((e) => {
-        const k = KIND[e.parts[0]?.kind ?? ""] ?? { icon: e.making ? "loader-circle" : e.failed ? "circle-alert" : "inbox", tint: e.failed ? "bg-[rgb(255_59_48/0.12)] text-[rgb(var(--sys-red))]" : "bg-sys-fill/15 text-sys-secondary/70" };
+        const k = KIND[e.parts[0]?.kind ?? ""] ?? { icon: e.making ? "circle-notch" : e.failed ? "warning-circle" : "tray", tint: e.failed ? "bg-[rgb(255_59_48/0.12)] text-[rgb(var(--sys-red))]" : "bg-sys-fill/15 text-sys-secondary/70" };
         const status = e.failed
           ? `<div class="mt-1 text-footnote text-[rgb(var(--sys-red))]">Couldn’t make: ${esc(e.failed)}</div>`
           : e.making
-            ? `<div class="mt-1 flex items-center gap-1.5 text-footnote text-sys-blue"><span class="inline-block animate-spin">${icon("loader-circle", 14)}</span>Being made…</div>`
+            ? `<div class="mt-1 flex items-center gap-1.5 text-footnote text-sys-blue"><span class="inline-block animate-spin">${icon("circle-notch", 14)}</span>Being made…</div>`
             : `<div class="mt-1 text-footnote text-sys-secondary/60">${esc(partsLine(e.parts))}${e.added ? ` · <span class="text-[rgb(var(--sys-green))]">${e.added} added</span>` : ""}</div>`;
         return `
         <button data-id="${esc(e.id)}" ${e.making || e.failed ? "data-inert" : ""} class="group relative flex w-full gap-3 overflow-hidden rounded-2xl bg-card/70 p-3.5 text-left hairline transition active:scale-[0.985] ${e.making ? "shimmer animate-shimmer" : ""}">
@@ -150,14 +150,14 @@ export function openInbox(root: HTMLElement, host: InboxHost): () => void {
       .join("");
     sheet.innerHTML = `${header("", "Inbox")}
       <div data-scroll class="flex-1 space-y-2 overflow-y-auto overscroll-contain px-3 pb-4">
-        ${cards || `<div class="grid h-full place-items-center px-8 text-center"><div><div class="mx-auto mb-3 grid h-14 w-14 place-items-center rounded-2xl bg-sys-fill/15 text-sys-secondary/60">${icon("inbox", 28)}</div><div class="text-subhead font-semibold text-sys-label">Nothing here yet</div><div class="mt-1 text-footnote text-sys-secondary/60">Ask the agent for a problem set, a graph or pages of a PDF; they land here.</div></div></div>`}
+        ${cards || `<div class="grid h-full place-items-center px-8 text-center"><div><div class="mx-auto mb-3 grid h-14 w-14 place-items-center rounded-2xl bg-sys-fill/15 text-sys-secondary/60">${icon("tray", 28)}</div><div class="text-subhead font-semibold text-sys-label">Nothing here yet</div><div class="mt-1 text-footnote text-sys-secondary/60">Ask the agent for a problem set, a graph or pages of a PDF; they land here.</div></div></div>`}
       </div>`;
   };
 
   const openEntry = async (id: string) => {
     current = id;
     sheet.style.width = "min(680px, calc(100% - 24px))";
-    sheet.innerHTML = `${header(`<button data-x="back" class="flex h-11 items-center gap-0.5 rounded-full pl-1 pr-2 text-body text-sys-blue active:opacity-60">${icon("chevron-left")}<span>Inbox</span></button>`, "")}<div class="grid flex-1 place-items-center text-sys-secondary/60">${icon("loader-circle")}</div>`;
+    sheet.innerHTML = `${header(`<button data-x="back" class="flex h-11 items-center gap-0.5 rounded-full pl-1 pr-2 text-body text-sys-blue active:opacity-60">${icon("caret-left")}<span>Inbox</span></button>`, "")}<div class="grid flex-1 place-items-center text-sys-secondary/60">${icon("circle-notch")}</div>`;
     let e: Entry;
     try {
       e = await api.getEntry(id);
@@ -170,7 +170,7 @@ export function openInbox(root: HTMLElement, host: InboxHost): () => void {
     const added = (n: number) => !!e.added?.[String(n)];
     const addBtn = (n: number | null, label: string) =>
       `<button data-add="${n ?? "all"}" class="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-full ${n === null ? "bg-sys-blue px-4 text-white" : "bg-sys-blue/15 px-3.5 text-sys-blue"} text-footnote font-semibold transition active:scale-95">${icon("plus", 16)}${label}</button>`;
-    sheet.innerHTML = `${header(`<button data-x="back" class="flex h-11 items-center gap-0.5 rounded-full pl-1 pr-2 text-body text-sys-blue active:opacity-60">${icon("chevron-left")}<span>Inbox</span></button>`, "", addBtn(null, "Add all"))}
+    sheet.innerHTML = `${header(`<button data-x="back" class="flex h-11 items-center gap-0.5 rounded-full pl-1 pr-2 text-body text-sys-blue active:opacity-60">${icon("caret-left")}<span>Inbox</span></button>`, "", addBtn(null, "Add all"))}
       <div data-scroll class="flex-1 overflow-y-auto overscroll-contain px-4 pb-6">
         <h3 class="text-title3 font-semibold tracking-tight text-sys-label">${esc(e.title)}</h3>
         ${e.note ? `<p class="mt-1 text-subhead text-sys-secondary/70">${esc(e.note)}</p>` : ""}
@@ -223,7 +223,7 @@ export function openInbox(root: HTMLElement, host: InboxHost): () => void {
           (t as HTMLButtonElement).disabled = false;
           t.classList.remove("opacity-50");
           t.title = String(err?.message ?? err);
-          t.innerHTML = `${icon("circle-alert", 16)}Retry`;
+          t.innerHTML = `${icon("warning-circle", 16)}Retry`;
         });
     }
   });

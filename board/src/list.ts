@@ -121,9 +121,9 @@ function menu(root: HTMLElement, tile: HTMLElement, slug: string, name: string, 
   m.style.top = `${Math.min(window.innerHeight - 140, r.bottom + 10)}px`;
   const row = "flex h-12 w-full items-center justify-between px-4 text-left active:bg-sys-fill/20";
   m.innerHTML = `
-    <button data-m="rename" class="${row}">Rename<span class="text-sys-secondary/60">${icon("pencil", 20)}</span></button>
+    <button data-m="rename" class="${row}">Rename<span class="text-sys-secondary/60">${icon("pencil-simple", 20)}</span></button>
     <div class="h-px bg-sys-separator/20"></div>
-    <button data-m="delete" class="${row} text-[rgb(var(--sys-red))]">Delete<span>${icon("trash-2", 20)}</span></button>`;
+    <button data-m="delete" class="${row} text-[rgb(var(--sys-red))]">Delete<span>${icon("trash", 20)}</span></button>`;
   const done = () => {
     scrim.remove();
     m.remove();

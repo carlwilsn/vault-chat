@@ -20,7 +20,7 @@ import { Smoother, boxesMeet, capsuleHits, carriedInk, cutStroke, lassoedBox, la
 import { HL_ALPHA, drawGrid, drawItem, drawStroke, inkStyle, itemBox, strokeInfo, translated, xyPath } from "./ink";
 import { Arbiter, type Action, type Hand, type PEvent } from "./palm";
 import * as api from "./api";
-import { icon, type IconName } from "./icons";
+import { icon, toolIcon, type IconName, type Weight } from "./icons";
 import { Items, isDom, measureMath, fetchText } from "./items";
 import { openInbox, inboxBadge, type InboxHost } from "./inbox";
 import { placeParts } from "./place";
@@ -75,14 +75,21 @@ type ToolG =
   | { k: "lasso"; id: number; touch: boolean; poly: XY[]; sx: number; sy: number; far: number }
   | { k: "xf"; id: number; touch: boolean; mode: "move" | "scale"; x0: number; y0: number; anchor: XY; c0: XY; xf: Xf };
 
-/** Toolbar icons (Lucide, board/src/icons.ts). */
-const ICONS: Record<string, IconName> = { back: "chevron-left", pen: "pen-line", hl: "highlighter", erase: "eraser", cut: "eraser", lasso: "lasso-select", undo: "undo-2", redo: "redo-2", more: "ellipsis", inbox: "inbox" };
-const svg = (name: string) => icon(ICONS[name] ?? (name as IconName));
+/** Toolbar icons (Phosphor, board/src/icons.ts): regular while idle; a pressed tool or an open panel shows its fill or duotone,
+ *  the pen and the highlighter with the ink's colour as the second tone (syncToolbar sets --tint). */
+const ICONS: Record<string, [IconName, Exclude<Weight, "regular">?]> = {
+  back: ["caret-left"], pen: ["pen-nib", "duotone"], hl: ["highlighter", "duotone"], erase: ["eraser", "fill"], cut: ["eraser", "fill"], lasso: ["lasso", "duotone"],
+  undo: ["arrow-u-up-left"], redo: ["arrow-u-up-right"], more: ["dots-three-outline", "fill"], inbox: ["tray", "fill"],
+};
+const svg = (name: string) => {
+  const [n, on] = ICONS[name] ?? [name as IconName];
+  return on ? toolIcon(n, on) : icon(n);
+};
 
 // The chrome's Tailwind classes (board/tailwind.config.js: the desktop's tokens, iPadOS colours).
 const BTN = "relative grid h-11 w-11 shrink-0 place-items-center rounded-full text-sys-label/80 transition-colors duration-150 active:bg-sys-fill/20 disabled:opacity-25 aria-pressed:bg-sys-blue/15 aria-pressed:text-sys-blue aria-expanded:bg-sys-fill/15";
 const FLOAT = "material hairline shadow-float absolute z-10 flex items-center rounded-full";
-const SEP = '<span class="mx-1 h-6 w-px shrink-0 bg-sys-separator/30"></span>';
+const SEP = '<span class="mx-1 h-6 w-px shrink-0 bg-sys-label/15"></span>';
 const POP = "pop material hairline shadow-pop absolute z-20 flex min-w-[220px] flex-col gap-3 rounded-[14px] p-3 text-foreground animate-pop-in origin-top";
 const SEG = "flex rounded-[9px] bg-sys-fill/15 p-0.5";
 const SEG_BTN = "h-8 flex-1 rounded-[7px] px-3 text-footnote font-medium text-sys-label/70 transition aria-pressed:bg-card aria-pressed:text-sys-label aria-pressed:shadow-sm";
@@ -179,7 +186,7 @@ export class BoardView {
     this.el.className = "board";
     const tool = (m: Mode, extra = "") => `<button class="${BTN}" data-mode="${m}" title="${TITLES[m]}" aria-label="${TITLES[m]}" aria-pressed="false">${svg(m)}${extra}</button>`;
     // The pen and the highlighter show their colour as a small dot under the icon.
-    const dot = '<i class="ink-dot pointer-events-none absolute bottom-[5px] left-1/2 h-[5px] w-[5px] -translate-x-1/2 rounded-full"></i>';
+    const dot = '<i class="ink-dot swatch pointer-events-none absolute bottom-[4px] left-1/2 h-[6px] w-[6px] -translate-x-1/2 rounded-full"></i>';
     // One eraser button: it picks the remembered eraser; tapped again while active, it opens the eraser's popover.
     const top = "top-[max(12px,env(safe-area-inset-top))]";
     this.el.innerHTML = `
@@ -192,7 +199,7 @@ export class BoardView {
         ${tool("pen", dot)}${tool("hl", dot)}<button class="${BTN}" data-mode="eraser" title="Eraser" aria-label="Eraser" aria-pressed="false">${svg("erase")}</button>${tool("lasso")}
         ${SEP}
         <button class="sz ${BTN}" data-pop="size" title="Size" aria-label="Size" aria-expanded="false"><svg width="26" height="26" viewBox="0 0 26 26"><path d="M4 17c4-8 7-8 9-3s5 5 9-3" fill="none" stroke-linecap="round"/></svg></button>
-        <button class="sw ${BTN}" data-pop="color" title="Colour" aria-label="Colour" aria-expanded="false"><i class="block h-[22px] w-[22px] rounded-full shadow-[inset_0_0_0_1px_rgb(0_0_0/0.12)]"></i></button>
+        <button class="sw ${BTN}" data-pop="color" title="Colour" aria-label="Colour" aria-expanded="false"><i class="swatch block h-[22px] w-[22px] rounded-full"></i></button>
         ${SEP}
         <button class="${BTN}" data-act="undo" title="Undo" aria-label="Undo">${svg("undo")}</button>
         <button class="${BTN}" data-act="redo" title="Redo" aria-label="Redo">${svg("redo")}</button>
@@ -601,7 +608,7 @@ export class BoardView {
       this.selbar.dataset.k = k;
       const pill = (act: string, ic: IconName, label: string, tone = "") => `<button data-act="${act}" class="${PILL} ${tone}">${icon(ic, 18)}<span>${label}</span></button>`;
       this.selbar.innerHTML =
-        k === "done" ? pill("interact-done", "check", "Done", "bg-sys-blue text-white") : (k === "widget" ? pill("interact", "hand", "Interact") : "") + pill("delete", "trash-2", "Delete", "text-[rgb(255_105_97)]");
+        k === "done" ? pill("interact-done", "check", "Done", "bg-sys-blue text-white") : (k === "widget" ? pill("interact", "hand-pointing", "Interact") : "") + pill("delete", "trash", "Delete", "text-[rgb(255_105_97)]");
     }
     const p = this.toScreen((b.x0 + b.x1) / 2, b.y0);
     this.selbar.hidden = false;
@@ -1332,10 +1339,10 @@ export class BoardView {
     } else if (this.openPop === "color") {
       const hl = p.mode === "hl";
       const cur = hl ? p.hlColor : p.penColor;
-      pop.innerHTML = `${arrow}<div class="flex items-center gap-1.5">${(hl ? HLS : PENS).map((c) => `<button class="grid h-11 w-11 place-items-center rounded-full ring-sys-blue transition aria-pressed:ring-2" data-color="${c}" aria-pressed="${c === cur}" title="${c}"><i class="block h-7 w-7 rounded-full shadow-[inset_0_0_0_1px_rgb(0_0_0/0.12)]" style="background:${c}"></i></button>`).join("")}</div>`;
+      pop.innerHTML = `${arrow}<div class="flex items-center gap-1.5">${(hl ? HLS : PENS).map((c) => `<button class="grid h-11 w-11 place-items-center rounded-full ring-sys-blue transition aria-pressed:ring-2" data-color="${c}" aria-pressed="${c === cur}" title="${c}"><i class="swatch block h-7 w-7 rounded-full" style="background:${c}"></i></button>`).join("")}</div>`;
     } else if (this.openPop === "menu") {
       pop.innerHTML = `${arrow}
-        <button class="flex h-11 items-center gap-3 rounded-[10px] px-2 text-body text-sys-label transition active:bg-sys-fill/20" data-act="insert">${icon("image-plus")}<span>Insert image…</span></button>
+        <button class="flex h-11 items-center gap-3 rounded-[10px] px-2 text-body text-sys-label transition active:bg-sys-fill/20" data-act="insert">${icon("image-square")}<span>Insert image…</span></button>
         <div class="h-px bg-sys-separator/20"></div>
         ${label("Background")}${seg("grid", [["plain", "Plain"], ["dots", "Dots"], ["grid", "Grid"]], this.board.grid)}
         ${label("Writing hand")}${seg("hand", [["left", "Left"], ["right", "Right"]], p.hand)}
@@ -1349,8 +1356,11 @@ export class BoardView {
     const er = this.el.querySelector('.tb [data-mode="eraser"]') as HTMLElement;
     er.title = er.ariaLabel = `Eraser (${p.eraser === "cut" ? "precise" : "stroke"})`;
     // The pen and highlighter carry their colour.
-    (this.el.querySelector('[data-mode="pen"] .ink-dot') as HTMLElement).style.background = p.penColor;
-    (this.el.querySelector('[data-mode="hl"] .ink-dot') as HTMLElement).style.background = p.hlColor;
+    for (const [m, c] of [["pen", p.penColor], ["hl", p.hlColor]] as const) {
+      const btn = this.el.querySelector(`[data-mode="${m}"]`) as HTMLElement;
+      btn.style.setProperty("--tint", c);
+      (btn.querySelector(".ink-dot") as HTMLElement).style.background = c;
+    }
     const k = this.sizeKey();
     const sz = this.el.querySelector(".tb .sz") as HTMLButtonElement;
     sz.disabled = !k;

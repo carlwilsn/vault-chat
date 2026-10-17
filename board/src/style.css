@@ -126,6 +126,20 @@
 .items > .it.interact iframe { pointer-events: auto; }
 .items > .it.math { background: transparent; }
 
+/* Icons (Phosphor, src/icons.ts): a button shows its regular glyph, and its fill (or, for the pen and the
+   highlighter, the duotone with the ink's colour, --tint) while it is the tool or its panel is open. */
+.ph { display: block; flex-shrink: 0; }
+.ph .duo { fill: var(--tint, currentColor); opacity: 0.2; }
+.ic-on { display: none; }
+[aria-pressed="true"] > .ic-on, [aria-expanded="true"] > .ic-on { display: block; }
+[aria-pressed="true"] > .ic-idle, [aria-expanded="true"] > .ic-idle { display: none; }
+.ic-on .duo { opacity: 1; }
+/* The lasso's loop has no colour of its own: a light fill of the icon's. */
+[data-mode="lasso"] .ic-on .duo { opacity: 0.3; }
+/* A colour shown in the chrome keeps an edge, so a dark ink still reads on the dark material. */
+.swatch { box-shadow: inset 0 0 0 1px rgb(0 0 0 / 0.12); }
+@media (prefers-color-scheme: dark) { .swatch { box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.32); } }
+
 /* The popover's arrow (a rotated square of the same material, under the panel's edge). */
 .pop-arrow { position: absolute; width: 14px; height: 14px; transform: rotate(45deg); border-radius: 3px; top: -6px; }
 
