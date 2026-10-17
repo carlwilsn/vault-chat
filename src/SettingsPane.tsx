@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { ArrowLeft, Check, X, Plus, ChevronDown } from "lucide-react";
+import { ArrowLeft, Check, X, Plus, ChevronDown, Play, Square } from "lucide-react";
 import { useStore } from "./store";
 import { PROVIDER_LABEL, AUTO_MODEL_ID, type ModelSpec, type ProviderId } from "./providers";
 import { Button, Input, MenuSelect } from "./ui";
@@ -24,6 +24,19 @@ import { pushKeysToBox, keysChanged, subscribeKeyPush } from "./boxKeys";
 import { ROLE_LABEL, type RoleId } from "./roles";
 import { checkModel, checkVoiceModel, NEED_LABEL, type Check as ModelCheck } from "./modelCaps";
 import { BoxModelChecks } from "./BoxModelChecks";
+import {
+  fetchSharedVoices,
+  recommendedVoices,
+  pickLibraryVoice,
+  describeShared,
+  selectVoice,
+  readHidden,
+  snapshotHidden,
+  visibleVoices,
+  VOICE_STORAGE,
+  voiceHints,
+  type SharedVoice,
+} from "./voiceLibraryBrowse";
 
 // Five sections: Models, Keys, Voice, Box, Appearance.
 
@@ -90,6 +103,7 @@ function Picker({
   onChange,
   placeholder = "Search…",
   defaultOpen = false,
+  footer,
 }: {
   value: string;
   label?: string;
@@ -97,6 +111,8 @@ function Picker({
   onChange: (v: string) => void;
   placeholder?: string;
   defaultOpen?: boolean;
+  /** One quiet action under the list (it closes the menu). */
+  footer?: { label: string; onClick: () => void };
 }) {
   const [open, setOpen] = useState(defaultOpen);
   const [query, setQuery] = useState("");
@@ -168,6 +184,7 @@ function Picker({
                     o.value === value ? "text-foreground font-medium" : "text-muted-foreground"
                   }`}
                   title={o.value}
+                  data-option={o.value}
                 >
                   {o.label}
                   {o.hint && <span className="ml-1.5 opacity-60 text-[10px]">{o.hint}</span>}
@@ -175,6 +192,17 @@ function Picker({
               ))
             )}
           </div>
+          {footer && (
+            <button
+              onClick={() => {
+                setOpen(false);
+                footer.onClick();
+              }}
+              className="block w-full text-left px-3 py-1.5 text-[11px] text-muted-foreground hover:bg-accent hover:text-foreground border-t border-border/60 transition-colors"
+            >
+              {footer.label}
+            </button>
+          )}
         </div>
       )}
     </div>
@@ -532,12 +560,14 @@ function KeysSection() {
 
 type ElVoice = { voice_id: string; name: string; category?: string; labels?: Record<string, string> };
 
+const DEFAULT_VOICE = "nPczCjzI2devNBz1zQrb";
+
 const TEST_LINE = "Hi Carl. This is how I'll sound when we talk in vault-chat.";
 
 function VoiceSection() {
   const key = useStore((s) => s.serviceKeys.elevenlabs);
   const [voiceId, setVoiceId] = useState(
-    localStorage.getItem("vault_chat_elevenlabs_voice") ?? "nPczCjzI2devNBz1zQrb",
+    localStorage.getItem(VOICE_STORAGE) ?? DEFAULT_VOICE,
   );
   // The voices on the ElevenLabs account (its default voices plus any added
   // from the library or cloned), straight from the API.
@@ -552,7 +582,9 @@ function VoiceSection() {
         const res = await fetch("https://api.elevenlabs.io/v1/voices", { headers: { "xi-api-key": key } });
         if (!res.ok) throw new Error(`ElevenLabs ${res.status}`);
         const j = (await res.json()) as { voices: ElVoice[] };
-        if (alive) setVoices([...j.voices].sort((a, b) => a.name.localeCompare(b.name)));
+        if (!alive) return;
+        setHidden(snapshotHidden(j.voices.map((v) => v.voice_id), localStorage.getItem(VOICE_STORAGE) ?? DEFAULT_VOICE));
+        setVoices([...j.voices].sort((a, b) => a.name.localeCompare(b.name)));
       } catch (e) {
         if (alive) setError(e instanceof Error ? e.message : String(e));
       }
@@ -563,8 +595,27 @@ function VoiceSection() {
   }, [key]);
 
   const choose = (id: string) => {
-    localStorage.setItem("vault_chat_elevenlabs_voice", id);
+    selectVoice(id);
     setVoiceId(id);
+  };
+  const [browsing, setBrowsing] = useState(false);
+  // Hidden voices (ids, never names): a one-time snapshot of the account's
+  // voices other than the selected one, taken the first time the list loads
+  // (snapshotHidden). The dropdown leaves them out; a voice added later shows.
+  const [hidden, setHidden] = useState(() => readHidden());
+  // A library voice was picked (added to the account, or already in it): it
+  // joins the account's list here at once.
+  const pickedFromLibrary = (id: string, v: SharedVoice) => {
+    setVoiceId(id);
+    setBrowsing(false);
+    setHidden(readHidden());
+    setVoices((cur) =>
+      cur && !cur.some((x) => x.voice_id === id)
+        ? [...cur, { voice_id: id, name: v.name, labels: { accent: v.accent ?? "", gender: v.gender ?? "", description: v.description ?? "" } }].sort((a, b) =>
+            a.name.localeCompare(b.name),
+          )
+        : cur,
+    );
   };
 
   // Test: speak one short line in the picked voice (about 60 characters of
@@ -598,9 +649,9 @@ function VoiceSection() {
   };
   useEffect(() => () => audioRef.current?.pause(), []);
 
-  const describe = (v: ElVoice) =>
-    [v.labels?.accent, v.labels?.gender, v.labels?.description ?? v.labels?.descriptive].filter(Boolean).join(", ");
-  const options: PickOption[] = (voices ?? []).map((v) => ({ value: v.voice_id, label: v.name, hint: describe(v) }));
+  const listed = visibleVoices(voices ?? [], hidden, voiceId);
+  const hints = voiceHints(listed);
+  const options: PickOption[] = listed.map((v) => ({ value: v.voice_id, label: v.name, hint: hints.get(v.voice_id) }));
   const current = voices?.find((v) => v.voice_id === voiceId)?.name ?? (voices ? "Pick a voice" : "Loading voices…");
 
   return (
@@ -609,7 +660,23 @@ function VoiceSection() {
       {key && (
         <div className="flex gap-2">
           <div className="flex-1 min-w-0">
-            <Picker value={voiceId} label={current} options={options} placeholder="Search voices…" onChange={choose} />
+            {browsing ? (
+              <LibraryPicker
+                elKey={key}
+                owned={new Set((voices ?? []).map((v) => v.voice_id))}
+                onPicked={pickedFromLibrary}
+                onClose={() => setBrowsing(false)}
+              />
+            ) : (
+              <Picker
+                value={voiceId}
+                label={current}
+                options={options}
+                placeholder="Search voices…"
+                onChange={choose}
+                footer={{ label: "Browse the voice library…", onClick: () => setBrowsing(true) }}
+              />
+            )}
           </div>
           <Button size="sm" variant="outline" onClick={() => void test()} disabled={testing || !voiceId}>
             {testing ? "Playing…" : "Test"}
@@ -618,6 +685,197 @@ function VoiceSection() {
       )}
       {error && <p className="text-[11px] text-amber-500/90">{error}</p>}
     </section>
+  );
+}
+
+/** The ElevenLabs voice library, as the same search-and-scroll menu:
+ *  Recommended on top (before a search), then English conversational voices
+ *  by recent use, 30 a page as it scrolls. The play button plays a voice's
+ *  preview (one at a time; closing stops it); a click adds it to the account
+ *  and selects it. */
+function LibraryPicker({
+  elKey,
+  owned,
+  onPicked,
+  onClose,
+}: {
+  elKey: string;
+  owned: ReadonlySet<string>;
+  onPicked: (id: string, v: SharedVoice) => void;
+  onClose: () => void;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
+  const [query, setQuery] = useState("");
+  const [anyUse, setAnyUse] = useState(false);
+  const [recommended, setRecommended] = useState<SharedVoice[] | null>(null);
+  const [list, setList] = useState<SharedVoice[]>([]);
+  const [page, setPage] = useState(0);
+  const [hasMore, setHasMore] = useState(true);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [adding, setAdding] = useState<string | null>(null);
+  const [playing, setPlaying] = useState<string | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const gen = useRef(0);
+
+  const stop = () => {
+    audioRef.current?.pause();
+    audioRef.current = null;
+    setPlaying(null);
+  };
+  const close = () => {
+    stop();
+    onClose();
+  };
+  const closeRef = useRef(close);
+  closeRef.current = close;
+  useEffect(() => {
+    const onDown = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) closeRef.current();
+    };
+    document.addEventListener("mousedown", onDown);
+    requestAnimationFrame(() => searchRef.current?.focus());
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      audioRef.current?.pause();
+    };
+  }, []);
+
+  useEffect(() => {
+    let alive = true;
+    void recommendedVoices(elKey)
+      .then((r) => alive && setRecommended(r))
+      .catch(() => alive && setRecommended([]));
+    return () => {
+      alive = false;
+    };
+  }, [elKey]);
+
+  const load = async (p: number, search: string, any: boolean) => {
+    const g = gen.current;
+    setLoading(true);
+    try {
+      const r = await fetchSharedVoices(elKey, { page: p, search, anyUse: any });
+      if (g !== gen.current) return;
+      setList((cur) => (p === 0 ? r.voices : [...cur, ...r.voices.filter((v) => !cur.some((c) => c.voice_id === v.voice_id))]));
+      setHasMore(r.hasMore);
+      setPage(p);
+    } catch (e) {
+      if (g === gen.current) setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      if (g === gen.current) setLoading(false);
+    }
+  };
+  // A new search or use filter starts over at page 0 (typing settles first).
+  useEffect(() => {
+    gen.current++;
+    setList([]);
+    setHasMore(true);
+    setError(null);
+    const t = setTimeout(() => void load(0, query, anyUse), query ? 300 : 0);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [query, anyUse, elKey]);
+
+  const onScroll = (e: React.UIEvent<HTMLDivElement>) => {
+    const el = e.currentTarget;
+    if (!loading && hasMore && el.scrollTop + el.clientHeight > el.scrollHeight - 60) void load(page + 1, query, anyUse);
+  };
+
+  const play = (v: SharedVoice) => {
+    if (playing === v.voice_id) return stop();
+    stop();
+    if (!v.preview_url) return;
+    const a = new Audio(v.preview_url);
+    audioRef.current = a;
+    setPlaying(v.voice_id);
+    a.onended = () => {
+      if (audioRef.current === a) setPlaying(null);
+    };
+    a.play().catch(() => {
+      if (audioRef.current === a) setPlaying(null);
+    });
+  };
+
+  const pick = async (v: SharedVoice) => {
+    if (adding) return;
+    setAdding(v.voice_id);
+    setError(null);
+    const r = await pickLibraryVoice(elKey, v, owned);
+    setAdding(null);
+    if ("error" in r) {
+      setError(r.error);
+      return;
+    }
+    stop();
+    onPicked(r.voiceId, v);
+  };
+
+  const row = (v: SharedVoice) => (
+    <div key={v.voice_id} className="flex items-start gap-1.5 px-2 py-1.5 hover:bg-accent transition-colors" data-voice={v.voice_id}>
+      <button
+        onClick={() => play(v)}
+        disabled={!v.preview_url}
+        title={playing === v.voice_id ? "Stop" : "Play a sample"}
+        className="mt-0.5 h-5 w-5 shrink-0 grid place-items-center rounded text-muted-foreground hover:text-foreground disabled:opacity-30"
+      >
+        {playing === v.voice_id ? <Square className="h-2.5 w-2.5" /> : <Play className="h-3 w-3" />}
+      </button>
+      <button onClick={() => void pick(v)} className="flex-1 min-w-0 text-left" title={v.description ?? v.name}>
+        <div className="text-[11px] text-foreground truncate">
+          {v.name}
+          <span className="ml-1.5 opacity-60 text-[10px]">{describeShared(v)}</span>
+          {adding === v.voice_id && <span className="ml-1.5 opacity-60 text-[10px]">Adding…</span>}
+        </div>
+        {v.description && <div className="text-[10.5px] text-muted-foreground truncate">{v.description}</div>}
+      </button>
+    </div>
+  );
+
+  const head = (t: string) => <div className="px-3 pt-1.5 pb-0.5 text-[10px] uppercase tracking-wider text-muted-foreground/70">{t}</div>;
+  const showRec = !query.trim() && !anyUse && !!recommended?.length;
+  return (
+    <div className="relative" ref={ref}>
+      <div className="w-full h-7 px-2.5 flex items-center rounded-md border border-input bg-background text-[12px] text-muted-foreground">
+        Voice library
+      </div>
+      <div className="absolute top-full left-0 right-0 mt-1 rounded-lg border border-border bg-card shadow-lg z-50 flex flex-col" data-voice-library>
+        <div className="p-1.5 border-b border-border/60 flex items-center gap-2">
+          <input
+            ref={searchRef}
+            type="search"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") {
+                e.preventDefault();
+                close();
+              }
+            }}
+            placeholder="Search the library…"
+            className="flex-1 min-w-0 bg-transparent outline-none text-[11px] px-2 py-1 rounded border border-transparent focus:border-border placeholder:text-muted-foreground/60"
+          />
+          <label className="flex items-center gap-1 text-[10px] text-muted-foreground shrink-0 pr-1 cursor-pointer" title="Not only voices made for conversation">
+            <input type="checkbox" checked={anyUse} onChange={(e) => setAnyUse(e.target.checked)} className="h-3 w-3" />
+            All uses
+          </label>
+        </div>
+        {error && <p className="px-3 py-1.5 text-[11px] text-amber-500/90 border-b border-border/60">{error}</p>}
+        <div className="py-1 max-h-72 overflow-auto" onScroll={onScroll}>
+          {showRec && (
+            <>
+              {head("Recommended")}
+              {recommended!.map(row)}
+              {head("Most used lately")}
+            </>
+          )}
+          {list.map(row)}
+          {loading && <div className="px-3 py-2 text-[11px] text-muted-foreground/70">Loading…</div>}
+          {!loading && list.length === 0 && !error && <div className="px-3 py-2 text-[11px] text-muted-foreground italic">No matches</div>}
+        </div>
+      </div>
+    </div>
   );
 }
 
