@@ -10,6 +10,26 @@ export type VoiceImageSink = {
   sendMultimodalMessage(m: { text?: string; fileId: string }): void;
 };
 
+/** A multimodal_message in the current shape — `files: [{type: "file_input", file_id}]`
+ *  (≤ 5; the single `file` field the SDK still sends is deprecated). Falls back to
+ *  the SDK's own call where its connection isn't reachable. */
+export function sendFilesMessage(conv: VoiceImageSink, text: string | undefined, fileIds: string[]): void {
+  const ids = fileIds.filter(Boolean).slice(0, 5);
+  if (!ids.length) return;
+  // The SDK's connection (protected in its types, there at runtime).
+  const c = (conv as unknown as { connection?: { sendMessage?: (m: Record<string, unknown>) => void } }).connection;
+  const send = c?.sendMessage?.bind(c);
+  if (send) {
+    send({
+      type: "multimodal_message",
+      ...(text ? { text: { type: "user_message", text } } : {}),
+      files: ids.map((file_id) => ({ type: "file_input", file_id })),
+    });
+    return;
+  }
+  for (const [i, fileId] of ids.entries()) conv.sendMultimodalMessage({ ...(i === 0 && text ? { text } : {}), fileId });
+}
+
 export type PushResult = "sent" | "duplicate" | "too-large" | "unsupported" | "failed";
 
 /** 10 MB: a phone photo fits; anything bigger is shrunk first (when the page can) or skipped. */

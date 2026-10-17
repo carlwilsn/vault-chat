@@ -12,7 +12,7 @@ import { loadSessionContext } from "./context";
 import { loadSkills, skillPromptIndex } from "./skills";
 import { voiceLineEntry, voiceToolEntry } from "./activityCore";
 import { cachedVoiceMath, displayVoiceMath, prefetchVoiceMath } from "./voiceMath";
-import { MAX_IMAGE_UPLOAD_BYTES, VoiceImagePusher, lookingAtNote, shrinkImage, thumbDataUrl, voiceImageMime, type PushResult } from "./voiceImages";
+import { MAX_IMAGE_UPLOAD_BYTES, VoiceImagePusher, lookingAtNote, sendFilesMessage, shrinkImage, thumbDataUrl, voiceImageMime, type PushResult } from "./voiceImages";
 import { fileKind, isUnreadableAsText } from "./fileKind";
 import { stripAudioTags } from "./voiceTags";
 import { QuietGate } from "./voiceQuiet";
@@ -1573,25 +1573,8 @@ type FileConv = {
   sendMultimodalMessage(m: { text?: string; fileId: string }): void;
 };
 
-/** A multimodal_message in the current shape — `files: [{type: "file_input", file_id}]`
- *  (≤ 5; the single `file` field the SDK still sends is deprecated). Falls back to
- *  the SDK's own call where its connection isn't reachable. */
-export function sendFilesMessage(conv: FileConv, text: string | undefined, fileIds: string[]): void {
-  const ids = fileIds.filter(Boolean).slice(0, 5);
-  if (!ids.length) return;
-  // The SDK's connection (protected in its types, there at runtime).
-  const c = (conv as unknown as { connection?: { sendMessage?: (m: Record<string, unknown>) => void } }).connection;
-  const send = c?.sendMessage?.bind(c);
-  if (send) {
-    send({
-      type: "multimodal_message",
-      ...(text ? { text: { type: "user_message", text } } : {}),
-      files: ids.map((file_id) => ({ type: "file_input", file_id })),
-    });
-    return;
-  }
-  for (const [i, fileId] of ids.entries()) conv.sendMultimodalMessage({ ...(i === 0 && text ? { text } : {}), fileId });
-}
+// sendFilesMessage lives in voiceImages.ts (the board's voice sends with it too).
+export { sendFilesMessage };
 
 /** The image pusher's sink: uploads through the SDK, sends in the current shape. */
 function fileSink(conv: FileConv): import("./voiceImages").VoiceImageSink & { sendFiles(text: string | undefined, ids: string[]): void } {
