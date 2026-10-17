@@ -50,6 +50,41 @@ export async function shrinkImage(blob: Blob, max = MAX_IMAGE_UPLOAD_BYTES): Pro
   }
 }
 
+/** The longest side an image goes to the voice model at: a screen's worth of
+ *  detail, a fraction of the tokens a 2048 px capture costs. */
+export const VOICE_IMAGE_MAX_SIDE = 1280;
+
+/** Images as ONE downscaled JPEG for the voice model, stacked top to bottom
+ *  (a look's several images are one picture, not five files in its context):
+ *  width ≤ maxSide, the stack's height ≤ 2 × maxSide. Null where the page can't
+ *  draw (the caller sends the originals). */
+export async function composeImages(blobs: Blob[], maxSide = VOICE_IMAGE_MAX_SIDE): Promise<Blob | null> {
+  const g = globalThis as { createImageBitmap?: (b: Blob) => Promise<ImageBitmap>; OffscreenCanvas?: typeof OffscreenCanvas };
+  if (!g.createImageBitmap || !g.OffscreenCanvas || !blobs.length) return null;
+  try {
+    const bmps = await Promise.all(blobs.map((b) => g.createImageBitmap!(b)));
+    const gap = bmps.length > 1 ? 16 : 0;
+    const w = Math.max(...bmps.map((b) => b.width));
+    const h = bmps.reduce((a, b) => a + b.height, 0) + gap * (bmps.length - 1);
+    const scale = Math.min(1, maxSide / w, (2 * maxSide) / h);
+    // One small image: nothing to gain.
+    if (bmps.length === 1 && scale === 1) return null;
+    const c = new g.OffscreenCanvas(Math.max(1, Math.round(w * scale)), Math.max(1, Math.round(h * scale)));
+    const ctx = c.getContext("2d");
+    if (!ctx) return null;
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, c.width, c.height);
+    let y = 0;
+    for (const b of bmps) {
+      ctx.drawImage(b, 0, y * scale, b.width * scale, b.height * scale);
+      y += b.height + gap;
+    }
+    return await c.convertToBlob({ type: "image/jpeg", quality: 0.85 });
+  } catch {
+    return null;
+  }
+}
+
 /** A data URL of the image for the thread: shrunk to 1024 px where the page can
  *  draw, the original when it is small, else null. */
 export async function thumbDataUrl(blob: Blob): Promise<string | null> {
@@ -82,14 +117,19 @@ export async function thumbDataUrl(blob: Blob): Promise<string | null> {
 export class VoiceImagePusher {
   private sent = new Set<string>();
   private inFlight = new Set<string>();
+  /** Files uploaded to this session (each stays in the model's context until ElevenLabs frees it). */
+  uploaded = 0;
   constructor(
     private readonly max = MAX_IMAGE_UPLOAD_BYTES,
     private readonly shrink: (b: Blob, max: number) => Promise<Blob | null> = shrinkImage,
+    // Downscales one image, or stacks several into one (null: send as they are).
+    private readonly compose: (bs: Blob[]) => Promise<Blob | null> = composeImages,
   ) {}
 
   reset(): void {
     this.sent.clear();
     this.inFlight.clear();
+    this.uploaded = 0;
   }
 
   has(key: string): boolean {
@@ -106,51 +146,61 @@ export class VoiceImagePusher {
     still: () => boolean = () => true,
   ): Promise<PushResult[]> {
     const out: PushResult[] = [];
-    const ids: string[] = [];
-    const keys: string[] = [];
-    for (const it of items.slice(0, 5)) {
-      if (this.sent.has(it.key) || this.inFlight.has(it.key) || keys.includes(it.key)) {
-        out.push("duplicate");
-        continue;
-      }
-      if (!it.blob.type.startsWith("image/")) {
-        out.push("unsupported");
-        continue;
-      }
-      this.inFlight.add(it.key);
-      try {
+    // The new images (index into out, key, a body under the cap).
+    const fresh: { i: number; key: string; body: Blob }[] = [];
+    const claimed: string[] = [];
+    try {
+      for (const it of items.slice(0, 5)) {
+        if (this.sent.has(it.key) || this.inFlight.has(it.key) || claimed.includes(it.key)) {
+          out.push("duplicate");
+          continue;
+        }
+        if (!it.blob.type.startsWith("image/")) {
+          out.push("unsupported");
+          continue;
+        }
+        this.inFlight.add(it.key);
+        claimed.push(it.key);
         let body: Blob | null = it.blob;
-        if (body.size > this.max) body = await this.shrink(body, this.max);
+        if (body.size > this.max) body = await this.shrink(body, this.max).catch(() => null);
         if (!body || body.size > this.max) {
           out.push("too-large");
           continue;
         }
-        if (!still()) {
-          out.push("failed");
-          continue;
-        }
-        const { fileId } = await sink.uploadFile(body);
-        ids.push(fileId);
-        keys.push(it.key);
+        fresh.push({ i: out.length, key: it.key, body });
         out.push("sent");
+      }
+      if (!fresh.length) return out;
+      const fail = () => {
+        for (const f of fresh) out[f.i] = "failed";
+        return out;
+      };
+      if (!still()) return fail();
+      // One picture for the look where the page can draw (stacked, downscaled), else each as it is.
+      const one = await this.compose(fresh.map((f) => f.body)).catch(() => null);
+      const bodies = one && one.size <= this.max ? [one] : fresh.map((f) => f.body);
+      const ids: string[] = [];
+      try {
+        for (const b of bodies) ids.push((await sink.uploadFile(b)).fileId);
       } catch (e) {
         console.warn("[voice-image] upload failed:", (e as Error)?.message ?? e);
-        out.push("failed");
-      } finally {
-        this.inFlight.delete(it.key);
+        return fail();
       }
-    }
-    if (ids.length) {
-      if (!still()) return out.map((r) => (r === "sent" ? "failed" : r));
+      if (!still()) return fail();
+      const n = fresh.length;
+      const text = bodies.length === 1 && n > 1 ? `${note} (The ${n} images are stacked top to bottom in one picture.)` : note;
       try {
-        sink.sendFiles(note, ids);
+        sink.sendFiles(text, ids);
       } catch (e) {
         console.warn("[voice-image] send failed:", (e as Error)?.message ?? e);
-        return out.map((r) => (r === "sent" ? "failed" : r));
+        return fail();
       }
-      for (const k of keys) this.sent.add(k);
+      this.uploaded += ids.length;
+      for (const f of fresh) this.sent.add(f.key);
+      return out;
+    } finally {
+      for (const k of claimed) this.inFlight.delete(k);
     }
-    return out;
   }
 
   /** Upload `blob` once per key and send it with `note`. */
@@ -166,9 +216,13 @@ export class VoiceImagePusher {
         return "too-large";
       }
       if (!still()) return "failed";
+      // Downscaled for the model where the page can draw.
+      const small = await this.compose([body]).catch(() => null);
+      if (small && small.size < body.size) body = small;
       const { fileId } = await sink.uploadFile(body);
       if (!still()) return "failed";
       sink.sendMultimodalMessage({ text: note, fileId });
+      this.uploaded++;
       this.sent.add(key);
       return "sent";
     } catch (e) {
