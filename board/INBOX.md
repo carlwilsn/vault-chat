@@ -94,3 +94,9 @@ default view is 1000 wide. Without one, a part lands 60% of the view wide.
 - Video.
 - Live HTML pages.
 - Remote URLs. Everything sent is a file in the vault, so it syncs, versions, and works offline on the iPad.
+
+## On the board, every kind behaves the same (Carl, 2026-10-16)
+
+- **An object:** every added part is an object on the canvas. Carl drags it, scales it, and writes on top of it with the pen (ink always lies above objects).
+- **Scaling:** always uniform. Nothing ever stretches, and there is no free-form resize.
+- **Widgets:** a widget scales as a whole too. It is laid out once at its send size, then zoomed like an image. Reshaping a widget, so its layout reflows, is a possible later option; it is not built.
