@@ -1,15 +1,21 @@
 // Seeds a preview box's inbox (board/INBOX.md) through the real, validated
-// send: a lecture PDF's pages, a Cauchy problem set, a generated phase plot
-// (SVG), a value-iteration widget (raw TS with a γ slider), and one entry
-// still "being made".
+// send: a lecture PDF's pages (16:9 slides, the math typeset by KaTeX and
+// printed to PDF by a headless Chromium), a Cauchy problem set, a generated
+// phase plot (SVG), a value-iteration widget (raw TS with a γ slider), and one
+// entry still "being made".
 //
 //   npx tsx board/preview/seed-inbox.ts <vault dir> [http://127.0.0.1:7432]
 //
 // The files are written into the vault first (the send only takes vault
 // paths), then sent; a refusal is printed and the script fails.
-import { mkdirSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { makePdf } from "../../server/test/pdfgen";
+import { pathToFileURL } from "node:url";
+import katex from "katex";
+import { findBrowser } from "../../server/headless";
 
 const vault = process.argv[2];
 const box = process.argv[3] ?? "http://127.0.0.1:7432";
@@ -17,40 +23,140 @@ if (!vault) throw new Error("usage: seed-inbox.ts <vault dir> [box url]");
 
 // ---------------------------------------------------------------- 1. a lecture PDF
 
-const esc = (s: string) => s.replace(/[\\()]/g, (c) => "\\" + c);
-function page(n: number, title: string, body: string[], draw = ""): string {
-  let s = `0.12 0.36 0.84 rg 0 762 612 30 re f 1 1 1 rg BT /F2 11 Tf 40 773 Td (IEMS 469  ·  Dynamic Programming  ·  Lecture 7) Tj ET\n0 0 0 rg`;
-  s += `\nBT /F2 22 Tf 56 712 Td (${esc(title)}) Tj ET\n0.75 G 0.6 w 56 700 m 556 700 l S 0 G\n`;
-  body.forEach((l, i) => {
-    const bullet = l.startsWith("- ");
-    s += `BT /F1 13 Tf ${bullet ? 74 : 56} ${668 - i * 21} Td (${esc(bullet ? "·  " + l.slice(2) : l)}) Tj ET\n`;
-  });
-  s += draw;
-  s += `0.5 g BT /F1 9 Tf 290 30 Td (${n}) Tj ET\n`;
-  return s;
+// Each slide is lines: "- " a bullet, "$$…$$" a display equation, `$…$` inline TeX.
+type Slide = { title: string; body: string[]; figure?: boolean };
+const SLIDES: Slide[] = [
+  { title: "Lecture 7: Value iteration", body: ["Today", "- The Bellman optimality equation", "- Value iteration and why it converges", "- Policy extraction", "- Discounting and the contraction argument"] },
+  {
+    title: "Markov decision processes",
+    figure: true,
+    body: [
+      "An MDP is a tuple $(\\mathcal{S}, \\mathcal{A}, P, r, \\gamma)$:",
+      "- $\\mathcal{S}, \\mathcal{A}$ finite sets of states and actions",
+      "- $P(s' \\mid s, a)$ transition probabilities, $r(s, a)$ expected reward",
+      "- $0 \\le \\gamma < 1$ the discount factor",
+      "A policy $\\pi : \\mathcal{S} \\to \\mathcal{A}$ has value",
+      "$$V^{\\pi}(s) = \\mathbb{E}\\Big[\\sum_{t=0}^{\\infty} \\gamma^{t}\\, r(s_t, a_t) \\;\\Big|\\; s_0 = s\\Big].$$",
+    ],
+  },
+  {
+    title: "The Bellman optimality equation",
+    body: [
+      "The optimal value function satisfies",
+      "$$V^{*}(s) = \\max_{a \\in \\mathcal{A}} \\Big\\{ r(s, a) + \\gamma \\sum_{s' \\in \\mathcal{S}} P(s' \\mid s, a)\\, V^{*}(s') \\Big\\}.$$",
+      "Write $T$ for the right-hand side, an operator on $\\mathbb{R}^{|\\mathcal{S}|}$: $V^{*}$ is its fixed point, $V^{*} = T V^{*}$.",
+      "- $T$ is monotone: $V \\le W \\implies TV \\le TW$",
+      "- $T(V + c\\mathbf{1}) = TV + \\gamma c\\mathbf{1}$ for every constant $c$",
+    ],
+  },
+  {
+    title: "Value iteration",
+    body: [
+      "Start from any $V_0$ (e.g. $V_0 = 0$) and repeat",
+      "$$V_{k+1} = T V_k .$$",
+      "Stop when $\\lVert V_{k+1} - V_k \\rVert_\\infty < \\varepsilon (1 - \\gamma) / 2\\gamma$; then the greedy policy is $\\varepsilon$-optimal.",
+      "- Each sweep costs $O(|\\mathcal{S}|^2 |\\mathcal{A}|)$",
+      "- Asynchronous (Gauss–Seidel) sweeps converge too",
+    ],
+  },
+  {
+    title: "Why it converges: a contraction",
+    body: [
+      "For any $V, W \\in \\mathbb{R}^{|\\mathcal{S}|}$:",
+      "$$\\lVert TV - TW \\rVert_\\infty \\le \\gamma\\, \\lVert V - W \\rVert_\\infty .$$",
+      "So $T$ is a $\\gamma$-contraction in the sup norm, and by Banach's fixed-point theorem $V_k \\to V^{*}$ geometrically:",
+      "$$\\lVert V_k - V^{*} \\rVert_\\infty \\le \\gamma^{k}\\, \\lVert V_0 - V^{*} \\rVert_\\infty .$$",
+      "Note: $(V_k)$ is a Cauchy sequence (problem set 4).",
+    ],
+  },
+  {
+    title: "Policy extraction",
+    body: [
+      "Given $V$, act greedily:",
+      "$$\\pi(s) \\in \\operatorname*{arg\\,max}_{a \\in \\mathcal{A}} \\Big\\{ r(s, a) + \\gamma \\sum_{s'} P(s' \\mid s, a)\\, V(s') \\Big\\}.$$",
+      "- If $V = V^{*}$, the greedy policy is optimal",
+      "- Policy iteration alternates evaluation and improvement",
+      "- Next lecture: policy iteration and linear programming",
+    ],
+  },
+];
+
+// The MDP on slide 2: three states, two actions.
+const MDP_SVG = `<svg viewBox="0 0 300 160" width="340" height="181" font-size="18">
+  <defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" fill="#333"/></marker></defs>
+  <g fill="#eef3fc" stroke="#1f5bd6" stroke-width="1.6"><circle cx="45" cy="105" r="25"/><circle cx="150" cy="105" r="25"/><circle cx="255" cy="105" r="25"/></g>
+  <g text-anchor="middle" font-family="KaTeX_Math" font-style="italic">${[45, 150, 255].map((x, i) => `<text x="${x - 3}" y="110">s<tspan font-family="KaTeX_Main" font-style="normal" font-size="12" dy="5">${i + 1}</tspan></text>`).join("")}</g>
+  <g stroke="#333" stroke-width="1.3" fill="none" marker-end="url(#ah)"><path d="M71 105H123"/><path d="M176 105H228"/><path d="M150 79C150 28 45 28 45 78"/></g>
+  <g font-size="14" font-family="KaTeX_Main" fill="#333" text-anchor="middle"><text x="97" y="96"><tspan font-family="KaTeX_Math" font-style="italic">a</tspan>, 0.8</text><text x="202" y="96"><tspan font-family="KaTeX_Math" font-style="italic">a</tspan>, 0.8</text><text x="97" y="30"><tspan font-family="KaTeX_Math" font-style="italic">b</tspan>, 0.2, <tspan font-family="KaTeX_Math" font-style="italic">r</tspan> = −1</text></g>
+</svg>`;
+
+const SANS = `-apple-system, "Segoe UI", "Helvetica Neue", Helvetica, Arial, sans-serif`;
+function slidesHtml(): string {
+  const tex = (src: string) => src.replace(/\$\$([\s\S]+?)\$\$|\$([^$]+?)\$/g, (_, d, i) => katex.renderToString(d ?? i, { displayMode: d !== undefined, throwOnError: true, strict: "ignore" }));
+  const body = (lines: string[]) => {
+    let out = "", list = false;
+    for (const l of lines) {
+      const li = l.startsWith("- ");
+      if (li !== list) (out += li ? "<ul>" : "</ul>"), (list = li);
+      out += l.startsWith("$$") ? `<div class="eq">${tex(l)}</div>` : li ? `<li>${tex(l.slice(2))}</li>` : `<p>${tex(l)}</p>`;
+    }
+    return out + (list ? "</ul>" : "");
+  };
+  const css = pathToFileURL(createRequire(import.meta.url).resolve("katex/dist/katex.min.css")).href;
+  return `<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="${css}"><style>
+@page { size: 10in 5.625in; margin: 0 }
+* { box-sizing: border-box }
+html, body { margin: 0; -webkit-print-color-adjust: exact; print-color-adjust: exact }
+body { font: 22px/1.5 "Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua", Georgia, serif; color: #1b1b1f }
+.slide { width: 10in; height: 5.625in; position: relative; overflow: hidden; break-after: page; padding: 66px 60px 40px }
+.slide:last-child { break-after: auto }
+.bar { position: absolute; inset: 0 0 auto; height: 32px; background: #1f5bd6; color: #fff; font: 600 12.5px/32px ${SANS}; letter-spacing: .02em; padding: 0 26px; display: flex; justify-content: space-between }
+h1 { font: 600 30px/1.2 ${SANS}; color: #12306e; margin: 0 0 18px; padding-bottom: 10px; border-bottom: 1.5px solid #d7deea }
+p { margin: 0 0 8px } ul { margin: 2px 0 10px; padding-left: 26px } li { margin: 0 0 6px } li::marker { color: #1f5bd6 }
+.eq { margin: 4px 0 12px } .eq .katex-display { margin: 0 } .katex { font-size: 1.08em }
+.cols { display: grid; grid-template-columns: 1fr 340px; gap: 20px; align-items: center }
+.num { position: absolute; right: 26px; bottom: 14px; font: 12px ${SANS}; color: #8a8f99 }
+.title { display: grid; align-content: center; height: 100%; padding-bottom: 20px }
+.title h1 { font-size: 40px; border: 0; margin: 0 0 6px; padding: 0 }
+.title .sub { font: 18px ${SANS}; color: #5b6170; margin-bottom: 26px }
+</style></head><body>${SLIDES.map(
+    (s, i) =>
+      `<section class="slide"><div class="bar"><span>IEMS 469 · Dynamic Programming</span><span>Lecture 7</span></div>${
+        i === 0
+          ? `<div class="title"><h1>${s.title}</h1><div class="sub">Northwestern University · Fall 2026</div>${body(s.body)}</div>`
+          : `<h1>${s.title}</h1>${s.figure ? `<div class="cols"><div>${body(s.body)}</div>${MDP_SVG}</div>` : body(s.body)}`
+      }<div class="num">${i + 1}</div></section>`,
+  ).join("")}</body></html>`;
 }
-// A small MDP diagram: states as circles (Bézier approximations), arrows with probabilities.
-function circle(cx: number, cy: number, r: number): string {
-  const k = 0.5523 * r;
-  return `${cx + r} ${cy} m ${cx + r} ${cy + k} ${cx + k} ${cy + r} ${cx} ${cy + r} c ${cx - k} ${cy + r} ${cx - r} ${cy + k} ${cx - r} ${cy} c ${cx - r} ${cy - k} ${cx - k} ${cy - r} ${cx} ${cy - r} c ${cx + k} ${cy - r} ${cx + r} ${cy - k} ${cx + r} ${cy} c S\n`;
+
+/** The slides printed to PDF by the box's headless Chromium (server/headless.ts finds it). */
+function lecturePdf(): Buffer {
+  const bin = findBrowser();
+  if (!bin) throw new Error("the lecture PDF needs a Chromium or Edge (or set VC_HEADLESS_BROWSER)");
+  const dir = mkdtempSync(join(tmpdir(), "vc-lecture-"));
+  try {
+    writeFileSync(join(dir, "lec7.html"), slidesHtml());
+    const out = join(dir, "lec7.pdf");
+    // The virtual time budget lets KaTeX's fonts load before the page prints.
+    const r = spawnSync(bin, ["--headless=new", "--disable-gpu", "--no-first-run", `--user-data-dir=${join(dir, "profile")}`, "--no-pdf-header-footer", "--virtual-time-budget=10000", `--print-to-pdf=${out}`, pathToFileURL(join(dir, "lec7.html")).href], { timeout: 120_000, windowsHide: true });
+    // On Windows msedge.exe hands off to its browser process and returns at once: wait for a whole PDF.
+    for (let i = 0; i < 600; i++) {
+      const b = existsSync(out) ? readFileSync(out) : null;
+      if (b && b.length > 1000 && b.subarray(-1024).includes("%%EOF")) return b;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 200);
+    }
+    throw new Error(`printing the lecture failed: ${String(r.stderr ?? r.error ?? "").slice(-400)}`);
+  } finally {
+    try {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 300 });
+    } catch {
+      /* the browser may still hold its profile; the OS cleans tmp */
+    }
+  }
 }
-const diagram =
-  "1.2 w 0.12 0.36 0.84 RG\n" +
-  circle(160, 300, 34) + circle(306, 300, 34) + circle(452, 300, 34) +
-  "0 0 0 RG 194 300 m 266 300 l S 266 300 m 258 305 l 258 295 l h f\n340 300 m 412 300 l S 412 300 m 404 305 l 404 295 l h f\n" +
-  "306 334 m 306 380 l 160 380 l 160 334 l S 160 334 m 155 342 l 165 342 l h f\n" +
-  "BT /F2 14 Tf 150 295 Td (s1) Tj ET BT /F2 14 Tf 296 295 Td (s2) Tj ET BT /F2 14 Tf 442 295 Td (s3) Tj ET\n" +
-  "BT /F1 11 Tf 214 308 Td (a: p = 0.8) Tj ET BT /F1 11 Tf 360 308 Td (a: p = 0.8) Tj ET BT /F1 11 Tf 200 388 Td (b: p = 0.2, r = -1) Tj ET\n";
-const pdf = makePdf([
-  page(1, "Lecture 7: Value iteration", ["Today", "- Bellman optimality equation", "- Value iteration and its convergence", "- Policy extraction", "- Discounting and the contraction argument"]),
-  page(2, "Markov decision processes", ["An MDP is (S, A, P, r, gamma):", "- S, A finite sets of states and actions", "- P(s' | s, a) transition probabilities", "- r(s, a) expected one-step reward", "- 0 <= gamma < 1 the discount factor", "", "A policy pi maps states to actions; its value is", "V_pi(s) = E[ sum_t gamma^t r(s_t, a_t) | s_0 = s ]."], diagram),
-  page(3, "The Bellman optimality equation", ["The optimal value function satisfies", "", "V*(s) = max_a { r(s, a) + gamma sum_s' P(s' | s, a) V*(s') }.", "", "Write T for the right-hand side as an operator on R^|S|:", "V* is a fixed point, V* = T V*.", "", "- T is monotone: V <= W implies TV <= TW", "- T(V + c 1) = TV + gamma c 1 for every constant c"]),
-  page(4, "Value iteration", ["Start from any V_0 (e.g. 0) and repeat", "", "V_{k+1} = T V_k.", "", "Stop when || V_{k+1} - V_k ||_inf < eps (1 - gamma) / (2 gamma);", "then the greedy policy is eps-optimal.", "", "- Each sweep costs O(|S|^2 |A|)", "- Asynchronous (Gauss-Seidel) sweeps converge too"]),
-  page(5, "Why it converges: a contraction", ["For any V, W:", "", "|| TV - TW ||_inf <= gamma || V - W ||_inf.", "", "So T is a gamma-contraction on (R^|S|, sup norm), and by Banach's", "fixed point theorem V_k -> V* geometrically:", "", "|| V_k - V* ||_inf <= gamma^k || V_0 - V* ||_inf.", "", "Note: (V_k) is a Cauchy sequence - see problem set 4."]),
-  page(6, "Policy extraction", ["Given V, act greedily:", "", "pi(s) = argmax_a { r(s, a) + gamma sum_s' P(s' | s, a) V(s') }.", "", "- If V = V*, the greedy policy is optimal", "- Policy iteration alternates evaluation and improvement", "- Next lecture: policy iteration and linear programming"]),
-]);
 mkdirSync(join(vault, "IEMS 469"), { recursive: true });
-writeFileSync(join(vault, "IEMS 469", "lec7.pdf"), pdf);
+writeFileSync(join(vault, "IEMS 469", "lec7.pdf"), lecturePdf());
+if (process.env.SEED_HTML) writeFileSync(process.env.SEED_HTML, slidesHtml());
 
 // ---------------------------------------------------------------- 3. the phase plot, generated
 
