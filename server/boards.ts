@@ -1,24 +1,29 @@
 // The whiteboard's storage on the box (format: src/boardFormat.ts):
-//   GET  /api/v1/boards                     → {boards:[{slug,name,updated,pages}]}, newest first
-//   POST /api/v1/boards {name}              → {slug, board} — a blank board
-//   GET  /api/v1/boards/<slug>              → the board
-//   POST /api/v1/boards/<slug> {board, base, png?: {"1": base64, …}}
-//                                           → {ok, rev, updated} | 409 {error, rev} when base ≠ the file's rev
-//   GET  /api/v1/boards/<slug>/page-<n>.png → the page's snapshot
+//   GET  /api/v1/boards                       → {boards:[{slug,name,updated,strokes,items}]}, newest first
+//   POST /api/v1/boards {name}                → {slug, board} — a blank board
+//   GET  /api/v1/boards/<slug>                → the board (a version-1 board arrives migrated)
+//   POST /api/v1/boards/<slug> {board, base, overview?: base64 PNG}
+//                                             → {ok, rev, updated} | 409 {error, rev} when base ≠ the file's rev
+//   GET  /api/v1/boards/<slug>/overview.png   → the snapshot of the whole board
+//   POST /api/v1/boards/<slug>/assets {data: base64 PNG/JPEG}
+//                                             → {src: "assets/<name>", w, h} — a file for an item
+//   GET  /api/v1/boards/<slug>/assets/<name>  → that file
 // Plain files in the vault's working copy: the box's sync cycle commits them,
 // like any other vault write, and the laptop gets them on its next pull. Every
 // path is a validated slug under `<vault>/boards/` (realpath-checked, so a
 // symlink cannot lead out).
+import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, sep } from "node:path";
-import { BOARDS_DIR, BOARD_FILE, blankBoard, parseBoard, serializeBoard, slugify, validSlug, type Board, type BoardSummary } from "../src/boardFormat";
+import { ASSETS_DIR, ASSET_RE, BOARDS_DIR, BOARD_VERSION, BOARD_FILE, OVERVIEW_FILE, blankBoard, imageSize, parseBoard, serializeBoard, slugify, validSlug, type Board, type BoardSummary } from "../src/boardFormat";
 import { HIDE_DEFAULTS_FILE, HIDE_FILE, hideOnce } from "../src/agentProjects";
 import { renameRetry, writeAtomic } from "./atomic";
 
-export type Out = { status: number; body: unknown; png?: Buffer };
+export type Out = { status: number; body: unknown; file?: Buffer; mime?: string };
 
 const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 const PNG_CAP = 8 * 1024 * 1024;
+const ASSET_CAP = 12 * 1024 * 1024;
 
 const readOr = (p: string) => {
   try {
@@ -84,7 +89,7 @@ export function listBoards(vault: string): BoardSummary[] {
     const dir = boardDir(vault, slug);
     if (!dir) continue;
     const b = readBoard(dir);
-    if (b) out.push({ slug, name: b.name, updated: b.updated, pages: b.pages.length });
+    if (b) out.push({ slug, name: b.name, updated: b.updated, strokes: b.strokes.length, items: b.items.length });
   }
   return out.sort((a, b) => b.updated - a.updated || a.slug.localeCompare(b.slug));
 }
@@ -106,7 +111,11 @@ export function getBoard(vault: string, slug: string): Out {
   const dir = boardDir(vault, slug);
   if (!dir) return { status: validSlug(slug) ? 404 : 400, body: { error: validSlug(slug) ? "no such board" : "invalid board name" } };
   const b = readBoard(dir);
-  return b ? { status: 200, body: b } : { status: 500, body: { error: "board.json unreadable" } };
+  if (!b) return { status: 500, body: { error: "board.json unreadable" } };
+  // `fresh`: the file is version 1 (it arrives migrated) or has no overview yet: the app saves it once.
+  const raw = readOr(join(dir, BOARD_FILE));
+  const fresh = !raw.startsWith(`{"v":${BOARD_VERSION},`) || !existsSync(join(dir, OVERVIEW_FILE));
+  return { status: 200, body: fresh ? { ...b, fresh: true } : b };
 }
 
 /** Saves of one board run one at a time. */
@@ -130,38 +139,64 @@ function saveNow(vault: string, slug: string, body: any): Out {
   } catch (e) {
     return { status: 400, body: { error: `bad board: ${(e as Error).message}` } };
   }
-  // Check every snapshot before writing anything.
-  const pngs: [number, Buffer][] = [];
-  const raw = body?.png && typeof body.png === "object" ? (body.png as Record<string, unknown>) : {};
-  for (const [k, v] of Object.entries(raw)) {
-    const n = Number(k);
-    if (!Number.isInteger(n) || n < 1 || n > next.pages.length || typeof v !== "string") return { status: 400, body: { error: `bad page snapshot ${k.slice(0, 8)}` } };
-    const buf = Buffer.from(v.replace(/^data:image\/png;base64,/, ""), "base64");
-    if (buf.length > PNG_CAP || !buf.subarray(0, 8).equals(PNG_MAGIC)) return { status: 400, body: { error: `page ${n}: not a PNG` } };
-    pngs.push([n, buf]);
+  let overview: Buffer | null = null;
+  if (typeof body?.overview === "string") {
+    overview = Buffer.from(body.overview.replace(/^data:image\/png;base64,/, ""), "base64");
+    if (overview.length > PNG_CAP || !overview.subarray(0, 8).equals(PNG_MAGIC)) return { status: 400, body: { error: "overview: not a PNG" } };
+  }
+  for (const it of next.items) {
+    if (it.src && !existsSync(join(dir, it.src))) return { status: 400, body: { error: `item ${it.id}: ${it.src} is not in the board folder` } };
   }
   next.rev = (cur?.rev ?? 0) + 1;
   next.updated = Date.now();
   next.created = cur?.created ?? next.created;
-  for (const [n, buf] of pngs) {
-    const f = join(dir, `page-${n}.png`);
-    writeFileSync(`${f}.tmp`, buf);
+  if (overview) {
+    const f = join(dir, OVERVIEW_FILE);
+    writeFileSync(`${f}.tmp`, overview);
     renameRetry(`${f}.tmp`, f);
   }
   writeAtomic(join(dir, BOARD_FILE), serializeBoard(next));
-  // A page that is gone (undo of "new page") loses its snapshot.
-  for (const f of readdirSync(dir)) {
-    const m = /^page-(\d+)\.png$/.exec(f);
-    if (m && Number(m[1]) > next.pages.length) rmSync(join(dir, f), { force: true });
-  }
+  // Version 1's page snapshots are gone with its pages.
+  for (const f of readdirSync(dir)) if (/^page-\d+\.png$/.test(f)) rmSync(join(dir, f), { force: true });
   return { status: 200, body: { ok: true, rev: next.rev, updated: next.updated } };
 }
 
-export function pagePng(vault: string, slug: string, n: number): Out {
+/** A file for an item: a PNG or JPEG, named by its content's random id. */
+export function addAsset(vault: string, slug: string, body: any): Out {
   const dir = boardDir(vault, slug);
-  if (!dir || !Number.isInteger(n) || n < 1 || n > 500) return { status: 404, body: { error: "not found" } };
+  if (!dir) return { status: validSlug(slug) ? 404 : 400, body: { error: validSlug(slug) ? "no such board" : "invalid board name" } };
+  if (typeof body?.data !== "string") return { status: 400, body: { error: "data (base64) required" } };
+  const buf = Buffer.from(body.data.replace(/^data:image\/[a-z]+;base64,/, ""), "base64");
+  if (buf.length > ASSET_CAP) return { status: 413, body: { error: "image too large" } };
+  const size = imageSize(buf);
+  if (!size) return { status: 400, body: { error: "not a PNG or JPEG" } };
+  const name = `${Date.now().toString(36)}-${randomBytes(4).toString("hex")}.${size.type === "png" ? "png" : "jpg"}`;
+  mkdirSync(join(dir, ASSETS_DIR), { recursive: true });
+  const f = join(dir, ASSETS_DIR, name);
+  writeFileSync(`${f}.tmp`, buf);
+  renameRetry(`${f}.tmp`, f);
+  return { status: 200, body: { src: `${ASSETS_DIR}/${name}`, w: size.w, h: size.h } };
+}
+
+export function assetFile(vault: string, slug: string, name: string): Out {
+  const dir = boardDir(vault, slug);
+  const src = `${ASSETS_DIR}/${name}`;
+  if (!dir || !ASSET_RE.test(src) || name.includes("..")) return { status: 404, body: { error: "not found" } };
   try {
-    return { status: 200, body: null, png: readFileSync(join(dir, `page-${n}.png`)) };
+    // Only images are served (an SVG or HTML file in assets/ would be script on the box's origin).
+    const mime = /\.png$/i.test(name) ? "image/png" : /\.jpe?g$/i.test(name) ? "image/jpeg" : /\.webp$/i.test(name) ? "image/webp" : "";
+    if (!mime) return { status: 404, body: { error: "not found" } };
+    return { status: 200, body: null, file: readFileSync(join(dir, ASSETS_DIR, name)), mime };
+  } catch {
+    return { status: 404, body: { error: "not found" } };
+  }
+}
+
+export function overviewPng(vault: string, slug: string): Out {
+  const dir = boardDir(vault, slug);
+  if (!dir) return { status: 404, body: { error: "not found" } };
+  try {
+    return { status: 200, body: null, file: readFileSync(join(dir, OVERVIEW_FILE)), mime: "image/png" };
   } catch {
     return { status: 404, body: { error: "no snapshot yet" } };
   }

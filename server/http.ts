@@ -23,7 +23,7 @@ import PHONE_SW_INLINE from "../src-tauri/assets/phone-sw.js?raw";
 import ICON_PNG_INLINE from "../src-tauri/assets/icon-apple-touch.png";
 import PHONE_APP from "vc:phone-app";
 import BOARD_APP from "vc:board-app";
-import { createBoard, getBoard, listBoards, pagePng, saveBoard } from "./boards";
+import { addAsset, assetFile, createBoard, getBoard, listBoards, overviewPng, saveBoard } from "./boards";
 
 /** A vault on this box, as the routes see it (engine/index.ts VaultRef). */
 export type VaultScope = { name: string; path: string; bare: string; main: boolean };
@@ -395,22 +395,24 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
 
   // The whiteboard (server/boards.ts): boards/<slug>/ in this vault.
   if (path === "/api/v1/boards" || path.startsWith("/api/v1/boards/")) {
-    const [slugRaw, file, more] = path.slice("/api/v1/boards/".length).split("/");
+    const [slugRaw, file, more, ...rest] = path.slice("/api/v1/boards/".length).split("/");
     let slug = "";
     try {
       slug = decodeURIComponent(slugRaw ?? "");
     } catch {
       /* invalid escape: an invalid slug */
     }
-    let out: { status: number; body: unknown; png?: Buffer };
+    let out: { status: number; body: unknown; file?: Buffer; mime?: string };
     if (path === "/api/v1/boards" && method === "GET") out = { status: 200, body: { boards: listBoards(vault) } };
     else if (path === "/api/v1/boards" && method === "POST") out = createBoard(vault, (await jsonBody(req)).name);
+    else if (file === "assets" && more && rest.length === 0 && method === "GET") out = assetFile(vault, slug, more);
+    else if (file === "assets" && more === undefined && method === "POST") out = addAsset(vault, slug, await jsonBody(req));
     else if (more !== undefined) out = { status: 404, body: { error: "not found" } };
     else if (file === undefined && method === "GET") out = getBoard(vault, slug);
     else if (file === undefined && method === "POST") out = await saveBoard(vault, slug, await jsonBody(req));
-    else if (file && /^page-\d+\.png$/.test(file) && method === "GET") out = pagePng(vault, slug, Number(file.slice(5, -4)));
+    else if (file === "overview.png" && method === "GET") out = overviewPng(vault, slug);
     else out = { status: 404, body: { error: "not found" } };
-    if (out.png) return send(res, 200, "image/png", out.png);
+    if (out.file) return send(res, 200, out.mime ?? "application/octet-stream", out.file, { "X-Content-Type-Options": "nosniff" });
     return json(res, out.status, out.body);
   }
 

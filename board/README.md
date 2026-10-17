@@ -2,45 +2,96 @@
 
 An iPad whiteboard served by the box at `/board`, like the phone app at `/phone`:
 same server, same auth (a tailnet login, or the `vc_token` cookie the page
-provisions). Add it to the Home Screen for fullscreen.
+provisions). Add it to the Home Screen for fullscreen (and no Safari
+edge-swipe-back).
 
 - `npm run build:board` → `board/dist`; `npm run build:server` embeds it (`--board-app`).
 - `npm run dev:board` → :1431, proxying `/api` to a box (`VC_BOX`, default :7420).
-- Storage: `boards/<slug>/board.json` + `page-N.png` in the vault (format and
-  limits: `src/boardFormat.ts`; routes: `server/boards.ts`). `boards/` is hidden
-  once in `.vaultchatignore`. The box's sync cycle commits the files like any
-  other vault write.
-- Ink: Pointer Events (coalesced + predicted), perfect-freehand, a per-page
-  bitmap cache under a live canvas (`src/view.ts`).
+- Tests: `test/harness/board-palm.test.ts` (palm rejection against scripted
+  traces), `board-geom.test.ts` (erasers, lasso), `boardformat.test.ts`;
+  `server/test/boards.test.ts` (routes).
 
-## Later milestones (designed for, not built)
+## One infinite canvas
 
-**The agent sees a board.** Through the page snapshots: `page-N.png`
-(1200 px wide, white, written ~2 s after the pen lifts, only for pages that
-changed). Its file tools can already read them. Live awareness comes from one
-event: on every save the server pushes `{type:"board", slug, rev, pages:[…]}`
-on the box's event ring (`/poll`), naming the pages whose PNG changed; the
-agent's board context re-reads only those. Strokes stay out of the prompt;
-`board.json` is for the app and for diffs.
+A board is one canvas: pan and pinch in every direction, no pages. Storage is
+`boards/<slug>/` in the vault (format and limits: `src/boardFormat.ts`, routes:
+`server/boards.ts`; `boards/` is hidden once in `.vaultchatignore`, and the box's
+sync cycle commits it like any other vault write):
 
-**The agent places things.** The `items` array in `board.json` (already
-parsed and kept by both sides): `{id, kind, page, x, y, w, h, …}` in page
-units, `kind` one of `text`, `latex`, `image`, `pdf-page`; images and PDF page
-renders as files next to the board (`boards/<slug>/assets/…`) referenced by
-path. The app draws an items layer between the page and the ink and can
-lasso-move items like strokes. The agent writes through a server route that
-does the same rev-checked read-modify-write as a save (a 409 makes the app
-reload and merge: items are the agent's, strokes are Carl's, so the merge is
-by field). "Worked math" is a `latex` item, or ink later.
+- `board.json`: `{v: 2, name, rev, grid, items: […], strokes: […]}`, one stroke or item per line.
+  A stroke is `{id, tool: "pen"|"hl", color, w, xy: [x, y, …]}` in canvas units
+  (1000 ≈ a sheet's width, the default view). Uniform width: no pressure is stored.
+  Version 1 (pages, `pts` with pressure) loads with its pages stacked top to
+  bottom and is rewritten as version 2 on its first save.
+- `assets/<name>`: the files items show (PNG/JPEG now).
+- `overview.png`: the whole board, fitted to its content, ≤ 1600 px on its long
+  side, written 2 s after the pen lifts. It is the list's thumbnail and what the
+  agent looks at. Next: a crop of the region being worked on beside it.
 
-**Voice joins.** The existing box voice session (`/api/v1/voice/session`,
-ElevenLabs, the same agent tools). The board page opens it like the phone
-does, with the open board as context: `contextual_update`s carrying the board
-slug, the page in view and "page N changed" on each save, so the voice agent
-can look at `page-N.png` when it matters, and place items with the route above.
+Rendering (`src/view.ts`): cached 512 px bitmap tiles at power-of-two zoom
+levels under a live canvas. Only tiles in view are drawn; a finished stroke is
+drawn into the tiles it crosses; an edit invalidates only the tiles its bounds
+meet. Layers: background (plain, dots, grid) → items → ink. Ink always lies
+above items.
+
+## Items
+
+`items: [{id, kind, x, y, w, h, src?}]`, positioned boxes in canvas units.
+`image` is rendered now; `pdf`, `math` and `widget` come with the inbox. Every
+item behaves the same (Carl, `INBOX.md`): drag it, scale it uniformly (corner
+handles keep the aspect ratio, nothing stretches), write on top of it. The
+erasers never touch items. For now the board menu has **Insert image…**
+(Photos/Files), which uploads to `POST /api/v1/boards/<slug>/assets` and places
+the image at the centre of the view, selected.
+
+## The tools
+
+Pen and highlighter (uniform width, a few preset sizes plus a slider, a few
+colours each), stroke eraser (removes a stroke it touches), precise eraser
+(cuts the part under its circle and splits the stroke; the pieces end exactly
+on the circle's edge so their round caps stay clean; `src/geom.ts`), each with
+its own size and its circle shown while erasing; select (lasso ink and items
+together, or tap an item or a stroke; drag to move, corner handles to scale
+uniformly, Delete). Every gesture is one undo step. The board menu (⋯) holds
+Insert image, Background, Writing hand and One-finger scroll.
+
+## Palm rejection (`src/palm.ts`)
+
+The pen draws; nothing else does once a Pencil has been seen on the device (before
+that, one finger draws). Rules, in order of strength:
+
+1. Pen down or hovering (Pencil hover, iPad Pro M2+ / Pencil Pro), and 600 ms after
+   it lifts or leaves hover: every new touch is a palm.
+2. A contact wider than 56 css px is a palm; so is a third contact.
+3. On the writing hand's side of the last pen position (Left: left of and below
+   it; Right: right of and below), within 450 px and 2 s: palm.
+4. Two fingers must land within 200 ms of each other; a single finger that rests
+   280 ms before moving is a palm (only matters with one-finger scroll on).
+5. A palm poisons the whole touch sequence until every finger lifts; a view
+   gesture it had started is undone (the camera goes back) if it is under 700 ms
+   old. Two-finger pan only zooms once the spread changes 6 %.
+6. Two-finger tap = undo, never within 1 s of the pen touching.
+7. Toolbar taps: fingers yes, palms (and anything while the pen is down) no.
+
+`?debug=touch` draws each touch's contact size on the board: the numbers to tune
+rules 2–3 with on a real iPad.
+
+## The inbox (next step)
+
+The agent never draws on a board; it sends things to the iPad's inbox and Carl
+adds them as items. The design is `board/INBOX.md`: the envelope
+(`boards/.inbox/<id>/entry.json`), the four kinds (`pdf` pages, `math`,
+`image`, `widget`), refusals, and what the agent gets back. Adding a part
+creates an item at the centre of the view, carrying its inbox id and label.
+The agent sees the board through `overview.png` (and later the work-region crop);
+on each save the server can push `{type:"board", slug, rev}` on the event ring
+(`/poll`) so its board context re-reads the snapshot only when it changed.
+
+**Voice joins** later: the box voice session opens with the board as context
+(`contextual_update`s carrying the slug and "the board changed" on each save).
 
 ## What only a real iPad can judge
 
 Pen latency (rAF at 120 Hz needs Safari's "Prefer Page Rendering Updates near
-60fps" feature flag off), the pressure curve and stroke widths, palm rejection
-with a resting hand, and pinch feel.
+60fps" feature flag off), stroke widths, the palm rules' numbers against a real
+resting hand (`?debug=touch`), and pinch feel.

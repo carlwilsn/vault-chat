@@ -1,5 +1,7 @@
-// The board list: newest first, each with its first page; "New board" names one.
+// The board list: newest first, each with its overview (the whole board, fitted); "New board" names one.
+import { contentBounds } from "../../src/boardFormat";
 import * as api from "./api";
+import { drawItem, drawStroke } from "./ink";
 
 const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]!);
 
@@ -30,12 +32,21 @@ export function renderList(root: HTMLElement, open: (slug: string) => void): voi
         .map(
           (b) => `
         <button class="card" data-slug="${esc(b.slug)}">
-          <div class="thumb"><img alt="" loading="lazy" src="${esc(api.pageUrl(b.slug, 1, b.updated))}" onerror="this.remove()"></div>
-          <div class="meta"><b>${esc(b.name)}</b><span>${b.pages} page${b.pages === 1 ? "" : "s"} · ${ago(b.updated)}</span></div>
+          <div class="thumb"><img alt="" loading="lazy" src="${esc(api.overviewUrl(b.slug, b.updated))}"></div>
+          <div class="meta"><b>${esc(b.name)}</b><span>${b.strokes || b.items ? ago(b.updated) : "Empty"}</span></div>
         </button>`,
         )
         .join("");
-      grid.querySelectorAll<HTMLElement>(".card").forEach((c) => c.addEventListener("click", () => open(c.dataset.slug!)));
+      grid.querySelectorAll<HTMLElement>(".card").forEach((c) => {
+        c.addEventListener("click", () => open(c.dataset.slug!));
+        const img = c.querySelector("img")!;
+        const b = boards.find((x) => x.slug === c.dataset.slug)!;
+        // No overview yet (an older board, never opened since): draw it from its ink.
+        img.addEventListener("error", () => {
+          img.remove();
+          if (b.strokes || b.items) void drawThumb(c.querySelector(".thumb") as HTMLElement, b.slug);
+        });
+      });
     })
     .catch((e) => {
       grid.innerHTML =
@@ -76,4 +87,27 @@ function newBoard(root: HTMLElement, open: (slug: string) => void): void {
         (dlg.querySelector(".err") as HTMLElement).textContent = String(err?.message ?? err);
       });
   });
+}
+
+/** A thumbnail drawn here from the board's ink (items as their placeholders): the content, fitted. */
+async function drawThumb(box: HTMLElement, slug: string): Promise<void> {
+  try {
+    const board = await api.getBoard(slug);
+    const b = contentBounds(board);
+    if (!b) return;
+    const r = box.getBoundingClientRect();
+    const d = Math.min(2, window.devicePixelRatio || 1);
+    const c = document.createElement("canvas");
+    c.width = Math.round(r.width * d);
+    c.height = Math.round(r.height * d);
+    const pad = 20, w = b.x1 - b.x0 + pad * 2, h = b.y1 - b.y0 + pad * 2;
+    const s = Math.min(c.width / w, c.height / h);
+    const ctx = c.getContext("2d")!;
+    ctx.setTransform(s, 0, 0, s, (c.width - w * s) / 2 + (pad - b.x0) * s, (c.height - h * s) / 2 + (pad - b.y0) * s);
+    for (const it of board.items) drawItem(ctx, it, null);
+    for (const st of board.strokes) drawStroke(ctx, st);
+    box.appendChild(c);
+  } catch {
+    /* no thumbnail */
+  }
 }

@@ -50,11 +50,15 @@ const enc = encodeURIComponent;
 export const listBoards = () => call<{ boards: BoardSummary[] }>("/api/v1/boards").then((r) => r.boards);
 export const createBoard = (name: string) => call<{ slug: string; board: Board }>("/api/v1/boards", { method: "POST", body: JSON.stringify({ name }) });
 export const getBoard = (slug: string) => call<Board>(`/api/v1/boards/${enc(slug)}`);
-export const saveBoard = (slug: string, board: Board, base: number, png: Record<string, string>) =>
-  call<{ ok: true; rev: number; updated: number }>(`/api/v1/boards/${enc(slug)}`, { method: "POST", body: JSON.stringify({ board, base, png }) });
+export const saveBoard = (slug: string, board: Board, base: number, overview?: string) =>
+  call<{ ok: true; rev: number; updated: number }>(`/api/v1/boards/${enc(slug)}`, { method: "POST", body: JSON.stringify({ board, base, overview }) });
+/** Store an image (base64 PNG/JPEG) in the board folder, for an item. */
+export const addAsset = (slug: string, data: string) => call<{ src: string; w: number; h: number }>(`/api/v1/boards/${enc(slug)}/assets`, { method: "POST", body: JSON.stringify({ data }) });
 
-/** A page snapshot for an <img> (the cookie or the token authorizes it). */
-export function pageUrl(slug: string, n: number, v: number): string {
-  const u = inVault(`/api/v1/boards/${enc(slug)}/page-${n}.png?v=${v}`);
-  return TOKEN ? `${u}&token=${enc(TOKEN)}` : u;
-}
+const withToken = (u: string) => (TOKEN ? `${u}${u.includes("?") ? "&" : "?"}token=${enc(TOKEN)}` : u);
+
+/** The board's overview snapshot for an <img> (the cookie or the token authorizes it). */
+export const overviewUrl = (slug: string, v: number) => withToken(inVault(`/api/v1/boards/${enc(slug)}/overview.png?v=${v}`));
+
+/** An item's file (`assets/<name>`) for an <img>. */
+export const assetUrl = (slug: string, src: string) => withToken(inVault(`/api/v1/boards/${enc(slug)}/${src.split("/").map(enc).join("/")}`));

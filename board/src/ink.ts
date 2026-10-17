@@ -1,115 +1,103 @@
-// Strokes to pixels: perfect-freehand outlines filled as Path2D, in page units.
+// Strokes, items and the background to pixels, in canvas units. A stroke is a
+// smoothed polyline (quadratics through the midpoints) stroked with a uniform
+// width and round caps: what geom.ts computes against is what is drawn.
 // A committed stroke's path and bounds are computed once and cached.
-import { getStroke } from "perfect-freehand";
-import { unpackPoints, type Stroke, type Tool } from "../../src/boardFormat";
+import type { Grid, Item, Stroke } from "../../src/boardFormat";
+import { xyBox, type Box } from "./geom";
 
 export const HL_ALPHA = 0.35;
 
-/** perfect-freehand's options for a tool. Width ≈ `w` at mid pressure. */
-function options(tool: Tool, w: number, last: boolean) {
-  if (tool === "hl") {
-    return { size: w, thinning: 0, smoothing: 0.5, streamline: 0.45, simulatePressure: false, last, start: { cap: true }, end: { cap: true } };
-  }
-  // radius = size/2 · (0.5 − thinning·(0.5 − p)): at p = 0.5 the width is size/2.
-  return { size: w * 2, thinning: 0.55, smoothing: 0.55, streamline: 0.3, simulatePressure: false, last, easing: (t: number) => t };
-}
-
-export function outlinePath(points: ArrayLike<number[]> & Iterable<number[]>, tool: Tool, w: number, last: boolean): Path2D {
-  const out = getStroke(Array.from(points), options(tool, w, last));
+export function xyPath(xy: ArrayLike<number>): Path2D {
   const p = new Path2D();
-  const n = out.length;
-  if (n < 2) return p;
-  p.moveTo(out[0]![0]!, out[0]![1]!);
-  for (let i = 0; i < n; i++) {
-    const a = out[i]!;
-    const b = out[(i + 1) % n]!;
-    p.quadraticCurveTo(a[0]!, a[1]!, (a[0]! + b[0]!) / 2, (a[1]! + b[1]!) / 2);
+  const n = xy.length / 2;
+  if (n < 1) return p;
+  p.moveTo(xy[0]!, xy[1]!);
+  if (n === 1) {
+    p.lineTo(xy[0]! + 0.01, xy[1]!); // a dot: the round caps draw it
+    return p;
   }
-  p.closePath();
+  for (let i = 1; i < n - 1; i++) {
+    const x = xy[i * 2]!, y = xy[i * 2 + 1]!;
+    p.quadraticCurveTo(x, y, (x + xy[i * 2 + 2]!) / 2, (y + xy[i * 2 + 3]!) / 2);
+  }
+  p.lineTo(xy[n * 2 - 2]!, xy[n * 2 - 1]!);
   return p;
 }
 
-export type BBox = { x0: number; y0: number; x1: number; y1: number };
-
-type Cached = { path: Path2D; box: BBox };
+type Cached = { path: Path2D; box: Box };
 const cache = new WeakMap<Stroke, Cached>();
 
 export function strokeInfo(s: Stroke): Cached {
   let c = cache.get(s);
   if (!c) {
-    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
-    for (let i = 0; i < s.pts.length; i += 3) {
-      const x = s.pts[i]!, y = s.pts[i + 1]!;
-      if (x < x0) x0 = x;
-      if (x > x1) x1 = x;
-      if (y < y0) y0 = y;
-      if (y > y1) y1 = y;
-    }
-    const pad = s.w * (s.tool === "hl" ? 0.6 : 1.2);
-    c = { path: outlinePath(unpackPoints(s.pts), s.tool, s.w, true), box: { x0: x0 - pad, y0: y0 - pad, x1: x1 + pad, y1: y1 + pad } };
+    c = { path: xyPath(s.xy), box: xyBox(s.xy, s.w / 2 + 1) };
     cache.set(s, c);
   }
   return c;
 }
 
-/** Fill one stroke (ctx already transformed to page units). */
-export function drawStroke(ctx: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D, s: Stroke, path = strokeInfo(s).path): void {
-  ctx.fillStyle = s.color;
-  if (s.tool === "hl") {
-    ctx.save();
+type Ctx = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
+
+export function inkStyle(ctx: Ctx, tool: Stroke["tool"], color: string, w: number): void {
+  ctx.strokeStyle = color;
+  ctx.lineWidth = w;
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+  if (tool === "hl") {
     ctx.globalAlpha = HL_ALPHA;
     ctx.globalCompositeOperation = "multiply";
-    ctx.fill(path);
-    ctx.restore();
-  } else ctx.fill(path);
-}
-
-/** Distance from (px, py) to segment ab. */
-function segDist(px: number, py: number, ax: number, ay: number, bx: number, by: number): number {
-  const dx = bx - ax, dy = by - ay;
-  const l = dx * dx + dy * dy;
-  let t = l ? ((px - ax) * dx + (py - ay) * dy) / l : 0;
-  t = Math.max(0, Math.min(1, t));
-  const x = ax + t * dx - px, y = ay + t * dy - py;
-  return Math.sqrt(x * x + y * y);
-}
-
-/** Does a circle of radius r at (x, y) touch the stroke? */
-export function hitStroke(s: Stroke, x: number, y: number, r: number): boolean {
-  const b = strokeInfo(s).box;
-  if (x < b.x0 - r || x > b.x1 + r || y < b.y0 - r || y > b.y1 + r) return false;
-  const reach = r + s.w * (s.tool === "hl" ? 0.5 : 0.6);
-  const p = s.pts;
-  if (p.length === 3) return Math.hypot(p[0]! - x, p[1]! - y) <= reach;
-  for (let i = 0; i + 5 < p.length; i += 3) if (segDist(x, y, p[i]!, p[i + 1]!, p[i + 3]!, p[i + 4]!) <= reach) return true;
-  return false;
-}
-
-export function pointInPoly(x: number, y: number, poly: ReadonlyArray<{ x: number; y: number }>): boolean {
-  let inside = false;
-  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
-    const a = poly[i]!, b = poly[j]!;
-    if (a.y > y !== b.y > y && x < ((b.x - a.x) * (y - a.y)) / (b.y - a.y) + a.x) inside = !inside;
   }
-  return inside;
 }
 
-/** A stroke is lassoed when most of its points are inside the loop. */
-export function lassoed(s: Stroke, poly: ReadonlyArray<{ x: number; y: number }>): boolean {
-  let n = 0, inside = 0;
-  for (let i = 0; i < s.pts.length; i += 3) {
-    n++;
-    if (pointInPoly(s.pts[i]!, s.pts[i + 1]!, poly)) inside++;
+/** Stroke one stroke (ctx already transformed to canvas units). */
+export function drawStroke(ctx: Ctx, s: Stroke, path = strokeInfo(s).path): void {
+  ctx.save();
+  inkStyle(ctx, s.tool, s.color, s.w);
+  ctx.stroke(path);
+  ctx.restore();
+}
+
+export const itemBox = (it: Item): Box => ({ x0: it.x, y0: it.y, x1: it.x + it.w, y1: it.y + it.h });
+
+/** An item: its image when loaded, else a quiet placeholder. */
+export function drawItem(ctx: Ctx, it: Item, img: CanvasImageSource | null): void {
+  if (img) {
+    ctx.drawImage(img, it.x, it.y, it.w, it.h);
+    return;
   }
-  return n > 0 && inside / n >= 0.6;
+  ctx.save();
+  ctx.fillStyle = "#f3f3f5";
+  ctx.fillRect(it.x, it.y, it.w, it.h);
+  ctx.restore();
 }
 
-/** Move a stroke's points (a new object, so the cache recomputes). */
+/** The background pattern over a rect of canvas units (spacing 40 units). */
+export function drawGrid(ctx: Ctx, grid: Grid, b: Box, z: number): void {
+  if (grid === "plain") return;
+  const step = 40 * Math.pow(2, Math.max(0, Math.ceil(Math.log2(6 / (40 * z))))); // never denser than 6 px
+  const x0 = Math.floor(b.x0 / step) * step, y0 = Math.floor(b.y0 / step) * step;
+  ctx.save();
+  if (grid === "dots") {
+    ctx.fillStyle = "#c9c9d1";
+    const r = Math.max(0.6 / z, 1.1);
+    for (let x = x0; x <= b.x1; x += step) for (let y = y0; y <= b.y1; y += step) ctx.fillRect(x - r / 2, y - r / 2, r, r);
+  } else {
+    ctx.strokeStyle = "#e2e2e8";
+    ctx.lineWidth = 1 / z;
+    ctx.beginPath();
+    for (let x = x0; x <= b.x1; x += step) ctx.moveTo(x, b.y0), ctx.lineTo(x, b.y1);
+    for (let y = y0; y <= b.y1; y += step) ctx.moveTo(b.x0, y), ctx.lineTo(b.x1, y);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+/** Move a stroke (a new object, so the cache recomputes). */
 export function translated(s: Stroke, dx: number, dy: number): Stroke {
-  const pts = s.pts.slice();
-  for (let i = 0; i < pts.length; i += 3) {
-    pts[i] = Math.round((pts[i]! + dx) * 10) / 10;
-    pts[i + 1] = Math.round((pts[i + 1]! + dy) * 10) / 10;
+  const xy = s.xy.slice();
+  for (let k = 0; k < xy.length; k += 2) {
+    xy[k] = Math.round((xy[k]! + dx) * 10) / 10;
+    xy[k + 1] = Math.round((xy[k + 1]! + dy) * 10) / 10;
   }
-  return { ...s, pts };
+  return { ...s, xy };
 }

@@ -29,7 +29,7 @@ input { -webkit-user-select: text; user-select: text; font: inherit; }
 button { font: inherit; color: inherit; touch-action: manipulation; }
 
 /* ---------------- a board ---------------- */
-.board { position: absolute; inset: 0; }
+.board { position: absolute; inset: 0; touch-action: none; }
 .stage { position: absolute; inset: 0; touch-action: none; }
 .stage canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
 
@@ -60,12 +60,45 @@ button { font: inherit; color: inherit; touch-action: manipulation; }
 .tb .ic.on { background: var(--sel); color: var(--accent); }
 .tb .back { width: 32px; }
 .tb .sw i { width: 18px; height: 18px; border-radius: 50%; display: block; box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.12); }
-.tb .sw.on i { box-shadow: 0 0 0 2px #fff, 0 0 0 3.5px currentColor; }
-.tb .sw.on { color: #9a9aa5; }
-.tb .wd i { display: block; border-radius: 50%; background: #55555d; }
-.tb .wd.on { background: var(--sel); }
-.tb .wd.on i { background: var(--accent); }
+.tb .sz i { display: block; border-radius: 50%; background: #55555d; }
+.tb .sz i.ring { background: none; box-shadow: inset 0 0 0 1.5px #55555d; }
+.tb button.open { background: var(--sel); }
 .tb .link { width: auto; height: auto; display: inline; text-decoration: underline; color: inherit; }
+
+/* popovers: size, colour, the board menu */
+.pop {
+  position: absolute;
+  min-width: 150px;
+  padding: 10px;
+  border-radius: 12px;
+  background: rgba(252, 252, 253, 0.97);
+  box-shadow: 0 0 0 0.5px var(--line), 0 8px 28px rgba(0, 0, 0, 0.14);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  z-index: 3;
+}
+.pop[hidden] { display: none; }
+.pop .row { display: flex; align-items: center; gap: 6px; }
+.pop button { border: 0; background: none; padding: 0; cursor: pointer; touch-action: manipulation; }
+.pop .szp, .pop .swp { width: 40px; height: 40px; border-radius: 10px; display: grid; place-items: center; }
+.pop .szp i { display: block; border-radius: 50%; background: #55555d; }
+.pop .szp i.ring { background: none; box-shadow: inset 0 0 0 1.5px #55555d; }
+.pop .szp.on, .pop .swp.on { background: var(--sel); }
+.pop .swp i { width: 24px; height: 24px; border-radius: 50%; display: block; box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.12); }
+.pop input[type="range"] { flex: 1; min-width: 120px; accent-color: var(--accent); }
+.pop .val { font-size: 12px; color: var(--muted); min-width: 40px; text-align: right; font-variant-numeric: tabular-nums; }
+.pop label { font-size: 12px; color: var(--muted); margin: 4px 2px -4px; }
+.pop .item { text-align: left; padding: 9px 10px; border-radius: 9px; font-weight: 500; }
+.pop .item:active { background: var(--sel); }
+.pop .seg { display: flex; background: #ececf0; border-radius: 9px; padding: 2px; }
+.pop .seg button { flex: 1; padding: 7px 10px; border-radius: 7px; font-size: 13px; color: var(--muted); }
+.pop .seg button.on { background: #fff; color: var(--ink); box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1); }
+
+/* the selection's action */
+.selbar { position: absolute; transform: translateX(-50%); z-index: 2; }
+.selbar[hidden] { display: none; }
+.selbar button { border: 0; padding: 8px 14px; border-radius: 10px; background: var(--ink); color: #fff; font-size: 13px; font-weight: 600; cursor: pointer; box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18); touch-action: manipulation; }
 
 /* ---------------- the list ---------------- */
 .list { position: absolute; inset: 0; overflow-y: auto; -webkit-overflow-scrolling: touch; padding: max(20px, env(safe-area-inset-top)) max(24px, env(safe-area-inset-right)) 40px max(24px, env(safe-area-inset-left)); }
@@ -75,8 +108,8 @@ button { font: inherit; color: inherit; touch-action: manipulation; }
 .primary { border: 0; background: var(--ink); color: #fff !important; padding: 9px 16px; border-radius: 10px; font-weight: 600; cursor: pointer; }
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 22px; }
 .card { border: 0; background: none; padding: 0; text-align: left; cursor: pointer; }
-.thumb { aspect-ratio: 1000 / 1294; background: #fff; border-radius: 8px; overflow: hidden; box-shadow: 0 0 0 0.5px var(--line), 0 2px 8px rgba(0, 0, 0, 0.06); }
-.thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.thumb { aspect-ratio: 4 / 3; background: #fff; position: relative; border-radius: 8px; overflow: hidden; box-shadow: 0 0 0 0.5px var(--line), 0 2px 8px rgba(0, 0, 0, 0.06); }
+.thumb img, .thumb canvas { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; display: block; }
 .card .meta { padding: 8px 2px 0; display: flex; flex-direction: column; gap: 1px; }
 .card .meta b { font-size: 14px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .card .meta span { font-size: 12px; color: var(--muted); }
