@@ -9,7 +9,9 @@ edge-swipe-back).
 - `npm run dev:board` → :1431, proxying `/api` to a box (`VC_BOX`, default :7420).
 - Tests: `test/harness/board-palm.test.ts` (palm rejection against scripted
   traces), `board-geom.test.ts` (erasers, lasso), `boardformat.test.ts`;
-  `server/test/boards.test.ts` (routes).
+  `server/test/boards.test.ts` (routes), `board-place.test.ts` (where inbox parts land), `server/test/inbox.test.ts` (the validated send, each refusal, the routes, makes).
+- The chrome is Tailwind (`board/tailwind.config.js`: the desktop's config and tokens as a preset, iPadOS colours, light and dark); the canvas engine is plain TypeScript.
+- Preview data: `npx tsx board/preview/seed-inbox.ts <vault> [box url]` seeds a box's inbox through the real send.
 
 ## One infinite canvas
 
@@ -36,23 +38,35 @@ above items.
 
 ## Items
 
-`items: [{id, kind, x, y, w, h, src?}]`, positioned boxes in canvas units.
-`image` is rendered now; `pdf`, `math` and `widget` come with the inbox. Every
-item behaves the same (Carl, `INBOX.md`): drag it, scale it uniformly (corner
-handles keep the aspect ratio, nothing stretches), write on top of it. The
-erasers never touch items. For now the board menu has **Insert image…**
-(Photos/Files), which uploads to `POST /api/v1/boards/<slug>/assets` and places
-the image at the centre of the view, selected.
+`items: [{id, kind, x, y, w, h, src?, …}]`, positioned boxes in canvas units. Every item behaves the
+same (Carl, `INBOX.md`): drag it, scale it uniformly (corner handles keep the aspect ratio, nothing
+stretches), write on top of it. Ink lying wholly inside an item moves and scales with it (one undo
+step); ink that only crosses its edge stays. The erasers never touch items. Kinds (`src/items.ts`):
+
+- `image`: PNG/JPEG/WebP/SVG, drawn in the tiles.
+- `pdf` (`page`, `lw`×`lh` in points): pdf.js renders the page for the zoom it is seen at, and again
+  sharper when the camera settles zoomed in.
+- `math`: the box's typeset markdown (KaTeX HTML, `assets/*.html`), as DOM: vector at any zoom.
+- `widget`: the bundle in an iframe (`sandbox="allow-scripts"`, CSP `default-src 'none'`), laid out
+  once at `lw`×`lh` css px and zoomed as a whole; it takes touches only after **Interact** (Done, or a
+  touch elsewhere, ends it).
+
+Math and widgets sit under the base canvas, which is transparent where they are, so ink always lies
+above them; `snap` (the box's PNG of them) is what the overview draws. **Insert image…** in the board
+menu uploads to `POST /api/v1/boards/<slug>/assets`. Items from the inbox come from
+`POST /api/v1/boards/<slug>/from-inbox {id, part?}` (the files copied into `assets/`, named by content).
+Board files are served inert: an SVG or PDF with CSP `sandbox`, math and bundles as plain text.
 
 ## The tools
 
 Pen and highlighter (uniform width, a few preset sizes plus a slider, a few
-colours each), stroke eraser (removes a stroke it touches), precise eraser
+colours each; the button shows its colour), one eraser button (tap it again for
+Stroke / Precise and its size, both remembered): stroke eraser (removes a stroke it touches), precise eraser
 (cuts the part under its circle and splits the stroke; the pieces end exactly
 on the circle's edge so their round caps stay clean; `src/geom.ts`), each with
 its own size and its circle shown while erasing; select (lasso ink and items
 together, or tap an item or a stroke; drag to move, corner handles to scale
-uniformly, Delete). Every gesture is one undo step. The board menu (⋯) holds
+uniformly: 12 px handles, 44 px hit areas; Delete, and Interact for a widget). Every gesture is one undo step. The board menu (⋯) holds
 Insert image, Background, Writing hand and One-finger scroll.
 
 ## Palm rejection (`src/palm.ts`)
@@ -76,19 +90,23 @@ that, one finger draws). Rules, in order of strength:
 `?debug=touch` draws each touch's contact size on the board: the numbers to tune
 rules 2–3 with on a real iPad.
 
-## The inbox (next step)
+## The inbox
 
-The agent never draws on a board; it sends things to the iPad's inbox and Carl
-adds them as items. The design is `board/INBOX.md`: the envelope
-(`boards/.inbox/<id>/entry.json`), the four kinds (`pdf` pages, `math`,
-`image`, `widget`), refusals, and what the agent gets back. Adding a part
-creates an item at the centre of the view, carrying its inbox id and label.
-The agent sees the board through `overview.png` (and later the work-region crop);
-on each save the server can push `{type:"board", slug, rev}` on the event ring
-(`/poll`) so its board context re-reads the snapshot only when it changed.
+The agent never draws on a board; it sends things to the iPad's inbox (`board/INBOX.md`; storage and
+the validated send: `server/inbox.ts`; format: `src/inboxFormat.ts`). The inbox icon's badge counts
+unread entries, live from `{type:"inbox"}` on `/poll`. The sheet lists entries (being made, couldn't
+make, unread); an entry's viewer shows its parts; **Add all** or **Add** per part lands them at the
+centre of the view, selected (`src/place.ts`), and tells the box which items they became.
 
-**Voice joins** later: the box voice session opens with the board as context
-(`contextual_update`s carrying the slug and "the board changed" on each save).
+The agent's tools (`server/engine/engine.ts`): **BoardSend** (validated: PDF pages in range and ≤ 20,
+KaTeX compiles, image type/size/SVG safety, a widget bundles with esbuild and mounts without throwing
+in a headless Chromium that also takes its snapshot), **BoardMake** (returns at once; a background pi
+sub-agent makes the files and sends them with `make`; the entry shows as being made, then lands or
+says why it couldn't), **BoardInbox** (status, and whether added items are still on their board).
+
+The box needs a Chromium for widgets (`server/headless.ts` finds `chromium`, or `VC_HEADLESS_BROWSER`);
+without one a widget send is refused with that reason and math has no snapshot. esbuild is the repo's,
+or a pinned copy the server installs into its state dir on first use (`VC_ESBUILD_DIR` overrides).
 
 ## What only a real iPad can judge
 
