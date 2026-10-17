@@ -18,7 +18,8 @@
 //   pinch; a quick still two-finger tap undoes (not within UNDO_PEN_MS of the
 //   pen). One-finger pan only when that setting is on, and only for a finger
 //   that starts moving before REST_MS.
-// - The toolbar takes finger taps, not palms.
+// - The chrome (toolbar, popovers, menu, inbox) is not the arbiter's: every pointer that lands on it is
+//   the chrome's (chrome.ts), so a tap works with the Pencil or a finger, whatever the pen did before.
 
 export type Kind = "pen" | "touch" | "mouse";
 export type PEvent = {
@@ -113,12 +114,6 @@ export class Arbiter {
     if (Math.hypot(e.x - p.x, e.y - p.y) > P.HAND_R) return false;
     const below = e.y - p.y > -P.HAND_MARGIN;
     return below && (this.settings.hand === "left" ? e.x - p.x < P.HAND_MARGIN : p.x - e.x < P.HAND_MARGIN);
-  }
-
-  /** Is this toolbar touch a finger tap (not a palm)? */
-  toolbarTouch(e: PEvent): boolean {
-    if (e.kind !== "touch") return true;
-    return sizeOf(e) <= P.FINGER_MAX && this.tool?.kind !== "pen";
   }
 
   handle(e: PEvent): Action[] {

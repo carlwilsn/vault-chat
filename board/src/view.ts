@@ -24,6 +24,7 @@ import { icon, toolIcon, type IconName, type Weight } from "./icons";
 import { Items, isDom, measureMath, fetchText, renderPdfPage } from "./items";
 import { openInbox, inboxBadge, type InboxHost } from "./inbox";
 import { placeParts } from "./place";
+import { ChromeTaps, routeChrome } from "./chrome";
 
 /** A PDF page's stored PNG: this many px on its long side (sharp up to about a screen's width on a 2× iPad). */
 const PDF_SNAP_PX = 1600;
@@ -155,7 +156,16 @@ export class BoardView {
   private prefs: Prefs = store("vc_board_prefs", DEFAULTS);
   private arb: Arbiter;
   private domEv: PointerEvent | null = null;
-  private blockClick = false;
+  /** Taps on the chrome: any pointer presses its button on pointerup, once (chrome.ts). */
+  private chrome = new ChromeTaps<HTMLButtonElement>((b) => {
+    this.synthClick = true;
+    try {
+      b.click();
+    } finally {
+      this.synthClick = false;
+    }
+  });
+  private synthClick = false;
 
   private g: ToolG | null = null;
   private view: { cam0: { x: number; y: number; z: number }; anchor: XY } | null = null;
@@ -247,6 +257,9 @@ export class BoardView {
     this.selbar = this.el.querySelector(".selbar")!;
     (this.el.querySelector(".tb-name") as HTMLElement).textContent = board.name;
 
+    // The click that follows a tap its pointerup already pressed is dropped before anything sees it — wherever it
+    // lands (the press may have opened the inbox, whose scrim is now under the finger).
+    window.addEventListener("click", this.onClickCapture, true);
     this.el.addEventListener("click", (e) => this.onClick(e as MouseEvent));
     this.el.addEventListener("input", (e) => this.onInput(e));
     (this.el.querySelector(".file") as HTMLInputElement).addEventListener("change", (e) => {
@@ -287,6 +300,7 @@ export class BoardView {
     this.disposed = true;
     window.removeEventListener("resize", this.onResize);
     window.removeEventListener("keydown", this.onKey);
+    window.removeEventListener("click", this.onClickCapture, true);
     document.removeEventListener("visibilitychange", this.onHide);
     window.removeEventListener("pagehide", this.onHide);
     cancelAnimationFrame(this.momentum);
@@ -739,13 +753,12 @@ export class BoardView {
     const type = e.type === "pointerdown" ? "down" : e.type === "pointermove" ? "move" : e.type === "pointerup" ? "up" : e.type === "pointercancel" ? "cancel" : "leave";
     if (type === "leave" && (kind !== "pen" || e.target !== this.el)) return;
     const pe: PEvent = { type, id: e.pointerId, kind, x: e.clientX - r.left, y: e.clientY - r.top, w: e.width, h: e.height, t: e.timeStamp, button: e.button, buttons: e.buttons };
+    // The chrome (toolbar, popovers, menu, inbox, selection pill) takes its own pointers, whatever they are:
+    // the ink, the palm rules and the gestures never see them.
+    // (A touch stays with the element it went down on: the button under it at the up is what it lifted on.)
+    const ce = { type: pe.type, id: e.pointerId, x: e.clientX, y: e.clientY, t: performance.now() };
+    if (routeChrome(this.chrome, ce, this.stage.contains(e.target as Node), () => this.chromeButton(type === "down" ? e.target : document.elementFromPoint(e.clientX, e.clientY)))) return;
     if (type === "down") {
-      const onStage = this.stage.contains(e.target as Node);
-      if (!onStage) {
-        // The toolbar and its popovers: a finger taps, a palm does not.
-        this.blockClick = !this.arb.toolbarTouch(pe);
-        return;
-      }
       e.preventDefault();
       this.closePop();
       if (this.interact) this.setInteract(null);
@@ -1287,13 +1300,23 @@ export class BoardView {
     return m === "lasso" ? null : m;
   }
 
+  private onClickCapture = (e: MouseEvent): void => {
+    if (this.synthClick || !e.isTrusted) return;
+    if (!this.chrome.click(performance.now())) {
+      e.stopImmediatePropagation();
+      e.preventDefault();
+    }
+  };
+
+  /** The chrome's button at a target (null on the canvas or outside the board). */
+  private chromeButton(t: EventTarget | null): HTMLButtonElement | null {
+    const b = (t as Element | null)?.closest?.("button") ?? null;
+    return b && this.el.contains(b) && !this.stage.contains(b) ? (b as HTMLButtonElement) : null;
+  }
+
   private onClick(e: MouseEvent): void {
     const t = (e.target as HTMLElement).closest("button");
     if (!t || !this.el.contains(t)) return;
-    if (this.blockClick) {
-      this.blockClick = false;
-      return;
-    }
     const d = t.dataset;
     if (d.mode === "eraser") {
       if (isEraser(this.prefs.mode)) this.togglePop("eraser", t);

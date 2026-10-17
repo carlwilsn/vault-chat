@@ -82,17 +82,6 @@ test("one-finger scroll (the option) pans with a finger that moves at once", () 
   assert.equal(simulate(after, { pan1: true }).viewStarts, 0);
 });
 
-test("the toolbar takes a finger tap, not a palm, nor anything while the pen writes", () => {
-  const arb = new Arbiter({ hand: "left", pan1: false, penSeen: true });
-  const tap = { type: "down" as const, id: 5, kind: "touch" as const, x: 400, y: 30, w: 30, h: 30, t: 0 };
-  assert.equal(arb.toolbarTouch(tap), true);
-  assert.equal(arb.toolbarTouch({ ...tap, w: 90, h: 90 }), false);
-  arb.handle({ type: "down", id: 1, kind: "pen", x: 600, y: 400, t: 10, buttons: 1 });
-  assert.equal(arb.toolbarTouch({ ...tap, t: 20 }), false);
-  arb.handle({ type: "up", id: 1, kind: "pen", x: 600, y: 400, t: 30 });
-  assert.equal(arb.toolbarTouch({ ...tap, t: 40 }), true);
-});
-
 test("the pen landing during a finger pan ends it; a young one is undone", () => {
   const tr = new Trace("pan then pen", "nothing")
     .touch(21, line([700, 300], [700, 400], 10), 0, 12, 30)

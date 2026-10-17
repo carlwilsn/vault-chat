@@ -8,7 +8,8 @@ edge-swipe-back).
 - `npm run build:board` → `board/dist`; `npm run build:server` embeds it (`--board-app`).
 - `npm run dev:board` → :1431, proxying `/api` to a box (`VC_BOX`, default :7420).
 - Tests: `test/harness/board-palm.test.ts` (palm rejection against scripted
-  traces), `board-geom.test.ts` (erasers, lasso), `boardformat.test.ts`;
+  traces), `board-chrome.test.ts` (after the pen, every control presses once for a Pencil or a finger tap,
+  with or without iOS's click), `board-geom.test.ts` (erasers, lasso), `boardformat.test.ts`;
   `server/test/boards.test.ts` (routes), `board-place.test.ts` (where inbox parts land), `server/test/inbox.test.ts` (the validated send, each refusal, the routes, makes).
 - The chrome is Tailwind (`board/tailwind.config.js`: the desktop's config and tokens as a preset, iPadOS colours, light and dark); the canvas engine is plain TypeScript.
 - Preview data: `npx tsx board/preview/seed-inbox.ts <vault> [box url]` seeds a box's inbox through the real send.
@@ -88,7 +89,9 @@ that, one finger draws). Rules, in order of strength:
    gesture it had started is undone (the camera goes back) if it is under 700 ms
    old. Two-finger pan only zooms once the spread changes 6 %.
 6. Two-finger tap = undo, never within 1 s of the pen touching.
-7. Toolbar taps: fingers yes, palms (and anything while the pen is down) no.
+7. The chrome (toolbar, popovers, menu, inbox, selection pill) is not the arbiter's: any pointer that lands
+   on it, Pencil or finger, presses its button on pointerup, once (`src/chrome.ts`; the click iOS may add after
+   it is dropped, wherever it lands). Palm rules apply on the canvas only.
 
 `?debug=touch` draws each touch's contact size on the board: the numbers to tune
 rules 2–3 with on a real iPad.
