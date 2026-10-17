@@ -18,6 +18,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { projectForSend } from "./projects";
 import { useStore, type ChatMessage, type ChatAttachment, type LiveTool } from "./store";
+import { Ids, isLocalOnly, isNewerCopy, msgKey, overlayWindow, settles } from "./msgOrder";
 import { addPending, patchPending, removePending, type PendingKind } from "./pendingInput";
 import { readBoxConfig, boxSyncNow } from "./vaultSync";
 import { boxFileChanged } from "./liveReload";
@@ -44,6 +45,8 @@ const DETAIL_N = 200;
 const CACHE_PREFIX = "vault-chat:box-chat-cache:";
 const CACHE_MAX_CONVS = 30;
 const CACHE_MAX_BYTES = 3_000_000;
+/** A reply shown from a live event that the box's copy never settles goes after this, once the turn is over. */
+const REPLY_HOLD_MS = 30_000;
 
 function headless(): boolean {
   return !!(globalThis as { __VC_HEADLESS__?: unknown }).__VC_HEADLESS__;
@@ -189,24 +192,42 @@ export function fromPhoneMessage(m: any): ChatMessage {
   return out;
 }
 
-const keyOf = (m: { role?: string; content?: string }) =>
-  `${m.role === "user" ? "user" : "assistant"}\u0000${(m.content ?? "").slice(0, 20_000)}`;
+const keyOf = msgKey;
 
-/** Merge the box's view of a conversation into the local copy.
- *  - `full`: the box's messages ARE the conversation.
+/** What a merge found: `stale` = the box's snapshot is older than what is shown
+ *  (its newer messages were kept); `unsettled` = replies shown before the box's
+ *  copy that it does not have yet. */
+export type MergeInfo = { stale?: boolean; unsettled?: number };
+
+/** Merge the box's view of a conversation into the local copy. Nothing shown
+ *  disappears (src/msgOrder.ts):
+ *  - `full`: the box's window (its last ≤200 messages) over the local copy —
+ *    older history stays, and a snapshot older than what is shown keeps the
+ *    newer messages.
  *  - phone shape (the last ≤200 visible messages): keep the local full-fidelity
  *    prefix up to the last message both sides share, then the box's newer tail.
- *  Optimistic local user messages the box has not recorded yet are kept. */
-export function mergeBoxMessages(local: ChatMessage[], d: BoxDetail, pending: string[] = []): ChatMessage[] {
+ *  Replies shown before the box's copy landed (a live `message` event, a steer)
+ *  give their place to that copy, and stay at the end until it lands (or, with
+ *  `keepReply` false, are let go). Local notices stay after the message they
+ *  followed. Optimistic local user messages the box has not recorded yet are kept. */
+export function mergeBoxMessages(
+  local: ChatMessage[],
+  d: BoxDetail,
+  pending: string[] = [],
+  info: MergeInfo = {},
+  keepReply: (m: ChatMessage) => boolean = () => true,
+): ChatMessage[] {
   const boxMsgs = Array.isArray(d.messages) ? d.messages : [];
   let merged: ChatMessage[];
   if (d.full) {
-    merged = boxMsgs as ChatMessage[];
+    const o = overlayWindow(local, boxMsgs as ChatMessage[], DETAIL_N);
+    merged = o.messages;
+    info.stale = o.stale;
   } else {
     const B = boxMsgs.map(fromPhoneMessage);
     const visIdx: number[] = [];
     local.forEach((m, i) => {
-      if (!m.hidden && !m.boxPending) visIdx.push(i);
+      if (!m.hidden && !isLocalOnly(m)) visIdx.push(i);
     });
     const L = visIdx.map((i) => local[i]!);
     const bk = B.map(keyOf);
@@ -228,13 +249,57 @@ export function mergeBoxMessages(local: ChatMessage[], d: BoxDetail, pending: st
       }
     }
     if (hit) {
-      const keep = local.slice(0, visIdx[hit.i]! + 1).filter((m) => !m.boxPending);
+      const keep = local.slice(0, visIdx[hit.i]! + 1).filter((m) => !isLocalOnly(m));
       merged = [...keep, ...B.slice(hit.j + 1)];
     } else if (L.length === 0 || B.length < DETAIL_N) {
       merged = B; // the box's window is the whole visible conversation
     } else {
-      merged = [...local.filter((m) => !m.boxPending), ...B];
+      merged = [...local.filter((m) => !isLocalOnly(m)), ...B];
     }
+  }
+  // Replies shown ahead of the box's copy: the copy this snapshot brought takes their place.
+  const had = new Ids(local.filter((m) => !isLocalOnly(m)));
+  const fresh = merged.filter((m) => !had.has(m));
+  const used = new Set<ChatMessage>();
+  const kept = new Set<ChatMessage>();
+  for (const p of local) {
+    if (!p.boxPending || p.role === "user") continue;
+    const hit = fresh.find((b) => !used.has(b) && settles(p, b));
+    if (hit) {
+      used.add(hit);
+      continue;
+    }
+    if (p.mid && merged.some((b) => b.mid === p.mid)) continue;
+    if (keepReply(p)) kept.add(p);
+  }
+  info.unsettled = kept.size;
+  // Those still waiting, and local notices (a refused or unsent turn), stay
+  // where they were: after the message they followed (and after the box's
+  // copies of the replies that were shown before them).
+  for (let i = 0; i < local.length; i++) {
+    const n = local[i]!;
+    if (!n.boxLocal && !kept.has(n)) continue;
+    let anchor: ChatMessage | undefined;
+    for (let j = i - 1; j >= 0; j--) {
+      if (!isLocalOnly(local[j]!)) {
+        anchor = local[j];
+        break;
+      }
+    }
+    let at = merged.length;
+    if (!anchor) at = 0;
+    else {
+      const k = keyOf(anchor);
+      for (let j = merged.length - 1; j >= 0; j--) {
+        const b = merged[j]!;
+        if (anchor.mid && b.mid ? b.mid === anchor.mid : keyOf(b) === k) {
+          at = j + 1;
+          break;
+        }
+      }
+    }
+    while (at < merged.length && (merged[at]!.boxLocal || kept.has(merged[at]!) || used.has(merged[at]!))) at++;
+    merged = [...merged.slice(0, at), n, ...merged.slice(at)];
   }
   // Optimistic user turns the box has not appended yet stay at the end.
   if (pending.length) {
@@ -259,6 +324,8 @@ function sameMessages(a: ChatMessage[], b: ChatMessage[]): boolean {
       !!x.system !== !!y.system ||
       !!x.boxPartial !== !!y.boxPartial ||
       !!x.boxPending !== !!y.boxPending ||
+      !!x.boxLocal !== !!y.boxLocal ||
+      x.mid !== y.mid ||
       (x.toolCalls?.length ?? 0) !== (y.toolCalls?.length ?? 0)
     )
       return false;
@@ -326,7 +393,7 @@ function writeBoxCache(vault: string): void {
         ...c,
         status: "idle" as const,
         messages: (c.id === s.activeConversationId ? s.messages : c.messages)
-          .filter((m) => !m.boxPending)
+          .filter((m) => !isLocalOnly(m))
           .slice(-DETAIL_N),
       }));
     let body = JSON.stringify({ at: Date.now(), conversations: convs });
@@ -361,6 +428,15 @@ class BoxChatSession {
   private wake: (() => void) | null = null;
   /** The live reply per conversation, rebuilt whole from the stream events. */
   private streams = new Map<string, StreamState>();
+  /** Per conversation: running or not, as the box's events (in order, newest
+   *  last) said. A /conversation answer's `status` is read from the box's
+   *  file, which says "idle" through most of a run: the events win while the
+   *  stream is unbroken; after a resync the details (and /status) decide. */
+  private evRun = new Map<string, boolean>();
+  /** When each reply shown ahead of the box's copy was placed (msgOrder.ts). */
+  private placed = new WeakMap<ChatMessage, number>();
+  /** Re-reads asked for because a snapshot was older than the screen (bounded). */
+  private rechecks = new Map<string, number>();
 
   constructor(
     readonly vault: string,
@@ -422,8 +498,16 @@ class BoxChatSession {
         if (Date.now() - this.lastList > LIST_REFRESH_MS) {
           await this.syncList();
           // The safety net under the events: a thread this laptop still shows
-          // running is re-read from the box, so a missed end can't freeze it.
-          for (const id of this.runningHere()) this.scheduleDetail(id, 0);
+          // running is asked about (/status) and re-read from the box, so a
+          // missed end can't freeze it.
+          const here = this.runningHere();
+          if (here.length) {
+            const runs = await this.boxRuns();
+            for (const id of here) {
+              if (runs && !runs.has(id)) this.evRun.set(id, false);
+              this.scheduleDetail(id, 0);
+            }
+          }
         }
         const r = await httpGet(this.link, `/poll?after=${this.cursor}`, POLL_TIMEOUT_MS);
         if (!this.live()) return;
@@ -483,39 +567,117 @@ class BoxChatSession {
     const reread = new Set<string>(whole ? this.runningHere() : []);
     if (whole) this.clearLive();
     await this.syncList();
-    try {
-      const st = await httpGet(this.link, "/status", 10_000);
-      const runs: any[] = Array.isArray(st?.runs) ? st.runs : [];
-      for (const r of runs) {
-        if (typeof r?.convId === "string") reread.add(r.convId);
+    const runs = await this.boxRuns();
+    if (runs) {
+      for (const id of runs) {
+        reread.add(id);
+        if (whole) this.evRun.set(id, true);
       }
-    } catch {
-      /* /status is optional for the chat */
+      // What the box runs now is the truth after a break: the rest is over.
+      if (whole) for (const id of reread) if (!runs.has(id)) this.evRun.set(id, false);
     }
     const active = useStore.getState().activeConversationId;
     if (active && this.known.has(active)) reread.add(active);
     for (const id of reread) this.scheduleDetail(id, 0);
   }
 
-  /** Forget the streamed reply-so-far, tools and runtime; the details re-read
-   *  next carry the truth (status, plan, messages). */
+  /** The conversations the box runs a turn in now (/status), or null when it can't say. */
+  private async boxRuns(): Promise<Set<string> | null> {
+    try {
+      const st = await httpGet(this.link, "/status", 10_000);
+      if (!Array.isArray(st?.runs)) return null;
+      return new Set(st.runs.map((r: any) => r?.convId).filter((x: unknown): x is string => typeof x === "string"));
+    } catch {
+      return null; // /status is optional for the chat
+    }
+  }
+
+  /** The stream broke: forget what it said (the reply's pieces, who runs).
+   *  What it showed stays on screen until the details re-read next carry the
+   *  truth (status, plan, messages) and replace it in one update — a resync
+   *  never blanks a reply. */
   private clearLive(): void {
     this.streams.clear();
-    useStore.setState((s) => {
-      const patch: Record<string, unknown> = {};
-      const mine = Object.keys(s.convRuntime).filter((id) => this.known.has(id));
-      if (mine.length) {
-        const rt = { ...s.convRuntime };
-        for (const id of mine) delete rt[id];
-        patch.convRuntime = rt;
+    this.evRun.clear();
+  }
+
+  /** Running, by the events when the stream has been unbroken, else by the detail. */
+  private runningNow(id: string, d: BoxDetail): boolean {
+    const ev = this.evRun.get(id);
+    return ev ?? d.status === "running";
+  }
+
+  /** The live reply (streamed so far) of `id` as `s` shows it. */
+  private shownStream(s: ReturnType<typeof useStore.getState>, id: string): string {
+    return ((s.activeConversationId === id ? s.streamingText : s.convRuntime[id]?.streamingText) ?? "").replace(/^…/, "").trim();
+  }
+
+  /** A reply shown before the box's copy lands (msgOrder.ts). */
+  private placeholder(m: ChatMessage): ChatMessage {
+    const p: ChatMessage = { ...m, boxPending: true };
+    delete p.boxPartial;
+    this.placed.set(p, Date.now());
+    return p;
+  }
+
+  /**
+   * The live reply becomes a message in the same store update that empties
+   * the stream — no frame shows neither, and none shows both.
+   * `landed`: the message the box just stored (its live `message` event);
+   * without it, the streamed text is kept as a reply until the box's copy lands
+   * (unless the list already has it).
+   */
+  private handOver(s: ReturnType<typeof useStore.getState>, id: string, landed?: ChatMessage, turnOver = false): Record<string, unknown> {
+    const isActive = s.activeConversationId === id;
+    const conv = s.conversations.find((c) => c.id === id);
+    let msgs = isActive ? s.messages : conv?.messages ?? [];
+    const shown = this.shownStream(s, id);
+    const before = msgs;
+    if (landed) {
+      let m = landed;
+      // A live event carries the text capped; the stream had all of it.
+      if (shown.length > (m.content ?? "").length && shown.startsWith(m.content ?? "")) m = { ...m, content: shown };
+      const there = m.mid ? msgs.find((x) => x.mid === m.mid) : undefined;
+      if (!there) {
+        // A steer closed this reply already: that one becomes it, in place.
+        let i = -1;
+        for (let j = msgs.length - 1; j >= Math.max(0, msgs.length - 6); j--) {
+          const x = msgs[j]!;
+          if (x.boxPending && x.role === "assistant" && settles({ ...x, mid: undefined }, { ...m, mid: undefined })) {
+            i = j;
+            break;
+          }
+        }
+        const last = [...msgs].reverse().find((x) => !x.hidden && !isLocalOnly(x));
+        if (i >= 0) msgs = msgs.map((x, j) => (j === i ? this.placeholder({ ...x, ...m }) : x));
+        else if (!(!m.mid && last && last.role === m.role && keyOf(last) === keyOf(m))) msgs = [...msgs, this.placeholder(m)];
       }
+    } else if (shown) {
+      // This turn's messages (after Carl's last): is the streamed text one of them already?
+      let from = msgs.length;
+      while (from > 0 && msgs[from - 1]!.role !== "user") from--;
+      const tail = msgs.slice(from);
+      const probe: ChatMessage = { role: "assistant", content: shown };
+      // A turn that is over and that the box's copy answers: its record is the box's.
+      const answered = turnOver && tail.some((x) => x.role === "assistant" && !isLocalOnly(x) && !x.system);
+      if (!answered && !tail.some((x) => x.role === "assistant" && settles(probe, { ...x, mid: undefined }))) msgs = [...msgs, this.placeholder(probe)];
+    }
+    const patch: Record<string, unknown> = {};
+    if (isActive) {
+      if (msgs !== before) patch.messages = msgs;
       if (s.streamingText || s.streamingReasoning || s.liveTools.length) {
         patch.streamingText = "";
         patch.streamingReasoning = "";
         patch.liveTools = [];
       }
-      return patch;
-    });
+    } else {
+      if (msgs !== before && conv) patch.conversations = s.conversations.map((c) => (c.id === id ? { ...c, messages: msgs } : c));
+      const rt = s.convRuntime[id];
+      if (rt && (rt.streamingText || rt.streamingReasoning || rt.liveTools?.length)) {
+        patch.convRuntime = { ...s.convRuntime, [id]: { ...rt, streamingText: "", streamingReasoning: "", liveTools: [] } };
+      }
+    }
+    return patch;
   }
 
   async syncList(): Promise<void> {
@@ -618,7 +780,12 @@ class BoxChatSession {
 
   applyDetail(id: string, d: BoxDetail): void {
     const pend = this.pending.get(id) ?? [];
-    const running = d.status === "running";
+    const running = this.runningNow(id, d);
+    const now = Date.now();
+    // A reply shown ahead of the box's copy waits for it — through the turn,
+    // and a while after (a slow write); one the box never stored then goes.
+    const keepReply = (m: ChatMessage) => running || now - (this.placed.get(m) ?? now) < REPLY_HOLD_MS;
+    const info: MergeInfo = {};
     useStore.setState((s) => {
       const idx = s.conversations.findIndex((c) => c.id === id);
       const base: Conversation =
@@ -636,13 +803,24 @@ class BoxChatSession {
             };
       const isActive = s.activeConversationId === id;
       const localMsgs = isActive ? s.messages : base.messages;
-      let messages = mergeBoxMessages(localMsgs, d, pend);
+      let messages = mergeBoxMessages(localMsgs, d, pend, info, keepReply);
       if (sameMessages(messages, localMsgs)) messages = localMsgs;
       // Settle the optimistic turns the box now has.
-      const stillPending = messages.filter((m) => m.boxPending).map((m) => m.content);
+      const stillPending = messages.filter((m) => m.boxPending && m.role === "user").map((m) => m.content);
       if (stillPending.length !== pend.length) {
         if (stillPending.length) this.pending.set(id, stillPending);
         else this.pending.delete(id);
+      }
+      // Status: the box is the truth (its events, else this answer). An
+      // optimistic send keeps "running" until the box has its user turn.
+      const wantRunning = running || stillPending.length > 0;
+      // Over: the live reply hands over to the messages in this same update.
+      let rtPatch: Record<string, unknown> = {};
+      if (!wantRunning) {
+        const view = isActive ? { ...s, messages } : { ...s, conversations: s.conversations.map((c, i) => (i === idx ? { ...c, messages } : c)) };
+        rtPatch = this.handOver(view as typeof s, id, undefined, true);
+        if (isActive && rtPatch.messages) messages = rtPatch.messages as ChatMessage[];
+        if (!isActive && rtPatch.conversations) messages = (rtPatch.conversations as Conversation[])[idx]!.messages;
       }
       const next: Conversation = { ...base, messages };
       // The dial reads the box model's window (the latest turn's usage.window).
@@ -654,7 +832,7 @@ class BoxChatSession {
         }
       }
       if (d.title && d.title !== base.title) next.title = d.title;
-      if (d.full && d.meta) {
+      if (d.full && d.meta && !info.stale) {
         for (const k of META_KEYS) {
           if (k in d.meta) (next as Record<string, unknown>)[k] = d.meta[k];
           // The box's meta is the truth: a field it no longer has (a wake that
@@ -666,9 +844,6 @@ class BoxChatSession {
         next.lastActivityAt = Math.max(base.lastActivityAt, Number(d.meta?.lastActivityAt) || Date.now());
         if (!isActive && base.source !== "worker" && base.source !== "mission") next.unread = true;
       }
-      // Status: the box is the truth. An optimistic send keeps "running" until
-      // the box has its user turn.
-      const wantRunning = running || stillPending.length > 0;
       next.status = wantRunning ? "running" : "idle";
       next.runStartedAt = wantRunning ? (d.runStartedAt ?? base.runStartedAt ?? Date.now()) : undefined;
       const conversations =
@@ -682,9 +857,7 @@ class BoxChatSession {
         if (wantRunning && !s.busyStartedAt) patch.busyStartedAt = next.runStartedAt ?? Date.now();
         if (!wantRunning) {
           patch.busyStartedAt = null;
-          patch.streamingText = "";
-          patch.streamingReasoning = "";
-          patch.liveTools = [];
+          if ("streamingText" in rtPatch) Object.assign(patch, { streamingText: "", streamingReasoning: "", liveTools: [] });
           const ctx = lastReportedContext(messages);
           if (ctx > 0 && ctx !== s.lastContext) patch.lastContext = ctx;
         }
@@ -696,6 +869,15 @@ class BoxChatSession {
       }
       return patch;
     });
+    // An answer older than the screen (the box stored the newest reply after
+    // reading its file for this one): ask again, a few times.
+    if (info.stale || info.unsettled) {
+      const n = (this.rechecks.get(id) ?? 0) + 1;
+      if (n <= 8) {
+        this.rechecks.set(id, n);
+        this.scheduleDetail(id, 400 * n);
+      }
+    } else this.rechecks.delete(id);
     this.scheduleCache();
   }
 
@@ -730,6 +912,7 @@ class BoxChatSession {
       case "status": {
         if (!id) return;
         const running = e.status === "running";
+        this.evRun.set(id, running);
         if (!running) this.streams.delete(id);
         this.setStatus(id, running);
         this.scheduleDetail(id, running ? 250 : 0);
@@ -737,16 +920,21 @@ class BoxChatSession {
       }
       case "runtime": {
         if (!id) return;
+        this.evRun.set(id, true);
         this.setLive(id, e);
-        this.setRuntime(id, this.streamText(id, e), String(e.tool ?? ""), e.steps, Number(e.startedAt) || undefined, false, typeof e.reasoning === "string" ? e.reasoning : undefined, typeof e.toolArg === "string" ? e.toolArg : undefined);
+        this.setRuntime(id, this.notLanded(id, this.streamText(id, e)), String(e.tool ?? ""), e.steps, Number(e.startedAt) || undefined, typeof e.reasoning === "string" ? e.reasoning : undefined, typeof e.toolArg === "string" ? e.toolArg : undefined);
         return;
       }
       case "message": {
         if (!id) return;
-        // A finalized assistant message replaces the live stream.
+        // A finalized assistant message replaces the live stream — shown from
+        // the event at once, in the same update that empties the stream; the
+        // box's full copy (the detail) then replaces it in place.
         if (e.role === "assistant") {
           this.streams.delete(id);
-          this.setRuntime(id, "", "", undefined, undefined, true);
+          const m: ChatMessage = { ...fromPhoneMessage(e), ...(typeof e.mid === "string" && e.mid ? { mid: e.mid } : {}) };
+          this.landed.set(id, (m.content ?? "").trim());
+          useStore.setState((s) => this.handOver(s, id, m));
         }
         this.scheduleDetail(id, 150);
         return;
@@ -768,16 +956,34 @@ class BoxChatSession {
         if (!id) return;
         if (e.phase === "start") {
           this.streams.delete(id);
+          this.evRun.set(id, true);
           this.setStatus(id, true);
-        } else if (e.phase === "stream" || e.phase === "delta")
-          this.setRuntime(id, this.streamText(id, e), String(e.tool ?? ""), undefined, undefined);
-        else if (e.phase === "end") this.setStatus(id, false);
+        } else if (e.phase === "stream" || e.phase === "delta") {
+          this.evRun.set(id, true);
+          this.setRuntime(id, this.notLanded(id, this.streamText(id, e)), String(e.tool ?? ""), undefined, undefined);
+        } else if (e.phase === "end") {
+          this.evRun.set(id, false);
+          this.setStatus(id, false);
+        }
         this.scheduleDetail(id, 150);
         return;
       }
       default:
         if (id) this.scheduleDetail(id, 500);
     }
+  }
+
+  /** The text of the reply that just landed per conversation: a live event
+   *  still carrying it (the box's run state lags its store by a beat) does not
+   *  show it a second time below its message. */
+  private landed = new Map<string, string>();
+  private notLanded(id: string, text: string): string {
+    const l = this.landed.get(id);
+    if (l === undefined) return text;
+    const shown = text.replace(/^…/, "").trim();
+    if (shown && (l === shown || l.endsWith(shown) || (shown.length > 40 && l.includes(shown.slice(-200))))) return "";
+    if (shown) this.landed.delete(id);
+    return text;
   }
 
   /** The whole live text after one stream event (src/streamWire.ts). */
@@ -820,11 +1026,16 @@ class BoxChatSession {
       if (s.activeConversationId === id && s.busy !== want) {
         patch.busy = want;
         patch.busyStartedAt = want ? (c.runStartedAt ?? Date.now()) : null;
-        if (!want) {
-          patch.streamingText = "";
-          patch.streamingReasoning = "";
-          patch.liveTools = [];
+      }
+      // Over: what streamed hands over to the messages in this same update.
+      if (!want) {
+        const h = this.handOver(s, id, undefined, true);
+        if (h.conversations && patch.conversations) {
+          const msgs = (h.conversations as Conversation[]).find((x) => x.id === id)!.messages;
+          patch.conversations = (patch.conversations as Conversation[]).map((x) => (x.id === id ? { ...x, messages: msgs } : x));
+          delete h.conversations;
         }
+        Object.assign(patch, h);
       }
       return patch;
     });
@@ -836,19 +1047,14 @@ class BoxChatSession {
     tool: string,
     steps: unknown,
     startedAt: number | undefined,
-    clearOnly = false,
     reasoning?: string,
     toolArg?: string,
   ): void {
     // toolArg: the call's path/command (src/convDiff.ts), shown beside the name ("Write dog.svg").
     const liveTools: LiveTool[] = tool ? [{ id: `box-live-${tool}`, name: tool, input: toolArg ? { path: toolArg } : {} }] : [];
     const s = useStore.getState();
-    if (!clearOnly && !s.conversations.some((c) => c.id === id && c.status === "running")) this.setStatus(id, true);
+    if (!s.conversations.some((c) => c.id === id && c.status === "running")) this.setStatus(id, true);
     if (s.activeConversationId === id) {
-      if (clearOnly) {
-        if (s.streamingText || s.streamingReasoning || s.liveTools.length) useStore.setState({ streamingText: "", streamingReasoning: "", liveTools: [] });
-        return;
-      }
       useStore.setState({
         streamingText: text,
         ...(reasoning !== undefined ? { streamingReasoning: reasoning } : {}),
@@ -857,11 +1063,6 @@ class BoxChatSession {
         ...(s.busyStartedAt ? {} : { busyStartedAt: startedAt ?? Date.now() }),
       });
     } else {
-      if (clearOnly) {
-        const rt = s.convRuntime[id];
-        if (rt) s.setConvRuntime(id, { ...rt, streamingText: "", streamingReasoning: "", liveTools: [] });
-        return;
-      }
       s.setConvRuntime(id, {
         ...(s.convRuntime[id] ?? { streamingReasoning: "" }),
         streamingText: text,
@@ -876,15 +1077,15 @@ class BoxChatSession {
   /** A steer was taken: the streamed reply-so-far becomes a (local, until the
    *  box's copy lands) message, and the live stream starts over after it. */
   closeLiveReply(id: string): void {
-    const s = useStore.getState();
-    const isActive = s.activeConversationId === id;
-    const text = (isActive ? s.streamingText : s.convRuntime[id]?.streamingText) ?? "";
     this.streams.delete(id);
-    if (isActive) {
-      if (s.streamingText || s.liveTools.length) useStore.setState({ streamingText: "", liveTools: [] });
-    } else if (s.convRuntime[id]) s.setConvRuntime(id, { ...s.convRuntime[id]!, streamingText: "", liveTools: [] });
-    const shown = text.replace(/^…/, "").trim();
-    if (shown) appendTo(id, { role: "assistant", content: shown, boxPending: true });
+    const s = useStore.getState();
+    this.landed.set(id, this.shownStream(s, id));
+    useStore.setState((st) => this.handOver(st, id));
+  }
+
+  /** The box accepted a turn for `id`: it runs until its events say otherwise. */
+  ranTurn(id: string): void {
+    this.evRun.set(id, true);
   }
 
   addPending(id: string, text: string): void {
@@ -914,7 +1115,7 @@ class BoxChatSession {
       let changed = false;
       const conversations = s.conversations.map((c) => {
         const hit = cache.conversations.find((x) => x.id === c.id);
-        if (!hit || hit.messages.length <= c.messages.filter((m) => !m.hidden).length) return c;
+        if (!hit || !isNewerCopy(c.messages, hit.messages)) return c;
         changed = true;
         return { ...c, title: hit.title || c.title, messages: hit.messages };
       });
@@ -1033,6 +1234,7 @@ export async function boxSend(opts: {
     appendTo(convId, {
       role: "assistant",
       system: true,
+      boxLocal: true,
       content: `⚠️ ${BOX_UNREACHABLE}. The message was NOT sent.`,
     });
     return true;
@@ -1041,7 +1243,7 @@ export async function boxSend(opts: {
   // A conversation the box knows: anything it listed, or any with messages
   // (those files came from the box through git). A fresh local "New chat" is
   // created on the box by omitting the id.
-  const knownToBox = sess.isKnown(convId) || (conv?.messages.some((m) => !m.boxPending) ?? false);
+  const knownToBox = sess.isKnown(convId) || (conv?.messages.some((m) => !isLocalOnly(m)) ?? false);
   const answer = knownToBox && waitingOnUser(conv);
   // Into a running turn: a chip until the box has it (pendingInput.ts).
   const midTurn = !!opts.mode && knownToBox && !answer && conv?.status === "running";
@@ -1059,7 +1261,7 @@ export async function boxSend(opts: {
     });
     if (!rq.ok) {
       removePending(chip.id);
-      appendTo(convId, { role: "assistant", system: true, content: `⚠️ The box refused the message: ${rq.error}` });
+      appendTo(convId, { role: "assistant", system: true, boxLocal: true, content: `⚠️ The box refused the message: ${rq.error}` });
       if (rq.network) sess.kick();
       return true;
     }
@@ -1117,8 +1319,9 @@ export async function boxSend(opts: {
     sess.dropPending(convId, shown);
     useStore.setState((st) => {
       const strip = (ms: ChatMessage[]) => {
-        const i = ms.map((m) => !!m.boxPending && m.content === shown).lastIndexOf(true);
-        return i < 0 ? ms : [...ms.slice(0, i), { ...ms[i]!, boxPending: undefined }, ...ms.slice(i + 1)];
+        // Kept where it was, as this laptop's own (never on the box).
+        const i = ms.map((m) => !!m.boxPending && m.role === "user" && m.content === shown).lastIndexOf(true);
+        return i < 0 ? ms : [...ms.slice(0, i), { ...ms[i]!, boxPending: undefined, boxLocal: true }, ...ms.slice(i + 1)];
       };
       return {
         conversations: st.conversations.map((c) => (c.id === convId ? { ...c, messages: strip(c.messages) } : c)),
@@ -1128,6 +1331,7 @@ export async function boxSend(opts: {
     appendTo(convId, {
       role: "assistant",
       system: true,
+      boxLocal: true,
       content: r.network
         ? `⚠️ ${BOX_UNREACHABLE}: ${r.error}. The message was NOT delivered.`
         : `⚠️ The box refused the message: ${r.error}`,
@@ -1146,6 +1350,8 @@ export async function boxSend(opts: {
     useStore.getState().rekeyConversation(convId, boxId);
   }
   sess.markKnown(boxId);
+  // The box took it: a turn runs (its events say when it ends).
+  sess.ranTurn(boxId);
   sess.scheduleDetail(boxId, 400);
   return true;
 }
@@ -1188,6 +1394,7 @@ export async function boxStop(convId: string | null): Promise<boolean> {
     appendTo(convId, {
       role: "assistant",
       system: true,
+      boxLocal: true,
       content: `⚠️ Couldn't stop it on the box: ${r.error}`,
     });
     if (r.network) sess.kick();
@@ -1206,9 +1413,10 @@ export async function boxAnswer(convId: string, text: string): Promise<boolean> 
   const sess = session;
   const r = await httpPost(sess.link, "/answer", { convId, text, clientMsgId: newClientMsgId() });
   if (!r.ok) {
-    appendTo(convId, { role: "assistant", system: true, content: `⚠️ Couldn't send the answer to the box: ${r.error}` });
+    appendTo(convId, { role: "assistant", system: true, boxLocal: true, content: `⚠️ Couldn't send the answer to the box: ${r.error}` });
     return true;
   }
+  sess.ranTurn(convId);
   sess.scheduleDetail(convId, 300);
   return true;
 }

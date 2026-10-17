@@ -371,7 +371,8 @@ test("a server without full=1: the phone shape merges onto the local full copy",
     const c = box.conv("old1");
     c.messages.push({ role: "user", content: "follow-up" }, { role: "assistant", content: "follow-up answer", toolCalls: [{ name: "Grep", input: { q: "x" } }] });
     box.emit({ type: "message", convId: "old1", role: "assistant", content: "follow-up answer", tools: ["Grep"] });
-    await waitFor("merged", () => S().messages.at(-1)?.content === "follow-up answer");
+    // The event's copy shows at once; the box's (phone-shaped) copy takes its place.
+    await waitFor("merged", () => S().messages.at(-1)?.content === "follow-up answer" && !S().messages.at(-1)?.boxPending);
     const ms = S().messages;
     assert.equal(ms.length, 4);
     // The local full-fidelity prefix is kept…

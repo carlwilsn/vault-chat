@@ -27,6 +27,7 @@ function withMid(m: ChatMessage): ChatMessage {
 import { formatNote } from "./notes-format";
 import { findModel } from "./providers";
 import { withCompactionDivider, lastReportedContext } from "./chatContext";
+import { coversShown, isNewerCopy, isLocalOnly } from "./msgOrder";
 import { keychainGet, keychainSet, keychainDelete, KEY } from "./keychain";
 import {
   fetchAllCatalog,
@@ -135,9 +136,12 @@ export type ChatMessage = {
   // [phase 2, box mode] In memory only (the laptop never writes conversations
   // in box mode). `boxPartial`: built from the phone-shaped /conversation (tool
   // calls by name only) — the git-synced full copy replaces it. `boxPending`:
-  // an optimistic user turn the box has not recorded yet.
+  // an optimistic user turn the box has not recorded yet, or a reply shown
+  // before the box's copy landed (src/msgOrder.ts). `boxLocal`: a notice or
+  // an unsent turn that exists only here — kept in place, never on the box.
   boxPartial?: boolean;
   boxPending?: boolean;
+  boxLocal?: boolean;
   // A compaction divider (always `system: true`): the earlier conversation was
   // summarized here. The model sees this summary plus only the messages AFTER
   // the divider; the chat shows a quiet divider whose summary expands. See
@@ -1997,24 +2001,25 @@ export const useStore = create<State>((set) => ({
           merged.push(cur);
           continue;
         }
-        // Disk wins only when it's genuinely newer — more messages (an append
-        // from another machine) or changed metadata at equal length. A disk copy
-        // that's BEHIND memory (a local edit not yet flushed) is ignored.
+        // Disk wins only when it's genuinely newer: it holds every message this
+        // copy shows, and more (an append from another machine) — never an older
+        // copy over a newer one (src/msgOrder.ts). A disk copy that's BEHIND memory
+        // (a local edit not yet flushed; in box mode, the box's reply the git sync
+        // hasn't brought yet, or the older history past the box's window) is ignored.
+        // Changed metadata at the same messages takes the disk's meta only.
         // [phase 2, box mode] Messages built from the box's phone-shaped view
         // (tool calls by name only) give way to the git-synced full copy once
         // it has caught up with them.
-        const visible = (ms: ChatMessage[]) => ms.filter((m) => !m.hidden && !m.boxPending).length;
-        const partialCaughtUp =
-          cur.messages.some((m) => m.boxPartial) && visible(disk.messages) >= visible(cur.messages);
-        const diskNewer =
-          partialCaughtUp ||
-          disk.messages.length > cur.messages.length ||
-          (disk.messages.length === cur.messages.length &&
-            (disk.lastActivityAt !== cur.lastActivityAt ||
-              disk.title !== cur.title ||
-              disk.unread !== cur.unread));
-        if (diskNewer) {
+        const curMsgs = cur.id === s.activeConversationId ? s.messages : cur.messages;
+        const partialCaughtUp = curMsgs.some((m) => m.boxPartial) && coversShown(curMsgs, disk.messages);
+        const msgsNewer = partialCaughtUp || isNewerCopy(curMsgs, disk.messages);
+        const metaNewer =
+          disk.lastActivityAt !== cur.lastActivityAt || disk.title !== cur.title || disk.unread !== cur.unread;
+        if (msgsNewer) {
           merged.push(disk);
+          listChanged = true;
+        } else if (metaNewer && disk.messages.length === curMsgs.filter((m) => !isLocalOnly(m)).length) {
+          merged.push({ ...disk, messages: cur.messages, status: cur.status, runStartedAt: cur.runStartedAt });
           listChanged = true;
         } else {
           merged.push(cur);
@@ -2028,21 +2033,20 @@ export const useStore = create<State>((set) => ({
         }
       }
       // Refresh the visible message pane only when the open thread isn't mid-run
-      // and disk genuinely has MORE messages (a remote append) — so a phone reply
-      // to the thread you're reading appears live without interrupting a local
-      // stream or clobbering a local message not yet flushed to disk.
+      // and disk is a newer copy of what it shows (a remote append) — so a phone
+      // reply to the thread you're reading appears live without interrupting a
+      // local stream or putting an older copy over what is on screen.
       const activeId = s.activeConversationId;
       const activeDisk = activeId ? byId.get(activeId) : undefined;
       const activeRunning =
         s.conversations.find((c) => c.id === activeId)?.status === "running";
-      const visibleCount = (ms: ChatMessage[]) => ms.filter((m) => !m.hidden && !m.boxPending).length;
       const messagesStale =
         !!activeDisk &&
         !s.busy &&
         !activeRunning &&
-        (activeDisk.messages.length > s.messages.length ||
-          (s.messages.some((m) => m.boxPartial) &&
-            visibleCount(activeDisk.messages) >= visibleCount(s.messages)));
+        !s.streamingText &&
+        (isNewerCopy(s.messages, activeDisk.messages) ||
+          (s.messages.some((m) => m.boxPartial) && coversShown(s.messages, activeDisk.messages)));
 
       if (!listChanged && !messagesStale) return {}; // nothing to apply → no re-render
 
