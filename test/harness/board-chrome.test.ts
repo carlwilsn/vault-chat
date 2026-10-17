@@ -1,5 +1,5 @@
 // The whiteboard's chrome taps (board/src/chrome.ts) after the pen has written: every control —
-// toolbar, popover items, the ⋯ menu, the inbox and its sheet, the selection pill — presses exactly
+// toolbar, popover items, the ⋯ menu, the inbox and its sheet, the selection pill, the mic and the voice pill — presses exactly
 // once for a Pencil tap and a finger tap, with or without the click iOS may synthesise after it,
 // with a pen hover going on, and even with a pen contact the board never saw lift. The canvas
 // pointers still go to the palm arbiter (board-palm.test.ts holds it to its rules).
@@ -11,11 +11,13 @@ import { ChromeTaps, routeChrome } from "../../board/src/chrome.ts";
 type Btn = { name: string; x: number; y: number };
 // A 1180×820 board: the bars along the top, a popover under the size button, the menu, the inbox sheet, the pill.
 const CONTROLS: Btn[] = [
-  ...["back", "pen", "hl", "eraser", "lasso", "size", "colour", "undo", "redo", "inbox", "menu"].map((name, i) => ({ name, x: 40 + i * 100, y: 34 })),
+  ...["back", "pen", "hl", "eraser", "lasso", "size", "colour", "undo", "redo", "voice", "inbox", "menu"].map((name, i) => ({ name, x: 40 + i * 90, y: 34 })),
   ...["size-1", "size-2", "size-3", "colour-red", "colour-blue"].map((name, i) => ({ name, x: 480 + i * 50, y: 120 })),
   ...["insert", "grid-dots", "hand-right", "scroll-on"].map((name, i) => ({ name, x: 1000, y: 120 + i * 50 })),
   ...["inbox-entry", "inbox-add-all", "inbox-back"].map((name, i) => ({ name, x: 800, y: 300 + i * 60 })),
   { name: "pill-delete", x: 600, y: 600 },
+  // The voice pill under the top-right controls (voicePill.ts: its own ChromeTaps, the same rule) and its chat list.
+  ...["voice-chats", "voice-mute", "voice-end", "voice-chat-row", "voice-dismiss"].map((name, i) => ({ name, x: 60 + i * 70, y: 480 })),
 ];
 const hit = (x: number, y: number) => CONTROLS.find((b) => Math.abs(b.x - x) < 22 && Math.abs(b.y - y) < 22) ?? null;
 
