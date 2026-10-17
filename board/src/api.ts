@@ -102,3 +102,17 @@ export async function watch(fn: (ev: any) => void): Promise<void> {
     }
   }
 }
+
+// ---- voice (server/voice.ts): the box's own voice path, the one the phone uses
+/** Carl's conversations, most recently active first (the phone's list: GET /conversations). */
+export type ChatRow = { id: string; title: string; lastActivityAt: number; source: string };
+export const listChats = () => call<{ conversations: ChatRow[] }>("/conversations").then((r) => r.conversations ?? []);
+/** A signed ElevenLabs session for the box's voice agent, its prompt built from `convId`'s thread. */
+export type VoiceConfig = { signedUrl: string; voiceId?: string; systemPrompt?: string; dynamicVariables?: Record<string, string>; toolNames?: string[] };
+export const voiceSession = (convId: string | null) => call<VoiceConfig>(`/api/v1/voice/session${convId ? `?convId=${enc(convId)}` : ""}`);
+/** One of the voice agent's tools, run on the box. */
+export const voiceTool = (body: { name: string; args: unknown; convId: string | null; fromConvId: string | null }) =>
+  call<{ result?: string; error?: string }>("/api/v1/voice/tool", { method: "POST", body: JSON.stringify(body) });
+/** One line of the session, saved on the box as its voice conversation (the first line makes it). */
+export const voiceTranscript = (body: { convId: string | null; fromConvId: string | null; role: string; text: string; system?: boolean; ended?: boolean }) =>
+  call<{ convId?: string | null }>("/api/v1/voice/transcript", { method: "POST", body: JSON.stringify(body) });

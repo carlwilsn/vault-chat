@@ -114,6 +114,20 @@ The box needs a Chromium for widgets (`server/headless.ts` finds `chromium`, or 
 without one a widget send is refused with that reason and math has no snapshot. esbuild is the repo's,
 or a pinned copy the server installs into its state dir on first use (`VC_ESBUILD_DIR` overrides).
 
+## Voice
+
+The mic in the top-right controls talks to the box's one voice agent, by the phone's path
+(`server/voice.ts`: the session, its tools, its transcript): no agent, tool or memory of the board's own
+(`src/voice.ts`, the pill: `src/voicePill.ts`). It continues Carl's most recently active chat (`GET
+/conversations`, the phone's filter); the pill's title lists the recent chats, and picking one restarts the
+session on it. While live, at the start and 1.5 s after each edit, the voice agent gets a contextual update
+(the board's name, the inbox parts on it with their labels, the ink) and a picture of the visible region
+through the laptop's image path (`src/voiceImages.ts`, keyed by content: an unchanged picture is not sent
+again); both wait while the agent speaks (`src/voiceQuiet.ts`). Sends still go through BoardSend/BoardMake
+(AskAgent), and a landed entry is mentioned at the next pause. A failed start turns the pill red with one
+line. `?voice=fake` swaps the SDK and the session for `src/voiceFake.ts` (`window.__voiceFake` logs what was
+sent). Tests: `test/harness/board-voice.test.ts`.
+
 ## What only a real iPad can judge
 
 Pen latency (rAF at 120 Hz needs Safari's "Prefer Page Rendering Updates near

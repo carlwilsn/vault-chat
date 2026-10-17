@@ -18,5 +18,5 @@ export default defineConfig({
   css: { postcss: { plugins: [tailwind({ config: join(root, "tailwind.config.js") }), autoprefixer()] } },
   build: { outDir: "dist", emptyOutDir: true, target: "es2022", assetsInlineLimit: 0 },
   // node_modules may be a link to another checkout: pdf.js's worker is served from there.
-  server: { port: 1431, strictPort: true, fs: { allow: [join(root, ".."), realpathSync(join(root, "..", "node_modules"))] }, proxy: { "/api": box, "/poll": box, "/apple-touch-icon.png": box } },
+  server: { port: 1431, strictPort: true, fs: { allow: [join(root, ".."), realpathSync(join(root, "..", "node_modules"))] }, proxy: { "/api": box, "/poll": box, "/conversations": box, "/apple-touch-icon.png": box } },
 });

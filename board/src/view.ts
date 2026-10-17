@@ -25,6 +25,8 @@ import { Items, isDom, measureMath, fetchText, renderPdfPage } from "./items";
 import { openInbox, inboxBadge, type InboxHost } from "./inbox";
 import { placeParts } from "./place";
 import { ChromeTaps, routeChrome } from "./chrome";
+import { mountVoicePill, voice, voiceButton } from "./voicePill";
+import type { BoardSource } from "./voice";
 
 /** A PDF page's stored PNG: this many px on its long side (sharp up to about a screen's width on a 2× iPad). */
 const PDF_SNAP_PX = 1600;
@@ -35,6 +37,7 @@ const TILE_CACHE = 72;
 const TILE_BUDGET = 8; // new tiles drawn per frame; the rest next frame
 const SHEET = 1000; // canvas units across at the default zoom
 const OVERVIEW_MAX = 1600; // px, the overview's long side
+const VOICE_SNAP_MAX = 1280; // px, the long side of what voice sees (the visible region)
 const SAVE_DELAY = 2000;
 
 const PENS = ["#1f1f24", "#1f5bd6", "#d23a2c", "#1e8a4c", "#8a4bd6"];
@@ -197,6 +200,9 @@ export class BoardView {
   private saveAgain = false;
   private conflict = false;
   private disposed = false;
+  /** What voice knows of this board (voice.ts), and the mic button's state hook. */
+  private voiceSrc: BoardSource;
+  private offVoice: () => void;
 
   constructor(
     private slug: string,
@@ -229,6 +235,7 @@ export class BoardView {
         <button class="${BTN}" data-act="redo" title="Redo" aria-label="Redo">${svg("redo")}</button>
       </div>
       <div class="${FLOAT} ${top} right-[max(12px,env(safe-area-inset-right))] h-14 gap-0.5 px-1.5">
+        <button class="${BTN}" data-act="voice" title="Voice" aria-label="Voice" aria-pressed="false"></button>
         <button class="${BTN}" data-act="inbox" title="Inbox" aria-label="Inbox" aria-expanded="false">${svg("inbox")}<span class="badge pointer-events-none absolute right-0.5 top-0.5 hidden min-w-[18px] rounded-full bg-sys-red px-1 text-center text-[11px] font-semibold leading-[18px] text-white tabular-nums shadow"></span></button>
         <button class="${BTN}" data-pop="menu" title="Board" aria-label="Board menu" aria-expanded="false">${svg("more")}</button>
       </div>
@@ -281,6 +288,9 @@ export class BoardView {
     this.syncToolbar();
     this.setStatus("saved");
     inboxBadge(this.el.querySelector(".badge") as HTMLElement);
+    this.voiceSrc = { slug, name: () => this.board.name, items: () => this.board.items, strokes: () => this.board.strokes.length, snapshot: () => this.snapshotView() };
+    this.offVoice = voiceButton(this.el.querySelector('[data-act="voice"]') as HTMLElement);
+    mountVoicePill();
   }
 
   /** After the element is in the document. */
@@ -292,12 +302,15 @@ export class BoardView {
     this.renderBase();
     // A new board, a version-1 board (migrated on read) or one without an overview: save once.
     if (this.rev === 0 || (this.board as Board & { fresh?: boolean }).fresh) this.changed();
+    voice.setBoard(this.voiceSrc);
   }
 
   async close(): Promise<void> {
     await this.flush();
     this.saveCam();
     this.disposed = true;
+    this.offVoice();
+    voice.setBoard(null);
     window.removeEventListener("resize", this.onResize);
     window.removeEventListener("keydown", this.onKey);
     window.removeEventListener("click", this.onClickCapture, true);
@@ -1364,6 +1377,7 @@ export class BoardView {
       if (one) this.setInteract(one.id);
     } else if (d.act === "interact-done") this.setInteract(null);
     else if (d.act === "inbox") this.toggleInbox(t);
+    else if (d.act === "voice") voice.toggle();
     else if (d.act === "back") this.onBack();
     else if (d.act === "reload") location.reload();
     if (d.grid || d.hand || d.pan1) this.renderPop();
@@ -1497,6 +1511,7 @@ export class BoardView {
     clearTimeout(this.saveT);
     // Debounced from the pen lifting: a pen down cancels it (startTool).
     this.saveT = window.setTimeout(() => void this.save(), SAVE_DELAY);
+    voice.boardChanged(this.voiceSrc);
   }
 
   /** Leaving the app (Home, app switcher, closing): save now. */
@@ -1533,6 +1548,29 @@ export class BoardView {
     const png = await canvasPng(c);
     c.width = c.height = 0;
     return png;
+  }
+
+  /** What voice sees: the visible region (under the controls' strip too), white, as a JPEG at most VOICE_SNAP_MAX px on its long side. Null when nothing is in view. */
+  async snapshotView(): Promise<Blob | null> {
+    const v: Box = { x0: this.cam.x, y0: this.cam.y, x1: this.cam.x + this.W / this.cam.z, y1: this.cam.y + this.H / this.cam.z };
+    const items = this.board.items.filter((it) => boxesMeet(itemBox(it), v));
+    const strokes = this.board.strokes.filter((st) => boxesMeet(strokeInfo(st).box, v));
+    if (!items.length && !strokes.length) return null;
+    await this.items.pdfsReady(items.filter((it) => !this.pdfSnap(it)));
+    const k = Math.min(1, VOICE_SNAP_MAX / Math.max(this.W, this.H));
+    const c = document.createElement("canvas");
+    c.width = Math.max(1, Math.round(this.W * k));
+    c.height = Math.max(1, Math.round(this.H * k));
+    const ctx = c.getContext("2d")!;
+    ctx.fillStyle = "#fff";
+    ctx.fillRect(0, 0, c.width, c.height);
+    const s = k * this.cam.z;
+    ctx.setTransform(s, 0, 0, s, -this.cam.x * s, -this.cam.y * s);
+    for (const it of items) this.paintItem(ctx, it, "overview");
+    for (const st of strokes) drawStroke(ctx, st, 1.2 / s);
+    const blob = await new Promise<Blob | null>((res) => c.toBlob(res, "image/jpeg", 0.85));
+    c.width = c.height = 0;
+    return blob;
   }
 
   save(): Promise<void> {

@@ -67,6 +67,13 @@ function soon(): void {
   refreshT = window.setTimeout(() => void refresh(), 150);
 }
 
+const eventListeners = new Set<(ev: { say?: string }) => void>();
+/** Every inbox event on /poll (voice mentions a landed entry's `say` line at its next pause). */
+export function onInboxEvent(fn: (ev: { say?: string }) => void): () => void {
+  eventListeners.add(fn);
+  return () => eventListeners.delete(fn);
+}
+
 /** Keep `badge` showing the unread count (the box pushes {type:"inbox"} on /poll). */
 export function inboxBadge(badge: HTMLElement): void {
   const paint = () => {
@@ -79,7 +86,9 @@ export function inboxBadge(badge: HTMLElement): void {
     started = true;
     void refresh();
     void api.watch((ev) => {
-      if (ev?.type === "inbox") soon();
+      if (ev?.type !== "inbox") return;
+      soon();
+      for (const fn of eventListeners) fn(ev);
     });
     document.addEventListener("visibilitychange", () => document.visibilityState === "visible" && soon());
   } else void refresh();
