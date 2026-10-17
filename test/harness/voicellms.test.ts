@@ -86,7 +86,8 @@ test("the agent ElevenLabs creates: natural TTS (no expressive mode), patient tu
   assert.deepEqual(cc.turn.interruption_ignore_terms, ["yeah", "yep", "mm", "mhm", "mm-hm", "uh-huh", "ok", "okay", "right", "sure"]);
   assert.equal(cc.turn.soft_timeout_config.timeout_seconds, 3);
   assert.equal(cc.vad.background_voice_detection, true);
-  assert.deepEqual(cc.conversation.file_input, { enabled: true, max_files_per_conversation: 10 });
+  assert.deepEqual(cc.conversation.file_input, { enabled: true, max_files_in_memory: 4, max_files_per_conversation: 40 });
+  assert.equal(cc.agent.prompt.cascade_timeout_seconds, 15);
   const p = cc.agent.prompt;
   assert.equal(p.llm, "gpt-6-luna");
   assert.equal(p.temperature, 0.4);

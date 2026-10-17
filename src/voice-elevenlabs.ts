@@ -16,6 +16,8 @@ import { MAX_IMAGE_UPLOAD_BYTES, VoiceImagePusher, lookingAtNote, shrinkImage, t
 import { fileKind, isUnreadableAsText } from "./fileKind";
 import { stripAudioTags } from "./voiceTags";
 import { QuietGate } from "./voiceQuiet";
+import { RECONNECT_NUDGE, RECONNECTING_LINE, TimeoutRetry, VoiceTurnStats, couldntReconnectLine, isLlmTimeoutClose, plainCloseReason, reconnectRecap } from "./voiceTimeout";
+import { vlog } from "./debugLog";
 import { DEFAULT_VOICE_LLM, isVoiceLlm, llmInfo, normalizeVoiceLlm, reasoningEffortFor, voiceLlmList, type VoiceLlmInfo } from "./voiceLlms";
 
 // The shared context stream (src/activity.ts), when voice runs on this laptop:
@@ -118,7 +120,7 @@ const AGENT_ID_KEY = "vault_chat_elevenlabs_agent_id";
 // the agent itself — tool schema, expects_response flags, override
 // permissions. Mismatch with the cached agent triggers re-provision
 // on next session, so updates roll out without manual intervention.
-const AGENT_CONFIG_VERSION = "v26-look";
+const AGENT_CONFIG_VERSION = "v27-cascade";
 const AGENT_VERSION_KEY = "vault_chat_elevenlabs_agent_config_version";
 // Signature of the per-vault custom tools baked into the cached agent. Custom
 // tools are part of the agent's tool schema (provisioned at create time), so a
@@ -178,6 +180,20 @@ const VIEWPORT_TEXT_CAP = 4000;
 type ActiveConversation = Awaited<ReturnType<typeof Conversation.startSession>>;
 
 let activeConversation: ActiveConversation | null = null;
+// A call ElevenLabs closed because the model timed out reconnects once (voiceTimeout.ts).
+const timeoutRetry = new TimeoutRetry();
+// Each turn's time to the first response and the session's size, for the log.
+const turnStats = new VoiceTurnStats();
+// While a timeout reconnect runs: a failed start is said once, in the reconnect's own words.
+let reconnecting: { error: string | null } | null = null;
+let restartForTests: ((recap: string) => Promise<void>) | null = null;
+/** [tests] Replace the reconnect's session start (null: the real one). */
+export function setVoiceRestartForTests(fn: ((recap: string) => Promise<void>) | null): void {
+  restartForTests = fn;
+}
+function logTurn(data: Record<string, unknown> | null): void {
+  if (data) vlog("voice turn", { ...data, images: imagePusher.uploaded });
+}
 let scrollDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 let lastViewportSent: string | null = null;
 // Tracked across the lifetime of one session — used at session end
@@ -784,7 +800,7 @@ export function ensureVoiceConversation(opts?: { stealFocus?: boolean; convId?: 
   return id;
 }
 
-export async function startElevenLabsSession(): Promise<void> {
+export async function startElevenLabsSession(opts?: { recap?: string }): Promise<void> {
   if (activeConversation) return;
   const state = useStore.getState();
   const apiKey = state.serviceKeys.elevenlabs;
@@ -923,9 +939,13 @@ export async function startElevenLabsSession(): Promise<void> {
     const a = await import("./activity");
     shared = a.sharedContextText(await a.sharedContextFor(voiceState.vaultPath));
   }
-  const systemPrompt = boxSession?.systemPrompt ?? buildSystemPrompt(voiceState, customHeader, northStar, promptContext, undefined, !!remote) + (shared ? `
+  const basePrompt = boxSession?.systemPrompt ?? buildSystemPrompt(voiceState, customHeader, northStar, promptContext, undefined, !!remote) + (shared ? `
 
 ${shared}` : "");
+  // A reconnect after a timeout: what was in flight, and to carry on in small steps.
+  const systemPrompt = opts?.recap ? `${basePrompt}\n\n${opts.recap}` : basePrompt;
+  turnStats.startSession(systemPrompt.length);
+  vlog("voice session", { promptChars: systemPrompt.length, llm: getCurrentLlm(), box: !!boxSession, reconnect: !!opts?.recap });
   const dynamicVariables = buildDynamicVariables(voiceState);
   const voiceId = boxSession?.voiceId ?? localStorage.getItem(VOICE_ID_STORAGE) ?? DEFAULT_VOICE_ID;
   // One line per start, so a report of "the voice didn't work" has the voice it asked for.
@@ -971,49 +991,7 @@ ${shared}` : "");
         useStore.getState().setVoiceSpeaking(false);
         useStore.getState().setVoiceThinking(false);
       },
-      onDisconnect: (details?: { reason?: string; message?: string; closeCode?: number; closeReason?: string }) => {
-        // A close that wasn't ours says why (a refused voice or override closes
-        // the socket with a reason, and it used to end with no trace at all).
-        const why = disconnectReason(details);
-        if (why) {
-          console.error("[voice-eleven] session closed:", why);
-          voiceAppend({ role: "assistant", content: `Voice session closed by ElevenLabs: ${why}`, system: true });
-        }
-        // Stop any native agent audio still playing/queued (Linux).
-        stopAgentAudioNative();
-        resetAgentEnvelope();
-        // Drain any agent text that was waiting for audio silence
-        // before stamping the "session ended" marker — preserves
-        // ordering between the last spoken turn and the end notice.
-        flushAgentQueueImmediate();
-        voiceAppend({
-          role: "assistant",
-          content: "Voice session ended.",
-          system: true,
-        });
-        transcriptMirror = null;
-        quietGate.reset();
-        voiceChats = null;
-        activeConversation = null;
-        stopViewportWatch();
-        // Flip the mic-button source of truth off so it matches
-        // reality. Critical for end_call / end-phrase paths where
-        // the click handler never ran. Idempotent for manual ends
-        // (endElevenLabsSession already set it).
-        useStore.setState({ voiceMode: false, voiceMicMuted: false });
-        useStore.getState().setVoiceConnecting(false);
-        useStore.getState().setVoiceListening(false);
-        useStore.getState().setVoiceSpeaking(false);
-        useStore.getState().setVoiceThinking(false);
-        useStore.getState().setVoiceCurrentTool(null);
-        stopThinkingWatcher();
-        pendingScrollTarget = null;
-        scrollGen++;
-        // If anything got written / a note got saved, snapshot the
-        // session as a single git commit and refresh the file tree.
-        // Fire-and-forget — UI doesn't need to wait.
-        void finalizeSessionMutations();
-      },
+      onDisconnect: (details?: { reason?: string; message?: string; closeCode?: number; closeReason?: string }) => voiceSessionClosed(details),
       onMessage: ({ message, role }) => {
         // The agent's audio tags ("[excited]") shaped the audio; the transcript drops them.
         const raw = (message ?? "").trim();
@@ -1024,6 +1002,9 @@ ${shared}` : "");
         // ElevenLabs sends whole messages (not token streams), so
         // there's no spam — one append per turn boundary.
         if (role === "user") {
+          // Our own reconnect nudge is not Carl's line.
+          if (text === RECONNECT_NUDGE) return;
+          turnStats.userTurn(text);
           if (sessionFirstUserText === null) sessionFirstUserText = text;
           voiceAppend({ role: "user", content: text });
           // User finished a turn — agent is now thinking until TTS
@@ -1042,6 +1023,8 @@ ${shared}` : "");
             void endElevenLabsSession();
           }
         } else if (role === "agent") {
+          if (text === SOFT_TIMEOUT_MESSAGE) turnStats.fillerSpoken();
+          else logTurn(turnStats.firstResponse("text", Date.now(), text.length));
           // Queue and drain serially. onMessage fires on text-complete,
           // not audio-complete; appending now would race the transcript
           // ahead of the user's ears. Each queued message waits its
@@ -1061,6 +1044,7 @@ ${shared}` : "");
         // per the SDK source. The wave hands off to the real output
         // spectrum on this transition.
         if (mode === "speaking") {
+          logTurn(turnStats.firstResponse("audio"));
           useStore.getState().setVoiceThinking(false);
           stopThinkingWatcher();
         }
@@ -1098,7 +1082,16 @@ ${shared}` : "");
     {
       const st = useStore.getState();
       const own = st.messages.some((m) => !m.system) ? st.messages : (st.conversations.find((c) => c.id === fromConvId)?.messages ?? []);
-      void pushThreadImages(own, st.vaultPath).catch((e) => console.warn("[voice-eleven] thread images:", e));
+      // A reconnect: only the newest (the recap carries the words; LookAtScreen sees the rest).
+      void pushThreadImages(own, st.vaultPath, opts?.recap ? 1 : 3).catch((e) => console.warn("[voice-eleven] thread images:", e));
+    }
+    // Reconnected after a timeout: the agent picks the request back up (the recap is in its prompt).
+    if (opts?.recap) {
+      try {
+        activeConversation.sendUserMessage(RECONNECT_NUDGE);
+      } catch (e) {
+        console.warn("[voice-eleven] reconnect nudge failed:", e);
+      }
     }
   } catch (e) {
     console.error("[voice-eleven] session start failed:", e);
@@ -1231,6 +1224,85 @@ function looksLikeEnd(text: string): boolean {
 }
 
 /** Why ElevenLabs closed the session, or "" for a normal end (ours, or the agent's 1000). */
+/** The session closed (onDisconnect). A close because the model timed out
+ *  reconnects once, with a recap, keeping the call on; a second one soon after
+ *  ends it with one plain line. Anything else ends it as before. */
+export function voiceSessionClosed(details?: { reason?: string; message?: string; closeCode?: number; closeReason?: string }): void {
+  const why = disconnectReason(details);
+  const timeout = !!why && isLlmTimeoutClose(details);
+  // Lines the agent had queued land before any notice (they were said first).
+  flushAgentQueueImmediate();
+  const retry = timeout && timeoutRetry.take();
+  let recap = "";
+  if (timeout) {
+    vlog("voice timeout", { why, retry, ...turnStats.atClose(), images: imagePusher.uploaded });
+    console.error("[voice-eleven] session closed:", why, retry ? "(reconnecting once)" : "(the reconnect timed out too)");
+    const st = useStore.getState();
+    const local = voiceChats?.local;
+    const lines = local && local !== st.activeConversationId ? (st.conversations.find((c) => c.id === local)?.messages ?? []) : st.messages;
+    recap = reconnectRecap(lines);
+    voiceAppend({ role: "assistant", content: retry ? RECONNECTING_LINE : couldntReconnectLine(plainCloseReason(details)), system: true });
+  } else if (why) {
+    // A close that wasn't ours says why (a refused voice or override closes
+    // the socket with a reason, and it used to end with no trace at all).
+    console.error("[voice-eleven] session closed:", why);
+    voiceAppend({ role: "assistant", content: `Voice session closed by ElevenLabs: ${why}`, system: true });
+  }
+  // Stop any native agent audio still playing/queued (Linux).
+  stopAgentAudioNative();
+  resetAgentEnvelope();
+  if (!retry) {
+    voiceAppend({
+      role: "assistant",
+      content: "Voice session ended.",
+      system: true,
+    });
+  }
+  transcriptMirror = null;
+  quietGate.reset();
+  voiceChats = null;
+  activeConversation = null;
+  stopViewportWatch();
+  // Flip the mic-button source of truth off so it matches
+  // reality. Critical for end_call / end-phrase paths where
+  // the click handler never ran. Idempotent for manual ends
+  // (endElevenLabsSession already set it). A reconnect keeps it on.
+  useStore.setState({ voiceMode: retry, voiceMicMuted: false });
+  useStore.getState().setVoiceConnecting(retry);
+  useStore.getState().setVoiceListening(false);
+  useStore.getState().setVoiceSpeaking(false);
+  useStore.getState().setVoiceThinking(false);
+  useStore.getState().setVoiceCurrentTool(null);
+  stopThinkingWatcher();
+  pendingScrollTarget = null;
+  scrollGen++;
+  // If anything got written / a note got saved, snapshot the
+  // session as a single git commit and refresh the file tree.
+  // Fire-and-forget — UI doesn't need to wait.
+  void finalizeSessionMutations();
+  if (retry) void reconnectAfterTimeout(recap);
+}
+
+async function reconnectAfterTimeout(recap: string): Promise<void> {
+  const r = { error: null as string | null };
+  reconnecting = r;
+  try {
+    await (restartForTests ?? ((x: string) => startElevenLabsSession({ recap: x })))(recap);
+  } catch (e) {
+    r.error = (e as Error)?.message ?? String(e);
+  } finally {
+    reconnecting = null;
+  }
+  if (activeConversation) return;
+  // The retry didn't connect: one plain line, and the call is off.
+  const msg = couldntReconnectLine(r.error ?? "no answer from ElevenLabs");
+  vlog("voice reconnect failed", { error: r.error });
+  voiceAppend({ role: "assistant", content: msg, system: true });
+  voiceAppend({ role: "assistant", content: "Voice session ended.", system: true });
+  useStore.setState({ voiceMode: false, voiceMicMuted: false, voiceError: msg });
+  useStore.getState().setVoiceConnecting(false);
+}
+
 export function disconnectReason(d?: { reason?: string; message?: string; closeCode?: number; closeReason?: string }): string {
   if (!d || d.reason === "user") return "";
   if (d.reason === "agent" && (d.closeCode === undefined || d.closeCode === 1000) && !d.closeReason) return "";
@@ -1240,6 +1312,11 @@ export function disconnectReason(d?: { reason?: string; message?: string; closeC
 function reportVoiceError(message: string): void {
   // An error line on every failed start (the app log mirrors console.error).
   console.error("[voice-eleven] voice start failed:", message);
+  // A timeout reconnect says its own one line (couldntReconnectLine).
+  if (reconnecting) {
+    reconnecting.error = message;
+    return;
+  }
   // The composer's waves turn red (VoiceCockpit's InlineVoiceWaves) until the
   // next start attempt or a successful connect.
   useStore.setState({ voiceError: message });
@@ -1259,6 +1336,7 @@ export async function endElevenLabsSession(): Promise<void> {
   // turn whose audio was still draining when the user hit "end" gets
   // dropped from the transcript.
   flushAgentQueueImmediate();
+  timeoutRetry.reset();
   const conv = activeConversation;
   activeConversation = null;
   // Cut audio synchronously before the async endSession() runs.
@@ -1708,14 +1786,14 @@ export function pushViewportContextDebounced(): void {
  *  recent images in the thread — sent by Carl, or shown in it — go to the new
  *  ElevenLabs conversation, which has never seen them (the prompt carries the
  *  words only). One message, ≤ 3 images, newest last. */
-export async function pushThreadImages(messages: ChatMessage[], vault: string | null): Promise<PushResult[] | "no-session" | "none"> {
+export async function pushThreadImages(messages: ChatMessage[], vault: string | null, max = 3): Promise<PushResult[] | "no-session" | "none"> {
   const picked: { att: import("./store").ChatAttachment; who: string }[] = [];
   for (const m of messages.slice(-24).reverse()) {
     for (const a of m.attachments ?? []) {
-      if (picked.length >= 3) break;
+      if (picked.length >= max) break;
       picked.push({ att: a, who: m.role === "user" ? "the user sent" : "shown in the chat" });
     }
-    if (picked.length >= 3) break;
+    if (picked.length >= max) break;
   }
   picked.reverse();
   const items: { key: string; dataUrl: string }[] = [];
@@ -2304,7 +2382,7 @@ export function buildSystemPrompt(
   tools?: VaultVoiceTool[],
 ): string {
   const vault = state.vaultPath ?? "(no vault)";
-  const recentHistory = formatRecentHistory(historyMessages ?? state.messages, 32);
+  const recentHistory = formatRecentHistory(historyMessages ?? state.messages, 24);
   const followNote = state.followAlong
     ? "Follow-along is on. The active document and viewport are in dynamic variables and will refresh via contextual updates as the user scrolls."
     : "Follow-along is off. The user is not asking about a specific document unless they name one.";
@@ -2352,6 +2430,7 @@ export function buildSystemPrompt(
     "Writing:",
     "- Write creates or overwrites a file. Plain markdown unless the extension implies otherwise. Stay inside the vault.",
     "- Edit replaces a unique string in an existing file — prefer over Write for small changes to large files. When the user wants a term changed EVERYWHERE / in every case / throughout (e.g. swap one word for another across a note), pass replace_all=true — a plain Edit only touches the FIRST match and silently leaves the rest, which reads to the user as 'you didn't get every case'. After any sweeping change, Read the file back and confirm every occurrence landed before you say it's done.",
+    "- Keep each Write or Edit short (a section, not a whole note). A big rewrite in one call takes too long to produce and the call drops: do it as several Edits, one section at a time, saying what you're doing between them — or hand it to AskAgent when there is one.",
     "- NotebookEdit is the only safe way to touch .ipynb files. action='append' adds to a cell's end; 'replace' overwrites a cell; 'insert' adds a new cell at cell_index (-1 = end); 'delete' removes one. 0-based.",
     "",
     "Notes:",
@@ -2492,7 +2571,7 @@ function activeSectionFor(
 // budget keeps a 32-turn thread of long messages under the ElevenLabs
 // session-override ceiling (same rationale as the caps in
 // loadVoicePromptContext). When the budget bites, the OLDEST turns drop first.
-const HISTORY_TOTAL_CHAR_BUDGET = 8000;
+export const HISTORY_TOTAL_CHAR_BUDGET = 6000;
 
 function formatRecentHistory(messages: ChatMessage[], take: number): string {
   const recent = messages
@@ -2503,7 +2582,7 @@ function formatRecentHistory(messages: ChatMessage[], take: number): string {
     const n = m.attachments?.length ?? 0;
     // An image sent with the line is said (its pixels arrive as an attachment at the start: pushThreadImages).
     const att = n ? ` [sent ${n === 1 ? "an image" : `${n} images`}]` : "";
-    return `${m.role === "user" ? "User" : "You"}: ${truncate(m.content.trim(), 400)}${att}`;
+    return `${m.role === "user" ? "User" : "You"}: ${truncate(m.content.trim(), 300)}${att}`;
   });
   // Trim from the front (oldest) until the newest turns fit the budget.
   let total = lines.reduce((a, l) => a + l.length + 1, 0);
@@ -2556,6 +2635,13 @@ const SOFT_TIMEOUT_MESSAGE = "One sec.";
 export const INTERRUPTION_IGNORE_TERMS = ["yeah", "yep", "mm", "mhm", "mm-hm", "uh-huh", "ok", "okay", "right", "sure"];
 /** When the chosen model is down: Claude Haiku, then a small GPT (ElevenLabs' default chain starts with Gemini). */
 export const BACKUP_LLMS = ["claude-haiku-4-5", "gpt-4.1-mini"];
+/** Seconds each model in the cascade gets before the next one is tried (ElevenLabs: 2–15, default 4).
+ *  At the default 4 s a turn whose answer is a tool call with a long argument (rewrite
+ *  a note) missed it on every model, and ElevenLabs closed the call ("LLM Cascade
+ *  Error: TimeoutError", 1002); the soft-timeout filler covers the wait from 3 s. */
+export const CASCADE_TIMEOUT_SECONDS = 15;
+/** Files (images, PDFs) kept whole in the model's context; older ones are summarised and freed. */
+export const FILES_IN_MEMORY = 4;
 
 /** The agent ElevenLabs creates for vault-chat (POST /v1/convai/agents/create).
  *  `info` is the model's row in ElevenLabs' list (what it can take, its reasoning). */
@@ -2581,6 +2667,7 @@ export function buildAgentCreateBody(o: {
           // A spoken reply wants no thinking: "none" when the model offers it, else its lowest.
           ...(effort ? { reasoning_effort: effort } : {}),
           backup_llm_config: { preference: "override", order: BACKUP_LLMS },
+          cascade_timeout_seconds: CASCADE_TIMEOUT_SECONDS,
           tools: [
             ...CLIENT_TOOL_DEFINITIONS
               // A model that reads the PDF itself (an uploaded document) doesn't need PdfExtract —
@@ -2628,7 +2715,8 @@ export function buildAgentCreateBody(o: {
         max_duration_seconds: 7200,
         silence_end_call_timeout: -1,
         // Uploads (PDFs, images) reach the model only with file input on.
-        file_input: { enabled: true, max_files_per_conversation: 10 },
+        // Only the newest few stay whole in context (a look's images are one stacked picture).
+        file_input: { enabled: true, max_files_in_memory: FILES_IN_MEMORY, max_files_per_conversation: 40 },
       },
       turn: {
         // Silence before ElevenLabs re-engages the agent (max 30 s; skip_turn answers it).
@@ -2968,6 +3056,14 @@ export async function setVoiceChatProject(name: unknown): Promise<string> {
 // voiceCurrentTool before the impl fires and clears it after, so
 // the titlebar pill can show "Running ToolName…" while the work
 // happens. Always logs to chat regardless of success/failure.
+function safeLen(v: unknown): number {
+  try {
+    return JSON.stringify(v)?.length ?? 0;
+  } catch {
+    return 0;
+  }
+}
+
 function withTracking<A>(
   name: string,
   impl: (args: A) => Promise<string>,
@@ -2976,12 +3072,15 @@ function withTracking<A>(
 ): (args: A) => Promise<string> {
   return async (args: A) => {
     useStore.getState().setVoiceCurrentTool(name);
+    logTurn(turnStats.firstResponse(`tool:${name}`, Date.now(), safeLen(args)));
     let result: string;
     try {
       result = await impl(args);
     } finally {
       useStore.getState().setVoiceCurrentTool(null);
     }
+    turnStats.toolResult(name, result.length);
+    turnStats.images = imagePusher.uploaded;
     logToolCall(name, args, result, where);
     return result;
   };
