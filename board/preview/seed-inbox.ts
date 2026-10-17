@@ -64,7 +64,7 @@ const SLIDES: Slide[] = [
     body: [
       "For any $V, W \\in \\mathbb{R}^{|\\mathcal{S}|}$:",
       "$$\\lVert TV - TW \\rVert_\\infty \\le \\gamma\\, \\lVert V - W \\rVert_\\infty .$$",
-      "So $T$ is a $\\gamma$-contraction in the sup norm, and by Banach's fixed-point theorem $V_k \\to V^{*}$ geometrically:",
+      "So $T$ is a $\\gamma$-contraction in the sup norm, and by Banach's fixed-point theorem the iterates converge geometrically:",
       "$$\\lVert V_k - V^{*} \\rVert_\\infty \\le \\gamma^{k}\\, \\lVert V_0 - V^{*} \\rVert_\\infty .$$",
       "Note: $(V_k)$ is a Cauchy sequence (problem set 4).",
     ],
