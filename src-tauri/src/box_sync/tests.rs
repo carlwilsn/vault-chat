@@ -558,3 +558,11 @@ fn tailscale_state_from_status_json() {
     assert!(!none.installed && !none.connected && !none.can_open);
     assert_eq!(up.can_open, cfg!(any(windows, target_os = "macos")));
 }
+
+#[test]
+fn classify_error_ignores_digits_inside_hashes() {
+    use super::classify_error;
+    assert_eq!(classify_error("fatal: unable to access 'x': The requested URL returned error: 502"), "unreachable");
+    assert_eq!(classify_error("error: object 9a502c1 is corrupt"), "git");
+    assert_eq!(classify_error("CONFLICT in notes/a504b.md"), "git");
+}
