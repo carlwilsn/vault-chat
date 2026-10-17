@@ -455,6 +455,30 @@ export class Engine {
         return (await this.kill({ convId: b.convId })) ?? { error: "legacy conversation" };
       case "answer":
         return (await this.answerRoute({ convId: b.convId, text: b.text, defer: b.defer, clientMsgId: b.clientId })) ?? { error: "legacy conversation" };
+      case "lines": {
+        // Lines a client brings into a chat as they are (a Ctrl+K exchange, a note opened for
+        // discussion): written as its items, under the client's ids; no turn runs.
+        const lines: any[] = Array.isArray(b.lines) ? b.lines.slice(0, 40) : [];
+        if (!lines.length) return { error: "no lines" };
+        let id = String(b.convId ?? "");
+        if (!id || !this.picture(id)) {
+          if (id && !/^[A-Za-z0-9_-]{6,80}$/.test(id)) return { error: "bad conversation id" };
+          const first = String(lines.find((l) => l?.role === "user" && !l.hidden)?.text ?? "Chat");
+          id = (await createConv(this.d.vault, { source: "manual" }, first, id || undefined)).id;
+        }
+        const { appendMessage } = await import("./convs");
+        for (const [i, l] of lines.entries()) {
+          const mid = `${String(b.clientId ?? newMessageId()).slice(0, 70)}:${i}`;
+          await appendMessage(this.d.vault, id, {
+            role: l?.role === "assistant" ? "assistant" : "user",
+            content: String(l?.text ?? "").slice(0, 100_000),
+            ...(l?.hidden ? { hidden: true } : {}),
+            ...(Array.isArray(l?.images) && l.images.length ? { attachments: l.images.slice(0, 8).map((u: unknown) => ({ imageDataUrl: String(u) })) } : {}),
+            mid,
+          } as any);
+        }
+        return { ok: true, convId: id };
+      }
       case "delete": {
         const id = String(b.convId ?? "");
         if (!this.picture(id)) return { ok: false, error: `conversation ${id} not found` };

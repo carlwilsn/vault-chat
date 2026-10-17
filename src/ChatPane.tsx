@@ -738,12 +738,13 @@ export function ChatPane() {
     }
   };
   // Pending chips: this machine's (local mode, or a box message in flight) and
-  // the box's queue for this conversation (its `queued`).
+  // what the box's log holds as pending for this conversation (a steer or a
+  // queued message pi has not delivered yet).
   const boxQueued = activeConv?.queued ?? [];
   const onBox = new Set(boxQueued.map((q) => q.id));
   const chips = [
-    ...localPending.filter((p) => !(p.qid && onBox.has(p.qid))).map((p) => ({ id: p.id, kind: p.kind, text: p.text, sending: !!p.sending || !!p.qid })),
-    ...boxQueued.map((q) => ({ id: `box:${activeConv!.id}:${q.id}`, kind: "queue" as PendingKind, text: q.text, sending: false })),
+    ...localPending.filter((p) => !(p.qid && onBox.has(p.qid))).map((p) => ({ id: p.id, kind: p.kind, text: p.text, sending: !!p.sending })),
+    ...boxQueued.map((q) => ({ id: `box:${activeConv!.id}:${q.id}`, kind: (q.kind ?? "queue") as PendingKind, text: q.text, sending: false })),
   ];
   const editChip = (c: { id: string; text: string }) => {
     dispatchChatAction({ kind: "unqueue", id: c.id });

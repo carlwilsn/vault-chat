@@ -498,7 +498,7 @@ export function InlineEditPrompt({
     onAccept(out);
   };
 
-  const sendToChat = () => {
+  const sendToChat = async () => {
     if (!result || streaming) return;
     const store = useStore.getState();
     const turns: { prompt: string; result: string }[] = [
@@ -567,6 +567,21 @@ export function InlineEditPrompt({
       : "";
 
     const hiddenPreamble = buildHiddenFilePreamble(request, currentFile);
+    // Box mode: the box writes the chat; these lines go to it as they are.
+    const { boxLines } = await import("./boxChat");
+    const [first0, ...rest0] = turns;
+    if (
+      await boxLines([
+        ...(hiddenPreamble ? [{ role: "user" as const, text: hiddenPreamble, hidden: true }] : []),
+        { role: "user" as const, text: visiblePrefix + first0.prompt, attachments: attachments.length > 0 ? attachments : undefined },
+        { role: "assistant" as const, text: first0.result },
+        ...rest0.flatMap((t) => [{ role: "user" as const, text: t.prompt }, { role: "assistant" as const, text: t.result }]),
+      ])
+    ) {
+      if (store.rightCollapsed) store.toggleRight();
+      onCancel();
+      return;
+    }
     if (hiddenPreamble) {
       store.appendMessage({ role: "user", content: hiddenPreamble, hidden: true });
     }

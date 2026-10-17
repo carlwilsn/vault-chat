@@ -27,7 +27,18 @@ function withMid(m: ChatMessage): ChatMessage {
 import { formatNote } from "./notes-format";
 import { findModel } from "./providers";
 import { withCompactionDivider, lastReportedContext } from "./chatContext";
-import { coversShown, isNewerCopy, isLocalOnly } from "./msgOrder";
+
+/** Laptop mode (no box): a copy on disk is newer than the one in memory when it
+ *  holds every message memory shows (by id, else by text) and more, or the same
+ *  messages changed in place. (Box mode never reads conversation files: the
+ *  box's event log is the conversation, src/boxChat.ts.) */
+function diskIsNewer(cur: ChatMessage[], disk: ChatMessage[]): boolean {
+  const key = (m: ChatMessage) => m.mid ?? `${m.role}\u0000${m.content}`;
+  const have = new Set(disk.map(key));
+  if (!cur.every((m) => m.hidden || have.has(key(m)))) return false;
+  if (disk.length !== cur.length) return disk.length > cur.length;
+  return disk.some((m, i) => m.content !== cur[i]!.content || (m.toolCalls?.length ?? 0) !== (cur[i]!.toolCalls?.length ?? 0) || !!m.hidden !== !!cur[i]!.hidden);
+}
 import { keychainGet, keychainSet, keychainDelete, KEY } from "./keychain";
 import {
   fetchAllCatalog,
@@ -133,13 +144,9 @@ export type ChatMessage = {
   // are never replaced. Tapping one relays it as the tagged answer to the
   // waiting mission. Only ever set on assistant turns in source:"ask" threads.
   askOptions?: { answer: string; title: string; body: string; primary?: boolean }[];
-  // [phase 2, box mode] In memory only (the laptop never writes conversations
-  // in box mode). `boxPartial`: built from the phone-shaped /conversation (tool
-  // calls by name only) — the git-synced full copy replaces it. `boxPending`:
-  // an optimistic user turn the box has not recorded yet, or a reply shown
-  // before the box's copy landed (src/msgOrder.ts). `boxLocal`: a notice or
-  // an unsent turn that exists only here — kept in place, never on the box.
-  boxPartial?: boolean;
+  // [box mode] Shown by this client only (src/boxChat.ts): `boxPending`, its
+  // own message on its way to the box (the box's log confirms it in place, by
+  // `mid`); `boxLocal`, a line the box never got (unreachable, refused).
   boxPending?: boolean;
   boxLocal?: boolean;
   // A compaction divider (always `system: true`): the earlier conversation was
@@ -1904,12 +1911,25 @@ export const useStore = create<State>((set) => ({
         .then((m) => m.startBoxChat(vault))
         .catch((e) => console.warn("[box-chat] start failed:", e));
     };
-    // Know box mode BEFORE the load sets the list, so no persist is ever
-    // scheduled for a box-authored conversation.
+    // Box mode: the conversations are the box's event log, never files on this
+    // disk (src/boxChat.ts fills the list from the box, or from its cache).
     try {
       const bc = await import("./boxChat");
       if (await bc.boxLinkFor(vault)) {
-        useStore.setState({ boxChat: useStore.getState().boxChat ?? { on: true, reachable: null, reason: "" } });
+        const fresh = emptyConversation();
+        const saved = savedActiveConvId(vault);
+        useStore.setState({
+          boxChat: useStore.getState().boxChat ?? { on: true, reachable: null, reason: "" },
+          conversations: saved ? [] : [fresh],
+          activeConversationId: saved ?? fresh.id,
+          conversationsLoaded: true,
+          messages: [],
+          streamingText: "",
+          streamingReasoning: "",
+          liveTools: [],
+        });
+        startBox();
+        return;
       }
     } catch {
       /* not box mode */
@@ -1969,6 +1989,7 @@ export const useStore = create<State>((set) => ({
     // nothing is mid-run.
     if (useStore.getState().vaultPath !== vault) return;
     if (!useStore.getState().conversationsLoaded) return; // initial load owns the first read
+    if (useStore.getState().boxChat?.on) return; // box mode: the box's log, never these files
     let list: Conversation[];
     try {
       list = await readConversations(vault);
@@ -2003,22 +2024,17 @@ export const useStore = create<State>((set) => ({
         }
         // Disk wins only when it's genuinely newer: it holds every message this
         // copy shows, and more (an append from another machine) — never an older
-        // copy over a newer one (src/msgOrder.ts). A disk copy that's BEHIND memory
-        // (a local edit not yet flushed; in box mode, the box's reply the git sync
-        // hasn't brought yet, or the older history past the box's window) is ignored.
-        // Changed metadata at the same messages takes the disk's meta only.
-        // [phase 2, box mode] Messages built from the box's phone-shaped view
-        // (tool calls by name only) give way to the git-synced full copy once
-        // it has caught up with them.
+        // copy over a newer one. A disk copy that's BEHIND memory (a local edit
+        // not yet flushed) is ignored. Changed metadata at the same messages
+        // takes the disk's meta only.
         const curMsgs = cur.id === s.activeConversationId ? s.messages : cur.messages;
-        const partialCaughtUp = curMsgs.some((m) => m.boxPartial) && coversShown(curMsgs, disk.messages);
-        const msgsNewer = partialCaughtUp || isNewerCopy(curMsgs, disk.messages);
+        const msgsNewer = diskIsNewer(curMsgs, disk.messages);
         const metaNewer =
           disk.lastActivityAt !== cur.lastActivityAt || disk.title !== cur.title || disk.unread !== cur.unread;
         if (msgsNewer) {
           merged.push(disk);
           listChanged = true;
-        } else if (metaNewer && disk.messages.length === curMsgs.filter((m) => !isLocalOnly(m)).length) {
+        } else if (metaNewer && disk.messages.length === curMsgs.length) {
           merged.push({ ...disk, messages: cur.messages, status: cur.status, runStartedAt: cur.runStartedAt });
           listChanged = true;
         } else {
@@ -2045,8 +2061,7 @@ export const useStore = create<State>((set) => ({
         !s.busy &&
         !activeRunning &&
         !s.streamingText &&
-        (isNewerCopy(s.messages, activeDisk.messages) ||
-          (s.messages.some((m) => m.boxPartial) && coversShown(s.messages, activeDisk.messages)));
+        diskIsNewer(s.messages, activeDisk.messages);
 
       if (!listChanged && !messagesStale) return {}; // nothing to apply → no re-render
 
@@ -2149,11 +2164,14 @@ export const useStore = create<State>((set) => ({
     // reloads Activity/Chats right after /kill — must await it, or that reload
     // races the not-yet-flushed tombstone and the deleted thread flickers back.
     const vault = useStore.getState().vaultPath;
-    const done = vault
-      ? invoke<void>("conversation_delete", { vault, id }).catch((e) => {
-          console.warn("[conversations] delete failed:", e);
-        })
-      : Promise.resolve();
+    // Box mode: a delete is an intent to the box (a record in its log every client folds).
+    const done = useStore.getState().boxChat?.on
+      ? import("./boxChat").then((bc) => bc.boxDelete(id)).then(() => undefined, (e) => console.warn("[conversations] delete failed:", e))
+      : vault
+        ? invoke<void>("conversation_delete", { vault, id }).catch((e) => {
+            console.warn("[conversations] delete failed:", e);
+          })
+        : Promise.resolve();
     set((s) => {
       const next = s.conversations.filter((c) => c.id !== id);
       if (s.activeConversationId !== id) {

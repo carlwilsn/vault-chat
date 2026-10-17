@@ -163,8 +163,8 @@ export type Conversation = {
   nextWakeAt?: number;
   state?: "idle" | "running" | "sleeping" | "waiting_user" | "blocked" | "done";
   pendingAsk?: { question: string; options?: string[]; at: number; notifId?: string };
-  // [box] Messages Carl queued while a turn ran (server/engine queue), waiting for it to end.
-  queued?: { id: string; text: string }[];
+  // [box] Messages Carl sent while a turn ran, not delivered by pi yet (the log's pending): a steer, or queued.
+  queued?: { id: string; text: string; kind?: "steer" | "queue" }[];
   verdict?: { verdict: "pass" | "fail" | "unsure"; notes: string[]; at: number; summary?: string };
   recap?: string;
   // Subagents this conversation spawned (children: task, model, state, cost; for later display).

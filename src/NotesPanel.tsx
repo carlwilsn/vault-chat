@@ -84,7 +84,7 @@ export function NotesPanel({
 
   const resolvedCount = notes.filter((n) => n.status === "resolved").length;
 
-  const discussInChat = (note: Note) => {
+  const discussInChat = async (note: Note) => {
     // Prime the chat with the note's context without actually firing
     // an agent turn. The user asked for "idle, ready" — they don't
     // want a big response dumped on them; they want to walk in with
@@ -155,6 +155,19 @@ export function NotesPanel({
     const assistantBubble = `Context loaded${primaryName ? ` from **${primaryName}**` : ""}. Ready when you are — what would you like to work through?`;
 
     const store = useStore.getState();
+    // Box mode: the box writes the chat; these lines go to it as they are.
+    const { boxLines } = await import("./boxChat");
+    if (
+      await boxLines([
+        { role: "user", text: preamble, hidden: true },
+        { role: "user", text: userBubble },
+        { role: "assistant", text: assistantBubble },
+      ])
+    ) {
+      if (store.rightCollapsed) store.toggleRight();
+      onClose();
+      return;
+    }
     store.appendMessage({ role: "user", content: preamble, hidden: true });
     store.appendMessage({ role: "user", content: userBubble });
     store.appendMessage({ role: "assistant", content: assistantBubble });

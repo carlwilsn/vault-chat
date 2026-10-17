@@ -70,6 +70,12 @@ function voiceAppend(m: ChatMessage): void {
     if (!content) return;
     if (content !== m.content) m = { ...m, content };
   }
+  // Box mode: the line is the box's to write (its voice conversation's log); this client shows it
+  // under the same id until the log brings it (voiceBox.ts) — it never writes a box conversation.
+  if (transcriptMirror) {
+    void transcriptMirror.push(m);
+    return;
+  }
   // Spoken math shows as notation (voiceMath.ts): already formatted (the agent's
   // lines are prefetched while their audio plays), or formatted when it returns.
   const shown = m.system ? undefined : cachedVoiceMath(String(m.content ?? ""));
@@ -78,8 +84,7 @@ function voiceAppend(m: ChatMessage): void {
     const last = useStore.getState().messages[useStore.getState().messages.length - 1];
     if (last && last.content === m.content) displayVoiceMath(last);
   }
-  transcriptMirror?.push(m);
-  if (!transcriptMirror && !m.system && (m.role === "user" || m.role === "assistant")) {
+  if (!m.system && (m.role === "user" || m.role === "assistant")) {
     recordLocalVoice(voiceLineEntry(m.role, String(m.content ?? ""), useStore.getState().activeConversationId));
   }
 }

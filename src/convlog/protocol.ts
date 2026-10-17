@@ -192,7 +192,10 @@ export type Intent =
   | { type: "unqueue"; convId: string; id: string }
   | { type: "stop"; convId: string }
   | { type: "answer"; convId: string; clientId: string; text: string; defer?: boolean }
-  | { type: "project"; convId: string; project: string | null };
+  | { type: "project"; convId: string; project: string | null }
+  /** Lines brought into a chat as they are (a Ctrl+K exchange, a note opened for discussion); no turn runs. */
+  | { type: "lines"; convId?: string | null; clientId: string; lines: { role: "user" | "assistant"; text: string; hidden?: boolean; images?: string[] }[] }
+  | { type: "delete"; convId: string };
 
 export function isLogRecord(v: unknown): v is LogRecord {
   return !!v && typeof v === "object" && typeof (v as LogRecord).seq === "number" && typeof (v as LogRecord).type === "string";

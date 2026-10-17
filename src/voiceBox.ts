@@ -6,7 +6,7 @@
 // (POST /api/v1/voice/transcript). Paths the agent builds from this laptop's
 // vault root are sent vault-relative, so they mean the same file on the box.
 // Tools that move the user's screen never go there (LOCAL_VOICE_TOOLS).
-import { boxGet, boxLinkFor, boxPost, type Link } from "./boxChat";
+import { boxGet, boxLinkFor, boxPost, boxOutgoingLine, boxRekey, newClientId, type Link } from "./boxChat";
 import { useStore, type ChatMessage } from "./store";
 
 const PATH_KEYS = ["path", "cwd", "source_path"];
@@ -106,6 +106,9 @@ export function voiceTranscriptMirror(b: BoxVoice, localId: string, fromConvId: 
   const push = (m: ChatMessage): Promise<unknown> => {
     const text = String(m.content ?? "").trim();
     if (!text) return chain;
+    // The line shows at once under the id the box writes it with (the box is its only writer).
+    const clientId = newClientId();
+    if (!m.system) boxOutgoingLine(id, clientId, text, m.role === "user" ? "user" : "assistant");
     chain = chain.then(async () => {
       // Images Carl sent in the chat while voice was on: saved with his line on the box.
       const images = (m.attachments ?? [])
@@ -118,12 +121,14 @@ export function voiceTranscriptMirror(b: BoxVoice, localId: string, fromConvId: 
         ...(fromConvId && fromConvId !== id ? { fromConvId } : {}),
         role: m.role === "user" ? "user" : "assistant",
         text,
+        clientId,
         ...(m.system ? { system: true } : {}),
         ...(images.length ? { images } : {}),
       });
       const next = typeof r.data?.convId === "string" ? r.data.convId : null;
       if (r.ok && next && next !== id) {
         useStore.getState().rekeyConversation(id, next);
+        boxRekey(id, next);
         id = next;
       }
     });

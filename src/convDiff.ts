@@ -84,7 +84,7 @@ export function makeConvDiff(
             convId: c.id,
             role: m.role,
             // Its identity: a client shows the event's copy at once and puts the
-            // stored one in its place by this id (src/msgOrder.ts).
+            // stored one in its place by this id.
             ...(m.mid ? { mid: m.mid } : {}),
             content: (m.content ?? "").slice(0, MSG_CAP),
             tools: toolNames(m).filter((n, i) => !(n === "Subagent" && String(m.toolCalls?.[i]?.id ?? "").startsWith("sub-"))),
