@@ -9,11 +9,11 @@
 //
 // `?voice=fake` swaps the ElevenLabs SDK and the box's session for voiceFake.ts (the preview).
 import * as api from "./api";
-import { ChromeTaps, isField, routeChrome } from "./chrome";
+import { ChromeTaps, buttonName, isField, redrawnSame, routeChrome } from "./chrome";
 import { icon, toolIcon } from "./icons";
 import { onInboxEvent } from "./inbox";
 import { VoiceController, type VoiceApi, type VoiceSdk, type VoiceState } from "./voice";
-import { blog } from "./log";
+import { blog, setStatSource, tapLine } from "./log";
 
 const FAKE = /[?&]voice=fake\b/.test(location.search);
 const BARS = 5;
@@ -195,14 +195,19 @@ export function mountVoicePill(): void {
 
   // ---- presses (chrome.ts): on pointerup, once; the click after it is dropped
   let synth = false;
-  const taps = new ChromeTaps<HTMLButtonElement>((b) => {
-    synth = true;
-    try {
-      b.click();
-    } finally {
-      synth = false;
-    }
-  });
+  const taps = new ChromeTaps<HTMLButtonElement>(
+    (b) => {
+      synth = true;
+      try {
+        b.click();
+      } finally {
+        synth = false;
+      }
+    },
+    { same: redrawnSame, name: buttonName },
+  );
+  // The pill's taps in the board's log too (its chat switch, mute and end are not the board's chrome).
+  setStatSource("taps:pill", "taps", () => tapLine(taps.takeStats(), "pill"));
   const btnAt = (t: EventTarget | null) => {
     const b = (t as Element | null)?.closest?.("button") ?? null;
     return b && root.contains(b) ? (b as HTMLButtonElement) : null;

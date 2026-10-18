@@ -24,8 +24,8 @@ import { icon, toolIcon, type IconName, type Weight } from "./icons";
 import { Items, isDom, measureMath, fetchText, renderPdfPage } from "./items";
 import { openInbox, inboxBadge, type InboxHost } from "./inbox";
 import { placeParts } from "./place";
-import { ChromeTaps, isField, isTextField, routeChrome } from "./chrome";
-import { blog, flushBoardLog, setTapSource } from "./log";
+import { ChromeTaps, buttonName, isField, isTextField, redrawnSame, routeChrome } from "./chrome";
+import { blog, flushBoardLog, setStatSource, setTapSource } from "./log";
 import { mountVoicePill, voice, voiceButton } from "./voicePill";
 import type { BoardSource } from "./voice";
 
@@ -52,9 +52,21 @@ const SIZES: Record<SizeKey, { presets: number[]; min: number; max: number }> = 
   erase: { presets: [6, 12, 24], min: 4, max: 48 },
   cut: { presets: [4, 8, 16], min: 3, max: 40 },
 };
-/** `eraser`: which eraser the one eraser button picks (the stroke or the precise one), remembered. */
-type Prefs = { mode: Mode; eraser: "erase" | "cut"; pen: number; hl: number; penColor: string; hlColor: string; erase: number; cut: number; hand: Hand; pan1: boolean };
-const DEFAULTS: Prefs = { mode: "pen", eraser: "erase", pen: 2.4, hl: 18, penColor: PENS[0]!, hlColor: HLS[0]!, erase: 12, cut: 8, hand: "left", pan1: false };
+/** `eraser`: which eraser the one eraser button picks (the stroke or the precise one), remembered. `pv`: the prefs' version. */
+type Prefs = { mode: Mode; eraser: "erase" | "cut"; pen: number; hl: number; penColor: string; hlColor: string; erase: number; cut: number; hand: Hand; pan1: boolean; pv?: number };
+// One-finger scroll is on by default (2026-10-18): with a Pencil, a finger never draws, so one finger pans as in
+// GoodNotes; the menu turns it off (and then, before a Pencil is seen, a finger writes).
+const DEFAULTS: Prefs = { mode: "pen", eraser: "erase", pen: 2.4, hl: 18, penColor: PENS[0]!, hlColor: HLS[0]!, erase: 12, cut: 8, hand: "left", pan1: true, pv: 2 };
+/** The stored prefs, brought up to date: before version 2, one-finger scroll was off by default and saved off. */
+function loadPrefs(): Prefs {
+  const p = store<Prefs>("vc_board_prefs", DEFAULTS);
+  if ((p.pv ?? 1) < 2) {
+    p.pan1 = true;
+    p.pv = 2;
+    save("vc_board_prefs", p);
+  }
+  return p;
+}
 const isEraser = (m: Mode): m is "erase" | "cut" => m === "erase" || m === "cut";
 
 type Diff<T> = { removed: { i: number; v: T }[]; added: { i: number; v: T }[] };
@@ -157,18 +169,21 @@ export class BoardView {
   private cam = { x: 0, y: 0, z: 1 };
   private homeZ = 1;
 
-  private prefs: Prefs = store("vc_board_prefs", DEFAULTS);
+  private prefs: Prefs = loadPrefs();
   private arb: Arbiter;
   private domEv: PointerEvent | null = null;
   /** Taps on the chrome: any pointer presses its button on pointerup, once (chrome.ts). */
-  private chrome = new ChromeTaps<HTMLButtonElement>((b) => {
-    this.synthClick = true;
-    try {
-      b.click();
-    } finally {
-      this.synthClick = false;
-    }
-  });
+  private chrome = new ChromeTaps<HTMLButtonElement>(
+    (b) => {
+      this.synthClick = true;
+      try {
+        b.click();
+      } finally {
+        this.synthClick = false;
+      }
+    },
+    { same: redrawnSame, name: buttonName },
+  );
   private synthClick = false;
 
   private g: ToolG | null = null;
@@ -305,6 +320,10 @@ export class BoardView {
     if (this.rev === 0 || (this.board as Board & { fresh?: boolean }).fresh) this.changed();
     voice.setBoard(this.voiceSrc);
     setTapSource(() => this.chrome.takeStats());
+    setStatSource("gestures", "gestures", () => {
+      const g = this.arb.takeStats();
+      return g.pan || g.pinch || g.pan1 || g.undo || g.reverted || Object.keys(g.palm).length ? g : null;
+    });
     blog("board.open", { slug: this.slug, rev: this.rev, items: this.board.items.length, strokes: this.board.strokes.length, tool: this.prefs.mode });
   }
 
@@ -315,6 +334,7 @@ export class BoardView {
     this.offVoice();
     voice.setBoard(null);
     setTapSource(null);
+    setStatSource("gestures", "gestures", null);
     blog("board.close", { slug: this.slug, rev: this.rev, items: this.board.items.length, strokes: this.board.strokes.length });
     void flushBoardLog();
     window.removeEventListener("resize", this.onResize);

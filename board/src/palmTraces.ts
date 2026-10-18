@@ -180,7 +180,7 @@ export const TRACES: Record<string, () => Trace> = {
 };
 
 /** The traces the tests and the browser proof run, with their sizes as the README lists them. */
-export const PALM_CASES = ["palmBeforePen", "palmBeforePenSmall", "palmMidStroke", "palmSliding", "palmLiftsBeforePen", "palmLiftsAfterPen", "sideOfHand", "knuckle", "twoKnuckles", "palmThenFingerTap", "handSidePinch", "hoverThenPalm"];
+export const PALM_CASES = ["palmBeforePen", "palmBeforePenSmall", "palmMidStroke", "palmSliding", "palmLiftsBeforePen", "palmLiftsAfterPen", "sideOfHand", "knuckle", "twoKnuckles", "palmThenFingerTap", "hoverThenPalm"];
 
 // ------------------------------------------------------------ replay in the browser
 

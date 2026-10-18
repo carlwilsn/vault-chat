@@ -95,12 +95,17 @@ export function boardLogPost(o: { stateDir: string; vaultName: string; ua: strin
   const log = boxLogs(o.stateDir).board;
   const ua = /iPad|iPhone|Macintosh|Android|Windows|Linux/.exec(o.ua)?.[0] ?? "?";
   const sess = typeof body?.session === "string" ? body.session.slice(0, 40) : null;
+  // The board's build, and what the device says it is: an iPad sends a Mac UA, so its touch points tell it apart.
+  const v = typeof body?.v === "string" ? body.v.slice(0, 60) : null;
+  const touch = typeof body?.touch === "number" && Number.isFinite(body.touch) ? Math.max(0, Math.min(20, Math.round(body.touch))) : null;
+  const app = body?.standalone === true ? "home-screen" : body?.standalone === false ? "browser" : null;
+  const device = { ...(v ? { v } : {}), ...(touch !== null ? { touch } : {}), ...(app ? { app } : {}) };
   let n = 0;
   for (const e of evs) {
     if (!e || typeof e !== "object") continue;
     const { at, ev, ...rest } = e as Record<string, unknown>;
     const t = Date.parse(String(at ?? ""));
-    log.append({ ...rest, at: Number.isFinite(t) ? new Date(t).toISOString() : new Date().toISOString(), ev: String(ev ?? "?").slice(0, 60), vault: o.vaultName, ua, ...(sess ? { session: sess } : {}) });
+    log.append({ ...rest, at: Number.isFinite(t) ? new Date(t).toISOString() : new Date().toISOString(), ev: String(ev ?? "?").slice(0, 60), vault: o.vaultName, ua, ...device, ...(sess ? { session: sess } : {}) });
     n++;
   }
   return { status: 200, body: { ok: true, n } };

@@ -75,26 +75,30 @@ Insert image, Background, Writing hand and One-finger scroll.
 
 ## Palm rejection (`src/palm.ts`)
 
-The pen draws; nothing else does once a Pencil has been seen on the device (before
-that, one finger draws). Rules, in order of strength:
+The pen draws. One finger pans (One-finger scroll, on by default; off, a finger writes until a Pencil has
+been seen). Two fingers pan and pinch whenever the Pencil is not touching the screen. Rules:
 
-1. Pen down or hovering (Pencil hover, iPad Pro M2+ / Pencil Pro), and 600 ms after
-   it lifts or leaves hover: every new touch is a palm.
-2. A contact wider than 56 css px is a palm; so is a third contact.
-3. On the writing hand's side of the last pen position (Left: left of and below
-   it; Right: right of and below), within 450 px and 2 s: palm.
-4. Two fingers must land within 200 ms of each other; a single finger that rests
-   280 ms before moving is a palm (only matters with one-finger scroll on).
-5. A palm poisons the whole touch sequence until every finger lifts; a view
-   gesture it had started is undone (the camera goes back) if it is under 700 ms
-   old. Two-finger pan only zooms once the spread changes 6 %.
+1. Pen down: every touch is a palm, and a gesture it lands in is undone if young (under 700 ms).
+2. Contact sizes are iPadOS's (twice UITouch's majorRadius, in ~20.9 px steps: a fingertip 41.75 or
+   62.6, a thumb or a pressed finger 83.5, a palm 104+). A contact 95 css px or wider is a palm; so is a
+   third contact. (Until 2026-10-18 the limit was 56: most real fingers and every thumb were palms.)
+3. One finger is a palm while the pen hovers (Pencil hover, iPad Pro M2+ / Pencil Pro) and 600 ms after it
+   lifts or leaves hover; on the writing hand's side of the last pen position (Left: left of and below it;
+   Right: right of and below) within 450 px and 2 s; and when it rests 280 ms before moving.
+4. Two fingers land within 280 ms of each other. A pair is never stopped by hover, the lockout after the
+   pen or the hand side; a pair that lands while the pen is near must move 24 px (not 10) before it pans,
+   so a palm settling as two small contacts does not nudge the page. It zooms once its spread changes 6 %
+   and 16 px.
+5. A palm poisons the whole touch sequence until every finger lifts.
 6. Two-finger tap = undo, never within 1 s of the pen touching.
 7. The chrome (toolbar, popovers, menu, inbox, selection pill) is not the arbiter's: any pointer that lands
    on it, Pencil or finger, presses its button on pointerup, once (`src/chrome.ts`; the click iOS may add after
    it is dropped, wherever it lands). Palm rules apply on the canvas only.
 
-`?debug=touch` draws each touch's contact size on the board: the numbers to tune
-rules 2–3 with on a real iPad.
+`?debug=touch` draws each touch's contact size on the board. The board's log (`gestures` lines) counts
+pans, pinches, one-finger pans, undo taps and each palm rejection by reason, with the largest contact seen:
+what a real-device report is read from. Proof in WebKit with the iPad's Mac UA and real contact sizes:
+`board/preview/gestures.mjs`.
 
 ## The inbox
 

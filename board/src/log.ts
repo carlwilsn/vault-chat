@@ -11,8 +11,22 @@
 //   image.fail    {error}
 //   save.fail     {status, error}                / save.conflict {rev}
 //   voice         {phase, error?}                the voice pill's phase changes
-//   taps          {pressed, missed, dropped}     chrome taps since the last batch (chrome.ts)
+//   taps          {pressed, missed, dropped, missedOn?, src}  chrome taps since the last batch (chrome.ts):
+//                                                the board's chrome (src "board") and the voice pill ("pill")
+//   gestures      {pan, pinch, pan1, undo, reverted, palm: {reason: n}, maxSize}
+//                                                fingers on the canvas since the last batch (palm.ts):
+//                                                two-finger pans and pinches, one-finger pans, undo taps,
+//                                                gestures undone by a palm, each palm rejection by reason
+//                                                (size, third-touch, late-second, pen-down, pen-hover,
+//                                                pen-lock, hand-side, rested) and the largest contact (css px)
+//   voice.close   {reason, code, closeReason, transport, secs, by}  why a voice session ended
+//   dialog        {what, how, focused, keyboard, vvh, ih}  the name dialog: how it was opened, whether its
+//                                                field took focus and whether the keyboard came up
 //   error         {msg, src?}                    an uncaught error on the page
+//
+// Every batch carries the board's build ({v}: its version and commit), so a report names the code it ran,
+// and the device (touch: navigator.maxTouchPoints, standalone: from the Home Screen): iPadOS sends a Mac user
+// agent, so the box's "ua" alone says "Macintosh" for Carl's iPad.
 import { postBoardLog } from "./api";
 
 type Ev = { at: string; ev: string; [k: string]: unknown };
@@ -24,7 +38,17 @@ const SESSION = Math.random().toString(36).slice(2, 10);
 
 let queue: Ev[] = [];
 let timer: ReturnType<typeof setTimeout> | null = null;
-let taps: (() => { pressed: number; missed: number; dropped: number }) | null = null;
+/** Counters read at every flush (the chrome's taps, the fingers' gestures): a source returns null when it has nothing. */
+const sources = new Map<string, () => Record<string, unknown> | null>();
+const VERSION = typeof __BOARD_VERSION__ === "string" ? __BOARD_VERSION__ : "dev";
+/** What the device is (an iPad sends a Mac UA: its touch points tell it apart) and whether it runs from the Home Screen. */
+const DEVICE = (() => {
+  try {
+    return { touch: navigator.maxTouchPoints ?? 0, standalone: (navigator as Navigator & { standalone?: boolean }).standalone === true || matchMedia("(display-mode: standalone)").matches };
+  } catch {
+    return {};
+  }
+})();
 let installed = false;
 let sending = false;
 
@@ -36,15 +60,33 @@ export function blog(ev: string, data: Record<string, unknown> = {}): void {
   else if (!timer) timer = setTimeout(() => void flushBoardLog(), FLUSH_MS);
 }
 
-/** Where the chrome tap counts come from (the open board's ChromeTaps). */
-export function setTapSource(fn: (() => { pressed: number; missed: number; dropped: number }) | null): void {
-  if (!fn && taps) addTaps(taps);
-  taps = fn;
+/** A counter read at every flush, under `key` (e.g. "taps:board"); its events are `ev` lines. Null removes it (read once more first). */
+export function setStatSource(key: string, ev: string, fn: (() => Record<string, unknown> | null) | null): void {
+  const prev = sources.get(key);
+  if (prev) readSource(prev);
+  if (fn) {
+    sources.set(key, () => {
+      const d = fn();
+      return d ? { ev, ...d } : null;
+    });
+    // Counters are read every FLUSH_MS while there are any (a batch goes only when something happened).
+    if (!timer) timer = setTimeout(() => void flushBoardLog(), FLUSH_MS);
+  } else sources.delete(key);
 }
 
-function addTaps(fn: () => { pressed: number; missed: number; dropped: number }): void {
-  const t = fn();
-  if (t.pressed || t.missed || t.dropped) queue.push({ at: new Date().toISOString(), ev: "taps", ...t });
+function readSource(fn: () => Record<string, unknown> | null): void {
+  const d = fn();
+  if (d) queue.push({ at: new Date().toISOString(), ...(d as { ev: string }) });
+}
+
+/** The chrome's tap counts as a log line, or null when there were none. */
+export function tapLine(t: { pressed: number; missed: number; dropped: number; missedOn?: string[] }, src: string): Record<string, unknown> | null {
+  return t.pressed || t.missed || t.dropped ? { ...t, src } : null;
+}
+
+/** Where the chrome tap counts come from (the open board's ChromeTaps). */
+export function setTapSource(fn: (() => { pressed: number; missed: number; dropped: number; missedOn?: string[] }) | null): void {
+  setStatSource("taps:board", "taps", fn ? () => tapLine(fn(), "board") : null);
 }
 
 /** Send what is queued (never throws; a failed batch goes back in front). */
@@ -53,16 +95,18 @@ export async function flushBoardLog(beacon = false): Promise<void> {
     clearTimeout(timer);
     timer = null;
   }
-  if (taps) addTaps(taps);
+  for (const fn of sources.values()) readSource(fn);
+  if (sources.size) timer = setTimeout(() => void flushBoardLog(), FLUSH_MS);
   if (!queue.length || sending) return;
   const batch = queue;
   queue = [];
   sending = true;
   try {
-    await postBoardLog({ session: SESSION, events: batch }, beacon);
+    await postBoardLog({ session: SESSION, v: VERSION, ...DEVICE, events: batch }, beacon);
   } catch {
     queue = [...batch, ...queue].slice(-MAX_QUEUE);
-    if (!timer) timer = setTimeout(() => void flushBoardLog(), FLUSH_MS * 2);
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(() => void flushBoardLog(), FLUSH_MS * 2);
   } finally {
     sending = false;
   }
