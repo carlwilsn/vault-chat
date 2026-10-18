@@ -279,7 +279,8 @@ async function buildMentionPreamble(
     "",
     blocks.join("\n\n"),
   ].join("\n");
-  console.info(`[@ref] attaching ${mentions.length} file(s):\n${preamble}`);
+  // Names only: the app log captures console.info, and it never holds a file's contents.
+  console.info(`[@ref] attaching ${mentions.length} file(s): ${mentions.map((m) => m.rel).join(", ")}`.slice(0, 300));
   return preamble;
 }
 

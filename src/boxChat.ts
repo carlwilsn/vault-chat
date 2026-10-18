@@ -17,7 +17,14 @@
 //   the last state at once and lets a reconnect fetch only the tail.
 //
 // Never active headless (the server bundles this module and IS the box).
+//
+// The app log follows one message across laptop → box → pi by the ids the box's
+// turn log carries too (server/engine/turnLog.ts): `box.intent` (conv, cmid,
+// outcome, ms) when this client sends, `box.turn` (conv, turn: start / end)
+// and `box.shown` (conv, cmid, pi's entry id) when the feed brings them back,
+// and `box.feed` for the poll itself (connect, drop, reset, resync, cursor).
 import { invoke } from "@tauri-apps/api/core";
+import { vlog } from "./debugLog";
 import { projectForSend } from "./projects";
 import { useStore, type ChatAttachment, type ChatMessage, type LiveTool } from "./store";
 import { addPending, removePending, pendingFor } from "./pendingInput";
@@ -172,6 +179,8 @@ class BoxChatSession {
   private unsub: (() => void) | null = null;
   private wake: (() => void) | null = null;
   private cacheTimer: ReturnType<typeof setTimeout> | null = null;
+  /** The poll is down since (ms), false when up, null before the first answer. */
+  private down: number | false | null = null;
   /** The ids this client sent (a delivered steer or queued message drops its chip). */
   private sent = new Set<string>();
 
@@ -235,10 +244,13 @@ class BoxChatSession {
         if (!this.live()) return;
         const r = (await httpGet(this.link, `/poll?after=${this.cursor}${this.epoch ? `&epoch=${encodeURIComponent(this.epoch)}` : ""}`, POLL_TIMEOUT_MS)) as PollAnswer & { epoch?: string };
         if (!this.live()) return;
+        if (this.down !== false) vlog("box.feed", { state: "connected", cursor: this.cursor, epoch: this.epoch, ...(this.down ? { downMs: Date.now() - this.down } : {}) });
+        this.down = false;
         this.setReach(true);
         backoff = 1000;
         if (r.reset || (r.epoch && this.epoch && r.epoch !== this.epoch)) {
           // Another log than the cursor's (the box's log was reset): start over from it.
+          vlog("box.feed", { state: "reset", cursor: this.cursor, epoch: this.epoch, boxEpoch: r.epoch ?? null });
           this.cursor = null;
           continue;
         }
@@ -246,6 +258,10 @@ class BoxChatSession {
         if (Number.isFinite(r.next)) this.cursor = Math.max(this.cursor ?? 0, r.next);
       } catch (e) {
         if (!this.live()) return;
+        if (!this.down) {
+          this.down = Date.now();
+          vlog("box.feed", { state: "dropped", cursor: this.cursor, error: String((e as Error)?.message ?? e).slice(0, 200) });
+        }
         this.setReach(false, String((e as Error)?.message ?? e));
         // The cursor stays: when the box answers again, /poll gives exactly what was missed.
         await new Promise<void>((res) => {
@@ -269,6 +285,7 @@ class BoxChatSession {
     this.epoch = String(r.epoch ?? "");
     this.rows = new Map((Array.isArray(r.rows) ? r.rows : []).map((x: RowState) => [x.id, x]));
     this.cursor = Number(r.seq) || 0;
+    vlog("box.feed", { state: "resync", cursor: this.cursor, epoch: this.epoch, rows: this.rows.size });
     // Pictures from another log (or an older cursor) are not this one's: fetched again.
     const reload = [...this.pics.keys()];
     this.pics.clear();
@@ -311,6 +328,7 @@ class BoxChatSession {
         this.signal(r.type === "signal" ? r.signal : {});
         continue;
       }
+      logRecord(r);
       let row = this.rows.get(r.conv);
       // A conversation born while this client follows the log: every record of it comes here,
       // so its picture folds from nothing (no fetch).
@@ -644,9 +662,34 @@ export function boxImages(atts: ChatAttachment[] | undefined): { name?: string; 
   return out.slice(0, 8);
 }
 
-/** One intent to the box (POST /api/v2/intent). */
-function intent(sess: BoxChatSession, body: Record<string, unknown>) {
-  return httpPost(sess.link, "/api/v2/intent", body);
+/** One intent to the box (POST /api/v2/intent), in the app log under the ids the box logs it with. */
+async function intent(sess: BoxChatSession, body: Record<string, unknown>) {
+  const t0 = Date.now();
+  const r = await httpPost(sess.link, "/api/v2/intent", { ...body, client: "laptop" });
+  const d = r.data ?? {};
+  vlog("box.intent", {
+    type: body.type,
+    conv: body.convId ?? d.convId ?? null,
+    cmid: body.clientId ?? body.id ?? null,
+    ok: r.ok,
+    ms: Date.now() - t0,
+    ...(r.ok ? { outcome: ["steered", "queued", "answered", "duplicate", "unqueued"].filter((k) => d[k]).join(",") || "ok" } : { error: r.error, network: !!r.network }),
+  });
+  return r;
+}
+
+/** A record from the box's feed, in the app log when it says something about a turn or a message of Carl's. */
+function logRecord(r: LogRecord): void {
+  try {
+    if (r.type === "meta" && "running" in r.patch) {
+      const run = r.patch.running as { turn?: string; kind?: string } | null;
+      vlog("box.turn", run ? { conv: r.conv, turn: run.turn, kind: run.kind, state: "start", seq: r.seq } : { conv: r.conv, state: "end", to: r.patch.state ?? null, seq: r.seq });
+    } else if (r.type === "entry" && r.clientId) {
+      vlog("box.shown", { conv: r.conv, cmid: r.clientId, entry: r.entry?.id ?? null, via: r.via ?? null, seq: r.seq });
+    }
+  } catch {
+    /* logging never breaks the feed */
+  }
 }
 
 /**

@@ -12,8 +12,19 @@
 // To capture a tight synchronous loop, we also re-persist every ~200ms of
 // wall-clock time *during* logging — so even a function that never yields
 // leaves a partial trail as long as it keeps calling vlog().
+//
+// Every line on disk is `<ISO time> v<version> <tag> <data>`: the full date and
+// the app's version on each line (a flush header alone left both to be
+// inferred). Data passes through src/logRedact.ts (no keys, no tokens, no
+// message or file contents: names, ids, counts and timings). The file is
+// capped: past 4 MB it becomes app-log.1.txt (append_debug_log, lib.rs).
 
 import { invoke } from "@tauri-apps/api/core";
+import { capText, redactText, safeData } from "./logRedact";
+
+declare const __APP_VERSION__: string | undefined;
+/** The app's version (vite.config.ts defines it; "dev" elsewhere). */
+export const APP_VERSION: string = typeof __APP_VERSION__ !== "undefined" && __APP_VERSION__ ? __APP_VERSION__ : "dev";
 
 const LS_KEY = "vc_debug_buf";
 const MAX_ENTRIES = 800;
@@ -23,7 +34,7 @@ const MAX_ENTRIES = 800;
 // lost when the user force-quits the frozen app.
 const PERSIST_INTERVAL_MS = 0;
 
-type Entry = { t: number; tag: string; data?: unknown };
+type Entry = { t: number; tag: string; data?: unknown; v?: string };
 
 let buf: Entry[] = [];
 let lastPersist = 0;
@@ -59,17 +70,17 @@ function persistNow(): void {
  * small and JSON-serializable; large blobs are stringified+truncated.
  */
 export function vlog(tag: string, data?: unknown): void {
-  let safe = data;
+  let safe: unknown = undefined;
   try {
     if (data !== undefined) {
-      const s = JSON.stringify(data);
+      safe = typeof data === "string" ? capText(redactText(data), 500) : safeData(data);
+      const s = JSON.stringify(safe);
       if (s && s.length > 600) safe = s.slice(0, 600) + "…";
-      else safe = data;
     }
   } catch {
-    safe = String(data);
+    safe = capText(redactText(String(data)), 500);
   }
-  buf.push({ t: Date.now(), tag, data: safe });
+  buf.push({ t: Date.now(), tag, data: safe, v: APP_VERSION });
   if (buf.length > MAX_ENTRIES) buf = buf.slice(-MAX_ENTRIES);
   // Throttle the synchronous localStorage write so a hot loop calling
   // vlog() thousands of times doesn't itself become the bottleneck — but
@@ -94,9 +105,22 @@ export function installDebugLog(): void {
 
   const origWarn = console.warn.bind(console);
   const origError = console.error.bind(console);
+  // console.info / console.debug, and console.log lines tagged "[…]" (the app's own diagnostics):
+  // into the trail too, redacted and capped like everything else.
+  for (const level of ["info", "debug", "log"] as const) {
+    const orig = console[level].bind(console);
+    console[level] = (...args: unknown[]) => {
+      try {
+        if (level !== "log" || (typeof args[0] === "string" && args[0].startsWith("["))) vlog(`console.${level}`, consoleText(args));
+      } catch {
+        /* ignore */
+      }
+      orig(...args);
+    };
+  }
   console.warn = (...args: unknown[]) => {
     try {
-      vlog("console.warn", args.map(String).join(" ").slice(0, 500));
+      vlog("console.warn", consoleText(args));
       persistNow();
     } catch {
       /* ignore */
@@ -105,7 +129,7 @@ export function installDebugLog(): void {
   };
   console.error = (...args: unknown[]) => {
     try {
-      vlog("console.error", args.map(String).join(" ").slice(0, 500));
+      vlog("console.error", consoleText(args));
       persistNow();
     } catch {
       /* ignore */
@@ -133,6 +157,28 @@ export function installDebugLog(): void {
   vlog("debugLog installed", { ua: navigator.userAgent.slice(0, 80) });
 }
 
+/** A console call's arguments as one line (objects as JSON, errors as their message). */
+function consoleText(args: unknown[]): string {
+  return args
+    .map((a) => {
+      if (typeof a === "string") return a;
+      if (a instanceof Error) return a.message;
+      try {
+        return JSON.stringify(a);
+      } catch {
+        return String(a);
+      }
+    })
+    .join(" ")
+    .slice(0, 800);
+}
+
+/** One entry as its app-log line: `<ISO> v<version> <tag> <data>`. */
+export function formatEntry(e: Entry): string {
+  const d = e.data === undefined ? "" : " " + (typeof e.data === "string" ? e.data : JSON.stringify(e.data));
+  return `${new Date(e.t).toISOString()} v${e.v ?? APP_VERSION} ${e.tag}${d}`.replace(/\r?\n/g, " ⏎ ");
+}
+
 /**
  * Flush the buffered trail (including anything left by a previous frozen
  * session) to `<vault>/.vault-chat/app-log.txt`, then clear it. Safe to
@@ -147,14 +193,8 @@ export async function flushDebugLogToDisk(vaultPath: string | null): Promise<voi
     saved = [];
   }
   if (!saved.length) return;
-  const header = `\n===== flush @ ${new Date().toISOString()} (${saved.length} entries) =====\n`;
-  const lines = saved
-    .map((e) => {
-      const ts = new Date(e.t).toISOString().slice(11, 23);
-      const d = e.data === undefined ? "" : " " + (typeof e.data === "string" ? e.data : JSON.stringify(e.data));
-      return `${ts} ${e.tag}${d}`;
-    })
-    .join("\n");
+  const header = `\n===== flush @ ${new Date().toISOString()} v${APP_VERSION} (${saved.length} entries) =====\n`;
+  const lines = saved.map(formatEntry).join("\n");
   try {
     await invoke("append_debug_log", { vaultPath, text: header + lines + "\n" });
     // Only clear after a successful write so we never lose the trail — and

@@ -1048,7 +1048,7 @@ ${shared}` : "");
       },
       onStatusChange: ({ status }: { status: string }) => vlog("voice status", { status, transport }),
       onConversationMetadata: (m: any) =>
-        vlog("voice metadata", { conversationId: m?.conversation_id, input: m?.user_input_audio_format, output: m?.agent_output_audio_format }),
+        vlog("voice metadata", { conversationId: m?.conversation_id, inFormat: m?.user_input_audio_format, outFormat: m?.agent_output_audio_format }),
       onConnect: ({ conversationId }: { conversationId?: string } = {}) => {
         vlog("voice connected", { transport, conversationId, connectMs: Date.now() - startedAt });
         useStore.setState({ voiceError: null });
@@ -3345,9 +3345,9 @@ function formatToolMarker(name: string, args: any): string {
 }
 
 function logToolCall(name: string, args: any, result: string, where = ""): void {
-  const argsStr = JSON.stringify(args);
-  const summary = result.length > 200 ? result.slice(0, 200) + "…" : result;
-  console.log(`[voice-eleven] tool ${name}(${argsStr}) →`, summary);
+  // Names and sizes only (the app log captures this line): never the arguments' or the result's text.
+  const path = typeof args?.path === "string" ? args.path : typeof args?.file_path === "string" ? args.file_path : null;
+  console.log(`[voice-eleven] tool ${name}(${Object.keys(args ?? {}).join(",")}${path ? ` path=${path}` : ""}) → ${result.length} chars${/^error/i.test(result) ? " (error)" : ""}`);
   // Ran here (not on the box, which records its own): what it changed, into the shared stream.
   if (!where) recordLocalVoice(voiceToolEntry(name, args, result, useStore.getState().vaultPath));
   voiceAppend({

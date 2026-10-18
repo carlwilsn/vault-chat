@@ -925,6 +925,7 @@ async fn client_event_append(vault: String, line: String) -> Result<(), String> 
         std::fs::create_dir_all(&dir)
             .map_err(|e| format!("mkdir {}: {}", dir.display(), e))?;
         let path = dir.join("client-events.jsonl");
+        rotate_log_file(&path, "client-events.1.jsonl", CLIENT_EVENTS_CAP_BYTES);
         let mut f = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -1781,6 +1782,24 @@ async fn write_text_file(
     Ok(())
 }
 
+/// The laptop's diagnostic logs are capped: past the cap the file becomes its
+/// `.1` sibling (the previous `.1` dropped), so a long-running laptop keeps the
+/// recent days and never grows without bound. Best-effort; never fails a write.
+const APP_LOG_CAP_BYTES: u64 = 4 * 1024 * 1024;
+const CLIENT_EVENTS_CAP_BYTES: u64 = 4 * 1024 * 1024;
+
+fn rotate_log_file(path: &std::path::Path, rotated_name: &str, cap: u64) {
+    if let Ok(meta) = std::fs::metadata(path) {
+        if meta.len() > cap {
+            if let Some(dir) = path.parent() {
+                let to = dir.join(rotated_name);
+                let _ = std::fs::remove_file(&to);
+                let _ = std::fs::rename(path, &to);
+            }
+        }
+    }
+}
+
 /// Append a line (or block) to `<vault>/.vault-chat/app-log.txt`.
 /// Used by the renderer's crash/freeze diagnostic logger. Deliberately
 /// does NOT emit a file-changed event (unlike `write_text_file`) so the
@@ -1793,6 +1812,7 @@ async fn append_debug_log(vault_path: String, text: String) -> Result<(), String
         let dir = std::path::Path::new(&vault_path).join(".vault-chat");
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
         let path = dir.join("app-log.txt");
+        rotate_log_file(&path, "app-log.1.txt", APP_LOG_CAP_BYTES);
         use std::io::Write;
         let mut f = std::fs::OpenOptions::new()
             .create(true)
@@ -3959,6 +3979,10 @@ const VAULT_GITIGNORE: &str = "\
 .vault-chat/firer-heartbeat.json
 .vault-chat/*heartbeat*.conflict
 .vault-chat/app-log.txt
+.vault-chat/app-log.1.txt
+.vault-chat/client-events.jsonl
+.vault-chat/client-events.1.jsonl
+.vault-chat/diag/
 .vault-chat/sync-log.jsonl
 .vault-chat/pending-wakes.json
 .vault-chat/*.bak
@@ -3981,6 +4005,12 @@ const VAULT_GITIGNORE_REQUIRED: &[&str] = &[
     // sheds any that were committed before heartbeats were untracked.
     ".vault-chat/*heartbeat*.conflict",
     ".vault-chat/app-log.txt",
+    // The rotated app log, the UI's client events (each machine's own; the diag
+    // bundle gathers the box's and the laptop's), and the diag bundles.
+    ".vault-chat/app-log.1.txt",
+    ".vault-chat/client-events.jsonl",
+    ".vault-chat/client-events.1.jsonl",
+    ".vault-chat/diag/",
     ".vault-chat/sync-log.jsonl",
     ".vault-chat/pending-wakes.json", // durable mission wake queue: per machine
     ".vault-chat/*.bak",
@@ -4242,6 +4272,7 @@ async fn git_init_if_needed(vault: String) -> Result<bool, String> {
                         ".vault-chat/run-heartbeat.json",
                         ".vault-chat/firer-heartbeat.json",
                         ".vault-chat/app-log.txt",
+                        ".vault-chat/client-events.jsonl",
                     ],
                 );
                 run_git_as(&vault, &hn, &he, &["add", "--", ".gitignore"])?;

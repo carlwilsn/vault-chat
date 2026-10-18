@@ -8,6 +8,7 @@ import {
   existsSync,
   readdirSync,
   appendFileSync,
+  renameSync,
   type Dirent,
 } from "node:fs";
 import { dirname, join, relative } from "node:path";
@@ -105,6 +106,18 @@ type FileEntry = {
   denied: boolean;
   humanized: boolean;
 };
+
+/** lib.rs rotate_log_file: past `cap` bytes the log becomes its `.1` sibling (the older one dropped). */
+function rotateLog(path: string, rotated: string, cap = 4 * 1024 * 1024): void {
+  try {
+    if (statSync(path).size > cap) {
+      rmSync(join(dirname(path), rotated), { force: true });
+      renameSync(path, join(dirname(path), rotated));
+    }
+  } catch {
+    /* missing or busy: append as it is */
+  }
+}
 
 function appendLine(path: string, line: string): void {
   mkdirSync(dirname(path), { recursive: true });
@@ -347,12 +360,14 @@ export const fsCommands: Record<string, CommandFn> = {
   append_debug_log: ({ vaultPath, text }) => {
     const p = join(vaultPath, ".vault-chat", "app-log.txt");
     mkdirSync(dirname(p), { recursive: true });
+    rotateLog(p, "app-log.1.txt");
     appendFileSync(p, String(text ?? ""));
     return null;
   },
 
   // lib.rs:893
   client_event_append: ({ vault, line }) => {
+    rotateLog(join(vault, NOTES_DIR, "client-events.jsonl"), "client-events.1.jsonl");
     appendLine(join(vault, NOTES_DIR, "client-events.jsonl"), String(line));
     return null;
   },
