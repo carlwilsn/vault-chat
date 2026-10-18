@@ -92,3 +92,26 @@ export function routeChrome<B>(c: ChromeTaps<B>, e: { type: "down" | "move" | "u
   else if (e.type === "cancel") c.cancel(e.id);
   return true;
 }
+
+/**
+ * A native field (an input, a textarea, a select, contenteditable): fully the browser's. The chrome's tap handling,
+ * the click dedupe, the gesture/touch prevention and the board's keys leave it alone — iOS raises its keyboard
+ * and places the caret only when the field's own touches and keys reach it untouched.
+ */
+export function isField(t: unknown): boolean {
+  const el = t as { tagName?: string; isContentEditable?: boolean } | null;
+  if (!el || typeof el.tagName !== "string") return false;
+  const tag = el.tagName.toUpperCase();
+  return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || el.isContentEditable === true;
+}
+
+/** A field that takes typing (Backspace, ⌘Z are the field's own there, not the board's). */
+export function isTextField(t: unknown): boolean {
+  const el = t as { tagName?: string; type?: string; isContentEditable?: boolean } | null;
+  if (!el || typeof el.tagName !== "string") return false;
+  if (el.isContentEditable === true) return true;
+  const tag = el.tagName.toUpperCase();
+  if (tag === "TEXTAREA") return true;
+  if (tag !== "INPUT") return false;
+  return !/^(button|checkbox|color|file|hidden|image|radio|range|reset|submit)$/i.test(el.type ?? "text");
+}

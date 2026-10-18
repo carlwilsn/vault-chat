@@ -9,7 +9,7 @@
 //
 // `?voice=fake` swaps the ElevenLabs SDK and the box's session for voiceFake.ts (the preview).
 import * as api from "./api";
-import { ChromeTaps, routeChrome } from "./chrome";
+import { ChromeTaps, isField, routeChrome } from "./chrome";
 import { icon, toolIcon } from "./icons";
 import { onInboxEvent } from "./inbox";
 import { VoiceController, type VoiceApi, type VoiceSdk, type VoiceState } from "./voice";
@@ -213,7 +213,7 @@ export function mountVoicePill(): void {
   };
   for (const t of ["pointerdown", "pointerup", "pointercancel"]) root.addEventListener(t, (e) => route(e as PointerEvent));
   root.addEventListener("click", (e) => {
-    if (!synth && e.isTrusted && !taps.click(performance.now())) {
+    if (!synth && e.isTrusted && !isField(e.target) && !taps.click(performance.now())) {
       e.preventDefault();
       e.stopPropagation();
       return;
@@ -235,5 +235,5 @@ export function mountVoicePill(): void {
     }
   });
   // Keep the pill's touches its own (no page scroll, no callout).
-  root.addEventListener("touchmove", (e) => !(e.target as HTMLElement).closest?.("[data-scroll]") && e.preventDefault(), { passive: false });
+  root.addEventListener("touchmove", (e) => !isField(e.target) && !(e.target as HTMLElement).closest?.("[data-scroll]") && e.preventDefault(), { passive: false });
 }

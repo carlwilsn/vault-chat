@@ -24,7 +24,7 @@ import { icon, toolIcon, type IconName, type Weight } from "./icons";
 import { Items, isDom, measureMath, fetchText, renderPdfPage } from "./items";
 import { openInbox, inboxBadge, type InboxHost } from "./inbox";
 import { placeParts } from "./place";
-import { ChromeTaps, routeChrome } from "./chrome";
+import { ChromeTaps, isField, isTextField, routeChrome } from "./chrome";
 import { blog, flushBoardLog, setTapSource } from "./log";
 import { mountVoicePill, voice, voiceButton } from "./voicePill";
 import type { BoardSource } from "./voice";
@@ -281,7 +281,7 @@ export class BoardView {
     // No iOS selection, callout, magnifier, double-tap zoom or rubber-band anywhere on the board.
     for (const t of ["touchstart", "dblclick", "contextmenu", "selectstart"]) this.stage.addEventListener(t, (e) => e.preventDefault(), { passive: false });
     // Text fields and the scrolling panels (the inbox, its viewer, the popovers) keep their own touches.
-    for (const t of ["touchmove", "dblclick", "contextmenu", "selectstart"]) this.el.addEventListener(t, (e) => (e.target as HTMLElement).tagName !== "INPUT" && !(e.target as HTMLElement).closest?.("[data-scroll]") && e.preventDefault(), { passive: false });
+    for (const t of ["touchmove", "dblclick", "contextmenu", "selectstart"]) this.el.addEventListener(t, (e) => !isField(e.target) && !(e.target as HTMLElement).closest?.("[data-scroll]") && e.preventDefault(), { passive: false });
     window.addEventListener("resize", this.onResize);
     window.addEventListener("keydown", this.onKey);
     document.addEventListener("visibilitychange", this.onHide);
@@ -1044,6 +1044,8 @@ export class BoardView {
   }
 
   private onKey = (e: KeyboardEvent) => {
+    // Typing in a field (a name, a widget's text box): Backspace and ⌘Z are the field's, never the board's.
+    if (isTextField(e.target) || isTextField(document.activeElement)) return;
     if ((e.key === "Delete" || e.key === "Backspace") && this.sel) return this.deleteSel();
     if (!(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== "z") return;
     e.preventDefault();
@@ -1329,7 +1331,7 @@ export class BoardView {
   }
 
   private onClickCapture = (e: MouseEvent): void => {
-    if (this.synthClick || !e.isTrusted) return;
+    if (this.synthClick || !e.isTrusted || isField(e.target)) return;
     if (!this.chrome.click(performance.now())) {
       e.stopImmediatePropagation();
       e.preventDefault();
