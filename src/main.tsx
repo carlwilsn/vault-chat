@@ -28,6 +28,8 @@ import { installAutosaveNet } from "./autosave";
 import { startPhoneVoiceHost } from "./phoneVoice";
 import { startPhoneAppHost } from "./phoneApp";
 import { initBackgroundMode } from "./background";
+import { installClientEvents } from "./clientEvents";
+import { installDiagShortcut } from "./diag";
 
 // Install the freeze diagnostic logger before anything else runs, so a
 // crash during boot still leaves a trail.
@@ -79,6 +81,10 @@ if (isPopout) {
   // Durability safety net: periodic backstop + commit-on-quit so no vault
   // change can reach disk without reaching git. Main window only.
   installAutosaveNet();
+  // What the screen did (client-events.jsonl) and the "something just went wrong" bundle
+  // (Ctrl+Shift+D → .vault-chat/diag/). Main window only.
+  installClientEvents();
+  installDiagShortcut();
   // Always-ready phone-voice host: the box keeps a token-guarded server up so a
   // phone can connect over Tailscale and talk live. Inert until a vault + EL key
   // exist. Main window only.
