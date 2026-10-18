@@ -1,12 +1,12 @@
-// A picture (./reduce.ts) as the desktop's chat components draw it: the
-// finished items as messages, in log order, and the open tail as the live
-// stream. A pure function of the picture — the desktop, the popout and the
-// box's own reads (the engine, the old routes) all project through here.
+// A picture (./reduce.ts) as the desktop's chat components draw it: what pi
+// wrote, as messages, in its order, and the open tail as the live stream. A
+// pure function of the picture — the desktop, the popout and the box's own
+// reads (the engine, the old routes) all project through here.
 //
 // One item is one message, except that consecutive tool calls share one (the
 // "N tool calls" fold). So the screen shows exactly the log's order.
-import type { Item, PendingInput, Todo } from "./protocol";
-import { isOpen, openAsk, planOf, type Picture } from "./reduce";
+import type { PendingInput, Todo } from "./protocol";
+import { isOpen, pendingOf, planOf, shown, type Item, type Picture } from "./reduce";
 
 export const DIVIDER_TEXT = "Earlier conversation summarized";
 
@@ -29,7 +29,6 @@ export type ViewMessage = {
   rollover?: { at?: number; recap?: string };
   /** The items this message shows (in order). */
   items?: string[];
-  /** A voice line. */
   voice?: boolean;
 };
 
@@ -40,7 +39,7 @@ export type ChatView = {
   /** The open tail: what streams now. */
   live: { text: string; reasoning: string; tools: ViewTool[]; items: string[] };
   running: boolean;
-  /** Parked on a question to Carl. */
+  /** Waiting on Carl's answer to a question. */
   waiting: boolean;
   startedAt: number | null;
   todos: Todo[] | null;
@@ -66,59 +65,55 @@ export function argsOf(it: Item): any {
   }
 }
 
-function askText(it: Item): string {
-  const opts = it.options ?? [];
-  return `**❓ ${it.question ?? ""}**${opts.length ? `\n\n${opts.map((o, i) => `${i + 1}. ${o}`).join("\n")}` : ""}`;
-}
+/** pi's tool names → the names the clients' renderers know. */
+const TOOL_NAMES: Record<string, string> = { bash: "Bash", read: "Read", write: "Write", edit: "Edit", grep: "Grep", find: "Glob", ls: "LS" };
+export const toolName = (n: string | undefined): string => TOOL_NAMES[n ?? ""] ?? (n || "tool");
 
-/** One non-tool item → its message. */
-function messageOf(it: Item): ViewMessage | null {
+const ENGINE_VIA = new Set(["wake", "nudge", "resume", "job"]);
+
+/** One non-tool item → its message(s). */
+function messagesOfItem(it: Item): ViewMessage[] {
   switch (it.kind) {
     case "user":
-      return {
-        role: "user",
-        content: it.text ?? "",
-        mid: it.id,
-        direct: true,
-        ...(it.hidden ? { hidden: true } : {}),
-        ...(it.via === "answer" ? { decision: true } : {}),
-        ...(it.via === "voice" ? { voice: true } : {}),
-        ...(it.images?.length ? { attachments: it.images.map((i) => ({ imageDataUrl: i.dataUrl ?? "", capturedFilePath: i.path })) } : {}),
-      };
+      if (ENGINE_VIA.has(it.via ?? "")) return [{ role: "user", system: true, content: `${it.via === "wake" || it.via === "job" ? "⏰" : "↻"} ${it.text ?? ""}`.trim(), mid: it.id }];
+      return [
+        {
+          role: "user",
+          content: it.text ?? "",
+          mid: it.id,
+          direct: true,
+          ...(it.via === "answer" ? { decision: true } : {}),
+          ...(it.via === "voice" ? { voice: true } : {}),
+          ...(it.images?.length ? { attachments: it.images.map((i) => ({ imageDataUrl: i.dataUrl ?? "", capturedFilePath: i.path })) } : {}),
+        },
+      ];
     case "assistant":
-      return { role: "assistant", content: it.text ?? "", mid: it.id, ...(it.via === "voice" ? { voice: true } : {}) };
+      return [{ role: "assistant", content: it.text ?? "", mid: it.id, ...(it.via === "voice" ? { voice: true } : {}) }];
     case "thinking":
-      return (it.text ?? "").trim() ? { role: "assistant", content: "", thinking: it.text, mid: it.id } : null;
+      return (it.text ?? "").trim() ? [{ role: "assistant", content: "", thinking: it.text, mid: it.id }] : [];
     case "compaction":
-      if (isOpen(it)) return { role: "assistant", system: true, content: "Summarizing the earlier conversation…", mid: it.id };
+      if (isOpen(it)) return [{ role: "assistant", system: true, content: "Summarizing the earlier conversation…", mid: it.id }];
       return it.rollover
-        ? { role: "assistant", system: true, content: DIVIDER_TEXT, mid: it.id, rollover: { recap: it.text ?? "", at: it.at } }
-        : { role: "assistant", system: true, content: DIVIDER_TEXT, mid: it.id, compaction: { summary: it.text ?? "", at: it.at } };
+        ? [{ role: "assistant", system: true, content: DIVIDER_TEXT, mid: it.id, rollover: { recap: it.text ?? "", at: it.at } }]
+        : [{ role: "assistant", system: true, content: DIVIDER_TEXT, mid: it.id, compaction: { summary: it.text ?? "", at: it.at } }];
     case "notice":
-      return { role: "assistant", system: true, content: it.text ?? "", mid: it.id, ...(it.level === "error" ? { failed: true } : {}) };
-    case "ask":
-      return {
-        role: "assistant",
-        content: askText(it),
-        mid: it.id,
-        ...(it.options?.length ? { askOptions: it.options.map((o) => ({ answer: o, title: o, body: "" })) } : {}),
-      };
-    case "wake":
-      return { role: "user", system: true, content: `${it.wake === "wake" || it.wake === "job" ? "⏰" : "↻"} ${it.text ?? ""}`.trim(), mid: it.id };
-    case "plan":
+      return [{ role: "assistant", system: true, content: it.text ?? "", mid: it.id, ...(it.level === "error" ? { failed: true } : {}) }];
     case "tool":
-      return null;
+      return [];
   }
 }
 
-function toolCall(it: Item): NonNullable<ViewMessage["toolCalls"]>[number] {
-  return {
-    id: it.id,
-    name: it.name ?? "tool",
-    input: argsOf(it),
-    ...(it.result !== undefined ? { result: it.result } : isOpen(it) ? {} : { result: it.status === "stopped" ? "(stopped)" : "" }),
-    ...(it.subagents?.length ? { subagents: it.subagents } : {}),
+/** AskUser: the question (its options as cards); Carl's answer is his own line after it (the reducer's). */
+function askMessages(it: Item): ViewMessage[] {
+  const a = argsOf(it);
+  const options: string[] = Array.isArray(a?.options) ? a.options.map(String) : [];
+  const q: ViewMessage = {
+    role: "assistant",
+    content: `**❓ ${String(a?.question ?? "")}**${options.length ? `\n\n${options.map((o, i) => `${i + 1}. ${o}`).join("\n")}` : ""}`,
+    mid: it.id,
+    ...(options.length ? { askOptions: options.map((o) => ({ answer: o, title: o, body: "" })) } : {}),
   };
+  return [q];
 }
 
 /** Where the live tail starts: trailing streaming text/thinking, or a trailing run of tool calls of which one is still open. */
@@ -130,67 +125,69 @@ export function liveStart(items: Item[]): number {
     else break;
   }
   let j = k;
-  while (j > 0 && items[j - 1]!.kind === "tool") j--;
+  while (j > 0 && items[j - 1]!.kind === "tool" && items[j - 1]!.name !== "AskUser") j--;
   if (j < k && items.slice(j, k).some(isOpen)) k = j;
   return k;
 }
 
-type Cached = { deps: Item[]; msg: ViewMessage };
+type Cached = { deps: Item[]; extra: string; msgs: ViewMessage[] };
 
-/** A projector that hands back the same message object for an item that did not change (React's memo keeps its row). */
+/** A projector that hands back the same message objects for items that did not change (React's memo keeps their rows). */
 export function makeChatView(): (p: Picture, opts?: { split?: boolean }) => ChatView {
   let cache = new Map<string, Cached>();
   return (p, opts = {}) => {
     const split = opts.split !== false;
-    const items = p.items;
-    const cut = split && p.turn ? liveStart(items) : items.length;
+    const items = shown(p).filter((x) => !(x.kind === "assistant" && !(x.text ?? "").trim() && x.status !== "streaming"));
+    const cut = split && p.meta.running ? liveStart(items) : items.length;
+    const subs = (p.meta.subagents ?? []) as { threadId: string; toolCallId?: string }[];
+    const spawnsOf = (id: string) => subs.filter((s) => s.toolCallId === id).map((s) => s.threadId);
     const next = new Map<string, Cached>();
     const messages: ViewMessage[] = [];
-    const use = (key: string, deps: Item[], make: () => ViewMessage | null) => {
+    const use = (key: string, deps: Item[], extra: string, make: () => ViewMessage[]) => {
       const hit = cache.get(key);
-      if (hit && hit.deps.length === deps.length && hit.deps.every((d, i) => d === deps[i])) {
+      if (hit && hit.extra === extra && hit.deps.length === deps.length && hit.deps.every((d, i) => d === deps[i])) {
         next.set(key, hit);
-        messages.push(hit.msg);
+        messages.push(...hit.msgs);
         return;
       }
-      const msg = make();
-      if (!msg) return;
-      msg.items = deps.map((d) => d.id);
-      next.set(key, { deps, msg });
-      messages.push(msg);
+      const msgs = make();
+      for (const m of msgs) m.items = deps.map((d) => d.id);
+      next.set(key, { deps, extra, msgs });
+      messages.push(...msgs);
     };
     for (let i = 0; i < cut; ) {
       const it = items[i]!;
-      if (it.kind === "plan") {
-        i++;
-        continue;
-      }
       if (it.kind === "tool") {
         const group: Item[] = [];
-        while (i < cut && items[i]!.kind === "tool") group.push(items[i++]!);
-        use(`t:${group[0]!.id}`, group, () => ({ role: "assistant", content: "", mid: group[0]!.id, toolCalls: group.map(toolCall) }));
+        while (i < cut && items[i]!.kind === "tool") {
+          group.push(items[i++]!);
+          if (group[group.length - 1]!.name === "AskUser") break;
+        }
+        const extra = group.map((t) => spawnsOf(t.id).join(",")).join("|");
+        use(`t:${group[0]!.id}`, group, extra, () => [
+          {
+            role: "assistant",
+            content: "",
+            mid: group[0]!.id,
+            toolCalls: group.map((t) => {
+              const sp = spawnsOf(t.id);
+              return {
+                id: t.id,
+                name: toolName(t.name),
+                input: argsOf(t),
+                ...(t.result !== undefined ? { result: t.result } : isOpen(t) ? {} : { result: t.status === "stopped" ? "(stopped)" : "" }),
+                ...(sp.length ? { subagents: sp } : {}),
+              };
+            }),
+          },
+        ]);
+        // A question: its card after the call (Carl's answer is his own line after that).
+        const last = group[group.length - 1]!;
+        if (last.name === "AskUser") use(`ask:${last.id}`, [last], "", () => askMessages(last));
         continue;
       }
-      use(it.id, [it], () => messageOf(it));
+      use(it.id, [it], "", () => messagesOfItem(it));
       i++;
-    }
-    // Each turn's cost on its last reply (its last text, else its last step).
-    if (Object.keys(p.turnCost).length) {
-      const byId = new Map(items.map((x) => [x.id, x]));
-      const lastOf = new Map<string, number>();
-      const lastText = new Map<string, number>();
-      messages.forEach((m, idx) => {
-        if (m.role !== "assistant" || m.system) return;
-        const it = byId.get(m.items?.[0] ?? "");
-        if (!it?.turn) return;
-        lastOf.set(it.turn, idx);
-        if (m.content.trim()) lastText.set(it.turn, idx);
-      });
-      for (const [t, i] of lastText) lastOf.set(t, i);
-      for (const [turn, idx] of lastOf) {
-        const usd = p.turnCost[turn];
-        if (typeof usd === "number" && messages[idx]!.costUsd !== usd) messages[idx] = { ...messages[idx]!, costUsd: usd };
-      }
     }
     cache = next;
     const tail = items.slice(cut);
@@ -200,23 +197,23 @@ export function makeChatView(): (p: Picture, opts?: { split?: boolean }) => Chat
       .filter((x) => x.kind === "tool")
       .map((x) => ({
         id: x.id,
-        name: x.name ?? "tool",
+        name: toolName(x.name),
         input: argsOf(x),
         ...(x.result !== undefined ? { result: x.result } : {}),
         startedAt: x.at,
         ...(x.args === undefined && x.argsText ? { inputChars: x.argsText.length } : {}),
       }));
-    const ask = openAsk(p);
+    const asking = !!p.meta.asking;
     return {
       messages,
       live: { text, reasoning, tools, items: tail.map((x) => x.id) },
-      running: !!p.turn && !ask,
-      waiting: !!ask,
-      startedAt: p.turn?.startedAt ?? null,
+      running: !!p.meta.running && !asking,
+      waiting: asking,
+      startedAt: p.meta.running?.startedAt ?? null,
       todos: planOf(p),
-      pending: p.pending,
+      pending: pendingOf(p),
       context: p.usage?.context ?? null,
-      window: p.usage?.window ?? null,
+      window: typeof p.meta.contextWindow === "number" ? p.meta.contextWindow : null,
     };
   };
 }

@@ -1,28 +1,33 @@
-// The durable, append-only event log of one vault's conversations
-// (src/convlog/protocol.ts). The box server is its only writer.
+// The box's conversation feed for one vault (src/convlog/protocol.ts). The box
+// server is its only writer. A conversation's transcript is pi's own session
+// files; the feed holds only pointers into them, pi's live events for the
+// message in flight, the conversation's fields and vault-level signals.
 //
 // Layout: <vault>/.vault-chat/events/
-//   <conv>.jsonl      one conversation's records, in seq order (one JSON line each)
-//   <conv>.ckpt.json  its picture at some seq K, exactly fold(records ≤ K) (a cache: deleting it is harmless)
+//   <conv>.jsonl      one conversation's records, in seq order (one JSON line each);
+//                     an entry record is a pointer {file, id, clientId?, shown?, via?}
+//   <conv>.ckpt.json  its picture at some seq K, exactly fold(records <= K) (a cache: deleting it is harmless)
+//   sessions/         pi-format session files for what no pi wrote (an imported older
+//                     conversation, a voice-only chat, a line after a failed start)
 //   _signals.jsonl    vault-level signals (conv: null)
-//   _seq              the highest seq reserved (blocks of 1000): seqs never go back, even if a file is removed
-//   _epoch            this log's identity: a client holding a cursor from another log starts over
+//   _seq              the highest seq reserved (blocks of 1000): seqs never go back
+//   _epoch            this feed's identity: a client holding a cursor from another starts over
 //
 // Why one file per conversation under ONE vault-wide sequence: a client opens a
-// conversation by replaying just its file (or its checkpoint plus the tail),
-// while /poll?after=N still answers exactly the records after N across the
-// vault (in memory for the recent tail, from the files for anything older).
-// Nothing is rotated away: a cursor of any age is answered exactly.
+// conversation by replaying its file (or its checkpoint plus the tail), while
+// /poll?after=N still answers exactly the records after N across the vault (in
+// memory for the recent tail, from the files for anything older).
 //
-// Every record is written (appendFileSync) before anyone is told about it, so a
-// record a client has seen is on disk, and a restart loses nothing it showed.
-// The importer (./importer.ts) turns an older conversation file into records
-// the first time it is opened; the original file is never touched.
+// Every record is written (appendFileSync) before anyone is told about it, and
+// an entry is pointed to only once pi has written it: a record a client has
+// seen is on disk, and a restart loses nothing it showed. On the wire (and in
+// memory) an entry record carries the entry itself, read from pi's file.
 import { appendFileSync, closeSync, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, ftruncateSync, statSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import { randomBytes } from "node:crypto";
 import { renameRetry } from "../atomic";
-import type { EventBody, LogRecord, PollAnswer } from "../../src/convlog/protocol";
+import type { EventBody, LogRecord, PiEntry, PollAnswer } from "../../src/convlog/protocol";
+import { readEntries } from "./piSession";
 import { REDUCER_VERSION, emptyPicture, emptyRow, foldInto, reduce, reduceRow, rowFromPicture, type Picture, type RowState } from "../../src/convlog/reduce";
 
 const BLOCK = 1000;
@@ -38,8 +43,9 @@ const SIGNALS = "_signals";
 export type LegacySource = {
   /** The conversations an older file holds that are not in the log yet: their list rows. */
   rows(): RowState[];
-  /** The records that bring one older conversation into the log (null: not a legacy one). */
-  records(id: string): EventBody[] | null;
+  /** The records that bring one older conversation into the feed, its transcript written as a
+   *  pi-format session file under `dir` (null: not a legacy one). The original is never touched. */
+  records(id: string, dir: string): EventBody[] | null;
   /** The `at` its records carry (the original activity time, so opening it does not move it in the list). */
   at(id: string): number;
 };
@@ -93,7 +99,7 @@ function healTail(file: string): void {
   }
 }
 
-function readRecords(file: string, after = 0): LogRecord[] {
+function readRecords(file: string, after = 0, resolveEntry?: (rec: any) => LogRecord): LogRecord[] {
   let raw = "";
   try {
     raw = readFileSync(file, "utf8");
@@ -105,12 +111,33 @@ function readRecords(file: string, after = 0): LogRecord[] {
     if (!line) continue;
     if (after && seqOfLine(line) <= after) continue;
     try {
-      out.push(JSON.parse(line));
+      const rec = JSON.parse(line);
+      out.push(resolveEntry && rec?.type === "entry" ? resolveEntry(rec) : rec);
     } catch {
       /* a torn line (healed on open) */
     }
   }
   return out;
+}
+
+/** pi's session files, read as needed: an entry record on disk names its file and entry id. */
+class Entries {
+  private files = new Map<string, Map<string, PiEntry>>();
+  get(file: string, id: string): PiEntry | null {
+    let m = this.files.get(file);
+    if (!m || !m.has(id)) {
+      // Not read yet, or written since: read it again.
+      m = new Map(readEntries(file).map((e) => [e.id, e] as const));
+      this.files.delete(file);
+      this.files.set(file, m);
+      while (this.files.size > 24) this.files.delete(this.files.keys().next().value!);
+    }
+    return m.get(id) ?? null;
+  }
+  /** pi wrote this entry (it is in hand already: no read). */
+  put(file: string, e: PiEntry): void {
+    this.files.get(file)?.set(e.id, e);
+  }
 }
 
 function lastSeq(file: string): number {
@@ -150,6 +177,11 @@ export class ConvLog {
   private waiters = new Set<() => void>();
   private listeners = new Set<(r: LogRecord) => void>();
   private legacyRows = new Map<string, RowState>();
+  private entries = new Entries();
+  /** Per conversation: the entries of each session file the feed points to (read on first use, kept up to date). */
+  private pointed = new Map<string, Map<string, Set<string>>>();
+  /** Where vault-chat's own pi-format session files live. */
+  readonly sessionsDir: string;
 
   constructor(
     readonly vault: string,
@@ -159,6 +191,7 @@ export class ConvLog {
     this.dir = dir ?? join(vault, ".vault-chat", "events");
     mkdirSync(this.dir, { recursive: true });
     this.signalsFile = join(this.dir, `${SIGNALS}.jsonl`);
+    this.sessionsDir = join(this.dir, "sessions");
     this.epoch = this.loadEpoch();
     let max = 0;
     for (const n of readdirSync(this.dir)) {
@@ -216,17 +249,17 @@ export class ConvLog {
     let ck: { pic: Picture; seq: number } | null = null;
     try {
       const v = JSON.parse(readFileSync(file.replace(/\.jsonl$/, ".ckpt.json"), "utf8"));
-      if (v?.v === 1 && v.rv === REDUCER_VERSION && v.picture && typeof v.seq === "number" && v.seq <= fileMax) ck = { pic: v.picture as Picture, seq: v.seq };
+      if (v?.v === 2 && v.rv === REDUCER_VERSION && v.picture && typeof v.seq === "number" && v.seq <= fileMax) ck = { pic: v.picture as Picture, seq: v.seq };
     } catch {
       /* none, or unreadable: fold from the start */
     }
     let pic: Picture;
     let tail: LogRecord[];
     if (ck) {
-      tail = readRecords(file, ck.seq);
+      tail = readRecords(file, ck.seq, this.resolve);
       pic = foldInto(ck.pic, tail);
     } else {
-      tail = readRecords(file);
+      tail = readRecords(file, 0, this.resolve);
       const id = tail.find((r) => typeof r.conv === "string")?.conv;
       if (!id) return null;
       pic = foldInto(emptyPicture(id), tail);
@@ -260,8 +293,9 @@ export class ConvLog {
     const seq = this.next++;
     if (seq >= this.reservedUpTo) this.reserve();
     const rec = { seq, conv, at, ...body } as LogRecord;
+    if (rec.type === "entry") rec.file = this.abs(rec.file);
     this.last = seq;
-    const line = JSON.stringify(rec) + "\n";
+    const line = JSON.stringify(this.pointer(rec)) + "\n";
     if (conv === null) {
       appendFileSync(this.signalsFile, line);
       this.signalsMax = seq;
@@ -278,7 +312,11 @@ export class ConvLog {
       c.picture = reduce(c.picture, rec);
       c.row = reduceRow(c.row, rec);
       c.sinceCkpt++;
-      if (c.sinceCkpt >= CKPT_EVERY || rec.type === "turn.ended") this.checkpoint(c);
+      if (rec.type === "entry") {
+        this.entries.put(rec.file, rec.entry);
+        this.pointed.get(conv)?.get(rec.file)?.add(rec.entry.id);
+      }
+      if (c.sinceCkpt >= CKPT_EVERY || (rec.type === "meta" && rec.patch.running === null)) this.checkpoint(c);
     }
     this.recent.push(rec);
     if (this.recent.length > RECENT_MAX) this.recent.splice(0, this.recent.length - RECENT_MAX);
@@ -293,10 +331,77 @@ export class ConvLog {
     return rec;
   }
 
+  /** A session file as an entry record names it on disk: relative to the feed's folder when inside it. */
+  private rel(file: string): string {
+    const r = relative(this.dir, file);
+    return !r.startsWith("..") && !isAbsolute(r) ? r.replace(/\\/g, "/") : file;
+  }
+  private abs(file: string): string {
+    return isAbsolute(file) ? file : resolve(this.dir, file);
+  }
+
+  /** An entry record as it is written: the pointer (the entry stays in pi's file). */
+  private pointer(rec: LogRecord): unknown {
+    if (rec.type !== "entry") return rec;
+    const { entry, file, images, ...rest } = rec;
+    // An image the entry itself carries (pi stores it base64) is not copied: only its path.
+    const inEntry = Array.isArray(entry.message?.content) && entry.message!.content.some((b: any) => b?.type === "image");
+    const imgs = images?.map((i) => (inEntry ? { path: i.path } : i));
+    return { ...rest, file: this.rel(file), id: entry.id, ...(imgs?.length ? { images: imgs } : {}) };
+  }
+
+  /** A pointer read back → the entry record (the entry from pi's file; gone: a placeholder no fold shows). */
+  private resolve = (p: any): LogRecord => {
+    const file = this.abs(String(p.file ?? ""));
+    const id = String(p.id ?? "");
+    const { id: _id, ...rest } = p;
+    const entry = this.entries.get(file, id) ?? ({ type: "missing", id } as PiEntry);
+    return { ...rest, file, entry } as LogRecord;
+  };
+
+  /** The entries of `file` this conversation's feed already points to (the engine's catch-up skips them). */
+  pointedIn(conv: string, file: string): Set<string> {
+    let byFile = this.pointed.get(conv);
+    if (!byFile) {
+      byFile = new Map();
+      this.pointed.set(conv, byFile);
+      const c = this.convs.get(conv);
+      if (c) {
+        for (const line of (() => {
+          try {
+            return readFileSync(c.file, "utf8").split("\n");
+          } catch {
+            return [];
+          }
+        })()) {
+          if (!line.includes('"type":"entry"')) continue;
+          try {
+            const r = JSON.parse(line);
+            if (r?.type !== "entry") continue;
+            const f = this.abs(String(r.file));
+            let set = byFile.get(f);
+            if (!set) byFile.set(f, (set = new Set()));
+            set.add(String(r.id));
+          } catch {
+            /* torn */
+          }
+        }
+      }
+    }
+    let set = byFile.get(file);
+    if (!set) byFile.set(file, (set = new Set()));
+    return set;
+  }
+
+  /** This conversation's own pi-format session file (for what no pi writes). */
+  ownSession(conv: string): string {
+    return join(this.sessionsDir, `${fileStem(conv)}.jsonl`);
+  }
+
   private checkpoint(c: Conv): void {
     const ck = c.file.replace(/\.jsonl$/, ".ckpt.json");
     try {
-      writeFileSync(ck + ".tmp", JSON.stringify({ v: 1, rv: REDUCER_VERSION, seq: c.picture.seq, picture: c.picture }));
+      writeFileSync(ck + ".tmp", JSON.stringify({ v: 2, rv: REDUCER_VERSION, seq: c.picture.seq, picture: c.picture }));
       renameRetry(ck + ".tmp", ck);
       c.sinceCkpt = 0;
     } catch (e) {
@@ -332,7 +437,7 @@ export class ConvLog {
   }
 
   private importLegacy(id: string): void {
-    const recs = this.legacy?.records(id);
+    const recs = this.legacy?.records(id, this.sessionsDir);
     this.legacyRows.delete(id);
     if (!recs?.length) return;
     const at = this.legacy!.at(id);
@@ -362,7 +467,7 @@ export class ConvLog {
     // The recent tail in memory covers it when it reaches back far enough.
     const r0 = this.recent[0]?.seq ?? Infinity;
     if (after >= r0 - 1) return this.recent.filter((r) => r.conv === id && r.seq > after);
-    return readRecords(c.file, after);
+    return readRecords(c.file, after, this.resolve);
   }
 
   /** Exactly the records after `after`, in seq order (at most POLL_LIMIT; `more` when there are others). */
@@ -385,7 +490,7 @@ export class ConvLog {
     } else {
       // Older than the tail: from the files (every file holding a record after `after`).
       const all: LogRecord[] = [];
-      for (const c of this.convs.values()) if (c.maxSeq > after) all.push(...readRecords(c.file, after));
+      for (const c of this.convs.values()) if (c.maxSeq > after) all.push(...readRecords(c.file, after, this.resolve));
       if (this.signalsMax > after) all.push(...readRecords(this.signalsFile, after));
       all.sort((a, b) => a.seq - b.seq);
       events = all.slice(0, limit + 1);

@@ -1,218 +1,369 @@
-// The one reducer: a conversation's picture is a pure fold of its log records.
-// The box folds it to answer the engine's reads, the laptop, the popout and
-// the phone fold it to render — all with this function, so no two of them can
-// disagree about what a conversation holds or in which order.
+// The one reducer: a conversation's picture is a pure fold of its feed records
+// (./protocol.ts) — pi's own session entries, pi's own live events for the
+// message in flight, and the conversation's fields. The box folds it to answer
+// the engine's reads; the laptop, the popout and the phone fold it to render.
+//
+// pi's streaming rule (json.md), applied as written: a message_start opens the
+// message in flight; each block grows by its deltas and takes its *_end
+// content; message_end is the whole message; the entry pi then writes is the
+// message for good and takes the place of the one in flight (same ids: a
+// block is `<message timestamp>:<content index>`, a tool call its own id).
 //
 //   reduce(picture, record) -> picture      (new object; unchanged parts shared)
-//   fold(records, id)       -> picture      (from nothing)
+//   fold(records, id)       -> picture
 //   foldInto(picture, records)              (a batch: one copy, then in place)
 //
-// A record at or below the picture's `seq` is skipped, so replaying an overlap
-// (a reconnect, a checkpoint plus its tail) never applies anything twice.
-import type { ConvMeta, ConvRow, Item, LogRecord, PendingInput, Todo, TurnEnd, TurnKind } from "./protocol";
+// A record at or below the picture's `seq` is skipped: replaying an overlap (a
+// reconnect, a checkpoint plus its tail) never applies anything twice.
+import type { ConvMeta, ConvRow, ItemImage, LogRecord, PendingInput, PiBlock, PiEntry, PiMessage, Todo } from "./protocol";
+import { VC_NOTE } from "./protocol";
+
+/** Bumped when the fold's meaning changes: a checkpoint from another version is folded again. */
+export const REDUCER_VERSION = 2;
+
+export type ItemKind = "user" | "assistant" | "thinking" | "tool" | "compaction" | "notice";
+export type ItemStatus = "streaming" | "pending" | "running" | "done" | "error" | "stopped";
+
+/** One thing the transcript shows, from pi's entries (or its message in flight). */
+export type Item = {
+  id: string;
+  kind: ItemKind;
+  status: ItemStatus;
+  at: number;
+  text?: string;
+  /** user: how it came in (chat, steer, queue, answer, voice, wake, nudge, resume, job). */
+  via?: string;
+  images?: ItemImage[];
+  // tool
+  name?: string;
+  argsText?: string;
+  args?: any;
+  result?: string;
+  partial?: string;
+  // notice
+  level?: "info" | "warn" | "error";
+  rollover?: boolean;
+};
 
 export type Picture = {
   id: string;
-  /** The last record applied. */
   seq: number;
-  /** A conv.created was seen. */
   exists: boolean;
   meta: ConvMeta;
-  /** In log order: the order every client shows. */
+  /** What pi's session holds, in its order. */
   items: Item[];
-  /** The running turn; null = idle. */
-  turn: { id: string; kind: TurnKind; startedAt: number } | null;
-  lastTurn: { id: string; status: TurnEnd; error?: string; endedAt: number } | null;
-  /** Steers and queued messages not delivered yet. */
-  pending: PendingInput[];
-  /** The latest context size and the model's window. */
-  usage: { context: number; window?: number } | null;
-  /** What each turn cost (USD). */
-  turnCost: Record<string, number>;
+  /** The message in flight (pi's live events), after the items. */
+  inflight: Item[];
+  /** Its pi timestamp (the ids of its blocks). */
+  inflightTs: number | null;
+  /** The last assistant messages pi wrote (their timestamps): a live event about one of them comes late and changes nothing. */
+  written: number[];
+  /** The context size of the last reply. */
+  usage: { context: number } | null;
 };
 
 const NEW_CHAT = "New chat";
-
-/** Bumped when the fold's meaning changes: a checkpoint from another version is folded again. */
-export const REDUCER_VERSION = 1;
+const OPEN = new Set(["streaming", "pending", "running"]);
+export const isOpen = (it: Item): boolean => OPEN.has(it.status);
 
 export function emptyPicture(id: string): Picture {
-  return {
-    id,
-    seq: 0,
-    exists: false,
-    meta: { title: NEW_CHAT, source: "manual", createdAt: 0, lastActivityAt: 0 },
-    items: [],
-    turn: null,
-    lastTurn: null,
-    pending: [],
-    usage: null,
-    turnCost: {},
-  };
+  return { id, seq: 0, exists: false, meta: { title: NEW_CHAT, source: "manual", createdAt: 0, lastActivityAt: 0 }, items: [], inflight: [], inflightTs: null, written: [], usage: null };
 }
 
-/** The title a first user message gives a new chat (src/conversations.ts deriveConversationTitle). */
+/** The title a first message of Carl's gives a new chat. */
 export function titleFrom(text: string): string {
   const first = text.trim().split(/\r?\n/)[0] ?? "";
   if (!first) return NEW_CHAT;
   return first.length <= 60 ? first : first.slice(0, 57) + "…";
 }
 
-const OPEN = new Set(["streaming", "pending", "running"]);
-export const isOpen = (it: Item): boolean => OPEN.has(it.status);
-
-const round = (n: number) => Math.round(n * 1e7) / 1e7;
-
-type Draft = Picture & { __idx?: Map<string, number> };
-
-function index(d: Draft): Map<string, number> {
-  if (!d.__idx) {
-    const m = new Map<string, number>();
-    d.items.forEach((it, i) => m.set(it.id, i));
-    Object.defineProperty(d, "__idx", { value: m, enumerable: false, writable: true, configurable: true });
-  }
-  return d.__idx!;
+export function textOf(content: PiMessage["content"]): string {
+  if (typeof content === "string") return content;
+  return (content ?? []).filter((b) => b.type === "text" && typeof b.text === "string").map((b) => b.text).join("\n");
 }
+
+const RESULT_CAP = 4_000;
+const cap = (s: string, n = RESULT_CAP) => (s.length > n ? s.slice(0, n) + `\n…[${s.length - n} more chars]` : s);
+const blockId = (ts: number | null | undefined, ci: number) => `${ts ?? 0}:${ci}`;
+
+type Draft = Picture;
 
 function draft(p: Picture): Draft {
-  return { ...p, items: p.items.slice() };
+  return { ...p, items: p.items.slice(), inflight: p.inflight.slice() };
 }
 
-function setItem(d: Draft, i: number, next: Item): void {
-  d.items[i] = next;
+function find(d: Draft, id: string): { list: Item[]; i: number } | null {
+  let i = d.items.findIndex((x) => x.id === id);
+  if (i >= 0) return { list: d.items, i };
+  i = d.inflight.findIndex((x) => x.id === id);
+  return i >= 0 ? { list: d.inflight, i } : null;
+}
+
+function patchItem(d: Draft, id: string, patch: Partial<Item>): boolean {
+  const f = find(d, id);
+  if (!f) return false;
+  f.list[f.i] = { ...f.list[f.i]!, ...patch };
+  return true;
 }
 
 function touch(d: Draft, at: number): void {
   if (at > d.meta.lastActivityAt) d.meta = { ...d.meta, lastActivityAt: at };
 }
 
-/** Apply one record to a draft (mutates the draft's own arrays and replaces the objects it changes). */
+/** An assistant message's blocks as items (the entry's, or message_end's). */
+function blocksOf(m: PiMessage, at: number, status: ItemStatus): Item[] {
+  const out: Item[] = [];
+  const content = Array.isArray(m.content) ? m.content : [];
+  const stopped = m.stopReason === "aborted";
+  content.forEach((b: PiBlock, ci) => {
+    const id = blockId(m.timestamp, ci);
+    if (b.type === "text" && typeof b.text === "string") {
+      if (b.text.trim() || stopped) out.push({ id, kind: "assistant", status: stopped ? "stopped" : status, text: b.text, at });
+    } else if (b.type === "thinking" && typeof b.thinking === "string") {
+      if (b.thinking.trim()) out.push({ id, kind: "thinking", status: stopped ? "stopped" : status, text: b.thinking, at });
+    } else if (b.type === "toolCall" && b.id) {
+      out.push({ id: String(b.id), kind: "tool", status: "pending", name: String(b.name ?? "tool"), args: b.arguments ?? {}, at });
+    }
+  });
+  if (m.stopReason === "error") out.push({ id: blockId(m.timestamp, -1), kind: "notice", status: "done", level: "error", text: `⚠️ ${m.errorMessage || "The model's request failed."}`, at });
+  return out;
+}
+
+/** Put items in place: an item already there (from the message in flight) keeps its place and takes the new fields. */
+function place(d: Draft, items: Item[]): void {
+  for (const it of items) {
+    const f = find(d, it.id);
+    if (f && f.list === d.items) {
+      const cur = f.list[f.i]!;
+      // A tool call's run (live) is kept over the call's own "pending".
+      f.list[f.i] = { ...cur, ...it, ...(cur.kind === "tool" && it.status === "pending" && cur.status !== "pending" ? { status: cur.status, result: cur.result, partial: cur.partial } : {}), at: cur.at };
+    } else {
+      if (f) f.list.splice(f.i, 1);
+      d.items.push(it);
+    }
+  }
+}
+
+function onEntry(d: Draft, r: Extract<LogRecord, { type: "entry" }>): void {
+  const e: PiEntry = r.entry;
+  if (e.type === "message" && e.message) {
+    const m = e.message;
+    if (m.role === "user") {
+      const text = r.shown ?? textOf(m.content);
+      const fromContent: ItemImage[] = Array.isArray(m.content)
+        ? m.content.filter((b) => b.type === "image" && b.data).map((b) => ({ path: "", dataUrl: `data:${b.mimeType ?? "image/png"};base64,${b.data}` }))
+        : [];
+      // The feed keeps an image's path; pi's entry holds its pixels.
+      const images = r.images ? r.images.map((im, i) => (im.dataUrl || !fromContent[i] ? im : { ...im, dataUrl: fromContent[i]!.dataUrl })) : fromContent;
+      place(d, [{ id: r.clientId ?? e.id, kind: "user", status: "done", text, via: r.via ?? "chat", ...(images.length ? { images } : {}), at: r.at }]);
+      touch(d, r.at);
+      if (d.meta.title === NEW_CHAT && text.trim() && !["wake", "nudge", "resume", "job"].includes(r.via ?? "")) d.meta = { ...d.meta, title: titleFrom(text) };
+      return;
+    }
+    if (m.role === "assistant") {
+      // The message for good: what was in flight is this message.
+      if (d.inflightTs === (m.timestamp ?? null)) {
+        d.inflight = d.inflight.filter((x) => x.kind === "compaction" || x.kind === "notice");
+        d.inflightTs = null;
+      }
+      if (typeof m.timestamp === "number") d.written = [...d.written.slice(-7), m.timestamp];
+      place(d, blocksOf(m, r.at, "done"));
+      const u = m.usage;
+      if (u) {
+        const ctx = Number(u.input ?? 0) + Number(u.cacheRead ?? 0) + Number(u.cacheWrite ?? 0);
+        if (ctx > 0) d.usage = { context: ctx };
+      }
+      touch(d, r.at);
+      return;
+    }
+    if (m.role === "toolResult" && m.toolCallId) {
+      const res = cap(`${m.isError ? "[error] " : ""}${textOf(m.content)}`);
+      if (!patchItem(d, m.toolCallId, { result: res, status: m.isError ? "error" : "done", partial: undefined })) {
+        d.items.push({ id: m.toolCallId, kind: "tool", status: m.isError ? "error" : "done", name: String(m.toolName ?? "tool"), args: {}, result: res, at: r.at });
+      }
+      // Carl's answer to a question: his line, under the id his client sent it with.
+      const ans = /^Carl answered: ([\s\S]*)$/.exec(textOf(m.content));
+      if (m.toolName === "AskUser" && ans) {
+        place(d, [{ id: r.clientId ?? `${m.toolCallId}:answer`, kind: "user", status: "done", text: ans[1]!.trim(), via: "answer", at: r.at }]);
+        touch(d, r.at);
+      }
+      return;
+    }
+    return; // system messages: the prompt, never shown
+  }
+  if (e.type === "compaction") {
+    d.inflight = d.inflight.filter((x) => x.kind !== "compaction");
+    place(d, [{ id: e.id, kind: "compaction", status: "done", text: String(e.summary ?? ""), at: r.at }]);
+    return;
+  }
+  if (e.type === "custom" && e.customType === VC_NOTE) {
+    const data = e.data ?? {};
+    if (data.kind === "line") {
+      // A line vault-chat wrote (voice, a message pi never took): Carl's or an agent's.
+      const user = data.role === "user";
+      const text = String(r.shown ?? data.text ?? "");
+      place(d, [{ id: r.clientId ?? data.clientId ?? e.id, kind: user ? "user" : "assistant", status: "done", text, via: r.via ?? data.via ?? (user ? "chat" : undefined), ...((r.images ?? data.images)?.length ? { images: r.images ?? data.images } : {}), at: r.at }]);
+      touch(d, r.at);
+      if (user && d.meta.title === NEW_CHAT && text.trim()) d.meta = { ...d.meta, title: titleFrom(text) };
+      return;
+    }
+    if (data.kind === "divider") place(d, [{ id: r.clientId ?? data.clientId ?? e.id, kind: "compaction", status: "done", text: String(data.text ?? ""), ...(data.rollover ? { rollover: true } : {}), at: r.at }]);
+    else place(d, [{ id: r.clientId ?? data.clientId ?? e.id, kind: "notice", status: "done", text: String(data.text ?? ""), level: data.level === "error" ? "error" : data.level === "warn" ? "warn" : "info", at: r.at }]);
+  }
+}
+
+/** One of pi's live events, by pi's streaming rule. */
+function onLive(d: Draft, r: Extract<LogRecord, { type: "live" }>): void {
+  const ev = r.ev ?? {};
+  // About a message pi already wrote: late, and nothing to add.
+  if ((ev.type === "message_start" || ev.type === "message_end") && d.written.includes(Number(ev.message?.timestamp))) return;
+  if (ev.type === "message_update" && d.inflightTs === null) return;
+  switch (ev.type) {
+    case "message_start":
+      if (ev.message?.role !== "assistant") return;
+      d.inflight = d.inflight.filter((x) => x.kind === "compaction" || x.kind === "notice");
+      d.inflightTs = Number(ev.message.timestamp ?? r.at);
+      return;
+    case "message_update": {
+      const ae = ev.assistantMessageEvent ?? {};
+      const ci = Number(ae.contentIndex ?? 0);
+      const id = blockId(d.inflightTs, ci);
+      const upsert = (it: Item) => {
+        const i = d.inflight.findIndex((x) => x.id === it.id);
+        if (i >= 0) d.inflight[i] = { ...d.inflight[i]!, ...it, at: d.inflight[i]!.at };
+        else d.inflight.push(it);
+      };
+      const grow = (kind: ItemKind, delta: string) => {
+        const cur = d.inflight.find((x) => x.id === id);
+        upsert({ id, kind, status: "streaming", text: (cur?.text ?? "") + delta, at: r.at });
+      };
+      switch (ae.type) {
+        case "text_start":
+          return upsert({ id, kind: "assistant", status: "streaming", text: "", at: r.at });
+        case "text_delta":
+          return grow("assistant", String(ae.delta ?? ""));
+        case "text_end":
+          return upsert({ id, kind: "assistant", status: "done", text: String(ae.content ?? ""), at: r.at });
+        case "thinking_start":
+          return upsert({ id, kind: "thinking", status: "streaming", text: "", at: r.at });
+        case "thinking_delta":
+          return grow("thinking", String(ae.delta ?? ""));
+        case "thinking_end":
+          return upsert({ id, kind: "thinking", status: "done", text: String(ae.content ?? ""), at: r.at });
+        case "toolcall_start": {
+          const tid = String(ae.id ?? ae.toolCall?.id ?? id);
+          return upsert({ id: tid, kind: "tool", status: "streaming", name: String(ae.toolName ?? "tool"), argsText: "", at: r.at });
+        }
+        case "toolcall_delta": {
+          const t = [...d.inflight].reverse().find((x) => x.kind === "tool" && x.status === "streaming");
+          if (t) upsert({ ...t, argsText: (t.argsText ?? "") + String(ae.delta ?? "") });
+          return;
+        }
+        case "toolcall_end": {
+          const tc = ae.toolCall ?? {};
+          if (tc.id) upsert({ id: String(tc.id), kind: "tool", status: "pending", name: String(tc.name ?? "tool"), args: tc.arguments ?? {}, at: r.at });
+          return;
+        }
+        default:
+          return;
+      }
+    }
+    case "message_end": {
+      const m = ev.message ?? {};
+      if (m.role !== "assistant") return;
+      d.inflightTs = Number(m.timestamp ?? d.inflightTs);
+      const keep = d.inflight.filter((x) => x.kind === "compaction" || x.kind === "notice");
+      d.inflight = [...keep, ...blocksOf(m, r.at, "done")];
+      return;
+    }
+    case "tool_execution_start": {
+      const id = String(ev.toolCallId ?? "");
+      if (!id) return;
+      if (!patchItem(d, id, { status: "running", ...(ev.args !== undefined ? { args: ev.args } : {}) })) d.items.push({ id, kind: "tool", status: "running", name: String(ev.toolName ?? "tool"), args: ev.args ?? {}, at: r.at });
+      return;
+    }
+    case "tool_execution_update": {
+      const id = String(ev.toolCallId ?? "");
+      const text = textOf(ev.partialResult?.content);
+      if (id && text) patchItem(d, id, { partial: text.slice(-2_000) });
+      return;
+    }
+    case "tool_execution_end": {
+      const id = String(ev.toolCallId ?? "");
+      if (!id) return;
+      const f = find(d, id);
+      if (f && f.list[f.i]!.result !== undefined) return; // the entry's result is already there
+      patchItem(d, id, { status: ev.isError ? "error" : "done", result: cap(`${ev.isError ? "[error] " : ""}${textOf(ev.result?.content)}`), partial: undefined });
+      return;
+    }
+    case "compaction_start":
+      d.inflight = [...d.inflight.filter((x) => x.kind !== "compaction"), { id: `compacting:${r.seq}`, kind: "compaction", status: "streaming", at: r.at }];
+      return;
+    case "compaction_end":
+      d.inflight = d.inflight.filter((x) => x.kind !== "compaction");
+      if (!ev.result && !ev.aborted && ev.errorMessage) d.items.push({ id: `compaction-failed:${r.seq}`, kind: "notice", status: "done", level: "warn", text: `Summarizing the earlier conversation failed: ${String(ev.errorMessage).slice(0, 300)}`, at: r.at });
+      return;
+    case "auto_retry_start":
+      d.inflight = [...d.inflight.filter((x) => !x.id.startsWith("retry:")), { id: `retry:${r.seq}`, kind: "notice", status: "running", level: "warn", text: `Retrying (${ev.attempt ?? "?"}/${ev.maxAttempts ?? "?"}): ${String(ev.errorMessage ?? "the provider failed").slice(0, 300)}`, at: r.at }];
+      return;
+    case "auto_retry_end":
+      d.inflight = d.inflight.filter((x) => !x.id.startsWith("retry:"));
+      return;
+    default:
+      return;
+  }
+}
+
+/** The turn is over: what was in flight and never written stays, closed (a stop, a crash); nothing streams or runs forever. */
+function closeOpen(d: Draft): void {
+  if (d.inflight.length) {
+    const kept = d.inflight.filter((x) => x.kind !== "compaction" && !(x.kind === "notice" && x.id.startsWith("retry:")) && (x.kind !== "assistant" || (x.text ?? "").trim()));
+    for (const it of kept) d.items.push({ ...it, status: isOpen(it) ? "stopped" : it.status });
+    d.inflight = [];
+    d.inflightTs = null;
+  }
+  d.items.forEach((it, i) => {
+    if (isOpen(it)) {
+      const { partial: _p, ...rest } = it;
+      d.items[i] = { ...rest, status: "stopped" };
+    }
+  });
+}
+
 function step(d: Draft, r: LogRecord): void {
   if (r.conv !== d.id || r.seq <= d.seq) return;
   d.seq = r.seq;
   switch (r.type) {
-    case "conv.created": {
-      // The conversation's fields as created (a second creation resets them); what the log itself
-      // adds up (cost, subagents, the last activity) is kept.
-      d.exists = true;
-      const { costUsd: _c, subagents: _s, costMissingCalls: _m, createdAt, lastActivityAt, ...meta } = r.meta;
-      const m: ConvMeta = { title: NEW_CHAT, source: "manual", createdAt: createdAt ?? r.at, lastActivityAt: Math.max(d.meta.lastActivityAt, lastActivityAt ?? r.at) };
-      for (const k of ["costUsd", "costMissingCalls", "subagents"] as const) if (d.meta[k] !== undefined) (m as Record<string, unknown>)[k] = d.meta[k];
-      for (const [k, v] of Object.entries(meta)) if (v !== null && v !== undefined) m[k] = v;
-      if (typeof m.title !== "string" || !m.title) m.title = NEW_CHAT;
-      if (typeof m.source !== "string" || !m.source) m.source = "manual";
-      d.meta = m;
-      return;
-    }
-    case "conv.updated": {
+    case "meta": {
+      const was = d.meta.running;
       const m: ConvMeta = { ...d.meta };
       for (const [k, v] of Object.entries(r.patch ?? {})) {
-        if (k === "createdAt" || k === "lastActivityAt" || k === "costUsd" || k === "subagents") continue; // log-derived
+        if (k === "lastActivityAt") {
+          if (typeof v === "number" && v > m.lastActivityAt) m.lastActivityAt = v;
+          continue;
+        }
         if (v === null || v === undefined) delete m[k];
         else m[k] = v;
       }
       if (typeof m.title !== "string" || !m.title) m.title = NEW_CHAT;
       if (typeof m.source !== "string" || !m.source) m.source = "manual";
+      if (!m.createdAt) m.createdAt = r.at;
+      if (!m.lastActivityAt) m.lastActivityAt = m.createdAt;
       d.meta = m;
+      d.exists = true;
+      if (was && !m.running) closeOpen(d);
+      if (m.running && (!was || was.turn !== m.running.turn)) touch(d, r.at);
       return;
     }
-    case "turn.started":
-      d.turn = { id: r.turn, kind: r.kind, startedAt: r.at };
-      touch(d, r.at);
+    case "entry":
+      onEntry(d, r);
       return;
-    case "turn.ended": {
-      if (d.turn && d.turn.id !== r.turn) return; // not the running turn's end (a stale one)
-      d.turn = null;
-      d.lastTurn = { id: r.turn, status: r.status, ...(r.error ? { error: r.error } : {}), endedAt: r.at };
-      // A turn's end closes what it left open (a stop, a crash): nothing streams forever.
-      // An open question outlives its turn (answered later, it starts a new one).
-      for (let i = 0; i < d.items.length; i++) {
-        const it = d.items[i]!;
-        if (it.turn === r.turn && isOpen(it) && it.kind !== "ask") {
-          const { partial: _p, ...rest } = it;
-          setItem(d, i, { ...rest, status: "stopped" });
-        }
-      }
+    case "live":
+      onLive(d, r);
       return;
-    }
-    case "item.started": {
-      const idx = index(d);
-      const at = idx.get(r.item.id);
-      const it: Item = { ...r.item, at: r.item.at || r.at };
-      if (at !== undefined) {
-        // Started twice (a retried write): the later fields win, the place stays.
-        setItem(d, at, { ...d.items[at]!, ...it, at: d.items[at]!.at });
-      } else {
-        idx.set(it.id, d.items.length);
-        d.items.push(it);
-      }
-      if ((it.kind === "user" || it.kind === "assistant") && !it.hidden) touch(d, r.at);
-      if (it.kind === "user" && !it.hidden && d.meta.title === NEW_CHAT && it.text?.trim()) d.meta = { ...d.meta, title: titleFrom(it.text) };
-      return;
-    }
-    case "item.delta": {
-      const i = index(d).get(r.id);
-      if (i === undefined) return;
-      const cur = d.items[i]!;
-      setItem(d, i, { ...cur, [r.field]: (cur[r.field] ?? "") + r.delta });
-      return;
-    }
-    case "item.updated": {
-      const i = index(d).get(r.id);
-      if (i === undefined) return;
-      setItem(d, i, { ...d.items[i]!, ...r.patch, id: r.id });
-      return;
-    }
-    case "item.completed": {
-      const i = index(d).get(r.id);
-      if (i === undefined) return;
-      const { partial: _p, ...cur } = d.items[i]!;
-      const status = r.patch?.status ?? (cur.status === "error" ? "error" : "done");
-      setItem(d, i, { ...cur, ...(r.patch ?? {}), id: r.id, status });
-      return;
-    }
-    case "item.removed": {
-      const i = index(d).get(r.id);
-      if (i === undefined) return;
-      d.items.splice(i, 1);
-      d.__idx = undefined;
-      return;
-    }
-    case "pending.added":
-      if (d.pending.some((x) => x.id === r.pending.id)) return;
-      d.pending = [...d.pending, { ...r.pending, at: r.pending.at || r.at }];
-      return;
-    case "pending.removed":
-      if (!d.pending.some((x) => x.id === r.id)) return;
-      d.pending = d.pending.filter((x) => x.id !== r.id);
-      return;
-    case "usage":
-      d.usage = { context: r.context, ...(r.window ? { window: r.window } : d.usage?.window ? { window: d.usage.window } : {}) };
-      return;
-    case "cost": {
-      const m: ConvMeta = { ...d.meta, costUsd: round((d.meta.costUsd ?? 0) + (r.usd || 0)) };
-      if (r.missing) m.costMissingCalls = (m.costMissingCalls ?? 0) + r.missing;
-      d.meta = m;
-      if (r.turn) d.turnCost = { ...d.turnCost, [r.turn]: round((d.turnCost[r.turn] ?? 0) + (r.usd || 0)) };
-      return;
-    }
-    case "subagent": {
-      const list = [...(d.meta.subagents ?? [])];
-      const i = list.findIndex((x) => x.threadId === r.threadId);
-      if (i >= 0) list[i] = { ...list[i]!, ...r.patch, threadId: r.threadId };
-      else list.push({ ...r.patch, threadId: r.threadId });
-      d.meta = { ...d.meta, subagents: list };
-      return;
-    }
     case "signal":
       return;
   }
-}
-
-function finish(d: Draft): Picture {
-  const { __idx: _i, ...p } = d as Draft & Record<string, unknown>;
-  void _i;
-  return p as Picture;
 }
 
 /** One record → a new picture (the old one is untouched). */
@@ -220,7 +371,7 @@ export function reduce(p: Picture, r: LogRecord): Picture {
   if (r.conv !== p.id || r.seq <= p.seq) return p;
   const d = draft(p);
   step(d, r);
-  return finish(d);
+  return d;
 }
 
 /** Many records → a new picture, copying once. */
@@ -231,7 +382,7 @@ export function foldInto(p: Picture, records: Iterable<LogRecord>): Picture {
     d ??= draft(p);
     step(d, r);
   }
-  return d ? finish(d) : p;
+  return d ?? p;
 }
 
 export function fold(records: Iterable<LogRecord>, id: string): Picture {
@@ -240,21 +391,23 @@ export function fold(records: Iterable<LogRecord>, id: string): Picture {
 
 // ---------------------------------------------------------------- selectors
 
-export const isRunning = (p: Picture): boolean => !!p.turn;
+export const isRunning = (p: Picture): boolean => !!p.meta.running;
 
-/** The open question, if one waits for Carl. */
-export function openAsk(p: Picture): Item | null {
-  for (let i = p.items.length - 1; i >= 0; i--) {
-    const it = p.items[i]!;
-    if (it.kind === "ask" && isOpen(it)) return it;
+/** Everything shown, in order: what pi wrote, then what is in flight. */
+export const shown = (p: Picture): Item[] => (p.inflight.length ? [...p.items, ...p.inflight] : p.items);
+
+/** The agent's current to-do list (its last TodoWrite). */
+export function planOf(p: Picture): Todo[] | null {
+  const all = shown(p);
+  for (let i = all.length - 1; i >= 0; i--) {
+    const it = all[i]!;
+    if (it.kind === "tool" && it.name === "TodoWrite" && Array.isArray(it.args?.todos)) return it.args.todos;
   }
   return null;
 }
 
-/** The agent's current to-do list (its last plan). */
-export function planOf(p: Picture): Todo[] | null {
-  for (let i = p.items.length - 1; i >= 0; i--) if (p.items[i]!.kind === "plan") return p.items[i]!.todos ?? [];
-  return null;
+export function pendingOf(p: Picture): PendingInput[] {
+  return (p.meta.pending as PendingInput[] | undefined) ?? [];
 }
 
 export function rowOf(p: Picture): ConvRow {
@@ -270,106 +423,66 @@ export function rowOf(p: Picture): ConvRow {
     ...(m.working ? { working: true } : {}),
     ...(typeof m.nextWakeAt === "number" ? { nextWakeAt: m.nextWakeAt } : {}),
     ...(typeof m.costUsd === "number" ? { costUsd: m.costUsd } : {}),
-    running: !!p.turn,
-    asking: !!openAsk(p),
+    ...(m.deleted ? { deleted: true } : {}),
+    running: !!m.running,
+    asking: !!m.asking,
     seq: p.seq,
   };
 }
 
 // ---------------------------------------------------------------- the list
 
-/** A list row folded from the records alone (a client keeps every row this way,
- *  without holding every conversation's items). Equal to rowOf(fold(records)). */
-export type RowState = ConvRow & { asks: Record<string, boolean>; turnId: string | null };
-
-export function rowFromPicture(p: Picture): RowState {
-  const asks: Record<string, boolean> = {};
-  for (const it of p.items) if (it.kind === "ask") asks[it.id] = isOpen(it);
-  return { ...rowOf(p), asks, turnId: p.turn?.id ?? null };
-}
+/** A list row folded from the records alone (a client keeps every row this
+ *  way, without holding every conversation's transcript). Equal to rowOf(fold(records)). */
+export type RowState = ConvRow;
 
 export function emptyRow(id: string): RowState {
-  return rowFromPicture(emptyPicture(id));
+  return rowOf(emptyPicture(id));
 }
+
+export const rowFromPicture = rowOf;
 
 /** One record → the row (new object when it changed). */
 export function reduceRow(row: RowState, r: LogRecord): RowState {
   if (r.conv !== row.id || r.seq <= row.seq) return row;
-  const n: RowState = { ...row, seq: r.seq };
-  const act = (at: number) => {
-    if (at > n.lastActivityAt) n.lastActivityAt = at;
+  // The row is the fold of a picture that keeps only the fields a row needs.
+  const p = emptyPicture(row.id);
+  p.seq = row.seq;
+  p.exists = row.seq > 0 || !!row.createdAt;
+  p.meta = {
+    title: row.title,
+    source: row.source,
+    createdAt: row.createdAt,
+    lastActivityAt: row.lastActivityAt,
+    ...(row.project ? { project: row.project } : {}),
+    ...(row.state ? { state: row.state } : {}),
+    ...(row.working ? { working: true } : {}),
+    ...(typeof row.nextWakeAt === "number" ? { nextWakeAt: row.nextWakeAt } : {}),
+    ...(typeof row.costUsd === "number" ? { costUsd: row.costUsd } : {}),
+    ...(row.deleted ? { deleted: true } : {}),
+    ...(row.running ? { running: { turn: "?", kind: "?", startedAt: 0 } } : {}),
+    ...(row.asking ? { asking: { question: "", options: [], at: 0 } } : {}),
   };
-  switch (r.type) {
-    case "conv.created":
-      n.title = NEW_CHAT;
-      n.source = "manual";
-      delete n.project;
-      delete n.state;
-      delete n.working;
-      delete n.nextWakeAt;
-      applyMeta(n, r.meta as Record<string, unknown>);
-      n.createdAt = r.meta.createdAt ?? r.at;
-      n.lastActivityAt = Math.max(row.lastActivityAt, r.meta.lastActivityAt ?? r.at);
-      break;
-    case "conv.updated":
-      applyMeta(n, r.patch, true);
-      break;
-    case "turn.started":
-      n.turnId = r.turn;
-      n.running = true;
-      act(r.at);
-      break;
-    case "turn.ended":
-      if (n.turnId && n.turnId !== r.turn) break;
-      n.turnId = null;
-      n.running = false;
-      break;
-    case "item.started":
-      if ((r.item.kind === "user" || r.item.kind === "assistant") && !r.item.hidden) act(r.at);
-      if (r.item.kind === "user" && !r.item.hidden && n.title === NEW_CHAT && r.item.text?.trim()) n.title = titleFrom(r.item.text);
-      if (r.item.kind === "ask" || r.item.id in n.asks) n.asks = { ...n.asks, [r.item.id]: OPEN.has(r.item.status) };
-      break;
-    case "item.completed":
-      if (r.id in n.asks) n.asks = { ...n.asks, [r.id]: OPEN.has(r.patch?.status ?? "done") };
-      break;
-    case "item.updated":
-      if (r.id in n.asks && r.patch.status) n.asks = { ...n.asks, [r.id]: OPEN.has(r.patch.status) };
-      break;
-    case "item.removed":
-      if (r.id in n.asks) {
-        const { [r.id]: _gone, ...rest } = n.asks;
-        n.asks = rest;
-      }
-      break;
-    case "cost":
-      n.costUsd = round((n.costUsd ?? 0) + (r.usd || 0));
-      break;
-    default:
-      break;
-  }
-  n.asking = Object.values(n.asks).some(Boolean);
-  return n;
-}
-
-const ROW_META = ["title", "source", "project", "state", "working", "nextWakeAt"] as const;
-function applyMeta(n: RowState, patch: Record<string, unknown>, nullable = false): void {
-  for (const k of ROW_META) {
-    if (!(k in patch)) continue;
-    const v = patch[k];
-    if (v === null || v === undefined) {
-      if (!nullable) continue;
-      if (k === "title") n.title = NEW_CHAT;
-      else if (k === "source") n.source = "manual";
-      else delete (n as Record<string, unknown>)[k];
-      continue;
+  // Only what changes a row: its fields, its activity and title (Carl's and the agent's messages).
+  if (r.type === "live" || r.type === "signal") return { ...row, seq: r.seq };
+  if (r.type === "entry") {
+    // Carl's answer to a question (the AskUser result): his line, so activity.
+    const m = r.entry.message;
+    if (r.entry.type === "message" && m?.role === "toolResult" && m.toolName === "AskUser" && /^Carl answered: /.test(textOf(m.content))) {
+      return { ...row, seq: r.seq, lastActivityAt: Math.max(row.lastActivityAt, r.at) };
     }
-    if (k === "working") {
-      if (v) n.working = true;
-      else delete n.working;
-      continue;
+    const line = r.entry.type === "custom" && r.entry.customType === VC_NOTE && r.entry.data?.kind === "line";
+    const role = line ? (r.entry.data.role === "user" ? "user" : "assistant") : r.entry.message?.role;
+    if (!line && (r.entry.type !== "message" || (role !== "user" && role !== "assistant"))) return { ...row, seq: r.seq };
+    const n = { ...row, seq: r.seq };
+    if (r.at > n.lastActivityAt) n.lastActivityAt = r.at;
+    if (role === "user" && n.title === NEW_CHAT) {
+      const text = line ? String(r.shown ?? r.entry.data.text ?? "") : (r.shown ?? textOf(r.entry.message!.content));
+      if (text.trim() && (line || !["wake", "nudge", "resume", "job"].includes(r.via ?? ""))) n.title = titleFrom(text);
     }
-    (n as Record<string, unknown>)[k] = v;
+    return n;
   }
-  if (!n.title) n.title = NEW_CHAT;
-  if (!n.source) n.source = "manual";
+  const q = reduce(p, r);
+  const out = rowOf(q);
+  return out;
 }
