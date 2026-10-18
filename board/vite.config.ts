@@ -4,16 +4,27 @@
 import { defineConfig } from "vite";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { realpathSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
+import { execSync } from "node:child_process";
 import tailwind from "tailwindcss";
 import autoprefixer from "autoprefixer";
 
 const root = dirname(fileURLToPath(import.meta.url));
 const box = process.env.VC_BOX || "http://127.0.0.1:7420";
+// The board's build, in every log batch (board/src/log.ts): the package version and the commit.
+const version = (() => {
+  const v = JSON.parse(readFileSync(join(root, "..", "package.json"), "utf8")).version as string;
+  try {
+    return `${v}+${execSync("git rev-parse --short HEAD", { cwd: root, encoding: "utf8" }).trim()}`;
+  } catch {
+    return v;
+  }
+})();
 
 export default defineConfig({
   root,
   base: "/board/",
+  define: { __BOARD_VERSION__: JSON.stringify(version) },
   // The chrome is Tailwind (board/tailwind.config.js: the desktop's config as a preset).
   css: { postcss: { plugins: [tailwind({ config: join(root, "tailwind.config.js") }), autoprefixer()] } },
   build: { outDir: "dist", emptyOutDir: true, target: "es2022", assetsInlineLimit: 0 },

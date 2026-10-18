@@ -144,6 +144,30 @@ describe("the board's log and the diag window", () => {
     expect(boardLogPost({ stateDir, vaultName: "x", ua: "" }, { events: [] }).status).toBe(400);
   });
 
+  it("board batches name the build and the device: an iPad sends a Mac UA, its touch points tell it apart", () => {
+    const stateDir = join(root, "state-b2");
+    const mac = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko)";
+    boardLogPost({ stateDir, vaultName: "school2", ua: mac }, {
+      session: "s2",
+      v: "0.6.48+abc1234",
+      touch: 5,
+      standalone: true,
+      events: [
+        { at: "2026-10-18T05:00:00.000Z", ev: "gestures", pan: 2, pinch: 1, pan1: 0, undo: 0, reverted: 0, palm: { size: 1, "pen-hover": 2 }, maxSize: 83.5 },
+        { at: "2026-10-18T05:00:01.000Z", ev: "taps", pressed: 3, missed: 1, dropped: 2, missedOn: ["entry>none"], src: "pill" },
+      ],
+    });
+    const lines = readFileSync(boxLogs(stateDir).board.path, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    expect(lines.every((l) => l.ua === "Macintosh" && l.touch === 5 && l.app === "home-screen" && l.v === "0.6.48+abc1234")).toBe(true);
+    expect(lines[0].palm).toEqual({ size: 1, "pen-hover": 2 });
+    expect(lines[1].missedOn).toEqual(["entry>none"]);
+    // An older board (no build) still logs; a desktop browser says it has no touch.
+    boardLogPost({ stateDir, vaultName: "school2", ua: mac }, { touch: 0, standalone: false, events: [{ ev: "tool", tool: "pen" }] });
+    const last = JSON.parse(readFileSync(boxLogs(stateDir).board.path, "utf8").trim().split("\n").pop()!);
+    expect(last).toMatchObject({ ev: "tool", touch: 0, app: "browser" });
+    expect(last.v).toBeUndefined();
+  });
+
   it("diag: the last N minutes of the turn log, the board log and the phone's events, redacted", () => {
     const stateDir = join(root, "state-c");
     const vault = join(root, "vault-c");

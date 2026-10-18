@@ -49,7 +49,7 @@ async function call<T>(path: string, init: RequestInit = {}): Promise<T> {
 const enc = encodeURIComponent;
 
 /** The board's log batch (board/src/log.ts → the box's board.jsonl). `keepalive`: sent as the page hides. */
-export const postBoardLog = (b: { session: string; events: unknown[] }, keepalive = false) =>
+export const postBoardLog = (b: { session: string; v?: string; touch?: number; standalone?: boolean; events: unknown[] }, keepalive = false) =>
   call<{ ok: true; n: number }>("/api/v1/board/log", { method: "POST", body: JSON.stringify(b), ...(keepalive ? { keepalive: true } : {}) });
 
 export const listBoards = () => call<{ boards: BoardSummary[] }>("/api/v1/boards").then((r) => r.boards);

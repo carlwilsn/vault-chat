@@ -6,25 +6,37 @@
 // that does follow the same tap is then dropped — wherever it lands: the press may have put something
 // new under the finger (the inbox's scrim, a popover), and that must not take the click and undo it.
 // A click with no pointer before it (the keyboard, a test's element.click()) acts as usual.
+// A button that was redrawn while the finger was on it (the inbox list repaints when the box's list arrives,
+// the pill's chat list on every voice state change) is the same button when it says the same (`same`): the
+// new one is pressed, not missed.
 // Pure: the tests drive it as it is.
 
-export type ChromeOpts = { /** A tap moving further than this (css px) is not a press (a scroll, a drag). */ slop?: number; /** A click this soon after a pointerup press of the same button repeats it. */ dedupeMs?: number };
+export type ChromeOpts<B = unknown> = {
+  /** A tap moving further than this (css px) is not a press (a scroll, a drag). */ slop?: number;
+  /** A click this soon after a pointerup press of the same button repeats it. */ dedupeMs?: number;
+  /** The button it went down on, redrawn since, and the one under it now are the same button. */ same?: (down: B, now: B) => boolean;
+  /** A short name for a button (the log's missedOn). */ name?: (b: B) => string;
+};
 
 export class ChromeTaps<B> {
   private downs = new Map<number, { b: B | null; x: number; y: number }>();
   private last: number | null = null;
   private slop: number;
   private dedupeMs: number;
-  /** Since the last takeStats(): taps that pressed their button, taps on a button that pressed nothing (moved off it, slid too far), native clicks dropped as a tap's tail. */
-  private stats = { pressed: 0, missed: 0, dropped: 0 };
+  private same: ((down: B, now: B) => boolean) | undefined;
+  private name: ((b: B) => string) | undefined;
+  /** Since the last takeStats(): taps that pressed their button, taps on a button that pressed nothing (moved off it, slid too far) and on which, native clicks dropped as a tap's tail. */
+  private stats = { pressed: 0, missed: 0, dropped: 0, missedOn: [] as string[] };
 
   constructor(
     /** Press the button (view.ts: its click handlers run, once). */
     private press: (b: B) => void,
-    o: ChromeOpts = {},
+    o: ChromeOpts<B> = {},
   ) {
     this.slop = o.slop ?? 12;
     this.dedupeMs = o.dedupeMs ?? 800;
+    this.same = o.same;
+    this.name = o.name;
   }
 
   /** A pointer went down on the chrome, on button `b` (or on none): it is the chrome's until it lifts. */
@@ -36,21 +48,25 @@ export class ChromeTaps<B> {
   up(id: number, over: B | null, x: number, y: number, t: number): boolean {
     const d = this.downs.get(id);
     this.downs.delete(id);
-    if (!d || !d.b || d.b !== over || Math.hypot(x - d.x, y - d.y) > this.slop) {
-      if (d?.b) this.stats.missed++;
+    const sameButton = !!d?.b && over !== null && (d.b === over || !!this.same?.(d.b, over));
+    if (!d || !d.b || !sameButton || Math.hypot(x - d.x, y - d.y) > this.slop) {
+      if (d?.b) {
+        this.stats.missed++;
+        if (this.name && this.stats.missedOn.length < 8) this.stats.missedOn.push(this.name(d.b) + (over === null ? ">none" : !sameButton ? ">" + this.name(over) : ">moved"));
+      }
       return false;
     }
     this.last = t;
     this.stats.pressed++;
-    this.press(d.b);
+    this.press(over as B);
     return true;
   }
 
   /** The tap counts since the last call (the board's log, board/src/log.ts), reset. */
-  takeStats(): { pressed: number; missed: number; dropped: number } {
-    const s = this.stats;
-    this.stats = { pressed: 0, missed: 0, dropped: 0 };
-    return s;
+  takeStats(): { pressed: number; missed: number; dropped: number; missedOn?: string[] } {
+    const { missedOn, ...s } = this.stats;
+    this.stats = { pressed: 0, missed: 0, dropped: 0, missedOn: [] };
+    return missedOn.length ? { ...s, missedOn } : s;
   }
 
   /** The browser took the pointer (a scroll began, the system cancelled it): no press. */
@@ -91,6 +107,24 @@ export function routeChrome<B>(c: ChromeTaps<B>, e: { type: "down" | "move" | "u
   if (e.type === "up") c.up(e.id, at(), e.x, e.y, e.t);
   else if (e.type === "cancel") c.cancel(e.id);
   return true;
+}
+
+/** What a chrome button says (a redrawn copy says the same): its tag, data attributes, label and text. */
+export function buttonSignature(b: HTMLElement): string {
+  return [b.tagName, JSON.stringify({ ...b.dataset }), b.getAttribute("aria-label") ?? "", (b.textContent ?? "").trim().slice(0, 80)].join("|");
+}
+
+/** The same button, redrawn: the one the finger went down on is gone from the page, the one under it now says the same. */
+export function redrawnSame(down: HTMLElement, now: HTMLElement): boolean {
+  return !down.isConnected && buttonSignature(down) === buttonSignature(now);
+}
+
+/** A button's name in the log: what it does, never what it shows (a chat's or an entry's title is not logged). */
+export function buttonName(b: HTMLElement): string {
+  const d = b.dataset;
+  const k =
+    d.act ?? d.mode ?? d.pop ?? d.v ?? d.x ?? d.m ?? (d.add !== undefined ? "add" : d.id !== undefined ? "entry" : d.size ? "size" : d.color ? "color" : d.grid ? "grid" : d.hand ? "hand" : d.pan1 ? "pan1" : d.eraser ? "eraser-kind" : null);
+  return (k ?? b.getAttribute("aria-label") ?? "button").slice(0, 24);
 }
 
 /**

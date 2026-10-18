@@ -160,3 +160,26 @@ test("typing fields keep Backspace and ⌘Z; a slider or a file picker does not 
   for (const t of [{ tagName: "INPUT", type: "text" }, { tagName: "INPUT" }, { tagName: "INPUT", type: "search" }, { tagName: "TEXTAREA" }, { tagName: "P", isContentEditable: true }]) assert.equal(isTextField(t), true, JSON.stringify(t));
   for (const t of [{ tagName: "INPUT", type: "range" }, { tagName: "INPUT", type: "file" }, { tagName: "INPUT", type: "checkbox" }, { tagName: "SELECT" }, { tagName: "BUTTON" }, null]) assert.equal(isTextField(t), false, JSON.stringify(t));
 });
+
+test("a button redrawn under the finger (the inbox list repainting, the pill's chat rows) presses its new copy, once", () => {
+  type B = { id: string; live: boolean };
+  const pressed: B[] = [];
+  const same = (down: B, now: B) => !down.live && down.id === now.id;
+  const c = new ChromeTaps<B>((b) => pressed.push(b), { same, name: (b) => b.id });
+  const old: B = { id: "entry-1", live: true };
+  c.down(1, old, 100, 100);
+  old.live = false; // the list repainted: a new element for the same entry
+  const fresh: B = { id: "entry-1", live: true };
+  assert.equal(c.up(1, fresh, 102, 101, 50), true);
+  assert.deepEqual(pressed, [fresh]);
+  // A different button under the finger, or none, is still a miss, and the log names it.
+  c.down(2, { id: "entry-2", live: false }, 100, 100);
+  assert.equal(c.up(2, { id: "entry-3", live: true }, 100, 100, 900), false);
+  c.down(3, { id: "add", live: true }, 100, 100);
+  assert.equal(c.up(3, null, 100, 100, 1800), false);
+  const st = c.takeStats();
+  assert.equal(st.pressed, 1);
+  assert.equal(st.missed, 2);
+  assert.deepEqual(st.missedOn, ["entry-2>entry-3", "add>none"]);
+  assert.equal(c.takeStats().missedOn, undefined);
+});
