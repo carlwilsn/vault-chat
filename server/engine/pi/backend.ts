@@ -415,6 +415,24 @@ export class PiBackend extends EventEmitter {
     this.attach({ id: threadId, subagents, file, proc, model: o.model, lastUsed: Date.now(), turnId: null, msgIndex: 0, crashes: [], restoreModel: null });
   }
 
+  /** Has a pi process this session open (only then may nothing else write its file)? */
+  holds(threadId: string): boolean {
+    return !!this.threads.get(threadId)?.proc.isAlive();
+  }
+
+  /** A vault-chat entry (a notice, a line, a divider) appended to the session by pi itself
+   *  (the extension's /vc-note command → pi.appendEntry). False: no pi has the session open. */
+  async note(threadId: string, data: Record<string, unknown>): Promise<boolean> {
+    const t = this.threads.get(threadId);
+    if (!t?.proc.isAlive()) return false;
+    const r = await t.proc.request({ type: "prompt", message: `/vc-note ${JSON.stringify(data)}` }, 15_000).catch((e) => ({ success: false, error: (e as Error).message }));
+    if (!r?.success) {
+      this.log(`vc-note on ${threadId} failed: ${String(r?.error ?? "no answer").slice(0, 200)}`);
+      return false;
+    }
+    return true;
+  }
+
   private live(threadId: string): Thread {
     const t = this.threads.get(threadId);
     if (!t || !t.proc.isAlive()) throw new Error(`pi session ${threadId} is not loaded`);

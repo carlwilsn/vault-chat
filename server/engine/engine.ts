@@ -1,11 +1,14 @@
 // The engine: every agent turn on the box runs in pi (pi/backend.ts). A
 // conversation maps to one pi session ("thread"; a new one after a roll-over).
-// Everything a turn does is written to the conversation's event log
-// (server/convlog, src/convlog/protocol.ts) as it happens: pi's own events pass
-// through 1:1 (piMap.ts), and the engine's needs (wakes, questions, keep-going,
-// the verifier, job wake-ups, cost) are items of their own in the same log.
-// The log is the conversation: every client folds it with one reducer.
-// vault-chat's own tools reach pi through its extension as host calls.
+// The transcript is pi's own session file; the vault's feed (server/convlog,
+// src/convlog/protocol.ts) points into it as pi writes it and carries pi's live
+// events for the message in flight (piFeed.ts). What only vault-chat knows
+// (the turn running, steers pi has not delivered, an open question, cost,
+// subagents, keep-going) is the conversation's fields in the same feed; its own
+// lines (a notice, the verifier's verdict, a roll-over) are pi custom entries
+// (`vc-note`), written by pi while it has the session. Every client folds the
+// feed with one reducer. vault-chat's tools reach pi through its extension as
+// host calls.
 import { appendFileSync, existsSync, readFileSync, statSync, mkdirSync, writeFileSync } from "node:fs";
 import { registerRun, unregisterRun } from "../../src/runRegistry";
 import type { BackendEvent, PiBackend } from "./pi/backend";
@@ -24,7 +27,7 @@ import {
   type EngineConv,
   type ThreadTokenUsage,
 } from "./context";
-import { patchMeta, readConv, allConvs, createConv, newMessageId, emitTo, pictureOf, logOf } from "./convs";
+import { patchMeta, readConv, allConvs, createConv, newMessageId, emitTo, pictureOf, logOf, writeNotes, appendNotes, setNoteWriter, type NoteData } from "./convs";
 import { addWake, readWakes, removeWakes, nextWakeFor, parseDelay, type Wake } from "./wakes";
 import { Ledger } from "./ledger";
 import { pdfRead, webSearch } from "./extraTools";
@@ -37,9 +40,11 @@ import { join } from "node:path";
 import { WRITE_TOOLS, writtenPath } from "../liveEdits";
 import { activitySummary, appendActivity, contextImage } from "../activity";
 import { CAPTURE_FRESH_MS, chatExchangeEntry } from "../../src/activityCore";
-import type { EventBody, Item, ItemImage, TurnEnd } from "../../src/convlog/protocol";
-import { openAsk, isOpen, type Picture } from "../../src/convlog/reduce";
-import { PiMapper, toolName } from "./piMap";
+import type { EventBody, ItemImage, PendingInput } from "../../src/convlog/protocol";
+import { isOpen, pendingOf, shown, type Picture } from "../../src/convlog/reduce";
+import { toolName } from "../../src/convlog/view";
+import { readEntries } from "../convlog/piSession";
+import { PiFeed } from "./piFeed";
 
 export type EngineDeps = {
   vault: string;
@@ -76,8 +81,8 @@ type Live = {
   kind: TurnKind;
   startedAt: number;
   lastEventAt: number;
-  /** pi's events → the log. */
-  mapper: PiMapper;
+  /** pi's session and live events → the feed. */
+  feed: PiFeed;
   usage: ThreadTokenUsage | null;
   flags: { wake: boolean; done: boolean; blocked: boolean };
   /** When the turn's ScheduleWake set its wake (ISO), and the tool calls the model made after it. */
@@ -103,7 +108,7 @@ type Live = {
   turnOpts: TurnOpts;
 };
 
-type TurnOpts = { alreadyAppended?: boolean; images?: string[]; context?: string; itemImages?: ItemImage[]; clientId?: string };
+type TurnOpts = { images?: string[]; context?: string; itemImages?: ItemImage[]; clientId?: string; /** What the chat shows (Carl's answer to a question asked before a restart). */ shown?: string; via?: string };
 
 const NUDGE_TEXT = "You're in keep-going mode: schedule your next check (ScheduleWake), or say Done or Blocked.";
 const RESUME_TEXT =
@@ -362,8 +367,65 @@ export class Engine {
     return pictureOf(this.d.vault, convId);
   }
 
-  private notice(convId: string, text: string, level: "info" | "warn" | "error" = "info", turn?: string): void {
-    this.emit(convId, { type: "item.started", item: { id: newMessageId(), kind: "notice", status: "done", text, level, ...(turn ? { turn } : {}), at: 0 } });
+  /** A line of vault-chat's in the transcript (a pi custom entry). */
+  private notice(convId: string, text: string, level: "info" | "warn" | "error" = "info"): Promise<void> {
+    return this.note(convId, [{ kind: "notice", text, level }]);
+  }
+
+  private note(convId: string, notes: NoteData[]): Promise<void> {
+    return writeNotes(this.d.vault, convId, notes).catch((e) => this.log(`note on ${convId}: ${(e as Error).message}`));
+  }
+
+  /** Through pi while a pi process has the conversation's session (then the feed points to what pi wrote). */
+  private async noteViaPi(convId: string, notes: NoteData[]): Promise<boolean> {
+    const p = this.picture(convId);
+    const threadId = p?.meta.threadId;
+    const file = p?.meta.threadPath;
+    if (!threadId || !file || !this.d.backend.holds(threadId)) return false;
+    for (const n of notes) {
+      // A line's pixels stay out of the session (its paths are enough).
+      const data = n.images ? { ...n, images: n.images.map((i) => ({ path: i.path })) } : n;
+      if (!(await this.d.backend.note(threadId, data))) return false;
+    }
+    const l = this.live.get(convId);
+    if (l && l.feed.file === file) l.feed.sync();
+    else this.catchUp(convId, file);
+    return true;
+  }
+
+  /** Point to what pi wrote that the feed does not have yet (a session read after a crash, a note between turns). */
+  private catchUp(convId: string, file: string): void {
+    const p = this.picture(convId);
+    const from = p?.meta.sessionFrom as { file?: string; after?: string | null } | undefined;
+    const feed = new PiFeed({ file, emit: (b) => this.emit(convId, b), pointed: this.skipSet(convId, file, from?.file === file ? from.after : undefined) });
+    feed.dispose();
+  }
+
+  /** The entries of `file` the feed must not point to again: those it points to, and a resumed older session's history. */
+  private skipSet(convId: string, file: string, after?: string | null): Set<string> {
+    const set = logOf(this.d.vault).pointedIn(convId, file);
+    if (after) {
+      for (const e of readEntries(file)) {
+        set.add(e.id);
+        if (e.id === after) break;
+      }
+    }
+    return set;
+  }
+
+  // ---------------------------------------------------------------- fields
+
+  private setPending(convId: string, add?: PendingInput, removeId?: string): void {
+    const cur = pendingOf(this.picture(convId) ?? ({ meta: {} } as Picture)).filter((x) => x.id !== removeId && x.id !== add?.id);
+    const next = add ? [...cur, add] : cur;
+    this.emit(convId, { type: "meta", patch: { pending: next.length ? next : null } });
+  }
+
+  private addCost(convId: string, usd: number, missing?: number): void {
+    const m = this.picture(convId)?.meta;
+    if (!m) return;
+    const total = Math.round(((Number(m.costUsd) || 0) + usd) * 1e7) / 1e7;
+    this.emit(convId, { type: "meta", patch: { costUsd: total, ...(missing ? { costMissingCalls: (Number(m.costMissingCalls) || 0) + missing } : {}) } });
   }
 
   // ---------------------------------------------------------------- lifecycle
@@ -372,6 +434,7 @@ export class Engine {
     const b = this.d.backend;
     b.on("event", (e: BackendEvent) => this.scoped(() => this.onEvent(e)));
     b.on("up", () => this.scoped(() => void this.onUp()));
+    setNoteWriter(this.d.vault, (convId, notes) => this.scoped(() => this.noteViaPi(convId, notes)));
     b.setHandlers({
       toolCall: (threadId, name, args) =>
         this.scoped(async () => {
@@ -420,12 +483,15 @@ export class Engine {
         } else if (!r.running) continue;
         const p = this.picture(r.id);
         if (!p) continue;
-        if (p.turn) {
-          this.notice(r.id, INTERRUPTED_TEXT, "error", p.turn.id);
-          this.emit(r.id, { type: "turn.ended", turn: p.turn.id, status: "cut" });
+        if (p.meta.running) {
+          // What pi wrote before it died is pointed to first; the turn ends (what was in flight stays, closed);
+          // then the line saying so (no pi has the session now).
+          const file = p.meta.threadPath;
+          if (typeof file === "string" && existsSync(file)) this.catchUp(r.id, file);
+          this.emit(r.id, { type: "meta", patch: { running: null, pending: null } });
+          appendNotes(this.d.vault, r.id, [{ kind: "notice", text: INTERRUPTED_TEXT, level: "error" }]);
         }
-        for (const x of p.pending) this.emit(r.id, { type: "pending.removed", id: x.id, reason: "failed" });
-        if (openAsk(p)) continue;
+        if (p.meta.asking) continue;
         if (p.meta.threadId) this.resumeQueue.add(r.id);
       }
     }
@@ -483,7 +549,7 @@ export class Engine {
         const id = String(b.convId ?? "");
         if (!this.picture(id)) return { ok: false, error: `conversation ${id} not found` };
         if (this.live.has(id)) await this.interrupt(id, true);
-        this.emit(id, { type: "conv.updated", patch: { deleted: true } });
+        this.emit(id, { type: "meta", patch: { deleted: true } });
         return { ok: true, convId: id };
       }
       default:
@@ -538,7 +604,7 @@ export class Engine {
     const id = conv.id;
     // The same message again (a retry, a service worker's replay): already here.
     const pic0 = this.picture(id);
-    if (pic0 && (pic0.items.some((x) => x.id === clientId) || pic0.pending.some((x) => x.id === clientId))) return { ok: true, convId: id, duplicate: true };
+    if (pic0 && (pic0.items.some((x) => x.id === clientId) || pendingOf(pic0).some((x) => x.id === clientId))) return { ok: true, convId: id, duplicate: true };
     if (typeof body.project === "string" && body.project.trim()) {
       try {
         const { ensureProject } = await import("../context");
@@ -589,15 +655,15 @@ export class Engine {
       // pi's follow-up (delivered when the agent would otherwise stop). Either way it is pending
       // until pi takes it, and enters the transcript where pi puts it.
       const kind = body.queue ? "queue" : "steer";
-      this.emit(id, { type: "pending.added", pending: { id: clientId, kind, text: shown, at: 0, ...(itemImages.length ? { images: itemImages } : {}) } });
-      l.mapper.expect({ kind, text: sent, id: clientId, shown, images: itemImages });
+      this.setPending(id, { id: clientId, kind, text: shown, at: Date.now() });
+      l.feed.expect({ kind, text: sent, clientId, shown, via: kind, images: itemImages });
       try {
         if (kind === "queue") await this.d.backend.followUp(l.threadId, { texts: [sent], images: paths });
         else await this.d.backend.steer(l.threadId, l.turnId, { texts: [sent], images: paths });
         return { ok: true, convId: id, ...(kind === "queue" ? { queued: true, qid: clientId } : { steered: true }) };
       } catch (e) {
-        l.mapper.forget(clientId);
-        this.emit(id, { type: "pending.removed", id: clientId, reason: "failed" });
+        l.feed.forget(clientId);
+        this.setPending(id, undefined, clientId);
         this.log(`${kind} failed (${(e as Error).message})`);
         return { ok: false, convId: id, error: `the running turn did not take it: ${(e as Error).message}` };
       }
@@ -609,11 +675,11 @@ export class Engine {
   /** Take back a message pi has not delivered yet: pi's queue is cleared and the others go back in, in order. */
   private async takeBack(convId: string, id: string): Promise<Record<string, unknown>> {
     const p = this.picture(convId);
-    const hit = p?.pending.find((x) => x.id === id);
+    const hit = p ? pendingOf(p).find((x) => x.id === id) : undefined;
     if (!hit) return { ok: false, error: "already delivered" };
     const l = this.live.get(convId);
     if (l && !l.finished) {
-      const rest = l.mapper.undelivered().filter((e) => "id" in e && e.id !== id);
+      const rest = l.feed.undelivered().filter((e) => e.clientId !== id);
       try {
         await this.d.backend.clearQueue(l.threadId);
         for (const e of rest) {
@@ -623,9 +689,9 @@ export class Engine {
       } catch (err) {
         this.log(`take back on ${convId}: ${(err as Error).message}`);
       }
-      l.mapper.forget(id);
+      l.feed.forget(id);
     }
-    this.emit(convId, { type: "pending.removed", id, reason: "taken-back" });
+    this.setPending(convId, undefined, id);
     return { ok: true, convId, unqueued: id };
   }
 
@@ -710,7 +776,7 @@ export class Engine {
       l.stopped = true;
       const a = l.ask;
       l.ask = null;
-      this.emit(convId, { type: "item.completed", id: a.itemId, patch: { status: "stopped" } });
+      this.emit(convId, { type: "meta", patch: { asking: null } });
       a.resolve("Carl stopped this turn instead of answering. End the turn now; do nothing else.");
     }
     l.stopped = byUser || l.stopped;
@@ -733,11 +799,10 @@ export class Engine {
     return next;
   }
 
-  /** The item an engine input shows as (a wake, a job, a nudge, a resume). */
-  private wakeItem(convId: string, input: string, kind: TurnKind, turn: string): void {
-    const wake = kind === "wake" ? (/^Job \S+ /.test(input) ? "job" : "wake") : kind === "nudge" ? "nudge" : "resume";
-    const shownText = kind === "wake" ? input.replace(/^Wake:\s*/, "") : input;
-    this.emit(convId, { type: "item.started", item: { id: newMessageId(), kind: "wake", status: "done", wake, text: shownText, turn, at: 0 } });
+  /** How an engine input shows (a wake, a job, a nudge, a resume). */
+  private engineInput(input: string, kind: TurnKind): { via: string; shown: string } {
+    const via = kind === "wake" ? (/^Job \S+ /.test(input) ? "job" : "wake") : kind === "nudge" ? "nudge" : "resume";
+    return { via, shown: kind === "wake" ? input.replace(/^Wake:\s*/, "") : input };
   }
 
   /** Start a turn (or, if one is running, hand the input to it). */
@@ -747,21 +812,20 @@ export class Engine {
       if (existing && !existing.finished) {
         if (existing.started && !existing.ask) {
           const b = this.d.backend;
-          if (kind === "user" && !opts.alreadyAppended) {
+          if (kind === "user") {
             // Carl's message that raced the turn's start: a steer (pending until pi delivers it).
             const id = opts.clientId ?? newMessageId();
             const sent = opts.context ? `${opts.context}\n\n${input}` : input;
-            this.emit(convId, { type: "pending.added", pending: { id, kind: "steer", text: input, at: 0, ...(opts.itemImages?.length ? { images: opts.itemImages } : {}) } });
-            existing.mapper.expect({ kind: "steer", text: sent, id, shown: input, images: opts.itemImages });
+            this.setPending(convId, { id, kind: "steer", text: opts.shown ?? input, at: Date.now() });
+            existing.feed.expect({ kind: "steer", text: sent, clientId: id, shown: opts.shown ?? input, via: opts.via ?? "steer", images: opts.itemImages });
             await b.steer(existing.threadId, existing.turnId, { texts: [sent], images: opts.images ?? [] }).catch(() => {
-              existing.mapper.forget(id);
-              this.emit(convId, { type: "pending.removed", id, reason: "failed" });
+              existing.feed.forget(id);
+              this.setPending(convId, undefined, id);
             });
             return;
           }
-          // An engine input while a turn runs: shown now, delivered when pi takes it.
-          this.wakeItem(convId, input, kind, existing.turnId);
-          existing.mapper.expect({ kind: "silent", text: input });
+          // An engine input while a turn runs: shown where pi delivers it.
+          existing.feed.expect({ kind: "silent", text: input, ...this.engineInput(input, kind) });
           await b.followUp(existing.threadId, { texts: [input], images: [] }).catch(() => undefined);
         }
         return;
@@ -770,40 +834,55 @@ export class Engine {
       let conv = await readConv(this.d.vault, convId);
       if (!conv) throw new Error(`conversation ${convId} not found`);
       const turnId = newTurnId();
-      // Running from here: the turn, then what started it.
-      this.emit(convId, { type: "turn.started", turn: turnId, kind });
-      if (!opts.alreadyAppended) {
-        if (kind === "user") {
-          this.emit(convId, {
-            type: "item.started",
-            item: { id: opts.clientId ?? newMessageId(), kind: "user", status: "done", text: input, via: "chat", turn: turnId, ...(opts.itemImages?.length ? { images: opts.itemImages } : {}), at: 0 },
-          });
-        } else this.wakeItem(convId, input, kind, turnId);
-      }
-      const fail = (text: string, status: TurnEnd = "failed") => {
-        this.notice(convId, text, "error", turnId);
-        this.emit(convId, { type: "turn.ended", turn: turnId, status, error: text });
+      // Running from here. What started it enters the transcript when pi writes it (the client shows it meanwhile).
+      const startedAt = Date.now();
+      this.emit(convId, { type: "meta", patch: { running: { turn: turnId, kind, startedAt }, state: "running" } });
+      const clientId = opts.clientId ?? newMessageId();
+      const shownInput = kind === "user" ? { via: opts.via ?? "chat", shown: opts.shown ?? input } : this.engineInput(input, kind);
+      const fail = async (text: string) => {
+        // pi never took it: the message itself (Carl's) and why, as vault-chat's lines.
+        const lines: NoteData[] = kind === "user" ? [{ kind: "line", role: "user", text: shownInput.shown, via: shownInput.via, clientId, ...(opts.itemImages?.length ? { images: opts.itemImages } : {}) }] : [];
+        await this.note(convId, [...lines, { kind: "notice", text, level: "error" }]);
+        this.emit(convId, { type: "meta", patch: { running: null, state: "idle" } });
       };
       if (!existsSync(this.d.vault) || !statSync(this.d.vault).isDirectory()) {
-        fail(`⚠️ The vault ${this.d.vault} is missing on the box; no turn was run.`);
+        await fail(`⚠️ The vault ${this.d.vault} is missing on the box; no turn was run.`);
         return;
       }
       let threadId: string;
+      let fresh: boolean;
       try {
-        threadId = await this.ensureThread(conv);
+        ({ threadId, fresh } = await this.ensureThread(conv));
         conv = (await readConv(this.d.vault, convId)) ?? conv;
       } catch (e) {
-        fail(`⚠️ The engine could not open this conversation's thread: ${(e as Error).message}`);
+        await fail(`⚠️ The engine could not open this conversation's thread: ${(e as Error).message}`);
         throw e;
       }
+      const file = String(conv.threadPath ?? "");
+      // A session from before the feed (an older conversation's): its history is not pointed to again.
+      const from = this.picture(convId)?.meta.sessionFrom as { file?: string; after?: string | null } | undefined;
+      let after = from?.file === file ? from.after : undefined;
+      if (!fresh && from?.file !== file && file && !logOf(this.d.vault).pointedIn(convId, file).size) {
+        const all = readEntries(file);
+        after = all.length ? all[all.length - 1]!.id : null;
+        this.emit(convId, { type: "meta", patch: { sessionFrom: { file, after } } });
+      }
+      const feed = new PiFeed({
+        file,
+        emit: (b) => this.emit(convId, b),
+        pointed: this.skipSet(convId, file, after),
+        delivered: (id) => this.setPending(convId, undefined, id),
+      });
+      // Anything pi wrote that the feed missed (a crash between its write and the pointer) comes first.
+      feed.sync();
       const live: Live = {
         convId,
         threadId,
         turnId,
         kind,
-        startedAt: Date.now(),
+        startedAt,
         lastEventAt: Date.now(),
-        mapper: new PiMapper({ turn: turnId, emit: (b) => this.emit(convId, b) }),
+        feed,
         usage: null,
         flags: { wake: false, done: false, blocked: false },
         wakeAt: null,
@@ -826,7 +905,6 @@ export class Engine {
       live.controller.signal.addEventListener("abort", () => void this.interrupt(convId, true));
       this.live.set(convId, live);
       registerRun(convId, live.controller);
-      await patchMeta(this.d.vault, convId, { state: "running" });
       // History from before this thread (a legacy chat) goes with its first turn.
       let body = input;
       const prior = this.handover.get(convId);
@@ -841,7 +919,7 @@ export class Engine {
       if (opts.context) body = `${opts.context}\n\n${body}`;
       const activity = kind === "user" ? this.activityPrefix(conv) : "";
       const texts = [rules, activity, kind === "wake" ? input : body].filter(Boolean);
-      live.mapper.expect({ kind: "prompt", text: texts.join("\n\n") });
+      live.feed.expect({ kind: "prompt", text: texts.join("\n\n"), clientId: kind === "user" ? clientId : undefined, ...shownInput, ...(opts.itemImages?.length ? { images: opts.itemImages } : {}) });
       // Images on a model that can't see: this turn (silently) uses the vision model.
       let model = this.d.model();
       if (opts.images?.length && !capabilitiesOf(model).images) model = this.d.visionModel ?? model;
@@ -852,9 +930,8 @@ export class Engine {
         live.finished = true;
         this.live.delete(convId);
         unregisterRun(convId, live.controller);
-        live.mapper.dispose();
-        fail(`⚠️ The engine could not start this turn: ${(e as Error).message}`);
-        await patchMeta(this.d.vault, convId, { state: "idle" });
+        live.feed.dispose();
+        await fail(`⚠️ The engine could not start this turn: ${(e as Error).message}`);
       }
     });
   }
@@ -876,7 +953,7 @@ export class Engine {
     return block ? `${block}\n\n` : "";
   }
 
-  private async ensureThread(conv: EngineConv): Promise<string> {
+  private async ensureThread(conv: EngineConv): Promise<{ threadId: string; fresh: boolean }> {
     const model = this.d.model();
     // Subagents only for models where they work (learned from use; see capabilities.ts).
     const subagents = capabilitiesOf(model).subagents;
@@ -884,7 +961,7 @@ export class Engine {
       try {
         await this.d.backend.resumeThread(conv.threadId, { model, subagents });
         this.byThread.set(conv.threadId, conv.id);
-        return conv.threadId;
+        return { threadId: conv.threadId, fresh: false };
       } catch (e) {
         if (!(e as any)?.threadUnknown) throw e;
         // A thread of the other runtime or a lost one: a fresh thread, with the transcript handed over.
@@ -911,7 +988,7 @@ export class Engine {
       this.handover.set(conv.id, `<earlier_conversation>\n${t.slice(-12_000)}\n</earlier_conversation>`);
     }
     await patchMeta(this.d.vault, conv.id, { threadId, threadPath: ref });
-    return threadId;
+    return { threadId, fresh: true };
   }
 
   // ---------------------------------------------------------------- events
@@ -948,8 +1025,8 @@ export class Engine {
         return;
       case "usage": {
         l.usage = e.usage;
-        const last = e.usage.last;
-        if (last?.inputTokens) this.emit(l.convId, { type: "usage", turn: l.turnId, context: last.inputTokens, ...(e.usage.modelContextWindow ? { window: e.usage.modelContextWindow } : {}) });
+        const w = e.usage.modelContextWindow;
+        if (w && this.picture(l.convId)?.meta.contextWindow !== w) this.emit(l.convId, { type: "meta", patch: { contextWindow: w } });
         return;
       }
       case "subagents": {
@@ -959,8 +1036,10 @@ export class Engine {
             this.updateSubagent(l.convId, t, { prompt: String(e.prompt ?? "").slice(0, 300), model: e.model ?? this.d.model(), status: "running", startedAt: Date.now() });
           }
         }
-        // One entry per spawn: the children ride on the parent's own `subagent` tool call.
-        this.attachChildren(l, e.itemId, e.children);
+        // The children ride on the parent's own `subagent` tool call (its id; an older extension
+        // without it: the newest `subagent` call still open).
+        const call = this.spawnCall(l.convId, e.itemId);
+        if (call) for (const t of e.children) this.updateSubagent(l.convId, t, { toolCallId: call });
         if (e.done && e.ok && e.op === "spawnAgent" && e.children.length) {
           if (learn(this.d.model(), "subagents", true, `spawned ${e.children.length} subagent(s) in a real turn`)) this.log(`learned: ${this.d.model()} subagents on`);
         }
@@ -973,7 +1052,7 @@ export class Engine {
       case "turnCompleted":
         // Going down: pi was killed with the server; the turn stays open in the log for the next boot.
         if (shuttingDown) return;
-        void this.finishTurn(l, e.status, e.error ?? l.mapper.lastError);
+        void this.finishTurn(l, e.status, e.error ?? l.feed.lastError);
         return;
       case "threadLost":
         if (shuttingDown) return;
@@ -988,7 +1067,7 @@ export class Engine {
     }
   }
 
-  /** One pi event: into the log (piMap.ts), plus what the engine itself watches. */
+  /** One pi event: into the feed (piFeed.ts), plus what the engine itself watches. */
   private onPi(l: Live, ev: any): void {
     switch (ev?.type) {
       case "tool_execution_start": {
@@ -1019,7 +1098,7 @@ export class Engine {
         break;
       }
     }
-    l.mapper.onPi(ev);
+    l.feed.onPi(ev);
   }
 
   private onThreadLost(l: Live): void {
@@ -1028,33 +1107,24 @@ export class Engine {
       l.finished = true;
       this.live.delete(l.convId);
       unregisterRun(l.convId, l.controller);
-      l.mapper.dispose();
-      this.emit(l.convId, { type: "turn.ended", turn: l.turnId, status: "cut" });
+      l.feed.dispose();
+      this.emit(l.convId, { type: "meta", patch: { running: null } });
       return;
     }
     l.cut = true;
     void this.finishTurn(l, "interrupted", null).then(() => this.run(l.convId, RESUME_TEXT, "resume")).catch((err) => this.log(`resume ${l.convId} failed: ${err}`));
   }
 
-  /** Children onto the `subagent` call that spawned them (by its toolCallId; an
-   *  older extension without it: the newest unfinished `subagent` call). */
-  private attachChildren(l: Live, itemId: string, children: string[]): void {
-    const p = this.picture(l.convId);
-    if (!p) return;
-    let it: Item | undefined = p.items.find((x) => x.id === itemId && x.kind === "tool");
-    if (!it) {
-      for (let j = p.items.length - 1; j >= 0; j--) {
-        const x = p.items[j]!;
-        if (x.kind === "tool" && x.name === "subagent" && isOpen(x)) {
-          it = x;
-          break;
-        }
-      }
+  private spawnCall(convId: string, itemId: string | undefined): string | null {
+    const p = this.picture(convId);
+    if (!p) return null;
+    const all = shown(p);
+    if (itemId && all.some((x) => x.kind === "tool" && x.id === itemId)) return itemId;
+    for (let j = all.length - 1; j >= 0; j--) {
+      const x = all[j]!;
+      if (x.kind === "tool" && x.name === "subagent" && isOpen(x)) return x.id;
     }
-    if (!it) return;
-    const have = it.subagents ?? [];
-    const add = children.filter((c) => !have.includes(c));
-    if (add.length) this.emit(l.convId, { type: "item.updated", id: it.id, patch: { subagents: [...have, ...add] } });
+    return itemId || null;
   }
 
   private async finishTurn(l: Live, status: string, error: any): Promise<void> {
@@ -1062,18 +1132,12 @@ export class Engine {
     l.finished = true;
     if (this.live.get(l.convId) === l) this.live.delete(l.convId);
     unregisterRun(l.convId, l.controller);
-    l.mapper.dispose();
+    l.feed.dispose();
     const vault = this.d.vault;
     const errStr = status === "failed" ? errText(error) : "";
     if (errStr && /tool/i.test(errStr) && /(not support|unsupported|No endpoints found)/i.test(errStr)) {
       learn(this.d.model(), "tools", false, `request rejected: ${errStr}`);
     }
-    // What ended it, said once in the transcript.
-    if (l.cut) this.notice(l.convId, INTERRUPTED_TEXT, "error", l.turnId);
-    else if (status === "failed") this.notice(l.convId, `⚠️ The turn failed: ${errStr}`, "error", l.turnId);
-    else if (status === "interrupted" && !l.endedAfterWake) this.notice(l.convId, l.stalled ? "Stalled — interrupted by the watchdog." : "Stopped.", "info", l.turnId);
-    // Messages pi never took (a stop clears its queue; a failure drops it): no longer pending.
-    for (const x of this.picture(l.convId)?.pending ?? []) this.emit(l.convId, { type: "pending.removed", id: x.id, reason: l.stopped ? "stopped" : "failed" });
     const conv0 = await readConv(vault, l.convId);
     const wakeAt = nextWakeFor(vault, l.convId);
     // The final state, decided once (the log never says idle on the way to blocked).
@@ -1092,11 +1156,15 @@ export class Engine {
     let state: EngineConv["state"] = l.flags.blocked ? "blocked" : l.flags.done ? "done" : wakeAt ? "sleeping" : "idle";
     if (conv0?.pendingAsk) state = "waiting_user";
     if (stuck || failedKeepGoing || nudgeStop) state = "blocked";
-    const end: TurnEnd = l.cut ? "cut" : status === "failed" ? "failed" : status === "interrupted" ? (l.stalled ? "stalled" : l.stopped || !l.endedAfterWake ? "stopped" : "completed") : "completed";
-    this.emit(l.convId, { type: "turn.ended", turn: l.turnId, status: end, ...(errStr ? { error: errStr } : {}) });
-    await patchMeta(vault, l.convId, { state, nextWakeAt: wakeAt, ...(stuck || failedKeepGoing ? { working: false } : {}) });
+    // The turn is over: messages pi never took (a stop clears its queue; a failure drops it) are no longer pending.
+    this.emit(l.convId, { type: "meta", patch: { running: null, pending: null, state, nextWakeAt: wakeAt ?? null, ...(stuck || failedKeepGoing ? { working: false } : {}) } });
+    // What ended it, said once in the transcript (after what was in flight, which the end closed).
+    if (l.cut) await this.notice(l.convId, INTERRUPTED_TEXT, "error");
+    // (A failure pi's own message carries is shown from that message: not said twice.)
+    else if (status === "failed" && errStr !== l.feed.lastError) await this.notice(l.convId, `⚠️ The turn failed: ${errStr}`, "error");
+    else if (status === "interrupted" && !l.endedAfterWake) await this.notice(l.convId, l.stalled ? "Stalled — interrupted by the watchdog." : "Stopped.", "info");
     const conv = await readConv(vault, l.convId);
-    const reply = l.mapper.replies.join("\n\n").trim();
+    const reply = l.feed.replies.join("\n\n").trim();
     // The shared stream: this chat's latest exchange, now with the reply (Ctrl+L, Ctrl+K, voice read it).
     if (reply && !l.cut && conv) {
       const lastUser = [...(conv.messages ?? [])].reverse().find((m: any) => m.role === "user" && !m.hidden && !m.system && String(m.content ?? "").trim());
@@ -1154,17 +1222,22 @@ export class Engine {
   private async rollOver(conv: EngineConv): Promise<void> {
     const r = await buildRecap(conv as any);
     const from = conv.threadId;
-    this.emit(conv.id, { type: "item.started", item: { id: newMessageId(), kind: "compaction", status: "done", rollover: true, text: r.recap, at: 0 } });
-    this.emit(conv.id, { type: "conv.updated", patch: { recap: r.recap, threadId: null, threadPath: null } });
-    if (typeof r.costUsd === "number" && r.costUsd) this.emit(conv.id, { type: "cost", usd: r.costUsd });
+    await this.note(conv.id, [{ kind: "divider", text: r.recap, rollover: true }]);
+    this.emit(conv.id, { type: "meta", patch: { recap: r.recap, threadId: null, threadPath: null } });
+    if (typeof r.costUsd === "number" && r.costUsd) this.addCost(conv.id, r.costUsd);
     if (from) this.byThread.delete(from);
     this.activitySeen.delete(conv.id); // the new thread has seen nothing: its first turn gets the whole block
     this.log(`rolled ${conv.id} over (from ${from}); next turn starts a new thread`);
   }
 
   private updateSubagent(convId: string, threadId: string, patch: Record<string, unknown>): void {
-    if (!this.picture(convId)) return;
-    this.emit(convId, { type: "subagent", threadId, patch });
+    const p = this.picture(convId);
+    if (!p) return;
+    const subs = ((p.meta.subagents ?? []) as { threadId: string }[]).slice();
+    const i = subs.findIndex((s) => s.threadId === threadId);
+    if (i >= 0) subs[i] = { ...subs[i]!, ...patch };
+    else subs.push({ threadId, ...patch });
+    this.emit(convId, { type: "meta", patch: { subagents: subs } });
   }
 
   private async settleCost(convId: string, threadPath: string | undefined, turnId: string): Promise<void> {
@@ -1175,7 +1248,7 @@ export class Engine {
     const childCalls = [...this.childOf.entries()].filter(([, c]) => c === convId).flatMap(([t]) => this.d.backend.childUsageCalls(t));
     const res = await this.d.ledger.settle([...this.d.backend.usageCalls(threadPath, turnId), ...childCalls]);
     if (!res.calls) return;
-    this.scoped(() => this.emit(convId, { type: "cost", turn: turnId, usd: res.usd, ...(res.missing ? { missing: res.missing } : {}) }));
+    this.scoped(() => this.addCost(convId, res.usd, res.missing));
   }
 
   /** At boot: cost any model call a restart cut off before its lookup finished
@@ -1190,7 +1263,7 @@ export class Engine {
       if (!calls.length) continue;
       const res = await this.d.ledger.settle(calls);
       if (!res.calls) continue;
-      this.emit(id, { type: "cost", usd: res.usd, ...(res.missing ? { missing: res.missing } : {}) });
+      this.addCost(id, res.usd, res.missing);
       this.log(`reconciled ${res.calls} uncounted call(s) on ${id}: $${res.usd}`);
     }
   }
@@ -1264,9 +1337,9 @@ export class Engine {
           const line = formatVerdict(v);
           // Done ends the work: no wake of it may run a turn later.
           removeWakes(vault, (w) => w.conv === convId);
-          this.emit(convId, { type: "conv.updated", patch: { working: false, nextWakeAt: null, verdict: { verdict: v.verdict, notes: v.notes, at: v.at, summary } } });
-          if (typeof v.costUsd === "number" && v.costUsd) this.emit(convId, { type: "cost", usd: v.costUsd });
-          this.notice(convId, `Verifier: ${line}`, v.verdict === "pass" ? "info" : "warn", l?.turnId);
+          this.emit(convId, { type: "meta", patch: { working: false, nextWakeAt: null, verdict: { verdict: v.verdict, notes: v.notes, at: v.at, summary } } });
+          if (typeof v.costUsd === "number" && v.costUsd) this.addCost(convId, v.costUsd);
+          await this.notice(convId, `Verifier: ${line}`, v.verdict === "pass" ? "info" : "warn");
           await this.d.notify({ kind: "info", title: `Done: ${conv.title}`.slice(0, 90), body: `${summary.slice(0, 300)}\n${line}`, convId });
           return text(`Recorded as done. ${line}\nTell Carl the verdict in your reply.`);
         }
@@ -1342,10 +1415,7 @@ export class Engine {
               ...(t?.activeForm ? { activeForm: String(t.activeForm).slice(0, 300) } : {}),
             }))
             .filter((t: { content: string }) => t.content.trim());
-          // The plan is an item of the turn that wrote it (one per turn, updated in place).
-          const planId = `${l?.turnId ?? "plan"}:plan`;
-          if (this.picture(convId)?.items.some((x) => x.id === planId)) this.emit(convId, { type: "item.updated", id: planId, patch: { todos } });
-          else this.emit(convId, { type: "item.started", item: { id: planId, kind: "plan", status: "done", todos, ...(l ? { turn: l.turnId } : {}), at: 0 } });
+          // The plan is the call itself (pi's toolCall carries it; the reducer reads the last one).
           const n = (st: string) => todos.filter((t: { status: string }) => t.status === st).length;
           return text(`updated: ${todos.length} items (${n("completed")} done, ${n("in_progress")} active, ${n("pending")} pending)`);
         }
@@ -1384,21 +1454,18 @@ export class Engine {
     const p = new Promise<string>((resolve) => {
       l.ask = { resolve, question, itemId };
     });
-    this.emit(convId, { type: "item.started", item: { id: itemId, kind: "ask", status: "pending", question, options, turn: l.turnId, at: 0 } });
-    await patchMeta(vault, convId, { state: "waiting_user" });
+    this.emit(convId, { type: "meta", patch: { asking: { question, options, at: Date.now() }, state: "waiting_user" } });
     await this.d.notify({ kind: "ask", title: (conv?.title ? `Needs you: ${conv.title}` : "Needs your call").slice(0, 90), body: question, convId, options });
     return p;
   }
 
   /** Carl's answer: his message (under his client's id), the question closed, the turn resumed (or a new one). */
   private async answer(convId: string, answer: string, clientId: string = newMessageId()): Promise<void> {
-    const vault = this.d.vault;
     const l = this.live.get(convId);
-    const p = this.picture(convId);
-    const ask = p ? openAsk(p) : null;
-    this.emit(convId, { type: "item.started", item: { id: clientId, kind: "user", status: "done", text: answer, via: "answer", ...(l ? { turn: l.turnId } : {}), at: 0 } });
-    if (ask) this.emit(convId, { type: "item.completed", id: ask.id, patch: { answer } });
-    await patchMeta(vault, convId, { state: l?.ask ? "running" : "idle" });
+    const ask = this.picture(convId)?.meta.asking ?? null;
+    // His line is the question's result pi writes ("Carl answered: …"), under his client's id.
+    if (l?.ask) l.feed.answered(clientId);
+    this.emit(convId, { type: "meta", patch: { asking: null, state: l?.ask ? "running" : "idle" } });
     this.nudged.delete(convId);
     // The question's card in the phone feed is answered too, however the answer came in.
     if (this.markAsksAnswered(convId, answer)) this.d.broadcast?.({ type: "notif" });
@@ -1411,7 +1478,7 @@ export class Engine {
     }
     // The turn that asked is gone (a restart): a new turn carries the answer.
     const q = ask?.question;
-    void this.run(convId, q ? `Carl's answer to your question "${q}": ${answer}` : answer, "user", { alreadyAppended: true });
+    void this.run(convId, q ? `Carl's answer to your question "${q}": ${answer}` : answer, "user", { clientId, shown: answer, via: "answer" });
   }
 
   /** Write an "answered" record for each of the conversation's unanswered ask notifications. Returns how many. */

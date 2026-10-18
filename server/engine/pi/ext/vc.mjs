@@ -166,4 +166,15 @@ export default function vaultChat(pi) {
     flush();
     gate.reset();
   });
+
+  // ---- vault-chat's own lines in the transcript (a notice, a line, a divider) ---------
+  // pi's custom entries (not in the model's context), appended by pi itself so the
+  // session's tree stays pi's: the host sends `/vc-note {json}` while pi has the session.
+  pi.registerCommand("vc-note", {
+    description: "vault-chat: append a vc-note entry to this session",
+    handler: async (args) => {
+      const d = json(String(args ?? "").trim(), null);
+      if (d && typeof d === "object" && typeof d.kind === "string") pi.appendEntry("vc-note", d);
+    },
+  });
 }

@@ -1,16 +1,25 @@
-// Conversations on the box: the event log (server/convlog/log.ts) is the only
-// record, and this server its only writer. What the engine and the routes read
-// is the log's fold (src/convlog/reduce.ts) projected to the conversation
-// shape they already know (src/convlog/view.ts) — never a second copy.
+// Conversations on the box. A conversation's transcript is pi's session files;
+// the vault's feed (server/convlog/log.ts) points into them and holds the
+// conversation's own fields, and this server is its only writer. What the
+// engine and the routes read is the feed's fold (src/convlog/reduce.ts),
+// projected to the conversation shape they already know (src/convlog/view.ts).
 //
-// Older conversation files are imported into the log the first time one is
-// read (server/convlog/importer.ts); the files themselves are never written.
+// Lines vault-chat itself adds to a transcript (a voice exchange, a notice, a
+// line brought in from Ctrl+K) are pi custom entries (`vc-note`): written by pi
+// when a pi process has the session open (the engine's note writer), else
+// appended in pi's format to the session file, or to the conversation's own
+// session file when it has no pi session at all.
+//
+// Older conversation files are imported the first time one is read
+// (server/convlog/importer.ts); the files themselves are never written.
+import { existsSync } from "node:fs";
 import type { ChatMessage } from "../../src/store";
 import { newMessageId } from "../../src/conversations";
-import type { EventBody, Item, ItemImage, LogRecord } from "../../src/convlog/protocol";
-import { openAsk, planOf, type Picture } from "../../src/convlog/reduce";
+import type { EventBody, ItemImage, LogRecord } from "../../src/convlog/protocol";
+import { pendingOf, planOf, type Picture } from "../../src/convlog/reduce";
 import { messagesOf } from "../../src/convlog/view";
 import { convLog, type ConvLog } from "../convlog/log";
+import { appendEntries, newSessionFile, vcNote } from "../convlog/piSession";
 import { readConversationObjects } from "../commands/conversations";
 import type { EngineConv } from "./context";
 
@@ -33,10 +42,11 @@ export function pictureOf(vault: string, id: string): Picture | null {
 /** The picture as the conversation shape the engine, CONTEXT and the old routes read. */
 export function toEngineConv(p: Picture): EngineConv {
   const m = p.meta;
-  const ask = openAsk(p);
   const todos = planOf(p);
-  const queued = p.pending.filter((x) => x.kind === "queue").map((x) => ({ id: x.id, text: x.text }));
-  const { subagents, ...rest } = m;
+  const queued = pendingOf(p)
+    .filter((x) => x.kind === "queue")
+    .map((x) => ({ id: x.id, text: x.text }));
+  const { subagents, running, asking, pending: _p, ...rest } = m;
   return {
     ...(rest as Record<string, unknown>),
     id: p.id,
@@ -46,9 +56,9 @@ export function toEngineConv(p: Picture): EngineConv {
     lastActivityAt: m.lastActivityAt,
     unread: false,
     messages: messagesOf(p) as ChatMessage[],
-    status: p.turn ? "running" : "idle",
-    ...(p.turn ? { runStartedAt: p.turn.startedAt } : {}),
-    ...(ask ? { pendingAsk: { question: ask.question ?? "", options: ask.options ?? [], at: ask.at } } : {}),
+    status: running ? "running" : "idle",
+    ...(running ? { runStartedAt: running.startedAt } : {}),
+    ...(asking ? { pendingAsk: { question: asking.question ?? "", options: asking.options ?? [], at: asking.at } } : {}),
     ...(todos ? { todos } : {}),
     ...(queued.length ? { queued } : {}),
     ...(subagents?.length ? { subagents: subagents as any } : {}),
@@ -71,8 +81,8 @@ export async function allConvs(vault: string): Promise<EngineConv[]> {
   return out;
 }
 
-/** What the log derives itself (items, turns, cost, subagents …): never set by a conv.updated. */
-const DERIVED = new Set(["id", "messages", "status", "runStartedAt", "pendingAsk", "todos", "queued", "subagents", "costUsd", "createdAt", "lastActivityAt", "unread"]);
+/** What the fold derives itself (the transcript, the turn, the question …): never set by a patch from outside the engine. */
+const DERIVED = new Set(["id", "messages", "status", "runStartedAt", "pendingAsk", "todos", "queued", "createdAt", "lastActivityAt", "unread"]);
 
 /** The conversation fields of a patch (undefined → null: removes it). */
 function metaPatch(meta: Record<string, unknown>): Record<string, unknown> {
@@ -84,7 +94,7 @@ function metaPatch(meta: Record<string, unknown>): Record<string, unknown> {
 export async function patchMeta(vault: string, id: string, meta: Partial<EngineConv> | Record<string, unknown>): Promise<EngineConv | null> {
   if (!pictureOf(vault, id)) return null;
   const patch = metaPatch(meta as Record<string, unknown>);
-  if (Object.keys(patch).length) emitTo(vault, id, { type: "conv.updated", patch });
+  if (Object.keys(patch).length) emitTo(vault, id, { type: "meta", patch });
   return readConv(vault, id);
 }
 
@@ -92,7 +102,8 @@ export async function createConv(vault: string, init: Partial<EngineConv>, first
   const convId = id ?? newConvId();
   const meta: Record<string, unknown> = { ...metaPatch(init as Record<string, unknown>), title: init.title ?? titleOf(firstText), source: init.source ?? "phone" };
   for (const [k, v] of Object.entries(meta)) if (v === null) delete meta[k];
-  emitTo(vault, convId, { type: "conv.created", meta: meta as any });
+  const now = Date.now();
+  emitTo(vault, convId, { type: "meta", patch: { ...meta, createdAt: now, lastActivityAt: now } });
   return (await readConv(vault, convId))!;
 }
 
@@ -112,34 +123,73 @@ export function imagesOf(m: { attachments?: { imageDataUrl?: string; capturedFil
     .filter((x) => x.path || x.dataUrl);
 }
 
+// ---------------------------------------------------------------- vault-chat's own entries
+
+/** A vc-note: a line (Carl's or an agent's), a notice, a divider. `clientId`: the id a client shows it under. */
+export type NoteData = { kind: "line" | "notice" | "divider"; clientId?: string; images?: ItemImage[]; [k: string]: unknown };
+
+/** The engine's writer: the notes through pi (true) while a pi process has the conversation's session open. */
+export type NoteWriter = (convId: string, notes: NoteData[]) => Promise<boolean>;
+const writers = new Map<string, NoteWriter>();
+
+export function setNoteWriter(vault: string, fn: NoteWriter | null): void {
+  if (fn) writers.set(vault, fn);
+  else writers.delete(vault);
+}
+
+/** Write notes into the conversation's transcript: through pi when it has the session, else straight into a pi-format file. */
+export async function writeNotes(vault: string, convId: string, notes: NoteData[]): Promise<void> {
+  if (!notes.length) return;
+  const w = writers.get(vault);
+  if (w && (await w(convId, notes))) return;
+  appendNotes(vault, convId, notes);
+}
+
+/** The notes appended in pi's format (no pi has the session): to its pi session file, or the conversation's own. */
+export function appendNotes(vault: string, convId: string, notes: NoteData[]): void {
+  const log = convLog(vault);
+  const p = log.picture(convId);
+  const thread = typeof p?.meta.threadPath === "string" && existsSync(p.meta.threadPath) ? p.meta.threadPath : null;
+  const file = thread ?? log.ownSession(convId);
+  if (!thread && !existsSync(file)) newSessionFile(file, vault);
+  const written = appendEntries(
+    file,
+    notes.map(({ images: _i, ...d }) => vcNote(d as NoteData)),
+  );
+  written.forEach((entry, i) => {
+    const n = notes[i]!;
+    emitTo(vault, convId, { type: "entry", file, entry, ...(n.clientId ? { clientId: n.clientId } : {}), ...(n.images?.length ? { images: n.images } : {}) });
+  });
+}
+
 /**
- * One message, written as the item it is: Carl's line (a user item), a line
- * from an agent (an assistant item), a system line (a notice). Voice
- * (server/voice.ts) and the engine's notices come through here. The message's
- * `mid` is the item's id (a client's own id when it sent one), so a repeat is a no-op.
+ * One message, written as the line it is: Carl's line, a line from an agent,
+ * a system line (a notice). Voice (server/voice.ts) and lines a client brings
+ * in come through here. The message's `mid` is the line's id (a client's own
+ * id when it sent one), so a repeat is a no-op.
  */
 export async function appendMessage(vault: string, id: string, m: ChatMessage & { mid?: string }, meta: Partial<EngineConv> = {}): Promise<EngineConv | null> {
   const p = pictureOf(vault, id);
   if (!p) return null;
   const itemId = m.mid ?? newMessageId();
-  if (!p.items.some((x) => x.id === itemId)) {
+  if (!p.items.some((x) => x.id === itemId) && !(m.role === "user" && m.hidden)) {
     const voice = p.meta.source === "voice";
-    let item: Omit<Item, "at">;
-    if (m.system) item = { id: itemId, kind: "notice", status: "done", text: m.content ?? "", level: m.failed ? "error" : "info" };
+    let note: NoteData;
+    if (m.system) note = { kind: "notice", text: m.content ?? "", level: m.failed ? "error" : "info", clientId: itemId };
     else if (m.role === "user") {
       const images = imagesOf(m as any);
-      item = { id: itemId, kind: "user", status: "done", text: m.content ?? "", via: voice ? "voice" : m.decision ? "answer" : "chat", ...(m.hidden ? { hidden: true } : {}), ...(images.length ? { images } : {}) };
-    } else item = { id: itemId, kind: "assistant", status: "done", text: m.content ?? "", ...(voice ? { via: "voice" as const } : {}) };
-    emitTo(vault, id, { type: "item.started", item: { ...item, at: 0 } as Item });
+      note = { kind: "line", role: "user", text: m.content ?? "", via: voice ? "voice" : m.decision ? "answer" : "chat", clientId: itemId, ...(images.length ? { images } : {}) };
+    } else note = { kind: "line", role: "assistant", text: m.content ?? "", ...(voice ? { via: "voice" } : {}), clientId: itemId };
+    await writeNotes(vault, id, [note]);
   }
   const patch = metaPatch(meta as Record<string, unknown>);
-  if (Object.keys(patch).length) emitTo(vault, id, { type: "conv.updated", patch });
+  if (Object.keys(patch).length) emitTo(vault, id, { type: "meta", patch });
   return readConv(vault, id);
 }
 
 /**
  * Every conversation as the plain object the older readers take (the phone's
- * routes, CONTEXT's cost, voice): from the log; one not imported yet comes
+ * routes, CONTEXT's cost, voice): from the feed; one not imported yet comes
  * from its older file as it is (reading never imports a whole vault).
  */
 export function conversationObjects(vault: string): any[] {
