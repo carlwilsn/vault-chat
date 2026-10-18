@@ -1,5 +1,5 @@
 // The full test conversation, checked (preview/scenarios/convFull.ts): loads
-// conv-a (laptop with a box), conv-b (laptop local) and conv-c (phone) — and
+// conv-a (laptop, the chat on its box) and conv-c (phone) — and
 // their second-option twins — plays each stage, and asserts in the DOM that
 // every element rendered, nothing twice, and no console errors. Screenshots
 // per stage → preview-proof/.
@@ -102,127 +102,76 @@ async function desktop(id, alt) {
       const ids = s.subagents.map((x) => x.sid);
       check(run, `${stage}: subagents — two, none twice, no legacy "Subagent" tool records`, ids.length === 2 && new Set(ids).size === 2 && s.legacySubagentRecords === 0, JSON.stringify(ids));
     };
-    if (id.startsWith("conv-a")) {
-      await play(0);
-      let s = await snapshot(page);
-      check(run, "roll-over: the summarized-earlier divider", s.divider === 1 && /Earlier conversation summarized/.test(s.dividerText));
-      await page.click("[data-el='divider'] summary");
-      s = await snapshot(page);
-      check(run, "roll-over: expands to the recap", /Where we are/.test(s.dividerText));
-      await shot(page, `${run}-0-rollover`);
+    await play(0);
+    let s = await snapshot(page);
+    check(run, "roll-over: the summarized-earlier divider", s.divider === 1 && /Earlier conversation summarized/.test(s.dividerText));
+    await page.click("[data-el='divider'] summary");
+    s = await snapshot(page);
+    check(run, "roll-over: expands to the recap", /Where we are/.test(s.dividerText));
+    await shot(page, `${run}-0-rollover`);
 
-      await play(1);
-      s = await snapshot(page);
-      check(run, "thinking streams live", s.thinkingLive);
-      check(run, "no brain toggle", s.toggle === 0);
-      check(run, "to-do list (first version) shown", alt ? s.todosPinned === 1 && /0\/4/.test(s.todos.join()) : /0\/4/.test(s.todos.join()));
-      subagentsOnce(s, "spawn");
-      const st = s.subagents.map((x) => x.state).sort().join(",");
-      check(run, `one subagent done (${alt ? "cost, " : "no cost, "}summary), one running`, st === "completed,running" && s.subagents.some((x) => (alt ? /\$0\.09/.test(x.text) : !/\$/.test(x.text)) && /Six methods/.test(x.text)), st);
-      check(run, `subagents shown ${alt ? "as the strip" : "inline"}`, s.subagentCards.length >= 1 && s.subagentCards.every((v) => v === (alt ? "strip" : "inline")), s.subagentCards.join());
-      await shot(page, `${run}-1-subagents`);
+    await play(1);
+    s = await snapshot(page);
+    check(run, "thinking streams live", s.thinkingLive);
+    check(run, "no brain toggle", s.toggle === 0);
+    check(run, "to-do list (first version) shown", alt ? s.todosPinned === 1 && /0\/4/.test(s.todos.join()) : /0\/4/.test(s.todos.join()));
+    subagentsOnce(s, "spawn");
+    const st = s.subagents.map((x) => x.state).sort().join(",");
+    check(run, `one subagent done (${alt ? "cost, " : "no cost, "}summary), one running`, st === "completed,running" && s.subagents.some((x) => (alt ? /\$0\.09/.test(x.text) : !/\$/.test(x.text)) && /Six methods/.test(x.text)), st);
+    check(run, `subagents shown ${alt ? "as the strip" : "inline"}`, s.subagentCards.length >= 1 && s.subagentCards.every((v) => v === (alt ? "strip" : "inline")), s.subagentCards.join());
+    await shot(page, `${run}-1-subagents`);
 
-      await play(2);
-      s = await snapshot(page);
-      check(run, "the streamed reply is whole (a 6,700-character reply keeps its start, past the old 6,000 tail)", s.stream.includes(FIRST) && s.stream.includes(LAST), `${s.stream.length} chars rendered`);
-      check(run, "to-do list updated (second version)", /2\/4/.test(s.todos.join()));
-      await shot(page, `${run}-2-stream`);
+    await play(2);
+    s = await snapshot(page);
+    check(run, "the streamed reply is whole (a 6,700-character reply keeps its start, past the old 6,000 tail)", s.stream.includes(FIRST) && s.stream.includes(LAST), `${s.stream.length} chars rendered`);
+    check(run, "to-do list updated (second version)", /2\/4/.test(s.todos.join()));
+    await shot(page, `${run}-2-stream`);
 
-      await play(3);
-      s = await snapshot(page);
-      check(run, "markdown: a table and code", s.tables >= 1 && s.code >= 1);
-      check(run, "math: inline ($ and \\(\\)) and display ($$ and \\[\\])", s.katex >= 8 && s.katexDisplay >= 2, `${s.katex} inline, ${s.katexDisplay} display`);
-      check(run, "the reply keeps its thinking (the collapsed Thought line)", s.thinking >= 1 && s.toggle === 0);
-      check(run, "tool calls (5, no duplicates)", s.toolCalls.some((t) => /5 tool calls/.test(t)), s.toolCalls.join(" | "));
-      subagentsOnce(s, "done");
-      check(run, "both subagents done", s.subagents.every((x) => x.state === "completed"));
-      check(run, alt ? "to-do list updated twice; finished, it unpins" : "to-do list updated twice (4/4)", alt ? s.todosPinned === 0 && s.todos.length === 0 : /4\/4/.test(s.todos.join()), JSON.stringify(s.todos));
-      check(run, alt ? "cost: the conversation total at the top, none per reply" : "no cost in the chat", alt ? s.totalCost.length === 1 && s.replyCost.length === 0 : s.totalCost.length === 0 && s.replyCost.length === 0, JSON.stringify([s.replyCost, s.totalCost]));
-      check(run, `AskUser: ${alt ? "numbered buttons" : "option cards"}, live`, s.ask.length === 1 && s.ask[0] === "1" && s.askOptions.length === 2, JSON.stringify(s.ask));
-      await shot(page, `${run}-3-reply-ask`);
+    await play(3);
+    s = await snapshot(page);
+    check(run, "markdown: a table and code", s.tables >= 1 && s.code >= 1);
+    check(run, "math: inline ($ and \\(\\)) and display ($$ and \\[\\])", s.katex >= 8 && s.katexDisplay >= 2, `${s.katex} inline, ${s.katexDisplay} display`);
+    check(run, "the reply keeps its thinking (the collapsed Thought line)", s.thinking >= 1 && s.toggle === 0);
+    check(run, "tool calls (5, no duplicates)", s.toolCalls.some((t) => /5 tool calls/.test(t)), s.toolCalls.join(" | "));
+    subagentsOnce(s, "done");
+    check(run, "both subagents done", s.subagents.every((x) => x.state === "completed"));
+    check(run, alt ? "to-do list updated twice; finished, it unpins" : "to-do list updated twice (4/4)", alt ? s.todosPinned === 0 && s.todos.length === 0 : /4\/4/.test(s.todos.join()), JSON.stringify(s.todos));
+    check(run, alt ? "cost: the conversation total at the top, none per reply" : "no cost in the chat", alt ? s.totalCost.length === 1 && s.replyCost.length === 0 : s.totalCost.length === 0 && s.replyCost.length === 0, JSON.stringify([s.replyCost, s.totalCost]));
+    check(run, `AskUser: ${alt ? "numbered buttons" : "option cards"}, live`, s.ask.length === 1 && s.ask[0] === "1" && s.askOptions.length === 2, JSON.stringify(s.ask));
+    await shot(page, `${run}-3-reply-ask`);
 
-      await play(4);
-      s = await snapshot(page);
-      const posts = await page.evaluate(() => window.__preview.boxPosts());
-      check(run, "AskUser answered through /answer", posts.some((p) => p.path === "/answer" && p.body.text === "Only 4-bit KV"), JSON.stringify(posts.map((p) => p.path)));
-      check(run, "the answer shows, the options go quiet", /Only 4-bit KV/.test(s.body) && s.ask[0] === "0");
-      check(run, "sleeping: the ongoing line with its next time", s.ongoing.some((o) => o.tone === "waiting" && /next \d/.test(o.text)), JSON.stringify(s.ongoing));
-      await shot(page, `${run}-4-sleeping`);
+    await play(4);
+    s = await snapshot(page);
+    const posts = await page.evaluate(() => window.__preview.boxPosts());
+    check(run, "AskUser answered through /answer", posts.some((p) => p.path === "/answer" && p.body.text === "Only 4-bit KV"), JSON.stringify(posts.map((p) => p.path)));
+    check(run, "the answer shows, the options go quiet", /Only 4-bit KV/.test(s.body) && s.ask[0] === "0");
+    check(run, "sleeping: the ongoing line with its next time", s.ongoing.some((o) => o.tone === "waiting" && /next \d/.test(o.text)), JSON.stringify(s.ongoing));
+    await shot(page, `${run}-4-sleeping`);
 
-      await play(5);
-      s = await snapshot(page);
-      check(run, "the wake arrives", /Wake: Checking the writeup build/.test(s.body));
-      check(run, "an error", /The turn failed: Provider returned error 502/.test(s.body));
-      await shot(page, `${run}-5-wake-error`);
+    await play(5);
+    s = await snapshot(page);
+    check(run, "the wake arrives", /Wake: Checking the writeup build/.test(s.body));
+    check(run, "an error", /The turn failed: Provider returned error 502/.test(s.body));
+    await shot(page, `${run}-5-wake-error`);
 
-      await play(6);
-      s = await snapshot(page);
-      const posts2 = await page.evaluate(() => window.__preview.boxPosts());
-      check(run, "retry: Carl's \"Try again\" and the reply", /Try again/.test(s.body) && /Retried: the writeup builds/.test(s.body));
-      check(run, "an image sent to the box (images[] in /message) and shown", posts2.some((p) => p.path === "/message" && Array.isArray(p.body.images) && p.body.images.length === 1 && p.body.images[0].mime === "image/png") && s.userImages >= 1, `${s.userImages} image(s)`);
-      check(run, `Done: the verifier's verdict ${alt ? "in the ongoing line" : "at the end of the thread"}`, s.verdict.some((v) => /Verifier passed/i.test(v) || /verifier passed/.test(v)) && (alt ? s.ongoing.some((o) => o.tone === "done") : true), JSON.stringify(s.verdict));
-      const m = /Context: ([\d,]+) of ([\d,]+) tokens \((\d+)%\)/.exec(s.dial);
-      check(run, "the context dial reads the box's window, near its limit", !!m && m[2] === "200,000" && Number(m[3]) >= 85, s.dial);
-      check(run, alt ? "cost shown" : "no cost anywhere (ongoing line, thread)", alt ? s.totalCost.some((t) => /\$0\.52/.test(t)) : s.replyCost.length === 0 && s.totalCost.length === 0 && !s.ongoing.some((o) => /\$/.test(o.text)), JSON.stringify([s.replyCost, s.totalCost, s.ongoing]));
-      subagentsOnce(s, "end");
-      await shot(page, `${run}-6-done`);
-    } else {
-      // conv-b: laptop local
-      await play(0);
-      // Stage 1 streams for a while: catch it mid-stream.
-      const p1 = page.evaluate(() => window.__preview.play(1));
-      let mid = "";
-      for (let i = 0; i < 200; i++) {
-        mid = await page.evaluate(() => document.querySelector("[data-el='stream']")?.textContent ?? "");
-        if (mid.length > 3000) break;
-        await page.waitForTimeout(100);
-      }
-      check(run, "the reply streams with its start", mid.length > 3000 && mid.includes(FIRST), `${mid.length} chars rendered mid-stream`);
-      await shot(page, `${run}-1-stream`);
-      await p1;
-      await page.waitForTimeout(600);
-      let s = await snapshot(page);
-      check(run, "markdown: a table and code", s.tables >= 1 && s.code >= 1);
-      check(run, "math: inline ($ and \\(\\)) and display ($$ and \\[\\])", s.katex >= 8 && s.katexDisplay >= 2, `${s.katex} inline, ${s.katexDisplay} display`);
-      check(run, "the reply keeps its thinking (saved with it)", s.thinking >= 1);
-      check(run, "tool calls (TodoWrite ×3, Read)", s.toolCalls.some((t) => /4 tool calls/.test(t)), s.toolCalls.join(" | "));
-      const llm = await page.evaluate(() => window.__preview.llm().filter((x) => x.script === "conv-first").length);
-      check(run, "to-do list updated twice (3 versions, 4/4 saved on the conversation)", /4\/4/.test(s.todos.join()) && llm >= 5, `${llm} model calls`);
-      await shot(page, `${run}-1-reply`);
-
-      await play(2);
-      s = await snapshot(page);
-      check(run, "AskUser: option cards on the reply, live", s.ask.length === 1 && s.ask[0] === "1" && s.askOptions.length === 2, JSON.stringify(s.ask));
-      check(run, "cost under the reply (OpenRouter)", s.replyCost.length >= 1, JSON.stringify(s.replyCost));
-      await shot(page, `${run}-2-ask`);
-
-      await play(3);
-      s = await snapshot(page);
-      check(run, "AskUser answered (the pick sent as the next message)", /Only 4-bit KV/.test(s.body) && s.ask[0] === "0" && /Going with the 4-bit section only/.test(s.body));
-      const m = /\((\d+)%\)/.exec(s.dial);
-      check(run, "the context dial near its limit", !!m && Number(m[1]) >= 85, s.dial);
-      await shot(page, `${run}-3-context`);
-
-      await play(4);
-      s = await snapshot(page);
-      check(run, "the next send summarized the earlier conversation (divider)", s.divider >= 1);
-      check(run, "an error, then a retry that works", /502|upstream connect error/.test(s.body) && /Retried: the writeup builds/.test(s.body));
-      await shot(page, `${run}-4-compaction-error-retry`);
-
-      await play(5);
-      s = await snapshot(page);
-      check(run, "an image sent and answered", s.userImages >= 1 && /The curve looks right/.test(s.body), `${s.userImages} image(s)`);
-      check(run, "cost on each OpenRouter reply", s.replyCost.length >= 4, JSON.stringify(s.replyCost));
-      await shot(page, `${run}-5-image`);
-    }
+    await play(6);
+    s = await snapshot(page);
+    const posts2 = await page.evaluate(() => window.__preview.boxPosts());
+    check(run, "retry: Carl's \"Try again\" and the reply", /Try again/.test(s.body) && /Retried: the writeup builds/.test(s.body));
+    check(run, "an image sent to the box (images[] in /message) and shown", posts2.some((p) => p.path === "/message" && Array.isArray(p.body.images) && p.body.images.length === 1 && p.body.images[0].mime === "image/png") && s.userImages >= 1, `${s.userImages} image(s)`);
+    check(run, `Done: the verifier's verdict ${alt ? "in the ongoing line" : "at the end of the thread"}`, s.verdict.some((v) => /Verifier passed/i.test(v) || /verifier passed/.test(v)) && (alt ? s.ongoing.some((o) => o.tone === "done") : true), JSON.stringify(s.verdict));
+    const m = /Context: ([\d,]+) of ([\d,]+) tokens \((\d+)%\)/.exec(s.dial);
+    check(run, "the context dial reads the box's window, near its limit", !!m && m[2] === "200,000" && Number(m[3]) >= 85, s.dial);
+    check(run, alt ? "cost shown" : "no cost anywhere (ongoing line, thread)", alt ? s.totalCost.some((t) => /\$0\.52/.test(t)) : s.replyCost.length === 0 && s.totalCost.length === 0 && !s.ongoing.some((o) => /\$/.test(o.text)), JSON.stringify([s.replyCost, s.totalCost, s.ongoing]));
+    subagentsOnce(s, "end");
+    await shot(page, `${run}-6-done`);
   } catch (e) {
     check(run, "ran to the end", false, String(e?.message ?? e).split("\n")[0]);
     await shot(page, `${run}-error`).catch(() => {});
   }
   const probs = await page.evaluate(() => (window.__preview ? { unknown: window.__preview.unknown(), refused: window.__preview.refused().map((r) => `${r.kind} ${r.url}`), stepError: window.__preview.stepError } : null)).catch(() => null);
-  // conv-b's error turn is a scripted 502: the AI SDK logs its retries giving up.
-  const cons = consoleProblems(log, id === "conv-b" ? [/upstream connect error or disconnect\/reset before headers/] : []);
-  check(run, id === "conv-b" ? "no console errors (but the scripted 502's)" : "no console errors", cons.length === 0, cons.join(" | "));
+  const cons = consoleProblems(log, []);
+  check(run, "no console errors", cons.length === 0, cons.join(" | "));
   check(run, "nothing unfaked, refused or outbound", probs && !probs.unknown.length && !probs.refused.length && !log.outbound.length, JSON.stringify({ ...probs, outbound: log.outbound }));
   await browser.close();
 }
@@ -368,7 +317,6 @@ async function phone(id, alt) {
 const RUNS = [
   ["conv-a", () => desktop("conv-a", false)],
   ["conv-a-alt", () => desktop("conv-a-alt", true)],
-  ["conv-b", () => desktop("conv-b", false)],
   ["conv-c", () => phone("conv-c", false)],
   ["conv-c-alt", () => phone("conv-c-alt", true)],
 ];

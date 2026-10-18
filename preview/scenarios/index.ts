@@ -152,21 +152,6 @@ const whereWere = (pad: number): Script => ({
   steps: [{ text: "We were on the 3.2B-token plan: re-fit the cosine schedule for 6100 steps and keep the step-0 LR guard.", promptPad: pad }],
 });
 
-/** A long PDF read the way the page-range tool expects: default pages, then a range. */
-const pdfRanges: Script = {
-  id: "pdf-ranges",
-  match: /survey|pdf/i,
-  steps: [
-    { text: "Starting with the opening pages.", tools: [{ name: "PdfExtract", args: { path: "{vault}/papers/attention-survey.pdf" } }] },
-    { text: "Now the taxonomy section.", tools: [{ name: "PdfExtract", args: { path: "{vault}/papers/attention-survey.pdf", pages: "4-8" } }] },
-    {
-      text:
-        "From pages 1–8 of 320: the survey sorts efficient attention into sparse/sliding-window, low-rank/kernel, and recurrent/state-space families, and argues the KV cache — not the attention FLOPs — dominates inference cost. Want a specific chapter next?\n\n" +
-        "*(Watch the dial: each call returned a few pages, not the whole document.)*",
-    },
-  ],
-};
-
 const inlineEdit: Script = {
   id: "inline-edit",
   system: /inline editor/i,
@@ -368,7 +353,7 @@ export const scenarios: Scenario[] = [
     id: "fresh",
     title: "Fresh install — empty vault data, no keys",
     group: "Basics",
-    notes: "A first run: no API key in the keychain, no conversations. The composer is disabled until a key is set in Settings (paste any fake value such as sk-or-PREVIEW-1).",
+    notes: "A first run: no box, no keys, no conversations. The chat pane says “Connect your box to chat” with one button to Settings → Box; files, the editor, notes and history work without it.",
     host: { keys: { "api.openrouter": null } },
     build: () => {},
     open: [{ chat: true }],
@@ -422,24 +407,6 @@ export const scenarios: Scenario[] = [
     llm: { scripts: [held], chunkMs: 30 },
     open: [...deskOpen(), ...send("Check all three seeds against the tolerance.")],
   },
-  {
-    id: "compaction",
-    title: "Chat — a long chat hits compaction",
-    group: "Chat",
-    notes:
-      "A 36-message chat. The first message's reply reports 176k context. Before: over 85% of the fixed 200k, so the second message compacts (the “Conversation compacted to free context.” banner; the earlier messages leave the view). After: 176k is 18% of Sonnet 5.5's real 1M window — no compaction. See “Compaction — the divider” for compaction after the change.",
-    build: (c) => world(c, { extraConvs: (now) => [W.longChat(now, 176_000)] }),
-    activeConversation: "c-long",
-    llm: { scripts: [whereWere(176_000), compactionReply], chunkMs: 12 },
-    open: [
-      ...deskOpen("notes/scaling-laws.md", "c-long"),
-      { sleep: 400 },
-      ...sendHere("Where were we?"),
-      { waitIdle: true },
-      { sleep: 800 },
-      ...sendHere("OK — what's next for the 3.2B run?"),
-    ],
-  },
   ...([
     ["context-low", "Context dial — low (~14k)", 4_000, "c-spectral", "A short chat: the dial after a live turn. Before: measured against a fixed 200k. After: against Sonnet 5.5's real 1M window (catalog); hover for the numbers."],
     ["context-high", "Context dial — high (~120k)", 110_000, "c-long", "A long chat at ~120k reported context. Before: amber (60% of a fixed 200k). After: grey, 12% of the real 1M window."],
@@ -474,15 +441,6 @@ export const scenarios: Scenario[] = [
     build: (c) => world(c),
     llm: { scripts: [askScript] },
     open: [{ file: NOTE }, { sleep: 600 }, { key: "Ctrl+l" }],
-  },
-  {
-    id: "model-picker",
-    title: "Model picker (real OpenRouter catalog)",
-    group: "Models",
-    notes: "The chat pane's model picker, open, listing the real OpenRouter catalog (saved from openrouter.ai/api/v1/models). Search works. Settings has the per-role pickers.",
-    build: (c) => world(c),
-    activeConversation: "c-spectral",
-    open: [...deskOpen(NOTE, "c-spectral"), { sleep: 800 }, { click: "button", text: /Claude Sonnet 5\.5/ }],
   },
 
   // ===== PDF =====
@@ -585,101 +543,6 @@ export const scenarios: Scenario[] = [
     activeConversation: "c-long",
     llm: { scripts: [whereWere(112_000), compactionReply], chunkMs: 12 },
     open: [...deskOpen("notes/scaling-laws.md", "c-long"), { sleep: 400 }, ...sendHere("Where were we?"), { waitIdle: true }],
-  },
-  {
-    id: "compaction-divider",
-    title: "Compaction — the divider (expanded)",
-    group: "Chat",
-    notes:
-      "A long chat past 85% of Sonnet 5.5's 1M window: the second message compacts on both sides. After: nothing leaves the transcript; a quiet “Earlier conversation summarized” divider sits above the four messages kept verbatim and expands to the summary (opened here). The summary rides on the divider, so it survives switching chats and reloads (before, it was one store field, cleared on every switch). Before: the “Conversation compacted to free context.” banner and the earlier messages gone from view (the never-shrink write keeps them on disk, so they come back on reload, without the summary).",
-    build: (c) => world(c, { extraConvs: (now) => [W.longChat(now, 100_000)] }),
-    activeConversation: "c-long",
-    llm: { scripts: [whereWere(890_000), compactionReply], chunkMs: 12 },
-    open: [
-      ...deskOpen("notes/scaling-laws.md", "c-long"),
-      { sleep: 400 },
-      ...sendHere("Where were we?"),
-      { waitIdle: true },
-      { sleep: 800 },
-      ...sendHere("OK — what's next for the 3.2B run?"),
-      { waitIdle: true },
-      { sleep: 600 },
-      // Open the divider (after only — the before side has none).
-      { run: (api) => api.byText(/Earlier conversation summarized/, "details > summary")?.click() },
-    ],
-  },
-  ...(["A", "B", "C"] as const).map(
-    (opt): Scenario => ({
-      id: `inline-roles-${opt}`,
-      title: `Ctrl+L / Ctrl+K models — option ${opt}`,
-      group: "Editing",
-      notes:
-        `The Ctrl+L ask popover on the writeup; its footer names the model (after only). ${
-          {
-            A: "Option A: Ctrl+K and Ctrl+L both on the Chat role (Claude Sonnet 5.5).",
-            B: "Option B (the default): Ctrl+K on Background (Claude Haiku 5.5), Ctrl+L on Chat (Claude Sonnet 5.5).",
-            C: "Option C: Ctrl+K and Ctrl+L both on Background (Claude Haiku 5.5).",
-          }[opt]
-        } ` +
-        "For Ctrl+K: Esc, switch the viewer to edit, select a paragraph, Ctrl+K. Roles are set in Settings → Models (a new Background row); an image ask (PDF region, image viewer) moves to the built-in vision model only when the role model can't read images — there is no Images & PDFs setting. Before: both always ran on the chat pane's current model.",
-      build: (c) => world(c),
-      localStorage: { vault_chat_inline_roles: opt },
-      llm: { scripts: [inlineEdit, askScript] },
-      open: [{ file: NOTE }, { sleep: 600 }, { key: "Ctrl+l" }],
-    }),
-  ),
-  {
-    id: "inline-auto",
-    title: "Ctrl+L with the chat model on Auto",
-    group: "Editing",
-    notes:
-      "The chat pane's model is Auto, and a Ctrl+L question is sent. Before: Ctrl+L reads the chat model, can't resolve “auto”, and fails with “No API key for auto. Add one in settings.” (Ctrl+K too). After: it runs on its role's model (Chat, here on Auto → OpenRouter's router) and answers.",
-    model: "auto",
-    localStorage: { vault_chat_inline_roles: "A" },
-    build: (c) => world(c),
-    llm: { scripts: [askScript] },
-    open: [
-      { file: NOTE },
-      { sleep: 600 },
-      { key: "Ctrl+l" },
-      { sleep: 600 },
-      // Before, Ctrl+L on Auto may not get as far as the popover: ask only if it opened.
-      {
-        run: async (api) => {
-          const ta = api.q("textarea[placeholder^='Ask about']") as HTMLTextAreaElement | null;
-          if (!ta) return;
-          ta.focus();
-          Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set?.call(ta, "What is the absmean scale in BitNet?");
-          ta.dispatchEvent(new Event("input", { bubbles: true }));
-          await new Promise((r) => setTimeout(r, 100));
-          ta.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", code: "Enter", bubbles: true, cancelable: true }));
-        },
-      },
-      { sleep: 2500 },
-    ],
-  },
-  {
-    id: "pdf-ranges",
-    title: "The PDF tool — page ranges with limits",
-    group: "PDF",
-    notes:
-      "papers/attention-survey.pdf (320 pages) open; the chat asks for a summary and the scripted model calls PdfExtract with no pages, then pages 4-8. After (the box engine's PdfRead rules): no pages → pages 1-3 plus “320 pages in total … pass pages for more”, each call capped at 12k chars (maxChars up to 40k), so the dial stays low. Before: no pages → all 320 pages extracted and ~60k chars returned. “2 tool calls” under the reply is opened: read the end of each result.",
-    build: (c) => world(c),
-    llm: { scripts: [pdfRanges] },
-    open: [...deskOpen("papers/attention-survey.pdf"), { sleep: 1500 }, ...send("Summarize the attention survey PDF."),
-      { waitIdle: true, timeout: 90000 },
-      // Open the reply's tool calls ("2 tool calls"; before, the whole-PDF
-      // extract is slow and the group can read differently — open whatever is there).
-      {
-        run: async (api) => {
-          for (let i = 0; i < 150; i++) {
-            const s = api.byText(/\d+ tool calls?/, "details > summary");
-            if (s) return void s.click();
-            await new Promise((r) => setTimeout(r, 200));
-          }
-        },
-      },
-    ],
   },
   {
     id: "search-notes",
@@ -905,7 +768,7 @@ export const scenarios: Scenario[] = [
     title: "Phase 2 — chat when the box is unreachable",
     group: "Sync",
     notes:
-      "Box mode (Phase 2): the vault's sync.json names a box, so every chat turn runs on the box. Here the box can't be reached. After: the composer is disabled and says “Box unreachable — agent runs on the box” (notes and editing still work). Before: the laptop runs the agent itself, so the composer stays open; only the sync chip turns red.",
+      "Box mode (Phase 2): the vault's sync.json names a box, so every chat turn runs on the box. Here the box can't be reached: the composer is disabled and says “Box unreachable — <why>. Retrying…”, the footer says the same, and the feed retries in the background. Opening, editing and saving a note still work (the sync catches up later).",
     build: (c) => world(c),
     host: {
       sync: {

@@ -6,6 +6,7 @@ import { report } from "../overlay";
 import * as fs from "../shims/memfs";
 import { gitDirty } from "./memgit";
 import { MemoryBox } from "../../../src/convlog/memoryBox";
+import { answerComplete } from "../llm";
 
 export type BoxReport = {
   configured: boolean;
@@ -431,6 +432,14 @@ export const hostCommands: Record<string, (a: Record<string, any>) => unknown> =
     boxPosts.push({ path, body: b, vault: u.searchParams.get("vault") });
     if (path === "/api/v1/voice/tool") return { status: 200, body: JSON.stringify({ result: boxVoiceTool(String(b.name ?? ""), b.args ?? {}) }) };
     if (path === "/api/v1/voice/transcript") return { status: 200, body: JSON.stringify(boxVoiceLine(b)) };
+    // A one-shot call (Ctrl+K / Ctrl+L, a note's title): the scenario's scripted model answers.
+    if (path === "/api/v1/complete") {
+      try {
+        return { status: 200, body: JSON.stringify({ text: await answerComplete(b) }) };
+      } catch (e) {
+        return { status: 502, body: JSON.stringify({ error: String((e as Error)?.message ?? e) }) };
+      }
+    }
     if (boxDown) {
       await sleep(1500);
       throw `error sending request for url (${u.href}): operation timed out`;

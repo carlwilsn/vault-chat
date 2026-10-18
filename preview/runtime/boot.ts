@@ -12,7 +12,7 @@ import { report, reports, setOverlayHidden } from "./overlay";
 import * as fs from "./shims/memfs";
 import { conversationsWriteAll } from "../../server/commands/conversations";
 import { dispatch, calls, unknownCommands, setOverrides, knownCommands } from "./backend/index";
-import { setHostConfig, boxNext, boxPlay, boxPostLog } from "./backend/host";
+import { setHostConfig, boxNext, boxPlay, boxPostLog, type BoxConv, type HostConfig } from "./backend/host";
 import { seedHistory, setGitClock } from "./backend/memgit";
 import { emitFromBackend } from "./ipc";
 import { scenarios } from "../scenarios/index";
@@ -34,7 +34,11 @@ export function vaultPathFor(base: Base): string {
   return `/home/carl/vaults/${base.vaultName ?? base.name}`;
 }
 
+/** The chats a scenario's build wrote (the fake box serves them: the app has no chat of its own). */
+let seededChats: Record<string, unknown>[] = [];
+
 function seedVault(vault: string, base: Base, sc: Scenario, t: number): void {
+  seededChats = [];
   fs.resetFs();
   fs.seedDir("/home/carl");
   fs.seedDir(vault);
@@ -48,7 +52,10 @@ function seedVault(vault: string, base: Base, sc: Scenario, t: number): void {
     now: t,
     write: (rel, text) => fs.seedText(`${vault}/${rel}`, text, t),
     read: (rel) => fs.readText(`${vault}/${rel}`),
-    conversations: (convs) => conversationsWriteAll(vault, convs.map((c) => JSON.stringify(c))),
+    conversations: (convs) => {
+      seededChats.push(...(convs as Record<string, unknown>[]));
+      conversationsWriteAll(vault, convs.map((c) => JSON.stringify(c)));
+    },
     history: (commits) => seedHistory(vault, commits),
     ls,
   };
@@ -100,6 +107,22 @@ function convertFileSrc(path: string): string {
   return url;
 }
 
+const PREVIEW_BOX = { box: "https://thinkbox.tail0a1b2.ts.net", vault: "summer-demo" };
+
+/** Every chat runs on the box: a scenario that wrote chats and says nothing
+ *  about a box gets the preview's box serving them (its turns recorded, live).
+ *  `sync.box: null` keeps a scenario without a box ("Connect your box"). */
+function withBoxChats(host: HostConfig): HostConfig {
+  if (!seededChats.length || (host.sync && "box" in host.sync)) return host;
+  const convs: Record<string, BoxConv> = {};
+  for (const c of seededChats) {
+    const { id, title, source, status, messages, ...meta } = c as Record<string, any>;
+    if (typeof id !== "string") continue;
+    convs[id] = { title: String(title ?? "New chat"), source: source ?? "manual", status: status === "running" ? "running" : "idle", meta, messages: Array.isArray(messages) ? messages : [] };
+  }
+  return { ...host, sync: { ...(host.sync ?? {}), box: PREVIEW_BOX, boxChat: { convs, live: true } } };
+}
+
 export function boot(base: Base): void {
   const q = new URLSearchParams(location.search);
   const side = q.get("side") ?? "before";
@@ -125,7 +148,7 @@ export function boot(base: Base): void {
   seedVault(vault, base, sc, now());
   setLlmConfig(sc.llm ?? {});
   setLlmVault(vault);
-  setHostConfig((typeof sc.host === "function" ? sc.host(now()) : sc.host) ?? {}, now);
+  setHostConfig(withBoxChats((typeof sc.host === "function" ? sc.host(now()) : sc.host) ?? {}), now);
   setOverrides(sc.overrides);
 
   installIpc(isPopout ? "chat-popout" : "main", dispatch, `${side}:${sc.id}`);

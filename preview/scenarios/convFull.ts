@@ -733,24 +733,6 @@ export const convFullScenarios: Scenario[] = [
     open: [{ click: "[title='Settings']" }, { sleep: 1500 }],
     surfaces: ["desktop"],
   },
-  {
-    id: "conv-b",
-    title: "Full conversation — laptop local",
-    group: "Full conversation",
-    notes:
-      "Laptop without a box: the scripted model. Thinking (a direct Anthropic key — OpenRouter's chat adapter drops reasoning), tools, the plan updated twice, the long reply, then OpenRouter for cost: an AskUser with options answered, the context near its limit, the next send compacting first (the summarized-earlier divider), an error and a retry, an image. Subagents, wakes and the Done verifier are the box's — not in local mode.",
-    clock: "2026-10-13T10:00:00",
-    model: "claude-sonnet-5",
-    host: { keys: { "api.anthropic": "sk-ant-PREVIEW-000000000000" } },
-    build: buildA,
-    llm: { scripts: localScripts, chunkMs: 8 },
-    // The per-reply cost option: this is where OpenRouter's metering is checked.
-    localStorage: lsFor({ ...DEFAULTS, cost: "reply" }),
-    drive: driveB,
-    // Opens through the answered AskUser (the self-test's 30 s); the check plays every stage.
-    open: driveB.slice(0, 4).flat(),
-    surfaces: ["desktop"],
-  },
   ...[
     ["conv-c", "first", DEFAULTS],
     ["conv-c-alt", "second", ALTS],
