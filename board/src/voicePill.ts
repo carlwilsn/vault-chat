@@ -61,7 +61,8 @@ function threadStore(): { get(): string | null; set(id: string | null): void } {
 export const voice = new VoiceController({
   api: FAKE ? { ...realApi, voiceSession: async () => ({ signedUrl: "fake://board-preview", conversationToken: null, systemPrompt: "", toolNames: [] }) } : realApi,
   sdk: () => (FAKE ? import("./voiceFake").then((m) => m.fakeSdk()) : (import("@elevenlabs/client") as unknown as Promise<VoiceSdk>)),
-  mic: FAKE ? async () => new MediaStream() : navigator.mediaDevices?.getUserMedia ? () => navigator.mediaDevices.getUserMedia({ audio: true }) : null,
+  // The preview's mic: an empty stream (a WebKit without media capture has no MediaStream: a stand-in with no tracks).
+  mic: FAKE ? async () => (typeof MediaStream === "function" ? new MediaStream() : ({ getTracks: () => [] } as unknown as MediaStream)) : navigator.mediaDevices?.getUserMedia ? () => navigator.mediaDevices.getUserMedia({ audio: true }) : null,
   unlock: unlockAudio,
   threadStore: threadStore(),
   // Every close, with who closed it and why (the board's log): the evidence for a call that keeps dropping.

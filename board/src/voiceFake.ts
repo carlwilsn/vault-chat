@@ -1,9 +1,22 @@
 // A fake voice session for the board's preview (`?voice=fake`): the ElevenLabs SDK's shape, no
 // network, no audio. It connects after a beat, "speaks" for a moment now and then (so the waves
-// and the held pushes show), and records what the board sent: window.__voiceFake.
+// and the held pushes show), and records what the board sent: window.__voiceFake. The checks drive it:
+// __voiceFake.say(role, text) is a line said in the call, __voiceFake.drop(why) the connection closing from
+// the other side (board/preview/voice-thread.mjs).
 import type { SessionOpts, VoiceConv, VoiceSdk } from "./voice";
 
-export type FakeLog = { started: number; ended: number; updates: { text: string; contextId?: string }[]; files: number; messages: { text?: string; files: number }[]; muted: boolean };
+export type FakeLog = {
+  started: number;
+  ended: number;
+  updates: { text: string; contextId?: string }[];
+  files: number;
+  messages: { text?: string; files: number }[];
+  muted: boolean;
+  /** A line said in the live call (the SDK's onMessage). */
+  say?: (role: "user" | "agent", text: string) => void;
+  /** The call closing from the other side (the SDK's onDisconnect with reason "error"). */
+  drop?: (why: string) => void;
+};
 
 export function fakeSdk(): VoiceSdk {
   const w = window as unknown as { __voiceFake?: FakeLog };
@@ -52,6 +65,13 @@ export function fakeSdk(): VoiceSdk {
             },
           },
           getOutputVolume: () => level * (0.6 + 0.4 * Math.random()),
+        };
+        log.say = (role, text) => open && o.onMessage({ role, message: text });
+        log.drop = (why) => {
+          if (!open) return;
+          open = false;
+          clearTimeout(speakT);
+          o.onDisconnect({ reason: "error", message: why, closeCode: 1006 });
         };
         setTimeout(() => {
           o.onConnect();
