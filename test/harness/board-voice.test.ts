@@ -4,7 +4,7 @@
 // through the chrome's rule (chrome.ts) into start and end.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { VoiceController, boardContextText, recentChats, type BoardSource, type SessionOpts, type VoiceApi, type VoiceConv } from "../../board/src/voice.ts";
+import { VoiceController, boardContextText, recentChats, type BoardSource, type SessionOpts, type VoiceApi, type VoiceClose, type VoiceConv } from "../../board/src/voice.ts";
 import { ChromeTaps, routeChrome } from "../../board/src/chrome.ts";
 import type { Item } from "../../src/boardFormat.ts";
 
@@ -283,4 +283,74 @@ test("WebRTC with the box's conversation token; WebSocket once if it can't conne
   assert.equal(v.inputLevel(), 0.5, "the waves read the SDK's own mic level");
   seen.at(-1)!.onDisconnect({ reason: "error", message: "ws closed", closeCode: 1006 });
   assert.deepEqual(v.lastClose, { transport: "websocket", reason: "error", message: "ws closed", code: 1006, closeReason: undefined });
+});
+
+// Carl, 2026-10-18: on the board, voice went live → idle → connecting → live every 15–25 s, and each restart
+// landed on a different conversation (the last session's voice conversation was the "most recent chat"), so
+// the agent lost what was said. One conversation for the whole time on the board.
+test("one conversation across a drop, a mic restart and a reload; only picking a chat changes it", async () => {
+  const lines: { convId: string | null; text: string }[] = [];
+  const convs = new Map<string, string>(); // id → source
+  let made = 0;
+  const box = fakeBox({
+    listChats: async () => [
+      { id: "c-new", title: "Cauchy sequences", lastActivityAt: 500, source: "phone" },
+      ...[...convs].map(([id], i) => ({ id, title: "Voice", lastActivityAt: 1000 + i, source: "voice" })),
+    ],
+    voiceTranscript: async (b) => {
+      lines.push({ convId: b.convId, text: b.text });
+      // The box: a line in a voice conversation goes on in it; anything else starts a new one.
+      if (b.convId && convs.get(b.convId) === "voice") return { convId: b.convId };
+      if (b.ended) return { convId: null };
+      const id = `voice-${++made}`;
+      convs.set(id, "voice");
+      return { convId: id };
+    },
+  });
+  const stored = new Map<string, string>();
+  const threadStore = { get: () => stored.get("t") ?? null, set: (id: string | null) => void (id ? stored.set("t", id) : stored.delete("t")) };
+  const closes: VoiceClose[] = [];
+  const f = fakeSdk();
+  const v = new VoiceController({ api: box.api, sdk: async () => f.sdk, mic, threadStore, onClose: (c) => closes.push(c) });
+  await v.start();
+  assert.deepEqual(box.calls.session, ["c-new"], "the first start continues the most recent chat");
+  f.opts().onMessage({ role: "user", message: "Can you see my board?" });
+  await wait(10);
+  assert.equal(v.thread, "voice-1", "its voice conversation is the board's thread");
+  assert.equal(v.state.chat?.id, "voice-1");
+
+  // The connection drops (ElevenLabs, the network): said, with the reason, and the mic goes on in the same chat.
+  f.opts().onDisconnect({ reason: "error", message: "pc connection lost", closeCode: 1006 });
+  await wait(10);
+  assert.equal(v.state.phase, "error");
+  assert.match(v.state.error, /Voice disconnected \(pc connection lost\)\. Tap the mic to go on with this chat\./);
+  assert.deepEqual(closes.at(-1), { by: "remote", reason: "error", message: "pc connection lost", code: 1006, transport: "websocket", secs: closes.at(-1)!.secs, conv: "voice-1" });
+  await v.start();
+  assert.equal(v.state.phase, "live");
+  assert.deepEqual(box.calls.session, ["c-new", "voice-1"], "the restart continues the thread, not the newest chat");
+  f.opts().onMessage({ role: "user", message: "Hello, can you hear me?" });
+  await wait(10);
+  assert.equal(lines.at(-1)!.convId, "voice-1", "its lines go on in the same conversation");
+
+  // Carl ends it with the mic and taps again: the same thread.
+  await v.end("mic");
+  assert.equal(closes.at(-1)!.by, "mic");
+  await v.start();
+  assert.equal(box.calls.session.at(-1), "voice-1");
+  f.opts().onMessage({ role: "assistant", message: "Yes." });
+  await wait(10);
+  assert.equal(lines.at(-1)!.convId, "voice-1");
+  await v.end("pill");
+
+  // A reload (a new controller, the same iPad): still the thread.
+  const v2 = new VoiceController({ api: box.api, sdk: async () => f.sdk, mic, threadStore });
+  await v2.start();
+  assert.equal(box.calls.session.at(-1), "voice-1");
+  assert.equal(made, 1, "never a second voice conversation");
+
+  // Picking another chat is the one deliberate change.
+  await v2.switchChat("c-new");
+  assert.equal(box.calls.session.at(-1), "c-new");
+  assert.equal(v2.thread, "c-new");
+  await v2.end();
 });

@@ -250,6 +250,42 @@ async function store(): Promise<any> {
   return (await import("../src/store")).useStore;
 }
 
+/** Where a vault's notes live (the laptop's Notes panel and the phone's Notes read this file). */
+export const NOTES_FILE = ".vault-chat/notes.jsonl";
+
+/** The headless store keeps a copy of the main vault's notes (the phone's relay routes): reread it after a write. */
+async function refreshStoreNotes(vault: string): Promise<void> {
+  try {
+    const st = (await store()).getState();
+    if (st.vaultPath && resolve(st.vaultPath) === resolve(vault) && st.notesLoaded) await st.loadNotes?.();
+  } catch {
+    /* no store */
+  }
+}
+
+/** CreateNote {text, source_path?, source_anchor?}: appended to this vault's notes and read back; the result says
+ * where it is and when the laptop shows it, or that nothing was saved. */
+async function createNote(d: VoiceDeps, a: any, wrote: (msg: string, rel?: string) => string): Promise<string> {
+  const text = s(a.text).trim();
+  if (!text) return "Error: CreateNote needs the note's text; nothing was saved.";
+  const { buildNote, appendNote, readNotes } = await import("../src/notes");
+  const anchors = a.source_path ? [{ source_path: s(a.source_path), source_kind: "code" as const, source_anchor: a.source_anchor ?? null, primary: true }] : [];
+  const note = buildNote({ anchors, userDraft: text });
+  try {
+    await appendNote(d.vault, note);
+  } catch (e) {
+    return `Error: the note was not saved: ${(e as Error)?.message ?? String(e)}`;
+  }
+  const saved = (await readNotes(d.vault).catch(() => [])).some((n: any) => n.id === note.id);
+  if (!saved) return `Error: the note was written but is not in ${NOTES_FILE} when read back; say it was not saved.`;
+  await refreshStoreNotes(d.vault);
+  const where = d.name ? `the "${d.name}" vault's notes` : "the vault's notes";
+  return wrote(
+    `Saved note ${note.id} in ${where} (${NOTES_FILE} on the box): the phone's Notes show it now; the laptop gets it with its next sync with the box (within about a minute).`,
+    NOTES_FILE,
+  );
+}
+
 async function runTool(d: VoiceDeps, name: string, a: any): Promise<string> {
   const vault = d.vault;
   const wrote = (msg: string, rel?: string) => {
@@ -345,35 +381,36 @@ async function runTool(d: VoiceDeps, name: string, a: any): Promise<string> {
       d.onWrite?.(); // a command may have changed files
       return out;
     }
-    case "CreateNote": {
-      const st = (await store()).getState();
-      const { buildNote } = await import("../src/notes");
-      const anchors = a.source_path ? [{ source_path: s(a.source_path), source_kind: "code" as const, source_anchor: a.source_anchor ?? null, primary: true }] : [];
-      const note = buildNote({ anchors, userDraft: s(a.text) });
-      await st.addNote(note);
-      return wrote(`Saved note ${note.id}.`);
-    }
+    // Notes: this vault's .vault-chat/notes.jsonl on the box, read and written there (never the headless store's
+    // copy, which is another vault's or stale), each result saying what the file now holds — the voice agent
+    // tells Carl only what the result confirms (2026-10-18: "I've saved a note … in your notes panel" when he
+    // could not see it there).
+    case "CreateNote":
+      return createNote(d, a, wrote);
     case "ListNotes": {
-      const us = await store();
-      await us.getState().loadNotes?.();
+      const { readNotes } = await import("../src/notes");
       const status = a.status ?? "open";
-      const notes: any[] = (us.getState().notes ?? []).filter((n: any) => status === "all" || n.status === status);
+      const notes: any[] = (await readNotes(vault)).filter((n: any) => status === "all" || n.status === status).sort((x: any, y: any) => (x.timestamp < y.timestamp ? 1 : -1));
       const shown = notes.slice(0, Number(a.limit) || 50);
-      if (!shown.length) return `No ${status === "all" ? "" : status + " "}notes.`;
-      return `${notes.length} note(s) (showing ${shown.length}):\n\n${shown
+      if (!shown.length) return `No ${status === "all" ? "" : status + " "}notes in ${NOTES_FILE}.`;
+      return `${notes.length} note(s) in ${NOTES_FILE} (showing ${shown.length}):\n\n${shown
         .map((n) => `[${n.id}] ${n.status} · ${s(n.timestamp).slice(0, 16)}\n  ${s(n.formatted ?? n.user_draft ?? n.turns?.[0]?.content).slice(0, 160).replace(/\n+/g, " ")}`)
         .join("\n\n")}`;
     }
     case "ResolveNote":
     case "ReopenNote": {
-      const us = await store();
-      await us.getState().loadNotes?.();
+      const { readNotes, writeAllNotes } = await import("../src/notes");
       const want = name === "ResolveNote" ? "resolved" : "open";
-      const n = (us.getState().notes ?? []).find((x: any) => x.id === a.id);
-      if (!n) return `No note with id "${s(a.id)}".`;
-      if (n.status === want) return `Note ${a.id} is already ${want}.`;
-      await us.getState().setNoteStatus(a.id, want);
-      return wrote(`${want === "resolved" ? "Resolved" : "Reopened"} note ${a.id}.`);
+      const notes = await readNotes(vault);
+      const n = notes.find((x: any) => x.id === s(a.id));
+      if (!n) return `Error: no note with id "${s(a.id)}" in ${NOTES_FILE}; nothing changed.`;
+      if (n.status === want) return `Note ${n.id} is already ${want}; nothing changed.`;
+      const now = new Date().toISOString();
+      await writeAllNotes(vault, notes.map((x: any) => (x.id === n.id ? { ...x, status: want, last_updated: now } : x)));
+      const after = (await readNotes(vault)).find((x: any) => x.id === n.id);
+      if (after?.status !== want) return `Error: note ${n.id} did not change in ${NOTES_FILE}; it is still ${after?.status ?? "missing"}.`;
+      await refreshStoreNotes(vault);
+      return wrote(`${want === "resolved" ? "Resolved" : "Reopened"} note ${n.id} in ${NOTES_FILE}.`, NOTES_FILE);
     }
     case "AskAgent": {
       if (!d.message) return "Error: the box's agent is not running, so nothing was handed over.";
@@ -557,9 +594,18 @@ export async function voiceTool(d: VoiceDeps, body: any): Promise<{ result: stri
 const THREAD_HISTORY_MARK = "Recent conversation context (earlier turns of THIS same thread";
 export const hasThreadHistory = (prompt: string) => prompt.includes(THREAD_HISTORY_MARK);
 
-/** The voice session's prompt: the builder's, then the shared stream's block. */
+/** The box's one rule on top of the builder's prompt: say only what a tool's result confirms. */
+export const VOICE_TRUTH = [
+  "What your tools did is only what their results say.",
+  "- Say something was done (saved, written, sent, handed over, resolved) only after a tool result says it was, and say where in the result's own words (a note's result names its file and when the laptop gets it).",
+  '- A result that starts with "Error" or says nothing changed means it was not done: say that plainly, and why.',
+  "- Never guess where something went or promise where it will show; if Carl asks, read it back (ListNotes, Read) before you answer.",
+  "- If Carl says he can't see it, check with a tool before you agree or disagree.",
+].join("\n");
+
+/** The voice session's prompt: the builder's, then the shared stream's block, then the box's rule (VOICE_TRUTH). */
 export function composeVoicePrompt(base: string, shared: string): string {
-  return shared ? `${base}\n\n${shared}` : base;
+  return [base, shared, VOICE_TRUTH].filter(Boolean).join("\n\n");
 }
 
 /** The voice session's share of the shared stream: what Carl did lately, and
@@ -638,15 +684,18 @@ export async function voiceSession(
   // Another vault than the store's: its working copy, its own conversation for
   // the history, and an agent of its own (its own tools).
   const other = d.main === false;
+  // The thread's turns, from the box's own conversation (pi's session as the feed folds it), in every vault: the
+  // headless store's copy has no voice conversation's lines, so a session continuing one (the board keeps one
+  // for as long as Carl is on it) was built without them.
   let history: any[] | undefined;
-  if (other && convId) {
+  if (convId) {
     const { readConv } = await import("./engine/convs");
     history = ((await readConv(d.vault, convId).catch(() => null))?.messages ?? []) as any[];
   }
   const ctx = await v.buildPhoneVoiceContext(convId || undefined, {
     agentOnBox: true,
     fileIndex: await fileIndex(d.vault),
-    ...(other ? { vault: d.vault, history: history ?? [], slot: `vault:${d.name ?? d.vault}` } : {}),
+    ...(other ? { vault: d.vault, history: history ?? [], slot: `vault:${d.name ?? d.vault}` } : history?.length ? { history } : {}),
   });
   if (!ctx) {
     const err = v.getLastAgentCreateError();

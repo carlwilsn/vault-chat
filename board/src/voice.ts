@@ -4,9 +4,17 @@
 // which sends to the board with BoardSend/BoardMake), and its lines are saved there as a
 // voice conversation (POST /api/v1/voice/transcript). No agent, tool or memory of its own.
 //
-// Which conversation: Carl's most recently active chat (GET /conversations, the phone's
-// list and filter) — the session's prompt is built from that thread. Another chat can be
-// picked; that restarts the session on it.
+// Which conversation: ONE for as long as Carl is on the board (Carl, 2026-10-18: each restart
+// had landed on a different conversation and the agent lost what was said). The first start
+// continues his most recently active chat (GET /conversations, the phone's list and filter);
+// from then on every start — after a drop, after he ends and taps the mic again, after a
+// reload — continues the board's thread: the voice conversation its lines were saved in
+// (remembered, `threadStore`). Its lines go on in that conversation, and its prompt is built
+// from it. Only picking another chat in the pill (switchChat) changes the thread.
+//
+// A session that closes by itself (the network, ElevenLabs) is said, not hidden: the pill
+// turns red with the reason, and the mic continues the same thread. Every close is reported
+// with who closed it and why (`onClose`, the board's log "voice.close").
 //
 // What the board adds: while live, the voice agent knows the board. At the start, and
 // 1.5 s after the pen lifts, a contextual update (the board's name, the inbox parts placed
@@ -118,8 +126,15 @@ export function micError(e: unknown): string {
   return `The microphone didn't start: ${String((e as Error)?.message ?? e)}`;
 }
 
+/** Why a session ended (the board's log "voice.close"): who closed it, the SDK's reason, how long it was live. */
+export type VoiceClose = { by: "mic" | "pill" | "switch" | "remote"; reason?: string; message?: string; code?: number; closeReason?: string; transport: "webrtc" | "websocket" | null; secs: number; conv: string | null };
+
 export type VoiceDeps = {
   api: VoiceApi;
+  /** Where the board's one conversation is remembered across starts and reloads (none: this page only). */
+  threadStore?: { get(): string | null; set(id: string | null): void };
+  /** Every close, with who closed it and why. */
+  onClose?: (c: VoiceClose) => void;
   sdk: () => Promise<VoiceSdk>;
   /** The mic stream (getUserMedia); throws as it does. Null: this page can't have a mic (not HTTPS). */
   mic: (() => Promise<MediaStream>) | null;
@@ -139,14 +154,33 @@ export class VoiceController {
   private pusher = new VoiceImagePusher();
   private lastText = "";
   private debounceT: ReturnType<typeof setTimeout> | null = null;
-  /** The session's own voice conversation (once a line made it) and the chat it continues. */
+  /** The session's own voice conversation (once a line made it, or the voice chat it continues). */
   private voiceConv: string | null = null;
+  /** The board's one conversation: what every start continues until Carl picks another chat. */
+  thread: string | null = null;
+  private liveAt = 0;
   private lines: Promise<unknown> = Promise.resolve();
   private gen = 0;
   /** Updates and pictures sent this session (for the preview and the tests). */
   readonly sent = { updates: [] as string[], images: 0 };
 
-  constructor(private d: VoiceDeps) {}
+  constructor(private d: VoiceDeps) {
+    try {
+      this.thread = d.threadStore?.get() ?? null;
+    } catch {
+      this.thread = null;
+    }
+  }
+
+  private setThread(id: string | null): void {
+    if (this.thread === id) return;
+    this.thread = id;
+    try {
+      this.d.threadStore?.set(id);
+    } catch {
+      /* storage blocked: this page only */
+    }
+  }
 
   on(fn: (s: VoiceState) => void): () => void {
     this.listeners.add(fn);
@@ -181,7 +215,7 @@ export class VoiceController {
 
   /** The mic button. */
   toggle(): void {
-    if (this.state.phase === "live" || this.state.phase === "connecting") void this.end();
+    if (this.state.phase === "live" || this.state.phase === "connecting") void this.end("mic");
     else void this.start();
   }
 
@@ -210,7 +244,9 @@ export class VoiceController {
     } catch {
       /* no list: a session with no thread behind it */
     }
-    const chat = (chatId ? chats.find((c) => c.id === chatId) : null) ?? chats[0] ?? null;
+    // A picked chat; else the board's thread; else (the first start) the most recent chat.
+    const want = chatId ?? this.thread;
+    const chat = (want ? chats.find((c) => c.id === want) : null) ?? chats[0] ?? null;
     this.set({ chats, chat });
     let cfg: VoiceConfig | null = null;
     let why = "";
@@ -226,7 +262,10 @@ export class VoiceController {
       if (gen !== this.gen) return;
     }
     if (!cfg) return this.fail(gen, why ? `Voice couldn't start: ${why}` : "Voice couldn't start.");
-    this.voiceConv = null;
+    // A voice conversation goes on where it is (its lines append to it); any other chat gets a voice conversation
+    // of its own on the first line (the box's rule), which then becomes the thread.
+    this.voiceConv = chat?.source === "voice" ? chat.id : null;
+    if (chat?.source === "voice") this.setThread(chat.id);
     this.lastText = "";
     this.pusher.reset();
     const from = chat?.id ?? null;
@@ -245,13 +284,19 @@ export class VoiceController {
         clientTools: this.clientTools(cfg.toolNames ?? [], from),
         onConnect: () => {
           if (timedOut || gen !== this.gen) return;
+          this.liveAt = Date.now();
           this.set({ phase: "live", error: "" });
           this.pushNow();
         },
         onDisconnect: (d) => {
           this.lastClose = { transport, reason: d?.reason, message: d?.message, code: d?.closeCode ?? d?.context?.code, closeReason: d?.closeReason ?? d?.context?.reason };
           console.warn("[board-voice] closed", JSON.stringify(this.lastClose));
-          if (!timedOut && gen === this.gen) this.teardown(this.state.phase === "connecting" ? "The voice connection closed before it started." : "");
+          if (timedOut || gen !== this.gen) return;
+          // Closed from the other side (the network, ElevenLabs): said, with the reason; the mic goes on with this chat.
+          const was = this.state.phase;
+          this.report("remote", d);
+          const why = String((d?.reason === "error" ? (d?.message ?? d?.closeReason ?? d?.context?.reason) : (d?.reason ?? d?.closeReason)) ?? "").slice(0, 120);
+          this.teardown(was === "connecting" ? "The voice connection closed before it started." : `Voice disconnected${why ? ` (${why})` : ""}. Tap the mic to go on with this chat.`);
         },
         onError: (m) => {
           if (gen === this.gen && this.state.phase !== "live") this.set({ error: typeof m === "string" ? m : ((m as Error)?.message ?? "voice error") });
@@ -302,8 +347,9 @@ export class VoiceController {
     }
   }
 
-  async end(): Promise<void> {
+  async end(by: "mic" | "pill" | "switch" = "mic"): Promise<void> {
     const c = this.conv;
+    if (this.state.phase === "live" || this.state.phase === "connecting") this.report(by);
     this.gen++;
     this.conv = null;
     try {
@@ -327,7 +373,9 @@ export class VoiceController {
   async switchChat(id: string): Promise<void> {
     if (this.state.chat?.id === id && this.state.phase === "live") return;
     const keep = this.state.chats;
-    await this.end();
+    // Picking a chat is the one deliberate change of the board's thread.
+    this.setThread(id);
+    await this.end("switch");
     this.set({ chats: keep });
     await this.start(id);
   }
@@ -430,11 +478,39 @@ export class VoiceController {
     this.lines = this.lines.then(async () => {
       try {
         const j = await this.d.api.voiceTranscript({ convId: this.voiceConv, fromConvId: from, role, text, ...(end ? { system: true, ended: true } : {}) });
-        if (j && typeof j.convId === "string") this.voiceConv = j.convId;
+        if (j && typeof j.convId === "string" && j.convId) {
+          if (j.convId !== this.voiceConv && !end) {
+            // The session's voice conversation: the board's thread from now on, and what the pill names.
+            const was = this.state.chat;
+            this.set({ chat: { id: j.convId, title: was?.title || "Voice", lastActivityAt: Date.now(), source: "voice" } });
+          }
+          this.voiceConv = j.convId;
+          if (!end) this.setThread(j.convId);
+        }
       } catch {
         /* the box is away: the line is lost, the call goes on */
       }
     });
+  }
+
+  /** A close, reported once with who closed it and why. */
+  private report(by: VoiceClose["by"], d?: { reason?: string; message?: string; closeCode?: number; closeReason?: string; context?: { reason?: string; code?: number } }): void {
+    const code = d?.closeCode ?? d?.context?.code;
+    const closeReason = d?.closeReason ?? d?.context?.reason;
+    try {
+      this.d.onClose?.({
+        by,
+        ...(d?.reason ? { reason: d.reason } : {}),
+        ...(d?.message ? { message: String(d.message).slice(0, 160) } : {}),
+        ...(code !== undefined ? { code } : {}),
+        ...(closeReason ? { closeReason: String(closeReason).slice(0, 160) } : {}),
+        transport: this.transport,
+        secs: this.liveAt ? Math.round((Date.now() - this.liveAt) / 1000) : 0,
+        conv: this.voiceConv ?? this.thread,
+      });
+    } catch {
+      /* a log must not break the call */
+    }
   }
 
   private fail(gen: number, why: string): void {
