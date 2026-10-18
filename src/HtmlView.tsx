@@ -5,6 +5,7 @@ import { isUnreadableAsText } from "./fileKind";
 import { openUrl, isExternalHref } from "./opener";
 import { InlineEditPrompt, type InlineEditRequest } from "./InlineEditPrompt";
 import { useStore } from "./store";
+import { matchSection, notFound, reportScroll, type Section } from "./scrollTarget";
 const LINK_INTERCEPT = `<script>(function(){
   function isExternal(href){ return /^(https?:|mailto:)/i.test(href); }
   function handle(e){
@@ -21,7 +22,10 @@ const LINK_INTERCEPT = `<script>(function(){
       e.preventDefault();
       var id = decodeURIComponent(href.slice(1));
       var t = id ? (document.getElementById(id) || document.querySelector('[name="' + id.replace(/"/g, '') + '"]')) : null;
-      if (t) t.scrollIntoView({ block: 'start' }); else if (!id) window.scrollTo(0, 0);
+      if (t) t.scrollIntoView({ block: 'start' });
+      else if (!id) window.scrollTo(0, 0);
+      // A hash-routed page ("#/02-lecture"): its own router moves (the fragment of this frame's own address).
+      else { try { location.hash = href; } catch(_) {} }
       return;
     }
     if (/^javascript:/i.test(href)) return;
@@ -141,6 +145,75 @@ const MARQUEE_BRIDGE = `<script>(function(){
   });
 })();</script>`;
 
+// ScrollTo (src/scrollTarget.ts): the page's sections for the parent to match,
+// then the move — to an id, a section, or the first place a phrase appears.
+// A link section (a hash-routed page's nav) is followed like a click.
+const SCROLL_BRIDGE = `<script>(function(){
+  var found = [];
+  function clean(s){ return (s || '').replace(/\\s+/g, ' ').trim(); }
+  function list(){
+    found = [];
+    var out = [];
+    var els = document.querySelectorAll('h1,h2,h3,h4,h5,h6,a[href^="#"]');
+    for (var i = 0; i < els.length && out.length < 400; i++) {
+      var el = els[i], text = clean(el.innerText || el.textContent);
+      if (!text) continue;
+      if (el.tagName === 'A') {
+        var h = el.getAttribute('href') || '';
+        if (h === '#' || h === '#top') continue;
+        found.push(el); out.push({ id: h.slice(1), text: text.slice(0, 200), link: true });
+      } else {
+        var idEl = el.id ? el : (el.querySelector('[id]') || (el.parentElement && /^(SECTION|ARTICLE)$/.test(el.parentElement.tagName) && el.parentElement.firstElementChild === el && el.parentElement.id ? el.parentElement : null));
+        found.push(el); out.push({ id: idEl ? idEl.id : undefined, text: text.slice(0, 200) });
+      }
+    }
+    return out;
+  }
+  function norm(s){ return clean(s).toLowerCase(); }
+  function byText(q){
+    var want = norm(q);
+    if (!want) return null;
+    var w = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null);
+    for (var n = w.nextNode(); n; n = w.nextNode()) {
+      var p = n.parentElement;
+      if (!p || /^(SCRIPT|STYLE|NOSCRIPT|TEMPLATE)$/.test(p.tagName)) continue;
+      if (norm(n.nodeValue).indexOf(want) >= 0) return p;
+    }
+    // Across inline markup ("the <em>Bellman</em> equation"): the deepest block that holds it.
+    var blocks = document.body.querySelectorAll('p,li,td,th,dt,dd,blockquote,pre,figcaption,caption,summary,h1,h2,h3,h4,h5,h6');
+    for (var i = 0; i < blocks.length; i++) if (norm(blocks[i].textContent).indexOf(want) >= 0) return blocks[i];
+    return null;
+  }
+  function visible(el){ var b = el.getBoundingClientRect(); return b.width > 0 || b.height > 0; }
+  function go(el){ el.scrollIntoView({ block: 'start', behavior: 'smooth' }); }
+  window.addEventListener('message', function(e){
+    var d = e.data;
+    if (!d) return;
+    if (d.__vc_scroll_list) {
+      var q = String(d.__vc_scroll_list.q || '').replace(/^#/, '');
+      var byId = q ? (document.getElementById(q) || document.getElementById(decodeURIComponent(q))) : null;
+      parent.postMessage({ __vc_scroll_list_result: { req: d.__vc_scroll_list.req, sections: list(), byId: !!(byId && visible(byId)) } }, '*');
+    }
+    if (d.__vc_scroll_go) {
+      var g = d.__vc_scroll_go, r = { req: g.req, ok: false, where: '', error: '' };
+      try {
+        if (g.id) {
+          var t = document.getElementById(g.id) || document.getElementById(decodeURIComponent(g.id));
+          if (t) { go(t); r.ok = true; r.where = '#' + g.id; }
+        } else if (typeof g.i === 'number' && found[g.i]) {
+          var el = found[g.i];
+          if (el.tagName === 'A') { el.click(); r.ok = true; r.where = 'the link "' + clean(el.textContent).slice(0, 80) + '"'; r.link = true; }
+          else { go(el); r.ok = true; r.where = '"' + clean(el.textContent).slice(0, 80) + '"'; }
+        } else if (g.text) {
+          var at = byText(g.text);
+          if (at) { go(at); r.ok = true; r.where = 'the text "' + clean(g.text).slice(0, 80) + '"'; }
+        }
+      } catch (err) { r.error = String(err && err.message || err); }
+      parent.postMessage({ __vc_scroll_done: r }, '*');
+    }
+  });
+})();</script>`;
+
 const SCROLLBAR_INJECT = `<style id="__vc_scrollbar_base">
   ::-webkit-scrollbar { width: 5px; height: 5px; background: transparent; }
   ::-webkit-scrollbar-track { background: transparent; }
@@ -186,11 +259,61 @@ const scrollKeeper = (y: number) => `<script>(function(){
 })();</script>`;
 
 function injectHeadScripts(html: string, scrollY = 0): string {
-  const payload = SCROLLBAR_INJECT + LINK_INTERCEPT + MARQUEE_BRIDGE + scrollKeeper(scrollY);
+  const payload = SCROLLBAR_INJECT + LINK_INTERCEPT + MARQUEE_BRIDGE + SCROLL_BRIDGE + scrollKeeper(scrollY);
   if (/<head[^>]*>/i.test(html)) {
     return html.replace(/<head[^>]*>/i, (m) => m + payload);
   }
   return payload + html;
+}
+
+/** Ask the page (SCROLL_BRIDGE) and wait for its answer; resent until the page's bridge is up (a page still loading). */
+function askFrame<T>(frame: () => HTMLIFrameElement | null, msg: Record<string, unknown>, pick: (d: any) => T | undefined, ms: number): Promise<T | null> {
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = (v: T | null) => {
+      if (done) return;
+      done = true;
+      window.removeEventListener("message", onMsg);
+      clearInterval(resend);
+      clearTimeout(stop);
+      resolve(v);
+    };
+    const onMsg = (e: MessageEvent) => {
+      if (e.source !== frame()?.contentWindow) return;
+      const v = pick(e.data);
+      if (v !== undefined) finish(v);
+    };
+    const send = () => {
+      try {
+        frame()?.contentWindow?.postMessage(msg, "*");
+      } catch {
+        /* the frame is between documents: the next send */
+      }
+    };
+    window.addEventListener("message", onMsg);
+    const resend = setInterval(send, 400);
+    const stop = setTimeout(() => finish(null), ms);
+    send();
+  });
+}
+
+let scrollReq = 0;
+
+/** ScrollTo on an HTML page: an id, a section (heading or in-page link) by its text or slug, else the first place the phrase appears. */
+export async function scrollHtml(frame: () => HTMLIFrameElement | null, anchor: string, path: string): Promise<string> {
+  const name = path.split(/[\\/]/).pop() ?? path;
+  if (/^page=\d+$/.test(anchor)) return `Error: ${name} is a web page, not a PDF: it has no pages. Pass a heading (its text or #id) or a phrase on the page as \`anchor\`.`;
+  const req = ++scrollReq;
+  const listed = await askFrame(frame, { __vc_scroll_list: { req, q: anchor } }, (d) => (d?.__vc_scroll_list_result?.req === req ? (d.__vc_scroll_list_result as { sections: Section[]; byId: boolean }) : undefined), 5000);
+  if (!listed) return `Error: ${name} did not answer (the page is still loading, or it is not open in the viewer). Try again in a moment.`;
+  const sections = Array.isArray(listed.sections) ? listed.sections : [];
+  const i = listed.byId ? null : matchSection(sections, anchor);
+  const go = listed.byId ? { id: anchor.replace(/^#/, "") } : i !== null ? { i } : { text: anchor };
+  const done = await askFrame(frame, { __vc_scroll_go: { req, ...go } }, (d) => (d?.__vc_scroll_done?.req === req ? (d.__vc_scroll_done as { ok: boolean; where: string; error?: string }) : undefined), 3000);
+  if (!done) return `Error: ${name} did not answer the scroll. Try again in a moment.`;
+  if (done.ok) return `Scrolled to ${done.where} in ${name}`;
+  if (done.error) return `Error: the scroll in ${name} failed: ${done.error}`;
+  return notFound(anchor, path, sections.filter((s) => !s.link || !sections.some((h) => !h.link && h.text === s.text)));
 }
 
 export function HtmlView({ content, path }: { content: string; path?: string | null }) {
@@ -309,6 +432,15 @@ export function HtmlView({ content, path }: { content: string; path?: string | n
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);
   }, []);
+
+  // ScrollTo (voice): match the request against the page's sections, move, answer the tool.
+  const pendingScrollAnchor = useStore((s) => s.pendingScrollAnchor);
+  useEffect(() => {
+    const req = pendingScrollAnchor;
+    if (!req || !path || req.path !== path) return;
+    useStore.getState().clearScrollAnchor();
+    void scrollHtml(() => iframeRef.current, req.anchor, path).then((outcome) => reportScroll(path, outcome));
+  }, [pendingScrollAnchor, path]);
 
   // Marquee drag over the iframe. The overlay div sits on top of the
   // iframe while marqueeOn is true and eats pointer events so the drag

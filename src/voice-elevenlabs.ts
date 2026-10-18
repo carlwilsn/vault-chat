@@ -14,6 +14,7 @@ import { voiceLineEntry, voiceToolEntry } from "./activityCore";
 import { cachedVoiceMath, displayVoiceMath, prefetchVoiceMath } from "./voiceMath";
 import { MAX_IMAGE_UPLOAD_BYTES, VoiceImagePusher, lookingAtNote, sendFilesMessage, shrinkImage, thumbDataUrl, voiceImageMime, type PushResult } from "./voiceImages";
 import { fileKind, isUnreadableAsText } from "./fileKind";
+import { awaitScroll } from "./scrollTarget";
 import { stripAudioTags } from "./voiceTags";
 import { QuietGate } from "./voiceQuiet";
 import { RECONNECT_NUDGE, RECONNECTING_LINE, TimeoutRetry, VoiceTurnStats, couldntReconnectLine, isLlmTimeoutClose, plainCloseReason, reconnectRecap } from "./voiceTimeout";
@@ -306,6 +307,35 @@ function flushAgentQueueImmediate(): void {
 // handler for the why.
 let scrollGen = 0;
 let pendingScrollTarget: { path: string; anchor: string } | null = null;
+// ScrollTo's budget, inside ElevenLabs' 30 s for a client tool: the words playing, then the viewer's answer.
+const SCROLL_SPEECH_WAIT_MS = 8000;
+const SCROLL_SPEECH_START_MS = 1200;
+const SCROLL_ANSWER_MS = 9000;
+
+const samePath = (a: string, b: string) => a.replace(/\\/g, "/").toLowerCase() === b.replace(/\\/g, "/").toLowerCase();
+
+/** Move the viewer of `path` (opened first when it is not on screen) and say what happened, in the viewer's words. */
+async function scrollViewer(path: string, anchor: string): Promise<string> {
+  const s = useStore.getState();
+  const name = path.split(/[\\/]/).pop() ?? path;
+  const shown = [s.currentFile, ...s.panes.map((p) => p.file)].find((f): f is string => !!f && samePath(f, path));
+  if (shown) path = shown;
+  else {
+    try {
+      const content = isUnreadableAsText(path) ? "" : await invoke<string>("read_text_file", { path });
+      s.setCurrentFile(path, content);
+    } catch (e) {
+      return `Error: couldn't open ${name}: ${(e as Error)?.message ?? String(e)}`;
+    }
+  }
+  const kind = fileKind(path).kind;
+  // HTML, markdown (reading view) and PDF answer with where they moved, or why they could not.
+  const answers = kind === "html" || kind === "markdown" || kind === "pdf";
+  const answer = answers ? awaitScroll(path, anchor, SCROLL_ANSWER_MS) : null;
+  useStore.getState().requestScrollAnchor(path, anchor);
+  if (!answer) return `Scrolled to ${anchor} in ${name}`;
+  return (await answer) ?? `Error: the viewer of ${name} did not answer in ${SCROLL_ANSWER_MS / 1000} s (is it still loading?). Try again in a moment.`;
+}
 
 // Matched to text-mode tools so the voice agent gets enough context to
 // answer questions about a real-sized file. 8k was too small for
@@ -518,7 +548,7 @@ export const CLIENT_TOOL_DEFINITIONS = [
   {
     name: "ScrollTo",
     description:
-      "Move the user's viewport to a specific page or section of the file they're currently viewing. Use this to drive read-along sessions: advance to the next page when the user is ready, jump back to a page they want to revisit ('go back to the bubble diagram'), or anchor on a specific section. The user's eyes follow what you scroll to, so move deliberately and explain what you're doing. Works on PDFs (page numbers). For non-PDF files, omit `page` and pass an `anchor` heading slug. Returns the resulting page / anchor on success.",
+      "Move the user's viewport to a specific page or section of the file they're currently viewing. Use this to drive read-along sessions: advance to the next page when the user is ready, jump back to a page they want to revisit ('go back to the bubble diagram'), or anchor on a specific section. The user's eyes follow what you scroll to, so move deliberately and explain what you're doing. Works on PDFs (a page number, or a phrase in the PDF), web pages (.html) and markdown: pass `anchor` as a heading's text ('Value iteration'), its #id or slug, or a phrase that appears on the page — the first place it appears is shown. On a hash-routed page, a section in its navigation is followed. Returns where it moved; if nothing matches, an error listing the nearest headings — retry with one of those.",
     parameters: {
       type: "object" as const,
       properties: {
@@ -528,7 +558,7 @@ export const CLIENT_TOOL_DEFINITIONS = [
         },
         anchor: {
           type: "string",
-          description: "Optional anchor string (e.g., 'page=12' for PDFs, or a heading slug for markdown). Prefer `page` for PDFs; use `anchor` when targeting a section.",
+          description: "Where to go: a heading's text, its #id or slug, or a phrase on the page (for a PDF: a phrase, or 'page=12'). Prefer `page` for PDF pages.",
         },
         path: {
           type: "string",
@@ -1541,6 +1571,8 @@ export function adoptVoiceSessionForPreview(conv: unknown): { line: (role: "user
 function waitForSpeechEnd(
   sustainedMs = 250,
   hardTimeoutMs = 30000,
+  // Speech that has not started by then is not coming (the call came before any words): go on.
+  startWithinMs = 0,
 ): Promise<void> {
   return new Promise((resolve) => {
     let done = false;
@@ -1590,6 +1622,7 @@ function waitForSpeechEnd(
     };
 
     const safetyTimer = setTimeout(finish, hardTimeoutMs);
+    if (startWithinMs > 0) setTimeout(() => !sawSpeaking && finish(), startWithinMs);
     const unsub = useStore.subscribe(evaluate);
     evaluate();
   });
@@ -3694,7 +3727,10 @@ export function buildClientToolHandlers(
         // the agent actually stops talking.
         const myGen = ++scrollGen;
         pendingScrollTarget = { path: targetPath, anchor };
-        await waitForSpeechEnd();
+        // The move lands with the words already playing — but never long: ElevenLabs gives a
+        // client tool 30 s, and a turn that opens with ScrollTo has nothing playing at all
+        // (waiting the old full 30 s for speech that never came timed every such call out).
+        await waitForSpeechEnd(250, SCROLL_SPEECH_WAIT_MS, SCROLL_SPEECH_START_MS);
         if (myGen !== scrollGen) {
           return `Superseded by later ScrollTo`;
         }
@@ -3703,8 +3739,7 @@ export function buildClientToolHandlers(
         if (!target) {
           return `Superseded by later ScrollTo`;
         }
-        useStore.getState().requestScrollAnchor(target.path, target.anchor);
-        return `Scrolled to ${target.anchor} in ${target.path}`;
+        return scrollViewer(target.path, target.anchor);
       },
     ),
     ShowFile: withTracking("ShowFile", async (args: { path?: string }) => {

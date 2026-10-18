@@ -1,0 +1,56 @@
+<!doctype html>
+<!-- A small stand-in for a single-file course-notes app (the kind Carl reads in
+     vault-chat): a hash-routed page ("#/02-policy-iteration") whose script draws
+     one lecture at a time, with headings that carry no ids. ScrollTo must reach
+     a section by its heading text, by a phrase, and through the nav. -->
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Course Notes (fixture)</title>
+    <style>
+      body { font: 15px/1.6 system-ui, sans-serif; margin: 0; display: flex; }
+      nav { width: 220px; padding: 16px; position: sticky; top: 0; height: 100vh; }
+      main { flex: 1; padding: 16px 32px; }
+      section { min-height: 900px; }
+    </style>
+  </head>
+  <body>
+    <nav id="nav"></nav>
+    <main id="root"></main>
+    <script>
+      var lectures = {
+        "01-mdps": {
+          title: "MDPs, V and Q, value iteration",
+          sections: [
+            ["TL;DR", "An MDP is states, actions, rewards and transitions."],
+            ["Making V optimal", "The Bellman optimality equation picks the best action in every state."],
+            ["Why the first action is left free", "Q lets the first action differ from the policy."],
+            ["Q under a policy", "Q of s and a is the reward plus the discounted value after."],
+            ["Gaps to fill", "Contraction mapping proof."],
+          ],
+        },
+        "02-policy-iteration": {
+          title: "Policy iteration",
+          sections: [
+            ["TL;DR", "Evaluate, improve, repeat."],
+            ["Two ways to solve it", "A linear system or iterative evaluation."],
+            ["What greedy(V) means", "Pick the action with the best one-step lookahead."],
+            ["The probability of an episode", "A product of policy and transition terms."],
+          ],
+        },
+      };
+      function route() { return decodeURIComponent(location.hash.replace(/^#\/?/, "")) || "01-mdps"; }
+      function draw() {
+        var cur = lectures[route()] || lectures["01-mdps"];
+        var nav = "";
+        for (var k in lectures) nav += '<a href="#/' + k + '" style="display:block">' + lectures[k].title + "</a>";
+        document.getElementById("nav").innerHTML = nav;
+        var html = "<h1>" + cur.title + "</h1>";
+        cur.sections.forEach(function (s) { html += "<section><h2>" + s[0] + "</h2><p>" + s[1] + "</p></section>"; });
+        document.getElementById("root").innerHTML = html;
+      }
+      addEventListener("hashchange", function () { draw(); scrollTo(0, 0); });
+      draw();
+    </script>
+  </body>
+</html>

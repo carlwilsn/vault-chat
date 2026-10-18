@@ -6,6 +6,7 @@ import { cn } from "./lib/utils";
 import { InlineEditPrompt, type InlineEditRequest } from "./InlineEditPrompt";
 import { useStore } from "./store";
 import { readShownBytes } from "./liveReload";
+import { reportScroll } from "./scrollTarget";
 import { pushViewportContextDebounced } from "./voice-elevenlabs";
 
 pdfjs.GlobalWorkerOptions.workerSrc = workerSrc;
@@ -103,20 +104,32 @@ export function PdfView({
     if (loading) return;
     if (!pendingScrollAnchor) return;
     if (pendingScrollAnchor.path !== path) return;
-    const pageMatch = pendingScrollAnchor.anchor.match(/page=(\d+)/);
-    if (!pageMatch) return;
-    const target = pageMatch[1];
-    const id = requestAnimationFrame(() => {
-      const wrap = hostRef.current?.querySelector<HTMLDivElement>(
-        `.pdf-page-wrap[data-page="${target}"]`,
-      );
-      if (wrap) {
-        wrap.scrollIntoView({ behavior: "smooth", block: "start" });
+    const anchor = pendingScrollAnchor.anchor;
+    clearScrollAnchor();
+    const name = path.split(/[\\/]/).pop() ?? path;
+    const pageMatch = anchor.match(/page=(\d+)/) ?? anchor.match(/^\s*(?:page\s*)?(\d+)\s*$/i);
+    void (async () => {
+      let target = pageMatch ? Number(pageMatch[1]) : 0;
+      if (!pageMatch) {
+        // Not a page: the first page whose text holds the phrase (a heading, a term). The text is read just after load.
+        for (let t = 0; t < 30 && !pageTextsRef.current.length; t++) await new Promise((r) => setTimeout(r, 100));
+        const want = anchor.replace(/\s+/g, " ").trim().toLowerCase();
+        target = pageTextsRef.current.findIndex((t) => t.replace(/\s+/g, " ").toLowerCase().includes(want)) + 1;
+        if (!target) {
+          reportScroll(path, `Error: "${anchor}" does not appear in ${name} (${pages} pages). Pass a page number, or a phrase that is in the PDF.`);
+          return;
+        }
       }
-      clearScrollAnchor();
-    });
-    return () => cancelAnimationFrame(id);
-  }, [pendingScrollAnchor, path, loading, clearScrollAnchor]);
+      if (target < 1 || target > pages) {
+        reportScroll(path, `Error: ${name} has ${pages} page${pages === 1 ? "" : "s"}; there is no page ${target}.`);
+        return;
+      }
+      await new Promise((r) => requestAnimationFrame(r));
+      const wrap = hostRef.current?.querySelector<HTMLDivElement>(`.pdf-page-wrap[data-page="${target}"]`);
+      wrap?.scrollIntoView({ behavior: "smooth", block: "start" });
+      reportScroll(path, wrap ? `Scrolled to page ${target} of ${pages}${pageMatch ? "" : ` (where "${anchor}" appears)`} in ${name}` : `Error: page ${target} of ${name} is not on screen; try again in a moment.`);
+    })();
+  }, [pendingScrollAnchor, path, loading, clearScrollAnchor, pages]);
 
   const loadedPathRef = useRef<string | null>(null);
   useEffect(() => {

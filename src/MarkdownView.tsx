@@ -15,6 +15,7 @@ import { UnsupportedView } from "./UnsupportedView";
 import { VAULT_PANE_MIME } from "./dnd";
 import { InlineEditPrompt, type InlineEditRequest } from "./InlineEditPrompt";
 import { fileKind } from "./fileKind";
+import { reportScroll, scrollInDom } from "./scrollTarget";
 import { findVaultFileByTail, tryOpenLink } from "./linkNav";
 import { HistoryStrip, HistoryVersionView, useViewingVersion } from "./HistoryInline";
 import { noteEditedFile } from "./commit-controller";
@@ -561,6 +562,24 @@ export function MarkdownView({ paneId }: Props) {
 
   // History style C: a past version shown read-only in this pane.
   const viewingVersion = useViewingVersion(file);
+
+  // ScrollTo (voice) on a rendered markdown file: its heading, id or a phrase; the tool hears the outcome.
+  const pendingScrollAnchor = useStore((s) => s.pendingScrollAnchor);
+  useEffect(() => {
+    const req = pendingScrollAnchor;
+    if (!req || !file || req.path !== file || fileKind(file).kind !== "markdown") return;
+    if (paneId && !isActive && panes.some((p) => p.id === activePaneId && p.file === file)) return; // the active pane shows it too: that one moves
+    useStore.getState().clearScrollAnchor();
+    if (mode === "edit") {
+      reportScroll(file, `Error: ${file.split(/[\\/]/).pop()} is open for editing, so it has no reading view to move. Say where it is instead, or ask to switch it to view.`);
+      return;
+    }
+    // After a render (a file just opened by this request has not drawn yet).
+    requestAnimationFrame(() => {
+      const root = viewScrollRef.current;
+      reportScroll(file, root ? scrollInDom(root, req.anchor, file) : `Error: ${file} is not on screen.`);
+    });
+  }, [pendingScrollAnchor, file, mode, paneId, isActive, panes, activePaneId]);
 
   if (!file) {
     return (
