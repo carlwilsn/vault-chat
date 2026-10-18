@@ -14,6 +14,8 @@ import { join } from "node:path";
 const url = process.argv[2] ?? "http://localhost:1431/board/";
 const pwPath = process.env.PLAYWRIGHT_CORE;
 const { webkit, devices } = await import(pwPath ? pathToFileURL(join(pwPath, "index.mjs")).href : "playwright-core");
+// iPadOS sends a Mac UA (board/preview/ipad.mjs): MAC_UA=0 runs with the iPad profile's own UA.
+const { MAC_UA } = await import("./ipad.mjs");
 
 let failed = 0;
 const check = (ok, what, detail = "") => {
@@ -22,7 +24,7 @@ const check = (ok, what, detail = "") => {
 };
 
 const browser = await webkit.launch();
-const ctx = await browser.newContext({ ...devices["iPad Pro 11"], hasTouch: true, isMobile: true });
+const ctx = await browser.newContext({ ...devices["iPad Pro 11"], ...(process.env.MAC_UA === "0" ? {} : { userAgent: MAC_UA }), hasTouch: true, isMobile: true });
 // Every focus() the page makes: how visible the element was (its opacity times every ancestor's, animations
 // included) and the event it ran in.
 await ctx.addInitScript(() => {
@@ -37,6 +39,15 @@ await ctx.addInitScript(() => {
   };
 });
 const page = await ctx.newPage();
+const logged = [];
+await page.route("**/api/v1/board/log", async (route) => {
+  try {
+    logged.push(...(JSON.parse(route.request().postData() ?? "{}").events ?? []));
+  } catch {
+    /* not JSON */
+  }
+  await route.fulfill({ status: 200, contentType: "application/json", body: '{"ok":true,"n":0}' });
+});
 page.on("pageerror", (e) => check(false, "no page error", e.message));
 
 const tapAt = async (sel) => {
@@ -131,6 +142,34 @@ const us = await page.evaluate(() => {
   return s;
 });
 check(us === "text", "Fields are selectable under the page's user-select: none", us);
+
+// ---- Nothing lies over the field (after a board was open: the voice pill is on the page), and it says what it is.
+await page.evaluate(() => (location.hash = ""));
+await page.waitForSelector('[data-act="new"]');
+await tapAt('[data-act="new"]');
+await page.waitForSelector(".name-dialog input");
+const top = await page.evaluate(() => {
+  const i = document.querySelector(".name-dialog input");
+  const r = i.getBoundingClientRect();
+  const pts = [[0.5, 0.5], [0.1, 0.5], [0.9, 0.5]].map(([fx, fy]) => document.elementFromPoint(r.x + r.width * fx, r.y + r.height * fy));
+  return { onTop: pts.every((el) => el === i), pill: !!document.querySelector(".voice-pill"), inputmode: i.getAttribute("inputmode"), enterkeyhint: i.getAttribute("enterkeyhint"), type: i.type };
+});
+check(top.onTop, "the field is the top element under every point of a tap on it", JSON.stringify(top));
+check(top.inputmode === "text" && top.enterkeyhint === "done" && top.type === "text", "the field is a text field: inputmode text, enterkeyhint done", JSON.stringify(top));
+// A tap on the field with no keyboard up (this WebKit shows none) focuses it again inside the tap.
+await page.evaluate(() => (window.__focusLog.length = 0));
+await tapAt(".name-dialog input");
+const re = await page.evaluate(() => window.__focusLog.filter((f) => f.tag === "INPUT").at(-1) ?? null);
+check(re?.ev === "touchend" && re.opacity === 1 && (await active()) === "INPUT", "a tap on the field refocuses it inside the tap (iOS raises the keyboard for that)", JSON.stringify(re));
+await page.waitForTimeout(1200);
+await tapAt('.name-dialog [data-act="cancel"]');
+await page.evaluate(() => (location.hash = "#/b/none") && (location.hash = ""));
+await page.goto("about:blank");
+await page.waitForTimeout(500);
+const dl = logged.filter((e) => e.ev === "dialog" || e.ev === "dialog.tap");
+check(dl.some((e) => e.ev === "dialog" && e.what === "new" && e.how === "touch" && e.focused === true && typeof e.keyboard === "boolean" && e.ih > 0), "the board log says how the dialog opened, whether the field took focus and whether a keyboard came up", JSON.stringify(dl));
+check(dl.some((e) => e.ev === "dialog.tap" && e.field === true), "…and each refocusing tap on the field");
+await page.goto(url);
 
 // Clean up the board this made.
 await page.evaluate(async (s) => {
