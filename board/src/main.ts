@@ -4,6 +4,7 @@ import "./style.css";
 import * as api from "./api";
 import { renderList } from "./list";
 import { BoardView } from "./view";
+import { isField } from "./chrome";
 import { installBoardLog } from "./log";
 
 installBoardLog();
@@ -11,8 +12,8 @@ installBoardLog();
 const app = document.getElementById("app")!;
 let current: BoardView | null = null;
 
-// Safari's own pinch-zoom of the page, outside the canvas too.
-for (const t of ["gesturestart", "gesturechange", "gestureend"]) document.addEventListener(t, (e) => e.preventDefault(), { passive: false });
+// Safari's own pinch-zoom of the page, outside the canvas too (a text field keeps its own touches).
+for (const t of ["gesturestart", "gesturechange", "gestureend"]) document.addEventListener(t, (e) => !isField(e.target) && e.preventDefault(), { passive: false });
 
 const slugOf = () => /^#\/b\/([a-z0-9-]+)$/.exec(location.hash)?.[1] ?? null;
 
