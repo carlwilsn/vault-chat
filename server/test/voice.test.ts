@@ -512,3 +512,93 @@ describe("SetProject (voice files its chat under a project)", () => {
     expect(askAgent.parameters.properties.project.description).toMatch(/starts the agent's work as a project/i);
   });
 });
+
+// Carl, 2026-10-18, on the board: voice said "I've saved a note … in your notes panel" and he couldn't find it.
+// The notes tools work on the vault's own notes.jsonl on the box and say what the file holds afterwards.
+describe("the notes tools (voice on the box)", () => {
+  const notesOf = (v: string) =>
+    existsSync(join(v, ".vault-chat", "notes.jsonl"))
+      ? readFileSync(join(v, ".vault-chat", "notes.jsonl"), "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l))
+      : [];
+
+  it("CreateNote appends to this vault's .vault-chat/notes.jsonl, reads it back, and says where it is and when the laptop gets it", async () => {
+    const before = writes;
+    const r = await tool("CreateNote", { text: "Ask Claude to fix the whiteboard: finger pan and zoom" });
+    const id = /Saved note (\S+) /.exec(r)?.[1];
+    expect(id).toBeTruthy();
+    expect(r).toContain('the "main" vault\'s notes (.vault-chat/notes.jsonl on the box)');
+    expect(r).toMatch(/the laptop gets it with its next sync with the box/);
+    const saved = notesOf(vault).find((n) => n.id === id);
+    expect(saved).toMatchObject({ user_draft: "Ask Claude to fix the whiteboard: finger pan and zoom", status: "open" });
+    // The write asks for a sync of that file (the laptop's copy and its Notes panel get it from there).
+    expect(writes).toBe(before + 1);
+    // The phone's Notes read the same file.
+    const { notesFeed } = await import("../phoneData");
+    expect(JSON.stringify(notesFeed(vault))).toContain(id!);
+  });
+
+  it("in another vault the note lands in that vault, never the store's", async () => {
+    const r = (await voice.voiceTool(deps2, { name: "CreateNote", args: { text: "lab note" } })).result;
+    const id = /Saved note (\S+) /.exec(r)?.[1];
+    expect(r).toContain('the "lab" vault\'s notes');
+    expect(notesOf(vault2).some((n) => n.id === id)).toBe(true);
+    expect(notesOf(vault).some((n) => n.id === id)).toBe(false);
+  });
+
+  it("an empty note or a write that fails is an error the agent hears, never a success", async () => {
+    expect(await tool("CreateNote", { text: "   " })).toMatch(/^Error: CreateNote needs the note's text; nothing was saved\./);
+    // notes.jsonl is a directory: the append fails.
+    const v3 = join(root, "vault3");
+    mkdirSync(join(v3, ".vault-chat", "notes.jsonl"), { recursive: true });
+    const r = (await voice.voiceTool({ vault: v3, name: "v3", main: false, shell: null }, { name: "CreateNote", args: { text: "x" } })).result;
+    expect(r).toMatch(/^Error: the note was not saved/);
+    expect(r).not.toMatch(/Saved note/);
+  });
+
+  it("ListNotes, ResolveNote and ReopenNote read and write the file itself (a note added elsewhere is seen)", async () => {
+    // Written by someone else (the laptop's Ctrl+N, merged in by sync): no store involved.
+    const { buildNote } = await import("../../src/notes");
+    const other = { ...buildNote({ anchors: [], userDraft: "from the laptop" }), id: "lap00001" };
+    writeFileSync(join(vault, ".vault-chat", "notes.jsonl"), readFileSync(join(vault, ".vault-chat", "notes.jsonl"), "utf8") + JSON.stringify(other) + "\n");
+    const list = await tool("ListNotes", {});
+    expect(list).toContain("[lap00001] open");
+    expect(list).toContain("in .vault-chat/notes.jsonl");
+    expect(await tool("ResolveNote", { id: "lap00001" })).toBe("Resolved note lap00001 in .vault-chat/notes.jsonl.");
+    expect(notesOf(vault).filter((n) => n.id === "lap00001").at(-1)?.status).toBe("resolved");
+    expect(await tool("ResolveNote", { id: "lap00001" })).toMatch(/already resolved; nothing changed/);
+    expect(await tool("ReopenNote", { id: "lap00001" })).toBe("Reopened note lap00001 in .vault-chat/notes.jsonl.");
+    expect(await tool("ResolveNote", { id: "nope" })).toMatch(/^Error: no note with id "nope"/);
+    // Every note made above is still there (a rewrite never drops one).
+    expect(notesOf(vault).length).toBeGreaterThanOrEqual(2);
+  });
+});
+
+describe("the session continues a voice conversation with its history (the board keeps one: board/src/voice.ts)", () => {
+  it("the prompt carries the thread's earlier lines in the main vault too, and the rule to say only what a tool confirmed", async () => {
+    const real = globalThis.fetch;
+    globalThis.fetch = (async (input: any, init?: any) => {
+      const url = String(typeof input === "string" ? input : input.url);
+      if (!url.startsWith("https://api.elevenlabs.io/")) return real(input, init);
+      if (url.includes("/convai/agents/create")) return new Response(JSON.stringify({ agent_id: "agent_hist" }), { status: 200 });
+      if (url.includes("/get_signed_url")) return new Response(JSON.stringify({ signed_url: "wss://fake/h" }), { status: 200 });
+      return new Response("{}", { status: 404 });
+    }) as typeof fetch;
+    try {
+      store.setState({ serviceKeys: { elevenlabs: "el-canary-key" } });
+      const a = await voice.voiceTranscript(deps, { role: "user", text: "Put the six essay questions on my board, please." });
+      const id = String(a.body.convId);
+      await voice.voiceTranscript(deps, { convId: id, role: "assistant", text: "I asked the agent to send them to your board inbox." });
+      const out = await voice.voiceSession(id, deps);
+      expect(out.status).toBe(200);
+      const p = String(out.body.systemPrompt);
+      expect(p).toContain("Put the six essay questions on my board");
+      expect(p).toContain("I asked the agent to send them to your board inbox.");
+      expect(voice.hasThreadHistory(p)).toBe(true);
+      expect(p).toContain(voice.VOICE_TRUTH);
+      // A session with no thread still has the rule.
+      expect(String((await voice.voiceSession(null, deps)).body.systemPrompt)).toContain("What your tools did is only what their results say.");
+    } finally {
+      globalThis.fetch = real;
+    }
+  });
+});

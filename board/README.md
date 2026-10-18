@@ -122,9 +122,14 @@ or a pinned copy the server installs into its state dir on first use (`VC_ESBUIL
 
 The mic in the top-right controls talks to the box's one voice agent, by the phone's path
 (`server/voice.ts`: the session, its tools, its transcript): no agent, tool or memory of the board's own
-(`src/voice.ts`, the pill: `src/voicePill.ts`). It continues Carl's most recently active chat (`GET
-/conversations`, the phone's filter); the pill's title lists the recent chats, and picking one restarts the
-session on it. While live, at the start and 1.5 s after each edit, the voice agent gets a contextual update
+(`src/voice.ts`, the pill: `src/voicePill.ts`). It keeps ONE conversation for as long as Carl is on the
+board: the first start continues his most recently active chat (`GET /conversations`, the phone's filter), and
+every later start — after a drop, after he ends it and taps the mic again, after a reload (remembered 12 h) —
+continues the board's thread, the voice conversation its lines went into; the box builds the session's prompt
+from that thread's turns. Only picking another chat in the pill's title changes it. A session that closes by
+itself turns the pill red with the reason ("Voice disconnected (…). Tap the mic to go on with this chat."), and
+every close is in the board's log (`voice.close`: who closed it — mic, pill, switch or remote — the SDK's
+reason and code, the transport, how long it was live). While live, at the start and 1.5 s after each edit, the voice agent gets a contextual update
 (the board's name, the inbox parts on it with their labels, the ink) and a picture of the visible region
 through the laptop's image path (`src/voiceImages.ts`, keyed by content: an unchanged picture is not sent
 again); both wait while the agent speaks (`src/voiceQuiet.ts`). Sends still go through BoardSend/BoardMake

@@ -34,12 +34,40 @@ function unlockAudio(): void {
 
 const realApi: VoiceApi = { listChats: api.listChats, voiceSession: api.voiceSession, voiceTool: api.voiceTool, voiceTranscript: api.voiceTranscript };
 
+/** The board's one voice conversation, remembered on this iPad for THREAD_MS (a new day starts from the latest chat). */
+const THREAD_KEY = "vc_board_voice_thread";
+const THREAD_MS = 12 * 3600_000;
+function threadStore(): { get(): string | null; set(id: string | null): void } {
+  return {
+    get: () => {
+      try {
+        const j = JSON.parse(localStorage.getItem(THREAD_KEY) ?? "null") as { id?: string; at?: number } | null;
+        return j?.id && typeof j.at === "number" && Date.now() - j.at < THREAD_MS ? j.id : null;
+      } catch {
+        return null;
+      }
+    },
+    set: (id) => {
+      try {
+        if (id) localStorage.setItem(THREAD_KEY, JSON.stringify({ id, at: Date.now() }));
+        else localStorage.removeItem(THREAD_KEY);
+      } catch {
+        /* storage blocked: this page only */
+      }
+    },
+  };
+}
+
 export const voice = new VoiceController({
   api: FAKE ? { ...realApi, voiceSession: async () => ({ signedUrl: "fake://board-preview", conversationToken: null, systemPrompt: "", toolNames: [] }) } : realApi,
   sdk: () => (FAKE ? import("./voiceFake").then((m) => m.fakeSdk()) : (import("@elevenlabs/client") as unknown as Promise<VoiceSdk>)),
   mic: FAKE ? async () => new MediaStream() : navigator.mediaDevices?.getUserMedia ? () => navigator.mediaDevices.getUserMedia({ audio: true }) : null,
   unlock: unlockAudio,
+  threadStore: threadStore(),
+  // Every close, with who closed it and why (the board's log): the evidence for a call that keeps dropping.
+  onClose: (c) => blog("voice.close", { ...c }),
 });
+
 (window as unknown as { __voice: VoiceController }).__voice = voice;
 // Voice's phases (start, live, stop, a failure and why) and the chat it joins, in the board's log.
 {
@@ -226,7 +254,7 @@ export function mountVoicePill(): void {
     const b = btnAt(e.target);
     if (!b) return;
     const v = b.dataset.v;
-    if (v === "end") void voice.end();
+    if (v === "end") void voice.end("pill");
     else if (v === "mute") voice.setMuted(!voice.state.muted);
     else if (v === "dismiss") voice.dismiss();
     else if (v === "chats") {
