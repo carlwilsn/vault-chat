@@ -78,6 +78,11 @@ function voiceAppend(m: ChatMessage): void {
     void transcriptMirror.push(m);
     return;
   }
+  // A tool call: the chat's tool row (its marker is only for the box's older readers).
+  if (m.toolCalls?.length) {
+    useStore.getState().appendMessage({ role: "assistant", content: "", toolCalls: m.toolCalls });
+    return;
+  }
   // Spoken math shows as notation (voiceMath.ts): already formatted (the agent's
   // lines are prefetched while their audio plays), or formatted when it returns.
   const shown = m.system ? undefined : cachedVoiceMath(String(m.content ?? ""));
@@ -3350,10 +3355,12 @@ function logToolCall(name: string, args: any, result: string, where = ""): void 
   console.log(`[voice-eleven] tool ${name}(${Object.keys(args ?? {}).join(",")}${path ? ` path=${path}` : ""}) → ${result.length} chars${/^error/i.test(result) ? " (error)" : ""}`);
   // Ran here (not on the box, which records its own): what it changed, into the shared stream.
   if (!where) recordLocalVoice(voiceToolEntry(name, args, result, useStore.getState().vaultPath));
+  // Shown as a tool row, like the text agent's calls (name, input, result).
   voiceAppend({
     role: "assistant",
     content: formatToolMarker(name, args) + where,
     system: true,
+    toolCalls: [{ name, input: args ?? {}, result: result.length > 4000 ? result.slice(0, 4000) + "…" : result }],
   });
 }
 

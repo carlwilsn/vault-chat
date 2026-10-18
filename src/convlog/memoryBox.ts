@@ -118,7 +118,7 @@ export class MemoryBox {
   }
 
   /** vault-chat's own line (voice, a line brought in, a notice): a vc-note entry. */
-  note(conv: string, id: string, data: { kind: "line" | "notice" | "divider"; [k: string]: unknown }): void {
+  note(conv: string, id: string, data: { kind: "line" | "notice" | "divider" | "tool"; [k: string]: unknown }): void {
     this.entry(conv, { type: "custom", customType: VC_NOTE, data: { ...data, clientId: id } }, { clientId: id });
   }
 

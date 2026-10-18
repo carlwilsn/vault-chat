@@ -107,11 +107,13 @@ export function voiceTranscriptMirror(b: BoxVoice, localId: string, fromConvId: 
   let id = localId;
   let chain: Promise<unknown> = Promise.resolve();
   const push = (m: ChatMessage): Promise<unknown> => {
-    const text = String(m.content ?? "").trim();
+    const call = m.toolCalls?.[0];
+    // A tool call's text is only its marker (for an older box, which shows it as a notice).
+    const text = String(m.content ?? "").trim() || (call ? call.name : "");
     if (!text) return chain;
     // The line shows at once under the id the box writes it with (the box is its only writer).
     const clientId = newClientId();
-    if (!m.system) boxOutgoingLine(id, clientId, text, m.role === "user" ? "user" : "assistant");
+    if (!m.system && !call) boxOutgoingLine(id, clientId, text, m.role === "user" ? "user" : "assistant");
     chain = chain.then(async () => {
       // Images Carl sent in the chat while voice was on: saved with his line on the box.
       const images = (m.attachments ?? [])
@@ -125,7 +127,8 @@ export function voiceTranscriptMirror(b: BoxVoice, localId: string, fromConvId: 
         role: m.role === "user" ? "user" : "assistant",
         text,
         clientId,
-        ...(m.system ? { system: true } : {}),
+        ...(m.system || call ? { system: true } : {}),
+        ...(call ? { tool: { name: call.name, args: call.input ?? {}, result: call.result ?? "" } } : {}),
         ...(images.length ? { images } : {}),
       });
       const next = typeof r.data?.convId === "string" ? r.data.convId : null;

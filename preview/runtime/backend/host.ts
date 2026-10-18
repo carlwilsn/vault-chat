@@ -227,7 +227,9 @@ function boxVoiceLine(b: any): { ok: true; convId: string } {
   // Under the client's id (a repeat is the same line), written by the box.
   const lid = String(b.clientId ?? "") || `vl-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
   if (!box.picture(id)!.items.some((x) => x.id === lid)) {
-    if (b.system) box.note(id, lid, { kind: "notice", text: String(b.text ?? "") });
+    // A tool call voice made: a tool row, as server/voice.ts writes it.
+    if (b.tool?.name) box.note(id, lid, { kind: "tool", name: String(b.tool.name), args: b.tool.args ?? {}, result: String(b.tool.result ?? ""), via: "voice" });
+    else if (b.system) box.note(id, lid, { kind: "notice", text: String(b.text ?? "") });
     else box.note(id, lid, { kind: "line", role: b.role === "user" ? "user" : "assistant", text: String(b.text ?? ""), via: "voice" });
   }
   return { ok: true, convId: id };

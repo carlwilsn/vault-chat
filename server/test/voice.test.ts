@@ -282,6 +282,28 @@ describe("POST /api/v1/voice/transcript", () => {
     expect(after?.messages.length).toBe(4);
   });
 
+  it("voice's tool calls are tool rows like the text agent's: consecutive ones share one group, a notice stays a notice", async () => {
+    const { readConv } = await import("../engine/convs");
+    const a = await voice.voiceTranscript(deps, { convId: "local-tools", role: "user", text: "jump to the MDP section" });
+    const id = String(a.body.convId);
+    await voice.voiceTranscript(deps, { convId: id, role: "assistant", text: "LookAtScreen", system: true, tool: { name: "LookAtScreen", args: {}, result: "course-notes.html, 3 headings" } });
+    await voice.voiceTranscript(deps, { convId: id, role: "assistant", text: "Scrolled to end-to-end-mdp-concepts", system: true, tool: { name: "ScrollTo", args: { path: "notes.html", anchor: "end-to-end-mdp-concepts", big: "x".repeat(900) }, result: "Scrolled to end-to-end-mdp-concepts" } });
+    await voice.voiceTranscript(deps, { convId: id, role: "assistant", text: "There it is." });
+    await voice.voiceTranscript(deps, { convId: id, role: "assistant", text: "Voice session ended.", system: true });
+    const msgs = (await readConv(vault, id))!.messages as any[];
+    expect(msgs.map((m) => (m.toolCalls ? `tools:${m.toolCalls.map((t: any) => t.name).join(",")}` : m.system ? `notice:${m.content}` : `${m.role}:${m.content}`))).toEqual([
+      "user:jump to the MDP section",
+      "tools:LookAtScreen,ScrollTo",
+      "assistant:There it is.",
+      "notice:Voice session ended.",
+    ]);
+    const scroll = msgs[1].toolCalls[1];
+    expect(scroll.input.anchor).toBe("end-to-end-mdp-concepts");
+    expect(scroll.input.big.length).toBeLessThan(510);
+    expect(scroll.result).toBe("Scrolled to end-to-end-mdp-concepts");
+    expect(msgs[1].system).toBeFalsy();
+  });
+
   it("an image Carl sent in the chat while voice was on is saved with his line (the text agent sees it later)", async () => {
     const { readConv } = await import("../engine/convs");
     const pngB64 = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]).toString("base64");

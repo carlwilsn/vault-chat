@@ -3,7 +3,7 @@
 // the phone). Three routes (http.ts), each with an optional vault:
 //   POST /api/v1/voice/tool       {name, args}                → {result}
 //   GET  /api/v1/voice/session    ?convId=                    → {conversationToken, signedUrl, systemPrompt, …}
-//   POST /api/v1/voice/transcript {convId?, fromConvId?, role, text, system?} → {convId}
+//   POST /api/v1/voice/transcript {convId?, fromConvId?, role, text, system?, tool?: {name, args, result}} → {convId}
 // The vault's own voice tools (.vault-chat/tools/<name>/TOOL.md + run.*) run
 // here too, in the same sandbox as Bash, with only the keys TOOL.md's
 // requires_keys names.
@@ -450,6 +450,8 @@ export async function voiceTranscript(d: VoiceDeps, b: any): Promise<{ status: n
     ...(b?.system === true ? { system: true } : {}),
     // The client's id for the line: the item's id in the log (a repeat is a no-op; the client confirms its copy in place).
     ...(s(b?.clientId) ? { mid: s(b.clientId).slice(0, 80) } : {}),
+    // A tool call voice made: written as a tool row (`text` is its one-line marker, for an older reader).
+    ...(b?.tool && typeof b.tool === "object" && s(b.tool.name) ? { toolCalls: [{ name: s(b.tool.name).slice(0, 80), input: toolArgs(b.tool.args), result: s(b.tool.result).slice(0, 4000) }] } : {}),
   };
   const { readConv, createConv, appendMessage } = await import("./engine/convs");
   let id = s(b?.convId);
@@ -475,6 +477,21 @@ export async function voiceTranscript(d: VoiceDeps, b: any): Promise<{ status: n
   }
   d.onWrite?.();
   return { status: 200, body: { ok: true, convId: id } };
+}
+
+/** A voice tool call's arguments as the row shows them: an object, long strings cut. */
+function toolArgs(a: unknown): Record<string, unknown> {
+  if (!a || typeof a !== "object" || Array.isArray(a)) return {};
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(a as Record<string, unknown>).slice(0, 20)) {
+    if (typeof v === "string") out[k] = v.length > 500 ? v.slice(0, 500) + "…" : v;
+    else if (typeof v === "number" || typeof v === "boolean" || v === null) out[k] = v;
+    else {
+      const j = JSON.stringify(v) ?? "";
+      out[k] = j.length > 500 ? j.slice(0, 500) + "…" : v;
+    }
+  }
+  return out;
 }
 
 /** Save a voice line's images under .vault-chat/captures/ (≤ 5, ≤ 15 MB each), as the engine saves a chat's. */

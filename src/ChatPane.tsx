@@ -2,7 +2,7 @@ import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState, type
 import { Markdown, StreamingMarkdown } from "./Markdown";
 import { localPathFromUrl } from "./mdPipeline";
 import { planDone, planIndex } from "./planPlace";
-import { Plus, Square, ArrowUp, ChevronDown, ChevronUp, Wrench, X, MessageSquare, Mic, Paperclip, Scan, AtSign } from "lucide-react";
+import { Plus, Square, ArrowUp, ChevronDown, ChevronUp, Wrench, X, MessageSquare, Mic, Paperclip, Scan, AtSign, AlertCircle, Info } from "lucide-react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { usePending, type PendingKind } from "./pendingInput";
 import { voiceImageMime } from "./voiceImages";
@@ -1409,11 +1409,11 @@ export const MessageBubble = memo(function MessageBubble({
     return <CompactionDivider message={message} />;
   }
   if (message.system) {
+    // A quiet notice (voice ended, an error): left, in the tool rows' small muted type.
     return (
-      <div className="flex items-center justify-center gap-2 py-2 text-[11px] text-muted-foreground">
-        <div className="h-px w-8 bg-border" />
-        <span className="italic">{message.content}</span>
-        <div className="h-px w-8 bg-border" />
+      <div className={cn("flex items-start gap-1.5 text-[11px] leading-snug", message.failed ? "text-destructive/90" : "text-muted-foreground")} data-el="notice">
+        {message.failed ? <AlertCircle className="h-3 w-3 mt-px shrink-0" /> : <Info className="h-3 w-3 mt-px shrink-0" />}
+        <span className="break-words min-w-0">{message.content}</span>
       </div>
     );
   }

@@ -19,7 +19,7 @@ import type { ConvMeta, ConvRow, ItemImage, LogRecord, PendingInput, PiBlock, Pi
 import { VC_NOTE } from "./protocol";
 
 /** Bumped when the fold's meaning changes: a checkpoint from another version is folded again. */
-export const REDUCER_VERSION = 2;
+export const REDUCER_VERSION = 3;
 
 export type ItemKind = "user" | "assistant" | "thinking" | "tool" | "compaction" | "notice";
 export type ItemStatus = "streaming" | "pending" | "running" | "done" | "error" | "stopped";
@@ -205,6 +205,12 @@ function onEntry(d: Draft, r: Extract<LogRecord, { type: "entry" }>): void {
       place(d, [{ id: r.clientId ?? data.clientId ?? e.id, kind: user ? "user" : "assistant", status: "done", text, via: r.via ?? data.via ?? (user ? "chat" : undefined), ...((r.images ?? data.images)?.length ? { images: r.images ?? data.images } : {}), at: r.at }]);
       touch(d, r.at);
       if (user && d.meta.title === NEW_CHAT && text.trim()) d.meta = { ...d.meta, title: titleFrom(text) };
+      return;
+    }
+    if (data.kind === "tool") {
+      // A tool call voice made (its result with it): a tool row, as the text agent's are.
+      const result = String(data.result ?? "");
+      place(d, [{ id: r.clientId ?? data.clientId ?? e.id, kind: "tool", status: data.isError || /^error/i.test(result) ? "error" : "done", name: String(data.name ?? "tool"), args: data.args ?? {}, result: cap(result), ...(data.via ? { via: String(data.via) } : {}), at: r.at }]);
       return;
     }
     if (data.kind === "divider") place(d, [{ id: r.clientId ?? data.clientId ?? e.id, kind: "compaction", status: "done", text: String(data.text ?? ""), ...(data.rollover ? { rollover: true } : {}), at: r.at }]);

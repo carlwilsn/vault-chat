@@ -109,7 +109,7 @@ export function appendEntries(file: string, entries: Omit<PiEntry, "id" | "paren
 }
 
 /** A vault-chat entry (a line, a notice, a divider) as a pi custom entry. */
-export function vcNote(data: { kind: "line" | "notice" | "divider"; [k: string]: unknown }): Omit<PiEntry, "id" | "parentId" | "timestamp"> {
+export function vcNote(data: { kind: "line" | "notice" | "divider" | "tool"; [k: string]: unknown }): Omit<PiEntry, "id" | "parentId" | "timestamp"> {
   return { type: "custom", customType: VC_NOTE, data };
 }
 

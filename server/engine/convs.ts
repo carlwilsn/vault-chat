@@ -125,8 +125,8 @@ export function imagesOf(m: { attachments?: { imageDataUrl?: string; capturedFil
 
 // ---------------------------------------------------------------- vault-chat's own entries
 
-/** A vc-note: a line (Carl's or an agent's), a notice, a divider. `clientId`: the id a client shows it under. */
-export type NoteData = { kind: "line" | "notice" | "divider"; clientId?: string; images?: ItemImage[]; [k: string]: unknown };
+/** A vc-note: a line (Carl's or an agent's), a notice, a divider, a tool call voice made. `clientId`: the id a client shows it under. */
+export type NoteData = { kind: "line" | "notice" | "divider" | "tool"; clientId?: string; images?: ItemImage[]; [k: string]: unknown };
 
 /** The engine's writer: the notes through pi (true) while a pi process has the conversation's session open. */
 export type NoteWriter = (convId: string, notes: NoteData[]) => Promise<boolean>;
@@ -175,7 +175,10 @@ export async function appendMessage(vault: string, id: string, m: ChatMessage & 
   if (!p.items.some((x) => x.id === itemId) && !(m.role === "user" && m.hidden)) {
     const voice = p.meta.source === "voice";
     let note: NoteData;
-    if (m.system) note = { kind: "notice", text: m.content ?? "", level: m.failed ? "error" : "info", clientId: itemId };
+    const call = m.toolCalls?.[0];
+    // A tool call voice made: a tool row like the text agent's (name, input, result).
+    if (call) note = { kind: "tool", name: String(call.name || "tool"), args: call.input ?? {}, result: String(call.result ?? ""), ...(voice ? { via: "voice" } : {}), clientId: itemId };
+    else if (m.system) note = { kind: "notice", text: m.content ?? "", level: m.failed ? "error" : "info", clientId: itemId };
     else if (m.role === "user") {
       const images = imagesOf(m as any);
       note = { kind: "line", role: "user", text: m.content ?? "", via: voice ? "voice" : m.decision ? "answer" : "chat", clientId: itemId, ...(images.length ? { images } : {}) };
