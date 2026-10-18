@@ -25,7 +25,7 @@ import { readBoxConfig, boxSyncNow } from "./vaultSync";
 import { boxFileChanged } from "./liveReload";
 import type { Conversation } from "./conversations";
 import type { LogRecord, PollAnswer } from "./convlog/protocol";
-import { emptyPicture, emptyRow, foldInto, reduceRow, type Picture, type RowState } from "./convlog/reduce";
+import { emptyPicture, emptyRow, foldInto, pendingOf, reduceRow, type Picture, type RowState } from "./convlog/reduce";
 import { makeChatView, type ChatView } from "./convlog/view";
 
 export const BOX_UNREACHABLE = "Box unreachable — agent runs on the box";
@@ -314,12 +314,10 @@ class BoxChatSession {
       let row = this.rows.get(r.conv);
       // A conversation born while this client follows the log: every record of it comes here,
       // so its picture folds from nothing (no fetch).
-      if (!row && r.type === "conv.created") this.pics.set(r.conv, emptyPicture(r.conv));
+      if (!row) this.pics.set(r.conv, emptyPicture(r.conv));
       // An older conversation's placeholder row gives way to its records.
       if (!row || row.legacy) row = emptyRow(r.conv);
-      let next = reduceRow(row, r);
-      if (r.type === "conv.updated" && r.patch && "deleted" in r.patch) next = { ...next, deleted: !!r.patch.deleted } as Deletable;
-      this.rows.set(r.conv, next);
+      this.rows.set(r.conv, reduceRow(row, r));
       touched.add(r.conv);
       const buf = this.loading.get(r.conv);
       if (buf) buf.push(r);
@@ -375,7 +373,7 @@ class BoxChatSession {
       const p = this.pics.get(id);
       for (const chip of pendingFor(id)) {
         if (!chip.qid || !this.sent.has(chip.qid)) continue;
-        if (p && (p.pending.some((x) => x.id === chip.qid) || p.items.some((x) => x.id === chip.qid))) removePending(chip.id);
+        if (p && (pendingOf(p).some((x) => x.id === chip.qid) || p.items.some((x) => x.id === chip.qid))) removePending(chip.id);
       }
     }
     useStore.setState((s) => {
@@ -412,7 +410,7 @@ class BoxChatSession {
         // Sending: running as far as this client knows, until the log says so.
         const sending = (this.outgoing.get(id) ?? []).some((o) => !o.failed && (o.role ?? "user") === "user" && !o.line);
         const running = (view ? view.running : row.running && !row.asking) || sending;
-        const ask = p ? [...p.items].reverse().find((x) => x.kind === "ask" && x.status === "pending") : undefined;
+        const ask = p?.meta.asking ?? (row.asking && prev?.pendingAsk ? prev.pendingAsk : undefined);
         const next = {
           ...(prev ?? { unread: false }),
           id,

@@ -116,13 +116,3 @@ export function spawnsOf(spawns: string[] | undefined, all: PhoneSubagent[]): Ph
   return all.filter((s) => ids.has(s.threadId));
 }
 
-/** A runtime event onto the live text (src/streamWire.ts's applyStream: the
- *  box sends the reply's growth as offset + delta, with whole-text keyframes). */
-export type StreamState = { text: string; whole: boolean };
-export function applyStream(cur: StreamState | null | undefined, ev: { text?: unknown; offset?: unknown; delta?: unknown; len?: unknown }): StreamState {
-  const tail = typeof ev.text === "string" ? ev.text : "";
-  if (typeof ev.offset !== "number" || typeof ev.delta !== "string") return { text: tail, whole: false };
-  if (ev.offset === 0) return { text: ev.delta, whole: true };
-  if (cur?.whole && cur.text.length >= ev.offset) return { text: cur.text.slice(0, ev.offset) + ev.delta, whole: true };
-  return { text: tail, whole: typeof ev.len === "number" && tail.length >= ev.len };
-}

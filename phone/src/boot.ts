@@ -6,6 +6,9 @@ import { installMock } from "./mock";
 import * as X from "./extras";
 import { createPhoneMarkdown, domToHtml } from "./markdown";
 import { stripAudioTags } from "../../src/voiceTags";
+import type { LogRecord } from "../../src/convlog/protocol";
+import { emptyPicture, emptyRow, foldInto, pendingOf, reduceRow, shown, type Picture, type RowState } from "../../src/convlog/reduce";
+import { makeChatView, type ChatView } from "../../src/convlog/view";
 
 export function boot(): void {
   const qs = new URLSearchParams(location.search);
@@ -121,12 +124,6 @@ export function boot(): void {
   // see stopMode().
   let convSource = null;
   let running = false, stopping = false, streamText = "", streamTool = "", streamStartedAt = null;
-  // Live in-flight state per conversation, NOT just the open one. Every runtime/
-  // status event lands here keyed by convId, so leaving a generating thread and
-  // coming back replays its streamed text, current tool, and elapsed clock
-  // instead of a blank "thinking" (the open thread used to be the ONLY thing
-  // tracked, and switching wiped it). Entries: {running, text, tool, startedAt}.
-  const liveByConv = new Map();
   // Per-conversation activity, for the drawer rows AND the conversations icon:
   //  • convRunning — convIds generating right now → a white pulsing "thinking" dot.
   //  • convUnseen  — convIds whose run FINISHED while you were looking at another
@@ -548,22 +545,6 @@ export function boot(): void {
     const planOpen = running || todos.some((t) => t.status !== "completed");
     if (pin) pin.innerHTML = (!inline ? X.subagentsHtml(latest, "strip") : "") + (X.choice("todos") === "pinned" && planOpen ? X.todosHtml(todos) : "");
   }
-  // Fresh meta for the open conversation (state flips arrive as status/message events).
-  async function refreshConvMeta() {
-    if (!convId) return;
-    const id = convId;
-    try {
-      const d = await (await api("/conversation?id=" + encodeURIComponent(id) + "&n=1")).json();
-      if (id !== convId || d.error) return;
-      // A reply's cost lands a moment after the reply: fill it in.
-      const last = (d.messages || [])[0];
-      const amsgs = msgsEl.querySelectorAll(".amsg:not(.stream)");
-      const lastEl = amsgs[amsgs.length - 1];
-      if (last && last.role === "assistant" && lastEl && !lastEl.querySelector(".rcost")) lastEl.insertAdjacentHTML("beforeend", X.costHtml(last.costUsd));
-      convMeta = metaOf(d);
-      renderOngoing(); setHeader(); renderExtras();
-    } catch {}
-  }
   setInterval(() => { renderOngoing(); }, 60000);
   // The project sheet: tap the chat's title. Pick, create, clear, or start a
   // new chat in the project. Before the first message it sets the new chat's.
@@ -751,63 +732,145 @@ export function boot(): void {
     const arch = !!convSource && ARCHIVED_SOURCES.has(convSource);
     input.disabled = arch; input.placeholder = arch ? "Archived mission thread — read only" : "Message…";
   }
+  // ---------- the open thread: a fold of the box's log ----------
+  // The thread on screen is the box's conversation log folded with the one
+  // reducer (src/convlog/reduce.ts) and projected like the desktop's chat
+  // (src/convlog/view.ts) — never a copy of its own. Carl's own messages show
+  // at once under the id the box echoes back, and are confirmed in place.
+  let pic: Picture | null = null;
+  let picView: ((p: Picture) => ChatView) | null = null;
+  /** The box's records that arrived while the open thread was loading. */
+  let loadingRecs: LogRecord[] | null = null;
+  /** This phone's messages on their way (shown until the log has them). */
+  let outgoing: { id: string; convId: string | null; text: string; images?: string[]; failed?: string; kind?: "steer" | "queue" }[] = [];
+  const shownNodes = new Map<string, { el: HTMLElement; msg: any; live: boolean }>();
+  const clientId = () => (self.crypto && crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36) + "-" + Math.random().toString(36).slice(2));
+
+  /** What a projected message carries for bubble() (its tools, thinking, cost, divider, spawns, images). */
+  function bubbleOf(m: any, live: boolean, last: boolean, all: any[], i: number): HTMLElement {
+    const o: Record<string, any> = {
+      system: m.system,
+      decision: m.decision,
+      thinking: m.thinking,
+      costUsd: m.costUsd,
+      divider: m.compaction ? m.compaction.summary : m.rollover ? m.rollover.recap : undefined,
+      spawns: (m.toolCalls || []).flatMap((t) => t.subagents || []),
+      images: (m.attachments || []).map((a) => a.imageDataUrl || (a.capturedFilePath ? fileUrl(a.capturedFilePath) : "")).filter(Boolean),
+      queued: !!m.failed,
+    };
+    if (Array.isArray(m.askOptions) && m.askOptions.length) {
+      o.askOptions = m.askOptions;
+      let chosen = "";
+      for (let j = i + 1; j < all.length && !chosen; j++) {
+        if (all[j].role === "user" && m.askOptions.some((x) => (x.answer || "") === (all[j].content || "").trim())) chosen = (all[j].content || "").trim();
+      }
+      o.chosenAnswer = chosen;
+      o.optionsLive = !chosen && last;
+    }
+    const el = bubble(m.role, m.content, (m.toolCalls || []).map((t) => t.name), o);
+    if (live) el.classList.add("pending");
+    if (m.__pending) {
+      el.classList.add("queued");
+      el.insertAdjacentHTML("beforeend", '<div class="steerlbl" data-el="pending" data-kind="' + m.__pending + '">' + (m.__pending === "steer" ? "Steering · next step" : "Queued · after this turn") + "</div>");
+    }
+    return el;
+  }
+
+  /** The thread on screen = the fold: each message's node kept while its message is the same object, put in the log's order. */
+  function renderThread() {
+    if (!convId) return;
+    const v = pic && picView ? picView(pic) : null;
+    const have = new Set([...(pic ? shown(pic) : []).map((x) => x.id), ...(pic ? pendingOf(pic) : []).map((x) => x.id)]);
+    const mine = outgoing.filter((o) => o.convId === convId && !have.has(o.id));
+    outgoing = outgoing.filter((o) => o.convId !== convId || !(pic ? shown(pic) : []).some((x) => x.id === o.id));
+    const msgs: any[] = [...(v ? v.messages : []).filter((m) => !m.hidden)];
+    // What pi has not delivered yet (a steer, a queued message): after the thread, labelled.
+    for (const p of v ? v.pending : []) msgs.push({ role: "user", content: p.text, mid: p.id, __pending: p.kind });
+    for (const o of mine) {
+      msgs.push({ role: "user", content: o.text, mid: o.id, attachments: (o.images || []).map((u) => ({ imageDataUrl: u })), __mine: true, failed: o.failed, ...(o.kind ? { __pending: o.kind } : {}) });
+      if (o.failed) msgs.push({ role: "assistant", system: true, content: o.failed, mid: o.id + ":failed", __mine: true });
+    }
+    if (!msgs.length && !(v && v.running)) {
+      if (!msgsEl.querySelector(".hint")) { for (const [, n] of shownNodes) n.el.remove(); shownNodes.clear(); showHint(); }
+    } else {
+      const hint = msgsEl.querySelector(".hint");
+      if (hint) hint.remove();
+      const keep = new Set<string>();
+      let prev: HTMLElement | null = null;
+      msgs.forEach((m, i) => {
+        const key = String(m.mid ?? "i" + i);
+        keep.add(key);
+        let n = shownNodes.get(key);
+        const last = i === msgs.length - 1 && !!v && v.waiting;
+        if (!n || (n.msg !== m && !(m.__mine || m.__pending ? n.msg.content === m.content && n.msg.failed === m.failed && n.msg.__pending === m.__pending : false)) || n.live !== !!m.__mine) {
+          const el = bubbleOf(m, !!m.__mine && !m.failed, last, msgs, i);
+          if (n) n.el.replaceWith(el);
+          n = { el, msg: m, live: !!m.__mine };
+          shownNodes.set(key, n);
+        }
+        // In the log's order: right after the previous one.
+        const want = prev ? prev.nextSibling : msgsEl.firstChild;
+        if (want !== n.el) msgsEl.insertBefore(n.el, want);
+        prev = n.el;
+      });
+      for (const [k, n] of shownNodes) if (!keep.has(k)) { n.el.remove(); shownNodes.delete(k); }
+    }
+    // The open tail and the run.
+    running = !!(v && v.running) || mine.some((o) => !o.failed);
+    if (!running) stopping = false;
+    streamText = v ? v.live.text : "";
+    const t = v && v.live.tools.length ? v.live.tools[v.live.tools.length - 1] : null;
+    const arg = t && t.input ? t.input.path || t.input.file_path || t.input.command || t.input.pattern || t.input.url || "" : "";
+    streamTool = t ? t.name + (arg ? " " + String(arg).split("\n")[0].slice(0, 80) : "") : "";
+    streamStartedAt = v ? v.startedAt : null;
+    if (pic) {
+      const m = pic.meta as any;
+      convTitle = m.title || convTitle;
+      convSource = m.source || convSource;
+      convMeta = { project: m.project, state: m.state, nextWakeAt: m.nextWakeAt, costUsd: m.costUsd, verdict: m.verdict, todos: v ? v.todos : undefined, subagents: m.subagents || [] };
+    }
+    renderStream(); renderRunline(); renderExtras(); renderOngoing(); syncArchived(); setHeader(); scrollDown(false);
+  }
+  let renderQueued = false;
+  function scheduleRender() {
+    if (renderQueued) return;
+    renderQueued = true;
+    requestAnimationFrame(() => { renderQueued = false; renderThread(); });
+    setTimeout(() => { if (renderQueued) { renderQueued = false; renderThread(); } }, 60);
+  }
+
   async function openThread(id: string, title?: string) {
     convId = id; convTitle = title || "New chat"; convSource = null; convMeta = {}; newChatProject = ""; clearThreadUi(); markSeen(id); renderOngoing();
+    for (const [, n] of shownNodes) n.el.remove();
+    shownNodes.clear();
+    pic = null; picView = makeChatView(); loadingRecs = [];
     setPage("chat"); setHeader();
     try {
-      const r = await api("/conversation?id=" + encodeURIComponent(id) + "&n=120");
-      if (!r.ok) throw new Error((await r.json()).error || r.status);
+      const r = await api("/api/v2/conversations/" + encodeURIComponent(id) + "/checkpoint");
       const d = await r.json();
-      convTitle = d.title;
-      convSource = d.source || null;
-      convMeta = metaOf(d);
-      clearThreadUi(); renderOngoing(); syncArchived();
-      // /conversation reads the on-disk (idle) status, so trust the live signals
-      // too: the activity sets seeded from /status, plus any per-conv live state
-      // we've buffered. Replaying that shows the thread already working on reopen
-      // instead of a blank "thinking".
-      const live = liveByConv.get(id);
-      running = d.status === "running" || convRunning.has(id) || !!(live && live.running);
-      if (!d.messages || !d.messages.length) showHint();
-      else {
-        // [unified ask] Option sets stay tappable only while they're the live
-        // fork (nothing after them); once a later user message answered —
-        // matched by verbatim option text — they render inert with the pick
-        // marked. Computed from the thread itself: no extra state to sync.
-        const msgs = d.messages;
-        for (let i = 0; i < msgs.length; i++) {
-          const m = msgs[i];
-          const o: Record<string, any> = { system: m.system, decision: m.decision, thinking: m.thinking, costUsd: m.costUsd, divider: m.divider, spawns: m.spawns, images: (m.images || []).map((p) => (/^(data|blob|https?):/.test(p) ? p : fileUrl(p))) };
-          if (Array.isArray(m.askOptions) && m.askOptions.length) {
-            o.askOptions = m.askOptions;
-            let chosen = "";
-            for (let j = i + 1; j < msgs.length && !chosen; j++) {
-              if (msgs[j].role === "user" && m.askOptions.some((x) => (x.answer || "") === (msgs[j].content || "").trim())) chosen = (msgs[j].content || "").trim();
-            }
-            o.chosenAnswer = chosen;
-            o.optionsLive = !chosen && i === msgs.length - 1;
-          }
-          msgsEl.appendChild(bubble(m.role, m.content, m.tools, o));
-        }
-      }
-      if (running && live) { streamText = live.text || ""; streamTool = live.tool || ""; streamStartedAt = live.startedAt ?? null; }
-      renderExtras(); renderStream(); renderRunline(); setHeader(); scrollDown(true); rememberConv();
+      if (!r.ok || d.error) throw new Error(d.error || r.status);
+      if (convId !== id) return;
+      // The box's fold, then what arrived meanwhile (the reducer skips what it already holds).
+      pic = foldInto(d.picture as Picture, loadingRecs || []);
+      loadingRecs = null;
+      clearThreadUi();
+      renderThread(); scrollDown(true); rememberConv();
     } catch (e) {
-      if (/not found/i.test(String(e.message || e))) { newChat(); return; }
+      loadingRecs = null;
+      if (/not found|404/i.test(String(e.message || e))) { newChat(); return; }
       toast("Load failed: " + (e.message || e));
     }
   }
 
-  let lastSentText = null;
   // One send in flight at a time. The optimistic bubble + cleared input already
   // stop a same-text re-tap, but a NEW chat is the dangerous case: until the
-  // POST returns the minted convId, a second submit still carries convId=null
-  // and the box would spin up a SECOND conversation. This flag closes that
-  // window; the clientMsgId below closes the network/service-worker-retry one.
+  // first send returns, a second submit would start a SECOND conversation.
+  // This flag closes that window; the client id closes the network/service-
+  // worker-retry one (the box treats a repeated id as the same message).
   let sending = false;
   // send() with no argument sends the composer text; send(text) sends a given
-  // string through the SAME pipeline (optimistic bubble, clientMsgId dedupe,
-  // busy flags) — that's how a tapped inline option card becomes your message.
+  // string through the SAME pipeline (optimistic bubble, client id, busy flags)
+  // — that's how a tapped inline option card becomes your message.
   async function send(forced?) {
     if (sending) return;
     const typed = (forced !== undefined ? String(forced) : input.value).trim();
@@ -819,44 +882,30 @@ export function boot(): void {
     if (convSource && ARCHIVED_SOURCES.has(convSource)) { toast("Archived mission thread — start a new chat."); return; }
     sending = true;
     if (forced === undefined) { input.value = ""; input.style.height = "auto"; pendingImgs = []; renderPending(); }
-    lastSentText = text;
-    // Idempotency key: a flaky network or the PWA service worker can deliver the
-    // same POST twice. The box collapses duplicate ids to a single turn (one
-    // conversation, one run) — the "my message got sent twice" bug.
-    const clientMsgId = (self.crypto && crypto.randomUUID) ? crypto.randomUUID() : (Date.now() + "-" + Math.random().toString(36).slice(2));
-    if (msgsEl.querySelector(".hint")) msgsEl.innerHTML = "";
-    msgsEl.appendChild(bubble("user", text, null, { images: imgs.map((x) => x.url) })); scrollDown(true);
-    const mine = msgsEl.lastChild;
+    // A new chat gets its id here: the box makes the conversation under it.
+    const fresh = !convId;
+    if (fresh) { convId = clientId(); convTitle = text.split("\n")[0].slice(0, 60); pic = null; picView = makeChatView(); for (const [, n] of shownNodes) n.el.remove(); shownNodes.clear(); rememberConv(); }
+    const target = convId;
+    userEngaged.add(target);
+    const id = clientId();
+    // The box's own rule: an open question takes it as the answer; a running turn as a steer (pi's, at its next step).
+    const asking = !!pic?.meta.asking;
+    const kind = asking ? "answer" : pic && pic.meta.running ? "steer" : "send";
+    outgoing.push({ id, convId: target, text, images: imgs.map((x) => x.url), ...(kind === "steer" ? { kind: "steer" as const } : {}) });
+    scheduleRender(); scrollDown(true);
     try {
-      if (convId) userEngaged.add(convId); // you're conversing here → the dot may track it
-      const r = await api("/message", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ convId, text: typed, clientMsgId, supervisor: convId ? undefined : true, ...(imgs.length ? { images: imgs.map((x) => ({ name: x.name, mime: x.mime, dataBase64: x.url.slice(x.url.indexOf(",") + 1) })) } : {}), ...(!convId && newChatProject ? { project: projects.find((x) => x.slug === newChatProject)?.name || newChatProject } : {}) }) });
+      const r = await api("/api/v2/intent", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ type: kind, convId: target, clientId: id, text: typed, ...(imgs.length ? { images: imgs.map((x) => ({ name: x.name, mime: x.mime, dataBase64: x.url.slice(x.url.indexOf(",") + 1) })) } : {}), ...(fresh && newChatProject ? { project: projects.find((x) => x.slug === newChatProject)?.name || newChatProject } : {}) }) });
       const d = await r.json();
-      if (!r.ok || d.error) throw new Error(d.error || r.status);
-      if (!convId && d.convId) { convId = d.convId; convTitle = text.split("\n")[0].slice(0, 60); if (newChatProject) convMeta.project = newChatProject; newChatProject = ""; rememberConv(); }
-      if (d.queued) { mine.classList.add("queued"); toast("Mid-run — queued, sends when it finishes."); }
-      // Sent while it works: into the running turn at its next step (the box steers it).
-      else if (d.steered) { mine.insertAdjacentHTML("beforeend", '<div class="steerlbl" data-el="pending" data-kind="steer">Steering · next step</div>'); }
-      else { running = true; stopping = false; streamStartedAt = Date.now(); renderRunline(); }
+      if (!r.ok || d.error || d.ok === false) throw new Error(d.error || r.status);
+      if (fresh) { if (newChatProject) convMeta.project = newChatProject; newChatProject = ""; }
+      if (d.steered) toast("Steering — it reads this at its next step.");
       setHeader();
     } catch (e) {
-      const msg = String(e.message || e);
-      // The thread is gone on the box (deleted, or a stale pointer the server's
-      // disk refresh couldn't resolve). Don't dead-end — drop to a fresh chat and
-      // resend as a new conversation, the same recovery openThread uses. Reuse
-      // the clientMsgId so this recovery stays idempotent under retry too.
-      if (/not found/i.test(msg) && convId) {
-        convId = null; rememberConv();
-        try {
-          const r2 = await api("/message", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text, clientMsgId, supervisor: true }) });
-          const d2 = await r2.json();
-          if (r2.ok && !d2.error) {
-            if (d2.convId) { convId = d2.convId; convTitle = text.split("\n")[0].slice(0, 60); rememberConv(); }
-            running = true; stopping = false; renderRunline(); setHeader();
-            return;
-          }
-        } catch {}
-      }
-      mine.classList.add("queued"); toast("Send failed: " + msg);
+      // Kept on screen, marked as not sent (never dropped).
+      const o = outgoing.find((x) => x.id === id);
+      if (o) o.failed = "Not sent: " + String(e.message || e);
+      else toast("Send failed: " + (e.message || e));
+      scheduleRender();
     } finally {
       sending = false;
     }
@@ -872,17 +921,12 @@ export function boot(): void {
     autosizeRAF = requestAnimationFrame(() => { autosizeRAF = 0; input.style.height = "auto"; input.style.height = Math.min(input.scrollHeight, 120) + "px"; });
   }
   input.addEventListener("input", scheduleAutosize);
-  // Interrupt the open thread's generation (chatbot stop, not a "kill").
-  // Optimistic: clear the running UI the moment you tap — the box's idle
-  // broadcast confirms it, but the button must never keep flashing after a
-  // successful stop.
+  // Stop the open thread's turn (an intent: the box's own stop). Honest: the
+  // line says "stopping…" until the log says the turn ended.
   async function killCurrent() {
     if (!convId) return;
-    // Honest stop: don't claim it's stopped — the run may be mid-tool-call and
-    // keep going until that returns. Show "stopping…" and let the box's REAL
-    // run-end flip it to idle, so the phone never lies about whether it's off.
-    stopping = true; streamText = ""; streamTool = ""; renderStream(); renderRunline(); setHeader();
-    const r = await api("/kill", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ convId }) }).catch(() => null);
+    stopping = true; renderRunline(); setHeader();
+    const r = await api("/api/v2/intent", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ type: "stop", convId }) }).catch(() => null);
     const d = r ? await r.json().catch(() => ({})) : {};
     toast(d.result || "Stop sent.");
   }
@@ -983,78 +1027,68 @@ export function boot(): void {
     if (sh) { sh.closest(".steps").classList.toggle("open"); }
   });
 
-  // ---------- live events ----------
+  // ---------- live events: the box's log ----------
+  // /poll?after=<cursor> answers exactly the records after the cursor (the
+  // whole vault: every conversation, and its signals). The open thread folds
+  // its own; the drawer's dots follow every conversation's running state
+  // (reduceRow); a reconnect resumes from the cursor, nothing is re-read.
   let pollGen = 0;
+  let cursor: number | null = null, epoch: string | null = null;
+  const rowState = new Map<string, RowState>();
   async function pollLoop() {
-    const gen = ++pollGen; let after = "latest";
+    const gen = ++pollGen;
     while (gen === pollGen) {
       try {
-        const r = await api("/poll?after=" + after);
+        if (cursor === null) {
+          const d = await (await api("/poll?after=latest")).json();
+          cursor = Number(d.next) || 0; epoch = d.epoch || null;
+        }
+        const r = await api("/poll?after=" + cursor + (epoch ? "&epoch=" + encodeURIComponent(epoch) : ""));
         if (!r.ok) throw new Error("poll " + r.status);
-        const d = await r.json(); after = d.next; offlineStreak = 0;
+        const d = await r.json(); offlineStreak = 0;
         if (document.body.classList.contains("offline")) setOffline(false);
-        for (const ev of d.events || []) handleEvent(ev);
+        if (d.reset) {
+          // Another log than the cursor's: start over from it (the open thread from its checkpoint).
+          cursor = null; epoch = null;
+          if (convId) void openThread(convId, convTitle);
+          continue;
+        }
+        applyRecords(d.events || []);
+        cursor = Math.max(cursor ?? 0, Number(d.next) || 0);
       } catch { offlineStreak++; if (offlineStreak >= 2) setOffline(true); await new Promise((res) => setTimeout(res, 3000)); }
     }
   }
-  function handleEvent(d: PollEvent) {
-    // Per-conversation activity bookkeeping — for EVERY conv, not just the open
-    // one — so the drawer dots and the conversations icon track background
-    // threads, and a reopened thread can replay its live state instead of a
-    // blank "thinking".
-    if (d.type === "runtime" && d.convId) {
-      // Dot bookkeeping only for YOUR chats — a mission/worker wake's runtime
-      // frames must not light the conversations icon (note 8c84fc31).
-      if (dotEligible(d.convId)) { convRunning.add(d.convId); convUnseen.delete(d.convId); }
-      const prev = liveByConv.get(d.convId);
-      // The whole reply, rebuilt from its pieces (offset + delta); before the
-      // first keyframe of a stream joined midway, its tail.
-      const st = X.applyStream(prev && prev.stream, d);
-      liveByConv.set(d.convId, { running: true, stream: st, text: st.whole || !st.text || typeof d.offset !== "number" ? st.text : "…" + st.text, tool: d.tool ? d.tool + (d.toolArg ? " " + d.toolArg : "") : "", startedAt: d.startedAt ?? (prev && prev.startedAt) ?? null });
-      updateConvDot();
-    } else if (d.type === "status" && d.convId) {
-      // The dot sets (convRunning/convUnseen) track YOUR chats only — the
-      // runtime handler above gates on dotEligible, but this status branch used
-      // to add ANY finished conv to convUnseen. So a mission or worker ending in
-      // the background lit the conversations icon with a phantom "unread" you
-      // could never clear (it isn't in the drawer) — the "indicator is out of
-      // whack" bug, and a direct violation of note 8c84fc31. Gate both writes on
-      // dotEligible. liveByConv is NOT gated: the sheet still replays a
-      // mission/worker's live state.
-      const elig = dotEligible(d.convId);
-      if (d.status === "running") {
-        if (elig) { convRunning.add(d.convId); convUnseen.delete(d.convId); }
-        const prev = liveByConv.get(d.convId) || {};
-        liveByConv.set(d.convId, { ...prev, running: true });
-      } else {
-        convRunning.delete(d.convId); liveByConv.delete(d.convId);
-        if (d.convId === convId) markSeen(convId); else if (elig) convUnseen.add(d.convId);
+  function applyRecords(recs: LogRecord[]) {
+    let mineChanged = false;
+    let listChanged = false;
+    for (const rec of recs) {
+      if (rec.conv === null) {
+        const s: any = rec.type === "signal" ? rec.signal : {};
+        if (s.type === "notif") { void refreshBadge(); if (page === "alerts") softReload(loadAlerts); }
+        else if (s.type === "project") { if (s.convId === convId) void loadProjects(); listChanged = true; }
+        continue;
       }
-      updateConvDot();
+      // The drawer's dots: which of your chats run now, and which finished while you looked elsewhere.
+      const before = rowState.get(rec.conv);
+      const row = reduceRow(before ?? emptyRow(rec.conv), rec);
+      rowState.set(rec.conv, row);
+      if (!before && row.source) convSourceById.set(rec.conv, row.source);
+      const elig = dotEligible(rec.conv);
+      const started = row.running && !before?.running;
+      const ended = !row.running && !!before?.running;
+      if (started && elig) { convRunning.add(rec.conv); convUnseen.delete(rec.conv); listChanged = true; }
+      if (ended) { convRunning.delete(rec.conv); if (rec.conv === convId) markSeen(convId); else if (elig) convUnseen.add(rec.conv); listChanged = true; }
+      if (rec.conv === convId) {
+        if (loadingRecs) loadingRecs.push(rec);
+        else pic = foldInto(pic ?? emptyPicture(rec.conv), [rec]);
+        mineChanged = true;
+      }
     }
-
-    if (d.type === "runtime" && d.convId === convId) { running = true; streamText = liveByConv.get(convId)?.text || ""; streamTool = d.tool ? d.tool + (d.toolArg ? " " + d.toolArg : "") : ""; streamStartedAt = d.startedAt ?? streamStartedAt; renderStream(); setHeader(); }
-    else if (d.type === "message" && d.convId === convId) {
-      markSeen(convId);
-      if (d.role === "user" && lastSentText !== null && d.content === lastSentText) { lastSentText = null; return; }
-      streamText = ""; streamTool = ""; renderStream();
-      // A landing reply with askOptions retires any older live option set —
-      // the newest fork is the one that counts (latest wins, same as sheets).
-      if (Array.isArray(d.askOptions) && d.askOptions.length)
-        msgsEl.querySelectorAll(".delib-opt.inline:not(.dead)").forEach((x) => x.classList.add("dead"));
-      msgsEl.appendChild(bubble(d.role, d.content, d.tools, { askOptions: d.askOptions, decision: d.decision, optionsLive: !!(d.askOptions && d.askOptions.length), system: d.system, thinking: d.thinking, costUsd: d.costUsd, divider: d.divider, spawns: d.spawns, images: (d.images || []).map((p) => (/^(data|blob|https?):/.test(p) ? p : fileUrl(p))) })); scrollDown(false);
-      renderExtras();
-      void refreshConvMeta();
-    } else if (d.type === "status") {
-      if (d.convId === convId) { running = d.status === "running"; stopping = false; if (!running) { streamText = ""; streamTool = ""; streamStartedAt = null; renderStream(); } renderRunline(); renderExtras(); }
-      if (d.convId === convId) void refreshConvMeta();
-      void refreshState();
-      if (cdraw.classList.contains("on")) void loadConvs();
-    } else if (d.type === "title" && d.convId === convId) { convTitle = d.title; setHeader(); }
-    else if (d.type === "meta" && d.convId === convId) void refreshConvMeta();
-    else if (d.type === "project") { if (d.convId === convId) { convMeta.project = (d as any).project || undefined; void loadProjects(); setHeader(); } if (cdraw.classList.contains("on")) void loadConvs(); }
-    else if (d.type === "notif") { void refreshBadge(); if (page === "alerts") softReload(loadAlerts); }
+    if (listChanged) { updateConvDot(); if (cdraw.classList.contains("on")) void loadConvs(); }
+    if (mineChanged && !loadingRecs) { markSeen(convId); scheduleRender(); }
   }
+  // The open thread's meta is its fold: nothing to fetch.
+  async function refreshConvMeta() { if (convId && pic) scheduleRender(); }
 
   async function refreshState() { try { const d = await (await api("/status")).json(); if (d.error) throw 0; vaultName = d.vault || vaultName; boxModel = d.model || ""; boxVersion = d.version || boxVersion; for (const r of d.runs || []) { if (r.convId && r.source) convSourceById.set(r.convId, r.source); } applyRunningSet((d.runs || []).map((r) => r.convId)); setHeader(); return d; } catch { return null; } }
   async function refreshBadge() { try { const d = await (await api("/notifications")).json(); if (typeof d.unread === "number") { unreadN = d.unread; setHeader(); } } catch {} }

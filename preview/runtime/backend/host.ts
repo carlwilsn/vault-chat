@@ -5,6 +5,7 @@
 import { report } from "../overlay";
 import * as fs from "../shims/memfs";
 import { gitDirty } from "./memgit";
+import { MemoryBox } from "../../../src/convlog/memoryBox";
 
 export type BoxReport = {
   configured: boolean;
@@ -51,7 +52,12 @@ export type SyncScript = {
 export type FakeBox = { name: string; version: string; keys?: Record<string, string>; online?: boolean; vaults?: string[] };
 
 export type BoxConv = { title: string; source?: string; status?: "running" | "idle"; meta?: Record<string, unknown>; messages: unknown[] };
+/** A step of a box script. The box writes its conversation log
+ *  (src/convlog/memoryBox.ts); the older step shapes below are what the scripts
+ *  were written in, and `log` writes records directly. */
 export type BoxStep = {
+  /** Write records through the box's helpers (open/say/tool/deliver/endTurn …). */
+  log?: (box: MemoryBox) => void;
   /** Poll events delivered for this step (status / runtime / message / chat). */
   events?: unknown[];
   /** Messages the box now has at the end of a conversation. */
@@ -61,13 +67,12 @@ export type BoxStep = {
   /** Files the box's agent changed (vault-relative → text): they reach the
    *  laptop's working copy on its next vault_box_sync, as a merge would. */
   merge?: Record<string, string | ((old: string | null) => string)>;
-  /** The box process restarts: /poll answers with a new boot id (the laptop resyncs whole). */
+  /** The box process restarts: a new process on the same log (its pollers are cut off; nothing is lost). */
   restart?: boolean;
-  /** /conversation reads `status` from the file, as the real box does ("idle"
-   *  through most of a run): true = it says idle from now on, false = the live status. */
-  fileIdle?: boolean;
-  /** /conversation answers this many ms late from now on (the tailnet). */
-  detailDelayMs?: number;
+  /** /poll answers this many ms late from now on (the tailnet). */
+  pollDelayMs?: number;
+  /** The box is unreachable (true) or back (false): every request to it times out meanwhile. */
+  down?: boolean;
 };
 export type BoxChatScript = {
   convs: Record<string, BoxConv>;
@@ -99,8 +104,11 @@ export type HostConfig = {
 
 let cfg: HostConfig = {};
 // The fake box's live state for box-mode chat.
-let boxConvs: Record<string, BoxConv> = {};
-let boxQueue: unknown[] = [];
+let box = new MemoryBox();
+let boxPollDelay = 0;
+let boxDown = false;
+/** The box's process (a restart cuts its pollers off). */
+let boxProc = 1;
 let boxStep = 0;
 /** The box's published edits the laptop has not merged yet (BoxStep.merge). */
 let boxMerge: NonNullable<BoxStep["merge"]> = {};
@@ -116,19 +124,17 @@ export function boxNext(): boolean {
 }
 /** Play one step the check itself wrote (a turn the scenario does not script). */
 export function boxPlay(st: BoxStep): void {
-  for (const [id, msgs] of Object.entries(st.append ?? {})) if (boxConvs[id]) boxConvs[id].messages = [...boxConvs[id].messages, ...msgs];
-  for (const [id, m] of Object.entries(st.meta ?? {})) if (boxConvs[id]) boxConvs[id].meta = { ...(boxConvs[id].meta ?? {}), ...m };
-  for (const [id, v] of Object.entries(st.status ?? {})) if (boxConvs[id]) boxConvs[id].status = v;
+  box.applyLegacyStep(st as any);
+  st.log?.(box);
   Object.assign(boxMerge, st.merge ?? {});
-  if (st.restart) boxBoot = `preview-${Math.random().toString(36).slice(2, 8)}`;
-  if (st.fileIdle !== undefined) boxFileIdle = st.fileIdle;
-  if (st.detailDelayMs !== undefined) boxDetailDelay = st.detailDelayMs;
-  boxQueue.push(...(st.events ?? []));
+  if (st.restart) boxProc++;
+  if (st.pollDelayMs !== undefined) boxPollDelay = st.pollDelayMs;
+  if (st.down !== undefined) boxDown = st.down;
 }
-/** The fake box process (/poll's `boot`), the file-status mode and the detail latency. */
-let boxBoot = "preview-1";
-let boxFileIdle = false;
-let boxDetailDelay = 0;
+/** The fake box itself (checks drive it directly). */
+export function fakeBoxLog(): MemoryBox {
+  return box;
+}
 let boxCalls = 0;
 let tailscaleOpened = false;
 const boxPosts: BoxPost[] = [];
@@ -143,12 +149,15 @@ export function setHostConfig(c: HostConfig, now: () => number): void {
   if (cfg.sync && c.sync) Object.assign(cfg.sync, { boxChat: c.sync.boxChat, reports: c.sync.reports });
   boxCalls = 0;
   tailscaleOpened = false;
-  boxConvs = JSON.parse(JSON.stringify(cfg.sync?.boxChat?.convs ?? {}));
-  boxQueue = [];
+  box = new MemoryBox();
+  for (const [id, c] of Object.entries((cfg.sync?.boxChat?.convs ?? {}) as Record<string, BoxConv>)) {
+    box.import(id, { title: c.title, source: c.source ?? "phone", ...(c.meta ?? {}) } as any, JSON.parse(JSON.stringify(c.messages)) as any);
+    if (c.status === "running") box.startTurn(id);
+  }
   boxMerge = {};
-  boxBoot = "preview-1";
-  boxFileIdle = false;
-  boxDetailDelay = 0;
+  boxPollDelay = 0;
+  boxDown = false;
+  boxProc = 1;
   laptopVault = null;
   boxStep = 0;
   boxPosts.length = 0;
@@ -208,15 +217,19 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
  *  a voice conversation of its own, tagged with the project it came from. */
 function boxVoiceLine(b: any): { ok: true; convId: string } {
   let id = String(b.convId ?? "");
-  if (!boxConvs[id] || boxConvs[id]!.source !== "voice") {
-    const from = boxConvs[String(b.fromConvId ?? "")];
-    id = `v-voice-${Object.keys(boxConvs).filter((k) => k.startsWith("v-voice-")).length + 1}`;
+  const cur = box.picture(id);
+  if (!cur || cur.meta.source !== "voice") {
+    const from = box.picture(String(b.fromConvId ?? ""));
+    id = `v-voice-${box.rows().filter((r) => r.id.startsWith("v-voice-")).length + 1}`;
     const first = String(b.text ?? "");
-    boxConvs[id] = { title: b.role === "user" ? (first.length > 48 ? first.slice(0, 47) + "…" : first) : "Voice", source: "voice", status: "idle", meta: { lastActivityAt: Date.now(), ...(from?.meta?.project ? { project: from.meta.project } : {}) }, messages: [] };
+    box.create(id, { title: b.role === "user" ? (first.length > 48 ? first.slice(0, 47) + "…" : first) : "Voice", source: "voice", ...(from?.meta.project ? { project: from.meta.project } : {}) });
   }
-  boxConvs[id]!.messages = [...boxConvs[id]!.messages, { role: b.role === "user" ? "user" : "assistant", content: String(b.text ?? ""), ...(b.system ? { system: true } : {}) }];
-  boxConvs[id]!.meta = { ...(boxConvs[id]!.meta ?? {}), lastActivityAt: Date.now() };
-  boxQueue.push({ type: "message", convId: id, role: b.role === "user" ? "user" : "assistant" });
+  // Under the client's id (a repeat is the same line), written by the box.
+  const lid = String(b.clientId ?? "") || `vl-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+  if (!box.picture(id)!.items.some((x) => x.id === lid)) {
+    if (b.system) box.note(id, lid, { kind: "notice", text: String(b.text ?? "") });
+    else box.note(id, lid, { kind: "line", role: b.role === "user" ? "user" : "assistant", text: String(b.text ?? ""), via: "voice" });
+  }
   return { ok: true, convId: id };
 }
 
@@ -225,25 +238,22 @@ function boxVoiceTool(name: string, args: any): string {
   if (name === "AskAgent") {
     const task = String(args.task ?? "").trim();
     let id = String(args.conversationId ?? "");
-    const started = !id || !boxConvs[id];
+    const started = !id || !box.picture(id);
     if (started) {
       // Deterministic, so a scenario's box steps can name it: v-agent-1, v-agent-2 …
-      id = `v-agent-${Object.keys(boxConvs).filter((k) => k.startsWith("v-agent-")).length + 1}`;
+      id = `v-agent-${box.rows().filter((r) => r.id.startsWith("v-agent-")).length + 1}`;
       const title = task.length > 48 ? task.slice(0, 47) + "…" : task;
-      boxConvs[id] = { title, source: "phone", status: "running", meta: { state: "running", lastActivityAt: Date.now(), ...(args.project ? { project: String(args.project) } : {}) }, messages: [{ role: "user", content: task }] };
-    } else {
-      boxConvs[id]!.messages = [...boxConvs[id]!.messages, { role: "user", content: task, direct: true }];
-      boxConvs[id]!.status = "running";
+      box.create(id, { title, source: "phone", ...(args.project ? { project: String(args.project) } : {}) });
     }
-    boxQueue.push({ type: "status", convId: id, status: "running" });
+    box.intent({ type: "send", convId: id, clientId: `va-${Date.now()}`, text: task });
     return JSON.stringify({ conversationId: id, started });
   }
   if (name === "AgentStatus") {
     const id = String(args.conversationId ?? "");
-    const c = boxConvs[id];
-    if (!c) return `No conversation ${id}.`;
-    const last = [...c.messages].reverse().find((m: any) => m.role === "assistant" && !m.system) as any;
-    return JSON.stringify({ conversationId: id, title: c.title, state: c.status === "running" ? "working" : String(c.meta?.state ?? "idle"), ...(last ? { lastReply: String(last.content).slice(0, 800) } : {}) });
+    const p = box.picture(id);
+    if (!p) return `No conversation ${id}.`;
+    const last = [...p.items].reverse().find((x) => x.kind === "assistant");
+    return JSON.stringify({ conversationId: id, title: p.meta.title, state: p.meta.running ? "working" : String(p.meta.state ?? "idle"), ...(last ? { lastReply: String(last.text).slice(0, 800) } : {}) });
   }
   return cfg.sync?.boxChat?.voice?.results?.[name] ?? `(ran ${name} on the box)`;
 }
@@ -370,35 +380,21 @@ export const hostCommands: Record<string, (a: Record<string, any>) => unknown> =
       for (const b of bytes) bin += String.fromCharCode(b);
       return { status: 200, body: JSON.stringify({ path: rel, size: bytes.length, base64: btoa(bin) }) };
     }
-    const p = u.pathname.replace(/^.*?(\/(poll|conversations|conversation|status|api\/v1\/models))/, "$1");
+    const p = u.pathname.replace(/^.*?(\/(poll|api\/v2\/.*|status|api\/v1\/models))$/, "$1");
     if (p === "/api/v1/models" && cfg.sync?.boxChat?.models) return { status: 200, body: JSON.stringify(cfg.sync.boxChat.models) };
     const ok = (v: unknown) => ({ status: 200, body: JSON.stringify(v) });
-    if (p === "/poll") {
-      const after = u.searchParams.get("after");
-      if (after === "latest") return ok({ next: 0, events: [], boot: boxBoot });
-      const n = Number(after) || 0;
-      const boot = boxBoot;
-      for (let t = 0; t < 125 && !boxQueue.length && boot === boxBoot; t++) await sleep(200);
-      // A restart: the old process's events are gone; the new one answers.
-      if (boot !== boxBoot) return ok({ next: 0, events: [], boot: boxBoot });
-      const events = boxQueue.splice(0);
-      return ok({ next: n + events.length, events, boot: boxBoot });
+    if (p === "/status") return ok({ runs: box.rows().filter((r) => r.running).map((r) => ({ convId: r.id })) });
+    // The box's conversation log: /poll, /api/v2/conversations, a conversation's checkpoint.
+    const proc = boxProc;
+    if (boxDown) {
+      await sleep(1500);
+      throw `error sending request for url (${u.href}): operation timed out`;
     }
-    if (p === "/conversations")
-      return ok({
-        conversations: Object.entries(boxConvs).map(([id, c]) => ({ id, title: c.title, source: c.source ?? "phone", msgCount: c.messages.length, lastActivityAt: Number(c.meta?.lastActivityAt) || undefined, ...(c.meta ?? {}) })),
-      });
-    if (p === "/status") return ok({ runs: Object.entries(boxConvs).filter(([, c]) => c.status === "running").map(([id]) => ({ convId: id })) });
-    if (p === "/conversation") {
-      const id = u.searchParams.get("id") ?? "";
-      const c = boxConvs[id];
-      if (!c) return { status: 404, body: JSON.stringify({ error: "not found" }) };
-      // Like server/phoneData.ts: the last n (≤ 200) messages, hidden ones included.
-      const n = Math.min(Math.max(Number(u.searchParams.get("n")) || 60, 1), 200);
-      const body = { id, title: c.title, source: c.source ?? "phone", status: boxFileIdle ? "idle" : c.status ?? "idle", full: true, meta: c.meta ?? {}, messages: c.messages.slice(-n) };
-      if (boxDetailDelay) await sleep(boxDetailDelay);
-      return ok(JSON.parse(JSON.stringify(body)));
-    }
+    if (p === "/poll" && boxPollDelay) await sleep(boxPollDelay);
+    const routed = await box.route("GET", p, u.searchParams, null, 2500);
+    // A restart (or an outage) while it waited: the old process's answer never comes (the connection drops).
+    if (proc !== boxProc || boxDown) throw `error sending request for url (${u.href}): connection reset (the box restarted)`;
+    if (routed) return { status: routed.status, body: JSON.stringify(routed.body) };
     return { status: 404, body: JSON.stringify({ error: "not found" }) };
   },
   box_post_json: async ({ url, body }) => {
@@ -423,7 +419,7 @@ export const hostCommands: Record<string, (a: Record<string, any>) => unknown> =
     const miss = unknownVault(u);
     if (miss) return miss;
     report("info", `box POST ${url} (answered by the preview)`);
-    const path = new URL(String(url)).pathname.replace(/^.*?(\/(message|answer|kill|api\/v1\/.*))$/, "$1");
+    const path = new URL(String(url)).pathname.replace(/^.*?(\/(message|answer|kill|api\/v1\/.*|api\/v2\/.*))$/, "$1");
     let b: any = {};
     try {
       b = JSON.parse(String(body ?? "{}"));
@@ -433,28 +429,13 @@ export const hostCommands: Record<string, (a: Record<string, any>) => unknown> =
     boxPosts.push({ path, body: b, vault: u.searchParams.get("vault") });
     if (path === "/api/v1/voice/tool") return { status: 200, body: JSON.stringify({ result: boxVoiceTool(String(b.name ?? ""), b.args ?? {}) }) };
     if (path === "/api/v1/voice/transcript") return { status: 200, body: JSON.stringify(boxVoiceLine(b)) };
-    if (cfg.sync?.boxChat?.live) {
-      const id = String(b.convId ?? "");
-      const c = boxConvs[id];
-      if (c && (path === "/message" || path === "/answer")) {
-        const imgs = Array.isArray(b.images) ? b.images : [];
-        const text = String(b.text ?? "").trim() || "(image)";
-        c.messages = [
-          ...c.messages,
-          {
-            role: "user",
-            content: text,
-            direct: true,
-            ...(path === "/answer" ? { decision: true } : {}),
-            ...(imgs.length ? { attachments: imgs.map((i: any) => ({ imageDataUrl: `data:${i.mime};base64,${i.dataBase64}`, capturedFilePath: `.vault-chat/captures/${i.name ?? "image.png"}` })) } : {}),
-          },
-        ];
-        c.status = "running";
-        c.meta = { ...(c.meta ?? {}), state: "running" };
-        boxQueue.push({ type: "message", convId: id, role: "user" }, { type: "status", convId: id, status: "running" });
-        return { status: 200, body: JSON.stringify({ ok: true, convId: id, ...(path === "/answer" ? { answered: true } : {}) }) };
-      }
+    if (boxDown) {
+      await sleep(1500);
+      throw `error sending request for url (${u.href}): operation timed out`;
     }
+    // Intents: the box writes their effect into its feed (src/convlog/memoryBox.ts intent()).
+    const routed = await box.route("POST", path, new URLSearchParams(), b);
+    if (routed) return { status: routed.status, body: JSON.stringify(routed.body) };
     return { status: 200, body: "{\"ok\":true}" };
   },
 

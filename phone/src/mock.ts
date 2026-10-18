@@ -1,3 +1,4 @@
+import { MemoryBox } from "../../src/convlog/memoryBox";
 export function installMock() {
   const now = Date.now();
   // Auto-play the supervisor m1 working→idle→(stale trailing frame) lifecycle
@@ -184,29 +185,47 @@ export function installMock() {
   })();
   const DB: MockDB = pick && ROOT.vaults?.[pick] ? ({ ...ROOT, ...ROOT.vaults[pick], vault: pick } as MockDB) : ROOT;
   const reply = (obj) => new Response(JSON.stringify(obj), { status: 200, headers: { "Content-Type": "application/json" } });
-  let pollWaited = false, pollTick = 0;
   // The preview's UI choices (localStorage switches), before the page reads them.
   for (const [k, v] of Object.entries(DB.ls ?? {})) {
     try { localStorage.setItem(k, v); } catch {}
   }
-  // A scripted box (preview): each __vcPhoneNext() applies one step — messages
-  // appended, thread meta changed — and queues its poll events, like the
-  // desktop harness's boxNext(). /poll then hands the queue out at once.
-  const scriptQueue: PollEvent[] = [];
+  // The box's conversations: its event log (src/convlog/memoryBox.ts — the same
+  // records and fold as the real box). The fixture threads are its history.
+  const box = new MemoryBox();
+  const asFixture = (m: any) => ({
+    ...m,
+    ...(Array.isArray(m.tools) && m.tools.length ? { toolCalls: m.tools.map((name: string, i: number) => ({ id: `${name}-${i}-${Math.random().toString(36).slice(2, 6)}`, name, input: {}, result: "" })) } : {}),
+    ...(typeof m.divider === "string" ? { compaction: { summary: m.divider } } : {}),
+    ...(Array.isArray(m.spawns) && m.spawns.length && !m.tools?.length ? { toolCalls: [{ id: "sub-" + m.spawns.join("-"), name: "subagent", input: {}, result: "", subagents: m.spawns }] } : {}),
+  });
+  for (const [id, t] of Object.entries(DB.threads)) {
+    const row = DB.convs.find((c) => c.id === id) as any;
+    box.import(id, { ...(t as any), title: (t as any).title || row?.title || "New chat", source: (t as any).source || row?.source || "phone", ...(row?.project ? { project: row.project } : {}), lastActivityAt: row?.lastActivityAt, createdAt: row?.lastActivityAt }, ((t as any).messages || []).map(asFixture));
+    if (DB.runs.some((r) => r.convId === id)) box.startTurn(id);
+  }
+  // A send gets the mock's canned reply (a scripted preview leaves the reply to its script).
+  box.onSend = (conv) => {
+    if (DB.script) return;
+    setTimeout(() => {
+      box.say(conv, "Here's the context on that call — happy to dig into any part of it.", 3);
+      box.endTurn(conv);
+    }, 350);
+  };
+  (window as any).__vcPhoneBox = box;
+  // A scripted box (preview): each __vcPhoneNext() applies one step — what the
+  // box writes for it (its older shapes: messages appended, meta, run states).
   let scriptAt = 0;
   window.__vcPhonePosts = [];
   window.__vcPhoneNext = () => {
     const st = DB.script?.[scriptAt];
     if (!st) return false;
     scriptAt++;
-    for (const [id, msgs] of Object.entries(st.append ?? {})) if (DB.threads[id]) DB.threads[id].messages.push(...msgs);
     for (const [id, m] of Object.entries(st.meta ?? {})) {
-      if (DB.threads[id]) Object.assign(DB.threads[id], m);
       const row = DB.convs.find((c) => c.id === id);
       if (row) Object.assign(row, m);
     }
     if (st.runs) DB.runs = st.runs;
-    scriptQueue.push(...(st.events ?? []));
+    box.applyLegacyStep({ ...st, append: Object.fromEntries(Object.entries(st.append ?? {}).map(([id, ms]) => [id, (ms as any[]).map(asFixture)])) } as any);
     return true;
   };
   window.fetch = async (url, opts) => {
@@ -214,18 +233,9 @@ export function installMock() {
     const q = new URLSearchParams(String(url).split("?")[1] || "");
     const body = opts && opts.body ? JSON.parse(opts.body as string) : {};
     if (DB.script && u !== "/poll") window.__vcPhonePosts.push({ url: String(url), method: (opts && opts.method) || "GET", body });
-    if (DB.script && u === "/poll") {
-      if (!pollWaited) { pollWaited = true; return reply({ events: [], next: "0" }); }
-      for (let t = 0; t < 12 && !scriptQueue.length; t++) await new Promise((r) => setTimeout(r, 200));
-      return reply({ events: scriptQueue.splice(0), next: String(++pollTick) });
-    }
-    if (DB.script && u === "/message") {
-      // The scripted box records the turn (photos included) and leaves the reply to the script.
-      const th = body.convId && DB.threads[body.convId];
-      const shown = String(body.text || "").trim() || "(image)";
-      if (th) th.messages.push({ role: "user", content: shown, ...(Array.isArray(body.images) && body.images.length ? { images: body.images.map((i) => "data:" + i.mime + ";base64," + i.dataBase64) } : {}) });
-      return reply({ ok: true, convId: body.convId });
-    }
+    // The log's routes: /poll, /api/v2/conversations[/<id>/checkpoint], /api/v2/intent.
+    const routed = await box.route((opts && opts.method) || "GET", u, q, body, DB.script ? 2400 : 2500);
+    if (routed) return new Response(JSON.stringify(routed.body), { status: routed.status, headers: { "Content-Type": "application/json" } });
     if (DB.script && /^\/api\/v1\/conversations\/[^/]+\/subagents\/[^/]+\/(steer|stop)$/.test(u)) return reply({ ok: true });
     if (u === "/conversations") return reply({ vault: DB.vault, conversations: DB.convs });
     if (u === "/api/v1/vaults") return reply({ vaults: [{ name: ROOT.vault, main: true, syncing: true }, ...Object.keys(ROOT.vaults ?? {}).map((name) => ({ name, main: false, syncing: true }))] });
@@ -255,85 +265,7 @@ export function installMock() {
       const th = DB.threads[body.convId]; if (th) (th as any).project = slug || undefined;
       return reply({ ok: true, project: slug || null });
     }
-    if (u === "/poll") {
-      // Running workers stream signs of life so the thread's live timeline is
-      // real in mock mode — the same "runtime" events (text + growing steps)
-      // the box broadcasts per run.
-      pollTick += 1;
-      // A worker's finished thoughts revealed over time, plus a trailing in-flight
-      // placeholder — the live edge shows the done ones + a quiet "working…".
-      const completed = [
-        { thought: "Seed 1's committed eval.loss is my ground truth, so I read it and the config before touching anything — I'm matching its exact learning rate, not eyeballing it." },
-        { thought: "The first relaunch errored on a stale checkpoint path left from the previous run, so I cleared the checkpoint dir and reran; it's training cleanly now." },
-      ];
-      const nDone = Math.min(completed.length, 1 + Math.floor(pollTick / 4));
-      const steps = completed.slice(0, nDone).concat([{ thought: "" }]);
-      const evs: PollEvent[] = DB.runs.filter((r) => r.source === "worker").map((r) => ({ type: "runtime", convId: r.convId, text: "", tool: "", steps }));
-      // Supervisor m1: script a working turn that ENDS with a stale trailing
-      // frame — status:idle then a lingering runtime in the SAME batch — to prove
-      // the sheet settles to "waiting" instead of sticking on "working…" (the
-      // close-and-reopen bug). Runs once, early, so verification is quick.
-      const m1steps = [
-        { thought: "Pulled seed-2's retry thread — at step 600 it's tracking seed 1 within 0.01 nat, so it's on course." },
-        { thought: "Holding the eval/writeup worker until seed 2's eval.loss actually commits rather than calling it early." },
-        { thought: "" },
-      ];
-      // Re-armable via window.__m1seq = 1 (set from a test) so the running →
-      // idle → stale-trailing-frame sequence can be fired at will while the m1
-      // sheet is open — the precise condition the reopen bug needs.
-      if (typeof window.__m1seq === "number" && window.__m1seq >= 1) {
-        const p = window.__m1seq;
-        if (p <= 2) {
-          if (!DB.runs.some((r) => r.convId === "m1")) DB.runs.push({ convId: "m1", title: "BitNet 160M MVP", mission: "BitNet 160M MVP", source: "mission", lastTool: "Read", lastProgressAt: Date.now() });
-          evs.push({ type: "runtime", convId: "m1", text: "", tool: "Read", steps: m1steps.slice(0, Math.min(m1steps.length, p + 1)) });
-        } else if (p === 3) {
-          DB.runs = DB.runs.filter((r) => r.convId !== "m1");
-          evs.push({ type: "status", convId: "m1", status: "idle" });
-          evs.push({ type: "runtime", convId: "m1", text: "", tool: "Read", steps: m1steps }); // the stale trailing frame
-        }
-        window.__m1seq = p >= 3 ? 0 : p + 1;
-      }
-      // Re-armable via window.__chatSeq = 1: the two-lane conversational front
-      // answering while the executor keeps streaming CHANGING steps — to prove
-      // the executor edge FREEZES during the reply and the reply folds in at end.
-      if (typeof window.__chatSeq === "number" && window.__chatSeq >= 1) {
-        const p = window.__chatSeq;
-        if (!DB.runs.some((r) => r.convId === "m1")) DB.runs.push({ convId: "m1", title: "BitNet 160M MVP", mission: "BitNet 160M MVP", source: "mission", lastTool: "Bash", lastProgressAt: Date.now() });
-        evs.push({ type: "runtime", convId: "m1", text: "", tool: "Bash", steps: [{ thought: "executor still grinding — tick " + p + " (should stay frozen while answering)" }, { thought: "" }] });
-        const rep = "Seed 2's retry is at step 600, tracking seed 1 within 0.01 nat — on course. Holding the eval/writeup worker until its loss commits.";
-        if (p === 1) { DB.threads.m1.messages.push({ role: "user", content: "how's seed 2 doing?" }); evs.push({ type: "chat", convId: "m1", phase: "start" }); }
-        else if (p === 2) evs.push({ type: "chat", convId: "m1", phase: "stream", text: rep.slice(0, 40) });
-        else if (p === 3) evs.push({ type: "chat", convId: "m1", phase: "stream", text: rep });
-        else if (p === 4) {
-          // Lane ends, but the persisted reply has NOT landed in the thread yet —
-          // this reproduces the ~½s gap where the old code blinked the reply out.
-          evs.push({ type: "chat", convId: "m1", phase: "end" });
-        }
-        else if (p === 5) {
-          // Persisted reply lands a beat later; the settled edge should hand off
-          // to it seamlessly (no frame where the reply is absent).
-          DB.threads.m1.messages.push({ role: "assistant", content: rep, direct: true });
-        }
-        window.__chatSeq = p >= 5 ? 0 : p + 1;
-      }
-      if (!pollWaited) { pollWaited = true; return reply({ events: evs, next: String(pollTick) }); }
-      await new Promise((r) => setTimeout(r, 2500));
-      return reply({ events: evs, next: String(pollTick) });
-    }
-    if (u === "/message") {
-      // Append to an existing thread + a canned reply so follow-up threads
-      // (ask / minted fu-) render a real round in the sheet.
-      const th = body.convId && DB.threads[body.convId];
-      if (th) { th.messages.push({ role: "user", content: body.text, direct: true }); setTimeout(() => { th.messages.push({ role: "assistant", content: "Here's the context on that call — happy to dig into any part of it.", direct: true }); }, 350); }
-      if (!body.convId && body.project) {
-        const nid = "new-" + Date.now();
-        DB.convs.unshift({ id: nid, title: String(body.text || "New chat").split("\n")[0].slice(0, 60), source: "phone", lastActivityAt: Date.now(), msgCount: 1, preview: "", project: body.project });
-        DB.threads[nid] = { id: nid, title: String(body.text || "New chat").slice(0, 60), source: "phone", status: "idle", messages: [{ role: "user", content: body.text }] } as any;
-        (DB.threads[nid] as any).project = body.project;
-        return reply({ ok: true, convId: nid });
-      }
-      return reply({ ok: true, convId: body.convId || "new-" + Date.now(), probe: true });
-    }
+    if (u === "/message") return reply(box.intent({ ...body, type: body.queue ? "queue" : "send", clientId: body.clientMsgId || "m-" + Date.now() }));
     if (u === "/decision-record") {
       // Mirror the real box: an inline decision lands in the archive as a
       // pre-decided ask card (never unread, never pushed).
@@ -345,10 +277,10 @@ export function installMock() {
       // and mark it read, so the decided-card/dead-sheet states are testable.
       const an = DB.notifs.find((x) => x.id === body.notifId);
       if (an) { an.answeredWith = body.text; an.answeredAt = Date.now(); an.read = true; }
-      DB.threads[body.convId] && DB.threads[body.convId].messages.push({ role: "user", content: body.text, direct: true, decision: true });
+      if (body.convId && box.picture(body.convId)) box.intent({ type: "answer", convId: body.convId, clientId: body.clientMsgId || "a-" + Date.now(), text: body.text });
       return reply({ ok: true, convId: body.convId, answered: true });
     }
-    if (u === "/kill") { if (body.convId) { DB.runs = DB.runs.filter((r) => r.convId !== body.convId); const m = DB.convs.find((c) => c.id === body.convId); if (m && m.source === "mission") { const key = (m.mission || m.title || "").trim(); DB.convs = DB.convs.filter((c) => c.id !== body.convId && !(c.source === "worker" && (c.mission || "").trim() === key)); } } return reply({ ok: true, result: "Kill sent." }); }
+    if (u === "/kill") { if (body.convId) { DB.runs = DB.runs.filter((r) => r.convId !== body.convId); box.intent({ type: "stop", convId: body.convId }); } return reply({ ok: true, result: "Kill sent." }); }
     if (u === "/chats/clear") return reply({ ok: true, cleared: 0 });
     if (u === "/schedule") { if (body.action === "toggle") { const s = DB.schedules.find((x) => x.id === body.id); if (s) s.enabled = body.enabled; } else if (body.action === "delete") { DB.schedules = DB.schedules.filter((x) => x.id !== body.id); } return reply({ ok: true }); }
     if (u === "/surface") return reply({ ok: true });
