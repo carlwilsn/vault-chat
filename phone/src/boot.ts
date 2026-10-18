@@ -2014,11 +2014,9 @@ export function boot(): void {
   function vMeter() {
     if (!vLive) return;
     const speaking = vAgentSpeaking; let raw;
-    try { if (speaking) { const lvl = vAgentEnvLevel(); raw = []; for (let i = 0; i < NUM_BARS; i++) { const shape = 0.55 + 0.45 * Math.sin((i / (NUM_BARS - 1)) * Math.PI); raw.push(lvl * shape); } } else if (vMicAnalyser) { vMicAnalyser.getByteFrequencyData(vMicBuf); raw = vBin(vMicBuf, NUM_BARS); } else { raw = vBin(vConv && vConv.getInputByteFrequencyData && vConv.getInputByteFrequencyData(), NUM_BARS); } } catch { raw = new Array(NUM_BARS).fill(0); }
-    // [truth] Muted + not the agent's turn → flat bars. The local mic analyser is
-    // a SEPARATE getUserMedia stream that vConv.setMicMuted() never touches, so
-    // without this the waves keep dancing to your voice while you're muted — the
-    // UI saying "you're being heard" when you aren't. (Mirrors voice.html:249.)
+    try { if (speaking) { const lvl = vTransport === "webrtc" ? Math.min(1, ((vConv && vConv.getOutputVolume && vConv.getOutputVolume()) || 0) * 2.5) : vAgentEnvLevel(); raw = []; for (let i = 0; i < NUM_BARS; i++) { const shape = 0.55 + 0.45 * Math.sin((i / (NUM_BARS - 1)) * Math.PI); raw.push(lvl * shape); } } else if (vMicAnalyser) { vMicAnalyser.getByteFrequencyData(vMicBuf); raw = vBin(vMicBuf, NUM_BARS); } else { raw = vBin(vConv && vConv.getInputByteFrequencyData && vConv.getInputByteFrequencyData(), NUM_BARS); } } catch { raw = new Array(NUM_BARS).fill(0); }
+    // [truth] Muted + not the agent's turn → flat bars (the SDK's meter reads zero
+    // muted too; this keeps the UI from ever saying "you're being heard" when you aren't).
     if (vMuted && !speaking) raw = new Array(NUM_BARS).fill(0);
     for (let i = 0; i < NUM_BARS; i++) { const decayed = vSmoothed[i] * DECAY; vSmoothed[i] = raw[i] > decayed ? raw[i] : decayed; const h = 0.16 + Math.min(1, vSmoothed[i]) * 0.84; vBars[i].style.transform = `scaleY(${h.toFixed(3)})`; }
     vRafId = requestAnimationFrame(vMeter);
@@ -2038,14 +2036,18 @@ export function boot(): void {
       } catch {}
     });
   }
+  let vTransport: "webrtc" | "websocket" = "webrtc";
   async function vStart() {
     if (vConnecting || vConv) return;
     if (!micAvailable()) { setVErr("This page isn't HTTPS, so the browser blocks the mic. Open the https://…ts.net link from Settings → Phone."); return; }
     vConnecting = true; setVErr(""); document.body.classList.add("vconnecting");
     vVoiceConv = null; vVoiceFrom = convId || null;
     try {
+      // The mic permission, asked on the tap; then let go: the SDK opens the ONE
+      // stream the call sends, and the waves read its meter (a second stream of
+      // ours could leave iOS capturing one and muting the other).
       const micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      try { vMicCtx = vMicCtx || new (window.AudioContext || window.webkitAudioContext!)(); vMicCtx.resume().catch(() => {}); const src = vMicCtx.createMediaStreamSource(micStream); vMicAnalyser = vMicCtx.createAnalyser(); vMicAnalyser.fftSize = 64; vMicAnalyser.smoothingTimeConstant = 0.5; src.connect(vMicAnalyser); vMicBuf = new Uint8Array(vMicAnalyser.frequencyBinCount); } catch { vMicAnalyser = null; }
+      for (const t of micStream.getTracks()) t.stop();
       let cfg = null;
       let sessErr = "";
       for (let a = 0; a < 6; a++) {
@@ -2060,18 +2062,28 @@ export function boot(): void {
       // @ts-ignore — URL import; the browser resolves it at runtime
       const sdk = (await sdkPromise) || (await import("@elevenlabs/client")); const { Conversation } = sdk;
       let timedOut = false, watchdog = 0;
-      const sessionPromise = Conversation.startSession({
-        signedUrl: cfg.signedUrl,
+      // WebRTC (ElevenLabs' recommended transport: echo cancellation, jitter buffer) with
+      // the box's conversation token; WebSocket with the signed URL when there's no token
+      // or WebRTC can't connect.
+      vTransport = cfg.conversationToken ? "webrtc" : "websocket";
+      const open = () => Conversation.startSession({
+        ...(vTransport === "webrtc" ? { conversationToken: cfg.conversationToken, connectionType: "webrtc" } : { signedUrl: cfg.signedUrl, connectionType: "websocket" }),
         overrides: { agent: { prompt: { prompt: cfg.systemPrompt || "" }, language: "en", firstMessage: "" }, tts: { voiceId: cfg.voiceId } },
         dynamicVariables: cfg.dynamicVariables || {}, clientTools: vClientTools(cfg.toolNames),
         onConnect: () => { if (timedOut) return; vConnecting = false; vAutoRetried = false; vLive = true; document.body.classList.remove("vconnecting"); vMeter(); },
-        onDisconnect: () => { if (!timedOut) vTeardown(); },
+        onDisconnect: (d) => { if (d && d.reason !== "user") console.warn("[voice] closed", vTransport, JSON.stringify({ reason: d.reason, message: d.message, code: d.closeCode ?? (d.context && d.context.code), why: d.closeReason ?? (d.context && d.context.reason) })); if (!timedOut) vTeardown(); },
         onError: (m) => setVErr(typeof m === "string" ? m : (m && m.message) || "voice error"),
-        onAudio: (b64) => { try { vAgentEnvPush(b64); } catch {} },
+        onAudio: (b64) => { if (vTransport === "websocket") try { vAgentEnvPush(b64); } catch {} },
         onMessage: ({ message, role }) => { const raw = (message || "").trim(); const text = role === "user" ? raw : stripAudioTags(raw); if (text) vSaveLine(role === "user" ? "user" : "assistant", text); },
         // Mode leaving "speaking" = the playback buffer drained (or barge-in) —
         // everything that arrived was heard, so drop the queued envelope tail.
         onModeChange: ({ mode }) => { vAgentSpeaking = mode === "speaking"; if (!vAgentSpeaking) vAgentEnvReset(); },
+      });
+      const sessionPromise = open().catch((e) => {
+        if (vTransport !== "webrtc" || !cfg.signedUrl || timedOut || /NotAllowed|NotFound|NotReadable|Permission/i.test(String(e && e.name) + String(e && e.message))) throw e;
+        console.warn("[voice] WebRTC failed, retrying over WebSocket:", String((e && e.message) || e));
+        vTransport = "websocket";
+        return open();
       });
       sessionPromise.then((c) => { clearTimeout(watchdog); if (timedOut && c) { try { c.endSession(); } catch {} } }).catch(() => clearTimeout(watchdog));
       vConv = await Promise.race([sessionPromise, new Promise((_, rej) => { watchdog = setTimeout(() => { timedOut = true; rej(new Error("connect timed out after 15s")); }, 15000); })]);
