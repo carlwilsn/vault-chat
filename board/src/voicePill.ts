@@ -34,7 +34,7 @@ function unlockAudio(): void {
 const realApi: VoiceApi = { listChats: api.listChats, voiceSession: api.voiceSession, voiceTool: api.voiceTool, voiceTranscript: api.voiceTranscript };
 
 export const voice = new VoiceController({
-  api: FAKE ? { ...realApi, voiceSession: async () => ({ signedUrl: "fake://board-preview", systemPrompt: "", toolNames: [] }) } : realApi,
+  api: FAKE ? { ...realApi, voiceSession: async () => ({ signedUrl: "fake://board-preview", conversationToken: null, systemPrompt: "", toolNames: [] }) } : realApi,
   sdk: () => (FAKE ? import("./voiceFake").then((m) => m.fakeSdk()) : (import("@elevenlabs/client") as unknown as Promise<VoiceSdk>)),
   mic: FAKE ? async () => new MediaStream() : navigator.mediaDevices?.getUserMedia ? () => navigator.mediaDevices.getUserMedia({ audio: true }) : null,
   unlock: unlockAudio,
@@ -81,8 +81,6 @@ export function mountVoicePill(): void {
   let chatsOpen = false;
   let bars: HTMLElement[] = [];
   let raf = 0;
-  let analyser: AnalyserNode | null = null;
-  let abuf: Uint8Array<ArrayBuffer> | null = null;
   const smooth = new Array(BARS).fill(0);
 
   const build = (s: VoiceState) => {
@@ -150,25 +148,13 @@ export function mountVoicePill(): void {
     loop(s);
   };
 
-  // The waves: the mic while Carl talks (flat while muted), the agent's output while it speaks.
+  // The waves: the SDK's mic level while Carl talks (flat while muted), the agent's output while it speaks.
   const loop = (s: VoiceState) => {
     cancelAnimationFrame(raf);
     raf = 0;
     if (s.phase !== "live") {
-      analyser = null;
       for (const b of bars) b.style.transform = s.phase === "error" ? "scaleY(.55)" : "";
       return;
-    }
-    if (!analyser && voice.micStream && actx && voice.micStream.getAudioTracks().length) {
-      try {
-        analyser = actx.createAnalyser();
-        analyser.fftSize = 64;
-        analyser.smoothingTimeConstant = 0.5;
-        actx.createMediaStreamSource(voice.micStream).connect(analyser);
-        abuf = new Uint8Array(analyser.frequencyBinCount);
-      } catch {
-        analyser = null;
-      }
     }
     const frame = () => {
       const st = voice.state;
@@ -176,15 +162,11 @@ export function mountVoicePill(): void {
       if (st.speaking) {
         const l = voice.outputLevel();
         lv = Array.from({ length: BARS }, (_, i) => l * (0.55 + 0.45 * Math.sin((i / (BARS - 1)) * Math.PI)));
-      } else if (analyser && abuf && !st.muted) {
-        analyser.getByteFrequencyData(abuf);
-        const per = Math.max(1, Math.floor(abuf.length / BARS));
-        lv = Array.from({ length: BARS }, (_, i) => {
-          let sum = 0;
-          for (let j = 0; j < per; j++) sum += abuf![i * per + j] ?? 0;
-          return sum / per / 255;
-        });
-      } else lv = new Array(BARS).fill(0);
+      } else {
+        // Carl's level from the SDK's own mic stream (the one the call sends).
+        const l = voice.inputLevel();
+        lv = Array.from({ length: BARS }, (_, i) => l * (0.55 + 0.45 * Math.sin((i / (BARS - 1)) * Math.PI)));
+      }
       bars.forEach((b, i) => {
         smooth[i] = Math.max(lv[i]!, smooth[i]! * 0.85);
         b.style.transform = `scaleY(${(0.2 + Math.min(1, smooth[i]!) * 0.8).toFixed(3)})`;

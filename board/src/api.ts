@@ -108,7 +108,7 @@ export async function watch(fn: (ev: any) => void): Promise<void> {
 export type ChatRow = { id: string; title: string; lastActivityAt: number; source: string };
 export const listChats = () => call<{ conversations: ChatRow[] }>("/conversations").then((r) => r.conversations ?? []);
 /** A signed ElevenLabs session for the box's voice agent, its prompt built from `convId`'s thread. */
-export type VoiceConfig = { signedUrl: string; voiceId?: string; systemPrompt?: string; dynamicVariables?: Record<string, string>; toolNames?: string[] };
+export type VoiceConfig = { signedUrl: string | null; conversationToken?: string | null; voiceId?: string; systemPrompt?: string; dynamicVariables?: Record<string, string>; toolNames?: string[] };
 export const voiceSession = (convId: string | null) => call<VoiceConfig>(`/api/v1/voice/session${convId ? `?convId=${enc(convId)}` : ""}`);
 /** One of the voice agent's tools, run on the box. */
 export const voiceTool = (body: { name: string; args: unknown; convId: string | null; fromConvId: string | null }) =>

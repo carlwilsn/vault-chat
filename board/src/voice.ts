@@ -15,8 +15,13 @@
 // again), both held while the agent speaks (src/voiceQuiet.ts). A landed inbox entry is
 // mentioned at the next pause, as on the laptop.
 //
-// No DOM here beyond the mic stream and an AudioContext: the pill (voicePill.ts) draws
-// it, the tests drive it with a fake SDK.
+// The transport is WebRTC (ElevenLabs' recommended one: echo cancellation, jitter
+// buffer) with the box's conversation token; WebSocket with the signed URL when the
+// box has no token or WebRTC can't connect. One mic stream, the SDK's: the tap asks
+// for the mic (Safari wants the gesture) and lets it go at once; the waves read the
+// SDK's own levels.
+//
+// No DOM here: the pill (voicePill.ts) draws it, the tests drive it with a fake SDK.
 import { QuietGate } from "../../src/voiceQuiet";
 import { VoiceImagePusher, lookingAtNote, sendFilesMessage } from "../../src/voiceImages";
 import { stripAudioTags } from "../../src/voiceTags";
@@ -31,14 +36,17 @@ export type VoiceConv = {
   uploadFile(b: Blob): Promise<{ fileId: string }>;
   sendMultimodalMessage(m: { text?: string; fileId: string }): void;
   getOutputVolume?(): number;
+  getInputVolume?(): number;
 };
 export type SessionOpts = {
-  signedUrl: string;
+  signedUrl?: string;
+  conversationToken?: string;
+  connectionType: "webrtc" | "websocket";
   overrides: unknown;
   dynamicVariables: Record<string, string>;
   clientTools: Record<string, (p: unknown) => Promise<string>>;
   onConnect(): void;
-  onDisconnect(): void;
+  onDisconnect(d?: { reason?: string; message?: string; closeCode?: number; closeReason?: string; context?: { type?: string; reason?: string; code?: number } }): void;
   onError(m: unknown): void;
   onMessage(m: { message: string; role: string }): void;
   onModeChange(m: { mode: string }): void;
@@ -158,9 +166,18 @@ export class VoiceController {
       return 0;
     }
   }
-  get micStream(): MediaStream | null {
-    return this.stream;
+  /** Carl's mic level, 0..1, from the SDK's own stream (flat while muted). */
+  inputLevel(): number {
+    try {
+      return this.state.muted ? 0 : Math.min(1, (this.conv?.getInputVolume?.() ?? 0) * 2.5);
+    } catch {
+      return 0;
+    }
   }
+  /** How the live call connected (diagnostics). */
+  transport: "webrtc" | "websocket" | null = null;
+  /** The last close, with its reason (diagnostics). */
+  lastClose: Record<string, unknown> | null = null;
 
   /** The mic button. */
   toggle(): void {
@@ -184,7 +201,9 @@ export class VoiceController {
     } catch (e) {
       return this.fail(gen, micError(e));
     }
-    if (gen !== this.gen) return this.dropMic();
+    // Permission only: the SDK opens the one mic stream the call uses.
+    this.dropMic();
+    if (gen !== this.gen) return;
     let chats: ChatRow[] = [];
     try {
       chats = recentChats(await this.d.api.listChats());
@@ -204,7 +223,7 @@ export class VoiceController {
         if ((e as { status?: number })?.status === 503) break;
         if (a < 2) await new Promise((r) => setTimeout(r, 600 * (a + 1)));
       }
-      if (gen !== this.gen) return this.dropMic();
+      if (gen !== this.gen) return;
     }
     if (!cfg) return this.fail(gen, why ? `Voice couldn't start: ${why}` : "Voice couldn't start.");
     this.voiceConv = null;
@@ -215,8 +234,12 @@ export class VoiceController {
       const sdk = await this.d.sdk();
       let timedOut = false;
       let watchdog: ReturnType<typeof setTimeout> | undefined;
-      const session = sdk.Conversation.startSession({
-        signedUrl: cfg.signedUrl,
+      const token = cfg.conversationToken || null;
+      const signed = cfg.signedUrl || null;
+      let transport: "webrtc" | "websocket" = token ? "webrtc" : "websocket";
+      const creds = () => (transport === "webrtc" ? { conversationToken: token!, connectionType: transport } : { signedUrl: signed!, connectionType: transport });
+      const open = () => sdk.Conversation.startSession({
+        ...creds(),
         overrides: { agent: { prompt: { prompt: cfg.systemPrompt || "" }, language: "en", firstMessage: "" }, tts: { voiceId: cfg.voiceId } },
         dynamicVariables: cfg.dynamicVariables || {},
         clientTools: this.clientTools(cfg.toolNames ?? [], from),
@@ -225,7 +248,9 @@ export class VoiceController {
           this.set({ phase: "live", error: "" });
           this.pushNow();
         },
-        onDisconnect: () => {
+        onDisconnect: (d) => {
+          this.lastClose = { transport, reason: d?.reason, message: d?.message, code: d?.closeCode ?? d?.context?.code, closeReason: d?.closeReason ?? d?.context?.reason };
+          console.warn("[board-voice] closed", JSON.stringify(this.lastClose));
           if (!timedOut && gen === this.gen) this.teardown(this.state.phase === "connecting" ? "The voice connection closed before it started." : "");
         },
         onError: (m) => {
@@ -241,6 +266,13 @@ export class VoiceController {
           this.set({ speaking: mode === "speaking" });
           this.gate.modeChanged();
         },
+      });
+      // WebRTC that can't connect (a network that blocks it): once more over WebSocket.
+      const session = open().catch((e) => {
+        if (transport !== "webrtc" || !signed || timedOut || gen !== this.gen || /NotAllowed|NotFound|NotReadable|Permission/i.test(String((e as Error)?.name) + String((e as Error)?.message))) throw e;
+        console.warn("[board-voice] WebRTC failed, retrying over WebSocket:", String((e as Error)?.message ?? e));
+        transport = "websocket";
+        return open();
       });
       session
         .then((c) => {
@@ -262,6 +294,7 @@ export class VoiceController {
         return;
       }
       this.conv = conv;
+      this.transport = transport;
       // The SDK may connect before startSession resolves: what onConnect couldn't send yet goes now.
       if ((this.state.phase as Phase) === "live") this.pushNow();
     } catch (e) {

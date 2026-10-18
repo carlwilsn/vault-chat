@@ -242,3 +242,45 @@ test("the mic button, pressed by a Pencil or a finger through the chrome's rule,
   assert.equal(v.state.phase, "idle");
   assert.equal(f.log.ended, 1);
 });
+
+test("WebRTC with the box's conversation token; WebSocket once if it can't connect; the tap's mic stream is let go; the close is kept with its reason", async () => {
+  const stopped: string[] = [];
+  const heldMic = async () => ({ getTracks: () => [{ stop: () => stopped.push("tap stream") }] }) as unknown as MediaStream;
+  const box = fakeBox({ voiceSession: async () => ({ conversationToken: "tok", signedUrl: "wss://fake", systemPrompt: "p", toolNames: [] }) });
+  const seen: SessionOpts[] = [];
+  let failFirst = true;
+  const conv: VoiceConv = {
+    endSession: async () => seen.at(-1)?.onDisconnect({ reason: "user" }),
+    setMicMuted: () => {},
+    sendContextualUpdate: () => {},
+    uploadFile: async () => ({ fileId: "f" }),
+    sendMultimodalMessage: () => {},
+    getInputVolume: () => 0.2,
+  };
+  const sdk = {
+    Conversation: {
+      startSession: async (o: SessionOpts) => {
+        seen.push(o);
+        if (failFirst) {
+          failFirst = false;
+          throw new Error("could not establish pc connection");
+        }
+        o.onConnect();
+        return conv;
+      },
+    },
+  };
+  const v = new VoiceController({ api: box.api, sdk: async () => sdk, mic: heldMic });
+  await v.start();
+  assert.deepEqual(stopped, ["tap stream"], "the permission stream is stopped before the SDK opens its own");
+  assert.equal(seen[0]!.connectionType, "webrtc");
+  assert.equal(seen[0]!.conversationToken, "tok");
+  assert.equal(seen[0]!.signedUrl, undefined);
+  assert.equal(seen[1]!.connectionType, "websocket");
+  assert.equal(seen[1]!.signedUrl, "wss://fake");
+  assert.equal(v.state.phase, "live");
+  assert.equal(v.transport, "websocket");
+  assert.equal(v.inputLevel(), 0.5, "the waves read the SDK's own mic level");
+  seen.at(-1)!.onDisconnect({ reason: "error", message: "ws closed", closeCode: 1006 });
+  assert.deepEqual(v.lastClose, { transport: "websocket", reason: "error", message: "ws closed", code: 1006, closeReason: undefined });
+});
