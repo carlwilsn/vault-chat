@@ -38,6 +38,8 @@ type StateSnapshot = {
   // are `messages`), so a long history is not re-sent on every turn.
   conversations: Conversation[];
   activeConversationId: string | null;
+  /** The chat runs on main's box: its state (on, reachable, why) for the popout's composer. */
+  boxChat: import("./boxChat").BoxChatState | null;
   // Voice runs in main; the popout's mic and waves show its state.
   voice: {
     voiceMode: boolean;
@@ -107,6 +109,7 @@ function takeStateSnapshot(): StateSnapshot {
     files: s.files,
     conversations: s.conversations.map((c) => (c.messages.length ? { ...c, messages: [] } : c)),
     activeConversationId: s.activeConversationId,
+    boxChat: s.boxChat,
     voice: {
       voiceMode: s.voiceMode,
       voiceConnecting: s.voiceConnecting,
@@ -220,7 +223,8 @@ export async function installMainSync() {
       state.voiceSpeaking !== prev.voiceSpeaking ||
       state.voiceListening !== prev.voiceListening ||
       state.voiceMicMuted !== prev.voiceMicMuted ||
-      state.voiceError !== prev.voiceError;
+      state.voiceError !== prev.voiceError ||
+      state.boxChat !== prev.boxChat;
     const streamChanged =
       state.busy !== prev.busy ||
       state.streamingText !== prev.streamingText ||

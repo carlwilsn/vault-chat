@@ -584,11 +584,7 @@ type State = {
   applyChatState: (s: {
     vaultPath: string | null;
     messages: ChatMessage[];
-    modelId?: string;
-    tokenUsage?: { prompt: number; completion: number; total: number };
     lastContext?: number;
-    compactionSummary?: string | null;
-    compacting?: boolean;
     currentFile?: string | null;
     panePaths?: string[];
     files?: FileEntry[];
@@ -598,6 +594,8 @@ type State = {
     activeConversationId?: string | null;
     // Voice runs in the main window; the popout's mic and waves show it.
     voice?: Pick<State, "voiceMode" | "voiceConnecting" | "voiceSpeaking" | "voiceListening" | "voiceMicMuted" | "voiceError">;
+    // The chat runs on main's box: the popout's composer follows its state.
+    boxChat?: State["boxChat"];
   }) => void;
   applyChatStream: (s: {
     busy: boolean;
@@ -1322,6 +1320,7 @@ export const useStore = create<State>((set) => ({
         ...(s.conversations ? { conversations: s.conversations } : {}),
         ...(s.activeConversationId !== undefined ? { activeConversationId: s.activeConversationId } : {}),
         ...(s.voice ?? {}),
+        ...(s.boxChat !== undefined ? { boxChat: s.boxChat } : {}),
       };
     }),
   applyChatStream: (s) =>
@@ -1344,6 +1343,11 @@ export const useStore = create<State>((set) => ({
     if (!(await bc.boxLinkFor(vault).catch(() => null))) {
       if (useStore.getState().vaultPath !== vault) return;
       useStore.setState({ boxChat: { on: false, reachable: null, reason: "" }, conversations: [], activeConversationId: null, conversationsLoaded: true, messages: [], streamingText: "", streamingReasoning: "", liveTools: [] });
+      return;
+    }
+    // Its feed is already live (a second load): the list is the feed's, keep it.
+    if (bc.boxChatOn()) {
+      useStore.setState({ conversationsLoaded: true });
       return;
     }
     const fresh = emptyConversation();

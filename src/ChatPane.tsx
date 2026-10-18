@@ -287,7 +287,14 @@ async function buildMentionPreamble(
 /** Settings, at its Box section. */
 function openBoxSettings() {
   useStore.getState().setShowSettings(true);
-  requestAnimationFrame(() => document.querySelector('[data-settings="box"]')?.scrollIntoView({ block: "start" }));
+  // The pane renders on React's next commit: look for the section for a few frames.
+  let tries = 0;
+  const go = () => {
+    const el = document.querySelector('[data-settings="box"]');
+    if (el) el.scrollIntoView({ block: "start" });
+    else if (++tries < 20) requestAnimationFrame(go);
+  };
+  requestAnimationFrame(go);
 }
 
 export function ChatPane() {
@@ -947,7 +954,14 @@ export function ChatPane() {
         <div className="max-w-[820px] mx-auto space-y-4">
         {messages.length === 0 && !streamingText && (
           <div className="absolute inset-0 flex items-center justify-center pointer-events-none" data-el="greeting">
-            <p className="text-[22px] font-semibold text-foreground/90">{greeting}</p>
+            {boxDown ? (
+              <div className="text-center space-y-1">
+                <p className="text-[15px] font-medium text-foreground/90">{BOX_UNREACHABLE}</p>
+                <p className="text-[12px] text-muted-foreground">{downWhy}. Retrying — files and notes work meanwhile.</p>
+              </div>
+            ) : (
+              <p className="text-[22px] font-semibold text-foreground/90">{greeting}</p>
+            )}
           </div>
         )}
 

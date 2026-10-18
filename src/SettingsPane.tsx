@@ -821,7 +821,7 @@ function AppearanceSection() {
 
 function BoxSection() {
   const vaultPath = useStore((s) => s.vaultPath);
-  // undefined = still reading sync.json; null = no box (runs on this laptop).
+  // undefined = still reading sync.json; null = no box (no chat until one is connected).
   const [box, setBox] = useState<BoxConfig | null | undefined>(undefined);
   const [rev, setRev] = useState(0);
   useEffect(() => {
@@ -849,7 +849,7 @@ function BoxSection() {
     <section className="space-y-3" data-settings="box">
       <SectionHead
         title="Box"
-        hint={!vaultPath || box === undefined ? "Open a vault to see its sync." : box ? `Runs on ${boxName(box)}` : "Runs on this laptop"}
+        hint={!vaultPath || box === undefined ? "Open a vault to see its sync." : box ? `Runs on ${boxName(box)}` : "No box: the chat runs on one. Connect it here."}
       />
       {vaultPath &&
         box !== undefined &&
