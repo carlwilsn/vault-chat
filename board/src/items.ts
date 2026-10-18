@@ -12,8 +12,11 @@
 // (view.ts renderTile), so ink and the selection always lie above. Each item
 // is laid out once at its own size (lw × lh css px) and zoomed as a whole:
 // a CSS transform of translate + uniform scale.
-import * as pdfjs from "pdfjs-dist";
-import workerSrc from "pdfjs-dist/build/pdf.worker.min.mjs?url";
+// pdf.js's legacy build: the modern one calls Map.prototype.getOrInsertComputed (and the worker too), which
+// only the newest WebKit has; without it every PDF page rendered nothing, a grey box (2026-10-18, WebKit 2191).
+// The legacy build carries the polyfills; the same API.
+import * as pdfjs from "pdfjs-dist/legacy/build/pdf.mjs";
+import workerSrc from "pdfjs-dist/legacy/build/pdf.worker.min.mjs?url";
 import type { Item } from "../../src/boardFormat";
 import { MATH_CSS, widgetDocument } from "../../src/widgetHost";
 import * as api from "./api";
