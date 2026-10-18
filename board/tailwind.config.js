@@ -59,6 +59,8 @@ export default {
         "sheet-in": { from: { transform: "translateX(104%)" }, to: { transform: "none" } },
         "fade-in": { from: { opacity: "0" }, to: { opacity: "1" } },
         "rise-in": { from: { opacity: "0", transform: "translateY(10px) scale(0.98)" }, to: { opacity: "1", transform: "none" } },
+        // A dialog with a text field: never transparent (iOS will not raise the keyboard for a field focused while it is).
+        "lift-in": { from: { transform: "translateY(10px) scale(0.98)" }, to: { transform: "none" } },
         shimmer: { from: { backgroundPosition: "-200% 0" }, to: { backgroundPosition: "200% 0" } },
       },
       animation: {
@@ -66,6 +68,7 @@ export default {
         "sheet-in": "sheet-in 320ms cubic-bezier(0.32, 0.72, 0, 1) both",
         "fade-in": "fade-in 160ms ease-out both",
         "rise-in": "rise-in 220ms cubic-bezier(0.32, 0.72, 0, 1) both",
+        "lift-in": "lift-in 220ms cubic-bezier(0.32, 0.72, 0, 1) both",
         shimmer: "shimmer 1.6s linear infinite",
       },
     },
