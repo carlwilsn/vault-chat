@@ -94,7 +94,6 @@
   #app { position: absolute; inset: 0; }
   /* `hidden` wins over a display utility (flex, grid) on the same element. */
   [hidden] { display: none !important; }
-  input { -webkit-user-select: text; user-select: text; }
   button { touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
 }
 
@@ -106,6 +105,15 @@
     backdrop-filter: blur(20px) saturate(180%);
   }
   .hairline { box-shadow: inset 0 0 0 0.5px rgb(var(--sys-separator) / 0.29); }
+}
+
+/* Text fields are fully native: selectable (WebKit inherits -webkit-user-select, and iOS will not type or
+   place a caret in a field under `none`), with the callout and magnifier back. Outside every layer and on
+   :is() so no utility or base rule can take it away. */
+:is(input, textarea, select, [contenteditable]:not([contenteditable="false"])) {
+  -webkit-user-select: text !important;
+  user-select: text !important;
+  -webkit-touch-callout: default;
 }
 
 /* ---------------- the canvas layers (not Tailwind) ----------------

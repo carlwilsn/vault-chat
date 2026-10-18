@@ -139,15 +139,21 @@ function menu(root: HTMLElement, tile: HTMLElement, slug: string, name: string, 
   });
 }
 
-/** An iOS alert-style dialog with one text field. */
+/**
+ * An iOS alert-style dialog with one text field. The field is focused in the tap that opened it (New board, Rename)
+ * and is fully visible when it is: the scrim fades in beside it, never around it, and the alert only slides. Until
+ * v0.6.46 the whole dialog faded in from opacity 0, so the field was focused while transparent — iOS treats that as
+ * a hidden field and raises no keyboard, and a tap on the field, already focused, changes no focus to raise it.
+ */
 function nameDialog(root: HTMLElement, title: string, value: string, action: string, submit: (v: string) => Promise<unknown>): void {
   const dlg = document.createElement("div");
-  dlg.className = "fixed inset-0 z-50 grid place-items-center bg-black/25 p-4 animate-fade-in";
+  dlg.className = "name-dialog fixed inset-0 z-50 grid place-items-center p-4";
   dlg.innerHTML = `
-    <form class="material w-[min(340px,100%)] overflow-hidden rounded-[14px] text-center shadow-pop animate-rise-in">
+    <div data-scrim class="absolute inset-0 bg-black/25 animate-fade-in"></div>
+    <form class="material relative w-[min(340px,100%)] overflow-hidden rounded-[14px] text-center shadow-pop animate-lift-in">
       <div class="px-4 pb-4 pt-5">
         <div class="text-body font-semibold text-sys-label">${esc(title)}</div>
-        <input name="name" autocomplete="off" autocapitalize="sentences" maxlength="120" value="${esc(value)}"
+        <input name="name" type="text" autocomplete="off" autocapitalize="sentences" enterkeyhint="done" maxlength="120" value="${esc(value)}"
           class="mt-3 h-10 w-full rounded-[10px] border-0 bg-card px-3 text-body text-sys-label outline-none ring-1 ring-sys-separator/30 focus:ring-2 focus:ring-sys-blue">
         <p class="err mt-2 hidden text-footnote text-[rgb(var(--sys-red))]"></p>
       </div>
@@ -158,6 +164,7 @@ function nameDialog(root: HTMLElement, title: string, value: string, action: str
     </form>`;
   root.appendChild(dlg);
   const input = dlg.querySelector("input")!;
+  // Synchronously, still inside the opening tap's gesture: iOS raises the keyboard only for a focus made there.
   input.focus();
   input.select();
   dlg.querySelector('[data-act="cancel"]')!.addEventListener("click", () => dlg.remove());
