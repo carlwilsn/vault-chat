@@ -8,7 +8,8 @@
 // keeps a registry (<logDir>/jobs.json): which conversation started which job,
 // so a finished job wakes its conversation, and at most `max` run at once.
 import { spawnSync } from "node:child_process";
-import { mkdirSync, readFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { writeAtomic } from "../../atomic";
 
@@ -22,6 +23,12 @@ export type PiJobEnv = {
   max?: number;
   /** systemd's MemoryMax for a job (default VC_JOB_MEMORY_MAX, else "75%" of RAM). */
   memoryMax?: string;
+  /**
+   * Where a starting job's environment file lives (0700 dir, 0600 file, removed
+   * once the unit has started): default jobEnvDir(). The values never go on
+   * systemd-run's command line, where any process lister would see the keys.
+   */
+  envDir?: string;
   /** Run a command (tests replace systemd-run / systemctl). */
   exec?: (cmd: string, args: string[]) => { status: number | null; stdout: string; stderr: string };
 };
@@ -91,11 +98,70 @@ export function jobTimeoutS(v: unknown): number {
   return Math.max(60, Math.min(Math.round(s), JOB_MAX_TIMEOUT_S));
 }
 
-/** The systemd-run argv for a job (pure; tests read it). */
-export function jobArgv(env: PiJobEnv, cwd: string, id: string, shell: string, timeoutS: number): string[] {
+/** The private dir for job environment files: $XDG_RUNTIME_DIR/vault-chat/jobs (tmpfs, the user's own), else a per-user dir in tmp. */
+export function jobEnvDir(): string {
+  const run = process.env.XDG_RUNTIME_DIR;
+  if (run) return join(run, "vault-chat", "jobs");
+  const uid = typeof process.getuid === "function" ? process.getuid() : "user";
+  return join(tmpdir(), `vault-chat-${uid}`, "jobs");
+}
+
+const envDirOf = (env: PiJobEnv) => env.envDir ?? jobEnvDir();
+
+/** One value in systemd's EnvironmentFile syntax: single quotes are literal; else double quotes with \ escapes. */
+function envFileValue(v: string): string {
+  if (!v.includes("'")) return `'${v}'`;
+  return `"${v.replace(/[\\"$`]/g, (c) => "\\" + c)}"`;
+}
+
+/** Write a job's environment to <dir>/<id>.env (dir 0700, file 0600); returns its path. */
+export function writeJobEnvFile(dir: string, id: string, vars: Record<string, string>): string {
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  chmodSync(dir, 0o700);
+  const path = join(dir, `${id}.env`);
+  const body = Object.entries(vars)
+    .filter(([k]) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(k))
+    .map(([k, v]) => `${k}=${envFileValue(String(v))}\n`)
+    .join("");
+  rmSync(path, { force: true });
+  writeFileSync(path, body, { mode: 0o600, flag: "wx" });
+  return path;
+}
+
+/** Remove job environment files left behind (a crash between write and start): those older than `olderMs`. Returns how many. */
+export function sweepJobEnvFiles(dir: string = jobEnvDir(), olderMs = 60_000): number {
+  let n = 0;
+  let names: string[] = [];
+  try {
+    names = readdirSync(dir);
+  } catch {
+    return 0;
+  }
+  const cutoff = Date.now() - olderMs;
+  for (const f of names) {
+    if (!f.endsWith(".env")) continue;
+    const p = join(dir, f);
+    try {
+      if (statSync(p).mtimeMs <= cutoff) {
+        rmSync(p, { force: true });
+        n++;
+      }
+    } catch {
+      /* gone already */
+    }
+  }
+  return n;
+}
+
+/**
+ * The systemd-run argv for a job (pure; tests read it). The environment comes
+ * from `envFile` (EnvironmentFile=: `systemctl show` prints the path, never the
+ * values). Type=exec: systemd-run returns only once the job's process has been
+ * exec'd, i.e. after systemd read the file, so the caller can delete it then.
+ */
+export function jobArgv(env: PiJobEnv, cwd: string, id: string, shell: string, timeoutS: number, envFile: string): string[] {
   // The log dir must be writable inside the sandbox even though the state dir is read-only there.
   const wrap = [...env.wrap!.slice(0, -1), "--bind", env.logDir, env.logDir, "--"];
-  const setenv = Object.entries(env.env).flatMap(([k, v]) => ["-E", `${k}=${v}`]);
   const memory = env.memoryMax ?? process.env.VC_JOB_MEMORY_MAX ?? "75%";
   return [
     "--user",
@@ -107,7 +173,8 @@ export function jobArgv(env: PiJobEnv, cwd: string, id: string, shell: string, t
     `--property=MemoryMax=${memory}`,
     "--property=CPUWeight=20",
     "--property=IOWeight=20",
-    ...setenv,
+    "--property=Type=exec",
+    `--property=EnvironmentFile=${envFile}`,
     ...wrap,
     "sh",
     "-c",
@@ -135,7 +202,21 @@ export function startJob(env: PiJobEnv, cwd: string, a: { command?: string; name
   mkdirSync(env.logDir, { recursive: true });
   const log = join(env.logDir, `${id}.log`);
   const shell = `(${cmd}) > ${JSON.stringify(log)} 2>&1; echo "[exit $?]" >> ${JSON.stringify(log)}`;
-  const r = exec(env)("systemd-run", jobArgv(env, cwd, id, shell, timeoutS));
+  const dir = envDirOf(env);
+  sweepJobEnvFiles(dir);
+  let envFile: string;
+  try {
+    envFile = writeJobEnvFile(dir, id, env.env);
+  } catch (e) {
+    return `StartJob failed: could not write its environment file (${(e as Error).message.slice(0, 200)}).`;
+  }
+  let r: ReturnType<ReturnType<typeof exec>>;
+  try {
+    r = exec(env)("systemd-run", jobArgv(env, cwd, id, shell, timeoutS, envFile));
+  } finally {
+    // Started (Type=exec: the file was read) or failed: either way it is no longer needed.
+    rmSync(envFile, { force: true });
+  }
   if (r.status !== 0) return `StartJob failed: ${(r.stderr || r.stdout || "").trim().slice(0, 400)}`;
   writeJobs(env, [...readJobs(env), { id, ...(conv ? { conv } : {}), name, command: cmd.slice(0, 2000), startedAt: Date.now(), timeoutS, state: "running" }]);
   const h = Math.round((timeoutS / 3600) * 10) / 10;

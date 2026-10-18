@@ -21,6 +21,7 @@ import { PiBackend, outerWith, type PiSandbox } from "./pi/backend";
 import { logOf } from "./convs";
 import { signal } from "../convlog/log";
 import { agentKeyEnv } from "../keys";
+import { sweepJobEnvFiles } from "./pi/jobs";
 
 /** A vault on this box: its working copy and bare repo. The main one keeps the paths it always had. */
 export type VaultRef = { name: string; path: string; bare: string; main: boolean };
@@ -327,13 +328,16 @@ export async function startEngine(b: EngineBoot): Promise<EngineHandle> {
       keyEnv: agentKeyEnv,
       ...(v.main ? {} : { log: (m: string) => console.log(`[pi:${v.name}] ${m}`) }),
     });
+    // A job's keys travel in a 0600 EnvironmentFile (never systemd-run's argv) that is
+    // deleted once the unit started; one a crash left behind is swept here, at boot.
+    sweepJobEnvFiles();
     const jobEnv = {
       logDir: st.jobs,
       // Jobs outlive turns: the same hiding as pi's sandbox (the other vaults included), in a pid namespace of their own.
       get wrap() {
         return jobWrap(outerWith(sandbox));
       },
-      // Read at each StartJob: the keys as they are now (server/keys.ts agentKeyEnv).
+      // Read at each StartJob: the keys as they are now (server/keys.ts agentKeyEnv), written to the job's env file.
       get env() {
         return { PATH: process.env.PATH ?? "/run/current-system/sw/bin", HOME: home, ...agentKeyEnv() };
       },

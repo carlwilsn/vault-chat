@@ -24,7 +24,10 @@ describe("Job control", () => {
   it("argv: a time limit (24 h default, 7 d max), a memory ceiling, a low CPU and IO share", async () => {
     const { jobArgv, jobTimeoutS } = await import("../engine/pi/jobs");
     const env = { logDir: "/state/jobs", wrap: ["bwrap", "--ro-bind", "/", "/", "--"], env: { PATH: "/bin", HOME: "/home/c" } };
-    const argv = jobArgv(env, "/vault", "train-abc", "(python train.py) > log", jobTimeoutS(undefined));
+    const argv = jobArgv(env, "/vault", "train-abc", "(python train.py) > log", jobTimeoutS(undefined), "/run/user/1000/vault-chat/jobs/train-abc.env");
+    expect(argv).toContain("--property=EnvironmentFile=/run/user/1000/vault-chat/jobs/train-abc.env");
+    expect(argv).toContain("--property=Type=exec");
+    expect(argv).not.toContain("-E");
     expect(argv).toContain("--property=RuntimeMaxSec=86400");
     expect(argv).toContain("--property=MemoryMax=75%");
     expect(argv).toContain("--property=CPUWeight=20");
