@@ -2,11 +2,10 @@
 // own `.vault-chat/local/` (src/activityCore.ts has the shape, caps and the
 // summary). Two routes (http.ts), scoped to the request's vault:
 //   POST /api/v1/activity          {entry, imageBase64?, imageMime?} → {ok}
-//   GET  /api/v1/activity/summary  ?project=&since=&exclude=       → {activity, project}
 //   POST /api/v1/activity/image    {text, deictic?, exclude?}       → {image: {path, mime, dataBase64, caption} | null}
 // Written by: the laptop (focus, Ctrl+K, Ctrl+L, captures), voice (voice.ts:
 // what was said, what its tools did), the engine (chat pointers). Read by: the
-// engine's per-turn prefix, the voice session prompt, Ctrl+K / Ctrl+L.
+// engine's per-turn prefix (and its Ctrl+K / Ctrl+L side threads), the voice session prompt.
 // VC_ACTIVITY=0 turns writing off. Failure-silent (logged): nothing waits on it.
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -148,16 +147,6 @@ export function activityPost(vault: string, b: any): { status: number; body: Rec
   }
   const e = appendActivity(vault, raw);
   return e ? { status: 200, body: { ok: true, image: e.image ?? null } } : { status: 400, body: { error: "not a valid entry" } };
-}
-
-/** GET /api/v1/activity/summary. */
-export async function activitySummaryRoute(vault: string, q: (k: string) => string): Promise<Record<string, unknown>> {
-  const project = q("project") || null;
-  const since = Number(q("since")) || undefined;
-  return {
-    activity: activitySummary(vault, { project, since, excludeConv: q("exclude") || null }),
-    project: await projectContextFor(vault, project),
-  };
 }
 
 export type ContextImage = { entry: ActivityEntry; abs: string; rel: string; mime: string; bytes: number; caption: string };

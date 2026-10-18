@@ -15,7 +15,7 @@ import {
   type InlineTurn,
 } from "./inlineEdit";
 import { loadVaultNorthStar } from "./meta";
-import { contextImageFor, recordActivity, sharedContextFor, sharedContextText } from "./activity";
+import { contextImageFor, flushActivity, recordActivity } from "./activity";
 import { editSummary } from "./activityCore";
 
 export type InlineEditMode = "edit" | "ask";
@@ -155,9 +155,9 @@ export function InlineEditPrompt({
 
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const abortRef = useRef<AbortController | null>(null);
-  // The shared context stream's block (project memory + recent activity),
-  // fetched once per popover on its first turn.
-  const sharedRef = useRef<Partial<Record<InlineEditMode, string>>>({});
+  // The popover's side thread on the box (its first request's id): a
+  // refinement or follow-up continues it there, so it carries only what is new.
+  const sideRef = useRef<string | null>(null);
   // Captures this popover already sent with a request (never twice).
   const imagesGivenRef = useRef<string[]>([]);
   // Refs + state for the bottom-edge resize-to-expand handle. The
@@ -331,15 +331,17 @@ export function InlineEditPrompt({
     setStreaming(true);
     const ac = new AbortController();
     abortRef.current = ac;
-    // Once per popover: the project's memory and what Carl did lately on
-    // every surface (the box's stream in box mode). Never blocks for long.
-    // Ctrl+L's first turn carries the open chat's last turns (chatPaneHistory),
-    // so its summary leaves that chat's exchange out — said once, not twice.
-    const activeConv = useStore.getState().activeConversationId;
-    if (sharedRef.current[mode] === undefined) {
-      sharedRef.current[mode] = sharedContextText(await sharedContextFor(vaultPath, undefined, undefined, mode === "ask" ? activeConv : null));
-    }
-    const sharedContext = sharedRef.current[mode] || undefined;
+    // The box forks the open conversation (its history, the agent's
+    // instructions, what Carl did elsewhere): the same context as a chat turn.
+    // A refinement continues this popover's side thread instead.
+    const convId = useStore.getState().activeConversationId;
+    // What Carl just did (a capture, a focus) reaches the box before it reads the stream.
+    await flushActivity().catch(() => undefined);
+    const sideId = nextPrior.length > 0 ? sideRef.current : null;
+    // The answer streams in where it shows now.
+    const onText = (t: string) => {
+      if (!ac.signal.aborted) setResult(t);
+    };
     // "This figure", "what I circled": the latest capture itself, when the
     // request is about it and carries no image of its own (one, capped, once
     // per popover). With a selection, "this" is the selection, not an image.
@@ -353,43 +355,45 @@ export function InlineEditPrompt({
     }
     try {
       if (mode === "edit") {
-        const out = await runInlineEdit({
-          prompt: currentPrompt,
-          selection: request.selection,
-          before: request.before,
-          after: request.after,
-          language: request.language,
-          priorTurns: nextPrior,
-          extraImages: turnImages,
-          northStar: northStarRef.current,
-          sharedContext,
-        });
-        if (!ac.signal.aborted) setResult(out);
+        const out = await runInlineEdit(
+          {
+            prompt: currentPrompt,
+            selection: request.selection,
+            before: request.before,
+            after: request.after,
+            language: request.language,
+            side: sideId,
+            convId,
+            extraImages: turnImages,
+            northStar: northStarRef.current,
+          },
+          { onText, signal: ac.signal },
+        );
+        if (ac.signal.aborted) return;
+        sideRef.current = out.side;
+        setResult(out.text);
       } else {
         const attachedFiles = await resolveAttachedFiles(currentPrompt);
-        // Only on the first popover turn, pull the last few chat-pane
-        // turns as context. Keeps subsequent popover turns focused on
-        // the in-popover thread without re-sending the chat history.
-        const isFirstTurn = nextPrior.length === 0;
-        const chatPaneHistory = isFirstTurn
-          ? recentChatPaneHistory(useStore.getState().messages, 6)
-          : undefined;
-        const acc = await runInlineAsk({
-          prompt: currentPrompt,
-          selection: request.selection,
-          before: request.before,
-          after: request.after,
-          language: request.language,
-          imageDataUrl: request.imageDataUrl,
-          pdfContext: request.pdfContext,
-          attachedFiles,
-          priorTurns: nextPrior,
-          extraImages: turnImages,
-          chatPaneHistory,
-          northStar: northStarRef.current,
-          sharedContext,
-        });
+        const out = await runInlineAsk(
+          {
+            prompt: currentPrompt,
+            selection: request.selection,
+            before: request.before,
+            after: request.after,
+            language: request.language,
+            imageDataUrl: request.imageDataUrl,
+            pdfContext: request.pdfContext,
+            attachedFiles,
+            side: sideId,
+            convId,
+            extraImages: turnImages,
+            northStar: northStarRef.current,
+          },
+          { onText, signal: ac.signal },
+        );
         if (ac.signal.aborted) return;
+        sideRef.current = out.side;
+        const acc = out.text;
         setResult(acc);
         if (acc.trim()) {
           recordActivity(vaultPath, {
@@ -415,6 +419,7 @@ export function InlineEditPrompt({
   const switchMode = (next: InlineEditMode) => {
     if (next === mode || streaming) return;
     setMode(next);
+    sideRef.current = null;
     setPriorTurns([]);
     setLastPrompt(null);
     setResult("");
@@ -1007,30 +1012,6 @@ export function InlineEditPrompt({
 // file context (before/after). The user's selection and any captured
 // image go in the visible user bubble instead, so the chat shows "what
 // you asked about" without piping the full file excerpt into the UI.
-/** Last N non-system / non-hidden messages from the chat pane, in
- *  chronological order, clipped to a reasonable per-turn length so a
- *  chatty session doesn't balloon the popover prompt. */
-function recentChatPaneHistory(
-  messages: Array<{
-    role: "user" | "assistant";
-    content: string;
-    system?: boolean;
-    hidden?: boolean;
-  }>,
-  n: number,
-): Array<{ role: "user" | "assistant"; content: string }> {
-  const visible = messages.filter((m) => !m.system && !m.hidden);
-  const tail = visible.slice(-n);
-  const MAX_PER_TURN = 1200;
-  return tail.map((m) => ({
-    role: m.role,
-    content:
-      m.content.length > MAX_PER_TURN
-        ? m.content.slice(0, MAX_PER_TURN) + "…"
-        : m.content,
-  }));
-}
-
 function buildHiddenFilePreamble(
   request: InlineEditRequest,
   currentFile: string | null,

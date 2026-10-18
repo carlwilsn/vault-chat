@@ -1,7 +1,7 @@
 // One agent, many modalities — the laptop's half: Ctrl+K / Ctrl+L get the
 // capture a request is about from the box (POST /api/v1/activity/image) and
-// send it as an image with what it is; Ctrl+L's summary leaves out the open
-// chat's exchange (its first turn carries that chat's transcript already).
+// send it as an image with what it is (the rest of their context is the box's:
+// the conversation they fork, and the activity stream).
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
@@ -12,7 +12,7 @@ const boxVault = makeTempVault("vc-modes-box-");
 const fake = installFakeTauri(vault);
 const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
 
-// A box: answers the image route and the summary, records what it was asked.
+// A box: answers the image route, records what it was asked.
 const boxReqs: { method: string; url: string; body: any }[] = [];
 let boxUrl = "";
 const box = http.createServer((req, res) => {
@@ -26,8 +26,7 @@ const box = http.createServer((req, res) => {
     if (url.startsWith("/api/v1/activity/image")) {
       const about = /figure/.test(String(body?.text ?? ""));
       res.end(JSON.stringify({ image: about ? { path: ".vault-chat/local/captures/box.png", mime: "image/png", dataBase64: PNG, caption: "[Attached: Carl's latest image capture from paper.pdf (page 2), 1 min ago — the image this request refers to.]" } : null }));
-    } else if (url.startsWith("/api/v1/activity/summary")) res.end(JSON.stringify({ activity: "<recent_activity>\n- box\n</recent_activity>", project: "" }));
-    else res.end(JSON.stringify({ ok: true }));
+    } else res.end(JSON.stringify({ ok: true }));
   });
 });
 fake.setHandler("vault_box_config", ({ vault: v }) => (v === boxVault ? { box: boxUrl, vault: "physics" } : null));
@@ -60,9 +59,6 @@ test("the image comes from the box's captures (one POST, this vault's)", async (
   assert.equal(post.url, "/api/v1/activity/image?vault=physics");
   assert.deepEqual(post.body, { text: "explain this figure", deictic: true, exclude: ["x"] });
   assert.equal(await activity.contextImageFor(boxVault, "list my notes"), null);
-  // The summary for Ctrl+L names the chat to leave out.
-  await activity.sharedContextFor(boxVault, "optics", 2500, "conv-1");
-  assert.ok(boxReqs.some((r) => r.url === "/api/v1/activity/summary?project=optics&exclude=conv-1&vault=physics"));
 });
 
 test("Ctrl+K and Ctrl+L carry the capture as an image, captioned with what it is", async () => {

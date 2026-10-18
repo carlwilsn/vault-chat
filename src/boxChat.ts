@@ -126,13 +126,42 @@ async function httpPost(link: Link, path: string, payload: Record<string, unknow
   return { ok: true, data: d };
 }
 
-/** A one-shot model call on this vault's box (src/complete.ts). Throws with the reason when there is no box or it does not answer. */
-export async function boxComplete(req: import("./complete").CompleteRequest): Promise<string> {
+/** A side request on this vault's box (src/complete.ts; server/engine/pi/side.ts): POST /api/v1/side starts it,
+ *  then long polls follow pi's text until it is done (`onText`: the text so far). Aborting stops it on the box.
+ *  Throws with the reason when there is no box or it does not answer. */
+export async function boxSide(
+  req: Record<string, unknown>,
+  o: { onText?: (text: string) => void; signal?: AbortSignal } = {},
+): Promise<{ text: string; side: string }> {
   const link = await boxLinkFor(useStore.getState().vaultPath);
   if (!link) throw new Error(`${NO_BOX}.`);
-  const r = await httpPost(link, "/api/v1/complete", req as unknown as Record<string, unknown>);
-  if (!r.ok) throw new Error(r.network ? `${BOX_UNREACHABLE}: ${unreachableWhy(r.error ?? "")}.` : `The box could not answer: ${r.error}`);
-  return String(r.data?.text ?? "");
+  const unreachable = (raw: string) => new Error(`${BOX_UNREACHABLE}: ${unreachableWhy(raw)}.`);
+  const r = await httpPost(link, "/api/v1/side", req);
+  if (!r.ok) throw r.network ? unreachable(r.error ?? "") : new Error(`The box could not answer: ${r.error}`);
+  const id = String(r.data?.id ?? "");
+  let v = Number(r.data?.v ?? 0);
+  const stop = () => void httpPost(link, `/api/v1/side/${encodeURIComponent(id)}/stop`, {});
+  o.signal?.addEventListener("abort", stop, { once: true });
+  try {
+    for (;;) {
+      let s: { text?: string; v?: number; done?: boolean; error?: string | null };
+      try {
+        s = await httpGet(link, `/api/v1/side/${encodeURIComponent(id)}?after=${v}&wait=20000`, 35_000);
+      } catch (e) {
+        const status = (e as { status?: number }).status;
+        throw status ? new Error(`The box could not answer: ${(e as Error).message}`) : unreachable(String((e as Error)?.message ?? e));
+      }
+      v = Number(s.v ?? v);
+      const text = String(s.text ?? "");
+      if (!o.signal?.aborted) o.onText?.(text);
+      if (s.done) {
+        if (s.error && !o.signal?.aborted) throw new Error(`The box could not answer: ${s.error}`);
+        return { text, side: id };
+      }
+    }
+  } finally {
+    o.signal?.removeEventListener("abort", stop);
+  }
 }
 
 /** A GET to the box (projects, notifications). Throws on failure. */

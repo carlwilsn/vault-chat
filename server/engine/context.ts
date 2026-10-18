@@ -16,6 +16,7 @@ export {
   verifyDone,
   formatVerdict,
   projectCost,
+  ctxConfig,
   setModelWindow,
   readProject,
   ensureProject,

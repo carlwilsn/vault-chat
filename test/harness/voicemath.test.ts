@@ -1,5 +1,5 @@
 // Voice transcripts with math: a local gate decides which lines are worth a
-// model call, the box's fast model (a one-shot call, src/complete.ts) turns
+// model call, the box's fast model (a one-shot in pi, src/complete.ts) turns
 // only the spoken math into $…$, and an answer that changed the words is
 // thrown away. The message keeps its spoken text; `display` is what the
 // bubble shows.
@@ -61,7 +61,7 @@ test("the guard: only math may change", () => {
   assert.equal(vm.acceptFormatted("x squared", "```\n$x^2$\n```"), "$x^2$");
 });
 
-test("the request: the box's fast model, the strict prompt, a short cap", async () => {
+test("the request: the box's fast model, the strict prompt", async () => {
   const n = requests.length;
   const out = await vm.formatVoiceMath("so alpha plus beta squared equals one");
   assert.equal(out, "so $\\alpha + \\beta^2 = 1$");
@@ -69,7 +69,6 @@ test("the request: the box's fast model, the strict prompt, a short cap", async 
   assert.equal(req.fast, true);
   assert.match(req.instructions, /Rewrite ONLY the spans that are mathematics/);
   assert.equal(req.text, "so alpha plus beta squared equals one");
-  assert.ok(req.maxOutputTokens > 0 && req.maxOutputTokens <= 200, `short cap (${req.maxOutputTokens})`);
 });
 
 test("cached per line; no call for a line without math; failures leave the line", async () => {

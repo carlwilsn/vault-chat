@@ -5,8 +5,8 @@
 // pass sets `display` on the message (what the bubble shows) and nothing else.
 //
 // Cheap on purpose: a local heuristic skips lines with no math cue (most
-// lines), the rest go to the box's fast model (src/complete.ts) with a strict
-// prompt and a short output cap, one call per distinct line (cached), never blocking — the
+// lines), the rest go to the box's fast model (src/complete.ts: pi, no session, no
+// tools) with a strict prompt, one call per distinct line (cached), never blocking — the
 // line shows as spoken until the formatted one lands. Any failure, or an answer
 // that changed the words, leaves the original.
 import { complete as boxComplete, type Complete } from "./complete";
@@ -92,7 +92,6 @@ export function formatVoiceMath(
       instructions: VOICE_MATH_SYSTEM,
       text: line,
       fast: true,
-      maxOutputTokens: Math.min(1200, Math.ceil(line.length / 2) + 80),
     });
     call.catch(() => {});
     let timer: ReturnType<typeof setTimeout> | undefined;

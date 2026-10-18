@@ -1,6 +1,11 @@
-// Ctrl+K (rewrite the selection) and Ctrl+L (ask about it): one-shot calls on
-// the box (src/complete.ts). This module builds what each request says.
-import { complete, type CompleteRequest } from "./complete";
+// Ctrl+K (rewrite the selection) and Ctrl+L (ask about it): requests to the
+// agent on the box, as a side thread of the open conversation (src/complete.ts
+// side(); server/engine/pi/side.ts: pi forks the conversation's session, with
+// pi's read-only tools). The conversation's history, the agent's instructions
+// and what Carl did elsewhere come from the box; this module builds what the
+// request itself says. A popover's later requests continue the same side
+// thread, so they carry only what is new.
+import { side, type SideOpts, type SideRequest, type SideResult } from "./complete";
 import { northStarPromptBlock } from "./meta";
 
 function prependNorthStar(base: string, northStar?: string): string {
@@ -8,17 +13,8 @@ function prependNorthStar(base: string, northStar?: string): string {
   return block ? `${block}\n\n${base}` : base;
 }
 
-/** The shared context (src/activity.ts: the project's memory and rules, what
- *  Carl did lately on every surface), after the surface's own rules. */
-export function withSharedContext(system: string, shared?: string): string {
-  const t = (shared ?? "").trim();
-  if (!t) return system;
-  return (
-    `${system}\n\n# Context from Carl's other surfaces\n` +
-    `Carl's rules in it are binding, like the rules above. The rest (project memory, what he did lately in the editor, Ctrl+K, Ctrl+L, voice and chats) is context: ` +
-    `use it to resolve "this", "that", "what I just did". Your output format is still set by the instructions above.\n\n${t}`
-  );
-}
+const EDIT_HEADER = `# Ctrl+K: an inline edit
+Carl pressed Ctrl+K in the file he has open. This is a side request beside his conversation: your final message goes into the file, not the chat.`;
 
 const SYSTEM = `You are an inline editor inside a text/code file. The user presses Ctrl+K and gives you an instruction plus context from the surrounding file.
 
@@ -31,7 +27,9 @@ Strict output rules:
 - Preserve leading/trailing whitespace contract of the original selection where relevant.
 - Keep the output self-contained — no cross-references to the chat, no "here is your code".
 
-If earlier turns of this popover are shown, the latest request refines the same edit. Re-emit the entire replacement, not a diff or a description of changes.`;
+You may read files (read, grep, find, ls) when the edit needs them; your final message is still only the replacement text.
+
+If Carl refines the edit in a later message, it refines the same edit. Re-emit the entire replacement, not a diff or a description of changes.`;
 
 export type InlineTurn = { prompt: string; result: string };
 
@@ -41,17 +39,18 @@ export type InlineEditParams = {
   before: string;
   after: string;
   language?: string;
-  priorTurns?: InlineTurn[];
+  /** The popover's side thread (its earlier requests): this request refines them. */
+  side?: string | null;
+  /** The open conversation: the side thread forks its pi session. */
+  convId?: string | null;
   /** Images captured via the in-popover marquee injection. Each
    *  carries optional sourcePath / sourceAnchor so we can caption the
    *  image with "from <file> (<page=N>)" when handing it to the model
    *  — prevents the agent from asking where a loose image came from. */
   extraImages?: CapturedExtra[];
-  /** Per-vault north-star brief, prepended to the system prompt so the
+  /** Per-vault north-star brief, prepended to the request's rules so the
    *  inline editor honors the vault's declared mode. */
   northStar?: string;
-  /** The shared context stream's block (src/activity.ts sharedContextText). */
-  sharedContext?: string;
 };
 
 export type CapturedExtra = {
@@ -62,14 +61,8 @@ export type CapturedExtra = {
   caption?: string;
 };
 
-/** The request's text and images: the first turn's context, the earlier turns
- *  of this popover, and the latest request; each image captioned in the text. */
-function oneMessage(firstText: string, prior: InlineTurn[], latest: string, images: CapturedExtra[]): { text: string; images?: string[] } {
-  let text = firstText;
-  if (prior.length > 0) {
-    const turns = prior.map((t, i) => `${i === 0 ? "" : `User: ${t.prompt}\n`}You answered:\n${t.result}`);
-    text += `\n\n[Earlier in this popover]\n${turns.join("\n\n")}\n\n[The latest request]\n${latest}`;
-  }
+/** The request's text and images, each image captioned in the text. */
+function oneMessage(text: string, images: CapturedExtra[]): { text: string; images?: string[] } {
   if (images.length === 0) return { text };
   const captions = images.map((img, i) => {
     const src = img.sourcePath ? img.sourcePath.split("/").pop() : null;
@@ -79,23 +72,32 @@ function oneMessage(firstText: string, prior: InlineTurn[], latest: string, imag
   return { text: `${text}\n\n${captions.join("\n")}`, images: images.map((x) => x.imageDataUrl) };
 }
 
+/** Where the request goes: a new side thread of the open conversation, or the popover's own. */
+function target(p: InlineEditParams): Pick<SideRequest, "convId" | "side"> {
+  return p.side ? { side: p.side } : { convId: p.convId ?? null };
+}
+
 /** Exactly what a Ctrl+K request sends. */
-export function buildInlineEditRequest(p: InlineEditParams): CompleteRequest {
-  const prior = p.priorTurns ?? [];
-  const first = buildContextBody(p, prior[0]?.prompt ?? p.prompt);
-  return { instructions: withSharedContext(prependNorthStar(SYSTEM, p.northStar), p.sharedContext), ...oneMessage(first, prior, p.prompt, p.extraImages ?? []) };
+export function buildInlineEditRequest(p: InlineEditParams): SideRequest {
+  const text = p.side ? p.prompt : `${prependNorthStar(`${EDIT_HEADER}\n\n${SYSTEM}`, p.northStar)}\n\n${buildContextBody(p, p.prompt)}`;
+  return { kind: "edit", ...target(p), ...oneMessage(text, p.extraImages ?? []) };
 }
 
-/** Ctrl+K: the replacement text. */
-export function runInlineEdit(p: InlineEditParams): Promise<string> {
-  return complete(buildInlineEditRequest(p));
+/** Ctrl+K: the replacement text (streamed to `onText`), and the side thread a refinement continues. */
+export function runInlineEdit(p: InlineEditParams, opts: SideOpts = {}): Promise<SideResult> {
+  return side(buildInlineEditRequest(p), opts);
 }
 
-function buildContextBody(
-  p: InlineEditParams,
-  instruction: string,
-  attached?: Array<{ rel: string; path: string; content?: string | null }>,
-): string {
+type Attached = Array<{ rel: string; path: string; content?: string | null }>;
+
+/** The files Carl @mentioned, with their contents. */
+function attachedBlock(attached?: Attached): string {
+  if (!attached || attached.length === 0) return "";
+  const blocks = attached.map((a) => (a.content == null ? `@${a.rel} — path: ${a.path} (binary or unreadable)` : `@${a.rel} — absolute path: ${a.path}\n${a.content}`));
+  return `ATTACHED FILES (the user referenced these with @mention; paths are authoritative, do not search for them):\n${blocks.join("\n\n")}`;
+}
+
+function buildContextBody(p: InlineEditParams, instruction: string, attached?: Attached): string {
   const MAX_CTX = 4000;
   const before =
     p.before.length > MAX_CTX ? "…" + p.before.slice(-MAX_CTX) : p.before;
@@ -112,23 +114,17 @@ function buildContextBody(
   }
   parts.push(`BEFORE (file content before selection/cursor):\n${before}`);
   parts.push(`AFTER (file content after selection/cursor):\n${after}`);
-  if (attached && attached.length > 0) {
-    const blocks = attached.map((a) => {
-      if (a.content == null) {
-        return `@${a.rel} — path: ${a.path} (binary or unreadable)`;
-      }
-      return `@${a.rel} — absolute path: ${a.path}\n${a.content}`;
-    });
-    parts.push(
-      `ATTACHED FILES (the user referenced these with @mention; paths are authoritative, do not search for them):\n${blocks.join("\n\n")}`,
-    );
-  }
+  const files = attachedBlock(attached);
+  if (files) parts.push(files);
   return parts.join("\n\n");
 }
 
+const ASK_HEADER = `# Ctrl+L: a question about the file
+Carl pressed Ctrl+L in the file he has open. This is a side request beside his conversation: your answer shows in a popover over the file.`;
+
 const ASK_SYSTEM = `You are an assistant inside a text/code file viewer. The user highlights a selection (or puts their cursor on a line) and asks a question about it.
 
-Answer from the context you are given (the file excerpt, the page text, any attached files and images). If it is not enough, say what is missing.
+Start from the context you are given (the file excerpt, the page text, any attached files and images). When it is not enough, look it up in the vault with your read-only tools (read, grep, find, ls); if it is still missing, say what is missing.
 
 When the user has captured a region from a PDF (a LOCATION line is present and an image is attached), the captured image is the primary subject of the question. Lead with what is visible in the image — describe the marqueed content first, then bring in surrounding-page text only as supporting context. The LOCATION line tells you exactly which page the user is on; trust it over any pattern-matching impulse from training data, and prefer the labeled CURRENT PAGE text over PREV/NEXT when they conflict. Do not invent theorem numbers, equation labels, or proof structure that isn't visible in the image or in the labeled page text.
 
@@ -155,50 +151,39 @@ export type InlineAskParams = InlineEditParams & {
   // model can see math, tables, and diagrams that text extraction
   // mangles.
   imageDataUrl?: string;
-  // PDF-only: when present, the first user turn uses a structured
+  // PDF-only: when present, the first request uses a structured
   // page-keyed context block (LOCATION + CURRENT/PREV/NEXT pages)
-  // instead of the flat before/after dump. before/after are still
-  // populated for the chat-transplant hidden preamble downstream, but
-  // the popover ask itself reads from this field exclusively.
+  // instead of the flat before/after dump.
   pdfContext?: PdfAskContext;
   // User-attached files via @mention. Content is pre-loaded by the
   // caller (null for binaries) so we don't re-read here.
   attachedFiles?: Array<{ rel: string; path: string; content: string | null }>;
   // Images captured mid-conversation via the popover's Capture button.
-  // Attached to the LATEST user turn only.
+  // Attached to the LATEST request only.
   extraImages?: CapturedExtra[];
-  // Recent chat-pane transcript. If provided, gets folded into the
-  // hidden context on the first turn so the popover agent knows
-  // what the user was just working on in the main chat.
-  chatPaneHistory?: Array<{ role: "user" | "assistant"; content: string }>;
 };
 
-/** Ctrl+L: the answer (markdown). */
-export function runInlineAsk(p: InlineAskParams): Promise<string> {
-  return complete(buildInlineAskRequest(p));
+/** Ctrl+L: the answer (markdown, streamed to `onText`), and the side thread a follow-up continues. */
+export function runInlineAsk(p: InlineAskParams, opts: SideOpts = {}): Promise<SideResult> {
+  return side(buildInlineAskRequest(p), opts);
 }
 
 /** Exactly what a Ctrl+L request sends. */
-export function buildInlineAskRequest(p: InlineAskParams): CompleteRequest {
-  const prior = p.priorTurns ?? [];
-  const firstPrompt = prior[0]?.prompt ?? p.prompt;
-  let firstContent = p.pdfContext
-    ? buildPdfContextBody(p, firstPrompt, p.pdfContext, p.attachedFiles)
-    : buildContextBody(p, firstPrompt, p.attachedFiles);
-  // The last few turns of the open chat, as reference for what Carl is working on.
-  const chat = p.chatPaneHistory ?? [];
-  if (chat.length > 0) {
-    const transcript = chat.map((m) => `${m.role === "user" ? "User" : "Assistant"}: ${m.content}`).join("\n\n---\n\n");
-    const header =
-      "[Recent chat-pane conversation — context for what the user is working on right now. Do not respond to it directly; it's reference material for the question that follows.]";
-    firstContent = `${header}\n\n${transcript}\n\n[End of chat-pane history]\n\n${firstContent}`;
+export function buildInlineAskRequest(p: InlineAskParams): SideRequest {
+  let text: string;
+  if (p.side) {
+    // A follow-up in the same side thread: only what is new.
+    text = [p.prompt, attachedBlock(p.attachedFiles)].filter(Boolean).join("\n\n");
+  } else {
+    const body = p.pdfContext ? buildPdfContextBody(p, p.prompt, p.pdfContext, p.attachedFiles) : buildContextBody(p, p.prompt, p.attachedFiles);
+    text = `${prependNorthStar(`${ASK_HEADER}\n\n${ASK_SYSTEM}`, p.northStar)}\n\n${body}`;
   }
-  // The marquee's region first, then images captured in the popover.
-  const images: CapturedExtra[] = [...(p.imageDataUrl ? [{ imageDataUrl: p.imageDataUrl }] : []), ...(p.extraImages ?? [])];
-  return { instructions: withSharedContext(prependNorthStar(ASK_SYSTEM, p.northStar), p.sharedContext), ...oneMessage(firstContent, prior, p.prompt, images) };
+  // The marquee's region first (with the first request), then images captured in the popover.
+  const images: CapturedExtra[] = [...(p.imageDataUrl && !p.side ? [{ imageDataUrl: p.imageDataUrl }] : []), ...(p.extraImages ?? [])];
+  return { kind: "ask", ...target(p), ...oneMessage(text, images) };
 }
 
-// Build the first-turn user content for a PDF marquee ask. Layout:
+// Build the first request's content for a PDF marquee ask. Layout:
 //
 //   LOCATION + CAPTURED TEXT first so the model frames its answer
 //   around "the user is on page N looking at this region." Image goes
@@ -206,12 +191,7 @@ export function buildInlineAskRequest(p: InlineAskParams): CompleteRequest {
 //   model order is: location label → image → labeled page texts →
 //   question. The QUESTION lands last because recency pulls a stronger
 //   signal from later content in the prompt.
-function buildPdfContextBody(
-  p: InlineAskParams,
-  instruction: string,
-  ctx: PdfAskContext,
-  attached?: Array<{ rel: string; path: string; content?: string | null }>,
-): string {
+function buildPdfContextBody(p: InlineAskParams, instruction: string, ctx: PdfAskContext, attached?: Attached): string {
   const parts: string[] = [];
   parts.push(
     `LOCATION: page ${ctx.pageNum} of ${ctx.totalPages} in ${ctx.fileName}`,
@@ -232,17 +212,8 @@ function buildPdfContextBody(
   if (ctx.nextPageText) {
     parts.push(`NEXT PAGE (page ${ctx.pageNum + 1}):\n${ctx.nextPageText}`);
   }
-  if (attached && attached.length > 0) {
-    const blocks = attached.map((a) => {
-      if (a.content == null) {
-        return `@${a.rel} — path: ${a.path} (binary or unreadable)`;
-      }
-      return `@${a.rel} — absolute path: ${a.path}\n${a.content}`;
-    });
-    parts.push(
-      `ATTACHED FILES (the user referenced these with @mention; paths are authoritative, do not search for them):\n${blocks.join("\n\n")}`,
-    );
-  }
+  const files = attachedBlock(attached);
+  if (files) parts.push(files);
   parts.push(`QUESTION:\n${instruction}`);
   return parts.join("\n\n");
 }

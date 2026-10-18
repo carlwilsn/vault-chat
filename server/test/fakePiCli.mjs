@@ -12,6 +12,13 @@
 // The real pi is exercised on the box (server/test/piEngine.test.ts, and the
 // real-pi run against a throwaway instance).
 //
+// Sessions and tools as pi's CLI takes them (cli.md): --session, --fork (a new
+// session holding the other's history, its header naming it as parentSession),
+// --no-session (nothing written), --tools (an allowlist: any other tool call is
+// refused, as pi would not have declared it) and --no-tools; --system-prompt
+// (a file) goes to the model as the system message. Of pi's built-ins only
+// `read` runs (a file under the working folder); the others answer a canned line.
+//
 // Knobs (in the user's message): "[slow]" streams the reply in 30 deltas, 250 ms apart.
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
@@ -27,10 +34,36 @@ if (argv.includes("--list-models")) process.exit(0);
 const sessionDir = arg("--session-dir") ?? ".";
 let model = (arg("--model") ?? "openrouter/test/fake").replace(/^openrouter\//, "");
 let file = arg("--session");
+const forkOf = arg("--fork");
+const ephemeral = argv.includes("--no-session");
+const allowed = argv.includes("--no-tools") ? new Set() : arg("--tools") ? new Set(arg("--tools").split(",")) : null;
+let system = null;
+try {
+  if (arg("--system-prompt")) system = readFileSync(arg("--system-prompt"), "utf8");
+} catch {}
 let sessionId;
 const history = [];
 let leaf = null;
-if (file && existsSync(file)) {
+if (forkOf) {
+  // pi's --fork: a new session with the other's entries (the history), its header naming the parent.
+  sessionId = randomUUID();
+  mkdirSync(sessionDir, { recursive: true });
+  file = join(sessionDir, `${new Date().toISOString().replace(/[:.]/g, "-")}_${sessionId}.jsonl`);
+  const lines = [JSON.stringify({ type: "session", version: 3, id: sessionId, timestamp: new Date().toISOString(), cwd: process.cwd(), parentSession: forkOf })];
+  for (const l of readFileSync(forkOf, "utf8").split("\n")) {
+    try {
+      const v = JSON.parse(l);
+      if (v.type === "session") continue;
+      if (v.type === "message") history.push(v.message);
+      if (v.id) leaf = v.id;
+      lines.push(l);
+    } catch {}
+  }
+  writeFileSync(file, lines.join("\n") + "\n");
+} else if (ephemeral) {
+  sessionId = randomUUID();
+  file = undefined;
+} else if (file && existsSync(file)) {
   sessionId = /_([^_]+)\.jsonl$/.exec(file)?.[1] ?? randomUUID();
   for (const l of readFileSync(file, "utf8").split("\n")) {
     try {
@@ -48,7 +81,7 @@ if (file && existsSync(file)) {
 const append = (e) => {
   const entry = { ...e, id: randomUUID().slice(0, 8), parentId: leaf, timestamp: new Date().toISOString() };
   leaf = entry.id;
-  appendFileSync(file, JSON.stringify(entry) + "\n");
+  if (file) appendFileSync(file, JSON.stringify(entry) + "\n");
 };
 const record = (message) => {
   history.push(message);
@@ -88,13 +121,21 @@ function hostCall(tool, args) {
   });
 }
 
+function readTool(a) {
+  try {
+    return { text: readFileSync(join(process.cwd(), String(a?.path ?? "")), "utf8"), isError: false };
+  } catch (e) {
+    return { text: String(e?.message ?? e), isError: true };
+  }
+}
+
 let running = false;
 let aborted = false;
 let steering = [];
 let followUp = [];
 
 async function callModel() {
-  const messages = history.map((m) => ({ role: m.role === "toolResult" ? "tool" : m.role, content: typeof m.content === "string" ? m.content : (m.content ?? []).filter((c) => c.type === "text").map((c) => c.text).join("\n"), ...(m.toolCallId ? { tool_call_id: m.toolCallId } : {}) }));
+  const messages = (system ? [{ role: "system", content: system }] : []).concat(history).map((m) => ({ role: m.role === "toolResult" ? "tool" : m.role, content: typeof m.content === "string" ? m.content : (m.content ?? []).filter((c) => c.type === "text").map((c) => c.text).join("\n"), ...(m.toolCallId ? { tool_call_id: m.toolCallId } : {}) }));
   const r = await fetch(`${baseUrl}/chat/completions`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${key}` }, body: JSON.stringify({ model, messages, stream: true }) });
   const body = await r.text();
   if (!r.ok) throw new Error(`${r.status} ${body.slice(0, 200)}`);
@@ -205,9 +246,16 @@ async function run(first) {
       record(am);
       for (const tc of content.filter((c) => c.type === "toolCall")) {
         out({ type: "tool_execution_start", toolCallId: tc.id, toolName: tc.name, args: tc.arguments });
-        // vault-chat's own tools are host calls (its extension's editor dialog, ext/vc.mjs); pi's built-ins are not run here.
+        // vault-chat's own tools are host calls (its extension's editor dialog, ext/vc.mjs); of pi's built-ins only read runs.
         const host = !BUILTINS.has(tc.name);
-        const r = host ? await hostCall(tc.name, tc.arguments) : { text: `(fake pi: ${tc.name} not run)`, isError: false };
+        const r =
+          allowed && !allowed.has(tc.name)
+            ? { text: `Tool ${tc.name} not found`, isError: true }
+            : host
+              ? await hostCall(tc.name, tc.arguments)
+              : tc.name === "read"
+                ? readTool(tc.arguments)
+                : { text: `(fake pi: ${tc.name} not run)`, isError: false };
         const result = { content: [{ type: "text", text: r.text }], details: {} };
         out({ type: "tool_execution_end", toolCallId: tc.id, toolName: tc.name, result, isError: !!r.isError });
         record({ role: "toolResult", toolCallId: tc.id, toolName: tc.name, content: result.content, isError: !!r.isError, timestamp: stamp() });
@@ -308,6 +356,11 @@ function handle(line) {
     case "abort":
       aborted = true;
       return respond(c, true);
+    case "get_last_assistant_text": {
+      const last = [...history].reverse().find((m) => m.role === "assistant");
+      const text = last ? (last.content ?? []).filter((b) => b.type === "text").map((b) => b.text).join("") : null;
+      return respond(c, true, { text: text || null });
+    }
     default:
       return respond(c, true);
   }

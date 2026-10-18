@@ -377,8 +377,8 @@ describe("every surface sees the same stream (engine on a fake pi)", () => {
     await voice.voiceTranscript(deps, { role: "assistant", text: "Done — the title is now Transformers.", convId: t.body.convId });
     // A read is not logged.
     await voice.voiceTool(deps, { name: "Read", args: { path: "notes/a.md" } });
-    // What Ctrl+L gets (GET /api/v1/activity/summary).
-    const sum = await act.activitySummaryRoute(vault, () => "");
+    // What a Ctrl+L side thread gets (the activity block the box puts before it).
+    const sum = { activity: act.activitySummary(vault) };
     expect(sum.activity).toContain('Voice: Carl said: "make the title shorter"');
     expect(sum.activity).toContain('Voice · notes/a.md: Voice edited notes/a.md — "# A very long and winding title about transformers" → "# Transformers"');
     expect(sum.activity).toContain('Voice replied: "Done — the title is now Transformers."');

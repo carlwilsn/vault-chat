@@ -12,6 +12,7 @@ import type { CallRecord } from "../ledger";
 import type { ThreadTokenUsage } from "../context";
 import { PiProc } from "./proc";
 import { Subagents, type SubagentOptions } from "./subagents";
+import { SideRuns } from "./side";
 import { modelWindow, type PiCatalogRow, type PiPaths } from "./config";
 import type { PiInstall } from "./install";
 
@@ -138,9 +139,22 @@ export class PiBackend extends EventEmitter {
     this.setMaxListeners(50);
     this.version = o.install.version;
     this.subs = new Subagents(this, o.subagents, (m) => this.log(m));
+    this.side = new SideRuns(this, (m) => this.log(m));
   }
 
   private subs: Subagents;
+  /** Side threads (Ctrl+K / Ctrl+L, one-shots): side.ts. */
+  readonly side: SideRuns;
+  /** A thread's session file, instructions and working folder: what a side thread forks. */
+  threadSource(threadId: string): { file: string; instr: string; cwd: string } | null {
+    try {
+      const meta = JSON.parse(readFileSync(join(this.o.paths.instrDir, `${threadId}.json`), "utf8"));
+      const file = this.sessionFileOf(threadId);
+      return file && typeof meta.instr === "string" ? { file, instr: meta.instr, cwd: String(meta.cwd ?? "") } : null;
+    } catch {
+      return null;
+    }
+  }
   /** The engine's handlers (a child's Notify/PdfRead/WebSearch go to its parent's). */
   get handlers(): { toolCall: ToolCallHandler; userInput: UserInputHandler } | null {
     return this.h;
@@ -180,7 +194,7 @@ export class PiBackend extends EventEmitter {
 
   health(): Record<string, unknown> {
     const procs = [...this.threads.values()].map((t) => ({ threadId: t.id, pid: t.proc.pid, model: t.model, busy: !!t.turnId, sinceMs: Date.now() - t.proc.startedAt }));
-    return { state: "up", version: this.version, sandbox: !!this.o.sandbox.outer, pid: this.lastPid, procs, subagents: this.subs.health(), ...this.stats };
+    return { state: "up", version: this.version, sandbox: !!this.o.sandbox.outer, pid: this.lastPid, procs, subagents: this.subs.health(), side: this.side.health(), ...this.stats };
   }
 
   setHandlers(h: { toolCall: ToolCallHandler; userInput: UserInputHandler }): void {
@@ -271,22 +285,25 @@ export class PiBackend extends EventEmitter {
     });
   }
 
-  /** Spawn pi on a session (new when `file` is null) and wait for it to answer. */
-  /** Spawn pi on a session (new when `file` is null) and wait for it to answer. Children (subagents) pass
-   * their own session dir and built-in tool list; they don't count against maxProcs (their own cap). */
-  async spawn(o: { cwd: string; model: string; file: string | null; instr: string; tools: string; subagents?: boolean; sessionDir?: string; builtins?: string[] }): Promise<{ proc: PiProc; id: string; file: string }> {
+  /** Spawn pi on a session (new when `file` is null) and wait for it to answer. Children (subagents) and
+   * side threads (side.ts) pass their own session dir and tool list; they don't count against maxProcs.
+   * `fork`: pi's --fork (a new session holding that session's history, its header naming it as parent);
+   * `ephemeral`: pi's --no-session; `system`: pi's --system-prompt (replaces pi's own) instead of
+   * --append-system-prompt `instr`; `builtins: []`: pi's --no-tools. */
+  async spawn(o: { cwd: string; model: string; file: string | null; instr: string; tools: string; subagents?: boolean; sessionDir?: string; builtins?: string[]; fork?: string; ephemeral?: boolean; system?: string; thinking?: string }): Promise<{ proc: PiProc; id: string; file: string }> {
     if (!o.sessionDir) await this.makeRoom();
+    const session = o.fork ? ["--fork", o.fork] : o.ephemeral ? ["--no-session"] : o.file ? ["--session", o.file] : [];
     const args = [
       this.o.install.cli,
       "--mode", "rpc",
       "--session-dir", o.sessionDir ?? this.o.paths.sessionsDir,
       "--model", `openrouter/${o.model}`,
-      "--thinking", this.o.thinking,
+      "--thinking", o.thinking ?? this.o.thinking,
       "-ne", "--no-mcp", "-ns", "-np", "--no-themes", "-na", "--offline",
       "-e", this.o.paths.ext,
-      "--append-system-prompt", o.instr,
-      ...(o.builtins ? ["--tools", o.builtins.join(",")] : []),
-      ...(o.file ? ["--session", o.file] : []),
+      ...(o.system ? ["--system-prompt", o.system] : ["--append-system-prompt", o.instr]),
+      ...(o.builtins ? (o.builtins.length ? ["--tools", o.builtins.join(",")] : ["--no-tools"]) : []),
+      ...session,
     ];
     const outer = outerWith(this.o.sandbox);
     const argv = outer ? [...outer, this.o.install.node, ...args] : [this.o.install.node, ...args];
@@ -303,7 +320,7 @@ export class PiBackend extends EventEmitter {
     }
     const id = String(st?.data?.sessionId ?? "");
     const file = String(st?.data?.sessionFile ?? "");
-    if (!id || !file) {
+    if (!id || (!file && !o.ephemeral)) {
       proc.killGroup("SIGKILL");
       throw new Error("pi reported no session");
     }

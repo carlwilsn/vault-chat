@@ -397,10 +397,10 @@ async function serveAnthropic(p: Parsed, step: Step, signal?: AbortSignal): Prom
   }, signal);
 }
 
-// ---- the box's one-shot calls (POST /api/v1/complete, src/complete.ts) ---------
+// ---- the box's side threads (POST /api/v1/side, src/complete.ts) ---------------
 
-/** Answer a one-shot call from the scenario's scripts: the instructions are the
- *  system prompt, the text the user message. An error step throws (the box's 502). */
+/** Answer a side request from the scenario's scripts: the instructions are its
+ *  rules, the text the user message. An error step throws (the box's 502). */
 export async function answerComplete(req: { instructions?: string; text?: string; images?: string[] }): Promise<string> {
   const text = String(req.text ?? "");
   const p: Parsed = {
@@ -415,7 +415,7 @@ export async function answerComplete(req: { instructions?: string; text?: string
     wantsJson: false,
   };
   const { id, step } = pick(p);
-  llmLog.push({ at: Date.now(), url: "box:/api/v1/complete", model: "box", script: id, step: 0, stream: false });
+  llmLog.push({ at: Date.now(), url: "box:/api/v1/side", model: "box", script: id, step: 0, stream: false });
   await holdIfAsked(step);
   await sleep(Math.min(1200, 200 + (step.text?.length ?? 0) * 2));
   if (step.error) throw new Error(`OpenRouter ${step.error.status}: ${step.error.message}`);

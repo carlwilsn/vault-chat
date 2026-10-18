@@ -8,6 +8,10 @@ import { gitDirty } from "./memgit";
 import { MemoryBox } from "../../../src/convlog/memoryBox";
 import { answerComplete } from "../llm";
 
+/** The box's side threads (server/engine/pi/side.ts): Ctrl+K / Ctrl+L and the one-shots, answered by the scenario's scripts. */
+type PreviewSide = { sys: string; text: string; v: number; done: boolean; error: string | null; wait: Promise<void> };
+const sides = new Map<string, PreviewSide>();
+
 export type BoxReport = {
   configured: boolean;
   ok: boolean;
@@ -368,6 +372,13 @@ export const hostCommands: Record<string, (a: Record<string, any>) => unknown> =
     }
     const miss = unknownVault(u);
     if (miss) return miss;
+    const sideM = /\/api\/v1\/side\/([^/]+)$/.exec(u.pathname);
+    if (sideM) {
+      const st = sides.get(decodeURIComponent(sideM[1]!));
+      if (!st) return { status: 404, body: JSON.stringify({ error: "no such side thread" }) };
+      await st.wait;
+      return { status: 200, body: JSON.stringify({ id: sideM[1], text: st.text, v: st.v, done: st.done, error: st.error }) };
+    }
     if (u.pathname.endsWith("/api/v1/vault/file")) {
       // server/http.ts vaultFileRoute: a file as the box has it now (its agent's
       // edits not merged here yet included), base64; inside the vault only.
@@ -432,14 +443,27 @@ export const hostCommands: Record<string, (a: Record<string, any>) => unknown> =
     boxPosts.push({ path, body: b, vault: u.searchParams.get("vault") });
     if (path === "/api/v1/voice/tool") return { status: 200, body: JSON.stringify({ result: boxVoiceTool(String(b.name ?? ""), b.args ?? {}) }) };
     if (path === "/api/v1/voice/transcript") return { status: 200, body: JSON.stringify(boxVoiceLine(b)) };
-    // A one-shot call (Ctrl+K / Ctrl+L, a note's title): the scenario's scripted model answers.
-    if (path === "/api/v1/complete") {
-      try {
-        return { status: 200, body: JSON.stringify({ text: await answerComplete(b) }) };
-      } catch (e) {
-        return { status: 502, body: JSON.stringify({ error: String((e as Error)?.message ?? e) }) };
-      }
+    // A side thread (Ctrl+K / Ctrl+L, a note's title): the scenario's scripted model answers; GET /api/v1/side/:id reads it.
+    // The scripts match the first request's rules (a one-shot's system prompt, Ctrl+K / Ctrl+L's own text).
+    if (path === "/api/v1/side") {
+      const prev = typeof b.side === "string" ? sides.get(b.side) : undefined;
+      if (b.side && !prev) return { status: 502, body: JSON.stringify({ error: "that side thread is gone" }) };
+      const id = prev ? String(b.side) : `side-${sides.size + 1}`;
+      const sys = prev?.sys ?? String(b.system ?? b.text ?? "");
+      const st: PreviewSide = { sys, text: "", v: (prev?.v ?? 0) + 1, done: false, error: null, wait: Promise.resolve() };
+      st.wait = answerComplete({ instructions: sys, text: String(b.text ?? ""), images: b.images })
+        .then(
+          (t) => void (st.text = t),
+          (e) => void (st.error = String((e as Error)?.message ?? e)),
+        )
+        .finally(() => {
+          st.done = true;
+          st.v++;
+        });
+      sides.set(id, st);
+      return { status: 200, body: JSON.stringify({ ok: true, id, v: st.v }) };
     }
+    if (/^\/api\/v1\/side\/[^/]+\/stop$/.test(path)) return { status: 200, body: JSON.stringify({ ok: true }) };
     if (boxDown) {
       await sleep(1500);
       throw `error sending request for url (${u.href}): operation timed out`;

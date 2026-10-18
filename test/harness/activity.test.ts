@@ -1,8 +1,10 @@
 // The shared context stream, laptop side (src/activity.ts): entries are posted
-// to the box's log for this vault and the summary fetched with ?vault=; with no
-// box there is no stream; the switch turns writing off. Ctrl+K and Ctrl+L send
-// the block (summary + project memory) in their request to the box's
-// /api/v1/complete — asserted on the body the fake box receives.
+// to the box's log for this vault; with no box there is no stream; the switch
+// turns writing off. Ctrl+K and Ctrl+L are side threads on the box
+// (POST /api/v1/side; the box forks the open conversation and adds the stream
+// itself): what they send, the answer streaming in through GET
+// /api/v1/side/:id (what the popover shows as it comes), a refinement in the
+// same side thread, Esc stopping it on the box, and the box-unreachable words.
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -14,19 +16,34 @@ const vault = makeTempVault("vc-activity-");
 const boxVault = makeTempVault("vc-activity-box-");
 const fake = installFakeTauri(vault);
 
-// A box: records what it is sent, answers the summary and one-shot calls.
+// A box: records what it is sent; a side thread answers in versions (pi's text
+// so far), one per poll, the last one done. `stream` is what the next one says.
 const boxReqs: { method: string; url: string; body: any }[] = [];
 let boxUrl = "";
+let stream = ["# Sh", "# Short", "# Short title"];
+const sides = new Map<string, { texts: string[]; stopped: boolean }>();
 const box = http.createServer((req, res) => {
   let raw = "";
   req.on("data", (c) => (raw += c));
   req.on("end", () => {
-    boxReqs.push({ method: req.method ?? "", url: req.url ?? "", body: raw ? JSON.parse(raw) : null });
+    const url = req.url ?? "";
+    boxReqs.push({ method: req.method ?? "", url, body: raw ? JSON.parse(raw) : null });
     res.writeHead(200, { "content-type": "application/json" });
-    if ((req.url ?? "").startsWith("/api/v1/activity/summary")) {
-      res.end(JSON.stringify({ activity: "<recent_activity>\n- [1 min ago] Voice: Carl said: \"from the box\"\n</recent_activity>", project: "<project_context>\nbox project memory\n</project_context>" }));
-    } else if ((req.url ?? "").startsWith("/api/v1/complete")) {
-      res.end(JSON.stringify({ text: "# Short title" }));
+    const poll = /^\/api\/v1\/side\/([^/?]+)\?after=(\d+)/.exec(url);
+    if (req.method === "POST" && url.startsWith("/api/v1/side?")) {
+      const body = JSON.parse(raw);
+      const id = body.side ?? `side-${sides.size + 1}`;
+      sides.set(id, { texts: [...stream], stopped: false });
+      res.end(JSON.stringify({ ok: true, id, v: 0 }));
+    } else if (req.method === "POST" && /^\/api\/v1\/side\/[^/]+\/stop/.test(url)) {
+      const sd = sides.get(decodeURIComponent(url.split("/")[4]!));
+      if (sd) sd.stopped = true;
+      res.end(JSON.stringify({ ok: true }));
+    } else if (poll) {
+      const sd = sides.get(decodeURIComponent(poll[1]!))!;
+      const v = Number(poll[2]) + 1;
+      const done = sd.stopped || v >= sd.texts.length;
+      res.end(JSON.stringify({ id: poll[1], v, text: sd.texts[Math.min(v, sd.texts.length) - 1], done, error: sd.stopped ? "stopped" : null }));
     } else res.end(JSON.stringify({ ok: true }));
   });
 });
@@ -44,6 +61,7 @@ const { useStore } = await import("../../src/store.ts");
 const activity = await import("../../src/activity.ts");
 const core = await import("../../src/activityCore.ts");
 const { runInlineEdit, runInlineAsk, buildInlineAskRequest } = await import("../../src/inlineEdit.ts");
+const { complete } = await import("../../src/complete.ts");
 const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
 
 before(async () => {
@@ -61,7 +79,6 @@ test("no box: nothing is written on the laptop and there is no shared context", 
   activity.recordActivity(vault, { kind: "focus", text: "opened the file", path: "notes/a.md" });
   await activity.flushActivity();
   assert.ok(!fs.existsSync(logPath(vault)), "no local log");
-  assert.deepEqual(await activity.sharedContextFor(vault, "coconut"), { activity: "", project: "" });
   assert.equal(await activity.contextImageFor(vault, "what is this figure", { deictic: true }), null);
   assert.equal(boxReqs.length, 0);
   // The current project comes from the conversation Carl is in.
@@ -82,7 +99,7 @@ test("the switch: vault_chat_activity = 0 posts nothing", async () => {
   }
 });
 
-test("entries are posted to the box's vault (the image as data for it to store), the summary fetched with ?vault=", async () => {
+test("entries are posted to the box's vault (the image as data for it to store)", async () => {
   boxReqs.length = 0;
   activity.recordActivity(boxVault, { kind: "ask", modality: "ctrl-l", text: 'asked "what is RoPE"', detail: "answer: rotary embeddings", path: "paper.pdf", where: "page 3" });
   activity.recordActivity(boxVault, { kind: "capture", text: "captured a region", imageDataUrl: `data:image/png;base64,${PNG}` });
@@ -94,49 +111,91 @@ test("entries are posted to the box's vault (the image as data for it to store),
   assert.equal(posts[1]!.body.imageMime, "image/png");
   assert.equal(posts[1]!.body.entry.imageDataUrl, undefined);
   assert.ok(!fs.existsSync(logPath(boxVault)), "nothing is written on the laptop");
-  const c = await activity.sharedContextFor(boxVault, "optics");
-  const get = boxReqs.find((r) => r.method === "GET")!;
-  assert.equal(get.url, "/api/v1/activity/summary?project=optics&vault=physics");
-  assert.ok(c.activity.includes("from the box"));
-  assert.ok(c.project.includes("box project memory"));
 });
 
-test("Ctrl+K: the box's one-shot call carries the shared context after the editor's rules", async () => {
+test("Ctrl+K: a side thread of the open conversation on the box; the replacement streams in", async () => {
   useStore.setState({ vaultPath: boxVault } as any);
-  const shared = activity.sharedContextText(await activity.sharedContextFor(boxVault, "optics"));
   boxReqs.length = 0;
-  const out = await runInlineEdit({ prompt: "undo the edit I just made", selection: "# Short title", before: "", after: "\nbody\n", sharedContext: shared });
-  assert.equal(out, "# Short title");
-  const req = boxReqs.find((r) => r.url.startsWith("/api/v1/complete"))!;
-  assert.equal(req.url, "/api/v1/complete?vault=physics");
-  assert.ok(req.body.instructions.startsWith("You are an inline editor"), "the editor's own rules first");
-  assert.ok(req.body.instructions.includes("# Context from Carl's other surfaces"));
-  assert.ok(req.body.instructions.includes("box project memory"));
-  // The request's text is the edit, not the context.
+  stream = ["# Sh", "# Short", "# Short title"];
+  const seen: string[] = [];
+  const out = await runInlineEdit({ prompt: "undo the edit I just made", selection: "# A very long title", before: "", after: "\nbody\n", convId: "conv-7" }, { onText: (t) => seen.push(t) });
+  assert.deepEqual(out, { text: "# Short title", side: "side-1" });
+  // What the popover shows as it comes: each version of pi's text, in order.
+  assert.deepEqual(seen, ["# Sh", "# Short", "# Short title"]);
+  const req = boxReqs.find((r) => r.method === "POST" && r.url.startsWith("/api/v1/side"))!;
+  assert.equal(req.url, "/api/v1/side?vault=physics");
+  assert.equal(req.body.kind, "edit");
+  assert.equal(req.body.convId, "conv-7");
+  assert.ok(req.body.text.startsWith("# Ctrl+K: an inline edit"), "the edit's own rules first");
+  assert.ok(req.body.text.includes("You are an inline editor"));
   assert.ok(req.body.text.includes("INSTRUCTION:\nundo the edit I just made"));
+  // The context (the conversation, the activity stream) is the box's: none of it is sent from here.
+  assert.ok(!req.body.text.includes("Context from Carl's other surfaces"));
   assert.ok(!req.body.text.includes("recent_activity"));
+  const polls = boxReqs.filter((r) => r.method === "GET" && r.url.startsWith("/api/v1/side/side-1"));
+  assert.deepEqual(polls.map((r) => /after=(\d+)/.exec(r.url)![1]), ["0", "1", "2"]);
 });
 
-test("Ctrl+L: the ask carries it too, and the marquee's image; without it the prompt is as before", async () => {
-  const shared = activity.sharedContextText(await activity.sharedContextFor(boxVault, "optics"));
+test("Ctrl+L: the marquee's image goes with the first request; a follow-up continues the same side thread", async () => {
   boxReqs.length = 0;
-  const answer = await runInlineAsk({ prompt: "what did I just circle?", selection: "", before: "", after: "", sharedContext: shared, imageDataUrl: `data:image/png;base64,${PNG}` });
-  assert.equal(answer, "# Short title");
-  const req = boxReqs.find((r) => r.url.startsWith("/api/v1/complete"))!;
-  assert.ok(req.body.instructions.includes("<recent_activity>"));
-  assert.ok(req.body.instructions.includes("<project_context>"));
+  stream = ["It is", "It is a circle."];
+  const answer = await runInlineAsk({ prompt: "what did I just circle?", selection: "", before: "", after: "", convId: "conv-7", imageDataUrl: `data:image/png;base64,${PNG}` });
+  assert.equal(answer.text, "It is a circle.");
+  const req = boxReqs.find((r) => r.method === "POST" && r.url.startsWith("/api/v1/side"))!;
+  assert.equal(req.body.kind, "ask");
+  assert.ok(req.body.text.startsWith("# Ctrl+L: a question about the file"));
+  assert.ok(req.body.text.includes("look it up in the vault with your read-only tools"));
   assert.deepEqual(req.body.images, [`data:image/png;base64,${PNG}`]);
-  const plain = buildInlineAskRequest({ prompt: "q", selection: "", before: "", after: "" });
-  assert.ok(!plain.instructions.includes("Context from Carl's other surfaces"));
-  // Earlier turns of the popover ride in the one message.
-  const refine = buildInlineAskRequest({ prompt: "shorter", selection: "", before: "", after: "", priorTurns: [{ prompt: "explain", result: "A long answer." }] });
-  assert.ok(refine.text.includes("[Earlier in this popover]\nYou answered:\nA long answer."));
-  assert.ok(refine.text.endsWith("[The latest request]\nshorter"));
+  // The popover's next request: only what is new, in the same side thread.
+  const refine = buildInlineAskRequest({ prompt: "shorter", selection: "x", before: "", after: "", side: answer.side, convId: "conv-7", imageDataUrl: `data:image/png;base64,${PNG}` });
+  assert.deepEqual(refine, { kind: "ask", side: answer.side, text: "shorter" });
 });
 
-test("no box: Ctrl+K says so, in the chat's words", async () => {
+test("Esc: the side thread is stopped on the box", async () => {
+  boxReqs.length = 0;
+  stream = ["a", "ab", "abc", "abcd", "abcde"];
+  const ac = new AbortController();
+  const seen: string[] = [];
+  await runInlineAsk({ prompt: "explain", selection: "", before: "", after: "" }, { signal: ac.signal, onText: (t) => (seen.push(t), seen.length === 2 && ac.abort()) });
+  const stopped = () => boxReqs.some((r) => r.method === "POST" && /^\/api\/v1\/side\/side-\d+\/stop/.test(r.url));
+  for (let i = 0; i < 50 && !stopped(); i++) await new Promise((r) => setTimeout(r, 20));
+  assert.ok(stopped(), "stop sent");
+  assert.deepEqual(seen, ["a", "ab"], "nothing shown after Esc");
+});
+
+test("a one-shot (a note's title, spoken math) is a side request too, and returns its text", async () => {
+  boxReqs.length = 0;
+  stream = ["KV", "KV cache basics"];
+  assert.equal(await complete({ instructions: "You write the headline for a saved note.", text: "a note", fast: true }), "KV cache basics");
+  const req = boxReqs.find((r) => r.method === "POST" && r.url.startsWith("/api/v1/side"))!;
+  assert.deepEqual(req.body, { kind: "once", system: "You write the headline for a saved note.", text: "a note", fast: true });
+});
+
+test("no box, or the box unreachable: Ctrl+K and Ctrl+L say so, in the chat's words", async () => {
   useStore.setState({ vaultPath: vault } as any);
   await assert.rejects(runInlineEdit({ prompt: "x", selection: "", before: "", after: "" }), /Connect your box to chat/);
+  // A box that does not answer: a closed port.
+  const closed = http.createServer();
+  await new Promise<void>((r) => closed.listen(0, "127.0.0.1", () => r()));
+  const deadUrl = `http://127.0.0.1:${(closed.address() as any).port}`;
+  await new Promise<void>((r) => closed.close(() => r()));
+  const deadVault = makeTempVault("vc-activity-dead-");
+  fake.setHandler("vault_box_config", ({ vault: v }) => (v === boxVault ? { box: boxUrl, vault: "physics" } : v === deadVault ? { box: deadUrl, vault: "physics" } : null));
+  fake.setHandler("box_post_json", async ({ url, body }) => {
+    try {
+      const r = await fetch(url, { method: "POST", body, headers: { "content-type": "application/json" } });
+      return { status: r.status, body: await r.text() };
+    } catch (e) {
+      throw String((e as any)?.cause?.code ?? (e as Error).message) + ": connection refused";
+    }
+  });
+  useStore.setState({ vaultPath: deadVault } as any);
+  await assert.rejects(runInlineAsk({ prompt: "x", selection: "", before: "", after: "" }), /^Error: Box unreachable: the box is down or restarting\.$/);
+  // The box answers but refuses (its engine is down): its own words.
+  useStore.setState({ vaultPath: boxVault } as any);
+  fake.setHandler("box_post_json", async () => ({ status: 503, body: JSON.stringify({ error: "engine not running" }) }));
+  await assert.rejects(runInlineEdit({ prompt: "x", selection: "", before: "", after: "" }), /The box could not answer: engine not running/);
+  useStore.setState({ vaultPath: vault } as any);
 });
 
 test("voice tool calls that change things become entries, reads do not", () => {

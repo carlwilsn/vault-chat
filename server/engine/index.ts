@@ -7,7 +7,7 @@ import { mkdirSync, statSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { basename, dirname, isAbsolute, join, relative } from "node:path";
 import { loadCatalog, modelMeta } from "./catalog";
-import { configureContext, prepareProjects, setModelWindow } from "./context";
+import { configureContext, ctxConfig, prepareProjects, setModelWindow } from "./context";
 import { Engine } from "./engine";
 export { engineShuttingDown } from "./engine";
 import { Ledger } from "./ledger";
@@ -257,7 +257,8 @@ export async function startEngine(b: EngineBoot): Promise<EngineHandle> {
 
   const base = piPaths(b.stateDir);
   const baseUrl = b.openrouterBase ? b.openrouterBase.replace(/\/+$/, "") : undefined;
-  writePiConfig({ paths: base, install, catalog: piCat, models: [model, visionModel], baseUrl });
+  // The fast model: the one-shots (a note's title, spoken math) run on it in pi too (pi/side.ts).
+  writePiConfig({ paths: base, install, catalog: piCat, models: [model, visionModel, ctxConfig().recapModel], baseUrl });
   console.log(`[engine:pi] model ${model} (window ${win}${modelMeta(model) ? "" : piCat.has(model) ? ", pi catalog" : ", defined in models.json"}); sandbox ${bwrap ?? "OFF"}`);
 
   const home = process.env.HOME || homedir();

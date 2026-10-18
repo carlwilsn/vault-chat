@@ -12,7 +12,7 @@ const TITLE_SYSTEM = `You write the headline for a saved note. Given the note's 
 export async function titleForNote(note: Note): Promise<string> {
   const body = titleableText(note);
   if (!body) return "";
-  const text = await complete({ instructions: TITLE_SYSTEM, text: body.slice(0, 4000), fast: true, maxOutputTokens: 200 });
+  const text = await complete({ instructions: TITLE_SYSTEM, text: body.slice(0, 4000), fast: true });
   // Defensive cleanup — models sometimes wrap in quotes, prepend "Title:", or
   // tack on a period despite the instruction.
   let t = (text || "")
@@ -64,6 +64,6 @@ export async function formatNote(note: Note): Promise<string> {
   }
   // The captured regions go along, so the scribe can say what was marqueed.
   const images = note.anchors.flatMap((a) => anchorImages(a)).filter((u) => u.startsWith("data:image/"));
-  const text = await complete({ instructions: FORMAT_SYSTEM, text: parts.join("\n\n"), images, fast: true, maxOutputTokens: 600 });
+  const text = await complete({ instructions: FORMAT_SYSTEM, text: parts.join("\n\n"), images, fast: true });
   return text.trim();
 }

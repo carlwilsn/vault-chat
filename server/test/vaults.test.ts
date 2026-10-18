@@ -9,7 +9,7 @@
 import { piOf } from "./fakePi";
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { EventEmitter } from "node:events";
-import { existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmp, cleanup, makeVault, startServer, sh, waitFor, type Running } from "./helpers";
 import { withPiSessions } from "./fakeSession";
@@ -299,17 +299,13 @@ describe("vault-scoped routes (the real server)", () => {
     expect((await (await fetch(srv.base + "/notifications")).json()).notifications.length).toBe(0);
   });
 
-  it("the activity stream is per vault: written and summarised in the vault the request names", async () => {
+  it("the activity stream is per vault: written in the vault the request names", async () => {
     const r = await (await post("/api/v1/activity?vault=physics", { entry: { kind: "edit", modality: "ctrl-k", text: '"shorten the optics intro"', path: "optics.md" } })).json();
     expect(r.ok).toBe(true);
-    expect(existsSync(join(home, "physics", ".vault-chat", "local", "activity.jsonl"))).toBe(true);
+    const log = join(home, "physics", ".vault-chat", "local", "activity.jsonl");
+    expect(existsSync(log)).toBe(true);
+    expect(readFileSync(log, "utf8")).toContain("shorten the optics intro");
     expect(existsSync(join(main, ".vault-chat", "local", "activity.jsonl"))).toBe(false);
-    const phys = await (await fetch(srv.base + "/api/v1/activity/summary?vault=physics&project=optics")).json();
-    expect(phys.activity).toContain("shorten the optics intro");
-    expect(phys.project).toContain("# Project: Optics (optics)");
-    const mine = await (await fetch(srv.base + "/api/v1/activity/summary")).json();
-    expect(mine.activity).toBe("");
-    expect(mine.project).not.toContain("Optics");
     expect((await post("/api/v1/activity?vault=physics", { entry: { kind: "nope", text: "x" } })).status).toBe(400);
   });
 });

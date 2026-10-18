@@ -2,8 +2,9 @@
 // sample — a box chat's first turn (developer instructions + the turn's
 // prefix), its next turn, a turn after a roll-over (new instructions with the
 // recap), a voice session's prompt (the box's), a Ctrl+K and a Ctrl+L request
-// — assembled by the real code (the engine on a fake pi, voice's builder, the
-// inline builders). Each is written, normalised, to
+// (a side thread forking that chat's pi session: its instructions and history
+// are the chat's, so only the request itself is audited) — assembled by the
+// real code (the engine on a fake pi, voice's builder, the inline builders). Each is written, normalised, to
 // server/test/__snapshots__/context-audit/<mode>.txt (committed: a change to
 // what a model receives shows in review) and, with a per-section token
 // estimate and the duplication found, to preview-proof/context-audit/.
@@ -67,6 +68,18 @@ class FakeBackend extends EventEmitter {
   }
   async subagentControl() {
     return { ok: true };
+  }
+  // Side threads (pi/side.ts): what the engine asks pi for.
+  sides: any[] = [];
+  paths = { sessionsDir: join(root, "pi", "sessions"), instrDir: join(root, "pi", "instr") };
+  side = {
+    start: async (o: any) => {
+      this.sides.push(o);
+      return { id: `side${this.sides.length}`, text: "", v: 0, done: false, error: null, file: null };
+    },
+  };
+  threadSource(threadId: string) {
+    return { file: join(root, "pi", `${threadId}.jsonl`), instr: join(root, "pi", `${threadId}.md`), cwd: vault };
   }
   reply(text: string) {
     const t = this.turns[this.turns.length - 1]!;
@@ -311,33 +324,35 @@ describe("what each mode sends", () => {
     expect(rep.duplicates).toEqual([]);
   });
 
-  it("Ctrl+K and Ctrl+L requests", async () => {
+  it("Ctrl+K and Ctrl+L requests (side threads of the chat)", async () => {
     const inline = await import("../../src/inlineEdit");
-    const sum = await act.activitySummaryRoute(vault, (k) => (k === "project" ? "coconut" : ""));
-    const shared = [sum.project, sum.activity].filter(Boolean).join("\n\n");
+    // As the box takes them (POST /api/v1/side): the engine forks the chat's thread with pi's read-only tools.
+    const sent = async (req: any) => {
+      const r = await engine.sideStart(req);
+      expect(r.ok).toBe(true);
+      const o = backend.sides[backend.sides.length - 1];
+      expect(o.fork).toMatch(/\.jsonl$/);
+      expect(o.tools).toEqual(["read", "grep", "find", "ls"]);
+      return o.text as string;
+    };
     const k = inline.buildInlineEditRequest({
       prompt: "make this shorter",
       selection: "We tile each orthomosaic into 1024 px squares with 128 px of overlap so that coconuts on tile edges are seen whole at least once.",
       before: "# Coconut\n\n## What\n\nDetect coconuts in drone images.\n\n## How\n\n",
       after: "\n\n## Done when\n\n(not decided yet)\n",
       language: "markdown",
-      sharedContext: shared,
+      convId,
     });
-    const rk = await audit("ctrl-k", [{ label: "system", text: k.instructions }, { label: "user 1", text: k.text }]);
-    const sumL = await act.activitySummaryRoute(vault, (q) => (q === "project" ? "coconut" : q === "exclude" ? convId : ""));
+    const rk = await audit("ctrl-k", [{ label: "side request (after the chat's instructions and history)", text: await sent(k) }]);
     const l = inline.buildInlineAskRequest({
       prompt: "why is the overlap 128?",
       selection: "128 px of overlap",
       before: "We tile each orthomosaic into 1024 px squares with ",
       after: " so that coconuts on tile edges are seen whole.",
       language: "markdown",
-      chatPaneHistory: [
-        { role: "user", content: "OK, plan it." },
-        { role: "assistant", content: "Planned in plan.md." },
-      ],
-      sharedContext: [sumL.project, sumL.activity].filter(Boolean).join("\n\n"),
+      convId,
     });
-    const rl = await audit("ctrl-l", [{ label: "system", text: l.instructions }, { label: "user 1", text: l.text }]);
+    const rl = await audit("ctrl-l", [{ label: "side request (after the chat's instructions and history)", text: await sent(l) }]);
     for (const r of [rk, rl]) {
       expect(r.leftovers).toEqual([]);
       expect(r.duplicates).toEqual([]);

@@ -248,8 +248,8 @@ describe("mode A, then mode B sees it", () => {
   it("chat → Ctrl+L and voice: the latest exchange of the chat, both sides", async () => {
     const reply = "A KV cache keeps the attention keys and values of earlier tokens so each new token only computes its own. " + "More detail. ".repeat(40);
     const c = await chatTurn({ text: "explain KV caching in one paragraph" }, reply);
-    // Ctrl+L / Ctrl+K read GET /api/v1/activity/summary.
-    const sum = String((await act.activitySummaryRoute(vault, () => "")).activity);
+    // Ctrl+L / Ctrl+K side threads get this block on the box.
+    const sum = act.activitySummary(vault);
     expect(sum).toContain('Carl: "explain KV caching in one paragraph"');
     expect(sum).toContain('Agent: "A KV cache keeps the attention keys and values');
     expect(sum).not.toContain("More detail. More detail. More detail. More detail. More detail. More detail. More detail. More detail. More detail. More detail. More detail. More detail. More detail. More detail. More detail.");
@@ -258,7 +258,7 @@ describe("mode A, then mode B sees it", () => {
     expect(block).toContain('Agent: "A KV cache keeps');
     // A second exchange replaces the first.
     await chatTurn({ text: "and in MLA?", convId: c.convId }, "MLA compresses the KV cache into a latent.");
-    const sum2 = String((await act.activitySummaryRoute(vault, () => "")).activity);
+    const sum2 = act.activitySummary(vault);
     expect(sum2).toContain('Carl: "and in MLA?" → Agent: "MLA compresses the KV cache into a latent."');
     expect(sum2).not.toContain('Carl: "explain KV caching');
     // The chat's own next turn does not read its own exchange back.

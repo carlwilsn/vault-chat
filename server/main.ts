@@ -74,11 +74,8 @@ async function main(): Promise<void> {
   const loaded = convLog(cfg.vault).rows().length;
   console.log(`[vault-chat-server] ${loaded} conversation(s) in the log; keys: ${Object.keys(useStore.getState().apiKeys).join(", ") || "none"}`);
 
-  // One-shot model calls (note titles here; Ctrl+K / Ctrl+L from the laptop via /api/v1/complete).
-  const { completeOnce } = await import("./context/model");
-  // They need only the vault and the key store (the engine adds the rest when it is up).
+  // CONTEXT needs only the vault and the key store (the engine adds the rest when it is up).
   (await import("./context/config")).configureContext({ vault: cfg.vault });
-  (await import("../src/complete")).setComplete(completeOnce);
   const { startPhoneAppHost, sendPush } = await import("../src/phoneApp");
   await startPhoneAppHost();
 
@@ -138,6 +135,8 @@ async function main(): Promise<void> {
     const main = ready();
     return v.main || !engine.open ? main : await engine.open(v);
   };
+  // One-shots on the box itself (a note's title): pi, no session, no tools (engine/pi/side.ts).
+  (await import("../src/complete")).setComplete((req) => ready().once(req));
   void engineBoot
     .then((h) => {
       engine = h;
@@ -222,7 +221,6 @@ async function main(): Promise<void> {
         schedules: [],
       };
     },
-    complete: completeOnce,
     setKeys: async (keys) => {
       const changed = await saveKeys(cfg.secretsDir, keys);
       if (changed) {
@@ -241,6 +239,11 @@ async function main(): Promise<void> {
           kill: async (v, b) => (await engineOf(v)).kill(b),
           subagent: async (v, c, sid, op, b) => (await engineOf(v)).subagent(c, sid, op, b),
           intent: async (v, b) => (await engineOf(v)).intent(b),
+          side: {
+            start: async (v, b) => (await engineOf(v)).sideStart(b),
+            poll: async (v, id, after, wait) => (await engineOf(v)).sidePoll(id, after, wait),
+            stop: async (v, id) => (await engineOf(v)).sideStop(id),
+          },
         },
     // Voice (server/voice.ts) in the request's vault: its working copy, its
     // engine (AskAgent), its sandbox (Bash, vault tools), its sync.

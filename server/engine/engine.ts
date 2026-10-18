@@ -24,6 +24,7 @@ import {
   verifyDone,
   formatVerdict,
   projectCost,
+  ctxConfig,
   type EngineConv,
   type ThreadTokenUsage,
 } from "./context";
@@ -45,6 +46,7 @@ import { isOpen, pendingOf, shown, type Picture } from "../../src/convlog/reduce
 import { toolName } from "../../src/convlog/view";
 import { readEntries } from "../convlog/piSession";
 import { PiFeed } from "./piFeed";
+import { READ_ONLY_TOOLS, type SideState } from "./pi/side";
 import { TurnRecorder, type TurnLine } from "./turnLog";
 import { SERVER_VERSION } from "../config";
 
@@ -352,7 +354,7 @@ export class Engine {
     // Everything this engine does runs scoped to its vault (CONTEXT reads that
     // vault's projects and rules): the public entry points here, the backend's
     // events, handlers and timers in start().
-    for (const k of ["message", "answerRoute", "subagent", "kill", "intent"] as const) {
+    for (const k of ["message", "answerRoute", "subagent", "kill", "intent", "sideStart", "once"] as const) {
       const f = (this as any)[k].bind(this);
       (this as any)[k] = (...a: unknown[]) => this.scoped(() => f(...a));
     }
@@ -788,6 +790,77 @@ export class Engine {
     if (!conv) return { ok: false, error: `conversation ${convId} not found` };
     if (!(conv.subagents ?? []).some((s: any) => s.threadId === sid)) return { ok: false, error: `no subagent ${sid} on this conversation` };
     return this.d.backend.subagentControl(sid, op, body?.text);
+  }
+
+  // ---------------------------------------------------------------- side threads (pi/side.ts)
+
+  /**
+   * POST /api/v1/side. Ctrl+K / Ctrl+L ({kind: "edit" | "ask", convId?, side?, text, images?}): pi forks the
+   * conversation's session (its history and instructions; a fresh session with the agent's instructions when it
+   * has none) with pi's read-only tools, and the request goes in after what Carl did elsewhere since that
+   * conversation last saw it — the same block a turn of the agent gets. `side`: the popover's next request, in
+   * the same side thread. One-shots ({kind: "once", system, text, images?, fast?}): no session, no tools.
+   */
+  async sideStart(b: Record<string, any>): Promise<Record<string, unknown>> {
+    const text = typeof b?.text === "string" ? b.text : "";
+    if (!text.trim()) return { error: "missing text" };
+    const kind = b.kind === "once" ? "once" : b.kind === "edit" ? "edit" : "ask";
+    const images: string[] = (Array.isArray(b.images) ? b.images : []).filter((u: unknown) => typeof u === "string" && u.startsWith("data:image/"));
+    let model = kind === "once" && b.fast ? ctxConfig().recapModel : this.d.model();
+    if (images.length && !capabilitiesOf(model).images) model = this.d.visionModel ?? model;
+    const dir = (parent: string) => join(this.d.backend.paths.sessionsDir, "side", parent);
+    const side = this.d.backend.side;
+    try {
+      let s: SideState;
+      let conv: EngineConv | null = null;
+      if (kind === "once") {
+        s = await side.start({ kind, system: String(b.system ?? ""), cwd: this.d.vault, model, tools: [], ephemeral: true, thinking: "off", sessionDir: dir("once"), text, images });
+      } else if (typeof b.side === "string" && b.side) {
+        s = await side.start({ kind, side: b.side, cwd: this.d.vault, model, tools: READ_ONLY_TOOLS, sessionDir: "", text, images });
+      } else {
+        conv = typeof b.convId === "string" && b.convId ? await readConv(this.d.vault, b.convId) : null;
+        const src = conv?.threadId ? this.d.backend.threadSource(conv.threadId) : null;
+        let instr = src?.instr;
+        if (!instr) {
+          // No session to fork: the agent's own instructions, as a new thread of that conversation would get them.
+          const note = capabilityNote(model);
+          mkdirSync(this.d.backend.paths.instrDir, { recursive: true });
+          instr = join(this.d.backend.paths.instrDir, `side-${Date.now().toString(36)}-${newMessageId().slice(-6)}.md`);
+          writeFileSync(instr, buildDeveloperInstructions((conv ?? { id: "side", title: "", messages: [] }) as any, { rolePrompt: ENGINE_ROLE_PROMPT + (note ? `\n\n${note}` : "") }));
+        }
+        const activity = activitySummary(this.d.vault, {
+          now: Date.now(),
+          project: typeof conv?.project === "string" ? conv.project : null,
+          since: src && conv ? this.activitySeen.get(conv.id) : undefined,
+          excludeConv: conv?.id ?? null,
+        });
+        s = await side.start({ kind, fork: src?.file ?? null, instr, cwd: src?.cwd || this.d.vault, model, tools: READ_ONLY_TOOLS, sessionDir: dir(conv?.id ?? "none"), text: sidePrompt(activity, text), images });
+      }
+      this.log(`side ${kind} ${s.id}${conv ? ` (forked from ${conv.id})` : ""} on ${model}${s.file ? `: ${s.file}` : ""}`);
+      return { ok: true, id: s.id, v: s.v };
+    } catch (e) {
+      return { error: String((e as Error)?.message ?? e).slice(0, 300) };
+    }
+  }
+
+  /** GET /api/v1/side/:id?after=v: the answer so far, once it changed (long poll). */
+  sidePoll(id: string, after: number, waitMs: number): Promise<SideState | null> {
+    return this.d.backend.side.poll(id, after, Math.max(0, Math.min(waitMs, 25_000)));
+  }
+
+  /** POST /api/v1/side/:id/stop. */
+  sideStop(id: string): Promise<boolean> {
+    return this.d.backend.side.stop(id);
+  }
+
+  /** A one-shot on the box itself (a note's title): pi, no session, no tools; the final text. */
+  async once(req: { instructions: string; text: string; images?: string[]; fast?: boolean }): Promise<string> {
+    const r = await this.sideStart({ kind: "once", system: req.instructions, text: req.text, images: req.images, fast: req.fast });
+    if (r.error) throw new Error(String(r.error));
+    const s = await this.d.backend.side.wait(String(r.id));
+    this.d.backend.side.forget(s.id);
+    if (s.error) throw new Error(s.error);
+    return s.text;
   }
 
   /** /kill. null → legacy path. Stop means stop: interrupt, keep-going off, wakes cancelled. */
@@ -1687,4 +1760,9 @@ function boardInboxText(vault: string, id: string | null): string {
       return lines.join("\n");
     })
     .join("\n");
+}
+
+/** What a Ctrl+K / Ctrl+L side thread is sent: what Carl did elsewhere (the block an agent turn gets), then the request. */
+export function sidePrompt(activity: string, text: string): string {
+  return [activity.trim(), text].filter(Boolean).join("\n\n");
 }

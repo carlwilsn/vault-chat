@@ -16,7 +16,7 @@ import { validVaultName } from "./sync";
 import { validKeyName } from "./keys";
 import { projectsList, setProject } from "./projectRoutes";
 import { voiceTool, voiceSession, voiceTranscript, voicePath, type VoiceDeps } from "./voice";
-import { activityImageRoute, activityPost, activitySummaryRoute } from "./activity";
+import { activityImageRoute, activityPost } from "./activity";
 import PHONE_PAGE_INLINE from "../src-tauri/assets/phone.html";
 import VOICE_PAGE_INLINE from "../src-tauri/assets/voice.html";
 import PHONE_SW_INLINE from "../src-tauri/assets/phone-sw.js?raw";
@@ -39,8 +39,6 @@ export type ServerHooks = {
   /** Settings → Box on the laptop: this box's vaults, and its own OpenRouter key. */
   vaults?: { list: () => unknown; add: (name: string) => Promise<Record<string, unknown>> };
   setKeys?: (keys: Record<string, string>) => Promise<boolean>;
-  /** POST /api/v1/complete: a one-shot model call (src/complete.ts) with the box's key. */
-  complete?: (req: { instructions: string; text: string; images?: string[]; fast?: boolean; maxOutputTokens?: number }) => Promise<string>;
   /** The vault a request names (`?vault=` or `X-VC-Vault`), null when this box
    * has no such vault. No name = the main vault (older laptops, the phone). */
   vault?: (name: string | null) => VaultScope | null;
@@ -58,6 +56,12 @@ export type ServerHooks = {
     subagent: (v: VaultScope, convId: string, sid: string, op: "steer" | "stop", b: any) => Promise<Record<string, unknown>>;
     /** POST /api/v2/intent: every client intent (src/convlog/protocol.ts Intent). */
     intent: (v: VaultScope, b: any) => Promise<Record<string, unknown>>;
+    /** Side threads (server/engine/pi/side.ts): Ctrl+K / Ctrl+L, and the one-shots. */
+    side?: {
+      start: (v: VaultScope, b: any) => Promise<Record<string, unknown>>;
+      poll: (v: VaultScope, id: string, after: number, waitMs: number) => Promise<Record<string, unknown> | null>;
+      stop: (v: VaultScope, id: string) => Promise<boolean>;
+    };
   };
   /** Voice (server/voice.ts) for the request's vault: its working copy, its
    * engine and sandbox — or why not. */
@@ -383,15 +387,24 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
 
   const q = (k: string) => url.searchParams.get(k) ?? "";
 
-  // A one-shot model call for a client (Ctrl+K / Ctrl+L, a note's title): one request, one text.
-  if (path === "/api/v1/complete" && method === "POST") {
-    if (!hooks.complete) return json(res, 503, { error: "not available on this box" });
-    const b = await jsonBody(req);
-    if (typeof b.text !== "string" || !b.text.trim()) return json(res, 400, { error: "missing text" });
-    try {
-      return json(res, 200, { text: await hooks.complete(b) });
-    } catch (e) {
-      return json(res, 502, { error: String((e as Error)?.message ?? e).slice(0, 300) });
+  // Side threads (server/engine/pi/side.ts): Ctrl+K / Ctrl+L as a fork of the conversation's pi session with
+  // pi's read-only tools, and the tool-less one-shots. POST starts one (or a popover's next request); GET
+  // answers the text so far once it moved past `after` (a long poll); stop aborts it.
+  if (path === "/api/v1/side" && method === "POST") {
+    const side = hooks.engine?.side;
+    if (!side) return json(res, 503, { error: "engine not running" });
+    const out: Record<string, unknown> = await side.start(scope, await jsonBody(req)).catch((e) => ({ error: String((e as Error)?.message ?? e) }));
+    return json(res, out.error ? (out.error === "missing text" ? 400 : 502) : 200, out);
+  }
+  const sideM = /^\/api\/v1\/side\/([^/]+)(\/stop)?$/.exec(path);
+  if (sideM) {
+    const side = hooks.engine?.side;
+    if (!side) return json(res, 503, { error: "engine not running" });
+    const id = decodeURIComponent(sideM[1]!);
+    if (sideM[2] && method === "POST") return json(res, 200, { ok: await side.stop(scope, id) });
+    if (!sideM[2] && method === "GET") {
+      const st = await side.poll(scope, id, Number(url.searchParams.get("after") ?? -1), Number(url.searchParams.get("wait") ?? 20_000));
+      return st ? json(res, 200, st) : json(res, 404, { error: "no such side thread" });
     }
   }
 
@@ -399,9 +412,6 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
   if (path === "/api/v1/activity" && method === "POST") {
     const out = activityPost(vault, await jsonBody(req));
     return json(res, out.status, out.body);
-  }
-  if (path === "/api/v1/activity/summary" && method === "GET") {
-    return json(res, 200, await activitySummaryRoute(vault, q));
   }
   if (path === "/api/v1/activity/image" && method === "POST") {
     return json(res, 200, activityImageRoute(vault, await jsonBody(req)));

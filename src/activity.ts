@@ -6,13 +6,13 @@
 // this side reads one). Queued and batched, never awaited by the UI,
 // failure-silent (logged). Off with localStorage `vault_chat_activity` = "0".
 //
-// Reading: sharedContextFor() — the recent-activity block and the project's
-// memory/rules for Ctrl+K and Ctrl+L (GET /api/v1/activity/summary).
+// Reading is the box's: an agent turn, a Ctrl+K / Ctrl+L side thread and a
+// voice session each get the recent-activity block there.
 //
 // Watching: startActivityWatch() turns what the editor already knows (the
 // file open, the PDF page, a selection, a marquee capture) into `focus` and
 // `capture` entries, coalesced.
-import { boxGet, boxLinkFor, boxPost, type Link } from "./boxChat";
+import { boxLinkFor, boxPost, type Link } from "./boxChat";
 import { CONTEXT_IMAGE_MAX_BYTES, type ActivityEntry } from "./activityCore";
 import { useStore } from "./store";
 
@@ -131,40 +131,11 @@ async function postOne(link: Link, input: ActivityInput): Promise<void> {
 
 // ---------------------------------------------------------------- reading
 
-export type SharedContext = { activity: string; project: string };
-
 /** The project of the conversation Carl is in, if any. */
 export function currentProject(): string | null {
   const s = useStore.getState();
   const c = s.conversations.find((x) => x.id === s.activeConversationId);
   return c && typeof c.project === "string" && c.project ? c.project : null;
-}
-
-/**
- * The recent-activity block and the project's memory and rules, for a small
- * surface (Ctrl+K, Ctrl+L), from the box (the log is there). Never throws;
- * "" parts on failure or with no box; `timeoutMs` keeps it off the critical path.
- */
-export async function sharedContextFor(
-  vault: string | null | undefined,
-  project: string | null = currentProject(),
-  timeoutMs = 2500,
-  /** Leave out this chat's exchange (the surface carries its transcript already). */
-  excludeConv: string | null = null,
-): Promise<SharedContext> {
-  const none = { activity: "", project: "" };
-  if (!vault) return none;
-  await flushActivity().catch(() => undefined);
-  try {
-    const link = await boxLinkFor(vault).catch(() => null);
-    if (!link) return none;
-    const q = [project ? `project=${encodeURIComponent(project)}` : "", excludeConv ? `exclude=${encodeURIComponent(excludeConv)}` : ""].filter(Boolean).join("&");
-    const r = await boxGet(link, `/api/v1/activity/summary${q ? `?${q}` : ""}`, timeoutMs);
-    return { activity: typeof r?.activity === "string" ? r.activity : "", project: typeof r?.project === "string" ? r.project : "" };
-  } catch (e) {
-    console.warn("[activity] shared context unavailable:", e);
-    return none;
-  }
 }
 
 /** The capture a request refers to, as data for an image part. */
@@ -195,11 +166,6 @@ export async function contextImageFor(
     console.warn("[activity] context image unavailable:", err);
     return null;
   }
-}
-
-/** The shared context as one block for a system prompt ("" when empty). */
-export function sharedContextText(c: SharedContext): string {
-  return [c.project, c.activity].filter(Boolean).join("\n\n");
 }
 
 // ---------------------------------------------------------------- watching the editor

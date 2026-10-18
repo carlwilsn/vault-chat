@@ -12,7 +12,7 @@ src/                   React + TypeScript frontend
   chat-controller.ts   The chat's intents (send, steer, queue, take back, stop) → the box
   boxChat.ts           The box's conversation feed (/poll), intents, reachability
   convlog/             The feed's protocol and the one reducer every client folds
-  complete.ts          One-shot calls on the box (Ctrl+K / Ctrl+L, note titles, voice math)
+  complete.ts          Model requests on the box, all in pi: Ctrl+K / Ctrl+L side threads, one-shots (note titles, voice math)
   skills.ts            /skill-name autocomplete
   meta.ts              Per-vault voice prompt, north star, memory index, vault tools (for voice)
   context.ts           Loads AGENTS.md / CLAUDE.md / goals as voice session context
@@ -52,7 +52,7 @@ docs/                  Subsystem documentation (this folder)
 ## Data boundaries
 
 - **UI → Rust**: every `invoke("...")` call is a Tauri command declared in `src-tauri/src/lib.rs`. Commands handle file IO, git and sync, keychain, glob, and the box's HTTP (`box_get_json` / `box_post_json`).
-- **UI → the box**: the conversation feed and intents, one-shot model calls (`/api/v1/complete`), voice sessions and tools, the activity stream, keys (Settings → Box sends this machine's keys). The app calls no model provider itself.
+- **UI → the box**: the conversation feed and intents, Ctrl+K / Ctrl+L and one-shots as pi side threads (`/api/v1/side`), voice sessions and tools, the activity stream, keys (Settings → Box sends this machine's keys). The app calls no model provider itself.
 - **Rust ↔ OS**: file-system walks (walkdir), keychain (OS credential store), git.
 
 ## Where state lives
