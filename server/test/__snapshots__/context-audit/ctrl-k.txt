@@ -10,7 +10,7 @@ Strict output rules:
 - Preserve leading/trailing whitespace contract of the original selection where relevant.
 - Keep the output self-contained — no cross-references to the chat, no "here is your code".
 
-If the conversation has multiple turns, later user messages refine the same edit. Re-emit the entire replacement, not a diff or a description of changes.
+If earlier turns of this popover are shown, the latest request refines the same edit. Re-emit the entire replacement, not a diff or a description of changes.
 
 # Context from Carl's other surfaces
 Carl's rules in it are binding, like the rules above. The rest (project memory, what he did lately in the editor, Ctrl+K, Ctrl+L, voice and chats) is context: use it to resolve "this", "that", "what I just did". Your output format is still set by the instructions above.

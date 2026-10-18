@@ -1,7 +1,7 @@
 // Voice in box mode: the laptop's voice agent sends its vault tools to the box
 // (POST /api/v1/voice/tool, paths made vault-relative), keeps ScrollTo — which
 // moves the user's own screen — local, and reaches the box's agent through
-// AskAgent. Off a box, every tool runs here and AskAgent says there is no box.
+// AskAgent. Off a box, voice does not start (it says to connect the box).
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
@@ -75,17 +75,16 @@ test("box mode: ScrollTo stays local (it moves this screen)", async () => {
   assert.equal(posts.length, 0);
 });
 
-test("off a box: tools run here and AskAgent says there is no box", async () => {
+test("off a box: voice does not start, and says to connect the box", async () => {
   const local = makeTempVault("vc-voicelocal-");
   assert.equal(await boxVoiceTool(local), null);
-  useStore.setState({ vaultPath: local } as any);
-  const h = voice.buildClientToolHandlers();
+  useStore.setState({ vaultPath: local, voiceError: null } as any);
   posts.length = 0;
-  fake.setHandler("read_text_file", () => "local text");
-  assert.equal(await h.Read({ path: `${local}/notes/a.md` }), "local text");
-  assert.match(await h.AskAgent({ task: "x" }), /isn't connected to a box/);
+  await voice.startElevenLabsSession();
+  assert.match(String(useStore.getState().voiceError ?? ""), /Connect your box to talk/);
+  assert.equal(useStore.getState().voiceConnecting, false);
   assert.equal(posts.length, 0);
-  useStore.setState({ vaultPath: vault } as any);
+  useStore.setState({ vaultPath: vault, voiceError: null } as any);
 });
 
 test("relativeArgs: only paths under the vault change", () => {

@@ -48,6 +48,7 @@ export function unreachableWhy(raw: string, tailscale?: { installed: boolean; co
   return raw.slice(0, 160) || "no answer";
 }
 
+/** The store's `boxChat`: null until the vault's box is known; `on: false`, no box (the chat says so). */
 export type BoxChatState = {
   on: boolean;
   /** null = not known yet (first contact pending). */
@@ -630,8 +631,9 @@ export function startBoxChat(vault: string): Promise<boolean> {
     session?.stop();
     session = null;
     const link = await boxLinkFor(vault);
-    if (!link || useStore.getState().vaultPath !== vault) {
-      if (useStore.getState().boxChat) useStore.getState().setBoxChat(null);
+    if (useStore.getState().vaultPath !== vault) return false;
+    if (!link) {
+      useStore.getState().setBoxChat(NO_BOX_STATE);
       return false;
     }
     session = new BoxChatSession(vault, link);
@@ -650,8 +652,10 @@ export function startBoxChat(vault: string): Promise<boolean> {
 export function stopBoxChat(): void {
   session?.stop();
   session = null;
-  if (useStore.getState().boxChat) useStore.getState().setBoxChat(null);
+  useStore.getState().setBoxChat(NO_BOX_STATE);
 }
+
+const NO_BOX_STATE: BoxChatState = { on: false, reachable: null, reason: "" };
 
 /** Is the open vault's chat on the box right now? */
 export function boxChatOn(): boolean {

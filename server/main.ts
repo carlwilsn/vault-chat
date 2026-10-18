@@ -76,6 +76,8 @@ async function main(): Promise<void> {
 
   // One-shot model calls (note titles here; Ctrl+K / Ctrl+L from the laptop via /api/v1/complete).
   const { completeOnce } = await import("./context/model");
+  // They need only the vault and the key store (the engine adds the rest when it is up).
+  (await import("./context/config")).configureContext({ vault: cfg.vault });
   (await import("../src/complete")).setComplete(completeOnce);
   const { startPhoneAppHost, sendPush } = await import("../src/phoneApp");
   await startPhoneAppHost();

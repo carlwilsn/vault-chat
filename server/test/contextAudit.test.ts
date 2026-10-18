@@ -316,8 +316,6 @@ describe("what each mode sends", () => {
     const sum = await act.activitySummaryRoute(vault, (k) => (k === "project" ? "coconut" : ""));
     const shared = [sum.project, sum.activity].filter(Boolean).join("\n\n");
     const k = inline.buildInlineEditRequest({
-      modelId: "x",
-      apiKey: "x",
       prompt: "make this shorter",
       selection: "We tile each orthomosaic into 1024 px squares with 128 px of overlap so that coconuts on tile edges are seen whole at least once.",
       before: "# Coconut\n\n## What\n\nDetect coconuts in drone images.\n\n## How\n\n",
@@ -325,12 +323,9 @@ describe("what each mode sends", () => {
       language: "markdown",
       sharedContext: shared,
     });
-    const rk = await audit("ctrl-k", [{ label: "system", text: k.system }, ...k.messages.map((m, i) => ({ label: `${m.role} ${i + 1}`, text: String(m.content) }))]);
+    const rk = await audit("ctrl-k", [{ label: "system", text: k.instructions }, { label: "user 1", text: k.text }]);
     const sumL = await act.activitySummaryRoute(vault, (q) => (q === "project" ? "coconut" : q === "exclude" ? convId : ""));
     const l = inline.buildInlineAskRequest({
-      modelId: "x",
-      apiKey: "x",
-      vault,
       prompt: "why is the overlap 128?",
       selection: "128 px of overlap",
       before: "We tile each orthomosaic into 1024 px squares with ",
@@ -342,7 +337,7 @@ describe("what each mode sends", () => {
       ],
       sharedContext: [sumL.project, sumL.activity].filter(Boolean).join("\n\n"),
     });
-    const rl = await audit("ctrl-l", [{ label: "system", text: l.system }, ...l.messages.map((m, i) => ({ label: `${m.role} ${i + 1}`, text: String(m.content) }))]);
+    const rl = await audit("ctrl-l", [{ label: "system", text: l.instructions }, { label: "user 1", text: l.text }]);
     for (const r of [rk, rl]) {
       expect(r.leftovers).toEqual([]);
       expect(r.duplicates).toEqual([]);

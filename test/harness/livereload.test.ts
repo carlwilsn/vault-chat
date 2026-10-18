@@ -1,7 +1,6 @@
 // The agent's edits turn up in the open file without a refresh:
-//  - box mode: /poll "vault_changed" runs a box sync cycle at once, and the
+//  - /poll "vault_changed" runs a box sync cycle at once, and the
 //    merge it brings reloads the open pane in place;
-//  - local mode: the laptop agent's Write/Edit reloads the open pane;
 //  - a pane with typing not yet on disk is never overwritten — it says
 //    "Changed by the agent" instead.
 import { test, after } from "node:test";
@@ -81,7 +80,6 @@ const { useStore } = await import("../../src/store.ts");
 const vs = await import("../../src/vaultSync.ts");
 const bc = await import("../../src/boxChat.ts");
 const live = await import("../../src/liveReload.ts");
-const { buildTools } = await import("../../src/tools.ts");
 
 const S = () => useStore.getState();
 async function waitFor(what: string, fn: () => boolean, ms = 4000) {
@@ -219,19 +217,6 @@ test("unsaved typing is never overwritten: the pane says it changed instead", as
   assert.equal(S().currentContent, "# A\n\nthird agent edit\n");
   assert.equal(live.useLiveFiles.getState().diskChanged[NOTE], undefined);
   un();
-});
-
-test("local mode: the laptop agent's Write and Edit reload the open panes showing that file (only those)", async () => {
-  bc.stopBoxChat();
-  vs.stopVaultSyncLoop();
-  S().splitWith(OTHER, "# B\n", "right");
-  assert.equal(S().panes.length, 2);
-  const tools = buildTools(vault) as any;
-  await tools.Write.execute({ path: NOTE, contents: "# A\n\nwritten locally\n" }, { toolCallId: "w1", messages: [] });
-  await waitFor("pane A", () => S().panes.some((p) => p.file === NOTE && p.content === "# A\n\nwritten locally\n"));
-  await tools.Edit.execute({ path: NOTE, old_string: "written locally", new_string: "edited locally" }, { toolCallId: "e1", messages: [] });
-  await waitFor("pane A after Edit", () => S().panes.some((p) => p.file === NOTE && p.content === "# A\n\nedited locally\n"));
-  assert.equal(S().panes.find((p) => p.file === OTHER)?.content, "# B\n", "the other pane is untouched");
 });
 
 test("a PDF or image named as changed re-renders (its revision bumps); one not named does not", async () => {

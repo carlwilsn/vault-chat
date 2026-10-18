@@ -1,37 +1,19 @@
 // The shared context stream, laptop side (src/activityCore.ts has the shape,
 // the caps and the summary; server/activity.ts is the box's half).
 //
-// Writing: recordActivity() — box mode posts to the box's log for this vault
-// (POST /api/v1/activity?vault=); otherwise it appends to this vault's own
-// .vault-chat/local/activity.jsonl. Queued and batched, never awaited by the
-// UI, failure-silent (logged). Off with localStorage `vault_chat_activity` = "0".
+// Writing: recordActivity() posts to the box's log for this vault
+// (POST /api/v1/activity?vault=); with no box there is no stream (nothing on
+// this side reads one). Queued and batched, never awaited by the UI,
+// failure-silent (logged). Off with localStorage `vault_chat_activity` = "0".
 //
 // Reading: sharedContextFor() — the recent-activity block and the project's
-// memory/rules for Ctrl+K and Ctrl+L (box mode: GET /api/v1/activity/summary;
-// otherwise built here from the same files).
+// memory/rules for Ctrl+K and Ctrl+L (GET /api/v1/activity/summary).
 //
 // Watching: startActivityWatch() turns what the editor already knows (the
 // file open, the PDF page, a selection, a marquee capture) into `focus` and
 // `capture` entries, coalesced.
-import { invoke } from "@tauri-apps/api/core";
 import { boxGet, boxLinkFor, boxPost, type Link } from "./boxChat";
-import { PROJECTS_DIR } from "./agentProjects";
-import {
-  ACTIVITY_DIR,
-  ACTIVITY_LOG,
-  ACTIVITY_LOG_OLD,
-  CAPTURES_DIR,
-  CONTEXT_IMAGE_MAX_BYTES,
-  appendToLog,
-  captureCaption,
-  parseLog,
-  pickContextImage,
-  projectContextBlock,
-  sanitizeEntry,
-  summarizeActivity,
-  type ActivityEntry,
-  type ProjectFiles,
-} from "./activityCore";
+import { CONTEXT_IMAGE_MAX_BYTES, type ActivityEntry } from "./activityCore";
 import { useStore } from "./store";
 
 export const ACTIVITY_SWITCH = "vault_chat_activity";
@@ -51,11 +33,9 @@ function headless(): boolean {
 
 export type ActivityInput = Omit<ActivityEntry, "ts" | "modality" | "image"> & {
   modality?: ActivityEntry["modality"];
-  /** A captured image (data URL): stored under .vault-chat/local/captures/, referenced by path. */
+  /** A captured image (data URL): the box stores it with its captures, referenced by path. */
   imageDataUrl?: string;
 };
-
-const join = (vault: string, rel: string) => `${vault.replace(/[\\/]+$/, "")}/${rel}`;
 
 // ---------------------------------------------------------------- writing
 
@@ -104,28 +84,8 @@ async function writeBatch(vault: string, items: Pending[]): Promise<void> {
   // A capture goes into the stream downscaled (a later request may send it to a model).
   for (const p of items) if (p.input.imageDataUrl) p.input = { ...p.input, imageDataUrl: await fitCapture(p.input.imageDataUrl) };
   const link = await boxLinkFor(vault).catch(() => null);
-  if (link) {
-    for (const p of items) await postOne(link, p.input);
-    return;
-  }
-  // This vault's own log: one read, one write per batch.
-  const log = join(vault, ACTIVITY_LOG);
-  let text = "";
-  try {
-    text = await invoke<string>("read_text_file", { path: log });
-  } catch {
-    text = "";
-    await invoke("write_text_file", { path: join(vault, `${ACTIVITY_DIR}/.gitignore`), contents: "*\n" }).catch(() => undefined);
-  }
-  for (const p of items) {
-    const { imageDataUrl, ...raw } = p.input;
-    const entry = sanitizeEntry({ ...raw, image: imageDataUrl ? await saveLocalCapture(vault, imageDataUrl) : undefined }, p.at);
-    if (!entry) continue;
-    const r = appendToLog(text, entry);
-    if (r.rotated !== null) await invoke("write_text_file", { path: join(vault, ACTIVITY_LOG_OLD), contents: r.rotated });
-    text = r.log;
-  }
-  await invoke("write_text_file", { path: log, contents: text });
+  if (!link) return;
+  for (const p of items) await postOne(link, p.input);
 }
 
 /** Longest side of a stored capture. */
@@ -169,26 +129,6 @@ async function postOne(link: Link, input: ActivityInput): Promise<void> {
   if (!r.ok) console.warn("[activity] the box did not take an entry:", r.error);
 }
 
-async function saveLocalCapture(vault: string, dataUrl: string): Promise<string | undefined> {
-  const img = splitDataUrl(dataUrl);
-  if (!img) return undefined;
-  try {
-    const bin = atob(img.b64);
-    if (bin.length > 8 * 1024 * 1024) return undefined;
-    const bytes = new Array<number>(bin.length);
-    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-    const ext = img.mime.includes("jpeg") || img.mime.includes("jpg") ? "jpg" : img.mime.includes("webp") ? "webp" : "png";
-    const name = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}.${ext}`;
-    const abs = await invoke<string>("write_binary_file_unique", { dir: join(vault, CAPTURES_DIR), name, bytes });
-    const norm = abs.replace(/\\/g, "/");
-    const i = norm.indexOf(`/${CAPTURES_DIR}/`);
-    return i >= 0 ? norm.slice(i + 1) : `${CAPTURES_DIR}/${name}`;
-  } catch (e) {
-    console.warn("[activity] capture save failed:", e);
-    return undefined;
-  }
-}
-
 // ---------------------------------------------------------------- reading
 
 export type SharedContext = { activity: string; project: string };
@@ -202,9 +142,8 @@ export function currentProject(): string | null {
 
 /**
  * The recent-activity block and the project's memory and rules, for a small
- * surface (Ctrl+K, Ctrl+L, local voice). Never throws; "" parts on failure.
- * Box mode asks the box (the log is there); `timeoutMs` keeps it off the
- * critical path.
+ * surface (Ctrl+K, Ctrl+L), from the box (the log is there). Never throws;
+ * "" parts on failure or with no box; `timeoutMs` keeps it off the critical path.
  */
 export async function sharedContextFor(
   vault: string | null | undefined,
@@ -218,32 +157,14 @@ export async function sharedContextFor(
   await flushActivity().catch(() => undefined);
   try {
     const link = await boxLinkFor(vault).catch(() => null);
-    if (link) {
-      const q = [project ? `project=${encodeURIComponent(project)}` : "", excludeConv ? `exclude=${encodeURIComponent(excludeConv)}` : ""].filter(Boolean).join("&");
-      const r = await boxGet(link, `/api/v1/activity/summary${q ? `?${q}` : ""}`, timeoutMs);
-      return { activity: typeof r?.activity === "string" ? r.activity : "", project: typeof r?.project === "string" ? r.project : "" };
-    }
-    return { activity: await localSummary(vault, project, Date.now(), excludeConv), project: await localProjectContext(vault, project) };
+    if (!link) return none;
+    const q = [project ? `project=${encodeURIComponent(project)}` : "", excludeConv ? `exclude=${encodeURIComponent(excludeConv)}` : ""].filter(Boolean).join("&");
+    const r = await boxGet(link, `/api/v1/activity/summary${q ? `?${q}` : ""}`, timeoutMs);
+    return { activity: typeof r?.activity === "string" ? r.activity : "", project: typeof r?.project === "string" ? r.project : "" };
   } catch (e) {
     console.warn("[activity] shared context unavailable:", e);
     return none;
   }
-}
-
-async function readOr(path: string): Promise<string> {
-  try {
-    return await invoke<string>("read_text_file", { path });
-  } catch {
-    return "";
-  }
-}
-
-export async function localSummary(vault: string, project: string | null, now = Date.now(), excludeConv: string | null = null): Promise<string> {
-  return summarizeActivity(await localEntries(vault), { now, project, excludeConv });
-}
-
-async function localEntries(vault: string): Promise<ActivityEntry[]> {
-  return parseLog((await readOr(join(vault, ACTIVITY_LOG_OLD))) + "\n" + (await readOr(join(vault, ACTIVITY_LOG))));
 }
 
 /** The capture a request refers to, as data for an image part. */
@@ -252,8 +173,7 @@ export type ContextImageData = { path: string; dataUrl: string; caption: string;
 /**
  * The latest capture, when this request is about it ("this figure", "what I
  * circled"; with `deictic`, "this" within a few minutes of the capture) —
- * activityCore pickContextImage. Box mode asks the box (the captures are
- * there); otherwise this vault's own. One image, at most
+ * activityCore pickContextImage, on the box (the captures are there). One image, at most
  * CONTEXT_IMAGE_MAX_BYTES. null when there is none, it is too big, or
  * anything fails.
  */
@@ -266,46 +186,15 @@ export async function contextImageFor(
   await flushActivity().catch(() => undefined);
   try {
     const link = await boxLinkFor(vault).catch(() => null);
-    if (link) {
-      const r = await boxPost(link, "/api/v1/activity/image", { text, deictic: !!o.deictic, exclude: o.exclude ?? [] });
-      const im = r.ok ? (r.data?.image as { path?: string; mime?: string; dataBase64?: string; caption?: string } | null | undefined) : null;
-      if (!im?.dataBase64 || !im.path || im.dataBase64.length * 0.75 > CONTEXT_IMAGE_MAX_BYTES) return null;
-      return { path: im.path, dataUrl: `data:${im.mime ?? "image/png"};base64,${im.dataBase64}`, caption: String(im.caption ?? "") };
-    }
-    const now = Date.now();
-    const e = pickContextImage(await localEntries(vault), text, { now, deictic: o.deictic, exclude: o.exclude });
-    if (!e?.image) return null;
-    const bytes = await invoke<number[]>("read_binary_file", { path: join(vault, e.image) });
-    if (!bytes?.length || bytes.length > CONTEXT_IMAGE_MAX_BYTES) return null;
-    let bin = "";
-    for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.slice(i, i + 0x8000));
-    const ext = (e.image.split(".").pop() ?? "png").toLowerCase();
-    const mime = ext === "jpg" || ext === "jpeg" ? "image/jpeg" : ext === "webp" ? "image/webp" : ext === "gif" ? "image/gif" : "image/png";
-    return {
-      path: e.image,
-      dataUrl: `data:${mime};base64,${btoa(bin)}`,
-      caption: captureCaption(e, now),
-      ...(e.path ? { sourcePath: e.path } : {}),
-      ...(e.where ? { sourceAnchor: e.where } : {}),
-    };
+    if (!link) return null;
+    const r = await boxPost(link, "/api/v1/activity/image", { text, deictic: !!o.deictic, exclude: o.exclude ?? [] });
+    const im = r.ok ? (r.data?.image as { path?: string; mime?: string; dataBase64?: string; caption?: string } | null | undefined) : null;
+    if (!im?.dataBase64 || !im.path || im.dataBase64.length * 0.75 > CONTEXT_IMAGE_MAX_BYTES) return null;
+    return { path: im.path, dataUrl: `data:${im.mime ?? "image/png"};base64,${im.dataBase64}`, caption: String(im.caption ?? "") };
   } catch (err) {
     console.warn("[activity] context image unavailable:", err);
     return null;
   }
-}
-
-async function localProjectContext(vault: string, project: string | null): Promise<string> {
-  const rules = await readOr(join(vault, ".vault-chat/rules.md"));
-  let p: ProjectFiles | null = null;
-  if (project && /^[a-z0-9-]+$/.test(project)) {
-    const f = (n: string) => readOr(join(vault, `${PROJECTS_DIR}/${project}/${n}.md`));
-    const [proj, memory, plan, progress, prules] = await Promise.all([f("project"), f("memory"), f("plan"), f("progress"), f("rules")]);
-    if (proj) {
-      const name = /^#\s+(.+?)\s*$/m.exec(proj)?.[1] ?? project;
-      p = { slug: project, name, project: proj, memory, plan, progress, rules: prules };
-    }
-  }
-  return projectContextBlock(p, rules);
 }
 
 /** The shared context as one block for a system prompt ("" when empty). */

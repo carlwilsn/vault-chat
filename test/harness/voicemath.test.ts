@@ -1,16 +1,17 @@
 // Voice transcripts with math: a local gate decides which lines are worth a
-// model call, the Background role's model turns only the spoken math into
-// $…$, and an answer that changed the words is thrown away. The message keeps
-// its spoken text; `display` is what the bubble shows.
-import { test, before, after } from "node:test";
+// model call, the box's fast model (a one-shot call, src/complete.ts) turns
+// only the spoken math into $…$, and an answer that changed the words is
+// thrown away. The message keeps its spoken text; `display` is what the
+// bubble shows.
+import { test } from "node:test";
 import assert from "node:assert/strict";
-import { installFakeTauri, makeTempVault, startFakeOpenRouter, type FakeOpenRouter } from "./fakes.ts";
+import { installFakeTauri, makeTempVault } from "./fakes.ts";
 
 const vault = makeTempVault("vc-voicemath-");
 installFakeTauri(vault);
 
 const { useStore } = await import("../../src/store.ts");
-const { setOpenRouterBaseURL } = await import("../../src/providers.ts");
+const { setComplete } = await import("../../src/complete.ts");
 const vm = await import("../../src/voiceMath.ts");
 
 const ANSWERS: Record<string, string> = {
@@ -19,21 +20,13 @@ const ANSWERS: Record<string, string> = {
   "the gradient of f with respect to theta": "Sure! The gradient is $\\nabla_\\theta f$, which tells you the slope.",
   "sigma is the standard deviation": "BOOM",
 };
-let fake: FakeOpenRouter;
-
-before(async () => {
-  fake = await startFakeOpenRouter((body) => {
-    const line = String(body.messages?.at(-1)?.content ?? "");
-    if (line.includes("lambda")) return { status: 500 };
-    return { text: ANSWERS[line] ?? line };
-  });
-  setOpenRouterBaseURL(fake.url);
-  useStore.setState({ vaultPath: vault, apiKeys: { openrouter: "sk-or-test" } } as any);
+const requests: any[] = [];
+setComplete(async (req) => {
+  requests.push(req);
+  if (req.text.includes("lambda")) throw new Error("HTTP 500");
+  return ANSWERS[req.text] ?? req.text;
 });
-after(async () => {
-  setOpenRouterBaseURL(null);
-  await fake.close();
-});
+useStore.setState({ vaultPath: vault } as any);
 
 test("the gate: spoken math, Greek and formulas pass; plain talk doesn't", () => {
   for (const yes of [
@@ -68,36 +61,27 @@ test("the guard: only math may change", () => {
   assert.equal(vm.acceptFormatted("x squared", "```\n$x^2$\n```"), "$x^2$");
 });
 
-test("the request: Background role's model, strict prompt, short cap, temperature 0", async () => {
-  const n = fake.requests.length;
+test("the request: the box's fast model, the strict prompt, a short cap", async () => {
+  const n = requests.length;
   const out = await vm.formatVoiceMath("so alpha plus beta squared equals one");
   assert.equal(out, "so $\\alpha + \\beta^2 = 1$");
-  const req = fake.requests[n];
-  assert.equal(req.model, "anthropic/claude-haiku-5.5");
-  assert.match(req.messages[0].content, /Rewrite ONLY the spans that are mathematics/);
-  assert.equal(req.messages.at(-1).content, "so alpha plus beta squared equals one");
-  assert.equal(req.temperature, 0);
-  assert.ok(req.max_tokens > 0 && req.max_tokens <= 200, `short cap (${req.max_tokens})`);
+  const req = requests[n];
+  assert.equal(req.fast, true);
+  assert.match(req.instructions, /Rewrite ONLY the spans that are mathematics/);
+  assert.equal(req.text, "so alpha plus beta squared equals one");
+  assert.ok(req.maxOutputTokens > 0 && req.maxOutputTokens <= 200, `short cap (${req.maxOutputTokens})`);
 });
 
 test("cached per line; no call for a line without math; failures leave the line", async () => {
-  const n = fake.requests.length;
+  const n = requests.length;
   assert.equal(await vm.formatVoiceMath("so alpha plus beta squared equals one"), "so $\\alpha + \\beta^2 = 1$");
   assert.equal(await vm.formatVoiceMath("I'll meet you at three"), null);
-  assert.equal(fake.requests.length, n, "no new request");
+  assert.equal(requests.length, n, "no new request");
   assert.equal(vm.cachedVoiceMath("so alpha plus beta squared equals one"), "so $\\alpha + \\beta^2 = 1$");
-  // The model added prose / answered nonsense / the provider failed: null.
+  // The model added prose / answered nonsense / the box failed: null.
   assert.equal(await vm.formatVoiceMath("the gradient of f with respect to theta"), null);
   assert.equal(await vm.formatVoiceMath("sigma is the standard deviation"), null);
   assert.equal(await vm.formatVoiceMath("lambda is the rate"), null);
-});
-
-test("no key for the role's provider: no call", async () => {
-  const n = fake.requests.length;
-  useStore.setState({ apiKeys: {} } as any);
-  assert.equal(await vm.formatVoiceMath("omega squared over k"), null);
-  assert.equal(fake.requests.length, n);
-  useStore.setState({ apiKeys: { openrouter: "sk-or-test" } } as any);
 });
 
 test("a voice line gets `display`, its spoken text stays", async () => {

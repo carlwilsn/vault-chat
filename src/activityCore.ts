@@ -10,8 +10,7 @@
 // Where it lives: <vault>/.vault-chat/local/activity.jsonl (one JSON entry per
 // line; rotated to activity.1.jsonl past LOG_MAX_BYTES). `.vault-chat/local/`
 // is machine-local: never committed, never synced, never in Carl's folders.
-// In box mode the log is the box's (the laptop posts to it); otherwise the
-// laptop's own vault's.
+// The log is the box's (the laptop posts to it).
 
 export type ActivityKind = "focus" | "edit" | "ask" | "capture" | "voice" | "chat";
 export const ACTIVITY_KINDS: readonly ActivityKind[] = ["focus", "edit", "ask", "capture", "voice", "chat"];
@@ -161,14 +160,6 @@ export function parseLog(text: string): ActivityEntry[] {
     }
   }
   return out;
-}
-
-/** Append `entry` to the log's text; past LOG_MAX_BYTES the log rotates. */
-export function appendToLog(current: string, entry: ActivityEntry): { log: string; rotated: string | null } {
-  const line = JSON.stringify(entry) + "\n";
-  const cur = current && !current.endsWith("\n") ? current + "\n" : current;
-  if (cur.length + line.length > LOG_MAX_BYTES) return { log: line, rotated: cur };
-  return { log: cur + line, rotated: null };
 }
 
 // ---------------------------------------------------------------- the summary

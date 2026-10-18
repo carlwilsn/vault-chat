@@ -89,7 +89,7 @@ function snap(s: ReturnType<typeof useStore.getState>) {
     voiceError: s.voiceError,
     voiceText: s.voiceTextPanelOpen,
     follow: s.followAlong,
-    box: s.boxChat ? (s.boxChat.reachable === null ? "connecting" : s.boxChat.reachable ? "up" : "down") : "off",
+    box: s.boxChat?.on ? (s.boxChat.reachable === null ? "connecting" : s.boxChat.reachable ? "up" : "down") : "off",
     vault: s.vaultPath ? s.vaultPath.replace(/\\/g, "/").split("/").pop() : null,
   };
 }
