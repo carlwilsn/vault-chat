@@ -9,8 +9,8 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmp, cleanup, makeVault, makeKeyStore, startServer, type Running } from "./helpers";
 import { makePdf, textPage } from "./pdfgen";
-import { findBrowser } from "../headless";
-import { failMake, listEntries, mathErrors, readEntry, sendEntry, startMake, svgCheck } from "../inbox";
+import { findBrowser, headless, headlessStats, stopWarmBrowser, warmBrowserPid } from "../headless";
+import { failMake, inboxSettled, listEntries, mathErrors, readEntry, sendEntry, startMake, svgCheck } from "../inbox";
 
 const PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==", "base64");
 /** A PNG header claiming 5000 × 10 (only the header is read). */
@@ -178,7 +178,14 @@ describe("board inbox", () => {
       const snap = Buffer.from(await (await get(`/api/v1/inbox/${id}/part/3/snapshot`)).arrayBuffer());
       expect(snap.subarray(1, 4).toString()).toBe("PNG");
       expect(snap.readUInt32BE(16)).toBe(640); // 2×
-      expect(entry.parts[1].snapshot).toBe("part-2.png");
+      // The math's snapshot comes after the entry landed (it is for the agent and the overview).
+      let math = entry.parts[1];
+      for (let i = 0; i < 100 && !math.snapshot; i++) {
+        await new Promise((r) => setTimeout(r, 100));
+        math = (await (await get(`/api/v1/inbox/${id}`)).json()).parts[1];
+      }
+      expect(math.snapshot).toBe("part-2.png");
+      expect((await (await get(`/poll?after=${cursor}`)).json()).events.some((e: any) => e.type === "signal" && e.signal.type === "inbox" && e.signal.id === id && e.signal.snapshot === true)).toBe(true);
     }
   });
 
@@ -251,5 +258,152 @@ describe("a make (BoardMake): being made → landed, or couldn't make", () => {
     raw.making.boot = "another-process";
     writeFileSync(join(vault, "boards", ".inbox", stale.id, "entry.json"), JSON.stringify(raw));
     expect(listEntries(vault).entries.find((x) => x.id === stale.id)?.failed).toMatch(/restarted/);
+  });
+});
+
+describe("speed: one warm browser, parts checked in parallel, a make streamed part by part", () => {
+  let home: string;
+  let vault: string;
+  beforeAll(() => {
+    home = tmp();
+    vault = makeVault(join(home, "vault"));
+    mkdirSync(join(vault, "w"), { recursive: true });
+    writeFileSync(join(vault, "w", "lec.pdf"), makePdf([1, 2, 3].map((n) => textPage(`Page ${n}`, ["x"]))));
+    writeFileSync(join(vault, "w", "plot.svg"), SVG);
+    writeFileSync(join(vault, "w", "a.ts"), WIDGET_OK);
+    writeFileSync(join(vault, "w", "b.ts"), WIDGET_OK.replace("#1f5bd6", "#d61f5b"));
+  });
+  afterAll(() => {
+    stopWarmBrowser();
+    cleanup(home);
+  });
+
+  const page = `<!doctype html><meta charset="utf-8"><pre id="vc-result"></pre><script>document.getElementById("vc-result").textContent="ok"</script>`;
+  const FRAC_BAD = "$" + String.fromCharCode(92) + "frac{1$";
+
+  it.skipIf(!browser)("the headless checks share one warm browser (a tab each), and a browser that died is started again", async () => {
+    stopWarmBrowser();
+    await new Promise((r) => setTimeout(r, 400));
+    const before = { ...headlessStats };
+    const [a, b] = await Promise.all([headless(page, { w: 200, h: 100 }), headless(page, { w: 300, h: 120 })]);
+    const c = await headless(page, { w: 200, h: 100, shot: false });
+    expect([a.verdict, b.verdict, c.verdict]).toEqual(["ok", "ok", "ok"]);
+    expect(a.png!.readUInt32BE(16)).toBe(400); // 2×, the size this check asked for
+    expect(b.png!.readUInt32BE(16)).toBe(600);
+    expect(c.png).toBeNull();
+    expect(headlessStats.launches - before.launches).toBe(1);
+    expect(headlessStats.warmChecks - before.warmChecks).toBe(3);
+    expect(headlessStats.oneShotChecks).toBe(before.oneShotChecks);
+    // It dies: the next check starts it again.
+    const pid = warmBrowserPid()!;
+    expect(pid).toBeGreaterThan(0);
+    process.kill(pid, "SIGKILL");
+    for (let i = 0; i < 50 && warmBrowserPid() === pid; i++) await new Promise((r) => setTimeout(r, 100));
+    expect((await headless(page, { w: 200, h: 100 })).verdict).toBe("ok");
+    expect(warmBrowserPid()).not.toBe(pid);
+    expect(headlessStats.launches - before.launches).toBe(2);
+  });
+
+  it("parts are checked in parallel: landed and refused in send order", async () => {
+    const logs: any[] = [];
+    const parts: any[] = [
+      { kind: "pdf", path: "w/lec.pdf", pages: [1, 2, 3] },
+      { kind: "math", label: "Problem 1", markdown: "$x+1$" },
+      { kind: "image", path: "w/plot.svg", alt: "a line" },
+      { kind: "math", label: "Problem 2", markdown: "$x^2$" },
+      ...(browser ? [{ kind: "widget", path: "w/a.ts", alt: "blue" }, { kind: "widget", path: "w/b.ts", alt: "red" }] : []),
+    ];
+    const r = await sendEntry(vault, { title: "Parallel", parts }, { log: (x) => logs.push(x) });
+    expect(r).toMatchObject({ ok: true, parts: parts.length });
+    const id = (r as any).id;
+    const e = readEntry(vault, id)!;
+    expect(e.parts.map((p) => p.kind)).toEqual(parts.map((p) => p.kind));
+    expect(e.parts.map((p) => p.label ?? null)).toEqual(parts.map((p) => p.label ?? null));
+    expect((e.parts[1] as any).html).toBe("part-2.html");
+    expect((e.parts[3] as any).html).toBe("part-4.html");
+    // Every phase is a line with the entry's id; the parts' checks overlapped (the send took less than their sum).
+    const partLines = logs.filter((l) => l.ev === "inbox.phase" && l.phase === "part");
+    expect(partLines.map((l) => l.part).sort()).toEqual(parts.map((_, i) => i + 1));
+    expect(logs.filter((l) => l.ev !== "inbox.send.start").every((l) => l.id === id)).toBe(true);
+    const landed = logs.find((l) => l.ev === "inbox.send.landed");
+    if (browser) expect(landed.t).toBeLessThan(partLines.reduce((s, l) => s + l.ms, 0));
+    // Refusals in order, whichever check finished first.
+    const bad = await sendEntry(vault, { title: "Bad", parts: [{ kind: "pdf", path: "w/lec.pdf", pages: [9] }, { kind: "math", markdown: FRAC_BAD }, { kind: "image", path: "w/plot.svg", alt: "ok" }, { kind: "image", path: "w/nope.svg", alt: "x" }] });
+    expect(bad.ok).toBe(false);
+    expect((bad as any).refusals.map((x: string) => x.split(":")[0])).toEqual(["part 1", "part 2", "part 4"]);
+    await inboxSettled();
+  });
+
+  it("a make streams: each `more` send lands its parts at once and keeps it being made; the last send finishes it", async () => {
+    const events: any[] = [];
+    const ctx = { conversation: "c1", emit: (e: any) => events.push(e) };
+    const m = startMake(vault, { title: "Problem set", request: "three problems" }, ctx);
+    expect(events.at(-1)).toMatchObject({ id: m.id, making: true, parts: 0 });
+    // The first part lands while the rest are still being made.
+    const one = await sendEntry(vault, { make: m.id, title: "Problem set", more: true, parts: [{ kind: "math", label: "Problem 1", markdown: "$a+b$" }] }, ctx);
+    expect(one).toMatchObject({ ok: true, id: m.id, parts: 1, making: true });
+    expect(events.at(-1)).toMatchObject({ type: "inbox", id: m.id, making: true, parts: 1 });
+    expect(events.at(-1).landed).toBeUndefined();
+    let sum = listEntries(vault).entries.find((x) => x.id === m.id)!;
+    expect(sum).toMatchObject({ making: true, status: "unread", parts: [{ kind: "math", label: "Problem 1", n: 1 }] });
+    // A refused part: nothing of that send lands; the entry keeps its first part and is still being made.
+    const bad = await sendEntry(vault, { make: m.id, title: "Problem set", more: true, parts: [{ kind: "math", label: "Problem 2", markdown: FRAC_BAD }] }, ctx);
+    expect(bad.ok).toBe(false);
+    expect((bad as any).refusals[0]).toMatch(/^part 1: KaTeX/);
+    expect(readEntry(vault, m.id)).toMatchObject({ parts: [{ label: "Problem 1" }], making: { request: "three problems" } });
+    // Two sends at once land one after the other, numbered in order.
+    const [two, three] = await Promise.all([
+      sendEntry(vault, { make: m.id, title: "Problem set", more: true, parts: [{ kind: "math", label: "Problem 2", markdown: "$c$" }] }, ctx),
+      sendEntry(vault, { make: m.id, title: "Problem set", more: true, parts: [{ kind: "math", label: "Problem 3", markdown: "$d$" }] }, ctx),
+    ]);
+    expect([two.ok, three.ok]).toEqual([true, true]);
+    const mid = readEntry(vault, m.id)!;
+    expect(mid.parts.map((p) => [p.label, (p as any).html])).toEqual([
+      ["Problem 1", "part-1.html"],
+      ["Problem 2", "part-2.html"],
+      ["Problem 3", "part-3.html"],
+    ]);
+    expect(existsSync(join(vault, "boards", ".inbox", m.id, "part-3.html"))).toBe(true);
+    // `more` is only for a make.
+    expect(await sendEntry(vault, { title: "x", more: true, parts: [{ kind: "math", markdown: "$x$" }] })).toMatchObject({ ok: false, refusals: [expect.stringMatching(/^more: only with make/)] });
+    // The last send (no parts of its own here) finishes it.
+    const done = await sendEntry(vault, { make: m.id, title: "Problem set", note: "Three, easiest first.", parts: [] }, ctx);
+    expect(done).toMatchObject({ ok: true, id: m.id, parts: 3 });
+    expect(done).not.toHaveProperty("making");
+    expect(events.filter((x) => x.landed)).toEqual([expect.objectContaining({ id: m.id, landed: true, parts: 3 })]);
+    const back = readEntry(vault, m.id)!;
+    expect(back.making).toBeUndefined();
+    expect(back.note).toBe("Three, easiest first.");
+    sum = listEntries(vault).entries.find((x) => x.id === m.id)!;
+    expect(sum.making).toBe(false);
+    expect(sum.parts).toHaveLength(3);
+    expect(await sendEntry(vault, { make: m.id, title: "x", more: true, parts: [{ kind: "math", markdown: "$x$" }] })).toMatchObject({ ok: false });
+    await inboxSettled();
+  });
+
+  it("a make that dies after some parts landed keeps them, and says it is unfinished", async () => {
+    const m = startMake(vault, { title: "Half", request: "two" });
+    expect((await sendEntry(vault, { make: m.id, title: "Half", more: true, parts: [{ kind: "image", path: "w/plot.svg", alt: "a line" }] })).ok).toBe(true);
+    expect(failMake(vault, m.id, "the maker ran out of time")).toBe(true);
+    const sum = listEntries(vault).entries.find((x) => x.id === m.id)!;
+    expect(sum).toMatchObject({ making: false, failed: "the maker ran out of time", parts: [{ kind: "image" }] });
+    // A send after it failed is refused: it never turns into a finished entry.
+    expect(await sendEntry(vault, { make: m.id, title: "Half", parts: [] })).toMatchObject({ ok: false, refusals: [expect.stringMatching(/already failed/)] });
+  });
+
+  it.skipIf(!browser)("a math part's snapshot comes after the entry landed, as its own event", async () => {
+    const events: any[] = [];
+    const r = await sendEntry(vault, { title: "Snap", parts: [{ kind: "math", markdown: "Let $x_n = 1/n$." }] }, { emit: (e) => events.push(e) });
+    expect(r.ok).toBe(true);
+    const id = (r as any).id;
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ landed: true });
+    expect(readEntry(vault, id)!.parts[0]).not.toHaveProperty("snapshot");
+    await inboxSettled();
+    const e = readEntry(vault, id)!;
+    expect(e.parts[0]).toMatchObject({ snapshot: "part-1.png" });
+    expect((e.parts[0] as any).h).toBeGreaterThan(10);
+    expect(events.at(-1)).toMatchObject({ id, snapshot: true });
+    expect(existsSync(join(vault, "boards", ".inbox", id, "part-1.png"))).toBe(true);
   });
 });

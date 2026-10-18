@@ -16,14 +16,26 @@
 //   widget — esbuild bundles it, and it mounts without throwing in a headless
 //            Chromium (server/headless.ts), which also takes its PNG snapshot
 //
+// Parts are checked in parallel (at most CHECKS at once; results and refusals
+// in send order). A math part's snapshot is taken after the entry lands (it is
+// for the agent and the overview; the board typesets the math itself), and
+// lands as a second event. A make streams: each BoardSend {make, more:true}
+// adds its parts to the entry still being made, the last send (no `more`)
+// finishes it.
+//
 // "Add to board" copies a part's files into the board's assets/ (named by
 // their content, so a PDF added twice is stored once) and returns the items
 // for the app to place. Every change pushes {type:"inbox"} on the /poll ring.
+//
+// Timings: one line per phase in the box's board log (<state>/logs/board.jsonl,
+// ev "inbox.*", the entry id on every line).
 import { createHash, randomBytes } from "node:crypto";
 import { createRequire } from "node:module";
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
-import { dirname, extname, join } from "node:path";
+import { homedir } from "node:os";
+import { dirname, extname, join, resolve } from "node:path";
+import { boxLogs } from "./boxLogs";
 import { ASSETS_DIR, imageSize, slugify, validSlug } from "../src/boardFormat";
 import {
   ENTRY_FILE,
@@ -48,11 +60,92 @@ import { boardDir, ensureBoardsHidden, type Out } from "./boards";
 // one, and voice.ts brings the app's command modules with it.
 const voicePath = async (vault: string, p: unknown, mode: "read" | "write") => (await import("./voice")).voicePath(vault, p, mode);
 import { writeAtomic, renameRetry } from "./atomic";
-import { findBrowser, headless } from "./headless";
+import { findBrowser, headless, warmUp } from "./headless";
 import { katexCss } from "./katexCss";
 
-export type InboxEvent = { type: "inbox"; id: string; status: string; title: string; landed?: boolean; failed?: string };
-export type InboxCtx = { conversation?: string; stateDir?: string; emit?: (ev: InboxEvent) => void };
+/**
+ * On /poll. `landed`: the entry is done (a direct send, or a make's last send). `making` + `parts`: a make's
+ * parts so far (`parts`: how many). `snapshot`: a part's snapshot came in after the entry landed.
+ */
+export type InboxEvent = { type: "inbox"; id: string; status: string; title: string; landed?: boolean; failed?: string; making?: boolean; parts?: number; snapshot?: boolean };
+/** `log`: where the timing lines go (default: the box's board log under `stateDir`). */
+export type InboxCtx = { conversation?: string; stateDir?: string; emit?: (ev: InboxEvent) => void; log?: (rec: Record<string, unknown>) => void };
+
+// ---------------------------------------------------------------- timings
+
+/** The timing sink: ctx.log, else the board log in the state dir (the server's own default on the box), else none. */
+function sinkOf(ctx: InboxCtx): ((rec: Record<string, unknown>) => void) | null {
+  if (ctx.log) return ctx.log;
+  const dir = ctx.stateDir ?? process.env.VC_STATE_DIR ?? (process.env.NODE_ENV === "production" ? join(homedir(), ".local", "state", "vault-chat-server") : null);
+  return dir ? (rec) => boxLogs(dir).board.append(rec) : null;
+}
+
+/** One timing line: `ev` is "inbox.<phase>", `ms` the phase's own time, `t` ms since the send (or make) began. */
+export function inboxLog(ctx: InboxCtx, ev: string, rec: Record<string, unknown>): void {
+  try {
+    sinkOf(ctx)?.({ at: new Date().toISOString(), ev: `inbox.${ev}`, ...rec });
+  } catch {
+    /* logging never breaks a send */
+  }
+}
+
+/** Run `f`, log its time as `phase` with `rec`. */
+async function timed<T>(ctx: InboxCtx, phase: string, rec: Record<string, unknown>, f: () => Promise<T> | T): Promise<T> {
+  const t0 = performance.now();
+  try {
+    return await f();
+  } finally {
+    inboxLog(ctx, "phase", { phase, ...rec, ms: Math.round(performance.now() - t0) });
+  }
+}
+
+// ---------------------------------------------------------------- one at a time per entry
+
+const locks = new Map<string, Promise<unknown>>();
+/** `f` after every earlier call for the same entry (a make's sends and its snapshots never interleave). */
+function withLock<T>(id: string, f: () => Promise<T>): Promise<T> {
+  const prev = locks.get(id) ?? Promise.resolve();
+  const run = prev.then(f, f);
+  const tail = run.catch(() => {});
+  locks.set(id, tail);
+  void tail.then(() => locks.get(id) === tail && locks.delete(id));
+  return run;
+}
+
+/** Work that runs after an entry landed (math snapshots). */
+const after = new Set<Promise<unknown>>();
+/** Resolves when the after-landing work started so far is done (tests, the bench). */
+export async function inboxSettled(): Promise<void> {
+  while (after.size) await Promise.all([...after]);
+}
+
+/** `items` mapped by `f` with at most `n` at once; results in order. */
+async function pool<T, R>(items: T[], n: number, f: (x: T, i: number) => Promise<R>): Promise<R[]> {
+  const out: R[] = new Array(items.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < items.length) {
+      const i = next++;
+      out[i] = await f(items[i]!, i);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(n, items.length) }, worker));
+  return out;
+}
+
+/**
+ * Load what the checks use before they need it: the headless browser and the typesetting and PDF modules (a
+ * cold first send otherwise spends seconds on them). Called when a make starts and when a send arrives.
+ */
+export function prewarm(): void {
+  warmUp();
+  void mathErrors("$x$").catch(() => {});
+  void typesetMath("x").catch(() => {});
+  void import("pdfjs-dist").catch(() => {});
+}
+
+/** Parts checked at once (each may hold a tab in the headless browser). */
+const CHECKS = 4;
 
 /** This server process (a make that was running in another one is gone). */
 export const INBOX_BOOT = randomBytes(6).toString("hex");
@@ -155,83 +248,153 @@ export function startMake(vault: string, a: { title: string; request: string }, 
     making: { request: String(a.request ?? "").slice(0, 4000), startedAt: Date.now(), boot: INBOX_BOOT },
   };
   writeEntry(vault, e);
-  ctx.emit?.({ type: "inbox", id: e.id, status: e.status, title: e.title });
+  ctx.emit?.({ type: "inbox", id: e.id, status: e.status, title: e.title, making: true, parts: 0 });
+  inboxLog(ctx, "make.start", { id: e.id });
+  prewarm();
   return e;
 }
 
-/** A make that ended without a send: "couldn't make: <reason>". No-op once it landed. */
+/**
+ * A make that ended without its last send: "couldn't make: <reason>". The parts it already sent stay (each passed
+ * the checks), with `failed` saying it is unfinished. No-op once it landed.
+ */
 export function failMake(vault: string, id: string, reason: string, ctx: InboxCtx = {}): boolean {
   const e = readEntry(vault, id);
   if (!e || !e.making || e.failed) return false;
   e.failed = oneLine(reason, 300) || "the make ended without sending anything";
   writeEntry(vault, e);
-  ctx.emit?.({ type: "inbox", id, status: e.status, title: e.title, failed: e.failed });
+  ctx.emit?.({ type: "inbox", id, status: e.status, title: e.title, failed: e.failed, parts: e.parts.length });
+  inboxLog(ctx, "make.failed", { id, parts: e.parts.length, ms: Date.now() - (e.making.startedAt ?? e.createdAt) });
   return true;
 }
 
 // ---------------------------------------------------------------- the validated send
 
-export type SendResult = { ok: true; id: string; parts: number } | { ok: false; refusals: string[] };
+export type SendResult = { ok: true; id: string; parts: number; making?: boolean } | { ok: false; refusals: string[] };
 
-/** The send: `{title, note?, parts, make?}` (`make`: the id of a "being made" entry this send fills). */
+/**
+ * The send: `{title, note?, parts, make?, more?}`. `make`: the id of a "being made" entry this send fills; with
+ * `more: true` its parts are added and the entry stays being made (the maker sends each part as soon as it is
+ * made), without it the send finishes the entry (its parts, possibly none, are the last).
+ */
 export async function sendEntry(vault: string, body: any, ctx: InboxCtx = {}): Promise<SendResult> {
+  const make = typeof body?.make === "string" ? body.make : null;
+  if (body?.make !== undefined && make && validEntryId(make)) return withLock(make, () => send(vault, body, ctx));
+  return send(vault, body, ctx);
+}
+
+async function send(vault: string, body: any, ctx: InboxCtx): Promise<SendResult> {
+  const t0 = performance.now();
+  const since = () => Math.round(performance.now() - t0);
   const refusals: string[] = [];
-  const title = oneLine(body?.title, 120);
-  if (!title) refusals.push("title: a one-line title is required");
-  const note = oneLine(body?.note, 300);
   const raw: unknown[] = Array.isArray(body?.parts) ? body.parts : [];
-  if (!raw.length) refusals.push("parts: at least one part is required");
-  if (raw.length > MAX_PARTS) refusals.push(`parts: at most ${MAX_PARTS} per send`);
+  const more = body?.more === true;
   let target: Entry | null = null;
   if (body?.make !== undefined) {
     target = typeof body.make === "string" ? readEntry(vault, body.make) : null;
     if (!target) refusals.push(`make: no entry ${String(body.make).slice(0, 80)} is being made`);
     else if (!target.making) refusals.push(`make: ${target.id} was already sent`);
+    else if (target.failed) refusals.push(`make: ${target.id} already failed (${target.failed})`);
+  } else if (more) refusals.push("more: only with make (the parts of an entry being made)");
+  const have = target?.making ? target.parts.length : 0;
+  const title = oneLine(body?.title, 120) || (target?.making ? target.title : "");
+  if (!title) refusals.push("title: a one-line title is required");
+  const note = body?.note !== undefined ? oneLine(body?.note, 300) : (target?.note ?? "");
+  if (!raw.length && !have) refusals.push("parts: at least one part is required");
+  if (have + raw.length > MAX_PARTS) refusals.push(`parts: at most ${MAX_PARTS} per entry`);
+  const id = target?.id ?? (refusals.length ? "" : newId(vault, title));
+  inboxLog(ctx, "send.start", { id: id || null, make: !!target, more, parts: raw.length, have });
+  if (refusals.length) {
+    inboxLog(ctx, "send.refused", { id: id || null, refusals: refusals.length, t: since() });
+    return { ok: false, refusals };
   }
-  if (refusals.length) return { ok: false, refusals };
 
-  const id = target?.id ?? newId(vault, title);
+  if (raw.some((p: any) => p?.kind === "widget" || p?.kind === "math")) warmUp();
   const dir = entryPath(vault, id)!;
-  const files: { name: string; data: Buffer | string }[] = [];
-  const parts: Part[] = [];
-  for (let n = 0; n < raw.length && n < MAX_PARTS; n++) {
+  const checked = await pool(raw, CHECKS, async (p, n) => {
     const where = `part ${n + 1}`;
+    const tm = { ctx, rec: { id, part: have + n + 1, kind: (p as any)?.kind ?? null } };
     try {
-      const r = await checkPart(vault, raw[n], n, where);
-      if (typeof r === "string") refusals.push(`${where}: ${r}`);
-      else {
-        parts.push(r.part);
-        files.push(...r.files);
-      }
+      return await timed(ctx, "part", tm.rec, () => checkPart(vault, p, have + n, tm));
     } catch (e) {
-      refusals.push(`${where}: ${(e as Error)?.message ?? String(e)}`);
+      return `${where}: ${(e as Error)?.message ?? String(e)}`;
     }
+  });
+  const parts: Part[] = [];
+  const files: { name: string; data: Buffer | string }[] = [];
+  const snaps: { n: number; html: string }[] = [];
+  checked.forEach((r, n) => {
+    if (typeof r === "string") refusals.push(r.startsWith(`part ${n + 1}: `) ? r : `part ${n + 1}: ${r}`);
+    else {
+      parts.push(r.part);
+      files.push(...r.files);
+      if (r.snapshot) snaps.push({ n: have + n, html: r.snapshot });
+    }
+  });
+  if (refusals.length) {
+    inboxLog(ctx, "send.refused", { id, refusals: refusals.length, t: since() });
+    return { ok: false, refusals };
   }
-  if (refusals.length) return { ok: false, refusals };
 
-  mkdirSync(dir, { recursive: true });
-  for (const f of files) {
-    const p = join(dir, f.name);
-    writeFileSync(`${p}.tmp`, f.data);
-    renameRetry(`${p}.tmp`, p);
+  await timed(ctx, "write", { id, files: files.length }, () => {
+    mkdirSync(dir, { recursive: true });
+    for (const f of files) {
+      const p = join(dir, f.name);
+      writeFileSync(`${p}.tmp`, f.data);
+      renameRetry(`${p}.tmp`, p);
+    }
+    const e: Entry = {
+      id,
+      title,
+      note,
+      ...(ctx.conversation || target?.from ? { from: { conversation: ctx.conversation ?? target?.from?.conversation } } : {}),
+      createdAt: target?.createdAt ?? Date.now(),
+      parts: [...(target?.parts ?? []), ...parts],
+      status: target?.status ?? "unread",
+      ...(target?.added ? { added: target.added } : {}),
+      ...(more && target?.making ? { making: target.making } : {}),
+    };
+    writeEntry(vault, e);
+  });
+  const total = have + parts.length;
+  ctx.emit?.(more ? { type: "inbox", id, status: target?.status ?? "unread", title, making: true, parts: total } : { type: "inbox", id, status: target?.status ?? "unread", title, landed: true, parts: total });
+  inboxLog(ctx, "send.landed", { id, more, parts: parts.length, total, t: since(), ...(target?.making && !more ? { makeMs: Date.now() - target.making.startedAt } : {}) });
+  if (snaps.length && findBrowser()) {
+    const job = snapshotsAfter(vault, id, snaps, ctx).catch(() => {});
+    after.add(job);
+    void job.finally(() => after.delete(job));
   }
-  const e: Entry = {
-    id,
-    title,
-    note,
-    ...(ctx.conversation || target?.from ? { from: { conversation: ctx.conversation ?? target?.from?.conversation } } : {}),
-    createdAt: target?.createdAt ?? Date.now(),
-    parts,
-    status: "unread",
-  };
-  writeEntry(vault, e);
-  ctx.emit?.({ type: "inbox", id, status: e.status, title, landed: true });
-  return { ok: true, id, parts: parts.length };
+  return { ok: true, id, parts: total, ...(more ? { making: true } : {}) };
 }
 
-type Checked = { part: Part; files: { name: string; data: Buffer | string }[] } | string;
+/** Math snapshots, after the entry landed: each one is written into its part, with an event. */
+async function snapshotsAfter(vault: string, id: string, snaps: { n: number; html: string }[], ctx: InboxCtx): Promise<void> {
+  await pool(snaps, 2, async ({ n, html }) => {
+    const shot = await timed(ctx, "mathShot", { id, part: n + 1, after: true }, () => mathSnapshot(html)).catch(() => null);
+    if (!shot) return;
+    await withLock(id, async () => {
+      const e = readEntry(vault, id);
+      const p = e?.parts[n];
+      if (!e || !p || p.kind !== "math" || p.html !== `part-${n + 1}.html`) return;
+      const dir = entryPath(vault, id)!;
+      writeFileSync(join(dir, `part-${n + 1}.png.tmp`), shot.png);
+      renameRetry(join(dir, `part-${n + 1}.png.tmp`), join(dir, `part-${n + 1}.png`));
+      p.snapshot = `part-${n + 1}.png`;
+      if (shot.h) (p as any).h = shot.h;
+      writeEntry(vault, e);
+      ctx.emit?.({ type: "inbox", id, status: e.status, title: e.title, snapshot: true, ...(e.making && !e.failed ? { making: true } : {}), parts: e.parts.length });
+    });
+  });
+}
 
-async function checkPart(vault: string, p: any, n: number, where: string): Promise<Checked> {
+/** A part's checks' timing: each phase is one line with the entry id and the part's number. */
+type Tm = { ctx: InboxCtx; rec: Record<string, unknown> };
+const phase = <T>(tm: Tm | undefined, name: string, f: () => Promise<T> | T): Promise<T> => (tm ? timed(tm.ctx, name, tm.rec, f) : Promise.resolve().then(f));
+
+/** A checked part, its files, and (math) the typeset html whose snapshot is taken after the entry lands. */
+type Checked = { part: Part; files: { name: string; data: Buffer | string }[]; snapshot?: string } | string;
+
+async function checkPart(vault: string, p: any, n: number, tm?: Tm): Promise<Checked> {
   if (!p || typeof p !== "object") return "not a part";
   const base: { label?: string; width?: number } = {};
   if (p.label !== undefined) base.label = oneLine(p.label, 80);
@@ -242,17 +405,16 @@ async function checkPart(vault: string, p: any, n: number, where: string): Promi
   }
   switch (p.kind) {
     case "pdf":
-      return checkPdf(vault, p, base);
+      return checkPdf(vault, p, base, tm);
     case "math":
-      return checkMath(p, base, n);
+      return checkMath(p, base, n, tm);
     case "image":
-      return checkImage(vault, p, base);
+      return checkImage(vault, p, base, tm);
     case "widget":
-      return checkWidget(vault, p, base, n);
+      return checkWidget(vault, p, base, n, tm);
     default:
       return `kind: one of pdf, math, image, widget (got ${JSON.stringify(p.kind ?? null)?.slice(0, 40)})`;
   }
-  void where;
 }
 
 async function vaultFile(vault: string, p: unknown): Promise<{ abs: string; rel: string } | string> {
@@ -276,17 +438,20 @@ async function pdfDoc(data: Uint8Array): Promise<any> {
   return pdfjs.getDocument({ data, isEvalSupported: false, disableFontFace: true, verbosity: 0 }).promise;
 }
 
-async function checkPdf(vault: string, p: any, base: object): Promise<Checked> {
-  const f = await vaultFile(vault, p.path);
+async function checkPdf(vault: string, p: any, base: object, tm?: Tm): Promise<Checked> {
+  const f = await phase(tm, "read", () => vaultFile(vault, p.path));
   if (typeof f === "string") return f;
   if (extname(f.rel).toLowerCase() !== ".pdf") return `path: ${f.rel} is not a .pdf`;
   const pages = parsePages(p.pages);
   if (typeof pages === "string") return pages;
   let count = 0;
   try {
-    const doc = await pdfDoc(new Uint8Array(readFileSync(f.abs)));
-    count = doc.numPages;
-    await doc.destroy?.();
+    count = await phase(tm, "pdf", async () => {
+      const doc = await pdfDoc(new Uint8Array(readFileSync(f.abs)));
+      const n = doc.numPages as number;
+      await doc.destroy?.();
+      return n;
+    });
   } catch (e) {
     return `path: ${f.rel} is not a readable PDF (${(e as Error).message})`;
   }
@@ -349,29 +514,47 @@ export async function typesetMath(markdown: string): Promise<string> {
   return renderToStaticMarkup(createElement(ReactMarkdown as any, { remarkPlugins, rehypePlugins, urlTransform: md.markdownUrlTransform }, md.prepareMarkdown(markdown)));
 }
 
-async function checkMath(p: any, base: object, n: number): Promise<Checked> {
+async function checkMath(p: any, base: object, n: number, tm?: Tm): Promise<Checked> {
   const markdown = typeof p.markdown === "string" ? p.markdown : "";
   if (!markdown.trim()) return "markdown: the text is required";
   if (markdown.length > MAX_MATH_CHARS) return `markdown: at most ${MAX_MATH_CHARS} characters per part`;
-  const errs = await mathErrors(markdown);
+  const errs = await phase(tm, "katex", () => mathErrors(markdown));
   if (errs.length) return errs.join("; ");
-  const html = await typesetMath(markdown);
-  const files: { name: string; data: Buffer | string }[] = [{ name: `part-${n + 1}.html`, data: html }];
-  const part: Part = { kind: "math", ...base, markdown, html: `part-${n + 1}.html` };
-  // A snapshot for the agent and the board's overview, when the box has a browser.
-  if (findBrowser()) {
-    try {
-      const r = await headless(mathDocument(html, katexCss(), MATH_LAYOUT_W), { w: MATH_LAYOUT_W, h: 200, shot: (v) => Math.max(40, Math.min(4000, Number(json(v)?.h) || 0)) || null });
-      if (r.png) {
-        files.push({ name: `part-${n + 1}.png`, data: r.png });
-        (part as any).snapshot = `part-${n + 1}.png`;
-        (part as any).h = Number(json(r.verdict)?.h) || undefined;
-      }
-    } catch {
-      /* no snapshot: the overview shows the label */
-    }
+  const html = await phase(tm, "typeset", () => typesetMath(markdown));
+  // Its snapshot (for the agent and the board's overview) is taken after the entry lands (snapshotsAfter).
+  return { part: { kind: "math", ...base, markdown, html: `part-${n + 1}.html` }, files: [{ name: `part-${n + 1}.html`, data: html }], snapshot: html };
+}
+
+/** The typeset math's PNG and height (css px), or null (no browser, or it did not render). Cached by its html. */
+async function mathSnapshot(html: string): Promise<{ png: Buffer; h: number | undefined } | null> {
+  if (!findBrowser()) return null;
+  const k = sha(html);
+  const hit = cacheGet(shotCache, k);
+  if (hit) return hit;
+  const r = await headless(mathDocument(html, katexCss(), MATH_LAYOUT_W), { w: MATH_LAYOUT_W, h: 200, shot: (v) => Math.max(40, Math.min(4000, Number(json(v)?.h) || 0)) || null });
+  if (!r.png) return null;
+  const out = { png: r.png, h: Number(json(r.verdict)?.h) || undefined };
+  cacheSet(shotCache, k, out);
+  return out;
+}
+
+// Small caches, so a send the agent repeats after fixing one part (or a make that resends) redoes nothing it did.
+const CACHE_MAX = 64;
+const shotCache = new Map<string, { png: Buffer; h: number | undefined }>();
+const mountCache = new Map<string, { error: null; png: Buffer | null }>();
+const bundleCache = new Map<string, { inputs: [string, string][]; js: string }>();
+const sha = (x: string | Buffer) => createHash("sha256").update(x).digest("hex");
+function cacheGet<V>(m: Map<string, V>, k: string): V | undefined {
+  const v = m.get(k);
+  if (v !== undefined) {
+    m.delete(k);
+    m.set(k, v);
   }
-  return { part, files };
+  return v;
+}
+function cacheSet<V>(m: Map<string, V>, k: string, v: V): void {
+  m.set(k, v);
+  while (m.size > CACHE_MAX) m.delete(m.keys().next().value!);
 }
 
 // ---- image
@@ -413,16 +596,16 @@ export function svgCheck(text: string): { w: number; h: number } | string {
   return { w: Math.round(w * 10) / 10, h: Math.round(h * 10) / 10 };
 }
 
-async function checkImage(vault: string, p: any, base: object): Promise<Checked> {
+async function checkImage(vault: string, p: any, base: object, tm?: Tm): Promise<Checked> {
   const alt = oneLine(p.alt, 300);
-  const f = await vaultFile(vault, p.path);
+  const f = await phase(tm, "read", () => vaultFile(vault, p.path));
   if (typeof f === "string") return f;
   if (!alt) return "alt: one line saying what it shows is required";
   const ext = extname(f.rel).toLowerCase();
   if (![".png", ".jpg", ".jpeg", ".webp", ".svg"].includes(ext)) return `path: ${f.rel} is not a PNG, JPEG, WebP or SVG`;
   const size = statSync(f.abs).size;
   if (size > MAX_IMAGE_BYTES) return `${f.rel} is ${(size / 1048576).toFixed(1)} MB; the limit is 20 MB`;
-  const buf = readFileSync(f.abs);
+  const buf = await phase(tm, "readImage", () => readFileSync(f.abs));
   let dim: { w: number; h: number } | null;
   if (ext === ".svg") {
     const r = svgCheck(buf.toString("utf8"));
@@ -476,11 +659,26 @@ export function loadEsbuild(stateDir?: string): Promise<any> {
   }));
 }
 
-/** The widget module bundled for the page (an IIFE exporting into __vcWidget), or esbuild's reasons. */
+/** The files a cached bundle was built from still say what they said. */
+function sameInputs(inputs: [string, string][]): boolean {
+  try {
+    return inputs.every(([f, h]) => sha(readFileSync(f)) === h);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The widget module bundled for the page (an IIFE exporting into __vcWidget), or esbuild's reasons. Cached: a
+ * module whose files (it and what it imports) are unchanged is not bundled again.
+ */
 export async function bundleWidget(abs: string, stateDir?: string): Promise<{ js: string } | { error: string }> {
+  const hit = cacheGet(bundleCache, abs);
+  if (hit && sameInputs(hit.inputs)) return { js: hit.js };
   const esbuild = await loadEsbuild(stateDir);
   try {
     const r = await esbuild.build({
+      metafile: true,
       entryPoints: [abs],
       bundle: true,
       write: false,
@@ -494,6 +692,17 @@ export async function bundleWidget(abs: string, stateDir?: string): Promise<{ js
     });
     const js = r.outputFiles?.[0]?.text ?? "";
     if (js.length > MAX_WIDGET_BYTES * 4) return { error: `the bundle is ${Math.round(js.length / 1024)} KB; keep a widget small (no large libraries)` };
+    // Its inputs (paths relative to esbuild's working directory) and their hashes: the cache's check.
+    const inputs: [string, string][] = [];
+    for (const f of Object.keys(r.metafile?.inputs ?? {})) {
+      try {
+        const a = resolve(f);
+        inputs.push([a, sha(readFileSync(a))]);
+      } catch {
+        /* a virtual input */
+      }
+    }
+    if (inputs.length) cacheSet(bundleCache, abs, { inputs, js });
     return { js };
   } catch (e: any) {
     const errs: any[] = e?.errors ?? [];
@@ -503,14 +712,19 @@ export async function bundleWidget(abs: string, stateDir?: string): Promise<{ js
 
 /** Mount the bundled widget headless: "ok" or what it threw, and its snapshot. */
 export async function checkWidgetMount(js: string, layout: { w: number; h: number }): Promise<{ error: string | null; png: Buffer | null }> {
+  // A bundle that mounted cleanly at this size mounts the same way again (only a pass is remembered).
+  const k = `${sha(js)}:${layout.w}x${layout.h}`;
+  const hit = cacheGet(mountCache, k);
+  if (hit) return hit;
   const r = await headless(widgetDocument(js, layout), { w: layout.w, h: layout.h, budgetMs: 1500 });
   if (r.verdict === null) return { error: "the page never reported (the bundle did not run)", png: r.png };
+  if (r.verdict === "ok") cacheSet(mountCache, k, { error: null, png: r.png });
   return { error: r.verdict === "ok" ? null : r.verdict.split("\n").slice(0, 4).join(" | ").slice(0, 600), png: r.png };
 }
 
-async function checkWidget(vault: string, p: any, base: object, n: number): Promise<Checked> {
+async function checkWidget(vault: string, p: any, base: object, n: number, tm?: Tm): Promise<Checked> {
   const alt = oneLine(p.alt, 300);
-  const f = await vaultFile(vault, p.path);
+  const f = await phase(tm, "read", () => vaultFile(vault, p.path));
   if (typeof f === "string") return f;
   if (!alt) return "alt: one line saying what it shows is required";
   if (![".ts", ".js", ".mts", ".mjs"].includes(extname(f.rel).toLowerCase())) return `path: ${f.rel} is not a TypeScript (or JavaScript) module`;
@@ -523,10 +737,10 @@ async function checkWidget(vault: string, p: any, base: object, n: number): Prom
   }
   const tex = WIDGET_TEX.exec(readFileSync(f.abs, "utf8"));
   if (tex) return `${f.rel} writes TeX (${tex[0].replace(/^\\+/, "\\")}) that a widget would show raw: use Unicode (γ, ‖V‖∞, Vₖ₊₁, ≤) in the widget, or send the formula as a math part beside it`;
-  const b = await bundleWidget(f.abs);
+  const b = await phase(tm, "bundle", () => bundleWidget(f.abs));
   if ("error" in b) return `it does not build: ${b.error}`;
   if (!findBrowser()) return "widgets can't be checked: there is no headless browser on the box (install Chromium or set VC_HEADLESS_BROWSER)";
-  const m = await checkWidgetMount(b.js, layout);
+  const m = await phase(tm, "mount", () => checkWidgetMount(b.js, layout));
   if (m.error) return `it throws on mount: ${m.error}`;
   const files: { name: string; data: Buffer | string }[] = [{ name: `part-${n + 1}.widget.js`, data: b.js }];
   const part: Part = { kind: "widget", ...base, path: f.rel, alt, layout, bundle: `part-${n + 1}.widget.js` };

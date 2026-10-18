@@ -7,8 +7,10 @@
 // refused with its reasons and never reaches the inbox.
 //
 // An entry that a background make (BoardMake) is still producing exists from
-// the start with `making` set and no parts, so nothing is invisible; a make
-// that fails keeps the entry with `failed` set to the reason.
+// the start with `making` set, so nothing is invisible. While `making` is set,
+// `parts` holds the parts that already landed (each passed the checks), in
+// order; the make's last send clears `making`. A make that fails keeps the
+// entry, and any parts that landed, with `failed` set to the reason.
 
 export const INBOX_DIR = ".inbox"; // under boards/
 export const ENTRY_FILE = "entry.json";
@@ -56,7 +58,7 @@ export type Entry = {
   status: EntryStatus;
   /** Part index → where it went (the board and the items it became). */
   added?: Record<string, { board: string; items: string[]; at: number }>;
-  /** A background make still producing this entry (BoardMake). `boot`: the server process running it. */
+  /** A background make still producing this entry (BoardMake; `parts` so far). `boot`: the server process running it. */
   making?: { request: string; startedAt: number; boot?: string };
   /** Why a make failed (after its own retries). */
   failed?: string;

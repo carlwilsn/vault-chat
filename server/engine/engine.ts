@@ -32,8 +32,8 @@ import { patchMeta, readConv, allConvs, createConv, newMessageId, emitTo, pictur
 import { addWake, readWakes, removeWakes, nextWakeFor, parseDelay, type Wake } from "./wakes";
 import { Ledger } from "./ledger";
 import { pdfRead, webSearch } from "./extraTools";
-import { failMake, listEntries, readEntry, sendEntry, startMake, type InboxEvent } from "../inbox";
-import { BOARD_MAKER_PROMPT, boardMakeTask } from "./boardTools";
+import { failMake, inboxLog, listEntries, readEntry, sendEntry, startMake, type InboxEvent } from "../inbox";
+import { BOARD_MAKER_PROMPT, boardMakeTask, makerStats } from "./boardTools";
 import { startJob, jobStatus, jobList, jobStop, reapJobs, type PiJobEnv } from "./pi/jobs";
 import { ENGINE_ROLE_PROMPT } from "./prompt";
 import { isNoteTool, noteTool, noteToolSpecs } from "../notesTools";
@@ -264,6 +264,7 @@ export const ENGINE_TOOL_SPECS = [
         note: { type: "string" },
         parts: { type: "array", items: { type: "object" } },
         make: { type: "string", description: "Only inside a BoardMake: the id of the entry being made." },
+        more: { type: "boolean", description: "Only with make: these parts land now and the entry stays being made; the last send leaves it out." },
       },
       required: ["title", "parts"],
       additionalProperties: false,
@@ -1494,15 +1495,19 @@ export class Engine {
           const title = String(a.title ?? "").trim();
           if (!request || !title) return text("BoardMake needs a request and a title.");
           const entry = startMake(vault, { title, request }, { conversation: convId, emit: (ev) => this.inboxEvent(ev) });
+          const t0 = Date.now();
           const started = this.d.backend.background(p.threadId, {
             agent: { name: "board-maker", systemPrompt: BOARD_MAKER_PROMPT, tools: ["read", "bash", "edit", "write", "BoardSend"] },
             task: boardMakeTask(entry.id, title, request),
           });
+          inboxLog({}, "make.spawn", { id: entry.id, ms: Date.now() - t0 });
           void started
             .then((r: any) => {
-              // Landed: the send cleared `making`. Otherwise it failed: say why in the inbox.
+              // Where the time went: the whole make, and the maker's model calls (its own session file).
+              inboxLog({}, "make.done", { id: entry.id, ms: Date.now() - t0, ok: !!r?.ok, state: r?.state ?? null, model: r?.model ?? null, costUsd: r?.costUsd ?? null, ...(makerStats(r?.sessionFile) ?? {}) });
+              // Landed: the last send cleared `making`. Otherwise it failed: say why in the inbox.
               const e = readEntry(vault, entry.id);
-              if (e?.making) failMake(vault, entry.id, r?.ok ? "the maker finished without sending anything" : String(r?.text ?? r?.state ?? "the maker failed").split("\n")[0]!, { emit: (ev) => this.inboxEvent(ev) });
+              if (e?.making) failMake(vault, entry.id, r?.ok ? (e.parts.length ? "the maker stopped before its last send" : "the maker finished without sending anything") : String(r?.text ?? r?.state ?? "the maker failed").split("\n")[0]!, { emit: (ev) => this.inboxEvent(ev) });
             })
             .catch((err: Error) => failMake(vault, entry.id, err.message, { emit: (ev) => this.inboxEvent(ev) }));
           return text(`Making it in the background (inbox entry ${entry.id}, shown as being made). It lands in Carl's inbox when ready; don't wait for it.`);
