@@ -631,3 +631,60 @@ describe("i. Notes made on one surface, visible to the agent on another", () => 
     expect(backend.threads.map((x) => x.instructions).join("\n")).toContain("notes.jsonl");
   });
 });
+
+// ================================================================ stories from Carl's own history (school2, 2026-10)
+
+describe("j. Voice is asked for a small HTML edit; it hands it to pi as a project (IEMS 469 Course Notes Visuals, 2026-10-18)", () => {
+  let convId = "";
+  let result = "";
+  it("setup: voice's AskAgent with a project name, as the voice prompt invites", async () => {
+    const before = backend.turns.length;
+    result = (await voice.voiceTool(voiceDeps(), { name: "AskAgent", args: { task: "Make the section 7 figure in course-notes.html clearer.", project: "IEMS 469 Course Notes Visuals" } })).result;
+    convId = String(JSON.parse(result).conversationId ?? "");
+    if (!convId) throw new SetupError(`AskAgent: ${result}`);
+    await until(() => backend.turns.length > before);
+    backend.reply("On it.");
+    await until(async () => (await convs.readConv(vault, convId))?.state !== "running");
+  });
+  pass("j", "voice → pi hand-off", "the task reaches pi in a conversation of its own (source voice)", async () => {
+    const c = need(await convs.readConv(vault, convId), "conv");
+    expect(c.source).toBe("voice");
+  });
+  hole("j", "voice → pi hand-off", "a project needs Carl's yes, as in chat (pi's SetProject proposes; voice's AskAgent project creates it at once)", async () => {
+    const c = need(await convs.readConv(vault, convId), "conv");
+    expect(c.project ?? null).toBeNull();
+  });
+});
+
+describe("k. Board voice: \"look at the mark again\" (d1c77940-651, 2026-10-18)", () => {
+  let out = "";
+  let prompt = "";
+  it("setup: LookAtScreen through the box, and the box's voice prompt", async () => {
+    out = (await voice.voiceTool(voiceDeps(), { name: "LookAtScreen", args: {} })).result;
+    prompt = await boxVoicePrompt(null);
+  });
+  hole("k", "board / phone voice", "LookAtScreen gives a fresh look (on the box it is \"not available\")", () => {
+    expect(out).not.toMatch(/^Error/);
+  });
+  hole("k", "board / phone voice (prompt)", "the prompt does not promise a screen and an open PDF the phone and board don't have", () => {
+    expect(prompt).not.toContain("Don't claim you can't see the screen");
+  });
+});
+
+describe("l. Homework on the phone, then laptop voice from another chat: \"go over what I did on my phone\" (71ebf634-ff7)", () => {
+  let phone: Turn | null = null;
+  let p = "";
+  it("setup: a three-turn phone homework chat; laptop voice started from an older laptop chat", async () => {
+    const older = await turn({ text: "Quick check on lecture 4 notes.", client: "laptop" }, "Sure.");
+    phone = await turn({ text: "Fill in hw4 problem 2 in the same form as the others, don't answer everything.", client: "phone" }, "Filled in the setup for problem 2; parts (b) and (c) left for you.");
+    phone = await turn({ text: "Hint for 2(b)?", convId: phone.convId, client: "phone" }, "Use the epsilon-delta definition with delta = epsilon/3.");
+    phone = await turn({ text: "Thanks, I'll do (c) later.", convId: phone.convId, client: "phone" }, "Good plan.");
+    p = await boxVoicePrompt(older.convId);
+  });
+  pass("l", "laptop voice (session prompt)", "sees the phone chat's latest exchange", () => {
+    expect(p).toContain("I'll do (c) later");
+  });
+  hole("l", "laptop voice (session prompt)", "sees the phone chat's earlier turns (the hint it gave)", () => {
+    expect(p).toContain("delta = epsilon/3");
+  });
+});
