@@ -6,6 +6,11 @@ import { contentBounds } from "../../src/boardFormat";
 import * as api from "./api";
 import { icon } from "./icons";
 import { drawItem, drawStroke } from "./ink";
+import { blog } from "./log";
+
+/** The last pointer's kind (the name dialog logs what opened it: a finger, the Pencil, a mouse). */
+let lastPointer = "";
+if (typeof document !== "undefined") document.addEventListener("pointerdown", (e) => (lastPointer = e.pointerType), true);
 
 const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]!);
 
@@ -153,7 +158,7 @@ function nameDialog(root: HTMLElement, title: string, value: string, action: str
     <form class="material relative w-[min(340px,100%)] overflow-hidden rounded-[14px] text-center shadow-pop animate-lift-in">
       <div class="px-4 pb-4 pt-5">
         <div class="text-body font-semibold text-sys-label">${esc(title)}</div>
-        <input name="name" type="text" autocomplete="off" autocapitalize="sentences" enterkeyhint="done" maxlength="120" value="${esc(value)}"
+        <input name="name" type="text" inputmode="text" autocomplete="off" autocapitalize="sentences" enterkeyhint="done" maxlength="120" value="${esc(value)}"
           class="mt-3 h-10 w-full rounded-[10px] border-0 bg-card px-3 text-body text-sys-label outline-none ring-1 ring-sys-separator/30 focus:ring-2 focus:ring-sys-blue">
         <p class="err mt-2 hidden text-footnote text-[rgb(var(--sys-red))]"></p>
       </div>
@@ -167,6 +172,27 @@ function nameDialog(root: HTMLElement, title: string, value: string, action: str
   // Synchronously, still inside the opening tap's gesture: iOS raises the keyboard only for a focus made there.
   input.focus();
   input.select();
+  // Carl's iPad (v0.6.47, 2026-10-18): the keyboard still did not come up, and nothing logged why. The board's log
+  // now says how the dialog was opened, whether the field took focus and whether a keyboard appeared (the visual
+  // viewport shrinks when it does; a hardware keyboard shows none). And a tap on the field always raises it: a
+  // field focused without a keyboard is blurred and focused again inside the tap (a focus change in a gesture).
+  const kind = action === "Create" ? "new" : "rename";
+  const how = lastPointer;
+  const focused = document.activeElement === input;
+  const ih = window.innerHeight;
+  const vv = () => Math.round(window.visualViewport?.height ?? ih);
+  const keyboardUp = () => vv() < ih * 0.85;
+  setTimeout(() => {
+    if (dlg.isConnected) blog("dialog", { what: kind, how, focused, field: document.activeElement === input, keyboard: keyboardUp(), vvh: vv(), ih });
+  }, 900);
+  let retaps = 0;
+  input.addEventListener("touchend", () => {
+    if (keyboardUp()) return;
+    retaps++;
+    input.blur();
+    input.focus();
+    setTimeout(() => blog("dialog.tap", { what: kind, n: retaps, field: document.activeElement === input, keyboard: keyboardUp(), vvh: vv(), ih }), 900);
+  });
   dlg.querySelector('[data-act="cancel"]')!.addEventListener("click", () => dlg.remove());
   dlg.querySelector("form")!.addEventListener("submit", (e) => {
     e.preventDefault();

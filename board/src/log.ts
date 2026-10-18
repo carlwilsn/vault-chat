@@ -21,7 +21,8 @@
 //                                                pen-lock, hand-side, rested) and the largest contact (css px)
 //   voice.close   {reason, code, closeReason, transport, secs, by}  why a voice session ended
 //   dialog        {what, how, focused, keyboard, vvh, ih}  the name dialog: how it was opened, whether its
-//                                                field took focus and whether the keyboard came up
+//                                                field took focus and whether the keyboard came up;
+//   dialog.tap    {what, n, field, keyboard}    a tap on the field that had no keyboard, refocused in the tap
 //   error         {msg, src?}                    an uncaught error on the page
 //
 // Every batch carries the board's build ({v}: its version and commit), so a report names the code it ran,
