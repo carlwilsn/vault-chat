@@ -1085,6 +1085,8 @@ ${shared}` : "");
           if (text === RECONNECT_NUDGE) return;
           const heardAt = Date.now();
           turnStats.userTurn(text, heardAt, health.userTranscript(heardAt));
+          // Heard: a later deaf spell gets its own re-acquire before any line.
+          micRecoveries = 0;
           if (sessionFirstUserText === null) sessionFirstUserText = text;
           voiceAppend({ role: "user", content: text });
           // User finished a turn — agent is now thinking until TTS

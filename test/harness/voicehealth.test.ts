@@ -290,3 +290,22 @@ test("firstResponseMs runs from the end of Carl's speech to the first audible ag
     level = { input: 0.2, output: 0 };
   }
 });
+
+test("a deaf spell after Carl was heard again gets its own re-acquire, not the line", async () => {
+  boxLines.length = 0;
+  const s = await startCall({ conversationToken: "tok_123", signedUrl: "wss://signed" });
+  try {
+    s.track.end();
+    await tick();
+    await tick();
+    s.opts.onMessage({ role: "user", message: "can you hear me now" });
+    s.track.readyState = "live";
+    s.track.end();
+    await tick();
+    await tick();
+    assert.equal(s.conv.deviceSwitches.length, 2);
+    assert.ok(!lines().includes(voice.MIC_UNHEARD_LINE));
+  } finally {
+    await voice.endElevenLabsSession();
+  }
+});
