@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { buildDeveloperInstructions, buildRecap, configureContext, createProject, handleContextTool, loadCatalog, rollThreshold, shouldRoll } from "../index";
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { buildDeveloperInstructions, buildRecap, configureContext, createProject, ctxConfig, loadCatalog, rollThreshold, shouldRoll } from "../index";
 import type { ContextConv, ThreadTokenUsage } from "../types";
 import { inputText, startFakeModel, tempVault, type FakeModel } from "./helpers";
 
@@ -51,7 +53,7 @@ describe("shouldRoll", () => {
 });
 
 describe("buildRecap", () => {
-  it("summarises with a cheap model, includes the project memory, and keeps the conversation id", async () => {
+  it("summarises with a cheap model and keeps the conversation id; an old project's memory.md is not part of it", async () => {
     createProject("Coconut");
     const conv: ContextConv = {
       id: "conv-42",
@@ -64,25 +66,23 @@ describe("buildRecap", () => {
         { role: "assistant", content: "Started.", toolCalls: [{ name: "shell", input: { cmd: "tmux new -d -s coconut python train.py" }, result: "ok" }] },
       ],
     };
-    const tag = { conv, setConversationProject: () => {} };
-    await handleContextTool("ProjectMemory", { action: "append", section: "Decisions", text: "- YOLOv12, batch 64" }, tag);
+    writeFileSync(join(ctxConfig().vault, "agent-projects", "coconut", "memory.md"), "# Memory\n\n- YOLOv12, batch 64\n");
 
     const r = await buildRecap(conv);
     expect(r.fallback).toBe(false);
     expect(r.costUsd).toBe(0.0042);
     expect(r.model).toBe("google/gemini-3.8-flash");
-    // The cheap model saw the conversation and the project memory.
+    // The cheap model saw the conversation, not the old memory file.
     expect(fake.requests).toHaveLength(1);
     expect(fake.requests[0]!.model).toBe("google/gemini-3.8-flash");
     const seen = inputText(fake.requests[0]!);
     expect(seen).toContain("Carl: Train the coconut detector overnight.");
     expect(seen).toContain("tmux new -d -s coconut");
-    expect(seen).toContain("- YOLOv12, batch 64");
+    expect(seen).not.toContain("- YOLOv12, batch 64");
     expect(fake.auth[0]).toBe("Bearer sk-test-not-a-key");
-    // The recap = the summary + the project memory.
+    // The recap is the summary.
     expect(r.recap).toContain("RECAP: training run 7 is in tmux `coconut`");
-    expect(r.recap).toContain("## Project memory at roll-over (Coconut)");
-    expect(r.recap).toContain("- YOLOv12, batch 64");
+    expect(r.recap).not.toContain("Project memory");
     // The quiet marker: a system divider carrying the recap.
     expect(r.marker).toMatchObject({ role: "assistant", system: true, content: "Rolled over to a fresh session" });
     expect(r.marker.rollover).toMatchObject({ fromThread: "thread-old", recap: r.recap });
@@ -92,7 +92,7 @@ describe("buildRecap", () => {
     expect(after.id).toBe("conv-42");
     const instr = buildDeveloperInstructions(after);
     expect(instr).toContain("RECAP: training run 7");
-    expect(instr).toContain("- YOLOv12, batch 64");
+    expect(instr).not.toContain("- YOLOv12, batch 64");
 
     // A second roll-over summarises only what came after, plus the earlier recap.
     after.messages!.push({ role: "user", content: "How is the run?" }, { role: "assistant", content: "mAP 0.71 at epoch 40." });

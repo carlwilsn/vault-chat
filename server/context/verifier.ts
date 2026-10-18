@@ -7,7 +7,6 @@ import { fsCommands } from "../commands/fs";
 import { ctxConfig } from "./config";
 import { cap } from "./files";
 import { callResponses, familyOf } from "./model";
-import { readProject } from "./projects";
 import type { ContextConv, Verdict } from "./types";
 
 /** The verifier model for an agent model: never the same family. */
@@ -165,10 +164,8 @@ export async function verifyDone(args: { conv: ContextConv; summary: string; evi
     costUsd: cost === null ? null : Math.round((cost as number) * 1e6) / 1e6,
   });
 
-  const project = args.conv.project ? readProject(args.conv.project) : null;
   const task =
     `# What Carl asked\n\n${goalOf(args.conv) || "(no user message)"}\n\n` +
-    (project ? `# The project's "done when" (${project.name})\n\n${cap(project.project, 3_000, "project.md is longer")}\n\n` : "") +
     `# The agent's summary\n\n${args.summary}\n\n# The agent's evidence\n\n` +
     (args.evidence.length ? args.evidence.map((e, i) => `${i + 1}. ${cap(String(e), 6_000, "evidence cut")}`).join("\n") : "(none given)") +
     `\n\nThe vault (working directory) is ${cfg.vault}.` +

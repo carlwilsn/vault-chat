@@ -24,8 +24,8 @@ export type ContextConfig = {
   /** Roll a thread when its context passes min(window × rollFraction, rollMaxTokens). */
   rollFraction: number;
   rollMaxTokens: number;
-  /** Builder caps, in characters. */
-  caps: { project: number; memory: number; plan: number; progress: number; recap: number };
+  /** Builder caps, in characters: a project's shared notes (project.md) and a roll-over recap. */
+  caps: { project: number; recap: number };
   fetch: typeof fetch;
 };
 
@@ -47,7 +47,7 @@ function defaults(): ContextConfig {
     verifierDeny: [],
     rollFraction: 0.6,
     rollMaxTokens: 300_000,
-    caps: { project: 4_000, memory: 8_000, plan: 4_000, progress: 3_000, recap: 12_000 },
+    caps: { project: 8_000, recap: 12_000 },
     fetch: (...a) => globalThis.fetch(...a),
   };
 }

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { createProject, handleContextTool, projectCost } from "../index";
+import { createProject, projectCost } from "../index";
 import { tempVault, writeConv } from "./helpers";
 
 let vault: string;
@@ -29,10 +29,5 @@ describe("cost by project", () => {
 
     // With conversations ENGINE already holds in memory.
     expect(projectCost("coconut", [{ id: "x", project: "coconut", costUsd: 0.1 }, { id: "y", project: "coconut", costUsd: 0.2 }])!.totalUsd).toBe(0.3);
-
-    // The ProjectCost tool, defaulting to the conversation's project.
-    const r = await handleContextTool("ProjectCost", {}, { conv: { id: "a", project: "coconut" }, setConversationProject: () => {} });
-    expect(r.success).toBe(true);
-    expect(r.contentItems[0]!.text).toMatch(/^Project Coconut: \$1\.7500 over 3 conversation\(s\) \(1 model call\(s\) had no cost reported\)/);
   });
 });

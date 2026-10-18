@@ -165,21 +165,15 @@ test("the transcript is saved on the box in order, and the local thread moves to
   assert.ok(!useStore.getState().conversations.some((c) => c.id === localId));
 });
 
-test("SetProject: voice files this chat under a project (new or existing) — local in box mode, through the box's /conversation/project", async () => {
-  const h = voice.buildClientToolHandlers((await boxVoiceTool(vault))!);
-  const id = useStore.getState().newConversation();
-  // A voice thread the box has (its lines were saved there).
-  const said = [{ role: "user" as const, content: "let's plan the whiteboard" }];
-  useStore.setState((st) => ({ messages: said, conversations: st.conversations.map((c) => (c.id === id ? { ...c, messages: said } : c)) }));
-  posts.length = 0;
-  const out = await h.SetProject({ name: "Whiteboard" });
-  assert.match(out, /now in the project "Whiteboard" \(a new project\)/);
-  assert.deepEqual(posts.map((p) => [p.path, p.body]), [["/conversation/project?vault=v", { convId: id, project: "Whiteboard" }]]);
-  assert.equal(useStore.getState().conversations.find((c) => c.id === id)?.project, "whiteboard");
-  // An existing one is just joined.
-  assert.match(await h.SetProject({ name: "Thesis" }), /now in the project "Thesis"\.$/);
-  // The agent is told it can, and AskAgent's project says what it does.
+test("voice has no project tool that acts: only Carl makes a project or moves a chat (in the app); AskAgent has no project", async () => {
+  const h = voice.buildClientToolHandlers((await boxVoiceTool(vault))!) as Record<string, unknown>;
+  assert.equal(h.SetProject, undefined);
   const defs = voice.CLIENT_TOOL_DEFINITIONS;
-  assert.ok(defs.some((d) => d.name === "SetProject"));
-  assert.match(defs.find((d) => d.name === "AskAgent")!.parameters.properties.project.description, /creates the project if it is new/);
+  assert.ok(!defs.some((d) => d.name === "SetProject"));
+  assert.equal(defs.find((d) => d.name === "AskAgent")!.parameters.properties.project, undefined);
+  // The read-only list and the notes tools run on the box, like the other file tools.
+  for (const n of ["ListProjects", "ListNotes", "CreateNote", "UpdateNote", "ResolveNote", "ReopenNote", "DeleteNote"]) {
+    assert.ok(defs.some((d) => d.name === n), n);
+    assert.ok(!voice.LOCAL_VOICE_TOOLS.has(n), n);
+  }
 });

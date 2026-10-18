@@ -409,7 +409,8 @@ export function captureCaption(e: ActivityEntry, now: number): string {
 
 // ---------------------------------------------------------------- project context
 
-export type ProjectFiles = { slug: string; name: string; project: string; memory: string; plan: string; progress: string; rules: string };
+/** A project as the surfaces read it: its shared notes (project.md) and its rules. */
+export type ProjectFiles = { slug: string; name: string; notes: string; rules: string };
 
 const capText = (t: string, n: number, keep: "head" | "tail" = "head") => {
   const s = t.trim();
@@ -417,7 +418,7 @@ const capText = (t: string, n: number, keep: "head" | "tail" = "head") => {
   return keep === "head" ? `${s.slice(0, n)}\n[… ${s.length - n} more characters]` : `[… ${s.length - n} more characters]\n${s.slice(s.length - n)}`;
 };
 
-/** The project's memory and rules for a small surface (Ctrl+K / Ctrl+L), capped
+/** Carl's rules and the project's shared notes for a small surface (voice), capped
  * well under the chat's (server/context/builder.ts): the same files, the same order. */
 export function projectContextBlock(p: ProjectFiles | null, globalRules = "", maxChars = 4000): string {
   const parts: string[] = [];
@@ -428,11 +429,8 @@ export function projectContextBlock(p: ProjectFiles | null, globalRules = "", ma
       body.trim() ? `## ${title}\n${capText(body, Math.max(200, Math.floor(budget * share)), keep)}` : "";
     parts.push(
       `# Project: ${p.name} (${p.slug})`,
-      sec("Project rules", p.rules, 0.15),
-      sec("project.md", p.project, 0.25),
-      sec("memory.md", p.memory, 0.3),
-      sec("plan.md", p.plan, 0.15),
-      sec("progress.md (latest)", p.progress, 0.1, "tail"),
+      sec("Project rules", p.rules, 0.25),
+      sec("Shared notes (project.md)", p.notes, 0.75),
     );
   }
   const body = parts.filter(Boolean).join("\n\n");
@@ -442,8 +440,8 @@ export function projectContextBlock(p: ProjectFiles | null, globalRules = "", ma
 
 // ---------------------------------------------------------------- what voice did
 
-const VOICE_WRITES = new Set(["Write", "Edit", "NotebookEdit", "Bash", "CreateNote", "ResolveNote", "ReopenNote", "AskAgent"]);
-const READ_ONLY = new Set(["Read", "ListDir", "Glob", "Grep", "GitLog", "ListConversations", "ReadConversation", "PdfExtract", "WebFetch", "WebSearch", "ListNotes", "AgentStatus", "ScrollTo"]);
+const VOICE_WRITES = new Set(["Write", "Edit", "NotebookEdit", "Bash", "CreateNote", "UpdateNote", "ResolveNote", "ReopenNote", "DeleteNote", "AskAgent"]);
+const READ_ONLY = new Set(["Read", "ListDir", "Glob", "Grep", "GitLog", "ListConversations", "ReadConversation", "PdfExtract", "WebFetch", "WebSearch", "ListNotes", "ListProjects", "AgentStatus", "ScrollTo"]);
 
 /** A voice tool call → an entry, when it changed something (or handed work to
  * the agent). Reads are not logged: they are noise next to what was done. */
@@ -477,10 +475,13 @@ export function voiceToolEntry(name: string, args: unknown, result: string, vaul
     case "Bash":
       return { kind: "voice", modality: "voice", text: `Voice ran a command: ${clean(a.command, 200)}${status}` };
     case "CreateNote":
-      return { kind: "voice", modality: "voice", text: `Voice saved a note: ${clean(a.text, 200)}` };
+      return { kind: "voice", modality: "voice", text: `Voice saved a note: ${clean(a.text, 200)}${status}` };
+    case "UpdateNote":
+      return { kind: "voice", modality: "voice", text: `Voice changed note ${clean(a.id, 40)} to: ${clean(a.text, 200)}${status}` };
     case "ResolveNote":
     case "ReopenNote":
-      return { kind: "voice", modality: "voice", text: `Voice ${name === "ResolveNote" ? "resolved" : "reopened"} note ${clean(a.id, 40)}` };
+    case "DeleteNote":
+      return { kind: "voice", modality: "voice", text: `Voice ${name === "ResolveNote" ? "resolved" : name === "ReopenNote" ? "reopened" : "deleted"} note ${clean(a.id, 40)}${status}` };
     case "AskAgent": {
       let convId: string | undefined;
       try {

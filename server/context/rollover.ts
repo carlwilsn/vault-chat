@@ -3,10 +3,8 @@
 // same conversation id, with the recap in its developer instructions.
 import { randomUUID } from "node:crypto";
 import { ctxConfig } from "./config";
-import { cap } from "./files";
 import { latestRollover } from "./builder";
 import { callResponses, modelWindow } from "./model";
-import { readProject } from "./projects";
 import type { ContextConv, ContextMessage, ThreadTokenUsage } from "./types";
 
 export const ROLLOVER_TEXT = "Rolled over to a fresh session";
@@ -31,7 +29,7 @@ export function shouldRoll(conv: ContextConv, usage: ThreadTokenUsage | null | u
   return used > rollThreshold(model, usage?.modelContextWindow);
 }
 
-const RECAP_INSTRUCTIONS = `You write the recap that lets a fresh session of an agent continue a long conversation with Carl. The new session sees only your recap, the project's memory files and Carl's rules.
+const RECAP_INSTRUCTIONS = `You write the recap that lets a fresh session of an agent continue a long conversation with Carl. The new session sees only your recap and its instructions (Carl's rules, and the project's shared notes when the chat is in one).
 
 Write, in plain markdown, under 1,200 words:
 - The goal, in Carl's terms, and whether it is done.
@@ -62,7 +60,7 @@ function renderTranscript(msgs: ContextMessage[], maxChars: number): string {
 }
 
 export type Recap = {
-  /** Summary + project memory; goes into the new thread's developer instructions via the marker. */
+  /** The summary; goes into the new thread's developer instructions via the marker. */
   recap: string;
   /** Append this message to the conversation (a quiet divider in both renderers), then thread/start. */
   marker: ContextMessage;
@@ -74,7 +72,7 @@ export type Recap = {
 
 /**
  * Summarise the conversation (since its last roll-over, plus that recap) with a
- * cheap model, combined with the project memory. Never throws: a failed model
+ * cheap model. Never throws: a failed model
  * call yields a mechanical recap (fallback: true).
  */
 export async function buildRecap(conv: ContextConv, opts: { signal?: AbortSignal } = {}): Promise<Recap> {
@@ -88,12 +86,9 @@ export async function buildRecap(conv: ContextConv, opts: { signal?: AbortSignal
     }
   }
   const prev = latestRollover(conv);
-  const project = conv.project ? readProject(conv.project) : null;
-  const memory = project ? cap(project.memory, 6_000, "the rest is in memory.md") : "";
 
   const input =
     (prev ? `## The recap from the session before\n\n${prev.recap}\n\n` : "") +
-    (project ? `## Project ${project.name}: memory.md\n\n${memory}\n\n## progress.md\n\n${cap(project.progress, 3_000, "older entries in progress.md", "tail")}\n\n` : "") +
     `## The conversation${prev ? " since then" : ""}\n\n${renderTranscript(msgs.slice(from), 200_000)}`;
 
   let summary = "";
@@ -119,9 +114,7 @@ export async function buildRecap(conv: ContextConv, opts: { signal?: AbortSignal
       renderTranscript(msgs.slice(from), 8_000);
   }
 
-  const recap =
-    summary +
-    (project ? `\n\n## Project memory at roll-over (${project.name})\n\n${memory}` : "");
+  const recap = summary;
   const marker: ContextMessage = {
     role: "assistant",
     content: ROLLOVER_TEXT,

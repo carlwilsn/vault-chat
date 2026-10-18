@@ -102,7 +102,7 @@ export function ProjectChip({ placement = "up", variant = "chip" }: { placement?
           "flex items-center gap-1 text-[11px] hover:text-foreground transition-colors",
           current ? "text-foreground/80" : "text-muted-foreground",
         )}
-        title="Project — memory this chat shares with the project's other chats"
+        title="Project — a folder of chats that share the project's notes (project.md)"
       >
         <Folder className="h-3 w-3" />
         <span className="max-w-[160px] truncate">{label}</span>

@@ -317,11 +317,12 @@ describe("the summary", () => {
     expect(s).toContain("Image capture · paper.pdf (page 2): captured a region for the chat [image: .vault-chat/local/captures/x.png]");
   });
 
-  it("the project's memory and rules, capped, for Ctrl+K / Ctrl+L", async () => {
+  it("the project's shared notes (project.md) and the rules, capped; an old memory.md is not read", async () => {
     const { ensureProject } = await import("../context");
     const { withVault } = await import("../context");
     withVault(vault, () => ensureProject("Coconut", "Detect coconuts in drone images."));
-    writeFileSync(join(vault, "agent-projects", "coconut", "memory.md"), `# Memory\n\n## Decisions\n\n- use YOLO\n${"filler ".repeat(3000)}`);
+    writeFileSync(join(vault, "agent-projects", "coconut", "project.md"), `# Coconut\n\nDetect coconuts in drone images.\n\n- use YOLO\n${"filler ".repeat(3000)}`);
+    writeFileSync(join(vault, "agent-projects", "coconut", "memory.md"), "# Memory\n\n- OLD-MEMORY\n");
     writeFileSync(join(vault, ".vault-chat", "rules.md"), "Always cite the page.\n");
     const p = await act.projectContextFor(vault, "coconut");
     expect(p).toMatch(/^<project_context>/);
@@ -329,6 +330,7 @@ describe("the summary", () => {
     expect(p).toContain("Detect coconuts");
     expect(p).toContain("use YOLO");
     expect(p).toContain("Always cite the page.");
+    expect(p).not.toContain("OLD-MEMORY");
     expect(p.length).toBeLessThan(4200);
     // The name works too; no project = the rules only.
     expect(await act.projectContextFor(vault, "Coconut")).toContain("use YOLO");

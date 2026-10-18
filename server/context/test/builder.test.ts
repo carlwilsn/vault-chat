@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { buildDeveloperInstructions, configureContext, createProject, rulesPrefixForTurn, RECHECK_RULE, ROLE_PROMPT } from "../index";
+import { buildDeveloperInstructions, configureContext, createProject, rulesPrefixForTurn, RECHECK_RULE, ROLE_PROMPT, WORK_RULES, PROJECTS_RULE } from "../index";
 import type { ContextConv } from "../types";
 import { tempVault } from "./helpers";
 
@@ -43,44 +43,59 @@ describe("rules on every turn", () => {
 });
 
 describe("buildDeveloperInstructions", () => {
-  it("has the role prompt, the project's files, the re-check rule; no project lists the projects", () => {
+  it("has the role prompt, how to work, the project's shared notes, the re-check rule; no project lists the projects", () => {
     createProject("Coconut", "Find coconuts.");
     createProject("Thesis");
     let s = buildDeveloperInstructions({ id: "c" });
     expect(s.startsWith(ROLE_PROMPT)).toBe(true);
-    expect(s).toContain("This conversation has no project");
+    expect(s).toContain(WORK_RULES);
+    expect(s).toContain("This chat is in no project, which is normal.");
     expect(s).toContain("- Coconut (coconut)\n- Thesis (thesis)");
     expect(s).toContain(RECHECK_RULE);
-    expect(s).toContain("(none yet; global rules go in .vault-chat/rules.md)");
+    expect(s).toContain("add it to .vault-chat/rules.md");
 
     s = buildDeveloperInstructions({ id: "c", project: "coconut" });
     expect(s).toContain("# Project: Coconut");
-    expect(s).toContain("Find coconuts.");
-    expect(s).toContain("# Memory: Coconut");
-    expect(s).toContain("# Plan: Coconut");
-    expect(s).not.toContain("This conversation has no project");
+    expect(s).toContain(`This chat is in Carl's project "Coconut" (${ap("coconut")}).`);
+    expect(s).toContain("## Its shared notes (project.md)\n\n# Coconut\n\nFind coconuts.");
+    expect(s).not.toContain("This chat is in no project");
     expect(s.trimEnd().endsWith(RECHECK_RULE)).toBe(true);
+    // Said once, in either case: only Carl decides what is a project; a project is context, not a boundary.
+    for (const x of [s, buildDeveloperInstructions({ id: "c" })]) {
+      expect(x.split(PROJECTS_RULE).length).toBe(2);
+      expect(x).toContain("Only Carl decides what is a project");
+      expect(x).toContain("you may read and write anywhere in the vault (other projects' files and project.md included)");
+      expect(x).not.toMatch(/SetProject|ProjectMemory|Plan \{|plan\.md|progress\.md|memory\.md/);
+    }
 
     expect(buildDeveloperInstructions({ id: "c" }, { rolePrompt: "ROLE X" }).startsWith("ROLE X")).toBe(true);
   });
 
-  it("caps the project files, with a pointer to read more", () => {
-    configureContext({ caps: { project: 500, memory: 1_000, plan: 300, progress: 200, recap: 12_000 } });
+  it("the size rule, do-it-now, read-back and the notes rule are in every thread's instructions", () => {
+    const s = buildDeveloperInstructions({ id: "c" });
+    expect(s).toContain("A small ask (an edit, a fix, a note, a quick question) is done now, directly, in the real file, in place: no copy of the file, no sandbox");
+    expect(s).toContain("git is the undo");
+    expect(s).toContain("Heavier checking only for long work, or when Carl asks for it.");
+    expect(s).toContain("not as a mission, a schedule or a background job");
+    expect(s).toContain("Read back before you claim.");
+    expect(s).toContain("an entry in Carl's Notes panel (.vault-chat/notes.jsonl)");
+    expect(s).toContain("UpdateNote (change a note in place");
+    expect(s).toContain('A "markdown file", a "write-up", or anything "detailed" is a vault .md file');
+  });
+
+  it("only project.md loads: an old project's memory, plan and progress stay on disk, unread", () => {
+    configureContext({ caps: { project: 500, recap: 12_000 } });
     createProject("Big");
     const p = (f: string) => ap("big", f);
-    writeFileSync(p("memory.md"), "# Memory\n\n" + "M".repeat(50_000) + "\nMEMORY-END");
-    writeFileSync(p("plan.md"), "PLAN-START " + "p".repeat(5_000));
-    writeFileSync(p("progress.md"), "PROGRESS-OLD " + "q".repeat(5_000) + " PROGRESS-NEWEST");
-    writeFileSync(p("project.md"), "# Big\n\n" + "w".repeat(9_000));
+    writeFileSync(p("memory.md"), "MEMORY-TEXT");
+    writeFileSync(p("plan.md"), "PLAN-TEXT");
+    writeFileSync(p("progress.md"), "PROGRESS-TEXT");
+    writeFileSync(p("project.md"), "# Big\n\nNOTES-START " + "w".repeat(9_000) + " NOTES-END");
     const s = buildDeveloperInstructions({ id: "c", project: "big" });
-    expect(s).not.toContain("MEMORY-END");
-    expect(s).toMatch(/\[… \d+ more characters — read more with ProjectMemory \{action:"read"\}\]/);
-    expect(s).toContain("PLAN-START");
-    expect(s).toContain('read more with Plan {action:"read"}');
-    // progress keeps the newest end
-    expect(s).toContain("PROGRESS-NEWEST");
-    expect(s).not.toContain("PROGRESS-OLD");
-    expect(s.length).toBeLessThan(ROLE_PROMPT.length + 500 + 1_000 + 300 + 200 + 2_500);
+    expect(s).toContain("NOTES-START");
+    expect(s).not.toContain("NOTES-END");
+    expect(s).toMatch(/\[… \d+ more characters — the rest is in agent-projects\/big\/project\.md\]/);
+    for (const x of ["MEMORY-TEXT", "PLAN-TEXT", "PROGRESS-TEXT"]) expect(s).not.toContain(x);
   });
 
   it("includes the recap after a roll-over (the latest one)", () => {
@@ -102,6 +117,6 @@ describe("buildDeveloperInstructions", () => {
   it("ignores a project tag whose folder is gone", () => {
     mkdirSync(ap(), { recursive: true });
     const s = buildDeveloperInstructions({ id: "c", project: "deleted" });
-    expect(s).toContain("This conversation has no project");
+    expect(s).toContain("This chat is in no project");
   });
 });

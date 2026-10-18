@@ -171,14 +171,14 @@ describe("POST /api/v1/voice/tool", () => {
     expect(await tool("Bash", { command: "cat private/s.md" })).toMatch(/^Refused/);
   });
 
-  it("AskAgent starts a box chat (tagged with its project) and AgentStatus reads it", async () => {
-    const r = JSON.parse(await tool("AskAgent", { task: "Summarise notes/a.md into notes/summary.md", project: "Voice test" }));
+  it("AskAgent starts a box chat (an ordinary message: no project) and AgentStatus reads it", async () => {
+    const r = JSON.parse(await tool("AskAgent", { task: "Summarise notes/a.md into notes/summary.md" }));
     expect(r.started).toBe(true);
     expect(typeof r.conversationId).toBe("string");
     const { readConv } = await import("../engine/convs");
     const conv = await readConv(vault, r.conversationId);
     expect(conv?.messages.some((m: any) => m.role === "user" && m.content.includes("Summarise notes/a.md"))).toBe(true);
-    expect(conv?.project).toBeTruthy();
+    expect(conv?.project).toBeUndefined();
     // The voice agent started it: a voice conversation, not a phone chat.
     expect(conv?.source).toBe("voice");
     for (let i = 0; i < 100 && backend.turns.length < 1; i++) await new Promise((r) => setTimeout(r, 50));
@@ -345,8 +345,9 @@ describe("GET /api/v1/voice/session (ElevenLabs faked)", () => {
       expect(voice.activeVoiceSessions()).toBeGreaterThan(0);
       expect(out.body.toolNames).toEqual(expect.arrayContaining(["Read", "Write", "Bash", "AskAgent", "AgentStatus", "ScrollTo"]));
       expect(String(out.body.systemPrompt)).toContain("AskAgent");
-      expect(String(out.body.systemPrompt)).toMatch(/SetProject {name} puts this chat into that project/);
-      expect(out.body.toolNames).toContain("SetProject");
+      expect(String(out.body.systemPrompt)).toContain("Only the user makes a project or moves a chat into one, in the app; you can't.");
+      expect(out.body.toolNames).not.toContain("SetProject");
+      expect(out.body.toolNames).toEqual(expect.arrayContaining(["ListNotes", "CreateNote", "UpdateNote", "ResolveNote", "DeleteNote", "ListProjects"]));
       expect(JSON.stringify(out.body)).not.toContain("el-canary-key");
       const create = calls.find((c) => c.url.includes("/agents/create"))!;
       expect(create.key).toBe("el-canary-key");
@@ -506,32 +507,29 @@ describe("a live voice session keeps the box busy (the updater waits on busy.run
   });
 });
 
-describe("SetProject (voice files its chat under a project)", () => {
-  it("puts the session's voice conversation into the project, creating it when new; before a line, the chat it started from", async () => {
+describe("projects: voice reads them, only Carl makes them", () => {
+  it("no voice tool makes a project or moves a chat; SetProject is not a tool any more", async () => {
+    const v = await import("../../src/voice-elevenlabs");
+    expect(v.BUILTIN_VOICE_TOOL_NAMES).not.toContain("SetProject");
+    expect(v.LOCAL_VOICE_TOOLS.has("SetProject")).toBe(false);
+    const askAgent = v.CLIENT_TOOL_DEFINITIONS.find((t: any) => t.name === "AskAgent") as any;
+    expect(askAgent.parameters.properties.project).toBeUndefined();
     const { readConv, createConv } = await import("../engine/convs");
     const from = await createConv(vault, {}, "the chat voice started from");
-    const line = await voice.voiceTranscript(deps, { convId: null, fromConvId: from.id, role: "user", text: "make this a project called Whiteboard" });
-    const own = String(line.body.convId);
-    const out = await voice.voiceTool(deps, { name: "SetProject", args: { name: "Whiteboard" }, convId: own, fromConvId: from.id });
-    expect(out.result).toMatch(/now in the project "Whiteboard" \(a new project\)/);
-    expect((await readConv(vault, own))?.project).toBe("whiteboard");
-    expect(existsSync(join(vault, "agent-projects", "whiteboard"))).toBe(true);
-    // Again: an existing project is joined, not made twice.
-    expect((await voice.voiceTool(deps, { name: "SetProject", args: { name: "Whiteboard" }, convId: own })).result).not.toMatch(/new project/);
-    // Nothing said yet (no voice conversation): the chat the session started from.
-    await voice.voiceTool(deps, { name: "SetProject", args: { name: "Whiteboard" }, convId: null, fromConvId: from.id });
-    expect((await readConv(vault, from.id))?.project).toBe("whiteboard");
-    // An empty name takes it out.
-    expect((await voice.voiceTool(deps, { name: "SetProject", args: { name: "" }, convId: own })).result).toMatch(/no longer in a project/);
-    expect((await readConv(vault, own))?.project).toBeUndefined();
-    expect((await voice.voiceTool(deps, { name: "SetProject", args: { name: "X" } })).result).toMatch(/^Error: there is no chat/);
+    const out = await voice.voiceTool(deps, { name: "SetProject", args: { name: "Whiteboard" }, fromConvId: from.id });
+    expect(out.result).toMatch(/^Error: tool "SetProject" is not available/);
+    expect((await readConv(vault, from.id))?.project).toBeUndefined();
+    expect(existsSync(join(vault, "agent-projects", "whiteboard"))).toBe(false);
   });
 
-  it("is in the box's session: the tool, and the prompt says voice can make projects", async () => {
-    const v = await import("../../src/voice-elevenlabs");
-    expect(v.BUILTIN_VOICE_TOOL_NAMES).toContain("SetProject");
-    const askAgent = v.CLIENT_TOOL_DEFINITIONS.find((t: any) => t.name === "AskAgent") as any;
-    expect(askAgent.parameters.properties.project.description).toMatch(/starts the agent's work as a project/i);
+  it("ListProjects shows Carl's projects and their chats", async () => {
+    const { setProject } = await import("../projectRoutes");
+    const { createConv } = await import("../engine/convs");
+    const c = await createConv(vault, {}, "psych reading");
+    await setProject(vault, { convId: c.id, project: "Psych 221" });
+    const r = await tool("ListProjects", {});
+    expect(r).toContain('- Psych 221 (psych-221): 1 chat(s): "psych reading"');
+    expect(await tool("ListProjects", { project: "psych-221" })).toContain("Notes file: agent-projects/psych-221/project.md");
   });
 });
 
@@ -577,7 +575,7 @@ describe("the notes tools (voice on the box)", () => {
     expect(r).not.toMatch(/Saved note/);
   });
 
-  it("ListNotes, ResolveNote and ReopenNote read and write the file itself (a note added elsewhere is seen)", async () => {
+  it("ListNotes, UpdateNote, ResolveNote, ReopenNote and DeleteNote read and write the file itself (a note added elsewhere is seen)", async () => {
     // Written by someone else (the laptop's Ctrl+N, merged in by sync): no store involved.
     const { buildNote } = await import("../../src/notes");
     const other = { ...buildNote({ anchors: [], userDraft: "from the laptop" }), id: "lap00001" };
@@ -590,6 +588,13 @@ describe("the notes tools (voice on the box)", () => {
     expect(await tool("ResolveNote", { id: "lap00001" })).toMatch(/already resolved; nothing changed/);
     expect(await tool("ReopenNote", { id: "lap00001" })).toBe("Reopened note lap00001 in .vault-chat/notes.jsonl.");
     expect(await tool("ResolveNote", { id: "nope" })).toMatch(/^Error: no note with id "nope"/);
+    // Edited in place: the same note, the new text, no second one.
+    const count = notesOf(vault).length;
+    expect(await tool("UpdateNote", { id: "lap00001", text: "from the laptop, now with a due date" })).toMatch(/^Updated note lap00001 in place/);
+    expect(new Set(notesOf(vault).map((n) => n.id)).size).toBe(new Set(notesOf(vault).slice(0, count).map((n) => n.id)).size);
+    expect(await tool("ListNotes", {})).toContain("from the laptop, now with a due date");
+    expect(await tool("DeleteNote", { id: "lap00001" })).toMatch(/^Deleted note lap00001/);
+    expect(await tool("ListNotes", { status: "all" })).not.toContain("lap00001");
     // Every note made above is still there (a rewrite never drops one).
     expect(notesOf(vault).length).toBeGreaterThanOrEqual(2);
   });

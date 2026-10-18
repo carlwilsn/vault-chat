@@ -25,6 +25,7 @@ import { conversationDetail, dispatchVoiceTool } from "./phoneData";
 import { activitySummary, appendActivity, projectContextFor } from "./activity";
 import { voiceLineEntry, voiceToolEntry, clean } from "../src/activityCore";
 import { stripAudioTags } from "../src/voiceTags";
+import { NOTES_FILE, noteTool } from "./notesTools";
 
 export type VoiceDeps = {
   /** The vault's working copy, its name on the box, and whether it is the main one (the store's). */
@@ -35,7 +36,7 @@ export type VoiceDeps = {
    * runs without one (not Linux, or VC_PI_UNSAFE); undefined = no engine. */
   shell?: string[] | null;
   /** The engine's /message (start or continue a box chat). */
-  message?: (b: { text: string; project?: string; convId?: string | null; source?: "voice" }) => Promise<Record<string, unknown> | null>;
+  message?: (b: { text: string; convId?: string | null; source?: "voice" }) => Promise<Record<string, unknown> | null>;
   /** After a write: run a sync cycle so it reaches the laptop; `paths` (vault-relative) when a file tool
    * wrote them — the open file on the laptop then updates live (server/liveEdits.ts). */
   onWrite?: (paths?: string[]) => void;
@@ -250,41 +251,7 @@ async function store(): Promise<any> {
   return (await import("../src/store")).useStore;
 }
 
-/** Where a vault's notes live (the laptop's Notes panel and the phone's Notes read this file). */
-export const NOTES_FILE = ".vault-chat/notes.jsonl";
-
-/** The headless store keeps a copy of the main vault's notes (the phone's relay routes): reread it after a write. */
-async function refreshStoreNotes(vault: string): Promise<void> {
-  try {
-    const st = (await store()).getState();
-    if (st.vaultPath && resolve(st.vaultPath) === resolve(vault) && st.notesLoaded) await st.loadNotes?.();
-  } catch {
-    /* no store */
-  }
-}
-
-/** CreateNote {text, source_path?, source_anchor?}: appended to this vault's notes and read back; the result says
- * where it is and when the laptop shows it, or that nothing was saved. */
-async function createNote(d: VoiceDeps, a: any, wrote: (msg: string, rel?: string) => string): Promise<string> {
-  const text = s(a.text).trim();
-  if (!text) return "Error: CreateNote needs the note's text; nothing was saved.";
-  const { buildNote, appendNote, readNotes } = await import("../src/notes");
-  const anchors = a.source_path ? [{ source_path: s(a.source_path), source_kind: "code" as const, source_anchor: a.source_anchor ?? null, primary: true }] : [];
-  const note = buildNote({ anchors, userDraft: text });
-  try {
-    await appendNote(d.vault, note);
-  } catch (e) {
-    return `Error: the note was not saved: ${(e as Error)?.message ?? String(e)}`;
-  }
-  const saved = (await readNotes(d.vault).catch(() => [])).some((n: any) => n.id === note.id);
-  if (!saved) return `Error: the note was written but is not in ${NOTES_FILE} when read back; say it was not saved.`;
-  await refreshStoreNotes(d.vault);
-  const where = d.name ? `the "${d.name}" vault's notes` : "the vault's notes";
-  return wrote(
-    `Saved note ${note.id} in ${where} (${NOTES_FILE} on the box): the phone's Notes show it now; the laptop gets it with its next sync with the box (within about a minute).`,
-    NOTES_FILE,
-  );
-}
+export { NOTES_FILE } from "./notesTools";
 
 async function runTool(d: VoiceDeps, name: string, a: any): Promise<string> {
   const vault = d.vault;
@@ -382,36 +349,20 @@ async function runTool(d: VoiceDeps, name: string, a: any): Promise<string> {
       return out;
     }
     // Notes: this vault's .vault-chat/notes.jsonl on the box, read and written there (never the headless store's
-    // copy, which is another vault's or stale), each result saying what the file now holds — the voice agent
-    // tells Carl only what the result confirms (2026-10-18: "I've saved a note … in your notes panel" when he
-    // could not see it there).
+    // copy, which is another vault's or stale), by the same code pi's notes tools run (server/notesTools.ts). Each
+    // result says what the file now holds — the voice agent tells Carl only what the result confirms (2026-10-18:
+    // "I've saved a note … in your notes panel" when he could not see it there).
+    case "ListNotes":
     case "CreateNote":
-      return createNote(d, a, wrote);
-    case "ListNotes": {
-      const { readNotes } = await import("../src/notes");
-      const status = a.status ?? "open";
-      const notes: any[] = (await readNotes(vault)).filter((n: any) => status === "all" || n.status === status).sort((x: any, y: any) => (x.timestamp < y.timestamp ? 1 : -1));
-      const shown = notes.slice(0, Number(a.limit) || 50);
-      if (!shown.length) return `No ${status === "all" ? "" : status + " "}notes in ${NOTES_FILE}.`;
-      return `${notes.length} note(s) in ${NOTES_FILE} (showing ${shown.length}):\n\n${shown
-        .map((n) => `[${n.id}] ${n.status} · ${s(n.timestamp).slice(0, 16)}\n  ${s(n.formatted ?? n.user_draft ?? n.turns?.[0]?.content).slice(0, 160).replace(/\n+/g, " ")}`)
-        .join("\n\n")}`;
-    }
+    case "UpdateNote":
     case "ResolveNote":
-    case "ReopenNote": {
-      const { readNotes, writeAllNotes } = await import("../src/notes");
-      const want = name === "ResolveNote" ? "resolved" : "open";
-      const notes = await readNotes(vault);
-      const n = notes.find((x: any) => x.id === s(a.id));
-      if (!n) return `Error: no note with id "${s(a.id)}" in ${NOTES_FILE}; nothing changed.`;
-      if (n.status === want) return `Note ${n.id} is already ${want}; nothing changed.`;
-      const now = new Date().toISOString();
-      await writeAllNotes(vault, notes.map((x: any) => (x.id === n.id ? { ...x, status: want, last_updated: now } : x)));
-      const after = (await readNotes(vault)).find((x: any) => x.id === n.id);
-      if (after?.status !== want) return `Error: note ${n.id} did not change in ${NOTES_FILE}; it is still ${after?.status ?? "missing"}.`;
-      await refreshStoreNotes(vault);
-      return wrote(`${want === "resolved" ? "Resolved" : "Reopened"} note ${n.id} in ${NOTES_FILE}.`, NOTES_FILE);
+    case "ReopenNote":
+    case "DeleteNote": {
+      const r = await noteTool(vault, name, a, d.name ? `the "${d.name}" vault's notes` : "the vault's notes");
+      return r.wrote ? wrote(r.text, NOTES_FILE) : r.text;
     }
+    case "ListProjects":
+      return projectsText(vault, a);
     case "AskAgent": {
       if (!d.message) return "Error: the box's agent is not running, so nothing was handed over.";
       const task = s(a.task).trim();
@@ -419,8 +370,9 @@ async function runTool(d: VoiceDeps, name: string, a: any): Promise<string> {
       const convId = s(a.conversationId).trim() || null;
       // Into the shared stream first: the agent's first turn then shows the hand-off with the voice turns before it.
       appendActivity(vault, voiceToolEntry("AskAgent", a, "")!);
-      // A conversation the voice agent started is a voice conversation (its source), not a phone chat.
-      const out = await d.message({ text: task, convId, source: "voice", ...(s(a.project).trim() ? { project: s(a.project).trim() } : {}) });
+      // A conversation the voice agent started is a voice conversation (its source), not a phone chat. An ordinary
+      // message: no project (only Carl puts a chat into a project, in the app — the IEMS 469 hand-off, 2026-10-18).
+      const out = await d.message({ text: task, convId, source: "voice" });
       if (!out || out.error) return `Error: ${s(out?.error) || "the agent did not take it"}`;
       return JSON.stringify({ conversationId: out.convId, started: !convId, ...(out.steered ? { steered: true } : {}), ...(out.answered ? { answered: true } : {}) });
     }
@@ -550,23 +502,20 @@ function saveTranscriptImages(vault: string, convId: string, images: unknown[]):
   return out;
 }
 
-/** SetProject {name}: the session's chat into that project, created when new (an empty name takes it out).
- * The client names its chats beside the args: `convId` (the session's own voice
- * conversation, once a line made it) and `fromConvId` (the chat it started from). */
-async function setProjectTool(d: VoiceDeps, body: any, a: Record<string, unknown>): Promise<string> {
-  const { readConv } = await import("./engine/convs");
-  const own = s(body?.convId);
-  const ownConv = own ? await readConv(d.vault, own).catch(() => null) : null;
-  const target = ownConv && ownConv.source === "voice" ? own : s(body?.fromConvId);
-  if (!target) return "Error: there is no chat to put into a project yet — say something first, then ask again.";
-  const want = s(a.name).trim();
-  const { setProject, projectsList } = await import("./projectRoutes");
-  const before = new Set(projectsList(d.vault).projects.map((p) => p.slug));
-  const r = await setProject(d.vault, { convId: target, project: want || null });
-  if ("error" in r) return `Error: ${r.error}`;
-  d.onWrite?.();
-  if (!r.project) return "Done — this chat is no longer in a project.";
-  return `Done — this chat is now in the project "${want}"${before.has(r.project) ? "" : " (a new project)"}.`;
+/** ListProjects {project?}: Carl's projects and their chats (read-only, the same answer pi gets). */
+async function projectsText(vault: string, a: Record<string, unknown>): Promise<string> {
+  const { configureContext, ctxConfig, withVault, listProjectsText } = await import("./context");
+  let v = "";
+  try {
+    v = ctxConfig().vault;
+  } catch {
+    /* not configured yet */
+  }
+  if (!v) configureContext({ vault });
+  const { allConvs } = await import("./engine/convs");
+  const convs = (await allConvs(vault).catch(() => [])) as any[];
+  const r = withVault(vault, () => listProjectsText(typeof a.project === "string" ? a.project : null, null, convs));
+  return r.ok ? r.text : `Error: ${r.text}`;
 }
 
 /** POST /api/v1/voice/tool {name, args}. Never throws: errors are the result the agent hears. */
@@ -578,7 +527,7 @@ export async function voiceTool(d: VoiceDeps, body: any): Promise<{ result: stri
   const a = args && typeof args === "object" ? args : {};
   let result: string;
   try {
-    result = name === "SetProject" ? await setProjectTool(d, body, a) : await runTool(d, name, a);
+    result = await runTool(d, name, a);
   } catch (e) {
     result = typeof e === "string" ? e : `Error: ${(e as Error)?.message ?? String(e)}`;
   }
@@ -598,6 +547,7 @@ export const hasThreadHistory = (prompt: string) => prompt.includes(THREAD_HISTO
 export const VOICE_TRUTH = [
   "What your tools did is only what their results say.",
   "- Say something was done (saved, written, sent, handed over, resolved) only after a tool result says it was, and say where in the result's own words (a note's result names its file and when the laptop gets it).",
+  "- After a Write or Edit, read the changed part back (Read) before you say it is done; for a sweeping change, check every place.",
   '- A result that starts with "Error" or says nothing changed means it was not done: say that plainly, and why.',
   "- Never guess where something went or promise where it will show; if Carl asks, read it back (ListNotes, Read) before you answer.",
   "- If Carl says he can't see it, check with a tool before you agree or disagree.",
@@ -640,7 +590,7 @@ export async function voiceContextBlock(d: VoiceDeps, fromConvId: string | null,
       /* no conversation */
     }
   }
-  // Carl's rules and the project's memory: binding on voice as on every surface (the builder loads AGENTS.md-style files only).
+  // Carl's rules and the project's shared notes (project.md): binding on voice as on every surface (the builder loads AGENTS.md-style files only).
   const proj = await projectContextFor(d.vault, project);
   if (proj) parts.unshift(proj);
   const act = activitySummary(d.vault, { project, excludeConv: fromConvId });

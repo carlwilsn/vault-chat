@@ -1,144 +1,101 @@
+// Projects are plain groupings (Carl, 2026-10-18): a folder of chats plus an
+// optional shared notes file, project.md. Only Carl makes a project or moves a
+// chat (the app); the agent's one project tool, ListProjects, only reads.
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { handleContextTool, listProjects, readProject, contextToolSpecs } from "../index";
+import { handleContextTool, listProjects, readProject, contextToolSpecs, createProject, ensureProject } from "../index";
 import type { ContextConv, ToolContext } from "../types";
-import { tempVault } from "./helpers";
+import { tempVault, writeConv } from "./helpers";
 
 let vault: string;
 let cleanup: () => void;
 let conv: ContextConv;
-let tagged: string[];
 let ctx: ToolContext;
-let cards: { question: string; options: string[] }[];
-let reply: string;
 
 beforeEach(() => {
   ({ vault, cleanup } = tempVault());
   conv = { id: "c1", title: "t", messages: [] };
-  tagged = [];
-  cards = [];
-  reply = "Yes";
-  // Carl's card: recorded, answered with `reply`.
-  ctx = { conv, setConversationProject: (s) => void tagged.push(s), ask: async (question, options) => (cards.push({ question, options }), reply), patchConversation: () => {} };
+  ctx = { conv };
 });
 afterEach(() => cleanup());
 
 const text = (r: { contentItems: { text: string }[] }) => r.contentItems.map((c) => c.text).join("");
 const pdir = (slug: string) => join(vault, "agent-projects", slug);
 
-describe("project tools", () => {
-  it("exposes the tool specs", () => {
-    expect(contextToolSpecs.map((t) => t.name)).toEqual(["SetProject", "ProjectMemory", "Plan", "ProjectCost"]);
+describe("projects are plain groupings", () => {
+  it("the agent's only project tool is ListProjects: none creates a project or moves a chat", async () => {
+    expect(contextToolSpecs.map((t) => t.name)).toEqual(["ListProjects"]);
     for (const t of contextToolSpecs) expect(t).toMatchObject({ type: "function", inputSchema: { type: "object" } });
+    expect(Object.keys((contextToolSpecs[0]!.inputSchema as any).properties)).toEqual(["project"]);
+    // The old tools are gone: a call is refused and nothing is written.
+    for (const name of ["SetProject", "ProjectMemory", "Plan", "ProjectCost"]) {
+      const r = await handleContextTool(name, { name: "Coconut", action: "append", text: "x" }, ctx);
+      expect(r.success).toBe(false);
+    }
+    expect(existsSync(join(vault, "agent-projects"))).toBe(false);
+    expect(conv.project).toBeUndefined();
   });
 
-  it("SetProject creates the project's files under agent-projects/ and tags the conversation", async () => {
-    const r = await handleContextTool("SetProject", { name: "Coconut Detector", description: "Find coconuts in photos." }, ctx);
+  it("a new project (Carl's action) is its folder and a project.md that names it: no plan, progress or memory files", () => {
+    const p = createProject("Coconut Detector", "Find coconuts in photos.");
+    expect(p).toEqual({ slug: "coconut-detector", name: "Coconut Detector", dir: pdir("coconut-detector") });
+    expect(readdirSync(pdir("coconut-detector"))).toEqual(["project.md"]);
+    expect(readFileSync(join(pdir("coconut-detector"), "project.md"), "utf8")).toBe("# Coconut Detector\n\nFind coconuts in photos.\n");
+    expect(ensureProject("coconut detector")).toEqual({ project: p, created: false });
+    expect(listProjects()).toEqual([p]);
+  });
+
+  it("an existing project keeps working: its old files stay on disk untouched; project.md is read as its notes", () => {
+    const d = pdir("iems-469-course-notes-visuals");
+    mkdirSync(d, { recursive: true });
+    const files: Record<string, string> = {
+      "project.md": "# IEMS 469 Course Notes Visuals\n\n## What\n\nClearer figures in course-notes.html.\n",
+      "memory.md": "# Memory\n\n- old memory\n",
+      "plan.md": "# Plan\n\n1. old plan\n",
+      "progress.md": "# Progress\n\n- old progress\n",
+    };
+    for (const [f, b] of Object.entries(files)) writeFileSync(join(d, f), b);
+    const p = readProject("iems-469-course-notes-visuals")!;
+    expect(p.name).toBe("IEMS 469 Course Notes Visuals");
+    expect(p.notes).toBe(files["project.md"]);
+    expect(Object.keys(p).sort()).toEqual(["dir", "name", "notes", "rules", "slug"]);
+    for (const [f, b] of Object.entries(files)) expect(readFileSync(join(d, f), "utf8")).toBe(b);
+    // A folder without project.md is still a project (its name is its slug).
+    mkdirSync(pdir("psych-221"));
+    expect(listProjects().map((x) => x.name)).toEqual(["IEMS 469 Course Notes Visuals", "psych-221"]);
+    expect(readProject("psych-221")!.notes).toBe("");
+  });
+
+  it("ListProjects lists the projects with their chats, and one project's notes and chats; it changes nothing", async () => {
+    createProject("Psych 221", "Readings and essays.");
+    createProject("Whiteboard");
+    const convs: ContextConv[] = [
+      { id: "a", title: "Week 3 reading", project: "psych-221", lastActivityAt: 3 },
+      { id: "b", title: "Essay outline", project: "psych-221", lastActivityAt: 5 },
+      { id: "c", title: "Unfiled chat", lastActivityAt: 6 },
+    ];
+    for (const c of convs) writeConv(vault, c);
+    const snapshot = () => readdirSync(join(vault, ".vault-chat", "conversations")).map((f) => readFileSync(join(vault, ".vault-chat", "conversations", f), "utf8"));
+    const before = snapshot();
+    let r = await handleContextTool("ListProjects", {}, { conv: { id: "a", project: "psych-221" }, convs });
     expect(r.success).toBe(true);
-    expect(cards).toEqual([{ question: 'Turn this into a new project "Coconut Detector"?', options: ["Create", "Not now"] }]);
-    expect(text(r)).toMatch(/^Carl said yes\. Created project Coconut Detector \(coconut-detector\)/);
-    expect(tagged).toEqual(["coconut-detector"]);
-    expect(conv.project).toBe("coconut-detector");
-    for (const f of ["project.md", "memory.md", "plan.md", "progress.md"]) expect(existsSync(join(pdir("coconut-detector"), f))).toBe(true);
-    expect(existsSync(join(pdir("coconut-detector"), "rules.md"))).toBe(false);
-    expect(readFileSync(join(pdir("coconut-detector"), "project.md"), "utf8")).toContain("Find coconuts in photos.");
-    expect(listProjects()).toEqual([{ slug: "coconut-detector", name: "Coconut Detector", dir: pdir("coconut-detector") }]);
+    expect(text(r)).toContain('- Psych 221 (psych-221) — this chat: 2 chat(s): "Essay outline", "Week 3 reading"');
+    expect(text(r)).toContain("- Whiteboard (whiteboard): 0 chat(s)");
+    expect(text(r)).toMatch(/only he makes them and moves chats into them/);
+    expect(text(r)).not.toContain("Unfiled chat");
+    r = await handleContextTool("ListProjects", { project: "psych 221" }, { conv, convs });
+    expect(text(r)).toContain("Notes file: agent-projects/psych-221/project.md");
+    expect(text(r)).toContain("Readings and essays.");
+    expect(text(r)).toContain('- "Essay outline" (b)\n- "Week 3 reading" (a)');
+    r = await handleContextTool("ListProjects", { project: "nope" }, ctx);
+    expect(r.success).toBe(false);
+    expect(snapshot()).toEqual(before);
+    expect(listProjects()).toHaveLength(2);
   });
 
-  it("SetProject attaches to an existing project by name or slug, never overwriting it", async () => {
-    await handleContextTool("SetProject", { name: "Coconut" }, ctx);
-    await handleContextTool("ProjectMemory", { action: "append", section: "Decisions", text: "- use YOLO" }, ctx);
-    const other: ContextConv = { id: "c2" };
-    const tags2: string[] = [];
-    const r = await handleContextTool("SetProject", { name: "coconut", description: "ignored" }, { conv: other, setConversationProject: (s) => void tags2.push(s), ask: ctx.ask });
-    expect(cards.at(-1)).toEqual({ question: "Move this chat to Coconut?", options: ["Yes", "Not now"] });
-    expect(text(r)).toMatch(/^Carl said yes\. Attached to project Coconut \(coconut\)/);
-    expect(text(r)).toContain("- use YOLO");
-    expect(tags2).toEqual(["coconut"]);
-    expect(listProjects()).toHaveLength(1);
-  });
-
-  it("SetProject: Not now changes nothing and is remembered; no second card until Carl brings a project up; no way to ask, no change", async () => {
-    reply = "Not now";
-    let r = await handleContextTool("SetProject", { name: "Coconut" }, ctx);
-    expect(r.success).toBe(true);
-    expect(text(r)).toMatch(/Nothing changed: the conversation stays without a project/);
-    expect(tagged).toEqual([]);
-    expect(listProjects()).toEqual([]);
-    expect(conv.projectDeclined).toEqual({ name: "Coconut", at: 0 });
-    r = await handleContextTool("SetProject", { name: "Coconut" }, ctx);
-    expect(r.success).toBe(false);
-    expect(cards).toHaveLength(1);
-    // Carl's answer to the card itself (a decision) does not count as asking.
-    conv.messages = [{ role: "user", content: "Not now, not a project", decision: true }];
-    expect((await handleContextTool("SetProject", { name: "Other" }, ctx)).success).toBe(false);
-    // He brings it up: one more card, and his yes applies it.
-    conv.messages.push({ role: "user", content: "ok, make this the coconut project" });
-    reply = "Create";
-    r = await handleContextTool("SetProject", { name: "Coconut" }, ctx);
-    expect(r.success).toBe(true);
-    expect(cards).toHaveLength(2);
-    expect(tagged).toEqual(["coconut"]);
-    expect(conv.projectDeclined).toBeUndefined();
-    // Without a way to ask Carl: refused, nothing made.
-    r = await handleContextTool("SetProject", { name: "Elsewhere" }, { conv: { id: "c9" }, setConversationProject: (s) => void tagged.push(s) });
-    expect(r.success).toBe(false);
-    expect(listProjects().map((p) => p.slug)).toEqual(["coconut"]);
-  });
-
-  it("ProjectMemory reads, appends to and updates sections", async () => {
-    await handleContextTool("SetProject", { name: "Coconut" }, ctx);
-    let r = await handleContextTool("ProjectMemory", { action: "append", section: "Decisions", text: "- batch size 32" }, ctx);
-    expect(r.success).toBe(true);
-    await handleContextTool("ProjectMemory", { action: "append", section: "Decisions", text: "- lr 3e-4" }, ctx);
-    await handleContextTool("ProjectMemory", { action: "append", section: "Open questions", text: "- which GPU?" }, ctx);
-    r = await handleContextTool("ProjectMemory", { action: "read", section: "Decisions" }, ctx);
-    expect(text(r)).toBe("- batch size 32\n- lr 3e-4");
-    await handleContextTool("ProjectMemory", { action: "update", section: "Decisions", text: "- batch size 64 (32 ran out of memory)" }, ctx);
-    const mem = readProject("coconut")!.memory;
-    expect(mem).toContain("## Decisions\n\n- batch size 64 (32 ran out of memory)\n\n## Tried and learned");
-    expect(mem).not.toContain("lr 3e-4");
-    expect(mem).toContain("## Open questions\n\n- which GPU?");
-    r = await handleContextTool("ProjectMemory", { action: "read" }, ctx);
-    expect(text(r)).toContain("# Memory: Coconut");
-
-    await handleContextTool("ProjectMemory", { action: "update", file: "project", section: "Done when", text: "mAP ≥ 0.8 on the test set" }, ctx);
-    expect(readProject("coconut")!.project).toContain("## Done when\n\nmAP ≥ 0.8 on the test set");
-
-    await handleContextTool("ProjectMemory", { action: "append", file: "rules", text: "- Never train on the test set." }, ctx);
-    expect(readProject("coconut")!.rules).toBe("- Never train on the test set.\n");
-
-    r = await handleContextTool("ProjectMemory", { action: "read", section: "Nope" }, ctx);
-    expect(r.success).toBe(false);
-    r = await handleContextTool("ProjectMemory", { action: "update", text: "x" }, ctx);
-    expect(r.success).toBe(false);
-  });
-
-  it("Plan reads and updates plan.md and progress.md", async () => {
-    await handleContextTool("SetProject", { name: "Coconut" }, ctx);
-    let r = await handleContextTool("Plan", { action: "update", plan: "# Plan\n\n1. label\n2. train" }, ctx);
-    expect(text(r)).toBe("plan.md replaced.");
-    await handleContextTool("Plan", { action: "update", progressNote: "labelled 200 images" }, ctx);
-    await handleContextTool("Plan", { action: "update", progressNote: "training started (tmux coconut)" }, ctx);
-    r = await handleContextTool("Plan", { action: "read" }, ctx);
-    expect(text(r)).toContain("1. label\n2. train");
-    expect(text(r)).toMatch(/- \d{4}-\d\d-\d\d \d\d:\d\d labelled 200 images\n- .* training started \(tmux coconut\)/);
-    r = await handleContextTool("Plan", { action: "update" }, ctx);
-    expect(r.success).toBe(false);
-  });
-
-  it("memory tools refuse without a project, and bad input never throws", async () => {
-    let r = await handleContextTool("ProjectMemory", { action: "read" }, ctx);
-    expect(r.success).toBe(false);
-    expect(text(r)).toContain("SetProject");
-    r = await handleContextTool("Plan", { action: "read" }, ctx);
-    expect(r.success).toBe(false);
-    r = await handleContextTool("SetProject", { name: "!!!" }, ctx);
-    expect(r.success).toBe(false);
-    r = await handleContextTool("SetProject", null, ctx);
-    expect(r.success).toBe(false);
-    r = await handleContextTool("Bogus", {}, ctx);
-    expect(r.success).toBe(false);
+  it("bad input never throws", async () => {
+    expect((await handleContextTool("ListProjects", null, ctx)).success).toBe(true);
+    expect((await handleContextTool("Bogus", {}, ctx)).success).toBe(false);
   });
 });

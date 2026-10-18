@@ -594,9 +594,10 @@ describe("h. Switching conversations: what carries over, what stays per conversa
     expect(t).toContain("papers/yolo.pdf");
     expect(t).toContain("tile size?");
   });
-  pass("h", "chat B (pi thread)", "stays per conversation: B is its own pi thread, without A's project memory or turns", () => {
+  pass("h", "chat B (pi thread)", "stays per conversation: B is its own pi thread, without A's project notes or turns", () => {
     expect(need(b1, "B").threadId).not.toBe(need(a1, "A").threadId);
-    expect(b1!.instructions ?? "").not.toContain("This conversation is tagged with project");
+    expect(need(a1, "A").instructions ?? "").toContain(`This chat is in Carl's project "Coconut"`);
+    expect(b1!.instructions ?? "").not.toContain("This chat is in Carl's project");
   });
   pass("h", "back in chat A (pi turn)", "only what changed since A's last turn: B's exchange, not A's own", () => {
     const t = need(a2, "A again").texts.join("\n");
@@ -609,6 +610,7 @@ describe("i. Notes made on one surface, visible to the agent on another", () => 
   let afterLaptopNote: Turn | null = null;
   let afterVoiceNote: Turn | null = null;
   let listed = "";
+  let piListed = "";
   it("setup: a note from the laptop's note popup (synced file), a note by voice, then chat turns", async () => {
     const { buildNote } = await import("../../src/notes");
     const note = buildNote({ anchors: [], userDraft: "Ask the TA about uniform convergence on the midterm." });
@@ -616,7 +618,9 @@ describe("i. Notes made on one surface, visible to the agent on another", () => 
     afterLaptopNote = await turn({ text: "what notes did I leave myself?", client: "phone" }, "Let me check.");
     listed = (await voice.voiceTool(voiceDeps(), { name: "ListNotes", args: {} })).result;
     await voice.voiceTool(voiceDeps(), { name: "CreateNote", args: { text: "Redo exercise 4.2 with the dominated convergence theorem." } });
-    afterVoiceNote = await turn({ text: "and the newest note?", convId: afterLaptopNote.convId, client: "phone" }, "Exercise 4.2.");
+    afterVoiceNote = await turn({ text: "and the newest note?", convId: afterLaptopNote.convId, client: "phone" }, "Exercise 4.2.", async (tid) => {
+      piListed = (await backend.handlers!.toolCall(tid, "ListNotes", {})).text;
+    });
   });
   pass("i", "voice (pull: ListNotes)", "voice reads a laptop note when asked", () => {
     expect(listed).toContain("uniform convergence");
@@ -627,22 +631,29 @@ describe("i. Notes made on one surface, visible to the agent on another", () => 
   hole("i", "phone chat (pi turn)", "a note from the laptop's popup (or the phone's notes page) is in the prefix", () => {
     expect(need(afterLaptopNote, "turn").texts.join("\n")).toContain("uniform convergence");
   });
-  hole("i", "any pi turn (instructions)", "the agent is told where notes live (.vault-chat/notes.jsonl) — it has no notes tool", () => {
+  pass("i", "any pi turn (instructions)", "the agent is told where notes live (.vault-chat/notes.jsonl)", () => {
     expect(backend.threads.map((x) => x.instructions).join("\n")).toContain("notes.jsonl");
+  });
+  pass("i", "phone chat (pull: pi's ListNotes)", "pi reads a laptop note and a voice note itself, as voice does (one notes tool set)", () => {
+    expect(piListed).toContain("uniform convergence");
+    expect(piListed).toContain("dominated convergence");
   });
 });
 
 // ================================================================ stories from Carl's own history (school2, 2026-10)
 
-describe("j. Voice is asked for a small HTML edit; it hands it to pi as a project (IEMS 469 Course Notes Visuals, 2026-10-18)", () => {
+describe("j. Voice is asked for a small HTML edit and hands it to pi (IEMS 469 Course Notes Visuals, 2026-10-18)", () => {
   let convId = "";
   let result = "";
-  it("setup: voice's AskAgent with a project name, as the voice prompt invites", async () => {
+  let instructions = "";
+  it("setup: voice's AskAgent (a model that still passes a project name, as the old prompt invited)", async () => {
     const before = backend.turns.length;
+    const threads = backend.threads.length;
     result = (await voice.voiceTool(voiceDeps(), { name: "AskAgent", args: { task: "Make the section 7 figure in course-notes.html clearer.", project: "IEMS 469 Course Notes Visuals" } })).result;
     convId = String(JSON.parse(result).conversationId ?? "");
     if (!convId) throw new SetupError(`AskAgent: ${result}`);
     await until(() => backend.turns.length > before);
+    if (backend.threads.length > threads) instructions = backend.threads.at(-1)!.instructions;
     backend.reply("On it.");
     await until(async () => (await convs.readConv(vault, convId))?.state !== "running");
   });
@@ -650,9 +661,18 @@ describe("j. Voice is asked for a small HTML edit; it hands it to pi as a projec
     const c = need(await convs.readConv(vault, convId), "conv");
     expect(c.source).toBe("voice");
   });
-  hole("j", "voice → pi hand-off", "a project needs Carl's yes, as in chat (pi's SetProject proposes; voice's AskAgent project creates it at once)", async () => {
+  pass("j", "voice → pi hand-off", "no agent tool creates or assigns a project: the hand-off is an ordinary message, no project made", async () => {
     const c = need(await convs.readConv(vault, convId), "conv");
     expect(c.project ?? null).toBeNull();
+    const v = await import("../../src/voice-elevenlabs");
+    expect(v.BUILTIN_VOICE_TOOL_NAMES).not.toContain("SetProject");
+    expect(Object.keys((v.CLIENT_TOOL_DEFINITIONS.find((x: any) => x.name === "AskAgent") as any).parameters.properties)).not.toContain("project");
+  });
+  pass("j", "pi (instructions)", "a small edit is done in place, in the real file: no copy, no plan files, no browser checks or hashes; git is the undo", () => {
+    const i = need(instructions || null, "instructions");
+    expect(i).toContain("done now, directly, in the real file, in place: no copy of the file, no sandbox, no plan or progress files, no test suite, browser checks or hashes");
+    expect(i).toContain("git is the undo");
+    expect(i).not.toMatch(/SetProject|ProjectMemory|Done means proved/);
   });
 });
 

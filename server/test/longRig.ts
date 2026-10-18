@@ -77,8 +77,6 @@ export type Rig = {
   allConvs: () => Promise<any[]>;
   /** Start a conversation and wait for its first turn; returns its id and thread. */
   start: (text: string, extra?: Record<string, unknown>) => Promise<{ convId: string; tid: string }>;
-  /** The agent's SetProject, and Carl's answer to its card (default "Yes"). */
-  setProject: (s: { convId: string; tid: string }, name: string, answer?: string) => Promise<any>;
   costs: Map<string, number>;
 };
 
@@ -141,13 +139,6 @@ export async function makeRig(opts: { verifier?: (req: FakeReq, n: number) => Fa
       const r = await engine.message({ text, ...extra });
       await until(() => backend.turns.length > before);
       return { convId: r.convId, tid: backend.turns[before].threadId };
-    },
-    setProject: async (s, name, answer = "Yes") => {
-      const call = backend.call(s.tid, "SetProject", { name });
-      await until(async () => !!(await convs.readConv(vault, s.convId))?.pendingAsk);
-      const r = await engine.message({ convId: s.convId, text: answer });
-      if (!r?.answered) throw new Error(`the SetProject card was not answered: ${JSON.stringify(r)}`);
-      return call;
     },
   };
   return rig;

@@ -153,7 +153,7 @@ function duplicates(all: string): { text: string; count: number }[] {
   return [...counts.entries()].filter(([, n]) => n > 1).map(([text, count]) => ({ text: text.slice(0, 160), count }));
 }
 
-const REMOVED = /SetBudget|SetCheck|SetMetric|RunWorkers|TaskAdd|TaskClaim|TaskUpdate|TaskList|<status>|budget|plateau|worker conversation|Done when.*command|pinned check/i;
+const REMOVED = /SetProject|ProjectMemory|ProjectCost|Done means proved|^## (memory|plan|progress).md|SetBudget|SetCheck|SetMetric|RunWorkers|TaskAdd|TaskClaim|TaskUpdate|TaskList|<status>|budget|plateau|worker conversation|Done when.*command|pinned check/i;
 
 function normalise(s: string): string {
   return s

@@ -57,19 +57,16 @@ describe("one name for the folder", () => {
 });
 
 describe("what the agent is told", () => {
-  it("the role prompt, the engine prompt and SetProject name agent-projects/, never the old place", async () => {
-    const { ROLE_PROMPT, contextToolSpecs, buildDeveloperInstructions } = await import("../context");
+  it("the instructions name agent-projects/, never the old place", async () => {
+    const { PROJECTS_RULE, ROLE_PROMPT, contextToolSpecs, buildDeveloperInstructions } = await import("../context");
     const { ENGINE_ROLE_PROMPT: ENGINE_PROMPT } = await import("../engine/prompt");
-    const setProject = contextToolSpecs.find((t) => t.name === "SetProject")!.description;
-    for (const t of [ROLE_PROMPT, ENGINE_PROMPT, setProject]) {
-      expect(t).toContain("agent-projects/");
-      expect(t).not.toContain(".vault-chat/projects");
-    }
+    expect(PROJECTS_RULE).toContain("agent-projects/<slug>/");
+    for (const t of [PROJECTS_RULE, ROLE_PROMPT, ENGINE_PROMPT, ...contextToolSpecs.map((x) => x.description)]) expect(t).not.toContain(".vault-chat/projects");
     const v = join(root, "v");
     mkdirSync(join(v, ".vault-chat"), { recursive: true });
     configureContext({ vault: v });
     createProject("Coconut");
-    expect(buildDeveloperInstructions({ id: "c", project: "coconut" })).toContain(`tagged with project "coconut" (${join(v, PROJECTS_DIR, "coconut")})`);
+    expect(buildDeveloperInstructions({ id: "c", project: "coconut" })).toContain(`This chat is in Carl's project "Coconut" (${join(v, PROJECTS_DIR, "coconut")}).`);
   });
 });
 
@@ -139,7 +136,7 @@ describe("hidden by default, once", () => {
     expect(hidden(v)).toEqual([]);
   });
 
-  it("a vault's first project (SetProject's createProject) hides the folder; the second changes nothing", () => {
+  it("a vault's first project (Carl's New project: createProject) hides the folder; the second changes nothing", () => {
     const v = join(root, "v");
     mkdirSync(join(v, ".vault-chat"), { recursive: true });
     configureContext({ vault: v });

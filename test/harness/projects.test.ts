@@ -79,7 +79,9 @@ test("a project made here lands in agent-projects/; unhidden by Carl, a new proj
   const id = useStore.getState().newConversation();
   const r = await projects.setConversationProject(id, "Whiteboard", []);
   assert.deepEqual(r, { ok: true, slug: "whiteboard" });
-  for (const f of ["project.md", "memory.md", "plan.md", "progress.md"]) assert.ok(fs.existsSync(path.join(vault, "agent-projects/whiteboard", f)), f);
+  // A plain grouping: its folder and project.md (the shared notes), no plan, progress or memory files.
+  assert.deepEqual(fs.readdirSync(path.join(vault, "agent-projects/whiteboard")), ["project.md"]);
+  assert.equal(fs.readFileSync(path.join(vault, "agent-projects/whiteboard/project.md"), "utf8"), "# Whiteboard\n");
   assert.equal(fs.existsSync(path.join(vault, ".vault-chat/projects/whiteboard")), false);
   assert.deepEqual(hideLines(), ["agent-projects"]);
 

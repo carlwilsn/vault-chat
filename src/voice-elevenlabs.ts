@@ -59,7 +59,7 @@ const AGENT_NAME = "vault-chat";
 // voiceTranscriptMirror). Null when voice runs here.
 let transcriptMirror: { push: (m: ChatMessage) => unknown; id?: () => string; done?: () => Promise<unknown> } | null = null;
 // The live session's chats: its own thread (box mode: the box's id once the
-// first line made it) and the one it started from — SetProject's target.
+// first line made it) and the one it started from.
 let voiceChats: { own: () => string | null; from: string | null; local?: string } | null = null;
 // The box's vault root (absolute paths in the box's prompt) — mapped back to
 // this vault for ScrollTo.
@@ -405,7 +405,7 @@ export const CLIENT_TOOL_DEFINITIONS = [
   {
     name: "CreateNote",
     description:
-      "Save a short entry to the user's notes scratchpad — visible later in their notes panel. Use when the user says 'remember this', 'jot that down', 'add a note', or you notice a thought worth saving for review. Keep it short, like a reminder; not an essay.",
+      "Add a note to the user's Notes panel (.vault-chat/notes.jsonl): a short reminder or flag. Use when the user says 'remember this', 'jot that down', 'add a note'. Not for write-ups: a 'markdown file', 'write-up' or anything 'detailed' is a vault .md file (Write). To change a note, use UpdateNote — never add a second note to fix one.",
     parameters: {
       type: "object" as const,
       properties: {
@@ -588,6 +588,30 @@ export const CLIENT_TOOL_DEFINITIONS = [
     },
   },
   {
+    name: "UpdateNote",
+    description:
+      "Change an existing note's text in place (the whole text is replaced). Use when the user corrects or adds to a note — never create a second note for it.",
+    parameters: {
+      type: "object" as const,
+      properties: {
+        id: { type: "string", description: "The note id (from ListNotes output, in square brackets)." },
+        text: { type: "string", description: "The note's new full text." },
+      },
+      required: ["id", "text"],
+    },
+  },
+  {
+    name: "DeleteNote",
+    description: "Delete a note from the Notes panel (as the panel's clear does; git history keeps it). Only when the user asks.",
+    parameters: {
+      type: "object" as const,
+      properties: {
+        id: { type: "string", description: "The note id (from ListNotes output, in square brackets)." },
+      },
+      required: ["id"],
+    },
+  },
+  {
     name: "WebFetch",
     description:
       "Fetch a URL over HTTPS and return the body as text. HTML is stripped to readable text. Use for documentation, articles, and API responses when you already know the URL. Follows redirects. Output is truncated.",
@@ -730,30 +754,26 @@ export const CLIENT_TOOL_DEFINITIONS = [
   {
     name: "AskAgent",
     description:
-      "Hand a task to the main agent on the box (it has a shell, the whole vault, subagents and hours of compute). Use for long or heavy work: research, multi-step edits, runs, anything over a minute. Starts a new chat with the task, or continues one when conversationId is given. Returns the conversationId — keep it to check on the work with AgentStatus.",
+      "Hand a task to the main agent on the box (it has a shell, the whole vault, subagents and hours of compute), as an ordinary message from the user. Use for long or heavy work: research, many edits, runs, anything over a minute. Pass the user's own words and what they want, not a plan. Starts a new chat with it, or continues one when conversationId is given. Returns the conversationId — keep it to check on the work with AgentStatus.",
     parameters: {
       type: "object" as const,
       properties: {
-        task: { type: "string", description: "What the agent should do, in full — it does not hear this voice conversation." },
-        project: {
-          type: "string",
-          description: "Optional. Starts the agent's work as a project with this name — creates the project if it is new (or files the work under the existing one).",
-        },
+        task: { type: "string", description: "What the user asked, in their words and in full — the agent does not hear this voice conversation." },
         conversationId: { type: "string", description: "Optional. Continue this agent chat instead of starting a new one." },
       },
       required: ["task"],
     },
   },
   {
-    name: "SetProject",
+    name: "ListProjects",
     description:
-      "Put this chat (the voice conversation; before anything was said, the chat the session started from) into a project, creating the project if it is new. Use when the user says to file this under a project, start a project, or move this to a project. An empty name takes it out of its project.",
+      "The user's projects (folders of chats, each with an optional shared notes file, project.md) and the chats in each; with `project`, that project's notes and all its chats. Read-only: only the user makes projects and moves chats between them, in the app.",
     parameters: {
       type: "object" as const,
       properties: {
-        name: { type: "string", description: "The project's name (an existing one, or a new one to create)." },
+        project: { type: "string", description: "Optional. A project's name or slug." },
       },
-      required: ["name"],
+      required: [],
     },
   },
   {
@@ -773,7 +793,7 @@ export const CLIENT_TOOL_DEFINITIONS = [
 /** The built-in voice tools by name (custom vault tools are not among them). */
 export const BUILTIN_VOICE_TOOL_NAMES: string[] = CLIENT_TOOL_DEFINITIONS.map((t) => t.name);
 /** Tools that act on the viewer: they stay in the client even when the vault runs on a box. */
-export const LOCAL_VOICE_TOOLS = new Set(["ScrollTo", "ShowFile", "LookAtScreen", "SetProject"]);
+export const LOCAL_VOICE_TOOLS = new Set(["ScrollTo", "ShowFile", "LookAtScreen"]);
 /** A voice tool run elsewhere (the box): name + args -> the result the agent hears. */
 export type RemoteVoiceTool = (name: string, args: any) => Promise<string>;
 
@@ -2355,7 +2375,7 @@ export const VOICE_HONESTY_RULES = `Honesty — accurate over agreeable:
 - No flattery or hype. Never "great question", "absolutely", "fantastic idea", "you're so right", "I love that". Calm, even tone; don't perform excitement or any other emotion.
 - If the user is wrong, say so plainly and give the correct answer. Disagree when it's warranted. If the true answer to a yes/no question is no, say no.
 - Never claim a tool or a capability you don't have, and never guess what one does. If you're not sure, say "I'm not sure" — then check with a tool if one can tell you.
-- Your tools, exactly: Read, ListDir, Glob, Grep (the vault's files); Write, Edit, NotebookEdit (change them); PdfExtract (a PDF's text); ScrollTo, ShowFile, LookAtScreen (the user's screen); CreateNote, ListNotes, ResolveNote (notes); WebFetch, WebSearch (the web); Bash (a shell in the vault); SetProject (put this chat into a project, creating it if new); and, when the vault runs on a box, AskAgent and AgentStatus — hand work to the main agent (a separate, stronger agent with hours of compute) and check on it. AskAgent's project starts that work as a project; it is not itself a project.`;
+- Your tools, exactly: Read, ListDir, Glob, Grep (the vault's files); Write, Edit, NotebookEdit (change them); PdfExtract (a PDF's text); ScrollTo, ShowFile, LookAtScreen (the user's screen); CreateNote, UpdateNote, ListNotes, ResolveNote, ReopenNote, DeleteNote (notes); ListProjects (the user's projects, read-only); WebFetch, WebSearch (the web); Bash (a shell in the vault); and, when the vault runs on a box, AskAgent and AgentStatus — hand work to the main agent (a separate, stronger agent with hours of compute) and check on it. No tool makes a project or moves a chat into one: only the user does that, in the app.`;
 
 // Compact file index for the system prompt. Voice mode struggles to
 // "find" files when it has to guess paths from a name — dumping the
@@ -2607,12 +2627,18 @@ export function buildSystemPrompt(
     "- Keep each Write or Edit short (a section, not a whole note). A big rewrite in one call takes too long to produce and the call drops: do it as several Edits, one section at a time, saying what you're doing between them — or hand it to AskAgent when there is one.",
     "- NotebookEdit is the only safe way to touch .ipynb files. action='append' adds to a cell's end; 'replace' overwrites a cell; 'insert' adds a new cell at cell_index (-1 = end); 'delete' removes one. 0-based.",
     "",
-    "Notes:",
-    "- CreateNote saves a quick reminder when the user says 'remember', 'jot that down'. Keep notes brief.",
-    "- ListNotes shows flagged items — only when the user asks for them; never to open a session. ResolveNote closes one when it's been addressed.",
+    "Notes — 'note' means one thing, an entry in the user's Notes panel:",
+    "- CreateNote saves a quick reminder when the user says 'remember', 'jot that down', 'add a note'. Keep notes brief.",
+    "- UpdateNote changes a note in place when the user corrects or adds to it; never add a second note instead. ResolveNote closes one that's been addressed; DeleteNote removes one when asked.",
+    "- ListNotes shows them — only when the user asks; never to open a session.",
+    "- A 'markdown file', 'write-up' or anything 'detailed' is a vault .md file (Write), not a note. If it's unclear which they mean, ask.",
+    "",
+    "Doing what's asked:",
+    "- Do it now, yourself, in the real file, in place: no copies, no plan files, no checks beyond reading it back. Git autosave is the undo.",
+    "- After a change, read it back before you say it's done.",
     "",
     "Projects:",
-    "- You CAN create and assign projects: SetProject {name} puts this chat into that project, creating it if it is new — no confirmation needed, the user asked you. Never say you have no project tool.",
+    "- The user groups chats into projects (each with a shared notes file, project.md). Only the user makes a project or moves a chat into one, in the app; you can't. A project is context, not a boundary: you may read and edit files anywhere in the vault, any project's included. If this chat sounds like one of their projects, you may say so in a line. ListProjects shows them.",
     "",
     "Web:",
     "- WebFetch when you have a URL — reads the page as text.",
@@ -2623,9 +2649,8 @@ export function buildSystemPrompt(
       ? [
           "The main agent (the vault runs on a box):",
           "- Your tools run on the box, against its copy of the vault; your writes sync like any agent edit.",
-          "- For long or heavy work (research, many edits, builds, anything over a minute), don't grind through it yourself: hand it to the agent with AskAgent (a full task description — it doesn't hear this call), tell the user it's on it, and offer to report back. Keep the conversationId.",
+          "- For long or heavy work (research, many edits, builds, anything over a minute), don't grind through it yourself: hand it to the agent with AskAgent — the user's own request, in their words, as an ordinary message (it doesn't hear this call) — tell the user it's on it, and offer to report back. Keep the conversationId. A small edit you do yourself.",
           "- When the user asks how it's going, or you offered to report back, call AgentStatus and summarise it in a sentence or two.",
-          "- To start the agent's work as a project, pass AskAgent's project (the project's name; a new name creates the project).",
           "",
         ].join("\n")
       : "",
@@ -3147,6 +3172,12 @@ function formatToolMarker(name: string, args: any): string {
       return `Listed ${args.status ?? "open"} notes`;
     case "ResolveNote":
       return `Resolved note ${args.id ?? ""}`;
+    case "UpdateNote":
+      return `Updated note ${args.id ?? ""}`;
+    case "DeleteNote":
+      return `Deleted note ${args.id ?? ""}`;
+    case "ListProjects":
+      return args.project ? `Read the project ${args.project}` : `Listed projects`;
     case "ReopenNote":
       return `Reopened note ${args.id ?? ""}`;
     case "GitLog":
@@ -3170,8 +3201,6 @@ function formatToolMarker(name: string, args: any): string {
     }
     case "AgentStatus":
       return `Checked on the agent`;
-    case "SetProject":
-      return String(args.name ?? "").trim() ? `Put this chat in the project "${String(args.name).trim()}"` : "Took this chat out of its project";
     case "Bash": {
       const cmd = String(args.command ?? "").trim().replace(/\s+/g, " ");
       const snip = cmd.length > 80 ? cmd.slice(0, 77) + "…" : cmd;
@@ -3195,26 +3224,6 @@ function logToolCall(name: string, args: any, result: string, where = ""): void 
     system: true,
     toolCalls: [{ name, input: args ?? {}, result: result.length > 4000 ? result.slice(0, 4000) + "…" : result }],
   });
-}
-
-/** SetProject: this session's chat into project `name` (created when new; "" = out of its project).
- *  Its own thread once it has lines (box mode: the box's copy), else the chat it started from. */
-export async function setVoiceChatProject(name: unknown): Promise<string> {
-  const want = typeof name === "string" ? name.trim() : "";
-  await transcriptMirror?.done?.();
-  const s = useStore.getState();
-  const own = voiceChats?.own() ?? null;
-  const ownConv = own ? s.conversations.find((c) => c.id === own) : undefined;
-  const ownMsgs = ownConv ? (s.activeConversationId === own ? s.messages : ownConv.messages) : [];
-  const target = own && ownMsgs.some((m) => !m.system) ? own : (voiceChats?.from ?? own ?? s.activeConversationId);
-  if (!target) return "Error: there is no chat to put into a project.";
-  const p = await import("./projects");
-  const known = await p.listProjects(s.vaultPath).catch(() => []);
-  const r = await p.setConversationProject(target, want || null, known);
-  if (!r.ok) return `Error: ${r.error}`;
-  if (!r.slug) return "Done — this chat is no longer in a project.";
-  const isNew = !known.some((k) => k.slug === r.slug);
-  return `Done — this chat is now in the project "${want || r.slug}"${isNew ? " (a new project)" : ""}.`;
 }
 
 // Wraps a tool handler so the cockpit knows what's running. Sets
@@ -3332,7 +3341,6 @@ export function buildClientToolHandlers(
         ? `Showing ${name}. The image is attached — you can see it.`
         : `Showing ${name}, but the image couldn't be attached (${r}).`;
     }),
-    SetProject: withTracking("SetProject", (args: { name?: string }) => setVoiceChatProject(args?.name)),
     LookAtScreen: withTracking("LookAtScreen", async () => {
       const state = useStore.getState();
       const file = state.currentFile;

@@ -1,10 +1,12 @@
 // Projects on the desktop: the project chip in the chat, "New chat in project"
 // and the chat list grouped by project.
 //
-// A project is memory in `<vault>/agent-projects/<slug>/` (src/agentProjects.ts
-// names the folder; server/context/projects.ts owns the files), a vault folder
-// hidden from the file tree by default; a conversation carries the slug in its
-// `project` meta field. In box mode the box authors every conversation, so the
+// A project is a plain grouping: a folder `<vault>/agent-projects/<slug>/`
+// (src/agentProjects.ts names it; server/context/projects.ts reads it) whose
+// project.md is the project's shared notes, hidden from the file tree by
+// default; a conversation carries the slug in its `project` meta field. Only
+// Carl makes projects and moves chats (this chip, the chats list): no agent
+// tool does. In box mode the box authors every conversation, so the
 // list and the tagging go to the box (`GET /projects`,
 // `POST /conversation/project`); otherwise they are read and written here.
 import { invoke } from "@tauri-apps/api/core";
@@ -125,24 +127,17 @@ export async function listProjects(vault: string | null): Promise<ProjectInfo[]>
   return listLocal(vault);
 }
 
-/** Seed files for a new project — the same set server/context creates. */
+/** A new project (Carl's action in the app): its folder and project.md, which names it and holds the
+ *  project's shared notes — the same file server/context creates. */
 async function createLocal(vault: string, name: string): Promise<ProjectInfo> {
   const slug = slugify(name);
   if (!slug) throw new Error(`"${name}" does not make a project name`);
   const dir = `${vault}/${PROJECTS_DIR}/${slug}`;
   const title = name.trim();
-  const seed: Record<string, string> = {
-    "project.md": `# ${title}\n\n## What\n\n(not written yet)\n\n## Why\n\n(not written yet)\n\n## Done when\n\n(not decided yet)\n\n## Status\n\nstarted ${new Date().toISOString().slice(0, 10)}\n`,
-    "memory.md": `# Memory: ${title}\n\n## Decisions\n\n## Tried and learned\n\n## Conventions\n`,
-    "plan.md": `# Plan: ${title}\n\n(no plan yet)\n`,
-    "progress.md": `# Progress: ${title}\n`,
-  };
   await invoke("create_dir", { path: dir }).catch(() => {});
-  for (const [file, body] of Object.entries(seed)) {
-    const p = `${dir}/${file}`;
-    const exists = await invoke<boolean>("path_exists", { path: p }).catch(() => false);
-    if (!exists) await invoke("write_text_file", { path: p, contents: body });
-  }
+  const p = `${dir}/project.md`;
+  const exists = await invoke<boolean>("path_exists", { path: p }).catch(() => false);
+  if (!exists) await invoke("write_text_file", { path: p, contents: `# ${title}\n` });
   // The vault's first project: hide agent-projects/ (once).
   await runPrepare(vault);
   return { slug, name: title };

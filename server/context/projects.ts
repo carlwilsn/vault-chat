@@ -1,5 +1,12 @@
-// Projects: memory in <vault>/agent-projects/<slug>/ (src/agentProjects.ts has
-// the layout), a folder of its own hidden from the file tree by default.
+// Projects are plain groupings, like Claude.ai / ChatGPT Projects: a folder of
+// chats (a conversation carries the slug in its `project` meta field) plus one
+// optional shared file, `agent-projects/<slug>/project.md` — the project's
+// instructions and notes, which the agent reads as context (like a CLAUDE.md).
+// Carl makes projects and moves chats (the app's New project and the
+// move-to-project menu); no agent tool creates a project or assigns a chat.
+// The folder is hidden from the file tree by default (src/agentProjects.ts).
+// Older projects may still hold memory.md / plan.md / progress.md: they stay on
+// disk, untouched, and are no longer loaded.
 import { readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { ctxConfig } from "./config";
@@ -8,23 +15,17 @@ import { ensureProjectsHidden, prepareProjects, projectsPath } from "./layout";
 
 export { ensureProjectsHidden, migrateLegacyProjects, prepareProjects, projectsPath } from "./layout";
 
-export const PROJECT_FILES = {
-  project: "project.md",
-  memory: "memory.md",
-  plan: "plan.md",
-  progress: "progress.md",
-  rules: "rules.md",
-} as const;
-export type ProjectFile = keyof typeof PROJECT_FILES;
+/** The project's shared instructions/notes (its first `# ` heading is the display name). */
+export const PROJECT_NOTES_FILE = "project.md";
+/** Optional project rules, binding like .vault-chat/rules.md. */
+export const PROJECT_RULES_FILE = "rules.md";
 
 export type ProjectInfo = { slug: string; name: string; dir: string };
 
 export type Project = ProjectInfo & {
-  project: string;
-  memory: string;
-  plan: string;
-  progress: string;
-  /** Project rules; "" when there are none. */
+  /** project.md: the shared instructions and notes; "" when there is none. */
+  notes: string;
+  /** rules.md; "" when there are none. */
   rules: string;
 };
 
@@ -36,13 +37,13 @@ export function projectDir(slug: string): string {
   return projectsPath(vault(), slug);
 }
 
-export function projectFilePath(slug: string, file: ProjectFile): string {
-  return projectsPath(vault(), slug, PROJECT_FILES[file]);
+export function projectNotesPath(slug: string): string {
+  return projectsPath(vault(), slug, PROJECT_NOTES_FILE);
 }
 
 /** The display name: project.md's first `# ` heading, else the slug. */
 function nameOf(slug: string): string {
-  const m = /^#\s+(.+?)\s*$/m.exec(readOr(projectFilePath(slug, "project")));
+  const m = /^#\s+(.+?)\s*$/m.exec(readOr(projectNotesPath(slug)));
   return m ? m[1]! : slug;
 }
 
@@ -69,21 +70,22 @@ export function listProjects(): ProjectInfo[] {
 
 export function projectExists(slug: string): boolean {
   prepareProjects(vault());
-  return !!slug && slug === slugify(slug) && exists(projectFilePath(slug, "project"));
+  if (!slug || slug !== slugify(slug)) return false;
+  try {
+    return statSync(projectDir(slug)).isDirectory();
+  } catch {
+    return false;
+  }
 }
 
 export function readProject(slug: string): Project | null {
   if (!projectExists(slug)) return null;
-  const f = (k: ProjectFile) => readOr(projectFilePath(slug, k));
   return {
     slug,
     name: nameOf(slug),
     dir: projectDir(slug),
-    project: f("project"),
-    memory: f("memory"),
-    plan: f("plan"),
-    progress: f("progress"),
-    rules: f("rules"),
+    notes: readOr(projectNotesPath(slug)),
+    rules: readOr(projectsPath(vault(), slug, PROJECT_RULES_FILE)),
   };
 }
 
@@ -94,30 +96,22 @@ export function findProject(nameOrSlug: string): ProjectInfo | null {
   return listProjects().find((p) => p.slug === slug || p.name.toLowerCase() === want) ?? null;
 }
 
-/** Create the project's files. Existing files are never overwritten. */
+/**
+ * A new project, for Carl's own actions only (New project, move to a new
+ * project): its folder and a project.md that names it — the shared notes he
+ * may fill in. An existing project.md is never overwritten.
+ */
 export function createProject(name: string, description = ""): ProjectInfo {
   const slug = slugify(name);
   if (!slug) throw new Error(`"${name}" does not make a project name`);
-  const title = name.trim();
-  const seed: Record<ProjectFile, string | null> = {
-    project:
-      `# ${title}\n\n## What\n\n${description.trim() || "(not written yet)"}\n\n## Why\n\n(not written yet)\n\n` +
-      `## Done when\n\n(not decided yet)\n\n## Status\n\nstarted ${new Date().toISOString().slice(0, 10)}\n`,
-    memory: `# Memory: ${title}\n\n## Decisions\n\n## Tried and learned\n\n## Conventions\n`,
-    plan: `# Plan: ${title}\n\n(no plan yet)\n`,
-    progress: `# Progress: ${title}\n`,
-    rules: null,
-  };
   prepareProjects(vault());
-  for (const [k, body] of Object.entries(seed) as [ProjectFile, string | null][]) {
-    const p = projectFilePath(slug, k);
-    if (body !== null && !exists(p)) writeFile(p, body);
-  }
+  const p = projectNotesPath(slug);
+  if (!exists(p)) writeFile(p, `# ${name.trim()}\n${description.trim() ? `\n${description.trim()}\n` : ""}`);
   ensureProjectsHidden(vault());
   return { slug, name: nameOf(slug), dir: projectDir(slug) };
 }
 
-/** Create-or-attach. */
+/** Create-or-attach (Carl's UI routes). */
 export function ensureProject(name: string, description = ""): { project: ProjectInfo; created: boolean } {
   const found = findProject(name);
   if (found) return { project: found, created: false };

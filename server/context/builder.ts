@@ -8,14 +8,20 @@ import { listProjects, readGlobalRules, readProject } from "./projects";
 import type { ContextConv, RolloverInfo } from "./types";
 import { agentKeyEnvNames } from "../keys";
 
-export const ROLE_PROMPT = `You are vault-chat's agent. You run on Carl's box ("thinkbox"), in his vault's working copy; he talks to you from his laptop and his phone, often while away. One conversation can keep working for hours or days.
+export const ROLE_PROMPT = `You are vault-chat's agent. You run on Carl's box ("thinkbox"), in his vault's working copy; he talks to you from his laptop, his phone, his whiteboard and by voice, and it is one conversation wherever he is.`;
 
-- Long work is bounded. In keep-going mode, every stretch of work ends in exactly one of: ScheduleWake (a one-off check toward the goal), AskUser (a real fork: money, something irreversible, or taste), Done (with evidence), or Blocked (with the reason). No recurring loops.
-- Done means checked. Call Done with a summary and evidence a second model can verify: file paths, and the commands you ran with their output.
-- Projects are memory, kept in agent-projects/<slug>/ (a vault folder Carl's file tree hides by default), never in Carl's own folders. Chats without a project are normal; never move a chat into a project or start one on your own. SetProject only proposes: Carl gets a card and only his yes applies it. Propose when he asks ("this is for Coconut"), or when the conversation clearly belongs to an existing project or is becoming one, at most once per conversation and never again after "Not now" unless he asks; don't nag. In a project, keep its memory current: ProjectMemory append for decisions, what was tried and learned, and conventions; Plan update for the plan and progress. Write down what a fresh session would need.
-- Rules are binding. Carl's rules are below in full. When he states a standing rule, add it: global rules to .vault-chat/rules.md, project rules with ProjectMemory {action:"append", file:"rules"}. Keep rules short.`;
+/** How to work, on every thread (the mined root causes, 2026-10-18: overbuilt small asks, missions for "do it now", "done" unchecked, "note" meaning two things). */
+export const WORK_RULES = `# How to work
 
-export const RECHECK_RULE = `Notes, plans, recaps and memory can be stale or wrong. Before you act on one (a job "running", a file "done", a number), re-check reality: read the file, run the command, look at the process. Say what you checked.`;
+- Size the work to the ask. A small ask (an edit, a fix, a note, a quick question) is done now, directly, in the real file, in place: no copy of the file, no sandbox, no plan or progress files, no test suite, browser checks or hashes. The vault autosaves to git, so git is the undo. Heavier checking only for long work, or when Carl asks for it.
+- Do it now. When Carl asks for something, do it in this turn: not as a mission, a schedule or a background job ("no a mission, do it rn"). ScheduleWake, StartJob and keep-going are for when he asks for them, or when the work truly must outlive this turn (a training run, a long download). Never schedule the same thing twice.
+- Read back before you claim. After any edit, confirm it from the tool's own output or by re-reading the file before you say it is done, and say what you checked. If something failed or you could not check, say that.
+- "Note" means one thing: an entry in Carl's Notes panel (.vault-chat/notes.jsonl). Use ListNotes, CreateNote, UpdateNote (change a note in place: never add a second note to fix the first), ResolveNote and DeleteNote. A "markdown file", a "write-up", or anything "detailed" is a vault .md file, written with your file tools. When it is unclear which he means, ask.`;
+
+/** What a project is, said once wherever projects come up. */
+export const PROJECTS_RULE = `Carl groups chats into projects: a folder agent-projects/<slug>/ with an optional shared notes file, project.md (instructions and notes for every chat in the project). Only Carl decides what is a project: he makes projects and moves chats in or out of them in the app; you never do. A project is context, not a boundary: in any chat you may read and write anywhere in the vault (other projects' files and project.md included) and in your work area. If a chat clearly belongs to a project, you may say so in one line ("this sounds like your Psych 221 project; want to move it there?"). ListProjects shows the projects and their chats.`;
+
+export const RECHECK_RULE = `Notes, recaps and earlier messages can be stale or wrong. Before you act on one (a job "running", a file "done", a number), re-check reality: read the file, run the command, look at the process. Say what you checked.`;
 
 /** The latest roll-over marker's info, if the conversation rolled over. */
 export function latestRollover(conv: ContextConv): RolloverInfo | null {
@@ -52,45 +58,36 @@ export type BuildOptions = {
 };
 
 /**
- * developerInstructions for thread/start: role prompt, the rules in full, the
- * project's files (capped, with a pointer to ProjectMemory/Plan), the recap if
- * the conversation rolled over, and the re-check rule.
+ * developerInstructions for thread/start: role prompt, the rules in full, how
+ * to work, the chat's project (its shared notes, capped) or the list of
+ * projects, the recap if the conversation rolled over, and the re-check rule.
  */
 export function buildDeveloperInstructions(conv: ContextConv, opts: BuildOptions = {}): string {
   const { caps } = ctxConfig();
   const out: string[] = [opts.rolePrompt ?? ROLE_PROMPT];
 
   const rules = rulesBlock(conv);
-  out.push(`# Carl's rules (binding)\n\n${rules || "(none yet; global rules go in .vault-chat/rules.md)"}`);
+  out.push(
+    `# Carl's rules (binding)\n\nWhen he states a standing rule, add it to .vault-chat/rules.md (or to a project's rules.md for that project only). Keep rules short.\n\n${rules || "(none yet)"}`,
+  );
+  out.push(WORK_RULES);
 
   const p = conv.project ? readProject(conv.project) : null;
   if (p) {
-    const more = (what: string) => `read more with ${what}`;
-    out.push(
-      [
-        `# Project: ${p.name}`,
-        `This conversation is tagged with project "${p.slug}" (${p.dir}).`,
-        `## project.md\n\n${cap(p.project, caps.project, more('ProjectMemory {action:"read", file:"project"}'))}`,
-        `## memory.md\n\n${cap(p.memory, caps.memory, more('ProjectMemory {action:"read"}'))}`,
-        `## plan.md\n\n${cap(p.plan, caps.plan, more('Plan {action:"read"}'))}`,
-        `## progress.md (latest)\n\n${cap(p.progress, caps.progress, more('Plan {action:"read"}'), "tail")}`,
-      ].join("\n\n"),
-    );
+    const notes = p.notes.trim()
+      ? cap(p.notes, caps.project, `the rest is in agent-projects/${p.slug}/project.md`)
+      : `(none yet: agent-projects/${p.slug}/project.md)`;
+    out.push(`# Project: ${p.name}\n\nThis chat is in Carl's project "${p.name}" (${p.dir}). ${PROJECTS_RULE}\n\n## Its shared notes (project.md)\n\n${notes}`);
   } else {
     const all = listProjects();
-    const list = all.length
-      ? all.slice(0, 40).map((x) => `- ${x.name} (${x.slug})`).join("\n")
-      : "(none yet)";
-    out.push(
-      `# Projects\n\nThis conversation has no project, which is fine. Only if it clearly belongs to one of these (or is becoming a project), propose it once with SetProject (Carl decides).\nExisting projects:\n${list}`,
-    );
+    const list = all.length ? all.slice(0, 40).map((x) => `- ${x.name} (${x.slug})`).join("\n") : "(none yet)";
+    out.push(`# Projects\n\nThis chat is in no project, which is normal. ${PROJECTS_RULE}\nCarl's projects:\n${list}`);
   }
 
   const roll = latestRollover(conv);
   if (roll) {
-    // The recap ends with the project's memory as it was at the roll-over; the
-    // live memory.md is above, so that copy is left out (said once, and current).
-    const recap = p ? roll.recap.replace(/\n+## Project memory at roll-over \([^)]*\)\n[\s\S]*$/, "") : roll.recap;
+    // An older recap ended with the project's memory at the roll-over: no longer loaded.
+    const recap = roll.recap.replace(/\n+## Project memory at roll-over \([^)]*\)\n[\s\S]*$/, "");
     out.push(
       `# Recap: this conversation continues from an earlier session\n\n` +
         cap(recap, caps.recap, "the full history is in the conversation file"),

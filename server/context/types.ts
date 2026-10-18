@@ -24,8 +24,6 @@ export type ContextConv = {
   messages?: ContextMessage[];
   costUsd?: number;
   costMissingCalls?: number;
-  /** The project Carl said "Not now" to for this conversation, and how many messages it had then. */
-  projectDeclined?: { name: string; at: number };
   [k: string]: unknown;
 };
 
@@ -68,12 +66,8 @@ export type DynamicToolCallResponse = {
 /** What a tool handler gets besides its arguments. */
 export type ToolContext = {
   conv: ContextConv;
-  /** ENGINE persists `project` on the conversation meta (and its in-memory copy). */
-  setConversationProject: (slug: string) => void | Promise<void>;
-  /** Ask Carl (an AskUser card: push, phone, desktop) and wait for his answer. Without it SetProject cannot run. */
-  ask?: (question: string, options: string[]) => Promise<string>;
-  /** ENGINE persists these on the conversation meta (SetProject's "Not now"). */
-  patchConversation?: (patch: Partial<ContextConv>) => void | Promise<void>;
+  /** Every conversation, as ENGINE holds them (ListProjects); default: read from the vault. */
+  convs?: ContextConv[];
 };
 
 export type Verdict = {

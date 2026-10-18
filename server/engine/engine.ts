@@ -36,6 +36,7 @@ import { failMake, listEntries, readEntry, sendEntry, startMake, type InboxEvent
 import { BOARD_MAKER_PROMPT, boardMakeTask } from "./boardTools";
 import { startJob, jobStatus, jobList, jobStop, reapJobs, type PiJobEnv } from "./pi/jobs";
 import { ENGINE_ROLE_PROMPT } from "./prompt";
+import { isNoteTool, noteTool, noteToolSpecs } from "../notesTools";
 import { capabilitiesOf, capabilityNote, learn } from "./capabilities";
 import { join } from "node:path";
 import { WRITE_TOOLS, writtenPath } from "../liveEdits";
@@ -597,7 +598,8 @@ export class Engine {
    * /message {text, convId?, clientMsgId?, project?, context?, images?, imagePaths?, source?, queue?, unqueue?, mode?}
    *  → {ok, convId}. images: [{name?, mime, dataBase64}] (saved under .vault-chat/captures/) or
    * imagePaths: [vault-relative path]. context: a preamble the agent sees before
-   * the text (not shown as the message). project: tags the conversation.
+   * the text (not shown as the message). project: tags a new conversation — Carl's choice in the app (the
+   * phone's "New chat in project"); no agent tool sends it.
    * While a turn runs the message steers it (pi's steer), or with `queue` waits
    * for its end (pi's follow-up); `unqueue: <id>` takes a queued one back.
    * `clientMsgId` is the id Carl's client shows it under (the item's id): a repeat
@@ -1096,7 +1098,7 @@ export class Engine {
       cwd: this.d.vault,
       model,
       instructions,
-      tools: [...ENGINE_TOOL_SPECS, ...contextToolSpecs] as any,
+      tools: [...ENGINE_TOOL_SPECS, ...noteToolSpecs, ...contextToolSpecs] as any,
       subagents,
     });
     this.byThread.set(threadId, conv.id);
@@ -1407,21 +1409,12 @@ export class Engine {
     // (a background make's BoardSend is the maker's, not this turn's).
     if (l?.flags.wake && l.wakeAt && !AFTER_WAKE_OK.has(name) && !(name === "BoardSend" && a?.make)) return { success: false, contentItems: [{ type: "inputText", text: wakeRefusal(l.wakeAt) }] };
     try {
-      if (isContextTool(name)) {
-        return await handleContextTool(name, a, {
-          conv: conv as any,
-          setConversationProject: async (slug: string) => {
-            await patchMeta(vault, convId, { project: slug });
-          },
-          // SetProject only proposes: Carl answers an AskUser card, like AskUser's own.
-          ask: async (question: string, options: string[]) => {
-            if (!this.live.get(convId)) throw new Error("Carl cannot be asked right now; nothing changed");
-            return this.waitForAnswer(p.threadId, question, options);
-          },
-          patchConversation: async (patch) => {
-            await patchMeta(vault, convId, patch as any);
-          },
-        });
+      // ListProjects only reads: no agent tool makes a project or moves a chat (Carl does, in the app).
+      if (isContextTool(name)) return await handleContextTool(name, a, { conv: conv as any, convs: (await allConvs(vault)) as any });
+      // The notes tools: the same code voice runs (server/notesTools.ts), every result read back from the file.
+      if (isNoteTool(name)) {
+        const r = await noteTool(vault, name, a);
+        return { success: r.ok, contentItems: [{ type: "inputText", text: r.text }] };
       }
       switch (name) {
         case "AskUser": {
@@ -1438,6 +1431,10 @@ export class Engine {
             at = Date.now() + ms;
           }
           at = Math.max(at, Date.now() + 5_000);
+          // Never the same wake twice (summer: 36 duplicate reminders): one already set for this reason, or within a
+          // minute of this time, stands.
+          const same = readWakes(vault).find((w) => w.conv === convId && (w.reason.trim().toLowerCase() === reason.toLowerCase() || Math.abs(w.at - at) < 60_000));
+          if (same) return text(`A wake is already set for ${new Date(same.at).toISOString()} ("${same.reason}"); no second one was added. Stop now: do not call any more tools this turn.`);
           addWake(vault, { conv: convId, at, reason });
           if (l) {
             l.flags.wake = true;

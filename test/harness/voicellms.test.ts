@@ -95,7 +95,8 @@ test("the agent ElevenLabs creates: natural TTS (no expressive mode), patient tu
   assert.deepEqual(p.backup_llm_config, { preference: "override", order: ["claude-haiku-4-5", "gpt-4.1-mini"] });
   const names = p.tools.map((t: any) => t.name);
   // Luna takes no documents: it keeps PdfExtract. A model that reads PDFs drops it.
-  assert.ok(names.includes("PdfExtract") && names.includes("SetProject") && names.includes("skip_turn"));
+  assert.ok(names.includes("PdfExtract") && names.includes("UpdateNote") && names.includes("skip_turn"));
+  assert.ok(!names.includes("SetProject"));
   const sonnet: any = voice.buildAgentCreateBody({ llm: "claude-sonnet-4-6", info: L.llmInfo(list, "claude-sonnet-4-6"), customTools: [], voiceId: "v1" });
   assert.ok(!sonnet.conversation_config.agent.prompt.tools.some((t: any) => t.name === "PdfExtract"));
   assert.equal(sonnet.conversation_config.agent.prompt.reasoning_effort, undefined);
@@ -112,7 +113,8 @@ test("the prompt carries the honesty rules, under any header", () => {
   assert.match(r, /"absolutely"/);
   assert.match(r, /If the user is wrong, say so plainly/);
   assert.match(r, /Never claim a tool or a capability you don't have/);
-  assert.match(r, /SetProject/);
+  assert.match(r, /No tool makes a project or moves a chat into one: only the user does that, in the app\./);
+  assert.match(r, /UpdateNote/);
   assert.match(r, /AskAgent and AgentStatus/);
 });
 

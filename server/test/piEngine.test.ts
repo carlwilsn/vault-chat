@@ -199,7 +199,7 @@ describe.skipIf(!PI_DIR)("pi engine (real pi 1.1.0, fake chat-completions OpenRo
     // Every vault-chat tool was declared to the model.
     const first0 = or.calls.find((b) => lastUser(b).includes("CHAT1"));
     const names = (first0.tools ?? []).map((t: any) => t.function?.name);
-    for (const t of ["AskUser", "ScheduleWake", "KeepWorking", "Done", "Blocked", "Notify", "StartJob", "PdfRead", "WebSearch", "SetProject", "ProjectMemory", "Plan", "bash", "read", "write", "edit"]) expect(names).toContain(t);
+    for (const t of ["AskUser", "ScheduleWake", "KeepWorking", "Done", "Blocked", "Notify", "StartJob", "PdfRead", "WebSearch", "ListProjects", "ListNotes", "CreateNote", "UpdateNote", "DeleteNote", "bash", "read", "write", "edit"]) expect(names).toContain(t);
     expect(c.messages.filter((m: any) => m.role === "user")).toHaveLength(1);
     const evs: any[] = [];
     await waitFor(async () => {
