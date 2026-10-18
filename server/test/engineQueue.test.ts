@@ -79,6 +79,8 @@ class FakeBackend extends EventEmitter {
 
 let engine: any;
 let backend: FakeBackend;
+/** The turn log's lines (engine/turnLog.ts). */
+const turnLines: any[] = [];
 let readConv: (v: string, id: string) => Promise<any>;
 
 beforeAll(async () => {
@@ -106,6 +108,8 @@ beforeAll(async () => {
     notify: async () => "sent",
     broadcast: () => {},
     log: () => {},
+    vaultName: "school2",
+    turnLog: (l: any) => turnLines.push(l),
   });
   engine.start();
 });
@@ -184,6 +188,15 @@ describe("steer and queue", () => {
       ["assistant", "PR opened."],
     ]);
     expect(c.messages.filter((m: any) => m.role === "user").map((m: any) => m.mid).slice(1)).toEqual(["c-steer", "c-q1", "c-q2"]);
+
+    // The turn's log line: its conversation and turn (the ids the feed's `running` carried), pi's figures,
+    // and every steer / queued message / take-back / delivery by the client's id, in order.
+    const line = turnLines.find((l) => l.conv === r.convId);
+    expect(line).toMatchObject({ ev: "turn", vault: "school2", mode: "user", status: "completed", outcome: "ok", state: "idle", calls: 4, stop: "stop", tokens: { in: 4000, out: 200 } });
+    expect(line.turn).toMatch(/\S/);
+    expect(line.session).toBe(tid);
+    expect(line.queue.map((q: any) => `${q.ev}:${q.cmid}`)).toEqual(["steer:c-steer", "queue:c-q1", "queue:c-q2", "queue:c-q3", "unqueue:c-q3", "delivered:c-steer", "delivered:c-q1", "delivered:c-q2"]);
+    expect(JSON.stringify(line)).not.toMatch(/Write the section|Keep it under|Drafting/);
   });
 
   it("a steer lands where pi delivers it: after the tool calls in flight, in the log's order", async () => {

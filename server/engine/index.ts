@@ -12,6 +12,8 @@ import { Engine } from "./engine";
 export { engineShuttingDown } from "./engine";
 import { Ledger } from "./ledger";
 import { excludeLocalDir } from "./wakes";
+import { boxLogs } from "../boxLogs";
+import { turnSummary } from "./turnLog";
 import { initCapabilities } from "./capabilities";
 import { ensurePi, findBwrap, type PiInstall } from "./pi/install";
 import { listPiModels, modelWindow, piPaths, vaultPiPaths, writePiConfig, type PiPaths } from "./pi/config";
@@ -351,6 +353,12 @@ export async function startEngine(b: EngineBoot): Promise<EngineHandle> {
       ...(v.main ? {} : { log: (m: string) => console.log(`[engine:${v.name}] ${m}`) }),
       deny: others,
       onFilesWritten: (paths) => b.onFilesWritten?.(v.name, paths),
+      vaultName: v.name,
+      // One line per turn: the full record in <state>/logs/turns.jsonl, a summary in the journal.
+      turnLog: (line) => {
+        boxLogs(b.stateDir).turns.append(line);
+        console.log(turnSummary(line));
+      },
     });
     engine.start();
     backend.start();

@@ -45,6 +45,8 @@ import { isOpen, pendingOf, shown, type Picture } from "../../src/convlog/reduce
 import { toolName } from "../../src/convlog/view";
 import { readEntries } from "../convlog/piSession";
 import { PiFeed } from "./piFeed";
+import { TurnRecorder, type TurnLine } from "./turnLog";
+import { SERVER_VERSION } from "../config";
 
 export type EngineDeps = {
   vault: string;
@@ -69,6 +71,10 @@ export type EngineDeps = {
   onFilesWritten?: (paths: string[]) => void;
   /** A turn ended (the sync brings its results to the laptop). */
   onTurnEnded?: (convId: string) => void;
+  /** The vault's name on this box (the turn log's `vault`); the folder's name when absent. */
+  vaultName?: string;
+  /** One structured line per turn (turnLog.ts): the box's turn log and the journal. */
+  turnLog?: (line: TurnLine) => void;
 };
 
 type TurnKind = "user" | "wake" | "nudge" | "resume";
@@ -83,6 +89,8 @@ type Live = {
   lastEventAt: number;
   /** pi's session and live events → the feed. */
   feed: PiFeed;
+  /** pi's events → the turn's log line. */
+  rec: TurnRecorder;
   usage: ThreadTokenUsage | null;
   flags: { wake: boolean; done: boolean; blocked: boolean };
   /** When the turn's ScheduleWake set its wake (ISO), and the tool calls the model made after it. */
@@ -108,7 +116,7 @@ type Live = {
   turnOpts: TurnOpts;
 };
 
-type TurnOpts = { images?: string[]; context?: string; itemImages?: ItemImage[]; clientId?: string; /** What the chat shows (Carl's answer to a question asked before a restart). */ shown?: string; via?: string };
+type TurnOpts = { images?: string[]; context?: string; itemImages?: ItemImage[]; clientId?: string; /** What the chat shows (Carl's answer to a question asked before a restart). */ shown?: string; via?: string; /** Which client sent it (the turn log's `via`: laptop, phone, voice …). */ origin?: string };
 
 const NUDGE_TEXT = "You're in keep-going mode: schedule your next check (ScheduleWake), or say Done or Blocked.";
 const RESUME_TEXT =
@@ -367,6 +375,32 @@ export class Engine {
     return pictureOf(this.d.vault, convId);
   }
 
+  /** A turn's log line recorder (turnLog.ts). */
+  private recorder(convId: string, turnId: string, threadId: string | null, kind: TurnKind, opts: TurnOpts, clientId: string, model: string | null, start: number): TurnRecorder {
+    const via = kind === "user" ? (opts.origin ?? opts.via ?? null) : (opts.via ?? (kind === "wake" ? "wake" : kind));
+    return new TurnRecorder({
+      vault: this.d.vaultName ?? (this.d.vault.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || this.d.vault),
+      conv: convId,
+      turn: turnId,
+      session: threadId,
+      mode: kind,
+      via,
+      cmid: kind === "user" ? clientId : null,
+      model,
+      start,
+      version: SERVER_VERSION,
+    });
+  }
+
+  /** Write a turn's line (never throws). */
+  private turnLine(rec: TurnRecorder, end: { status: string; outcome: string; state?: string; error?: string | null }): void {
+    try {
+      this.d.turnLog?.(rec.line(end));
+    } catch (e) {
+      this.log(`turn log: ${(e as Error).message}`);
+    }
+  }
+
   /** A line of vault-chat's in the transcript (a pi custom entry). */
   private notice(convId: string, text: string, level: "info" | "warn" | "error" = "info"): Promise<void> {
     return this.note(convId, [{ kind: "notice", text, level }]);
@@ -582,6 +616,8 @@ export class Engine {
     /** Take back a queued (or steering) message not delivered yet (its id). */
     unqueue?: string;
     mode?: "steer";
+    /** Which client sent it (laptop, phone, board): the turn log's `via`. */
+    client?: string;
   }): Promise<Record<string, unknown> | null> {
     const clientId = typeof body.clientMsgId === "string" && body.clientMsgId.trim() ? body.clientMsgId.trim().slice(0, 80) : newMessageId();
     if (typeof body?.unqueue === "string" && body.convId) return this.takeBack(body.convId, body.unqueue);
@@ -657,6 +693,7 @@ export class Engine {
       const kind = body.queue ? "queue" : "steer";
       this.setPending(id, { id: clientId, kind, text: shown, at: Date.now() });
       l.feed.expect({ kind, text: sent, clientId, shown, via: kind, images: itemImages });
+      l.rec.q(kind, clientId);
       try {
         if (kind === "queue") await this.d.backend.followUp(l.threadId, { texts: [sent], images: paths });
         else await this.d.backend.steer(l.threadId, l.turnId, { texts: [sent], images: paths });
@@ -664,11 +701,13 @@ export class Engine {
       } catch (e) {
         l.feed.forget(clientId);
         this.setPending(id, undefined, clientId);
+        l.rec.q("refused", clientId);
         this.log(`${kind} failed (${(e as Error).message})`);
         return { ok: false, convId: id, error: `the running turn did not take it: ${(e as Error).message}` };
       }
     }
-    void this.run(id, shown, "user", { images: paths, context, itemImages, clientId }).catch((e) => this.log(`turn failed: ${e}`));
+    const origin = body.source === "voice" ? "voice" : typeof body.client === "string" && body.client ? body.client.slice(0, 20) : body.source ? String(body.source).slice(0, 20) : undefined;
+    void this.run(id, shown, "user", { images: paths, context, itemImages, clientId, origin }).catch((e) => this.log(`turn failed: ${e}`));
     return { ok: true, convId: id };
   }
 
@@ -690,6 +729,7 @@ export class Engine {
         this.log(`take back on ${convId}: ${(err as Error).message}`);
       }
       l.feed.forget(id);
+      l.rec.q("unqueue", id);
     }
     this.setPending(convId, undefined, id);
     return { ok: true, convId, unqueued: id };
@@ -818,6 +858,7 @@ export class Engine {
             const sent = opts.context ? `${opts.context}\n\n${input}` : input;
             this.setPending(convId, { id, kind: "steer", text: opts.shown ?? input, at: Date.now() });
             existing.feed.expect({ kind: "steer", text: sent, clientId: id, shown: opts.shown ?? input, via: opts.via ?? "steer", images: opts.itemImages });
+            existing.rec.q("steer", id);
             await b.steer(existing.threadId, existing.turnId, { texts: [sent], images: opts.images ?? [] }).catch(() => {
               existing.feed.forget(id);
               this.setPending(convId, undefined, id);
@@ -839,8 +880,9 @@ export class Engine {
       this.emit(convId, { type: "meta", patch: { running: { turn: turnId, kind, startedAt }, state: "running" } });
       const clientId = opts.clientId ?? newMessageId();
       const shownInput = kind === "user" ? { via: opts.via ?? "chat", shown: opts.shown ?? input } : this.engineInput(input, kind);
-      const fail = async (text: string) => {
+      const fail = async (text: string, rec?: TurnRecorder) => {
         // pi never took it: the message itself (Carl's) and why, as vault-chat's lines.
+        this.turnLine(rec ?? this.recorder(convId, turnId, null, kind, opts, clientId, null, startedAt), { status: "failed", outcome: "not_started", state: "idle", error: text });
         const lines: NoteData[] = kind === "user" ? [{ kind: "line", role: "user", text: shownInput.shown, via: shownInput.via, clientId, ...(opts.itemImages?.length ? { images: opts.itemImages } : {}) }] : [];
         await this.note(convId, [...lines, { kind: "notice", text, level: "error" }]);
         this.emit(convId, { type: "meta", patch: { running: null, state: "idle" } });
@@ -867,11 +909,18 @@ export class Engine {
         after = all.length ? all[all.length - 1]!.id : null;
         this.emit(convId, { type: "meta", patch: { sessionFrom: { file, after } } });
       }
+      // Images on a model that can't see: this turn (silently) uses the vision model.
+      let model = this.d.model();
+      if (opts.images?.length && !capabilitiesOf(model).images) model = this.d.visionModel ?? model;
+      const rec = this.recorder(convId, turnId, threadId, kind, opts, clientId, model, startedAt);
       const feed = new PiFeed({
         file,
         emit: (b) => this.emit(convId, b),
         pointed: this.skipSet(convId, file, after),
-        delivered: (id) => this.setPending(convId, undefined, id),
+        delivered: (id) => {
+          this.setPending(convId, undefined, id);
+          rec.q("delivered", id);
+        },
       });
       // Anything pi wrote that the feed missed (a crash between its write and the pointer) comes first.
       feed.sync();
@@ -883,6 +932,7 @@ export class Engine {
         startedAt,
         lastEventAt: Date.now(),
         feed,
+        rec,
         usage: null,
         flags: { wake: false, done: false, blocked: false },
         wakeAt: null,
@@ -920,9 +970,6 @@ export class Engine {
       const activity = kind === "user" ? this.activityPrefix(conv) : "";
       const texts = [rules, activity, kind === "wake" ? input : body].filter(Boolean);
       live.feed.expect({ kind: "prompt", text: texts.join("\n\n"), clientId: kind === "user" ? clientId : undefined, ...shownInput, ...(opts.itemImages?.length ? { images: opts.itemImages } : {}) });
-      // Images on a model that can't see: this turn (silently) uses the vision model.
-      let model = this.d.model();
-      if (opts.images?.length && !capabilitiesOf(model).images) model = this.d.visionModel ?? model;
       try {
         await this.d.backend.startTurn(threadId, { texts, images: opts.images ?? [], model, turnId });
         live.started = true;
@@ -931,7 +978,7 @@ export class Engine {
         this.live.delete(convId);
         unregisterRun(convId, live.controller);
         live.feed.dispose();
-        await fail(`⚠️ The engine could not start this turn: ${(e as Error).message}`);
+        await fail(`⚠️ The engine could not start this turn: ${(e as Error).message}`, rec);
       }
     });
   }
@@ -1069,6 +1116,7 @@ export class Engine {
 
   /** One pi event: into the feed (piFeed.ts), plus what the engine itself watches. */
   private onPi(l: Live, ev: any): void {
+    l.rec.pi(ev);
     switch (ev?.type) {
       case "tool_execution_start": {
         const id = String(ev.toolCallId ?? "");
@@ -1171,6 +1219,8 @@ export class Engine {
       appendActivity(vault, chatExchangeEntry({ convId: l.convId, title: conv.title, user: lastUser?.content ?? "", agent: reply, project: typeof conv.project === "string" ? conv.project : null }));
     }
     this.log(`turn ${l.kind} on ${l.convId} ${status}${l.cut ? " (cut)" : ""} → ${state}`);
+    const outcome = l.cut ? "cut" : l.stalled ? "stalled" : l.endedAfterWake ? "ended_after_wake" : l.stopped ? "stopped" : status === "completed" ? "ok" : status;
+    this.turnLine(l.rec, { status, outcome, state, error: errStr || null });
     this.d.onTurnEnded?.(l.convId);
 
     // Cost, from the session's own figures (async; lands a few seconds later).
