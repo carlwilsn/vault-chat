@@ -1,4 +1,4 @@
-import { Conversation } from "@elevenlabs/client";
+import { Conversation, type VoiceConversation } from "@elevenlabs/client";
 import { invoke } from "@tauri-apps/api/core";
 import { useStore, type ChatMessage, type Viewport, type FileEntry } from "./store";
 import { buildNote } from "./notes";
@@ -18,6 +18,7 @@ import { stripAudioTags } from "./voiceTags";
 import { QuietGate } from "./voiceQuiet";
 import { RECONNECT_NUDGE, RECONNECTING_LINE, TimeoutRetry, VoiceTurnStats, couldntReconnectLine, isLlmTimeoutClose, plainCloseReason, reconnectRecap } from "./voiceTimeout";
 import { vlog } from "./debugLog";
+import { VoiceHealth, connectionOptions, pickTransport, type HealthEvent, type Transport } from "./voiceHealth";
 import { DEFAULT_VOICE_LLM, isVoiceLlm, llmInfo, normalizeVoiceLlm, reasoningEffortFor, voiceLlmList, type VoiceLlmInfo } from "./voiceLlms";
 
 // The shared context stream (src/activity.ts), when voice runs on this laptop:
@@ -36,10 +37,11 @@ function recordLocalVoice(e: Parameters<typeof import("./activity").recordActivi
 // SDK events and get appended to state.messages when the session
 // ends.
 
-// WebKitGTK (Linux) can't play Web Audio on the current Ubuntu stack, so the
-// agent's voice is routed to native playback in the Rust backend. The Rust
-// command no-ops on other platforms (WebView2 / WKWebView), where the webview
-// plays audio fine on its own.
+// WebKitGTK (Linux) can't play Web Audio on the current Ubuntu stack, so there
+// voice runs over the WebSocket transport and the agent's voice is routed to
+// native playback in the Rust backend (16 kHz PCM chunks). Everywhere else voice
+// runs over WebRTC (ElevenLabs' recommended transport) and the SDK plays it —
+// no audio code of ours on that path.
 
 // Hand an agent-audio chunk to the native player. The SDK's
 // onAudio gives base64 PCM (16 kHz mono s16le) — exactly what the Rust
@@ -182,9 +184,49 @@ const DEFAULT_VOICE_ID = "nPczCjzI2devNBz1zQrb"; // Brian — Jarvis-adjacent ba
 const SCROLL_DEBOUNCE_MS = 600;
 const VIEWPORT_TEXT_CAP = 4000;
 
-type ActiveConversation = Awaited<ReturnType<typeof Conversation.startSession>>;
+type ActiveConversation = VoiceConversation;
 
 let activeConversation: ActiveConversation | null = null;
+// The SDK's entry point ([tests] replaceable: a mocked SDK).
+let voiceSdk: { startSession(o: any): Promise<any> } = Conversation;
+/** [tests] Replace the ElevenLabs SDK's Conversation (null: the real one). */
+export function setVoiceSdkForTests(sdk: { startSession(o: any): Promise<any> } | null): void {
+  voiceSdk = sdk ?? Conversation;
+}
+// The live session's transport; WebSocket on Linux is the one with native playback.
+let activeTransport: Transport | null = null;
+const nativePlayback = () => activeTransport === "websocket" && isLinuxWebview();
+function isLinuxWebview(): boolean {
+  const ua = typeof navigator !== "undefined" ? navigator.userAgent : "";
+  return /Linux/.test(ua) && !/Android/.test(ua);
+}
+/** Settings → Voice → Microphone (empty: the system default). */
+export const VOICE_INPUT_STORAGE = "vault_chat_voice_input_device";
+export function voiceInputDevice(): string {
+  try {
+    return localStorage.getItem(VOICE_INPUT_STORAGE) ?? "";
+  } catch {
+    return "";
+  }
+}
+/** Pick the mic; a live call switches to it now (the SDK's changeInputDevice). */
+export async function setVoiceInputDevice(id: string): Promise<void> {
+  try {
+    if (id) localStorage.setItem(VOICE_INPUT_STORAGE, id);
+    else localStorage.removeItem(VOICE_INPUT_STORAGE);
+  } catch {
+    /* no storage */
+  }
+  const conv = activeConversation;
+  if (!conv) return;
+  try {
+    await conv.changeInputDevice({ inputDeviceId: id || "default" });
+    vlog("voice mic switched", { ...(await micInfo(conv)) });
+    health.micReset(Date.now());
+  } catch (e) {
+    console.warn("[voice-eleven] couldn't switch the microphone:", e);
+  }
+}
 // A call ElevenLabs closed because the model timed out reconnects once (voiceTimeout.ts).
 const timeoutRetry = new TimeoutRetry();
 // Each turn's time to the first response and the session's size, for the log.
@@ -805,6 +847,10 @@ export function ensureVoiceConversation(opts?: { stealFocus?: boolean; convId?: 
   return id;
 }
 
+function isMicProblem(e: unknown): boolean {
+  return /NotAllowed|NotFound|NotReadable|Overconstrained|Permission|microphone/i.test(`${(e as any)?.name ?? ""} ${(e as any)?.message ?? String(e)}`);
+}
+
 export async function startElevenLabsSession(opts?: { recap?: string }): Promise<void> {
   if (activeConversation) return;
   const state = useStore.getState();
@@ -825,18 +871,9 @@ export async function startElevenLabsSession(opts?: { recap?: string }): Promise
   // any of the error paths below.
   useStore.getState().setVoiceConnecting(true);
 
-  // Pre-flight mic permission. WebView2 on Windows sometimes refuses
-  // silently otherwise; this surfaces the failure visibly.
-  try {
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    for (const t of stream.getTracks()) t.stop();
-  } catch (e) {
-    useStore.getState().setVoiceConnecting(false);
-    reportVoiceError(
-      `Microphone access denied or unavailable: ${(e as any)?.message ?? String(e)}. Check Windows Settings → Privacy → Microphone.`,
-    );
-    return;
-  }
+  // No mic pre-flight of our own: the SDK opens the one mic stream (a second
+  // getUserMedia here could leave Windows capturing with other settings); a
+  // refused mic surfaces from startSession below, in the same words.
 
   let boxSession: import("./voiceBox").BoxVoiceSession | null = null;
   if (box) {
@@ -855,9 +892,14 @@ export async function startElevenLabsSession(opts?: { recap?: string }): Promise
     return;
   }
 
-  let signedUrl: string;
-  if (boxSession) signedUrl = boxSession.signedUrl;
-  else {
+  // Credentials for both transports: a WebRTC conversation token (preferred)
+  // and a signed URL (WebSocket: Linux, or the fallback).
+  let signedUrl: string | null = null;
+  let conversationToken: string | null = null;
+  if (boxSession) {
+    signedUrl = boxSession.signedUrl ?? null;
+    conversationToken = boxSession.conversationToken ?? null;
+  } else {
   // A desktop mic-tap is user intent — always clear a tripped breaker so the
   // user can retry after fixing the config, even if the box heartbeat left it open.
   resetAgentCreateBreaker();
@@ -887,16 +929,28 @@ export async function startElevenLabsSession(opts?: { recap?: string }): Promise
     return;
   }
 
-  const own = await getSignedUrl(apiKey!, agentId);
-  if (!own) {
+  [signedUrl, conversationToken] = await Promise.all([getSignedUrl(apiKey!, agentId), getConversationToken(apiKey!, agentId)]);
+  if (!signedUrl && !conversationToken) {
     useStore.getState().setVoiceConnecting(false);
     reportVoiceError(
-      "Couldn't get a signed conversation URL from ElevenLabs. The agent ID may be stale (try clearing localStorage `vault_chat_elevenlabs_agent_id`) or your account may have hit a rate limit.",
+      "Couldn't get a conversation token or signed URL from ElevenLabs. The agent ID may be stale (try clearing localStorage `vault_chat_elevenlabs_agent_id`) or your account may have hit a rate limit.",
     );
     return;
   }
-  signedUrl = own;
   }
+  let override: string | null = null;
+  try {
+    override = localStorage.getItem("vault_chat_voice_transport");
+  } catch {
+    /* no storage */
+  }
+  const picked = pickTransport({ ua: navigator.userAgent, override, hasToken: !!conversationToken, hasSignedUrl: !!signedUrl });
+  if (!picked) {
+    useStore.getState().setVoiceConnecting(false);
+    reportVoiceError("ElevenLabs gave no way to connect (no conversation token, no signed URL).");
+    return;
+  }
+  let transport: Transport = picked;
 
   lastViewportSent = null;
   sentPdfPaths.clear();
@@ -905,6 +959,7 @@ export async function startElevenLabsSession(opts?: { recap?: string }): Promise
   sessionMutationCount = 0;
   sessionFirstUserText = null;
   resetAgentEnvelope();
+  stopHealthWatch();
 
   // Voice runs in its own thread. Start fresh unless we're resuming a
   // pure-voice conversation (the user toggled the mic off and back on, so
@@ -950,15 +1005,17 @@ ${shared}` : "");
   // A reconnect after a timeout: what was in flight, and to carry on in small steps.
   const systemPrompt = opts?.recap ? `${basePrompt}\n\n${opts.recap}` : basePrompt;
   turnStats.startSession(systemPrompt.length);
-  vlog("voice session", { promptChars: systemPrompt.length, llm: getCurrentLlm(), box: !!boxSession, reconnect: !!opts?.recap });
+  vlog("voice session", { promptChars: systemPrompt.length, llm: getCurrentLlm(), box: !!boxSession, reconnect: !!opts?.recap, transport });
   const dynamicVariables = buildDynamicVariables(voiceState);
   const voiceId = boxSession?.voiceId ?? localStorage.getItem(VOICE_ID_STORAGE) ?? DEFAULT_VOICE_ID;
   // One line per start, so a report of "the voice didn't work" has the voice it asked for.
   console.info(`[voice-eleven] starting: voice ${voiceId}, ${boxSession ? "the box's agent" : "this laptop's agent"}`);
 
   try {
-    activeConversation = await Conversation.startSession({
-      signedUrl,
+    activeTransport = transport;
+    const startedAt = Date.now();
+    const start = () => voiceSdk.startSession({
+      ...connectionOptions(transport, { conversationToken, signedUrl, inputDeviceId: voiceInputDevice() }),
       overrides: {
         agent: {
           prompt: { prompt: systemPrompt },
@@ -969,35 +1026,52 @@ ${shared}` : "");
       },
       dynamicVariables,
       clientTools: buildClientToolHandlers(remote ?? undefined, boxSession?.toolNames),
-      // Linux: the webview can't play Web Audio, so play the agent's voice
-      // natively. Harmless no-op elsewhere (the webview plays it normally and
-      // playAgentAudioNative/stopAgentAudioNative short-circuit off Linux).
-      // Every chunk also feeds the visualizer's playback envelope — see
-      // pushAgentEnvelope for why the bars can't key off arrival time.
+      // Agent audio arrived (the health watch compares it with what plays).
+      // Linux (WebSocket): the webview can't play Web Audio, so the chunk is
+      // played natively and feeds the bars' envelope. WebRTC: the SDK plays it.
       onAudio: (audioBase64: string) => {
+        health.audioReceived(Date.now());
+        if (!nativePlayback()) return;
         playAgentAudioNative(audioBase64);
         try {
           pushAgentEnvelope(audioBase64);
         } catch {}
       },
       onInterruption: () => {
-        // Diagnostics for "it cut out and said a different sentence": a barge-in
-        // ElevenLabs detected (the user's voice — or the agent's own echo).
-        console.info("[voice-eleven] interruption (barge-in) at", new Date().toISOString(), quietGate.pending ? `— ${quietGate.pending} push(es) held` : "");
-        // Barge-in: drop buffered agent audio so it stops immediately, and
-        // the queued envelope with it — that audio will never be heard.
-        stopAgentAudioNative();
-        resetAgentEnvelope();
+        // "It cut out and said a different sentence": a barge-in ElevenLabs
+        // detected (the user's voice — or, on WebSocket, the agent's own echo).
+        vlog("voice interruption", { transport, heldPushes: quietGate.pending });
+        if (nativePlayback()) {
+          stopAgentAudioNative();
+          resetAgentEnvelope();
+        }
       },
-      onConnect: () => {
+      onStatusChange: ({ status }: { status: string }) => vlog("voice status", { status, transport }),
+      onConversationMetadata: (m: any) =>
+        vlog("voice metadata", { conversationId: m?.conversation_id, input: m?.user_input_audio_format, output: m?.agent_output_audio_format }),
+      onConnect: ({ conversationId }: { conversationId?: string } = {}) => {
+        vlog("voice connected", { transport, conversationId, connectMs: Date.now() - startedAt });
         useStore.setState({ voiceError: null });
         useStore.getState().setVoiceConnecting(false);
         useStore.getState().setVoiceListening(false);
         useStore.getState().setVoiceSpeaking(false);
         useStore.getState().setVoiceThinking(false);
       },
-      onDisconnect: (details?: { reason?: string; message?: string; closeCode?: number; closeReason?: string }) => voiceSessionClosed(details),
-      onMessage: ({ message, role }) => {
+      onDisconnect: (details?: any) => {
+        // Every close, ours included, with its reason (one ended at 01:07 with no trace).
+        vlog("voice closed", {
+          transport,
+          reason: details?.reason,
+          message: details?.message,
+          closeCode: details?.closeCode ?? details?.context?.code,
+          closeReason: details?.closeReason ?? details?.context?.reason,
+          context: details?.context?.type,
+          afterMs: Date.now() - startedAt,
+          ...turnStats.atClose(),
+        });
+        voiceSessionClosed(details);
+      },
+      onMessage: ({ message, role }: { message: string; role: string }) => {
         // The agent's audio tags ("[excited]") shaped the audio; the transcript drops them.
         const raw = (message ?? "").trim();
         const text = role === "agent" ? stripAudioTags(raw) : raw;
@@ -1009,7 +1083,8 @@ ${shared}` : "");
         if (role === "user") {
           // Our own reconnect nudge is not Carl's line.
           if (text === RECONNECT_NUDGE) return;
-          turnStats.userTurn(text);
+          const heardAt = Date.now();
+          turnStats.userTurn(text, heardAt, health.userTranscript(heardAt));
           if (sessionFirstUserText === null) sessionFirstUserText = text;
           voiceAppend({ role: "user", content: text });
           // User finished a turn — agent is now thinking until TTS
@@ -1041,15 +1116,15 @@ ${shared}` : "");
           void drainAgentQueue();
         }
       },
-      onModeChange: ({ mode }) => {
+      onModeChange: ({ mode }: { mode: string }) => {
         useStore.getState().setVoiceListening(mode === "listening");
         useStore.getState().setVoiceSpeaking(mode === "speaking");
         // Clear thinking the moment the first TTS chunk arrives — mode
         // flips listening → speaking in `handleAudio` at chunk arrival
         // per the SDK source. The wave hands off to the real output
         // spectrum on this transition.
+        // The turn's timing is logged when audio is audibly playing (the health watch), not here.
         if (mode === "speaking") {
-          logTurn(turnStats.firstResponse("audio"));
           useStore.getState().setVoiceThinking(false);
           stopThinkingWatcher();
         }
@@ -1062,10 +1137,9 @@ ${shared}` : "");
           flushAgentQueueImmediate();
           useStore.getState().setVoiceThinking(false);
           stopThinkingWatcher();
-          // Mode leaves "speaking" only when the output buffer has drained
-          // (or a barge-in cut it) — everything that arrived has been heard,
-          // so any unconsumed envelope tail is stale cursor lag. Drop it.
-          resetAgentEnvelope();
+          // Linux envelope: mode leaves "speaking" once the buffer drained (or a
+          // barge-in cut it), so any unconsumed tail is stale. Drop it.
+          if (nativePlayback()) resetAgentEnvelope();
         }
       },
       onError: (message: string) => {
@@ -1082,6 +1156,20 @@ ${shared}` : "");
         });
       },
     });
+    let conv: ActiveConversation;
+    try {
+      conv = await start();
+    } catch (e) {
+      // WebRTC refused (a network that blocks it): once more over WebSocket, when there's a signed URL.
+      if (transport !== "webrtc" || !signedUrl || isMicProblem(e)) throw e;
+      vlog("voice transport fallback", { from: "webrtc", error: String((e as Error)?.message ?? e).slice(0, 300) });
+      transport = "websocket";
+      activeTransport = transport;
+      conv = await start();
+    }
+    activeConversation = conv;
+    // The connection's health, from the SDK's own meters (voiceHealth.ts).
+    void startHealthWatch(conv, transport);
     // The thread's recent images (its own, or — a fresh voice thread — the chat
     // it started from): this ElevenLabs conversation has never seen them.
     {
@@ -1093,7 +1181,7 @@ ${shared}` : "");
     // Reconnected after a timeout: the agent picks the request back up (the recap is in its prompt).
     if (opts?.recap) {
       try {
-        activeConversation.sendUserMessage(RECONNECT_NUDGE);
+        conv.sendUserMessage(RECONNECT_NUDGE);
       } catch (e) {
         console.warn("[voice-eleven] reconnect nudge failed:", e);
       }
@@ -1101,10 +1189,15 @@ ${shared}` : "");
   } catch (e) {
     console.error("[voice-eleven] session start failed:", e);
     activeConversation = null;
+    activeTransport = null;
+    stopHealthWatch();
+    const msg = (e as any)?.message ?? String(e);
     useStore.getState().setVoiceConnecting(false);
-    reportVoiceError(
-      `Voice session failed to start: ${(e as any)?.message ?? String(e)}.`,
-    );
+    if (isMicProblem(e)) {
+      reportVoiceError(`Microphone access denied or unavailable: ${msg}. Check Windows Settings → Privacy → Microphone, and the input in Settings → Voice.`);
+      return;
+    }
+    reportVoiceError(`Voice session failed to start: ${msg}.`);
   }
 }
 
@@ -1254,8 +1347,10 @@ export function voiceSessionClosed(details?: { reason?: string; message?: string
     voiceAppend({ role: "assistant", content: `Voice session closed by ElevenLabs: ${why}`, system: true });
   }
   // Stop any native agent audio still playing/queued (Linux).
-  stopAgentAudioNative();
+  if (nativePlayback()) stopAgentAudioNative();
   resetAgentEnvelope();
+  stopHealthWatch();
+  activeTransport = null;
   if (!retry) {
     voiceAppend({
       role: "assistant",
@@ -1344,6 +1439,7 @@ export async function endElevenLabsSession(): Promise<void> {
   timeoutRetry.reset();
   const conv = activeConversation;
   activeConversation = null;
+  stopHealthWatch();
   // Cut audio synchronously before the async endSession() runs.
   // Without this, the user can keep speaking and the SDK keeps
   // streaming their audio to ElevenLabs until the WebSocket
@@ -2020,7 +2116,7 @@ export function voiceBarLevels(n: number): number[] {
   // Polled every speaking frame regardless of which source wins — polling
   // advances the envelope's playback cursor, so it stays in sync for the
   // frames where the analyser flakes out.
-  const env = s.voiceSpeaking ? getAgentEnvelopeLevels(n) : null;
+  const env = s.voiceSpeaking && nativePlayback() ? getAgentEnvelopeLevels(n) : null;
   const outActive = out !== null && out.reduce((a, b) => a + b, 0) > 0.05;
   // A muted mic is honestly silent, whatever the analyser still reads.
   return outActive && out ? out : env !== null ? env : s.voiceMicMuted ? new Array(n).fill(0) : getInputLevels(n);
@@ -2055,6 +2151,225 @@ function binFrequencyData(data: Uint8Array, n: number): number[] {
     out.push(sum / binsPerBar / 255);
   }
   return out;
+}
+
+// ---- The call's health (voiceHealth.ts), from the SDK's own meters ---------
+//
+// One sampler per live call reads the SDK's input and output levels; the
+// detectors decide, this acts: a deaf or dead mic is re-acquired once through
+// the SDK (changeInputDevice), then said in one plain line; audio arriving but
+// not audible is logged and playback nudged (LiveKit's startAudio, a suspended
+// context resumed); the first audible agent audio closes the turn's timing.
+// Every step lands in the app log (vlog): the reports that prompted this had no
+// trace of why a call went deaf or silent.
+const health = new VoiceHealth((e) => onHealthEvent(e));
+let healthTimer: ReturnType<typeof setInterval> | null = null;
+let healthConv: ActiveConversation | null = null;
+let healthCleanup: (() => void)[] = [];
+let micRecoveries = 0;
+export const MIC_UNHEARD_LINE = "vault-chat isn't receiving your microphone. Check the input device in Settings → Voice.";
+
+/** [best-effort, diagnostics] The SDK's live pieces it doesn't expose publicly:
+ *  the LiveKit room (WebRTC), the mic track, the WebSocket path's audio contexts.
+ *  Any of them may be missing; nothing depends on them but logs and nudges. */
+function sdkParts(conv: ActiveConversation | null): { room: any; track: MediaStreamTrack | null; contexts: AudioContext[] } {
+  const c = conv as any;
+  const room = c?.connection?.getRoom?.() ?? null;
+  let track: MediaStreamTrack | null = null;
+  try {
+    track = room?.localParticipant?.getTrackPublication?.("microphone")?.track?.mediaStreamTrack ?? c?.input?.inputStream?.getAudioTracks?.()[0] ?? null;
+  } catch {
+    track = null;
+  }
+  const contexts = [c?.input?.context, c?.output?.context].filter((x) => x && typeof x.state === "string");
+  return { room, track, contexts };
+}
+
+/** The mic the SDK captures: its label and device id (logged at every start and switch). */
+async function micInfo(conv: ActiveConversation | null): Promise<Record<string, unknown>> {
+  const { track } = sdkParts(conv);
+  if (!track) return { mic: null };
+  const settings = (track.getSettings?.() ?? {}) as MediaTrackSettings;
+  return {
+    mic: track.label || null,
+    micId: settings.deviceId ? String(settings.deviceId).slice(0, 12) : null,
+    micState: track.readyState,
+    echoCancellation: settings.echoCancellation,
+    picked: voiceInputDevice() ? "chosen" : "default",
+  };
+}
+
+async function startHealthWatch(conv: ActiveConversation, transport: Transport): Promise<void> {
+  stopHealthWatch();
+  healthConv = conv;
+  micRecoveries = 0;
+  health.connected(Date.now());
+  vlog("voice mic", { transport, ...(await micInfo(conv)) });
+  if (healthConv !== conv) return;
+  watchMicTrack(conv);
+  // The output device or mic set changed (a headset plugged, a Bluetooth profile switch).
+  const md = typeof navigator !== "undefined" ? navigator.mediaDevices : undefined;
+  if (md?.addEventListener) {
+    const onDevices = () => void devicesChanged(conv);
+    md.addEventListener("devicechange", onDevices);
+    healthCleanup.push(() => md.removeEventListener("devicechange", onDevices));
+  }
+  const { room, contexts } = sdkParts(conv);
+  for (const ctx of contexts) {
+    const onState = () => vlog("voice audio context", { state: ctx.state, rate: ctx.sampleRate });
+    ctx.addEventListener?.("statechange", onState);
+    healthCleanup.push(() => ctx.removeEventListener?.("statechange", onState));
+  }
+  if (room?.on) {
+    // LiveKit's own events (string names: livekit-client RoomEvent).
+    const events: [string, (...a: any[]) => void][] = [
+      ["audioPlaybackChanged", () => vlog("voice playback allowed", { canPlay: room.canPlaybackAudio })],
+      ["reconnecting", () => vlog("voice transport reconnecting", {})],
+      ["reconnected", () => vlog("voice transport reconnected", {})],
+      ["mediaDevicesError", (e: unknown) => vlog("voice media device error", { error: String((e as Error)?.message ?? e) })],
+      ["connectionQualityChanged", (q: unknown, p: any) => p?.isLocal && q === "poor" && vlog("voice connection poor", {})],
+    ];
+    for (const [ev, fn] of events) {
+      room.on(ev, fn);
+      healthCleanup.push(() => room.off?.(ev, fn));
+    }
+  }
+  healthTimer = setInterval(() => sampleHealth(conv), 100);
+}
+
+function stopHealthWatch(): void {
+  if (healthTimer) clearInterval(healthTimer);
+  healthTimer = null;
+  for (const f of healthCleanup.splice(0)) {
+    try {
+      f();
+    } catch {
+      /* already gone */
+    }
+  }
+  healthConv = null;
+}
+
+const watchedTracks = new WeakSet<MediaStreamTrack>();
+function watchMicTrack(conv: ActiveConversation): void {
+  const { track } = sdkParts(conv);
+  if (!track?.addEventListener || watchedTracks.has(track)) return;
+  watchedTracks.add(track);
+  const onEnded = () => {
+    if (healthConv !== conv) return;
+    vlog("voice mic ended", { mic: track.label || null });
+    void recoverMic(conv, "the microphone track ended");
+  };
+  track.addEventListener("ended", onEnded);
+  healthCleanup.push(() => {
+    track.removeEventListener("ended", onEnded);
+    watchedTracks.delete(track);
+  });
+}
+
+async function devicesChanged(conv: ActiveConversation): Promise<void> {
+  if (healthConv !== conv) return;
+  let inputs: MediaDeviceInfo[] = [];
+  try {
+    inputs = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === "audioinput" || d.kind === "audiooutput");
+  } catch {
+    /* can't list */
+  }
+  const { track } = sdkParts(conv);
+  const id = (track?.getSettings?.() ?? {}).deviceId;
+  const stillThere = !id || inputs.some((d) => d.kind === "audioinput" && d.deviceId === id);
+  vlog("voice devices changed", {
+    inputs: inputs.filter((d) => d.kind === "audioinput").map((d) => d.label || "?").slice(0, 8),
+    outputs: inputs.filter((d) => d.kind === "audiooutput").map((d) => d.label || "?").slice(0, 8),
+    micState: track?.readyState ?? null,
+    micStillThere: stillThere,
+  });
+  if (track?.readyState === "ended" || !stillThere) await recoverMic(conv, "the microphone went away");
+}
+
+/** Re-acquire the mic once through the SDK; a second failure in the call is said plainly. */
+async function recoverMic(conv: ActiveConversation, why: string): Promise<void> {
+  if (healthConv !== conv || activeConversation !== conv) return;
+  micRecoveries++;
+  if (micRecoveries === 1) {
+    try {
+      const id = voiceInputDevice();
+      await conv.changeInputDevice({ inputDeviceId: id || "default" });
+      if (healthConv !== conv) return;
+      health.micReset(Date.now());
+      watchMicTrack(conv);
+      vlog("voice mic reacquired", { why, ...(await micInfo(conv)) });
+      return;
+    } catch (e) {
+      vlog("voice mic reacquire failed", { why, error: String((e as Error)?.message ?? e).slice(0, 300) });
+    }
+  }
+  if (micRecoveries <= 2) {
+    console.error("[voice-eleven] microphone not reaching ElevenLabs:", why);
+    voiceAppend({ role: "assistant", content: MIC_UNHEARD_LINE, system: true });
+  }
+}
+
+function sampleHealth(conv: ActiveConversation): void {
+  if (healthConv !== conv || activeConversation !== conv) return;
+  const now = Date.now();
+  let input = 0;
+  let output = 0;
+  try {
+    input = conv.getInputVolume();
+    output = conv.getOutputVolume();
+  } catch {
+    return;
+  }
+  const st = useStore.getState();
+  const { room } = sdkParts(conv);
+  health.sample({
+    now,
+    input: Number.isFinite(input) ? input : 0,
+    output: Number.isFinite(output) ? output : 0,
+    muted: st.voiceMicMuted,
+    speaking: st.voiceSpeaking,
+    playbackBlocked: room ? room.canPlaybackAudio === false : false,
+  });
+  logTurn(turnStats.noAudio(now));
+}
+
+function onHealthEvent(e: HealthEvent): void {
+  const conv = healthConv;
+  switch (e.kind) {
+    case "first-audio":
+      logTurn(turnStats.audioPlaying(e.at));
+      return;
+    case "mic-dead":
+      vlog("voice mic silent", { ms: e.ms, transport: activeTransport });
+      if (conv) void micInfo(conv).then((m) => vlog("voice mic", m)).finally(() => recoverMic(conv, "the microphone reads silent"));
+      return;
+    case "mic-unheard":
+      vlog("voice mic unheard", { speechMs: e.speechMs, waitedMs: e.waitedMs, transport: activeTransport });
+      if (conv) void recoverMic(conv, "speech the meter saw got no transcript");
+      return;
+    case "silent-playback": {
+      const { room, contexts } = sdkParts(conv);
+      vlog("voice silent playback", {
+        ms: e.ms,
+        transport: activeTransport,
+        canPlay: room ? room.canPlaybackAudio : null,
+        contexts: contexts.map((c) => c.state),
+      });
+      // Nudge playback the SDK's own way: LiveKit's startAudio, a suspended context resumed.
+      void room?.startAudio?.().catch(() => undefined);
+      for (const c of contexts) if (c.state === "suspended") void c.resume().catch(() => undefined);
+      return;
+    }
+    case "playback-resumed":
+      vlog("voice playback resumed", { silentMs: e.silentMs });
+      return;
+  }
+}
+
+/** [tests] Feed one health sample now (the sampler's 100 ms tick). */
+export function sampleVoiceHealthForTests(): void {
+  if (activeConversation) sampleHealth(activeConversation);
 }
 
 // ---- Agent-audio playback envelope (visualizer) ---------------------------
@@ -2875,6 +3190,26 @@ export async function getSignedUrl(apiKey: string, agentId: string, slot?: strin
     return json.signed_url ?? null;
   } catch (e) {
     console.error("[voice-eleven] signed url exception:", e);
+    return null;
+  }
+}
+
+/** A WebRTC conversation token for the agent (ElevenLabs' recommended transport:
+ *  built-in echo cancellation, jitter buffer, noise suppression). Minted with the
+ *  key exactly as the signed URL is; null when ElevenLabs refuses. */
+export async function getConversationToken(apiKey: string, agentId: string): Promise<string | null> {
+  try {
+    const res = await fetch(`https://api.elevenlabs.io/v1/convai/conversation/token?agent_id=${encodeURIComponent(agentId)}`, {
+      headers: { "xi-api-key": apiKey },
+    });
+    if (!res.ok) {
+      console.error("[voice-eleven] conversation token failed:", res.status, await res.text().catch(() => ""));
+      return null;
+    }
+    const json = (await res.json()) as { token?: string };
+    return typeof json.token === "string" && json.token ? json.token : null;
+  } catch (e) {
+    console.error("[voice-eleven] conversation token exception:", e);
     return null;
   }
 }

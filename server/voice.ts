@@ -2,7 +2,7 @@
 // box's working copy, whichever client holds the mic (the laptop in box mode,
 // the phone). Three routes (http.ts), each with an optional vault:
 //   POST /api/v1/voice/tool       {name, args}                → {result}
-//   GET  /api/v1/voice/session    ?convId=                    → {signedUrl, systemPrompt, …}
+//   GET  /api/v1/voice/session    ?convId=                    → {conversationToken, signedUrl, systemPrompt, …}
 //   POST /api/v1/voice/transcript {convId?, fromConvId?, role, text, system?} → {convId}
 // The vault's own voice tools (.vault-chat/tools/<name>/TOOL.md + run.*) run
 // here too, in the same sandbox as Bash, with only the keys TOOL.md's
@@ -647,14 +647,20 @@ export async function voiceSession(
   // The builder already carries this thread's recent turns when it found them: then not its last exchange again.
   const shared = await voiceContextBlock(d, convId, { exchange: !hasThreadHistory(ctx.systemPrompt) }).catch(() => "");
   const systemPrompt = composeVoicePrompt(ctx.systemPrompt, shared);
-  const signedUrl = await v.getSignedUrl(ctx.elKey, ctx.agentId, other ? `vault:${d.name ?? d.vault}` : undefined);
-  if (!signedUrl) return { status: 502, body: { error: "ElevenLabs refused a signed URL" } };
+  // Both credentials, minted at once: a WebRTC conversation token (the
+  // recommended transport) and a signed URL (WebSocket: Linux webviews, older clients).
+  const [signedUrl, conversationToken] = await Promise.all([
+    v.getSignedUrl(ctx.elKey, ctx.agentId, other ? `vault:${d.name ?? d.vault}` : undefined),
+    v.getConversationToken(ctx.elKey, ctx.agentId),
+  ]);
+  if (!signedUrl && !conversationToken) return { status: 502, body: { error: "ElevenLabs refused a signed URL and a conversation token" } };
   // Someone is about to talk: the box is busy until the session's end line (or VOICE_IDLE_MS of silence).
   voiceActivity(d.vault);
   return {
     status: 200,
     body: {
       signedUrl,
+      conversationToken,
       agentId: ctx.agentId,
       voiceId: ctx.voiceId,
       systemPrompt,

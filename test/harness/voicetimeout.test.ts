@@ -210,18 +210,29 @@ test("a reconnect that can't start says why in words; a hang-up resets the allow
 test("timings: each turn's first response, the session's size and images, the timeout's wait", () => {
   const s = new T.VoiceTurnStats();
   s.startSession(20_000);
-  s.userTurn("rewrite the note", 1000);
+  // Carl stopped speaking at 600; the transcript landed at 1000 (with the reply under way).
+  s.userTurn("rewrite the note", 1000, 600);
   s.fillerSpoken();
-  const r = s.firstResponse("tool:Write", 4500, 2000)!;
-  assert.equal(r.firstResponseMs, 3500);
+  assert.equal(s.firstResponse("tool:Write", 4500, 2000), null, "the turn is logged when audio plays");
+  const r = s.audioPlaying(5100)!;
+  assert.equal(r.firstResponseMs, 3900, "from the end of his speech, not the transcript");
+  assert.equal(r.firstAudioMs, 4500);
+  assert.equal(r.transcriptToAudioMs, 4100);
+  assert.equal(r.from, "speech-end");
   assert.equal(r.via, "tool:Write");
   assert.equal(r.filler, true);
-  assert.equal(s.firstResponse("audio", 5000), null, "once a turn");
+  assert.equal(s.audioPlaying(5200), null, "once a turn");
   s.toolResult("Write", 100);
   s.addImages(2);
   s.userTurn("and again", 10_000);
   const c = s.atClose(25_000);
   assert.equal(c.waitingMs, 15_000);
+  // A reply that never plays ("waves but silence") is logged too, with no audio time.
+  assert.equal(s.noAudio(25_000), null, "not before 20 s");
+  const silent = s.noAudio(30_000)!;
+  assert.equal(silent.firstAudioMs, null);
+  assert.equal(silent.via, "none");
+  assert.equal(silent.from, "transcript");
   assert.equal(c.images, 2);
   assert.equal(c.estTokens, Math.round((20_000 + "rewrite the note".length + 2000 + 100 + "and again".length) / 4));
   assert.equal(T.isLlmTimeoutClose(TIMEOUT_CLOSE), true);

@@ -4,6 +4,7 @@ import { useStore } from "./store";
 import { PROVIDER_LABEL, AUTO_MODEL_ID, type ModelSpec, type ProviderId } from "./providers";
 import { Button, Input, MenuSelect } from "./ui";
 import { VOICE_LLMS, normalizeVoiceLlm } from "./voiceLlms";
+import { setVoiceInputDevice, voiceInputDevice } from "./voice-elevenlabs";
 import { listUserKeys, setUserKey, deleteUserKey } from "./keychain";
 import {
   readBoxConfig,
@@ -703,7 +704,53 @@ function VoiceSection() {
         </div>
       )}
       {error && <p className="text-[11px] text-amber-500/90">{error}</p>}
+      <MicPicker />
     </section>
+  );
+}
+
+/** The microphone voice listens with: the system default, or one input
+ *  (the SDK's inputDeviceId; a live call switches at once). */
+function MicPicker() {
+  const [mic, setMic] = useState(() => voiceInputDevice());
+  const [inputs, setInputs] = useState<MediaDeviceInfo[]>([]);
+  useEffect(() => {
+    const md = navigator.mediaDevices;
+    if (!md?.enumerateDevices) return;
+    let alive = true;
+    const load = () =>
+      void md
+        .enumerateDevices()
+        .then((ds) => alive && setInputs(ds.filter((d) => d.kind === "audioinput" && d.deviceId && d.deviceId !== "default" && d.deviceId !== "communications")))
+        .catch(() => undefined);
+    load();
+    md.addEventListener?.("devicechange", load);
+    return () => {
+      alive = false;
+      md.removeEventListener?.("devicechange", load);
+    };
+  }, []);
+  const missing = !!mic && inputs.length > 0 && !inputs.some((d) => d.deviceId === mic);
+  return (
+    <div className="space-y-1">
+      <div className="text-[11px] text-muted-foreground">Microphone</div>
+      <MenuSelect
+        value={mic}
+        onChange={(v) => {
+          setMic(v);
+          void setVoiceInputDevice(v);
+        }}
+        groups={[
+          {
+            options: [
+              { value: "", label: "System default" },
+              ...inputs.map((d, i) => ({ value: d.deviceId, label: d.label || `Microphone ${i + 1}` })),
+              ...(missing ? [{ value: mic, label: "The picked microphone (not connected)" }] : []),
+            ],
+          },
+        ]}
+      />
+    </div>
   );
 }
 

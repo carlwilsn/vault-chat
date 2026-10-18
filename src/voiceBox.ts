@@ -55,7 +55,10 @@ export async function boxVoiceTool(vault: string | null): Promise<((name: string
 }
 
 export type BoxVoiceSession = {
-  signedUrl: string;
+  /** WebSocket credential (null when the box minted only a token). */
+  signedUrl: string | null;
+  /** WebRTC credential (ElevenLabs' recommended transport); absent from boxes before it. */
+  conversationToken?: string | null;
   systemPrompt: string;
   voiceId?: string;
   toolNames: string[];
@@ -85,7 +88,7 @@ export async function boxVoiceSession(
   const qs = q.toString();
   try {
     const s = await get(b.link, `/api/v1/voice/session${qs ? `?${qs}` : ""}`, 20_000);
-    if (!s || typeof s.signedUrl !== "string") return { error: "the box sent no signed URL" };
+    if (!s || (typeof s.signedUrl !== "string" && typeof s.conversationToken !== "string")) return { error: "the box sent no signed URL or conversation token" };
     return { session: { ...s, toolNames: Array.isArray(s.toolNames) ? s.toolNames : [] } };
   } catch (e) {
     const status = (e as { status?: number }).status;

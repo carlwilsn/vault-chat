@@ -67,7 +67,12 @@ export class TimeoutRetry {
   }
 }
 
-/** Per-turn timings and the session's size, for the log. */
+/** Per-turn timings and the session's size, for the log. A turn starts when
+ *  Carl stopped speaking (the last moment his mic was above speech level), not
+ *  when ElevenLabs' final transcript lands: that arrives with the reply already
+ *  under way, so timing from it read 12–61 ms. It ends at the first agent audio
+ *  actually playing (the output level, not a chunk's arrival); a reply that
+ *  never plays is logged too, with firstAudioMs null — "waves but silence". */
 export class VoiceTurnStats {
   /** Characters the ElevenLabs conversation holds beyond the prompt: transcript lines and tool results. */
   sessionChars = 0;
@@ -75,6 +80,9 @@ export class VoiceTurnStats {
   turns = 0;
   promptChars = 0;
   private turnStart: number | null = null;
+  private transcriptAt = 0;
+  private fromSpeech = false;
+  private first: { via: string; at: number } | null = null;
   private filler = false;
   private lastTool: string | null = null;
 
@@ -84,13 +92,18 @@ export class VoiceTurnStats {
     this.turns = 0;
     this.promptChars = promptChars;
     this.turnStart = null;
+    this.first = null;
     this.filler = false;
     this.lastTool = null;
   }
-  userTurn(text: string, now = Date.now()): void {
+  /** Carl's final transcript; `speechEndedAt` when the mic level says when he stopped. */
+  userTurn(text: string, now = Date.now(), speechEndedAt?: number | null): void {
     this.sessionChars += text.length;
     this.turns++;
-    this.turnStart = now;
+    this.fromSpeech = typeof speechEndedAt === "number" && speechEndedAt <= now;
+    this.turnStart = this.fromSpeech ? (speechEndedAt as number) : now;
+    this.transcriptAt = now;
+    this.first = null;
     this.filler = false;
     this.lastTool = null;
   }
@@ -105,13 +118,36 @@ export class VoiceTurnStats {
     this.sessionChars += chars;
     this.lastTool = name;
   }
-  /** The agent's first response to the turn (audio, a line, a tool call): its timing once per turn, else null. */
-  firstResponse(via: string, now = Date.now(), extraChars = 0): Record<string, unknown> | null {
+  /** The agent's first response to the turn (a line, a tool call): noted once a turn; the turn is logged when audio plays. */
+  firstResponse(via: string, now = Date.now(), extraChars = 0): null {
     this.sessionChars += extraChars;
+    if (this.turnStart !== null && !this.first) this.first = { via, at: now };
+    return null;
+  }
+  /** The agent's audio is audibly playing (output level up): the turn's line, once. */
+  audioPlaying(now = Date.now()): Record<string, unknown> | null {
     if (this.turnStart === null) return null;
-    const ms = now - this.turnStart;
+    return this.close(now);
+  }
+  /** No audio played `afterMs` after the transcript: the turn's line with firstAudioMs null, once. */
+  noAudio(now = Date.now(), afterMs = 20_000): Record<string, unknown> | null {
+    if (this.turnStart === null || now - this.transcriptAt < afterMs) return null;
+    return this.close(null);
+  }
+  private close(audioAt: number | null): Record<string, unknown> {
+    const start = this.turnStart as number;
+    const first = this.first ?? (audioAt !== null ? { via: "audio", at: audioAt } : null);
     this.turnStart = null;
-    return { turn: this.turns, firstResponseMs: ms, via, filler: this.filler, ...this.size() };
+    return {
+      turn: this.turns,
+      firstResponseMs: first ? Math.max(0, first.at - start) : null,
+      via: first?.via ?? "none",
+      firstAudioMs: audioAt === null ? null : Math.max(0, audioAt - start),
+      transcriptToAudioMs: audioAt === null ? null : audioAt - this.transcriptAt,
+      from: this.fromSpeech ? "speech-end" : "transcript",
+      filler: this.filler,
+      ...this.size(),
+    };
   }
   /** At a close: how long the open turn had waited, and its last tool. */
   atClose(now = Date.now()): Record<string, unknown> {
