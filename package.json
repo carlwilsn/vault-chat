@@ -31,9 +31,6 @@
     "vite:preview": "vite preview"
   },
   "dependencies": {
-    "@ai-sdk/anthropic": "^3.0.69",
-    "@ai-sdk/google": "^3.0.63",
-    "@ai-sdk/openai": "^3.0.53",
     "@codemirror/commands": "^6.10.3",
     "@codemirror/lang-markdown": "^6.5.0",
     "@codemirror/language": "^6.12.3",
@@ -49,7 +46,6 @@
     "@tauri-apps/plugin-opener": "^2.5.3",
     "@tauri-apps/plugin-process": "^2.3.0",
     "@tauri-apps/plugin-updater": "^2.9.0",
-    "ai": "^6.0.162",
     "allotment": "^1.20.5",
     "buffer": "^6.0.3",
     "class-variance-authority": "^0.7.1",
@@ -73,7 +69,6 @@
     "remark-math": "^6.0.0",
     "tailwind-merge": "^3.5.0",
     "tailwindcss-animate": "^1.0.7",
-    "zod": "^4.3.6",
     "zustand": "^5.0.12"
   },
   "devDependencies": {

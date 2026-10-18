@@ -18,105 +18,11 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-// Windows: probe once for Git Bash and reuse the result for every
-// bash_exec call. Picking bash.exe over `cmd /C` makes the Bash tool
-// usable for agents — cmd's quote handling mangles any command with
-// embedded quotes (e.g. `gh repo create --description "foo bar"`
-// becomes two args), and POSIX commands the agent reaches for by
-// default (head/ls/sed/awk) just don't exist. If Git for Windows
-// isn't installed, fall back to cmd so we degrade rather than break.
-#[cfg(windows)]
-static GIT_BASH_PATH: OnceLock<Option<PathBuf>> = OnceLock::new();
-
-#[cfg(windows)]
-fn find_git_bash() -> Option<PathBuf> {
-    GIT_BASH_PATH
-        .get_or_init(|| {
-            // Check the canonical install locations first — fastest
-            // path, no subprocess. Order: 64-bit machine install,
-            // 32-bit machine install, per-user install.
-            let candidates = [
-                std::env::var("ProgramFiles")
-                    .ok()
-                    .map(|p| PathBuf::from(p).join("Git").join("bin").join("bash.exe")),
-                std::env::var("ProgramFiles(x86)")
-                    .ok()
-                    .map(|p| PathBuf::from(p).join("Git").join("bin").join("bash.exe")),
-                std::env::var("LocalAppData").ok().map(|p| {
-                    PathBuf::from(p)
-                        .join("Programs")
-                        .join("Git")
-                        .join("bin")
-                        .join("bash.exe")
-                }),
-            ];
-            for c in candidates.into_iter().flatten() {
-                if c.is_file() {
-                    return Some(c);
-                }
-            }
-            // Last resort: ask PATH. `where bash` returns 0 + a list
-            // of matching paths if found. Skipped silently if `where`
-            // itself isn't available (vanishingly rare on Windows).
-            use std::os::windows::process::CommandExt;
-            let out = Command::new("where")
-                .arg("bash")
-                .creation_flags(0x08000000)
-                .output()
-                .ok()?;
-            if !out.status.success() {
-                return None;
-            }
-            let first = String::from_utf8_lossy(&out.stdout)
-                .lines()
-                .map(str::trim)
-                .find(|l| !l.is_empty())?
-                .to_string();
-            let p = PathBuf::from(first);
-            if p.is_file() {
-                Some(p)
-            } else {
-                None
-            }
-        })
-        .clone()
-}
-
-#[derive(Serialize)]
-struct ShellKind {
-    kind: String,        // "git-bash" | "cmd" | "bash"
-    path: Option<String>,
-}
-
 // Every command that touches the disk, spawns a process or waits on the network
 // is `async` and does that work on the blocking pool. A plain `fn` command runs
 // on the main thread, and while it runs the window pumps no messages: a second
 // of git or `tailscale` there is a frozen window, five is Windows' "Not
 // responding". Keep plain `fn` commands for in-memory work only.
-
-#[tauri::command]
-async fn bash_shell_kind() -> ShellKind {
-    tauri::async_runtime::spawn_blocking(bash_shell_kind_sync)
-        .await
-        .unwrap_or(ShellKind { kind: "cmd".into(), path: None })
-}
-
-fn bash_shell_kind_sync() -> ShellKind {
-    #[cfg(windows)]
-    {
-        if let Some(p) = find_git_bash() {
-            return ShellKind {
-                kind: "git-bash".into(),
-                path: Some(p.to_string_lossy().to_string()),
-            };
-        }
-        ShellKind { kind: "cmd".into(), path: None }
-    }
-    #[cfg(not(windows))]
-    {
-        ShellKind { kind: "bash".into(), path: None }
-    }
-}
 
 // Fire a `file-changed` event with the absolute path. Subscribed to by
 // viewers that need to react to disk mutations they didn't initiate —
@@ -138,7 +44,6 @@ const DENY_FILE: &str = ".vaultchatdeny";
 pub(crate) const NOTES_DIR: &str = ".vault-chat";
 const NOTES_FILE: &str = "notes.jsonl";
 const HUMANIZED_FILE: &str = "humanized.json";
-const CONVERSATIONS_FILE: &str = "conversations.jsonl";
 /// Folder holding one `<id>.json` per conversation (replaces the single
 /// `conversations.jsonl` monolith). Per-conversation files mean a new message
 /// rewrites only its own small file, not the whole multi-MB blob — collapsing
@@ -281,13 +186,6 @@ fn load_humanized_set(vault: &std::path::Path) -> HashSet<String> {
         }
     }
     set
-}
-
-fn read_humanized_list(vault: &str) -> Vec<String> {
-    let root = std::path::Path::new(vault);
-    let mut list: Vec<String> = load_humanized_set(root).into_iter().collect();
-    list.sort();
-    list
 }
 
 fn write_humanized_set(vault: &str, set: &HashSet<String>) -> Result<(), String> {
@@ -693,13 +591,6 @@ async fn remove_from_ignore(vault: String, relative_paths: Vec<String>) -> Resul
 // say "I can't read this — you've restricted it".
 
 #[tauri::command]
-async fn read_deny_lines(vault: String) -> Result<Vec<String>, String> {
-    tauri::async_runtime::spawn_blocking(move || read_list_lines_sync(&vault, DENY_FILE))
-        .await
-        .map_err(|e| e.to_string())?
-}
-
-#[tauri::command]
 async fn add_to_deny(vault: String, relative_path: String) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
         add_to_list_sync(
@@ -755,13 +646,6 @@ async fn remove_from_deny(vault: String, relative_paths: Vec<String>) -> Result<
 // children. The user opts files in one at a time via a right-click
 // "Humanize…" entry. Meant to be near-permanent; unlock is hand-edit
 // only.
-
-#[tauri::command]
-async fn read_humanized(vault: String) -> Result<Vec<String>, String> {
-    tauri::async_runtime::spawn_blocking(move || Ok(read_humanized_list(&vault)))
-        .await
-        .map_err(|e| e.to_string())?
-}
 
 #[tauri::command]
 async fn add_to_humanized(vault: String, relative_path: String) -> Result<(), String> {
@@ -1140,271 +1024,6 @@ fn is_terminal_meta(v: &serde_json::Value) -> bool {
             v.get("missionState").and_then(|x| x.as_str()),
             Some("DONE") | Some("KILLED")
         )
-}
-
-#[tauri::command]
-async fn conversations_read(vault: String) -> Result<Vec<String>, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let base = std::path::Path::new(&vault).join(NOTES_DIR);
-        let dir = base.join(CONVERSATIONS_DIR);
-        // Preferred layout: one append-only <id>.jsonl per conversation. A
-        // legacy <id>.json (single object) may still linger until its next write
-        // migrates it — read those too, but let a .jsonl win for the same stem.
-        if dir.is_dir() {
-            let mut out: Vec<String> = Vec::new();
-            let tombstones = conversation_tombstone_stems(&vault);
-            let mut seen_stems: std::collections::HashSet<String> = std::collections::HashSet::new();
-            if let Ok(entries) = std::fs::read_dir(&dir) {
-                for e in entries.flatten() {
-                    let p = e.path();
-                    if p.extension().and_then(|x| x.to_str()) != Some("jsonl") {
-                        continue;
-                    }
-                    if let Some(stem) = p.file_stem().and_then(|s| s.to_str()) {
-                        if tombstones.contains(stem) {
-                            continue; // deleted on some machine; sync may lag the file removal
-                        }
-                    }
-                    if let Ok(contents) = std::fs::read_to_string(&p) {
-                        if let Some(conv) = reconstruct_conversation(&contents) {
-                            if let Some(stem) = p.file_stem().and_then(|s| s.to_str()) {
-                                seen_stems.insert(stem.to_string());
-                            }
-                            out.push(conv);
-                        }
-                    }
-                }
-            }
-            if let Ok(entries) = std::fs::read_dir(&dir) {
-                for e in entries.flatten() {
-                    let p = e.path();
-                    if p.extension().and_then(|x| x.to_str()) != Some("json") {
-                        continue; // skip .tmp and anything else
-                    }
-                    let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or("").to_string();
-                    if seen_stems.contains(&stem) || tombstones.contains(&stem) {
-                        continue; // superseded by its .jsonl, or deleted
-                    }
-                    if let Ok(contents) = std::fs::read_to_string(&p) {
-                        let t = contents.trim();
-                        if !t.is_empty() {
-                            out.push(t.to_string());
-                        }
-                    }
-                }
-            }
-            if !out.is_empty() {
-                return Ok(out);
-            }
-        }
-        // Legacy fallback: the single conversations.jsonl monolith. The next
-        // write migrates it into the folder and removes it.
-        let legacy = base.join(CONVERSATIONS_FILE);
-        if !legacy.exists() {
-            return Ok(Vec::new());
-        }
-        let contents = std::fs::read_to_string(&legacy).map_err(|e| e.to_string())?;
-        Ok(contents
-            .lines()
-            .filter(|l| !l.trim().is_empty())
-            .map(String::from)
-            .collect())
-    })
-    .await
-    .map_err(|e| e.to_string())?
-}
-
-// Count the lines a conversation body occupies AFTER collapsing adjacent
-// same-role byte-identical message twins — the same rule the read (reconstruct)
-// and write paths apply. The never-shrink guard compares this on BOTH sides so a
-// twins-only collapse (which legitimately shrinks the file) is permitted, while
-// a genuine truncation (real turns dropped) still reads new < existing and is
-// rejected. A meta line or an unparseable line always counts and resets the
-// twin tracker.
-fn deduped_line_count(contents: &str) -> usize {
-    let mut count = 0usize;
-    let mut prev_line: Option<String> = None;
-    let mut prev_role: Option<serde_json::Value> = None;
-    for line in contents.lines() {
-        let t = line.trim();
-        if t.is_empty() {
-            continue;
-        }
-        let v: serde_json::Value = match serde_json::from_str(t) {
-            Ok(v) => v,
-            Err(_) => {
-                count += 1;
-                prev_line = None;
-                prev_role = None;
-                continue;
-            }
-        };
-        if v.get("id").is_some() {
-            count += 1;
-            prev_line = None;
-            prev_role = None;
-            continue;
-        }
-        let role = v.get("role").cloned();
-        let canon = serde_json::to_string(&v).unwrap_or_default();
-        if prev_line.as_deref() == Some(canon.as_str()) && prev_role == role {
-            continue; // adjacent same-role twin — collapsed, not counted
-        }
-        count += 1;
-        prev_line = Some(canon);
-        prev_role = role;
-    }
-    count
-}
-
-#[tauri::command]
-async fn conversations_write_all(vault: String, lines: Vec<String>) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let base = std::path::Path::new(&vault).join(NOTES_DIR);
-        let dir = base.join(CONVERSATIONS_DIR);
-        std::fs::create_dir_all(&dir)
-            .map_err(|e| format!("mkdir {}: {}", dir.display(), e))?;
-
-        // Write each conversation to its own append-only <id>.jsonl: a meta line
-        // (the conversation minus messages) then one line per message. Same
-        // full-rewrite model as before, but the line-per-message encoding means
-        // git sees a clean trailing-line diff and `*.jsonl merge=union` resolves
-        // two machines' concurrent edits losslessly instead of hard-conflicting
-        // on one giant single-object line. Only written when changed, so an
-        // untouched conversation produces no git diff.
-        let tombstones = conversation_tombstone_stems(&vault);
-        // [sync split] A follower (content writer) never WRITES mission-zone
-        // conversations — mission/worker/ask files on its disk are read-only
-        // mirrors of the host's, refreshed by git pulls. Without this, the
-        // in-memory store re-dirties the files the sanitize pass just reset
-        // (store content vs origin content differ → content-compare rewrites
-        // → dirty tree every cycle → the pull's merge refuses to start).
-        // Enforced here because every writer funnels through this command.
-        // Box mode (sync.json names a box): the box is the mission host, so the
-        // laptop is a follower for the mission zone too — with box/box as the
-        // authority instead of origin.
-        let box_mode = box_sync::box_mode_cached(&vault);
-        // [phase 2] Box mode: every agent turn runs on the box, so the box
-        // authors EVERY conversation file — the laptop's copies are read-only
-        // mirrors that arrive through the merge gate. The laptop writing any of
-        // them (even a chat) would race the box's appends into a conflict.
-        if box_mode {
-            return Ok(());
-        }
-        let follower = is_sync_follower_cached(&vault);
-        for line in &lines {
-            let t = line.trim();
-            if t.is_empty() {
-                continue;
-            }
-            let v: serde_json::Value = match serde_json::from_str(t) {
-                Ok(v) => v,
-                Err(_) => continue,
-            };
-            if follower {
-                let src = v.get("source").and_then(|x| x.as_str()).unwrap_or("");
-                if src == "mission" || src == "worker" || src == "ask" {
-                    continue;
-                }
-            }
-            let id = match v.get("id").and_then(|x| x.as_str()) {
-                Some(id) if !id.is_empty() => id.to_string(),
-                _ => continue,
-            };
-            let stem = conversation_file_stem(&id);
-            // Deleted elsewhere (tombstoned): never resurrect it from this
-            // machine's memory, and clear any lingering file.
-            if tombstones.contains(&stem) {
-                let _ = std::fs::remove_file(dir.join(format!("{}.jsonl", stem)));
-                let _ = std::fs::remove_file(dir.join(format!("{}.json", stem)));
-                continue;
-            }
-
-            // Build the jsonl body: meta line (conversation without messages),
-            // then each message on its own line. serde_json sorts object keys, so
-            // the same message serializes identically on every machine — which is
-            // what keeps the union diff clean.
-            let mut meta = v.clone();
-            let messages = meta
-                .as_object_mut()
-                .and_then(|m| m.remove("messages"))
-                .unwrap_or(serde_json::Value::Array(Vec::new()));
-            let mut body = String::new();
-            body.push_str(&serde_json::to_string(&meta).unwrap_or_default());
-            body.push('\n');
-            if let serde_json::Value::Array(msgs) = messages {
-                let mut prev_line: Option<String> = None;
-                let mut prev_role: Option<serde_json::Value> = None;
-                for m in msgs {
-                    let line = serde_json::to_string(&m).unwrap_or_default();
-                    let role = m.get("role").cloned();
-                    // Drop an adjacent same-role byte-identical twin so the dup
-                    // actually LEAVES disk (and stops re-propagating via union-
-                    // merge), instead of being rewritten every persist cycle.
-                    if prev_line.as_deref() == Some(line.as_str()) && prev_role == role {
-                        continue;
-                    }
-                    body.push_str(&line);
-                    body.push('\n');
-                    prev_line = Some(line);
-                    prev_role = role;
-                }
-            }
-
-            let path = dir.join(format!("{}.jsonl", stem));
-            let stale_json = dir.join(format!("{}.json", stem));
-            // Skip the write if on-disk content is already identical — but still
-            // sweep away a superseded single-object .json from before migration.
-            if let Ok(existing) = std::fs::read_to_string(&path) {
-                if existing == body {
-                    let _ = std::fs::remove_file(&stale_json);
-                    continue;
-                }
-                // Never SHRINK a conversation. Messages are append-only, so a
-                // conversation only ever grows — an incoming version with FEWER
-                // lines (meta line + one per message) than what's on disk is a
-                // STALE write racing richer disk state: the debounced autosave
-                // flushing an in-memory copy that lags a withConvLock writer
-                // (the brief seed, a worker/supervisor turn) or another machine's
-                // synced-in appends. Honoring it dropped real turns — e.g. a
-                // mission's brief + first turn. Keep the longer on-disk version.
-                // Compare DEDUPED line counts: a twins-only collapse yields equal
-                // counts (write permitted, so the dup finally leaves disk), while
-                // a genuine truncation still reads new < existing (rejected).
-                if deduped_line_count(&body) < deduped_line_count(&existing) {
-                    continue;
-                }
-            }
-            // Write-temp-then-rename so a crash mid-write leaves the previous good
-            // file in place. The temp sits at `.vault-chat/` top level so the
-            // managed `.gitignore`'s `*.tmp` rule keeps it out of git; the rename
-            // into the subfolder is same-volume/atomic.
-            let tmp = base.join(format!("{}.jsonl.tmp", stem));
-            std::fs::write(&tmp, &body)
-                .map_err(|e| format!("write {}: {}", tmp.display(), e))?;
-            std::fs::rename(&tmp, &path)
-                .map_err(|e| format!("rename {} -> {}: {}", tmp.display(), path.display(), e))?;
-            // Migration: the .jsonl is now authoritative — drop the old .json.
-            let _ = std::fs::remove_file(&stale_json);
-        }
-
-        // NOTE: no delete-by-omission sweep here. This used to remove every
-        // file whose id wasn't in the caller's in-memory list — which, with two
-        // machines syncing one vault, silently deleted conversations the OTHER
-        // machine had just created (its files arrive via sync; this machine's
-        // memory doesn't know them; the next persist swept them away). Deletion
-        // is now explicit-only via conversation_delete + tombstones above.
-
-        // Migration complete: drop the legacy monolith so it stops being
-        // re-stored on every sync.
-        let legacy = base.join(CONVERSATIONS_FILE);
-        if legacy.exists() {
-            let _ = std::fs::remove_file(&legacy);
-        }
-        Ok(())
-    })
-    .await
-    .map_err(|e| e.to_string())?
 }
 
 /// The set of tombstoned schedule ids (deleted on some machine). Every reader
@@ -2106,55 +1725,6 @@ async fn delete_file(path: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn edit_text_file(
-    app: AppHandle,
-    path: String,
-    old_string: String,
-    new_string: String,
-    replace_all: Option<bool>,
-) -> Result<String, String> {
-    git_guard(&path)?;
-    let raw = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
-    // Normalize line endings for matching so agent-provided `old_string`
-    // (usually LF) matches CRLF files on Windows. The file's original
-    // ending style is detected and restored on write so we don't
-    // silently churn EOLs on every edit.
-    let had_crlf = raw.contains("\r\n");
-    let contents = if had_crlf { raw.replace("\r\n", "\n") } else { raw };
-    let needle = old_string.replace("\r\n", "\n");
-    let replacement = new_string.replace("\r\n", "\n");
-    let all = replace_all.unwrap_or(false);
-    let new_contents_lf = if all {
-        let count = contents.matches(&needle).count();
-        if count == 0 {
-            return Err(format!("old_string not found in {}", path));
-        }
-        (contents.replace(&needle, &replacement), count)
-    } else {
-        let count = contents.matches(&needle).count();
-        if count == 0 {
-            return Err(format!("old_string not found in {}", path));
-        }
-        if count > 1 {
-            return Err(format!(
-                "old_string matches {} times in {} — provide more context to make it unique, or set replace_all=true",
-                count, path
-            ));
-        }
-        (contents.replacen(&needle, &replacement, 1), 1)
-    };
-    let (body, count) = new_contents_lf;
-    let out = if had_crlf { body.replace('\n', "\r\n") } else { body };
-    std::fs::write(&path, out).map_err(|e| e.to_string())?;
-    emit_file_changed(&app, &path);
-    if all {
-        Ok(format!("replaced {} occurrence(s) in {}", count, path))
-    } else {
-        Ok(format!("edited {}", path))
-    }
-}
-
-#[tauri::command]
 async fn glob_files(pattern: String, cwd: Option<String>) -> Result<Vec<String>, String> {
     let base = cwd
         .as_deref()
@@ -2180,414 +1750,6 @@ async fn glob_files(pattern: String, cwd: Option<String>) -> Result<Vec<String>,
     }
     out.sort_by(|a, b| b.1.cmp(&a.1));
     Ok(out.into_iter().map(|(p, _)| p).collect())
-}
-
-#[derive(Serialize)]
-struct GrepMatch {
-    path: String,
-    line: usize,
-    text: String,
-}
-
-#[tauri::command]
-async fn grep_files(
-    pattern: String,
-    path: String,
-    glob_filter: Option<String>,
-    case_insensitive: Option<bool>,
-    max_results: Option<usize>,
-) -> Result<Vec<GrepMatch>, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        grep_files_sync(pattern, path, glob_filter, case_insensitive, max_results)
-    })
-    .await
-    .map_err(|e| e.to_string())?
-}
-
-fn grep_files_sync(
-    pattern: String,
-    path: String,
-    glob_filter: Option<String>,
-    case_insensitive: Option<bool>,
-    max_results: Option<usize>,
-) -> Result<Vec<GrepMatch>, String> {
-    let mut builder = regex::RegexBuilder::new(&pattern);
-    builder.case_insensitive(case_insensitive.unwrap_or(false));
-    let re = builder.build().map_err(|e| e.to_string())?;
-    let root = PathBuf::from(&path);
-    if !root.exists() {
-        return Err(format!("path does not exist: {}", path));
-    }
-
-    let glob_pat = glob_filter
-        .as_deref()
-        .and_then(|g| glob::Pattern::new(g).ok());
-
-    let limit = max_results.unwrap_or(500);
-    let mut results: Vec<GrepMatch> = Vec::new();
-
-    let walker = if root.is_dir() {
-        WalkDir::new(&root)
-    } else {
-        WalkDir::new(&root)
-    };
-
-    for entry in walker
-        .into_iter()
-        .filter_entry(|e| {
-            let name = e.file_name().to_string_lossy();
-            !name.starts_with('.') && name != "node_modules" && name != "target"
-        })
-        .filter_map(|e| e.ok())
-    {
-        let p = entry.path();
-        if !p.is_file() {
-            continue;
-        }
-        if let Some(ref gp) = glob_pat {
-            let name = p.file_name().unwrap_or_default().to_string_lossy();
-            if !gp.matches(&name) {
-                continue;
-            }
-        }
-        let content = match std::fs::read_to_string(p) {
-            Ok(c) => c,
-            Err(_) => continue,
-        };
-        for (i, line) in content.lines().enumerate() {
-            if re.is_match(line) {
-                results.push(GrepMatch {
-                    path: p.to_string_lossy().replace('\\', "/"),
-                    line: i + 1,
-                    text: line.to_string(),
-                });
-                if results.len() >= limit {
-                    return Ok(results);
-                }
-            }
-        }
-    }
-    Ok(results)
-}
-
-#[derive(Serialize)]
-struct BashResult {
-    stdout: String,
-    stderr: String,
-    code: i32,
-    timed_out: bool,
-}
-
-// Cancel registry for in-flight Bash commands. Stop sets the flag for the
-// command's cancel id; the poll loop in bash_exec_sync sees it and kills the
-// subprocess within a few ms — a HARD interrupt instead of waiting for the
-// command to run to completion (or hit its timeout).
-static BASH_CANCELS: std::sync::OnceLock<
-    std::sync::Mutex<std::collections::HashMap<String, std::sync::Arc<std::sync::atomic::AtomicBool>>>,
-> = std::sync::OnceLock::new();
-
-fn bash_cancels() -> &'static std::sync::Mutex<
-    std::collections::HashMap<String, std::sync::Arc<std::sync::atomic::AtomicBool>>,
-> {
-    BASH_CANCELS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
-}
-
-#[tauri::command]
-fn bash_cancel(cancel_id: String) {
-    if let Ok(map) = bash_cancels().lock() {
-        if let Some(flag) = map.get(&cancel_id) {
-            flag.store(true, std::sync::atomic::Ordering::SeqCst);
-        }
-    }
-}
-
-#[tauri::command]
-async fn bash_exec(
-    command: String,
-    cwd: Option<String>,
-    timeout_ms: Option<u64>,
-    cancel_id: Option<String>,
-    env: Option<std::collections::HashMap<String, String>>,
-) -> Result<BashResult, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        bash_exec_sync(command, cwd, timeout_ms, cancel_id, env)
-    })
-    .await
-    .map_err(|e| e.to_string())?
-}
-
-fn bash_exec_sync(
-    command: String,
-    cwd: Option<String>,
-    timeout_ms: Option<u64>,
-    cancel_id: Option<String>,
-    // [harness v2] Optional extra env for the child (mirrors run_script's `env`).
-    // Added so the deterministic cost-guard in the run-watcher can invoke the
-    // per-vault lambda tool with `lambda_api_key` — bash_exec previously injected
-    // no secrets, which made an off-LLM terminate impossible.
-    env: Option<std::collections::HashMap<String, String>>,
-) -> Result<BashResult, String> {
-    use std::io::Read;
-    use std::time::{Duration, Instant};
-
-    let timeout = Duration::from_millis(timeout_ms.unwrap_or(120_000));
-    let working_dir = cwd.clone().filter(|c| PathBuf::from(c).is_dir());
-
-    #[cfg(windows)]
-    let mut cmd = {
-        use std::os::windows::process::CommandExt;
-        if let Some(bash) = find_git_bash() {
-            // Git Bash. Use `-c` (not `-lc`) — login mode loads
-            // /etc/profile which can be slow and prints MOTD-style
-            // junk into the agent's view. The command string itself
-            // already passes through Rust's CreateProcess arg
-            // escaping cleanly because bash.exe's arg parsing matches
-            // C runtime conventions.
-            // MSYS_NO_PATHCONV + MSYS2_ARG_CONV_EXCL disable Git Bash's
-            // auto path-rewriting heuristic, which otherwise mangles
-            // any arg starting with `/` into a Windows path under the
-            // Git install dir. Without this, `gh api /repos/foo`
-            // silently becomes `gh api C:\Program Files\Git\repos\foo`
-            // and the request 404s. Standard hygiene when using Git
-            // Bash as a script host.
-            let mut c = Command::new(&bash);
-            c.arg("-c").arg(&command);
-            c.env("MSYS_NO_PATHCONV", "1");
-            c.env("MSYS2_ARG_CONV_EXCL", "*");
-            c.creation_flags(0x08000000);
-            c
-        } else {
-            let mut c = Command::new("cmd");
-            c.arg("/C").arg(&command);
-            c.creation_flags(0x08000000);
-            c
-        }
-    };
-    #[cfg(not(windows))]
-    let mut cmd = {
-        let mut c = Command::new("bash");
-        c.arg("-lc").arg(&command);
-        c
-    };
-
-    if let Some(d) = &working_dir {
-        cmd.current_dir(d);
-    }
-    strip_polluting_env(&mut cmd);
-    // [harness v2] Caller-supplied env (e.g. lambda_api_key for the cost-guard's
-    // terminate). Applied after the strip so an explicit key always wins.
-    if let Some(extra) = &env {
-        for (k, v) in extra {
-            cmd.env(k, v);
-        }
-    }
-    // Any `git commit` the agent runs via Bash — in the vault root or a
-    // nested repo — is authored as the agent, so it's distinguishable from
-    // the user's own commits in that repo's history.
-    stamp_agent_git_identity(&mut cmd);
-    cmd.stdout(std::process::Stdio::piped());
-    cmd.stderr(std::process::Stdio::piped());
-
-    let mut child = cmd.spawn().map_err(|e| e.to_string())?;
-    // Register a cancel flag so a Stop can kill THIS subprocess (see bash_cancel).
-    let cancel_flag = cancel_id.as_ref().map(|id| {
-        let flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        if let Ok(mut map) = bash_cancels().lock() {
-            map.insert(id.clone(), flag.clone());
-        }
-        flag
-    });
-    let start = Instant::now();
-    let mut timed_out = false;
-    let code;
-    loop {
-        match child.try_wait().map_err(|e| e.to_string())? {
-            Some(status) => {
-                code = status.code().unwrap_or(-1);
-                break;
-            }
-            None => {
-                // Hard interrupt: Stop set the cancel flag — kill the subprocess now.
-                if cancel_flag
-                    .as_ref()
-                    .map_or(false, |f| f.load(std::sync::atomic::Ordering::SeqCst))
-                {
-                    let _ = child.kill();
-                    code = -1;
-                    break;
-                }
-                if start.elapsed() > timeout {
-                    let _ = child.kill();
-                    timed_out = true;
-                    code = -1;
-                    break;
-                }
-                // Tight poll so a kill lands within ~15ms of Stop.
-                std::thread::sleep(Duration::from_millis(15));
-            }
-        }
-    }
-    if let Some(id) = &cancel_id {
-        if let Ok(mut map) = bash_cancels().lock() {
-            map.remove(id);
-        }
-    }
-
-    let mut stdout = String::new();
-    let mut stderr = String::new();
-    if let Some(mut o) = child.stdout.take() {
-        let _ = o.read_to_string(&mut stdout);
-    }
-    if let Some(mut e) = child.stderr.take() {
-        let _ = e.read_to_string(&mut stderr);
-    }
-
-    const MAX_OUT: usize = 50_000;
-    if stdout.len() > MAX_OUT {
-        stdout = format!(
-            "{}\n…[truncated {} bytes]",
-            &stdout[..MAX_OUT],
-            stdout.len() - MAX_OUT
-        );
-    }
-    if stderr.len() > MAX_OUT {
-        stderr = format!(
-            "{}\n…[truncated {} bytes]",
-            &stderr[..MAX_OUT],
-            stderr.len() - MAX_OUT
-        );
-    }
-
-    Ok(BashResult {
-        stdout,
-        stderr,
-        code,
-        timed_out,
-    })
-}
-
-fn html_to_text(html: &str) -> String {
-    let script_re = regex::Regex::new(r"(?is)<script\b[^>]*>.*?</script>").unwrap();
-    let style_re = regex::Regex::new(r"(?is)<style\b[^>]*>.*?</style>").unwrap();
-    let noscript_re = regex::Regex::new(r"(?is)<noscript\b[^>]*>.*?</noscript>").unwrap();
-    let s1 = script_re.replace_all(html, " ");
-    let s2 = style_re.replace_all(&s1, " ");
-    let s3 = noscript_re.replace_all(&s2, " ");
-    let tag_re = regex::Regex::new(r"(?s)<[^>]+>").unwrap();
-    let no_tags = tag_re.replace_all(&s3, " ");
-    let decoded = no_tags
-        .replace("&nbsp;", " ")
-        .replace("&amp;", "&")
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&quot;", "\"")
-        .replace("&#39;", "'")
-        .replace("&apos;", "'");
-    let ws_re = regex::Regex::new(r"[ \t]+").unwrap();
-    let single_spaces = ws_re.replace_all(&decoded, " ");
-    let nl_re = regex::Regex::new(r"\n{3,}").unwrap();
-    nl_re.replace_all(&single_spaces, "\n\n").trim().to_string()
-}
-
-#[tauri::command]
-async fn http_fetch(url: String, max_chars: Option<usize>) -> Result<String, String> {
-    let limit = max_chars.unwrap_or(120_000);
-    let result = tauri::async_runtime::spawn_blocking(move || -> Result<String, String> {
-        let client = reqwest::blocking::Client::builder()
-            .user_agent("vault-chat/0.1")
-            .timeout(std::time::Duration::from_secs(30))
-            .redirect(reqwest::redirect::Policy::limited(5))
-            .build()
-            .map_err(|e| e.to_string())?;
-        let resp = client.get(&url).send().map_err(|e| e.to_string())?;
-        let status = resp.status();
-        let ct = resp
-            .headers()
-            .get("content-type")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("")
-            .to_string();
-        let body = resp.text().map_err(|e| e.to_string())?;
-        if !status.is_success() {
-            return Err(format!("HTTP {}: {}", status, body.chars().take(200).collect::<String>()));
-        }
-        let text = if ct.contains("html") || body.trim_start().starts_with("<!") || body.trim_start().starts_with("<html") {
-            html_to_text(&body)
-        } else {
-            body
-        };
-        Ok(text)
-    })
-    .await
-    .map_err(|e| e.to_string())??;
-
-    if result.chars().count() > limit {
-        let truncated: String = result.chars().take(limit).collect();
-        Ok(format!("{}\n…[truncated; full length {} chars]", truncated, result.chars().count()))
-    } else {
-        Ok(result)
-    }
-}
-
-#[tauri::command]
-async fn tavily_search(
-    query: String,
-    api_key: String,
-    max_results: Option<usize>,
-    include_answer: Option<bool>,
-) -> Result<String, String> {
-    let max = max_results.unwrap_or(5).min(10);
-    let answer = include_answer.unwrap_or(true);
-    tauri::async_runtime::spawn_blocking(move || -> Result<String, String> {
-        let client = reqwest::blocking::Client::builder()
-            .user_agent("vault-chat/0.1")
-            .timeout(std::time::Duration::from_secs(30))
-            .build()
-            .map_err(|e| e.to_string())?;
-        let body = serde_json::json!({
-            "api_key": api_key,
-            "query": query,
-            "max_results": max,
-            "include_answer": answer,
-            "search_depth": "basic",
-        });
-        let body_str = serde_json::to_string(&body).map_err(|e| e.to_string())?;
-        let resp = client
-            .post("https://api.tavily.com/search")
-            .header("content-type", "application/json")
-            .body(body_str)
-            .send()
-            .map_err(|e: reqwest::Error| e.to_string())?;
-        let status = resp.status();
-        let text = resp.text().map_err(|e: reqwest::Error| e.to_string())?;
-        if !status.is_success() {
-            return Err(format!("Tavily HTTP {}: {}", status, text.chars().take(400).collect::<String>()));
-        }
-        let parsed: serde_json::Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
-        let mut out = String::new();
-        if let Some(ans) = parsed.get("answer").and_then(|a| a.as_str()) {
-            if !ans.is_empty() {
-                out.push_str("Answer: ");
-                out.push_str(ans);
-                out.push_str("\n\n");
-            }
-        }
-        if let Some(results) = parsed.get("results").and_then(|r| r.as_array()) {
-            for (i, r) in results.iter().enumerate() {
-                let title = r.get("title").and_then(|v| v.as_str()).unwrap_or("");
-                let url = r.get("url").and_then(|v| v.as_str()).unwrap_or("");
-                let content = r.get("content").and_then(|v| v.as_str()).unwrap_or("");
-                out.push_str(&format!("[{}] {}\n{}\n{}\n\n", i + 1, title, url, content));
-            }
-        }
-        if out.is_empty() {
-            Ok(format!("(no results)\n{}", text.chars().take(500).collect::<String>()))
-        } else {
-            Ok(out.trim_end().to_string())
-        }
-    })
-    .await
-    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -2664,16 +1826,6 @@ const AGENT_GIT_NAME: &str = "vault-chat-agent";
 const AGENT_GIT_EMAIL: &str = "agent@vault-chat.local";
 const APP_GIT_NAME: &str = "vault-chat";
 const APP_GIT_EMAIL: &str = "vault-chat@local";
-
-/// Stamp the agent's git identity into a spawned command's environment, so
-/// any `git commit` it runs is authored as `vault-chat-agent` regardless of
-/// which repo (nested work repos included) it lands in.
-fn stamp_agent_git_identity(cmd: &mut Command) {
-    cmd.env("GIT_AUTHOR_NAME", AGENT_GIT_NAME);
-    cmd.env("GIT_AUTHOR_EMAIL", AGENT_GIT_EMAIL);
-    cmd.env("GIT_COMMITTER_NAME", AGENT_GIT_NAME);
-    cmd.env("GIT_COMMITTER_EMAIL", AGENT_GIT_EMAIL);
-}
 
 /// The user's *real* git identity for `repo`, read from its effective git
 /// config (local → global → system, exactly what a bare `git commit` would
@@ -5457,25 +4609,6 @@ async fn box_get_json(url: String, token: Option<String>, timeout_ms: Option<u64
     .map_err(|e| e.to_string())?
 }
 
-/// is_sync_follower behind a 60s cache — for hot paths (every conversations
-/// autosave) where a git subprocess per call would be a spawn storm. The role
-/// marker is a per-checkout constant; 60s staleness is irrelevant.
-fn is_sync_follower_cached(vault: &str) -> bool {
-    use std::sync::Mutex;
-    use std::time::Instant;
-    static CACHE: Mutex<Option<std::collections::HashMap<String, (bool, Instant)>>> = Mutex::new(None);
-    let mut guard = CACHE.lock().unwrap_or_else(|p| p.into_inner());
-    let map = guard.get_or_insert_with(std::collections::HashMap::new);
-    if let Some((v, at)) = map.get(vault) {
-        if at.elapsed().as_secs() < 60 {
-            return *v;
-        }
-    }
-    let v = is_sync_follower(vault);
-    map.insert(vault.to_string(), (v, Instant::now()));
-    v
-}
-
 /// The mission zone: paths only the mission host may author. A follower resets
 /// these to origin before every commit, so no follower push can carry a
 /// mission-state change (proven by the two-checkout scratch test: the box's
@@ -6364,32 +5497,6 @@ mod conversation_jsonl_tests {
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v.get("messages").unwrap().as_array().unwrap().len(), 3);
     }
-
-    #[test]
-    fn deduped_count_permits_twins_shrink_rejects_truncation() {
-        use super::deduped_line_count;
-        // Only difference from disk is removed adjacent twins -> deduped counts
-        // equal -> the never-shrink guard must NOT block the write.
-        let disk_with_twins = "{\"id\":\"a\"}\n\
-                               {\"role\":\"user\",\"content\":\"A\"}\n\
-                               {\"role\":\"user\",\"content\":\"A\"}\n";
-        let deduped_body = "{\"id\":\"a\"}\n{\"role\":\"user\",\"content\":\"A\"}\n";
-        assert_eq!(deduped_line_count(disk_with_twins), 2);
-        assert_eq!(deduped_line_count(deduped_body), 2);
-        assert!(!(deduped_line_count(deduped_body) < deduped_line_count(disk_with_twins)));
-        // A genuine truncation (a real distinct turn dropped) still reads
-        // new < existing -> the guard rejects it.
-        let disk_full = "{\"id\":\"a\"}\n\
-                         {\"role\":\"user\",\"content\":\"A\"}\n\
-                         {\"role\":\"assistant\",\"content\":\"B\"}\n\
-                         {\"role\":\"user\",\"content\":\"C\"}\n";
-        let truncated = "{\"id\":\"a\"}\n\
-                         {\"role\":\"user\",\"content\":\"A\"}\n\
-                         {\"role\":\"assistant\",\"content\":\"B\"}\n";
-        assert_eq!(deduped_line_count(disk_full), 4);
-        assert_eq!(deduped_line_count(truncated), 3);
-        assert!(deduped_line_count(truncated) < deduped_line_count(disk_full));
-    }
 }
 
 // ----- .git/ guard -----
@@ -6423,19 +5530,7 @@ fn git_guard(path: &str) -> Result<(), String> {
 // can open it as a regular vault and edit anything. Agent can too.
 // On first launch we seed it with sensible defaults.
 
-const DEFAULT_SYSTEM_MD: &str = include_str!("../defaults/system.md");
 const DEFAULT_VOICE_MD: &str = include_str!("../defaults/voice.md");
-const DEFAULT_SUPERVISOR_MD: &str = include_str!("../defaults/supervisor.md");
-const DEFAULT_ASSISTANT_MD: &str = include_str!("../defaults/assistant.md");
-
-/// The bundled default agent system prompt. New vaults seed
-/// `<vault>/.vault-chat/agent/system.md` from this; it can then be
-/// customized per-vault and syncs across machines via the vault's git.
-#[tauri::command]
-fn default_system_prompt() -> String {
-    DEFAULT_SYSTEM_MD.to_string()
-}
-
 /// The bundled default voice-mode prompt. New vaults seed
 /// `<vault>/.vault-chat/agent/voice.md` from this.
 #[tauri::command]
@@ -6443,203 +5538,11 @@ fn default_voice_prompt() -> String {
     DEFAULT_VOICE_MD.to_string()
 }
 
-/// The bundled default supervisor role prompt. New vaults seed
-/// `<vault>/.vault-chat/agent/supervisor.md` from this. It layers an always-on
-/// orchestrator role (persistent mind, goal loop, worker steering) onto the
-/// agent, and is editable per vault.
-#[tauri::command]
-fn default_supervisor_prompt() -> String {
-    DEFAULT_SUPERVISOR_MD.to_string()
-}
-
-/// The bundled default cockpit-assistant prompt. New vaults seed
-/// `<vault>/.vault-chat/agent/assistant.md` from this. It steers the
-/// interactive phone-cockpit chat (light, conversational, proposes missions
-/// via plan cards rather than running work itself), and is editable per vault.
-#[tauri::command]
-fn default_assistant_prompt() -> String {
-    DEFAULT_ASSISTANT_MD.to_string()
-}
-
 // ----- run_script -----
 //
 // Executes a vault-tool script (Python / Node / bash / etc.). The
 // script receives its input on stdin as JSON and is expected to write
 // its output to stdout (JSON or plain text — caller decides).
-
-#[derive(Serialize)]
-struct ScriptResult {
-    stdout: String,
-    stderr: String,
-    code: i32,
-    timed_out: bool,
-}
-
-fn interpreter_for(path: &str) -> Option<(&'static str, Vec<String>)> {
-    let lower = path.to_lowercase();
-    if lower.ends_with(".py") {
-        // Windows' Python installer provides `python`; Linux/macOS ship
-        // `python3` with no bare `python` by default — so pick per-platform,
-        // or every .py tool/script dies with "python: command not found".
-        #[cfg(windows)]
-        {
-            Some(("python", vec![path.to_string()]))
-        }
-        #[cfg(not(windows))]
-        {
-            Some(("python3", vec![path.to_string()]))
-        }
-    } else if lower.ends_with(".mjs") || lower.ends_with(".js") {
-        Some(("node", vec![path.to_string()]))
-    } else if lower.ends_with(".ts") {
-        Some(("npx", vec!["tsx".to_string(), path.to_string()]))
-    } else if lower.ends_with(".sh") || lower.ends_with(".bash") {
-        #[cfg(windows)]
-        {
-            Some(("bash", vec![path.to_string()]))
-        }
-        #[cfg(not(windows))]
-        {
-            Some(("bash", vec![path.to_string()]))
-        }
-    } else {
-        None
-    }
-}
-
-// User scripts and Bash commands should run in a clean system environment,
-// not the GUI app's. An AppImage (and some packaging) leaks PYTHONHOME /
-// PYTHONPATH into the app's own process; inherited by a spawned python3,
-// they break its stdlib bootstrap ("Failed to import encodings"). Strip
-// them before spawn so every Python tool/script/command runs against the
-// system interpreter's own paths. No-op when the vars aren't set.
-fn strip_polluting_env(cmd: &mut Command) {
-    cmd.env_remove("PYTHONHOME");
-    cmd.env_remove("PYTHONPATH");
-}
-
-#[tauri::command]
-async fn run_script(
-    script_path: String,
-    stdin_json: Option<String>,
-    cwd: Option<String>,
-    timeout_ms: Option<u64>,
-    env: Option<std::collections::HashMap<String, String>>,
-) -> Result<ScriptResult, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        run_script_sync(script_path, stdin_json, cwd, timeout_ms, env)
-    })
-    .await
-    .map_err(|e| e.to_string())?
-}
-
-fn run_script_sync(
-    script_path: String,
-    stdin_json: Option<String>,
-    cwd: Option<String>,
-    timeout_ms: Option<u64>,
-    env: Option<std::collections::HashMap<String, String>>,
-) -> Result<ScriptResult, String> {
-    use std::io::{Read, Write};
-    use std::time::{Duration, Instant};
-
-    let (program, args) =
-        interpreter_for(&script_path).ok_or_else(|| {
-            format!(
-                "no known interpreter for {} (supported: .py .js .mjs .ts .sh .bash)",
-                script_path
-            )
-        })?;
-
-    let timeout = Duration::from_millis(timeout_ms.unwrap_or(60_000));
-
-    #[cfg(windows)]
-    let mut cmd = {
-        use std::os::windows::process::CommandExt;
-        let mut c = Command::new(program);
-        c.creation_flags(0x08000000); // CREATE_NO_WINDOW
-        c
-    };
-    #[cfg(not(windows))]
-    let mut cmd = Command::new(program);
-
-    cmd.args(&args);
-    strip_polluting_env(&mut cmd);
-    if let Some(d) = &cwd {
-        if PathBuf::from(d).is_dir() {
-            cmd.current_dir(d);
-        }
-    }
-    if let Some(vars) = env {
-        for (k, v) in vars {
-            cmd.env(k, v);
-        }
-    }
-    cmd.stdin(std::process::Stdio::piped());
-    cmd.stdout(std::process::Stdio::piped());
-    cmd.stderr(std::process::Stdio::piped());
-
-    let mut child = cmd.spawn().map_err(|e| e.to_string())?;
-
-    if let (Some(stdin), Some(payload)) = (child.stdin.take(), stdin_json.as_ref()) {
-        let mut stdin = stdin;
-        let _ = stdin.write_all(payload.as_bytes());
-        drop(stdin);
-    }
-
-    let start = Instant::now();
-    let mut timed_out = false;
-    let code;
-    loop {
-        match child.try_wait().map_err(|e| e.to_string())? {
-            Some(status) => {
-                code = status.code().unwrap_or(-1);
-                break;
-            }
-            None => {
-                if start.elapsed() > timeout {
-                    let _ = child.kill();
-                    timed_out = true;
-                    code = -1;
-                    break;
-                }
-                std::thread::sleep(Duration::from_millis(20));
-            }
-        }
-    }
-
-    let mut stdout = String::new();
-    let mut stderr = String::new();
-    if let Some(mut o) = child.stdout.take() {
-        let _ = o.read_to_string(&mut stdout);
-    }
-    if let Some(mut e) = child.stderr.take() {
-        let _ = e.read_to_string(&mut stderr);
-    }
-
-    const MAX_OUT: usize = 50_000;
-    if stdout.len() > MAX_OUT {
-        stdout = format!(
-            "{}\n…[truncated {} bytes]",
-            &stdout[..MAX_OUT],
-            stdout.len() - MAX_OUT
-        );
-    }
-    if stderr.len() > MAX_OUT {
-        stderr = format!(
-            "{}\n…[truncated {} bytes]",
-            &stderr[..MAX_OUT],
-            stderr.len() - MAX_OUT
-        );
-    }
-
-    Ok(ScriptResult {
-        stdout,
-        stderr,
-        code,
-        timed_out,
-    })
-}
 
 #[tauri::command]
 async fn path_exists(path: String) -> bool {
@@ -7493,26 +6396,17 @@ pub fn run() {
             create_dir,
             rename_path,
             prepare_agent_projects,
-            edit_text_file,
             glob_files,
-            grep_files,
-            bash_exec,
-            bash_cancel,
-            bash_shell_kind,
             list_dir,
-            http_fetch,
-            tavily_search,
             read_ignore_lines,
             add_to_ignore,
             rename_in_ignore,
             remove_prefix_from_ignore,
             remove_from_ignore,
-            read_deny_lines,
             add_to_deny,
             rename_in_deny,
             remove_prefix_from_deny,
             remove_from_deny,
-            read_humanized,
             add_to_humanized,
             rename_in_humanized,
             remove_prefix_from_humanized,
@@ -7520,8 +6414,6 @@ pub fn run() {
             notes_append,
             client_event_append,
             notes_write_all,
-            conversations_read,
-            conversations_write_all,
             conversation_delete,
             schedule_tombstone_add,
             schedules_read,
@@ -7548,10 +6440,7 @@ pub fn run() {
             vault_sync_push,
             vault_sync_gh_create_repo,
             path_exists,
-            default_system_prompt,
             default_voice_prompt,
-            default_supervisor_prompt,
-            default_assistant_prompt,
             vault_sync_role,
             vault_box_sync,
             vault_box_config,
@@ -7562,7 +6451,6 @@ pub fn run() {
             vault_box_disconnect,
             box_post_json,
             box_get_json,
-            run_script,
             keychain_get,
             keychain_set,
             keychain_delete,

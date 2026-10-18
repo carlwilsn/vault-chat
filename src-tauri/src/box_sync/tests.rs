@@ -268,18 +268,7 @@ fn mission_zone_is_never_written_by_the_laptop() {
     }
     assert!(git(&r.bare, &["show", "master:note.md"]).contains("note edit"), "content still flows");
 
-    // conversations_write_all in box mode never writes a mission thread. (The
-    // scribble above was never staged: conversations don't go through git here.)
-    let before_m1 = read(&r.laptop, ".vault-chat/conversations/m1.jsonl");
     let v = s(&r.laptop);
-    let lines = vec![
-        "{\"id\":\"m1\",\"source\":\"mission\",\"missionState\":\"KILLED\",\"messages\":[]}".to_string(),
-        "{\"id\":\"chat2\",\"source\":\"manual\",\"messages\":[{\"role\":\"user\",\"content\":\"x\"}]}".to_string(),
-    ];
-    tauri::async_runtime::block_on(crate::conversations_write_all(v.clone(), lines)).unwrap();
-    assert_eq!(read(&r.laptop, ".vault-chat/conversations/m1.jsonl"), before_m1);
-    // [phase 2] …nor any other conversation: the box authors every one.
-    assert!(!r.laptop.join(".vault-chat/conversations/chat2.jsonl").exists());
     assert_eq!(crate::vault_sync_role_sync(v), "follower", "box mode = follower: no local scheduler/missions");
 
     // A zone-only conflict (a stale laptop commit that bypassed the sanitize)
@@ -401,10 +390,6 @@ fn without_sync_json_nothing_changes() {
     assert_eq!(git(&base, &["remote"]), "", "no box remote added");
     assert_ne!(git_code(&base, &["rev-parse", "--verify", "HEAD"]), 0, "nothing committed");
     assert_eq!(crate::vault_sync_role_sync(v.clone()), "writer");
-    // Mission threads are still written (this machine may host missions).
-    let lines = vec!["{\"id\":\"m9\",\"source\":\"mission\",\"messages\":[]}".to_string()];
-    tauri::async_runtime::block_on(crate::conversations_write_all(v, lines)).unwrap();
-    assert!(base.join(".vault-chat/conversations/m9.jsonl").exists());
     let _ = std::fs::remove_dir_all(&base);
 }
 
@@ -422,10 +407,9 @@ fn github_failure_stays_reported_between_debounced_attempts() {
     r.done();
 }
 
-/// [phase 2] Box mode: the box authors EVERY conversation. The laptop's
-/// conversations writer is a no-op (chats included), a delete is a tombstone
-/// only, and a stray laptop edit to a chat is reset to the box's before the
-/// commit.
+/// [phase 2] Box mode: the box authors EVERY conversation (the laptop has no
+/// conversations writer), a delete is a tombstone only, and a stray laptop
+/// edit to a chat is reset to the box's before the commit.
 #[test]
 fn box_mode_never_writes_conversations() {
     let r = rig("convs");
@@ -435,21 +419,6 @@ fn box_mode_never_writes_conversations() {
     assert!(rep.merged, "{:?}", rep);
     assert_eq!(read(&r.laptop, ".vault-chat/conversations/c9.jsonl"), chat);
     let v = s(&r.laptop);
-
-    // 1. The writer writes nothing — not an existing chat (even with more
-    //    messages in memory), not a brand-new one, not a legacy monolith sweep.
-    let before_chat1 = read(&r.laptop, ".vault-chat/conversations/chat1.jsonl");
-    let lines = vec![
-        "{\"id\":\"c9\",\"source\":\"manual\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"},{\"role\":\"assistant\",\"content\":\"from the box\"},{\"role\":\"user\",\"content\":\"laptop local turn\"}]}".to_string(),
-        "{\"id\":\"chat1\",\"source\":\"manual\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"},{\"role\":\"assistant\",\"content\":\"laptop model reply\"}]}".to_string(),
-        "{\"id\":\"fresh\",\"source\":\"manual\",\"messages\":[{\"role\":\"user\",\"content\":\"new\"}]}".to_string(),
-    ];
-    tauri::async_runtime::block_on(crate::conversations_write_all(v.clone(), lines)).unwrap();
-    assert_eq!(read(&r.laptop, ".vault-chat/conversations/c9.jsonl"), chat);
-    assert_eq!(read(&r.laptop, ".vault-chat/conversations/chat1.jsonl"), before_chat1);
-    assert!(!r.laptop.join(".vault-chat/conversations/fresh.jsonl").exists());
-    let st = git(&r.laptop, &["status", "--porcelain"]);
-    assert!(!st.contains("conversations/"), "writer dirtied a conversation: {}", st);
 
     // 2. A delete is a tombstone only; the file stays for the box to remove.
     tauri::async_runtime::block_on(crate::conversation_delete(v.clone(), "c9".to_string())).unwrap();
