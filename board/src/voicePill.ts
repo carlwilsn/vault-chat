@@ -13,6 +13,7 @@ import { ChromeTaps, routeChrome } from "./chrome";
 import { icon, toolIcon } from "./icons";
 import { onInboxEvent } from "./inbox";
 import { VoiceController, type VoiceApi, type VoiceSdk, type VoiceState } from "./voice";
+import { blog } from "./log";
 
 const FAKE = /[?&]voice=fake\b/.test(location.search);
 const BARS = 5;
@@ -40,6 +41,17 @@ export const voice = new VoiceController({
   unlock: unlockAudio,
 });
 (window as unknown as { __voice: VoiceController }).__voice = voice;
+// Voice's phases (start, live, stop, a failure and why) and the chat it joins, in the board's log.
+{
+  let last = { phase: voice.state.phase as string, error: "", chat: null as string | null, muted: false };
+  voice.on((st) => {
+    const chat = st.chat?.id ?? null;
+    if (st.phase !== last.phase || (st.error && st.error !== last.error)) blog("voice", { phase: st.phase, ...(st.error ? { error: st.error.slice(0, 200) } : {}), ...(chat ? { conv: chat } : {}) });
+    else if (chat !== last.chat && st.phase === "live") blog("voice.chat", { conv: chat });
+    if (st.muted !== last.muted && st.phase === "live") blog("voice.muted", { on: st.muted });
+    last = { phase: st.phase, error: st.error, chat, muted: st.muted };
+  });
+}
 
 const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]!);
 function ago(t: number): string {

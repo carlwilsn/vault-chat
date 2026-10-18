@@ -15,6 +15,8 @@ export class ChromeTaps<B> {
   private last: number | null = null;
   private slop: number;
   private dedupeMs: number;
+  /** Since the last takeStats(): taps that pressed their button, taps on a button that pressed nothing (moved off it, slid too far), native clicks dropped as a tap's tail. */
+  private stats = { pressed: 0, missed: 0, dropped: 0 };
 
   constructor(
     /** Press the button (view.ts: its click handlers run, once). */
@@ -34,10 +36,21 @@ export class ChromeTaps<B> {
   up(id: number, over: B | null, x: number, y: number, t: number): boolean {
     const d = this.downs.get(id);
     this.downs.delete(id);
-    if (!d || !d.b || d.b !== over || Math.hypot(x - d.x, y - d.y) > this.slop) return false;
+    if (!d || !d.b || d.b !== over || Math.hypot(x - d.x, y - d.y) > this.slop) {
+      if (d?.b) this.stats.missed++;
+      return false;
+    }
     this.last = t;
+    this.stats.pressed++;
     this.press(d.b);
     return true;
+  }
+
+  /** The tap counts since the last call (the board's log, board/src/log.ts), reset. */
+  takeStats(): { pressed: number; missed: number; dropped: number } {
+    const s = this.stats;
+    this.stats = { pressed: 0, missed: 0, dropped: 0 };
+    return s;
   }
 
   /** The browser took the pointer (a scroll began, the system cancelled it): no press. */
@@ -54,7 +67,9 @@ export class ChromeTaps<B> {
   click(t: number): boolean {
     const l = this.last;
     this.last = null;
-    return !(l !== null && t - l < this.dedupeMs);
+    const keep = !(l !== null && t - l < this.dedupeMs);
+    if (!keep) this.stats.dropped++;
+    return keep;
   }
 }
 

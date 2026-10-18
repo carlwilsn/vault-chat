@@ -25,6 +25,7 @@ import { Items, isDom, measureMath, fetchText, renderPdfPage } from "./items";
 import { openInbox, inboxBadge, type InboxHost } from "./inbox";
 import { placeParts } from "./place";
 import { ChromeTaps, routeChrome } from "./chrome";
+import { blog, flushBoardLog, setTapSource } from "./log";
 import { mountVoicePill, voice, voiceButton } from "./voicePill";
 import type { BoardSource } from "./voice";
 
@@ -303,6 +304,8 @@ export class BoardView {
     // A new board, a version-1 board (migrated on read) or one without an overview: save once.
     if (this.rev === 0 || (this.board as Board & { fresh?: boolean }).fresh) this.changed();
     voice.setBoard(this.voiceSrc);
+    setTapSource(() => this.chrome.takeStats());
+    blog("board.open", { slug: this.slug, rev: this.rev, items: this.board.items.length, strokes: this.board.strokes.length, tool: this.prefs.mode });
   }
 
   async close(): Promise<void> {
@@ -311,6 +314,9 @@ export class BoardView {
     this.disposed = true;
     this.offVoice();
     voice.setBoard(null);
+    setTapSource(null);
+    blog("board.close", { slug: this.slug, rev: this.rev, items: this.board.items.length, strokes: this.board.strokes.length });
+    void flushBoardLog();
     window.removeEventListener("resize", this.onResize);
     window.removeEventListener("keydown", this.onKey);
     window.removeEventListener("click", this.onClickCapture, true);
@@ -1237,6 +1243,7 @@ export class BoardView {
       this.setMode("lasso");
       this.setSel({ strokes: new Set(), items: new Set([item]) });
     } catch (e) {
+      blog("image.fail", { slug: this.slug, error: String((e as Error)?.message ?? e).slice(0, 200) });
       this.setStatus("offline", `Image not added: ${String((e as Error)?.message ?? e)}`);
     }
   }
@@ -1259,7 +1266,13 @@ export class BoardView {
 
   /** "Add to board": the part (or every part) lands at the centre of the view, selected, ready to move and scale. */
   async addFromInbox(id: string, part?: number): Promise<string[]> {
-    const { items: tpl } = await api.fromInbox(this.slug, id, part);
+    let tpl: Awaited<ReturnType<typeof api.fromInbox>>["items"];
+    try {
+      ({ items: tpl } = await api.fromInbox(this.slug, id, part));
+    } catch (e) {
+      blog("inbox.fail", { slug: this.slug, entry: id, part: part ?? null, error: String((e as Error)?.message ?? e).slice(0, 200) });
+      throw e;
+    }
     // Typeset math's height as this iPad lays it out (the fonts it has).
     for (const t of tpl) {
       if (t.kind === "math") {
@@ -1292,12 +1305,14 @@ export class BoardView {
       byPart.set(n, [...(byPart.get(n) ?? []), it.id]);
     }
     for (const [n, ids] of byPart) void api.markAdded(id, n, this.slug, ids).catch(() => {});
+    blog("inbox.add", { slug: this.slug, entry: id, part: part ?? null, items: made.length, kinds: [...new Set(made.map((x) => x.kind))] });
     return made.map((x) => x.id);
   }
 
   // ------------------------------------------------------------ toolbar & popovers
 
   private setMode(m: Mode): void {
+    if (this.prefs.mode !== m) blog("tool", { tool: m });
     this.prefs.mode = m;
     if (m !== "lasso") this.setSel(null);
     this.savePrefs();
@@ -1602,10 +1617,12 @@ export class BoardView {
       this.setStatus(this.dirty ? "unsaved" : "saved");
     } catch (e) {
       if (e instanceof api.HttpError && e.status === 409) {
+        blog("save.conflict", { slug: this.slug, rev: this.rev });
         this.conflict = true;
         this.setStatus("conflict");
         return;
       }
+      blog("save.fail", { slug: this.slug, rev: this.rev, status: e instanceof api.HttpError ? e.status : null, error: String((e as Error)?.message ?? e).slice(0, 200) });
       this.dirty = true;
       this.setStatus("offline");
       clearTimeout(this.saveT);

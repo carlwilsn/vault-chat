@@ -4,6 +4,9 @@ import "./style.css";
 import * as api from "./api";
 import { renderList } from "./list";
 import { BoardView } from "./view";
+import { installBoardLog } from "./log";
+
+installBoardLog();
 
 const app = document.getElementById("app")!;
 let current: BoardView | null = null;
