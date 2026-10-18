@@ -2867,61 +2867,151 @@ fn find_gh() -> Option<PathBuf> {
         .clone()
 }
 
-/// The `-c credential.https://github.com.helper=…` arg that makes git
-/// authenticate GitHub HTTPS remotes through the (already-authenticated) `gh`
-/// CLI, injected per-command.
-///
-/// Why per-command instead of stored config: the headless Linux server never
-/// ran `gh auth setup-git`, so over an `https://github.com/...` origin git had
-/// no credential helper and — with `GIT_TERMINAL_PROMPT=0` — died with
-/// "fatal: could not read Username for 'https://...'" instead of authenticating.
-/// Injecting it on every invocation also means it survives the global git config
-/// being wiped or NUL-corrupted, and is inherited by submodule sub-processes
-/// (via GIT_CONFIG_PARAMETERS) so nested-repo forks authenticate too.
-///
-/// Why `gh auth token` and not `gh auth git-credential`: gh's own credential
-/// helper REFUSES to emit an HTTPS password when the box's gh is configured for
-/// the **ssh** git protocol (`gh config get git_protocol` == ssh) — it stays
-/// silent, git falls through, and you get "could not read Username" even though
-/// `gh auth status` says you're logged in. The headless box is exactly that case
-/// (laptop = https, box = ssh). `gh auth token` prints the token regardless of
-/// protocol, so a tiny `!`-shell helper turns it into a git credential that works
-/// on both boxes. (`echo` per line — not `printf '...\n...'` — because MSYS
-/// mangles the `\n` on Windows git-bash.)
-///
-/// We *append* gh as a helper rather than resetting: git tries helpers in order
-/// and stops at the first that returns a credential, so a box that already has a
-/// working helper (e.g. Windows Credential Manager) keeps using it first and
-/// only falls through to gh when it has nothing. If gh isn't installed/authed the
-/// helper just yields no credential and git behaves exactly as before — no
-/// regression.
-/// Build the git `-c` args that authenticate GitHub HTTPS remotes.
+// History: auth is injected per-command (not stored config) because the
+// headless Linux server never ran `gh auth setup-git`, and per-command config
+// survives the global git config being wiped. It uses `gh auth token`, not
+// `gh auth git-credential`, because gh's own helper stays silent when gh is
+// configured for the ssh git protocol (the box is). It was once a `-c` arg on
+// every git command line; it now travels in the environment (below).
+
+/// The git config that authenticates GitHub HTTPS remotes, as (key, value).
 ///
 /// Strategy: call `gh auth token` directly in Rust (no shell subprocess, no
-/// quoting) and inject the token as an HTTP Authorization header via
-/// `http.extraHeader`. This completely sidesteps the credential-helper system
-/// and all the shell-quoting fragility that has plagued the `!f()` approach
+/// quoting) and send the token as an HTTP Authorization header via
+/// `http.https://github.com.extraHeader`. This sidesteps the credential-helper
+/// system and all the shell-quoting fragility that plagued the `!f()` approach
 /// (paths with spaces on Windows, sh implementation differences, GCM fallthrough
 /// with stale passwords, etc.).
+///
+/// The header is NEVER put on git's command line (`-c …`): argv is readable by
+/// any program that can list processes and is logged by GIT_TRACE2. It goes
+/// through the environment instead (`github_auth_env`), which only the same
+/// user can read and which trace2 does not log.
 ///
 /// If gh is unavailable or not authenticated, return empty — git falls back to
 /// whatever credential helpers are configured (GCM, netrc, etc.), which still
 /// can't prompt interactively because GCM_INTERACTIVE=never is set.
-fn github_credential_args() -> Vec<String> {
-    let Some(token) = get_gh_token() else {
-        return vec![];
-    };
+fn github_auth_config(token: &str) -> Vec<(String, String)> {
     use base64::Engine as _;
     let b64 = base64::engine::general_purpose::STANDARD
         .encode(format!("x-access-token:{}", token));
     vec![
         // Clear the host-specific credential-helper chain so GCM/netrc can't
         // race against our header or provide a conflicting Authorization value.
-        "-c".into(),
-        "credential.https://github.com.helper=".into(),
-        "-c".into(),
-        format!("http.https://github.com.extraHeader=Authorization: Basic {}", b64),
+        ("credential.https://github.com.helper".into(), String::new()),
+        (
+            "http.https://github.com.extraHeader".into(),
+            format!("Authorization: Basic {}", b64),
+        ),
     ]
+}
+
+/// Git subcommands that may talk to a remote. Only these get the GitHub
+/// credentials in their environment; a `status` or `commit` never sees them.
+fn git_may_use_network(args: &[&str]) -> bool {
+    matches!(
+        git_subcommand(args),
+        "fetch" | "push" | "pull" | "ls-remote" | "clone" | "submodule" | "remote"
+    )
+}
+
+/// `git --version` as (major, minor), probed once. None if git won't run.
+fn git_version() -> Option<(u32, u32)> {
+    static V: OnceLock<Option<(u32, u32)>> = OnceLock::new();
+    *V.get_or_init(|| {
+        let mut cmd = Command::new("git");
+        cmd.arg("--version");
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(0x08000000);
+        }
+        let out = cmd.output().ok()?;
+        parse_git_version(&String::from_utf8_lossy(&out.stdout))
+    })
+}
+
+/// "git version 2.46.0.windows.1" → (2, 46).
+fn parse_git_version(s: &str) -> Option<(u32, u32)> {
+    let v = s.trim().strip_prefix("git version ")?;
+    let mut it = v.split('.');
+    let major = it.next()?.trim().parse().ok()?;
+    let minor = it
+        .next()?
+        .chars()
+        .take_while(|c| c.is_ascii_digit())
+        .collect::<String>()
+        .parse()
+        .ok()?;
+    Some((major, minor))
+}
+
+/// The environment variables that hand `entries` to git as config.
+///
+/// git ≥ 2.31: `GIT_CONFIG_COUNT` / `GIT_CONFIG_KEY_n` / `GIT_CONFIG_VALUE_n`,
+/// numbered after any the app itself inherited. Older git (or an unknown
+/// version): `GIT_CONFIG_PARAMETERS` in its original `'key=value'` form, which
+/// every git since 1.7 reads — appended to an inherited value. Both are
+/// inherited by git's own children (git-remote-https, submodule processes), so
+/// nested-repo fetches authenticate too.
+fn git_config_env(
+    entries: &[(String, String)],
+    version: Option<(u32, u32)>,
+    inherited_count: Option<&str>,
+    inherited_params: Option<&str>,
+) -> Vec<(String, String)> {
+    if entries.is_empty() {
+        return vec![];
+    }
+    let modern = matches!(version, Some(v) if v >= (2, 31));
+    if modern {
+        let base: usize = inherited_count
+            .and_then(|c| c.trim().parse().ok())
+            .unwrap_or(0);
+        let mut env = Vec::with_capacity(entries.len() * 2 + 1);
+        for (i, (k, v)) in entries.iter().enumerate() {
+            env.push((format!("GIT_CONFIG_KEY_{}", base + i), k.clone()));
+            env.push((format!("GIT_CONFIG_VALUE_{}", base + i), v.clone()));
+        }
+        env.push(("GIT_CONFIG_COUNT".into(), (base + entries.len()).to_string()));
+        env
+    } else {
+        // sq_quote: wrap in '…', and each ' inside becomes '\''.
+        let quote = |s: &str| format!("'{}'", s.replace('\'', "'\''"));
+        let mut parts: Vec<String> = inherited_params
+            .map(str::trim)
+            .filter(|p| !p.is_empty())
+            .map(|p| vec![p.to_string()])
+            .unwrap_or_default();
+        for (k, v) in entries {
+            parts.push(quote(&format!("{}={}", k, v)));
+        }
+        vec![("GIT_CONFIG_PARAMETERS".into(), parts.join(" "))]
+    }
+}
+
+/// Put GitHub credentials (if any) into `cmd`'s environment — never its argv —
+/// when `args` is a git command that may reach a remote.
+fn apply_github_auth(
+    cmd: &mut Command,
+    args: &[&str],
+    token: Option<&str>,
+    version: Option<(u32, u32)>,
+) {
+    let Some(token) = token.filter(|t| !t.is_empty()) else { return };
+    if !git_may_use_network(args) {
+        return;
+    }
+    let count = std::env::var("GIT_CONFIG_COUNT").ok();
+    let params = std::env::var("GIT_CONFIG_PARAMETERS").ok();
+    for (k, v) in git_config_env(
+        &github_auth_config(token),
+        version,
+        count.as_deref(),
+        params.as_deref(),
+    ) {
+        cmd.env(k, v);
+    }
 }
 
 /// Kill a process AND every descendant by pid. git launches helper processes
@@ -2965,12 +3055,15 @@ fn run_git_timeout(
     git_serialized(cwd, args, || run_git_timeout_now(cwd, args, timeout_secs))
 }
 
-fn run_git_timeout_now(
+/// The git process `run_git` starts: never-prompt env, its own process group,
+/// and — for commands that may reach a remote — the GitHub token in the
+/// environment (never argv). Separate so tests can inspect argv and env.
+fn git_command(
     cwd: &str,
     args: &[&str],
-    timeout_secs: u64,
-) -> Result<(String, String, i32), String> {
-    use std::io::Read;
+    token: Option<&str>,
+    version: Option<(u32, u32)>,
+) -> Command {
     #[cfg(windows)]
     let mut cmd = {
         use std::os::windows::process::CommandExt;
@@ -2981,13 +3074,10 @@ fn run_git_timeout_now(
     #[cfg(not(windows))]
     let mut cmd = Command::new("git");
     cmd.current_dir(cwd);
-    // Authenticate GitHub HTTPS remotes through the `gh` CLI. Goes before the
-    // subcommand (a `-c` config override) and ahead of any `-c user.*` the
-    // caller passed in `args`. Harmless for local/offline git — git only ever
-    // consults a credential helper when a remote actually demands auth.
-    for a in github_credential_args() {
-        cmd.arg(a);
-    }
+    // Authenticate GitHub HTTPS remotes with the `gh` token — through the
+    // environment, never argv (see `github_auth_config`), and only for commands
+    // that may reach a remote.
+    apply_github_auth(&mut cmd, args, token, version);
     // Belt-and-suspenders: even if some helper is still consulted, forbid it
     // from prompting. A helper that can't satisfy the request non-interactively
     // must return nothing (so git fails fast) rather than block on a UI.
@@ -3021,6 +3111,18 @@ fn run_git_timeout_now(
         use std::os::unix::process::CommandExt;
         cmd.process_group(0);
     }
+    cmd
+}
+
+fn run_git_timeout_now(
+    cwd: &str,
+    args: &[&str],
+    timeout_secs: u64,
+) -> Result<(String, String, i32), String> {
+    use std::io::Read;
+    let token = if git_may_use_network(args) { get_gh_token() } else { None };
+    let version = if token.is_some() { git_version() } else { None };
+    let mut cmd = git_command(cwd, args, token.as_deref(), version);
     let mut child = cmd.spawn().map_err(|e| e.to_string())?;
     let child_pid = child.id();
     // Wait for the child AND drain both pipes on a worker thread, the whole
@@ -6522,5 +6624,137 @@ mod box_terminal_tests {
     fn sh_quote_words() {
         assert_eq!(sh_quote("carl@box"), "carl@box");
         assert_eq!(sh_quote("cd 'a' && x"), r"'cd '\''a'\'' && x'");
+    }
+}
+
+#[cfg(test)]
+mod github_auth_tests {
+    use super::{git_command, git_config_env, github_auth_config, parse_git_version};
+    use std::process::Command;
+
+    // A fake token, built at runtime so no key-like string sits in the source.
+    fn fake_token() -> String {
+        let mut t = String::from("fake");
+        t.extend(std::iter::repeat('Q').take(36));
+        t
+    }
+
+    fn b64_of(token: &str) -> String {
+        use base64::Engine as _;
+        base64::engine::general_purpose::STANDARD.encode(format!("x-access-token:{}", token))
+    }
+
+    fn argv(cmd: &Command) -> Vec<String> {
+        let mut v = vec![cmd.get_program().to_string_lossy().to_string()];
+        v.extend(cmd.get_args().map(|a| a.to_string_lossy().to_string()));
+        v
+    }
+
+    fn envs(cmd: &Command) -> Vec<(String, String)> {
+        cmd.get_envs()
+            .filter_map(|(k, v)| Some((k.to_string_lossy().to_string(), v?.to_string_lossy().to_string())))
+            .collect()
+    }
+
+    fn assert_not_in_argv(cmd: &Command, tok: &str) {
+        for a in argv(cmd) {
+            assert!(!a.contains(tok), "token on argv");
+            assert!(!a.contains(&b64_of(tok)), "encoded token on argv");
+            assert!(!a.to_ascii_lowercase().contains("extraheader"), "auth header config on argv");
+        }
+    }
+
+    #[test]
+    fn modern_git_gets_the_token_through_the_environment_only() {
+        let tok = fake_token();
+        let cmd = git_command(".", &["fetch", "origin"], Some(&tok), Some((2, 46)));
+        assert_not_in_argv(&cmd, &tok);
+        let env = envs(&cmd);
+        let get = |k: &str| env.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone());
+        let n: usize = get("GIT_CONFIG_COUNT").expect("GIT_CONFIG_COUNT").parse().unwrap();
+        let hdr = (0..n)
+            .find(|i| get(&format!("GIT_CONFIG_KEY_{}", i)).as_deref() == Some("http.https://github.com.extraHeader"))
+            .expect("extraHeader key in env");
+        assert_eq!(
+            get(&format!("GIT_CONFIG_VALUE_{}", hdr)).unwrap(),
+            format!("Authorization: Basic {}", b64_of(&tok))
+        );
+        assert!(get("GIT_CONFIG_PARAMETERS").is_none());
+    }
+
+    #[test]
+    fn old_git_falls_back_to_config_parameters_in_the_environment() {
+        let tok = fake_token();
+        for version in [Some((2, 30)), None] {
+            let cmd = git_command(".", &["push", "origin", "main"], Some(&tok), version);
+            assert_not_in_argv(&cmd, &tok);
+            let env = envs(&cmd);
+            let p = env.iter().find(|(k, _)| k == "GIT_CONFIG_PARAMETERS").map(|(_, v)| v.clone())
+                .expect("GIT_CONFIG_PARAMETERS");
+            assert!(p.contains(&b64_of(&tok)));
+            assert!(env.iter().all(|(k, _)| k != "GIT_CONFIG_COUNT"));
+        }
+    }
+
+    #[test]
+    fn local_commands_never_carry_the_token() {
+        let tok = fake_token();
+        for args in [&["status", "--porcelain"][..], &["commit", "-m", "x"], &["-c", "user.name=a", "rev-parse", "HEAD"]] {
+            let cmd = git_command(".", args, Some(&tok), Some((2, 46)));
+            assert_not_in_argv(&cmd, &tok);
+            for (_, v) in envs(&cmd) {
+                assert!(!v.contains(&b64_of(&tok)), "token in env of a local command");
+            }
+        }
+        // Network subcommands behind global options are still recognised.
+        let cmd = git_command(".", &["-c", "user.name=a", "submodule", "update", "--init"], Some(&tok), Some((2, 46)));
+        assert!(envs(&cmd).iter().any(|(_, v)| v.contains(&b64_of(&tok))));
+    }
+
+    #[test]
+    fn inherited_env_config_is_extended_not_replaced() {
+        let entries = github_auth_config(&fake_token());
+        let env = git_config_env(&entries, Some((2, 31)), Some("2"), None);
+        assert!(env.contains(&("GIT_CONFIG_COUNT".into(), "4".into())));
+        assert!(env.iter().any(|(k, _)| k == "GIT_CONFIG_KEY_2"));
+        assert!(env.iter().all(|(k, _)| k != "GIT_CONFIG_KEY_0"));
+        let env = git_config_env(&entries, Some((2, 20)), None, Some("'a.b=c'"));
+        assert!(env[0].1.starts_with("'a.b=c' '"));
+    }
+
+    #[test]
+    fn parses_git_versions() {
+        assert_eq!(parse_git_version("git version 2.46.0.windows.1\n"), Some((2, 46)));
+        assert_eq!(parse_git_version("git version 2.30.2"), Some((2, 30)));
+        assert_eq!(parse_git_version("git version 2.39.3 (Apple Git-146)"), Some((2, 39)));
+        assert_eq!(parse_git_version("nonsense"), None);
+    }
+
+    /// The real git reads the header from the environment, in both formats.
+    #[test]
+    fn real_git_reads_the_header_from_the_environment() {
+        let tok = fake_token();
+        let entries = github_auth_config(&tok);
+        let installed = super::git_version();
+        let mut versions = vec![Some((2, 0))]; // GIT_CONFIG_PARAMETERS: every git
+        if matches!(installed, Some(v) if v >= (2, 31)) {
+            versions.push(installed);
+        }
+        for version in versions {
+            let mut cmd = Command::new("git");
+            cmd.args(["config", "--get", "http.https://github.com.extraheader"])
+                .env_remove("GIT_CONFIG_COUNT")
+                .env_remove("GIT_CONFIG_PARAMETERS");
+            for (k, v) in git_config_env(&entries, version, None, None) {
+                cmd.env(k, v);
+            }
+            let out = cmd.output().expect("git runs");
+            assert_eq!(
+                String::from_utf8_lossy(&out.stdout).trim(),
+                format!("Authorization: Basic {}", b64_of(&tok)),
+                "version {:?}",
+                version
+            );
+        }
     }
 }
