@@ -1,4 +1,3 @@
-import { invoke } from "@tauri-apps/api/core";
 import type { ChatMessage } from "./store";
 
 export type ConversationSource =
@@ -71,17 +70,14 @@ export type Conversation = {
   // two clean one-liners: what it was asked to do (`taskSummary`) and what it's
   // doing / has done now (`statusSummary`). The Activity surface shows these
   // instead of a raw slice of the task input. `summaryRev` is the message count
-  // they were computed at, so an unchanged thread isn't re-summarized. These
-  // MUST be carried through readConversations (below) or they're stripped on
-  // every read-modify-write — the same load-bearing trap as `mission`.
+  // they were computed at, so an unchanged thread isn't re-summarized.
   taskSummary?: string;
   statusSummary?: string;
   summaryRev?: number;
   // Mode B of the cockpit transform: a short, Haiku-cleaned digest of the
   // thread's THINKING — what the worker/supervisor reasoned through and why —
   // for the Activity detail view. Cleaned, not the raw rambling chain. Computed
-  // at turn completion alongside the summaries above; carried through
-  // readConversations (below) like the rest.
+  // at turn completion alongside the summaries above.
   thinkingDigest?: string;
   // When a mission is finished, its supervisor stamps this (via CompleteMission).
   // A completed mission drops off the Activity page — the missing terminal state
@@ -98,8 +94,7 @@ export type Conversation = {
   // was sent and stays continuous across leave/return, reload, and phone↔desktop
   // — NOT from when the thread was last opened. Lives on the Conversation (not a
   // transient view buffer) so EVERY source — manual, voice, mission, worker,
-  // phone, scheduled — gets a correct clock for free. Carried through
-  // readConversations (below) like the other load-bearing fields.
+  // phone, scheduled — gets a correct clock for free.
   runStartedAt?: number;
   // The user has OPENED this thread at least once, so it earns a spot in the
   // recent-conversations list even when it'd normally be hidden there. Mission
@@ -109,16 +104,13 @@ export type Conversation = {
   // synced, so viewing a worker on the phone also surfaces it on the desktop.
   surfaced?: boolean;
   // [harness v2] Explicit mission lifecycle state (see MissionState). Only set on
-  // source "mission" threads. Like every other optional field on this type it
-  // MUST be carried through readConversations below or it's silently stripped on
-  // every append — the same load-bearing trap documented on `mission`.
+  // source "mission" threads.
   missionState?: MissionState;
   // Model spend on THIS thread so far, in USD: the sum of OpenRouter's
   // server-reported `usage.cost` over every model call its turns made
   // (including mid-run compaction and sub-agents). Each assistant message also
   // carries its own turn's `costUsd`. A mission's total = this + its workers'
-  // + its ask threads' (see computeMissionCost). Carried through
-  // readConversations below — the same strip-trap as `mission`.
+  // + its ask threads' (see computeMissionCost).
   costUsd?: number;
   // Model calls whose response carried no cost (direct-provider keys, or an
   // OpenRouter response without usage) — so a total is never silently partial.
@@ -133,9 +125,7 @@ export type Conversation = {
   // this thread belongs to. Once the user commits a decision, `askDecided` +
   // `askDecidedAt` record WHAT was decided and when — the receipt for the
   // Archive card. [unified ask] The thread stays TALKABLE after (deciding
-  // records the call, it does not close the conversation). All four MUST be
-  // carried through readConversations below — the same load-bearing strip-trap
-  // as `mission`.
+  // records the call, it does not close the conversation).
   askOf?: string;
   askNotifId?: string;
   askDecided?: string;
@@ -144,15 +134,13 @@ export type Conversation = {
   // deadline after which an UNANSWERED low-stakes ask self-defers ("Not now" on
   // the user's behalf, resuming the mission on its onDefer branch). Only set
   // when the ask opted in with a timeout; a high-stakes ask never carries a live
-  // deadline (only the user may end it). All three MUST be carried through
-  // readConversations below — the same strip-trap as askDecided.
+  // deadline (only the user may end it).
   askStakes?: "low" | "high";
   askOnDefer?: string;
   askDeadlineAt?: number;
   // [engine, Phase 2] The box's engine (pi): the thread behind this
   // conversation, its project, keep-going mode, wake and lifecycle state, an
-  // open question, the Done verifier's verdict and a roll-over recap. Carried
-  // through readConversations below (same strip-trap as `mission`).
+  // open question, the Done verifier's verdict and a roll-over recap.
   threadId?: string;
   threadPath?: string;
   project?: string;
@@ -232,116 +220,6 @@ export function conversationPreview(c: Conversation): string {
     return text.length <= 120 ? text : text.slice(0, 117) + "…";
   }
   return "";
-}
-
-export async function readConversations(vault: string): Promise<Conversation[]> {
-  // Conversations live in the vault on local disk; git auto-sync
-  // propagates them across machines.
-  const lines = await invoke<string[]>("conversations_read", { vault });
-  const out: Conversation[] = [];
-  for (const line of lines) {
-    try {
-      const parsed = JSON.parse(line) as Conversation;
-      if (!parsed || typeof parsed.id !== "string") continue;
-      // Normalize legacy / partial entries. `running` state never
-      // survives a restart — anything mid-run when the app died is
-      // back to idle now.
-      out.push({
-        id: parsed.id,
-        title: parsed.title ?? "New chat",
-        messages: Array.isArray(parsed.messages) ? parsed.messages : [],
-        status: "idle",
-        createdAt: parsed.createdAt ?? Date.now(),
-        lastActivityAt: parsed.lastActivityAt ?? parsed.createdAt ?? Date.now(),
-        source: parsed.source ?? "manual",
-        unread: parsed.unread ?? false,
-        role: parsed.role,
-        // The North Star tag MUST survive read-modify-write. Dropping it here
-        // was a load-bearing bug: every message a worker/mission appended ran
-        // through this read and stripped `mission`, so (a) Activity could no
-        // longer group workers under their mission, and (b) after a reload a
-        // mission's own tag was gone, so StartWorker's inheritance came up empty
-        // and refused — the supervisor could spawn no workers at all.
-        mission: parsed.mission,
-        // Carry the presentation summaries through read-modify-write (same
-        // load-bearing reason as `mission` — drop them and every appended
-        // worker turn would strip the Activity surface back to raw slices).
-        taskSummary: parsed.taskSummary,
-        statusSummary: parsed.statusSummary,
-        summaryRev: parsed.summaryRev,
-        thinkingDigest: parsed.thinkingDigest,
-        completedAt: parsed.completedAt,
-        doneWhenDone: parsed.doneWhenDone,
-        // Carry the run-start through read-modify-write so a thread that's
-        // running on the active box still surfaces a correct elapsed clock on
-        // another surface (phone / second machine). Status is forced idle on a
-        // cold load, so a stale value here is harmless — the clock only renders
-        // while the in-memory run is live.
-        runStartedAt: parsed.runStartedAt,
-        // Whether the user has viewed this thread (promotes it into recent).
-        surfaced: parsed.surfaced,
-        // [harness v2] Carry the mission lifecycle state + billing flag through
-        // read-modify-write (same load-bearing trap as `mission` above — drop
-        // them and every appended turn resets a mission's state/billing on disk).
-        missionState: parsed.missionState,
-        costUsd: parsed.costUsd,
-        costMissingCalls: parsed.costMissingCalls,
-        audits: parsed.audits,
-        // [ask redesign] Carry the ask-thread linkage + decision record (same
-        // strip-trap: dropping askDecided here would resurrect a settled ask's
-        // composer on every append).
-        askOf: parsed.askOf,
-        askNotifId: parsed.askNotifId,
-        askDecided: parsed.askDecided,
-        askDecidedAt: parsed.askDecidedAt,
-        askStakes: parsed.askStakes,
-        askOnDefer: parsed.askOnDefer,
-        askDeadlineAt: parsed.askDeadlineAt,
-        // Renamed from codexThreadId/codexThreadPath (2026-10-11); files written before still load.
-        threadId: parsed.threadId ?? (parsed as any).codexThreadId,
-        threadPath: parsed.threadPath ?? (parsed as any).codexThreadPath,
-        project: parsed.project,
-        projectDeclined: parsed.projectDeclined,
-        working: parsed.working,
-        nextWakeAt: parsed.nextWakeAt,
-        state: parsed.state,
-        pendingAsk: parsed.pendingAsk,
-        queued: parsed.queued,
-        verdict: parsed.verdict,
-        recap: parsed.recap,
-        subagents: parsed.subagents,
-        todos: parsed.todos,
-      });
-    } catch {
-      // skip
-    }
-  }
-  return out;
-}
-
-export async function writeConversations(
-  vault: string,
-  conversations: Conversation[],
-): Promise<void> {
-  // Persist messages, not in-flight stream state. The `status` field is
-  // forced to 'idle' on read anyway.
-  const lines = conversations.map((c) => JSON.stringify(c));
-  await invoke("conversations_write_all", { vault, lines });
-}
-
-// Serialize read→modify→write cycles on the conversations store. write_all
-// rewrites each conversation file from whatever the caller read, so two
-// concurrent cycles interleave as lost updates ("0-message worker threads", a
-// dropped mission brief, truncated worker logs). This lock is SHARED across
-// every writer — the background runs in offVaultRun AND the store's debounced
-// autosave — so a stale in-memory snapshot can't clobber a richer disk copy a
-// background run just appended. Lives here (not offVaultRun) so the store can
-// import it without a circular dependency.
-let convChain: Promise<unknown> = Promise.resolve();
-export function withConvLock<T>(fn: () => Promise<T>): Promise<T> {
-  const run = convChain.then(fn, fn);
-  convChain = run.catch(() => undefined);
-  return run;
 }
 
 // Threads from the old missions system (supervisor, workers, ask threads).

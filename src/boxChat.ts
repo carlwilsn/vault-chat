@@ -35,7 +35,18 @@ import type { LogRecord, PollAnswer } from "./convlog/protocol";
 import { emptyPicture, emptyRow, foldInto, pendingOf, reduceRow, type Picture, type RowState } from "./convlog/reduce";
 import { makeChatView, type ChatView } from "./convlog/view";
 
-export const BOX_UNREACHABLE = "Box unreachable — agent runs on the box";
+export const BOX_UNREACHABLE = "Box unreachable";
+/** No box for this vault: the chat has nothing to run on. */
+export const NO_BOX = "Connect your box to chat";
+
+/** Why the box did not answer, in words (the raw error from the request). */
+export function unreachableWhy(raw: string, tailscale?: { installed: boolean; connected: boolean } | null): string {
+  if (tailscale && tailscale.installed && !tailscale.connected) return "Tailscale is not connected";
+  if (/timed? ?out|timeout|deadline/i.test(raw)) return "the box did not answer in time";
+  if (/refused|reset|closed|502|503|504/i.test(raw)) return "the box is down or restarting";
+  if (/dns|resolve|no route|unreachable|network|connect/i.test(raw)) return "no route to the box (is Tailscale connected?)";
+  return raw.slice(0, 160) || "no answer";
+}
 
 export type BoxChatState = {
   on: boolean;
@@ -112,6 +123,15 @@ async function httpPost(link: Link, path: string, payload: Record<string, unknow
     return { ok: false, error: String(d.error || `HTTP ${r.status}${r.body ? `: ${r.body.slice(0, 200)}` : ""}`), data: d };
   }
   return { ok: true, data: d };
+}
+
+/** A one-shot model call on this vault's box (src/complete.ts). Throws with the reason when there is no box or it does not answer. */
+export async function boxComplete(req: import("./complete").CompleteRequest): Promise<string> {
+  const link = await boxLinkFor(useStore.getState().vaultPath);
+  if (!link) throw new Error(`${NO_BOX}.`);
+  const r = await httpPost(link, "/api/v1/complete", req as unknown as Record<string, unknown>);
+  if (!r.ok) throw new Error(r.network ? `${BOX_UNREACHABLE}: ${unreachableWhy(r.error ?? "")}.` : `The box could not answer: ${r.error}`);
+  return String(r.data?.text ?? "");
 }
 
 /** A GET to the box (projects, notifications). Throws on failure. */

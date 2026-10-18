@@ -9,17 +9,17 @@ import { voiceImageMime } from "./voiceImages";
 import { fileKind } from "./fileKind";
 import { invoke } from "@tauri-apps/api/core";
 import { dispatchChatAction, isPopout } from "./sync";
-import { COMPACT_THRESHOLD, COMPACTION_DIVIDER_TEXT, windowFor, isCompactionDivider, dividerSummary } from "./chatContext";
+import { COMPACTION_DIVIDER_TEXT, isCompactionDivider, dividerSummary } from "./chatContext";
 import { useStore, type ChatMessage, type FileEntry, type LiveTool, type TodoItem } from "./store";
 import { buildViewportContextText, toggleVoice } from "./voice-elevenlabs";
 import { InlineVoiceWaves } from "./VoiceCockpit";
-import { findModel, AUTO_MODEL_ID } from "./providers";
 import { loadSkills } from "./skills";
 import { isUnreadableAsText } from "./fileKind";
 import { SettingsPane } from "./SettingsPane";
 import { Button, Textarea } from "./ui";
 import { cn } from "./lib/utils";
-import { BOX_UNREACHABLE, boxAnswer, boxChatOn, boxSubagent } from "./boxChat";
+import { BOX_UNREACHABLE, NO_BOX, boxAnswer, boxChatOn, boxSubagent, unreachableWhy } from "./boxChat";
+import { tailscaleCheck, type TailscaleState } from "./vaultSync";
 import {
   AskOptions,
   ReplyCost,
@@ -284,6 +284,12 @@ async function buildMentionPreamble(
   return preamble;
 }
 
+/** Settings, at its Box section. */
+function openBoxSettings() {
+  useStore.getState().setShowSettings(true);
+  requestAnimationFrame(() => document.querySelector('[data-settings="box"]')?.scrollIntoView({ block: "start" }));
+}
+
 export function ChatPane() {
   // Per-field selectors so the pane only re-renders when the field it
   // actually reads changes. Destructuring the whole store was causing
@@ -292,24 +298,17 @@ export function ChatPane() {
   // 60+ times per second.
   const vaultPath = useStore((s) => s.vaultPath);
   const messages = useStore((s) => s.messages);
-  const apiKeys = useStore((s) => s.apiKeys);
-  const modelId = useStore((s) => s.modelId);
   const skills = useStore((s) => s.skills);
   const busy = useStore((s) => s.busy);
   const showSettings = useStore((s) => s.showSettings);
   const lastContext = useStore((s) => s.lastContext);
-  // Re-read the window when the catalog (re)loads — it carries the windows.
-  const catalog = useStore((s) => s.catalog);
   const boxWindow = useStore((s) => (s.boxChat?.on ? s.conversations.find((c) => c.id === s.activeConversationId)?.contextWindow : undefined));
-  // Box mode: the box's model window (reported with its usage), not the laptop's pick.
-  const ctxWindow = useMemo(() => (boxWindow ? { tokens: boxWindow, known: true } : windowFor(modelId)), [modelId, catalog, boxWindow]);
-  const compacting = useStore((s) => s.compacting);
+  // The box's model window (reported with its usage); unknown until it reports one.
+  const ctxWindow = useMemo(() => (boxWindow ? { tokens: boxWindow, known: true } : { tokens: 200_000, known: false }), [boxWindow]);
   const setSkills = useStore((s) => s.setSkills);
-  const setShowSettings = useStore((s) => s.setShowSettings);
   const streamingText = useStore((s) => s.streamingText);
   const streamingReasoning = useStore((s) => s.streamingReasoning);
   const liveTools = useStore((s) => s.liveTools);
-  const agentTodos = useStore((s) => s.agentTodos);
   const files = useStore((s) => s.files);
   const currentFile = useStore((s) => s.currentFile);
   const panes = useStore((s) => s.panes);
@@ -452,22 +451,24 @@ export function ChatPane() {
   const pinnedToBottomRef = useRef(true);
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
 
-  const activeSpec = findModel(modelId);
-  // Auto mode is "active" if any provider has a key — routing picks
-  // the right one at send-time. Without this, `activeKey` is undefined
-  // for the "auto" sentinel and the chat pane shows "Set up a provider".
-  const activeKey =
-    modelId === AUTO_MODEL_ID
-      ? Object.values(apiKeys).find(Boolean)
-      : activeSpec
-        ? apiKeys[activeSpec.provider]
-        : undefined;
-  // [phase 2] Box mode: the agent runs on the box — no laptop key needed, and
-  // the composer is off (with the reason) while the box can't be reached.
+  // Every turn runs on the box: no box, nothing to chat with; the box out of
+  // reach, the composer is off (with the reason) and the feed retries.
   const boxChat = useStore((s) => s.boxChat);
+  const noBox = !!vaultPath && boxChat?.on === false;
   const boxDown = !!boxChat?.on && boxChat.reachable === false;
   const archived = !!activeConv && isArchivedThread(activeConv);
-  const ready = Boolean(vaultPath && (activeKey || boxChat?.on)) && !boxDown && !archived;
+  const ready = Boolean(vaultPath && boxChat?.on) && !boxDown && !archived;
+  // Why the box is out of reach: Tailscale, the box itself, or the wait.
+  const [tailscale, setTailscale] = useState<TailscaleState | null>(null);
+  useEffect(() => {
+    if (!boxDown) return;
+    let alive = true;
+    void tailscaleCheck().then((t) => alive && setTailscale(t));
+    return () => {
+      alive = false;
+    };
+  }, [boxDown, boxChat?.reason]);
+  const downWhy = boxDown ? unreachableWhy(boxChat?.reason ?? "", tailscale) : "";
 
   useEffect(() => {
     const el = scrollRef.current;
@@ -547,19 +548,15 @@ export function ChatPane() {
 
   if (showSettings) return <SettingsPane />;
 
-  if (!activeKey && !boxChat?.on) {
+  if (noBox) {
     return (
-      <div className="h-full flex flex-col bg-card border-l border-border">
+      <div className="h-full flex flex-col bg-card border-l border-border" data-el="no-box">
         <div className="flex-1 flex items-center justify-center px-8">
-          <div className="max-w-[280px] text-center space-y-4">
-            <div className="space-y-1.5">
-              <h3 className="text-[14px] font-semibold">Set up a provider</h3>
-              <p className="text-[12px] text-muted-foreground leading-relaxed">
-                Paste an API key to start. Claude, GPT, or Gemini — swap any time.
-              </p>
-            </div>
-            <Button onClick={() => setShowSettings(true)} className="w-full">
-              Open settings
+          <div className="max-w-[260px] text-center space-y-3">
+            <p className="text-[13px] text-foreground/90">{NO_BOX}</p>
+            <p className="text-[11.5px] text-muted-foreground leading-relaxed">The agent runs on your box. Files, notes and history work here without it.</p>
+            <Button variant="secondary" size="sm" onClick={openBoxSettings} className="w-full">
+              Settings → Box
             </Button>
           </div>
         </div>
@@ -567,7 +564,7 @@ export function ChatPane() {
     );
   }
 
-  const todos: TodoItem[] = activeConv?.todos?.length ? activeConv.todos : agentTodos;
+  const todos: TodoItem[] = activeConv?.todos ?? [];
   const planInline = todos.length > 0 && uiChoice("todos") === "inline";
   const planAt = planInline ? planIndex(messages, busy) : -1;
   const verdict = activeConv?.state === "done" ? activeConv.verdict : undefined;
@@ -671,7 +668,6 @@ export function ChatPane() {
       if (additions.length > 0) setPendingImages((prev) => [...prev, ...additions]);
     });
   };
-  const onSelectModel = (id: string) => dispatchChatAction({ kind: "setModel", id });
 
   const onKey = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (skillMention && filteredSkills.length > 0) {
@@ -974,12 +970,6 @@ export function ChatPane() {
 
         {subagentsInline && unplacedSubagents.length > 0 && <Subagents list={unplacedSubagents} variant="inline" onControl={controlSubagent} />}
 
-        {compacting && (
-          <div className="flex items-center justify-center gap-2 py-2 text-[11.5px] text-muted-foreground">
-            <span>Compacting conversation…</span>
-          </div>
-        )}
-
         {planInline && planAt < 0 && <AgentTodoList todos={todos} />}
 
         {verdict && uiChoice("verdict") === "thread" && <VerdictLine verdict={verdict} />}
@@ -1008,7 +998,7 @@ export function ChatPane() {
 
         {busy && (
           <ThinkingIndicator
-            silent={!compacting && !streamingText && !streamingReasoning && liveTools.length === 0}
+            silent={!streamingText && !streamingReasoning && liveTools.length === 0}
             activeTool={liveTools.find((t) => !t.result)?.name}
             streaming={!!streamingText}
             reasoning={!!streamingReasoning && !streamingText}
@@ -1224,7 +1214,7 @@ export function ChatPane() {
                 onChange={(e) => onInputChange(e.target.value)}
                 onKeyDown={onKey}
                 onPaste={onPaste}
-                placeholder={archived ? ARCHIVED_THREAD : boxDown ? BOX_UNREACHABLE : !ready ? "Open a vault first" : busy ? "Enter to steer · Tab to queue · Esc to stop" : "Ask anything, or / for commands…"}
+                placeholder={archived ? ARCHIVED_THREAD : boxDown ? `${BOX_UNREACHABLE} — ${downWhy}. Retrying…` : !ready ? (vaultPath ? "Connecting to the box…" : "Open a vault first") : busy ? "Enter to steer · Tab to queue · Esc to stop" : "Ask anything, or / for commands…"}
                 disabled={!ready}
                 rows={1}
                 className={cn("border-0 bg-transparent min-h-0 max-h-[200px] focus-visible:ring-0 shadow-none !py-2", chatFullscreen && (voiceMode || voiceError) ? "!pr-32" : "!pr-20", "!pl-11")}
@@ -1278,7 +1268,11 @@ export function ChatPane() {
           {!voiceBar && (
           <div className="flex items-center justify-between px-1 pt-1.5 text-[11px] text-muted-foreground">
             <div className="flex items-center gap-3 min-w-0">
-              <ModelPicker modelId={modelId} apiKeys={apiKeys} onSelect={onSelectModel} />
+              {boxDown && (
+                <span className="truncate text-amber-500/90" data-el="box-unreachable" title={boxChat?.reason || undefined}>
+                  {BOX_UNREACHABLE}: {downWhy}
+                </span>
+              )}
             </div>
             <div className="flex items-center gap-2">
               {busy && <ElapsedTimer />}
@@ -1750,8 +1744,7 @@ function TokenRing({ used, limit, size }: { used: number; limit: number; size: n
 function contextTitle(used: number, w: { tokens: number; known: boolean }): string {
   const pct = Math.round((used / w.tokens) * 100);
   const of = w.known ? `${w.tokens.toLocaleString()}` : `~${w.tokens.toLocaleString()} (window unknown)`;
-  const next = used > COMPACT_THRESHOLD * w.tokens ? "\nThe next message first summarizes the earlier conversation." : "";
-  return `Context: ${used.toLocaleString()} of ${of} tokens (${pct}%)${next}`;
+  return `Context: ${used.toLocaleString()} of ${of} tokens (${pct}%)`;
 }
 
 function formatTokens(n: number): string {
@@ -1767,120 +1760,4 @@ function formatEta(seconds: number): string {
   const h = Math.floor(m / 60);
   const rem = m % 60;
   return rem === 0 ? `${h}h` : `${h}h${rem}m`;
-}
-
-function ModelPicker({
-  modelId,
-  apiKeys,
-  onSelect,
-}: {
-  modelId: string;
-  apiKeys: Partial<Record<string, string>>;
-  onSelect: (id: string) => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const [query, setQuery] = useState("");
-  const ref = useRef<HTMLDivElement>(null);
-  const searchRef = useRef<HTMLInputElement>(null);
-  const catalog = useStore((s) => s.catalog);
-  const available = catalog.filter((m) => apiKeys[m.provider]);
-  const q = query.trim().toLowerCase();
-  const filtered = q
-    ? available.filter((m) => {
-        const hay = `${m.provider} ${m.id} ${m.label}`.toLowerCase();
-        return q.split(/\s+/).every((t) => hay.includes(t));
-      })
-    : available;
-  const isAuto = modelId === AUTO_MODEL_ID;
-  const current = isAuto ? null : findModel(modelId);
-
-  useEffect(() => {
-    if (!open) return;
-    const onClick = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
-    };
-    document.addEventListener("mousedown", onClick);
-    // Auto-focus the search when the menu opens.
-    requestAnimationFrame(() => searchRef.current?.focus());
-    return () => document.removeEventListener("mousedown", onClick);
-  }, [open]);
-
-  useEffect(() => {
-    if (!open) setQuery("");
-  }, [open]);
-
-  return (
-    <div className="relative" ref={ref}>
-      <button
-        onClick={() => setOpen(!open)}
-        className="flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground transition-colors"
-      >
-        <span>
-          {isAuto ? "Auto" : (current?.label ?? modelId)}
-        </span>
-        <ChevronUp className="h-3 w-3" />
-      </button>
-      {open && (
-        <div className="absolute bottom-full left-0 mb-1 w-64 rounded-lg border border-border bg-card shadow-lg z-50 flex flex-col">
-          <div className="p-1.5 border-b border-border/60">
-            <input
-              ref={searchRef}
-              type="search"
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Escape") {
-                  e.preventDefault();
-                  setOpen(false);
-                } else if (e.key === "Enter" && filtered.length > 0) {
-                  e.preventDefault();
-                  onSelect(filtered[0].id);
-                  setOpen(false);
-                }
-              }}
-              placeholder="Search models…"
-              className="w-full bg-transparent outline-none text-[11px] px-2 py-1 rounded border border-transparent focus:border-border placeholder:text-muted-foreground/60"
-            />
-          </div>
-          <div className="py-1 max-h-64 overflow-auto">
-            {/* Auto option — always pinned at the top, hidden when searching */}
-            {!q && (
-              <>
-                <button
-                  onClick={() => { onSelect(AUTO_MODEL_ID); setOpen(false); }}
-                  className={cn(
-                    "block w-full text-left px-3 py-1.5 text-[11px] hover:bg-accent transition-colors",
-                    isAuto ? "font-medium" : "text-muted-foreground"
-                  )}
-                  title="Routes each message to a fast or full model based on complexity"
-                >
-                  Auto <span className="opacity-60 text-[10px]">— smart routing</span>
-                </button>
-                <div className="mx-2 border-t border-border/40 my-1" />
-              </>
-            )}
-            {filtered.length === 0 ? (
-              <div className="px-3 py-2 text-[11px] text-muted-foreground italic">
-                No matches
-              </div>
-            ) : (
-              filtered.map((m) => (
-                <button
-                  key={`${m.provider}:${m.id}`}
-                  onClick={() => { onSelect(m.id); setOpen(false); }}
-                  className={cn(
-                    "block w-full text-left px-3 py-1.5 text-[11px] hover:bg-accent transition-colors truncate",
-                    m.id === modelId ? "text-foreground font-medium" : "text-muted-foreground"
-                  )}
-                  title={`${m.provider} · ${m.id}`}
-                >
-                  {m.label}
-                </button>
-              ))
-            )}
-          </div>
-        </div>
-      )}
-    </div>
-  );
 }

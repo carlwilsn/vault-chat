@@ -1,13 +1,10 @@
 import { Conversation, type VoiceConversation } from "@elevenlabs/client";
 import { invoke } from "@tauri-apps/api/core";
-import { useStore, type ChatMessage, type Viewport, type FileEntry } from "./store";
-import { buildNote } from "./notes";
-import { gitCommitAll } from "./git";
+import { useStore, type ChatMessage, type Viewport } from "./store";
 import { loadVaultVoicePrompt, loadVaultNorthStar, northStarPromptBlock, loadVaultMemoryIndex, vaultMemoryPromptBlock, loadVaultVoiceTools, type VaultVoiceTool } from "./meta";
 // `Conversation` (the value) is the ElevenLabs SDK class imported above; alias
 // our thread type so the names don't collide.
 import { emptyConversation, type Conversation as ConvThread } from "./conversations";
-import { applyNotebookEdit, readPdf, stripNotebook, assertCanWrite } from "./tools";
 import { loadSessionContext } from "./context";
 import { loadSkills, skillPromptIndex } from "./skills";
 import { voiceLineEntry, voiceToolEntry } from "./activityCore";
@@ -222,11 +219,6 @@ function logTurn(data: Record<string, unknown> | null): void {
 }
 let scrollDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 let lastViewportSent: string | null = null;
-// Tracked across the lifetime of one session — used at session end
-// to decide whether to auto-commit + refresh the file tree, and to
-// derive a useful commit subject from the user's first utterance.
-let sessionMutationCount = 0;
-let sessionFirstUserText: string | null = null;
 // Store subscription that watches active-pane / current-file and
 // pushes a contextual update when either changes. Set up at session
 // start, torn down at session end.
@@ -309,11 +301,6 @@ async function scrollViewer(path: string, anchor: string): Promise<string> {
   if (!answer) return `Scrolled to ${anchor} in ${name}`;
   return (await answer) ?? `Error: the viewer of ${name} did not answer in ${SCROLL_ANSWER_MS / 1000} s (is it still loading?). Try again in a moment.`;
 }
-
-// Matched to text-mode tools so the voice agent gets enough context to
-// answer questions about a real-sized file. 8k was too small for
-// notebooks (cell metadata ate the budget before any code showed up).
-const READ_CAP = 24_000;
 
 // ElevenLabs's tool-parameter validator requires every property to
 // carry a `description` (or `dynamic_variable` / `is_system_provided`
@@ -862,15 +849,12 @@ function isMicProblem(e: unknown): boolean {
 export async function startElevenLabsSession(opts?: { recap?: string }): Promise<void> {
   if (activeConversation) return;
   const state = useStore.getState();
-  const apiKey = state.serviceKeys.elevenlabs;
-  // Box mode: the box's agent and key (one agent, one key place); its tools
-  // run there. This laptop's own agent only when the box doesn't answer.
+  // Voice is the box's: its agent, its key, its tools (one agent, one key
+  // place). No box, or the box out of reach: voice says so and does not start.
   const { boxVoice, boxVoiceSession, voiceTranscriptMirror } = await import("./voiceBox");
-  let box = await boxVoice(state.vaultPath);
-  if (!box && !apiKey) {
-    reportVoiceError(
-      "Voice mode needs an ElevenLabs API key. Add one in Settings.",
-    );
+  const box = await boxVoice(state.vaultPath);
+  if (!box) {
+    reportVoiceError("Connect your box to talk — voice runs on the box (Settings → Box).");
     return;
   }
 
@@ -883,69 +867,24 @@ export async function startElevenLabsSession(opts?: { recap?: string }): Promise
   // getUserMedia here could leave Windows capturing with other settings); a
   // refused mic surfaces from startSession below, in the same words.
 
-  let boxSession: import("./voiceBox").BoxVoiceSession | null = null;
-  if (box) {
-    const r = await boxVoiceSession(box, state.activeConversationId);
-    if (r.session) boxSession = r.session;
-    else if (r.unsupported) box = null; // no voice for this vault on the box: voice runs here
-    else if (!r.unreachable || !apiKey) {
-      useStore.getState().setVoiceConnecting(false);
-      reportVoiceError(`The box couldn't start voice: ${r.error ?? "no answer"}.${r.unreachable ? " (It isn't reachable, and this laptop has no ElevenLabs key of its own.)" : ""}`);
-      return;
-    } else console.warn("[voice-eleven] box unreachable; voice runs on this laptop's agent:", r.error);
-  }
-  if (!box && !apiKey) {
+  const r = await boxVoiceSession(box, state.activeConversationId);
+  if (!r.session) {
     useStore.getState().setVoiceConnecting(false);
-    reportVoiceError("Voice mode needs an ElevenLabs API key. Add one in Settings.");
+    const { BOX_UNREACHABLE, unreachableWhy } = await import("./boxChat");
+    reportVoiceError(
+      r.unreachable
+        ? `${BOX_UNREACHABLE}: ${unreachableWhy(r.error ?? "")}. Voice runs on the box.`
+        : r.unsupported
+          ? "The box has no voice for this vault (is the vault on the box, and the box up to date?)."
+          : `The box couldn't start voice: ${r.error ?? "no answer"}.`,
+    );
     return;
   }
-
+  const boxSession = r.session;
   // Credentials for both transports: a WebRTC conversation token (preferred)
   // and a signed URL (WebSocket: Linux, or the fallback).
-  let signedUrl: string | null = null;
-  let conversationToken: string | null = null;
-  if (boxSession) {
-    signedUrl = boxSession.signedUrl ?? null;
-    conversationToken = boxSession.conversationToken ?? null;
-  } else {
-  // A desktop mic-tap is user intent — always clear a tripped breaker so the
-  // user can retry after fixing the config, even if the box heartbeat left it open.
-  resetAgentCreateBreaker();
-  const agentId = await ensureAgent(apiKey!);
-  if (!agentId) {
-    useStore.getState().setVoiceConnecting(false);
-    const err = getLastAgentCreateError();
-    const refusedVoice = err && /^voice [A-Za-z0-9]+: /.exec(err.body);
-    if (err && refusedVoice && !err.body.includes("voice_not_found")) {
-      reportVoiceError(`ElevenLabs won't use the voice you picked (${err.body.slice(6, refusedVoice[0].length - 2)}) for the voice agent: ${truncate(err.body.slice(refusedVoice[0].length), 400)}. Pick another voice in Settings → Voice.`);
-      return;
-    }
-    if (err && err.body.includes("voice_not_found")) {
-      const failedVoice =
-        localStorage.getItem(VOICE_ID_STORAGE) ?? DEFAULT_VOICE_ID;
-      reportVoiceError(
-        `Voice ID ${failedVoice} isn't in your ElevenLabs library, so the agent can't be created with it. Two ways to fix: (1) open elevenlabs.io/app/voice-library, find that voice, click "Add to library" — then click the mic again; or (2) change the Voice ID in Settings to one already in your library (Brian — ${DEFAULT_VOICE_ID} — is the default and always works).`,
-      );
-      return;
-    }
-    const detail = err
-      ? `HTTP ${err.status}: ${truncate(err.body, 600)}`
-      : "(no response captured)";
-    reportVoiceError(
-      `Couldn't provision the ElevenLabs agent.\n\n${detail}\n\nCommon causes: plan doesn't include Conversational AI, key lacks scope, or the LLM string is rejected.`,
-    );
-    return;
-  }
-
-  [signedUrl, conversationToken] = await Promise.all([getSignedUrl(apiKey!, agentId), getConversationToken(apiKey!, agentId)]);
-  if (!signedUrl && !conversationToken) {
-    useStore.getState().setVoiceConnecting(false);
-    reportVoiceError(
-      "Couldn't get a conversation token or signed URL from ElevenLabs. The agent ID may be stale (try clearing localStorage `vault_chat_elevenlabs_agent_id`) or your account may have hit a rate limit.",
-    );
-    return;
-  }
-  }
+  const signedUrl = boxSession.signedUrl ?? null;
+  const conversationToken = boxSession.conversationToken ?? null;
   let override: string | null = null;
   try {
     override = localStorage.getItem("vault_chat_voice_transport");
@@ -964,8 +903,6 @@ export async function startElevenLabsSession(opts?: { recap?: string }): Promise
   sentPdfPaths.clear();
   imagePusher.reset();
   quietGate.reset();
-  sessionMutationCount = 0;
-  sessionFirstUserText = null;
   resetAgentEnvelope();
   stopHealthWatch();
 
@@ -975,49 +912,31 @@ export async function startElevenLabsSession(opts?: { recap?: string }): Promise
   // empty. Otherwise a voice session would tack its turns onto whatever
   // text chat happened to be open. Must run before the prompt build below
   // so the system prompt's recent-history reflects the chosen thread.
-  // Box mode: voice gets a thread of its own (never an engine chat), saved on
-  // the box line by line; a voice thread the box already has is continued.
+  // Voice gets a thread of its own (never an engine chat), saved on the box
+  // line by line; a voice thread the box already has is continued.
   const fromConvId = useStore.getState().activeConversationId;
-  if (box) {
-    const cur = useStore.getState().conversations.find((c) => c.id === fromConvId);
-    if (!cur || cur.source !== "voice") useStore.getState().newConversation();
-  }
+  const cur = useStore.getState().conversations.find((c) => c.id === fromConvId);
+  if (!cur || cur.source !== "voice") useStore.getState().newConversation();
   const voiceConvId = ensureVoiceConversation();
-  transcriptMirror = box ? voiceTranscriptMirror(box, voiceConvId, fromConvId) : null;
+  transcriptMirror = voiceTranscriptMirror(box, voiceConvId, fromConvId);
   {
     const mirror = transcriptMirror;
     voiceChats = { own: () => mirror?.id?.() ?? voiceConvId, from: fromConvId, local: voiceConvId };
   }
-  boxVaultRoot = boxSession?.vaultRoot ?? null;
+  boxVaultRoot = boxSession.vaultRoot ?? null;
   startViewportWatch();
 
   // Re-read after the possible conversation swap.
   const voiceState = useStore.getState();
-  // Load the user-editable voice header from this vault's agent config
-  // (.vault-chat/agent/voice.md). Empty string when missing →
-  // buildSystemPrompt falls back to the built-in default header.
-  const customHeader = await loadVaultVoicePrompt(voiceState.vaultPath);
-  const northStar = await loadVaultNorthStar(voiceState.vaultPath);
-  const promptContext = await loadVoicePromptContext(voiceState.vaultPath);
-  // Box mode: the vault's tools run on the box, and AskAgent reaches its agent.
-  const remote = box?.tool ?? null;
-  // Voice on this laptop: the shared stream (what Carl did lately, the project's memory) from here.
-  let shared = "";
-  if (!boxSession) {
-    const a = await import("./activity");
-    shared = a.sharedContextText(await a.sharedContextFor(voiceState.vaultPath));
-  }
-  const basePrompt = boxSession?.systemPrompt ?? buildSystemPrompt(voiceState, customHeader, northStar, promptContext, undefined, !!remote) + (shared ? `
-
-${shared}` : "");
+  const basePrompt = boxSession.systemPrompt;
   // A reconnect after a timeout: what was in flight, and to carry on in small steps.
   const systemPrompt = opts?.recap ? `${basePrompt}\n\n${opts.recap}` : basePrompt;
   turnStats.startSession(systemPrompt.length);
-  vlog("voice session", { promptChars: systemPrompt.length, llm: getCurrentLlm(), box: !!boxSession, reconnect: !!opts?.recap, transport });
+  vlog("voice session", { promptChars: systemPrompt.length, llm: getCurrentLlm(), reconnect: !!opts?.recap, transport });
   const dynamicVariables = buildDynamicVariables(voiceState);
-  const voiceId = boxSession?.voiceId ?? localStorage.getItem(VOICE_ID_STORAGE) ?? DEFAULT_VOICE_ID;
+  const voiceId = boxSession.voiceId ?? localStorage.getItem(VOICE_ID_STORAGE) ?? DEFAULT_VOICE_ID;
   // One line per start, so a report of "the voice didn't work" has the voice it asked for.
-  console.info(`[voice-eleven] starting: voice ${voiceId}, ${boxSession ? "the box's agent" : "this laptop's agent"}`);
+  console.info(`[voice-eleven] starting: voice ${voiceId}, the box's agent`);
 
   try {
     activeTransport = transport;
@@ -1034,7 +953,7 @@ ${shared}` : "");
         tts: { voiceId },
       },
       dynamicVariables,
-      clientTools: buildClientToolHandlers(remote ?? undefined, boxSession?.toolNames),
+      clientTools: buildClientToolHandlers(box.tool, boxSession.toolNames),
       // Agent audio arrived (the health watch compares it with what plays).
       // Linux (WebSocket): the webview can't play Web Audio, so the chunk is
       // played natively and feeds the bars' envelope. WebRTC: the SDK plays it.
@@ -1096,7 +1015,6 @@ ${shared}` : "");
           turnStats.userTurn(text, heardAt, health.userTranscript(heardAt));
           // Heard: a later deaf spell gets its own re-acquire before any line.
           micRecoveries = 0;
-          if (sessionFirstUserText === null) sessionFirstUserText = text;
           voiceAppend({ role: "user", content: text });
           // User finished a turn — agent is now thinking until TTS
           // audio arrives. Drives the sine-wave visualizer; cleared
@@ -1212,33 +1130,6 @@ ${shared}` : "");
   }
 }
 
-// If the agent just wrote `path` and that path is currently open
-// in any pane / as the single-pane current file, refresh the
-// in-memory content — but only when the viewer is in VIEW mode.
-// In edit mode the user's CodeMirror has its own state plus a
-// debounced autosave; clobbering pane.content there races with
-// the autosave (which holds a stale closure) and ends up writing
-// the old content back over the agent's write. Path comparison
-// normalises slashes so we don't miss matches because of forward
-// vs backslash drift.
-function refreshIfOpen(path: string, contents: string): void {
-  const norm = (p: string) => p.replace(/\\/g, "/");
-  const target = norm(path);
-  const store = useStore.getState();
-  if (store.panes.length > 0) {
-    for (const pane of store.panes) {
-      if (norm(pane.file) === target && pane.mode === "view") {
-        store.setPaneFile(pane.id, pane.file, contents);
-      }
-    }
-  } else if (
-    store.currentFile &&
-    norm(store.currentFile) === target &&
-    store.mode === "view"
-  ) {
-    store.reloadCurrent(path, contents);
-  }
-}
 
 // Subscribes to the store and pushes a contextual update whenever
 // the active pane / current file changes mid-session. Without this,
@@ -1258,34 +1149,6 @@ function stopViewportWatch(): void {
   if (unsubscribeViewportWatch) {
     unsubscribeViewportWatch();
     unsubscribeViewportWatch = null;
-  }
-}
-
-// Snapshot whatever the session wrote / noted into a single git
-// commit so the user has the same "fall back to git" safety net
-// they get from text-mode tool calls. Refreshes the file tree so
-// newly-written files show up in the panel.
-async function finalizeSessionMutations(): Promise<void> {
-  const count = sessionMutationCount;
-  const firstUser = sessionFirstUserText;
-  sessionMutationCount = 0;
-  sessionFirstUserText = null;
-  if (count === 0) return;
-  const vault = useStore.getState().vaultPath;
-  if (!vault) return;
-  const subject = firstUser
-    ? `voice session: ${truncate(firstUser, 60)}`
-    : "voice session";
-  try {
-    await gitCommitAll(vault, subject, true);
-  } catch (e) {
-    console.warn("[voice-eleven] auto-commit failed:", e);
-  }
-  try {
-    const files = await invoke<FileEntry[]>("list_markdown_files", { vault });
-    useStore.getState().setFiles(files);
-  } catch (e) {
-    console.warn("[voice-eleven] file tree refresh failed:", e);
   }
 }
 
@@ -1390,7 +1253,6 @@ export function voiceSessionClosed(details?: { reason?: string; message?: string
   // If anything got written / a note got saved, snapshot the
   // session as a single git commit and refresh the file tree.
   // Fire-and-forget — UI doesn't need to wait.
-  void finalizeSessionMutations();
   if (retry) void reconnectAfterTimeout(recap);
 }
 
@@ -1994,7 +1856,6 @@ export async function sendComposerToVoice(text: string, attachments?: import("./
   const shown = said || (images.length === 1 ? "[image]" : `[${images.length} images]`);
   // The thread first: his line shows at once, the image with it.
   voiceAppend({ role: "user", content: shown, ...(attachments?.length ? { attachments } : {}) });
-  if (sessionFirstUserText === null) sessionFirstUserText = shown;
   let problem = "";
   try {
     if (images.length && seesImages(getCurrentLlm())) {
@@ -2074,7 +1935,6 @@ export function sendVoiceUserText(text: string): boolean {
     console.warn("[voice-eleven] sendUserMessage failed:", e);
     return false;
   }
-  if (sessionFirstUserText === null) sessionFirstUserText = trimmed;
   voiceAppend({ role: "user", content: trimmed });
   useStore.getState().setVoiceThinking(true);
   armThinkingSafetyTimeout();
@@ -2104,7 +1964,6 @@ export async function sendVoiceUserMultimodal(
     return false;
   }
   const display = trimmed || "[image]";
-  if (sessionFirstUserText === null) sessionFirstUserText = display;
   voiceAppend({ role: "user", content: display });
   useStore.getState().setVoiceThinking(true);
   armThinkingSafetyTimeout();
@@ -2602,7 +2461,7 @@ export async function buildPhoneVoiceContext(
     voiceId: localStorage.getItem(VOICE_ID_STORAGE) ?? DEFAULT_VOICE_ID,
     systemPrompt: buildSystemPrompt(state, customHeader, northStar, promptContext, historyMessages, opts?.agentOnBox, opts?.fileIndex, vaultTools),
     dynamicVariables: buildDynamicVariables(state),
-    toolNames: Object.keys(buildClientToolHandlers(undefined, undefined, vaultTools)),
+    toolNames: [...new Set([...BUILTIN_VOICE_TOOL_NAMES, ...vaultTools.map((t) => t.name)])],
     vault: state.vaultPath,
   };
 }
@@ -3226,37 +3085,6 @@ export async function getConversationToken(apiKey: string, agentId: string): Pro
   }
 }
 
-// Convert a simple glob ('**', '*', '?') to a regex that matches the
-// whole path. Used as a case-insensitive fallback for the voice Glob
-// tool when the native, case-sensitive glob crate returns nothing —
-// voice users say file names by sound, not by exact case, so 'hw3' has
-// to match 'HW3'.
-function globPatternToRegex(pattern: string): RegExp {
-  let out = "";
-  let i = 0;
-  while (i < pattern.length) {
-    const c = pattern[i];
-    if (c === "*" && pattern[i + 1] === "*") {
-      // ** matches across path separators
-      out += ".*";
-      i += 2;
-      if (pattern[i] === "/") i += 1;
-    } else if (c === "*") {
-      out += "[^/]*";
-      i += 1;
-    } else if (c === "?") {
-      out += "[^/]";
-      i += 1;
-    } else if (/[.+^${}()|[\]\\]/.test(c)) {
-      out += "\\" + c;
-      i += 1;
-    } else {
-      out += c;
-      i += 1;
-    }
-  }
-  return new RegExp(`^${out}$`, "i");
-}
 
 // ---- Client tool implementations ----------------------------------------
 
@@ -3424,250 +3252,17 @@ function withTracking<A>(
 }
 
 export function buildClientToolHandlers(
-  remote?: RemoteVoiceTool,
+  remote: RemoteVoiceTool,
   remoteNames?: string[],
-  // The vault's own tools (default: the store vault's).
+  // The vault's own tools (default: the store vault's): they run on the box too.
   vaultTools: VaultVoiceTool[] = toolsFor(useStore.getState().vaultPath),
 ): Record<
   string,
   (parameters: any) => Promise<string>
 > {
+  // The tools that move this screen run here; every other one (the vault's
+  // files, notes, the web, the agent) runs on the box (server/voice.ts).
   const handlers: Record<string, (parameters: any) => Promise<string>> = {
-    Read: withTracking("Read", async (args: { path: string }) => {
-      try {
-        const raw = await invoke<string>("read_text_file", { path: args.path });
-        // .ipynb is JSON noise — strip to "# Cell N [type]\n<source>"
-        // sections like text-mode does, otherwise notebook metadata
-        // burns the whole READ_CAP before any actual code shows up.
-        const isNotebook = /\.ipynb$/i.test(args.path);
-        const text = isNotebook ? stripNotebook(raw) : raw;
-        return text.length > READ_CAP
-          ? text.slice(0, READ_CAP) + "\n…[truncated]"
-          : text;
-      } catch (e) {
-        return `Error: ${(e as any)?.message ?? String(e)}`;
-      }
-    }),
-    Glob: withTracking("Glob", async (args: { pattern: string }) => {
-      const vault = useStore.getState().vaultPath;
-      if (!vault) return "Error: no active vault";
-      try {
-        const results = await invoke<string[]>("glob_files", {
-          pattern: args.pattern,
-          cwd: vault,
-        });
-        if (results.length > 0) {
-          const out = results.slice(0, 200).join("\n");
-          return results.length > 200
-            ? out + `\n…(${results.length - 200} more)`
-            : out;
-        }
-        // Fallback: native glob is case-sensitive and only returns
-        // files, so 'hw3.ipynb' misses 'HW3.ipynb' and '**/HW3' misses
-        // the HW3 directory. Scan state.files in JS with a
-        // case-insensitive regex that also includes directories.
-        const regex = globPatternToRegex(args.pattern);
-        const nv = vault.replace(/\\/g, "/").replace(/\/+$/, "");
-        const fallback: string[] = [];
-        for (const f of useStore.getState().files) {
-          if (f.hidden || f.denied) continue;
-          const np = f.path.replace(/\\/g, "/");
-          const rel = np.startsWith(nv + "/") ? np.slice(nv.length + 1) : np;
-          if (regex.test(rel)) fallback.push(f.path + (f.is_dir ? "/" : ""));
-        }
-        if (fallback.length === 0) return "(no matches)";
-        const out = fallback.slice(0, 200).join("\n");
-        return fallback.length > 200
-          ? `${out}\n…(${fallback.length - 200} more) [case-insensitive fallback]`
-          : `${out}\n[case-insensitive fallback]`;
-      } catch (e) {
-        return `Error: ${(e as any)?.message ?? String(e)}`;
-      }
-    }),
-    Grep: withTracking(
-      "Grep",
-      async (args: {
-        pattern: string;
-        path?: string;
-        glob_filter?: string;
-        case_insensitive?: boolean;
-      }) => {
-        const vault = useStore.getState().vaultPath;
-        if (!vault) return "Error: no active vault";
-        try {
-          const results = await invoke<
-            { path: string; line: number; text: string }[]
-          >("grep_files", {
-            pattern: args.pattern,
-            path: args.path ?? vault,
-            globFilter: args.glob_filter ?? null,
-            caseInsensitive: args.case_insensitive ?? false,
-            maxResults: 200,
-          });
-          if (!results.length) return "(no matches)";
-          return results
-            .slice(0, 100)
-            .map((r) => `${r.path}:${r.line}: ${r.text}`)
-            .join("\n");
-        } catch (e) {
-          return `Error: ${(e as any)?.message ?? String(e)}`;
-        }
-      },
-    ),
-    ListDir: withTracking("ListDir", async (args: { path: string }) => {
-      try {
-        const entries = await invoke<{ name: string; is_dir: boolean }[]>(
-          "list_dir",
-          { path: args.path },
-        );
-        if (!entries.length) return "(empty)";
-        return entries
-          .map((e) => (e.is_dir ? `${e.name}/` : e.name))
-          .join("\n");
-      } catch (e) {
-        return `Error: ${(e as any)?.message ?? String(e)}`;
-      }
-    }),
-    Write: withTracking(
-      "Write",
-      async (args: { path: string; contents: string }) => {
-        try {
-          const v = useStore.getState().vaultPath;
-          if (v) {
-            try {
-              await assertCanWrite(args.path, v);
-            } catch (e) {
-              return (e as Error).message;
-            }
-          }
-          await invoke("write_text_file", {
-            path: args.path,
-            contents: args.contents,
-          });
-          sessionMutationCount++;
-          // If the file the agent just wrote is currently open in a
-          // viewer, push the new content into the store immediately
-          // so the user sees the edit without having to re-open. We
-          // use the bytes the agent supplied — same content the
-          // file now contains on disk.
-          refreshIfOpen(args.path, args.contents);
-          return `Wrote ${args.path}`;
-        } catch (e) {
-          return `Error: ${(e as any)?.message ?? String(e)}`;
-        }
-      },
-    ),
-    CreateNote: withTracking(
-      "CreateNote",
-      async (args: {
-        text: string;
-        source_path?: string;
-        source_anchor?: string;
-      }) => {
-        const vault = useStore.getState().vaultPath;
-        if (!vault) return "Error: no active vault";
-        const anchors = args.source_path
-          ? [
-              {
-                source_path: args.source_path,
-                source_kind: "code" as const,
-                source_anchor: args.source_anchor ?? null,
-                primary: true,
-              },
-            ]
-          : [];
-        try {
-          const note = buildNote({ anchors, userDraft: args.text });
-          await useStore.getState().addNote(note);
-          sessionMutationCount++;
-          return `Saved note ${note.id}.`;
-        } catch (e) {
-          return `Error: ${(e as any)?.message ?? String(e)}`;
-        }
-      },
-    ),
-    Edit: withTracking(
-      "Edit",
-      async (args: {
-        path: string;
-        old_string: string;
-        new_string: string;
-        replace_all?: boolean;
-      }) => {
-        try {
-          const v = useStore.getState().vaultPath;
-          if (v) {
-            try {
-              await assertCanWrite(args.path, v);
-            } catch (e) {
-              return (e as Error).message;
-            }
-          }
-          const summary = await invoke<string>("edit_text_file", {
-            path: args.path,
-            oldString: args.old_string,
-            newString: args.new_string,
-            replaceAll: args.replace_all ?? false,
-          });
-          sessionMutationCount++;
-          // Re-read the file so any open viewer reflects the edit.
-          try {
-            const fresh = await invoke<string>("read_text_file", { path: args.path });
-            refreshIfOpen(args.path, fresh);
-          } catch {}
-          return summary;
-        } catch (e) {
-          return `Error: ${(e as any)?.message ?? String(e)}`;
-        }
-      },
-    ),
-    NotebookEdit: withTracking(
-      "NotebookEdit",
-      async (args: {
-        path: string;
-        action: "replace" | "insert" | "delete" | "append";
-        cell_index: number;
-        source?: string;
-        cell_type?: "code" | "markdown" | "raw";
-      }) => {
-        try {
-          const v = useStore.getState().vaultPath;
-          if (v) {
-            try {
-              await assertCanWrite(args.path, v);
-            } catch (e) {
-              return (e as Error).message;
-            }
-          }
-          const raw = await invoke<string>("read_text_file", { path: args.path });
-          const result = applyNotebookEdit(
-            raw,
-            args.action,
-            args.cell_index,
-            args.source,
-            args.cell_type,
-          );
-          if (!result.ok) return `Error: ${result.error}`;
-          await invoke("write_text_file", { path: args.path, contents: result.contents });
-          sessionMutationCount++;
-          refreshIfOpen(args.path, result.contents);
-          return `${result.summary} in ${args.path}`;
-        } catch (e) {
-          return `Error: ${(e as any)?.message ?? String(e)}`;
-        }
-      },
-    ),
-    PdfExtract: withTracking(
-      "PdfExtract",
-      async (args: { path: string; pages?: string }) => {
-        try {
-          // Same page-range rules as the chat tool (tools.ts readPdf).
-          return await readPdf(args.path, { pages: args.pages });
-        } catch (e) {
-          return `Error: ${(e as any)?.message ?? String(e)}`;
-        }
-      },
-    ),
     ScrollTo: withTracking(
       "ScrollTo",
       async (args: { page?: number; anchor?: string; path?: string }) => {
@@ -3774,286 +3369,10 @@ export function buildClientToolHandlers(
       const text = buildViewportContextText(state);
       return text || `${name} is open, but nothing in view can be read.`;
     }),
-    ListNotes: withTracking(
-      "ListNotes",
-      async (args: { status?: "open" | "resolved" | "all"; limit?: number }) => {
-        const status = args.status ?? "open";
-        const limit = args.limit ?? 50;
-        const notes = useStore.getState().notes;
-        const filtered = notes.filter(
-          (n) => status === "all" || n.status === status,
-        );
-        const sliced = filtered.slice(0, limit);
-        if (sliced.length === 0) {
-          return `No ${status === "all" ? "" : status + " "}notes.`;
-        }
-        const lines = sliced.map((n) => {
-          const primary = n.anchors.find((a) => a.primary) ?? n.anchors[0];
-          const anchor = primary
-            ? `${primary.source_path.split("/").pop()}${primary.source_anchor ? ` (${primary.source_anchor})` : ""}`
-            : "(no anchor)";
-          const body =
-            n.formatted ??
-            n.user_draft ??
-            (n.turns[0]?.content ?? "").slice(0, 160);
-          return `[${n.id}] ${n.status} · ${anchor} · ${n.timestamp.slice(0, 16)}\n  ${body.replace(/\n+/g, " ")}`;
-        });
-        return `${filtered.length} note${filtered.length === 1 ? "" : "s"} (showing ${sliced.length}):\n\n${lines.join("\n\n")}`;
-      },
-    ),
-    ResolveNote: withTracking(
-      "ResolveNote",
-      async (args: { id: string }) => {
-        const n = useStore.getState().notes.find((n) => n.id === args.id);
-        if (!n) return `No note with id "${args.id}".`;
-        if (n.status === "resolved") {
-          return `Note ${args.id} was already resolved.`;
-        }
-        try {
-          await useStore.getState().setNoteStatus(args.id, "resolved");
-          sessionMutationCount++;
-          return `Resolved note ${args.id}.`;
-        } catch (e) {
-          return `Error: ${(e as any)?.message ?? String(e)}`;
-        }
-      },
-    ),
-    WebFetch: withTracking(
-      "WebFetch",
-      async (args: { url: string; max_chars?: number }) => {
-        try {
-          // Voice context is smaller than text — cap tighter by default
-          // so a long page doesn't blow the prompt budget.
-          const cap = args.max_chars ?? 24_000;
-          return await invoke<string>("http_fetch", {
-            url: args.url,
-            maxChars: cap,
-          });
-        } catch (e) {
-          return `Error: ${(e as any)?.message ?? String(e)}`;
-        }
-      },
-    ),
-    WebSearch: withTracking(
-      "WebSearch",
-      async (args: { query: string; max_results?: number }) => {
-        const tavilyKey = useStore.getState().serviceKeys.tavily;
-        if (!tavilyKey) {
-          return "Error: WebSearch needs a Tavily API key — the user can add one in Settings.";
-        }
-        try {
-          return await invoke<string>("tavily_search", {
-            query: args.query,
-            apiKey: tavilyKey,
-            maxResults: args.max_results ?? null,
-            includeAnswer: true,
-          });
-        } catch (e) {
-          return `Error: ${(e as any)?.message ?? String(e)}`;
-        }
-      },
-    ),
-    Bash: withTracking(
-      "Bash",
-      async (args: { command: string; cwd?: string; timeout_ms?: number }) => {
-        const state = useStore.getState();
-        if (state.bashDisabled) {
-          return "Error: Bash is disabled in this app's settings. The user can enable it in Settings → Agent.";
-        }
-        const vault = state.vaultPath;
-        if (!vault) return "Error: no active vault";
-        // Mirror text-mode's best-effort path gates so the voice agent
-        // can't trivially read denylisted or humanized files via shell
-        // tricks. Same caveat as text mode: shell indirection can still
-        // smuggle these — the gate is a tripwire, not a sandbox.
-        try {
-          const denyLines = await invoke<string[]>("read_deny_lines", { vault });
-          const nv = vault.replace(/\\/g, "/").replace(/\/+$/, "");
-          for (const raw of denyLines) {
-            const rel = raw.replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
-            if (!rel) continue;
-            if (args.command.includes(rel) || args.command.includes(`${nv}/${rel}`)) {
-              return `Refused: command references restricted path '${rel}'.`;
-            }
-          }
-        } catch {
-          // No deny file or read failed — proceed.
-        }
-        try {
-          const humanized = await invoke<string[]>("read_humanized", { vault });
-          const nv = vault.replace(/\\/g, "/").replace(/\/+$/, "");
-          for (const raw of humanized) {
-            const rel = raw.replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
-            if (!rel) continue;
-            if (args.command.includes(rel) || args.command.includes(`${nv}/${rel}`)) {
-              return "Refused: command references a humanized file.";
-            }
-          }
-        } catch {
-          // proceed
-        }
-        // ElevenLabs caps tool response at 30s. Default 20s leaves
-        // headroom; clamp at 25s so the agent can't accidentally
-        // request a timeout that exceeds the platform ceiling.
-        const timeout = Math.min(args.timeout_ms ?? 20_000, 25_000);
-        try {
-          const result = await invoke<{
-            stdout: string;
-            stderr: string;
-            code: number;
-            timed_out: boolean;
-          }>("bash_exec", {
-            command: args.command,
-            cwd: args.cwd ?? vault,
-            timeoutMs: timeout,
-          });
-          const cap = 8_000;
-          const clip = (s: string) =>
-            s.length > cap ? s.slice(0, cap) + "\n…[truncated]" : s;
-          const parts: string[] = [];
-          parts.push(`exit: ${result.code}${result.timed_out ? " (TIMED OUT)" : ""}`);
-          if (result.stdout) parts.push(`stdout:\n${clip(result.stdout)}`);
-          if (result.stderr) parts.push(`stderr:\n${clip(result.stderr)}`);
-          return parts.join("\n");
-        } catch (e) {
-          return `Error: ${(e as any)?.message ?? String(e)}`;
-        }
-      },
-    ),
-    ReopenNote: withTracking("ReopenNote", async (args: { id: string }) => {
-      const n = useStore.getState().notes.find((n) => n.id === args.id);
-      if (!n) return `No note with id "${args.id}".`;
-      if (n.status === "open") return `Note ${args.id} is already open.`;
-      try {
-        await useStore.getState().setNoteStatus(args.id, "open");
-        sessionMutationCount++;
-        return `Reopened note ${args.id}.`;
-      } catch (e) {
-        return `Error: ${(e as any)?.message ?? String(e)}`;
-      }
-    }),
-    GitLog: withTracking(
-      "GitLog",
-      async (args: {
-        subdir: string;
-        since?: string;
-        author?: string;
-        max_count?: number;
-      }) => {
-        const vault = useStore.getState().vaultPath;
-        if (!vault) return "Error: no active vault";
-        try {
-          const { gitLogSubdir } = await import("./git");
-          const out = await gitLogSubdir(vault, args.subdir ?? ".", {
-            since: args.since,
-            author: args.author,
-            maxCount: args.max_count,
-          });
-          return out.trim() === "" ? "(no commits match)" : out;
-        } catch (e) {
-          return `Error: ${(e as any)?.message ?? String(e)}`;
-        }
-      },
-    ),
-    ListConversations: withTracking(
-      "ListConversations",
-      async (args: { limit?: number }) => {
-        const vault = useStore.getState().vaultPath;
-        if (!vault) return "Error: no active vault";
-        const current = useStore.getState().activeConversationId;
-        const cap = Math.max(1, Math.min(100, args.limit ?? 20));
-        try {
-          const { readConversations } = await import("./conversations");
-          const list = await readConversations(vault);
-          const filtered = list
-            .filter((c) => c.id !== current)
-            .sort((a, b) => b.lastActivityAt - a.lastActivityAt)
-            .slice(0, cap);
-          if (filtered.length === 0) return "(no other conversations)";
-          const fmt = (ts: number) => {
-            const diff = Date.now() - ts;
-            const min = Math.floor(diff / 60_000);
-            if (min < 60) return `${Math.max(0, min)}m ago`;
-            const hr = Math.floor(min / 60);
-            if (hr < 24) return `${hr}h ago`;
-            return `${Math.floor(hr / 24)}d ago`;
-          };
-          return filtered
-            .map((c) =>
-              JSON.stringify({
-                id: c.id,
-                title: c.title || "(untitled)",
-                source: c.source,
-                status: c.status,
-                unread: !!c.unread,
-                messageCount: c.messages.length,
-                lastActivity: fmt(c.lastActivityAt),
-              }),
-            )
-            .join("\n");
-        } catch (e) {
-          return `Error: ${(e as any)?.message ?? String(e)}`;
-        }
-      },
-    ),
-    ReadConversation: withTracking(
-      "ReadConversation",
-      async (args: { conversation_id: string; last_n?: number }) => {
-        const vault = useStore.getState().vaultPath;
-        if (!vault) return "Error: no active vault";
-        const cap = Math.max(1, Math.min(50, args.last_n ?? 12));
-        try {
-          const { readConversations } = await import("./conversations");
-          const list = await readConversations(vault);
-          const conv = list.find((c) => c.id === args.conversation_id);
-          if (!conv) return `Conversation not found: ${args.conversation_id}`;
-          const tail = conv.messages.slice(-cap);
-          const lines: string[] = [
-            `# ${conv.title || "(untitled)"} [${conv.status}]`,
-            `source: ${conv.source} · ${conv.messages.length} total messages`,
-            ...tail.map((m) => {
-              const content = (m.content ?? "").slice(0, 800);
-              const tools =
-                m.toolCalls && m.toolCalls.length > 0
-                  ? `\n  tools: ${m.toolCalls
-                      .map((t) => `${t.name}(${JSON.stringify(t.input ?? {}).slice(0, 80)})`)
-                      .join(", ")}`
-                  : "";
-              return `[${m.role}${m.hidden ? " hidden" : ""}] ${content}${content.length === 800 ? "…" : ""}${tools}`;
-            }),
-          ];
-          return lines.join("\n\n");
-        } catch (e) {
-          return `Error: ${(e as any)?.message ?? String(e)}`;
-        }
-      },
-    ),
   };
-
-  // Custom per-vault tools, from the snapshot ensureAgent loaded (which always
-  // runs first on every voice path). Same execute the text agent uses, wrapped
-  // in withTracking so they show in the cockpit pill and chat log like built-ins.
-  // A custom tool sharing a built-in's name overrides it — matching both the
-  // text agent's merge order and the agent schema filter in ensureAgent.
-  const noBox = async () => "Error: the vault isn't connected to a box, so there is no main agent to hand work to. Do it here, or ask the user to connect the box.";
-  handlers.AskAgent = withTracking("AskAgent", noBox);
-  handlers.AgentStatus = withTracking("AgentStatus", noBox);
-
-  // Box mode: every built-in that reads or writes the vault runs on the box
-  // (server/voice.ts); the ones that move the user's screen stay here.
-  // The vault's own tools: here, or on the box (in its sandbox) in box mode —
-  // together with any the box's agent offers that this laptop hasn't loaded.
-  const customs = new Set<string>([...vaultTools.map((t) => t.name), ...(remote ? (remoteNames ?? []) : [])]);
-  if (remote) {
-    for (const name of new Set([...BUILTIN_VOICE_TOOL_NAMES, ...customs])) {
-      if (LOCAL_VOICE_TOOLS.has(name)) continue;
-      handlers[name] = withTracking(name, (args: unknown) => remote(name, args), " · on the box");
-    }
-  } else {
-    for (const t of vaultTools) {
-      handlers[t.name] = withTracking(t.name, (args: unknown) => t.execute(args));
-    }
+  for (const name of new Set([...BUILTIN_VOICE_TOOL_NAMES, ...vaultTools.map((t) => t.name), ...(remoteNames ?? [])])) {
+    if (LOCAL_VOICE_TOOLS.has(name)) continue;
+    handlers[name] = withTracking(name, (args: unknown) => remote(name, args), " · on the box");
   }
-
   return handlers;
 }

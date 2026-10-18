@@ -39,6 +39,8 @@ export type ServerHooks = {
   /** Settings → Box on the laptop: this box's vaults, and its own OpenRouter key. */
   vaults?: { list: () => unknown; add: (name: string) => Promise<Record<string, unknown>> };
   setKeys?: (keys: Record<string, string>) => Promise<boolean>;
+  /** POST /api/v1/complete: a one-shot model call (src/complete.ts) with the box's key. */
+  complete?: (req: { instructions: string; text: string; images?: string[]; fast?: boolean; maxOutputTokens?: number }) => Promise<string>;
   /** The vault a request names (`?vault=` or `X-VC-Vault`), null when this box
    * has no such vault. No name = the main vault (older laptops, the phone). */
   vault?: (name: string | null) => VaultScope | null;
@@ -380,6 +382,18 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
   if (path === "/api/v1/vault/file" && method === "GET") return vaultFileRoute(res, vault, url.searchParams.get("path"));
 
   const q = (k: string) => url.searchParams.get(k) ?? "";
+
+  // A one-shot model call for a client (Ctrl+K / Ctrl+L, a note's title): one request, one text.
+  if (path === "/api/v1/complete" && method === "POST") {
+    if (!hooks.complete) return json(res, 503, { error: "not available on this box" });
+    const b = await jsonBody(req);
+    if (typeof b.text !== "string" || !b.text.trim()) return json(res, 400, { error: "missing text" });
+    try {
+      return json(res, 200, { text: await hooks.complete(b) });
+    } catch (e) {
+      return json(res, 502, { error: String((e as Error)?.message ?? e).slice(0, 300) });
+    }
+  }
 
   // The shared context stream (server/activity.ts): this vault's log only.
   if (path === "/api/v1/activity" && method === "POST") {

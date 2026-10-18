@@ -1,6 +1,6 @@
-import { streamText, stepCountIs, type ModelMessage } from "ai";
-import { buildModel, findModel, DEFAULT_MODEL_ID } from "./providers";
-import { buildTools } from "./tools";
+// Ctrl+K (rewrite the selection) and Ctrl+L (ask about it): one-shot calls on
+// the box (src/complete.ts). This module builds what each request says.
+import { complete, type CompleteRequest } from "./complete";
 import { northStarPromptBlock } from "./meta";
 
 function prependNorthStar(base: string, northStar?: string): string {
@@ -31,13 +31,11 @@ Strict output rules:
 - Preserve leading/trailing whitespace contract of the original selection where relevant.
 - Keep the output self-contained — no cross-references to the chat, no "here is your code".
 
-If the conversation has multiple turns, later user messages refine the same edit. Re-emit the entire replacement, not a diff or a description of changes.`;
+If earlier turns of this popover are shown, the latest request refines the same edit. Re-emit the entire replacement, not a diff or a description of changes.`;
 
 export type InlineTurn = { prompt: string; result: string };
 
 export type InlineEditParams = {
-  modelId: string;
-  apiKey: string;
   prompt: string;
   selection: string;
   before: string;
@@ -49,7 +47,6 @@ export type InlineEditParams = {
    *  image with "from <file> (<page=N>)" when handing it to the model
    *  — prevents the agent from asking where a loose image came from. */
   extraImages?: CapturedExtra[];
-  abortSignal?: AbortSignal;
   /** Per-vault north-star brief, prepended to the system prompt so the
    *  inline editor honors the vault's declared mode. */
   northStar?: string;
@@ -65,69 +62,33 @@ export type CapturedExtra = {
   caption?: string;
 };
 
-// Emit a user-turn content array with text + captioned image parts.
-// AI SDK's UserContent type is narrow, so we cast to any — we only
-// produce text / image parts, both valid. Images with source metadata
-// get a short caption preceding them so the model knows the region's
-// origin without asking.
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function makeUserContent(text: string, images: CapturedExtra[]): any {
-  if (images.length === 0) return text;
-  const parts: unknown[] = [{ type: "text", text }];
-  for (const img of images) {
-    const src = img.sourcePath ? img.sourcePath.split("/").pop() : null;
-    const caption = img.caption
-      ? img.caption
-      : src
-        ? `Captured region from ${src}${img.sourceAnchor ? ` (${img.sourceAnchor})` : ""}:`
-        : "Captured region:";
-    parts.push({ type: "text", text: caption });
-    parts.push({ type: "image", image: new URL(img.imageDataUrl) });
-  }
-  return parts;
-}
-
-/** Exactly what a Ctrl+K request sends (the system prompt and the messages). */
-export function buildInlineEditRequest(p: InlineEditParams): { system: string; messages: ModelMessage[] } {
-  const messages: ModelMessage[] = [];
-  const prior = p.priorTurns ?? [];
-  const extras: CapturedExtra[] = p.extraImages ?? [];
-  const firstPrompt = prior[0]?.prompt ?? p.prompt;
-  const firstContent = buildContextBody(p, firstPrompt);
+/** The request's text and images: the first turn's context, the earlier turns
+ *  of this popover, and the latest request; each image captioned in the text. */
+function oneMessage(firstText: string, prior: InlineTurn[], latest: string, images: CapturedExtra[]): { text: string; images?: string[] } {
+  let text = firstText;
   if (prior.length > 0) {
-    messages.push({ role: "user", content: firstContent });
-    messages.push({ role: "assistant", content: prior[0].result });
-    for (let i = 1; i < prior.length; i++) {
-      messages.push({ role: "user", content: prior[i].prompt });
-      messages.push({ role: "assistant", content: prior[i].result });
-    }
-    // Latest user turn — the one the model is about to respond to —
-    // carries any freshly captured marquee images.
-    messages.push({ role: "user", content: makeUserContent(p.prompt, extras) });
-  } else {
-    // Single-turn case; attach extras to the only user message.
-    messages.push({ role: "user", content: makeUserContent(firstContent, extras) });
+    const turns = prior.map((t, i) => `${i === 0 ? "" : `User: ${t.prompt}\n`}You answered:\n${t.result}`);
+    text += `\n\n[Earlier in this popover]\n${turns.join("\n\n")}\n\n[The latest request]\n${latest}`;
   }
-  return { system: withSharedContext(prependNorthStar(SYSTEM, p.northStar), p.sharedContext), messages };
+  if (images.length === 0) return { text };
+  const captions = images.map((img, i) => {
+    const src = img.sourcePath ? img.sourcePath.split("/").pop() : null;
+    const what = img.caption ? img.caption : src ? `Captured region from ${src}${img.sourceAnchor ? ` (${img.sourceAnchor})` : ""}` : "Captured region";
+    return `Image ${i + 1}: ${what}`;
+  });
+  return { text: `${text}\n\n${captions.join("\n")}`, images: images.map((x) => x.imageDataUrl) };
 }
 
-export async function* runInlineEdit(
-  p: InlineEditParams,
-): AsyncGenerator<string, void, void> {
-  const spec = findModel(p.modelId) ?? findModel(DEFAULT_MODEL_ID);
-  if (!spec) throw new Error(`unknown model: ${p.modelId}`);
-  const model = buildModel(spec, p.apiKey);
-  const { system, messages } = buildInlineEditRequest(p);
-  const result = streamText({
-    model,
-    system,
-    messages,
-    abortSignal: p.abortSignal,
-  });
+/** Exactly what a Ctrl+K request sends. */
+export function buildInlineEditRequest(p: InlineEditParams): CompleteRequest {
+  const prior = p.priorTurns ?? [];
+  const first = buildContextBody(p, prior[0]?.prompt ?? p.prompt);
+  return { instructions: withSharedContext(prependNorthStar(SYSTEM, p.northStar), p.sharedContext), ...oneMessage(first, prior, p.prompt, p.extraImages ?? []) };
+}
 
-  for await (const chunk of result.textStream) {
-    yield chunk;
-  }
+/** Ctrl+K: the replacement text. */
+export function runInlineEdit(p: InlineEditParams): Promise<string> {
+  return complete(buildInlineEditRequest(p));
 }
 
 function buildContextBody(
@@ -154,7 +115,7 @@ function buildContextBody(
   if (attached && attached.length > 0) {
     const blocks = attached.map((a) => {
       if (a.content == null) {
-        return `@${a.rel} — absolute path: ${a.path} (binary or unreadable; call Read if you need contents)`;
+        return `@${a.rel} — path: ${a.path} (binary or unreadable)`;
       }
       return `@${a.rel} — absolute path: ${a.path}\n${a.content}`;
     });
@@ -167,16 +128,11 @@ function buildContextBody(
 
 const ASK_SYSTEM = `You are an assistant inside a text/code file viewer. The user highlights a selection (or puts their cursor on a line) and asks a question about it.
 
-You have read-only tools for fetching more context: Read, Glob, Grep, ListDir, PdfExtract, ListNotes, WebFetch, WebSearch. Use them only when you genuinely need more than the file excerpt provides — otherwise answer directly.
+Answer from the context you are given (the file excerpt, the page text, any attached files and images). If it is not enough, say what is missing.
 
 When the user has captured a region from a PDF (a LOCATION line is present and an image is attached), the captured image is the primary subject of the question. Lead with what is visible in the image — describe the marqueed content first, then bring in surrounding-page text only as supporting context. The LOCATION line tells you exactly which page the user is on; trust it over any pattern-matching impulse from training data, and prefer the labeled CURRENT PAGE text over PREV/NEXT when they conflict. Do not invent theorem numbers, equation labels, or proof structure that isn't visible in the image or in the labeled page text.
 
-Answer in markdown. Be concise — this renders in a small popover. Use fenced code blocks for code. Use $$...$$ for display math (inline $...$ does not render here). Don't narrate tool use.`;
-
-export type AskEvent =
-  | { kind: "text"; delta: string }
-  | { kind: "thinking" }
-  | { kind: "error"; message: string };
+Answer in markdown. Be concise — this renders in a small popover. Use fenced code blocks for code. Use $$...$$ for display math (inline $...$ does not render here).`;
 
 // Structured page-keyed context for PDF marquees. Fixes the old
 // behavior where surrounding context was sliced from a single joined
@@ -194,9 +150,6 @@ export type PdfAskContext = {
 };
 
 export type InlineAskParams = InlineEditParams & {
-  vault: string;
-  tavilyKey?: string;
-  strictVault?: boolean;
   // Optional region screenshot (data URL) to attach to the first user
   // message alongside the text context. Used by the PDF marquee so the
   // model can see math, tables, and diagrams that text extraction
@@ -220,114 +173,29 @@ export type InlineAskParams = InlineEditParams & {
   chatPaneHistory?: Array<{ role: "user" | "assistant"; content: string }>;
 };
 
-export async function* runInlineAsk(
-  p: InlineAskParams,
-): AsyncGenerator<AskEvent, void, void> {
-  const spec = findModel(p.modelId) ?? findModel(DEFAULT_MODEL_ID);
-  if (!spec) throw new Error(`unknown model: ${p.modelId}`);
-  const model = buildModel(spec, p.apiKey);
-
-  const allTools = buildTools(p.vault, {
-    tavilyKey: p.tavilyKey,
-    strictVault: p.strictVault ?? false,
-    // Inline ask only ever exposes the read-only subset below — Bash
-    // isn't in that list, so this flag is moot here. Pass-through for
-    // consistency with the main agent.
-    bashDisabled: true,
-  }) as Record<string, unknown>;
-  const readOnlyNames = [
-    "Read",
-    "Glob",
-    "Grep",
-    "ListDir",
-    "PdfExtract",
-    "WebFetch",
-    "WebSearch",
-    "ListNotes",
-  ] as const;
-  const tools: Record<string, unknown> = {};
-  for (const name of readOnlyNames) {
-    if (allTools[name]) tools[name] = allTools[name];
-  }
-
-  const { system, messages } = buildInlineAskRequest(p);
-  const result = streamText({
-    model,
-    system,
-    messages,
-    tools: tools as any,
-    stopWhen: stepCountIs(8),
-    abortSignal: p.abortSignal,
-  });
-
-  for await (const part of result.fullStream) {
-    if (part.type === "text-delta") {
-      if ("text" in part && typeof part.text === "string") {
-        yield { kind: "text", delta: part.text };
-      }
-    } else if (part.type === "tool-call") {
-      yield { kind: "thinking" };
-    } else if (part.type === "error") {
-      const err = (part as { error?: { message?: string } }).error;
-      yield { kind: "error", message: err?.message ?? String(err) };
-    }
-  }
+/** Ctrl+L: the answer (markdown). */
+export function runInlineAsk(p: InlineAskParams): Promise<string> {
+  return complete(buildInlineAskRequest(p));
 }
 
-/** Exactly what a Ctrl+L request sends (the system prompt and the messages; the tools are the read-only set). */
-export function buildInlineAskRequest(p: InlineAskParams): { system: string; messages: ModelMessage[] } {
-  const messages: ModelMessage[] = [];
+/** Exactly what a Ctrl+L request sends. */
+export function buildInlineAskRequest(p: InlineAskParams): CompleteRequest {
   const prior = p.priorTurns ?? [];
   const firstPrompt = prior[0]?.prompt ?? p.prompt;
   let firstContent = p.pdfContext
     ? buildPdfContextBody(p, firstPrompt, p.pdfContext, p.attachedFiles)
     : buildContextBody(p, firstPrompt, p.attachedFiles);
-
-  // If the caller supplied recent chat-pane history, prepend it to
-  // the first turn's context body as a labelled transcript. The
-  // popover agent then has the last few turns from the main chat as
-  // context on what the user is working on.
+  // The last few turns of the open chat, as reference for what Carl is working on.
   const chat = p.chatPaneHistory ?? [];
   if (chat.length > 0) {
-    const transcript = chat
-      .map((m) => {
-        const who = m.role === "user" ? "User" : "Assistant";
-        return `${who}: ${m.content}`;
-      })
-      .join("\n\n---\n\n");
+    const transcript = chat.map((m) => `${m.role === "user" ? "User" : "Assistant"}: ${m.content}`).join("\n\n---\n\n");
     const header =
       "[Recent chat-pane conversation — context for what the user is working on right now. Do not respond to it directly; it's reference material for the question that follows.]";
     firstContent = `${header}\n\n${transcript}\n\n[End of chat-pane history]\n\n${firstContent}`;
   }
-
-  // If we have a region screenshot, attach it as an image part on the
-  // first user message — the same turn that carries the file context.
-  // The model then sees text + image together and can cross-reference.
-  const extras: CapturedExtra[] = p.extraImages ?? [];
-  const firstTurnImages: CapturedExtra[] = [];
-  if (p.imageDataUrl) {
-    firstTurnImages.push({ imageDataUrl: p.imageDataUrl });
-  }
-
-  if (prior.length > 0) {
-    messages.push({ role: "user", content: makeUserContent(firstContent, firstTurnImages) });
-    messages.push({ role: "assistant", content: prior[0].result });
-    for (let i = 1; i < prior.length; i++) {
-      messages.push({ role: "user", content: prior[i].prompt });
-      messages.push({ role: "assistant", content: prior[i].result });
-    }
-    // Latest turn — extras go here so the model uses them for the
-    // response it's about to generate.
-    messages.push({ role: "user", content: makeUserContent(p.prompt, extras) });
-  } else {
-    // Single-turn: both firstTurn image (if any) AND extras land here.
-    messages.push({
-      role: "user",
-      content: makeUserContent(firstContent, [...firstTurnImages, ...extras]),
-    });
-  }
-
-  return { system: withSharedContext(prependNorthStar(ASK_SYSTEM, p.northStar), p.sharedContext), messages };
+  // The marquee's region first, then images captured in the popover.
+  const images: CapturedExtra[] = [...(p.imageDataUrl ? [{ imageDataUrl: p.imageDataUrl }] : []), ...(p.extraImages ?? [])];
+  return { instructions: withSharedContext(prependNorthStar(ASK_SYSTEM, p.northStar), p.sharedContext), ...oneMessage(firstContent, prior, p.prompt, images) };
 }
 
 // Build the first-turn user content for a PDF marquee ask. Layout:
@@ -367,7 +235,7 @@ function buildPdfContextBody(
   if (attached && attached.length > 0) {
     const blocks = attached.map((a) => {
       if (a.content == null) {
-        return `@${a.rel} — absolute path: ${a.path} (binary or unreadable; call Read if you need contents)`;
+        return `@${a.rel} — path: ${a.path} (binary or unreadable)`;
       }
       return `@${a.rel} — absolute path: ${a.path}\n${a.content}`;
     });

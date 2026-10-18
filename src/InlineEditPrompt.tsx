@@ -4,7 +4,6 @@ import { StreamingMarkdown } from "./Markdown";
 import { Check, X, Loader2, CornerDownLeft, MessageSquare, StickyNote, Camera } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { useStore } from "./store";
-import { inlineModel, ROLE_LABEL } from "./roles";
 import { isUnreadableAsText } from "./fileKind";
 import { fileKind } from "./fileKind";
 import { cn } from "./lib/utils";
@@ -85,14 +84,7 @@ export function InlineEditPrompt({
   onAccept: (result: string) => void;
   onCancel: () => void;
 }) {
-  // Re-render when the chat model or catalog changes (the Chat role is the
-  // chat pane's model; labels come from the catalog).
-  useStore((s) => s.modelId);
-  useStore((s) => s.catalog);
-  const apiKeys = useStore((s) => s.apiKeys);
   const vaultPath = useStore((s) => s.vaultPath);
-  const serviceKeys = useStore((s) => s.serviceKeys);
-  const strictVault = useStore((s) => s.strictVaultMode);
   const files = useStore((s) => s.files);
   const currentFile = useStore((s) => s.currentFile);
   const openNoteComposer = useStore((s) => s.openNoteComposer);
@@ -109,7 +101,6 @@ export function InlineEditPrompt({
   }, [vaultPath]);
   const [prompt, setPrompt] = useState("");
   const [streaming, setStreaming] = useState(false);
-  const [thinking, setThinking] = useState(false);
   const [result, setResult] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [priorTurns, setPriorTurns] = useState<InlineTurn[]>([]);
@@ -318,20 +309,6 @@ export function InlineEditPrompt({
 
   const submit = async () => {
     if (!prompt.trim() || streaming) return;
-    // The model comes from this surface's Settings role (roles.ts), not
-    // from whatever the chat pane's picker is on.
-    const picked = inlineModel(mode === "edit" ? "inlineEdit" : "inlineAsk", {
-      hasImage: !!request.imageDataUrl || extraImages.length > 0,
-      prompt,
-      apiKeys,
-    });
-    const spec = picked.spec;
-    const modelId = spec?.id ?? picked.id;
-    const key = spec ? apiKeys[spec.provider] : undefined;
-    if (!spec || !key) {
-      setError(`No API key for ${spec?.provider ?? modelId} (${ROLE_LABEL[picked.role]} model). Add one in settings.`);
-      return;
-    }
     if (mode === "ask" && !vaultPath) {
       setError("Open a vault first — ask mode uses it for file context.");
       return;
@@ -352,7 +329,6 @@ export function InlineEditPrompt({
     setError(null);
     setResult("");
     setStreaming(true);
-    setThinking(mode === "ask");
     const ac = new AbortController();
     abortRef.current = ac;
     // Once per popover: the project's memory and what Carl did lately on
@@ -377,10 +353,7 @@ export function InlineEditPrompt({
     }
     try {
       if (mode === "edit") {
-        let acc = "";
-        for await (const chunk of runInlineEdit({
-          modelId,
-          apiKey: key,
+        const out = await runInlineEdit({
           prompt: currentPrompt,
           selection: request.selection,
           before: request.before,
@@ -390,13 +363,9 @@ export function InlineEditPrompt({
           extraImages: turnImages,
           northStar: northStarRef.current,
           sharedContext,
-          abortSignal: ac.signal,
-        })) {
-          acc += chunk;
-          setResult(acc);
-        }
+        });
+        if (!ac.signal.aborted) setResult(out);
       } else {
-        let acc = "";
         const attachedFiles = await resolveAttachedFiles(currentPrompt);
         // Only on the first popover turn, pull the last few chat-pane
         // turns as context. Keeps subsequent popover turns focused on
@@ -405,12 +374,7 @@ export function InlineEditPrompt({
         const chatPaneHistory = isFirstTurn
           ? recentChatPaneHistory(useStore.getState().messages, 6)
           : undefined;
-        for await (const ev of runInlineAsk({
-          modelId,
-          apiKey: key,
-          vault: vaultPath!,
-          tavilyKey: serviceKeys.tavily,
-          strictVault,
+        const acc = await runInlineAsk({
           prompt: currentPrompt,
           selection: request.selection,
           before: request.before,
@@ -424,18 +388,9 @@ export function InlineEditPrompt({
           chatPaneHistory,
           northStar: northStarRef.current,
           sharedContext,
-          abortSignal: ac.signal,
-        })) {
-          if (ev.kind === "text") {
-            setThinking(false);
-            acc += ev.delta;
-            setResult(acc);
-          } else if (ev.kind === "thinking") {
-            setThinking(true);
-          } else if (ev.kind === "error") {
-            setError(ev.message);
-          }
-        }
+        });
+        if (ac.signal.aborted) return;
+        setResult(acc);
         if (acc.trim()) {
           recordActivity(vaultPath, {
             kind: "ask",
@@ -447,12 +402,9 @@ export function InlineEditPrompt({
         }
       }
     } catch (e: any) {
-      if (e?.name !== "AbortError") {
-        setError(e?.message ?? String(e));
-      }
+      if (!ac.signal.aborted) setError(e?.message ?? String(e));
     } finally {
       setStreaming(false);
-      setThinking(false);
       abortRef.current = null;
       // extraImages were consumed by this turn; clear so the next
       // turn doesn't double-include them.
@@ -567,37 +519,19 @@ export function InlineEditPrompt({
       : "";
 
     const hiddenPreamble = buildHiddenFilePreamble(request, currentFile);
-    // Box mode: the box writes the chat; these lines go to it as they are.
+    // The box writes the chat; these lines go to it as they are.
     const { boxLines } = await import("./boxChat");
-    const [first0, ...rest0] = turns;
-    if (
-      await boxLines([
-        ...(hiddenPreamble ? [{ role: "user" as const, text: hiddenPreamble, hidden: true }] : []),
-        { role: "user" as const, text: visiblePrefix + first0.prompt, attachments: attachments.length > 0 ? attachments : undefined },
-        { role: "assistant" as const, text: first0.result },
-        ...rest0.flatMap((t) => [{ role: "user" as const, text: t.prompt }, { role: "assistant" as const, text: t.result }]),
-      ])
-    ) {
-      if (store.rightCollapsed) store.toggleRight();
-      onCancel();
+    const [first, ...rest] = turns;
+    const sent = await boxLines([
+      ...(hiddenPreamble ? [{ role: "user" as const, text: hiddenPreamble, hidden: true }] : []),
+      { role: "user" as const, text: visiblePrefix + first.prompt, attachments: attachments.length > 0 ? attachments : undefined },
+      { role: "assistant" as const, text: first.result },
+      ...rest.flatMap((t) => [{ role: "user" as const, text: t.prompt }, { role: "assistant" as const, text: t.result }]),
+    ]);
+    if (!sent) {
+      setError("Connect your box to chat — the chat lives on the box.");
       return;
     }
-    if (hiddenPreamble) {
-      store.appendMessage({ role: "user", content: hiddenPreamble, hidden: true });
-    }
-
-    const [first, ...rest] = turns;
-    store.appendMessage({
-      role: "user",
-      content: visiblePrefix + first.prompt,
-      attachments: attachments.length > 0 ? attachments : undefined,
-    });
-    store.appendMessage({ role: "assistant", content: first.result });
-    rest.forEach((t) => {
-      store.appendMessage({ role: "user", content: t.prompt });
-      store.appendMessage({ role: "assistant", content: t.result });
-    });
-
     if (store.rightCollapsed) store.toggleRight();
     onCancel();
   };
@@ -995,17 +929,14 @@ export function InlineEditPrompt({
             <span className="text-destructive">{error}</span>
           ) : (
             <>
-              {thinking && !result && (
+              {streaming && !result && (
                 <div className="flex items-center gap-2 text-muted-foreground">
                   <Loader2 className="h-3 w-3 animate-spin" />
-                  <span>Thinking…</span>
+                  <span>{mode === "ask" ? "Thinking…" : "Writing…"}</span>
                 </div>
               )}
               {result && (
                 <StreamingMarkdown text={result} />
-              )}
-              {streaming && result && (
-                <Loader2 className="inline h-3 w-3 ml-1 animate-spin text-muted-foreground align-[-2px]" />
               )}
             </>
           )}
@@ -1055,19 +986,7 @@ export function InlineEditPrompt({
           )}
         </div>
         <span className="opacity-70">
-          {(() => {
-            const m = inlineModel(mode === "edit" ? "inlineEdit" : "inlineAsk", {
-              hasImage: !!request.imageDataUrl || extraImages.length > 0,
-              apiKeys,
-            });
-            const name = m.spec?.label.replace(/^[^:]+:\s*/, "") ?? m.id;
-            return (
-              <span title={m.switchedFrom ? `Built-in vision model (an image is attached; the ${ROLE_LABEL[m.switchedFrom]} model can't read images)` : `${ROLE_LABEL[m.role]} model · set in Settings → Models`}>
-                {name} ·{" "}
-              </span>
-            );
-          })()}
-          Enter · Esc
+          On the box · Enter · Esc
         </span>
       </div>
       {(streaming || result || error) && (

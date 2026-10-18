@@ -1,7 +1,7 @@
 import { emit, emitTo, listen } from "@tauri-apps/api/event";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
-import { useStore, type ChatMessage, type FileEntry, type LiveTool, type Theme, type TodoItem } from "./store";
-import { sendMessage, stopAgent, clearChat, setModel, interruptAndSend, sendMidTurn, cancelPending } from "./chat-controller";
+import { useStore, type ChatMessage, type FileEntry, type LiveTool, type Theme } from "./store";
+import { sendMessage, stopAgent, clearChat, interruptAndSend, sendMidTurn, cancelPending } from "./chat-controller";
 import type { Conversation } from "./conversations";
 import { newConversationId } from "./conversations";
 import { listProjects, routeProjectChangesTo, setConversationProject } from "./projects";
@@ -24,11 +24,7 @@ export { isPopout };
 type StateSnapshot = {
   vaultPath: string | null;
   messages: ChatMessage[];
-  modelId: string;
-  tokenUsage: { prompt: number; completion: number; total: number };
   lastContext: number;
-  compactionSummary: string | null;
-  compacting: boolean;
   // Mirrored so the popout can reason about what's open in main —
   // used to gate the Capture button's enabled state.
   currentFile: string | null;
@@ -61,7 +57,6 @@ type StreamSnapshot = {
   streamingText: string;
   streamingReasoning: string;
   liveTools: LiveTool[];
-  agentTodos: TodoItem[];
 };
 
 export type ChatAction =
@@ -91,7 +86,6 @@ export type ChatAction =
   | { kind: "unqueue"; id: string }
   | { kind: "stop" }
   | { kind: "clear" }
-  | { kind: "setModel"; id: string }
   | { kind: "startCapture" }
   // The fullscreen chat's sidebar, mic and Ctrl+T, from the popout: main owns
   // the chats list (it runs the agent and writes the list to disk).
@@ -107,11 +101,7 @@ function takeStateSnapshot(): StateSnapshot {
   return {
     vaultPath: s.vaultPath,
     messages: s.messages,
-    modelId: s.modelId,
-    tokenUsage: s.tokenUsage,
     lastContext: s.lastContext,
-    compactionSummary: s.compactionSummary,
-    compacting: s.compacting,
     currentFile: s.currentFile,
     panePaths: s.panes.map((p) => p.file),
     files: s.files,
@@ -135,7 +125,6 @@ function takeStreamSnapshot(): StreamSnapshot {
     streamingText: s.streamingText,
     streamingReasoning: s.streamingReasoning,
     liveTools: s.liveTools,
-    agentTodos: s.agentTodos,
   };
 }
 
@@ -153,7 +142,6 @@ function applyActionLocal(a: ChatAction) {
   else if (a.kind === "unqueue") void cancelPending(a.id);
   else if (a.kind === "stop") stopAgent();
   else if (a.kind === "clear") clearChat();
-  else if (a.kind === "setModel") setModel(a.id);
   else if (a.kind === "startCapture") {
     // Triggered by popout's Camera button. Main sets the pending
     // flag and fires marquee-toggle on main's window — the user
@@ -220,11 +208,7 @@ export async function installMainSync() {
 
     const stateChanged =
       state.messages !== prev.messages ||
-      state.modelId !== prev.modelId ||
-      state.tokenUsage !== prev.tokenUsage ||
       state.lastContext !== prev.lastContext ||
-      state.compactionSummary !== prev.compactionSummary ||
-      state.compacting !== prev.compacting ||
       state.vaultPath !== prev.vaultPath ||
       state.currentFile !== prev.currentFile ||
       state.panes !== prev.panes ||
@@ -241,8 +225,7 @@ export async function installMainSync() {
       state.busy !== prev.busy ||
       state.streamingText !== prev.streamingText ||
       state.streamingReasoning !== prev.streamingReasoning ||
-      state.liveTools !== prev.liveTools ||
-      state.agentTodos !== prev.agentTodos;
+      state.liveTools !== prev.liveTools;
     if (stateChanged) broadcastState(streamChanged);
     else if (streamChanged) broadcastStream();
 

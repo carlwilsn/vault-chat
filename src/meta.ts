@@ -1,8 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
 import matter from "gray-matter";
-import { tool } from "ai";
-import { z } from "zod";
-import { getUserKeysAsEnv } from "./keychain";
 import { DEFAULT_PROMPT_HISTORY } from "./defaultPromptHistory";
 
 // ----- per-vault agent config -----
@@ -120,25 +117,6 @@ async function ensureAgentConfig(
   }
 }
 
-/** Per-vault system prompt at `.vault-chat/agent/system.md`. Syncs across
- *  machines via git; "" when absent (caller has a compiled-in baseline). */
-export async function loadVaultSystemPrompt(vault: string | null): Promise<string> {
-  if (!vault) return "";
-  return readAgentConfig(vault, "system.md", "system.md");
-}
-
-export async function ensureVaultSystemPrompt(vault: string | null): Promise<void> {
-  if (!vault) return;
-  await ensureAgentConfig(vault, "system.md", "default_system_prompt", "system.md");
-}
-
-export async function saveVaultSystemPrompt(vault: string, contents: string): Promise<void> {
-  await invoke("write_text_file", {
-    path: `${vault}/${AGENT_DIR}/system.md`,
-    contents,
-  });
-}
-
 /** Per-vault voice-mode prompt at `.vault-chat/agent/voice.md`. */
 export async function loadVaultVoicePrompt(vault: string | null): Promise<string> {
   if (!vault) return "";
@@ -150,81 +128,6 @@ export async function ensureVaultVoicePrompt(vault: string | null): Promise<void
   await ensureAgentConfig(vault, "voice.md", "default_voice_prompt");
 }
 
-export async function saveVaultVoicePrompt(vault: string, contents: string): Promise<void> {
-  await invoke("write_text_file", {
-    path: `${vault}/${AGENT_DIR}/voice.md`,
-    contents,
-  });
-}
-
-/** Per-vault cockpit-assistant prompt at `.vault-chat/agent/assistant.md`. Steers
- *  the interactive phone-cockpit chat — light, conversational, proposes missions
- *  via plan cards instead of running work itself. "" when absent (the agent then
- *  falls back to the compiled-in cockpit baseline). */
-export async function loadVaultAssistantPrompt(vault: string | null): Promise<string> {
-  if (!vault) return "";
-  return readAgentConfig(vault, "assistant.md");
-}
-
-export async function ensureVaultAssistantPrompt(vault: string | null): Promise<void> {
-  if (!vault) return;
-  await ensureAgentConfig(vault, "assistant.md", "default_assistant_prompt");
-  await dropProposeMissionLines(vault).catch((e) => console.warn("[agent-cfg] assistant.md ProposeMission migration failed:", e));
-}
-
-// sha256 of each line (trimmed) that a shipped assistant.md ever had which
-// names ProposeMission — from every version of src-tauri/defaults/assistant.md
-// in git history. The tool is gone with the missions system.
-const SHIPPED_PROPOSE_MISSION_LINES = new Set([
-  "7024c5f9681262c73edfd74e5284a903af12c6c1cf972f043641f46ce7d616cb",
-  "9c92e30115a4d96b5e1644f32ecc379e52603bd31e6a3d022a0e803a96a18f8c",
-  "dce0e6cb87825502691a31de06694c38c894dd411e2bd8954b5b150731e63154",
-  "e07d9d53abf0528daa7370ff8776d3acfd28140879d4debeee8b47e467a576b3",
-  "fd66f7c04b6eee47e732f79a38ad79bd4cf0764ea2e9d8ad05b28b38ab2758d5",
-]);
-
-async function lineHash(line: string): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(line.trim()));
-  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
-}
-
-/** One-time migration: an edited assistant.md (a pristine one was already
- *  replaced by the current default above) loses the lines that tell the agent
- *  to call ProposeMission — but only lines exactly as we shipped them; a line
- *  the user wrote or changed stays. Idempotent: once no shipped line is left,
- *  the file is never written again. */
-export async function dropProposeMissionLines(vault: string): Promise<boolean> {
-  const path = `${vault}/${AGENT_DIR}/assistant.md`;
-  let text: string;
-  try {
-    text = await invoke<string>("read_text_file", { path });
-  } catch {
-    return false;
-  }
-  if (!text.includes("ProposeMission")) return false;
-  const lines = text.split("\n");
-  const keep: string[] = [];
-  let dropped = 0;
-  for (const l of lines) {
-    if (l.includes("ProposeMission") && SHIPPED_PROPOSE_MISSION_LINES.has(await lineHash(l))) {
-      dropped++;
-      continue;
-    }
-    keep.push(l);
-  }
-  if (!dropped) return false;
-  await invoke("write_text_file", { path, contents: keep.join("\n") });
-  console.log(`[agent-cfg] assistant.md: removed ${dropped} shipped ProposeMission line(s)`);
-  return true;
-}
-
-export async function saveVaultAssistantPrompt(vault: string, contents: string): Promise<void> {
-  await invoke("write_text_file", {
-    path: `${vault}/${AGENT_DIR}/assistant.md`,
-    contents,
-  });
-}
-
 /** Read the per-vault north-star brief (the user's declaration of
  *  what the vault is for). Stored at <vault>/.vault-chat/agent/north-star.md
  *  (migrated from the older flat `.vault-chat/north-star.md`). Prepended to
@@ -233,13 +136,6 @@ export async function saveVaultAssistantPrompt(vault: string, contents: string):
 export async function loadVaultNorthStar(vault: string | null): Promise<string> {
   if (!vault) return "";
   return readAgentConfig(vault, "north-star.md", "north-star.md");
-}
-
-export async function saveVaultNorthStar(vault: string, contents: string): Promise<void> {
-  await invoke("write_text_file", {
-    path: `${vault}/${AGENT_DIR}/north-star.md`,
-    contents,
-  });
 }
 
 function formatNorthStarBlock(text: string): string {
@@ -309,9 +205,8 @@ ${indexSection}`;
 //   - TOOL.md         : YAML front-matter with name, description, input_schema
 //   - run.(py|js|ts|sh) : the executable
 //
-// At agent startup we scan the folder, parse each TOOL.md, build an AI
-// SDK tool() whose `execute` runs the corresponding script via the
-// Rust `run_script` command.
+// The box runs them (server/voice.ts, in its sandbox); this side parses the
+// folders for voice's tool list.
 
 type FieldSpec = {
   type?: "string" | "integer" | "number" | "boolean";
@@ -330,85 +225,11 @@ type ToolSpec = {
   timeout_ms?: number;
 };
 
-// Accept either convention:
-//   1. Flat map: { field_name: { type, description, default, required } }
-//   2. JSON Schema: { type: "object", properties: { field_name: {...} }, required: [...] }
-// Claude models default to the JSON Schema form when asked to write a
-// TOOL.md, so we need to handle both.
-function zodFromSchema(schema: unknown): z.ZodTypeAny {
-  if (!schema || typeof schema !== "object") return z.object({});
-
-  const obj = schema as Record<string, unknown>;
-
-  // JSON Schema shape
-  if (obj.type === "object" && typeof obj.properties === "object" && obj.properties !== null) {
-    const required = new Set(
-      Array.isArray(obj.required) ? (obj.required as string[]) : [],
-    );
-    const flat: Record<string, FieldSpec> = {};
-    for (const [key, prop] of Object.entries(obj.properties as Record<string, unknown>)) {
-      if (!prop || typeof prop !== "object") continue;
-      const p = prop as Record<string, unknown>;
-      flat[key] = {
-        type: normalizeType(p.type),
-        description: typeof p.description === "string" ? p.description : undefined,
-        default: p.default,
-        required: required.has(key),
-      };
-    }
-    return buildZod(flat);
-  }
-
-  // Flat shape — if every value is itself an object that could be a FieldSpec
-  const flat: Record<string, FieldSpec> = {};
-  for (const [key, val] of Object.entries(obj)) {
-    if (val && typeof val === "object" && !Array.isArray(val)) {
-      const v = val as Record<string, unknown>;
-      flat[key] = {
-        type: normalizeType(v.type),
-        description: typeof v.description === "string" ? v.description : undefined,
-        default: v.default,
-        required: v.required === true,
-      };
-    }
-  }
-  return buildZod(flat);
-}
-
 function normalizeType(t: unknown): FieldSpec["type"] {
   if (t === "integer" || t === "int") return "integer";
   if (t === "number" || t === "float" || t === "double") return "number";
   if (t === "boolean" || t === "bool") return "boolean";
   return "string";
-}
-
-function buildZod(schema: Record<string, FieldSpec>): z.ZodTypeAny {
-  const shape: Record<string, z.ZodTypeAny> = {};
-  for (const [key, spec] of Object.entries(schema)) {
-    let field: z.ZodTypeAny;
-    switch (spec.type) {
-      case "integer":
-        field = z.number().int();
-        break;
-      case "number":
-        field = z.number();
-        break;
-      case "boolean":
-        field = z.boolean();
-        break;
-      case "string":
-      default:
-        field = z.string();
-        break;
-    }
-    if (spec.description) field = field.describe(spec.description);
-    if (!spec.required) field = field.optional();
-    if (spec.default !== undefined) {
-      field = (field as any).default(spec.default);
-    }
-    shape[key] = field;
-  }
-  return z.object(shape);
 }
 
 async function findRunFile(toolDir: string): Promise<string | null> {
@@ -423,17 +244,8 @@ async function findRunFile(toolDir: string): Promise<string | null> {
   return null;
 }
 
-// Return type is intentionally loose — each tool's zod schema is built
-// at runtime from TOOL.md, so we can't statically type them.
-//
-// Scans a `<root>/<name>/TOOL.md` + run.* layout and returns a dict of
-// ai-sdk tool objects. Shared by both the global meta-tool loader and
-// the per-vault loader below — the only difference between them is the
-// root directory.
-// Scan a `<root>/<name>/TOOL.md` + run.* layout into parsed specs. Shared by
-// every consumer below — the text-agent AI-SDK loader AND the voice loader —
-// so the on-disk tool format has exactly one parser. Whatever the text agent
-// can run, voice can too, because they read the same folders the same way.
+// Scan a `<root>/<name>/TOOL.md` + run.* layout into parsed specs: the one
+// parser of the on-disk tool format (voice's list, the box's runner).
 async function scanToolSpecs(
   toolsRoot: string,
 ): Promise<{ spec: ToolSpec; runPath: string; toolDir: string }[]> {
@@ -487,82 +299,14 @@ async function scanToolSpecs(
   return found;
 }
 
-// Run a scanned tool's script with the args object and return its stdout (or a
-// readable error string). Shared by both the text and voice executors so a tool
-// behaves identically whether the user typed or spoke.
-async function runToolScript(
-  spec: ToolSpec,
-  runPath: string,
-  toolDir: string,
-  args: unknown,
-): Promise<string> {
-  try {
-    // Pull any user-key values the tool declared it needs and pass them as
-    // environment variables. The values don't flow through the agent's
-    // context — the script reads them via os.environ (or equivalent).
-    const requiredKeys = spec.requires_keys ?? [];
-    const env =
-      requiredKeys.length > 0 ? await getUserKeysAsEnv(requiredKeys) : undefined;
-    const result = await invoke<{
-      stdout: string;
-      stderr: string;
-      code: number;
-      timed_out: boolean;
-    }>("run_script", {
-      scriptPath: runPath,
-      stdinJson: JSON.stringify(args),
-      cwd: toolDir,
-      timeoutMs: spec.timeout_ms ?? 60_000,
-      env,
-    });
-    if (result.timed_out) return `(timed out)\n${result.stderr}`;
-    if (result.code !== 0) {
-      return `exit ${result.code}\nstderr:\n${result.stderr}\nstdout:\n${result.stdout}`;
-    }
-    return result.stdout.trim() || "(no output)";
-  } catch (e) {
-    return `run_script failed: ${(e as Error).message}`;
-  }
-}
-
-async function loadToolsFromRoot(toolsRoot: string): Promise<Record<string, unknown>> {
-  const out: Record<string, unknown> = {};
-  const loaded: string[] = [];
-  for (const { spec, runPath, toolDir } of await scanToolSpecs(toolsRoot)) {
-    try {
-      const inputSchema = zodFromSchema(spec.input_schema);
-      out[spec.name] = tool({
-        description: spec.description,
-        inputSchema: inputSchema as any,
-        execute: (args: unknown) => runToolScript(spec, runPath, toolDir, args),
-      });
-      loaded.push(spec.name);
-    } catch (e) {
-      console.log("[tools]", `skip ${spec.name}: schema build failed: ${(e as Error).message}`);
-    }
-  }
-  console.log("[tools]", toolsRoot, "→ registered:", loaded);
-  return out;
-}
-
-/** Per-vault tools: <vault>/.vault-chat/tools/<name>/ — a folder per tool
- *  (TOOL.md + run.*), scoped to the vault and synced with it via git so a
- *  tool built in a vault reaches every machine that opens it. */
-export async function loadVaultTools(vault: string | null): Promise<Record<string, unknown>> {
-  if (!vault) return {};
-  return loadToolsFromRoot(`${vault}/.vault-chat/tools`);
-}
-
 /** The vault's tool folders, parsed (the box runs voice's calls to them in its sandbox, server/voice.ts). */
 export async function vaultToolSpecs(vault: string): Promise<{ spec: ToolSpec; runPath: string; toolDir: string }[]> {
   return scanToolSpecs(`${vault}/.vault-chat/tools`);
 }
 
-// A vault tool shaped for the ElevenLabs voice agent's client-tool protocol.
-// ElevenLabs needs a JSON-schema `parameters` block (every property described)
-// at agent-provision time, plus an `execute` the box runs when the agent calls
-// the tool. Same `execute` path as the text agent — only the schema shape
-// differs (JSON schema here vs. zod for the AI SDK).
+// A vault tool shaped for the ElevenLabs voice agent's client-tool protocol:
+// a JSON-schema `parameters` block (every property described) at
+// agent-provision time. The box runs the tool when the agent calls it.
 export type VaultVoiceTool = {
   name: string;
   description: string;
@@ -571,27 +315,19 @@ export type VaultVoiceTool = {
     properties: Record<string, { type: string; description: string }>;
     required: string[];
   };
-  execute: (args: unknown) => Promise<string>;
 };
 
-/**
- * Voice/text tool parity: load the SAME per-vault tools the text agent loads
- * (loadVaultTools), shaped for ElevenLabs. A tool added to a vault is then
- * usable whether the user types or talks — no second place to register it.
- */
+/** The vault's tools, shaped for ElevenLabs. */
 export async function loadVaultVoiceTools(
   vault: string | null,
 ): Promise<VaultVoiceTool[]> {
   if (!vault) return [];
   const out: VaultVoiceTool[] = [];
-  for (const { spec, runPath, toolDir } of await scanToolSpecs(
-    `${vault}/.vault-chat/tools`,
-  )) {
+  for (const { spec } of await scanToolSpecs(`${vault}/.vault-chat/tools`)) {
     out.push({
       name: spec.name,
       description: spec.description,
       parameters: inputSchemaToVoiceParameters(spec.input_schema),
-      execute: (args: unknown) => runToolScript(spec, runPath, toolDir, args),
     });
   }
   return out;
@@ -601,7 +337,7 @@ export async function loadVaultVoiceTools(
 // the JSON-Schema `{ type:"object", properties, required }` form — into the
 // JSON-Schema `parameters` ElevenLabs requires. ElevenLabs 422s on any property
 // missing a description and rejects non-scalar types, so we coerce every leaf to
-// a scalar (mirroring zodFromSchema's normalizeType) and fill a description
+// a scalar (normalizeType) and fill a description
 // (falling back to the property name) for every one.
 function inputSchemaToVoiceParameters(
   schema: unknown,

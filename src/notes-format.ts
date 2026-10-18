@@ -1,5 +1,5 @@
-import { generateText, type ModelMessage } from "ai";
-import { buildModel, supportsVision, type ModelSpec } from "./providers";
+// A note's headline and its re-orienting summary: one-shot calls (src/complete.ts).
+import { complete } from "./complete";
 import { anchorImages, titleableText, type Note } from "./notes";
 
 // A short, scannable headline for the note — DISTINCT from its body, so a list
@@ -9,19 +9,10 @@ const TITLE_SYSTEM = `You write the headline for a saved note. Given the note's 
 
 /** Generate a short headline for a note. Returns "" when there's nothing
  *  meaningful to title. Best paired with a fast/cheap model. */
-export async function titleForNote(
-  note: Note,
-  spec: ModelSpec,
-  apiKey: string,
-): Promise<string> {
+export async function titleForNote(note: Note): Promise<string> {
   const body = titleableText(note);
   if (!body) return "";
-  const model = buildModel(spec, apiKey);
-  const { text } = await generateText({
-    model,
-    system: TITLE_SYSTEM,
-    messages: [{ role: "user", content: body.slice(0, 4000) }],
-  });
+  const text = await complete({ instructions: TITLE_SYSTEM, text: body.slice(0, 4000), fast: true, maxOutputTokens: 200 });
   // Defensive cleanup — models sometimes wrap in quotes, prepend "Title:", or
   // tack on a period despite the instruction.
   let t = (text || "")
@@ -59,63 +50,20 @@ function describeAnchors(note: Note): string {
     .join("\n");
 }
 
-export async function formatNote(
-  note: Note,
-  spec: ModelSpec,
-  apiKey: string,
-): Promise<string> {
-  const model = buildModel(spec, apiKey);
-
+export async function formatNote(note: Note): Promise<string> {
   const parts: string[] = [];
   parts.push(describeAnchors(note));
 
   const primary = note.anchors.find((a) => a.primary) ?? note.anchors[0];
-  if (primary?.source_before) {
-    parts.push(
-      `File context before:\n${primary.source_before.slice(-800)}`,
-    );
-  }
-  if (primary?.source_after) {
-    parts.push(`File context after:\n${primary.source_after.slice(0, 800)}`);
-  }
+  if (primary?.source_before) parts.push(`File context before:\n${primary.source_before.slice(-800)}`);
+  if (primary?.source_after) parts.push(`File context after:\n${primary.source_after.slice(0, 800)}`);
   if (note.user_draft) parts.push(`User's note: ${note.user_draft}`);
   if (note.turns.length > 0) {
-    const compact = note.turns
-      .map((t) => `${t.role}: ${t.content}`)
-      .join("\n---\n");
+    const compact = note.turns.map((t) => `${t.role}: ${t.content}`).join("\n---\n");
     parts.push(`Conversation:\n${compact}`);
   }
-
-  const textBody = parts.join("\n\n");
-
-  // If the note has an image and the active model supports vision,
-  // attach the image so the scribe can describe what the marquee
-  // actually captured. Otherwise fall back to text-only.
-  const imageUrls = note.anchors.flatMap((a) => anchorImages(a));
-  const canSeeImages = imageUrls.length > 0 && supportsVision(spec);
-
-  let messages: ModelMessage[];
-  if (canSeeImages) {
-    messages = [
-      {
-        role: "user",
-        content: [
-          { type: "text", text: textBody },
-          ...imageUrls.map((u) => ({ type: "image" as const, image: new URL(u) })),
-        ],
-      },
-    ];
-  } else {
-    const hint = imageUrls.length > 0
-      ? `\n\n(Note: the user captured ${imageUrls.length} image region(s) but the active model can't see them — describe the text context only.)`
-      : "";
-    messages = [{ role: "user", content: textBody + hint }];
-  }
-
-  const { text } = await generateText({
-    model,
-    system: FORMAT_SYSTEM,
-    messages,
-  });
+  // The captured regions go along, so the scribe can say what was marqueed.
+  const images = note.anchors.flatMap((a) => anchorImages(a)).filter((u) => u.startsWith("data:image/"));
+  const text = await complete({ instructions: FORMAT_SYSTEM, text: parts.join("\n\n"), images, fast: true, maxOutputTokens: 600 });
   return text.trim();
 }

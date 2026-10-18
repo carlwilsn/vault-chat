@@ -262,7 +262,7 @@ async function runTool(d: VoiceDeps, name: string, a: any): Promise<string> {
       if (/\.pdf$/i.test(abs)) return `${rel} is a PDF — use PdfExtract.`;
       const raw = fsCommands.read_text_file({ path: abs }) as string;
       let text = raw;
-      if (/\.ipynb$/i.test(abs)) text = (await import("../src/tools")).stripNotebook(raw);
+      if (/\.ipynb$/i.test(abs)) text = (await import("../src/fileText")).stripNotebook(raw);
       return clip(text, READ_CAP);
     }
     case "ListDir": {
@@ -305,7 +305,7 @@ async function runTool(d: VoiceDeps, name: string, a: any): Promise<string> {
     }
     case "NotebookEdit": {
       const { abs, rel } = voicePath(vault, a.path, "write");
-      const { applyNotebookEdit } = await import("../src/tools");
+      const { applyNotebookEdit } = await import("../src/fileText");
       const r = applyNotebookEdit(readFileSync(abs, "utf8"), a.action, Number(a.cell_index), a.source, a.cell_type);
       if (!r.ok) return `Error: ${r.error}`;
       fsCommands.write_text_file({ path: abs, contents: r.contents });

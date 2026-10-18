@@ -14,7 +14,7 @@ export async function pdfRead(vault: string, a: { path?: string; pages?: string;
   if (!raw) return "PdfRead needs a path.";
   const path = isAbsolute(raw) ? raw : resolve(vault, raw);
   if (!existsSync(path)) return `No such file: ${path}`;
-  const { extractPdfText } = await import("../../src/tools");
+  const { extractPdfText } = await import("../../src/fileText");
   const pages = String(a?.pages ?? "").trim() || PDF_DEFAULT_PAGES;
   const cap = Math.max(500, Math.min(Number(a?.maxChars) || PDF_DEFAULT_CHARS, PDF_MAX_CHARS));
   let text: string;

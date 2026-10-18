@@ -5,13 +5,11 @@
 // pass sets `display` on the message (what the bubble shows) and nothing else.
 //
 // Cheap on purpose: a local heuristic skips lines with no math cue (most
-// lines), the rest go to the Background role's model with a strict prompt and a
-// short output cap, one call per distinct line (cached), never blocking — the
+// lines), the rest go to the box's fast model (src/complete.ts) with a strict
+// prompt and a short output cap, one call per distinct line (cached), never blocking — the
 // line shows as spoken until the formatted one lands. Any failure, or an answer
 // that changed the words, leaves the original.
-import { generateText, type LanguageModel } from "ai";
-import { buildModel, findModel, resolveAutoModel, AUTO_MODEL_ID } from "./providers";
-import { roleModelId } from "./roles";
+import { complete as boxComplete, type Complete } from "./complete";
 import { useStore, type ChatMessage } from "./store";
 
 const GREEK =
@@ -80,43 +78,28 @@ const cache = new Map<string, Promise<string | null>>();
 const done = new Map<string, string | null>();
 const CACHE_CAP = 500;
 
-/** The model the pass runs on: the Background role (Settings → Models), with this machine's key. */
-export function voiceMathModel(): LanguageModel | null {
-  const s = useStore.getState();
-  const keys = s.apiKeys ?? {};
-  const id = roleModelId("background");
-  const spec = id === AUTO_MODEL_ID ? resolveAutoModel("", keys) : findModel(id);
-  if (!spec) return null;
-  const key = keys[spec.provider];
-  if (!key) return null;
-  return buildModel(spec, key);
-}
-
 /** The display text for a line: its math as LaTeX, or null (no math, no model, a failure). Cached per line. */
 export function formatVoiceMath(
   text: string,
-  opts: { model?: LanguageModel | null; timeoutMs?: number } = {},
+  opts: { complete?: Complete; timeoutMs?: number } = {},
 ): Promise<string | null> {
   const line = text.trim();
   if (!hasMathCues(line)) return Promise.resolve(null);
   const hit = cache.get(line);
   if (hit) return hit;
   const p = (async () => {
-    const model = opts.model === undefined ? voiceMathModel() : opts.model;
-    if (!model) return null;
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), opts.timeoutMs ?? 15_000);
+    const call = (opts.complete ?? boxComplete)({
+      instructions: VOICE_MATH_SYSTEM,
+      text: line,
+      fast: true,
+      maxOutputTokens: Math.min(1200, Math.ceil(line.length / 2) + 80),
+    });
+    call.catch(() => {});
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const late = new Promise<never>((_, rej) => (timer = setTimeout(() => rej(new Error("timed out")), opts.timeoutMs ?? 15_000)));
     try {
-      const res = await generateText({
-        model,
-        system: VOICE_MATH_SYSTEM,
-        prompt: line,
-        temperature: 0,
-        maxRetries: 0, // a display nicety: a failure shows the line as spoken
-        maxOutputTokens: Math.min(1200, Math.ceil(line.length / 2) + 80),
-        abortSignal: ctrl.signal,
-      });
-      return acceptFormatted(line, res.text ?? "");
+      // A display nicety: a failure or a late answer shows the line as spoken.
+      return acceptFormatted(line, (await Promise.race([call, late])) ?? "");
     } catch (e) {
       console.warn("[voice-math] format failed:", (e as Error)?.message ?? e);
       return null;

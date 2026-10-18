@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { ArrowLeft, Check, X, Plus, ChevronDown, Play, Square } from "lucide-react";
 import { useStore } from "./store";
-import { PROVIDER_LABEL, AUTO_MODEL_ID, type ModelSpec, type ProviderId } from "./providers";
 import { Button, Input, MenuSelect } from "./ui";
 import { VOICE_LLMS, normalizeVoiceLlm } from "./voiceLlms";
 import { listUserKeys, setUserKey, deleteUserKey } from "./keychain";
@@ -21,8 +20,7 @@ import {
 } from "./vaultSync";
 import { boxGet, boxPost } from "./boxChat";
 import { pushKeysToBox, keysChanged, subscribeKeyPush } from "./boxKeys";
-import { ROLE_LABEL, type RoleId } from "./roles";
-import { checkModel, checkVoiceModel, NEED_LABEL, type Check as ModelCheck } from "./modelCaps";
+import { checkVoiceModel, NEED_LABEL, type Check as ModelCheck } from "./modelCaps";
 import { BoxModelChecks } from "./BoxModelChecks";
 import {
   fetchSharedVoices,
@@ -42,13 +40,6 @@ import {
 } from "./voiceLibraryBrowse";
 
 // Five sections: Models, Keys, Voice, Box, Appearance.
-
-const KEY_PLACEHOLDER: Record<ProviderId, string> = {
-  anthropic: "sk-ant-…",
-  openai: "sk-…",
-  google: "AIza…",
-  openrouter: "sk-or-…",
-};
 
 const mask = (k?: string) => (k ? `${k.slice(0, 6)}…${k.slice(-4)}` : "not set");
 
@@ -252,18 +243,9 @@ function useCheck(run: () => Promise<ModelCheck> | ModelCheck, dep: string): Mod
   return check;
 }
 
+// The agent's models are the box's (BoxModelChecks); this machine picks only
+// the voice model, which the box's voice agent follows.
 function ModelsSection() {
-  const catalog = useStore((s) => s.catalog);
-  const catalogErrors = useStore((s) => s.catalogErrors);
-  const orKey = useStore((s) => s.apiKeys.openrouter);
-  const modelId = useStore((s) => s.modelId);
-  const setModelId = useStore((s) => s.setModelId);
-  const setAssistantModelId = useStore((s) => s.setAssistantModelId);
-  const backgroundModelId = useStore((s) => s.backgroundModelId);
-  const setBackgroundModelId = useStore((s) => s.setBackgroundModelId);
-  const autoRouterCostBias = useStore((s) => s.autoRouterCostBias);
-  const setAutoRouterCostBias = useStore((s) => s.setAutoRouterCostBias);
-
   const [voiceLlm, setVoiceLlm] = useState(() => {
     // An old id shows as its nearest current one; nothing chosen is the default.
     return normalizeVoiceLlm(localStorage.getItem("vault_chat_elevenlabs_llm"));
@@ -272,98 +254,20 @@ function ModelsSection() {
     localStorage.setItem("vault_chat_elevenlabs_llm", v);
     setVoiceLlm(v);
   };
-
-  const options = (withAuto: boolean): PickOption[] => [
-    ...(withAuto ? [{ value: AUTO_MODEL_ID, label: "Auto", hint: "— smart routing" }] : []),
-    ...catalog.map((m: ModelSpec) => ({ value: m.id, label: m.label })),
-  ];
-  const labelOf = (id: string) => (id === AUTO_MODEL_ID ? "Auto" : (catalog.find((c) => c.id === id)?.label ?? id.split("/").pop()!));
-
-  // Auto routes per message, so there's no one model to check.
-  const chatCheck = useCheck(
-    () => (modelId === AUTO_MODEL_ID ? Promise.resolve<ModelCheck>({ state: "passed" }) : checkModel("chat", modelId, orKey)),
-    `${modelId}|${!!orKey}`,
-  );
-  const bgCheck = useCheck(() => checkModel("background", backgroundModelId, orKey), `${backgroundModelId}|${!!orKey}`);
   const elKey = useStore((s) => s.serviceKeys.elevenlabs);
   const voiceCheck = useCheck(() => checkVoiceModel(voiceLlm, elKey), `${voiceLlm}|${!!elKey}`);
 
-  const rows: Array<{ role: RoleId; picker: ReactNode; check: ModelCheck | null }> = [
-    {
-      role: "chat",
-      picker: (
-        <Picker
-          value={modelId}
-          label={labelOf(modelId)}
-          options={options(true)}
-          placeholder="Search models…"
-          onChange={(v) => {
-            setModelId(v);
-            setAssistantModelId(v);
-          }}
-        />
-      ),
-      check: chatCheck,
-    },
-    {
-      role: "background",
-      picker: (
-        <Picker
-          value={backgroundModelId}
-          label={labelOf(backgroundModelId)}
-          options={options(false)}
-          placeholder="Search models…"
-          onChange={setBackgroundModelId}
-        />
-      ),
-      check: bgCheck,
-    },
-    {
-      role: "voice",
-      picker: <Picker value={voiceLlm} options={VOICE_OPTIONS} placeholder="Search models…" onChange={saveVoiceLlm} />,
-      check: voiceCheck,
-    },
-  ];
-
   return (
     <section className="space-y-2">
-      <SectionHead title="Models" hint="One model per role. Each is checked for what its role needs when you pick it." />
-      {rows.map((r) => (
-        <div key={r.role} className="flex items-start justify-between gap-3">
-          <span className="text-[12px] text-foreground/90 shrink-0 pt-1">{ROLE_LABEL[r.role]}</span>
-          <div className="min-w-0 flex-1 max-w-[62%] space-y-0.5">
-            {r.picker}
-            <CheckLine check={r.check} />
-          </div>
+      <SectionHead title="Models" hint="The agent's models are set on the box. Voice uses the one picked here." />
+      <div className="flex items-start justify-between gap-3">
+        <span className="text-[12px] text-foreground/90 shrink-0 pt-1">Voice</span>
+        <div className="min-w-0 flex-1 max-w-[62%] space-y-0.5">
+          <Picker value={voiceLlm} options={VOICE_OPTIONS} placeholder="Search models…" onChange={saveVoiceLlm} />
+          <CheckLine check={voiceCheck} />
         </div>
-      ))}
+      </div>
       <BoxModelChecks />
-      {Object.entries(catalogErrors).length > 0 && (
-        <p className="text-[11px] text-amber-500/90">
-          {Object.entries(catalogErrors)
-            .map(([p, msg]) => `${p}: ${msg}`)
-            .join(" · ")}
-        </p>
-      )}
-      {modelId === AUTO_MODEL_ID && orKey && (
-        <div className="rounded-md border border-border/60 bg-accent/20 p-3 space-y-2">
-          <div className="flex items-center justify-between">
-            <span className="text-[11.5px] font-medium text-foreground">Auto cost ⇄ quality</span>
-            <span className="text-[11px] tabular-nums text-muted-foreground">
-              {autoRouterCostBias <= 3 ? "Quality" : autoRouterCostBias >= 8 ? "Cheapest" : "Balanced"} ({autoRouterCostBias}/10)
-            </span>
-          </div>
-          <input
-            type="range"
-            min={0}
-            max={10}
-            step={1}
-            value={autoRouterCostBias}
-            onChange={(e) => setAutoRouterCostBias(Number(e.target.value))}
-            className="w-full accent-primary"
-          />
-        </div>
-      )}
     </section>
   );
 }
@@ -436,21 +340,6 @@ function KeysSection() {
   const clearApiKey = useStore((s) => s.clearApiKey);
   const setServiceKey = useStore((s) => s.setServiceKey);
   const clearServiceKey = useStore((s) => s.clearServiceKey);
-  const refreshCatalog = useStore((s) => s.refreshCatalog);
-
-  const provider = (p: ProviderId) => (
-    <KeyRow
-      key={p}
-      label={PROVIDER_LABEL[p]}
-      value={apiKeys[p]}
-      placeholder={KEY_PLACEHOLDER[p]}
-      onSave={(v) => {
-        setApiKey(p, v);
-        setTimeout(() => refreshCatalog(), 500);
-      }}
-      onClear={() => clearApiKey(p)}
-    />
-  );
 
   // Service keys: Tavily's fixed slot plus the named keys vault tools ask for.
   const [names, setNames] = useState<string[]>(() => listUserKeys());
@@ -490,8 +379,14 @@ function KeysSection() {
 
   return (
     <section className="space-y-2.5">
-      <SectionHead title="Keys" hint="Kept in this machine's keychain." />
-      {provider("openrouter")}
+      <SectionHead title="Keys" hint="Kept in this machine's keychain, and sent to the box." />
+      <KeyRow
+        label="OpenRouter"
+        value={apiKeys.openrouter}
+        placeholder="sk-or-…"
+        onSave={(v) => setApiKey("openrouter", v)}
+        onClear={() => clearApiKey("openrouter")}
+      />
       <KeyRow
         label="ElevenLabs"
         value={serviceKeys.elevenlabs}
@@ -951,7 +846,7 @@ function BoxSection() {
   // Sync exists only with a box. Without one, the vault is saved locally for
   // history (always on, no setting) and nothing is pushed anywhere.
   return (
-    <section className="space-y-3">
+    <section className="space-y-3" data-settings="box">
       <SectionHead
         title="Box"
         hint={!vaultPath || box === undefined ? "Open a vault to see its sync." : box ? `Runs on ${boxName(box)}` : "Runs on this laptop"}

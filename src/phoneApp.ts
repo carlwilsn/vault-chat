@@ -1,29 +1,15 @@
-// Phone chat host. The box runs vault-chat 24/7; the embedded server
-// (src-tauri/src/voice_server.rs) serves the /phone PWA and relays its
-// traffic here over the same reqId machinery phone voice uses. This module:
+// Phone host, on the box (server/main.ts starts it): notes, schedules, the
+// chats list, notifications and Web Push for the /phone PWA, over the same
+// reqId relay phone voice uses. Messages, answers and stops never come here —
+// they are the engine's (server/http.ts).
 //
-//   • runs phone messages as background agent turns (parallel to the
-//     foreground, never steals desktop focus) with queue-then-auto-run
-//     semantics when the target thread is mid-run — the Telegram
-//     "message absorbed, no reply until you text again" hole doesn't exist
-//     on this surface;
-//   • forwards store diffs (streaming text, new messages, status flips) to
-//     the phone's SSE stream via phone_broadcast;
-//   • answers /status from the heartbeat file + run registry — a glance,
-//     not a model turn;
-//   • implements Web Push entirely with WebCrypto (RFC 8291 aes128gcm +
-//     VAPID ES256). Rust only stores subscriptions and does the raw POST,
-//     so push costs zero new native dependencies.
-//
-// Phone-sourced runs use the desktop default model, NOT the cheap Telegram
-// brain — the phone page is a full-fidelity surface.
+// Web Push is implemented with WebCrypto (RFC 8291 aes128gcm + VAPID ES256);
+// the server only stores subscriptions and does the raw POST.
 
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { useStore } from "./store";
-import { abortRun, activeRuns } from "./runRegistry";
-import { emptyConversation, deriveConversationTitle, isArchivedThread, type Conversation } from "./conversations";
-import { makeConvDiff } from "./convDiff";
+import { isArchivedThread } from "./conversations";
 
 
 function respond(reqId: string, result: unknown): void {
@@ -34,12 +20,6 @@ function respond(reqId: string, result: unknown): void {
 function broadcast(event: Record<string, unknown>): void {
   void invoke("phone_broadcast", { json: JSON.stringify(event) }).catch(() => {});
 }
-
-// ---- inbound: run a phone message ----
-
-// Messages that arrived while their thread was mid-run. Flushed (joined into
-// one turn) the moment the run ends — see the status-flip handler below.
-const queued = new Map<string, string[]>();
 
 // Coalesce identical (title, body) notifications fired within this window. The
 // dark-alarm triple-fires the same record within one second (two scheduler
@@ -61,205 +41,6 @@ function isDuplicateNotif(key: string, now: number): boolean {
   return false;
 }
 
-function isThreadBusy(conv: Conversation): boolean {
-  const s = useStore.getState();
-  return (
-    conv.status === "running" ||
-    (s.activeConversationId === conv.id && s.busy)
-  );
-}
-
-// Idempotency for phone sends. The phone tags each send with a clientMsgId; a
-// flaky network or the PWA service worker can deliver the same POST twice, and
-// for a NEW chat each delivery would otherwise mint a fresh conversation and
-// re-run the message (the "my message got sent twice" bug). Collapse duplicate
-// ids to a single execution: a concurrent or slightly-later duplicate awaits and
-// returns the FIRST call's result (same convId), so the user gets exactly one
-// turn. Successful results linger briefly so a late retry still dedupes; an
-// error result is evicted at once so a genuine retry can re-attempt.
-const inflightSends = new Map<string, Promise<Record<string, unknown>>>();
-function dedupedPhoneMessage(
-  clientMsgId: string | undefined,
-  convId: string | null,
-  text: string,
-  supervisor: boolean,
-): Promise<Record<string, unknown>> {
-  if (!clientMsgId) return handlePhoneMessage(convId, text, supervisor);
-  const existing = inflightSends.get(clientMsgId);
-  if (existing) return existing;
-  const p = handlePhoneMessage(convId, text, supervisor);
-  inflightSends.set(clientMsgId, p);
-  p.then(
-    (res) => {
-      if (res && (res as { error?: unknown }).error) inflightSends.delete(clientMsgId);
-      else setTimeout(() => inflightSends.delete(clientMsgId), 60_000);
-    },
-    () => inflightSends.delete(clientMsgId),
-  );
-  return p;
-}
-
-async function handlePhoneMessage(
-  convId: string | null,
-  text: string,
-  supervisor = false,
-): Promise<Record<string, unknown>> {
-  const s = useStore.getState();
-  if (!s.vaultPath) return { error: "no vault open on the box" };
-  if (!s.conversationsLoaded) return { error: "box is still loading conversations — retry in a few seconds" };
-  const trimmed = text.trim();
-  if (!trimmed) return { error: "empty message" };
-
-  let conv: Conversation | undefined;
-  if (convId) {
-    conv = s.conversations.find((c) => c.id === convId);
-    if (!conv) {
-      // The phone lists and opens threads straight from disk (the /conversations
-      // and /conversation endpoints read the files fresh on every call), but
-      // this lookup uses the in-memory store — which can lag disk: a thread
-      // synced in from another machine, written since the box last loaded, or
-      // dropped by a load race. The phone showed it, so it IS on disk; pull it
-      // in (non-destructive — doesn't disturb the box's active view) and retry
-      // before giving up with "not found".
-      await useStore.getState().refreshConversationFromDisk(s.vaultPath, convId).catch(() => {});
-      conv = useStore.getState().conversations.find((c) => c.id === convId);
-    }
-    if (!conv) return { error: `conversation ${convId} not found` };
-  } else if (supervisor) {
-    // Cockpit chats: every new thread IS the agent — a fresh conversation
-    // carrying role "supervisor" so its turns get the vault's supervisor.md
-    // orchestrator prompt (chat-controller passes supervisorMode for
-    // role === "supervisor") without the Telegram brevity contract. Fresh
-    // each time, per the open-to-a-new-chat design; old threads stay in
-    // the menu's recents.
-    const fresh: Conversation = {
-      ...emptyConversation(),
-      source: "phone",
-      role: "supervisor",
-      title: deriveConversationTitle([{ role: "user", content: trimmed }]),
-    };
-    useStore.setState({ conversations: [fresh, ...useStore.getState().conversations] });
-    conv = fresh;
-  } else {
-    // Fresh thread. Built inline (NOT newConversation()) so the desktop's
-    // focus never jumps — same pattern as the Telegram inbound handler.
-    const fresh: Conversation = {
-      ...emptyConversation(),
-      source: "phone",
-      title: deriveConversationTitle([{ role: "user", content: trimmed }]),
-    };
-    useStore.setState({ conversations: [fresh, ...useStore.getState().conversations] });
-    conv = fresh;
-  }
-
-  // Threads from the old missions system are archived: readable, never run.
-  if (isArchivedThread(conv)) return { error: "archived mission thread — read only; start a new chat" };
-
-  if (isThreadBusy(conv)) {
-    const q = queued.get(conv.id) ?? [];
-    q.push(trimmed);
-    queued.set(conv.id, q);
-    return { ok: true, convId: conv.id, queued: true };
-  }
-
-  const { sendMessage } = await import("./chat-controller");
-  void sendMessage(trimmed, undefined, undefined, conv.id).catch((e) =>
-    console.warn("[phone-app] agent run failed:", e),
-  );
-  return { ok: true, convId: conv.id };
-}
-
-// ---- inbound: status snapshot (deterministic — zero model tokens) ----
-
-type HeartbeatFile = Record<string, { lastProgressAt: number; lastTool?: string; running: boolean }>;
-
-async function statusSnapshot(): Promise<Record<string, unknown>> {
-  const s = useStore.getState();
-  if (!s.vaultPath) return { error: "no vault open on the box" };
-  let hb: HeartbeatFile = {};
-  try {
-    const raw = await invoke<string>("read_text_file", {
-      path: `${s.vaultPath}/.vault-chat/run-heartbeat.json`,
-    });
-    hb = JSON.parse(raw) ?? {};
-  } catch {
-    /* no heartbeat file yet */
-  }
-  const runningIds = new Set<string>(activeRuns());
-  for (const c of s.conversations) {
-    if (c.status === "running") runningIds.add(c.id);
-  }
-  if (s.busy && s.activeConversationId) runningIds.add(s.activeConversationId);
-  const runs = [...runningIds].map((id) => {
-    const c = s.conversations.find((x) => x.id === id);
-    const beat = hb[id];
-    return {
-      convId: id,
-      title: c?.title ?? id,
-      mission: c?.mission ?? "",
-      source: c?.source ?? "",
-      lastTool: beat?.lastTool,
-      lastProgressAt: beat?.lastProgressAt,
-    };
-  });
-  let schedules: { name: string; detail: string }[] = [];
-  try {
-    const { getSchedules } = await import("./schedulerLoop");
-    schedules = getSchedules().map((sc: any) => ({
-      name: String(sc.name ?? sc.prompt ?? "schedule").slice(0, 60),
-      detail:
-        (sc.enabled === false ? "disabled" : "enabled") +
-        (sc.quietUnlessAlert ? " · quiet-unless-ALERT" : ""),
-    }));
-  } catch {
-    /* scheduler not loaded */
-  }
-  const vaultName = s.vaultPath.replace(/[\\/]+$/, "").split(/[\\/]/).pop() ?? s.vaultPath;
-  // App version, so the phone can show what the box is actually running —
-  // "did the box pick up the update yet" stops being guesswork.
-  let version = "";
-  try {
-    const { getVersion } = await import("@tauri-apps/api/app");
-    version = await getVersion();
-  } catch {
-    /* version stays unknown */
-  }
-  return { vault: vaultName, model: s.modelId, version, runs, schedules };
-}
-
-// ---- outbound: store diffs → SSE ----
-
-let diffTimer: number | null = null;
-const diffOnce = makeConvDiff(() => useStore.getState(), broadcast, (id) => void onRunEnded(id));
-function runDiff(): void {
-  diffTimer = null;
-  diffOnce();
-}
-
-async function onRunEnded(convId: string): Promise<void> {
-  // 1) Flush messages that queued up while the thread was busy. The user's OWN
-  // message must NEVER be blended into worker-wake plumbing — joining them made
-  // the user's bubble read "How's it going  Your worker … just finished…" (the
-  // bug the user hit). Flush the user's messages first as their own turn, then
-  // re-queue the worker wakes so the next onRunEnded batches them into one
-  // review turn — two clean, separate turns instead of one merged blob.
-  const q = queued.get(convId);
-  if (q && q.length > 0) {
-    const isWake = (t: string) => /^Your worker "/.test(t);
-    const userMsgs = q.filter((t) => !isWake(t));
-    const wakes = q.filter(isWake);
-    const isUserGroup = userMsgs.length > 0;
-    const group = isUserGroup ? userMsgs : wakes;
-    const leftover = isUserGroup ? wakes : [];
-    if (leftover.length) queued.set(convId, leftover);
-    else queued.delete(convId);
-    const text = group.join("\n\n");
-    const { sendMessage } = await import("./chat-controller");
-    void sendMessage(text, undefined, undefined, convId).catch((e) =>
-      console.warn("[phone-app] queued send failed:", e),
-    );
-  }
-}
 // ---- the agent→you channel: record + push + live-update, one call ----
 // Every notification is (a) appended to <vault>/.vault-chat/notifications.jsonl
 // (the Alerts tab reads this), (b) delivered as Web Push, and (c) broadcast so
@@ -599,74 +380,6 @@ export async function sendPush(title: string, body: string, url = "/phone", tag 
   return sent;
 }
 
-// A briefing title is only acceptable if it reads like a headline — not raw
-// chain-of-thought ("Re-reading the operating files…"), a content-less
-// placeholder ("(done)", "no"), or a one-word echo. When the model headline OR
-// the first-line fallback fails this test, we drop to the schedule's own name
-// rather than ship monologue (the CoT/one-word coach titles the user flagged).
-function looksLikeBadTitle(s: string): boolean {
-  const t = (s ?? "").trim();
-  if (!t) return true;
-  const low = t.toLowerCase();
-  if (t.split(/\s+/).length < 2 || t.length < 6) return true;
-  if (/^(\[object object\]|\(done\)|\(no reply\)|finished\.?)(?:\b|$)/.test(low)) return true;
-  // Genuine narration openers only — NOT "first/checking/reading/looking at"
-  // (those head valid headlines like "Checking in: week 2", "First milestone").
-  if (!/[.!?]$/.test(t) && /^(re-?reading|let me|okay|now i|i'?ll|i am|going to|let's|alright)\b/.test(low)) return true;
-  return false;
-}
-
-/** Surface a finished SCHEDULED briefing in the notification feed + push.
- * Called from the scheduler paths (chat-controller / offVaultRun) for ANY
- * scheduled run that delivers — coach, supervisor report, any recurring job;
- * NOT a normal chat or a worker/mission reply. The caller passes the already-
- * CLEANED deliverable (the turn's closing message, never the raw "let me re-read
- * the files…" narration), which this runs through the general alert summarizer
- * for a clean headline + a few sentences. The full text stays one tap away via
- * "Open thread" (convId).
- *
- * `fallbackTitle` is the schedule's own name (the scheduled conversation's
- * title, e.g. "Daily coach"): when no fast model is available to summarize — the
- * box with a degraded keyring is the real trigger — this is a far better, clean
- * headline than a raw truncation of the deliverable's first line (which read as
- * a wall of text / leaked narration). The deliverable still fills the body. */
-export async function mirrorPushNotify(text: string, convId?: string, fallbackTitle?: string): Promise<void> {
-  const raw = text.trim();
-  if (!raw) return;
-  const apiKeys = useStore.getState().apiKeys;
-  const { summarizeForAlert } = await import("./alert-summary");
-  const sum = await summarizeForAlert(raw, apiKeys).catch(() => null);
-  // Clean-boundary excerpt for the no-model fallback (no fast model on the box,
-  // or the summarizer errored): end at the last sentence boundary in the window,
-  // else the last word — never a mid-word chop, the "just the tip N characters"
-  // complaint. When the model summary exists it's used as-is.
-  const clip = (s: string, n: number): string => {
-    const t = (s ?? "").trim();
-    if (t.length <= n) return t;
-    const cut = t.slice(0, n);
-    const stop = Math.max(cut.lastIndexOf(". "), cut.lastIndexOf("! "), cut.lastIndexOf("? "));
-    if (stop >= n * 0.5) return cut.slice(0, stop + 1).trim();
-    const sp = cut.lastIndexOf(" ");
-    return (sp > 0 ? cut.slice(0, sp) : cut).trim() + "…";
-  };
-  // Title precedence: model headline → the schedule's own name → a clipped first
-  // line as a last resort. The schedule name keeps the headline clean and short
-  // even on a box that can't run the summarizer.
-  const modelTitle = sum?.title && !looksLikeBadTitle(sum.title) ? sum.title : "";
-  const firstLine = clip(raw.split("\n")[0]?.trim() || "", 90);
-  const title =
-    modelTitle ||
-    fallbackTitle?.trim() ||
-    (looksLikeBadTitle(firstLine) ? "" : firstLine) ||
-    "New briefing";
-  const body = sum?.body || clip(raw, 1800);
-  await notify("info", title, body, convId, {
-    intention: "Scheduled briefing",
-    summary: sum?.body ? sum.body.slice(0, 200) : clip(raw, 200),
-    icon: "✦",
-    cls: "g",
-  });
-}
 
 // ---- wiring ----
 
@@ -712,14 +425,11 @@ async function ensureNoteTitles(vault: string): Promise<void> {
       .filter((n) => (n.title == null || n.title === "") && titleableText(n))
       .slice(0, 12);
     if (!todo.length) return;
-    const { pickFastModel } = await import("./eta-estimator");
-    const fast = pickFastModel(useStore.getState().apiKeys);
-    if (!fast) return;
     const { titleForNote } = await import("./notes-format");
     const titles = new Map<string, string>();
     for (const n of todo) {
       try {
-        const t = await titleForNote(n, fast.spec, fast.apiKey);
+        const t = await titleForNote(n);
         if (t) titles.set(n.id, t);
       } catch (e) {
         console.warn("[phone-app] note title gen failed:", e);
@@ -764,78 +474,6 @@ export async function startPhoneAppHost(): Promise<void> {
   void ensureVapid()
     .then(({ pubB64u }) => invoke("phone_set_vapid", { key: pubB64u }))
     .catch((e) => console.warn("[phone-app] vapid init failed:", e));
-
-  await listen<{
-    reqId: string;
-    convId?: string | null;
-    text?: string;
-    supervisor?: boolean;
-    clientMsgId?: string;
-  }>("phone:msg", async (event) => {
-    const { reqId, convId, text, supervisor, clientMsgId } = event.payload;
-    try {
-      respond(
-        reqId,
-        await dedupedPhoneMessage(clientMsgId, convId ?? null, String(text ?? ""), !!supervisor),
-      );
-    } catch (e) {
-      respond(reqId, { error: String(e) });
-    }
-  });
-
-  // The answer to a "Needs you" ask: a tapped option or a committed reply, sent
-  // as the next message in the asking conversation, with the decision recorded
-  // on the notification (answeredWith) for the archive.
-  await listen<{
-    reqId: string;
-    convId?: string | null;
-    text?: string;
-    clientMsgId?: string;
-    notifId?: string;
-    defer?: boolean;
-    onDefer?: string;
-  }>("phone:answer", async (event) => {
-    const { reqId, convId, text, clientMsgId, notifId, defer, onDefer } = event.payload;
-    try {
-      const t = String(text ?? "").trim();
-      if (!convId || (!t && !defer)) {
-        respond(reqId, { error: "answer needs a convId and non-empty text" });
-        return;
-      }
-      // "Not now" ends the ask without picking an option: the injected turn
-      // tells the agent to fall back to what it declared when it raised the ask
-      // (act on a named default, or stand down for anything high-stakes). The
-      // recorded decision is the short "Not now" for the card + archive.
-      const onDeferTxt = String(onDefer ?? "").trim();
-      const injected = defer
-        ? "[NOT NOW] I'm deferring this decision — I did not pick any of the options. Don't wait on me further, and don't re-raise the same ask. " +
-          (onDeferTxt
-            ? `The fallback you declared when you raised it: “${onDeferTxt.slice(0, 300)}”. Do that now if it's an action; if it's a hold, or this ask was high-stakes/irreversible, stand down and don't act. Say plainly what you're doing.`
-            : "Fall back to what you decided when you raised it: if you named a default action for no-answer, take it now; if this needs my explicit go and I haven't given it (a spend, or anything irreversible or high-stakes), do NOT act — stand down or hold, and say plainly what you're doing.")
-        : t;
-      const recorded = defer ? "Not now" : t;
-      const res = await dedupedPhoneMessage(clientMsgId, convId, injected, false);
-      // Durably record WHICH answer settled this ask — an append-only "answered"
-      // marker keyed to the notification id. notifications_json folds it into the
-      // card as answeredWith/answeredAt (and treats it as read), so the Archive
-      // shows the decision that was made, not just that an ask once existed.
-      // Skipped when the send failed or deduped to an error — a phantom "decided"
-      // stamp on an ask whose answer never ran would lie to the archive.
-      if (notifId && !(res as { error?: unknown }).error) {
-        const vault = useStore.getState().vaultPath;
-        if (vault) {
-          await invoke("notification_add", {
-            vault,
-            json: JSON.stringify({ type: "answered", id: notifId, answer: recorded.slice(0, 160), ts: Date.now() }),
-          }).catch(() => {});
-          broadcast({ type: "notif" });
-        }
-      }
-      respond(reqId, res);
-    } catch (e) {
-      respond(reqId, { error: String(e) });
-    }
-  });
 
   // Full schedule list for the phone's drawer — read fresh from disk so the
   // phone sees the same truth as the SchedulesPanel.
@@ -1185,47 +823,6 @@ export async function startPhoneAppHost(): Promise<void> {
     respond(event.payload.reqId, useStore.getState().vaultPath ?? "");
   });
 
-  await listen<{ reqId: string }>("phone:status", async (event) => {
-    try {
-      respond(event.payload.reqId, await statusSnapshot());
-    } catch (e) {
-      respond(event.payload.reqId, { error: String(e) });
-    }
-  });
-
-  await listen<{ reqId: string; convId?: string | null }>("phone:kill", async (event) => {
-    const { reqId, convId } = event.payload;
-    try {
-      if (convId) {
-        const hit = abortRun(convId);
-        // Only claim idle when nothing was actually running. If we DID abort a
-        // live run, it may be mid-tool-call and keep going until that tool
-        // returns — its REAL end broadcasts idle via runDiff. Broadcasting idle
-        // prematurely here was the bug: the phone flipped between stopped and
-        // running and the user couldn't tell whether it was truly off.
-        if (!hit) broadcast({ type: "status", convId, status: "idle" });
-        respond(reqId, {
-          ok: true,
-          result: hit
-            ? "Stopped — interrupting now (an in-flight command is killed)."
-            : "Nothing running on that thread.",
-        });
-      } else {
-        const ids = activeRuns();
-        let n = 0;
-        for (const id of ids) {
-          if (abortRun(id)) {
-            n++;
-            broadcast({ type: "status", convId: id, status: "idle" });
-          }
-        }
-        respond(reqId, { ok: true, result: n ? `Stopped ${n} run(s).` : "Nothing running." });
-      }
-    } catch (e) {
-      respond(reqId, { error: String(e) });
-    }
-  });
-
   // Purge the chats list: tombstone-delete every idle assistant chat. Archived
   // mission threads are untouched (they are history), as is anything mid-run.
   await listen<{ reqId: string }>("phone:clearchats", async (event) => {
@@ -1260,27 +857,4 @@ export async function startPhoneAppHost(): Promise<void> {
       respond(event.payload.reqId, { error: String(e) });
     }
   });
-
-  // Store → SSE forwarding, debounced. The diff is cheap (length/status
-  // compares) and only runs 4×/sec at worst during a streaming turn.
-  let prevConvs = useStore.getState().conversations;
-  let prevRuntime = useStore.getState().convRuntime;
-  let prevStreaming = "";
-  useStore.subscribe((s) => {
-    if (
-      s.conversations === prevConvs &&
-      s.convRuntime === prevRuntime &&
-      s.streamingText === prevStreaming
-    ) {
-      return;
-    }
-    prevConvs = s.conversations;
-    prevRuntime = s.convRuntime;
-    prevStreaming = s.streamingText;
-    if (diffTimer === null) {
-      diffTimer = window.setTimeout(runDiff, 250);
-    }
-  });
-  // Seed the snapshot so a fresh boot doesn't replay the whole history.
-  runDiff();
 }

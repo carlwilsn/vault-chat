@@ -275,7 +275,31 @@ function serializeStart(vault: string, fn: () => Promise<void>): Promise<void> {
 
 // Idempotent: start a loop for `vault` only if one isn't already running.
 // Used on launch (every tracked sync-enabled vault) and on vault open.
+// Every vault this install has opened (localStorage): each keeps its sync loop
+// for the whole session, so switching vaults never strands the one you left.
+const TRACKED_VAULTS_KEY = "vault_chat_tracked_vaults";
+
+export function trackedVaults(): string[] {
+  try {
+    const arr = JSON.parse(localStorage.getItem(TRACKED_VAULTS_KEY) ?? "[]");
+    return Array.isArray(arr) ? arr.filter((s) => typeof s === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+function trackVault(vault: string): void {
+  const list = trackedVaults();
+  if (list.includes(vault)) return;
+  try {
+    localStorage.setItem(TRACKED_VAULTS_KEY, JSON.stringify([...list, vault]));
+  } catch {
+    /* no storage: this vault just isn't remembered */
+  }
+}
+
 export function ensureVaultSyncLoop(vault: string): Promise<void> {
+  trackVault(vault);
   return serializeStart(vault, async () => {
     if (loops.has(vault)) return;
     await doStartVaultSyncLoop(vault);
@@ -864,7 +888,6 @@ function startBoxSyncLoop(vault: string, cfg: BoxConfig): void {
       if (r.merged) {
         appendSyncLog(vault, "merge", "box-sync", r.message);
         void refreshFileTreeIfChanged(vault);
-        void useStore.getState().refreshConversationsFromDisk(vault);
         // The agent's edits on the box show in the open panes now (never over unsaved typing).
         void refreshOpenFiles({ vault, paths: r.merged_paths?.length ? r.merged_paths : null });
       } else if (r.committed) {

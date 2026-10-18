@@ -25,6 +25,9 @@ export async function keychainDelete(key: string): Promise<void> {
   }
 }
 
+/** The model providers whose keys this machine keeps (and sends to the box). */
+export type ProviderId = "anthropic" | "openai" | "google" | "openrouter";
+
 // Canonical key names. Keep flat (all under service com.vault-chat.app)
 // to keep the surface simple — collisions impossible since providers
 // and service-key names are disjoint strings.
@@ -89,19 +92,4 @@ export function mergeUserKeyNames(names: string[]): void {
 
 export async function getUserKey(name: string): Promise<string | null> {
   return keychainGet(userKeyName(name));
-}
-
-/** Fetch a set of user keys as a string-to-string env dict. Missing
- *  keys are omitted (not errors) — the caller decides how to react. */
-export async function getUserKeysAsEnv(
-  names: string[],
-): Promise<Record<string, string>> {
-  const out: Record<string, string> = {};
-  await Promise.all(
-    names.map(async (n) => {
-      const v = await getUserKey(n);
-      if (v !== null) out[n] = v;
-    }),
-  );
-  return out;
 }

@@ -74,6 +74,9 @@ async function main(): Promise<void> {
   const loaded = convLog(cfg.vault).rows().length;
   console.log(`[vault-chat-server] ${loaded} conversation(s) in the log; keys: ${Object.keys(useStore.getState().apiKeys).join(", ") || "none"}`);
 
+  // One-shot model calls (note titles here; Ctrl+K / Ctrl+L from the laptop via /api/v1/complete).
+  const { completeOnce } = await import("./context/model");
+  (await import("../src/complete")).setComplete(completeOnce);
   const { startPhoneAppHost, sendPush } = await import("../src/phoneApp");
   await startPhoneAppHost();
 
@@ -217,6 +220,7 @@ async function main(): Promise<void> {
         schedules: [],
       };
     },
+    complete: completeOnce,
     setKeys: async (keys) => {
       const changed = await saveKeys(cfg.secretsDir, keys);
       if (changed) {
@@ -260,9 +264,12 @@ async function main(): Promise<void> {
   });
   console.log(`[vault-chat-server] listening on http://${cfg.host}:${cfg.port}`);
 
-  // Only this machine fires schedules and missions.
+  // Only the box fires schedules: each due one is a message to the engine.
   const { startSchedulerLoop } = await import("../src/schedulerLoop");
-  void startSchedulerLoop(cfg.vault);
+  void startSchedulerLoop(cfg.vault, async (convId, text) => {
+    const out = await ready().message({ convId, text, client: "schedule" });
+    if (out?.error) console.warn(`[scheduler] the engine refused a schedule: ${out.error}`);
+  });
 
   await startBoxSync(alert);
 

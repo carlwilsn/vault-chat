@@ -1,10 +1,6 @@
-// Per-conversation run handles. Every in-flight agent run registers its
-// AbortController here keyed by conversation id, so a *different* agent (a
-// supervisor, or the phone's front agent) can target a specific worker's run —
-// e.g. to interject/nudge it. The foreground singleton abortRef in
-// chat-controller still drives the Stop button; this is the by-id index that
-// lets one thread reach another. Purely additive: if a run forgets to
-// register, the worst case is "can't interject it," never a broken run.
+// The box engine's turns in flight, by conversation id (server/engine/engine.ts
+// registers each): /health's busy count reads them, so the updater never
+// restarts the server under a running turn.
 
 const controllers = new Map<string, AbortController>();
 
@@ -18,21 +14,7 @@ export function unregisterRun(convId: string, c: AbortController): void {
   if (controllers.get(convId) === c) controllers.delete(convId);
 }
 
-export function isRunActive(convId: string): boolean {
-  return controllers.has(convId);
-}
-
-// Abort the in-flight run on a conversation, if any. Returns whether one was
-// found to abort.
-export function abortRun(convId: string): boolean {
-  const c = controllers.get(convId);
-  if (!c) return false;
-  c.abort();
-  return true;
-}
-
-// Conversation ids with a registered in-flight run — the phone's /status and
-// kill-all read this.
+// Conversation ids with a registered in-flight run.
 export function activeRuns(): string[] {
   return [...controllers.keys()];
 }

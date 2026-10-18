@@ -41,32 +41,6 @@ export type Schedule = {
   createdAt: number;
 };
 
-export function newScheduleId(): string {
-  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
-    return crypto.randomUUID().slice(0, 12);
-  }
-  return `s_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
-}
-
-export function emptySchedule(defaultModelId: string): Schedule {
-  const now = Date.now();
-  const tz =
-    Intl.DateTimeFormat().resolvedOptions().timeZone ?? "UTC";
-  return {
-    id: newScheduleId(),
-    name: "",
-    prompt: "",
-    recurrence: { kind: "daily" },
-    time: "07:00",
-    timezone: tz,
-    target: { kind: "new" },
-    modelId: defaultModelId,
-    enabled: true,
-    markUnreadOnFinish: true,
-    createdAt: now,
-  };
-}
-
 export async function readSchedules(vault: string): Promise<Schedule[]> {
   const lines = await invoke<string[]>("schedules_read", { vault });
   const out: Schedule[] = [];

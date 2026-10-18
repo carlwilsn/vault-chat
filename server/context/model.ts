@@ -58,6 +58,21 @@ export async function callResponses(req: {
   return { id: String(j.id ?? ""), output, text, functionCalls, costUsd: typeof cost === "number" ? cost : null };
 }
 
+/** A one-shot call (src/complete.ts): one user message with its images, the agent's
+ * model or (fast) the recap model. No tools, no memory. */
+export async function completeOnce(req: { instructions: string; text: string; images?: string[]; fast?: boolean; maxOutputTokens?: number }): Promise<string> {
+  const cfg = ctxConfig();
+  const content: Record<string, unknown>[] = [{ type: "input_text", text: String(req.text ?? "") }];
+  for (const u of (req.images ?? []).slice(0, 8)) if (typeof u === "string" && u.startsWith("data:image/")) content.push({ type: "input_image", image_url: u, detail: "auto" });
+  const r = await callResponses({
+    model: req.fast ? cfg.recapModel : cfg.agentModel,
+    instructions: String(req.instructions ?? ""),
+    input: [{ role: "user", content }],
+    maxOutputTokens: Math.max(64, Math.min(Number(req.maxOutputTokens) || 8_000, 16_000)),
+  });
+  return r.text;
+}
+
 // ---- catalog (context windows) ----
 
 const windows = new Map<string, number>();

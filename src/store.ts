@@ -2,9 +2,6 @@ import { create } from "zustand";
 import { isPopout } from "./windowKind";
 import { invoke } from "@tauri-apps/api/core";
 import { emit } from "@tauri-apps/api/event";
-import type { ModelSpec, ProviderId } from "./providers";
-import { DEFAULT_MODEL_ID, setLiveCatalog, setAutoRouterCostBias } from "./providers";
-import { BACKGROUND_MODEL_STORAGE, backgroundModel } from "./roles";
 import type { Skill } from "./skills";
 import type { Note } from "./notes";
 import { readNotes, appendNote, writeAllNotes } from "./notes";
@@ -12,9 +9,6 @@ import {
   type Conversation,
   deriveConversationTitle,
   emptyConversation,
-  readConversations,
-  writeConversations,
-  withConvLock,
   newMessageId,
 } from "./conversations";
 
@@ -25,26 +19,9 @@ function withMid(m: ChatMessage): ChatMessage {
   return m.mid ? m : { ...m, mid: newMessageId() };
 }
 import { formatNote } from "./notes-format";
-import { findModel } from "./providers";
-import { withCompactionDivider, lastReportedContext } from "./chatContext";
+import { lastReportedContext } from "./chatContext";
 
-/** Laptop mode (no box): a copy on disk is newer than the one in memory when it
- *  holds every message memory shows (by id, else by text) and more, or the same
- *  messages changed in place. (Box mode never reads conversation files: the
- *  box's event log is the conversation, src/boxChat.ts.) */
-function diskIsNewer(cur: ChatMessage[], disk: ChatMessage[]): boolean {
-  const key = (m: ChatMessage) => m.mid ?? `${m.role}\u0000${m.content}`;
-  const have = new Set(disk.map(key));
-  if (!cur.every((m) => m.hidden || have.has(key(m)))) return false;
-  if (disk.length !== cur.length) return disk.length > cur.length;
-  return disk.some((m, i) => m.content !== cur[i]!.content || (m.toolCalls?.length ?? 0) !== (cur[i]!.toolCalls?.length ?? 0) || !!m.hidden !== !!cur[i]!.hidden);
-}
-import { keychainGet, keychainSet, keychainDelete, KEY } from "./keychain";
-import {
-  fetchAllCatalog,
-  loadCatalogFromLocalStorage,
-  saveCatalogToLocalStorage,
-} from "./modelCatalog";
+import { keychainGet, keychainSet, keychainDelete, KEY, type ProviderId } from "./keychain";
 
 export type FileEntry = {
   path: string;
@@ -186,11 +163,6 @@ export type LiveTool = { id: string; name: string; input: any; result?: string; 
 export type TodoStatus = "pending" | "in_progress" | "completed";
 export type TodoItem = { content: string; status: TodoStatus; activeForm?: string };
 
-// How hard reasoning models think before answering. Maps to the right
-// per-provider knob in agent.ts (Anthropic effort, OpenAI/OpenRouter
-// reasoning_effort, Gemini thinking budget). Default medium.
-export type ReasoningEffort = "low" | "medium" | "high";
-
 // Snapshot of a single conversation's in-flight streaming view, used to
 // keep a backgrounded run's progress visible across leave/return.
 export type ConvRuntime = {
@@ -230,14 +202,6 @@ function liveToolsEqual(a: LiveTool[], b: LiveTool[]): boolean {
   return true;
 }
 
-function todosEqual(a: TodoItem[], b: TodoItem[]): boolean {
-  if (a === b) return true;
-  if (a.length !== b.length) return false;
-  for (let i = 0; i < a.length; i++) {
-    if (a[i].content !== b[i].content || a[i].status !== b[i].status) return false;
-  }
-  return true;
-}
 
 export type Pane = { id: string; file: string; content: string; mode: "view" | "edit" };
 export type SplitDirection = "horizontal" | "vertical" | null;
@@ -251,13 +215,6 @@ const newPaneId = () =>
 type ApiKeys = Partial<Record<ProviderId, string>>;
 export type ServiceKeys = { tavily?: string; elevenlabs?: string };
 
-const MODEL_STORAGE = "vault_chat_model";
-// Per-role model overrides. MODEL_STORAGE above is the chat-pane (desktop)
-// model; voice has its own vault_chat_elevenlabs_llm. Each role's run reads its
-// own model so e.g. workers can run a heavy model while the phone assistant
-// stays cheap. Routed in sendMessage (by conversation source) + the worker /
-// mission spawn paths.
-const ASSISTANT_MODEL_STORAGE = "vault_chat_assistant_model";
 const THEME_STORAGE = "vault_chat_theme";
 const CHAT_SIDEBAR_STORAGE = "vc_chat_sidebar";
 
@@ -270,15 +227,10 @@ function readChatSidebarOpen(): boolean {
   }
 }
 const VAULT_STORAGE = "vault_chat_last_vault";
-const CHAT_STORAGE = "vault_chat_history";
-const STRICT_VAULT_STORAGE = "vault_chat_strict_vault";
-const BASH_DISABLED_STORAGE = "vault_chat_bash_disabled";
 // The box's X-Vault-Token (box-mode chat and the sync's API calls), the same
 // token the phone uses. Machine-local by design — never in the synced config.
 // The key keeps its old name (it was the mission host's token).
 const BOX_TOKEN_STORAGE = "vault_chat_mission_host_token";
-const REASONING_EFFORT_STORAGE = "vault_chat_reasoning_effort";
-const AUTO_COST_BIAS_STORAGE = "vault_chat_auto_cost_bias";
 // The active/open conversation is PER-DEVICE, not synced: your phone chat and
 // your desktop chat are independent (message CONTENT still syncs via the vault).
 // Persisted per vault so reopening the app restores THIS device's last-open
@@ -305,80 +257,11 @@ function persistActiveConvId(vault: string | null, id: string | null): void {
     /* localStorage unavailable — non-fatal */
   }
 }
-// Rolling buffer of the last few finalised conversations. Capped at
-// SAVED_CHATS_MAX entries (newest first), shared across vaults — the
-// UI filters to the active vault on display.
-const SAVED_CHATS_STORAGE = "vault_chat_saved";
-const SAVED_CHATS_MAX = 20;
-
 export type Theme = "graphite" | "light";
-
-// Streaming text from the agent arrives one token at a time — often
-// many per frame. Re-rendering the chat pane on every token re-parses
-// a growing markdown buffer through remark/rehype/katex/highlight,
-// which freezes the UI thread ("(Not Responding)"). Buffer here and
-// flush at ~5 Hz so React only repaints a few times per second while
-// streaming. Anything higher than this overwhelms rehypeHighlight for
-// long messages.
-const STREAM_FLUSH_MS = 200;
-let streamBuffer = "";
-let streamFlushTimer: ReturnType<typeof setTimeout> | null = null;
-function flushStreamBuffer() {
-  streamFlushTimer = null;
-  if (!streamBuffer) return;
-  const chunk = streamBuffer;
-  streamBuffer = "";
-  useStore.setState((prev) => ({ streamingText: prev.streamingText + chunk }));
-}
-function cancelStreamFlush() {
-  streamBuffer = "";
-  if (streamFlushTimer !== null) {
-    clearTimeout(streamFlushTimer);
-    streamFlushTimer = null;
-  }
-}
-
-let reasoningBuffer = "";
-let reasoningFlushTimer: ReturnType<typeof setTimeout> | null = null;
-function flushReasoningBuffer() {
-  reasoningFlushTimer = null;
-  if (!reasoningBuffer) return;
-  const chunk = reasoningBuffer;
-  reasoningBuffer = "";
-  useStore.setState((prev) => ({ streamingReasoning: prev.streamingReasoning + chunk }));
-}
-function cancelReasoningFlush() {
-  reasoningBuffer = "";
-  if (reasoningFlushTimer !== null) {
-    clearTimeout(reasoningFlushTimer);
-    reasoningFlushTimer = null;
-  }
-}
 
 function loadTheme(): Theme {
   const raw = localStorage.getItem(THEME_STORAGE);
   return raw === "light" ? "light" : "graphite";
-}
-
-// Both default to ON: safer-by-default for new installs. Existing users
-// can opt back into wider access in Settings.
-function loadBoolFlag(key: string, defaultValue: boolean): boolean {
-  const raw = localStorage.getItem(key);
-  if (raw === null) return defaultValue;
-  return raw === "true";
-}
-
-function loadNumFlag(key: string, defaultValue: number): number {
-  const raw = localStorage.getItem(key);
-  if (raw === null) return defaultValue;
-  const n = Number(raw);
-  return Number.isFinite(n) ? n : defaultValue;
-}
-
-function loadReasoningEffort(): ReasoningEffort {
-  const raw = localStorage.getItem(REASONING_EFFORT_STORAGE);
-  if (raw === "low" || raw === "medium" || raw === "high") return raw;
-  return "medium";
 }
 
 /** Fetch every known credential from the OS keychain into memory.
@@ -444,38 +327,7 @@ export async function hydrateKeychain(): Promise<void> {
   await migrateLocalStorageKeys();
   const { apiKeys, serviceKeys } = await fetchAllFromKeychain();
   useStore.setState({ apiKeys, serviceKeys });
-  // Seed the live model catalog from last session's cache so the
-  // dropdown isn't empty on boot.
-  const cached = loadCatalogFromLocalStorage();
-  if (cached && cached.length > 0) {
-    setLiveCatalog(cached);
-    useStore.setState({ catalog: cached });
-    // A catalog cached before windows were kept has no contextLength on any
-    // OpenRouter entry: refresh once in the background so the context dial
-    // measures against each model's real window.
-    if (apiKeys.openrouter && cached.some((m) => m.provider === "openrouter") && !cached.some((m) => typeof m.contextLength === "number")) {
-      void useStore.getState().refreshCatalog();
-    }
-  } else if (Object.keys(apiKeys).length > 0) {
-    // New install with keys already in the keychain (e.g. migrated):
-    // kick off a background refresh so the dropdown populates.
-    void useStore.getState().refreshCatalog();
-  }
 }
-
-export type SavedChat = {
-  id: string;
-  vaultPath: string | null;
-  // First user message (trimmed to 80 chars) — labels the entry in the
-  // recents popover. Empty conversations are never saved so this is
-  // always meaningful.
-  title: string;
-  savedAt: number;
-  messages: ChatMessage[];
-  compactionSummary: string | null;
-  lastContext: number;
-  tokenUsage: { prompt: number; completion: number; total: number };
-};
 
 export type Viewport = {
   path: string;
@@ -497,27 +349,9 @@ type State = {
   messages: ChatMessage[];
   apiKeys: ApiKeys;
   serviceKeys: ServiceKeys;
-  catalog: ModelSpec[];
-  catalogRefreshing: boolean;
-  catalogErrors: Partial<Record<ProviderId, string>>;
-  modelId: string;
-  assistantModelId: string;
-  backgroundModelId: string;
   theme: Theme;
-  // Restrict file-op tools (Read/Write/Edit/Delete/Glob/Grep/ListDir/
-  // NotebookEdit/PdfExtract) to the active vault + meta vault. Bash is
-  // not covered — it's a separate setting because real shell containment
-  // needs OS sandboxing we don't have.
-  strictVaultMode: boolean;
-  // Don't expose the Bash tool to the agent at all.
-  bashDisabled: boolean;
   // The box's X-Vault-Token (same contract as the phone). Empty = none.
   boxToken: string;
-  // How hard reasoning-capable models think before answering.
-  reasoningEffort: ReasoningEffort;
-  // Cost ⇄ quality dial for OpenRouter's auto router (0 = quality … 10 =
-  // cheapest). Applies when "Auto" resolves to openrouter/auto.
-  autoRouterCostBias: number;
   skills: Skill[];
   busy: boolean;
   showSettings: boolean;
@@ -571,18 +405,14 @@ type State = {
   // visible portion of the active document, not the whole file —
   // so "what does this say?" answers about the part you can see.
   viewport: Viewport | null;
-  tokenUsage: { prompt: number; completion: number; total: number };
   lastContext: number;
   // When the active conversation's run started (ms). Drives the elapsed
   // timer off real run start instead of component mount, so the timer
   // keeps counting correctly across a leave/return. null when idle.
   busyStartedAt: number | null;
-  compactionSummary: string | null;
-  compacting: boolean;
   streamingText: string;
   streamingReasoning: string;
   liveTools: LiveTool[];
-  agentTodos: TodoItem[];
   // Per-conversation live-run buffer. A run that's backgrounded (the user
   // switched away from it) keeps writing its streaming text / reasoning /
   // live tools here keyed by conversation id, and the global streaming
@@ -661,11 +491,6 @@ type State = {
     initialAnchors?: import("./notes").NoteAnchor[];
     initialTurns?: import("./notes").NoteTurn[];
   };
-  // Rolling buffer of finished conversations, capped to the last
-  // SAVED_CHATS_MAX. Auto-snapshotted whenever the user clears or
-  // loads another saved chat. UI shows entries matching the current
-  // vaultPath.
-  savedChats: SavedChat[];
   // Multi-chat inbox (piece #1). Persisted per-vault to
   // <vault>/.vault-chat/conversations.jsonl. The active conversation's
   // messages mirror the top-level `messages` field — switching
@@ -702,21 +527,9 @@ type State = {
   clearApiKey: (p: ProviderId) => void;
   setServiceKey: (name: keyof ServiceKeys, k: string) => void;
   clearServiceKey: (name: keyof ServiceKeys) => void;
-  refreshCatalog: () => Promise<void>;
-  setModelId: (id: string) => void;
-  setAssistantModelId: (id: string) => void;
-  setBackgroundModelId: (id: string) => void;
   setTheme: (t: Theme) => void;
   applyThemeFromEvent: (t: Theme) => void;
-  // Turning strict mode ON also flips bashDisabled ON (it's the matching
-  // safer default — no point sandboxing file ops while leaving a shell
-  // open that bypasses the guard). User can independently turn Bash back
-  // on after, if they explicitly want shell + strict file ops.
-  setStrictVaultMode: (b: boolean) => void;
-  setAutoRouterCostBias: (n: number) => void;
-  setBashDisabled: (b: boolean) => void;
   setBoxToken: (token: string) => void;
-  setReasoningEffort: (e: ReasoningEffort) => void;
   setSkills: (s: Skill[]) => void;
   setBusy: (b: boolean) => void;
   setShowSettings: (b: boolean) => void;
@@ -736,22 +549,6 @@ type State = {
   setVoiceConnecting: (b: boolean) => void;
   setVoiceCurrentTool: (name: string | null) => void;
   setViewport: (v: Viewport | null) => void;
-  addTokenUsage: (u: { prompt: number; completion: number; total: number }) => void;
-  setLastContext: (n: number) => void;
-  setCompacting: (b: boolean) => void;
-  applyCompaction: (summary: string, keepCount: number) => void;
-  appendStreamingText: (s: string) => void;
-  setStreamingText: (s: string) => void;
-  appendStreamingReasoning: (s: string) => void;
-  clearStreamingReasoning: () => void;
-  pushLiveTool: (t: LiveTool) => void;
-  startLiveToolInput: (id: string, name: string) => void;
-  appendLiveToolInputDelta: (id: string, delta: string) => void;
-  updateLiveToolResult: (id: string, result: string) => void;
-  setLiveToolEta: (id: string, seconds: number) => void;
-  setAgentTodos: (todos: TodoItem[]) => void;
-  // The to-do list of one conversation (saved with it).
-  setConversationTodos: (id: string, todos: TodoItem[]) => void;
   loadNotes: () => Promise<void>;
   addNote: (note: Note) => Promise<void>;
   deleteNote: (id: string) => Promise<void>;
@@ -778,16 +575,12 @@ type State = {
   setVoiceCapturePending: (b: boolean) => void;
   setVoiceLastCapture: (cap: State["voiceLastCapture"]) => void;
   setEditorSelection: (sel: State["editorSelection"]) => void;
-  setConvRuntime: (id: string, rt: ConvRuntime) => void;
-  clearConvRuntime: (id: string) => void;
-  setBusyStartedAt: (t: number | null) => void;
   openNoteComposer: (payload?: {
     initialDraft?: string;
     initialAnchors?: import("./notes").NoteAnchor[];
     initialTurns?: import("./notes").NoteTurn[];
   }) => void;
   closeNoteComposer: () => void;
-  resetStreaming: () => void;
   applyChatState: (s: {
     vaultPath: string | null;
     messages: ChatMessage[];
@@ -806,8 +599,6 @@ type State = {
     // Voice runs in the main window; the popout's mic and waves show it.
     voice?: Pick<State, "voiceMode" | "voiceConnecting" | "voiceSpeaking" | "voiceListening" | "voiceMicMuted" | "voiceError">;
   }) => void;
-  saveCurrentChat: () => void;
-  loadSavedChat: (id: string) => void;
   applyChatStream: (s: {
     busy: boolean;
     streamingText?: string;
@@ -815,10 +606,7 @@ type State = {
     liveTools?: LiveTool[];
     agentTodos?: TodoItem[];
   }) => void;
-  clearMessages: () => void;
   loadConversations: () => Promise<void>;
-  refreshConversationFromDisk: (vault: string, convId: string) => Promise<void>;
-  refreshConversationsFromDisk: (vault: string) => Promise<void>;
   /** `id`: the chat popout picks the id and the main window creates it. */
   newConversation: (id?: string) => string;
   selectConversation: (id: string) => void;
@@ -830,12 +618,6 @@ type State = {
   // thread and flicker it back.
   deleteConversation: (id: string) => Promise<void>;
   setShowChatsPanel: (b: boolean) => void;
-  // Off-screen-safe message append: writes directly to a specific
-  // conversation's stored messages array, regardless of which one is
-  // currently active. Used by chat-controller when a run finishes
-  // after the user navigated away.
-  appendMessageToConversation: (id: string, m: ChatMessage) => void;
-  setConversationStatus: (id: string, status: "idle" | "running") => void;
   setBoxChat: (b: import("./boxChat").BoxChatState | null) => void;
   // The box created a conversation the laptop had opened locally under another
   // id: move it (list entry, active pointer, runtime) to the box's id.
@@ -849,108 +631,6 @@ type State = {
 
 // The git-synced load behind loadConversations (moved out so box mode can
 // start after it whatever path it returns by).
-async function loadConversationsInner(vault: string): Promise<void> {
-  try {
-    const list = await readConversations(vault);
-    const state = useStore.getState();
-    // First-run migration: if conversations.jsonl is empty but the
-    // user has live messages from the legacy single-chat path,
-    // promote them into a first conversation entry so nothing is
-    // lost across the upgrade.
-    if (list.length === 0 && state.messages.length > 0) {
-      const seeded: Conversation = {
-        ...emptyConversation(),
-        messages: state.messages,
-        title: deriveConversationTitle(state.messages),
-        lastActivityAt: Date.now(),
-      };
-      const next = [seeded];
-      useStore.setState({
-        conversations: next,
-        activeConversationId: seeded.id,
-        conversationsLoaded: true,
-      });
-      try {
-        await writeConversations(vault, next);
-      } catch (e) {
-        console.warn("[conversations] seed-write failed:", e);
-      }
-      return;
-    }
-    if (list.length === 0) {
-      // Brand-new vault — start with one empty conversation so the
-      // chat surface always has something selected.
-      const fresh = emptyConversation();
-      useStore.setState({
-        conversations: [fresh],
-        activeConversationId: fresh.id,
-        conversationsLoaded: true,
-        messages: [],
-      });
-      return;
-    }
-    // Sort by most-recent first.
-    const sorted = list
-      .slice()
-      .sort((a, b) => b.lastActivityAt - a.lastActivityAt);
-    // Per-device active conversation: restore THIS device's last-open thread
-    // (persisted per vault) rather than auto-jumping to whatever was most-
-    // recently touched — that's what let a phone chat steal the desktop's open
-    // pane. Fall back to the most-recent thread when there's no saved pick or
-    // it was deleted elsewhere.
-    const savedId = savedActiveConvId(vault);
-    const active =
-      (savedId ? sorted.find((c) => c.id === savedId) : undefined) ??
-      sorted[0];
-    persistActiveConvId(vault, active.id);
-    // Husk-prune: drop 0-message "New chat" shells that are neither the active
-    // thread nor freshly created (failed voice opens minted ~21 in one 20-min
-    // spree; a crashed worker/mission spawn leaves an empty shell too). The
-    // >2min createdAt guard spares a just-opened empty chat the user is about
-    // to type in; messages.length===0 means a thread with real messages is
-    // never touched; tombstoning (not omission) keeps a husk synced from
-    // another machine from resurrecting.
-    const HUSK_MAX_AGE_MS = 2 * 60 * 1000;
-    const nowTs = Date.now();
-    // Only interactive-chat husks (failed voice opens, abandoned "New chat").
-    // NEVER prune a worker/mission/scheduled shell: those are written empty
-    // then populated async (possibly by another machine), so tombstoning one
-    // here could race-delete a thread the box is about to fill.
-    const huskSources = new Set(["manual", "voice", "phone"]);
-    const husks = sorted.filter(
-      (c) =>
-        c.messages.length === 0 &&
-        c.id !== active.id &&
-        huskSources.has(c.source) &&
-        nowTs - (c.createdAt ?? nowTs) > HUSK_MAX_AGE_MS,
-    );
-    const survivors = husks.length
-      ? sorted.filter((c) => !husks.some((h) => h.id === c.id))
-      : sorted;
-    for (const h of husks) {
-      invoke<void>("conversation_delete", { vault, id: h.id }).catch((e) =>
-        console.warn("[conversations] husk-prune delete failed:", e),
-      );
-    }
-    useStore.setState({
-      conversations: survivors,
-      activeConversationId: active.id,
-      conversationsLoaded: true,
-      messages: active.messages,
-      compactionSummary: null,
-      lastContext: lastReportedContext(active.messages),
-      tokenUsage: { prompt: 0, completion: 0, total: 0 },
-      agentTodos: [],
-      streamingText: "",
-      streamingReasoning: "",
-      liveTools: [],
-    });
-  } catch (e) {
-    console.error("[conversations] load failed:", e);
-    useStore.setState({ conversationsLoaded: true });
-  }
-}
-
 export const useStore = create<State>((set) => ({
   // [harness-loop rig — DEV only, prod ignores VITE_DEV_VAULT] Boot straight
   // into a chosen active vault so the local rig has a deterministic vaultPath
@@ -969,29 +649,8 @@ export const useStore = create<State>((set) => ({
   messages: [],
   apiKeys: {}, // populated async via hydrateKeychain
   serviceKeys: {}, // populated async via hydrateKeychain
-  catalog: loadCatalogFromLocalStorage() ?? [],
-  catalogRefreshing: false,
-  catalogErrors: {},
-  // New installs default to the app's default model (Claude Sonnet 5). Anyone who
-  // has already picked a model in the dropdown keeps it — switch via the model
-  // picker to apply Sonnet 5 on an existing client.
-  modelId: localStorage.getItem(MODEL_STORAGE) ?? DEFAULT_MODEL_ID,
-  // The phone assistant (cockpit) is the hardest agentic surface — it has to
-  // hold a multi-step orchestration prompt, drive tools, and emit structured
-  // plan cards. Auto's cost router was picking models too weak for that
-  // (sycophantic loops, lost context, ignored conventions), so default it to a
-  // strong model — same tier as supervisors/workers — not the cheap router.
-  assistantModelId: localStorage.getItem(ASSISTANT_MODEL_STORAGE) ?? DEFAULT_MODEL_ID,
-  backgroundModelId: backgroundModel(),
   theme: loadTheme(),
-  strictVaultMode: loadBoolFlag(STRICT_VAULT_STORAGE, !import.meta.env.DEV),
-  // [harness-loop rig — DEV only, prod default stays true] The box runs with
-  // Bash enabled; a fresh isolated dev store defaulting it OFF makes probe
-  // workers honestly refuse shell tasks and fail probes for the wrong reason.
-  bashDisabled: loadBoolFlag(BASH_DISABLED_STORAGE, !import.meta.env.DEV),
   boxToken: localStorage.getItem(BOX_TOKEN_STORAGE) ?? "",
-  reasoningEffort: loadReasoningEffort(),
-  autoRouterCostBias: loadNumFlag(AUTO_COST_BIAS_STORAGE, 7),
   skills: [],
   busy: false,
   showSettings: false,
@@ -1011,15 +670,11 @@ export const useStore = create<State>((set) => ({
   voiceMicMuted: false,
   voiceError: null,
   viewport: null,
-  tokenUsage: { prompt: 0, completion: 0, total: 0 },
   lastContext: 0,
   busyStartedAt: null,
-  compactionSummary: null,
-  compacting: false,
   streamingText: "",
   streamingReasoning: "",
   liveTools: [],
-  agentTodos: [],
   convRuntime: {},
   notes: [],
   notesLoaded: false,
@@ -1037,7 +692,6 @@ export const useStore = create<State>((set) => ({
   voiceLastCapture: null,
   editorSelection: null,
   noteComposer: { open: false },
-  savedChats: loadSavedChats(),
   conversations: [],
   activeConversationId: null,
   conversationsLoaded: false,
@@ -1054,38 +708,13 @@ export const useStore = create<State>((set) => ({
       if (s.vaultPath === p) {
         return { vaultPath: p };
       }
-      // Snapshot the about-to-be-dropped chat into savedChats so
-      // bouncing back to the old vault can recover it via the recents
-      // popover. Same rolling-buffer logic as Clear / Pick Recent
-      // (saveCurrentChat), inlined here because we need it to land in
-      // the same set() as the vault swap. No-op if empty.
-      let nextSavedChats = s.savedChats;
-      if (s.messages.length > 0) {
-        const entry: SavedChat = {
-          id: `${Date.now().toString(36)}-${Math.random()
-            .toString(36)
-            .slice(2, 8)}`,
-          vaultPath: s.vaultPath,
-          title: deriveSavedChatTitle(s.messages),
-          savedAt: Date.now(),
-          messages: s.messages,
-          compactionSummary: s.compactionSummary,
-          lastContext: s.lastContext,
-          tokenUsage: s.tokenUsage,
-        };
-        const trimmed = s.savedChats.filter((c) => c.messages !== entry.messages);
-        nextSavedChats = [entry, ...trimmed].slice(0, SAVED_CHATS_MAX);
-      }
       // Open files / panes are tied to the prior vault. Leaving them
       // up after the switch would point at paths that don't exist in
       // the new vault, breaking save and reload.
       return {
         vaultPath: p,
-        savedChats: nextSavedChats,
         messages: [],
-        tokenUsage: { prompt: 0, completion: 0, total: 0 },
         lastContext: 0,
-        compactionSummary: null,
         streamingText: "",
         streamingReasoning: "",
         liveTools: [],
@@ -1486,25 +1115,6 @@ export const useStore = create<State>((set) => ({
       );
     }
   },
-  refreshCatalog: async () => {
-    const apiKeys = useStore.getState().apiKeys;
-    set({ catalogRefreshing: true });
-    try {
-      const { models, errors } = await fetchAllCatalog(apiKeys);
-      setLiveCatalog(models);
-      saveCatalogToLocalStorage(models);
-      set({ catalog: models, catalogErrors: errors, catalogRefreshing: false });
-    } catch (e) {
-      console.error("[catalog] refresh failed:", e);
-      set({ catalogRefreshing: false });
-    }
-  },
-  setModelId: (id) => {
-    localStorage.setItem(MODEL_STORAGE, id);
-    set({ modelId: id });
-  },
-  setAssistantModelId: (id) => { localStorage.setItem(ASSISTANT_MODEL_STORAGE, id); set({ assistantModelId: id }); },
-  setBackgroundModelId: (id) => { localStorage.setItem(BACKGROUND_MODEL_STORAGE, id); set({ backgroundModelId: id }); },
   setTheme: (t) => {
     localStorage.setItem(THEME_STORAGE, t);
     set({ theme: t });
@@ -1514,33 +1124,10 @@ export const useStore = create<State>((set) => ({
     localStorage.setItem(THEME_STORAGE, t);
     set({ theme: t });
   },
-  setAutoRouterCostBias: (n) => {
-    const clamped = Math.max(0, Math.min(10, Math.round(n)));
-    localStorage.setItem(AUTO_COST_BIAS_STORAGE, String(clamped));
-    setAutoRouterCostBias(clamped); // sync the providers module (fetch shim reads it)
-    set({ autoRouterCostBias: clamped });
-  },
-  setStrictVaultMode: (b) => {
-    localStorage.setItem(STRICT_VAULT_STORAGE, String(b));
-    if (b) {
-      localStorage.setItem(BASH_DISABLED_STORAGE, "true");
-      set({ strictVaultMode: true, bashDisabled: true });
-    } else {
-      set({ strictVaultMode: false });
-    }
-  },
-  setBashDisabled: (b) => {
-    localStorage.setItem(BASH_DISABLED_STORAGE, String(b));
-    set({ bashDisabled: b });
-  },
   setBoxToken: (token) => {
     const t = token.trim();
     localStorage.setItem(BOX_TOKEN_STORAGE, t);
     set({ boxToken: t });
-  },
-  setReasoningEffort: (e) => {
-    localStorage.setItem(REASONING_EFFORT_STORAGE, e);
-    set({ reasoningEffort: e });
   },
   setSkills: (s) => set({ skills: s }),
   setBusy: (b) => set({ busy: b }),
@@ -1579,89 +1166,6 @@ export const useStore = create<State>((set) => ({
   setVoiceConnecting: (b) => set({ voiceConnecting: b }),
   setVoiceCurrentTool: (name) => set({ voiceCurrentTool: name }),
   setViewport: (v) => set({ viewport: v }),
-  addTokenUsage: (u) =>
-    set((s) => ({
-      tokenUsage: {
-        prompt: s.tokenUsage.prompt + u.prompt,
-        completion: s.tokenUsage.completion + u.completion,
-        total: s.tokenUsage.total + u.total,
-      },
-    })),
-  setLastContext: (n) => set({ lastContext: n }),
-  setCompacting: (b) => set({ compacting: b }),
-  // Nothing is dropped: a divider carrying the summary goes in before the last
-  // `keepCount` messages (chatContext.ts). Messages are append-only on disk, so
-  // the old "replace the transcript with banner + tail" was refused by the
-  // never-shrink write and lost the summary on the next switch or reload.
-  applyCompaction: (summary, keepCount) =>
-    set((s) => ({
-      messages: withCompactionDivider(s.messages, summary, keepCount),
-      compactionSummary: null,
-      lastContext: 0,
-    })),
-  appendStreamingText: (s) => {
-    streamBuffer += s;
-    if (streamFlushTimer === null) {
-      streamFlushTimer = setTimeout(flushStreamBuffer, STREAM_FLUSH_MS);
-    }
-  },
-  setStreamingText: (s) => {
-    cancelStreamFlush();
-    set({ streamingText: s });
-  },
-  appendStreamingReasoning: (s) => {
-    reasoningBuffer += s;
-    if (reasoningFlushTimer === null) {
-      reasoningFlushTimer = setTimeout(flushReasoningBuffer, STREAM_FLUSH_MS);
-    }
-  },
-  clearStreamingReasoning: () => {
-    cancelReasoningFlush();
-    set({ streamingReasoning: "" });
-  },
-  pushLiveTool: (t) =>
-    set((prev) => {
-      // If we already created a placeholder via startLiveToolInput,
-      // upgrade it in place rather than pushing a duplicate.
-      const i = prev.liveTools.findIndex((x) => x.id === t.id);
-      if (i >= 0) {
-        const next = prev.liveTools.slice();
-        next[i] = { ...next[i], ...t };
-        return { liveTools: next };
-      }
-      return { liveTools: [...prev.liveTools, t] };
-    }),
-  startLiveToolInput: (id, name) =>
-    set((prev) => {
-      if (prev.liveTools.some((t) => t.id === id)) return prev;
-      const placeholder: LiveTool = {
-        id,
-        name,
-        input: undefined,
-        startedAt: Date.now(),
-        inputChars: 0,
-      };
-      return { liveTools: [...prev.liveTools, placeholder] };
-    }),
-  appendLiveToolInputDelta: (id, delta) =>
-    set((prev) => ({
-      liveTools: prev.liveTools.map((t) =>
-        t.id === id ? { ...t, inputChars: (t.inputChars ?? 0) + delta.length } : t,
-      ),
-    })),
-  updateLiveToolResult: (id, result) =>
-    set((prev) => ({
-      liveTools: prev.liveTools.map((t) => (t.id === id ? { ...t, result } : t)),
-    })),
-  setLiveToolEta: (id, seconds) =>
-    set((prev) => ({
-      liveTools: prev.liveTools.map((t) =>
-        t.id === id ? { ...t, etaSeconds: seconds } : t,
-      ),
-    })),
-  setAgentTodos: (todos) => set({ agentTodos: todos }),
-  setConversationTodos: (id, todos) =>
-    set((s) => ({ conversations: s.conversations.map((c) => (c.id === id ? { ...c, todos } : c)) })),
   loadNotes: async () => {
     const vault = useStore.getState().vaultPath;
     if (!vault) return;
@@ -1735,14 +1239,8 @@ export const useStore = create<State>((set) => ({
     if (!vault) return;
     const note = state.notes.find((n) => n.id === id);
     if (!note) return;
-    const spec = findModel(state.modelId);
-    const apiKey = spec ? state.apiKeys[spec.provider] : undefined;
-    if (!spec || !apiKey) {
-      console.warn("[notes] reformat skipped: no model + key");
-      return;
-    }
     try {
-      const formatted = await formatNote(note, spec, apiKey);
+      const formatted = await formatNote(note);
       // Write-first, then commit to memory, so a crash between steps
       // leaves either both (disk + memory) or neither — not a "memory
       // has summary, disk doesn't, restart nukes it" state.
@@ -1795,21 +1293,6 @@ export const useStore = create<State>((set) => ({
       },
     }),
   closeNoteComposer: () => set({ noteComposer: { open: false } }),
-  resetStreaming: () => {
-    cancelStreamFlush();
-    cancelReasoningFlush();
-    set({ streamingText: "", streamingReasoning: "", liveTools: [], agentTodos: [] });
-  },
-  setConvRuntime: (id, rt) =>
-    set((s) => ({ convRuntime: { ...s.convRuntime, [id]: rt } })),
-  setBusyStartedAt: (t) => set({ busyStartedAt: t }),
-  clearConvRuntime: (id) =>
-    set((s) => {
-      if (!(id in s.convRuntime)) return {};
-      const next = { ...s.convRuntime };
-      delete next[id];
-      return { convRuntime: next };
-    }),
   applyChatState: (s) =>
     set((prev) => {
       // Preserve existing messages reference if the incoming list is
@@ -1832,11 +1315,7 @@ export const useStore = create<State>((set) => ({
       return {
         vaultPath: s.vaultPath,
         messages: nextMessages,
-        modelId: s.modelId ?? prev.modelId,
-        tokenUsage: s.tokenUsage ?? prev.tokenUsage,
         lastContext: s.lastContext ?? prev.lastContext,
-        compactionSummary: s.compactionSummary ?? null,
-        compacting: s.compacting ?? false,
         currentFile: s.currentFile !== undefined ? s.currentFile : prev.currentFile,
         panes: nextPanes,
         files: s.files ?? prev.files,
@@ -1848,231 +1327,39 @@ export const useStore = create<State>((set) => ({
   applyChatStream: (s) =>
     set((prev) => {
       const incomingTools = s.liveTools ?? [];
-      const incomingTodos = s.agentTodos ?? [];
       return {
         busy: s.busy,
         streamingText: s.streamingText ?? "",
         streamingReasoning: s.streamingReasoning ?? "",
         liveTools: liveToolsEqual(prev.liveTools, incomingTools) ? prev.liveTools : incomingTools,
-        agentTodos: todosEqual(prev.agentTodos, incomingTodos) ? prev.agentTodos : incomingTodos,
-      };
-    }),
-  clearMessages: () =>
-    set({
-      messages: [],
-      tokenUsage: { prompt: 0, completion: 0, total: 0 },
-      lastContext: 0,
-      compactionSummary: null,
-      agentTodos: [],
-    }),
-  saveCurrentChat: () =>
-    set((s) => {
-      if (s.messages.length === 0) return {};
-      const entry: SavedChat = {
-        id: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
-        vaultPath: s.vaultPath,
-        title: deriveSavedChatTitle(s.messages),
-        savedAt: Date.now(),
-        messages: s.messages,
-        compactionSummary: s.compactionSummary,
-        lastContext: s.lastContext,
-        tokenUsage: s.tokenUsage,
-      };
-      // Prune any older entry that already matches by message ref —
-      // happens when the user loads then immediately re-saves the same
-      // chat without changes.
-      const trimmed = s.savedChats.filter((c) => c.messages !== entry.messages);
-      const next = [entry, ...trimmed].slice(0, SAVED_CHATS_MAX);
-      return { savedChats: next };
-    }),
-  loadSavedChat: (id) =>
-    set((s) => {
-      const entry = s.savedChats.find((c) => c.id === id);
-      if (!entry) return {};
-      return {
-        messages: entry.messages,
-        compactionSummary: entry.compactionSummary,
-        lastContext: entry.lastContext,
-        tokenUsage: entry.tokenUsage,
-        agentTodos: [],
-        streamingText: "",
-        streamingReasoning: "",
-        liveTools: [],
       };
     }),
   loadConversations: async () => {
     const vault = useStore.getState().vaultPath;
     if (!vault) return;
-    // [phase 2] Box mode: once the git-synced history is loaded, the box takes
-    // over the chat (list, live turns, sending). No-op outside box mode.
-    const startBox = () => {
+    // The conversations are the box's event log, never files on this disk
+    // (src/boxChat.ts fills the list from the box, or from its cache). No box:
+    // no chat, and the pane says so.
+    const bc = await import("./boxChat");
+    if (!(await bc.boxLinkFor(vault).catch(() => null))) {
       if (useStore.getState().vaultPath !== vault) return;
-      void import("./boxChat")
-        .then((m) => m.startBoxChat(vault))
-        .catch((e) => console.warn("[box-chat] start failed:", e));
-    };
-    // Box mode: the conversations are the box's event log, never files on this
-    // disk (src/boxChat.ts fills the list from the box, or from its cache).
-    try {
-      const bc = await import("./boxChat");
-      if (await bc.boxLinkFor(vault)) {
-        const fresh = emptyConversation();
-        const saved = savedActiveConvId(vault);
-        useStore.setState({
-          boxChat: useStore.getState().boxChat ?? { on: true, reachable: null, reason: "" },
-          conversations: saved ? [] : [fresh],
-          activeConversationId: saved ?? fresh.id,
-          conversationsLoaded: true,
-          messages: [],
-          streamingText: "",
-          streamingReasoning: "",
-          liveTools: [],
-        });
-        startBox();
-        return;
-      }
-    } catch {
-      /* not box mode */
-    }
-    try {
-      await loadConversationsInner(vault);
-    } finally {
-      startBox();
-    }
-  },
-  refreshConversationFromDisk: async (vault, convId) => {
-    // Non-destructive: pull ONE conversation's latest on-disk state into
-    // the in-memory list without disturbing the user's active view. Used
-    // after a headless scheduled / off-vault run so its result appears
-    // live if the user is on that vault, without yanking focus the way
-    // loadConversations() would.
-    if (useStore.getState().vaultPath !== vault) return;
-    try {
-      const list = await readConversations(vault);
-      const updated = list.find((c) => c.id === convId);
-      if (!updated) return;
-      set((s) => {
-        const exists = s.conversations.some((c) => c.id === convId);
-        const conversations = exists
-          ? s.conversations.map((c) => (c.id === convId ? updated : c))
-          : [updated, ...s.conversations];
-        // Only refresh the visible message list when the user is actually
-        // looking at this conversation and nothing is mid-run.
-        if (s.activeConversationId === convId && !s.busy) {
-          return { conversations, messages: updated.messages };
-        }
-        return { conversations };
-      });
-    } catch (e) {
-      console.warn("[conversations] refresh-from-disk failed:", e);
-    }
-  },
-  refreshConversationsFromDisk: async (vault) => {
-    // After a sync pull brings conversation changes in from another machine
-    // (e.g. a reply you wrote on your phone), merge the on-disk state into the
-    // in-memory list so it appears WITHOUT an app restart — the list-level
-    // sibling of refreshConversationFromDisk.
-    //
-    // SELF-CORRECTING by design: the update decision is recomputed from the
-    // CURRENT store + disk on every pull, never gated by a one-shot signature.
-    // An earlier signature-dedup version stranded the open thread — if the pull
-    // that carried the change happened to land while the thread was momentarily
-    // busy, the message pane was skipped AND the dedup then blocked every later
-    // pull from retrying, so it took an app restart. Now a skipped pane simply
-    // refreshes on the next pull once it's safe.
-    //
-    // Non-destructive: a conversation running locally keeps its live in-memory
-    // copy; disk only wins when it's genuinely newer (more messages, or changed
-    // metadata at equal length), so a not-yet-flushed local edit is never
-    // clobbered (mirrors the persist merge); brand-new local conversations are
-    // never dropped by omission; the open thread's messages refresh only when
-    // nothing is mid-run.
-    if (useStore.getState().vaultPath !== vault) return;
-    if (!useStore.getState().conversationsLoaded) return; // initial load owns the first read
-    if (useStore.getState().boxChat?.on) return; // box mode: the box's log, never these files
-    let list: Conversation[];
-    try {
-      list = await readConversations(vault);
-    } catch (e) {
-      console.warn("[conversations] list refresh-from-disk failed:", e);
+      useStore.setState({ boxChat: { on: false, reachable: null, reason: "" }, conversations: [], activeConversationId: null, conversationsLoaded: true, messages: [], streamingText: "", streamingReasoning: "", liveTools: [] });
       return;
     }
-    if (list.length === 0) return;
-    if (useStore.getState().vaultPath !== vault) return; // vault switched during the read
-    set((s) => {
-      const byId = new Map(list.map((c) => [c.id, c]));
-      const seen = new Set<string>();
-      const merged: Conversation[] = [];
-      let listChanged = false;
-      for (const cur of s.conversations) {
-        seen.add(cur.id);
-        const disk = byId.get(cur.id);
-        // Keep the in-memory copy when there's no disk version yet (a brand-new
-        // local conversation not committed) or it's running locally (its live
-        // stream is newer than disk).
-        if (!disk || cur.status === "running") {
-          merged.push(cur);
-          continue;
-        }
-        // Terminal state is monotonic (defense-in-depth behind the Rust
-        // reconstruct guard): once a mission is completed in memory, a disk copy
-        // that isn't terminal must never revert it — that's the resurrection bug
-        // where a stray post-completion wake re-surfaced a finished mission.
-        if (cur.completedAt && !disk.completedAt) {
-          merged.push(cur);
-          continue;
-        }
-        // Disk wins only when it's genuinely newer: it holds every message this
-        // copy shows, and more (an append from another machine) — never an older
-        // copy over a newer one. A disk copy that's BEHIND memory (a local edit
-        // not yet flushed) is ignored. Changed metadata at the same messages
-        // takes the disk's meta only.
-        const curMsgs = cur.id === s.activeConversationId ? s.messages : cur.messages;
-        const msgsNewer = diskIsNewer(curMsgs, disk.messages);
-        const metaNewer =
-          disk.lastActivityAt !== cur.lastActivityAt || disk.title !== cur.title || disk.unread !== cur.unread;
-        if (msgsNewer) {
-          merged.push(disk);
-          listChanged = true;
-        } else if (metaNewer && disk.messages.length === curMsgs.length) {
-          merged.push({ ...disk, messages: cur.messages, status: cur.status, runStartedAt: cur.runStartedAt });
-          listChanged = true;
-        } else {
-          merged.push(cur);
-        }
-      }
-      // Conversations on disk but not in memory were created on another machine.
-      for (const d of list) {
-        if (!seen.has(d.id)) {
-          merged.push(d);
-          listChanged = true;
-        }
-      }
-      // Refresh the visible message pane only when the open thread isn't mid-run
-      // and disk is a newer copy of what it shows (a remote append) — so a phone
-      // reply to the thread you're reading appears live without interrupting a
-      // local stream or putting an older copy over what is on screen.
-      const activeId = s.activeConversationId;
-      const activeDisk = activeId ? byId.get(activeId) : undefined;
-      const activeRunning =
-        s.conversations.find((c) => c.id === activeId)?.status === "running";
-      const messagesStale =
-        !!activeDisk &&
-        !s.busy &&
-        !activeRunning &&
-        !s.streamingText &&
-        diskIsNewer(s.messages, activeDisk.messages);
-
-      if (!listChanged && !messagesStale) return {}; // nothing to apply → no re-render
-
-      const patch: Partial<State> = {};
-      if (listChanged) {
-        merged.sort((a, b) => b.lastActivityAt - a.lastActivityAt);
-        patch.conversations = merged;
-      }
-      if (messagesStale) patch.messages = activeDisk!.messages;
-      return patch;
+    const fresh = emptyConversation();
+    const saved = savedActiveConvId(vault);
+    useStore.setState({
+      boxChat: useStore.getState().boxChat?.on ? useStore.getState().boxChat : { on: true, reachable: null, reason: "" },
+      conversations: saved ? [] : [fresh],
+      activeConversationId: saved ?? fresh.id,
+      conversationsLoaded: true,
+      messages: [],
+      streamingText: "",
+      streamingReasoning: "",
+      liveTools: [],
     });
+    if (useStore.getState().vaultPath !== vault) return;
+    void bc.startBoxChat(vault).catch((e) => console.warn("[box-chat] start failed:", e));
   },
   newConversation: (id) => {
     const fresh = id ? { ...emptyConversation(), id } : emptyConversation();
@@ -2225,26 +1512,6 @@ export const useStore = create<State>((set) => ({
         ),
       };
     }),
-  appendMessageToConversation: (id, m) =>
-    set((s) => ({
-      conversations: s.conversations.map((c) =>
-        c.id === id
-          ? {
-              ...c,
-              messages: [...c.messages, withMid(m)],
-              lastActivityAt: Date.now(),
-              // [unread hygiene] Never badge worker/mission threads — they live on
-              // the Activity surface, not the chat list, so a background turn
-              // appending to one must not mark it unread (the "everything's unread"
-              // noise). Only user-facing chats the user isn't looking at go unread.
-              unread:
-                s.activeConversationId === id || c.source === "worker" || c.source === "mission"
-                  ? c.unread
-                  : true,
-            }
-          : c,
-      ),
-    })),
   setBoxChat: (b) => set({ boxChat: b }),
   rekeyConversation: (from, to) => {
     if (from === to) return;
@@ -2284,29 +1551,8 @@ export const useStore = create<State>((set) => ({
       persistActiveConvId(useStore.getState().vaultPath, to);
     }
   },
-  setConversationStatus: (id, status) =>
-    set((s) => ({
-      conversations: s.conversations.map((c) => {
-        if (c.id !== id) return c;
-        if (status === "running") {
-          // Stamp the run start once, on the idle→running edge, so the elapsed
-          // clock counts from when the prompt was sent and stays continuous
-          // across open/close, reload, and phone↔desktop. A re-entrant "running"
-          // (a multi-turn agent loop that never went idle) keeps its original
-          // start instead of resetting to now.
-          const runStartedAt =
-            c.status === "running" && c.runStartedAt ? c.runStartedAt : Date.now();
-          return { ...c, status, runStartedAt };
-        }
-        // Run ended — drop the start so a later open doesn't show a phantom clock.
-        return { ...c, status, runStartedAt: undefined };
-      }),
-    })),
-}));
 
-// Sync the persisted auto-router cost bias into the providers module on
-// boot (its fetch shim reads a module-level copy, not the store).
-setAutoRouterCostBias(useStore.getState().autoRouterCostBias);
+}));
 
 // Mirror the live `messages` / `busy` view back into the active
 // conversation entry. Called from any action that swaps the active
@@ -2325,8 +1571,6 @@ function snapshotRuntime(s: State): Record<string, ConvRuntime> {
       streamingText: s.streamingText,
       streamingReasoning: s.streamingReasoning,
       liveTools: s.liveTools,
-      agentTodos: s.agentTodos,
-      tokenUsage: s.tokenUsage,
       lastContext: s.lastContext,
       startedAt: s.busyStartedAt ?? prev?.startedAt,
     },
@@ -2359,74 +1603,6 @@ function syncActiveMessages(s: State): Conversation[] {
   });
 }
 
-function deriveSavedChatTitle(messages: ChatMessage[]): string {
-  for (const m of messages) {
-    if (m.role !== "user") continue;
-    const trimmed = (m.content ?? "").trim();
-    if (!trimmed) continue;
-    const firstLine = trimmed.split(/\r?\n/)[0]!;
-    return firstLine.length <= 80 ? firstLine : firstLine.slice(0, 77) + "…";
-  }
-  return "(no prompt)";
-}
-
-function loadSavedChats(): SavedChat[] {
-  try {
-    const raw = localStorage.getItem(SAVED_CHATS_STORAGE);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    return parsed.slice(0, SAVED_CHATS_MAX);
-  } catch (e) {
-    console.warn("[saved-chats] load failed:", e);
-    return [];
-  }
-}
-
-// Mirror live `messages` + busy state into the active conversation
-// entry, debounce-write the conversations list to disk. Skip while
-// the conversations list is empty (not yet loaded) so we don't write
-// over a real on-disk file with a no-op empty.
-let conversationsPersistTimer: ReturnType<typeof setTimeout> | null = null;
-let conversationsPersistVault: string | null = null;
-function scheduleConversationsPersist(vault: string) {
-  // [phase 2] Box mode: the box authors every conversation; nothing to write
-  // (lib.rs refuses too — this just skips the read-merge round trip).
-  if (useStore.getState().boxChat?.on) return;
-  conversationsPersistVault = vault;
-  if (conversationsPersistTimer !== null) return;
-  conversationsPersistTimer = setTimeout(() => {
-    conversationsPersistTimer = null;
-    const v = conversationsPersistVault;
-    if (!v || useStore.getState().boxChat?.on) return;
-    // Persist UNDER the shared conversation lock with a non-destructive merge.
-    // Background runs (offVaultRun: missions, workers, wakes) advance
-    // conversations on disk via the same lock; a blind memory→disk rewrite here
-    // would clobber their appends — that's what dropped the mission brief and
-    // truncated worker threads. Inside the lock, read disk and, per
-    // conversation, keep whichever copy has MORE messages (append-only ⇒ more =
-    // newer), then union in disk-only conversations memory hasn't seen.
-    void withConvLock(async () => {
-      const state = useStore.getState();
-      if (state.vaultPath !== v) return;
-      let disk: Conversation[] = [];
-      try {
-        disk = await readConversations(v);
-      } catch {
-        disk = [];
-      }
-      const diskById = new Map(disk.map((c) => [c.id, c]));
-      const memIds = new Set(state.conversations.map((c) => c.id));
-      const merged = state.conversations.map((c) => {
-        const d = diskById.get(c.id);
-        return d && d.messages.length > c.messages.length ? d : c;
-      });
-      for (const d of disk) if (!memIds.has(d.id)) merged.push(d);
-      await writeConversations(v, merged);
-    }).catch((e) => console.warn("[conversations] persist failed:", e));
-  }, 500);
-}
-
 let conversationsLastMessagesRef: ChatMessage[] | null = null;
 let conversationsLastBusy = false;
 let conversationsLastListRef: Conversation[] | null = null;
@@ -2446,114 +1622,8 @@ useStore.subscribe((state) => {
     if (synced !== state.conversations) {
       useStore.setState({ conversations: synced });
       conversationsLastListRef = synced;
-      if (state.vaultPath) scheduleConversationsPersist(state.vaultPath);
       return;
     }
   }
   conversationsLastListRef = state.conversations;
-  if (state.vaultPath) scheduleConversationsPersist(state.vaultPath);
 });
-
-let savedChatsLastSig = "";
-useStore.subscribe((state) => {
-  // Defensive: never crash the subscribe pipeline if the field is
-  // somehow missing — Zustand state shape can drift across refactors
-  // and the popout's installPopoutSync overwrites partial state.
-  const list = state.savedChats ?? [];
-  const sig = list.map((c) => c.id).join("|");
-  if (sig === savedChatsLastSig) return;
-  savedChatsLastSig = sig;
-  try {
-    localStorage.setItem(SAVED_CHATS_STORAGE, JSON.stringify(list));
-  } catch (e) {
-    console.warn("[saved-chats] persist failed:", e);
-  }
-});
-
-// Persist chat history to localStorage so HMR reloads (or crashes) don't
-// nuke the conversation mid-edit. We only snapshot finalized fields —
-// streaming text, live tools, and todos are mid-turn ephemera that would
-// be stale or misleading if restored across a reload.
-type PersistedChat = {
-  vaultPath: string | null;
-  messages: ChatMessage[];
-  compactionSummary: string | null;
-  lastContext: number;
-  tokenUsage: { prompt: number; completion: number; total: number };
-};
-
-let persistTimer: ReturnType<typeof setTimeout> | null = null;
-function schedulePersist() {
-  if (persistTimer !== null) return;
-  persistTimer = setTimeout(() => {
-    persistTimer = null;
-    try {
-      const s = useStore.getState();
-      const snapshot: PersistedChat = {
-        vaultPath: s.vaultPath,
-        messages: s.messages,
-        compactionSummary: s.compactionSummary,
-        lastContext: s.lastContext,
-        tokenUsage: s.tokenUsage,
-      };
-      localStorage.setItem(CHAT_STORAGE, JSON.stringify(snapshot));
-    } catch (e) {
-      console.warn("[chat] persist failed:", e);
-    }
-  }, 500);
-}
-
-let lastSig = "";
-useStore.subscribe((state) => {
-  const sig = `${state.vaultPath ?? ""}|${state.messages.length}|${state.lastContext}|${state.tokenUsage.total}|${state.compactionSummary ?? ""}`;
-  if (sig === lastSig) return;
-  lastSig = sig;
-  schedulePersist();
-});
-
-/** Restore persisted chat from a previous session. Only restores if the
- *  persisted vault matches the currently-selected vault — switching
- *  vaults always starts fresh. Call after hydrateKeychain in main.tsx. */
-export function hydratePersistedChat(): void {
-  try {
-    const raw = localStorage.getItem(CHAT_STORAGE);
-    if (!raw) return;
-    const parsed = JSON.parse(raw) as PersistedChat;
-    const current = useStore.getState().vaultPath;
-    if (parsed.vaultPath !== current) return;
-    useStore.setState({
-      messages: parsed.messages ?? [],
-      compactionSummary: parsed.compactionSummary ?? null,
-      lastContext: parsed.lastContext ?? 0,
-      tokenUsage: parsed.tokenUsage ?? { prompt: 0, completion: 0, total: 0 },
-    });
-  } catch (e) {
-    console.warn("[chat] hydrate failed:", e);
-  }
-}
-
-// One-shot migration: when the ElevenLabs Conversational AI pipeline
-// lands, the user asked us to clear out test chats from the prior
-// voice-mode iterations so the new conversation starts fresh. The flag
-// makes this idempotent — runs once per install on first boot after
-// the upgrade.
-const VOICE_V2_CLEAR_FLAG = "vault_chat_voice_v2_cleared";
-export function maybeClearMessagesForVoiceV2(): void {
-  try {
-    if (localStorage.getItem(VOICE_V2_CLEAR_FLAG) === "1") return;
-    localStorage.removeItem(CHAT_STORAGE);
-    useStore.setState({
-      messages: [],
-      compactionSummary: null,
-      lastContext: 0,
-      tokenUsage: { prompt: 0, completion: 0, total: 0 },
-      streamingText: "",
-      streamingReasoning: "",
-      liveTools: [],
-      agentTodos: [],
-    });
-    localStorage.setItem(VOICE_V2_CLEAR_FLAG, "1");
-  } catch (e) {
-    console.warn("[chat] voice-v2 clear failed:", e);
-  }
-}

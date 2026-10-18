@@ -18,15 +18,11 @@ import { ChatWindow } from "./ChatWindow";
 import { installMainSync, installPopoutSync } from "./sync";
 import {
   hydrateKeychain,
-  hydratePersistedChat,
-  maybeClearMessagesForVoiceV2,
   useStore,
 } from "./store";
 import { installDebugLog, flushDebugLogToDisk, vlog } from "./debugLog";
 import { afterVaultReady, bootMark, installBootTiming } from "./bootTiming";
 import { installAutosaveNet } from "./autosave";
-import { startPhoneVoiceHost } from "./phoneVoice";
-import { startPhoneAppHost } from "./phoneApp";
 import { initBackgroundMode } from "./background";
 import { installClientEvents } from "./clientEvents";
 import { installDiagShortcut } from "./diag";
@@ -73,11 +69,6 @@ if (isPopout) {
   // Pull any existing API keys out of the OS keychain into the store,
   // migrating them out of legacy localStorage on the first run.
   hydrateKeychain().catch((e) => console.warn("[keys] hydrate failed:", e));
-  // Restore chat from the previous session (HMR reload, crash, restart).
-  hydratePersistedChat();
-  // One-shot wipe of pre-ElevenLabs voice-mode chat history. Runs
-  // once per install thanks to a localStorage flag, then no-ops.
-  maybeClearMessagesForVoiceV2();
   // Durability safety net: periodic backstop + commit-on-quit so no vault
   // change can reach disk without reaching git. Main window only.
   installAutosaveNet();
@@ -85,13 +76,6 @@ if (isPopout) {
   // (Ctrl+Shift+D → .vault-chat/diag/). Main window only.
   installClientEvents();
   installDiagShortcut();
-  // Always-ready phone-voice host: the box keeps a token-guarded server up so a
-  // phone can connect over Tailscale and talk live. Inert until a vault + EL key
-  // exist. Main window only.
-  void startPhoneVoiceHost();
-  // Phone chat host: relays /phone PWA traffic (messages, status, kill, push)
-  // through the same server. Main window only.
-  void startPhoneAppHost();
   // Reconcile "run in background" (always-on tray daemon) with the Rust
   // close-to-tray gate and the OS login item. Main window only; popouts must
   // never register autostart or hold the app alive on close.

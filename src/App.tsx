@@ -27,8 +27,8 @@ import {
   stopVaultSyncLoop,
   focusVaultSync,
   readVaultSyncConfig,
+  trackedVaults,
 } from "./vaultSync";
-import { startSchedulerLoop, stopSchedulerLoop } from "./schedulerLoop";
 import { startActivityWatch } from "./activity";
 import { bootMark } from "./bootTiming";
 import "./App.css";
@@ -298,7 +298,7 @@ export default function App() {
   }, [vaultPath, elevenKey]);
 
 
-  // Vault auto-sync — multi-vault, like the scheduler below. A sync-enabled
+  // Vault auto-sync — multi-vault. A sync-enabled
   // vault syncs in the BACKGROUND for the whole session, so switching to a
   // different vault never strands the one you left (the old single-loop design
   // silently stopped syncing everything but the foreground vault). On launch,
@@ -306,8 +306,7 @@ export default function App() {
   // torn down only on app unmount.
   useEffect(() => {
     void (async () => {
-      const { getTrackedVaults } = await import("./schedulerLoop");
-      for (const v of getTrackedVaults()) {
+      for (const v of trackedVaults()) {
         try {
           const cfg = await readVaultSyncConfig(v);
           if (cfg.enabled) await ensureVaultSyncLoop(v);
@@ -328,39 +327,6 @@ export default function App() {
     if (!vaultPath) return;
     void ensureVaultSyncLoop(vaultPath);
     focusVaultSync();
-  }, [vaultPath]);
-
-  // Scheduled agent runs — multi-vault. On app launch, start a
-  // scheduler loop for every vault we've ever opened (tracked in
-  // localStorage). Whenever a new vault is opened, start its loop
-  // too. Loops persist across vault switches so a schedule for
-  // vault-B fires at its time even when you're working in vault-A.
-  useEffect(() => {
-    void (async () => {
-      const { getTrackedVaults, startSchedulerLoop } = await import("./schedulerLoop");
-      const tracked = getTrackedVaults();
-      // [harness-loop rig — DEV only, prod tree-shakes this out] Inject a
-      // headless scratch vault so the local rig fires it via offVaultRun
-      // (tracked-but-NOT-active), faithfully mirroring the box. Set
-      // VITE_DEV_TRACKED_VAULT to the scratch vault path at launch.
-      if (import.meta.env.DEV) {
-        const devTracked = (import.meta.env as unknown as Record<string, string | undefined>)
-          .VITE_DEV_TRACKED_VAULT;
-        if (devTracked && !tracked.includes(devTracked)) tracked.push(devTracked);
-      }
-      for (const v of tracked) {
-        void startSchedulerLoop(v);
-      }
-    })();
-    return () => {
-      // Stop all loops on app unmount.
-      stopSchedulerLoop();
-    };
-  }, []);
-  // When a new vault is opened, make sure its loop is running too.
-  useEffect(() => {
-    if (!vaultPath) return;
-    void startSchedulerLoop(vaultPath);
   }, [vaultPath]);
 
   // Cross-machine sync — daemon (server) or client (consumer) per the
@@ -389,19 +355,12 @@ export default function App() {
         console.warn("[keystore] auto-import failed:", e),
       );
     })();
-    // Seed this vault's agent config (system.md + voice.md) from the bundled
-    // defaults if absent — migrating any older flat files — so the agent's
-    // prompts live in the vault at .vault-chat/agent/ and sync across machines.
+    // Seed this vault's voice prompt (.vault-chat/agent/voice.md, which the box's
+    // voice agent reads) from the bundled default if absent.
     void (async () => {
-      const { ensureVaultSystemPrompt, ensureVaultVoicePrompt, ensureVaultAssistantPrompt } = await import("./meta");
-      await ensureVaultSystemPrompt(vaultPath).catch((e) =>
-        console.warn("[agent-cfg] ensure system prompt failed:", e),
-      );
+      const { ensureVaultVoicePrompt } = await import("./meta");
       await ensureVaultVoicePrompt(vaultPath).catch((e) =>
         console.warn("[agent-cfg] ensure voice prompt failed:", e),
-      );
-      await ensureVaultAssistantPrompt(vaultPath).catch((e) =>
-        console.warn("[agent-cfg] ensure assistant prompt failed:", e),
       );
     })();
   }, [vaultPath]);
