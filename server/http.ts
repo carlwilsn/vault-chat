@@ -25,6 +25,8 @@ import PHONE_APP from "vc:phone-app";
 import BOARD_APP from "vc:board-app";
 import { addAsset, assetFile, createBoard, deleteBoard, getBoard, listBoards, overviewPng, renameBoard, saveBoard } from "./boards";
 import { addToBoard, getEntry, listEntries, markAdded, markRead, partFile, sendEntry, type InboxCtx } from "./inbox";
+import { boxLogs } from "./boxLogs";
+import { boardLogPost, boxDiag } from "./diag";
 
 /** A vault on this box, as the routes see it (engine/index.ts VaultRef). */
 export type VaultScope = { name: string; path: string; bare: string; main: boolean };
@@ -417,6 +419,16 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
     return json(res, out.status, out.body);
   }
 
+  // The whiteboard's own log (board/src/log.ts): batched events → <state>/logs/board.jsonl.
+  if (path === "/api/v1/board/log" && method === "POST") {
+    const out = boardLogPost({ stateDir: cfg.stateDir, vaultName: scope.name, ua: String(req.headers["user-agent"] ?? "") }, await jsonBody(req));
+    return json(res, out.status, out.body);
+  }
+  // The box's half of a diag bundle (server/diag.ts): the last N minutes of its logs, redacted.
+  if (path === "/api/v1/diag" && method === "GET") {
+    return json(res, 200, boxDiag({ stateDir: cfg.stateDir, vault, vaultName: scope.name, version: SERVER_VERSION, rev: SERVER_REV ?? null, minutes: Number(q("minutes") || 15) }));
+  }
+
   // The whiteboard (server/boards.ts): boards/<slug>/ in this vault.
   if (path === "/api/v1/boards" || path.startsWith("/api/v1/boards/")) {
     const [slugRaw, file, more, ...rest] = path.slice("/api/v1/boards/".length).split("/");
@@ -471,7 +483,9 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
   if (path === "/api/v2/intent" && method === "POST") {
     if (!hooks.engine) return json(res, 503, { error: "engine not running" });
     const b = await jsonBody(req);
+    const t0 = Date.now();
     const out = await hooks.engine.intent(scope, b).catch((e) => ({ error: String((e as Error)?.message ?? e) }));
+    logIntent(cfg.stateDir, scope.name, req, b, out, Date.now() - t0);
     return json(res, (out as any).error ? 409 : 200, out);
   }
 
@@ -559,7 +573,10 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
       return relayRoute(res, "phone:status", {}, 10_000, "app not answering — is a vault open?");
     case "POST /message": {
       const b = await jsonBody(req);
-      return engineRoute(res, scope, hooks.engine?.message, b, "phone:msg", 15_000, "app not answering — is a vault open?");
+      const t0 = Date.now();
+      return engineRoute(res, scope, hooks.engine?.message, b, "phone:msg", 15_000, "app not answering — is a vault open?", (out) =>
+        logIntent(cfg.stateDir, scope.name, req, { ...b, type: b.queue ? "queue" : "message", clientId: b.clientMsgId }, out, Date.now() - t0),
+      );
     }
     case "POST /answer": {
       const b = await jsonBody(req);
@@ -642,6 +659,26 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
     default:
       return json(res, 404, { error: "not found" });
   }
+}
+
+/** One intent in the box's turn log (server/boxLogs.ts): which client asked what of which conversation, under which message id, and how it went. */
+function logIntent(stateDir: string, vault: string, req: IncomingMessage, b: any, out: any, ms: number): void {
+  const ua = String(req.headers["user-agent"] ?? "");
+  const client = typeof b?.client === "string" && b.client ? b.client.slice(0, 20) : /iPad|iPhone|Android/.test(ua) ? "phone" : null;
+  const result = out && typeof out === "object" ? ["steered", "queued", "answered", "duplicate", "unqueued"].filter((k) => out[k]) : [];
+  boxLogs(stateDir).turns.append({
+    at: new Date().toISOString(),
+    ev: "intent",
+    vault,
+    type: String(b?.type ?? "?").slice(0, 20),
+    conv: (typeof b?.convId === "string" && b.convId) || (typeof out?.convId === "string" ? out.convId : null),
+    cmid: typeof b?.clientId === "string" ? b.clientId : typeof b?.id === "string" ? b.id : null,
+    client,
+    ok: !out?.error && out?.ok !== false,
+    ms,
+    ...(result.length ? { outcome: result.join(",") } : {}),
+    ...(out?.error ? { error: String(out.error).slice(0, 300) } : {}),
+  });
 }
 
 /** The old voice page's current voice conversation, per vault. */

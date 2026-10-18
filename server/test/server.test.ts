@@ -75,6 +75,22 @@ describe("auth", () => {
     expect((await get("notes/missing.md")).status).toBe(404);
     expect((await get("notes/ideas.md", viaServe)).status).toBe(401);
   });
+  it("/api/v1/board/log and /api/v1/diag: the board's batch lands in the box's log and comes back in the diag window, redacted, behind auth", async () => {
+    const post = (h: Record<string, string> = {}) =>
+      fetch(srv.base + "/api/v1/board/log", {
+        method: "POST",
+        headers: { "content-type": "application/json", "user-agent": "Mozilla/5.0 (iPad)", ...h },
+        body: JSON.stringify({ session: "s9", events: [{ at: new Date().toISOString(), ev: "save.fail", status: 503, error: "Bearer sk-or-v1-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }] }),
+      });
+    expect((await post(viaServe)).status).toBe(401);
+    expect(await (await post()).json()).toEqual({ ok: true, n: 1 });
+    expect((await fetch(srv.base + "/api/v1/diag", { headers: viaServe })).status).toBe(401);
+    const d = await (await fetch(srv.base + "/api/v1/diag?minutes=5")).json();
+    expect(d.minutes).toBe(5);
+    expect(d.board).toEqual([expect.objectContaining({ ev: "save.fail", status: 503, ua: "iPad", session: "s9" })]);
+    expect(JSON.stringify(d)).not.toContain("sk-or-v1-aaaa");
+    expect(JSON.stringify(d)).not.toContain(TOKEN);
+  });
 });
 
 describe("/poll cursors (the restart itself: convlogServer.test.ts)", () => {

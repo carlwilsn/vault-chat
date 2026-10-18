@@ -894,7 +894,7 @@ export function boot(): void {
     outgoing.push({ id, convId: target, text, images: imgs.map((x) => x.url), ...(kind === "steer" ? { kind: "steer" as const } : {}) });
     scheduleRender(); scrollDown(true);
     try {
-      const r = await api("/api/v2/intent", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ type: kind, convId: target, clientId: id, text: typed, ...(imgs.length ? { images: imgs.map((x) => ({ name: x.name, mime: x.mime, dataBase64: x.url.slice(x.url.indexOf(",") + 1) })) } : {}), ...(fresh && newChatProject ? { project: projects.find((x) => x.slug === newChatProject)?.name || newChatProject } : {}) }) });
+      const r = await api("/api/v2/intent", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ type: kind, convId: target, clientId: id, client: "phone", text: typed, ...(imgs.length ? { images: imgs.map((x) => ({ name: x.name, mime: x.mime, dataBase64: x.url.slice(x.url.indexOf(",") + 1) })) } : {}), ...(fresh && newChatProject ? { project: projects.find((x) => x.slug === newChatProject)?.name || newChatProject } : {}) }) });
       const d = await r.json();
       if (!r.ok || d.error || d.ok === false) throw new Error(d.error || r.status);
       if (fresh) { if (newChatProject) convMeta.project = newChatProject; newChatProject = ""; }
