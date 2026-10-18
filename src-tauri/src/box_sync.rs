@@ -24,8 +24,15 @@
 //! - No nested-repo / submodule automation.
 //! - Errors carry git's full stderr.
 //! - GitHub backup: when the vault has a remote named `github`, a successful
-//!   cycle pushes `master` and the fetched box branch (as `box`) there, at most
-//!   every 2 minutes. A failure is a warning, never a gate.
+//!   cycle starts a push of `master` and the fetched box branch (as `box`)
+//!   there in the background, after the box push, at most every 10 minutes and
+//!   only when GitHub is behind. A failure is a warning, never a gate.
+//!
+//! Speed (every git process costs ~0.15–0.2 s on Windows): the cycle reads the
+//! repo's config once, the working tree once (`status --porcelain=v2`), the
+//! refs once after the fetch, and pushes only when the box is behind. The
+//! vault's hooks are skipped when they are only Git LFS's and LFS holds no
+//! objects (its pre-push alone ran ~18 git processes, ~5 s, on every push).
 
 use serde::Serialize;
 use std::collections::HashMap;
@@ -34,8 +41,9 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use super::{
-    human_identity, prepare_vault_repo, run_git, run_git_as, run_git_mut,
-    run_git_timeout, with_repo_lock, MISSION_ZONE_PATHS,
+    ensure_vault_gitattributes, ensure_vault_gitignore, run_git, run_git_as,
+    run_git_mut, run_git_timeout, untrack_ignored_files, with_repo_lock, APP_GIT_EMAIL, APP_GIT_NAME,
+    MISSION_ZONE_PATHS,
 };
 
 /// Never auto-commit a file larger than this.
@@ -44,7 +52,10 @@ pub const BOX_MAX_FILE_BYTES: u64 = 50 * 1024 * 1024;
 pub const BOX_REF: &str = "refs/remotes/box/box";
 const BOX_REMOTE: &str = "box";
 const GITHUB_REMOTE: &str = "github";
-const GITHUB_DEBOUNCE: Duration = Duration::from_secs(120);
+const GITHUB_DEBOUNCE: Duration = Duration::from_secs(600);
+/// Even when the refs say the box has master, push again this often (the
+/// box's copy could have been replaced behind our back).
+const PUSH_VERIFY_EVERY: Duration = Duration::from_secs(300);
 /// Network ops (fetch/push) get a longer leash than local git, but bounded.
 const NET_TIMEOUT_SECS: u64 = 120;
 const EXCLUDE_BEGIN: &str = "# >>> vault-chat: files over 50 MB, kept out of git";
@@ -417,10 +428,6 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
-fn git_ok(vault: &str, args: &[&str]) -> bool {
-    matches!(run_git(vault, args), Ok((_, _, 0)))
-}
-
 fn git_dir(vault: &str) -> PathBuf {
     // Fast path (no process spawn): an ordinary checkout.
     let dot = PathBuf::from(vault).join(".git");
@@ -431,10 +438,6 @@ fn git_dir(vault: &str) -> PathBuf {
         .ok()
         .and_then(|(o, _, c)| if c == 0 { Some(PathBuf::from(o.trim())) } else { None })
         .unwrap_or_else(|| PathBuf::from(vault).join(".git"))
-}
-
-fn ref_exists(vault: &str, r: &str) -> bool {
-    git_ok(vault, &["rev-parse", "--verify", "--quiet", r])
 }
 
 /// Combine stdout+stderr of a failed git call into one honest message.
@@ -480,6 +483,257 @@ fn classify_error(stderr: &str) -> &'static str {
     }
 }
 
+// ---------- the sync's own git: few processes, no LFS hooks when LFS is unused ----------
+
+/// The repo's config the cycle needs, read in one process.
+#[derive(Default, Debug)]
+struct RepoConfig {
+    values: Vec<(String, String)>,
+}
+
+impl RepoConfig {
+    /// The effective value (the last one wins, as in `git config --get`).
+    fn get(&self, key: &str) -> Option<&str> {
+        self.values.iter().rev().find(|(k, _)| k == key).map(|(_, v)| v.as_str())
+    }
+    fn all(&self, key: &str) -> Vec<&str> {
+        self.values.iter().filter(|(k, _)| k == key).map(|(_, v)| v.as_str()).collect()
+    }
+    /// The user's real identity (what a bare `git commit` would use).
+    fn identity(&self) -> (String, String) {
+        let pick = |k: &str, d: &str| {
+            self.get(k).map(str::trim).filter(|v| !v.is_empty()).unwrap_or(d).to_string()
+        };
+        (pick("user.name", APP_GIT_NAME), pick("user.email", APP_GIT_EMAIL))
+    }
+}
+
+/// `git config -z --get-regexp` output: `key\nvalue\0` per entry.
+fn parse_config_z(out: &str) -> RepoConfig {
+    let values = out
+        .split('\0')
+        .filter(|r| !r.is_empty())
+        .map(|r| match r.split_once('\n') {
+            Some((k, v)) => (k.to_string(), v.to_string()),
+            None => (r.to_string(), String::new()),
+        })
+        .collect();
+    RepoConfig { values }
+}
+
+fn read_repo_config(vault: &str) -> RepoConfig {
+    let re = r"^(remote\.(box|github)\.(url|fetch)|fetch\.recursesubmodules|submodule\.recurse|user\.(name|email)|core\.hookspath)$";
+    match run_git(vault, &["config", "-z", "--get-regexp", re]) {
+        Ok((o, _, 0)) => parse_config_z(&o),
+        _ => RepoConfig::default(),
+    }
+}
+
+/// Per vault: does any config scope set `core.hooksPath`? Unknown = yes (the
+/// hooks then always run).
+static HOOKS_PATH_SET: Mutex<Option<HashMap<String, bool>>> = Mutex::new(None);
+
+fn remember_hooks_path(vault: &str, cfg: &RepoConfig) {
+    let mut g = HOOKS_PATH_SET.lock().unwrap_or_else(|p| p.into_inner());
+    g.get_or_insert_with(HashMap::new).insert(vault.to_string(), cfg.get("core.hookspath").is_some());
+}
+
+/// Hook body that is Git LFS's own (`git lfs post-commit "$@"` …).
+fn is_lfs_hook(body: &str) -> bool {
+    body.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .all(|l| l.starts_with("command -v git-lfs") || l.starts_with("git lfs ") || l.starts_with("git-lfs "))
+}
+
+/// Git LFS holds objects in this repo (then its pre-push must run: it uploads them).
+fn lfs_has_objects(git_dir: &std::path::Path) -> bool {
+    std::fs::read_dir(git_dir.join("lfs").join("objects"))
+        .map(|mut d| d.next().is_some())
+        .unwrap_or(false)
+}
+
+/// The vault's hooks may be skipped for the sync's own git: there is no
+/// `core.hooksPath` anywhere, every hook in `.git/hooks` is Git LFS's, and LFS
+/// stores no objects (so its pre-push has nothing to upload and its
+/// post-commit/merge/checkout lock bookkeeping has no locked files). Checked
+/// afresh for every call (a few file reads): a `git add` that turns a file into
+/// an LFS pointer brings the hooks back before the push that needs them.
+pub(crate) fn sync_hooks_skippable(vault: &str) -> bool {
+    let known = {
+        let g = HOOKS_PATH_SET.lock().unwrap_or_else(|p| p.into_inner());
+        g.as_ref().and_then(|m| m.get(vault).copied())
+    };
+    if known != Some(false) {
+        return false;
+    }
+    let gd = git_dir(vault);
+    if lfs_has_objects(&gd) {
+        return false;
+    }
+    let Ok(rd) = std::fs::read_dir(gd.join("hooks")) else {
+        return false;
+    };
+    let mut any = false;
+    for e in rd.flatten() {
+        let name = e.file_name().to_string_lossy().to_string();
+        if name.ends_with(".sample") || !e.path().is_file() {
+            continue;
+        }
+        let Ok(body) = std::fs::read_to_string(e.path()) else {
+            return false;
+        };
+        if !is_lfs_hook(&body) {
+            return false;
+        }
+        any = true;
+    }
+    any
+}
+
+/// `args` with the hooks switched off when `sync_hooks_skippable`.
+fn sync_args(vault: &str, args: &[&str]) -> Vec<String> {
+    let mut v: Vec<String> = Vec::with_capacity(args.len() + 2);
+    if sync_hooks_skippable(vault) {
+        let none = git_dir(vault).join("vault-chat-no-hooks");
+        v.push("-c".into());
+        v.push(format!("core.hooksPath={}", none.to_string_lossy().replace('\\', "/")));
+    }
+    v.extend(args.iter().map(|s| s.to_string()));
+    v
+}
+
+fn as_strs(v: &[String]) -> Vec<&str> {
+    v.iter().map(String::as_str).collect()
+}
+
+/// Local git for the sync (hooks off when skippable).
+fn sg(vault: &str, args: &[&str]) -> Result<(String, String, i32), String> {
+    run_git(vault, &as_strs(&sync_args(vault, args)))
+}
+
+fn sg_mut(vault: &str, args: &[&str]) -> Result<(String, String, i32), String> {
+    run_git_mut(vault, &as_strs(&sync_args(vault, args)))
+}
+
+fn sg_as(vault: &str, name: &str, email: &str, args: &[&str]) -> Result<(String, String, i32), String> {
+    run_git_as(vault, name, email, &as_strs(&sync_args(vault, args)))
+}
+
+/// Network git for the sync (fetch/push), bounded.
+fn sg_net(vault: &str, args: &[&str]) -> Result<(String, String, i32), String> {
+    run_git_timeout(vault, &as_strs(&sync_args(vault, args)), NET_TIMEOUT_SECS)
+}
+
+/// One entry of `git status --porcelain=v2 -z`.
+#[derive(Debug, Clone, PartialEq)]
+struct StatusEntry {
+    /// Index status ('.' = unchanged; '?' for untracked).
+    x: char,
+    path: String,
+    untracked: bool,
+}
+
+#[derive(Debug, Default)]
+struct WorkStatus {
+    branch: Option<String>,
+    entries: Vec<StatusEntry>,
+}
+
+fn parse_status_v2(out: &str) -> WorkStatus {
+    let mut st = WorkStatus::default();
+    let mut it = out.split('\0');
+    while let Some(rec) = it.next() {
+        if rec.is_empty() {
+            continue;
+        }
+        if let Some(b) = rec.strip_prefix("# branch.head ") {
+            st.branch = Some(b.to_string()).filter(|b| b != "(detached)");
+            continue;
+        }
+        let (kind, fields) = match rec.as_bytes()[0] {
+            b'1' => ('1', 9),
+            b'2' => ('2', 10),
+            b'u' => ('u', 11),
+            b'?' => ('?', 0),
+            _ => continue,
+        };
+        if kind == '?' {
+            st.entries.push(StatusEntry { x: '?', path: rec[2..].to_string(), untracked: true });
+            continue;
+        }
+        let parts: Vec<&str> = rec.splitn(fields, ' ').collect();
+        if parts.len() < fields {
+            continue;
+        }
+        let x = parts[1].chars().next().unwrap_or('.');
+        st.entries.push(StatusEntry { x, path: parts[fields - 1].to_string(), untracked: false });
+        if kind == '2' {
+            // A rename/copy: its original path follows as its own field.
+            let _ = it.next();
+        }
+    }
+    st
+}
+
+/// The working tree in one process (with the branch, every untracked file).
+fn read_status(vault: &str) -> Result<WorkStatus, String> {
+    let (o, e, c) = sg(
+        vault,
+        &["status", "--porcelain=v2", "-z", "--branch", "--untracked-files=all", "--ignore-submodules=dirty"],
+    )?;
+    if c != 0 {
+        return Err(full_err(&o, &e, c, "git status"));
+    }
+    Ok(parse_status_v2(&o))
+}
+
+/// The refs a cycle compares, read in one process after the fetch.
+#[derive(Debug, Default, Clone)]
+struct Refs {
+    master: Option<String>,
+    box_box: Option<String>,
+    box_master: Option<String>,
+    github_master: Option<String>,
+    github_box: Option<String>,
+}
+
+fn read_refs(vault: &str) -> Refs {
+    let mut r = Refs::default();
+    if let Ok((o, _, 0)) = run_git(
+        vault,
+        &[
+            "for-each-ref",
+            "--format=%(objectname) %(refname)",
+            "refs/heads/master",
+            BOX_REF,
+            "refs/remotes/box/master",
+            "refs/remotes/github/master",
+            "refs/remotes/github/box",
+        ],
+    ) {
+        for l in o.lines() {
+            let Some((oid, name)) = l.trim().split_once(' ') else { continue };
+            let oid = Some(oid.to_string());
+            match name {
+                "refs/heads/master" => r.master = oid,
+                "refs/remotes/box/box" => r.box_box = oid,
+                "refs/remotes/box/master" => r.box_master = oid,
+                "refs/remotes/github/master" => r.github_master = oid,
+                "refs/remotes/github/box" => r.github_box = oid,
+                _ => {}
+            }
+        }
+    }
+    r
+}
+
+/// HEAD's branch from `.git/HEAD` (no process); `None` = detached or unknown.
+fn head_branch_fs(vault: &str) -> Option<String> {
+    let head = std::fs::read_to_string(git_dir(vault).join("HEAD")).ok()?;
+    head.trim().strip_prefix("ref: refs/heads/").map(String::from)
+}
+
 // ---------- persisted machine-local state (.git/vault-chat-box-sync.json) ----------
 
 #[derive(Serialize, serde::Deserialize, Default)]
@@ -508,28 +762,71 @@ fn save_state(vault: &str, st: &PersistedState) {
 
 /// Make remote `box` point at the box's git URL and fetch only the `box`
 /// branch. Idempotent.
-fn ensure_box_remote(vault: &str, cfg: &BoxConfig) -> Result<(), String> {
+fn ensure_box_remote(vault: &str, cfg: &BoxConfig, rc: &RepoConfig) -> Result<(), String> {
     let url = cfg.remote_url();
-    let cur = run_git(vault, &["remote", "get-url", BOX_REMOTE])?;
-    if cur.2 != 0 {
-        let (o, e, c) = run_git(vault, &["remote", "add", BOX_REMOTE, &url])?;
-        if c != 0 {
-            return Err(full_err(&o, &e, c, "git remote add box"));
+    match rc.get("remote.box.url") {
+        None => {
+            let (o, e, c) = run_git(vault, &["remote", "add", BOX_REMOTE, &url])?;
+            if c != 0 {
+                return Err(full_err(&o, &e, c, "git remote add box"));
+            }
         }
-    } else if cur.0.trim() != url {
-        let (o, e, c) = run_git(vault, &["remote", "set-url", BOX_REMOTE, &url])?;
-        if c != 0 {
-            return Err(full_err(&o, &e, c, "git remote set-url box"));
+        Some(cur) if cur.trim() != url => {
+            let (o, e, c) = run_git(vault, &["remote", "set-url", BOX_REMOTE, &url])?;
+            if c != 0 {
+                return Err(full_err(&o, &e, c, "git remote set-url box"));
+            }
         }
+        _ => {}
     }
     let want = format!("+refs/heads/box:{}", BOX_REF);
-    let (fetch_cfg, _, _) = run_git(vault, &["config", "--get-all", "remote.box.fetch"])?;
-    if fetch_cfg.trim() != want {
+    if rc.all("remote.box.fetch") != vec![want.as_str()] {
         let _ = run_git(vault, &["config", "--replace-all", "remote.box.fetch", &want]);
     }
-    // (No submodule recursion: prepare_vault_repo sets fetch.recurseSubmodules
-    // and submodule.recurse to false every cycle.)
     Ok(())
+}
+
+/// Index state that decides whether the tracked-but-ignored sweep can find
+/// anything new: the root ignore rules, `.git/info/exclude`, and the index
+/// file itself (any add/commit/merge rewrites it).
+fn untrack_key(vault: &str) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    std::fs::read(PathBuf::from(vault).join(".gitignore")).unwrap_or_default().hash(&mut h);
+    let gd = git_dir(vault);
+    std::fs::read(gd.join("info").join("exclude")).unwrap_or_default().hash(&mut h);
+    if let Ok(m) = std::fs::metadata(gd.join("index")) {
+        m.len().hash(&mut h);
+        m.modified().ok().hash(&mut h);
+    }
+    format!("{:x}", h.finish())
+}
+
+static UNTRACK_SEEN: Mutex<Option<HashMap<String, String>>> = Mutex::new(None);
+
+/// `prepare_vault_repo` for the box cycle, from the config already read: the
+/// managed `.gitattributes`/`.gitignore` (file reads), submodule recursion off
+/// (a write only when it isn't), and the tracked-but-ignored sweep only when
+/// the ignore rules or the index changed since it last ran in this process.
+fn prepare_box_repo(vault: &str, rc: &RepoConfig) {
+    ensure_vault_gitattributes(vault);
+    ensure_vault_gitignore(vault);
+    for key in ["fetch.recurseSubmodules", "submodule.recurse"] {
+        if rc.get(&key.to_ascii_lowercase()).map(str::trim) != Some("false") {
+            let _ = run_git_mut(vault, &["config", key, "false"]);
+        }
+    }
+    let key = untrack_key(vault);
+    let seen = {
+        let g = UNTRACK_SEEN.lock().unwrap_or_else(|p| p.into_inner());
+        g.as_ref().and_then(|m| m.get(vault).cloned())
+    };
+    if seen.as_deref() != Some(key.as_str()) {
+        untrack_ignored_files(vault);
+        // Keyed after the sweep (its `rm --cached` rewrites the index).
+        let mut g = UNTRACK_SEEN.lock().unwrap_or_else(|p| p.into_inner());
+        g.get_or_insert_with(HashMap::new).insert(vault.to_string(), untrack_key(vault));
+    }
 }
 
 // ---------- mission zone ----------
@@ -576,9 +873,7 @@ fn ensure_exclude_line(vault: &str, line: &str) {
 /// sanitize, with the box as the authority. Only paths the authority has are
 /// touched; a zone path the box has never had is left alone.
 pub fn sanitize_zone_to(vault: &str, authority: &str) -> Vec<String> {
-    if !ref_exists(vault, authority) {
-        return vec![];
-    }
+    // (A missing authority makes the diff fail: nothing to reset.)
     let (out, _, c) = match run_git(
         vault,
         &["diff", "--no-renames", "--name-status", "-z", authority, "--", ".vault-chat"],
@@ -607,7 +902,7 @@ pub fn sanitize_zone_to(vault: &str, authority: &str) -> Vec<String> {
     for chunk in reset.chunks(50) {
         let mut args: Vec<&str> = vec!["checkout", authority, "--"];
         args.extend(chunk.iter().map(|s| s.as_str()));
-        let _ = run_git_mut(vault, &args);
+        let _ = sg_mut(vault, &args);
     }
     reset
 }
@@ -703,70 +998,79 @@ fn read_exclude_block(vault: &str) -> Vec<String> {
     out
 }
 
-/// Keep untracked files over 50 MB out of git via `.git/info/exclude`. Entries
-/// whose file is gone or has shrunk are dropped again. Returns the current
-/// set of excluded big files.
-fn exclude_large_untracked(vault: &str) -> Vec<BigFile> {
-    let mut big: Vec<String> = read_exclude_block(vault)
-        .into_iter()
-        .filter(|p| file_size(vault, p).map(|s| s > BOX_MAX_FILE_BYTES).unwrap_or(false))
-        .collect();
-    if let Ok((out, _, 0)) = run_git(vault, &["ls-files", "--others", "--exclude-standard", "-z"]) {
-        for p in out.split('\0').filter(|p| !p.is_empty()) {
-            if file_size(vault, p).map(|s| s > BOX_MAX_FILE_BYTES).unwrap_or(false)
-                && !big.iter().any(|b| b == p)
-            {
-                big.push(p.to_string());
-            }
-        }
-    }
-    big.sort();
-    write_exclude_block(vault, &big);
-    big.iter()
-        .map(|p| BigFile { path: p.clone(), size: file_size(vault, p).unwrap_or(0) })
-        .collect()
+fn is_big(vault: &str, rel: &str) -> bool {
+    file_size(vault, rel).map(|s| s > BOX_MAX_FILE_BYTES).unwrap_or(false)
 }
 
-/// After `add -A`: unstage anything over 50 MB that still got staged (a tracked
-/// file that grew). Returns those files.
-fn unstage_large(vault: &str) -> Vec<BigFile> {
-    let mut out_v = Vec::new();
-    if let Ok((out, _, 0)) = run_git(
-        vault,
-        &["diff", "--cached", "--no-renames", "--name-only", "-z", "--diff-filter=AM"],
-    ) {
-        for p in out.split('\0').filter(|p| !p.is_empty()) {
-            if let Some(sz) = file_size(vault, p) {
-                if sz > BOX_MAX_FILE_BYTES {
-                    let _ = run_git_mut(vault, &["reset", "-q", "--", p]);
-                    out_v.push(BigFile { path: p.to_string(), size: sz });
-                }
+fn never_staged(path: &str) -> bool {
+    NEVER_STAGED.iter().any(|n| path == *n || path.starts_with(&format!("{}/", n)))
+}
+
+/// Stage everything a box-mode commit may carry, from one `git status`:
+/// mission zone reset to the box, untracked files over 50 MB kept out via
+/// `.git/info/exclude` (entries whose file is gone or shrank are dropped
+/// again), a tracked file that grew past 50 MB left unstaged, the
+/// conversations never staged. Caller holds the repo lock. Returns the big
+/// files and whether anything was staged.
+fn stage_from_status(vault: &str, st: &WorkStatus, name: &str, email: &str) -> Result<(Vec<BigFile>, bool), String> {
+    let zone_reset = sanitize_zone_to(vault, BOX_REF);
+    ensure_exclude_line(vault, "/.vault-chat/events/");
+    // Untracked files over 50 MB → the managed exclude block.
+    let mut excluded: Vec<String> = read_exclude_block(vault).into_iter().filter(|p| is_big(vault, p)).collect();
+    for e in st.entries.iter().filter(|e| e.untracked) {
+        if is_big(vault, &e.path) && !excluded.iter().any(|b| b == &e.path) {
+            excluded.push(e.path.clone());
+        }
+    }
+    excluded.sort();
+    write_exclude_block(vault, &excluded);
+    let mut big: Vec<BigFile> = excluded
+        .iter()
+        .map(|p| BigFile { path: p.clone(), size: file_size(vault, p).unwrap_or(0) })
+        .collect();
+    // Tracked files that grew past 50 MB: staged by `add -A`, unstaged again.
+    let mut unstage: Vec<String> = Vec::new();
+    for e in st.entries.iter().filter(|e| !e.untracked) {
+        if let Some(sz) = file_size(vault, &e.path).filter(|s| *s > BOX_MAX_FILE_BYTES) {
+            unstage.push(e.path.clone());
+            if !big.iter().any(|b| b.path == e.path) {
+                big.push(BigFile { path: e.path.clone(), size: sz });
             }
         }
     }
-    out_v
+    let stageable = st
+        .entries
+        .iter()
+        .any(|e| !never_staged(&e.path) && !excluded.contains(&e.path) && !unstage.contains(&e.path));
+    if stageable {
+        let (o, e, c) = sg_as(vault, name, email, &["add", "-A"])?;
+        if c != 0 {
+            return Err(full_err(&o, &e, c, "git add -A"));
+        }
+    }
+    // The conversations never go through git in box mode: whatever `add -A`
+    // (or anyone before it) staged there is unstaged again, with the big
+    // files, in one reset — run only when there is something to undo.
+    let mut reset: Vec<&str> = vec!["reset", "-q", "--"];
+    if st
+        .entries
+        .iter()
+        .any(|e| never_staged(&e.path) && (stageable || (!e.untracked && e.x != '.')))
+    {
+        reset.extend(NEVER_STAGED.iter().copied());
+    }
+    reset.extend(unstage.iter().map(String::as_str));
+    if reset.len() > 3 {
+        let _ = sg_mut(vault, &reset);
+    }
+    Ok((big, stageable || !zone_reset.is_empty()))
 }
 
 /// Stage everything a box-mode commit may carry: mission zone reset to the
 /// box, nothing over 50 MB. Caller holds the repo lock. Returns the big files.
 pub fn box_stage_all(vault: &str, name: &str, email: &str) -> Result<Vec<BigFile>, String> {
-    sanitize_zone_to(vault, BOX_REF);
-    ensure_exclude_line(vault, "/.vault-chat/events/");
-    let mut big = exclude_large_untracked(vault);
-    let (o, e, c) = run_git_as(vault, name, email, &["add", "-A"])?;
-    if c != 0 {
-        return Err(full_err(&o, &e, c, "git add -A"));
-    }
-    // The conversations never go through git in box mode (unstaged again, whatever was there).
-    let mut reset: Vec<&str> = vec!["reset", "-q", "--"];
-    reset.extend(NEVER_STAGED.iter().copied());
-    let _ = run_git_mut(vault, &reset);
-    for b in unstage_large(vault) {
-        if !big.iter().any(|x| x.path == b.path) {
-            big.push(b);
-        }
-    }
-    Ok(big)
+    let st = read_status(vault)?;
+    stage_from_status(vault, &st, name, email).map(|(big, _)| big)
 }
 
 fn merge_in_progress(vault: &str) -> bool {
@@ -774,25 +1078,37 @@ fn merge_in_progress(vault: &str) -> bool {
 }
 
 fn worktree_dirty(vault: &str) -> bool {
-    run_git(vault, &["status", "--porcelain", "--ignore-submodules=dirty"])
+    sg(vault, &["status", "--porcelain", "--ignore-submodules=dirty"])
         .map(|(s, _, _)| !s.trim().is_empty())
         .unwrap_or(false)
 }
 
+/// "Nothing to commit" from `git commit` (the status said dirty, the staged
+/// tree came out equal to HEAD): not an error, just no commit.
+fn nothing_to_commit(out: &str, err: &str) -> bool {
+    let t = format!("{}
+{}", out, err);
+    t.contains("nothing to commit") || t.contains("nothing added to commit") || t.contains("no changes added to commit")
+}
+
 /// Commit local edits on master (no nested repos). Caller holds the lock.
-fn commit_local(vault: &str) -> Result<(bool, Vec<BigFile>), String> {
-    // Steady state: nothing changed and no big file to re-check → done after
-    // one `git status` (every spawn costs ~0.1–0.2 s on Windows).
-    if !worktree_dirty(vault) && read_exclude_block(vault).is_empty() {
+/// Steady state: nothing changed and no big file to re-check → done after one
+/// `git status` (every spawn costs ~0.15–0.2 s on Windows).
+fn commit_local(vault: &str, rc: &RepoConfig) -> Result<(bool, Vec<BigFile>), String> {
+    let st = read_status(vault)?;
+    if st.entries.is_empty() && read_exclude_block(vault).is_empty() {
         return Ok((false, vec![]));
     }
-    let (hn, he) = human_identity(vault);
-    let big = box_stage_all(vault, &hn, &he)?;
-    if git_ok(vault, &["diff", "--cached", "--quiet"]) {
+    let (hn, he) = rc.identity();
+    let (big, staged) = stage_from_status(vault, &st, &hn, &he)?;
+    if !staged {
         return Ok((false, big));
     }
-    let (o, e, c) = run_git_as(vault, &hn, &he, &["commit", "-q", "--no-verify", "-m", "vault-chat: sync"])?;
+    let (o, e, c) = sg_as(vault, &hn, &he, &["commit", "-q", "--no-verify", "-m", "vault-chat: sync"])?;
     if c != 0 {
+        if nothing_to_commit(&o, &e) {
+            return Ok((false, big));
+        }
         return Err(full_err(&o, &e, c, "git commit"));
     }
     Ok((true, big))
@@ -804,17 +1120,33 @@ enum Gate {
     Conflict(Vec<String>),
 }
 
+/// Per vault: the last (box/box, master) pair known to need no merge (box/box
+/// is an ancestor of master), so an idle cycle asks git nothing.
+static UP_TO_DATE: Mutex<Option<HashMap<String, (String, String)>>> = Mutex::new(None);
+
 /// The merge gate. Caller holds the lock and has committed local edits.
-fn merge_gate(vault: &str) -> Result<Gate, String> {
-    if !ref_exists(vault, BOX_REF) {
+/// `refs` were read after those commits.
+fn merge_gate(vault: &str, rc: &RepoConfig, refs: &Refs) -> Result<Gate, String> {
+    let Some(boxo) = refs.box_box.clone() else {
+        return Ok(Gate::UpToDate);
+    };
+    let head = refs.master.clone().unwrap_or_default();
+    let pair = (boxo.clone(), head.clone());
+    let known = {
+        let g = UP_TO_DATE.lock().unwrap_or_else(|p| p.into_inner());
+        g.as_ref().and_then(|m| m.get(vault).cloned())
+    };
+    if boxo == head || known.as_ref() == Some(&pair) {
         return Ok(Gate::UpToDate);
     }
-    if git_ok(vault, &["merge-base", "--is-ancestor", BOX_REF, "HEAD"]) {
+    if matches!(sg(vault, &["merge-base", "--is-ancestor", BOX_REF, "HEAD"]), Ok((_, _, 0))) {
+        let mut g = UP_TO_DATE.lock().unwrap_or_else(|p| p.into_inner());
+        g.get_or_insert_with(HashMap::new).insert(vault.to_string(), pair);
         return Ok(Gate::UpToDate);
     }
     // Dry run first: `merge-tree --write-tree` merges in memory and touches
     // neither the index nor the working tree. Exit 0 = clean, 1 = conflicts.
-    let (out, err, code) = run_git(
+    let (out, err, code) = sg(
         vault,
         &["merge-tree", "--write-tree", "--name-only", "--no-messages", "HEAD", BOX_REF],
     )?;
@@ -840,10 +1172,10 @@ fn merge_gate(vault: &str) -> Result<Gate, String> {
     // Clean (or only the box's own zone): merge for real, in place. A file
     // edited since our commit would block it, so commit again first.
     if worktree_dirty(vault) {
-        commit_local(vault)?;
+        commit_local(vault, rc)?;
     }
-    let (hn, he) = human_identity(vault);
-    let (o, e, c) = run_git_as(
+    let (hn, he) = rc.identity();
+    let (o, e, c) = sg_as(
         vault,
         &hn,
         &he,
@@ -854,7 +1186,7 @@ fn merge_gate(vault: &str) -> Result<Gate, String> {
     }
     if zone_only && merge_in_progress(vault) {
         // The mission zone is the box's: take its side of every conflict.
-        let (u, _, _) = run_git(vault, &["ls-files", "-u", "-z"])?;
+        let (u, _, _) = sg(vault, &["ls-files", "-u", "-z"])?;
         let mut unmerged: Vec<(String, bool)> = Vec::new();
         for rec in u.split('\0').filter(|r| !r.is_empty()) {
             // "<mode> <sha> <stage>\t<path>"
@@ -870,23 +1202,23 @@ fn merge_gate(vault: &str) -> Result<Gate, String> {
         if all_zone {
             for (p, theirs) in &unmerged {
                 if *theirs {
-                    let _ = run_git_mut(vault, &["checkout", "--theirs", "--", p]);
-                    let _ = run_git_mut(vault, &["add", "--", p]);
+                    let _ = sg_mut(vault, &["checkout", "--theirs", "--", p]);
+                    let _ = sg_mut(vault, &["add", "--", p]);
                 } else {
-                    let _ = run_git_mut(vault, &["rm", "-q", "--", p]);
+                    let _ = sg_mut(vault, &["rm", "-q", "--", p]);
                 }
             }
-            let (o2, e2, c2) = run_git_as(vault, &hn, &he, &["commit", "-q", "--no-edit", "--no-verify"])?;
+            let (o2, e2, c2) = sg_as(vault, &hn, &he, &["commit", "-q", "--no-edit", "--no-verify"])?;
             if c2 == 0 {
                 return Ok(Gate::Merged);
             }
-            let _ = run_git_mut(vault, &["merge", "--abort"]);
+            let _ = sg_mut(vault, &["merge", "--abort"]);
             return Err(full_err(&o2, &e2, c2, "git commit (merge box, mission zone)"));
         }
     }
     // Anything else: leave master exactly as it was.
     if merge_in_progress(vault) {
-        let _ = run_git_mut(vault, &["merge", "--abort"]);
+        let _ = sg_mut(vault, &["merge", "--abort"]);
     }
     Err(full_err(&o, &e, c, "git merge box/box"))
 }
@@ -907,54 +1239,91 @@ fn changes_waiting(vault: &str) -> u32 {
         .unwrap_or(0)
 }
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 struct GithubState {
-    attempted: Instant,
+    attempted: Option<Instant>,
     pushed_at: Option<u64>,
     warning: Option<String>,
+    running: bool,
 }
 
 static GITHUB_LAST: Mutex<Option<HashMap<String, GithubState>>> = Mutex::new(None);
 
-/// Back up master + the box branch to the `github` remote, at most every
-/// 2 minutes (attempts too, so a failing backup doesn't retry every cycle).
-/// Between attempts the last outcome is reported again, so a failure stays
+/// Back up master + the box branch to the `github` remote, off the critical
+/// path: started after the box push, run on its own thread, at most every 10
+/// minutes (attempts too, so a failing backup doesn't retry every cycle), and
+/// a push only when GitHub's refs are behind (the first backup in a session
+/// always pushes). Every cycle reports the last outcome, so a failure stays
 /// visible until a push succeeds.
-fn github_backup(vault: &str, report: &mut BoxSyncReport) {
-    if !git_ok(vault, &["remote", "get-url", GITHUB_REMOTE]) {
+fn github_backup(vault: &str, rc: &RepoConfig, report: &mut BoxSyncReport) {
+    if rc.get("remote.github.url").is_none() {
         return;
     }
-    let prev = {
-        let g = GITHUB_LAST.lock().unwrap_or_else(|p| p.into_inner());
-        g.as_ref().and_then(|m| m.get(vault)).cloned()
-    };
-    if let Some(p) = &prev {
-        if p.attempted.elapsed() < GITHUB_DEBOUNCE {
-            report.github_pushed_at = p.pushed_at;
-            report.github_warning = p.warning.clone();
+    let first = {
+        let mut g = GITHUB_LAST.lock().unwrap_or_else(|p| p.into_inner());
+        let st = g.get_or_insert_with(HashMap::new).entry(vault.to_string()).or_default();
+        report.github_pushed_at = st.pushed_at;
+        report.github_warning = st.warning.clone();
+        if st.running || st.attempted.map(|a| a.elapsed() < GITHUB_DEBOUNCE).unwrap_or(false) {
             return;
         }
-    }
-    let box_spec = format!("{}:refs/heads/box", BOX_REF);
-    let mut args: Vec<&str> = vec!["push", "--porcelain", GITHUB_REMOTE, "refs/heads/master:refs/heads/master"];
-    if ref_exists(vault, BOX_REF) {
-        args.push(&box_spec);
-    }
-    let mut next = GithubState {
-        attempted: Instant::now(),
-        pushed_at: prev.and_then(|p| p.pushed_at),
-        warning: None,
+        let first = st.attempted.is_none();
+        st.running = true;
+        st.attempted = Some(Instant::now());
+        first
     };
-    match run_git_timeout(vault, &args, NET_TIMEOUT_SECS) {
-        Ok((_, _, 0)) => next.pushed_at = Some(now_ms()),
-        Ok((o, e, c)) => next.warning = Some(full_err(&o, &e, c, "GitHub backup (git push github)")),
-        Err(e) => next.warning = Some(format!("GitHub backup failed: {}", e)),
-    }
-    report.github_pushed_at = next.pushed_at;
-    report.github_warning = next.warning.clone();
-    let mut g = GITHUB_LAST.lock().unwrap_or_else(|p| p.into_inner());
-    g.get_or_insert_with(HashMap::new).insert(vault.to_string(), next);
+    let v = vault.to_string();
+    std::thread::spawn(move || {
+        let refs = read_refs(&v);
+        let current = !first
+            && refs.master.is_some()
+            && refs.github_master == refs.master
+            && (refs.box_box.is_none() || refs.github_box == refs.box_box);
+        let outcome: Result<(), String> = if current {
+            Ok(())
+        } else {
+            let box_spec = format!("{}:refs/heads/box", BOX_REF);
+            let mut args: Vec<&str> = vec!["push", "--porcelain", GITHUB_REMOTE, "refs/heads/master:refs/heads/master"];
+            if refs.box_box.is_some() {
+                args.push(&box_spec);
+            }
+            match sg_net(&v, &args) {
+                Ok((_, _, 0)) => Ok(()),
+                Ok((o, e, c)) => Err(full_err(&o, &e, c, "GitHub backup (git push github)")),
+                Err(e) => Err(format!("GitHub backup failed: {}", e)),
+            }
+        };
+        let mut g = GITHUB_LAST.lock().unwrap_or_else(|p| p.into_inner());
+        let st = g.get_or_insert_with(HashMap::new).entry(v).or_default();
+        st.running = false;
+        match outcome {
+            Ok(()) => {
+                st.pushed_at = Some(now_ms());
+                st.warning = None;
+            }
+            Err(w) => st.warning = Some(w),
+        }
+    });
 }
+
+/// Tests: wait until no GitHub backup is running for `vault`.
+#[cfg(test)]
+pub(crate) fn wait_github_backup(vault: &str) {
+    let end = Instant::now() + Duration::from_secs(120);
+    while Instant::now() < end {
+        let running = {
+            let g = GITHUB_LAST.lock().unwrap_or_else(|p| p.into_inner());
+            g.as_ref().and_then(|m| m.get(vault)).map(|s| s.running).unwrap_or(false)
+        };
+        if !running {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// When this process last pushed master to the box (per vault).
+static LAST_PUSH: Mutex<Option<HashMap<String, Instant>>> = Mutex::new(None);
 
 /// One full sync cycle. Blocking; call from a worker thread.
 pub fn box_sync_cycle(vault: &str) -> BoxSyncReport {
@@ -980,26 +1349,35 @@ fn cycle(vault: &str, push: bool) -> BoxSyncReport {
         r.error = Some(msg);
     };
 
-    // 1. Local: remote config, hygiene, commit. Under the repo lock.
+    // 1. Local: config (one read), hygiene, commit. Under the repo lock.
+    let mut rc = RepoConfig::default();
     let local: Result<bool, String> = with_repo_lock(vault, || {
         if !PathBuf::from(vault).join(".git").exists() {
             return Err("this vault is not a git repository".into());
         }
-        let (b, _, _) = run_git(vault, &["symbolic-ref", "--quiet", "--short", "HEAD"])?;
-        if b.trim() != "master" {
+        let b = head_branch_fs(vault).unwrap_or_default();
+        if b != "master" {
             return Err(format!(
                 "box sync works on branch master, but this vault is on '{}'",
-                if b.trim().is_empty() { "a detached HEAD" } else { b.trim() }
+                if b.is_empty() { "a detached HEAD" } else { b.as_str() }
             ));
         }
-        ensure_box_remote(vault, &cfg)?;
+        rc = read_repo_config(vault);
+        remember_hooks_path(vault, &rc);
+        ensure_box_remote(vault, &cfg, &rc)?;
         if merge_in_progress(vault) {
             // Someone is resolving by hand: never abort their merge, never
             // commit over it.
             return Ok(true);
         }
-        prepare_vault_repo(vault);
-        let (committed, big) = commit_local(vault)?;
+        prepare_box_repo(vault, &rc);
+        let (committed, big) = commit_local(vault, &rc)?;
+        if committed {
+            // Our own `add -A` never stages an ignored file: the sweep that
+            // just ran still holds for the index this commit wrote.
+            let mut g = UNTRACK_SEEN.lock().unwrap_or_else(|p| p.into_inner());
+            g.get_or_insert_with(HashMap::new).insert(vault.to_string(), untrack_key(vault));
+        }
         r.committed = committed;
         r.big_files = big;
         Ok(false)
@@ -1014,7 +1392,20 @@ fn cycle(vault: &str, push: bool) -> BoxSyncReport {
     };
 
     // 2. Fetch the box branch (no lock: it only writes remote refs + objects).
-    match run_git_timeout(vault, &["fetch", "--no-recurse-submodules", "--prune", BOX_REMOTE], NET_TIMEOUT_SECS) {
+    // Only that branch, no tags, no FETCH_HEAD, no auto-maintenance (commit
+    // and merge still run it).
+    match sg_net(
+        vault,
+        &[
+            "fetch",
+            "--no-tags",
+            "--no-write-fetch-head",
+            "--no-auto-maintenance",
+            "--no-recurse-submodules",
+            "--prune",
+            BOX_REMOTE,
+        ],
+    ) {
         Ok((_, _, 0)) => {}
         // The box has not created its branch yet: nothing to merge, still push.
         Ok((_, e, _)) if e.contains("couldn't find remote ref refs/heads/box") => {}
@@ -1032,32 +1423,46 @@ fn cycle(vault: &str, push: bool) -> BoxSyncReport {
         }
     }
 
-    // 3. The merge gate.
+    // 3. The merge gate (the refs read once, under the same lock).
     let mut st = load_state(vault);
+    let mut refs = Refs::default();
+    let mut master_moved = r.committed;
     if hand_merge {
         r.message = "a merge is in progress (being resolved by hand); waiting".into();
+        refs = with_repo_lock(vault, || read_refs(vault));
     } else {
-        let gate = with_repo_lock(vault, || merge_gate(vault));
+        let gate = with_repo_lock(vault, || {
+            refs = read_refs(vault);
+            merge_gate(vault, &rc, &refs)
+        });
         match gate {
             Ok(Gate::UpToDate) => st.conflict = None,
             Ok(Gate::Merged) => {
                 st.conflict = None;
                 r.merged = true;
+                master_moved = true;
                 r.merged_paths = merged_paths(vault);
             }
             Ok(Gate::Conflict(files)) => {
                 let since = st.conflict.as_ref().map(|c| c.since).unwrap_or_else(now_ms);
                 st.conflict = Some(ConflictState { files, since });
             }
-            Err(e) => fail(&mut r, e),
+            Err(e) => {
+                // It may have committed before failing: the push decides by itself.
+                master_moved = true;
+                fail(&mut r, e);
+            }
         }
         save_state(vault, &st);
     }
     r.conflict = st.conflict.clone();
+    // The box already has this master: our record of its master (updated on
+    // every push) equals ours, and nothing moved master since the refs were read.
+    let box_has_master = !master_moved && refs.master.is_some() && refs.master == refs.box_master;
 
     if !push {
         r.ok = r.error.is_none();
-        r.changes_waiting = changes_waiting(vault);
+        r.changes_waiting = if box_has_master { 0 } else { changes_waiting(vault) };
         r.message = match (&r.error, &r.conflict, r.merged) {
             (Some(_), _, _) => "sync failed".into(),
             (None, Some(c), _) => format!("merge gate closed: conflict in {}", c.files.join(", ")),
@@ -1068,26 +1473,48 @@ fn cycle(vault: &str, push: bool) -> BoxSyncReport {
         return r;
     }
 
-    // 4. Push master, and only master.
-    match run_git_timeout(
-        vault,
-        &["push", "--porcelain", BOX_REMOTE, "refs/heads/master:refs/heads/master"],
-        NET_TIMEOUT_SECS,
-    ) {
-        Ok((_, _, 0)) => {
-            let _ = run_git(vault, &["update-ref", "refs/remotes/box/master", "refs/heads/master"]);
-            if r.error.is_none() {
-                r.ok = true;
+    // 4. Push master, and only master: when the box is behind, and every few
+    // minutes anyway (the box's copy could have been replaced).
+    let verify_due = {
+        let g = LAST_PUSH.lock().unwrap_or_else(|p| p.into_inner());
+        g.as_ref()
+            .and_then(|m| m.get(vault))
+            .map(|t| t.elapsed() >= PUSH_VERIFY_EVERY)
+            .unwrap_or(true)
+    };
+    if box_has_master && !verify_due {
+        if r.error.is_none() {
+            r.ok = true;
+        }
+        r.changes_waiting = 0;
+    } else {
+        {
+            let mut g = LAST_PUSH.lock().unwrap_or_else(|p| p.into_inner());
+            g.get_or_insert_with(HashMap::new).insert(vault.to_string(), Instant::now());
+        }
+        match sg_net(vault, &["push", "--porcelain", BOX_REMOTE, "refs/heads/master:refs/heads/master"]) {
+            Ok((_, _, 0)) => {
+                let _ = run_git(vault, &["update-ref", "refs/remotes/box/master", "refs/heads/master"]);
+                if r.error.is_none() {
+                    r.ok = true;
+                }
+                // master is now box/master: nothing waits.
+                r.changes_waiting = 0;
+            }
+            Ok((o, e, c)) => {
+                fail(&mut r, full_err(&o, &e, c, "git push box master"));
+                r.changes_waiting = changes_waiting(vault);
+            }
+            Err(e) => {
+                fail(&mut r, e);
+                r.changes_waiting = changes_waiting(vault);
             }
         }
-        Ok((o, e, c)) => fail(&mut r, full_err(&o, &e, c, "git push box master")),
-        Err(e) => fail(&mut r, e),
     }
-    r.changes_waiting = changes_waiting(vault);
 
-    // 5. GitHub backup, after a good cycle only.
+    // 5. GitHub backup, after a good cycle only, in the background.
     if r.ok {
-        github_backup(vault, &mut r);
+        github_backup(vault, &rc, &mut r);
     }
     r.message = match (&r.error, &r.conflict, r.merged) {
         (Some(_), _, _) => "sync failed".into(),

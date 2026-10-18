@@ -463,6 +463,11 @@ export type BoxSyncReport = {
   github_pushed_at: number | null;
 };
 
+/** A merge brought in notes (or we don't know which files it changed). */
+export function mergedNotes(paths: string[] | undefined | null): boolean {
+  return !paths?.length || paths.includes(".vault-chat/notes.jsonl");
+}
+
 export type BoxAttention = {
   kind: "conflict" | "tailscale" | "offline" | "error" | "big" | "github";
   level: "amber" | "red";
@@ -890,6 +895,8 @@ function startBoxSyncLoop(vault: string, cfg: BoxConfig): void {
         void refreshFileTreeIfChanged(vault);
         // The agent's edits on the box show in the open panes now (never over unsaved typing).
         void refreshOpenFiles({ vault, paths: r.merged_paths?.length ? r.merged_paths : null });
+        // Notes written on the box (voice, the agent) show in the Notes panel now.
+        if (mergedNotes(r.merged_paths) && useStore.getState().vaultPath === vault) void useStore.getState().loadNotes();
       } else if (r.committed) {
         void forceRefreshFileTree(vault);
       }

@@ -148,3 +148,47 @@ test("the attention rules: Tailscale connected (or not installed) → the ordina
   const conflict = { ...unreachable, conflict: { files: ["a.md"], since: now } };
   assert.equal(vs.boxAttentionOf({ ...base, report: conflict as any, tailscale: down }, now)!.kind, "conflict");
 });
+
+test("a box merge that brings in notes reloads the Notes panel (and only for notes, or unknown paths)", async () => {
+  assert.equal(vs.mergedNotes([".vault-chat/notes.jsonl", "a.md"]), true);
+  assert.equal(vs.mergedNotes(["a.md"]), false);
+  assert.equal(vs.mergedNotes([]), true, "unknown paths: reload to be safe");
+  assert.equal(vs.mergedNotes(undefined), true);
+
+  const notesVault = makeTempVault("vc-sync-notes-");
+  boxOf[notesVault] = { box: BOX, vault: "notes" };
+  const voiceNote = {
+    id: "n-voice-1",
+    timestamp: "2026-10-18T10:00:00.000Z",
+    last_updated: "2026-10-18T10:00:00.000Z",
+    anchors: [],
+    turns: [],
+    user_draft: "written on the box by voice",
+    status: "open",
+  };
+  let onDisk: string[] = [];
+  let reads = 0;
+  fake.setHandler("notes_read", () => (reads++, onDisk));
+  let report: any = { ...okReport, committed: false };
+  fake.setHandler("vault_box_sync", ({ vault }) => (vault === offline ? unreachable : vault === notesVault ? report : okReport));
+  useStore.setState({ vaultPath: notesVault, notes: [], notesLoaded: true });
+  let st: any = null;
+  const un = vs.subscribeBoxSync((s) => (s?.vault === notesVault ? (st = s) : null));
+  await vs.ensureVaultSyncLoop(notesVault);
+  await waitFor("the first cycle", () => st?.report?.ok === true);
+  assert.equal(reads, 0, "no merge, no reload");
+
+  // The box wrote a voice note; the next cycle merges it.
+  onDisk = [JSON.stringify(voiceNote)];
+  report = { ...okReport, committed: false, merged: true, message: "merged box into master; pushed", merged_paths: [".vault-chat/notes.jsonl"] };
+  await vs.boxSyncNow(notesVault);
+  await waitFor("the notes reload", () => useStore.getState().notes.some((n: any) => n.id === "n-voice-1"));
+  const after = reads;
+
+  // A merge of other files leaves the notes alone.
+  report = { ...report, merged_paths: ["Ad Hoc/plan.md"] };
+  await vs.boxSyncNow(notesVault);
+  await sleep(200);
+  assert.equal(reads, after, "a merge without notes does not reload them");
+  un();
+});

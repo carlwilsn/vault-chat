@@ -346,7 +346,11 @@ fn github_backup_pushes_master_and_box_and_only_warns() {
     r.box_commit(&[("from-box.md", "box\n")], "box work");
     let rep = r.cycle();
     assert!(rep.ok && rep.github_warning.is_none(), "{:?} {:?}", rep.error, rep.github_warning);
-    assert!(rep.github_pushed_at.is_some());
+    // The backup runs in the background, after the box push; the next cycle reports it.
+    assert!(rep.github_pushed_at.is_none(), "not on the cycle's critical path");
+    wait_github_backup(&s(&r.laptop));
+    let rep = r.cycle();
+    assert!(rep.github_pushed_at.is_some() && rep.github_warning.is_none(), "{:?}", rep.github_warning);
     assert_eq!(git(&gh, &["rev-parse", "refs/heads/master"]), r.head());
     assert_eq!(git(&gh, &["rev-parse", "refs/heads/box"]), git(&r.bare, &["rev-parse", "refs/heads/box"]));
     r.done();
@@ -355,6 +359,9 @@ fn github_backup_pushes_master_and_box_and_only_warns() {
     let r = rig("githubfail");
     git(&r.laptop, &["remote", "add", "github", &s(&r.base.join("nope.git"))]);
     write(&r.laptop, "x.md", "x\n");
+    let rep = r.cycle();
+    assert!(rep.ok && rep.error.is_none(), "{:?}", rep.error);
+    wait_github_backup(&s(&r.laptop));
     let rep = r.cycle();
     assert!(rep.ok && rep.error.is_none(), "{:?}", rep.error);
     assert!(rep.github_warning.is_some());
@@ -397,9 +404,11 @@ fn without_sync_json_nothing_changes() {
 fn github_failure_stays_reported_between_debounced_attempts() {
     let r = rig("githubsticky");
     git(&r.laptop, &["remote", "add", "github", &s(&r.base.join("nope.git"))]);
+    r.cycle();
+    wait_github_backup(&s(&r.laptop));
     let first = r.cycle();
     assert!(first.github_warning.is_some());
-    // Within the 2-minute window: no new attempt, but the warning is still there.
+    // Within the 10-minute window: no new attempt, but the warning is still there.
     write(&r.laptop, "y.md", "y\n");
     let second = r.cycle();
     assert!(second.ok);
@@ -548,4 +557,130 @@ fn pull_cycle_merges_without_pushing() {
     assert!(full.ok, "full: {:?}", full.error);
     assert_eq!(git(&r.bare, &["rev-parse", "refs/heads/master"]), r.head(), "the next full cycle pushes");
     r.done();
+}
+
+#[test]
+fn status_v2_and_config_z_parse() {
+    let out = "# branch.oid 1234\0# branch.head master\0\
+1 .M N... 100644 100644 100644 aaa bbb notes/a b.md\0\
+2 R. N... 100644 100644 100644 aaa bbb R100 new.md\0old.md\0\
+u UU N... 100644 100644 100644 100644 a b c both.md\0\
+? Ad Hoc/new file.md\0";
+    let st = parse_status_v2(out);
+    assert_eq!(st.branch.as_deref(), Some("master"));
+    let paths: Vec<(&str, char, bool)> = st.entries.iter().map(|e| (e.path.as_str(), e.x, e.untracked)).collect();
+    assert_eq!(
+        paths,
+        vec![("notes/a b.md", '.', false), ("new.md", 'R', false), ("both.md", 'U', false), ("Ad Hoc/new file.md", '?', true)]
+    );
+    assert_eq!(parse_status_v2("# branch.oid (initial)\0# branch.head (detached)\0").branch, None);
+
+    let cfg = parse_config_z("remote.box.url\nhttps://b/git/v.git\0remote.box.fetch\n+refs/heads/box:refs/remotes/box/box\0user.name\nA\0user.name\nCarl\0");
+    assert_eq!(cfg.get("remote.box.url"), Some("https://b/git/v.git"));
+    assert_eq!(cfg.all("remote.box.fetch"), vec!["+refs/heads/box:refs/remotes/box/box"]);
+    assert_eq!(cfg.identity().0, "Carl", "the last value wins, as in git config --get");
+    assert_eq!(cfg.identity().1, APP_GIT_EMAIL);
+}
+
+/// Git LFS installs hooks that run ~10 git processes per commit and per push.
+/// The sync skips them only while they are LFS's alone and LFS holds nothing.
+#[test]
+fn lfs_hooks_are_skipped_only_while_lfs_is_unused() {
+    let r = rig("lfshooks");
+    let v = s(&r.laptop);
+    let hooks = r.laptop.join(".git").join("hooks");
+    std::fs::create_dir_all(&hooks).unwrap();
+    let marker = r.base.join("hook-ran");
+    let lfs_hook = format!(
+        "#!/bin/sh\ncommand -v git-lfs >/dev/null 2>&1 || {{ echo >&2 \"no lfs\"; exit 2; }}\ngit lfs post-commit \"$@\"\n"
+    );
+    std::fs::write(hooks.join("post-commit"), &lfs_hook).unwrap();
+    assert!(is_lfs_hook(&lfs_hook));
+    r.cycle();
+    assert!(sync_hooks_skippable(&v), "only LFS hooks, no LFS objects");
+    // LFS objects appear: the hooks run again (the pre-push must upload them).
+    std::fs::create_dir_all(r.laptop.join(".git/lfs/objects/ab")).unwrap();
+    assert!(!sync_hooks_skippable(&v));
+    std::fs::remove_dir_all(r.laptop.join(".git/lfs")).unwrap();
+    // A hook of the user's own: never skipped.
+    std::fs::write(
+        hooks.join("post-merge"),
+        format!("#!/bin/sh\necho ran > '{}'\n", s(&marker)),
+    )
+    .unwrap();
+    assert!(!sync_hooks_skippable(&v));
+    r.done();
+}
+
+/// A cycle with nothing to do asks git as little as it can: no push when the
+/// box already has master, no commit, still the fetch (and so still merges).
+#[test]
+fn idle_cycle_skips_the_push_and_still_merges() {
+    let r = rig("idle");
+    let first = r.cycle();
+    assert!(first.ok, "{:?}", first.error);
+    let master = git(&r.bare, &["rev-parse", "refs/heads/master"]);
+    let idle = r.cycle();
+    assert!(idle.ok && !idle.committed && !idle.merged && idle.changes_waiting == 0, "{:?}", idle);
+    assert_eq!(git(&r.bare, &["rev-parse", "refs/heads/master"]), master);
+    // The box writes: the next idle cycle merges it.
+    r.box_commit(&[("voice.md", "from the box\n")], "voice note");
+    let rep = r.cycle();
+    assert!(rep.ok && rep.merged, "{:?}", rep);
+    assert_eq!(rep.merged_paths, vec!["voice.md".to_string()]);
+    assert_eq!(git(&r.bare, &["rev-parse", "refs/heads/master"]), r.head(), "the merge is pushed");
+    // A local edit: committed and pushed in the same cycle.
+    write(&r.laptop, "mine.md", "laptop\n");
+    let rep = r.cycle();
+    assert!(rep.ok && rep.committed, "{:?}", rep);
+    assert_eq!(git(&r.bare, &["rev-parse", "refs/heads/master"]), r.head());
+    assert_eq!(rep.changes_waiting, 0);
+    r.done();
+}
+
+/// Timing of real cycles on a scratch copy of a vault (never a real one):
+/// `VC_BENCH_VAULT=<copy> VC_BENCH_BOXWC=<clone of its box bare on branch box>
+/// cargo test --lib bench_box_sync -- --ignored --nocapture`. Prints the
+/// first cycle in this process, idle cycles, and a typical cycle (a few notes
+/// changed on each side).
+#[test]
+#[ignore]
+fn bench_box_sync() {
+    let (Ok(v), Ok(bw)) = (std::env::var("VC_BENCH_VAULT"), std::env::var("VC_BENCH_BOXWC")) else {
+        eprintln!("set VC_BENCH_VAULT and VC_BENCH_BOXWC");
+        return;
+    };
+    let vault = PathBuf::from(&v);
+    let boxwc = PathBuf::from(&bw);
+    let time = |label: &str| {
+        let t = Instant::now();
+        let r = box_sync_cycle(&v);
+        let ms = t.elapsed().as_millis();
+        eprintln!("{:<28} {:>6} ms  ok={} committed={} merged={} paths={:?} err={:?}", label, ms, r.ok, r.committed, r.merged, r.merged_paths, r.error);
+        (ms, r)
+    };
+    time("first cycle (fresh process)");
+    for i in 1..=3 {
+        time(&format!("idle cycle {}", i));
+    }
+    for i in 1..=2 {
+        let stamp = now_ms();
+        let notes = vault.join(".vault-chat/notes.jsonl");
+        let mut cur = std::fs::read_to_string(&notes).unwrap_or_default();
+        cur.push_str(&format!("{{\"id\":\"bench-l{}\",\"text\":\"laptop note\"}}\n", stamp));
+        std::fs::write(&notes, cur).unwrap();
+        write(&vault, &format!("Ad Hoc/bench-{}.md", stamp), "a laptop note\n");
+        // The box adds a note of its own (a voice note).
+        git(&boxwc, &["pull", "-q", "--no-rebase", "origin", "box"]);
+        let bnotes = boxwc.join("bench-box.md");
+        let mut b = std::fs::read_to_string(&bnotes).unwrap_or_default();
+        b.push_str(&format!("box line {}\n", stamp));
+        std::fs::write(&bnotes, b).unwrap();
+        git(&boxwc, &["add", "-A"]);
+        git(&boxwc, &["-c", "core.hooksPath=NUL", "commit", "-q", "-m", "box note"]);
+        git(&boxwc, &["-c", "core.hooksPath=NUL", "push", "-q", "origin", "box"]);
+        let (_, r) = time(&format!("typical cycle {}", i));
+        assert!(r.ok && r.committed && r.merged, "{:?}", r);
+        time(&format!("idle after typical {}", i));
+    }
 }
