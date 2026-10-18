@@ -215,3 +215,42 @@ export function newChatInProject(slug: string): string {
   }));
   return id;
 }
+
+// The popout has no viewer: it hands "Project notes" to main (sync.ts installs this there).
+let notesToMain: ((slug: string, name: string) => void) | null = null;
+export function routeProjectNotesTo(fn: (slug: string, name: string) => void): void {
+  notesToMain = fn;
+}
+
+/** A project's shared notes file, `<vault>/agent-projects/<slug>/project.md`. */
+export function projectNotesPath(vault: string, slug: string): string {
+  return `${vault}/${PROJECTS_DIR}/${slug}/project.md`;
+}
+
+/**
+ * Open a project's project.md in the viewer (the folder is hidden from the
+ * file tree, so this is the way to it), creating it with its heading first if
+ * it is missing. Leaves fullscreen chat, which has no viewer. Returns the path.
+ */
+export async function openProjectNotes(slug: string, name: string): Promise<string | null> {
+  if (notesToMain) {
+    notesToMain(slug, name);
+    return null;
+  }
+  const s = useStore.getState();
+  const vault = s.vaultPath;
+  if (!vault || !slug || slug !== slugify(slug)) return null;
+  const p = projectNotesPath(vault, slug);
+  let content: string;
+  const exists = await invoke<boolean>("path_exists", { path: p }).catch(() => false);
+  if (exists) content = await invoke<string>("read_text_file", { path: p });
+  else {
+    await invoke("create_dir", { path: `${vault}/${PROJECTS_DIR}/${slug}` }).catch(() => {});
+    content = `# ${name.trim() || nameFromSlug(slug)}\n`;
+    await invoke("write_text_file", { path: p, contents: content });
+  }
+  const st = useStore.getState();
+  if (st.chatFullscreen) st.toggleChatFullscreen();
+  st.setCurrentFile(p, content);
+  return p;
+}

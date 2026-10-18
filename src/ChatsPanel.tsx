@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { MessageSquare, Plus, X as XIcon, Trash2, Mic, CheckCheck, ChevronRight, Folder, FolderInput, PanelLeftClose, Check } from "lucide-react";
+import { MessageSquare, Plus, X as XIcon, Trash2, Mic, CheckCheck, ChevronRight, Folder, FolderInput, PanelLeftClose, Check, FileText } from "lucide-react";
 import { useStore } from "./store";
 import { conversationPreview, isArchivedThread, type Conversation } from "./conversations";
 import { ongoingWork } from "./ongoingWork";
 import { useProjects } from "./ProjectChip";
-import { newChatInProject, projectName, setConversationProject, type ProjectInfo } from "./projects";
+import { newChatInProject, openProjectNotes, projectName, setConversationProject, type ProjectInfo } from "./projects";
 import { cn } from "./lib/utils";
 
 // How the list groups by project — a preview switch while Carl picks:
@@ -259,7 +259,13 @@ function ChatsList({
           <>
             {style === "sections" &&
               sections.projects.map((p) => (
-                <Section key={p.slug} label={p.name} onAdd={() => newInProject(p.slug)} addTitle={`New chat in ${p.name}`}>
+                <Section
+                  key={p.slug}
+                  label={p.name}
+                  onAdd={() => newInProject(p.slug)}
+                  addTitle={`New chat in ${p.name}`}
+                  onNotes={() => void openProjectNotes(p.slug, p.name).then(() => onPicked?.())}
+                >
                   {p.items.map(row)}
                 </Section>
               ))}
@@ -312,6 +318,7 @@ function ChatsList({
                           })
                         }
                         onAdd={() => newInProject(p.slug)}
+                        onNotes={() => void openProjectNotes(p.slug, p.name).then(() => onPicked?.())}
                       />
                       {isOpen && <div className="pl-3">{p.items.map(row)}</div>}
                     </div>
@@ -338,16 +345,29 @@ function Section({
   children,
   onAdd,
   addTitle,
+  onNotes,
 }: {
   label: string;
   children: React.ReactNode;
   onAdd?: () => void;
   addTitle?: string;
+  /** A project's section: open its project.md. */
+  onNotes?: () => void;
 }) {
   return (
     <>
       <div className="px-4 pt-3 pb-1 flex items-center gap-1 text-[10.5px] uppercase tracking-wider text-muted-foreground/80 font-medium group/sec">
         <span className="flex-1 truncate">{label}</span>
+        {onNotes && (
+          <button
+            onClick={onNotes}
+            data-el="project-notes"
+            className="opacity-0 group-hover/sec:opacity-60 hover:!opacity-100 transition-opacity h-5 w-5 -my-1 flex items-center justify-center rounded hover:bg-accent/60 text-muted-foreground hover:text-foreground"
+            title="Project notes"
+          >
+            <FileText className="h-3 w-3" />
+          </button>
+        )}
         {onAdd && (
           <button
             onClick={onAdd}
@@ -370,11 +390,13 @@ function FolderRow({
   open,
   onToggle,
   onAdd,
+  onNotes,
 }: {
   project: ProjectGroup;
   open: boolean;
   onToggle: () => void;
   onAdd: () => void;
+  onNotes: () => void;
 }) {
   const working = project.items.filter((c) => ongoingWork(c)).length;
   return (
@@ -387,6 +409,14 @@ function FolderRow({
           {project.items.length}
           {working > 0 ? ` · ${working} working` : ""}
         </span>
+      </button>
+      <button
+        onClick={onNotes}
+        data-el="project-notes"
+        className="opacity-0 group-hover:opacity-100 transition-opacity h-7 w-7 -mr-1 flex items-center justify-center rounded text-muted-foreground hover:bg-accent/60 hover:text-foreground shrink-0"
+        title="Project notes"
+      >
+        <FileText className="h-3 w-3" />
       </button>
       <button
         onClick={onAdd}

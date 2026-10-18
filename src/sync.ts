@@ -4,7 +4,7 @@ import { useStore, type ChatMessage, type FileEntry, type LiveTool, type Theme }
 import { sendMessage, stopAgent, clearChat, interruptAndSend, sendMidTurn, cancelPending } from "./chat-controller";
 import type { Conversation } from "./conversations";
 import { newConversationId } from "./conversations";
-import { listProjects, routeProjectChangesTo, setConversationProject } from "./projects";
+import { listProjects, openProjectNotes, routeProjectChangesTo, routeProjectNotesTo, setConversationProject } from "./projects";
 import { sendComposerToVoice, toggleVoice, voiceBarLevels, voiceSessionOn } from "./voice-elevenlabs";
 import { isPopout } from "./windowKind";
 
@@ -96,6 +96,7 @@ export type ChatAction =
   | { kind: "deleteConversation"; id: string }
   | { kind: "markAllRead" }
   | { kind: "setProject"; convId: string; nameOrSlug: string | null }
+  | { kind: "openProjectNotes"; slug: string; name: string }
   | { kind: "toggleVoice" };
 
 function takeStateSnapshot(): StateSnapshot {
@@ -160,6 +161,10 @@ function applyActionLocal(a: ChatAction) {
   else if (a.kind === "deleteConversation") void useStore.getState().deleteConversation(a.id);
   else if (a.kind === "markAllRead") useStore.getState().markAllRead();
   else if (a.kind === "toggleVoice") toggleVoice();
+  else if (a.kind === "openProjectNotes") {
+    // From the popout: main has the viewer, so it opens here and comes forward.
+    void openProjectNotes(a.slug, a.name).then(() => WebviewWindow.getByLabel(MAIN_LABEL).then((w) => w?.setFocus()).catch(() => {}));
+  }
   else if (a.kind === "setProject") {
     void listProjects(useStore.getState().vaultPath)
       .then((known) => setConversationProject(a.convId, a.nameOrSlug, known))
@@ -292,6 +297,7 @@ function routeChatsToMain() {
     markAllRead: () => send({ kind: "markAllRead" }),
   });
   routeProjectChangesTo((convId, nameOrSlug) => send({ kind: "setProject", convId, nameOrSlug }));
+  routeProjectNotesTo((slug, name) => send({ kind: "openProjectNotes", slug, name }));
 }
 
 export async function installPopoutSync() {
