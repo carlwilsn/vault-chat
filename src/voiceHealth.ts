@@ -7,7 +7,13 @@
 //                    track ended, a device switch, exclusive mode) — re-acquire;
 //   - mic-unheard:   Carl's level says he spoke (≥ 2.5 s of speech) but no
 //                    transcript came back 8 s after he stopped — ElevenLabs is
-//                    not receiving what the meter sees;
+//                    not receiving what the meter sees. Only when nothing of
+//                    his was heard since the call connected, or nothing for a
+//                    long span (90 s, no transcript and no agent audio) while
+//                    the meter saw ≥ 15 s of speech: never in a working
+//                    conversation, where a transcript can come late (Carl
+//                    talking over a slow tool call) and the meter's "speech"
+//                    can be a noisy room the transcriber rightly ignores;
 //   - silent-playback: agent audio is arriving but the output level stays at
 //                    zero for 2 s — "waves but silence";
 //   - first-audio:   the first moment the agent is audible after Carl's turn
@@ -29,15 +35,9 @@ export function pickTransport(o: { ua: string; override?: string | null; hasToke
   return o.hasToken ? "webrtc" : null;
 }
 
-/** The SDK's start options for the transport (credentials + the picked mic). */
-export function connectionOptions(
-  t: Transport,
-  c: { conversationToken?: string | null; signedUrl?: string | null; inputDeviceId?: string | null },
-): Record<string, unknown> {
-  const dev = c.inputDeviceId && c.inputDeviceId !== "default" ? { inputDeviceId: c.inputDeviceId } : {};
-  return t === "webrtc"
-    ? { conversationToken: c.conversationToken, connectionType: "webrtc", ...dev }
-    : { signedUrl: c.signedUrl, connectionType: "websocket", ...dev };
+/** The SDK's start options for the transport (its credential; the mic is the system default). */
+export function connectionOptions(t: Transport, c: { conversationToken?: string | null; signedUrl?: string | null }): Record<string, unknown> {
+  return t === "webrtc" ? { conversationToken: c.conversationToken, connectionType: "webrtc" } : { signedUrl: c.signedUrl, connectionType: "websocket" };
 }
 
 export type HealthEvent =
@@ -72,6 +72,8 @@ export class VoiceHealth {
   private lastSample = 0;
   private lastSpeechAt = 0;
   private unheardSaid = false;
+  /** Carl's last transcript (null: none since the call connected). */
+  private heardAt: number | null = null;
   private lastAudioAt = 0;
   private silentSince: number | null = null;
   private silentSaid = false;
@@ -80,7 +82,7 @@ export class VoiceHealth {
 
   constructor(
     private readonly emit: (e: HealthEvent) => void,
-    private readonly cfg = { deadMs: 10_000, unheardSpeechMs: 2_500, unheardWaitMs: 8_000, silentMs: 2_000, receivingMs: 500 },
+    private readonly cfg = { deadMs: 10_000, unheardSpeechMs: 2_500, unheardWaitMs: 8_000, silentMs: 2_000, receivingMs: 500, heardLongMs: 90_000, unheardLongSpeechMs: 15_000 },
   ) {}
 
   connected(now: number): void {
@@ -91,6 +93,7 @@ export class VoiceHealth {
     this.speechMs = 0;
     this.lastSpeechAt = 0;
     this.unheardSaid = false;
+    this.heardAt = null;
     this.lastAudioAt = 0;
     this.silentSince = null;
     this.silentSaid = false;
@@ -114,12 +117,21 @@ export class VoiceHealth {
   /** Carl's final transcript landed: ElevenLabs heard him. Returns when his speech ended (null: the meter never saw it). */
   userTranscript(now: number): number | null {
     const end = this.lastSpeechAt && now - this.lastSpeechAt < 20_000 ? this.lastSpeechAt : null;
+    this.heardAt = now;
     this.speechMs = 0;
     this.unheardSaid = false;
     // Audio may already be playing (a speculative reply): that moment counts.
     if (this.playingSince !== null && end !== null && this.playingSince >= end) this.emit({ kind: "first-audio", at: this.playingSince });
     else this.waitingForAudio = true;
     return end;
+  }
+
+  /** Speech the meter saw, no transcript for it: before he was ever heard this call, or over a long deaf span. */
+  private unheard(now: number): boolean {
+    if (this.speechMs < this.cfg.unheardSpeechMs || !this.lastSpeechAt || now - this.lastSpeechAt < this.cfg.unheardWaitMs) return false;
+    if (this.heardAt === null) return true;
+    const lastSign = Math.max(this.heardAt, this.lastAudioAt);
+    return now - lastSign >= this.cfg.heardLongMs && this.speechMs >= this.cfg.unheardLongSpeechMs;
   }
 
   sample(s: HealthSample): void {
@@ -136,7 +148,7 @@ export class VoiceHealth {
       this.speechMs += dt;
       this.lastSpeechAt = s.now;
     }
-    if (!this.unheardSaid && this.speechMs >= this.cfg.unheardSpeechMs && this.lastSpeechAt && s.now - this.lastSpeechAt >= this.cfg.unheardWaitMs) {
+    if (!this.unheardSaid && this.unheard(s.now)) {
       this.unheardSaid = true;
       this.emit({ kind: "mic-unheard", speechMs: Math.round(this.speechMs), waitedMs: s.now - this.lastSpeechAt });
       this.speechMs = 0;

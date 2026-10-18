@@ -115,12 +115,9 @@ test("transport: WebRTC with a token, WebSocket on Linux webviews or with only a
   assert.equal(H.pickTransport({ ua: win, hasToken: false, hasSignedUrl: true }), "websocket");
   assert.equal(H.pickTransport({ ua: win, override: "websocket", hasToken: true, hasSignedUrl: true }), "websocket");
   assert.equal(H.pickTransport({ ua: win, hasToken: false, hasSignedUrl: false }), null);
-  assert.deepEqual(H.connectionOptions("webrtc", { conversationToken: "t", signedUrl: "wss://x", inputDeviceId: "" }), { conversationToken: "t", connectionType: "webrtc" });
-  assert.deepEqual(H.connectionOptions("websocket", { conversationToken: "t", signedUrl: "wss://x", inputDeviceId: "mic-2" }), {
-    signedUrl: "wss://x",
-    connectionType: "websocket",
-    inputDeviceId: "mic-2",
-  });
+  // The mic is the system default: no device in the options.
+  assert.deepEqual(H.connectionOptions("webrtc", { conversationToken: "t", signedUrl: "wss://x" }), { conversationToken: "t", connectionType: "webrtc" });
+  assert.deepEqual(H.connectionOptions("websocket", { conversationToken: "t", signedUrl: "wss://x" }), { signedUrl: "wss://x", connectionType: "websocket" });
 });
 
 // ---- pure: the detectors ----------------------------------------------------
@@ -147,6 +144,44 @@ test("health: a mic that reads zero for 10 s is dead (not while muted); speech w
   for (let t = 3_100; t <= 11_000; t += 100) u.sample({ now: t, input: 0.01, output: 0, muted: false, speaking: false });
   assert.deepEqual(ev3.map((e) => e.kind), ["mic-unheard"]);
   assert.ok(ev3[0].speechMs >= 2_500);
+});
+
+// Carl's v0.6.46 session: "vault-chat isn't receiving your microphone" in the
+// middle of a conversation that heard him fine (his next line went through).
+// He talked over a slow tool call; his transcript came after the 8 s wait.
+test("health: never 'unheard' in a working conversation — a late transcript, or a noisy room, after he was heard", () => {
+  const ev: any[] = [];
+  const h = new H.VoiceHealth((e) => ev.push(e));
+  h.connected(0);
+  const say = (from: number, to: number, input: number) => {
+    for (let t = from; t <= to; t += 100) h.sample({ now: t, input, output: 0, muted: false, speaking: false });
+  };
+  say(100, 2_000, 0.3);
+  say(2_100, 2_500, 0.01);
+  h.userTranscript(2_600); // heard
+  h.audioReceived(3_000);
+  // He talks 4 s while the agent runs a slow tool; the transcript lands 12 s after he stops.
+  say(5_000, 9_000, 0.3);
+  say(9_100, 21_000, 0.01);
+  assert.deepEqual(ev, [], "a transcript that is late is not a deaf mic");
+  h.userTranscript(21_000);
+  // A noisy room (energy the transcriber rightly ignores) for 20 s, no transcript.
+  for (let t = 21_100; t <= 41_000; t += 100) h.sample({ now: t, input: t % 1_000 < 500 ? 0.06 : 0.01, output: 0, muted: false, speaking: false });
+  say(41_100, 60_000, 0.01);
+  assert.deepEqual(ev, [], "noise after he was heard is not a deaf mic");
+});
+
+test("health: after he was heard, 'unheard' only over a long deaf span with lots of speech", () => {
+  const ev: any[] = [];
+  const h = new H.VoiceHealth((e) => ev.push(e));
+  h.connected(0);
+  h.userTranscript(1_000);
+  // 20 s of speech, nothing heard, nothing said back, 90 s on.
+  for (let t = 1_100; t <= 21_000; t += 100) h.sample({ now: t, input: 0.3, output: 0, muted: false, speaking: false });
+  for (let t = 21_100; t <= 80_000; t += 100) h.sample({ now: t, input: 0.01, output: 0, muted: false, speaking: false });
+  assert.deepEqual(ev, [], "not yet: under 90 s since he was heard");
+  for (let t = 80_100; t <= 92_000; t += 100) h.sample({ now: t, input: 0.01, output: 0, muted: false, speaking: false });
+  assert.deepEqual(ev.map((e) => e.kind), ["mic-unheard"]);
 });
 
 test("health: audio arriving with nothing audible for 2 s is 'waves but silence'; the first audible audio is timed from speech end", () => {
@@ -180,7 +215,7 @@ test("health: audio arriving with nothing audible for 2 s is 'waves but silence'
 });
 
 // ---- the session, on a mocked SDK -------------------------------------------
-test("start: WebRTC with the box's conversation token, the picked mic, no mic stream of ours", async () => {
+test("start: WebRTC with the box's conversation token, the system's default mic (its label logged), no mic stream of ours", async () => {
   const g = globalThis as any;
   const realMd = g.navigator?.mediaDevices;
   let ours = 0;
@@ -190,20 +225,18 @@ test("start: WebRTC with the box's conversation token, the picked mic, no mic st
     /* node without a navigator: nothing of ours could call it anyway */
   }
   Object.defineProperty(g.navigator, "userAgent", { configurable: true, value: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" });
-  localStorage.setItem(voice.VOICE_INPUT_STORAGE, "dev-usb-mic");
   try {
     const s = await startCall({ conversationToken: "tok_123", signedUrl: "wss://signed" });
     assert.equal(s.opts.connectionType, "webrtc");
     assert.equal(s.opts.conversationToken, "tok_123");
     assert.equal(s.opts.signedUrl, undefined, "one credential: the SDK refuses signedUrl with webrtc");
-    assert.equal(s.opts.inputDeviceId, "dev-usb-mic");
+    assert.equal(s.opts.inputDeviceId, undefined, "no picked device: the SDK takes the system default");
     assert.equal(ours, 0, "the SDK owns the only mic stream");
     const connected = tagged("voice connected").pop()!;
     assert.equal(connected.data.transport, "webrtc");
     assert.equal(tagged("voice mic").pop()!.data.mic, "Headset Microphone (Jabra)", "the captured device is logged");
     await voice.endElevenLabsSession();
   } finally {
-    localStorage.removeItem(voice.VOICE_INPUT_STORAGE);
     if (realMd !== undefined) Object.defineProperty(g.navigator, "mediaDevices", { configurable: true, value: realMd });
   }
 });

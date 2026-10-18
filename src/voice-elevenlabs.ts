@@ -206,33 +206,6 @@ function isLinuxWebview(): boolean {
   const ua = typeof navigator !== "undefined" ? navigator.userAgent : "";
   return /Linux/.test(ua) && !/Android/.test(ua);
 }
-/** Settings → Voice → Microphone (empty: the system default). */
-export const VOICE_INPUT_STORAGE = "vault_chat_voice_input_device";
-export function voiceInputDevice(): string {
-  try {
-    return localStorage.getItem(VOICE_INPUT_STORAGE) ?? "";
-  } catch {
-    return "";
-  }
-}
-/** Pick the mic; a live call switches to it now (the SDK's changeInputDevice). */
-export async function setVoiceInputDevice(id: string): Promise<void> {
-  try {
-    if (id) localStorage.setItem(VOICE_INPUT_STORAGE, id);
-    else localStorage.removeItem(VOICE_INPUT_STORAGE);
-  } catch {
-    /* no storage */
-  }
-  const conv = activeConversation;
-  if (!conv) return;
-  try {
-    await conv.changeInputDevice({ inputDeviceId: id || "default" });
-    vlog("voice mic switched", { ...(await micInfo(conv)) });
-    health.micReset(Date.now());
-  } catch (e) {
-    console.warn("[voice-eleven] couldn't switch the microphone:", e);
-  }
-}
 // A call ElevenLabs closed because the model timed out reconnects once (voiceTimeout.ts).
 const timeoutRetry = new TimeoutRetry();
 // Each turn's time to the first response and the session's size, for the log.
@@ -1050,7 +1023,8 @@ ${shared}` : "");
     activeTransport = transport;
     const startedAt = Date.now();
     const start = () => voiceSdk.startSession({
-      ...connectionOptions(transport, { conversationToken, signedUrl, inputDeviceId: voiceInputDevice() }),
+      // The mic is the system default (the SDK's own); its label is logged at start ("voice mic").
+      ...connectionOptions(transport, { conversationToken, signedUrl }),
       overrides: {
         agent: {
           prompt: { prompt: systemPrompt },
@@ -1231,7 +1205,7 @@ ${shared}` : "");
     const msg = (e as any)?.message ?? String(e);
     useStore.getState().setVoiceConnecting(false);
     if (isMicProblem(e)) {
-      reportVoiceError(`Microphone access denied or unavailable: ${msg}. Check Windows Settings → Privacy → Microphone, and the input in Settings → Voice.`);
+      reportVoiceError(`Microphone access denied or unavailable: ${msg}. Check Windows Settings → Privacy → Microphone, and the system's default input device.`);
       return;
     }
     reportVoiceError(`Voice session failed to start: ${msg}.`);
@@ -2207,7 +2181,7 @@ let healthTimer: ReturnType<typeof setInterval> | null = null;
 let healthConv: ActiveConversation | null = null;
 let healthCleanup: (() => void)[] = [];
 let micRecoveries = 0;
-export const MIC_UNHEARD_LINE = "vault-chat isn't receiving your microphone. Check the input device in Settings → Voice.";
+export const MIC_UNHEARD_LINE = "vault-chat isn't receiving your microphone. Check the system's default input device.";
 
 /** [best-effort, diagnostics] The SDK's live pieces it doesn't expose publicly:
  *  the LiveKit room (WebRTC), the mic track, the WebSocket path's audio contexts.
@@ -2235,7 +2209,6 @@ async function micInfo(conv: ActiveConversation | null): Promise<Record<string, 
     micId: settings.deviceId ? String(settings.deviceId).slice(0, 12) : null,
     micState: track.readyState,
     echoCancellation: settings.echoCancellation,
-    picked: voiceInputDevice() ? "chosen" : "default",
   };
 }
 
@@ -2333,8 +2306,7 @@ async function recoverMic(conv: ActiveConversation, why: string): Promise<void> 
   micRecoveries++;
   if (micRecoveries === 1) {
     try {
-      const id = voiceInputDevice();
-      await conv.changeInputDevice({ inputDeviceId: id || "default" });
+      await conv.changeInputDevice({ inputDeviceId: "default" });
       if (healthConv !== conv) return;
       health.micReset(Date.now());
       watchMicTrack(conv);
