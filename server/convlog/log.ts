@@ -354,9 +354,10 @@ export class ConvLog {
   private resolve = (p: any): LogRecord => {
     const file = this.abs(String(p.file ?? ""));
     const id = String(p.id ?? "");
-    const { id: _id, ...rest } = p;
+    const { seq, conv, at, type, file: _f, id: _id, ...extra } = p;
     const entry = this.entries.get(file, id) ?? ({ type: "missing", id } as PiEntry);
-    return { ...rest, file, entry } as LogRecord;
+    // The same record (key for key) a client was handed when it was written.
+    return { seq, conv, at, type, file, entry, ...extra } as LogRecord;
   };
 
   /** The entries of `file` this conversation's feed already points to (the engine's catch-up skips them). */

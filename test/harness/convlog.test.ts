@@ -417,6 +417,7 @@ test("on disk an entry record is only a pointer; a checkpoint is exactly the fol
     const ck = log.checkpointOf(C)!;
     const recs = log.eventsOf(C, 0);
     assert.deepEqual(ck.picture, JSON.parse(JSON.stringify(fold(recs.filter((r) => r.seq <= ck.seq), C))));
+    const every0 = log.after(0, 1e6).events;
     // More after the checkpoint; then a new process on the same directory.
     const sim = new PiSim(path.join(dir, "sessions"), (b) => log.emit(C, b));
     sim.note({ kind: "notice", text: "after the checkpoint", clientId: "late" });
@@ -425,6 +426,8 @@ test("on disk an entry record is only a pointer; a checkpoint is exactly the fol
     assert.deepEqual(JSON.parse(JSON.stringify(again.picture(C))), JSON.parse(JSON.stringify(log.picture(C))), "the same picture after the restart");
     assert.equal(again.picture(C)!.items.at(-1)!.id, "late");
     assert.equal(again.latest(), log.latest(), "the sequence goes on where it was");
+    // Every record a client was handed before the restart comes back the same, key for key.
+    assert.equal(JSON.stringify(again.after(0, 1e6).events.slice(0, every0.length)), JSON.stringify(every0));
     // /poll after any N is exact across the restart, entries resolved from pi's files.
     const every = again.after(0, 1e6).events;
     assert.ok(every.every((r) => r.type !== "entry" || r.entry.type !== "missing"));
