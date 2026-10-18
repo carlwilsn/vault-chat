@@ -6,7 +6,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Arbiter, type Action, type PEvent } from "../../board/src/palm.ts";
-import { ChromeTaps, routeChrome } from "../../board/src/chrome.ts";
+import { ChromeTaps, isField, isTextField, routeChrome } from "../../board/src/chrome.ts";
 
 type Btn = { name: string; x: number; y: number };
 // A 1180×820 board: the bars along the top, a popover under the size button, the menu, the inbox sheet, the pill.
@@ -147,4 +147,16 @@ test("chrome pointers never reach the arbiter; a canvas down with a reused id is
   b.ev("down", 1, "mouse", CONTROLS[1]!.x, CONTROLS[1]!.y, { button: 0 });
   b.ev("down", 1, "mouse", 600, 500, { button: 0 });
   assert.equal(b.actions.at(-1)?.a, "tool-start");
+});
+
+// Fields are fully native (the iPad name dialog's keyboard, v0.6.46): the click dedupe, the touch/gesture
+// prevention and the board's Backspace/⌘Z leave inputs, textareas, selects and contenteditable alone.
+test("fields are the browser's: every input kind, textareas, selects, contenteditable", () => {
+  for (const t of [{ tagName: "INPUT", type: "text" }, { tagName: "input", type: "range" }, { tagName: "TEXTAREA" }, { tagName: "SELECT" }, { tagName: "DIV", isContentEditable: true }]) assert.equal(isField(t), true, JSON.stringify(t));
+  for (const t of [{ tagName: "BUTTON" }, { tagName: "DIV" }, { tagName: "CANVAS" }, null, undefined, {}]) assert.equal(isField(t), false, JSON.stringify(t));
+});
+
+test("typing fields keep Backspace and ⌘Z; a slider or a file picker does not take typing", () => {
+  for (const t of [{ tagName: "INPUT", type: "text" }, { tagName: "INPUT" }, { tagName: "INPUT", type: "search" }, { tagName: "TEXTAREA" }, { tagName: "P", isContentEditable: true }]) assert.equal(isTextField(t), true, JSON.stringify(t));
+  for (const t of [{ tagName: "INPUT", type: "range" }, { tagName: "INPUT", type: "file" }, { tagName: "INPUT", type: "checkbox" }, { tagName: "SELECT" }, { tagName: "BUTTON" }, null]) assert.equal(isTextField(t), false, JSON.stringify(t));
 });
