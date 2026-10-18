@@ -23,6 +23,11 @@
 // again), both held while the agent speaks (src/voiceQuiet.ts). A landed inbox entry is
 // mentioned at the next pause, as on the laptop.
 //
+// And the agent can LOOK on demand: LookAtScreen is handled here, by the board page (BOARD_LOCAL_TOOLS), never
+// sent to the box (which has no screen). It takes the visible region as drawn — ink, items, typeset math, PDF
+// pages — as a downscaled JPEG through the same image path (an unchanged picture is not sent twice: the tool says
+// so), with the board's name and its placed items as text. The session's prompt says it can (BOARD_VOICE_NOTE).
+//
 // The transport is WebRTC (ElevenLabs' recommended one: echo cancellation, jitter
 // buffer) with the box's conversation token; WebSocket with the signed URL when the
 // box has no token or WebRTC can't connect. One mic stream, the SDK's: the tap asks
@@ -104,9 +109,17 @@ export function boardContextText(b: { name: string; items: Item[]; strokes: numb
   } else lines.push("Nothing from the board inbox is on it.");
   if (own) lines.push(`${own} picture${own === 1 ? "" : "s"} he inserted himself.`);
   lines.push(b.strokes ? `${b.strokes} stroke${b.strokes === 1 ? "" : "s"} of his handwriting.` : "No handwriting yet.");
-  lines.push("A picture of what he sees comes with this when it changes. To put something on his board, ask the agent to send it to the board inbox. Don't describe the board unless he asks.]");
+  lines.push("A picture of what he sees comes with this when it changes; LookAtScreen looks again right now. To put something on his board, ask the agent to send it to the board inbox. Don't describe the board unless he asks.]");
   return lines.join(" ");
 }
+
+/** Tools the board page answers itself (the box has no screen to look at). */
+export const BOARD_LOCAL_TOOLS = new Set(["LookAtScreen"]);
+
+/** Added to the session's prompt on the board: what it can see, said honestly. */
+export const BOARD_VOICE_NOTE = `
+
+On this call Carl is on his iPad whiteboard. You CAN see it: LookAtScreen returns a picture of the part of the board he has in view, as drawn (his handwriting, pictures, typeset math, PDF pages), plus the board's name and what is placed on it. Call it whenever he says "look", asks about what he wrote or drew, or asks you to check his work, and call it again after he says he changed or wrote something: a picture you saw earlier may be out of date. Never say you cannot see the board.`;
 
 /** FNV-1a over a picture's bytes: its key for the image path's dedupe. */
 export async function blobKey(b: Blob): Promise<string> {
@@ -162,7 +175,7 @@ export class VoiceController {
   private lines: Promise<unknown> = Promise.resolve();
   private gen = 0;
   /** Updates and pictures sent this session (for the preview and the tests). */
-  readonly sent = { updates: [] as string[], images: 0 };
+  readonly sent = { updates: [] as string[], images: 0, looks: 0 };
 
   constructor(private d: VoiceDeps) {
     try {
@@ -279,7 +292,7 @@ export class VoiceController {
       const creds = () => (transport === "webrtc" ? { conversationToken: token!, connectionType: transport } : { signedUrl: signed!, connectionType: transport });
       const open = () => sdk.Conversation.startSession({
         ...creds(),
-        overrides: { agent: { prompt: { prompt: cfg.systemPrompt || "" }, language: "en", firstMessage: "" }, tts: { voiceId: cfg.voiceId } },
+        overrides: { agent: { prompt: { prompt: (cfg.systemPrompt || "") + BOARD_VOICE_NOTE }, language: "en", firstMessage: "" }, tts: { voiceId: cfg.voiceId } },
         dynamicVariables: cfg.dynamicVariables || {},
         clientTools: this.clientTools(cfg.toolNames ?? [], from),
         onConnect: () => {
@@ -456,9 +469,39 @@ export class VoiceController {
 
   // ---------------------------------------------------------------- the box's path
 
+  /** LookAtScreen on the board: the part in view, now, as a picture (through the image path), and the board as text. */
+  async lookAtBoard(): Promise<string> {
+    const conv = this.conv, b = this.board;
+    if (!b) return "Carl is not on a board right now (the board list is open), so there is nothing to look at.";
+    const text = boardContextText({ name: b.name(), items: b.items(), strokes: b.strokes() }).replace(/^\[|\]$/g, "");
+    let blob: Blob | null;
+    try {
+      blob = await b.snapshot();
+    } catch (e) {
+      return `Error: the board's picture could not be taken on the iPad (${String((e as Error)?.message ?? e)}). ${text}`;
+    }
+    if (!blob) return `The part of the board in view is empty: no handwriting or items there. ${text}`;
+    if (!conv) return `Error: the call is not connected, so the picture could not be attached. ${text}`;
+    const key = `board:${b.slug}:${await blobKey(blob)}`;
+    const sink = { uploadFile: (x: Blob) => conv.uploadFile(x), sendMultimodalMessage: (m: { text?: string; fileId: string }) => conv.sendMultimodalMessage(m) };
+    const [r] = await this.pusher.pushMany({ ...sink, sendFiles: (t, ids) => sendFilesMessage(sink, t, ids) }, [{ key, blob }], lookingAtNote(`his whiteboard "${b.name()}"`, "the part in view"), () => this.conv === conv);
+    if (r === "sent") {
+      this.sent.images++;
+      this.sent.looks++;
+      return `Attached a picture of the part of his board in view, as he sees it now — look at it. ${text}`;
+    }
+    if (r === "duplicate") {
+      this.sent.looks++;
+      return `Nothing in view has changed since the picture of his board you already have — look at that one. ${text}`;
+    }
+    return `Error: the picture could not be attached (${String(r)}). ${text}`;
+  }
+
   private clientTools(names: string[], from: string | null): Record<string, (p: unknown) => Promise<string>> {
     const tools: Record<string, (p: unknown) => Promise<string>> = {};
+    for (const name of BOARD_LOCAL_TOOLS) tools[name] = () => this.lookAtBoard().catch((e) => `Error: ${String((e as Error)?.message ?? e)}`);
     for (const name of names) {
+      if (BOARD_LOCAL_TOOLS.has(name)) continue;
       tools[name] = async (params) => {
         try {
           // SetProject's target is this session's voice conversation once a line made it.

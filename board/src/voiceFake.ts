@@ -16,6 +16,11 @@ export type FakeLog = {
   say?: (role: "user" | "agent", text: string) => void;
   /** The call closing from the other side (the SDK's onDisconnect with reason "error"). */
   drop?: (why: string) => void;
+  /** The agent calling one of the session's client tools (what it returns to the agent). */
+  tool?: (name: string, params?: unknown) => Promise<string>;
+  /** The client tools the session was given, and its prompt. */
+  tools?: string[];
+  prompt?: string;
 };
 
 export function fakeSdk(): VoiceSdk {
@@ -67,6 +72,12 @@ export function fakeSdk(): VoiceSdk {
           getOutputVolume: () => level * (0.6 + 0.4 * Math.random()),
         };
         log.say = (role, text) => open && o.onMessage({ role, message: text });
+        log.tools = Object.keys(o.clientTools);
+        log.prompt = (o.overrides as { agent?: { prompt?: { prompt?: string } } })?.agent?.prompt?.prompt ?? "";
+        log.tool = async (name, params) => {
+          const fn = o.clientTools[name];
+          return fn ? fn(params ?? {}) : `no client tool ${name}`;
+        };
         log.drop = (why) => {
           if (!open) return;
           open = false;
