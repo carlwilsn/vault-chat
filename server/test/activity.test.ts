@@ -11,6 +11,7 @@ import { EventEmitter } from "node:events";
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmp, cleanup, git } from "./helpers";
+import { withPiSessions } from "./fakeSession";
 
 const root = tmp("vca-");
 const vault = join(root, "vault");
@@ -129,8 +130,8 @@ beforeAll(async () => {
   const { configureContext } = await import("../context");
   configureContext({ vault, agentModel: "openai/gpt-6.1-sol", apiKey: () => null, verifierDeny: [] } as any);
   const { Engine } = await import("../engine/engine");
-  backend = new FakeBackend("a");
-  backend2 = new FakeBackend("b");
+  backend = withPiSessions(new FakeBackend("a"), join(root, "pi-a"));
+  backend2 = withPiSessions(new FakeBackend("b"), join(root, "pi-b"));
   engine = makeEngine(Engine, vault, backend);
   engine2 = makeEngine(Engine, vault2, backend2);
   act = await import("../activity");

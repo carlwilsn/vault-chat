@@ -12,6 +12,7 @@ import { EventEmitter } from "node:events";
 import { existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmp, cleanup, makeVault, startServer, sh, waitFor, type Running } from "./helpers";
+import { withPiSessions } from "./fakeSession";
 
 const root = tmp("vcv-");
 const mainVault = join(root, "vaults", "school2");
@@ -85,7 +86,7 @@ describe("two vaults on one box (engines on fake backends)", () => {
   let a: { engine: any; backend: FakeBackend }, b: { engine: any; backend: FakeBackend };
 
   const boot = (vault: string, thread: string, tag?: string) => {
-    const backend = new FakeBackend(thread);
+    const backend = withPiSessions(new FakeBackend(thread), join(root, `pi-${thread}`));
     const engine = new Engine({
       vault,
       backend,
@@ -279,7 +280,7 @@ describe("vault-scoped routes (the real server)", () => {
 
     // Each vault's /poll is its own log (its own sequence): the tag is a record of cphys, the project a signal.
     const phys = await (await fetch(`${srv.base}/poll?after=0&vault=physics`)).json();
-    expect(phys.events.filter((e: any) => e.type === "conv.updated")).toEqual([expect.objectContaining({ conv: "cphys", patch: { project: "optics" } })]);
+    expect(phys.events.filter((e: any) => e.type === "meta" && "project" in e.patch)).toEqual([expect.objectContaining({ conv: "cphys", patch: { project: "optics" } })]);
     expect(phys.events.filter((e: any) => e.type === "signal")).toEqual([expect.objectContaining({ conv: null, signal: { type: "project", convId: "cphys", project: "optics" } })]);
     // The main vault's client gets nothing of it (and its cursor still moves past it).
     const t0 = Date.now();

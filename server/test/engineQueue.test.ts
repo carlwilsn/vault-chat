@@ -10,6 +10,7 @@ import { EventEmitter } from "node:events";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmp, cleanup } from "./helpers";
+import { withPiSessions } from "./fakeSession";
 
 const root = tmp("vcq-");
 const vault = join(root, "vault");
@@ -93,7 +94,7 @@ beforeAll(async () => {
   const { configureContext } = await import("../context");
   configureContext({ vault, agentModel: "openai/gpt-6.1-sol", apiKey: () => null, verifierDeny: [] } as any);
   const { Engine } = await import("../engine/engine");
-  backend = new FakeBackend();
+  backend = withPiSessions(new FakeBackend(), join(root, "pi"));
   engine = new Engine({
     vault,
     backend: backend as any,
@@ -143,6 +144,8 @@ describe("steer and queue", () => {
     expect(backend.followUps.map((x) => x.texts.join())).toEqual(["Then check the build.", "And open a PR.", "Never mind this one."]);
     let c = await readConv(vault, r.convId);
     expect(c.queued.map((q: any) => q.text)).toEqual(["Then check the build.", "And open a PR.", "Never mind this one."]);
+    // Carl's steer and queued messages are not in the transcript until pi delivers them; the turn's own message is, once pi took it.
+    await until(async () => (await userTexts(r.convId)).length === 1);
     expect(await userTexts(r.convId)).toEqual(["Write the section."]);
     // The same message again (a retry): nothing new.
     expect((await engine.message({ convId: r.convId, text: "And open a PR.", queue: true, clientMsgId: "c-q2" })).duplicate).toBe(true);
@@ -156,7 +159,7 @@ describe("steer and queue", () => {
     expect(c.queued.map((q: any) => q.id)).toEqual(["c-q1", "c-q2"]);
 
     // pi delivers: the steer after the current step, the follow-ups when the agent would stop.
-    backend.pi(tid, [...userMsg("Write the section."), ...assistant([{ text: "Drafting." }]), ...userMsg("Keep it under a page."), ...assistant([{ text: "Short then." }])]);
+    backend.pi(tid, [...assistant([{ text: "Drafting." }]), ...userMsg("Keep it under a page."), ...assistant([{ text: "Short then." }])]);
     backend.pi(tid, [...userMsg("Then check the build."), ...assistant([{ text: "Build is green." }])]);
     await new Promise((res) => setTimeout(res, 200));
     c = await readConv(vault, r.convId);
@@ -189,7 +192,6 @@ describe("steer and queue", () => {
     const turn = backend.turns.length;
     const tid = backend.turns[turn - 1].threadId;
     backend.pi(tid, [
-      ...userMsg("Go through the three chapters."),
       ...assistant([{ text: "Reading chapter one" }, { toolCall: { id: "c1", name: "read", arguments: { path: "ch1.md" } } }, { toolCall: { id: "c2", name: "subagent", arguments: { task: "ch2" } } }]),
       toolStart("c1", "read", { path: "ch1.md" }),
       toolStart("c2", "subagent", { task: "ch2" }),

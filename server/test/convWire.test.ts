@@ -9,6 +9,7 @@ import { EventEmitter } from "node:events";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmp, cleanup } from "./helpers";
+import { withPiSessions } from "./fakeSession";
 
 const root = tmp("vcw-");
 const vault = join(root, "vault");
@@ -79,7 +80,7 @@ beforeAll(async () => {
   const { configureContext } = await import("../context");
   configureContext({ vault, agentModel: "openai/gpt-6.1-sol", apiKey: () => null, verifierDeny: [] } as any);
   const { Engine } = await import("../engine/engine");
-  backend = new FakeBackend();
+  backend = withPiSessions(new FakeBackend(), join(root, "pi"));
   engine = new Engine({
     vault,
     backend: backend as any,
@@ -122,6 +123,7 @@ describe("the box's full conversation (engine on a fake pi)", () => {
     convId = r.convId;
     await until(() => backend.turns.length === 1);
     const { pictureOf } = await import("../engine/convs");
+    const { shown } = await import("../../src/convlog/reduce");
 
     // Two children from ONE `subagent` call (parallel mode): the call carries both.
     backend.ev({ kind: "tool", itemId: "call_sub", name: "subagent", input: { tasks: [{ agent: "researcher", task: "one" }, { agent: "researcher", task: "two" }] } });
@@ -135,21 +137,26 @@ describe("the box's full conversation (engine on a fake pi)", () => {
 
     // Thinking as it streams: in the log while it streams, then final.
     pi({ type: "message_start", message: { role: "assistant", content: [] } }, upd({ type: "thinking_start", contentIndex: 0 }), upd({ type: "thinking_delta", contentIndex: 0, delta: "Check the memory " }), upd({ type: "thinking_delta", contentIndex: 0, delta: "factors." }));
-    await until(() => !!pictureOf(vault, convId)?.items.some((x) => x.kind === "thinking" && x.status === "streaming" && x.text === "Check the memory factors."));
-    pi(upd({ type: "thinking_end", contentIndex: 0, content: "Check the memory factors." }));
+    await until(() => !!shown(pictureOf(vault, convId)!).some((x) => x.kind === "thinking" && x.status === "streaming" && x.text === "Check the memory factors."));
 
-    // The plan, through the host tool.
-    const todo = await backend.h.toolCall("t1", "TodoWrite", { todos: [{ content: "Read", status: "completed" }, { content: "Write", status: "in_progress", activeForm: "Writing" }] });
+    pi(upd({ type: "thinking_end", contentIndex: 0, content: "Check the memory factors." }), { type: "message_end", message: { role: "assistant", content: [{ type: "thinking", thinking: "Check the memory factors." }], stopReason: "toolUse" } });
+
+    // The plan: pi's TodoWrite call (the transcript carries it), answered by the host tool.
+    const todos = [{ content: "Read", status: "completed" }, { content: "Write", status: "in_progress", activeForm: "Writing" }];
+    backend.ev({ kind: "tool", itemId: "call_todo", name: "TodoWrite", input: { todos } });
+    const todo = await backend.h.toolCall("t1", "TodoWrite", { todos });
     expect(todo.ok).toBe(true);
+    backend.ev({ kind: "tool", itemId: "call_todo", name: "TodoWrite", input: undefined, result: todo.text });
 
     // The live context and the model's window.
     backend.ev({ kind: "usage", usage: { last: { inputTokens: 182_000, outputTokens: 10, totalTokens: 182_010 }, modelContextWindow: 200_000 } });
     // A long reply: the log holds every character while it streams.
-    pi(upd({ type: "text_start", contentIndex: 1 }), upd({ type: "text_delta", contentIndex: 1, delta: LONG.slice(0, 3000) }), upd({ type: "text_delta", contentIndex: 1, delta: LONG.slice(3000) }));
+    pi({ type: "message_start", message: { role: "assistant", content: [] } }, upd({ type: "text_start", contentIndex: 0 }), upd({ type: "text_delta", contentIndex: 0, delta: LONG.slice(0, 3000) }), upd({ type: "text_delta", contentIndex: 0, delta: LONG.slice(3000) }));
     expect(LONG.length).toBeGreaterThan(6000);
-    await until(() => !!pictureOf(vault, convId)?.items.some((x) => x.kind === "assistant" && x.status === "streaming" && x.text === LONG));
-    pi(upd({ type: "text_end", contentIndex: 1, content: LONG }), { type: "message_end", message: { role: "assistant", content: [{ type: "thinking", thinking: "Check the memory factors." }, { type: "text", text: LONG }], stopReason: "stop", usage: { input: 182_000, output: 10 } } });
-    expect(pictureOf(vault, convId)!.usage).toEqual({ context: 182_000, window: 200_000 });
+    await until(() => !!shown(pictureOf(vault, convId)!).some((x) => x.kind === "assistant" && x.status === "streaming" && x.text === LONG));
+    pi(upd({ type: "text_end", contentIndex: 0, content: LONG }), { type: "message_end", message: { role: "assistant", content: [{ type: "text", text: LONG }], stopReason: "stop", usage: { input: 182_000, output: 10 } } });
+    await until(() => pictureOf(vault, convId)!.usage?.context === 182_000);
+    expect(pictureOf(vault, convId)!.meta.contextWindow).toBe(200_000);
 
     // pi compacted its context mid-turn: the summarized divider, not a tool step.
     backend.ev({ kind: "compaction", summary: "Earlier: the survey's section 4." });
@@ -165,9 +172,10 @@ describe("the box's full conversation (engine on a fake pi)", () => {
     // In the log's order: the call, the thinking, the reply, the divider.
     const order = c.messages.filter((m: any) => m.role === "assistant").map((m: any) => (m.toolCalls ? "tools" : m.thinking ? "thinking" : m.compaction || m.rollover ? "divider" : m.system ? "notice" : "text"));
     // pi's compaction, then the roll-over the full context (182k of 200k) triggers at the turn's end.
-    expect(order).toEqual(["tools", "thinking", "text", "divider", "divider"]);
+    expect(order).toEqual(["tools", "thinking", "tools", "text", "divider", "divider"]);
     const calls = c.messages.flatMap((m: any) => m.toolCalls ?? []);
     expect(calls.filter((t: any) => t.name === "subagent")).toHaveLength(1);
+    expect(calls.filter((t: any) => t.name === "TodoWrite")).toHaveLength(1);
     expect(calls.some((t: any) => t.name === "Subagent")).toBe(false);
     const sub = calls.find((t: any) => t.name === "subagent");
     expect(sub.subagents).toEqual(["c1", "c2"]);
@@ -224,7 +232,7 @@ describe("the box's full conversation (engine on a fake pi)", () => {
       ["assistant", "", ["subagent"]],
       ["assistant", "Earlier conversation summarized", []],
     ]);
-    expect(old.messages[1].costUsd).toBe(0.2);
+    expect((await readConv(vault, "legacy1")).costUsd).toBe(0.2);
     expect(old.messages[3].divider).toBe("## Where we are");
     expect(old.verdict.verdict).toBe("pass");
     // The older file is never touched.

@@ -52,7 +52,7 @@ before(async () => {
   // An older chat the box already has.
   box.create("old1", "earlier", Date.now() - 60_000);
   box.startTurn("old1");
-  box.emit("old1", { type: "item.started", item: { id: "u-old", kind: "user", status: "done", text: "earlier question", at: 0 } });
+  box.user("old1", "u-old", "earlier question");
   box.stream("old1", "assistant", "earlier answer");
   box.tool("old1", "t1", "Read", { path: "a.md" });
   box.toolDone("old1", "t1", "x");

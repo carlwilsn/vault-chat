@@ -1,17 +1,19 @@
-// A fake box for the laptop's tests: the REAL event log (server/convlog/log.ts,
-// on a temp dir) behind the box's real routes (/poll, /api/v2/*), and a
-// scripted engine that writes what pi would make of a turn — the same records
-// the box writes (server/engine/piMap.ts shapes). Intents are recorded and
-// answered like the engine answers them. `restart()` is a new process on the
-// same log directory (what survives is what is on disk); `down` drops every
-// connection.
+// A fake box for the laptop's tests: the REAL feed (server/convlog/log.ts, on a
+// temp dir) behind the box's real routes (/poll, /api/v2/*), and a scripted
+// engine that writes what pi would: pi's session file per conversation (in
+// pi's format, on disk), a pointer record for each entry, pi's live events for
+// the message in flight, and the conversation's fields. Intents are recorded
+// and answered like the engine answers them. `restart()` is a new process on
+// the same directory (what survives is what is on disk: the feed and pi's
+// files); `down` drops every connection.
 import http from "node:http";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { ConvLog } from "../../server/convlog/log.ts";
-import type { EventBody, Item, LogRecord } from "../../src/convlog/protocol.ts";
-import { fold } from "../../src/convlog/reduce.ts";
+import { appendEntries, newSessionFile, vcNote } from "../../server/convlog/piSession.ts";
+import type { EventBody, LogRecord, PendingInput, PiEntry } from "../../src/convlog/protocol.ts";
+import { fold, pendingOf, shown } from "../../src/convlog/reduce.ts";
 
 export class FakeBox {
   url = "";
@@ -24,8 +26,8 @@ export class FakeBox {
   /** Answer /poll this many ms late (the tailnet). */
   pollDelay = 0;
   private server!: http.Server;
-  private turns = new Map<string, { turn: string; msg: number }>();
   private n = 0;
+  private clock = Date.now();
   /** What a send does: by default a turn starts (the reply is the test's to script). */
   onSend: (conv: string, b: any) => void = () => {};
 
@@ -33,7 +35,7 @@ export class FakeBox {
     return this.log.emit(conv, body);
   }
 
-  /** The box restarts: a new process on the same log (only what is on disk survives). */
+  /** The box restarts: a new process on the same directory (only what is on disk survives). */
   restart(): void {
     this.log = new ConvLog(this.dir, null, path.join(this.dir, "events"));
   }
@@ -54,82 +56,127 @@ export class FakeBox {
     return fold(this.records(conv), conv);
   }
 
-  // ---------- the scripted engine ----------
+  // ---------- pi, scripted ----------
+
+  private stamp(): number {
+    return (this.clock = Math.max(Date.now(), this.clock + 1));
+  }
+
+  private file(conv: string): string {
+    const f = path.join(this.dir, "pi", `${conv}.jsonl`);
+    if (!fs.existsSync(f)) newSessionFile(f, this.dir);
+    return f;
+  }
+
+  /** pi writes an entry; the feed points to it. */
+  private entry(conv: string, e: Omit<PiEntry, "id" | "parentId" | "timestamp">, extra: { clientId?: string; shown?: string; via?: string } = {}): PiEntry {
+    const file = this.file(conv);
+    const [entry] = appendEntries(file, [e]);
+    this.emit(conv, { type: "entry", file, entry: entry!, ...extra });
+    return entry!;
+  }
+
+  private live(conv: string, ev: any): void {
+    this.emit(conv, { type: "live", ev });
+  }
+
+  private meta(conv: string, patch: Record<string, unknown>): void {
+    this.emit(conv, { type: "meta", patch });
+  }
 
   create(conv: string, title = "New chat", at?: number): void {
-    this.emit(conv, { type: "conv.created", meta: { title, source: "manual", ...(at ? { createdAt: at, lastActivityAt: at } : {}) } });
+    const t = at ?? Date.now();
+    this.meta(conv, { title, source: "manual", createdAt: t, lastActivityAt: t });
   }
 
   turnOf(conv: string): string {
-    return this.turns.get(conv)!.turn;
+    return this.picture(conv).meta.running!.turn;
   }
 
   startTurn(conv: string): string {
     const turn = `t${++this.n}`;
-    this.turns.set(conv, { turn, msg: 0 });
-    this.emit(conv, { type: "turn.started", turn, kind: "user" });
+    this.meta(conv, { running: { turn, kind: "user", startedAt: Date.now() } });
     return turn;
   }
 
-  private item(conv: string, item: Omit<Item, "at" | "turn">): void {
-    const turn = this.turns.get(conv)?.turn;
-    this.emit(conv, { type: "item.started", item: { ...item, ...(turn ? { turn } : {}), at: 0 } as Item });
+  /** Carl's message as pi's user entry, under his client's id. */
+  user(conv: string, clientId: string, text: string, via = "chat"): void {
+    this.entry(conv, { type: "message", message: { role: "user", content: [{ type: "text", text }], timestamp: this.stamp() } }, { clientId, shown: text, via });
   }
 
-  /** A content block streamed in `chunks` deltas, then completed with pi's final text. */
+  /** A content block streamed in `chunks` deltas (pi's live events), then pi's entry for it. */
   stream(conv: string, kind: "assistant" | "thinking", text: string, chunks = 3): string {
-    const t = this.turns.get(conv)!;
-    t.msg++;
-    const id = `${t.turn}:${t.msg}:0`;
-    this.item(conv, { id, kind, status: "streaming", text: "" });
+    const b = this.open(conv, kind);
     const size = Math.max(1, Math.ceil(text.length / chunks));
-    for (let i = 0; i < text.length; i += size) this.emit(conv, { type: "item.delta", id, field: "text", delta: text.slice(i, i + size) });
-    this.emit(conv, { type: "item.completed", id, patch: { text } });
-    return id;
+    for (let i = 0; i < text.length; i += size) b.delta(text.slice(i, i + size));
+    b.end();
+    return b.id;
   }
 
   /** Start streaming a block, and hand back a function that adds a delta (and one that ends it). */
   open(conv: string, kind: "assistant" | "thinking"): { id: string; delta: (s: string) => void; end: () => void } {
-    const t = this.turns.get(conv)!;
-    t.msg++;
-    const id = `${t.turn}:${t.msg}:0`;
-    this.item(conv, { id, kind, status: "streaming", text: "" });
+    const ts = this.stamp();
+    const t = kind === "assistant" ? "text" : "thinking";
+    this.live(conv, { type: "message_start", message: { role: "assistant", timestamp: ts } });
+    this.live(conv, { type: "message_update", assistantMessageEvent: { type: `${t}_start`, contentIndex: 0 } });
     let text = "";
     return {
-      id,
+      id: `${ts}:0`,
       delta: (s) => {
         text += s;
-        this.emit(conv, { type: "item.delta", id, field: "text", delta: s });
+        this.live(conv, { type: "message_update", assistantMessageEvent: { type: `${t}_delta`, contentIndex: 0, delta: s } });
       },
-      end: () => this.emit(conv, { type: "item.completed", id, patch: { text } }),
+      end: () => {
+        this.live(conv, { type: "message_update", assistantMessageEvent: { type: `${t}_end`, contentIndex: 0, content: text } });
+        this.entry(conv, { type: "message", message: { role: "assistant", content: [kind === "assistant" ? { type: "text", text } : { type: "thinking", thinking: text }], stopReason: "stop", timestamp: ts } });
+      },
     };
   }
 
+  /** The model calls a tool: its arguments stream, pi writes the call, the tool runs. */
   tool(conv: string, id: string, name: string, args: unknown): void {
-    this.item(conv, { id, kind: "tool", status: "streaming", name, argsText: "" });
-    this.emit(conv, { type: "item.delta", id, field: "argsText", delta: JSON.stringify(args) });
-    this.emit(conv, { type: "item.updated", id, patch: { status: "running", args } });
+    const ts = this.stamp();
+    this.live(conv, { type: "message_start", message: { role: "assistant", timestamp: ts } });
+    this.live(conv, { type: "message_update", assistantMessageEvent: { type: "toolcall_start", contentIndex: 0, id, toolName: name } });
+    this.live(conv, { type: "message_update", assistantMessageEvent: { type: "toolcall_delta", contentIndex: 0, delta: JSON.stringify(args) } });
+    this.live(conv, { type: "message_update", assistantMessageEvent: { type: "toolcall_end", contentIndex: 0, toolCall: { type: "toolCall", id, name, arguments: args } } });
+    this.entry(conv, { type: "message", message: { role: "assistant", content: [{ type: "toolCall", id, name, arguments: args }], stopReason: "toolUse", timestamp: ts } });
+    this.live(conv, { type: "tool_execution_start", toolCallId: id, toolName: name, args });
   }
 
-  toolDone(conv: string, id: string, result: string): void {
-    this.emit(conv, { type: "item.completed", id, patch: { result } });
+  toolDone(conv: string, id: string, result: string, clientId?: string): void {
+    const call = shown(this.picture(conv)).find((x) => x.id === id);
+    this.live(conv, { type: "tool_execution_end", toolCallId: id, toolName: call?.name, isError: false, result: { content: [{ type: "text", text: result }] } });
+    this.entry(conv, { type: "message", message: { role: "toolResult", toolCallId: id, toolName: call?.name ?? "tool", content: [{ type: "text", text: result }], isError: false, timestamp: this.stamp() } }, clientId ? { clientId } : {});
   }
 
-  /** pi delivered Carl's steer / queued message: his item where pi put it. */
+  private setPending(conv: string, add?: PendingInput, remove?: string): void {
+    const cur = pendingOf(this.picture(conv)).filter((x) => x.id !== remove);
+    const next = add ? [...cur, add] : cur;
+    this.meta(conv, { pending: next.length ? next : null });
+  }
+
+  /** pi delivered Carl's steer / queued message: his message where pi put it. */
   deliver(conv: string, id: string): void {
-    const p = this.picture(conv).pending.find((x) => x.id === id)!;
-    this.emit(conv, { type: "pending.removed", id, reason: "delivered" });
-    this.item(conv, { id, kind: "user", status: "done", text: p.text, via: p.kind });
+    const p = pendingOf(this.picture(conv)).find((x) => x.id === id)!;
+    this.setPending(conv, undefined, id);
+    this.user(conv, id, p.text, p.kind);
   }
 
+  /** AskUser: pi's call, running; the question waits for Carl. */
   ask(conv: string, question: string, options: string[]): string {
     const id = `${this.turnOf(conv)}:ask:1`;
-    this.item(conv, { id, kind: "ask", status: "pending", question, options });
+    this.tool(conv, id, "AskUser", { question, options });
+    this.meta(conv, { asking: { question, options, toolCallId: id, at: Date.now() } });
     return id;
   }
 
-  endTurn(conv: string, status: "completed" | "stopped" | "cut" = "completed"): void {
-    this.emit(conv, { type: "turn.ended", turn: this.turnOf(conv), status });
+  endTurn(conv: string, _status: "completed" | "stopped" | "cut" = "completed"): void {
+    this.meta(conv, { running: null, pending: null });
+  }
+
+  private note(conv: string, clientId: string, data: { kind: "line" | "notice" | "divider"; [k: string]: unknown }): void {
+    this.entry(conv, vcNote({ ...data, clientId }), { clientId });
   }
 
   // ---------- the routes ----------
@@ -189,45 +236,47 @@ export class FakeBox {
   private intent(b: any): Record<string, unknown> {
     const conv = String(b.convId ?? "") || `box${++this.n}`;
     const p = this.log.picture(conv);
+    const exists = !!p?.exists;
     switch (b.type) {
       case "send": {
-        if (p?.items.some((x) => x.id === b.clientId)) return { ok: true, convId: conv, duplicate: true };
-        if (!p) this.create(conv);
+        if (exists && shown(p!).some((x) => x.id === b.clientId)) return { ok: true, convId: conv, duplicate: true };
+        if (!exists) this.create(conv);
         this.startTurn(conv);
-        this.item(conv, { id: b.clientId, kind: "user", status: "done", text: String(b.text ?? "") || "(image)", via: "chat" });
+        this.user(conv, b.clientId, String(b.text ?? "") || "(image)");
         this.onSend(conv, b);
         return { ok: true, convId: conv };
       }
       case "steer":
       case "queue":
-        if (!p?.turn) return { ok: false, error: "nothing running" };
-        this.emit(conv, { type: "pending.added", pending: { id: b.clientId, kind: b.type, text: String(b.text ?? ""), at: 0 } });
+        if (!p?.meta.running) return { ok: false, error: "nothing running" };
+        this.setPending(conv, { id: b.clientId, kind: b.type, text: String(b.text ?? ""), at: Date.now() });
         return { ok: true, convId: conv, ...(b.type === "queue" ? { queued: true, qid: b.clientId } : { steered: true }) };
       case "unqueue":
-        if (!p?.pending.some((x) => x.id === b.id)) return { ok: false, error: "already delivered" };
-        this.emit(conv, { type: "pending.removed", id: b.id, reason: "taken-back" });
+        if (!p || !pendingOf(p).some((x) => x.id === b.id)) return { ok: false, error: "already delivered" };
+        this.setPending(conv, undefined, b.id);
         return { ok: true };
       case "stop":
-        if (p?.turn) {
-          for (const x of p.pending) this.emit(conv, { type: "pending.removed", id: x.id, reason: "stopped" });
-          this.item(conv, { id: `${p.turn.id}:stopped`, kind: "notice", status: "done", text: "Stopped." });
+        if (p?.meta.running) {
+          const turn = p.meta.running.turn;
           this.endTurn(conv, "stopped");
+          this.note(conv, `${turn}:stopped`, { kind: "notice", text: "Stopped." });
         }
         return { ok: true };
       case "answer": {
-        const ask = [...(p?.items ?? [])].reverse().find((x) => x.kind === "ask" && x.status === "pending");
-        this.item(conv, { id: b.clientId, kind: "user", status: "done", text: String(b.text ?? ""), via: "answer" });
-        if (ask) this.emit(conv, { type: "item.completed", id: ask.id, patch: { answer: String(b.text ?? "") } });
+        const ask = p?.meta.asking;
+        if (ask?.toolCallId) this.toolDone(conv, ask.toolCallId, `Carl answered: ${String(b.text ?? "")}`, b.clientId);
+        else this.user(conv, b.clientId, String(b.text ?? ""), "answer");
+        if (ask) this.meta(conv, { asking: null });
         return { ok: true, convId: conv, answered: true };
       }
       case "lines":
-        if (!p) this.create(conv);
-        (b.lines ?? []).forEach((l: any, i: number) =>
-          this.emit(conv, { type: "item.started", item: { id: `${b.clientId}:${i}`, kind: l.role === "assistant" ? "assistant" : "user", status: "done", text: l.text, ...(l.hidden ? { hidden: true } : {}), at: 0 } }),
-        );
+        if (!exists) this.create(conv);
+        (b.lines ?? []).forEach((l: any, i: number) => {
+          if (!l.hidden) this.note(conv, `${b.clientId}:${i}`, { kind: "line", role: l.role === "assistant" ? "assistant" : "user", text: l.text });
+        });
         return { ok: true, convId: conv };
       case "delete":
-        this.emit(conv, { type: "conv.updated", patch: { deleted: true } });
+        this.meta(conv, { deleted: true });
         return { ok: true };
       default:
         return { error: "unknown intent" };

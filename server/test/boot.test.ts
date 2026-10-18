@@ -104,10 +104,14 @@ describe("boot + phone routes", () => {
         return null;
       }
       const rs = body.trim().split("\n").map((l) => JSON.parse(l));
-      return rs.some((x) => x.type === "turn.ended") ? rs : null;
+      return rs.some((x) => x.type === "meta" && x.patch.running === null) ? rs : null;
     }, 60_000);
-    expect(recs[0]).toMatchObject({ type: "conv.created", conv: missionId, meta: { source: "phone" } });
-    expect(recs.filter((x: any) => x.type === "item.delta").map((x: any) => x.delta).join("")).toContain("Acknowledged. I have the brief");
+    expect(recs[0]).toMatchObject({ type: "meta", conv: missionId, patch: { source: "phone" } });
+    // The reply streamed (pi's deltas), then pi's own entry: on disk a pointer into its session file.
+    expect(recs.filter((x: any) => x.type === "live" && x.ev.assistantMessageEvent?.type === "text_delta").map((x: any) => x.ev.assistantMessageEvent.delta).join("")).toContain("Acknowledged. I have the brief");
+    const entries = recs.filter((x: any) => x.type === "entry");
+    expect(entries.length).toBeGreaterThan(1);
+    expect(entries.every((x: any) => typeof x.file === "string" && typeof x.id === "string" && !("entry" in x))).toBe(true);
     expect(existsSync(join(vault, ".vault-chat", "conversations", `${missionId}.jsonl`))).toBe(false);
     expect(or.calls.length).toBeGreaterThan(0);
     // And the phone sees it.

@@ -7,6 +7,7 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmp } from "./helpers";
 import { startFakeModel, type FakeModel, type FakeReq, type FakeReply } from "../context/test/helpers";
+import { withPiSessions } from "./fakeSession";
 
 export class FakeBackend extends EventEmitter {
   readonly name = "pi";
@@ -105,7 +106,7 @@ export async function makeRig(opts: { verifier?: (req: FakeReq, n: number) => Fa
   const { configureContext } = await import("../context");
   configureContext({ vault, agentModel: "openai/gpt-6.1-sol", apiKey: () => "sk-test", baseUrl: verifier.base, verifierDeny: [] } as any);
   const { Engine } = await import("../engine/engine");
-  const backend = new FakeBackend();
+  const backend = withPiSessions(new FakeBackend(), join(root, "pi"));
   const pings: any[] = [];
   const costs = new Map<string, number>();
   const engine = new Engine({

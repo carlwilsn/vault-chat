@@ -13,6 +13,7 @@ import { EventEmitter } from "node:events";
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmp, cleanup } from "./helpers";
+import { withPiSessions } from "./fakeSession";
 
 const root = tmp("vcr-");
 const vault = join(root, "vault");
@@ -84,7 +85,7 @@ const engines: any[] = [];
 
 /** An engine on its own fake pi; notify writes the feed the way engineNotify does. */
 function makeEngine(prefix: string, stallMs?: number) {
-  const backend = new FakeBackend(prefix);
+  const backend = withPiSessions(new FakeBackend(prefix), join(root, `pi-${prefix}`));
   const engine = new Engine({
     vault,
     backend: backend as any,

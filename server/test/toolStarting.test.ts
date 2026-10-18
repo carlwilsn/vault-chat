@@ -12,6 +12,7 @@ import { EventEmitter } from "node:events";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmp, cleanup } from "./helpers";
+import { withPiSessions } from "./fakeSession";
 
 const root = tmp("vcts-");
 const vault = join(root, "vault");
@@ -107,7 +108,7 @@ beforeAll(async () => {
   const { configureContext } = await import("../context");
   configureContext({ vault, agentModel: "openai/gpt-6.1-sol", apiKey: () => null, verifierDeny: [] } as any);
   const { Engine } = await import("../engine/engine");
-  backend = new FakeBackend();
+  backend = withPiSessions(new FakeBackend(), join(root, "pi"));
   engine = new Engine({
     vault,
     backend: backend as any,

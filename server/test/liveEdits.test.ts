@@ -10,6 +10,7 @@ import { join } from "node:path";
 import { tmp, cleanup, makeVault, sh } from "./helpers";
 import { BoxSync } from "../sync";
 import { LiveEdits, writtenPath } from "../liveEdits";
+import { withPiSessions } from "./fakeSession";
 
 const root = tmp("vcle-");
 const vault = join(root, "vault");
@@ -86,7 +87,7 @@ beforeAll(async () => {
   const { configureContext } = await import("../context");
   configureContext({ vault, agentModel: "openai/gpt-6.1-sol", apiKey: () => null, verifierDeny: [] } as any);
   const { Engine } = await import("../engine/engine");
-  backend = new FakeBackend();
+  backend = withPiSessions(new FakeBackend(), join(root, "pi"));
   engine = new Engine({
     vault,
     backend: backend as any,

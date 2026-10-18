@@ -15,6 +15,7 @@ import { EventEmitter } from "node:events";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmp, cleanup, git } from "./helpers";
+import { withPiSessions } from "./fakeSession";
 
 const root = tmp("vcaudit-");
 const vault = join(root, "vault");
@@ -198,7 +199,7 @@ beforeAll(async () => {
   writeFileSync(join(pdir, "progress.md"), "# Progress\n\n- 2026-10-14: tiled the March flight (4,812 tiles).\n- 2026-10-15: v3 training started, mAP50 0.71 at epoch 20.\n");
   writeFileSync(join(pdir, "rules.md"), "- Report mAP50 and the count error together.\n");
   const { Engine } = await import("../engine/engine");
-  backend = new FakeBackend();
+  backend = withPiSessions(new FakeBackend(), join(root, "pi"));
   engine = new Engine({
     vault,
     backend: backend as any,
@@ -271,10 +272,10 @@ describe("what each mode sends", () => {
 
   it("box chat after a roll-over: the new thread's instructions carry the recap", async () => {
     // The roll-over as the engine writes it: the divider item, and the thread retired with its recap.
-    const { emitTo } = await import("../engine/convs");
+    const { emitTo, appendNotes } = await import("../engine/convs");
     const recap = "## Goal\n\nDetect coconuts; v3 training.\n\n## Decided\n\n- Decoupled head for v4.\n\n## Project memory at roll-over (Coconut)\n\n# Memory\n\n## Decisions\n\n- YOLOv8 at 640px; tiles of 1024 with 128 overlap.";
-    emitTo(vault, convId, { type: "item.started", item: { id: "roll1", kind: "compaction", status: "done", rollover: true, text: recap, at: 0 } });
-    emitTo(vault, convId, { type: "conv.updated", patch: { recap, threadId: null, threadPath: null } });
+    appendNotes(vault, convId, [{ kind: "divider", text: recap, rollover: true }]);
+    emitTo(vault, convId, { type: "meta", patch: { recap, threadId: null, threadPath: null } });
     const r = await turn({ text: "Where are we?", convId }, "v3 is training; v4 gets the decoupled head.");
     expect(r.instructions).toBeTruthy();
     const rep = await audit("box-chat-rollover-turn", [

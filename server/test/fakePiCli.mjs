@@ -2,8 +2,11 @@
 // that boot the real bundle where pi cannot run (Windows). It speaks pi's
 // protocol as pi's docs define it (rpc.md, rpc-commands.md, json.md): strict
 // JSONL on stdio, get_state / prompt / steer / follow_up / abort / clear_queue /
-// set_model, and the session events (agent_start … message_start/update/end
-// with text deltas, tool_execution_*, queue delivery, agent_settled). Its model
+// set_model, extension commands (`/vc-note` → a custom entry), the session file
+// in pi's format (entries with id/parentId/timestamp; an assistant message's
+// timestamp is the same in its live events and its entry), and the session
+// events (agent_start … message_start/update/end with text deltas,
+// tool_execution_*, queue delivery, agent_settled). Its model
 // is the test's fake OpenRouter (non-streamed chat completions); a reply with
 // tool_calls is shown as the tool call and a canned result, then asked again.
 // The real pi is exercised on the box (server/test/piEngine.test.ts, and the
@@ -26,12 +29,14 @@ let model = (arg("--model") ?? "openrouter/test/fake").replace(/^openrouter\//, 
 let file = arg("--session");
 let sessionId;
 const history = [];
+let leaf = null;
 if (file && existsSync(file)) {
   sessionId = /_([^_]+)\.jsonl$/.exec(file)?.[1] ?? randomUUID();
   for (const l of readFileSync(file, "utf8").split("\n")) {
     try {
       const v = JSON.parse(l);
       if (v.type === "message") history.push(v.message);
+      if (v.id) leaf = v.id;
     } catch {}
   }
 } else {
@@ -40,9 +45,14 @@ if (file && existsSync(file)) {
   file = join(sessionDir, `${new Date().toISOString().replace(/[:.]/g, "-")}_${sessionId}.jsonl`);
   writeFileSync(file, JSON.stringify({ type: "session", version: 3, id: sessionId, timestamp: new Date().toISOString(), cwd: process.cwd() }) + "\n");
 }
+const append = (e) => {
+  const entry = { ...e, id: randomUUID().slice(0, 8), parentId: leaf, timestamp: new Date().toISOString() };
+  leaf = entry.id;
+  appendFileSync(file, JSON.stringify(entry) + "\n");
+};
 const record = (message) => {
   history.push(message);
-  appendFileSync(file, JSON.stringify({ type: "message", id: randomUUID().slice(0, 8), message }) + "\n");
+  append({ type: "message", message });
 };
 
 let key = "";
@@ -118,6 +128,10 @@ async function callModel() {
   return { content, ...(calls.length ? { tool_calls: calls.filter(Boolean) } : {}) };
 }
 
+let lastTs = 0;
+/** pi's message timestamps (ms; unique here, as an assistant message's blocks are named by it). */
+const stamp = () => (lastTs = Math.max(Date.now(), lastTs + 1));
+
 async function streamText(text, ci, slow) {
   out({ type: "message_update", assistantMessageEvent: { type: "text_start", contentIndex: ci } });
   const n = slow ? 30 : 3;
@@ -133,7 +147,7 @@ async function streamText(text, ci, slow) {
 
 function deliver(list) {
   for (const m of list.splice(0)) {
-    const msg = { role: "user", content: m.message, timestamp: Date.now() };
+    const msg = { role: "user", content: [{ type: "text", text: m.message }], timestamp: stamp() };
     out({ type: "message_start", message: msg });
     out({ type: "message_end", message: msg });
     record(msg);
@@ -146,7 +160,7 @@ async function run(first) {
   aborted = false;
   out({ type: "agent_start" });
   const slow = /\[slow\]/.test(first);
-  const u = { role: "user", content: first, timestamp: Date.now() };
+  const u = { role: "user", content: [{ type: "text", text: first }], timestamp: stamp() };
   out({ type: "turn_start" });
   out({ type: "message_start", message: u });
   out({ type: "message_end", message: u });
@@ -157,10 +171,17 @@ async function run(first) {
       if (aborted) break;
       const text = String(reply.content ?? "");
       const calls = Array.isArray(reply.tool_calls) ? reply.tool_calls : [];
-      out({ type: "message_start", message: { role: "assistant", content: [], stopReason: "pending" } });
+      const ts = stamp();
+      out({ type: "message_start", message: { role: "assistant", content: [], timestamp: ts } });
       const content = [];
       if (text) {
-        if (!(await streamText(text, 0, slow))) break;
+        if (!(await streamText(text, 0, slow))) {
+          // Stopped mid-stream: pi ends the message as aborted and writes it.
+          const am = { role: "assistant", content: [{ type: "text", text: "" }], stopReason: "aborted", timestamp: ts };
+          out({ type: "message_end", message: am });
+          record(am);
+          break;
+        }
         content.push({ type: "text", text });
       }
       calls.forEach((c, i) => {
@@ -179,7 +200,7 @@ async function run(first) {
         content.push(tc);
         void i;
       });
-      const am = { role: "assistant", content, stopReason: calls.length ? "toolUse" : "stop", usage: { input: 1200, output: 40, cacheRead: 0, cacheWrite: 0 } };
+      const am = { role: "assistant", content, stopReason: calls.length ? "toolUse" : "stop", usage: { input: 1200, output: 40, cacheRead: 0, cacheWrite: 0 }, timestamp: ts };
       out({ type: "message_end", message: am });
       record(am);
       for (const tc of content.filter((c) => c.type === "toolCall")) {
@@ -189,7 +210,7 @@ async function run(first) {
         const r = host ? await hostCall(tc.name, tc.arguments) : { text: `(fake pi: ${tc.name} not run)`, isError: false };
         const result = { content: [{ type: "text", text: r.text }], details: {} };
         out({ type: "tool_execution_end", toolCallId: tc.id, toolName: tc.name, result, isError: !!r.isError });
-        record({ role: "toolResult", toolCallId: tc.id, content: result.content });
+        record({ role: "toolResult", toolCallId: tc.id, toolName: tc.name, content: result.content, isError: !!r.isError, timestamp: stamp() });
       }
       out({ type: "turn_end", message: am, toolResults: [] });
       if (steering.length) {
@@ -205,9 +226,10 @@ async function run(first) {
       break;
     }
   } catch (e) {
-    const am = { role: "assistant", content: [], stopReason: "error", errorMessage: String(e?.message ?? e) };
+    const am = { role: "assistant", content: [], stopReason: "error", errorMessage: String(e?.message ?? e), timestamp: stamp() };
     out({ type: "message_start", message: am });
     out({ type: "message_end", message: am });
+    record(am);
   }
   out({ type: "agent_end", messages: [], willRetry: false });
   running = false;
@@ -252,6 +274,14 @@ function handle(line) {
       model = c.modelId;
       return respond(c, true, { id: model });
     case "prompt":
+      // An extension command runs at once, streaming or not (ext/vc.mjs's /vc-note: a custom entry).
+      if (String(c.message ?? "").startsWith("/vc-note ")) {
+        try {
+          const d = JSON.parse(String(c.message).slice("/vc-note ".length));
+          if (d && typeof d.kind === "string") append({ type: "custom", customType: "vc-note", data: d });
+        } catch {}
+        return respond(c, true);
+      }
       if (running) {
         if (c.streamingBehavior === "steer") steering.push({ message: c.message });
         else if (c.streamingBehavior === "followUp") followUp.push({ message: c.message });
