@@ -90,6 +90,11 @@ together, or tap an item or a stroke; drag to move, corner handles to scale
 uniformly: 12 px handles, 44 px hit areas; Delete, and Interact for a widget). Every gesture is one undo step. The board menu (⋯) holds
 Insert image, Background, Writing hand and Scribble to erase (on by default).
 
+The floating controls (`view.ts` layoutChrome): undo and redo upper left, with the board's name when a few words
+of it fit; the tools in the middle (centred when there is room, else just left of the right-hand group, as on an
+iPad held upright); voice, the inbox, the menu and Boards (back to the list) upper right. Proof:
+`board/preview/chrome-layout.mjs` (sideways and upright: no overlap, undo/redo from there, the call pill).
+
 ## Palm rejection (`src/palm.ts`)
 
 The pen draws. One finger pans (One-finger scroll, on by default; off, a finger writes until a Pencil has
@@ -137,8 +142,8 @@ or a pinned copy the server installs into its state dir on first use (`VC_ESBUIL
 
 ## Voice
 
-The mic in the top-right controls is the voice of one conversation (D3, `server/voice.ts`), as on the
-phone and the laptop: no agent, tool or memory of the board's own (`src/voice.ts`, the pill:
+The mic in the top-right controls starts the voice of one conversation; during a call it steps aside and the pill
+under the controls is the call, one 40 px row: waves, the chat's name (tap: switch), mute and the one end button. One conversation (D3, `server/voice.ts`), as on the phone and the laptop: no agent, tool or memory of the board's own (`src/voice.ts`, the pill:
 `src/voicePill.ts`). The box builds the session's prompt from that conversation's pi session and the "you"
 layer; every line said goes into it; its one tool that acts, Ask, hands Carl's request to that
 conversation's agent, and the agent's answer comes back into the call (`GET /api/v1/voice/updates`). It

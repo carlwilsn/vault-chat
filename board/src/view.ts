@@ -145,7 +145,7 @@ type ToolG =
 /** Toolbar icons (Phosphor, board/src/icons.ts): regular while idle; a pressed tool or an open panel shows its fill or duotone,
  *  the pen and the highlighter with the ink's colour as the second tone (syncToolbar sets --tint). */
 const ICONS: Record<string, [IconName, Exclude<Weight, "regular">?]> = {
-  back: ["caret-left"], pen: ["pen-nib", "duotone"], hl: ["highlighter", "duotone"], erase: ["eraser", "fill"], cut: ["eraser", "fill"], lasso: ["lasso", "duotone"],
+  back: ["squares-four"], pen: ["pen-nib", "duotone"], hl: ["highlighter", "duotone"], erase: ["eraser", "fill"], cut: ["eraser", "fill"], lasso: ["lasso", "duotone"],
   undo: ["arrow-u-up-left"], redo: ["arrow-u-up-right"], more: ["dots-three-outline", "fill"], inbox: ["tray", "fill"],
 };
 const svg = (name: string) => {
@@ -290,23 +290,24 @@ export class BoardView {
     const top = "top-[max(12px,env(safe-area-inset-top))]";
     this.el.innerHTML = `
       <div class="stage"><div class="items"></div><canvas class="base"></canvas><canvas class="live"></canvas></div>
-      <div class="${FLOAT} ${top} left-[max(12px,env(safe-area-inset-left))] h-14 max-w-[26%] gap-0.5 pl-1.5 pr-5">
-        <button class="${BTN} text-sys-blue" data-act="back" title="Boards" aria-label="Boards">${svg("back")}</button>
-        <div class="tb-name min-w-0 truncate text-subhead font-semibold text-sys-label"></div>
+      <div class="tb-left ${FLOAT} ${top} left-[max(12px,env(safe-area-inset-left))] h-14 gap-0.5 pl-1.5 pr-1.5">
+        <button class="${BTN}" data-act="undo" title="Undo" aria-label="Undo">${svg("undo")}</button>
+        <button class="${BTN}" data-act="redo" title="Redo" aria-label="Redo">${svg("redo")}</button>
+        <span class="tb-name-sep mx-1 h-6 w-px shrink-0 bg-sys-label/15"></span>
+        <div class="tb-name min-w-0 truncate pl-1 pr-3 text-subhead font-semibold text-sys-label"></div>
       </div>
       <div class="tb ${FLOAT} ${top} left-1/2 h-14 -translate-x-1/2 gap-0.5 px-1.5">
         ${tool("pen", dot)}${tool("hl", dot)}<button class="${BTN}" data-mode="eraser" title="Eraser" aria-label="Eraser" aria-pressed="false">${svg("erase")}</button>${tool("lasso")}
         ${SEP}
         <button class="sz ${BTN}" data-pop="size" title="Size" aria-label="Size" aria-expanded="false"><svg width="26" height="26" viewBox="0 0 26 26"><path d="M4 17c4-8 7-8 9-3s5 5 9-3" fill="none" stroke-linecap="round"/></svg></button>
         <div class="slots flex items-center">${PENS.map((_, i) => `<button class="slot grid h-11 w-9 shrink-0 place-items-center rounded-full" data-slot="${i}" aria-pressed="false" aria-label="Colour ${i + 1}"><i class="swatch block h-6 w-6 rounded-full"></i></button>`).join("")}</div>
-        ${SEP}
-        <button class="${BTN}" data-act="undo" title="Undo" aria-label="Undo">${svg("undo")}</button>
-        <button class="${BTN}" data-act="redo" title="Redo" aria-label="Redo">${svg("redo")}</button>
       </div>
-      <div class="${FLOAT} ${top} right-[max(12px,env(safe-area-inset-right))] h-14 gap-0.5 px-1.5">
+      <div class="tb-right ${FLOAT} ${top} right-[max(12px,env(safe-area-inset-right))] h-14 gap-0.5 px-1.5">
         <button class="${BTN}" data-act="voice" title="Voice" aria-label="Voice" aria-pressed="false"></button>
         <button class="${BTN}" data-act="inbox" title="Inbox" aria-label="Inbox" aria-expanded="false">${svg("inbox")}<span class="badge pointer-events-none absolute right-0.5 top-0.5 hidden min-w-[18px] rounded-full bg-sys-red px-1 text-center text-[11px] font-semibold leading-[18px] text-white tabular-nums shadow"></span></button>
         <button class="${BTN}" data-pop="menu" title="Board" aria-label="Board menu" aria-expanded="false">${svg("more")}</button>
+        ${SEP}
+        <button class="${BTN} text-sys-blue" data-act="back" title="Boards" aria-label="Boards">${svg("back")}</button>
       </div>
       <div class="tb-status material hairline shadow-float absolute left-[max(12px,env(safe-area-inset-left))] top-[calc(max(12px,env(safe-area-inset-top))+64px)] z-10 hidden rounded-full px-3.5 py-1.5 text-footnote font-medium text-[rgb(var(--sys-red))]"></div>
       <div class="${POP}" hidden></div>
@@ -354,10 +355,37 @@ export class BoardView {
     this.voiceSrc = { slug, name: () => this.board.name, items: () => this.board.items, strokes: () => this.board.strokes.length, snapshot: () => this.snapshotView() };
     this.offVoice = voiceButton(this.el.querySelector('[data-act="voice"]') as HTMLElement);
     mountVoicePill();
+    // The floating controls keep clear of each other as their widths change (the mic hides during a call).
+    this.chromeRO = new ResizeObserver(() => this.layoutChrome());
+    for (const sel of [".tb", ".tb-right"]) this.chromeRO.observe(this.el.querySelector(sel)!);
+  }
+
+  private chromeRO: ResizeObserver;
+  /**
+   * The floating controls (iPadOS): undo, redo and the board's name upper left; the tools in the middle; voice,
+   * the inbox, the menu and Boards upper right. The tools are centred when there is room, else they sit just left
+   * of the right-hand group (an iPad held upright); the name truncates in what is left.
+   */
+  private layoutChrome(): void {
+    const W = this.el.clientWidth;
+    if (!W) return;
+    const tb = this.el.querySelector(".tb") as HTMLElement, right = this.el.querySelector(".tb-right") as HTMLElement, left = this.el.querySelector(".tb-left") as HTMLElement;
+    const rr = right.getBoundingClientRect(), root = this.el.getBoundingClientRect();
+    const tbW = tb.offsetWidth, gap = 10;
+    const limit = rr.left - root.left - gap;
+    const x = Math.round(Math.min((W - tbW) / 2, limit - tbW));
+    tb.style.left = `${x}px`;
+    tb.style.transform = "none";
+    const room = x - gap - left.offsetLeft;
+    // The name only when a few words of it fit (upright, the tools leave it a sliver: then undo and redo alone).
+    const name = room >= 104 + 72;
+    for (const sel of [".tb-name", ".tb-name-sep"]) (left.querySelector(sel) as HTMLElement).style.display = name ? "" : "none";
+    left.style.maxWidth = `${Math.max(104, room)}px`;
   }
 
   /** After the element is in the document. */
   mount(): void {
+    this.layoutChrome();
     this.measure();
     this.home();
     this.snapCam();
@@ -386,6 +414,7 @@ export class BoardView {
     blog("board.close", { slug: this.slug, rev: this.rev, items: this.board.items.length, strokes: this.board.strokes.length });
     void flushBoardLog();
     window.removeEventListener("resize", this.onResize);
+    this.chromeRO.disconnect();
     window.removeEventListener("keydown", this.onKey);
     window.removeEventListener("click", this.onClickCapture, true);
     document.removeEventListener("visibilitychange", this.onHide);
@@ -429,6 +458,7 @@ export class BoardView {
   }
 
   private onResize = () => {
+    this.layoutChrome();
     const cx = this.cam.x + this.W / this.cam.z / 2, cy = this.cam.y + this.H / this.cam.z / 2;
     this.measure();
     this.cam.x = cx - this.W / this.cam.z / 2;

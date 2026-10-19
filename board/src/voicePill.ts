@@ -1,7 +1,7 @@
-// The board's voice on screen: the mic button's state (view.ts puts the button in the top-right
-// controls) and, while voice is on, a small pill under them — live waves, the chat it continues
-// (tap: the recent chats, to switch), mute and end. A start that fails turns it red with one plain
-// line, like the laptop's red bars. The pill lives on the page, not in a board, so a call goes on
+// The board's voice on screen: the mic button (view.ts puts it in the top-right controls) starts a
+// call; while one is on, the button steps aside and one compact pill under the controls is the call:
+// live waves, the chat it continues (small; tap: the recent chats, to switch), mute, and the one end
+// button. A start that fails shows the mic red and the pill one plain line, like the laptop's red bars. The pill lives on the page, not in a board, so a call goes on
 // while Carl changes boards.
 //
 // Its buttons follow the chrome's rule (chrome.ts): the Pencil, a finger or the mouse presses a
@@ -91,19 +91,24 @@ function ago(t: number): string {
   return new Date(t).toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
-/** Keep the board's mic button showing voice's state (regular idle, fill while on, red after a failed start). */
+/**
+ * Keep the board's mic button showing voice's state: it starts a call, and while one is connecting or on it is
+ * hidden — the pill is the call, with the one end button (it was a second "End voice" beside the pill's own).
+ * Red after a failed start (tap: try again).
+ */
 export function voiceButton(btn: HTMLElement): () => void {
   btn.innerHTML = toolIcon("microphone", "fill");
   return voice.on((s) => {
     const on = s.phase === "live" || s.phase === "connecting";
-    btn.setAttribute("aria-pressed", String(on));
-    btn.setAttribute("aria-label", on ? "End voice" : "Voice");
-    btn.title = on ? "End voice" : "Voice";
+    btn.style.display = on ? "none" : "";
+    btn.setAttribute("aria-pressed", "false");
+    btn.setAttribute("aria-label", "Voice");
+    btn.title = "Voice";
     btn.classList.toggle("text-[rgb(var(--sys-red))]", s.phase === "error");
   });
 }
 
-const IB = "grid h-9 w-9 shrink-0 place-items-center rounded-full transition active:scale-95";
+const IB = "grid h-8 w-8 shrink-0 place-items-center rounded-full transition active:scale-95";
 
 let mounted = false;
 /** The pill, once per page. */
@@ -111,7 +116,7 @@ export function mountVoicePill(): void {
   if (mounted) return;
   mounted = true;
   const root = document.createElement("div");
-  root.className = "voice-pill pointer-events-none fixed right-[max(12px,env(safe-area-inset-right))] top-[calc(max(12px,env(safe-area-inset-top))+64px)] z-30 flex flex-col items-end gap-2";
+  root.className = "voice-pill pointer-events-none fixed right-[max(12px,env(safe-area-inset-right))] top-[calc(max(12px,env(safe-area-inset-top))+62px)] z-30 flex flex-col items-end gap-2";
   document.body.appendChild(root);
   // A landed inbox entry (or a make that failed): one short line at the next pause, as on the laptop.
   onInboxEvent((ev) => {
@@ -133,12 +138,12 @@ export function mountVoicePill(): void {
       bars = [];
       return;
     }
-    const waves = `<div class="waves flex h-5 items-center gap-[3px] px-1" aria-hidden="true">${'<i class="block h-full w-[3px] origin-center rounded-full"></i>'.repeat(BARS)}</div>`;
+    const waves = `<div class="waves flex h-4 shrink-0 items-center gap-[2.5px] px-0.5" aria-hidden="true">${'<i class="block h-full w-[3px] origin-center rounded-full"></i>'.repeat(BARS)}</div>`;
     if (s.phase === "error") {
-      root.innerHTML = `<div class="pointer-events-auto material hairline shadow-float flex max-w-[460px] items-center gap-2 rounded-[22px] py-1.5 pl-3 pr-1.5 animate-pop-in" role="alert" data-voice="error">
+      root.innerHTML = `<div class="pointer-events-auto material hairline shadow-float flex min-h-10 max-w-[460px] items-center gap-2 rounded-[20px] py-1 pl-3 pr-1 animate-pop-in" role="alert" data-voice="error">
         ${waves}
         <span class="v-reason min-w-0 text-footnote font-medium leading-[17px] text-[rgb(var(--sys-red))]"></span>
-        <button class="${IB} text-sys-label/60 active:bg-sys-fill/20" data-v="dismiss" aria-label="Close">${icon("x", 18)}</button>
+        <button class="${IB} text-sys-label/60 active:bg-sys-fill/20" data-v="dismiss" aria-label="Close">${icon("x", 16)}</button>
       </div>`;
     } else {
       const list = chatsOpen
@@ -147,11 +152,12 @@ export function mountVoicePill(): void {
             <div class="v-chats flex flex-col"></div>
           </div>`
         : "";
-      root.innerHTML = `<div class="pointer-events-auto material hairline shadow-float flex h-12 items-center gap-1 rounded-full pl-3 pr-1.5 animate-pop-in" data-voice="${s.phase}">
+      // One row, 40 px: the waves, the chat (small, tap to switch), mute, end.
+      root.innerHTML = `<div class="pointer-events-auto material hairline shadow-float flex h-10 items-center gap-0.5 rounded-full pl-3 pr-1 animate-pop-in" data-voice="${s.phase}">
           ${waves}
-          <button class="flex h-9 min-w-0 max-w-[240px] items-center gap-1 rounded-full px-2 text-footnote font-medium text-sys-label/70 transition active:bg-sys-fill/20 aria-expanded:bg-sys-fill/15" data-v="chats" aria-expanded="${chatsOpen}" aria-label="Chat"><span class="v-title truncate"></span><span class="shrink-0 opacity-60">${icon("caret-down", 14)}</span></button>
-          <button class="v-mute ${IB} text-sys-label/80 active:bg-sys-fill/20 aria-pressed:bg-sys-label/10 aria-pressed:text-[rgb(var(--sys-red))]" data-v="mute" aria-pressed="false" aria-label="Mute">${icon("microphone", 22)}</button>
-          <button class="${IB} bg-sys-red text-white shadow-sm active:bg-sys-red/80" data-v="end" aria-label="End voice">${icon("phone-disconnect", 22, "fill")}</button>
+          <button class="ml-1 flex h-8 min-w-0 max-w-[180px] items-center gap-0.5 rounded-full px-1.5 text-caption font-medium text-sys-label/70 transition active:bg-sys-fill/20 aria-expanded:bg-sys-fill/15" data-v="chats" aria-expanded="${chatsOpen}" aria-label="Chat"><span class="v-title truncate"></span><span class="shrink-0 opacity-60">${icon("caret-down", 12)}</span></button>
+          <button class="v-mute ${IB} text-sys-label/80 active:bg-sys-fill/20 aria-pressed:bg-sys-label/10 aria-pressed:text-[rgb(var(--sys-red))]" data-v="mute" aria-pressed="false" aria-label="Mute">${icon("microphone", 18)}</button>
+          <button class="${IB} bg-sys-red text-white shadow-sm active:bg-sys-red/80" data-v="end" aria-label="End call">${icon("phone-disconnect", 18, "fill")}</button>
         </div>${list}`;
     }
     bars = [...root.querySelectorAll<HTMLElement>(".waves i")];
@@ -167,7 +173,7 @@ export function mountVoicePill(): void {
     if (mute) {
       mute.setAttribute("aria-pressed", String(s.muted));
       mute.setAttribute("aria-label", s.muted ? "Unmute" : "Mute");
-      mute.innerHTML = s.muted ? icon("microphone-slash", 22, "fill") : icon("microphone", 22);
+      mute.innerHTML = s.muted ? icon("microphone-slash", 18, "fill") : icon("microphone", 18);
     }
     const tone = s.phase === "error" ? "bg-[rgb(var(--sys-red))]" : s.speaking ? "bg-sys-blue" : s.muted ? "bg-sys-label/25" : "bg-sys-label/70";
     for (const b of bars) b.className = `block h-full w-[3px] origin-center rounded-full ${tone}${s.phase === "connecting" ? " v-wait" : ""}`;
