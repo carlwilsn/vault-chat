@@ -28,6 +28,9 @@
 // layer comes back as a custom_message entry after the user message, and goes
 // to the model as a user message (pi's convertToLlm), now and on every resume.
 //
+// The extension's before_provider_request (ext/pdf.mjs withPdfParts, its own code)
+// rewrites each request as pi would: a PdfPages slice goes as a native PDF part.
+//
 // Knobs (in the user's message): "[slow]" streams the reply in 30 deltas, 250 ms apart.
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -43,6 +46,10 @@ const arg = (k) => {
 const { YOU_TYPE, youSince } = arg("-e")
   ? await import(pathToFileURL(join(dirname(arg("-e")), "policy.mjs")).href)
   : { YOU_TYPE: "vc-you", youSince: () => null };
+// pi's before_provider_request as the extension hooks it (pdf.mjs: PdfPages' slices as native PDF parts).
+const { withPdfParts } = arg("-e") && existsSync(join(dirname(arg("-e")), "pdf.mjs"))
+  ? await import(pathToFileURL(join(dirname(arg("-e")), "pdf.mjs")).href)
+  : { withPdfParts: () => undefined };
 if (argv.includes("--list-models")) process.exit(0);
 
 const sessionDir = arg("--session-dir") ?? ".";
@@ -189,7 +196,8 @@ let followUp = [];
 
 async function callModel() {
   const messages = (system ? [{ role: "system", content: system }] : []).concat(history).map((m) => ({ role: m.role === "toolResult" ? "tool" : m.role, content: typeof m.content === "string" ? m.content : (m.content ?? []).filter((c) => c.type === "text").map((c) => c.text).join("\n"), ...(m.toolCallId ? { tool_call_id: m.toolCallId } : {}) }));
-  const r = await fetch(`${baseUrl}/chat/completions`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${key}` }, body: JSON.stringify({ model, messages, stream: true, ...(declared.length ? { tools: declared } : {}) }) });
+  const payload = { model, messages, stream: true, ...(declared.length ? { tools: declared } : {}) };
+  const r = await fetch(`${baseUrl}/chat/completions`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${key}` }, body: JSON.stringify(withPdfParts(payload) ?? payload) });
   const body = await r.text();
   if (!r.ok) throw new Error(`${r.status} ${body.slice(0, 200)}`);
   if (!body.startsWith("data:")) {

@@ -31,7 +31,7 @@ import {
 import { patchMeta, readConv, allConvs, createConv, newMessageId, emitTo, pictureOf, logOf, writeNotes, appendNotes, setNoteWriter, type NoteData } from "./convs";
 import { addWake, readWakes, removeWakes, nextWakeFor, parseDelay, type Wake } from "./wakes";
 import { Ledger } from "./ledger";
-import { pdfRead, webSearch } from "./extraTools";
+import { pdfPages, pdfPagesSpec, pdfRead, webSearch } from "./extraTools";
 import { failMake, inboxLog, listEntries, readEntry, sendEntry, startMake, type InboxEvent } from "../inbox";
 import { BOARD_MAKER_PROMPT, boardMakeTask, makerStats } from "./boardTools";
 import { startJob, jobStatus, jobList, jobStop, reapJobs, type PiJobEnv } from "./pi/jobs";
@@ -209,7 +209,7 @@ export const ENGINE_TOOL_SPECS = [
     type: "function",
     name: "PdfRead",
     readOnly: true,
-    description: "Read text from a PDF in the vault: the page count plus the pages asked for (default 1-3), capped at maxChars (default 12000). Use page ranges; never read a whole long PDF at once. The read tool gives a PDF's raw bytes: use this instead, and never ask Carl for a screenshot of a PDF you can read.",
+    description: "Read text from a PDF in the vault: the page count plus the pages asked for (default 1-3), capped at maxChars (default 12000). Use page ranges; never read a whole long PDF at once. The read tool gives a PDF's raw bytes: use this instead, and never ask Carl for a screenshot of a PDF you can read. When a page has no text layer (a scan, handwriting), or the question is about a figure, a diagram or the layout, use PdfPages to see the page.",
     inputSchema: {
       type: "object",
       properties: { path: { type: "string" }, pages: { type: "string", description: "e.g. \"1\", \"4-8\", \"1,3,7-9\"" }, maxChars: { type: "number" } },
@@ -333,7 +333,7 @@ export const ENGINE_TOOL_SPECS = [
 
 /** Every vault-chat tool the agent has (Carl's own vault tools are added per thread). */
 export function agentToolSpecs(): ToolSpec[] {
-  return [...ENGINE_TOOL_SPECS, ...noteToolSpecs, ...contextToolSpecs] as ToolSpec[];
+  return [...ENGINE_TOOL_SPECS, pdfPagesSpec, ...noteToolSpecs, ...contextToolSpecs] as ToolSpec[];
 }
 /** Ctrl+K / Ctrl+L: the agent's tools that change nothing (marked readOnly where they are defined). */
 export function sideToolSpecs(): ToolSpec[] {
@@ -1528,6 +1528,8 @@ export class Engine {
           return text(boardInboxText(vault, a.id ? String(a.id) : null));
         case "PdfRead":
           return text(await pdfRead(vault, a));
+        case "PdfPages":
+          return text(await pdfPages(vault, a));
         case "WebSearch":
           return text(await webSearch(String(a.query ?? ""), this.d.apiKey(), this.d.webSearchModel));
         case "StartJob": {

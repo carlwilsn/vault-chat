@@ -24,6 +24,7 @@ import { closeSync, readFileSync } from "node:fs";
 import { Type } from "typebox";
 import { createBashToolDefinition } from "@earendil-works/pi-coding-agent";
 import { registerSubagentTool } from "./subagent.mjs";
+import { registerPdfParts } from "./pdf.mjs";
 import { YOU_TYPE, addCacheMarkers, costFromStreamEvent, guardToolCall, resolveList, scrubEnv, shq, toTypebox, wakeGate, youSince } from "./policy.mjs";
 
 const E = process.env;
@@ -131,6 +132,9 @@ export default function vaultChat(pi) {
 
   // ---- subagents (the parent only; children never get this tool) ----------------------
   if (E.VC_PI_SUBAGENTS === "1") registerSubagentTool(pi);
+
+  // ---- PdfPages: the asked pages go to the model as a native PDF part (pdf.mjs) ------
+  registerPdfParts(pi);
 
   // ---- the ledger: OpenRouter's own numbers, per model call ---------------------------
   let pending = null;
