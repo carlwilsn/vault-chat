@@ -44,6 +44,22 @@ tile not yet redrawn shows the previous scale's meanwhile). Only tiles in view a
 drawn into the tiles it crosses; an edit repaints or drops only the tiles its bounds meet. Layers: background
 (plain, dots, grid) → items → highlighter ink → pen ink.
 
+Canvas memory is bounded, because iPadOS caps it (past the cap `getContext("2d")` returns null) and counts a canvas
+until it is collected, which can be long after it is dropped: every settle at a new zoom is a new tile scale, so the
+tiles of earlier scales piled up until a tile got no context, `renderBase` threw half way and the board showed
+blank where it had not drawn yet, until a pan drew it again (Carl: "things sort of disappear, and I have to pan").
+Now a dropped tile's canvas is reused (a small pool) or given back at once (sized to 0); a tile that still gets no
+context gives back the older half of the cache and tries again, else it is left for the next frame; `renderBase`
+never leaves a half-drawn board (it starts the tiles over); a PDF page's bitmap is at most 12 MP and all of them 40
+MP (least recently drawn first out, back to the page's PNG); a pinch-out mid-gesture switches to the screen's scale
+before the view needs more tiles than the cache holds (they pushed each other out every frame). The safety net: 600
+ms after anything that can change what is on screen (an edit, an undo, an inbox add, a refit, an image or a PDF page
+landing, the camera settling) every visible tile is repainted in place; back from the background (`visibilitychange`,
+`pageshow`), the canvases are re-made and everything visible redrawn at once. Proof: `board/preview/render-stress.mjs`
+(the cap emulated with no garbage collection at all, canvases wiped in the background; random strokes, scribbles,
+inbox adds, undo/redo, pinches, pans; nothing in view missing after any of them; before: blank PDF pages and
+`null is not an object (evaluating 'ctx.setTransform')` after 15 actions).
+
 Strokes (`src/ink.ts`, `src/geom.ts`): the Pencil's coalesced samples, lightly stabilised (each moves most of the
 way to the pen: about 2 ms of lag at 240 Hz), keep only the points where the line bends more than 0.75 css px
 (the samples come in whole css px, so a slow shallow line arrives as a staircase; this straightens it), drawn as a

@@ -11,7 +11,7 @@ import { widgetDocument } from "../../src/widgetHost";
 import * as api from "./api";
 import { blog } from "./log";
 import { icon, type IconName } from "./icons";
-import { ensureMathStyle, fetchText, renderPdfPage } from "./items";
+import { ensureMathStyle, fetchText, release, renderPdfPage } from "./items";
 
 export type InboxHost = {
   /** Add an entry's part (or all of it) to the board; resolves with the new items' ids. */
@@ -127,6 +127,8 @@ export function openInbox(root: HTMLElement, host: InboxHost): () => void {
     scrim.style.transition = "opacity 220ms";
     scrim.style.opacity = "0";
     setTimeout(() => {
+      // The viewer's PDF pages: their canvases given back at once (iPadOS caps canvas memory).
+      sheet.querySelectorAll("canvas").forEach(release);
       sheet.remove();
       scrim.remove();
     }, 230);
@@ -168,10 +170,14 @@ export function openInbox(root: HTMLElement, host: InboxHost): () => void {
         </button>`;
       })
       .join("");
+    // A repaint (the box's answer, an inbox event) keeps the list where it was scrolled: the card under a finger
+    // stays under it (it used to jump back to the top, and a tap landed on another card or on none).
+    const was = sheet.querySelector<HTMLElement>("[data-scroll]")?.scrollTop ?? 0;
     sheet.innerHTML = `${header("", "Inbox")}
       <div data-scroll class="flex-1 space-y-2 overflow-y-auto overscroll-contain px-3 pb-4">
         ${cards || `<div class="grid h-full place-items-center px-8 text-center"><div><div class="mx-auto mb-3 grid h-14 w-14 place-items-center rounded-2xl bg-sys-fill/15 text-sys-secondary/60">${icon("tray", 28)}</div><div class="text-subhead font-semibold text-sys-label">Nothing here yet</div><div class="mt-1 text-footnote text-sys-secondary/60">Ask the agent for a problem set, a graph or pages of a PDF; they land here.</div></div></div>`}
       </div>`;
+    if (was) (sheet.querySelector("[data-scroll]") as HTMLElement).scrollTop = was;
   };
 
   /** The open entry as last drawn (parts, making): a streamed make adds its new parts in place as they land. */

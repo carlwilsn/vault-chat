@@ -174,6 +174,11 @@ const addAll = async (id) => {
   }, before);
   await tap('[data-act="inbox"]');
   await tap(`aside.inbox button[data-id="${id}"]`);
+  // The entry opens (its Add all shows); a tap that met no card is tapped again, as a finger would.
+  for (let k = 0; k < 2 && !(await page.locator('aside.inbox button[data-add="all"]').isVisible()); k++) {
+    await page.waitForTimeout(1500);
+    if (!(await page.locator('aside.inbox button[data-add="all"]').isVisible())) await tap(`aside.inbox button[data-id="${id}"]`).catch(() => {});
+  }
   await tap('aside.inbox button[data-add="all"]').catch(async (e) => {
     await page.screenshot({ path: join(OUT, "item-bounds-stuck.png") });
     throw e;

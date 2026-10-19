@@ -23,7 +23,7 @@ import { classifyScribble, coveredShare, scribbleRegion, SCRIBBLE_COVER, type TP
 import { Arbiter, type Action, type Hand, type PEvent } from "./palm";
 import * as api from "./api";
 import { icon, toolIcon, type IconName, type Weight } from "./icons";
-import { Items, isDom, mathSize, renderPdfPage } from "./items";
+import { Items, isDom, mathSize, release, renderPdfPage } from "./items";
 import { MATH_LAYOUT_W } from "../../src/inboxFormat";
 import { openInbox, inboxBadge, type InboxHost } from "./inbox";
 import { pillSpot, placeParts } from "./place";
@@ -40,6 +40,12 @@ const TILE = 512; // device px
 const SMIN = 1 / 32, SMAX = 64;
 const TILE_CACHE = 72;
 const TILE_BUDGET = 8; // new tiles drawn per frame; the rest next frame
+/** Dropped tiles' canvases kept for reuse. iPadOS caps the memory of live canvases (past it getContext returns null)
+ *  and counts a canvas until it is collected or sized to 0: every tile canvas is in use, here, or released. */
+const POOL_MAX = 12;
+/** After anything that can change what is on screen, every visible tile is repainted in place this long after the
+ *  last such change (refreshVisible). */
+const REFRESH_MS = 600;
 const SHEET = 1000; // canvas units across at the default zoom
 const OVERVIEW_MAX = 1600; // px, the overview's long side
 const VOICE_SNAP_MAX = 1280; // px, the long side of what voice sees (the visible region)
@@ -355,6 +361,7 @@ export class BoardView {
       for (const it of this.board.items) if (it.src === src && (it.page ?? 1) === page) this.invalidate(itemBox(it));
       this.renderBase();
       this.queueLive();
+      this.refreshSoon();
     });
     this.lctx = this.live.getContext("2d", { desynchronized: true } as CanvasRenderingContext2DSettings)!;
     this.statusEl = this.el.querySelector(".tb-status")!;
@@ -382,6 +389,10 @@ export class BoardView {
     window.addEventListener("keydown", this.onKey);
     document.addEventListener("visibilitychange", this.onHide);
     window.addEventListener("pagehide", this.onHide);
+    // Back from the background (iPadOS may have dropped the canvases' pixels meanwhile): everything visible, redrawn.
+    document.addEventListener("visibilitychange", this.onShow);
+    window.addEventListener("pageshow", this.onShow);
+    for (const c of [this.base, this.live]) c.addEventListener("contextrestored", this.onShow);
     this.syncToolbar();
     this.setStatus("saved");
     inboxBadge(this.el.querySelector(".badge") as HTMLElement);
@@ -452,8 +463,17 @@ export class BoardView {
     window.removeEventListener("click", this.onClickCapture, true);
     document.removeEventListener("visibilitychange", this.onHide);
     window.removeEventListener("pagehide", this.onHide);
+    document.removeEventListener("visibilitychange", this.onShow);
+    window.removeEventListener("pageshow", this.onShow);
+    clearTimeout(this.refreshT);
     cancelAnimationFrame(this.momentum);
+    // Every canvas this board drew with, given back (iPadOS caps canvas memory and collects them lazily).
+    for (const t of this.tiles.values()) release(t.c);
     this.tiles.clear();
+    for (const c of this.pool) release(c);
+    this.pool = [];
+    release(this.base);
+    release(this.live);
     this.items.dispose();
     this.inboxClose?.();
   }
@@ -525,6 +545,7 @@ export class BoardView {
       this.queueLive();
       this.saveCam();
       this.sharpenPdfs();
+      this.refreshSoon();
     }, 140);
   }
 
@@ -543,8 +564,9 @@ export class BoardView {
   }
 
   /** Paint a tile's content (cleared first): items, the highlighter's ink, then the pen's. */
-  private paintTile(t: Tile): void {
-    const ctx = t.c.getContext("2d")!;
+  private paintTile(t: Tile): boolean {
+    const ctx = t.c.getContext("2d");
+    if (!ctx) return false;
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, TILE, TILE);
     const S = t.S, tw = t.tw;
@@ -555,14 +577,50 @@ export class BoardView {
     for (const it of this.board.items) if (!lifted?.items.has(it) && boxesMeet(itemBox(it), box)) this.paintItem(ctx, it, "tile");
     const ink = this.board.strokes.filter((st) => !(lifted && (lifted.strokes.has(st) || this.carry.has(st))) && boxesMeet(strokeInfo(st).box, box));
     for (const st of paintOrder(ink)) drawStroke(ctx, st);
+    return true;
   }
 
-  private makeTile(S: number, tx: number, ty: number): Tile {
-    const c = document.createElement("canvas");
-    c.width = c.height = TILE;
-    const t: Tile = { c, S, tw: TILE / S, tx, ty };
-    this.paintTile(t);
-    return t;
+  private pool: HTMLCanvasElement[] = [];
+  private freshCanvas(): HTMLCanvasElement {
+    const c = this.pool.pop() ?? document.createElement("canvas");
+    if (c.width !== TILE || c.height !== TILE) (c.width = TILE), (c.height = TILE);
+    return c;
+  }
+  /** A new tile, or null when no canvas can be had (over the canvas memory cap even after giving memory back). */
+  private makeTile(S: number, tx: number, ty: number): Tile | null {
+    const t: Tile = { c: this.freshCanvas(), S, tw: TILE / S, tx, ty };
+    if (this.paintTile(t)) return t;
+    // No context: over the cap. Give back the pool and the older half of the cache, and try once more.
+    release(t.c);
+    for (const c of this.pool) release(c);
+    this.pool = [];
+    let n = this.tiles.size >> 1;
+    for (const [k, old] of this.tiles) {
+      if (n-- <= 0) break;
+      this.tiles.delete(k);
+      release(old.c);
+    }
+    t.c = this.freshCanvas();
+    if (this.paintTile(t)) return t;
+    release(t.c);
+    this.trouble("tile: no canvas context");
+    return null;
+  }
+  private dropTile(k: string, t: Tile): void {
+    this.tiles.delete(k);
+    if (this.pool.length < POOL_MAX) this.pool.push(t.c);
+    else release(t.c);
+  }
+  private dropAllTiles(): void {
+    for (const [k, t] of [...this.tiles]) this.dropTile(k, t);
+  }
+  /** Something went wrong drawing (logged at most every 10 s, with how much canvas there is). */
+  private troubleAt = 0;
+  private trouble(what: string): void {
+    const now = performance.now();
+    if (now - this.troubleAt < 10_000) return;
+    this.troubleAt = now;
+    blog("render.fail", { what: what.slice(0, 200), tiles: this.tiles.size, pool: this.pool.length, scale: Math.round(this.drawS * 1000) / 1000 });
   }
 
   private tileBox(t: Tile): Box {
@@ -571,25 +629,75 @@ export class BoardView {
 
   /** Drop the cached tiles that meet a box (canvas units). */
   private invalidate(b?: Box | null): void {
-    if (!b) return this.tiles.clear();
-    for (const [k, t] of this.tiles) if (boxesMeet(b, this.tileBox(t))) this.tiles.delete(k);
+    if (!b) return this.dropAllTiles();
+    for (const [k, t] of [...this.tiles]) if (boxesMeet(b, this.tileBox(t))) this.dropTile(k, t);
   }
 
   /** Repaint the cached tiles at the current scale that meet a box, in place (no gap while they redraw); drop the rest. */
   private repaint(b: Box): void {
-    for (const [k, t] of this.tiles) {
+    for (const [k, t] of [...this.tiles]) {
       if (!boxesMeet(b, this.tileBox(t))) continue;
-      if (t.S === this.drawS) this.paintTile(t);
-      else this.tiles.delete(k);
+      if (t.S !== this.drawS || !this.paintTile(t)) this.dropTile(k, t);
     }
   }
 
+  /**
+   * The safety net under the targeted invalidations: REFRESH_MS after the last thing that can change what is on
+   * screen (an edit, an undo, an inbox add, a refit, an image or a PDF page landing, the camera settling), every
+   * visible tile is repainted in place at the current scale (no gap while it redraws), the DOM items laid out and the
+   * live canvas redrawn. Waits while a gesture or the pen is down.
+   */
+  private refreshT = 0;
+  private refreshSoon(ms = REFRESH_MS): void {
+    clearTimeout(this.refreshT);
+    this.refreshT = window.setTimeout(() => this.refreshVisible(), ms);
+  }
+  private refreshVisible(): void {
+    if (this.disposed || document.visibilityState === "hidden") return;
+    if (this.gesturing || this.g || this.view) return this.refreshSoon();
+    const view: Box = { x0: this.cam.x, y0: this.cam.y, x1: this.cam.x + this.W / this.cam.z, y1: this.cam.y + this.H / this.cam.z };
+    try {
+      for (const [k, t] of [...this.tiles]) if (t.S === this.drawS && boxesMeet(view, this.tileBox(t)) && !this.paintTile(t)) this.dropTile(k, t);
+    } catch (e) {
+      this.trouble(`refresh: ${String((e as Error)?.message ?? e)}`);
+      this.dropAllTiles();
+    }
+    this.renderBase();
+    this.queueLive();
+  }
+
+  /** Back in front: the canvases re-made at the screen's size and everything visible drawn again, at once. */
+  private onShow = (e: Event): void => {
+    if (this.disposed || (e.type === "visibilitychange" && document.visibilityState !== "visible")) return;
+    this.measure();
+    this.snapCam();
+    this.drawS = this.screenScale();
+    this.refreshVisible();
+    blog("board.show", { via: e.type, tiles: this.tiles.size });
+  };
+
   renderBase(): void {
     if (this.disposed) return;
+    try {
+      this.renderBaseNow();
+    } catch (e) {
+      // Never a half-drawn board left on screen: start the tiles over next frame (and say so in the log).
+      this.trouble(`renderBase: ${String((e as Error)?.message ?? e)}`);
+      this.dropAllTiles();
+      if (this.retries++ < 3) this.queueBase();
+      return;
+    }
+    this.retries = 0;
+  }
+  private retries = 0;
+
+  private renderBaseNow(): void {
     const ctx = this.bctx, d = this.dpr, { x, y, z } = this.cam;
     const zd = z * d;
-    // Mid-gesture keep the scale (the cached tiles, scaled) unless it drifted far; settled, it is the screen's.
-    if (!this.gesturing || Math.abs(Math.log2(zd / this.drawS)) > 1.4) this.drawS = this.screenScale();
+    // Mid-gesture keep the scale (the cached tiles, scaled) unless it drifted far, or the view would need more tiles
+    // at it than the cache holds (pinching out: they would push each other out every frame); settled, it is the screen's.
+    const need = (S: number) => (Math.floor((x + this.W / z) / (TILE / S)) - Math.floor(x / (TILE / S)) + 1) * (Math.floor((y + this.H / z) / (TILE / S)) - Math.floor(y / (TILE / S)) + 1);
+    if (!this.gesturing || Math.abs(Math.log2(zd / this.drawS)) > 1.4 || need(this.drawS) > TILE_CACHE - 8) this.drawS = this.screenScale();
     const S = this.drawS, tw = TILE / S;
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, this.base.width, this.base.height);
@@ -614,7 +722,12 @@ export class BoardView {
             missing.push({ x0: tx * tw, y0: ty * tw, x1: (tx + 1) * tw, y1: (ty + 1) * tw });
             continue;
           }
-          t = this.makeTile(S, tx, ty);
+          const made = this.makeTile(S, tx, ty);
+          if (!made) {
+            missing.push({ x0: tx * tw, y0: ty * tw, x1: (tx + 1) * tw, y1: (ty + 1) * tw });
+            continue;
+          }
+          t = made;
         }
         this.tiles.delete(key);
         this.tiles.set(key, t); // least recently used first out
@@ -642,7 +755,10 @@ export class BoardView {
         ctx.restore();
       }
     }
-    while (this.tiles.size > TILE_CACHE) this.tiles.delete(this.tiles.keys().next().value!);
+    while (this.tiles.size > TILE_CACHE) {
+      const [k, t] = this.tiles.entries().next().value!;
+      this.dropTile(k, t);
+    }
     if (missing.length) this.queueBase();
     this.layoutDom();
   }
@@ -991,6 +1107,7 @@ export class BoardView {
       // One redraw for the images that land in the same frame.
       this.queueBase();
       this.queueLive();
+      this.refreshSoon();
       // A PDF page seen closer than its PNG is sharp: pdf.js takes over.
       for (const x of this.board.items) if (x.kind === "pdf" && x.snap === src) this.wantPdf(x, x.w * this.cam.z * this.dpr);
     };
@@ -1301,7 +1418,8 @@ export class BoardView {
         // Into the cached tiles it crosses, on top (a full redraw of them would be the same pixels).
         for (const t of this.tiles.values()) {
           if (!boxesMeet(box, this.tileBox(t))) continue;
-          const ctx = t.c.getContext("2d")!;
+          const ctx = t.c.getContext("2d");
+          if (!ctx) continue;
           ctx.setTransform(t.S, 0, 0, t.S, -t.tx * t.tw * t.S, -t.ty * t.tw * t.S);
           drawStroke(ctx, stroke);
         }
@@ -2027,6 +2145,8 @@ export class BoardView {
   // ------------------------------------------------------------ saving
 
   private changed(): void {
+    // Whatever changed, everything visible is repainted once things are still (a missed invalidation never sticks).
+    this.refreshSoon();
     this.dirty = true;
     if (this.conflict) return;
     this.setStatus("unsaved");

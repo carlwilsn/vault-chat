@@ -201,7 +201,8 @@ for (const k of [1, 2]) {
   const s = sharpness(await pixels(clip), ref);
   s.nativeEdgePx = sharpness(ref, ref).edgePx;
   const d = await dbg();
-  report[`ink ${k}×`] = { ...s, dpr: await page.evaluate(() => window.__board.dpr), tileScale: d.tileScale ?? 2 ** d.level, // (level: the power-of-two tiles before 2026-10-18) screenScale: d.cam.z * (await page.evaluate(() => window.__board.dpr)) };
+  // (level: the power-of-two tiles before 2026-10-18)
+  report[`ink ${k}×`] = { ...s, dpr: await page.evaluate(() => window.__board.dpr), tileScale: d.tileScale ?? 2 ** d.level, screenScale: d.cam.z * (await page.evaluate(() => window.__board.dpr)) };
   await shot(`ink-${k}x`, clip);
   check(s.edgePx <= s.nativeEdgePx + 0.15 && s.diffToNative <= 3, `ink at ${k}× zoom is as crisp as native at DPR 2`, `edge ${s.edgePx.toFixed(2)} px (native ${s.nativeEdgePx.toFixed(2)}), ${s.diffToNative.toFixed(1)}/255 from native; tiles at ${report[`ink ${k}×`].tileScale.toFixed(3)} px/unit for a ${report[`ink ${k}×`].screenScale.toFixed(3)} screen`);
 }

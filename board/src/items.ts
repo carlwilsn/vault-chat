@@ -24,6 +24,16 @@ import * as api from "./api";
 pdfjs.GlobalWorkerOptions.workerSrc = workerSrc;
 
 export const isDom = (it: { kind: string }) => it.kind === "math" || it.kind === "widget";
+
+/** Give a canvas's memory back now: iPadOS caps the memory of live canvases (past it getContext returns null) and
+ *  counts one until it is collected, which can be long after it is dropped. */
+export function release(c: HTMLCanvasElement): void {
+  c.width = 0;
+  c.height = 0;
+}
+/** A PDF page's bitmap is at most this many pixels (48 MB), and all of them together at most PDF_BUDGET. */
+const PDF_MAX_PX = 12e6;
+const PDF_BUDGET = 40e6;
 const num = (v: unknown, d: number) => (typeof v === "number" && Number.isFinite(v) && v > 0 ? v : d);
 
 // ---------------------------------------------------------------- pdf
@@ -179,7 +189,7 @@ export function mathSize(url: string, w: number): Promise<{ w: number; h: number
 // ---------------------------------------------------------------- the renderer
 
 type Dom = { el: HTMLElement; src: string };
-type PdfBitmap = { c: HTMLCanvasElement | null; px: number; want: number; p?: Promise<void> };
+type PdfBitmap = { c: HTMLCanvasElement | null; px: number; want: number; p?: Promise<void>; used: number };
 
 export class Items {
   private dom = new Map<string, Dom>();
@@ -200,25 +210,49 @@ export class Items {
 
   /** The page's bitmap so far (null until the first render lands). */
   pdfBitmap(it: Item): HTMLCanvasElement | null {
-    return this.pdf.get(this.pdfKey(it))?.c ?? null;
+    const rec = this.pdf.get(this.pdfKey(it));
+    if (!rec?.c) return null;
+    rec.used = performance.now();
+    return rec.c;
+  }
+
+  /** Over PDF_BUDGET: the least recently drawn pages' bitmaps given back (they fall back to their stored PNG, and
+   *  are rendered again when seen close up). */
+  private trimPdf(keep: PdfBitmap): void {
+    const live = [...this.pdf.values()].filter((r) => r.c);
+    let total = live.reduce((n, r) => n + r.c!.width * r.c!.height, 0);
+    for (const r of live.sort((a, b) => a.used - b.used)) {
+      if (total <= PDF_BUDGET) break;
+      if (r === keep) continue;
+      total -= r.c!.width * r.c!.height;
+      release(r.c!);
+      r.c = null;
+      r.px = r.want = 0;
+    }
   }
 
   /** Ask for the page at least `px` px wide (power-of-two steps, 256–4096); renders in the background. */
   wantPdf(it: Item, px: number): void {
     if (!it.src) return;
-    const want = Math.min(4096, Math.max(256, Math.pow(2, Math.ceil(Math.log2(Math.max(1, px))))));
+    // Never past PDF_MAX_PX for the page's shape (a 4096 px letter page alone was 87 MB of canvas).
+    const tall = num(it.lh, 1) / num(it.lw, 1);
+    const cap = Math.max(256, Math.floor(Math.sqrt(PDF_MAX_PX / tall)));
+    const want = Math.min(4096, cap, Math.max(256, Math.pow(2, Math.ceil(Math.log2(Math.max(1, px))))));
     const k = this.pdfKey(it);
     const cur = this.pdf.get(k);
     if (cur && (cur.px >= want || cur.want >= want)) return;
-    const rec: PdfBitmap = cur ?? { c: null, px: 0, want: 0 };
+    const rec: PdfBitmap = cur ?? { c: null, px: 0, want: 0, used: performance.now() };
     rec.want = want;
     this.pdf.set(k, rec);
     const page = num(it.page, 1), src = it.src;
     rec.p = renderPdfPage(api.assetUrl(this.slug, src), page, want)
       .then((c) => {
-        if (rec.want !== want && rec.px >= want) return;
+        if (rec.want !== want && rec.px >= want) return release(c);
+        if (rec.c && rec.c !== c) release(rec.c);
         rec.c = c;
         rec.px = want;
+        rec.used = performance.now();
+        this.trimPdf(rec);
         this.changed(src, page);
       })
       .catch(() => {
@@ -314,5 +348,7 @@ export class Items {
   dispose(): void {
     for (const d of this.dom.values()) d.el.remove();
     this.dom.clear();
+    for (const r of this.pdf.values()) if (r.c) release(r.c);
+    this.pdf.clear();
   }
 }
