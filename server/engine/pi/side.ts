@@ -9,6 +9,9 @@
 //    as its parent (a linked side thread, kept under sessions/side/);
 //  - tools: pi's --tools allowlist (Ctrl+K and Ctrl+L: the read-only built-ins)
 //    or --no-tools (one-shots);
+//  - what Carl did elsewhere: the "you" layer, through the same extension hook
+//    as a conversation's turn (before_agent_start → a vc-you custom message in
+//    the side session; the fork carries what the conversation saw already);
 //  - a popover's refinement: the next prompt in the same pi session;
 //  - one-shots: --no-session, --system-prompt (theirs replaces pi's own).
 //
@@ -17,7 +20,7 @@
 // get_last_assistant_text. Nothing here writes a session file.
 import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { PiBackend } from "./backend";
+import { sinceOf, type PiBackend } from "./backend";
 import type { PiProc } from "./proc";
 
 /** pi's read-only built-ins: what Ctrl+K and Ctrl+L may use. */
@@ -43,6 +46,8 @@ export type SideStart = {
   thinking?: string;
   /** Where the session goes (persisted side threads). */
   sessionDir: string;
+  /** Ctrl+K / Ctrl+L: the "you" layer before each request, as of this conversation (null: none open). One-shots: off. */
+  you?: { convId: string | null } | null;
   text: string;
   /** data: URLs. */
   images?: string[];
@@ -54,7 +59,7 @@ type Run = {
   id: string;
   proc: PiProc | null;
   file: string | null;
-  meta: { instr?: string; system?: string; cwd: string; model: string; tools: string[]; thinking?: string; sessionDir: string; ephemeral: boolean };
+  meta: { instr?: string; system?: string; cwd: string; model: string; tools: string[]; thinking?: string; sessionDir: string; ephemeral: boolean; you?: { convId: string | null } | null };
   text: string;
   v: number;
   done: boolean;
@@ -122,7 +127,7 @@ export class SideRuns {
   }
 
   private async open(o: SideStart): Promise<Run> {
-    const meta: Run["meta"] = { instr: o.instr, system: o.system, cwd: o.cwd, model: o.model, tools: o.tools, thinking: o.thinking, sessionDir: o.sessionDir, ephemeral: !!o.ephemeral };
+    const meta: Run["meta"] = { instr: o.instr, system: o.system, cwd: o.cwd, model: o.model, tools: o.tools, thinking: o.thinking, sessionDir: o.sessionDir, ephemeral: !!o.ephemeral, you: o.you ?? null };
     if (o.system) {
       // pi's --system-prompt takes a file's contents too (no prompt in argv).
       mkdirSync(this.b.paths.instrDir, { recursive: true });
@@ -152,6 +157,7 @@ export class SideRuns {
       tools: this.b.writeTools([]),
       sessionDir: meta.sessionDir,
       builtins: meta.tools,
+      you: !!meta.you,
     });
   }
 
@@ -192,10 +198,19 @@ export class SideRuns {
         })();
       }
     });
-    // Host calls: none are offered (no vault-chat tools); dialogs are cancelled.
-    proc.on("ui", (req: any) => {
+    // Host calls: the "you" layer (as of the conversation it was opened from); no vault-chat tools; dialogs are cancelled.
+    proc.on("ui", async (req: any) => {
       const reply = (o: Record<string, unknown>) => proc.write({ type: "extension_ui_response", id: req.id, ...o });
-      if (req.method === "editor" && req.title === "vc:host-call") return reply({ value: JSON.stringify({ text: "Not available here: this request has read-only tools.", isError: true }) });
+      if (req.method === "editor" && req.title === "vc:host-call") {
+        let call: any = {};
+        try {
+          call = JSON.parse(String(req.prefill ?? "{}"));
+        } catch {
+          /* not a call */
+        }
+        if (call?.tool === "__you" && run.meta.you) return reply({ value: JSON.stringify(await this.b.you({ convId: run.meta.you.convId, since: sinceOf(call.args) })) });
+        return reply({ value: JSON.stringify({ text: "Not available here: this request has read-only tools.", isError: true }) });
+      }
       if (["select", "confirm", "input", "editor"].includes(req.method)) reply({ cancelled: true });
     });
     proc.on("exit", () => {

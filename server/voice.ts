@@ -22,7 +22,7 @@ import { conversationObjects as readConversationObjects } from "./engine/convs";
 import { keychainCommands, agentKeyEnv } from "./keys";
 import { runGit } from "./git";
 import { conversationDetail, dispatchVoiceTool } from "./phoneData";
-import { activitySummary, appendActivity, projectContextFor } from "./activity";
+import { appendActivity, projectContextFor, youLayer } from "./activity";
 import { voiceLineEntry, voiceToolEntry, clean } from "../src/activityCore";
 import { stripAudioTags } from "../src/voiceTags";
 import { NOTES_FILE, noteTool } from "./notesTools";
@@ -593,8 +593,9 @@ export async function voiceContextBlock(d: VoiceDeps, fromConvId: string | null,
   // Carl's rules and the project's shared notes (project.md): binding on voice as on every surface (the builder loads AGENTS.md-style files only).
   const proj = await projectContextFor(d.vault, project);
   if (proj) parts.unshift(proj);
-  const act = activitySummary(d.vault, { project, excludeConv: fromConvId });
-  if (act) parts.push(act);
+  // What Carl just did elsewhere: the same "you" layer every pi turn gets (server/activity.ts youLayer).
+  const you = youLayer(d.vault, { convId: fromConvId }).text;
+  if (you) parts.push(you);
   return parts.join("\n\n");
 }
 

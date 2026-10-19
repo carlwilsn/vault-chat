@@ -1,4 +1,6 @@
-// The project tool ENGINE exposes to the agent: ListProjects, which only reads.
+// The reading tools ENGINE exposes to the agent: ListProjects, and the other
+// chats (ListConversations, ReadConversation: the "you" layer points at Carl's
+// messages in other chats by title; their content is read only on request).
 // Carl decides what is a project (the app's New project and move-to-project
 // menu); no agent tool creates a project or moves a chat in or out of one. The
 // agent may still read and write a project's files (its project.md, anything
@@ -10,7 +12,7 @@ import { findProject, listProjects, projectNotesPath, readProject } from "./proj
 import { relative } from "node:path";
 import type { ContextConv, DynamicToolCallResponse, DynamicToolSpec, ToolContext } from "./types";
 
-export const CONTEXT_TOOL_NAMES = ["ListProjects"] as const;
+export const CONTEXT_TOOL_NAMES = ["ListProjects", "ListConversations", "ReadConversation"] as const;
 export type ContextToolName = (typeof CONTEXT_TOOL_NAMES)[number];
 
 export const contextToolSpecs: DynamicToolSpec[] = [
@@ -22,6 +24,23 @@ export const contextToolSpecs: DynamicToolSpec[] = [
     inputSchema: {
       type: "object",
       properties: { project: { type: "string", description: "A project's name or slug." } },
+      additionalProperties: false,
+    },
+  },
+  {
+    type: "function",
+    name: "ListConversations",
+    description: "Carl's other chats, most recent first: id, title, project and when it was last active. The \"you\" layer points at his recent messages in them; read one with ReadConversation.",
+    inputSchema: { type: "object", properties: { limit: { type: "number" } }, additionalProperties: false },
+  },
+  {
+    type: "function",
+    name: "ReadConversation",
+    description: "Read another chat's recent messages (Carl's and the agent's), by its id (from the \"you\" layer's pointer or ListConversations). Only when it matters for what Carl asks: another chat's content is not yours by default.",
+    inputSchema: {
+      type: "object",
+      properties: { conversation_id: { type: "string" }, last_n: { type: "number", description: "How many recent messages (default 12, max 50)." } },
+      required: ["conversation_id"],
       additionalProperties: false,
     },
   },
@@ -98,6 +117,22 @@ export async function handleContextTool(name: string, args: unknown, ctx: ToolCo
     if (name === "ListProjects") {
       const r = listProjectsText(typeof a.project === "string" ? a.project : null, ctx.conv.project ?? null, ctx.convs);
       return r.ok ? ok(r.text) : fail(r.text);
+    }
+    if (name === "ListConversations" || name === "ReadConversation") {
+      const all = ((ctx.convs as any[] | undefined) ?? readConversationObjects(ctxConfig().vault)).filter((c: any) => typeof c?.id === "string" && c.id !== ctx.conv.id);
+      const at = (c: any) => Number(c.lastActivityAt ?? c.updatedAt ?? c.createdAt ?? 0) || 0;
+      if (name === "ListConversations") {
+        const n = Math.min(Math.max(Number(a.limit) || 25, 1), 100);
+        const rows = all.sort((x, y) => at(y) - at(x)).slice(0, n);
+        return ok(rows.length ? rows.map((c) => `${c.id} — "${String(c.title ?? "").trim() || "(untitled)"}"${c.project ? ` (project ${c.project})` : ""}, last active ${new Date(at(c)).toISOString().slice(0, 16)}`).join("\n") : "(no other chats)");
+      }
+      const id = String(a.conversation_id ?? "").trim();
+      const c = all.find((x) => x.id === id);
+      if (!c) return fail(`No other chat with id "${id}". ListConversations lists them.`);
+      const n = Math.min(Math.max(Number(a.last_n) || 12, 1), 50);
+      const msgs = (Array.isArray(c.messages) ? c.messages : []).filter((m: any) => !m.hidden && (m.role === "user" || m.role === "assistant") && String(m.content ?? "").trim()).slice(-n);
+      const body = msgs.map((m: any) => `[${m.role === "user" ? "Carl" : "agent"}] ${cap(String(m.content), 1500, "the rest is in that chat")}`).join("\n\n");
+      return ok(`"${String(c.title ?? "").trim() || "(untitled)"}" (${c.id})\n\n${body || "(no messages)"}`);
     }
     return fail(`Unknown context tool ${name}`);
   } catch (e) {

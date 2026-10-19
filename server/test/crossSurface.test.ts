@@ -4,12 +4,14 @@
 // agent can see and move with me.")
 //
 // Each scenario is one "move around" story, run through the real code: the
-// engine on a fake pi (the turn's prefix exactly as pi would get it), the box's
+// engine on a fake pi (the turn's prompt and the "you" layer pi's extension
+// adds after it, as the model gets them: fakeSession.ts), the box's
 // voice routes (voiceTool / voiceTranscript), the shared activity stream, the
 // board inbox and boards, and the board's voice client (board/src/voice.ts) on
 // a fake ElevenLabs SDK. The assertion is always about what the next surface's
 // agent context CONTAINS:
-//   - a pi turn: the texts and images the engine hands pi (startTurn);
+//   - a pi turn: the texts and images the engine hands pi (startTurn), and the
+//     "you" layer the extension's before_agent_start adds (a vc-you message);
 //   - a voice session on the box (phone, board, laptop in box mode): the
 //     session prompt, built as GET /api/v1/voice/session builds it
 //     (boxVoicePrompt below mirrors server/voice.ts voiceSession: the
@@ -102,7 +104,8 @@ class FakeBackend extends EventEmitter {
   async resumeThread() {}
   async startTurn(threadId: string, o: any) {
     const turnId = `${threadId}-turn${this.turns.length + 1}`;
-    this.turns.push({ threadId, texts: o.texts, images: o.images ?? [], turnId });
+    // What the model gets this turn: the prompt, then the "you" layer pi adds after it (the extension, fakeSession.ts).
+    this.turns.push({ threadId, texts: o.you ? [...o.texts, o.you] : o.texts, images: o.images ?? [], turnId });
     return { turnId };
   }
   async steer() {}
@@ -342,9 +345,9 @@ describe("a. Ctrl+L on the laptop about a PDF selection, then the phone: \"what 
     phoneVoice = await boxVoicePrompt(phone.convId);
   });
 
-  pass("a", "phone chat (pi turn)", "the prefix has the Ctrl+L question, the selection and the PDF page", () => {
+  pass("a", "phone chat (pi turn)", "the you layer has the Ctrl+L question, the selection and the PDF page", () => {
     const t = need(phone, "phone turn").texts.join("\n");
-    expect(t).toContain("<recent_activity>");
+    expect(t).toContain("<you>");
     expect(t).toContain("Why does this guarantee convergence?");
     expect(t).toContain("the spectral radius of T is below one");
     expect(t).toContain("papers/iterative.pdf");
@@ -448,9 +451,11 @@ describe("c. Writing a proof on the board, then the laptop chat: \"check what I 
     expect(inboxText).toContain(slug);
     expect(inboxText).toContain("still on the board");
   });
-  hole("c", "laptop chat (pi turn)", "the turn's prefix says a board was just written on (its name / path)", () => {
+  pass("c", "laptop chat (pi turn)", "the you layer says a board was just written on (its name, path, items and the picture to read)", () => {
     const all = need(t, "turn").all;
-    expect(all).toMatch(/Banach proof|boards\//);
+    expect(all).toContain(`Board: "Banach proof" (boards/${slug}/)`);
+    expect(all).toContain("Lemma 1 (image)");
+    expect(all).toContain(`read boards/${slug}/overview.png`);
   });
   hole("c", "laptop chat (pi turn)", "the board's overview picture goes with the turn (\"what I just wrote\" is ink)", () => {
     expect(need(t, "turn").images.some((p) => /overview\.png$/.test(p))).toBe(true);
@@ -517,8 +522,10 @@ describe("e. An image pasted into a chat, then voice: \"what's in the image I se
     expect(r.ctl.state.chat?.id).toBe(chat!.convId);
     expect(r.uploads).toBeGreaterThan(0);
   });
-  hole("e", "Ctrl+K / Ctrl+L, chat turns (\"this image\")", "an image pasted into a chat is a capture in the stream (only marquee captures are)", () => {
-    expect(act.readActivity(vault).some((e) => e.kind === "capture")).toBe(true);
+  pass("e", "Ctrl+K / Ctrl+L, chat turns (\"this image\")", "an image pasted into a chat is in the stream, by path (the other chats' you layer lists it)", () => {
+    const pasted = act.readActivity(vault).find((e) => e.kind === "capture" && e.modality === "chat" && e.convId === chat!.convId);
+    expect(pasted?.path).toMatch(/^\.vault-chat\/captures\//);
+    expect(act.youLayer(vault, { convId: null }).text).toContain(pasted!.path!);
   });
 });
 
@@ -625,10 +632,10 @@ describe("i. Notes made on one surface, visible to the agent on another", () => 
   pass("i", "voice (pull: ListNotes)", "voice reads a laptop note when asked", () => {
     expect(listed).toContain("uniform convergence");
   });
-  pass("i", "phone chat (pi turn)", "a note voice saved is in the next turn's prefix", () => {
+  pass("i", "phone chat (pi turn)", "a note voice saved is in the next turn's you layer", () => {
     expect(need(afterVoiceNote, "turn").texts.join("\n")).toContain("dominated convergence");
   });
-  hole("i", "phone chat (pi turn)", "a note from the laptop's popup (or the phone's notes page) is in the prefix", () => {
+  pass("i", "phone chat (pi turn)", "a note from the laptop's popup (or the phone's notes page) is in the you layer", () => {
     expect(need(afterLaptopNote, "turn").texts.join("\n")).toContain("uniform convergence");
   });
   pass("i", "any pi turn (instructions)", "the agent is told where notes live (.vault-chat/notes.jsonl)", () => {

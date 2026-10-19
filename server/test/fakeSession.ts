@@ -7,10 +7,19 @@
 // the way pi does (session-format.md): a message entry at each message_end (an
 // assistant message's timestamp the same in its events and its entry), a
 // toolResult at tool_execution_end, a compaction at compaction_end.
+//
+// And the vault-chat extension's "you" layer, as pi runs it (ext/vc.mjs
+// before_agent_start): before a turn's prompt the engine's `you` handler is
+// asked for the layer since the session's last `vc-you` custom message
+// (policy.mjs youSince, the extension's own code); a layer is written after the
+// user message as a custom_message entry, and handed to the fake's startTurn as
+// `o.you` (what the model gets with that turn, besides the prompt).
 import type { EventEmitter } from "node:events";
 import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import { appendEntries, newSessionFile } from "../convlog/piSession";
+import { appendEntries, newSessionFile, readEntries } from "../convlog/piSession";
+// @ts-ignore a plain .mjs (the pi extension's helpers)
+import { YOU_TYPE, youSince } from "../engine/pi/ext/policy.mjs";
 
 let clock = Date.now();
 const stamp = () => (clock = Math.max(Date.now(), clock + 1));
@@ -40,10 +49,22 @@ export function withPiSessions<T extends EventEmitter>(b: T, dir: string): T {
     sessions.set(r.threadId, { file: r.ref, ts: null, sentPrompt: null });
     return r;
   };
+  let handlers: any = null;
+  const setH = anyB.setHandlers?.bind(b);
+  anyB.setHandlers = (h: any) => {
+    handlers = h;
+    return setH?.(h);
+  };
   const turn = anyB.startTurn?.bind(b);
   anyB.startTurn = async (threadId: string, o: any) => {
-    const r = await turn(threadId, o);
     const s = sess(threadId);
+    // The extension's before_agent_start: the "you" layer since this session's last one.
+    let you: { text: string; until: number } | null = null;
+    if (s && handlers?.you) {
+      const got = await handlers.you({ threadId, since: youSince(readEntries(s.file)) });
+      if (got && typeof got.text === "string" && got.text.trim()) you = got;
+    }
+    const r = await turn(threadId, { ...o, you: you?.text ?? null });
     if (s) {
       // pi sends the prompt's user message as the turn starts.
       const text = (o?.texts ?? []).filter(Boolean).join("\n\n");
@@ -51,6 +72,7 @@ export function withPiSessions<T extends EventEmitter>(b: T, dir: string): T {
       queueMicrotask(() => {
         for (const ev of [{ type: "message_start", message }, { type: "message_end", message }]) b.emit("event", { threadId, kind: "pi", ev });
         s.sentPrompt = text;
+        if (you) write(s, { type: "custom_message", customType: YOU_TYPE, content: you.text, display: false, details: { until: you.until } });
       });
     }
     return r;

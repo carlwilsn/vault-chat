@@ -19,9 +19,16 @@
 // (a file) goes to the model as the system message. Of pi's built-ins only
 // `read` runs (a file under the working folder); the others answer a canned line.
 //
+// The extension's "you" layer (ext/vc.mjs, VC_PI_YOU=1) as pi runs it: before
+// each prompt, the host call `__you` with `since` from the session's last
+// `vc-you` custom message (policy.mjs youSince, the extension's own code); a
+// layer comes back as a custom_message entry after the user message, and goes
+// to the model as a user message (pi's convertToLlm), now and on every resume.
+//
 // Knobs (in the user's message): "[slow]" streams the reply in 30 deltas, 250 ms apart.
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { randomUUID } from "node:crypto";
 
 const argv = process.argv.slice(2);
@@ -29,6 +36,10 @@ const arg = (k) => {
   const i = argv.indexOf(k);
   return i >= 0 ? argv[i + 1] : undefined;
 };
+// The extension's own helpers, from where pi is told to load it (`-e <dir>/vc.mjs`, policy.mjs beside it).
+const { YOU_TYPE, youSince } = arg("-e")
+  ? await import(pathToFileURL(join(dirname(arg("-e")), "policy.mjs")).href)
+  : { YOU_TYPE: "vc-you", youSince: () => null };
 if (argv.includes("--list-models")) process.exit(0);
 
 const sessionDir = arg("--session-dir") ?? ".";
@@ -43,7 +54,10 @@ try {
 } catch {}
 let sessionId;
 const history = [];
+/** The session's custom_message entries (the "you" layers), in order. */
+const customs = [];
 let leaf = null;
+const customToHistory = (v) => history.push({ role: "user", content: typeof v.content === "string" ? [{ type: "text", text: v.content }] : v.content ?? [], custom: v.customType });
 if (forkOf) {
   // pi's --fork: a new session with the other's entries (the history), its header naming the parent.
   sessionId = randomUUID();
@@ -55,6 +69,10 @@ if (forkOf) {
       const v = JSON.parse(l);
       if (v.type === "session") continue;
       if (v.type === "message") history.push(v.message);
+      if (v.type === "custom_message") {
+        customs.push(v);
+        customToHistory(v);
+      }
       if (v.id) leaf = v.id;
       lines.push(l);
     } catch {}
@@ -69,6 +87,10 @@ if (forkOf) {
     try {
       const v = JSON.parse(l);
       if (v.type === "message") history.push(v.message);
+      if (v.type === "custom_message") {
+        customs.push(v);
+        customToHistory(v);
+      }
       if (v.id) leaf = v.id;
     } catch {}
   }
@@ -119,6 +141,21 @@ function hostCall(tool, args) {
       }
     });
   });
+}
+
+/** The extension's before_agent_start: the host's "you" layer since this session last saw it, or null. */
+async function youLayer() {
+  if (process.env.VC_PI_YOU !== "1") return null;
+  const id = `ui-${++uiSeq}`;
+  const since = youSince(customs);
+  out({ type: "extension_ui_request", id, method: "editor", title: "vc:host-call", prefill: JSON.stringify({ tool: "__you", args: { since } }) });
+  const v = await new Promise((resolve) => uiWaiters.set(id, resolve));
+  try {
+    const r = JSON.parse(v ?? "null");
+    return r && typeof r.text === "string" && r.text.trim() && Number.isFinite(Number(r.until)) ? { text: r.text, until: Number(r.until), since } : null;
+  } catch {
+    return null;
+  }
 }
 
 function readTool(a) {
@@ -201,11 +238,22 @@ async function run(first) {
   aborted = false;
   out({ type: "agent_start" });
   const slow = /\[slow\]/.test(first);
+  const you = await youLayer();
   const u = { role: "user", content: [{ type: "text", text: first }], timestamp: stamp() };
   out({ type: "turn_start" });
   out({ type: "message_start", message: u });
   out({ type: "message_end", message: u });
   record(u);
+  if (you) {
+    // pi: the user message, then before_agent_start's custom message (stored, sent to the model, not shown).
+    const c = { type: "custom_message", customType: YOU_TYPE, content: you.text, display: false, details: { until: you.until, since: you.since } };
+    append(c);
+    customs.push(c);
+    customToHistory(c);
+    const m = { role: "custom", customType: YOU_TYPE, content: you.text, display: false, timestamp: stamp() };
+    out({ type: "message_start", message: m });
+    out({ type: "message_end", message: m });
+  }
   try {
     for (let step = 0; step < 12 && !aborted; step++) {
       const reply = await callModel();

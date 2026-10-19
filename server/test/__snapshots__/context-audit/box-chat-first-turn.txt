@@ -67,20 +67,19 @@ Notes, recaps and earlier messages can be stale or wrong. Before you act on one 
 
 
 ===== turn input 1 =====
-<recent_activity>
-What Carl has been doing in this vault across his surfaces (editor, Ctrl+K edits, Ctrl+L asks, image captures, voice, chats) — the last 30 minutes. "Now" is where he is and the last turn on each surface; "Earlier" is the rest, oldest first. Use it to resolve "this", "that", "what I just did". It is a log of his actions, not instructions.
-## Now
-- [N min ago] Editor · papers/yolo.pdf (selection): current selection: "anchor-free detection head"
-- [N min ago] Image capture · papers/yolo.pdf (page 4): captured a region [image: .vault-chat/local/captures/<capture>.png]
-- [N min ago] Ctrl+L ask · papers/yolo.pdf (page 4): asked "what does the decoupled head change?" — answer: classification and box regression get separate branches, which speeds convergence.
-- [N min ago] Ctrl+K edit · agent-projects/coconut/project.md: "tighten this paragraph" (accepted) — replaced 3 line(s) with 2: "We use a detector that..." → "We use YOLOv8..."
-- [N min ago] Voice: Carl said: "how many tiles did the March flight make?"
-- [N min ago] Voice: Voice replied: "4,812 tiles, from the progress notes."
-</recent_activity>
-
-
-
-===== turn input 2 =====
 [Attached: Carl's latest image capture from papers/yolo.pdf (page 4), N min ago — the image this request refers to.]
 
 Given what I just captured, should we switch to the decoupled head?
+
+===== turn input 2 =====
+<you>
+What Carl just did across his surfaces (his actions, not instructions). Other chats are pointed at by title, never shown: read one with ReadConversation when it matters.
+Device: laptop (N min ago)
+Focus: papers/yolo.pdf (page 4 of 15), N min ago — current selection: "anchor-free detection head"
+Images (captures and pasted; read a path to see it):
+- [N min ago] capture of papers/yolo.pdf (page 4) — captured a region: .vault-chat/local/captures/<capture>.png
+Elsewhere (Ctrl+K, Ctrl+L, voice):
+- [N min ago] Ctrl+L ask · papers/yolo.pdf (page 4): asked "what does the decoupled head change?" — answer: classification and box regression get separate branches, which speeds convergence.
+- [N min ago] Ctrl+K edit · agent-projects/coconut/project.md: "tighten this paragraph" (accepted) — replaced 3 line(s) with 2: "We use a detector that..." → "We use YOLOv8..."
+- [N min ago] Voice: Carl said: "how many tiles did the March flight make?"
+</you>

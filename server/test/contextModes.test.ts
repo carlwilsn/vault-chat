@@ -44,7 +44,8 @@ class FakeBackend extends EventEmitter {
   async resumeThread() {}
   async startTurn(threadId: string, o: any) {
     const turnId = `${threadId}-turn${this.turns.length + 1}`;
-    this.turns.push({ threadId, texts: o.texts, images: o.images ?? [], turnId });
+    // What the model gets this turn: the prompt, then the "you" layer pi adds after it (the extension, fakeSession.ts).
+    this.turns.push({ threadId, texts: o.you ? [...o.texts, o.you] : o.texts, images: o.images ?? [], turnId });
     return { turnId };
   }
   async steer() {}
@@ -90,8 +91,8 @@ async function chatTurn(body: Record<string, unknown>, reply = "ok"): Promise<{ 
   backend.reply(reply);
   const { readConv } = await import("../engine/convs");
   await until(async () => (await readConv(vault, String(out.convId)))?.state !== "running");
-  // The exchange is in the stream once the turn has ended.
-  await until(() => act.readActivity(vault).some((e) => e.convId === out.convId && /Agent: |no reply text/.test(e.detail ?? "")));
+  // Carl's message is in the stream as a pointer (the reply never is).
+  await until(() => act.readActivity(vault).some((e) => e.kind === "chat" && e.convId === out.convId));
   return { texts: t.texts.join("\n\n"), images: t.images, convId: String(out.convId) };
 }
 
@@ -147,79 +148,75 @@ describe("pure parts", () => {
   const E = (ago: number, e: Partial<import("../../src/activityCore").ActivityEntry>) =>
     ({ ts: now - ago * 60_000, modality: "editor", kind: "focus", text: "x", ...e }) as import("../../src/activityCore").ActivityEntry;
 
-  it("a chat exchange: both sides, each capped, markdown stripped; 'replying' while the turn runs", () => {
-    const e = core.chatExchangeEntry({ convId: "c1", title: "KV", user: "explain **KV** caching", agent: `## Answer\nThe cache ${"stores keys ".repeat(40)}` });
-    expect(e.text).toBe('Chat "KV"');
-    expect(e.detail).toMatch(/^Carl: "explain KV caching" → Agent: "Answer The cache stores keys/);
-    const agentSide = /Agent: "(.*)"$/.exec(e.detail!)![1]!;
-    expect(agentSide.length).toBeLessThanOrEqual(core.GIST_MAX);
-    expect(core.chatExchangeEntry({ convId: "c1", user: "hi", agent: null }).detail).toBe('Carl: "hi" → (the agent is replying)');
+  it("a chat pointer: Carl's words only (capped, markdown stripped), never the agent's", () => {
+    const e = core.chatPointerEntry({ convId: "c1", title: "KV", user: `explain **KV** caching ${"and more ".repeat(40)}`, device: "phone" });
+    expect(e.text).toBe("KV");
+    expect(e.detail).toMatch(/^Carl: "explain KV caching and more/);
+    expect(e.detail!.length).toBeLessThanOrEqual(core.GIST_MAX + 10);
+    expect(e.detail).not.toContain("Agent");
+    expect(e.device).toBe("phone");
     const s = core.sanitizeEntry(e, now);
     expect(s?.detail).toBe(e.detail); // fits the log's caps unchanged
+    expect(s?.device).toBe("phone");
   });
 
-  it("only the latest exchange of a chat reaches the summary", () => {
-    const s = core.summarizeActivity(
-      [
-        E(5, core.chatExchangeEntry({ convId: "c1", title: "KV", user: "first question", agent: "first answer" }) as any),
-        E(3, core.chatExchangeEntry({ convId: "c1", title: "KV", user: "second question", agent: null }) as any),
-        E(2, core.chatExchangeEntry({ convId: "c1", title: "KV", user: "second question", agent: "second answer" }) as any),
-      ],
-      { now },
-    );
-    expect(s).not.toContain("first question");
-    expect(s).not.toContain("is replying");
+  it("each of Carl's messages in another chat is a pointer, newest kept; a repeat counts once", () => {
+    const P = (ago: number, user: string) => E(ago, core.chatPointerEntry({ convId: "c1", title: "KV", user }) as any);
+    const s = core.buildYouLayer({ entries: [P(5, "first question"), P(3, "second question"), P(2, "second question")] }, { now }).text;
+    expect(s).toContain("[KV chat, 5 min ago] Carl: first question (id c1)");
     expect(s.match(/second question/g)).toHaveLength(1);
-    expect(s).toContain('Agent: "second answer"');
+    expect(s).not.toContain("Agent");
   });
 
-  it("Now: the open file and page, the selection, the latest capture, the last turn on each surface — then the rest", () => {
-    const s = core.summarizeActivity(
-      [
-        E(20, { kind: "ask", modality: "ctrl-l", text: 'asked "old question"' }),
-        E(12, { text: "opened the file", path: "notes/a.md" }),
-        E(9, { kind: "edit", modality: "ctrl-k", text: '"shorter"', path: "notes/a.md", outcome: "accepted", detail: "replaced 1 line(s) with 1" }),
-        E(8, { kind: "voice", modality: "voice", text: 'Carl said: "read me page 3"' }),
-        E(7, { kind: "voice", modality: "voice", text: 'Voice replied: "Page 3 is about RoPE."' }),
-        E(6, { kind: "voice", modality: "voice", text: "Voice wrote notes/rope.md" }),
-        E(5, { text: "reading", path: "paper.pdf", where: "page 3 of 12" }),
-        E(4, { text: 'selected "rotary position embedding"', path: "paper.pdf", where: "selection" }),
-        E(3, { kind: "capture", modality: "capture", text: "captured a region", path: "paper.pdf", where: "page 3", image: ".vault-chat/local/captures/a.png" }),
-        E(2, { kind: "ask", modality: "ctrl-l", text: 'asked "what is this"', detail: "answer: a rotation" }),
-        E(1, core.chatExchangeEntry({ convId: "c9", title: "RoPE", user: "summarise it", agent: "Done." }) as any),
-      ],
+  it("where he is, then each kind in its section: focus and selection, captures, other chats, the other surfaces", () => {
+    const s = core.buildYouLayer(
+      {
+        entries: [
+          E(20, { kind: "ask", modality: "ctrl-l", text: 'asked "old question"' }),
+          E(12, { text: "opened the file", path: "notes/a.md" }),
+          E(9, { kind: "edit", modality: "ctrl-k", text: '"shorter"', path: "notes/a.md", outcome: "accepted", detail: "replaced 1 line(s) with 1" }),
+          E(8, { kind: "voice", modality: "voice", text: 'Carl said: "read me page 3"', convId: "v1" }),
+          E(7, { kind: "voice", modality: "voice", text: 'Voice replied: "Page 3 is about RoPE."', convId: "v1" }),
+          E(6, { kind: "voice", modality: "voice", text: "Voice wrote notes/rope.md", convId: "v1" }),
+          E(5, { text: "reading", path: "paper.pdf", where: "page 3 of 12", device: "laptop" }),
+          E(4, { text: 'selected "rotary position embedding"', path: "paper.pdf", where: "selection" }),
+          E(3, { kind: "capture", modality: "capture", text: "captured a region", path: "paper.pdf", where: "page 3", image: ".vault-chat/local/captures/a.png" }),
+          E(2, { kind: "ask", modality: "ctrl-l", text: 'asked "what is this"', detail: "answer: a rotation" }),
+          E(1, core.chatPointerEntry({ convId: "c9", title: "RoPE", user: "summarise it", device: "phone" }) as any),
+        ],
+      },
       { now },
-    );
-    const nowPart = s.slice(s.indexOf("## Now"), s.indexOf("## Earlier"));
-    const earlier = s.slice(s.indexOf("## Earlier"));
-    expect(s.indexOf("## Now")).toBeGreaterThan(0);
-    expect(nowPart).toContain('current selection: "rotary position embedding"');
-    expect(nowPart).toContain("[image: .vault-chat/local/captures/a.png]");
-    expect(nowPart).toContain('asked "what is this"');
-    expect(nowPart).toContain('"shorter" (accepted)');
-    expect(nowPart).toContain('Carl said: "read me page 3"');
-    expect(nowPart).toContain('Voice replied: "Page 3 is about RoPE."');
-    expect(nowPart).toContain('Agent: "Done."');
-    // Earlier holds the rest, not what Now already says.
-    expect(earlier).toContain('asked "old question"');
-    expect(earlier).toContain("Voice wrote notes/rope.md");
-    expect(earlier).not.toContain("what is this");
-    expect(earlier).not.toContain("rotary position embedding");
-    expect(s.length).toBeLessThanOrEqual(core.SUMMARY_MAX_CHARS);
-    // `since`: nothing new → nothing; something new → Now whole, Earlier only the new.
-    expect(core.summarizeActivity([E(5, { text: "x", path: "a.md" })], { now, since: now - 60_000 })).toBe("");
+    ).text;
+    expect(s).toContain("Device: phone (1 min ago)");
+    expect(s).toContain('Focus: paper.pdf (page 3 of 12), 5 min ago — current selection: "rotary position embedding"');
+    expect(s).toContain("capture of paper.pdf (page 3) — captured a region: .vault-chat/local/captures/a.png");
+    expect(s).toContain("[RoPE chat, 1 min ago] Carl: summarise it (id c9)");
+    expect(s).toContain('Ctrl+L ask: asked "what is this" — answer: a rotation');
+    expect(s).toContain('"shorter" (accepted)');
+    expect(s).toContain('Carl said: "read me page 3"');
+    expect(s).toContain("Voice wrote notes/rope.md");
+    expect(s).toContain('asked "old question"');
+    // Another conversation's reply (voice's here) stays in it.
+    expect(s).not.toContain("Page 3 is about RoPE.");
+    // The file seen before the PDF is replaced by where he is now.
+    expect(s).not.toContain("Focus: notes/a.md");
+    expect(s.indexOf("Other chats")).toBeLessThan(s.indexOf("Elsewhere"));
+    expect(s.length).toBeLessThanOrEqual(core.YOU_MAX_CHARS);
+    // `since`: nothing new → nothing.
+    expect(core.buildYouLayer({ entries: [E(5, { text: "x", path: "a.md" })] }, { now, since: now - 60_000 }).text).toBe("");
   });
 
-  it("the total cap holds with a full Now and a long history", () => {
+  it("the total cap holds with long lines everywhere", () => {
     const big = "w".repeat(280);
     const many = Array.from({ length: 120 }, (_, i) => E(29 - i * 0.2, { kind: "voice", modality: "voice", text: `Voice ran a command: ${i} ${big}` }));
     many.push(E(1, { kind: "ask", modality: "ctrl-l", text: `asked "${big}"`, detail: `answer: ${"a".repeat(590)}` }));
-    many.push(E(1, core.chatExchangeEntry({ convId: "c", title: big, user: big, agent: big }) as any));
-    const s = core.summarizeActivity(many, { now });
-    expect(s.length).toBeLessThanOrEqual(core.SUMMARY_MAX_CHARS);
+    many.push(E(1, core.chatPointerEntry({ convId: "c", title: big, user: big }) as any));
+    many.push(E(1, { text: `selected "${big}"`, path: "p.md", where: "selection" }));
+    const s = core.buildYouLayer({ entries: many }, { now }).text;
+    expect(s.length).toBeLessThanOrEqual(core.YOU_MAX_CHARS);
     expect(s).toMatch(/older entries left out/);
-    expect(s.endsWith("</recent_activity>")).toBe(true);
-    for (const l of s.split("\n")) expect(l.length).toBeLessThanOrEqual(core.NOW_LINE_MAX + 700);
+    expect(s.endsWith("</you>")).toBe(true);
+    for (const l of s.split("\n")) expect(l.length).toBeLessThanOrEqual(600);
   });
 
   it("which requests are about an image", () => {
@@ -245,28 +242,27 @@ describe("pure parts", () => {
 // ---------------------------------------------------------------- in process
 
 describe("mode A, then mode B sees it", () => {
-  it("chat → Ctrl+L and voice: the latest exchange of the chat, both sides", async () => {
-    const reply = "A KV cache keeps the attention keys and values of earlier tokens so each new token only computes its own. " + "More detail. ".repeat(40);
+  it("chat → Ctrl+L and voice: Carl's message as a pointer, never the agent's reply", async () => {
+    const reply = "A KV cache keeps the attention keys and values of earlier tokens so each new token only computes its own.";
     const c = await chatTurn({ text: "explain KV caching in one paragraph" }, reply);
-    // Ctrl+L / Ctrl+K side threads get this block on the box.
-    const sum = act.activitySummary(vault);
-    expect(sum).toContain('Carl: "explain KV caching in one paragraph"');
-    expect(sum).toContain('Agent: "A KV cache keeps the attention keys and values');
-    expect(sum).not.toContain("More detail. More detail. More detail. More detail. More detail. More detail. More detail. More detail. More detail. More detail. More detail. More detail. More detail. More detail. More detail.");
-    // A voice session started elsewhere (not from that chat) knows it too.
+    // Ctrl+L / Ctrl+K side threads and voice read the same layer.
+    const sum = act.youLayer(vault).text;
+    expect(sum).toContain("Carl: explain KV caching in one paragraph");
+    expect(sum).not.toContain("A KV cache keeps");
     const block = await voice.voiceContextBlock(deps, null);
-    expect(block).toContain('Agent: "A KV cache keeps');
-    // A second exchange replaces the first.
+    expect(block).toContain("Carl: explain KV caching in one paragraph");
+    expect(block).not.toContain("A KV cache keeps");
+    // A second message is a second pointer; the reply is still that chat's.
     await chatTurn({ text: "and in MLA?", convId: c.convId }, "MLA compresses the KV cache into a latent.");
-    const sum2 = act.activitySummary(vault);
-    expect(sum2).toContain('Carl: "and in MLA?" → Agent: "MLA compresses the KV cache into a latent."');
-    expect(sum2).not.toContain('Carl: "explain KV caching');
-    // The chat's own next turn does not read its own exchange back.
+    const sum2 = act.youLayer(vault).text;
+    expect(sum2).toContain("Carl: and in MLA?");
+    expect(sum2).not.toContain("MLA compresses");
+    // The chat's own next turn does not read its own messages back.
     const own = await chatTurn({ text: "thanks", convId: c.convId });
-    expect(own.texts).not.toContain("MLA compresses");
+    expect(own.texts).not.toContain("Carl: and in MLA?");
   });
 
-  it("Ctrl+L, Ctrl+K and voice → the next chat turn's Now", async () => {
+  it("Ctrl+L, Ctrl+K and voice → the next chat turn's you layer", async () => {
     act.activityPost(vault, { entry: { kind: "focus", modality: "editor", text: "reading", path: "paper.pdf", where: "page 4 of 9" } });
     act.activityPost(vault, { entry: { kind: "ask", modality: "ctrl-l", text: 'asked "what is eq. 3"', detail: "answer: the softmax over scaled scores", path: "paper.pdf", where: "page 4" } });
     act.activityPost(vault, { entry: { kind: "edit", modality: "ctrl-k", text: '"fix the typo"', detail: 'replaced 1 line(s) with 1: "teh" → "the"', outcome: "accepted", path: "notes/kv.md" } });
@@ -274,14 +270,15 @@ describe("mode A, then mode B sees it", () => {
     const t = await voice.voiceTranscript(deps, { role: "assistant", text: "You are on page four." });
     expect(t.status).toBe(200);
     const c = await chatTurn({ text: "where was I?" });
-    const now = c.texts.slice(c.texts.indexOf("## Now"), c.texts.indexOf("</recent_activity>"));
-    expect(now).toContain("Editor · paper.pdf (page 4 of 9): reading");
-    expect(now).toContain('Ctrl+L ask · paper.pdf (page 4): asked "what is eq. 3" — answer: the softmax over scaled scores');
-    expect(now).toContain('Ctrl+K edit · notes/kv.md: "fix the typo" (accepted)');
-    expect(now).toContain('Carl said: "what page am I on"');
-    expect(now).toContain('Voice replied: "You are on page four."');
-    // The chat from the test before: its latest exchange, as the chat line.
-    expect(now).toContain('Agent: "ok"');
+    const you = c.texts.slice(c.texts.indexOf("<you>"), c.texts.indexOf("</you>"));
+    expect(you).toContain("Focus: paper.pdf (page 4 of 9)");
+    expect(you).toContain('Ctrl+L ask · paper.pdf (page 4): asked "what is eq. 3" — answer: the softmax over scaled scores');
+    expect(you).toContain('Ctrl+K edit · notes/kv.md: "fix the typo" (accepted)');
+    expect(you).toContain('Carl said: "what page am I on"');
+    // Voice's reply is the voice conversation's: not here.
+    expect(you).not.toContain("You are on page four.");
+    // The chat from the test before: Carl's message, as a pointer.
+    expect(you).toContain("Carl: thanks");
   });
 
   it("a capture → the chat turn about it gets the image itself, once; an unrelated or stale one does not", async () => {

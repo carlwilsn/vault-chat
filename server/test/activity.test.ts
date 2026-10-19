@@ -55,7 +55,8 @@ class FakeBackend extends EventEmitter {
   async resumeThread() {}
   async startTurn(threadId: string, o: any) {
     const turnId = `${threadId}-turn${this.turns.length + 1}`;
-    this.turns.push({ threadId, texts: o.texts, turnId });
+    // What the model gets this turn: the prompt, then the "you" layer pi adds after it (the extension, fakeSession.ts).
+    this.turns.push({ threadId, texts: o.you ? [...o.texts, o.you] : o.texts, turnId });
     return { turnId };
   }
   async steer() {}
@@ -165,7 +166,7 @@ describe("the log", () => {
     const v = join(root, "u1");
     mkdirSync(v, { recursive: true });
     const e = act.appendActivity(v, { kind: "focus", text: "opened the file", path: "notes\\x.md", bogus: "dropped", ts: 5 }, 1_000_000);
-    expect(e).toEqual({ ts: 1_000_000, kind: "focus", modality: "editor", text: "opened the file", path: "notes/x.md" });
+    expect(e).toEqual({ ts: 1_000_000, kind: "focus", modality: "editor", text: "opened the file", path: "notes/x.md", device: "laptop" });
     expect(readFileSync(join(v, ".vault-chat", "local", ".gitignore"), "utf8")).toBe("*\n");
     expect(act.appendActivity(v, { kind: "nope", text: "x" })).toBeNull();
     expect(act.appendActivity(v, { kind: "chat", text: "   " })).toBeNull();
@@ -236,85 +237,80 @@ describe("the log", () => {
   });
 });
 
-describe("the summary", () => {
+describe("the you layer (buildYouLayer)", () => {
   const now = 10_000_000;
   const E = (ago: number, e: Partial<import("../../src/activityCore").ActivityEntry>) =>
     ({ ts: now - ago * 60_000, modality: "editor", kind: "focus", text: "x", ...e }) as import("../../src/activityCore").ActivityEntry;
 
   it("dedupes, orders oldest first, drops the window's outside, and is empty when there is nothing", () => {
-    const s = core.summarizeActivity(
-      [
-        E(40, { text: "too old", path: "old.md" }),
-        E(9, { text: "opened the file", path: "notes/a.md" }),
-        E(8, { kind: "ask", modality: "ctrl-l", text: 'asked "what is RoPE"', path: "paper.pdf", where: "page 3" }),
-        E(7, { text: "reading", path: "notes/a.md", where: "L4" }),
-        E(6, { kind: "ask", modality: "ctrl-l", text: 'asked "what is RoPE"', path: "paper.pdf", where: "page 3" }),
-        E(2, { kind: "chat", modality: "chat", text: 'Chat "Plan"', convId: "c1" }),
-        E(1, { kind: "chat", modality: "chat", text: 'Chat "Plan v2"', convId: "c1" }),
-      ],
+    const s = core.buildYouLayer(
+      {
+        entries: [
+          E(60, { kind: "ask", modality: "ctrl-l", text: "too old" }),
+          E(9, { text: "opened the file", path: "notes/a.md" }),
+          E(8, { kind: "ask", modality: "ctrl-l", text: 'asked "what is RoPE"', path: "paper.pdf", where: "page 3" }),
+          E(7, { text: "reading", path: "notes/a.md", where: "L4" }),
+          E(6, { kind: "ask", modality: "ctrl-l", text: 'asked "what is RoPE"', path: "paper.pdf", where: "page 3" }),
+          E(2, { kind: "chat", modality: "chat", text: "Plan", detail: 'Carl: "first"', convId: "c1" }),
+          E(1, { kind: "chat", modality: "chat", text: "Plan v2", detail: 'Carl: "second"', convId: "c1" }),
+        ],
+      },
       { now },
-    );
-    expect(s).toMatch(/^<recent_activity>/);
-    expect(s).toMatch(/<\/recent_activity>$/);
+    ).text;
+    expect(s).toMatch(/^<you>/);
+    expect(s).toMatch(/<\/you>$/);
     expect(s).not.toContain("too old");
     expect(s.match(/notes\/a\.md/g)).toHaveLength(1); // the later view of the file replaced the earlier
-    expect(s).toContain("(L4)");
+    expect(s).toContain("Focus: notes/a.md (L4)");
     expect(s.match(/what is RoPE/g)).toHaveLength(1);
-    expect(s).not.toContain('"Plan"');
-    expect(s).toContain('Chat "Plan v2"');
-    expect(s.indexOf("what is RoPE")).toBeLessThan(s.indexOf("Plan v2")); // oldest first
+    // Each of Carl's messages is a pointer of its own, oldest first.
+    expect(s.indexOf("Carl: first")).toBeLessThan(s.indexOf("Carl: second"));
     expect(s).toContain("1 min ago");
-    expect(core.summarizeActivity([E(40, {})], { now })).toBe("");
+    expect(core.buildYouLayer({ entries: [] }, { now }).text).toBe("");
   });
 
-  it("puts the current project first, honours since and excludeConv, and keeps under the cap", () => {
+  it("honours since and the reader's conversation, and keeps under the cap", () => {
     const entries = [
-      E(5, { kind: "voice", modality: "voice", text: "Voice edited notes/x.md", project: "other" }),
-      E(4, { kind: "edit", modality: "ctrl-k", text: '"tighten"', path: "coconut/readme.md", project: "coconut" }),
-      E(3, { kind: "chat", modality: "chat", text: 'Chat "Me"', convId: "me" }),
-      E(2, { kind: "ask", modality: "ctrl-l", text: 'asked "why"', project: "coconut" }),
-      E(6, { kind: "voice", modality: "voice", text: "Voice wrote coconut/plan.md", project: "coconut" }),
+      E(5, { kind: "voice", modality: "voice", text: "Voice edited notes/x.md" }),
+      E(4, { kind: "edit", modality: "ctrl-k", text: '"tighten"', path: "coconut/readme.md" }),
+      E(3, { kind: "chat", modality: "chat", text: "Me", detail: 'Carl: "mine"', convId: "me" }),
+      E(2, { kind: "ask", modality: "ctrl-l", text: 'asked "why"' }),
     ];
-    const s = core.summarizeActivity(entries, { now, project: "coconut", excludeConv: "me" });
-    // Now: the last turn on each surface; then the earlier entries, the project's first.
-    expect(s).toContain("## Now");
-    expect(s).toContain("## Earlier — project coconut");
-    expect(s).toContain("## Earlier — elsewhere in the vault");
-    expect(s.indexOf("tighten")).toBeLessThan(s.indexOf("Voice edited"));
-    expect(s.indexOf('asked "why"')).toBeLessThan(s.indexOf("Voice edited"));
-    expect(s.indexOf("Voice wrote coconut/plan.md")).toBeLessThan(s.indexOf("Voice edited"));
-    expect(s).not.toContain('Chat "Me"');
-    const later = core.summarizeActivity(entries, { now, since: now - 2.5 * 60_000 });
+    const s = core.buildYouLayer({ entries }, { now, convId: "me" }).text;
+    expect(s).toContain("Elsewhere (Ctrl+K, Ctrl+L, voice):");
+    expect(s.indexOf("Voice edited")).toBeLessThan(s.indexOf("tighten"));
+    expect(s).not.toContain("Carl: mine");
+    const later = core.buildYouLayer({ entries }, { now, since: now - 2.5 * 60_000 }).text;
     expect(later).toContain('asked "why"');
     expect(later).not.toContain("tighten");
-    // The cap: many big entries, the newest kept, the project's first.
+    // The cap: many big entries, the newest kept.
     const many = Array.from({ length: 200 }, (_, i) => E(29 - i * 0.1, { kind: "ask", modality: "ctrl-l", text: `question number ${i} ${"z".repeat(200)}` }));
-    many.push(E(29.5, { kind: "edit", modality: "ctrl-k", text: "the project's edit", project: "coconut" }));
-    const capped = core.summarizeActivity(many, { now, project: "coconut" });
-    expect(capped.length).toBeLessThanOrEqual(core.SUMMARY_MAX_CHARS);
-    expect(capped).toContain("the project's edit");
+    const capped = core.buildYouLayer({ entries: many }, { now }).text;
+    expect(capped.length).toBeLessThanOrEqual(core.YOU_MAX_CHARS);
     expect(capped).toContain("question number 199");
     expect(capped).not.toContain("question number 0 ");
     expect(capped).toMatch(/older entries left out/);
   });
 
   it("formats each surface's entry with what is needed to act on it", () => {
-    const s = core.summarizeActivity(
-      [
-        E(1, {
-          kind: "edit",
-          modality: "ctrl-k",
-          text: '"make the title shorter"',
-          path: "notes/a.md",
-          outcome: "accepted",
-          detail: core.editSummary("# A very long title", "# Short title"),
-        }),
-        E(1, { kind: "capture", modality: "capture", text: "captured a region for the chat", path: "paper.pdf", where: "page 2", image: ".vault-chat/local/captures/x.png" }),
-      ],
+    const s = core.buildYouLayer(
+      {
+        entries: [
+          E(1, {
+            kind: "edit",
+            modality: "ctrl-k",
+            text: '"make the title shorter"',
+            path: "notes/a.md",
+            outcome: "accepted",
+            detail: core.editSummary("# A very long title", "# Short title"),
+          }),
+          E(1, { kind: "capture", modality: "capture", text: "captured a region for the chat", path: "paper.pdf", where: "page 2", image: ".vault-chat/local/captures/x.png" }),
+        ],
+      },
       { now },
-    );
+    ).text;
     expect(s).toContain('Ctrl+K edit · notes/a.md: "make the title shorter" (accepted) — replaced 1 line(s) with 1: "# A very long title" → "# Short title"');
-    expect(s).toContain("Image capture · paper.pdf (page 2): captured a region for the chat [image: .vault-chat/local/captures/x.png]");
+    expect(s).toContain("capture of paper.pdf (page 2) — captured a region for the chat: .vault-chat/local/captures/x.png");
   });
 
   it("the project's shared notes (project.md) and the rules, capped; an old memory.md is not read", async () => {
@@ -341,7 +337,7 @@ describe("the summary", () => {
 // ---------------------------------------------------------------- in process
 
 describe("every surface sees the same stream (engine on a fake pi)", () => {
-  it("a Ctrl+K edit reaches the next chat turn's prefix, with what to undo — once", async () => {
+  it("a Ctrl+K edit reaches the next chat turn's you layer, with what to undo — once", async () => {
     const r = act.activityPost(vault, {
       entry: {
         kind: "edit",
@@ -355,19 +351,19 @@ describe("every surface sees the same stream (engine on a fake pi)", () => {
     });
     expect(r.status).toBe(200);
     const first = await chatTurn(engine, backend, { text: "undo the Ctrl+K edit I just made" });
-    expect(first.texts).toContain("<recent_activity>");
+    expect(first.texts).toContain("<you>");
     expect(first.texts).toContain("Ctrl+K edit · notes/a.md (L1)");
     expect(first.texts).toContain('"# A very long and winding title about transformers" → "# Transformers"');
     expect(first.texts).toContain("(accepted)");
-    // The prefix comes before the message.
-    expect(first.texts.indexOf("<recent_activity>")).toBeLessThan(first.texts.indexOf("undo the Ctrl+K edit"));
-    // The same conversation's next turn: nothing new, no block again.
+    // pi adds the layer after the message (before_agent_start's custom message).
+    expect(first.texts.indexOf("<you>")).toBeGreaterThan(first.texts.indexOf("undo the Ctrl+K edit"));
+    // The same conversation's next turn: nothing new, no layer again.
     const again = await chatTurn(engine, backend, { text: "thanks", convId: first.convId });
-    expect(again.texts).not.toContain("<recent_activity>");
+    expect(again.texts).not.toContain("<you>");
     // A different chat started afterwards points back at the first one, not at itself.
     const other = await chatTurn(engine, backend, { text: "what was I doing?" });
-    expect(other.texts).toContain(`[conversation ${first.convId}]`);
-    expect(other.texts).not.toContain(`[conversation ${other.convId}]`);
+    expect(other.texts).toContain(`(id ${first.convId})`);
+    expect(other.texts).not.toContain(`(id ${other.convId})`);
   });
 
   it("a voice turn with an Edit reaches a later Ctrl+L summary and a later chat turn", async () => {
@@ -379,11 +375,12 @@ describe("every surface sees the same stream (engine on a fake pi)", () => {
     await voice.voiceTranscript(deps, { role: "assistant", text: "Done — the title is now Transformers.", convId: t.body.convId });
     // A read is not logged.
     await voice.voiceTool(deps, { name: "Read", args: { path: "notes/a.md" } });
-    // What a Ctrl+L side thread gets (the activity block the box puts before it).
-    const sum = { activity: act.activitySummary(vault) };
+    // What a Ctrl+L side thread with no conversation gets (the same layer, through the same function).
+    const sum = { activity: act.youLayer(vault).text };
     expect(sum.activity).toContain('Voice: Carl said: "make the title shorter"');
     expect(sum.activity).toContain('Voice · notes/a.md: Voice edited notes/a.md — "# A very long and winding title about transformers" → "# Transformers"');
-    expect(sum.activity).toContain('Voice replied: "Done — the title is now Transformers."');
+    // Voice's reply is that conversation's content: it stays there.
+    expect(sum.activity).not.toContain("Done — the title is now Transformers.");
     expect(sum.activity).not.toMatch(/Voice ran Read|Voice read/);
     // And the chat.
     const chat = await chatTurn(engine, backend, { text: "what did I just change by voice?" });
@@ -391,7 +388,7 @@ describe("every surface sees the same stream (engine on a fake pi)", () => {
     expect(chat.texts).toContain("Voice edited notes/a.md");
   });
 
-  it("an image capture is stored under .vault-chat/local/captures and the chat prefix references it", async () => {
+  it("an image capture is stored under .vault-chat/local/captures and the chat's you layer references it", async () => {
     const r = act.activityPost(vault, {
       entry: { kind: "capture", modality: "capture", text: "captured a region for the chat", path: "paper.pdf", where: "page 2", image: "notes/a.md" },
       imageBase64: PNG,
@@ -404,8 +401,7 @@ describe("every surface sees the same stream (engine on a fake pi)", () => {
     // No base64 in the log, ever.
     expect(logOf(vault)).not.toContain(PNG.slice(0, 40));
     const chat = await chatTurn(engine, backend, { text: "what's in the thing I just circled?" });
-    expect(chat.texts).toContain(`[image: ${rel}]`);
-    expect(chat.texts).toContain("Image capture · paper.pdf (page 2)");
+    expect(chat.texts).toContain(`capture of paper.pdf (page 2) — captured a region for the chat: ${rel}`);
   });
 
   it("AskAgent from voice: the new conversation's first turn carries the voice turns before it", async () => {
@@ -430,19 +426,19 @@ describe("every surface sees the same stream (engine on a fake pi)", () => {
     expect(block).toContain('started from the chat "Planning the survey"');
     expect(block).toContain("Carl: Draft section 4 on KV caches");
     expect(block).toContain("Agent: Section 4 drafted in survey.md.");
-    expect(block).toContain("<recent_activity>");
+    expect(block).toContain("<you>");
     expect(block).toContain("Voice edited notes/a.md");
   });
 
   it("two vaults: the second never sees the first's entries, and its own stay its own", async () => {
-    expect(act.activitySummary(vault2)).toBe("");
+    expect(act.youLayer(vault2).text).toBe("");
     const chat2 = await chatTurn(engine2, backend2, { text: "what did I just do?" });
-    expect(chat2.texts).not.toContain("<recent_activity>");
+    expect(chat2.texts).not.toContain("<you>");
     expect(chat2.texts).not.toContain("notes/a.md");
     // vault2's own entry stays in vault2.
     act.activityPost(vault2, { entry: { kind: "edit", modality: "ctrl-k", text: '"lab only edit"', path: "notes/b.md" } });
-    expect(act.activitySummary(vault2)).toContain("lab only edit");
-    expect(act.activitySummary(vault)).not.toContain("lab only edit");
+    expect(act.youLayer(vault2).text).toContain("lab only edit");
+    expect(act.youLayer(vault).text).not.toContain("lab only edit");
     expect(logOf(vault)).not.toContain("lab only edit");
     const chat1 = await chatTurn(engine, backend, { text: "anything new?" });
     expect(chat1.texts).not.toContain("lab only edit");

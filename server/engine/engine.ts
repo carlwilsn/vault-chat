@@ -40,8 +40,8 @@ import { isNoteTool, noteTool, noteToolSpecs } from "../notesTools";
 import { capabilitiesOf, capabilityNote, learn } from "./capabilities";
 import { join } from "node:path";
 import { WRITE_TOOLS, writtenPath } from "../liveEdits";
-import { activitySummary, appendActivity, contextImage } from "../activity";
-import { CAPTURE_FRESH_MS, chatExchangeEntry } from "../../src/activityCore";
+import { appendActivity, contextImage, youLayer } from "../activity";
+import { CAPTURE_FRESH_MS, chatPointerEntry } from "../../src/activityCore";
 import type { EventBody, ItemImage, PendingInput } from "../../src/convlog/protocol";
 import { isOpen, pendingOf, shown, type Picture } from "../../src/convlog/reduce";
 import { toolName } from "../../src/convlog/view";
@@ -342,8 +342,6 @@ export class Engine {
   private timers: NodeJS.Timeout[] = [];
   private firing = new Set<string>();
   private childOf = new Map<string, string>(); // subagent threadId → parent conversation id
-  /** The shared activity stream: when each conversation last saw it (in memory; after a restart a turn sees the whole window again). */
-  private activitySeen = new Map<string, number>();
   /** Captures already sent to each conversation's model (in memory): one is never attached twice. */
   private imagesGiven = new Map<string, Set<string>>();
   /** The rules each thread last received (its instructions at start, or a turn's prefix): a turn repeats them only when they changed. In memory; after a restart a resumed thread gets them once more. */
@@ -480,6 +478,7 @@ export class Engine {
           return { ok: r?.success !== false, text: (r?.contentItems ?? []).map((c: any) => c?.text ?? "").join("\n") };
         }),
       userInput: (threadId, question, options) => this.scoped(() => this.waitForAnswer(threadId, question, options)),
+      you: (q) => this.scoped(async () => this.you(q)),
     });
     this.timers.push(setInterval(() => this.scoped(() => void this.tickWakes()), 2_000));
     this.timers.push(setInterval(() => this.scoped(() => this.tickWatchdog()), 15_000));
@@ -673,10 +672,15 @@ export class Engine {
         context = [context, img.caption].filter(Boolean).join("\n\n");
       }
     }
-    // The shared stream: this chat's latest exchange (Carl's side now; the reply when the turn ends).
+    // The shared stream: a pointer to Carl's message (his words only: the reply stays in this chat), and
+    // the images he pasted into it, by path (the other conversations' "you" layer lists them).
     const now = (await readConv(this.d.vault, id).catch(() => null)) ?? conv;
     const proj = now.project;
-    appendActivity(this.d.vault, chatExchangeEntry({ convId: id, title: String(now.title ?? "").trim() || shown, user: shown, agent: null, project: typeof proj === "string" ? proj : null }));
+    const title = String(now.title ?? "").trim() || shown;
+    const device = body.source === "voice" ? null : body.client ?? null;
+    appendActivity(this.d.vault, chatPointerEntry({ convId: id, title, user: shown, project: typeof proj === "string" ? proj : null, device }));
+    for (const im of itemImages.filter((x) => x.path.startsWith(".vault-chat/captures/")))
+      appendActivity(this.d.vault, { kind: "capture", modality: "chat", text: `pasted into "${title}"`, path: im.path, convId: id, ...(device ? { device } : {}) });
     this.nudged.delete(id);
     // An open question: this message is the answer.
     if (this.live.get(id)?.ask || conv.pendingAsk) {
@@ -800,8 +804,8 @@ export class Engine {
   /**
    * POST /api/v1/side. Ctrl+K / Ctrl+L ({kind: "edit" | "ask", convId?, side?, text, images?}): pi forks the
    * conversation's session (its history and instructions; a fresh session with the agent's instructions when it
-   * has none) with pi's read-only tools, and the request goes in after what Carl did elsewhere since that
-   * conversation last saw it — the same block a turn of the agent gets. `side`: the popover's next request, in
+   * has none) with pi's read-only tools; pi's extension adds what Carl did elsewhere since that conversation
+   * last saw it (the "you" layer, the same hook a turn of the agent runs). `side`: the popover's next request, in
    * the same side thread. One-shots ({kind: "once", system, text, images?, fast?}): no session, no tools.
    */
   async sideStart(b: Record<string, any>): Promise<Record<string, unknown>> {
@@ -831,13 +835,8 @@ export class Engine {
           instr = join(this.d.backend.paths.instrDir, `side-${Date.now().toString(36)}-${newMessageId().slice(-6)}.md`);
           writeFileSync(instr, buildDeveloperInstructions((conv ?? { id: "side", title: "", messages: [] }) as any, { rolePrompt: ENGINE_ROLE_PROMPT + (note ? `\n\n${note}` : "") }));
         }
-        const activity = activitySummary(this.d.vault, {
-          now: Date.now(),
-          project: typeof conv?.project === "string" ? conv.project : null,
-          since: src && conv ? this.activitySeen.get(conv.id) : undefined,
-          excludeConv: conv?.id ?? null,
-        });
-        s = await side.start({ kind, fork: src?.file ?? null, instr, cwd: src?.cwd || this.d.vault, model, tools: READ_ONLY_TOOLS, sessionDir: dir(conv?.id ?? "none"), text: sidePrompt(activity, text), images });
+        // What Carl did elsewhere comes in through pi (the extension's "you" layer, as of this conversation).
+        s = await side.start({ kind, fork: src?.file ?? null, instr, cwd: src?.cwd || this.d.vault, model, tools: READ_ONLY_TOOLS, sessionDir: dir(conv?.id ?? "none"), text, images, you: { convId: conv?.id ?? null } });
       }
       this.log(`side ${kind} ${s.id}${conv ? ` (forked from ${conv.id})` : ""} on ${model}${s.file ? `: ${s.file}` : ""}`);
       return { ok: true, id: s.id, v: s.v };
@@ -1043,8 +1042,8 @@ export class Engine {
       const rules = this.rulesSent.get(threadId) === rulesNow ? "" : rulesNow;
       this.rulesSent.set(threadId, rulesNow);
       if (opts.context) body = `${opts.context}\n\n${body}`;
-      const activity = kind === "user" ? this.activityPrefix(conv) : "";
-      const texts = [rules, activity, kind === "wake" ? input : body].filter(Boolean);
+      // What Carl did elsewhere is not in the prompt: pi's extension adds it (the "you" layer, a vc-you custom message).
+      const texts = [rules, kind === "wake" ? input : body].filter(Boolean);
       live.feed.expect({ kind: "prompt", text: texts.join("\n\n"), clientId: kind === "user" ? clientId : undefined, ...shownInput, ...(opts.itemImages?.length ? { images: opts.itemImages } : {}) });
       try {
         await this.d.backend.startTurn(threadId, { texts, images: opts.images ?? [], model, turnId });
@@ -1060,20 +1059,14 @@ export class Engine {
   }
 
   /**
-   * For a user turn: what Carl did elsewhere (Ctrl+K, Ctrl+L, captures, voice,
-   * other chats) since this conversation last saw the stream — the earlier
-   * entries are in its thread already. "" when there is nothing new.
+   * The "you" layer for a pi session's prompt (the extension's before_agent_start): what Carl did
+   * since that session last saw it (`since`: its last vc-you message), as of its conversation: a
+   * thread's own, or the one a Ctrl+K / Ctrl+L side thread was opened from.
    */
-  private activityPrefix(conv: EngineConv): string {
-    const now = Date.now();
-    const block = activitySummary(this.d.vault, {
-      now,
-      project: typeof conv.project === "string" ? conv.project : null,
-      since: this.activitySeen.get(conv.id),
-      excludeConv: conv.id,
-    });
-    this.activitySeen.set(conv.id, now);
-    return block ? `${block}\n\n` : "";
+  private you(q: { threadId?: string; convId?: string | null; since: number | null }): { text: string; until: number } {
+    const convId = q.threadId ? (this.byThread.get(q.threadId) ?? null) : (q.convId ?? null);
+    const r = youLayer(this.d.vault, { since: q.since, convId });
+    return { text: r.text, until: r.until };
   }
 
   private async ensureThread(conv: EngineConv): Promise<{ threadId: string; fresh: boolean }> {
@@ -1289,11 +1282,6 @@ export class Engine {
     else if (status === "interrupted" && !l.endedAfterWake) await this.notice(l.convId, l.stalled ? "Stalled — interrupted by the watchdog." : "Stopped.", "info");
     const conv = await readConv(vault, l.convId);
     const reply = l.feed.replies.join("\n\n").trim();
-    // The shared stream: this chat's latest exchange, now with the reply (Ctrl+L, Ctrl+K, voice read it).
-    if (reply && !l.cut && conv) {
-      const lastUser = [...(conv.messages ?? [])].reverse().find((m: any) => m.role === "user" && !m.hidden && !m.system && String(m.content ?? "").trim());
-      appendActivity(vault, chatExchangeEntry({ convId: l.convId, title: conv.title, user: lastUser?.content ?? "", agent: reply, project: typeof conv.project === "string" ? conv.project : null }));
-    }
     this.log(`turn ${l.kind} on ${l.convId} ${status}${l.cut ? " (cut)" : ""} → ${state}`);
     const outcome = l.cut ? "cut" : l.stalled ? "stalled" : l.endedAfterWake ? "ended_after_wake" : l.stopped ? "stopped" : status === "completed" ? "ok" : status;
     this.turnLine(l.rec, { status, outcome, state, error: errStr || null });
@@ -1352,7 +1340,6 @@ export class Engine {
     this.emit(conv.id, { type: "meta", patch: { recap: r.recap, threadId: null, threadPath: null } });
     if (typeof r.costUsd === "number" && r.costUsd) this.addCost(conv.id, r.costUsd);
     if (from) this.byThread.delete(from);
-    this.activitySeen.delete(conv.id); // the new thread has seen nothing: its first turn gets the whole block
     this.log(`rolled ${conv.id} over (from ${from}); next turn starts a new thread`);
   }
 
@@ -1764,7 +1751,3 @@ function boardInboxText(vault: string, id: string | null): string {
     .join("\n");
 }
 
-/** What a Ctrl+K / Ctrl+L side thread is sent: what Carl did elsewhere (the block an agent turn gets), then the request. */
-export function sidePrompt(activity: string, text: string): string {
-  return [activity.trim(), text].filter(Boolean).join("\n\n");
-}

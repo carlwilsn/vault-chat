@@ -201,3 +201,23 @@ export function wakeGate() {
     },
   };
 }
+
+/** The custom message type of the "you" layer in a pi session (vc.mjs before_agent_start). */
+export const YOU_TYPE = "vc-you";
+
+/**
+ * What this session has seen of the "you" layer: the `until` of the last
+ * `vc-you` custom message on its branch (a fork carries its parent's), or null
+ * (a new conversation: it gets the whole layer).
+ */
+export function youSince(entries) {
+  const list = Array.isArray(entries) ? entries : [];
+  for (let i = list.length - 1; i >= 0; i--) {
+    const e = list[i];
+    if (e?.type === "custom_message" && e.customType === YOU_TYPE) {
+      const u = Number(e.details?.until);
+      if (Number.isFinite(u)) return u;
+    }
+  }
+  return null;
+}

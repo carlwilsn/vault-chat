@@ -36,14 +36,15 @@ export function chatText(body: any): string {
   return out.join("\n");
 }
 
-/** The newest user message's text. */
+/** The newest user message's text (Carl's: the "you" layer pi sends after it, as a user message, is skipped). */
 export function lastUser(body: any): string {
   const ms: any[] = body?.messages ?? [];
   for (let i = ms.length - 1; i >= 0; i--) {
     const m = ms[i];
     if (m?.role !== "user") continue;
-    if (typeof m.content === "string") return m.content;
-    return (m.content ?? []).map((c: any) => (typeof c?.text === "string" ? c.text : "")).join("\n");
+    const t = typeof m.content === "string" ? m.content : (m.content ?? []).map((c: any) => (typeof c?.text === "string" ? c.text : "")).join("\n");
+    if (t.startsWith("<you>")) continue;
+    return t;
   }
   return "";
 }

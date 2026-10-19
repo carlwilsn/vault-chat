@@ -1,5 +1,5 @@
 // The shared context stream, laptop side (src/activityCore.ts has the shape,
-// the caps and the summary; server/activity.ts is the box's half).
+// the caps and the "you" layer; server/activity.ts is the box's half).
 //
 // Writing: recordActivity() posts to the box's log for this vault
 // (POST /api/v1/activity?vault=); with no box there is no stream (nothing on
@@ -7,7 +7,7 @@
 // failure-silent (logged). Off with localStorage `vault_chat_activity` = "0".
 //
 // Reading is the box's: an agent turn, a Ctrl+K / Ctrl+L side thread and a
-// voice session each get the recent-activity block there.
+// voice session each get the "you" layer there (server/activity.ts youLayer).
 //
 // Watching: startActivityWatch() turns what the editor already knows (the
 // file open, the PDF page, a selection, a marquee capture) into `focus` and

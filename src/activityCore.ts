@@ -5,7 +5,7 @@
 //
 // This file is the pure part, shared by the laptop (src/activity.ts) and the
 // box (server/activity.ts): the entry shape, the caps and redaction applied on
-// write, and the summary block every surface reads. No I/O here.
+// write, and the "you" layer every surface reads (buildYouLayer). No I/O here.
 //
 // Where it lives: <vault>/.vault-chat/local/activity.jsonl (one JSON entry per
 // line; rotated to activity.1.jsonl past LOG_MAX_BYTES). `.vault-chat/local/`
@@ -27,6 +27,12 @@ const DEFAULT_MODALITY: Record<ActivityKind, ActivityModality> = {
   chat: "chat",
 };
 
+/** The device Carl was on. */
+export type Device = "laptop" | "phone" | "board";
+export const DEVICES: readonly Device[] = ["laptop", "phone", "board"];
+/** Surfaces only the laptop has. */
+const LAPTOP_ONLY: ReadonlySet<ActivityModality> = new Set(["editor", "ctrl-k", "ctrl-l", "capture"]);
+
 export type ActivityEntry = {
   ts: number;
   kind: ActivityKind;
@@ -47,6 +53,8 @@ export type ActivityEntry = {
   image?: string;
   /** Ctrl+K: whether Carl kept the edit. */
   outcome?: "accepted" | "rejected";
+  /** The device it happened on (the laptop for the editor, Ctrl+K, Ctrl+L and captures). */
+  device?: Device;
 };
 
 export const ACTIVITY_DIR = ".vault-chat/local";
@@ -58,11 +66,8 @@ export const LOG_MAX_BYTES = 256 * 1024;
 /** No single line over this. */
 export const ENTRY_MAX_BYTES = 2048;
 export const CAPS = { text: 300, detail: 600, path: 240, where: 80, project: 64, convId: 80, image: 200 } as const;
-/** Entries older than this are ignored when reading. */
+/** A capture older than this is not "the image" a request refers to. */
 export const DEFAULT_WINDOW_MS = 30 * 60_000;
-/** The summary block's hard cap (~1.5k tokens at ~4 chars a token). */
-export const SUMMARY_MAX_CHARS = 6000;
-export const SUMMARY_MAX_ENTRIES = 40;
 
 // ---------------------------------------------------------------- redaction
 
@@ -138,6 +143,8 @@ export function sanitizeEntry(raw: unknown, now: number): ActivityEntry | null {
   const image = field(r.image, CAPS.image).replace(/\\/g, "/");
   if (image && image.startsWith(`${CAPTURES_DIR}/`) && !image.includes("..")) e.image = image;
   if (r.outcome === "accepted" || r.outcome === "rejected") e.outcome = r.outcome;
+  if (DEVICES.includes(r.device as Device)) e.device = r.device as Device;
+  else if (LAPTOP_ONLY.has(modality)) e.device = "laptop";
   // A last guard on the line's size (the caps above keep it far under).
   let line = JSON.stringify(e);
   if (line.length > ENTRY_MAX_BYTES && e.detail) {
@@ -162,33 +169,58 @@ export function parseLog(text: string): ActivityEntry[] {
   return out;
 }
 
-// ---------------------------------------------------------------- the summary
+// ---------------------------------------------------------------- the "you" layer
 
-export type SummaryOptions = {
+// What Carl just did, across every surface, for every conversation: where he
+// is (focus, selection, device), the last board, his captures and pasted
+// images, notes he changed, his own messages in OTHER chats (one-line
+// pointers: never a reply, never a draft) and what he did on the other
+// surfaces (Ctrl+K, Ctrl+L, voice). Conversation content does not bleed: a
+// chat is named and pointed at; the agent reads it on request (ReadConversation).
+//
+// One builder, every reader: pi's turns and Ctrl+K / Ctrl+L side threads get it
+// through the vault-chat pi extension's before_agent_start (written into pi's
+// session as a `vc-you` custom message, so it is in pi's record and its
+// compaction), and voice calls the same server function (server/activity.ts youLayer).
+
+/** The newest board, as the layer shows it (server/activity.ts reads it from boards/). */
+export type BoardSnap = { slug: string; name: string; updated: number; strokes: number; items: { kind: string; label: string }[]; overview: string | null };
+/** A note's latest state (server/activity.ts reads .vault-chat/notes.jsonl). */
+export type NoteSnap = { id: string; ts: number; created: boolean; status: string; text: string };
+export type YouSources = { entries: ActivityEntry[]; board?: BoardSnap | null; notes?: NoteSnap[] };
+/** The conversations' titles, for the pointers (an entry carries the title it had when it was written). */
+export type YouOptions = {
   now: number;
-  /** The current project: its entries come first. */
-  project?: string | null;
+  /** What this reader saw already: the `until` of its last layer. Only what is newer is given. */
+  since?: number | null;
+  /** The reader's own conversation: its own messages and pasted images are in its thread already. */
+  convId?: string | null;
   windowMs?: number;
   maxChars?: number;
-  maxEntries?: number;
-  /** Only entries after this (a reader that already saw the earlier ones). */
-  since?: number;
-  /** Leave out pointers to this conversation (the chat reading its own prefix). */
-  excludeConv?: string | null;
 };
+export type YouLayer = { text: string; until: number; items: number };
 
-/** The key two entries share when the later one makes the earlier one redundant. */
-function dedupeKey(e: ActivityEntry): string | null {
-  if (e.kind === "focus") return `focus|${e.path ?? ""}`;
-  if (e.kind === "chat") return `chat|${e.convId ?? e.text}`;
-  return `${e.kind}|${e.modality}|${e.path ?? ""}|${e.text}|${e.detail ?? ""}|${e.outcome ?? ""}`;
-}
+/** The window shown in detail; "the last thing he did" is shown whatever its age (to a reader that has not seen it). */
+export const YOU_WINDOW_MS = 45 * 60_000;
+/** The layer's budget (~1.25k tokens at ~4 characters a token). */
+export const YOU_MAX_CHARS = 5000;
+/** A pointer quotes this much of Carl's message. */
+export const POINTER_CHARS = 120;
+/** What a chat pointer stores of Carl's message (the pointer shows POINTER_CHARS of it). */
+export const GIST_MAX = 200;
+const LINE_MAX = 320;
+const MAX_IMAGES = 4;
+const MAX_NOTES = 4;
+const MAX_CHATS = 6;
+/** A selection is "current" while it is this fresh. */
+const SELECTION_FRESH_MS = 10 * 60_000;
 
 function ago(ms: number): string {
   const m = Math.round(ms / 60_000);
   if (m <= 0) return "just now";
   if (m < 60) return `${m} min ago`;
-  return `${Math.floor(m / 60)} h ${m % 60} min ago`;
+  if (m < 48 * 60) return `${Math.floor(m / 60)} h ${m % 60} min ago`;
+  return `${Math.round(m / 1440)} days ago`;
 }
 
 const SURFACE: Record<ActivityModality, string> = {
@@ -200,129 +232,176 @@ const SURFACE: Record<ActivityModality, string> = {
   chat: "Chat",
 };
 
-export function formatEntry(e: ActivityEntry, now: number): string {
-  const head = `[${ago(now - e.ts)}] ${SURFACE[e.modality] ?? e.modality}`;
+const clip = (l: string, n = LINE_MAX) => (l.length > n ? `${l.slice(0, n - 1)}…` : l);
+const isSelection = (e: ActivityEntry) => e.kind === "focus" && /^selected "/.test(e.text);
+const isVoiceReply = (e: ActivityEntry) => e.kind === "voice" && e.text.startsWith("Voice replied:");
+const isPasted = (e: ActivityEntry) => e.kind === "capture" && e.modality === "chat";
+
+/** "[Physics hw4 chat, 2 min ago] Carl: …first 120 chars…" — Carl's own words, never a reply. */
+export function chatPointer(e: ActivityEntry, now: number): string {
+  const title = (e.text || "untitled").replace(/^Chat "(.*)"$/, "$1");
+  // (An older entry also held the reply: `Carl: "…" → Agent: "…"`. Only Carl's side is shown.)
+  const said = (e.detail ?? "").replace(/^Carl: "([\s\S]*?)"(?: → [\s\S]*)?$/, "$1");
+  const quote = said.length > POINTER_CHARS ? `${said.slice(0, POINTER_CHARS - 1)}…` : said;
+  return `[${title} chat, ${ago(now - e.ts)}] Carl: ${quote}${e.convId ? ` (id ${e.convId})` : ""}`;
+}
+
+/** One entry of the other surfaces (Ctrl+K, Ctrl+L, voice), one line. */
+function otherLine(e: ActivityEntry, now: number): string {
   const loc = e.path ? ` · ${e.path}${e.where ? ` (${e.where})` : ""}` : e.where ? ` · ${e.where}` : "";
-  const bits = [`${head}${loc}: ${e.text}`];
+  const bits = [`[${ago(now - e.ts)}] ${SURFACE[e.modality] ?? e.modality}${loc}: ${e.text}`];
   if (e.outcome) bits.push(`(${e.outcome})`);
   if (e.detail) bits.push(`— ${e.detail}`);
-  if (e.image) bits.push(`[image: ${e.image}]`);
-  if (e.convId && e.kind !== "focus") bits.push(`[conversation ${e.convId}]`);
-  return `- ${bits.join(" ")}`;
+  return clip(bits.join(" "));
 }
 
-/** A Now line never runs past this (an answer's gist is the long part). */
-export const NOW_LINE_MAX = 480;
-/** A selection is "current" while it is this fresh. */
-const SELECTION_FRESH_MS = 10 * 60_000;
+function imageLine(e: ActivityEntry, now: number): string {
+  if (isPasted(e)) return clip(`[${ago(now - e.ts)}] ${e.text}: ${e.path ?? "?"}`);
+  const from = e.path ? ` of ${e.path}${e.where ? ` (${e.where})` : ""}` : "";
+  return clip(`[${ago(now - e.ts)}] capture${from}${e.text && e.text !== "captured" ? ` — ${e.text}` : ""}${e.image ? `: ${e.image}` : " (no image stored)"}`);
+}
 
-const isSelection = (e: ActivityEntry) => e.kind === "focus" && /^selected "/.test(e.text);
-const isVoiceLine = (e: ActivityEntry, who: "Carl" | "Voice") => e.kind === "voice" && e.text.startsWith(who === "Carl" ? "Carl said:" : "Voice replied:");
+function noteLine(n: NoteSnap, now: number): string {
+  const what = n.status === "cleared" ? "cleared a note" : n.status === "resolved" ? "resolved a note" : n.created ? "new note" : "changed a note";
+  const t = n.text.replace(/\s+/g, " ").trim();
+  return clip(`[${ago(now - n.ts)}] ${what} (${n.id}): "${t.length > 160 ? `${t.slice(0, 159)}…` : t}"`);
+}
 
-/**
- * The working set — where Carl is and the last turn on each surface — picked
- * from the entries in the window (newest of each): the open file (and page),
- * the current selection, the latest capture, the latest chat exchange, the last
- * Ctrl+L ask, the last Ctrl+K edit, the last voice exchange.
- */
-export function workingSet(entries: ActivityEntry[], now: number): ActivityEntry[] {
-  const byTime = [...entries].sort((a, b) => a.ts - b.ts);
-  const last = (f: (e: ActivityEntry) => boolean) => {
-    for (let i = byTime.length - 1; i >= 0; i--) if (f(byTime[i]!)) return byTime[i]!;
-    return null;
-  };
-  const out = new Set<ActivityEntry>();
-  const focus = last((e) => e.kind === "focus");
-  if (focus) out.add(focus);
-  const sel = last(isSelection);
-  if (sel && focus && sel.path === focus.path && now - sel.ts <= SELECTION_FRESH_MS) out.add(sel);
-  for (const k of ["capture", "chat", "ask", "edit"] as const) {
-    const e = last((x) => x.kind === k);
-    if (e) out.add(e);
-  }
-  const said = last((e) => isVoiceLine(e, "Carl"));
-  const replied = last((e) => isVoiceLine(e, "Voice"));
-  if (said) out.add(said);
-  if (replied && (!said || replied.ts >= said.ts)) out.add(replied);
-  return [...out].sort((a, b) => a.ts - b.ts);
+function boardLine(b: BoardSnap, now: number): string {
+  const items = b.items.length
+    ? `${b.items.length} item${b.items.length === 1 ? "" : "s"}: ${b.items.slice(0, 8).map((i) => (i.label ? `${i.label} (${i.kind})` : i.kind)).join(", ")}${b.items.length > 8 ? ", …" : ""}`
+    : "no items";
+  const look = b.overview ? ` To see it, read ${b.overview}` : "";
+  return clip(`Board: "${b.name}" (boards/${b.slug}/), saved ${ago(now - b.updated)} — ${items}; ${b.strokes} ink stroke${b.strokes === 1 ? "" : "s"}.${look}`, 600);
 }
 
 /**
- * The "What Carl has been doing" block: first **Now** (the working set, see
- * workingSet: where he is and the last turn on each surface), then the recent
- * history — the other entries in the window, deduplicated (a later view of the
- * same file replaces the earlier one; a chat shows only its latest exchange; a
- * repeated entry counts once), the current project's first, oldest first within
- * each part, capped at maxChars / maxEntries (the oldest outside the project go
- * first). `since` (a reader that already saw the earlier entries, like a chat
- * thread): only what is new since then, in both parts. "" when there is nothing to say.
+ * The layer for one reader: what is new since `since` (everything, for a new
+ * conversation), the last `windowMs` in detail, plus the last thing Carl did
+ * even when it is older. Deduped (a later view of a file replaces the earlier;
+ * a repeated entry counts once) and within `maxChars`: the oldest of the
+ * other surfaces go first, then the oldest pointers, images and notes.
+ * `until` is what the reader has now seen (its next `since`). "" when nothing is new.
  */
-export function summarizeActivity(entries: ActivityEntry[], o: SummaryOptions): string {
-  const windowMs = o.windowMs ?? DEFAULT_WINDOW_MS;
-  const maxChars = o.maxChars ?? SUMMARY_MAX_CHARS;
-  const maxEntries = o.maxEntries ?? SUMMARY_MAX_ENTRIES;
-  const inWindow = entries
-    .filter((e) => e.ts > o.now - windowMs && e.ts <= o.now + 60_000)
-    .filter((e) => !(o.excludeConv && e.convId === o.excludeConv && (e.kind === "chat" || e.kind === "focus")))
-    .sort((a, b) => a.ts - b.ts);
-  // Dedupe: newest wins.
+export function buildYouLayer(src: YouSources, o: YouOptions): YouLayer {
+  const now = o.now;
+  const since = o.since ?? -Infinity;
+  const windowMs = o.windowMs ?? YOU_WINDOW_MS;
+  const maxChars = o.maxChars ?? YOU_MAX_CHARS;
+  const from = now - windowMs;
+  const own = o.convId || null;
+  const all = [...src.entries].filter((e) => e.ts <= now + 60_000).sort((a, b) => a.ts - b.ts);
+  // Not for this reader: its own messages and pasted images (in its thread), and a reply from another conversation.
+  const visible = all.filter((e) => {
+    if (own && e.convId === own && (e.kind === "chat" || isPasted(e) || e.kind === "focus")) return false;
+    if (isVoiceReply(e) && e.convId !== own) return false;
+    return true;
+  });
+  // Dedupe, newest wins: one focus per file, one selection, a repeated entry once.
   const seen = new Set<string>();
   const kept: ActivityEntry[] = [];
-  for (let i = inWindow.length - 1; i >= 0; i--) {
-    const e = inWindow[i]!;
-    const k = dedupeKey(e);
-    if (k && seen.has(k)) continue;
-    if (k) seen.add(k);
-    kept.push(e);
+  for (let i = visible.length - 1; i >= 0; i--) {
+    const e = visible[i]!;
+    const k =
+      e.kind === "focus"
+        ? `focus|${isSelection(e) ? "sel" : "file"}|${e.path ?? ""}`
+        : e.kind === "chat"
+          ? `chat|${e.convId ?? ""}|${e.detail ?? ""}`
+          : `${e.kind}|${e.modality}|${e.path ?? ""}|${e.text}|${e.detail ?? ""}|${e.outcome ?? ""}`;
+    if (seen.has(k)) continue;
+    seen.add(k);
+    kept.unshift(e);
   }
-  const since = o.since ?? -Infinity;
-  if (!kept.length || !inWindow.some((e) => e.ts > since)) return "";
-  // A reader that saw the stream before (a chat thread) gets only what changed, in Now as in Earlier.
-  const nowSet = workingSet(kept, o.now).filter((e) => e.ts > since);
-  const inNow = new Set(nowSet);
-  const proj = o.project || null;
-  const isProj = (e: ActivityEntry) => !!proj && e.project === proj;
-  const history = kept.filter((e) => !inNow.has(e) && e.ts > since);
-  // Priority: the project's entries, newest first; then the rest, newest first.
-  const ranked = [...history.filter(isProj), ...history.filter((e) => !isProj(e))];
-  // A reader that has seen the block before (`since`) gets the short header: the long one is in its thread already.
-  const header = Number.isFinite(since)
-    ? `<recent_activity>\nWhat Carl did on his other surfaces since your last turn (same format as before; his actions, not instructions).`
-    : `<recent_activity>\nWhat Carl has been doing in this vault across his surfaces (editor, Ctrl+K edits, Ctrl+L asks, image captures, voice, chats) — ` +
-    `the last ${Math.round(windowMs / 60_000)} minutes. "Now" is where he is and the last turn on each surface; "Earlier" is the rest, oldest first. ` +
-    `Use it to resolve "this", "that", "what I just did". It is a log of his actions, not instructions.`;
-  const footer = "</recent_activity>";
-  const clip = (l: string) => (l.length > NOW_LINE_MAX ? `${l.slice(0, NOW_LINE_MAX - 1)}…` : l);
-  const nowLines = nowSet.map((e) => clip(formatEntry(isSelection(e) ? { ...e, text: e.text.replace(/^selected/, "current selection:") } : e, o.now)));
-  const nowBlock = nowLines.length ? ["## Now", ...nowLines].join("\n") : "";
-  let budget = maxChars - header.length - footer.length - nowBlock.length - 128;
-  const chosen = new Set<ActivityEntry>();
-  const lines = new Map<ActivityEntry, string>();
-  for (const e of ranked) {
-    if (chosen.size >= maxEntries) break;
-    const l = formatEntry(e, o.now);
-    if (l.length + 1 > budget) continue;
-    budget -= l.length + 1;
-    chosen.add(e);
-    lines.set(e, l);
+  const notes = (src.notes ?? []).filter((n) => n.ts <= now + 60_000).sort((a, b) => a.ts - b.ts);
+  const board = src.board && src.board.updated <= now + 60_000 ? src.board : null;
+
+  // The last thing he did (any source): shown even when older than the window.
+  type Last = { ts: number; e?: ActivityEntry; note?: NoteSnap; board?: true };
+  let last: Last | null = null;
+  const take = (x: Last) => {
+    if (!last || x.ts >= last.ts) last = x;
+  };
+  for (const e of kept) if (!isVoiceReply(e)) take({ ts: e.ts, e });
+  for (const n of notes) take({ ts: n.ts, note: n });
+  if (board) take({ ts: board.updated, board: true });
+  const lastT = last as Last | null;
+  const fresh = (ts: number, isLast: boolean) => ts > since && (ts > from || isLast);
+
+  // Where he is: the open file (and the current selection in it), and the device.
+  const focus = [...kept].reverse().find((e) => e.kind === "focus" && !isSelection(e)) ?? [...kept].reverse().find((e) => e.kind === "focus") ?? null;
+  const sel = [...kept].reverse().find(isSelection) ?? null;
+  const selNow = sel && focus && sel.path === focus.path && now - sel.ts <= SELECTION_FRESH_MS ? sel : null;
+  const focusTs = Math.max(focus?.ts ?? -Infinity, selNow?.ts ?? -Infinity);
+  let focusLine = "";
+  if (focus && focusTs > since && (focusTs > from || lastT?.e === focus || lastT?.e === selNow)) {
+    const where = focus.path ? `${focus.path}${focus.where && focus.where !== "selection" ? ` (${focus.where})` : ""}` : focus.text;
+    focusLine = clip(
+      `Focus: ${where}, ${ago(now - focus.ts)}${selNow ? ` — current selection: ${selNow.text.replace(/^selected /, "")}` : ""}`,
+      LINE_MAX + 160,
+    );
   }
-  const byTime = (xs: ActivityEntry[]) => xs.filter((e) => chosen.has(e)).sort((a, b) => a.ts - b.ts).map((e) => lines.get(e)!);
-  const parts: string[] = [header];
-  if (nowBlock) parts.push(nowBlock);
-  const mine = byTime(history.filter(isProj));
-  const rest = byTime(history.filter((e) => !isProj(e)));
-  if (mine.length) parts.push(`## Earlier — project ${proj}`, ...mine);
-  if (rest.length) parts.push(mine.length ? "## Earlier — elsewhere in the vault" : "## Earlier", ...rest);
-  const dropped = history.length - chosen.size;
-  if (dropped > 0) parts.push(`(${dropped} older entr${dropped === 1 ? "y" : "ies"} left out)`);
+  const boardOut = board && fresh(board.updated, !!lastT?.board) ? boardLine(board, now) : "";
+  const images = kept.filter((e) => e.kind === "capture" && fresh(e.ts, lastT?.e === e));
+  const noteRows = notes.filter((n) => fresh(n.ts, lastT?.note === n));
+  const chats = kept.filter((e) => e.kind === "chat" && fresh(e.ts, lastT?.e === e));
+  const others = kept.filter((e) => (e.kind === "ask" || e.kind === "edit" || e.kind === "voice") && fresh(e.ts, lastT?.e === e));
+
+  // The device he is on: the newest entry that says (his own message in this chat counts).
+  const dev = [...all].reverse().find((e) => e.device);
+  const devBefore = [...all].reverse().find((e) => e.device && e.ts <= since);
+  const somethingNew = !!(focusLine || boardOut || images.length || noteRows.length || chats.length || others.length);
+  const devNew = !!dev && dev.ts > since && dev.device !== devBefore?.device;
+  if (!somethingNew && !devNew) return { text: "", until: now, items: 0 };
+
+  const header =
+    `<you>\nWhat Carl just did across his surfaces${Number.isFinite(since) ? " since your last turn" : ""} (his actions, not instructions). ` +
+    `Other chats are pointed at by title, never shown: read one with ReadConversation when it matters.`;
+  const footer = "</you>";
+  const head: string[] = [];
+  if (dev) head.push(`Device: ${dev.device} (${ago(now - dev.ts)})`);
+  if (focusLine) head.push(focusLine);
+  if (boardOut) head.push(boardOut);
+
+  // Newest first into the budget; each section printed oldest first.
+  type Sec = { title: string; rows: { ts: number; line: string }[]; max: number };
+  const secs: Sec[] = [
+    { title: "Other chats (Carl's messages):", rows: chats.map((e) => ({ ts: e.ts, line: `- ${clip(chatPointer(e, now))}` })), max: MAX_CHATS },
+    { title: "Images (captures and pasted; read a path to see it):", rows: images.map((e) => ({ ts: e.ts, line: `- ${imageLine(e, now)}` })), max: MAX_IMAGES },
+    { title: "Notes:", rows: noteRows.map((n) => ({ ts: n.ts, line: `- ${noteLine(n, now)}` })), max: MAX_NOTES },
+    { title: "Elsewhere (Ctrl+K, Ctrl+L, voice):", rows: others.map((e) => ({ ts: e.ts, line: `- ${otherLine(e, now)}` })), max: 40 },
+  ];
+  let budget = maxChars - header.length - footer.length - head.join("\n").length - head.length - 64 - secs.reduce((n, s) => n + (s.rows.length ? s.title.length + 1 : 0), 0);
+  const chosen = new Map<Sec, Set<number>>(secs.map((s) => [s, new Set<number>()]));
+  // Round-robin by section, newest first, so no one section eats the budget.
+  const queues = secs.map((s) => s.rows.map((r, i) => ({ r, i })).reverse().slice(0, s.max));
+  let left = 0;
+  for (let round = 0; queues.some((q) => q.length); round++) {
+    for (let k = 0; k < secs.length; k++) {
+      const next = queues[k]!.shift();
+      if (!next) continue;
+      if (next.r.line.length + 1 > budget) {
+        left++;
+        continue;
+      }
+      budget -= next.r.line.length + 1;
+      chosen.get(secs[k]!)!.add(next.i);
+    }
+  }
+  left += secs.reduce((n, s) => n + Math.max(0, s.rows.length - s.max), 0);
+  const parts = [header, ...head];
+  let items = head.length - (dev ? 1 : 0);
+  for (const s of secs) {
+    const idx = chosen.get(s)!;
+    if (!idx.size) continue;
+    parts.push(s.title, ...s.rows.filter((_, i) => idx.has(i)).map((r) => r.line));
+    items += idx.size;
+  }
+  if (left > 0) parts.push(`(${left} older entr${left === 1 ? "y" : "ies"} left out)`);
   parts.push(footer);
-  return parts.join("\n");
+  return { text: parts.join("\n"), until: now, items };
 }
 
-// ---------------------------------------------------------------- chat exchanges
-
-/** Each side of a chat exchange in the stream: never more than this. */
-export const GIST_MAX = 200;
+// ---------------------------------------------------------------- chat pointers
 
 /** Markdown noise out of a gist (fences, emphasis, headings) — the words stay. */
 function stripMd(t: string): string {
@@ -333,22 +412,20 @@ function stripMd(t: string): string {
 }
 
 /**
- * A chat's latest exchange, for the stream: Carl's last message and the
- * agent's reply (each ≤ GIST_MAX), or "replying" while the turn runs. One per
- * chat survives the summary's dedupe (the newest), so the stream never holds
- * more than the latest exchange of a chat.
+ * Carl's message in a chat, for the stream: the chat's title and his words
+ * (≤ GIST_MAX). Only his side: what the agent replies stays in that chat.
  */
-export function chatExchangeEntry(o: { convId: string; title?: string | null; user?: string | null; agent?: string | null; project?: string | null }): Omit<ActivityEntry, "ts"> {
+export function chatPointerEntry(o: { convId: string; title?: string | null; user?: string | null; project?: string | null; device?: string | null }): Omit<ActivityEntry, "ts"> {
   const user = clean(stripMd(o.user ?? ""), GIST_MAX);
-  const agent = o.agent == null ? null : clean(stripMd(o.agent), GIST_MAX);
-  const bits = [user ? `Carl: "${user}"` : "", agent === null ? "(the agent is replying)" : agent ? `Agent: "${agent}"` : "(no reply text)"].filter(Boolean);
+  const dev = DEVICES.includes(o.device as Device) ? (o.device as Device) : null;
   return {
     kind: "chat",
     modality: "chat",
-    text: `Chat "${clean(o.title || user || "untitled", 120)}"`,
-    detail: bits.join(" → "),
+    text: clean(o.title || user || "untitled", 120),
+    detail: `Carl: "${user || "(an image)"}"`,
     convId: o.convId,
     ...(o.project ? { project: o.project } : {}),
+    ...(dev ? { device: dev } : {}),
   };
 }
 

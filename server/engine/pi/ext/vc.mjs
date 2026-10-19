@@ -15,13 +15,16 @@
 //  - the ledger: OpenRouter's generation id (x-generation-id) and the cost it
 //    reports in the stream go into the session as `vc-cost` entries (the host
 //    sees them live as `entry_appended`);
+//  - the "you" layer (VC_PI_YOU=1: conversations and Ctrl+K / Ctrl+L): before
+//    each prompt the host is asked what Carl did since this session last saw
+//    it, and pi stores and sends it as a `vc-you` custom message;
 //  - Gemini requests get cache_control markers;
 //  - the `subagent` tool (subagent.mjs) for a parent, when the host enables it.
 import { closeSync, readFileSync } from "node:fs";
 import { Type } from "typebox";
 import { createBashToolDefinition } from "@earendil-works/pi-coding-agent";
 import { registerSubagentTool } from "./subagent.mjs";
-import { addCacheMarkers, costFromStreamEvent, guardToolCall, resolveList, scrubEnv, shq, toTypebox, wakeGate } from "./policy.mjs";
+import { YOU_TYPE, addCacheMarkers, costFromStreamEvent, guardToolCall, resolveList, scrubEnv, shq, toTypebox, wakeGate, youSince } from "./policy.mjs";
 
 const E = process.env;
 const HOME = E.HOME || "/";
@@ -166,6 +169,36 @@ export default function vaultChat(pi) {
     flush();
     gate.reset();
   });
+
+  // ---- the "you" layer: what Carl just did on his other surfaces ----------------------
+  // Each prompt (a conversation's turn, a Ctrl+K / Ctrl+L request): ask the box for the
+  // layer since this session last saw it (the `until` of its last vc-you message; a
+  // fork carries its parent's), and hand it to pi as before_agent_start's custom
+  // message: pi stores it in the session (after the user message, as a custom_message
+  // entry the transcript does not show) and sends it to the model with this turn, and
+  // its compaction summarises it like any other message. Nothing new: no message.
+  if (E.VC_PI_YOU === "1") {
+    pi.on("before_agent_start", async (_event, ctx) => {
+      let since = null;
+      try {
+        since = youSince(ctx.sessionManager.getBranch());
+      } catch {
+        since = null;
+      }
+      let v;
+      try {
+        v = await Promise.race([
+          ctx.ui.editor("vc:host-call", JSON.stringify({ tool: "__you", args: { since } })),
+          new Promise((r) => setTimeout(() => r(undefined), 10_000)),
+        ]);
+      } catch {
+        return undefined;
+      }
+      const r = json(v, null);
+      if (!r || typeof r.text !== "string" || !r.text.trim() || !Number.isFinite(Number(r.until))) return undefined;
+      return { message: { customType: YOU_TYPE, content: r.text, display: false, details: { until: Number(r.until), since } } };
+    });
+  }
 
   // ---- vault-chat's own lines in the transcript (a notice, a line, a divider) ---------
   // pi's custom entries (not in the model's context), appended by pi itself so the

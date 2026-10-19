@@ -45,6 +45,11 @@ export class ThreadUnknownError extends Error {
 
 export type ToolCallHandler = (threadId: string, name: string, args: any) => Promise<{ ok: boolean; text: string }>;
 export type UserInputHandler = (threadId: string, question: string, options: string[]) => Promise<string>;
+/** The "you" layer for a session (the extension's before_agent_start asks before each prompt): what Carl
+ * did since `since` (that session's last layer). A conversation's thread names itself by `threadId`; a
+ * Ctrl+K / Ctrl+L side thread by the conversation it was forked from (`convId`, or none). */
+export type YouHandler = (q: { threadId?: string; convId?: string | null; since: number | null }) => Promise<{ text: string; until: number }>;
+export type Handlers = { toolCall: ToolCallHandler; userInput: UserInputHandler; you?: YouHandler };
 
 export type PiSandbox = {
   /** bubblewrap argv for pi itself (ends with "--"), or null (no sandbox). */
@@ -127,7 +132,7 @@ export class PiBackend extends EventEmitter {
   readonly name = "pi";
   readonly version: string;
   private threads = new Map<string, Thread>();
-  private h: { toolCall: ToolCallHandler; userInput: UserInputHandler } | null = null;
+  private h: Handlers | null = null;
   private seq = 0;
   private stats = { spawns: 0, crashes: 0 };
   private crashLog = new Map<string, number[]>();
@@ -156,7 +161,7 @@ export class PiBackend extends EventEmitter {
     }
   }
   /** The engine's handlers (a child's Notify/PdfRead/WebSearch go to its parent's). */
-  get handlers(): { toolCall: ToolCallHandler; userInput: UserInputHandler } | null {
+  get handlers(): Handlers | null {
     return this.h;
   }
   get paths(): PiPaths {
@@ -197,7 +202,7 @@ export class PiBackend extends EventEmitter {
     return { state: "up", version: this.version, sandbox: !!this.o.sandbox.outer, pid: this.lastPid, procs, subagents: this.subs.health(), side: this.side.health(), ...this.stats };
   }
 
-  setHandlers(h: { toolCall: ToolCallHandler; userInput: UserInputHandler }): void {
+  setHandlers(h: Handlers): void {
     this.h = h;
   }
 
@@ -255,7 +260,7 @@ export class PiBackend extends EventEmitter {
     }
   }
 
-  piEnv(toolsFile: string, subagents = false): NodeJS.ProcessEnv {
+  piEnv(toolsFile: string, subagents = false, you = false): NodeJS.ProcessEnv {
     const env: NodeJS.ProcessEnv = {};
     for (const [k, v] of Object.entries(process.env)) {
       if (v === undefined || /OPENROUTER|API_KEY|APIKEY|SECRET|PASSW|_TOKEN$|^VC_|^PI_/i.test(k)) continue;
@@ -268,6 +273,7 @@ export class PiBackend extends EventEmitter {
       PI_OFFLINE: "1",
       VC_KEY_FD: "3",
       VC_PI_TOOLS: toolsFile,
+      ...(you ? { VC_PI_YOU: "1" } : {}),
       ...(subagents
         ? {
             VC_PI_SUBAGENTS: "1",
@@ -289,8 +295,9 @@ export class PiBackend extends EventEmitter {
    * side threads (side.ts) pass their own session dir and tool list; they don't count against maxProcs.
    * `fork`: pi's --fork (a new session holding that session's history, its header naming it as parent);
    * `ephemeral`: pi's --no-session; `system`: pi's --system-prompt (replaces pi's own) instead of
-   * --append-system-prompt `instr`; `builtins: []`: pi's --no-tools. */
-  async spawn(o: { cwd: string; model: string; file: string | null; instr: string; tools: string; subagents?: boolean; sessionDir?: string; builtins?: string[]; fork?: string; ephemeral?: boolean; system?: string; thinking?: string }): Promise<{ proc: PiProc; id: string; file: string }> {
+   * --append-system-prompt `instr`; `builtins: []`: pi's --no-tools. `you`: the extension asks for the
+   * "you" layer before each prompt (conversations and Ctrl+K / Ctrl+L; not subagents or one-shots). */
+  async spawn(o: { cwd: string; model: string; file: string | null; instr: string; tools: string; subagents?: boolean; sessionDir?: string; builtins?: string[]; fork?: string; ephemeral?: boolean; system?: string; thinking?: string; you?: boolean }): Promise<{ proc: PiProc; id: string; file: string }> {
     if (!o.sessionDir) await this.makeRoom();
     const session = o.fork ? ["--fork", o.fork] : o.ephemeral ? ["--no-session"] : o.file ? ["--session", o.file] : [];
     const args = [
@@ -307,7 +314,7 @@ export class PiBackend extends EventEmitter {
     ];
     const outer = outerWith(this.o.sandbox);
     const argv = outer ? [...outer, this.o.install.node, ...args] : [this.o.install.node, ...args];
-    const proc = new PiProc({ argv, cwd: o.cwd, env: this.piEnv(o.tools, !!o.subagents), key: this.o.apiKey() });
+    const proc = new PiProc({ argv, cwd: o.cwd, env: this.piEnv(o.tools, !!o.subagents, !!o.you), key: this.o.apiKey() });
     proc.start();
     this.stats.spawns++;
     let st: any;
@@ -399,7 +406,7 @@ export class PiBackend extends EventEmitter {
     const instr = join(this.o.paths.instrDir, `${Date.now().toString(36)}-${++this.seq}.md`);
     writeFileSync(instr, o.instructions);
     const tools = this.writeTools(o.tools);
-    const { proc, id, file } = await this.spawn({ cwd: o.cwd, model: o.model, file: null, instr, tools, subagents: o.subagents });
+    const { proc, id, file } = await this.spawn({ cwd: o.cwd, model: o.model, file: null, instr, tools, subagents: o.subagents, you: true });
     // The session's instructions and tools live beside it, so any later pi on it gets the same prompt (cache-stable).
     writeFileSync(join(this.o.paths.instrDir, `${id}.json`), JSON.stringify({ instr, tools, cwd: o.cwd, subagents: o.subagents }));
     this.attach({ id, subagents: o.subagents, file, proc, model: o.model, lastUsed: Date.now(), turnId: null, msgIndex: 0, crashes: [], restoreModel: null });
@@ -428,7 +435,7 @@ export class PiBackend extends EventEmitter {
     }
     // The tool set is the session's own (a cache-stable prompt); subagents only if it was started with them.
     const subagents = !!meta.subagents && o.subagents;
-    const { proc } = await this.spawn({ cwd: meta.cwd, model: o.model, file, instr: meta.instr, tools: meta.tools, subagents });
+    const { proc } = await this.spawn({ cwd: meta.cwd, model: o.model, file, instr: meta.instr, tools: meta.tools, subagents, you: true });
     this.attach({ id: threadId, subagents, file, proc, model: o.model, lastUsed: Date.now(), turnId: null, msgIndex: 0, crashes: [], restoreModel: null });
   }
 
@@ -648,6 +655,16 @@ export class PiBackend extends EventEmitter {
     }
   }
 
+  /** The "you" layer for a session's prompt (the extension's `__you` host call); empty when the engine can't say. */
+  async you(q: { threadId?: string; convId?: string | null; since: number | null }): Promise<{ text: string; until: number }> {
+    try {
+      return (await this.h?.you?.(q)) ?? { text: "", until: Date.now() };
+    } catch (e) {
+      this.log(`you layer failed: ${(e as Error).message}`);
+      return { text: "", until: Date.now() };
+    }
+  }
+
   /** The extension's host calls (vault-chat's tools, AskUser included) and any other dialog. */
   private async onUi(t: Thread, req: any): Promise<void> {
     const reply = (o: Record<string, unknown>) => t.proc.write({ type: "extension_ui_response", id: req.id, ...o });
@@ -660,6 +677,7 @@ export class PiBackend extends EventEmitter {
       }
       // The extension's Bash asks for the keys before each command (never shown to the model).
       if (call.tool === "__env") return reply({ value: JSON.stringify({ env: this.agentEnv() }) });
+      if (call.tool === "__you") return reply({ value: JSON.stringify(await this.you({ threadId: t.id, since: sinceOf(call.args) })) });
       if (!this.h) return reply({ value: JSON.stringify({ text: "engine not ready", isError: true }) });
       if (call.tool === "__subagent") {
         if (!t.subagents) return reply({ value: JSON.stringify({ ok: false, text: "Subagents are off for this conversation." }) });
@@ -672,6 +690,12 @@ export class PiBackend extends EventEmitter {
     if (req.method === "select" || req.method === "confirm" || req.method === "input" || req.method === "editor") return reply({ cancelled: true });
     // notify / setStatus / …: fire-and-forget.
   }
+}
+
+/** The `since` of a `__you` host call (a number, or null for a session that has seen no layer). */
+export function sinceOf(args: any): number | null {
+  const n = Number(args?.since);
+  return args?.since != null && Number.isFinite(n) ? n : null;
 }
 
 function hash(s: string): string {

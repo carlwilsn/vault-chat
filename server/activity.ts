@@ -4,8 +4,12 @@
 //   POST /api/v1/activity          {entry, imageBase64?, imageMime?} → {ok}
 //   POST /api/v1/activity/image    {text, deictic?, exclude?}       → {image: {path, mime, dataBase64, caption} | null}
 // Written by: the laptop (focus, Ctrl+K, Ctrl+L, captures), voice (voice.ts:
-// what was said, what its tools did), the engine (chat pointers). Read by: the
-// engine's per-turn prefix (and its Ctrl+K / Ctrl+L side threads), the voice session prompt.
+// what was said, what its tools did), the engine (Carl's messages as chat
+// pointers, images pasted into a chat). Read through youLayer() only — the one
+// "you" layer (src/activityCore.ts buildYouLayer) with the newest board and the
+// notes changes read from their own files: pi's turns and Ctrl+K / Ctrl+L side
+// threads get it through the pi extension (before_agent_start → a `vc-you`
+// custom message in the session), voice calls youLayer for its session prompt.
 // VC_ACTIVITY=0 turns writing off. Failure-silent (logged): nothing waits on it.
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -17,15 +21,18 @@ import {
   CONTEXT_IMAGE_MAX_BYTES,
   LOG_MAX_BYTES,
   DEFAULT_WINDOW_MS,
+  buildYouLayer,
   captureCaption,
   parseLog,
   pickContextImage,
   projectContextBlock,
   sanitizeEntry,
-  summarizeActivity,
   type ActivityEntry,
-  type SummaryOptions,
+  type BoardSnap,
+  type NoteSnap,
+  type YouLayer,
 } from "../src/activityCore";
+import { BOARDS_DIR, BOARD_FILE, OVERVIEW_FILE, parseBoard, validSlug } from "../src/boardFormat";
 
 export function activityOn(): boolean {
   return process.env.VC_ACTIVITY !== "0";
@@ -78,13 +85,89 @@ export function readActivity(vault: string, now = Date.now(), windowMs = DEFAULT
   return out.filter((e) => e.ts > now - windowMs).sort((a, b) => a.ts - b.ts);
 }
 
-export function activitySummary(vault: string, o: Partial<SummaryOptions> = {}): string {
+/** The newest board in the vault (by its own `updated`), or null. Reads only: never creates boards/. */
+export function latestBoard(vault: string): BoardSnap | null {
+  let best: BoardSnap | null = null;
+  let names: string[] = [];
+  try {
+    names = readdirSync(join(vault, BOARDS_DIR));
+  } catch {
+    return null;
+  }
+  for (const slug of names) {
+    if (!validSlug(slug)) continue;
+    try {
+      const b = parseBoard(readFileSync(join(vault, BOARDS_DIR, slug, BOARD_FILE), "utf8"));
+      if (best && b.updated <= best.updated) continue;
+      const overview = `${BOARDS_DIR}/${slug}/${OVERVIEW_FILE}`;
+      best = {
+        slug,
+        name: b.name,
+        updated: b.updated,
+        strokes: b.strokes.length,
+        items: b.items.map((i) => ({ kind: String(i.kind ?? "item"), label: typeof i.label === "string" ? i.label.replace(/\s+/g, " ").trim().slice(0, 60) : "" })),
+        overview: existsSync(join(vault, ...overview.split("/"))) ? overview : null,
+      };
+    } catch {
+      /* not a board */
+    }
+  }
+  return best;
+}
+
+/** Each note's latest state (.vault-chat/notes.jsonl: a note may have several lines; the newest last_updated wins). */
+export function notesSnapshot(vault: string): NoteSnap[] {
+  let raw = "";
+  try {
+    raw = readFileSync(join(vault, ".vault-chat", "notes.jsonl"), "utf8");
+  } catch {
+    return [];
+  }
+  const byId = new Map<string, any>();
+  for (const l of raw.split("\n")) {
+    if (!l.trim()) continue;
+    try {
+      const n = JSON.parse(l);
+      if (!n || typeof n.id !== "string") continue;
+      const prev = byId.get(n.id);
+      if (!prev || String(n.last_updated ?? n.timestamp ?? "") >= String(prev.last_updated ?? prev.timestamp ?? "")) byId.set(n.id, n);
+    } catch {
+      /* a torn line */
+    }
+  }
+  const out: NoteSnap[] = [];
+  for (const n of byId.values()) {
+    const ts = Date.parse(String(n.last_updated ?? n.timestamp ?? ""));
+    if (!Number.isFinite(ts)) continue;
+    const draft = typeof n.user_draft === "string" ? n.user_draft : "";
+    const turns = Array.isArray(n.turns) ? n.turns.map((t: any) => String(t?.content ?? "")).join(" ") : "";
+    out.push({ id: n.id, ts, created: n.last_updated === n.timestamp || !n.last_updated, status: String(n.status ?? "open"), text: draft || turns || String(n.title ?? "") });
+  }
+  return out;
+}
+
+/** How far back the layer looks for "the last thing he did". */
+const YOU_LOOKBACK_MS = 7 * 24 * 60 * 60_000;
+
+/**
+ * The "you" layer (src/activityCore.ts buildYouLayer) for one reader — the one
+ * function every surface reads it through: the pi extension's before_agent_start
+ * (via the engine's `you` host handler), Ctrl+K / Ctrl+L side threads (the same
+ * hook), and voice's session prompt. `since`: the `until` of the layer this
+ * reader saw last (null: a new conversation, it gets the whole layer). `convId`:
+ * the reader's own conversation. Never throws.
+ */
+export function youLayer(vault: string, o: { since?: number | null; convId?: string | null; now?: number } = {}): YouLayer {
   const now = o.now ?? Date.now();
   try {
-    return summarizeActivity(readActivity(vault, now, o.windowMs), { ...o, now });
+    if (!activityOn()) return { text: "", until: now, items: 0 };
+    return buildYouLayer(
+      { entries: readActivity(vault, now, YOU_LOOKBACK_MS), board: latestBoard(vault), notes: notesSnapshot(vault) },
+      { now, since: o.since ?? null, convId: o.convId ?? null },
+    );
   } catch (err) {
-    console.warn(`[activity] summary failed: ${(err as Error).message}`);
-    return "";
+    console.warn(`[activity] you layer failed: ${(err as Error).message}`);
+    return { text: "", until: now, items: 0 };
   }
 }
 

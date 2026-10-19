@@ -1,9 +1,10 @@
 // The context audit: the exact prompt each mode sends for one realistic
-// sample — a box chat's first turn (developer instructions + the turn's
-// prefix), its next turn, a turn after a roll-over (new instructions with the
-// recap), a voice session's prompt (the box's), a Ctrl+K and a Ctrl+L request
-// (a side thread forking that chat's pi session: its instructions and history
-// are the chat's, so only the request itself is audited) — assembled by the
+// sample — a box chat's first turn (developer instructions + the message +
+// the "you" layer pi's extension adds after it), its next turn, a turn after a
+// roll-over (new instructions with the recap), a voice session's prompt (the
+// box's), a Ctrl+K and a Ctrl+L request (a side thread forking that chat's pi
+// session: its instructions and history are the chat's, so only the request and
+// the layer the extension adds to it are audited) — assembled by the
 // real code (the engine on a fake pi, voice's builder, the inline builders). Each is written, normalised, to
 // server/test/__snapshots__/context-audit/<mode>.txt (committed: a change to
 // what a model receives shows in review) and, with a per-section token
@@ -55,7 +56,8 @@ class FakeBackend extends EventEmitter {
   async resumeThread() {}
   async startTurn(threadId: string, o: any) {
     const turnId = `${threadId}-turn${this.turns.length + 1}`;
-    this.turns.push({ threadId, texts: o.texts, images: o.images ?? [], turnId });
+    // What the model gets this turn: the prompt, then the "you" layer pi adds after it (the extension, fakeSession.ts).
+    this.turns.push({ threadId, texts: o.you ? [...o.texts, o.you] : o.texts, images: o.images ?? [], turnId });
     return { turnId };
   }
   async steer() {}
@@ -162,7 +164,9 @@ function normalise(s: string): string {
     .split(vault)
     .join("<vault>")
     .replace(/\[(\d+ min ago|just now|\d+ h \d+ min ago)\]/g, "[N min ago]")
-    .replace(/, (\d+ min ago|just now)( —)/g, ", N min ago$2")
+    .replace(/, (\d+ min ago|just now)\]/g, ", N min ago]")
+    .replace(/\((\d+ min ago|just now)\)/g, "(N min ago)")
+    .replace(/, (\d+ min ago|just now)( —|$)/gm, ", N min ago$2")
     .replace(/[0-9a-f]{8}-[0-9a-f]{3,4}(-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})?/g, "<id>")
     .replace(/\.vault-chat\/local\/captures\/[a-z0-9]+-[a-z0-9]+\.png/g, ".vault-chat/local/captures/<capture>.png")
     .replace(/Current date and time: [^\n]*/g, "Current date and time: <now>")
@@ -251,7 +255,7 @@ afterAll(() => {
 });
 
 describe("what each mode sends", () => {
-  it("box chat: first turn (developer instructions + prefix + message), then the next turn", async () => {
+  it("box chat: first turn (developer instructions + message + you layer), then the next turn", async () => {
     const { createConv, appendMessage } = await import("../engine/convs");
     const c = await createConv(vault, { project: "coconut" } as any, "YOLO tiling");
     convId = c.id;
@@ -335,6 +339,16 @@ describe("what each mode sends", () => {
       expect(o.tools).toEqual(["read", "grep", "find", "ls"]);
       return o.text as string;
     };
+    // What pi's extension adds after the request (before_agent_start): the layer since the chat's last one,
+    // as the engine answers the side thread's `__you` host call.
+    const { readConv } = await import("../engine/convs");
+    const { readEntries } = await import("../convlog/piSession");
+    // @ts-ignore a plain .mjs (the pi extension's helpers)
+    const { youSince } = await import("../engine/pi/ext/policy.mjs");
+    const layerFor = async () => {
+      const c: any = await readConv(vault, convId);
+      return act.youLayer(vault, { convId, since: youSince(readEntries(c.threadPath)) }).text;
+    };
     const k = inline.buildInlineEditRequest({
       prompt: "make this shorter",
       selection: "We tile each orthomosaic into 1024 px squares with 128 px of overlap so that coconuts on tile edges are seen whole at least once.",
@@ -343,7 +357,11 @@ describe("what each mode sends", () => {
       language: "markdown",
       convId,
     });
-    const rk = await audit("ctrl-k", [{ label: "side request (after the chat's instructions and history)", text: await sent(k) }]);
+    act.activityPost(vault, { entry: { kind: "focus", modality: "editor", text: "opened the file", path: "agent-projects/coconut/project.md", where: "L7" } });
+    const rk = await audit("ctrl-k", [
+      { label: "side request (after the chat's instructions and history)", text: await sent(k) },
+      { label: "you layer (pi's extension, after the request)", text: await layerFor() },
+    ]);
     const l = inline.buildInlineAskRequest({
       prompt: "why is the overlap 128?",
       selection: "128 px of overlap",
@@ -352,7 +370,10 @@ describe("what each mode sends", () => {
       language: "markdown",
       convId,
     });
-    const rl = await audit("ctrl-l", [{ label: "side request (after the chat's instructions and history)", text: await sent(l) }]);
+    const rl = await audit("ctrl-l", [
+      { label: "side request (after the chat's instructions and history)", text: await sent(l) },
+      { label: "you layer (pi's extension, after the request)", text: await layerFor() },
+    ]);
     for (const r of [rk, rl]) {
       expect(r.leftovers).toEqual([]);
       expect(r.duplicates).toEqual([]);
