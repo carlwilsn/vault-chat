@@ -470,9 +470,12 @@ fn classify_error(stderr: &str) -> &'static str {
         "network is unreachable",
         "no route to host",
         "could not read from remote",
-        "502",
-        "503",
-        "504",
+        "error: 502",
+        "error: 503",
+        "error: 504",
+        "http 502",
+        "http 503",
+        "http 504",
         "does not appear to be a git repository",
         "unable to access",
     ];
@@ -1274,25 +1277,8 @@ fn github_backup(vault: &str, rc: &RepoConfig, report: &mut BoxSyncReport) {
     };
     let v = vault.to_string();
     std::thread::spawn(move || {
-        let refs = read_refs(&v);
-        let current = !first
-            && refs.master.is_some()
-            && refs.github_master == refs.master
-            && (refs.box_box.is_none() || refs.github_box == refs.box_box);
-        let outcome: Result<(), String> = if current {
-            Ok(())
-        } else {
-            let box_spec = format!("{}:refs/heads/box", BOX_REF);
-            let mut args: Vec<&str> = vec!["push", "--porcelain", GITHUB_REMOTE, "refs/heads/master:refs/heads/master"];
-            if refs.box_box.is_some() {
-                args.push(&box_spec);
-            }
-            match sg_net(&v, &args) {
-                Ok((_, _, 0)) => Ok(()),
-                Ok((o, e, c)) => Err(full_err(&o, &e, c, "GitHub backup (git push github)")),
-                Err(e) => Err(format!("GitHub backup failed: {}", e)),
-            }
-        };
+        let outcome = std::panic::catch_unwind(|| github_push(&v, first))
+            .unwrap_or_else(|_| Err("GitHub backup failed: the backup thread panicked".to_string()));
         let mut g = GITHUB_LAST.lock().unwrap_or_else(|p| p.into_inner());
         let st = g.get_or_insert_with(HashMap::new).entry(v).or_default();
         st.running = false;
@@ -1304,6 +1290,27 @@ fn github_backup(vault: &str, rc: &RepoConfig, report: &mut BoxSyncReport) {
             Err(w) => st.warning = Some(w),
         }
     });
+}
+
+fn github_push(v: &str, first: bool) -> Result<(), String> {
+    let refs = read_refs(v);
+    let current = !first
+        && refs.master.is_some()
+        && refs.github_master == refs.master
+        && (refs.box_box.is_none() || refs.github_box == refs.box_box);
+    if current {
+        return Ok(());
+    }
+    let box_spec = format!("{}:refs/heads/box", BOX_REF);
+    let mut args: Vec<&str> = vec!["push", "--porcelain", GITHUB_REMOTE, "refs/heads/master:refs/heads/master"];
+    if refs.box_box.is_some() {
+        args.push(&box_spec);
+    }
+    match sg_net(v, &args) {
+        Ok((_, _, 0)) => Ok(()),
+        Ok((o, e, c)) => Err(full_err(&o, &e, c, "GitHub backup (git push github)")),
+        Err(e) => Err(format!("GitHub backup failed: {}", e)),
+    }
 }
 
 /// Tests: wait until no GitHub backup is running for `vault`.

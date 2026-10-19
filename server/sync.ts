@@ -282,7 +282,7 @@ exit 0
           throw e;
         }
       });
-      await this.refreshRefs();
+      await this.refreshRefs().catch((e) => console.warn("[sync] refreshing refs failed:", errText(e)));
       s.ok = true;
       s.lastError = null;
       s.lastOkAt = Date.now();

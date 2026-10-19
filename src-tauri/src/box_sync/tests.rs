@@ -684,3 +684,11 @@ fn bench_box_sync() {
         time(&format!("idle after typical {}", i));
     }
 }
+
+#[test]
+fn classify_error_ignores_digits_inside_hashes_and_paths() {
+    assert_eq!(classify_error("fatal: bad object 5025ab9c0d1e"), "git");
+    assert_eq!(classify_error("error: unable to read notes/2503-04.md"), "git");
+    assert_eq!(classify_error("fatal: unable to access 'https://box/git/v.git/': The requested URL returned error: 503"), "unreachable");
+    assert_eq!(classify_error("fatal: unable to access 'x': Could not resolve host: box"), "unreachable");
+}
