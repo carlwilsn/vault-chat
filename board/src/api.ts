@@ -2,7 +2,7 @@
 // token-free and provisions the vc_token cookie; a tailnet login or that cookie
 // authorizes the data calls. A ?token= (an old phone link) is remembered like the
 // phone remembers it (same origin, same key).
-import type { Board, BoardSummary } from "../../src/boardFormat";
+import type { Board, BoardHistory, BoardSummary } from "../../src/boardFormat";
 import type { Entry, EntrySummary } from "../../src/inboxFormat";
 
 const qs = new URLSearchParams(location.search);
@@ -55,8 +55,10 @@ export const postBoardLog = (b: { session: string; v?: string; touch?: number; s
 export const listBoards = () => call<{ boards: BoardSummary[] }>("/api/v1/boards").then((r) => r.boards);
 export const createBoard = (name: string) => call<{ slug: string; board: Board }>("/api/v1/boards", { method: "POST", body: JSON.stringify({ name }) });
 export const getBoard = (slug: string) => call<Board>(`/api/v1/boards/${enc(slug)}`);
-export const saveBoard = (slug: string, board: Board, base: number, overview?: string) =>
-  call<{ ok: true; rev: number; updated: number }>(`/api/v1/boards/${enc(slug)}`, { method: "POST", body: JSON.stringify({ board, base, overview }) });
+export const saveBoard = (slug: string, board: Board, base: number, overview?: string, history?: BoardHistory) =>
+  call<{ ok: true; rev: number; updated: number }>(`/api/v1/boards/${enc(slug)}`, { method: "POST", body: JSON.stringify({ board, base, overview, history }) });
+/** The undo and redo saved with the board (rev -1 when there are none). */
+export const getHistory = (slug: string) => call<BoardHistory>(`/api/v1/boards/${enc(slug)}/history`);
 /** Store an image (base64 PNG/JPEG) in the board folder, for an item. */
 export const addAsset = (slug: string, data: string) => call<{ src: string; w: number; h: number }>(`/api/v1/boards/${enc(slug)}/assets`, { method: "POST", body: JSON.stringify({ data }) });
 

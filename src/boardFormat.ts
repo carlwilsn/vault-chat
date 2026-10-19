@@ -254,3 +254,62 @@ export function imageSize(buf: Uint8Array): { type: "png" | "jpeg"; w: number; h
   }
   return null;
 }
+
+// ---------------------------------------------------------------- undo history
+
+/**
+ * A board's undo and redo, kept beside it (`boards/<slug>/history.json`, not committed: `boards/.gitignore`) so
+ * that leaving the board, reloading or reopening it keeps them. Written by the same save as the board, stamped with
+ * the rev that save made: the app uses it only when it matches the board it opened (a board changed elsewhere since
+ * has history that no longer describes it). A step is a diff of the strokes and items lists ([index, value] pairs
+ * removed and added) or a background change; values are whole strokes and items, checked like the board's.
+ */
+export const HISTORY_FILE = "history.json";
+export const HISTORY_STEPS = 200;
+export const HISTORY_BYTES = 3 * 1024 * 1024;
+
+export type HistoryDiff<T> = { r: [number, T][]; a: [number, T][] };
+export type HistoryStep = { s?: HistoryDiff<Stroke>; i?: HistoryDiff<Item>; g?: [Grid, Grid] };
+export type BoardHistory = { v: 1; rev: number; undo: HistoryStep[]; redo: HistoryStep[] };
+
+const GRIDS = new Set(["plain", "dots", "grid"]);
+
+function checkStep(st: any, where: string): HistoryStep {
+  if (!st || typeof st !== "object") throw new Error(`${where}: not a step`);
+  const out: HistoryStep = {};
+  const pairs = <T>(d: any, check: (v: any, w: string) => T, w: string): HistoryDiff<T> => {
+    if (!d || !Array.isArray(d.r) || !Array.isArray(d.a)) throw new Error(`${w}: r and a`);
+    const one = (p: any, k: number): [number, T] => {
+      if (!Array.isArray(p) || p.length !== 2 || !Number.isInteger(p[0]) || p[0] < 0) throw new Error(`${w} ${k}: [index, value]`);
+      return [p[0], check(p[1], `${w} ${k}`)];
+    };
+    return { r: d.r.map(one), a: d.a.map(one) };
+  };
+  if (st.s !== undefined) out.s = pairs(st.s, checkStroke, `${where} strokes`);
+  if (st.i !== undefined) out.i = pairs(st.i, checkItem, `${where} items`);
+  if (st.g !== undefined) {
+    if (!Array.isArray(st.g) || st.g.length !== 2 || !st.g.every((g: unknown) => GRIDS.has(g as string))) throw new Error(`${where}: grid`);
+    out.g = [st.g[0], st.g[1]];
+  }
+  if (!out.s && !out.i && !out.g) throw new Error(`${where}: empty`);
+  return out;
+}
+
+/** Parse and check a history (the file, or a save's `history`). Throws a short reason. */
+export function parseHistory(input: unknown): BoardHistory {
+  const h = (typeof input === "string" ? JSON.parse(input) : input) as any;
+  if (!h || typeof h !== "object" || !Array.isArray(h.undo) || !Array.isArray(h.redo)) throw new Error("undo and redo lists");
+  if (h.undo.length > HISTORY_STEPS || h.redo.length > HISTORY_STEPS) throw new Error(`at most ${HISTORY_STEPS} steps each`);
+  return {
+    v: 1,
+    rev: isNum(h.rev) ? h.rev : -1,
+    undo: h.undo.map((s: unknown, k: number) => checkStep(s, `undo ${k}`)),
+    redo: h.redo.map((s: unknown, k: number) => checkStep(s, `redo ${k}`)),
+  };
+}
+
+/** One step per line. */
+export function serializeHistory(h: BoardHistory): string {
+  const list = (a: HistoryStep[]) => `[${a.map((s) => "\n" + JSON.stringify(s)).join(",")}${a.length ? "\n" : ""}]`;
+  return `{"v":1,"rev":${h.rev},"undo":${list(h.undo)},"redo":${list(h.redo)}}\n`;
+}

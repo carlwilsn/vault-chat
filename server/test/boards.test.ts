@@ -85,6 +85,28 @@ describe("boards", () => {
     expect((await post("/api/v1/boards/lecture-3-fourier", { board, base: 1 })).status).toBe(200);
   });
 
+  it("keeps the undo history beside the board, stamped with the save's rev, never committed", async () => {
+    const slug = "lecture-3-fourier-2";
+    expect(await (await get(`/api/v1/boards/${slug}/history`)).json()).toEqual({ v: 1, rev: -1, undo: [], redo: [] });
+    const board = (await (await get(`/api/v1/boards/${slug}`)).json()) as any;
+    const st = { id: "u1", tool: "pen", color: "#1f1f24", w: 2.4, xy: [1, 2, 3, 4] };
+    board.strokes.push(st);
+    const history = { v: 1, rev: 0, undo: [{ s: { r: [], a: [[0, st]] } }, { g: ["grid", "dots"] }], redo: [] };
+    const r = await post(`/api/v1/boards/${slug}`, { board, base: board.rev, history });
+    const rev = (await r.json()).rev;
+    const h = await (await get(`/api/v1/boards/${slug}/history`)).json();
+    expect(h.rev).toBe(rev);
+    expect(h.undo).toEqual(history.undo);
+    expect(readFileSync(join(vault, "boards", ".gitignore"), "utf8")).toMatch(/^\*\/history\.json$/m);
+    // A save without one leaves it (stale by rev: the app ignores it); a bad one is dropped, the board still saved.
+    const b2 = (await (await get(`/api/v1/boards/${slug}`)).json()) as any;
+    expect((await post(`/api/v1/boards/${slug}`, { board: b2, base: b2.rev })).status).toBe(200);
+    expect((await (await get(`/api/v1/boards/${slug}/history`)).json()).rev).toBe(rev);
+    const b3 = (await (await get(`/api/v1/boards/${slug}`)).json()) as any;
+    expect((await post(`/api/v1/boards/${slug}`, { board: b3, base: b3.rev, history: { undo: [{ s: { r: [], a: [[0, { id: "x" }]] } }], redo: [] } })).status).toBe(200);
+    expect((await (await get(`/api/v1/boards/${slug}/history`)).json()).rev).toBe(-1);
+  });
+
   it("stores an image for an item, serves it, and keeps items' files inside the board", async () => {
     const up = await post("/api/v1/boards/lecture-3-fourier/assets", { data: `data:image/png;base64,${PNG}` });
     expect(up.status).toBe(200);

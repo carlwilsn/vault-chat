@@ -28,6 +28,11 @@ sync cycle commits it like any other vault write):
   Version 1 (pages, `pts` with pressure) loads with its pages stacked top to
   bottom and is rewritten as version 2 on its first save.
 - `assets/<name>`: the files items show (PNG/JPEG now).
+- `history.json`: the undo and redo (the newest 200 steps, at most 3 MB), written by the same save as the
+  board and stamped with its rev, so leaving the board, reopening it or reloading keeps them; used only when its
+  rev is the board's (a board changed elsewhere since has history that no longer describes it), and a step whose
+  strokes or items are gone ends that direction rather than breaking anything. Not committed (`boards/.gitignore`).
+  Proof: `board/preview/undo-persist.mjs`.
 - `overview.png`: the whole board, fitted to its content, ≤ 1600 px on its long
   side, written 2 s after the pen lifts. It is the list's thumbnail and what the
   agent looks at. Next: a crop of the region being worked on beside it.

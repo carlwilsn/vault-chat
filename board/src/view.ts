@@ -16,7 +16,7 @@
 // Input goes through the arbiter (palm.ts): the pen draws, fingers navigate,
 // palms do nothing. Everything that changes the board is one undoable edit: a
 // diff of the strokes and items lists from the gesture's start to its end.
-import { contentBounds, packXY, type Board, type Grid, type Item, type LineStyle, type Stroke, type Tool } from "../../src/boardFormat";
+import { HISTORY_BYTES, HISTORY_STEPS, contentBounds, packXY, type Board, type BoardHistory, type HistoryDiff, type HistoryStep, type Grid, type Item, type LineStyle, type Stroke, type Tool } from "../../src/boardFormat";
 import { Simplifier, Smoother, boxesMeet, capsuleHits, carriedInk, cutStroke, lassoedBox, lassoedXY, unionBox, type Box, type XY } from "./geom";
 import { HL_ALPHA, dashFor, drawGridScreen, drawItem, drawStroke, inkStyle, itemBox, paintOrder, strokeInfo, translated, xyPath } from "./ink";
 import { classifyScribble, coveredShare, scribbleRegion, SCRIBBLE_COVER, type TP } from "./scribble";
@@ -126,10 +126,37 @@ function diff<T>(before: T[], after: T[]): Diff<T> | undefined {
   const added = after.flatMap((v, i) => (b.has(v) ? [] : [{ i, v }]));
   return removed.length || added.length ? { removed, added } : undefined;
 }
-function applyDiff<T>(arr: T[], d: Diff<T>, dir: 1 | -1): void {
-  const [rm, add] = dir > 0 ? [d.removed, d.added] : [d.added, d.removed];
-  for (let k = rm.length - 1; k >= 0; k--) arr.splice(rm[k]!.i, 1);
-  for (const x of add) arr.splice(x.i, 0, x.v);
+/**
+ * Where each value a step takes out is now: at its index (the same object, or one with its id: a step reloaded
+ * from history.json holds copies), else wherever its id is. Null when one is gone (the board changed under the
+ * step another way): the step cannot be taken.
+ */
+function locate<T extends { id: string }>(arr: T[], d: Diff<T>, dir: 1 | -1): number[] | null {
+  const rm = dir > 0 ? d.removed : d.added;
+  const used = new Set<number>();
+  const at: number[] = [];
+  for (const x of rm) {
+    let i = arr[x.i] === x.v || (arr[x.i]?.id === x.v.id && !used.has(x.i)) ? x.i : arr.findIndex((y, k) => !used.has(k) && (y === x.v || y.id === x.v.id));
+    if (i < 0) return null;
+    used.add(i);
+    at.push(i);
+  }
+  return at;
+}
+function applyDiff<T extends { id: string }>(arr: T[], d: Diff<T>, dir: 1 | -1, at: number[]): void {
+  const add = dir > 0 ? d.added : d.removed;
+  for (const i of [...at].sort((a, b) => b - a)) arr.splice(i, 1);
+  for (const x of add) arr.splice(Math.min(x.i, arr.length), 0, x.v);
+}
+
+/** A step as history.json keeps it, and back. */
+function stepOut(op: Op): HistoryStep {
+  const d = <T>(x: Diff<T>): HistoryDiff<T> => ({ r: x.removed.map((e) => [e.i, e.v]), a: x.added.map((e) => [e.i, e.v]) });
+  return { ...(op.strokes ? { s: d(op.strokes) } : {}), ...(op.items ? { i: d(op.items) } : {}), ...(op.grid ? { g: op.grid } : {}) };
+}
+function stepIn(st: HistoryStep): Op {
+  const d = <T>(x: HistoryDiff<T>): Diff<T> => ({ removed: x.r.map(([i, v]) => ({ i, v })), added: x.a.map(([i, v]) => ({ i, v })) });
+  return { ...(st.s ? { strokes: d(st.s) } : {}), ...(st.i ? { items: d(st.i) } : {}), ...(st.g ? { grid: st.g } : {}) };
 }
 
 /** p' = p · s + o: a move (s = 1) or a uniform scale about an anchor. */
@@ -276,8 +303,14 @@ export class BoardView {
     private slug: string,
     private board: Board,
     private onBack: () => void,
+    /** The undo and redo saved with the board (history.json): kept only when it was saved with this very rev. */
+    history?: BoardHistory | null,
   ) {
     this.rev = board.rev;
+    if (history && history.rev === board.rev) {
+      this.undoStack = history.undo.map(stepIn);
+      this.redoStack = history.redo.map(stepIn);
+    }
     if (isEraser(this.prefs.mode)) this.prefs.eraser = this.prefs.mode;
     // One finger pans, two pan and pinch, the Pencil draws (one-finger scroll is no longer a setting).
     this.arb = new Arbiter({ hand: this.prefs.hand, pan1: true, penSeen });
@@ -1543,14 +1576,18 @@ export class BoardView {
 
   private push(op: Op): void {
     this.undoStack.push(op);
-    if (this.undoStack.length > 300) this.undoStack.shift();
+    if (this.undoStack.length > HISTORY_STEPS) this.undoStack.shift();
     this.redoStack = [];
     this.syncToolbar();
   }
 
-  private applyOp(op: Op, dir: 1 | -1): void {
-    if (op.strokes) applyDiff(this.board.strokes, op.strokes, dir);
-    if (op.items) applyDiff(this.board.items, op.items, dir);
+  /** Take a step (back: -1). False, and nothing changed, when the board no longer has what it would take out. */
+  private applyOp(op: Op, dir: 1 | -1): boolean {
+    const sAt = op.strokes ? locate(this.board.strokes, op.strokes, dir) : [];
+    const iAt = op.items ? locate(this.board.items, op.items, dir) : [];
+    if (!sAt || !iAt) return false;
+    if (op.strokes) applyDiff(this.board.strokes, op.strokes, dir, sAt);
+    if (op.items) applyDiff(this.board.items, op.items, dir, iAt);
     if (op.grid) {
       this.board.grid = op.grid[dir > 0 ? 1 : 0];
       this.invalidate();
@@ -1558,6 +1595,7 @@ export class BoardView {
     this.changed();
     // A step taken back to a box from before it was refitted: refitted again.
     this.fitItems();
+    return true;
   }
 
   private undo(): void {
@@ -1565,7 +1603,7 @@ export class BoardView {
     const op = this.undoStack.pop();
     if (!op) return;
     this.setSel(null);
-    this.applyOp(op, -1);
+    if (!this.applyOp(op, -1)) return this.historyBroken("undo");
     this.redoStack.push(op);
     this.syncToolbar();
     this.renderBase();
@@ -1576,10 +1614,28 @@ export class BoardView {
     const op = this.redoStack.pop();
     if (!op) return;
     this.setSel(null);
-    this.applyOp(op, 1);
+    if (!this.applyOp(op, 1)) return this.historyBroken("redo");
     this.undoStack.push(op);
     this.syncToolbar();
     this.renderBase();
+  }
+
+  /** A step that no longer fits the board (it changed another way): that direction's history ends here. */
+  private historyBroken(dir: "undo" | "redo"): void {
+    blog("history.broken", { slug: this.slug, dir, left: (dir === "undo" ? this.undoStack : this.redoStack).length });
+    if (dir === "undo") this.undoStack = [];
+    else this.redoStack = [];
+    this.syncToolbar();
+  }
+
+  /** The undo and redo to save with the board: the newest steps, as many as fit HISTORY_BYTES. */
+  private historyOut(): BoardHistory {
+    const undo = this.undoStack.map(stepOut), redo = this.redoStack.map(stepOut);
+    const size = (a: HistoryStep[]) => a.reduce((n, st) => n + JSON.stringify(st).length + 2, 0);
+    let total = size(undo) + size(redo) + 64;
+    // Oldest first: the bottom of the undo stack, then the far end of the redo.
+    while (total > HISTORY_BYTES * 0.95 && (undo.length || redo.length)) total -= JSON.stringify((undo.length ? undo : redo).shift()).length + 2;
+    return { v: 1, rev: this.rev, undo, redo };
   }
 
   private setGrid(grid: Grid): void {
@@ -2061,7 +2117,7 @@ export class BoardView {
     this.setStatus("saving");
     try {
       const overview = await this.exportOverview();
-      const r = await api.saveBoard(this.slug, this.board, this.rev, overview);
+      const r = await api.saveBoard(this.slug, this.board, this.rev, overview, this.historyOut());
       this.rev = r.rev;
       this.board.rev = r.rev;
       this.board.updated = r.updated;

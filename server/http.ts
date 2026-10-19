@@ -23,7 +23,7 @@ import PHONE_SW_INLINE from "../src-tauri/assets/phone-sw.js?raw";
 import ICON_PNG_INLINE from "../src-tauri/assets/icon-apple-touch.png";
 import PHONE_APP from "vc:phone-app";
 import BOARD_APP from "vc:board-app";
-import { addAsset, assetFile, createBoard, deleteBoard, getBoard, listBoards, overviewPng, renameBoard, saveBoard } from "./boards";
+import { addAsset, assetFile, createBoard, deleteBoard, getBoard, getHistory, listBoards, overviewPng, renameBoard, saveBoard } from "./boards";
 import { addToBoard, getEntry, listEntries, markAdded, markRead, partFile, sendEntry, type InboxCtx } from "./inbox";
 import { boxLogs } from "./boxLogs";
 import { boardLogPost, boxDiag } from "./diag";
@@ -482,6 +482,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
     else if (file === undefined && method === "GET") out = getBoard(vault, slug);
     else if (file === undefined && method === "POST") out = await saveBoard(vault, slug, await jsonBody(req));
     else if (file === "overview.png" && method === "GET") out = overviewPng(vault, slug);
+    else if (file === "history" && method === "GET") out = getHistory(vault, slug);
     else out = { status: 404, body: { error: "not found" } };
     if (out.file) return send(res, 200, out.mime ?? "application/octet-stream", out.file, out.headers ?? { "X-Content-Type-Options": "nosniff" });
     return json(res, out.status, out.body);

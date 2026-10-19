@@ -32,10 +32,11 @@ async function route(): Promise<void> {
   }
   app.innerHTML = `<div class="grid h-full place-items-center bg-sys-grouped text-subhead text-sys-secondary/60">Opening…</div>`;
   try {
-    const board = await api.getBoard(slug);
+    // The board and the undo history saved with it, together.
+    const [board, history] = await Promise.all([api.getBoard(slug), api.getHistory(slug).catch(() => null)]);
     if (slugOf() !== slug) return;
     document.title = board.name;
-    const v = new BoardView(slug, board, () => (location.hash = ""));
+    const v = new BoardView(slug, board, () => (location.hash = ""), history);
     app.innerHTML = "";
     app.appendChild(v.el);
     v.mount();

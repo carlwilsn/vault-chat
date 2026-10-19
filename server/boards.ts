@@ -2,8 +2,11 @@
 //   GET  /api/v1/boards                       → {boards:[{slug,name,updated,strokes,items}]}, newest first
 //   POST /api/v1/boards {name}                → {slug, board} — a blank board
 //   GET  /api/v1/boards/<slug>                → the board (a version-1 board arrives migrated)
-//   POST /api/v1/boards/<slug> {board, base, overview?: base64 PNG}
+//   POST /api/v1/boards/<slug> {board, base, overview?: base64 PNG, history?}
 //                                             → {ok, rev, updated} | 409 {error, rev} when base ≠ the file's rev
+//                                               (history: the app's undo/redo, written to history.json stamped
+//                                               with the new rev; a bad or oversized one is dropped, not an error)
+//   GET  /api/v1/boards/<slug>/history        → {v, rev, undo, redo} (empty, rev -1, when there is none)
 //   POST /api/v1/boards/<slug>/rename {name}  → {ok, name}
 //   POST /api/v1/boards/<slug>/delete         → {ok} — moved to boards/.trash/<slug>-<time>, never removed
 //   GET  /api/v1/boards/<slug>/overview.png   → the snapshot of the whole board
@@ -17,7 +20,7 @@
 import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, sep } from "node:path";
-import { ASSETS_DIR, ASSET_RE, BOARDS_DIR, BOARD_VERSION, BOARD_FILE, OVERVIEW_FILE, blankBoard, imageSize, parseBoard, serializeBoard, slugify, validSlug, type Board, type BoardSummary } from "../src/boardFormat";
+import { ASSETS_DIR, ASSET_RE, BOARDS_DIR, BOARD_VERSION, BOARD_FILE, HISTORY_BYTES, HISTORY_FILE, OVERVIEW_FILE, blankBoard, imageSize, parseBoard, parseHistory, serializeBoard, serializeHistory, slugify, validSlug, type Board, type BoardSummary } from "../src/boardFormat";
 import { HIDE_DEFAULTS_FILE, HIDE_FILE, hideOnce } from "../src/agentProjects";
 import { renameRetry, writeAtomic } from "./atomic";
 
@@ -57,6 +60,10 @@ function boardsRoot(vault: string): string {
   const root = join(vault, BOARDS_DIR);
   mkdirSync(root, { recursive: true });
   ensureBoardsHidden(vault);
+  // A board's undo history is this machine's working state, rewritten on every save: never committed.
+  const gi = join(root, ".gitignore");
+  if (!existsSync(gi)) writeFileSync(gi, `*/${HISTORY_FILE}
+`);
   return root;
 }
 
@@ -159,9 +166,32 @@ function saveNow(vault: string, slug: string, body: any): Out {
     renameRetry(`${f}.tmp`, f);
   }
   writeAtomic(join(dir, BOARD_FILE), serializeBoard(next));
+  if (body?.history !== undefined) {
+    try {
+      const h = parseHistory(body.history);
+      h.rev = next.rev;
+      const text = serializeHistory(h);
+      if (text.length <= HISTORY_BYTES) writeAtomic(join(dir, HISTORY_FILE), text);
+      else rmSync(join(dir, HISTORY_FILE), { force: true });
+    } catch (e) {
+      console.warn(`[boards] ${slug}: history dropped: ${(e as Error).message}`);
+      rmSync(join(dir, HISTORY_FILE), { force: true });
+    }
+  }
   // Version 1's page snapshots are gone with its pages.
   for (const f of readdirSync(dir)) if (/^page-\d+\.png$/.test(f)) rmSync(join(dir, f), { force: true });
   return { status: 200, body: { ok: true, rev: next.rev, updated: next.updated } };
+}
+
+/** GET …/history: the undo and redo the app saved with the board (rev -1 and empty when none, or unreadable). */
+export function getHistory(vault: string, slug: string): Out {
+  const dir = boardDir(vault, slug);
+  if (!dir) return { status: validSlug(slug) ? 404 : 400, body: { error: "no such board" } };
+  try {
+    return { status: 200, body: parseHistory(readFileSync(join(dir, HISTORY_FILE), "utf8")) };
+  } catch {
+    return { status: 200, body: { v: 1, rev: -1, undo: [], redo: [] } };
+  }
 }
 
 /** A board's new name (its folder keeps its slug). */
