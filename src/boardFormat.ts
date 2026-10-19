@@ -30,6 +30,8 @@ export const V1_PAGE = { w: 1000, h: 1294, gap: 28 };
 
 export type Tool = "pen" | "hl";
 export type Grid = "plain" | "dots" | "grid";
+/** A pen stroke's line: solid (the default, not stored), dashed or dotted. */
+export type LineStyle = "dash" | "dot";
 
 export type Stroke = {
   id: string;
@@ -39,6 +41,8 @@ export type Stroke = {
   w: number;
   /** [x, y] pairs, flat, canvas units. */
   xy: number[];
+  /** Dashed or dotted (dash lengths scale with `w`, in canvas units); absent = solid. */
+  style?: LineStyle;
 };
 
 /** A placed box. `src` (for image-like kinds) is a file in the board folder, `assets/<name>`. */
@@ -60,7 +64,7 @@ export type Board = {
 export type BoardSummary = { slug: string; name: string; updated: number; strokes: number; items: number };
 
 export function blankBoard(name: string, now = Date.now()): Board {
-  return { v: BOARD_VERSION, name, created: now, updated: now, rev: 0, grid: "plain", strokes: [], items: [] };
+  return { v: BOARD_VERSION, name, created: now, updated: now, rev: 0, grid: "grid", strokes: [], items: [] };
 }
 
 const r1 = (n: number) => Math.round(n * 10) / 10;
@@ -105,7 +109,8 @@ function checkStroke(s: any, where: string, dx = 0, dy = 0): Stroke {
     for (let k = 0; k + 2 < s.pts.length; k += 3) xy.push(r1(s.pts[k] + dx), r1(s.pts[k + 1] + dy));
   } else throw new Error(`${where}: points`);
   if (!xy.length) throw new Error(`${where}: points`);
-  return { id: s.id, tool: s.tool, color: s.color, w: s.w, xy };
+  if (s.style !== undefined && s.style !== "dash" && s.style !== "dot") throw new Error(`${where}: style`);
+  return { id: s.id, tool: s.tool, color: s.color, w: s.w, xy, ...(s.style ? { style: s.style as LineStyle } : {}) };
 }
 
 function checkItem(it: any, where: string): Item {
@@ -147,7 +152,8 @@ export function parseBoard(input: unknown): Board {
     created: isNum(b.created) ? b.created : Date.now(),
     updated: isNum(b.updated) ? b.updated : Date.now(),
     rev: isNum(b.rev) ? b.rev : 0,
-    grid: b.grid === "dots" || b.grid === "grid" ? b.grid : "plain",
+    // A board that never chose a background has the grid (Carl, 2026-10-18); a saved choice stays.
+    grid: b.grid === "dots" || b.grid === "plain" ? b.grid : "grid",
     strokes,
     items,
   };

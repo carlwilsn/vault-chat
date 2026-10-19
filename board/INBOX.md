@@ -3,7 +3,9 @@
 The agent never draws on a board. It sends things to the iPad's **inbox** (top-right
 icon, badge = unread). Carl opens an item to read it, then **Add to board**: the whole
 thing or one part, landing at the centre of his view, moved and resized with the
-select tool. The agent sees the board (ink + items) through snapshots.
+select tool. "Add all" lands every part as its own object, laid out in send order near the centre of the view,
+clear of what is already on the board (one undo takes the whole add back). The agent sees the board (ink + items)
+through snapshots.
 
 ## The envelope
 
@@ -110,5 +112,6 @@ Carl keeps talking while things are made. The rule:
   - The sub-agent works in the same vault with the same context summary. It makes the files, sends them through the same validated send, and fixes refusals itself.
   - When it finishes, the inbox badge appears, and voice says it in a short line at the next natural pause.
 - **Voice** follows the same rule, and never waits on a make.
+- **Parts stream in.** The maker sends each part as soon as it is made (`BoardSend {make, parts, more: true}`); the entry shows "Being made… N so far", opens, and each landed part can be added while the rest are made. The last send (no `more`) clears "being made". A refused batch lands nothing from that batch; a make that dies keeps the parts that landed and says why.
 - **Several makes** can run at once. Each appears in the inbox as "being made" with its title, so nothing is invisible.
 - **A make that fails** after its own retries shows in the inbox as "couldn't make: <reason>". It never fails silently.

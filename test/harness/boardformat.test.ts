@@ -20,10 +20,12 @@ test("a board round-trips through its file, one stroke and one item per line", (
   b.strokes.push({ id: "s1", tool: "pen", color: "#1f1f24", w: 2.4, xy: packXY(random(200)) });
   b.strokes.push({ id: "s2", tool: "hl", color: "#ffd21f", w: 18, xy: packXY(random(2)) });
   b.strokes.push({ id: "dot", tool: "pen", color: "#d23a2c", w: 4, xy: packXY(random(1)) });
+  b.strokes.push({ id: "dashed", tool: "pen", color: "#1f5bd6", w: 2.4, xy: packXY(random(30)), style: "dash" });
+  b.strokes.push({ id: "dotted", tool: "pen", color: "#1f5bd6", w: 4, xy: packXY(random(30)), style: "dot" });
   b.items.push({ id: "i1", kind: "image", x: 10, y: 20, w: 300, h: 200, src: "assets/a.jpg" });
   b.grid = "dots";
   const text = serializeBoard(b);
-  assert.equal(text.split("\n").filter((l) => l.startsWith('{"id"')).length, 4);
+  assert.equal(text.split("\n").filter((l) => l.startsWith('{"id"')).length, 6);
   assert.ok(text.startsWith('{"v":2,'));
   const back = parseBoard(text);
   assert.deepEqual(back, b);
@@ -45,7 +47,17 @@ test("a version-1 board loads with its pages stacked and its pressure dropped", 
   assert.equal(b.rev, 4);
   assert.deepEqual(b.strokes[0]!.xy, [10, 20, 11.5, 21]);
   assert.deepEqual(b.strokes[1]!.xy, [5, 5 + 2 * (V1_PAGE.h + V1_PAGE.gap)]);
-  assert.equal(b.grid, "plain");
+  assert.equal(b.grid, "grid"); // never chose a background: the grid
+});
+
+test("a new board has the grid; a saved choice stays, an unset one is the grid; a solid stroke stores no style", () => {
+  assert.equal(blankBoard("x").grid, "grid");
+  assert.equal(parseBoard({ strokes: [] }).grid, "grid");
+  for (const g of ["plain", "dots", "grid"] as const) assert.equal(parseBoard({ strokes: [], grid: g }).grid, g);
+  const solid = parseBoard({ strokes: [{ id: "a", tool: "pen", color: "#000", w: 1, xy: [1, 2] }] }).strokes[0]!;
+  assert.equal("style" in solid, false);
+  assert.equal(parseBoard({ strokes: [{ id: "a", tool: "pen", color: "#000", w: 1, xy: [1, 2], style: "dash" }] }).strokes[0]!.style, "dash");
+  assert.throws(() => parseBoard({ strokes: [{ id: "a", tool: "pen", color: "#000", w: 1, xy: [1, 2], style: "wavy" }] }), /style/);
 });
 
 test("parse refuses what is not a board", () => {

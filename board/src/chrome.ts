@@ -123,7 +123,7 @@ export function redrawnSame(down: HTMLElement, now: HTMLElement): boolean {
 export function buttonName(b: HTMLElement): string {
   const d = b.dataset;
   const k =
-    d.act ?? d.mode ?? d.pop ?? d.v ?? d.x ?? d.m ?? (d.add !== undefined ? "add" : d.id !== undefined ? "entry" : d.size ? "size" : d.color ? "color" : d.grid ? "grid" : d.hand ? "hand" : d.pan1 ? "pan1" : d.eraser ? "eraser-kind" : null);
+    d.act ?? d.mode ?? d.pop ?? d.v ?? d.x ?? d.m ?? (d.add !== undefined ? "add" : d.id !== undefined ? "entry" : d.size ? "size" : d.color ? "color" : d.grid ? "grid" : d.hand ? "hand" : d.slot !== undefined ? "slot" : d.pick ? "pick" : d.line ? "line" : d.eraser ? "eraser-kind" : null);
   return (k ?? b.getAttribute("aria-label") ?? "button").slice(0, 24);
 }
 

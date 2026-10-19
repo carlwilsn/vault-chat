@@ -2,7 +2,7 @@
 // view, uniform (each keeps its aspect ratio), and always inside the view.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { placeParts } from "../../board/src/place.ts";
+import { pillSpot, placeParts } from "../../board/src/place.ts";
 
 const view = { cx: 500, cy: 400, w: 1000, h: 700 };
 const inside = (b: { x: number; y: number; w: number; h: number }) =>
@@ -38,4 +38,61 @@ test("several parts: two to a row, scaled down together to fit the view, aspect 
   for (let i = 0; i < bs.length; i++) for (let j = i + 1; j < bs.length; j++) assert.ok(!overlap(bs[i], bs[j]));
   const many = placeParts(Array.from({ length: 9 }, () => ({ lw: 560, lh: 200 })), view);
   for (const b of many) assert.ok(inside(b));
+});
+
+const overlap = (a: { x: number; y: number; w: number; h: number }, b: { x0: number; y0: number; x1: number; y1: number }) => a.x < b.x1 && b.x0 < a.x + a.w && a.y < b.y1 && b.y0 < a.y + a.h;
+
+test("Add all keeps clear of what is on the board: nearest free spot in view, send order kept", () => {
+  const parts = Array.from({ length: 4 }, () => ({ lw: 560, lh: 140 }));
+  // Ink across the middle of the view.
+  const avoid = [{ x0: 200, y0: 330, x1: 800, y1: 470 }];
+  const bs = placeParts(parts, view, avoid);
+  for (const b of bs) {
+    assert.ok(inside(b), JSON.stringify(b));
+    assert.ok(!overlap(b, avoid[0]!), JSON.stringify(b));
+  }
+  for (let i = 0; i < bs.length; i++) for (let j = i + 1; j < bs.length; j++) assert.ok(!overlap(bs[i]!, { x0: bs[j]!.x, y0: bs[j]!.y, x1: bs[j]!.x + bs[j]!.w, y1: bs[j]!.y + bs[j]!.h }));
+  // Send order: reading order (rows top to bottom, left to right in a row).
+  const order = bs.map((b, i) => ({ i, y: Math.round(b.y), x: b.x })).sort((a, b) => a.y - b.y || a.x - b.x).map((o) => o.i);
+  assert.deepEqual(order, [0, 1, 2, 3]);
+  // Nothing in the way: exactly the centred arrangement.
+  assert.deepEqual(placeParts(parts, view, [{ x0: 5000, y0: 5000, x1: 5100, y1: 5100 }]), placeParts(parts, view));
+});
+
+test("Add all with no room in view lands beside what is there, at full size, on nothing", () => {
+  const parts = [{ lw: 560, lh: 400 }, { lw: 560, lh: 400 }];
+  const full = [{ x0: 0, y0: 50, x1: 1000, y1: 750 }];
+  const bs = placeParts(parts, view, full);
+  const fitted = placeParts(parts, view);
+  for (const [k, b] of bs.entries()) {
+    assert.ok(!overlap(b, full[0]!), JSON.stringify(b));
+    assert.equal(b.w, fitted[k]!.w);
+  }
+});
+
+test("the selection pill: centred above at a fixed gap, flipped below, inside when it fills the view, clamped, null off-screen", () => {
+  const v = { w: 1180, h: 820, top: 76 };
+  const pill = { w: 120, h: 48 };
+  const a = pillSpot({ x0: 400, y0: 300, x1: 600, y1: 400 }, pill, v)!;
+  assert.deepEqual(a, { x: 440, y: 300 - 18 - 48, side: "above" });
+  // Near the top: below, same gap.
+  const b = pillSpot({ x0: 400, y0: 90, x1: 600, y1: 300 }, pill, v)!;
+  assert.deepEqual(b, { x: 440, y: 318, side: "below" });
+  // Fills the view: inside, under its top handles and the controls.
+  const c = pillSpot({ x0: -100, y0: 20, x1: 1300, y1: 900 }, pill, v)!;
+  assert.equal(c.side, "inside");
+  assert.ok(c.y >= v.top && c.y >= 20 + 18 + 10);
+  // Near the left and right edges: clamped inside the view.
+  assert.equal(pillSpot({ x0: -300, y0: 300, x1: 30, y1: 400 }, pill, v)!.x, 10);
+  assert.equal(pillSpot({ x0: 1150, y0: 300, x1: 1500, y1: 400 }, pill, v)!.x, 1180 - 10 - 120);
+  // Above never covers the top handles (drawn 9 px round the corners); below never the bottom ones.
+  for (const s of [a, b]) {
+    const sel = s === a ? { x0: 400, y0: 300, x1: 600, y1: 400 } : { x0: 400, y0: 90, x1: 600, y1: 300 };
+    for (const [hx, hy] of [[sel.x0, sel.y0], [sel.x1, sel.y0], [sel.x0, sel.y1], [sel.x1, sel.y1]] as const) {
+      const nx = Math.max(s.x, Math.min(hx, s.x + pill.w)), ny = Math.max(s.y, Math.min(hy, s.y + pill.h));
+      assert.ok(Math.hypot(hx - nx, hy - ny) > 9, `handle ${hx},${hy}`);
+    }
+  }
+  // Out of view: no pill.
+  assert.equal(pillSpot({ x0: 400, y0: 900, x1: 600, y1: 1000 }, pill, v), null);
 });

@@ -15,15 +15,15 @@
 // Input goes through the arbiter (palm.ts): the pen draws, fingers navigate,
 // palms do nothing. Everything that changes the board is one undoable edit: a
 // diff of the strokes and items lists from the gesture's start to its end.
-import { contentBounds, packXY, type Board, type Grid, type Item, type Stroke, type Tool } from "../../src/boardFormat";
+import { contentBounds, packXY, type Board, type Grid, type Item, type LineStyle, type Stroke, type Tool } from "../../src/boardFormat";
 import { Smoother, boxesMeet, capsuleHits, carriedInk, cutStroke, lassoedBox, lassoedXY, unionBox, type Box, type XY } from "./geom";
-import { HL_ALPHA, drawGrid, drawItem, drawStroke, inkStyle, itemBox, strokeInfo, translated, xyPath } from "./ink";
+import { HL_ALPHA, dashFor, drawGridScreen, drawItem, drawStroke, inkStyle, itemBox, strokeInfo, translated, xyPath } from "./ink";
 import { Arbiter, type Action, type Hand, type PEvent } from "./palm";
 import * as api from "./api";
 import { icon, toolIcon, type IconName, type Weight } from "./icons";
 import { Items, isDom, measureMath, fetchText, renderPdfPage } from "./items";
 import { openInbox, inboxBadge, type InboxHost } from "./inbox";
-import { placeParts } from "./place";
+import { pillSpot, placeParts } from "./place";
 import { ChromeTaps, buttonName, isField, isTextField, redrawnSame, routeChrome } from "./chrome";
 import { blog, flushBoardLog, setStatSource, setTapSource } from "./log";
 import { mountVoicePill, voice, voiceButton } from "./voicePill";
@@ -41,8 +41,20 @@ const OVERVIEW_MAX = 1600; // px, the overview's long side
 const VOICE_SNAP_MAX = 1280; // px, the long side of what voice sees (the visible region)
 const SAVE_DELAY = 2000;
 
+/** The quick colour slots in the toolbar (GoodNotes-style), five per ink tool; their defaults. */
 const PENS = ["#1f1f24", "#1f5bd6", "#d23a2c", "#1e8a4c", "#8a4bd6"];
-const HLS = ["#ffd21f", "#7ee07a", "#ff8fc8", "#7cc7ff"];
+const HLS = ["#ffd21f", "#7ee07a", "#ff8fc8", "#7cc7ff", "#ffa94d"];
+/** The palettes a slot is set from (long-press a slot, or tap the active one): inks that read on white paper. */
+const PEN_PALETTE = [
+  "#1f1f24", "#4a4a52", "#8e8e96", "#1f5bd6", "#0a7fd6", "#1aa3b8", "#1e8a4c", "#5f9e1f",
+  "#c79a00", "#e67700", "#d23a2c", "#c2255c", "#8a4bd6", "#5b3fa8", "#7a4a2a", "#b07a52",
+];
+const HL_PALETTE = [
+  "#ffd21f", "#ffe880", "#ffa94d", "#ffc9a3", "#ff6b6b", "#ff8fc8", "#ffc2e2", "#e9b8ff",
+  "#c9a0ff", "#7cc7ff", "#b3e0ff", "#7ee8e0", "#7ee07a", "#c3f08a", "#d0d0d6", "#a5a5ad",
+];
+type LineStyleKey = "solid" | LineStyle;
+const LINE_STYLES: [LineStyleKey, string][] = [["solid", "Solid"], ["dash", "Dashed"], ["dot", "Dotted"]];
 type Mode = "pen" | "hl" | "erase" | "cut" | "lasso";
 type SizeKey = "pen" | "hl" | "erase" | "cut";
 /** Ink widths in canvas units; eraser radii in screen px. */
@@ -53,18 +65,43 @@ const SIZES: Record<SizeKey, { presets: number[]; min: number; max: number }> = 
   cut: { presets: [4, 8, 16], min: 3, max: 40 },
 };
 /** `eraser`: which eraser the one eraser button picks (the stroke or the precise one), remembered. `pv`: the prefs' version. */
-type Prefs = { mode: Mode; eraser: "erase" | "cut"; pen: number; hl: number; penColor: string; hlColor: string; erase: number; cut: number; hand: Hand; pan1: boolean; pv?: number };
-// One-finger scroll is on by default (2026-10-18): with a Pencil, a finger never draws, so one finger pans as in
-// GoodNotes; the menu turns it off (and then, before a Pencil is seen, a finger writes).
-const DEFAULTS: Prefs = { mode: "pen", eraser: "erase", pen: 2.4, hl: 18, penColor: PENS[0]!, hlColor: HLS[0]!, erase: 12, cut: 8, hand: "left", pan1: true, pv: 2 };
-/** The stored prefs, brought up to date: before version 2, one-finger scroll was off by default and saved off. */
+/** `penColor`/`hlColor`: the active slot's colour (penSlots[penSlot]). `penStyle`: the pen's line. `pv`: the prefs' version. */
+type Prefs = {
+  mode: Mode;
+  eraser: "erase" | "cut";
+  pen: number;
+  hl: number;
+  penColor: string;
+  hlColor: string;
+  penSlots: string[];
+  hlSlots: string[];
+  penSlot: number;
+  hlSlot: number;
+  penStyle: LineStyleKey;
+  erase: number;
+  cut: number;
+  hand: Hand;
+  pv?: number;
+};
+const DEFAULTS: Prefs = { mode: "pen", eraser: "erase", pen: 2.4, hl: 18, penColor: PENS[0]!, hlColor: HLS[0]!, penSlots: PENS, hlSlots: HLS, penSlot: 0, hlSlot: 0, penStyle: "solid", erase: 12, cut: 8, hand: "left", pv: 3 };
+const HEX = /^#[0-9a-fA-F]{6}$/;
+/** The stored prefs, brought up to date (a colour picked before the slots existed keeps its place in them). */
 function loadPrefs(): Prefs {
   const p = store<Prefs>("vc_board_prefs", DEFAULTS);
-  if ((p.pv ?? 1) < 2) {
-    p.pan1 = true;
-    p.pv = 2;
-    save("vc_board_prefs", p);
+  for (const [slots, i, color, defs] of [["penSlots", "penSlot", "penColor", PENS], ["hlSlots", "hlSlot", "hlColor", HLS]] as const) {
+    const list = Array.isArray(p[slots]) && p[slots].length === defs.length && p[slots].every((c) => HEX.test(c)) ? [...p[slots]] : [...defs];
+    let k = Number.isInteger(p[i]) && p[i] >= 0 && p[i] < list.length ? p[i] : list.indexOf(p[color]);
+    if (k < 0) {
+      k = 0;
+      if (HEX.test(p[color])) list[0] = p[color];
+    }
+    p[slots] = list;
+    p[i] = k;
+    p[color] = list[k]!;
   }
+  if (!LINE_STYLES.some(([v]) => v === p.penStyle)) p.penStyle = "solid";
+  delete (p as Partial<Prefs> & { pan1?: boolean }).pan1;
+  p.pv = 3;
   return p;
 }
 const isEraser = (m: Mode): m is "erase" | "cut" => m === "erase" || m === "cut";
@@ -89,7 +126,7 @@ type Xf = { s: number; ox: number; oy: number };
 const ID: Xf = { s: 1, ox: 0, oy: 0 };
 
 type ToolG =
-  | { k: "draw"; id: number; touch: boolean; tool: Tool; color: string; w: number; pts: XY[]; pred: XY[]; sm: Smoother }
+  | { k: "draw"; id: number; touch: boolean; tool: Tool; color: string; w: number; style?: LineStyle; pts: XY[]; pred: XY[]; sm: Smoother }
   | { k: "erase"; id: number; touch: boolean; precise: boolean; last: XY; at: XY }
   | { k: "lasso"; id: number; touch: boolean; poly: XY[]; sx: number; sy: number; far: number }
   | { k: "xf"; id: number; touch: boolean; mode: "move" | "scale"; x0: number; y0: number; anchor: XY; c0: XY; xf: Xf };
@@ -227,7 +264,8 @@ export class BoardView {
   ) {
     this.rev = board.rev;
     if (isEraser(this.prefs.mode)) this.prefs.eraser = this.prefs.mode;
-    this.arb = new Arbiter({ hand: this.prefs.hand, pan1: this.prefs.pan1, penSeen });
+    // One finger pans, two pan and pinch, the Pencil draws (one-finger scroll is no longer a setting).
+    this.arb = new Arbiter({ hand: this.prefs.hand, pan1: true, penSeen });
     this.el = document.createElement("div");
     this.el.className = "board";
     const tool = (m: Mode, extra = "") => `<button class="${BTN}" data-mode="${m}" title="${TITLES[m]}" aria-label="${TITLES[m]}" aria-pressed="false">${svg(m)}${extra}</button>`;
@@ -245,7 +283,7 @@ export class BoardView {
         ${tool("pen", dot)}${tool("hl", dot)}<button class="${BTN}" data-mode="eraser" title="Eraser" aria-label="Eraser" aria-pressed="false">${svg("erase")}</button>${tool("lasso")}
         ${SEP}
         <button class="sz ${BTN}" data-pop="size" title="Size" aria-label="Size" aria-expanded="false"><svg width="26" height="26" viewBox="0 0 26 26"><path d="M4 17c4-8 7-8 9-3s5 5 9-3" fill="none" stroke-linecap="round"/></svg></button>
-        <button class="sw ${BTN}" data-pop="color" title="Colour" aria-label="Colour" aria-expanded="false"><i class="swatch block h-[22px] w-[22px] rounded-full"></i></button>
+        <div class="slots flex items-center">${PENS.map((_, i) => `<button class="slot grid h-11 w-9 shrink-0 place-items-center rounded-full" data-slot="${i}" aria-pressed="false" aria-label="Colour ${i + 1}"><i class="swatch block h-6 w-6 rounded-full"></i></button>`).join("")}</div>
         ${SEP}
         <button class="${BTN}" data-act="undo" title="Undo" aria-label="Undo">${svg("undo")}</button>
         <button class="${BTN}" data-act="redo" title="Redo" aria-label="Redo">${svg("redo")}</button>
@@ -255,15 +293,9 @@ export class BoardView {
         <button class="${BTN}" data-act="inbox" title="Inbox" aria-label="Inbox" aria-expanded="false">${svg("inbox")}<span class="badge pointer-events-none absolute right-0.5 top-0.5 hidden min-w-[18px] rounded-full bg-sys-red px-1 text-center text-[11px] font-semibold leading-[18px] text-white tabular-nums shadow"></span></button>
         <button class="${BTN}" data-pop="menu" title="Board" aria-label="Board menu" aria-expanded="false">${svg("more")}</button>
       </div>
-      <div class="empty pointer-events-none absolute inset-0 z-[2] hidden place-items-center">
-        <div class="text-center animate-fade-in">
-          <div class="text-title3 font-semibold text-black/25">Write anywhere</div>
-          <div class="mt-1.5 text-footnote text-black/25">Two fingers to move and zoom · two-finger tap to undo · what the agent sends waits in the inbox</div>
-        </div>
-      </div>
       <div class="tb-status material hairline shadow-float absolute left-[max(12px,env(safe-area-inset-left))] top-[calc(max(12px,env(safe-area-inset-top))+64px)] z-10 hidden rounded-full px-3.5 py-1.5 text-footnote font-medium text-[rgb(var(--sys-red))]"></div>
       <div class="${POP}" hidden></div>
-      <div class="selbar absolute z-10 flex -translate-x-1/2 gap-1 rounded-full bg-[rgb(28_28_30/0.92)] p-1 text-white shadow-pop backdrop-blur-xl animate-pop-in" hidden></div>
+      <div class="selbar absolute z-10 flex gap-1 rounded-full bg-[rgb(28_28_30/0.92)] p-1 text-white shadow-pop backdrop-blur-xl animate-pop-in" hidden></div>
       <input class="file" type="file" accept="image/*" hidden>`;
     this.stage = this.el.querySelector(".stage")!;
     this.base = this.el.querySelector("canvas.base")!;
@@ -429,10 +461,8 @@ export class BoardView {
     const ctx = c.getContext("2d")!;
     const s = Math.pow(2, L), tw = this.tileWorld(L);
     const box: Box = { x0: tx * tw, y0: ty * tw, x1: (tx + 1) * tw, y1: (ty + 1) * tw };
-    ctx.fillStyle = "#fff";
-    ctx.fillRect(0, 0, TILE, TILE);
+    // Transparent: the paper's grid is drawn under the tiles every frame (renderBase), at the zoom of the moment.
     ctx.setTransform(s, 0, 0, s, -box.x0 * s, -box.y0 * s);
-    drawGrid(ctx, this.board.grid, box, s);
     const lifted = this.lifted ? this.sel : null;
     for (const it of this.board.items) if (!lifted?.items.has(it) && boxesMeet(itemBox(it), box)) this.paintItem(ctx, it, "tile");
     for (const st of this.board.strokes) if (!(lifted && (lifted.strokes.has(st) || this.carry.has(st))) && boxesMeet(strokeInfo(st).box, box)) drawStroke(ctx, st);
@@ -456,6 +486,9 @@ export class BoardView {
     const L = this.drawLevel, tw = this.tileWorld(L);
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, this.base.width, this.base.height);
+    // The grid, live at every frame of a pan or a pinch; none over a DOM item (math, a widget) under the canvas.
+    drawGridScreen(ctx, this.board.grid, this.cam, this.W, this.H, d);
+    if (this.board.grid !== "plain") this.gridHoles(ctx);
     ctx.imageSmoothingQuality = "high";
     const tx0 = Math.floor(x / tw), tx1 = Math.floor((x + this.W / z) / tw);
     const ty0 = Math.floor(y / tw), ty1 = Math.floor((y + this.H / z) / tw);
@@ -481,11 +514,21 @@ export class BoardView {
     while (this.tiles.size > TILE_CACHE) this.tiles.delete(this.tiles.keys().next().value!);
     if (missing) this.queueBase();
     this.layoutDom();
-    // A fresh board says how it works, until the first stroke or item.
-    const empty = !this.board.strokes.length && !this.board.items.length && !this.g;
-    const hint = this.el.querySelector(".empty") as HTMLElement;
-    hint.classList.toggle("hidden", !empty);
-    hint.classList.toggle("grid", empty);
+  }
+
+  /** Clear the grid where a DOM item shows through from below (as it moves, where it is now). */
+  private gridHoles(ctx: CanvasRenderingContext2D): void {
+    const g = this.g, xf = g?.k === "xf" ? g.xf : ID;
+    const lifted = this.lifted && this.sel ? this.sel.items : null;
+    const d = this.dpr;
+    for (const it of this.board.items) {
+      if (!isDom(it)) continue;
+      const b = itemBox(it);
+      const q = lifted?.has(it) ? { x0: b.x0 * xf.s + xf.ox, y0: b.y0 * xf.s + xf.oy, x1: b.x1 * xf.s + xf.ox, y1: b.y1 * xf.s + xf.oy } : b;
+      const a = this.toScreen(q.x0, q.y0), c = this.toScreen(q.x1, q.y1);
+      if (c.x < 0 || c.y < 0 || a.x > this.W || a.y > this.H) continue;
+      ctx.clearRect(Math.floor(a.x * d), Math.floor(a.y * d), Math.ceil((c.x - a.x) * d) + 1, Math.ceil((c.y - a.y) * d) + 1);
+    }
   }
 
   /** An item into a context in canvas units: `tile` (a DOM item leaves a hole), `live` (lifted; a DOM item moves itself), `overview` (its snapshot). */
@@ -584,7 +627,7 @@ export class BoardView {
     if (g?.k === "draw" && g.pts.length) {
       this.worldTransform(ctx);
       ctx.save();
-      inkStyle(ctx, g.tool, g.color, g.w);
+      inkStyle(ctx, g.tool, g.color, g.w, g.style);
       ctx.globalCompositeOperation = "source-over";
       if (g.tool === "hl") ctx.globalAlpha = HL_ALPHA;
       ctx.stroke(xyPath(packXY(g.pred.length ? g.pts.concat(g.pred) : g.pts)));
@@ -646,7 +689,11 @@ export class BoardView {
       }
     }
     this.placeSelbar();
-    if (this.g?.k === "xf") this.layoutDom();
+    if (this.g?.k === "xf") {
+      // A moving DOM item takes its hole in the grid with it (renderBase lays the DOM out too).
+      if (this.board.grid !== "plain" && sel && [...sel.items].some(isDom)) this.renderBase();
+      else this.layoutDom();
+    }
     if (DEBUG_TOUCH) {
       ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
       const st = this.arb.state();
@@ -664,8 +711,15 @@ export class BoardView {
   }
 
   private placeSelbar(): void {
-    const b = this.sel && !(this.g?.k === "xf") ? this.selBox() : this.interact ? this.interactBox() : null;
-    if (!b) {
+    const g = this.g;
+    let b = this.sel ? this.selBox() : this.interact ? this.interactBox() : null;
+    // While it moves or scales, the pill rides with it.
+    if (b && this.sel && g?.k === "xf") {
+      const f = g.xf;
+      b = { x0: b.x0 * f.s + f.ox, y0: b.y0 * f.s + f.oy, x1: b.x1 * f.s + f.ox, y1: b.y1 * f.s + f.oy };
+    }
+    const a = b && this.toScreen(b.x0, b.y0), c = b && this.toScreen(b.x1, b.y1);
+    if (!b || !a || !c) {
       this.selbar.hidden = true;
       this.selbar.dataset.k = "";
       return;
@@ -679,11 +733,19 @@ export class BoardView {
       this.selbar.innerHTML =
         k === "done" ? pill("interact-done", "check", "Done", "bg-sys-blue text-white") : (k === "widget" ? pill("interact", "hand-pointing", "Interact") : "") + pill("delete", "trash", "Delete", "text-[rgb(255_105_97)]");
     }
-    const p = this.toScreen((b.x0 + b.x1) / 2, b.y0);
     this.selbar.hidden = false;
-    this.selbar.style.left = `${clamp(p.x, 110, this.W - 110)}px`;
-    // Above the selection, or just inside its top edge when that is under the toolbar.
-    this.selbar.style.top = `${clamp(p.y - 58, TOP + 6, this.H - 56)}px`;
+    // Centred above it at a fixed gap (clear of its handles); below when there is no room above; inside the view,
+    // clear of the controls (place.ts pillSpot). Out of view: no pill.
+    const spot = pillSpot({ x0: a.x, y0: a.y, x1: c.x, y1: c.y }, { w: this.selbar.offsetWidth, h: this.selbar.offsetHeight }, { w: this.W, h: this.H, top: TOP });
+    if (!spot) {
+      this.selbar.hidden = true;
+      return;
+    }
+    // left/top, not a transform: the pop-in animation owns the transform.
+    this.selbar.style.left = `${spot.x}px`;
+    this.selbar.style.top = `${spot.y}px`;
+    this.selbar.dataset.side = spot.side;
+    this.selbar.dataset.at = `${Math.round(a.x)},${Math.round(a.y)},${Math.round(c.x)},${Math.round(c.y)}`; // the box it was placed by (the checks)
   }
 
   private interactBox(): Box | null {
@@ -796,6 +858,7 @@ export class BoardView {
     // the ink, the palm rules and the gestures never see them.
     // (A touch stays with the element it went down on: the button under it at the up is what it lifted on.)
     const ce = { type: pe.type, id: e.pointerId, x: e.clientX, y: e.clientY, t: performance.now() };
+    this.slotHold(ce, e.target);
     if (routeChrome(this.chrome, ce, this.stage.contains(e.target as Node), () => this.chromeButton(type === "down" ? e.target : document.elementFromPoint(e.clientX, e.clientY)))) return;
     if (type === "down") {
       e.preventDefault();
@@ -807,6 +870,36 @@ export class BoardView {
     for (const a of this.arb.handle(pe)) this.act(a);
     this.domEv = null;
     if (DEBUG_TOUCH && kind === "touch") this.queueLive();
+  }
+
+  /** A long-press on a colour slot (any pointer) opens the palette to set it; the tap that follows presses nothing. */
+  private hold: { id: number; x: number; y: number; t: number } | null = null;
+  private heldAt = 0;
+  private slotHold(e: { type: string; id: number; x: number; y: number }, target: EventTarget | null): void {
+    if (e.type === "down") {
+      const btn = (target as Element | null)?.closest?.(".tb [data-slot]") as HTMLElement | null;
+      if (!btn) return;
+      clearTimeout(this.hold?.t);
+      const id = e.id;
+      this.hold = {
+        id,
+        x: e.x,
+        y: e.y,
+        t: window.setTimeout(() => {
+          this.hold = null;
+          if (!this.chrome.has(id)) return;
+          this.chrome.cancel(id);
+          this.heldAt = performance.now();
+          this.openPalette(Number(btn.dataset.slot), btn);
+        }, 450),
+      };
+      return;
+    }
+    const h = this.hold;
+    if (!h || h.id !== e.id) return;
+    if (e.type === "move" && Math.hypot(e.x - h.x, e.y - h.y) <= 12) return;
+    clearTimeout(h.t);
+    this.hold = null;
   }
 
   private act(a: Action): void {
@@ -878,7 +971,8 @@ export class BoardView {
     if (m === "pen" || m === "hl") {
       const hl = m === "hl";
       const sm = new Smoother(hl ? 0.55 : 0.7, 0.2 / this.cam.z);
-      this.g = { k: "draw", id: ev.id, touch, tool: m, color: hl ? this.prefs.hlColor : this.prefs.penColor, w: hl ? this.prefs.hl : this.prefs.pen, pts: [sm.push(p.x, p.y)!], pred: [], sm };
+      const style = !hl && this.prefs.penStyle !== "solid" ? this.prefs.penStyle : undefined;
+      this.g = { k: "draw", id: ev.id, touch, tool: m, color: hl ? this.prefs.hlColor : this.prefs.penColor, w: hl ? this.prefs.hl : this.prefs.pen, ...(style ? { style } : {}), pts: [sm.push(p.x, p.y)!], pred: [], sm };
     } else if (m === "erase" || m === "cut") {
       this.begin();
       this.g = { k: "erase", id: ev.id, touch, precise: m === "cut", last: p, at: p };
@@ -942,7 +1036,7 @@ export class BoardView {
     }
     if (g.k === "draw") {
       if (drop) return this.queueLive();
-      const stroke: Stroke = { id: rid(), tool: g.tool, color: g.color, w: g.w, xy: packXY(g.pts) };
+      const stroke: Stroke = { id: rid(), tool: g.tool, color: g.color, w: g.w, xy: packXY(g.pts), ...(g.style ? { style: g.style } : {}) };
       this.begin();
       this.board.strokes.push(stroke);
       this.commit(false);
@@ -1105,7 +1199,7 @@ export class BoardView {
       }
       dirty = unionBox(dirty, box);
       changed = true;
-      for (const xy of pieces) out.push({ id: rid(), tool: s.tool, color: s.color, w: s.w, xy });
+      for (const xy of pieces) out.push({ id: rid(), tool: s.tool, color: s.color, w: s.w, xy, ...(s.style ? { style: s.style } : {}) });
     }
     if (!changed) return;
     this.board.strokes = out;
@@ -1307,7 +1401,9 @@ export class BoardView {
     }
     const vw = this.W / this.cam.z, vh = (this.H - TOP) / this.cam.z;
     const c = this.toWorld(this.W / 2, TOP + (this.H - TOP) / 2);
-    const boxes = placeParts(tpl, { cx: c.x, cy: c.y, w: vw, h: vh });
+    // Clear of what is on the board already (its items and ink), nearest the centre of the view.
+    const avoid = [...this.board.items.map(itemBox), ...this.board.strokes.map((st) => strokeInfo(st).box)];
+    const boxes = placeParts(tpl, { cx: c.x, cy: c.y, w: vw, h: vh }, avoid);
     const made: Item[] = tpl.map((t, i) => {
       const { width: _w, ...rest } = t;
       void _w;
@@ -1316,10 +1412,21 @@ export class BoardView {
     this.begin();
     this.board.items.push(...made);
     this.commit();
+    // No room in view: it landed beside what is there; the view moves to show it (the add is what moved it).
+    let u: Box | null = null;
+    for (const it of made) u = unionBox(u, itemBox(it));
+    const view: Box = { x0: this.cam.x, y0: this.cam.y + TOP / this.cam.z, x1: this.cam.x + this.W / this.cam.z, y1: this.cam.y + this.H / this.cam.z };
+    if (u && (u.x0 < view.x0 || u.y0 < view.y0 || u.x1 > view.x1 || u.y1 > view.y1)) {
+      this.cam.x = (u.x0 + u.x1) / 2 - this.W / this.cam.z / 2;
+      this.cam.y = (u.y0 + u.y1) / 2 - (TOP + (this.H - TOP) / 2) / this.cam.z;
+      this.camMoved();
+    }
     for (const it of made) this.loadImage(it);
     this.renderBase();
     this.setMode("lasso");
-    this.setSel({ strokes: new Set(), items: new Set(made) });
+    // One object lands selected, ready to move and scale. Several (Add all, a PDF's pages) land as separate
+    // objects, none selected: each is tapped, moved and deleted on its own (Carl: "not a fused thing").
+    this.setSel(made.length === 1 ? { strokes: new Set(), items: new Set(made) } : null);
     // Which part became which items (the agent reads it with BoardInbox).
     const byPart = new Map<number, string[]>();
     for (const it of made) {
@@ -1343,7 +1450,6 @@ export class BoardView {
   private savePrefs(): void {
     save("vc_board_prefs", this.prefs);
     this.arb.settings.hand = this.prefs.hand;
-    this.arb.settings.pan1 = this.prefs.pan1;
   }
   private sizeKey(): SizeKey | null {
     const m = this.prefs.mode;
@@ -1388,20 +1494,25 @@ export class BoardView {
       if (k) this.prefs[k] = Number(d.size);
       this.savePrefs();
       this.renderPop();
-    } else if (d.color) {
-      if (this.prefs.mode === "hl") this.prefs.hlColor = d.color;
+    } else if (d.slot !== undefined) {
+      // The click a long-press may leave behind (it already opened the palette).
+      if (performance.now() - this.heldAt < 900) return;
+      const i = Number(d.slot), tool = this.slotTool();
+      // The active slot tapped again opens the palette to set it (as a long-press does); another one switches to it.
+      if (this.prefs.mode === tool && i === this.prefs[tool === "hl" ? "hlSlot" : "penSlot"] && this.openPop !== "color") this.openPalette(i, t);
       else {
-        this.prefs.penColor = d.color;
-        if (this.prefs.mode !== "pen") this.prefs.mode = "pen";
+        this.pickSlot(i);
+        this.closePop();
       }
-      this.savePrefs();
+    } else if (d.color) {
+      this.setSlotColor(d.color);
       this.closePop();
+    } else if (d.line) {
+      this.prefs.penStyle = (LINE_STYLES.find(([v]) => v === d.line)?.[0] ?? "solid") as LineStyleKey;
+      this.savePrefs();
     } else if (d.grid) this.setGrid(d.grid as Grid);
     else if (d.hand) {
       this.prefs.hand = d.hand as Hand;
-      this.savePrefs();
-    } else if (d.pan1) {
-      this.prefs.pan1 = d.pan1 === "on";
       this.savePrefs();
     } else if (d.act === "insert") {
       this.closePop();
@@ -1417,12 +1528,16 @@ export class BoardView {
     else if (d.act === "voice") voice.toggle();
     else if (d.act === "back") this.onBack();
     else if (d.act === "reload") location.reload();
-    if (d.grid || d.hand || d.pan1) this.renderPop();
+    if (d.grid || d.hand || d.line) this.renderPop();
     this.syncToolbar();
   }
 
   private onInput(e: Event): void {
     const t = e.target as HTMLInputElement;
+    if (t.dataset.custom !== undefined) {
+      if (HEX.test(t.value)) this.setSlotColor(t.value.toLowerCase());
+      return;
+    }
     if (t.dataset.range === undefined) return;
     const k = this.sizeKey();
     if (!k) return;
@@ -1463,6 +1578,37 @@ export class BoardView {
     (this.el.querySelector(".pop") as HTMLElement).hidden = true;
     this.syncToolbar();
   }
+  /** The ink tool whose colour slots the toolbar shows: the highlighter's while it is the tool, else the pen's. */
+  private slotTool(): "pen" | "hl" {
+    return this.prefs.mode === "hl" ? "hl" : "pen";
+  }
+  /** Slot `i` of the shown tool becomes its colour, and that tool the tool. */
+  private pickSlot(i: number): void {
+    const tool = this.slotTool(), p = this.prefs;
+    if (tool === "hl") (p.hlSlot = i), (p.hlColor = p.hlSlots[i]!);
+    else (p.penSlot = i), (p.penColor = p.penSlots[i]!);
+    if (p.mode !== tool) this.setMode(tool);
+    this.savePrefs();
+    this.syncToolbar();
+  }
+  private editSlot = 0;
+  /** The palette for slot `i` (a long-press on it, or a tap on the active one), under its button. */
+  private openPalette(i: number, btn: HTMLElement): void {
+    this.pickSlot(i);
+    this.editSlot = i;
+    if (this.openPop === "color") this.closePop();
+    this.togglePop("color", btn);
+  }
+  /** The slot being edited takes a colour from the palette (or the custom picker). */
+  private setSlotColor(c: string): void {
+    const tool = this.slotTool(), p = this.prefs;
+    const slots = tool === "hl" ? p.hlSlots : p.penSlots;
+    slots[this.editSlot] = c;
+    if (tool === "hl") (p.hlSlot = this.editSlot), (p.hlColor = c);
+    else (p.penSlot = this.editSlot), (p.penColor = c);
+    this.savePrefs();
+    this.syncToolbar();
+  }
   private sizeLabel(k: SizeKey): string {
     return k === "erase" || k === "cut" ? `${this.prefs[k]} px` : `${this.prefs[k]}`;
   }
@@ -1484,20 +1630,29 @@ export class BoardView {
           ? `<svg width="40" height="28" viewBox="0 0 40 28"><path d="M5 19c5-11 9-11 12-4s7 7 13-4" fill="none" stroke="${color}" stroke-opacity="${k === "hl" ? HL_ALPHA * 1.6 : 1}" stroke-width="${clamp(v * this.homeZ, 1, 16)}" stroke-linecap="round"/></svg>`
           : `<svg width="40" height="28" viewBox="0 0 40 28"><circle cx="20" cy="14" r="${clamp(v * 0.55, 2, 13)}" fill="rgb(120 120 128 / 0.16)" stroke="currentColor" stroke-opacity="0.55" stroke-width="1.2"/></svg>`;
       const kind = this.openPop === "eraser" ? seg("eraser", [["erase", "Stroke"], ["cut", "Precise"]], p.eraser) : "";
-      pop.innerHTML = `${arrow}${kind}
+      // The pen's line: solid, dashed or dotted, each shown as it draws.
+      const lineSample = (v: LineStyleKey) => {
+        const w = clamp(p.pen * this.homeZ, 1.5, 4);
+        const dash = dashFor(v === "solid" ? undefined : v, w).join(" ");
+        return `<svg width="44" height="14" viewBox="0 0 44 14" aria-hidden="true"><path d="M4 7H40" stroke="currentColor" stroke-width="${w}" stroke-linecap="round" ${dash ? `stroke-dasharray="${dash}"` : ""}/></svg>`;
+      };
+      const line =
+        k === "pen" ? `<div class="${SEG}">${LINE_STYLES.map(([v, l]) => `<button data-line="${v}" aria-pressed="${v === p.penStyle}" aria-label="${l}" title="${l}" class="${SEG_BTN} grid place-items-center">${lineSample(v)}</button>`).join("")}</div>` : "";
+      pop.innerHTML = `${arrow}${kind}${line}
         <div class="flex items-center gap-1">${spec.presets.map((v) => `<button class="grid h-11 flex-1 place-items-center rounded-[10px] text-sys-label transition aria-pressed:bg-sys-blue/15" data-size="${v}" aria-pressed="${v === p[k]}" title="${v}">${sample(v)}</button>`).join("")}</div>
         <div class="flex items-center gap-3 px-1"><input type="range" data-range class="h-7 flex-1 accent-[rgb(var(--sys-blue))]" min="${spec.min}" max="${spec.max}" step="0.1" value="${p[k]}"><span class="val w-12 text-right text-footnote text-sys-secondary/60 tabular-nums">${this.sizeLabel(k)}</span></div>`;
     } else if (this.openPop === "color") {
-      const hl = p.mode === "hl";
-      const cur = hl ? p.hlColor : p.penColor;
-      pop.innerHTML = `${arrow}<div class="flex items-center gap-1.5">${(hl ? HLS : PENS).map((c) => `<button class="grid h-11 w-11 place-items-center rounded-full ring-sys-blue transition aria-pressed:ring-2" data-color="${c}" aria-pressed="${c === cur}" title="${c}"><i class="swatch block h-7 w-7 rounded-full" style="background:${c}"></i></button>`).join("")}</div>`;
+      const hl = this.slotTool() === "hl";
+      const cur = (hl ? p.hlSlots : p.penSlots)[this.editSlot];
+      pop.innerHTML = `${arrow}${label(`${hl ? "Highlighter" : "Pen"} colour ${this.editSlot + 1}`)}
+        <div class="grid grid-cols-8 gap-1">${(hl ? HL_PALETTE : PEN_PALETTE).map((c) => `<button class="grid h-10 w-10 place-items-center rounded-full ring-sys-blue transition aria-pressed:ring-2" data-color="${c}" aria-pressed="${c === cur}" aria-label="${c}"><i class="swatch block h-7 w-7 rounded-full" style="background:${c}"></i></button>`).join("")}</div>
+        <label class="flex h-11 items-center gap-3 rounded-[10px] px-1 text-body text-sys-label"><input type="color" data-custom value="${cur}" class="h-8 w-10 cursor-pointer rounded-md border-0 bg-transparent p-0"><span>Custom…</span></label>`;
     } else if (this.openPop === "menu") {
       pop.innerHTML = `${arrow}
         <button class="flex h-11 items-center gap-3 rounded-[10px] px-2 text-body text-sys-label transition active:bg-sys-fill/20" data-act="insert">${icon("image-square")}<span>Insert image…</span></button>
         <div class="h-px bg-sys-separator/20"></div>
         ${label("Background")}${seg("grid", [["plain", "Plain"], ["dots", "Dots"], ["grid", "Grid"]], this.board.grid)}
-        ${label("Writing hand")}${seg("hand", [["left", "Left"], ["right", "Right"]], p.hand)}
-        ${label("One-finger scroll")}${seg("pan1", [["off", "Off"], ["on", "On"]], p.pan1 ? "on" : "off")}`;
+        ${label("Writing hand")}${seg("hand", [["left", "Left"], ["right", "Right"]], p.hand)}`;
     }
   }
 
@@ -1522,9 +1677,16 @@ export class BoardView {
     // A stroke sample for the pen and highlighter; the eraser's circle at its size.
     path.setAttribute("d", ink || !k ? "M4 17c4-8 7-8 9-3s5 5 9-3" : `M${13 - clamp(p[k] * 0.4, 3, 10)} 13a${clamp(p[k] * 0.4, 3, 10)} ${clamp(p[k] * 0.4, 3, 10)} 0 1 0 ${2 * clamp(p[k] * 0.4, 3, 10)} 0a${clamp(p[k] * 0.4, 3, 10)} ${clamp(p[k] * 0.4, 3, 10)} 0 1 0 -${2 * clamp(p[k] * 0.4, 3, 10)} 0`);
     path.setAttribute("stroke-width", String(k ? (ink ? clamp(p[k] * this.homeZ, 1.5, 9) : 1.6) : 2));
-    const sw = this.el.querySelector(".tb .sw") as HTMLButtonElement;
-    sw.disabled = !ink;
-    (sw.querySelector("i") as HTMLElement).style.background = p.mode === "hl" ? p.hlColor : p.penColor;
+    path.setAttribute("stroke-dasharray", k === "pen" && p.penStyle !== "solid" ? dashFor(p.penStyle, clamp(p[k] * this.homeZ, 1.5, 9)).join(" ") : "");
+    // The colour slots of the pen (or of the highlighter while it is the tool); the active one ringed.
+    const tool = this.slotTool();
+    const slots = tool === "hl" ? p.hlSlots : p.penSlots, on = tool === "hl" ? p.hlSlot : p.penSlot;
+    this.el.querySelectorAll<HTMLElement>(".tb .slot").forEach((b, i) => {
+      (b.querySelector("i") as HTMLElement).style.background = slots[i]!;
+      b.setAttribute("aria-pressed", String(i === on && p.mode === tool));
+      b.dataset.tool = tool;
+      b.setAttribute("aria-label", `${tool === "hl" ? "Highlighter" : "Pen"} colour ${i + 1}`);
+    });
     this.el.querySelectorAll<HTMLElement>("[data-pop]").forEach((b) => b.setAttribute("aria-expanded", String(b.dataset.pop === this.openPop || (b.dataset.pop === "size" && this.openPop === "eraser"))));
     (this.el.querySelector('[data-act="undo"]') as HTMLButtonElement).disabled = !this.undoStack.length;
     (this.el.querySelector('[data-act="redo"]') as HTMLButtonElement).disabled = !this.redoStack.length;
@@ -1555,7 +1717,7 @@ export class BoardView {
   private onHide = (e: Event) => {
     if (e.type === "pagehide" || document.visibilityState === "hidden") {
       this.saveCam();
-      void this.flush();
+      void this.flush().catch(() => {}); // a save cut off by the page going away retries on the next open
     }
   };
 

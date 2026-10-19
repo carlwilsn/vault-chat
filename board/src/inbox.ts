@@ -9,6 +9,7 @@ import type { Entry, EntrySummary, Part } from "../../src/inboxFormat";
 import { WIDGET_LAYOUT, MATH_LAYOUT_W } from "../../src/inboxFormat";
 import { widgetDocument } from "../../src/widgetHost";
 import * as api from "./api";
+import { blog } from "./log";
 import { icon, type IconName } from "./icons";
 import { ensureMathStyle, fetchText, renderPdfPage } from "./items";
 
@@ -52,6 +53,8 @@ const listeners = new Set<() => void>();
 let started = false;
 let refreshT = 0;
 
+/** When the oldest inbox event not yet painted arrived (the board's log: event → painted, per entry). */
+let eventAt: { t: number; id: string } | null = null;
 async function refresh(): Promise<void> {
   try {
     const r = await api.listInbox();
@@ -61,10 +64,15 @@ async function refresh(): Promise<void> {
     /* offline: keep what we had */
   }
   for (const fn of listeners) fn();
+  if (eventAt) {
+    const e = eventAt;
+    eventAt = null;
+    requestAnimationFrame(() => blog("inbox.paint", { entry: e.id, ms: Math.round(performance.now() - e.t) }));
+  }
 }
-function soon(): void {
+function soon(ms = 150): void {
   clearTimeout(refreshT);
-  refreshT = window.setTimeout(() => void refresh(), 150);
+  refreshT = window.setTimeout(() => void refresh(), ms);
 }
 
 const eventListeners = new Set<(ev: { say?: string }) => void>();
@@ -87,7 +95,9 @@ export function inboxBadge(badge: HTMLElement): void {
     void refresh();
     void api.watch((ev) => {
       if (ev?.type !== "inbox") return;
-      soon();
+      // A part or an entry landed: shown at once (a short debounce only coalesces a burst of events).
+      eventAt ??= { t: performance.now(), id: String((ev as { id?: unknown }).id ?? "") };
+      soon(40);
       for (const fn of eventListeners) fn(ev);
     });
     document.addEventListener("visibilitychange", () => document.visibilityState === "visible" && soon());
@@ -111,6 +121,7 @@ export function openInbox(root: HTMLElement, host: InboxHost): () => void {
     if (closed) return;
     closed = true;
     listeners.delete(paintList);
+    listeners.delete(followEntry);
     sheet.style.transition = "transform 220ms cubic-bezier(0.32,0.72,0,1), opacity 220ms";
     sheet.style.transform = "translateX(104%)";
     scrim.style.transition = "opacity 220ms";
@@ -138,12 +149,12 @@ export function openInbox(root: HTMLElement, host: InboxHost): () => void {
       .map((e) => {
         const k = KIND[e.parts[0]?.kind ?? ""] ?? { icon: e.making ? "circle-notch" : e.failed ? "warning-circle" : "tray", tint: e.failed ? "bg-[rgb(255_59_48/0.12)] text-[rgb(var(--sys-red))]" : "bg-sys-fill/15 text-sys-secondary/70" };
         const status = e.failed
-          ? `<div class="mt-1 text-footnote text-[rgb(var(--sys-red))]">Couldn’t make: ${esc(e.failed)}</div>`
+          ? `<div class="mt-1 text-footnote text-[rgb(var(--sys-red))]">Couldn’t make: ${esc(e.failed)}${e.parts.length ? ` · ${esc(partsLine(e.parts))} made` : ""}</div>`
           : e.making
-            ? `<div class="mt-1 flex items-center gap-1.5 text-footnote text-sys-blue"><span class="inline-block animate-spin">${icon("circle-notch", 14)}</span>Being made…</div>`
+            ? `<div class="mt-1 flex items-center gap-1.5 text-footnote text-sys-blue"><span class="inline-block animate-spin">${icon("circle-notch", 14)}</span>Being made…${e.parts.length ? ` · ${esc(partsLine(e.parts))} so far` : ""}</div>`
             : `<div class="mt-1 text-footnote text-sys-secondary/60">${esc(partsLine(e.parts))}${e.added ? ` · <span class="text-[rgb(var(--sys-green))]">${e.added} added</span>` : ""}</div>`;
         return `
-        <button data-id="${esc(e.id)}" ${e.making || e.failed ? "data-inert" : ""} class="group relative flex w-full gap-3 overflow-hidden rounded-2xl bg-card/70 p-3.5 text-left hairline transition active:scale-[0.985] ${e.making ? "shimmer animate-shimmer" : ""}">
+        <button data-id="${esc(e.id)}" ${(e.making || e.failed) && !e.parts.length ? "data-inert" : ""} class="group relative flex w-full gap-3 overflow-hidden rounded-2xl bg-card/70 p-3.5 text-left hairline transition active:scale-[0.985] ${e.making ? "shimmer animate-shimmer" : ""}">
           <span class="grid h-10 w-10 shrink-0 place-items-center rounded-xl ${k.tint}">${icon(k.icon, 20)}</span>
           <span class="min-w-0 flex-1">
             <span class="flex items-baseline gap-2">
@@ -163,45 +174,68 @@ export function openInbox(root: HTMLElement, host: InboxHost): () => void {
       </div>`;
   };
 
-  const openEntry = async (id: string) => {
+  /** The open entry as last drawn (parts, making): a streamed make adds its new parts in place as they land. */
+  let shown: { parts: number; making: boolean } | null = null;
+  const followEntry = () => {
+    if (!current || !shown) return;
+    const now = entries.find((x) => x.id === current);
+    if (!now || (now.parts.length === shown.parts && now.making === shown.making)) return;
+    void openEntry(current, true);
+  };
+  const back = `<button data-x="back" class="flex h-11 items-center gap-0.5 rounded-full pl-1 pr-2 text-body text-sys-blue active:opacity-60">${icon("caret-left")}<span>Inbox</span></button>`;
+  const addBtn = (n: number | null, label: string) =>
+    `<button data-add="${n ?? "all"}" class="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-full ${n === null ? "bg-sys-blue px-4 text-white" : "bg-sys-blue/15 px-3.5 text-sys-blue"} text-footnote font-semibold transition active:scale-95">${icon("plus", 16)}${label}</button>`;
+  const statusLines = (e: Entry) =>
+    `<p class="mt-1 text-footnote text-sys-secondary/50">${esc(partsLine(e.parts, e.parts))} · ${ago(e.createdAt)}</p>
+    ${e.making && !e.failed ? `<p class="mt-2 flex items-center gap-1.5 text-footnote text-sys-blue"><span class="inline-block animate-spin">${icon("circle-notch", 14)}</span>Being made — more parts land here as they are ready</p>` : ""}
+    ${e.failed ? `<p class="mt-2 text-footnote text-[rgb(var(--sys-red))]">Couldn’t finish: ${esc(e.failed)}</p>` : ""}`;
+  const partSection = (e: Entry, n: number) => {
+    const p = e.parts[n]!;
+    const k = KIND[p.kind]!;
+    const title = p.label || (p.kind === "pdf" ? `${p.path.split("/").pop()} · ${p.pages.length > 1 ? `pp. ${p.pages[0]}–${p.pages[p.pages.length - 1]}` : `p. ${p.pages[0]}`}` : p.kind === "image" || p.kind === "widget" ? p.alt : `Part ${n + 1}`);
+    return `
+      <section class="overflow-hidden rounded-2xl bg-card hairline shadow-sm" data-part="${n}">
+        <div class="flex items-center gap-2.5 border-b border-sys-separator/15 px-3.5 py-2.5">
+          <span class="grid h-7 w-7 shrink-0 place-items-center rounded-lg ${k.tint}">${icon(k.icon, 16)}</span>
+          <span class="min-w-0 flex-1 truncate text-subhead font-semibold text-sys-label">${esc(title)}</span>
+          ${e.added?.[String(n)] ? `<span class="text-footnote text-[rgb(var(--sys-green))]">Added</span>` : ""}
+          ${addBtn(n, p.kind === "pdf" && p.pages.length > 1 ? `Add ${p.pages.length} pages` : "Add")}
+        </div>
+        <div class="part-body bg-white" data-kind="${p.kind}"></div>
+      </section>`;
+  };
+  /** Open entry `id`; `follow`: it is open already and parts landed (only the new ones are added, nothing moves). */
+  const openEntry = async (id: string, follow = false) => {
     current = id;
     sheet.style.width = "min(680px, calc(100% - 24px))";
-    sheet.innerHTML = `${header(`<button data-x="back" class="flex h-11 items-center gap-0.5 rounded-full pl-1 pr-2 text-body text-sys-blue active:opacity-60">${icon("caret-left")}<span>Inbox</span></button>`, "")}<div class="grid flex-1 place-items-center text-sys-secondary/60">${icon("circle-notch")}</div>`;
+    if (!follow) sheet.innerHTML = `${header(back, "")}<div class="grid flex-1 place-items-center text-sys-secondary/60">${icon("circle-notch")}</div>`;
     let e: Entry;
     try {
       e = await api.getEntry(id);
     } catch (err) {
-      sheet.querySelector("div.grid")!.textContent = `Couldn't open it: ${String((err as Error).message)}`;
+      if (!follow) sheet.querySelector("div.grid")!.textContent = `Couldn't open it: ${String((err as Error).message)}`;
       return;
     }
     if (current !== id) return;
-    if (e.status === "unread") void api.markRead(id).then(soon, () => {});
-    const added = (n: number) => !!e.added?.[String(n)];
-    const addBtn = (n: number | null, label: string) =>
-      `<button data-add="${n ?? "all"}" class="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-full ${n === null ? "bg-sys-blue px-4 text-white" : "bg-sys-blue/15 px-3.5 text-sys-blue"} text-footnote font-semibold transition active:scale-95">${icon("plus", 16)}${label}</button>`;
-    sheet.innerHTML = `${header(`<button data-x="back" class="flex h-11 items-center gap-0.5 rounded-full pl-1 pr-2 text-body text-sys-blue active:opacity-60">${icon("caret-left")}<span>Inbox</span></button>`, "", addBtn(null, "Add all"))}
+    const list = sheet.querySelector<HTMLElement>(".parts");
+    if (follow && shown && list) {
+      for (let n = shown.parts; n < e.parts.length; n++) {
+        list.insertAdjacentHTML("beforeend", partSection(e, n));
+        const sec = list.lastElementChild as HTMLElement;
+        void fillPart(sec.querySelector(".part-body") as HTMLElement, e, n);
+      }
+      (sheet.querySelector(".status") as HTMLElement).innerHTML = statusLines(e);
+      shown = { parts: e.parts.length, making: !!e.making && !e.failed };
+      return;
+    }
+    shown = { parts: e.parts.length, making: !!e.making && !e.failed };
+    if (e.status === "unread") void api.markRead(id).then(() => soon(), () => {});
+    sheet.innerHTML = `${header(back, "", addBtn(null, "Add all"))}
       <div data-scroll class="flex-1 overflow-y-auto overscroll-contain px-4 pb-6">
         <h3 class="text-title3 font-semibold tracking-tight text-sys-label">${esc(e.title)}</h3>
         ${e.note ? `<p class="mt-1 text-subhead text-sys-secondary/70">${esc(e.note)}</p>` : ""}
-        <p class="mt-1 text-footnote text-sys-secondary/50">${esc(partsLine(e.parts, e.parts))} · ${ago(e.createdAt)}</p>
-        <div class="mt-4 space-y-4">
-          ${e.parts
-            .map((p, n) => {
-              const k = KIND[p.kind]!;
-              const title = p.label || (p.kind === "pdf" ? `${p.path.split("/").pop()} · ${p.pages.length > 1 ? `pp. ${p.pages[0]}–${p.pages[p.pages.length - 1]}` : `p. ${p.pages[0]}`}` : p.kind === "image" || p.kind === "widget" ? p.alt : `Part ${n + 1}`);
-              return `
-              <section class="overflow-hidden rounded-2xl bg-card hairline shadow-sm" data-part="${n}">
-                <div class="flex items-center gap-2.5 border-b border-sys-separator/15 px-3.5 py-2.5">
-                  <span class="grid h-7 w-7 shrink-0 place-items-center rounded-lg ${k.tint}">${icon(k.icon, 16)}</span>
-                  <span class="min-w-0 flex-1 truncate text-subhead font-semibold text-sys-label">${esc(title)}</span>
-                  ${added(n) ? `<span class="text-footnote text-[rgb(var(--sys-green))]">Added</span>` : ""}
-                  ${addBtn(n, p.kind === "pdf" && p.pages.length > 1 ? `Add ${p.pages.length} pages` : "Add")}
-                </div>
-                <div class="part-body bg-white" data-kind="${p.kind}"></div>
-              </section>`;
-            })
-            .join("")}
-        </div>
+        <div class="status">${statusLines(e)}</div>
+        <div class="parts mt-4 space-y-4">${e.parts.map((_, n) => partSection(e, n)).join("")}</div>
       </div>`;
     // Fill each part's preview.
     sheet.querySelectorAll<HTMLElement>("[data-part]").forEach((sec) => void fillPart(sec.querySelector(".part-body") as HTMLElement, e, Number(sec.dataset.part)));
@@ -213,6 +247,7 @@ export function openInbox(root: HTMLElement, host: InboxHost): () => void {
     if (t.dataset.x === "close") return close();
     if (t.dataset.x === "back") {
       current = null;
+      shown = null;
       paintList();
       void refresh();
       return;
@@ -229,6 +264,7 @@ export function openInbox(root: HTMLElement, host: InboxHost): () => void {
           close();
         })
         .catch((err) => {
+          blog("inbox.fail", { entry: current, part: part ?? null, at: "add", error: String(err?.message ?? err).slice(0, 200) });
           (t as HTMLButtonElement).disabled = false;
           t.classList.remove("opacity-50");
           t.title = String(err?.message ?? err);
@@ -238,6 +274,7 @@ export function openInbox(root: HTMLElement, host: InboxHost): () => void {
   });
 
   listeners.add(paintList);
+  listeners.add(followEntry);
   paintList();
   void refresh();
   return close;

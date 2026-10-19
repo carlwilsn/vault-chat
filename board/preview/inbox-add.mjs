@@ -3,16 +3,19 @@
 // board/preview/box.ts). Each round moves the camera somewhere new (pan and zoom), opens the inbox with a tap,
 // opens an entry, taps Add all, and checks every new item: inside the visible board (below the controls),
 // drawn (a PDF page or an image has ink on the base canvas where it is; math is typeset DOM, none of it cut
-// off), the inbox closed, the parts selected. Ten rounds.
+// off), the inbox closed; each part its own object (one part lands selected, several land unselected), none
+// overlapping another or what was on the board before. Ten rounds. Then one Add all is taken apart: one of its
+// objects is tapped, dragged and deleted on its own, and one undo takes the whole add back.
 //
 //   npx tsx board/preview/box.ts 7442 &  ;  VC_BOX=http://127.0.0.1:7442 npm run dev:board
 //   PLAYWRIGHT_CORE=preview/node_modules/playwright-core node board/preview/inbox-add.mjs [board url] [rounds]
-import { ipadPage, checker } from "./ipad.mjs";
+import { ipadPage, checker, touchScript } from "./ipad.mjs";
 
 const url = process.argv[2] ?? "http://localhost:1431/board/";
 const ROUNDS = Number(process.argv[3] ?? 10);
 const { check, failed } = checker();
 const { browser, page } = await ipadPage();
+await page.addInitScript(touchScript());
 page.on("pageerror", (e) => check(false, "no page error", e.message));
 const logged = [];
 await page.route("**/api/v1/board/log", async (route) => {
@@ -86,7 +89,8 @@ const inspect = (before) =>
       }
       out.push({ id: it.id, kind: it.kind, inView, shows, why, box: [Math.round(sx), Math.round(sy), Math.round(sw), Math.round(sh)] });
     }
-    return { items: out, selected: d.selection?.items ?? 0, inboxOpen: !!document.querySelector("aside.inbox") };
+    const sheet = document.querySelector("aside.inbox");
+    return { items: out, selected: d.selection?.items ?? 0, inboxOpen: !!sheet, sheet: sheet ? `${sheet.style.transform || "open"}: ${sheet.innerText.slice(0, 60).replace(/\s+/g, " ")}` : null };
   }, before);
 
 for (let round = 1; round <= ROUNDS; round++) {
@@ -116,8 +120,63 @@ for (let round = 1; round <= ROUNDS; round++) {
     const bad = r.items.filter((x) => !x.inView || !x.shows);
     check(r.items.length === e.kinds.length * (e.kinds[0] === "pdf" ? 0 : 1) || r.items.length >= e.kinds.length, `round ${round}, ${kinds}: Add all made ${r.items.length} item(s)`);
     check(r.items.length > 0 && !bad.length, `round ${round}, ${kinds}: every item in view and showing`, bad.length ? JSON.stringify(bad) : `${r.items.length} items`);
-    check(!r.inboxOpen && r.selected === r.items.length, `round ${round}, ${kinds}: the inbox closed, the parts selected`, JSON.stringify({ inbox: r.inboxOpen, selected: r.selected }));
+    check(!r.inboxOpen && r.selected === (r.items.length === 1 ? 1 : 0), `round ${round}, ${kinds}: the inbox closed; ${r.items.length === 1 ? "the part selected" : "separate objects, none selected"}`, JSON.stringify({ inbox: r.inboxOpen, selected: r.selected, sheet: r.sheet }));
+    const all = await page.evaluate(() => window.__board.debug().itemsList);
+    const fresh = all.filter((x) => !before.includes(x.id)), old = all.filter((x) => before.includes(x.id));
+    const hit = (a, b) => a.x < b.x + b.w - 0.5 && b.x < a.x + a.w - 0.5 && a.y < b.y + b.h - 0.5 && b.y < a.y + a.h - 0.5;
+    const clash = fresh.flatMap((a, i) => [...fresh.slice(i + 1), ...old].filter((b) => hit(a, b)).map((b) => `${a.kind}×${b.kind}`));
+    check(!clash.length, `round ${round}, ${kinds}: no part on another or on what was there`, clash.join(", ") || `${fresh.length} new, ${old.length} before`);
   }
+}
+
+// One Add all, taken apart: its objects are separate.
+{
+  const e = entries.find((x) => x.kinds.length > 1) ?? entries[0];
+  await page.evaluate(() => {
+    const v = window.__board;
+    v.cam = { x: 40000, y: 40000, z: v.homeZ };
+    v.renderBase();
+  });
+  await page.waitForTimeout(200);
+  const before = await page.evaluate(() => window.__board.debug().itemsList.map((x) => x.id));
+  await tap('[data-act="inbox"]');
+  await tap(`aside.inbox button[data-id="${e.id}"]`);
+  await tap('aside.inbox button[data-add="all"]');
+  await page.waitForFunction((n) => window.__board.debug().itemsList.length > n, before.length, { timeout: 15000 });
+  await page.waitForSelector("aside.inbox", { state: "detached", timeout: 5000 }).catch(() => {});
+  await page.waitForTimeout(400);
+  const items = () => page.evaluate(() => window.__board.debug().itemsList);
+  const mine = (await items()).filter((x) => !before.includes(x.id));
+  check(mine.length >= 2, "Add all made several objects", `${mine.length}`);
+  const scr = (it, fx = 0.5, fy = 0.5) => page.evaluate(([it, fx, fy]) => {
+    const v = window.__board, st = document.querySelector(".stage").getBoundingClientRect();
+    return [st.left + (it.x + it.w * fx - v.cam.x) * v.cam.z, st.top + (it.y + it.h * fy - v.cam.y) * v.cam.z];
+  }, [it, fx, fy]);
+  const target = mine[mine.length - 1];
+  // A tap with the select tool picks that one object alone.
+  const [tx, ty] = await scr(target, 0.5, 0.3);
+  await page.evaluate(([x, y]) => window.__pen([x, y], [x + 1, y], 60, 2), [tx, ty]);
+  await page.waitForTimeout(150);
+  const sel = await page.evaluate(() => window.__board.debug().selection);
+  check(sel?.items === 1 && !sel.strokes, "a tap selects one of them alone", JSON.stringify(sel));
+  // Dragged: only it moves.
+  await page.evaluate(([x, y]) => window.__pen([x, y], [x + 120, y + 60], 300, 12), [tx, ty]);
+  await page.waitForTimeout(250);
+  const after = await items();
+  const moved = mine.filter((m) => {
+    const n = after.find((a) => a.id === m.id);
+    return !n || Math.abs(n.x - m.x) + Math.abs(n.y - m.y) > 1;
+  });
+  check(moved.length === 1, "dragging it moves it alone", `${moved.length} moved`);
+  // Deleted from its pill: only it goes.
+  await tap('.selbar button[data-act="delete"]');
+  await page.waitForTimeout(150);
+  const left = (await items()).length;
+  check(left === after.length - 1, "its pill's Delete removes it alone", `${after.length} → ${left}`);
+  // One undo takes back the delete, two the move, three the whole add.
+  for (let i = 0; i < 3; i++) await page.evaluate(() => document.querySelector('[data-act="undo"]').click());
+  await page.waitForTimeout(150);
+  check((await items()).length === before.length, "the whole Add all is one undo step", `${(await items()).length} vs ${before.length}`);
 }
 
 const fails = logged.filter((e) => e.ev === "inbox.fail");
