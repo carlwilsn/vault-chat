@@ -4,7 +4,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { writeFileSync, readFileSync, existsSync, mkdirSync, openSync, closeSync, ftruncateSync } from "node:fs";
 import { join } from "node:path";
 import { BoxSync } from "../sync";
-import { tmp, cleanup, makeVault, git, sh } from "./helpers";
+import { tmp, cleanup, makeVault, git, sh, waitFor } from "./helpers";
 
 type AlertCall = { title: string; body: string };
 
@@ -140,6 +140,27 @@ describe("box sync loop", () => {
     git(laptop, "add", "-A");
     git(laptop, "commit", "-q", "-m", "laptop writes box");
     expect(() => sh(laptop, "git", ["push", "-q", "origin", "box"], { VC_PUSHER: "http" })).toThrow(/written only by the box/);
+  });
+
+  it("a trigger that lands while a cycle is finishing gets its own cycle, not the next interval", async () => {
+    // A push over /git (or an agent's write) that arrives after the running
+    // cycle's fetch: the cycle's end used to replace the trigger's timer with
+    // the full interval (60 s here), so the change waited a whole interval.
+    const s = sync as unknown as { cycle: () => Promise<void>; stopped: boolean };
+    s.stopped = false; // started, without start()'s first timer (it would fire mid-cycle and hide the bug)
+    const cycle = s.cycle.bind(sync);
+    let first = true;
+    s.cycle = async () => {
+      await cycle();
+      if (!first) return;
+      first = false;
+      writeFileSync(join(box, "notes", "late.md"), "after the fetch\n"); // the cycle has already looked
+      sync.trigger(); // still in flight: the cycle's finally has not run
+    };
+    await sync.runOnce();
+    expect(git(box, "status", "--porcelain")).toContain("late.md");
+    await waitFor(() => !sync.status.running && sync.status.ok && git(box, "status", "--porcelain").trim() === "" && bareRef("refs/heads/box") === head(box), 10_000, 50);
+    expect(git(box, "show", "--name-only", "--format=", "HEAD").trim()).toBe("notes/late.md");
   });
 
   it("reports full stderr, alerts on persistent failure and again on recovery", async () => {

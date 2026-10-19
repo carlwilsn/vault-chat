@@ -33,8 +33,20 @@ export function cleanup(dir: string): void {
   }
 }
 
+/** Test-side git never asks for credentials: no prompt, and no credential
+ * helper (Git Credential Manager from Git for Windows' system config would
+ * otherwise answer a 401 from a test server and record a
+ * `credential.http://127.0.0.1:<port>.provider` line in the real ~/.gitconfig). */
+const GIT_NO_CREDENTIALS: NodeJS.ProcessEnv = {
+  GIT_TERMINAL_PROMPT: "0",
+  GCM_INTERACTIVE: "never",
+  GIT_CONFIG_COUNT: "1",
+  GIT_CONFIG_KEY_0: "credential.helper",
+  GIT_CONFIG_VALUE_0: "",
+};
+
 export function sh(cwd: string, cmd: string, args: string[], env: NodeJS.ProcessEnv = {}): string {
-  const r = spawnSync(cmd, args, { cwd, encoding: "utf8", env: { ...process.env, ...env }, windowsHide: true });
+  const r = spawnSync(cmd, args, { cwd, encoding: "utf8", env: { ...process.env, ...(cmd === "git" ? GIT_NO_CREDENTIALS : {}), ...env }, windowsHide: true });
   if (r.status !== 0) throw new Error(`${cmd} ${args.join(" ")} failed (${r.status}): ${r.stderr}${r.stdout}`);
   return r.stdout;
 }

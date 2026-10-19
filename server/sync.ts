@@ -169,8 +169,15 @@ exit 0
     this.timer = setTimeout(() => void this.runOnce(), ms);
   }
 
-  /** Run a cycle now (after a mission turn, after a push over /git). */
+  /** Run a cycle now (after a mission turn, after a push over /git). During a
+   * cycle it asks for a follow-up: a timer set now would be replaced by the
+   * cycle's own `schedule(intervalMs)` when it ends, and a push that landed
+   * after the cycle's fetch would wait a whole interval. */
   trigger(): void {
+    if (this.inFlight) {
+      this.again = true;
+      return;
+    }
     this.schedule(200);
   }
 
