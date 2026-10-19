@@ -1,58 +1,45 @@
-// Voice on the box: the ElevenLabs agent's client tools run here, against the
-// box's working copy, whichever client holds the mic (the laptop in box mode,
-// the phone). Three routes (http.ts), each with an optional vault:
-//   POST /api/v1/voice/tool       {name, args}                → {result}
-//   GET  /api/v1/voice/session    ?convId=                    → {conversationToken, signedUrl, systemPrompt, …}
-//   POST /api/v1/voice/transcript {convId?, fromConvId?, role, text, system?, tool?: {name, args, result}} → {convId}
-// The vault's own voice tools (.vault-chat/tools/<name>/TOOL.md + run.*) run
-// here too, in the same sandbox as Bash, with only the keys TOOL.md's
-// requires_keys names.
-// The tools keep the engine's posture: paths stay inside the vault (realpath),
-// never .git, never the conversation files or .vault-chat/local (the server's
-// to write), never a .vaultchatdeny entry; writes also respect humanized files.
-// Bash runs in the engine's shell sandbox (bubblewrap: own pid namespace, the
-// key store hidden). AskAgent / AgentStatus hand heavy work to the engine.
-import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+// Voice on the box (D3: one brain). Voice is the front of house of ONE
+// conversation — the chat Carl attached it to: its prompt is that
+// conversation's pi session (what was typed and said, the compaction summary)
+// plus the "you" layer; every line said on the call goes into that session (a
+// vc-voice custom message: the agent hears it on its next turn); and every
+// action is the agent's: voice's one tool that acts, Ask, hands Carl's request
+// to pi in that conversation and returns at once, and the agent's answer comes
+// back into the live call through /updates. Tools that read or move a screen
+// run on the device in front of Carl (src/voicePrompt.ts SCREEN_TOOLS).
+//
+// Routes (http.ts), each with an optional vault:
+//   GET  /api/v1/voice/session    ?convId=&device=            → {conversationToken, signedUrl, systemPrompt, toolNames, convId, cursor, images, …}
+//   POST /api/v1/voice/tool       {name, args, convId, device} → {result, convId?}
+//   POST /api/v1/voice/transcript {convId, role, text, system?, ended?, tool?, images?, clientId?, device?} → {convId}
+//   GET  /api/v1/voice/updates    ?convId=&cursor=&wait=      → {updates: [{id, kind, text, speak}], cursor}
+import { mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fsCommands } from "./commands/fs";
-import { netCommands } from "./commands/net";
-import { killTree } from "./commands/proc";
-import { conversationObjects as readConversationObjects } from "./engine/convs";
-import { keychainCommands, agentKeyEnv } from "./keys";
 import { runGit } from "./git";
-import { conversationDetail, dispatchVoiceTool } from "./phoneData";
+import { createConv, logOf, newMessageId, pictureOf, writeNotes, type NoteData } from "./engine/convs";
 import { appendActivity, projectContextFor, youLayer } from "./activity";
-import { voiceLineEntry, voiceToolEntry, clean } from "../src/activityCore";
+import { voiceLineEntry } from "../src/activityCore";
 import { stripAudioTags } from "../src/voiceTags";
-import { NOTES_FILE, noteTool } from "./notesTools";
+import { ASK, SCREEN_TOOLS, buildVoicePrompt, controlLine, isControlLine, voiceDevice, voiceToolNames, type VoiceDevice } from "../src/voicePrompt";
+import type { Item, Picture } from "../src/convlog/reduce";
 
 export type VoiceDeps = {
   /** The vault's working copy, its name on the box, and whether it is the main one (the store's). */
   vault: string;
   name?: string;
   main?: boolean;
-  /** The engine's per-command sandbox argv (ends with "--"); null = the engine
-   * runs without one (not Linux, or VC_PI_UNSAFE); undefined = no engine. */
-  shell?: string[] | null;
-  /** The engine's /message (start or continue a box chat). */
-  message?: (b: { text: string; convId?: string | null; source?: "voice" }) => Promise<Record<string, unknown> | null>;
-  /** After a write: run a sync cycle so it reaches the laptop; `paths` (vault-relative) when a file tool
-   * wrote them — the open file on the laptop then updates live (server/liveEdits.ts). */
+  /** The engine's /message: Ask hands Carl's request to the conversation's agent through it. */
+  message?: (b: { text: string; convId?: string | null; source?: "voice"; via?: string; clientMsgId?: string; client?: string; context?: string }) => Promise<Record<string, unknown> | null>;
+  /** After a line is saved: a sync cycle, so it reaches the laptop. */
   onWrite?: (paths?: string[]) => void;
-  openrouterKey?: () => string | null;
-  webSearchModel?: string;
 };
 
-const READ_CAP = 24_000;
-const OUT_CAP = 8_000;
-/** Tools that move the user's screen: they run in the client, never here. */
-export const VOICE_LOCAL_TOOLS = new Set(["ScrollTo"]);
-
 const s = (v: unknown) => (typeof v === "string" ? v : v == null ? "" : String(v));
-const clip = (t: string, n: number) => (t.length > n ? t.slice(0, n) + "\n…[truncated]" : t);
+const clip = (t: string, n: number) => (t.length > n ? `${t.slice(0, n - 1)}…` : t);
+const oneLine = (t: string) => t.replace(/\s+/g, " ").trim();
 
-// ---------------------------------------------------------------- paths
+// ---------------------------------------------------------------- paths (the vault file route, http.ts)
 
 /** The real path of `p`, or of its deepest existing ancestor plus the rest (a file not yet written). */
 function realish(p: string): string {
@@ -88,8 +75,7 @@ function listLines(cmd: "read_deny_lines" | "read_humanized", vault: string): st
 
 const under = (rel: string, entry: string) => rel === entry || rel.startsWith(entry + "/");
 
-/** Resolve a tool path (vault-relative or absolute) to an absolute path inside
- * the vault, or throw the refusal the agent hears. */
+/** Resolve a path (vault-relative or absolute) to an absolute path inside the vault, or throw the refusal. */
 export function voicePath(vault: string, p: unknown, mode: "read" | "write"): { abs: string; rel: string } {
   const raw = s(p).trim();
   const root = realish(resolve(vault));
@@ -104,290 +90,6 @@ export function voicePath(vault: string, p: unknown, mode: "read" | "write"): { 
   for (const d of listLines("read_deny_lines", vault)) if (under(rel, d)) throw `Refused: ${rel} is restricted from the agent.`;
   if (mode === "write") for (const h of listLines("read_humanized", vault)) if (rel === h) throw `Refused: ${rel} is a humanized file; the agent does not write it.`;
   return { abs, rel };
-}
-
-// ---------------------------------------------------------------- bash
-
-type RunOut = { code: number; out: string; err: string; timedOut: boolean } | { refused: string };
-
-/** Run argv in the engine's per-command sandbox (bubblewrap: own pid
- * namespace, the key store hidden) with a minimal environment plus `extraEnv`. */
-function runSandboxed(d: VoiceDeps, argv: string[], o: { cwd: string; timeoutMs: number; stdin?: string; extraEnv?: Record<string, string> }): Promise<RunOut> {
-  let prog: string;
-  let args: string[];
-  if (d.shell && d.shell.length) {
-    prog = d.shell[0]!;
-    args = [...d.shell.slice(1), ...argv];
-  } else if (d.shell === null || process.platform !== "linux" || process.env.VC_PI_UNSAFE === "1") {
-    prog = argv[0]!;
-    if (process.platform === "win32" && prog === "bash") {
-      prog = ["C:/Program Files/Git/bin/bash.exe", "C:/Program Files (x86)/Git/bin/bash.exe"].find((c) => existsSync(c)) ?? "bash";
-    }
-    args = argv.slice(1);
-  } else {
-    return Promise.resolve({ refused: "unavailable right now — the box's sandbox comes with the agent engine, which is still starting or off." });
-  }
-  const env: NodeJS.ProcessEnv = {
-    PATH: process.env.PATH ?? "/run/current-system/sw/bin",
-    HOME: process.env.HOME ?? process.env.USERPROFILE ?? "",
-    LANG: process.env.LANG ?? "C.UTF-8",
-    GIT_AUTHOR_NAME: "vault-chat-agent",
-    GIT_AUTHOR_EMAIL: "agent@vault-chat.local",
-    GIT_COMMITTER_NAME: "vault-chat-agent",
-    GIT_COMMITTER_EMAIL: "agent@vault-chat.local",
-    ...(process.platform === "win32" ? { SYSTEMROOT: process.env.SYSTEMROOT ?? "", MSYS_NO_PATHCONV: "1" } : {}),
-    ...(o.extraEnv ?? {}),
-  };
-  return new Promise((done) => {
-    let out = "";
-    let err = "";
-    let timedOut = false;
-    let child;
-    try {
-      child = spawn(prog, args, { cwd: o.cwd, env, detached: process.platform !== "win32", windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
-    } catch (e) {
-      return done({ refused: (e as Error).message });
-    }
-    child.stdout!.on("data", (c) => (out += c));
-    child.stderr!.on("data", (c) => (err += c));
-    child.stdin!.on("error", () => {});
-    child.stdin!.end(o.stdin ?? "");
-    const timer = setTimeout(() => {
-      timedOut = true;
-      killTree(child.pid);
-    }, o.timeoutMs);
-    child.on("error", (e) => {
-      clearTimeout(timer);
-      done({ refused: e.message });
-    });
-    child.on("close", (code) => {
-      clearTimeout(timer);
-      done({ code: timedOut ? -1 : (code ?? -1), out, err, timedOut });
-    });
-  });
-}
-
-async function runShell(d: VoiceDeps, command: string, timeoutMs: number): Promise<string> {
-  // The keys Carl added are the agent's (as environment variables, read now).
-  const r = await runSandboxed(d, ["bash", "-lc", command], { cwd: d.vault, timeoutMs, extraEnv: agentKeyEnv() });
-  if ("refused" in r) return `Error: Bash is ${r.refused}`;
-  const parts = [`exit: ${r.code}${r.timedOut ? " (TIMED OUT)" : ""}`];
-  if (r.out) parts.push(`stdout:\n${clip(r.out, OUT_CAP)}`);
-  if (r.err) parts.push(`stderr:\n${clip(r.err, OUT_CAP)}`);
-  return parts.join("\n");
-}
-
-// ---------------------------------------------------------------- the vault's own tools
-
-/** The interpreter for a tool's run file (server/commands/proc.ts interpreterFor). */
-function interpreter(path: string): string[] | null {
-  const l = path.toLowerCase();
-  if (l.endsWith(".py")) return [process.platform === "win32" ? "python" : "python3", path];
-  if (l.endsWith(".mjs") || l.endsWith(".js")) return ["node", path];
-  if (l.endsWith(".ts")) return ["npx", "tsx", path];
-  if (l.endsWith(".sh") || l.endsWith(".bash")) return ["bash", path];
-  return null;
-}
-
-/** A vault tool (TOOL.md + run.*), run like the laptop runs it (stdin = the
- * args as JSON, cwd = its folder, stdout = the result), but sandboxed, with
- * the keys as environment variables (its declared ones under their own names). ElevenLabs waits 30 s for a client tool. */
-async function runVaultTool(d: VoiceDeps, name: string, args: unknown): Promise<string | null> {
-  const { vaultToolSpecs } = await import("../src/meta");
-  const hit = (await vaultToolSpecs(d.vault)).find((x) => x.spec.name === name);
-  if (!hit) return null;
-  const argv = interpreter(hit.runPath);
-  if (!argv) return `Error: no interpreter for ${hit.runPath}`;
-  // Every key (as the agent's commands get them), plus each declared one under its own name.
-  const keys: Record<string, string> = { ...agentKeyEnv() };
-  for (const k of hit.spec.requires_keys ?? []) {
-    const v = keychainCommands.keychain_get({ key: `user.${k}` });
-    if (typeof v === "string" && v) keys[k] = v;
-  }
-  const r = await runSandboxed(d, argv, { cwd: hit.toolDir, stdin: JSON.stringify(args ?? {}), timeoutMs: Math.min(hit.spec.timeout_ms ?? 25_000, 28_000), extraEnv: keys });
-  if ("refused" in r) return `Error: ${name} is ${r.refused}`;
-  if (r.timedOut) return `(timed out)\n${clip(r.err, OUT_CAP)}`;
-  if (r.code !== 0) return `exit ${r.code}\nstderr:\n${clip(r.err, OUT_CAP)}\nstdout:\n${clip(r.out, OUT_CAP)}`;
-  return clip(r.out.trim(), READ_CAP) || "(no output)";
-}
-
-// ---------------------------------------------------------------- the agent
-
-function agentStatus(vault: string, id: string, live: any): string {
-  if (!id) return "Error: AgentStatus needs a conversationId.";
-  const d = conversationDetail(vault, id, 12) as any;
-  if (!d) return `No conversation ${id}.`;
-  const raw = readConversationObjects(vault).find((c) => c.id === id) ?? {};
-  const out: Record<string, unknown> = { conversationId: id, title: d.title };
-  let running = d.status === "running" || d.state === "running";
-  try {
-    // The live run, when this process has one (the store mirrors the engine's turn).
-    const rt = live?.getState?.().convRuntime?.[id];
-    if (rt) {
-      running = true;
-      const tool = Array.isArray(rt.liveTools) && rt.liveTools.length ? rt.liveTools[rt.liveTools.length - 1] : null;
-      if (tool?.name) out.now = `running ${tool.name}`;
-      if (s(rt.streamingText).trim()) out.saying = clip(s(rt.streamingText).trim().replace(/\s+/g, " "), 300);
-    }
-  } catch {
-    /* no store */
-  }
-  out.state = raw.pendingAsk ? "waiting for Carl's answer" : running ? "working" : d.state === "sleeping" ? "sleeping" : s(d.state) || "idle";
-  if (raw.pendingAsk) out.question = clip(s(raw.pendingAsk.question ?? raw.pendingAsk), 400);
-  if (d.wakeReason) out.wakeReason = d.wakeReason;
-  if (typeof d.nextWakeAt === "number") out.nextWake = new Date(d.nextWakeAt).toISOString();
-  const doing = (d.todos ?? []).find((t: any) => t?.status === "in_progress");
-  if (doing) out.step = s(doing.activeForm || doing.content);
-  if (d.verdict) out.verdict = d.verdict;
-  const last = [...(d.messages ?? [])].reverse().find((m: any) => m.role === "assistant" && !m.system && s(m.content).trim());
-  if (last) out.lastReply = clip(s(last.content).trim(), 800);
-  if (typeof d.costUsd === "number") out.costUsd = Math.round(d.costUsd * 10000) / 10000;
-  return JSON.stringify(out);
-}
-
-// ---------------------------------------------------------------- the tools
-
-async function store(): Promise<any> {
-  return (await import("../src/store")).useStore;
-}
-
-export { NOTES_FILE } from "./notesTools";
-
-async function runTool(d: VoiceDeps, name: string, a: any): Promise<string> {
-  const vault = d.vault;
-  const wrote = (msg: string, rel?: string) => {
-    d.onWrite?.(rel ? [rel] : undefined);
-    return msg;
-  };
-  switch (name) {
-    case "Read": {
-      const { abs, rel } = voicePath(vault, a.path, "read");
-      if (/\.pdf$/i.test(abs)) return `${rel} is a PDF — use PdfExtract.`;
-      const raw = fsCommands.read_text_file({ path: abs }) as string;
-      let text = raw;
-      if (/\.ipynb$/i.test(abs)) text = (await import("../src/fileText")).stripNotebook(raw);
-      return clip(text, READ_CAP);
-    }
-    case "ListDir": {
-      const { abs } = voicePath(vault, a.path, "read");
-      const entries = fsCommands.list_dir({ path: abs }) as { name: string; is_dir: boolean }[];
-      return entries.length ? entries.map((e) => (e.is_dir ? `${e.name}/` : e.name)).join("\n") : "(empty)";
-    }
-    case "Glob":
-    case "GitLog":
-    case "ListConversations":
-    case "ReadConversation":
-      // The phone's read-only set (vault-confined; GitLog's subdir checked here).
-      if (name === "GitLog") voicePath(vault, s(a.subdir) || ".", "read");
-      return dispatchVoiceTool(vault, JSON.stringify({ name, arguments: a }));
-    case "Grep": {
-      const { abs } = voicePath(vault, a.path, "read");
-      const root = realish(resolve(vault));
-      const deny = listLines("read_deny_lines", vault);
-      const hits = fsCommands.grep_files({ pattern: s(a.pattern), path: abs, globFilter: a.glob_filter ?? null, caseInsensitive: !!a.case_insensitive, maxResults: 200 }) as {
-        path: string;
-        line: number;
-        text: string;
-      }[];
-      const rows = hits
-        .map((h) => ({ ...h, rel: relIn(root, realish(h.path)) }))
-        .filter((h) => h.rel !== null && !deny.some((x) => under(h.rel!, x)))
-        .slice(0, 100)
-        .map((h) => `${h.rel}:${h.line}: ${h.text}`);
-      return rows.length ? rows.join("\n") : "(no matches)";
-    }
-    case "Write": {
-      const { abs, rel } = voicePath(vault, a.path, "write");
-      fsCommands.write_text_file({ path: abs, contents: s(a.contents) });
-      return wrote(`Wrote ${rel}`, rel);
-    }
-    case "Edit": {
-      const { abs, rel } = voicePath(vault, a.path, "write");
-      const out = fsCommands.edit_text_file({ path: abs, oldString: s(a.old_string), newString: s(a.new_string), replaceAll: !!a.replace_all }) as string;
-      return wrote(out.split(abs).join(relIn(realish(resolve(vault)), abs) ?? abs), rel);
-    }
-    case "NotebookEdit": {
-      const { abs, rel } = voicePath(vault, a.path, "write");
-      const { applyNotebookEdit } = await import("../src/fileText");
-      const r = applyNotebookEdit(readFileSync(abs, "utf8"), a.action, Number(a.cell_index), a.source, a.cell_type);
-      if (!r.ok) return `Error: ${r.error}`;
-      fsCommands.write_text_file({ path: abs, contents: r.contents });
-      return wrote(`${r.summary} in ${rel}`, rel);
-    }
-    case "PdfExtract": {
-      const { abs } = voicePath(vault, a.path, "read");
-      const { pdfRead } = await import("./engine/extraTools");
-      return pdfRead(vault, { path: abs, pages: a.pages });
-    }
-    case "WebFetch": {
-      const url = s(a.url).trim();
-      let host = "";
-      try {
-        host = new URL(url).hostname.replace(/^\[|\]$/g, "");
-      } catch {
-        return "Error: WebFetch needs a full http(s) URL.";
-      }
-      // The box's own services answer loopback without auth: never fetch them for a voice.
-      if (/^(localhost|127\.|0\.0\.0\.0|::1$|10\.|192\.168\.|169\.254\.|100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.)/i.test(host) || /^172\.(1[6-9]|2\d|3[01])\./.test(host)) {
-        return "Refused: WebFetch does not reach the box's own network.";
-      }
-      return (await netCommands.http_fetch({ url, maxChars: Math.min(Number(a.max_chars) || 24_000, 40_000) })) as string;
-    }
-    case "WebSearch": {
-      const { webSearch } = await import("./engine/extraTools");
-      return webSearch(s(a.query), d.openrouterKey?.() ?? null, d.webSearchModel || "google/gemini-2.5-flash-lite");
-    }
-    case "Bash": {
-      const cmd = s(a.command);
-      if (!cmd.trim()) return "Error: Bash needs a command.";
-      const nv = realish(resolve(vault)).replace(/\\/g, "/");
-      for (const x of [...listLines("read_deny_lines", vault)]) {
-        if (cmd.includes(x) || cmd.includes(`${nv}/${x}`)) return `Refused: command references restricted path '${x}'.`;
-      }
-      const out = await runShell(d, cmd, Math.min(Number(a.timeout_ms) || 20_000, 25_000));
-      d.onWrite?.(); // a command may have changed files
-      return out;
-    }
-    // Notes: this vault's .vault-chat/notes.jsonl on the box, read and written there (never the headless store's
-    // copy, which is another vault's or stale), by the same code pi's notes tools run (server/notesTools.ts). Each
-    // result says what the file now holds — the voice agent tells Carl only what the result confirms (2026-10-18:
-    // "I've saved a note … in your notes panel" when he could not see it there).
-    case "ListNotes":
-    case "CreateNote":
-    case "UpdateNote":
-    case "ResolveNote":
-    case "ReopenNote":
-    case "DeleteNote": {
-      const r = await noteTool(vault, name, a, d.name ? `the "${d.name}" vault's notes` : "the vault's notes");
-      return r.wrote ? wrote(r.text, NOTES_FILE) : r.text;
-    }
-    case "ListProjects":
-      return projectsText(vault, a);
-    case "AskAgent": {
-      if (!d.message) return "Error: the box's agent is not running, so nothing was handed over.";
-      const task = s(a.task).trim();
-      if (!task) return "Error: AskAgent needs a task.";
-      const convId = s(a.conversationId).trim() || null;
-      // Into the shared stream first: the agent's first turn then shows the hand-off with the voice turns before it.
-      appendActivity(vault, voiceToolEntry("AskAgent", a, "")!);
-      // A conversation the voice agent started is a voice conversation (its source), not a phone chat. An ordinary
-      // message: no project (only Carl puts a chat into a project, in the app — the IEMS 469 hand-off, 2026-10-18).
-      const out = await d.message({ text: task, convId, source: "voice" });
-      if (!out || out.error) return `Error: ${s(out?.error) || "the agent did not take it"}`;
-      return JSON.stringify({ conversationId: out.convId, started: !convId, ...(out.steered ? { steered: true } : {}), ...(out.answered ? { answered: true } : {}) });
-    }
-    case "AgentStatus":
-      return agentStatus(vault, s(a.conversationId).trim(), await store().catch(() => null));
-    default: {
-      if (VOICE_LOCAL_TOOLS.has(name)) return `${name} moves a screen; there is none on the box, so nothing moved.`;
-      const out = await runVaultTool(d, name, a);
-      if (out !== null) {
-        d.onWrite?.(); // a vault tool may have changed files
-        return out;
-      }
-      return `Error: tool "${name}" is not available on the box.`;
-    }
-  }
 }
 
 // ---------------------------------------------------------------- live sessions
@@ -414,61 +116,67 @@ export function activeVoiceSessions(now = Date.now()): number {
 /** The end-of-session line the clients write ("Voice session ended."). */
 const ENDED_LINE = /^voice session ended\b/i;
 
+// ---------------------------------------------------------------- the attached conversation
+
+const CONV_ID = /^[A-Za-z0-9_-]{6,80}$/;
+/** The old missions system's threads: readable, never run, never attached. */
+const ARCHIVED = new Set(["mission", "worker", "ask"]);
+
+/** The conversation voice is attached to: `convId` when it is one (any chat Carl has), else — `create` — a new one
+ * (under the client's id when it chose one: an optimistic new chat on the laptop), titled by `first`. */
+async function attached(d: VoiceDeps, convId: unknown, create: false): Promise<string | null>;
+async function attached(d: VoiceDeps, convId: unknown, create: true, first: string): Promise<string>;
+async function attached(d: VoiceDeps, convId: unknown, create: boolean, first = "Voice"): Promise<string | null> {
+  const id = s(convId).trim();
+  const p = id ? pictureOf(d.vault, id) : null;
+  if (p && !p.meta.deleted && !ARCHIVED.has(String(p.meta.source))) return id;
+  if (!create) return null;
+  const fresh = CONV_ID.test(id) && !logOf(d.vault).has(id) ? id : undefined;
+  return (await createConv(d.vault, { source: "voice" }, first, fresh)).id;
+}
+
 // ---------------------------------------------------------------- transcripts
 
-/** POST /api/v1/voice/transcript: one line of a voice session (what was said,
- * a tool marker, "Voice session ended") saved on the box. A voice session is a
- * conversation of its own (source "voice"): `convId` names it once the first
- * line made it; a convId that is not a voice conversation on this box (a
- * laptop's local id, an engine chat) starts a new one, tagged with the
- * project of `fromConvId` (the chat the user was in). Returns the id. */
+/** POST /api/v1/voice/transcript: one line of the call (Carl's, the voice's, a system line, a screen tool's row),
+ * written into the attached conversation's pi session, in order. Carl's and the voice's lines are vc-voice custom
+ * messages (in the agent's context); a system line or a tool row is a vc-note (shown, not in its context). A line
+ * vault-chat itself sent into the call ([vc:…]) is never Carl's: it is not saved. */
 export async function voiceTranscript(d: VoiceDeps, b: any): Promise<{ status: number; body: Record<string, unknown> }> {
   const said = s(b?.text).trim();
   if (!said) return { status: 400, body: { error: "empty transcript line" } };
-  // The agent's audio tags ("[excited]") are for its TTS, not the transcript (an older client sends them).
-  const text = b?.role !== "user" && b?.system !== true ? stripAudioTags(said) : said;
-  if (!text) {
-    voiceActivity(d.vault);
-    return { status: 200, body: { ok: true, convId: s(b?.convId) || null } };
-  }
-  const ended = b?.ended === true || (b?.system === true && ENDED_LINE.test(text));
+  const system = b?.system === true;
+  const role: "user" | "assistant" = b?.role === "user" ? "user" : "assistant";
+  // Control tags ("[skip_turn]") and audio tags shape the call, not the transcript; our own [vc:…] messages are not his.
+  const text = role === "assistant" && !system ? stripAudioTags(said) : said;
+  const ended = b?.ended === true || (system && ENDED_LINE.test(text));
   voiceActivity(d.vault, ended);
-  const msg: Record<string, unknown> & { role: "user" | "assistant"; content: string; system?: boolean } = {
-    role: b?.role === "user" ? ("user" as const) : ("assistant" as const),
-    content: text.slice(0, 20_000),
-    ...(b?.system === true ? { system: true } : {}),
-    // The client's id for the line: the item's id in the log (a repeat is a no-op; the client confirms its copy in place).
-    ...(s(b?.clientId) ? { mid: s(b.clientId).slice(0, 80) } : {}),
-    // A tool call voice made: written as a tool row (`text` is its one-line marker, for an older reader).
-    ...(b?.tool && typeof b.tool === "object" && s(b.tool.name) ? { toolCalls: [{ name: s(b.tool.name).slice(0, 80), input: toolArgs(b.tool.args), result: s(b.tool.result).slice(0, 4000) }] } : {}),
-  };
-  const { readConv, createConv, appendMessage } = await import("./engine/convs");
-  let id = s(b?.convId);
-  const cur = id ? await readConv(d.vault, id) : null;
-  // The end of a session where nothing was said: no conversation for it.
-  if (ended && (!cur || cur.source !== "voice")) return { status: 200, body: { ok: true, convId: null } };
-  if (!cur || cur.source !== "voice") {
-    const from = s(b?.fromConvId) ? await readConv(d.vault, s(b.fromConvId)) : null;
-    const project = s(b?.project) || (from && typeof from.project === "string" ? from.project : "");
-    const c = await createConv(d.vault, { source: "voice", ...(project ? { project } : {}) }, msg.role === "user" ? text : "Voice");
-    id = c.id;
+  if (!text || (role === "user" && !system && isControlLine(text))) return { status: 200, body: { ok: true, convId: s(b?.convId) || null, skipped: true } };
+  // The end of a call where nothing was said: no conversation for it.
+  const have = await attached(d, b?.convId, false);
+  if (ended && !have) return { status: 200, body: { ok: true, convId: null } };
+  const id = have ?? (await attached(d, b?.convId, true, role === "user" && !system ? text : "Voice"));
+  const clientId = s(b?.clientId).slice(0, 80) || newMessageId();
+  if (pictureOf(d.vault, id)?.items.some((x) => x.id === clientId)) return { status: 200, body: { ok: true, convId: id, duplicate: true } };
+  const device = b?.device ? voiceDevice(b.device) : null;
+  const tool = b?.tool && typeof b.tool === "object" && s(b.tool.name) ? b.tool : null;
+  let note: NoteData;
+  if (tool) note = { kind: "tool", name: s(tool.name).slice(0, 80), args: toolArgs(tool.args), result: s(tool.result).slice(0, 4000), via: "voice", clientId };
+  else if (system) note = { kind: "notice", text: text.slice(0, 2000), level: "info", clientId };
+  else {
+    // Images Carl sent in the chat while voice was on: saved like any chat capture.
+    const images = role === "user" && Array.isArray(b?.images) && b.images.length ? saveTranscriptImages(d.vault, id, b.images) : [];
+    note = { kind: "line", role, text: text.slice(0, 20_000), via: "voice", voice: true, clientId, ...(device ? { device } : {}), ...(images.length ? { images } : {}) };
   }
-  // Images Carl sent in the chat while voice was on (the voice agent got them):
-  // saved like any chat capture, so the text agent sees them in the thread later.
-  if (msg.role === "user" && Array.isArray(b?.images) && b.images.length) {
-    const attachments = saveTranscriptImages(d.vault, id, b.images);
-    if (attachments.length) msg.attachments = attachments;
-  }
-  await appendMessage(d.vault, id, msg as any);
-  if (!msg.system) {
-    const e = voiceLineEntry(msg.role, text, id);
-    if (e) appendActivity(d.vault, { ...e, ...(cur && typeof cur.project === "string" && cur.project ? { project: cur.project } : {}) });
+  await writeNotes(d.vault, id, [note]);
+  if (!tool && !system) {
+    const e = voiceLineEntry(role, text, id);
+    if (e) appendActivity(d.vault, { ...e, ...(device ? { device } : {}) });
   }
   d.onWrite?.();
   return { status: 200, body: { ok: true, convId: id } };
 }
 
-/** A voice tool call's arguments as the row shows them: an object, long strings cut. */
+/** A tool call's arguments as the row shows them: an object, long strings cut. */
 function toolArgs(a: unknown): Record<string, unknown> {
   if (!a || typeof a !== "object" || Array.isArray(a)) return {};
   const out: Record<string, unknown> = {};
@@ -484,8 +192,8 @@ function toolArgs(a: unknown): Record<string, unknown> {
 }
 
 /** Save a voice line's images under .vault-chat/captures/ (≤ 5, ≤ 15 MB each), as the engine saves a chat's. */
-function saveTranscriptImages(vault: string, convId: string, images: unknown[]): { imageDataUrl: string; capturedFilePath: string }[] {
-  const out: { imageDataUrl: string; capturedFilePath: string }[] = [];
+function saveTranscriptImages(vault: string, convId: string, images: unknown[]): { path: string; dataUrl?: string }[] {
+  const out: { path: string; dataUrl?: string }[] = [];
   images.slice(0, 5).forEach((raw, i) => {
     const img = (raw ?? {}) as { mime?: unknown; dataBase64?: unknown };
     const mime = s(img.mime) || "image/png";
@@ -497,115 +205,251 @@ function saveTranscriptImages(vault: string, convId: string, images: unknown[]):
     const rel = `.vault-chat/captures/${new Date().toISOString().replace(/[:.]/g, "-")}-${convId.slice(0, 8)}-v${i}${ext}`;
     mkdirSync(join(vault, ".vault-chat", "captures"), { recursive: true });
     writeFileSync(join(vault, rel), buf);
-    out.push({ imageDataUrl: buf.length < 400_000 ? `data:${mime};base64,${b64}` : "", capturedFilePath: rel });
+    out.push({ path: rel, ...(buf.length < 400_000 ? { dataUrl: `data:${mime};base64,${b64}` } : {}) });
   });
   return out;
 }
 
-/** ListProjects {project?}: Carl's projects and their chats (read-only, the same answer pi gets). */
-async function projectsText(vault: string, a: Record<string, unknown>): Promise<string> {
-  const { configureContext, ctxConfig, withVault, listProjectsText } = await import("./context");
-  let v = "";
-  try {
-    v = ctxConfig().vault;
-  } catch {
-    /* not configured yet */
-  }
-  if (!v) configureContext({ vault });
-  const { allConvs } = await import("./engine/convs");
-  const convs = (await allConvs(vault).catch(() => [])) as any[];
-  const r = withVault(vault, () => listProjectsText(typeof a.project === "string" ? a.project : null, null, convs));
-  return r.ok ? r.text : `Error: ${r.text}`;
-}
+// ---------------------------------------------------------------- the tool
 
-/** POST /api/v1/voice/tool {name, args}. Never throws: errors are the result the agent hears. */
-export async function voiceTool(d: VoiceDeps, body: any): Promise<{ result: string }> {
+/** POST /api/v1/voice/tool {name, args, convId, device}. Never throws: errors are the result the voice hears. */
+export async function voiceTool(d: VoiceDeps, body: any): Promise<{ result: string; convId?: string }> {
   const name = s(body?.name);
   const args = body?.args ?? body?.arguments ?? body?.parameters ?? {};
   if (!name) return { result: "Error: missing tool name." };
   voiceActivity(d.vault);
   const a = args && typeof args === "object" ? args : {};
-  let result: string;
+  const device = voiceDevice(body?.device);
   try {
-    result = await runTool(d, name, a);
+    if (name === ASK) return await ask(d, a, body?.convId, device);
+    if (SCREEN_TOOLS.has(name)) {
+      return {
+        result:
+          device === "phone"
+            ? `Error: ${name} needs a screen, and this call is on Carl's phone: nothing was looked at or moved. Say you can't see his screen from the phone.`
+            : `Error: ${name} runs on Carl's ${device} itself, and it did not answer: nothing was looked at or moved.`,
+      };
+    }
+    return { result: `Error: "${name}" is not one of your tools. Hand it to the agent with ${ASK} — it has every tool. Nothing was done.` };
   } catch (e) {
-    result = typeof e === "string" ? e : `Error: ${(e as Error)?.message ?? String(e)}`;
+    return { result: `Error: ${typeof e === "string" ? e : ((e as Error)?.message ?? String(e))}. Nothing was done.` };
   }
-  // What voice changed, into the shared stream (AskAgent wrote its own entry before the hand-off).
-  if (name !== "AskAgent") {
-    const e = voiceToolEntry(name, a, result, d.vault);
-    if (e) appendActivity(d.vault, e);
-  }
-  return { result };
 }
 
-/** The voice builder's marker for "this thread's recent turns are in the prompt" (src/voice-elevenlabs buildSystemPrompt). */
-const THREAD_HISTORY_MARK = "Recent conversation context (earlier turns of THIS same thread";
-export const hasThreadHistory = (prompt: string) => prompt.includes(THREAD_HISTORY_MARK);
+/** What the agent is told with a request voice handed over (before Carl's words; not shown in the chat). */
+export const ASK_CONTEXT =
+  "[Carl asked this by voice, on a call (his spoken lines are in this conversation). Do it now, in place; then answer in two or three plain sentences: they are read out to him. Say only what you did and checked.]";
 
-/** The box's one rule on top of the builder's prompt: say only what a tool's result confirms. */
-export const VOICE_TRUTH = [
-  "What your tools did is only what their results say.",
-  "- Say something was done (saved, written, sent, handed over, resolved) only after a tool result says it was, and say where in the result's own words (a note's result names its file and when the laptop gets it).",
-  "- After a Write or Edit, read the changed part back (Read) before you say it is done; for a sweeping change, check every place.",
-  '- A result that starts with "Error" or says nothing changed means it was not done: say that plainly, and why.',
-  "- Never guess where something went or promise where it will show; if Carl asks, read it back (ListNotes, Read) before you answer.",
-  "- If Carl says he can't see it, check with a tool before you agree or disagree.",
-].join("\n");
+/** A request id: the pi message's client id (its item in the transcript). */
+const requestId = () => `ask-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
 
-/** The voice session's prompt: the builder's, then the shared stream's block, then the box's rule (VOICE_TRUTH). */
-export function composeVoicePrompt(base: string, shared: string): string {
-  return [base, shared, VOICE_TRUTH].filter(Boolean).join("\n\n");
+/** Ask {request}: Carl's request to the conversation's agent, as a pi turn in the attached conversation (or into
+ * its running turn, or as the answer to its open question). Returns at once — never waits on the agent, so no
+ * timeout of the call (ElevenLabs' 30 s for a tool, its cascade's 15 s) can drop it; the answer comes back
+ * through /updates. */
+async function ask(d: VoiceDeps, a: Record<string, unknown>, convId: unknown, device: VoiceDevice): Promise<{ result: string; convId?: string }> {
+  const request = s(a.request ?? a.task).trim();
+  if (!request) return { result: `Error: ${ASK} needs the request (Carl's words). Nothing was handed over.` };
+  if (!d.message) return { result: "Error: the agent is not running on the box, so nothing was handed over. Tell Carl it didn't go through." };
+  const id = await attached(d, convId, true, request);
+  const rid = requestId();
+  const out = await d.message({ convId: id, text: request, source: "voice", via: "voice-ask", clientMsgId: rid, client: device, context: ASK_CONTEXT });
+  if (!out || out.error) return { result: `Error: the agent did not take it (${s(out?.error) || "no answer"}). Nothing was done — tell Carl.`, convId: id };
+  const now = out.answered
+    ? `The agent had asked Carl a question; this went to it as his answer (request ${rid}).`
+    : out.steered
+      ? `The agent was already working in this conversation; this was added to its work (request ${rid}).`
+      : `The agent has it (request ${rid}) and is working on it in this conversation.`;
+  return { result: `${now} Its answer will come to you as a message starting [vc:result]. Now say only a short line ("on it"); don't say it is done and don't guess the answer.`, convId: id };
 }
 
-/** The voice session's share of the shared stream: what Carl did lately, and
- * the last exchange of the chat the session was started from (unless
- * `exchange: false` — the prompt carries that chat's turns already). The
- * stream leaves that chat's own exchange out either way. */
-export async function voiceContextBlock(d: VoiceDeps, fromConvId: string | null, o: { exchange?: boolean } = {}): Promise<string> {
-  const parts: string[] = [];
-  let project: string | null = null;
-  if (fromConvId) {
-    try {
-      const { readConv } = await import("./engine/convs");
-      const c = await readConv(d.vault, fromConvId);
-      if (c) {
-        if (typeof c.project === "string" && c.project) project = c.project;
-        if (c.source !== "voice" && o.exchange !== false) {
-          const msgs = (c.messages ?? []).filter((m: any) => !m.hidden && !m.system && s(m.content).trim());
-          const lastUser = [...msgs].reverse().find((m: any) => m.role === "user");
-          const lastAgent = [...msgs].reverse().find((m: any) => m.role === "assistant");
-          if (lastUser || lastAgent) {
-            parts.push(
-              [
-                `This voice session was started from the chat "${clean(c.title, 120)}" (conversation ${c.id}; AskAgent with that conversationId continues it). Its last exchange:`,
-                ...(lastUser ? [`Carl: ${clean(lastUser.content, 600)}`] : []),
-                ...(lastAgent ? [`Agent: ${clean(lastAgent.content, 600)}`] : []),
-              ].join("\n"),
-            );
-          }
+// ---------------------------------------------------------------- updates into the live call
+
+/** One thing to put into a live call: `speak` (a [vc:result] / [vc:question] user message the voice answers
+ * aloud) or not (a [vc:context] contextual update: already handled, never answered). */
+export type VoiceUpdate = { id: string; kind: "result" | "question" | "context" | "you"; text: string; speak: boolean };
+
+const RESULT_CAP = 1500;
+const parseCursor = (c: unknown): { at: number; you: number } | null => {
+  const m = /^(\d+):(\d+)$/.exec(s(c));
+  return m ? { at: Number(m[1]), you: Number(m[2]) } : null;
+};
+const cursorOf = (at: number, you: number) => `${Math.floor(at)}:${Math.floor(you)}`;
+
+/** What happened in the conversation (and elsewhere) since `cur`: the agent's finished answers, its open question,
+ * and the "you" layer. A turn still running is held until it ends (never a half answer). */
+export function voiceUpdatesSince(d: VoiceDeps, convId: string | null, cur: { at: number; you: number }, o: { you?: boolean } = {}): { updates: VoiceUpdate[]; at: number; you: number } {
+  const updates: VoiceUpdate[] = [];
+  let at = cur.at;
+  let you = cur.you;
+  const c = convId ? pictureOf(d.vault, convId) : null;
+  if (c) {
+    const asking = c.meta.asking;
+    if (asking && asking.at > at) {
+      const opts = asking.options?.length ? ` (options: ${asking.options.join(" / ")})` : "";
+      updates.push({ id: `q-${asking.at}`, kind: "question", speak: true, text: controlLine("question", `The agent asks Carl: ${clip(oneLine(asking.question ?? ""), 600)}${opts}. Put it to him in your words; his answer goes back with ${ASK}.`) });
+      at = Math.max(at, asking.at);
+    }
+    if (!c.meta.running) {
+      const fresh = c.items.filter((x) => x.at > cur.at && x.status !== "streaming");
+      const replies = fresh.filter((x) => x.kind === "assistant" && x.via !== "voice" && s(x.text).trim());
+      if (replies.length) {
+        const asked = fresh.some((x) => x.kind === "user" && x.via === "voice-ask");
+        const typed = [...fresh].reverse().find((x) => x.kind === "user" && x.via !== "voice" && x.via !== "voice-ask");
+        const failed = fresh.filter((x) => x.kind === "notice" && x.level === "error").map((x) => oneLine(s(x.text)));
+        const answer = clip(replies.slice(-3).map((x) => s(x.text).trim()).join("\n"), RESULT_CAP);
+        const last = replies[replies.length - 1]!;
+        if (asked) {
+          updates.push({
+            id: `r-${last.id}`,
+            kind: "result",
+            speak: true,
+            text: controlLine("result", `The agent answered: ${answer}${failed.length ? `\n(Its turn reported: ${clip(failed.join(" "), 300)})` : ""}\nTell Carl now, briefly, in your own words — only what it says.`),
+          });
+        } else {
+          updates.push({ id: `c-${last.id}`, kind: "context", speak: false, text: controlLine("context", `Carl typed in the chat${typed ? `: "${clip(oneLine(s(typed.text)), 300)}"` : ""}. The agent answered there: "${clip(oneLine(answer), 600)}". Already answered: don't answer it aloud.`) });
         }
+      } else if (fresh.some((x) => x.kind === "notice" && x.level === "error") && fresh.some((x) => x.kind === "user" && x.via === "voice-ask")) {
+        const why = fresh.filter((x) => x.kind === "notice" && x.level === "error").map((x) => oneLine(s(x.text))).join(" ");
+        updates.push({ id: `f-${fresh[fresh.length - 1]!.id}`, kind: "result", speak: true, text: controlLine("result", `The agent could not do it: ${clip(why, 400)}. Tell Carl it didn't happen.`) });
       }
-    } catch {
-      /* no conversation */
+      if (fresh.length) at = Math.max(at, ...fresh.map((x) => x.at));
     }
   }
-  // Carl's rules and the project's shared notes (project.md): binding on voice as on every surface (the builder loads AGENTS.md-style files only).
-  const proj = await projectContextFor(d.vault, project);
-  if (proj) parts.unshift(proj);
-  // What Carl just did elsewhere: the same "you" layer every pi turn gets (server/activity.ts youLayer).
-  const you = youLayer(d.vault, { convId: fromConvId }).text;
-  if (you) parts.push(you);
-  return parts.join("\n\n");
+  if (o.you !== false) {
+    const y = youLayer(d.vault, { since: cur.you, convId });
+    if (y.text.trim()) updates.push({ id: `y-${y.until}`, kind: "you", speak: false, text: controlLine("context", `What Carl just did on his other surfaces (already handled; use it if he refers to it):\n${y.text}`) });
+    you = Math.max(you, y.until);
+  }
+  return { updates, at, you };
 }
 
-// ---------------------------------------------------------------- the session
+/** GET /api/v1/voice/updates?convId=&cursor=&wait=: long-polled (≤ 25 s). No cursor: the current one, no updates. */
+export async function voiceUpdates(d: VoiceDeps, q: { convId?: string | null; cursor?: string | null; waitMs?: number; signal?: { closed: boolean } }): Promise<{ updates: VoiceUpdate[]; cursor: string }> {
+  const now = Date.now();
+  const cur = parseCursor(q.cursor);
+  if (!cur) return { updates: [], cursor: cursorOf(now, now) };
+  const convId = s(q.convId).trim() || null;
+  const deadline = now + Math.max(0, Math.min(Number(q.waitMs) || 0, 25_000));
+  voiceActivity(d.vault);
+  let lastYou = 0;
+  for (let i = 0; ; i++) {
+    // The layer reads the activity log, the newest board and the notes: every 2 s, not every look.
+    const withYou = Date.now() - lastYou >= 2000;
+    if (withYou) lastYou = Date.now();
+    const r = voiceUpdatesSince(d, convId, cur, { you: withYou });
+    if (r.updates.length || Date.now() >= deadline || q.signal?.closed) return { updates: r.updates, cursor: cursorOf(r.at, r.you) };
+    cur.at = r.at;
+    cur.you = r.you;
+    await new Promise((res) => setTimeout(res, 400));
+  }
+}
 
-/** GET /api/v1/voice/session: a signed ElevenLabs URL for the box's agent
- * (provisioned with the box's key, the same builder the laptop uses), and the
- * session's prompt. The key itself never leaves the box. */
-/** The vault's files for the voice prompt's index, the cheap way: git's index
- * (capped), minus .vault-chat and denied entries. Empty when git can't say. */
+// ---------------------------------------------------------------- the session's context
+
+/** The conversation as voice reads it: pi's session folded (the latest compaction summary, then the recent lines,
+ * typed and spoken), oldest first. "" for none. */
+export function conversationBlock(vault: string, convId: string | null, budget = 6000): string {
+  const p: Picture | null = convId ? pictureOf(vault, convId) : null;
+  if (!p) return "";
+  const items = p.items;
+  let from = 0;
+  let summary = "";
+  for (let i = items.length - 1; i >= 0; i--) {
+    if (items[i]!.kind === "compaction") {
+      summary = s(items[i]!.text).trim();
+      from = i + 1;
+      break;
+    }
+  }
+  const who = (x: Item) =>
+    x.kind === "user" ? (x.via === "voice" ? "Carl (voice)" : x.via === "voice-ask" ? "Carl (by voice, handed to the agent)" : "Carl") : x.via === "voice" ? "You (voice)" : "Agent";
+  // The lines, and the agent's tool calls between them as one short line per run of calls.
+  const lines: string[] = [];
+  let calls: string[] = [];
+  const flush = () => {
+    if (calls.length) lines.push(`(the agent ran ${calls.slice(0, 6).join(", ")}${calls.length > 6 ? `, and ${calls.length - 6} more` : ""})`);
+    calls = [];
+  };
+  for (const x of items.slice(from)) {
+    if (x.kind === "tool" && x.via !== "voice") calls.push(toolLine(x));
+    else if ((x.kind === "user" || x.kind === "assistant") && (s(x.text).trim() || x.images?.length)) {
+      flush();
+      lines.push(`${who(x)}: ${clip(s(x.text).trim(), 400)}${imagesNote(vault, x)}`);
+    }
+  }
+  flush();
+  const cut = Math.max(0, lines.length - 30);
+  lines.splice(0, cut);
+  let total = lines.reduce((n, l) => n + l.length + 1, 0);
+  let start = 0;
+  while (start < lines.length - 1 && total > budget) total -= lines[start++]!.length + 1;
+  const parts = [`This conversation — "${clip(s(p.meta.title), 120)}" (id ${p.id}). Its record so far, oldest first; you speak for it, "Agent" is the agent you hand requests to:`];
+  if (summary) parts.push(`Earlier (the agent's summary of what came before):\n${clip(summary, 2500)}`);
+  if (start + cut > 0) parts.push(`(${start + cut} earlier line${start + cut === 1 ? "" : "s"} left out)`);
+  parts.push(...lines.slice(start));
+  if (p.meta.running) parts.push("(The agent is working on something in this conversation right now.)");
+  if (p.meta.asking) parts.push(`(The agent is waiting for Carl's answer to: "${clip(oneLine(s(p.meta.asking.question)), 300)}".)`);
+  return parts.join("\n");
+}
+
+/** A tool call of the agent's, in a few words: its name and what it was about (never its whole input or result). */
+function toolLine(x: Item): string {
+  const a = (x.args && typeof x.args === "object" ? x.args : {}) as Record<string, unknown>;
+  const about = ["title", "path", "query", "question", "request", "command", "id"].map((k) => a[k]).find((v) => typeof v === "string" && v.trim()) as string | undefined;
+  return `${x.name ?? "a tool"}${about ? ` "${clip(oneLine(about), 80)}"` : ""}${x.status === "error" ? " — it failed" : ""}`;
+}
+
+/** A line's images, said honestly: sent (its pixels come with the call on the phone and the board), or empty. */
+function imagesNote(vault: string, x: Item): string {
+  const imgs = x.images ?? [];
+  if (!imgs.length) return "";
+  const empty = imgs.filter((im) => !/^data:[^,]*,./.test(im.dataUrl ?? "") && !fileBytes(vault, im.path)).length;
+  const ok = imgs.length - empty;
+  const said = ok ? ` [sent ${ok === 1 ? "an image" : `${ok} images`}]` : "";
+  return `${said}${empty ? ` [${empty === 1 ? "an image" : `${empty} images`} arrived empty: you have NOT seen ${empty === 1 ? "it" : "them"}]` : ""}`;
+}
+
+function fileBytes(vault: string, rel: string): number {
+  if (!rel || rel.includes("..")) return 0;
+  try {
+    return statSync(join(vault, ...rel.split("/"))).size;
+  } catch {
+    return 0;
+  }
+}
+
+/** The conversation's newest images (≤ `max`, newest last) as data, for a phone or board call's start (the laptop
+ * pushes them from its own copy). Empty or missing ones are counted, never sent. */
+export function threadImages(vault: string, convId: string | null, max = 3): { images: { mime: string; dataBase64: string }[]; empty: number } {
+  const out: { mime: string; dataBase64: string }[] = [];
+  let empty = 0;
+  const p = convId ? pictureOf(vault, convId) : null;
+  if (!p) return { images: out, empty };
+  const picked: { path: string; dataUrl?: string }[] = [];
+  for (const x of [...p.items].reverse()) {
+    for (const im of x.images ?? []) if (picked.length < max) picked.push(im);
+    if (picked.length >= max) break;
+  }
+  for (const im of picked.reverse()) {
+    const m = /^data:(image\/[a-z0-9.+-]+);base64,(.+)$/i.exec(im.dataUrl ?? "");
+    if (m) {
+      out.push({ mime: m[1]!, dataBase64: m[2]! });
+      continue;
+    }
+    const n = fileBytes(vault, im.path);
+    if (!n || n > 8 * 1024 * 1024) {
+      empty++;
+      continue;
+    }
+    const ext = (im.path.split(".").pop() ?? "").toLowerCase();
+    const mime = ext === "jpg" || ext === "jpeg" ? "image/jpeg" : ext === "webp" ? "image/webp" : ext === "gif" ? "image/gif" : "image/png";
+    out.push({ mime, dataBase64: readFileSync(join(vault, ...im.path.split("/"))).toString("base64") });
+  }
+  return { images: out, empty };
+}
+
+/** The vault's files for the laptop's ShowFile / ScrollTo, the cheap way: git's index (capped), minus .vault-chat and denied entries. */
 export async function fileIndex(vault: string, cap = 2000): Promise<string[]> {
   try {
     const r = await runGit(vault, ["ls-files", "--cached", "--others", "--exclude-standard"]);
@@ -621,34 +465,65 @@ export async function fileIndex(vault: string, cap = 2000): Promise<string[]> {
   }
 }
 
+/** "Current date and time: …" — the voice's "now" (never inferred from files). */
+function nowNote(): string {
+  try {
+    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+    const stamp = new Intl.DateTimeFormat("en-US", { weekday: "long", year: "numeric", month: "long", day: "numeric", hour: "2-digit", minute: "2-digit", timeZoneName: "short", timeZone: tz }).format(new Date());
+    return `Current date and time: ${stamp}.`;
+  } catch {
+    return "";
+  }
+}
+
+const capped = (t: string, n: number) => (t.length > n ? `${t.slice(0, n)}\n…[truncated for voice]` : t);
+
+/** The session's prompt for `convId` on `device` (src/voicePrompt.ts buildVoicePrompt): the vault's voice.md or the
+ * default header, the honesty and Ask rules, the device's truth, Carl's rules, the conversation, the "you" layer. */
+export async function voicePrompt(d: VoiceDeps, convId: string | null, device: VoiceDevice): Promise<string> {
+  const meta = await import("../src/meta");
+  const { loadSessionContext } = await import("../src/context");
+  // (No memory block: the vault's memory is the agent's to read and write — voice has no files of its own.)
+  const [header, northStar, rules] = await Promise.all([
+    meta.loadVaultVoicePrompt(d.vault).catch(() => ""),
+    meta.loadVaultNorthStar(d.vault).catch(() => ""),
+    loadSessionContext(d.vault).catch(() => ""),
+  ]);
+  const p = convId ? pictureOf(d.vault, convId) : null;
+  const project = typeof p?.meta.project === "string" && p.meta.project ? await projectContextFor(d.vault, p.meta.project) : "";
+  return buildVoicePrompt({
+    device,
+    header,
+    now: nowNote(),
+    northStar: meta.northStarPromptBlock(northStar),
+    rules: capped(rules, 6000),
+    project,
+    conversation: conversationBlock(d.vault, convId),
+    you: youLayer(d.vault, { convId }).text,
+    ...(device === "laptop" ? { fileIndex: await fileIndex(d.vault), vaultRoot: d.vault } : {}),
+  });
+}
+
+// ---------------------------------------------------------------- the session
+
+/** GET /api/v1/voice/session: a signed ElevenLabs URL (and a WebRTC token) for the box's voice agent on `device`
+ * (provisioned with that device's tools, src/voicePrompt.ts voiceToolDefs), and the prompt for the conversation
+ * `convId` it is attached to (none: a new conversation, made by its first line or request). The key never leaves the box. */
 export async function voiceSession(
   convId: string | null,
   d: VoiceDeps,
-  choice: { llm?: string | null; voice?: string | null } = {},
+  choice: { llm?: string | null; voice?: string | null; device?: string | null } = {},
 ): Promise<{ status: number; body: Record<string, unknown> }> {
   const v = await import("../src/voice-elevenlabs");
-  // The laptop's Settings choice (voice model, voice) — the box's agent follows
-  // it; a changed model re-provisions the agent (ensureAgent compares).
+  const device = voiceDevice(choice.device);
+  // The laptop's Settings choice (voice model, voice): the box's agent follows it; a changed model re-provisions.
   if (choice.llm && v.SUPPORTED_VOICE_LLMS.has(choice.llm)) localStorage.setItem("vault_chat_elevenlabs_llm", choice.llm);
   if (choice.voice && /^[A-Za-z0-9]{8,40}$/.test(choice.voice)) localStorage.setItem("vault_chat_elevenlabs_voice", choice.voice);
   v.resetAgentCreateBreaker();
-  // Another vault than the store's: its working copy, its own conversation for
-  // the history, and an agent of its own (its own tools).
-  const other = d.main === false;
-  // The thread's turns, from the box's own conversation (pi's session as the feed folds it), in every vault: the
-  // headless store's copy has no voice conversation's lines, so a session continuing one (the board keeps one
-  // for as long as Carl is on it) was built without them.
-  let history: any[] | undefined;
-  if (convId) {
-    const { readConv } = await import("./engine/convs");
-    history = ((await readConv(d.vault, convId).catch(() => null))?.messages ?? []) as any[];
-  }
-  const ctx = await v.buildPhoneVoiceContext(convId || undefined, {
-    agentOnBox: true,
-    fileIndex: await fileIndex(d.vault),
-    ...(other ? { vault: d.vault, history: history ?? [], slot: `vault:${d.name ?? d.vault}` } : history?.length ? { history } : {}),
-  });
-  if (!ctx) {
+  // One provisioned agent per vault and device (each device's own tools).
+  const slot = `${d.main === false ? `vault:${d.name ?? d.vault}` : "main"}:${device}`;
+  const agent = await v.voiceAgent({ device, slot });
+  if (!agent) {
     const err = v.getLastAgentCreateError();
     return {
       status: 503,
@@ -661,30 +536,32 @@ export async function voiceSession(
       },
     };
   }
-  // The builder already carries this thread's recent turns when it found them: then not its last exchange again.
-  const shared = await voiceContextBlock(d, convId, { exchange: !hasThreadHistory(ctx.systemPrompt) }).catch(() => "");
-  const systemPrompt = composeVoicePrompt(ctx.systemPrompt, shared);
-  // Both credentials, minted at once: a WebRTC conversation token (the
-  // recommended transport) and a signed URL (WebSocket: Linux webviews, older clients).
-  const [signedUrl, conversationToken] = await Promise.all([
-    v.getSignedUrl(ctx.elKey, ctx.agentId, other ? `vault:${d.name ?? d.vault}` : undefined),
-    v.getConversationToken(ctx.elKey, ctx.agentId),
-  ]);
+  const id = await attached(d, convId, false);
+  const systemPrompt = await voicePrompt(d, id, device);
+  const cursor = cursorOf(Date.now(), Date.now());
+  // Both credentials, minted at once: a WebRTC conversation token (the recommended transport) and a signed URL (WebSocket).
+  const [signedUrl, conversationToken] = await Promise.all([v.getSignedUrl(agent.elKey, agent.agentId, slot), v.getConversationToken(agent.elKey, agent.agentId)]);
   if (!signedUrl && !conversationToken) return { status: 502, body: { error: "ElevenLabs refused a signed URL and a conversation token" } };
   // Someone is about to talk: the box is busy until the session's end line (or VOICE_IDLE_MS of silence).
   voiceActivity(d.vault);
+  const imgs = device === "laptop" ? { images: [], empty: 0 } : threadImages(d.vault, id);
   return {
     status: 200,
     body: {
       signedUrl,
       conversationToken,
-      agentId: ctx.agentId,
-      voiceId: ctx.voiceId,
+      agentId: agent.agentId,
+      voiceId: agent.voiceId,
       systemPrompt,
-      dynamicVariables: ctx.dynamicVariables,
-      toolNames: ctx.toolNames,
-      // Where the prompt's absolute paths point (a client maps them back for ScrollTo).
-      vaultRoot: ctx.vault,
+      dynamicVariables: device === "laptop" ? { viewport_context: "(no document open)" } : {},
+      toolNames: voiceToolNames(device),
+      device,
+      convId: id,
+      cursor,
+      images: imgs.images,
+      ...(imgs.empty ? { emptyImages: imgs.empty } : {}),
+      // Where the prompt's paths point (the laptop maps them back for ScrollTo).
+      vaultRoot: d.vault,
       onBox: true,
     },
   };

@@ -16,7 +16,7 @@
 // A record at or below the picture's `seq` is skipped: replaying an overlap (a
 // reconnect, a checkpoint plus its tail) never applies anything twice.
 import type { ConvMeta, ConvRow, ItemImage, LogRecord, PendingInput, PiBlock, PiEntry, PiMessage, Todo } from "./protocol";
-import { VC_NOTE } from "./protocol";
+import { VC_NOTE, VC_VOICE } from "./protocol";
 
 /** Bumped when the fold's meaning changes: a checkpoint from another version is folded again. */
 export const REDUCER_VERSION = 3;
@@ -196,8 +196,10 @@ function onEntry(d: Draft, r: Extract<LogRecord, { type: "entry" }>): void {
     place(d, [{ id: e.id, kind: "compaction", status: "done", text: String(e.summary ?? ""), at: r.at }]);
     return;
   }
-  if (e.type === "custom" && e.customType === VC_NOTE) {
-    const data = e.data ?? {};
+  // A line said on a voice call: in pi's context (a custom_message), shown as the line it is.
+  const voiceLine = e.type === "custom_message" && e.customType === VC_VOICE;
+  if ((e.type === "custom" && e.customType === VC_NOTE) || voiceLine) {
+    const data = (voiceLine ? (e.details as any) : e.data) ?? {};
     if (data.kind === "line") {
       // A line vault-chat wrote (voice, a message pi never took): Carl's or an agent's.
       const user = data.role === "user";
@@ -477,13 +479,15 @@ export function reduceRow(row: RowState, r: LogRecord): RowState {
     if (r.entry.type === "message" && m?.role === "toolResult" && m.toolName === "AskUser" && /^Carl answered: /.test(textOf(m.content))) {
       return { ...row, seq: r.seq, lastActivityAt: Math.max(row.lastActivityAt, r.at) };
     }
-    const line = r.entry.type === "custom" && r.entry.customType === VC_NOTE && r.entry.data?.kind === "line";
-    const role = line ? (r.entry.data.role === "user" ? "user" : "assistant") : r.entry.message?.role;
+    const voice = r.entry.type === "custom_message" && r.entry.customType === VC_VOICE;
+    const data = voice ? (r.entry.details as any) : r.entry.data;
+    const line = (voice || (r.entry.type === "custom" && r.entry.customType === VC_NOTE)) && data?.kind === "line";
+    const role = line ? (data.role === "user" ? "user" : "assistant") : r.entry.message?.role;
     if (!line && (r.entry.type !== "message" || (role !== "user" && role !== "assistant"))) return { ...row, seq: r.seq };
     const n = { ...row, seq: r.seq };
     if (r.at > n.lastActivityAt) n.lastActivityAt = r.at;
     if (role === "user" && n.title === NEW_CHAT) {
-      const text = line ? String(r.shown ?? r.entry.data.text ?? "") : (r.shown ?? textOf(r.entry.message!.content));
+      const text = line ? String(r.shown ?? data.text ?? "") : (r.shown ?? textOf(r.entry.message!.content));
       if (text.trim() && (line || !["wake", "nudge", "resume", "job"].includes(r.via ?? ""))) n.title = titleFrom(text);
     }
     return n;

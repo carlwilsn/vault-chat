@@ -30,7 +30,8 @@ export function sendFilesMessage(conv: VoiceImageSink, text: string | undefined,
   for (const [i, fileId] of ids.entries()) conv.sendMultimodalMessage({ ...(i === 0 && text ? { text } : {}), fileId });
 }
 
-export type PushResult = "sent" | "duplicate" | "too-large" | "unsupported" | "failed";
+/** "empty": the image had no bytes — never uploaded (the model would describe a picture it never got, P17). */
+export type PushResult = "sent" | "duplicate" | "too-large" | "unsupported" | "empty" | "failed";
 
 /** 10 MB: a phone photo fits; anything bigger is shrunk first (when the page can) or skipped. */
 export const MAX_IMAGE_UPLOAD_BYTES = 10 * 1024 * 1024;
@@ -179,6 +180,10 @@ export class VoiceImagePusher {
           out.push("unsupported");
           continue;
         }
+        if (!it.blob.size) {
+          out.push("empty");
+          continue;
+        }
         this.inFlight.add(it.key);
         claimed.push(it.key);
         let body: Blob | null = it.blob;
@@ -227,6 +232,7 @@ export class VoiceImagePusher {
   async push(sink: VoiceImageSink, key: string, blob: Blob, note: string, still: () => boolean = () => true): Promise<PushResult> {
     if (this.sent.has(key) || this.inFlight.has(key)) return "duplicate";
     if (!blob.type.startsWith("image/")) return "unsupported";
+    if (!blob.size) return "empty";
     this.inFlight.add(key);
     try {
       let body: Blob | null = blob;

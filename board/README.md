@@ -120,20 +120,22 @@ or a pinned copy the server installs into its state dir on first use (`VC_ESBUIL
 
 ## Voice
 
-The mic in the top-right controls talks to the box's one voice agent, by the phone's path
-(`server/voice.ts`: the session, its tools, its transcript): no agent, tool or memory of the board's own
-(`src/voice.ts`, the pill: `src/voicePill.ts`). It keeps ONE conversation for as long as Carl is on the
-board: the first start continues his most recently active chat (`GET /conversations`, the phone's filter), and
-every later start — after a drop, after he ends it and taps the mic again, after a reload (remembered 12 h) —
-continues the board's thread, the voice conversation its lines went into; the box builds the session's prompt
-from that thread's turns. Only picking another chat in the pill's title changes it. A session that closes by
+The mic in the top-right controls is the voice of one conversation (D3, `server/voice.ts`), as on the
+phone and the laptop: no agent, tool or memory of the board's own (`src/voice.ts`, the pill:
+`src/voicePill.ts`). The box builds the session's prompt from that conversation's pi session and the "you"
+layer; every line said goes into it; its one tool that acts, Ask, hands Carl's request to that
+conversation's agent, and the agent's answer comes back into the call (`GET /api/v1/voice/updates`). It
+attaches to Carl's most recently active chat (`GET /conversations`, the phone's filter), or the one he picked
+in the pill's title for as long as he is active nowhere else; since its lines go into that chat, a drop, a
+mic restart and a reload all continue it, and a chat he then continues on the laptop is followed. A session that closes by
 itself turns the pill red with the reason ("Voice disconnected (…). Tap the mic to go on with this chat."), and
 every close is in the board's log (`voice.close`: who closed it — mic, pill, switch or remote — the SDK's
 reason and code, the transport, how long it was live). While live, at the start and 1.5 s after each edit, the voice agent gets a contextual update
 (the board's name, the inbox parts on it with their labels, the ink) and a picture of the visible region
 through the laptop's image path (`src/voiceImages.ts`, keyed by content: an unchanged picture is not sent
-again); both wait while the agent speaks (`src/voiceQuiet.ts`). Sends still go through BoardSend/BoardMake
-(AskAgent), and a landed entry is mentioned at the next pause. A failed start turns the pill red with one
+again); both wait while the agent speaks (`src/voiceQuiet.ts`). LookAtScreen is answered by the board itself
+(a fresh picture of the view). Sends go through the agent's BoardSend/BoardMake (Ask), and a landed entry is
+mentioned at the next pause. The conversation's newest images go with the call's start. A failed start turns the pill red with one
 line. `?voice=fake` swaps the SDK and the session for `src/voiceFake.ts` (`window.__voiceFake` logs what was
 sent). Tests: `test/harness/board-voice.test.ts`.
 

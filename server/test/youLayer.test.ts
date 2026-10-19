@@ -228,6 +228,26 @@ describe.skipIf(!PI_DIR)("the you layer with the real pi 1.1.0 and ext/vc.mjs", 
     await rsend("REAL-3 and again", conv);
     expect(layers((await rmeta(conv)).threadPath).length).toBe(2);
   }, 240_000);
+
+  it("a voice call's lines go into the conversation's pi session through pi (vc-voice custom messages), and the model gets them on the next turn", async () => {
+    const conv = await rsend("REAL-V1 a chat voice will join");
+    // While pi has the session open: the box's /vc-note with `voice` → pi.sendMessage (no turn of its own).
+    const n = chat.calls.length;
+    for (const [role, text] of [["user", "REAL-VOICE what is lemma 2 again?"], ["assistant", "REAL-VOICE-REPLY the contraction lemma."]] as const) {
+      const r = await rpost("/api/v1/voice/transcript", { convId: conv, role, text, device: "phone" });
+      expect(r.convId).toBe(conv);
+    }
+    await new Promise((r) => setTimeout(r, 500));
+    expect(chat.calls.length).toBe(n);
+    const file = (await rmeta(conv)).threadPath;
+    const said = entries(file).filter((e) => e.type === "custom_message" && e.customType === "vc-voice");
+    expect(said.map((e) => e.content)).toEqual(["[voice call] Carl said: REAL-VOICE what is lemma 2 again?", "[voice call] You said to Carl (spoken by your voice): REAL-VOICE-REPLY the contraction lemma."]);
+    // The next typed turn: the model gets both lines from pi's own context.
+    await rsend("REAL-V2 and what did I just ask by voice?", conv);
+    const sent = JSON.stringify(chat.calls.at(-1));
+    expect(sent).toContain("[voice call] Carl said: REAL-VOICE what is lemma 2 again?");
+    expect(sent).toContain("REAL-VOICE-REPLY the contraction lemma.");
+  }, 240_000);
 });
 
 // ---------------------------------------------------------------- the builder
@@ -253,7 +273,7 @@ describe("buildYouLayer", () => {
     expect(l.text).not.toContain("SECRET-REPLY");
   });
 
-  it("the reader's own conversation and other conversations' replies stay out; its own voice lines stay in", () => {
+  it("the reader's own conversation (its voice lines too: they are in its pi session) and other conversations' replies stay out", () => {
     const es = [
       E(3, { kind: "chat", modality: "chat", text: "Mine", detail: 'Carl: "my own message"', convId: "me" }),
       E(3, { kind: "capture", modality: "chat", text: 'pasted into "Mine"', path: ".vault-chat/captures/mine.png", convId: "me" }),
@@ -265,8 +285,8 @@ describe("buildYouLayer", () => {
     expect(t).not.toContain("my own message");
     expect(t).not.toContain("mine.png");
     expect(t).not.toContain("OTHER-VOICE-REPLY");
-    expect(t).toContain("MY-VOICE-REPLY");
-    expect(t).toContain('Carl said: "rename lemma 2"');
+    expect(t).not.toContain("MY-VOICE-REPLY");
+    expect(t).toContain('Voice (in chat other): Carl said: "rename lemma 2"');
   });
 
   it("holds its budget: a busy hour stays under maxChars, newest kept, the rest counted", () => {

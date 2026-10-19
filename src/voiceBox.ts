@@ -1,12 +1,13 @@
-// Voice in box mode: when the vault runs on a box, voice is the box's — one
-// agent, one key place. The box mints the session (GET /api/v1/voice/session:
-// its agent, its prompt with its vault index), the vault tools run there
-// (POST /api/v1/voice/tool — the box's working copy, its sandbox, its agent),
-// and the session's transcript is saved there as a conversation of its own
-// (POST /api/v1/voice/transcript). Paths the agent builds from this laptop's
-// vault root are sent vault-relative, so they mean the same file on the box.
-// Tools that move the user's screen never go there (LOCAL_VOICE_TOOLS).
-import { boxGet, boxLinkFor, boxPost, boxOutgoingLine, boxRekey, newClientId, type Link } from "./boxChat";
+// Voice in box mode: voice is the box's — one agent, one key place — and the
+// front of house of the conversation that is open (D3). The box mints the
+// session (GET /api/v1/voice/session: its agent for this laptop, its prompt from
+// the conversation's pi session), runs voice's one tool that acts (POST
+// /api/v1/voice/tool: Ask, a request to the conversation's agent), saves every
+// line into that conversation (POST /api/v1/voice/transcript), and hands the
+// live call its updates (GET /api/v1/voice/updates). Paths the voice builds
+// from this laptop's vault root are sent vault-relative. Tools that read or
+// move the screen never go there (LOCAL_VOICE_TOOLS).
+import { boxGet, boxLinkFor, boxPost, boxOutgoingLine, newClientId, type Link } from "./boxChat";
 import { useStore, type ChatMessage } from "./store";
 
 const PATH_KEYS = ["path", "cwd", "source_path"];
@@ -32,21 +33,34 @@ type Post = (link: Link, path: string, payload: Record<string, unknown>) => Prom
  * runs in that vault's working copy and engine) and the tool runner. */
 export type BoxVoice = { link: Link; vault: string; tool: (name: string, args: unknown) => Promise<string> };
 
-/** The remote runner for one link. */
-export function voiceToolVia(link: Link, vault: string, post: Post = boxPost) {
+/** The remote runner for one link (its tools run in the conversation `convId()` names). */
+export function voiceToolVia(link: Link, vault: string, post: Post = boxPost, convId: () => string | null = () => null) {
   return async (name: string, args: unknown): Promise<string> => {
-    const r = await post(link, "/api/v1/voice/tool", { name, args: relativeArgs(args, vault) });
+    const r = await post(link, "/api/v1/voice/tool", { name, args: relativeArgs(args, vault), convId: convId(), device: "laptop" });
     if (!r.ok) return `Error: the box did not run ${name} (${r.error ?? "unreachable"}).`;
     return typeof r.data?.result === "string" ? r.data.result : JSON.stringify(r.data ?? {});
   };
 }
 
 /** The box `vault` runs on, or null (voice runs here). */
-export async function boxVoice(vault: string | null, post: Post = boxPost): Promise<BoxVoice | null> {
+export async function boxVoice(vault: string | null, post: Post = boxPost, convId: () => string | null = () => useStore.getState().activeConversationId): Promise<BoxVoice | null> {
   if (!vault) return null;
   const link = await boxLinkFor(vault).catch(() => null);
   if (!link) return null;
-  return { link, vault, tool: voiceToolVia(link, vault, post) };
+  return { link, vault, tool: voiceToolVia(link, vault, post, convId) };
+}
+
+/** One long poll of the call's updates (server/voice.ts voiceUpdates): the agent's answers and what Carl did elsewhere. */
+export async function boxVoiceUpdates(
+  link: Link,
+  convId: string,
+  cursor: string | null,
+  get: (link: Link, path: string, timeoutMs?: number) => Promise<any> = boxGet,
+): Promise<{ updates: { id: string; kind: string; text: string; speak: boolean }[]; cursor: string }> {
+  const q = new URLSearchParams({ convId, wait: "20000" });
+  if (cursor) q.set("cursor", cursor);
+  const r = await get(link, `/api/v1/voice/updates?${q}`, 30_000);
+  return { updates: Array.isArray(r?.updates) ? r.updates : [], cursor: typeof r?.cursor === "string" ? r.cursor : (cursor ?? "") };
 }
 
 /** The remote runner when `vault` runs on a box, else null (tools run here). */
@@ -64,6 +78,8 @@ export type BoxVoiceSession = {
   toolNames: string[];
   vaultRoot?: string;
   dynamicVariables?: Record<string, string>;
+  /** Where the call's updates start (GET /api/v1/voice/updates). */
+  cursor?: string | null;
 };
 
 /** The box's session for this vault. `unreachable`: the box did not answer
@@ -76,6 +92,7 @@ export async function boxVoiceSession(
 ): Promise<{ session?: BoxVoiceSession; error?: string; unreachable?: boolean; unsupported?: boolean }> {
   const q = new URLSearchParams();
   if (convId) q.set("convId", convId);
+  q.set("device", "laptop");
   // This laptop's Settings → voice model and voice: the box's agent uses them.
   try {
     const llm = localStorage.getItem("vault_chat_elevenlabs_llm");
@@ -99,12 +116,11 @@ export async function boxVoiceSession(
   }
 }
 
-/** Save a voice session's lines on the box, in order. The first line names
- * the local thread (`localId`); the box answers with its conversation's id and
- * the local thread moves to it (rekeyConversation), so the list shows the
- * box's copy like any box chat. */
-export function voiceTranscriptMirror(b: BoxVoice, localId: string, fromConvId: string | null, post: Post = boxPost) {
-  let id = localId;
+/** Save a call's lines on the box, in order, into the conversation voice is attached to (`convId`: the box makes
+ * it under this id when it is a new chat). `done()` resolves once every line so far is saved (Ask waits on it, so
+ * the agent reads Carl's words before his request). */
+export function voiceTranscriptMirror(b: BoxVoice, convId: string, post: Post = boxPost) {
+  const id = convId;
   let chain: Promise<unknown> = Promise.resolve();
   const push = (m: ChatMessage): Promise<unknown> => {
     const call = m.toolCalls?.[0];
@@ -121,9 +137,9 @@ export function voiceTranscriptMirror(b: BoxVoice, localId: string, fromConvId: 
         .filter((x): x is RegExpExecArray => !!x)
         .slice(0, 5)
         .map((x) => ({ mime: x[1]!, dataBase64: x[2]! }));
-      const r = await post(b.link, "/api/v1/voice/transcript", {
+      await post(b.link, "/api/v1/voice/transcript", {
         convId: id,
-        ...(fromConvId && fromConvId !== id ? { fromConvId } : {}),
+        device: "laptop",
         role: m.role === "user" ? "user" : "assistant",
         text,
         clientId,
@@ -131,12 +147,6 @@ export function voiceTranscriptMirror(b: BoxVoice, localId: string, fromConvId: 
         ...(call ? { tool: { name: call.name, args: call.input ?? {}, result: call.result ?? "" } } : {}),
         ...(images.length ? { images } : {}),
       });
-      const next = typeof r.data?.convId === "string" ? r.data.convId : null;
-      if (r.ok && next && next !== id) {
-        useStore.getState().rekeyConversation(id, next);
-        boxRekey(id, next);
-        id = next;
-      }
     });
     return chain;
   };

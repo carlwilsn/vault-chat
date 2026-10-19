@@ -51,6 +51,10 @@ export type PiMessage = {
 
 /** vault-chat's own entries in a pi session (a pi custom entry; not in the model's context). */
 export const VC_NOTE = "vc-note";
+/** A line said on a voice call (Carl's or the voice's): a pi custom_message, so it IS in the model's
+ *  context — the conversation's agent hears what was said by voice on its next turn. Its `details`
+ *  hold the line as a vc-note line holds it ({kind: "line", role, text, via: "voice", clientId}). */
+export const VC_VOICE = "vc-voice";
 
 export type Todo = { content: string; status: "pending" | "in_progress" | "completed"; activeForm?: string };
 export type ItemImage = { path: string; dataUrl?: string };

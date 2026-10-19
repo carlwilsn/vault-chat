@@ -50,6 +50,7 @@ import { PiFeed } from "./piFeed";
 import { READ_ONLY_TOOLS, type SideState } from "./pi/side";
 import { TurnRecorder, type TurnLine } from "./turnLog";
 import { SERVER_VERSION } from "../config";
+import { runVaultTool, vaultToolSpecsFor } from "../vaultTools";
 
 export type EngineDeps = {
   vault: string;
@@ -78,6 +79,8 @@ export type EngineDeps = {
   vaultName?: string;
   /** One structured line per turn (turnLog.ts): the box's turn log and the journal. */
   turnLog?: (line: TurnLine) => void;
+  /** The per-command sandbox the vault's own tools run in (server/vaultTools.ts); null: none (not Linux). */
+  shell?: () => string[] | null | undefined;
 };
 
 type TurnKind = "user" | "wake" | "nudge" | "resume";
@@ -341,6 +344,9 @@ export function sideToolSpecs(): ToolSpec[] {
 }
 
 const text = (t: string) => ({ success: true, contentItems: [{ type: "inputText", text: t }] });
+
+/** pi's own tools (and the subagent tool): a vault tool of the same name is not registered over them. */
+const PI_BUILTIN_TOOLS = ["read", "write", "edit", "bash", "grep", "find", "ls", "subagent"];
 
 
 export class Engine {
@@ -633,7 +639,7 @@ export class Engine {
     context?: string;
     images?: { name?: string; mime?: string; dataBase64?: string }[];
     imagePaths?: string[];
-    /** Who started it: "voice" (the voice agent's AskAgent); a phone chat otherwise. */
+    /** Who started it: "voice" (the voice's Ask); a phone chat otherwise. */
     source?: string;
     /** Hold it until the running turn ends (a follow-up), instead of steering. */
     queue?: boolean;
@@ -642,6 +648,8 @@ export class Engine {
     mode?: "steer";
     /** Which client sent it (laptop, phone, board): the turn log's `via`. */
     client?: string;
+    /** How the message shows (its item's `via`): "voice-ask" for a request voice handed over (server/voice.ts Ask). */
+    via?: string;
   }): Promise<Record<string, unknown> | null> {
     const clientId = typeof body.clientMsgId === "string" && body.clientMsgId.trim() ? body.clientMsgId.trim().slice(0, 80) : newMessageId();
     if (typeof body?.unqueue === "string" && body.convId) return this.takeBack(body.convId, body.unqueue);
@@ -674,8 +682,10 @@ export class Engine {
         this.log(`project ${body.project}: ${(e as Error).message}`);
       }
     }
-    const { paths, itemImages } = this.saveImages(id, body);
+    const { paths, itemImages, empty } = this.saveImages(id, body);
     let context = typeof body.context === "string" && body.context.trim() ? body.context.trim() : undefined;
+    // An attachment that arrived empty is said, never guessed at (P17: the agent described an image it never got).
+    if (empty) context = [context, `[Carl attached ${empty === 1 ? "an image" : `${empty} images`}, but ${empty === 1 ? "it" : "they"} arrived empty (no data): you have NOT seen ${empty === 1 ? "it" : "them"}. Say so plainly; don't guess what ${empty === 1 ? "it shows" : "they show"}.]`].filter(Boolean).join("\n\n");
     const shown = textIn || "(image)";
     // "This plot", "what I circled": the latest capture itself goes with the turn (one, capped), once per chat.
     const given = this.imagesGiven.get(id) ?? new Set<string>();
@@ -721,7 +731,7 @@ export class Engine {
       // until pi takes it, and enters the transcript where pi puts it.
       const kind = body.queue ? "queue" : "steer";
       this.setPending(id, { id: clientId, kind, text: shown, at: Date.now() });
-      l.feed.expect({ kind, text: sent, clientId, shown, via: kind, images: itemImages });
+      l.feed.expect({ kind, text: sent, clientId, shown, via: body.via ?? kind, images: itemImages });
       l.rec.q(kind, clientId);
       try {
         if (kind === "queue") await this.d.backend.followUp(l.threadId, { texts: [sent], images: paths });
@@ -736,7 +746,7 @@ export class Engine {
       }
     }
     const origin = body.source === "voice" ? "voice" : typeof body.client === "string" && body.client ? body.client.slice(0, 20) : body.source ? String(body.source).slice(0, 20) : undefined;
-    void this.run(id, shown, "user", { images: paths, context, itemImages, clientId, origin }).catch((e) => this.log(`turn failed: ${e}`));
+    void this.run(id, shown, "user", { images: paths, context, itemImages, clientId, origin, ...(body.via ? { via: body.via } : {}) }).catch((e) => this.log(`turn failed: ${e}`));
     return { ok: true, convId: id };
   }
 
@@ -764,15 +774,19 @@ export class Engine {
     return { ok: true, convId, unqueued: id };
   }
 
-  private saveImages(convId: string, body: { images?: { name?: string; mime?: string; dataBase64?: string }[]; imagePaths?: string[] }): { paths: string[]; itemImages: ItemImage[] } {
+  private saveImages(convId: string, body: { images?: { name?: string; mime?: string; dataBase64?: string }[]; imagePaths?: string[] }): { paths: string[]; itemImages: ItemImage[]; empty: number } {
     const paths: string[] = [];
     const itemImages: ItemImage[] = [];
+    let empty = 0;
     const dir = join(this.d.vault, ".vault-chat", "captures");
     (body.images ?? []).slice(0, 8).forEach((img, i) => {
       const b64 = String(img?.dataBase64 ?? "").replace(/^data:[^,]*,/, "");
-      if (!b64) return;
       const buf = Buffer.from(b64, "base64");
-      if (!buf.length || buf.length > 15 * 1024 * 1024) return;
+      if (!buf.length) {
+        empty++;
+        return;
+      }
+      if (buf.length > 15 * 1024 * 1024) return;
       const mime = String(img?.mime ?? "image/png");
       const ext = mime.includes("jpeg") || mime.includes("jpg") ? ".jpg" : mime.includes("webp") ? ".webp" : mime.includes("gif") ? ".gif" : ".png";
       const rel = `.vault-chat/captures/${new Date().toISOString().replace(/[:.]/g, "-")}-${convId.slice(0, 8)}-${i}${ext}`;
@@ -787,7 +801,7 @@ export class Engine {
       paths.push(join(this.d.vault, rel));
       itemImages.push({ path: rel });
     }
-    return { paths, itemImages };
+    return { paths, itemImages, empty };
   }
 
   /** /answer. null → legacy path. */
@@ -990,7 +1004,7 @@ export class Engine {
       let threadId: string;
       let fresh: boolean;
       try {
-        ({ threadId, fresh } = await this.ensureThread(conv));
+        ({ threadId, fresh } = await this.ensureThread(conv, kind === "user" ? (opts.shown ?? input) : null));
         conv = (await readConv(this.d.vault, convId)) ?? conv;
       } catch (e) {
         await fail(`⚠️ The engine could not open this conversation's thread: ${(e as Error).message}`);
@@ -1090,7 +1104,7 @@ export class Engine {
     return { text: r.text, until: r.until };
   }
 
-  private async ensureThread(conv: EngineConv): Promise<{ threadId: string; fresh: boolean }> {
+  private async ensureThread(conv: EngineConv, current: string | null = null): Promise<{ threadId: string; fresh: boolean }> {
     const model = this.d.model();
     // Subagents only for models where they work (learned from use; see capabilities.ts).
     const subagents = capabilitiesOf(model).subagents;
@@ -1109,17 +1123,23 @@ export class Engine {
     }
     const note = capabilityNote(model);
     const instructions = buildDeveloperInstructions(conv as any, { rolePrompt: ENGINE_ROLE_PROMPT + (note ? `\n\n${note}` : "") });
+    const builtin = agentToolSpecs();
+    // Carl's own vault tools (.vault-chat/tools): the agent's on every surface (voice reaches them through it).
+    const own = await vaultToolSpecsFor(this.d.vault, [...builtin.map((t) => t.name), ...PI_BUILTIN_TOOLS]);
     const { threadId, ref } = await this.d.backend.startThread({
       cwd: this.d.vault,
       model,
       instructions,
-      tools: agentToolSpecs() as any,
+      tools: [...builtin, ...own] as any,
       subagents,
     });
     this.byThread.set(threadId, conv.id);
     this.rulesSent.set(threadId, rulesPrefixForTurn(conv as any)); // the instructions carry them in full
-    // History from before this thread (a legacy chat, or a retry on a fresh thread): hand it over once.
-    const old = conv.messages.filter((m) => !m.hidden && !m.system && (m.content ?? "").trim()).slice(0, -1);
+    // History from before this thread (a legacy chat, a voice call's lines, a retry on a fresh thread): hand it over
+    // once — without this turn's own message when it is already there (a retry).
+    const said = conv.messages.filter((m) => !m.hidden && !m.system && (m.content ?? "").trim());
+    const last = said[said.length - 1];
+    const old = last && last.role === "user" && current !== null && last.content.trim() === current.trim() ? said.slice(0, -1) : said;
     if (old.length && !conv.messages.some((m: any) => m.rollover)) {
       const t = old.slice(-30).map((m) => `${m.role}: ${(m.content ?? "").slice(0, 1500)}`).join("\n");
       this.handover.set(conv.id, `<earlier_conversation>\n${t.slice(-12_000)}\n</earlier_conversation>`);
@@ -1567,8 +1587,12 @@ export class Engine {
           if (!target) return text(`No conversation ${a.conversation}.`);
           return text(`Conversation "${target.title}": $${(target.costUsd ?? 0).toFixed(4)}${target.costMissingCalls ? ` (+${target.costMissingCalls} call(s) without a cost)` : ""}. (Costs land a few seconds after each turn.)`);
         }
-        default:
+        default: {
+          // One of Carl's own vault tools (.vault-chat/tools), run in the command sandbox.
+          const out = await runVaultTool(vault, this.d.shell?.(), name, a);
+          if (out !== null) return { success: !/^(Error|exit \d|\(timed out\))/.test(out), contentItems: [{ type: "inputText", text: out }] };
           return { success: false, contentItems: [{ type: "inputText", text: `Unknown tool ${name}.` }] };
+        }
       }
     } catch (e) {
       return { success: false, contentItems: [{ type: "inputText", text: `${name} failed: ${(e as Error).message}` }] };

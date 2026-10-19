@@ -25,7 +25,7 @@ import { Type } from "typebox";
 import { createBashToolDefinition } from "@earendil-works/pi-coding-agent";
 import { registerSubagentTool } from "./subagent.mjs";
 import { registerPdfParts } from "./pdf.mjs";
-import { YOU_TYPE, addCacheMarkers, costFromStreamEvent, guardToolCall, resolveList, scrubEnv, shq, toTypebox, wakeGate, youSince } from "./policy.mjs";
+import { VOICE_TYPE, YOU_TYPE, addCacheMarkers, costFromStreamEvent, guardToolCall, resolveList, scrubEnv, shq, toTypebox, voiceLineContent, wakeGate, youSince } from "./policy.mjs";
 
 const E = process.env;
 const HOME = E.HOME || "/";
@@ -207,11 +207,16 @@ export default function vaultChat(pi) {
   // ---- vault-chat's own lines in the transcript (a notice, a line, a divider) ---------
   // pi's custom entries (not in the model's context), appended by pi itself so the
   // session's tree stays pi's: the host sends `/vc-note {json}` while pi has the session.
+  // A line said on a voice call (`voice: true`) is a custom MESSAGE instead: in the model's
+  // context, so this conversation's agent hears what was said by voice (pi's sendMessage;
+  // never a turn of its own, and held to the end of a running turn by pi itself).
   pi.registerCommand("vc-note", {
-    description: "vault-chat: append a vc-note entry to this session",
+    description: "vault-chat: append a vc-note entry (or a voice line) to this session",
     handler: async (args) => {
       const d = json(String(args ?? "").trim(), null);
-      if (d && typeof d === "object" && typeof d.kind === "string") pi.appendEntry("vc-note", d);
+      if (!d || typeof d !== "object" || typeof d.kind !== "string") return;
+      if (d.voice === true && d.kind === "line") pi.sendMessage({ customType: VOICE_TYPE, content: voiceLineContent(d), display: true, details: d }, { triggerTurn: false });
+      else pi.appendEntry("vc-note", d);
     },
   });
 }

@@ -19,7 +19,7 @@ import type { EventBody, ItemImage, LogRecord } from "../../src/convlog/protocol
 import { pendingOf, planOf, type Picture } from "../../src/convlog/reduce";
 import { messagesOf } from "../../src/convlog/view";
 import { convLog, type ConvLog } from "../convlog/log";
-import { appendEntries, newSessionFile, vcNote } from "../convlog/piSession";
+import { appendEntries, newSessionFile, vcNote, vcVoice } from "../convlog/piSession";
 import { readConversationObjects } from "../commands/conversations";
 import type { EngineConv } from "./context";
 
@@ -125,7 +125,8 @@ export function imagesOf(m: { attachments?: { imageDataUrl?: string; capturedFil
 
 // ---------------------------------------------------------------- vault-chat's own entries
 
-/** A vc-note: a line (Carl's or an agent's), a notice, a divider, a tool call voice made. `clientId`: the id a client shows it under. */
+/** A vc-note: a line (Carl's or an agent's), a notice, a divider, a tool call voice made. `clientId`: the id a client shows it under.
+ *  A line with `voice: true` (said on a voice call) is written as a vc-voice custom message instead: in pi's context. */
 export type NoteData = { kind: "line" | "notice" | "divider" | "tool"; clientId?: string; images?: ItemImage[]; [k: string]: unknown };
 
 /** The engine's writer: the notes through pi (true) while a pi process has the conversation's session open. */
@@ -154,7 +155,7 @@ export function appendNotes(vault: string, convId: string, notes: NoteData[]): v
   if (!thread && !existsSync(file)) newSessionFile(file, vault);
   const written = appendEntries(
     file,
-    notes.map(({ images: _i, ...d }) => vcNote(d as NoteData)),
+    notes.map(({ images: _i, ...d }) => (d.voice === true && d.kind === "line" ? vcVoice(d as NoteData & { kind: "line" }) : vcNote(d as NoteData))),
   );
   written.forEach((entry, i) => {
     const n = notes[i]!;

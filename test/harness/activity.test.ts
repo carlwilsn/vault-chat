@@ -199,15 +199,10 @@ test("no box, or the box unreachable: Ctrl+K and Ctrl+L say so, in the chat's wo
   useStore.setState({ vaultPath: vault } as any);
 });
 
-test("voice tool calls that change things become entries, reads do not", () => {
-  assert.equal(core.voiceToolEntry("Read", { path: "a.md" }, "x"), null);
-  const e = core.voiceToolEntry("Edit", { path: `${vault}/notes/a.md`, old_string: "long", new_string: "short" }, "Edited", vault)!;
-  assert.equal(e.path, "notes/a.md");
-  assert.equal(e.text, "Voice edited notes/a.md");
-  assert.equal(e.detail, '"long" → "short"');
-  assert.match(core.voiceToolEntry("Write", { path: "x.md", contents: "y" }, "Error: nope")!.text, /failed: Error: nope/);
-  // A refusal changed nothing and may name a denied path; another vault's tool did nothing here.
-  assert.equal(core.voiceToolEntry("Bash", { command: "cat private/s.md" }, "Refused: command references restricted path 'private'."), null);
-  assert.equal(core.voiceToolEntry("EchoKey", {}, 'Error: tool "EchoKey" is not available on the box.'), null);
-  assert.equal(core.voiceLineEntry("user", "make it shorter", "v1")!.text, 'Carl said: "make it shorter"');
+test("what was said by voice becomes an entry naming its chat; voice acts only through the agent, so no tool entries", () => {
+  assert.equal((core as any).voiceToolEntry, undefined);
+  const e = core.voiceLineEntry("user", "make it shorter", "v1")!;
+  assert.equal(e.text, 'Carl said: "make it shorter"');
+  assert.equal(e.convId, "v1");
+  assert.equal(core.voiceLineEntry("assistant", "  ", "v1"), null);
 });

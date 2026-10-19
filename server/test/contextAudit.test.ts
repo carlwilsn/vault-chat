@@ -303,27 +303,12 @@ describe("what each mode sends", () => {
     expect(r.instructions).toContain("# Recap: this conversation continues from an earlier session");
   });
 
-  it("voice session (the box's prompt, started from the chat)", async () => {
-    const v = await import("../../src/voice-elevenlabs");
-    const meta = await import("../../src/meta");
+  it("voice session (the box's prompt for a call on the laptop, attached to the chat)", async () => {
     const voice = await import("../voice");
-    const { readConv } = await import("../engine/convs");
-    const store = (await import("../../src/store")).useStore;
-    const conv = await readConv(vault, convId);
-    const state = { ...store.getState(), vaultPath: vault, followAlong: true } as any;
-    const base = v.buildSystemPrompt(
-      state,
-      await meta.loadVaultVoicePrompt(vault),
-      await meta.loadVaultNorthStar(vault),
-      await v.loadVoicePromptContext(vault),
-      (conv?.messages ?? []) as any,
-      true,
-      await voice.fileIndex(vault),
-      [],
-    );
-    // As voiceSession: the chat's last exchange only when the builder did not carry its turns.
-    const shared = await voice.voiceContextBlock({ vault, name: "main", main: true } as any, convId, { exchange: !voice.hasThreadHistory(base) });
-    const rep = await audit("voice-session", [{ label: "voice system prompt", text: voice.composeVoicePrompt(base, shared) }]);
+    // As voiceSession builds it (D3): the front-of-house rules, the device's truth, Carl's rules, the chat's own
+    // record (pi's session) and the you layer.
+    const prompt = await voice.voicePrompt({ vault, name: "main", main: true }, convId, "laptop");
+    const rep = await audit("voice-session", [{ label: "voice system prompt", text: prompt }]);
     expect(rep.leftovers).toEqual([]);
     expect(rep.duplicates).toEqual([]);
   });

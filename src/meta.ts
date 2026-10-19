@@ -299,15 +299,15 @@ async function scanToolSpecs(
   return found;
 }
 
-/** The vault's tool folders, parsed (the box runs voice's calls to them in its sandbox, server/voice.ts). */
+/** The vault's tool folders, parsed (the box runs the agent's calls to them in its sandbox, server/vaultTools.ts). */
 export async function vaultToolSpecs(vault: string): Promise<{ spec: ToolSpec; runPath: string; toolDir: string }[]> {
   return scanToolSpecs(`${vault}/.vault-chat/tools`);
 }
 
-// A vault tool shaped for the ElevenLabs voice agent's client-tool protocol:
-// a JSON-schema `parameters` block (every property described) at
-// agent-provision time. The box runs the tool when the agent calls it.
-export type VaultVoiceTool = {
+// A vault tool's schema: a JSON-schema `parameters` block (every property
+// described, scalar leaves). The box registers it with the agent's threads and
+// runs the tool when the agent calls it (server/vaultTools.ts).
+export type VaultToolSchema = {
   name: string;
   description: string;
   parameters: {
@@ -317,12 +317,12 @@ export type VaultVoiceTool = {
   };
 };
 
-/** The vault's tools, shaped for ElevenLabs. */
-export async function loadVaultVoiceTools(
+/** The vault's tools, with their schemas. */
+export async function loadVaultToolSchemas(
   vault: string | null,
-): Promise<VaultVoiceTool[]> {
+): Promise<VaultToolSchema[]> {
   if (!vault) return [];
-  const out: VaultVoiceTool[] = [];
+  const out: VaultToolSchema[] = [];
   for (const { spec } of await scanToolSpecs(`${vault}/.vault-chat/tools`)) {
     out.push({
       name: spec.name,
@@ -341,7 +341,7 @@ export async function loadVaultVoiceTools(
 // (falling back to the property name) for every one.
 function inputSchemaToVoiceParameters(
   schema: unknown,
-): VaultVoiceTool["parameters"] {
+): VaultToolSchema["parameters"] {
   const properties: Record<string, { type: string; description: string }> = {};
   const required: string[] = [];
   const add = (key: string, p: Record<string, unknown>, isRequired: boolean) => {

@@ -15,7 +15,7 @@ import { isGitPath, handleGitHttp } from "./gitHttp";
 import { validVaultName } from "./sync";
 import { validKeyName } from "./keys";
 import { projectsList, setProject } from "./projectRoutes";
-import { voiceTool, voiceSession, voiceTranscript, voicePath, type VoiceDeps } from "./voice";
+import { voiceTool, voiceSession, voiceTranscript, voiceUpdates, voicePath, type VoiceDeps } from "./voice";
 import { activityImageRoute, activityPost } from "./activity";
 import PHONE_PAGE_INLINE from "../src-tauri/assets/phone.html";
 import VOICE_PAGE_INLINE from "../src-tauri/assets/voice.html";
@@ -359,8 +359,9 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
   }
 
 
-  // Voice (server/voice.ts): the laptop in box mode and the phone run the
-  // voice agent's tools here; the session is minted with the box's key.
+  // Voice (server/voice.ts): the front of house of one conversation, on the laptop, the phone and the board —
+  // the session (minted with the box's key, its prompt from the conversation's pi session), its one tool that
+  // acts (Ask: a request to the conversation's agent), its lines (into that session) and the updates a live call gets.
   if (path === "/api/v1/voice/tool" && method === "POST") {
     const b = await jsonBody(req);
     const d = (await hooks.voice?.(scope)) ?? { error: "voice tools not available" };
@@ -370,8 +371,15 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
   if (path === "/api/v1/voice/session" && method === "GET") {
     const d = (await hooks.voice?.(scope)) ?? { error: "voice not available" };
     if ("error" in d) return json(res, 503, d);
-    const out = await voiceSession(url.searchParams.get("convId"), d, { llm: url.searchParams.get("llm"), voice: url.searchParams.get("voice") });
+    const out = await voiceSession(url.searchParams.get("convId"), d, { llm: url.searchParams.get("llm"), voice: url.searchParams.get("voice"), device: url.searchParams.get("device") });
     return json(res, out.status, out.body);
+  }
+  if (path === "/api/v1/voice/updates" && method === "GET") {
+    const d = (await hooks.voice?.(scope)) ?? { error: "voice not available" };
+    if ("error" in d) return json(res, 503, d);
+    const signal = { closed: false };
+    res.on("close", () => (signal.closed = true));
+    return json(res, 200, await voiceUpdates(d, { convId: url.searchParams.get("convId"), cursor: url.searchParams.get("cursor"), waitMs: Number(url.searchParams.get("wait")) || 0, signal }));
   }
   if (path === "/api/v1/voice/transcript" && method === "POST") {
     const b = await jsonBody(req);

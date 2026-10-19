@@ -189,27 +189,7 @@ describe("file_changed: the open pane hears of a write at once", () => {
     return { events, live, flushed: () => flushed };
   };
 
-  it("a voice-route Edit emits file_changed immediately (no debounce, no commit first)", async () => {
-    const { events, live, flushed } = recorder();
-    try {
-      writeFileSync(join(vault, "dog.svg"), '<svg><rect fill="gold"/></svg>');
-      const voice = await import("../voice");
-      const t0 = Date.now();
-      const r = await voice.voiceTool({ vault, name: "v", main: true, shell: null, onWrite: (paths) => paths?.length && live.note("v", paths) }, {
-        name: "Edit",
-        args: { path: "dog.svg", old_string: "gold", new_string: "purple" },
-      });
-      expect(String(r.result)).toContain("edited");
-      const fc = events.filter((e) => e.ev.type === "file_changed");
-      expect(fc.map((e) => e.ev)).toEqual([{ vault: "v", type: "file_changed", path: "dog.svg" }]);
-      expect(fc[0]!.at - t0).toBeLessThan(500);
-      expect(flushed()).toBe(0); // the sync cycle is still debounced behind it
-      expect(JSON.stringify(fc[0]!.ev).startsWith('{"vault":"v"')).toBe(true); // /poll scopes by it
-    } finally {
-      live.stop();
-    }
-  });
-
+  // (Voice edits nothing itself since D3: an edit asked for by voice is the agent's, the engine Write below.)
   it("an engine Write emits file_changed immediately", async () => {
     const { events, live } = recorder();
     onWritten = (paths) => live.note("v", paths);

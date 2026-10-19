@@ -17,7 +17,7 @@
 // sent (`expect`); the match puts his client's id, the text he typed (pi's copy
 // carries the engine's prefixes) and how it came in on the pointer.
 import type { EventBody, ItemImage, PiEntry } from "../../src/convlog/protocol";
-import { VC_NOTE } from "../../src/convlog/protocol";
+import { VC_NOTE, VC_VOICE } from "../../src/convlog/protocol";
 import { SessionTail, shownEntry } from "../convlog/piSession";
 
 export type Expected = {
@@ -144,6 +144,8 @@ export class PiFeed {
     if (e.type === "custom" && e.customType === VC_NOTE && typeof e.data?.clientId === "string") {
       return this.o.emit({ type: "entry", file: this.o.file, entry: e, clientId: e.data.clientId });
     }
+    const voice = e.type === "custom_message" && e.customType === VC_VOICE ? (e.details as { clientId?: unknown } | undefined) : undefined;
+    if (typeof voice?.clientId === "string") return this.o.emit({ type: "entry", file: this.o.file, entry: e, clientId: voice.clientId });
     this.o.emit({ type: "entry", file: this.o.file, entry: e });
   }
 

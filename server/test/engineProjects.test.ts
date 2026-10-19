@@ -1,12 +1,12 @@
 // Projects are plain groupings, and the agent works directly (Carl, 2026-10-18).
 // On a fake pi, through the real engine and the box's voice routes:
-//   - no agent tool makes a project or moves a chat (pi or voice; AskAgent has
-//     no project); Carl's own choice in the app applies directly;
+//   - no agent tool makes a project or moves a chat (pi or voice; voice's Ask
+//     carries only Carl's request); Carl's own choice in the app applies directly;
 //   - a project is context, not a boundary: a chat in project X edits a file
 //     of project Y like any vault file;
 //   - every thread is told the size rule, do-it-now and read-back;
 //   - the notes tools (list, create, update in place, resolve, reopen, delete)
-//     are pi's as well as voice's, the same code, read back from the file;
+//     are pi's, read back from the file; voice reaches them through pi (Ask);
 //   - ScheduleWake never adds the same wake twice.
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -32,7 +32,7 @@ const settle = async (s: { convId: string; tid: string }) => {
   rig.backend.end(s.tid);
   await until(async () => (await rig.readConv(s.convId))?.state !== "running");
 };
-const voiceDeps = () => ({ vault: rig.vault, name: "main", main: true, shell: null, message: (b: any) => rig.engine.message(b) }) as any;
+const voiceDeps = () => ({ vault: rig.vault, name: "main", main: true, message: (b: any) => rig.engine.message(b) }) as any;
 
 describe("projects: only Carl decides what is a project", () => {
   it("pi has no tool that makes a project or moves a chat; ListProjects only reads", async () => {
@@ -56,23 +56,24 @@ describe("projects: only Carl decides what is a project", () => {
     expect(existsSync(join(rig.vault, "agent-projects"))).toBe(false);
   });
 
-  it("voice's AskAgent hands the work over as an ordinary message: no project, even if a model passes one", async () => {
-    const v = await import("../../src/voice-elevenlabs");
-    const ask = v.CLIENT_TOOL_DEFINITIONS.find((t: any) => t.name === "AskAgent") as any;
-    expect(Object.keys(ask.parameters.properties).sort()).toEqual(["conversationId", "task"]);
-    expect(v.BUILTIN_VOICE_TOOL_NAMES).not.toContain("SetProject");
+  it("voice's Ask hands the work over as an ordinary message: no project, even if a model passes one", async () => {
+    const p = await import("../../src/voicePrompt");
+    for (const d of ["laptop", "phone", "board"] as const) {
+      expect(p.voiceToolNames(d)).not.toContain("SetProject");
+      expect(Object.keys(p.voiceToolDefs(d)[0]!.parameters.properties)).toEqual(["request"]);
+    }
     const before = rig.backend.turns.length;
-    const r = JSON.parse((await voice.voiceTool(voiceDeps(), { name: "AskAgent", args: { task: "Make the section 7 figure in course-notes.html clearer.", project: "IEMS 469 Course Notes Visuals" } })).result);
+    const r = await voice.voiceTool(voiceDeps(), { name: "Ask", args: { request: "Make the section 7 figure in course-notes.html clearer.", project: "IEMS 469 Course Notes Visuals" } });
     await until(() => rig.backend.turns.length > before);
-    const c = await rig.readConv(r.conversationId);
+    const c = await rig.readConv(String(r.convId));
     expect(c.source).toBe("voice");
     expect(c.project).toBeUndefined();
     expect(existsSync(join(rig.vault, "agent-projects", "iems-469-course-notes-visuals"))).toBe(false);
     expect(JSON.stringify(rig.backend.turns.at(-1))).toContain("Make the section 7 figure in course-notes.html clearer.");
-    await settle({ convId: r.conversationId, tid: rig.backend.turns.at(-1).threadId });
-    // Voice's SetProject is gone too: the box answers it as an unknown tool.
-    expect((await voice.voiceTool(voiceDeps(), { name: "SetProject", args: { name: "X" }, convId: r.conversationId })).result).toMatch(/^Error: tool "SetProject" is not available/);
-    expect((await rig.readConv(r.conversationId)).project).toBeUndefined();
+    await settle({ convId: String(r.convId), tid: rig.backend.turns.at(-1).threadId });
+    // A voice SetProject is not a tool: the box says so and nothing changes.
+    expect((await voice.voiceTool(voiceDeps(), { name: "SetProject", args: { name: "X" }, convId: r.convId })).result).toMatch(/^Error: "SetProject" is not one of your tools/);
+    expect((await rig.readConv(String(r.convId))).project).toBeUndefined();
   });
 
   it("Carl's own choice (the chip, the phone's sheet) makes the project and moves the chat, directly", async () => {
@@ -107,11 +108,14 @@ describe("projects: only Carl decides what is a project", () => {
     const opts = { cwd: rig.vault, home: rig.root, denyRead: [join(rig.root, "secrets")], denyWrite: [join(rig.vault, ".vault-chat", "conversations")] };
     expect(guardToolCall("edit", { path: "agent-projects/psych-221/reading-list.md" }, opts)).toBeNull();
     expect(guardToolCall("write", { path: join(rig.vault, "agent-projects", "psych-221", "project.md") }, opts)).toBeNull();
-    // Voice in the same chat writes there too (the box's voice tools, vault-confined only).
-    const w = (await voice.voiceTool(voiceDeps(), { name: "Edit", args: { path: "agent-projects/psych-221/reading-list.md", old_string: "- Kahneman\n", new_string: "- Kahneman\n- Tversky\n" }, convId: s.convId })).result;
-    expect(w).not.toMatch(/^(Error|Refused)/);
-    expect(readFileSync(join(rig.vault, "agent-projects", "psych-221", "reading-list.md"), "utf8")).toBe("- Kahneman\n- Tversky\n");
+    // Voice in the same chat hands it to the same agent (its Ask is a turn in this chat, with these tools).
     await settle(s);
+    const before = rig.backend.turns.length;
+    await voice.voiceTool(voiceDeps(), { name: "Ask", args: { request: "And add Simon too." }, convId: s.convId });
+    await until(() => rig.backend.turns.length > before);
+    expect(rig.backend.turns.at(-1).threadId).toBe(s.tid);
+    await settle({ convId: s.convId, tid: s.tid });
+    expect(readFileSync(join(rig.vault, "agent-projects", "psych-221", "reading-list.md"), "utf8")).toBe("- Kahneman\n");
   });
 });
 
@@ -189,17 +193,18 @@ describe("notes: one thing, editable in place, on pi and on voice", () => {
     await settle(s);
   });
 
-  it("voice has the same tools, run by the same code: a note voice made, pi edits in place, voice sees the edit", async () => {
-    const v = await import("../../src/voice-elevenlabs");
-    for (const t of ["ListNotes", "CreateNote", "UpdateNote", "ResolveNote", "ReopenNote", "DeleteNote", "ListProjects"]) expect(v.BUILTIN_VOICE_TOOL_NAMES).toContain(t);
-    const made = (await voice.voiceTool(voiceDeps(), { name: "CreateNote", args: { text: "Ask the TA about 4.2" } })).result;
+  it("voice has no notes tools of its own: a note asked for by voice is the agent's (one tool set, one file)", async () => {
+    for (const t of ["ListNotes", "CreateNote", "UpdateNote", "DeleteNote"]) expect((await voice.voiceTool(voiceDeps(), { name: t, args: { text: "x", id: "x" } })).result).toMatch(/is not one of your tools.*Nothing was done/);
+    const before = rig.backend.turns.length;
+    const r = await voice.voiceTool(voiceDeps(), { name: "Ask", args: { request: "Note: ask the TA about 4.2." } });
+    await until(() => rig.backend.turns.length > before);
+    const tid = rig.backend.turns.at(-1).threadId;
+    const made = out(await rig.backend.call(tid, "CreateNote", { text: "Ask the TA about 4.2" }));
     const id = /Saved note (\S+) /.exec(made)![1]!;
+    await settle({ convId: String(r.convId), tid });
     const s = await rig.start("change that note to say 4.3");
     expect((await rig.backend.call(s.tid, "UpdateNote", { id, text: "Ask the TA about 4.3" })).ok).toBe(true);
+    expect(out(await rig.backend.call(s.tid, "ListNotes", {}))).toContain("Ask the TA about 4.3");
     await settle(s);
-    expect((await voice.voiceTool(voiceDeps(), { name: "ListNotes", args: {} })).result).toContain("Ask the TA about 4.3");
-    expect((await voice.voiceTool(voiceDeps(), { name: "UpdateNote", args: { id, text: "Ask the TA about 4.3 and 4.4" } })).result).toMatch(/^Updated note .* in place/);
-    expect((await voice.voiceTool(voiceDeps(), { name: "DeleteNote", args: { id } })).result).toMatch(/^Deleted note/);
-    expect((await voice.voiceTool(voiceDeps(), { name: "ListNotes", args: {} })).result).not.toContain(id);
   });
 });

@@ -14,6 +14,7 @@ const L = await import("../../src/voiceLlms.ts");
 const { checkVoiceModel } = await import("../../src/modelCaps.ts");
 const { useStore } = await import("../../src/store.ts");
 const voice = await import("../../src/voice-elevenlabs.ts");
+const P = await import("../../src/voicePrompt.ts");
 
 const LIST = {
   llms: [
@@ -75,7 +76,7 @@ test("Settings' voice check comes from the list: Luna can't take a PDF and says 
 
 test("the agent ElevenLabs creates: natural TTS (no expressive mode), patient turns, low temperature, backup chain, file input", () => {
   const list = L.parseLlmList(LIST);
-  const body: any = voice.buildAgentCreateBody({ llm: "gpt-6-luna", info: L.llmInfo(list, "gpt-6-luna"), customTools: [], voiceId: "v1" });
+  const body: any = voice.buildAgentCreateBody({ llm: "gpt-6-luna", info: L.llmInfo(list, "gpt-6-luna"), tools: P.voiceToolDefs("laptop"), voiceId: "v1" });
   const cc = body.conversation_config;
   assert.deepEqual(cc.tts, { model_id: "eleven_flash_v2", expressive_mode: false, voice_id: "v1" });
   assert.ok(!/eleven_v3/.test(JSON.stringify(body)));
@@ -93,29 +94,29 @@ test("the agent ElevenLabs creates: natural TTS (no expressive mode), patient tu
   assert.equal(p.temperature, 0.4);
   assert.equal(p.reasoning_effort, "none");
   assert.deepEqual(p.backup_llm_config, { preference: "override", order: ["claude-haiku-4-5", "gpt-4.1-mini"] });
-  const names = p.tools.map((t: any) => t.name);
-  // Luna takes no documents: it keeps PdfExtract. A model that reads PDFs drops it.
-  assert.ok(names.includes("PdfExtract") && names.includes("UpdateNote") && names.includes("skip_turn"));
-  assert.ok(!names.includes("SetProject"));
-  const sonnet: any = voice.buildAgentCreateBody({ llm: "claude-sonnet-4-6", info: L.llmInfo(list, "claude-sonnet-4-6"), customTools: [], voiceId: "v1" });
-  assert.ok(!sonnet.conversation_config.agent.prompt.tools.some((t: any) => t.name === "PdfExtract"));
-  assert.equal(sonnet.conversation_config.agent.prompt.reasoning_effort, undefined);
+  // The device's tools, exactly (Ask and its screen tools), and skip_turn.
+  assert.deepEqual(p.tools.map((t: any) => t.name), ["Ask", "LookAtScreen", "ShowFile", "ScrollTo", "skip_turn"]);
+  assert.ok(p.tools.filter((t: any) => t.type === "client").every((t: any) => t.expects_response === true && t.response_timeout_secs === 30));
+  const phone: any = voice.buildAgentCreateBody({ llm: "claude-sonnet-4-6", info: L.llmInfo(list, "claude-sonnet-4-6"), tools: P.voiceToolDefs("phone"), voiceId: "v1" });
+  assert.deepEqual(phone.conversation_config.agent.prompt.tools.map((t: any) => t.name), ["Ask", "skip_turn"]);
+  assert.equal(phone.conversation_config.agent.prompt.reasoning_effort, undefined);
 });
 
-test("the prompt carries the honesty rules, under any header", () => {
-  const st = { ...useStore.getState(), vaultPath: vault, files: [], messages: [] } as any;
+test("the prompt carries the honesty and Ask rules, under any header", () => {
   for (const header of ["", "You are my custom voice."]) {
-    const prompt = voice.buildSystemPrompt(st, header, "", undefined, [], true, [], []);
-    assert.ok(prompt.includes(voice.VOICE_HONESTY_RULES), "rules present");
+    const prompt = P.buildVoicePrompt({ device: "phone", header });
+    assert.ok(prompt.includes("Honesty — accurate over agreeable:"), "rules present");
+    assert.ok(prompt.includes("Doing things (Ask):"), "Ask rules present");
+    assert.ok(prompt.startsWith(header || "You are vault-chat's voice"));
   }
-  const r = voice.VOICE_HONESTY_RULES;
+  const r = P.VOICE_HONESTY_RULES;
   assert.match(r, /No flattery or hype/);
-  assert.match(r, /"absolutely"/);
-  assert.match(r, /If the user is wrong, say so plainly/);
-  assert.match(r, /Never claim a tool or a capability you don't have/);
-  assert.match(r, /No tool makes a project or moves a chat into one: only the user does that, in the app\./);
-  assert.match(r, /UpdateNote/);
-  assert.match(r, /AskAgent and AgentStatus/);
+  assert.match(r, /If Carl is wrong, say so plainly/);
+  assert.match(r, /Never claim a tool or ability you don't have/);
+  assert.match(r, /Never do arithmetic in your head: Ask/);
+  assert.match(r, /ONLY when a \[vc:result\] says the agent did it/);
+  assert.match(r, /arrived empty, or a look found nothing, say you saw nothing/);
+  assert.match(P.buildVoicePrompt({ device: "phone" }), /Your tools, exactly: Ask, skip_turn — and nothing else/);
 });
 
 test("live session: contextual updates carry a stable context id; files go as files: [{type: file_input}]", async () => {

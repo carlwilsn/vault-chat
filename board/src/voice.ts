@@ -1,16 +1,18 @@
-// Voice on the board: the box's voice path, the one the phone uses (server/voice.ts) —
-// GET /api/v1/voice/session mints the ElevenLabs session for the box's one voice agent,
-// its tools run on the box (POST /api/v1/voice/tool, AskAgent hands work to the agent,
-// which sends to the board with BoardSend/BoardMake), and its lines are saved there as a
-// voice conversation (POST /api/v1/voice/transcript). No agent, tool or memory of its own.
+// Voice on the board: the front of house of one conversation (D3, server/voice.ts), as on
+// the phone and the laptop — GET /api/v1/voice/session mints the ElevenLabs session for the
+// box's board agent with its prompt built from the conversation's pi session; every line said
+// goes into that conversation (POST /api/v1/voice/transcript); its one tool that acts, Ask,
+// hands Carl's request to the conversation's agent (POST /api/v1/voice/tool), which does it
+// with its own tools (BoardSend, BoardMake, BoardInbox …); and the agent's answers and what
+// Carl did elsewhere reach the live call (GET /api/v1/voice/updates, src/voiceFront.ts). No
+// agent, tool or memory of its own.
 //
-// Which conversation: ONE for as long as Carl is on the board (Carl, 2026-10-18: each restart
-// had landed on a different conversation and the agent lost what was said). The first start
-// continues his most recently active chat (GET /conversations, the phone's list and filter);
-// from then on every start — after a drop, after he ends and taps the mic again, after a
-// reload — continues the board's thread: the voice conversation its lines were saved in
-// (remembered, `threadStore`). Its lines go on in that conversation, and its prompt is built
-// from it. Only picking another chat in the pill (switchChat) changes the thread.
+// Which conversation: the one Carl is in — his most recently active chat (GET /conversations,
+// the phone's list and filter), or the one he picked in the pill (switchChat) for as long as no
+// other chat has been active since. Lines go into that conversation, so it stays the most
+// recent while he talks on the board: a drop, an end and a new tap, a reload all continue it
+// (Carl, 2026-10-18: each restart had landed on a different conversation). A chat he then
+// continues on the laptop is followed: "continue that" on the board means that chat.
 //
 // A session that closes by itself (the network, ElevenLabs) is said, not hidden: the pill
 // turns red with the reason, and the mic continues the same thread. Every close is reported
@@ -26,7 +28,7 @@
 // And the agent can LOOK on demand: LookAtScreen is handled here, by the board page (BOARD_LOCAL_TOOLS), never
 // sent to the box (which has no screen). It takes the visible region as drawn — ink, items, typeset math, PDF
 // pages — as a downscaled JPEG through the same image path (an unchanged picture is not sent twice: the tool says
-// so), with the board's name and its placed items as text. The session's prompt says it can (BOARD_VOICE_NOTE).
+// so), with the board's name and its placed items as text. The session's prompt says it can (the box's prompt for the board, src/voicePrompt.ts deviceNote).
 //
 // The transport is WebRTC (ElevenLabs' recommended one: echo cancellation, jitter
 // buffer) with the box's conversation token; WebSocket with the signed URL when the
@@ -38,6 +40,8 @@
 import { QuietGate } from "../../src/voiceQuiet";
 import { VoiceImagePusher, lookingAtNote, sendFilesMessage } from "../../src/voiceImages";
 import { stripAudioTags } from "../../src/voiceTags";
+import { isControlLine } from "../../src/voicePrompt";
+import { VoiceUpdates, pushStartImages, type UpdatesPage } from "../../src/voiceFront";
 import type { Item } from "../../src/boardFormat";
 import type { ChatRow, VoiceConfig } from "./api";
 
@@ -46,6 +50,8 @@ export type VoiceConv = {
   endSession(): Promise<void>;
   setMicMuted(m: boolean): void;
   sendContextualUpdate(text: string, o?: { contextId?: string }): void;
+  /** A user message (the box's [vc:result] updates, answered aloud). */
+  sendUserMessage?(text: string): void;
   uploadFile(b: Blob): Promise<{ fileId: string }>;
   sendMultimodalMessage(m: { text?: string; fileId: string }): void;
   getOutputVolume?(): number;
@@ -66,11 +72,16 @@ export type SessionOpts = {
 };
 export type VoiceSdk = { Conversation: { startSession(o: SessionOpts): Promise<VoiceConv> } };
 
+/** The session as the box sends it (server/voice.ts voiceSession): the conversation, where its updates start, its images. */
+export type BoardVoiceConfig = VoiceConfig & { convId?: string | null; cursor?: string | null; images?: { mime: string; dataBase64: string }[] };
+
 export type VoiceApi = {
   listChats(): Promise<ChatRow[]>;
-  voiceSession(convId: string | null): Promise<VoiceConfig>;
-  voiceTool(b: { name: string; args: unknown; convId: string | null; fromConvId: string | null }): Promise<{ result?: string; error?: string }>;
-  voiceTranscript(b: { convId: string | null; fromConvId: string | null; role: string; text: string; system?: boolean; ended?: boolean }): Promise<{ convId?: string | null }>;
+  voiceSession(convId: string | null): Promise<BoardVoiceConfig>;
+  voiceTool(b: { name: string; args: unknown; convId: string | null; device: "board" }): Promise<{ result?: string; error?: string; convId?: string | null }>;
+  voiceTranscript(b: { convId: string | null; role: string; text: string; system?: boolean; ended?: boolean; device: "board" }): Promise<{ convId?: string | null }>;
+  /** One long poll of the call's updates (none: the call gets no updates). */
+  voiceUpdates?(convId: string, cursor: string | null): Promise<UpdatesPage>;
 };
 
 /** What the board tells voice (view.ts). */
@@ -109,17 +120,13 @@ export function boardContextText(b: { name: string; items: Item[]; strokes: numb
   } else lines.push("Nothing from the board inbox is on it.");
   if (own) lines.push(`${own} picture${own === 1 ? "" : "s"} he inserted himself.`);
   lines.push(b.strokes ? `${b.strokes} stroke${b.strokes === 1 ? "" : "s"} of his handwriting.` : "No handwriting yet.");
-  lines.push("A picture of what he sees comes with this when it changes; LookAtScreen looks again right now. To put something on his board, ask the agent to send it to the board inbox. Don't describe the board unless he asks.]");
+  lines.push("A picture of what he sees comes with this when it changes; LookAtScreen looks again right now. To put something on his board, Ask the agent to send it to his board inbox. Don't describe the board unless he asks.]");
   return lines.join(" ");
 }
 
 /** Tools the board page answers itself (the box has no screen to look at). */
 export const BOARD_LOCAL_TOOLS = new Set(["LookAtScreen"]);
 
-/** Added to the session's prompt on the board: what it can see, said honestly. */
-export const BOARD_VOICE_NOTE = `
-
-On this call Carl is on his iPad whiteboard. You CAN see it: LookAtScreen returns a picture of the part of the board he has in view, as drawn (his handwriting, pictures, typeset math, PDF pages), plus the board's name and what is placed on it. Call it whenever he says "look", asks about what he wrote or drew, or asks you to check his work, and call it again after he says he changed or wrote something: a picture you saw earlier may be out of date. Never say you cannot see the board.`;
 
 /** FNV-1a over a picture's bytes: its key for the image path's dedupe. */
 export async function blobKey(b: Blob): Promise<string> {
@@ -144,7 +151,7 @@ export type VoiceClose = { by: "mic" | "pill" | "switch" | "remote"; reason?: st
 
 export type VoiceDeps = {
   api: VoiceApi;
-  /** Where the board's one conversation is remembered across starts and reloads (none: this page only). */
+  /** Where the chat Carl picked in the pill is remembered across reloads (none: this page only). */
   threadStore?: { get(): string | null; set(id: string | null): void };
   /** Every close, with who closed it and why. */
   onClose?: (c: VoiceClose) => void;
@@ -167,13 +174,15 @@ export class VoiceController {
   private pusher = new VoiceImagePusher();
   private lastText = "";
   private debounceT: ReturnType<typeof setTimeout> | null = null;
-  /** The session's own voice conversation (once a line made it, or the voice chat it continues). */
-  private voiceConv: string | null = null;
-  /** The board's one conversation: what every start continues until Carl picks another chat. */
+  /** The conversation this call is attached to (its lines go there; null until the box made a new one). */
+  private convId: string | null = null;
+  /** The chat Carl picked in the pill, and when: it is continued until another chat is more recently active. */
   thread: string | null = null;
+  private pickedAt = 0;
   private liveAt = 0;
   private lines: Promise<unknown> = Promise.resolve();
   private gen = 0;
+  private updates: VoiceUpdates | null = null;
   /** Updates and pictures sent this session (for the preview and the tests). */
   readonly sent = { updates: [] as string[], images: 0, looks: 0 };
 
@@ -186,6 +195,7 @@ export class VoiceController {
   }
 
   private setThread(id: string | null): void {
+    this.pickedAt = Date.now();
     if (this.thread === id) return;
     this.thread = id;
     try {
@@ -257,11 +267,13 @@ export class VoiceController {
     } catch {
       /* no list: a session with no thread behind it */
     }
-    // A picked chat; else the board's thread; else (the first start) the most recent chat.
-    const want = chatId ?? this.thread;
-    const chat = (want ? chats.find((c) => c.id === want) : null) ?? chats[0] ?? null;
+    // A picked chat; else the one picked in the pill while no other chat has been active since; else the most recent.
+    const picked = this.thread ? chats.find((c) => c.id === this.thread) : null;
+    const latest = chats[0] ?? null;
+    const stillPicked = !!picked && (!latest || latest.id === picked.id || (latest.lastActivityAt ?? 0) <= Math.max(this.pickedAt, picked.lastActivityAt ?? 0));
+    const chat = (chatId ? chats.find((c) => c.id === chatId) : null) ?? (stillPicked ? picked : null) ?? latest;
     this.set({ chats, chat });
-    let cfg: VoiceConfig | null = null;
+    let cfg: BoardVoiceConfig | null = null;
     let why = "";
     for (let a = 0; a < 3 && !cfg; a++) {
       try {
@@ -275,13 +287,10 @@ export class VoiceController {
       if (gen !== this.gen) return;
     }
     if (!cfg) return this.fail(gen, why ? `Voice couldn't start: ${why}` : "Voice couldn't start.");
-    // A voice conversation goes on where it is (its lines append to it); any other chat gets a voice conversation
-    // of its own on the first line (the box's rule), which then becomes the thread.
-    this.voiceConv = chat?.source === "voice" ? chat.id : null;
-    if (chat?.source === "voice") this.setThread(chat.id);
+    // The call is that conversation's voice: its lines and requests go into it (a new one when there is none yet).
+    this.convId = cfg.convId ?? chat?.id ?? null;
     this.lastText = "";
     this.pusher.reset();
-    const from = chat?.id ?? null;
     try {
       const sdk = await this.d.sdk();
       let timedOut = false;
@@ -292,9 +301,9 @@ export class VoiceController {
       const creds = () => (transport === "webrtc" ? { conversationToken: token!, connectionType: transport } : { signedUrl: signed!, connectionType: transport });
       const open = () => sdk.Conversation.startSession({
         ...creds(),
-        overrides: { agent: { prompt: { prompt: (cfg.systemPrompt || "") + BOARD_VOICE_NOTE }, language: "en", firstMessage: "" }, tts: { voiceId: cfg.voiceId } },
+        overrides: { agent: { prompt: { prompt: cfg.systemPrompt || "" }, language: "en", firstMessage: "" }, tts: { voiceId: cfg.voiceId } },
         dynamicVariables: cfg.dynamicVariables || {},
-        clientTools: this.clientTools(cfg.toolNames ?? [], from),
+        clientTools: this.clientTools(cfg.toolNames ?? []),
         onConnect: () => {
           if (timedOut || gen !== this.gen) return;
           this.liveAt = Date.now();
@@ -316,8 +325,10 @@ export class VoiceController {
         },
         onMessage: ({ message, role }) => {
           const raw = (message || "").trim();
+          // The box's own updates ([vc:result] …) come back as user lines: they are not Carl's.
+          if (role === "user" && isControlLine(raw)) return;
           const text = role === "user" ? raw : stripAudioTags(raw);
-          if (text) this.saveLine(role === "user" ? "user" : "assistant", text, from);
+          if (text) this.saveLine(role === "user" ? "user" : "assistant", text);
         },
         // Leaving "speaking" = the playback drained: the held pushes go after a settle.
         onModeChange: ({ mode }) => {
@@ -355,9 +366,43 @@ export class VoiceController {
       this.transport = transport;
       // The SDK may connect before startSession resolves: what onConnect couldn't send yet goes now.
       if ((this.state.phase as Phase) === "live") this.pushNow();
+      // The conversation's newest images (a phone photo, a pasted figure): this call has never seen them.
+      void pushStartImages(conv, this.pusher, cfg.images, () => this.conv === conv)
+        .then((r) => {
+          this.sent.images += r.filter((x) => x === "sent").length;
+        })
+        .catch(() => {});
+      // The agent's answers and what Carl did elsewhere, into the live call (held while the voice speaks).
+      this.startUpdates(conv, cfg.cursor ?? null);
     } catch (e) {
       return this.fail(gen, `Voice couldn't connect: ${String((e as Error)?.message ?? e)}`);
     }
+  }
+
+  private startUpdates(conv: VoiceConv, cursor: string | null): void {
+    this.updates?.stop();
+    this.updates = null;
+    const get = this.d.api.voiceUpdates;
+    if (!get) return;
+    this.updates = new VoiceUpdates({
+      cursor,
+      gate: this.gate,
+      conv: () => (this.conv === conv ? conv : null),
+      fetch: async (cur) => {
+        // A new conversation exists once its first line or request made it.
+        await this.lines;
+        if (!this.convId) {
+          await new Promise((r) => setTimeout(r, 1000));
+          return { updates: [], cursor: cur ?? "" };
+        }
+        return get(this.convId, cur);
+      },
+    }).start();
+  }
+
+  /** What the box's updates put into the call so far (tests, diagnostics). */
+  get delivered(): string[] {
+    return (this.updates?.delivered ?? []).map((u) => u.text);
   }
 
   async end(by: "mic" | "pill" | "switch" = "mic"): Promise<void> {
@@ -497,39 +542,40 @@ export class VoiceController {
     return `Error: the picture could not be attached (${String(r)}). ${text}`;
   }
 
-  private clientTools(names: string[], from: string | null): Record<string, (p: unknown) => Promise<string>> {
+  private clientTools(names: string[]): Record<string, (p: unknown) => Promise<string>> {
     const tools: Record<string, (p: unknown) => Promise<string>> = {};
     for (const name of BOARD_LOCAL_TOOLS) tools[name] = () => this.lookAtBoard().catch((e) => `Error: ${String((e as Error)?.message ?? e)}`);
     for (const name of names) {
       if (BOARD_LOCAL_TOOLS.has(name)) continue;
       tools[name] = async (params) => {
         try {
-          // SetProject's target is this session's voice conversation once a line made it.
-          if (name === "SetProject") await this.lines;
-          const j = await this.d.api.voiceTool({ name, args: params ?? {}, convId: this.voiceConv, fromConvId: from });
-          return typeof j.result === "string" ? j.result : `error: ${j.error ?? "no result"}`;
+          // A request reaches the agent after Carl's words before it (the lines are saved in order).
+          await this.lines;
+          const j = await this.d.api.voiceTool({ name, args: params ?? {}, convId: this.convId, device: "board" });
+          if (typeof j.convId === "string" && j.convId) this.adopt(j.convId);
+          return typeof j.result === "string" ? j.result : `Error: ${j.error ?? "no result"}`;
         } catch (e) {
-          return `error: ${String((e as Error)?.message ?? e)}`;
+          return `Error: the box did not take it (${String((e as Error)?.message ?? e)}). Nothing was done.`;
         }
       };
     }
     return tools;
   }
 
-  /** The session's lines, saved on the box in order (the first makes its voice conversation). */
-  private saveLine(role: string, text: string, from: string | null, end = false): void {
+  /** The conversation the box made for this call (a new chat): its lines and requests go on there. */
+  private adopt(id: string): void {
+    if (this.convId === id) return;
+    this.convId = id;
+    const was = this.state.chat;
+    if (was?.id !== id) this.set({ chat: { id, title: was?.title || "Voice", lastActivityAt: Date.now(), source: "voice" } });
+  }
+
+  /** The call's lines, saved into its conversation on the box, in order (the first makes a new one when there is none). */
+  private saveLine(role: string, text: string, end = false): void {
     this.lines = this.lines.then(async () => {
       try {
-        const j = await this.d.api.voiceTranscript({ convId: this.voiceConv, fromConvId: from, role, text, ...(end ? { system: true, ended: true } : {}) });
-        if (j && typeof j.convId === "string" && j.convId) {
-          if (j.convId !== this.voiceConv && !end) {
-            // The session's voice conversation: the board's thread from now on, and what the pill names.
-            const was = this.state.chat;
-            this.set({ chat: { id: j.convId, title: was?.title || "Voice", lastActivityAt: Date.now(), source: "voice" } });
-          }
-          this.voiceConv = j.convId;
-          if (!end) this.setThread(j.convId);
-        }
+        const j = await this.d.api.voiceTranscript({ convId: this.convId, role, text, device: "board", ...(end ? { system: true, ended: true } : {}) });
+        if (j && typeof j.convId === "string" && j.convId && !end) this.adopt(j.convId);
       } catch {
         /* the box is away: the line is lost, the call goes on */
       }
@@ -549,7 +595,7 @@ export class VoiceController {
         ...(closeReason ? { closeReason: String(closeReason).slice(0, 160) } : {}),
         transport: this.transport,
         secs: this.liveAt ? Math.round((Date.now() - this.liveAt) / 1000) : 0,
-        conv: this.voiceConv ?? this.thread,
+        conv: this.convId,
       });
     } catch {
       /* a log must not break the call */
@@ -561,6 +607,8 @@ export class VoiceController {
     this.gen++;
     const c = this.conv;
     this.conv = null;
+    this.updates?.stop();
+    this.updates = null;
     void c?.endSession().catch(() => {});
     this.dropMic();
     this.set({ phase: "error", error: why, speaking: false });
@@ -568,7 +616,9 @@ export class VoiceController {
 
   private teardown(why: string): void {
     const was = this.state.phase;
-    if (was === "live") this.saveLine("assistant", "Voice session ended.", this.state.chat?.id ?? null, true);
+    if (was === "live") this.saveLine("assistant", "Voice session ended.", true);
+    this.updates?.stop();
+    this.updates = null;
     if (this.debounceT) clearTimeout(this.debounceT);
     this.debounceT = null;
     this.conv = null;

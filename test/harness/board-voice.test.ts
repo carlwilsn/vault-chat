@@ -1,7 +1,8 @@
 // The board's voice (board/src/voice.ts) against a fake ElevenLabs SDK and a fake box: the chat it
-// continues, the board's contextual update and picture (deduped by the image path), the update after
-// a stroke, the holds while the agent speaks, a mic that is refused, and the mic button pressing
-// through the chrome's rule (chrome.ts) into start and end.
+// is attached to (its lines go into it), the board's contextual update and picture (deduped by the
+// image path), the update after a stroke, the holds while the agent speaks, the box's updates in the
+// live call (an answer spoken, context never), the conversation's images at the start, a mic that is
+// refused, and the mic button pressing through the chrome's rule (chrome.ts) into start and end.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { VoiceController, boardContextText, recentChats, type BoardSource, type SessionOpts, type VoiceApi, type VoiceClose, type VoiceConv } from "../../board/src/voice.ts";
@@ -11,7 +12,7 @@ import type { Item } from "../../src/boardFormat.ts";
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 function fakeBox(over: Partial<VoiceApi> = {}) {
-  const calls = { session: [] as (string | null)[], lines: [] as { role: string; text: string; ended?: boolean; fromConvId: string | null }[], tools: [] as string[] };
+  const calls = { session: [] as (string | null)[], lines: [] as { role: string; text: string; ended?: boolean; convId: string | null }[], tools: [] as { name: string; convId: string | null }[] };
   const api: VoiceApi = {
     listChats: async () => [
       { id: "m1", title: "A mission", lastActivityAt: 900, source: "mission" },
@@ -20,15 +21,15 @@ function fakeBox(over: Partial<VoiceApi> = {}) {
     ],
     voiceSession: async (id) => {
       calls.session.push(id);
-      return { signedUrl: "wss://fake", systemPrompt: "prompt", toolNames: ["Read", "AskAgent"] };
+      return { signedUrl: "wss://fake", systemPrompt: "prompt", toolNames: ["Ask", "LookAtScreen"], convId: id };
     },
     voiceTool: async (b) => {
-      calls.tools.push(b.name);
+      calls.tools.push({ name: b.name, convId: b.convId });
       return { result: "ok" };
     },
     voiceTranscript: async (b) => {
-      calls.lines.push({ role: b.role, text: b.text, ended: b.ended, fromConvId: b.fromConvId });
-      return { convId: "voice-1" };
+      calls.lines.push({ role: b.role, text: b.text, ended: b.ended, convId: b.convId });
+      return { convId: b.convId ?? "voice-1" };
     },
     ...over,
   };
@@ -88,7 +89,7 @@ test("the context update names the board and the inbox parts on it, by their lab
   assert.match(t, /from the board inbox: "Problem 3" \(math\), a PDF page \(page 4\) \(pdf\)\./);
   assert.match(t, /1 picture he inserted himself/);
   assert.match(t, /2 strokes of his handwriting/);
-  assert.match(t, /ask the agent to send it to the board inbox/);
+  assert.match(t, /Ask the agent to send it to his board inbox/);
   assert.equal(boardContextText({ name: "Empty", items: [], strokes: 0 }).includes("Nothing from the board inbox is on it. No handwriting yet."), true);
 });
 
@@ -134,9 +135,10 @@ test("start → live with the board's context and picture; a stroke sends a new 
   await wait(60);
   assert.equal(f.log.uploads, 2, "a changed picture goes");
 
-  // Its tools run on the box, its lines are saved there, from the chat it continues.
-  assert.equal(await f.opts().clientTools.AskAgent!({ task: "x" }), "ok");
-  assert.deepEqual(box.calls.tools, ["AskAgent"]);
+  // Its one tool that acts (Ask) runs on the box in the chat it is attached to; its lines go into that chat.
+  assert.equal(await f.opts().clientTools.Ask!({ request: "x" }), "ok");
+  assert.deepEqual(box.calls.tools, [{ name: "Ask", convId: "c-new" }]);
+  assert.deepEqual(Object.keys(f.opts().clientTools).sort(), ["Ask", "LookAtScreen"]);
   f.opts().onMessage({ role: "user", message: "what's under problem 3?" });
   f.opts().onMessage({ role: "agent", message: "[curious] Your bound." });
   v.setMuted(true);
@@ -146,7 +148,7 @@ test("start → live with the board's context and picture; a stroke sends a new 
   assert.equal(v.state.phase, "idle");
   assert.equal(f.log.ended, 1);
   assert.deepEqual(
-    box.calls.lines.map((l) => [l.role, l.text, l.ended ?? false, l.fromConvId]),
+    box.calls.lines.map((l) => [l.role, l.text, l.ended ?? false, l.convId]),
     [
       ["user", "what's under problem 3?", false, "c-new"],
       ["assistant", "Your bound.", false, "c-new"],
@@ -285,26 +287,23 @@ test("WebRTC with the box's conversation token; WebSocket once if it can't conne
   assert.deepEqual(v.lastClose, { transport: "websocket", reason: "error", message: "ws closed", code: 1006, closeReason: undefined });
 });
 
-// Carl, 2026-10-18: on the board, voice went live → idle → connecting → live every 15–25 s, and each restart
-// landed on a different conversation (the last session's voice conversation was the "most recent chat"), so
-// the agent lost what was said. One conversation for the whole time on the board.
-test("one conversation across a drop, a mic restart and a reload; only picking a chat changes it", async () => {
+/// Carl, 2026-10-18: on the board, voice went live → idle → connecting → live every 15–25 s, and each restart
+// landed on a different conversation (each session's lines made a voice conversation of their own, the next
+// "most recent chat"), so the agent lost what was said. Now the call's lines go into the chat it is attached
+// to, so that chat stays the most recent: a drop, a mic restart and a reload all continue it.
+test("one conversation across a drop, a mic restart and a reload: the attached chat, which its lines go into", async () => {
   const lines: { convId: string | null; text: string }[] = [];
-  const convs = new Map<string, string>(); // id → source
-  let made = 0;
+  const active = new Map<string, number>([
+    ["c-old", 100],
+    ["c-new", 500],
+  ]);
   const box = fakeBox({
-    listChats: async () => [
-      { id: "c-new", title: "Cauchy sequences", lastActivityAt: 500, source: "phone" },
-      ...[...convs].map(([id], i) => ({ id, title: "Voice", lastActivityAt: 1000 + i, source: "voice" })),
-    ],
+    listChats: async () => [...active].map(([id, at]) => ({ id, title: id, lastActivityAt: at, source: "manual" })).sort((a, b) => b.lastActivityAt - a.lastActivityAt),
     voiceTranscript: async (b) => {
       lines.push({ convId: b.convId, text: b.text });
-      // The box: a line in a voice conversation goes on in it; anything else starts a new one.
-      if (b.convId && convs.get(b.convId) === "voice") return { convId: b.convId };
-      if (b.ended) return { convId: null };
-      const id = `voice-${++made}`;
-      convs.set(id, "voice");
-      return { convId: id };
+      // The box: the line goes into that chat (its activity is now).
+      if (b.convId && !b.ended) active.set(b.convId, Math.max(...active.values()) + 1);
+      return { convId: b.convId };
     },
   });
   const stored = new Map<string, string>();
@@ -316,41 +315,105 @@ test("one conversation across a drop, a mic restart and a reload; only picking a
   assert.deepEqual(box.calls.session, ["c-new"], "the first start continues the most recent chat");
   f.opts().onMessage({ role: "user", message: "Can you see my board?" });
   await wait(10);
-  assert.equal(v.thread, "voice-1", "its voice conversation is the board's thread");
-  assert.equal(v.state.chat?.id, "voice-1");
+  assert.equal(lines.at(-1)!.convId, "c-new", "its lines go into that chat, never a conversation of their own");
+  assert.equal(v.state.chat?.id, "c-new");
 
-  // The connection drops (ElevenLabs, the network): said, with the reason, and the mic goes on in the same chat.
+  // The connection drops: said, with the reason, and the mic goes on in the same chat.
   f.opts().onDisconnect({ reason: "error", message: "pc connection lost", closeCode: 1006 });
   await wait(10);
   assert.equal(v.state.phase, "error");
   assert.match(v.state.error, /Voice disconnected \(pc connection lost\)\. Tap the mic to go on with this chat\./);
-  assert.deepEqual(closes.at(-1), { by: "remote", reason: "error", message: "pc connection lost", code: 1006, transport: "websocket", secs: closes.at(-1)!.secs, conv: "voice-1" });
+  assert.deepEqual(closes.at(-1), { by: "remote", reason: "error", message: "pc connection lost", code: 1006, transport: "websocket", secs: closes.at(-1)!.secs, conv: "c-new" });
   await v.start();
-  assert.equal(v.state.phase, "live");
-  assert.deepEqual(box.calls.session, ["c-new", "voice-1"], "the restart continues the thread, not the newest chat");
-  f.opts().onMessage({ role: "user", message: "Hello, can you hear me?" });
-  await wait(10);
-  assert.equal(lines.at(-1)!.convId, "voice-1", "its lines go on in the same conversation");
-
-  // Carl ends it with the mic and taps again: the same thread.
+  assert.deepEqual(box.calls.session, ["c-new", "c-new"]);
+  // Ended with the mic and tapped again; then a reload: still that chat.
   await v.end("mic");
-  assert.equal(closes.at(-1)!.by, "mic");
   await v.start();
-  assert.equal(box.calls.session.at(-1), "voice-1");
-  f.opts().onMessage({ role: "assistant", message: "Yes." });
-  await wait(10);
-  assert.equal(lines.at(-1)!.convId, "voice-1");
+  assert.equal(box.calls.session.at(-1), "c-new");
   await v.end("pill");
-
-  // A reload (a new controller, the same iPad): still the thread.
   const v2 = new VoiceController({ api: box.api, sdk: async () => f.sdk, mic, threadStore });
   await v2.start();
-  assert.equal(box.calls.session.at(-1), "voice-1");
-  assert.equal(made, 1, "never a second voice conversation");
-
-  // Picking another chat is the one deliberate change.
-  await v2.switchChat("c-new");
   assert.equal(box.calls.session.at(-1), "c-new");
-  assert.equal(v2.thread, "c-new");
+
+  // Picking another chat: it holds across restarts while Carl is active nowhere else…
+  await v2.switchChat("c-old");
+  assert.equal(box.calls.session.at(-1), "c-old");
   await v2.end();
+  await v2.start();
+  assert.equal(box.calls.session.at(-1), "c-old");
+  await v2.end();
+  // …and when he goes on in another chat (the laptop), "continue that" on the board means that chat.
+  active.set("c-new", Date.now() + 60_000);
+  await v2.start();
+  assert.equal(box.calls.session.at(-1), "c-new");
+  await v2.end();
+});
+
+test("the box's updates in the live call: the agent's answer is spoken (a user message), context never; [vc:…] lines are not Carl's; the chat's images go at the start", async () => {
+  const sent: string[] = [];
+  const ctx: string[] = [];
+  let polls = 0;
+  const box = fakeBox({
+    voiceSession: async (id) => ({
+      signedUrl: "wss://fake",
+      systemPrompt: "p",
+      toolNames: ["Ask", "LookAtScreen"],
+      convId: id,
+      cursor: "1:1",
+      images: [
+        { mime: "image/png", dataBase64: Buffer.from("png-bytes").toString("base64") },
+        { mime: "image/png", dataBase64: "" },
+      ],
+    }),
+    voiceUpdates: async (_id, cursor) => {
+      polls++;
+      if (cursor === "1:1")
+        return {
+          cursor: "2:2",
+          updates: [
+            { id: "r1", kind: "result", speak: true, text: "[vc:result] The agent answered: saved." },
+            { id: "c1", kind: "context", speak: false, text: "[vc:context] Carl typed in the chat." },
+          ],
+        };
+      await wait(20);
+      return { cursor: cursor ?? "", updates: [] };
+    },
+  });
+  let opts: SessionOpts | null = null;
+  const conv: VoiceConv = {
+    endSession: async () => opts?.onDisconnect(),
+    setMicMuted: () => {},
+    sendContextualUpdate: (t) => ctx.push(t),
+    sendUserMessage: (t) => sent.push(t),
+    uploadFile: async () => ({ fileId: "img" }),
+    sendMultimodalMessage: () => {},
+  };
+  const sdk = {
+    Conversation: {
+      startSession: async (o: SessionOpts) => {
+        opts = o;
+        o.onConnect();
+        return conv;
+      },
+    },
+  };
+  const v = new VoiceController({ api: box.api, sdk: async () => sdk, mic });
+  await v.start();
+  await wait(80);
+  assert.deepEqual(sent, ["[vc:result] The agent answered: saved."]);
+  assert.deepEqual(
+    ctx.filter((t) => t.startsWith("[vc:")),
+    ["[vc:context] Carl typed in the chat."],
+  );
+  assert.ok(polls >= 2, "it keeps listening");
+  assert.equal(v.sent.images, 1, "the real image went; the empty one never");
+  // The SDK echoes our user message back as a user line: never saved as Carl's; a control tag never reaches the chat.
+  opts!.onMessage({ role: "user", message: "[vc:result] The agent answered: saved." });
+  opts!.onMessage({ role: "agent", message: "Saved it. [skip_turn]" });
+  await wait(10);
+  assert.deepEqual(
+    box.calls.lines.map((l) => [l.role, l.text]),
+    [["assistant", "Saved it."]],
+  );
+  await v.end();
 });

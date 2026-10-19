@@ -38,7 +38,7 @@ export function reconnectRecap(lines: { role: string; content: string; system?: 
     "This call just reconnected: on the previous connection the voice model took too long to answer and the call dropped.",
     lastUser ? `The user's last request: "${clip(lastUser.content.trim(), 500)}"` : "",
     tail.length ? `The last lines before the drop:\n${tail.join("\n")}` : "",
-    "Don't greet and don't apologise at length. Carry on with that request if it isn't done (check the file first if you changed one); if it is done, say so in one line. Work in small steps: several short Edits rather than one big Write, or hand a large rewrite to AskAgent.",
+    "Don't greet and don't apologise at length. If you had handed that request to the agent (Ask), it is still running: its answer comes as a [vc:result] message, so don't ask it again. If you hadn't, say a short line and Ask now; if it is done, say so in one line.",
   ]
     .filter(Boolean)
     .join("\n");

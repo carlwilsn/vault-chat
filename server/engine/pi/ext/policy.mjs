@@ -223,3 +223,15 @@ export function youSince(entries) {
   }
   return null;
 }
+
+/** The custom message type of a line said on a voice call (vc.mjs /vc-note with `voice`; server/convlog/piSession.ts). */
+export const VOICE_TYPE = "vc-voice";
+
+/**
+ * What the model reads for a voice line (a custom_message is sent as user-role text): who said it, on the
+ * call. Voice is this conversation's front of house, not another agent: its words are the conversation's.
+ */
+export function voiceLineContent(d) {
+  const text = String(d?.text ?? "").trim();
+  return d?.role === "user" ? `[voice call] Carl said: ${text}` : `[voice call] You said to Carl (spoken by your voice): ${text}`;
+}

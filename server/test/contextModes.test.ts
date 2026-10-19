@@ -133,7 +133,7 @@ beforeAll(async () => {
   act = await import("../activity");
   core = await import("../../src/activityCore");
   voice = await import("../voice");
-  deps = { vault, name: "main", main: true, shell: null, message: (b) => engine.message(b) };
+  deps = { vault, name: "main", main: true, message: (b) => engine.message(b) };
 });
 
 afterAll(() => {
@@ -249,7 +249,7 @@ describe("mode A, then mode B sees it", () => {
     const sum = act.youLayer(vault).text;
     expect(sum).toContain("Carl: explain KV caching in one paragraph");
     expect(sum).not.toContain("A KV cache keeps");
-    const block = await voice.voiceContextBlock(deps, null);
+    const block = await voice.voicePrompt(deps, null, "phone");
     expect(block).toContain("Carl: explain KV caching in one paragraph");
     expect(block).not.toContain("A KV cache keeps");
     // A second message is a second pointer; the reply is still that chat's.

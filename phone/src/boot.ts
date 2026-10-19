@@ -6,6 +6,10 @@ import { installMock } from "./mock";
 import * as X from "./extras";
 import { createPhoneMarkdown, domToHtml } from "./markdown";
 import { stripAudioTags } from "../../src/voiceTags";
+import { isControlLine } from "../../src/voicePrompt";
+import { QuietGate } from "../../src/voiceQuiet";
+import { VoiceImagePusher } from "../../src/voiceImages";
+import { VoiceUpdates, pushStartImages } from "../../src/voiceFront";
 import type { LogRecord } from "../../src/convlog/protocol";
 import { emptyPicture, emptyRow, foldInto, pendingOf, reduceRow, shown, type Picture, type RowState } from "../../src/convlog/reduce";
 import { makeChatView, type ChatView } from "../../src/convlog/view";
@@ -2055,27 +2059,48 @@ export function boot(): void {
     for (let i = 0; i < NUM_BARS; i++) { const decayed = vSmoothed[i] * DECAY; vSmoothed[i] = raw[i] > decayed ? raw[i] : decayed; const h = 0.16 + Math.min(1, vSmoothed[i]) * 0.84; vBars[i].style.transform = `scaleY(${h.toFixed(3)})`; }
     vRafId = requestAnimationFrame(vMeter);
   }
-  function vClientTools(toolNames) { const tools = {}; for (const name of toolNames || []) { tools[name] = async (params) => { try { if (name === "SetProject") await vLines; /* this session's chats (SetProject's target): its voice conversation once a line made it, the chat it started from */ const r = await api("/api/v1/voice/tool", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, args: params || {}, convId: vVoiceConv, fromConvId: vVoiceFrom }) }); const j = await r.json(); return typeof j.result === "string" ? j.result : "error: " + (j.error || r.status); } catch (e) { return "error: " + String(e); } }; } return tools; }
-  // The session's lines are saved on the box as a voice conversation of their
-  // own (POST /api/v1/voice/transcript): the first line makes it, the rest
-  // name it; in order, one at a time. A new session makes a new one.
-  let vVoiceConv: string | null = null, vVoiceFrom: string | null = null, vLines: Promise<unknown> = Promise.resolve();
+  // Voice is the front of house of the open chat (D3, server/voice.ts): its one tool that acts, Ask, is a request
+  // to that chat's agent, sent after the lines before it (so the agent reads Carl's words first). The phone has no
+  // screen tools (the box's prompt says so).
+  function vClientTools(toolNames) { const tools = {}; for (const name of toolNames || []) { tools[name] = async (params) => { try { await vLines; const r = await api("/api/v1/voice/tool", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, args: params || {}, convId: vVoiceConv, device: "phone" }) }); const j = await r.json(); if (j && typeof j.convId === "string" && j.convId) vVoiceConv = j.convId; return typeof j.result === "string" ? j.result : "Error: " + (j.error || r.status) + ". Nothing was done."; } catch (e) { return "Error: the box did not take it (" + String(e) + "). Nothing was done."; } }; } return tools; }
+  // The call's lines go into the open chat on the box (POST /api/v1/voice/transcript), in order, one at a time;
+  // with no chat open, the first line makes one and the rest go on there.
+  let vVoiceConv: string | null = null, vLines: Promise<unknown> = Promise.resolve();
   function vSaveLine(role: string, text: string, end = false) {
     vLines = vLines.then(async () => {
       try {
         // `end`: the session is over — the box stops counting it as busy (its updater waits for that); no line is saved when nothing was said.
-        const r = await api("/api/v1/voice/transcript", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ convId: vVoiceConv, fromConvId: vVoiceFrom, role, text, ...(end ? { system: true, ended: true } : {}) }) });
+        const r = await api("/api/v1/voice/transcript", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ convId: vVoiceConv, role, text, device: "phone", ...(end ? { system: true, ended: true } : {}) }) });
         const j = await r.json();
-        if (j && typeof j.convId === "string") vVoiceConv = j.convId;
+        if (j && typeof j.convId === "string" && j.convId && !end) vVoiceConv = j.convId;
       } catch {}
     });
+  }
+  // The agent's answers and what Carl did elsewhere, into the live call, held while the voice speaks.
+  const vGate = new QuietGate(() => vAgentSpeaking);
+  const vPusher = new VoiceImagePusher();
+  let vUpdates: VoiceUpdates | null = null;
+  function vStartUpdates(conv, cursor) {
+    if (vUpdates) vUpdates.stop();
+    vUpdates = new VoiceUpdates({
+      cursor,
+      gate: vGate,
+      conv: () => (vConv === conv ? conv : null),
+      fetch: async (cur) => {
+        await vLines;
+        if (!vVoiceConv) { await new Promise((res) => setTimeout(res, 1000)); return { updates: [], cursor: cur || "" }; }
+        const r = await api("/api/v1/voice/updates?convId=" + encodeURIComponent(vVoiceConv) + "&wait=20000" + (cur ? "&cursor=" + encodeURIComponent(cur) : ""));
+        if (!r.ok) throw new Error("updates " + r.status);
+        return r.json();
+      },
+    }).start();
   }
   let vTransport: "webrtc" | "websocket" = "webrtc";
   async function vStart() {
     if (vConnecting || vConv) return;
     if (!micAvailable()) { setVErr("This page isn't HTTPS, so the browser blocks the mic. Open the https://…ts.net link from Settings → Phone."); return; }
     vConnecting = true; setVErr(""); document.body.classList.add("vconnecting");
-    vVoiceConv = null; vVoiceFrom = convId || null;
+    vVoiceConv = convId || null;
     try {
       // The mic permission, asked on the tap; then let go: the SDK opens the ONE
       // stream the call sends, and the waves read its meter (a second stream of
@@ -2085,7 +2110,7 @@ export function boot(): void {
       let cfg = null;
       let sessErr = "";
       for (let a = 0; a < 6; a++) {
-        try { const r = await api("/api/v1/voice/session" + (convId ? "?convId=" + encodeURIComponent(convId) : "")); if (r.ok) { cfg = await r.json(); break; } sessErr = `session ${r.status}: ${(await r.text()).slice(0, 200)}`; }
+        try { const r = await api("/api/v1/voice/session?device=phone" + (vVoiceConv ? "&convId=" + encodeURIComponent(vVoiceConv) : "")); if (r.ok) { cfg = await r.json(); break; } sessErr = `session ${r.status}: ${(await r.text()).slice(0, 200)}`; }
         catch (e) { sessErr = String((e && e.message) || e); }
         // Retry ANY failure (502 transient mint, network blip, 503 not-ready), not
         // just 503 — a single stray error used to kill the whole start. Backoff.
@@ -2108,10 +2133,10 @@ export function boot(): void {
         onDisconnect: (d) => { if (d && d.reason !== "user") console.warn("[voice] closed", vTransport, JSON.stringify({ reason: d.reason, message: d.message, code: d.closeCode ?? (d.context && d.context.code), why: d.closeReason ?? (d.context && d.context.reason) })); if (!timedOut) vTeardown(); },
         onError: (m) => setVErr(typeof m === "string" ? m : (m && m.message) || "voice error"),
         onAudio: (b64) => { if (vTransport === "websocket") try { vAgentEnvPush(b64); } catch {} },
-        onMessage: ({ message, role }) => { const raw = (message || "").trim(); const text = role === "user" ? raw : stripAudioTags(raw); if (text) vSaveLine(role === "user" ? "user" : "assistant", text); },
+        onMessage: ({ message, role }) => { const raw = (message || "").trim(); if (role === "user" && isControlLine(raw)) return; /* the box's own [vc:result] updates: not Carl's */ const text = role === "user" ? raw : stripAudioTags(raw); if (text) vSaveLine(role === "user" ? "user" : "assistant", text); },
         // Mode leaving "speaking" = the playback buffer drained (or barge-in) —
         // everything that arrived was heard, so drop the queued envelope tail.
-        onModeChange: ({ mode }) => { vAgentSpeaking = mode === "speaking"; if (!vAgentSpeaking) vAgentEnvReset(); },
+        onModeChange: ({ mode }) => { vAgentSpeaking = mode === "speaking"; if (!vAgentSpeaking) vAgentEnvReset(); vGate.modeChanged(); },
       });
       const sessionPromise = open().catch((e) => {
         if (vTransport !== "webrtc" || !cfg.signedUrl || timedOut || /NotAllowed|NotFound|NotReadable|Permission/i.test(String(e && e.name) + String(e && e.message))) throw e;
@@ -2122,13 +2147,16 @@ export function boot(): void {
       sessionPromise.then((c) => { clearTimeout(watchdog); if (timedOut && c) { try { c.endSession(); } catch {} } }).catch(() => clearTimeout(watchdog));
       vConv = await Promise.race([sessionPromise, new Promise((_, rej) => { watchdog = setTimeout(() => { timedOut = true; rej(new Error("connect timed out after 15s")); }, 15000); })]);
       clearTimeout(watchdog);
+      if (cfg.convId) vVoiceConv = cfg.convId;
+      // The chat's newest images (the box sends them with the session): this call has never seen them.
+      { const c = vConv; vPusher.reset(); void pushStartImages(c, vPusher, cfg.images, () => vConv === c).catch(() => {}); vStartUpdates(c, cfg.cursor || null); }
     } catch (e) {
       vConnecting = false; vTeardownAudio(); document.body.classList.remove("vconnecting");
       if (!vAutoRetried) { vAutoRetried = true; setTimeout(() => { try { if (vMicCtx && vMicCtx.state === "suspended") vMicCtx.resume().catch(() => {}); } catch {} vStart(); }, 800); return; }
       setVErr(String((e && e.message) || e));
     }
   }
-  function vTeardown() { if (vLive) vSaveLine("assistant", "Voice session ended.", true); vLive = false; cancelAnimationFrame(vRafId); vRafId = 0; vTeardownAudio(); vAutoRetried = false; vAgentSpeaking = false; vAgentEnvReset(); vSmoothed.fill(0); for (const b of vBars) b.style.transform = "scaleY(.16)"; document.body.classList.remove("voice", "voicemin", "vconnecting", "vmicmuted"); vMuted = false; { const vh = $("vhint"); if (vh) vh.textContent = ""; } vConv = null; vConnecting = false; }
+  function vTeardown() { if (vLive) vSaveLine("assistant", "Voice session ended.", true); if (vUpdates) { vUpdates.stop(); vUpdates = null; } vGate.reset(); vLive = false; cancelAnimationFrame(vRafId); vRafId = 0; vTeardownAudio(); vAutoRetried = false; vAgentSpeaking = false; vAgentEnvReset(); vSmoothed.fill(0); for (const b of vBars) b.style.transform = "scaleY(.16)"; document.body.classList.remove("voice", "voicemin", "vconnecting", "vmicmuted"); vMuted = false; { const vh = $("vhint"); if (vh) vh.textContent = ""; } vConv = null; vConnecting = false; }
   async function vStop() { try { if (vConv) await vConv.endSession(); } catch {} vTeardown(); }
   $("voiceRow").onclick = () => {
     closeMenu();

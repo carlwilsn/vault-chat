@@ -18,6 +18,7 @@ installFakeTauri(vault);
 
 const { useStore } = await import("../../src/store.ts");
 const voice = await import("../../src/voice-elevenlabs.ts");
+const P = await import("../../src/voicePrompt.ts");
 const L = await import("../../src/voiceLlms.ts");
 const T = await import("../../src/voiceTimeout.ts");
 const { VoiceImagePusher } = await import("../../src/voiceImages.ts");
@@ -59,7 +60,7 @@ const TIMEOUT_CLOSE = {
 
 test("the agent: 15 s per model in the cascade, a tool-capable backup chain, few files kept whole, the least reasoning", () => {
   const list = L.parseLlmList({ llms: [{ llm: "gpt-6-luna", supports_image_input: true, available_reasoning_efforts: ["low", "medium", "high"] }] });
-  const body: any = voice.buildAgentCreateBody({ llm: "gpt-6-luna", info: L.llmInfo(list, "gpt-6-luna"), customTools: [], voiceId: "v" });
+  const body: any = voice.buildAgentCreateBody({ llm: "gpt-6-luna", info: L.llmInfo(list, "gpt-6-luna"), tools: P.voiceToolDefs("board"), voiceId: "v" });
   const p = body.conversation_config.agent.prompt;
   assert.equal(p.cascade_timeout_seconds, 15);
   assert.ok(p.cascade_timeout_seconds >= 2 && p.cascade_timeout_seconds <= 15, "ElevenLabs' range");
@@ -70,24 +71,16 @@ test("the agent: 15 s per model in the cascade, a tool-capable backup chain, few
   assert.ok(fi.max_files_per_conversation >= fi.max_files_in_memory);
 });
 
-test("a 200-message conversation full of images: the prompt and its history stay under budget, no pixels in it", () => {
-  const long = "Clear out the rest of the note except for the problem statement and build from there. ".repeat(30);
-  const msgs = Array.from({ length: 200 }, (_, i) => ({
-    role: i % 2 ? "assistant" : "user",
-    content: `${i}: ${long}`,
-    ...(i % 3 === 0 ? { attachments: [{ imageDataUrl: png(i % 250) }] } : {}),
-  }));
-  const st = { ...useStore.getState(), vaultPath: vault, files: [], messages: [] } as any;
-  const p = voice.buildSystemPrompt(st, "", "", { sessionContext: "", memoryBlock: "", skillsIndex: "" }, msgs as any, true, [], []);
-  const hist = p.split("Recent conversation context")[1] ?? "";
-  assert.ok(hist.length > 0, "the history is there");
-  assert.ok(hist.length <= voice.HISTORY_TOTAL_CHAR_BUDGET + 200, `history ${hist.length} chars`);
-  assert.ok(p.length < 20_000, `prompt ${p.length} chars`);
-  assert.ok(!p.includes("data:image"), "no image bytes in the prompt");
-  assert.match(hist, /199: /, "the newest turn is kept");
-  assert.ok(!hist.includes("\n0: ") && !/User: 0: /.test(hist), "the oldest dropped");
-  // The guidance that keeps a turn's tool call short.
-  assert.match(p, /Keep each Write or Edit short/);
+test("the one tool that acts takes a sentence (no long tool argument for the cascade to time out on), and returns at once", () => {
+  // P7 (e73c63e8): a turn whose answer was a long tool call (a rewrite) missed the cascade's 15 s on every model and
+  // the call closed, the action dropped. Voice's only acting tool is Ask: one short string, Carl's words.
+  const ask = P.voiceToolDefs("laptop").find((t) => t.name === "Ask")!;
+  assert.deepEqual(Object.keys(ask.parameters.properties), ["request"]);
+  assert.match(ask.parameters.properties.request!.description, /Short: one or two sentences/);
+  assert.match(ask.description, /returns at once/);
+  const p = P.buildVoicePrompt({ device: "laptop" });
+  assert.match(p, /say a short line first \("on it", "one sec, checking"\) and call Ask in the same reply/);
+  assert.ok(!/Write|Edit\b|NotebookEdit/.test(P.voiceToolNames("laptop").join(" ")));
 });
 
 test("images already in the session are not sent again; a look's several images go as one picture", async () => {
@@ -152,7 +145,7 @@ test("a timeout close reconnects once with a recap; the plain line, never the ra
     await tick();
     assert.equal(recaps.length, 1, "one reconnect");
     assert.match(recaps[0]!, /The user's last request: "Clear out the rest of the note except for the problem statement/);
-    assert.match(recaps[0]!, /several short Edits/);
+    assert.match(recaps[0]!, /its answer comes as a \[vc:result\] message, so don't ask it again/);
     assert.ok(next, "a new session");
     assert.equal(useStore.getState().voiceMode, true, "the call stays on");
     const lines = useStore.getState().messages.map((m) => m.content);

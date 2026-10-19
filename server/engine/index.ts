@@ -54,10 +54,6 @@ export type EngineHandle = {
   health: () => Record<string, unknown>;
   /** The models the box runs: the chat agent, the vision fallback, the subagent child's default. */
   roles?: () => { chat: string; vision: string; subagent: string };
-  /** A vault's sandbox for commands run from the server (voice's Bash and vault tools): the
-   * outer layer with the other vaults hidden; null without bubblewrap, undefined before the
-   * vault's engine is up. */
-  shellFor?: (vault: string) => string[] | null | undefined;
   /** The engine of a vault, started on first use (the main one is `engine`). */
   open?: (v: VaultRef) => Promise<Engine>;
 };
@@ -275,7 +271,6 @@ export async function startEngine(b: EngineBoot): Promise<EngineHandle> {
   const vaults = (): VaultRef[] => b.vaults?.() ?? [mainRef];
   const stateOf = (v: VaultRef) => vaultState(b.stateDir, base, v);
 
-  const sandboxes = new Map<string, PiSandbox>();
   const make = (v: VaultRef): Engine => {
     const st = stateOf(v);
     excludeLocalDir(v.path);
@@ -306,7 +301,6 @@ export async function startEngine(b: EngineBoot): Promise<EngineHandle> {
       }),
       others,
     };
-    sandboxes.set(v.name, sandbox);
     const backend = new PiBackend({
       install,
       paths: st.pi,
@@ -359,6 +353,8 @@ export async function startEngine(b: EngineBoot): Promise<EngineHandle> {
       deny: others,
       onFilesWritten: (paths) => b.onFilesWritten?.(v.name, paths),
       vaultName: v.name,
+      // The vault's own tools run in the same sandbox as the agent's commands (the other vaults hidden).
+      shell: () => outerWith(sandbox),
       // One line per turn: the full record in <state>/logs/turns.jsonl, a summary in the journal.
       turnLog: (line) => {
         boxLogs(b.stateDir).turns.append(line);
@@ -400,10 +396,6 @@ export async function startEngine(b: EngineBoot): Promise<EngineHandle> {
     }),
     // A child runs on its agent's model, else VC_PI_SUBAGENT_MODEL, else the parent's (subagents.ts).
     roles: () => ({ chat: engineModel(), vision: visionModel, subagent: process.env.VC_PI_SUBAGENT_MODEL || engineModel() }),
-    shellFor: (name) => {
-      const sb = sandboxes.get(name);
-      return sb ? outerWith(sb) : undefined;
-    },
     open,
   };
 }

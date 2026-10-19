@@ -2,10 +2,10 @@
 // activity log per vault, written by every surface, read by every surface.
 // Unit: append, rotation, caps, redaction, the summary (dedupe, order, cap,
 // project first, window), isolation, the off switch. In process (the engine
-// on a fake pi, voice's tools for real): a Ctrl+K edit reaches the next chat
-// turn's prefix; a voice turn with an Edit reaches a Ctrl+L summary and a chat
-// turn; a capture's stored image is referenced; AskAgent's first turn carries
-// the voice turns before it; a second vault never sees the first's entries.
+// on a fake pi, voice's routes for real): a Ctrl+K edit reaches the next chat
+// turn's prefix; what Carl said by voice reaches a Ctrl+L layer and a chat turn
+// (pointing at its chat); a capture's stored image is referenced; voice's Ask
+// from a fresh call carries the call's lines; a second vault never sees the first's.
 import { describe, it, expect, beforeAll, afterAll, afterEach } from "vitest";
 import { EventEmitter } from "node:events";
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
@@ -138,7 +138,7 @@ beforeAll(async () => {
   act = await import("../activity");
   core = await import("../../src/activityCore");
   voice = await import("../voice");
-  deps = { vault, name: "main", main: true, shell: null, message: (b) => engine.message(b) };
+  deps = { vault, name: "main", main: true, message: (b) => engine.message(b) };
 });
 
 afterAll(() => {
@@ -366,26 +366,20 @@ describe("every surface sees the same stream (engine on a fake pi)", () => {
     expect(other.texts).not.toContain(`(id ${other.convId})`);
   });
 
-  it("a voice turn with an Edit reaches a later Ctrl+L summary and a later chat turn", async () => {
-    const t = await voice.voiceTranscript(deps, { role: "user", text: "make the title shorter" });
+  it("what Carl said by voice reaches a later Ctrl+L layer and a later chat turn, pointing at its chat; voice's reply stays there", async () => {
+    const t = await voice.voiceTranscript(deps, { role: "user", text: "shorten the heading, please" });
     expect(t.status).toBe(200);
-    const edit = await voice.voiceTool(deps, { name: "Edit", args: { path: "notes/a.md", old_string: "# A very long and winding title about transformers", new_string: "# Transformers" } });
-    expect(edit.result).not.toMatch(/^(Error|Refused)/);
-    expect(readFileSync(join(vault, "notes", "a.md"), "utf8")).toMatch(/^# Transformers/);
     await voice.voiceTranscript(deps, { role: "assistant", text: "Done — the title is now Transformers.", convId: t.body.convId });
-    // A read is not logged.
-    await voice.voiceTool(deps, { name: "Read", args: { path: "notes/a.md" } });
     // What a Ctrl+L side thread with no conversation gets (the same layer, through the same function).
     const sum = { activity: act.youLayer(vault).text };
-    expect(sum.activity).toContain('Voice: Carl said: "make the title shorter"');
-    expect(sum.activity).toContain('Voice · notes/a.md: Voice edited notes/a.md — "# A very long and winding title about transformers" → "# Transformers"');
+    expect(sum.activity).toContain(`Voice (in chat ${t.body.convId}): Carl said: "shorten the heading, please"`);
     // Voice's reply is that conversation's content: it stays there.
     expect(sum.activity).not.toContain("Done — the title is now Transformers.");
-    expect(sum.activity).not.toMatch(/Voice ran Read|Voice read/);
-    // And the chat.
-    const chat = await chatTurn(engine, backend, { text: "what did I just change by voice?" });
-    expect(chat.texts).toContain('Carl said: "make the title shorter"');
-    expect(chat.texts).toContain("Voice edited notes/a.md");
+    // The chat it was said in has it in its own thread (its pi session): not again in its layer.
+    expect(act.youLayer(vault, { convId: String(t.body.convId) }).text).not.toContain("shorten the heading, please");
+    // Another chat.
+    const chat = await chatTurn(engine, backend, { text: "what did I just say by voice?" });
+    expect(chat.texts).toContain('Carl said: "shorten the heading, please"');
   });
 
   it("an image capture is stored under .vault-chat/local/captures and the chat's you layer references it", async () => {
@@ -404,30 +398,29 @@ describe("every surface sees the same stream (engine on a fake pi)", () => {
     expect(chat.texts).toContain(`capture of paper.pdf (page 2) — captured a region for the chat: ${rel}`);
   });
 
-  it("AskAgent from voice: the new conversation's first turn carries the voice turns before it", async () => {
-    await voice.voiceTranscript(deps, { role: "user", text: "can you have the agent summarise the transformers note" });
+  it("Ask from a fresh call: the new conversation's first agent turn carries the call's lines before it", async () => {
+    const line = await voice.voiceTranscript(deps, { role: "user", text: "can you have the agent summarise the transformers note" });
     const before = backend.turns.length;
-    const r = JSON.parse((await voice.voiceTool(deps, { name: "AskAgent", args: { task: "Summarise notes/a.md into notes/summary.md" } })).result);
-    expect(r.started).toBe(true);
+    const r = await voice.voiceTool(deps, { name: "Ask", args: { request: "Summarise notes/a.md into notes/summary.md" }, convId: line.body.convId });
+    expect(r.convId).toBe(line.body.convId);
     await until(() => backend.turns.length > before);
     const texts = backend.turns[backend.turns.length - 1]!.texts.join("\n\n");
     backend.end();
-    expect(texts).toContain('Carl said: "can you have the agent summarise the transformers note"');
-    expect(texts).toContain("Voice handed a task to the agent: Summarise notes/a.md into notes/summary.md");
+    expect(texts).toContain("can you have the agent summarise the transformers note");
     expect(texts).toContain("Summarise notes/a.md into notes/summary.md");
   });
 
-  it("a voice session started from a chat knows its last exchange and the recent stream", async () => {
+  it("a voice session on a chat has that chat's turns and the recent stream (its you layer)", async () => {
     const { appendMessage, createConv } = await import("../engine/convs");
     const c = await createConv(vault, {}, "Planning the survey");
     await appendMessage(vault, c.id, { role: "user", content: "Draft section 4 on KV caches" });
     await appendMessage(vault, c.id, { role: "assistant", content: "Section 4 drafted in survey.md." });
-    const block = await voice.voiceContextBlock(deps, c.id);
-    expect(block).toContain('started from the chat "Planning the survey"');
-    expect(block).toContain("Carl: Draft section 4 on KV caches");
-    expect(block).toContain("Agent: Section 4 drafted in survey.md.");
-    expect(block).toContain("<you>");
-    expect(block).toContain("Voice edited notes/a.md");
+    const prompt = await voice.voicePrompt(deps, c.id, "phone");
+    expect(prompt).toContain('This conversation — "Planning the survey"');
+    expect(prompt).toContain("Carl: Draft section 4 on KV caches");
+    expect(prompt).toContain("Agent: Section 4 drafted in survey.md.");
+    expect(prompt).toContain("<you>");
+    expect(prompt).toContain('Carl said: "shorten the heading, please"');
   });
 
   it("two vaults: the second never sees the first's entries, and its own stay its own", async () => {
@@ -448,7 +441,6 @@ describe("every surface sees the same stream (engine on a fake pi)", () => {
     const size = logOf(vault).length;
     process.env.VC_ACTIVITY = "0";
     await voice.voiceTranscript(deps, { role: "user", text: "silent" });
-    await voice.voiceTool(deps, { name: "Write", args: { path: "notes/off.md", contents: "x" } });
     act.activityPost(vault, { entry: { kind: "edit", text: "off" } });
     await chatTurn(engine, backend, { text: "off" });
     expect(logOf(vault).length).toBe(size);

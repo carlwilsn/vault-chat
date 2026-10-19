@@ -4,10 +4,11 @@
 // laptop and the phone, and saved on the box) drops them. The audio is never
 // touched (this runs only on the text clients receive after the fact).
 
-/** One tag: [word], [two words] or [three words], letters and spaces only —
+/** One tag: [word], [two words] or [three words], letters (and underscores: a
+ *  control tag the model writes out, "[skip_turn]", P22) and spaces only —
  *  never a markdown link's text ("[the paper](…)"), a wiki link ("[[Note]]"),
  *  a footnote ("[1]") or a checkbox ("[ ]", "[x]"). */
-const TAG = /(?<![[\w])\[\s*[A-Za-z]{2,}(?: [A-Za-z]+){0,2}\s*\](?![\](])/g;
+const TAG = /(?<![[\w])\[\s*[A-Za-z][A-Za-z_]+(?: [A-Za-z_]+){0,2}\s*\](?![\](])/g;
 
 /** `text` without its audio tags, the spaces around them tidied. */
 export function stripAudioTags(text: string): string {

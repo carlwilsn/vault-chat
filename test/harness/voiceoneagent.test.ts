@@ -5,10 +5,9 @@
 //   - LookAtScreen reads the focused pane off the page at call time: the text
 //     and every image in view as shown — an in-editor paste included, with no
 //     save, no disk read, no sync.
-//   - While voice is live on a conversation, its composer's send is Carl's turn
-//     in the voice conversation (text as a user message, images uploaded with
-//     it); the text agent starts no turn. Voice off: the composer is the text
-//     agent's again.
+//   - One brain answers each turn (D3): while voice is live on a conversation,
+//     what Carl types goes to the conversation's agent, never into the call
+//     (voice hears it, and the agent's answer, as context from the box).
 //   - A new session gets the thread's recent images (it never saw them).
 import { test, before } from "node:test";
 import assert from "node:assert/strict";
@@ -195,51 +194,29 @@ test("LookAtScreen: what is on screen now — a paste in the editor shows at onc
   voice.adoptVoiceSessionForPreview(null);
 });
 
-test("the voice prompt: it sees images and the screen, never asks for a refresh or a re-paste", () => {
-  const p = voice.buildSystemPrompt(useStore.getState() as any, "", "", { sessionContext: "", memoryBlock: "", skillsIndex: "" });
-  assert.match(p, /LookAtScreen reads their screen right now, on their machine/);
-  assert.match(p, /Never ask them to refresh, re-paste, re-attach, or 'send it in the chat'/);
+test("the voice prompt on the laptop: it sees the screen and images, never asks for a refresh or a re-paste", async () => {
+  const P = await import("../../src/voicePrompt.ts");
+  const p = P.buildVoicePrompt({ device: "laptop" });
+  assert.match(p, /LookAtScreen reads what is in view right now/);
+  assert.match(p, /Never ask him to refresh, re-paste or send it again/);
   assert.match(p, /never blame syncing/);
-  const def = voice.CLIENT_TOOL_DEFINITIONS.find((t) => t.name === "LookAtScreen")!;
-  assert.match(def.description, /read on their machine at call time/);
+  const def = P.voiceToolDefs("laptop").find((t) => t.name === "LookAtScreen")!;
+  assert.match(def.description, /See Carl's screen right now, on the device in front of him/);
 });
 
-test("composer during voice: Carl's turn in the voice conversation (text and image), no text-agent turn; voice off: the text agent's again", async () => {
+test("composer during voice: one brain per turn — what Carl types goes to the conversation's agent, never into the call", async () => {
   const id = useStore.getState().newConversation();
   useStore.getState().selectConversation(id);
   const conv = fakeConv();
   voice.adoptVoiceSessionForPreview(conv);
   assert.equal(voice.voiceSessionOn(id), true);
-  const before = useStore.getState().messages.length;
-
+  assert.equal((voice as any).sendComposerToVoice, undefined, "no route from the composer into the call");
   dispatchChatAction({ kind: "send", text: "Sure, I just pasted it into the chat." });
+  dispatchChatAction({ kind: "send", text: "this one", attachments: [{ imageDataUrl: png(7) }] });
   await new Promise((r) => setTimeout(r, 50));
-  assert.deepEqual(conv.userMessages, ["Sure, I just pasted it into the chat."]);
-
-  const img = png(7);
-  dispatchChatAction({ kind: "send", text: "this one", attachments: [{ imageDataUrl: img }] });
-  await new Promise((r) => setTimeout(r, 50));
-  assert.equal(conv.uploads.length, 1, "the image went through the voice upload");
-  assert.equal(conv.uploads[0]!.type, "image/png");
-  assert.deepEqual(conv.sent, [{ text: "this one", fileId: "f1" }]);
-
-  // The thread has both lines (the image with its line), and no reply from the text agent.
-  const s = useStore.getState();
-  const added = s.messages.slice(before);
-  assert.deepEqual(added.map((m) => [m.role, m.content]), [["user", "Sure, I just pasted it into the chat."], ["user", "this one"]]);
-  assert.equal(added[1]!.attachments?.[0]?.imageDataUrl, img);
-  assert.equal(s.busy, false, "no text turn");
-  assert.notEqual(s.conversations.find((c) => c.id === id)?.status, "running");
-
-  // Another conversation open: its composer is the text agent's (voice runs in its own).
-  assert.equal(voice.voiceSessionOn("some-other-chat"), false);
-
-  // Voice ends: the composer goes back to the text agent.
+  assert.deepEqual(conv.userMessages, [], "the voice never gets a typed turn to answer");
+  assert.equal(conv.uploads.length, 0);
   voice.adoptVoiceSessionForPreview(null);
-  assert.equal(voice.voiceSessionOn(id), false);
-  dispatchChatAction({ kind: "send", text: "back to typing" });
-  await new Promise((r) => setTimeout(r, 50));
-  assert.equal(conv.userMessages.length, 1, "nothing more reached the voice session");
 });
 
 test("a new session gets the thread's recent images it never saw (a resume, a reconnect)", async () => {
@@ -260,14 +237,6 @@ test("a new session gets the thread's recent images it never saw (a resume, a re
   assert.equal(conv.uploads.length, 2);
   assert.equal(conv.sent.length, 2, "one message (each file id carries it here: the fake has no raw connection)");
   assert.match(conv.sent[0]!.text!, /Earlier in this conversation.*these 2 images were shared/);
-  // The prompt's history says an image went with a line.
-  const p = voice.buildSystemPrompt(
-    useStore.getState() as any,
-    "",
-    "",
-    { sessionContext: "", memoryBlock: "", skillsIndex: "" },
-    [{ role: "user", content: "the potassium one", attachments: [{ imageDataUrl: png(2) }] }] as any,
-  );
-  assert.match(p, /User: the potassium one \[sent an image\]/);
+  // (The box's prompt says an image went with a line: server/test/voice.test.ts.)
   voice.adoptVoiceSessionForPreview(null);
 });

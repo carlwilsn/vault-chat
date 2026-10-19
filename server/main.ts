@@ -245,8 +245,8 @@ async function main(): Promise<void> {
             stop: async (v, id) => (await engineOf(v)).sideStop(id),
           },
         },
-    // Voice (server/voice.ts) in the request's vault: its working copy, its
-    // engine (AskAgent), its sandbox (Bash, vault tools), its sync.
+    // Voice (server/voice.ts) in the request's vault: its conversations, its engine (Ask hands
+    // Carl's request to the conversation's agent), its sync.
     voice: async (v) => {
       // Its engine opens its conversation mirror, so voice's lines reach the clients' /poll.
       if (!v.main && engine.engine) await engineOf(v).catch((e) => console.error(`[voice] vault ${v.name}:`, e));
@@ -254,16 +254,8 @@ async function main(): Promise<void> {
         vault: v.path,
         name: v.name,
         main: v.main,
-        get shell() {
-          return engine.engine ? engine.shellFor?.(v.name) : undefined;
-        },
         message: async (b) => (await engineOf(v)).message(b),
         onWrite: (paths) => (paths?.length ? liveEdits.note(v.name, paths) : triggerSync(v.main ? undefined : v.name)),
-        openrouterKey: () => {
-          const v = keychainCommands.keychain_get({ key: "api.openrouter" });
-          return typeof v === "string" && v ? v : null;
-        },
-        webSearchModel: process.env.VC_WEBSEARCH_MODEL || "google/gemini-2.5-flash-lite",
       };
     },
   });

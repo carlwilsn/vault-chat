@@ -47,7 +47,7 @@ export type ActivityEntry = {
   where?: string;
   /** A project slug, when known. */
   project?: string;
-  /** A conversation the entry points at (chat pointers, voice sessions, AskAgent hand-offs). */
+  /** A conversation the entry points at (chat pointers, what was said by voice in it). */
   convId?: string;
   /** A stored image (vault-relative, under .vault-chat/local/captures/), never inline data. */
   image?: string;
@@ -249,7 +249,9 @@ export function chatPointer(e: ActivityEntry, now: number): string {
 /** One entry of the other surfaces (Ctrl+K, Ctrl+L, voice), one line. */
 function otherLine(e: ActivityEntry, now: number): string {
   const loc = e.path ? ` · ${e.path}${e.where ? ` (${e.where})` : ""}` : e.where ? ` · ${e.where}` : "";
-  const bits = [`[${ago(now - e.ts)}] ${SURFACE[e.modality] ?? e.modality}${loc}: ${e.text}`];
+  // A voice line points at the chat it was said in (ReadConversation reads it there).
+  const where = e.kind === "voice" && e.convId ? ` (in chat ${e.convId})` : "";
+  const bits = [`[${ago(now - e.ts)}] ${SURFACE[e.modality] ?? e.modality}${loc}${where}: ${e.text}`];
   if (e.outcome) bits.push(`(${e.outcome})`);
   if (e.detail) bits.push(`— ${e.detail}`);
   return clip(bits.join(" "));
@@ -293,7 +295,8 @@ export function buildYouLayer(src: YouSources, o: YouOptions): YouLayer {
   const all = [...src.entries].filter((e) => e.ts <= now + 60_000).sort((a, b) => a.ts - b.ts);
   // Not for this reader: its own messages and pasted images (in its thread), and a reply from another conversation.
   const visible = all.filter((e) => {
-    if (own && e.convId === own && (e.kind === "chat" || isPasted(e) || e.kind === "focus")) return false;
+    // (A voice line of this conversation is in its thread too: a vc-voice message in its pi session.)
+    if (own && e.convId === own && (e.kind === "chat" || isPasted(e) || e.kind === "focus" || e.kind === "voice")) return false;
     if (isVoiceReply(e) && e.convId !== own) return false;
     return true;
   });
@@ -515,67 +518,7 @@ export function projectContextBlock(p: ProjectFiles | null, globalRules = "", ma
   return `<project_context>\n${capText(body, maxChars)}\n</project_context>`;
 }
 
-// ---------------------------------------------------------------- what voice did
-
-const VOICE_WRITES = new Set(["Write", "Edit", "NotebookEdit", "Bash", "CreateNote", "UpdateNote", "ResolveNote", "ReopenNote", "DeleteNote", "AskAgent"]);
-const READ_ONLY = new Set(["Read", "ListDir", "Glob", "Grep", "GitLog", "ListConversations", "ReadConversation", "PdfExtract", "WebFetch", "WebSearch", "ListNotes", "ListProjects", "AgentStatus", "ScrollTo"]);
-
-/** A voice tool call → an entry, when it changed something (or handed work to
- * the agent). Reads are not logged: they are noise next to what was done. */
-export function voiceToolEntry(name: string, args: unknown, result: string, vaultRoot?: string | null): Omit<ActivityEntry, "ts"> | null {
-  if (READ_ONLY.has(name)) return null;
-  const a = (args && typeof args === "object" ? args : {}) as Record<string, unknown>;
-  const rel = (p: unknown) => {
-    let s = str(p).replace(/\\/g, "/");
-    const root = (vaultRoot ?? "").replace(/\\/g, "/").replace(/\/+$/, "");
-    if (root && s.toLowerCase().startsWith(root.toLowerCase() + "/")) s = s.slice(root.length + 1);
-    return s;
-  };
-  const res = result.trim();
-  // A refusal changed nothing, and its args may name a denied path: never logged.
-  if (/^Refused/.test(res)) return null;
-  const failed = /^Error/.test(res);
-  const status = failed ? ` — failed: ${clean(result, 120)}` : "";
-  switch (name) {
-    case "Write":
-      return { kind: "voice", modality: "voice", text: `Voice wrote ${rel(a.path)}${status}`, path: rel(a.path), detail: clean(a.contents, 200) };
-    case "Edit":
-      return {
-        kind: "voice",
-        modality: "voice",
-        text: `Voice edited ${rel(a.path)}${a.replace_all ? " (every occurrence)" : ""}${status}`,
-        path: rel(a.path),
-        detail: `"${clean(a.old_string, 220)}" → "${clean(a.new_string, 220)}"`,
-      };
-    case "NotebookEdit":
-      return { kind: "voice", modality: "voice", text: `Voice ${clean(a.action, 20) || "edited"} cell ${clean(a.cell_index, 6)} of ${rel(a.path)}${status}`, path: rel(a.path) };
-    case "Bash":
-      return { kind: "voice", modality: "voice", text: `Voice ran a command: ${clean(a.command, 200)}${status}` };
-    case "CreateNote":
-      return { kind: "voice", modality: "voice", text: `Voice saved a note: ${clean(a.text, 200)}${status}` };
-    case "UpdateNote":
-      return { kind: "voice", modality: "voice", text: `Voice changed note ${clean(a.id, 40)} to: ${clean(a.text, 200)}${status}` };
-    case "ResolveNote":
-    case "ReopenNote":
-    case "DeleteNote":
-      return { kind: "voice", modality: "voice", text: `Voice ${name === "ResolveNote" ? "resolved" : name === "ReopenNote" ? "reopened" : "deleted"} note ${clean(a.id, 40)}${status}` };
-    case "AskAgent": {
-      let convId: string | undefined;
-      try {
-        const r = JSON.parse(result);
-        if (typeof r?.conversationId === "string") convId = r.conversationId;
-      } catch {
-        /* an error string */
-      }
-      return { kind: "voice", modality: "voice", text: `Voice handed a task to the agent: ${clean(a.task, 240)}${status}`, ...(convId ? { convId } : {}) };
-    }
-    default:
-      // A vault's own tool: it may have changed things.
-      // A tool this vault lacks (another vault's) or one that failed: nothing happened here.
-      if (VOICE_WRITES.has(name) || failed) return null;
-      return { kind: "voice", modality: "voice", text: `Voice ran the vault tool ${clean(name, 60)}${status}` };
-  }
-}
+// ---------------------------------------------------------------- what was said by voice
 
 /** One transcript line of a voice session → an entry (system lines are not). */
 export function voiceLineEntry(role: "user" | "assistant", text: string, convId?: string | null): Omit<ActivityEntry, "ts"> | null {

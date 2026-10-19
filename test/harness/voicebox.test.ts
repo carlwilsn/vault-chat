@@ -1,7 +1,8 @@
-// Voice in box mode: the laptop's voice agent sends its vault tools to the box
-// (POST /api/v1/voice/tool, paths made vault-relative), keeps ScrollTo — which
-// moves the user's own screen — local, and reaches the box's agent through
-// AskAgent. Off a box, voice does not start (it says to connect the box).
+// Voice in box mode: the laptop's voice is the front of house of the open chat
+// (D3): its one tool that acts, Ask, goes to the box (POST /api/v1/voice/tool,
+// in the attached conversation, after the lines before it); the tools that read
+// or move this screen stay local; its lines go into that chat on the box, under
+// its own id; its updates come from the box. Off a box, voice does not start.
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
@@ -46,25 +47,21 @@ before(async () => {
 });
 after(() => new Promise<void>((r) => server.close(() => r())));
 
-test("box mode: vault tools go to the box with vault-relative paths", async () => {
-  const remote = await boxVoiceTool(vault);
-  assert.ok(remote, "a box-connected vault yields a remote runner");
-  const h = voice.buildClientToolHandlers(remote!);
+test("box mode: Ask goes to the box in the attached chat, after the lines before it; the screen tools are this laptop's", async () => {
+  const { voiceToolVia, boxVoice } = await import("../../src/voiceBox.ts");
+  const b = (await boxVoice(vault))!;
+  let saved = false;
+  const lines = new Promise((r) => setTimeout(() => ((saved = true), r(undefined)), 30));
+  const h = voice.buildClientToolHandlers(voiceToolVia(b.link, vault, undefined, () => "chat-7"), ["Ask"], () => lines);
   posts.length = 0;
-  assert.equal(await h.Read({ path: `${vault}/notes/a.md` }), "box ran Read");
-  assert.equal(await h.Write({ path: `${vault}/notes/b.md`, contents: "x" }), "box ran Write");
-  assert.equal(await h.Bash({ command: "ls" }), "box ran Bash");
-  assert.equal(await h.AskAgent({ task: "summarise the week" }), "box ran AskAgent");
+  assert.equal(await h.Ask({ request: "summarise the week" }), "box ran Ask");
+  assert.equal(saved, true, "the request waited for Carl's words to be saved");
   assert.deepEqual(
-    posts.map((p) => [p.path, p.body.name, p.body.args.path ?? p.body.args.command ?? p.body.args.task]),
-    [
-      ["/api/v1/voice/tool?vault=v", "Read", "notes/a.md"],
-      ["/api/v1/voice/tool?vault=v", "Write", "notes/b.md"],
-      ["/api/v1/voice/tool?vault=v", "Bash", "ls"],
-      ["/api/v1/voice/tool?vault=v", "AskAgent", "summarise the week"],
-    ],
+    posts.map((p) => [p.path, p.body.name, p.body.args.request, p.body.convId, p.body.device]),
+    [["/api/v1/voice/tool?vault=v", "Ask", "summarise the week", "chat-7", "laptop"]],
   );
-  // Nothing was written on the laptop: the write is the box's.
+  assert.deepEqual(Object.keys(h).sort(), ["Ask", "LookAtScreen", "ScrollTo", "ShowFile"]);
+  // Nothing was written on the laptop: any change is the agent's, on the box.
   assert.equal(fake.calls.some((c) => c.cmd === "write_text_file"), false);
 });
 
@@ -93,12 +90,7 @@ test("relativeArgs: only paths under the vault change", () => {
   assert.deepEqual(relativeArgs({ path: "C:\\V\\notes\\a.md" }, "C:/v"), { path: "notes/a.md" });
 });
 
-test("box mode: the box's own vault tools (named by its session) are forwarded too", async () => {
-  const h = voice.buildClientToolHandlers((await boxVoiceTool(vault))!, ["EchoKey"]);
-  posts.length = 0;
-  assert.equal(await h.EchoKey({ word: "hi" }), "box ran EchoKey");
-  assert.equal(posts[0]?.path, "/api/v1/voice/tool?vault=v", "the box's name for the vault rides along");
-});
+
 
 test("the session is the box's; unreachable and no-voice-for-this-vault are told apart", async () => {
   const { boxVoice, boxVoiceSession } = await import("../../src/voiceBox.ts");
@@ -111,7 +103,7 @@ test("the session is the box's; unreachable and no-voice-for-this-vault are told
     return { signedUrl: "wss://fake/x", systemPrompt: "box prompt", toolNames: ["Read", "EchoKey"], vaultRoot: "/home/carl/vaults/v" };
   });
   assert.equal(ok.session?.signedUrl, "wss://fake/x");
-  assert.deepEqual(seen, ["/api/v1/voice/session?convId=c1"]);
+  assert.deepEqual(seen, ["/api/v1/voice/session?convId=c1&device=laptop"]);
   assert.equal(b.link.vault, "v", "(boxGet adds ?vault= from the link)");
   // Settings' voice model and voice ride along: the box's agent uses them.
   localStorage.setItem("vault_chat_elevenlabs_llm", "claude-sonnet-4-6");
@@ -121,7 +113,7 @@ test("the session is the box's; unreachable and no-voice-for-this-vault are told
     chosen.push(path);
     return { signedUrl: "wss://fake/y", systemPrompt: "p", toolNames: [] };
   });
-  assert.deepEqual(chosen, ["/api/v1/voice/session?convId=c1&llm=claude-sonnet-4-6&voice=JBFqnCBsd6RMkjVDRZzb"]);
+  assert.deepEqual(chosen, ["/api/v1/voice/session?convId=c1&device=laptop&llm=claude-sonnet-4-6&voice=JBFqnCBsd6RMkjVDRZzb"]);
   localStorage.removeItem("vault_chat_elevenlabs_llm");
   localStorage.removeItem("vault_chat_elevenlabs_voice");
   const down = await boxVoiceSession(b, null, async () => {
@@ -138,42 +130,50 @@ test("the session is the box's; unreachable and no-voice-for-this-vault are told
   assert.ok(noKey.error && !noKey.unreachable && !noKey.unsupported);
 });
 
-test("the transcript is saved on the box in order, and the local thread moves to the box's id", async () => {
+test("the transcript is saved on the box in order, into the chat voice is attached to, under its own id", async () => {
   const { boxVoice, voiceTranscriptMirror } = await import("../../src/voiceBox.ts");
   const b = (await boxVoice(vault))!;
-  const localId = useStore.getState().newConversation();
+  const chat = useStore.getState().newConversation();
   const sent: any[] = [];
   const post = async (_l: any, path: string, body: any) => {
     sent.push({ path, ...body });
     await new Promise((r) => setTimeout(r, body.role === "user" ? 30 : 0)); // the first answers slowest
-    return { ok: true, data: { ok: true, convId: "box-voice-1" } };
+    return { ok: true, data: { ok: true, convId: body.convId } };
   };
-  const m = voiceTranscriptMirror(b, localId, "p-seed44", post);
+  const m = voiceTranscriptMirror(b, chat, post);
   m.push({ role: "user", content: "what's the budget?" });
-  m.push({ role: "assistant", content: "Read writeup.md · on the box", system: true });
+  m.push({ role: "assistant", content: "LookAtScreen", system: true, toolCalls: [{ name: "LookAtScreen", input: {}, result: "budget.md" }] } as any);
   m.push({ role: "assistant", content: "3.2B tokens." });
   await m.done();
   assert.deepEqual(
-    sent.map((x) => [x.path, x.convId, x.role, x.text, !!x.system, x.fromConvId ?? null]),
+    sent.map((x) => [x.path, x.convId, x.role, x.text, !!x.system, x.device]),
     [
-      ["/api/v1/voice/transcript", localId, "user", "what's the budget?", false, "p-seed44"],
-      ["/api/v1/voice/transcript", "box-voice-1", "assistant", "Read writeup.md · on the box", true, "p-seed44"],
-      ["/api/v1/voice/transcript", "box-voice-1", "assistant", "3.2B tokens.", false, "p-seed44"],
+      ["/api/v1/voice/transcript", chat, "user", "what's the budget?", false, "laptop"],
+      ["/api/v1/voice/transcript", chat, "assistant", "LookAtScreen", true, "laptop"],
+      ["/api/v1/voice/transcript", chat, "assistant", "3.2B tokens.", false, "laptop"],
     ],
   );
-  assert.equal(useStore.getState().activeConversationId, "box-voice-1");
-  assert.ok(!useStore.getState().conversations.some((c) => c.id === localId));
+  assert.equal(useStore.getState().activeConversationId, chat, "the same chat: no conversation of voice's own");
 });
 
-test("voice has no project tool that acts: only Carl makes a project or moves a chat (in the app); AskAgent has no project", async () => {
+test("the call's updates come from the box for the attached chat (long-polled from the session's cursor)", async () => {
+  const { boxVoice, boxVoiceUpdates } = await import("../../src/voiceBox.ts");
+  const b = (await boxVoice(vault))!;
+  const seen: string[] = [];
+  const page = await boxVoiceUpdates(b.link, "chat-7", "100:100", async (_l, path) => {
+    seen.push(path);
+    return { updates: [{ id: "r1", kind: "result", speak: true, text: "[vc:result] The agent answered: done." }], cursor: "200:100" };
+  });
+  assert.deepEqual(seen, ["/api/v1/voice/updates?convId=chat-7&wait=20000&cursor=100%3A100"]);
+  assert.equal(page.cursor, "200:100");
+  assert.equal(page.updates[0]!.speak, true);
+});
+
+test("voice has no tool that acts but Ask: no project, notes or file tool of its own (they are the agent's)", async () => {
   const h = voice.buildClientToolHandlers((await boxVoiceTool(vault))!) as Record<string, unknown>;
-  assert.equal(h.SetProject, undefined);
-  const defs = voice.CLIENT_TOOL_DEFINITIONS;
-  assert.ok(!defs.some((d) => d.name === "SetProject"));
-  assert.equal(defs.find((d) => d.name === "AskAgent")!.parameters.properties.project, undefined);
-  // The read-only list and the notes tools run on the box, like the other file tools.
-  for (const n of ["ListProjects", "ListNotes", "CreateNote", "UpdateNote", "ResolveNote", "ReopenNote", "DeleteNote"]) {
-    assert.ok(defs.some((d) => d.name === n), n);
-    assert.ok(!voice.LOCAL_VOICE_TOOLS.has(n), n);
-  }
+  assert.deepEqual(Object.keys(h).sort(), ["Ask", "LookAtScreen", "ScrollTo", "ShowFile"]);
+  const { voiceToolDefs } = await import("../../src/voicePrompt.ts");
+  const defs = voiceToolDefs("laptop");
+  for (const n of ["SetProject", "ListProjects", "ListNotes", "CreateNote", "Write", "Edit", "Bash", "AskAgent"]) assert.ok(!defs.some((d) => d.name === n), n);
+  assert.deepEqual(Object.keys(defs[0]!.parameters.properties), ["request"]);
 });

@@ -31,3 +31,14 @@ test("brackets that are text stay", () => {
     assert.equal(stripAudioTags(t), t, t);
   }
 });
+
+test("control tags the model writes out (P22: \"[skip_turn]\") never reach the transcript; vault-chat's own [vc:…] lines are recognised", async () => {
+  assert.equal(stripAudioTags("[skip_turn]"), "");
+  assert.equal(stripAudioTags("Okay. [skip_turn]"), "Okay.");
+  assert.equal(stripAudioTags("[end_call] Bye."), "Bye.");
+  const { isControlLine, controlLine } = await import("../../src/voicePrompt.ts");
+  assert.equal(isControlLine(controlLine("result", "The agent answered: done.")), true);
+  assert.equal(isControlLine("  [vc:context] Carl typed."), true);
+  assert.equal(isControlLine("[vcx] not ours"), false);
+  assert.equal(isControlLine("What's [vc] in this paper?"), false);
+});

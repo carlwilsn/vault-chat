@@ -11,13 +11,16 @@ import { appendFileSync, closeSync, existsSync, fstatSync, mkdirSync, openSync, 
 import { dirname } from "node:path";
 import { randomBytes, randomUUID } from "node:crypto";
 import type { PiEntry } from "../../src/convlog/protocol";
-import { VC_NOTE } from "../../src/convlog/protocol";
+import { VC_NOTE, VC_VOICE } from "../../src/convlog/protocol";
+// @ts-ignore a plain .mjs (the pi extension's helpers): the same words pi's extension writes
+import { voiceLineContent } from "../engine/pi/ext/policy.mjs";
 
 /** The entry types the transcript shows (or vault-chat's own); the rest (the session header, model and thinking-level changes, labels, names, usage) are pi's bookkeeping. */
 export function shownEntry(e: PiEntry): boolean {
   if (e.type === "message") return e.message?.role === "user" || e.message?.role === "assistant" || e.message?.role === "toolResult";
   if (e.type === "compaction") return true;
   if (e.type === "custom") return e.customType === VC_NOTE;
+  if (e.type === "custom_message") return e.customType === VC_VOICE;
   return false;
 }
 
@@ -111,6 +114,11 @@ export function appendEntries(file: string, entries: Omit<PiEntry, "id" | "paren
 /** A vault-chat entry (a line, a notice, a divider) as a pi custom entry. */
 export function vcNote(data: { kind: "line" | "notice" | "divider" | "tool"; [k: string]: unknown }): Omit<PiEntry, "id" | "parentId" | "timestamp"> {
   return { type: "custom", customType: VC_NOTE, data };
+}
+
+/** A line said on a voice call as pi's extension writes it (a custom_message: in the model's context). */
+export function vcVoice(data: { kind: "line"; role?: unknown; text?: unknown; [k: string]: unknown }): Omit<PiEntry, "id" | "parentId" | "timestamp"> {
+  return { type: "custom_message", customType: VC_VOICE, content: voiceLineContent(data) as string, display: true, details: data };
 }
 
 /** A message entry in pi's format (an imported conversation). */
