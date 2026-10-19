@@ -17,7 +17,8 @@ import { modelWindow, type PiCatalogRow, type PiPaths } from "./config";
 import type { PiInstall } from "./install";
 
 // ---- what the engine (../engine.ts) sees: neutral events and the two handlers it answers
-export type ToolSpec = { type: "function"; name: string; description: string; inputSchema: Record<string, unknown> };
+/** `readOnly`: the tool changes nothing (Ctrl+K / Ctrl+L side threads get every such tool: pi/side.ts). */
+export type ToolSpec = { type: "function"; name: string; description: string; inputSchema: Record<string, unknown>; readOnly?: boolean };
 
 /** What the runtime reports, in neutral terms. Every event names the thread it
  * belongs to; subagent threads report under their own ids (the engine maps
@@ -49,7 +50,9 @@ export type UserInputHandler = (threadId: string, question: string, options: str
  * did since `since` (that session's last layer). A conversation's thread names itself by `threadId`; a
  * Ctrl+K / Ctrl+L side thread by the conversation it was forked from (`convId`, or none). */
 export type YouHandler = (q: { threadId?: string; convId?: string | null; since: number | null }) => Promise<{ text: string; until: number }>;
-export type Handlers = { toolCall: ToolCallHandler; userInput: UserInputHandler; you?: YouHandler };
+/** A read-only vault-chat tool called from a Ctrl+K / Ctrl+L side thread, as of the conversation it was opened from (or none). */
+export type SideToolHandler = (convId: string | null, name: string, args: any) => Promise<{ ok: boolean; text: string }>;
+export type Handlers = { toolCall: ToolCallHandler; userInput: UserInputHandler; you?: YouHandler; sideTool?: SideToolHandler };
 
 export type PiSandbox = {
   /** bubblewrap argv for pi itself (ends with "--"), or null (no sandbox). */

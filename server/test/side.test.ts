@@ -8,8 +8,9 @@
 // conversation's own transcript alone; a popover's next request continues the
 // same side thread; a one-shot is pi with no session and no tools.
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { makePdf, textPage } from "./pdfgen";
 import { tmp, cleanup, makeVault, makeKeyStore, fakeOpenRouter, startServer, waitFor, type Running, type FakeOpenRouter } from "./helpers";
 
 let home: string, vault: string, secrets: string;
@@ -139,6 +140,37 @@ describe("Ctrl+L and Ctrl+K are requests to pi", () => {
     expect(seen.length).toBeGreaterThan(2);
     expect(seen.slice(0, -1).every((s) => final.text.startsWith(s) && s.length < final.text.length)).toBe(true);
     expect(callText(or.calls[n + 1])).toContain("Tool write not found");
+    expect(readFileSync(join(vault, "notes", "ideas.md"), "utf8")).toBe("- an idea\n");
+  }, 60_000);
+
+  // Carl's bug: Ctrl+K on a note asking for a proof of an exam's problem; the side thread had pi's read, which gives a
+  // PDF's raw bytes, so it asked him for a screenshot. Side threads have the agent's read-only tools: PdfRead among them.
+  it("Ctrl+L and Ctrl+K read a PDF in the vault with the agent's read-only tools (PdfRead), with or without a chat", async () => {
+    mkdirSync(join(vault, "Real 320-1"), { recursive: true });
+    writeFileSync(join(vault, "Real 320-1", "2025Fall_Exam1.pdf"), makePdf([textPage("Exam 1", ["Problem 1. Prove that the square root of 2 is irrational."])]));
+    const toolNames = (c: any) => (c?.tools ?? []).map((t: any) => t.function?.name);
+    const readOnly = ["read", "grep", "find", "ls", "PdfRead", "WebSearch", "ListNotes", "ListProjects", "BoardInbox"];
+    const never = ["write", "edit", "bash", "AskUser", "ScheduleWake", "CreateNote", "BoardSend", "StartJob", "Done"];
+    for (const req of [
+      { kind: "ask", convId: conv, text: "# Ctrl+L: a question about the file\n\nQUESTION:\nwhat does Problem 1 of my exam ask?" },
+      { kind: "edit", text: "# Ctrl+K: an inline edit\n\nINSTRUCTION:\nwrite the proof of Problem 1 in Real 320-1/2025Fall_Exam1.pdf\n\nSELECTION:\n" },
+    ]) {
+      const n = or.calls.length;
+      or.script.push({ toolCall: { name: "PdfRead", args: { path: "Real 320-1/2025Fall_Exam1.pdf", pages: "1" } } }, { toolCall: { name: "CreateNote", args: { text: "x" } } }, { text: "Suppose sqrt 2 = p/q in lowest terms." });
+      const r = await post("/api/v1/side", req);
+      expect(r.status).toBe(200);
+      const { final } = await follow(r.body.id, r.body.v);
+      expect(final).toMatchObject({ done: true, error: null, text: "Suppose sqrt 2 = p/q in lowest terms." });
+      const calls = or.calls.slice(n);
+      expect(calls.length).toBe(3);
+      // The model is offered every read-only tool, PdfRead among them, and nothing that writes.
+      for (const t of readOnly) expect(toolNames(calls[0])).toContain(t);
+      for (const t of never) expect(toolNames(calls[0])).not.toContain(t);
+      // PdfRead ran on the box: the page's text went back to the model.
+      expect(callText(calls[1])).toContain("Problem 1. Prove that the square root of 2 is irrational.");
+      // A tool that writes is refused (pi never declared it).
+      expect(callText(calls[2])).toContain("Tool CreateNote not found");
+    }
     expect(readFileSync(join(vault, "notes", "ideas.md"), "utf8")).toBe("- an idea\n");
   }, 60_000);
 

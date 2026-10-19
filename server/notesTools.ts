@@ -47,6 +47,7 @@ export const noteToolSpecs = [
   {
     type: "function" as const,
     name: "ListNotes",
+    readOnly: true,
     description: `Carl's notes: the entries in his Notes panel (${NOTES_FILE}), newest first, each with its id, status and text. status: open (default), resolved or all.`,
     inputSchema: {
       type: "object",

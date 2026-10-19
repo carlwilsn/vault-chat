@@ -11,7 +11,7 @@
 // host calls.
 import { appendFileSync, existsSync, readFileSync, statSync, mkdirSync, writeFileSync } from "node:fs";
 import { registerRun, unregisterRun } from "../../src/runRegistry";
-import type { BackendEvent, PiBackend } from "./pi/backend";
+import type { BackendEvent, PiBackend, ToolSpec } from "./pi/backend";
 import {
   withVault,
   contextToolSpecs,
@@ -208,7 +208,8 @@ export const ENGINE_TOOL_SPECS = [
   {
     type: "function",
     name: "PdfRead",
-    description: "Read text from a PDF: the page count plus the pages asked for (default 1-3), capped at maxChars (default 12000). Use page ranges; never read a whole long PDF at once.",
+    readOnly: true,
+    description: "Read text from a PDF in the vault: the page count plus the pages asked for (default 1-3), capped at maxChars (default 12000). Use page ranges; never read a whole long PDF at once. The read tool gives a PDF's raw bytes: use this instead, and never ask Carl for a screenshot of a PDF you can read.",
     inputSchema: {
       type: "object",
       properties: { path: { type: "string" }, pages: { type: "string", description: "e.g. \"1\", \"4-8\", \"1,3,7-9\"" }, maxChars: { type: "number" } },
@@ -219,6 +220,7 @@ export const ENGINE_TOOL_SPECS = [
   {
     type: "function",
     name: "WebSearch",
+    readOnly: true,
     description: "Search the web; returns a short answer with source URLs.",
     inputSchema: { type: "object", properties: { query: { type: "string" } }, required: ["query"], additionalProperties: false },
   },
@@ -237,6 +239,7 @@ export const ENGINE_TOOL_SPECS = [
   {
     type: "function",
     name: "JobList",
+    readOnly: true,
     description: "This conversation's jobs (all: true for every job in the vault): id, state, age, command.",
     inputSchema: { type: "object", properties: { all: { type: "boolean" } }, additionalProperties: false },
   },
@@ -249,6 +252,7 @@ export const ENGINE_TOOL_SPECS = [
   {
     type: "function",
     name: "JobStatus",
+    readOnly: true,
     description: "State and last output lines of a job started with StartJob.",
     inputSchema: { type: "object", properties: { id: { type: "string" }, tail: { type: "number" } }, required: ["id"], additionalProperties: false },
   },
@@ -288,6 +292,7 @@ export const ENGINE_TOOL_SPECS = [
   {
     type: "function",
     name: "BoardInbox",
+    readOnly: true,
     description: "The whiteboard inbox: each entry's title, status (unread / read / added / being made / couldn't make) and, for added parts, the board and whether its items are still there. Give id for one entry.",
     inputSchema: { type: "object", properties: { id: { type: "string" } }, additionalProperties: false },
   },
@@ -316,6 +321,7 @@ export const ENGINE_TOOL_SPECS = [
   {
     type: "function",
     name: "Cost",
+    readOnly: true,
     description: "Model spend in USD: this conversation by default, or a project's total.",
     inputSchema: {
       type: "object",
@@ -324,6 +330,15 @@ export const ENGINE_TOOL_SPECS = [
     },
   },
 ];
+
+/** Every vault-chat tool the agent has (Carl's own vault tools are added per thread). */
+export function agentToolSpecs(): ToolSpec[] {
+  return [...ENGINE_TOOL_SPECS, ...noteToolSpecs, ...contextToolSpecs] as ToolSpec[];
+}
+/** Ctrl+K / Ctrl+L: the agent's tools that change nothing (marked readOnly where they are defined). */
+export function sideToolSpecs(): ToolSpec[] {
+  return agentToolSpecs().filter((t) => t.readOnly === true);
+}
 
 const text = (t: string) => ({ success: true, contentItems: [{ type: "inputText", text: t }] });
 
@@ -479,6 +494,11 @@ export class Engine {
         }),
       userInput: (threadId, question, options) => this.scoped(() => this.waitForAnswer(threadId, question, options)),
       you: (q) => this.scoped(async () => this.you(q)),
+      sideTool: (convId, name, args) =>
+        this.scoped(async () => {
+          const r: any = await this.onToolCall({ side: { convId }, tool: name, arguments: args });
+          return { ok: r?.success !== false, text: (r?.contentItems ?? []).map((c: any) => c?.text ?? "").join("\n") };
+        }),
     });
     this.timers.push(setInterval(() => this.scoped(() => void this.tickWakes()), 2_000));
     this.timers.push(setInterval(() => this.scoped(() => this.tickWatchdog()), 15_000));
@@ -804,7 +824,8 @@ export class Engine {
   /**
    * POST /api/v1/side. Ctrl+K / Ctrl+L ({kind: "edit" | "ask", convId?, side?, text, images?}): pi forks the
    * conversation's session (its history and instructions; a fresh session with the agent's instructions when it
-   * has none) with pi's read-only tools; pi's extension adds what Carl did elsewhere since that conversation
+   * has none) with the agent's read-only tools (pi's read/grep/find/ls and every vault-chat tool marked readOnly:
+   * PdfRead, WebSearch, …); pi's extension adds what Carl did elsewhere since that conversation
    * last saw it (the "you" layer, the same hook a turn of the agent runs). `side`: the popover's next request, in
    * the same side thread. One-shots ({kind: "once", system, text, images?, fast?}): no session, no tools.
    */
@@ -823,7 +844,7 @@ export class Engine {
       if (kind === "once") {
         s = await side.start({ kind, system: String(b.system ?? ""), cwd: this.d.vault, model, tools: [], ephemeral: true, thinking: "off", sessionDir: dir("once"), text, images });
       } else if (typeof b.side === "string" && b.side) {
-        s = await side.start({ kind, side: b.side, cwd: this.d.vault, model, tools: READ_ONLY_TOOLS, sessionDir: "", text, images });
+        s = await side.start({ kind, side: b.side, cwd: this.d.vault, model, tools: READ_ONLY_TOOLS, hostTools: sideToolSpecs(), sessionDir: "", text, images });
       } else {
         conv = typeof b.convId === "string" && b.convId ? await readConv(this.d.vault, b.convId) : null;
         const src = conv?.threadId ? this.d.backend.threadSource(conv.threadId) : null;
@@ -836,7 +857,7 @@ export class Engine {
           writeFileSync(instr, buildDeveloperInstructions((conv ?? { id: "side", title: "", messages: [] }) as any, { rolePrompt: ENGINE_ROLE_PROMPT + (note ? `\n\n${note}` : "") }));
         }
         // What Carl did elsewhere comes in through pi (the extension's "you" layer, as of this conversation).
-        s = await side.start({ kind, fork: src?.file ?? null, instr, cwd: src?.cwd || this.d.vault, model, tools: READ_ONLY_TOOLS, sessionDir: dir(conv?.id ?? "none"), text, images, you: { convId: conv?.id ?? null } });
+        s = await side.start({ kind, fork: src?.file ?? null, instr, cwd: src?.cwd || this.d.vault, model, tools: READ_ONLY_TOOLS, hostTools: sideToolSpecs(), sessionDir: dir(conv?.id ?? "none"), text, images, you: { convId: conv?.id ?? null } });
       }
       this.log(`side ${kind} ${s.id}${conv ? ` (forked from ${conv.id})` : ""} on ${model}${s.file ? `: ${s.file}` : ""}`);
       return { ok: true, id: s.id, v: s.v };
@@ -1092,7 +1113,7 @@ export class Engine {
       cwd: this.d.vault,
       model,
       instructions,
-      tools: [...ENGINE_TOOL_SPECS, ...noteToolSpecs, ...contextToolSpecs] as any,
+      tools: agentToolSpecs() as any,
       subagents,
     });
     this.byThread.set(threadId, conv.id);
@@ -1385,14 +1406,18 @@ export class Engine {
   // ---------------------------------------------------------------- tools
 
   private async onToolCall(p: any): Promise<unknown> {
-    const convId = this.byThread.get(p?.threadId) ?? this.childOf.get(p?.threadId);
-    const l = convId ? this.live.get(convId) : undefined;
+    const name = String(p?.tool ?? "");
+    // A Ctrl+K / Ctrl+L side thread (p.side): only the read-only tools, as of the conversation it was opened from (or none).
+    const side: { convId: string | null } | null = p?.side ?? null;
+    if (side && !sideToolSpecs().some((t) => t.name === name)) return { success: false, contentItems: [{ type: "inputText", text: `${name} is not available here: this request has read-only tools.` }] };
+    const convId: string = (side ? side.convId : this.byThread.get(p?.threadId) ?? this.childOf.get(p?.threadId)) ?? "";
+    const l = convId && !side ? this.live.get(convId) : undefined;
     if (l) l.lastEventAt = Date.now();
     const vault = this.d.vault;
-    const conv = convId ? await readConv(vault, convId) : null;
-    if (!convId || !conv) return { success: false, contentItems: [{ type: "inputText", text: "No conversation for this thread." }] };
+    const found = convId ? await readConv(vault, convId) : null;
+    if (!side && (!convId || !found)) return { success: false, contentItems: [{ type: "inputText", text: "No conversation for this thread." }] };
+    const conv = found ?? ({ id: "", title: "", messages: [] } as unknown as NonNullable<typeof found>);
     const a = p?.arguments ?? {};
-    const name = String(p?.tool ?? "");
     // After ScheduleWake the turn is over: only Done or Blocked may still end it differently
     // (a background make's BoardSend is the maker's, not this turn's).
     if (l?.flags.wake && l.wakeAt && !AFTER_WAKE_OK.has(name) && !(name === "BoardSend" && a?.make)) return { success: false, contentItems: [{ type: "inputText", text: wakeRefusal(l.wakeAt) }] };
@@ -1536,7 +1561,7 @@ export class Engine {
             const pc = projectCost(String(a.project), (await allConvs(vault)) as any);
             return text(pc ? `Project ${pc.name}: $${pc.totalUsd.toFixed(4)} over ${pc.parts.length} conversation(s)${pc.missingCalls ? ` (${pc.missingCalls} call(s) without a cost)` : ""}.` : `No project "${a.project}".`);
           }
-          const target = a.conversation ? await readConv(vault, String(a.conversation)) : conv;
+          const target = a.conversation ? await readConv(vault, String(a.conversation)) : conv.id ? conv : null;
           if (!target) return text(`No conversation ${a.conversation}.`);
           return text(`Conversation "${target.title}": $${(target.costUsd ?? 0).toFixed(4)}${target.costMissingCalls ? ` (+${target.costMissingCalls} call(s) without a cost)` : ""}. (Costs land a few seconds after each turn.)`);
         }

@@ -19,6 +19,7 @@ export const contextToolSpecs: DynamicToolSpec[] = [
   {
     type: "function",
     name: "ListProjects",
+    readOnly: true,
     description:
       "Carl's projects (folders of chats, each with an optional shared notes file, project.md) and the chats in each. Without `project`: every project with its chats' titles. With `project` (name or slug): its notes file and all its chats. Read-only: only Carl makes projects and moves chats between them, in the app. You may read and edit a project's files (its project.md included) with your file tools.",
     inputSchema: {
@@ -30,12 +31,14 @@ export const contextToolSpecs: DynamicToolSpec[] = [
   {
     type: "function",
     name: "ListConversations",
+    readOnly: true,
     description: "Carl's other chats, most recent first: id, title, project and when it was last active. The \"you\" layer points at his recent messages in them; read one with ReadConversation.",
     inputSchema: { type: "object", properties: { limit: { type: "number" } }, additionalProperties: false },
   },
   {
     type: "function",
     name: "ReadConversation",
+    readOnly: true,
     description: "Read another chat's recent messages (Carl's and the agent's), by its id (from the \"you\" layer's pointer or ListConversations). Only when it matters for what Carl asks: another chat's content is not yours by default.",
     inputSchema: {
       type: "object",

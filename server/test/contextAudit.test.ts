@@ -330,13 +330,16 @@ describe("what each mode sends", () => {
 
   it("Ctrl+K and Ctrl+L requests (side threads of the chat)", async () => {
     const inline = await import("../../src/inlineEdit");
-    // As the box takes them (POST /api/v1/side): the engine forks the chat's thread with pi's read-only tools.
+    // As the box takes them (POST /api/v1/side): the engine forks the chat's thread with the agent's read-only tools.
     const sent = async (req: any) => {
       const r = await engine.sideStart(req);
       expect(r.ok).toBe(true);
       const o = backend.sides[backend.sides.length - 1];
       expect(o.fork).toMatch(/\.jsonl$/);
       expect(o.tools).toEqual(["read", "grep", "find", "ls"]);
+      // …and the agent's read-only vault-chat tools (PdfRead for a PDF), never one that writes.
+      expect(o.hostTools.map((t: any) => t.name)).toEqual(expect.arrayContaining(["PdfRead", "WebSearch", "ListNotes"]));
+      expect(o.hostTools.every((t: any) => t.readOnly === true)).toBe(true);
       return o.text as string;
     };
     // What pi's extension adds after the request (before_agent_start): the layer since the chat's last one,

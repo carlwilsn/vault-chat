@@ -7,8 +7,10 @@
 //    starts with the conversation's history and its instructions (one agent,
 //    shared context), and its session header names the conversation's session
 //    as its parent (a linked side thread, kept under sessions/side/);
-//  - tools: pi's --tools allowlist (Ctrl+K and Ctrl+L: the read-only built-ins)
-//    or --no-tools (one-shots);
+//  - tools: pi's --tools allowlist (Ctrl+K and Ctrl+L: the agent's read-only
+//    tools — pi's read/grep/find/ls and every vault-chat tool the engine marks
+//    readOnly, PdfRead and WebSearch among them, answered by the engine as of the
+//    conversation) or --no-tools (one-shots);
 //  - what Carl did elsewhere: the "you" layer, through the same extension hook
 //    as a conversation's turn (before_agent_start → a vc-you custom message in
 //    the side session; the fork carries what the conversation saw already);
@@ -20,10 +22,10 @@
 // get_last_assistant_text. Nothing here writes a session file.
 import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { sinceOf, type PiBackend } from "./backend";
+import { sinceOf, type PiBackend, type ToolSpec } from "./backend";
 import type { PiProc } from "./proc";
 
-/** pi's read-only built-ins: what Ctrl+K and Ctrl+L may use. */
+/** pi's read-only built-ins (Ctrl+K and Ctrl+L have these, plus the engine's read-only tools: SideStart.hostTools). */
 export const READ_ONLY_TOOLS = ["read", "grep", "find", "ls"];
 
 export type SideStart = {
@@ -39,8 +41,10 @@ export type SideStart = {
   system?: string;
   cwd: string;
   model: string;
-  /** pi's tool allowlist; [] = --no-tools. */
+  /** pi's built-ins allowed; [] (and no hostTools) = --no-tools. */
   tools: string[];
+  /** vault-chat tools (the extension registers them; the engine answers): Ctrl+K / Ctrl+L get the read-only ones. */
+  hostTools?: ToolSpec[];
   /** --no-session (one-shots). */
   ephemeral?: boolean;
   thinking?: string;
@@ -59,7 +63,7 @@ type Run = {
   id: string;
   proc: PiProc | null;
   file: string | null;
-  meta: { instr?: string; system?: string; cwd: string; model: string; tools: string[]; thinking?: string; sessionDir: string; ephemeral: boolean; you?: { convId: string | null } | null };
+  meta: { instr?: string; system?: string; cwd: string; model: string; tools: string[]; hostTools?: ToolSpec[]; thinking?: string; sessionDir: string; ephemeral: boolean; you?: { convId: string | null } | null };
   text: string;
   v: number;
   done: boolean;
@@ -127,7 +131,7 @@ export class SideRuns {
   }
 
   private async open(o: SideStart): Promise<Run> {
-    const meta: Run["meta"] = { instr: o.instr, system: o.system, cwd: o.cwd, model: o.model, tools: o.tools, thinking: o.thinking, sessionDir: o.sessionDir, ephemeral: !!o.ephemeral, you: o.you ?? null };
+    const meta: Run["meta"] = { instr: o.instr, system: o.system, cwd: o.cwd, model: o.model, tools: o.tools, hostTools: o.hostTools ?? [], thinking: o.thinking, sessionDir: o.sessionDir, ephemeral: !!o.ephemeral, you: o.you ?? null };
     if (o.system) {
       // pi's --system-prompt takes a file's contents too (no prompt in argv).
       mkdirSync(this.b.paths.instrDir, { recursive: true });
@@ -154,9 +158,10 @@ export class SideRuns {
       system: meta.system,
       ephemeral: meta.ephemeral,
       thinking: meta.thinking,
-      tools: this.b.writeTools([]),
+      tools: this.b.writeTools(meta.hostTools ?? []),
       sessionDir: meta.sessionDir,
-      builtins: meta.tools,
+      // pi's --tools names every active tool, extension ones too.
+      builtins: [...meta.tools, ...(meta.hostTools ?? []).map((t) => t.name)],
       you: !!meta.you,
     });
   }
@@ -198,7 +203,7 @@ export class SideRuns {
         })();
       }
     });
-    // Host calls: the "you" layer (as of the conversation it was opened from); no vault-chat tools; dialogs are cancelled.
+    // Host calls: the "you" layer and the read-only vault-chat tools (as of the conversation it was opened from); dialogs are cancelled.
     proc.on("ui", async (req: any) => {
       const reply = (o: Record<string, unknown>) => proc.write({ type: "extension_ui_response", id: req.id, ...o });
       if (req.method === "editor" && req.title === "vc:host-call") {
@@ -209,6 +214,12 @@ export class SideRuns {
           /* not a call */
         }
         if (call?.tool === "__you" && run.meta.you) return reply({ value: JSON.stringify(await this.b.you({ convId: run.meta.you.convId, since: sinceOf(call.args) })) });
+        const name = String(call?.tool ?? "");
+        const h = this.b.handlers?.sideTool;
+        if (h && (run.meta.hostTools ?? []).some((t) => t.name === name)) {
+          const r = await h(run.meta.you?.convId ?? null, name, call.args ?? {}).catch((e) => ({ ok: false, text: `${name} failed: ${(e as Error).message}` }));
+          return reply({ value: JSON.stringify({ text: r.text, ...(r.ok ? {} : { isError: true }) }) });
+        }
         return reply({ value: JSON.stringify({ text: "Not available here: this request has read-only tools.", isError: true }) });
       }
       if (["select", "confirm", "input", "editor"].includes(req.method)) reply({ cancelled: true });

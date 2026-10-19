@@ -55,6 +55,8 @@ export type DynamicToolSpec = {
   name: string;
   description: string;
   inputSchema: Record<string, unknown>;
+  /** It changes nothing: Ctrl+K / Ctrl+L side threads have it too. */
+  readOnly?: boolean;
 };
 
 /** A tool call's reply. */

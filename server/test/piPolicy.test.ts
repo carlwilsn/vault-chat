@@ -33,6 +33,8 @@ describe("pi extension policy", () => {
     expect(guardToolCall("write", { path: join(home, "state", "x"), content: "" }, opts)).toMatch(/read-only/);
     expect(guardToolCall("read", { path: join(home, "state", "x") }, opts)).toBeNull();
     expect(guardToolCall("read", { path: "notes.md" }, opts)).toBeNull();
+    // pi's read gives a PDF's raw bytes: the agent is sent to PdfRead instead (never to Carl for a screenshot).
+    expect(guardToolCall("read", { path: "Real 320-1/2025Fall_Exam1.PDF" }, opts)).toMatch(/PdfRead/);
     expect(guardToolCall("bash", { command: "cat ~/.config/vault-chat/x" }, opts)).toBeNull(); // bash is sandboxed instead
   });
 

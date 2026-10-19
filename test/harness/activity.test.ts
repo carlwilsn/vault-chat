@@ -144,7 +144,8 @@ test("Ctrl+L: the marquee's image goes with the first request; a follow-up conti
   const req = boxReqs.find((r) => r.method === "POST" && r.url.startsWith("/api/v1/side"))!;
   assert.equal(req.body.kind, "ask");
   assert.ok(req.body.text.startsWith("# Ctrl+L: a question about the file"));
-  assert.ok(req.body.text.includes("look it up in the vault with your read-only tools"));
+  assert.ok(req.body.text.includes("look it up with your read-only tools (files in the vault, PDFs with PdfRead"));
+  assert.ok(req.body.text.includes("Never ask Carl for a screenshot"));
   assert.deepEqual(req.body.images, [`data:image/png;base64,${PNG}`]);
   // The popover's next request: only what is new, in the same side thread.
   const refine = buildInlineAskRequest({ prompt: "shorter", selection: "x", before: "", after: "", side: answer.side, convId: "conv-7", imageDataUrl: `data:image/png;base64,${PNG}` });

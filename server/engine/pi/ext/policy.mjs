@@ -88,6 +88,8 @@ export function guardToolCall(toolName, input, { cwd, home, denyRead, denyWrite 
     for (const d of denyRead) if (isUnder(p, d)) return `${toolName}: ${v} is in a protected location (vault-chat's key store and server state are off limits).`;
     if (WRITES.has(toolName)) for (const d of denyWrite) if (isUnder(p, d)) return `${toolName}: ${v} is read-only for the agent.`;
   }
+  // pi's read gives a PDF's raw bytes (Carl was asked for a screenshot of an exam the agent could not read this way).
+  if (toolName === "read" && /\.pdf$/i.test(String(input?.path ?? "").trim())) return `read: ${input.path} is a PDF, and read gives only its raw bytes. Use PdfRead {path, pages} for its text (without PdfRead: pdftotext in the shell).`;
   // grep/find with a glob that climbs out of the tree is not followed by pi's
   // tools (no symlink following); nothing more to check.
   return null;

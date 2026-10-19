@@ -18,6 +18,9 @@
 // refused, as pi would not have declared it) and --no-tools; --system-prompt
 // (a file) goes to the model as the system message. Of pi's built-ins only
 // `read` runs (a file under the working folder); the others answer a canned line.
+// The model is sent the active tools as pi declares them: the built-ins (pi's
+// defaults read/bash/edit/write, or the allowlist's) and the extension's
+// vault-chat tools ($VC_PI_TOOLS), each only if the allowlist names it.
 //
 // The extension's "you" layer (ext/vc.mjs, VC_PI_YOU=1) as pi runs it: before
 // each prompt, the host call `__you` with `since` from the session's last
@@ -125,6 +128,19 @@ const out = (o) => process.stdout.write(JSON.stringify(o) + "\n");
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const BUILTINS = new Set(["bash", "read", "write", "edit", "grep", "find", "ls"]);
+/** The tools pi declares to the model: its built-ins and the extension's, filtered by --tools. */
+const declared = (() => {
+  let specs = [];
+  try {
+    specs = process.env.VC_PI_TOOLS ? JSON.parse(readFileSync(process.env.VC_PI_TOOLS, "utf8")) : [];
+  } catch {}
+  const builtins = [...BUILTINS].filter((n) => (allowed ? allowed.has(n) : ["read", "bash", "edit", "write"].includes(n)));
+  const host = specs.filter((t) => t && typeof t.name === "string" && (!allowed || allowed.has(t.name)));
+  return [
+    ...builtins.map((name) => ({ type: "function", function: { name, description: `pi's ${name}`, parameters: { type: "object", properties: {} } } })),
+    ...host.map((t) => ({ type: "function", function: { name: t.name, description: String(t.description ?? t.name), parameters: t.inputSchema ?? { type: "object", properties: {} } } })),
+  ];
+})();
 const uiWaiters = new Map();
 let uiSeq = 0;
 /** A vault-chat tool, as its extension calls the host: an editor dialog titled vc:host-call. */
@@ -173,7 +189,7 @@ let followUp = [];
 
 async function callModel() {
   const messages = (system ? [{ role: "system", content: system }] : []).concat(history).map((m) => ({ role: m.role === "toolResult" ? "tool" : m.role, content: typeof m.content === "string" ? m.content : (m.content ?? []).filter((c) => c.type === "text").map((c) => c.text).join("\n"), ...(m.toolCallId ? { tool_call_id: m.toolCallId } : {}) }));
-  const r = await fetch(`${baseUrl}/chat/completions`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${key}` }, body: JSON.stringify({ model, messages, stream: true }) });
+  const r = await fetch(`${baseUrl}/chat/completions`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${key}` }, body: JSON.stringify({ model, messages, stream: true, ...(declared.length ? { tools: declared } : {}) }) });
   const body = await r.text();
   if (!r.ok) throw new Error(`${r.status} ${body.slice(0, 200)}`);
   if (!body.startsWith("data:")) {

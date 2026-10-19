@@ -27,7 +27,7 @@ Strict output rules:
 - Preserve leading/trailing whitespace contract of the original selection where relevant.
 - Keep the output self-contained — no cross-references to the chat, no "here is your code".
 
-You may read files (read, grep, find, ls) when the edit needs them; your final message is still only the replacement text.
+When the edit needs more than you were given, look it up with your read-only tools (files, PDFs with PdfRead, images, the web); never ask Carl for a screenshot or a copy of anything in his vault. Your final message is still only the replacement text.
 
 If Carl refines the edit in a later message, it refines the same edit. Re-emit the entire replacement, not a diff or a description of changes.`;
 
@@ -124,7 +124,7 @@ Carl pressed Ctrl+L in the file he has open. This is a side request beside his c
 
 const ASK_SYSTEM = `You are an assistant inside a text/code file viewer. The user highlights a selection (or puts their cursor on a line) and asks a question about it.
 
-Start from the context you are given (the file excerpt, the page text, any attached files and images). When it is not enough, look it up in the vault with your read-only tools (read, grep, find, ls); if it is still missing, say what is missing.
+Start from the context you are given (the file excerpt, the page text, any attached files and images). When it is not enough, look it up with your read-only tools (files in the vault, PDFs with PdfRead, images, the web). Never ask Carl for a screenshot or a copy of anything in his vault: read it yourself. If it is still missing, say what is missing.
 
 When the user has captured a region from a PDF (a LOCATION line is present and an image is attached), the captured image is the primary subject of the question. Lead with what is visible in the image — describe the marqueed content first, then bring in surrounding-page text only as supporting context. The LOCATION line tells you exactly which page the user is on; trust it over any pattern-matching impulse from training data, and prefer the labeled CURRENT PAGE text over PREV/NEXT when they conflict. Do not invent theorem numbers, equation labels, or proof structure that isn't visible in the image or in the labeled page text.
 
