@@ -10,7 +10,7 @@
 // feed with one reducer. vault-chat's tools reach pi through its extension as
 // host calls.
 import { appendFileSync, existsSync, readFileSync, statSync, mkdirSync, writeFileSync } from "node:fs";
-import { registerRun, unregisterRun } from "../../src/runRegistry";
+import { holdRun, registerRun, unregisterRun } from "../../src/runRegistry";
 import type { BackendEvent, PiBackend, ToolSpec } from "./pi/backend";
 import {
   withVault,
@@ -913,6 +913,9 @@ export class Engine {
 
   /** Start a turn (or, if one is running, hand the input to it). */
   run(convId: string, input: string, kind: TurnKind, opts: TurnOpts = {}): Promise<void> {
+    // Busy from here (health's busy.runs), not only once the turn has started: the wait for
+    // the conversation's earlier input, the runtime and the thread is part of the turn.
+    const release = holdRun(convId);
     return this.serial(convId, async () => {
       const existing = this.live.get(convId);
       if (existing && !existing.finished) {
@@ -1038,7 +1041,7 @@ export class Engine {
         live.feed.dispose();
         await fail(`⚠️ The engine could not start this turn: ${(e as Error).message}`, rec);
       }
-    });
+    }).finally(release);
   }
 
   /**

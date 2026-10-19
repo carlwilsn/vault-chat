@@ -160,6 +160,8 @@ describe("boot + phone routes", () => {
     const a = await fetch(srv.base + "/answer", { method: "POST", headers: viaServe, body: JSON.stringify({ convId: j.convId, text: "go" }) });
     expect(a.status).toBe(200);
     expect((await a.json()).ok).toBe(true);
+    // Its turn ends here, not under the next test (busy counts a turn from when it is accepted).
+    await waitFor(async () => (await (await get("/api/v1/health")).json()).busy.runs === 0, 60_000);
     const bad = await fetch(srv.base + "/message", { method: "POST", headers: { ...viaServe, "tailscale-user-login": "x@y.z" }, body: "{}" });
     expect(bad.status).toBe(401);
   });
@@ -198,10 +200,15 @@ describe("boot + phone routes", () => {
         JSON.stringify({ role: "user", content: "MISSION BRIEF" }) +
         "\n",
     );
-    const before = or.calls.length;
     const j = await (await post("/message", { convId: "old-mission", text: "status?" })).json();
     expect(j.error).toMatch(/archived/);
-    expect(or.calls.length).toBe(before);
+    // Refused before anything starts: nothing is busy, no turn was logged, and no model call ever
+    // carried this thread (only its brief or this message would show it ran; other chats' calls don't count).
+    expect((await (await get("/api/v1/health")).json()).busy.runs).toBe(0);
+    const log = join(vault, ".vault-chat", "events", "old-mission.jsonl");
+    const recs = existsSync(log) ? readFileSync(log, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)) : [];
+    expect(recs.filter((x: any) => x.patch?.running || x.type === "live" || (x.type === "entry" && x.via !== "import"))).toEqual([]);
+    expect(or.calls.filter((c: any) => /MISSION BRIEF|status\?/.test(JSON.stringify(c.messages ?? [])))).toEqual([]);
     const conv = await (await get("/conversation?id=old-mission")).json();
     expect(conv.messages.some((m: any) => String(m.content).includes("MISSION BRIEF"))).toBe(true);
   });
