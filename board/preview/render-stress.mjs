@@ -163,7 +163,8 @@ const tap = async (sel) => {
     await el.waitFor({ state: 'visible', timeout: 8000 });
     await el.evaluate((n) => n.scrollIntoView({ block: 'center' })).catch(() => {});
     const b = await el.boundingBox({ timeout: 1000 }).catch(() => null);
-    if (b) return page.touchscreen.tap(b.x + b.width / 2, b.y + b.height / 2);
+    // On screen (a list repainted under the scroll moves it): else found and scrolled again.
+    if (b && b.y >= 0 && b.y + b.height <= (page.viewportSize()?.height ?? 1e9)) return page.touchscreen.tap(b.x + b.width / 2, b.y + b.height / 2);
     await page.waitForTimeout(50);
   }
   throw new Error(`nothing to tap: ${sel}`);

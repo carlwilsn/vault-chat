@@ -160,7 +160,7 @@ check(p.penSlots[3] === pick && p.penColor === pick && (await page.locator(".pop
 await holdFinger('.tb .slot[data-slot="0"]');
 check(await page.locator(".pop [data-color]").first().isVisible(), "a long-press on a slot opens its palette");
 check((await prefs()).penSlot === 0, "…for that slot");
-await tapFinger('.tb [data-act="undo"]');
+await tapFinger('.tb-left [data-act="undo"]');
 // The highlighter has its own slots.
 await tapFinger('.tb [data-mode="hl"]');
 await tapFinger('.tb .slot[data-slot="4"]');
