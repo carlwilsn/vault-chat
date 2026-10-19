@@ -301,6 +301,9 @@ async function fillPart(box: HTMLElement, e: Entry, n: number): Promise<void> {
       m.style.width = `${MATH_LAYOUT_W}px`;
       m.style.maxWidth = "100%";
       m.innerHTML = html;
+      // A long equation scrolls sideways in the viewer rather than being cut off.
+      box.style.overflowX = "auto";
+      box.dataset.scroll = "";
       box.appendChild(m);
     } else if (p.kind === "image") {
       const img = document.createElement("img");

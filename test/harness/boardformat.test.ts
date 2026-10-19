@@ -88,6 +88,17 @@ test("image sizes from PNG and JPEG headers", () => {
   // SOI, an APP0 segment, then SOF0 with 480 × 640.
   const jpg = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x04, 0x00, 0x00, 0xff, 0xc0, 0x00, 0x11, 0x08, 0x02, 0x80, 0x01, 0xe0, 0x03, 0, 0, 0, 0, 0, 0]);
   assert.deepEqual(imageSize(jpg), { type: "jpeg", w: 480, h: 640 });
+  // A phone photo stored sideways: APP1 Exif with Orientation 6 or 8 (3, upside down, keeps its sides), both byte orders.
+  const exif = (o: number, le: boolean) => {
+    const tiff = le
+      ? [0x49, 0x49, 0x2a, 0, 8, 0, 0, 0, 1, 0, 0x12, 0x01, 3, 0, 1, 0, 0, 0, o, 0, 0, 0, 0, 0, 0, 0]
+      : [0x4d, 0x4d, 0, 0x2a, 0, 0, 0, 8, 0, 1, 0x01, 0x12, 0, 3, 0, 0, 0, 1, 0, o, 0, 0, 0, 0, 0, 0];
+    const body = [0x45, 0x78, 0x69, 0x66, 0, 0, ...tiff];
+    return Buffer.from([0xff, 0xd8, 0xff, 0xe1, 0, body.length + 2, ...body, ...jpg.subarray(2)]);
+  };
+  assert.deepEqual(imageSize(exif(6, true)), { type: "jpeg", w: 640, h: 480 });
+  assert.deepEqual(imageSize(exif(8, false)), { type: "jpeg", w: 640, h: 480 });
+  assert.deepEqual(imageSize(exif(3, true)), { type: "jpeg", w: 480, h: 640 });
   assert.equal(imageSize(Buffer.from("<svg/>")), null);
 });
 

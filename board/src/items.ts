@@ -79,20 +79,101 @@ export function ensureMathStyle(): void {
   document.head.appendChild(st);
 }
 
-/** The height typeset math takes at width `w` (css px), measured off-screen once the fonts are in. */
-export async function measureMath(html: string, w: number): Promise<number> {
+/**
+ * Every web font `d`'s text is set in, loaded. Explicitly: WebKit does not load a font for hidden text when it is
+ * only laid out, so `fonts.ready` alone resolved with KaTeX's fonts still missing and the math was measured in a
+ * fallback font, narrower and shorter than it then rendered (the cut-off right ends and last lines).
+ */
+async function fontsSettled(d: HTMLElement): Promise<void> {
+  const fonts = document.fonts;
+  if (!fonts) return;
+  const faces = new Set<string>();
+  for (const el of [d, ...d.querySelectorAll<HTMLElement>("*")]) {
+    if (!el.firstChild) continue;
+    const cs = getComputedStyle(el);
+    faces.add(`${cs.fontStyle} ${cs.fontWeight} 16px ${cs.fontFamily}`);
+  }
+  const text = (d.textContent ?? "").slice(0, 2000) || "x";
+  await Promise.all([...faces].map((f) => fonts.load(f, text).catch(() => [])));
+  for (let k = 0; k < 4; k++) {
+    await fonts.ready;
+    // A frame for any font the last layout asked for to start loading.
+    await new Promise((r) => requestAnimationFrame(() => r(null)));
+    if (fonts.status !== "loading") return;
+  }
+}
+
+/**
+ * The box `d`'s typeset content needs (css px, its padding included): wider than `d` when something will not wrap.
+ * A display equation wider than its line is centred, so it spills out on BOTH sides: the width is the content's
+ * whole span, left to right, plus the padding.
+ */
+function mathExtent(d: HTMLElement): { w: number; h: number } {
+  const r = d.getBoundingClientRect();
+  const cs = getComputedStyle(d);
+  const pl = parseFloat(cs.paddingLeft) || 0, pr = parseFloat(cs.paddingRight) || 0, pb = parseFloat(cs.paddingBottom) || 0;
+  let left = r.left + pl, right = r.right - pr, bottom = r.bottom;
+  const take = (q: DOMRect) => {
+    if (!q.width && !q.height) return;
+    left = Math.min(left, q.left);
+    right = Math.max(right, q.right);
+    bottom = Math.max(bottom, q.bottom + pb);
+  };
+  // Not KaTeX's MathML copy for screen readers: clipped to a pixel, its boxes (and its TeX annotation's text) still
+  // report where they would be, far beyond what shows.
+  const hidden = (n: Node) => !!(n instanceof Element ? n : n.parentElement)?.closest(".katex-mathml");
+  for (const el of d.querySelectorAll("*")) if (!hidden(el)) take(el.getBoundingClientRect());
+  // Text runs too (a long word or a run of inline math wider than its line).
+  const range = document.createRange();
+  const walk = document.createTreeWalker(d, NodeFilter.SHOW_TEXT);
+  for (let n = walk.nextNode(); n; n = walk.nextNode()) {
+    if (hidden(n)) continue;
+    range.selectNodeContents(n);
+    for (const q of range.getClientRects()) take(q);
+  }
+  return { w: right - left + pl + pr, h: bottom - r.top };
+}
+
+/**
+ * The box typeset math needs, laid out `w` css px wide (the inbox's layout width): its height, and a wider width
+ * when something will not wrap (a long display equation, a wide table), so nothing is cut off. Measured off-screen
+ * after laying it out once (that is what asks for KaTeX's fonts) and once every font it asked for has loaded.
+ */
+export async function measureMath(html: string, w: number): Promise<{ w: number; h: number }> {
   ensureMathStyle();
   const d = document.createElement("div");
   d.className = "vc-math";
-  d.style.cssText = `position:absolute;left:-10000px;top:0;width:${w}px;visibility:hidden`;
+  d.style.cssText = `position:absolute;left:-100000px;top:0;width:${w}px;visibility:hidden`;
   d.innerHTML = html;
   document.body.appendChild(d);
   try {
-    await document.fonts.ready;
-    return Math.ceil(d.getBoundingClientRect().height);
+    void d.offsetHeight;
+    await fontsSettled(d);
+    let width = w;
+    // Widened, it wraps differently: measure again until it fits (a few rounds at most).
+    for (let k = 0; k < 4; k++) {
+      const need = Math.ceil(mathExtent(d).w - 0.5);
+      if (need <= width) break;
+      width = need;
+      d.style.width = `${width}px`;
+    }
+    return { w: width, h: Math.ceil(mathExtent(d).h - 0.5) };
   } finally {
     d.remove();
   }
+}
+
+const mathSizes = new Map<string, Promise<{ w: number; h: number }>>();
+/** The size of the typeset math at `url`, laid out at `w` (once per page). */
+export function mathSize(url: string, w: number): Promise<{ w: number; h: number }> {
+  const k = `${w}|${url}`;
+  let p = mathSizes.get(k);
+  if (!p) {
+    p = fetchText(url).then((h) => measureMath(h, w));
+    p.catch(() => mathSizes.delete(k));
+    mathSizes.set(k, p);
+  }
+  return p;
 }
 
 // ---------------------------------------------------------------- the renderer
@@ -186,6 +267,9 @@ export class Items {
       el.style.display = "";
       el.style.width = `${num(it.lw, it.w)}px`;
       el.style.height = `${num(it.lh, it.h)}px`;
+      // Math is laid out at its box's width (a refit widens it: board view fitItems).
+      const m = it.kind === "math" ? (el.firstElementChild as HTMLElement | null) : null;
+      if (m && m.style.width !== el.style.width) m.style.width = el.style.width;
       el.style.transform = `translate(${p.x}px, ${p.y}px) scale(${p.s})`;
       el.classList.toggle("lifted", lifted(it));
       el.classList.toggle("interact", interact === id);

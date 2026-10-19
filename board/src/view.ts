@@ -23,7 +23,8 @@ import { classifyScribble, coveredShare, scribbleRegion, SCRIBBLE_COVER, type TP
 import { Arbiter, type Action, type Hand, type PEvent } from "./palm";
 import * as api from "./api";
 import { icon, toolIcon, type IconName, type Weight } from "./icons";
-import { Items, isDom, measureMath, fetchText, renderPdfPage } from "./items";
+import { Items, isDom, mathSize, renderPdfPage } from "./items";
+import { MATH_LAYOUT_W } from "../../src/inboxFormat";
 import { openInbox, inboxBadge, type InboxHost } from "./inbox";
 import { pillSpot, placeParts } from "./place";
 import { ChromeTaps, buttonName, isField, isTextField, redrawnSame, routeChrome } from "./chrome";
@@ -902,6 +903,7 @@ export class BoardView {
   }
 
   private loadImage(it: Item): void {
+    if (it.kind === "math" && it.src) void this.measureMathItem(it.src);
     // Images draw their file; math and widgets keep a snapshot for the overview; a PDF page shows its stored PNG
     // at once and pdf.js's render when that is not sharp enough (items.ts).
     if (it.kind === "pdf") {
@@ -919,6 +921,9 @@ export class BoardView {
     const ready = () => {
       if (this.disposed) return;
       this.images.set(src, img);
+      // The picture's own aspect as WebKit shows it (EXIF applied; an SVG's viewBox): the item's box keeps it.
+      if (img.naturalWidth && img.naturalHeight) this.natural.set(src, { w: img.naturalWidth, h: img.naturalHeight });
+      this.fitItems();
       for (const x of this.board.items) if (x.src === src || x.snap === src) this.invalidate(itemBox(x));
       // One redraw for the images that land in the same frame.
       this.queueBase();
@@ -934,8 +939,95 @@ export class BoardView {
     };
     img.src = api.assetUrl(this.slug, src);
   }
+  /** A board asset decoded (at most 8 s), kept for drawing; null if it will not load. */
+  private decoded(src: string): Promise<HTMLImageElement | null> {
+    const have = this.images.get(src);
+    if (have) return Promise.resolve(have);
+    return new Promise((res) => {
+      const img = new Image();
+      img.decoding = "async";
+      const t = setTimeout(() => res(null), 8000);
+      img.onload = () =>
+        void img.decode().then(
+          () => {
+            clearTimeout(t);
+            if (!this.images.get(src)) this.images.set(src, img);
+            if (img.naturalWidth && img.naturalHeight) this.natural.set(src, { w: img.naturalWidth, h: img.naturalHeight });
+            res(img);
+          },
+          () => (clearTimeout(t), res(null)),
+        );
+      img.onerror = () => (clearTimeout(t), res(null));
+      img.src = api.assetUrl(this.slug, src);
+    });
+  }
   private imageFor(it: Item): HTMLImageElement | null {
     return it.src ? (this.images.get(it.src) ?? null) : null;
+  }
+
+  /**
+   * What each file really is (css px of laid-out math; a picture's pixels as shown), learnt as they load: an item
+   * whose box disagrees is refitted (fitItems) — math to its whole typeset size, a picture or a PDF page to its own
+   * aspect — so nothing is cut off or stretched, whatever box it was given when it was added (math heights were
+   * measured before KaTeX's fonts had loaded, a wide equation never fitted 560 px, a sideways phone photo came with
+   * its stored sides).
+   */
+  private natural = new Map<string, { w: number; h: number }>();
+  private measuring = new Set<string>();
+  private async measureMathItem(src: string): Promise<void> {
+    if (this.natural.has(src) || this.measuring.has(src)) return;
+    this.measuring.add(src);
+    try {
+      const sz = await mathSize(api.assetUrl(this.slug, src), MATH_LAYOUT_W);
+      if (this.disposed) return;
+      this.natural.set(src, sz);
+      this.fitItems();
+    } catch {
+      /* the math file is missing: it shows its label */
+    } finally {
+      this.measuring.delete(src);
+    }
+  }
+
+  /** Refit every item whose box disagrees with its file's true size (not an undo step: a correction, saved). */
+  private fitItems(): void {
+    const r1 = (v: number) => Math.round(v * 10) / 10;
+    let dirty: Box | null = null;
+    for (const it of this.board.items) {
+      if (this.lifted && this.sel?.items.has(it)) continue; // moving: refitted when it lands
+      const key = it.kind === "pdf" ? it.snap : it.src;
+      const n = typeof key === "string" ? this.natural.get(key) : undefined;
+      if (!n) continue;
+      const before = itemBox(it);
+      if (it.kind === "math") {
+        // Its layout box is the typeset size; on the board it keeps its scale, anchored at its top-left.
+        const lw = Number(it.lw) || MATH_LAYOUT_W, lh = Number(it.lh) || 0;
+        if (Math.abs(lw - n.w) <= 1 && Math.abs(lh - n.h) <= 1) continue;
+        const s = it.w / lw;
+        it.lw = n.w;
+        it.lh = n.h;
+        it.w = r1(n.w * s);
+        it.h = r1(n.h * s);
+      } else if (it.kind === "image" || it.kind === "pdf") {
+        const want = n.w / n.h;
+        if (Math.abs(it.w / it.h / want - 1) <= 0.01) continue;
+        // The same area about the same centre, at the picture's own aspect.
+        const area = it.w * it.h, cx = it.x + it.w / 2, cy = it.y + it.h / 2;
+        const w = Math.sqrt(area * want), h = w / want;
+        it.w = r1(w);
+        it.h = r1(h);
+        it.x = r1(cx - w / 2);
+        it.y = r1(cy - h / 2);
+        if (it.kind === "image") (it.lw = n.w), (it.lh = n.h);
+      } else continue;
+      blog("item.refit", { kind: it.kind, id: it.id, from: [r1(before.x1 - before.x0), r1(before.y1 - before.y0)], to: [it.w, it.h] });
+      dirty = unionBox(unionBox(dirty, before), itemBox(it));
+    }
+    if (!dirty) return;
+    this.invalidate(dirty);
+    this.queueBase();
+    this.queueLive();
+    this.changed();
   }
 
   // ------------------------------------------------------------ input
@@ -1434,6 +1526,8 @@ export class BoardView {
       this.invalidate();
     } else this.invalidate(opBox(op));
     this.changed();
+    // A step taken back to a box from before it was refitted: refitted again.
+    this.fitItems();
   }
 
   private undo(): void {
@@ -1519,16 +1613,25 @@ export class BoardView {
       blog("inbox.fail", { slug: this.slug, entry: id, part: part ?? null, error: String((e as Error)?.message ?? e).slice(0, 200) });
       throw e;
     }
-    // Typeset math's height as this iPad lays it out (the fonts it has).
-    for (const t of tpl) {
-      if (t.kind === "math") {
+    // Each part's true size before it is placed: typeset math as this iPad lays it out (its fonts loaded; wider
+    // than the layout width when an equation will not wrap), a picture as WebKit shows it (EXIF applied).
+    await Promise.all(
+      tpl.map(async (t) => {
         try {
-          t.lh = await measureMath(await fetchText(api.assetUrl(this.slug, t.src)), t.lw);
+          if (t.kind === "math") {
+            const sz = await mathSize(api.assetUrl(this.slug, t.src), t.lw);
+            t.lw = sz.w;
+            t.lh = sz.h;
+            this.natural.set(t.src, sz);
+          } else if (t.kind === "image") {
+            const img = await this.decoded(t.src);
+            if (img?.naturalWidth && img.naturalHeight) (t.lw = img.naturalWidth), (t.lh = img.naturalHeight);
+          }
         } catch {
-          t.lh = t.lh || t.lw * 0.4;
+          if (t.kind === "math") t.lh = t.lh || t.lw * 0.4;
         }
-      }
-    }
+      }),
+    );
     const vw = this.W / this.cam.z, vh = (this.H - TOP) / this.cam.z;
     const c = this.toWorld(this.W / 2, TOP + (this.H - TOP) / 2);
     // Clear of what is on the board already (its items and ink), nearest the centre of the view.

@@ -198,7 +198,29 @@ export function slugify(name: string): string {
   return s || "board";
 }
 
-/** An image's pixel size from its header (PNG or JPEG), or null. */
+/** The EXIF Orientation (1–8) in an APP1 segment's payload at `at` (`n` bytes), or 0. */
+function exifOrientation(buf: Uint8Array, at: number, n: number): number {
+  if (n < 14 || at + n > buf.length) return 0;
+  if (String.fromCharCode(...buf.subarray(at, at + 4)) !== "Exif" || buf[at + 4] !== 0 || buf[at + 5] !== 0) return 0;
+  const t = at + 6, end = at + n;
+  const le = buf[t] === 0x49 && buf[t + 1] === 0x49;
+  if (!le && !(buf[t] === 0x4d && buf[t + 1] === 0x4d)) return 0;
+  const u16 = (o: number) => (o + 2 > end ? -1 : le ? buf[o]! | (buf[o + 1]! << 8) : (buf[o]! << 8) | buf[o + 1]!);
+  const u32 = (o: number) => (o + 4 > end ? -1 : le ? (buf[o]! | (buf[o + 1]! << 8) | (buf[o + 2]! << 16)) + buf[o + 3]! * 0x1000000 : buf[o]! * 0x1000000 + ((buf[o + 1]! << 16) | (buf[o + 2]! << 8) | buf[o + 3]!));
+  const ifd = u32(t + 4);
+  if (ifd < 8) return 0;
+  const count = u16(t + ifd);
+  for (let k = 0; k < count && k < 200; k++) {
+    const e = t + ifd + 2 + k * 12;
+    if (u16(e) === 0x0112) {
+      const v = u16(e + 8);
+      return v >= 1 && v <= 8 ? v : 0;
+    }
+  }
+  return 0;
+}
+
+/** A PNG's or JPEG's size as shown (a JPEG's EXIF orientation applied), or null. */
 export function imageSize(buf: Uint8Array): { type: "png" | "jpeg"; w: number; h: number } | null {
   if (buf.length > 24 && buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) {
     const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
@@ -206,6 +228,8 @@ export function imageSize(buf: Uint8Array): { type: "png" | "jpeg"; w: number; h
     return w && h ? { type: "png", w, h } : null;
   }
   if (buf.length > 4 && buf[0] === 0xff && buf[1] === 0xd8) {
+    // EXIF orientation 5–8 (a phone photo stored sideways): shown, and drawn, with its sides swapped.
+    let turned = false;
     let i = 2;
     while (i + 9 < buf.length) {
       if (buf[i] !== 0xff) return null;
@@ -219,10 +243,11 @@ export function imageSize(buf: Uint8Array): { type: "png" | "jpeg"; w: number; h
         continue;
       }
       const len = (buf[i + 2]! << 8) | buf[i + 3]!;
+      if (m === 0xe1) turned = exifOrientation(buf, i + 4, len - 2) >= 5 || turned;
       // SOF0–SOF15, not DHT (C4), JPG (C8) or DAC (CC).
       if (m >= 0xc0 && m <= 0xcf && m !== 0xc4 && m !== 0xc8 && m !== 0xcc) {
         const h = (buf[i + 5]! << 8) | buf[i + 6]!, w = (buf[i + 7]! << 8) | buf[i + 8]!;
-        return w && h ? { type: "jpeg", w, h } : null;
+        return w && h ? { type: "jpeg", w: turned ? h : w, h: turned ? w : h } : null;
       }
       i += 2 + len;
     }
