@@ -99,7 +99,7 @@ for (let round = 1; round <= ROUNDS; round++) {
     const v = window.__board;
     const z = v.homeZ * [1, 0.6, 1.8, 0.35, 2.5, 1.2, 0.8, 3, 0.5, 1.5][(r - 1) % 10];
     v.cam = { x: r * 900 - 3000 + (r % 3) * 517, y: (r % 4) * 1300 - 1800, z };
-    v.drawLevel = v.levelFor();
+    v.drawS = v.screenScale();
     v.renderBase();
   }, round);
   await page.waitForTimeout(300);

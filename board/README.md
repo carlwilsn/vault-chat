@@ -9,7 +9,8 @@ edge-swipe-back).
 - `npm run dev:board` → :1431, proxying `/api` to a box (`VC_BOX`, default :7420).
 - Tests: `test/harness/board-palm.test.ts` (palm rejection against scripted
   traces), `board-chrome.test.ts` (after the pen, every control presses once for a Pencil or a finger tap,
-  with or without iOS's click), `board-geom.test.ts` (erasers, lasso), `boardformat.test.ts`;
+  with or without iOS's click), `board-geom.test.ts` (erasers, lasso, the stroke simplifier),
+  `board-scribble.test.ts` (scribble to erase on recorded-shape traces), `boardformat.test.ts`;
   `server/test/boards.test.ts` (routes), `board-place.test.ts` (where inbox parts land), `server/test/inbox.test.ts` (the validated send, each refusal, the routes, makes).
 - The chrome is Tailwind (`board/tailwind.config.js`: the desktop's config and tokens as a preset, iPadOS colours, light and dark); the canvas engine is plain TypeScript.
 - Preview data: `npx tsx board/preview/seed-inbox.ts <vault> [box url]` seeds a box's inbox through the real send.
@@ -31,11 +32,21 @@ sync cycle commits it like any other vault write):
   side, written 2 s after the pen lifts. It is the list's thumbnail and what the
   agent looks at. Next: a crop of the region being worked on beside it.
 
-Rendering (`src/view.ts`): cached 512 px bitmap tiles at power-of-two zoom
-levels under a live canvas. Only tiles in view are drawn; a finished stroke is
-drawn into the tiles it crosses; an edit invalidates only the tiles its bounds
-meet. Layers: background (plain, dots, grid) → items → ink. Ink always lies
-above items.
+Rendering (`src/view.ts`): cached 512 px bitmap tiles under a live canvas, both at the device's pixel ratio.
+Once the camera settles, tiles are drawn at exactly the screen's scale (zoom × devicePixelRatio) on whole device
+pixels, so ink is copied pixel for pixel, as crisp as drawing it directly (mid-pinch the cached tiles scale; a
+tile not yet redrawn shows the previous scale's meanwhile). Only tiles in view are drawn; a finished pen stroke is
+drawn into the tiles it crosses; an edit repaints or drops only the tiles its bounds meet. Layers: background
+(plain, dots, grid) → items → highlighter ink → pen ink.
+
+Strokes (`src/ink.ts`, `src/geom.ts`): the Pencil's coalesced samples, lightly stabilised (each moves most of the
+way to the pen: about 2 ms of lag at 240 Hz), keep only the points where the line bends more than 0.75 css px
+(the samples come in whole css px, so a slow shallow line arrives as a staircase; this straightens it), drawn as a
+centripetal Catmull–Rom curve through them with sharp corners kept (the peak of an M, the corners of a Σ), round
+caps and joins; the tip is extended by the predicted samples. Uniform width, no pressure. Proof in WebKit at DPR 2
+(`board/preview/ink.mjs`): ink on screen against the same strokes drawn natively (0/255 apart at 1× zoom; before,
+tiles at the next power of two scaled down were 12/255 off), the highlighter under blue ink with no self-overlap
+darkening, scribble to erase, and normal writing over ink erasing nothing.
 
 ## Items
 
@@ -64,14 +75,20 @@ Board files are served inert: an SVG or PDF with CSP `sandbox`, math and bundles
 ## The tools
 
 Pen and highlighter (uniform width, a few preset sizes plus a slider, a few
-colours each; the button shows its colour), one eraser button (tap it again for
+colours each; the button shows its colour). The highlighter is one path at one alpha (35%, multiplied onto the
+page: no darkening where it crosses itself), always under the pen's ink, while it is drawn too (the live canvas
+multiplies, with the ink it crosses cut out of it). **Scribble to erase** (`src/scribble.ts`, GoodNotes): with the
+pen, scribble quickly back and forth over strokes and the strokes it mostly covers are erased (never items), the
+scribble leaves no ink, one undo step, and they fade out; a scribble over nothing is ink. A scribble is at least
+five sharp reversals with nearly antiparallel straight legs, fast (legs under ~190 ms), the path ≥ 2.9× its box's
+diagonal; m, w, z, Σ, M, a star, zigzags and loops are writing. One eraser button (tap it again for
 Stroke / Precise and its size, both remembered): stroke eraser (removes a stroke it touches), precise eraser
 (cuts the part under its circle and splits the stroke; the pieces end exactly
 on the circle's edge so their round caps stay clean; `src/geom.ts`), each with
 its own size and its circle shown while erasing; select (lasso ink and items
 together, or tap an item or a stroke; drag to move, corner handles to scale
 uniformly: 12 px handles, 44 px hit areas; Delete, and Interact for a widget). Every gesture is one undo step. The board menu (⋯) holds
-Insert image, Background, Writing hand and One-finger scroll.
+Insert image, Background, Writing hand and Scribble to erase (on by default).
 
 ## Palm rejection (`src/palm.ts`)
 

@@ -2,7 +2,7 @@
 // a stroke into clean pieces, the stroke eraser's hit test, the lasso.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { capsuleHits, cutStroke, lassoedBox, lassoedXY, ptSeg, Smoother } from "../../board/src/geom.ts";
+import { capsuleHits, cutStroke, lassoedBox, lassoedXY, ptSeg, Simplifier, Smoother } from "../../board/src/geom.ts";
 
 const horiz = (x0: number, x1: number, y = 0, step = 10) => {
   const out: number[] = [];
@@ -100,4 +100,27 @@ test("ink written on an item moves with it; ink that crosses its edge stays", as
   const got = carriedInk([on, crossing, outside, selected], new Set([selected]), [item]);
   assert.deepEqual(got, [on]);
   assert.deepEqual(carriedInk([on], new Set(), []), []);
+});
+
+test("the simplifier straightens a staircase of whole-px samples and keeps a corner where it is", () => {
+  // A shallow line sampled in whole px (WebKit's clientX/Y): y steps 1 px every 80.
+  const s = new Simplifier(0.75);
+  for (let x = 0; x <= 400; x += 3) s.push({ x, y: Math.round(x / 80) });
+  const pts = s.final();
+  assert.ok(pts.length <= 3, `${pts.length} points`);
+  // A "v": the corner is kept, within a sample.
+  const v = new Simplifier(0.75);
+  for (let i = 0; i <= 40; i++) v.push({ x: i, y: i * 2 });
+  for (let i = 1; i <= 40; i++) v.push({ x: 40 + i, y: 80 - i * 2 });
+  const vp = v.final();
+  // Live, the kept points too stay within eps.
+  assert.ok(v.points().length >= vp.length);
+  assert.ok(vp.some((p) => Math.abs(p.x - 40) <= 1 && Math.abs(p.y - 80) <= 2), JSON.stringify(vp));
+  // Every sample stays within eps of the kept polyline.
+  for (let i = 0; i <= 80; i++) {
+    const q = i <= 40 ? { x: i, y: i * 2 } : { x: i, y: 80 - (i - 40) * 2 };
+    let d = Infinity;
+    for (let k = 0; k + 1 < vp.length; k++) d = Math.min(d, ptSeg(q.x, q.y, vp[k]!.x, vp[k]!.y, vp[k + 1]!.x, vp[k + 1]!.y));
+    assert.ok(d <= 0.75 + 1e-9, `${i}: ${d}`);
+  }
 });

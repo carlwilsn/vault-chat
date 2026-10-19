@@ -211,3 +211,68 @@ export class Smoother {
     return { x: l.x + (x - l.x) * this.follow, y: l.y + (y - l.y) * this.follow };
   }
 }
+
+/** Douglas–Peucker: the fewest of the points whose polyline stays within `eps` of them all (the ends kept). */
+export function simplify(pts: readonly XY[], eps: number): XY[] {
+  if (pts.length < 3) return [...pts];
+  const keep = new Uint8Array(pts.length);
+  keep[0] = keep[pts.length - 1] = 1;
+  const stack: [number, number][] = [[0, pts.length - 1]];
+  while (stack.length) {
+    const [i, j] = stack.pop()!;
+    const a = pts[i]!, b = pts[j]!;
+    let far = -1, fd = eps;
+    for (let k = i + 1; k < j; k++) {
+      const d = ptSeg(pts[k]!.x, pts[k]!.y, a.x, a.y, b.x, b.y);
+      if (d > fd) (fd = d), (far = k);
+    }
+    if (far < 0) continue;
+    keep[far] = 1;
+    stack.push([i, far], [far, j]);
+  }
+  return pts.filter((_, k) => keep[k]);
+}
+
+/**
+ * The stroke's shape as it is written: only the points where the path bends away from a straight line by more
+ * than `eps`. Live (`points`) it is incremental (kept points never change, so the stroke being written never
+ * wobbles); when the pen lifts (`final`) the whole stroke is simplified at once, which also straightens what the
+ * live pass cannot: the pen's samples arrive in whole css px (WebKit rounds them), so a slow, shallow line comes
+ * as a staircase of 1 px steps. Curves keep a point every few px; the curve through them (ink.ts) is smooth.
+ */
+export class Simplifier {
+  readonly kept: XY[] = [];
+  private buf: XY[] = [];
+  private all: XY[] = [];
+  constructor(private eps: number) {}
+  push(p: XY): void {
+    this.all.push(p);
+    if (!this.kept.length) {
+      this.kept.push(p);
+      return;
+    }
+    this.buf.push(p);
+    // Every buffered sample within eps of the segment from the last kept point to this one, or keep the farthest.
+    for (;;) {
+      const a = this.kept[this.kept.length - 1]!;
+      let far = -1, fd = this.eps;
+      for (let i = 0; i + 1 < this.buf.length; i++) {
+        const q = this.buf[i]!;
+        const d = ptSeg(q.x, q.y, a.x, a.y, p.x, p.y);
+        if (d > fd) (fd = d), (far = i);
+      }
+      if (far < 0) return;
+      this.kept.push(this.buf[far]!);
+      this.buf = this.buf.slice(far + 1);
+    }
+  }
+  /** The kept points and the latest sample (the stroke being written). */
+  points(): XY[] {
+    const last = this.buf[this.buf.length - 1];
+    return last ? [...this.kept, last] : [...this.kept];
+  }
+  /** The finished stroke. */
+  final(): XY[] {
+    return simplify(this.all, this.eps);
+  }
+}

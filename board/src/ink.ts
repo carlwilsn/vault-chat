@@ -1,26 +1,61 @@
-// Strokes, items and the background to pixels, in canvas units. A stroke is a
-// smoothed polyline (quadratics through the midpoints) stroked with a uniform
-// width and round caps: what geom.ts computes against is what is drawn.
+// Strokes, items and the background to pixels, in canvas units. A stroke is a polyline of the points where it
+// bends (geom.ts Simplifier) drawn as the smooth curve through them (centripetal Catmull–Rom, as cubic Béziers:
+// no loops or overshoot at a sharp turn), with a uniform width and round caps and joins. The curve stays within a
+// fraction of a px of the polyline, so what geom.ts computes against is what is drawn.
 // A committed stroke's path and bounds are computed once and cached.
 import type { Grid, Item, LineStyle, Stroke } from "../../src/boardFormat";
 import { xyBox, type Box } from "./geom";
 
+/** The highlighter's opacity: one value for the whole stroke, drawn as one path (no darkening where it crosses itself). */
 export const HL_ALPHA = 0.35;
+
+/** A turn sharper than this (radians, ~65°) that stands out from its neighbours' is a corner. */
+const CORNER = 1.13;
 
 export function xyPath(xy: ArrayLike<number>): Path2D {
   const p = new Path2D();
   const n = xy.length / 2;
   if (n < 1) return p;
-  p.moveTo(xy[0]!, xy[1]!);
+  const X = (i: number) => xy[i * 2]!, Y = (i: number) => xy[i * 2 + 1]!;
+  p.moveTo(X(0), Y(0));
   if (n === 1) {
-    p.lineTo(xy[0]! + 0.01, xy[1]!); // a dot: the round caps draw it
+    p.lineTo(X(0) + 0.01, Y(0)); // a dot: the round caps draw it
     return p;
   }
-  for (let i = 1; i < n - 1; i++) {
-    const x = xy[i * 2]!, y = xy[i * 2 + 1]!;
-    p.quadraticCurveTo(x, y, (x + xy[i * 2 + 2]!) / 2, (y + xy[i * 2 + 3]!) / 2);
+  if (n === 2) {
+    p.lineTo(X(1), Y(1));
+    return p;
   }
-  p.lineTo(xy[n * 2 - 2]!, xy[n * 2 - 1]!);
+  // The turn at each point (radians). A corner — a sharp turn between gentle ones, the peak of an "M" or the
+  // corner of a "z" — stays sharp: the curve is broken there, as at an end.
+  const turn = new Float64Array(n);
+  for (let i = 1; i < n - 1; i++) {
+    const ux = X(i) - X(i - 1), uy = Y(i) - Y(i - 1), vx = X(i + 1) - X(i), vy = Y(i + 1) - Y(i);
+    const l = Math.hypot(ux, uy) * Math.hypot(vx, vy);
+    turn[i] = l ? Math.acos(Math.max(-1, Math.min(1, (ux * vx + uy * vy) / l))) : 0;
+  }
+  const corner = (i: number) => i > 0 && i < n - 1 && turn[i]! > CORNER && turn[i]! > 1.8 * Math.max(turn[i - 1]!, turn[i + 1]!);
+  for (let i = 0; i < n - 1; i++) {
+    // p0 p1 p2 p3 around the segment p1 → p2; past an end or a corner, the far point reflected.
+    const x1 = X(i), y1 = Y(i), x2 = X(i + 1), y2 = Y(i + 1);
+    const c0 = i === 0 || corner(i), c3 = i + 2 >= n || corner(i + 1);
+    const x0 = c0 ? 2 * x1 - x2 : X(i - 1), y0 = c0 ? 2 * y1 - y2 : Y(i - 1);
+    const x3 = c3 ? 2 * x2 - x1 : X(i + 2), y3 = c3 ? 2 * y2 - y1 : Y(i + 2);
+    const d1 = Math.sqrt(Math.hypot(x1 - x0, y1 - y0)), d2 = Math.sqrt(Math.hypot(x2 - x1, y2 - y1)), d3 = Math.sqrt(Math.hypot(x3 - x2, y3 - y2));
+    if (d2 < 1e-6) continue;
+    let c1x = x1, c1y = y1, c2x = x2, c2y = y2;
+    if (d1 > 1e-6) {
+      const a = 2 * d1 * d1 + 3 * d1 * d2 + d2 * d2, k = 3 * d1 * (d1 + d2);
+      c1x = (d1 * d1 * x2 - d2 * d2 * x0 + a * x1) / k;
+      c1y = (d1 * d1 * y2 - d2 * d2 * y0 + a * y1) / k;
+    }
+    if (d3 > 1e-6) {
+      const b = 2 * d3 * d3 + 3 * d3 * d2 + d2 * d2, k = 3 * d3 * (d3 + d2);
+      c2x = (d3 * d3 * x1 - d2 * d2 * x3 + b * x2) / k;
+      c2y = (d3 * d3 * y1 - d2 * d2 * y3 + b * y2) / k;
+    }
+    p.bezierCurveTo(c1x, c1y, c2x, c2y, x2, y2);
+  }
   return p;
 }
 
@@ -30,7 +65,7 @@ const cache = new WeakMap<Stroke, Cached>();
 export function strokeInfo(s: Stroke): Cached {
   let c = cache.get(s);
   if (!c) {
-    c = { path: xyPath(s.xy), box: xyBox(s.xy, s.w / 2 + 1) };
+    c = { path: xyPath(s.xy), box: xyBox(s.xy, s.w / 2 + 2) };
     cache.set(s, c);
   }
   return c;
@@ -66,6 +101,13 @@ export function drawStroke(ctx: Ctx, s: Stroke, minW = 0, path = strokeInfo(s).p
   inkStyle(ctx, s.tool, s.color, Math.max(s.w, minW), s.style);
   ctx.stroke(path);
   ctx.restore();
+}
+
+/** Strokes in the order they are painted: the highlighter's under the pen's (each group in the order written). */
+export function paintOrder<S extends { tool: Stroke["tool"] }>(strokes: Iterable<S>): S[] {
+  const hl: S[] = [], pen: S[] = [];
+  for (const s of strokes) (s.tool === "hl" ? hl : pen).push(s);
+  return hl.concat(pen);
 }
 
 export const itemBox = (it: Item): Box => ({ x0: it.x, y0: it.y, x1: it.x + it.w, y1: it.y + it.h });

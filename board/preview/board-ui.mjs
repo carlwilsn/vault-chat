@@ -96,7 +96,7 @@ const setZoom = (k) =>
   page.evaluate((k) => {
     const v = window.__board;
     v.cam = { x: -200, y: -200, z: v.homeZ * k };
-    v.drawLevel = v.levelFor();
+    v.drawS = v.screenScale();
     v.renderBase();
   }, k);
 for (const scheme of ["light", "dark"]) {
@@ -207,7 +207,7 @@ await page.evaluate(() => {
   const v = window.__board, s = v.board.strokes.at(-1);
   const z = v.homeZ * 2, cx = (s.xy[0] + s.xy.at(-2)) / 2, cy = s.xy[1];
   v.cam = { z, x: cx - 150 / z - (s.xy.at(-2) - s.xy[0]) / 4, y: cy - 400 / z };
-  v.drawLevel = v.levelFor();
+  v.drawS = v.screenScale();
   v.renderBase();
 });
 await page.waitForTimeout(150);
