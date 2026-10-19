@@ -70,6 +70,24 @@ const webApps = {
   },
 };
 
+/** Speech Rule Engine (server/speakMath.ts) loads its XML parser and XPath with eval("require")(name), which a
+ * bundle cannot see and the box (one file, no node_modules) cannot resolve: those become plain requires, bundled. */
+const sreRequires = {
+  name: "sre-requires",
+  setup(b) {
+    b.onLoad({ filter: /speech-rule-engine[\\/]js[\\/]common[\\/]system_external\.js$/ }, (a) => {
+      const src = readFileSync(a.path, "utf8");
+      const out = src
+        .replace(/SystemExternal\.extRequire\('(@xmldom\/xmldom|wicked-good-xpath|fs)'\)/g, "require('$1')")
+        .replace("return eval('require');", "return require;");
+      if (!/require\('@xmldom\/xmldom'\)/.test(out) || !/require\('wicked-good-xpath'\)/.test(out)) {
+        return { errors: [{ text: "speech-rule-engine changed its system_external.js: update sreRequires in server/build.mjs" }] };
+      }
+      return { contents: out, loader: "js" };
+    });
+  },
+};
+
 /** Vite-isms the app modules use: `?url` asset imports and aliases. */
 const viteCompat = {
   name: "vite-compat",
@@ -105,7 +123,7 @@ const result = await build({
   metafile: wantMeta,
   logLevel: "warning",
   loader: { ".md": "text", ".html": "text", ".png": "binary" },
-  plugins: [viteCompat, webApps],
+  plugins: [viteCompat, webApps, sreRequires],
   // esbuild itself (the inbox bundles widgets): native, never bundled — the repo's, or one the server installs (server/inbox.ts).
   external: ["esbuild"],
   // CJS deps bundled into ESM need a real require for node builtins.

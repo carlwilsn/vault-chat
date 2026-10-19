@@ -21,6 +21,7 @@ import { createConv, logOf, newMessageId, pictureOf, writeNotes, type NoteData }
 import { appendActivity, projectContextFor, youLayer } from "./activity";
 import { voiceLineEntry } from "../src/activityCore";
 import { stripAudioTags } from "../src/voiceTags";
+import { speakMath, speechReady } from "./speakMath";
 import { ASK, SCREEN_TOOLS, buildVoicePrompt, controlLine, isControlLine, voiceDevice, voiceToolNames, type VoiceDevice } from "../src/voicePrompt";
 import type { Item, Picture } from "../src/convlog/reduce";
 
@@ -287,7 +288,7 @@ export function voiceUpdatesSince(d: VoiceDeps, convId: string | null, cur: { at
     const asking = c.meta.asking;
     if (asking && asking.at > at) {
       const opts = asking.options?.length ? ` (options: ${asking.options.join(" / ")})` : "";
-      updates.push({ id: `q-${asking.at}`, kind: "question", speak: true, text: controlLine("question", `The agent asks Carl: ${clip(oneLine(asking.question ?? ""), 600)}${opts}. Put it to him in your words; his answer goes back with ${ASK}.`) });
+      updates.push({ id: `q-${asking.at}`, kind: "question", speak: true, text: controlLine("question", `The agent asks Carl: ${speakMath(clip(oneLine(asking.question ?? ""), 600))}${speakMath(opts)}. Put it to him in your words; his answer goes back with ${ASK}.`) });
       at = Math.max(at, asking.at);
     }
     if (!c.meta.running) {
@@ -297,7 +298,8 @@ export function voiceUpdatesSince(d: VoiceDeps, convId: string | null, cur: { at
         const asked = fresh.some((x) => x.kind === "user" && x.via === "voice-ask");
         const typed = [...fresh].reverse().find((x) => x.kind === "user" && x.via !== "voice" && x.via !== "voice-ask");
         const failed = fresh.filter((x) => x.kind === "notice" && x.level === "error").map((x) => oneLine(s(x.text)));
-        const answer = clip(replies.slice(-3).map((x) => s(x.text).trim()).join("\n"), RESULT_CAP);
+        // The agent writes LaTeX for the chat (which renders it); the voice gets its math in words (server/speakMath.ts).
+        const answer = speakMath(clip(replies.slice(-3).map((x) => s(x.text).trim()).join("\n"), RESULT_CAP));
         const last = replies[replies.length - 1]!;
         if (asked) {
           updates.push({
@@ -307,7 +309,7 @@ export function voiceUpdatesSince(d: VoiceDeps, convId: string | null, cur: { at
             text: controlLine("result", `The agent answered: ${answer}${failed.length ? `\n(Its turn reported: ${clip(failed.join(" "), 300)})` : ""}\nTell Carl now, briefly, in your own words — only what it says.`),
           });
         } else {
-          updates.push({ id: `c-${last.id}`, kind: "context", speak: false, text: controlLine("context", `Carl typed in the chat${typed ? `: "${clip(oneLine(s(typed.text)), 300)}"` : ""}. The agent answered there: "${clip(oneLine(answer), 600)}". Already answered: don't answer it aloud.`) });
+          updates.push({ id: `c-${last.id}`, kind: "context", speak: false, text: controlLine("context", `Carl typed in the chat${typed ? `: "${speakMath(clip(oneLine(s(typed.text)), 300))}"` : ""}. The agent answered there: "${clip(oneLine(answer), 600)}". Already answered: don't answer it aloud.`) });
         }
       } else if (fresh.some((x) => x.kind === "notice" && x.level === "error") && fresh.some((x) => x.kind === "user" && x.via === "voice-ask")) {
         const why = fresh.filter((x) => x.kind === "notice" && x.level === "error").map((x) => oneLine(s(x.text))).join(" ");
@@ -318,7 +320,7 @@ export function voiceUpdatesSince(d: VoiceDeps, convId: string | null, cur: { at
   }
   if (o.you !== false) {
     const y = youLayer(d.vault, { since: cur.you, convId });
-    if (y.text.trim()) updates.push({ id: `y-${y.until}`, kind: "you", speak: false, text: controlLine("context", `What Carl just did on his other surfaces (already handled; use it if he refers to it):\n${y.text}`) });
+    if (y.text.trim()) updates.push({ id: `y-${y.until}`, kind: "you", speak: false, text: controlLine("context", `What Carl just did on his other surfaces (already handled; use it if he refers to it):\n${speakMath(y.text)}`) });
     you = Math.max(you, y.until);
   }
   return { updates, at, you };
@@ -332,6 +334,7 @@ export async function voiceUpdates(d: VoiceDeps, q: { convId?: string | null; cu
   const convId = s(q.convId).trim() || null;
   const deadline = now + Math.max(0, Math.min(Number(q.waitMs) || 0, 25_000));
   voiceActivity(d.vault);
+  await speechReady();
   let lastYou = 0;
   for (let i = 0; ; i++) {
     // The layer reads the activity log, the newest board and the notes: every 2 s, not every look.
@@ -498,8 +501,9 @@ export async function voicePrompt(d: VoiceDeps, convId: string | null, device: V
     northStar: meta.northStarPromptBlock(northStar),
     rules: capped(rules, 6000),
     project,
-    conversation: conversationBlock(d.vault, convId),
-    you: youLayer(d.vault, { convId }).text,
+    // What the voice may read out, with its math in words (the chat keeps the LaTeX).
+    conversation: (await speechReady(), speakMath(conversationBlock(d.vault, convId))),
+    you: speakMath(youLayer(d.vault, { convId }).text),
     ...(device === "laptop" ? { fileIndex: await fileIndex(d.vault), vaultRoot: d.vault } : {}),
   });
 }

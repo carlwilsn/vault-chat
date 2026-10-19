@@ -267,6 +267,32 @@ describe("voice's one tool that acts: Ask, a request to the conversation's agent
     const again = await voice.voiceUpdates(deps, { convId: chat, cursor: got.cursor, waitMs: 200 });
     expect(again.updates.filter((u) => u.kind === "result")).toEqual([]);
   });
+
+  it("an answer with LaTeX reaches the call as words (server/speakMath.ts); the transcript keeps the LaTeX", async () => {
+    const chat = await typed("Real analysis homework.", "Ready.");
+    const start = await voice.voiceUpdates(deps, { convId: chat });
+    const n = backend.turns.length;
+    await voice.voiceTool(deps, { name: "Ask", args: { request: "What does Cauchy mean, and what's the series?" }, convId: chat, device: "laptop" });
+    await until(() => backend.turns.length > n);
+    const latex = String.raw`Cauchy: for every $\epsilon > 0$ there is $N$ with $|x_m - x_n| < \epsilon$ for $m, n > N$. The series is $$\sum_{k=1}^n \frac{(-1)^k}{k}$$ and the field is $\frac{1}{4\pi\epsilon_0}\frac{q}{r^2}$, a drop of 5 mV.`;
+    backend.reply(latex);
+    await idle(chat);
+    const got = await voice.voiceUpdates(deps, { convId: chat, cursor: start.cursor, waitMs: 2000 });
+    const res = got.updates.find((u) => u.kind === "result")!;
+    // Into the session: words, never LaTeX or its symbols.
+    expect(res.text).toContain("the absolute value of x sub m minus x sub n is less than epsilon");
+    expect(res.text).toContain("the sum from k equals 1 to n of the fraction with numerator open paren negative 1 close paren to the k-th power and denominator k");
+    expect(res.text).toContain("1 over 4 pi epsilon sub 0 the fraction with numerator q and denominator r squared");
+    expect(res.text).toContain("a drop of 5 millivolts");
+    expect(res.text).not.toMatch(/[$\\^_{}]|\bfrac\b/);
+    // The transcript (pi's session, what the chat renders) keeps the LaTeX as the agent wrote it.
+    const shown = convs.pictureOf(vault, chat)!.items.filter((x) => x.kind === "assistant").map((x) => String(x.text));
+    expect(shown).toContain(latex);
+    // And the session's prompt (the conversation voice reads) has the words too.
+    const prompt = await voice.voicePrompt(deps, chat, "laptop");
+    expect(prompt).toContain("the absolute value of x sub m minus x sub n is less than epsilon");
+    expect(prompt).not.toContain(String.raw`\frac{(-1)^k}{k}`);
+  });
 });
 
 describe("Carl's own vault tools are the agent's (one tool set on every surface)", () => {

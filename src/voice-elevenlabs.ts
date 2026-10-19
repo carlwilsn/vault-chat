@@ -121,7 +121,8 @@ const AGENT_ID_KEY = "vault_chat_elevenlabs_agent_id";
 // permissions. Mismatch with the cached agent triggers re-provision
 // on next session, so updates roll out without manual intervention.
 // v28-front: voice is the conversation's front of house — Ask plus the device's screen tools, one agent per device.
-const AGENT_CONFIG_VERSION = "v28-front";
+// v29-normalise: ElevenLabs' own text normaliser before speech (numbers and symbols the model still writes).
+const AGENT_CONFIG_VERSION = "v29-normalise";
 const AGENT_VERSION_KEY = "vault_chat_elevenlabs_agent_config_version";
 // The voice the provisioned agent speaks with. The session also overrides it
 // (platform_settings allows tts.voice_id), but the agent's own voice is set too
@@ -1872,6 +1873,11 @@ export function buildAgentCreateBody(o: {
         model_id: "eleven_flash_v2",
         expressive_mode: false,
         voice_id: o.voiceId,
+        // The guard behind the prompt's "math in words" rule (Carl: "horrible at reading LaTeX and math"):
+        // ElevenLabs normalises what the model still writes in symbols (x², ≤, 3.5 mV) after the model and
+        // before speech; the transcript keeps the model's text. ("system_prompt", the default, only asks the
+        // model to spell things out.) The box sends the agent's results already in words (server/speakMath.ts).
+        text_normalisation_type: "elevenlabs",
       },
       // Two hours (the 10-minute default hung up mid-explanation); never hang up on silence.
       conversation: {

@@ -78,7 +78,8 @@ test("the agent ElevenLabs creates: natural TTS (no expressive mode), patient tu
   const list = L.parseLlmList(LIST);
   const body: any = voice.buildAgentCreateBody({ llm: "gpt-6-luna", info: L.llmInfo(list, "gpt-6-luna"), tools: P.voiceToolDefs("laptop"), voiceId: "v1" });
   const cc = body.conversation_config;
-  assert.deepEqual(cc.tts, { model_id: "eleven_flash_v2", expressive_mode: false, voice_id: "v1" });
+  // ElevenLabs' normaliser speaks the symbols the model still writes (the transcript keeps its text).
+  assert.deepEqual(cc.tts, { model_id: "eleven_flash_v2", expressive_mode: false, voice_id: "v1", text_normalisation_type: "elevenlabs" });
   assert.ok(!/eleven_v3/.test(JSON.stringify(body)));
   assert.equal(cc.turn.turn_eagerness, "patient");
   assert.equal(cc.turn.turn_model, "turn_v3");
@@ -107,6 +108,7 @@ test("the prompt carries the honesty and Ask rules, under any header", () => {
     const prompt = P.buildVoicePrompt({ device: "phone", header });
     assert.ok(prompt.includes("Honesty — accurate over agreeable:"), "rules present");
     assert.ok(prompt.includes("Doing things (Ask):"), "Ask rules present");
+    assert.ok(prompt.includes("Never write LaTeX or math symbols"), "math-in-words rule present under any header");
     assert.ok(prompt.startsWith(header || "You are vault-chat's voice"));
   }
   const r = P.VOICE_HONESTY_RULES;

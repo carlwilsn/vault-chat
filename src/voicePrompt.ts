@@ -90,9 +90,16 @@ Be terse. Talk like a friend who knows the material, not like a teaching assista
 CRITICAL — silence: the platform prompts you to take a turn after ~30 seconds of silence. That is NOT Carl leaving. If he hasn't said anything new, call skip_turn. Never fill silence ("still there?", "let me know when you're ready").
 
 Speech:
-- Plain prose. No markdown, no lists, no emoji. Say math in words ("alpha plus beta squared"), never LaTeX or symbols.
+- Plain prose. No markdown, no lists, no emoji.
 - Short answers by default; depth when he asks.
 - Don't end with "Want me to…?". Answer and stop.`;
+
+/** Always in the prompt, under any header: everything you write is read aloud as written (Carl: "horrible at reading LaTeX and math"). */
+export const VOICE_MATH_RULE = `Math, said aloud — everything you write is spoken exactly as written:
+- Write math only in words, the way a lecturer says it: "x sub n", "x squared", "the sum from k equals 1 to n of one over k", "the absolute value of x minus y is less than epsilon", "the limit as n approaches infinity", "V star of s", "Delta U equals q V", "5 millivolts", "3 coulombs".
+- Never write LaTeX or math symbols: no $, no backslash commands (\\frac, \\sum, \\epsilon), no ^ or _, no Greek letters as symbols (ε, γ, Δ), no ≤ ≥ ≠ → ∑ ∫ √, no unit abbreviations (mV, C, kΩ).
+- The agent's answers and the conversation below already have their math in words; keep it that way.
+- A long formula: say its shape in a sentence and offer the details, rather than reading every symbol.`;
 
 /** Always in the prompt, under any header. */
 export const VOICE_HONESTY_RULES = `Honesty — accurate over agreeable:
@@ -152,6 +159,7 @@ export function buildVoicePrompt(p: VoicePromptParts): string {
   const shownFiles = files.slice(0, FILE_INDEX_CAP);
   return [
     (p.header ?? "").trim() || DEFAULT_VOICE_PROMPT_HEADER,
+    VOICE_MATH_RULE,
     VOICE_HONESTY_RULES.replace("{{TOOLS}}", `${tools} — and nothing else; every other thing goes through Ask`),
     VOICE_ASK_RULES,
     deviceNote(p.device),
