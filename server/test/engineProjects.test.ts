@@ -22,7 +22,6 @@ beforeAll(async () => {
 });
 afterAll(async () => {
   rig?.engine?.stop();
-  await rig?.verifier.close();
   cleanup(rig?.root);
 });
 
@@ -127,8 +126,9 @@ describe("direct action, sized to the ask, read back", () => {
     expect(instr).toContain("The vault autosaves to git, so git is the undo.");
     expect(instr).toContain('Do it now. When Carl asks for something, do it in this turn: not as a mission, a schedule or a background job ("no a mission, do it rn").');
     expect(instr).toContain("Read back before you claim. After any edit, confirm it from the tool's own output or by re-reading the file");
-    expect(instr).toContain("A quick ask needs no Done");
-    expect(instr).not.toMatch(/Done means proved|SetProject|ProjectMemory|memory\.md|plan\.md/);
+    expect(instr).toContain("finish by reading back what you changed and saying what you checked");
+    // No ceremony tools or modes: no keep-going, no Done verifier, no project tools.
+    expect(instr).not.toMatch(/KeepWorking|keep-going|\bDone\b|\bBlocked\b|Done means proved|SetProject|ProjectMemory|memory\.md|plan\.md/);
     await settle(s);
   });
 

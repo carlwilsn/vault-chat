@@ -1,12 +1,10 @@
 // In-process rig for the long-run tests: a fake pi backend (threads, turns and
-// tool calls driven by the test), the engine on a temp vault, and a fake
-// OpenRouter for the Done verifier.
+// tool calls driven by the test) and the engine on a temp vault.
 import { piOf } from "./fakePi";
 import { EventEmitter } from "node:events";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmp } from "./helpers";
-import { startFakeModel, type FakeModel, type FakeReq, type FakeReply } from "../context/test/helpers";
 import { withPiSessions } from "./fakeSession";
 
 export class FakeBackend extends EventEmitter {
@@ -72,7 +70,6 @@ export type Rig = {
   engine: any;
   backend: FakeBackend;
   pings: any[];
-  verifier: FakeModel;
   readConv: (id: string) => Promise<any>;
   allConvs: () => Promise<any[]>;
   /** Start a conversation and wait for its first turn; returns its id and thread. */
@@ -80,7 +77,7 @@ export type Rig = {
   costs: Map<string, number>;
 };
 
-export async function makeRig(opts: { verifier?: (req: FakeReq, n: number) => FakeReply; deps?: Record<string, unknown> } = {}): Promise<Rig> {
+export async function makeRig(opts: { deps?: Record<string, unknown> } = {}): Promise<Rig> {
   const root = tmp("vcl-");
   const vault = join(root, "vault");
   mkdirSync(join(vault, ".vault-chat", "conversations"), { recursive: true });
@@ -91,7 +88,6 @@ export async function makeRig(opts: { verifier?: (req: FakeReq, n: number) => Fa
   process.env.VC_TOKEN_FILE = join(root, "token");
   process.env.VC_SECRETS_DIR = join(root, "secrets");
   process.env.VC_PI_UNSAFE = "1"; // no bubblewrap in tests
-  const verifier = await startFakeModel(opts.verifier ?? (() => ({ text: '{"verdict":"pass","notes":["ok"]}' })));
   await import("../shims/globals");
   const { registerAll } = await import("../commands/registry");
   const { conversationCommands } = await import("../commands/conversations");
@@ -102,7 +98,7 @@ export async function makeRig(opts: { verifier?: (req: FakeReq, n: number) => Fa
   store.setState({ vaultPath: vault, conversationsLoaded: true });
   const convs = await import("../engine/convs");
   const { configureContext } = await import("../context");
-  configureContext({ vault, agentModel: "openai/gpt-6.1-sol", apiKey: () => "sk-test", baseUrl: verifier.base, verifierDeny: [] } as any);
+  configureContext({ vault });
   const { Engine } = await import("../engine/engine");
   const backend = withPiSessions(new FakeBackend(), join(root, "pi"));
   const pings: any[] = [];
@@ -130,7 +126,6 @@ export async function makeRig(opts: { verifier?: (req: FakeReq, n: number) => Fa
     engine,
     backend,
     pings,
-    verifier,
     costs,
     readConv: (id) => convs.readConv(vault, id),
     allConvs: () => convs.allConvs(vault),

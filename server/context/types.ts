@@ -72,10 +72,3 @@ export type ToolContext = {
   convs?: ContextConv[];
 };
 
-export type Verdict = {
-  verdict: "pass" | "fail" | "unsure";
-  notes: string[];
-  model: string;
-  at: number;
-  costUsd: number | null;
-};

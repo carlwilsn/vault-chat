@@ -9,7 +9,6 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { renameRetry } from "../../atomic";
 import { modelMeta } from "../catalog";
-import { rollThreshold } from "../context";
 import EXT_SOURCE from "./ext/vc.mjs?raw";
 import POLICY_SOURCE from "./ext/policy.mjs?raw";
 import SUBAGENT_SOURCE from "./ext/subagent.mjs?raw";
@@ -91,9 +90,10 @@ export function modelWindow(model: string, cat: Map<string, PiCatalogRow>): numb
   return modelMeta(model)?.contextLength ?? cat.get(model)?.context ?? 200_000;
 }
 
-/** pi compacts at this many tokens: a quarter above CONTEXT's roll threshold, so roll-over (a recap + new session) wins. */
-export function compactAt(model: string, window: number): number {
-  return Math.max(8_000, Math.min(window - 16_384, Math.floor(rollThreshold(model, window) * 1.25)));
+/** pi compacts (its own summary, in the same session) at this many tokens: three quarters of the window, at most 375k
+ *  (past that a model's attention and the cost per call degrade long before the window is full). */
+export function compactAt(window: number): number {
+  return Math.max(8_000, Math.min(window - 16_384, Math.floor(window * 0.75), 375_000));
 }
 
 export type PiConfigInput = {
@@ -116,7 +116,7 @@ export function writePiConfig(c: PiConfigInput): void {
   const defined: any[] = [];
   for (const m of [...new Set(c.models.filter(Boolean))]) {
     const w = modelWindow(m, c.catalog);
-    overrides[`openrouter/${m}`] = { reserveTokens: Math.max(16_384, w - compactAt(m, w)), keepRecentTokens: 20_000 };
+    overrides[`openrouter/${m}`] = { reserveTokens: Math.max(16_384, w - compactAt(w)), keepRecentTokens: 20_000 };
     if (!c.catalog.has(m)) {
       const meta = modelMeta(m);
       defined.push({
@@ -154,12 +154,12 @@ export function writePiConfig(c: PiConfigInput): void {
 /** Built-in subagents, adapted from pi's example agents (MIT). No `model:` — the
  * host picks VC_PI_SUBAGENT_MODEL (else the parent's). A vault can add or
  * override agents in .vault-chat/agents/*.md. Tools: pi's built-ins plus the
- * host tools a child may use (Done, Notify, PdfRead, WebSearch); never AskUser. */
+ * host tools a child may use (Notify, PdfRead, WebSearch, BoardSend); never AskUser. */
 const BUILTIN_AGENTS: Record<string, string> = {
   worker: `---
 name: worker
 description: General-purpose helper with file and shell access, in its own context
-tools: read, bash, edit, write, Done, Notify
+tools: read, bash, edit, write, Notify
 ---
 
 You are a worker subagent of vault-chat's agent. You run in an isolated context to complete one delegated task.

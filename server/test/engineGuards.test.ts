@@ -1,7 +1,7 @@
 // The engine's guards against the failures that sank summer's missions, in
-// process on a fake pi: a keep-going conversation whose turn fails ends
-// blocked with a ping (never a silent idle), and the agent's Notify pings are
-// capped per conversation per hour (no "still training normally" floods).
+// process on a fake pi: a failed turn says why in the transcript and starts no
+// turn of its own, and the agent's Notify pings are capped per conversation per
+// hour (no "still training normally" floods).
 import { piOf } from "./fakePi";
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { EventEmitter } from "node:events";
@@ -75,7 +75,7 @@ beforeAll(async () => {
   store.setState({ vaultPath: vault, conversationsLoaded: true });
   readConv = (await import("../engine/convs")).readConv;
   const { configureContext } = await import("../context");
-  configureContext({ vault, agentModel: "openai/gpt-6.1-sol", apiKey: () => null, verifierDeny: [] } as any);
+  configureContext({ vault, agentModel: "openai/gpt-6.1-sol" });
   const { Engine } = await import("../engine/engine");
   backend = withPiSessions(new FakeBackend(), join(root, "pi"));
   engine = new Engine({
@@ -110,19 +110,14 @@ const until = async (fn: () => Promise<boolean> | boolean, ms = 10_000) => {
 };
 
 describe("engine guards", () => {
-  it("a keep-going conversation whose turn fails ends blocked and pings Carl", async () => {
-    const r = await engine.message({ text: "Train it and keep going." });
+  it("a turn that fails (pi's own retries spent) says why and starts no turn of its own", async () => {
+    const r = await engine.message({ text: "Train it." });
     await until(() => backend.turns.length === 1);
     const tid = backend.turns[0].threadId;
-    const kw = await backend.h.toolCall(tid, "KeepWorking", { on: true });
-    expect(kw.ok).toBe(true);
     backend.ev(tid, { kind: "textDelta", itemId: "pt-1:1:0", delta: "Provider error: no endpoints available." });
     backend.ev(tid, { kind: "turnCompleted", turnId: "pt-1", status: "failed", error: "upstream 503" });
-    await until(async () => (await readConv(vault, r.convId))?.state === "blocked");
-    const c = await readConv(vault, r.convId);
-    expect(c.working).toBe(false);
-    expect(pings.some((p) => p.convId === r.convId && /^Failed:/.test(p.title))).toBe(true);
-    // No nudge turn was started for the failed turn.
+    await until(async () => (await readConv(vault, r.convId))?.state === "idle");
+    await until(async () => (await readConv(vault, r.convId))!.messages.some((m: any) => /The turn failed: upstream 503/.test(m.content ?? "")));
     expect(backend.turns.length).toBe(1);
   });
 

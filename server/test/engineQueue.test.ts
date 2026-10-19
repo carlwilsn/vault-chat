@@ -94,7 +94,7 @@ beforeAll(async () => {
   store.setState({ vaultPath: vault, conversationsLoaded: true });
   readConv = (await import("../engine/convs")).readConv;
   const { configureContext } = await import("../context");
-  configureContext({ vault, agentModel: "openai/gpt-6.1-sol", apiKey: () => null, verifierDeny: [] } as any);
+  configureContext({ vault, agentModel: "openai/gpt-6.1-sol" });
   const { Engine } = await import("../engine/engine");
   backend = withPiSessions(new FakeBackend(), join(root, "pi"));
   engine = new Engine({

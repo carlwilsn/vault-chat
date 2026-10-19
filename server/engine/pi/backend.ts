@@ -27,8 +27,6 @@ export type BackendEvent =
   | { kind: "turnStarted"; threadId: string; turnId: string }
   /** One of pi's own RPC session events, as pi sent it (the engine maps it into the log, 1:1: ../piMap.ts). */
   | { kind: "pi"; threadId: string; ev: any }
-  /** A thread (a subagent's) is working: keeps its parent's turn alive. */
-  | { kind: "alive"; threadId: string }
   /** The context size of the last model call, and the model's window. */
   | { kind: "usage"; threadId: string; usage: ThreadTokenUsage }
   /** The parent spawned/messaged subagents. */

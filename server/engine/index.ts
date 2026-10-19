@@ -1,13 +1,13 @@
 // Boot the engine: install/locate the pinned pi, write its agent dir and
 // extension, build the sandbox, and hand the HTTP layer the routes it takes
 // over (/message, /answer, /kill). Everything runtime-neutral (conversations,
-// wakes, keep-going, watchdog, resume, tools, ledger, CONTEXT, /poll) is
+// wakes, jobs, resume, tools, ledger, CONTEXT, /poll) is
 // engine.ts; pi itself is pi/backend.ts.
 import { mkdirSync, statSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { basename, dirname, isAbsolute, join, relative } from "node:path";
 import { loadCatalog, modelMeta } from "./catalog";
-import { configureContext, ctxConfig, prepareProjects, setModelWindow } from "./context";
+import { configureContext, ctxConfig, prepareProjects } from "./context";
 import { Engine } from "./engine";
 export { engineShuttingDown } from "./engine";
 import { Ledger } from "./ledger";
@@ -249,8 +249,7 @@ export async function startEngine(b: EngineBoot): Promise<EngineHandle> {
   const model = engineModel();
   const visionModel = process.env.VC_VISION_MODEL || "openai/gpt-6.1-sol";
   const win = modelWindow(model, piCat);
-  setModelWindow(model, win);
-  configureContext({ vault: b.vault, agentModel: model, apiKey: b.apiKey, verifierDeny: [b.stateDir, b.tokenPath, b.localStoragePath, b.pushSubsPath] });
+  configureContext({ vault: b.vault, agentModel: model });
 
   const base = piPaths(b.stateDir);
   const baseUrl = b.openrouterBase ? b.openrouterBase.replace(/\/+$/, "") : undefined;
@@ -347,10 +346,8 @@ export async function startEngine(b: EngineBoot): Promise<EngineHandle> {
       broadcast: (ev) => signal(v.path, ev),
       onTurnEnded: () => b.onTurnEnded?.(v.name),
       visionModel,
-      stallMs: Number(process.env.VC_ENGINE_STALL_MS) || 30 * 60_000,
       notify: engineNotify(b, v.main ? undefined : v),
       ...(v.main ? {} : { log: (m: string) => console.log(`[engine:${v.name}] ${m}`) }),
-      deny: others,
       onFilesWritten: (paths) => b.onFilesWritten?.(v.name, paths),
       vaultName: v.name,
       // The vault's own tools run in the same sandbox as the agent's commands (the other vaults hidden).

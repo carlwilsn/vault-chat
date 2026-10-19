@@ -36,6 +36,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSy
 import { homedir } from "node:os";
 import { dirname, extname, join, resolve } from "node:path";
 import { boxLogs } from "./boxLogs";
+import { appendActivity } from "./activity";
 import { ASSETS_DIR, imageSize, slugify, validSlug } from "../src/boardFormat";
 import {
   ENTRY_FILE,
@@ -359,6 +360,8 @@ async function send(vault: string, body: any, ctx: InboxCtx): Promise<SendResult
   const total = have + parts.length;
   ctx.emit?.(more ? { type: "inbox", id, status: target?.status ?? "unread", title, making: true, parts: total } : { type: "inbox", id, status: target?.status ?? "unread", title, landed: true, parts: total });
   inboxLog(ctx, "send.landed", { id, more, parts: parts.length, total, t: since(), ...(target?.making && !more ? { makeMs: Date.now() - target.making.startedAt } : {}) });
+  // The shared stream: every surface's next turn (and a voice call on any chat) knows it landed.
+  if (!more) appendActivity(vault, { kind: "inbox", text: `"${title}" landed in the board inbox (${total} part${total === 1 ? "" : "s"})`, ...(ctx.conversation ? { convId: ctx.conversation } : {}) });
   if (snaps.length && findBrowser()) {
     const job = snapshotsAfter(vault, id, snaps, ctx).catch(() => {});
     after.add(job);

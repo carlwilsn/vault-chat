@@ -4,7 +4,7 @@
 // (its own bubblewrap, pid namespace and process group, the key on its own fd,
 // scrubbed env, path guard), in RPC mode so it can be steered and stopped, on a
 // persisted session of its own under sessions/sub/<parent session>/. A child
-// gets file/shell tools plus Done/Notify (an agent may allow PdfRead/WebSearch)
+// gets file/shell tools plus Notify (an agent may allow PdfRead/WebSearch)
 // and never AskUser: it reports to the parent, which decides what reaches Carl.
 // Its OpenRouter cost (the vc-cost entries in its session) is rolled onto the
 // parent conversation by the engine (childUsageCalls) and summed into
@@ -42,7 +42,6 @@ type Child = {
   startedAt: number;
   stopReason: string | null;
   error: string | null;
-  summary: string | null;
   stopped: ChildState | null;
   /** Started by BoardMake: outlives the parent's turn (only the parent's process ending stops it). */
   background: boolean;
@@ -50,9 +49,9 @@ type Child = {
 };
 
 const PI_BUILTINS = ["read", "bash", "edit", "write", "grep", "find", "ls"];
-/** Host tools a child may have; AskUser, subagent, ScheduleWake, KeepWorking, Blocked, StartJob… never. */
-const CHILD_HOST_TOOLS = ["Done", "Notify", "PdfRead", "WebSearch", "BoardSend"];
-const DEFAULT_TOOLS = ["read", "bash", "edit", "write", "Done", "Notify"];
+/** Host tools a child may have; AskUser, subagent, ScheduleWake, StartJob… never. */
+const CHILD_HOST_TOOLS = ["Notify", "PdfRead", "WebSearch", "BoardSend"];
+const DEFAULT_TOOLS = ["read", "bash", "edit", "write", "Notify"];
 
 const PREAMBLE = `You are a subagent: a helper that vault-chat's agent started for one task, in a context of your own.
 You cannot ask Carl anything and nobody will answer questions: decide, and say what you assumed.
@@ -162,7 +161,6 @@ export class Subagents {
       startedAt: Date.now(),
       stopReason: null,
       error: null,
-      summary: null,
       stopped: null,
       background: a?.background === true,
       settle: (aborted) => {
@@ -179,8 +177,6 @@ export class Subagents {
     this.b.ev({ kind: "subagentStatus", threadId: parentId, child: id, status: "running", path: file, patch: { task: task.slice(0, 500), agent: child.agent, model, state: "running", startedAt: child.startedAt, sessionFile: file, costUsd: 0, toolCallId: itemId } });
 
     proc.on("event", (e: any) => {
-      // Any child activity keeps the parent's turn alive for the watchdog.
-      this.b.ev({ kind: "alive", threadId: id });
       if (e?.type === "message_end" && e.message?.role === "assistant") {
         child.stopReason = e.message.stopReason ?? null;
         child.error = e.message.stopReason === "error" ? String(e.message.errorMessage ?? "error").slice(0, 500) : null;
@@ -214,16 +210,16 @@ export class Subagents {
 
     const state: ChildState = child.stopped ?? (child.error ? "failed" : "completed");
     const costUsd = round(this.b.usageCalls(file).reduce((s, c) => s + (typeof c.cost === "number" ? c.cost : 0), 0));
-    const report = text || child.summary || "";
+    const report = text || "";
     const ok = state === "completed";
     this.b.ev({ kind: "subagents", threadId: parentId, itemId, children: [id], op: "spawnAgent", prompt: task, model, done: true, ok });
-    this.b.ev({ kind: "subagentStatus", threadId: parentId, child: id, status: state, patch: { state, costUsd, endedAt: Date.now(), ...(child.summary || report ? { summary: (child.summary || report).slice(0, 500) } : {}) } });
+    this.b.ev({ kind: "subagentStatus", threadId: parentId, child: id, status: state, patch: { state, costUsd, endedAt: Date.now(), ...(report ? { summary: report.slice(0, 500) } : {}) } });
     this.log(`subagent ${id} (${child.agent}, ${model}) ${state}, $${costUsd}`);
     const failText = state === "timeout" ? "The subagent ran out of time and was stopped." : state === "stopped" ? "The subagent was stopped." : state === "killed" ? "The subagent's process ended unexpectedly." : child.error ?? "";
     return { ok, state, text: ok ? report || "(no output)" : [failText, report].filter(Boolean).join("\n\n"), childId: id, model, costUsd, sessionFile: file };
   }
 
-  /** A child's host calls: Done is noted for its report; Notify/PdfRead/WebSearch run as the parent's; nothing else. */
+  /** A child's host calls: Notify/PdfRead/WebSearch/BoardSend run as the parent's; nothing else. Its final message is its report. */
   private async onChildUi(c: Child, req: any): Promise<void> {
     const reply = (o: Record<string, unknown>) => c.proc.write({ type: "extension_ui_response", id: req.id, ...o });
     if (req.method === "editor" && req.title === "vc:host-call") {
@@ -235,10 +231,6 @@ export class Subagents {
       }
       const name = String(call.tool ?? "");
       if (name === "__env") return reply({ value: JSON.stringify({ env: this.b.agentEnv() }) });
-      if (name === "Done") {
-        c.summary = String(call.args?.summary ?? "").trim() || null;
-        return reply({ value: JSON.stringify({ text: "Recorded. Now end with your report: your final message is what the parent agent receives." }) });
-      }
       if (!CHILD_HOST_TOOLS.includes(name) || !this.b.handlers) return reply({ value: JSON.stringify({ text: `${name} is not available to subagents; report to the parent agent instead.`, isError: true }) });
       const r = await this.b.handlers.toolCall(c.parent, name, call.args ?? {}).catch((e) => ({ ok: false, text: `${name} failed: ${(e as Error).message}` }));
       return reply({ value: JSON.stringify({ text: r.text, ...(r.ok ? {} : { isError: true }) }) });

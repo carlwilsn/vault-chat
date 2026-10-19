@@ -208,7 +208,7 @@ beforeAll(async () => {
   const store = (await import("../../src/store")).useStore;
   store.setState({ vaultPath: vault, conversationsLoaded: true });
   const ctx = await import("../context");
-  ctx.configureContext({ vault, agentModel: "openai/gpt-6.1-sol", apiKey: () => null, verifierDeny: [] } as any);
+  ctx.configureContext({ vault, agentModel: "openai/gpt-6.1-sol" });
   ctx.withVault(vault, () => ctx.ensureProject("Coconut", "Detect coconuts in drone images."));
   const pdir = join(vault, "agent-projects", "coconut");
   writeFileSync(join(pdir, "memory.md"), "# Memory\n\n## Decisions\n\n- YOLOv8 at 640px; tiles of 1024 with 128 overlap.\n- Labels in labels/ (CVAT export).\n\n## Learned\n\n- Shadows cause false positives before 9am.\n");

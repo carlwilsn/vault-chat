@@ -89,8 +89,9 @@ laptop's local chats; the missions system is gone and its mission/worker/ask thr
 ```
 server/engine/
   index.ts          boot: install/locate pi, its agent dir and extension, the sandbox, Engine + PiBackend
-  engine.ts         conversations ↔ pi sessions ("threads"), AskUser/ScheduleWake/KeepWorking/Done/Blocked/Notify,
-                    keep-going rule, watchdog, resume after a crash, roll-over, cost, subagents
+  engine.ts         conversations ↔ pi sessions ("threads"), AskUser/ScheduleWake/StartJob/Notify/RecentActivity,
+                    durable wakes, job-end turns, resume after a crash, cost, subagents (long sessions: pi's compaction;
+                    a hung provider: pi's idle timeout and retry)
   convs.ts          one-conversation locked read-modify-write, mirrored into the store (→ /poll events)
   wakes.ts          durable one-off wakes: <vault>/.vault-chat/local/wakes.json (added to .git/info/exclude)
   ledger.ts         dollars per OpenRouter generation id: the cost OpenRouter streamed, else GET /generation
@@ -105,7 +106,7 @@ server/engine/
   pi/subagents.ts   subagents: each child a sibling pi the host starts (see below)
   pi/proc.ts        one `pi --mode rpc` child: strict LF-split JSONL, own process group, key written to fd 3 then closed
   pi/install.ts     npm-installs pi 1.1.0 into $VC_STATE_DIR/pi/1.1.0 (VC_PI_DIR overrides); finds bwrap
-  pi/config.ts      $VC_STATE_DIR/pi/{agent/settings.json (compaction per model, above CONTEXT's roll threshold),
+  pi/config.ts      $VC_STATE_DIR/pi/{agent/settings.json (compaction per model: at ¾ of the window, ≤ 375k),
                     agent/models.json (models pi's catalog lacks), agents/, ext/, instr/, sessions/}
   pi/jobs.ts        StartJob/JobStatus: `systemd-run --user` + bubblewrap with the same hiding
   pi/ext/vc.mjs     the pi extension (copied to $VC_STATE_DIR/pi/ext at boot): vault-chat's tools as blocking host calls
@@ -136,7 +137,7 @@ server/engine/
 **Routes.** `/message {text, convId?, project?, context?, images?: [{name?, mime, dataBase64}], imagePaths?: [vault-relative]}`
 → `{ok, convId}` (creates a conversation without `convId`; a message to a running turn steers it → `steered: true`;
 a message while a question is open answers it → `answered: true`). `/answer {convId, text | defer, notifId?}`,
-`/kill {convId}` (interrupt, keep-going off, wakes cancelled, its subagents stopped). Archived mission threads fall
+`/kill {convId}` (interrupt, wakes cancelled, its subagents stopped). Archived mission threads fall
 through to the old relay, which refuses them. `GET /conversation?id=&full=1` adds `full`, `meta` and the stored
 messages. `GET /api/v1/models` → `{models: [{id, capabilities, source: catalog|learned|untested, status, checkedAt}]}`.
 `POST /api/v1/conversations/<id>/subagents/<sid>/steer {text}` and `…/stop` steer or stop one running subagent.
@@ -153,7 +154,6 @@ names; such a thread is unknown to pi, so its next turn starts a fresh session w
 | `VC_ENGINE_MODEL` | `localStorage.vault_chat_engine_model` or `openai/gpt-6.1-sol` | the agent's model |
 | `VC_VISION_MODEL` | `openai/gpt-6.1-sol` | a turn with images on a model that can't see uses this |
 | `VC_WEBSEARCH_MODEL` | `google/gemini-2.5-flash-lite` | WebSearch (OpenRouter web plugin) |
-| `VC_ENGINE_STALL_MS` | 30 min | watchdog: no events for this long → interrupt + resume turn |
 | `VC_PI_DIR` | unset | npm prefix holding pi 1.1.0 (else installed into `$VC_STATE_DIR/pi/1.1.0`) |
 | `VC_BWRAP` | PATH, then /nix/store | bubblewrap binary (required on Linux) |
 | `VC_PI_UNSAFE` | unset | `1` = run without bubblewrap (path guard + env scrub only) |
@@ -176,8 +176,8 @@ anything itself: per child it asks the host (`__subagent` over the extension bri
 the child as a **sibling** of the parent — the same launch as any pi (its own bubblewrap, pid namespace and process
 group, the key on its own fd 3, scrubbed env, the path guard), in RPC mode, on a persisted session in
 `sessions/sub/<parent session>/<child>/`. A child's tools are its agent's allow-list: pi's file/shell tools plus at
-most `Done`, `Notify`, `PdfRead`, `WebSearch` (default: read, bash, edit, write, Done, Notify) — never `AskUser`,
-`subagent`, `ScheduleWake`, `KeepWorking`, `Blocked` or `StartJob`; it reports to the parent, which decides what
+most `Notify`, `PdfRead`, `WebSearch`, `BoardSend` (default: read, bash, edit, write, Notify) — never `AskUser`,
+`subagent`, `ScheduleWake` or `StartJob`; it reports to the parent, which decides what
 reaches Carl. The parent conversation's meta gets `subagents[]` = `{threadId, task, agent, model, state
 (running|completed|failed|stopped|timeout|killed), costUsd, startedAt, endedAt, sessionFile}`; each child's
 OpenRouter cost (its own vc-cost entries) is also rolled into the conversation's `costUsd`. Stopping the parent's

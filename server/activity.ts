@@ -21,6 +21,7 @@ import {
   CONTEXT_IMAGE_MAX_BYTES,
   LOG_MAX_BYTES,
   DEFAULT_WINDOW_MS,
+  activityLine,
   buildYouLayer,
   captureCaption,
   parseLog,
@@ -169,6 +170,28 @@ export function youLayer(vault: string, o: { since?: number | null; convId?: str
     console.warn(`[activity] you layer failed: ${(err as Error).message}`);
     return { text: "", until: now, items: 0 };
   }
+}
+
+/**
+ * RecentActivity (a read-only agent tool): the stream searched past the you layer's window — the last `hours`
+ * (default 24, at most a week), the entries whose words contain every word of `query`, newest last, at most `limit`.
+ * The you layer stays "what Carl just did"; anything older is found when he asks about it.
+ */
+export function searchActivity(vault: string, o: { query?: string; hours?: number; limit?: number; now?: number } = {}): string {
+  const now = o.now ?? Date.now();
+  const hours = Math.min(Math.max(Number(o.hours) || 24, 0.1), 168);
+  const limit = Math.min(Math.max(Math.floor(Number(o.limit) || 30), 1), 100);
+  const query = String(o.query ?? "").trim();
+  const words = query.toLowerCase().split(/\s+/).filter(Boolean);
+  const hits = readActivity(vault, now, hours * 3_600_000).filter((e) => {
+    const hay = [e.text, e.detail, e.path, e.where, e.project].filter(Boolean).join(" ").toLowerCase();
+    return words.every((w) => hay.includes(w));
+  });
+  const span = `the last ${hours} h${query ? ` matching "${query}"` : ""}`;
+  if (!hits.length) return `Nothing in ${span}.`;
+  const shown = hits.slice(-limit);
+  const more = hits.length - shown.length;
+  return [`Carl's activity in ${span} (oldest first${more ? `; ${more} older left out` : ""}):`, ...shown.map((e) => `- ${activityLine(e, now)}`)].join("\n");
 }
 
 const MIME_EXT: Record<string, string> = { "image/png": ".png", "image/jpeg": ".jpg", "image/jpg": ".jpg", "image/webp": ".webp", "image/gif": ".gif" };

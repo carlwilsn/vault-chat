@@ -1,16 +1,13 @@
 // What the box's end-to-end runs found, in process on a fake pi:
-//  B  Done/Blocked cancel the conversation's wakes, a wake of a done/blocked
-//     conversation never runs a turn, and after ScheduleWake every further call
-//     but Done/Blocked is refused (and the turn is ended if the model keeps going);
+//  B  Stop cancels the conversation's wakes;
 //  C  one restart → one interrupted marker, one resume (the dying server does nothing);
 //  E  a conversation the voice agent starts is tagged "voice";
 //  F  answering an AskUser marks its ask notification answered (no notifId needed);
-//  G  the AskUser call is stored once, with its answer on it;
-//  and a failed keep-going turn goes straight to blocked (never "idle" on the way).
+//  G  the AskUser call is stored once, with its answer on it.
 import { piOf } from "./fakePi";
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { EventEmitter } from "node:events";
-import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmp, cleanup } from "./helpers";
 import { withPiSessions } from "./fakeSession";
@@ -78,13 +75,12 @@ let Engine: any;
 let engineShuttingDown: (on?: boolean) => void;
 let readConv: (v: string, id: string) => Promise<any>;
 let readWakes: (v: string) => any[];
-let addWake: (v: string, w: any) => any;
 const notifs = join(vault, ".vault-chat", "notifications.jsonl");
 const logs: string[] = [];
 const engines: any[] = [];
 
 /** An engine on its own fake pi; notify writes the feed the way engineNotify does. */
-function makeEngine(prefix: string, stallMs?: number) {
+function makeEngine(prefix: string) {
   const backend = withPiSessions(new FakeBackend(prefix), join(root, `pi-${prefix}`));
   const engine = new Engine({
     vault,
@@ -101,7 +97,6 @@ function makeEngine(prefix: string, stallMs?: number) {
     },
     broadcast: () => {},
     log: (m: string) => logs.push(m),
-    ...(stallMs ? { stallMs } : {}),
   });
   engines.push(engine);
   return { engine, backend };
@@ -120,9 +115,9 @@ beforeAll(async () => {
   const store = (await import("../../src/store")).useStore;
   store.setState({ vaultPath: vault, conversationsLoaded: true });
   readConv = (await import("../engine/convs")).readConv;
-  ({ readWakes, addWake } = await import("../engine/wakes"));
+  ({ readWakes } = await import("../engine/wakes"));
   const { configureContext } = await import("../context");
-  configureContext({ vault, agentModel: "openai/gpt-6.1-sol", apiKey: () => null, verifierDeny: [] } as any);
+  configureContext({ vault, agentModel: "openai/gpt-6.1-sol" });
   ({ Engine, engineShuttingDown } = await import("../engine/engine"));
   ({ engine, backend } = makeEngine("t"));
   engine.start();
@@ -152,90 +147,15 @@ async function startTurn(e: any, be: FakeBackend, msg: string) {
   return { convId: r.convId as string, tid: be.turns[before].threadId as string, turnId: `pt-${(be as any).prefix}-${before + 1}` };
 }
 
-describe("B: wakes end with the work, and ScheduleWake ends the turn", () => {
-  it("Done cancels the conversation's pending wakes and clears nextWakeAt", async () => {
-    const { convId, tid, turnId } = await startTurn(engine, backend, "Check the run later, then finish.");
+describe("B: Stop cancels the wakes", () => {
+  it("/kill on a conversation removes its pending wakes and clears nextWakeAt", async () => {
+    const { convId, tid } = await startTurn(engine, backend, "Check the run later.");
     expect((await backend.h.toolCall(tid, "ScheduleWake", { in: "1h", reason: "check" })).ok).toBe(true);
     expect(readWakes(vault).some((w) => w.conv === convId)).toBe(true);
     expect((await readConv(vault, convId)).nextWakeAt).toBeGreaterThan(Date.now());
-    // Done is still allowed after ScheduleWake (it ends the work differently).
-    const done = await backend.h.toolCall(tid, "Done", { summary: "finished", evidence: [] });
-    expect(text(done)).toMatch(/Recorded as done/);
+    await engine.kill({ convId });
     expect(readWakes(vault).some((w) => w.conv === convId)).toBe(false);
     expect((await readConv(vault, convId)).nextWakeAt).toBeUndefined();
-    backend.ev(tid, { kind: "turnCompleted", turnId, status: "completed", error: null });
-    await until(async () => (await readConv(vault, convId))?.state === "done");
-    expect((await readConv(vault, convId)).nextWakeAt).toBeUndefined();
-  });
-
-  it("Blocked cancels the wakes too", async () => {
-    const { convId, tid } = await startTurn(engine, backend, "Try, and wake later.");
-    await backend.h.toolCall(tid, "ScheduleWake", { in: "2h", reason: "again" });
-    expect(readWakes(vault).some((w) => w.conv === convId)).toBe(true);
-    await backend.h.toolCall(tid, "Blocked", { reason: "needs a key" });
-    expect(readWakes(vault).some((w) => w.conv === convId)).toBe(false);
-    const c = await readConv(vault, convId);
-    expect(c.state).toBe("blocked");
-    expect(c.nextWakeAt).toBeUndefined();
-  });
-
-  it("a wake that fires for a done or blocked conversation is dropped, never a turn", async () => {
-    const { convId, tid, turnId } = await startTurn(engine, backend, "Do the thing.");
-    const done = { id: convId };
-    backend.ev(tid, { kind: "turnCompleted", turnId, status: "completed", error: null });
-    await until(async () => (await readConv(vault, done.id))?.state === "idle");
-    // Done as an older build left it: the conversation done, its wake still pending.
-    const { patchMeta } = await import("../engine/convs");
-    await patchMeta(vault, done.id, { state: "done" });
-    const turns = backend.turns.length;
-    addWake(vault, { conv: done.id, at: Date.now() - 1000, reason: "stale wake" });
-    await until(() => !readWakes(vault).some((w) => w.conv === done.id), 8_000);
-    await sleep(500);
-    expect(backend.turns.length).toBe(turns);
-    expect(logs.some((l) => l.includes(done.id) && /dropped: the conversation is done/.test(l))).toBe(true);
-    expect((await readConv(vault, done.id)).messages.some((m: any) => /stale wake/.test(m.content))).toBe(false);
-  });
-
-  it("after ScheduleWake every further call but Done/Blocked is refused; a model that keeps going is ended", async () => {
-    const { convId, tid, turnId } = await startTurn(engine, backend, "Start the check.");
-    backend.ev(tid, { kind: "tool", itemId: "c-wake", name: "ScheduleWake", input: { in: "30m", reason: "look" } });
-    const w = await backend.h.toolCall(tid, "ScheduleWake", { in: "30m", reason: "look" });
-    expect(text(w)).toMatch(/Stop now: do not call any more tools this turn\.$/);
-    const at = /Wake set for (\S+) /.exec(text(w))![1];
-    backend.ev(tid, { kind: "tool", itemId: "c-wake", name: "ScheduleWake", input: undefined, result: text(w) });
-    const n = await backend.h.toolCall(tid, "Notify", { title: "still here" });
-    expect(n.ok).toBe(false);
-    expect(text(n)).toBe(`You scheduled a wake for ${at}. End your turn now; you'll be woken then.`);
-    const again = await backend.h.toolCall(tid, "ScheduleWake", { in: "5m", reason: "sooner" });
-    expect(text(again)).toMatch(/You scheduled a wake for/);
-    expect(readWakes(vault).filter((x) => x.conv === convId)).toHaveLength(1);
-    // pi's own tools (refused by the extension's gate): the engine counts them and ends the turn.
-    expect(backend.interrupts).not.toContain(tid);
-    backend.ev(tid, { kind: "tool", itemId: "c-b1", name: "Bash", input: { command: "sleep 5" } });
-    expect(backend.interrupts).not.toContain(tid);
-    backend.ev(tid, { kind: "tool", itemId: "c-b2", name: "Bash", input: { command: "date" } });
-    await until(() => backend.interrupts.includes(tid));
-    backend.ev(tid, { kind: "turnCompleted", turnId, status: "interrupted", error: null });
-    await until(async () => (await readConv(vault, convId))?.state === "sleeping");
-    const last = (await readConv(vault, convId)).messages.filter((m: any) => m.role === "assistant").pop();
-    expect(String(last?.content ?? "")).not.toMatch(/stopped/);
-  });
-
-  it("the extension's gate (pi's own tools) gives the same refusal, lets Done/Blocked through, and resets per turn", async () => {
-    // @ts-expect-error plain JS module
-    const { wakeGate } = await import("../engine/pi/ext/policy.mjs");
-    const g = wakeGate();
-    expect(g.check("bash")).toBeNull();
-    g.onResult("ScheduleWake", "ScheduleWake needs `in`", false);
-    expect(g.check("bash")).toBeNull();
-    g.onResult("ScheduleWake", 'Wake scheduled for 2026-10-14T09:00:00.000Z ("x"). End your turn now; you\'ll be woken then.', false);
-    expect(g.check("bash")).toBe("You scheduled a wake for 2026-10-14T09:00:00.000Z. End your turn now; you'll be woken then.");
-    expect(g.check("read")).toMatch(/End your turn now/);
-    expect(g.check("ScheduleWake")).toMatch(/End your turn now/);
-    expect(g.check("Done")).toBeNull();
-    expect(g.check("Blocked")).toBeNull();
-    g.reset();
-    expect(g.check("bash")).toBeNull();
   });
 });
 
@@ -297,74 +217,6 @@ describe("E: the voice agent's conversations", () => {
     await until(() => backend.turns.length === before + 2);
     expect((await readConv(vault, v.convId)).source).toBe("voice");
     expect((await readConv(vault, p.convId)).source).toBe("phone");
-  });
-});
-
-describe("finishTurn decides the final state once", () => {
-  it("a failed keep-going turn is written blocked directly (the log never says idle)", async () => {
-    const { convId, tid, turnId } = await startTurn(engine, backend, "Keep training.");
-    await backend.h.toolCall(tid, "KeepWorking", { on: true });
-    logs.length = 0;
-    backend.ev(tid, { kind: "turnCompleted", turnId, status: "failed", error: "upstream 503" });
-    await until(async () => (await readConv(vault, convId))?.state === "blocked");
-    const line = logs.find((l) => l.includes(convId) && /^turn /.test(l));
-    expect(line).toMatch(/failed → blocked$/);
-    expect(logs.some((l) => l.includes(convId) && /→ idle/.test(l))).toBe(false);
-    expect((await readConv(vault, convId)).working).toBe(false);
-  });
-});
-
-describe("the watchdog: a running tool is not a stall", () => {
-  it("an open Bash call waits for its own timeout; streamed progress and a job's log count as liveness", async () => {
-    const { utimesSync } = await import("node:fs");
-    const w = makeEngine("w", 200);
-    w.engine.start();
-    w.engine.stop(); // no timer: the test ticks the watchdog itself
-    const tick = () => (w.engine as any).tickWatchdog();
-    const live = (id: string) => (w.engine as any).live.get(id);
-
-    // 1. A silent Bash command (timeout 1 s → 1 s + 5 min margin) outlives the 200 ms stall limit.
-    const a = await startTurn(w.engine, w.backend, "Run the long build.");
-    w.backend.ev(a.tid, { kind: "tool", itemId: "b-long", name: "Bash", input: { command: "make", timeout: 1 } });
-    expect(w.engine.stallLimit(live(a.convId))).toBe(1000 + 5 * 60_000);
-    await sleep(400);
-    tick();
-    expect(w.backend.interrupts).not.toContain(a.tid);
-    // Without a timeout of its own: the extension's default (1800 s), not the stall limit.
-    w.backend.ev(a.tid, { kind: "tool", itemId: "b-def", name: "Bash", input: { command: "sleep 3600" } });
-    expect(w.engine.stallLimit(live(a.convId))).toBe(1800_000 + 5 * 60_000);
-    // Both finish: silence is a stall again.
-    w.backend.ev(a.tid, { kind: "tool", itemId: "b-long", name: "Bash", input: undefined, result: "ok" });
-    w.backend.ev(a.tid, { kind: "tool", itemId: "b-def", name: "Bash", input: undefined, result: "ok" });
-    expect(w.engine.stallLimit(live(a.convId))).toBe(200);
-    await sleep(400);
-    tick();
-    await until(() => w.backend.interrupts.includes(a.tid));
-
-    // 2. A tool streaming progress (pi's tool_execution_update) keeps the turn alive.
-    const b = await startTurn(w.engine, w.backend, "Download the data.");
-    w.backend.ev(b.tid, { kind: "tool", itemId: "r-1", name: "WebSearch", input: { query: "x" } });
-    for (let i = 0; i < 5; i++) {
-      await sleep(100);
-      w.backend.ev(b.tid, { kind: "toolProgress", itemId: "r-1" });
-      tick();
-    }
-    expect(w.backend.interrupts).not.toContain(b.tid);
-
-    // 3. A StartJob log growing counts as progress for its conversation.
-    const c = await startTurn(w.engine, w.backend, "Train in the background.");
-    const log = join(root, "jobs-c.log");
-    writeFileSync(log, "epoch 1\n");
-    (w.engine as any).jobLogs.set(c.convId, [log]);
-    for (let i = 0; i < 4; i++) {
-      await sleep(120);
-      appendFileSync(log, `epoch ${i + 2}\n`);
-      const t = new Date();
-      utimesSync(log, t, t);
-      tick();
-    }
-    expect(w.backend.interrupts).not.toContain(c.tid);
-    for (const id of [b.convId, c.convId]) live(id).finished = true;
   });
 });
 

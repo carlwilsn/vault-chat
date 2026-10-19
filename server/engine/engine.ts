@@ -4,8 +4,8 @@
 // src/convlog/protocol.ts) points into it as pi writes it and carries pi's live
 // events for the message in flight (piFeed.ts). What only vault-chat knows
 // (the turn running, steers pi has not delivered, an open question, cost,
-// subagents, keep-going) is the conversation's fields in the same feed; its own
-// lines (a notice, the verifier's verdict, a roll-over) are pi custom entries
+// subagents, the next wake) is the conversation's fields in the same feed; its own
+// lines (a notice) are pi custom entries
 // (`vc-note`), written by pi while it has the session. Every client folds the
 // feed with one reducer. vault-chat's tools reach pi through its extension as
 // host calls.
@@ -19,14 +19,9 @@ import {
   isContextTool,
   buildDeveloperInstructions,
   rulesPrefixForTurn,
-  shouldRoll,
-  buildRecap,
-  verifyDone,
-  formatVerdict,
   projectCost,
   ctxConfig,
   type EngineConv,
-  type ThreadTokenUsage,
 } from "./context";
 import { patchMeta, readConv, allConvs, createConv, newMessageId, emitTo, pictureOf, logOf, writeNotes, appendNotes, setNoteWriter, type NoteData } from "./convs";
 import { addWake, readWakes, removeWakes, nextWakeFor, parseDelay, type Wake } from "./wakes";
@@ -40,7 +35,7 @@ import { isNoteTool, noteTool, noteToolSpecs } from "../notesTools";
 import { capabilitiesOf, capabilityNote, learn } from "./capabilities";
 import { join } from "node:path";
 import { WRITE_TOOLS, writtenPath } from "../liveEdits";
-import { appendActivity, contextImage, youLayer } from "../activity";
+import { appendActivity, contextImage, searchActivity, youLayer } from "../activity";
 import { CAPTURE_FRESH_MS, chatPointerEntry } from "../../src/activityCore";
 import type { EventBody, ItemImage, PendingInput } from "../../src/convlog/protocol";
 import { isOpen, pendingOf, shown, type Picture } from "../../src/convlog/reduce";
@@ -64,13 +59,10 @@ export type EngineDeps = {
   notify: (n: { kind: "info" | "ask"; title: string; body: string; convId: string; options?: string[] }) => Promise<string | null>;
   /** One-line log. */
   log?: (s: string) => void;
-  stallMs?: number;
   /** A vault-level signal on /poll (the inbox, notifications). */
   broadcast?: (ev: Record<string, unknown>) => void;
   /** Model for a turn that carries images when the default can't see. */
   visionModel?: string;
-  /** The other vaults on this box (and their state): the verifier may not read them. */
-  deny?: () => string[];
   /** A Write/Edit/NotebookEdit succeeded: the vault-relative paths it changed (server/liveEdits.ts). */
   onFilesWritten?: (paths: string[]) => void;
   /** A turn ended (the sync brings its results to the laptop). */
@@ -83,7 +75,7 @@ export type EngineDeps = {
   shell?: () => string[] | null | undefined;
 };
 
-type TurnKind = "user" | "wake" | "nudge" | "resume";
+type TurnKind = "user" | "wake" | "resume";
 
 type Live = {
   convId: string;
@@ -92,26 +84,15 @@ type Live = {
   turnId: string;
   kind: TurnKind;
   startedAt: number;
-  lastEventAt: number;
   /** pi's session and live events → the feed. */
   feed: PiFeed;
   /** pi's events → the turn's log line. */
   rec: TurnRecorder;
-  usage: ThreadTokenUsage | null;
-  flags: { wake: boolean; done: boolean; blocked: boolean };
-  /** When the turn's ScheduleWake set its wake (ISO), and the tool calls the model made after it. */
-  wakeAt: string | null;
-  afterWake: number;
-  /** The turn was ended by the engine after a ScheduleWake (the model kept going): not "stopped". */
-  endedAfterWake: boolean;
   ask: { resolve: (answer: string) => void; question: string; itemId: string } | null;
   asks: number;
-  /** Tool calls in flight (started, no result yet): while one is open the watchdog waits for its own timeout. */
+  /** Tool calls in flight (started, no result yet): a write tool's path is reported when it ends. */
   open: Map<string, { name: string; input: any }>;
-  /** Tool calls seen running (the after-wake count counts new ones only). */
-  seen: Set<string>;
   cut: boolean;
-  stalled: boolean;
   stopped: boolean;
   controller: AbortController;
   /** pi accepted the prompt. */
@@ -124,19 +105,11 @@ type Live = {
 
 type TurnOpts = { images?: string[]; context?: string; itemImages?: ItemImage[]; clientId?: string; /** What the chat shows (Carl's answer to a question asked before a restart). */ shown?: string; via?: string; /** Which client sent it (the turn log's `via`: laptop, phone, voice …). */ origin?: string };
 
-const NUDGE_TEXT = "You're in keep-going mode: schedule your next check (ScheduleWake), or say Done or Blocked.";
 const RESUME_TEXT =
   "The box restarted (or the engine stopped) while your last turn was running, so any command it was running was killed and may not have finished. Re-check reality (files, processes, logs), then continue from where you were.";
 const LEGACY_SOURCES = new Set(["mission", "worker", "ask"]);
 const ARCHIVED = "This is an archived mission thread (the old missions system): readable, never run. Start a new chat.";
 const INTERRUPTED_TEXT = "⚠️ Interrupted by a restart — the command it was running was killed and may not have finished.";
-/** Tool calls a turn may still make after ScheduleWake: only ending it differently. */
-const AFTER_WAKE_OK = new Set(["Done", "Blocked"]);
-/** Tool calls after ScheduleWake before the engine ends the turn itself. */
-const AFTER_WAKE_MAX = 2;
-/** How much longer than an open tool call's own timeout the watchdog waits. */
-const TOOL_MARGIN_MS = 5 * 60_000;
-export const wakeRefusal = (at: string) => `You scheduled a wake for ${at}. End your turn now; you'll be woken then.`;
 
 // The server is going down (SIGTERM/SIGINT): pi's processes die with it, and
 // that is not a crash. A turn cut by the shutdown stays open in the log for the
@@ -166,36 +139,13 @@ export const ENGINE_TOOL_SPECS = [
     type: "function",
     name: "ScheduleWake",
     description:
-      "Schedule ONE future turn of this conversation (survives restarts). Give `in` (e.g. \"2m\", \"1h30m\") or `at` (ISO time), and the reason you will read when woken. Then end your turn.",
+      "Schedule ONE future turn of this conversation (survives restarts), only when Carl asks for a reminder or a later check. Give `in` (e.g. \"2m\", \"1h30m\") or `at` (ISO time), and the reason you will read when woken. Then end your turn.",
     inputSchema: {
       type: "object",
       properties: { in: { type: "string" }, at: { type: "string" }, reason: { type: "string" } },
       required: ["reason"],
       additionalProperties: false,
     },
-  },
-  {
-    type: "function",
-    name: "KeepWorking",
-    description: "Turn keep-going mode on or off for this conversation. On: every turn must end with ScheduleWake, AskUser, Done or Blocked.",
-    inputSchema: { type: "object", properties: { on: { type: "boolean" } }, required: ["on"], additionalProperties: false },
-  },
-  {
-    type: "function",
-    name: "Done",
-    description: "Declare the work done, with a summary and the evidence (file paths, quoted command outputs). A separate verifier checks it; its verdict is returned and shown to Carl.",
-    inputSchema: {
-      type: "object",
-      properties: { summary: { type: "string" }, evidence: { type: "array", items: { type: "string" } } },
-      required: ["summary"],
-      additionalProperties: false,
-    },
-  },
-  {
-    type: "function",
-    name: "Blocked",
-    description: "Say you cannot continue without Carl, and why. Ends keep-going work and pushes him.",
-    inputSchema: { type: "object", properties: { reason: { type: "string" } }, required: ["reason"], additionalProperties: false },
   },
   {
     type: "function",
@@ -323,6 +273,18 @@ export const ENGINE_TOOL_SPECS = [
   },
   {
     type: "function",
+    name: "RecentActivity",
+    readOnly: true,
+    description:
+      "Search what Carl did on his surfaces over the last days (the shared activity stream: Ctrl+L asks and their answers, Ctrl+K edits, voice lines, captures, files he opened, his messages in other chats, inbox sends). Your turns only get the last ~45 minutes of it; use this when he refers to something older (\"what did I ask before lunch?\"). `query`: words to match (empty: everything); `hours`: how far back (default 24, at most 168).",
+    inputSchema: {
+      type: "object",
+      properties: { query: { type: "string" }, hours: { type: "number" }, limit: { type: "number" } },
+      additionalProperties: false,
+    },
+  },
+  {
+    type: "function",
     name: "Cost",
     readOnly: true,
     description: "Model spend in USD: this conversation by default, or a project's total.",
@@ -353,9 +315,6 @@ export class Engine {
   private live = new Map<string, Live>(); // convId → live turn
   private byThread = new Map<string, string>(); // threadId → convId
   private chains = new Map<string, Promise<unknown>>();
-  private nudged = new Set<string>();
-  /** Watchdog resumes in a row per conversation; a third stall ends it as blocked. */
-  private stalls = new Map<string, number>();
   /** Notify calls per conversation in the last hour (the agent's pings are capped). */
   private pings = new Map<string, number[]>();
   private resumeQueue = new Set<string>();
@@ -367,7 +326,6 @@ export class Engine {
   private imagesGiven = new Map<string, Set<string>>();
   /** The rules each thread last received (its instructions at start, or a turn's prefix): a turn repeats them only when they changed. In memory; after a restart a resumed thread gets them once more. */
   private rulesSent = new Map<string, string>();
-  private jobLogs = new Map<string, string[]>(); // convId → its StartJob logs
   /** History from before a conversation's thread, handed to its first turn once (a legacy chat, a lost thread). */
   private handover = new Map<string, string>();
 
@@ -382,7 +340,7 @@ export class Engine {
   }
 
   private scoped<T>(fn: () => T): T {
-    return withVault(this.d.vault, fn, this.d.deny);
+    return withVault(this.d.vault, fn);
   }
 
   private log(s: string): void {
@@ -507,7 +465,6 @@ export class Engine {
         }),
     });
     this.timers.push(setInterval(() => this.scoped(() => void this.tickWakes()), 2_000));
-    this.timers.push(setInterval(() => this.scoped(() => this.tickWatchdog()), 15_000));
     this.timers.push(setInterval(() => this.scoped(() => void this.tickJobs()), 15_000));
   }
 
@@ -711,7 +668,6 @@ export class Engine {
     appendActivity(this.d.vault, chatPointerEntry({ convId: id, title, user: shown, project: typeof proj === "string" ? proj : null, device }));
     for (const im of itemImages.filter((x) => x.path.startsWith(".vault-chat/captures/")))
       appendActivity(this.d.vault, { kind: "capture", modality: "chat", text: `pasted into "${title}"`, path: im.path, convId: id, ...(device ? { device } : {}) });
-    this.nudged.delete(id);
     // An open question: this message is the answer.
     if (this.live.get(id)?.ask || conv.pendingAsk) {
       await this.answer(id, shown, clientId);
@@ -900,7 +856,7 @@ export class Engine {
     return s.text;
   }
 
-  /** /kill. null → legacy path. Stop means stop: interrupt, keep-going off, wakes cancelled. */
+  /** /kill. null → legacy path. Stop means stop: interrupt, wakes cancelled. */
   async kill(body: { convId?: string | null }): Promise<Record<string, unknown> | null> {
     const id = body?.convId ? String(body.convId) : "";
     if (!id) {
@@ -917,7 +873,7 @@ export class Engine {
   async interrupt(convId: string, byUser: boolean): Promise<boolean> {
     if (byUser) {
       removeWakes(this.d.vault, (w) => w.conv === convId);
-      await patchMeta(this.d.vault, convId, { working: false, nextWakeAt: undefined });
+      await patchMeta(this.d.vault, convId, { nextWakeAt: undefined });
     }
     const l = this.live.get(convId);
     if (!l) return false;
@@ -949,9 +905,9 @@ export class Engine {
     return next;
   }
 
-  /** How an engine input shows (a wake, a job, a nudge, a resume). */
+  /** How an engine input shows (a wake, a job, a resume). */
   private engineInput(input: string, kind: TurnKind): { via: string; shown: string } {
-    const via = kind === "wake" ? (/^Job \S+ /.test(input) ? "job" : "wake") : kind === "nudge" ? "nudge" : "resume";
+    const via = kind === "wake" ? (/^Job \S+ /.test(input) ? "job" : "wake") : "resume";
     return { via, shown: kind === "wake" ? input.replace(/^Wake:\s*/, "") : input };
   }
 
@@ -1040,20 +996,12 @@ export class Engine {
         turnId,
         kind,
         startedAt,
-        lastEventAt: Date.now(),
         feed,
         rec,
-        usage: null,
-        flags: { wake: false, done: false, blocked: false },
-        wakeAt: null,
-        afterWake: 0,
-        endedAfterWake: false,
         ask: null,
         asks: 0,
         open: new Map(),
-        seen: new Set(),
         cut: false,
-        stalled: false,
         stopped: false,
         controller: new AbortController(),
         started: false,
@@ -1159,9 +1107,7 @@ export class Engine {
   private onEvent(e: BackendEvent): void {
     const parent = this.childOf.get(e.threadId);
     if (parent) {
-      // A subagent's own stream: keeps the parent's turn alive, never mixed into its transcript.
-      const pl = this.live.get(parent);
-      if (pl) pl.lastEventAt = Date.now();
+      // A subagent's own stream: never mixed into its parent's transcript.
       if (e.kind === "turnCompleted") this.updateSubagent(parent, e.threadId, { status: e.status });
       return;
     }
@@ -1173,15 +1119,11 @@ export class Engine {
     }
     const l = this.liveByThread(e.threadId);
     if (!l) return;
-    l.lastEventAt = Date.now();
     switch (e.kind) {
       case "pi":
         this.onPi(l, e.ev);
         return;
-      case "alive":
-        return;
       case "usage": {
-        l.usage = e.usage;
         const w = e.usage.modelContextWindow;
         if (w && this.picture(l.convId)?.meta.contextWindow !== w) this.emit(l.convId, { type: "meta", patch: { contextWindow: w } });
         return;
@@ -1228,23 +1170,9 @@ export class Engine {
   private onPi(l: Live, ev: any): void {
     l.rec.pi(ev);
     switch (ev?.type) {
-      case "tool_execution_start": {
-        const id = String(ev.toolCallId ?? "");
-        const name = String(ev.toolName ?? "");
-        // A call the model made after its ScheduleWake (the refusal goes back to it).
-        // Past AFTER_WAKE_MAX it is not listening: the engine ends the turn.
-        if (l.flags.wake && !l.seen.has(id) && !AFTER_WAKE_OK.has(name)) {
-          l.afterWake++;
-          if (l.afterWake >= AFTER_WAKE_MAX && !l.endedAfterWake) {
-            l.endedAfterWake = true;
-            this.log(`turn on ${l.convId} kept calling tools after ScheduleWake (${l.afterWake}); ending it`);
-            void this.interrupt(l.convId, false);
-          }
-        }
-        l.seen.add(id);
-        l.open.set(id, { name: toolName(name), input: ev.args ?? {} });
+      case "tool_execution_start":
+        l.open.set(String(ev.toolCallId ?? ""), { name: toolName(String(ev.toolName ?? "")), input: ev.args ?? {} });
         break;
-      }
       case "tool_execution_end": {
         const id = String(ev.toolCallId ?? "");
         const o = l.open.get(id);
@@ -1298,90 +1226,23 @@ export class Engine {
     }
     const conv0 = await readConv(vault, l.convId);
     const wakeAt = nextWakeFor(vault, l.convId);
-    // The final state, decided once (the log never says idle on the way to blocked).
-    // A stalled turn gets a resume turn — twice in a row at most; then it is blocked
-    // and Carl hears about it, instead of a silent stall loop.
-    const stallN = l.stalled && !l.stopped && !l.cut ? (this.stalls.get(l.convId) ?? 0) + 1 : 0;
-    const stuck = stallN > 2;
-    // A keep-going conversation whose turn failed (the model or its provider kept
-    // erroring after retries) ends blocked with the reason — never idle.
-    const failedKeepGoing = !l.cut && stallN === 0 && !!conv0?.working && status === "failed" && !l.stopped;
-    // Keep-going rule: a keep-going turn must end in a wake, a question, Done or Blocked;
-    // the first time it doesn't it is nudged, the second time it is stopped (blocked).
-    const ended = l.flags.wake || l.flags.done || l.flags.blocked || !!conv0?.pendingAsk || !!wakeAt;
-    const unended = !l.cut && stallN === 0 && !!conv0?.working && !ended && !l.stopped && status !== "failed";
-    const nudgeStop = unended && this.nudged.has(l.convId);
-    let state: EngineConv["state"] = l.flags.blocked ? "blocked" : l.flags.done ? "done" : wakeAt ? "sleeping" : "idle";
-    if (conv0?.pendingAsk) state = "waiting_user";
-    if (stuck || failedKeepGoing || nudgeStop) state = "blocked";
+    // The final state, decided once.
+    const state: EngineConv["state"] = conv0?.pendingAsk ? "waiting_user" : wakeAt ? "sleeping" : "idle";
     // The turn is over: messages pi never took (a stop clears its queue; a failure drops it) are no longer pending.
-    this.emit(l.convId, { type: "meta", patch: { running: null, pending: null, state, nextWakeAt: wakeAt ?? null, ...(stuck || failedKeepGoing ? { working: false } : {}) } });
+    this.emit(l.convId, { type: "meta", patch: { running: null, pending: null, state, nextWakeAt: wakeAt ?? null } });
     // What ended it, said once in the transcript (after what was in flight, which the end closed).
     if (l.cut) await this.notice(l.convId, INTERRUPTED_TEXT, "error");
     // (A failure pi's own message carries is shown from that message: not said twice.)
     else if (status === "failed" && errStr !== l.feed.lastError) await this.notice(l.convId, `⚠️ The turn failed: ${errStr}`, "error");
-    else if (status === "interrupted" && !l.endedAfterWake) await this.notice(l.convId, l.stalled ? "Stalled — interrupted by the watchdog." : "Stopped.", "info");
+    else if (status === "interrupted") await this.notice(l.convId, "Stopped.", "info");
     const conv = await readConv(vault, l.convId);
-    const reply = l.feed.replies.join("\n\n").trim();
     this.log(`turn ${l.kind} on ${l.convId} ${status}${l.cut ? " (cut)" : ""} → ${state}`);
-    const outcome = l.cut ? "cut" : l.stalled ? "stalled" : l.endedAfterWake ? "ended_after_wake" : l.stopped ? "stopped" : status === "completed" ? "ok" : status;
+    const outcome = l.cut ? "cut" : l.stopped ? "stopped" : status === "completed" ? "ok" : status;
     this.turnLine(l.rec, { status, outcome, state, error: errStr || null });
     this.d.onTurnEnded?.(l.convId);
 
     // Cost, from the session's own figures (async; lands a few seconds later).
     void this.settleCost(l.convId, conv?.threadPath ?? conv0?.threadPath, l.turnId);
-
-    if (l.cut || !conv) return;
-
-    if (stallN) {
-      this.stalls.set(l.convId, stallN);
-      if (!stuck) {
-        void this.run(l.convId, `Your last turn made no progress for ${Math.round((this.d.stallMs ?? 0) / 60000)} minutes and was interrupted by the watchdog. ${RESUME_TEXT}`, "resume");
-        return;
-      }
-      this.stalls.delete(l.convId);
-      await this.d.notify({ kind: "info", title: `Stuck: ${conv.title}`.slice(0, 90), body: "Its turns stopped making progress three times in a row, so it was stopped. Open the chat to see where.", convId: l.convId });
-      return;
-    }
-    if (status === "completed") this.stalls.delete(l.convId);
-
-    if (failedKeepGoing) {
-      this.nudged.delete(l.convId);
-      await this.d.notify({ kind: "info", title: `Failed: ${conv.title}`.slice(0, 90), body: (reply || errStr || "Its last turn failed.").slice(0, 600), convId: l.convId });
-      return;
-    }
-
-    // Rolling sessions: past the threshold, retire the thread with a recap.
-    if (status === "completed" && l.usage && shouldRoll(conv as any, l.usage)) {
-      await this.rollOver(conv).catch((e) => this.log(`roll-over failed: ${e}`));
-    }
-
-    // Keep-going rule (decided above).
-    if (ended) this.nudged.delete(l.convId);
-    if (unended) {
-      if (!nudgeStop) {
-        this.nudged.add(l.convId);
-        void this.run(l.convId, NUDGE_TEXT, "nudge");
-      } else {
-        this.nudged.delete(l.convId);
-        await this.d.notify({
-          kind: "info",
-          title: `Stopped: ${conv.title}`.slice(0, 90),
-          body: "It ended a keep-going turn twice without scheduling a check, asking you, or saying Done or Blocked.",
-          convId: l.convId,
-        });
-      }
-    }
-  }
-
-  private async rollOver(conv: EngineConv): Promise<void> {
-    const r = await buildRecap(conv as any);
-    const from = conv.threadId;
-    await this.note(conv.id, [{ kind: "divider", text: r.recap, rollover: true }]);
-    this.emit(conv.id, { type: "meta", patch: { recap: r.recap, threadId: null, threadPath: null } });
-    if (typeof r.costUsd === "number" && r.costUsd) this.addCost(conv.id, r.costUsd);
-    if (from) this.byThread.delete(from);
-    this.log(`rolled ${conv.id} over (from ${from}); next turn starts a new thread`);
   }
 
   private updateSubagent(convId: string, threadId: string, patch: Record<string, unknown>): void {
@@ -1431,16 +1292,11 @@ export class Engine {
     const side: { convId: string | null } | null = p?.side ?? null;
     if (side && !sideToolSpecs().some((t) => t.name === name)) return { success: false, contentItems: [{ type: "inputText", text: `${name} is not available here: this request has read-only tools.` }] };
     const convId: string = (side ? side.convId : this.byThread.get(p?.threadId) ?? this.childOf.get(p?.threadId)) ?? "";
-    const l = convId && !side ? this.live.get(convId) : undefined;
-    if (l) l.lastEventAt = Date.now();
     const vault = this.d.vault;
     const found = convId ? await readConv(vault, convId) : null;
     if (!side && (!convId || !found)) return { success: false, contentItems: [{ type: "inputText", text: "No conversation for this thread." }] };
     const conv = found ?? ({ id: "", title: "", messages: [] } as unknown as NonNullable<typeof found>);
     const a = p?.arguments ?? {};
-    // After ScheduleWake the turn is over: only Done or Blocked may still end it differently
-    // (a background make's BoardSend is the maker's, not this turn's).
-    if (l?.flags.wake && l.wakeAt && !AFTER_WAKE_OK.has(name) && !(name === "BoardSend" && a?.make)) return { success: false, contentItems: [{ type: "inputText", text: wakeRefusal(l.wakeAt) }] };
     try {
       // ListProjects only reads: no agent tool makes a project or moves a chat (Carl does, in the app).
       if (isContextTool(name)) return await handleContextTool(name, a, { conv: conv as any, convs: (await allConvs(vault)) as any });
@@ -1469,40 +1325,8 @@ export class Engine {
           const same = readWakes(vault).find((w) => w.conv === convId && (w.reason.trim().toLowerCase() === reason.toLowerCase() || Math.abs(w.at - at) < 60_000));
           if (same) return text(`A wake is already set for ${new Date(same.at).toISOString()} ("${same.reason}"); no second one was added. Stop now: do not call any more tools this turn.`);
           addWake(vault, { conv: convId, at, reason });
-          if (l) {
-            l.flags.wake = true;
-            l.wakeAt = new Date(at).toISOString();
-          }
           await patchMeta(vault, convId, { nextWakeAt: nextWakeFor(vault, convId) });
           return text(`Wake set for ${new Date(at).toISOString()} ("${reason}"). Stop now: do not call any more tools this turn.`);
-        }
-        case "KeepWorking": {
-          const on = a.on !== false;
-          await patchMeta(vault, convId, { working: on, ...(on && (conv.state === "done" || conv.state === "blocked") ? { state: "running" } : {}) });
-          if (!on) this.nudged.delete(convId);
-          return text(on ? "Keep-going mode on. End every turn with ScheduleWake, AskUser, Done or Blocked." : "Keep-going mode off.");
-        }
-        case "Done": {
-          if (l) l.flags.done = true;
-          const summary = String(a.summary ?? "").trim();
-          const evidence = Array.isArray(a.evidence) ? a.evidence.map(String) : [];
-          const v = await verifyDone({ conv: conv as any, summary, evidence });
-          const line = formatVerdict(v);
-          // Done ends the work: no wake of it may run a turn later.
-          removeWakes(vault, (w) => w.conv === convId);
-          this.emit(convId, { type: "meta", patch: { working: false, nextWakeAt: null, verdict: { verdict: v.verdict, notes: v.notes, at: v.at, summary } } });
-          if (typeof v.costUsd === "number" && v.costUsd) this.addCost(convId, v.costUsd);
-          await this.notice(convId, `Verifier: ${line}`, v.verdict === "pass" ? "info" : "warn");
-          await this.d.notify({ kind: "info", title: `Done: ${conv.title}`.slice(0, 90), body: `${summary.slice(0, 300)}\n${line}`, convId });
-          return text(`Recorded as done. ${line}\nTell Carl the verdict in your reply.`);
-        }
-        case "Blocked": {
-          if (l) l.flags.blocked = true;
-          const reason = String(a.reason ?? "").trim();
-          removeWakes(vault, (w) => w.conv === convId);
-          await patchMeta(vault, convId, { state: "blocked", working: false, nextWakeAt: undefined });
-          await this.d.notify({ kind: "info", title: `Blocked: ${conv.title}`.slice(0, 90), body: reason.slice(0, 600), convId });
-          return text("Recorded as blocked; Carl has been notified. End your turn.");
         }
         case "Notify": {
           // At most 4 pings an hour per conversation; past that they go to the
@@ -1552,13 +1376,10 @@ export class Engine {
           return text(await pdfPages(vault, a));
         case "WebSearch":
           return text(await webSearch(String(a.query ?? ""), this.d.apiKey(), this.d.webSearchModel));
-        case "StartJob": {
-          const out = startJob(this.d.jobEnv, vault, a, convId);
-          // Its log growing counts as this conversation's progress (the watchdog reads its mtime).
-          const id = /^Started job (\S+) /.exec(out)?.[1];
-          if (id) this.jobLogs.set(convId, [...(this.jobLogs.get(convId) ?? []), join(this.d.jobEnv.logDir, `${id}.log`)].slice(-8));
-          return text(out);
-        }
+        case "StartJob":
+          return text(startJob(this.d.jobEnv, vault, a, convId));
+        case "RecentActivity":
+          return text(searchActivity(vault, { query: typeof a.query === "string" ? a.query : "", hours: Number(a.hours) || undefined, limit: Number(a.limit) || undefined }));
         case "JobStatus":
           return text(jobStatus(this.d.jobEnv, a));
         case "JobList":
@@ -1629,13 +1450,11 @@ export class Engine {
     // His line is the question's result pi writes ("Carl answered: …"), under his client's id.
     if (l?.ask) l.feed.answered(clientId);
     this.emit(convId, { type: "meta", patch: { asking: null, state: l?.ask ? "running" : "idle" } });
-    this.nudged.delete(convId);
     // The question's card in the phone feed is answered too, however the answer came in.
     if (this.markAsksAnswered(convId, answer)) this.d.broadcast?.({ type: "notif" });
     if (l?.ask) {
       const a = l.ask;
       l.ask = null;
-      l.lastEventAt = Date.now();
       a.resolve(answer);
       return;
     }
@@ -1679,7 +1498,7 @@ export class Engine {
   }
 
 
-  // ---------------------------------------------------------------- wakes & watchdog
+  // ---------------------------------------------------------------- wakes and jobs
 
   private async tickWakes(): Promise<void> {
     if (shuttingDown) return;
@@ -1698,16 +1517,11 @@ export class Engine {
     const conv = await readConv(this.d.vault, w.conv);
     if (!conv) return;
     await patchMeta(this.d.vault, w.conv, { nextWakeAt: nextWakeFor(this.d.vault, w.conv) ?? undefined });
-    // The work ended (Done or Blocked) after this wake was set: it never runs a turn.
-    if (conv.state === "done" || conv.state === "blocked") {
-      this.log(`wake ${w.id} → ${w.conv} dropped: the conversation is ${conv.state}`);
-      return;
-    }
     this.log(`wake ${w.id} → ${w.conv}: ${w.reason}`);
     await this.run(w.conv, `Wake: ${w.reason}`, "wake").catch((e) => this.log(`wake failed: ${e}`));
   }
 
-  /** A job that ended wakes the conversation that started it (never a done or blocked one). */
+  /** A job that ended wakes the conversation that started it. */
   async tickJobs(): Promise<void> {
     if (shuttingDown) return;
     let ended: ReturnType<typeof reapJobs> = [];
@@ -1720,7 +1534,7 @@ export class Engine {
       this.log(`job ${j.id} ended: ${j.state}${j.exit !== undefined ? ` (exit ${j.exit})` : ""}`);
       if (!j.conv) continue;
       const conv = await readConv(this.d.vault, j.conv);
-      if (!conv || conv.state === "done" || conv.state === "blocked") continue;
+      if (!conv) continue;
       const how =
         j.state === "finished" ? `finished: exit ${j.exit}` : j.state === "timeout" ? "was stopped by its time limit" : j.state === "stopped" ? "was stopped" : "ended without an exit code (stopped, or killed: out of memory?)";
       const tail = j.tail.split("\n").slice(-30).join("\n").slice(-3000);
@@ -1728,43 +1542,6 @@ export class Engine {
     }
   }
 
-  /** The silence a turn is allowed: the stall limit, or longer while a tool call that may run longer is open
-   * (a Bash command: its own timeout, the extension's default or max, plus a margin). */
-  stallLimit(l: Live): number {
-    const stall = this.d.stallMs ?? 30 * 60_000;
-    let limit = stall;
-    for (const t of l.open.values()) {
-      if (t.name !== "Bash") continue;
-      const def = Number(process.env.VC_PI_SHELL_TIMEOUT_S) || 1800;
-      const max = Number(process.env.VC_PI_SHELL_MAX_TIMEOUT_S) || 4 * 3600;
-      const asked = Number(t.input?.timeout);
-      const s = Number.isFinite(asked) && asked > 0 ? Math.min(asked, max) : def;
-      limit = Math.max(limit, s * 1000 + TOOL_MARGIN_MS);
-    }
-    return limit;
-  }
-
-  private tickWatchdog(): void {
-    const now = Date.now();
-    for (const l of this.live.values()) {
-      if (l.ask || l.finished || l.stalled) continue;
-      // A job of this conversation writing to its log is progress too.
-      for (const p of this.jobLogs.get(l.convId) ?? []) {
-        try {
-          const m = statSync(p).mtimeMs;
-          if (m > l.lastEventAt && m <= now) l.lastEventAt = m;
-        } catch {
-          /* not written yet */
-        }
-      }
-      const stall = this.stallLimit(l);
-      if (now - l.lastEventAt > stall) {
-        l.stalled = true;
-        this.log(`watchdog: ${l.convId} silent for ${Math.round((now - l.lastEventAt) / 1000)} s — interrupting`);
-        void this.interrupt(l.convId, false);
-      }
-    }
-  }
 }
 
 function errText(e: any): string {

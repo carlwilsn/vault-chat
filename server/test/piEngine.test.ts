@@ -41,11 +41,12 @@ function makeResponder(scenarios: Record<string, Scenario>, outputs: Record<stri
   return (body: any): ChatStep => {
     const user = lastUser(body);
     if (user.includes("kiwi steer")) return { text: "saw the kiwi steer" };
-    if (user.includes("keep-going mode")) return { text: "still nothing to report" };
     if (user.includes("box restarted")) return { text: "resumed after the crash" };
     if (user.includes("Wake: check the run")) return { text: "woke up and checked" };
-    const all = chatText(body);
-    // The newest scenario mentioned in the request.
+    // The newest scenario mentioned in this conversation's own messages: pi's "you" layer (a user message
+    // starting <you>) points at Carl's messages in the OTHER chats, so their scenario words are not this one's.
+    const own = (body?.messages ?? []).filter((m: any) => !(m?.role === "user" && chatText({ messages: [m] }).startsWith("<you>")));
+    const all = chatText({ messages: own });
     let key = "";
     let at = -1;
     for (const k of Object.keys(scenarios)) {
@@ -65,11 +66,13 @@ function makeResponder(scenarios: Record<string, Scenario>, outputs: Record<stri
   };
 }
 
-async function readConvFile(vault: string, id: string): Promise<any> {
-  const f = join(vault, ".vault-chat", "conversations", `${id}.jsonl`);
-  const lines = readFileSync(f, "utf8").trim().split("\n").map((l) => JSON.parse(l));
-  const metas = lines.filter((l) => "id" in l);
-  return { ...metas[metas.length - 1], messages: lines.filter((l) => "role" in l) };
+/** A conversation as the box holds it: the vault's feed folded over pi's session file (its fields and its
+ *  transcript as messages), read the way the desktop client reads it (GET /conversation?full=1). */
+async function readConvFile(base: string, id: string): Promise<any> {
+  const r = await fetch(`${base}/conversation?id=${encodeURIComponent(id)}&full=1&n=200`);
+  if (!r.ok) throw new Error(`conversation ${id}: HTTP ${r.status}`);
+  const d = await r.json();
+  return { ...d.meta, messages: d.messages };
 }
 
 describe.skipIf(!PI_DIR)("pi engine (real pi 1.1.0, fake chat-completions OpenRouter)", () => {
@@ -93,7 +96,7 @@ describe.skipIf(!PI_DIR)("pi engine (real pi 1.1.0, fake chat-completions OpenRo
   };
   const post = (p: string, body: unknown) =>
     fetch(srv.base + p, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).then((r) => r.json());
-  const conv = (id: string) => readConvFile(vault, id);
+  const conv = (id: string) => readConvFile(srv.base, id);
   const assistantSays = (id: string, re: RegExp, ms = 60_000) =>
     waitFor(async () => {
       const c = await conv(id);
@@ -133,7 +136,6 @@ describe.skipIf(!PI_DIR)("pi engine (real pi 1.1.0, fake chat-completions OpenRo
       () => ({ call: { name: "write", args: { path: "keylink/planted.txt", content: "x" } } }),
       () => ({ call: { name: "write", args: { path: "STATE/pi/ext/vc.mjs", content: "export default () => {}" } } }),
     ],
-    NUDGE1: [() => ({ call: { name: "KeepWorking", args: { on: true } } })],
     CRASH1: [() => ({ call: { name: "bash", args: { command: "sleep 8; echo survived > crash.txt" } } })],
     WAKE1: [() => ({ call: { name: "ScheduleWake", args: { in: "12s", reason: "check the run" } } })],
     IMG1: [],
@@ -149,7 +151,9 @@ describe.skipIf(!PI_DIR)("pi engine (real pi 1.1.0, fake chat-completions OpenRo
     // Path placeholders in scenarios.
     for (const s of Object.values(scenarios))
       s.forEach((f, i) => {
-        s[i] = (prev) => JSON.parse(JSON.stringify(f(prev)).replaceAll("SECRETS", secrets).replaceAll("STATE", state).replaceAll("PASSVAL", PASS));
+        // (Each path JSON-escaped: a Windows path's backslashes.)
+        const esc = (v: string) => JSON.stringify(v).slice(1, -1);
+        s[i] = (prev) => JSON.parse(JSON.stringify(f(prev)).replaceAll("SECRETS", esc(secrets)).replaceAll("STATE", esc(state)).replaceAll("PASSVAL", esc(PASS)));
       });
     or = await fakeChat();
     or.respond = makeResponder(scenarios, outputs);
@@ -199,16 +203,22 @@ describe.skipIf(!PI_DIR)("pi engine (real pi 1.1.0, fake chat-completions OpenRo
     // Every vault-chat tool was declared to the model.
     const first0 = or.calls.find((b) => lastUser(b).includes("CHAT1"));
     const names = (first0.tools ?? []).map((t: any) => t.function?.name);
-    for (const t of ["AskUser", "ScheduleWake", "KeepWorking", "Done", "Blocked", "Notify", "StartJob", "PdfRead", "WebSearch", "ListProjects", "ListNotes", "CreateNote", "UpdateNote", "DeleteNote", "bash", "read", "write", "edit"]) expect(names).toContain(t);
+    for (const t of ["AskUser", "ScheduleWake", "Notify", "StartJob", "JobStatus", "PdfRead", "WebSearch", "RecentActivity", "ListProjects", "ListNotes", "CreateNote", "UpdateNote", "DeleteNote", "bash", "read", "write", "edit"]) expect(names).toContain(t);
+    // The ceremony tools are gone (2026-10-18): no keep-going mode, no Done verifier, no Blocked.
+    for (const t of ["KeepWorking", "Done", "Blocked"]) expect(names).not.toContain(t);
     expect(c.messages.filter((m: any) => m.role === "user")).toHaveLength(1);
+    // /poll is the vault's feed: the turn's start and end (meta), pointers into pi's session file (entry), pi's live events.
     const evs: any[] = [];
+    let cur = cursor;
     await waitFor(async () => {
-      const p = await (await fetch(srv.base + `/poll?after=${cursor}`)).json();
+      const p = await (await fetch(srv.base + `/poll?after=${cur}`)).json();
       evs.push(...p.events);
-      return evs.some((e) => e.type === "message" && e.convId === chatId && e.role === "assistant") ? true : null;
+      cur = p.next;
+      return evs.some((e) => e.conv === chatId && e.type === "meta" && e.patch?.running === null) ? true : null;
     }, 20_000);
-    expect(evs.some((e) => e.type === "status" && e.convId === chatId && e.status === "running")).toBe(true);
-    expect(evs.some((e) => e.type === "chat" && e.convId === chatId && e.phase === "start")).toBe(true);
+    expect(evs.some((e) => e.conv === chatId && e.type === "meta" && typeof e.patch?.running?.turn === "string")).toBe(true);
+    expect(evs.some((e) => e.conv === chatId && e.type === "entry" && e.file === c.threadPath)).toBe(true);
+    expect(evs.some((e) => e.conv === chatId && e.type === "live")).toBe(true);
     const list = await (await fetch(srv.base + "/conversations")).json();
     expect(list.conversations.find((x: any) => x.id === chatId)).toMatchObject({ title: "CHAT1 hi there", source: "phone" });
     const d = await (await fetch(srv.base + `/conversation?id=${chatId}`)).json();
@@ -244,15 +254,13 @@ describe.skipIf(!PI_DIR)("pi engine (real pi 1.1.0, fake chat-completions OpenRo
     expect(lastUser(body)).toContain("KIWIWORD"); // the transcript was handed over
   });
 
-  it("a tombstone from the laptop removes the conversation file on the box", async () => {
+  it("a delete from the laptop (the delete intent) takes the conversation off the box's list", async () => {
     const r = await post("/message", { text: "CHAT1 to be deleted" });
     await assistantSays(r.convId, /hello from pi/);
-    const f = join(vault, ".vault-chat", "conversations", `${r.convId}.jsonl`);
-    expect(existsSync(f)).toBe(true);
-    writeFileSync(join(vault, ".vault-chat", "conversations-deleted.jsonl"), JSON.stringify({ id: r.convId, ts: Date.now() }) + "\n", { flag: "a" });
-    const list = await (await fetch(srv.base + "/conversations")).json();
-    expect(list.conversations.some((x: any) => x.id === r.convId)).toBe(false);
-    expect(existsSync(f)).toBe(false);
+    const listed = async () => ((await (await fetch(srv.base + "/conversations")).json()).conversations as any[]).some((x) => x.id === r.convId);
+    expect(await listed()).toBe(true);
+    expect((await post("/api/v2/intent", { type: "delete", convId: r.convId })).ok).toBe(true);
+    expect(await listed()).toBe(false);
   });
 
   it("the cost ledger sums OpenRouter's streamed costs (never pi's own price)", async () => {
@@ -261,7 +269,7 @@ describe.skipIf(!PI_DIR)("pi engine (real pi 1.1.0, fake chat-completions OpenRo
       return x.costUsd > 0 ? x : null;
     }, 20_000);
     expect(c.costUsd).toBeCloseTo(CHAT_COST, 6);
-    expect(c.messages.find((m: any) => m.role === "assistant").costUsd).toBeCloseTo(CHAT_COST, 6);
+    // (Cost is the conversation's, from its pi session's vc-cost entries; the transcript is pi's own messages.)
     const ledger = JSON.parse(readFileSync(join(state, "ledger.json"), "utf8"));
     expect(Object.keys(ledger).some((k) => k.startsWith("gen-pi-"))).toBe(true);
     expect(or.lookups).toEqual([]); // the streamed cost was used, no lookup needed
@@ -301,7 +309,10 @@ describe.skipIf(!PI_DIR)("pi engine (real pi 1.1.0, fake chat-completions OpenRo
     expect(s.steered).toBe(true);
     const c = await assistantSays(r.convId, /saw the kiwi steer/, 60_000);
     expect(c.messages.filter((m: any) => m.role === "user").map((m: any) => m.content)).toEqual(["STEER1 run the slow step", "kiwi steer: also mention kiwi"]);
-    expect(c.messages.filter((m: any) => m.role === "assistant")).toHaveLength(1);
+    // pi's own transcript: the steer is a user message where pi delivered it (after the running tool call), and
+    // the turn's one reply comes after it.
+    expect(c.messages.filter((m: any) => !m.system).map((m: any) => m.role)).toEqual(["user", "assistant", "user", "assistant"]);
+    expect(c.messages.filter((m: any) => m.role === "assistant").at(-1).content).toMatch(/saw the kiwi steer/);
   });
 
   it("interrupt: /kill aborts the running command at once", async () => {
@@ -311,7 +322,7 @@ describe.skipIf(!PI_DIR)("pi engine (real pi 1.1.0, fake chat-completions OpenRo
     const t0 = Date.now();
     const k = await post("/kill", { convId: r.convId });
     expect(k.ok).toBe(true);
-    const c = await assistantSays(r.convId, /stopped/, 20_000);
+    const c = await assistantSays(r.convId, /stopped/i, 20_000);
     expect(Date.now() - t0).toBeLessThan(10_000);
     expect(c.state).not.toBe("running");
   });
@@ -363,7 +374,8 @@ describe.skipIf(!PI_DIR)("pi engine (real pi 1.1.0, fake chat-completions OpenRo
     expect(line("SYSTEMD")).toMatch(/rc=[1-9]/); // the user's systemd bus is hidden: no escape
   });
 
-  it("pi's own read/write tools cannot reach the key store (path guard, symlinks resolved) or its state", async () => {
+  // Linux: the agent's own `ln -s` (Windows' Git Bash copies instead; the junction case is in the describe below).
+  it.skipIf(!linux)("pi's own read/write tools cannot reach the key store (path guard, symlinks resolved) or its state", async () => {
     const r = await post("/message", { text: "KEY2 try the in-process tools" });
     await assistantSays(r.convId, /KEY2 done/, 60_000);
     const o = outputs.KEY2 ?? "";
@@ -373,17 +385,6 @@ describe.skipIf(!PI_DIR)("pi engine (real pi 1.1.0, fake chat-completions OpenRo
     expect(o).toMatch(/read-only for the agent/);
     expect(existsSync(join(secrets, "planted.txt"))).toBe(false);
     expect(readFileSync(join(state, "pi", "ext", "vc.mjs"), "utf8")).toContain("vault-chat's extension for pi");
-  });
-
-  it("keep-going: one nudge, then blocked with a push", async () => {
-    const r = await post("/message", { text: "NUDGE1 keep at it" });
-    const c = await waitFor(async () => {
-      const x = await conv(r.convId);
-      return x.state === "blocked" ? x : null;
-    }, 60_000);
-    expect(c.messages.some((m: any) => m.role === "user" && String(m.content).includes("keep-going mode"))).toBe(true);
-    expect(c.messages.some((m: any) => m.role === "assistant" && /still nothing/.test(m.content))).toBe(true);
-    expect(readFileSync(join(vault, ".vault-chat", "notifications.jsonl"), "utf8")).toMatch(/Stopped: NUDGE1/);
   });
 
   it("kill -9 pi mid-turn → its whole process tree dies, the turn is marked, a resume turn runs", async () => {
@@ -399,7 +400,8 @@ describe.skipIf(!PI_DIR)("pi engine (real pi 1.1.0, fake chat-completions OpenRo
     expect(c.messages.some((m: any) => /Interrupted by a restart/.test(m.content))).toBe(true);
     // The orphan would have written crash.txt 8 s in.
     await new Promise((res) => setTimeout(res, 9000));
-    expect(existsSync(join(vault, "crash.txt"))).toBe(false);
+    // (Linux: pi's process group dies with it. Windows has no process groups to kill.)
+    if (linux) expect(existsSync(join(vault, "crash.txt"))).toBe(false);
     const h2 = await (await fetch(srv.base + "/api/v1/health")).json();
     expect(h2.engine.pi.crashes).toBeGreaterThanOrEqual(1);
   });
@@ -414,7 +416,7 @@ describe.skipIf(!PI_DIR)("pi engine (real pi 1.1.0, fake chat-completions OpenRo
     await srv.stop();
     await boot();
     const c2 = await assistantSays(r.convId, /woke up and checked/, 60_000);
-    expect(c2.messages.some((m: any) => m.role === "user" && /Wake: check the run/.test(m.content))).toBe(true);
+    expect(c2.messages.some((m: any) => m.role === "user" && /check the run/.test(m.content))).toBe(true);
     expect(JSON.parse(readFileSync(join(vault, ".vault-chat", "local", "wakes.json"), "utf8"))).toEqual([]);
     // The same pi session file carried the conversation across the restart.
     expect(c2.threadPath).toBe(c.threadPath);
@@ -431,7 +433,8 @@ describe.skipIf(!PI_DIR)("pi engine without bubblewrap: the path guard alone; Ge
     home = tmp("vcpig-");
     vault = makeVault(join(home, "vault"));
     secrets = await makeKeyStore(join(home, "secrets"), { "api.openrouter": CANARY });
-    symlinkSync(secrets, join(vault, "sneaky"));
+    // (A junction on Windows: a plain directory symlink needs admin rights there.)
+    symlinkSync(secrets, join(vault, "sneaky"), process.platform === "win32" ? "junction" : "dir");
     or = await fakeChat();
     const scenarios: Record<string, Scenario> = {
       GUARD1: [
@@ -471,7 +474,7 @@ describe.skipIf(!PI_DIR)("pi engine without bubblewrap: the path guard alone; Ge
     const r = await fetch(srv.base + "/message", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text: "GUARD1 read things" }) }).then((x) => x.json());
     const id = r.convId;
     await waitFor(async () => {
-      const c = await readConvFile(vault, id);
+      const c = await readConvFile(srv.base, id);
       return c.messages.some((m: any) => m.role === "assistant" && /GUARD1 done/.test(m.content)) ? c : null;
     }, 60_000);
     const o = outputs.GUARD1 ?? "";

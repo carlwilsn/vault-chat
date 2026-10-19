@@ -113,7 +113,7 @@ describe("two vaults on one box (engines on fake backends)", () => {
     store.setState({ vaultPath: mainVault, conversationsLoaded: true });
     ({ readConv } = await import("../engine/convs"));
     const { configureContext } = await import("../context");
-    configureContext({ vault: mainVault, agentModel: "openai/gpt-6.1-sol", apiKey: () => null, verifierDeny: [] } as any);
+    configureContext({ vault: mainVault, agentModel: "openai/gpt-6.1-sol" });
     ({ Engine } = await import("../engine/engine"));
     a = boot(mainVault, "ta");
     b = boot(second, "tb", "physics");

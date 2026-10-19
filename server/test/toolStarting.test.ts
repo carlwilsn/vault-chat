@@ -4,8 +4,7 @@
 // JSON, delta by delta) are the tool item's start and its streamed arguments in
 // the log; the screen names the call and its path as soon as the path is
 // written — never the content. The real tool_execution_start/end are the same
-// item. Display only until it runs: no ScheduleWake count, no files-written
-// signal.
+// item. Display only until it runs: not an open call, no files-written signal.
 import { piOf } from "./fakePi";
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { EventEmitter } from "node:events";
@@ -106,7 +105,7 @@ beforeAll(async () => {
   store = (await import("../../src/store")).useStore;
   store.setState({ vaultPath: vault, conversationsLoaded: true });
   const { configureContext } = await import("../context");
-  configureContext({ vault, agentModel: "openai/gpt-6.1-sol", apiKey: () => null, verifierDeny: [] } as any);
+  configureContext({ vault, agentModel: "openai/gpt-6.1-sol" });
   const { Engine } = await import("../engine/engine");
   backend = withPiSessions(new FakeBackend(), join(root, "pi"));
   engine = new Engine({
@@ -152,9 +151,6 @@ describe("engine: a tool row while the model writes the call", () => {
       for (const ev of evs) backend.emit("event", { threadId: tid, kind: "pi", ev });
     };
 
-    // A wake set earlier in the turn: a call written after it is counted once, when it really starts.
-    expect((await backend.h.toolCall(tid, "ScheduleWake", { in: "30m", reason: "check" })).ok).toBe(true);
-
     const stream = piWriteStream("call_dog");
     pi(stream.slice(0, 4)); // the content so far, no path yet
     await until(() => rows().length === 1);
@@ -162,7 +158,6 @@ describe("engine: a tool row while the model writes the call", () => {
     await until(() => (rows()[0]?.inputChars ?? 0) > 0); // its arguments stream in (counted, not shown)
     pi(stream.slice(4)); // the rest: the path at the end
     await until(() => rows()[0]?.input?.path === "dog.svg");
-    expect(live().afterWake).toBe(0);
     expect(live().open.size).toBe(0);
     expect(written).toEqual([]);
 
@@ -173,7 +168,7 @@ describe("engine: a tool row while the model writes the call", () => {
     ]);
     await until(() => rows()[0]?.input?.content === SVG);
     expect(rows()).toHaveLength(1);
-    expect(live().afterWake).toBe(1);
+    expect(live().open.size).toBe(1);
 
     pi([{ type: "tool_execution_end", toolCallId: "call_dog", toolName: "write", result: { content: [{ type: "text", text: "Successfully wrote to dog.svg" }] }, isError: false }]);
     const items = pictureOf(vault, r.convId)!.items.filter((x) => x.kind === "tool");

@@ -14,7 +14,6 @@ beforeAll(async () => {
 
 afterAll(async () => {
   rig?.engine?.stop();
-  await rig?.verifier.close();
   cleanup(rig?.root);
 });
 

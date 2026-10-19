@@ -80,7 +80,11 @@ describe.skipIf(!PI_DIR)("pi subagents (real pi children, fake OpenRouter)", () 
   const respondParent = (body: any): ChatStep => {
     const user = lastUser(body);
     if (user.includes("box restarted")) return { text: "resumed after the crash" };
-    const all = (body.messages ?? []).map((m: any) => (typeof m.content === "string" ? m.content : JSON.stringify(m.content))).join("\n");
+    // This conversation's own messages: pi's "you" layer (a user message starting <you>) points at other chats' words.
+    const all = (body.messages ?? [])
+      .map((m: any) => (typeof m.content === "string" ? m.content : JSON.stringify(m.content)))
+      .filter((t: string) => !t.startsWith("<you>") && !t.startsWith('[{"type":"text","text":"<you>'))
+      .join("\n");
     const key = Object.keys(parentCalls).filter((k) => all.includes(k)).sort((a, b) => all.lastIndexOf(b) - all.lastIndexOf(a))[0];
     if (all.includes("BOARDMAKE")) {
       const out0 = lastToolResult(body);
@@ -103,19 +107,21 @@ describe.skipIf(!PI_DIR)("pi subagents (real pi children, fake OpenRouter)", () 
     await waitFor(async () => ((await (await fetch(srv.base + "/api/v1/health")).json()).engine?.pi?.state === "up" ? true : null), 60_000);
   };
   const post = (p: string, body: unknown) => fetch(srv.base + p, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).then((r) => r.json());
-  const conv = (id: string) => {
-    const lines = readFileSync(join(vault, ".vault-chat", "conversations", `${id}.jsonl`), "utf8").trim().split("\n").map((l) => JSON.parse(l));
-    const metas = lines.filter((l) => "id" in l);
-    return { ...metas[metas.length - 1], messages: lines.filter((l) => "role" in l) };
+  // The conversation as the box holds it (the vault's feed over pi's session), as the desktop client reads it.
+  const conv = async (id: string): Promise<any> => {
+    const r = await fetch(`${srv.base}/conversation?id=${encodeURIComponent(id)}&full=1&n=200`);
+    if (!r.ok) throw new Error(`conversation ${id}: HTTP ${r.status}`);
+    const d = await r.json();
+    return { ...d.meta, messages: d.messages };
   };
   const says = (id: string, re: RegExp, ms = 60_000) =>
-    waitFor(() => {
-      const c = conv(id);
+    waitFor(async () => {
+      const c = await conv(id);
       return c.messages.some((m: any) => m.role === "assistant" && re.test(String(m.content))) ? c : null;
     }, ms);
   const runningChild = (id: string) =>
-    waitFor(() => {
-      const c = conv(id);
+    waitFor(async () => {
+      const c = await conv(id);
       return (c.subagents ?? []).find((s: any) => s.state === "running") ?? null;
     }, 30_000);
   const alive = (pid: number) => {
@@ -148,8 +154,8 @@ describe.skipIf(!PI_DIR)("pi subagents (real pi children, fake OpenRouter)", () 
   it("single: the parent delegates, gets the report, and the child is on the meta with its cost", async () => {
     const r = await post("/message", { text: "SUB1 delegate one thing" });
     await says(r.convId, /SUB1 done: child A reporting/);
-    const c = await waitFor(() => {
-      const x = conv(r.convId);
+    const c = await waitFor(async () => {
+      const x = await conv(r.convId);
       return x.costUsd >= CHAT_COST * 3 - 1e-9 && x.subagents?.[0]?.state === "completed" ? x : null;
     }, 30_000);
     const s = c.subagents[0];
@@ -172,7 +178,7 @@ describe.skipIf(!PI_DIR)("pi subagents (real pi children, fake OpenRouter)", () 
     const reply = c.messages.filter((m: any) => m.role === "assistant").pop().content;
     expect(reply).toContain("child A reporting");
     expect(reply).toContain("child B reporting");
-    const subs = (await waitFor(() => (conv(r.convId).subagents?.length === 2 ? conv(r.convId) : null), 10_000)).subagents;
+    const subs = (await waitFor(async () => { const x = await conv(r.convId); return x.subagents?.length === 2 ? x : null; }, 10_000)).subagents;
     // Overlap: the second started before the first ended (each child answers after 1.5 s).
     const [x, y] = subs.sort((p: any, q: any) => p.startedAt - q.startedAt);
     expect(y.startedAt).toBeLessThan(x.endedAt ?? Date.now());
@@ -183,11 +189,11 @@ describe.skipIf(!PI_DIR)("pi subagents (real pi children, fake OpenRouter)", () 
     await says(r.convId, /SUB3 done: C got: CHILDC with child A reporting/);
   });
 
-  it("children get file/shell + Done/Notify, never AskUser or subagent; an AskUser attempt fails", async () => {
+  it("children get file/shell + Notify, never AskUser or subagent; an AskUser attempt fails", async () => {
     const child = or.calls.find((b) => isChild(b));
     const names = toolNames(child);
-    for (const t of ["bash", "read", "write", "edit", "Done", "Notify"]) expect(names).toContain(t);
-    for (const t of ["AskUser", "subagent", "ScheduleWake", "KeepWorking", "Blocked", "StartJob"]) expect(names).not.toContain(t);
+    for (const t of ["bash", "read", "write", "edit", "Notify"]) expect(names).toContain(t);
+    for (const t of ["AskUser", "subagent", "ScheduleWake", "StartJob"]) expect(names).not.toContain(t);
     const parent = or.calls.find((b) => !isChild(b) && lastUser(b).includes("SUB1"));
     expect(toolNames(parent)).toContain("subagent");
     const r = await post("/message", { text: "SUBASK try it" });
@@ -253,13 +259,13 @@ describe.skipIf(!PI_DIR)("pi subagents (real pi children, fake OpenRouter)", () 
     expect(out.ok).toBe(true);
     await says(r.convId, /SUBSTOP done: .*stopped/s, 30_000);
     expect(Date.now() - t0).toBeLessThan(10_000);
-    expect(conv(r.convId).subagents[0].state).toBe("stopped");
+    expect((await conv(r.convId)).subagents[0].state).toBe("stopped");
   });
 
   it("a child past its wall-clock limit is stopped (timeout)", async () => {
     const r = await post("/message", { text: "SUBTIMEOUT a child that won't finish" });
     await says(r.convId, /SUBTIMEOUT done: .*ran out of time/s, 60_000);
-    expect(conv(r.convId).subagents[0].state).toBe("timeout");
+    expect((await conv(r.convId)).subagents[0].state).toBe("timeout");
   });
 
   it("kill -9 the parent mid-child: the child's whole tree dies with it, the parent resumes", async () => {
@@ -269,15 +275,17 @@ describe.skipIf(!PI_DIR)("pi subagents (real pi children, fake OpenRouter)", () 
     await new Promise((res) => setTimeout(res, 1000));
     const h = await (await fetch(srv.base + "/api/v1/health")).json();
     const childPid = h.engine.pi.subagents.children.find((x: any) => x.id === s.threadId)?.pid;
-    const parentPid = h.engine.pi.procs.find((x: any) => x.threadId === conv(r.convId).threadId)?.pid;
+    const parentThread = (await conv(r.convId)).threadId;
+    const parentPid = h.engine.pi.procs.find((x: any) => x.threadId === parentThread)?.pid;
     expect(childPid).toBeTruthy();
     expect(parentPid).toBeTruthy();
     process.kill(parentPid, "SIGKILL");
     await waitFor(() => (!alive(childPid) ? true : null), 10_000);
     await says(r.convId, /resumed after the crash/, 60_000);
     await new Promise((res) => setTimeout(res, 9000)); // the child's command would have written at 8 s
-    expect(existsSync(join(vault, "child-crash.txt"))).toBe(false);
-    expect(conv(r.convId).subagents[0].state).toBe("killed");
+    // (Linux: the child's process group dies with it. Windows has no process groups to kill.)
+    if (linux) expect(existsSync(join(vault, "child-crash.txt"))).toBe(false);
+    expect((await conv(r.convId)).subagents[0].state).toBe("killed");
   });
 
   it("/api/v1/models reports subagents on where tools work", async () => {

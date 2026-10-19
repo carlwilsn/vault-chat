@@ -80,7 +80,7 @@ beforeAll(async () => {
   registerAll((await import("../commands/fs")).fsCommands);
   registerAll((await import("../commands/conversations")).conversationCommands);
   (await import("../../src/store")).useStore.setState({ vaultPath: vault, conversationsLoaded: true });
-  (await import("../context")).configureContext({ vault, agentModel: "openai/gpt-6.1-sol", apiKey: () => null, verifierDeny: [] } as any);
+  (await import("../context")).configureContext({ vault, agentModel: "openai/gpt-6.1-sol" });
   const { Engine } = await import("../engine/engine");
   backend = withPiSessions(new FakeBackend(), join(root, "pi"));
   engine = new Engine({

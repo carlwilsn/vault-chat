@@ -141,7 +141,7 @@ async function main(): Promise<void> {
     .then((h) => {
       engine = h;
       console.log(`[vault-chat-server] engine ${h.engine ? "up" : `not running: ${h.error}`}`);
-      // Wakes, the watchdog and cut turns of every vault come back with the server.
+      // Wakes, jobs and cut turns of every vault come back with the server.
       if (h.engine) for (const v of vaultRefs()) if (!v.main) void engineOf(v).catch((e) => console.error(`[engine] vault ${v.name}:`, e));
     })
     .catch((e) => {

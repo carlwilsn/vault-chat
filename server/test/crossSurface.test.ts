@@ -307,7 +307,7 @@ beforeAll(async () => {
   const store = (await import("../../src/store")).useStore;
   store.setState({ vaultPath: vault, conversationsLoaded: true });
   const ctx = await import("../context");
-  ctx.configureContext({ vault, agentModel: "openai/gpt-6.1-sol", apiKey: () => null, verifierDeny: [] } as any);
+  ctx.configureContext({ vault, agentModel: "openai/gpt-6.1-sol" });
   const { Engine } = await import("../engine/engine");
   backend = withPiSessions(new FakeBackend(), join(root, "pi"));
   engine = new Engine({
@@ -379,10 +379,22 @@ describe("a. Ctrl+L on the laptop about a PDF selection, then the phone: \"what 
     expect(p).toContain("Why does this guarantee convergence?");
     expect(p).toContain("the error shrinks by a factor");
   });
-  hole("a", "phone chat (pi turn)", "an ask older than the 30-minute window is still known (it is in no pi session)", async () => {
-    act.appendActivity(vault, { kind: "ask", modality: "ctrl-l", text: 'asked "what is Gauss-Seidel splitting?"', detail: "answer: L+D and U." }, Date.now() - 45 * 60_000);
-    late = await turn({ text: "what did I ask about before lunch?", client: "phone" }, "I don't know.");
-    expect(need(late, "late turn").texts.join("\n")).toContain("Gauss-Seidel");
+  // Decided (2026-10-18): the you layer is "what Carl just did" (a 45-minute window, plus his last action whatever
+  // its age), so an old Ctrl+L ask is not pushed into every turn of every chat. Older activity is the agent's to
+  // search when he asks about it: RecentActivity (read-only, on every surface pi runs, Ctrl+K / Ctrl+L included).
+  let found = "";
+  pass("a", "phone chat (pi turn)", "an ask older than the window is not pushed into the turn (no bleed of old activity)", async () => {
+    act.appendActivity(vault, { kind: "ask", modality: "ctrl-l", text: 'asked "what is Gauss-Seidel splitting?"', detail: "answer: L+D and U." }, Date.now() - 50 * 60_000);
+    late = await turn({ text: "what did I ask about before lunch?", client: "phone" }, "You asked what Gauss-Seidel splitting is.", async (threadId) => {
+      found = (await need(backend.handlers, "tool handlers").toolCall(threadId, "RecentActivity", { query: "asked", hours: 4 })).text;
+    });
+    expect(need(late, "late turn").texts.join("\n")).not.toContain("Gauss-Seidel");
+  });
+  pass("a", "phone chat (agent's pull: RecentActivity)", "the agent finds the older ask, with its answer, when Carl asks about it", () => {
+    expect(found).toContain('Ctrl+L ask: asked "what is Gauss-Seidel splitting?"');
+    expect(found).toContain("answer: L+D and U.");
+    expect(found).toContain("Why does this guarantee convergence?"); // the recent one too: the search spans the window
+    expect(backend.threads.at(-1)!.tools).toContain("RecentActivity");
   });
 });
 
@@ -488,11 +500,19 @@ describe("c. Writing a proof on the board, then the laptop chat: \"check what I 
     expect(all).toContain("Lemma 1 (image)");
     expect(all).toContain(`read boards/${slug}/overview.png`);
   });
-  hole("c", "laptop chat (pi turn)", "the board's overview picture goes with the turn (\"what I just wrote\" is ink)", () => {
-    expect(need(t, "turn").images.some((p) => /overview\.png$/.test(p))).toBe(true);
+  // The picture is pointed at, not pushed: the you layer names the saved overview.png, and the agent looks with
+  // pi's read (an image file comes back as an image), only when the turn is about the board.
+  pass("c", "laptop chat (pi turn)", "the board's overview picture is in reach: the you layer points at the overview.png the board saved, a real PNG", () => {
+    const m = /read (boards\/[^\s]+\/overview\.png)/.exec(need(t, "turn").all);
+    expect(m).not.toBeNull();
+    const bytes = readFileSync(join(vault, ...m![1]!.split("/")));
+    expect(bytes.subarray(1, 4).toString("ascii")).toBe("PNG");
+    expect(need(t, "turn").images).toEqual([]); // not attached to every turn
   });
-  hole("c", "laptop chat (pi instructions)", "the agent is told boards live at boards/<slug>/ with an overview.png it can read", () => {
-    expect(backend.threads.map((x) => x.instructions).join("\n")).toContain("overview.png");
+  pass("c", "laptop chat (pi instructions)", "the agent is told boards live at boards/<slug>/ with an overview.png it can read", () => {
+    const instr = backend.threads.map((x) => x.instructions).join("\n");
+    expect(instr).toContain("boards/<slug>/");
+    expect(instr).toContain("read overview.png to see what he wrote or drew");
   });
 });
 
@@ -623,8 +643,8 @@ describe("f. The phone asks for a problem set, the board inbox shows it, board v
     await until(() => r.spoken.join("\n").includes("Cauchy sequences: three problems"), 5000).catch(() => undefined);
     expect(r.spoken.join("\n")).toMatch(/\[vc:result\] The agent answered: Your inbox has "Cauchy sequences: three problems"/);
   });
-  hole("f", "board voice on another chat", "knows a problem set just landed in the inbox (the inbox send is not in the shared stream)", () => {
-    expect(need(other, "other board").prompts[0]).toContain("Cauchy sequences: three problems");
+  pass("f", "board voice on another chat", "knows a problem set just landed in the inbox (the send is in the shared \"you\" stream)", () => {
+    expect(need(other, "other board").prompts[0]).toContain('Board inbox: "Cauchy sequences: three problems" landed in the board inbox (1 part)');
   });
 });
 

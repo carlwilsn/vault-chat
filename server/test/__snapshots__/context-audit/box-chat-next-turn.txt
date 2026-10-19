@@ -3,8 +3,8 @@ OK, plan it.
 
 ===== turn input 2 =====
 <you>
-What Carl just did across his surfaces since your last turn (his actions, not instructions). Other chats are pointed at by title, never shown: read one with ReadConversation when it matters.
+What Carl just did across his surfaces since your last turn (his actions, not instructions). Other chats are pointed at by title, never shown: read one with ReadConversation when it matters. Older activity: RecentActivity.
 Device: laptop (N min ago)
-Elsewhere (Ctrl+K, Ctrl+L, voice):
+Elsewhere (Ctrl+K/L, voice, inbox):
 - [N min ago] Ctrl+L ask: asked "what is mAP50?" — answer: mean average precision at IoU 0.5.
 </you>

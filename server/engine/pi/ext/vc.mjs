@@ -9,7 +9,7 @@
 //    with a default timeout;
 //  - a path guard keeps pi's own read/write/edit/grep/find/ls (which run in
 //    this process) out of the key store and off the server's state;
-//  - vault-chat's tools (AskUser, ScheduleWake, Done, …) are registered from
+//  - vault-chat's tools (AskUser, ScheduleWake, StartJob, …) are registered from
 //    $VC_PI_TOOLS and answered by the host over the extension-UI channel
 //    (`editor` titled "vc:host-call", value = JSON);
 //  - the ledger: OpenRouter's generation id (x-generation-id) and the cost it
@@ -25,7 +25,7 @@ import { Type } from "typebox";
 import { createBashToolDefinition } from "@earendil-works/pi-coding-agent";
 import { registerSubagentTool } from "./subagent.mjs";
 import { registerPdfParts } from "./pdf.mjs";
-import { VOICE_TYPE, YOU_TYPE, addCacheMarkers, costFromStreamEvent, guardToolCall, resolveList, scrubEnv, shq, toTypebox, voiceLineContent, wakeGate, youSince } from "./policy.mjs";
+import { VOICE_TYPE, YOU_TYPE, addCacheMarkers, costFromStreamEvent, guardToolCall, resolveList, scrubEnv, shq, toTypebox, voiceLineContent, youSince } from "./policy.mjs";
 
 const E = process.env;
 const HOME = E.HOME || "/";
@@ -101,11 +101,7 @@ export default function vaultChat(pi) {
   // ---- path guard for the in-process tools ------------------------------------------
   const denyRead = resolveList(json(E.VC_PI_DENY_READ, []), HOME);
   const denyWrite = resolveList(json(E.VC_PI_DENY_WRITE, []), HOME);
-  // After ScheduleWake, the turn's only move left is to end (Done/Blocked may still end it differently).
-  const gate = wakeGate();
   pi.on("tool_call", async (event, ctx) => {
-    const after = gate.check(event.toolName);
-    if (after) return { block: true, reason: after };
     const why = guardToolCall(event.toolName, event.input, { cwd: ctx?.cwd || process.cwd(), home: HOME, denyRead, denyWrite });
     return why ? { block: true, reason: why } : undefined;
   });
@@ -124,7 +120,6 @@ export default function vaultChat(pi) {
         const v = await ctx.ui.editor("vc:host-call", JSON.stringify({ tool: s.name, args: params ?? {}, toolCallId }));
         if (v === undefined) return { content: [{ type: "text", text: `${s.name}: vault-chat did not answer.` }], details: undefined, isError: true };
         const r = json(v, { text: String(v) });
-        gate.onResult(s.name, r.text, !!r.isError);
         return { content: [{ type: "text", text: String(r.text ?? "") }], details: undefined, ...(r.isError ? { isError: true } : {}) };
       },
     });
@@ -169,10 +164,7 @@ export default function vaultChat(pi) {
   pi.on("message_end", (event) => {
     if (event?.message?.role === "assistant") flush();
   });
-  pi.on("agent_settled", () => {
-    flush();
-    gate.reset();
-  });
+  pi.on("agent_settled", flush);
 
   // ---- the "you" layer: what Carl just did on his other surfaces ----------------------
   // Each prompt (a conversation's turn, a Ctrl+K / Ctrl+L request): ask the box for the
