@@ -37,7 +37,7 @@ import { appendActivity, projectContextFor, youLayer } from "./activity";
 import { voiceLineEntry } from "../src/activityCore";
 import { stripAudioTags } from "../src/voiceTags";
 import { speakMath, speechReady } from "./speakMath";
-import { ASK, SCREEN_TOOLS, buildVoicePrompt, controlLine, isControlLine, isFillerLine, voiceDevice, voiceToolNames, type VoiceDevice } from "../src/voicePrompt";
+import { ASK, SCREEN_TOOLS, buildVoicePrompt, controlLine, isControlLine, isFillerLine, spokenReply, voiceDevice, voiceToolNames, type VoiceDevice } from "../src/voicePrompt";
 import type { Item, Picture } from "../src/convlog/reduce";
 
 export type VoiceDeps = {
@@ -481,6 +481,18 @@ export function voiceUpdatesSince(d: VoiceDeps, convId: string | null, cur: { at
             speak: true,
             text: controlLine("result", `The agent answered: ${answer}${failed.length ? `\n(Its turn reported: ${clip(failed.join(" "), 300)})` : ""}\nTell Carl now, briefly, in your own words — only what it says.`),
           });
+        } else if (typed && last.at > typed.at) {
+          // One agent on every surface: what the agent answered to his typed message is spoken by the call, in full
+          // (code blocks and tables skipped), and the voice never answers the typed message itself.
+          const spoken = speakMath(spokenReply(replies.filter((x) => x.at > typed.at).map((x) => s(x.text).trim()).join("\n\n")));
+          if (spoken)
+            updates.push({
+              id: `t-${last.id}`,
+              kind: "result",
+              speak: true,
+              text: controlLine("result", `Carl typed in the chat: "${speakMath(clip(oneLine(s(typed.text)), 300))}". The agent answered there. Read its answer to him aloud as it is, in full; don't answer his message yourself and add nothing:
+${spoken}`),
+            });
         } else {
           updates.push({ id: `c-${last.id}`, kind: "context", speak: false, text: controlLine("context", `Carl typed in the chat${typed ? `: "${speakMath(clip(oneLine(s(typed.text)), 300))}"` : ""}. The agent answered there: "${clip(oneLine(answer), 600)}". Already answered: don't answer it aloud.`) });
         }

@@ -489,17 +489,44 @@ describe("GET /api/v1/voice/updates: the live call hears what happened, and only
     expect(backend.turns.length).toBe(n);
   });
 
-  it("a typed turn while voice is live is answered by the agent; voice gets it as context it never answers aloud", async () => {
+  // Carl, 2026-10-21: "I thought we were a single model": a typed turn during a call is answered by the agent in
+  // the chat AND spoken by the call — the agent's answer, in full; the voice never answers the typed message itself.
+  it("a typed turn while voice is live: one agent reply in the thread, spoken by the call once, in full", async () => {
     const chat = await typed("Start of the homework chat.", "Ready.");
     const cur = (await voice.voiceUpdates(deps, { convId: chat })).cursor;
+    const n = backend.turns.length;
     await typed("Is 2(b) the epsilon-delta one?", "Yes: take delta = epsilon/3.", chat);
+    expect(backend.turns.length).toBe(n + 1);
     const got = await voice.voiceUpdates(deps, { convId: chat, cursor: cur, waitMs: 2000 });
-    const u = got.updates.find((x) => x.kind === "context")!;
-    expect(u.speak).toBe(false);
-    expect(u.text).toContain('Carl typed in the chat: "Is 2(b) the epsilon-delta one?"');
-    expect(u.text).toContain("take delta = epsilon/3");
-    expect(u.text).toMatch(/Already answered: don't answer it aloud/);
-    expect(got.updates.some((x) => x.speak)).toBe(false);
+    const spoken = got.updates.filter((x) => x.speak);
+    expect(spoken).toHaveLength(1);
+    expect(spoken[0]!.kind).toBe("result");
+    expect(spoken[0]!.text).toMatch(/^\[vc:result\] Carl typed in the chat: "Is 2\(b\) the epsilon-delta one\?"/);
+    expect(spoken[0]!.text).toContain("Yes: take delta = epsilon/3.");
+    expect(spoken[0]!.text).toMatch(/don't answer his message yourself/);
+    expect(got.updates.some((x) => x.kind === "context" && /typed/.test(x.text))).toBe(false);
+    // Delivered once: the next poll from its cursor has nothing more.
+    const again = await voice.voiceUpdates(deps, { convId: chat, cursor: got.cursor, waitMs: 50 });
+    expect(again.updates.filter((x) => x.speak)).toHaveLength(0);
+  });
+
+  it("a long typed reply is spoken in full; its code blocks and tables are skipped", async () => {
+    const chat = await typed("Start.", "Ready.");
+    const cur = (await voice.voiceUpdates(deps, { convId: chat })).cursor;
+    const long = [
+      "First, the sequence is Cauchy because the tail terms shrink geometrically.",
+      "Second, completeness of the reals gives the limit.",
+      "```python\nprint('never read aloud')\n```",
+      "| n | a_n |\n|---|-----|\n| 1 | 0.5 |",
+      "Third, the limit is unique. Fourth, it equals one half. Fifth, that closes part (b).",
+    ].join("\n\n");
+    await typed("Explain 3(a) fully.", long, chat);
+    const got = await voice.voiceUpdates(deps, { convId: chat, cursor: cur, waitMs: 2000 });
+    const u = got.updates.find((x) => x.speak)!;
+    expect(u.text).toContain("First, the sequence is Cauchy");
+    expect(u.text).toContain("Fifth, that closes part (b).");
+    expect(u.text).not.toContain("never read aloud");
+    expect(u.text).not.toContain("a_n");
   });
 
   it("the agent's question reaches the call to be asked aloud; Carl's spoken answer goes back as its answer", async () => {

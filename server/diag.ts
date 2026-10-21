@@ -21,6 +21,8 @@ export type BoxDiag = {
   minutes: number;
   turns: unknown[];
   board: unknown[];
+  /** The laptop's and the phone's voice diagnostics (voice.jsonl). */
+  voice: unknown[];
   journal: string[];
   phoneEvents: unknown[];
   notes: string[];
@@ -82,17 +84,21 @@ export function boxDiag(o: { stateDir: string; vault: string; vaultName: string;
     minutes,
     turns: logs.turns.since(since).map((x) => safeData(x, { depth: 5 })),
     board: logs.board.since(since).map((x) => safeData(x, { depth: 5 })),
+    voice: logs.voice.since(since).map((x) => safeData(x, { depth: 5 })),
     journal: j.lines,
     phoneEvents: jsonlSince(join(o.vault, ".vault-chat", "client-events.jsonl"), since),
     notes,
   };
 }
 
-/** One board batch (POST /api/v1/board/log): each event its own line, stamped and made safe. */
+/** One board batch (POST /api/v1/board/log): each event its own line, stamped and made safe. A batch with
+ *  source "voice" (the laptop's and the phone's voice diagnostics, src/voiceShip.ts) goes to voice.jsonl. */
 export function boardLogPost(o: { stateDir: string; vaultName: string; ua: string }, body: any): { status: number; body: Record<string, unknown> } {
   const evs: unknown[] = Array.isArray(body?.events) ? body.events.slice(0, 300) : [];
   if (!evs.length) return { status: 400, body: { error: "events: a non-empty list is required" } };
-  const log = boxLogs(o.stateDir).board;
+  const voice = body?.source === "voice";
+  const log = voice ? boxLogs(o.stateDir).voice : boxLogs(o.stateDir).board;
+  const from = voice && typeof body?.device === "string" ? body.device.slice(0, 20) : null;
   const ua = /iPad|iPhone|Macintosh|Android|Windows|Linux/.exec(o.ua)?.[0] ?? "?";
   const sess = typeof body?.session === "string" ? body.session.slice(0, 40) : null;
   // The board's build, and what the device says it is: an iPad sends a Mac UA, so its touch points tell it apart.
@@ -105,7 +111,7 @@ export function boardLogPost(o: { stateDir: string; vaultName: string; ua: strin
     if (!e || typeof e !== "object") continue;
     const { at, ev, ...rest } = e as Record<string, unknown>;
     const t = Date.parse(String(at ?? ""));
-    log.append({ ...rest, at: Number.isFinite(t) ? new Date(t).toISOString() : new Date().toISOString(), ev: String(ev ?? "?").slice(0, 60), vault: o.vaultName, ua, ...device, ...(sess ? { session: sess } : {}) });
+    log.append({ ...rest, at: Number.isFinite(t) ? new Date(t).toISOString() : new Date().toISOString(), ev: String(ev ?? "?").slice(0, 60), vault: o.vaultName, ua, ...device, ...(from ? { device: from } : {}), ...(sess ? { session: sess } : {}) });
     n++;
   }
   return { status: 200, body: { ok: true, n } };

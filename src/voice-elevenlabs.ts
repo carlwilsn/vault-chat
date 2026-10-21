@@ -10,8 +10,22 @@ import { awaitScroll } from "./scrollTarget";
 import { stripAudioTags } from "./voiceTags";
 import { QuietGate } from "./voiceQuiet";
 import { RECONNECT_NUDGE, RECONNECTING_LINE, FillerWatch, TimeoutRetry, VoiceTurnStats, couldntReconnectLine, isLlmTimeoutClose, plainCloseReason, reconnectRecap } from "./voiceTimeout";
-import { vlog } from "./debugLog";
+import { vlog as debugVlog } from "./debugLog";
+import { VoiceLogShipper } from "./voiceShip";
 import { SPEECH_LEVEL, VoiceHealth, connectionOptions, pickTransport, type HealthEvent, type Transport } from "./voiceHealth";
+import { AUDIO_WARN_LINE, MicPin, audioBlocked, canPickOutput, deviceLists, listAudioDevices, type MicDevice } from "./voiceMic";
+import { PlaybackMonitor, roomAudioStats } from "./voiceStats";
+
+/** The voice's diagnostics: the local trail, and the box (voiceShip.ts: <state>/logs/voice.jsonl). */
+const ship = new VoiceLogShipper({ device: "laptop" });
+function vlog(tag: string, data?: unknown): void {
+  debugVlog(tag, data);
+  ship.add(tag, data);
+}
+/** [tests] The laptop's voice-log shipper. */
+export function voiceShipperForTests(): VoiceLogShipper {
+  return ship;
+}
 import { DEFAULT_VOICE_LLM, isVoiceLlm, llmInfo, normalizeVoiceLlm, reasoningEffortFor, voiceLlmList, type VoiceLlmInfo } from "./voiceLlms";
 
 // Voice mode runs as an ElevenLabs Conversational AI session: their
@@ -272,6 +286,14 @@ export async function startElevenLabsSession(opts?: { recap?: string }): Promise
   // place). No box, or the box out of reach: voice says so and does not start.
   const { boxVoice, boxVoiceSession, voiceTranscriptMirror, voiceToolVia } = await import("./voiceBox");
   const box = await boxVoice(state.vaultPath);
+  if (box) {
+    const { boxPost } = await import("./boxChat");
+    ship.post = async (body) => {
+      const r = await boxPost(box.link, "/api/v1/board/log", body);
+      if (!r.ok) throw new Error(r.error ?? "not sent");
+    };
+    ship.installPageHide();
+  }
   if (!box) {
     reportVoiceError("Connect your box to talk — voice runs on the box (Settings → Box).");
     return;
@@ -361,9 +383,16 @@ export async function startElevenLabsSession(opts?: { recap?: string }): Promise
   try {
     activeTransport = transport;
     const startedAt = Date.now();
+    // The mic: the physical device behind the system default, pinned for the whole call (voiceMic.ts) — Windows
+    // flipping its default/communications endpoints mid-call no longer moves or ends it. Logged ("voice mic pinned").
+    const listed = await micPin.devices();
+    let micId = await micPin.atStart(listed);
+    // The agent's output too, where the page can pick one (Chromium's setSinkId; Linux's WebSocket plays natively).
+    let outId = canPickOutput() && !(transport === "websocket" && isLinuxWebview()) ? await outPin.atStart(listed) : (outPin.reset(), undefined);
     const start = () => voiceSdk.startSession({
-      // The mic is the system default (the SDK's own); its label is logged at start ("voice mic").
       ...connectionOptions(transport, { conversationToken, signedUrl }),
+      ...(micId ? { inputDeviceId: micId } : {}),
+      ...(outId ? { outputDeviceId: outId } : {}),
       overrides: {
         agent: {
           prompt: { prompt: systemPrompt },
@@ -418,6 +447,7 @@ export async function startElevenLabsSession(opts?: { recap?: string }): Promise
           afterMs: Date.now() - startedAt,
           ...turnStats.atClose(),
         });
+        void ship.flush();
         voiceSessionClosed(details);
       },
       onMessage: ({ message, role }: { message: string; role: string }) => {
@@ -513,7 +543,18 @@ export async function startElevenLabsSession(opts?: { recap?: string }): Promise
     });
     let conv: ActiveConversation;
     try {
-      conv = await start();
+      try {
+        conv = await start();
+      } catch (e) {
+        // The pinned device refused (gone between the listing and the open, held exclusively): the system default.
+        if (!micId || !isMicProblem(e) || /NotAllowed|Permission/i.test(`${(e as any)?.name ?? ""} ${(e as any)?.message ?? ""}`)) throw e;
+        vlog("voice mic pin failed", { at: "start", error: String((e as Error)?.message ?? e).slice(0, 300) });
+        micPin.reset();
+        outPin.reset();
+        micId = undefined;
+        outId = undefined;
+        conv = await start();
+      }
     } catch (e) {
       // WebRTC refused (a network that blocks it): once more over WebSocket, when there's a signed URL.
       if (transport !== "webrtc" || !signedUrl || isMicProblem(e)) throw e;
@@ -1400,6 +1441,9 @@ export async function sendVoiceUserMultimodal(
  */
 export function voiceBarLevels(n: number): number[] {
   const s = useStore.getState();
+  // Nothing audible can play (voiceMic.ts audioBlocked), or the inbound audio stalled mid-reply (voiceStats.ts):
+  // flat — never waves over silence (the composer says why).
+  if (audioWarned || playback?.stalled) return new Array(n).fill(0);
   const out = s.voiceSpeaking ? getOutputLevels(n) : null;
   // Polled every speaking frame regardless of which source wins — polling
   // advances the envelope's playback cursor, so it stays in sync for the
@@ -1455,6 +1499,19 @@ let healthTimer: ReturnType<typeof setInterval> | null = null;
 let healthConv: ActiveConversation | null = null;
 let healthCleanup: (() => void)[] = [];
 let micRecoveries = 0;
+/** The call's pinned mic (voiceMic.ts): the device listing is read when asked (tests install theirs late). */
+const micPin = new MicPin({ list: listAudioDevices, log: (ev, data) => vlog(ev, data) });
+/** The agent's output, pinned the same way: a Windows default/communications switch mid-call no longer moves it
+ *  ("I stop hearing the voice, but the waves keep going": the waves are the SDK's level, whatever device plays it). */
+const outPin = new MicPin({ list: listAudioDevices, log: (ev, data) => vlog(ev, data), kind: "audiooutput" });
+/** The pinned output went away with nothing to move to: the waves would lie. */
+let outputLost = false;
+/** The inbound audio's stats while the agent speaks (voiceStats.ts): dropouts classified network/source/local. */
+let playback: PlaybackMonitor | null = null;
+function localPlayback(conv: ActiveConversation) {
+  const { contexts } = sdkParts(conv);
+  return { contexts: contexts.map((c) => c.state as string), outputDevice: outPin.pinned?.label ?? (nativePlayback() ? "native" : "system default"), outputLost };
+}
 export const MIC_UNHEARD_LINE = "vault-chat isn't receiving your microphone. Check the system's default input device.";
 
 /** [best-effort, diagnostics] The SDK's live pieces it doesn't expose publicly:
@@ -1494,6 +1551,26 @@ async function startHealthWatch(conv: ActiveConversation, transport: Transport):
   health.connected(Date.now());
   vlog("voice mic", { transport, ...(await micInfo(conv)) });
   if (healthConv !== conv) return;
+  // Opened on a virtual default (the device ids weren't readable before the mic was allowed): pinned now.
+  {
+    const { track } = sdkParts(conv);
+    await micPin.afterConnect((track?.getSettings?.() ?? {}).deviceId, (id) => conv.changeInputDevice({ inputDeviceId: id }));
+    if (healthConv !== conv) return;
+    if (canPickOutput() && !nativePlayback()) await outPin.afterConnect(undefined, (id) => conv.changeOutputDevice({ outputDeviceId: id }));
+    if (healthConv !== conv) return;
+  }
+  // Per call: the devices in use and every one listed (a "waves but silence" is matched to a switch by these).
+  {
+    const devs = (await micPin.devices()) ?? [];
+    vlog("voice devices", { ...deviceLists(devs), mic: micPin.pinned?.label ?? null, outputDevice: localPlayback(conv).outputDevice, waves: "SDK output analyser (speaking), mic analyser (listening)" });
+    if (healthConv !== conv) return;
+  }
+  playback = new PlaybackMonitor({
+    stats: () => roomAudioStats(sdkParts(conv).room),
+    speaking: () => useStore.getState().voiceSpeaking,
+    local: () => localPlayback(conv),
+    log: (ev, data) => vlog(ev, data),
+  }).start();
   watchMicTrack(conv);
   // The output device or mic set changed (a headset plugged, a Bluetooth profile switch).
   const md = typeof navigator !== "undefined" ? navigator.mediaDevices : undefined;
@@ -1526,6 +1603,11 @@ async function startHealthWatch(conv: ActiveConversation, transport: Transport):
 }
 
 function stopHealthWatch(): void {
+  if (audioWarned && useStore.getState().voiceNotice === AUDIO_WARN_LINE) useStore.setState({ voiceNotice: null });
+  audioWarned = null;
+  outputLost = false;
+  playback?.stop();
+  playback = null;
   if (healthTimer) clearInterval(healthTimer);
   healthTimer = null;
   for (const f of healthCleanup.splice(0)) {
@@ -1557,22 +1639,89 @@ function watchMicTrack(conv: ActiveConversation): void {
 
 async function devicesChanged(conv: ActiveConversation): Promise<void> {
   if (healthConv !== conv) return;
-  let inputs: MediaDeviceInfo[] = [];
-  try {
-    inputs = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === "audioinput" || d.kind === "audiooutput");
-  } catch {
-    /* can't list */
-  }
-  const { track } = sdkParts(conv);
+  const { track, contexts } = sdkParts(conv);
   const id = (track?.getSettings?.() ?? {}).deviceId;
-  const stillThere = !id || inputs.some((d) => d.kind === "audioinput" && d.deviceId === id);
+  const listed = await micPin.devices();
+  const devs: MicDevice[] = listed ?? [];
+  // Every change, with both lists, both pins and what the waves are drawing: a "waves but silence" in the log
+  // lines up with the switch that caused it.
+  let levels: Record<string, unknown> = {};
+  try {
+    levels = { inputLevel: +conv.getInputVolume().toFixed(3), outputLevel: +conv.getOutputVolume().toFixed(3), waves: useStore.getState().voiceSpeaking ? "output" : "input" };
+  } catch {
+    /* closed */
+  }
   vlog("voice devices changed", {
-    inputs: inputs.filter((d) => d.kind === "audioinput").map((d) => d.label || "?").slice(0, 8),
-    outputs: inputs.filter((d) => d.kind === "audiooutput").map((d) => d.label || "?").slice(0, 8),
+    ...deviceLists(devs),
+    mic: micPin.pinned?.label ?? null,
+    micStillThere: micPin.pinned ? micPin.present(devs) : listed ? !id || devs.some((d) => (d.kind ?? "audioinput") === "audioinput" && d.deviceId === id) : null,
     micState: track?.readyState ?? null,
-    micStillThere: stillThere,
+    outputDevice: outPin.pinned?.label ?? null,
+    outputStillThere: outPin.pinned ? outPin.present(devs) : null,
+    contexts: contexts.map((c) => c.state),
+    ...levels,
   });
+  if (!listed) return;
+  // Pinned: Windows moving its default/communications endpoints changes nothing; the pinned device unplugged
+  // moves the call to the best remaining one, the call going on.
+  const outOutcome = await outPin.devicesChanged(devs, (to) => conv.changeOutputDevice({ outputDeviceId: to }));
+  outputLost = outOutcome === "lost" || outOutcome === "failed";
+  if (healthConv !== conv) return;
+  const outcome = await micPin.devicesChanged(devs, async (to) => {
+    await conv.changeInputDevice({ inputDeviceId: to });
+    if (healthConv === conv) {
+      health.micReset(Date.now());
+      watchMicTrack(conv);
+    }
+  });
+  if (healthConv !== conv) return;
+  if (outcome === "kept" || outcome === "switched") return;
+  if (outcome === "failed" || outcome === "lost") return void (await recoverMic(conv, "the microphone went away"));
+  // Unpinned (no virtual default here: the system routes its inputs itself): the track's device must still be listed.
+  const stillThere = !id || devs.some((d) => (d.kind ?? "audioinput") === "audioinput" && d.deviceId === id);
   if (track?.readyState === "ended" || !stillThere) await recoverMic(conv, "the microphone went away");
+}
+
+/** The waves would lie (the agent speaking into a suspended context, a blocked page, a vanished output): the
+ *  composer says so instead ("No sound? Tap to reconnect audio"); cleared as soon as it can play again. */
+let audioWarned: string | null = null;
+function checkAudio(conv: ActiveConversation, speaking: boolean): void {
+  const { room, contexts } = sdkParts(conv);
+  const why = audioBlocked({ speaking, contexts: contexts.map((c) => c.state as string), canPlay: room ? room.canPlaybackAudio : null, outputLost });
+  if (why === audioWarned) return;
+  if (why) {
+    vlog("voice audio blocked", { why, contexts: contexts.map((c) => c.state), canPlay: room ? room.canPlaybackAudio : null, outputDevice: outPin.pinned?.label ?? null });
+    useStore.setState({ voiceNotice: AUDIO_WARN_LINE });
+  } else {
+    vlog("voice audio unblocked", { was: audioWarned });
+    if (useStore.getState().voiceNotice === AUDIO_WARN_LINE) useStore.setState({ voiceNotice: null });
+  }
+  audioWarned = why;
+}
+
+/** "No sound? Tap to reconnect audio": playback resumed the SDK's own ways, the output re-set on its pinned device. */
+export async function reconnectVoiceAudio(): Promise<void> {
+  const conv = activeConversation;
+  if (!conv) return;
+  const { room, contexts } = sdkParts(conv);
+  vlog("voice audio reconnect", { contexts: contexts.map((c) => c.state), canPlay: room ? room.canPlaybackAudio : null });
+  await room?.startAudio?.().catch(() => undefined);
+  for (const c of contexts) if (c.state !== "running" && c.state !== "closed") await c.resume().catch(() => undefined);
+  if (outPin.pinned || outputLost) {
+    try {
+      const to = await outPin.target();
+      await conv.changeOutputDevice({ outputDeviceId: to });
+      outputLost = false;
+    } catch (e) {
+      vlog("voice output switch failed", { error: String((e as Error)?.message ?? e).slice(0, 300) });
+    }
+  }
+  if (activeConversation === conv) checkAudio(conv, useStore.getState().voiceSpeaking);
+}
+
+/** [tests] The playback monitor of the live call. */
+export function voicePlaybackForTests(): PlaybackMonitor | null {
+  return playback;
 }
 
 /** Carl is talking now (his mic over speech level, not muted), or the voice is working out its reply to his line. */
@@ -1595,7 +1744,7 @@ async function reacquireQuietly(conv: ActiveConversation, why: string): Promise<
   if (healthConv !== conv || activeConversation !== conv || quietMicReacquired) return;
   quietMicReacquired = true;
   try {
-    await conv.changeInputDevice({ inputDeviceId: "default" });
+    await conv.changeInputDevice({ inputDeviceId: await micPin.target() });
     if (healthConv !== conv) return;
     watchMicTrack(conv);
     vlog("voice mic reacquired", { why, quiet: true, ...(await micInfo(conv)) });
@@ -1604,13 +1753,14 @@ async function reacquireQuietly(conv: ActiveConversation, why: string): Promise<
   }
 }
 
-/** Re-acquire the mic once through the SDK; a second failure in the call is said plainly. */
+/** Re-acquire the mic once through the SDK (the pinned device); a second failure in the call is said plainly. */
 async function recoverMic(conv: ActiveConversation, why: string): Promise<void> {
   if (healthConv !== conv || activeConversation !== conv) return;
   micRecoveries++;
   if (micRecoveries === 1) {
     try {
-      await conv.changeInputDevice({ inputDeviceId: "default" });
+      // The same pinned device (its replacement if it went away); "default" when nothing is pinned.
+      await conv.changeInputDevice({ inputDeviceId: await micPin.target() });
       if (healthConv !== conv) return;
       health.micReset(Date.now());
       watchMicTrack(conv);
@@ -1649,6 +1799,7 @@ function sampleHealth(conv: ActiveConversation): void {
     trackLive: track ? track.readyState === "live" && track.muted !== true : undefined,
     playbackBlocked: room ? room.canPlaybackAudio === false : false,
   });
+  checkAudio(conv, st.voiceSpeaking);
   logTurn(turnStats.noAudio(now));
 }
 

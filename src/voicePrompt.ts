@@ -131,13 +131,26 @@ export const VOICE_HONESTY_RULES = `Honesty — accurate over agreeable:
 - If something he sent arrived empty, or a look found nothing, say you saw nothing. Never guess what an image or a file shows.
 - Never claim a tool or ability you don't have. Your tools, exactly: {{TOOLS}}.`;
 
+/** A chat reply as it is read aloud: code blocks and tables skipped silently (a person reading it out skips them
+ *  too), nothing else changed. */
+export function spokenReply(text: string): string {
+  return String(text ?? "")
+    .replace(/```[\s\S]*?(```|$)/g, "\n")
+    .split("\n")
+    .filter((l) => !/^\s*\|.*\|\s*$/.test(l) && !/^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)*\|?\s*$/.test(l))
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
 /** How a request runs: one line now, the answer when the agent has it. */
 export const VOICE_ASK_RULES = `Doing things (Ask):
 - For an action or a question you can't answer from the conversation: call Ask with his words (act: true only for a change), then say one short line ("on it"). Ask runs in the background, beside the agent's own work in the chat, never interrupting it.
 - Ask returns at once. The agent's answer arrives later as a user message starting [vc:result] (or [vc:question] when the agent needs his answer): that is not Carl talking. Then tell him the answer in a sentence or two, in your own words, only what it says.
 - Long work: say the agent is on it and you'll tell him when it's done; carry on talking about anything else meanwhile. When the result comes, tell him then (it reaches you when he isn't mid-sentence).
 - When the agent asks him something ([vc:question]), put the question to him; his answer goes back with Ask.
-- Messages starting [vc:context] are things that happened elsewhere (Carl typed in the chat and the agent answered there; what he did on his other devices). They are already handled: never answer them aloud, use them if he refers to them.
+- When Carl types in the chat during the call, the agent answers him there, and its answer reaches you as a [vc:result] starting "Carl typed in the chat": read that answer to him aloud as it is, in full. Never answer his typed message yourself, add nothing, and don't announce it.
+- Messages starting [vc:context] are things that happened elsewhere (what he did on his other devices). They are already handled: never answer them aloud, use them if he refers to them.
 - Small talk, explanations of what's already in the conversation, and quick checks of what he just said: answer directly, no Ask.`;
 
 /** Seeing, said once for the devices with a screen (Carl, 2026-10-17: voice asked him to re-paste what it could look at). */

@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
-import { Keyboard, Mic, MicOff } from "lucide-react";
+import { Keyboard, Mic, MicOff, VolumeX } from "lucide-react";
 import { useStore } from "./store";
-import { toggleVoice, toggleVoiceMute, voiceBarLevels } from "./voice-elevenlabs";
+import { reconnectVoiceAudio, toggleVoice, toggleVoiceMute, voiceBarLevels } from "./voice-elevenlabs";
+import { AUDIO_WARN_LINE } from "./voiceMic";
 import { isPopout } from "./windowKind";
 import { relayedVoiceLevels } from "./sync";
 
@@ -117,6 +118,20 @@ export function VoiceMuteButton() {
       </span>
     );
   if (!live) return null;
+  // The agent's audio can't be heard (a suspended context, a blocked page, its output gone): said, and one tap
+  // reconnects it — instead of waves over silence.
+  if (notice === AUDIO_WARN_LINE)
+    return (
+      <button
+        onClick={() => void reconnectVoiceAudio()}
+        data-el="voice-audio-warn"
+        title="The voice's audio isn't reaching your speakers. Click to reconnect it."
+        className="h-7 px-2.5 gap-1.5 flex items-center rounded-full text-[11px] font-semibold whitespace-nowrap bg-amber-500 text-black hover:bg-amber-600"
+      >
+        <VolumeX className="h-3.5 w-3.5" />
+        <span>{AUDIO_WARN_LINE}</span>
+      </button>
+    );
   return (
     <button
       onClick={() => toggleVoiceMute()}

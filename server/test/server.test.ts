@@ -91,6 +91,28 @@ describe("auth", () => {
     expect(JSON.stringify(d)).not.toContain("sk-or-v1-aaaa");
     expect(JSON.stringify(d)).not.toContain(TOKEN);
   });
+  it("/api/v1/board/log with source voice: the laptop's voice lines land in voice.jsonl, redacted, and in the diag window", async () => {
+    const post = (h: Record<string, string> = {}) =>
+      fetch(srv.base + "/api/v1/board/log", {
+        method: "POST",
+        headers: { "content-type": "application/json", "user-agent": "Mozilla/5.0 (Windows NT 10.0)", ...h },
+        body: JSON.stringify({
+          source: "voice",
+          device: "laptop",
+          session: "v7",
+          events: [
+            { at: new Date().toISOString(), ev: "voice dropout", cause: "network", lost: 18, concealed: 27000, rttMs: 80, contexts: ["running"], output: "Speakers (Realtek(R) Audio)" },
+            { at: new Date().toISOString(), ev: "voice closed", reason: "error", message: "token sk-or-v1-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb rejected" },
+          ],
+        }),
+      });
+    expect((await post(viaServe)).status).toBe(401);
+    expect(await (await post()).json()).toEqual({ ok: true, n: 2 });
+    const d = await (await fetch(srv.base + "/api/v1/diag?minutes=5")).json();
+    expect(d.voice).toEqual(expect.arrayContaining([expect.objectContaining({ ev: "voice dropout", cause: "network", lost: 18, ua: "Windows", device: "laptop", session: "v7" })]));
+    expect(d.board.some((x: { ev: string }) => x.ev.startsWith("voice dropout"))).toBe(false);
+    expect(JSON.stringify(d.voice)).not.toContain("sk-or-v1-bbbb");
+  });
 });
 
 describe("/poll cursors (the restart itself: convlogServer.test.ts)", () => {

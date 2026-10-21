@@ -39,6 +39,8 @@
 // No DOM here: the pill (voicePill.ts) draws it, the tests drive it with a fake SDK.
 import { QuietGate } from "../../src/voiceQuiet";
 import { SPEECH_LEVEL } from "../../src/voiceHealth";
+import { AUDIO_WARN_LINE, MicPin, audioBlocked, canPickOutput, deviceLists, type MicDevice } from "../../src/voiceMic";
+import { PlaybackMonitor, roomAudioStats } from "../../src/voiceStats";
 import { VoiceImagePusher, lookingAtNote, sendFilesMessage } from "../../src/voiceImages";
 import { stripAudioTags } from "../../src/voiceTags";
 import { isControlLine, isFillerLine } from "../../src/voicePrompt";
@@ -57,11 +59,19 @@ export type VoiceConv = {
   sendMultimodalMessage(m: { text?: string; fileId: string }): void;
   getOutputVolume?(): number;
   getInputVolume?(): number;
+  /** The SDK's device switch (the pinned mic, or its replacement when it was unplugged). */
+  changeInputDevice?(c: { inputDeviceId: string }): Promise<void>;
+  /** The SDK's output switch (setSinkId underneath; Chromium only). */
+  changeOutputDevice?(c: { outputDeviceId: string }): Promise<void>;
 };
 export type SessionOpts = {
   signedUrl?: string;
   conversationToken?: string;
   connectionType: "webrtc" | "websocket";
+  /** The physical mic behind the system default, pinned for the call (src/voiceMic.ts). */
+  inputDeviceId?: string;
+  /** The physical output behind the system default, pinned for the call (where the page can pick one). */
+  outputDeviceId?: string;
   overrides: unknown;
   dynamicVariables: Record<string, string>;
   clientTools: Record<string, (p: unknown) => Promise<string>>;
@@ -96,7 +106,18 @@ export type BoardSource = {
 };
 
 export type Phase = "idle" | "connecting" | "live" | "error";
-export type VoiceState = { phase: Phase; error: string; muted: boolean; speaking: boolean; chat: ChatRow | null; chats: ChatRow[] };
+export type VoiceState = {
+  phase: Phase;
+  error: string;
+  muted: boolean;
+  speaking: boolean;
+  chat: ChatRow | null;
+  chats: ChatRow[];
+  /** The agent's audio can't be heard (a suspended context, a blocked page, its output gone): the pill says
+   *  AUDIO_WARN_LINE and flattens its waves. Empty: fine. */
+  audio?: string;
+};
+export { AUDIO_WARN_LINE };
 
 /** The chats the phone lists: not the old missions system's threads. */
 const NOT_CHATS = new Set(["ask", "worker", "mission"]);
@@ -159,6 +180,16 @@ export type VoiceDeps = {
   sdk: () => Promise<VoiceSdk>;
   /** The mic stream (getUserMedia); throws as it does. Null: this page can't have a mic (not HTTPS). */
   mic: (() => Promise<MediaStream>) | null;
+  /** The device list and its devicechange (navigator.mediaDevices when left out; null: none). The call's mic is pinned
+   *  to the physical device behind a virtual "default" where the system lists one; Safari lists none, so on the iPad
+   *  nothing is pinned and nothing changes. */
+  devices?: { enumerateDevices(): Promise<MicDevice[]>; addEventListener?(t: "devicechange", f: () => void): void; removeEventListener?(t: "devicechange", f: () => void): void } | null;
+  /** The page's own audio contexts (the tap's unlock context): their state is logged, resumed on a touch. */
+  audioContexts?: () => (AudioContext | null | undefined)[];
+  /** The inbound audio's stats while the agent speaks (default: the SDK's LiveKit room). */
+  stats?: (conv: VoiceConv) => Promise<unknown>;
+  /** The board's log (mic pinned, switched, devices changed). */
+  log?: (event: string, data: Record<string, unknown>) => void;
   /** Called synchronously in the tap, before anything awaits (iOS: audio must be unlocked in the gesture). */
   unlock?: () => void;
   debounceMs?: number;
@@ -173,6 +204,27 @@ export class VoiceController {
   private board: BoardSource | null = null;
   private gate = new QuietGate(() => this.state.speaking);
   private pusher = new VoiceImagePusher();
+  private pin = new MicPin({
+    list: async () => {
+      const md = this.media();
+      if (!md) throw new Error("no device listing");
+      return (await md.enumerateDevices()).map((d) => ({ deviceId: d.deviceId, groupId: d.groupId, label: d.label, kind: d.kind }));
+    },
+    log: (ev, data) => this.d.log?.(ev, data),
+  });
+  private outPin = new MicPin({
+    list: async () => {
+      const md = this.media();
+      if (!md) throw new Error("no device listing");
+      return (await md.enumerateDevices()).map((d) => ({ deviceId: d.deviceId, groupId: d.groupId, label: d.label, kind: d.kind }));
+    },
+    log: (ev, data) => this.d.log?.(ev, data),
+    kind: "audiooutput",
+  });
+  private outputLost = false;
+  private unwatchDevices: (() => void) | null = null;
+  private unwatchAudio: (() => void)[] = [];
+  private playback: PlaybackMonitor | null = null;
   private lastText = "";
   private debounceT: ReturnType<typeof setTimeout> | null = null;
   /** The conversation this call is attached to (its lines go there; null until the box made a new one). */
@@ -221,6 +273,8 @@ export class VoiceController {
   /** The agent's output level, 0..1 (the pill's waves while it speaks). */
   outputLevel(): number {
     try {
+      // Flat when nothing audible plays (a suspended context, a gone output) or the inbound audio stalled.
+      if (this.state.audio || this.playback?.stalled) return 0;
       return this.state.speaking ? Math.min(1, (this.conv?.getOutputVolume?.() ?? 0) * 2.5) : 0;
     } catch {
       return 0;
@@ -308,8 +362,15 @@ export class VoiceController {
       const signed = cfg.signedUrl || null;
       let transport: "webrtc" | "websocket" = token ? "webrtc" : "websocket";
       const creds = () => (transport === "webrtc" ? { conversationToken: token!, connectionType: transport } : { signedUrl: signed!, connectionType: transport });
-      const open = () => sdk.Conversation.startSession({
+      // The mic allowed in this tap, its device ids readable: the call opens on the physical device behind "default".
+      const listed = await this.pin.devices();
+      let micId = await this.pin.atStart(listed);
+      let outId = canPickOutput() ? await this.outPin.atStart(listed) : (this.outPin.reset(), undefined);
+      if (gen !== this.gen) return;
+      const openOnce = () => sdk.Conversation.startSession({
         ...creds(),
+        ...(micId ? { inputDeviceId: micId } : {}),
+        ...(outId ? { outputDeviceId: outId } : {}),
         overrides: { agent: { prompt: { prompt: cfg.systemPrompt || "" }, language: "en", firstMessage: "" }, tts: { voiceId: cfg.voiceId } },
         dynamicVariables: cfg.dynamicVariables || {},
         clientTools: this.clientTools(cfg.toolNames ?? []),
@@ -347,6 +408,18 @@ export class VoiceController {
           this.gate.modeChanged();
         },
       });
+      // The pinned device refused (gone since the listing, held elsewhere): the system default.
+      const open = () =>
+        openOnce().catch((e) => {
+          const what = String((e as Error)?.name) + " " + String((e as Error)?.message);
+          if (!micId || timedOut || gen !== this.gen || !/NotFound|NotReadable|Overconstrained/i.test(what)) throw e;
+          this.d.log?.("voice mic pin failed", { at: "start", error: what.slice(0, 300) });
+          this.pin.reset();
+          this.outPin.reset();
+          micId = undefined;
+          outId = undefined;
+          return openOnce();
+        });
       // WebRTC that can't connect (a network that blocks it): once more over WebSocket.
       const session = open().catch((e) => {
         if (transport !== "webrtc" || !signed || timedOut || gen !== this.gen || /NotAllowed|NotFound|NotReadable|Permission/i.test(String((e as Error)?.name) + String((e as Error)?.message))) throw e;
@@ -375,6 +448,8 @@ export class VoiceController {
       }
       this.conv = conv;
       this.transport = transport;
+      this.watchDevices(conv);
+      this.watchAudio(conv);
       // The SDK may connect before startSession resolves: what onConnect couldn't send yet goes now.
       if ((this.state.phase as Phase) === "live") this.pushNow();
       // The conversation's newest images (a phone photo, a pasted figure): this call has never seen them.
@@ -388,6 +463,162 @@ export class VoiceController {
     } catch (e) {
       return this.fail(gen, `Voice couldn't connect: ${String((e as Error)?.message ?? e)}`);
     }
+  }
+
+  private media(): VoiceDeps["devices"] {
+    if (this.d.devices !== undefined) return this.d.devices;
+    const md = typeof navigator !== "undefined" ? navigator.mediaDevices : undefined;
+    return md?.enumerateDevices ? md : null;
+  }
+
+  /** The SDK's live pieces it doesn't expose publicly: the LiveKit room (WebRTC), its audio contexts; plus ours. */
+  private parts(conv: VoiceConv): { room: any; contexts: (AudioContext | { state: string; resume?: () => Promise<void>; addEventListener?: any; removeEventListener?: any })[] } {
+    const c = conv as any;
+    const room = c?.connection?.getRoom?.() ?? null;
+    const contexts = [c?.input?.context, c?.output?.context, ...(this.d.audioContexts?.() ?? [])].filter((x) => x && typeof x.state === "string");
+    return { room, contexts: [...new Set(contexts)] };
+  }
+
+  private local(conv: VoiceConv) {
+    return { contexts: this.parts(conv).contexts.map((c) => c.state as string), outputDevice: this.outPin.pinned?.label ?? "system default", outputLost: this.outputLost };
+  }
+
+  /** A devicechange mid-call (an iPad's route change shows up here too): logged with both lists, both pins, the
+   *  contexts and what the waves draw; the pinned device still there → nothing; unplugged → the best remaining one. */
+  private watchDevices(conv: VoiceConv): void {
+    this.unwatchDevices?.();
+    this.unwatchDevices = null;
+    const md = this.media();
+    if (!md?.addEventListener) return;
+    const on = async () => {
+      if (this.conv !== conv) return;
+      const listed = await this.pin.devices();
+      const devs: MicDevice[] = listed ?? [];
+      this.d.log?.("voice devices changed", {
+        ...deviceLists(devs),
+        mic: this.pin.pinned?.label ?? null,
+        micStillThere: this.pin.pinned ? this.pin.present(devs) : null,
+        outputDevice: this.outPin.pinned?.label ?? null,
+        outputStillThere: this.outPin.pinned ? this.outPin.present(devs) : null,
+        contexts: this.local(conv).contexts,
+        inputLevel: +(conv.getInputVolume?.() ?? 0).toFixed(3),
+        outputLevel: +(conv.getOutputVolume?.() ?? 0).toFixed(3),
+        waves: this.state.speaking ? "output" : "input",
+      });
+      if (!listed || this.conv !== conv) return;
+      if (conv.changeOutputDevice) {
+        const o = await this.outPin.devicesChanged(devs, (id) => conv.changeOutputDevice!({ outputDeviceId: id }));
+        this.outputLost = o === "lost" || o === "failed";
+      }
+      if (conv.changeInputDevice && this.conv === conv) await this.pin.devicesChanged(devs, (id) => conv.changeInputDevice!({ inputDeviceId: id }));
+    };
+    const handler = () => void on();
+    md.addEventListener("devicechange", handler);
+    this.unwatchDevices = () => md.removeEventListener?.("devicechange", handler);
+  }
+
+  /** The call's playback, watched: the contexts' state changes and the iOS audio session (logged), a suspended
+   *  context resumed on the next touch, the inbound stats per reply (voiceStats.ts), and the pill's warning when
+   *  nothing audible can play. */
+  private watchAudio(conv: VoiceConv): void {
+    this.unwatch();
+    const log = (ev: string, data: Record<string, unknown>) => this.d.log?.(ev, data);
+    const { contexts } = this.parts(conv);
+    for (const ctx of contexts) {
+      const on = () => log("voice audio context", { state: ctx.state, speaking: this.state.speaking });
+      ctx.addEventListener?.("statechange", on);
+      this.unwatchAudio.push(() => ctx.removeEventListener?.("statechange", on));
+    }
+    // iOS: the audio session (Safari 16.4+) — its type and state, interrupted by a call, Siri, a route change.
+    const session = typeof navigator !== "undefined" ? (navigator as unknown as { audioSession?: { type?: string; state?: string; addEventListener?: any; removeEventListener?: any } }).audioSession : undefined;
+    if (session) {
+      log("voice audio session", { type: session.type ?? null, state: session.state ?? null });
+      const on = () => log("voice audio session", { type: session.type ?? null, state: session.state ?? null, speaking: this.state.speaking });
+      session.addEventListener?.("statechange", on);
+      this.unwatchAudio.push(() => session.removeEventListener?.("statechange", on));
+    }
+    // A suspended context comes back on the next touch (iOS lets audio resume only in a gesture).
+    if (typeof document !== "undefined") {
+      const touch = () => {
+        if (this.conv !== conv) return;
+        const stuck = this.parts(conv).contexts.filter((c) => c.state === "suspended" || c.state === "interrupted");
+        if (!stuck.length) return;
+        log("voice audio resume", { on: "touch", contexts: stuck.map((c) => c.state) });
+        for (const c of stuck) void c.resume?.().catch(() => undefined);
+        void this.parts(conv).room?.startAudio?.().catch(() => undefined);
+      };
+      document.addEventListener("pointerdown", touch, true);
+      this.unwatchAudio.push(() => document.removeEventListener("pointerdown", touch, true));
+    }
+    this.playback = new PlaybackMonitor({
+      stats: () => (this.d.stats ? this.d.stats(conv) : roomAudioStats(this.parts(conv).room)),
+      speaking: () => this.conv === conv && this.state.speaking,
+      local: () => this.local(conv),
+      log,
+    }).start();
+    const check = setInterval(() => this.checkAudio(conv), 250);
+    (check as { unref?: () => void }).unref?.();
+    this.unwatchAudio.push(() => clearInterval(check));
+  }
+
+  /** Nothing audible can play while the agent speaks: the pill says so (and flattens its waves). */
+  checkAudio(conv: VoiceConv | null = this.conv): void {
+    if (!conv || this.conv !== conv) return;
+    const { room, contexts } = this.parts(conv);
+    const why = audioBlocked({ speaking: this.state.speaking, contexts: contexts.map((c) => c.state as string), canPlay: room ? room.canPlaybackAudio : null, outputLost: this.outputLost }) ?? "";
+    if (why === (this.state.audio ?? "")) return;
+    this.d.log?.(why ? "voice audio blocked" : "voice audio unblocked", { why: why || null, ...this.local(conv) });
+    this.set({ audio: why });
+  }
+
+  /** "No sound? Tap to reconnect audio": contexts resumed, LiveKit's startAudio, the output re-set. */
+  async reconnectAudio(): Promise<void> {
+    const conv = this.conv;
+    if (!conv) return;
+    const { room, contexts } = this.parts(conv);
+    this.d.log?.("voice audio reconnect", this.local(conv));
+    try {
+      this.d.unlock?.();
+    } catch {
+      /* none */
+    }
+    await room?.startAudio?.().catch(() => undefined);
+    for (const c of contexts) if (c.state !== "running" && c.state !== "closed") await c.resume?.().catch(() => undefined);
+    if (conv.changeOutputDevice && (this.outPin.pinned || this.outputLost)) {
+      try {
+        await conv.changeOutputDevice({ outputDeviceId: await this.outPin.target() });
+        this.outputLost = false;
+      } catch {
+        /* still gone */
+      }
+    }
+    this.checkAudio(conv);
+  }
+
+  private unwatch(): void {
+    for (const f of this.unwatchAudio.splice(0)) {
+      try {
+        f();
+      } catch {
+        /* gone */
+      }
+    }
+    this.playback?.stop();
+    this.playback = null;
+  }
+
+  /** The playback monitor of the live call (tests, diagnostics). */
+  get monitor(): PlaybackMonitor | null {
+    return this.playback;
+  }
+
+  /** The pinned mic's device id (null: the system default) — tests, diagnostics. */
+  get micDevice(): string | null {
+    return this.pin.pinned?.deviceId ?? null;
+  }
+  /** The pinned output's device id (null: the system default). */
+  get outputDevice(): string | null {
+    return this.outPin.pinned?.deviceId ?? null;
   }
 
   private startUpdates(conv: VoiceConv, cursor: string | null): void {
@@ -659,8 +890,14 @@ export class VoiceController {
     if (this.debounceT) clearTimeout(this.debounceT);
     this.debounceT = null;
     this.conv = null;
+    this.unwatchDevices?.();
+    this.unwatchDevices = null;
+    this.unwatch();
+    this.pin.reset();
+    this.outPin.reset();
+    this.outputLost = false;
     this.dropMic();
-    this.set(why ? { phase: "error", error: why, speaking: false, muted: false } : { phase: "idle", error: "", speaking: false, muted: false });
+    this.set(why ? { phase: "error", error: why, speaking: false, muted: false, audio: "" } : { phase: "idle", error: "", speaking: false, muted: false, audio: "" });
   }
 
   private dropMic(): void {
