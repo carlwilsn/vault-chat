@@ -25,6 +25,7 @@ import { applyDiskContent, pendingBoxText, registerDirty, setDiskChanged, useLiv
 
 import { Markdown } from "./Markdown";
 import { flipNthTaskCheckbox, localPathFromUrl } from "./mdPipeline";
+import { hit } from "./shortcuts";
 
 // Monaco (with its languages) is most of the bundle and only edits non-markdown
 // files, so it loads on first use (main.tsx prefetches it once startup settles)
@@ -468,8 +469,7 @@ export function MarkdownView({ paneId }: Props) {
     if (mode !== "view" || k !== "markdown" || !isActive) return;
 
     const onKey = (e: KeyboardEvent) => {
-      const mod = e.ctrlKey || e.metaKey;
-      if (!mod || e.key.toLowerCase() !== "l") return;
+      if (!hit(e, "edit.ask")) return;
 
       const sel = window.getSelection();
       const selectionText = sel && !sel.isCollapsed ? sel.toString() : "";
@@ -535,15 +535,12 @@ export function MarkdownView({ paneId }: Props) {
     const hasNoContextAsk = hasMarquee || k === "notebook";
     if (!hasNoContextAsk) return;
     const onKey = (e: KeyboardEvent) => {
-      const mod = e.ctrlKey || e.metaKey;
-      if (!mod) return;
-      const key = e.key.toLowerCase();
-      if (key === "m" && hasMarquee) {
+      if (hit(e, "edit.marquee") && hasMarquee) {
         e.preventDefault();
         window.dispatchEvent(new CustomEvent("vc-marquee-toggle"));
         return;
       }
-      if (key !== "l") return;
+      if (!hit(e, "edit.ask")) return;
       e.preventDefault();
       setInlineAsk({
         anchor: {

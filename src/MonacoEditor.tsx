@@ -3,6 +3,7 @@ import Editor from "@monaco-editor/react";
 import type * as monaco from "monaco-editor";
 import { useStore } from "./store";
 import { reportScroll } from "./scrollTarget";
+import { monacoKeys } from "./shortcuts";
 import { decodeTarget, landLines } from "./viewTarget";
 import { extToMonacoLang } from "./monaco-setup";
 import {
@@ -151,14 +152,8 @@ export function MonacoEditor({
       });
     };
 
-    editor.addCommand(
-      monacoNs.KeyMod.CtrlCmd | monacoNs.KeyCode.KeyK,
-      () => openInline("edit"),
-    );
-    editor.addCommand(
-      monacoNs.KeyMod.CtrlCmd | monacoNs.KeyCode.KeyL,
-      () => openInline("ask"),
-    );
+    editor.addCommand(monacoKeys("edit.inline", monacoNs), () => openInline("edit"));
+    editor.addCommand(monacoKeys("edit.ask", monacoNs), () => openInline("ask"));
 
     // Push the Monaco selection into the store so Ctrl+N can pick it
     // up as the note's source_selection. window.getSelection() doesn't

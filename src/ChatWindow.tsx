@@ -4,6 +4,8 @@ import { useStore } from "./store";
 import { applyHljsTheme } from "./hljsTheme";
 import { useGlobalAnchorClickHandler } from "./linkNav";
 import { dispatchChatAction } from "./sync";
+import { ShortcutSheet } from "./ShortcutSheet";
+import { hit } from "./shortcuts";
 
 /**
  * The chat popout window: the fullscreen chat itself (FullscreenChat.tsx), with
@@ -37,15 +39,15 @@ export function ChatWindow() {
         return;
       }
       if (e.altKey) return;
-      if (k === "b" && !e.shiftKey) {
+      if (hit(e, "view.files")) {
         e.preventDefault();
         if (!e.repeat) useStore.getState().toggleChatSidebar();
-      } else if (k === "t" && !e.shiftKey) {
+      } else if (hit(e, "chat.new")) {
         e.preventDefault();
         if (e.repeat || !useStore.getState().vaultPath) return;
         useStore.getState().newConversation();
         setTimeout(focusComposer, 0);
-      } else if (k === "d" && !e.shiftKey) {
+      } else if (hit(e, "voice.toggle")) {
         e.preventDefault();
         if (!e.repeat) dispatchChatAction({ kind: "toggleVoice" });
       }
@@ -54,7 +56,12 @@ export function ChatWindow() {
     return () => window.removeEventListener("keydown", onKey, true);
   }, []);
 
-  return <FullscreenChat onFocusComposer={focusComposer} />;
+  return (
+    <>
+      <FullscreenChat onFocusComposer={focusComposer} />
+      <ShortcutSheet />
+    </>
+  );
 }
 
 // Composer focus is owned by ChatPane (the same event App.tsx sends).

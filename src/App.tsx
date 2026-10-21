@@ -15,6 +15,8 @@ import { VoiceTextPanel } from "./VoiceTextPanel";
 import { NotesPanel } from "./NotesPanel";
 import { ChatsPanel } from "./ChatsPanel";
 import { UpdateBanner } from "./UpdateBanner";
+import { ShortcutSheet } from "./ShortcutSheet";
+import { hit } from "./shortcuts";
 import { fileKind } from "./fileKind";
 import type { NoteAnchor } from "./notes";
 import { useStore } from "./store";
@@ -145,14 +147,13 @@ export default function App() {
   const lastThemeToggleRef = useRef(0);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      const k = e.key.toLowerCase();
       // Alt+L — theme toggle. We have to guard against three different
       // ways the same chord can fire twice: keyboard auto-repeat, a
       // synthetic re-emit from the OS menu-activation that Alt sometimes
       // triggers on Windows, and rapid back-to-back keydowns from the
       // user mashing the chord. e.repeat catches auto-repeat; the time
       // lockout absorbs the other two without affecting normal toggles.
-      if (k === "l" && e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
+      if (hit(e, "view.theme")) {
         e.preventDefault();
         if (e.repeat) return;
         const now = Date.now();
@@ -167,7 +168,7 @@ export default function App() {
       // (~30 Hz). Without this guard, Ctrl+B flickers the pane on/off,
       // Ctrl+J spawns a terminal per repeat, etc. One press = one fire.
       if (e.repeat) return;
-      if (k === "n" && !e.shiftKey && !e.altKey) {
+      if (hit(e, "files.note")) {
         // Ctrl+N — open a fresh note composer for the current vault.
         // Intentionally also fires while focused in a Monaco editor
         // or a textarea — the user often wants to capture a thought
@@ -221,7 +222,7 @@ export default function App() {
         }
         return;
       }
-      if (k === "e") {
+      if (hit(e, "edit.mode")) {
         if (!currentFile) return;
         e.preventDefault();
         // In split mode, Ctrl+E toggles only the active pane so users
@@ -233,25 +234,25 @@ export default function App() {
         } else {
           toggleMode();
         }
-      } else if (k === "b" && !e.shiftKey) {
+      } else if (hit(e, "view.files")) {
         e.preventDefault();
         // Fullscreen chat has no file tree: its left panel is the chats.
         const st = useStore.getState();
         if (st.chatFullscreen && !st.popoutOpen) st.toggleChatSidebar();
         else toggleLeft();
-      } else if (k === "b" && e.shiftKey) {
+      } else if (hit(e, "view.chat")) {
         e.preventDefault();
         toggleRight();
-      } else if (k === "f" && e.shiftKey && !e.altKey) {
+      } else if (hit(e, "view.fullscreen")) {
         // Ctrl+Shift+F — toggle borderless fullscreen chat. Covers the
         // titlebar, file tree, and viewer with just the ChatPane. Same
         // chord exits.
         e.preventDefault();
         useStore.getState().toggleChatFullscreen();
-      } else if (k === "h" && !e.shiftKey && !e.altKey) {
+      } else if (hit(e, "files.history")) {
         e.preventDefault();
         setShowHistory(true);
-      } else if (k === "t" && !e.shiftKey && !e.altKey) {
+      } else if (hit(e, "chat.new")) {
         // Ctrl+T — start a fresh chat. The browser/webview's native
         // "new tab" is already swallowed by Tauri, so we don't fight
         // any platform shortcut here.
@@ -260,7 +261,7 @@ export default function App() {
         e.preventDefault();
         s.newConversation();
         if (s.rightCollapsed) s.toggleRight();
-      } else if (k === "j" && !e.altKey) {
+      } else if (hit(e, "view.terminal") || hit(e, "view.terminalOther")) {
         // Ctrl+J: the terminal where the chat runs (the box for a box vault); Shift: the other one.
         e.preventDefault();
         openTerminal({ shift: e.shiftKey }).catch((err) => console.error("[terminal] failed:", err));
@@ -423,12 +424,12 @@ export default function App() {
   // in fullscreen chat, which has no titlebar.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.ctrlKey && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "d") {
+      if (hit(e, "voice.toggle")) {
         e.preventDefault();
         toggleVoice();
       }
       // Ctrl+Shift+M: mute / unmute a live call (the composer's Mute button). No call: the key is left alone.
-      if (e.ctrlKey && e.shiftKey && !e.altKey && e.key.toLowerCase() === "m" && !e.repeat && toggleVoiceMute()) e.preventDefault();
+      if (hit(e, "voice.mute") && !e.repeat && toggleVoiceMute()) e.preventDefault();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -454,6 +455,7 @@ export default function App() {
       <NotesPanel open={showNotesPanel} onClose={() => setShowNotesPanel(false)} />
       <VoiceTextPanel />
       <UpdateBanner />
+      <ShortcutSheet />
     </>
   );
 

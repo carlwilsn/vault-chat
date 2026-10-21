@@ -24,6 +24,7 @@ import {
 } from "./InlineEditPrompt";
 import { useStore } from "./store";
 import { reportScroll } from "./scrollTarget";
+import { cmKey } from "./shortcuts";
 import { decodeTarget, landLines } from "./viewTarget";
 // The in-place preview (math, tables, images, rules, …) lives in livePreview.ts.
 import { currentFileField, livePreviewField, setCurrentFileEffect } from "./livePreview";
@@ -290,7 +291,7 @@ export function LiveEditor({
       history(),
       keymap.of([
         {
-          key: "Mod-k",
+          key: cmKey("edit.inline"),
           preventDefault: true,
           run: (view) => {
             // Humanized files suppress Ctrl+K entirely.
@@ -300,7 +301,7 @@ export function LiveEditor({
           },
         },
         {
-          key: "Mod-l",
+          key: cmKey("edit.ask"),
           preventDefault: true,
           run: (view) => {
             setInlineEdit(buildInlineEditContext(view, "md", "ask"));

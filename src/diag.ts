@@ -12,6 +12,7 @@ import { useStore } from "./store";
 import { APP_VERSION, vlog, vlogFlush, flushDebugLogToDisk } from "./debugLog";
 import { cev, flushClientEvents } from "./clientEvents";
 import { redactText, safeData } from "./logRedact";
+import { hit } from "./shortcuts";
 
 export const DIAG_MINUTES = 15;
 
@@ -135,7 +136,7 @@ export function installDiagShortcut(): void {
   };
   (window as unknown as { vcDiag: typeof run }).vcDiag = run;
   window.addEventListener("keydown", (e) => {
-    if ((e.ctrlKey || e.metaKey) && e.shiftKey && !e.altKey && e.key.toLowerCase() === "d" && !e.repeat) {
+    if (hit(e, "box.diag") && !e.repeat) {
       e.preventDefault();
       void run();
     }

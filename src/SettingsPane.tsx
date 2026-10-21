@@ -22,6 +22,8 @@ import { boxGet, boxPost } from "./boxChat";
 import { pushKeysToBox, keysChanged, subscribeKeyPush } from "./boxKeys";
 import { checkVoiceModel, NEED_LABEL, type Check as ModelCheck } from "./modelCaps";
 import { BoxModelChecks } from "./BoxModelChecks";
+import { openShortcutSheet } from "./ShortcutSheet";
+import { chordText } from "./shortcuts";
 import {
   fetchSharedVoices,
   recommendedVoices,
@@ -39,7 +41,7 @@ import {
   type VoiceDetail,
 } from "./voiceLibraryBrowse";
 
-// Five sections: Models, Keys, Voice, Box, Appearance.
+// Five sections: Models, Keys, Voice, Box, Appearance; then Keyboard shortcuts (the Ctrl+/ sheet).
 
 const mask = (k?: string) => (k ? `${k.slice(0, 6)}…${k.slice(-4)}` : "not set");
 
@@ -77,6 +79,14 @@ export function SettingsPane() {
         <BoxSection />
         <Divider />
         <AppearanceSection />
+        <button
+          onClick={openShortcutSheet}
+          className="w-full flex items-center justify-between rounded px-2 py-1.5 -mx-2 text-[12px] text-foreground/90 hover:bg-accent/60"
+          data-el="settings-shortcuts"
+        >
+          <span>Keyboard shortcuts</span>
+          <span className="text-[11px] text-muted-foreground">{chordText("Mod+/")}</span>
+        </button>
       </div>
     </div>
   );
