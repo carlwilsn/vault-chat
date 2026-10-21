@@ -33,7 +33,7 @@ import {
   type NoteSnap,
   type YouLayer,
 } from "../src/activityCore";
-import { BOARDS_DIR, BOARD_FILE, OVERVIEW_FILE, parseBoard, validSlug } from "../src/boardFormat";
+import { BOARDS_DIR, BOARD_FILE, OVERVIEW_FILE, VIEW_FILE, parseBoard, validSlug } from "../src/boardFormat";
 
 export function activityOn(): boolean {
   return process.env.VC_ACTIVITY !== "0";
@@ -101,6 +101,7 @@ export function latestBoard(vault: string): BoardSnap | null {
       const b = parseBoard(readFileSync(join(vault, BOARDS_DIR, slug, BOARD_FILE), "utf8"));
       if (best && b.updated <= best.updated) continue;
       const overview = `${BOARDS_DIR}/${slug}/${OVERVIEW_FILE}`;
+      const view = `${BOARDS_DIR}/${slug}/${VIEW_FILE}`;
       best = {
         slug,
         name: b.name,
@@ -108,6 +109,7 @@ export function latestBoard(vault: string): BoardSnap | null {
         strokes: b.strokes.length,
         items: b.items.map((i) => ({ kind: String(i.kind ?? "item"), label: typeof i.label === "string" ? i.label.replace(/\s+/g, " ").trim().slice(0, 60) : "" })),
         overview: existsSync(join(vault, ...overview.split("/"))) ? overview : null,
+        view: existsSync(join(vault, ...view.split("/"))) ? view : null,
       };
     } catch {
       /* not a board */

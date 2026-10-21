@@ -192,4 +192,14 @@ describe("boards", () => {
       expect((await (await get("/api/v1/boards")).json()).boards.map((b: any) => b.slug)).not.toContain("escape");
     }
   });
+
+  it("saves the part in view as view.png beside the overview, never committed", async () => {
+    const board = (await (await get("/api/v1/boards/lecture-3-fourier")).json()) as any;
+    expect((await post("/api/v1/boards/lecture-3-fourier", { board, base: board.rev, overview: PNG, view: PNG })).status).toBe(200);
+    const dir = join(vault, "boards", "lecture-3-fourier");
+    expect(readFileSync(join(dir, "view.png")).subarray(1, 4).toString()).toBe("PNG");
+    expect(readFileSync(join(vault, "boards", ".gitignore"), "utf8").split("\n")).toContain("*/view.png");
+    const b2 = (await (await get("/api/v1/boards/lecture-3-fourier")).json()) as any;
+    expect((await post("/api/v1/boards/lecture-3-fourier", { board: b2, base: b2.rev, view: Buffer.from("<svg/>").toString("base64") })).status).toBe(400);
+  });
 });

@@ -23,6 +23,8 @@
 export const BOARDS_DIR = "boards";
 export const BOARD_FILE = "board.json";
 export const OVERVIEW_FILE = "overview.png";
+/** The part of the board in view on the iPad at its last save (for the agent; not committed). */
+export const VIEW_FILE = "view.png";
 export const ASSETS_DIR = "assets";
 export const BOARD_VERSION = 2;
 /** Version 1's page, and the gap between its pages (for the migration). */

@@ -186,7 +186,7 @@ export function parseLog(text: string): ActivityEntry[] {
 // compaction), and voice calls the same server function (server/activity.ts youLayer).
 
 /** The newest board, as the layer shows it (server/activity.ts reads it from boards/). */
-export type BoardSnap = { slug: string; name: string; updated: number; strokes: number; items: { kind: string; label: string }[]; overview: string | null };
+export type BoardSnap = { slug: string; name: string; updated: number; strokes: number; items: { kind: string; label: string }[]; overview: string | null; view?: string | null };
 /** A note's latest state (server/activity.ts reads .vault-chat/notes.jsonl). */
 export type NoteSnap = { id: string; ts: number; created: boolean; status: string; text: string };
 export type YouSources = { entries: ActivityEntry[]; board?: BoardSnap | null; notes?: NoteSnap[] };
@@ -283,7 +283,7 @@ function boardLine(b: BoardSnap, now: number): string {
   const items = b.items.length
     ? `${b.items.length} item${b.items.length === 1 ? "" : "s"}: ${b.items.slice(0, 8).map((i) => (i.label ? `${i.label} (${i.kind})` : i.kind)).join(", ")}${b.items.length > 8 ? ", …" : ""}`
     : "no items";
-  const look = b.overview ? ` To see it, read ${b.overview}` : "";
+  const look = b.overview ? ` To see it, read ${b.overview} (the whole board)${b.view ? ` or ${b.view} (the part in view on the iPad)` : ""}` : "";
   return clip(`Board: "${b.name}" (boards/${b.slug}/), saved ${ago(now - b.updated)} — ${items}; ${b.strokes} ink stroke${b.strokes === 1 ? "" : "s"}.${look}`, 600);
 }
 

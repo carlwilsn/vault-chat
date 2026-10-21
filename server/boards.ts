@@ -20,7 +20,7 @@
 import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, sep } from "node:path";
-import { ASSETS_DIR, ASSET_RE, BOARDS_DIR, BOARD_VERSION, BOARD_FILE, HISTORY_BYTES, HISTORY_FILE, OVERVIEW_FILE, blankBoard, imageSize, parseBoard, parseHistory, serializeBoard, serializeHistory, slugify, validSlug, type Board, type BoardSummary } from "../src/boardFormat";
+import { ASSETS_DIR, ASSET_RE, BOARDS_DIR, BOARD_VERSION, BOARD_FILE, HISTORY_BYTES, HISTORY_FILE, OVERVIEW_FILE, VIEW_FILE, blankBoard, imageSize, parseBoard, parseHistory, serializeBoard, serializeHistory, slugify, validSlug, type Board, type BoardSummary } from "../src/boardFormat";
 import { HIDE_DEFAULTS_FILE, HIDE_FILE, hideOnce } from "../src/agentProjects";
 import { renameRetry, writeAtomic } from "./atomic";
 
@@ -60,10 +60,13 @@ function boardsRoot(vault: string): string {
   const root = join(vault, BOARDS_DIR);
   mkdirSync(root, { recursive: true });
   ensureBoardsHidden(vault);
-  // A board's undo history is this machine's working state, rewritten on every save: never committed.
+  // A board's undo history and the picture of the part in view are this machine's working state, rewritten on
+  // every save: never committed.
   const gi = join(root, ".gitignore");
-  if (!existsSync(gi)) writeFileSync(gi, `*/${HISTORY_FILE}
-`);
+  const want = [`*/${HISTORY_FILE}`, `*/${VIEW_FILE}`];
+  const have = existsSync(gi) ? readFileSync(gi, "utf8") : "";
+  const missing = want.filter((l) => !have.split(/\r?\n/).includes(l));
+  if (missing.length) writeFileSync(gi, (have && !have.endsWith("\n") ? have + "\n" : have) + missing.join("\n") + "\n");
   return root;
 }
 
@@ -153,6 +156,11 @@ function saveNow(vault: string, slug: string, body: any): Out {
     overview = Buffer.from(body.overview.replace(/^data:image\/png;base64,/, ""), "base64");
     if (overview.length > PNG_CAP || !overview.subarray(0, 8).equals(PNG_MAGIC)) return { status: 400, body: { error: "overview: not a PNG" } };
   }
+  let view: Buffer | null = null;
+  if (typeof body?.view === "string") {
+    view = Buffer.from(body.view.replace(/^data:image\/png;base64,/, ""), "base64");
+    if (view.length > PNG_CAP || !view.subarray(0, 8).equals(PNG_MAGIC)) return { status: 400, body: { error: "view: not a PNG" } };
+  }
   for (const it of next.items) {
     if (it.src && !existsSync(join(dir, it.src))) return { status: 400, body: { error: `item ${it.id}: ${it.src} is not in the board folder` } };
     if (typeof it.snap === "string" && (!ASSET_RE.test(it.snap) || it.snap.includes("..") || !existsSync(join(dir, it.snap)))) return { status: 400, body: { error: `item ${it.id}: its snapshot is not in the board folder` } };
@@ -160,9 +168,10 @@ function saveNow(vault: string, slug: string, body: any): Out {
   next.rev = (cur?.rev ?? 0) + 1;
   next.updated = Date.now();
   next.created = cur?.created ?? next.created;
-  if (overview) {
-    const f = join(dir, OVERVIEW_FILE);
-    writeFileSync(`${f}.tmp`, overview);
+  for (const [file, png] of [[OVERVIEW_FILE, overview], [VIEW_FILE, view]] as const) {
+    if (!png) continue;
+    const f = join(dir, file);
+    writeFileSync(`${f}.tmp`, png);
     renameRetry(`${f}.tmp`, f);
   }
   writeAtomic(join(dir, BOARD_FILE), serializeBoard(next));
