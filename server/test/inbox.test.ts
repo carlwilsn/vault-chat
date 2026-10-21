@@ -9,7 +9,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmp, cleanup, makeVault, makeKeyStore, startServer, type Running } from "./helpers";
 import { makePdf, textPage } from "./pdfgen";
-import { findBrowser, headless, headlessStats, stopWarmBrowser, warmBrowserPid } from "../headless";
+import { findBrowser, headless, headlessStats, killProcessTree, stopWarmBrowser, warmBrowserPid } from "../headless";
 import { failMake, inboxSettled, listEntries, mathErrors, readEntry, sendEntry, startMake, svgCheck } from "../inbox";
 
 const PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==", "base64");
@@ -297,7 +297,7 @@ describe("speed: one warm browser, parts checked in parallel, a make streamed pa
     // It dies: the next check starts it again.
     const pid = warmBrowserPid()!;
     expect(pid).toBeGreaterThan(0);
-    process.kill(pid, "SIGKILL");
+    killProcessTree(pid); // the browser and its helpers (taskkill /T on Windows; already gone is fine)
     for (let i = 0; i < 50 && warmBrowserPid() === pid; i++) await new Promise((r) => setTimeout(r, 100));
     expect((await headless(page, { w: 200, h: 100 })).verdict).toBe("ok");
     expect(warmBrowserPid()).not.toBe(pid);

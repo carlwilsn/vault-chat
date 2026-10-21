@@ -11,7 +11,7 @@
 //
 // The browser: $VC_HEADLESS_BROWSER, else chromium / google-chrome / chrome /
 // msedge on PATH, the Nix store, or the usual Windows and macOS locations.
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
@@ -213,7 +213,25 @@ async function runPage(page: Page, file: string, o: HeadlessOpts): Promise<Headl
 // dies is started again on the next check. When the warm path fails, the check
 // runs on a browser of its own (the one-shot path below).
 
-type Warm = { proc: ChildProcess; conn: Conn; dir: string; active: number; idle: ReturnType<typeof setTimeout> | null };
+/** `pid`: the browser's own process (on Windows the launcher we started may have handed off to it and exited). */
+type Warm = { proc: ChildProcess; pid: number | null; conn: Conn; dir: string; active: number; idle: ReturnType<typeof setTimeout> | null };
+
+/**
+ * Kill a process and everything it started, now: `taskkill /F /T` on Windows (a browser is a tree of processes, and
+ * a signal reaches only the one), SIGKILL elsewhere. A process already gone (ESRCH, taskkill's "not found") is fine.
+ */
+export function killProcessTree(pid: number | null | undefined): void {
+  if (!pid || pid <= 0) return;
+  if (process.platform === "win32") {
+    spawnSync("taskkill", ["/F", "/T", "/PID", String(pid)], { stdio: "ignore", windowsHide: true });
+    return;
+  }
+  try {
+    process.kill(pid, "SIGKILL");
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== "ESRCH") throw e;
+  }
+}
 let warmP: Promise<Warm> | null = null;
 let warmNow: Warm | null = null;
 let pageSeq = 0;
@@ -237,6 +255,14 @@ function killWarm(w: Warm): void {
       w.proc.kill("SIGKILL");
     } catch {
       /* gone */
+    }
+    // The browser itself (on Windows not the launcher we started), and its helpers.
+    if (w.pid && w.pid !== w.proc.pid) {
+      try {
+        killProcessTree(w.pid);
+      } catch {
+        /* gone */
+      }
     }
     try {
       rmSync(w.dir, { recursive: true, force: true });
@@ -266,7 +292,16 @@ async function startWarm(bin: string): Promise<Warm> {
     const { port, path } = found;
     const url = path ? `ws://127.0.0.1:${port}${path}` : (((await (await fetch(`http://127.0.0.1:${port}/json/version`)).json()) as any).webSocketDebuggerUrl as string);
     const conn = await Conn.open(url);
-    const w: Warm = { proc, conn, dir, active: 0, idle: null };
+    // The browser's own process id (SystemInfo: the "browser" process), else the one we started.
+    let pid: number | null = proc.pid ?? null;
+    try {
+      const info = await conn.call("SystemInfo.getProcessInfo", {}, undefined, Date.now() + 3000);
+      const b = (info?.processInfo ?? []).find((p: { type?: string; id?: number }) => p.type === "browser");
+      if (typeof b?.id === "number" && b.id > 0) pid = b.id;
+    } catch {
+      /* an older browser: the launcher's */
+    }
+    const w: Warm = { proc, pid, conn, dir, active: 0, idle: null };
     // On Windows the launcher may hand off and exit 0: the socket closing is what says the browser is gone.
     const gone = () => {
       if (warmNow === w) killWarm(w);
@@ -278,6 +313,7 @@ async function startWarm(bin: string): Promise<Warm> {
       process.on("exit", () => {
         try {
           warmNow?.proc.kill("SIGKILL");
+          if (warmNow?.pid && warmNow.pid !== warmNow.proc.pid) killProcessTree(warmNow.pid);
         } catch {
           /* gone */
         }
@@ -333,7 +369,7 @@ export function stopWarmBrowser(): void {
 }
 
 /** The warm browser's process id, or null (tests). */
-export const warmBrowserPid = (): number | null => warmNow?.proc.pid ?? null;
+export const warmBrowserPid = (): number | null => warmNow?.pid ?? warmNow?.proc.pid ?? null;
 
 async function warmCheck(bin: string, html: string, o: HeadlessOpts): Promise<HeadlessResult> {
   const w = await warmBrowser(bin);
