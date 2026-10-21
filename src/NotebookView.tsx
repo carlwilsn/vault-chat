@@ -1,9 +1,12 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import ReactMarkdown from "react-markdown";
 import rehypeHighlight from "rehype-highlight";
 import { Markdown } from "./Markdown";
 import { Eye } from "lucide-react";
 import "katex/dist/katex.min.css";
+import { useStore } from "./store";
+import { reportScroll } from "./scrollTarget";
+import { decodeTarget, landCell } from "./viewTarget";
 
 type NbCell =
   | { cell_type: "markdown"; source: string | string[] }
@@ -43,7 +46,7 @@ const pickMime = (data: Record<string, string | string[]>): { mime: string; valu
 const stripAnsi = (s: string): string =>
   s.replace(/\x1B\[[0-9;?]*[ -/]*[@-~]/g, "").replace(/\x1B\][^\x07]*\x07/g, "");
 
-export function NotebookView({ content }: { content: string }) {
+export function NotebookView({ content, path }: { content: string; path?: string | null }) {
   const nb = useMemo<Notebook | { error: string }>(() => {
     try {
       return JSON.parse(content) as Notebook;
@@ -51,6 +54,31 @@ export function NotebookView({ content }: { content: string }) {
       return { error: (e as Error).message };
     }
   }, [content]);
+
+  // Show / ScrollTo: a cell (1-based) or the first cell holding a phrase, scrolled to and outlined for a moment.
+  const hostRef = useRef<HTMLDivElement | null>(null);
+  const pendingScrollAnchor = useStore((s) => s.pendingScrollAnchor);
+  useEffect(() => {
+    const req = pendingScrollAnchor;
+    if (!req || !path || req.path !== path || "error" in nb) return;
+    useStore.getState().clearScrollAnchor();
+    const r = landCell(decodeTarget(req.anchor), nb.cells.map((c) => joinSource(c.source)), path);
+    if ("error" in r) {
+      reportScroll(path, r.error);
+      return;
+    }
+    requestAnimationFrame(() => {
+      const el = hostRef.current?.querySelector<HTMLElement>(`[data-cell="${r.cell}"]`);
+      if (!el) {
+        reportScroll(path, `Error: cell ${r.cell} is not on screen; try again in a moment.`);
+        return;
+      }
+      el.scrollIntoView({ behavior: "smooth", block: "start" });
+      el.classList.add("vc-cell-flash");
+      setTimeout(() => el.classList.remove("vc-cell-flash"), 1600);
+      reportScroll(path, r.said);
+    });
+  }, [pendingScrollAnchor, path, nb]);
 
   if ("error" in nb) {
     return (
@@ -66,7 +94,7 @@ export function NotebookView({ content }: { content: string }) {
     "python";
 
   return (
-    <div className="flex-1 overflow-auto">
+    <div ref={hostRef} className="flex-1 overflow-auto">
       <div className="sticky top-0 z-10 bg-muted/80 backdrop-blur border-b border-border/60 px-6 py-1.5 flex items-center gap-2 text-[11px] text-muted-foreground">
         <Eye className="h-3 w-3" />
         <span>Read-only notebook view</span>
@@ -75,7 +103,9 @@ export function NotebookView({ content }: { content: string }) {
       </div>
       <div className="max-w-[980px] mx-auto px-6 py-6 space-y-4">
         {nb.cells.map((cell, i) => (
-          <Cell key={i} cell={cell} lang={lang} />
+          <div key={i} data-cell={i + 1}>
+            <Cell cell={cell} lang={lang} />
+          </div>
         ))}
       </div>
     </div>

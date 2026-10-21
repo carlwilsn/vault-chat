@@ -864,3 +864,68 @@ describe("parity. One tool set on every surface, by construction (voice hands ev
     expect([...all].sort()).toEqual(["Ask", "LookAtScreen", "ScrollTo", "ShowFile"]);
   });
 });
+
+describe("m. Board voice: \"put problem 3 on my laptop\", then \"I'm not near my laptop\" (Show, one tool on every surface)", () => {
+  let onLaptop = "";
+  let toInbox = "";
+  let here = "";
+  let entryId = "";
+  const shows: any[] = [];
+  let leave: () => void = () => {};
+  let laptopApp: ReturnType<typeof setInterval> | null = null;
+
+  it("setup: a problem set in the vault; the laptop app on the feed (it opens what it is sent and acks); three asks from the board", async () => {
+    const S = await import("../show");
+    mkdirSync(join(vault, "hw"), { recursive: true });
+    writeFileSync(join(vault, "hw", "ps5.md"), "# Problem set 5\n\n## Problem 1\n\nShow $a_n \to 0$.\n\n## Problem 2\n\nBound $|x_n|$.\n\n## Problem 3\n\nProve the contraction has a unique fixed point.\n");
+    // The laptop app: its feed is live (/poll?client=laptop), and it acks each show signal as src/showOnLaptop.ts does.
+    leave = S.feedOpened(vault, "laptop");
+    let seen = broadcasts.length;
+    laptopApp = setInterval(() => {
+      for (const ev of broadcasts.slice(seen)) {
+        if (ev.type !== "show" || ev.to !== "laptop") continue;
+        shows.push(ev);
+        S.ackShow(ev.id, { ok: true, landed: `opened ${String(ev.path).split("/").pop()}; scrolled to heading "${ev.target?.heading}" in ${String(ev.path).split("/").pop()}` });
+      }
+      seen = broadcasts.length;
+    }, 10);
+    // Carl's words on the board reach the conversation's agent (voice hands every action to it); its Show call, as pi runs it.
+    const t1 = await turn({ text: "put problem 3 on my laptop", client: "board" }, "It's on your laptop.", async (threadId) => {
+      onLaptop = (await need(backend.handlers, "tool handlers").toolCall(threadId, "Show", { path: "hw/ps5.md", where: "laptop", heading: "Problem 3" })).text;
+    });
+    await turn({ text: "I'm not near my laptop, send it to my iPad", convId: t1.convId, client: "board" }, "It's in your inbox.", async (threadId) => {
+      toInbox = (await backend.handlers!.toolCall(threadId, "Show", { path: "hw/ps5.md", where: "board", heading: "Problem 3" })).text;
+    });
+    // "Show me" with no device named: Carl is talking on the board (his lines there are in the "you" layer).
+    await voice.voiceTranscript(voiceDeps(), { role: "user", text: "show me problem 1", convId: t1.convId, device: "board" });
+    await turn({ text: "show me problem 1", convId: t1.convId, client: "board" }, "Sent.", async (threadId) => {
+      here = (await backend.handlers!.toolCall(threadId, "Show", { path: "hw/ps5.md", heading: "Problem 1" })).text;
+    });
+    entryId = /entry (\S+?)\.$/.exec(toInbox)?.[1] ?? "";
+  });
+
+  afterAll(() => {
+    if (laptopApp) clearInterval(laptopApp);
+    leave();
+  });
+
+  pass("m", "board voice → the agent → laptop", "\"put problem 3 on my laptop\": a show signal for the laptop, and the result is the laptop's confirmation", () => {
+    expect(shows[0]).toMatchObject({ type: "show", to: "laptop", path: "hw/ps5.md", target: { heading: "Problem 3" } });
+    expect(onLaptop).toBe('Shown on the laptop: opened ps5.md; scrolled to heading "Problem 3" in ps5.md.');
+  });
+  pass("m", "board voice → the agent → board inbox", "\"I'm not near my laptop\": problem 3 lands in the board inbox (one part, labelled)", async () => {
+    expect(toInbox).toMatch(/^In Carl's board inbox: "ps5\.md, "Problem 3"" \(1 part\)/);
+    const { readEntry } = await import("../inbox");
+    const e = readEntry(vault, entryId)!;
+    expect(e.parts).toHaveLength(1);
+    expect((e.parts[0] as any).label).toBe("Problem 3");
+    expect(broadcasts.some((b) => b.type === "inbox" && b.id === entryId && b.landed)).toBe(true);
+  });
+  pass("m", "the agent (here)", "\"show me\" with no device named goes to the device he is talking on (the board), not the laptop", () => {
+    expect(here).toMatch(/^In Carl's board inbox: "ps5\.md, "Problem 1""/);
+    expect(shows).toHaveLength(1);
+  });
+  pass("m", "the agent (every surface)", "Show is one of the agent's own tools (typed chat, laptop / board / phone voice through Ask)", () => {
+    expect(backend.threads.every((t) => t.tools.includes("Show"))).toBe(true);
+  });
+});

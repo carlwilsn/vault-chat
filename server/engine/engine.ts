@@ -29,6 +29,7 @@ import { Ledger } from "./ledger";
 import { pdfPages, pdfPagesSpec, pdfRead, webSearch } from "./extraTools";
 import { failMake, inboxLog, listEntries, readEntry, sendEntry, startMake, type InboxEvent } from "../inbox";
 import { BOARD_MAKER_PROMPT, boardMakeTask, makerStats } from "./boardTools";
+import { show, SHOW_DESCRIPTION, SHOW_SCHEMA } from "../show";
 import { startJob, jobStatus, jobList, jobStop, reapJobs, type PiJobEnv } from "./pi/jobs";
 import { ENGINE_ROLE_PROMPT } from "./prompt";
 import { isNoteTool, noteTool, noteToolSpecs } from "../notesTools";
@@ -248,6 +249,12 @@ export const ENGINE_TOOL_SPECS = [
     readOnly: true,
     description: "The whiteboard inbox: each entry's title, status (unread / read / added / being made / couldn't make) and, for added parts, the board and whether its items are still there. Give id for one entry.",
     inputSchema: { type: "object", properties: { id: { type: "string" } }, additionalProperties: false },
+  },
+  {
+    type: "function",
+    name: "Show",
+    description: SHOW_DESCRIPTION,
+    inputSchema: SHOW_SCHEMA as unknown as Record<string, unknown>,
   },
   {
     type: "function",
@@ -1373,6 +1380,11 @@ export class Engine {
         }
         case "BoardInbox":
           return text(boardInboxText(vault, a.id ? String(a.id) : null));
+        case "Show": {
+          // On the device he names (or is on): a signal the laptop / phone acks, or the inbox's validated send.
+          const r = await show({ vault, emit: (ev) => this.d.broadcast?.(ev), sendBoard: (b) => sendEntry(vault, b, { conversation: convId, emit: (ev) => this.inboxEvent(ev) }) }, a);
+          return { success: r.ok, contentItems: [{ type: "inputText", text: r.text }] };
+        }
         case "PdfRead":
           return text(await pdfRead(vault, a));
         case "PdfPages":

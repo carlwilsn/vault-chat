@@ -26,6 +26,7 @@ import BOARD_APP from "vc:board-app";
 import { addAsset, assetFile, createBoard, deleteBoard, getBoard, getHistory, listBoards, overviewPng, renameBoard, saveBoard } from "./boards";
 import { addToBoard, getEntry, listEntries, markAdded, markRead, partFile, sendEntry, type InboxCtx } from "./inbox";
 import { boxLogs } from "./boxLogs";
+import { ackShow, feedOpened } from "./show";
 import { boardLogPost, boxDiag } from "./diag";
 
 /** A vault on this box, as the routes see it (engine/index.ts VaultRef). */
@@ -451,6 +452,10 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
     return json(res, out.status, out.body);
   }
 
+  // pi's Show (server/show.ts): the laptop / phone / board app says what it did with a show signal.
+  const showAck = /^\/api\/v1\/show\/([^/]+)\/ack$/.exec(path);
+  if (showAck && method === "POST") return json(res, 200, { ok: true, waiting: ackShow(decodeURIComponent(showAck[1]!), await jsonBody(req)) });
+
   // The whiteboard's own log (board/src/log.ts): batched events → <state>/logs/board.jsonl.
   if (path === "/api/v1/board/log" && method === "POST") {
     const out = boardLogPost({ stateDir: cfg.stateDir, vaultName: scope.name, ua: String(req.headers["user-agent"] ?? "") }, await jsonBody(req));
@@ -721,6 +726,16 @@ const legacyVoice = new Map<string, { id: string | null; at: number }>();
  * `after=latest` (or none) → the head, no records. A cursor from another log (its epoch) or from
  * beyond the head → `reset`: start over from 0. */
 async function poll(res: ServerResponse, url: URL, vault: string): Promise<void> {
+  // Who follows the feed (`client=laptop|phone|board`): Show sends only to a live app (server/show.ts).
+  const leave = feedOpened(vault, url.searchParams.get("client"));
+  try {
+    await pollLog(res, url, vault);
+  } finally {
+    leave();
+  }
+}
+
+async function pollLog(res: ServerResponse, url: URL, vault: string): Promise<void> {
   const log = convLog(vault);
   const raw = url.searchParams.get("after") ?? "";
   const epoch = url.searchParams.get("epoch");

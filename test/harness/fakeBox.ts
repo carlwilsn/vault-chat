@@ -14,6 +14,7 @@ import { ConvLog } from "../../server/convlog/log.ts";
 import { appendEntries, newSessionFile, vcNote } from "../../server/convlog/piSession.ts";
 import type { EventBody, LogRecord, PendingInput, PiEntry } from "../../src/convlog/protocol.ts";
 import { fold, pendingOf, shown } from "../../src/convlog/reduce.ts";
+import { ackShow, feedOpened } from "../../server/show.ts";
 
 export class FakeBox {
   url = "";
@@ -23,6 +24,8 @@ export class FakeBox {
   /** Every request's route and the vault it named (`?vault=`). */
   seen: { route: string; vault: string | null }[] = [];
   down = false;
+  /** The vault Show (server/show.ts) counts this feed's clients for (the laptop test's vault). */
+  showVault = this.dir;
   /** Answer /poll this many ms late (the tailnet). */
   pollDelay = 0;
   private server!: http.Server;
@@ -199,6 +202,9 @@ export class FakeBox {
         const route = `${req.method} ${u.pathname}`;
         this.seen.push({ route, vault: u.searchParams.get("vault") });
         if (route === "GET /poll") {
+          // Who follows the feed, as the box's /poll records it (server/show.ts: Show sends only to a live app).
+          const leave = feedOpened(this.showVault, u.searchParams.get("client"));
+          res.on("close", leave);
           if (this.pollDelay) await new Promise((r) => setTimeout(r, this.pollDelay));
           const a = u.searchParams.get("after") ?? "latest";
           const epoch = u.searchParams.get("epoch");
@@ -225,6 +231,8 @@ export class FakeBox {
           return send(200, this.intent(b));
         }
         if (route === "GET /api/v1/vault/file") return send(404, { error: "no" });
+        const ack = /^\/api\/v1\/show\/([^/]+)\/ack$/.exec(u.pathname);
+        if (ack && req.method === "POST") return send(200, { ok: true, waiting: ackShow(decodeURIComponent(ack[1]!), raw ? JSON.parse(raw) : {}) });
         return send(404, { error: "not found" });
       });
     });

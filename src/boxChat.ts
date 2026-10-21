@@ -292,7 +292,7 @@ class BoxChatSession {
       try {
         if (this.cursor === null) await this.resync();
         if (!this.live()) return;
-        const r = (await httpGet(this.link, `/poll?after=${this.cursor}${this.epoch ? `&epoch=${encodeURIComponent(this.epoch)}` : ""}`, POLL_TIMEOUT_MS)) as PollAnswer & { epoch?: string };
+        const r = (await httpGet(this.link, `/poll?after=${this.cursor}${this.epoch ? `&epoch=${encodeURIComponent(this.epoch)}` : ""}&client=laptop`, POLL_TIMEOUT_MS)) as PollAnswer & { epoch?: string };
         if (!this.live()) return;
         if (this.down !== false) vlog("box.feed", { state: "connected", cursor: this.cursor, epoch: this.epoch, ...(this.down ? { downMs: Date.now() - this.down } : {}) });
         this.down = false;
@@ -412,6 +412,17 @@ class BoxChatSession {
         // Something landed in the board inbox: a live voice session mentions it at its next pause.
         if (typeof e.say === "string" && e.say) void import("./voice-elevenlabs").then((v) => v.announceAtNextPause(e.say as string)).catch(() => {});
         return;
+      case "show": {
+        // pi's Show: open it here (the file tree's way, scrolled to its target) and tell the box what happened.
+        const id = typeof e.id === "string" ? e.id : "";
+        if (e.to !== "laptop" || !id) return;
+        const link = this.link;
+        void import("./showOnLaptop")
+          .then((m) => m.showOnLaptop(e as unknown as import("./showOnLaptop").ShowSignal, { sync: () => boxSyncNow(this.vault, { pull: true }) }))
+          .then((ack) => httpPost(link, `/api/v1/show/${encodeURIComponent(id)}/ack`, ack))
+          .catch((err) => console.warn("[box-chat] show failed:", err));
+        return;
+      }
       case "vault_changed":
         // The agent on the box edited files and published them: fetch and merge them now.
         void boxSyncNow(this.vault, { pull: true });

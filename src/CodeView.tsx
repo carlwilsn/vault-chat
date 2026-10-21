@@ -2,6 +2,8 @@ import { useEffect, useRef } from "react";
 import ReactMarkdown from "react-markdown";
 import rehypeHighlight from "rehype-highlight";
 import { useStore } from "./store";
+import { reportScroll } from "./scrollTarget";
+import { decodeTarget, landLines } from "./viewTarget";
 import { pushViewportContextDebounced } from "./voice-elevenlabs";
 
 const EXT_TO_LANG: Record<string, string> = {
@@ -84,10 +86,15 @@ export function CodeView({
   useEffect(() => {
     if (!pendingScrollAnchor) return;
     if (!path || pendingScrollAnchor.path !== path) return;
-    const m = pendingScrollAnchor.anchor.match(/L(\d+)/);
-    if (!m) return;
-    const line = parseInt(m[1], 10);
+    const t = decodeTarget(pendingScrollAnchor.anchor);
+    if (t.line === undefined) return;
+    const r = landLines(t, content.split(/\r?\n/).length, path);
     const id = requestAnimationFrame(() => {
+      clearScrollAnchor();
+      if ("error" in r) {
+        reportScroll(path, r.error);
+        return;
+      }
       const scroller = scrollRef.current;
       const codeBlock = codeRef.current?.querySelector("code");
       if (scroller && codeBlock) {
@@ -96,13 +103,20 @@ export function CodeView({
         let lineHeight = parseFloat(cs.lineHeight);
         if (!Number.isFinite(lineHeight)) lineHeight = fontSize * 1.5;
         const blockTop = codeBlock.getBoundingClientRect().top - scroller.getBoundingClientRect().top + scroller.scrollTop;
-        const target = blockTop + (line - 1) * lineHeight - scroller.clientHeight * 0.3;
+        const target = blockTop + (r.line - 1) * lineHeight - scroller.clientHeight * 0.3;
         scroller.scrollTo({ top: Math.max(0, target), behavior: "smooth" });
-      }
-      clearScrollAnchor();
+        // The range, flashed for a moment.
+        const flash = document.createElement("div");
+        flash.className = "vc-line-flash";
+        Object.assign(flash.style, { position: "absolute", left: "0", right: "0", top: `${blockTop + (r.line - 1) * lineHeight}px`, height: `${(r.endLine - r.line + 1) * lineHeight}px`, pointerEvents: "none" });
+        if (getComputedStyle(scroller).position === "static") scroller.style.position = "relative";
+        scroller.appendChild(flash);
+        setTimeout(() => flash.remove(), 1600);
+        reportScroll(path, r.said);
+      } else reportScroll(path, `Error: ${path.split(/[\\/]/).pop()} is not on screen.`);
     });
     return () => cancelAnimationFrame(id);
-  }, [pendingScrollAnchor, path, clearScrollAnchor]);
+  }, [pendingScrollAnchor, path, clearScrollAnchor, content]);
 
   const onScroll = () => {
     const el = scrollRef.current;

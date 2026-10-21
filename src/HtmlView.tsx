@@ -5,7 +5,8 @@ import { isUnreadableAsText } from "./fileKind";
 import { openUrl, isExternalHref } from "./opener";
 import { InlineEditPrompt, type InlineEditRequest } from "./InlineEditPrompt";
 import { useStore } from "./store";
-import { matchSection, notFound, reportScroll, type Section } from "./scrollTarget";
+import { reportScroll, scrollHtmlWith } from "./scrollTarget";
+import { decodeTarget } from "./viewTarget";
 const LINK_INTERCEPT = `<script>(function(){
   function isExternal(href){ return /^(https?:|mailto:)/i.test(href); }
   function handle(e){
@@ -301,19 +302,7 @@ let scrollReq = 0;
 
 /** ScrollTo on an HTML page: an id, a section (heading or in-page link) by its text or slug, else the first place the phrase appears. */
 export async function scrollHtml(frame: () => HTMLIFrameElement | null, anchor: string, path: string): Promise<string> {
-  const name = path.split(/[\\/]/).pop() ?? path;
-  if (/^page=\d+$/.test(anchor)) return `Error: ${name} is a web page, not a PDF: it has no pages. Pass a heading (its text or #id) or a phrase on the page as \`anchor\`.`;
-  const req = ++scrollReq;
-  const listed = await askFrame(frame, { __vc_scroll_list: { req, q: anchor } }, (d) => (d?.__vc_scroll_list_result?.req === req ? (d.__vc_scroll_list_result as { sections: Section[]; byId: boolean }) : undefined), 5000);
-  if (!listed) return `Error: ${name} did not answer (the page is still loading, or it is not open in the viewer). Try again in a moment.`;
-  const sections = Array.isArray(listed.sections) ? listed.sections : [];
-  const i = listed.byId ? null : matchSection(sections, anchor);
-  const go = listed.byId ? { id: anchor.replace(/^#/, "") } : i !== null ? { i } : { text: anchor };
-  const done = await askFrame(frame, { __vc_scroll_go: { req, ...go } }, (d) => (d?.__vc_scroll_done?.req === req ? (d.__vc_scroll_done as { ok: boolean; where: string; error?: string }) : undefined), 3000);
-  if (!done) return `Error: ${name} did not answer the scroll. Try again in a moment.`;
-  if (done.ok) return `Scrolled to ${done.where} in ${name}`;
-  if (done.error) return `Error: the scroll in ${name} failed: ${done.error}`;
-  return notFound(anchor, path, sections.filter((s) => !s.link || !sections.some((h) => !h.link && h.text === s.text)));
+  return scrollHtmlWith((msg, pick, ms) => askFrame(frame, msg, pick, ms), decodeTarget(anchor), path, ++scrollReq);
 }
 
 export function HtmlView({ content, path }: { content: string; path?: string | null }) {

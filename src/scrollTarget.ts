@@ -4,6 +4,8 @@
 // back to the tool — so a scroll that lands says where, and one that cannot
 // says why, with the headings that do exist.
 
+import { decodeTarget, mdLineQuery, type ViewTarget } from "./viewTarget";
+
 /** A place the viewer can scroll to: a heading (or an in-page link, e.g. a hash-routed page's nav). */
 export type Section = { id?: string; text: string; link?: boolean };
 
@@ -160,4 +162,90 @@ export function scrollInDom(root: HTMLElement, anchor: string, file: string): st
   const at = findText(root, anchor);
   if (at) return go(at, `the text "${squash(anchor).slice(0, 80)}"`);
   return notFound(anchor, file, sections);
+}
+
+// ---------------------------------------------------------------- typed targets (src/viewTarget.ts)
+
+/** A rendered markdown page under `root`: an id (anchor), a heading (headings only), a phrase (text), or an older free string. */
+export function scrollToTarget(root: HTMLElement, t: ViewTarget, file: string, said?: string): string {
+  if (t.query !== undefined) return scrollInDom(root, t.query, file);
+  const name = file.split(/[\/]/).pop() ?? file;
+  const els = Array.from(root.querySelectorAll<HTMLElement>("h1,h2,h3,h4,h5,h6"));
+  const sections: Section[] = els.map((h) => ({ id: h.id || undefined, text: squash(h.textContent).slice(0, 200) })).filter((s) => s.text);
+  const go = (el: Element, where: string) => {
+    el.scrollIntoView({ behavior: "smooth", block: "start" });
+    return `Scrolled to ${said ?? where} in ${name}`;
+  };
+  if (t.anchor) {
+    let el: HTMLElement | null = null;
+    try {
+      el = root.querySelector<HTMLElement>(`[id="${CSS.escape(t.anchor)}"]`);
+    } catch {
+      el = null;
+    }
+    return el ? go(el, `#${t.anchor}`) : notFound(`#${t.anchor}`, file, sections);
+  }
+  if (t.heading) {
+    const i = matchSection(sections, t.heading);
+    const el = i === null ? null : els.find((h) => squash(h.textContent).slice(0, 200) === sections[i]!.text);
+    return el ? go(el, `heading "${sections[i!]!.text.slice(0, 80)}"`) : notFound(t.heading, file, sections);
+  }
+  if (t.text) {
+    const el = findText(root, t.text);
+    return el ? go(el, `the text "${squash(t.text).slice(0, 80)}"`) : notFound(t.text, file, sections);
+  }
+  return `Error: nothing to scroll to in ${name}.`;
+}
+
+/** The HTML viewer's bridge, as a function (HtmlView passes its iframe's; tests pass a fake page). */
+export type FrameAsk = <T>(msg: Record<string, unknown>, pick: (d: any) => T | undefined, ms: number) => Promise<T | null>;
+
+/** An HTML page in the viewer: anchor (an id), heading (headings and nav links), text, or an older free string. */
+export async function scrollHtmlWith(ask: FrameAsk, t: ViewTarget, path: string, req: number): Promise<string> {
+  const name = path.split(/[\/]/).pop() ?? path;
+  const q = t.anchor ? `#${t.anchor}` : t.heading ?? t.text ?? t.query ?? "";
+  if (t.page !== undefined || (t.query !== undefined && /^page=\d+$/.test(t.query)))
+    return `Error: ${name} is a web page, not a PDF: it has no pages. Pass a heading (its text), an anchor (#id) or a phrase on the page.`;
+  if (!q) return `Error: ${name} takes anchor, heading or text.`;
+  const listed = await ask({ __vc_scroll_list: { req, q } }, (d) => (d?.__vc_scroll_list_result?.req === req ? (d.__vc_scroll_list_result as { sections: Section[]; byId: boolean }) : undefined), 5000);
+  if (!listed) return `Error: ${name} did not answer (the page is still loading, or it is not open in the viewer). Try again in a moment.`;
+  const sections = Array.isArray(listed.sections) ? listed.sections : [];
+  const shown = () => sections.filter((s) => !s.link || !sections.some((h) => !h.link && h.text === s.text));
+  let go: Record<string, unknown>;
+  if (t.anchor) {
+    if (!listed.byId) return notFound(q, path, shown());
+    go = { id: t.anchor };
+  } else if (t.heading) {
+    const i = matchSection(sections, t.heading);
+    if (i === null) return notFound(t.heading, path, shown());
+    go = { i };
+  } else if (t.text) go = { text: t.text };
+  else {
+    const i = listed.byId ? null : matchSection(sections, q);
+    go = listed.byId ? { id: q.replace(/^#/, "") } : i !== null ? { i } : { text: q };
+  }
+  const done = await ask({ __vc_scroll_go: { req, ...go } }, (d) => (d?.__vc_scroll_done?.req === req ? (d.__vc_scroll_done as { ok: boolean; where: string; error?: string }) : undefined), 3000);
+  if (!done) return `Error: ${name} did not answer the scroll. Try again in a moment.`;
+  if (done.ok) return `Scrolled to ${done.where} in ${name}`;
+  if (done.error) return `Error: the scroll in ${name} failed: ${done.error}`;
+  return notFound(q, path, shown());
+}
+
+/**
+ * A markdown viewer's answer to a request (MarkdownView): in reading view a source line becomes the heading on it
+ * or its first words on the rendered page; while editing only a line can be reached (LiveEditor takes those, so
+ * the caller never passes one here with `editing`).
+ */
+export function landMarkdown(root: HTMLElement | null, content: string, anchor: string, file: string, editing: boolean): string {
+  const name = file.split(/[\/]/).pop() ?? file;
+  const t = decodeTarget(anchor);
+  if (editing) return `Error: ${name} is open for editing, so it has no reading view to move. Pass line (the editor goes to a source line), or ask to switch it to view.`;
+  if (!root) return `Error: ${file} is not on screen.`;
+  if (t.line === undefined) return scrollToTarget(root, t, file);
+  const q = mdLineQuery(content, t.line);
+  if (!q) {
+    const total = content.split(/\r?\n/).length;
+    return `Error: ${name} has ${total} lines; nothing on the page is at or after line ${t.line}. Lines are 1–${total}.`;
+  }
+  return scrollToTarget(root, q, file, `line ${t.line}${q.heading ? ` (heading "${q.heading.slice(0, 80)}")` : ""}`);
 }

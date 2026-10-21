@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Annotation, EditorState } from "@codemirror/state";
+import { Annotation, EditorSelection, EditorState } from "@codemirror/state";
 import type { Extension } from "@codemirror/state";
 import { invoke } from "@tauri-apps/api/core";
 
@@ -23,6 +23,8 @@ import {
   type InlineEditRequest,
 } from "./InlineEditPrompt";
 import { useStore } from "./store";
+import { reportScroll } from "./scrollTarget";
+import { decodeTarget, landLines } from "./viewTarget";
 // The in-place preview (math, tables, images, rules, …) lives in livePreview.ts.
 import { currentFileField, livePreviewField, setCurrentFileEffect } from "./livePreview";
 
@@ -384,6 +386,27 @@ export function LiveEditor({
       viewRef.current = null;
     };
   }, [extensions]);
+
+  // Show / ScrollTo with a source line while the markdown is being edited: the editor goes there and selects the range.
+  const pendingScrollAnchor = useStore((s) => s.pendingScrollAnchor);
+  useEffect(() => {
+    const req = pendingScrollAnchor;
+    const view = viewRef.current;
+    if (!req || !file || !view || req.path !== file) return;
+    const t = decodeTarget(req.anchor);
+    if (t.line === undefined) return;
+    useStore.getState().clearScrollAnchor();
+    const doc = view.state.doc;
+    const r = landLines(t, doc.lines, file);
+    if ("error" in r) {
+      reportScroll(file, r.error);
+      return;
+    }
+    const from = doc.line(r.line).from;
+    const to = doc.line(r.endLine).to;
+    view.dispatch({ selection: EditorSelection.range(from, to), effects: EditorView.scrollIntoView(from, { y: "center" }) });
+    reportScroll(file, r.said);
+  }, [pendingScrollAnchor, file]);
 
   // File switch within the same editor instance — push the new path
   // through the StateEffect so livePreviewField rebuilds, getting

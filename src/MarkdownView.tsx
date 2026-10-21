@@ -15,7 +15,8 @@ import { UnsupportedView } from "./UnsupportedView";
 import { VAULT_PANE_MIME } from "./dnd";
 import { InlineEditPrompt, type InlineEditRequest } from "./InlineEditPrompt";
 import { fileKind } from "./fileKind";
-import { reportScroll, scrollInDom } from "./scrollTarget";
+import { landMarkdown, reportScroll } from "./scrollTarget";
+import { decodeTarget } from "./viewTarget";
 import { findVaultFileByTail, tryOpenLink } from "./linkNav";
 import { HistoryStrip, HistoryVersionView, useViewingVersion } from "./HistoryInline";
 import { noteEditedFile } from "./commit-controller";
@@ -569,17 +570,17 @@ export function MarkdownView({ paneId }: Props) {
     const req = pendingScrollAnchor;
     if (!req || !file || req.path !== file || fileKind(file).kind !== "markdown") return;
     if (paneId && !isActive && panes.some((p) => p.id === activePaneId && p.file === file)) return; // the active pane shows it too: that one moves
+    const t = decodeTarget(req.anchor);
+    // A source line while editing: the editor itself goes there (LiveEditor takes the request).
+    if (mode === "edit" && t.line !== undefined) return;
     useStore.getState().clearScrollAnchor();
     if (mode === "edit") {
-      reportScroll(file, `Error: ${file.split(/[\\/]/).pop()} is open for editing, so it has no reading view to move. Say where it is instead, or ask to switch it to view.`);
+      reportScroll(file, landMarkdown(null, content, req.anchor, file, true));
       return;
     }
-    // After a render (a file just opened by this request has not drawn yet).
-    requestAnimationFrame(() => {
-      const root = viewScrollRef.current;
-      reportScroll(file, root ? scrollInDom(root, req.anchor, file) : `Error: ${file} is not on screen.`);
-    });
-  }, [pendingScrollAnchor, file, mode, paneId, isActive, panes, activePaneId]);
+    // After a render (a file just opened by this request has not drawn yet). A source line: the heading on it, else its first words.
+    requestAnimationFrame(() => reportScroll(file, landMarkdown(viewScrollRef.current, content, req.anchor, file, false)));
+  }, [pendingScrollAnchor, file, mode, paneId, isActive, panes, activePaneId, content]);
 
   if (!file) {
     return (
@@ -753,7 +754,7 @@ export function MarkdownView({ paneId }: Props) {
           </div>
         </div>
       ) : kind === "notebook" ? (
-        <NotebookView content={content} />
+        <NotebookView content={content} path={file} />
       ) : kind === "pdf" ? (
         <PdfView path={file} relPath={relPath} paneId={paneId} rev={rev} />
       ) : kind === "tex" ? (

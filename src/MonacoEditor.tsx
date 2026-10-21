@@ -2,6 +2,8 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import Editor from "@monaco-editor/react";
 import type * as monaco from "monaco-editor";
 import { useStore } from "./store";
+import { reportScroll } from "./scrollTarget";
+import { decodeTarget, landLines } from "./viewTarget";
 import { extToMonacoLang } from "./monaco-setup";
 import {
   InlineEditPrompt,
@@ -45,16 +47,24 @@ export function MonacoEditor({
   useEffect(() => {
     if (!pendingScrollAnchor) return;
     if (!path || pendingScrollAnchor.path !== path) return;
-    const m = pendingScrollAnchor.anchor.match(/L(\d+)/);
-    if (!m) return;
-    const line = parseInt(m[1], 10);
+    const t = decodeTarget(pendingScrollAnchor.anchor);
+    if (t.line === undefined) return;
     const id = requestAnimationFrame(() => {
       const ed = editorRef.current;
-      if (ed) {
-        ed.revealLineInCenter(line);
-        ed.setPosition({ lineNumber: line, column: 1 });
-      }
+      const model = ed?.getModel();
       clearScrollAnchor();
+      if (!ed || !model) return;
+      // The range (Show's line…endLine, a note's L42-L58): in view, selected, and flashed for a moment.
+      const r = landLines(t, model.getLineCount(), path);
+      if ("error" in r) {
+        reportScroll(path, r.error);
+        return;
+      }
+      ed.revealLinesInCenter(r.line, r.endLine);
+      ed.setSelection({ startLineNumber: r.line, startColumn: 1, endLineNumber: r.endLine, endColumn: model.getLineMaxColumn(r.endLine) });
+      const flash = ed.deltaDecorations([], [{ range: { startLineNumber: r.line, startColumn: 1, endLineNumber: r.endLine, endColumn: 1 }, options: { isWholeLine: true, className: "vc-line-flash" } }]);
+      setTimeout(() => ed.deltaDecorations(flash, []), 1600);
+      reportScroll(path, r.said);
     });
     return () => cancelAnimationFrame(id);
   }, [pendingScrollAnchor, path, clearScrollAnchor]);

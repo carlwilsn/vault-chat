@@ -7,6 +7,7 @@ import { InlineEditPrompt, type InlineEditRequest } from "./InlineEditPrompt";
 import { useStore } from "./store";
 import { readShownBytes } from "./liveReload";
 import { reportScroll } from "./scrollTarget";
+import { decodeTarget, landPdf } from "./viewTarget";
 import { pushViewportContextDebounced } from "./voice-elevenlabs";
 
 pdfjs.GlobalWorkerOptions.workerSrc = workerSrc;
@@ -107,27 +108,20 @@ export function PdfView({
     const anchor = pendingScrollAnchor.anchor;
     clearScrollAnchor();
     const name = path.split(/[\\/]/).pop() ?? path;
-    const pageMatch = anchor.match(/page=(\d+)/) ?? anchor.match(/^\s*(?:page\s*)?(\d+)\s*$/i);
+    const t = decodeTarget(anchor);
     void (async () => {
-      let target = pageMatch ? Number(pageMatch[1]) : 0;
-      if (!pageMatch) {
-        // Not a page: the first page whose text holds the phrase (a heading, a term). The text is read just after load.
-        for (let t = 0; t < 30 && !pageTextsRef.current.length; t++) await new Promise((r) => setTimeout(r, 100));
-        const want = anchor.replace(/\s+/g, " ").trim().toLowerCase();
-        target = pageTextsRef.current.findIndex((t) => t.replace(/\s+/g, " ").toLowerCase().includes(want)) + 1;
-        if (!target) {
-          reportScroll(path, `Error: "${anchor}" does not appear in ${name} (${pages} pages). Pass a page number, or a phrase that is in the PDF.`);
-          return;
-        }
-      }
-      if (target < 1 || target > pages) {
-        reportScroll(path, `Error: ${name} has ${pages} page${pages === 1 ? "" : "s"}; there is no page ${target}.`);
+      // A phrase: the first page whose text holds it (a heading, a term). The text is read just after load.
+      if (t.page === undefined && !(t.query && /^(?:page\s*=?\s*)?\d+$|page=\d+/i.test(t.query.trim())))
+        for (let i = 0; i < 30 && !pageTextsRef.current.length; i++) await new Promise((r) => setTimeout(r, 100));
+      const r = landPdf(t, pages, pageTextsRef.current, path);
+      if ("error" in r) {
+        reportScroll(path, r.error);
         return;
       }
-      await new Promise((r) => requestAnimationFrame(r));
-      const wrap = hostRef.current?.querySelector<HTMLDivElement>(`.pdf-page-wrap[data-page="${target}"]`);
+      await new Promise((res) => requestAnimationFrame(res));
+      const wrap = hostRef.current?.querySelector<HTMLDivElement>(`.pdf-page-wrap[data-page="${r.page}"]`);
       wrap?.scrollIntoView({ behavior: "smooth", block: "start" });
-      reportScroll(path, wrap ? `Scrolled to page ${target} of ${pages}${pageMatch ? "" : ` (where "${anchor}" appears)`} in ${name}` : `Error: page ${target} of ${name} is not on screen; try again in a moment.`);
+      reportScroll(path, wrap ? r.said : `Error: page ${r.page} of ${name} is not on screen; try again in a moment.`);
     })();
   }, [pendingScrollAnchor, path, loading, clearScrollAnchor, pages]);
 

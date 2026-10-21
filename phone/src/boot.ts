@@ -1047,7 +1047,7 @@ export function boot(): void {
           const d = await (await api("/poll?after=latest")).json();
           cursor = Number(d.next) || 0; epoch = d.epoch || null;
         }
-        const r = await api("/poll?after=" + cursor + (epoch ? "&epoch=" + encodeURIComponent(epoch) : ""));
+        const r = await api("/poll?after=" + cursor + (epoch ? "&epoch=" + encodeURIComponent(epoch) : "") + "&client=phone");
         if (!r.ok) throw new Error("poll " + r.status);
         const d = await r.json(); offlineStreak = 0;
         if (document.body.classList.contains("offline")) setOffline(false);
@@ -1070,6 +1070,7 @@ export function boot(): void {
         const s: any = rec.type === "signal" ? rec.signal : {};
         if (s.type === "notif") { void refreshBadge(); if (page === "alerts") softReload(loadAlerts); }
         else if (s.type === "project") { if (s.convId === convId) void loadProjects(); listChanged = true; }
+        else if (s.type === "show" && s.to === "phone" && s.id) void showOnPhone(s);
         continue;
       }
       // The drawer's dots: which of your chats run now, and which finished while you looked elsewhere.
@@ -1090,6 +1091,37 @@ export function boot(): void {
     }
     if (listChanged) { updateConvDot(); if (cdraw.classList.contains("on")) void loadConvs(); }
     if (mineChanged && !loadingRecs) { markSeen(convId); scheduleRender(); }
+  }
+  // pi's Show (server/show.ts) on the phone: markdown and images in a sheet; a PDF, a page or anything else as
+  // a link to the phone's own viewer. The box hears what was shown (the ack), never more.
+  async function showOnPhone(s: any) {
+    const ack = (b: Record<string, unknown>) => api("/api/v1/show/" + encodeURIComponent(s.id) + "/ack", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(b) }).catch(() => {});
+    try {
+      const intent = "Shown by the agent";
+      if (s.url) {
+        const u = String(s.url);
+        openSheet({ intent, title: u, bodyHtml: '<p><a href="' + esc(u) + '" target="_blank" rel="noopener">Open ' + esc(u) + "</a></p>" });
+        void ack({ ok: true, landed: "a link to " + u + " is on the phone's screen" });
+        return;
+      }
+      const p = String(s.path || "");
+      const name = p.split("/").pop() || p;
+      const ext = (name.split(".").pop() || "").toLowerCase();
+      if (ext === "md" || ext === "markdown") {
+        const r = await api("/file?path=" + encodeURIComponent(p));
+        if (!r.ok) throw new Error("the phone couldn't read " + p + " (" + r.status + ")");
+        openSheet({ intent, title: name, bodyHtml: '<div class="md">' + md(await r.text()) + "</div>" });
+        void ack({ ok: true, landed: "showing " + name + " on the phone" });
+      } else if (["png", "jpg", "jpeg", "gif", "webp", "svg"].includes(ext)) {
+        openSheet({ intent, title: name, bodyHtml: '<img src="' + esc(fileUrl(p)) + '" alt="' + esc(name) + '" style="max-width:100%;height:auto">' });
+        void ack({ ok: true, landed: "showing " + name + " on the phone" });
+      } else {
+        openSheet({ intent, title: name, bodyHtml: '<p><a href="' + esc(fileUrl(p)) + '" target="_blank" rel="noopener">Open ' + esc(name) + "</a> in the phone's viewer.</p>" });
+        void ack({ ok: true, landed: name + " is on the phone's screen as a link that opens it in the phone's own viewer (one tap)" });
+      }
+    } catch (e: any) {
+      void ack({ ok: false, error: String(e?.message || e) });
+    }
   }
   // The open thread's meta is its fold: nothing to fetch.
   async function refreshConvMeta() { if (convId && pic) scheduleRender(); }
