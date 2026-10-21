@@ -31,7 +31,26 @@ const settle = async (s: { convId: string; tid: string }) => {
   rig.backend.end(s.tid);
   await until(async () => (await rig.readConv(s.convId))?.state !== "running");
 };
-const voiceDeps = () => ({ vault: rig.vault, name: "main", main: true, message: (b: any) => rig.engine.message(b) }) as any;
+/** Voice's Asks: pi side threads of the conversation (faked: what each was given; `during` runs its tools through the
+ *  engine, as pi's side thread calls them). */
+const asked: { kind: string; convId: string; text: string; tools?: string }[] = [];
+let during: ((b: { convId: string }) => Promise<void>) | null = null;
+const voiceDeps = () =>
+  ({
+    vault: rig.vault,
+    name: "main",
+    main: true,
+    message: (b: any) => rig.engine.message(b),
+    side: {
+      start: async (b: any) => (asked.push(b), { id: `vs${asked.length}` }),
+      wait: async (id: string) => {
+        const b = asked[Number(id.slice(2)) - 1]!;
+        if (during) await during(b);
+        return { text: "Done.", error: null };
+      },
+    },
+  }) as any;
+const sideCall = (convId: string, name: string, args: any) => rig.backend.h.sideTool(convId, name, args);
 
 describe("projects: only Carl decides what is a project", () => {
   it("pi has no tool that makes a project or moves a chat; ListProjects only reads", async () => {
@@ -59,17 +78,18 @@ describe("projects: only Carl decides what is a project", () => {
     const p = await import("../../src/voicePrompt");
     for (const d of ["laptop", "phone", "board"] as const) {
       expect(p.voiceToolNames(d)).not.toContain("SetProject");
-      expect(Object.keys(p.voiceToolDefs(d)[0]!.parameters.properties)).toEqual(["request"]);
+      expect(Object.keys(p.voiceToolDefs(d)[0]!.parameters.properties)).toEqual(["request", "act"]);
     }
     const before = rig.backend.turns.length;
-    const r = await voice.voiceTool(voiceDeps(), { name: "Ask", args: { request: "Make the section 7 figure in course-notes.html clearer.", project: "IEMS 469 Course Notes Visuals" } });
-    await until(() => rig.backend.turns.length > before);
+    const r = await voice.voiceTool(voiceDeps(), { name: "Ask", args: { request: "Make the section 7 figure in course-notes.html clearer.", project: "IEMS 469 Course Notes Visuals", act: true } });
+    await voice.voiceAsksSettled();
     const c = await rig.readConv(String(r.convId));
     expect(c.source).toBe("voice");
     expect(c.project).toBeUndefined();
     expect(existsSync(join(rig.vault, "agent-projects", "iems-469-course-notes-visuals"))).toBe(false);
-    expect(JSON.stringify(rig.backend.turns.at(-1))).toContain("Make the section 7 figure in course-notes.html clearer.");
-    await settle({ convId: String(r.convId), tid: rig.backend.turns.at(-1).threadId });
+    // A side request of that conversation, Carl's words in it; no turn of it.
+    expect(asked.at(-1)!.text).toContain("Make the section 7 figure in course-notes.html clearer.");
+    expect(rig.backend.turns.length).toBe(before);
     // A voice SetProject is not a tool: the box says so and nothing changes.
     expect((await voice.voiceTool(voiceDeps(), { name: "SetProject", args: { name: "X" }, convId: r.convId })).result).toMatch(/^Error: "SetProject" is not one of your tools/);
     expect((await rig.readConv(String(r.convId))).project).toBeUndefined();
@@ -107,13 +127,13 @@ describe("projects: only Carl decides what is a project", () => {
     const opts = { cwd: rig.vault, home: rig.root, denyRead: [join(rig.root, "secrets")], denyWrite: [join(rig.vault, ".vault-chat", "conversations")] };
     expect(guardToolCall("edit", { path: "agent-projects/psych-221/reading-list.md" }, opts)).toBeNull();
     expect(guardToolCall("write", { path: join(rig.vault, "agent-projects", "psych-221", "project.md") }, opts)).toBeNull();
-    // Voice in the same chat hands it to the same agent (its Ask is a turn in this chat, with these tools).
+    // Voice in the same chat: its Ask is a side request of this chat (forked from it, as of it), never a turn of it.
     await settle(s);
     const before = rig.backend.turns.length;
-    await voice.voiceTool(voiceDeps(), { name: "Ask", args: { request: "And add Simon too." }, convId: s.convId });
-    await until(() => rig.backend.turns.length > before);
-    expect(rig.backend.turns.at(-1).threadId).toBe(s.tid);
-    await settle({ convId: s.convId, tid: s.tid });
+    await voice.voiceTool(voiceDeps(), { name: "Ask", args: { request: "And add Simon too.", act: true }, convId: s.convId });
+    await voice.voiceAsksSettled();
+    expect(asked.at(-1)).toMatchObject({ convId: s.convId, tools: "act" });
+    expect(rig.backend.turns.length).toBe(before);
     expect(readFileSync(join(rig.vault, "agent-projects", "psych-221", "reading-list.md"), "utf8")).toBe("- Kahneman\n");
   });
 });
@@ -195,13 +215,15 @@ describe("notes: one thing, editable in place, on pi and on voice", () => {
 
   it("voice has no notes tools of its own: a note asked for by voice is the agent's (one tool set, one file)", async () => {
     for (const t of ["ListNotes", "CreateNote", "UpdateNote", "DeleteNote"]) expect((await voice.voiceTool(voiceDeps(), { name: t, args: { text: "x", id: "x" } })).result).toMatch(/is not one of your tools.*Nothing was done/);
-    const before = rig.backend.turns.length;
-    const r = await voice.voiceTool(voiceDeps(), { name: "Ask", args: { request: "Note: ask the TA about 4.2." } });
-    await until(() => rig.backend.turns.length > before);
-    const tid = rig.backend.turns.at(-1).threadId;
-    const made = out(await rig.backend.call(tid, "CreateNote", { text: "Ask the TA about 4.2" }));
+    // An action Ask: its side request has the agent's notes tools (the same tools, the same file).
+    let made = "";
+    during = async (b) => {
+      made = out(await sideCall(b.convId, "CreateNote", { text: "Ask the TA about 4.2" }));
+    };
+    await voice.voiceTool(voiceDeps(), { name: "Ask", args: { request: "Note: ask the TA about 4.2.", act: true } });
+    await voice.voiceAsksSettled();
+    during = null;
     const id = /Saved note (\S+) /.exec(made)![1]!;
-    await settle({ convId: String(r.convId), tid });
     const s = await rig.start("change that note to say 4.3");
     expect((await rig.backend.call(s.tid, "UpdateNote", { id, text: "Ask the TA about 4.3" })).ok).toBe(true);
     expect(out(await rig.backend.call(s.tid, "ListNotes", {}))).toContain("Ask the TA about 4.3");

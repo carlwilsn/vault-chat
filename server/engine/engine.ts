@@ -311,6 +311,14 @@ export function agentToolSpecs(): ToolSpec[] {
 export function sideToolSpecs(): ToolSpec[] {
   return agentToolSpecs().filter((t) => t.readOnly === true);
 }
+/** The agent's tools a side thread can't use: they belong to a turn (its question, plan, background maker, job, wake). */
+const TURN_ONLY_TOOLS = new Set(["AskUser", "TodoWrite", "BoardMake", "StartJob", "JobStop", "ScheduleWake"]);
+/** Voice's Ask (server/voice.ts), a side thread: a question has the read-only tools and Show; an action every tool a
+ *  side thread can use (BoardSend, Show, the notes …), with pi's own file tools (sideStart). */
+export function voiceSideToolSpecs(act: boolean): ToolSpec[] {
+  if (act) return agentToolSpecs().filter((t) => !TURN_ONLY_TOOLS.has(t.name));
+  return [...sideToolSpecs(), ...agentToolSpecs().filter((t) => t.name === "Show" && t.readOnly !== true)];
+}
 
 const text = (t: string) => ({ success: true, contentItems: [{ type: "inputText", text: t }] });
 
@@ -834,7 +842,14 @@ export class Engine {
           writeFileSync(instr, buildDeveloperInstructions((conv ?? { id: "side", title: "", messages: [] }) as any, { rolePrompt: ENGINE_ROLE_PROMPT + (note ? `\n\n${note}` : "") }));
         }
         // What Carl did elsewhere comes in through pi (the extension's "you" layer, as of this conversation).
-        s = await side.start({ kind, fork: src?.file ?? null, instr, cwd: src?.cwd || this.d.vault, model, tools: READ_ONLY_TOOLS, hostTools: sideToolSpecs(), sessionDir: dir(conv?.id ?? "none"), text, images, you: { convId: conv?.id ?? null } });
+        // Voice's Ask (server/voice.ts): Show too; an action also pi's own file tools and BoardSend.
+        const voice = typeof b.kind === "string" && b.kind.startsWith("voice");
+        const act = voice && b.tools === "act";
+        const tools = act ? [...READ_ONLY_TOOLS, "bash", "edit", "write"] : READ_ONLY_TOOLS;
+        // Voice's Asks also have Carl's own vault tools (his calendar …): voice reached them through the agent before.
+        const own = voice ? await vaultToolSpecsFor(this.d.vault, [...agentToolSpecs().map((t) => t.name), ...PI_BUILTIN_TOOLS]) : [];
+        const hostTools = voice ? [...voiceSideToolSpecs(act), ...(own as ToolSpec[])] : sideToolSpecs();
+        s = await side.start({ kind, fork: src?.file ?? null, instr, cwd: src?.cwd || this.d.vault, model, tools, hostTools, sessionDir: dir(conv?.id ?? "none"), text, images, you: { convId: conv?.id ?? null } });
       }
       this.log(`side ${kind} ${s.id}${conv ? ` (forked from ${conv.id})` : ""} on ${model}${s.file ? `: ${s.file}` : ""}`);
       return { ok: true, id: s.id, v: s.v };
@@ -1300,7 +1315,9 @@ export class Engine {
     const name = String(p?.tool ?? "");
     // A Ctrl+K / Ctrl+L side thread (p.side): only the read-only tools, as of the conversation it was opened from (or none).
     const side: { convId: string | null } | null = p?.side ?? null;
-    if (side && !sideToolSpecs().some((t) => t.name === name)) return { success: false, contentItems: [{ type: "inputText", text: `${name} is not available here: this request has read-only tools.` }] };
+    // (Each side thread's own list is enforced in pi/side.ts: voice's Asks may also Show, an action BoardSend and the
+    // notes, and both Carl's vault tools. A turn's own tools never run in a side thread.)
+    if (side && agentToolSpecs().some((t) => t.name === name) && !voiceSideToolSpecs(true).some((t) => t.name === name)) return { success: false, contentItems: [{ type: "inputText", text: `${name} is not available here: this request has read-only tools.` }] };
     const convId: string = (side ? side.convId : this.byThread.get(p?.threadId) ?? this.childOf.get(p?.threadId)) ?? "";
     const vault = this.d.vault;
     const found = convId ? await readConv(vault, convId) : null;

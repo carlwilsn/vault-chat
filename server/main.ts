@@ -255,6 +255,17 @@ async function main(): Promise<void> {
         name: v.name,
         main: v.main,
         message: async (b) => (await engineOf(v)).message(b),
+        // Voice's Ask: a pi side thread forked from the conversation (never a turn of it, never a steer).
+        side: {
+          start: async (b) => (await engineOf(v)).sideStart(b),
+          wait: async (id) => {
+            for (;;) {
+              const st = await (await engineOf(v)).sidePoll(id, Number.MAX_SAFE_INTEGER, 25_000);
+              if (!st) return { text: "", error: "the side request is gone" };
+              if (st.done) return { text: st.text, error: st.error };
+            }
+          },
+        },
         onWrite: (paths) => (paths?.length ? liveEdits.note(v.name, paths) : triggerSync(v.main ? undefined : v.name)),
       };
     },

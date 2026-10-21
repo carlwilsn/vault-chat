@@ -30,6 +30,8 @@ export type ViewMessage = {
   /** The items this message shows (in order). */
   items?: string[];
   voice?: boolean;
+  /** A voice Ask (server/voice.ts, a background side request): one collapsed row. */
+  voiceAsk?: { request: string; result: string; failed: boolean; act?: boolean };
 };
 
 export type ViewTool = { id: string; name: string; input: any; result?: string; startedAt?: number; inputChars?: number };
@@ -103,6 +105,20 @@ function messagesOfItem(it: Item): ViewMessage[] {
   }
 }
 
+/** The name of voice's background Ask row (server/voice.ts runAsk). */
+export const VOICE_ASK = "VoiceAsk";
+
+function voiceAskMessage(it: Item): ViewMessage {
+  const a = argsOf(it);
+  const result = String(it.result ?? "");
+  return {
+    role: "assistant",
+    content: "",
+    mid: it.id,
+    voiceAsk: { request: String(a?.request ?? ""), result: result.replace(/^Error:\s*/, ""), failed: it.status === "error" || /^error/i.test(result), ...(a?.act ? { act: true } : {}) },
+  };
+}
+
 /** AskUser: the question (its options as cards); Carl's answer is his own line after it (the reducer's). */
 function askMessages(it: Item): ViewMessage[] {
   const a = argsOf(it);
@@ -125,7 +141,7 @@ export function liveStart(items: Item[]): number {
     else break;
   }
   let j = k;
-  while (j > 0 && items[j - 1]!.kind === "tool" && items[j - 1]!.name !== "AskUser") j--;
+  while (j > 0 && items[j - 1]!.kind === "tool" && items[j - 1]!.name !== "AskUser" && items[j - 1]!.name !== VOICE_ASK) j--;
   if (j < k && items.slice(j, k).some(isOpen)) k = j;
   return k;
 }
@@ -157,9 +173,15 @@ export function makeChatView(): (p: Picture, opts?: { split?: boolean }) => Chat
     };
     for (let i = 0; i < cut; ) {
       const it = items[i]!;
+      // Voice's background Ask: its own row, never one of the agent's tool calls.
+      if (it.kind === "tool" && it.name === VOICE_ASK) {
+        use(it.id, [it], "", () => [voiceAskMessage(it)]);
+        i++;
+        continue;
+      }
       if (it.kind === "tool") {
         const group: Item[] = [];
-        while (i < cut && items[i]!.kind === "tool") {
+        while (i < cut && items[i]!.kind === "tool" && items[i]!.name !== VOICE_ASK) {
           group.push(items[i++]!);
           if (group[group.length - 1]!.name === "AskUser") break;
         }
@@ -194,7 +216,7 @@ export function makeChatView(): (p: Picture, opts?: { split?: boolean }) => Chat
     const text = tail.filter((x) => x.kind === "assistant").map((x) => x.text ?? "").filter((s) => s.trim()).join("\n\n");
     const reasoning = tail.filter((x) => x.kind === "thinking").map((x) => x.text ?? "").filter((s) => s.trim()).join("\n\n");
     const tools: ViewTool[] = tail
-      .filter((x) => x.kind === "tool")
+      .filter((x) => x.kind === "tool" && x.name !== VOICE_ASK)
       .map((x) => ({
         id: x.id,
         name: toolName(x.name),

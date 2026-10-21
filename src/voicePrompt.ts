@@ -30,10 +30,13 @@ export type VoiceToolDef = { name: string; description: string; parameters: { ty
 const ASK_DEF: VoiceToolDef = {
   name: ASK,
   description:
-    "Hand a request to the agent of this conversation — the same agent as Carl's typed chat, with every tool: files (read, write, edit), notes, his whiteboard inbox, his own vault tools (calendar …), conversations, the web, Python and the shell. Use it for ANY action and for anything you would otherwise have to work out or guess: arithmetic and math (it runs Python), facts in files, what's on the board inbox, searches. Pass Carl's request in his own words (short). It returns at once with a request id; the agent's answer comes to you later as a message starting [vc:result]. Never say it is done before that.",
+    "Hand a request to the agent of this conversation — the same agent as Carl's typed chat, with every tool: files (read, write, edit), notes, his whiteboard inbox, his own vault tools (calendar …), conversations, the web, Python and the shell. Use it for ANY action and for anything you would otherwise have to work out or guess: arithmetic and math (it runs Python), facts in files, what's on the board inbox, searches. Pass Carl's request in his own words (short). It runs in the background as a side request (it never interrupts the agent's own work in the chat) and returns at once with a request id; the answer comes to you later as a message starting [vc:result]. Never say it is done before that.",
   parameters: {
     type: "object",
-    properties: { request: { type: "string", description: "Carl's request in his own words, with what he pointed at (a file, a page). Short: one or two sentences." } },
+    properties: {
+      request: { type: "string", description: "Carl's request in his own words, with what he pointed at (a file, a page). Short: one or two sentences." },
+      act: { type: "boolean", description: "true only when he asked for a change: write or edit a file, save a note, send something. Leave it out for a question or a lookup." },
+    },
     required: ["request"],
   },
 };
@@ -78,6 +81,17 @@ export const CONTROL_PREFIX = "[vc:";
 export const controlLine = (kind: string, body: string): string => `${CONTROL_PREFIX}${kind}] ${body}`;
 export const isControlLine = (text: string): boolean => text.trimStart().startsWith(CONTROL_PREFIX);
 
+// ---------------------------------------------------------------- spoken, never written
+
+/** The platform's soft-timeout filler (src/voice-elevenlabs.ts SOFT_TIMEOUT_MESSAGE) and voice's own holding lines. */
+const FILLER = /^(?:one sec(?:ond)?|just a (?:sec(?:ond)?|moment)|give me a (?:sec(?:ond)?|moment)|hang on|hold on|on it|checking|let me (?:check|look|see|find)|looking(?: it up| that up)?|i'll (?:check|look)|one moment)\b/i;
+/** A short holding line ("One sec—I'm checking the objective…"): spoken while the agent works, not a reply. */
+export function isFillerLine(text: string): boolean {
+  const t = text.trim();
+  return t.length <= 160 && FILLER.test(t.replace(/^(?:ok(?:ay)?|sure|right|alright|yeah|yes)[,.!—–-]*\s*/i, ""));
+}
+
+
 // ---------------------------------------------------------------- the prompt
 
 /** The default header (a vault's voice.md replaces it, never the rules below it). */
@@ -119,7 +133,7 @@ export const VOICE_HONESTY_RULES = `Honesty — accurate over agreeable:
 
 /** How a request runs: one line now, the answer when the agent has it. */
 export const VOICE_ASK_RULES = `Doing things (Ask):
-- For an action or a question you can't answer from the conversation: say a short line first ("on it", "one sec, checking") and call Ask in the same reply, with his words. Don't wait for it before speaking.
+- For an action or a question you can't answer from the conversation: call Ask with his words (act: true only for a change), then say one short line ("on it"). Ask runs in the background, beside the agent's own work in the chat, never interrupting it.
 - Ask returns at once. The agent's answer arrives later as a user message starting [vc:result] (or [vc:question] when the agent needs his answer): that is not Carl talking. Then tell him the answer in a sentence or two, in your own words, only what it says.
 - Long work: say the agent is on it and you'll tell him when it's done; carry on talking about anything else meanwhile. When the result comes, tell him then (it reaches you when he isn't mid-sentence).
 - When the agent asks him something ([vc:question]), put the question to him; his answer goes back with Ask.
@@ -130,12 +144,16 @@ export const VOICE_ASK_RULES = `Doing things (Ask):
 const LOOK_RULE = "Never ask him to refresh, re-paste or send it again — look (LookAtScreen). If a look fails, say what failed in its words; never blame syncing.";
 
 /** What this device can and cannot do, said honestly (story k: the phone was promised a screen). */
+/** Every device: the agent's Show puts things in front of Carl, wherever he is (server/show.ts). */
+export const SHOW_RULE = (here: string) =>
+  `To put something in front of Carl (open a file, a page of a PDF, a problem set or a write-up the agent made), Ask the agent to show it and say where: on his laptop, on his iPad board, on his phone, or here (${here}). "I'm not near my laptop" means the board. Say only what the agent's answer confirms was shown.`;
+
 export function deviceNote(device: VoiceDevice): string {
   if (device === "laptop")
-    return `This call is on Carl's laptop. You can see and move his screen: LookAtScreen reads what is in view right now (text and images), ShowFile opens a file in his viewer, ScrollTo moves it (one move at a time, saying where you're going). An image he opens or shows is attached to you. The viewport context below says what he is looking at. ${LOOK_RULE}`;
+    return `This call is on Carl's laptop. You can see and move his screen: LookAtScreen reads what is in view right now (text and images), ShowFile opens a file in his viewer, ScrollTo moves it (one move at a time, saying where you're going). An image he opens or shows is attached to you. The viewport context below says what he is looking at. ${LOOK_RULE} ${SHOW_RULE("the laptop")}`;
   if (device === "board")
-    return `This call is on Carl's iPad whiteboard. You CAN see the board: LookAtScreen returns a picture of the part he has in view (his handwriting, pictures, typeset math, PDF pages) and what is placed on it; look again after he says he wrote or changed something. ${LOOK_RULE} You cannot open files or scroll anything: to put something on his board, Ask the agent to send it to his board inbox.`;
-  return `This call is on Carl's phone. You have NO screen here: you can't see his screen, a page, a PDF or the board, and you can't open or scroll anything. If he asks you to look, say you can't see his screen on the phone — the agent can read a file or the board for him (Ask). Images he sent in this conversation are attached to you when the call starts.`;
+    return `This call is on Carl's iPad whiteboard. You CAN see the board: LookAtScreen returns a picture of the part he has in view (his handwriting, pictures, typeset math, PDF pages) and what is placed on it; look again after he says he wrote or changed something. ${LOOK_RULE} You can't open or scroll anything yourself: the agent can. ${SHOW_RULE("the board: it lands in his board inbox")}`;
+  return `This call is on Carl's phone. You have NO screen here: you can't see his screen, a page, a PDF or the board, and you can't open or scroll anything yourself. If he asks you to look, say you can't see his screen on the phone — the agent can read a file or the board for him (Ask). Images he sent in this conversation are attached to you when the call starts. ${SHOW_RULE("the phone")}`;
 }
 
 export type VoicePromptParts = {

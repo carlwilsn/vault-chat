@@ -1,7 +1,7 @@
 import { Conversation, type VoiceConversation } from "@elevenlabs/client";
 import { invoke } from "@tauri-apps/api/core";
 import { useStore, type ChatMessage, type Viewport } from "./store";
-import { SCREEN_TOOLS, isControlLine, voiceToolDefs, type VoiceDevice, type VoiceToolDef } from "./voicePrompt";
+import { SCREEN_TOOLS, isControlLine, isFillerLine, voiceToolDefs, type VoiceDevice, type VoiceToolDef } from "./voicePrompt";
 import { VoiceUpdates } from "./voiceFront";
 import { cachedVoiceMath, displayVoiceMath, prefetchVoiceMath } from "./voiceMath";
 import { VoiceImagePusher, lookingAtNote, sendFilesMessage, thumbDataUrl, voiceImageMime, type PushResult } from "./voiceImages";
@@ -125,7 +125,8 @@ const AGENT_ID_KEY = "vault_chat_elevenlabs_agent_id";
 // v30-idle: silence is idle (Carl: "I don't want to have to tell it over and over that I'm still working"):
 //   skip_turn waits silently until he speaks (wait_timeout_secs -1), the filler never before his first line,
 //   silence_end_call_timeout where ElevenLabs reads it (turn, not conversation).
-const AGENT_CONFIG_VERSION = "v30-idle";
+// v31-side-ask: Ask takes `act` (a change, not a question) and runs as a background side request.
+const AGENT_CONFIG_VERSION = "v31-side-ask";
 const AGENT_VERSION_KEY = "vault_chat_elevenlabs_agent_config_version";
 // The voice the provisioned agent speaks with. The session also overrides it
 // (platform_settings allows tts.voice_id), but the agent's own voice is set too
@@ -457,6 +458,8 @@ export async function startElevenLabsSession(opts?: { recap?: string }): Promise
           if (fillerWatch.agentLine(filler)) vlog("voice filler in silence", { turn: turnStats.turns });
           if (filler) turnStats.fillerSpoken();
           else logTurn(turnStats.firstResponse("text", Date.now(), text.length));
+          // A holding line ("One sec", "on it") is spoken, never written into the thread.
+          if (isFillerLine(text)) return;
           // Queue and drain serially. onMessage fires on text-complete,
           // not audio-complete; appending now would race the transcript
           // ahead of the user's ears. Each queued message waits its

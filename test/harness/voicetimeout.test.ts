@@ -75,11 +75,12 @@ test("the one tool that acts takes a sentence (no long tool argument for the cas
   // P7 (e73c63e8): a turn whose answer was a long tool call (a rewrite) missed the cascade's 15 s on every model and
   // the call closed, the action dropped. Voice's only acting tool is Ask: one short string, Carl's words.
   const ask = P.voiceToolDefs("laptop").find((t) => t.name === "Ask")!;
-  assert.deepEqual(Object.keys(ask.parameters.properties), ["request"]);
+  assert.deepEqual(Object.keys(ask.parameters.properties), ["request", "act"]);
+  assert.equal(ask.parameters.properties.act!.type, "boolean", "a flag, not a long argument");
   assert.match(ask.parameters.properties.request!.description, /Short: one or two sentences/);
   assert.match(ask.description, /returns at once/);
   const p = P.buildVoicePrompt({ device: "laptop" });
-  assert.match(p, /say a short line first \("on it", "one sec, checking"\) and call Ask in the same reply/);
+  assert.match(p, /call Ask with his words \(act: true only for a change\), then say one short line \("on it"\)/);
   assert.ok(!/Write|Edit\b|NotebookEdit/.test(P.voiceToolNames("laptop").join(" ")));
 });
 

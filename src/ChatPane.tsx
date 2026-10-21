@@ -976,6 +976,7 @@ export function ChatPane() {
                 onAsk={answerAsk}
                 spawns={subagentsInline ? spawnsAt[i] : undefined}
                 onSubagent={controlSubagent}
+                voiceCont={!!m.voice && i > 0 && !!messages[i - 1]?.voice && !messages[i - 1]?.hidden}
               />
               {/* The plan sits with the turn that last wrote it (planPlace.ts). */}
               {planInline && i === planAt && <AgentTodoList todos={todos} />}
@@ -1405,8 +1406,11 @@ export const MessageBubble = memo(function MessageBubble({
   onAsk,
   spawns,
   onSubagent,
+  voiceCont = false,
 }: {
   message: ChatMessage;
+  /** A voice line right after another: the same voice turn (no marker of its own). */
+  voiceCont?: boolean;
   /** AskUser options on this reply: still the open fork, and the answer given. */
   askLive?: boolean;
   askChosen?: string;
@@ -1428,6 +1432,8 @@ export const MessageBubble = memo(function MessageBubble({
       </div>
     );
   }
+  if (message.voiceAsk) return <VoiceAskRow ask={message.voiceAsk} />;
+  if (message.voice) return <VoiceLine message={message} cont={voiceCont} />;
   const isUser = message.role === "user";
   return (
     <div className={cn("flex flex-col gap-1.5", isUser && "items-end")}>
@@ -1506,6 +1512,46 @@ export const MessageBubble = memo(function MessageBubble({
     </div>
   );
 });
+
+// A line said on a voice call: a compact voice turn, smaller and lighter than a typed bubble. Carl's words and
+// the voice's replies sit in one column under a small mic; consecutive lines are one turn (only the first has
+// the mic, and they sit close).
+function VoiceLine({ message, cont }: { message: ChatMessage; cont: boolean }) {
+  const isUser = message.role === "user";
+  return (
+    <div className={cn("flex items-start gap-1.5 text-[12px] leading-snug", cont && "-mt-2")} data-el="voice-line" data-role={message.role}>
+      <span className="w-3.5 shrink-0 pt-[3px] text-muted-foreground/70">{cont ? null : <Mic className="h-3 w-3" aria-label="voice" />}</span>
+      <div className={cn("min-w-0 flex-1 break-words", isUser ? "text-foreground/80" : "text-muted-foreground")}>
+        {isUser && <span className="mr-1 text-[10.5px] font-medium uppercase tracking-wide text-muted-foreground/60">You</span>}
+        <Markdown source={message.display ?? message.content} profile="chat" components={chatComponents} />
+      </div>
+    </div>
+  );
+}
+
+// Voice asked the agent in the background (server/voice.ts Ask): one row, collapsed, styled like a tool row —
+// what voice asked and what came back, when opened. Never a bubble of Carl's.
+function VoiceAskRow({ ask }: { ask: NonNullable<ChatMessage["voiceAsk"]> }) {
+  const line = ask.result.replace(/\s+/g, " ").trim();
+  return (
+    <details className="group" data-el="voice-ask">
+      <summary className={cn("flex items-center gap-1.5 text-[11px] cursor-pointer hover:text-foreground list-none select-none min-w-0", ask.failed ? "text-destructive/90" : "text-muted-foreground")}>
+        <ChevronDown className="h-3 w-3 shrink-0 transition-transform group-open:rotate-0 -rotate-90" />
+        <Mic className="h-3 w-3 shrink-0" />
+        <span className="shrink-0">{ask.act ? "Voice asked the agent to do it" : "Voice asked the agent"}</span>
+        <span className="truncate opacity-80">· {ask.failed ? `failed: ${line}` : line || "no answer"}</span>
+      </summary>
+      <div className="mt-2 space-y-1.5 pl-4 border-l border-border text-[11.5px]">
+        <div className="text-muted-foreground">
+          <span className="font-medium">Asked:</span> {ask.request}
+        </div>
+        <div className="prose-chat text-foreground/90">
+          <Markdown source={ask.result || "(nothing came back)"} profile="chat" components={chatComponents} />
+        </div>
+      </div>
+    </details>
+  );
+}
 
 // Where the earlier conversation was summarized: the quiet system-line divider,
 // whose summary expands like a tool-call list.

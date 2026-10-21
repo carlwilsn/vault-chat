@@ -115,6 +115,10 @@ export type ChatMessage = {
   // Voice lines: what the bubble shows instead of `content` — the same words
   // with the spoken math as LaTeX (voiceMath.ts). `content` stays as spoken.
   display?: string;
+  // A line said on a voice call (Carl's or the voice's): shown as a compact voice turn, not a bubble.
+  voice?: boolean;
+  // Voice asked the agent something in the background (server/voice.ts Ask): one collapsed row, never a bubble.
+  voiceAsk?: { request: string; result: string; failed: boolean; act?: boolean };
   // [ask redesign] A fresh option set the ask agent proposed mid-conversation
   // (via its ProposeOptions tool). The phone renders these as tappable cards
   // that STACK under the exchange — the original options at the top of the ask

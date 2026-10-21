@@ -6,7 +6,7 @@ import { installMock } from "./mock";
 import * as X from "./extras";
 import { createPhoneMarkdown, domToHtml } from "./markdown";
 import { stripAudioTags } from "../../src/voiceTags";
-import { isControlLine } from "../../src/voicePrompt";
+import { isControlLine, isFillerLine } from "../../src/voicePrompt";
 import { QuietGate } from "../../src/voiceQuiet";
 import { SPEECH_LEVEL } from "../../src/voiceHealth";
 import { VoiceImagePusher } from "../../src/voiceImages";
@@ -2182,7 +2182,7 @@ export function boot(): void {
         onDisconnect: (d) => { if (d && d.reason !== "user") console.warn("[voice] closed", vTransport, JSON.stringify({ reason: d.reason, message: d.message, code: d.closeCode ?? (d.context && d.context.code), why: d.closeReason ?? (d.context && d.context.reason) })); if (!timedOut) vTeardown(); },
         onError: (m) => setVErr(typeof m === "string" ? m : (m && m.message) || "voice error"),
         onAudio: (b64) => { if (vTransport === "websocket") try { vAgentEnvPush(b64); } catch {} },
-        onMessage: ({ message, role }) => { const raw = (message || "").trim(); if (role === "user" && isControlLine(raw)) return; /* the box's own [vc:result] updates: not Carl's */ const text = role === "user" ? raw : stripAudioTags(raw); if (text) vSaveLine(role === "user" ? "user" : "assistant", text); },
+        onMessage: ({ message, role }) => { const raw = (message || "").trim(); if (role === "user" && isControlLine(raw)) return; /* the box's own [vc:result] updates: not Carl's */ const text = role === "user" ? raw : stripAudioTags(raw); if (role !== "user" && isFillerLine(text)) return; /* spoken, never written */ if (text) vSaveLine(role === "user" ? "user" : "assistant", text); },
         // Mode leaving "speaking" = the playback buffer drained (or barge-in) —
         // everything that arrived was heard, so drop the queued envelope tail.
         onModeChange: ({ mode }) => { vAgentSpeaking = mode === "speaking"; if (!vAgentSpeaking) vAgentEnvReset(); vGate.modeChanged(); },

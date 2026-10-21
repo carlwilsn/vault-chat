@@ -5,7 +5,14 @@
 // vc-voice custom message: the agent hears it on its next turn); and every
 // action is the agent's: voice's one tool that acts, Ask, hands Carl's request
 // to pi in that conversation and returns at once, and the agent's answer comes
-// back into the live call through /updates. Tools that read or move a screen
+// back into the live call through /updates. Ask is a background side request,
+// never a message in the thread and never a steer (Carl: "Do I even need to see
+// the voice talking to the main agent? Why is that not a background task?"): a
+// pi side thread forked from the conversation (read-only for a question, like
+// Ctrl+L; with pi's own file tools for an action, which waits for a running turn
+// to end), its result said to Carl through /updates and kept in the thread as ONE
+// collapsed row (VoiceAsk). Voice's acknowledgement ("on it") and the platform's
+// filler ("One sec.") are spoken, never written. Tools that read or move a screen
 // run on the device in front of Carl (src/voicePrompt.ts SCREEN_TOOLS).
 //
 // Routes (http.ts), each with an optional vault:
@@ -30,7 +37,7 @@ import { appendActivity, projectContextFor, youLayer } from "./activity";
 import { voiceLineEntry } from "../src/activityCore";
 import { stripAudioTags } from "../src/voiceTags";
 import { speakMath, speechReady } from "./speakMath";
-import { ASK, SCREEN_TOOLS, buildVoicePrompt, controlLine, isControlLine, voiceDevice, voiceToolNames, type VoiceDevice } from "../src/voicePrompt";
+import { ASK, SCREEN_TOOLS, buildVoicePrompt, controlLine, isControlLine, isFillerLine, voiceDevice, voiceToolNames, type VoiceDevice } from "../src/voicePrompt";
 import type { Item, Picture } from "../src/convlog/reduce";
 
 export type VoiceDeps = {
@@ -42,6 +49,13 @@ export type VoiceDeps = {
   message?: (b: { text: string; convId?: string | null; source?: "voice"; via?: string; clientMsgId?: string; client?: string; context?: string }) => Promise<Record<string, unknown> | null>;
   /** After a line is saved: a sync cycle, so it reaches the laptop. */
   onWrite?: (paths?: string[]) => void;
+  /** pi side threads (server/engine/pi/side.ts, the engine's sideStart): voice's Ask runs as one, forked from the
+   *  conversation — read-only for a question (like Ctrl+L), with pi's own file tools for an action ("act"). */
+  side?: {
+    start(b: { kind: string; convId: string; text: string; tools?: "act" }): Promise<{ id?: unknown; error?: unknown }>;
+    /** Until it is done: its final text, or why it failed. */
+    wait(id: string): Promise<{ text: string; error: string | null }>;
+  };
 };
 
 const s = (v: unknown) => (typeof v === "string" ? v : v == null ? "" : String(v));
@@ -217,6 +231,11 @@ export async function voiceTranscript(d: VoiceDeps, b: any): Promise<{ status: n
   if (moved) return { status: 409, body: { error: movedLine(moved), moved: { to: moved, line: movedLine(moved) } } };
   voiceActivity(d.vault, ended);
   if (!text || (role === "user" && !system && isControlLine(text))) return { status: 200, body: { ok: true, convId: s(b?.convId) || null, skipped: true } };
+  // Spoken, never written: the platform's filler, voice's own "one sec / on it", and the line acknowledging an Ask.
+  if (role === "assistant" && !system && !b?.tool && (isFillerLine(text) || takeAck(s(b?.convId), text))) {
+    touchSession(b?.sessionId);
+    return { status: 200, body: { ok: true, convId: s(b?.convId) || null, skipped: true, filler: true } };
+  }
   // The end of a call where nothing was said: no conversation for it.
   const have = await attached(d, b?.convId, false);
   if (ended && !have) return { status: 200, body: { ok: true, convId: null } };
@@ -279,6 +298,18 @@ function saveTranscriptImages(vault: string, convId: string, images: unknown[]):
 
 // ---------------------------------------------------------------- the tool
 
+// ---------------------------------------------------------------- spoken, never written
+
+/** After an Ask: voice's next short line in that conversation is its acknowledgement (the Ask's result tells it to say one). */
+const ackDue = new Map<string, number>();
+const ACK_MS = 20_000;
+function takeAck(convId: string, text: string): boolean {
+  const until = convId ? ackDue.get(convId) : undefined;
+  if (!until) return false;
+  ackDue.delete(convId);
+  return Date.now() < until && text.trim().length <= 160;
+}
+
 /** POST /api/v1/voice/tool {name, args, convId, device}. Never throws: errors are the result the voice hears. */
 export async function voiceTool(d: VoiceDeps, body: any): Promise<{ result: string; convId?: string; moved?: { to: VoiceDevice; line: string } }> {
   const name = s(body?.name);
@@ -306,31 +337,91 @@ export async function voiceTool(d: VoiceDeps, body: any): Promise<{ result: stri
   }
 }
 
-/** What the agent is told with a request voice handed over (before Carl's words; not shown in the chat). */
+/** What the side thread is told with a request voice handed over (before Carl's words; not shown in the chat). */
 export const ASK_CONTEXT =
-  "[Carl asked this by voice, on a call (his spoken lines are in this conversation). Do it now, in place; then answer in two or three plain sentences: they are read out to him. Say only what you did and checked.]";
+  "[Carl asked this by voice, on a call (his spoken lines are in this conversation). You are a side request: the conversation's own work goes on without you. Answer in two or three plain sentences: they are read out to him. Say only what you found or did, and checked.]";
+/** For an action (Ask {act: true}): it changes things. */
+export const ACT_CONTEXT =
+  "[Carl asked this by voice, on a call (his spoken lines are in this conversation). You are a side request with the file tools: do it now, in place, carefully; the conversation's own work goes on without you. Then say in two or three plain sentences what you did and checked: they are read out to him. If it needs a tool you don't have here, do nothing and say so.]";
 
-/** A request id: the pi message's client id (its item in the transcript). */
+/** A request id (its row in the transcript: voice-ask-<id>). */
 const requestId = () => `ask-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
 
-/** Ask {request}: Carl's request to the conversation's agent, as a pi turn in the attached conversation (or into
- * its running turn, or as the answer to its open question). Returns at once — never waits on the agent, so no
- * timeout of the call (ElevenLabs' 30 s for a tool, its cascade's 15 s) can drop it; the answer comes back
- * through /updates. */
+/** What a voice Ask came back with, for the live call's updates (newest last; per vault). */
+type AskDone = { vault: string; convId: string; id: string; at: number; text: string; error: string | null };
+const asksDone: AskDone[] = [];
+/** Voice Asks still running (tests, diagnostics). */
+const asksRunning = new Map<string, Promise<void>>();
+/** [tests] Until every running voice Ask has finished. */
+export async function voiceAsksSettled(): Promise<void> {
+  while (asksRunning.size) await Promise.all([...asksRunning.values()]);
+}
+
+/** Ask {request, act?}: Carl's request, in the background — a pi side thread forked from the attached conversation
+ * (read-only for a question; pi's file tools for an action, which waits until a running turn of the conversation
+ * ends). It never writes a message into the thread and never steers a running turn. Returns at once, so no timeout
+ * of the call can drop it; the answer comes back through /updates and is kept as one collapsed row. The one
+ * exception is the agent's own open question: Carl's spoken answer goes to it as his answer. */
 async function ask(d: VoiceDeps, a: Record<string, unknown>, convId: unknown, device: VoiceDevice): Promise<{ result: string; convId?: string }> {
   const request = s(a.request ?? a.task).trim();
   if (!request) return { result: `Error: ${ASK} needs the request (Carl's words). Nothing was handed over.` };
-  if (!d.message) return { result: "Error: the agent is not running on the box, so nothing was handed over. Tell Carl it didn't go through." };
   const id = await attached(d, convId, true, request);
   const rid = requestId();
-  const out = await d.message({ convId: id, text: request, source: "voice", via: "voice-ask", clientMsgId: rid, client: device, context: ASK_CONTEXT });
-  if (!out || out.error) return { result: `Error: the agent did not take it (${s(out?.error) || "no answer"}). Nothing was done — tell Carl.`, convId: id };
-  const now = out.answered
-    ? `The agent had asked Carl a question; this went to it as his answer (request ${rid}).`
-    : out.steered
-      ? `The agent was already working in this conversation; this was added to its work (request ${rid}).`
-      : `The agent has it (request ${rid}) and is working on it in this conversation.`;
+  const p = pictureOf(d.vault, id);
+  // The agent asked Carl something: his answer goes to it, as a typed answer would.
+  if (p?.meta.asking && d.message) {
+    const out = await d.message({ convId: id, text: request, source: "voice", via: "voice-ask", clientMsgId: rid, client: device, context: "[Carl answered your question by voice, on a call.]" });
+    if (!out || out.error) return { result: `Error: the agent did not take his answer (${s(out?.error) || "no answer"}). Tell Carl.`, convId: id };
+    ackDue.set(id, Date.now() + ACK_MS);
+    return { result: `That went to the agent as Carl's answer to its question (request ${rid}). What it does next comes to you as a message starting [vc:result]. Now say only a short line.`, convId: id };
+  }
+  if (!d.side) return { result: "Error: the agent is not running on the box, so nothing was handed over. Tell Carl it didn't go through.", convId: id };
+  const act = a.act === true || a.act === "true";
+  const waits = act && !!p?.meta.running;
+  const run = runAsk(d, { rid, convId: id, request, act }).finally(() => asksRunning.delete(rid));
+  asksRunning.set(rid, run);
+  ackDue.set(id, Date.now() + ACK_MS);
+  const now = act
+    ? waits
+      ? `The agent will do it as a side request once its current work in this conversation finishes (request ${rid}).`
+      : `The agent is doing it as a side request (request ${rid}).`
+    : `The agent is looking it up as a side request (request ${rid}).`;
   return { result: `${now} Its answer will come to you as a message starting [vc:result]. Now say only a short line ("on it"); don't say it is done and don't guess the answer.`, convId: id };
+}
+
+/** Until the conversation has no running turn (an action never runs beside one: it would edit the same files). */
+async function untilIdle(vault: string, convId: string, maxMs = 60 * 60_000): Promise<void> {
+  const t0 = Date.now();
+  while (pictureOf(vault, convId)?.meta.running && Date.now() - t0 < maxMs) await new Promise((r) => setTimeout(r, 1000));
+}
+
+/** The side request, then its one row in the thread and its answer for the live call. */
+async function runAsk(d: VoiceDeps, o: { rid: string; convId: string; request: string; act: boolean }): Promise<void> {
+  let text = "";
+  let error: string | null = null;
+  try {
+    if (o.act) await untilIdle(d.vault, o.convId);
+    // A conversation no agent turn has run in has no session to fork: what was said comes with the request.
+    const said = pictureOf(d.vault, o.convId)?.meta.threadId ? "" : conversationBlock(d.vault, o.convId, 4000);
+    const prompt = `${o.act ? ACT_CONTEXT : ASK_CONTEXT}\n\n${said ? `${said}\n\n` : ""}${o.request}`;
+    const r = await d.side!.start({ kind: o.act ? "voice-act" : "voice-ask", convId: o.convId, text: prompt, ...(o.act ? { tools: "act" as const } : {}) });
+    if (!r?.id || r.error) throw new Error(s(r?.error) || "the side request did not start");
+    const done = await d.side!.wait(String(r.id));
+    text = s(done.text).trim();
+    error = done.error;
+    if (!text && !error) error = "it came back with nothing";
+  } catch (e) {
+    error = String((e as Error)?.message ?? e).slice(0, 300);
+  }
+  // One compact row in the thread: what voice asked and what came back (collapsed; never a bubble).
+  await writeNotes(d.vault, o.convId, [
+    { kind: "tool", name: "VoiceAsk", args: { request: o.request, ...(o.act ? { act: true } : {}) }, result: error ? `Error: ${error}` : text.slice(0, 4000), via: "voice", clientId: `voice-${o.rid}` },
+  ]).catch((e) => console.warn("[voice] the Ask's row:", e));
+  d.onWrite?.();
+  // The acknowledgement window ends with the answer: what voice says after it is its reply.
+  ackDue.delete(o.convId);
+  asksDone.push({ vault: d.vault, convId: o.convId, id: o.rid, at: Date.now(), text, error });
+  while (asksDone.length > 200) asksDone.shift();
 }
 
 // ---------------------------------------------------------------- updates into the live call
@@ -352,6 +443,19 @@ export function voiceUpdatesSince(d: VoiceDeps, convId: string | null, cur: { at
   const updates: VoiceUpdate[] = [];
   let at = cur.at;
   let you = cur.you;
+  // Voice's own Asks, answered in the background (never held for a running turn: they are not its).
+  for (const r of asksDone) {
+    if (r.vault !== d.vault || r.convId !== convId || r.at <= cur.at) continue;
+    updates.push({
+      id: `v-${r.id}`,
+      kind: "result",
+      speak: true,
+      text: r.error
+        ? controlLine("result", `The agent could not do it (request ${r.id}): ${clip(oneLine(r.error), 400)}. Tell Carl it didn't happen.`)
+        : controlLine("result", `The agent answered (request ${r.id}): ${speakMath(clip(r.text, RESULT_CAP))}\nTell Carl now, briefly, in your own words — only what it says.`),
+    });
+    at = Math.max(at, r.at);
+  }
   const c = convId ? pictureOf(d.vault, convId) : null;
   if (c) {
     const asking = c.meta.asking;

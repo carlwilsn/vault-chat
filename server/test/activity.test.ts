@@ -83,6 +83,8 @@ let voice: typeof import("../voice");
 let engine: any, engine2: any;
 let backend: FakeBackend, backend2: FakeBackend;
 let deps: import("../voice").VoiceDeps;
+/** Voice's Asks (pi side threads, faked): what each was given. */
+const sideAsks: { kind: string; convId: string; text: string; tools?: string }[] = [];
 
 const until = async (fn: () => Promise<boolean> | boolean, ms = 10_000) => {
   const t0 = Date.now();
@@ -138,7 +140,7 @@ beforeAll(async () => {
   act = await import("../activity");
   core = await import("../../src/activityCore");
   voice = await import("../voice");
-  deps = { vault, name: "main", main: true, message: (b) => engine.message(b) };
+  deps = { vault, name: "main", main: true, message: (b) => engine.message(b), side: { start: async (b) => (sideAsks.push(b), { id: `s${sideAsks.length}` }), wait: async () => ({ text: "Summarised.", error: null }) } };
 });
 
 afterAll(() => {
@@ -398,16 +400,17 @@ describe("every surface sees the same stream (engine on a fake pi)", () => {
     expect(chat.texts).toContain(`capture of paper.pdf (page 2) — captured a region for the chat: ${rel}`);
   });
 
-  it("Ask from a fresh call: the new conversation's first agent turn carries the call's lines before it", async () => {
+  it("Ask from a fresh call: its side request carries the call's lines before it (no session to fork yet), and starts no turn", async () => {
     const line = await voice.voiceTranscript(deps, { role: "user", text: "can you have the agent summarise the transformers note" });
     const before = backend.turns.length;
-    const r = await voice.voiceTool(deps, { name: "Ask", args: { request: "Summarise notes/a.md into notes/summary.md" }, convId: line.body.convId });
+    const r = await voice.voiceTool(deps, { name: "Ask", args: { request: "Summarise notes/a.md into notes/summary.md", act: true }, convId: line.body.convId });
     expect(r.convId).toBe(line.body.convId);
-    await until(() => backend.turns.length > before);
-    const texts = backend.turns[backend.turns.length - 1]!.texts.join("\n\n");
-    backend.end();
-    expect(texts).toContain("can you have the agent summarise the transformers note");
-    expect(texts).toContain("Summarise notes/a.md into notes/summary.md");
+    await voice.voiceAsksSettled();
+    const s = sideAsks.at(-1)!;
+    expect(s).toMatchObject({ kind: "voice-act", convId: line.body.convId, tools: "act" });
+    expect(s.text).toContain("can you have the agent summarise the transformers note");
+    expect(s.text).toContain("Summarise notes/a.md into notes/summary.md");
+    expect(backend.turns.length).toBe(before);
   });
 
   it("a voice session on a chat has that chat's turns and the recent stream (its you layer)", async () => {

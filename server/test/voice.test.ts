@@ -68,7 +68,10 @@ class FakeBackend extends EventEmitter {
     this.turns.push({ threadId, texts: o.texts, turnId });
     return { turnId };
   }
-  async steer() {}
+  steers = 0;
+  async steer() {
+    this.steers++;
+  }
   async followUp() {}
   async interrupt() {}
   usageCalls() {
@@ -96,6 +99,21 @@ let convs: typeof import("../engine/convs");
 let writes = 0;
 let deps: import("../voice").VoiceDeps;
 let deps2: import("../voice").VoiceDeps;
+
+/** pi side threads, faked (the engine's sideStart forks the conversation; here each is answered by the test). */
+type FakeSideRun = { id: string; kind: string; convId: string; text: string; tools?: string; answer: (text: string, error?: string | null) => void; done: Promise<{ text: string; error: string | null }> };
+const sides: FakeSideRun[] = [];
+const fakeSide = {
+  async start(b: { kind: string; convId: string; text: string; tools?: "act" }) {
+    let answer!: FakeSideRun["answer"];
+    const done = new Promise<{ text: string; error: string | null }>((res) => (answer = (text, error = null) => res({ text, error })));
+    const run: FakeSideRun = { id: `side-${sides.length + 1}`, ...b, answer, done };
+    sides.push(run);
+    return { id: run.id };
+  },
+  wait: (id: string) => sides.find((x) => x.id === id)!.done,
+};
+const lastSide = () => sides[sides.length - 1]!;
 
 const until = async (fn: () => Promise<boolean> | boolean, ms = 10_000) => {
   const t0 = Date.now();
@@ -157,7 +175,7 @@ beforeAll(async () => {
   engine.start();
   voice = await import("../voice");
   convs = await import("../engine/convs");
-  deps = { vault, name: "main", main: true, message: (b) => engine.message(b), onWrite: () => writes++ };
+  deps = { vault, name: "main", main: true, message: (b) => engine.message(b), side: fakeSide, onWrite: () => writes++ };
   deps2 = { vault: vault2, name: "lab", main: false, onWrite: () => writes++ };
 });
 
@@ -167,29 +185,94 @@ afterAll(() => {
 });
 
 describe("voice's one tool that acts: Ask, a request to the conversation's agent", () => {
-  it("hands Carl's words to the agent as a turn in the attached conversation, and returns at once with a request id", async () => {
+  it("runs Carl's words as a background side request forked from the conversation: no turn, no steer, no bubble; returns at once", async () => {
     const chat = await typed("Let's work on the fixed-point notes.", "Sure.");
     const n = backend.turns.length;
     const t0 = Date.now();
-    const r = await voice.voiceTool(deps, { name: "Ask", args: { request: "Rename lemma 2 to the contraction lemma." }, convId: chat, device: "laptop" });
-    const ms = Date.now() - t0;
+    const r = await voice.voiceTool(deps, { name: "Ask", args: { request: "What does lemma 2 say?" }, convId: chat, device: "laptop" });
+    expect(Date.now() - t0).toBeLessThan(1000);
     expect(r.convId).toBe(chat);
-    expect(r.result).toMatch(/^The agent has it \(request ask-[a-z0-9-]+\)/);
+    expect(r.result).toMatch(/^The agent is looking it up as a side request \(request ask-[a-z0-9-]+\)/);
     // It never says it is done: the answer comes as [vc:result].
     expect(r.result).toContain("[vc:result]");
     expect(r.result).toMatch(/don't say it is done/);
-    expect(ms).toBeLessThan(1000);
+    // A side thread of this conversation (read-only: a question), told it came by voice; not a turn of it.
+    const side = lastSide();
+    expect(side).toMatchObject({ kind: "voice-ask", convId: chat });
+    expect(side.tools).toBeUndefined();
+    expect(side.text).toContain(voice.ASK_CONTEXT);
+    expect(side.text).toContain("What does lemma 2 say?");
+    await new Promise((res) => setTimeout(res, 100));
+    expect(backend.turns.length).toBe(n);
+    // No bubble: the request is not a message in the thread.
+    const items = () => convs.pictureOf(vault, chat)!.items;
+    expect(items().some((x) => x.kind === "user" && String(x.text).includes("What does lemma 2 say?"))).toBe(false);
+    side.answer("Lemma 2: a contraction on a complete metric space has exactly one fixed point.");
+    await voice.voiceAsksSettled();
+    // One collapsed row: what voice asked and what came back.
+    const rows = items().filter((x) => x.kind === "tool" && x.name === "VoiceAsk");
+    expect(rows.length).toBe(1);
+    expect(rows[0]!.args).toEqual({ request: "What does lemma 2 say?" });
+    expect(rows[0]!.result).toBe("Lemma 2: a contraction on a complete metric space has exactly one fixed point.");
+    const { messagesOf } = await import("../../src/convlog/view");
+    const msgs = messagesOf(convs.pictureOf(vault, chat)!);
+    expect(msgs.filter((m) => m.voiceAsk).map((m) => m.voiceAsk)).toEqual([{ request: "What does lemma 2 say?", result: "Lemma 2: a contraction on a complete metric space has exactly one fixed point.", failed: false }]);
+    expect(msgs.some((m) => m.role === "user" && m.content.includes("lemma 2 say"))).toBe(false);
+    expect(msgs.some((m) => m.toolCalls?.some((t) => t.name === "VoiceAsk"))).toBe(false);
+  });
+
+  it("an Ask during a running turn: no steer, the running turn and its queue untouched; an action waits for the turn to end", async () => {
+    const chat = await typed("Build lecture three's notes.", "Starting.");
+    const n = backend.turns.length;
+    await engine.message({ text: "Add lecture three and render the HTML.", convId: chat, client: "laptop" });
     await until(() => backend.turns.length > n);
-    const turn = backend.turns.at(-1)!;
-    // The same conversation's thread: one brain, Carl's own words, told it came by voice.
-    expect(turn.threadId).toBe(backend.turns[n - 1]!.threadId);
-    expect(turn.texts.join("\n")).toContain("Rename lemma 2 to the contraction lemma.");
-    expect(turn.texts.join("\n")).toContain(voice.ASK_CONTEXT);
-    // The chat shows it as a request handed over by voice.
-    const items = convs.pictureOf(vault, chat)!.items;
-    expect(items.find((x) => x.kind === "user" && x.text === "Rename lemma 2 to the contraction lemma.")?.via).toBe("voice-ask");
-    backend.reply("Done: lemma 2 is now called the contraction lemma (notes/fixed-point.md, line 3).");
+    const running = () => !!convs.pictureOf(vault, chat)!.meta.running;
+    expect(running()).toBe(true);
+    const pending = JSON.stringify(convs.pictureOf(vault, chat)!.meta.pending ?? []);
+    const steers = backend.steers;
+    const turns = backend.turns.length;
+    const sidesBefore = sides.length;
+    // A question: answered beside the running turn, at once.
+    const q = await voice.voiceTool(deps, { name: "Ask", args: { request: "What's J of theta in my policy-gradient notes?" }, convId: chat, device: "laptop" });
+    expect(q.result).toMatch(/looking it up as a side request/);
+    expect(sides.length).toBe(sidesBefore + 1);
+    // An action: queued until the turn ends (it would edit the same files), never steered in.
+    const a = await voice.voiceTool(deps, { name: "Ask", args: { request: "Add a line to the TODO note: check lecture 3's figures.", act: true }, convId: chat, device: "laptop" });
+    expect(a.result).toMatch(/once its current work in this conversation finishes/);
+    await new Promise((res) => setTimeout(res, 300));
+    expect(sides.length).toBe(sidesBefore + 1);
+    expect(backend.steers).toBe(steers);
+    expect(backend.turns.length).toBe(turns);
+    expect(JSON.stringify(convs.pictureOf(vault, chat)!.meta.pending ?? [])).toBe(pending);
+    expect(running()).toBe(true);
+    sides[sidesBefore]!.answer("J of theta is the expected return of the policy with parameters theta.");
+    // The turn ends: now the action runs, forked after it, with the file tools.
+    backend.reply("Lecture three is added and rendered.");
     await idle(chat);
+    await until(() => sides.length > sidesBefore + 1, 5000);
+    expect(lastSide()).toMatchObject({ kind: "voice-act", convId: chat, tools: "act" });
+    expect(lastSide().text).toContain(voice.ACT_CONTEXT);
+    lastSide().answer("Added the line to notes/TODO.md and read it back.");
+    await voice.voiceAsksSettled();
+    expect(backend.steers).toBe(steers);
+    const rows = convs.pictureOf(vault, chat)!.items.filter((x) => x.kind === "tool" && x.name === "VoiceAsk");
+    expect(rows.map((x) => (x.args as any).act ?? false)).toEqual([false, true]);
+    expect(convs.pictureOf(vault, chat)!.items.some((x) => x.kind === "user" && /J of theta|TODO note/.test(String(x.text)))).toBe(false);
+  });
+
+  it("the filler and the Ask's acknowledgement are spoken, never written; the voice's real replies are", async () => {
+    const chat = await typed("Policy gradients.", "Ready.");
+    for (const line of ["One sec.", "One sec—I'm checking the objective in your notes.", "Okay, let me check that.", "On it."]) {
+      const r = await voice.voiceTranscript(deps, { convId: chat, role: "assistant", text: line, device: "laptop" });
+      expect(r.body.filler, line).toBe(true);
+    }
+    await voice.voiceTool(deps, { name: "Ask", args: { request: "Which lecture defines the baseline?" }, convId: chat, device: "laptop" });
+    // Its acknowledgement, whatever the words.
+    expect((await voice.voiceTranscript(deps, { convId: chat, role: "assistant", text: "Sure, the agent's looking that up for you.", device: "laptop" })).body.filler).toBe(true);
+    lastSide().answer("Lecture 7 defines the baseline.");
+    await voice.voiceAsksSettled();
+    await voice.voiceTranscript(deps, { convId: chat, role: "assistant", text: "Lecture seven defines the baseline.", device: "laptop" });
+    expect(voiceEntries(chat).map((e) => e.content)).toEqual(["[voice call] You said to Carl (spoken by your voice): Lecture seven defines the baseline."]);
   });
 
   it("no voice-local tools remain: files, notes, shell, projects, the web and the old hand-off are the agent's", async () => {
@@ -240,43 +323,56 @@ describe("voice's one tool that acts: Ask, a request to the conversation's agent
     expect((await voice.voiceTool(deps, { name: "ScrollTo", args: { page: 3 }, device: "laptop" })).result).toMatch(/runs on Carl's laptop itself, and it did not answer: nothing was looked at or moved/);
   });
 
-  it("without an engine (or while it starts) Ask says nothing was handed over", async () => {
+  it("without an engine Ask says nothing was handed over; a side request that fails is said as such", async () => {
     expect((await voice.voiceTool({ vault }, { name: "Ask", args: { request: "x" } })).result).toMatch(/not running on the box, so nothing was handed over/);
-    const starting = await voice.voiceTool({ vault, message: async () => { throw new Error("the agent engine is still starting — try again in a minute"); } }, { name: "Ask", args: { request: "x" } });
-    expect(starting.result).toMatch(/still starting.*Nothing was done/);
     expect((await voice.voiceTool(deps, { name: "Ask", args: {} })).result).toMatch(/^Error: Ask needs the request/);
+    const chat = await typed("A chat for a failing ask.", "OK.");
+    const start = await voice.voiceUpdates(deps, { convId: chat });
+    const starting = { vault, side: { start: async () => ({ error: "the agent engine is still starting — try again in a minute" }), wait: fakeSide.wait } };
+    expect((await voice.voiceTool(starting, { name: "Ask", args: { request: "x" }, convId: chat })).result).toMatch(/side request/);
+    await voice.voiceAsksSettled();
+    const got = await voice.voiceUpdates(deps, { convId: chat, cursor: start.cursor, waitMs: 1000 });
+    expect(got.updates.find((u) => u.kind === "result")?.text).toMatch(/could not do it .*still starting.*Tell Carl it didn't happen/);
   });
 
-  it("an action never drops on a timeout: Ask returns while the agent still works, and its answer arrives later", async () => {
+  it("an Ask never drops on a timeout: it returns while the side request still works, and its answer reaches the call once", async () => {
     const chat = await typed("Open the measure theory notes.", "Open.");
     const start = await voice.voiceUpdates(deps, { convId: chat });
-    const n = backend.turns.length;
-    const r = await voice.voiceTool(deps, { name: "Ask", args: { request: "Rewrite all of section 4 in plain words." }, convId: chat, device: "phone" });
-    expect(r.result).toMatch(/is working on it/);
-    await until(() => backend.turns.length > n);
-    // The turn is still running (longer than ElevenLabs' 15 s cascade or 30 s tool timeout would allow): nothing yet.
+    const r = await voice.voiceTool(deps, { name: "Ask", args: { request: "Summarise section 4 in plain words." }, convId: chat, device: "phone" });
+    expect(r.result).toMatch(/side request/);
+    // Still working (longer than ElevenLabs' 15 s cascade or 30 s tool timeout would allow): nothing yet.
     const none = await voice.voiceUpdates(deps, { convId: chat, cursor: start.cursor, waitMs: 300 });
     expect(none.updates.filter((u) => u.kind === "result")).toEqual([]);
-    backend.reply("Section 4 is rewritten in plain words; I read it back: five paragraphs, no symbols left.");
-    await idle(chat);
+    lastSide().answer("Section 4 says every measurable function is a limit of simple functions.");
+    await voice.voiceAsksSettled();
     const got = await voice.voiceUpdates(deps, { convId: chat, cursor: none.cursor, waitMs: 2000 });
     const res = got.updates.find((u) => u.kind === "result")!;
     expect(res.speak).toBe(true);
-    expect(res.text).toMatch(/^\[vc:result\] The agent answered: Section 4 is rewritten/);
+    expect(res.text).toMatch(/^\[vc:result\] The agent answered \(request ask-[a-z0-9-]+\): Section 4 says every measurable function/);
     // Once: the cursor moved past it.
     const again = await voice.voiceUpdates(deps, { convId: chat, cursor: got.cursor, waitMs: 200 });
     expect(again.updates.filter((u) => u.kind === "result")).toEqual([]);
+    // And while a turn of the conversation runs, a result still reaches the call (it is not that turn's).
+    const n = backend.turns.length;
+    await engine.message({ text: "Now render the notes.", convId: chat, client: "laptop" });
+    await until(() => backend.turns.length > n);
+    const cur = (await voice.voiceUpdates(deps, { convId: chat })).cursor;
+    await voice.voiceTool(deps, { name: "Ask", args: { request: "How many sections are there?" }, convId: chat, device: "phone" });
+    lastSide().answer("Six sections.");
+    await voice.voiceAsksSettled();
+    const mid = await voice.voiceUpdates(deps, { convId: chat, cursor: cur, waitMs: 1000 });
+    expect(mid.updates.filter((u) => u.kind === "result").map((u) => u.text)).toEqual([expect.stringContaining("Six sections.")]);
+    backend.reply("Rendered.");
+    await idle(chat);
   });
 
-  it("an answer with LaTeX reaches the call as words (server/speakMath.ts); the transcript keeps the LaTeX", async () => {
+  it("an answer with LaTeX reaches the call as words (server/speakMath.ts); the row keeps the LaTeX", async () => {
     const chat = await typed("Real analysis homework.", "Ready.");
     const start = await voice.voiceUpdates(deps, { convId: chat });
-    const n = backend.turns.length;
     await voice.voiceTool(deps, { name: "Ask", args: { request: "What does Cauchy mean, and what's the series?" }, convId: chat, device: "laptop" });
-    await until(() => backend.turns.length > n);
     const latex = String.raw`Cauchy: for every $\epsilon > 0$ there is $N$ with $|x_m - x_n| < \epsilon$ for $m, n > N$. The series is $$\sum_{k=1}^n \frac{(-1)^k}{k}$$ and the field is $\frac{1}{4\pi\epsilon_0}\frac{q}{r^2}$, a drop of 5 mV.`;
-    backend.reply(latex);
-    await idle(chat);
+    lastSide().answer(latex);
+    await voice.voiceAsksSettled();
     const got = await voice.voiceUpdates(deps, { convId: chat, cursor: start.cursor, waitMs: 2000 });
     const res = got.updates.find((u) => u.kind === "result")!;
     // Into the session: words, never LaTeX or its symbols.
@@ -285,13 +381,9 @@ describe("voice's one tool that acts: Ask, a request to the conversation's agent
     expect(res.text).toContain("1 over 4 pi epsilon sub 0 the fraction with numerator q and denominator r squared");
     expect(res.text).toContain("a drop of 5 millivolts");
     expect(res.text).not.toMatch(/[$\\^_{}]|\bfrac\b/);
-    // The transcript (pi's session, what the chat renders) keeps the LaTeX as the agent wrote it.
-    const shown = convs.pictureOf(vault, chat)!.items.filter((x) => x.kind === "assistant").map((x) => String(x.text));
-    expect(shown).toContain(latex);
-    // And the session's prompt (the conversation voice reads) has the words too.
-    const prompt = await voice.voicePrompt(deps, chat, "laptop");
-    expect(prompt).toContain("the absolute value of x sub m minus x sub n is less than epsilon");
-    expect(prompt).not.toContain(String.raw`\frac{(-1)^k}{k}`);
+    // The row (what the chat renders) keeps the LaTeX as the agent wrote it.
+    const row = convs.pictureOf(vault, chat)!.items.find((x) => x.kind === "tool" && x.name === "VoiceAsk")!;
+    expect(row.result).toBe(latex);
   });
 });
 
@@ -366,12 +458,18 @@ describe("POST /api/v1/voice/transcript: every line goes into the attached conve
     expect(await convs.readConv(vault, String(line.body.convId))).toBeNull();
   });
 
-  it("a conversation with no pi thread yet hands its voice lines to the agent's first turn", async () => {
+  it("a conversation with no pi thread yet: an Ask's side request gets its voice lines, and so does the agent's first turn", async () => {
     const id = "voice-first-1";
     await voice.voiceTranscript(deps, { convId: id, role: "user", text: "Remind me what a sigma-algebra is." });
     await voice.voiceTranscript(deps, { convId: id, role: "assistant", text: "Closed under complements and countable unions." });
+    // No session to fork yet: the side request is told what was said.
+    await voice.voiceTool(deps, { name: "Ask", args: { request: "Which lecture defines it?" }, convId: id });
+    expect(lastSide().text).toContain("Remind me what a sigma-algebra is.");
+    expect(lastSide().text).toContain("Closed under complements and countable unions.");
+    lastSide().answer("Lecture 2.");
+    await voice.voiceAsksSettled();
     const n = backend.turns.length;
-    await voice.voiceTool(deps, { name: "Ask", args: { request: "Write that definition into notes/measure.md." }, convId: id });
+    await engine.message({ text: "Write that definition into notes/measure.md.", convId: id, client: "laptop" });
     await until(() => backend.turns.length > n);
     const t = backend.turns.at(-1)!.texts.join("\n");
     expect(t).toContain("Remind me what a sigma-algebra is.");
@@ -408,7 +506,7 @@ describe("GET /api/v1/voice/updates: the live call hears what happened, and only
     const chat = await typed("Clean up my notes folder.", "Looking.");
     const cur = (await voice.voiceUpdates(deps, { convId: chat })).cursor;
     const n = backend.turns.length;
-    await voice.voiceTool(deps, { name: "Ask", args: { request: "And delete the old drafts." }, convId: chat });
+    await engine.message({ text: "And delete the old drafts.", convId: chat, client: "laptop" });
     await until(() => backend.turns.length > n);
     const thread = backend.turns.at(-1)!.threadId;
     const answer = backend.h.toolCall(thread, "AskUser", { question: "Delete all 12 drafts, or only the ones older than a month?", options: ["all 12", "older than a month"] });
@@ -417,7 +515,7 @@ describe("GET /api/v1/voice/updates: the live call hears what happened, and only
     expect(q.speak).toBe(true);
     expect(q.text).toContain("Delete all 12 drafts, or only the ones older than a month?");
     const r = await voice.voiceTool(deps, { name: "Ask", args: { request: "Only the ones older than a month." }, convId: chat });
-    expect(r.result).toMatch(/went to it as his answer/);
+    expect(r.result).toMatch(/went to the agent as Carl's answer to its question/);
     expect((await answer).text).toBe("Carl answered: Only the ones older than a month.");
     backend.reply("Deleted 5 drafts older than a month.");
     await idle(chat);
@@ -711,9 +809,8 @@ describe("one voice at a time: starting voice on another device hands off (Eleve
       const cur2 = String(pad.body.cursor);
       const ask = await voice.voiceTool(deps, { name: "Ask", args: { request: "check step two" }, convId: chat, device: "board", sessionId: sid2 });
       expect(ask.result).toMatch(/\[vc:result\]/);
-      await until(() => backend.turns.length > n);
-      backend.reply("Step two: integrate both sides.");
-      await idle(chat);
+      lastSide().answer("Step two: integrate both sides.");
+      await voice.voiceAsksSettled();
       const padGot = await voice.voiceUpdates(deps, { convId: chat, cursor: cur2, waitMs: 3000, session: sid2 });
       expect(padGot.updates.filter((u) => u.speak).map((u) => u.kind)).toEqual(["result"]);
       const lapGot = await voice.voiceUpdates(deps, { convId: chat, cursor: String(lap.body.cursor), waitMs: 3000, session: sid1 });

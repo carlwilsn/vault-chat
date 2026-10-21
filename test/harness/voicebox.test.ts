@@ -175,5 +175,5 @@ test("voice has no tool that acts but Ask: no project, notes or file tool of its
   const { voiceToolDefs } = await import("../../src/voicePrompt.ts");
   const defs = voiceToolDefs("laptop");
   for (const n of ["SetProject", "ListProjects", "ListNotes", "CreateNote", "Write", "Edit", "Bash", "AskAgent"]) assert.ok(!defs.some((d) => d.name === n), n);
-  assert.deepEqual(Object.keys(defs[0]!.parameters.properties), ["request"]);
+  assert.deepEqual(Object.keys(defs[0]!.parameters.properties), ["request", "act"]);
 });

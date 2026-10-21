@@ -6,9 +6,10 @@
 // action itself, tool first — the model wrote the whole Edit call (old and new paragraph), the box ran
 // it, the model read the file back (VOICE_TRUTH), then spoke: median 4678 ms to first audio.
 //
-// After: voice says a short line and hands Carl's words to the agent (Ask) in the same reply; Ask
-// returns at once. First audio is the short line. The answer is spoken when the agent's turn ends (its
-// own time, not the call's: the call is never blocked on it), delivered through the updates long poll.
+// After: voice hands Carl's words to the agent (Ask, a background side request of the conversation) and
+// says a short line; Ask returns at once. First audio is the short line. The answer is spoken when the side
+// request ends (its own time, not the call's: the call is never blocked on it), delivered through the updates
+// long poll.
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { EventEmitter } from "node:events";
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -111,7 +112,19 @@ const idle = async (id: string) => {
 
 describe("time to first audio for an action turn (mocked model and speech, the real voice path)", () => {
   it("ack first: under 1.5 s; tool first: still far under the old path; the answer lands within a poll of the agent's end", async () => {
-    const deps = { vault, name: "main", main: true, message: (b: any) => engine.message(b) } as any;
+    // The side request (pi, forked from the conversation): it ends when the test says so.
+    let finish: ((t: string) => void) | null = null;
+    let sides = 0;
+    const deps = {
+      vault,
+      name: "main",
+      main: true,
+      message: (b: any) => engine.message(b),
+      side: {
+        start: async () => ({ id: `s${++sides}` }),
+        wait: () => new Promise<{ text: string; error: string | null }>((res) => (finish = (text) => res({ text, error: null }))),
+      },
+    } as any;
     const started = async (n: number) => {
       for (let i = 0; i < 500 && backend.turns.length <= n; i++) await new Promise((r) => setTimeout(r, 10));
     };
@@ -126,12 +139,12 @@ describe("time to first audio for an action turn (mocked model and speech, the r
     for (let i = 0; i < 5; i++) {
       const request = `Rename lemma 2 to the contraction lemma in notes/n.md (${i}).`;
       const args = { request };
-      const n = backend.turns.length;
+      const n = sides;
       const cursor = (await voice.voiceUpdates(deps, { convId: chat })).cursor;
       const t0 = performance.now();
       const r = await voice.voiceTool(deps, { name: "Ask", args, convId: chat, device: "laptop" });
       const ask = performance.now() - t0;
-      expect(r.result).toMatch(/^The agent has it/);
+      expect(r.result).toMatch(/side request/);
       askMs.push(ask);
       // Ack first (the prompt's rule): "On it." streams to speech while the Ask call follows.
       ackFirst.push(gen("On it.".length) + M.tts);
@@ -139,14 +152,15 @@ describe("time to first audio for an action turn (mocked model and speech, the r
       toolFirst.push(gen(JSON.stringify(args).length) + M.rtt + ask + gen("On it, renaming it now.".length) + M.tts);
       // The agent finishes; how long until the call's long poll hands its answer over.
       const poll = voice.voiceUpdates(deps, { convId: chat, cursor, waitMs: 5000 });
-      await started(n);
+      for (let k = 0; k < 500 && (sides <= n || !finish); k++) await new Promise((res) => setTimeout(res, 10));
       await new Promise((res) => setTimeout(res, 100));
       const tEnd = performance.now();
-      backend.reply(`Done (${i}): lemma 2 is now the contraction lemma; I read it back.`);
+      finish!(`Done (${i}): lemma 2 is now the contraction lemma; I read it back.`);
+      finish = null;
       const got = await poll;
       delivery.push(performance.now() - tEnd);
       expect(got.updates.some((u) => u.kind === "result" && u.speak)).toBe(true);
-      await idle(chat);
+      await voice.voiceAsksSettled();
     }
     const out = {
       before: BEFORE_MEDIAN_MS,

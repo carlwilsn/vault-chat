@@ -175,23 +175,50 @@ async function turn(body: Record<string, unknown>, reply: string, during?: (thre
   return { texts: t.texts, images: t.images, instructions, convId: String(out.convId), threadId: t.threadId, all: [instructions ?? "", ...t.texts].join("\n") };
 }
 
-/** Voice's Ask (any device): the agent's turn it starts, run with `during` and answered `reply`; then the result the call gets. */
-async function ask(request: string, convId: string | null, reply: string, during?: (threadId: string) => Promise<void>, device = "phone"): Promise<{ turn: Turn; result: string; convId: string }> {
-  const before = backend.turns.length;
+/** Voice's Asks run as pi side threads (engine.sideStart, on the fake backend): each is answered by the test. */
+const sideDone = new Map<string, { promise: Promise<{ text: string; error: string | null }>; resolve: (r: { text: string; error: string | null }) => void }>();
+const sideOf = (id: string) => {
+  let d = sideDone.get(id);
+  if (!d) {
+    let resolve!: (r: { text: string; error: string | null }) => void;
+    const promise = new Promise<{ text: string; error: string | null }>((res) => (resolve = res));
+    sideDone.set(id, (d = { promise, resolve }));
+  }
+  return d;
+};
+
+type AskedSide = { kind: string; fork: string | null; tools: string[]; hostTools: string[]; text: string };
+
+/** Voice's Ask (any device): the side request it starts (forked from the conversation), its tools run with `during`
+ * (through the engine, as pi's side thread calls them), answered `reply`; then the result the call gets. */
+async function ask(
+  request: string,
+  convId: string | null,
+  reply: string,
+  during?: (call: (name: string, args: Record<string, unknown>) => Promise<string>) => Promise<void>,
+  device = "phone",
+  act = false,
+): Promise<{ side: AskedSide; result: string; convId: string }> {
+  const before = backend.sides.length;
+  const turns = backend.turns.length;
   const cursor = (await voice.voiceUpdates(voiceDeps(), { convId })).cursor;
-  const r = await voice.voiceTool(voiceDeps(), { name: "Ask", args: { request }, convId, device });
+  const r = await voice.voiceTool(voiceDeps(), { name: "Ask", args: { request, ...(act ? { act: true } : {}) }, convId, device });
   if (!r.convId) throw new SetupError(`Ask: ${r.result}`);
-  await until(() => backend.turns.length > before);
-  const t = backend.turns.at(-1)!;
-  if (during) await during(t.threadId);
-  backend.reply(reply);
-  await until(async () => (await convs.readConv(vault, r.convId!))?.state !== "running");
+  await until(() => backend.sides.length > before);
+  const o = backend.sides.at(-1)!;
+  const id = `side${backend.sides.length}`;
+  const call = async (name: string, args: Record<string, unknown>) => (await need(backend.handlers, "handlers").sideTool!(r.convId!, name, args)).text;
+  if (during) await during(call);
+  sideOf(id).resolve({ text: reply, error: null });
+  await voice.voiceAsksSettled();
+  if (backend.turns.length !== turns) throw new SetupError("an Ask started a turn of the conversation");
   const up = await voice.voiceUpdates(voiceDeps(), { convId: r.convId, cursor, waitMs: 2000 });
   const result = up.updates.find((u) => u.kind === "result")?.text ?? "";
-  return { turn: { texts: t.texts, images: t.images, instructions: null, convId: r.convId, threadId: t.threadId, all: t.texts.join("\n") }, result, convId: r.convId };
+  return { side: { kind: o.kind, fork: o.fork ?? null, tools: o.tools ?? [], hostTools: (o.hostTools ?? []).map((t: any) => t.name), text: o.text }, result, convId: r.convId };
 }
 
-const voiceDeps = () => ({ vault, name: "main", main: true, message: (b: any) => engine.message(b) }) as any;
+const voiceDeps = () =>
+  ({ vault, name: "main", main: true, message: (b: any) => engine.message(b), side: { start: (b: any) => engine.sideStart(b), wait: (id: string) => sideOf(id).promise } }) as any;
 
 /** The voice session prompt the box hands a `device` client for `convId` (server/voice.ts voiceSession builds it so). */
 const boxVoicePrompt = (convId: string | null, device: "laptop" | "phone" | "board" = "phone") => voice.voicePrompt(voiceDeps(), convId, device);
@@ -518,7 +545,7 @@ describe("c. Writing a proof on the board, then the laptop chat: \"check what I 
 
 describe("d. Voice on the laptop asks for a file edit, then a typed chat: \"what did voice just change?\"", () => {
   let call = "";
-  let asked: { turn: Turn; result: string } | null = null;
+  let asked: { side: AskedSide; result: string } | null = null;
   let after: Turn | null = null;
   let inCall: Turn | null = null;
 
@@ -528,19 +555,27 @@ describe("d. Voice on the laptop asks for a file edit, then a typed chat: \"what
     await voice.voiceTranscript(d, { convId: call, role: "user", text: "Rename lemma 2 to the contraction lemma.", device: "laptop" });
     await voice.voiceTranscript(d, { convId: call, role: "assistant", text: "On it.", device: "laptop" });
     asked = await ask("Rename lemma 2 to the contraction lemma in notes/fixed-point.md.", call, "Done: notes/fixed-point.md now says \"Contraction lemma.\"; I read it back.", async () => {
+      // pi's own edit tool in the side thread.
       writeFileSync(join(vault, "notes", "fixed-point.md"), "# Fixed points\n\nContraction lemma. Every contraction on a complete metric space has a unique fixed point.\n");
-    }, "laptop");
+    }, "laptop", true);
     await voice.voiceTranscript(d, { convId: call, role: "assistant", text: "Done — it's called the contraction lemma now.", device: "laptop" });
     await voice.voiceTranscript(d, { convId: call, role: "assistant", text: "Voice session ended.", system: true, ended: true });
     after = await turn({ text: "what did voice just change?", client: "laptop" }, "It renamed Lemma 2.");
     inCall = await turn({ text: "and what exactly did you change?", convId: call, client: "laptop" }, "The heading of lemma 2.");
   });
 
-  pass("d", "voice → pi", "the edit is the agent's turn in the same conversation, and voice relays its confirmed result", () => {
+  pass("d", "voice → pi", "the edit is a side request forked from the same conversation (its file tools, no turn, no steer), and voice relays its confirmed result", () => {
     const a = need(asked, "ask");
-    expect(a.turn.convId).toBe(call);
-    expect(a.turn.texts.join("\n")).toContain("Rename lemma 2 to the contraction lemma in notes/fixed-point.md.");
-    expect(a.result).toMatch(/^\[vc:result\] The agent answered: Done: notes\/fixed-point.md now says/);
+    expect(a.side.kind).toBe("ask");
+    expect(a.side.fork).toBe(backend.threadSource(String(convs.pictureOf(vault, call)!.meta.threadId)).file);
+    expect(a.side.tools).toEqual(expect.arrayContaining(["edit", "write", "bash"]));
+    expect(a.side.hostTools).toEqual(expect.arrayContaining(["Show", "BoardSend", "CreateNote"]));
+    expect(a.side.text).toContain("Rename lemma 2 to the contraction lemma in notes/fixed-point.md.");
+    expect(a.result).toMatch(/^\[vc:result\] The agent answered \(request ask-[^)]+\): Done: notes\/fixed-point.md now says/);
+    // In the thread: one collapsed row, no bubble with the request.
+    const items = convs.pictureOf(vault, call)!.items;
+    expect(items.filter((x) => x.kind === "tool" && x.name === "VoiceAsk").length).toBe(1);
+    expect(items.some((x) => x.kind === "user" && String(x.text).includes("in notes/fixed-point.md"))).toBe(false);
   });
   pass("d", "typed chat, another conversation (pi turn)", "the you layer points at what was said by voice, and in which chat", () => {
     const t = need(after, "after").texts.join("\n");
@@ -631,17 +666,21 @@ describe("f. The phone asks for a problem set, the board inbox shows it, board v
   pass("f", "board voice (tools)", "voice reaches the inbox through Ask: the conversation's agent reads it with its BoardInbox", async () => {
     const r = need(rig, "board");
     expect(r.toolNames).toEqual(["Ask", "LookAtScreen"]);
-    const before = backend.turns.length;
+    const before = backend.sides.length;
+    const turns = backend.turns.length;
     const out = await r.tools.Ask!({ request: "what did the agent send me?" });
-    expect(out).toMatch(/^The agent has it/);
-    await until(() => backend.turns.length > before);
-    const t = backend.turns.at(-1)!;
-    expect(t.threadId).toBe(need(phone, "phone").threadId);
-    asked = (await backend.handlers!.toolCall(t.threadId, "BoardInbox", {})).text;
-    backend.reply("Your inbox has \"Cauchy sequences: three problems\", unread.");
+    expect(out).toMatch(/^The agent is looking it up as a side request/);
+    await until(() => backend.sides.length > before);
+    // A side request forked from the phone chat's session (its context), with the read-only tools and Show.
+    const o = backend.sides.at(-1)!;
+    expect(o.fork).toBe(backend.threadSource(need(phone, "phone").threadId).file);
+    expect(o.hostTools.map((x: any) => x.name)).toEqual(expect.arrayContaining(["BoardInbox", "Show"]));
+    asked = (await backend.handlers!.sideTool!(need(phone, "phone").convId, "BoardInbox", {})).text;
+    sideOf(`side${backend.sides.length}`).resolve({ text: "Your inbox has \"Cauchy sequences: three problems\", unread.", error: null });
     expect(asked).toContain("Cauchy sequences: three problems");
     await until(() => r.spoken.join("\n").includes("Cauchy sequences: three problems"), 5000).catch(() => undefined);
-    expect(r.spoken.join("\n")).toMatch(/\[vc:result\] The agent answered: Your inbox has "Cauchy sequences: three problems"/);
+    expect(r.spoken.join("\n")).toMatch(/\[vc:result\] The agent answered \(request ask-[^)]+\): Your inbox has "Cauchy sequences: three problems"/);
+    expect(backend.turns.length).toBe(turns);
   });
   pass("f", "board voice on another chat", "knows a problem set just landed in the inbox (the send is in the shared \"you\" stream)", () => {
     expect(need(other, "other board").prompts[0]).toContain('Board inbox: "Cauchy sequences: three problems" landed in the board inbox (1 part)');
@@ -703,14 +742,15 @@ describe("i. Notes made on one surface, visible to the agent on another", () => 
     afterLaptopNote = await turn({ text: "what notes did I leave myself?", client: "phone" }, "Let me check.");
     // Voice: "what's in my notes?" — the agent's ListNotes, relayed.
     let notes = "";
-    const r = await ask("What's in my notes?", afterLaptopNote.convId, "Your open note: ask the TA about uniform convergence on the midterm.", async (tid) => {
-      notes = (await backend.handlers!.toolCall(tid, "ListNotes", {})).text;
+    const r = await ask("What's in my notes?", afterLaptopNote.convId, "Your open note: ask the TA about uniform convergence on the midterm.", async (call) => {
+      notes = await call("ListNotes", {});
     });
     listed = `${notes}\n${r.result}`;
     // Voice: "jot down: redo 4.2" — the agent's CreateNote.
-    await ask("Jot down: redo exercise 4.2 with the dominated convergence theorem.", afterLaptopNote.convId, "Saved as a note.", async (tid) => {
-      await backend.handlers!.toolCall(tid, "CreateNote", { text: "Redo exercise 4.2 with the dominated convergence theorem." });
-    });
+    // An action: the side request has the note tools.
+    await ask("Jot down: redo exercise 4.2 with the dominated convergence theorem.", afterLaptopNote.convId, "Saved as a note.", async (call) => {
+      await call("CreateNote", { text: "Redo exercise 4.2 with the dominated convergence theorem." });
+    }, "phone", true);
     afterVoiceNote = await turn({ text: "and the newest note?", convId: afterLaptopNote.convId, client: "phone" }, "Exercise 4.2.", async (tid) => {
       piListed = (await backend.handlers!.toolCall(tid, "ListNotes", {})).text;
     });
@@ -741,19 +781,20 @@ describe("j. Voice is asked for a small HTML edit and hands it to pi (IEMS 469 C
   let instructions = "";
   let texts = "";
   it("setup: a call with no chat open: Carl's words, then voice's Ask (a model that still passes a project name)", async () => {
-    const before = backend.turns.length;
-    const threads = backend.threads.length;
+    const before = backend.sides.length;
     const line = await voice.voiceTranscript(voiceDeps(), { role: "user", text: "Can you make the section 7 figure in course-notes.html clearer?" });
-    const r = await voice.voiceTool(voiceDeps(), { name: "Ask", args: { request: "Make the section 7 figure in course-notes.html clearer.", project: "IEMS 469 Course Notes Visuals" }, convId: line.body.convId });
+    const r = await voice.voiceTool(voiceDeps(), { name: "Ask", args: { request: "Make the section 7 figure in course-notes.html clearer.", project: "IEMS 469 Course Notes Visuals", act: true }, convId: line.body.convId });
     convId = String(r.convId ?? "");
     if (!convId) throw new SetupError(`Ask: ${r.result}`);
-    await until(() => backend.turns.length > before);
-    if (backend.threads.length > threads) instructions = backend.threads.at(-1)!.instructions;
-    texts = backend.turns.at(-1)!.texts.join("\n");
-    backend.reply("On it.");
-    await until(async () => (await convs.readConv(vault, convId))?.state !== "running");
+    // A side request of the call's conversation: no session to fork yet, so the agent's own instructions and what was said.
+    await until(() => backend.sides.length > before);
+    const o = backend.sides.at(-1)!;
+    instructions = o.instr ? readFileSync(o.instr, "utf8") : "";
+    texts = o.text;
+    sideOf(`side${backend.sides.length}`).resolve({ text: "Done: the figure's labels are larger.", error: null });
+    await voice.voiceAsksSettled();
   });
-  pass("j", "voice → pi", "the request reaches pi in the call's conversation (source voice), with Carl's own words before it", async () => {
+  pass("j", "voice → pi", "the request reaches pi (a side request of the call's conversation, source voice), with Carl's own words before it", async () => {
     const c = need(await convs.readConv(vault, convId), "conv");
     expect(c.source).toBe("voice");
     expect(texts).toContain("Can you make the section 7 figure in course-notes.html clearer?");
@@ -764,7 +805,7 @@ describe("j. Voice is asked for a small HTML edit and hands it to pi (IEMS 469 C
     expect(c.project ?? null).toBeNull();
     const p = await import("../../src/voicePrompt");
     for (const d of ["laptop", "board", "phone"] as const) expect(p.voiceToolNames(d)).not.toContain("SetProject");
-    expect(Object.keys(p.voiceToolDefs("phone")[0]!.parameters.properties)).toEqual(["request"]);
+    expect(Object.keys(p.voiceToolDefs("phone")[0]!.parameters.properties)).toEqual(["request", "act"]);
   });
   pass("j", "pi (instructions)", "a small edit is done in place, in the real file: no copy, no plan files, no browser checks or hashes; git is the undo", () => {
     const i = need(instructions || null, "instructions");
@@ -837,20 +878,19 @@ describe("parity. One tool set on every surface, by construction (voice hands ev
     const t = await turn({ text: "Parity check chat.", client: "laptop" }, "OK.");
     tools = backend.threads.find((x) => x.threadId === t.threadId)!.tools;
     for (const device of ["laptop", "phone", "board"] as const) {
-      const before = backend.turns.length;
-      const r = await voice.voiceTool(voiceDeps(), { name: "Ask", args: { request: `What's on my calendar today? (${device})` }, convId: t.convId, device });
-      await until(() => backend.turns.length > before);
-      const run = backend.turns.at(-1)!;
-      const out = await backend.handlers!.toolCall(run.threadId, "CalendarToday", {});
-      backend.reply(out.text);
-      await until(async () => (await convs.readConv(vault, t.convId))?.state !== "running");
-      results[device] = { tool: r.result, device, ok: run.threadId === t.threadId && out.text.includes("Psych 221 at 2pm") };
+      let out = "";
+      const a = await ask(`What's on my calendar today? (${device})`, t.convId, "Psych 221 at 2pm.", async (call) => {
+        out = await call("CalendarToday", {});
+      }, device);
+      // Forked from the conversation's own session, with Carl's vault tool among its tools.
+      const ok = a.side.fork === backend.threadSource(t.threadId).file && a.side.hostTools.includes("CalendarToday") && out.includes("Psych 221 at 2pm") && a.result.includes("Psych 221");
+      results[device] = { tool: a.result, device, ok };
     }
   });
   for (const device of ["laptop", "phone", "board"] as const) {
-    pass("parity", `${device} voice`, "Ask runs on the conversation's own agent (same thread, same tools): Carl's vault tool (a calendar) works from it", () => {
+    pass("parity", `${device} voice`, "Ask runs as a side request of the conversation (its session, the agent's tools): Carl's vault tool (a calendar) works from it", () => {
       expect(results[device]?.ok).toBe(true);
-      expect(results[device]?.tool).toMatch(/^The agent has it/);
+      expect(results[device]?.tool).toMatch(/^\[vc:result\] The agent answered/);
     });
   }
   pass("parity", "the agent (every surface)", "notes, the board inbox, the web, PDFs, conversations, projects (read) and Carl's own tools", () => {
@@ -873,6 +913,7 @@ describe("m. Board voice: \"put problem 3 on my laptop\", then \"I'm not near my
   const shows: any[] = [];
   let leave: () => void = () => {};
   let laptopApp: ReturnType<typeof setInterval> | null = null;
+  let showHostTools: string[] = [];
 
   it("setup: a problem set in the vault; the laptop app on the feed (it opens what it is sent and acks); three asks from the board", async () => {
     const S = await import("../show");
@@ -889,18 +930,22 @@ describe("m. Board voice: \"put problem 3 on my laptop\", then \"I'm not near my
       }
       seen = broadcasts.length;
     }, 10);
-    // Carl's words on the board reach the conversation's agent (voice hands every action to it); its Show call, as pi runs it.
-    const t1 = await turn({ text: "put problem 3 on my laptop", client: "board" }, "It's on your laptop.", async (threadId) => {
-      onLaptop = (await need(backend.handlers, "tool handlers").toolCall(threadId, "Show", { path: "hw/ps5.md", where: "laptop", heading: "Problem 3" })).text;
-    });
-    await turn({ text: "I'm not near my laptop, send it to my iPad", convId: t1.convId, client: "board" }, "It's in your inbox.", async (threadId) => {
-      toInbox = (await backend.handlers!.toolCall(threadId, "Show", { path: "hw/ps5.md", where: "board", heading: "Problem 3" })).text;
-    });
+    // Carl's words on the board, and board voice's Ask: a side request of the conversation, its Show call as pi runs it.
+    const line = await voice.voiceTranscript(voiceDeps(), { role: "user", text: "put problem 3 on my laptop", device: "board" });
+    const conv = String(line.body.convId);
+    await ask("Put problem 3 of hw/ps5.md on my laptop.", conv, "It's on your laptop.", async (call) => {
+      onLaptop = await call("Show", { path: "hw/ps5.md", where: "laptop", heading: "Problem 3" });
+    }, "board");
+    showHostTools = backend.sides.at(-1)!.hostTools.map((x: any) => x.name);
+    await voice.voiceTranscript(voiceDeps(), { role: "user", text: "I'm not near my laptop, send it to my iPad", convId: conv, device: "board" });
+    await ask("I'm not near my laptop: send problem 3 to my iPad.", conv, "It's in your inbox.", async (call) => {
+      toInbox = await call("Show", { path: "hw/ps5.md", where: "board", heading: "Problem 3" });
+    }, "board");
     // "Show me" with no device named: Carl is talking on the board (his lines there are in the "you" layer).
-    await voice.voiceTranscript(voiceDeps(), { role: "user", text: "show me problem 1", convId: t1.convId, device: "board" });
-    await turn({ text: "show me problem 1", convId: t1.convId, client: "board" }, "Sent.", async (threadId) => {
-      here = (await backend.handlers!.toolCall(threadId, "Show", { path: "hw/ps5.md", heading: "Problem 1" })).text;
-    });
+    await voice.voiceTranscript(voiceDeps(), { role: "user", text: "show me problem 1", convId: conv, device: "board" });
+    await ask("Show me problem 1.", conv, "Sent.", async (call) => {
+      here = await call("Show", { path: "hw/ps5.md", heading: "Problem 1" });
+    }, "board");
     entryId = /entry (\S+?)\.$/.exec(toInbox)?.[1] ?? "";
   });
 
@@ -927,5 +972,8 @@ describe("m. Board voice: \"put problem 3 on my laptop\", then \"I'm not near my
   });
   pass("m", "the agent (every surface)", "Show is one of the agent's own tools (typed chat, laptop / board / phone voice through Ask)", () => {
     expect(backend.threads.every((t) => t.tools.includes("Show"))).toBe(true);
+    // And voice's Asks, questions too (a side request: read-only tools and Show).
+    expect(showHostTools).toContain("Show");
+    expect(showHostTools).not.toContain("BoardSend");
   });
 });

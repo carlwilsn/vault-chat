@@ -136,9 +136,10 @@ export function voiceTranscriptMirror(b: BoxVoice, convId: string, post: Post = 
     // A tool call's text is only its marker (for an older box, which shows it as a notice).
     const text = String(m.content ?? "").trim() || (call ? call.name : "");
     if (!text) return chain;
-    // The line shows at once under the id the box writes it with (the box is its only writer).
+    // Carl's line shows at once under the id the box writes it with (the box is its only writer). The voice's own
+    // lines come with the log: the box may keep one out of the thread (an Ask's "on it"), so none is shown early.
     const clientId = newClientId();
-    if (!m.system && !call) boxOutgoingLine(id, clientId, text, m.role === "user" ? "user" : "assistant");
+    if (!m.system && !call && m.role === "user") boxOutgoingLine(id, clientId, text, "user");
     chain = chain.then(async () => {
       // Images Carl sent in the chat while voice was on: saved with his line on the box.
       const images = (m.attachments ?? [])

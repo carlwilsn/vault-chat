@@ -41,7 +41,7 @@ import { QuietGate } from "../../src/voiceQuiet";
 import { SPEECH_LEVEL } from "../../src/voiceHealth";
 import { VoiceImagePusher, lookingAtNote, sendFilesMessage } from "../../src/voiceImages";
 import { stripAudioTags } from "../../src/voiceTags";
-import { isControlLine } from "../../src/voicePrompt";
+import { isControlLine, isFillerLine } from "../../src/voicePrompt";
 import { VoiceUpdates, pushStartImages, type UpdatesPage } from "../../src/voiceFront";
 import type { Item } from "../../src/boardFormat";
 import type { ChatRow, VoiceConfig } from "./api";
@@ -337,6 +337,8 @@ export class VoiceController {
           // The box's own updates ([vc:result] …) come back as user lines: they are not Carl's.
           if (role === "user" && isControlLine(raw)) return;
           const text = role === "user" ? raw : stripAudioTags(raw);
+          // A holding line ("One sec", "on it") is spoken, never written into the thread.
+          if (role !== "user" && isFillerLine(text)) return;
           if (text) this.saveLine(role === "user" ? "user" : "assistant", text);
         },
         // Leaving "speaking" = the playback drained: the held pushes go after a settle.
