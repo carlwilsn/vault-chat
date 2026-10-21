@@ -1496,6 +1496,10 @@ async fn append_sync_log(vault_path: String, line: String) -> Result<(), String>
         let dir = std::path::Path::new(&vault_path).join(".vault-chat");
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
         let path = dir.join("sync-log.jsonl");
+        // Loops for several vaults (or two failures at once) append from
+        // different threads: one trim must not interleave with another append.
+        static LOG_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _g = LOG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         // Trim when oversized so the local log can't grow without bound.
         if let Ok(meta) = std::fs::metadata(&path) {
             if meta.len() > CAP_BYTES {
@@ -1503,7 +1507,12 @@ async fn append_sync_log(vault_path: String, line: String) -> Result<(), String>
                     let mut kept: Vec<&str> =
                         existing.lines().rev().take(KEEP_LINES).collect();
                     kept.reverse();
-                    let _ = std::fs::write(&path, kept.join("\n") + "\n");
+                    let tmp = path.with_extension("jsonl.tmp");
+                    if std::fs::write(&tmp, kept.join("\n") + "\n").is_ok()
+                        && std::fs::rename(&tmp, &path).is_err()
+                    {
+                        let _ = std::fs::remove_file(&tmp);
+                    }
                 }
             }
         }

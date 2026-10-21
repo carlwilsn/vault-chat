@@ -456,7 +456,10 @@ fn full_err(out: &str, err: &str, code: i32, what: &str) -> String {
     s
 }
 
-/// Network failure (box asleep, off the tailnet, DNS) vs. a real git problem.
+/// Network failure (box asleep, off the tailnet, DNS, a dropped connection
+/// mid-transfer) vs. a real git problem. HTTP 5xx only counts in git's own
+/// wording ("returned error: 502"), so a file or commit named `…503…` in a
+/// merge error is not mistaken for a network failure.
 fn classify_error(stderr: &str) -> &'static str {
     let e = stderr.to_ascii_lowercase();
     let net = [
@@ -465,14 +468,23 @@ fn classify_error(stderr: &str) -> &'static str {
         "couldn't connect",
         "connection refused",
         "connection timed out",
+        "connection reset",
+        "connection was reset",
+        "connection closed",
         "timed out",
         "operation timed out",
         "network is unreachable",
         "no route to host",
         "could not read from remote",
-        "502",
-        "503",
-        "504",
+        "the remote end hung up",
+        "early eof",
+        "rpc failed",
+        "unexpected disconnect",
+        "http2 framing layer",
+        "non-properly terminated",
+        "returned error: 502",
+        "returned error: 503",
+        "returned error: 504",
         "does not appear to be a git repository",
         "unable to access",
     ];
@@ -754,7 +766,13 @@ fn load_state(vault: &str) -> PersistedState {
 
 fn save_state(vault: &str, st: &PersistedState) {
     if let Ok(s) = serde_json::to_string(st) {
-        let _ = std::fs::write(state_path(vault), s);
+        // Written beside and renamed over, so a crash mid-write can't leave a
+        // truncated file that load_state would read as "no conflict".
+        let p = state_path(vault);
+        let tmp = p.with_extension("json.tmp");
+        if std::fs::write(&tmp, s).is_ok() && std::fs::rename(&tmp, &p).is_err() {
+            let _ = std::fs::remove_file(&tmp);
+        }
     }
 }
 
@@ -1274,6 +1292,18 @@ fn github_backup(vault: &str, rc: &RepoConfig, report: &mut BoxSyncReport) {
     };
     let v = vault.to_string();
     std::thread::spawn(move || {
+        // A panic in here must not leave `running` set: every later backup
+        // would be skipped silently.
+        struct Clear(String);
+        impl Drop for Clear {
+            fn drop(&mut self) {
+                let mut g = GITHUB_LAST.lock().unwrap_or_else(|p| p.into_inner());
+                if let Some(st) = g.as_mut().and_then(|m| m.get_mut(&self.0)) {
+                    st.running = false;
+                }
+            }
+        }
+        let _clear = Clear(v.clone());
         let refs = read_refs(&v);
         let current = !first
             && refs.master.is_some()

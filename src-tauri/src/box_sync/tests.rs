@@ -684,3 +684,23 @@ fn bench_box_sync() {
         time(&format!("idle after typical {}", i));
     }
 }
+
+#[test]
+fn classify_error_separates_network_from_git() {
+    for e in [
+        "fatal: unable to access 'https://box/git/v.git/': Could not resolve host: box",
+        "error: RPC failed; curl 56 OpenSSL SSL_read: Connection reset by peer",
+        "fatal: the remote end hung up unexpectedly\nfatal: early EOF",
+        "error: The requested URL returned error: 502",
+        "git timed out after 120s: git fetch box",
+    ] {
+        assert_eq!(classify_error(e), "unreachable", "{e}");
+    }
+    for e in [
+        "CONFLICT (content): Merge conflict in notes-503.md",
+        "error: Your local changes to the following files would be overwritten by merge:\n\tref-504.md",
+        "fatal: not a git repository",
+    ] {
+        assert_eq!(classify_error(e), "git", "{e}");
+    }
+}
