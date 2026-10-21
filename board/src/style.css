@@ -162,6 +162,10 @@
 .v-wait:nth-child(5) { animation-delay: 0.48s; }
 @keyframes v-wait { 0%, 100% { transform: scaleY(0.25); opacity: 0.5; } 50% { transform: scaleY(0.7); opacity: 1; } }
 
+/* The inbox badge: a short pop when something new arrives (inbox.ts). */
+.animate-badge-pop { animation: badge-pop 0.6s cubic-bezier(0.34, 1.56, 0.64, 1); }
+@keyframes badge-pop { 0% { transform: scale(0.4); } 45% { transform: scale(1.35); } 100% { transform: scale(1); } }
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 1ms !important; animation-iteration-count: 1 !important; transition-duration: 1ms !important; }
 }

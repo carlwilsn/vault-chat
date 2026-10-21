@@ -17,15 +17,15 @@
 // palms do nothing. Everything that changes the board is one undoable edit: a
 // diff of the strokes and items lists from the gesture's start to its end.
 import { HISTORY_BYTES, HISTORY_STEPS, contentBounds, packXY, type Board, type BoardHistory, type HistoryDiff, type HistoryStep, type Grid, type Item, type LineStyle, type Stroke, type Tool } from "../../src/boardFormat";
-import { Simplifier, Smoother, boxesMeet, capsuleHits, carriedInk, cutStroke, lassoedBox, lassoedXY, unionBox, type Box, type XY } from "./geom";
-import { HL_ALPHA, dashFor, drawGridScreen, drawItem, drawStroke, inkStyle, itemBox, paintOrder, strokeInfo, translated, xyPath } from "./ink";
-import { classifyScribble, coveredShare, scribbleRegion, SCRIBBLE_COVER, type TP } from "./scribble";
+import { boxesMeet, xyBox, capsuleHits, carriedInk, cutStroke, lassoedBox, lassoedXY, unionBox, type Box, type XY } from "./geom";
+import { HL_ALPHA, dashFor, drawGridScreen, drawItem, drawStroke, INK, inkPath, inkStyle, itemBox, paintInk, paintOrder, strokeInfo, translated } from "./ink";
+import { classifyScribble, coveredShare, scribbleRegion, SCRIBBLE_COVER, type ScribbleVerdict, type TP } from "./scribble";
 import { Arbiter, type Action, type Hand, type PEvent } from "./palm";
 import * as api from "./api";
 import { icon, toolIcon, type IconName, type Weight } from "./icons";
 import { Items, isDom, mathSize, release, renderPdfPage } from "./items";
 import { MATH_LAYOUT_W } from "../../src/inboxFormat";
-import { openInbox, inboxBadge, type InboxHost } from "./inbox";
+import { openInbox, inboxBadge, onShow, takeOpenInbox, type InboxHost, type ShowAck } from "./inbox";
 import { pillSpot, placeParts } from "./place";
 import { ChromeTaps, buttonName, isField, isTextField, redrawnSame, routeChrome } from "./chrome";
 import { blog, flushBoardLog, setStatSource, setTapSource } from "./log";
@@ -49,9 +49,14 @@ const REFRESH_MS = 600;
 const SHEET = 1000; // canvas units across at the default zoom
 const OVERVIEW_MAX = 1600; // px, the overview's long side
 const VOICE_SNAP_MAX = 1280; // px, the long side of what voice sees (the visible region)
-const SAVE_DELAY = 2000;
+/** From the pen lifting to the save (and the agent's pictures of the board): a pen down in between postpones it. */
+const SAVE_DELAY = 500;
 /** How long a scribble's erased strokes take to fade out. */
 const FADE_MS = 280;
+/** How long Show's outline stays on the item it centred. */
+const SHOWN_MS = 1800;
+/** A stroke a scribble being written would erase, dimmed to this (the preview). */
+const DIM_ALPHA = 0.28;
 
 /** The quick colour slots in the toolbar (GoodNotes-style), five per ink tool; their defaults. */
 const PENS = ["#1f1f24", "#1f5bd6", "#d23a2c", "#1e8a4c", "#8a4bd6"];
@@ -170,7 +175,7 @@ type Xf = { s: number; ox: number; oy: number };
 const ID: Xf = { s: 1, ox: 0, oy: 0 };
 
 type ToolG =
-  | { k: "draw"; id: number; touch: boolean; tool: Tool; color: string; w: number; style?: LineStyle; simp: Simplifier; pred: XY[]; sm: Smoother; raw: TP[] }
+  | { k: "draw"; id: number; touch: boolean; tool: Tool; color: string; w: number; style?: LineStyle; xy: number[]; minStep: number; pred: XY | null; raw: TP[]; scribAt: number }
   | { k: "erase"; id: number; touch: boolean; precise: boolean; last: XY; at: XY }
   | { k: "lasso"; id: number; touch: boolean; poly: XY[]; sx: number; sy: number; far: number }
   | { k: "xf"; id: number; touch: boolean; mode: "move" | "scale"; x0: number; y0: number; anchor: XY; c0: XY; xf: Xf };
@@ -199,6 +204,37 @@ const TITLES: Record<Mode, string> = { pen: "Pen", hl: "Highlighter", erase: "St
 const rid = () => Math.random().toString(36).slice(2, 10);
 const clamp = (v: number, a: number, b: number) => Math.max(a, Math.min(b, v));
 const DEBUG_TOUCH = /[?&]debug=touch\b/.test(location.search);
+
+/**
+ * A canvas as a PNG, base64, encoded off the page's thread (pngWorker.ts: WebKit's toBlob encodes on the main
+ * thread, long enough to hold up a pen coming down); on the page when there is no worker or OffscreenCanvas.
+ */
+let pngW: { w: Worker; next: number; wait: Map<number, (r: { png?: string; error?: string }) => void> } | null | undefined;
+async function encodePng(c: HTMLCanvasElement): Promise<string> {
+  if (pngW === undefined) {
+    try {
+      pngW = typeof OffscreenCanvas === "function" ? { w: new Worker(new URL("./pngWorker.ts", import.meta.url), { type: "module" }), next: 1, wait: new Map() } : null;
+      pngW?.w.addEventListener("message", (e: MessageEvent<{ id: number; png?: string; error?: string }>) => {
+        pngW?.wait.get(e.data.id)?.(e.data);
+        pngW?.wait.delete(e.data.id);
+      });
+    } catch {
+      pngW = null;
+    }
+  }
+  if (!pngW) return canvasPng(c);
+  const w = pngW;
+  const bitmap = await createImageBitmap(c);
+  const id = w.next++;
+  const r = await new Promise<{ png?: string; error?: string }>((res) => {
+    w.wait.set(id, res);
+    w.w.postMessage({ id, bitmap }, [bitmap]);
+  });
+  if (r.png) return r.png;
+  // The worker could not (no OffscreenCanvas 2D): on the page from now on.
+  pngW = null;
+  return canvasPng(c);
+}
 
 /** A canvas as a PNG, base64 (no data: prefix). */
 async function canvasPng(c: HTMLCanvasElement): Promise<string> {
@@ -286,7 +322,10 @@ export class BoardView {
   /** The scale tiles are drawn at: the screen's (zoom × devicePixelRatio) once the camera settles. */
   private drawS = 1;
   /** Strokes fading out after a scribble erased them (and the scribble itself). */
-  private fades: { strokes: Stroke[]; t0: number }[] = [];
+  private fades: { strokes: Stroke[]; t0: number; from: number }[] = [];
+  /** The strokes a scribble being written would erase: off the tiles, drawn dimmed on the live canvas (a preview). */
+  private dimmed = new Set<Stroke>();
+  private scribT = 0;
   private gesturing = false;
   private settleT = 0;
   private baseQueued = false;
@@ -304,6 +343,7 @@ export class BoardView {
   /** What voice knows of this board (voice.ts), and the mic button's state hook. */
   private voiceSrc: BoardSource;
   private offVoice: () => void;
+  private offBadge: () => void = () => {};
 
   constructor(
     private slug: string,
@@ -395,7 +435,7 @@ export class BoardView {
     for (const c of [this.base, this.live]) c.addEventListener("contextrestored", this.onShow);
     this.syncToolbar();
     this.setStatus("saved");
-    inboxBadge(this.el.querySelector(".badge") as HTMLElement);
+    this.offBadge = inboxBadge(this.el.querySelector(".badge") as HTMLElement);
     this.voiceSrc = { slug, name: () => this.board.name, items: () => this.board.items, strokes: () => this.board.strokes.length, snapshot: () => this.snapshotView() };
     this.offVoice = voiceButton(this.el.querySelector('[data-act="voice"]') as HTMLElement);
     mountVoicePill();
@@ -439,6 +479,9 @@ export class BoardView {
     // A new board, a version-1 board (migrated on read) or one without an overview: save once.
     if (this.rev === 0 || (this.board as Board & { fresh?: boolean }).fresh) this.changed();
     voice.setBoard(this.voiceSrc);
+    onShow(this.showLabel);
+    // Opened from the board list's inbox button: its inbox, open.
+    if (takeOpenInbox()) this.toggleInbox(this.el.querySelector('[data-act="inbox"]') as HTMLElement);
     setTapSource(() => this.chrome.takeStats());
     setStatSource("gestures", "gestures", () => {
       const g = this.arb.takeStats();
@@ -452,6 +495,8 @@ export class BoardView {
     this.saveCam();
     this.disposed = true;
     this.offVoice();
+    this.offBadge();
+    onShow(null);
     voice.setBoard(null);
     setTapSource(null);
     setStatSource("gestures", "gestures", null);
@@ -474,6 +519,8 @@ export class BoardView {
     this.pool = [];
     release(this.base);
     release(this.live);
+    for (const p of this.boardPics.values()) release(p.c);
+    this.boardPics.clear();
     this.items.dispose();
     this.inboxClose?.();
   }
@@ -575,7 +622,7 @@ export class BoardView {
     ctx.setTransform(S, 0, 0, S, -box.x0 * S, -box.y0 * S);
     const lifted = this.lifted ? this.sel : null;
     for (const it of this.board.items) if (!lifted?.items.has(it) && boxesMeet(itemBox(it), box)) this.paintItem(ctx, it, "tile");
-    const ink = this.board.strokes.filter((st) => !(lifted && (lifted.strokes.has(st) || this.carry.has(st))) && boxesMeet(strokeInfo(st).box, box));
+    const ink = this.board.strokes.filter((st) => !(lifted && (lifted.strokes.has(st) || this.carry.has(st))) && !this.dimmed.has(st) && boxesMeet(strokeInfo(st).box, box));
     for (const st of paintOrder(ink)) drawStroke(ctx, st);
     return true;
   }
@@ -875,21 +922,47 @@ export class BoardView {
     // it, and the pen's ink it crosses is cut out of it, so the ink stays on top, its colour untouched.
     const hlLive = g?.k === "draw" && g.tool === "hl";
     if (this.live.style.mixBlendMode !== (hlLive ? "multiply" : "")) this.live.style.mixBlendMode = hlLive ? "multiply" : "";
+    // Show's item: a blue outline, fading out over SHOWN_MS.
+    if (this.shown) {
+      const k = (performance.now() - this.shown.t0) / SHOWN_MS;
+      if (k >= 1) this.shown = null;
+      else {
+        const b = this.shown.box, pad = 8 / z;
+        this.worldTransform(ctx);
+        ctx.save();
+        ctx.globalAlpha = k < 0.7 ? 1 : (1 - k) / 0.3;
+        ctx.strokeStyle = "#0a84ff";
+        ctx.lineWidth = 4 / z;
+        ctx.beginPath();
+        ctx.roundRect(b.x0 - pad, b.y0 - pad, b.x1 - b.x0 + 2 * pad, b.y1 - b.y0 + 2 * pad, 10 / z);
+        ctx.stroke();
+        ctx.restore();
+        this.queueLive();
+      }
+    }
+    // A scribble's preview: the strokes it would erase, dimmed (taken off the tiles while it lasts).
+    if (this.dimmed.size) {
+      this.worldTransform(ctx);
+      ctx.save();
+      ctx.globalAlpha = DIM_ALPHA;
+      for (const st of paintOrder(this.dimmed)) drawStroke(ctx, st);
+      ctx.restore();
+    }
     if (g?.k === "draw") {
-      const pts = g.simp.points();
+      // The same function of the same samples as the finished stroke (ink.ts): nothing moves when the pen lifts.
+      const xy = g.pred ? g.xy.concat(g.pred.x, g.pred.y) : g.xy;
       this.worldTransform(ctx);
       ctx.save();
       inkStyle(ctx, g.tool, g.color, g.w, g.style);
       ctx.globalCompositeOperation = "source-over";
       if (g.tool === "hl") ctx.globalAlpha = HL_ALPHA;
-      const path = xyPath(packXY(g.pred.length ? pts.concat(g.pred) : pts));
-      ctx.stroke(path);
+      paintInk(ctx, inkPath(xy, g.w, g.tool === "pen" ? g.style : undefined));
       ctx.restore();
       if (hlLive) {
-        const b = xyBoxOf(pts, g.w / 2 + 2);
+        const b = xyBox(xy, g.w / 2 + 2);
         ctx.save();
         ctx.globalCompositeOperation = "destination-out";
-        for (const st of this.board.strokes) if (st.tool === "pen" && boxesMeet(strokeInfo(st).box, b)) drawStroke(ctx, { ...st, color: "#000" }, 0, strokeInfo(st).path);
+        for (const st of this.board.strokes) if (st.tool === "pen" && !this.dimmed.has(st) && boxesMeet(strokeInfo(st).box, b)) drawStroke(ctx, { ...st, color: "#000" }, 0, strokeInfo(st).ink);
         ctx.restore();
       }
     }
@@ -900,7 +973,7 @@ export class BoardView {
       this.worldTransform(ctx);
       for (const f of this.fades) {
         ctx.save();
-        ctx.globalAlpha = Math.max(0, 1 - (now - f.t0) / FADE_MS) * 0.85;
+        ctx.globalAlpha = Math.max(0, 1 - (now - f.t0) / FADE_MS) * f.from;
         for (const st of paintOrder(f.strokes)) drawStroke(ctx, st);
         ctx.restore();
       }
@@ -1335,13 +1408,10 @@ export class BoardView {
     clearTimeout(this.saveT);
     if (m === "pen" || m === "hl") {
       const hl = m === "hl";
-      // Light stabilisation (each sample goes most of the way to the pen: ~2 ms of lag at 240 Hz), then only the
-      // points where the line bends (geom.ts Simplifier: 0.75 css px), drawn as a smooth curve (ink.ts).
-      const sm = new Smoother(hl ? 0.55 : 0.7, 0.2 / this.cam.z);
-      const simp = new Simplifier(0.75 / this.cam.z);
-      simp.push(sm.push(p.x, p.y)!);
+      // The pen's own samples are the stroke (ink.ts draws them through perfect-freehand); repeats and samples
+      // closer than INK.minStep css px to the last are left out.
       const style = !hl && this.prefs.penStyle !== "solid" ? this.prefs.penStyle : undefined;
-      this.g = { k: "draw", id: ev.id, touch, tool: m, color: hl ? this.prefs.hlColor : this.prefs.penColor, w: hl ? this.prefs.hl : this.prefs.pen, ...(style ? { style } : {}), simp, pred: [], sm, raw: [{ ...p, t: ev.t }] };
+      this.g = { k: "draw", id: ev.id, touch, tool: m, color: hl ? this.prefs.hlColor : this.prefs.penColor, w: hl ? this.prefs.hl : this.prefs.pen, ...(style ? { style } : {}), xy: [r2(p.x), r2(p.y)], minStep: INK.minStep / this.cam.z, pred: null, raw: [{ ...p, t: ev.t }], scribAt: 0 };
     } else if (m === "erase" || m === "cut") {
       this.begin();
       this.g = { k: "erase", id: ev.id, touch, precise: m === "cut", last: p, at: p };
@@ -1368,15 +1438,39 @@ export class BoardView {
     if (g.k === "draw") {
       for (const q of this.samples(ev)) {
         g.raw.push(q);
-        const s = g.sm.push(q.x, q.y);
-        if (s) g.simp.push(s);
+        addSample(g.xy, q.x, q.y, g.minStep);
       }
+      // One predicted sample at most, and only one that carries the line on (never one that bends it back): the
+      // tip keeps up with the Pencil without wobbling.
       const e = this.domEv as (PointerEvent & { getPredictedEvents?: () => PointerEvent[] }) | null;
-      const r = this.stage.getBoundingClientRect();
-      g.pred = (e?.getPredictedEvents?.() ?? []).map((c) => {
+      const c = e?.getPredictedEvents?.()[0];
+      g.pred = null;
+      if (c) {
+        const r = this.stage.getBoundingClientRect();
         const w = this.toWorld(c.clientX - r.left, c.clientY - r.top);
-        return g.sm.peek(w.x, w.y);
-      });
+        const n = g.xy.length;
+        if (n >= 4) {
+          const ax = g.xy[n - 4]!, ay = g.xy[n - 3]!, bx = g.xy[n - 2]!, by = g.xy[n - 1]!;
+          const ux = bx - ax, uy = by - ay, vx = w.x - bx, vy = w.y - by;
+          const d = Math.hypot(vx, vy);
+          if (d > 0 && d < 8 / this.cam.z && ux * vx + uy * vy > 0.7 * Math.hypot(ux, uy) * d) g.pred = { x: r2(w.x), y: r2(w.y) };
+        }
+      }
+      // The scribble preview: classified at most every 60 ms, and once more 60 ms after the last move (the pen
+      // resting before it lifts sees where it got to).
+      if (g.tool === "pen" && this.prefs.scribble) {
+        clearTimeout(this.scribT);
+        if (performance.now() - g.scribAt > 60) {
+          g.scribAt = performance.now();
+          this.scribblePreview(g.raw, g.w);
+        }
+        this.scribT = window.setTimeout(() => {
+          if (this.g !== g || this.disposed) return;
+          g.scribAt = performance.now();
+          this.scribblePreview(g.raw, g.w);
+          this.queueLive();
+        }, 60);
+      }
     } else if (g.k === "erase") {
       for (const q of this.samples(ev)) this.eraseTo(q);
     } else if (g.k === "lasso") {
@@ -1405,10 +1499,13 @@ export class BoardView {
       this.saveT = window.setTimeout(() => void this.save(), SAVE_DELAY);
     }
     if (g.k === "draw") {
-      if (drop) return this.queueLive();
-      const pts = g.simp.final();
-      const stroke: Stroke = { id: rid(), tool: g.tool, color: g.color, w: g.w, xy: packXY(pts), ...(g.style ? { style: g.style } : {}) };
+      if (drop) {
+        this.undim();
+        return this.queueLive();
+      }
+      const stroke: Stroke = { id: rid(), tool: g.tool, color: g.color, w: g.w, xy: g.xy, ...(g.style ? { style: g.style } : {}) };
       if (g.tool === "pen" && this.prefs.scribble && this.scribbleErase(g.raw, stroke)) return;
+      this.undim();
       this.begin();
       this.board.strokes.push(stroke);
       this.commit(false);
@@ -1481,31 +1578,91 @@ export class BoardView {
   }
 
   /**
-   * Scribble to erase (scribble.ts): a pen stroke that is a scribble erases the strokes it mostly covers (never
-   * items) and leaves no ink itself, as one undo step; they fade out. A scribble over nothing is ink (shading).
+   * Scribble to erase (scribble.ts), as GoodNotes does it: while a pen stroke is written it is classified now and
+   * then; once it is clearly a scribble over ink, the strokes it would erase dim (a preview). Only when the Pencil
+   * lifts, and only if the whole stroke is a confident scribble that mostly covers them, are they erased (one undo
+   * step; they fade out from their dimmed look) and the scribble leaves no ink. Anything less stays ink, and the
+   * dimmed strokes come back.
    */
-  private scribbleErase(raw: TP[], scrib: Stroke): boolean {
+  private scribbleHits(raw: TP[], w: number): { v: ScribbleVerdict; hit: Stroke[] } {
     const z = this.cam.z;
     const v = classifyScribble(raw.map((p) => ({ x: p.x * z, y: p.y * z, t: p.t })));
-    if (!v.ok) return false;
-    const region = scribbleRegion(packXY(raw), scrib.w / 2 + 3 / z, v.legPx / z);
+    if (!v.ok) return { v, hit: [] };
+    const region = scribbleRegion(packXY(raw), w / 2 + 3 / z, v.legPx / z);
     const step = Math.max(0.5, 1 / z);
-    const hit = this.board.strokes.filter((s) => boxesMeet(strokeInfo(s).box, region.box) && coveredShare(s.xy, region, step) >= SCRIBBLE_COVER);
-    blog("scribble", { erased: hit.length, reversals: v.reversals, turn: Math.round(v.medianTurn), legMs: Math.round(v.legMs) });
+    return { v, hit: this.board.strokes.filter((s) => boxesMeet(strokeInfo(s).box, region.box) && coveredShare(s.xy, region, step) >= SCRIBBLE_COVER) };
+  }
+  private scribblePreview(raw: TP[], w: number): void {
+    const { hit } = this.scribbleHits(raw, w);
+    const next = new Set(hit);
+    if (next.size === this.dimmed.size && hit.every((s) => this.dimmed.has(s))) return;
+    let box: Box | null = null;
+    for (const s of this.dimmed) if (!next.has(s)) box = unionBox(box, strokeInfo(s).box);
+    for (const s of next) if (!this.dimmed.has(s)) box = unionBox(box, strokeInfo(s).box);
+    this.dimmed = next;
+    if (box) {
+      this.repaint(box);
+      this.renderBase();
+    }
+  }
+  /** The scribble preview is over: the dimmed strokes back on the tiles. */
+  private undim(): void {
+    if (!this.dimmed.size) return;
+    let box: Box | null = null;
+    for (const s of this.dimmed) box = unionBox(box, strokeInfo(s).box);
+    this.dimmed = new Set();
+    this.repaint(box!);
+    this.renderBase();
+  }
+  private scribbleErase(raw: TP[], scrib: Stroke): boolean {
+    const { v, hit } = this.scribbleHits(raw, scrib.w);
+    if (v.ok) blog("scribble", { erased: hit.length, reversals: v.reversals, turn: Math.round(v.medianTurn), legMs: Math.round(v.legMs) });
     if (!hit.length) return false;
     const gone = new Set(hit);
     let box: Box | null = null;
     for (const s of hit) box = unionBox(box, strokeInfo(s).box);
+    for (const s of this.dimmed) box = unionBox(box, strokeInfo(s).box);
+    const wasDim = new Set(this.dimmed);
+    this.dimmed = new Set();
     this.begin();
     this.board.strokes = this.board.strokes.filter((s) => !gone.has(s));
     if (this.sel) this.setSel(null);
     this.commit(false);
     this.repaint(box!);
-    this.fades.push({ strokes: [...hit, scrib], t0: performance.now() });
+    // They fade out from how they look now (dimmed by the preview, or whole).
+    const dim = hit.filter((s) => wasDim.has(s)), whole = hit.filter((s) => !wasDim.has(s));
+    const t0 = performance.now();
+    if (dim.length) this.fades.push({ strokes: dim, t0, from: DIM_ALPHA });
+    this.fades.push({ strokes: [...whole, scrib], t0, from: 0.85 });
     this.renderBase();
     this.queueLive();
     return true;
   }
+
+  /**
+   * Show (server/show.ts, the agent): the item labelled `label` centred in the view below the controls, zoomed out
+   * just enough to fit it whole (never in), and outlined for a moment. A label that is on no item says which are.
+   */
+  private showLabel = (label: string): ShowAck => {
+    const norm = (s: unknown) => (typeof s === "string" ? s.replace(/\s+/g, " ").trim().toLowerCase() : "");
+    const want = norm(label);
+    const labelled = this.board.items.filter((it) => norm(it.label));
+    const it = labelled.find((x) => norm(x.label) === want) ?? labelled.find((x) => norm(x.label).includes(want));
+    if (!it) {
+      const names = labelled.map((x) => `"${String(x.label)}"`).slice(0, 12);
+      return { ok: false, error: `no item labelled "${label}" on the board "${this.board.name}"${names.length ? ` (its labelled items: ${names.join(", ")})` : " (no item on it has a label)"}` };
+    }
+    const m = 40, h = this.H - TOP;
+    const fit = Math.min((this.W - 2 * m) / it.w, (h - 2 * m) / it.h);
+    const z = clamp(Math.min(this.cam.z, fit), this.homeZ * 0.05, this.homeZ * 8);
+    this.cam = { x: it.x + it.w / 2 - this.W / 2 / z, y: it.y + it.h / 2 - (TOP + h / 2) / z, z };
+    this.camMoved();
+    this.shown = { box: itemBox(it), t0: performance.now() };
+    this.queueLive();
+    return { ok: true, landed: `"${String(it.label)}" centred in view on the board "${this.board.name}"` };
+  };
+  /** The item Show just centred: outlined, fading out. */
+  private shown: { box: Box; t0: number } | null = null;
 
   /** A tap with the select tool: the top item under it, else a stroke. */
   private tapSelect(p: XY): void {
@@ -2170,13 +2327,17 @@ export class BoardView {
     if (this.dirty) await this.save();
   }
 
-  /** overview.png: everything on the board, white, at most OVERVIEW_MAX px on its long side. */
-  private async exportOverview(): Promise<string | undefined> {
+  /**
+   * The whole board on white, at most `max` px on its long side (null when the board is empty), with its scale and
+   * origin (to mark the view on it). Strokes at least `minPx` px wide, from their cached paths: cheap enough to run
+   * after every pen-up.
+   */
+  private async boardCanvas(max: number, minPx: number): Promise<{ c: HTMLCanvasElement; s: number; x0: number; y0: number } | null> {
     const b = contentBounds(this.board);
-    if (!b) return undefined;
+    if (!b) return null;
     await this.items.pdfsReady(this.board.items.filter((it) => !this.pdfSnap(it)));
     const pad = 40, w = b.x1 - b.x0 + pad * 2, h = b.y1 - b.y0 + pad * 2;
-    const s = Math.min(1.5, OVERVIEW_MAX / Math.max(w, h));
+    const s = Math.min(1.5, max / Math.max(w, h));
     const c = document.createElement("canvas");
     c.width = Math.max(1, Math.round(w * s));
     c.height = Math.max(1, Math.round(h * s));
@@ -2184,22 +2345,38 @@ export class BoardView {
     ctx.fillStyle = "#fff";
     ctx.fillRect(0, 0, c.width, c.height);
     ctx.setTransform(s, 0, 0, s, (pad - b.x0) * s, (pad - b.y0) * s);
-    for (const it of this.board.items) this.paintItem(ctx, it, "overview");
-    // At least 1.5 px wide: a whole-board snapshot of fine writing stays readable.
-    for (const st of paintOrder(this.board.strokes)) drawStroke(ctx, st, 1.5 / s);
-    const png = await canvasPng(c);
-    c.width = c.height = 0;
-    return png;
+    // Pen strokes only added since the last one at this size, the rest the same: the last picture with them on top.
+    const prev = this.boardPics.get(`${max}:${minPx}`);
+    const key = `${b.x0}:${b.y0}:${b.x1}:${b.y1}`;
+    const added = prev && prev.key === key && prev.items.length === this.board.items.length && prev.items.every((it, i) => it === this.board.items[i]) ? this.board.strokes.filter((st) => !prev.strokes.has(st)) : null;
+    if (prev && added && prev.strokes.size + added.length === this.board.strokes.length && added.every((st) => st.tool === "pen")) {
+      ctx.save();
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.drawImage(prev.c, 0, 0);
+      ctx.restore();
+      for (const st of added) drawStroke(ctx, st, minPx / s);
+    } else {
+      for (const it of this.board.items) this.paintItem(ctx, it, "overview");
+      for (const st of paintOrder(this.board.strokes)) drawStroke(ctx, st, minPx / s);
+    }
+    // Kept for next time (a copy: the caller gives its canvas back).
+    const keep = prev?.c ?? document.createElement("canvas");
+    if (keep.width !== c.width || keep.height !== c.height) (keep.width = c.width), (keep.height = c.height);
+    keep.getContext("2d")?.drawImage(c, 0, 0);
+    this.boardPics.set(`${max}:${minPx}`, { key, c: keep, items: [...this.board.items], strokes: new Set(this.board.strokes) });
+    return { c, s, x0: b.x0 - pad, y0: b.y0 - pad };
   }
+  /** The last whole-board picture at each size (boardCanvas), to add new pen strokes to instead of drawing every stroke again. */
+  private boardPics = new Map<string, { key: string; c: HTMLCanvasElement; items: Item[]; strokes: Set<Stroke> }>();
 
-  /** What voice sees: the visible region (under the controls' strip too), white, as a JPEG at most VOICE_SNAP_MAX px on its long side. Null when nothing is in view. */
-  async snapshotView(): Promise<Blob | null> {
+  /** The visible region (under the controls' strip too) on white, at most `max` px on its long side; null when nothing is in view. */
+  private async viewCanvas(max: number): Promise<HTMLCanvasElement | null> {
     const v: Box = { x0: this.cam.x, y0: this.cam.y, x1: this.cam.x + this.W / this.cam.z, y1: this.cam.y + this.H / this.cam.z };
     const items = this.board.items.filter((it) => boxesMeet(itemBox(it), v));
     const strokes = this.board.strokes.filter((st) => boxesMeet(strokeInfo(st).box, v));
     if (!items.length && !strokes.length) return null;
     await this.items.pdfsReady(items.filter((it) => !this.pdfSnap(it)));
-    const k = Math.min(1, VOICE_SNAP_MAX / Math.max(this.W, this.H));
+    const k = Math.min(1, max / Math.max(this.W, this.H));
     const c = document.createElement("canvas");
     c.width = Math.max(1, Math.round(this.W * k));
     c.height = Math.max(1, Math.round(this.H * k));
@@ -2210,8 +2387,76 @@ export class BoardView {
     ctx.setTransform(s, 0, 0, s, -this.cam.x * s, -this.cam.y * s);
     for (const it of items) this.paintItem(ctx, it, "overview");
     for (const st of paintOrder(strokes)) drawStroke(ctx, st, 1.2 / s);
+    return c;
+  }
+
+  /**
+   * What the agent sees, written with every save: overview.png (the whole board, at most OVERVIEW_MAX px) and
+   * view.png (the part in view on the iPad now, at most VOICE_SNAP_MAX px), base64 PNGs.
+   */
+  private async exportPictures(): Promise<{ overview?: string; view?: string }> {
+    const t0 = performance.now();
+    const all = await this.boardCanvas(OVERVIEW_MAX, 1.5);
+    if (!all) return {};
+    const vc = await this.viewCanvas(VOICE_SNAP_MAX);
+    const drawn = performance.now();
+    const [overview, view] = await Promise.all([encodePng(all.c), vc ? encodePng(vc) : Promise.resolve(undefined)]);
+    all.c.width = all.c.height = 0;
+    if (vc) vc.width = vc.height = 0;
+    blog("board.pictures", { drawMs: Math.round(drawn - t0), ms: Math.round(performance.now() - t0), strokes: this.board.strokes.length, items: this.board.items.length });
+    return { overview, ...(view ? { view } : {}) };
+  }
+
+  /**
+   * What voice sees (LookAtScreen): one picture with both the part in view (left, as he sees it) and the whole board
+   * (right, the view outlined in blue), each labelled; a JPEG at most VOICE_SNAP_MAX px wide. Null when the board is
+   * empty.
+   */
+  async snapshotView(): Promise<Blob | null> {
+    const t0 = performance.now();
+    const H = 720, GAP = 16, LABEL = 28;
+    const all = await this.boardCanvas(H, 1.5);
+    if (!all) return null;
+    const vc = await this.viewCanvas(VOICE_SNAP_MAX);
+    // Both at one height: the view as large as fits, the board beside it.
+    const vw = vc ? Math.round((vc.width * H) / vc.height) : Math.round((this.W * H) / this.H);
+    const bw = Math.round((all.c.width * H) / all.c.height);
+    let width = vw + GAP + bw;
+    const k = Math.min(1, (VOICE_SNAP_MAX * 1.6) / width);
+    width = Math.round(width * k);
+    const c = document.createElement("canvas");
+    c.width = width;
+    c.height = Math.round((H + LABEL) * k);
+    const ctx = c.getContext("2d")!;
+    ctx.fillStyle = "#e9e9ee";
+    ctx.fillRect(0, 0, c.width, c.height);
+    ctx.scale(k, k);
+    ctx.fillStyle = "#3a3a40";
+    ctx.font = "600 18px -apple-system, system-ui, sans-serif";
+    ctx.fillText("In view on the iPad now", 6, 20);
+    ctx.fillText("The whole board (blue: the part in view)", vw + GAP + 6, 20);
+    if (vc) ctx.drawImage(vc, 0, LABEL, vw, H);
+    else {
+      ctx.fillStyle = "#fff";
+      ctx.fillRect(0, LABEL, vw, H);
+      ctx.fillStyle = "#8e8e93";
+      ctx.fillText("(nothing in view)", 16, LABEL + 40);
+    }
+    const bk = H / all.c.height;
+    ctx.drawImage(all.c, vw + GAP, LABEL, bw, H);
+    // The view on the board.
+    const s = all.s * bk;
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(vw + GAP, LABEL, bw, H);
+    ctx.clip();
+    ctx.strokeStyle = "#0a84ff";
+    ctx.lineWidth = 3;
+    ctx.strokeRect(vw + GAP + (this.cam.x - all.x0) * s, LABEL + (this.cam.y - all.y0) * s, (this.W / this.cam.z) * s, (this.H / this.cam.z) * s);
+    ctx.restore();
     const blob = await new Promise<Blob | null>((res) => c.toBlob(res, "image/jpeg", 0.85));
-    c.width = c.height = 0;
+    for (const x of [c, all.c, vc]) if (x) x.width = x.height = 0;
+    blog("board.look", { ms: Math.round(performance.now() - t0), bytes: blob?.size ?? 0 });
     return blob;
   }
 
@@ -2236,8 +2481,8 @@ export class BoardView {
     this.dirty = false;
     this.setStatus("saving");
     try {
-      const overview = await this.exportOverview();
-      const r = await api.saveBoard(this.slug, this.board, this.rev, overview, this.historyOut());
+      const pics = await this.exportPictures();
+      const r = await api.saveBoard(this.slug, this.board, this.rev, pics.overview, this.historyOut(), pics.view);
       this.rev = r.rev;
       this.board.rev = r.rev;
       this.board.updated = r.updated;
@@ -2262,6 +2507,7 @@ export class BoardView {
     return {
       cam: { ...this.cam },
       strokes: this.board.strokes.length,
+      dimmed: this.dimmed.size,
       items: this.board.items.length,
       grid: this.board.grid,
       tileScale: this.drawS,
@@ -2281,14 +2527,17 @@ export class BoardView {
   }
 }
 
-function xyBoxOf(pts: XY[], pad: number): Box {
-  let b: Box | null = null;
-  for (const p of pts) b = unionBox(b, { x0: p.x - pad, y0: p.y - pad, x1: p.x + pad, y1: p.y + pad });
-  return b ?? { x0: 0, y0: 0, x1: 0, y1: 0 };
+const r2 = (v: number) => Math.round(v * 100) / 100;
+
+/** A pen sample into a stroke's points (flat, canvas units): repeats and samples closer than `min` are left out. */
+function addSample(xy: number[], x: number, y: number, min: number): void {
+  const n = xy.length;
+  if (n >= 2 && Math.hypot(x - xy[n - 2]!, y - xy[n - 1]!) < min) return;
+  xy.push(r2(x), r2(y));
 }
 
 function scaled(s: Stroke, xf: Xf): Stroke {
-  const r = (v: number) => Math.round(v * 10) / 10;
+  const r = (v: number) => Math.round(v * 100) / 100;
   return { ...s, id: s.id, w: Math.round(clamp(s.w * xf.s, 0.2, 200) * 100) / 100, xy: s.xy.map((v, k) => r(v * xf.s + (k % 2 ? xf.oy : xf.ox))) };
 }
 

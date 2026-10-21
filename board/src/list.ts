@@ -6,6 +6,7 @@ import { contentBounds } from "../../src/boardFormat";
 import * as api from "./api";
 import { icon } from "./icons";
 import { drawItem, drawStroke } from "./ink";
+import { inboxBadge, openInboxOnNextBoard } from "./inbox";
 import { blog } from "./log";
 
 /** The last pointer's kind (the name dialog logs what opened it: a finger, the Pencil, a mouse). */
@@ -24,17 +25,31 @@ function ago(t: number): string {
 
 const TILE = "relative block aspect-[4/3] w-full overflow-hidden rounded-[14px] bg-white shadow-tile transition duration-200 ease-ios group-active:scale-[0.97]";
 
+/** The badge of the list on screen (one at a time: the list is re-rendered on every visit). */
+let offBadge: () => void = () => {};
+
 export function renderList(root: HTMLElement, open: (slug: string) => void): void {
+  offBadge();
   root.innerHTML = `
     <div data-scroll class="absolute inset-0 overflow-y-auto bg-sys-grouped px-[max(32px,env(safe-area-inset-left))] pb-16 pt-[max(28px,env(safe-area-inset-top))]">
       <header class="mx-auto mb-6 mt-4 flex max-w-[1180px] items-end justify-between">
         <h1 class="font-display text-large font-bold tracking-tight text-sys-label">Boards</h1>
+        <button data-act="inbox-list" class="relative mb-1 grid h-11 w-11 place-items-center rounded-full text-sys-blue active:bg-sys-fill/20" title="Inbox" aria-label="Inbox">${icon("tray", 26)}<span class="badge pointer-events-none absolute right-0 top-0 hidden min-w-[18px] rounded-full bg-sys-red px-1 text-center text-[11px] font-semibold leading-[18px] text-white tabular-nums shadow"></span></button>
       </header>
       <div class="boards mx-auto grid max-w-[1180px] grid-cols-[repeat(auto-fill,minmax(220px,1fr))] gap-x-7 gap-y-8">
         <p class="col-span-full text-subhead text-sys-secondary/60">Loading…</p>
       </div>
     </div>`;
   const grid = root.querySelector(".boards") as HTMLElement;
+  // The inbox's count of new entries here too; a tap opens the most recent board with its inbox open.
+  const inboxBtn = root.querySelector('[data-act="inbox-list"]') as HTMLElement;
+  offBadge = inboxBadge(inboxBtn.querySelector(".badge") as HTMLElement);
+  let newest: string | null = null;
+  inboxBtn.addEventListener("click", () => {
+    if (!newest) return;
+    openInboxOnNextBoard();
+    open(newest);
+  });
   const newTile = `
     <button data-act="new" class="group text-left">
       <span class="${TILE.replace("bg-white", "")} grid place-items-center bg-sys-fill/10 shadow-none ring-1 ring-inset ring-sys-separator/20">
@@ -47,6 +62,7 @@ export function renderList(root: HTMLElement, open: (slug: string) => void): voi
     api
       .listBoards()
       .then((boards) => {
+        newest = boards[0]?.slug ?? null;
         grid.innerHTML =
           newTile +
           boards

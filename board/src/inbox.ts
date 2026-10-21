@@ -48,10 +48,51 @@ function partsLine(parts: { kind: string; n?: number }[], full?: Part[]): string
 // ---------------------------------------------------------------- the live list and the badge
 
 let entries: EntrySummary[] = [];
-let unread = 0;
 const listeners = new Set<() => void>();
 let started = false;
 let refreshT = 0;
+
+/**
+ * What this device has seen of the inbox: an entry's id → how many parts it had when the inbox was last open here.
+ * The badge counts what is new since (a new entry, or one that got more parts — "being made" ones too); opening the
+ * inbox sees them all. The unread dot on a card is the box's status (opening the entry reads it).
+ */
+const SEEN_KEY = "vc_board_inbox_seen";
+let seen: Record<string, number> | null = null;
+function seenMap(): Record<string, number> {
+  if (seen) return seen;
+  try {
+    seen = JSON.parse(localStorage.getItem(SEEN_KEY) || "{}") as Record<string, number>;
+  } catch {
+    seen = {};
+  }
+  return (seen ??= {});
+}
+/** The entries the badge counts: unread or being made, not failed, and not seen here at their size. */
+export function unseenCount(list: readonly EntrySummary[] = entries, s: Record<string, number> = seenMap()): number {
+  return list.filter((e) => (e.status === "unread" || e.making) && !e.failed && !(e.id in s && s[e.id]! >= e.parts.length)).length;
+}
+/** The inbox is open: everything in it is seen. */
+function seeAll(): void {
+  const s = seenMap();
+  let changed = false;
+  for (const e of entries)
+    if (s[e.id] !== e.parts.length) {
+      s[e.id] = e.parts.length;
+      changed = true;
+    }
+  // Forget entries no longer in the list.
+  const ids = new Set(entries.map((e) => e.id));
+  for (const k of Object.keys(s)) if (!ids.has(k)) (delete s[k], (changed = true));
+  if (!changed) return;
+  try {
+    localStorage.setItem(SEEN_KEY, JSON.stringify(s));
+  } catch {
+    /* storage blocked: seen for this session */
+  }
+  for (const fn of listeners) fn();
+}
+let sheetOpen = false;
 
 /** When the oldest inbox event not yet painted arrived (the board's log: event → painted, per entry). */
 let eventAt: { t: number; id: string } | null = null;
@@ -59,10 +100,10 @@ async function refresh(): Promise<void> {
   try {
     const r = await api.listInbox();
     entries = r.entries;
-    unread = r.unread;
   } catch {
     /* offline: keep what we had */
   }
+  if (sheetOpen) seeAll();
   for (const fn of listeners) fn();
   if (eventAt) {
     const e = eventAt;
@@ -82,26 +123,81 @@ export function onInboxEvent(fn: (ev: { say?: string }) => void): () => void {
   return () => eventListeners.delete(fn);
 }
 
-/** Keep `badge` showing the unread count (the box pushes {type:"inbox"} on /poll). */
-export function inboxBadge(badge: HTMLElement): void {
+/**
+ * Show (server/show.ts) asking the board to put an item in front of Carl: {type:"show", to:"board", id,
+ * target:{label}}. The open board handles it (centres the item, highlights it) and says what happened; with no board
+ * open (the list) it cannot. Every one is acked: the agent says only what the board confirmed.
+ */
+export type ShowAck = { ok: boolean; landed?: string; error?: string };
+let showHandler: ((label: string) => ShowAck) | null = null;
+export function onShow(fn: ((label: string) => ShowAck) | null): void {
+  showHandler = fn;
+}
+function show(ev: { id?: unknown; target?: { label?: unknown } }): void {
+  const id = typeof ev.id === "string" ? ev.id : "";
+  if (!id) return;
+  const label = typeof ev.target?.label === "string" ? ev.target.label : "";
+  let ack: ShowAck;
+  try {
+    ack = !label ? { ok: false, error: "the board got no label to show" } : showHandler ? showHandler(label) : { ok: false, error: "Carl is on the board list, not in a board" };
+  } catch (e) {
+    ack = { ok: false, error: String((e as Error)?.message ?? e) };
+  }
+  blog("show", { id, label: label.slice(0, 80), ok: ack.ok });
+  void api.ackShow(id, ack).catch(() => {});
+}
+
+/** The /poll feed, once per page: an inbox event (the box's vault log wraps it as a signal) refreshes the list. */
+function start(): void {
+  if (started) return;
+  started = true;
+  void refresh();
+  api.watch((rec) => {
+    // The box's /poll carries vault-log records: an inbox change is {type:"signal", signal:{type:"inbox", …}}.
+    const ev = rec?.type === "signal" ? rec.signal : rec;
+    if (ev?.type === "show" && ev.to === "board") return show(ev);
+    if (ev?.type !== "inbox") return;
+    // A part or an entry landed: shown at once (a short debounce only coalesces a burst of events).
+    eventAt ??= { t: performance.now(), id: String((ev as { id?: unknown }).id ?? "") };
+    soon(40);
+    for (const fn of eventListeners) fn(ev);
+  }, () => soon());
+  document.addEventListener("visibilitychange", () => document.visibilityState === "visible" && soon());
+}
+
+/** The board list's inbox button: the next board opened opens its inbox. */
+let openOnMount = false;
+export function openInboxOnNextBoard(): void {
+  openOnMount = true;
+}
+export function takeOpenInbox(): boolean {
+  const v = openOnMount;
+  openOnMount = false;
+  return v;
+}
+
+/**
+ * Keep `badge` showing how many entries are new to this device (the box pushes inbox events on /poll); it pulses
+ * when the count goes up. Returns its unsubscribe.
+ */
+export function inboxBadge(badge: HTMLElement): () => void {
+  let last = -1;
   const paint = () => {
-    badge.textContent = unread > 9 ? "9+" : String(unread);
-    badge.classList.toggle("hidden", !unread);
+    const n = unseenCount();
+    badge.textContent = n > 9 ? "9+" : String(n);
+    badge.classList.toggle("hidden", !n);
+    if (last >= 0 && n > last) {
+      badge.classList.remove("animate-badge-pop");
+      void badge.offsetWidth; // restart the animation
+      badge.classList.add("animate-badge-pop");
+    }
+    last = n;
   };
   listeners.add(paint);
   paint();
-  if (!started) {
-    started = true;
-    void refresh();
-    void api.watch((ev) => {
-      if (ev?.type !== "inbox") return;
-      // A part or an entry landed: shown at once (a short debounce only coalesces a burst of events).
-      eventAt ??= { t: performance.now(), id: String((ev as { id?: unknown }).id ?? "") };
-      soon(40);
-      for (const fn of eventListeners) fn(ev);
-    });
-    document.addEventListener("visibilitychange", () => document.visibilityState === "visible" && soon());
-  } else void refresh();
+  if (started) void refresh();
+  else start();
+  return () => listeners.delete(paint);
 }
 
 // ---------------------------------------------------------------- the sheet
@@ -120,6 +216,7 @@ export function openInbox(root: HTMLElement, host: InboxHost): () => void {
   const close = () => {
     if (closed) return;
     closed = true;
+    sheetOpen = false;
     listeners.delete(paintList);
     listeners.delete(followEntry);
     sheet.style.transition = "transform 220ms cubic-bezier(0.32,0.72,0,1), opacity 220ms";
@@ -281,6 +378,8 @@ export function openInbox(root: HTMLElement, host: InboxHost): () => void {
 
   listeners.add(paintList);
   listeners.add(followEntry);
+  sheetOpen = true;
+  seeAll();
   paintList();
   void refresh();
   return close;

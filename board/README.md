@@ -9,8 +9,9 @@ edge-swipe-back).
 - `npm run dev:board` → :1431, proxying `/api` to a box (`VC_BOX`, default :7420).
 - Tests: `test/harness/board-palm.test.ts` (palm rejection against scripted
   traces), `board-chrome.test.ts` (after the pen, every control presses once for a Pencil or a finger tap,
-  with or without iOS's click), `board-geom.test.ts` (erasers, lasso, the stroke simplifier),
-  `board-scribble.test.ts` (scribble to erase on recorded-shape traces), `boardformat.test.ts`;
+  with or without iOS's click), `board-geom.test.ts` (erasers, lasso),
+  `board-ink.test.ts` (how ink follows the hand, on recorded-shape handwriting), `board-scribble.test.ts` (scribble
+  to erase on recorded-shape traces), `boardformat.test.ts`;
   `server/test/boards.test.ts` (routes), `board-place.test.ts` (where inbox parts land), `server/test/inbox.test.ts` (the validated send, each refusal, the routes, makes).
 - The chrome is Tailwind (`board/tailwind.config.js`: the desktop's config and tokens as a preset, iPadOS colours, light and dark); the canvas engine is plain TypeScript.
 - Preview data: `npx tsx board/preview/seed-inbox.ts <vault> [box url]` seeds a box's inbox through the real send.
@@ -34,8 +35,11 @@ sync cycle commits it like any other vault write):
   strokes or items are gone ends that direction rather than breaking anything. Not committed (`boards/.gitignore`).
   Proof: `board/preview/undo-persist.mjs`.
 - `overview.png`: the whole board, fitted to its content, ≤ 1600 px on its long
-  side, written 2 s after the pen lifts. It is the list's thumbnail and what the
-  agent looks at. Next: a crop of the region being worked on beside it.
+  side, and `view.png`: the part in view on the iPad (≤ 1280 px; not committed), both written by the save 0.5 s
+  after the pen lifts (a pen down in between postpones it). The overview is the list's thumbnail; the agent reads
+  either (the "you" layer names both). Voice's LookAtScreen gets one picture with the view and the whole board side
+  by side (the view outlined on it). Proof: `board/preview/board-pictures.mjs` (pen-up → both files fresh on the box,
+  on a board of 600 strokes).
 
 Rendering (`src/view.ts`): cached 512 px bitmap tiles under a live canvas, both at the device's pixel ratio.
 Once the camera settles, tiles are drawn at exactly the screen's scale (zoom × devicePixelRatio) on whole device
@@ -60,14 +64,22 @@ landing, the camera settling) every visible tile is repainted in place; back fro
 inbox adds, undo/redo, pinches, pans; nothing in view missing after any of them; before: blank PDF pages and
 `null is not an object (evaluating 'ctx.setTransform')` after 15 actions).
 
-Strokes (`src/ink.ts`, `src/geom.ts`): the Pencil's coalesced samples, lightly stabilised (each moves most of the
-way to the pen: about 2 ms of lag at 240 Hz), keep only the points where the line bends more than 0.75 css px
-(the samples come in whole css px, so a slow shallow line arrives as a staircase; this straightens it), drawn as a
-centripetal Catmull–Rom curve through them with sharp corners kept (the peak of an M, the corners of a Σ), round
-caps and joins; the tip is extended by the predicted samples. Uniform width, no pressure. Proof in WebKit at DPR 2
-(`board/preview/ink.mjs`): ink on screen against the same strokes drawn natively (0/255 apart at 1× zoom; before,
-tiles at the next power of two scaled down were 12/255 off), the highlighter under blue ink with no self-overlap
-darkening, scribble to erase, and normal writing over ink erasing nothing.
+Strokes (`src/ink.ts`): a stroke is the Pencil's own coalesced samples (repeats and samples under half a css px
+apart left out), drawn by **perfect-freehand** (tldraw's freehand ink): the samples evenly respaced along the path
+(0.6 of the width, at most 1.5 units), its `streamline` 0.5 (input stabilisation: the hand's tremor and the
+whole-px samples ironed out over the same distance at every speed), `smoothing` 0.6, `thinning` 0 (uniform width,
+no pressure), round caps; its outline polygon filled with the nonzero rule (a stroke crossing itself is filled
+once: no holes), drawn as quadratic curves through the outline's midpoints. Dashed and dotted lines are its
+stabilised centreline stroked with the dash pattern. The stroke being written is the same function of the same
+samples as the finished one, so nothing moves when the pen lifts; one predicted sample at most, only one that
+carries the line on. Measured on recorded-shape handwriting (`src/inkTraces.ts`, `test/harness/board-ink.test.ts`:
+tremor, sensor noise, whole-px samples) against the path the hand meant: 0.27 px RMS off it (before: 0.33), at
+most 0.95 px (before: 2.1, corners cut), as smooth (wiggle 0.17 rad, before 0.16; the raw samples 0.80), and no
+jump on lift (before: up to 2.5 px when the bend points were re-chosen). Proof in WebKit at DPR 2
+(`board/preview/ink.mjs`): ink on screen against the same strokes drawn natively, the highlighter under blue ink
+with no self-overlap darkening and no gaps (strokes crossing themselves and the ink, across tile seams, at 0.5×,
+1×, 2×; on screen every frame for 2 s after the lift), scribble to erase with its preview, normal writing over ink
+erasing nothing, and handwriting at 1× and 2× unchanged by the lift.
 
 ## Items
 
@@ -99,10 +111,12 @@ Pen and highlighter (uniform width, a few preset sizes plus a slider, a few
 colours each; the button shows its colour). The highlighter is one path at one alpha (35%, multiplied onto the
 page: no darkening where it crosses itself), always under the pen's ink, while it is drawn too (the live canvas
 multiplies, with the ink it crosses cut out of it). **Scribble to erase** (`src/scribble.ts`, GoodNotes): with the
-pen, scribble quickly back and forth over strokes and the strokes it mostly covers are erased (never items), the
-scribble leaves no ink, one undo step, and they fade out; a scribble over nothing is ink. A scribble is at least
-five sharp reversals with nearly antiparallel straight legs, fast (legs under ~190 ms), the path ≥ 2.9× its box's
-diagonal; m, w, z, Σ, M, a star, zigzags and loops are writing. One eraser button (tap it again for
+pen, scribble back and forth over strokes: once it is clearly a scribble the strokes it would erase dim (a preview,
+while the Pencil is still down); when it lifts they are erased (never items), the scribble leaves no ink, one undo
+step, and they fade out from their dimmed look. Anything less stays ink and the dimmed strokes come back; a
+scribble over nothing is ink. A scribble is at least seven sharp reversals (eight legs) with nearly antiparallel
+straight legs, fast (legs under ~190 ms), dense (the path ≥ 4.5× its box's diagonal: back and forth over one
+place, not along a line); short scribbles, m, w, z, Σ, M, a star, quick zigzags and loops are writing. One eraser button (tap it again for
 Stroke / Precise and its size, both remembered): stroke eraser (removes a stroke it touches), precise eraser
 (cuts the part under its circle and splits the stroke; the pieces end exactly
 on the circle's edge so their round caps stay clean; `src/geom.ts`), each with
@@ -146,8 +160,18 @@ what a real-device report is read from. Proof in WebKit with the iPad's Mac UA a
 ## The inbox
 
 The agent never draws on a board; it sends things to the iPad's inbox (`board/INBOX.md`; storage and
-the validated send: `server/inbox.ts`; format: `src/inboxFormat.ts`). The inbox icon's badge counts
-unread entries, live from `{type:"inbox"}` on `/poll`. The sheet lists entries (being made, couldn't
+the validated send: `server/inbox.ts`; format: `src/inboxFormat.ts`). The inbox icon's badge (on a board,
+and on the board list) counts the entries new to this iPad — a new entry, or one that got more parts since the
+inbox was last open here — live from the box's `/poll` feed (an inbox change arrives as a vault-log signal,
+`{type:"signal", signal:{type:"inbox", …}}`; a long poll is cut off after 35 s, coming back from the background
+reconnects at once, and every reconnect re-reads the list), and pops when it goes up; opening the inbox sees them
+all. Proof: `board/preview/inbox-badge.mjs`.
+
+**Show** (the agent's Show tool, `server/show.ts`): the board follows the feed as `client=board`, so the box knows a
+board app is open; `{type:"show", to:"board", target:{label}}` centres the item with that label in the view below the
+controls (zoomed out only if it would not fit whole), outlines it in blue for a moment, and acks what happened
+(`POST /api/v1/show/<id>/ack`): a label on no item, or the board list being open, is an honest no. Proof:
+`board/preview/show-label.mjs`. The sheet lists entries (being made, couldn't
 make, unread); an entry's viewer shows its parts; **Add all** or **Add** per part lands them at the
 centre of the view, selected (`src/place.ts`), and tells the box which items they became.
 

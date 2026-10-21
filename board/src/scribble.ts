@@ -17,14 +17,14 @@ export const SCRIBBLE = {
   step: 1.5,
   /** A reversal candidate: the direction turns more than this (degrees) over the window. */
   candTurn: 120,
-  /** At least this many reversals (six legs). */
-  minReversals: 5,
+  /** At least this many reversals (eight legs): a few quick strokes back and forth are not yet a deliberate scribble. */
+  minReversals: 7,
   /** The legs on either side of a reversal, nearly antiparallel: the median turn at least this (degrees). */
   minMedianTurn: 157,
   /** Inner legs nearly straight: chord / length (median). */
   minStraight: 0.8,
-  /** Path length over the box's diagonal. */
-  minRatio: 2.9,
+  /** Dense: the path's length over its box's diagonal (back and forth over the same place, not along a line). */
+  minRatio: 4.5,
   /** Fast: the median inner leg at most this long (ms). */
   maxLegMs: 190,
   /** Legs of at least this length (css px, median): a tremor is not a scribble. */

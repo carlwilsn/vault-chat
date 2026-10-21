@@ -2,7 +2,7 @@
 // a stroke into clean pieces, the stroke eraser's hit test, the lasso.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { capsuleHits, cutStroke, lassoedBox, lassoedXY, ptSeg, Simplifier, Smoother } from "../../board/src/geom.ts";
+import { capsuleHits, cutStroke, lassoedBox, lassoedXY, ptSeg } from "../../board/src/geom.ts";
 
 const horiz = (x0: number, x1: number, y = 0, step = 10) => {
   const out: number[] = [];
@@ -83,13 +83,6 @@ test("the lasso takes most-inside strokes and boxes", () => {
   assert.equal(lassoedBox({ x: 60, y: 60, w: 100, h: 100 }, poly), false);
 });
 
-test("the smoother follows the pen and skips tiny steps", () => {
-  const s = new Smoother(0.5, 0.3);
-  assert.deepEqual(s.push(0, 0), { x: 0, y: 0 });
-  assert.deepEqual(s.push(10, 0), { x: 5, y: 0 });
-  assert.equal(s.push(5.2, 0), null);
-});
-
 test("ink written on an item moves with it; ink that crosses its edge stays", async () => {
   const { carriedInk } = await import("../../board/src/geom.ts");
   const item = { x: 100, y: 100, w: 200, h: 100 };
@@ -102,25 +95,3 @@ test("ink written on an item moves with it; ink that crosses its edge stays", as
   assert.deepEqual(carriedInk([on], new Set(), []), []);
 });
 
-test("the simplifier straightens a staircase of whole-px samples and keeps a corner where it is", () => {
-  // A shallow line sampled in whole px (WebKit's clientX/Y): y steps 1 px every 80.
-  const s = new Simplifier(0.75);
-  for (let x = 0; x <= 400; x += 3) s.push({ x, y: Math.round(x / 80) });
-  const pts = s.final();
-  assert.ok(pts.length <= 3, `${pts.length} points`);
-  // A "v": the corner is kept, within a sample.
-  const v = new Simplifier(0.75);
-  for (let i = 0; i <= 40; i++) v.push({ x: i, y: i * 2 });
-  for (let i = 1; i <= 40; i++) v.push({ x: 40 + i, y: 80 - i * 2 });
-  const vp = v.final();
-  // Live, the kept points too stay within eps.
-  assert.ok(v.points().length >= vp.length);
-  assert.ok(vp.some((p) => Math.abs(p.x - 40) <= 1 && Math.abs(p.y - 80) <= 2), JSON.stringify(vp));
-  // Every sample stays within eps of the kept polyline.
-  for (let i = 0; i <= 80; i++) {
-    const q = i <= 40 ? { x: i, y: i * 2 } : { x: i, y: 80 - (i - 40) * 2 };
-    let d = Infinity;
-    for (let k = 0; k + 1 < vp.length; k++) d = Math.min(d, ptSeg(q.x, q.y, vp[k]!.x, vp[k]!.y, vp[k + 1]!.x, vp[k + 1]!.y));
-    assert.ok(d <= 0.75 + 1e-9, `${i}: ${d}`);
-  }
-});

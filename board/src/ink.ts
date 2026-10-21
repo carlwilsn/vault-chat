@@ -1,71 +1,122 @@
-// Strokes, items and the background to pixels, in canvas units. A stroke is a polyline of the points where it
-// bends (geom.ts Simplifier) drawn as the smooth curve through them (centripetal Catmull–Rom, as cubic Béziers:
-// no loops or overshoot at a sharp turn), with a uniform width and round caps and joins. The curve stays within a
-// fraction of a px of the polyline, so what geom.ts computes against is what is drawn.
-// A committed stroke's path and bounds are computed once and cached.
+// Strokes, items and the background to pixels, in canvas units. A stroke is stored as the pen's own samples (raw,
+// in canvas units) and drawn by perfect-freehand (the established freehand-ink algorithm: tldraw, Excalidraw): its
+// input stabilisation (`streamline`) irons out the hand's tremor and the samples' whole-px steps, and its outline
+// (`smoothing`) is a smooth polygon of uniform width (`thinning: 0`, no pressure) with round caps, filled with the
+// nonzero rule (a stroke that crosses itself is filled once: no holes, no darker overlap). The stroke being written
+// and the finished stroke are the same function of the same samples, so nothing moves when the pen lifts.
+// Dashed and dotted lines are stroked along perfect-freehand's stabilised centreline with the dash pattern.
+// A committed stroke's outline and bounds are computed once and cached.
+import { getStrokeOutlinePoints, getStrokePoints } from "perfect-freehand";
 import type { Grid, Item, LineStyle, Stroke } from "../../src/boardFormat";
 import { xyBox, type Box } from "./geom";
 
-/** The highlighter's opacity: one value for the whole stroke, drawn as one path (no darkening where it crosses itself). */
+/** The highlighter's opacity: one value for the whole stroke, drawn as one path (no darkening where it overlaps itself). */
 export const HL_ALPHA = 0.35;
 
-/** A turn sharper than this (radians, ~65°) that stands out from its neighbours' is a corner. */
-const CORNER = 1.13;
+/**
+ * perfect-freehand's settings (board/README.md "Ink"; measured on board/src/inkTraces.ts by
+ * test/harness/board-ink.test.ts). It runs in a space where the stroke is `SIZE` wide, so every length it uses (its
+ * minimum stroke length, the outline's point spacing, the end's last few units) is relative to the stroke's own width:
+ * a stroke looks the same at any zoom it was written at and after it is scaled. `minStep` (css px): a sample closer
+ * than this to the last one kept is left out as it is written (view.ts).
+ */
+export const INK = { size: 16, streamline: 0.5, smoothing: 0.6, spacing: 0.6, maxSpacing: 1.5, minStep: 0.5 };
 
-export function xyPath(xy: ArrayLike<number>): Path2D {
+/**
+ * A flat [x, y, …] array as perfect-freehand's points, in its space (`k`: its units per canvas unit), spaced evenly
+ * along the path (`INK.spacing` of the width apart, at most `INK.maxSpacing` canvas units: a wide highlighter keeps its
+ * shape; the first and last sample kept). perfect-freehand's streamline
+ * moves each point part of the way from the last one, so on the Pencil's raw samples (one every 1/240 s: a fraction
+ * of a px apart when slow, 10 px when fast) it would smooth slow writing too little and cut fast corners; on even
+ * spacing it is the same smoothing over the same distance at every speed.
+ */
+function pfIn(xy: ArrayLike<number>, k: number, w: number): number[][] {
+  const n = xy.length >> 1;
+  const out: number[][] = [];
+  if (!n) return out;
+  const step = Math.min(INK.spacing * w, INK.maxSpacing);
+  out.push([xy[0]! * k, xy[1]! * k]);
+  let carry = 0;
+  for (let i = 1; i < n; i++) {
+    const ax = xy[i * 2 - 2]!, ay = xy[i * 2 - 1]!, bx = xy[i * 2]!, by = xy[i * 2 + 1]!;
+    const d = Math.hypot(bx - ax, by - ay);
+    if (!d) continue;
+    let s = step - carry;
+    while (s <= d) {
+      out.push([(ax + ((bx - ax) * s) / d) * k, (ay + ((by - ay) * s) / d) * k]);
+      s += step;
+    }
+    carry = d - (s - step);
+  }
+  const lx = xy[n * 2 - 2]! * k, ly = xy[n * 2 - 1]! * k, l = out[out.length - 1]!;
+  if (n > 1 && (l[0] !== lx || l[1] !== ly)) out.push([lx, ly]);
+  return out;
+}
+
+/** The stroke's stabilised centreline (flat, canvas units): what a dashed line is stroked along. */
+export function inkCentre(xy: ArrayLike<number>, w: number): number[] {
+  const k = INK.size / w;
+  const out: number[] = [];
+  for (const p of getStrokePoints(pfIn(xy, k, w), { size: INK.size, streamline: INK.streamline, last: true })) out.push(p.point[0]! / k, p.point[1]! / k);
+  return out;
+}
+
+/** The stroke's outline polygon (flat, canvas units), to fill with the nonzero rule. */
+export function inkOutline(xy: ArrayLike<number>, w: number): number[] {
+  const k = INK.size / w;
+  const pts = getStrokePoints(pfIn(xy, k, w), { size: INK.size, streamline: INK.streamline, last: true });
+  const poly = getStrokeOutlinePoints(pts, { size: INK.size, thinning: 0, smoothing: INK.smoothing, simulatePressure: false, last: true, start: { cap: true }, end: { cap: true } });
+  const out: number[] = [];
+  for (const p of poly) out.push(p[0]! / k, p[1]! / k);
+  return out;
+}
+
+/**
+ * A closed polygon as a smooth path: quadratic curves through the midpoints of its sides, each controlled by the
+ * vertex between them (perfect-freehand's own rendering, its README's getSvgPathFromStroke), so the outline has no
+ * facets however far apart its points are.
+ */
+function polyPath(f: ArrayLike<number>): Path2D {
   const p = new Path2D();
-  const n = xy.length / 2;
+  const n = f.length >> 1;
+  if (n < 3) return p;
+  const X = (i: number) => f[(i % n) * 2]!, Y = (i: number) => f[(i % n) * 2 + 1]!;
+  p.moveTo((X(0) + X(1)) / 2, (Y(0) + Y(1)) / 2);
+  for (let i = 1; i <= n; i++) p.quadraticCurveTo(X(i), Y(i), (X(i) + X(i + 1)) / 2, (Y(i) + Y(i + 1)) / 2);
+  p.closePath();
+  return p;
+}
+/** An open polyline as a smooth path (the same midpoint curves, from its first point to its last). */
+function linePath(f: ArrayLike<number>): Path2D {
+  const p = new Path2D();
+  const n = f.length >> 1;
   if (n < 1) return p;
-  const X = (i: number) => xy[i * 2]!, Y = (i: number) => xy[i * 2 + 1]!;
-  p.moveTo(X(0), Y(0));
-  if (n === 1) {
-    p.lineTo(X(0) + 0.01, Y(0)); // a dot: the round caps draw it
-    return p;
-  }
-  if (n === 2) {
-    p.lineTo(X(1), Y(1));
-    return p;
-  }
-  // The turn at each point (radians). A corner — a sharp turn between gentle ones, the peak of an "M" or the
-  // corner of a "z" — stays sharp: the curve is broken there, as at an end.
-  const turn = new Float64Array(n);
-  for (let i = 1; i < n - 1; i++) {
-    const ux = X(i) - X(i - 1), uy = Y(i) - Y(i - 1), vx = X(i + 1) - X(i), vy = Y(i + 1) - Y(i);
-    const l = Math.hypot(ux, uy) * Math.hypot(vx, vy);
-    turn[i] = l ? Math.acos(Math.max(-1, Math.min(1, (ux * vx + uy * vy) / l))) : 0;
-  }
-  const corner = (i: number) => i > 0 && i < n - 1 && turn[i]! > CORNER && turn[i]! > 1.8 * Math.max(turn[i - 1]!, turn[i + 1]!);
-  for (let i = 0; i < n - 1; i++) {
-    // p0 p1 p2 p3 around the segment p1 → p2; past an end or a corner, the far point reflected.
-    const x1 = X(i), y1 = Y(i), x2 = X(i + 1), y2 = Y(i + 1);
-    const c0 = i === 0 || corner(i), c3 = i + 2 >= n || corner(i + 1);
-    const x0 = c0 ? 2 * x1 - x2 : X(i - 1), y0 = c0 ? 2 * y1 - y2 : Y(i - 1);
-    const x3 = c3 ? 2 * x2 - x1 : X(i + 2), y3 = c3 ? 2 * y2 - y1 : Y(i + 2);
-    const d1 = Math.sqrt(Math.hypot(x1 - x0, y1 - y0)), d2 = Math.sqrt(Math.hypot(x2 - x1, y2 - y1)), d3 = Math.sqrt(Math.hypot(x3 - x2, y3 - y2));
-    if (d2 < 1e-6) continue;
-    let c1x = x1, c1y = y1, c2x = x2, c2y = y2;
-    if (d1 > 1e-6) {
-      const a = 2 * d1 * d1 + 3 * d1 * d2 + d2 * d2, k = 3 * d1 * (d1 + d2);
-      c1x = (d1 * d1 * x2 - d2 * d2 * x0 + a * x1) / k;
-      c1y = (d1 * d1 * y2 - d2 * d2 * y0 + a * y1) / k;
-    }
-    if (d3 > 1e-6) {
-      const b = 2 * d3 * d3 + 3 * d3 * d2 + d2 * d2, k = 3 * d3 * (d3 + d2);
-      c2x = (d3 * d3 * x1 - d2 * d2 * x3 + b * x2) / k;
-      c2y = (d3 * d3 * y1 - d2 * d2 * y3 + b * y2) / k;
-    }
-    p.bezierCurveTo(c1x, c1y, c2x, c2y, x2, y2);
+  p.moveTo(f[0]!, f[1]!);
+  if (n === 1) p.lineTo(f[0]! + 0.01, f[1]!);
+  else if (n === 2) p.lineTo(f[2]!, f[3]!);
+  else {
+    for (let i = 1; i < n - 1; i++) p.quadraticCurveTo(f[i * 2]!, f[i * 2 + 1]!, (f[i * 2]! + f[i * 2 + 2]!) / 2, (f[i * 2 + 1]! + f[i * 2 + 3]!) / 2);
+    p.lineTo(f[(n - 1) * 2]!, f[(n - 1) * 2 + 1]!);
   }
   return p;
 }
 
-type Cached = { path: Path2D; box: Box };
+/** How a stroke is painted: a filled outline, or (dashed, dotted) a stroked centreline. */
+export type InkPath = { fill: boolean; path: Path2D };
+
+/** The path that paints these samples at width `w` (the live stroke and the finished one use this same function). */
+export function inkPath(xy: ArrayLike<number>, w: number, style?: LineStyle): InkPath {
+  if (style) return { fill: false, path: linePath(inkCentre(xy, w)) };
+  return { fill: true, path: polyPath(inkOutline(xy, w)) };
+}
+
+type Cached = { ink: InkPath; box: Box; centre?: Path2D };
 const cache = new WeakMap<Stroke, Cached>();
 
 export function strokeInfo(s: Stroke): Cached {
   let c = cache.get(s);
   if (!c) {
-    c = { path: xyPath(s.xy), box: xyBox(s.xy, s.w / 2 + 2) };
+    c = { ink: inkPath(s.xy, s.w, s.tool === "pen" ? s.style : undefined), box: xyBox(s.xy, s.w / 2 + 2) };
     cache.set(s, c);
   }
   return c;
@@ -85,6 +136,7 @@ export function dashFor(style: LineStyle | undefined, w: number): number[] {
 
 export function inkStyle(ctx: Ctx, tool: Stroke["tool"], color: string, w: number, style?: LineStyle): void {
   ctx.strokeStyle = color;
+  ctx.fillStyle = color;
   ctx.lineWidth = w;
   ctx.lineCap = "round";
   ctx.lineJoin = "round";
@@ -95,11 +147,27 @@ export function inkStyle(ctx: Ctx, tool: Stroke["tool"], color: string, w: numbe
   }
 }
 
-/** Stroke one stroke (ctx already transformed to canvas units); `minW` keeps ink legible in a small snapshot. */
-export function drawStroke(ctx: Ctx, s: Stroke, minW = 0, path = strokeInfo(s).path): void {
+/** Paint an ink path with the context's style set (inkStyle). */
+export function paintInk(ctx: Ctx, ink: InkPath): void {
+  if (ink.fill) ctx.fill(ink.path, "nonzero");
+  else ctx.stroke(ink.path);
+}
+
+/**
+ * Paint one stroke (ctx already transformed to canvas units); `minW` keeps ink legible in a small snapshot (the
+ * overview, a thumbnail): there the stroke is its stabilised centreline stroked that wide (cached: a snapshot of the
+ * whole board stays cheap).
+ */
+export function drawStroke(ctx: Ctx, s: Stroke, minW = 0, ink?: InkPath): void {
   ctx.save();
-  inkStyle(ctx, s.tool, s.color, Math.max(s.w, minW), s.style);
-  ctx.stroke(path);
+  const info = strokeInfo(s);
+  if (minW > s.w) {
+    inkStyle(ctx, s.tool, s.color, minW, s.tool === "pen" ? s.style : undefined);
+    ctx.stroke((info.centre ??= linePath(inkCentre(s.xy, s.w))));
+  } else {
+    inkStyle(ctx, s.tool, s.color, s.w, s.style);
+    paintInk(ctx, ink ?? info.ink);
+  }
   ctx.restore();
 }
 
@@ -202,8 +270,8 @@ export function drawGrid(ctx: Ctx, grid: Grid, b: Box, z: number): void {
 export function translated(s: Stroke, dx: number, dy: number): Stroke {
   const xy = s.xy.slice();
   for (let k = 0; k < xy.length; k += 2) {
-    xy[k] = Math.round((xy[k]! + dx) * 10) / 10;
-    xy[k + 1] = Math.round((xy[k + 1]! + dy) * 10) / 10;
+    xy[k] = Math.round((xy[k]! + dx) * 100) / 100;
+    xy[k + 1] = Math.round((xy[k + 1]! + dy) * 100) / 100;
   }
   return { ...s, xy };
 }

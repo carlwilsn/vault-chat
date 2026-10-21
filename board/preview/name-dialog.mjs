@@ -78,7 +78,7 @@ await tapAt('.name-dialog button[type="submit"]');
 await page.waitForFunction(() => location.hash.startsWith("#/b/"), null, { timeout: 5000 }).catch(() => {});
 const slug = (await page.evaluate(() => location.hash)).replace("#/b/", "");
 check(!!slug, "New board: Create opens the new board", slug);
-await page.waitForSelector(".tb-name", { timeout: 5000 });
+await page.waitForSelector(".tb-name", { state: "attached", timeout: 5000 }); // shown only when it fits beside undo (chrome-layout)
 check((await page.locator(".tb-name").textContent()) === name, "New board: it has the typed name");
 
 // ---- A hardware keyboard on an open board: a focused field keeps Backspace even with a selection.
@@ -86,7 +86,7 @@ const keys = await page.evaluate(() => {
   const v = window.__board;
   let deletes = 0;
   v.deleteSel = () => void deletes++;
-  v.sel = { ink: [], items: [] }; // any selection: Backspace on the board would delete it
+  v.sel = { strokes: new Set(), items: new Set() }; // any selection: Backspace on the board would delete it
   const input = document.createElement("input");
   input.value = "abc";
   v.el.appendChild(input);

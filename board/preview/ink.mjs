@@ -3,8 +3,15 @@
 //      and 2× zoom (edge width and the difference to native);
 //   2. the highlighter: one path at one alpha (no darkening where it overlaps itself), under the pen's ink (a blue
 //      line keeps its colour under it, while it is drawn and after), even across tile seams;
-//   3. scribble to erase: a scribble over a word erases it (one undo step, the scribble gone, a fade), a scribble
-//      on empty paper stays ink, and normal writing over ink (m, w, z, ∑, zigzags) never erases.
+//   2b. no gaps in the highlighter: jittery strokes that cross themselves and the ink, across tile seams, at 1×, 2×
+//      and 0.5×: every device px along each stroke's path is highlight (or ink on top); and after the Pencil lifts it
+//      stays on screen every frame for 2 s (the live layer hands over to the tiles with no blank frame);
+//   3. scribble to erase, deliberate (GoodNotes): while a long scribble is written over a word, the word dims (a
+//      preview) and nothing is erased yet; on lift it is erased (one undo step, the scribble gone, a fade); a short
+//      scribble over a word stays ink and the word comes back whole; a scribble on empty paper stays ink; normal
+//      writing over ink (m, w, z, ∑, quick zigzags) never erases;
+//   4. handwriting, small letters and fast long strokes (board/src/inkTraces.ts) written with the Pencil at 1× and 2×:
+//      screenshots, and the stroke the pen left is the one drawn while it was down (no jump on lift).
 // Screenshots go to OUT (default: the OS temp dir).
 //
 //   npx tsx board/preview/box.ts 7442 &  ;  VC_BOX=http://127.0.0.1:7442 npm run dev:board
@@ -68,6 +75,8 @@ const dbg = () => page.evaluate(() => window.__board.debug());
 const settle = (ms = 700) => page.waitForTimeout(ms);
 
 async function openBoard() {
+  // A board still saving finishes first (navigating away cancels its request: WebKit reports that as a page error).
+  await page.evaluate(() => window.__board?.flush?.()).catch(() => {});
   await page.goto(url);
   await page.evaluate(() => localStorage.clear());
   const slug = await page.evaluate(async () => {
@@ -251,6 +260,120 @@ await shot("hl-committed", { x: 150, y: 330, width: 800, height: 100 });
   check(single[0] > 240 && single[1] > 220 && single[2] < 200, "a yellow band on white paper", String(single));
 }
 
+// ================================================================ 2b. no gaps in the highlighter
+{
+  let seed = 5;
+  const rnd = () => ((seed = (seed * 1664525 + 1013904223) >>> 0) / 2 ** 32) * 2 - 1;
+  // A Pencil along a curve: a sample every 1/240 s at `speed` px/ms, a little tremor, whole px (as WebKit gives them).
+  const trace = (f, n, speed) => {
+    const dense = Array.from({ length: n + 1 }, (_, i) => f(i / n));
+    const out = [{ x: Math.round(dense[0][0]), y: Math.round(dense[0][1]), t: 0 }];
+    let acc = 0, t = 0;
+    for (let i = 1; i < dense.length; i++) {
+      acc += Math.hypot(dense[i][0] - dense[i - 1][0], dense[i][1] - dense[i - 1][1]) / speed;
+      if (acc >= 1000 / 240) {
+        t += acc;
+        acc = 0;
+        out.push({ x: Math.round(dense[i][0] + rnd() * 0.6), y: Math.round(dense[i][1] + rnd() * 0.6), t });
+      }
+    }
+    return out;
+  };
+  const hlPaths = () => [
+    trace((u) => [120 + 850 * u, 260 + 8 * Math.sin(u * 20)], 600, 0.7), // long and wavy, across tile seams
+    trace((u) => [500 + 120 * Math.cos(u * 2.4 * Math.PI) + 200 * u, 400 + 80 * Math.sin(u * 2.4 * Math.PI)], 600, 0.5), // a loop crossing itself
+    trace((u) => { const s = u * 7, leg = Math.floor(s), ph = s % 1; return [150 + 560 * (leg % 2 ? 1 - ph : ph), 520 + leg * 6]; }, 1400, 1.2), // back and forth over itself
+    trace((u) => [200 + 40 * u + 25 * Math.sin(u * 40), 330 + 120 * u], 500, 0.3), // a tight slow wiggle
+  ];
+  const gapReport = {};
+  for (const k of [1, 2, 0.5]) {
+    await openBoard();
+    await camTo(0, 0, k);
+    await setTool("pen", { pen: 2.4, penColor: "#1f5bd6" });
+    for (let x = 150; x < 1000; x += 90) await pen(trace((u) => [x + 3 * Math.sin(u * 6), 200 + 380 * u], 200, 0.5));
+    await setTool("hl", { hl: 18, hlColor: "#ffd21f" });
+    const paths = hlPaths();
+    for (const p of paths) await pen(p);
+    await settle(900);
+    const full = { x: 0, y: 150, width: 1100, height: 500 };
+    // The screen's pixels along each path, read in the page (a whole-screen array is too big to bring back).
+    const png = await page.screenshot({ clip: full, scale: "device" });
+    const { n, gaps, where } = await page.evaluate(
+      async ([b64, paths, full]) => {
+        const img = new Image();
+        img.src = `data:image/png;base64,${b64}`;
+        await img.decode();
+        const c = document.createElement("canvas");
+        c.width = img.naturalWidth;
+        c.height = img.naturalHeight;
+        const x = c.getContext("2d");
+        x.drawImage(img, 0, 0);
+        const px = x.getImageData(0, 0, c.width, c.height).data, d = window.__board.dpr;
+        let n = 0, gaps = 0;
+        const where = [];
+        for (const p of paths)
+          for (let i = 1; i < p.length; i++) {
+            const a = p[i - 1], b = p[i], m = Math.ceil(Math.hypot(b.x - a.x, b.y - a.y) * d);
+            for (let j = 0; j < m; j++) {
+              const X = Math.round((a.x + ((b.x - a.x) * j) / m - full.x) * d), Y = Math.round((a.y + ((b.y - a.y) * j) / m - full.y) * d);
+              const k = (Y * c.width + X) * 4;
+              n++;
+              // Paper (white) where the stroke passed: a gap. Highlight is yellow, ink under it blue.
+              if (px[k] > 245 && px[k + 1] > 245 && px[k + 2] > 235) {
+                gaps++;
+                if (where.length < 5) where.push(`${(X / d + full.x).toFixed(1)},${(Y / d + full.y).toFixed(1)}`);
+              }
+            }
+          }
+        return { n, gaps, where };
+      },
+      [png.toString("base64"), paths, full],
+    );
+    gapReport[`${k}×`] = { samples: n, gaps };
+    await shot(`hl-gaps-${k}x`, full);
+    check(gaps === 0, `no gaps in highlighter strokes that cross themselves and the ink, across tile seams, at ${k}×`, `${gaps} of ${n} px along the paths are paper${where.length ? ` (at ${where.join(" ")})` : ""}`);
+  }
+  report.highlighterGaps = gapReport;
+
+  // After the lift, every frame for 2 s: a point on the stroke away from the ink shows the highlight, on the live
+  // canvas while the pen is down and on the tiles after (read straight from the canvases each frame).
+  await openBoard();
+  await setTool("hl", { hl: 18, hlColor: "#ffd21f" });
+  const path = trace((u) => [200 + 600 * u, 420 + 10 * Math.sin(u * 9)], 600, 0.6);
+  await pen(path, true);
+  const probe = path[Math.floor(path.length / 2)];
+  const frames = await page.evaluate(async (probe) => {
+    const v = window.__board;
+    const r = v.stage.getBoundingClientRect(), d = v.dpr;
+    const read = (c) => {
+      const x = c.getContext("2d").getImageData(Math.round((probe.x - r.left) * d), Math.round((probe.y - r.top) * d), 1, 1).data;
+      return x[3];
+    };
+    const out = [];
+    const t0 = performance.now();
+    let lifted = false;
+    await new Promise((done) => {
+      const tick = () => {
+        const t = performance.now() - t0;
+        if (!lifted && t > 50) {
+          lifted = true;
+          window.__penUp();
+        }
+        out.push({ t: Math.round(t), base: read(v.base), live: read(v.live), lifted });
+        if (t < 2050) setTimeout(tick, 16);
+        else done();
+      };
+      // Every ~16 ms (a timer, not rAF: a page the test runner does not keep in front gets few frames), reading
+      // the canvases as they stand.
+      setTimeout(tick, 0);
+    });
+    return out;
+  }, probe);
+  const blank = frames.filter((f) => f.base < 20 && f.live < 20);
+  report.highlighterFrames = { frames: frames.length, afterLift: frames.filter((f) => f.lifted).length, blank: blank.length };
+  check(frames.length > 60 && blank.length === 0, "the highlighter stays on screen for 2 s after the Pencil lifts, sampled every 16 ms (never blank)", `${frames.length} samples, ${blank.length} blank${blank.length ? ` (at ${blank.slice(0, 5).map((f) => f.t).join(", ")} ms)` : ""}`);
+}
+
 // ================================================================ 3. scribble to erase
 const hasScribble = await page.evaluate(() => "scribble" in window.__board.prefs);
 await openBoard();
@@ -273,17 +396,25 @@ await write(420, 300);
 await settle(300);
 const before = await dbg();
 const scrib = traces.find((t) => t.name.startsWith("horizontal scribble"));
+// While it is written (the Pencil still down): the word it covers dims, nothing is erased yet.
+await pen(place(scrib.pts, 330, 306), true);
+await page.waitForTimeout(80);
+const mid = await dbg();
+await shot("scribble-preview", { x: 270, y: 270, width: 260, height: 80 });
+check(mid.dimmed === 4 && mid.strokes === before.strokes, "while a scribble is written over a word, the word dims and nothing is erased yet", `${mid.dimmed} dimmed, ${before.strokes} → ${mid.strokes} strokes`);
 // Freeze the fade at its middle for the screenshot (the page's clock, for this one frame).
-await pen(place(scrib.pts, 330, 306));
+await page.evaluate(() => window.__penUp());
 const fading = await page.evaluate(() => {
-  const v = window.__board, f = v.fades?.[0];
-  if (!f) return 0;
-  f.t0 = performance.now() - 120;
+  // The word fades from its dimmed look, the scribble from whole: every fade frozen at its middle.
+  const v = window.__board, fs = v.fades ?? [];
+  if (!fs.length) return 0;
+  const t0 = performance.now() - 120;
+  for (const f of fs) f.t0 = t0;
   const real = performance.now.bind(performance);
-  performance.now = () => f.t0 + 120;
+  performance.now = () => t0 + 120;
   v.renderLive();
   window.__unfreeze = () => (performance.now = real);
-  return f.strokes.length;
+  return fs.reduce((n, f) => n + f.strokes.length, 0);
 });
 await shot("scribble-fade", { x: 270, y: 270, width: 260, height: 80 });
 await page.evaluate(() => window.__unfreeze?.());
@@ -298,6 +429,16 @@ check(after.undo === before.undo + 1, "…as one undo step", `${before.undo} →
 await page.evaluate(() => window.__board.undo());
 check((await dbg()).strokes === before.strokes, "undo brings the word back", `${(await dbg()).strokes}`);
 await page.evaluate(() => window.__board.redo());
+// A short scribble (six legs) over a word: not deliberate, it stays ink and the word stays whole.
+{
+  await write(300, 400);
+  const k0 = (await dbg()).strokes;
+  const short = traces.find((t) => t.name === "short scribble (6 legs)");
+  await pen(place(short.pts, 330, 406));
+  await settle(300);
+  const k1 = await dbg();
+  check(k1.strokes === k0 + 1 && k1.dimmed === 0, "a short scribble over a word stays ink, and the word is untouched", `${k0} → ${k1.strokes} strokes, ${k1.dimmed} dimmed`);
+}
 // On empty paper a scribble is ink (shading).
 const n0 = (await dbg()).strokes;
 await pen(place(scrib.pts, 700, 600));
@@ -326,6 +467,47 @@ const m0 = (await dbg()).strokes;
 await pen(place(scrib.pts, 330, 656));
 await settle(200);
 check((await dbg()).strokes === m0 + 1, "with Scribble to erase off, a scribble is ink", `${m0} → ${(await dbg()).strokes}`);
+
+// ================================================================ 4. handwriting, small letters, fast strokes
+{
+  const inkT = await page.evaluate(async () => (await import("/board/src/inkTraces.ts")).inkTraces(1));
+  for (const k of [1, 2]) {
+    await openBoard();
+    await camTo(0, 0, k);
+    await setTool("pen", { pen: 2.4, penColor: "#1f1f24" });
+    let x = 60, y = 200, row = 0;
+    let jumps = 0;
+    const lift = [];
+    for (const t of inkT) {
+      let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+      for (const p of t.pts) (x0 = Math.min(x0, p.x)), (y0 = Math.min(y0, p.y)), (x1 = Math.max(x1, p.x)), (y1 = Math.max(y1, p.y));
+      const fit = Math.min(1, 300 / (x1 - x0 + 1), 220 / (y1 - y0 + 1));
+      if (x + (x1 - x0) * fit > 1150) (x = 60), (y += 240), row++;
+      const pts = t.pts.map((p) => ({ x: Math.round((p.x - x0) * fit + x), y: Math.round((p.y - y0) * fit + y), t: p.t }));
+      await pen(pts, true);
+      // The screen just before the lift (the live layer) and just after (the tiles), over the stroke: the same pixels.
+      const clip = { x: x - 6, y: y - 6, width: Math.ceil((x1 - x0) * fit) + 12, height: Math.ceil((y1 - y0) * fit) + 12 };
+      await page.waitForTimeout(150); // the last move drawn (the next frame)
+      const a = await pixels(clip);
+      await page.evaluate(() => window.__penUp());
+      await page.waitForTimeout(250);
+      const b = await pixels(clip);
+      let diff = 0, nd = 0;
+      for (let i = 0; i < a.d.length; i += 4) {
+        const da = Math.abs(lum([a.d[i], a.d[i + 1], a.d[i + 2]]) - lum([b.d[i], b.d[i + 1], b.d[i + 2]]));
+        if (da > 40) nd++;
+        diff = Math.max(diff, da);
+      }
+      jumps = Math.max(jumps, nd);
+      lift.push(`${t.name}: ${nd} px`);
+      x += (x1 - x0) * fit + 50;
+    }
+    await settle(400);
+    report[`lift ${k}×`] = lift;
+    check(jumps <= 6, `at ${k}×, nothing moves when the Pencil lifts (the stroke drawn while writing is the one left)`, `at most ${jumps} device px changed by more than 40/255 (${inkT.length} strokes)`);
+    await shot(`handwriting-${k}x`, { x: 0, y: 150, width: 1194, height: 680 });
+  }
+}
 
 console.log(JSON.stringify(report, null, 1));
 console.log(`screenshots: ${OUT}`);

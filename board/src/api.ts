@@ -55,8 +55,9 @@ export const postBoardLog = (b: { session: string; v?: string; touch?: number; s
 export const listBoards = () => call<{ boards: BoardSummary[] }>("/api/v1/boards").then((r) => r.boards);
 export const createBoard = (name: string) => call<{ slug: string; board: Board }>("/api/v1/boards", { method: "POST", body: JSON.stringify({ name }) });
 export const getBoard = (slug: string) => call<Board>(`/api/v1/boards/${enc(slug)}`);
-export const saveBoard = (slug: string, board: Board, base: number, overview?: string, history?: BoardHistory) =>
-  call<{ ok: true; rev: number; updated: number }>(`/api/v1/boards/${enc(slug)}`, { method: "POST", body: JSON.stringify({ board, base, overview, history }) });
+/** Save the board, with overview.png (the whole board) and view.png (the part in view) for the agent. */
+export const saveBoard = (slug: string, board: Board, base: number, overview?: string, history?: BoardHistory, view?: string) =>
+  call<{ ok: true; rev: number; updated: number }>(`/api/v1/boards/${enc(slug)}`, { method: "POST", body: JSON.stringify({ board, base, overview, history, view }) });
 /** The undo and redo saved with the board (rev -1 when there are none). */
 export const getHistory = (slug: string) => call<BoardHistory>(`/api/v1/boards/${enc(slug)}/history`);
 /** Store an image (base64 PNG/JPEG) in the board folder, for an item. */
@@ -95,19 +96,51 @@ export async function text(url: string): Promise<string> {
   return r.text();
 }
 
-/** The box's event ring (/poll): `fn` gets this vault's events; resolves never. */
-export async function watch(fn: (ev: any) => void): Promise<void> {
-  let cursor: number | null = null;
-  for (;;) {
-    try {
-      const r: { next: number; events: any[] } = await call(`/poll?after=${cursor ?? "latest"}`);
-      if (cursor !== null) for (const e of r.events) fn(e);
-      cursor = r.next;
-    } catch {
-      await new Promise((res) => setTimeout(res, 4000));
+/**
+ * The box's event ring (/poll): `fn` gets this vault's records (an inbox change arrives wrapped as
+ * {type:"signal", signal:{type:"inbox", …}}); `resync` is called whenever events may have been missed (the first
+ * answer, a reconnect, a reset after the box restarted), so the caller re-reads its state. Resolves never.
+ *
+ * A long poll is cut off after 35 s (the box answers within 25 s; a request iPadOS froze in the background never
+ * settles on its own), and coming back to the foreground reconnects at once.
+ */
+export function watch(fn: (ev: any) => void, resync: () => void = () => {}): void {
+  let cursor: number | null = null, epoch: string | null = null;
+  let ctl: AbortController | null = null;
+  let wake: (() => void) | null = null;
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState !== "visible") return;
+    ctl?.abort();
+    wake?.();
+  });
+  void (async () => {
+    for (;;) {
+      ctl = new AbortController();
+      const timer = setTimeout(() => ctl?.abort(), 35_000);
+      try {
+        const q = cursor === null ? "latest" : `${cursor}${epoch ? `&epoch=${enc(epoch)}` : ""}`;
+        // client=board: the box knows a board app is following (server/show.ts sends it Show's signals).
+        const r: { next: number; events: any[]; epoch?: string; reset?: boolean } = await call(`/poll?after=${q}&client=board`, { signal: ctl.signal });
+        if (cursor === null || r.reset) resync();
+        else for (const e of r.events) fn(e);
+        cursor = r.next;
+        epoch = r.epoch ?? null;
+      } catch {
+        // Offline, the box restarting, or cut off: start again from the head and re-read (nothing is lost).
+        const aborted = ctl.signal.aborted;
+        cursor = null;
+        if (!aborted || document.visibilityState === "hidden") await new Promise<void>((res) => ((wake = res), setTimeout(res, 3000)));
+        wake = null;
+      } finally {
+        clearTimeout(timer);
+      }
     }
-  }
+  })();
 }
+
+/** Show (server/show.ts): what happened to a {type:"show"} signal on this iPad. */
+export const ackShow = (id: string, ack: { ok: boolean; landed?: string; error?: string }) =>
+  call<{ ok: true; waiting: boolean }>(`/api/v1/show/${enc(id)}/ack`, { method: "POST", body: JSON.stringify(ack) });
 
 // ---- voice (server/voice.ts): the box's own voice path, the one the phone uses
 /** Carl's conversations, most recently active first (the phone's list: GET /conversations). */

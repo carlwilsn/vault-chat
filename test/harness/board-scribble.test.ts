@@ -29,6 +29,31 @@ test("the shapes the brief names stay writing: m, w, z, ∑ and zigzags", () => 
   }
 });
 
+test("deliberate only: short scribbles and quick zigzag writing stay ink", () => {
+  for (let v = 0; v < VARIANTS; v++)
+    for (const name of ["short scribble (4 legs)", "short scribble (6 legs)", "short scribble (7 legs, small)", "wwww (fast, small)", "vvvvvv (fast, steep)", "zigzag underline (fast)", "MMMM (fast)", "www (steep, fast)"]) {
+      const t = scribbleTraces(v).find((x) => x.name === name);
+      assert.ok(t, name);
+      const r = classifyScribble(t.pts);
+      assert.equal(r.ok, false, `${name} #${v}: ${r.why}`);
+    }
+});
+
+test("a scribble needs eight legs: the same scribble cut short is ink, carried on it erases", () => {
+  const t = scribbleTraces().find((x) => x.name === "horizontal scribble over a word, drifting down")!;
+  // Its first legs only (the pen lifted early): cut where the fifth reversal would be.
+  let legs = 0, cut = t.pts.length;
+  for (let i = 2; i < t.pts.length; i++) {
+    const a = t.pts[i - 2]!, b = t.pts[i - 1]!, c = t.pts[i]!;
+    if ((b.x - a.x) * (c.x - b.x) < 0 && ++legs === 5) {
+      cut = i;
+      break;
+    }
+  }
+  assert.equal(classifyScribble(t.pts.slice(0, cut)).ok, false);
+  assert.equal(classifyScribble(t.pts).ok, true);
+});
+
 test("a slow back-and-forth is not a scribble (it has to be quick)", () => {
   const t = scribbleTraces().find((x) => x.name === "horizontal scribble over a word, drifting down")!;
   const slow = t.pts.map((p) => ({ ...p, t: p.t * 4 }));
