@@ -289,7 +289,8 @@ function plainToTex(t: string): string {
 
 /** A number and a unit in prose: "5 mV", "3 C", "2.5 kΩ" (not "part 2 A": A, F, T and the one-letter metric units need math). */
 const PLAIN_UNIT = new RegExp(`(?<![\\w.])(\\d+(?:\\.\\d+)?)\\s?((?:${PREFIXES})?(?:${SI_UNITS})|${OTHER_UNITS})(?![\\w^_])`, "g");
-const PLAIN_UNIT_SKIP = new Set(["A", "F", "T", "s", "m", "g", "h", "l", "L", "K", "a", "min"]);
+// "pm"/"am" after a number are times of day ("2pm"), never picometres/attometres in prose.
+const PLAIN_UNIT_SKIP = new Set(["A", "F", "T", "s", "m", "g", "h", "l", "L", "K", "a", "min", "pm", "am"]);
 
 /** The text as the voice should say it: every bit of math in words, everything else as it was. */
 export function speakMath(text: string): string {

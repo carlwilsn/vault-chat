@@ -89,3 +89,14 @@ describe("math in a text: delimited, bare and plain-text, everything else as it 
     expect(out).toContain("a over b");
   });
 });
+
+describe("times of day stay times", () => {
+  beforeAll(async () => {
+    await speechReady();
+  });
+  it("2pm and 9am are not picometres or attometres", () => {
+    expect(speakMath("Psych 221 at 2pm")).toBe("Psych 221 at 2pm");
+    expect(speakMath("office hours 9am to 11am")).toBe("office hours 9am to 11am");
+    expect(speakMath("5 mV")).toContain("millivolt");
+  });
+});
