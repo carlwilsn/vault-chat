@@ -616,7 +616,15 @@ body.vconnecting .vconn{display:block}
 .vx{width:66px;height:66px;border-radius:50%;border:1px solid var(--line);background:var(--surface);color:var(--text);display:flex;align-items:center;justify-content:center}
 .vx svg{width:24px;height:24px}
 .vbtns{display:flex;gap:20px;align-items:center}
-body.vmicmuted #vMuteBtn{background:var(--mute-bg);border-color:var(--mute-line);color:var(--danger)}
+/* Mute: the big one (Carl lets voice sit muted while he works and unmutes to ask) — muted is solid red with a slashed mic. */
+#vMuteBtn{width:84px;height:84px}
+#vMuteBtn svg{width:30px;height:30px}
+#vMuteBtn .slash{display:none}
+body.vmicmuted #vMuteBtn{background:var(--danger);border-color:var(--danger);color:#fff}
+body.vmicmuted #vMuteBtn .slash{display:inline}
+body.vmicmuted .vhint{color:var(--danger);font-weight:600}
+body.vmicmuted .vpill{color:var(--danger);border-color:var(--mute-line)}
+body.vmicmuted .vpill .d{background:var(--danger)}
 .vhint{font-size:11.5px;color:var(--faint)}
 .vhint .chev{display:inline-block;width:12px;height:12px;vertical-align:-1px}
 

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import { Keyboard, Mic } from "lucide-react";
+import { Keyboard, Mic, MicOff } from "lucide-react";
 import { useStore } from "./store";
-import { toggleVoice, voiceBarLevels } from "./voice-elevenlabs";
+import { toggleVoice, toggleVoiceMute, voiceBarLevels } from "./voice-elevenlabs";
 import { isPopout } from "./windowKind";
 import { relayedVoiceLevels } from "./sync";
 
@@ -97,6 +97,40 @@ export function VoiceMicGroup() {
         </div>
       )}
     </div>
+  );
+}
+
+// Mute: the big, plain toggle by the composer (Carl lets voice sit muted while he works and unmutes to ask).
+// Muted is unmistakable: solid red, a slashed mic, the word. Ctrl+Shift+M (App.tsx) does the same. The
+// mute is the SDK's own: no audio leaves the laptop, and the voice can still speak a result. Voice runs in
+// the main window, so a popout shows nothing here. When voice moved to another device, this spot says so.
+export function VoiceMuteButton() {
+  const live = useStore((s) => s.voiceMode && !s.voiceConnecting);
+  const muted = useStore((s) => s.voiceMicMuted);
+  const notice = useStore((s) => s.voiceNotice);
+  const voiceMode = useStore((s) => s.voiceMode);
+  if (isPopout) return null;
+  if (!voiceMode && notice)
+    return (
+      <span data-el="voice-notice" className="h-7 px-2.5 flex items-center rounded-full text-[11px] font-medium whitespace-nowrap text-muted-foreground bg-muted/60" title="Start voice here to bring it back">
+        {notice}
+      </span>
+    );
+  if (!live) return null;
+  return (
+    <button
+      onClick={() => toggleVoiceMute()}
+      data-el="voice-mute"
+      aria-pressed={muted}
+      aria-label={muted ? "Unmute" : "Mute"}
+      title={muted ? "Muted: nothing is sent. Click or Ctrl+Shift+M to talk" : "Mute the mic (Ctrl+Shift+M)"}
+      className={`h-7 px-2.5 gap-1.5 flex items-center rounded-full text-[11px] font-semibold whitespace-nowrap transition-colors ${
+        muted ? "bg-red-600 text-white hover:bg-red-700" : "bg-accent/70 text-foreground hover:bg-accent"
+      }`}
+    >
+      {muted ? <MicOff className="h-3.5 w-3.5" strokeWidth={2.5} /> : <Mic className="h-3.5 w-3.5" />}
+      <span>{muted ? "Muted" : "Mute"}</span>
+    </button>
   );
 }
 

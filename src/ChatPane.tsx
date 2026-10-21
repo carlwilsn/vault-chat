@@ -12,7 +12,7 @@ import { dispatchChatAction, isPopout } from "./sync";
 import { COMPACTION_DIVIDER_TEXT, isCompactionDivider, dividerSummary } from "./chatContext";
 import { useStore, type ChatMessage, type FileEntry, type LiveTool, type TodoItem } from "./store";
 import { buildViewportContextText, toggleVoice } from "./voice-elevenlabs";
-import { InlineVoiceWaves } from "./VoiceCockpit";
+import { InlineVoiceWaves, VoiceMuteButton } from "./VoiceCockpit";
 import { loadSkills } from "./skills";
 import { isUnreadableAsText } from "./fileKind";
 import { SettingsPane } from "./SettingsPane";
@@ -355,6 +355,7 @@ export function ChatPane() {
   // Fullscreen chat: voice replaces the composer with its waves (VoiceCockpit).
   const voiceMode = useStore((s) => s.voiceMode);
   const voiceError = useStore((s) => s.voiceError);
+  const voiceNotice = useStore((s) => s.voiceNotice);
   // The empty chat's greeting, like the phone's — one per conversation.
   const greeting = useMemo(() => {
     const g = ["Welcome back!", "He returns!", "Ready to work?", "Welcome, sir.", "At your service."];
@@ -1231,9 +1232,11 @@ export function ChatPane() {
                 placeholder={archived ? ARCHIVED_THREAD : boxDown ? `${BOX_UNREACHABLE} — ${downWhy}. Retrying…` : !ready ? (vaultPath ? "Connecting to the box…" : "Open a vault first") : busy ? "Enter to steer · Tab to queue · Esc to stop" : "Ask anything, or / for commands…"}
                 disabled={!ready}
                 rows={1}
-                className={cn("border-0 bg-transparent min-h-0 max-h-[200px] focus-visible:ring-0 shadow-none !py-2", chatFullscreen && (voiceMode || voiceError) ? "!pr-32" : "!pr-20", "!pl-11")}
+                className={cn("border-0 bg-transparent min-h-0 max-h-[200px] focus-visible:ring-0 shadow-none !py-2", voiceMode || voiceNotice ? (chatFullscreen ? "!pr-52" : "!pr-40") : chatFullscreen && voiceError ? "!pr-32" : "!pr-20", "!pl-11")}
               />
               <div className="absolute right-3 bottom-2 flex items-center gap-1">
+                {/* Mute, by the composer while voice is on (or where voice went, when it moved to another device). */}
+                <VoiceMuteButton />
                 {chatFullscreen && <InlineVoiceWaves />}
                 {chatFullscreen && (
                   <button

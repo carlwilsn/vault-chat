@@ -53,9 +53,9 @@ let voiceChats: { own: () => string | null; from: string | null; local?: string 
 let boxVaultRoot: string | null = null;
 // The live call's updates from the box (src/voiceFront.ts).
 let updates: VoiceUpdates | null = null;
-async function fetchUpdates(link: import("./boxChat").Link, convId: string, cursor: string | null) {
+async function fetchUpdates(link: import("./boxChat").Link, convId: string, cursor: string | null, sessionId: string | null) {
   const { boxVoiceUpdates } = await import("./voiceBox");
-  return boxVoiceUpdates(link, convId, cursor);
+  return boxVoiceUpdates(link, convId, cursor, undefined, sessionId);
 }
 function voiceAppend(m: ChatMessage): void {
   if (m.role === "assistant" && !m.system && typeof m.content === "string") {
@@ -287,7 +287,8 @@ export async function startElevenLabsSession(opts?: { recap?: string }): Promise
 
   // Voice is the front of house of the conversation that is open (a new one when none is): its prompt is that
   // conversation's pi session, its lines go into it, its requests are the agent's turns in it (server/voice.ts).
-  const convId = state.activeConversationId ?? useStore.getState().newConversation();
+  let convId = state.activeConversationId ?? useStore.getState().newConversation();
+  useStore.setState({ voiceNotice: null });
   const r = await boxVoiceSession(box, convId);
   if (!r.session) {
     useStore.getState().setVoiceConnecting(false);
@@ -302,6 +303,17 @@ export async function startElevenLabsSession(opts?: { recap?: string }): Promise
     return;
   }
   const boxSession = r.session;
+  // One voice at a time: voice was live on another device — this call continues its conversation (the box says which).
+  const sessionId = boxSession.sessionId ?? null;
+  if (boxSession.handoff?.convId && boxSession.handoff.convId !== convId) {
+    convId = boxSession.handoff.convId;
+    vlog("voice handoff", { from: boxSession.handoff.from });
+    try {
+      useStore.getState().selectConversation(convId);
+    } catch (e) {
+      console.warn("[voice-eleven] couldn't open the handed-over conversation:", e);
+    }
+  }
   // Credentials for both transports: a WebRTC conversation token (preferred)
   // and a signed URL (WebSocket: Linux, or the fallback).
   const signedUrl = boxSession.signedUrl ?? null;
@@ -328,7 +340,7 @@ export async function startElevenLabsSession(opts?: { recap?: string }): Promise
   stopHealthWatch();
 
   // The call's lines go into the attached conversation on the box, in order (the box writes them into its pi session).
-  transcriptMirror = voiceTranscriptMirror(box, convId);
+  transcriptMirror = voiceTranscriptMirror(box, convId, undefined, sessionId);
   voiceChats = { own: () => convId, from: convId, local: convId };
   boxVaultRoot = boxSession.vaultRoot ?? null;
   startViewportWatch();
@@ -361,7 +373,7 @@ export async function startElevenLabsSession(opts?: { recap?: string }): Promise
       },
       dynamicVariables,
       // Ask runs on the box in the attached conversation (whatever chat is open meanwhile), after the lines before it.
-      clientTools: buildClientToolHandlers(voiceToolVia(box.link, box.vault, undefined, () => convId), boxSession.toolNames, () => transcriptMirror?.done?.()),
+      clientTools: buildClientToolHandlers(voiceToolVia(box.link, box.vault, undefined, () => convId, () => sessionId), boxSession.toolNames, () => transcriptMirror?.done?.()),
       // Agent audio arrived (the health watch compares it with what plays).
       // Linux (WebSocket): the webview can't play Web Audio, so the chunk is
       // played natively and feeds the bars' envelope. WebRTC: the SDK plays it.
@@ -518,8 +530,19 @@ export async function startElevenLabsSession(opts?: { recap?: string }): Promise
       gate: quietGate,
       // A result he is waiting for waits until he isn't mid-sentence (and the voice isn't working out a reply to him).
       userSpeaking: () => carlSpeaking(conv),
-      fetch: (cursor) => fetchUpdates(box.link, convId, cursor),
+      fetch: (cursor) => fetchUpdates(box.link, convId, cursor, sessionId),
       log: (ev, data) => vlog(ev, data),
+      // Voice moved to another device (one voice at a time): this call ends, and the laptop says where it went.
+      onMoved: (m) => {
+        if (activeConversation !== conv) return;
+        vlog("voice moved away", { to: m.to });
+        void endElevenLabsSession().finally(() => {
+          useStore.setState({ voiceNotice: m.line });
+          // Said for a while, not forever (the other device's call may end too).
+          const t = setTimeout(() => useStore.getState().voiceNotice === m.line && useStore.setState({ voiceNotice: null }), 60_000);
+          (t as { unref?: () => void }).unref?.(); // (node, in tests: a pending notice never holds the process)
+        });
+      },
     }).start();
     // The conversation's recent images: this ElevenLabs conversation has never seen them.
     {
@@ -1263,6 +1286,16 @@ export function isVoiceSessionActive(): boolean {
 export function voiceSessionOn(id: string | null | undefined): boolean {
   if (!activeConversation || !voiceChats || !id) return false;
   return id === voiceChats.own() || id === voiceChats.local;
+}
+
+/** The mute toggle (the composer's Mute button, Ctrl+Shift+M): the SDK's own mute, so no audio leaves the
+ *  laptop while the voice can still speak a result; unmuting is instant. No live call: nothing. */
+export function toggleVoiceMute(): boolean {
+  if (!activeConversation) return false;
+  const next = !useStore.getState().voiceMicMuted;
+  setVoiceMicMuted(next);
+  vlog("voice mute", { on: next, by: "carl" });
+  return true;
 }
 
 export function setVoiceMicMuted(muted: boolean): void {

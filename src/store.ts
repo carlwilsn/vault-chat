@@ -390,6 +390,8 @@ type State = {
   // The last voice failure (start or mid-session), shown as red waves by the
   // composer's mic until the next start attempt or a successful connect.
   voiceError: string | null;
+  // A plain word about voice that isn't a failure ("Voice moved to iPad": another device took the call over).
+  voiceNotice: string | null;
   // True between mic-click and the ElevenLabs session reporting ready
   // — covers agent provisioning, signed-URL fetch, and the WebRTC
   // handshake. The cockpit shows "Connecting…" during this window.
@@ -667,6 +669,7 @@ export const useStore = create<State>((set) => ({
   voiceCurrentTool: null,
   voiceMicMuted: false,
   voiceError: null,
+  voiceNotice: null,
   viewport: null,
   lastContext: 0,
   busyStartedAt: null,

@@ -18,9 +18,17 @@ const fake = installFakeTauri(vault);
 
 let sessionBody: Record<string, unknown> = {};
 fake.setHandler("vault_box_config", ({ vault: v }) => (v === vault ? { box: "http://127.0.0.1:9", vault: "v" } : null));
-fake.setHandler("box_get_json", async ({ url }) =>
-  String(url).includes("/api/v1/voice/session") ? { status: 200, body: JSON.stringify(sessionBody) } : { status: 200, body: "{}" },
-);
+const updateUrls: string[] = [];
+let updatesBody: Record<string, unknown> | null = null;
+fake.setHandler("box_get_json", async ({ url }) => {
+  if (String(url).includes("/api/v1/voice/session")) return { status: 200, body: JSON.stringify(sessionBody) };
+  if (String(url).includes("/api/v1/voice/updates")) {
+    updateUrls.push(String(url));
+    await new Promise((r) => setTimeout(r, 5));
+    if (updatesBody) return { status: 200, body: JSON.stringify(updatesBody) };
+  }
+  return { status: 200, body: "{}" };
+});
 const boxLines: string[] = [];
 fake.setHandler("box_post_json", async ({ url, body }) => {
   if (String(url).includes("/api/v1/voice/transcript")) boxLines.push(String(JSON.parse(body).text ?? ""));
@@ -407,5 +415,43 @@ test("a mic whose source stopped (muted track, zero level) is re-acquired quietl
   } finally {
     Date.now = realNow;
     level = { input: 0.2, output: 0 };
+  }
+});
+
+// Carl's flow: voice sits muted while he works; he unmutes only to ask.
+test("mute: the SDK's own, toggled by the composer's button and Ctrl+Shift+M (toggleVoiceMute), instant both ways", async () => {
+  assert.equal(voice.toggleVoiceMute(), false, "no call: nothing to mute");
+  const s = await startCall({ conversationToken: "tok_123", signedUrl: "wss://signed" });
+  const calls: boolean[] = [];
+  s.conv.setMicMuted = (m: boolean) => calls.push(m);
+  try {
+    assert.equal(voice.toggleVoiceMute(), true);
+    assert.equal(useStore.getState().voiceMicMuted, true);
+    assert.equal(voice.toggleVoiceMute(), true);
+    assert.equal(useStore.getState().voiceMicMuted, false);
+    assert.deepEqual(calls, [true, false], "the SDK's mute, at once, both ways");
+  } finally {
+    await voice.endElevenLabsSession();
+  }
+});
+
+test("one voice at a time: the box says the call moved — the laptop ends it and says where voice went", async () => {
+  updateUrls.length = 0;
+  const s = await startCall({ conversationToken: "tok_123", signedUrl: "wss://signed", sessionId: "vs-lap-1", cursor: "1:1" });
+  let ended = 0;
+  const realEnd = s.conv.endSession;
+  s.conv.endSession = async () => (ended++, realEnd());
+  try {
+    updatesBody = { updates: [], cursor: "1:1", moved: { to: "board", line: "Voice moved to iPad" } };
+    for (let i = 0; i < 100 && voice.isVoiceSessionActive(); i++) await new Promise((r) => setTimeout(r, 10));
+    for (let i = 0; i < 50 && !useStore.getState().voiceNotice; i++) await new Promise((r) => setTimeout(r, 10));
+    assert.equal(voice.isVoiceSessionActive(), false, "the call ended");
+    assert.equal(ended, 1);
+    assert.equal(useStore.getState().voiceNotice, "Voice moved to iPad");
+    assert.ok(updateUrls.some((u) => u.includes("session=vs-lap-1")), "the poll carried the call's id");
+  } finally {
+    updatesBody = null;
+    useStore.setState({ voiceNotice: null });
+    if (voice.isVoiceSessionActive()) await voice.endElevenLabsSession();
   }
 });

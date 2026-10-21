@@ -77,10 +77,12 @@ export function VoiceTextPanel() {
   useEffect(() => {
     if (!open) return;
     if (!isVoiceSessionActive()) return;
+    // Carl's own mute stays as he left it: the panel unmutes only what it muted.
+    const wasMuted = useStore.getState().voiceMicMuted;
     setVoiceMicMuted(true);
     sendVoiceTypingHint("opened");
     return () => {
-      setVoiceMicMuted(false);
+      if (!wasMuted) setVoiceMicMuted(false);
       setVoiceOutputMuted(false);
     };
   }, [open]);

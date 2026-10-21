@@ -20,7 +20,7 @@ import type { NoteAnchor } from "./notes";
 import { useStore } from "./store";
 import { gitInitIfNeeded } from "./git";
 import { useGlobalAnchorClickHandler } from "./linkNav";
-import { toggleVoice } from "./voice-elevenlabs";
+import { toggleVoice, toggleVoiceMute } from "./voice-elevenlabs";
 import { applyHljsTheme } from "./hljsTheme";
 import {
   ensureVaultSyncLoop,
@@ -427,6 +427,8 @@ export default function App() {
         e.preventDefault();
         toggleVoice();
       }
+      // Ctrl+Shift+M: mute / unmute a live call (the composer's Mute button). No call: the key is left alone.
+      if (e.ctrlKey && e.shiftKey && !e.altKey && e.key.toLowerCase() === "m" && !e.repeat && toggleVoiceMute()) e.preventDefault();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);

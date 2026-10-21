@@ -9,10 +9,18 @@
 // run on the device in front of Carl (src/voicePrompt.ts SCREEN_TOOLS).
 //
 // Routes (http.ts), each with an optional vault:
-//   GET  /api/v1/voice/session    ?convId=&device=            → {conversationToken, signedUrl, systemPrompt, toolNames, convId, cursor, images, …}
-//   POST /api/v1/voice/tool       {name, args, convId, device} → {result, convId?}
-//   POST /api/v1/voice/transcript {convId, role, text, system?, ended?, tool?, images?, clientId?, device?} → {convId}
-//   GET  /api/v1/voice/updates    ?convId=&cursor=&wait=      → {updates: [{id, kind, text, speak}], cursor}
+//   GET  /api/v1/voice/session    ?convId=&device=            → {conversationToken, signedUrl, systemPrompt, toolNames, convId, cursor, images, sessionId, handoff?, …}
+//   POST /api/v1/voice/tool       {name, args, convId, device, sessionId?} → {result, convId?, moved?}
+//   POST /api/v1/voice/transcript {convId, role, text, system?, ended?, tool?, images?, clientId?, device?, sessionId?} → {convId} | 409 {moved}
+//   GET  /api/v1/voice/updates    ?convId=&cursor=&wait=&session= → {updates: [{id, kind, text, speak}], cursor, moved?}
+//
+// One voice at a time (Carl: "can I technically have 2 voices in the same conversation thread? That sounds
+// like an inconsistency"): the box mints every session, so it keeps the one live session. Starting voice on
+// another device hands off, like AirPods: the new session continues the live one's conversation (its prompt
+// is that conversation, so it has the whole context) and the old one is told "moved" through its updates
+// poll — its client ends its call and says "Voice moved to iPad". From then on the box refuses the old
+// session's lines and tools (409 / an error result) and gives it no updates, so the thread has one voice,
+// in order, and only one voice speaks. A client without a session id (an older build) is not refused.
 import { mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fsCommands } from "./commands/fs";
@@ -114,6 +122,60 @@ export function activeVoiceSessions(now = Date.now()): number {
   return n;
 }
 
+// ---------------------------------------------------------------- one voice at a time
+
+export type LiveVoice = { id: string; vault: string; device: VoiceDevice; convId: string | null; at: number; ended: boolean; movedTo: VoiceDevice | null };
+/** Sessions minted on this box (the newest few, for their "moved" answers), and the live one. */
+const voiceSessionsById = new Map<string, LiveVoice>();
+let liveVoice: LiveVoice | null = null;
+
+/** What Carl calls each device. */
+export const deviceLabel = (d: VoiceDevice): string => (d === "board" ? "iPad" : d === "phone" ? "phone" : "laptop");
+/** What the old device shows. */
+export const movedLine = (to: VoiceDevice): string => `Voice moved to ${deviceLabel(to)}`;
+
+/** The live session (minted, not ended, not idle past VOICE_IDLE_MS), or null. */
+export function liveVoiceSession(now = Date.now()): LiveVoice | null {
+  const v = liveVoice;
+  return v && !v.ended && !v.movedTo && now - v.at < VOICE_IDLE_MS ? v : null;
+}
+
+/** A session id the box minted that another session has replaced (null: live, ended, or unknown). */
+function supersededBy(sessionId: unknown): VoiceDevice | null {
+  const id = s(sessionId);
+  return id ? (voiceSessionsById.get(id)?.movedTo ?? null) : null;
+}
+
+/** A new session on `device`: the live one on another device moves here (its conversation with it). */
+function startLiveVoice(vault: string, device: VoiceDevice, convId: string | null): { session: LiveVoice; from: LiveVoice | null } {
+  const prev = liveVoiceSession();
+  const id = `vs-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  // Another device's live call in this vault: its conversation continues here.
+  const from = prev && prev.device !== device && prev.vault === vault ? prev : null;
+  // Any earlier session ends here (the same device's too: a reconnect, a switched chat, a second tab).
+  if (liveVoice && !liveVoice.ended && !liveVoice.movedTo) liveVoice.movedTo = device;
+  const session: LiveVoice = { id, vault, device, convId: from?.convId ?? convId, at: Date.now(), ended: false, movedTo: null };
+  voiceSessionsById.set(id, session);
+  while (voiceSessionsById.size > 50) voiceSessionsById.delete(voiceSessionsById.keys().next().value as string);
+  liveVoice = session;
+  return { session, from };
+}
+
+/** A line, a tool call or a poll from `sessionId`: it is alive (and its conversation is `convId`). */
+function touchSession(sessionId: unknown, convId?: string | null, ended = false): void {
+  const v = voiceSessionsById.get(s(sessionId));
+  if (!v || v.movedTo) return;
+  v.at = Date.now();
+  if (convId) v.convId = convId;
+  if (ended) v.ended = true;
+}
+
+/** [tests] Forget every session. */
+export function resetVoiceSessionsForTests(): void {
+  voiceSessionsById.clear();
+  liveVoice = null;
+}
+
 /** The end-of-session line the clients write ("Voice session ended."). */
 const ENDED_LINE = /^voice session ended\b/i;
 
@@ -150,6 +212,9 @@ export async function voiceTranscript(d: VoiceDeps, b: any): Promise<{ status: n
   // Control tags ("[skip_turn]") and audio tags shape the call, not the transcript; our own [vc:…] messages are not his.
   const text = role === "assistant" && !system ? stripAudioTags(said) : said;
   const ended = b?.ended === true || (system && ENDED_LINE.test(text));
+  // A session another device took over: nothing of it lands (one voice in the thread, in order).
+  const moved = supersededBy(b?.sessionId);
+  if (moved) return { status: 409, body: { error: movedLine(moved), moved: { to: moved, line: movedLine(moved) } } };
   voiceActivity(d.vault, ended);
   if (!text || (role === "user" && !system && isControlLine(text))) return { status: 200, body: { ok: true, convId: s(b?.convId) || null, skipped: true } };
   // The end of a call where nothing was said: no conversation for it.
@@ -173,6 +238,7 @@ export async function voiceTranscript(d: VoiceDeps, b: any): Promise<{ status: n
     const e = voiceLineEntry(role, text, id);
     if (e) appendActivity(d.vault, { ...e, ...(device ? { device } : {}) });
   }
+  touchSession(b?.sessionId, id, ended);
   d.onWrite?.();
   return { status: 200, body: { ok: true, convId: id } };
 }
@@ -214,11 +280,14 @@ function saveTranscriptImages(vault: string, convId: string, images: unknown[]):
 // ---------------------------------------------------------------- the tool
 
 /** POST /api/v1/voice/tool {name, args, convId, device}. Never throws: errors are the result the voice hears. */
-export async function voiceTool(d: VoiceDeps, body: any): Promise<{ result: string; convId?: string }> {
+export async function voiceTool(d: VoiceDeps, body: any): Promise<{ result: string; convId?: string; moved?: { to: VoiceDevice; line: string } }> {
   const name = s(body?.name);
   const args = body?.args ?? body?.arguments ?? body?.parameters ?? {};
   if (!name) return { result: "Error: missing tool name." };
+  const moved = supersededBy(body?.sessionId);
+  if (moved) return { result: `Error: voice moved to Carl's ${deviceLabel(moved)}; this call is over and nothing was done. Say nothing.`, moved: { to: moved, line: movedLine(moved) } };
   voiceActivity(d.vault);
+  touchSession(body?.sessionId, s(body?.convId) || null);
   const a = args && typeof args === "object" ? args : {};
   const device = voiceDevice(body?.device);
   try {
@@ -327,10 +396,21 @@ export function voiceUpdatesSince(d: VoiceDeps, convId: string | null, cur: { at
 }
 
 /** GET /api/v1/voice/updates?convId=&cursor=&wait=: long-polled (≤ 25 s). No cursor: the current one, no updates. */
-export async function voiceUpdates(d: VoiceDeps, q: { convId?: string | null; cursor?: string | null; waitMs?: number; signal?: { closed: boolean } }): Promise<{ updates: VoiceUpdate[]; cursor: string }> {
+export async function voiceUpdates(
+  d: VoiceDeps,
+  q: { convId?: string | null; cursor?: string | null; waitMs?: number; signal?: { closed: boolean }; session?: string | null },
+): Promise<{ updates: VoiceUpdate[]; cursor: string; moved?: { to: VoiceDevice; line: string } }> {
   const now = Date.now();
+  // Another device took this session over: it hears nothing more, and is told so (its client ends the call).
+  const movedNow = () => {
+    const to = supersededBy(q.session);
+    return to ? { to, line: movedLine(to) } : null;
+  };
   const cur = parseCursor(q.cursor);
+  const m0 = movedNow();
+  if (m0) return { updates: [], cursor: s(q.cursor) || cursorOf(now, now), moved: m0 };
   if (!cur) return { updates: [], cursor: cursorOf(now, now) };
+  touchSession(q.session);
   const convId = s(q.convId).trim() || null;
   const deadline = now + Math.max(0, Math.min(Number(q.waitMs) || 0, 25_000));
   voiceActivity(d.vault);
@@ -340,6 +420,8 @@ export async function voiceUpdates(d: VoiceDeps, q: { convId?: string | null; cu
     // The layer reads the activity log, the newest board and the notes: every 2 s, not every look.
     const withYou = Date.now() - lastYou >= 2000;
     if (withYou) lastYou = Date.now();
+    const m = movedNow();
+    if (m) return { updates: [], cursor: cursorOf(cur.at, cur.you), moved: m };
     const r = voiceUpdatesSince(d, convId, cur, { you: withYou });
     if (r.updates.length || Date.now() >= deadline || q.signal?.closed) return { updates: r.updates, cursor: cursorOf(r.at, r.you) };
     cur.at = r.at;
@@ -540,7 +622,15 @@ export async function voiceSession(
       },
     };
   }
-  const id = await attached(d, convId, false);
+  // One voice at a time: a live call on another device moves here, with its conversation.
+  const { session, from } = startLiveVoice(d.vault, device, await attached(d, convId, false));
+  const id = await attached(d, session.convId, false);
+  session.convId = id;
+  if (from && id) {
+    // Said in the thread where it happened (a note: shown, not in the agent's context).
+    await writeNotes(d.vault, id, [{ kind: "notice", text: `Voice moved from the ${deviceLabel(from.device)} to the ${deviceLabel(device)}.`, level: "info", clientId: `voice-move-${session.id}` }]);
+    d.onWrite?.();
+  }
   const systemPrompt = await voicePrompt(d, id, device);
   const cursor = cursorOf(Date.now(), Date.now());
   // Both credentials, minted at once: a WebRTC conversation token (the recommended transport) and a signed URL (WebSocket).
@@ -567,6 +657,9 @@ export async function voiceSession(
       // Where the prompt's paths point (the laptop maps them back for ScrollTo).
       vaultRoot: d.vault,
       onBox: true,
+      // This call's id: its lines, tools and polls carry it, so the box can tell it when another device takes over.
+      sessionId: session.id,
+      ...(from ? { handoff: { from: from.device, convId: id } } : {}),
     },
   };
 }

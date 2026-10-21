@@ -380,7 +380,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
     if ("error" in d) return json(res, 503, d);
     const signal = { closed: false };
     res.on("close", () => (signal.closed = true));
-    return json(res, 200, await voiceUpdates(d, { convId: url.searchParams.get("convId"), cursor: url.searchParams.get("cursor"), waitMs: Number(url.searchParams.get("wait")) || 0, signal }));
+    return json(res, 200, await voiceUpdates(d, { convId: url.searchParams.get("convId"), cursor: url.searchParams.get("cursor"), waitMs: Number(url.searchParams.get("wait")) || 0, signal, session: url.searchParams.get("session") }));
   }
   if (path === "/api/v1/voice/transcript" && method === "POST") {
     const b = await jsonBody(req);

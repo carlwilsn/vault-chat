@@ -2095,15 +2095,17 @@ export function boot(): void {
   // Voice is the front of house of the open chat (D3, server/voice.ts): its one tool that acts, Ask, is a request
   // to that chat's agent, sent after the lines before it (so the agent reads Carl's words first). The phone has no
   // screen tools (the box's prompt says so).
-  function vClientTools(toolNames) { const tools = {}; for (const name of toolNames || []) { tools[name] = async (params) => { try { await vLines; const r = await api("/api/v1/voice/tool", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, args: params || {}, convId: vVoiceConv, device: "phone" }) }); const j = await r.json(); if (j && typeof j.convId === "string" && j.convId) vVoiceConv = j.convId; return typeof j.result === "string" ? j.result : "Error: " + (j.error || r.status) + ". Nothing was done."; } catch (e) { return "Error: the box did not take it (" + String(e) + "). Nothing was done."; } }; } return tools; }
+  function vClientTools(toolNames) { const tools = {}; for (const name of toolNames || []) { tools[name] = async (params) => { try { await vLines; const r = await api("/api/v1/voice/tool", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, args: params || {}, convId: vVoiceConv, device: "phone", ...(vSessionId ? { sessionId: vSessionId } : {}) }) }); const j = await r.json(); if (j && typeof j.convId === "string" && j.convId) vVoiceConv = j.convId; return typeof j.result === "string" ? j.result : "Error: " + (j.error || r.status) + ". Nothing was done."; } catch (e) { return "Error: the box did not take it (" + String(e) + "). Nothing was done."; } }; } return tools; }
   // The call's lines go into the open chat on the box (POST /api/v1/voice/transcript), in order, one at a time;
   // with no chat open, the first line makes one and the rest go on there.
   let vVoiceConv: string | null = null, vLines: Promise<unknown> = Promise.resolve();
+  // This call's id on the box (one voice at a time: its lines, tools and polls carry it; the box says when another device took over).
+  let vSessionId: string | null = null;
   function vSaveLine(role: string, text: string, end = false) {
     vLines = vLines.then(async () => {
       try {
         // `end`: the session is over — the box stops counting it as busy (its updater waits for that); no line is saved when nothing was said.
-        const r = await api("/api/v1/voice/transcript", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ convId: vVoiceConv, role, text, device: "phone", ...(end ? { system: true, ended: true } : {}) }) });
+        const r = await api("/api/v1/voice/transcript", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ convId: vVoiceConv, role, text, device: "phone", ...(vSessionId ? { sessionId: vSessionId } : {}), ...(end ? { system: true, ended: true } : {}) }) });
         const j = await r.json();
         if (j && typeof j.convId === "string" && j.convId && !end) vVoiceConv = j.convId;
       } catch {}
@@ -2124,11 +2126,21 @@ export function boot(): void {
       fetch: async (cur) => {
         await vLines;
         if (!vVoiceConv) { await new Promise((res) => setTimeout(res, 1000)); return { updates: [], cursor: cur || "" }; }
-        const r = await api("/api/v1/voice/updates?convId=" + encodeURIComponent(vVoiceConv) + "&wait=20000" + (cur ? "&cursor=" + encodeURIComponent(cur) : ""));
+        const r = await api("/api/v1/voice/updates?convId=" + encodeURIComponent(vVoiceConv) + "&wait=20000" + (cur ? "&cursor=" + encodeURIComponent(cur) : "") + (vSessionId ? "&session=" + encodeURIComponent(vSessionId) : ""));
         if (!r.ok) throw new Error("updates " + r.status);
         return r.json();
       },
+      // Voice moved to another device (one voice at a time): this call ends now and says where it went.
+      onMoved: (m) => { if (vConv === conv) vMovedAway(m.line); },
     }).start();
+  }
+  function vMovedAway(line: string) {
+    // No end line: the box already said it in the thread ("Voice moved from the phone to the laptop.").
+    vLive = false;
+    const c = vConv;
+    try { if (c) c.endSession(); } catch {}
+    vTeardown();
+    toast(line);
   }
   let vTransport: "webrtc" | "websocket" = "webrtc";
   async function vStart() {
@@ -2153,6 +2165,8 @@ export function boot(): void {
         throw new Error(sessErr || "session not ready");
       }
       if (!cfg) throw new Error("session not ready");
+      vSessionId = cfg.sessionId || null;
+      if (cfg.convId) vVoiceConv = cfg.convId;
       // @ts-ignore — URL import; the browser resolves it at runtime
       const sdk = (await sdkPromise) || (await import("@elevenlabs/client")); const { Conversation } = sdk;
       let timedOut = false, watchdog = 0;
@@ -2199,7 +2213,8 @@ export function boot(): void {
     try { vMicCtx = vMicCtx || new (window.AudioContext || window.webkitAudioContext!)(); if (vMicCtx.state === "suspended") vMicCtx.resume().catch(() => {}); const b = vMicCtx.createBuffer(1, 1, 22050); const s = vMicCtx.createBufferSource(); s.buffer = b; s.connect(vMicCtx.destination); s.start(0); } catch {}
     hideKb(); document.body.classList.add("voice"); document.body.classList.remove("voicemin"); vStart();
   };
-  function vSetMute(m) { vMuted = m; document.body.classList.toggle("vmicmuted", m); const vh = $("vhint"); if (vh) vh.textContent = m ? "Muted" : ""; if (vConv) try { vConv.setMicMuted(m); } catch {} }
+  // Mute is the SDK's own (no audio leaves the phone; the voice can still speak a result), and plain to see.
+  function vSetMute(m) { vMuted = m; document.body.classList.toggle("vmicmuted", m); const vh = $("vhint"); if (vh) vh.textContent = m ? "Muted — tap the mic to talk" : ""; const mb = $("vMuteBtn"); if (mb) { mb.setAttribute("aria-pressed", String(m)); mb.setAttribute("aria-label", m ? "unmute mic" : "mute mic"); } if (vConv) try { vConv.setMicMuted(m); } catch {} }
   $("vMuteBtn").onclick = () => vSetMute(!vMuted);
   $("vEndBtn").onclick = vStop;
   $("vMinBtn").onclick = () => { if (vLive || vConnecting) { document.body.classList.add("voicemin"); document.body.classList.remove("voice"); } else vStop(); };

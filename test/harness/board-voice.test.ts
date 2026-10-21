@@ -399,7 +399,8 @@ test("the box's updates in the live call: the agent's answer is spoken (a user m
   };
   const v = new VoiceController({ api: box.api, sdk: async () => sdk, mic });
   await v.start();
-  await wait(80);
+  // An answer waits until Carl's mic has been quiet a second (never over his words).
+  await wait(1_300);
   assert.deepEqual(sent, ["[vc:result] The agent answered: saved."]);
   assert.deepEqual(
     ctx.filter((t) => t.startsWith("[vc:")),
@@ -416,4 +417,67 @@ test("the box's updates in the live call: the agent's answer is spoken (a user m
     [["assistant", "Saved it."]],
   );
   await v.end();
+});
+
+// One voice at a time (server/voice.ts): voice started on another device ends this call at once.
+test("voice moved to another device: the call ends at once, no end line, the pill says where it went; lines and tools carried this call's id", async () => {
+  let moved = false;
+  const box = fakeBox({
+    voiceSession: async (id) => ({ signedUrl: "wss://fake", systemPrompt: "p", toolNames: ["Ask"], convId: id, cursor: "1:1", sessionId: "vs-board-1" }),
+    voiceUpdates: async (_id, cursor, session) => {
+      assert.equal(session, "vs-board-1", "the poll carries the call's id");
+      await wait(10);
+      return moved ? { cursor: cursor ?? "", updates: [], moved: { to: "laptop", line: "Voice moved to laptop" } } : { cursor: cursor ?? "", updates: [] };
+    },
+  });
+  const ids: (string | undefined)[] = [];
+  const realT = box.api.voiceTranscript;
+  box.api.voiceTranscript = async (b) => (ids.push(b.sessionId), realT(b));
+  const f = fakeSdk();
+  const closes: VoiceClose[] = [];
+  const v = new VoiceController({ api: box.api, sdk: async () => f.sdk, mic, onClose: (c) => closes.push(c) });
+  await v.start();
+  f.opts().onMessage({ role: "user", message: "what's the next line" });
+  await wait(20);
+  assert.deepEqual(ids, ["vs-board-1"]);
+  moved = true;
+  await wait(60);
+  assert.equal(f.log.ended, 1, "the SDK's session ended");
+  assert.equal(v.state.phase, "error");
+  assert.equal(v.state.error, "Voice moved to laptop.");
+  assert.equal(closes.at(-1)?.by, "moved");
+  assert.ok(!box.calls.lines.some((l) => l.ended), "no end line: the box said it in the thread");
+});
+
+test("mute is the SDK's own and instant; a result still reaches the call while muted", async () => {
+  const sent: string[] = [];
+  let polls = 0;
+  const box = fakeBox({
+    voiceSession: async (id) => ({ signedUrl: "wss://fake", systemPrompt: "p", toolNames: ["Ask"], convId: id, cursor: "1:1", sessionId: "vs-2" }),
+    voiceUpdates: async (_id, cursor) => {
+      polls++;
+      await wait(15);
+      return polls === 2 ? { cursor: "2:2", updates: [{ id: "r1", kind: "result", speak: true, text: "[vc:result] The agent answered: 91." }] } : { cursor: cursor ?? "", updates: [] };
+    },
+  });
+  const f = fakeSdk();
+  const conv = await (async () => {
+    const v = new VoiceController({ api: box.api, sdk: async () => ({ Conversation: { startSession: async (o: SessionOpts) => {
+      const c = await f.sdk.Conversation.startSession(o);
+      (c as VoiceConv).sendUserMessage = (t: string) => sent.push(t);
+      // A loud room: the meter says someone talks, but he is muted, so nothing waits on it.
+      (c as VoiceConv).getInputVolume = () => 0.5;
+      return c;
+    } } }), mic });
+    await v.start();
+    return v;
+  })();
+  conv.setMuted(true);
+  assert.equal(f.log.muted, true, "the SDK's mute: no audio is sent");
+  assert.equal(conv.state.muted, true);
+  await wait(1_400);
+  assert.deepEqual(sent, ["[vc:result] The agent answered: 91."], "the voice still speaks a result while he is muted");
+  conv.setMuted(false);
+  assert.equal(f.log.muted, false, "unmuted at once");
+  await conv.end();
 });

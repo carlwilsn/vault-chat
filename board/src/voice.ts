@@ -79,10 +79,10 @@ export type BoardVoiceConfig = VoiceConfig & { convId?: string | null; cursor?: 
 export type VoiceApi = {
   listChats(): Promise<ChatRow[]>;
   voiceSession(convId: string | null): Promise<BoardVoiceConfig>;
-  voiceTool(b: { name: string; args: unknown; convId: string | null; device: "board" }): Promise<{ result?: string; error?: string; convId?: string | null }>;
-  voiceTranscript(b: { convId: string | null; role: string; text: string; system?: boolean; ended?: boolean; device: "board" }): Promise<{ convId?: string | null }>;
-  /** One long poll of the call's updates (none: the call gets no updates). */
-  voiceUpdates?(convId: string, cursor: string | null): Promise<UpdatesPage>;
+  voiceTool(b: { name: string; args: unknown; convId: string | null; device: "board"; sessionId?: string }): Promise<{ result?: string; error?: string; convId?: string | null }>;
+  voiceTranscript(b: { convId: string | null; role: string; text: string; system?: boolean; ended?: boolean; device: "board"; sessionId?: string }): Promise<{ convId?: string | null }>;
+  /** One long poll of the call's updates (none: the call gets no updates); `session`: this call's id on the box. */
+  voiceUpdates?(convId: string, cursor: string | null, session?: string | null): Promise<UpdatesPage>;
 };
 
 /** What the board tells voice (view.ts). */
@@ -148,7 +148,7 @@ export function micError(e: unknown): string {
 }
 
 /** Why a session ended (the board's log "voice.close"): who closed it, the SDK's reason, how long it was live. */
-export type VoiceClose = { by: "mic" | "pill" | "switch" | "remote"; reason?: string; message?: string; code?: number; closeReason?: string; transport: "webrtc" | "websocket" | null; secs: number; conv: string | null };
+export type VoiceClose = { by: "mic" | "pill" | "switch" | "remote" | "moved"; reason?: string; message?: string; code?: number; closeReason?: string; transport: "webrtc" | "websocket" | null; secs: number; conv: string | null };
 
 export type VoiceDeps = {
   api: VoiceApi;
@@ -184,6 +184,8 @@ export class VoiceController {
   private lines: Promise<unknown> = Promise.resolve();
   private gen = 0;
   private updates: VoiceUpdates | null = null;
+  /** This call's id on the box (one voice at a time: its lines, tools and polls carry it). */
+  private sessionId: string | null = null;
   /** Updates and pictures sent this session (for the preview and the tests). */
   readonly sent = { updates: [] as string[], images: 0, looks: 0 };
 
@@ -289,7 +291,13 @@ export class VoiceController {
     }
     if (!cfg) return this.fail(gen, why ? `Voice couldn't start: ${why}` : "Voice couldn't start.");
     // The call is that conversation's voice: its lines and requests go into it (a new one when there is none yet).
+    // A hand-off (voice was live on another device): the box attached the call to that conversation.
     this.convId = cfg.convId ?? chat?.id ?? null;
+    this.sessionId = cfg.sessionId ?? null;
+    if (cfg.handoff?.convId && this.state.chat?.id !== cfg.handoff.convId) {
+      const row = chats.find((c) => c.id === cfg!.handoff!.convId);
+      this.set({ chat: row ?? { id: cfg.handoff.convId, title: "Voice", lastActivityAt: Date.now(), source: "voice" } });
+    }
     this.lastText = "";
     this.pusher.reset();
     try {
@@ -398,7 +406,10 @@ export class VoiceController {
           await new Promise((r) => setTimeout(r, 1000));
           return { updates: [], cursor: cur ?? "" };
         }
-        return get(this.convId, cur);
+        return get(this.convId, cur, this.sessionId);
+      },
+      onMoved: (m) => {
+        if (this.conv === conv) this.movedAway(m.line);
       },
     }).start();
   }
@@ -554,7 +565,7 @@ export class VoiceController {
         try {
           // A request reaches the agent after Carl's words before it (the lines are saved in order).
           await this.lines;
-          const j = await this.d.api.voiceTool({ name, args: params ?? {}, convId: this.convId, device: "board" });
+          const j = await this.d.api.voiceTool({ name, args: params ?? {}, convId: this.convId, device: "board", ...this.sid() });
           if (typeof j.convId === "string" && j.convId) this.adopt(j.convId);
           return typeof j.result === "string" ? j.result : `Error: ${j.error ?? "no result"}`;
         } catch (e) {
@@ -563,6 +574,27 @@ export class VoiceController {
       };
     }
     return tools;
+  }
+
+  private sid(): { sessionId?: string } {
+    return this.sessionId ? { sessionId: this.sessionId } : {};
+  }
+
+  /** Voice moved to another device (one voice at a time): this call ends at once and the pill says where it went. */
+  private movedAway(line: string): void {
+    if (this.state.phase !== "live" && this.state.phase !== "connecting") return;
+    const c = this.conv;
+    this.report("moved");
+    this.gen++;
+    this.updates?.stop();
+    this.updates = null;
+    this.conv = null;
+    void c?.endSession().catch(() => {});
+    if (this.debounceT) clearTimeout(this.debounceT);
+    this.debounceT = null;
+    this.dropMic();
+    // No end line: the box already said it in the thread ("Voice moved from the iPad to the laptop.").
+    this.set({ phase: "error", error: `${line}.`, speaking: false, muted: false });
   }
 
   /** The conversation the box made for this call (a new chat): its lines and requests go on there. */
@@ -577,7 +609,7 @@ export class VoiceController {
   private saveLine(role: string, text: string, end = false): void {
     this.lines = this.lines.then(async () => {
       try {
-        const j = await this.d.api.voiceTranscript({ convId: this.convId, role, text, device: "board", ...(end ? { system: true, ended: true } : {}) });
+        const j = await this.d.api.voiceTranscript({ convId: this.convId, role, text, device: "board", ...this.sid(), ...(end ? { system: true, ended: true } : {}) });
         if (j && typeof j.convId === "string" && j.convId && !end) this.adopt(j.convId);
       } catch {
         /* the box is away: the line is lost, the call goes on */

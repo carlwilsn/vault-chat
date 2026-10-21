@@ -15,7 +15,9 @@ import type { QuietGate } from "./voiceQuiet";
 import { VoiceImagePusher, sendFilesMessage, type PushResult, type VoiceImageSink } from "./voiceImages";
 
 export type VoiceUpdate = { id: string; kind: string; text: string; speak: boolean };
-export type UpdatesPage = { updates: VoiceUpdate[]; cursor: string };
+/** Another device took this call over (server/voice.ts, one voice at a time): `line` is what this device shows. */
+export type VoiceMoved = { to: string; line: string };
+export type UpdatesPage = { updates: VoiceUpdate[]; cursor: string; moved?: VoiceMoved | null };
 /** As much of the SDK's conversation as an update needs. */
 export type UpdateConv = { sendUserMessage?(text: string): void; sendContextualUpdate(text: string, o?: { contextId?: string }): void };
 
@@ -38,6 +40,8 @@ export class VoiceUpdates {
       userSpeaking?: () => boolean;
       quietMs?: number;
       pollMs?: number;
+      /** The box says voice moved to another device: the loop stops, the caller ends its call and says `line`. */
+      onMoved?: (m: VoiceMoved) => void;
       log?: (ev: string, data: Record<string, unknown>) => void;
     },
   ) {}
@@ -58,6 +62,12 @@ export class VoiceUpdates {
         const page = await this.o.fetch(cursor);
         if (this.stopped) return;
         cursor = page.cursor || cursor;
+        if (page.moved) {
+          this.stopped = true;
+          this.o.log?.("voice moved", { to: page.moved.to });
+          this.o.onMoved?.(page.moved);
+          return;
+        }
         for (const u of page.updates ?? []) this.deliver(u);
       } catch (e) {
         this.o.log?.("voice updates", { error: String((e as Error)?.message ?? e).slice(0, 200) });

@@ -1,7 +1,10 @@
 // The board's voice on screen: the mic button (view.ts puts it in the top-right controls) starts a
 // call; while one is on, the button steps aside and one compact pill under the controls is the call:
 // live waves, the chat it continues (small; tap: the recent chats, to switch), mute, and the one end
-// button. A start that fails shows the mic red and the pill one plain line, like the laptop's red bars. The pill lives on the page, not in a board, so a call goes on
+// button. Mute is the big, plain toggle (Carl lets voice sit muted while he works and unmutes to ask):
+// muted, it is red with a slashed mic and says "Muted"; the SDK's own mute, so no audio leaves the iPad
+// while the voice can still speak a result. Held down while muted, it talks while held (push to talk).
+// Voice taken over by another device says where it went ("Voice moved to laptop."), not in red. A start that fails shows the mic red and the pill one plain line, like the laptop's red bars. The pill lives on the page, not in a board, so a call goes on
 // while Carl changes boards.
 //
 // Its buttons follow the chrome's rule (chrome.ts): the Pencil, a finger or the mouse presses a
@@ -109,6 +112,10 @@ export function voiceButton(btn: HTMLElement): () => void {
 }
 
 const IB = "grid h-8 w-8 shrink-0 place-items-center rounded-full transition active:scale-95";
+/** How long the mute button is held (while muted) before it talks: shorter is a tap (unmute). */
+const HOLD_MS = 300;
+/** Another device took the call over: said plainly, not as a failure. */
+const isMoved = (s: VoiceState) => s.phase === "error" && /^Voice moved to /.test(s.error);
 
 let mounted = false;
 /** The pill, once per page. */
@@ -140,9 +147,9 @@ export function mountVoicePill(): void {
     }
     const waves = `<div class="waves flex h-4 shrink-0 items-center gap-[2.5px] px-0.5" aria-hidden="true">${'<i class="block h-full w-[3px] origin-center rounded-full"></i>'.repeat(BARS)}</div>`;
     if (s.phase === "error") {
-      root.innerHTML = `<div class="pointer-events-auto material hairline shadow-float flex min-h-10 max-w-[460px] items-center gap-2 rounded-[20px] py-1 pl-3 pr-1 animate-pop-in" role="alert" data-voice="error">
+      root.innerHTML = `<div class="pointer-events-auto material hairline shadow-float flex min-h-10 max-w-[460px] items-center gap-2 rounded-[20px] py-1 pl-3 pr-1 animate-pop-in" role="${isMoved(s) ? "status" : "alert"}" data-voice="${isMoved(s) ? "moved" : "error"}">
         ${waves}
-        <span class="v-reason min-w-0 text-footnote font-medium leading-[17px] text-[rgb(var(--sys-red))]"></span>
+        <span class="v-reason min-w-0 text-footnote font-medium leading-[17px] ${isMoved(s) ? "text-sys-label/80" : "text-[rgb(var(--sys-red))]"}"></span>
         <button class="${IB} text-sys-label/60 active:bg-sys-fill/20" data-v="dismiss" aria-label="Close">${icon("x", 16)}</button>
       </div>`;
     } else {
@@ -156,7 +163,7 @@ export function mountVoicePill(): void {
       root.innerHTML = `<div class="pointer-events-auto material hairline shadow-float flex h-10 items-center gap-0.5 rounded-full pl-3 pr-1 animate-pop-in" data-voice="${s.phase}">
           ${waves}
           <button class="ml-1 flex h-8 min-w-0 max-w-[180px] items-center gap-0.5 rounded-full px-1.5 text-caption font-medium text-sys-label/70 transition active:bg-sys-fill/20 aria-expanded:bg-sys-fill/15" data-v="chats" aria-expanded="${chatsOpen}" aria-label="Chat"><span class="v-title truncate"></span><span class="shrink-0 opacity-60">${icon("caret-down", 12)}</span></button>
-          <button class="v-mute ${IB} text-sys-label/80 active:bg-sys-fill/20 aria-pressed:bg-sys-label/10 aria-pressed:text-[rgb(var(--sys-red))]" data-v="mute" aria-pressed="false" aria-label="Mute">${icon("microphone", 18)}</button>
+          <button class="v-mute flex h-8 shrink-0 items-center gap-1 rounded-full px-2.5 text-footnote font-semibold transition active:scale-95" data-v="mute" aria-pressed="false" aria-label="Mute"></button>
           <button class="${IB} bg-sys-red text-white shadow-sm active:bg-sys-red/80" data-v="end" aria-label="End call">${icon("phone-disconnect", 18, "fill")}</button>
         </div>${list}`;
     }
@@ -169,13 +176,19 @@ export function mountVoicePill(): void {
     if (reason) reason.textContent = s.error;
     const title = root.querySelector(".v-title");
     if (title) title.textContent = s.phase === "connecting" ? (s.chat ? `Connecting · ${s.chat.title}` : "Connecting…") : (s.chat?.title ?? "New chat");
-    const mute = root.querySelector(".v-mute");
+    const mute = root.querySelector<HTMLElement>(".v-mute");
     if (mute) {
       mute.setAttribute("aria-pressed", String(s.muted));
       mute.setAttribute("aria-label", s.muted ? "Unmute" : "Mute");
-      mute.innerHTML = s.muted ? icon("microphone-slash", 18, "fill") : icon("microphone", 18);
+      mute.dataset.muted = String(s.muted);
+      // Muted: unmistakable (solid red, a slashed mic, the word). Live: the mic and "Mute".
+      mute.classList.toggle("bg-[rgb(var(--sys-red))]", s.muted);
+      mute.classList.toggle("text-white", s.muted);
+      mute.classList.toggle("bg-sys-fill/15", !s.muted);
+      mute.classList.toggle("text-sys-label/85", !s.muted);
+      mute.innerHTML = s.muted ? `${icon("microphone-slash", 18, "fill")}<span>Muted</span>` : `${icon("microphone", 18)}<span>Mute</span>`;
     }
-    const tone = s.phase === "error" ? "bg-[rgb(var(--sys-red))]" : s.speaking ? "bg-sys-blue" : s.muted ? "bg-sys-label/25" : "bg-sys-label/70";
+    const tone = s.phase === "error" ? (isMoved(s) ? "bg-sys-label/25" : "bg-[rgb(var(--sys-red))]") : s.speaking ? "bg-sys-blue" : s.muted ? "bg-sys-label/25" : "bg-sys-label/70";
     for (const b of bars) b.className = `block h-full w-[3px] origin-center rounded-full ${tone}${s.phase === "connecting" ? " v-wait" : ""}`;
     const list = root.querySelector(".v-chats");
     if (list) {
@@ -251,6 +264,36 @@ export function mountVoicePill(): void {
     const type = e.type === "pointerdown" ? "down" : e.type === "pointerup" ? "up" : "cancel";
     routeChrome(taps, { type, id: e.pointerId, x: e.clientX, y: e.clientY, t: performance.now() }, false, () => btnAt(type === "down" ? e.target : document.elementFromPoint(e.clientX, e.clientY)));
   };
+  // Push to talk: the mute button held down while muted talks while held (the tap after it is not a toggle).
+  let hold: { id: number; timer: ReturnType<typeof setTimeout>; talking: boolean } | null = null;
+  let dropMuteTap = false;
+  root.addEventListener(
+    "pointerdown",
+    (e) => {
+      dropMuteTap = false;
+      const b = btnAt(e.target);
+      if (!b || b.dataset.v !== "mute" || !voice.state.muted || voice.state.phase !== "live") return;
+      const h = { id: e.pointerId, talking: false, timer: setTimeout(() => {
+        h.talking = true;
+        voice.setMuted(false);
+        blog("voice.ptt", { on: true });
+      }, HOLD_MS) };
+      hold = h;
+    },
+    true,
+  );
+  const release = (e: Event) => {
+    const h = hold;
+    if (!h || (e as PointerEvent).pointerId !== h.id) return;
+    hold = null;
+    clearTimeout(h.timer);
+    if (!h.talking) return;
+    dropMuteTap = true;
+    voice.setMuted(true);
+    blog("voice.ptt", { on: false });
+  };
+  root.addEventListener("pointerup", release, true);
+  root.addEventListener("pointercancel", release, true);
   for (const t of ["pointerdown", "pointerup", "pointercancel"]) root.addEventListener(t, (e) => route(e as PointerEvent));
   root.addEventListener("click", (e) => {
     if (!synth && e.isTrusted && !isField(e.target) && !taps.click(performance.now())) {
@@ -262,7 +305,10 @@ export function mountVoicePill(): void {
     if (!b) return;
     const v = b.dataset.v;
     if (v === "end") void voice.end("pill");
-    else if (v === "mute") voice.setMuted(!voice.state.muted);
+    else if (v === "mute") {
+      if (dropMuteTap) dropMuteTap = false;
+      else voice.setMuted(!voice.state.muted);
+    }
     else if (v === "dismiss") voice.dismiss();
     else if (v === "chats") {
       chatsOpen = !chatsOpen;

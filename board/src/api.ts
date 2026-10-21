@@ -114,7 +114,7 @@ export async function watch(fn: (ev: any) => void): Promise<void> {
 export type ChatRow = { id: string; title: string; lastActivityAt: number; source: string };
 export const listChats = () => call<{ conversations: ChatRow[] }>("/conversations").then((r) => r.conversations ?? []);
 /** A signed ElevenLabs session for the box's board voice agent, its prompt built from `convId`'s pi session (server/voice.ts). */
-export type VoiceConfig = { signedUrl: string | null; conversationToken?: string | null; voiceId?: string; systemPrompt?: string; dynamicVariables?: Record<string, string>; toolNames?: string[]; convId?: string | null; cursor?: string | null; images?: { mime: string; dataBase64: string }[] };
+export type VoiceConfig = { signedUrl: string | null; conversationToken?: string | null; voiceId?: string; systemPrompt?: string; dynamicVariables?: Record<string, string>; toolNames?: string[]; convId?: string | null; cursor?: string | null; images?: { mime: string; dataBase64: string }[]; sessionId?: string | null; handoff?: { from: string; convId: string | null } | null };
 export const voiceSession = (convId: string | null) => call<VoiceConfig>(`/api/v1/voice/session?device=board${convId ? `&convId=${enc(convId)}` : ""}`);
 /** Voice's one tool that acts (Ask: a request to the conversation's agent), run on the box. */
 export const voiceTool = (body: { name: string; args: unknown; convId: string | null; device: "board" }) =>
@@ -123,5 +123,7 @@ export const voiceTool = (body: { name: string; args: unknown; convId: string | 
 export const voiceTranscript = (body: { convId: string | null; role: string; text: string; system?: boolean; ended?: boolean; device: "board" }) =>
   call<{ convId?: string | null }>("/api/v1/voice/transcript", { method: "POST", body: JSON.stringify(body) });
 /** One long poll of the live call's updates: the agent's answers, what Carl did elsewhere. */
-export const voiceUpdates = (convId: string, cursor: string | null) =>
-  call<{ updates: { id: string; kind: string; text: string; speak: boolean }[]; cursor: string }>(`/api/v1/voice/updates?convId=${enc(convId)}&wait=20000${cursor ? `&cursor=${enc(cursor)}` : ""}`);
+export const voiceUpdates = (convId: string, cursor: string | null, session?: string | null) =>
+  call<{ updates: { id: string; kind: string; text: string; speak: boolean }[]; cursor: string; moved?: { to: string; line: string } | null }>(
+    `/api/v1/voice/updates?convId=${enc(convId)}&wait=20000${cursor ? `&cursor=${enc(cursor)}` : ""}${session ? `&session=${enc(session)}` : ""}`,
+  );

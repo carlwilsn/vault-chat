@@ -34,9 +34,10 @@ type Post = (link: Link, path: string, payload: Record<string, unknown>) => Prom
 export type BoxVoice = { link: Link; vault: string; tool: (name: string, args: unknown) => Promise<string> };
 
 /** The remote runner for one link (its tools run in the conversation `convId()` names). */
-export function voiceToolVia(link: Link, vault: string, post: Post = boxPost, convId: () => string | null = () => null) {
+export function voiceToolVia(link: Link, vault: string, post: Post = boxPost, convId: () => string | null = () => null, sessionId: () => string | null = () => null) {
   return async (name: string, args: unknown): Promise<string> => {
-    const r = await post(link, "/api/v1/voice/tool", { name, args: relativeArgs(args, vault), convId: convId(), device: "laptop" });
+    const sid = sessionId();
+    const r = await post(link, "/api/v1/voice/tool", { name, args: relativeArgs(args, vault), convId: convId(), device: "laptop", ...(sid ? { sessionId: sid } : {}) });
     if (!r.ok) return `Error: the box did not run ${name} (${r.error ?? "unreachable"}).`;
     return typeof r.data?.result === "string" ? r.data.result : JSON.stringify(r.data ?? {});
   };
@@ -56,11 +57,14 @@ export async function boxVoiceUpdates(
   convId: string,
   cursor: string | null,
   get: (link: Link, path: string, timeoutMs?: number) => Promise<any> = boxGet,
-): Promise<{ updates: { id: string; kind: string; text: string; speak: boolean }[]; cursor: string }> {
+  sessionId: string | null = null,
+): Promise<{ updates: { id: string; kind: string; text: string; speak: boolean }[]; cursor: string; moved?: { to: string; line: string } | null }> {
   const q = new URLSearchParams({ convId, wait: "20000" });
   if (cursor) q.set("cursor", cursor);
+  if (sessionId) q.set("session", sessionId);
   const r = await get(link, `/api/v1/voice/updates?${q}`, 30_000);
-  return { updates: Array.isArray(r?.updates) ? r.updates : [], cursor: typeof r?.cursor === "string" ? r.cursor : (cursor ?? "") };
+  const moved = r?.moved && typeof r.moved.line === "string" ? { to: String(r.moved.to ?? ""), line: r.moved.line as string } : null;
+  return { updates: Array.isArray(r?.updates) ? r.updates : [], cursor: typeof r?.cursor === "string" ? r.cursor : (cursor ?? ""), moved };
 }
 
 /** The remote runner when `vault` runs on a box, else null (tools run here). */
@@ -80,6 +84,11 @@ export type BoxVoiceSession = {
   dynamicVariables?: Record<string, string>;
   /** Where the call's updates start (GET /api/v1/voice/updates). */
   cursor?: string | null;
+  /** This call's id on the box (one voice at a time: its lines, tools and polls carry it). */
+  sessionId?: string | null;
+  /** The conversation the box attached the call to (a hand-off: the one voice was live in on another device). */
+  convId?: string | null;
+  handoff?: { from: string; convId: string | null } | null;
 };
 
 /** The box's session for this vault. `unreachable`: the box did not answer
@@ -119,7 +128,7 @@ export async function boxVoiceSession(
 /** Save a call's lines on the box, in order, into the conversation voice is attached to (`convId`: the box makes
  * it under this id when it is a new chat). `done()` resolves once every line so far is saved (Ask waits on it, so
  * the agent reads Carl's words before his request). */
-export function voiceTranscriptMirror(b: BoxVoice, convId: string, post: Post = boxPost) {
+export function voiceTranscriptMirror(b: BoxVoice, convId: string, post: Post = boxPost, sessionId: string | null = null) {
   const id = convId;
   let chain: Promise<unknown> = Promise.resolve();
   const push = (m: ChatMessage): Promise<unknown> => {
@@ -140,6 +149,7 @@ export function voiceTranscriptMirror(b: BoxVoice, convId: string, post: Post = 
       await post(b.link, "/api/v1/voice/transcript", {
         convId: id,
         device: "laptop",
+        ...(sessionId ? { sessionId } : {}),
         role: m.role === "user" ? "user" : "assistant",
         text,
         clientId,

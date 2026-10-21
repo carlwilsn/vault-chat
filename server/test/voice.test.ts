@@ -6,7 +6,7 @@
 // elsewhere come back through the updates; and the session is minted with the
 // box's ElevenLabs key, one agent per device with that device's tools —
 // ElevenLabs faked, no request leaves the process.
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import { EventEmitter } from "node:events";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -437,6 +437,8 @@ describe("GET /api/v1/voice/updates: the live call hears what happened, and only
 });
 
 describe("GET /api/v1/voice/session (ElevenLabs faked)", () => {
+  // Each start here is a fresh call (no other device's call live: that hand-off is tested on its own, below).
+  beforeEach(() => voice.resetVoiceSessionsForTests());
   const fake = (calls: { url: string; method: string; body: any; key: string | null }[], agent = "agent_fake") => {
     const real = globalThis.fetch;
     globalThis.fetch = (async (input: any, init?: any) => {
@@ -633,5 +635,119 @@ describe("a live voice session keeps the box busy (the updater waits on busy.run
     expect(voice.activeVoiceSessions()).toBe(1);
     await voice.voiceTranscript(deps, { role: "assistant", text: "x", ended: true });
     expect(voice.activeVoiceSessions()).toBe(0);
+  });
+});
+
+// Carl: "can I technically have 2 voices in the same conversation thread? That sounds like an inconsistency."
+describe("one voice at a time: starting voice on another device hands off (ElevenLabs faked)", () => {
+  const fakeEl = () => {
+    const real = globalThis.fetch;
+    globalThis.fetch = (async (input: any, init?: any) => {
+      const url = String(typeof input === "string" ? input : input.url);
+      if (!url.startsWith("https://api.elevenlabs.io/")) return real(input, init);
+      if (url.includes("/convai/agents/create")) return new Response(JSON.stringify({ agent_id: "agent_handoff" }), { status: 200 });
+      if (url.includes("/get_signed_url")) return new Response(JSON.stringify({ signed_url: "wss://fake.elevenlabs/x" }), { status: 200 });
+      if (url.includes("/conversation/token")) return new Response(JSON.stringify({ token: "fake-webrtc" }), { status: 200 });
+      return new Response("{}", { status: 404 });
+    }) as typeof fetch;
+    return () => (globalThis.fetch = real);
+  };
+
+  it("the second device's start ends the first: one thread, its lines in order, and only the live call hears or speaks", async () => {
+    const restore = fakeEl();
+    try {
+      voice.resetVoiceSessionsForTests();
+      store.setState({ serviceKeys: { elevenlabs: "el-canary-key" } });
+      const chat = await typed("Let's go over problem 3 of the set.", "Sure: problem 3, the separable ODE.");
+      const lap = await voice.voiceSession(chat, deps, { device: "laptop" });
+      expect(lap.status).toBe(200);
+      const sid1 = String(lap.body.sessionId);
+      expect(sid1).toMatch(/^vs-/);
+      expect(lap.body.handoff).toBeUndefined();
+      await voice.voiceTranscript(deps, { convId: chat, role: "user", text: "What's the first step?", device: "laptop", sessionId: sid1 });
+      await voice.voiceTranscript(deps, { convId: chat, role: "assistant", text: "Separate the variables.", device: "laptop", sessionId: sid1 });
+      // The laptop's call is waiting on its updates when Carl starts voice on the iPad (another chat picked there).
+      const t0 = Date.now();
+      const laptopPoll = voice.voiceUpdates(deps, { convId: chat, cursor: String(lap.body.cursor), waitMs: 15_000, session: sid1 });
+      const other = await typed("A different chat on the iPad.", "Okay.");
+      const pad = await voice.voiceSession(other, deps, { device: "board" });
+      expect(pad.status).toBe(200);
+      const sid2 = String(pad.body.sessionId);
+      expect(sid2).not.toBe(sid1);
+      // It continues the live conversation, with its full context.
+      expect(pad.body.convId).toBe(chat);
+      expect(pad.body.handoff).toEqual({ from: "laptop", convId: chat });
+      expect(String(pad.body.systemPrompt)).toContain("Separate the variables.");
+      expect(String(pad.body.systemPrompt)).toContain("What's the first step?");
+      // The laptop is told at once, and ends its call.
+      const moved = await laptopPoll;
+      expect(moved.moved).toEqual({ to: "board", line: "Voice moved to iPad" });
+      expect(moved.updates).toEqual([]);
+      expect(Date.now() - t0).toBeLessThan(5_000);
+      // Whatever the old call still sends is refused: no second voice in the thread.
+      const late = await voice.voiceTranscript(deps, { convId: chat, role: "assistant", text: "A late line from the laptop.", device: "laptop", sessionId: sid1 });
+      expect(late.status).toBe(409);
+      expect(late.body.moved).toEqual({ to: "board", line: "Voice moved to iPad" });
+      const n = backend.turns.length;
+      const tool = await voice.voiceTool(deps, { name: "Ask", args: { request: "do it from the laptop" }, convId: chat, device: "laptop", sessionId: sid1 });
+      expect(tool.result).toMatch(/voice moved to Carl's iPad; this call is over and nothing was done/);
+      expect(backend.turns.length).toBe(n);
+      // Its end line does not end the live call's hold on the box.
+      await voice.voiceTranscript(deps, { convId: chat, role: "assistant", text: "Voice session ended.", system: true, ended: true, device: "laptop", sessionId: sid1 });
+      expect(voice.liveVoiceSession()?.id).toBe(sid2);
+      expect(voice.activeVoiceSessions()).toBeGreaterThan(0);
+      // The iPad's lines go on in the same thread, after the laptop's, in order.
+      await voice.voiceTranscript(deps, { convId: chat, role: "user", text: "And the second step?", device: "board", sessionId: sid2 });
+      expect(voiceEntries(chat).map((e) => e.content)).toEqual([
+        "[voice call] Carl said: What's the first step?",
+        "[voice call] You said to Carl (spoken by your voice): Separate the variables.",
+        "[voice call] Carl said: And the second step?",
+      ]);
+      // The thread says where voice went (a note, shown in the chat).
+      const msgs = JSON.stringify((await convs.readConv(vault, chat))!.messages);
+      expect(msgs).toContain("Voice moved from the laptop to the iPad.");
+      expect(msgs).not.toContain("A late line from the laptop.");
+      // No double speaking: the agent's answer to an iPad request reaches only the iPad's call.
+      const cur2 = String(pad.body.cursor);
+      const ask = await voice.voiceTool(deps, { name: "Ask", args: { request: "check step two" }, convId: chat, device: "board", sessionId: sid2 });
+      expect(ask.result).toMatch(/\[vc:result\]/);
+      await until(() => backend.turns.length > n);
+      backend.reply("Step two: integrate both sides.");
+      await idle(chat);
+      const padGot = await voice.voiceUpdates(deps, { convId: chat, cursor: cur2, waitMs: 3000, session: sid2 });
+      expect(padGot.updates.filter((u) => u.speak).map((u) => u.kind)).toEqual(["result"]);
+      const lapGot = await voice.voiceUpdates(deps, { convId: chat, cursor: String(lap.body.cursor), waitMs: 3000, session: sid1 });
+      expect(lapGot.updates).toEqual([]);
+      expect(lapGot.moved?.to).toBe("board");
+      // And back to the laptop: the iPad is told in turn.
+      const back = await voice.voiceSession(null, deps, { device: "laptop" });
+      expect(back.body.convId).toBe(chat);
+      expect(back.body.handoff).toEqual({ from: "board", convId: chat });
+      expect((await voice.voiceUpdates(deps, { convId: chat, cursor: cur2, session: sid2 })).moved).toEqual({ to: "laptop", line: "Voice moved to laptop" });
+    } finally {
+      restore();
+      voice.resetVoiceSessionsForTests();
+    }
+  });
+
+  it("the same device starting again (a reconnect, a switched chat) keeps the chat it asked for; a client without a session id is never refused", async () => {
+    const restore = fakeEl();
+    try {
+      voice.resetVoiceSessionsForTests();
+      store.setState({ serviceKeys: { elevenlabs: "el-canary-key" } });
+      const a = await typed("Chat A.", "A.");
+      const b = await typed("Chat B.", "B.");
+      const one = await voice.voiceSession(a, deps, { device: "board" });
+      const two = await voice.voiceSession(b, deps, { device: "board" });
+      expect(two.body.convId).toBe(b);
+      expect(two.body.handoff).toBeUndefined();
+      expect((await voice.voiceUpdates(deps, { convId: a, cursor: String(one.body.cursor), session: String(one.body.sessionId) })).moved?.to).toBe("board");
+      // An older client (no session id): its lines land as before.
+      const old = await voice.voiceTranscript(deps, { convId: b, role: "user", text: "from an older phone build", device: "phone" });
+      expect(old.status).toBe(200);
+    } finally {
+      restore();
+      voice.resetVoiceSessionsForTests();
+    }
   });
 });
