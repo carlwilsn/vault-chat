@@ -3,14 +3,20 @@
 // nothing, then my mic disconnects", and "vault-chat doesn't hear my mic". The
 // app log could not say which: sessions opened and closed with no reason, no
 // level, no device. This watches what the SDK exposes, sampled ~10×/s:
-//   - mic-dead:      the SDK's input level reads exactly zero for 10 s (the
-//                    track ended, a device switch, exclusive mode) — re-acquire;
+//   - mic-dead:      the SDK's input level reads exactly zero for 10 s while
+//                    the track isn't known to be live and delivering (it
+//                    ended, its source stopped: a device switch, exclusive
+//                    mode) — once a call. A silent room under noise
+//                    suppression reads zero too (Carl writing, thinking): with
+//                    a live track that is silence, no verdict; and the caller
+//                    re-acquires quietly, never saying anything for it;
 //   - mic-unheard:   Carl's level says he spoke (≥ 2.5 s of speech) but no
 //                    transcript came back 8 s after he stopped — ElevenLabs is
 //                    not receiving what the meter sees. Only when nothing of
 //                    his was heard since the call connected, or nothing for a
 //                    long span (90 s, no transcript and no agent audio) while
-//                    the meter saw ≥ 15 s of speech: never in a working
+//                    the meter saw ≥ 15 s of speech in one burst (gaps under
+//                    8 s): never in a working
 //                    conversation, where a transcript can come late (Carl
 //                    talking over a slow tool call) and the meter's "speech"
 //                    can be a noisy room the transcriber rightly ignores;
@@ -57,6 +63,9 @@ export type HealthSample = {
   muted: boolean;
   /** The SDK's mode: "speaking" while the agent talks. */
   speaking: boolean;
+  /** The mic track is live and delivering (readyState "live", not muted by its source). Then a zero level is
+   *  a silent room, not a dead mic: no verdict. Unknown (undefined): the level alone decides. */
+  trackLive?: boolean;
   /** Something blocks playback the SDK's meter can't see (a paused audio element): counts as silent. */
   playbackBlocked?: boolean;
 };
@@ -139,12 +148,15 @@ export class VoiceHealth {
     this.lastSample = s.now;
     if (!this.live) return;
     // The mic.
-    if (s.muted || s.input > 0) this.lastNonZeroInput = s.now;
+    if (s.muted || s.input > 0 || s.trackLive === true) this.lastNonZeroInput = s.now;
     if (!this.micDeadSaid && s.now - this.lastNonZeroInput >= this.cfg.deadMs) {
       this.micDeadSaid = true;
       this.emit({ kind: "mic-dead", ms: s.now - this.lastNonZeroInput });
     }
     if (!s.muted && !s.speaking && s.input >= SPEECH_LEVEL) {
+      // A new burst after a gap long enough to have been judged: speech is counted per burst, so the
+      // scattered noise of a long quiet spell (a pencil, a chair, a cough) never adds up to "unheard".
+      if (this.lastSpeechAt && s.now - this.lastSpeechAt > this.cfg.unheardWaitMs) this.speechMs = 0;
       this.speechMs += dt;
       this.lastSpeechAt = s.now;
     }

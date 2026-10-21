@@ -342,3 +342,70 @@ test("a deaf spell after Carl was heard again gets its own re-acquire, not the l
     await voice.endElevenLabsSession();
   }
 });
+
+// Carl, 2026-10-21: "It should just sit idle." A long quiet spell is him working: nothing of ours ends,
+// re-acquires or says anything for it.
+test("idle: 5 minutes of silence on a live call — no mic verdict, no re-acquire, no line, the call stays open", async () => {
+  const realNow = Date.now;
+  let now = realNow() + 120_000;
+  Date.now = () => now;
+  boxLines.length = 0;
+  const silentBefore = tagged("voice mic silent").length;
+  const unheardBefore = tagged("voice mic unheard").length;
+  try {
+    const s = await startCall({ conversationToken: "tok_123", signedUrl: "wss://signed" });
+    s.opts.onMessage({ role: "user", message: "give me a minute to write this out" });
+    s.opts.onMessage({ role: "agent", message: "Sure." });
+    let ended = 0;
+    const realEnd = s.conv.endSession;
+    s.conv.endSession = async () => (ended++, realEnd());
+    for (let i = 0; i < 3_000; i++) {
+      now += 100;
+      // A quiet room under noise suppression reads zero; now and then a pencil tap.
+      level = { input: i % 150 === 0 ? 0.06 : 0, output: 0 };
+      voice.sampleVoiceHealthForTests();
+    }
+    await tick();
+    assert.equal(tagged("voice mic silent").length, silentBefore, "no mic-dead");
+    assert.equal(tagged("voice mic unheard").length, unheardBefore, "no mic-unheard");
+    assert.deepEqual(s.conv.deviceSwitches, [], "nothing re-acquired");
+    assert.ok(!lines().includes(voice.MIC_UNHEARD_LINE), "the microphone line never fires for silence");
+    assert.equal(ended, 0, "nothing of ours ended the call");
+    assert.ok(voice.isVoiceSessionActive());
+    await voice.endElevenLabsSession();
+  } finally {
+    Date.now = realNow;
+    level = { input: 0.2, output: 0 };
+  }
+});
+
+test("a mic whose source stopped (muted track, zero level) is re-acquired quietly — never the line, and the real-loss re-acquire stays", async () => {
+  const realNow = Date.now;
+  let now = realNow() + 240_000;
+  Date.now = () => now;
+  boxLines.length = 0;
+  try {
+    const s = await startCall({ conversationToken: "tok_123", signedUrl: "wss://signed" });
+    (s.track as any).muted = true;
+    level = { input: 0, output: 0 };
+    for (let i = 0; i < 120; i++) {
+      now += 100;
+      voice.sampleVoiceHealthForTests();
+    }
+    await tick();
+    await tick();
+    await tick();
+    assert.deepEqual(s.conv.deviceSwitches, [{ inputDeviceId: "default" }]);
+    assert.ok(!lines().includes(voice.MIC_UNHEARD_LINE));
+    // The track then really ends: it still gets its own re-acquire (not the line straight away).
+    s.track.end();
+    await tick();
+    await tick();
+    assert.equal(s.conv.deviceSwitches.length, 2);
+    assert.ok(!lines().includes(voice.MIC_UNHEARD_LINE));
+    await voice.endElevenLabsSession();
+  } finally {
+    Date.now = realNow;
+    level = { input: 0.2, output: 0 };
+  }
+});

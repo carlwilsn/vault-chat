@@ -8,6 +8,7 @@ import { createPhoneMarkdown, domToHtml } from "./markdown";
 import { stripAudioTags } from "../../src/voiceTags";
 import { isControlLine } from "../../src/voicePrompt";
 import { QuietGate } from "../../src/voiceQuiet";
+import { SPEECH_LEVEL } from "../../src/voiceHealth";
 import { VoiceImagePusher } from "../../src/voiceImages";
 import { VoiceUpdates, pushStartImages } from "../../src/voiceFront";
 import type { LogRecord } from "../../src/convlog/protocol";
@@ -2118,6 +2119,8 @@ export function boot(): void {
       cursor,
       gate: vGate,
       conv: () => (vConv === conv ? conv : null),
+      // An answer he is waiting for waits until he isn't mid-sentence.
+      userSpeaking: () => { try { return !vMuted && (conv.getInputVolume?.() ?? 0) >= SPEECH_LEVEL; } catch { return false; } },
       fetch: async (cur) => {
         await vLines;
         if (!vVoiceConv) { await new Promise((res) => setTimeout(res, 1000)); return { updates: [], cursor: cur || "" }; }

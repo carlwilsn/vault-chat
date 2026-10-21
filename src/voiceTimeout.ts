@@ -163,3 +163,23 @@ export class VoiceTurnStats {
     };
   }
 }
+
+/** Whether the soft-timeout filler ("One sec.") was said into Carl's silence: it belongs only to a slow reply
+ *  to a line of his, and one with no line of his since the voice last spoke (ElevenLabs' re-engage, or a
+ *  [vc:result], on a slow model) filled his silence instead — logged, so it can be seen. */
+export class FillerWatch {
+  private userSpoke = false;
+  reset(): void {
+    this.userSpoke = false;
+  }
+  /** A line of Carl's (a transcript; never the box's own [vc:…] messages). */
+  userLine(): void {
+    this.userSpoke = true;
+  }
+  /** A line of the voice's: true when it is the filler said into his silence. */
+  agentLine(isFiller: boolean): boolean {
+    if (isFiller) return !this.userSpoke;
+    this.userSpoke = false;
+    return false;
+  }
+}

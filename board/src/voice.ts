@@ -38,6 +38,7 @@
 //
 // No DOM here: the pill (voicePill.ts) draws it, the tests drive it with a fake SDK.
 import { QuietGate } from "../../src/voiceQuiet";
+import { SPEECH_LEVEL } from "../../src/voiceHealth";
 import { VoiceImagePusher, lookingAtNote, sendFilesMessage } from "../../src/voiceImages";
 import { stripAudioTags } from "../../src/voiceTags";
 import { isControlLine } from "../../src/voicePrompt";
@@ -388,6 +389,8 @@ export class VoiceController {
       cursor,
       gate: this.gate,
       conv: () => (this.conv === conv ? conv : null),
+      // An answer he is waiting for waits until he isn't mid-sentence.
+      userSpeaking: () => !this.state.muted && (conv.getInputVolume?.() ?? 0) >= SPEECH_LEVEL,
       fetch: async (cur) => {
         // A new conversation exists once its first line or request made it.
         await this.lines;
@@ -472,7 +475,7 @@ export class VoiceController {
     this.gate.run(`announce:${line}`, () => {
       if (this.conv !== conv) return;
       try {
-        conv.sendContextualUpdate(`Heads-up for Carl, to mention in one short sentence at the next natural pause (do not interrupt him): ${line.trim()}`);
+        conv.sendContextualUpdate(`Heads-up for Carl, to mention in one short sentence when you next talk with him (never break his silence for it; do not interrupt him): ${line.trim()}`);
       } catch {
         /* closed */
       }

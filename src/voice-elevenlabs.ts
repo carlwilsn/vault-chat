@@ -9,9 +9,9 @@ import { fileKind, isUnreadableAsText } from "./fileKind";
 import { awaitScroll } from "./scrollTarget";
 import { stripAudioTags } from "./voiceTags";
 import { QuietGate } from "./voiceQuiet";
-import { RECONNECT_NUDGE, RECONNECTING_LINE, TimeoutRetry, VoiceTurnStats, couldntReconnectLine, isLlmTimeoutClose, plainCloseReason, reconnectRecap } from "./voiceTimeout";
+import { RECONNECT_NUDGE, RECONNECTING_LINE, FillerWatch, TimeoutRetry, VoiceTurnStats, couldntReconnectLine, isLlmTimeoutClose, plainCloseReason, reconnectRecap } from "./voiceTimeout";
 import { vlog } from "./debugLog";
-import { VoiceHealth, connectionOptions, pickTransport, type HealthEvent, type Transport } from "./voiceHealth";
+import { SPEECH_LEVEL, VoiceHealth, connectionOptions, pickTransport, type HealthEvent, type Transport } from "./voiceHealth";
 import { DEFAULT_VOICE_LLM, isVoiceLlm, llmInfo, normalizeVoiceLlm, reasoningEffortFor, voiceLlmList, type VoiceLlmInfo } from "./voiceLlms";
 
 // Voice mode runs as an ElevenLabs Conversational AI session: their
@@ -122,7 +122,10 @@ const AGENT_ID_KEY = "vault_chat_elevenlabs_agent_id";
 // on next session, so updates roll out without manual intervention.
 // v28-front: voice is the conversation's front of house — Ask plus the device's screen tools, one agent per device.
 // v29-normalise: ElevenLabs' own text normaliser before speech (numbers and symbols the model still writes).
-const AGENT_CONFIG_VERSION = "v29-normalise";
+// v30-idle: silence is idle (Carl: "I don't want to have to tell it over and over that I'm still working"):
+//   skip_turn waits silently until he speaks (wait_timeout_secs -1), the filler never before his first line,
+//   silence_end_call_timeout where ElevenLabs reads it (turn, not conversation).
+const AGENT_CONFIG_VERSION = "v30-idle";
 const AGENT_VERSION_KEY = "vault_chat_elevenlabs_agent_config_version";
 // The voice the provisioned agent speaks with. The session also overrides it
 // (platform_settings allows tts.voice_id), but the agent's own voice is set too
@@ -138,6 +141,8 @@ const VIEWPORT_TEXT_CAP = 4000;
 type ActiveConversation = VoiceConversation;
 
 let activeConversation: ActiveConversation | null = null;
+/** The soft-timeout filler said into his silence (it belongs only to a slow reply to his line): logged. */
+const fillerWatch = new FillerWatch();
 // The SDK's entry point ([tests] replaceable: a mocked SDK).
 let voiceSdk: { startSession(o: any): Promise<any> } = Conversation;
 /** [tests] Replace the ElevenLabs SDK's Conversation (null: the real one). */
@@ -333,6 +338,7 @@ export async function startElevenLabsSession(opts?: { recap?: string }): Promise
   // A reconnect after a timeout: what was in flight, and to carry on in small steps.
   const systemPrompt = opts?.recap ? `${basePrompt}\n\n${opts.recap}` : basePrompt;
   turnStats.startSession(systemPrompt.length);
+  fillerWatch.reset();
   vlog("voice session", { promptChars: systemPrompt.length, llm: getCurrentLlm(), reconnect: !!opts?.recap, transport });
   const dynamicVariables = buildDynamicVariables(voiceState);
   const voiceId = boxSession.voiceId ?? localStorage.getItem(VOICE_ID_STORAGE) ?? DEFAULT_VOICE_ID;
@@ -414,6 +420,7 @@ export async function startElevenLabsSession(opts?: { recap?: string }): Promise
           // Our own reconnect nudge and the box's updates ([vc:result] …) are not Carl's lines.
           if (text === RECONNECT_NUDGE || isControlLine(text)) return;
           const heardAt = Date.now();
+          fillerWatch.userLine();
           turnStats.userTurn(text, heardAt, health.userTranscript(heardAt));
           // Heard: a later deaf spell gets its own re-acquire before any line.
           micRecoveries = 0;
@@ -434,7 +441,9 @@ export async function startElevenLabsSession(opts?: { recap?: string }): Promise
             void endElevenLabsSession();
           }
         } else if (role === "agent") {
-          if (text === SOFT_TIMEOUT_MESSAGE) turnStats.fillerSpoken();
+          const filler = text === SOFT_TIMEOUT_MESSAGE;
+          if (fillerWatch.agentLine(filler)) vlog("voice filler in silence", { turn: turnStats.turns });
+          if (filler) turnStats.fillerSpoken();
           else logTurn(turnStats.firstResponse("text", Date.now(), text.length));
           // Queue and drain serially. onMessage fires on text-complete,
           // not audio-complete; appending now would race the transcript
@@ -507,6 +516,8 @@ export async function startElevenLabsSession(opts?: { recap?: string }): Promise
       cursor: boxSession.cursor ?? null,
       conv: () => (activeConversation === conv ? conv : null),
       gate: quietGate,
+      // A result he is waiting for waits until he isn't mid-sentence (and the voice isn't working out a reply to him).
+      userSpeaking: () => carlSpeaking(conv),
       fetch: (cursor) => fetchUpdates(box.link, convId, cursor),
       log: (ev, data) => vlog(ev, data),
     }).start();
@@ -1237,7 +1248,7 @@ export function announceAtNextPause(line: string): void {
   quietGate.run(`announce:${line}`, () => {
     if (activeConversation !== conv) return;
     try {
-      conv.sendContextualUpdate(`Heads-up for Carl, to mention in one short sentence at the next natural pause (do not interrupt him): ${line.trim()}`);
+      conv.sendContextualUpdate(`Heads-up for Carl, to mention in one short sentence when you next talk with him (never break his silence for it; do not interrupt him): ${line.trim()}`);
     } catch (e) {
       console.warn("[voice-eleven] announce failed:", e);
     }
@@ -1443,6 +1454,7 @@ async function startHealthWatch(conv: ActiveConversation, transport: Transport):
   stopHealthWatch();
   healthConv = conv;
   micRecoveries = 0;
+  quietMicReacquired = false;
   health.connected(Date.now());
   vlog("voice mic", { transport, ...(await micInfo(conv)) });
   if (healthConv !== conv) return;
@@ -1527,6 +1539,35 @@ async function devicesChanged(conv: ActiveConversation): Promise<void> {
   if (track?.readyState === "ended" || !stillThere) await recoverMic(conv, "the microphone went away");
 }
 
+/** Carl is talking now (his mic over speech level, not muted), or the voice is working out its reply to his line. */
+function carlSpeaking(conv: ActiveConversation): boolean {
+  const st = useStore.getState();
+  if (st.voiceThinking) return true;
+  if (st.voiceMicMuted) return false;
+  try {
+    return conv.getInputVolume() >= SPEECH_LEVEL;
+  } catch {
+    return false;
+  }
+}
+
+/** A mic that only reads zero: re-acquired once a call, quietly. Zero is also what a silent room reads under
+ *  noise suppression — Carl writing or thinking — so it is never said to him and never uses up the
+ *  re-acquire a real loss (the track ending, speech with no transcript) gets. */
+let quietMicReacquired = false;
+async function reacquireQuietly(conv: ActiveConversation, why: string): Promise<void> {
+  if (healthConv !== conv || activeConversation !== conv || quietMicReacquired) return;
+  quietMicReacquired = true;
+  try {
+    await conv.changeInputDevice({ inputDeviceId: "default" });
+    if (healthConv !== conv) return;
+    watchMicTrack(conv);
+    vlog("voice mic reacquired", { why, quiet: true, ...(await micInfo(conv)) });
+  } catch (e) {
+    vlog("voice mic reacquire failed", { why, quiet: true, error: String((e as Error)?.message ?? e).slice(0, 300) });
+  }
+}
+
 /** Re-acquire the mic once through the SDK; a second failure in the call is said plainly. */
 async function recoverMic(conv: ActiveConversation, why: string): Promise<void> {
   if (healthConv !== conv || activeConversation !== conv) return;
@@ -1561,13 +1602,15 @@ function sampleHealth(conv: ActiveConversation): void {
     return;
   }
   const st = useStore.getState();
-  const { room } = sdkParts(conv);
+  const { room, track } = sdkParts(conv);
   health.sample({
     now,
     input: Number.isFinite(input) ? input : 0,
     output: Number.isFinite(output) ? output : 0,
     muted: st.voiceMicMuted,
     speaking: st.voiceSpeaking,
+    // A live track reading zero is a quiet room (Carl working), not a dead mic.
+    trackLive: track ? track.readyState === "live" && track.muted !== true : undefined,
     playbackBlocked: room ? room.canPlaybackAudio === false : false,
   });
   logTurn(turnStats.noAudio(now));
@@ -1581,7 +1624,7 @@ function onHealthEvent(e: HealthEvent): void {
       return;
     case "mic-dead":
       vlog("voice mic silent", { ms: e.ms, transport: activeTransport });
-      if (conv) void micInfo(conv).then((m) => vlog("voice mic", m)).finally(() => recoverMic(conv, "the microphone reads silent"));
+      if (conv) void micInfo(conv).then((m) => vlog("voice mic", m)).finally(() => reacquireQuietly(conv, "the microphone reads silent"));
       return;
     case "mic-unheard":
       vlog("voice mic unheard", { speechMs: e.speechMs, waitedMs: e.waitedMs, transport: activeTransport });
@@ -1809,7 +1852,15 @@ function isTransientStatus(status: number): boolean {
 const slotKey = (name: string, slot?: string) => (slot ? `${name}:${slot}` : name);
 
 /** Filler the agent says while a slow model is still thinking (soft timeout): short and neutral. */
-const SOFT_TIMEOUT_MESSAGE = "One sec.";
+export const SOFT_TIMEOUT_MESSAGE = "One sec.";
+/** Seconds of silence before ElevenLabs re-engages the agent (turn.turn_timeout). Its docs allow 1–30 and
+ *  document no "off" (-1 is documented only for the soft timeout and the end-after-silence timer), so the
+ *  longest: and the one re-engage that can still come is answered with skip_turn (the prompt's silence rule),
+ *  after which the agent stays silent until Carl speaks (SKIP_TURN_WAIT_SECS). */
+export const TURN_TIMEOUT_SECONDS = 30;
+/** skip_turn's wait_timeout_secs: -1 = after skip_turn the agent stays silent until the caller speaks (no
+ *  "contextual check-in" later). ElevenLabs' SkipTurnToolConfig; the default, set so it never drifts. */
+export const SKIP_TURN_WAIT_SECS = -1;
 /** Back-channel words that never interrupt the agent ("yeah" while it talks is listening, not a new turn). */
 export const INTERRUPTION_IGNORE_TERMS = ["yeah", "yep", "mm", "mhm", "mm-hm", "uh-huh", "ok", "okay", "right", "sure"];
 /** When the chosen model is down: Claude Haiku, then a small GPT (ElevenLabs' default chain starts with Gemini). */
@@ -1859,9 +1910,10 @@ export function buildAgentCreateBody(o: {
               response_timeout_secs: 30,
             })),
             // NB: end_call is intentionally omitted (it hung up on long study
-            // silences). skip_turn is the lever for the 30 s re-engage: the agent
-            // has a concrete "nothing to add" action instead of filler.
-            { type: "system" as const, name: "skip_turn" },
+            // silences). skip_turn is the answer to the 30 s re-engage: the agent
+            // has a concrete "nothing to add" action instead of filler, and with
+            // wait_timeout_secs -1 it then stays silent until Carl speaks.
+            { type: "system" as const, name: "skip_turn", description: "", params: { system_tool_type: "skip_turn", wait_timeout_secs: SKIP_TURN_WAIT_SECS } },
           ],
         },
       },
@@ -1879,17 +1931,19 @@ export function buildAgentCreateBody(o: {
         // model to spell things out.) The box sends the agent's results already in words (server/speakMath.ts).
         text_normalisation_type: "elevenlabs",
       },
-      // Two hours (the 10-minute default hung up mid-explanation); never hang up on silence.
+      // Two hours (the 10-minute default hung up mid-explanation). Silence never hangs up: turn.silence_end_call_timeout.
       conversation: {
         max_duration_seconds: 7200,
-        silence_end_call_timeout: -1,
         // Uploads (PDFs, images) reach the model only with file input on.
         // Only the newest few stay whole in context (a look's images are one stacked picture).
         file_input: { enabled: true, max_files_in_memory: FILES_IN_MEMORY, max_files_per_conversation: 40 },
       },
       turn: {
-        // Silence before ElevenLabs re-engages the agent (max 30 s; skip_turn answers it).
-        turn_timeout: 30,
+        // Silence before ElevenLabs re-engages the agent (the documented max; skip_turn answers it, silently).
+        turn_timeout: TURN_TIMEOUT_SECONDS,
+        // Never end the call on silence (-1). This lives in `turn` (ElevenLabs' TurnConfig); under
+        // `conversation`, where v29 had it, it is not a field.
+        silence_end_call_timeout: -1,
         turn_model: "turn_v3",
         // Wait for the user to finish (study talk has pauses); back-channel words don't interrupt.
         turn_eagerness: "patient",
@@ -1897,7 +1951,15 @@ export function buildAgentCreateBody(o: {
         merge_with_default_ignore_terms: true,
         // Start the reply while the end of the turn is being confirmed (lower latency).
         speculative_turn: true,
-        soft_timeout_config: { timeout_seconds: 3, message: SOFT_TIMEOUT_MESSAGE },
+        // The filler is for a slow reply to something Carl SAID: it fires only while ElevenLabs waits for the
+        // model's response, once per response, and never before his first line (the call's quiet start).
+        soft_timeout_config: {
+          timeout_seconds: 3,
+          message: SOFT_TIMEOUT_MESSAGE,
+          use_llm_generated_message: false,
+          max_soft_timeouts_per_generation: 1,
+          disable_until_first_user_message: true,
+        },
       },
       // Another voice in the room (a video, someone nearby) is not the user barging in.
       vad: { background_voice_detection: true },

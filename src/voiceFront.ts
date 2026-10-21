@@ -6,7 +6,9 @@
 //     while the voice speaks (QuietGate) — the agent's answer to an Ask and
 //     its questions as a user message the voice answers aloud ([vc:result],
 //     [vc:question]), everything already handled (a typed turn, the "you"
-//     layer) as a contextual update it never answers ([vc:context]);
+//     layer) as a contextual update it never answers ([vc:context]); one it
+//     answers aloud also waits until Carl isn't mid-speech (userSpeaking: his
+//     mic quiet for quietMs), so a result never talks over him;
 //   - pushStartImages: the conversation's newest images, sent with the call's
 //     start (the box reads them from the conversation; empty ones are never sent).
 import type { QuietGate } from "./voiceQuiet";
@@ -31,6 +33,11 @@ export class VoiceUpdates {
       gate: QuietGate;
       cursor: string | null;
       retryMs?: number;
+      /** Carl is talking (his mic's level now) or the voice is working out its reply to him: a line it would
+       *  answer aloud waits until this has read false for `quietMs`. Context is never held for it. */
+      userSpeaking?: () => boolean;
+      quietMs?: number;
+      pollMs?: number;
       log?: (ev: string, data: Record<string, unknown>) => void;
     },
   ) {}
@@ -59,23 +66,58 @@ export class VoiceUpdates {
     }
   }
 
-  /** Into the call once the voice is quiet: a user message it answers aloud, or a contextual update it never answers. */
+  /** Into the call once the voice is quiet: a user message it answers aloud (and only once Carl isn't
+   *  mid-speech), or a contextual update it never answers. */
   deliver(u: VoiceUpdate): void {
     if (!u?.id || this.seen.has(u.id)) return;
     this.seen.add(u.id);
     const conv = this.o.conv();
     if (!conv) return;
-    this.o.gate.run(`vc:${u.id}`, () => {
+    const send = () =>
+      this.o.gate.run(`vc:${u.id}`, () => {
+        if (this.stopped || this.o.conv() !== conv) return;
+        try {
+          if (u.speak && conv.sendUserMessage) conv.sendUserMessage(u.text);
+          else conv.sendContextualUpdate(u.text);
+          this.delivered.push(u);
+          this.o.log?.("voice update", { kind: u.kind, speak: u.speak, chars: u.text.length });
+        } catch (e) {
+          this.o.log?.("voice update failed", { kind: u.kind, error: String((e as Error)?.message ?? e).slice(0, 200) });
+        }
+      });
+    if (u.speak && this.o.userSpeaking) this.whenUserQuiet(conv, send);
+    else send();
+  }
+
+  /** `fn` once Carl's mic has been quiet for quietMs (polled; dropped if the call changed or stopped). */
+  private whenUserQuiet(conv: UpdateConv, fn: () => void): void {
+    const busy = this.o.userSpeaking!;
+    const quietMs = this.o.quietMs ?? 1000;
+    const pollMs = this.o.pollMs ?? 200;
+    let quietSince: number | null = null;
+    let held = false;
+    const check = () => {
       if (this.stopped || this.o.conv() !== conv) return;
+      let speaking = false;
       try {
-        if (u.speak && conv.sendUserMessage) conv.sendUserMessage(u.text);
-        else conv.sendContextualUpdate(u.text);
-        this.delivered.push(u);
-        this.o.log?.("voice update", { kind: u.kind, speak: u.speak, chars: u.text.length });
-      } catch (e) {
-        this.o.log?.("voice update failed", { kind: u.kind, error: String((e as Error)?.message ?? e).slice(0, 200) });
+        speaking = busy();
+      } catch {
+        speaking = false;
       }
-    });
+      const now = Date.now();
+      if (speaking) {
+        quietSince = null;
+        if (!held) {
+          held = true;
+          this.o.log?.("voice update held", { why: "Carl is speaking" });
+        }
+      } else {
+        quietSince ??= now;
+        if (now - quietSince >= quietMs) return fn();
+      }
+      setTimeout(check, pollMs);
+    };
+    check();
   }
 }
 
