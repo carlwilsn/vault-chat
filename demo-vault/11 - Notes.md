@@ -24,7 +24,7 @@ The same works on `dashboard.html` (HTML marquee → note) and on any image file
 
 ## Where they live
 
-`<your-vault>/.vault-chat/notes.jsonl` — JSON-lines, one note per row. Hidden from the file tree but versioned with the rest of the vault, so they travel with your notes when you push the repo elsewhere or restore via Ctrl+H.
+`<your-vault>/.vault-chat/notes.jsonl` — JSON-lines, one note per row. Hidden from the file tree but versioned with the rest of the vault, so they travel with your notes when you push the repo elsewhere, and any earlier version can be restored by asking the agent.
 
 States are **open** / **resolved** — flip a note to resolved when you've dealt with it. The titlebar sticky-note icon shows a dot when there are open notes pending, so they don't disappear into the void.
 
