@@ -5,9 +5,8 @@
 //   - turn.turn_timeout: after this much silence the agent is re-engaged (docs: 1–30 s, no "off");
 //   - skip_turn with params.wait_timeout_secs -1: after it, the agent stays silent until the caller speaks
 //     (SkipTurnToolConfig);
-//   - turn.soft_timeout_config: the filler while waiting for the model's response, once per response
-//     (max_soft_timeouts_per_generation), never before the first user message
-//     (disable_until_first_user_message);
+//   - turn.soft_timeout_config: the filler while waiting for the model's response; timeout_seconds -1 turns it
+//     off (ours, v32-quiet: Carl, 2026-10-21, "a lot of 'one sec', 'one sec' and 'on it'");
 //   - turn.silence_end_call_timeout: -1 never ends the call on silence (a TurnConfig field);
 //   - a contextual update never triggers a response; a user message does.
 // The model is faked: it follows the prompt's silence rule when the prompt has it (and checks in when it
@@ -31,20 +30,14 @@ const body = (device: "laptop" | "phone" | "board" = "board"): any =>
   voice.buildAgentCreateBody({ llm: "gpt-6-luna", info: null, tools: P.voiceToolDefs(device), voiceId: "v1" });
 
 // ---- the config, exactly -------------------------------------------------------
-test("config: the longest re-engage ElevenLabs allows, skip_turn silent until he speaks, no hang-up on silence, the filler only after his first line", () => {
+test("config: the longest re-engage ElevenLabs allows, skip_turn silent until he speaks, no hang-up on silence, no filler", () => {
   const cc = body().conversation_config;
   assert.equal(cc.turn.turn_timeout, 30, "the documented maximum (1–30 s)");
   assert.equal(cc.turn.initial_wait_time, undefined, "unset: the start waits turn_timeout too");
   assert.equal(cc.turn.silence_end_call_timeout, -1, "in turn (TurnConfig), where ElevenLabs reads it");
   assert.equal(cc.conversation.silence_end_call_timeout, undefined, "not a ConversationConfig field");
   assert.equal(cc.conversation.max_duration_seconds, 7200);
-  assert.deepEqual(cc.turn.soft_timeout_config, {
-    timeout_seconds: 3,
-    message: "One sec.",
-    use_llm_generated_message: false,
-    max_soft_timeouts_per_generation: 1,
-    disable_until_first_user_message: true,
-  });
+  assert.deepEqual(cc.turn.soft_timeout_config, { timeout_seconds: -1 }, "the platform filler off (-1 is the API's disabled), set explicitly so a re-provision clears the old 3 s");
   assert.equal(cc.turn.retranscribe_on_turn_timeout, undefined);
   for (const device of ["laptop", "phone", "board"] as const) {
     const tools = body(device).conversation_config.agent.prompt.tools;
@@ -199,13 +192,12 @@ test("5 minutes of silence from the start: no speech, one tool call (skip_turn),
   assert.equal(sim.ended, null);
 });
 
-test("after a conversation, 5 minutes of silence: only skip_turn, and the filler only on his line", () => {
+test("after a conversation, 5 minutes of silence: only skip_turn; a slow reply to his line is silence, then the reply (no filler)", () => {
   const sim = new SimElevenLabs(body().conversation_config, boardPrompt(), obedient);
   sim.run(2_000);
   sim.userSays("why does the derivative of sine give cosine");
   sim.run(5_000);
-  assert.deepEqual(sim.said.map((s) => s.why), ["filler", "reply"], "his line, a slow model: the filler, then the reply");
-  assert.equal(sim.said[0]!.at, 5_000, "3 s after his line");
+  assert.deepEqual(sim.said.map((s) => s.why), ["reply"], "his line, a slow model: no filler, only the reply");
   const before = sim.said.length;
   sim.run(5 * MIN);
   assert.deepEqual(sim.said.slice(before), [], "5 minutes of his silence: not a word");
@@ -215,7 +207,8 @@ test("after a conversation, 5 minutes of silence: only skip_turn, and the filler
   // He speaks again: the voice answers (skip_turn waited for exactly this).
   sim.userSays("ok and tangent?");
   sim.run(5_000);
-  assert.deepEqual(sim.said.slice(before).map((s) => s.why), ["filler", "reply"]);
+  assert.deepEqual(sim.said.slice(before).map((s) => s.why), ["reply"]);
+  assert.ok(!sim.said.some((s) => s.why === "filler" || /one sec|on it/i.test(s.text)), "never a filler or a holding line");
 });
 
 test("context updates during silence (board, focus, screen) are never answered aloud", async () => {
@@ -286,14 +279,15 @@ test("control: the old setup (skip_turn without its wait, the rule out of the pr
   const withWait = new SimElevenLabs(old, boardPrompt(), obedient);
   withWait.run(5 * MIN);
   assert.ok(withWait.said.some((s) => s.why === "check-in"), "a skip_turn with a wait checks in after it");
+  // The old filler (v31: 3 s, "One sec.", and without disable_until_first_user_message) would speak into his silence.
   const filler = structuredClone(cc);
-  filler.turn.soft_timeout_config.disable_until_first_user_message = false;
+  filler.turn.soft_timeout_config = { timeout_seconds: 3, message: "One sec.", use_llm_generated_message: false, max_soft_timeouts_per_generation: 1, disable_until_first_user_message: false };
   const slowStart = new SimElevenLabs(filler, boardPrompt(), (t, p) => (t.kind === "reengage" ? { ms: 4_000, tool: "skip_turn" } : obedient(t, p)));
   slowStart.run(2 * MIN);
-  assert.deepEqual(slowStart.said.map((s) => s.text), ["One sec."], "without disable_until_first_user_message a slow re-engage at the start says the filler");
+  assert.deepEqual(slowStart.said.map((s) => s.text), ["One sec."], "the old filler: a slow re-engage at the start says it");
   const ours = new SimElevenLabs(cc, boardPrompt(), (t, p) => (t.kind === "reengage" ? { ms: 4_000, tool: "skip_turn" } : obedient(t, p)));
   ours.run(2 * MIN);
-  assert.deepEqual(ours.said, [], "with it: silent");
+  assert.deepEqual(ours.said, [], "ours (no filler): silent");
 });
 
 // ---- the mic health detector over a long quiet spell ------------------------------

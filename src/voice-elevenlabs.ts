@@ -140,7 +140,7 @@ const AGENT_ID_KEY = "vault_chat_elevenlabs_agent_id";
 //   skip_turn waits silently until he speaks (wait_timeout_secs -1), the filler never before his first line,
 //   silence_end_call_timeout where ElevenLabs reads it (turn, not conversation).
 // v31-side-ask: Ask takes `act` (a change, not a question) and runs as a background side request.
-const AGENT_CONFIG_VERSION = "v31-side-ask";
+const AGENT_CONFIG_VERSION = "v32-quiet";
 const AGENT_VERSION_KEY = "vault_chat_elevenlabs_agent_config_version";
 // The voice the provisioned agent speaks with. The session also overrides it
 // (platform_settings allows tts.voice_id), but the agent's own voice is set too
@@ -2143,15 +2143,10 @@ export function buildAgentCreateBody(o: {
         merge_with_default_ignore_terms: true,
         // Start the reply while the end of the turn is being confirmed (lower latency).
         speculative_turn: true,
-        // The filler is for a slow reply to something Carl SAID: it fires only while ElevenLabs waits for the
-        // model's response, once per response, and never before his first line (the call's quiet start).
-        soft_timeout_config: {
-          timeout_seconds: 3,
-          message: SOFT_TIMEOUT_MESSAGE,
-          use_llm_generated_message: false,
-          max_soft_timeouts_per_generation: 1,
-          disable_until_first_user_message: true,
-        },
+        // No platform filler (Carl, 2026-10-21: "a lot of 'one sec', 'one sec' and 'on it'"): a slow reply is
+        // silence until there is something to say. -1 is the API's "disabled" (SoftTimeoutConfig.timeout_seconds),
+        // set explicitly so a re-provisioned agent loses the old 3 s filler too.
+        soft_timeout_config: { timeout_seconds: -1 },
       },
       // Another voice in the room (a video, someone nearby) is not the user barging in.
       vad: { background_voice_detection: true },

@@ -80,7 +80,11 @@ test("the one tool that acts takes a sentence (no long tool argument for the cas
   assert.match(ask.parameters.properties.request!.description, /Short: one or two sentences/);
   assert.match(ask.description, /returns at once/);
   const p = P.buildVoicePrompt({ device: "laptop" });
-  assert.match(p, /call Ask with his words \(act: true only for a change\), then say one short line \("on it"\)/);
+  assert.match(p, /call Ask with his words \(act: true only for a change\), and say nothing/);
+  // No holding lines (Carl, 2026-10-21: "a lot of 'one sec', 'one sec' and 'on it'"): never told to say one.
+  assert.ok(!/say (?:only )?(?:one )?(?:a )?short line|\("on it"\)/i.test(p), "no instruction to say a holding line");
+  assert.match(p, /say once, in a few plain words, what is happening \("pulling the lecture notes"\)/);
+  assert.match(p, /never twice for one request/);
   assert.ok(!/Write|Edit\b|NotebookEdit/.test(P.voiceToolNames("laptop").join(" ")));
 });
 

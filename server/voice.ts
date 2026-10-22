@@ -231,6 +231,8 @@ export async function voiceTranscript(d: VoiceDeps, b: any): Promise<{ status: n
   if (moved) return { status: 409, body: { error: movedLine(moved), moved: { to: moved, line: movedLine(moved) } } };
   voiceActivity(d.vault, ended);
   if (!text || (role === "user" && !system && isControlLine(text))) return { status: 200, body: { ok: true, convId: s(b?.convId) || null, skipped: true } };
+  // Carl speaking again ends an Ask's acknowledgement window: voice's next line is its reply to him.
+  if (role === "user" && !system && b?.convId) ackDue.delete(s(b.convId));
   // Spoken, never written: the platform's filler, voice's own "one sec / on it", and the line acknowledging an Ask.
   if (role === "assistant" && !system && !b?.tool && (isFillerLine(text) || takeAck(s(b?.convId), text))) {
     touchSession(b?.sessionId);
@@ -300,7 +302,9 @@ function saveTranscriptImages(vault: string, convId: string, images: unknown[]):
 
 // ---------------------------------------------------------------- spoken, never written
 
-/** After an Ask: voice's next short line in that conversation is its acknowledgement (the Ask's result tells it to say one). */
+/** After an Ask: voice's next short line in that conversation, if it says one (a long task's "pulling the lecture
+ *  notes"; it is told to say nothing for a quick one), is about the Ask, not a reply. Ends with the answer or when
+ *  Carl speaks again (what voice says after that is its reply to him). */
 const ackDue = new Map<string, number>();
 const ACK_MS = 20_000;
 function takeAck(convId: string, text: string): boolean {
@@ -373,7 +377,7 @@ async function ask(d: VoiceDeps, a: Record<string, unknown>, convId: unknown, de
     const out = await d.message({ convId: id, text: request, source: "voice", via: "voice-ask", clientMsgId: rid, client: device, context: "[Carl answered your question by voice, on a call.]" });
     if (!out || out.error) return { result: `Error: the agent did not take his answer (${s(out?.error) || "no answer"}). Tell Carl.`, convId: id };
     ackDue.set(id, Date.now() + ACK_MS);
-    return { result: `That went to the agent as Carl's answer to its question (request ${rid}). What it does next comes to you as a message starting [vc:result]. Now say only a short line.`, convId: id };
+    return { result: `That went to the agent as Carl's answer to its question (request ${rid}). What it does next comes to you as a message starting [vc:result]. Say nothing now (no holding line).`, convId: id };
   }
   if (!d.side) return { result: "Error: the agent is not running on the box, so nothing was handed over. Tell Carl it didn't go through.", convId: id };
   const act = a.act === true || a.act === "true";
@@ -386,7 +390,7 @@ async function ask(d: VoiceDeps, a: Record<string, unknown>, convId: unknown, de
       ? `The agent will do it as a side request once its current work in this conversation finishes (request ${rid}).`
       : `The agent is doing it as a side request (request ${rid}).`
     : `The agent is looking it up as a side request (request ${rid}).`;
-  return { result: `${now} Its answer will come to you as a message starting [vc:result]. Now say only a short line ("on it"); don't say it is done and don't guess the answer.`, convId: id };
+  return { result: `${now} Its answer will come to you as a message starting [vc:result]. Say nothing now (no "on it", no holding line) unless it will clearly take a while, then once, in a few plain words, what is happening; don't say it is done and don't guess the answer.`, convId: id };
 }
 
 /** Until the conversation has no running turn (an action never runs beside one: it would edit the same files). */

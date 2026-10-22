@@ -86,7 +86,7 @@ test("the agent ElevenLabs creates: natural TTS (no expressive mode), patient tu
   assert.equal(cc.turn.speculative_turn, true);
   assert.equal(cc.turn.merge_with_default_ignore_terms, true);
   assert.deepEqual(cc.turn.interruption_ignore_terms, ["yeah", "yep", "mm", "mhm", "mm-hm", "uh-huh", "ok", "okay", "right", "sure"]);
-  assert.equal(cc.turn.soft_timeout_config.timeout_seconds, 3);
+  assert.equal(cc.turn.soft_timeout_config.timeout_seconds, -1, "no platform filler");
   assert.equal(cc.vad.background_voice_detection, true);
   assert.deepEqual(cc.conversation.file_input, { enabled: true, max_files_in_memory: 4, max_files_per_conversation: 40 });
   assert.equal(cc.agent.prompt.cascade_timeout_seconds, 15);

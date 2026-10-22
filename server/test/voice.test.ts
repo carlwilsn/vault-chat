@@ -275,6 +275,17 @@ describe("voice's one tool that acts: Ask, a request to the conversation's agent
     expect(voiceEntries(chat).map((e) => e.content)).toEqual(["[voice call] You said to Carl (spoken by your voice): Lecture seven defines the baseline."]);
   });
 
+  it("a silent Ask (v32-quiet: no holding line), then Carl speaks: the voice's short reply to him is written, not taken for an acknowledgement", async () => {
+    const chat = await typed("Policy gradients.", "Ready.");
+    const r = await voice.voiceTool(deps, { name: "Ask", args: { request: "Which lecture defines the baseline?" }, convId: chat, device: "laptop" });
+    expect(r.result).toMatch(/Say nothing now \(no "on it", no holding line\)/);
+    await voice.voiceTranscript(deps, { convId: chat, role: "user", text: "And what's a baseline again?", device: "laptop" });
+    expect((await voice.voiceTranscript(deps, { convId: chat, role: "assistant", text: "A value subtracted from the return to cut variance.", device: "laptop" })).body.filler).toBeUndefined();
+    expect(voiceEntries(chat).map((e) => e.content)).toContain("[voice call] You said to Carl (spoken by your voice): A value subtracted from the return to cut variance.");
+    lastSide().answer("Lecture 7.");
+    await voice.voiceAsksSettled();
+  });
+
   it("no voice-local tools remain: files, notes, shell, projects, the web and the old hand-off are the agent's", async () => {
     const before = readFileSync(join(vault, "notes", "a.md"), "utf8");
     const notes = existsSync(join(vault, ".vault-chat", "notes.jsonl"));
