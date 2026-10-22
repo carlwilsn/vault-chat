@@ -153,10 +153,13 @@ describe("the feed over HTTP", () => {
     expect(pendingOf(fold(await recsOf(conv), conv)).map((x) => x.id)).toEqual(["c-queue-2"]);
     const r = await intent({ type: "stop", convId: conv });
     expect(r.ok).toBe(true);
-    await waitFor(() => ended(conv, 3), 30_000);
+    // The engine ends the turn (running: null) and only then writes the line that says why (after what the end
+    // closed): under load a fold right after the end can come before "Stopped.". Wait for both.
+    const stopped = (p: ReturnType<typeof fold>) => p.items.filter((x) => x.kind === "notice" && x.text === "Stopped.");
+    await waitFor(async () => (await ended(conv, 3)) && stopped(fold(await recsOf(conv), conv)).length > 0, 30_000);
     const p = fold(await recsOf(conv), conv);
     expect(pendingOf(p)).toEqual([]);
-    expect(p.items.filter((x) => x.kind === "notice" && x.text === "Stopped.")).toHaveLength(1);
+    expect(stopped(p)).toHaveLength(1);
     expect(p.items.some((x) => x.id === "c-queue-2")).toBe(false);
     expect(shown(p).some(isOpen)).toBe(false);
   });

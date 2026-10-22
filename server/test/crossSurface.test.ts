@@ -457,15 +457,23 @@ describe("b. A chat on the laptop, then voice on the iPad board: \"continue that
   pass("b", "board voice, an older call remembered", "sees the laptop chat's earlier turns (\"continue that\" needs the thread, not one gist)", () => {
     expect(need(remembered, "remembered board").prompts[0]).toContain("completeness gives the limit");
   });
-  pass("b", "board voice, live", "a laptop chat turn made while the board's voice is live reaches it (a contextual update)", async () => {
+  // Carl, 2026-10-21 ("I thought we were a single model"): a typed turn during a call is answered by the agent in
+  // the chat, and the call speaks that answer — a [vc:result] user message, once, never a silent context update.
+  pass("b", "board voice, live", "a laptop chat turn made while the board's voice is live reaches it (the agent's answer, spoken once)", async () => {
     const rig = need(fresh, "fresh board");
+    const updatesBefore = rig.updates.length;
+    const spokenBefore = rig.spoken.length;
     await turn({ text: "Now do the contraction mapping on C[0,1].", convId: need(chat, "chat").convId, client: "laptop" }, "Use the sup norm; the integral operator has constant 1/2.");
-    await until(() => rig.updates.join("\n").includes("contraction mapping on C[0,1]"), 5000).catch(() => undefined);
-    const u = rig.updates.join("\n");
-    expect(u).toContain("contraction mapping on C[0,1]");
-    expect(u).toContain("the integral operator has constant 1/2");
-    // A typed turn is the agent's to answer: the call gets it as context, never to answer aloud.
-    expect(rig.spoken.join("\n")).not.toContain("contraction mapping on C[0,1]");
+    const mine = () => rig.spoken.slice(spokenBefore).filter((x) => x.includes("the integral operator has constant 1/2"));
+    await until(() => mine().length > 0, 5000).catch(() => undefined);
+    // Let any duplicate delivery (a second poll) land before counting.
+    await new Promise((r) => setTimeout(r, 300));
+    expect(mine()).toHaveLength(1);
+    const said = mine()[0]!;
+    expect(said).toMatch(/^\[vc:result\] Carl typed in the chat: "Now do the contraction mapping on C\[0,1\]\."/);
+    expect(said).toMatch(/don't answer his message yourself/);
+    // Not also a context update (the call would know it twice).
+    expect(rig.updates.slice(updatesBefore).join("\n")).not.toContain("the integral operator has constant 1/2");
   });
   pass("b", "board voice, live", "what Carl says on the board goes into that chat's pi session (the agent hears it on its next turn)", async () => {
     const rig = need(fresh, "fresh board");
