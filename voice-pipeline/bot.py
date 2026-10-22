@@ -74,6 +74,8 @@ VAD_STOP_SECS = float(os.environ.get("VC_VAD_STOP_SECS", "0.2"))
 VAD_START_SECS = float(os.environ.get("VC_VAD_START_SECS", "0.2"))
 # No audio from the device for this long while "speaking" counts as silence (see run_call).
 AUDIO_IDLE_SECS = float(os.environ.get("VC_AUDIO_IDLE_SECS", "0.25"))
+# The longest a turn the turn model called unfinished waits in silence before it ends anyway (see run_call).
+TURN_STOP_TIMEOUT_SECS = float(os.environ.get("VC_TURN_STOP_TIMEOUT_SECS", "1.5"))
 
 
 def jlog(**o: Any) -> None:
@@ -215,6 +217,10 @@ async def run_call(connection, call: dict):
             # such turn (measured: speech end → the box's VAD stop 1.0–1.1 s late from Edge). Treat 0.25 s of no
             # audio as silence.
             audio_idle_timeout=AUDIO_IDLE_SECS,
+            # When Smart Turn calls a turn incomplete and nothing more comes, the turn still ends after this much
+            # silence. Pipecat's default 5 s was the whole tail: 5 of 24 turns waited exactly 5.0 s (questions with
+            # a trailing "?" the model read as unfinished). 1.5 s keeps room for a pause mid-thought.
+            user_turn_stop_timeout=TURN_STOP_TIMEOUT_SECS,
         ),
     )
     quiet = Quiet()
