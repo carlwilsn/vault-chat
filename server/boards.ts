@@ -13,6 +13,9 @@
 //   POST /api/v1/boards/<slug>/assets {data: base64 PNG/JPEG}
 //                                             → {src: "assets/<name>", w, h} — a file for an item
 //   GET  /api/v1/boards/<slug>/assets/<name>  → that file
+//   POST /api/v1/boards/<slug>/assets/copy {from, srcs: ["assets/<name>", …]}
+//                                             → {ok, copied} — another board's files, for items pasted from it
+//                                               (the same names: an asset's name never changes meaning)
 // Plain files in the vault's working copy: the box's sync cycle commits them,
 // like any other vault write, and the laptop gets them on its next pull. Every
 // path is a validated slug under `<vault>/boards/` (realpath-checked, so a
@@ -242,6 +245,33 @@ export function addAsset(vault: string, slug: string, body: any): Out {
   renameRetry(`${f}.tmp`, f);
   return { status: 200, body: { src: `${ASSETS_DIR}/${name}`, w: size.w, h: size.h } };
 }
+
+/** Copy assets from board `from` into board `slug` (the board's clipboard pasting items across boards). */
+export function copyAssets(vault: string, slug: string, body: any): Out {
+  const dir = boardDir(vault, slug);
+  if (!dir) return { status: validSlug(slug) ? 404 : 400, body: { error: validSlug(slug) ? "no such board" : "invalid board name" } };
+  const src = boardDir(vault, body?.from);
+  if (!src) return { status: 404, body: { error: "no such board to copy from" } };
+  const srcs: unknown = body?.srcs;
+  if (!Array.isArray(srcs) || srcs.length > MAX_COPY || !srcs.every((x) => typeof x === "string" && ASSET_RE.test(x) && !x.includes(".."))) return { status: 400, body: { error: "srcs: asset paths" } };
+  let copied = 0;
+  mkdirSync(join(dir, ASSETS_DIR), { recursive: true });
+  for (const a of new Set(srcs as string[])) {
+    const to = join(dir, a);
+    if (existsSync(to)) continue;
+    let buf: Buffer;
+    try {
+      buf = readFileSync(join(src, a));
+    } catch {
+      return { status: 404, body: { error: `not found: ${a}` } };
+    }
+    writeFileSync(`${to}.tmp`, buf);
+    renameRetry(`${to}.tmp`, to);
+    copied++;
+  }
+  return { status: 200, body: { ok: true, copied } };
+}
+const MAX_COPY = 400;
 
 export function assetFile(vault: string, slug: string, name: string): Out {
   const dir = boardDir(vault, slug);

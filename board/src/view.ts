@@ -27,6 +27,7 @@ import { Items, isDom, mathSize, release, renderPdfPage } from "./items";
 import { MATH_LAYOUT_W } from "../../src/inboxFormat";
 import { openInbox, inboxBadge, onShow, takeOpenInbox, type InboxHost, type ShowAck } from "./inbox";
 import { pillSpot, placeParts } from "./place";
+import { clipAssets, loadClip, makeClip, placeClip, saveClip } from "./clip";
 import { ChromeTaps, buttonName, isField, isTextField, redrawnSame, routeChrome } from "./chrome";
 import { blog, flushBoardLog, setStatSource, setTapSource } from "./log";
 import { mountVoicePill, voice, voiceButton } from "./voicePill";
@@ -177,7 +178,7 @@ const ID: Xf = { s: 1, ox: 0, oy: 0 };
 type ToolG =
   | { k: "draw"; id: number; touch: boolean; tool: Tool; color: string; w: number; style?: LineStyle; xy: number[]; minStep: number; pred: XY | null; raw: TP[]; scribAt: number }
   | { k: "erase"; id: number; touch: boolean; precise: boolean; last: XY; at: XY }
-  | { k: "lasso"; id: number; touch: boolean; poly: XY[]; sx: number; sy: number; far: number }
+  | { k: "lasso"; id: number; touch: boolean; poly: XY[]; sx: number; sy: number; far: number; held?: boolean }
   | { k: "xf"; id: number; touch: boolean; mode: "move" | "scale"; x0: number; y0: number; anchor: XY; c0: XY; xf: Xf };
 
 /** Toolbar icons (Phosphor, board/src/icons.ts): regular while idle; a pressed tool or an open panel shows its fill or duotone,
@@ -198,6 +199,9 @@ const SEP = '<span class="mx-1 h-6 w-px shrink-0 bg-sys-label/15"></span>';
 const POP = "pop material hairline shadow-pop absolute z-20 flex min-w-[220px] flex-col gap-3 rounded-[14px] p-3 text-foreground animate-pop-in origin-top";
 const SEG = "flex rounded-[9px] bg-sys-fill/15 p-0.5";
 const SEG_BTN = "h-8 flex-1 rounded-[7px] px-3 text-footnote font-medium text-sys-label/70 transition aria-pressed:bg-card aria-pressed:text-sys-label aria-pressed:shadow-sm";
+/** A long-press (the select tool's Paste, or selecting what is under it): held this long, within HOLD_SLOP css px. */
+const HOLD_MS = 500;
+const HOLD_SLOP = 8;
 const PILL = "inline-flex h-10 items-center gap-1.5 rounded-full px-4 text-subhead font-semibold transition active:scale-95";
 const TITLES: Record<Mode, string> = { pen: "Pen", hl: "Highlighter", erase: "Stroke eraser", cut: "Precise eraser", lasso: "Select" };
 
@@ -280,6 +284,12 @@ export class BoardView {
   private lctx: CanvasRenderingContext2D;
   private statusEl: HTMLElement;
   private selbar: HTMLElement;
+  /** The select tool's Paste, shown by a long-press on empty canvas, at that spot (`pasteAt`: canvas units). */
+  private pastebar: HTMLElement;
+  private pasteAt: XY | null = null;
+  /** A one-finger long-press waiting to fire (the select tool): the touch, where it landed. */
+  private touchHold: { id: number; x: number; y: number; t: number } | null = null;
+  private lassoHoldT = 0;
   private W = 0;
   private H = 0;
   private dpr = 1;
@@ -391,6 +401,7 @@ export class BoardView {
       <div class="tb-status material hairline shadow-float absolute left-[max(12px,env(safe-area-inset-left))] top-[calc(max(12px,env(safe-area-inset-top))+64px)] z-10 hidden rounded-full px-3.5 py-1.5 text-footnote font-medium text-[rgb(var(--sys-red))]"></div>
       <div class="${POP}" hidden></div>
       <div class="selbar absolute z-10 flex gap-1 rounded-full bg-[rgb(28_28_30/0.92)] p-1 text-white shadow-pop backdrop-blur-xl animate-pop-in" hidden></div>
+      <div class="pastebar absolute z-10 flex gap-1 rounded-full bg-[rgb(28_28_30/0.92)] p-1 text-white shadow-pop backdrop-blur-xl animate-pop-in" hidden><button data-act="paste" class="${PILL}">${icon("clipboard", 18)}<span>Paste</span></button></div>
       <input class="file" type="file" accept="image/*" hidden>`;
     this.stage = this.el.querySelector(".stage")!;
     this.base = this.el.querySelector("canvas.base")!;
@@ -406,6 +417,7 @@ export class BoardView {
     this.lctx = this.live.getContext("2d", { desynchronized: true } as CanvasRenderingContext2DSettings)!;
     this.statusEl = this.el.querySelector(".tb-status")!;
     this.selbar = this.el.querySelector(".selbar")!;
+    this.pastebar = this.el.querySelector(".pastebar")!;
     (this.el.querySelector(".tb-name") as HTMLElement).textContent = board.name;
 
     // The click that follows a tap its pointerup already pressed is dropped before anything sees it — wherever it
@@ -579,6 +591,7 @@ export class BoardView {
   /** The camera moved: blit now, re-render crisply when it settles. */
   private camMoved(): void {
     this.gesturing = true;
+    this.hidePaste();
     this.renderBase();
     this.queueLive();
     clearTimeout(this.settleT);
@@ -1070,14 +1083,16 @@ export class BoardView {
       this.selbar.dataset.k = "";
       return;
     }
-    // Delete, and Interact when the selection is one widget; Done while a widget is being used.
+    // Cut, Copy and Delete, and Interact when the selection is one widget; Done while a widget is being used.
     const one = this.sel && this.sel.items.size === 1 && !this.sel.strokes.size ? [...this.sel.items][0]! : null;
     const k = this.interact ? "done" : one?.kind === "widget" ? "widget" : "plain";
     if (this.selbar.dataset.k !== k) {
       this.selbar.dataset.k = k;
       const pill = (act: string, ic: IconName, label: string, tone = "") => `<button data-act="${act}" class="${PILL} ${tone}">${icon(ic, 18)}<span>${label}</span></button>`;
       this.selbar.innerHTML =
-        k === "done" ? pill("interact-done", "check", "Done", "bg-sys-blue text-white") : (k === "widget" ? pill("interact", "hand-pointing", "Interact") : "") + pill("delete", "trash", "Delete", "text-[rgb(255_105_97)]");
+        k === "done"
+          ? pill("interact-done", "check", "Done", "bg-sys-blue text-white")
+          : (k === "widget" ? pill("interact", "hand-pointing", "Interact") : "") + pill("cut", "scissors", "Cut") + pill("copy", "copy", "Copy") + pill("delete", "trash", "Delete", "text-[rgb(255_105_97)]");
     }
     this.selbar.hidden = false;
     // Centred above it at a fixed gap (clear of its handles); below when there is no room above; inside the view,
@@ -1300,6 +1315,7 @@ export class BoardView {
     if (routeChrome(this.chrome, ce, this.stage.contains(e.target as Node), () => this.chromeButton(type === "down" ? e.target : document.elementFromPoint(e.clientX, e.clientY)))) return;
     if (type === "down") {
       e.preventDefault();
+      this.hidePaste();
       this.closePop();
       if (this.interact) this.setInteract(null);
       cancelAnimationFrame(this.momentum);
@@ -1307,6 +1323,7 @@ export class BoardView {
     this.domEv = e;
     for (const a of this.arb.handle(pe)) this.act(a);
     this.domEv = null;
+    if (kind === "touch") this.fingerHold(pe);
     if (DEBUG_TOUCH && kind === "touch") this.queueLive();
   }
 
@@ -1426,7 +1443,15 @@ export class BoardView {
         this.lift();
       } else {
         this.setSel(null);
-        this.g = { k: "lasso", id: ev.id, touch, poly: [p], sx: ev.x, sy: ev.y, far: 0 };
+        const g: ToolG = { k: "lasso", id: ev.id, touch, poly: [p], sx: ev.x, sy: ev.y, far: 0 };
+        this.g = g;
+        // Held still: on an object it selects it; on empty canvas, Paste.
+        clearTimeout(this.lassoHoldT);
+        this.lassoHoldT = window.setTimeout(() => {
+          if (this.g !== g || g.far >= HOLD_SLOP || this.disposed) return;
+          g.held = true;
+          this.held(p, { x: g.sx, y: g.sy });
+        }, HOLD_MS);
       }
     }
     this.queueLive();
@@ -1474,6 +1499,7 @@ export class BoardView {
     } else if (g.k === "erase") {
       for (const q of this.samples(ev)) this.eraseTo(q);
     } else if (g.k === "lasso") {
+      if (g.held) return;
       for (const q of this.samples(ev)) g.poly.push(q);
       g.far = Math.max(g.far, Math.hypot(ev.x - g.sx, ev.y - g.sy));
     } else if (g.k === "xf") {
@@ -1531,7 +1557,8 @@ export class BoardView {
       return;
     }
     if (g.k === "lasso") {
-      if (drop) return this.queueLive();
+      clearTimeout(this.lassoHoldT);
+      if (drop || g.held) return this.queueLive();
       const p = g.poly[g.poly.length - 1]!;
       if (g.far < 8) this.tapSelect(p);
       else {
@@ -1721,6 +1748,10 @@ export class BoardView {
     // Typing in a field (a name, a widget's text box): Backspace and ⌘Z are the field's, never the board's.
     if (isTextField(e.target) || isTextField(document.activeElement)) return;
     if ((e.key === "Delete" || e.key === "Backspace") && this.sel) return this.deleteSel();
+    if ((e.ctrlKey || e.metaKey) && this.sel && (e.key.toLowerCase() === "c" || e.key.toLowerCase() === "x")) {
+      e.preventDefault();
+      return e.key.toLowerCase() === "x" ? this.cutSel() : void this.copySel();
+    }
     if (!(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== "z") return;
     e.preventDefault();
     if (e.shiftKey) this.redo();
@@ -1818,6 +1849,110 @@ export class BoardView {
     this.invalidate(box);
     this.renderBase();
     this.queueLive();
+  }
+
+  // ------------------------------------------------------------ the clipboard (clip.ts)
+
+  /** Copy: the selection (ink and items, as they lie, their style) onto the board clipboard; it stays selected. */
+  private copySel(): boolean {
+    const sel = this.sel, box = this.selBox();
+    if (!sel || !box) return false;
+    const ok = saveClip(makeClip(this.slug, sel.strokes, sel.items, box));
+    if (!ok) this.setStatus("unsaved", "Couldn't copy · storage full");
+    blog("board.copy", { strokes: sel.strokes.size, items: sel.items.size, ok });
+    return ok;
+  }
+
+  /** Cut: Copy, then Delete (one undo step). */
+  private cutSel(): void {
+    if (this.copySel()) this.deleteSel();
+  }
+
+  /** A still press held HOLD_MS (the select tool): on an object it selects it; on empty canvas it offers Paste. */
+  private held(p: XY, at: XY): void {
+    if (this.objectAt(p)) {
+      this.tapSelect(p);
+      return;
+    }
+    this.setSel(null);
+    if (!loadClip()) return;
+    this.pasteAt = p;
+    const b = this.pastebar;
+    b.hidden = false;
+    // Centred above the press (clear of the finger); below it when there is no room above.
+    const w = b.offsetWidth, h = b.offsetHeight;
+    const x = clamp(at.x - w / 2, 8, this.W - w - 8);
+    const y = at.y - h - 28 >= TOP ? at.y - h - 28 : at.y + 28;
+    b.style.left = `${x}px`;
+    b.style.top = `${y}px`;
+    b.dataset.at = `${Math.round(at.x)},${Math.round(at.y)}`;
+  }
+
+  private hidePaste(): void {
+    if (this.pastebar.hidden) return;
+    this.pastebar.hidden = true;
+    this.pasteAt = null;
+  }
+
+  private objectAt(p: XY): boolean {
+    return !!this.strokeAt(p) || this.board.items.some((it) => p.x >= it.x && p.x <= it.x + it.w && p.y >= it.y && p.y <= it.y + it.h);
+  }
+
+  /** One finger held still on the canvas with the select tool: the arbiter says whether it is a deliberate press. */
+  private fingerHold(e: PEvent): void {
+    const h = this.touchHold;
+    if (e.type === "down") {
+      if (h) {
+        clearTimeout(h.t);
+        this.touchHold = null;
+        return; // a second finger: a gesture
+      }
+      if (this.prefs.mode !== "lasso" || this.g) return;
+      const id = e.id;
+      this.touchHold = {
+        id,
+        x: e.x,
+        y: e.y,
+        t: window.setTimeout(() => {
+          this.touchHold = null;
+          if (this.disposed || this.g || this.prefs.mode !== "lasso" || !this.arb.hold(id, performance.now())) return;
+          this.held(this.toWorld(e.x, e.y), { x: e.x, y: e.y });
+        }, HOLD_MS),
+      };
+      return;
+    }
+    if (!h || h.id !== e.id) return;
+    if (e.type === "move" && Math.hypot(e.x - h.x, e.y - h.y) <= HOLD_SLOP) return;
+    clearTimeout(h.t);
+    this.touchHold = null;
+  }
+
+  /** Paste: the clipboard centred where Paste was asked for, selected; its files copied first from another board. One undo step. */
+  private async paste(): Promise<void> {
+    const at = this.pasteAt, c = loadClip();
+    this.hidePaste();
+    if (!at || !c) return;
+    const need = clipAssets(c, this.slug);
+    if (need.length) {
+      try {
+        await api.copyAssets(this.slug, c.from, need);
+      } catch (err) {
+        this.setStatus("unsaved", "Couldn't paste · its files are not there");
+        blog("board.paste", { ok: false, from: c.from, error: String((err as Error)?.message ?? err).slice(0, 120) });
+        return;
+      }
+      if (this.disposed) return;
+    }
+    const { strokes, items } = placeClip(c, at, rid);
+    this.begin();
+    this.board.strokes.push(...strokes);
+    this.board.items.push(...items);
+    this.commit();
+    for (const it of items) this.loadImage(it);
+    this.renderBase();
+    this.setMode("lasso");
+    this.setSel({ strokes: new Set(strokes), items: new Set(items) });
+    blog("board.paste", { ok: true, strokes: strokes.length, items: items.length, across: c.from !== this.slug });
   }
 
   // ------------------------------------------------------------ edits & undo
@@ -2037,7 +2172,10 @@ export class BoardView {
   private setMode(m: Mode): void {
     if (this.prefs.mode !== m) blog("tool", { tool: m });
     this.prefs.mode = m;
-    if (m !== "lasso") this.setSel(null);
+    if (m !== "lasso") {
+      this.setSel(null);
+      this.hidePaste();
+    }
     this.savePrefs();
     this.syncToolbar();
   }
@@ -2117,6 +2255,9 @@ export class BoardView {
     } else if (d.act === "undo") this.undo();
     else if (d.act === "redo") this.redo();
     else if (d.act === "delete") this.deleteSel();
+    else if (d.act === "copy") this.copySel();
+    else if (d.act === "cut") this.cutSel();
+    else if (d.act === "paste") void this.paste();
     else if (d.act === "interact") {
       const one = this.sel && [...this.sel.items][0];
       if (one) this.setInteract(one.id);

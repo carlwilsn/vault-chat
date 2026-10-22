@@ -23,7 +23,7 @@ import PHONE_SW_INLINE from "../src-tauri/assets/phone-sw.js?raw";
 import ICON_PNG_INLINE from "../src-tauri/assets/icon-apple-touch.png";
 import PHONE_APP from "vc:phone-app";
 import BOARD_APP from "vc:board-app";
-import { addAsset, assetFile, createBoard, deleteBoard, getBoard, getHistory, listBoards, overviewPng, renameBoard, saveBoard } from "./boards";
+import { addAsset, assetFile, copyAssets, createBoard, deleteBoard, getBoard, getHistory, listBoards, overviewPng, renameBoard, saveBoard } from "./boards";
 import { addToBoard, getEntry, listEntries, markAdded, markRead, partFile, sendEntry, type InboxCtx } from "./inbox";
 import { boxLogs } from "./boxLogs";
 import { ackShow, feedOpened } from "./show";
@@ -478,6 +478,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
     let out: { status: number; body: unknown; file?: Buffer; mime?: string; headers?: Record<string, string> };
     if (path === "/api/v1/boards" && method === "GET") out = { status: 200, body: { boards: listBoards(vault) } };
     else if (path === "/api/v1/boards" && method === "POST") out = createBoard(vault, (await jsonBody(req)).name);
+    else if (file === "assets" && more === "copy" && rest.length === 0 && method === "POST") out = copyAssets(vault, slug, await jsonBody(req));
     else if (file === "assets" && more && rest.length === 0 && method === "GET") out = assetFile(vault, slug, more);
     else if (file === "assets" && more === undefined && method === "POST") out = addAsset(vault, slug, await jsonBody(req));
     else if (file === "rename" && more === undefined && method === "POST") out = renameBoard(vault, slug, await jsonBody(req));

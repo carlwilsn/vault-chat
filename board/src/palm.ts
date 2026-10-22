@@ -150,6 +150,21 @@ export class Arbiter {
     return below && (this.settings.hand === "left" ? e.x - p.x < P.HAND_MARGIN : p.x - e.x < P.HAND_MARGIN);
   }
 
+  /**
+   * A one-finger long-press (the select tool's Paste, view.ts asks when its timer fires): true when touch `id` is
+   * the only contact, finger-sized, has not moved, and its sequence is clean — no palm, no pair, the pen not down,
+   * hovering or just lifted, and it did not land on the writing hand's side. Once it holds, the sequence is done:
+   * moving or lifting that finger does nothing more.
+   */
+  hold(id: number, t: number): boolean {
+    const tc = this.touches.get(id), s = this.seq;
+    if (!tc || !s || this.touches.size !== 1 || s.poisoned || s.done || s.suspect || tc.movedAt || tc.size >= P.PALM_MIN) return false;
+    if (this.locked(t) || s.view?.committed || this.tool) return false;
+    s.done = true;
+    s.view = null;
+    return true;
+  }
+
   handle(e: PEvent): Action[] {
     if (e.kind === "pen") return this.pen(e);
     if (e.kind === "mouse") return this.mouse(e);

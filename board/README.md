@@ -128,7 +128,15 @@ Stroke / Precise and its size, both remembered): stroke eraser (removes a stroke
 on the circle's edge so their round caps stay clean; `src/geom.ts`), each with
 its own size and its circle shown while erasing; select (lasso ink and items
 together, or tap an item or a stroke; drag to move, corner handles to scale
-uniformly: 12 px handles, 44 px hit areas; Delete, and Interact for a widget). Every gesture is one undo step. The board menu (⋯) holds
+uniformly: 12 px handles, 44 px hit areas; the pill: Cut, Copy, Delete, and Interact for a widget). Every gesture is one undo step.
+**The clipboard** (`src/clip.ts`): Copy puts the selection (ink and items, as they lie, with their colours, widths and
+line styles) on the board clipboard, kept in localStorage so it pastes on any board on the device (⌘C/⌘X too); Cut
+is Copy and Delete as one undo step. With the select tool, a long-press (500 ms, still) on empty canvas shows a small
+Paste pill there (a long-press on ink or an item selects it instead): Paste places the clipboard centred on that spot,
+selected, one undo step. The Pencil, a finger or the mouse; a finger's press is the arbiter's (`palm.ts` hold: one
+finger-sized contact, not moved, no pen near, not on the writing hand's side), so a palm never offers it. Items pasted
+from another board bring their files: `POST /api/v1/boards/<slug>/assets/copy {from, srcs}` copies them into this
+board's assets under the same names first. Proof: `board/preview/clipboard.mjs`, `test/harness/board-clip.test.ts`. The board menu (⋯) holds
 Insert image, Background, Writing hand and Scribble to erase (on by default).
 
 The floating controls (`view.ts` layoutChrome): undo and redo upper left, with the board's name when a few words

@@ -133,6 +133,27 @@ describe("boards", () => {
     expect((await get("/api/v1/boards/lecture-3-fourier/assets/..%2F..%2F..%2Fsecret.md")).status).toBe(404);
   });
 
+  it("copies another board's assets for pasted items (same names), and only real asset paths between real boards", async () => {
+    const up = await (await post("/api/v1/boards/lecture-3-fourier/assets", { data: `data:image/png;base64,${PNG}` })).json();
+    writeFileSync(join(vault, "boards", "lecture-3-fourier", "assets", "m1.html"), "<span>x</span>");
+    const to = (await (await post("/api/v1/boards", { name: "Paste target" })).json()).slug as string;
+    const r = await post(`/api/v1/boards/${to}/assets/copy`, { from: "lecture-3-fourier", srcs: [up.src, "assets/m1.html", up.src] });
+    expect(r.status).toBe(200);
+    expect(await r.json()).toEqual({ ok: true, copied: 2 });
+    expect(readFileSync(join(vault, "boards", to, up.src))).toEqual(readFileSync(join(vault, "boards", "lecture-3-fourier", up.src)));
+    expect((await get(`/api/v1/boards/${to}/assets/m1.html`)).status).toBe(200);
+    // Again: already there, nothing copied.
+    expect(await (await post(`/api/v1/boards/${to}/assets/copy`, { from: "lecture-3-fourier", srcs: [up.src] })).json()).toEqual({ ok: true, copied: 0 });
+    // A pasted item pointing at the copy saves.
+    const board = (await (await get(`/api/v1/boards/${to}`)).json()) as any;
+    board.items.push({ id: "p1", kind: "image", x: 0, y: 0, w: 10, h: 10, src: up.src });
+    expect((await post(`/api/v1/boards/${to}`, { board, base: board.rev })).status).toBe(200);
+    expect((await post(`/api/v1/boards/${to}/assets/copy`, { from: "lecture-3-fourier", srcs: ["assets/../board.json"] })).status).toBe(400);
+    expect((await post(`/api/v1/boards/${to}/assets/copy`, { from: "../x", srcs: [up.src] })).status).toBe(404);
+    expect((await post(`/api/v1/boards/${to}/assets/copy`, { from: "lecture-3-fourier", srcs: ["assets/nope.png"] })).status).toBe(404);
+    expect((await post("/api/v1/boards/no-such-board/assets/copy", { from: "lecture-3-fourier", srcs: [up.src] })).status).toBe(404);
+  });
+
   it("renames a board, and deletes one by moving it to boards/.trash", async () => {
     const { slug } = (await (await post("/api/v1/boards", { name: "To go" })).json()) as any;
     expect((await (await post(`/api/v1/boards/${slug}/rename`, { name: "Renamed" })).json()).name).toBe("Renamed");

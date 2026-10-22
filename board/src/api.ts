@@ -60,6 +60,9 @@ export const saveBoard = (slug: string, board: Board, base: number, overview?: s
   call<{ ok: true; rev: number; updated: number }>(`/api/v1/boards/${enc(slug)}`, { method: "POST", body: JSON.stringify({ board, base, overview, history, view }) });
 /** The undo and redo saved with the board (rev -1 when there are none). */
 export const getHistory = (slug: string) => call<BoardHistory>(`/api/v1/boards/${enc(slug)}/history`);
+/** Copy another board's files into this one (items pasted from it keep their names). */
+export const copyAssets = (slug: string, from: string, srcs: string[]) =>
+  call<{ ok: true; copied: number }>(`/api/v1/boards/${enc(slug)}/assets/copy`, { method: "POST", body: JSON.stringify({ from, srcs }) });
 /** Store an image (base64 PNG/JPEG) in the board folder, for an item. */
 export const addAsset = (slug: string, data: string) => call<{ src: string; w: number; h: number }>(`/api/v1/boards/${enc(slug)}/assets`, { method: "POST", body: JSON.stringify({ data }) });
 
