@@ -28,7 +28,7 @@ In the chat pane:
 
 > read code/log_parser.py and refactor it: type hints, defaultdict, pathlib instead of open(), and add a `--threshold` CLI flag that filters endpoints with fewer than N errors.
 
-The agent reads the file, plans the changes, and writes the new version. Open it back up and you'll see all the requested changes applied in one shot. (Open Ctrl+H to compare against the original — it's still there in git history.)
+The agent reads the file, plans the changes, and writes the new version. Open it back up and you'll see all the requested changes applied in one shot.
 
 The keybinds are universal: Ctrl+K to rewrite, Ctrl+L to ask, chat to delegate larger work. Same flow you've used on prose for the last few notes.
 

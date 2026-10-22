@@ -6,7 +6,7 @@ A real shell window opens in the current vault's directory. Windows: `cmd`. Mac:
 
 Why it's useful:
 
-- `git log`, `git diff`, `git status` — when you want to see what the auto-commit machinery has been doing without opening Ctrl+H.
+- `git log`, `git diff`, `git status` — when you want to see what the auto-commit machinery has been doing.
 - Run a Python script that lives in your vault. Pipe a note through `pandoc`. Whatever shell glue you reach for.
 - The agent's `Bash` tool already runs in this same directory, so anything you do here is the same environment the agent sees.
 
