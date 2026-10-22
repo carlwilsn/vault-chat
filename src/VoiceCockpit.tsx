@@ -70,7 +70,7 @@ export function VoiceMicGroup() {
       }}
     >
       <button
-        onClick={toggleVoice}
+        onClick={() => toggleVoice("titlebar mic")}
         disabled={!vaultPath}
         data-el="voice-mic"
         className={`h-7 w-7 flex items-center justify-center rounded hover:bg-accent/60 relative z-10 bg-card disabled:opacity-40 ${

@@ -275,7 +275,7 @@ export function VoiceTextPanel() {
           onMouseDown={(e) => e.stopPropagation()}
           onClick={() => {
             setOpen(false);
-            void endElevenLabsSession();
+            void endElevenLabsSession("text panel");
           }}
           className="h-5 w-5 flex items-center justify-center rounded hover:bg-accent/60 hover:text-foreground"
           title="End voice mode"

@@ -426,7 +426,7 @@ export default function App() {
     const onKey = (e: KeyboardEvent) => {
       if (hit(e, "voice.toggle")) {
         e.preventDefault();
-        toggleVoice();
+        toggleVoice("ctrl+d");
       }
       // Ctrl+Shift+M: mute / unmute a live call (the composer's Mute button). No call: the key is left alone.
       if (hit(e, "voice.mute") && !e.repeat && toggleVoiceMute()) e.preventDefault();

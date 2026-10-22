@@ -110,7 +110,8 @@ Speech:
  *  and the voice sits idle through it — ElevenLabs' turn timeout can't be switched off (1–30 s), so the
  *  re-engage it still sends is answered with skip_turn, which then waits silently until he speaks. */
 export const VOICE_SILENCE_RULE = `CRITICAL — silence means idle. Carl is often quiet for minutes: writing on the board, reading, working a problem, thinking. That is not him leaving and not a cue for you.
-- When you get a turn and Carl has said nothing new since you last spoke — only silence, or only [vc:context] updates and heads-ups — call skip_turn and say nothing at all. Every time, however long the silence: the first time, the tenth time, after a minute or after an hour.
+- When Carl says something to you — a greeting ("hey", "hello?"), a question, a request, anything addressed to you — always answer, at once, even right after a long silence, a reconnect or a new session. skip_turn is only for turns where he has said nothing to you.
+- When you get a turn and Carl has said nothing new since you last spoke — only silence, an empty or unintelligible transcript ("…"), or only [vc:context] updates and heads-ups — call skip_turn and say nothing at all. Every time, however long the silence: the first time, the tenth time, after a minute or after an hour.
 - Never check in or fill silence: no "are you still there?", "let me know when you're back", "take your time", "I'm here if you need me", "still working on it?", no recap, no filler sound.
 - [vc:context] updates (the board, what he's looking at, his screen, what he did elsewhere) arrive silently while he works: never answer them aloud and never take a turn for them; just know them, so you're up to date when he speaks again.
 - A [vc:result] or [vc:question] is different: it is news he is waiting for, so tell him (see below).

@@ -423,3 +423,34 @@ test("dropouts: the monitor reads getStats while the agent speaks, logs the repl
   assert.deepEqual(play.map(([, d]) => d.phase), ["start", "stop"]);
   assert.equal(play[1]![1].dropouts, 1);
 });
+
+// ---- Carl, 2026-10-21: "it hung up when I switched layouts", then "Hello?" got nothing --------------------
+test("layout: fullscreen chat, the panel and the popout toggled during a call keep the same session", async () => {
+  const c = await startCall(windows({ def: INTEL, comm: INTEL }));
+  const closed = tagged("voice closed").length;
+  try {
+    const st = useStore.getState() as any;
+    useStore.setState({ chatFullscreen: true } as any);
+    st.toggleChatSidebar?.();
+    useStore.setState({ chatFullscreen: false } as any);
+    st.toggleChatSidebar?.();
+    useStore.setState({ popoutOpen: true } as any);
+    useStore.setState({ popoutOpen: false } as any);
+    await wait(20);
+    assert.ok(voice.isVoiceSessionActive(), "still live");
+    assert.equal(calls[calls.length - 1], c, "no new session");
+    assert.equal(calls.length, 1);
+    assert.equal(tagged("voice closed").length, closed, "nothing closed it");
+  } finally {
+    await voice.endElevenLabsSession("test");
+  }
+  // Who ended a call is in the log (a "user" close used to say nothing about which button).
+  assert.equal(tagged("voice end").pop()!.data.by, "test");
+});
+
+test("silence rule: a greeting or a question always gets an answer; skip_turn only when he said nothing to the voice", async () => {
+  const { VOICE_SILENCE_RULE } = await import("../../src/voicePrompt.ts");
+  assert.match(VOICE_SILENCE_RULE, /a greeting \("hey", "hello\?"\), a question, a request, anything addressed to you — always answer/);
+  assert.match(VOICE_SILENCE_RULE, /skip_turn is only for turns where he has said nothing to you/);
+  assert.match(VOICE_SILENCE_RULE, /an empty or unintelligible transcript/);
+});

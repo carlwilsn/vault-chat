@@ -8,7 +8,7 @@
 // SSH. The board's voice lines go to board.jsonl by its own log (board/src/log.ts).
 
 /** The lines worth shipping (the rest stay in the device's local trail). */
-export const SHIPPED = /^voice (dropout|mic|output|devices|closed|turn|silent playback|playback|filler in silence|long task|audio|connected|session|transport|interruption|media device|connection poor)/;
+export const SHIPPED = /^voice (end|start|dropout|mic|output|devices|closed|turn|silent playback|playback|filler in silence|long task|audio|connected|session|transport|interruption|media device|connection poor)/;
 
 export type ShipBody = { source: "voice"; device: string; session: string; v?: string; events: { at: string; ev: string; [k: string]: unknown }[] };
 

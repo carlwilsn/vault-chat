@@ -1242,7 +1242,7 @@ export function ChatPane() {
                 {chatFullscreen && (
                   <button
                     // Voice runs in the main window (the popout's mic asks it).
-                    onClick={isPopout ? () => dispatchChatAction({ kind: "toggleVoice" }) : toggleVoice}
+                    onClick={isPopout ? () => dispatchChatAction({ kind: "toggleVoice" }) : () => toggleVoice("mic button")}
                     disabled={!vaultPath}
                     data-el="composer-voice"
                     className={cn(
@@ -1513,16 +1513,27 @@ export const MessageBubble = memo(function MessageBubble({
   );
 });
 
-// A line said on a voice call: a compact voice turn, smaller and lighter than a typed bubble. Carl's words and
-// the voice's replies sit in one column under a small mic; consecutive lines are one turn (only the first has
-// the mic, and they sit close).
+// A line said on a voice call looks like the thread around it (Carl, 2026-10-21: the separate "YOU" voice style
+// looked broken next to the bubbles): his spoken words are his bubble, the voice's replies are agent text, each
+// with a tiny mic so a spoken line is still told apart from a typed one.
 function VoiceLine({ message, cont }: { message: ChatMessage; cont: boolean }) {
   const isUser = message.role === "user";
+  const mic = <Mic className={cn("inline h-2.5 w-2.5 shrink-0", isUser ? "opacity-70" : "text-muted-foreground/70")} aria-label="said aloud" />;
+  if (isUser)
+    return (
+      <div className={cn("flex flex-col items-end", cont && "-mt-1")} data-el="voice-line" data-role="user">
+        <div className="max-w-[85%] rounded-2xl rounded-br-md bg-primary/90 text-primary-foreground px-3.5 py-2 text-[13px] leading-relaxed break-words overflow-hidden prose-user flex items-start gap-1.5">
+          <span className="pt-[5px]">{mic}</span>
+          <div className="min-w-0">
+            <Markdown source={message.display ?? message.content} profile="user" components={chatComponents} />
+          </div>
+        </div>
+      </div>
+    );
   return (
-    <div className={cn("flex items-start gap-1.5 text-[12px] leading-snug", cont && "-mt-2")} data-el="voice-line" data-role={message.role}>
-      <span className="w-3.5 shrink-0 pt-[3px] text-muted-foreground/70">{cont ? null : <Mic className="h-3 w-3" aria-label="voice" />}</span>
-      <div className={cn("min-w-0 flex-1 break-words", isUser ? "text-foreground/80" : "text-muted-foreground")}>
-        {isUser && <span className="mr-1 text-[10.5px] font-medium uppercase tracking-wide text-muted-foreground/60">You</span>}
+    <div className={cn("w-full flex items-start gap-1.5", cont && "-mt-1")} data-el="voice-line" data-role={message.role}>
+      <span className="pt-[6px]">{mic}</span>
+      <div className="min-w-0 flex-1">
         <Markdown source={message.display ?? message.content} profile="chat" components={chatComponents} />
       </div>
     </div>

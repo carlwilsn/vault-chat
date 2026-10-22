@@ -481,7 +481,7 @@ export async function startElevenLabsSession(opts?: { recap?: string }): Promise
           // judgment. Conservative whitelist — won't match
           // ambiguous "I'm done talking about it" style phrases.
           if (looksLikeEnd(text)) {
-            void endElevenLabsSession();
+            void endElevenLabsSession("he said goodbye");
           }
         } else if (role === "agent") {
           const filler = text === SOFT_TIMEOUT_MESSAGE;
@@ -580,7 +580,7 @@ export async function startElevenLabsSession(opts?: { recap?: string }): Promise
       onMoved: (m) => {
         if (activeConversation !== conv) return;
         vlog("voice moved away", { to: m.to });
-        void endElevenLabsSession().finally(() => {
+        void endElevenLabsSession("moved to another device").finally(() => {
           useStore.setState({ voiceNotice: m.line });
           // Said for a while, not forever (the other device's call may end too).
           const t = setTimeout(() => useStore.getState().voiceNotice === m.line && useStore.setState({ voiceNotice: null }), 60_000);
@@ -790,7 +790,11 @@ function reportVoiceError(message: string): void {
   });
 }
 
-export async function endElevenLabsSession(): Promise<void> {
+/** Ends the call. `by` says who ended it, in the log ("voice end"): a close with reason "user" is always one of
+ *  these, and Carl's "it hung up when I switched layouts" (2026-10-21) could not say which. Nothing on a layout
+ *  change calls this: the call is this module's, not a component's. */
+export async function endElevenLabsSession(by = "app"): Promise<void> {
+  if (activeConversation) vlog("voice end", { by });
   if (scrollDebounceTimer !== null) {
     clearTimeout(scrollDebounceTimer);
     scrollDebounceTimer = null;
@@ -837,13 +841,14 @@ export async function endElevenLabsSession(): Promise<void> {
 /** The mic button and Ctrl+D: start a session, or end the live one. voiceMode
  *  goes on at once so the click shows; startElevenLabsSession's error paths and
  *  onDisconnect turn it off again. */
-export function toggleVoice(): void {
+export function toggleVoice(by: string = "toggle"): void {
   if (!useStore.getState().voiceMode) {
+    vlog("voice start", { by: typeof by === "string" ? by : "toggle" });
     // A retry: the red waves go back to normal while it connects.
     useStore.setState({ voiceMode: true, voiceError: null });
     void startElevenLabsSession();
   } else {
-    void endElevenLabsSession();
+    void endElevenLabsSession(typeof by === "string" ? by : "toggle");
   }
 }
 

@@ -155,7 +155,7 @@ function applyActionLocal(a: ChatAction) {
   else if (a.kind === "selectConversation") useStore.getState().selectConversation(a.id);
   else if (a.kind === "deleteConversation") void useStore.getState().deleteConversation(a.id);
   else if (a.kind === "markAllRead") useStore.getState().markAllRead();
-  else if (a.kind === "toggleVoice") toggleVoice();
+  else if (a.kind === "toggleVoice") toggleVoice("popout");
   else if (a.kind === "openProjectNotes") {
     // From the popout: main has the viewer, so it opens here and comes forward.
     void openProjectNotes(a.slug, a.name).then(() => WebviewWindow.getByLabel(MAIN_LABEL).then((w) => w?.setFocus()).catch(() => {}));
