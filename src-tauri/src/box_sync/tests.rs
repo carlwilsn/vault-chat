@@ -684,3 +684,23 @@ fn bench_box_sync() {
         time(&format!("idle after typical {}", i));
     }
 }
+
+#[test]
+fn network_failures_are_unreachable_and_git_errors_are_not() {
+    for e in [
+        "fatal: unable to access 'https://box/git/v.git/': Could not resolve host: box",
+        "error: RPC failed; curl 56 Recv failure: Connection reset by peer\nfatal: the remote end hung up unexpectedly",
+        "fatal: early EOF",
+        "git timed out after 120s: git fetch box",
+        "fatal: unable to access 'https://box/git/v.git/': The requested URL returned error: 502",
+    ] {
+        assert_eq!(classify_error(e), "unreachable", "{e}");
+    }
+    for e in [
+        "error: pathspec '502.md' did not match any file(s) known to git",
+        "CONFLICT (content): Merge conflict in notes/503.md",
+        "fatal: Unable to create '.git/index.lock': File exists.",
+    ] {
+        assert_eq!(classify_error(e), "git", "{e}");
+    }
+}
