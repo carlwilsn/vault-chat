@@ -101,7 +101,7 @@ test("Ctrl+/ (Cmd+/ on a Mac) opens the sheet; typing / does not", () => {
   assert.equal(hit(ev("/", {}, "Slash"), "view.shortcuts"), false, "a / typed in the composer starts a command, not the sheet");
   assert.equal(hit(ev("7", { ctrlKey: true }, "Slash"), "view.shortcuts"), true, "a layout where the / key types something else");
   assert.equal(hit(ev("h", { ctrlKey: true }), "view.shortcuts"), false);
-  assert.equal(hit(ev("h", { ctrlKey: true }), "files.history"), true, "Ctrl+H is still History");
+  assert.ok(!all.some((s) => s.keys.includes("Mod+H")), "Ctrl+H is bound to nothing (History was dropped)");
   // The sheet listens for it, and both windows mount the sheet.
   const sheet = readFileSync(join(root, "src/ShortcutSheet.tsx"), "utf8");
   assert.match(sheet, /hit\(e, "view\.shortcuts"\)/);

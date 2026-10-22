@@ -13,7 +13,6 @@ import DEFAULT_VOICE_MD from "../../../src-tauri/defaults/voice.md?raw";
 import DEFAULT_SUPERVISOR_MD from "../../../src-tauri/defaults/supervisor.md?raw";
 import DEFAULT_ASSISTANT_MD from "../../../src-tauri/defaults/assistant.md?raw";
 import { gitCommands } from "./memgit";
-import { historyCommands } from "./memhistory";
 import { miscCommands } from "./misc";
 import { hostCommands, windowCommand } from "./host";
 import { report } from "../overlay";
@@ -24,7 +23,6 @@ const table: Record<string, Fn> = {
   ...(fsCommands as Record<string, Fn>),
   ...(conversationCommands as Record<string, Fn>),
   ...gitCommands,
-  ...historyCommands,
   ...miscCommands,
   ...hostCommands,
   default_system_prompt: () => DEFAULT_SYSTEM_MD,

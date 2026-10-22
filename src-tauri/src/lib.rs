@@ -2,7 +2,6 @@ mod voice_server;
 mod boot_watch;
 mod agent_projects;
 mod box_sync;
-mod history;
 
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
@@ -6527,13 +6526,6 @@ pub fn run() {
             git_repo_root_for_file,
             git_log_subdir,
             git_file_at,
-            history::history_timeline,
-            history::history_note_versions,
-            history::history_file_at,
-            history::history_diff,
-            history::history_restore_note,
-            history::history_undo_entry,
-            history::history_redo_entry,
             vault_sync_status,
             vault_sync_set_remote,
             vault_sync_commit_local,

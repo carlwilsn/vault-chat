@@ -18,7 +18,6 @@ import { fileKind } from "./fileKind";
 import { landMarkdown, reportScroll } from "./scrollTarget";
 import { decodeTarget } from "./viewTarget";
 import { findVaultFileByTail, tryOpenLink } from "./linkNav";
-import { HistoryStrip, HistoryVersionView, useViewingVersion } from "./HistoryInline";
 import { noteEditedFile } from "./commit-controller";
 import { pushViewportContextDebounced } from "./voice-elevenlabs";
 import { applyDiskContent, pendingBoxText, registerDirty, setDiskChanged, useLiveFiles } from "./liveReload";
@@ -360,8 +359,8 @@ export function MarkdownView({ paneId }: Props) {
         lastSaved.current = value;
         // Tell the commit-controller this file is dirty; once the
         // user pauses for ~10 s, all the edits in the burst land as
-        // a single "edit foo.md" commit. Lets users see their own
-        // typing in History, not just the agent's writes.
+        // a single "edit foo.md" commit, so the vault's git history
+        // carries their own typing, not just the agent's writes.
         noteEditedFile(file);
       } catch (e) {
         console.error("autosave failed", e);
@@ -558,9 +557,6 @@ export function MarkdownView({ paneId }: Props) {
     return () => window.removeEventListener("keydown", onKey);
   }, [file, isActive]);
 
-  // History style C: a past version shown read-only in this pane.
-  const viewingVersion = useViewingVersion(file);
-
   // ScrollTo (voice) on a rendered markdown file: its heading, id or a phrase; the tool hears the outcome.
   const pendingScrollAnchor = useStore((s) => s.pendingScrollAnchor);
   useEffect(() => {
@@ -717,10 +713,7 @@ export function MarkdownView({ paneId }: Props) {
         </div>
       </div>
       )}
-      <HistoryStrip file={file} />
-      {viewingVersion ? (
-        <HistoryVersionView file={file} />
-      ) : showingEditor && kind === "markdown" ? (
+      {showingEditor && kind === "markdown" ? (
         <div className="flex-1 min-h-0">
           <LiveEditor
             value={content}

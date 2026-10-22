@@ -47,7 +47,7 @@ async function forceRefreshFileTree(vault: string): Promise<void> {
 
 // Two things run per vault, and neither is a setting:
 // - autosave for history: every open vault's root and nested repos are
-//   committed LOCALLY on a quiet interval (the history Ctrl+H reads). Nothing
+//   committed LOCALLY on a quiet interval (the vault's git history). Nothing
 //   is pushed or pulled.
 // - box sync: only when `.vault-chat/sync.json` names a box. The box cycle
 //   (box_sync.rs) commits locally first, then syncs with the box and backs up
@@ -329,7 +329,7 @@ async function doStartVaultSyncLoop(vault: string): Promise<void> {
 }
 
 // Autosave for history: no box, so no remote. The root and every nested repo
-// are committed locally on a quiet interval, so work is captured for Ctrl+H
+// are committed locally on a quiet interval, so work is captured in git
 // and the file-tree dirty dots clear. Nothing is pushed or pulled.
 function startAutosaveLoop(vault: string): void {
   let cancelled = false;

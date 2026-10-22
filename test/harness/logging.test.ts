@@ -96,7 +96,7 @@ test("client events: shortcuts only (never a typed character), and what the scre
   assert.equal(k("Control", { ctrlKey: true }), null);
   assert.equal(k("Enter", { ctrlKey: true }), "Ctrl+Enter");
 
-  const base = { file: "a.md", mode: "view", panes: 1, paneFile: "a.md", conv: null, fullscreen: false, popout: false, left: false, right: false, chatSidebar: false, settings: false, history: false, notes: false, chats: false, voice: false, voiceConnecting: false, voiceMuted: false, voiceError: null, voiceText: false, follow: false, box: "up", vault: "school2" } as any;
+  const base = { file: "a.md", mode: "view", panes: 1, paneFile: "a.md", conv: null, fullscreen: false, popout: false, left: false, right: false, chatSidebar: false, settings: false, notes: false, chats: false, voice: false, voiceConnecting: false, voiceMuted: false, voiceError: null, voiceText: false, follow: false, box: "up", vault: "school2" } as any;
   const evs = diffSnap(base, { ...base, file: "b.md", paneFile: "b.md", mode: "edit", conv: UUID, fullscreen: true, voice: true, voiceError: "mic denied", box: "down" });
   assert.deepEqual(
     evs.map((e) => [e.ev, e.data]),

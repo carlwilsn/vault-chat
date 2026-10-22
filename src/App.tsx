@@ -47,7 +47,6 @@ export default function App() {
   const noteComposer = useStore((s) => s.noteComposer);
   const showNotesPanel = useStore((s) => s.showNotesPanel);
   const setShowNotesPanel = useStore((s) => s.setShowNotesPanel);
-  const setShowHistory = useStore((s) => s.setShowHistory);
   const loadNotes = useStore((s) => s.loadNotes);
   const notesLoaded = useStore((s) => s.notesLoaded);
   const showChatsPanel = useStore((s) => s.showChatsPanel);
@@ -249,9 +248,6 @@ export default function App() {
         // chord exits.
         e.preventDefault();
         useStore.getState().toggleChatFullscreen();
-      } else if (hit(e, "files.history")) {
-        e.preventDefault();
-        setShowHistory(true);
       } else if (hit(e, "chat.new")) {
         // Ctrl+T — start a fresh chat. The browser/webview's native
         // "new tab" is already swallowed by Tauri, so we don't fight
@@ -269,7 +265,7 @@ export default function App() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [toggleMode, toggleLeft, toggleRight, currentFile, setTheme, openNoteComposer, setShowHistory, newConversation]);
+  }, [toggleMode, toggleLeft, toggleRight, currentFile, setTheme, openNoteComposer, newConversation]);
 
   // Lazy-load notes the first time a vault is active (or after a vault
   // switch, which resets notesLoaded).

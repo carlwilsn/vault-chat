@@ -6,7 +6,7 @@
 //   {"at":"2026-10-17T21:03:11.123Z","v":"0.6.45","ev":"file.open","path":"notes/a.md"}
 //
 // Recorded: the file opened, view/edit mode, the chat opened, fullscreen chat,
-// the popout, the sidebars, settings, history, notes, the chats panel, voice on
+// the popout, the sidebars, settings, notes, the chats panel, voice on
 // / off / errors, the box's reachability, window focus, and every keyboard
 // shortcut (the combination only, e.g. "Ctrl+K" — never a typed character).
 // Most come from one subscription to the store (what changed, not who changed
@@ -80,7 +80,6 @@ function snap(s: ReturnType<typeof useStore.getState>) {
     right: s.rightCollapsed,
     chatSidebar: s.chatSidebarOpen,
     settings: s.showSettings,
-    history: s.showHistory,
     notes: s.showNotesPanel,
     chats: s.showChatsPanel,
     voice: s.voiceMode,
@@ -112,7 +111,6 @@ export function diffSnap(a: Snap, b: Snap): { ev: string; data: Record<string, u
   flag("right", "sidebar.right.collapsed");
   flag("chatSidebar", "chat.sidebar");
   flag("settings", "settings");
-  flag("history", "history");
   flag("notes", "notes.panel");
   flag("chats", "chats.panel");
   flag("voice", "voice");

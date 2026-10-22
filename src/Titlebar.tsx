@@ -8,7 +8,6 @@ import { openChatPopout } from "./sync";
 import { gitInitIfNeeded } from "./git";
 import { stopAgent } from "./chat-controller";
 import { VoiceCockpit, VoiceMicGroup } from "./VoiceCockpit";
-import { HistoryRoot } from "./HistoryInline";
 import { subscribeBoxSync, openTailscale, boxSyncNow, type BoxSyncState } from "./vaultSync";
 import { openTerminal, subscribeTerminalNote, terminalBoxName, terminalTitle } from "./terminal";
 
@@ -28,8 +27,6 @@ export function Titlebar() {
     setShowNotesPanel,
     showNotesPanel,
     notes,
-    showHistory,
-    setShowHistory,
   } = useStore();
   const [hiddenOpen, setHiddenOpen] = useState(false);
   const [hiddenLines, setHiddenLines] = useState<string[]>([]);
@@ -278,7 +275,6 @@ export function Titlebar() {
         </div>
       </div>
     )}
-    <HistoryRoot open={showHistory} onClose={() => setShowHistory(false)} />
     </>
   );
 }

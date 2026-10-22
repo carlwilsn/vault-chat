@@ -14,7 +14,7 @@ export type ShortcutGroup =
   | "Voice"
   | "Views & windows"
   | "Editing"
-  | "Files & history"
+  | "Files"
   | "Box & diagnostics";
 
 /** The sheet's order (two balanced columns: Chat and Editing on the left). */
@@ -23,7 +23,7 @@ export const SHORTCUT_GROUPS: readonly ShortcutGroup[] = [
   "Editing",
   "Views & windows",
   "Voice",
-  "Files & history",
+  "Files",
   "Box & diagnostics",
 ];
 
@@ -70,7 +70,6 @@ export const SHORTCUTS = [
     files: [
       "src/App.tsx",
       "src/ShortcutSheet.tsx",
-      "src/HistoryModal.tsx",
       "src/ChatsPanel.tsx",
       "src/NotesPanel.tsx",
       "src/NotePopup.tsx",
@@ -94,9 +93,8 @@ export const SHORTCUTS = [
   { id: "edit.marquee", keys: ["Mod+M"], label: "Capture a region", group: "Editing", where: "a PDF, HTML page or image", files: ["src/MarkdownView.tsx"] },
   { id: "edit.confirm", keys: ["Enter"], label: "Confirm a name", group: "Editing", where: "rename, new project, a key", files: ["src/FileTree.tsx", "src/ChatsPanel.tsx", "src/ProjectChip.tsx", "src/SettingsPane.tsx"] },
 
-  // ---- Files & history
-  { id: "files.note", keys: ["Mod+N"], label: "New note", group: "Files & history", where: "anywhere, with a vault", files: ["src/App.tsx"] },
-  { id: "files.history", keys: ["Mod+H"], label: "History", group: "Files & history", where: "the main window", files: ["src/App.tsx"] },
+  // ---- Files
+  { id: "files.note", keys: ["Mod+N"], label: "New note", group: "Files", where: "anywhere, with a vault", files: ["src/App.tsx"] },
 
   // ---- Box & diagnostics
   { id: "box.diag", keys: ["Mod+Shift+D"], label: "Diagnostics bundle", group: "Box & diagnostics", where: "the main window", files: ["src/diag.ts"] },

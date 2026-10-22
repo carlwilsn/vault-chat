@@ -429,7 +429,6 @@ type State = {
   notes: Note[];
   notesLoaded: boolean;
   showNotesPanel: boolean;
-  showHistory: boolean;
   // When set, a viewer should scroll to this anchor inside the
   // given path once it's ready. Consumed + cleared by the viewer.
   pendingScrollAnchor: { path: string; anchor: string } | null;
@@ -562,7 +561,6 @@ type State = {
   clearResolvedNotes: () => Promise<void>;
   reformatNote: (id: string) => Promise<void>;
   setShowNotesPanel: (b: boolean) => void;
-  setShowHistory: (b: boolean) => void;
   requestScrollAnchor: (path: string, anchor: string) => void;
   clearScrollAnchor: () => void;
   setLastCapture: (cap: State["lastCapture"]) => void;
@@ -684,7 +682,6 @@ export const useStore = create<State>((set) => ({
   notes: [],
   notesLoaded: false,
   showNotesPanel: false,
-  showHistory: false,
   pendingScrollAnchor: null,
   lastCapture: null,
   noteCapturePending: false,
@@ -1264,7 +1261,6 @@ export const useStore = create<State>((set) => ({
   },
   setShowNotesPanel: (b) =>
     set(b ? { showNotesPanel: true, showChatsPanel: false } : { showNotesPanel: false }),
-  setShowHistory: (b) => set({ showHistory: b }),
   requestScrollAnchor: (path, anchor) => set({ pendingScrollAnchor: { path, anchor } }),
   clearScrollAnchor: () => set({ pendingScrollAnchor: null }),
   setLastCapture: (cap) => set({ lastCapture: cap }),

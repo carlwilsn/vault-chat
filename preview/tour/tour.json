@@ -327,159 +327,6 @@
       }
     },
     {
-      "id": "history-timeline",
-      "group": "History",
-      "title": "History reads like a timeline",
-      "caption": "Ctrl+H used to list raw commits — autosaves, app-state churn, hashes. Now it groups saves into sessions, hides the app's own files, and shows agent turns, the box, missions, restores and undos as plain entries.",
-      "scenario": "history-a",
-      "beforeSide": {
-        "scenario": "history",
-        "steps": [
-          {
-            "hold": 3500
-          }
-        ]
-      },
-      "steps": [
-        {
-          "hold": 3500
-        }
-      ]
-    },
-    {
-      "id": "history-undo",
-      "group": "History",
-      "title": "Undo one agent turn",
-      "caption": "Pick what the agent did and undo just that change, as one new commit. The entry is struck through and offers Redo.",
-      "scenario": "history-a-undo",
-      "beforeSide": {
-        "scenario": "history",
-        "steps": [
-          {
-            "hold": 3500
-          }
-        ]
-      },
-      "steps": [
-        {
-          "highlight": "button",
-          "text": "/^Redo$/",
-          "label": "undone — Redo is here"
-        },
-        {
-          "hold": 3500
-        }
-      ]
-    },
-    {
-      "id": "history-redo",
-      "group": "History",
-      "title": "Redo an undone change",
-      "caption": "An undone edit stays in the timeline, struck through. Redo brings it back, again as one commit.",
-      "scenario": "history-a-redo",
-      "beforeSide": {
-        "scenario": "history",
-        "steps": [
-          {
-            "hold": 3500
-          }
-        ]
-      },
-      "steps": [
-        {
-          "hold": 3800
-        }
-      ]
-    },
-    {
-      "id": "history-restore",
-      "group": "History",
-      "title": "Restore a version of a note",
-      "caption": "A note's versions are one per session, not one per save. Preview or diff one against now, then restore it; the open note reloads with that text.",
-      "scenario": "history-a-restore",
-      "beforeSide": {
-        "scenario": "history",
-        "steps": [
-          {
-            "hold": 3500
-          }
-        ]
-      },
-      "steps": [
-        {
-          "hold": 3800
-        }
-      ]
-    },
-    {
-      "id": "history-styles",
-      "group": "History",
-      "title": "Three ways to show history — pick one",
-      "caption": "The same timeline in three places: A a modal like today's, B a side sheet next to the note, C a thin version strip above the note.",
-      "scenario": "history-a",
-      "beforeSide": {
-        "scenario": "history",
-        "steps": [
-          {
-            "hold": 3500
-          }
-        ]
-      },
-      "steps": [
-        {
-          "hold": 3500
-        }
-      ],
-      "options": [
-        {
-          "label": "Option A — timeline modal",
-          "scenario": "history-a"
-        },
-        {
-          "label": "Option B — side sheet",
-          "scenario": "history-b"
-        },
-        {
-          "label": "Option C — inline version strip",
-          "scenario": "history-c"
-        }
-      ]
-    },
-    {
-      "id": "history-styles-restore",
-      "group": "History",
-      "title": "Restoring, in each style",
-      "caption": "The same restore — an older version of the scaling-laws note — done from the modal, the sheet, and the inline strip.",
-      "scenario": "history-a-restore",
-      "beforeSide": {
-        "scenario": "history",
-        "steps": [
-          {
-            "hold": 3500
-          }
-        ]
-      },
-      "steps": [
-        {
-          "hold": 3500
-        }
-      ],
-      "options": [
-        {
-          "label": "Option A — timeline modal",
-          "scenario": "history-a-restore"
-        },
-        {
-          "label": "Option B — side sheet",
-          "scenario": "history-b-restore"
-        },
-        {
-          "label": "Option C — inline version strip",
-          "scenario": "history-c-restore"
-        }
-      ]
-    },
-    {
       "id": "removals-titlebar",
       "group": "Removals",
       "title": "Mission Control is gone",
@@ -924,8 +771,7 @@
           "items": [
             "Settings: six sections, roles (no Images & PDFs row), capabilities, keys, Box",
             "Chat details: the context dial, compaction divider, Ctrl+K/L models, the PDF tool, search",
-            "History: the timeline, undo, redo, restore, three styles",
-            "Removals: Mission Control, Approve & run, schedules, the North star editor; chats by project, the project chip, the ongoing-work line, notifications",
+            "Removals: History (Ctrl+H), Mission Control, Approve & run, schedules, the North star editor; chats by project, the project chip, the ongoing-work line, notifications",
             "Phone: the same changes, rebuilt in React",
             "Phase 2: chat on the box — unreachable box, subagents, the Done verifier, wakes, roll-over, images, “now”"
           ]
@@ -935,7 +781,6 @@
           "items": [
             "Capability view: A table · B one line per picker · C folded",
             "Ctrl+K / Ctrl+L roles: A both Chat · B K Background, L Chat (default) · C both Background",
-            "History: A modal · B side sheet · C inline strip",
             "Chat list: A projects as sections · B projects as folders",
             "Project chip: A over the thread · B beside the model picker",
             "Notifications: A popover · B side panel",

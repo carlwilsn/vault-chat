@@ -1,4 +1,4 @@
-// An in-memory git for the History modal (Ctrl+H), the per-file history, the
+// An in-memory git for the per-file history, the
 // autosave net and the agent's commits. Commits are full snapshots of the
 // vault's text files; history is seeded by the scenario (oldest first, the
 // first one tagged `vault-chat-start`), and every runtime commit/restore/revert
@@ -344,13 +344,3 @@ export function gitDirty(vault: string): number {
   return n;
 }
 
-// For memhistory.ts (the readable-history commands).
-export function commitsOf(vault: string): Commit[] {
-  return repo(vault).commits;
-}
-export function headOf(vault: string): Commit | null {
-  return head(vault);
-}
-export function makeCommitFor(vault: string, subject: string, tree: Map<string, string>, body: string): Commit {
-  return makeCommit(vault, subject, tree, HUMAN, now(), body);
-}
