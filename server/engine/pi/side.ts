@@ -24,6 +24,7 @@ import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "nod
 import { join } from "node:path";
 import { sinceOf, type PiBackend, type ToolSpec } from "./backend";
 import type { PiProc } from "./proc";
+import { TurnRecorder, type TurnLine } from "../turnLog";
 
 /** pi's read-only built-ins (Ctrl+K and Ctrl+L have these, plus the engine's read-only tools: SideStart.hostTools). */
 export const READ_ONLY_TOOLS = ["read", "grep", "find", "ls"];
@@ -55,7 +56,11 @@ export type SideStart = {
   text: string;
   /** data: URLs. */
   images?: string[];
+  /** The box's turn log (turnLog.ts): one line per request of this side thread, mode "side". Kept for its next requests. */
+  log?: SideLog;
 };
+
+export type SideLog = { vault: string; conv: string | null; via: string; version: string; write: (line: TurnLine) => void };
 
 export type SideState = { id: string; text: string; v: number; done: boolean; error: string | null; file: string | null };
 
@@ -71,6 +76,8 @@ type Run = {
   busy: boolean;
   lastUsed: number;
   waiters: Set<() => void>;
+  log?: SideLog;
+  rec?: TurnRecorder | null;
 };
 
 const IDLE_MS = 10 * 60_000;
@@ -121,6 +128,11 @@ export class SideRuns {
     run.busy = true;
     run.v++;
     run.lastUsed = Date.now();
+    if (o.log) run.log = o.log;
+    if (run.log) {
+      const l = run.log;
+      run.rec = new TurnRecorder({ vault: l.vault, conv: l.conv ?? "side", turn: `side-${run.id.slice(-12)}-${run.v}`, session: run.id, mode: "side", via: l.via, cmid: null, model: run.meta.model, start: Date.now(), version: l.version });
+    }
     const imgs = piImages(o.images);
     const r = await run.proc!.request({ type: "prompt", message: o.text, ...(imgs.length ? { images: imgs } : {}) }, 60_000).catch((e) => ({ success: false, error: (e as Error).message }));
     if (!r?.success) {
@@ -182,6 +194,7 @@ export class SideRuns {
     const proc = run.proc!;
     proc.on("event", (e: any) => {
       if (run.proc !== proc) return;
+      run.rec?.pi(e);
       if (e?.type === "message_start" && e.message?.role === "assistant") {
         // A new assistant message (after a tool call): what streams is this one.
         run.text = "";
@@ -242,6 +255,16 @@ export class SideRuns {
     run.error = error;
     run.lastUsed = Date.now();
     this.bump(run);
+    const rec = run.rec;
+    run.rec = null;
+    if (rec && run.log) {
+      const stopped = error === "stopped";
+      try {
+        run.log.write(rec.line({ status: error ? (stopped ? "interrupted" : "failed") : "completed", outcome: error ? (stopped ? "stopped" : "error") : "ok", error: stopped ? null : error }));
+      } catch (e) {
+        this.log(`side turn log: ${(e as Error).message}`);
+      }
+    }
   }
 
   private state(run: Run): SideState {

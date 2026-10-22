@@ -43,7 +43,7 @@ import { isOpen, pendingOf, shown, type Picture } from "../../src/convlog/reduce
 import { toolName } from "../../src/convlog/view";
 import { readEntries } from "../convlog/piSession";
 import { PiFeed } from "./piFeed";
-import { READ_ONLY_TOOLS, type SideState } from "./pi/side";
+import { READ_ONLY_TOOLS, type SideLog, type SideState } from "./pi/side";
 import { TurnRecorder, type TurnLine } from "./turnLog";
 import { SERVER_VERSION } from "../config";
 import { runVaultTool, vaultToolSpecsFor } from "../vaultTools";
@@ -386,6 +386,17 @@ export class Engine {
       start,
       version: SERVER_VERSION,
     });
+  }
+
+  /** A side thread's turn-log identity: each of its requests (voice's Asks, Ctrl+K / Ctrl+L, one-shots) is a line, mode "side". */
+  private sideLog(conv: string | null, via: string): SideLog {
+    return {
+      vault: this.d.vaultName ?? (this.d.vault.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || this.d.vault),
+      conv,
+      via,
+      version: SERVER_VERSION,
+      write: (line) => this.d.turnLog?.(line),
+    };
   }
 
   /** Write a turn's line (never throws). */
@@ -827,7 +838,7 @@ export class Engine {
       let s: SideState;
       let conv: EngineConv | null = null;
       if (kind === "once") {
-        s = await side.start({ kind, system: String(b.system ?? ""), cwd: this.d.vault, model, tools: [], ephemeral: true, thinking: "off", sessionDir: dir("once"), text, images });
+        s = await side.start({ kind, system: String(b.system ?? ""), cwd: this.d.vault, model, tools: [], ephemeral: true, thinking: "off", sessionDir: dir("once"), text, images, log: this.sideLog(null, "once") });
       } else if (typeof b.side === "string" && b.side) {
         s = await side.start({ kind, side: b.side, cwd: this.d.vault, model, tools: READ_ONLY_TOOLS, hostTools: sideToolSpecs(), sessionDir: "", text, images });
       } else {
@@ -849,7 +860,7 @@ export class Engine {
         // Voice's Asks also have Carl's own vault tools (his calendar …): voice reached them through the agent before.
         const own = voice ? await vaultToolSpecsFor(this.d.vault, [...agentToolSpecs().map((t) => t.name), ...PI_BUILTIN_TOOLS]) : [];
         const hostTools = voice ? [...voiceSideToolSpecs(act), ...(own as ToolSpec[])] : sideToolSpecs();
-        s = await side.start({ kind, fork: src?.file ?? null, instr, cwd: src?.cwd || this.d.vault, model, tools, hostTools, sessionDir: dir(conv?.id ?? "none"), text, images, you: { convId: conv?.id ?? null } });
+        s = await side.start({ kind, fork: src?.file ?? null, instr, cwd: src?.cwd || this.d.vault, model, tools, hostTools, sessionDir: dir(conv?.id ?? "none"), text, images, you: { convId: conv?.id ?? null }, log: this.sideLog(conv?.id ?? null, String(b.kind ?? kind).slice(0, 40)) });
       }
       this.log(`side ${kind} ${s.id}${conv ? ` (forked from ${conv.id})` : ""} on ${model}${s.file ? `: ${s.file}` : ""}`);
       return { ok: true, id: s.id, v: s.v };
