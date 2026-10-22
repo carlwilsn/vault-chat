@@ -65,17 +65,23 @@ inbox adds, undo/redo, pinches, pans; nothing in view missing after any of them;
 `null is not an object (evaluating 'ctx.setTransform')` after 15 actions).
 
 Strokes (`src/ink.ts`): a stroke is the Pencil's own coalesced samples (repeats and samples under half a css px
-apart left out), drawn by **perfect-freehand** (tldraw's freehand ink): the samples evenly respaced along the path
-(0.6 of the width, at most 1.5 units), its `streamline` 0.5 (input stabilisation: the hand's tremor and the
-whole-px samples ironed out over the same distance at every speed), `smoothing` 0.6, `thinning` 0 (uniform width,
-no pressure), round caps; its outline polygon filled with the nonzero rule (a stroke crossing itself is filled
-once: no holes), drawn as quadratic curves through the outline's midpoints. Dashed and dotted lines are its
-stabilised centreline stroked with the dash pattern. The stroke being written is the same function of the same
-samples as the finished one, so nothing moves when the pen lifts; one predicted sample at most, only one that
-carries the line on. Measured on recorded-shape handwriting (`src/inkTraces.ts`, `test/harness/board-ink.test.ts`:
-tremor, sensor noise, whole-px samples) against the path the hand meant: 0.27 px RMS off it (before: 0.33), at
-most 0.95 px (before: 2.1, corners cut), as smooth (wiggle 0.17 rad, before 0.16; the raw samples 0.80), and no
-jump on lift (before: up to 2.5 px when the bend points were re-chosen). Proof in WebKit at DPR 2
+apart left out). Ink is uniform width, so it is drawn as uniform-width ink apps draw it: the samples evenly respaced
+along the path (0.6 of the width, at most 1.5 units) and stabilised by **perfect-freehand**'s `getStrokePoints`
+(`streamline` 0.5: the hand's tremor and the whole-px samples ironed out over the same distance at every speed);
+that centreline is ONE smooth path (quadratic curves through its midpoints) stroked at the stroke's width with round
+caps and joins: every point within w/2 of the line, one band of constant width however it turns or crosses itself.
+(Until 2026-10-21 perfect-freehand's outline polygon was filled instead; built for pressure ink, at uniform width it
+folded over itself at sharp turns and slow stretches: beads, necks and knots along Carl's handwriting.) Dashed and
+dotted lines and the highlighter are the same path, with the dash pattern or at the highlighter's alpha. The stroke
+being written is the same function of the same samples as the finished one, so nothing moves when the pen lifts; one
+predicted sample at most, only one that carries the line on. Measured on recorded-shape handwriting
+(`src/inkTraces.ts`, `test/harness/board-ink.test.ts`: tremor, sensor noise, whole-px samples) against the path the
+hand meant: 0.27 px RMS off it (before: 0.33), at most 0.95 px (before: 2.1, corners cut), as smooth (wiggle 0.17
+rad, before 0.16; the raw samples 0.80), and no jump on lift (before: up to 2.5 px when the bend points were
+re-chosen). The pixels are one band (`board/preview/ink-band.mjs`, WebKit at DPR 2, at 0.5–4× home zoom, on the
+traces, hairpins and zigzags, and any real board.json given): one connected component, nothing past w/2 (+15%) of
+the line, nothing missing within it, its width across within ±15% (the filled outline, on Carl's real board at 4×:
+43 of 91 strokes failed (14 at 2×), necks to 0.56 w and bulges 0.25 w past the edge). Proof in WebKit at DPR 2
 (`board/preview/ink.mjs`): ink on screen against the same strokes drawn natively, the highlighter under blue ink
 with no self-overlap darkening and no gaps (strokes crossing themselves and the ink, across tile seams, at 0.5×,
 1×, 2×; on screen every frame for 2 s after the lift), scribble to erase with its preview, normal writing over ink

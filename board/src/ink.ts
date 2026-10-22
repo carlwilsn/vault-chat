@@ -1,12 +1,15 @@
 // Strokes, items and the background to pixels, in canvas units. A stroke is stored as the pen's own samples (raw,
-// in canvas units) and drawn by perfect-freehand (the established freehand-ink algorithm: tldraw, Excalidraw): its
-// input stabilisation (`streamline`) irons out the hand's tremor and the samples' whole-px steps, and its outline
-// (`smoothing`) is a smooth polygon of uniform width (`thinning: 0`, no pressure) with round caps, filled with the
-// nonzero rule (a stroke that crosses itself is filled once: no holes, no darker overlap). The stroke being written
-// and the finished stroke are the same function of the same samples, so nothing moves when the pen lifts.
-// Dashed and dotted lines are stroked along perfect-freehand's stabilised centreline with the dash pattern.
-// A committed stroke's outline and bounds are computed once and cached.
-import { getStrokeOutlinePoints, getStrokePoints } from "perfect-freehand";
+// in canvas units). Ink is uniform width (no pressure), so it is drawn the way uniform-width ink apps draw it: the
+// samples are stabilised by perfect-freehand's `getStrokePoints` (its `streamline` irons out the hand's tremor and
+// the samples' whole-px steps), and that centreline is ONE smooth path (quadratic curves through its midpoints)
+// stroked at the stroke's width with round caps and joins. A stroked path is the set of points within w/2 of the
+// centreline: one band of constant width however the line turns, crosses itself or slows down. (perfect-freehand's
+// outline polygon, filled, was built for variable-width ink: at uniform width it folded over itself at sharp turns
+// and slow stretches, beads and knots along Carl's handwriting.) The stroke being written and the finished stroke
+// are the same function of the same samples, so nothing moves when the pen lifts. Dashed and dotted lines and the
+// highlighter are the same path, with a dash pattern or at the highlighter's alpha (one path: no darkening where it
+// overlaps itself). A committed stroke's path and bounds are computed once and cached.
+import { getStrokePoints } from "perfect-freehand";
 import type { Grid, Item, LineStyle, Stroke } from "../../src/boardFormat";
 import { xyBox, type Box } from "./geom";
 
@@ -16,11 +19,11 @@ export const HL_ALPHA = 0.35;
 /**
  * perfect-freehand's settings (board/README.md "Ink"; measured on board/src/inkTraces.ts by
  * test/harness/board-ink.test.ts). It runs in a space where the stroke is `SIZE` wide, so every length it uses (its
- * minimum stroke length, the outline's point spacing, the end's last few units) is relative to the stroke's own width:
+ * minimum stroke length, the stabilisation's reach) is relative to the stroke's own width:
  * a stroke looks the same at any zoom it was written at and after it is scaled. `minStep` (css px): a sample closer
  * than this to the last one kept is left out as it is written (view.ts).
  */
-export const INK = { size: 16, streamline: 0.5, smoothing: 0.6, spacing: 0.6, maxSpacing: 1.5, minStep: 0.5 };
+export const INK = { size: 16, streamline: 0.5, spacing: 0.6, maxSpacing: 1.5, minStep: 0.5 };
 
 /**
  * A flat [x, y, …] array as perfect-freehand's points, in its space (`k`: its units per canvas unit), spaced evenly
@@ -53,7 +56,7 @@ function pfIn(xy: ArrayLike<number>, k: number, w: number): number[][] {
   return out;
 }
 
-/** The stroke's stabilised centreline (flat, canvas units): what a dashed line is stroked along. */
+/** The stroke's stabilised centreline (flat, canvas units): what is stroked. */
 export function inkCentre(xy: ArrayLike<number>, w: number): number[] {
   const k = INK.size / w;
   const out: number[] = [];
@@ -61,31 +64,6 @@ export function inkCentre(xy: ArrayLike<number>, w: number): number[] {
   return out;
 }
 
-/** The stroke's outline polygon (flat, canvas units), to fill with the nonzero rule. */
-export function inkOutline(xy: ArrayLike<number>, w: number): number[] {
-  const k = INK.size / w;
-  const pts = getStrokePoints(pfIn(xy, k, w), { size: INK.size, streamline: INK.streamline, last: true });
-  const poly = getStrokeOutlinePoints(pts, { size: INK.size, thinning: 0, smoothing: INK.smoothing, simulatePressure: false, last: true, start: { cap: true }, end: { cap: true } });
-  const out: number[] = [];
-  for (const p of poly) out.push(p[0]! / k, p[1]! / k);
-  return out;
-}
-
-/**
- * A closed polygon as a smooth path: quadratic curves through the midpoints of its sides, each controlled by the
- * vertex between them (perfect-freehand's own rendering, its README's getSvgPathFromStroke), so the outline has no
- * facets however far apart its points are.
- */
-function polyPath(f: ArrayLike<number>): Path2D {
-  const p = new Path2D();
-  const n = f.length >> 1;
-  if (n < 3) return p;
-  const X = (i: number) => f[(i % n) * 2]!, Y = (i: number) => f[(i % n) * 2 + 1]!;
-  p.moveTo((X(0) + X(1)) / 2, (Y(0) + Y(1)) / 2);
-  for (let i = 1; i <= n; i++) p.quadraticCurveTo(X(i), Y(i), (X(i) + X(i + 1)) / 2, (Y(i) + Y(i + 1)) / 2);
-  p.closePath();
-  return p;
-}
 /** An open polyline as a smooth path (the same midpoint curves, from its first point to its last). */
 function linePath(f: ArrayLike<number>): Path2D {
   const p = new Path2D();
@@ -101,22 +79,21 @@ function linePath(f: ArrayLike<number>): Path2D {
   return p;
 }
 
-/** How a stroke is painted: a filled outline, or (dashed, dotted) a stroked centreline. */
-export type InkPath = { fill: boolean; path: Path2D };
-
-/** The path that paints these samples at width `w` (the live stroke and the finished one use this same function). */
-export function inkPath(xy: ArrayLike<number>, w: number, style?: LineStyle): InkPath {
-  if (style) return { fill: false, path: linePath(inkCentre(xy, w)) };
-  return { fill: true, path: polyPath(inkOutline(xy, w)) };
+/**
+ * The path that paints these samples at width `w`, to stroke (inkStyle: `lineWidth` w, round caps and joins, the
+ * dash pattern); the live stroke and the finished one use this same function.
+ */
+export function inkPath(xy: ArrayLike<number>, w: number): Path2D {
+  return linePath(inkCentre(xy, w));
 }
 
-type Cached = { ink: InkPath; box: Box; centre?: Path2D };
+type Cached = { ink: Path2D; box: Box };
 const cache = new WeakMap<Stroke, Cached>();
 
 export function strokeInfo(s: Stroke): Cached {
   let c = cache.get(s);
   if (!c) {
-    c = { ink: inkPath(s.xy, s.w, s.tool === "pen" ? s.style : undefined), box: xyBox(s.xy, s.w / 2 + 2) };
+    c = { ink: inkPath(s.xy, s.w), box: xyBox(s.xy, s.w / 2 + 2) };
     cache.set(s, c);
   }
   return c;
@@ -148,26 +125,18 @@ export function inkStyle(ctx: Ctx, tool: Stroke["tool"], color: string, w: numbe
 }
 
 /** Paint an ink path with the context's style set (inkStyle). */
-export function paintInk(ctx: Ctx, ink: InkPath): void {
-  if (ink.fill) ctx.fill(ink.path, "nonzero");
-  else ctx.stroke(ink.path);
+export function paintInk(ctx: Ctx, ink: Path2D): void {
+  ctx.stroke(ink);
 }
 
 /**
  * Paint one stroke (ctx already transformed to canvas units); `minW` keeps ink legible in a small snapshot (the
- * overview, a thumbnail): there the stroke is its stabilised centreline stroked that wide (cached: a snapshot of the
- * whole board stays cheap).
+ * overview, a thumbnail): there the same path is stroked that wide.
  */
-export function drawStroke(ctx: Ctx, s: Stroke, minW = 0, ink?: InkPath): void {
+export function drawStroke(ctx: Ctx, s: Stroke, minW = 0, ink?: Path2D): void {
   ctx.save();
-  const info = strokeInfo(s);
-  if (minW > s.w) {
-    inkStyle(ctx, s.tool, s.color, minW, s.tool === "pen" ? s.style : undefined);
-    ctx.stroke((info.centre ??= linePath(inkCentre(s.xy, s.w))));
-  } else {
-    inkStyle(ctx, s.tool, s.color, s.w, s.style);
-    paintInk(ctx, ink ?? info.ink);
-  }
+  inkStyle(ctx, s.tool, s.color, Math.max(s.w, minW), s.tool === "pen" ? s.style : undefined);
+  paintInk(ctx, ink ?? strokeInfo(s).ink);
   ctx.restore();
 }
 

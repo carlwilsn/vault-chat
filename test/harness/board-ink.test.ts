@@ -1,10 +1,11 @@
-// How ink is drawn (board/src/ink.ts: the pen's samples through perfect-freehand), measured on recorded-shape
+// How ink is drawn (board/src/ink.ts: the pen's samples stabilised by perfect-freehand, the centreline stroked at the
+// stroke's width; board/preview/ink-band.mjs checks the pixels are one band of that width), measured on recorded-shape
 // handwriting (board/src/inkTraces.ts: tremor, sensor noise, whole-px samples) against the path the hand meant
 // (board/src/inkMetrics.ts). Before (the bend-point simplifier and Catmull–Rom curve, 25dc8c2) on the same traces:
 // dev 0.326 px, max 2.08 px, wiggle 0.161, and a jump of up to 2.5 px when the pen lifted.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { INK, inkCentre, inkOutline } from "../../board/src/ink.ts";
+import { INK, inkCentre } from "../../board/src/ink.ts";
 import { inkTraces } from "../../board/src/inkTraces.ts";
 import { inkMetrics, type P } from "../../board/src/inkMetrics.ts";
 
@@ -68,27 +69,25 @@ test("written and finished are one: the line already drawn never moves as the pe
       for (let i = 0; i < live.length - 8; i++) moved = Math.max(moved, Math.hypot(live[i]![0] - fin[i]![0], live[i]![1] - fin[i]![1]));
       assert.ok(moved < 1e-9, `${t.name} at ${k}: ${moved}`);
     }
-    // And the outline the pen leaves is the one it was drawing (same function, same samples).
-    assert.deepEqual(inkOutline(xy, W), inkOutline(xy.slice(), W));
+    // And the line the pen leaves is the one it was drawing (same function, same samples).
+    assert.deepEqual(inkCentre(xy, W), inkCentre(xy.slice(), W));
   }
 });
 
 test("a stroke keeps its look when scaled (every length relative to its width, up to the highlighter cap)", () => {
   const t = inkTraces(0).find((x) => x.name === "2 (24 px)")!;
-  const a = inkOutline(flat(t.pts), W);
-  const b = inkOutline(flat(t.pts).map((v) => v * 0.5), W * 0.5);
+  const a = inkCentre(flat(t.pts), W);
+  const b = inkCentre(flat(t.pts).map((v) => v * 0.5), W * 0.5);
   assert.equal(a.length, b.length);
   for (let i = 0; i < a.length; i++) assert.ok(Math.abs(a[i]! * 0.5 - b[i]!) < 1e-6);
 });
 
 test("a dot, a two-point line and an older board's sparse stroke all draw", () => {
-  const dot = inkOutline([10, 10], W);
-  assert.ok(dot.length >= 6);
-  // A round dot the stroke's width across (perfect-freehand draws a one-sample stroke as a tiny capsule).
-  for (let i = 0; i < dot.length; i += 2) assert.ok(Math.abs(Math.hypot(dot[i]! - 10, dot[i + 1]! - 10) - W / 2) < 0.3);
-  const line = unflat(inkOutline([0, 0, 100, 0], W));
-  const ys = line.filter(([x]) => x > 5 && x < 95).map(([, y]) => Math.abs(y));
-  assert.ok(ys.length && ys.every((y) => Math.abs(y - W / 2) < 0.05), JSON.stringify(ys.slice(0, 6)));
+  // A one-sample stroke: a centreline a tiny fraction of the width long, so its round caps make a dot W across.
+  const dot = unflat(inkCentre([10, 10], W));
+  assert.ok(dot.length >= 1 && dot.every(([x, y]) => Math.hypot(x - 10, y - 10) < W / 10), JSON.stringify(dot));
+  const line = unflat(inkCentre([0, 0, 100, 0], W));
+  assert.ok(line.length >= 2 && line.every(([, y]) => Math.abs(y) < 1e-9) && line[0]![0] === 0 && line[line.length - 1]![0] === 100, JSON.stringify(line.slice(0, 6)));
   // Bend points a few px apart (how strokes were stored before): the shape is kept, its corner too.
   const v = unflat(inkCentre([0, 0, 20, 40, 40, 0], W));
   assert.ok(v.some(([x, y]) => Math.abs(x - 20) < 2 && y > 37), JSON.stringify(v));

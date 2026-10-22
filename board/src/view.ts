@@ -956,7 +956,7 @@ export class BoardView {
       inkStyle(ctx, g.tool, g.color, g.w, g.style);
       ctx.globalCompositeOperation = "source-over";
       if (g.tool === "hl") ctx.globalAlpha = HL_ALPHA;
-      paintInk(ctx, inkPath(xy, g.w, g.tool === "pen" ? g.style : undefined));
+      paintInk(ctx, inkPath(xy, g.w));
       ctx.restore();
       if (hlLive) {
         const b = xyBox(xy, g.w / 2 + 2);
@@ -1408,7 +1408,7 @@ export class BoardView {
     clearTimeout(this.saveT);
     if (m === "pen" || m === "hl") {
       const hl = m === "hl";
-      // The pen's own samples are the stroke (ink.ts draws them through perfect-freehand); repeats and samples
+      // The pen's own samples are the stroke (ink.ts: stabilised, then stroked as one path); repeats and samples
       // closer than INK.minStep css px to the last are left out.
       const style = !hl && this.prefs.penStyle !== "solid" ? this.prefs.penStyle : undefined;
       this.g = { k: "draw", id: ev.id, touch, tool: m, color: hl ? this.prefs.hlColor : this.prefs.penColor, w: hl ? this.prefs.hl : this.prefs.pen, ...(style ? { style } : {}), xy: [r2(p.x), r2(p.y)], minStep: INK.minStep / this.cam.z, pred: null, raw: [{ ...p, t: ev.t }], scribAt: 0 };
