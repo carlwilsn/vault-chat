@@ -2,8 +2,8 @@
 // the root: the same tokens — bg-card, text-foreground, border … — and
 // Tailwind 3.4) as a preset, with the board's own content and the iPadOS
 // pieces on top: system colours, materials, the popover/sheet springs.
-// The tokens' values are set in board/src/style.css (light, and dark with
-// prefers-color-scheme), the same HSL variables the desktop defines.
+// The tokens' values are set in board/src/style.css (light only: the board is
+// white paper), the same HSL variables the desktop defines.
 import root from "../tailwind.config.js";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -14,11 +14,11 @@ const here = dirname(fileURLToPath(import.meta.url));
 export default {
   presets: [root],
   content: [join(here, "index.html"), join(here, "src/**/*.ts")],
-  darkMode: "media",
+  darkMode: "class",
   theme: {
     extend: {
       colors: {
-        // iPadOS system colours (light/dark values in style.css).
+        // iPadOS system colours (values in style.css).
         sys: {
           blue: "rgb(var(--sys-blue) / <alpha-value>)",
           red: "rgb(var(--sys-red) / <alpha-value>)",

@@ -7,7 +7,7 @@
 @tailwind utilities;
 
 @layer base {
-  /* The desktop's tokens (src/App.css, light) and iPadOS system colours. */
+  /* The desktop's tokens (src/App.css, light) and iPadOS system colours. Light always: the board is white paper (Carl). */
   :root {
     --background: 0 0% 98%;
     --foreground: 0 0% 12%;
@@ -42,42 +42,6 @@
     --sys-material: 249 249 251;
     color-scheme: light;
   }
-  @media (prefers-color-scheme: dark) {
-    :root {
-      --background: 0 0% 10%;
-      --foreground: 0 0% 92%;
-      --card: 0 0% 13%;
-      --card-foreground: 0 0% 92%;
-      --popover: 0 0% 18%;
-      --popover-foreground: 0 0% 92%;
-      --primary: 0 0% 85%;
-      --primary-foreground: 0 0% 10%;
-      --secondary: 0 0% 16%;
-      --secondary-foreground: 0 0% 92%;
-      --muted: 0 0% 14%;
-      --muted-foreground: 0 0% 60%;
-      --accent: 0 0% 20%;
-      --accent-foreground: 0 0% 95%;
-      --destructive: 0 72% 58%;
-      --destructive-foreground: 0 0% 100%;
-      --border: 0 0% 22%;
-      --input: 0 0% 18%;
-      --ring: 0 0% 60%;
-
-      --sys-blue: 10 132 255;
-      --sys-red: 255 69 58;
-      --sys-green: 48 209 88;
-      --sys-label: 255 255 255;
-      --sys-secondary: 235 235 245;
-      --sys-tertiary: 235 235 245;
-      --sys-fill: 120 120 128;
-      --sys-separator: 84 84 88;
-      --sys-grouped: 0 0 0;
-      --sys-material: 30 30 32;
-      color-scheme: dark;
-    }
-  }
-
   html, body {
     height: 100%;
     margin: 0;
@@ -146,7 +110,6 @@
 [data-mode="lasso"] .ic-on .duo { opacity: 0.3; }
 /* A colour shown in the chrome keeps an edge, so a dark ink still reads on the dark material. */
 .swatch { box-shadow: inset 0 0 0 1px rgb(0 0 0 / 0.12); }
-@media (prefers-color-scheme: dark) { .swatch { box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.32); } }
 
 /* The popover's arrow (a rotated square of the same material, under the panel's edge). */
 .pop-arrow { position: absolute; width: 14px; height: 14px; transform: rotate(45deg); border-radius: 3px; top: -6px; }
