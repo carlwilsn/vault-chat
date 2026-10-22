@@ -1,0 +1,2 @@
+pipecat-ai[elevenlabs,silero,webrtc,local-smart-turn,openai]==1.12.0
+aiohttp==3.13.2

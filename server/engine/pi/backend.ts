@@ -128,6 +128,8 @@ type Thread = {
   restoreModel: string | null;
   /** The provider's error on the last assistant message (stopReason "error"). */
   lastError?: string | null;
+  /** The thinking level set on the process when a turn asked for one (a voice call's talker); null: the default. */
+  thinking?: string | null;
 };
 
 /** Events: "event" (BackendEvent), "up" (ready; the engine resumes cut turns). */
@@ -505,11 +507,20 @@ export class PiBackend extends EventEmitter {
     return !!r?.success;
   }
 
-  async startTurn(threadId: string, o: { texts: string[]; images: string[]; model: string; turnId?: string }): Promise<{ turnId: string | null }> {
+  async startTurn(threadId: string, o: { texts: string[]; images: string[]; model: string; turnId?: string; thinking?: string }): Promise<{ turnId: string | null }> {
     const t = this.live(threadId);
     t.lastUsed = Date.now();
     const prev = t.model;
-    if (o.model !== t.model && (await this.setModel(t, o.model)) && o.images.length) t.restoreModel = prev;
+    const switched = o.model !== t.model;
+    if (switched && (await this.setModel(t, o.model)) && o.images.length) t.restoreModel = prev;
+    // A turn's own thinking level (a voice call's talker), pi's set_thinking_level, back to the default after.
+    // After the model: pi clamps a level to what the CURRENT model supports ("off" on a model that can't is "low").
+    const want = o.thinking ?? this.o.thinking;
+    if (switched || (t.thinking ?? this.o.thinking) !== want) {
+      const r = await t.proc.request({ type: "set_thinking_level", level: want }, 10_000).catch(() => null);
+      if (r?.success) t.thinking = o.thinking ? want : null;
+      else this.log(`set_thinking_level ${want} failed: ${r?.error ?? "no answer"}`);
+    }
     const turnId = o.turnId ?? `pt-${Date.now().toString(36)}-${++this.seq}`;
     t.turnId = turnId;
     const imgs = this.images(o.images);

@@ -1,0 +1,132 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>Voice pipeline check</title>
+<style>
+  body { font: 14px system-ui, sans-serif; margin: 16px; background: #fff; color: #111; }
+  pre { white-space: pre-wrap; font-size: 12px; }
+</style>
+</head>
+<body>
+<h3>Voice pipeline check (browser WebRTC → the box over the tailnet)</h3>
+<p>Plays recorded questions into the call as the microphone and measures, as heard here: end of speech → first bot audio, and barge-in → bot audio stops.</p>
+<pre id="log"></pre>
+<script>
+// A headless-capable client: no microphone permission needed. The "mic" is a WebAudio stream we play utterances into
+// at known times; the bot's audio is analysed as it arrives (AnalyserNode RMS every 10 ms).
+const q = new URLSearchParams(location.search);
+const conv = q.get("conv") || "browser-check";
+const files = (q.get("wav") || "u02,u03,u06,u08").split(",");
+const barge = q.get("barge") === "1";
+const rounds = Number(q.get("rounds") || 1);
+const out = [];
+// Each row also goes to the page's server (serve_test.py appends it to a file: how a headless run is read).
+const send = (o) => fetch("/result", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(o) }).catch(() => {});
+const log = (o) => { send(o); out.push(o); document.getElementById("log").textContent += JSON.stringify(o) + "\n"; };
+window.results = out;
+
+const pct = (xs, p) => { const s = [...xs].sort((a, b) => a - b); if (!s.length) return null; const k = (s.length - 1) * p, lo = Math.floor(k), hi = Math.min(lo + 1, s.length - 1); return +(s[lo] + (s[hi] - s[lo]) * (k - lo)).toFixed(3); };
+
+async function main() {
+  const ac = new AudioContext({ sampleRate: 48000 });
+  await ac.resume();
+  const dest = ac.createMediaStreamDestination();
+  const bufs = [];
+  for (const f of files) bufs.push(await ac.decodeAudioData(await (await fetch(`utt/${f}.wav`)).arrayBuffer()));
+
+  const pc = new RTCPeerConnection();
+  pc.onconnectionstatechange = () => log({ pc: pc.connectionState, at: +(ac.currentTime).toFixed(1) });
+  pc.addTrack(dest.stream.getAudioTracks()[0], dest.stream);
+  pc.addTransceiver("audio", { direction: "recvonly" });
+  let loudAt = [];
+  let lastLoud = 0;
+  let receiver = null;
+  pc.ontrack = (ev) => {
+    receiver = ev.receiver;
+    // jbt=<ms>: Chrome's playout target for this receiver (what the real client would set; 0 = as low as NetEq can).
+    if (q.has("jbt") && "jitterBufferTarget" in ev.receiver) ev.receiver.jitterBufferTarget = Number(q.get("jbt"));
+    const src = ac.createMediaStreamSource(new MediaStream([ev.track]));
+    const an = ac.createAnalyser();
+    an.fftSize = 512;
+    src.connect(an);
+    // Chrome needs the remote stream attached to an element to pull it.
+    const el = new Audio(); el.srcObject = new MediaStream([ev.track]); el.muted = true; el.play().catch(() => {});
+    const buf = new Float32Array(an.fftSize);
+    setInterval(() => {
+      an.getFloatTimeDomainData(buf);
+      let s = 0; for (const v of buf) s += v * v;
+      if (Math.sqrt(s / buf.length) > 0.01) { const t = performance.now() / 1000; loudAt.push(t); lastLoud = t; }
+    }, 10);
+  };
+
+  const call = await (await fetch("/api/v1/brain/call", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ convId: conv, device: "laptop" }) })).json();
+  await pc.setLocalDescription(await pc.createOffer());
+  await new Promise((r) => { if (pc.iceGatheringState === "complete") r(); else pc.onicegatheringstatechange = () => pc.iceGatheringState === "complete" && r(); setTimeout(r, 3000); });
+  const ans = await (await fetch("/api/v1/brain/offer", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ callId: call.callId, sdp: pc.localDescription.sdp, type: pc.localDescription.type }) })).json();
+  await pc.setRemoteDescription(ans);
+  await new Promise((r) => setTimeout(r, 3000));
+  log({ audio: { sampleRate: ac.sampleRate, baseLatency: ac.baseLatency, outputLatency: ac.outputLatency }, ua: navigator.userAgent.slice(0, 120) });
+  // The box's clock, against this page's (the best of 5 round trips): to place speech end on the box's timeline.
+  let offset = 0, best = 1e9;
+  for (let k = 0; k < 5; k++) {
+    const a = Date.now(); const j = await (await fetch("/api/v1/brain/calls")).json(); const b = Date.now();
+    if (b - a < best) { best = b - a; offset = j.now - (a + b) / 2; }
+  }
+  log({ clock: { offset_ms: Math.round(offset), rtt_ms: best } });
+  const boxNow = (perfSec) => (Date.now() + offset) / 1000 - (performance.now() / 1000 - perfSec);
+
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  /** Play a buffer into the call now; resolves (performance.now seconds) when its last sample has gone out. */
+  const play = (b, dur) => new Promise((res) => { const s = ac.createBufferSource(); s.buffer = b; s.connect(dest); s.start(); const d = dur ?? b.duration; if (dur) s.stop(ac.currentTime + dur); setTimeout(() => res(performance.now() / 1000), d * 1000); });
+  const firstAfter = async (t, ms) => { const end = performance.now() + ms; while (performance.now() < end) { const x = loudAt.find((v) => v > t); if (x) return x; await sleep(10); } return null; };
+  const quiet = async (secs, ms) => { const end = performance.now() + ms; while (performance.now() < end) { if (lastLoud && performance.now() / 1000 - lastLoud >= secs) return; await sleep(20); } };
+
+  const eos = [], bs = [];
+  let turn = 0;
+  for (let r = 0; r < rounds; r++) for (let i = 0; i < bufs.length; i++) {
+    await sleep(1500);
+    // End of SPEECH, not of the file: the file's own trailing silence (|x| < 500/32768) comes off.
+    const ch = bufs[i].getChannelData(0);
+    let last = ch.length - 1;
+    while (last > 0 && Math.abs(ch[last]) < 500 / 32768) last--;
+    const tail = (ch.length - 1 - last) / bufs[i].sampleRate;
+    const tEnd = (await play(bufs[i])) - tail;
+    const first = await firstAfter(tEnd, 30000);
+    const row = { turn: turn++, file: files[i], eos_to_audio: first ? +(first - tEnd).toFixed(3) : null, speech_end_box: +boxNow(tEnd).toFixed(3), first_audio_box: first ? +boxNow(first).toFixed(3) : null };
+    if (first) eos.push(first - tEnd);
+    if (barge && first) {
+      await sleep(Math.max(0, (first + 1.2 - performance.now() / 1000) * 1000));
+      const t0 = performance.now() / 1000;
+      const p = play(bufs[(i + 1) % bufs.length], 2);
+      let stopped = null;
+      const end = performance.now() + 5000;
+      while (performance.now() < end) {
+        const now = performance.now() / 1000;
+        if (lastLoud < t0 && now - t0 > 0.2) { stopped = "already-quiet"; break; }
+        if (lastLoud >= t0 - 0.02 && now - lastLoud >= 0.2) { stopped = lastLoud - t0; break; }
+        await sleep(10);
+      }
+      await p;
+      row.barge_stop = typeof stopped === "number" ? +stopped.toFixed(3) : stopped;
+      if (typeof stopped === "number") bs.push(stopped);
+    }
+    await quiet(2, 60000);
+    // The receive side's own delay: the jitter buffer's average so far (inbound-rtp), in ms.
+    if (receiver) {
+      for (const s of (await pc.getStats()).values()) {
+        if (s.type === "inbound-rtp" && s.jitterBufferEmittedCount) row.jb_ms = Math.round((1000 * s.jitterBufferDelay) / s.jitterBufferEmittedCount);
+        if (s.type === "inbound-rtp" && s.jitterBufferTargetDelay && s.jitterBufferEmittedCount) row.jb_target_ms = Math.round((1000 * s.jitterBufferTargetDelay) / s.jitterBufferEmittedCount);
+      }
+    }
+    log(row);
+  }
+  await fetch(`/api/v1/brain/call/${call.callId}/end`, { method: "POST" });
+  pc.close();
+  log({ summary: true, n: eos.length, p50: pct(eos, 0.5), p90: pct(eos, 0.9), p95: pct(eos, 0.95), barge_n: bs.length, barge_p50: pct(bs, 0.5), barge_p90: pct(bs, 0.9) });
+  window.done = true;
+}
+main().catch((e) => { log({ error: String(e && e.stack || e) }); window.done = true; });
+</script>
+</body>
+</html>

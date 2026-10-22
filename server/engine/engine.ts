@@ -347,6 +347,21 @@ export const ENGINE_TOOL_SPECS = [
       additionalProperties: false,
     },
   },
+  {
+    type: "function",
+    name: "Delegate",
+    description:
+      "Hand slow work to a background worker (a pi subagent in this vault with file, shell, PDF and web tools) and keep talking: edits across files, research, builds, anything over a few seconds. Returns at once. When the worker finishes, its report comes back to you as a new turn (\"Delegated work finished: ...\"): then tell Carl the result. Several can run at once. Never wait for one, and never say it is done before its report arrives.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        title: { type: "string", description: "What it is doing, in a few words, for Carl's waiting-on line (\"Pulling the lecture notes\")." },
+        task: { type: "string", description: "The whole task with everything the worker needs: it does not see this conversation. Say what to report back." },
+      },
+      required: ["title", "task"],
+      additionalProperties: false,
+    },
+  },
 ];
 
 /** Every vault-chat tool the agent has (Carl's own vault tools are added per thread). */
@@ -358,7 +373,7 @@ export function sideToolSpecs(): ToolSpec[] {
   return agentToolSpecs().filter((t) => t.readOnly === true);
 }
 /** The agent's tools a side thread can't use: they belong to a turn (its question, plan, background maker, job, wake). */
-const TURN_ONLY_TOOLS = new Set(["AskUser", "TodoWrite", "BoardMake", "StartJob", "JobStop", "ScheduleWake"]);
+const TURN_ONLY_TOOLS = new Set(["AskUser", "TodoWrite", "BoardMake", "Delegate", "StartJob", "JobStop", "ScheduleWake"]);
 /** Voice's Ask (server/voice.ts), a side thread: a question has the read-only tools and Show; an action every tool a
  *  side thread can use (BoardSend, Show, the notes …), with pi's own file tools (sideStart). */
 export function voiceSideToolSpecs(act: boolean): ToolSpec[] {
@@ -374,6 +389,9 @@ export function toolAnswer(r: any): { ok: boolean; text: string; images?: { data
   const images = items.filter((c) => c?.type === "inputImage" && typeof c.data === "string" && c.data).map((c) => ({ data: String(c.data), mimeType: String(c.mimeType || "image/png") }));
   return { ok: r?.success !== false, text: items.filter((c) => c?.type !== "inputImage").map((c) => c?.text ?? "").join("\n"), ...(images.length ? { images } : {}) };
 }
+
+/** A Delegate worker's instructions (on top of the subagent preamble). */
+const DELEGATE_WORKER_PROMPT = `You do one piece of work for vault-chat's agent, in Carl's vault, in the background while it keeps talking with him. Do it fully and carefully, in place (git autosave is the undo). Read back what you changed. End with a short report the agent can say aloud in two or three sentences: what you did or found, and what you checked; then any detail it may need.`;
 
 /** pi's own tools (and the subagent tool): a vault tool of the same name is not registered over them. */
 const PI_BUILTIN_TOOLS = ["read", "write", "edit", "bash", "grep", "find", "ls", "subagent"];
@@ -402,6 +420,10 @@ export class Engine {
   private turnWaiters = new Map<string, (() => void)[]>();
   /** History from before a conversation's thread, handed to its first turn once (a legacy chat, a lost thread). */
   private handover = new Map<string, string>();
+  /** A voice call is live on these conversations (server/voiceBrain.ts): every turn, typed or spoken, runs on the
+   *  talker's model with the call's rules (once per call), and its pi events reach the call (tap). */
+  private talkers = new Map<string, { model: string; rules: string; sent: boolean; thinking?: string }>();
+  private taps = new Map<string, Set<(ev: any) => void>>();
 
   constructor(private d: EngineDeps) {
     // Everything this engine does runs scoped to its vault (CONTEXT reads that
@@ -1017,6 +1039,33 @@ export class Engine {
     }
   }
 
+  /** A voice call on `convId` (null: it ended). Its turns run on `model`; `rules` go in front of the call's first turn. */
+  setTalker(convId: string, t: { model: string; rules: string; thinking?: string } | null): void {
+    if (t) this.talkers.set(convId, { ...t, sent: false });
+    else this.talkers.delete(convId);
+  }
+
+  /** pi's events of `convId`'s turns as they happen, plus {type: "vc_turn_end"} at each turn's end. Returns the unsubscribe. */
+  tap(convId: string, fn: (ev: any) => void): () => void {
+    const set = this.taps.get(convId) ?? new Set();
+    set.add(fn);
+    this.taps.set(convId, set);
+    return () => {
+      set.delete(fn);
+      if (!set.size) this.taps.delete(convId);
+    };
+  }
+
+  private tapEmit(convId: string, ev: any): void {
+    for (const f of [...(this.taps.get(convId) ?? [])]) {
+      try {
+        f(ev);
+      } catch (e) {
+        this.log(`tap on ${convId}: ${(e as Error).message}`);
+      }
+    }
+  }
+
   /** A one-shot on the box itself (a note's title): pi, no session, no tools; the final text. */
   async once(req: { instructions: string; text: string; images?: string[]; fast?: boolean }): Promise<string> {
     const r = await this.sideStart({ kind: "once", system: req.instructions, text: req.text, images: req.images, fast: req.fast });
@@ -1078,7 +1127,7 @@ export class Engine {
 
   /** How an engine input shows (a wake, a job, a resume). */
   private engineInput(input: string, kind: TurnKind): { via: string; shown: string } {
-    const via = kind === "wake" ? (/^Job \S+ /.test(input) ? "job" : "wake") : "resume";
+    const via = kind === "wake" ? (/^Job \S+ /.test(input) ? "job" : /^Delegated work /.test(input) ? "delegate" : "wake") : "resume";
     return { via, shown: kind === "wake" ? input.replace(/^Wake:\s*/, "") : input };
   }
 
@@ -1150,7 +1199,8 @@ export class Engine {
         this.emit(convId, { type: "meta", patch: { sessionFrom: { file, after } } });
       }
       // Images on a model that can't see: this turn (silently) uses the vision model.
-      let model = this.d.model();
+      const talker = this.talkers.get(convId);
+      let model = talker?.model ?? this.d.model();
       if (opts.images?.length && !capabilitiesOf(model).images) model = this.d.visionModel ?? model;
       const rec = this.recorder(convId, turnId, threadId, kind, opts, clientId, model, startedAt);
       const feed = new PiFeed({
@@ -1199,11 +1249,16 @@ export class Engine {
       // again: only a section that changed goes in front of the turn (the rules mechanism, for all of them).
       const rules = this.changedSections(threadId, conv);
       if (opts.context) body = `${opts.context}\n\n${body}`;
+      // A live voice call: its rules once per call, in front of its first turn (they stay in the session after).
+      if (talker && !talker.sent) {
+        talker.sent = true;
+        body = `${talker.rules}\n\n${body}`;
+      }
       // What Carl did elsewhere is not in the prompt: pi's extension adds it (the "you" layer, a vc-you custom message).
       const texts = [rules, kind === "wake" ? input : body].filter(Boolean);
       live.feed.expect({ kind: "prompt", text: texts.join("\n\n"), clientId: kind === "user" ? clientId : undefined, ...shownInput, ...(opts.itemImages?.length ? { images: opts.itemImages } : {}), ...(kind === "user" && opts.origin ? { device: opts.origin } : {}) });
       try {
-        await this.d.backend.startTurn(threadId, { texts, images: opts.images ?? [], model, turnId });
+        await this.d.backend.startTurn(threadId, { texts, images: opts.images ?? [], model, turnId, ...(talker?.thinking ? { thinking: talker.thinking } : {}) });
         live.started = true;
       } catch (e) {
         live.finished = true;
@@ -1394,6 +1449,7 @@ export class Engine {
       }
     }
     l.feed.onPi(ev);
+    if (this.taps.has(l.convId)) this.tapEmit(l.convId, ev);
   }
 
   private onThreadLost(l: Live): void {
@@ -1450,6 +1506,7 @@ export class Engine {
     this.turnLine(l.rec, { status, outcome, state, error: errStr || null });
     this.d.onTurnEnded?.(l.convId);
     for (const w of this.turnWaiters.get(l.convId)?.splice(0) ?? []) w();
+    if (this.taps.has(l.convId)) this.tapEmit(l.convId, { type: "vc_turn_end", status, kind: l.kind });
 
     // Cost, from the session's own figures (async; lands a few seconds later).
     void this.settleCost(l.convId, conv?.threadPath ?? conv0?.threadPath, l.turnId);
@@ -1557,6 +1614,26 @@ export class Engine {
           const r = await sendEntry(vault, a, { conversation: convId, emit: (ev) => this.inboxEvent(ev) });
           if (!r.ok) return { success: false, contentItems: [{ type: "inputText", text: `Refused (nothing reached the inbox):\n- ${r.refusals.join("\n- ")}` }] };
           return text(JSON.stringify({ id: r.id, parts: r.parts }) + " — in Carl's whiteboard inbox.");
+        }
+        case "Delegate": {
+          const title = String(a.title ?? "").trim().slice(0, 120);
+          const task = String(a.task ?? "").trim();
+          if (!title || !task) return text("Delegate needs a title and a task.");
+          const started = this.d.backend.background(p.threadId, {
+            agent: { name: "worker", systemPrompt: DELEGATE_WORKER_PROMPT, tools: ["read", "bash", "edit", "write", "grep", "find", "ls", "Notify", "PdfRead", "WebSearch", "BoardSend"] },
+            task,
+            // The conversation's own model, not a live call's talker: the work wants the strong one.
+            model: this.d.model(),
+            title,
+          });
+          void started
+            .then((r: any) => {
+              const how = r?.ok ? "finished" : `failed (${r?.state ?? "error"})`;
+              return this.run(convId, `Delegated work ${how}: "${title}"\n\n${String(r?.text ?? "").slice(0, 12_000) || "(no report)"}`, "wake");
+            })
+            .catch((err: Error) => this.run(convId, `Delegated work failed: "${title}"\n\n${err.message}`, "wake"))
+            .catch((err: Error) => this.log(`delegate result on ${convId}: ${err.message}`));
+          return text(`Started in the background ("${title}"). Its report comes back to you as a new turn when it is done. If you already told Carl you sent it, end your turn now without another line; otherwise say so in one short line.`);
         }
         case "BoardMake": {
           const request = String(a.request ?? "").trim();

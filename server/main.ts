@@ -5,6 +5,7 @@
 import "./shims/globals";
 import { spawnSync } from "node:child_process";
 import { existsSync, statSync } from "node:fs";
+import { join } from "node:path";
 import { loadConfig, SERVER_VERSION, SERVER_REV } from "./config";
 import { registerCommands } from "./commands";
 import { loadKeyStore, hasKey, keychainCommands, saveKeys, keyNames } from "./keys";
@@ -251,6 +252,16 @@ async function main(): Promise<void> {
             stop: async (v, id) => (await engineOf(v)).sideStop(id),
           },
         },
+    // Voice with one brain (server/voiceBrain.ts): the conversation's engine, the box's ElevenLabs key, the pipeline on loopback.
+    brain: (v) => ({
+      vault: v.path,
+      engine: async () => engineOf(v),
+      elKey: () => useStore.getState().serviceKeys.elevenlabs || null,
+      voiceId: () => localStorage.getItem("vault_chat_elevenlabs_voice") || "nPczCjzI2devNBz1zQrb",
+      botUrl: process.env.VC_VOICE_PIPELINE_URL || "http://127.0.0.1:8857",
+      selfUrl: `http://127.0.0.1:${cfg.port}`,
+      logDir: join(cfg.stateDir, "logs"),
+    }),
     // Voice (server/voice.ts) in the request's vault: its conversations, its engine (Ask hands
     // Carl's request to the conversation's agent), its sync.
     voice: async (v) => {

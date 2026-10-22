@@ -8,7 +8,8 @@ import { join } from "node:path";
 import { loadConfig, SERVER_VERSION, SERVER_REV } from "./config";
 import { trackWrites } from "./drain";
 import { inputSurface, noteInput } from "./presence";
-import { authorize, phoneToken } from "./auth";
+import { authorize, isDirectLoopback, phoneToken } from "./auth";
+import { brainEnabled, brainRoute, type BrainDeps } from "./voiceBrain";
 import { relay, emitLocal } from "./bus";
 import { convLog, signal } from "./convlog/log";
 import { conversationsSummary, conversationDetail, notificationsFeed, notesFeed, withinVault, mimeFor, dispatchVoiceTool } from "./phoneData";
@@ -72,6 +73,8 @@ export type ServerHooks = {
   /** Voice (server/voice.ts) for the request's vault: its working copy, its
    * engine and sandbox — or why not. */
   voice?: (v: VaultScope) => Promise<VoiceDeps | { error: string }>;
+  /** Voice with one brain (server/voiceBrain.ts, VC_VOICE_BRAIN=pi): the box's voice pipeline and pi. */
+  brain?: (v: VaultScope) => BrainDeps;
 };
 
 // Idempotency for engine sends: the phone tags each POST with clientMsgId and
@@ -356,6 +359,11 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
   const tagged = (ev: Record<string, unknown>) => signal(scope.path, ev);
   // The old app (the relay) knows only the main vault.
   const mainOnly = () => json(res, 409, { error: `only on the box's main vault (${cfg.vaultName})` });
+
+  // Voice with one brain (behind VC_VOICE_BRAIN=pi): the call's pipeline and pi (server/voiceBrain.ts).
+  if (hooks.brain && brainEnabled() && (path === "/v1/chat/completions" || path.startsWith("/api/v1/brain/"))) {
+    if (await brainRoute(hooks.brain(scope), req, res, path, method, isDirectLoopback(req), () => jsonBody(req))) return;
+  }
 
   // Model capabilities for Settings → Models.
   if (path === "/api/v1/models" && method === "GET") {
