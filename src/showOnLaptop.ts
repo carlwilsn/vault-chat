@@ -6,14 +6,21 @@
 // viewer through the same request voice's ScrollTo uses (requestScrollAnchor +
 // the viewer's answer, src/scrollTarget.ts), and acks the box with what
 // actually happened: the spot it landed on, or the viewer's error.
+//
+// With `pane` ("left" | "right", src/paneLayout.ts's names) it goes into that
+// pane of the split screen instead, turning split on when one other file is
+// open (the store's drop-at-edge). Whenever the screen is split afterwards, the
+// ack says which pane holds what, so the agent can describe and rebuild it.
 import { invoke } from "@tauri-apps/api/core";
 import { useStore } from "./store";
 import { isUnreadableAsText } from "./fileKind";
 import { awaitScroll } from "./scrollTarget";
 import { encodeTarget, hasTarget, type ViewTarget } from "./viewTarget";
+import { layoutLine, placeInPane, PANE_SIDES, type PaneSide } from "./paneLayout";
 
-export type ShowSignal = { type: "show"; id: string; to?: string; path?: string; url?: string; target?: ViewTarget };
-export type ShowAck = { ok: boolean; landed?: string; error?: string };
+export type ShowSignal = { type: "show"; id: string; to?: string; path?: string; url?: string; target?: ViewTarget; pane?: string };
+/** `pane`: the pane it was put in (only when one was asked for — an older app has none). `layout`: the split afterwards. */
+export type ShowAck = { ok: boolean; landed?: string; error?: string; pane?: PaneSide; layout?: string };
 
 export type ShowDeps = {
   /** Bring the box's latest files here now (a file the agent just made may not have synced yet). */
@@ -59,30 +66,43 @@ export async function showOnLaptop(sig: ShowSignal, deps: ShowDeps = {}): Promis
     if (!vault) return { ok: false, error: "no vault is open in the laptop app" };
     const want = localPath(vault, sig.path);
     const name = nameOf(want);
+    const pane = PANE_SIDES.includes(sig.pane as PaneSide) ? (sig.pane as PaneSide) : null;
+    if (sig.pane !== undefined && !pane) return { ok: false, error: `pane is "left" or "right", not "${sig.pane}"` };
     const s = useStore.getState();
     // On screen already (the main view or a split pane): it is not opened again, only moved.
     const shown = [s.currentFile, ...s.panes.map((p) => p.file)].find((f): f is string => !!f && norm(f) === norm(want));
-    let path = shown ?? want;
-    if (!shown) {
-      if (!(await exists(want))) {
-        await deps.sync?.().catch(() => {});
-        if (!(await exists(want))) return { ok: false, error: `${sig.path} is not on the laptop yet (the vault sync has not brought it); nothing was opened` };
-      }
-      path = want;
-      const content = isUnreadableAsText(path) ? "" : await invoke<string>("read_text_file", { path });
-      useStore.getState().setCurrentFile(path, content);
+    const path = shown ?? want;
+    if (!shown && !(await exists(want))) {
+      await deps.sync?.().catch(() => {});
+      if (!(await exists(want))) return { ok: false, error: `${sig.path} is not on the laptop yet (the vault sync has not brought it); nothing was opened` };
     }
+    const read = async () => (isUnreadableAsText(path) ? "" : await invoke<string>("read_text_file", { path }));
+    let opened = false;
+    if (pane) {
+      const r = placeInPane(pane, path, shown ? "" : await read());
+      // A file already on screen keeps its live content: the swap / focus moved it, nothing was read.
+      opened = r.opened;
+    } else if (!shown) {
+      useStore.getState().setCurrentFile(path, await read());
+      opened = true;
+    }
+    const after = useStore.getState();
+    const split = after.panes.length >= 2;
+    const layout = split ? layoutLine(after, vault) : "";
+    const where = pane ? (split ? ` in the ${pane} pane` : " (alone: a split needs a second file — Show another one with the other pane)") : "";
+    const tail = (t: string) => `${t}${layout ? `. ${layout}` : ""}`;
+    const extra = { ...(pane ? { pane } : {}), ...(layout ? { layout } : {}) };
     // The viewer must be on screen: the full-screen chat has none.
     const st = useStore.getState();
     if (st.chatFullscreen) st.toggleChatFullscreen();
     const t = sig.target ?? {};
-    if (!hasTarget(t)) return { ok: true, landed: shown ? `${name} is open (it already was)` : `opened ${name}` };
+    if (!hasTarget(t)) return { ok: true, landed: tail(opened ? `opened ${name}${where}` : `${name} is open${where} (it already was)`), ...extra };
     const answer = awaitScroll(path, encodeTarget(t), deps.answerMs ?? 9000);
     useStore.getState().requestScrollAnchor(path, encodeTarget(t));
     const outcome = await answer;
-    if (outcome === null) return { ok: false, error: `${name} is open, but its viewer did not say where it landed within ${Math.round((deps.answerMs ?? 9000) / 1000)} s (still loading?)` };
-    if (/^Error/.test(outcome) || /^Superseded/.test(outcome)) return { ok: false, error: `${name} is open, but: ${outcome.replace(/^Error:\s*/, "").replace("Call ScrollTo again", "Call Show again")}` };
-    return { ok: true, landed: `${shown ? "" : `opened ${name}; `}${outcome.charAt(0).toLowerCase()}${outcome.slice(1)}` };
+    if (outcome === null) return { ok: false, ...extra, error: `${name} is open, but its viewer did not say where it landed within ${Math.round((deps.answerMs ?? 9000) / 1000)} s (still loading?)` };
+    if (/^Error/.test(outcome) || /^Superseded/.test(outcome)) return { ok: false, ...extra, error: `${name} is open, but: ${outcome.replace(/^Error:\s*/, "").replace("Call ScrollTo again", "Call Show again")}` };
+    return { ok: true, landed: tail(`${opened ? `opened ${name}${where}; ` : pane && split ? `${name} is in the ${pane} pane; ` : ""}${outcome.charAt(0).toLowerCase()}${outcome.slice(1)}`), ...extra };
   } catch (e) {
     return { ok: false, error: `the laptop could not open it: ${(e as Error)?.message ?? String(e)}` };
   }

@@ -32,6 +32,7 @@ import {
   trackedVaults,
 } from "./vaultSync";
 import { startActivityWatch } from "./activity";
+import { startLayoutPersist } from "./paneLayout";
 import { bootMark } from "./bootTiming";
 import "./App.css";
 
@@ -62,6 +63,8 @@ export default function App() {
 
   // The shared context stream: the file open, the PDF page, selections and captures (src/activity.ts).
   useEffect(() => startActivityWatch(), []);
+  // The open files and the split survive a restart (an update restarts the app): src/paneLayout.ts.
+  useEffect(() => startLayoutPersist(), []);
 
   const setFiles = useStore((s) => s.setFiles);
   useEffect(() => {

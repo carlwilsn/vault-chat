@@ -2,11 +2,14 @@
 // device he names — or the one he is on now — and report what actually
 // happened there.
 //
-//   laptop  a {type:"show", to:"laptop", id, path | url, target?} signal on the
+//   laptop  a {type:"show", to:"laptop", id, path | url, target?, pane?} signal on the
 //           vault's feed (/poll); the laptop app opens it as a click in the file
 //           tree does, scrolled to the target (src/showOnLaptop.ts), and acks
 //           (POST /api/v1/show/<id>/ack). Success is only ever that ack. A laptop
 //           with no live feed gets nothing sent and an honest "not online".
+//           `pane` ("left" | "right") puts it in that pane of the split screen,
+//           turning split on (src/paneLayout.ts); the ack then names which pane
+//           holds what.
 //   board   the iPad inbox through the same validated send as BoardSend
 //           (server/inbox.ts): PDF pages, markdown as math parts (one per
 //           section when it has several), an image, code or notebook cells as
@@ -72,7 +75,7 @@ export function resetPresence(): void {
 
 // ---------------------------------------------------------------- acks
 
-export type Ack = { ok: boolean; landed?: string; error?: string };
+export type Ack = { ok: boolean; landed?: string; error?: string; pane?: string };
 const waits = new Map<string, (a: Ack) => void>();
 
 /** POST /api/v1/show/<id>/ack: a client says what happened. False: no one is waiting for it (late, or unknown). */
@@ -81,7 +84,7 @@ export function ackShow(id: string, body: unknown): boolean {
   if (!w) return false;
   waits.delete(id);
   const b = (body ?? {}) as Record<string, unknown>;
-  w({ ok: b.ok === true, ...(typeof b.landed === "string" ? { landed: b.landed.slice(0, 600) } : {}), ...(typeof b.error === "string" ? { error: b.error.slice(0, 1200) } : {}) });
+  w({ ok: b.ok === true, ...(typeof b.pane === "string" ? { pane: b.pane.slice(0, 10) } : {}), ...(typeof b.landed === "string" ? { landed: b.landed.slice(0, 600) } : {}), ...(typeof b.error === "string" ? { error: b.error.slice(0, 1200) } : {}) });
   return true;
 }
 
@@ -126,14 +129,17 @@ export type ShowDeps = {
 
 export type ShowResult = { ok: boolean; text: string; where?: Device };
 
-const SHOW_KEYS = ["path", "url", "where", "title", "pages", "page", "line", "endLine", "heading", "text", "anchor", "cell", "label"];
+const SHOW_KEYS = ["path", "url", "where", "pane", "title", "pages", "page", "line", "endLine", "heading", "text", "anchor", "cell", "label"];
 
 export const SHOW_DESCRIPTION =
   "Put something in front of Carl: open a vault file (or a web address) on one of his screens, at a place in it. " +
   'where: "laptop" (the laptop app\'s viewer/editor, scrolled to the place; an open file only scrolls — use this to scroll his laptop too), ' +
   '"board" (his iPad whiteboard inbox: PDF pages, markdown — one item per section —, an image, code or notebook cells as text, an HTML page as a picture), ' +
   '"phone" (the phone app: markdown and images shown, PDFs and pages opened in the phone\'s viewer), ' +
-  'or "here"/omitted (the device he is on now, from the "you" layer). Pick where from what he says ("I\'m not near my laptop", "send it to my iPad"); only show what he asked to see, or work you made for him. ' +
+  'or "here"/omitted (the device he is on now, from the "you" layer). ' +
+  'The laptop has a split screen: two files side by side, a left pane and a right pane (the turn prefix and the "you" layer say which file is in which, and whether split is on). ' +
+  'pane: "left" or "right" (laptop only) puts the file in that pane, turning split on when another file is open; without pane it replaces the file in the active pane. ' +
+  'To set up or rebuild a layout (two files side by side), call Show twice: one file with pane "left", the other with pane "right". The result says which pane holds what. Pick where from what he says ("I\'m not near my laptop", "send it to my iPad"); only show what he asked to see, or work you made for him. ' +
   "The place, by file type (one of them): PDF: page (1-based, as PdfRead/PdfPages count) or text (the first page with that phrase); for the board, pages [3,4,5] or \"3-5\" too. " +
   "Markdown: line (a source line, as read numbers them), heading (its text or slug) or text. Code/plain text: line, or line + endLine (the range is highlighted). " +
   "HTML: anchor (an element id), heading or text. Notebook (.ipynb): cell (1-based) or text. Image: none. " +
@@ -146,6 +152,7 @@ export const SHOW_SCHEMA = {
     path: { type: "string", description: "A file in the vault (vault-relative)." },
     url: { type: "string", description: "A web address (laptop: the browser; phone: a link). Not for the board." },
     where: { type: "string", enum: ["laptop", "board", "phone", "here"] },
+    pane: { type: "string", enum: ["left", "right"], description: 'Laptop only: the split-screen pane to open it in (split turns on). Omitted: the active pane, as before.' },
     title: { type: "string", description: "Board only: the inbox title (default: the file's name and place)." },
     pages: { description: "Board, PDF: the pages to send, e.g. [3,4] or \"3-5\" (≤ 20; default: the page asked for, else the first 20)." },
     page: { type: "number" },
@@ -192,6 +199,16 @@ async function run(d: ShowDeps, a: Record<string, unknown>): Promise<ShowResult>
   else if (asked === "ipad") where = "board";
   else return fail(`Error: where is "laptop", "board", "phone" or "here", not "${asked}".`);
 
+  // A pane of the laptop's split screen.
+  let pane: "left" | "right" | undefined;
+  if (a.pane !== undefined) {
+    const p = typeof a.pane === "string" ? a.pane.trim().toLowerCase() : "";
+    if (p !== "left" && p !== "right") return fail(`Error: pane is "left" or "right" (the laptop's split screen), not ${JSON.stringify(a.pane)}.`);
+    if (where !== "laptop") return fail(`Error: pane is for the laptop's split screen; the ${DEVICE_NAME[where]}${because} has no panes. Leave pane out, or pass where: "laptop".`);
+    if (url) return fail("Error: a web address opens in the browser, not in a pane; pane is for a vault file.");
+    pane = p;
+  }
+
   // A label alone: an item on the board.
   if (!rawPath && !url) {
     if (where === "board" && target.label) return boardLabel(d, target.label);
@@ -216,7 +233,7 @@ async function run(d: ShowDeps, a: Record<string, unknown>): Promise<ShowResult>
   const bad = targetError(kind, t, name);
   if (bad) return fail(bad);
   if (where === "board") return toBoard(d, f, kind, target, a);
-  return toClient(d, where, { path: f.rel, ...(hasTarget(t) ? { target: t } : {}) }, `${name}${hasTarget(t) ? ` at ${spotLabel(t)}` : ""}`, because);
+  return toClient(d, where, { path: f.rel, ...(hasTarget(t) ? { target: t } : {}), ...(pane ? { pane } : {}) }, `${name}${pane ? ` in the ${pane} pane` : ""}${hasTarget(t) ? ` at ${spotLabel(t)}` : ""}`, because);
 }
 
 function spotTakes(kind: FileKind): string {
@@ -263,7 +280,9 @@ async function toClient(d: ShowDeps, where: Device, payload: Record<string, unkn
   if (!ack) return fail(`Sent ${what} to the ${dev}${because}, but it did not confirm within ${Math.round(ms / 1000)} s — it may not have opened. Don't tell Carl it's open; ask him to check, or send it to the board instead.`, where);
   if (!ack.ok) return fail(`On the ${dev}${because}: ${ack.error ?? "it could not be shown"}`, where);
   const phoneNote = where === "phone" && what.includes(" at ") ? " (the phone shows it whole; it can't jump to a place)" : "";
-  return { ok: true, where, text: `Shown on the ${dev}${because}: ${ack.landed ?? what}${phoneNote}.` };
+  // An app from before panes opens it in the active pane and does not say a pane: say so, never claim the split.
+  const paneNote = payload.pane && ack.pane !== payload.pane ? ` (this laptop app is older and has no pane control: it opened in the active pane, not the ${payload.pane} pane — Carl can drag it to that side, or update the app)` : "";
+  return { ok: true, where, text: `Shown on the ${dev}${because}: ${ack.landed ?? what}${phoneNote}${paneNote}.` };
 }
 
 async function boardLabel(d: ShowDeps, label: string): Promise<ShowResult> {

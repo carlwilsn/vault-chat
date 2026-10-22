@@ -164,6 +164,54 @@ describe("Show on the laptop: a signal, and success only on the ack", () => {
   });
 });
 
+describe("Show's pane: the laptop's split screen", () => {
+  it("the description tells the agent split screen exists and how to rebuild a layout; the schema has pane left/right", async () => {
+    const { SHOW_DESCRIPTION, SHOW_SCHEMA } = await import("../show");
+    expect(SHOW_DESCRIPTION).toMatch(/split screen/);
+    expect(SHOW_DESCRIPTION).toMatch(/call Show twice: one file with pane "left", the other with pane "right"/);
+    expect(SHOW_SCHEMA.properties.pane.enum).toEqual(["left", "right"]);
+  });
+
+  it("pane goes out with the signal, and the result is the laptop's word on which pane holds what", async () => {
+    const leave = feedOpened(vault, "laptop");
+    const from = emitted.length;
+    const layout = "Split screen on (side by side): left pane: hw/hw4.md · right pane: papers/lec7.pdf (active)";
+    const stop = client("laptop", (ev) => ({ ok: true, pane: ev.pane, landed: `opened lec7.pdf in the ${ev.pane} pane; scrolled to page 4 of 5 in lec7.pdf. ${layout}`, layout }));
+    const r = await show(deps(), { path: "papers/lec7.pdf", where: "laptop", pane: "right", page: 4 });
+    stop();
+    expect(emitted.slice(from).find((e) => e.type === "show")).toMatchObject({ to: "laptop", path: "papers/lec7.pdf", pane: "right", target: { page: 4 } });
+    expect(r.ok).toBe(true);
+    expect(r.text).toBe(`Shown on the laptop: opened lec7.pdf in the right pane; scrolled to page 4 of 5 in lec7.pdf. ${layout}.`);
+    leave();
+  });
+
+  it("an older laptop app (no pane in its ack) is not claimed to have split: the result says it opened in the active pane", async () => {
+    const leave = feedOpened(vault, "laptop");
+    const stop = client("laptop", () => ({ ok: true, landed: "opened hw4.md" }));
+    const r = await show(deps(), { path: "hw/hw4.md", where: "laptop", pane: "left" });
+    stop();
+    expect(r.ok).toBe(true);
+    expect(r.text).toMatch(/^Shown on the laptop: opened hw4\.md \(this laptop app is older and has no pane control: it opened in the active pane, not the left pane/);
+    leave();
+  });
+
+  it("pane is refused, before anything is sent, off the laptop, with a url, or when it is not left/right", async () => {
+    const from = emitted.length;
+    const leave = feedOpened(vault, "phone");
+    const phone = await show(deps(), { path: "hw/hw4.md", where: "phone", pane: "left" });
+    expect(phone).toMatchObject({ ok: false });
+    expect(phone.text).toMatch(/pane is for the laptop's split screen; the phone has no panes/);
+    const board = await show(deps(), { path: "hw/hw4.md", where: "board", pane: "right" });
+    expect(board.text).toMatch(/the iPad board has no panes/);
+    const url = await show(deps(), { url: "https://example.org", where: "laptop", pane: "left" });
+    expect(url.text).toMatch(/not in a pane/);
+    const bad = await show(deps(), { path: "hw/hw4.md", where: "laptop", pane: "top" });
+    expect(bad.text).toMatch(/pane is "left" or "right"/);
+    expect(emitted.length).toBe(from);
+    leave();
+  });
+});
+
 describe("Show on the board: an inbox entry, through the validated send", () => {
   const entryOf = (text: string) => readEntry(vault, /entry (\S+?)\.$/.exec(text)![1]!)!;
 

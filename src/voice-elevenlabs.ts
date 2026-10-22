@@ -15,6 +15,7 @@ import { VoiceLogShipper } from "./voiceShip";
 import { SPEECH_LEVEL, VoiceHealth, connectionOptions, pickTransport, type HealthEvent, type Transport } from "./voiceHealth";
 import { AUDIO_WARN_LINE, MicPin, audioBlocked, canPickOutput, deviceLists, listAudioDevices, type MicDevice } from "./voiceMic";
 import { PlaybackMonitor, roomAudioStats } from "./voiceStats";
+import { layoutLine, sideOf } from "./paneLayout";
 
 /** The voice's diagnostics: the local trail, and the box (voiceShip.ts: <state>/logs/voice.jsonl). */
 const ship = new VoiceLogShipper({ device: "laptop" });
@@ -1965,18 +1966,22 @@ export function buildViewportContextText(
 
   const sections: string[] = [activeSectionFor(state, activeFile)];
 
-  // Split view: include the OTHER pane(s) too so the agent knows
-  // both files are visible. Marked OTHER vs ACTIVE so it can pick
-  // the right one when the user says "this" or "that one".
+  // Split view: the layout first, in Show's names (left / right pane;
+  // src/paneLayout.ts), then the OTHER pane too so the agent knows both
+  // files are visible. Marked OTHER vs ACTIVE so it can pick the right
+  // one when the user says "this" or "that one".
   if (state.panes.length > 0) {
+    sections.unshift(`${layoutLine(state, state.vaultPath)} (Show's pane: "left" / "right" puts a file in one)`);
     for (const pane of state.panes) {
       if (pane.id === state.activePaneId) continue;
       const content = (pane.content ?? "").trim();
       const otherCap = 2000;
+      const side = sideOf(state, pane.id);
+      const label = `OTHER pane${side ? ` (${side})` : ""} document`;
       sections.push(
         content
-          ? `OTHER pane document: ${pane.file}\nContent:\n${truncate(content, otherCap)}`
-          : `OTHER pane document: ${pane.file} (no text content)`,
+          ? `${label}: ${pane.file}\nContent:\n${truncate(content, otherCap)}`
+          : `${label}: ${pane.file} (no text content)`,
       );
     }
   }

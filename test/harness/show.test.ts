@@ -287,6 +287,53 @@ test("a file the laptop does not have yet: an honest no, after one sync", async 
   fs.rmSync(local);
 });
 
+// ---------------------------------------------------------------- the split screen (pane)
+
+const panesNow = () => S().panes.map((p) => `${name(p.file)}${p.id === S().activePaneId ? "*" : ""}`).join(" | ");
+
+test("pane: two files side by side — Show left, then Show right; the result names which pane holds what", async () => {
+  useStore.setState({ currentFile: null, currentContent: "", panes: [], splitDirection: null, activePaneId: null });
+  const a = await Show({ path: "hw/hw4.md", pane: "left" });
+  assert.equal(a.ok, true, a.text);
+  assert.match(a.text, /opened hw4\.md \(alone: a split needs a second file/);
+  assert.equal(S().panes.length, 0);
+  const b = await Show({ path: "papers/lec7.pdf", pane: "right" });
+  assert.equal(b.ok, true, b.text);
+  assert.equal(b.text, "Shown on the laptop: opened lec7.pdf in the right pane. Split screen on (side by side): left pane: hw/hw4.md · right pane: papers/lec7.pdf (active).");
+  assert.equal(S().splitDirection, "horizontal");
+  assert.equal(panesNow(), "hw4.md | lec7.pdf*");
+});
+
+test("pane: a new file replaces that pane only; one already in the other pane swaps; a place still lands", async () => {
+  const c = await Show({ path: "code/vi.py", pane: "left", line: 12 });
+  assert.equal(c.ok, true, c.text);
+  assert.match(c.text, /^Shown on the laptop: opened vi\.py in the left pane; scrolled to line 12 in vi\.py\. Split screen on \(side by side\): left pane: code\/vi\.py \(active\) · right pane: papers\/lec7\.pdf\.$/);
+  assert.equal(panesNow(), "vi.py* | lec7.pdf");
+  const n = opens.length;
+  const d = await Show({ path: "papers/lec7.pdf", pane: "left", page: 3 });
+  assert.equal(d.ok, true, d.text);
+  assert.match(d.text, /lec7\.pdf is in the left pane; scrolled to page 3 of 6 in lec7\.pdf\. Split screen on \(side by side\): left pane: papers\/lec7\.pdf \(active\) · right pane: code\/vi\.py\.$/);
+  assert.equal(panesNow(), "lec7.pdf* | vi.py");
+  assert.equal(opens.length, n, "a file already on screen is moved, never reopened");
+});
+
+test("without pane, in a split: the active pane's file is replaced (as before) and the result still says the layout", async () => {
+  const r = await Show({ path: "hw/hw4.md" });
+  assert.equal(r.ok, true, r.text);
+  assert.match(r.text, /opened hw4\.md\. Split screen on \(side by side\): left pane: hw\/hw4\.md \(active\) · right pane: code\/vi\.py\.$/);
+  assert.equal(panesNow(), "hw4.md* | vi.py");
+});
+
+test("pane is for the laptop: refused for the board before anything is sent", async () => {
+  const n = sent.length;
+  const r = await show(toolDeps(), { path: "hw/hw4.md", where: "board", pane: "left" });
+  assert.equal(r.ok, false);
+  assert.match(r.text, /pane is for the laptop's split screen/);
+  const bad = await Show({ path: "hw/hw4.md", pane: "middle" });
+  assert.match(bad.text, /pane is "left" or "right"/);
+  assert.equal(sent.length, n);
+});
+
 test("the laptop offline: nothing is sent and the result says so", async () => {
   bc.stopBoxChat();
   // Its last poll ends on the box up to 1.5 s later; then the feed's 8 s grace.
