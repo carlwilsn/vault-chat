@@ -19,7 +19,7 @@ import type { ConvMeta, ConvRow, ItemImage, LogRecord, PendingInput, PiBlock, Pi
 import { VC_NOTE, VC_VOICE } from "./protocol";
 
 /** Bumped when the fold's meaning changes: a checkpoint from another version is folded again. */
-export const REDUCER_VERSION = 3;
+export const REDUCER_VERSION = 4;
 
 export type ItemKind = "user" | "assistant" | "thinking" | "tool" | "compaction" | "notice";
 export type ItemStatus = "streaming" | "pending" | "running" | "done" | "error" | "stopped";
@@ -344,6 +344,7 @@ function step(d: Draft, r: LogRecord): void {
   switch (r.type) {
     case "meta": {
       const was = d.meta.running;
+      const wasCleared = d.meta.cleared;
       const m: ConvMeta = { ...d.meta };
       for (const [k, v] of Object.entries(r.patch ?? {})) {
         if (k === "lastActivityAt") {
@@ -359,15 +360,23 @@ function step(d: Draft, r: LogRecord): void {
       if (!m.lastActivityAt) m.lastActivityAt = m.createdAt;
       d.meta = m;
       d.exists = true;
+      // Clear: the view is blank from here (nothing to scroll back into); pi's file keeps everything.
+      if (m.cleared && JSON.stringify(m.cleared) !== JSON.stringify(wasCleared ?? null)) {
+        d.items = [];
+        d.inflight = [];
+        d.inflightTs = null;
+        d.usage = null;
+      }
       if (was && !m.running) closeOpen(d);
       if (m.running && (!was || was.turn !== m.running.turn)) touch(d, r.at);
       return;
     }
     case "entry":
-      onEntry(d, r);
+      // Clear's work behind the blank view (its save turn, its note, compaction) is never shown.
+      if (!d.meta.clearing) onEntry(d, r);
       return;
     case "live":
-      onLive(d, r);
+      if (!d.meta.clearing) onLive(d, r);
       return;
     case "signal":
       return;
@@ -432,7 +441,9 @@ export function rowOf(p: Picture): ConvRow {
     ...(typeof m.nextWakeAt === "number" ? { nextWakeAt: m.nextWakeAt } : {}),
     ...(typeof m.costUsd === "number" ? { costUsd: m.costUsd } : {}),
     ...(m.deleted ? { deleted: true } : {}),
-    running: !!m.running,
+    ...(typeof m.kind === "string" && m.kind ? { kind: m.kind } : {}),
+    ...(m.clearing ? { clearing: true } : {}),
+    running: !!m.running && !m.clearing,
     asking: !!m.asking,
     seq: p.seq,
   };
@@ -468,11 +479,13 @@ export function reduceRow(row: RowState, r: LogRecord): RowState {
     ...(typeof row.nextWakeAt === "number" ? { nextWakeAt: row.nextWakeAt } : {}),
     ...(typeof row.costUsd === "number" ? { costUsd: row.costUsd } : {}),
     ...(row.deleted ? { deleted: true } : {}),
+    ...(row.kind ? { kind: row.kind } : {}),
+    ...(row.clearing ? { clearing: true } : {}),
     ...(row.running ? { running: { turn: "?", kind: "?", startedAt: 0 } } : {}),
     ...(row.asking ? { asking: { question: "", options: [], at: 0 } } : {}),
   };
   // Only what changes a row: its fields, its activity and title (Carl's and the agent's messages).
-  if (r.type === "live" || r.type === "signal") return { ...row, seq: r.seq };
+  if (r.type === "live" || r.type === "signal" || (r.type === "entry" && row.clearing)) return { ...row, seq: r.seq };
   if (r.type === "entry") {
     // Carl's answer to a question (the AskUser result): his line, so activity.
     const m = r.entry.message;

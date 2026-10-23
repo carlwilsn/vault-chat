@@ -117,11 +117,13 @@ describe("projects: only Carl decides what is a project", () => {
     const threads = rig.backend.threads.length;
     const s = await rig.start("Add Tversky to the Psych 221 reading list.", { project: "coconut" });
     const th = rig.backend.threads[threads];
+    // The project's one thread (src/threads.ts).
+    expect(s.convId).toBe("project-coconut");
     expect((await rig.readConv(s.convId)).project).toBe("coconut");
-    // The working directory is the vault, as for any chat; the instructions say the vault is open to it.
+    // The working directory is the vault (no main folder named); the instructions say the vault is open to it.
     expect(th.cwd).toBe(rig.vault);
-    expect(th.instructions).toContain('This chat is in Carl\'s project "Coconut"');
-    expect(th.instructions).toContain("A project is context, not a boundary: in any chat you may read and write anywhere in the vault (other projects' files and project.md included)");
+    expect(th.instructions).toContain('This is the thread of Carl\'s project "Coconut"');
+    expect(th.instructions).toContain("A project is context, not a wall: from any thread you may read and write anywhere in the vault and in your work area");
     // pi's own write/edit tools: the path guard lets a project-X chat write project Y's files.
     const { guardToolCall } = await import("../engine/pi/ext/policy.mjs" as any);
     const opts = { cwd: rig.vault, home: rig.root, denyRead: [join(rig.root, "secrets")], denyWrite: [join(rig.vault, ".vault-chat", "conversations")] };

@@ -1,10 +1,10 @@
 import { emit, emitTo, listen } from "@tauri-apps/api/event";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { useStore, type ChatMessage, type FileEntry, type LiveTool, type Theme } from "./store";
-import { sendMessage, stopAgent, clearChat, interruptAndSend, sendMidTurn, cancelPending } from "./chat-controller";
+import { sendMessage, stopAgent, clearThread, interruptAndSend, sendMidTurn, cancelPending } from "./chat-controller";
 import type { Conversation } from "./conversations";
 import { newConversationId } from "./conversations";
-import { listProjects, openProjectNotes, routeProjectChangesTo, routeProjectNotesTo, setConversationProject } from "./projects";
+import { listProjects, openProjectNotes, openThread, routeProjectChangesTo, routeProjectNotesTo, setConversationProject } from "./projects";
 import { toggleVoice, voiceBarLevels } from "./voice-elevenlabs";
 import { isPopout } from "./windowKind";
 
@@ -140,7 +140,8 @@ function applyActionLocal(a: ChatAction) {
   else if (a.kind === "steer" || a.kind === "queue") void sendMidTurn(a.kind, a.text, a.contextPreamble, a.attachments);
   else if (a.kind === "unqueue") void cancelPending(a.id);
   else if (a.kind === "stop") stopAgent();
-  else if (a.kind === "clear") clearChat();
+  // Clear: the open thread's view goes blank; the box saves what lasts and compacts (chat-controller.ts).
+  else if (a.kind === "clear") clearThread();
   else if (a.kind === "startCapture") {
     // Triggered by popout's Camera button. Main sets the pending
     // flag and fires marquee-toggle on main's window — the user
@@ -152,7 +153,8 @@ function applyActionLocal(a: ChatAction) {
     s.setChatPaneCapturePending(true);
     window.dispatchEvent(new CustomEvent("vc-marquee-toggle"));
   } else if (a.kind === "newConversation") useStore.getState().newConversation(a.id);
-  else if (a.kind === "selectConversation") useStore.getState().selectConversation(a.id);
+  // Main or a project's thread may not be in the list yet: shown at once (projects.ts openThread).
+  else if (a.kind === "selectConversation") openThread(a.id);
   else if (a.kind === "deleteConversation") void useStore.getState().deleteConversation(a.id);
   else if (a.kind === "markAllRead") useStore.getState().markAllRead();
   else if (a.kind === "toggleVoice") toggleVoice("popout");

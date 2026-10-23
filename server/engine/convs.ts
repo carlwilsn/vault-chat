@@ -22,6 +22,7 @@ import { convLog, type ConvLog } from "../convlog/log";
 import { appendEntries, newSessionFile, vcNote, vcVoice } from "../convlog/piSession";
 import { readConversationObjects } from "../commands/conversations";
 import type { EngineConv } from "./context";
+import { MAIN_ID, MAIN_TITLE, projectThreadId } from "../../src/threads";
 
 export { newMessageId };
 
@@ -105,6 +106,21 @@ export async function createConv(vault: string, init: Partial<EngineConv>, first
   const now = Date.now();
   emitTo(vault, convId, { type: "meta", patch: { ...meta, createdAt: now, lastActivityAt: now } });
   return (await readConv(vault, convId))!;
+}
+
+/** Main (src/threads.ts): made once, the default conversation of every surface. */
+export async function ensureMain(vault: string): Promise<EngineConv> {
+  const have = pictureOf(vault, MAIN_ID);
+  if (have && !have.meta.deleted) return toEngineConv(have);
+  return createConv(vault, { kind: "main", source: "main", title: MAIN_TITLE } as Partial<EngineConv>, MAIN_TITLE, MAIN_ID);
+}
+
+/** A project's one thread, made the first time it is needed (its title: the project's name). */
+export async function ensureProjectThread(vault: string, slug: string, name: string): Promise<EngineConv> {
+  const id = projectThreadId(slug);
+  const have = pictureOf(vault, id);
+  if (have && !have.meta.deleted) return toEngineConv(have);
+  return createConv(vault, { kind: "project", source: "project", project: slug, title: name || slug } as Partial<EngineConv>, name || slug, id);
 }
 
 function titleOf(text: string): string {

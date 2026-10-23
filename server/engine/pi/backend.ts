@@ -414,17 +414,25 @@ export class PiBackend extends EventEmitter {
     return { threadId: id, ref: file };
   }
 
-  async resumeThread(threadId: string, o: { model: string; subagents: boolean }): Promise<void> {
+  /** `cwd`: the thread's working folder now (a project's main folder); a change restarts its pi there (pi reads
+   *  context files such as that folder's AGENTS.md when it starts). Not while a turn runs. */
+  async resumeThread(threadId: string, o: { model: string; subagents: boolean; cwd?: string }): Promise<void> {
     const have = this.threads.get(threadId);
-    if (have?.proc.isAlive()) {
-      have.lastUsed = Date.now();
-      return;
-    }
     let meta: { instr: string; tools: string; cwd: string; subagents?: boolean } | null = null;
     try {
       meta = JSON.parse(readFileSync(join(this.o.paths.instrDir, `${threadId}.json`), "utf8"));
     } catch {
       meta = null;
+    }
+    const moved = !!meta && !!o.cwd && meta.cwd !== o.cwd;
+    if (have?.proc.isAlive() && (!moved || have.turnId)) {
+      have.lastUsed = Date.now();
+      return;
+    }
+    if (meta && moved) {
+      meta = { ...meta, cwd: o.cwd! };
+      writeFileSync(join(this.o.paths.instrDir, `${threadId}.json`), JSON.stringify(meta));
+      this.log(`thread ${threadId} now runs in ${o.cwd}`);
     }
     const file = this.sessionFileOf(threadId);
     if (!meta || !file) throw new ThreadUnknownError(`no pi session ${threadId}`);
@@ -438,6 +446,15 @@ export class PiBackend extends EventEmitter {
     const subagents = !!meta.subagents && o.subagents;
     const { proc } = await this.spawn({ cwd: meta.cwd, model: o.model, file, instr: meta.instr, tools: meta.tools, subagents, you: true });
     this.attach({ id: threadId, subagents, file, proc, model: o.model, lastUsed: Date.now(), turnId: null, msgIndex: 0, crashes: [], restoreModel: null });
+  }
+
+  /** pi's own compaction of a thread, now (RPC `compact`, with a focus for its summary). Throws when pi refuses. */
+  async compact(threadId: string, customInstructions?: string): Promise<{ tokensBefore?: number; summary?: string }> {
+    const t = this.live(threadId);
+    t.lastUsed = Date.now();
+    const r = await t.proc.request({ type: "compact", ...(customInstructions ? { customInstructions } : {}) }, 300_000);
+    if (!r?.success) throw new Error(String(r?.error ?? "compact rejected"));
+    return r.data ?? {};
   }
 
   /** Has a pi process this session open (only then may nothing else write its file)? */

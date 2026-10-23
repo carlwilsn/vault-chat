@@ -127,7 +127,8 @@ const idle = (id: string) => until(async () => (await convs.readConv(vault, id))
 /** A typed chat turn (the laptop's composer): what pi got, then the reply. */
 async function typed(text: string, reply: string, convId?: string): Promise<string> {
   const n = backend.turns.length;
-  const out = await engine.message({ text, convId, client: "laptop" });
+  // No convId: a chat of its own (a separate chat; a message naming none would be Main's).
+  const out = await engine.message({ text, convId: convId ?? `sep-${Math.random().toString(36).slice(2, 10)}`, client: "laptop" });
   await until(() => backend.turns.length > n);
   backend.reply(reply);
   await idle(String(out.convId));

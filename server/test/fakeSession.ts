@@ -78,7 +78,24 @@ export function withPiSessions<T extends EventEmitter>(b: T, dir: string): T {
     return r;
   };
   if (typeof anyB.holds !== "function") anyB.holds = () => false;
-  if (typeof anyB.note !== "function") anyB.note = async () => false;
+  // The extension's /vc-note for Clear: a vc-clear custom message (in the model's context); other notes: no pi here.
+  if (typeof anyB.note !== "function")
+    anyB.note = async (threadId: string, d: any) => {
+      const s = sess(threadId);
+      if (!s || d?.kind !== "clear") return false;
+      write(s, { type: "custom_message", customType: "vc-clear", content: String(d.text ?? ""), display: false, details: { at: d.at } });
+      return true;
+    };
+  // pi's RPC compact: a compaction entry (the engine's Clear calls it).
+  if (typeof anyB.compact !== "function")
+    anyB.compact = async (threadId: string, customInstructions?: string) => {
+      const s = sess(threadId);
+      if (!s) throw new Error("no session");
+      const summary = `Summary${customInstructions ? " (focused)" : ""} of ${readEntries(s.file).length} entries`;
+      write(s, { type: "compaction", summary, firstKeptEntryId: null, tokensBefore: 1000 });
+      anyB.compactions = [...(anyB.compactions ?? []), { threadId, customInstructions }];
+      return { summary, tokensBefore: 1000 };
+    };
   const emit = b.emit.bind(b);
   (b as any).emit = (name: string, e: any, ...rest: any[]) => {
     if (name === "event" && e?.kind === "pi" && e.ev) {

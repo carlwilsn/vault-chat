@@ -131,7 +131,8 @@ export async function makeRig(opts: { deps?: Record<string, unknown> } = {}): Pr
     allConvs: () => convs.allConvs(vault),
     start: async (text, extra = {}) => {
       const before = backend.turns.length;
-      const r = await engine.message({ text, ...extra });
+      // No convId: a new separate chat (Main is the engine's default; these tests each want a chat of their own).
+      const r = await engine.message({ text, ...(extra.convId || extra.project ? {} : { convId: `sep-${Math.random().toString(36).slice(2, 10)}` }), ...extra });
       await until(() => backend.turns.length > before);
       return { convId: r.convId, tid: backend.turns[before].threadId };
     },

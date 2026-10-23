@@ -229,7 +229,7 @@ export function makeChatView(): (p: Picture, opts?: { split?: boolean }) => Chat
     return {
       messages,
       live: { text, reasoning, tools, items: tail.map((x) => x.id) },
-      running: !!p.meta.running && !asking,
+      running: !!p.meta.running && !asking && !p.meta.clearing,
       waiting: asking,
       startedAt: p.meta.running?.startedAt ?? null,
       todos: planOf(p),

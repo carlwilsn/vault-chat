@@ -5,6 +5,9 @@ export type ConversationSource =
   | "scheduled"
   | "voice"
   | "phone"
+  // One main conversation (src/threads.ts): Main and a project's thread.
+  | "main"
+  | "project"
   | "worker"
   // A mission thread: the dedicated supervisor that owns one user-approved
   // goal — it spawns and monitors that goal's workers and reports by Notify.
@@ -158,6 +161,10 @@ export type Conversation = {
   todos?: import("./store").TodoItem[];
   // [box mode, in memory] The box model's context window (for the dial).
   contextWindow?: number;
+  // One main conversation (src/threads.ts): "main" | "project" | "separate"; none: an older chat (archived, read-only).
+  kind?: string;
+  // Carl cleared this thread's view and the box is still saving and compacting behind it.
+  clearing?: boolean;
 };
 
 
@@ -227,3 +234,6 @@ export function isArchivedThread(c: { source: string }): boolean {
   return ARCHIVED_SOURCES.has(c.source);
 }
 export const ARCHIVED_THREAD = "Archived mission thread — read only. Start a new chat to go on.";
+
+/** An older chat from before one main conversation (src/threads.ts): kept readable, not continued here. */
+export const OLDER_CHAT = "An older chat — read only. Main and your projects carry on from the left panel.";

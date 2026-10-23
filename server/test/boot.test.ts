@@ -87,7 +87,7 @@ describe("boot + phone routes", () => {
 
   let missionId = "";
 
-  it("/message starts a chat that runs one scripted turn into its log (never a conversation file)", async () => {
+  it("/message with no conversation is Main's: one scripted turn into its log (never a conversation file)", async () => {
     const r = await post("/message", { text: "Write a haiku." });
     expect(r.status).toBe(200);
     const j = await r.json();
@@ -106,7 +106,8 @@ describe("boot + phone routes", () => {
       const rs = body.trim().split("\n").map((l) => JSON.parse(l));
       return rs.some((x) => x.type === "meta" && x.patch.running === null) ? rs : null;
     }, 60_000);
-    expect(recs[0]).toMatchObject({ type: "meta", conv: missionId, patch: { source: "phone" } });
+    expect(missionId).toBe("main");
+    expect(recs[0]).toMatchObject({ type: "meta", conv: missionId, patch: { source: "main", kind: "main" } });
     // The reply streamed (pi's deltas), then pi's own entry: on disk a pointer into its session file.
     expect(recs.filter((x: any) => x.type === "live" && x.ev.assistantMessageEvent?.type === "text_delta").map((x: any) => x.ev.assistantMessageEvent.delta).join("")).toContain("Acknowledged. I have the brief");
     const entries = recs.filter((x: any) => x.type === "entry");

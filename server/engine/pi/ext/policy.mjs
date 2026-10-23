@@ -208,3 +208,47 @@ export function voiceLineContent(d) {
   const text = String(d?.text ?? "").trim();
   return d?.role === "user" ? `[voice call] Carl said: ${text}` : `[voice call] You said to Carl (spoken by your voice): ${text}`;
 }
+
+/** Carl cleared a thread's view (the engine's Clear): a custom message in the model's context, never shown. */
+export const CLEAR_TYPE = "vc-clear";
+
+// The memory files' caps (server/context/memory.ts says the same): Claude Code's near-cap reminder.
+const MEMORY_CAPS = { lines: 200, chars: 25_000, projectChars: 8_000, projectMemoryLines: 60, near: 0.8 };
+
+/**
+ * The near-cap reminder for a write or edit that touched a memory file — `.vault-chat/MEMORY.md` or a
+ * project's `agent-projects/<slug>/project.md` — appended to that tool's result (pi's tool_result hook),
+ * or null. `read(abs)` returns the file's text after the write.
+ */
+export function memoryCapNote(toolName, input, cwd, read) {
+  if (toolName !== "write" && toolName !== "edit") return null;
+  const p = String(input?.path ?? input?.file_path ?? "");
+  if (!p) return null;
+  const abs = p.startsWith("/") || /^[A-Za-z]:[\\/]/.test(p) ? p : `${cwd.replace(/[\\/]+$/, "")}/${p}`;
+  const norm = abs.replace(/\\/g, "/");
+  let text;
+  try {
+    text = String(read(abs) ?? "");
+  } catch {
+    return null;
+  }
+  const lines = (s) => (s.trim() ? s.trim().split(/\r?\n/).length : 0);
+  if (/\/\.vault-chat\/MEMORY\.md$/.test(norm)) {
+    const n = lines(text);
+    if (n < MEMORY_CAPS.lines * MEMORY_CAPS.near && text.length < MEMORY_CAPS.chars * MEMORY_CAPS.near) return null;
+    return `[memory] MEMORY.md is at ${n} of ${MEMORY_CAPS.lines} lines: merge related lines and drop stale ones now${n > MEMORY_CAPS.lines ? " (past the cap the rest is not loaded)" : ""}.`;
+  }
+  if (/\/agent-projects\/[a-z0-9-]+\/project\.md$/.test(norm)) {
+    const m = /^##\s+Memory\s*$/im.exec(text);
+    let n = 0;
+    if (m) {
+      const rest = text.slice(m.index + m[0].length);
+      const end = /^##\s+/m.exec(rest);
+      n = (end ? rest.slice(0, end.index) : rest).split(/\r?\n/).filter((l) => l.trim()).length;
+    }
+    const big = text.trim().length >= MEMORY_CAPS.projectChars * MEMORY_CAPS.near;
+    if (n < MEMORY_CAPS.projectMemoryLines * MEMORY_CAPS.near && !big) return null;
+    return `[memory] This project.md's ## Memory is at ${n} of ${MEMORY_CAPS.projectMemoryLines} lines${big ? ` and the file at ${text.trim().length} of ${MEMORY_CAPS.projectChars} characters loaded` : ""}: merge related memory lines and drop stale ones now (never Carl's instructions above ## Memory).`;
+  }
+  return null;
+}

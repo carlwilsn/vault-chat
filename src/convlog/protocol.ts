@@ -90,6 +90,12 @@ export type ConvMeta = {
   threadId?: string;
   threadPath?: string;
   deleted?: boolean;
+  /** What this conversation is (src/threads.ts): "main", "project" (a project's one thread) or "separate"; none: an older chat. */
+  kind?: string;
+  /** Carl cleared the view (Clear): what came before is not shown. `id`: the client's id for it. */
+  cleared?: { at: number; id?: string };
+  /** Clear's work behind the blank view (the save-what-lasts turn, the note, compaction): nothing it writes is shown. */
+  clearing?: boolean;
   [k: string]: unknown;
 };
 
@@ -119,6 +125,10 @@ export type ConvRow = {
   running: boolean;
   asking: boolean;
   deleted?: boolean;
+  /** src/threads.ts: main | project | separate; none: an older chat. */
+  kind?: string;
+  /** Clear's work is running behind the blank view. */
+  clearing?: boolean;
   /** An older conversation file not imported yet. */
   legacy?: boolean;
   seq: number;

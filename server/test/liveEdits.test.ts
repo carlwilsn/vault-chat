@@ -195,7 +195,7 @@ describe("file_changed: the open pane hears of a write at once", () => {
     onWritten = (paths) => live.note("v", paths);
     try {
       const at = written.length;
-      await engine.message({ text: "Draw a dog." });
+      await engine.message({ text: "Draw a dog.", convId: "sep-draw-dog" });
       await until(() => backend.turns.length >= 2);
       const tid = backend.turns.at(-1).threadId;
       backend.ev(tid, { kind: "tool", itemId: "w1", name: "Write", input: { path: "pics/dog.svg", content: "<svg/>" } });

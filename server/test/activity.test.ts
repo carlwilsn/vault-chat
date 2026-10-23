@@ -97,7 +97,8 @@ const until = async (fn: () => Promise<boolean> | boolean, ms = 10_000) => {
 /** Send a chat message and return the texts its turn started with (the prefix and the message). */
 async function chatTurn(e: any, b: FakeBackend, body: Record<string, unknown>): Promise<{ texts: string; convId: string }> {
   const before = b.turns.length;
-  const out = await e.message(body);
+  // No convId: a chat of its own (a separate chat; a message naming none would be Main's).
+  const out = await e.message({ ...(body.convId ? {} : { convId: `sep-${Math.random().toString(36).slice(2, 10)}` }), ...body });
   expect(out?.ok).toBe(true);
   await until(() => b.turns.length > before);
   const t = b.turns[b.turns.length - 1]!;

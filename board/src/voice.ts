@@ -7,12 +7,11 @@
 // Carl did elsewhere reach the live call (GET /api/v1/voice/updates, src/voiceFront.ts). No
 // agent, tool or memory of its own.
 //
-// Which conversation: the one Carl is in — his most recently active chat (GET /conversations,
-// the phone's list and filter), or the one he picked in the pill (switchChat) for as long as no
-// other chat has been active since. Lines go into that conversation, so it stays the most
-// recent while he talks on the board: a drop, an end and a new tap, a reload all continue it
-// (Carl, 2026-10-18: each restart had landed on a different conversation). A chat he then
-// continues on the laptop is followed: "continue that" on the board means that chat.
+// Which conversation: Main, the one main conversation every surface continues (src/threads.ts),
+// or the thread he picked in the pill (switchChat: a project's thread) for as long as no other
+// thread has been active since. Lines go into that conversation, so it stays the most recent
+// while he talks on the board: a drop, an end and a new tap, a reload all continue it
+// (Carl, 2026-10-18: each restart had landed on a different conversation).
 //
 // A session that closes by itself (the network, ElevenLabs) is said, not hidden: the pill
 // turns red with the reason, and the mic continues the same thread. Every close is reported
@@ -47,6 +46,7 @@ import { isControlLine, isFillerLine } from "../../src/voicePrompt";
 import { VoiceUpdates, pushStartImages, type UpdatesPage } from "../../src/voiceFront";
 import type { Item } from "../../src/boardFormat";
 import type { ChatRow, VoiceConfig } from "./api";
+import { MAIN_ID, isOlderChat } from "../../src/threads";
 
 /** The SDK's conversation, as much of it as the board uses. */
 export type VoiceConv = {
@@ -121,7 +121,11 @@ export { AUDIO_WARN_LINE };
 
 /** The chats the phone lists: not the old missions system's threads. */
 const NOT_CHATS = new Set(["ask", "worker", "mission"]);
-export const recentChats = (rows: ChatRow[]) => rows.filter((c) => !NOT_CHATS.has(c.source)).sort((a, b) => (b.lastActivityAt ?? 0) - (a.lastActivityAt ?? 0));
+/** The threads voice can continue: Main, the projects' threads, separate chats (never an older chat: read only). */
+export const recentChats = (rows: ChatRow[]) => {
+  const known = rows.some((c) => typeof c.kind === "string" && c.kind);
+  return rows.filter((c) => !NOT_CHATS.has(c.source) && (!known || !isOlderChat(c))).sort((a, b) => (b.lastActivityAt ?? 0) - (a.lastActivityAt ?? 0));
+};
 
 /** One line naming an item on the board (its inbox label when it has one). */
 function itemName(it: Item): string {
@@ -324,11 +328,12 @@ export class VoiceController {
     } catch {
       /* no list: a session with no thread behind it */
     }
-    // A picked chat; else the one picked in the pill while no other chat has been active since; else the most recent.
+    // A picked chat; else the one picked in the pill while no other chat has been active since; else Main (one main
+    // conversation, every surface's default: src/threads.ts); else the most recent (a box from before Main).
     const picked = this.thread ? chats.find((c) => c.id === this.thread) : null;
     const latest = chats[0] ?? null;
     const stillPicked = !!picked && (!latest || latest.id === picked.id || (latest.lastActivityAt ?? 0) <= Math.max(this.pickedAt, picked.lastActivityAt ?? 0));
-    const chat = (chatId ? chats.find((c) => c.id === chatId) : null) ?? (stillPicked ? picked : null) ?? latest;
+    const chat = (chatId ? chats.find((c) => c.id === chatId) : null) ?? (stillPicked ? picked : null) ?? chats.find((c) => c.id === MAIN_ID) ?? latest;
     this.set({ chats, chat });
     let cfg: BoardVoiceConfig | null = null;
     let why = "";

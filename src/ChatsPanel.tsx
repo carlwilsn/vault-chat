@@ -1,22 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { MessageSquare, Plus, X as XIcon, Trash2, Mic, CheckCheck, ChevronRight, Folder, FolderInput, PanelLeftClose, Check, FileText } from "lucide-react";
+import { MessageSquare, Plus, X as XIcon, Trash2, Mic, Folder, PanelLeftClose, FileText, MoreHorizontal, ChevronLeft, Brain, MessageSquarePlus, History } from "lucide-react";
 import { useStore } from "./store";
-import { conversationPreview, isArchivedThread, type Conversation } from "./conversations";
-import { ongoingWork } from "./ongoingWork";
+import { conversationPreview, type Conversation } from "./conversations";
 import { useProjects } from "./ProjectChip";
-import { newChatInProject, openProjectNotes, projectName, setConversationProject, type ProjectInfo } from "./projects";
+import { createProjectThread, openMemory, openProjectNotes, openThread, projectName } from "./projects";
+import { panelModel, threadKindOf, type PanelEntry } from "./threads";
 import { cn } from "./lib/utils";
-
-// How the list groups by project — a preview switch while Carl picks:
-// "sections": each project is a section of its chats, above the rest;
-// "folders": each project is one collapsed row that opens in place.
-function groupingStyle(): "sections" | "folders" {
-  try {
-    return localStorage.getItem("vc_chat_grouping") === "folders" ? "folders" : "sections";
-  } catch {
-    return "sections";
-  }
-}
 
 type Props = {
   open: boolean;
@@ -24,12 +13,8 @@ type Props = {
   onFocusComposer?: () => void;
 };
 
-/** The Chats overlay (the docked layout): a 380px slide-over on the right. */
+/** The left panel as an overlay (the docked layout): a 380px slide-over on the right. */
 export function ChatsPanel({ open, onClose, onFocusComposer }: Props) {
-  // The filter and open folders live here, not in the list, so they survive
-  // the overlay closing (the list unmounts with it).
-  const [query, setQuery] = useState("");
-  const [openFolders, setOpenFolders] = useState<Set<string>>(() => new Set());
   const panelRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -71,11 +56,7 @@ export function ChatsPanel({ open, onClose, onFocusComposer }: Props) {
         ref={panelRef}
         className="h-full w-[380px] max-w-[92vw] bg-card border-l border-border shadow-xl flex flex-col pointer-events-auto"
       >
-        <ChatsList
-          query={query}
-          setQuery={setQuery}
-          openFolders={openFolders}
-          setOpenFolders={setOpenFolders}
+        <ThreadsList
           onPicked={onClose}
           onFocusComposer={onFocusComposer}
           trailing={
@@ -93,25 +74,18 @@ export function ChatsPanel({ open, onClose, onFocusComposer }: Props) {
   );
 }
 
-/** Fullscreen chat's left sidebar: the same list, docked, collapsible. */
+/** Fullscreen chat's (and the popout's) left sidebar: the same list, docked, collapsible. */
 export function ChatsSidebar({ onFocusComposer }: { onFocusComposer?: () => void }) {
-  const [query, setQuery] = useState("");
-  const [openFolders, setOpenFolders] = useState<Set<string>>(() => new Set());
   const toggle = useStore((s) => s.toggleChatSidebar);
   return (
     <aside data-el="chats-sidebar" className="h-full w-[272px] shrink-0 bg-background flex flex-col">
-      <ChatsList
-        query={query}
-        setQuery={setQuery}
-        openFolders={openFolders}
-        setOpenFolders={setOpenFolders}
+      <ThreadsList
         onFocusComposer={onFocusComposer}
-        compact
         trailing={
           <button
             onClick={toggle}
             className="h-7 w-7 flex items-center justify-center rounded hover:bg-accent/60 text-muted-foreground hover:text-foreground"
-            title="Hide chats (Ctrl+B)"
+            title="Hide (Ctrl+B)"
           >
             <PanelLeftClose className="h-3.5 w-3.5" />
           </button>
@@ -121,92 +95,85 @@ export function ChatsSidebar({ onFocusComposer }: { onFocusComposer?: () => void
   );
 }
 
-/** The conversations: header (count, mark all read, New), the filter, and
- *  the list grouped by project. Shared by the overlay and the sidebar. */
-function ChatsList({
-  query,
-  setQuery,
-  openFolders,
-  setOpenFolders,
+/**
+ * The left panel (src/threads.ts panelModel): Main at the top, then the projects (each opens its one
+ * thread), then "+ New project". No list of chats: the menu has "New separate chat", "Older chats"
+ * (separate and older chats, newest first) and "Memory" (the agent's MEMORY.md).
+ */
+function ThreadsList({
   onPicked,
   onFocusComposer,
   trailing,
-  compact = false,
 }: {
-  query: string;
-  setQuery: (q: string) => void;
-  openFolders: Set<string>;
-  setOpenFolders: React.Dispatch<React.SetStateAction<Set<string>>>;
-  /** after a chat is picked or started (the overlay closes; the sidebar stays) */
+  /** after a thread is picked or started (the overlay closes; the sidebar stays) */
   onPicked?: () => void;
   onFocusComposer?: () => void;
   /** the header's last control: close (overlay) or hide (sidebar) */
   trailing: React.ReactNode;
-  /** the narrow sidebar: "Mark all read" as its icon alone */
-  compact?: boolean;
 }) {
   const conversations = useStore((s) => s.conversations);
   const activeId = useStore((s) => s.activeConversationId);
-  const newConversation = useStore((s) => s.newConversation);
-  const selectConversation = useStore((s) => s.selectConversation);
   const deleteConversation = useStore((s) => s.deleteConversation);
-  const markAllRead = useStore((s) => s.markAllRead);
-  const unreadCount = useMemo(
-    () => conversations.filter((c) => c.unread).length,
-    [conversations],
-  );
-
   const projects = useProjects();
-  const sections = useMemo(() => groupConversations(conversations, query, projects), [conversations, query, projects]);
-  const [style] = useState(groupingStyle);
-
-  const row = (c: Conversation) => (
-    <Row
-      key={c.id}
-      conversation={c}
-      active={c.id === activeId}
-      onSelect={() => {
-        selectConversation(c.id);
-        onPicked?.();
-      }}
-      onDelete={() => deleteConversation(c.id)}
-      projects={projects}
-      onProject={(nameOrSlug) => void setConversationProject(c.id, nameOrSlug, projects)}
-    />
+  const { entries, others } = useMemo(
+    () =>
+      panelModel(
+        conversations.map((c) => ({ id: c.id, title: c.title, kind: c.kind, lastActivityAt: c.lastActivityAt, running: c.status === "running", unread: c.unread })),
+        projects,
+        activeId,
+      ),
+    [conversations, projects, activeId],
   );
-
-  const newInProject = (slug: string) => {
-    newChatInProject(slug);
-    setQuery("");
-    onPicked?.();
-    const store = useStore.getState();
-    if (store.rightCollapsed) store.toggleRight();
-    setTimeout(() => onFocusComposer?.(), 0);
-  };
-
-  // New project: named in place, then a chat in it (the project itself is
-  // written when that chat is first sent — the same as picking one).
+  const [menu, setMenu] = useState(false);
+  const [older, setOlder] = useState(false);
   const [naming, setNaming] = useState<string | null>(null);
-  const createProject = async (name: string) => {
-    setNaming(null);
-    const id = useStore.getState().newConversation();
-    await setConversationProject(id, name, projects);
-    setQuery("");
-    onPicked?.();
-    const store = useStore.getState();
-    if (store.rightCollapsed) store.toggleRight();
-    setTimeout(() => onFocusComposer?.(), 0);
-  };
+  const [err, setErr] = useState<string | null>(null);
 
-  const handleNew = () => {
-    newConversation();
-    setQuery("");
+  const focusChat = () => {
     onPicked?.();
     const store = useStore.getState();
     if (store.rightCollapsed) store.toggleRight();
-    // Defer so the chat pane is fully visible before focus moves.
     setTimeout(() => onFocusComposer?.(), 0);
   };
+  const open = (id: string, title?: string) => {
+    openThread(id, title);
+    onPicked?.();
+  };
+  const create = async (name: string) => {
+    setNaming(null);
+    const r = await createProjectThread(name);
+    if (!r.ok) {
+      setErr(r.error);
+      return;
+    }
+    setErr(null);
+    focusChat();
+  };
+  const byId = useMemo(() => new Map(conversations.map((c) => [c.id, c])), [conversations]);
+
+  if (older) {
+    return (
+      <>
+        <div className="flex items-center justify-between px-2 py-3 border-b border-border/60">
+          <button onClick={() => setOlder(false)} data-el="older-back" className="h-7 px-2 flex items-center gap-1 rounded hover:bg-accent/60 text-[13px] font-semibold">
+            <ChevronLeft className="h-3.5 w-3.5 text-muted-foreground" />
+            Older chats
+          </button>
+          {trailing}
+        </div>
+        <div className="flex-1 overflow-auto" data-el="older-chats">
+          {others.length === 0 ? (
+            <div className="px-4 py-6 text-center text-[12px] text-muted-foreground">No other chats.</div>
+          ) : (
+            others.map((o) => {
+              const c = byId.get(o.id);
+              return c ? <OlderRow key={c.id} conversation={c} active={c.id === activeId} onSelect={() => open(c.id)} onDelete={() => void deleteConversation(c.id)} /> : null;
+            })
+          )}
+        </div>
+      </>
+    );
+  }
 
   return (
     <>
@@ -214,235 +181,87 @@ function ChatsList({
         <div className="flex items-center gap-2">
           <MessageSquare className="h-3.5 w-3.5 text-muted-foreground" />
           <span className="text-[13px] font-semibold">Chats</span>
-          <span className="text-[11px] text-muted-foreground">
-            {conversations.length}
-          </span>
         </div>
-        <div className="flex items-center gap-1">
-          {unreadCount > 0 && (
-            <button
-              onClick={() => markAllRead()}
-              className="h-7 px-2 flex items-center gap-1 rounded hover:bg-accent/60 text-[11.5px] text-muted-foreground hover:text-foreground/90"
-              title="Mark all chats read"
-            >
-              <CheckCheck className="h-3 w-3" />
-              {!compact && <span>Mark all read</span>}
-            </button>
-          )}
+        <div className="flex items-center gap-1 relative">
           <button
-            onClick={handleNew}
-            className="h-7 px-2 flex items-center gap-1 rounded hover:bg-accent/60 text-[11.5px] text-foreground/90"
-            title="New chat (Ctrl+T)"
+            onClick={() => setMenu((v) => !v)}
+            data-el="threads-menu"
+            className={cn("h-7 w-7 flex items-center justify-center rounded hover:bg-accent/60 text-muted-foreground hover:text-foreground", menu && "bg-accent/60 text-foreground")}
+            title="More"
           >
-            <Plus className="h-3 w-3" />
-            <span>New</span>
+            <MoreHorizontal className="h-3.5 w-3.5" />
           </button>
+          {menu && (
+            <Menu onClose={() => setMenu(false)}>
+              <MenuItem
+                el="new-separate-chat"
+                icon={<MessageSquarePlus className="h-3 w-3" />}
+                label="New separate chat"
+                onClick={() => {
+                  useStore.getState().newConversation();
+                  focusChat();
+                }}
+              />
+              <MenuItem el="open-older-chats" icon={<History className="h-3 w-3" />} label={`Older chats${others.length ? ` (${others.length})` : ""}`} onClick={() => setOlder(true)} />
+              <MenuItem el="open-memory" icon={<Brain className="h-3 w-3" />} label="Memory" onClick={() => void openMemory().then(() => onPicked?.())} />
+            </Menu>
+          )}
           {trailing}
         </div>
       </div>
-      <div className="flex items-center gap-2 px-4 py-2 border-b border-border/60">
-        <input
-          type="text"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder="Filter chats…"
-          className="flex-1 h-6 px-2 rounded bg-background border border-border text-[11.5px] placeholder:text-muted-foreground/60 focus:outline-none focus:border-ring/40"
-        />
-      </div>
 
-      <div className="flex-1 overflow-auto">
-        {conversations.length === 0 ? (
-          <div className="px-4 py-6 text-center text-[12px] text-muted-foreground">
-            No chats yet.
-          </div>
-        ) : (
-          <>
-            {style === "sections" &&
-              sections.projects.map((p) => (
-                <Section
-                  key={p.slug}
-                  label={p.name}
-                  onAdd={() => newInProject(p.slug)}
-                  addTitle={`New chat in ${p.name}`}
-                  onNotes={() => void openProjectNotes(p.slug, p.name).then(() => onPicked?.())}
-                >
-                  {p.items.map(row)}
-                </Section>
-              ))}
-            {!query.trim() &&
-              (naming === null ? (
-                <button
-                  onClick={() => setNaming("")}
-                  data-el="new-project"
-                  className="w-full px-4 pt-3 pb-1 flex items-center gap-1.5 text-[10.5px] uppercase tracking-wider text-muted-foreground/70 hover:text-foreground font-medium"
-                >
-                  <Plus className="h-3 w-3" />
-                  New project
-                </button>
-              ) : (
-                // Name it here: Enter makes the project and opens a chat in it.
-                <div className="px-4 pt-3 pb-1">
-                  <input
-                    autoFocus
-                    value={naming}
-                    data-el="new-project-name"
-                    onChange={(e) => setNaming(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter" && naming.trim()) void createProject(naming.trim());
-                      if (e.key === "Escape") {
-                        e.stopPropagation();
-                        setNaming(null);
-                      }
-                    }}
-                    onBlur={() => !naming.trim() && setNaming(null)}
-                    placeholder="Project name, then Enter"
-                    className="w-full h-7 px-2 rounded bg-background border border-border text-[12px] placeholder:text-muted-foreground/60 focus:outline-none focus:border-ring/40"
-                  />
-                </div>
-              ))}
-            {style === "folders" && sections.projects.length > 0 && (
-              <Section label="Projects">
-                {sections.projects.map((p) => {
-                  const isOpen = openFolders.has(p.slug) || !!query.trim();
-                  return (
-                    <div key={p.slug}>
-                      <FolderRow
-                        project={p}
-                        open={isOpen}
-                        onToggle={() =>
-                          setOpenFolders((cur) => {
-                            const next = new Set(cur);
-                            if (next.has(p.slug)) next.delete(p.slug);
-                            else next.add(p.slug);
-                            return next;
-                          })
-                        }
-                        onAdd={() => newInProject(p.slug)}
-                        onNotes={() => void openProjectNotes(p.slug, p.name).then(() => onPicked?.())}
-                      />
-                      {isOpen && <div className="pl-3">{p.items.map(row)}</div>}
-                    </div>
-                  );
-                })}
-              </Section>
-            )}
-            {sections.chats.length > 0 && <Section label="Chats">{sections.chats.map(row)}</Section>}
-            {sections.projects.length === 0 &&
-              sections.chats.length === 0 && (
-                <div className="px-4 py-6 text-center text-[12px] text-muted-foreground">
-                  No matches.
-                </div>
-              )}
-          </>
+      <div className="flex-1 overflow-auto py-1" data-el="threads">
+        {entries.map((e) =>
+          e.type === "new-project" ? (
+            naming === null ? (
+              <button
+                key="new-project"
+                onClick={() => setNaming("")}
+                data-el="new-project"
+                className="w-full px-4 pt-3 pb-1 flex items-center gap-1.5 text-[10.5px] uppercase tracking-wider text-muted-foreground/70 hover:text-foreground font-medium"
+              >
+                <Plus className="h-3 w-3" />
+                New project
+              </button>
+            ) : (
+              // Name it here: Enter makes the project and opens its thread.
+              <div key="new-project" className="px-4 pt-3 pb-1">
+                <input
+                  autoFocus
+                  value={naming}
+                  data-el="new-project-name"
+                  onChange={(ev) => setNaming(ev.target.value)}
+                  onKeyDown={(ev) => {
+                    if (ev.key === "Enter" && naming.trim()) void create(naming.trim());
+                    if (ev.key === "Escape") {
+                      ev.stopPropagation();
+                      setNaming(null);
+                    }
+                  }}
+                  onBlur={() => !naming.trim() && setNaming(null)}
+                  placeholder="Project name, then Enter"
+                  className="w-full h-7 px-2 rounded bg-background border border-border text-[12px] placeholder:text-muted-foreground/60 focus:outline-none focus:border-ring/40"
+                />
+              </div>
+            )
+          ) : (
+            <ThreadRow
+              key={e.id}
+              entry={e}
+              name={e.type === "project" ? projectName(e.slug, projects) || e.title : e.title}
+              onSelect={() => open(e.id, e.title)}
+              onNotes={e.type === "project" ? () => void openProjectNotes(e.slug, e.title).then(() => onPicked?.()) : () => void openMemory().then(() => onPicked?.())}
+            />
+          ),
         )}
+        {err && <div className="px-4 py-1 text-[11px] text-destructive">{err}</div>}
       </div>
     </>
   );
 }
 
-function Section({
-  label,
-  children,
-  onAdd,
-  addTitle,
-  onNotes,
-}: {
-  label: string;
-  children: React.ReactNode;
-  onAdd?: () => void;
-  addTitle?: string;
-  /** A project's section: open its project.md. */
-  onNotes?: () => void;
-}) {
-  return (
-    <>
-      <div className="px-4 pt-3 pb-1 flex items-center gap-1 text-[10.5px] uppercase tracking-wider text-muted-foreground/80 font-medium group/sec">
-        <span className="flex-1 truncate">{label}</span>
-        {onNotes && (
-          <button
-            onClick={onNotes}
-            data-el="project-notes"
-            className="opacity-0 group-hover/sec:opacity-60 hover:!opacity-100 transition-opacity h-5 w-5 -my-1 flex items-center justify-center rounded hover:bg-accent/60 text-muted-foreground hover:text-foreground"
-            title="Project notes"
-          >
-            <FileText className="h-3 w-3" />
-          </button>
-        )}
-        {onAdd && (
-          <button
-            onClick={onAdd}
-            className="opacity-60 hover:opacity-100 transition-opacity h-5 w-5 -my-1 flex items-center justify-center rounded hover:bg-accent/60 text-muted-foreground hover:text-foreground"
-            title={addTitle}
-          >
-            <Plus className="h-3 w-3" />
-          </button>
-        )}
-      </div>
-      {children}
-    </>
-  );
-}
-
-type ProjectGroup = ProjectInfo & { items: Conversation[]; lastActivityAt: number };
-
-function FolderRow({
-  project,
-  open,
-  onToggle,
-  onAdd,
-  onNotes,
-}: {
-  project: ProjectGroup;
-  open: boolean;
-  onToggle: () => void;
-  onAdd: () => void;
-  onNotes: () => void;
-}) {
-  const working = project.items.filter((c) => ongoingWork(c)).length;
-  return (
-    <div className="border-b border-border/40 hover:bg-accent/40 flex items-center gap-2 group">
-      <button onClick={onToggle} aria-expanded={open} className="flex-1 text-left px-4 py-2.5 flex items-center gap-2 min-w-0">
-        <ChevronRight className={cn("h-3 w-3 text-muted-foreground shrink-0 transition-transform", open && "rotate-90")} />
-        <Folder className="h-3 w-3 text-muted-foreground shrink-0" />
-        <span className="text-[12.5px] text-foreground truncate flex-1">{project.name}</span>
-        <span className="text-[10px] text-muted-foreground tabular-nums shrink-0">
-          {project.items.length}
-          {working > 0 ? ` · ${working} working` : ""}
-        </span>
-      </button>
-      <button
-        onClick={onNotes}
-        data-el="project-notes"
-        className="opacity-0 group-hover:opacity-100 transition-opacity h-7 w-7 -mr-1 flex items-center justify-center rounded text-muted-foreground hover:bg-accent/60 hover:text-foreground shrink-0"
-        title="Project notes"
-      >
-        <FileText className="h-3 w-3" />
-      </button>
-      <button
-        onClick={onAdd}
-        className="opacity-0 group-hover:opacity-100 transition-opacity h-7 w-7 mr-2 flex items-center justify-center rounded text-muted-foreground hover:bg-accent/60 hover:text-foreground shrink-0"
-        title={`New chat in ${project.name}`}
-      >
-        <Plus className="h-3 w-3" />
-      </button>
-    </div>
-  );
-}
-
-/** A row's project action: the projects, "No project", and "New project…" named in place. */
-function ProjectMenu({
-  current,
-  projects,
-  onPick,
-  onClose,
-}: {
-  current: string | undefined;
-  projects: ProjectInfo[];
-  onPick: (nameOrSlug: string | null) => void;
-  onClose: () => void;
-}) {
+function Menu({ children, onClose }: { children: React.ReactNode; onClose: () => void }) {
   const ref = useRef<HTMLDivElement>(null);
-  const [naming, setNaming] = useState<string | null>(null);
   useEffect(() => {
     const onDown = (e: MouseEvent) => {
       if (!ref.current?.contains(e.target as Node)) onClose();
@@ -460,141 +279,70 @@ function ProjectMenu({
       window.removeEventListener("keydown", onKey, true);
     };
   }, [onClose]);
-  const item = "w-full text-left px-2.5 h-7 flex items-center gap-2 rounded text-[12px] hover:bg-accent/60";
-  const pick = (v: string | null) => {
-    onPick(v);
-    onClose();
-  };
   return (
-    <div
-      ref={ref}
-      data-el="row-project-menu"
-      className="absolute right-2 top-8 z-20 w-52 max-h-72 overflow-auto rounded-md border border-border bg-popover text-popover-foreground shadow-lg p-1"
-      onClick={(e) => e.stopPropagation()}
-    >
-      {projects.map((p) => (
-        <button key={p.slug} className={item} onClick={() => pick(p.slug)}>
-          <Folder className="h-3 w-3 text-muted-foreground shrink-0" />
-          <span className="truncate flex-1">{p.name}</span>
-          {current === p.slug && <Check className="h-3 w-3 shrink-0" />}
-        </button>
-      ))}
-      {current && (
-        <button className={cn(item, "text-muted-foreground")} onClick={() => pick(null)}>
-          <span className="w-3 shrink-0" />
-          No project
-        </button>
-      )}
-      {naming === null ? (
-        <button className={cn(item, "text-muted-foreground")} onClick={() => setNaming("")} data-el="row-new-project">
-          <Plus className="h-3 w-3 shrink-0" />
-          New project…
-        </button>
-      ) : (
-        <input
-          autoFocus
-          value={naming}
-          data-el="row-new-project-name"
-          onChange={(e) => setNaming(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && naming.trim()) pick(naming.trim());
-          }}
-          placeholder="Project name, then Enter"
-          className="w-full h-7 px-2 mt-0.5 rounded bg-background border border-border text-[12px] placeholder:text-muted-foreground/60 focus:outline-none focus:border-ring/40"
-        />
-      )}
+    <div ref={ref} data-el="threads-menu-list" className="absolute right-0 top-8 z-20 w-48 rounded-md border border-border bg-popover text-popover-foreground shadow-lg p-1" onClick={onClose}>
+      {children}
     </div>
   );
 }
 
-function Row({
-  conversation,
-  active,
-  onSelect,
-  onDelete,
-  projects,
-  onProject,
-}: {
-  conversation: Conversation;
-  active: boolean;
-  onSelect: () => void;
-  onDelete: () => void;
-  projects: ProjectInfo[];
-  onProject: (nameOrSlug: string | null) => void;
-}) {
-  const [menu, setMenu] = useState(false);
-  const c = conversation;
-  const time = relativeTime(c.lastActivityAt);
-  const preview = conversationPreview(c);
-  const isRunning = c.status === "running";
-  const isUnread = c.unread && !active;
-  const titleClass = active
-    ? "text-[12.5px] text-foreground truncate flex-1 font-medium"
-    : isUnread || isRunning
-      ? "text-[12.5px] text-foreground truncate flex-1"
-      : "text-[12.5px] text-muted-foreground truncate flex-1";
-  const previewClass =
-    isUnread || isRunning || active
-      ? "text-[10.5px] text-muted-foreground truncate mt-0.5"
-      : "text-[10.5px] text-muted-foreground/80 truncate mt-0.5";
+function MenuItem({ icon, label, onClick, el }: { icon: React.ReactNode; label: string; onClick: () => void; el: string }) {
+  return (
+    <button data-el={el} onClick={onClick} className="w-full text-left px-2.5 h-7 flex items-center gap-2 rounded text-[12px] hover:bg-accent/60">
+      <span className="text-muted-foreground">{icon}</span>
+      <span className="truncate flex-1">{label}</span>
+    </button>
+  );
+}
 
+/** Main or a project's thread: its name, a dot while it works (pulsing) or when it finished unseen. */
+function ThreadRow({ entry, name, onSelect, onNotes }: { entry: Extract<PanelEntry, { type: "main" | "project" }>; name: string; onSelect: () => void; onNotes: () => void }) {
+  const { active, running, unread } = entry;
   return (
     <div
-      className={
-        active
-          ? "relative border-b border-border/40 bg-accent flex items-start gap-1 group"
-          : "relative border-b border-border/40 hover:bg-accent/40 flex items-start gap-1 group"
-      }
+      data-el={entry.type === "main" ? "thread-main" : "thread-project"}
+      data-thread={entry.id}
+      className={cn("relative flex items-center gap-1 group", active ? "bg-accent" : "hover:bg-accent/40")}
     >
-      <button
-        onClick={onSelect}
-        className="flex-1 text-left px-4 py-2.5 flex items-start gap-2 min-w-0"
-      >
-        <span
-          className="relative inline-flex h-1.5 w-1.5 mt-[7px] shrink-0"
-          title={
-            isRunning ? "Generating…" : isUnread ? "Done — unseen" : undefined
-          }
-        >
-          {isRunning ? (
-            // White, pulsing = still thinking.
-            <>
-              <span className="absolute inset-0 rounded-full bg-foreground opacity-60 animate-ping" />
-              <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-foreground" />
-            </>
-          ) : isUnread ? (
-            // Solid accent = finished, waiting for you to look.
-            <span className="h-1.5 w-1.5 rounded-full bg-primary" />
-          ) : active ? (
-            <span className="h-1.5 w-1.5 rounded-full bg-foreground/40" />
-          ) : null}
-        </span>
-        <span className="min-w-0 flex-1">
-          <div className="flex items-center gap-1.5">
-            <span className={titleClass}>{c.title || "New chat"}</span>
-            {c.source !== "manual" && <SourceIcon source={c.source} />}
-            <span className="text-[10px] text-muted-foreground tabular-nums shrink-0">
-              {time}
-            </span>
-          </div>
-          {preview && <div className={previewClass}>{preview}</div>}
-        </span>
+      <button onClick={onSelect} className="flex-1 text-left px-4 py-2 flex items-center gap-2 min-w-0">
+        {entry.type === "main" ? <MessageSquare className="h-3 w-3 text-muted-foreground shrink-0" /> : <Folder className="h-3 w-3 text-muted-foreground shrink-0" />}
+        <span className={cn("text-[12.5px] truncate flex-1", active ? "text-foreground font-medium" : running || unread ? "text-foreground" : "text-foreground/80")}>{name}</span>
+        {running ? (
+          <span className="relative inline-flex h-1.5 w-1.5 shrink-0" title="Working…">
+            <span className="absolute inset-0 rounded-full bg-foreground opacity-60 animate-ping" />
+            <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-foreground" />
+          </span>
+        ) : unread ? (
+          <span className="h-1.5 w-1.5 rounded-full bg-primary shrink-0" title="Done — unseen" />
+        ) : null}
       </button>
       <button
-        onClick={(e) => {
-          e.stopPropagation();
-          setMenu((v) => !v);
-        }}
-        data-el="row-project"
-        className={cn(
-          "transition-opacity h-7 w-7 mt-1 flex items-center justify-center rounded text-muted-foreground hover:bg-accent/60 hover:text-foreground shrink-0",
-          menu ? "opacity-100" : "opacity-0 group-hover:opacity-100",
-        )}
-        title={c.project ? "Move to another project" : "Put in a project"}
+        onClick={onNotes}
+        data-el={entry.type === "main" ? "main-memory" : "project-notes"}
+        className="opacity-0 group-hover:opacity-100 transition-opacity h-7 w-7 mr-2 flex items-center justify-center rounded text-muted-foreground hover:bg-accent/60 hover:text-foreground shrink-0"
+        title={entry.type === "main" ? "Memory" : "Project notes"}
       >
-        <FolderInput className="h-3 w-3" />
+        {entry.type === "main" ? <Brain className="h-3 w-3" /> : <FileText className="h-3 w-3" />}
       </button>
-      {menu && <ProjectMenu current={c.project} projects={projects} onPick={onProject} onClose={() => setMenu(false)} />}
+    </div>
+  );
+}
+
+/** A separate or older chat, in "Older chats". */
+function OlderRow({ conversation: c, active, onSelect, onDelete }: { conversation: Conversation; active: boolean; onSelect: () => void; onDelete: () => void }) {
+  const preview = conversationPreview(c);
+  const separate = threadKindOf(c) === "separate";
+  return (
+    <div className={cn("relative border-b border-border/40 flex items-start gap-1 group", active ? "bg-accent" : "hover:bg-accent/40")}>
+      <button onClick={onSelect} className="flex-1 text-left px-4 py-2.5 min-w-0">
+        <div className="flex items-center gap-1.5">
+          <span className={cn("text-[12.5px] truncate flex-1", active ? "text-foreground font-medium" : "text-muted-foreground")}>{c.title || "New chat"}</span>
+          {c.source === "voice" && <Mic className="h-3 w-3 text-muted-foreground shrink-0" />}
+          {separate && <span className="text-[10px] text-muted-foreground/80 shrink-0">separate</span>}
+          <span className="text-[10px] text-muted-foreground tabular-nums shrink-0">{relativeTime(c.lastActivityAt)}</span>
+        </div>
+        {preview && <div className="text-[10.5px] text-muted-foreground/80 truncate mt-0.5">{preview}</div>}
+      </button>
       <button
         onClick={(e) => {
           e.stopPropagation();
@@ -607,47 +355,6 @@ function Row({
       </button>
     </div>
   );
-}
-
-function SourceIcon({ source }: { source: string }) {
-  if (source === "voice") {
-    return <Mic className="h-3 w-3 text-muted-foreground shrink-0" />;
-  }
-  return null;
-}
-
-
-function groupConversations(list: Conversation[], query: string, projects: ProjectInfo[]) {
-  const q = query.trim().toLowerCase();
-  const filter = (c: Conversation) => {
-    if (!q) return true;
-    const hay = `${c.title}\n${conversationPreview(c)}\n${c.project ? projectName(c.project, projects) : ""}`.toLowerCase();
-    return hay.includes(q);
-  };
-  const sorted = list.slice().sort((a, b) => b.lastActivityAt - a.lastActivityAt);
-  const chats: Conversation[] = [];
-  const archived: Conversation[] = [];
-  const byProject = new Map<string, ProjectGroup>();
-  for (const c of sorted) {
-    if (!filter(c)) continue;
-    if (isArchivedThread(c)) {
-      archived.push(c);
-      continue;
-    }
-    if (c.project) {
-      let g = byProject.get(c.project);
-      if (!g) {
-        g = { slug: c.project, name: projectName(c.project, projects), items: [], lastActivityAt: c.lastActivityAt };
-        byProject.set(c.project, g);
-      }
-      g.items.push(c);
-      continue;
-    }
-    chats.push(c); // newest first (sorted above); no time buckets
-  }
-  // The most recently active project first.
-  const groups = [...byProject.values()].sort((a, b) => b.lastActivityAt - a.lastActivityAt);
-  return { projects: groups, chats, archived };
 }
 
 export function relativeTime(ts: number): string {

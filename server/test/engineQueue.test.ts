@@ -131,7 +131,7 @@ const userTexts = async (id: string) => ((await readConv(vault, id))?.messages ?
 
 describe("steer and queue", () => {
   it("steers a running turn; queued messages are pi's follow-ups, pending until pi delivers them, in order; one can be taken back", async () => {
-    const r = await engine.message({ text: "Write the section." });
+    const r = await engine.message({ text: "Write the section.", convId: "sep-queue1" });
     await until(() => backend.turns.length === 1);
     const tid = backend.turns[0].threadId;
 

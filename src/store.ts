@@ -11,6 +11,12 @@ import {
   emptyConversation,
   newMessageId,
 } from "./conversations";
+import { MAIN_ID, MAIN_TITLE, projectOfThread } from "./threads";
+
+/** Main, before the box has said anything about it (it shows as Main at once; the box's row replaces it). */
+function mainPlaceholder(): Conversation {
+  return { ...emptyConversation(), id: MAIN_ID, title: MAIN_TITLE, kind: "main" };
+}
 
 // Stamp a stable `mid` on a message at creation if it lacks one (release 1 of
 // the message-identity cure). Idempotent: a message that already has a mid is
@@ -247,7 +253,9 @@ function activeConvKey(vault: string): string {
 function savedActiveConvId(vault: string | null): string | null {
   if (!vault) return null;
   try {
-    return localStorage.getItem(activeConvKey(vault));
+    const id = localStorage.getItem(activeConvKey(vault));
+    // One main conversation: the app opens on Main, or on the project thread it was last on; never an older chat.
+    return id === MAIN_ID || projectOfThread(id) ? id : null;
   } catch {
     return null;
   }
@@ -1353,12 +1361,11 @@ export const useStore = create<State>((set) => ({
       useStore.setState({ conversationsLoaded: true });
       return;
     }
-    const fresh = emptyConversation();
     const saved = savedActiveConvId(vault);
     useStore.setState({
       boxChat: useStore.getState().boxChat?.on ? useStore.getState().boxChat : { on: true, reachable: null, reason: "" },
-      conversations: saved ? [] : [fresh],
-      activeConversationId: saved ?? fresh.id,
+      conversations: saved ? [] : [mainPlaceholder()],
+      activeConversationId: saved ?? MAIN_ID,
       conversationsLoaded: true,
       messages: [],
       streamingText: "",
@@ -1369,7 +1376,8 @@ export const useStore = create<State>((set) => ({
     void bc.startBoxChat(vault).catch((e) => console.warn("[box-chat] start failed:", e));
   },
   newConversation: (id) => {
-    const fresh = id ? { ...emptyConversation(), id } : emptyConversation();
+    // A separate chat: only when Carl asks for one (src/threads.ts); Main is everyone's default.
+    const fresh: Conversation = { ...(id ? { ...emptyConversation(), id } : emptyConversation()), kind: "separate" };
     set((s) => {
       // Snapshot whatever is in-flight into the prior active entry
       // before swapping.
@@ -1471,13 +1479,14 @@ export const useStore = create<State>((set) => ({
       if (s.activeConversationId !== id) {
         return { conversations: next };
       }
-      // The active chat was just deleted — fall back to the most
-      // recent surviving conversation, or seed a fresh empty one.
-      if (next.length === 0) {
-        const fresh = emptyConversation();
+      // The active chat was just deleted: back to Main.
+      const main = next.find((c) => c.id === MAIN_ID);
+      if (!main) {
+        const fresh = mainPlaceholder();
+        persistActiveConvId(s.vaultPath, MAIN_ID);
         return {
-          conversations: [fresh],
-          activeConversationId: fresh.id,
+          conversations: [fresh, ...next],
+          activeConversationId: MAIN_ID,
           messages: [],
           compactionSummary: null,
           lastContext: 0,
@@ -1488,11 +1497,8 @@ export const useStore = create<State>((set) => ({
           liveTools: [],
         };
       }
-      const sorted = next
-        .slice()
-        .sort((a, b) => b.lastActivityAt - a.lastActivityAt);
-      // Pick the most-recent thread as the new active one after a delete.
-      const target = sorted[0];
+      const target = main;
+      persistActiveConvId(s.vaultPath, MAIN_ID);
       return {
         conversations: next,
         activeConversationId: target.id,

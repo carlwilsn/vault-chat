@@ -7,6 +7,7 @@ import { ChevronDown, ChevronUp, Folder, Plus, Check } from "lucide-react";
 import { useStore } from "./store";
 import { cn } from "./lib/utils";
 import { isArchivedThread } from "./conversations";
+import { threadKindOf } from "./threads";
 import {
   listProjects,
   projectName,
@@ -66,8 +67,9 @@ export function ProjectChip({ placement = "up", variant = "chip" }: { placement?
     return () => window.removeEventListener("vc-open-project-picker", onOpen);
   }, []);
 
-  // An archived mission thread is history: no project to set.
-  if (!activeId || (conv && isArchivedThread(conv))) return null;
+  // An archived mission thread is history: no project to set. Main and a project's thread are what they are
+  // (src/threads.ts): only a separate chat can still be put in a project.
+  if (!activeId || (conv && isArchivedThread(conv)) || threadKindOf({ id: activeId, kind: conv?.kind }) !== "separate") return null;
 
   const q = query.trim();
   const ql = q.toLowerCase();
@@ -185,7 +187,8 @@ export function ProjectChip({ placement = "up", variant = "chip" }: { placement?
 export function ChatTitle() {
   const conv = useStore((s) => s.conversations.find((c) => c.id === s.activeConversationId));
   const projects = useProjects();
-  const proj = conv?.project ? projectName(conv.project, projects) : "";
+  // A project's own thread is named after the project already.
+  const proj = conv?.project && conv.kind !== "project" ? projectName(conv.project, projects) : "";
   return (
     <div data-el="chat-title" className="flex items-baseline gap-1.5 min-w-0 max-w-[60%] text-[12px]">
       <span className="text-foreground/85 truncate">{conv?.title || "New chat"}</span>

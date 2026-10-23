@@ -21,6 +21,8 @@ export class FakeBox {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), "vc-fakebox-"));
   log = new ConvLog(this.dir, null, path.join(this.dir, "events"));
   intents: any[] = [];
+  /** How long Clear's work takes behind the blank view. */
+  clearMs = 300;
   /** Every request's route and the vault it named (`?vault=`). */
   seen: { route: string; vault: string | null }[] = [];
   down = false;
@@ -286,6 +288,11 @@ export class FakeBox {
       case "delete":
         this.meta(conv, { deleted: true });
         return { ok: true };
+      case "clear":
+        // The engine's Clear: `cleared` at once (every fold blank), its work behind it (`clearing`), then done.
+        this.meta(conv, { cleared: { at: Date.now(), id: b.clientId }, clearing: true });
+        setTimeout(() => this.meta(conv, { clearing: null }), this.clearMs);
+        return { ok: true, convId: conv, cleared: true };
       default:
         return { error: "unknown intent" };
     }

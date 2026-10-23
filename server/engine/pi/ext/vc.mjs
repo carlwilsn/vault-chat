@@ -25,7 +25,7 @@ import { Type } from "typebox";
 import { createBashToolDefinition } from "@earendil-works/pi-coding-agent";
 import { registerSubagentTool } from "./subagent.mjs";
 import { registerPdfParts } from "./pdf.mjs";
-import { VOICE_TYPE, YOU_TYPE, addCacheMarkers, costFromStreamEvent, guardToolCall, resolveList, scrubEnv, shq, toTypebox, voiceLineContent, youSince } from "./policy.mjs";
+import { CLEAR_TYPE, VOICE_TYPE, YOU_TYPE, addCacheMarkers, memoryCapNote, costFromStreamEvent, guardToolCall, resolveList, scrubEnv, shq, toTypebox, voiceLineContent, youSince } from "./policy.mjs";
 
 const E = process.env;
 const HOME = E.HOME || "/";
@@ -104,6 +104,13 @@ export default function vaultChat(pi) {
   pi.on("tool_call", async (event, ctx) => {
     const why = guardToolCall(event.toolName, event.input, { cwd: ctx?.cwd || process.cwd(), home: HOME, denyRead, denyWrite });
     return why ? { block: true, reason: why } : undefined;
+  });
+
+  // ---- memory near its cap: the write's own result says so (Claude Code's near-cap reminder) ----
+  pi.on("tool_result", async (event, ctx) => {
+    const note = memoryCapNote(event.toolName, event.input, ctx?.cwd || process.cwd(), (p) => readFileSync(p, "utf8"));
+    if (!note || event.isError) return undefined;
+    return { content: [...(event.content ?? []), { type: "text", text: note }] };
   });
 
   // ---- vault-chat's tools, answered by the host --------------------------------------
@@ -207,7 +214,9 @@ export default function vaultChat(pi) {
     handler: async (args) => {
       const d = json(String(args ?? "").trim(), null);
       if (!d || typeof d !== "object" || typeof d.kind !== "string") return;
-      if (d.voice === true && d.kind === "line") pi.sendMessage({ customType: VOICE_TYPE, content: voiceLineContent(d), display: true, details: d }, { triggerTurn: false });
+      // Clear: the agent is told (in its context, never shown); no turn of its own.
+      if (d.kind === "clear") pi.sendMessage({ customType: CLEAR_TYPE, content: String(d.text ?? ""), display: false, details: { at: d.at } }, { triggerTurn: false });
+      else if (d.voice === true && d.kind === "line") pi.sendMessage({ customType: VOICE_TYPE, content: voiceLineContent(d), display: true, details: d }, { triggerTurn: false });
       else pi.appendEntry("vc-note", d);
     },
   });

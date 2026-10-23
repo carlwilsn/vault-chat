@@ -156,7 +156,8 @@ export function setHostConfig(c: HostConfig, now: () => number): void {
   tailscaleOpened = false;
   box = new MemoryBox();
   for (const [id, c] of Object.entries((cfg.sync?.boxChat?.convs ?? {}) as Record<string, BoxConv>)) {
-    box.import(id, { title: c.title, source: c.source ?? "phone", ...(c.meta ?? {}) } as any, JSON.parse(JSON.stringify(c.messages)) as any);
+    // A scenario's chats are ones Carl continues (a separate chat beside Main, src/threads.ts) unless it says otherwise.
+    box.import(id, { title: c.title, source: c.source ?? "phone", kind: "separate", ...(c.meta ?? {}) } as any, JSON.parse(JSON.stringify(c.messages)) as any);
     if (c.status === "running") box.startTurn(id);
   }
   boxMerge = {};
@@ -394,7 +395,9 @@ export const hostCommands: Record<string, (a: Record<string, any>) => unknown> =
       for (const b of bytes) bin += String.fromCharCode(b);
       return { status: 200, body: JSON.stringify({ path: rel, size: bytes.length, base64: btoa(bin) }) };
     }
-    const p = u.pathname.replace(/^.*?(\/(poll|api\/v2\/.*|status|api\/v1\/models))$/, "$1");
+    const p = u.pathname.replace(/^.*?(\/(poll|api\/v2\/.*|status|api\/v1\/models|projects))$/, "$1");
+    // The box's projects (server/projectRoutes.ts): each project's one thread, its title the name (src/threads.ts).
+    if (p === "/projects") return { status: 200, body: JSON.stringify({ projects: box.rows().filter((r) => r.kind === "project" && r.project).map((r) => ({ slug: r.project, name: r.title })) }) };
     if (p === "/api/v1/models" && cfg.sync?.boxChat?.models) return { status: 200, body: JSON.stringify(cfg.sync.boxChat.models) };
     const ok = (v: unknown) => ({ status: 200, body: JSON.stringify(v) });
     if (p === "/status") return ok({ runs: box.rows().filter((r) => r.running).map((r) => ({ convId: r.id })) });
@@ -441,6 +444,14 @@ export const hostCommands: Record<string, (a: Record<string, any>) => unknown> =
       b = {};
     }
     boxPosts.push({ path, body: b, vault: u.searchParams.get("vault") });
+    if (path === "/projects") {
+      const name = String(b.name ?? "").trim();
+      const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+      if (!slug) return { status: 400, body: JSON.stringify({ error: "name required" }) };
+      const convId = `project-${slug}`;
+      if (!box.picture(convId)) box.create(convId, { title: name, source: "project", kind: "project", project: slug });
+      return { status: 200, body: JSON.stringify({ ok: true, slug, name, convId, created: true }) };
+    }
     if (path === "/api/v1/voice/tool") return { status: 200, body: JSON.stringify({ result: boxVoiceTool(String(b.name ?? ""), b.args ?? {}) }) };
     if (path === "/api/v1/voice/transcript") return { status: 200, body: JSON.stringify(boxVoiceLine(b)) };
     // A side thread (Ctrl+K / Ctrl+L, a note's title): the scenario's scripted model answers; GET /api/v1/side/:id reads it.

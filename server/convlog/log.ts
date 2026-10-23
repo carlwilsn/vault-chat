@@ -394,6 +394,12 @@ export class ConvLog {
     return set;
   }
 
+  /** Every session file this conversation's feed points into (SearchHistory reads them). */
+  sessionFilesOf(conv: string): string[] {
+    this.pointedIn(conv, "");
+    return [...(this.pointed.get(conv)?.keys() ?? [])].filter(Boolean);
+  }
+
   /** This conversation's own pi-format session file (for what no pi writes). */
   ownSession(conv: string): string {
     return join(this.sessionsDir, `${fileStem(conv)}.jsonl`);

@@ -46,10 +46,10 @@ const callText = (c: any) => (c?.messages ?? []).map((m: any) => (typeof m.conte
 const msgText = (m: any) => (typeof m.content === "string" ? m.content : (m.content ?? []).map((c: any) => c?.text ?? "").join(""));
 const callWith = (marker: string) => [...or.calls].reverse().find((c) => (c?.messages ?? []).some((m: any) => m.role === "user" && new RegExp(`(^|\\n)${marker}`).test(msgText(m))));
 
-/** One message in a conversation (a new one without `conv`), the model answering `reply`; the turn waited out. */
+/** One message in a conversation (a new separate chat without `conv`), the model answering `reply`; the turn waited out. */
 async function send(text: string, reply: string, conv?: string, client = "laptop"): Promise<string> {
   or.script.push({ text: reply });
-  const r = await post("/api/v2/intent", { type: "send", clientId: `c-${Math.random().toString(36).slice(2, 9)}`, text, client, ...(conv ? { convId: conv } : {}) });
+  const r = await post("/api/v2/intent", { type: "send", clientId: `c-${Math.random().toString(36).slice(2, 9)}`, text, client, convId: conv ?? `sep-${Math.random().toString(36).slice(2, 10)}` });
   expect(r.body.ok).toBe(true);
   await idle(r.body.convId);
   return r.body.convId;
@@ -177,7 +177,7 @@ describe.skipIf(!PI_DIR)("the you layer with the real pi 1.1.0 and ext/vc.mjs", 
     (await (await fetch(rsrv.base + p, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(b) })).json()) as any;
   const rmeta = async (conv: string) => (await rget(`/api/v2/conversations/${conv}/checkpoint`))?.picture?.meta ?? {};
   const rsend = async (text: string, conv?: string) => {
-    const r = await rpost("/api/v2/intent", { type: "send", clientId: `r-${Math.random().toString(36).slice(2, 9)}`, text, client: "laptop", ...(conv ? { convId: conv } : {}) });
+    const r = await rpost("/api/v2/intent", { type: "send", clientId: `r-${Math.random().toString(36).slice(2, 9)}`, text, client: "laptop", convId: conv ?? `sep-${Math.random().toString(36).slice(2, 10)}` });
     expect(r.ok).toBe(true);
     await waitFor(async () => {
       const m = await rmeta(r.convId);

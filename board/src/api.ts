@@ -147,7 +147,8 @@ export const ackShow = (id: string, ack: { ok: boolean; landed?: string; error?:
 
 // ---- voice (server/voice.ts): the box's own voice path, the one the phone uses
 /** Carl's conversations, most recently active first (the phone's list: GET /conversations). */
-export type ChatRow = { id: string; title: string; lastActivityAt: number; source: string };
+/** `kind`: main | project | separate, "" for an older chat (src/threads.ts). */
+export type ChatRow = { id: string; title: string; lastActivityAt: number; source: string; kind?: string };
 export const listChats = () => call<{ conversations: ChatRow[] }>("/conversations").then((r) => r.conversations ?? []);
 /** A signed ElevenLabs session for the box's board voice agent, its prompt built from `convId`'s pi session (server/voice.ts). */
 export type VoiceConfig = { signedUrl: string | null; conversationToken?: string | null; voiceId?: string; systemPrompt?: string; dynamicVariables?: Record<string, string>; toolNames?: string[]; convId?: string | null; cursor?: string | null; images?: { mime: string; dataBase64: string }[]; sessionId?: string | null; handoff?: { from: string; convId: string | null } | null };

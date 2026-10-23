@@ -142,7 +142,8 @@ const text = (r: any) => String(r?.text ?? "");
 /** A new conversation with one running turn on `be`; returns its id and thread. */
 async function startTurn(e: any, be: FakeBackend, msg: string) {
   const before = be.turns.length;
-  const r = await e.message({ text: msg });
+  // A conversation of its own (a separate chat: a message naming none would be Main's).
+  const r = await e.message({ text: msg, convId: `sep-${Math.random().toString(36).slice(2, 10)}` });
   await until(() => be.turns.length === before + 1);
   return { convId: r.convId as string, tid: be.turns[before].threadId as string, turnId: `pt-${(be as any).prefix}-${before + 1}` };
 }
@@ -212,8 +213,8 @@ describe("F + G: one AskUser entry, and its notification answered", () => {
 describe("E: the voice agent's conversations", () => {
   it("a conversation started with source voice is tagged voice; a phone one stays phone", async () => {
     const before = backend.turns.length;
-    const v = await engine.message({ text: "From voice", source: "voice" });
-    const p = await engine.message({ text: "From the phone" });
+    const v = await engine.message({ text: "From voice", source: "voice", convId: "sep-from-voice" });
+    const p = await engine.message({ text: "From the phone", convId: "sep-from-phone" });
     await until(() => backend.turns.length === before + 2);
     expect((await readConv(vault, v.convId)).source).toBe("voice");
     expect((await readConv(vault, p.convId)).source).toBe("phone");

@@ -138,9 +138,13 @@ describe("two vaults on one box (engines on fake backends)", () => {
     await until(async () => !!(await readConv(second, convB))?.messages.some((m: any) => m.role === "assistant"));
     await until(async () => !!(await readConv(mainVault, convA))?.messages.some((m: any) => m.role === "assistant"));
 
-    // Each vault's own log; never a conversation file.
-    expect(logFiles(mainVault)).toEqual([`${convA}.jsonl`]);
-    expect(logFiles(second)).toEqual([`${convB}.jsonl`]);
+    // Each vault's own log (its Main and its projects' threads, src/threads.ts); never a conversation file.
+    expect(convA).toBe("project-alpha");
+    expect(convB).toBe("project-beta");
+    expect(logFiles(mainVault)).toContain(`${convA}.jsonl`);
+    expect(logFiles(mainVault)).not.toContain(`${convB}.jsonl`);
+    expect(logFiles(second)).toContain(`${convB}.jsonl`);
+    expect(logFiles(second)).not.toContain(`${convA}.jsonl`);
     expect(convFiles(mainVault)).toEqual([]);
     expect(convFiles(second)).toEqual([]);
     expect(await readConv(mainVault, convB)).toBeNull();
@@ -152,8 +156,8 @@ describe("two vaults on one box (engines on fake backends)", () => {
     // No app store holds a conversation: each is its vault's log.
     expect(store.getState().conversations.map((c: any) => c.id)).not.toContain(convA);
     const { logOf } = await import("../engine/convs");
-    expect(logOf(mainVault).ids()).toEqual([convA]);
-    expect(logOf(second).ids()).toEqual([convB]);
+    expect(logOf(mainVault).ids().sort()).toEqual(["main", convA].sort());
+    expect(logOf(second).ids().sort()).toEqual(["main", convB].sort());
   });
 
   it("each agent's path guard refuses the other vault (the env pi gets, read as the extension reads it)", async () => {
@@ -258,9 +262,10 @@ describe("vault-scoped routes (the real server)", () => {
     expect(await ids("/conversations")).toContain("cmain");
     expect(await ids("/conversations")).not.toContain("cphys");
     expect(await ids("/conversations?vault=school2")).toEqual(await ids("/conversations"));
-    expect(await ids("/conversations?vault=physics")).toEqual(["cphys"]);
+    // Each vault also has its own Main (src/threads.ts).
+    expect((await ids("/conversations?vault=physics")).filter((id: string) => id !== "main")).toEqual(["cphys"]);
     const h = await (await fetch(srv.base + "/conversations", { headers: { "x-vc-vault": "physics" } })).json();
-    expect(h.conversations.map((c: any) => c.id)).toEqual(["cphys"]);
+    expect(h.conversations.map((c: any) => c.id).filter((id: string) => id !== "main")).toEqual(["cphys"]);
     expect((await fetch(srv.base + "/conversation?id=cphys")).status).toBe(404);
     expect((await fetch(srv.base + "/conversation?id=cphys&vault=physics")).status).toBe(200);
     expect((await fetch(srv.base + "/conversations?vault=nope")).status).toBe(404);

@@ -203,6 +203,11 @@ export function installMock() {
     box.import(id, { ...(t as any), title: (t as any).title || row?.title || "New chat", source: (t as any).source || row?.source || "phone", ...(row?.project ? { project: row.project } : {}), lastActivityAt: row?.lastActivityAt, createdAt: row?.lastActivityAt }, ((t as any).messages || []).map(asFixture));
     if (DB.runs.some((r) => r.convId === id)) box.startTurn(id);
   }
+  // One main conversation (src/threads.ts), as the box makes it at start: Main and each project's one thread.
+  if (!box.picture("main")) box.create("main", { title: "Main", source: "main", kind: "main" });
+  for (const p of DB.projects || []) if (!box.picture(`project-${p.slug}`)) box.create(`project-${p.slug}`, { title: p.name, source: "project", kind: "project", project: p.slug });
+  /** The list rows the box adds for them (GET /conversations: the fixture's chats are older chats). */
+  const threadRows = () => box.rows().filter((r) => r.kind === "main" || r.kind === "project" || r.kind === "separate").map((r) => ({ id: r.id, title: r.title, lastActivityAt: r.lastActivityAt, source: r.source, kind: r.kind, project: r.project, msgCount: 0, preview: "" }));
   // A send gets the mock's canned reply (a scripted preview leaves the reply to its script).
   box.onSend = (conv) => {
     if (DB.script) return;
@@ -237,7 +242,7 @@ export function installMock() {
     const routed = await box.route((opts && opts.method) || "GET", u, q, body, DB.script ? 2400 : 2500);
     if (routed) return new Response(JSON.stringify(routed.body), { status: routed.status, headers: { "Content-Type": "application/json" } });
     if (DB.script && /^\/api\/v1\/conversations\/[^/]+\/subagents\/[^/]+\/(steer|stop)$/.test(u)) return reply({ ok: true });
-    if (u === "/conversations") return reply({ vault: DB.vault, conversations: DB.convs });
+    if (u === "/conversations") return reply({ vault: DB.vault, conversations: [...threadRows(), ...DB.convs.filter((c) => !threadRows().some((t) => t.id === c.id))] });
     if (u === "/api/v1/vaults") return reply({ vaults: [{ name: ROOT.vault, main: true, syncing: true }, ...Object.keys(ROOT.vaults ?? {}).map((name) => ({ name, main: false, syncing: true }))] });
     if (u === "/conversation") {
       const t = DB.threads[q.get("id")];
@@ -256,6 +261,14 @@ export function installMock() {
     if (u === "/notes/status") { const n = DB.notes.find((x) => x.id === body.id); if (n) n.status = body.status === "open" ? "open" : "resolved"; return reply({ ok: true }); }
     if (u === "/notes/edit") { const n = DB.notes.find((x) => x.id === body.id); if (!n) return reply({ error: "note not found" }); n.user_draft = body.text; n.title = null; n.last_updated = new Date().toISOString(); return reply({ ok: true, id: n.id }); }
     if (u === "/notes/clear-resolved") { let c = 0; DB.notes.forEach((n) => { if (n.status === "resolved") { n.status = "cleared"; c += 1; } }); return reply({ ok: true, cleared: c }); }
+    if (u === "/projects" && (opts?.method || "GET") === "POST") {
+      const name = String(body.name || "").trim();
+      const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+      if (!slug) return reply({ error: "name required" });
+      if (!(DB.projects || []).some((x) => x.slug === slug)) (DB.projects = DB.projects || []).push({ slug, name });
+      if (!box.picture(`project-${slug}`)) box.create(`project-${slug}`, { title: name, source: "project", kind: "project", project: slug });
+      return reply({ ok: true, slug, name, convId: `project-${slug}` });
+    }
     if (u === "/projects") return reply({ projects: DB.projects || [] });
     if (u === "/conversation/project") {
       const want = String(body.project || "").trim();

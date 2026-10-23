@@ -20,6 +20,11 @@
 //   - a live board voice call: its contextual updates, the user messages the
 //     box's updates send ([vc:result]), its uploads.
 //
+// One main conversation (2026-10-21, src/threads.ts): a message that names no conversation is Main's,
+// on every surface, as the engine does it; a project's thread is "project-<slug>"; a separate chat
+// only with its own id (the stories that need two conversations name one). Voice with no chat open
+// still makes a conversation of its own (server/voice.ts attached()): a hole below (j).
+//
 // Today's holes are written as `hole(...)`: the check runs, and the test passes
 // while the check FAILS (the build stays green). When a hole is closed the
 // check holds and the test fails with "the hole is closed" — move it to `it`.
@@ -568,7 +573,7 @@ describe("d. Voice on the laptop asks for a file edit, then a typed chat: \"what
     }, "laptop", true);
     await voice.voiceTranscript(d, { convId: call, role: "assistant", text: "Done — it's called the contraction lemma now.", device: "laptop" });
     await voice.voiceTranscript(d, { convId: call, role: "assistant", text: "Voice session ended.", system: true, ended: true });
-    after = await turn({ text: "what did voice just change?", client: "laptop" }, "It renamed Lemma 2.");
+    after = await turn({ text: "what did voice just change?", convId: "sep-d-after", client: "laptop" }, "It renamed Lemma 2.");
     inCall = await turn({ text: "and what exactly did you change?", convId: call, client: "laptop" }, "The heading of lemma 2.");
   });
 
@@ -715,8 +720,10 @@ describe("h. Switching conversations: what carries over, what stays per conversa
   let a1: Turn | null = null;
   let b1: Turn | null = null;
   let a2: Turn | null = null;
-  it("setup: chat A (project), chat B, back to A", async () => {
-    a1 = await turn({ text: "Project Coconut: tile size?", project: "Coconut", client: "laptop" }, "1024 with 128 overlap.");
+  it("setup: A is a project's thread (Coconut), B is Main, back to A", async () => {
+    mkdirSync(join(vault, "agent-projects", "coconut"), { recursive: true });
+    writeFileSync(join(vault, "agent-projects", "coconut", "project.md"), "# Coconut\n");
+    a1 = await turn({ text: "Project Coconut: tile size?", convId: "project-coconut", client: "laptop" }, "1024 with 128 overlap.");
     act.activityPost(vault, { entry: { kind: "focus", modality: "editor", text: "opened the file", path: "papers/yolo.pdf", project: "coconut" } });
     b1 = await turn({ text: "Unrelated: what's a sigma-algebra?", client: "laptop" }, "A family of sets closed under complements and countable unions.");
     a2 = await turn({ text: "Back to tiles: is 128 enough?", convId: a1.convId, client: "laptop" }, "Yes for 40 px coconuts.");
@@ -726,10 +733,13 @@ describe("h. Switching conversations: what carries over, what stays per conversa
     expect(t).toContain("papers/yolo.pdf");
     expect(t).toContain("tile size?");
   });
-  pass("h", "chat B (pi thread)", "stays per conversation: B is its own pi thread, without A's project notes or turns", () => {
+  pass("h", "Main (pi thread)", "stays per conversation: Main is its own pi thread, without the project's file or turns", () => {
+    expect(need(b1, "B").convId).toBe("main");
+    expect(need(a1, "A").convId).toBe("project-coconut");
     expect(need(b1, "B").threadId).not.toBe(need(a1, "A").threadId);
-    expect(need(a1, "A").instructions ?? "").toContain(`This chat is in Carl's project "Coconut"`);
-    expect(b1!.instructions ?? "").not.toContain("This chat is in Carl's project");
+    expect(need(a1, "A").all).toContain(`This is the thread of Carl's project "Coconut"`);
+    expect(need(a1, "A").all).toContain(`<project name="Coconut"`);
+    expect(b1!.all).not.toContain(`<project name="Coconut"`);
   });
   pass("h", "back in chat A (pi turn)", "only what changed since A's last turn: B's exchange, not A's own", () => {
     const t = need(a2, "A again").texts.join("\n");
@@ -802,11 +812,14 @@ describe("j. Voice is asked for a small HTML edit and hands it to pi (IEMS 469 C
     sideOf(`side${backend.sides.length}`).resolve({ text: "Done: the figure's labels are larger.", error: null });
     await voice.voiceAsksSettled();
   });
-  pass("j", "voice → pi", "the request reaches pi (a side request of the call's conversation, source voice), with Carl's own words before it", async () => {
-    const c = need(await convs.readConv(vault, convId), "conv");
-    expect(c.source).toBe("voice");
+  pass("j", "voice → pi", "the request reaches pi (a side request of the call's conversation), with Carl's own words before it", async () => {
     expect(texts).toContain("Can you make the section 7 figure in course-notes.html clearer?");
     expect(texts).toContain("Make the section 7 figure in course-notes.html clearer.");
+  });
+  // Voice with no chat open should continue Main (one main conversation); server/voice.ts attached() still makes a
+  // conversation of its own (one line there: no convId → "main"). Voice's own file: the single-brain voice's to close.
+  hole("j", "voice, no chat open", "the call's conversation is Main", async () => {
+    expect(convId).toBe("main");
   });
   pass("j", "voice → pi", "no tool creates or assigns a project: the hand-off is an ordinary message, no project made", async () => {
     const c = need(await convs.readConv(vault, convId), "conv");
@@ -856,8 +869,8 @@ describe("l. Homework on the phone, then laptop voice from another chat: \"go ov
   let phone: Turn | null = null;
   let p = "";
   let attached = "";
-  it("setup: a three-turn phone homework chat; laptop voice on an older laptop chat, then on the phone chat", async () => {
-    const older = await turn({ text: "Quick check on lecture 4 notes.", client: "laptop" }, "Sure.");
+  it("setup: three phone turns in Main; laptop voice on a separate laptop chat, then on Main", async () => {
+    const older = await turn({ text: "Quick check on lecture 4 notes.", convId: "sep-l-older", client: "laptop" }, "Sure.");
     phone = await turn({ text: "Fill in hw4 problem 2 in the same form as the others, don't answer everything.", client: "phone" }, "Filled in the setup for problem 2; parts (b) and (c) left for you.");
     phone = await turn({ text: "Hint for 2(b)?", convId: phone.convId, client: "phone" }, "Use the epsilon-delta definition with delta = epsilon/3.");
     phone = await turn({ text: "Thanks, I'll do (c) later.", convId: phone.convId, client: "phone" }, "Good plan.");

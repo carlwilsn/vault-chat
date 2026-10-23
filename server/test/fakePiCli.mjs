@@ -2,7 +2,9 @@
 // that boot the real bundle where pi cannot run (Windows). It speaks pi's
 // protocol as pi's docs define it (rpc.md, rpc-commands.md, json.md): strict
 // JSONL on stdio, get_state / prompt / steer / follow_up / abort / clear_queue /
-// set_model, extension commands (`/vc-note` → a custom entry), the session file
+// set_model, compact (a compaction entry; the model then sees the summary and the
+// last few entries), extension commands (`/vc-note` → a custom entry; Clear's note
+// a vc-clear custom message, as ext/vc.mjs sends it), the session file
 // in pi's format (entries with id/parentId/timestamp; an assistant message's
 // timestamp is the same in its live events and its entry), and the session
 // events (agent_start … message_start/update/end with text deltas,
@@ -67,6 +69,12 @@ const history = [];
 /** The session's custom_message entries (the "you" layers), in order. */
 const customs = [];
 let leaf = null;
+/** pi's compaction as the model then sees it: the summary, then the recent entries kept verbatim (here: the last 4). */
+const compacted = (v) => {
+  const kept = history.slice(-4);
+  history.length = 0;
+  history.push({ role: "user", content: [{ type: "text", text: `[compaction summary] ${v.summary ?? ""}` }] }, ...kept);
+};
 const customToHistory = (v) => history.push({ role: "user", content: typeof v.content === "string" ? [{ type: "text", text: v.content }] : v.content ?? [], custom: v.customType });
 if (forkOf) {
   // pi's --fork: a new session with the other's entries (the history), its header naming the parent.
@@ -79,6 +87,7 @@ if (forkOf) {
       const v = JSON.parse(l);
       if (v.type === "session") continue;
       if (v.type === "message") history.push(v.message);
+      if (v.type === "compaction") compacted(v);
       if (v.type === "custom_message") {
         customs.push(v);
         customToHistory(v);
@@ -97,6 +106,7 @@ if (forkOf) {
     try {
       const v = JSON.parse(l);
       if (v.type === "message") history.push(v.message);
+      if (v.type === "compaction") compacted(v);
       if (v.type === "custom_message") {
         customs.push(v);
         customToHistory(v);
@@ -398,7 +408,13 @@ function handle(line) {
       if (String(c.message ?? "").startsWith("/vc-note ")) {
         try {
           const d = JSON.parse(String(c.message).slice("/vc-note ".length));
-          if (d && typeof d.kind === "string") append({ type: "custom", customType: "vc-note", data: d });
+          // The extension: Clear's note is a custom message in context (vc-clear); a voice line likewise (vc-voice); the rest vc-note entries.
+          if (d && d.kind === "clear") {
+            const cm = { type: "custom_message", customType: "vc-clear", content: String(d.text ?? ""), display: false, details: { at: d.at } };
+            append(cm);
+            customs.push(cm);
+            customToHistory(cm);
+          } else if (d && typeof d.kind === "string") append({ type: "custom", customType: "vc-note", data: d });
         } catch {}
         return respond(c, true);
       }
@@ -428,6 +444,17 @@ function handle(line) {
     case "abort":
       aborted = true;
       return respond(c, true);
+    case "compact": {
+      // pi's manual compaction (rpc-commands.md): a compaction entry with the summary; the model sees the summary from now on.
+      if (running) return respond(c, false, undefined, "Agent is streaming");
+      const before = history.reduce((n, m) => n + JSON.stringify(m.content ?? "").length, 0);
+      const said = history.filter((m) => m.role === "user" || m.role === "assistant").map((m) => (typeof m.content === "string" ? m.content : (m.content ?? []).filter((b) => b.type === "text").map((b) => b.text).join(" "))).join(" | ");
+      const summary = `Summary (${c.customInstructions ? `focus: ${c.customInstructions.slice(0, 60)}` : "default"}): ${said.slice(-600)}`;
+      const entry = { type: "compaction", summary, firstKeptEntryId: leaf, tokensBefore: Math.ceil(before / 4) };
+      append(entry);
+      compacted(entry);
+      return respond(c, true, { summary, firstKeptEntryId: entry.firstKeptEntryId, tokensBefore: entry.tokensBefore, estimatedTokensAfter: Math.ceil(summary.length / 4) });
+    }
     case "get_last_assistant_text": {
       const last = [...history].reverse().find((m) => m.role === "assistant");
       const text = last ? (last.content ?? []).filter((b) => b.type === "text").map((b) => b.text).join("") : null;

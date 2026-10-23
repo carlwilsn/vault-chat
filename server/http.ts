@@ -14,7 +14,7 @@ import { notificationAppend, pushSubsAdd, pushSubsRemove, vapidPublicKey } from 
 import { isGitPath, handleGitHttp } from "./gitHttp";
 import { validVaultName } from "./sync";
 import { validKeyName } from "./keys";
-import { projectsList, setProject } from "./projectRoutes";
+import { createProjectWithThread, projectsList, setProject } from "./projectRoutes";
 import { voiceTool, voiceSession, voiceTranscript, voiceUpdates, voicePath, type VoiceDeps } from "./voice";
 import { activityImageRoute, activityPost } from "./activity";
 import PHONE_PAGE_INLINE from "../src-tauri/assets/phone.html";
@@ -693,6 +693,12 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
     // Projects: the chat chip and "New chat in project" (desktop box mode, phone).
     case "GET /projects":
       return json(res, 200, projectsList(vault));
+    case "POST /projects": {
+      const b = await jsonBody(req);
+      const out = await createProjectWithThread(vault, b);
+      if ("ok" in out) tagged({ type: "project", convId: out.convId, project: out.slug });
+      return json(res, "ok" in out ? 200 : 400, out);
+    }
     case "POST /conversation/project": {
       const b = await jsonBody(req);
       const out = await setProject(vault, b);

@@ -13,6 +13,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { useStore, type FileEntry } from "./store";
 import { boxLinkFor, boxGet, boxPost } from "./boxChat";
 import { PROJECTS_DIR } from "./agentProjects";
+import { emptyConversation } from "./conversations";
+import { MAIN_ID, MAIN_TITLE, projectOfThread, projectThreadId } from "./threads";
 
 export type Prepared = { moved: string[]; kept: string[]; hidden: boolean };
 
@@ -203,6 +205,49 @@ export async function setConversationProject(
   return { ok: true, slug };
 }
 
+/**
+ * Open a thread: Main, a project's one thread, or any chat. Shown at once (a placeholder until the box's row
+ * arrives: the box makes Main and the project threads itself).
+ */
+export function openThread(id: string, title?: string): void {
+  const s = useStore.getState();
+  if (!s.conversations.some((c) => c.id === id)) {
+    const slug = projectOfThread(id);
+    const placeholder = { ...emptyConversation(), id, title: title ?? (id === MAIN_ID ? MAIN_TITLE : "New chat"), ...(id === MAIN_ID ? { kind: "main" } : slug ? { kind: "project", project: slug } : {}) };
+    useStore.setState((st) => ({ conversations: [...st.conversations, placeholder] }));
+  }
+  useStore.getState().selectConversation(id);
+}
+
+/**
+ * Carl's "+ New project": the project (its folder and project.md) and its one thread, then that thread open.
+ * On the box (`POST /projects`) or, without one, the files here. Returns the thread's id, or an error.
+ */
+export async function createProjectThread(name: string): Promise<{ ok: true; id: string; slug: string } | { ok: false; error: string }> {
+  const vault = useStore.getState().vaultPath;
+  const want = name.trim();
+  if (!vault || !want) return { ok: false, error: "no name" };
+  const link = await boxLinkFor(vault);
+  let slug: string;
+  let title = want;
+  if (link) {
+    const r = await boxPost(link, "/projects", { name: want });
+    if (!r.ok) return { ok: false, error: r.error ?? "the box refused" };
+    slug = String(r.data?.slug ?? slugify(want));
+    title = String(r.data?.name ?? want);
+  } else {
+    try {
+      slug = (await createLocal(vault, want)).slug;
+    } catch (e) {
+      return { ok: false, error: String((e as Error)?.message ?? e) };
+    }
+  }
+  const id = projectThreadId(slug);
+  if (typeof window !== "undefined" && typeof window.dispatchEvent === "function") window.dispatchEvent(new CustomEvent("vc-projects-changed"));
+  openThread(id, title);
+  return { ok: true, id, slug };
+}
+
 /** A fresh chat already tagged with `slug`. */
 export function newChatInProject(slug: string): string {
   const id = useStore.getState().newConversation();
@@ -237,6 +282,7 @@ export async function openProjectNotes(slug: string, name: string): Promise<stri
     notesToMain(slug, name);
     return null;
   }
+  if (slug === MEMORY_SLUG) return openMemory();
   const s = useStore.getState();
   const vault = s.vaultPath;
   if (!vault || !slug || slug !== slugify(slug)) return null;
@@ -247,6 +293,35 @@ export async function openProjectNotes(slug: string, name: string): Promise<stri
   else {
     await invoke("create_dir", { path: `${vault}/${PROJECTS_DIR}/${slug}` }).catch(() => {});
     content = `# ${name.trim() || nameFromSlug(slug)}\n`;
+    await invoke("write_text_file", { path: p, contents: content });
+  }
+  const st = useStore.getState();
+  if (st.chatFullscreen) st.toggleChatFullscreen();
+  st.setCurrentFile(p, content);
+  return p;
+}
+
+/** "Memory" for Main: the agent's global memory file, `.vault-chat/MEMORY.md` (server/context/memory.ts). */
+export const MEMORY_REL = ".vault-chat/MEMORY.md";
+/** openProjectNotes' name for the memory file (the popout hands it to main the same way). */
+export const MEMORY_SLUG = "__memory__";
+
+/** Open `.vault-chat/MEMORY.md` in the viewer (made with its heading when missing). Returns the path. */
+export async function openMemory(): Promise<string | null> {
+  if (notesToMain) {
+    notesToMain(MEMORY_SLUG, "Memory");
+    return null;
+  }
+  const s = useStore.getState();
+  const vault = s.vaultPath;
+  if (!vault) return null;
+  const p = `${vault}/${MEMORY_REL}`;
+  let content: string;
+  const exists = await invoke<boolean>("path_exists", { path: p }).catch(() => false);
+  if (exists) content = await invoke<string>("read_text_file", { path: p });
+  else {
+    await invoke("create_dir", { path: `${vault}/.vault-chat` }).catch(() => {});
+    content = "# Memory\n\nWhat the agent keeps between conversations: one line per fact, dated. Edit or delete freely.\n";
     await invoke("write_text_file", { path: p, contents: content });
   }
   const st = useStore.getState();

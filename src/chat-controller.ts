@@ -57,6 +57,12 @@ export async function interruptAndSend(text: string, contextPreamble?: string, a
   await sendMessage(text, contextPreamble, attachments);
 }
 
+/** Clear: the open thread's view goes blank at once; the box saves what lasts, tells the agent and compacts. */
+export function clearThread(): void {
+  const id = useStore.getState().activeConversationId;
+  if (id) void import("./boxChat").then((bc) => bc.boxClear(id));
+}
+
 /** "Delete": the active conversation goes. */
 export function clearChat(): void {
   const s = useStore.getState();

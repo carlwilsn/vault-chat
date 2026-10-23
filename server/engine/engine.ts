@@ -19,11 +19,17 @@ import {
   isContextTool,
   buildDeveloperInstructions,
   rulesPrefixForTurn,
+  turnSections,
+  projectFolder,
+  readProject,
+  listProjects,
   projectCost,
   ctxConfig,
   type EngineConv,
 } from "./context";
-import { patchMeta, readConv, allConvs, createConv, newMessageId, emitTo, pictureOf, logOf, writeNotes, appendNotes, setNoteWriter, type NoteData } from "./convs";
+import { patchMeta, readConv, allConvs, createConv, newMessageId, emitTo, pictureOf, logOf, writeNotes, appendNotes, setNoteWriter, ensureMain, ensureProjectThread, type NoteData } from "./convs";
+import { MAIN_ID, projectOfThread, threadKindOf } from "../../src/threads";
+import { searchHistory } from "./history";
 import { addWake, readWakes, removeWakes, nextWakeFor, parseDelay, type Wake } from "./wakes";
 import { Ledger } from "./ledger";
 import { pdfPages, pdfPagesSpec, pdfRead, webSearch } from "./extraTools";
@@ -34,7 +40,7 @@ import { startJob, jobStatus, jobList, jobStop, reapJobs, type PiJobEnv } from "
 import { ENGINE_ROLE_PROMPT } from "./prompt";
 import { isNoteTool, noteTool, noteToolSpecs } from "../notesTools";
 import { capabilitiesOf, capabilityNote, learn } from "./capabilities";
-import { join } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { WRITE_TOOLS, writtenPath } from "../liveEdits";
 import { appendActivity, contextImage, searchActivity, youLayer } from "../activity";
 import { CAPTURE_FRESH_MS, chatPointerEntry } from "../../src/activityCore";
@@ -102,6 +108,8 @@ type Live = {
   /** What started the turn (for the silent retry). */
   input: string;
   turnOpts: TurnOpts;
+  /** The thread's working folder (the vault, or a project's main folder): relative tool paths start here. */
+  cwd: string;
 };
 
 type TurnOpts = { images?: string[]; context?: string; itemImages?: ItemImage[]; clientId?: string; /** What the chat shows (Carl's answer to a question asked before a restart). */ shown?: string; via?: string; /** Which client sent it (the turn log's `via`: laptop, phone, voice …). */ origin?: string };
@@ -111,6 +119,16 @@ const RESUME_TEXT =
 const LEGACY_SOURCES = new Set(["mission", "worker", "ask"]);
 const ARCHIVED = "This is an archived mission thread (the old missions system): readable, never run. Start a new chat.";
 const INTERRUPTED_TEXT = "⚠️ Interrupted by a restart — the command it was running was killed and may not have finished.";
+
+/** Clear's silent turn (OpenClaw's pre-compaction memory flush). */
+export const CLEAR_FLUSH = "[Clear]";
+const CLEAR_FLUSH_TEXT = `${CLEAR_FLUSH} Carl pressed Clear: his view of this thread is now blank, and what was said so far becomes background. Before it does, save anything that must outlast it (a decision, his correction or preference, a deadline, an open commitment) to the right memory file under your memory rules: this project's ## Memory, or .vault-chat/MEMORY.md. Save nothing that is already there or that the files already say. Do nothing else. Then reply exactly NO_REPLY (also when there was nothing to save).`;
+/** What the agent is told Clear means (a hidden pi custom message, `vc-clear`). */
+export function clearNote(at: number): string {
+  return `[Carl cleared this thread's view at ${new Date(at).toISOString()}. Everything said before this point is background: don't bring up earlier topics unless he does. Open commitments, scheduled wakes, jobs and delegated work still stand.]`;
+}
+const CLEAR_COMPACT_FOCUS =
+  "Carl cleared his view: everything so far is background. Keep, briefly: open commitments and promises, delegated work, jobs and wakes still pending, and decisions he made. Finished topics: one line each, or nothing.";
 
 // The server is going down (SIGTERM/SIGINT): pi's processes die with it, and
 // that is not a crash. A turn cut by the shutdown stays open in the log for the
@@ -301,6 +319,19 @@ export const ENGINE_TOOL_SPECS = [
       additionalProperties: false,
     },
   },
+  {
+    type: "function",
+    name: "SearchHistory",
+    readOnly: true,
+    description:
+      "Search a thread's full raw history (pi's own session file: everything ever said, before any compaction or Clear), newest first, with the time of each hit. Use it when Carl refers to something earlier that your context no longer holds (\"what did we decide about X last week?\"). `query`: words that must all appear (case-insensitive); `thread`: \"main\" (default: this thread) or a project's name; `limit`: hits (default 12, at most 40). Read-only.",
+    inputSchema: {
+      type: "object",
+      properties: { query: { type: "string" }, thread: { type: "string" }, limit: { type: "number" } },
+      required: ["query"],
+      additionalProperties: false,
+    },
+  },
 ];
 
 /** Every vault-chat tool the agent has (Carl's own vault tools are added per thread). */
@@ -339,8 +370,14 @@ export class Engine {
   private childOf = new Map<string, string>(); // subagent threadId → parent conversation id
   /** Captures already sent to each conversation's model (in memory): one is never attached twice. */
   private imagesGiven = new Map<string, Set<string>>();
-  /** The rules each thread last received (its instructions at start, or a turn's prefix): a turn repeats them only when they changed. In memory; after a restart a resumed thread gets them once more. */
-  private rulesSent = new Map<string, string>();
+  /** What each thread last received of each turn section (rules, memory, its project.md, the project list, its
+   *  folder: context/builder.ts turnSections): a turn sends a section again only when it changed. Forgotten when the
+   *  thread compacts (the summary may have dropped them). In memory; after a restart a resumed thread gets them once more. */
+  private sectionsSent = new Map<string, Map<string, string>>();
+  /** Clear's work, per conversation (the save turn, the note, compaction): Carl's next message waits for it. */
+  private clearing = new Map<string, Promise<void>>();
+  /** Waiting for a conversation's turn to end. */
+  private turnWaiters = new Map<string, (() => void)[]>();
   /** History from before a conversation's thread, handed to its first turn once (a legacy chat, a lost thread). */
   private handover = new Map<string, string>();
 
@@ -491,12 +528,42 @@ export class Engine {
           return { ok: r?.success !== false, text: (r?.contentItems ?? []).map((c: any) => c?.text ?? "").join("\n") };
         }),
     });
+    // Main and every project's thread exist from the start (src/threads.ts): every surface opens one.
+    void this.scoped(() => this.ensureThreads()).catch((e) => this.log(`threads: ${(e as Error).message}`));
     this.timers.push(setInterval(() => this.scoped(() => void this.tickWakes()), 2_000));
     this.timers.push(setInterval(() => this.scoped(() => void this.tickJobs()), 15_000));
   }
 
   stop(): void {
     for (const t of this.timers) clearInterval(t);
+  }
+
+  /** Main, and one thread per project (made once; never a write when they exist). */
+  async ensureThreads(): Promise<void> {
+    await ensureMain(this.d.vault);
+    for (const p of listProjects()) await ensureProjectThread(this.d.vault, p.slug, p.name);
+  }
+
+  /** The conversation a message without one goes to (Main), or the one named: a project's thread or a
+   *  separate chat is made the first time its id is used. Null: an id that can't be a conversation. */
+  private async target(convId: string | null | undefined, project: string | undefined, init: Partial<EngineConv>, first: string): Promise<EngineConv | null> {
+    if (!convId && project) {
+      // "New chat in project" from an older client: the project's one thread.
+      const { ensureProject } = await import("../context");
+      const { project: info } = ensureProject(project);
+      return ensureProjectThread(this.d.vault, info.slug, info.name);
+    }
+    if (!convId || convId === MAIN_ID) return ensureMain(this.d.vault);
+    const have = await readConv(this.d.vault, convId);
+    if (have) return have;
+    const slug = projectOfThread(convId);
+    if (slug) {
+      const p = readProject(slug);
+      return p ? ensureProjectThread(this.d.vault, slug, p.name) : null;
+    }
+    // A client's optimistic new chat (Carl asked for a separate one): the id it chose becomes the conversation's.
+    if (/^[A-Za-z0-9_-]{6,80}$/.test(convId) && !logOf(this.d.vault).has(convId)) return createConv(this.d.vault, { ...init, kind: "separate" } as Partial<EngineConv>, first, convId);
+    return null;
   }
 
   health(): Record<string, unknown> {
@@ -570,15 +637,13 @@ export class Engine {
         return (await this.answerRoute({ convId: b.convId, text: b.text, defer: b.defer, clientMsgId: b.clientId })) ?? { error: "legacy conversation" };
       case "lines": {
         // Lines a client brings into a chat as they are (a Ctrl+K exchange, a note opened for
-        // discussion): written as its items, under the client's ids; no turn runs.
+        // discussion): written as its items, under the client's ids; no turn runs. No conversation: Main.
         const lines: any[] = Array.isArray(b.lines) ? b.lines.slice(0, 40) : [];
         if (!lines.length) return { error: "no lines" };
-        let id = String(b.convId ?? "");
-        if (!id || !this.picture(id)) {
-          if (id && !/^[A-Za-z0-9_-]{6,80}$/.test(id)) return { error: "bad conversation id" };
-          const first = String(lines.find((l) => l?.role === "user" && !l.hidden)?.text ?? "Chat");
-          id = (await createConv(this.d.vault, { source: "manual" }, first, id || undefined)).id;
-        }
+        const first = String(lines.find((l) => l?.role === "user" && !l.hidden)?.text ?? "Chat");
+        const into = await this.target(String(b.convId ?? "") || null, undefined, { source: "manual" }, first);
+        if (!into) return { error: "bad conversation id" };
+        const id = into.id;
         const { appendMessage } = await import("./convs");
         for (const [i, l] of lines.entries()) {
           const mid = `${String(b.clientId ?? newMessageId()).slice(0, 70)}:${i}`;
@@ -592,9 +657,13 @@ export class Engine {
         }
         return { ok: true, convId: id };
       }
+      case "clear":
+        return this.clear(String(b.convId ?? "") || MAIN_ID, typeof b.clientId === "string" ? b.clientId.slice(0, 80) : undefined);
       case "delete": {
         const id = String(b.convId ?? "");
         if (!this.picture(id)) return { ok: false, error: `conversation ${id} not found` };
+        // Main and a project's thread are never deleted (Clear gives a fresh view; the history stays in pi's file).
+        if (threadKindOf({ id }) === "main" || threadKindOf({ id }) === "project") return { ok: false, error: "Main and a project's thread can't be deleted; Clear gives a fresh view" };
         if (this.live.has(id)) await this.interrupt(id, true);
         this.emit(id, { type: "meta", patch: { deleted: true } });
         return { ok: true, convId: id };
@@ -640,24 +709,24 @@ export class Engine {
     const textIn = String(body?.text ?? "").trim();
     const hasImages = (body.images?.length ?? 0) + (body.imagePaths?.length ?? 0) > 0;
     if (!textIn && !hasImages) return { error: "empty message" };
-    let conv: EngineConv | null = null;
-    if (body.convId) {
-      conv = await readConv(this.d.vault, body.convId);
-      if (!conv) {
-        // A client's optimistic new chat: the id it chose becomes the conversation's.
-        if (/^[A-Za-z0-9_-]{6,80}$/.test(body.convId) && !logOf(this.d.vault).has(body.convId)) {
-          conv = await createConv(this.d.vault, body.source === "voice" ? { source: "voice" } : {}, textIn || "Image", body.convId);
-        } else return { error: `conversation ${body.convId} not found` };
-      }
-      if (LEGACY_SOURCES.has(conv.source)) return { error: ARCHIVED };
-    } else {
-      conv = await createConv(this.d.vault, body.source === "voice" ? { source: "voice" } : {}, textIn || "Image");
+    // No conversation named: Main (every surface's default). A project's thread or a separate chat is made on first use.
+    const projectAsked = !body.convId && typeof body.project === "string" && body.project.trim() ? body.project.trim() : undefined;
+    let conv: EngineConv | null;
+    try {
+      conv = await this.target(body.convId, projectAsked, body.source === "voice" ? { source: "voice" } : {}, textIn || "Image");
+    } catch (e) {
+      return { error: (e as Error).message };
     }
+    if (!conv) return { error: `conversation ${body.convId} not found` };
+    if (LEGACY_SOURCES.has(conv.source)) return { error: ARCHIVED };
     const id = conv.id;
+    // Clear's work still running behind the blank view: this message starts after it.
+    const clearing = this.clearing.get(id);
+    if (clearing) await clearing;
     // The same message again (a retry, a service worker's replay): already here.
     const pic0 = this.picture(id);
     if (pic0 && (pic0.items.some((x) => x.id === clientId) || pendingOf(pic0).some((x) => x.id === clientId))) return { ok: true, convId: id, duplicate: true };
-    if (typeof body.project === "string" && body.project.trim()) {
+    if (!projectAsked && body.convId && typeof body.project === "string" && body.project.trim() && threadKindOf(conv) === "separate") {
       try {
         const { ensureProject } = await import("../context");
         const { project } = ensureProject(body.project.trim());
@@ -880,6 +949,66 @@ export class Engine {
     return this.d.backend.side.stop(id);
   }
 
+  /** Resolves when the conversation's running turn (if any) has ended. */
+  private turnEnd(convId: string): Promise<void> {
+    const l = this.live.get(convId);
+    if (!l || l.finished) return Promise.resolve();
+    return new Promise((r) => this.turnWaiters.set(convId, [...(this.turnWaiters.get(convId) ?? []), r]));
+  }
+
+  /**
+   * Clear (Carl, 2026-10-21): the view goes blank at once (a `cleared` field every client folds: no divider,
+   * nothing to scroll back into), and behind it, in order: one silent "save what lasts" turn (OpenClaw's
+   * pre-compaction flush: the agent updates MEMORY.md or the project's memory, replying NO_REPLY), a hidden
+   * pi custom message telling the agent Carl cleared (earlier topics are background), then pi's own
+   * compaction. pi's file keeps the full raw history. A running turn is stopped first; Carl's next message
+   * waits for the work to finish.
+   */
+  async clear(convId: string, clientId?: string): Promise<Record<string, unknown>> {
+    const p = this.picture(convId);
+    if (!p) return { ok: false, error: `conversation ${convId} not found` };
+    const busy = this.clearing.get(convId);
+    if (busy) return { ok: true, convId, cleared: true };
+    const at = Date.now();
+    this.emit(convId, { type: "meta", patch: { cleared: { at, ...(clientId ? { id: clientId } : {}) }, clearing: true, pending: null } });
+    const work = this.scoped(() => this.clearWork(convId, at))
+      .catch((e) => this.log(`clear on ${convId}: ${(e as Error).message}`))
+      .finally(() => {
+        this.clearing.delete(convId);
+        this.emit(convId, { type: "meta", patch: { clearing: null } });
+      });
+    this.clearing.set(convId, work);
+    return { ok: true, convId, cleared: true };
+  }
+
+  private async clearWork(convId: string, at: number): Promise<void> {
+    if (this.live.has(convId)) {
+      await this.interrupt(convId, false);
+      await this.turnEnd(convId);
+    }
+    const conv0 = await readConv(this.d.vault, convId);
+    // Nothing said yet in pi: nothing to save, mark or compact.
+    if (!conv0?.threadId) return;
+    // 1. Save what lasts (one turn).
+    await this.run(convId, CLEAR_FLUSH_TEXT, "wake", { via: "clear" });
+    await this.turnEnd(convId);
+    const conv = (await readConv(this.d.vault, convId)) ?? conv0;
+    const threadId = String(conv.threadId ?? "");
+    const file = String(conv.threadPath ?? "");
+    if (!threadId) return;
+    await this.d.backend.resumeThread(threadId, { model: this.d.model(), subagents: capabilitiesOf(this.d.model()).subagents, cwd: this.cwdOf(conv) });
+    // 2. The agent is told (a custom message in its context, never shown).
+    if (!(await this.d.backend.note(threadId, { kind: "clear", at, text: clearNote(at) }))) this.log(`clear on ${convId}: the note did not reach pi`);
+    // 3. pi's own compaction, focused on what still stands.
+    try {
+      await this.d.backend.compact(threadId, CLEAR_COMPACT_FOCUS);
+    } catch (e) {
+      this.log(`clear on ${convId}: compaction: ${(e as Error).message}`);
+    }
+    this.sectionsSent.delete(threadId);
+    if (file) this.catchUp(convId, file);
+  }
+
   /** A one-shot on the box itself (a note's title): pi, no session, no tools; the final text. */
   async once(req: { instructions: string; text: string; images?: string[]; fast?: boolean }): Promise<string> {
     const r = await this.sideStart({ kind: "once", system: req.instructions, text: req.text, images: req.images, fast: req.fast });
@@ -941,7 +1070,7 @@ export class Engine {
 
   /** How an engine input shows (a wake, a job, a resume). */
   private engineInput(input: string, kind: TurnKind): { via: string; shown: string } {
-    const via = kind === "wake" ? (/^Job \S+ /.test(input) ? "job" : "wake") : "resume";
+    const via = kind === "wake" ? (/^Job \S+ /.test(input) ? "job" : input.startsWith(CLEAR_FLUSH) ? "clear" : "wake") : "resume";
     return { via, shown: kind === "wake" ? input.replace(/^Wake:\s*/, "") : input };
   }
 
@@ -1045,6 +1174,7 @@ export class Engine {
         finished: false,
         input,
         turnOpts: opts,
+        cwd: (typeof this.d.backend.threadSource === "function" ? this.d.backend.threadSource(threadId)?.cwd : null) || this.d.vault,
       };
       // The old Stop path (runRegistry) reaches engine runs too.
       live.controller.signal.addEventListener("abort", () => void this.interrupt(convId, true));
@@ -1057,10 +1187,9 @@ export class Engine {
         this.handover.delete(convId);
         body = `${prior}\n\n${input}`;
       }
-      // The rules are in the thread already (its instructions, or an earlier prefix): only a change goes in front of the turn.
-      const rulesNow = rulesPrefixForTurn(conv as any);
-      const rules = this.rulesSent.get(threadId) === rulesNow ? "" : rulesNow;
-      this.rulesSent.set(threadId, rulesNow);
+      // What the thread already has (rules, memory, its project.md, the project list, its folder) is not sent
+      // again: only a section that changed goes in front of the turn (the rules mechanism, for all of them).
+      const rules = this.changedSections(threadId, conv);
       if (opts.context) body = `${opts.context}\n\n${body}`;
       // What Carl did elsewhere is not in the prompt: pi's extension adds it (the "you" layer, a vc-you custom message).
       const texts = [rules, kind === "wake" ? input : body].filter(Boolean);
@@ -1089,13 +1218,40 @@ export class Engine {
     return { text: r.text, until: r.until };
   }
 
+  /** A project thread's working folder: its main folder (project.md's `folder:`), else the vault. */
+  private folderOf(conv: EngineConv): { abs: string; rel: string } | { error: string } | null {
+    const slug = projectOfThread(conv.id);
+    const p = slug ? readProject(slug) : null;
+    return p ? projectFolder(this.d.vault, p.notes) : null;
+  }
+
+  private cwdOf(conv: EngineConv): string {
+    const f = this.folderOf(conv);
+    return f && "abs" in f ? f.abs : this.d.vault;
+  }
+
+  /** The turn sections that changed since this thread last got them (all of them for a thread that has none yet). */
+  private changedSections(threadId: string, conv: EngineConv): string {
+    const sent = this.sectionsSent.get(threadId) ?? new Map<string, string>();
+    this.sectionsSent.set(threadId, sent);
+    const out: string[] = [];
+    for (const x of turnSections(conv as any, { folder: this.folderOf(conv) })) {
+      if (sent.get(x.key) === x.text) continue;
+      sent.set(x.key, x.text);
+      out.push(x.text);
+    }
+    return out.join("\n\n");
+  }
+
   private async ensureThread(conv: EngineConv, current: string | null = null): Promise<{ threadId: string; fresh: boolean }> {
     const model = this.d.model();
     // Subagents only for models where they work (learned from use; see capabilities.ts).
     const subagents = capabilitiesOf(model).subagents;
+    // A project's thread runs in its main folder (pi loads that folder's AGENTS.md itself); a change of folder restarts its pi.
+    const cwd = this.cwdOf(conv);
     if (conv.threadId) {
       try {
-        await this.d.backend.resumeThread(conv.threadId, { model, subagents });
+        await this.d.backend.resumeThread(conv.threadId, { model, subagents, cwd });
         this.byThread.set(conv.threadId, conv.id);
         return { threadId: conv.threadId, fresh: false };
       } catch (e) {
@@ -1112,14 +1268,15 @@ export class Engine {
     // Carl's own vault tools (.vault-chat/tools): the agent's on every surface (voice reaches them through it).
     const own = await vaultToolSpecsFor(this.d.vault, [...builtin.map((t) => t.name), ...PI_BUILTIN_TOOLS]);
     const { threadId, ref } = await this.d.backend.startThread({
-      cwd: this.d.vault,
+      cwd,
       model,
       instructions,
       tools: [...builtin, ...own] as any,
       subagents,
     });
     this.byThread.set(threadId, conv.id);
-    this.rulesSent.set(threadId, rulesPrefixForTurn(conv as any)); // the instructions carry them in full
+    // The instructions carry the rules in full; the rest of the sections go with the first turn.
+    this.sectionsSent.set(threadId, new Map([["rules", rulesPrefixForTurn(conv as any).trim()]]));
     // History from before this thread (a legacy chat, a voice call's lines, a retry on a fresh thread): hand it over
     // once — without this turn's own message when it is already there (a retry).
     const said = conv.messages.filter((m) => !m.hidden && !m.system && (m.content ?? "").trim());
@@ -1210,11 +1367,18 @@ export class Engine {
       case "tool_execution_start":
         l.open.set(String(ev.toolCallId ?? ""), { name: toolName(String(ev.toolName ?? "")), input: ev.args ?? {} });
         break;
+      case "compaction_end":
+        // The summary may have dropped what the turn sections said: the next turn sends them again.
+        if (ev.result) this.sectionsSent.delete(l.threadId);
+        break;
       case "tool_execution_end": {
         const id = String(ev.toolCallId ?? "");
         const o = l.open.get(id);
         if (o && WRITE_TOOLS.has(o.name) && !ev.isError) {
-          const p = writtenPath(this.d.vault, o.input);
+          // A project thread in its main folder: a relative path starts there.
+          const rel = String(o.input?.path ?? o.input?.file_path ?? "");
+          const input = rel && !isAbsolute(rel) && l.cwd !== this.d.vault ? { ...o.input, path: resolve(l.cwd, rel) } : o.input;
+          const p = writtenPath(this.d.vault, input);
           if (p) this.d.onFilesWritten?.([p]);
         }
         l.open.delete(id);
@@ -1277,6 +1441,7 @@ export class Engine {
     const outcome = l.cut ? "cut" : l.stopped ? "stopped" : status === "completed" ? "ok" : status;
     this.turnLine(l.rec, { status, outcome, state, error: errStr || null });
     this.d.onTurnEnded?.(l.convId);
+    for (const w of this.turnWaiters.get(l.convId)?.splice(0) ?? []) w();
 
     // Cost, from the session's own figures (async; lands a few seconds later).
     void this.settleCost(l.convId, conv?.threadPath ?? conv0?.threadPath, l.turnId);
@@ -1422,6 +1587,17 @@ export class Engine {
           return text(await webSearch(String(a.query ?? ""), this.d.apiKey(), this.d.webSearchModel));
         case "StartJob":
           return text(startJob(this.d.jobEnv, vault, a, convId));
+        case "SearchHistory": {
+          const want = String(a.thread ?? "").trim();
+          let target = conv.id ? conv : null;
+          if (want) {
+            const slug = want.toLowerCase() === "main" ? null : (await import("../context")).findProject(want)?.slug;
+            if (want.toLowerCase() !== "main" && !slug) return text(`No thread "${want}": "main" or a project's name.`);
+            target = await readConv(vault, slug ? `project-${slug}` : MAIN_ID);
+          }
+          if (!target) return text("No thread to search.");
+          return text(searchHistory(vault, target, String(a.query ?? ""), Number(a.limit) || undefined));
+        }
         case "RecentActivity":
           return text(searchActivity(vault, { query: typeof a.query === "string" ? a.query : "", hours: Number(a.hours) || undefined, limit: Number(a.limit) || undefined }));
         case "JobStatus":

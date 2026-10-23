@@ -376,12 +376,13 @@ export class MemoryBox {
 
   intent(b: any): Record<string, unknown> {
     this.intents.push(b);
-    const conv = String(b.convId ?? "") || `c${++this.n}`;
+    // As the engine: no conversation named is Main's; a new id is a separate chat (src/threads.ts).
+    const conv = String(b.convId ?? "") || "main";
     const p = this.picture(conv);
     switch (b.type) {
       case "send": {
         if (p && (shown(p).some((x) => x.id === b.clientId) || pendingOf(p).some((x) => x.id === b.clientId))) return { ok: true, convId: conv, duplicate: true };
-        if (!p) this.create(conv, { ...(b.project ? { project: String(b.project) } : {}) });
+        if (!p) this.create(conv, conv === "main" ? { title: "Main", source: "main", kind: "main" } : { kind: "separate", ...(b.project ? { project: String(b.project) } : {}) });
         if (p?.meta.asking) return this.intent({ ...b, type: "answer", convId: conv });
         if (p?.meta.running) return this.intent({ ...b, type: "steer", convId: conv });
         this.startTurn(conv);
@@ -421,6 +422,12 @@ export class MemoryBox {
       case "delete":
         this.meta(conv, { deleted: true });
         return { ok: true };
+      case "clear":
+        // The engine's Clear: blank at once (`cleared`); its save turn, note and compaction run hidden (`clearing`).
+        if (!p) return { ok: false, error: `conversation ${conv} not found` };
+        this.meta(conv, { cleared: { at: this.now(), id: b.clientId }, clearing: true });
+        this.meta(conv, { clearing: null });
+        return { ok: true, convId: conv, cleared: true };
       default:
         return { error: "unknown intent" };
     }

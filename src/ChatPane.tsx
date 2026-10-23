@@ -2,7 +2,7 @@ import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState, type
 import { Markdown, StreamingMarkdown } from "./Markdown";
 import { localPathFromUrl } from "./mdPipeline";
 import { planDone, planIndex } from "./planPlace";
-import { Plus, Square, ArrowUp, ChevronDown, ChevronUp, Wrench, X, MessageSquare, Mic, Paperclip, Scan, AtSign, AlertCircle, Info } from "lucide-react";
+import { Plus, Square, ArrowUp, ChevronDown, ChevronUp, Wrench, X, MessageSquare, Mic, Paperclip, Scan, AtSign, AlertCircle, Info, Eraser } from "lucide-react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { usePending, type PendingKind } from "./pendingInput";
 import { voiceImageMime } from "./voiceImages";
@@ -35,7 +35,8 @@ import {
 import { uiChoice } from "./uiChoices";
 import { formatCost } from "./ongoingWork";
 import { OngoingLine } from "./OngoingLine";
-import { isArchivedThread, ARCHIVED_THREAD } from "./conversations";
+import { isArchivedThread, ARCHIVED_THREAD, OLDER_CHAT } from "./conversations";
+import { isOlderChat } from "./threads";
 
 type MentionHit = { path: string; name: string; rel: string };
 const NO_SUBAGENTS: SubagentRec[] = [];
@@ -464,7 +465,9 @@ export function ChatPane() {
   const boxChat = useStore((s) => s.boxChat);
   const noBox = !!vaultPath && boxChat?.on === false;
   const boxDown = !!boxChat?.on && boxChat.reachable === false;
-  const archived = !!activeConv && isArchivedThread(activeConv);
+  // An older chat (from before one main conversation) or an old mission thread: readable, not continued.
+  const older = !!activeConv && !isArchivedThread(activeConv) && isOlderChat(activeConv);
+  const archived = !!activeConv && (isArchivedThread(activeConv) || older);
   const ready = Boolean(vaultPath && boxChat?.on) && !boxDown && !archived;
   // Why the box is out of reach: Tailscale, the box itself, or the wait.
   const [tailscale, setTailscale] = useState<TailscaleState | null>(null);
@@ -1230,7 +1233,7 @@ export function ChatPane() {
                 onChange={(e) => onInputChange(e.target.value)}
                 onKeyDown={onKey}
                 onPaste={onPaste}
-                placeholder={archived ? ARCHIVED_THREAD : boxDown ? `${BOX_UNREACHABLE} — ${downWhy}. Retrying…` : !ready ? (vaultPath ? "Connecting to the box…" : "Open a vault first") : busy ? "Enter to steer · Tab to queue · Esc to stop" : "Ask anything, or / for commands…"}
+                placeholder={archived ? (older ? OLDER_CHAT : ARCHIVED_THREAD) : boxDown ? `${BOX_UNREACHABLE} — ${downWhy}. Retrying…` : !ready ? (vaultPath ? "Connecting to the box…" : "Open a vault first") : busy ? "Enter to steer · Tab to queue · Esc to stop" : "Ask anything, or / for commands…"}
                 disabled={!ready}
                 rows={1}
                 className={cn("border-0 bg-transparent min-h-0 max-h-[200px] focus-visible:ring-0 shadow-none !py-2", voiceMode || voiceNotice ? (chatFullscreen ? "!pr-52" : "!pr-40") : chatFullscreen && voiceError ? "!pr-32" : "!pr-20", "!pl-11")}
@@ -1336,13 +1339,16 @@ export function ChatPane() {
                   )}
                 </button>
               )}
-              {!chatFullscreen && (
+              {!archived && !!activeConv && (
                 <button
-                  onClick={() => useStore.getState().newConversation()}
-                  className="hover:text-foreground transition-colors"
-                  title="New chat"
+                  onClick={() => dispatchChatAction({ kind: "clear" })}
+                  disabled={!ready}
+                  data-el="clear-thread"
+                  className="flex items-center gap-1 hover:text-foreground transition-colors disabled:opacity-40"
+                  title="Clear — a fresh view of this thread (the agent saves what lasts first; nothing is deleted)"
                 >
-                  <Plus className="h-3 w-3" />
+                  <Eraser className="h-3 w-3" />
+                  <span>Clear</span>
                 </button>
               )}
             </div>

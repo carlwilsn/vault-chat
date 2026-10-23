@@ -74,6 +74,9 @@ export function conversationsSummary(vault: string): unknown {
       title: str(c.title, "New chat"),
       lastActivityAt: int(c.lastActivityAt) ?? 0,
       source: str(c.source, "manual"),
+      // One main conversation (src/threads.ts): main | project | separate; "" for an older chat.
+      kind: str(c.kind),
+      project: str(c.project),
       role: str(c.role),
       mission: str(c.mission),
       msgCount: msgs.length,

@@ -66,7 +66,7 @@ describe("what the agent is told", () => {
     mkdirSync(join(v, ".vault-chat"), { recursive: true });
     configureContext({ vault: v });
     createProject("Coconut");
-    expect(buildDeveloperInstructions({ id: "c", project: "coconut" })).toContain(`This chat is in Carl's project "Coconut" (${join(v, PROJECTS_DIR, "coconut")}).`);
+    expect(buildDeveloperInstructions({ id: "project-coconut", project: "coconut" })).toContain(`This is the thread of Carl's project "Coconut" (${join(v, PROJECTS_DIR, "coconut")}).`);
   });
 });
 

@@ -34,6 +34,7 @@ import type { Conversation } from "./conversations";
 import type { LogRecord, PollAnswer } from "./convlog/protocol";
 import { emptyPicture, emptyRow, foldInto, pendingOf, reduceRow, type Picture, type RowState } from "./convlog/reduce";
 import { makeChatView, type ChatView } from "./convlog/view";
+import { MAIN_ID } from "./threads";
 
 export const BOX_UNREACHABLE = "Box unreachable";
 /** No box for this vault: the chat has nothing to run on. */
@@ -233,6 +234,8 @@ class BoxChatSession {
   private down: number | false | null = null;
   /** The ids this client sent (a delivered steer or queued message drops its chip). */
   private sent = new Set<string>();
+  /** Clear pressed here: the thread shows blank at once, until the box's `cleared` (this id) is in the fold. */
+  private blank = new Map<string, string>();
 
   constructor(
     readonly vault: string,
@@ -483,8 +486,12 @@ class BoxChatSession {
         }
         if (row.deleted) continue;
         const p = this.pics.get(id);
-        const view = p ? this.viewOf(id)(p) : null;
-        const base = (view?.messages ?? prev?.messages.filter((m) => !m.boxPending && !m.boxLocal) ?? []) as ChatMessage[];
+        // Clear pressed here: blank now, before the box's record arrives (then the fold itself is blank).
+        const tok = this.blank.get(id);
+        if (tok && p?.meta.cleared && (p.meta.cleared as { id?: string }).id === tok) this.blank.delete(id);
+        const blank = this.blank.has(id);
+        const view = p && !blank ? this.viewOf(id)(p) : null;
+        const base = (blank ? [] : (view?.messages ?? prev?.messages.filter((m) => !m.boxPending && !m.boxLocal) ?? [])) as ChatMessage[];
         const messages = this.overlay(id, base);
         // Sending: running as far as this client knows, until the log says so.
         const sending = (this.outgoing.get(id) ?? []).some((o) => !o.failed && (o.role ?? "user") === "user" && !o.line);
@@ -501,6 +508,8 @@ class BoxChatSession {
           status: running ? "running" : "idle",
           runStartedAt: running ? (view?.startedAt ?? prev?.runStartedAt ?? Date.now()) : undefined,
           project: row.project,
+          kind: row.kind,
+          clearing: row.clearing || blank,
           state: row.state as Conversation["state"],
           working: row.working,
           nextWakeAt: row.nextWakeAt,
@@ -596,6 +605,18 @@ class BoxChatSession {
 
   noteSent(id: string): void {
     this.sent.add(id);
+  }
+
+  /** Clear pressed here: the thread is blank on this client at once (and its own messages on their way go too). */
+  blankNow(convId: string, id: string): void {
+    this.blank.set(convId, id);
+    this.outgoing.delete(convId);
+    this.notices.delete(convId);
+    this.project(new Set([convId]));
+  }
+
+  unblank(convId: string): void {
+    if (this.blank.delete(convId)) this.project(new Set([convId]));
   }
 
   /** The id of the log's last message shown for a conversation (where a local line is anchored). */
@@ -767,8 +788,8 @@ export async function boxSend(opts: { text: string; contextPreamble?: string; at
   const s = useStore.getState();
   const vault = s.vaultPath!;
   const trimmed = opts.text.trim();
-  let convId = opts.convId ?? s.activeConversationId;
-  if (!convId) convId = s.newConversation();
+  // No conversation named: Main, the default everywhere.
+  const convId = opts.convId ?? s.activeConversationId ?? MAIN_ID;
   const images = boxImages(opts.attachments);
   if (!trimmed && !images.length) return true;
   const shown = trimmed || "(image)";
@@ -867,7 +888,7 @@ export async function boxLines(lines: { role: "user" | "assistant"; text: string
   if (!boxChatOn() || !session) return false;
   const sess = session;
   const s = useStore.getState();
-  const convId = s.activeConversationId ?? s.newConversation();
+  const convId = s.activeConversationId ?? MAIN_ID;
   const clientId = newClientId();
   lines.forEach((l, i) => {
     if (!l.hidden) sess.addOutgoing(convId, { id: `${clientId}:${i}`, text: l.text, role: l.role, line: true, attachments: l.attachments });
@@ -882,6 +903,25 @@ export async function boxLines(lines: { role: "user" | "assistant"; text: string
     lines.forEach((l, i) => {
       if (!l.hidden) sess.failOutgoing(convId, `${clientId}:${i}`, `⚠️ ${r.network ? BOX_UNREACHABLE : "The box refused it"}: ${r.error}. Not saved in the chat.`);
     });
+  }
+  return true;
+}
+
+/**
+ * Clear a thread (Carl's Clear): blank here at once, no divider, nothing to scroll back into. The box then
+ * saves what lasts, tells the agent and compacts, behind the blank view (server/engine/engine.ts clear).
+ * False = not box mode. A refusal puts the thread back and says why.
+ */
+export async function boxClear(convId: string): Promise<boolean> {
+  if (!boxChatOn() || !session) return false;
+  const sess = session;
+  const clientId = newClientId();
+  sess.blankNow(convId, clientId);
+  const r = await intent(sess, { type: "clear", convId, clientId });
+  if (!r.ok) {
+    sess.unblank(convId);
+    sess.notice(convId, `⚠️ ${r.network ? BOX_UNREACHABLE : "The box refused"}: ${r.error}. Not cleared.`);
+    if (r.network) sess.kick();
   }
   return true;
 }

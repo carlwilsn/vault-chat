@@ -140,6 +140,8 @@ button.csec.wsec:active{background:var(--surface)}
 .wsec .chv{font-size:12px;color:var(--label-2)}
 .crow2{display:block;width:100%;text-align:left;padding:11px 16px}
 .crow2:active{background:var(--surface)}
+.crow2.on{background:var(--surface)}
+.newbtn.more{font-size:18px;line-height:1;padding:6px 12px}
 .crow2 .t{display:flex;align-items:center;gap:8px}
 .crow2 .rd{width:7px;height:7px;border-radius:50%;background:var(--ok);flex:none}
 /* generating = white pulsing "thinking" dot; done-but-unseen = steady solid. */

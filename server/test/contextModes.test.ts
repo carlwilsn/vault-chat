@@ -84,7 +84,8 @@ const until = async (fn: () => Promise<boolean> | boolean, ms = 10_000) => {
 /** A chat message, answered with `reply`: the turn's texts, images and conversation. */
 async function chatTurn(body: Record<string, unknown>, reply = "ok"): Promise<{ texts: string; images: string[]; convId: string }> {
   const before = backend.turns.length;
-  const out = await engine.message(body);
+  // No convId: a chat of its own (a separate chat; a message naming none would be Main's).
+  const out = await engine.message({ ...(body.convId ? {} : { convId: `sep-${Math.random().toString(36).slice(2, 10)}` }), ...body });
   expect(out?.ok).toBe(true);
   await until(() => backend.turns.length > before);
   const t = backend.turns[backend.turns.length - 1]!;

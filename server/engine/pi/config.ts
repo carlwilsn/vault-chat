@@ -90,10 +90,12 @@ export function modelWindow(model: string, cat: Map<string, PiCatalogRow>): numb
   return modelMeta(model)?.contextLength ?? cat.get(model)?.context ?? 200_000;
 }
 
-/** pi compacts (its own summary, in the same session) at this many tokens: three quarters of the window, at most 375k
- *  (past that a model's attention and the cost per call degrade long before the window is full). */
+/** pi compacts (its own summary, in the same session) at this many tokens: three quarters of the window, at most 150k.
+ *  One main conversation never ends, so it compacts early: a model's attention and the cost per call degrade long
+ *  before the window is full, and a smaller input summarises reliably (reports/Continuous conversation SOTA research.md). */
+export const COMPACT_CAP = 150_000;
 export function compactAt(window: number): number {
-  return Math.max(8_000, Math.min(window - 16_384, Math.floor(window * 0.75), 375_000));
+  return Math.max(8_000, Math.min(window - 16_384, Math.floor(window * 0.75), COMPACT_CAP));
 }
 
 export type PiConfigInput = {
