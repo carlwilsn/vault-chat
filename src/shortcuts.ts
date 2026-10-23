@@ -79,6 +79,7 @@ export const SHORTCUTS = [
       "src/VoiceTextPanel.tsx",
       "src/ProjectChip.tsx",
       "src/SettingsPane.tsx",
+      "src/AgentModelPicker.tsx",
       "src/ChatPane.tsx",
       "src/PdfView.tsx",
       "src/HtmlView.tsx",
@@ -91,7 +92,7 @@ export const SHORTCUTS = [
   { id: "edit.ask", keys: ["Mod+L"], label: "Ask about it", group: "Editing", where: "a file", files: ["src/LiveEditor.tsx", "src/MonacoEditor.tsx", "src/MarkdownView.tsx"] },
   { id: "edit.mode", keys: ["Mod+E"], label: "Edit / view", group: "Editing", where: "an open file", files: ["src/App.tsx"] },
   { id: "edit.marquee", keys: ["Mod+M"], label: "Capture a region", group: "Editing", where: "a PDF, HTML page or image", files: ["src/MarkdownView.tsx"] },
-  { id: "edit.confirm", keys: ["Enter"], label: "Confirm a name", group: "Editing", where: "rename, new project, a key", files: ["src/FileTree.tsx", "src/ChatsPanel.tsx", "src/ProjectChip.tsx", "src/SettingsPane.tsx"] },
+  { id: "edit.confirm", keys: ["Enter"], label: "Confirm a name", group: "Editing", where: "rename, new project, a key", files: ["src/FileTree.tsx", "src/ChatsPanel.tsx", "src/ProjectChip.tsx", "src/SettingsPane.tsx", "src/AgentModelPicker.tsx"] },
 
   // ---- Files
   { id: "files.note", keys: ["Mod+N"], label: "New note", group: "Files", where: "anywhere, with a vault", files: ["src/App.tsx"] },

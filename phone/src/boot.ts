@@ -377,32 +377,15 @@ export function boot(): void {
     const row = (k: string, label: string) => '<button class="arch-row" data-k="' + k + '"><span class="arch-t">' + esc(label) + "</span></button>";
     openSheet({
       intent: "Chats", title: "More", ico: "◎",
-      bodyHtml: row("separate", "New separate chat") + (convId ? row("clear", "Clear this thread") : "") + row("older", "Older chats") + row("memory", "Memory"),
+      bodyHtml: row("separate", "New separate chat") + (convId ? row("clear", "Clear this thread") : "") + row("memory", "Memory"),
       wire: (body) => {
         body.querySelectorAll(".arch-row[data-k]").forEach((b) => {
           b.onclick = () => {
             const k = b.dataset.k;
             if (k === "separate") { closeSheet(); newChat(); }
             else if (k === "clear") { closeSheet(); void clearThread(); }
-            else if (k === "older") openOlderChats();
             else if (k === "memory") void openMemory();
           };
-        });
-      },
-    });
-  }
-  /** Older chats (from before one main conversation) and separate chats: readable, newest first. */
-  async function openOlderChats() {
-    let others: any[] = [];
-    try { const d = await (await api("/conversations")).json(); others = panelModel((d.conversations || []).filter((c) => c.source !== "ask" && c.source !== "worker" && c.source !== "mission"), [], convId).others; } catch {}
-    openSheet({
-      intent: "Chats", title: "Older chats", ico: "◎", back: openThreadsMenu,
-      bodyHtml: others.length ? others.map((c) => '<button class="arch-row" data-id="' + esc(c.id) + '"><span class="arch-t"></span></button>').join("") : '<div class="md dim" style="padding:0 18px 10px">No other chats.</div>',
-      wire: (body) => {
-        body.querySelectorAll(".arch-row[data-id]").forEach((b) => {
-          const c = others.find((x) => x.id === b.dataset.id);
-          b.querySelector(".arch-t").textContent = (c && c.title) || "Chat";
-          b.onclick = () => { closeSheet(); void openThread(b.dataset.id, c && c.title); };
         });
       },
     });
@@ -479,20 +462,36 @@ export function boot(): void {
       if (cdraw.classList.contains("on")) { for (const c of chats) { if (!runIds.has(c.id)) convUnseen.delete(c.id); } }
       updateConvDot();
       box.innerHTML = "";
-      // The left panel, as on the laptop (src/threads.ts): Main, the projects (each its one thread), + New project.
+      // The left panel, as on the laptop (src/threads.ts): Main on its own, then "Projects" (each its one thread) and
+      // + New project, then a separate chat while one exists. No list of older chats (their files stay on the box).
       await loadProjects();
-      const { entries } = panelModel(chats.map((c) => ({ ...c, running: runIds.has(c.id) || convRunning.has(c.id), unread: convUnseen.has(c.id) })), projects, convId);
+      const { entries, others } = panelModel(chats.map((c) => ({ ...c, running: runIds.has(c.id) || convRunning.has(c.id), unread: convUnseen.has(c.id) })), projects, convId);
+      const sectionLabel = (t: string) => { const h = document.createElement("div"); h.className = "csec"; h.textContent = t; return h; };
       for (const e of entries) {
+        if (e.type === "main") {
+          const r = convRow({ id: e.id, title: "Main", lastActivityAt: (chats.find((c) => c.id === e.id) || {}).lastActivityAt, preview: "" }, e.running);
+          r.dataset.el = "thread-main";
+          r.classList.add("main");
+          if (e.active) r.classList.add("on");
+          box.appendChild(r);
+          box.appendChild(sectionLabel("Projects"));
+          continue;
+        }
         if (e.type === "new-project") {
           const np = el('<button class="csec proj pnew" data-el="new-project"><span class="pn">+ New project</span></button>');
           np.onclick = () => { closeConvs(); openNewProjectSheet(); };
           box.appendChild(np);
           continue;
         }
-        const r = convRow({ id: e.id, title: e.type === "project" ? projectName(e.slug) : e.title, lastActivityAt: (chats.find((c) => c.id === e.id) || {}).lastActivityAt, preview: (chats.find((c) => c.id === e.id) || {}).preview || "" }, e.running);
-        r.dataset.el = e.type === "main" ? "thread-main" : "thread-project";
+        const r = convRow({ id: e.id, title: projectName(e.slug) || e.title, lastActivityAt: (chats.find((c) => c.id === e.id) || {}).lastActivityAt, preview: (chats.find((c) => c.id === e.id) || {}).preview || "" }, e.running);
+        r.dataset.el = "thread-project";
         if (e.active) r.classList.add("on");
         box.appendChild(r);
+      }
+      const separate = others.filter((o) => o.kind === "separate");
+      if (separate.length) {
+        box.appendChild(sectionLabel("Separate chats"));
+        for (const c of separate) box.appendChild(convRow({ id: c.id, title: c.title || "Chat", lastActivityAt: c.lastActivityAt, preview: "" }, !!c.running));
       }
     } catch (e) {
       box.innerHTML = '<div class="empty">Couldn’t load: ' + esc(String(e.message || e)) + "</div>";

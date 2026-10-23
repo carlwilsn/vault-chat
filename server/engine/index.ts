@@ -54,6 +54,8 @@ export type EngineHandle = {
   health: () => Record<string, unknown>;
   /** The models the box runs: the chat agent, the vision fallback, the subagent child's default. */
   roles?: () => { chat: string; vision: string; subagent: string };
+  /** Carl's choice of the agent's model (Settings → Models, the composer's picker): the one model pi runs, typed and spoken. */
+  setModel?: (model: string) => { ok: true; model: string } | { ok: false; error: string };
   /** The engine of a vault, started on first use (the main one is `engine`). */
   open?: (v: VaultRef) => Promise<Engine>;
 };
@@ -65,7 +67,8 @@ export function engineModel(): string {
   } catch {
     ls = null;
   }
-  return process.env.VC_ENGINE_MODEL || ls || "openai/gpt-6.1-sol";
+  // Carl's choice (set from the laptop) over the deployment's default.
+  return ls || process.env.VC_ENGINE_MODEL || "openai/gpt-6.1-sol";
 }
 
 /** Web Push + notifications.jsonl + the /poll "notif" event, . A vault other
@@ -393,6 +396,20 @@ export async function startEngine(b: EngineBoot): Promise<EngineHandle> {
     }),
     // A child runs on its agent's model, else VC_PI_SUBAGENT_MODEL, else the parent's (subagents.ts).
     roles: () => ({ chat: engineModel(), vision: visionModel, subagent: process.env.VC_PI_SUBAGENT_MODEL || engineModel() }),
+    setModel: (id: string) => {
+      const m = String(id ?? "").trim();
+      if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.:-]+$/.test(m)) return { ok: false as const, error: `"${m.slice(0, 80)}" is not a model id` };
+      try {
+        localStorage.setItem("vault_chat_engine_model", m);
+      } catch (e) {
+        return { ok: false as const, error: (e as Error).message };
+      }
+      // pi's settings for it (compaction at the same cap); every thread's next turn runs on it (backend.startTurn).
+      writePiConfig({ paths: base, install, catalog: piCat, models: [m, visionModel, ctxConfig().recapModel], baseUrl });
+      configureContext({ agentModel: m });
+      console.log(`[engine:pi] model ${m} (Carl's choice)`);
+      return { ok: true as const, model: m };
+    },
     open,
   };
 }

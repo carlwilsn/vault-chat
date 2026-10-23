@@ -22,6 +22,7 @@ import { boxGet, boxPost } from "./boxChat";
 import { pushKeysToBox, keysChanged, subscribeKeyPush } from "./boxKeys";
 import { checkVoiceModel, NEED_LABEL, type Check as ModelCheck } from "./modelCaps";
 import { BoxModelChecks } from "./BoxModelChecks";
+import { modelLabel, setAgentModel, useAgentModel } from "./agentModel";
 import { openShortcutSheet } from "./ShortcutSheet";
 import { chordText } from "./shortcuts";
 import {
@@ -253,9 +254,12 @@ function useCheck(run: () => Promise<ModelCheck> | ModelCheck, dep: string): Mod
   return check;
 }
 
-// The agent's models are the box's (BoxModelChecks); this machine picks only
-// the voice model, which the box's voice agent follows.
+// Models: the agent's one model (pi on the box, for everything, typed and spoken; the same setting as the
+// composer's picker, src/agentModel.ts), and the fast model a voice call speaks its quick replies with
+// (the call hands any real work to the agent).
 function ModelsSection() {
+  const agent = useAgentModel();
+  const agentOptions: PickOption[] = agent.options.map((id) => ({ value: id, label: modelLabel(id), hint: id }));
   const [voiceLlm, setVoiceLlm] = useState(() => {
     // An old id shows as its nearest current one; nothing chosen is the default.
     return normalizeVoiceLlm(localStorage.getItem("vault_chat_elevenlabs_llm"));
@@ -269,11 +273,23 @@ function ModelsSection() {
 
   return (
     <section className="space-y-2">
-      <SectionHead title="Models" hint="The agent's models are set on the box. Voice uses the one picked here." />
-      <div className="flex items-start justify-between gap-3">
-        <span className="text-[12px] text-foreground/90 shrink-0 pt-1">Voice</span>
+      <SectionHead title="Models" hint="The agent runs on one model, for what you type and what you say." />
+      <div className="flex items-start justify-between gap-3" data-el="agent-model">
+        <span className="text-[12px] text-foreground/90 shrink-0 pt-1">Agent</span>
+        <div className="min-w-0 flex-1 max-w-[62%] space-y-0.5">
+          {agent.current ? (
+            <Picker value={agent.current} label={modelLabel(agent.current)} options={agentOptions} placeholder="Search models…" onChange={(v) => void setAgentModel(v)} />
+          ) : (
+            <p className="text-[11px] text-muted-foreground px-0.5 pt-1">Set on the box once it is connected.</p>
+          )}
+          {agent.error && <p className="text-[10.5px] text-amber-500/90 px-0.5">Not changed: {agent.error}</p>}
+        </div>
+      </div>
+      <div className="flex items-start justify-between gap-3" data-el="quick-replies-model">
+        <span className="text-[12px] text-foreground/70 shrink-0 pt-1">Quick replies</span>
         <div className="min-w-0 flex-1 max-w-[62%] space-y-0.5">
           <Picker value={voiceLlm} options={VOICE_OPTIONS} placeholder="Search models…" onChange={saveVoiceLlm} />
+          <p className="text-[10.5px] text-muted-foreground px-0.5">A fast model for short spoken replies on a call; anything that needs work goes to the agent.</p>
           <CheckLine check={voiceCheck} />
         </div>
       </div>

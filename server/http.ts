@@ -52,6 +52,8 @@ export type ServerHooks = {
     models: () => unknown;
     /** The box's own models (chat, vision fallback, subagent child) and their checks. */
     boxModels?: () => unknown;
+    /** POST /api/v1/models/agent {model}: the agent's model, from the laptop (one setting: Settings and the composer). */
+    setModel?: (model: string) => Record<string, unknown>;
     message: (v: VaultScope, b: any) => Promise<Record<string, unknown> | null>;
     answer: (v: VaultScope, b: any) => Promise<Record<string, unknown> | null>;
     kill: (v: VaultScope, b: any) => Promise<Record<string, unknown> | null>;
@@ -351,6 +353,11 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
   // Model capabilities for Settings → Models.
   if (path === "/api/v1/models" && method === "GET") {
     return hooks.engine ? json(res, 200, { models: hooks.engine.models(), ...(hooks.engine.boxModels ? { box: hooks.engine.boxModels() } : {}) }) : json(res, 503, { error: "engine not running" });
+  }
+  if (path === "/api/v1/models/agent" && method === "POST") {
+    if (!hooks.engine?.setModel) return json(res, 503, { error: "engine not running" });
+    const out = hooks.engine.setModel(String((await jsonBody(req))?.model ?? ""));
+    return json(res, out.ok ? 200 : 400, out);
   }
   // Steer or stop one running subagent of a conversation.
   const subM = /^\/api\/v1\/conversations\/([^/]+)\/subagents\/([^/]+)\/(steer|stop)$/.exec(path);

@@ -432,7 +432,8 @@ const driveA: Step[][] = beatsA({}).map((stage) => stage.flatMap((b) => b.steps)
 
 /** The box's own model checks (Settings → Models, box mode). */
 const BOX_MODELS = {
-  models: [],
+  // The box's list (the composer's and Settings' agent model picker).
+  models: [{ id: "openai/gpt-6.1-sol" }, { id: "anthropic/claude-opus-5.5" }, { id: "google/gemini-3.8-pro" }],
   box: {
     chat: { id: "openai/gpt-6.1-sol", state: "passed", context: 1_050_000 },
     vision: { id: "openai/gpt-6.1-sol", state: "passed", context: 1_050_000 },

@@ -234,6 +234,7 @@ async function main(): Promise<void> {
       : {
           models: () => (engine.engine ? modelsList() : []),
           boxModels: () => (engine.engine && engine.roles ? boxModelChecks(engine.roles()) : undefined),
+          setModel: (m) => (engine.engine && engine.setModel ? engine.setModel(m) : { ok: false, error: "engine not running" }),
           message: async (v, b) => (await engineOf(v)).message(b),
           answer: async (v, b) => (await engineOf(v)).answerRoute(b),
           kill: async (v, b) => (await engineOf(v)).kill(b),

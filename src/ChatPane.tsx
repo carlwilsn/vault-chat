@@ -37,6 +37,7 @@ import { formatCost } from "./ongoingWork";
 import { OngoingLine } from "./OngoingLine";
 import { isArchivedThread, ARCHIVED_THREAD, OLDER_CHAT } from "./conversations";
 import { isOlderChat } from "./threads";
+import { AgentModelPicker } from "./AgentModelPicker";
 
 type MentionHit = { path: string; name: string; rel: string };
 const NO_SUBAGENTS: SubagentRec[] = [];
@@ -1289,6 +1290,8 @@ export function ChatPane() {
           {!voiceBar && (
           <div className="flex items-center justify-between px-1 pt-1.5 text-[11px] text-muted-foreground">
             <div className="flex items-center gap-3 min-w-0">
+              {/* The agent's model (the same setting as Settings → Models). */}
+              {!archived && <AgentModelPicker />}
               {boxDown && (
                 <span className="truncate text-amber-500/90" data-el="box-unreachable" title={boxChat?.reason || undefined}>
                   {BOX_UNREACHABLE}: {downWhy}
@@ -1306,16 +1309,29 @@ export function ChatPane() {
                   <span>{formatTokens(lastContext)}</span>
                 </div>
               )}
+              {!archived && !!activeConv && (
+                <button
+                  onClick={() => dispatchChatAction({ kind: "clear" })}
+                  disabled={!ready}
+                  data-el="clear-thread"
+                  className="flex items-center gap-1 hover:text-foreground transition-colors disabled:opacity-40"
+                  title="Clear — a fresh view of this thread (the agent saves what lasts first; nothing is deleted)"
+                >
+                  <Eraser className="h-3 w-3" />
+                  <span>Clear</span>
+                </button>
+              )}
               {!isPopout && !chatFullscreen && (
                 <button
                   onClick={toggleChatsPanel}
                   className={`relative flex items-center gap-1 text-[11px] hover:text-foreground transition-colors ${
-                    chatsShown ? "text-foreground font-medium" : "text-muted-foreground"
+                    chatsShown ? "text-foreground" : "text-muted-foreground"
                   }`}
-                  title="Chats — switch, see history, see what's running"
+                  data-el="chats-toggle"
+                  title="Chats — Main and your projects, and what's running"
+                  aria-label="Chats"
                 >
                   <MessageSquare className="h-3 w-3" />
-                  <span>Chats</span>
                   {indicatorKind && (
                     <span
                       className="relative inline-flex h-1.5 w-1.5 ml-0.5"
@@ -1337,18 +1353,6 @@ export function ChatPane() {
                       )}
                     </span>
                   )}
-                </button>
-              )}
-              {!archived && !!activeConv && (
-                <button
-                  onClick={() => dispatchChatAction({ kind: "clear" })}
-                  disabled={!ready}
-                  data-el="clear-thread"
-                  className="flex items-center gap-1 hover:text-foreground transition-colors disabled:opacity-40"
-                  title="Clear — a fresh view of this thread (the agent saves what lasts first; nothing is deleted)"
-                >
-                  <Eraser className="h-3 w-3" />
-                  <span>Clear</span>
                 </button>
               )}
             </div>

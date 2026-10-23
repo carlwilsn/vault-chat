@@ -97,6 +97,19 @@ describe("Main over HTTP", () => {
     expect(shown(await picture("main")).map((x) => x.text)).toEqual(["What was I saying?", "NO_REPLY"]);
   });
 
+  it("the agent's model is one setting the laptop changes (Settings and the composer): the next turn runs on it", async () => {
+    const before = await get("/api/v1/models");
+    expect(typeof before.box?.chat?.id).toBe("string");
+    expect(await post("/api/v1/models/agent", { model: "not a model" })).toMatchObject({ ok: false });
+    expect(await post("/api/v1/models/agent", { model: "anthropic/claude-test-model" })).toMatchObject({ ok: true, model: "anthropic/claude-test-model" });
+    expect((await get("/api/v1/models")).box.chat.id).toBe("anthropic/claude-test-model");
+    const calls0 = or.calls.length;
+    await post("/api/v2/intent", { type: "send", clientId: "c-model", text: "Which model are you?" });
+    await waitFor(() => idle("main"), 30_000);
+    expect(or.calls.slice(calls0).some((c: any) => /claude-test-model/.test(String(c.model)))).toBe(true);
+    await post("/api/v1/models/agent", { model: before.box.chat.id });
+  });
+
   it("+ New project makes the project and its thread; a send to it carries its project.md", async () => {
     const r = await post("/projects", { name: "Psych 221" });
     expect(r).toMatchObject({ ok: true, slug: "psych-221", convId: "project-psych-221" });

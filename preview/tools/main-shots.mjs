@@ -51,7 +51,8 @@ const SEED = async (after) => {
 
 const shots = {};
 async function desktop(side) {
-  const after = side === "after";
+  // Both trees have one main conversation (--before <the previous push>); --old-before: a tree from before it.
+  const after = side === "after" || !argv.includes("--old-before");
   const { browser, page, log } = await launch({ width: 1400, height: 900 });
   const shot = async (name) => {
     const p = join(out, `${name}-${side}.png`);
@@ -86,6 +87,9 @@ async function desktop(side) {
     else await page.click("[data-el='chats-sidebar'] button:has-text(\"What's due this week?\")");
     await page.waitForTimeout(900);
     await shot("main");
+    // The composer and the row under it: the model, the context, Clear, Chats.
+    await page.screenshot({ path: join(out, `composer-${side}.png`), clip: { x: 272, y: 780, width: 1128, height: 120 } });
+    (shots.composer ??= {})[side] = join(out, `composer-${side}.png`);
     // A project's thread (before: a chat in the project).
     if (after) await page.click("[data-thread='project-coconut']");
     else await page.click("[data-el='chats-sidebar'] button:has-text('Tile overlap')");
@@ -102,6 +106,15 @@ async function desktop(side) {
       await page.waitForTimeout(700);
     }
     await shot("clear");
+    // Settings → Models.
+    await page.evaluate(async () => {
+      const url = performance.getEntriesByType("resource").map((e) => e.name).find((n) => /\/src\/store\.ts/.test(n));
+      const s = (await import(url)).useStore;
+      if (s.getState().chatFullscreen) s.getState().toggleChatFullscreen();
+      s.getState().setShowSettings(true);
+    });
+    await page.waitForTimeout(1200);
+    await shot("settings");
     const errs = [...log.pageErrors.map((e) => e.text.split("\n")[0]), ...log.console.filter((m) => m.type === "error").map((m) => m.text.slice(0, 200))];
     console.log(`desktop ${side}: ${errs.length ? errs.slice(0, 4).join(" | ") : "no page errors"}`);
   } finally {
