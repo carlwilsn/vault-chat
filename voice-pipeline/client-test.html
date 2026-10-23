@@ -1,0 +1,105 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>Voice client check</title>
+<style>
+  body { font: 14px system-ui, sans-serif; margin: 16px; background: #fff; color: #111; }
+  pre { white-space: pre-wrap; font-size: 12px; }
+</style>
+</head>
+<body>
+<h3>Voice client check (the real src/voiceBrainClient.ts over the tailnet)</h3>
+<p>The app's own call code, with recorded questions as the microphone. Measured as heard (the reply's level × its volume):
+end of speech → first audio, and talking over a reply → it goes silent.</p>
+<pre id="log"></pre>
+<script type="module">
+import { BrainConversation } from "/brain.js";
+const q = new URLSearchParams(location.search);
+const conv = q.get("conv") || "main";
+const files = (q.get("wav") || "u02,u03,u06,u08").split(",");
+const barge = q.get("barge") === "1";
+const rounds = Number(q.get("rounds") || 1);
+const out = [];
+const send = (o) => fetch("/result", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(o) }).catch(() => {});
+const log = (o) => { send(o); out.push(o); document.getElementById("log").textContent += JSON.stringify(o) + "\n"; };
+const pct = (xs, p) => { const s = [...xs].sort((a, b) => a - b); if (!s.length) return null; const k = (s.length - 1) * p, lo = Math.floor(k), hi = Math.min(lo + 1, s.length - 1); return +(s[lo] + (s[hi] - s[lo]) * (k - lo)).toFixed(3); };
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+async function main() {
+  const ac = new AudioContext({ sampleRate: 48000 });
+  await ac.resume();
+  const dest = ac.createMediaStreamDestination();
+  // A real microphone is never digitally silent: a -60 dB noise floor under the utterances (a silent WebAudio track
+  // makes the browser stop sending, which no real mic does).
+  {
+    const nb = ac.createBuffer(1, 48000, 48000);
+    const d = nb.getChannelData(0);
+    for (let i = 0; i < d.length; i++) d[i] = (Math.random() * 2 - 1) * 0.0017;
+    const n = ac.createBufferSource();
+    n.buffer = nb;
+    n.loop = true;
+    n.connect(dest);
+    n.start();
+  }
+  const bufs = [];
+  for (const f of files) bufs.push(await ac.decodeAudioData(await (await fetch(`utt/${f}.wav`)).arrayBuffer()));
+  const post = async (path, body) => {
+    const r = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`);
+    return j;
+  };
+  const modes = [];
+  const c = await BrainConversation.start({
+    post, convId: conv, device: "laptop",
+    deps: { getUserMedia: async () => dest.stream },
+    onConnect: () => log({ connected: true }),
+    onMode: (m) => modes.push(m),
+    log: (ev, data) => { if (ev === "voice brain barge-in") log({ ev, ...data }); },
+  });
+  let loudAt = [], lastLoud = 0;
+  setInterval(() => { if (c.audibleVolume() > 0.01) { const t = performance.now() / 1000; loudAt.push(t); lastLoud = t; } }, 10);
+  await sleep(3000);
+  const play = (b, dur) => new Promise((res) => { const s = ac.createBufferSource(); s.buffer = b; s.connect(dest); s.start(); const d = dur ?? b.duration; if (dur) s.stop(ac.currentTime + dur); setTimeout(() => res(performance.now() / 1000), d * 1000); });
+  const firstAfter = async (t, ms) => { const end = performance.now() + ms; while (performance.now() < end) { const x = loudAt.find((v) => v > t); if (x) return x; await sleep(10); } return null; };
+  const quiet = async (secs, ms) => { const end = performance.now() + ms; while (performance.now() < end) { if (lastLoud && performance.now() / 1000 - lastLoud >= secs) return; await sleep(20); } };
+  const eos = [], bs = [];
+  let turn = 0;
+  for (let r = 0; r < rounds; r++) for (let i = 0; i < bufs.length; i++) {
+    await sleep(1500);
+    const ch = bufs[i].getChannelData(0);
+    let last = ch.length - 1;
+    while (last > 0 && Math.abs(ch[last]) < 500 / 32768) last--;
+    const tail = (ch.length - 1 - last) / bufs[i].sampleRate;
+    const tEnd = (await play(bufs[i])) - tail;
+    const first = await firstAfter(tEnd, 30000);
+    const row = { turn: turn++, file: files[i], eos_to_audio: first ? +(first - tEnd).toFixed(3) : null };
+    if (first) eos.push(first - tEnd);
+    if (barge && first) {
+      await sleep(Math.max(0, (first + 1.2 - performance.now() / 1000) * 1000));
+      const t0 = performance.now() / 1000;
+      const p = play(bufs[(i + 1) % bufs.length], 2);
+      let stopped = null;
+      const end = performance.now() + 5000;
+      while (performance.now() < end) {
+        const now = performance.now() / 1000;
+        if (lastLoud < t0 && now - t0 > 0.2) { stopped = "already-quiet"; break; }
+        if (lastLoud >= t0 - 0.02 && now - lastLoud >= 0.2) { stopped = lastLoud - t0; break; }
+        await sleep(10);
+      }
+      await p;
+      row.barge_stop = typeof stopped === "number" ? +stopped.toFixed(3) : stopped;
+      if (typeof stopped === "number") bs.push(stopped);
+    }
+    await quiet(2, 60000);
+    row.modes = [...new Set(modes.splice(0))].join(">");
+    log(row);
+  }
+  await c.endSession();
+  log({ summary: true, n: eos.length, p50: pct(eos, 0.5), p90: pct(eos, 0.9), p95: pct(eos, 0.95), barge_n: bs.length, barge_p50: pct(bs, 0.5), barge_p90: pct(bs, 0.9) });
+}
+main().catch((e) => log({ error: String((e && e.stack) || e) }));
+</script>
+</body>
+</html>

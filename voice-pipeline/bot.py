@@ -225,6 +225,10 @@ async def run_call(connection, call: dict):
             # silence. Pipecat's default 5 s was the whole tail: 5 of 24 turns waited exactly 5.0 s (questions with
             # a trailing "?" the model read as unfinished). 1.5 s keeps room for a pause mid-thought.
             user_turn_stop_timeout=TURN_STOP_TIMEOUT_SECS,
+            # A turn that ends with no words (a noise that only interrupted) is never answered: Pipecat's default
+            # re-asks the LLM with the context unchanged, which here would send his previous line to pi a second
+            # time (a double answer). The interrupted reply's words still come, on the speak channel.
+            empty_user_turn=None,
         ),
     )
     quiet = Quiet()

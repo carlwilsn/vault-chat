@@ -19,11 +19,19 @@ def main():
     ap.add_argument("--box", default="http://127.0.0.1:18856")
     ap.add_argument("--port", type=int, default=18900)
     ap.add_argument("--out", default="browser-results.jsonl")
+    ap.add_argument("--brain-js", default=None, help="src/voiceBrainClient.ts bundled as ESM (esbuild)")
     o = ap.parse_args()
     here = os.path.dirname(os.path.abspath(__file__))
 
-    async def page(_r):
-        return web.FileResponse(os.path.join(here, "browser-test.html"))
+    async def page(r: web.Request):
+        # ?client=brain: the app's own call code (client-test.html + /brain.js); else the raw WebRTC check.
+        name = "client-test.html" if r.query.get("client") == "brain" else "browser-test.html"
+        return web.FileResponse(os.path.join(here, name))
+
+    async def brain_js(_r):
+        if not o.brain_js:
+            return web.Response(status=404, text="no --brain-js")
+        return web.FileResponse(o.brain_js, headers={"Content-Type": "text/javascript"})
 
     async def api(r: web.Request):
         async with aiohttp.ClientSession() as s:
@@ -37,6 +45,7 @@ def main():
 
     app = web.Application()
     app.router.add_post("/result", result)
+    app.router.add_get("/brain.js", brain_js)
     app.router.add_get("/", page)
     app.router.add_static("/utt/", o.utt)
     app.router.add_route("*", "/api/{tail:.*}", api)

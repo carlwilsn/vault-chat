@@ -32,6 +32,18 @@ async function main() {
   const ac = new AudioContext({ sampleRate: 48000 });
   await ac.resume();
   const dest = ac.createMediaStreamDestination();
+  // A real microphone is never digitally silent: a -60 dB noise floor under the utterances (a silent WebAudio track
+  // makes the browser stop sending, which no real mic does).
+  {
+    const nb = ac.createBuffer(1, 48000, 48000);
+    const d = nb.getChannelData(0);
+    for (let i = 0; i < d.length; i++) d[i] = (Math.random() * 2 - 1) * 0.0017;
+    const n = ac.createBufferSource();
+    n.buffer = nb;
+    n.loop = true;
+    n.connect(dest);
+    n.start();
+  }
   const bufs = [];
   for (const f of files) bufs.push(await ac.decodeAudioData(await (await fetch(`utt/${f}.wav`)).arrayBuffer()));
 

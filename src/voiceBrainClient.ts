@@ -63,6 +63,15 @@ export const SPEAKING_HANG_MS = 400;
 export const TURN_END_MS = 350;
 /** "Thinking" never shows longer than this without audio (a turn that says nothing, a skipped turn). */
 export const THINKING_MAX_MS = 20_000;
+/** Barge-in, here on the device: Carl's voice above this (well above the echo the browser's canceller leaves) for
+ *  BARGE_MS while the reply plays silences the reply at once — the box's own stop follows (VAD → cancel), but its
+ *  audio already on the way would play for another ~0.4 s. If the box didn't take it as an interruption (a "yeah"),
+ *  the reply comes back after RESUME_MS of his silence. */
+export const BARGE_RMS = 0.05;
+export const BARGE_MS = 75;
+export const RESUME_MS = 900;
+/** How often the levels are read. */
+export const TICK_MS = 25;
 
 /** Pure: the call's mode from what the levels did and when. */
 export function brainMode(s: { now: number; lastPlaying: number; lastSpeech: number; speechSince: number | null; thinkingSince: number | null }): BrainMode {
@@ -93,6 +102,10 @@ export class BrainConversation {
   private speechSince: number | null = null;
   private thinkingSince: number | null = null;
   private muted = false;
+  private volume = 1;
+  /** The reply is silenced here because Carl started talking over it (local barge-in). */
+  private ducked = false;
+  private bargeSince: number | null = null;
 
   private constructor(
     private o: BrainOptions,
@@ -181,7 +194,7 @@ export class BrainConversation {
       }
     };
     const buf = new Float32Array(512);
-    this.timer = setInterval(() => this.tick(buf), 50);
+    this.timer = setInterval(() => this.tick(buf), TICK_MS);
   }
 
   private tick(buf: Float32Array): void {
@@ -196,7 +209,26 @@ export class BrainConversation {
     }
     if (!this.muted) {
       this.inAn.getFloatTimeDomainData(buf);
-      if (rms(buf) > SPEECH_RMS && now - this.lastPlaying >= SPEAKING_HANG_MS) {
+      const level = rms(buf);
+      // Local barge-in: he talks over the reply → it goes silent now, not when the box's stop arrives.
+      const playing = now - this.lastPlaying < SPEAKING_HANG_MS;
+      if (playing && level > BARGE_RMS) {
+        this.bargeSince ??= now;
+        if (!this.ducked && now - this.bargeSince >= BARGE_MS) {
+          this.ducked = true;
+          this.el.volume = 0;
+          this.o.log?.("voice brain barge-in", { level: Math.round(level * 1000) / 1000 });
+        }
+      } else if (level <= BARGE_RMS) this.bargeSince = null;
+      if (this.ducked) {
+        if (level > SPEECH_RMS) this.lastSpeech = now;
+        // The reply stopped (the box took the interruption), or he stopped and it went on (it didn't): sound back.
+        if (!playing || now - this.lastSpeech >= RESUME_MS) {
+          this.ducked = false;
+          this.el.volume = this.volume;
+        }
+      }
+      if (level > SPEECH_RMS && (!playing || this.ducked)) {
         this.speechSince ??= now;
         this.lastSpeech = now;
         this.thinkingSince = null;
@@ -247,7 +279,13 @@ export class BrainConversation {
   }
 
   setVolume(o: { volume: number }): void {
-    this.el.volume = Math.max(0, Math.min(1, o.volume));
+    this.volume = Math.max(0, Math.min(1, o.volume));
+    if (!this.ducked) this.el.volume = this.volume;
+  }
+
+  /** What is audible from the reply now (its level × the element's volume): the waves, and the barge-in measure. */
+  audibleVolume(): number {
+    return this.getOutputVolume() * (this.ducked ? 0 : this.el.volume);
   }
 
   async setOutputDevice(id: string): Promise<void> {
@@ -263,7 +301,8 @@ export class BrainConversation {
   getOutputByteFrequencyData(): Uint8Array {
     const an = this.outAn;
     const a = new Uint8Array(an?.frequencyBinCount ?? 256);
-    an?.getByteFrequencyData(a);
+    // Silenced by a barge-in: the waves go flat with it (never waves over silence).
+    if (!this.ducked) an?.getByteFrequencyData(a);
     return a;
   }
 

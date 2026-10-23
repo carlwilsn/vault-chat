@@ -161,6 +161,23 @@ describe("voice with one brain", () => {
     expect(eng.messages).toHaveLength(0);
   });
 
+  it("the pipeline re-asking with the same words (after an interruption with none) is never a second turn: no double answer", async () => {
+    const c = await call();
+    const ask = () => fetch(`${base}/v1/chat/completions`, { method: "POST", headers: { authorization: `Bearer ${c.token}` }, body: JSON.stringify({ messages: [{ role: "user", content: "tell me a fun fact" }] }) });
+    const ac = new AbortController();
+    const first = fetch(`${base}/v1/chat/completions`, { method: "POST", headers: { authorization: `Bearer ${c.token}` }, body: JSON.stringify({ messages: [{ role: "user", content: "tell me a fun fact" }] }), signal: ac.signal }).catch(() => null);
+    await until(() => eng.messages.length);
+    ac.abort();
+    await first;
+    const second = ask();
+    await new Promise((r) => setTimeout(r, 100));
+    eng.emit(delta("Octopuses have three hearts. "));
+    eng.emit({ type: "vc_turn_end", status: "completed" });
+    const lines = await sse(await second);
+    expect(eng.messages).toHaveLength(1);
+    expect(lines.join("")).toContain("Octopuses have three hearts.");
+  });
+
   it("lastUserText takes only Carl's newest words", () => {
     expect(lastUserText({ messages: [{ role: "user", content: "a" }, { role: "assistant", content: "b" }] })).toBe("");
     expect(lastUserText({ messages: [{ role: "user", content: [{ type: "text", text: "hello" }] }] })).toBe("hello");

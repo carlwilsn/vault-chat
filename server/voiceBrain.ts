@@ -59,6 +59,9 @@ export type BrainDeps = {
 };
 
 /** The routes are on unless the box turns them off; which voice a device uses is the engine setting below. */
+/** The same words again within this long are the pipeline re-asking, never a second turn. */
+export const REASK_MS = 10_000;
+
 export const brainEnabled = (): boolean => process.env.VC_VOICE_BRAIN !== "off";
 
 export type VoiceEngine = "classic" | "new";
@@ -128,6 +131,8 @@ type Call = {
   untap: () => void;
   engine: BrainEngine;
   turns: number;
+  /** The last words sent to pi, and when (the same words again at once are a re-ask, not a new turn). */
+  lastText: { text: string; at: number } | null;
   /** Its last request or speak-channel activity (a call whose pipeline died without ending it is reaped). */
   lastActive: number;
   /** A barge-in stopped the turn that was talking: the next request waits for it to end. */
@@ -191,6 +196,7 @@ export async function startCall(d: BrainDeps, b: { convId?: unknown; device?: un
     untap: () => {},
     engine,
     turns: 0,
+    lastText: null,
     lastActive: Date.now(),
     stopping: null,
   };
@@ -332,6 +338,10 @@ async function completions(d: BrainDeps, req: IncomingMessage, res: ServerRespon
   c.sink = s;
   c.dropping = false;
   c.turns++;
+  // The pipeline asking again with nothing new from Carl (a retry after an interruption that carried no words): the
+  // same turn, not a second one — the reply already on its way streams into this response.
+  const again = c.lastText && c.lastText.text === text && Date.now() - c.lastText.at < REASK_MS;
+  c.lastText = { text, at: Date.now() };
   c.lastActive = Date.now();
   res.on("close", () => {
     if (!s.done) {
@@ -346,6 +356,10 @@ async function completions(d: BrainDeps, req: IncomingMessage, res: ServerRespon
       log(d, { ev: "turn.cut", call: c.id, req: s.id, afterMs: Date.now() - t0, spokenChars: s.text.length, stopped: s.sent > 0 });
     }
   });
+  if (again) {
+    log(d, { ev: "turn.reask", call: c.id, req: s.id });
+    return;
+  }
   const out = await c.engine.message({ convId: c.convId, text, source: "voice", via: "voice", client: c.device, clientMsgId: `v-${s.id}` }).catch((e): Record<string, unknown> => ({ error: (e as Error).message }));
   log(d, { ev: "turn.start", call: c.id, req: s.id, chars: text.length, steered: !!out?.steered, msgMs: Date.now() - t0, ...(out?.error ? { error: String(out.error).slice(0, 200) } : {}) });
   if (!out || out.error) {
