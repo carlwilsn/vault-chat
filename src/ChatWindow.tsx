@@ -45,7 +45,8 @@ export function ChatWindow() {
       } else if (hit(e, "chat.new")) {
         e.preventDefault();
         if (e.repeat || !useStore.getState().vaultPath) return;
-        useStore.getState().newConversation();
+        // Back to Main (main opens it: the popout's list is main's).
+        dispatchChatAction({ kind: "selectConversation", id: "main" });
         setTimeout(focusComposer, 0);
       } else if (hit(e, "voice.toggle")) {
         e.preventDefault();

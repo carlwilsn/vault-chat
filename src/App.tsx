@@ -252,13 +252,12 @@ export default function App() {
         e.preventDefault();
         useStore.getState().toggleChatFullscreen();
       } else if (hit(e, "chat.new")) {
-        // Ctrl+T — start a fresh chat. The browser/webview's native
-        // "new tab" is already swallowed by Tauri, so we don't fight
-        // any platform shortcut here.
+        // Ctrl+T — back to Main (one main conversation: there are no new chats to start). The
+        // webview's native "new tab" is already swallowed by Tauri.
         const s = useStore.getState();
         if (!s.vaultPath || !s.conversationsLoaded) return;
         e.preventDefault();
-        s.newConversation();
+        void import("./projects").then((p) => p.openThread("main"));
         if (s.rightCollapsed) s.toggleRight();
       } else if (hit(e, "view.terminal") || hit(e, "view.terminalOther")) {
         // Ctrl+J: the terminal where the chat runs (the box for a box vault); Shift: the other one.

@@ -377,26 +377,16 @@ export function boot(): void {
     const row = (k: string, label: string) => '<button class="arch-row" data-k="' + k + '"><span class="arch-t">' + esc(label) + "</span></button>";
     openSheet({
       intent: "Chats", title: "More", ico: "◎",
-      bodyHtml: row("separate", "New separate chat") + (convId ? row("clear", "Clear this thread") : "") + row("memory", "Memory"),
+      bodyHtml: convId ? row("clear", "Clear this thread") : '<div class="md dim" style="padding:0 18px 10px">Nothing to clear.</div>',
       wire: (body) => {
         body.querySelectorAll(".arch-row[data-k]").forEach((b) => {
           b.onclick = () => {
             const k = b.dataset.k;
-            if (k === "separate") { closeSheet(); newChat(); }
-            else if (k === "clear") { closeSheet(); void clearThread(); }
-            else if (k === "memory") void openMemory();
+            if (k === "clear") { closeSheet(); void clearThread(); }
           };
         });
       },
     });
-  }
-  /** Main's memory (.vault-chat/MEMORY.md), as the agent keeps it. */
-  async function openMemory() {
-    try {
-      const r = await api("/file?path=" + encodeURIComponent(".vault-chat/MEMORY.md"));
-      const text = r.ok ? await r.text() : "";
-      openSheet({ intent: "Main", title: "Memory", ico: "◎", back: openThreadsMenu, bodyHtml: text.trim() ? '<div class="md">' + md(text) + "</div>" : '<div class="md dim" style="padding:0 18px 10px">Nothing saved yet. The agent keeps what lasts here, one dated line per fact.</div>' });
-    } catch (e: any) { toast("Couldn't read the memory: " + (e.message || e)); }
   }
   /** Clear: this thread's view blank at once; the box saves what lasts, tells the agent and compacts behind it. */
   let blankTok: { conv: string; id: string } | null = null;
@@ -419,7 +409,8 @@ export function boot(): void {
       toast("Not cleared: " + (e.message || e));
     }
   }
-  $("titleBtn").onclick = () => { if (page === "chat") openProjectSheet(); else setPage("chat"); };
+  // The title opens the panel (Main and the projects); a thread is not moved between projects any more.
+  $("titleBtn").onclick = () => { if (page === "chat") openConvs(); else setPage("chat"); };
 
   async function loadConvs() {
     const box = $("clist");
@@ -465,7 +456,7 @@ export function boot(): void {
       // The left panel, as on the laptop (src/threads.ts): Main on its own, then "Projects" (each its one thread) and
       // + New project, then a separate chat while one exists. No list of older chats (their files stay on the box).
       await loadProjects();
-      const { entries, others } = panelModel(chats.map((c) => ({ ...c, running: runIds.has(c.id) || convRunning.has(c.id), unread: convUnseen.has(c.id) })), projects, convId);
+      const { entries } = panelModel(chats.map((c) => ({ ...c, running: runIds.has(c.id) || convRunning.has(c.id), unread: convUnseen.has(c.id) })), projects, convId);
       const sectionLabel = (t: string) => { const h = document.createElement("div"); h.className = "csec"; h.textContent = t; return h; };
       for (const e of entries) {
         if (e.type === "main") {
@@ -487,11 +478,6 @@ export function boot(): void {
         r.dataset.el = "thread-project";
         if (e.active) r.classList.add("on");
         box.appendChild(r);
-      }
-      const separate = others.filter((o) => o.kind === "separate");
-      if (separate.length) {
-        box.appendChild(sectionLabel("Separate chats"));
-        for (const c of separate) box.appendChild(convRow({ id: c.id, title: c.title || "Chat", lastActivityAt: c.lastActivityAt, preview: "" }, !!c.running));
       }
     } catch (e) {
       box.innerHTML = '<div class="empty">Couldn’t load: ' + esc(String(e.message || e)) + "</div>";

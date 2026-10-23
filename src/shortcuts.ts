@@ -41,7 +41,7 @@ export type Shortcut = {
 
 export const SHORTCUTS = [
   // ---- Chat & composer
-  { id: "chat.new", keys: ["Mod+T"], label: "New chat", group: "Chat & composer", where: "anywhere", files: ["src/App.tsx", "src/ChatWindow.tsx"] },
+  { id: "chat.new", keys: ["Mod+T"], label: "Go to Main", group: "Chat & composer", where: "anywhere", files: ["src/App.tsx", "src/ChatWindow.tsx"] },
   { id: "chat.send", keys: ["Enter"], label: "Send / steer", group: "Chat & composer", where: "the composer, Ctrl+K/L, a note, voice text", files: ["src/ChatPane.tsx", "src/InlineEditPrompt.tsx", "src/NotePopup.tsx", "src/VoiceTextPanel.tsx"] },
   { id: "chat.newline", keys: ["Shift+Enter"], label: "New line", group: "Chat & composer", where: "the composer", files: ["src/ChatPane.tsx"] },
   { id: "chat.queue", keys: ["Tab"], label: "Queue a follow-up", group: "Chat & composer", where: "the composer, while the agent works", files: ["src/ChatPane.tsx"] },

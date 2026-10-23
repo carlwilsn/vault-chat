@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { MessageSquare, Plus, X as XIcon, Folder, PanelLeftClose, FileText, MoreHorizontal, Brain, MessageSquarePlus, Home } from "lucide-react";
+import { MessageSquare, Plus, X as XIcon, Folder, PanelLeftClose, FileText, Home } from "lucide-react";
 import { useStore } from "./store";
 import { useProjects } from "./ProjectChip";
-import { createProjectThread, openMemory, openProjectNotes, openThread, projectName } from "./projects";
-import { panelModel, threadKindOf, type PanelEntry } from "./threads";
+import { createProjectThread, openProjectNotes, openThread, projectName } from "./projects";
+import { panelModel, type PanelEntry } from "./threads";
 import { cn } from "./lib/utils";
 
 type Props = {
@@ -96,9 +96,9 @@ export function ChatsSidebar({ onFocusComposer }: { onFocusComposer?: () => void
 
 /**
  * The left panel (src/threads.ts panelModel): Main on its own at the top, then the projects under a
- * small "Projects" label (each opens its one thread) and "+ New project"; a separate chat Carl started
- * is listed below them while one exists. No list of older chats (their files stay on disk; the agent
- * reads them with its tools). The menu: "New separate chat" and "Memory" (the agent's MEMORY.md).
+ * small "Projects" label (each opens its one thread) and "+ New project". Nothing else: no older chats
+ * (their files stay on disk; the agent reads them with its tools), no separate chats, no memory viewer
+ * (memory works behind the scenes; Carl: "if there is a failure, i will tell you to fix it").
  */
 function ThreadsList({
   onPicked,
@@ -114,7 +114,7 @@ function ThreadsList({
   const conversations = useStore((s) => s.conversations);
   const activeId = useStore((s) => s.activeConversationId);
   const projects = useProjects();
-  const { entries, others } = useMemo(
+  const { entries } = useMemo(
     () =>
       panelModel(
         conversations.map((c) => ({ id: c.id, title: c.title, kind: c.kind, lastActivityAt: c.lastActivityAt, running: c.status === "running", unread: c.unread })),
@@ -123,8 +123,6 @@ function ThreadsList({
       ),
     [conversations, projects, activeId],
   );
-  const separate = others.filter((o) => threadKindOf(o) === "separate");
-  const [menu, setMenu] = useState(false);
   const [naming, setNaming] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
@@ -159,28 +157,6 @@ function ThreadsList({
           <span className="text-[13px] font-semibold">Chats</span>
         </div>
         <div className="flex items-center gap-1 relative">
-          <button
-            onClick={() => setMenu((v) => !v)}
-            data-el="threads-menu"
-            className={cn("h-7 w-7 flex items-center justify-center rounded hover:bg-accent/60 text-muted-foreground hover:text-foreground", menu && "bg-accent/60 text-foreground")}
-            title="More"
-          >
-            <MoreHorizontal className="h-3.5 w-3.5" />
-          </button>
-          {menu && (
-            <Menu onClose={() => setMenu(false)}>
-              <MenuItem
-                el="new-separate-chat"
-                icon={<MessageSquarePlus className="h-3 w-3" />}
-                label="New separate chat"
-                onClick={() => {
-                  useStore.getState().newConversation();
-                  focusChat();
-                }}
-              />
-              <MenuItem el="open-memory" icon={<Brain className="h-3 w-3" />} label="Memory" onClick={() => void openMemory().then(() => onPicked?.())} />
-            </Menu>
-          )}
           {trailing}
         </div>
       </div>
@@ -188,7 +164,7 @@ function ThreadsList({
       <div className="flex-1 overflow-auto" data-el="threads">
         {/* Main: the one conversation, on its own. */}
         <div className="py-1.5">
-          <ThreadRow entry={main} name="Main" onSelect={() => open(main.id, main.title)} onNotes={() => void openMemory().then(() => onPicked?.())} />
+          <ThreadRow entry={main} name="Main" onSelect={() => open(main.id, main.title)} />
         </div>
         <div className="border-t border-border/60" />
         <div className={label} data-el="projects-label">
@@ -238,63 +214,13 @@ function ThreadsList({
           ),
         )}
         {err && <div className="px-4 py-1 text-[11px] text-destructive">{err}</div>}
-        {separate.length > 0 && (
-          <>
-            <div className={label}>Separate chats</div>
-            {separate.map((c) => (
-              <button
-                key={c.id}
-                data-el="separate-chat"
-                onClick={() => open(c.id)}
-                className={cn("w-full text-left px-4 py-1.5 text-[12.5px] truncate", c.id === activeId ? "bg-accent text-foreground" : "text-foreground/80 hover:bg-accent/40")}
-              >
-                {c.title || "New chat"}
-              </button>
-            ))}
-          </>
-        )}
       </div>
     </>
   );
 }
 
-function Menu({ children, onClose }: { children: React.ReactNode; onClose: () => void }) {
-  const ref = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    const onDown = (e: MouseEvent) => {
-      if (!ref.current?.contains(e.target as Node)) onClose();
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        e.stopPropagation();
-        onClose();
-      }
-    };
-    window.addEventListener("mousedown", onDown);
-    window.addEventListener("keydown", onKey, true);
-    return () => {
-      window.removeEventListener("mousedown", onDown);
-      window.removeEventListener("keydown", onKey, true);
-    };
-  }, [onClose]);
-  return (
-    <div ref={ref} data-el="threads-menu-list" className="absolute right-0 top-8 z-20 w-48 rounded-md border border-border bg-popover text-popover-foreground shadow-lg p-1" onClick={onClose}>
-      {children}
-    </div>
-  );
-}
-
-function MenuItem({ icon, label, onClick, el }: { icon: React.ReactNode; label: string; onClick: () => void; el: string }) {
-  return (
-    <button data-el={el} onClick={onClick} className="w-full text-left px-2.5 h-7 flex items-center gap-2 rounded text-[12px] hover:bg-accent/60">
-      <span className="text-muted-foreground">{icon}</span>
-      <span className="truncate flex-1">{label}</span>
-    </button>
-  );
-}
-
 /** Main (a home, a stronger name) or a project's thread (a folder): a dot while it works (pulsing) or when it finished unseen. */
-function ThreadRow({ entry, name, onSelect, onNotes }: { entry: Extract<PanelEntry, { type: "main" | "project" }>; name: string; onSelect: () => void; onNotes: () => void }) {
+function ThreadRow({ entry, name, onSelect, onNotes }: { entry: Extract<PanelEntry, { type: "main" | "project" }>; name: string; onSelect: () => void; onNotes?: () => void }) {
   const { active, running, unread } = entry;
   const isMain = entry.type === "main";
   return (
@@ -322,14 +248,16 @@ function ThreadRow({ entry, name, onSelect, onNotes }: { entry: Extract<PanelEnt
           <span className="h-1.5 w-1.5 rounded-full bg-primary shrink-0" title="Done — unseen" />
         ) : null}
       </button>
-      <button
-        onClick={onNotes}
-        data-el={isMain ? "main-memory" : "project-notes"}
-        className="opacity-0 group-hover:opacity-100 transition-opacity h-7 w-7 mr-2 flex items-center justify-center rounded text-muted-foreground hover:bg-accent/60 hover:text-foreground shrink-0"
-        title={isMain ? "Memory" : "Project notes"}
-      >
-        {isMain ? <Brain className="h-3 w-3" /> : <FileText className="h-3 w-3" />}
-      </button>
+      {onNotes && (
+        <button
+          onClick={onNotes}
+          data-el="project-notes"
+          className="opacity-0 group-hover:opacity-100 transition-opacity h-7 w-7 mr-2 flex items-center justify-center rounded text-muted-foreground hover:bg-accent/60 hover:text-foreground shrink-0"
+          title="Project notes"
+        >
+          <FileText className="h-3 w-3" />
+        </button>
+      )}
     </div>
   );
 }
