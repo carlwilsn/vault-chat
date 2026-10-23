@@ -769,7 +769,7 @@ async function pollLog(res: ServerResponse, url: URL, vault: string): Promise<vo
 }
 
 /** GET /api/v1/vault/file?path= → {path, size, mtimeMs, base64}: one file's
- * bytes, inside the vault only (realpath; never .git or a denied entry). */
+ * bytes, inside the vault only (realpath; never .git). */
 const VAULT_FILE_CAP = 25 * 1024 * 1024;
 function vaultFileRoute(res: ServerResponse, vault: string, p: string | null): void {
   if (!p || !p.trim()) return json(res, 400, { error: "missing path" });

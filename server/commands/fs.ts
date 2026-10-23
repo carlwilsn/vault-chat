@@ -19,7 +19,6 @@ import { prepareAgentProjects } from "../context/layout";
 
 const NOTES_DIR = ".vault-chat"; // lib.rs:122
 const IGNORE_FILE = ".vaultchatignore"; // lib.rs:114
-const DENY_FILE = ".vaultchatdeny"; // lib.rs:121
 
 /** lib.rs:6478 path_touches_dot_git / 6483 git_guard. */
 export function gitGuard(path: string): void {
@@ -66,25 +65,6 @@ function readListLines(vault: string, file: string): string[] {
   return out;
 }
 
-/** lib.rs:237 load_humanized_set. */
-function readHumanized(vault: string): string[] {
-  let v: unknown;
-  try {
-    v = JSON.parse(readFileSync(join(vault, NOTES_DIR, "humanized.json"), "utf8"));
-  } catch {
-    return [];
-  }
-  if (!Array.isArray(v)) return [];
-  const set = new Set<string>();
-  for (const item of v) {
-    const rel = typeof item === "string" ? item : item && typeof item === "object" ? (item as any).path : null;
-    if (typeof rel !== "string") continue;
-    const n = rel.replace(/^\/+/, "").replace(/\/+$/, "").replace(/\\/g, "/");
-    if (n) set.add(n);
-  }
-  return [...set].sort();
-}
-
 /** lib.rs:290 is_listed_path — the path or any ancestor is listed. */
 function isListed(rel: string, set: Set<string>): boolean {
   if (set.has(rel)) return true;
@@ -103,8 +83,6 @@ type FileEntry = {
   is_dir: boolean;
   depth: number;
   hidden: boolean;
-  denied: boolean;
-  humanized: boolean;
 };
 
 /** lib.rs rotate_log_file: past `cap` bytes the log becomes its `.1` sibling (the older one dropped). */
@@ -295,7 +273,7 @@ export const fsCommands: Record<string, CommandFn> = {
           /* dangling */
         }
       }
-      out.push({ path: full, name: e.name, is_dir: isDir, depth: 0, hidden: false, denied: false, humanized: false });
+      out.push({ path: full, name: e.name, is_dir: isDir, depth: 0, hidden: false });
     }
     out.sort((a, b) => Number(b.is_dir) - Number(a.is_dir) || cmpLower(a.name, b.name));
     return out;
@@ -313,8 +291,6 @@ export const fsCommands: Record<string, CommandFn> = {
     }
     if (!st.isDirectory()) throw `Not a directory: ${vault}`;
     const ignored = new Set(readListLines(vault, IGNORE_FILE));
-    const denied = new Set(readListLines(vault, DENY_FILE));
-    const humanized = new Set(readHumanized(vault));
     const out: FileEntry[] = [];
     const walk = (dir: string, depth: number) => {
       let ents: Dirent[];
@@ -339,8 +315,6 @@ export const fsCommands: Record<string, CommandFn> = {
           is_dir: isDir,
           depth,
           hidden: isListed(rel, ignored),
-          denied: isListed(rel, denied),
-          humanized: humanized.has(rel),
         });
         if (isDir) walk(full, depth + 1);
       }
@@ -351,10 +325,6 @@ export const fsCommands: Record<string, CommandFn> = {
 
   // lib.rs prepare_agent_projects (agent_projects.rs): projects out of .vault-chat/, agent-projects/ hidden once
   prepare_agent_projects: ({ vault }) => prepareAgentProjects(vault),
-  // lib.rs:668
-  read_deny_lines: ({ vault }) => readListLines(vault, DENY_FILE),
-  // lib.rs:732
-  read_humanized: ({ vault }) => readHumanized(vault),
 
   // lib.rs:1617
   append_debug_log: ({ vaultPath, text }) => {

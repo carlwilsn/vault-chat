@@ -1,11 +1,11 @@
 // Commands lib.rs has that server/commands/ (the node port) doesn't: the
-// desktop-only file ops, the ignore/deny/humanized lists, captures, and the
+// desktop-only file ops, the ignore list, captures, and the
 // inert host commands (window/voice/phone/terminal) that only need a sane reply.
 import * as fs from "../shims/memfs";
 import { report } from "../overlay";
 
 const NOTES_DIR = ".vault-chat";
-const LISTS: Record<string, string> = { ignore: ".vaultchatignore", deny: ".vaultchatdeny" };
+const IGNORE_FILE = ".vaultchatignore";
 
 function readList(vault: string, file: string): string[] {
   const t = fs.readText(`${vault}/${file}`);
@@ -18,20 +18,8 @@ function readList(vault: string, file: string): string[] {
 function writeList(vault: string, file: string, lines: string[]): void {
   fs.seedText(`${vault}/${file}`, lines.length ? lines.join("\n") + "\n" : "");
 }
-function humanized(vault: string): string[] {
-  try {
-    const v = JSON.parse(fs.readText(`${vault}/${NOTES_DIR}/humanized.json`) ?? "[]");
-    return Array.isArray(v) ? v : Array.isArray(v?.paths) ? v.paths : [];
-  } catch {
-    return [];
-  }
-}
-function writeHumanized(vault: string, list: string[]): void {
-  fs.seedText(`${vault}/${NOTES_DIR}/humanized.json`, JSON.stringify(list, null, 2) + "\n");
-}
-
-function listCommands(kind: "ignore" | "deny") {
-  const file = LISTS[kind];
+function listCommands(kind: "ignore") {
+  const file = IGNORE_FILE;
   return {
     [`read_${kind}_lines`]: ({ vault }: any) => readList(vault, file),
     [`add_to_${kind}`]: ({ vault, relativePath }: any) => {
@@ -59,21 +47,6 @@ function listCommands(kind: "ignore" | "deny") {
 let uniq = 0;
 export const miscCommands: Record<string, (a: Record<string, any>) => unknown> = {
   ...listCommands("ignore"),
-  ...listCommands("deny"),
-  add_to_humanized: ({ vault, relativePath }) => {
-    const l = humanized(vault);
-    if (!l.includes(relativePath)) writeHumanized(vault, [...l, relativePath]);
-    return null;
-  },
-  rename_in_humanized: ({ vault, oldRelative, newRelative }) => {
-    writeHumanized(vault, humanized(vault).map((l) => (l === oldRelative ? newRelative : l)));
-    return null;
-  },
-  remove_prefix_from_humanized: ({ vault, relativePrefixes }) => {
-    const ps: string[] = relativePrefixes ?? [];
-    writeHumanized(vault, humanized(vault).filter((l) => !ps.some((p) => l === p || l.startsWith(p + "/"))));
-    return null;
-  },
   create_dir: ({ path }) => {
     fs.mkdirSync(path, { recursive: true });
     return null;

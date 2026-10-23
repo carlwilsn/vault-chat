@@ -30,7 +30,6 @@
 // in order, and only one voice speaks. A client without a session id (an older build) is not refused.
 import { mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { fsCommands } from "./commands/fs";
 import { runGit } from "./git";
 import { createConv, logOf, newMessageId, pictureOf, writeNotes, type NoteData } from "./engine/convs";
 import { appendActivity, projectContextFor, youLayer } from "./activity";
@@ -87,15 +86,6 @@ function relIn(root: string, abs: string): string | null {
   return r.split(sep).join("/");
 }
 
-function listLines(cmd: "read_deny_lines" | "read_humanized", vault: string): string[] {
-  try {
-    const v = (fsCommands[cmd] as any)({ vault });
-    return Array.isArray(v) ? v.map((x: unknown) => s(x).replace(/\\/g, "/").replace(/^\/+|\/+$/g, "")).filter(Boolean) : [];
-  } catch {
-    return [];
-  }
-}
-
 const under = (rel: string, entry: string) => rel === entry || rel.startsWith(entry + "/");
 
 /** Resolve a path (vault-relative or absolute) to an absolute path inside the vault, or throw the refusal. */
@@ -110,8 +100,6 @@ export function voicePath(vault: string, p: unknown, mode: "read" | "write"): { 
   if (mode === "write" && (under(rel, ".vault-chat/conversations") || under(rel, ".vault-chat/local"))) {
     throw `Refused: ${rel} belongs to the server (conversations and local state are not written by tools).`;
   }
-  for (const d of listLines("read_deny_lines", vault)) if (under(rel, d)) throw `Refused: ${rel} is restricted from the agent.`;
-  if (mode === "write") for (const h of listLines("read_humanized", vault)) if (rel === h) throw `Refused: ${rel} is a humanized file; the agent does not write it.`;
   return { abs, rel };
 }
 
@@ -666,16 +654,15 @@ export function threadImages(vault: string, convId: string | null, max = 3): { i
   return { images: out, empty };
 }
 
-/** The vault's files for the laptop's ShowFile / ScrollTo, the cheap way: git's index (capped), minus .vault-chat and denied entries. */
+/** The vault's files for the laptop's ShowFile / ScrollTo, the cheap way: git's index (capped), minus .vault-chat. */
 export async function fileIndex(vault: string, cap = 2000): Promise<string[]> {
   try {
     const r = await runGit(vault, ["ls-files", "--cached", "--others", "--exclude-standard"]);
     if (r.code !== 0) return [];
-    const deny = listLines("read_deny_lines", vault);
     return r.stdout
       .split("\n")
       .map((l) => l.trim())
-      .filter((l) => l && !l.startsWith(".vault-chat/") && !deny.some((x) => under(l, x)))
+      .filter((l) => l && !l.startsWith(".vault-chat/"))
       .slice(0, cap);
   } catch {
     return [];

@@ -17,7 +17,7 @@ const posix = (p) => p.replace(/\\/g, "/");
 const TEXT_EXT = new Set([
   "", ".md", ".markdown", ".txt", ".json", ".jsonl", ".html", ".htm", ".css", ".js", ".mjs", ".ts", ".tsx", ".py", ".ipynb",
   ".tex", ".bib", ".csv", ".tsv", ".yaml", ".yml", ".toml", ".sh", ".ps1", ".rs", ".go", ".c", ".h", ".cpp", ".java", ".svg",
-  ".xml", ".ini", ".cfg", ".gitignore", ".vaultchatignore", ".vaultchatdeny", ".log", ".r", ".jl", ".sql", ".lua", ".rb",
+  ".xml", ".ini", ".cfg", ".gitignore", ".vaultchatignore", ".log", ".r", ".jl", ".sql", ".lua", ".rb",
 ]);
 const LAZY_TEXT_OVER = 2 * 1024 * 1024;
 

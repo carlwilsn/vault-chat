@@ -272,12 +272,6 @@ export function LiveEditor({
 
   const [inlineEdit, setInlineEdit] = useState<InlineEditContext | null>(null);
 
-  const isHumanized = useStore((s) =>
-    file ? s.files.some((e) => e.path === file && e.humanized) : false,
-  );
-  const isHumanizedRef = useRef(isHumanized);
-  isHumanizedRef.current = isHumanized;
-
   // Refs so the once-built paste handler (extensions useMemo has empty
   // deps) always sees the current file/vault without rebuilding the view.
   const vaultPath = useStore((s) => s.vaultPath);
@@ -294,8 +288,6 @@ export function LiveEditor({
           key: cmKey("edit.inline"),
           preventDefault: true,
           run: (view) => {
-            // Humanized files suppress Ctrl+K entirely.
-            if (isHumanizedRef.current) return true;
             setInlineEdit(buildInlineEditContext(view, "md", "edit"));
             return true;
           },
@@ -460,7 +452,6 @@ export function LiveEditor({
         <InlineEditPrompt
           request={inlineEdit}
           initialMode={inlineEdit.mode}
-          askOnly={isHumanized}
           onAccept={acceptInlineEdit}
           onCancel={cancelInlineEdit}
         />

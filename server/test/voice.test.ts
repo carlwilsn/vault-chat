@@ -18,7 +18,6 @@ const root = tmp("vcv-");
 const vault = join(root, "vault");
 mkdirSync(join(vault, ".vault-chat", "conversations"), { recursive: true });
 mkdirSync(join(vault, "notes"), { recursive: true });
-mkdirSync(join(vault, "private"), { recursive: true });
 // A vault tool that needs one key (and must not see another).
 mkdirSync(join(vault, ".vault-chat", "tools", "echo"), { recursive: true });
 writeFileSync(
@@ -34,8 +33,6 @@ mkdirSync(join(vault2, "lab"), { recursive: true });
 writeFileSync(join(vault2, "lab", "plan.md"), "# Plan\nsecond vault\n");
 git(vault2, "init", "-q");
 writeFileSync(join(vault, "notes", "a.md"), "# A\nthe quick fox\n");
-writeFileSync(join(vault, "private", "s.md"), "secret quick\n");
-writeFileSync(join(vault, ".vaultchatdeny"), "private\n");
 process.env.VC_VAULT = vault;
 process.env.VC_STATE_DIR = join(root, "state");
 process.env.VC_LOCALSTORAGE = join(root, "ls.json");
@@ -660,7 +657,6 @@ describe("GET /api/v1/voice/session (ElevenLabs faked)", () => {
       expect(board).not.toContain("ShowFile");
       const laptop = await voice.voiceSession(null, deps, { device: "laptop" });
       expect(String(laptop.body.systemPrompt)).toContain("notes/a.md");
-      expect(String(laptop.body.systemPrompt)).not.toContain("private/s.md");
       expect(String(laptop.body.systemPrompt)).toContain("{{viewport_context}}");
       expect(laptop.body.vaultRoot).toBe(vault);
       for (const p of [phone, board, String(laptop.body.systemPrompt)]) {

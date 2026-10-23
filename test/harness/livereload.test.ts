@@ -22,8 +22,6 @@ fake.setHandler("list_markdown_files", () => []);
 fake.setHandler("read_binary_file", ({ path: p }) => [...fs.readFileSync(p)]);
 fake.setHandler("append_sync_log", () => null);
 fake.setHandler("machine_host", () => "laptop");
-fake.setHandler("read_humanized", () => []);
-fake.setHandler("read_deny_lines", () => []);
 fake.setHandler("edit_text_file", ({ path: p, oldString, newString }) => {
   const t = fs.readFileSync(p, "utf8");
   fs.writeFileSync(p, t.replace(oldString, newString));

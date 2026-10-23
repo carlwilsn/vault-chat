@@ -35,12 +35,6 @@ export type FileEntry = {
   is_dir: boolean;
   depth: number;
   hidden: boolean;
-  // True when this path (or an ancestor) is in `.vaultchatdeny`. The
-  // file tree shows a lock badge; agent file-touching tools refuse it.
-  denied: boolean;
-  // True when this exact path is in <vault>/.vault-chat/humanized.json.
-  // Agent write tools refuse it; the user can still edit by hand.
-  humanized: boolean;
   // Set only for directories that ARE a git repo root (contain `.git`).
   // Branch name, e.g. "main", or "detached". Used only to detect "is a repo";
   // the file tree no longer renders the branch name.

@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef } from "react";
+import { createPortal, flushSync } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { FileText, ChevronRight, ChevronDown, FilePlus, FolderPlus, Pencil, Trash2, EyeOff, FolderOpen, Plus, Upload, Lock, Unlock, Hand, AlertTriangle } from "lucide-react";
+import { FileText, ChevronRight, ChevronDown, FilePlus, FolderPlus, Pencil, Trash2, EyeOff, FolderOpen, Plus, Upload, AlertTriangle, Folder } from "lucide-react";
 import { useStore, type FileEntry } from "./store";
 import { VAULT_PATH_MIME, VAULT_PATHS_MIME, isExternalFileDrop, copyExternalFilesInto } from "./dnd";
 import { cn } from "./lib/utils";
@@ -11,6 +12,16 @@ import { commitFsAction } from "./commit-controller";
 
 type PendingKind = "file" | "folder";
 type Menu = { x: number; y: number; entry: FileEntry | null } | null;
+
+// Drag and drop (see the note in FileTree): how far the pointer must travel,
+// or how long a row must be held, before a drag can drop anywhere; how long a
+// closed folder must be hovered before it opens; and where the pointer holds
+// the drag chip.
+const DRAG_THRESHOLD = 7;
+const HOLD_MS = 300;
+const AUTO_EXPAND_MS = 600;
+const GHOST_GRAB = { x: 6, y: 6 };
+type DragGhostInfo = { name: string; isDir: boolean; count: number };
 
 export function FileTree() {
   const {
@@ -34,7 +45,6 @@ export function FileTree() {
   const [menu, setMenu] = useState<Menu>(null);
   const [confirmDelete, setConfirmDelete] = useState<FileEntry | null>(null);
   const [confirmDeleteMulti, setConfirmDeleteMulti] = useState<string[] | null>(null);
-  const [confirmHumanize, setConfirmHumanize] = useState<FileEntry | null>(null);
   const [selectedDir, setSelectedDir] = useState<string | null>(null);
   // Multi-select (Shift+Click). Holds absolute paths. `anchor` is the
   // last plain-click, used as the range start for shift-extend.
@@ -48,24 +58,26 @@ export function FileTree() {
   const lastVaultRef = useRef<string | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const renameRef = useRef<HTMLInputElement | null>(null);
-  // Drag threshold. Rows stay statically `draggable` — WebKitGTK (the Linux
-  // webview) only honors the draggable flag as it stood at mousedown and
-  // ignores a later flip, so the old "arm draggable after movement" trick
-  // killed drag-and-drop entirely on Linux. So instead we record the press
-  // origin on mousedown and watch real pointer travel via a window mousemove
-  // listener, flipping `moved` once it passes DRAG_THRESHOLD px. onDragStart
-  // then cancels the drag only when the pointer never actually moved.
-  //
-  // We deliberately do NOT recompute the distance from the dragstart event's
-  // own clientX/clientY: Chromium (Windows WebView2) reports those at the
-  // mousedown origin rather than the moved position, so that check read as
-  // "didn't move" and silently cancelled every drag on Windows. Tracking the
-  // pre-dragstart mousemoves works the same on both webviews. Threshold is
-  // kept under the OS-native drag threshold (~4px) so a deliberate drag's
-  // movement always registers before dragstart fires, while a 1-2px
-  // click-twitch is still rejected.
-  const pressRef = useRef<{ x: number; y: number; el: HTMLElement; moved: boolean } | null>(null);
-  const DRAG_THRESHOLD = 3;
+  // Drag and drop. Rows stay statically `draggable` (WebKitGTK only honours
+  // the flag as it stood at mousedown), so the webview starts a native drag
+  // at its own ~4 px threshold. That is too twitchy: a click that slips a few
+  // pixels used to drop the file into the next folder. So a drag only counts
+  // once it is *armed*: the pointer has travelled DRAG_THRESHOLD px from the
+  // press (measured on dragover, whose coordinates are right on WebView2 and
+  // WebKitGTK alike), or the row was held HOLD_MS before it moved. Until then
+  // nothing highlights and a drop does nothing; a release that never armed is
+  // the click it was meant to be. Escape cancels (the webview ends the drag
+  // with dropEffect "none") and folders the hover opened close again.
+  const pressRef = useRef<{ x: number; y: number; at: number } | null>(null);
+  const dragRef = useRef<{
+    x: number;
+    y: number;
+    armed: boolean;
+    sources: string[];
+    autoOpened: Set<string>;
+  } | null>(null);
+  const ghostRef = useRef<HTMLDivElement | null>(null);
+  const [ghost, setGhost] = useState<DragGhostInfo | null>(null);
 
   useEffect(() => {
     if (vaultPath && vaultPath !== lastVaultRef.current) {
@@ -87,29 +99,6 @@ export function FileTree() {
     }
   }, [renaming?.path]);
 
-  // Watch pointer travel while a row is pressed: flip `moved` once it crosses
-  // the threshold (these mousemoves fire before the webview's dragstart on
-  // both Chromium and WebKitGTK). Clear the recorded press on mouseup so a
-  // click that never became a drag doesn't leave a stale press origin behind.
-  useEffect(() => {
-    const onMove = (e: MouseEvent) => {
-      const p = pressRef.current;
-      if (!p || p.moved) return;
-      if (Math.hypot(e.clientX - p.x, e.clientY - p.y) >= DRAG_THRESHOLD) {
-        p.moved = true;
-      }
-    };
-    const onUp = () => {
-      pressRef.current = null;
-    };
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
-    return () => {
-      window.removeEventListener("mousemove", onMove);
-      window.removeEventListener("mouseup", onUp);
-    };
-  }, []);
-
   useEffect(() => {
     if (!menu) return;
     const close = () => setMenu(null);
@@ -127,17 +116,28 @@ export function FileTree() {
   }, [addMenuOpen]);
 
   useEffect(() => {
-    if (!confirmDelete && !confirmDeleteMulti && !confirmHumanize) return;
+    if (!confirmDelete && !confirmDeleteMulti) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         setConfirmDelete(null);
         setConfirmDeleteMulti(null);
-        setConfirmHumanize(null);
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [confirmDelete, confirmDeleteMulti, confirmHumanize]);
+  }, [confirmDelete, confirmDeleteMulti]);
+
+  // Hovering a closed folder during a drag opens it after a beat, like
+  // Finder's spring-loaded folders. A cancelled drag closes them again.
+  useEffect(() => {
+    if (!dropTarget || expanded.has(dropTarget)) return;
+    const d = dragRef.current;
+    const t = window.setTimeout(() => {
+      d?.autoOpened.add(dropTarget);
+      setExpanded((prev) => new Set(prev).add(dropTarget));
+    }, AUTO_EXPAND_MS);
+    return () => window.clearTimeout(t);
+  }, [dropTarget, expanded]);
 
   const openFile = async (f: FileEntry) => {
     if (f.is_dir) return;
@@ -250,15 +250,6 @@ export function FileTree() {
           } catch (e) {
             console.error("[move] update ignore failed:", e);
           }
-          try {
-            await invoke("rename_in_humanized", {
-              vault: vaultPath,
-              oldRelative: oldRel,
-              newRelative: newRel,
-            });
-          } catch (e) {
-            console.error("[move] update humanized failed:", e);
-          }
         }
       }
       if (succeeded.length > 0) {
@@ -328,6 +319,74 @@ export function FileTree() {
 
   const isInternalDrag = (dt: DataTransfer | null): boolean =>
     !!dt && dt.types.includes(VAULT_PATH_MIME);
+
+  // The folder a drop on this row lands in: the folder itself, or a file's
+  // own folder (like VS Code), so hovering a sibling file never means "the
+  // vault root".
+  const dirOf = (f: FileEntry): string =>
+    f.is_dir ? f.path : f.path.slice(0, f.path.lastIndexOf("/")) || vaultPath || "";
+
+  // Arm the drag once the pointer is far enough from the press. A drag that
+  // came from outside this tree (OS files, a pane header) is always armed.
+  const armed = (e: React.DragEvent): boolean => {
+    const d = dragRef.current;
+    if (!d) return true;
+    if (!d.armed && Math.hypot(e.clientX - d.x, e.clientY - d.y) >= DRAG_THRESHOLD) d.armed = true;
+    return d.armed;
+  };
+
+  // Shared by every drop zone (rows, and the empty area = the vault root).
+  const onZoneOver = (e: React.DragEvent<HTMLElement>, dir: string) => {
+    if (!vaultPath) return;
+    const internal = isInternalDrag(e.dataTransfer);
+    if (!internal && !isExternalFileDrop(e.dataTransfer)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    e.dataTransfer.dropEffect = internal ? "move" : "copy";
+    if (!armed(e)) return;
+    const sources = internal ? dragRef.current?.sources ?? [] : [];
+    // Into itself or a descendant: refused. Already there: nothing to show.
+    if (sources.some((p) => p === dir || dir.startsWith(p + "/"))) {
+      e.dataTransfer.dropEffect = "none";
+      setDropTarget(undefined);
+      return;
+    }
+    const noop = sources.length > 0 && sources.every((p) => p.slice(0, p.lastIndexOf("/")) === dir);
+    setDropTarget(noop ? undefined : dir === vaultPath ? null : dir);
+  };
+
+  const onZoneDrop = (e: React.DragEvent<HTMLElement>, dir: string) => {
+    if (!vaultPath) return;
+    if (isInternalDrag(e.dataTransfer)) {
+      if (!armed(e)) {
+        e.preventDefault();
+        e.stopPropagation();
+        setDropTarget(undefined);
+        return;
+      }
+      handleInternalMove(e, readDropSources(e.dataTransfer), dir);
+    } else if (isExternalFileDrop(e.dataTransfer)) {
+      handleExternalDrop(e, dir);
+    }
+  };
+
+  const onRowClick = (f: FileEntry, shift: boolean) => {
+    if (shift) {
+      toggleSelection(f.path);
+      return;
+    }
+    // Plain click — reset multi-selection to just this
+    // row (acts as the anchor for a subsequent shift).
+    setSelected(new Set([f.path]));
+    setAnchor(f.path);
+    if (f.is_dir) {
+      setSelectedDir((prev) => (prev === f.path ? null : f.path));
+      toggleFolder(f.path);
+    } else {
+      setSelectedDir(null);
+      openFile(f);
+    }
+  };
 
   // Shift+Click toggles the clicked row in/out of the selection — one
   // at a time, not a range. Includes the previous anchor so the user's
@@ -500,15 +559,6 @@ export function FileTree() {
         } catch (e) {
           console.error("[rename] update ignore failed:", e);
         }
-        try {
-          await invoke("rename_in_humanized", {
-            vault: vaultPath,
-            oldRelative: oldRel,
-            newRelative: newRel,
-          });
-        } catch (e) {
-          console.error("[rename] update humanized failed:", e);
-        }
       }
       // Rewrite panes, currentFile, and note anchors that pointed at
       // the renamed path or any descendant. Re-read currentFile from
@@ -580,22 +630,6 @@ export function FileTree() {
           } catch (e) {
             console.error("[delete] prune ignore failed:", e);
           }
-          try {
-            await invoke("remove_prefix_from_deny", {
-              vault: vaultPath,
-              relativePrefixes: rels,
-            });
-          } catch (e) {
-            console.error("[delete] prune deny failed:", e);
-          }
-          try {
-            await invoke("remove_prefix_from_humanized", {
-              vault: vaultPath,
-              relativePrefixes: rels,
-            });
-          } catch (e) {
-            console.error("[delete] prune humanized failed:", e);
-          }
         }
       }
       await applyDeleteCascade(deletedOk);
@@ -635,49 +669,6 @@ export function FileTree() {
     }
   };
 
-  // Add the entry to .vaultchatdeny so the agent's file-touching tools
-  // refuse it. The lock badge in the tree updates after refreshFiles
-  // returns the new `denied` flag from Rust.
-  const restrictEntry = async (f: FileEntry) => {
-    if (!vaultPath || !f.path.startsWith(vaultPath + "/")) return;
-    const rel = f.path.slice(vaultPath.length + 1);
-    try {
-      await invoke("add_to_deny", { vault: vaultPath, relativePath: rel });
-      await refreshFiles();
-    } catch (e) {
-      console.error("[restrict]", e);
-    }
-  };
-
-  // Add the entry to <vault>/.vault-chat/humanized.json. Agent write
-  // tools refuse it from this point on; there's no UI to revoke (spec:
-  // hand-edit the file to unlock).
-  const humanizeEntry = async (f: FileEntry) => {
-    if (!vaultPath || !f.path.startsWith(vaultPath + "/")) return;
-    if (f.is_dir) return;
-    const rel = f.path.slice(vaultPath.length + 1);
-    try {
-      await invoke("add_to_humanized", { vault: vaultPath, relativePath: rel });
-      await refreshFiles();
-    } catch (e) {
-      console.error("[humanize]", e);
-    }
-  };
-
-  // Remove the entry from .vaultchatdeny. No-op if the deny was via an
-  // ancestor — the user has to right-click the ancestor to revoke that
-  // case, since the lock at this row is inherited.
-  const unrestrictEntry = async (f: FileEntry) => {
-    if (!vaultPath || !f.path.startsWith(vaultPath + "/")) return;
-    const rel = f.path.slice(vaultPath.length + 1);
-    try {
-      await invoke("remove_from_deny", { vault: vaultPath, relativePaths: [rel] });
-      await refreshFiles();
-    } catch (e) {
-      console.error("[unrestrict]", e);
-    }
-  };
-
   const doDelete = async (f: FileEntry) => {
     try {
       await invoke("delete_file", { path: f.path });
@@ -690,22 +681,6 @@ export function FileTree() {
           });
         } catch (e) {
           console.error("[delete] prune ignore failed:", e);
-        }
-        try {
-          await invoke("remove_prefix_from_deny", {
-            vault: vaultPath,
-            relativePrefixes: [rel],
-          });
-        } catch (e) {
-          console.error("[delete] prune deny failed:", e);
-        }
-        try {
-          await invoke("remove_prefix_from_humanized", {
-            vault: vaultPath,
-            relativePrefixes: [rel],
-          });
-        } catch (e) {
-          console.error("[delete] prune humanized failed:", e);
         }
       }
       await applyDeleteCascade([f.path]);
@@ -787,41 +762,22 @@ export function FileTree() {
         </div>
       )}
       <div
-        className="flex-1 overflow-auto py-1"
+        className={cn(
+          "flex-1 overflow-auto py-1",
+          dropTarget === null && "bg-primary/[0.06] shadow-[inset_0_0_0_1px_hsl(var(--primary)/0.45)]",
+        )}
         onContextMenu={(e) => {
           if (!vaultPath) return;
           e.preventDefault();
           setMenu({ x: e.clientX, y: e.clientY, entry: null });
         }}
-        onDragEnter={(e) => {
-          if (!vaultPath) return;
-          const internal = isInternalDrag(e.dataTransfer);
-          const external = isExternalFileDrop(e.dataTransfer);
-          if (!internal && !external) return;
-          e.preventDefault();
-          if (dropTarget === undefined) setDropTarget(null);
-        }}
-        onDragOver={(e) => {
-          if (!vaultPath) return;
-          const internal = isInternalDrag(e.dataTransfer);
-          const external = isExternalFileDrop(e.dataTransfer);
-          if (!internal && !external) return;
-          e.preventDefault();
-          e.dataTransfer.dropEffect = internal ? "move" : "copy";
-        }}
+        onDragOver={(e) => vaultPath && onZoneOver(e, vaultPath)}
         onDragLeave={(e) => {
           if (!vaultPath) return;
           if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
           setDropTarget(undefined);
         }}
-        onDrop={(e) => {
-          if (!vaultPath) return;
-          if (isInternalDrag(e.dataTransfer)) {
-            handleInternalMove(e, readDropSources(e.dataTransfer), vaultPath);
-          } else if (isExternalFileDrop(e.dataTransfer)) {
-            handleExternalDrop(e, vaultPath);
-          }
-        }}
+        onDrop={(e) => vaultPath && onZoneDrop(e, vaultPath)}
       >
         {!vaultPath && (
           <div className="px-4 py-8 text-center text-[12px] text-muted-foreground">
@@ -876,7 +832,7 @@ export function FileTree() {
                     isActive && "bg-accent text-accent-foreground",
                     isSelectedDir && "bg-accent/40",
                     isMultiSelected && "bg-primary/15 text-foreground",
-                    f.is_dir && dropTarget === f.path && "ring-2 ring-primary/60 bg-primary/10",
+                    f.is_dir && dropTarget === f.path && "bg-primary/15 text-foreground ring-1 ring-inset ring-primary/70",
                   )}
                   style={{ paddingLeft: 8 + f.depth * 12 }}
                   draggable
@@ -885,35 +841,24 @@ export function FileTree() {
                       e.stopPropagation();
                       return;
                     }
-                    if (e.button !== 0) return;
-                    // Record the press origin; the window mousemove listener
-                    // flips `moved` once travel passes the threshold, and
-                    // onDragStart reads that flag (see DRAG_THRESHOLD note).
-                    pressRef.current = { x: e.clientX, y: e.clientY, el: e.currentTarget, moved: false };
-                  }}
-                  onDragEnd={() => {
-                    pressRef.current = null;
+                    if (e.button === 0) pressRef.current = { x: e.clientX, y: e.clientY, at: performance.now() };
                   }}
                   onDragStart={(e) => {
-                    // Cancel a drag that a tiny click-twitch would otherwise
-                    // start: only proceed if the pointer actually travelled
-                    // past the threshold (tracked by the window mousemove
-                    // listener). We do NOT recompute from this event's own
-                    // clientX/clientY — Chromium/WebView2 reports those at the
-                    // mousedown origin, which read as "no movement" and killed
-                    // every drag on Windows.
-                    const p = pressRef.current;
-                    if (p && p.el === e.currentTarget && !p.moved) {
-                      e.preventDefault();
-                      return;
-                    }
-                    pressRef.current = null;
                     // If the dragged row is part of a multi-selection,
                     // ship the whole set; otherwise just this row.
                     const group =
                       selected.has(f.path) && selected.size > 1
                         ? Array.from(selected)
                         : [f.path];
+                    const p = pressRef.current;
+                    pressRef.current = null;
+                    dragRef.current = {
+                      x: p?.x ?? e.clientX,
+                      y: p?.y ?? e.clientY,
+                      armed: !!p && performance.now() - p.at >= HOLD_MS,
+                      sources: group,
+                      autoOpened: new Set(),
+                    };
                     e.dataTransfer.setData(VAULT_PATH_MIME, f.path);
                     // Intentionally NOT setting text/plain. Nothing in
                     // this app consumes it, and Monaco / CodeMirror
@@ -929,66 +874,33 @@ export function FileTree() {
                     // copyMove — ChatPane treats it as copy (attach),
                     // folder targets treat it as move.
                     e.dataTransfer.effectAllowed = "copyMove";
+                    // The drag image: a solid chip (icon, name, count),
+                    // rendered now so the webview can snapshot it.
+                    flushSync(() => setGhost({ name: f.name, isDir: f.is_dir, count: group.length }));
+                    if (ghostRef.current) e.dataTransfer.setDragImage(ghostRef.current, GHOST_GRAB.x, GHOST_GRAB.y);
                   }}
-                  onDragEnter={(e) => {
-                    if (!f.is_dir) return;
-                    const internal = isInternalDrag(e.dataTransfer);
-                    const external = isExternalFileDrop(e.dataTransfer);
-                    if (!internal && !external) return;
-                    // Can't drop into self or a descendant. For multi-
-                    // drags, reject the whole gesture if ANY source
-                    // would be invalid — otherwise the visual lights up
-                    // for moves that won't happen on drop.
-                    if (internal) {
-                      const sources = readDropSources(e.dataTransfer);
-                      const blocked = sources.some(
-                        (s) => s === f.path || f.path.startsWith(s + "/"),
-                      );
-                      if (blocked) return;
+                  onDragEnd={(e) => {
+                    const d = dragRef.current;
+                    dragRef.current = null;
+                    setDropTarget(undefined);
+                    setGhost(null);
+                    if (!d) return;
+                    const cancelled = e.dataTransfer.dropEffect === "none";
+                    if (cancelled && d.autoOpened.size > 0) {
+                      setExpanded((prev) => {
+                        const next = new Set(prev);
+                        for (const p of d.autoOpened) next.delete(p);
+                        return next;
+                      });
                     }
-                    e.preventDefault();
-                    e.stopPropagation();
-                    setDropTarget(f.path);
+                    // Released before it armed, inside the tree: a click.
+                    if (!d.armed && !cancelled) onRowClick(f, e.shiftKey);
                   }}
-                  onDragOver={(e) => {
-                    if (!f.is_dir) return;
-                    const internal = isInternalDrag(e.dataTransfer);
-                    const external = isExternalFileDrop(e.dataTransfer);
-                    if (!internal && !external) return;
-                    e.preventDefault();
-                    e.stopPropagation();
-                    e.dataTransfer.dropEffect = internal ? "move" : "copy";
-                  }}
-                  onDragLeave={(e) => {
-                    if (!f.is_dir) return;
-                    if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
-                    if (dropTarget === f.path) setDropTarget(null);
-                  }}
-                  onDrop={(e) => {
-                    if (!f.is_dir) return;
-                    if (isInternalDrag(e.dataTransfer)) {
-                      handleInternalMove(e, readDropSources(e.dataTransfer), f.path);
-                    } else if (isExternalFileDrop(e.dataTransfer)) {
-                      handleExternalDrop(e, f.path);
-                    }
-                  }}
+                  onDragOver={(e) => onZoneOver(e, dirOf(f))}
+                  onDrop={(e) => onZoneDrop(e, dirOf(f))}
                   onClick={(ev) => {
-                    if (ev.shiftKey) {
-                      ev.preventDefault();
-                      toggleSelection(f.path);
-                      return;
-                    }
-                    // Plain click — reset multi-selection to just this
-                    // row (acts as the anchor for a subsequent shift).
-                    setSelected(new Set([f.path]));
-                    setAnchor(f.path);
-                    if (f.is_dir) {
-                      setSelectedDir((prev) => (prev === f.path ? null : f.path));
-                      toggleFolder(f.path);
-                    } else {
-                      setSelectedDir(null);
-                      openFile(f);
-                    }
+                    if (ev.shiftKey) ev.preventDefault();
+                    onRowClick(f, ev.shiftKey);
                   }}
                   onContextMenu={(e) => {
                     e.preventDefault();
@@ -1023,18 +935,6 @@ export function FileTree() {
                     <span
                       className="h-1.5 w-1.5 rounded-full bg-amber-500 shrink-0 ml-1"
                       title={`${f.git_dirty_count} uncommitted change${f.git_dirty_count === 1 ? "" : "s"}`}
-                    />
-                  )}
-                  {f.humanized && (
-                    <Hand
-                      className="h-3 w-3 shrink-0 ml-auto text-muted-foreground/70"
-                      aria-label="Humanized — AI cannot edit"
-                    />
-                  )}
-                  {f.denied && !f.humanized && (
-                    <Lock
-                      className="h-3 w-3 shrink-0 ml-auto text-muted-foreground/70"
-                      aria-label="Restricted from agent"
                     />
                   )}
                 </div>
@@ -1158,38 +1058,6 @@ export function FileTree() {
               >
                 <EyeOff className="h-3.5 w-3.5 opacity-70" /> Hide
               </button>
-              {menu.entry!.denied ? (
-                <button
-                  className="w-full flex items-center gap-2 px-3 py-1 hover:bg-accent/60 text-left text-foreground whitespace-nowrap"
-                  onClick={() => {
-                    unrestrictEntry(menu.entry!);
-                    setMenu(null);
-                  }}
-                >
-                  <Unlock className="h-3.5 w-3.5 opacity-70" /> Allow agent access
-                </button>
-              ) : (
-                <button
-                  className="w-full flex items-center gap-2 px-3 py-1 hover:bg-accent/60 text-left text-foreground whitespace-nowrap"
-                  onClick={() => {
-                    restrictEntry(menu.entry!);
-                    setMenu(null);
-                  }}
-                >
-                  <Lock className="h-3.5 w-3.5 opacity-70" /> Restrict from agent
-                </button>
-              )}
-              {!menu.entry!.is_dir && !menu.entry!.humanized && (
-                <button
-                  className="w-full flex items-center gap-2 px-3 py-1 hover:bg-accent/60 text-left text-foreground whitespace-nowrap"
-                  onClick={() => {
-                    setConfirmHumanize(menu.entry);
-                    setMenu(null);
-                  }}
-                >
-                  <Hand className="h-3.5 w-3.5 opacity-70" /> Humanize…
-                </button>
-              )}
               <button
                 className="w-full flex items-center gap-2 px-3 py-1 hover:bg-accent/60 text-left text-destructive whitespace-nowrap"
                 onClick={() => {
@@ -1294,51 +1162,6 @@ export function FileTree() {
           </div>
         </div>
       )}
-      {confirmHumanize && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm"
-          onMouseDown={(e) => {
-            if (e.target === e.currentTarget) setConfirmHumanize(null);
-          }}
-        >
-          <div
-            className="w-[400px] rounded-md border border-border bg-card shadow-xl p-4"
-            onMouseDown={(e) => e.stopPropagation()}
-          >
-            <div className="text-[13px] font-semibold text-foreground">
-              Humanize this file?
-            </div>
-            <div className="text-[12px] text-muted-foreground mt-1 break-all font-mono">
-              {confirmHumanize.name}
-            </div>
-            <div className="text-[12px] text-muted-foreground mt-3 leading-relaxed">
-              The AI will be able to read it but not edit it. Inline edit,
-              voice edits, and agent writes will all be refused. This is
-              meant to be permanent — the only way back is hand-editing
-              hidden config.
-            </div>
-            <div className="flex justify-end gap-2 mt-4">
-              <button
-                className="px-3 py-1 rounded text-[12px] hover:bg-accent/60 text-foreground"
-                onClick={() => setConfirmHumanize(null)}
-              >
-                Cancel
-              </button>
-              <button
-                className="px-3 py-1 rounded text-[12px] bg-primary text-primary-foreground hover:bg-primary/90"
-                autoFocus
-                onClick={() => {
-                  const f = confirmHumanize;
-                  setConfirmHumanize(null);
-                  humanizeEntry(f);
-                }}
-              >
-                Humanize
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
       {confirmDelete && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm"
@@ -1386,6 +1209,38 @@ export function FileTree() {
           </div>
         </div>
       )}
+      {ghost && createPortal(<DragGhost ref={ghostRef} info={ghost} />, document.body)}
+    </div>
+  );
+}
+
+// The drag image: an opaque chip with the icon, the name and, for several
+// items, a count badge over a second card. It sits off-screen, portalled to
+// the body so no pane clips it; the webview snapshots it when the drag starts.
+export function DragGhost({ info, ref }: { info: DragGhostInfo; ref?: React.Ref<HTMLDivElement> }) {
+  const Icon = info.isDir ? Folder : FileText;
+  return (
+    <div
+      ref={ref}
+      aria-hidden
+      data-testid="drag-ghost"
+      className="fixed pointer-events-none"
+      style={{ left: -10000, top: -10000, padding: 10 }}
+    >
+      <div className="relative">
+        {info.count > 1 && (
+          <div className="absolute inset-0 translate-x-[3px] translate-y-[3px] rounded-md border border-border bg-popover shadow-sm" />
+        )}
+        <div className="relative flex items-center gap-1.5 max-w-[240px] rounded-md border border-border bg-popover px-2.5 py-1.5 text-[12.5px] leading-4 text-popover-foreground shadow-[0_6px_16px_rgba(0,0,0,0.28),0_1px_3px_rgba(0,0,0,0.18)]">
+          <Icon className="h-3.5 w-3.5 shrink-0 opacity-70" />
+          <span className="truncate font-medium">{info.name.replace(/\.md$/, "")}</span>
+          {info.count > 1 && (
+            <span className="ml-0.5 shrink-0 rounded-full bg-primary px-1.5 text-[10.5px] font-semibold leading-4 tabular-nums text-primary-foreground">
+              {info.count}
+            </span>
+          )}
+        </div>
+      </div>
     </div>
   );
 }

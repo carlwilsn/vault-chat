@@ -21,8 +21,6 @@ autosave, commit-controller, alert-summary, compactor, providers, modelCatalog (
 | `grep_files` | 1999 / 2013 | commands/fs.ts | skips dot dirs, node_modules, target; JS regex syntax (Rust `regex` differs on exotic syntax) |
 | `list_dir` | 2400 | commands/fs.ts | |
 | `list_markdown_files` | 307 / 313 | commands/fs.ts | the UI-only git badge fields are omitted |
-| `read_deny_lines` | 668 (`read_list_lines_sync` 423) | commands/fs.ts | |
-| `read_humanized` | 732 (`load_humanized_set` 237) | commands/fs.ts | |
 | `append_debug_log` | 1617 | commands/fs.ts | |
 | `client_event_append` | 893 | commands/fs.ts | |
 | `notes_read` / `notes_append` / `notes_write_all` | 846 / 864 / 917 | commands/fs.ts | |
