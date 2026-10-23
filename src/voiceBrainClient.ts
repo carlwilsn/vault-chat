@@ -72,6 +72,11 @@ export const BARGE_MS = 75;
 export const RESUME_MS = 900;
 /** How often the levels are read. */
 export const TICK_MS = 25;
+/** The window his level is measured over: longer than a tick, so every sample counts. At 512 (10.7 ms read every
+ *  25 ms) more than half his voice went unseen, a gap between syllables reset the barge-in clock, and the reply went
+ *  silent late (replayed over the recorded questions: p90 0.36 s → 0.21 s at 2048; the same threshold and the same
+ *  75 ms of voice, so a keyboard's 12 ms clicks still never count). The waves keep their own 512 analyser. */
+export const LEVEL_FFT = 2048;
 
 /** Pure: the call's mode from what the levels did and when. */
 export function brainMode(s: { now: number; lastPlaying: number; lastSpeech: number; speechSince: number | null; thinkingSince: number | null }): BrainMode {
@@ -93,6 +98,8 @@ export class BrainConversation {
   private ctx: AudioContext;
   private el: HTMLAudioElement;
   private inAn: AnalyserNode;
+  /** His level, for barge-in and the call's mode (LEVEL_FFT). */
+  private levelAn: AnalyserNode;
   private outAn: AnalyserNode | null = null;
   private timer: ReturnType<typeof setInterval> | null = null;
   private ended = false;
@@ -110,7 +117,7 @@ export class BrainConversation {
   private constructor(
     private o: BrainOptions,
     private d: BrainDeps,
-    parts: { callId: string; pc: RTCPeerConnection; mic: MediaStream; ctx: AudioContext; el: HTMLAudioElement; inAn: AnalyserNode },
+    parts: { callId: string; pc: RTCPeerConnection; mic: MediaStream; ctx: AudioContext; el: HTMLAudioElement; inAn: AnalyserNode; levelAn: AnalyserNode },
   ) {
     this.callId = parts.callId;
     this.pc = parts.pc;
@@ -118,6 +125,7 @@ export class BrainConversation {
     this.ctx = parts.ctx;
     this.el = parts.el;
     this.inAn = parts.inAn;
+    this.levelAn = parts.levelAn;
   }
 
   /** Open the mic, start the call on the box, connect. Throws (a refused mic, the box's error) and leaves nothing open. */
@@ -134,14 +142,18 @@ export class BrainConversation {
       void ctx.resume?.().catch(() => {});
       const inAn = ctx.createAnalyser();
       inAn.fftSize = 512;
-      ctx.createMediaStreamSource(mic).connect(inAn);
+      const levelAn = ctx.createAnalyser();
+      levelAn.fftSize = LEVEL_FFT;
+      const src = ctx.createMediaStreamSource(mic);
+      src.connect(inAn);
+      src.connect(levelAn);
       const el = d.audioElement();
       if (o.outputDeviceId && typeof (el as any).setSinkId === "function") await (el as any).setSinkId(o.outputDeviceId).catch(() => {});
       pc = d.peer();
       for (const t of mic.getAudioTracks()) pc.addTrack(t, mic);
       const call = await o.post("/api/v1/brain/call", { convId: o.convId, device: o.device });
       if (!call?.callId) throw new Error(call?.error ?? "the box did not start the call");
-      const conv = new BrainConversation(o, d, { callId: String(call.callId), pc, mic, ctx, el, inAn });
+      const conv = new BrainConversation(o, d, { callId: String(call.callId), pc, mic, ctx, el, inAn, levelAn });
       conv.wire();
       await pc.setLocalDescription(await pc.createOffer());
       // All candidates in the offer (no trickle): the tailnet address is among them.
@@ -194,10 +206,11 @@ export class BrainConversation {
       }
     };
     const buf = new Float32Array(512);
-    this.timer = setInterval(() => this.tick(buf), TICK_MS);
+    const lbuf = new Float32Array(LEVEL_FFT);
+    this.timer = setInterval(() => this.tick(buf, lbuf), TICK_MS);
   }
 
-  private tick(buf: Float32Array): void {
+  private tick(buf: Float32Array, lbuf: Float32Array): void {
     if (this.ended) return;
     const now = this.d.now();
     if (this.outAn) {
@@ -208,8 +221,8 @@ export class BrainConversation {
       }
     }
     if (!this.muted) {
-      this.inAn.getFloatTimeDomainData(buf);
-      const level = rms(buf);
+      this.levelAn.getFloatTimeDomainData(lbuf);
+      const level = rms(lbuf);
       // Local barge-in: he talks over the reply → it goes silent now, not when the box's stop arrives.
       const playing = now - this.lastPlaying < SPEAKING_HANG_MS;
       if (playing && level > BARGE_RMS) {
@@ -329,7 +342,9 @@ export class BrainConversation {
     await sender?.replaceTrack(track);
     for (const t of this.mic.getTracks()) t.stop();
     this.mic = next;
-    this.ctx.createMediaStreamSource(next).connect(this.inAn);
+    const src = this.ctx.createMediaStreamSource(next);
+    src.connect(this.inAn);
+    src.connect(this.levelAn);
   }
 
   async changeOutputDevice(o: { outputDeviceId?: string }): Promise<void> {
