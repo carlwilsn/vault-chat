@@ -85,7 +85,8 @@ describe("projects: only Carl decides what is a project", () => {
     const r = await voice.voiceTool(voiceDeps(), { name: "Ask", args: { request: "Make the section 7 figure in course-notes.html clearer.", project: "IEMS 469 Course Notes Visuals", act: true } });
     await voice.voiceAsksSettled();
     const c = await rig.readConv(String(r.convId));
-    expect(c.source).toBe("voice");
+    // No chat named: the call is Main's (never a new chat per call).
+    expect(r.convId).toBe("main");
     expect(c.project).toBeUndefined();
     expect(existsSync(join(rig.vault, "agent-projects", "iems-469-course-notes-visuals"))).toBe(false);
     // A side request of that conversation, Carl's words in it; no turn of it.
