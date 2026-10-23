@@ -95,7 +95,7 @@ check() {  # check <name> <condition...>
   if "$@"; then PASS=$((PASS+1)); echo "ok   - $name"
   else FAIL=$((FAIL+1)); echo "FAIL - $name"; sed 's/^/       | /' "$FIX/out.log"; fi
 }
-reset_logs() { : > "$FIX/systemctl.log"; : > "$FIX/health.log"; : > "$FIX/alerts.log"; echo 0 > "$FIX/busy"; }
+reset_logs() { : > "$FIX/systemctl.log"; : > "$FIX/health.log"; : > "$FIX/alerts.log"; echo 0 > "$FIX/busy"; echo 0 > "$FIX/inputs"; }
 
 # ── 1. first install (nothing running yet) ──────────────────────────────────
 reset_logs; echo down > "$FIX/server-state"
@@ -115,12 +115,15 @@ check "same version: no restart"              [ "$(restarts)" = 0 ]
 check "same version: says up to date"         grep -q "up to date (1.0.0)" "$FIX/out.log"
 
 # ── 3. busy waits, then swap + health OK ────────────────────────────────────
-reset_logs; echo 3 > "$FIX/busy"
+# Runs (3 polls) and Carl's input on a surface (5 polls, server/presence.ts): it waits for both.
+reset_logs; echo 3 > "$FIX/busy"; echo 5 > "$FIX/inputs"
 make_release 1.0.1
 run_update; rc=$?
 check "busy: exit 0"                          [ "$rc" = 0 ]
 check "busy: waited for the idle report"      grep -q "waiting for it to go idle" "$FIX/out.log"
 check "busy: polled health while busy (3,2,1,0)" bash -c "head -4 '$FIX/health.log' | tr '\n' ' ' | grep -q '^3 2 1 0 '"
+check "busy: waited out the input too (6+ polls)" [ "$(wc -l < "$FIX/health.log" | tr -d ' ')" -ge 6 ]
+check "busy: says surfaces in use"            grep -q "1 surfaces in use" "$FIX/out.log"
 check "busy: restarted only once"             [ "$(restarts)" = 1 ]
 check "swap: current -> 1.0.1"                [ "$(cur_target)" = versions/1.0.1 ]
 check "swap: server reports 1.0.1"            [ "$(cat "$FIX/server-state")" = 1.0.1 ]

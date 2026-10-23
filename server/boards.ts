@@ -2,8 +2,10 @@
 //   GET  /api/v1/boards                       → {boards:[{slug,name,updated,strokes,items}]}, newest first
 //   POST /api/v1/boards {name}                → {slug, board} — a blank board
 //   GET  /api/v1/boards/<slug>                → the board (a version-1 board arrives migrated)
-//   POST /api/v1/boards/<slug> {board, base, overview?: base64 PNG, history?}
+//   POST /api/v1/boards/<slug> {board, base, overview?: base64 PNG, history?, writer?, gen?}
 //                                             → {ok, rev, updated} | 409 {error, rev} when base ≠ the file's rev
+//                                               (unless every rev since base is this writer's own: see saveNow;
+//                                               `already: true` when that writer's newer save is there already)
 //                                               (history: the app's undo/redo, written to history.json stamped
 //                                               with the new rev; a bad or oversized one is dropped, not an error)
 //   GET  /api/v1/boards/<slug>/history        → {v, rev, undo, redo} (empty, rev -1, when there is none)
@@ -66,7 +68,7 @@ function boardsRoot(vault: string): string {
   // A board's undo history and the picture of the part in view are this machine's working state, rewritten on
   // every save: never committed.
   const gi = join(root, ".gitignore");
-  const want = [`*/${HISTORY_FILE}`, `*/${VIEW_FILE}`];
+  const want = [`*/${HISTORY_FILE}`, `*/${VIEW_FILE}`, `*/${SAVES_FILE}`];
   const have = existsSync(gi) ? readFileSync(gi, "utf8") : "";
   const missing = want.filter((l) => !have.split(/\r?\n/).includes(l));
   if (missing.length) writeFileSync(gi, (have && !have.endsWith("\n") ? have + "\n" : have) + missing.join("\n") + "\n");
@@ -136,6 +138,26 @@ export function getBoard(vault: string, slug: string): Out {
 /** Saves of one board run one at a time. */
 const chains = new Map<string, Promise<unknown>>();
 
+/**
+ * Who wrote each of a board's newest revs (`saves.json`, not committed): `writer` is one page's id for this board,
+ * `gen` how far its edits had got (it only grows). A save whose answer never reached the iPad (the connection cut,
+ * the box restarting) is sent again from the same base: when every rev since that base is the same writer's, the
+ * later save is newer than all of them and goes ahead, instead of a "changed elsewhere" for the iPad's own work —
+ * or, when the writer's save with this gen (or a later one) is there already, nothing is written (`already`).
+ * Another writer's rev in between is a real conflict (409), as before.
+ */
+export const SAVES_FILE = "saves.json";
+const SAVES_KEEP = 50;
+type SaveRec = { rev: number; writer: string; gen: number };
+function readSaves(dir: string): SaveRec[] {
+  try {
+    const v = JSON.parse(readFileSync(join(dir, SAVES_FILE), "utf8"));
+    return Array.isArray(v) ? v.filter((r) => r && typeof r.rev === "number" && typeof r.writer === "string" && typeof r.gen === "number") : [];
+  } catch {
+    return [];
+  }
+}
+
 export function saveBoard(vault: string, slug: string, body: any): Promise<Out> {
   const key = `${vault}\0${slug}`;
   const run = (chains.get(key) ?? Promise.resolve()).then(() => saveNow(vault, slug, body));
@@ -147,7 +169,20 @@ function saveNow(vault: string, slug: string, body: any): Out {
   const dir = boardDir(vault, slug);
   if (!dir) return { status: validSlug(slug) ? 404 : 400, body: { error: validSlug(slug) ? "no such board" : "invalid board name" } };
   const cur = readBoard(dir);
-  if (cur && typeof body?.base === "number" && body.base !== cur.rev) return { status: 409, body: { error: "the board changed since you loaded it", rev: cur.rev } };
+  const writer = typeof body?.writer === "string" && body.writer.length <= 80 ? body.writer : null;
+  const gen = typeof body?.gen === "number" && Number.isFinite(body.gen) ? body.gen : null;
+  const saves = readSaves(dir);
+  if (cur && typeof body?.base === "number" && body.base !== cur.rev) {
+    // Every rev since the base this writer's own (a save whose answer was lost, sent again): not a conflict.
+    const since = saves.filter((r) => r.rev > body.base && r.rev <= cur.rev);
+    const own = writer !== null && gen !== null && body.base < cur.rev && since.length === cur.rev - body.base && since.every((r) => r.writer === writer);
+    if (!own) return { status: 409, body: { error: "the board changed since you loaded it", rev: cur.rev } };
+    if (Math.max(...since.map((r) => r.gen)) >= gen!) return { status: 200, body: { ok: true, rev: cur.rev, updated: cur.updated, already: true } };
+  } else if (cur && writer !== null && gen !== null) {
+    // The same save again (its answer lost, or the iPad's copy sent once more): the board has it already.
+    const last = saves.find((r) => r.rev === cur.rev);
+    if (last && last.writer === writer && last.gen >= gen) return { status: 200, body: { ok: true, rev: cur.rev, updated: cur.updated, already: true } };
+  }
   let next: Board;
   try {
     next = parseBoard(body?.board);
@@ -178,6 +213,13 @@ function saveNow(vault: string, slug: string, body: any): Out {
     renameRetry(`${f}.tmp`, f);
   }
   writeAtomic(join(dir, BOARD_FILE), serializeBoard(next));
+  try {
+    const keep = saves.filter((r) => r.rev < next.rev);
+    if (writer !== null && gen !== null) keep.push({ rev: next.rev, writer, gen });
+    writeAtomic(join(dir, SAVES_FILE), JSON.stringify(keep.slice(-SAVES_KEEP)));
+  } catch (e) {
+    console.warn(`[boards] ${slug}: ${SAVES_FILE}: ${(e as Error).message}`);
+  }
   if (body?.history !== undefined) {
     try {
       const h = parseHistory(body.history);

@@ -6,6 +6,8 @@ import { createServer, type IncomingMessage, type ServerResponse, type Server } 
 import { readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { loadConfig, SERVER_VERSION, SERVER_REV } from "./config";
+import { trackWrites } from "./drain";
+import { inputSurface, noteInput } from "./presence";
 import { authorize, phoneToken } from "./auth";
 import { relay, emitLocal } from "./bus";
 import { convLog, signal } from "./convlog/log";
@@ -238,6 +240,8 @@ export function startHttpServer(hooks: ServerHooks): Promise<Server> {
   // Outlive client/proxy idle pools so a reused keep-alive socket is never
   // closed under a request (ECONNRESET on the next call).
   server.keepAliveTimeout = 65_000;
+  // Writes in flight finish on shutdown (server/drain.ts).
+  trackWrites(server);
   return new Promise((resolve, reject) => {
     server.once("error", reject);
     server.listen(cfg.port, cfg.host, () => {
@@ -280,6 +284,9 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
 
   const auth = authorize(req, url);
   if (!auth.ok) return json(res, 401, { error: "unauthorized" });
+  // Carl's input keeps the box from self-updating under him (server/presence.ts, the health's busy).
+  const surface = inputSurface(method, path, /iPhone|Android/.test(String(req.headers["user-agent"] ?? "")) ? "phone" : null);
+  if (surface) noteInput(surface);
 
   if (isGitPath(path)) {
     const user = String(req.headers["tailscale-user-login"] ?? auth.via ?? "local");

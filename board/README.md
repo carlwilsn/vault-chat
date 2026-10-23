@@ -87,6 +87,34 @@ with no self-overlap darkening and no gaps (strokes crossing themselves and the 
 1×, 2×; on screen every frame for 2 s after the lift), scribble to erase with its preview, normal writing over ink
 erasing nothing, and handwriting at 1× and 2× unchanged by the lift.
 
+## Saving: nothing exists only in memory
+
+On 2026-10-22 a self-update restarted the box while a save was in flight; that request never settled, every later
+save queued behind it, "saving" showed nothing, and 24 minutes of ink were gone when the app was reopened. Now:
+
+- **The iPad keeps it** (`src/local.ts`, IndexedDB, one record per board: the whole board's JSON, the rev it was based
+  on, the page's `writer` id and `gen`): written 0.4 s after a change (a pen down postpones it, at most 3 s) and at once
+  when the page hides; deleted when the box acknowledges that gen. Opening a board with a record left behind (a reload,
+  the app killed, a save cut off) sends it to the box first (`main.ts`); when the board really changed elsewhere since,
+  Carl is asked which to keep (the other stays in the vault's history, or aside on the iPad). The box unreachable: the
+  board opens from the iPad's copy and the usual retries send it. A refused write is logged (`local.fail`).
+- **No save hangs** (`api.ts` saveBoard): an upload that makes no progress for 20 s, or no answer 20 s after the body is
+  up, is aborted and retried like any failure; a slow upload that keeps moving is never cut. The agent's pictures never
+  hold a save (15 s at most, a PNG worker that stops answering is dropped after 8 s).
+- **A resend is not a conflict** (`server/boards.ts`, `saves.json`: who wrote each of the newest revs, not committed):
+  a save whose answer was lost and is sent again from the same base is taken when every rev since is the same page's,
+  or answered `already` when the box has it.
+- **The UI never hides unsaved work**: a change the box has not acknowledged for 10 s shows "Not saved · retrying"
+  whatever the save is doing (`save.stall` in the log). A pen down postpones the save only while the work is under 4 s
+  old, so continuous writing still saves.
+- **The box does not restart under it**: a board saved (or any surface Carl used: typed, voice, the phone) in the last
+  10 minutes keeps `busy.inputs` above 0 and the self-updater waits (`server/presence.ts`, at most its 2 h cap); a
+  SIGTERM answers every write in flight before exiting (`server/drain.ts`).
+
+Proof: `board/preview/save-robust.mjs` (the built server, killed and restarted by the script: a save held open
+forever, the box killed mid-save on a 3.7 MB board, a lost answer, a 500, a reload 0.45 s after the pen, a conflict,
+a size change); `server/test/boards.test.ts`, `drain.test.ts`, `presence.test.ts`; `server/deploy/test/test-update.sh`.
+
 ## Items
 
 `items: [{id, kind, x, y, w, h, src?, …}]`, positioned boxes in canvas units. Every item behaves the

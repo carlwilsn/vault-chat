@@ -5,6 +5,7 @@
 //   server-state        "down" or the version the (fake) running server reports
 //   busy                integer; while > 0, /api/v1/health reports busy.runs=1 and
 //                       decrements it (each poll = one finished step)
+//   inputs              integer; the same for busy.inputs (Carl's input on a surface lately)
 //   health.log          one line per /api/v1/health hit: "<busy-before>"
 //   alerts.log          one JSON line per POST /api/v1/alert
 // Writes its port to <fixture>/port once listening.
@@ -35,7 +36,10 @@ const server = http.createServer((req, res) => {
     appendFileSync(join(dir, "health.log"), `${busy}\n`);
     if (state === "down") return send(503, JSON.stringify({ ok: false }));
     if (busy > 0) writeFileSync(join(dir, "busy"), String(busy - 1));
-    return send(200, JSON.stringify({ ok: true, version: state, busy: { runs: busy > 0 ? 1 : 0 } }));
+    // `inputs`: surfaces Carl used lately (server/presence.ts), counted down the same way.
+    const inputs = parseInt(read("inputs", "0"), 10) || 0;
+    if (inputs > 0) writeFileSync(join(dir, "inputs"), String(inputs - 1));
+    return send(200, JSON.stringify({ ok: true, version: state, busy: { runs: busy > 0 ? 1 : 0, inputs: inputs > 0 ? 1 : 0 } }));
   }
   if (req.method === "POST" && url.pathname === "/api/v1/alert") {
     let body = "";

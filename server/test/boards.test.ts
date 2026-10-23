@@ -85,6 +85,40 @@ describe("boards", () => {
     expect((await post("/api/v1/boards/lecture-3-fourier", { board, base: 1 })).status).toBe(200);
   });
 
+  it("a save sent again after its answer was lost is not a conflict; another writer's save in between is", async () => {
+    const slug = (await (await post("/api/v1/boards", { name: "Resend" })).json()).slug;
+    const board = (await (await get(`/api/v1/boards/${slug}`)).json()) as any;
+    const st = (id: string) => ({ id, tool: "pen", color: "#1f1f24", w: 2.4, xy: [1, 2, 3, 4] });
+    // The iPad's save of gen 10 lands (rev 1) but its answer is lost; it sends gen 11 from the same base (0).
+    board.strokes = [st("a")];
+    expect((await (await post(`/api/v1/boards/${slug}`, { board, base: 0, writer: "w1", gen: 10 })).json()).rev).toBe(1);
+    board.strokes = [st("a"), st("b")];
+    const again = await post(`/api/v1/boards/${slug}`, { board, base: 0, writer: "w1", gen: 11 });
+    expect(again.status).toBe(200);
+    expect((await again.json()).rev).toBe(2);
+    expect(((await (await get(`/api/v1/boards/${slug}`)).json()) as any).strokes.map((s: any) => s.id)).toEqual(["a", "b"]);
+    // The same gen once more (from base 0 or from the current rev): already there, nothing written.
+    const dup = await (await post(`/api/v1/boards/${slug}`, { board, base: 0, writer: "w1", gen: 11 })).json();
+    expect(dup).toMatchObject({ ok: true, rev: 2, already: true });
+    expect(await (await post(`/api/v1/boards/${slug}`, { board, base: 2, writer: "w1", gen: 11 })).json()).toMatchObject({ rev: 2, already: true });
+    // An older gen of the same writer (a stale copy from the iPad's storage): the box's is newer, kept.
+    expect(await (await post(`/api/v1/boards/${slug}`, { board: { ...board, strokes: [st("a")] }, base: 0, writer: "w1", gen: 10 })).json()).toMatchObject({ rev: 2, already: true });
+    // Another writer's save in between: a real conflict, as before (and without writer/gen, as before).
+    expect((await post(`/api/v1/boards/${slug}`, { board, base: 2, writer: "w2", gen: 1 })).status).toBe(200);
+    expect((await post(`/api/v1/boards/${slug}`, { board, base: 2, writer: "w1", gen: 12 })).status).toBe(409);
+    expect((await post(`/api/v1/boards/${slug}`, { board, base: 0, writer: "w1", gen: 12 })).status).toBe(409);
+    expect((await post(`/api/v1/boards/${slug}`, { board, base: 2 })).status).toBe(409);
+    // Who wrote what is this machine's working state: never committed.
+    expect(readFileSync(join(vault, "boards", ".gitignore"), "utf8")).toMatch(/^\*\/saves\.json$/m);
+    expect(JSON.parse(readFileSync(join(vault, "boards", slug, "saves.json"), "utf8")).map((r: any) => [r.rev, r.writer])).toEqual([[1, "w1"], [2, "w1"], [3, "w2"]]);
+  });
+
+  it("a board saved in the last 10 minutes keeps the box busy (the self-updater waits)", async () => {
+    const h = await (await get("/api/v1/health", { "x-vault-token": "canary-board-token" })).json();
+    expect(h.busy.input.board).toBeGreaterThanOrEqual(0);
+    expect(h.busy.inputs).toBeGreaterThan(0);
+  });
+
   it("keeps the undo history beside the board, stamped with the save's rev, never committed", async () => {
     const slug = "lecture-3-fourier-2";
     expect(await (await get(`/api/v1/boards/${slug}/history`)).json()).toEqual({ v: 1, rev: -1, undo: [], redo: [] });

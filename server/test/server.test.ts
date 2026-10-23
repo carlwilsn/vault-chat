@@ -151,14 +151,15 @@ describe("missing key", () => {
       expect(h.keyNames).toEqual(["api.anthropic"]);
       // A live voice session is busy (the updater waits on busy.runs): from its
       // first line until its end line.
-      expect(h.busy).toEqual({ runs: 0, agent: 0, voice: 0 });
+      expect(h.busy).toEqual({ runs: 0, agent: 0, voice: 0, inputs: 0, input: {} });
       const line = (b: Record<string, unknown>) =>
         fetch(`${srv.base}/api/v1/voice/transcript`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ role: "assistant", ...b }) }).then((r) => r.json());
       const first = await line({ text: "Hi Carl." });
       expect(typeof first.convId).toBe("string");
-      expect((await (await fetch(`${srv.base}/api/v1/health`)).json()).busy).toEqual({ runs: 1, agent: 0, voice: 1 });
+      // …and a voice line is Carl's input: the updater also waits 10 minutes after it (server/presence.ts).
+      expect((await (await fetch(`${srv.base}/api/v1/health`)).json()).busy).toEqual({ runs: 1, agent: 0, voice: 1, inputs: 1, input: { voice: expect.any(Number) } });
       await line({ convId: first.convId, text: "Voice session ended.", system: true });
-      expect((await (await fetch(`${srv.base}/api/v1/health`)).json()).busy).toEqual({ runs: 0, agent: 0, voice: 0 });
+      expect((await (await fetch(`${srv.base}/api/v1/health`)).json()).busy).toEqual({ runs: 0, agent: 0, voice: 0, inputs: 1, input: { voice: expect.any(Number) } });
     } finally {
       await srv.stop();
       cleanup(home);

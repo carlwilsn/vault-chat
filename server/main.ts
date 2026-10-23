@@ -165,7 +165,9 @@ async function main(): Promise<void> {
   };
 
   const { startHttpServer } = await import("./http");
+  const { drainServer, SHUTDOWN_GRACE_MS } = await import("./drain");
   const { activeVoiceSessions } = await import("./voice");
+  const { recentInput } = await import("./presence");
   const server = await startHttpServer({
     health: async () => ({
       ok: true,
@@ -189,10 +191,13 @@ async function main(): Promise<void> {
       keys: { openrouter: hasKey("api.openrouter"), elevenlabs: hasKey("service.elevenlabs") },
       // A live voice session counts as a run: the updater waits for busy.runs == 0
       // (server/deploy/vault-chat-update.sh), so it never restarts under someone talking.
+      // It also waits for busy.inputs == 0: no surface Carl used in the last 10 minutes
+      // (server/presence.ts: board saves, typed messages, voice, the phone, `input`: seconds ago).
       busy: (() => {
         const agent = activeRuns().length;
         const voice = activeVoiceSessions();
-        return { runs: agent + voice, agent, voice };
+        const input = recentInput();
+        return { runs: agent + voice, agent, voice, inputs: Object.keys(input).length, input };
       })(),
       conversations: convLog(cfg.vault).rows().length,
       sync: syncSummary(),
@@ -282,12 +287,20 @@ async function main(): Promise<void> {
 
   await startBoxSync(alert);
 
+  let stopping = false;
   const shutdown = (sig: string) => {
+    if (stopping) return;
+    stopping = true;
     console.log(`[vault-chat-server] ${sig} — shutting down`);
     // pi's processes die with the server: not a crash. Their turns stay "running" for the next boot to resume once.
     engineShuttingDown();
-    server.close();
-    setTimeout(() => process.exit(0), 300).unref();
+    // A write in flight (a board save, a message) finishes and gets its answer; long polls are cut (their clients
+    // reconnect). Nothing is left half-open: whatever is still running at the grace's end is closed, so its client
+    // sees an error and retries.
+    void drainServer(server, SHUTDOWN_GRACE_MS).then((left) => {
+      if (left) console.warn(`[vault-chat-server] ${left} request(s) still running after ${SHUTDOWN_GRACE_MS} ms — closed`);
+      process.exit(0);
+    });
   };
   process.on("SIGTERM", () => shutdown("SIGTERM"));
   process.on("SIGINT", () => shutdown("SIGINT"));

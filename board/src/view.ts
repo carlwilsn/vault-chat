@@ -30,6 +30,7 @@ import { pillSpot, placeParts } from "./place";
 import { clipAssets, loadClip, makeClip, placeClip, saveClip } from "./clip";
 import { ChromeTaps, buttonName, isField, isTextField, redrawnSame, routeChrome } from "./chrome";
 import { blog, flushBoardLog, setStatSource, setTapSource } from "./log";
+import { ackLocal, localKey, putLocal } from "./local";
 import { mountVoicePill, voice, voiceButton } from "./voicePill";
 import type { BoardSource } from "./voice";
 
@@ -52,6 +53,15 @@ const OVERVIEW_MAX = 1600; // px, the overview's long side
 const VOICE_SNAP_MAX = 1280; // px, the long side of what voice sees (the visible region)
 /** From the pen lifting to the save (and the agent's pictures of the board): a pen down in between postpones it. */
 const SAVE_DELAY = 500;
+/** A pen down postpones the save only while the work is this young: continuous writing still saves every few s. */
+const SAVE_POSTPONE_MAX = 4000;
+/** From a change to its copy on the device (local.ts); a pen down postpones it, at most LOCAL_MAX after the change. */
+const LOCAL_DELAY = 400;
+const LOCAL_MAX = 3000;
+/** A change the box has not acknowledged this long shows "Not saved", whatever the reason ("saving" too). */
+const STALL_MS = 10_000;
+/** The agent's pictures may hold a save up this long at most (then it goes without them). */
+const PICTURES_MS = 15_000;
 /** How long a scribble's erased strokes take to fade out. */
 const FADE_MS = 280;
 /** How long Show's outline stays on the item it centred. */
@@ -206,6 +216,7 @@ const PILL = "inline-flex h-10 items-center gap-1.5 rounded-full px-4 text-subhe
 const TITLES: Record<Mode, string> = { pen: "Pen", hl: "Highlighter", erase: "Stroke eraser", cut: "Precise eraser", lasso: "Select" };
 
 const rid = () => Math.random().toString(36).slice(2, 10);
+type SaveState = "saved" | "unsaved" | "saving" | "offline" | "conflict";
 const clamp = (v: number, a: number, b: number) => Math.max(a, Math.min(b, v));
 const DEBUG_TOUCH = /[?&]debug=touch\b/.test(location.search);
 
@@ -233,6 +244,15 @@ async function encodePng(c: HTMLCanvasElement): Promise<string> {
   const r = await new Promise<{ png?: string; error?: string }>((res) => {
     w.wait.set(id, res);
     w.w.postMessage({ id, bitmap }, [bitmap]);
+    // A worker that never answers (iPadOS dropped it) must not hold every save after it: on the page from now on.
+    setTimeout(() => {
+      if (!w.wait.has(id)) return;
+      w.wait.delete(id);
+      if (pngW === w) pngW = null;
+      w.w.terminate();
+      blog("png.worker", { error: "no answer in 8 s" });
+      res({ error: "timeout" });
+    }, 8000);
   });
   if (r.png) return r.png;
   // The worker could not (no OffscreenCanvas 2D): on the page from now on.
@@ -350,6 +370,26 @@ export class BoardView {
   private saveAgain = false;
   private conflict = false;
   private disposed = false;
+  /**
+   * The save's bookkeeping (board/src/local.ts, server/boards.ts). `writer`: this page's id for the board (a
+   * recovered record's, when the board opened from one); `gen`: how far the edits have got (grows with every change,
+   * never repeats); `ser`: the board serialized at a gen (one JSON.stringify serves the device's copy and the save).
+   */
+  private writer = rid() + rid();
+  private gen = 0;
+  private ser: { gen: number; json: string } | null = null;
+  /** The gen on the device (its copy), and the timer that writes it. */
+  private localGen = 0;
+  private localT = 0;
+  private localSince = 0;
+  /** When the oldest change the box has not acknowledged was made (0: none), and the first one after the save in flight. */
+  private unsavedSince = 0;
+  private sinceCapture = 0;
+  /** Unsaved past STALL_MS: "Not saved · retrying" shows, whatever the save is doing. */
+  private stalled = false;
+  private stallT = 0;
+  private saveStarted = 0;
+  private readonly lkey: string;
   /** What voice knows of this board (voice.ts), and the mic button's state hook. */
   private voiceSrc: BoardSource;
   private offVoice: () => void;
@@ -361,8 +401,15 @@ export class BoardView {
     private onBack: () => void,
     /** The undo and redo saved with the board (history.json): kept only when it was saved with this very rev. */
     history?: BoardHistory | null,
+    /** Opened from the device's copy the box does not have yet (main.ts): that page's writer and gen carry on. */
+    recovered?: { writer: string; gen: number } | null,
   ) {
     this.rev = board.rev;
+    this.lkey = localKey(api.vaultKey(), slug);
+    if (recovered) {
+      this.writer = recovered.writer;
+      this.gen = recovered.gen;
+    }
     if (history && history.rev === board.rev) {
       this.undoStack = history.undo.map(stepIn);
       this.redoStack = history.redo.map(stepIn);
@@ -454,9 +501,18 @@ export class BoardView {
     // The floating controls keep clear of each other as their widths change (the mic hides during a call).
     this.chromeRO = new ResizeObserver(() => this.layoutChrome());
     for (const sel of [".tb", ".tb-right"]) this.chromeRO.observe(this.el.querySelector(sel)!);
+    // The stage itself: a size change with no window resize event (iPadOS rotation, Stage Manager, the background).
+    this.stageRO = new ResizeObserver(() => {
+      if (!this.mounted) return;
+      const r = this.stage.getBoundingClientRect();
+      if (Math.abs(r.width - this.W) > 0.5 || Math.abs(r.height - this.H) > 0.5) this.onResizeFrom("observer");
+    });
+    this.stageRO.observe(this.stage);
   }
 
   private chromeRO: ResizeObserver;
+  private stageRO: ResizeObserver;
+  private mounted = false;
   /**
    * The floating controls (iPadOS): undo, redo and the board's name upper left; the tools in the middle; voice,
    * the inbox, the menu and Boards upper right. The tools are centred when there is room, else they sit just left
@@ -483,6 +539,7 @@ export class BoardView {
   mount(): void {
     this.layoutChrome();
     this.measure();
+    this.mounted = true;
     this.home();
     this.snapCam();
     this.drawS = this.screenScale();
@@ -516,6 +573,7 @@ export class BoardView {
     void flushBoardLog();
     window.removeEventListener("resize", this.onResize);
     this.chromeRO.disconnect();
+    this.stageRO.disconnect();
     window.removeEventListener("keydown", this.onKey);
     window.removeEventListener("click", this.onClickCapture, true);
     document.removeEventListener("visibilitychange", this.onHide);
@@ -539,8 +597,9 @@ export class BoardView {
 
   // ------------------------------------------------------------ layout & camera
 
-  private measure(): void {
+  private measure(via = "mount"): void {
     const r = this.stage.getBoundingClientRect();
+    const was = { W: this.W, H: this.H, dpr: this.dpr };
     this.W = Math.max(1, r.width);
     this.H = Math.max(1, r.height);
     this.dpr = Math.min(3, window.devicePixelRatio || 1);
@@ -549,6 +608,41 @@ export class BoardView {
       c.height = Math.round(this.H * this.dpr);
     }
     this.homeZ = clamp((this.W - 32) / SHEET, 0.2, 4);
+    if (via === "mount" || was.W !== this.W || was.H !== this.H || was.dpr !== this.dpr || r.left || r.top) this.logView(via, r);
+  }
+
+  /** The geometry everything on screen hangs on, in the log (`view.resize`): what a "everything moved" report is read from. */
+  private logView(via: string, r: DOMRect = this.stage.getBoundingClientRect()): void {
+    const vv = window.visualViewport;
+    const n = (v: number) => Math.round(v * 100) / 100;
+    blog("view.resize", {
+      via,
+      W: n(this.W),
+      H: n(this.H),
+      dpr: this.dpr,
+      stage: [n(r.left), n(r.top), n(r.width), n(r.height)],
+      canvas: [this.base.width, this.base.height],
+      cam: [n(this.cam.x), n(this.cam.y), Math.round(this.cam.z * 1000) / 1000],
+      inner: [window.innerWidth, window.innerHeight],
+      scroll: [n(window.scrollX), n(window.scrollY)],
+      vv: vv ? [n(vv.offsetLeft), n(vv.offsetTop), n(vv.width), n(vv.height), n(vv.scale)] : null,
+      orient: screen.orientation?.type ?? null,
+    });
+  }
+
+  /**
+   * Everything on screen is drawn for the stage measured at W×H, at the page's origin, unscrolled: if any of that is no
+   * longer true (iPadOS left the page scrolled after a keyboard, or a rotation or a return from the background
+   * changed the size without a resize event), every stroke lands off the Pencil and every item looks moved. Checked
+   * at each pen or finger down: re-measured and logged (`view.resize`, via "drift") — never left until a reload.
+   */
+  private checkGeometry(r: DOMRect): boolean {
+    const off = Math.abs(r.width - this.W) > 0.5 || Math.abs(r.height - this.H) > 0.5 || Math.abs(r.left) > 0.5 || Math.abs(r.top) > 0.5 || window.scrollX || window.scrollY || Math.min(3, window.devicePixelRatio || 1) !== this.dpr;
+    if (!off) return false;
+    if (window.scrollX || window.scrollY) window.scrollTo(0, 0);
+    this.logView("drift", r);
+    this.onResizeFrom("drift");
+    return true;
   }
 
   /** Where the board opens: where it was left, else its content fitted to the width, else a sheet's width. */
@@ -569,16 +663,18 @@ export class BoardView {
     save(`vc_board_cam:${this.slug}`, this.cam);
   }
 
-  private onResize = () => {
+  private onResize = () => this.onResizeFrom("resize");
+  private onResizeFrom(via: string): void {
+    if (this.disposed) return;
     this.layoutChrome();
     const cx = this.cam.x + this.W / this.cam.z / 2, cy = this.cam.y + this.H / this.cam.z / 2;
-    this.measure();
+    this.measure(via);
     this.cam.x = cx - this.W / this.cam.z / 2;
     this.cam.y = cy - this.H / this.cam.z / 2;
     this.snapCam();
     this.renderBase();
     this.queueLive();
-  };
+  }
 
   /** Screen (stage css px) → canvas units. */
   private toWorld(sx: number, sy: number): XY {
@@ -729,7 +825,9 @@ export class BoardView {
   /** Back in front: the canvases re-made at the screen's size and everything visible drawn again, at once. */
   private onShow = (e: Event): void => {
     if (this.disposed || (e.type === "visibilitychange" && document.visibilityState !== "visible")) return;
-    this.measure();
+    if (window.scrollX || window.scrollY) window.scrollTo(0, 0);
+    // Re-made at the screen's size, the view's centre kept (the size may have changed while in the background).
+    this.onResizeFrom(`show:${e.type}`);
     this.snapCam();
     this.drawS = this.screenScale();
     this.refreshVisible();
@@ -1302,7 +1400,8 @@ export class BoardView {
 
   private onPointer(e: PointerEvent): void {
     if (this.disposed) return;
-    const r = this.stage.getBoundingClientRect();
+    let r = this.stage.getBoundingClientRect();
+    if (e.type === "pointerdown" && this.stage.contains(e.target as Node) && this.checkGeometry(r)) r = this.stage.getBoundingClientRect();
     const kind = e.pointerType === "pen" ? "pen" : e.pointerType === "touch" ? "touch" : "mouse";
     const type = e.type === "pointerdown" ? "down" : e.type === "pointermove" ? "move" : e.type === "pointerup" ? "up" : e.type === "pointercancel" ? "cancel" : "leave";
     if (type === "leave" && (kind !== "pen" || e.target !== this.el)) return;
@@ -1422,7 +1521,8 @@ export class BoardView {
     const p = this.toWorld(ev.x, ev.y);
     const touch = ev.kind === "touch";
     const m = this.prefs.mode;
-    clearTimeout(this.saveT);
+    // A pen down postpones the save, unless the work has waited long already (continuous writing still saves).
+    if (!this.unsavedSince || Date.now() - this.unsavedSince < SAVE_POSTPONE_MAX) clearTimeout(this.saveT);
     if (m === "pen" || m === "hl") {
       const hl = m === "hl";
       // The pen's own samples are the stroke (ink.ts: stabilised, then stroked as one path); repeats and samples
@@ -2431,13 +2531,14 @@ export class BoardView {
     (this.el.querySelector('[data-act="redo"]') as HTMLButtonElement).disabled = !this.redoStack.length;
   }
 
-  private setStatus(s: "saved" | "unsaved" | "saving" | "offline" | "conflict", text?: string): void {
+  private setStatus(s: SaveState, text?: string): void {
     this.el.dataset.save = s;
-    // Saving is quiet; only a failure shows.
-    const show = s === "offline" || s === "conflict" || (!!text && s !== "saving" && s !== "saved");
+    this.el.dataset.stalled = String(this.stalled);
+    // Saving is quiet; only a failure shows — or work the box has not had for STALL_MS, whatever the reason.
+    const show = s === "offline" || s === "conflict" || (this.stalled && s !== "saved") || (!!text && s !== "saving" && s !== "saved");
     this.statusEl.classList.toggle("hidden", !show);
     this.statusEl.innerHTML =
-      s === "conflict" ? `Changed elsewhere · <button class="underline" data-act="reload">Reload</button>` : show ? (text ?? "Not saved · retrying") : "";
+      s === "conflict" ? `Changed elsewhere · <button class="underline" data-act="reload">Reload</button>` : show ? ((s === "saving" ? undefined : text) ?? "Not saved · retrying") : "";
   }
 
   // ------------------------------------------------------------ saving
@@ -2446,6 +2547,14 @@ export class BoardView {
     // Whatever changed, everything visible is repainted once things are still (a missed invalidation never sticks).
     this.refreshSoon();
     this.dirty = true;
+    // Never the same gen twice, across reloads too (a recovered writer goes on from its record's).
+    this.gen = Math.max(this.gen + 1, Date.now());
+    const now = Date.now();
+    if (!this.unsavedSince) this.unsavedSince = now;
+    if (this.saving && !this.sinceCapture) this.sinceCapture = now;
+    this.armStall();
+    // On the device first: whatever happens to the save (or the page), the work is kept.
+    this.persistSoon();
     if (this.conflict) return;
     this.setStatus("unsaved");
     clearTimeout(this.saveT);
@@ -2454,18 +2563,76 @@ export class BoardView {
     voice.boardChanged(this.voiceSrc);
   }
 
-  /** Leaving the app (Home, app switcher, closing): save now. */
+  /** Leaving the app (Home, app switcher, closing): onto the device at once, and save now. */
   private onHide = (e: Event) => {
     if (e.type === "pagehide" || document.visibilityState === "hidden") {
       this.saveCam();
-      void this.flush().catch(() => {}); // a save cut off by the page going away retries on the next open
+      void this.persistLocal();
+      void this.flush().catch(() => {}); // a save cut off by the page going away: the device's copy goes up on the next open
     }
   };
 
   async flush(): Promise<void> {
     clearTimeout(this.saveT);
+    if (this.localGen < this.gen) void this.persistLocal();
     if (this.saving) await this.saving;
     if (this.dirty) await this.save();
+  }
+
+  /** The board as JSON at the current gen (one stringify for the device's copy and the save). */
+  private serial(): { gen: number; json: string } {
+    if (this.ser?.gen !== this.gen) this.ser = { gen: this.gen, json: JSON.stringify(this.board) };
+    return this.ser;
+  }
+
+  /** The device's copy, LOCAL_DELAY after a change (a pen down postpones it, up to LOCAL_MAX). */
+  private persistSoon(): void {
+    if (!this.localSince) this.localSince = Date.now();
+    clearTimeout(this.localT);
+    this.localT = window.setTimeout(() => {
+      if (this.g && Date.now() - this.localSince < LOCAL_MAX) return this.persistSoon();
+      void this.persistLocal();
+    }, LOCAL_DELAY);
+  }
+
+  /** Write the board to the device now (nothing when the device already has this gen, or the box acknowledged it). */
+  private async persistLocal(): Promise<void> {
+    clearTimeout(this.localT);
+    this.localSince = 0;
+    if (this.localGen >= this.gen || !this.unsavedSince) return;
+    const s = this.serial();
+    const ok = await putLocal({ key: this.lkey, slug: this.slug, json: s.json, base: this.rev, writer: this.writer, gen: s.gen, at: Date.now(), strokes: this.board.strokes.length, items: this.board.items.length });
+    if (ok) this.localGen = Math.max(this.localGen, s.gen);
+  }
+
+  /** The box has every change up to `gen`: the device's copy goes (unless it holds later ones). */
+  private acked(gen: number): void {
+    if (this.gen === gen) {
+      this.unsavedSince = 0;
+      this.localGen = gen;
+      clearTimeout(this.localT);
+      this.localSince = 0;
+      clearTimeout(this.stallT);
+      this.stallT = 0;
+      this.stalled = false;
+    } else this.unsavedSince = this.sinceCapture || Date.now();
+    this.sinceCapture = 0;
+    void ackLocal(this.lkey, this.writer, gen);
+    if (this.unsavedSince) this.armStall();
+  }
+
+  /** "Not saved · retrying" once a change has waited STALL_MS for the box, whatever the save is doing (logged). */
+  private armStall(): void {
+    if (this.stalled || this.stallT) return;
+    const left = Math.max(0, this.unsavedSince + STALL_MS - Date.now());
+    this.stallT = window.setTimeout(() => {
+      this.stallT = 0;
+      if (this.disposed || !this.unsavedSince) return;
+      if (Date.now() - this.unsavedSince < STALL_MS) return this.armStall();
+      this.stalled = true;
+      blog("save.stall", { slug: this.slug, rev: this.rev, ms: Date.now() - this.unsavedSince, status: this.el.dataset.save, saving: this.saving ? Date.now() - this.saveStarted : null, local: this.localGen >= this.gen, pen: !!this.g });
+      this.setStatus(this.el.dataset.save as SaveState);
+    }, left);
   }
 
   /**
@@ -2620,22 +2787,34 @@ export class BoardView {
 
   private async saveOnce(): Promise<void> {
     this.dirty = false;
+    this.saveStarted = Date.now();
     this.setStatus("saving");
     try {
-      const pics = await this.exportPictures();
-      const r = await api.saveBoard(this.slug, this.board, this.rev, pics.overview, this.historyOut(), pics.view);
+      // The agent's pictures never hold the board's save: past PICTURES_MS (or failing) it goes without them.
+      const pics = await within(this.exportPictures(), PICTURES_MS).catch((e) => {
+        blog("pictures.fail", { slug: this.slug, error: String((e as Error)?.message ?? e).slice(0, 200) });
+        return {} as { overview?: string; view?: string };
+      });
+      const s = this.serial();
+      this.sinceCapture = 0;
+      const r = await api.saveBoard(this.slug, s.json, this.rev, { overview: pics.overview, history: this.historyOut(), view: pics.view, writer: this.writer, gen: s.gen });
       this.rev = r.rev;
       this.board.rev = r.rev;
       this.board.updated = r.updated;
+      this.ser = null; // its rev is stale now
+      this.acked(s.gen);
+      if (r.already) blog("save.already", { slug: this.slug, rev: r.rev });
       this.setStatus(this.dirty ? "unsaved" : "saved");
     } catch (e) {
       if (e instanceof api.HttpError && e.status === 409) {
         blog("save.conflict", { slug: this.slug, rev: this.rev });
         this.conflict = true;
+        // Not saved: the device keeps it, and opening the board again asks which version to keep (main.ts).
+        this.dirty = true;
         this.setStatus("conflict");
         return;
       }
-      blog("save.fail", { slug: this.slug, rev: this.rev, status: e instanceof api.HttpError ? e.status : null, error: String((e as Error)?.message ?? e).slice(0, 200) });
+      blog("save.fail", { slug: this.slug, rev: this.rev, status: e instanceof api.HttpError ? e.status : null, error: String((e as Error)?.message ?? e).slice(0, 200), ms: Date.now() - this.saveStarted });
       this.dirty = true;
       this.setStatus("offline");
       clearTimeout(this.saveT);
@@ -2656,6 +2835,10 @@ export class BoardView {
       rev: this.rev,
       dirty: this.dirty,
       status: this.el.dataset.save,
+      stalled: this.stalled,
+      gen: this.gen,
+      localGen: this.localGen,
+      writer: this.writer,
       penSeen,
       prefs: { ...this.prefs },
       selection: this.sel ? { strokes: this.sel.strokes.size, items: this.sel.items.size } : null,
@@ -2669,6 +2852,17 @@ export class BoardView {
 }
 
 const r2 = (v: number) => Math.round(v * 100) / 100;
+
+/** `p`, or a rejection after `ms` (what `p` was doing is left to finish or not; nothing waits on it). */
+function within<T>(p: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((res, rej) => {
+    const t = setTimeout(() => rej(new Error(`timed out after ${ms} ms`)), ms);
+    p.then(
+      (v) => (clearTimeout(t), res(v)),
+      (e) => (clearTimeout(t), rej(e)),
+    );
+  });
+}
 
 /** A pen sample into a stroke's points (flat, canvas units): repeats and samples closer than `min` are left out. */
 function addSample(xy: number[], x: number, y: number, min: number): void {

@@ -55,9 +55,72 @@ export const postBoardLog = (b: { session: string; v?: string; touch?: number; s
 export const listBoards = () => call<{ boards: BoardSummary[] }>("/api/v1/boards").then((r) => r.boards);
 export const createBoard = (name: string) => call<{ slug: string; board: Board }>("/api/v1/boards", { method: "POST", body: JSON.stringify({ name }) });
 export const getBoard = (slug: string) => call<Board>(`/api/v1/boards/${enc(slug)}`);
-/** Save the board, with overview.png (the whole board) and view.png (the part in view) for the agent. */
-export const saveBoard = (slug: string, board: Board, base: number, overview?: string, history?: BoardHistory, view?: string) =>
-  call<{ ok: true; rev: number; updated: number }>(`/api/v1/boards/${enc(slug)}`, { method: "POST", body: JSON.stringify({ board, base, overview, history, view }) });
+/** This vault's key for things kept on the device per board (unsaved work: board/src/local.ts). */
+export const vaultKey = () => VAULT;
+
+export type SaveOut = { ok: true; rev: number; updated: number; already?: boolean };
+/** A save stalls when nothing moves for this long: no upload progress, or no answer once the body is sent. */
+export const SAVE_STALL_MS = 20_000;
+
+/**
+ * Save the board (`boardJson`: the board, already serialized), with overview.png (the whole board) and view.png
+ * (the part in view) for the agent. `writer`/`gen`: this page's id and how far its edits had got, so a save resent
+ * after its answer was lost is not taken for a change made elsewhere (server/boards.ts).
+ *
+ * It never hangs: an XMLHttpRequest that makes no progress for SAVE_STALL_MS (nothing uploaded, or no answer once
+ * the body is up) is aborted and fails like any network error (status 0), so the caller retries. A slow upload that
+ * keeps moving is not cut off, however big the board.
+ */
+export function saveBoard(
+  slug: string,
+  boardJson: string,
+  base: number,
+  o: { overview?: string; history?: BoardHistory; view?: string; writer?: string; gen?: number } = {},
+  stallMs = SAVE_STALL_MS,
+): Promise<SaveOut> {
+  const rest = JSON.stringify({ base, overview: o.overview, history: o.history, view: o.view, writer: o.writer, gen: o.gen });
+  const body = `{"board":${boardJson},${rest.slice(1)}`;
+  return new Promise<SaveOut>((resolve, reject) => {
+    const x = new XMLHttpRequest();
+    let timer = 0;
+    let done = false;
+    const finish = (f: () => void) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      f();
+    };
+    const arm = () => {
+      clearTimeout(timer);
+      timer = window.setTimeout(() => {
+        x.abort();
+        finish(() => reject(new HttpError(0, `no progress for ${Math.round(stallMs / 1000)} s`)));
+      }, stallMs);
+    };
+    x.open("POST", inVault(`/api/v1/boards/${enc(slug)}`));
+    x.setRequestHeader("Content-Type", "application/json");
+    if (TOKEN) x.setRequestHeader("X-Vault-Token", TOKEN);
+    x.upload.onprogress = arm;
+    x.upload.onload = arm;
+    x.onprogress = arm;
+    x.onerror = () => finish(() => reject(new HttpError(0, "network error")));
+    x.onabort = () => finish(() => reject(new HttpError(0, "aborted")));
+    x.ontimeout = x.onerror;
+    x.onload = () =>
+      finish(() => {
+        let j: any = null;
+        try {
+          j = JSON.parse(x.responseText);
+        } catch {
+          /* not JSON */
+        }
+        if (x.status >= 200 && x.status < 300 && j && typeof j.rev === "number") resolve(j as SaveOut);
+        else reject(new HttpError(x.status, j?.error || `HTTP ${x.status}`, j));
+      });
+    arm();
+    x.send(body);
+  });
+}
 /** The undo and redo saved with the board (rev -1 when there are none). */
 export const getHistory = (slug: string) => call<BoardHistory>(`/api/v1/boards/${enc(slug)}/history`);
 /** Copy another board's files into this one (items pasted from it keep their names). */

@@ -9,7 +9,15 @@
 //   inbox.add     {entry, part, items}           an inbox part placed on the board
 //   inbox.fail    {entry, error}
 //   image.fail    {error}
-//   save.fail     {status, error}                / save.conflict {rev}
+//   save.fail     {status, error, ms}            / save.conflict {rev} / save.already {rev} (the box had it)
+//   save.stall    {ms, status, saving, local, pen}  a change unsaved for 10 s, whatever the reason: "Not saved" shows
+//   pictures.fail {error}                        the agent's pictures skipped for one save (they never hold it)
+//   local.fail    {op, error}                    the iPad refused its copy of the board (IndexedDB: local.ts)
+//   local.recovered / local.had / local.offline / local.conflict {slug, strokes, base, rev, age, now?, kept?}
+//                                                opening a board the iPad held unsaved work of (main.ts)
+//   view.resize   {via, W, H, dpr, stage, canvas, cam, inner, scroll, vv, orient}  the geometry everything is
+//                                                drawn on: at open, on a size change, back from the background, and
+//                                                "drift" (a pen or finger down found it changed with no event)
 //   voice         {phase, error?}                the voice pill's phase changes
 //   taps          {pressed, missed, dropped, missedOn?, src}  chrome taps since the last batch (chrome.ts):
 //                                                the board's chrome (src "board") and the voice pill ("pill")
