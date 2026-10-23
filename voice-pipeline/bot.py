@@ -23,6 +23,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import time
 from typing import Any
 
@@ -36,10 +37,12 @@ from pipecat.frames.frames import (
     BotStartedSpeakingFrame,
     BotStoppedSpeakingFrame,
     Frame,
+    InterimTranscriptionFrame,
     LLMContextFrame,
     LLMFullResponseEndFrame,
     LLMFullResponseStartFrame,
     LLMTextFrame,
+    TranscriptionFrame,
     TTSSpeakFrame,
     UserStartedSpeakingFrame,
     UserStoppedSpeakingFrame,
@@ -55,6 +58,7 @@ from pipecat.processors.aggregators.llm_response_universal import (
 )
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.transports.base_transport import TransportParams
+from pipecat.turns.types import ProcessFrameResult
 from pipecat.turns.user_start import MinWordsUserTurnStartStrategy
 from pipecat.turns.user_turn_strategies import UserTurnStrategies
 from pipecat.transports.smallwebrtc.request_handler import (
@@ -202,6 +206,38 @@ async def speak_channel(call: dict, task: PipelineTask, quiet: Quiet):
 # ---------------------------------------------------------------- one call
 
 
+def _words(text: str) -> list[str]:
+    return re.sub(r"[^\w\s']", " ", text.lower()).split()
+
+
+class FreshWordsStartStrategy(MinWordsUserTurnStartStrategy):
+    """MinWords, minus the echo of the line that just ended a turn.
+
+    ElevenLabs can deliver the last partial of a line just after committing it. Pipecat counts that partial as new
+    speech: a new turn starts, and its interruption cancels the reply's request before it reaches the box, so the
+    question is lost without a word (seen 2026-10-23: "what's seven times eight plus three?" committed, the turn
+    stopped, a 7-word partial 2 ms later started a new turn and the request died after 39 ms). A partial whose words
+    all belong to the last committed line, within ECHO_SECS of it, is not a new turn.
+    """
+
+    ECHO_SECS = 1.5
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self._last: set[str] = set()
+        self._last_at = 0.0
+
+    async def process_frame(self, frame: Frame) -> ProcessFrameResult:
+        if isinstance(frame, TranscriptionFrame):
+            self._last = set(_words(frame.text))
+            self._last_at = time.monotonic()
+        elif isinstance(frame, InterimTranscriptionFrame) and self._last and time.monotonic() - self._last_at < self.ECHO_SECS:
+            w = _words(frame.text)
+            if w and set(w) <= self._last:
+                return ProcessFrameResult.CONTINUE
+        return await super().process_frame(frame)
+
+
 async def run_call(connection, call: dict):
     transport = SmallWebRTCTransport(
         webrtc_connection=connection,
@@ -215,8 +251,9 @@ async def run_call(connection, call: dict):
             # A turn (and an interruption of a reply) starts on a WORD, never on sound alone: keyboard clacks, a
             # cough or a chair are not Carl talking (the ground-truths audit). The reply goes silent at once on his
             # device anyway (src/voiceBrainClient.ts barge-in); this is the box's stop and the turn. A late transcript
-            # that would repeat his last words is caught by the server's re-ask guard. Stop: Smart Turn v3.
-            user_turn_strategies=UserTurnStrategies(start=[MinWordsUserTurnStartStrategy(min_words=1, use_interim=True)]),
+            # that would repeat his last words is caught by the server's re-ask guard, and a late partial of the line that just
+            # ended never starts a turn (FreshWordsStartStrategy). Stop: Smart Turn v3.
+            user_turn_strategies=UserTurnStrategies(start=[FreshWordsStartStrategy(min_words=1, use_interim=True)]),
             # A browser that stops sending in silence (a muted or digitally silent track, Opus DTX) leaves the VAD
             # "speaking" until this idle timeout forces a stop: Pipecat's default 1.0 s added a second to every
             # such turn (measured: speech end → the box's VAD stop 1.0–1.1 s late from Edge). Treat 0.25 s of no
