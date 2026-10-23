@@ -66,6 +66,9 @@ export const STOP_RE = /^\s*(?:ok(?:ay)?,?\s+)?(?:stop|stop (?:it|that)|never ?m
 
 /** The same words again within this long are the pipeline re-asking, never a second turn. */
 export const REASK_MS = 10_000;
+/** ...but once that turn's reply is complete, the same words are Carl asking again (he didn't catch it), unless they
+ * come so soon after that they can only be a late copy of the same transcript. */
+export const REPEAT_AFTER_END_MS = 1_500;
 
 export const brainEnabled = (): boolean => process.env.VC_VOICE_BRAIN !== "off";
 
@@ -140,7 +143,7 @@ type Call = {
   engine: BrainEngine;
   turns: number;
   /** The last words sent to pi, and when (the same words again at once are a re-ask, not a new turn). */
-  lastText: { text: string; at: number } | null;
+  lastText: { text: string; at: number; endedAt?: number } | null;
   /** Its last request or speak-channel activity (a call whose pipeline died without ending it is reaped). */
   lastActive: number;
   /** A barge-in stopped the turn that was talking: the next request waits for it to end. */
@@ -279,6 +282,7 @@ function onPi(d: BrainDeps, c: Call, ev: any): void {
       log(d, { ev: "turn.end", call: c.id, req: c.sink.id, firstMs: c.sink.tFirst != null ? c.sink.tFirst - c.sink.t0 : null, deltaMs: c.sink.tDelta != null ? c.sink.tDelta - c.sink.t0 : null, deltas: c.sink.deltas, ms: Date.now() - c.sink.t0, chars: c.sink.text.length });
       finishSink(c, c.sink);
     }
+    if (c.lastText) c.lastText.endedAt ??= Date.now();
     c.dropping = false;
   }
 }
@@ -355,7 +359,11 @@ async function completions(d: BrainDeps, req: IncomingMessage, res: ServerRespon
   c.turns++;
   // The pipeline asking again with nothing new from Carl (a retry after an interruption that carried no words): the
   // same turn, not a second one — the reply already on its way streams into this response.
-  const again = c.lastText && c.lastText.text === text && Date.now() - c.lastText.at < REASK_MS;
+  // Once that turn has answered in full, the same words again (after a moment) are a new question: he asks again
+  // because he didn't catch it, and silence would look broken (the 30-minute session: 24 repeats went unanswered).
+  const last = c.lastText;
+  const answered = last?.endedAt != null && Date.now() - last.endedAt >= REPEAT_AFTER_END_MS;
+  const again = !!last && last.text === text && Date.now() - last.at < REASK_MS && !answered;
   c.lastText = { text, at: Date.now() };
   c.lastActive = Date.now();
   res.on("close", () => {

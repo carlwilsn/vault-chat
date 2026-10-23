@@ -4,7 +4,7 @@ import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { speechReady } from "../speakMath";
-import { STOP_RE, brainRoute, lastUserText, resetBrainForTests, voiceCallRules, type BrainDeps, type BrainEngine } from "../voiceBrain";
+import { REPEAT_AFTER_END_MS, STOP_RE, brainRoute, lastUserText, resetBrainForTests, voiceCallRules, type BrainDeps, type BrainEngine } from "../voiceBrain";
 
 type Fake = BrainEngine & { emit(ev: any): void; messages: any[]; talker: any; interrupted: number; running: boolean; stopped: number };
 
@@ -182,6 +182,22 @@ describe("voice with one brain", () => {
     const lines = await sse(await second);
     expect(eng.messages).toHaveLength(1);
     expect(lines.join("")).toContain("Octopuses have three hearts.");
+  });
+
+  it("the same words again once the reply was complete are a new question (he didn't catch it): answered, not swallowed", async () => {
+    const c = await call();
+    const ask = () => fetch(`${base}/v1/chat/completions`, { method: "POST", headers: { authorization: `Bearer ${c.token}` }, body: JSON.stringify({ messages: [{ role: "user", content: "what's seven times eight plus three?" }] }) });
+    const first = ask();
+    await until(() => eng.messages.length);
+    eng.emit(delta("Fifty-nine. "));
+    eng.emit({ type: "vc_turn_end", status: "completed" });
+    await sse(await first);
+    await new Promise((r) => setTimeout(r, REPEAT_AFTER_END_MS + 100));
+    const second = ask();
+    await until(() => eng.messages.length === 2);
+    eng.emit(delta("Fifty-nine. "));
+    eng.emit({ type: "vc_turn_end", status: "completed" });
+    expect((await sse(await second)).join("")).toContain("Fifty-nine.");
   });
 
   it("\"never mind\" / \"stop\" stops the running work in code (the turn and its workers), then reaches pi as his line; a sentence with \"stop\" in it does not", async () => {
