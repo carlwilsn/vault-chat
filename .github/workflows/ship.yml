@@ -390,7 +390,8 @@ jobs:
           missing=0
           for f in latest.json server-version.json \
             vault-chat-server.mjs vault-chat-server.mjs.sha256 \
-            vault-chat-server-assets.tar.gz vault-chat-server-assets.tar.gz.sha256; do
+            vault-chat-server-assets.tar.gz vault-chat-server-assets.tar.gz.sha256 \
+            vault-chat-deploy.tar.gz vault-chat-deploy.tar.gz.sha256; do
             if ! grep -qx "$f" <<< "$have"; then echo "missing: $f"; missing=1; fi
           done
           [ "$missing" = 0 ] || { echo "Refusing to publish an incomplete release."; exit 1; }

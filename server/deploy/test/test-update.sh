@@ -53,7 +53,7 @@ for _ in $(seq 50); do [ -s "$FIX/port" ] && break; sleep 0.1; done
 PORT="$(cat "$FIX/port")"
 BASE="http://127.0.0.1:$PORT"
 
-# make_release <ver> [crash|badsha|noassets]
+# make_release <ver> [crash|badsha|noassets|nodeploy|baddeploy]
 make_release() {
   local ver="$1" mode="${2:-}" d="$FIX/dl/$1"
   mkdir -p "$d/a"
@@ -65,8 +65,16 @@ make_release() {
   (cd "$d/a" && tar -czf ../vault-chat-server-assets.tar.gz phone.html)
   (cd "$d" && sha256sum vault-chat-server-assets.tar.gz > vault-chat-server-assets.tar.gz.sha256)
   printf '{"version":"%s","rev":"deadbeef"}\n' "$ver" > "$d/server-version.json"
+  # The release's updater and units (vault-chat-deploy.tar.gz): the updater refreshes itself from them.
+  mkdir -p "$d/deploy"
+  if [ "$mode" = baddeploy ]; then printf '#!/usr/bin/env bash\nif then fi # updater %s, broken\n' "$ver" > "$d/deploy/vault-chat-update.sh"
+  else printf '#!/usr/bin/env bash\n# updater %s\nexit 0\n' "$ver" > "$d/deploy/vault-chat-update.sh"; fi
+  for u in vault-chat-server.service vault-chat-update.service vault-chat-update.timer; do printf '# %s %s\n' "$u" "$ver" > "$d/deploy/$u"; done
+  (cd "$d/deploy" && tar -czf ../vault-chat-deploy.tar.gz vault-chat-update.sh vault-chat-server.service vault-chat-update.service vault-chat-update.timer)
+  (cd "$d" && sha256sum vault-chat-deploy.tar.gz > vault-chat-deploy.tar.gz.sha256)
   local names="server-version.json vault-chat-server.mjs vault-chat-server.mjs.sha256"
   [ "$mode" = noassets ] || names="$names vault-chat-server-assets.tar.gz vault-chat-server-assets.tar.gz.sha256"
+  [ "$mode" = nodeploy ] || names="$names vault-chat-deploy.tar.gz vault-chat-deploy.tar.gz.sha256"
   local assets="" sep=""
   for n in $names; do
     assets="$assets$sep{\"name\":\"$n\",\"browser_download_url\":\"$BASE/dl/$ver/$n\"}"; sep=","
@@ -81,13 +89,15 @@ run_update() {
   VC_UPDATE_BUSY_POLL_S="${BUSY_POLL:-0.05}" VC_UPDATE_BUSY_MAX_S="${BUSY_MAX:-30}" \
   VC_UPDATE_HEALTH_WAIT_S=2 VC_UPDATE_HEALTH_POLL_S=0.1 \
   VC_UPDATE_FAKE_SYMLINKS=$FAKE_LINKS \
+  VC_UPDATE_BIN_DIR="$ROOT/installed/bin" VC_UPDATE_UNITS_DIR="$ROOT/installed/units" \
     bash "$UPDATE" > "$FIX/out.log" 2>&1
 }
 
 cur_target() {
   if [ "$FAKE_LINKS" = 1 ]; then cat "$STATE/current" 2>/dev/null; else readlink "$STATE/current"; fi
 }
-restarts() { grep -c "restart" "$FIX/systemctl.log" 2>/dev/null || true; }
+restarts() { grep -c "restart vault-chat-server" "$FIX/systemctl.log" 2>/dev/null || true; }
+INST="$ROOT/installed"
 
 PASS=0; FAIL=0
 check() {  # check <name> <condition...>
@@ -173,6 +183,47 @@ done
 left="$(ls -1 "$STATE/versions" | sort | tr '\n' ' ')"
 check "prune: current + two most recent old remain ($left)" [ "$left" = "1.0.4 1.0.5 1.0.6 " ]
 check "prune: current -> 1.0.6"               [ "$(cur_target)" = versions/1.0.6 ]
+
+# ── 8. the updater refreshes itself (script + units) from the release ───────
+reset_logs
+make_release 1.0.7
+run_update; rc=$?
+check "refresh: exit 0"                       [ "$rc" = 0 ]
+check "refresh: the updater is the release's" cmp -s "$FIX/dl/1.0.7/deploy/vault-chat-update.sh" "$INST/bin/vault-chat-update.sh"
+check "refresh: the updater is executable"    [ -x "$INST/bin/vault-chat-update.sh" ]
+units_are() {  # units_are <ver>: every installed unit is that release's
+  for u in vault-chat-server.service vault-chat-update.service vault-chat-update.timer; do
+    cmp -s "$FIX/dl/$1/deploy/$u" "$INST/units/$u" || return 1
+  done
+}
+check "refresh: the units are the release's"  units_are 1.0.7
+check "refresh: daemon-reload, the timer restarted" bash -c "grep -qx -- '--user daemon-reload' '$FIX/systemctl.log' && grep -qx -- '--user restart vault-chat-update.timer' '$FIX/systemctl.log'"
+check "refresh: says what it refreshed"       grep -q "refreshed from the release: vault-chat-update.sh vault-chat-server.service" "$FIX/out.log"
+check "refresh: no temp files left"           bash -c "! ls '$INST/bin' '$INST/units' | grep -q 'new'"
+
+reset_logs
+run_update; rc=$?
+check "refresh, up to date and unchanged: nothing written, no reload" bash -c "[ $rc = 0 ] && ! grep -q refreshed '$FIX/out.log' && [ ! -s '$FIX/systemctl.log' ]"
+
+reset_logs
+echo "# edited by hand" > "$INST/units/vault-chat-update.timer"
+run_update; rc=$?
+check "refresh, up to date: a drifted unit is put back from the running version" units_are 1.0.7
+check "refresh, up to date: only that unit, then reloaded" bash -c "grep -q 'refreshed from the release: vault-chat-update.timer$' '$FIX/out.log' && grep -qx -- '--user daemon-reload' '$FIX/systemctl.log'"
+
+reset_logs
+make_release 1.0.8 baddeploy
+run_update; rc=$?
+check "refresh: an updater that does not parse is not installed" cmp -s "$FIX/dl/1.0.7/deploy/vault-chat-update.sh" "$INST/bin/vault-chat-update.sh"
+check "refresh: …it says so, and the units still refresh" bash -c "grep -q 'not refreshing vault-chat-update.sh: it does not parse' '$FIX/out.log'"
+check "refresh: …the units are 1.0.8's"     units_are 1.0.8
+check "refresh: the server update itself went on" [ "$(cur_target)" = versions/1.0.8 ]
+
+reset_logs
+make_release 1.0.9 nodeploy
+run_update; rc=$?
+check "refresh: a release without deploy files leaves the installed ones" bash -c "[ $rc = 0 ] && [ \"\$(cat '$FIX/server-state')\" = 1.0.9 ]"
+check "refresh: …still 1.0.8's units"       units_are 1.0.8
 
 echo
 echo "# $PASS passed, $FAIL failed"

@@ -8,7 +8,9 @@
 //   vault-chat-server.mjs.sha256              "<hex>  vault-chat-server.mjs"
 //   vault-chat-server-assets.tar.gz           the phone/PWA files (the updater unpacks
 //   vault-chat-server-assets.tar.gz.sha256      them into <version dir>/assets/)
-//   server-version.json                       {version, rev, sha256, assetsSha256, builtAt}
+//   vault-chat-deploy.tar.gz                  the updater and the systemd units (server/deploy/:
+//   vault-chat-deploy.tar.gz.sha256             the updater reinstalls itself from them)
+//   server-version.json                       {version, rev, sha256, assetsSha256, deploySha256, builtAt}
 //
 // The phone assets ship even if the bundle inlines them; the server may ignore them.
 // Fails loudly on a missing input: a release without its server is not a release.
@@ -54,11 +56,25 @@ try {
 const assetsSha = sha256(tarball);
 writeFileSync(`${tarball}.sha256`, `${assetsSha}  vault-chat-server-assets.tar.gz\n`);
 
+// The updater and its units, as install.sh installs them: the updater refreshes itself from these.
+const deployDir = "server/deploy";
+const deployFiles = ["vault-chat-update.sh", "vault-chat-server.service", "vault-chat-update.service", "vault-chat-update.timer"];
+for (const f of deployFiles) if (!existsSync(join(deployDir, f))) fail(`${deployDir}/${f} is missing`);
+const deployTar = join(out, "vault-chat-deploy.tar.gz");
+try {
+  execFileSync("tar", [...gnuFlags, "-czf", deployTar, "-C", deployDir, ...deployFiles], { stdio: "inherit" });
+} catch {
+  execFileSync("tar", ["-czf", deployTar, "-C", deployDir, ...deployFiles], { stdio: "inherit" });
+}
+const deploySha = sha256(deployTar);
+writeFileSync(`${deployTar}.sha256`, `${deploySha}  vault-chat-deploy.tar.gz\n`);
+
 const meta = {
   version,
   rev,
   sha256: bundleSha,
   assetsSha256: assetsSha,
+  deploySha256: deploySha,
   builtAt: new Date().toISOString(),
 };
 writeFileSync(join(out, "server-version.json"), JSON.stringify(meta, null, 2) + "\n");

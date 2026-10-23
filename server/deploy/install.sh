@@ -11,6 +11,9 @@
 # ~/.local/state/vault-chat-server/bin/. Creates ~/.config/vault-chat-server.env from
 # the example only if it does not exist. Never reads, writes or copies secrets, and
 # never overwrites an existing env file. Re-running it is safe.
+#
+# Needed once: from then on the updater keeps itself and the three units current from
+# each release (vault-chat-deploy.tar.gz, step 7 of vault-chat-update.sh).
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -18,7 +21,7 @@ START=0
 for a in "$@"; do
   case "$a" in
     --start) START=1 ;;
-    -h|--help) sed -n '2,13p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,16p' "$0"; exit 0 ;;
     *) echo "unknown option: $a" >&2; exit 2 ;;
   esac
 done

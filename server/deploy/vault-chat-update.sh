@@ -14,7 +14,13 @@
 #   5. /api/v1/health must report <ver> within 90 s — otherwise swap the symlink back,
 #      restart, mark <ver> failed (so it is not retried every 10 min) and
 #      POST /api/v1/alert so the phone hears about it;
-#   6. keep the two most recent old versions, delete older ones.
+#   6. keep the two most recent old versions, delete older ones;
+#   7. refresh itself: the release's own copy of this script and the units
+#      (vault-chat-deploy.tar.gz, from server/deploy/) replace the installed ones when
+#      they differ — each written beside its target and renamed over it, the script only
+#      if `bash -n` passes, then `daemon-reload` (and the timer restarted when it changed).
+#      Also on an up-to-date pass, from the running version. So updater changes ship like
+#      everything else; install.sh is needed once, never again.
 #
 # Layout under $VC_SERVER_STATE (default ~/.local/state/vault-chat-server):
 #   current -> versions/<ver>          what the systemd unit runs
@@ -41,7 +47,12 @@ FAKE_LINKS="${VC_UPDATE_FAKE_SYMLINKS:-0}"
 
 BUNDLE=vault-chat-server.mjs
 ASSETS=vault-chat-server-assets.tar.gz
+DEPLOY=vault-chat-deploy.tar.gz
 META=server-version.json
+# Where install.sh put the updater and the units (overridable for the tests only).
+BIN_DIR="${VC_UPDATE_BIN_DIR:-$STATE/bin}"
+UNITS_DIR="${VC_UPDATE_UNITS_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user}"
+DEPLOY_FILES="vault-chat-update.sh vault-chat-server.service vault-chat-update.service vault-chat-update.timer"
 
 log() { echo "vault-chat-update: $*"; }
 die() { echo "vault-chat-update: $*" >&2; exit 1; }
@@ -118,6 +129,38 @@ wait_for_version() {  # wait_for_version <ver> <seconds>; 0 when health reports 
   done
 }
 
+# refresh_self <dir>: install the release's deploy files (DEPLOY_FILES) from <dir> where
+# they differ from what is installed. Atomic per file (written beside it, renamed over it:
+# this very script keeps running from the old file), the updater only if it parses.
+# Never fails the pass.
+refresh_self() {
+  local src="$1" f dst mode changed="" units=0
+  [ -d "$src" ] || return 0
+  for f in $DEPLOY_FILES; do
+    [ -f "$src/$f" ] || continue
+    case "$f" in
+      *.sh) dst="$BIN_DIR/$f"; mode=0755
+            bash -n "$src/$f" 2>/dev/null || { log "not refreshing $f: it does not parse"; continue; } ;;
+      *)    dst="$UNITS_DIR/$f"; mode=0644 ;;
+    esac
+    if [ -f "$dst" ] && cmp -s "$src/$f" "$dst"; then continue; fi
+    if mkdir -p "$(dirname "$dst")" && install -m "$mode" "$src/$f" "$dst.new.$$" && mv -f "$dst.new.$$" "$dst"; then
+      changed="$changed $f"
+      case "$f" in *.sh) ;; *) units=1 ;; esac
+    else
+      rm -f "$dst.new.$$"
+      log "could not refresh $dst"
+    fi
+  done
+  [ -n "$changed" ] || return 0
+  log "refreshed from the release:$changed"
+  if [ "$units" = 1 ]; then
+    systemctl --user daemon-reload || log "daemon-reload returned non-zero"
+    case "$changed" in *vault-chat-update.timer*) systemctl --user restart vault-chat-update.timer || log "timer restart returned non-zero" ;; esac
+  fi
+  return 0
+}
+
 # ── 1. what is latest, what is running ──────────────────────────────────────
 tmp="$(mktemp -d "$STATE/.tmp.XXXXXX")"
 trap 'rm -rf "$tmp"' EXIT
@@ -133,6 +176,7 @@ case "$ver" in *[!0-9A-Za-z.+-]*|"") die "refusing odd version '$ver'";; esac
 cur="$(strip_v "$(current_version)")"
 if [ "$ver" = "$cur" ]; then
   log "up to date ($ver)"
+  refresh_self "$(read_current)/deploy"
   exit 0
 fi
 if [ -e "failed/$ver" ]; then
@@ -178,6 +222,16 @@ if fetch "$ASSETS" optional; then
   rm -f "$stage/$ASSETS"
 fi
 
+# The updater and units of this release (optional: older releases have none).
+if fetch "$DEPLOY" optional; then
+  fetch "$DEPLOY.sha256"
+  sha_ok "$stage/$DEPLOY" "$stage/$DEPLOY.sha256" \
+    || die "sha256 mismatch for $DEPLOY in $tag — refusing to install it"
+  mkdir -p "$stage/deploy"
+  tar -xzf "$stage/$DEPLOY" -C "$stage/deploy"
+  rm -f "$stage/$DEPLOY" "$stage/$DEPLOY.sha256"
+fi
+
 rm -rf "versions/$ver"
 mv "$stage" "versions/$ver"
 touch "versions/$ver"
@@ -212,6 +266,8 @@ systemctl --user restart "$UNIT" || log "systemctl restart returned non-zero"
 # ── 5. prove it, or roll back ───────────────────────────────────────────────
 if wait_for_version "$ver" "$HEALTH_WAIT_S"; then
   log "now running $ver"
+  # ── 7. the updater and units of the version now running ──
+  refresh_self "versions/$ver/deploy"
 else
   : > "failed/$ver"
   if [ -n "$prev" ] && [ -d "$prev" ]; then
