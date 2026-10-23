@@ -422,12 +422,6 @@ export class MemoryBox {
       case "delete":
         this.meta(conv, { deleted: true });
         return { ok: true };
-      case "clear":
-        // The engine's Clear: blank at once (`cleared`); its save turn, note and compaction run hidden (`clearing`).
-        if (!p) return { ok: false, error: `conversation ${conv} not found` };
-        this.meta(conv, { cleared: { at: this.now(), id: b.clientId }, clearing: true });
-        this.meta(conv, { clearing: null });
-        return { ok: true, convId: conv, cleared: true };
       default:
         return { error: "unknown intent" };
     }

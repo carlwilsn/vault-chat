@@ -16,7 +16,7 @@ import { VoiceImagePusher } from "../../src/voiceImages";
 import { VoiceUpdates, pushStartImages } from "../../src/voiceFront";
 import type { LogRecord } from "../../src/convlog/protocol";
 import { emptyPicture, emptyRow, foldInto, pendingOf, reduceRow, shown, type Picture, type RowState } from "../../src/convlog/reduce";
-import { makeChatView, type ChatView } from "../../src/convlog/view";
+import { afterClear, makeChatView, type ChatView } from "../../src/convlog/view";
 import { MAIN_ID, MAIN_TITLE, isOlderChat, panelModel, projectThreadId } from "../../src/threads";
 
 export function boot(): void {
@@ -382,32 +382,41 @@ export function boot(): void {
         body.querySelectorAll(".arch-row[data-k]").forEach((b) => {
           b.onclick = () => {
             const k = b.dataset.k;
-            if (k === "clear") { closeSheet(); void clearThread(); }
+            if (k === "clear") { closeSheet(); clearThread(); }
           };
         });
       },
     });
   }
-  /** Clear: this thread's view blank at once; the box saves what lasts, tells the agent and compacts behind it. */
-  let blankTok: { conv: string; id: string } | null = null;
-  async function clearThread() {
-    if (!convId) return;
-    const id = clientId();
-    const conv = convId;
-    blankTok = { conv, id };
-    outgoing = outgoing.filter((o) => o.convId !== conv);
+  /** Clear on this phone only (the laptop's view, the conversation and its context are untouched): what is
+   *  shown now leaves this view, kept across reloads (src/boxChat.ts afterClear, the laptop's own). */
+  const CLEARED_KEY = "vc_phone_cleared";
+  let clearedAt: Record<string, string> = (() => { try { return JSON.parse(localStorage.getItem(CLEARED_KEY) || "{}") || {}; } catch { return {}; } })();
+  function clearThread() {
+    if (!convId || !pic || !picView) return;
+    const msgs = picView(pic).messages;
+    const last = msgs[msgs.length - 1]?.mid;
+    if (!last) return;
+    clearedAt = { ...clearedAt, [convId]: last };
+    try { localStorage.setItem(CLEARED_KEY, JSON.stringify(clearedAt)); } catch {}
+    outgoing = outgoing.filter((o) => o.convId !== convId || !o.failed);
     for (const [, n] of shownNodes) n.el.remove();
     shownNodes.clear();
     renderThread();
+  }
+  /** "/compact [focus]": the conversation's context compacted now (not a message to the agent). */
+  async function compactCommand(text: string): Promise<boolean> {
+    const m = /^\/compact(?:\s+([\s\S]*))?$/i.exec(text.trim());
+    if (!m || !convId) return false;
     try {
-      const r = await api("/api/v2/intent", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ type: "clear", convId: conv, clientId: id, client: "phone" }) });
+      const r = await api("/api/v2/intent", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ type: "compact", convId, client: "phone", ...(m[1] && m[1].trim() ? { focus: m[1].trim() } : {}) }) });
       const d = await r.json();
       if (!r.ok || d.error || d.ok === false) throw new Error(d.error || r.status);
+      toast(d.compacted === false ? "Nothing to compact yet." : "Compacted.");
     } catch (e: any) {
-      blankTok = null;
-      renderThread();
-      toast("Not cleared: " + (e.message || e));
+      toast("Not compacted: " + (e.message || e));
     }
+    return true;
   }
   // The title opens the panel (Main and the projects); a thread is not moved between projects any more.
   $("titleBtn").onclick = () => { if (page === "chat") openConvs(); else setPage("chat"); };
@@ -845,13 +854,11 @@ export function boot(): void {
   function renderThread() {
     if (!convId) return;
     // Clear pressed here: blank until the box's own `cleared` (this id) is in the fold, which is blank itself.
-    if (blankTok && (blankTok.conv !== convId || (pic && (pic.meta as any).cleared && (pic.meta as any).cleared.id === blankTok.id))) blankTok = null;
-    const blank = !!blankTok;
-    const v = !blank && pic && picView ? picView(pic) : null;
+    const v = pic && picView ? picView(pic) : null;
     const have = new Set([...(pic ? shown(pic) : []).map((x) => x.id), ...(pic ? pendingOf(pic) : []).map((x) => x.id)]);
     const mine = outgoing.filter((o) => o.convId === convId && !have.has(o.id));
     outgoing = outgoing.filter((o) => o.convId !== convId || !(pic ? shown(pic) : []).some((x) => x.id === o.id));
-    const msgs: any[] = [...(v ? v.messages : []).filter((m) => !m.hidden)];
+    const msgs: any[] = [...afterClear(v ? v.messages : [], clearedAt[convId]).filter((m) => !m.hidden)];
     // What pi has not delivered yet (a steer, a queued message): after the thread, labelled.
     for (const p of v ? v.pending : []) msgs.push({ role: "user", content: p.text, mid: p.id, __pending: p.kind });
     for (const o of mine) {
@@ -945,6 +952,7 @@ export function boot(): void {
     // Photos ride with a typed send (not with a tapped option).
     const imgs = forced === undefined ? pendingImgs.slice() : [];
     if (!typed && !imgs.length) return;
+    if (!imgs.length && (await compactCommand(typed))) { if (forced === undefined) { input.value = ""; input.style.height = "auto"; } return; }
     // The box records a photo-only turn as "(image)".
     const text = typed || "(image)";
     if (convSource && ARCHIVED_SOURCES.has(convSource)) { toast("Archived mission thread — start a new chat."); return; }

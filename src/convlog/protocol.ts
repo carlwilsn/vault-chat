@@ -101,7 +101,7 @@ export type ConvMeta = {
 
 export type EventBody =
   | { type: "meta"; patch: Record<string, unknown> }
-  | { type: "entry"; file: string; entry: PiEntry; clientId?: string; shown?: string; via?: string; images?: ItemImage[] }
+  | { type: "entry"; file: string; entry: PiEntry; clientId?: string; shown?: string; via?: string; images?: ItemImage[]; device?: string }
   | { type: "live"; ev: any }
   | { type: "signal"; signal: Record<string, unknown> };
 

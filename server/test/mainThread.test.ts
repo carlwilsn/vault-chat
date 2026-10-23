@@ -2,9 +2,9 @@
 // reports/Project memory SOTA research.md), through the real engine on a fake pi:
 //   - Main is the default of every message that names no conversation; Main and one thread per
 //     project exist from the start; a separate chat only when a client asks with its own id;
-//   - Clear: the picture is blank at once (no divider, nothing to scroll back into), and behind it,
-//     in order: one silent save-what-lasts turn, a hidden vc-clear message in pi's context, pi's
-//     own compaction; pi's file keeps the raw history; Carl's next message waits for it;
+//   - Clear is a mark on each surface (never sent to the box: the conversation and its context stay
+//     whole); /compact compacts the context now; two surfaces at once share the one thread, each
+//     message tagged with its surface, one from another surface queued behind a running turn;
 //   - memory: the 9 probes of the project-memory report, as far as they are the box's mechanics
 //     (what is loaded where, re-sent when changed, capped, the rules the agent is given). Whether a
 //     real model follows the rules is a real-pi run on the box, not this file;
@@ -259,83 +259,66 @@ describe("memory: the project-memory report's probes (the box's side of each)", 
   });
 });
 
-describe("Clear: a blank view at once; the agent saves, is told, and pi compacts behind it", () => {
+describe("one context, several surfaces: Clear is per surface, /compact compacts, two conversations at once queue", () => {
   let tid = "";
-  it("5. the view is blank at once (no divider), the save turn runs hidden, the note and compaction follow, the raw history stays", async () => {
-    put(".vault-chat/MEMORY.md", "# Memory\n");
+  it("the box keeps everything (Clear is a mark on each device, never sent); /compact compacts now, focused, and the agent gets its memory again", async () => {
+    put(".vault-chat/MEMORY.md", "# Memory\n\n- 2026-10-21: the essay is due Friday\n");
     const before = await turn("We decided: the essay is due Friday, CLEARMARK.");
     tid = before.tid;
     const p0 = convs.pictureOf(rig.vault, "main")!;
-    expect(reduce.shown(p0).some((x) => (x.text ?? "").includes("CLEARMARK"))).toBe(true);
     const file = String(p0.meta.threadPath);
-    const turns0 = rig.backend.turns.length;
+    expect(reduce.shown(p0).some((x) => (x.text ?? "").includes("CLEARMARK"))).toBe(true);
+    // There is no clear intent any more: the box has nothing to clear.
+    expect((await rig.engine.intent({ type: "clear", convId: "main" })).error).toMatch(/unknown intent/);
 
-    const r = await rig.engine.intent({ type: "clear", convId: "main", clientId: "clr-1" });
-    expect(r).toMatchObject({ ok: true, cleared: true });
-    // At once: nothing shown, no divider, nothing to scroll back into; not "running" for the clients.
-    const p1 = convs.pictureOf(rig.vault, "main")!;
-    expect(reduce.shown(p1)).toEqual([]);
-    expect((p1.meta as any).cleared).toMatchObject({ id: "clr-1" });
-    expect(reduce.rowOf(p1).running).toBe(false);
-
-    // A message Carl sends meanwhile waits for Clear's work.
-    let sentLate = false;
-    const late = rig.engine.message({ text: "After the clear: what is due?" }).then((x: any) => ((sentLate = true), x));
-
-    // 1. The save turn: the agent is asked to save what lasts and reply NO_REPLY.
-    await until(() => rig.backend.turns.length > turns0);
-    const flush = rig.backend.turns[turns0]!;
-    expect(flush.threadId).toBe(tid);
-    expect(flush.texts.join("\n")).toContain("[Clear] Carl pressed Clear");
-    expect(flush.texts.join("\n")).toContain("reply exactly NO_REPLY");
-    expect(sentLate).toBe(false);
-    // The agent saves (its edit) and says NO_REPLY: none of it is shown.
-    appendFileSync(join(rig.vault, ".vault-chat", "MEMORY.md"), "- 2026-10-21: the essay is due Friday\n");
-    rig.backend.ev(tid, { kind: "text", text: "NO_REPLY" });
-    rig.backend.end(tid);
-
-    // 2 and 3: the note in pi's context, then pi's compaction (focused), then the work ends.
-    await until(() => !(convs.pictureOf(rig.vault, "main")!.meta as any).clearing);
+    const r = await rig.engine.intent({ type: "compact", convId: "main", focus: "the essay deadline" });
+    expect(r).toMatchObject({ ok: true, compacted: true });
+    expect((rig.backend as any).compactions.at(-1)).toMatchObject({ threadId: tid, customInstructions: expect.stringContaining("the essay deadline") });
     const entries = readFileSync(file, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l));
-    const iNote = entries.findIndex((e) => e.type === "custom_message" && e.customType === "vc-clear");
-    const iComp = entries.findIndex((e) => e.type === "compaction");
-    const iFlush = entries.findIndex((e) => e.type === "message" && JSON.stringify(e.message.content).includes("[Clear]"));
-    expect(iFlush).toBeGreaterThan(0);
-    expect(iNote).toBeGreaterThan(iFlush);
-    expect(iComp).toBeGreaterThan(iNote);
-    expect(entries[iNote].content).toContain("Everything said before this point is background: don't bring up earlier topics unless he does");
-    expect(entries[iNote].display).toBe(false);
-    expect((rig.backend as any).compactions.at(-1)).toMatchObject({ threadId: tid, customInstructions: expect.stringContaining("Carl cleared his view") });
-    // The raw history is all still in pi's file.
+    expect(entries.some((e) => e.type === "compaction")).toBe(true);
+    // The raw history stays, and the thread still shows it (no surface's Clear is the box's).
     expect(readFileSync(file, "utf8")).toContain("CLEARMARK");
-    // Still blank: nothing of the save turn, the note or the compaction shows (only the waiting message may by now).
-    const after = reduce.shown(convs.pictureOf(rig.vault, "main")!);
-    expect(after.filter((x) => x.text !== "After the clear: what is due?")).toEqual([]);
+    expect(reduce.shown(convs.pictureOf(rig.vault, "main")!).some((x) => (x.text ?? "").includes("CLEARMARK"))).toBe(true);
+    // The next turn carries the memory again (the summary may have dropped it).
+    const next = await turn("What is due?");
+    expect(next.text).toContain("- 2026-10-21: the essay is due Friday");
+  });
 
-    // The waiting message runs now, and the agent gets its memory again (the summary may have dropped it).
-    const out = await late;
-    expect(out).toMatchObject({ ok: true, convId: "main" });
-    await until(() => rig.backend.turns.length > turns0 + 1);
-    const next = rig.backend.turns.at(-1)!;
-    expect(next.texts.join("\n")).toContain("After the clear: what is due?");
-    expect(next.texts.join("\n")).toContain("- 2026-10-21: the essay is due Friday");
-    rig.backend.ev(tid, { kind: "text", text: "Friday." });
+  it("the Compact tool (Carl asks in words or by voice): runs when the turn ends, never inside it", async () => {
+    const before = rig.backend.turns.length;
+    const n0 = (rig.backend as any).compactions.length;
+    await rig.engine.message({ text: "Compact the context please.", client: "laptop" });
+    await until(() => rig.backend.turns.length > before);
+    const r = await rig.backend.call(tid, "Compact", { focus: "open tasks" });
+    expect(r.text).toMatch(/starts as soon as this turn ends/);
+    await new Promise((x) => setTimeout(x, 200));
+    expect((rig.backend as any).compactions.length).toBe(n0);
+    rig.backend.end(tid);
+    await until(() => (rig.backend as any).compactions.length > n0);
+    expect((rig.backend as any).compactions.at(-1).customInstructions).toContain("open tasks");
+  });
+
+  it("two surfaces at once: each message says where Carl is; one from another surface while a turn runs waits its turn (never lost, never steering it)", async () => {
+    const before = rig.backend.turns.length;
+    await rig.engine.message({ text: "Laptop: start the long refactor.", client: "laptop" });
+    await until(() => rig.backend.turns.length > before);
+    expect(rig.backend.turns.at(-1)!.texts.join("\n")).toContain("[Carl, on his laptop]");
+    const fu0 = rig.backend.followUps.length;
+    const out = await rig.engine.message({ text: "Phone: what's on today?", client: "phone" });
+    expect(out).toMatchObject({ ok: true, queued: true });
+    expect(rig.backend.followUps.length).toBe(fu0 + 1);
+    expect(rig.backend.followUps.at(-1).texts.join("\n")).toContain("[Carl, on his phone]");
+    // The same surface still steers its own turn.
+    const steered = await rig.engine.message({ text: "Laptop: only the parser.", client: "laptop" });
+    expect(steered).toMatchObject({ ok: true, steered: true });
     rig.backend.end(tid);
     await until(async () => (await rig.readConv("main"))?.state !== "running");
-    // The view holds only what came after.
-    const shownNow = reduce.shown(convs.pictureOf(rig.vault, "main")!).map((x) => x.text);
-    expect(shownNow).toEqual(["After the clear: what is due?", "Friday."]);
-    expect(shownNow.join(" ")).not.toContain("CLEARMARK");
+    // Each of Carl's messages carries its surface in the feed (a call can tell his laptop's turns from its own).
+    const users = reduce.shown(convs.pictureOf(rig.vault, "main")!).filter((x) => x.kind === "user");
+    expect(users.find((x) => x.text === "Laptop: start the long refactor.")?.device).toBe("laptop");
   });
 
-  it("the clients' fold is the same: a client following the feed shows nothing from before the clear", async () => {
-    const recs = convs.logOf(rig.vault).eventsOf("main", 0);
-    const p = reduce.fold(recs, "main");
-    expect(reduce.shown(p).map((x) => x.text)).toEqual(["After the clear: what is due?", "Friday."]);
-    expect(reduce.shown(p).some((x) => x.kind === "compaction")).toBe(false);
-  });
-
-  it("SearchHistory finds what was said before the clear, in pi's own file, with its time", async () => {
+  it("SearchHistory finds what was said before a compaction, in pi's own file, with its time", async () => {
     const r = await rig.backend.call(tid, "SearchHistory", { query: "clearmark essay" });
     expect(r.ok).toBe(true);
     expect(r.text).toMatch(/1 match\(es\) in "Main"'s full history:\n\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}\] Carl: .*CLEARMARK/);
@@ -346,12 +329,8 @@ describe("Clear: a blank view at once; the agent saves, is told, and pi compacts
     expect((await rig.backend.call(tid, "SearchHistory", { query: "x", thread: "Nope" })).text).toMatch(/No thread "Nope"/);
   });
 
-  it("Clear on a thread nothing was said in: blank, nothing to save or compact", async () => {
-    const turns0 = rig.backend.turns.length;
-    const r = await rig.engine.intent({ type: "clear", convId: "project-thesis-draft", clientId: "clr-2" });
-    expect(r.ok).toBe(true);
-    await until(() => !(convs.pictureOf(rig.vault, "project-thesis-draft")!.meta as any).clearing);
-    expect(rig.backend.turns.length).toBe(turns0);
+  it("/compact on a thread nothing was said in: nothing to compact", async () => {
+    expect(await rig.engine.intent({ type: "compact", convId: "project-thesis-draft" })).toMatchObject({ ok: true, compacted: false });
   });
 });
 

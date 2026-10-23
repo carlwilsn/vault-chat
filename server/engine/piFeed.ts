@@ -30,6 +30,8 @@ export type Expected = {
   via: string;
   clientId?: string;
   images?: ItemImage[];
+  /** The surface Carl sent it from (laptop, phone, board, voice): two surfaces can talk in one thread at once. */
+  device?: string;
 };
 
 export type FeedOpts = {
@@ -167,6 +169,7 @@ export class PiFeed {
       shown: x!.shown,
       via: x!.via,
       ...(x!.images?.length ? { images: x!.images } : {}),
+      ...(x!.device ? { device: x!.device } : {}),
     });
     if (x!.clientId && (x!.kind === "steer" || x!.kind === "queue")) this.o.delivered?.(x!.clientId);
   }

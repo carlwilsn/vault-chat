@@ -22,6 +22,7 @@ async function boxReady(): Promise<typeof import("./boxChat") | null> {
  * both held by the box's engine.
  */
 export async function sendMidTurn(kind: PendingKind, text: string, contextPreamble?: string, attachments?: ChatAttachment[]): Promise<void> {
+  if (await compactCommand(text, useStore.getState().activeConversationId)) return;
   const bc = await boxReady();
   if (!bc) return;
   await bc.boxSend({ text, contextPreamble, attachments, convId: useStore.getState().activeConversationId, mode: kind });
@@ -35,9 +36,21 @@ export async function cancelPending(id: string): Promise<Pending | null> {
   return (await bc.boxUnqueue(convId!, qid!)) ? { id, convId: convId!, kind: "queue", text: "" } : null;
 }
 
+/** "/compact [focus]": compact the open conversation's context now (not a message to the agent). */
+const COMPACT = /^\/compact(?:\s+([\s\S]*))?$/i;
+async function compactCommand(text: string, convId: string | null): Promise<boolean> {
+  const m = COMPACT.exec(text.trim());
+  if (!m || !convId) return false;
+  const bc = await boxReady();
+  if (!bc) return true;
+  await bc.boxCompact(convId, m[1] ?? "");
+  return true;
+}
+
 /** Send a message to the box: a new turn, or a steer into the running one. */
 export async function sendMessage(text: string, contextPreamble?: string, attachments?: ChatAttachment[], convId?: string): Promise<void> {
   const s = useStore.getState();
+  if (await compactCommand(text, convId ?? s.activeConversationId)) return;
   // Threads from the old missions system are archived: readable, never run.
   const t = s.conversations.find((c) => c.id === (convId ?? s.activeConversationId));
   if (t && isArchivedThread(t)) return;
@@ -57,7 +70,7 @@ export async function interruptAndSend(text: string, contextPreamble?: string, a
   await sendMessage(text, contextPreamble, attachments);
 }
 
-/** Clear: the open thread's view goes blank at once; the box saves what lasts, tells the agent and compacts. */
+/** Clear: this surface's view of the open thread goes blank (the conversation and other surfaces keep it all). */
 export function clearThread(): void {
   const id = useStore.getState().activeConversationId;
   if (id) void import("./boxChat").then((bc) => bc.boxClear(id));

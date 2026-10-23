@@ -268,3 +268,14 @@ export function makeChatView(): (p: Picture, opts?: { split?: boolean }) => Chat
 export function messagesOf(p: Picture): ViewMessage[] {
   return makeChatView()(p, { split: false }).messages;
 }
+
+/** Clear is per surface (Carl, 2026-10-23): each device keeps the id of the last message it showed when he cleared. */
+/** The messages after this surface's Clear (its last shown message's id, or one of the items a message shows); all of them when the mark is not there. */
+export function afterClear<T extends { mid?: string; items?: string[] }>(messages: T[], mark: string | undefined): T[] {
+  if (!mark) return messages;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i]!;
+    if (m.mid === mark || m.items?.includes(mark)) return messages.slice(i + 1);
+  }
+  return messages;
+}

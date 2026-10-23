@@ -3,7 +3,8 @@
 // Plain TS strings (no `?raw` import) so the headless server bundle can
 // include this module too.
 import { RESOLVE_SYNC_CONFLICT } from "./resolveSyncConflict";
+import { COMPACT } from "./compact";
 
 export type DefaultSkill = { name: string; description: string; body: string };
 
-export const DEFAULT_SKILLS: DefaultSkill[] = [RESOLVE_SYNC_CONFLICT];
+export const DEFAULT_SKILLS: DefaultSkill[] = [RESOLVE_SYNC_CONFLICT, COMPACT];

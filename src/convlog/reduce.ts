@@ -33,6 +33,8 @@ export type Item = {
   text?: string;
   /** user: how it came in (chat, steer, queue, answer, voice, wake, nudge, resume, job). */
   via?: string;
+  /** user: the surface it was sent from (laptop, phone, board, voice), when the box knows it. */
+  device?: string;
   images?: ItemImage[];
   // tool
   name?: string;
@@ -155,7 +157,7 @@ function onEntry(d: Draft, r: Extract<LogRecord, { type: "entry" }>): void {
         : [];
       // The feed keeps an image's path; pi's entry holds its pixels.
       const images = r.images ? r.images.map((im, i) => (im.dataUrl || !fromContent[i] ? im : { ...im, dataUrl: fromContent[i]!.dataUrl })) : fromContent;
-      place(d, [{ id: r.clientId ?? e.id, kind: "user", status: "done", text, via: r.via ?? "chat", ...(images.length ? { images } : {}), at: r.at }]);
+      place(d, [{ id: r.clientId ?? e.id, kind: "user", status: "done", text, via: r.via ?? "chat", ...(r.device ? { device: r.device } : {}), ...(images.length ? { images } : {}), at: r.at }]);
       touch(d, r.at);
       if (d.meta.title === NEW_CHAT && text.trim() && !["wake", "nudge", "resume", "job"].includes(r.via ?? "")) d.meta = { ...d.meta, title: titleFrom(text) };
       return;

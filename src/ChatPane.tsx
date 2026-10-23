@@ -1315,7 +1315,7 @@ export function ChatPane() {
                   disabled={!ready}
                   data-el="clear-thread"
                   className="flex items-center gap-1 hover:text-foreground transition-colors disabled:opacity-40"
-                  title="Clear — a fresh view of this thread (the agent saves what lasts first; nothing is deleted)"
+                  title="Clear this view — on this device only; the conversation and the agent keep everything (/compact makes the context smaller)"
                 >
                   <Eraser className="h-3 w-3" />
                   <span>Clear</span>

@@ -1,8 +1,7 @@
 // One main conversation on the laptop (src/threads.ts): the left panel's structure (the same
 // model on the laptop overlay, the fullscreen sidebar, the popout and the phone), Main as the
-// default the app opens on, older chats read-only, and Clear: the thread blank on the very next
-// frame (no divider, nothing to scroll back into), against a fake box that answers late — and it
-// stays blank while the box works behind it.
+// default the app opens on, older chats read-only, and Clear: this surface's view blank on the very
+// next frame (no divider, nothing to scroll back into), nothing sent to the box, kept on this device.
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { installFakeTauri, makeTempVault } from "./fakes.ts";
@@ -111,33 +110,38 @@ test("the app opens on Main; a message with nothing chosen goes to Main", async 
   assert.equal(S().conversations.find((c) => c.id === "old1")?.kind, undefined);
 });
 
-test("Clear: blank on the next frame, before the box answers; never anything from before again, no divider", async () => {
-  box.pollDelay = 400; // the box's records come late: the blank must not wait for them
-  box.clearMs = 600;
-  const frames: { messages: string[]; stream: string; busy: boolean }[] = [];
-  const unsub = useStore.subscribe((s) => frames.push({ messages: s.messages.map((m) => m.content), stream: s.streamingText, busy: s.busy }));
-  const p = chat.clearThread();
-  void p;
+test("Clear is this surface's: blank on the next frame, nothing sent to the box, the box (and every other surface) keeps it all; it lasts across a restart", async () => {
+  const intents0 = box.intents.length;
+  const frames: string[][] = [];
+  const unsub = useStore.subscribe((s) => frames.push(s.messages.map((m) => m.content)));
+  chat.clearThread();
   await waitFor("blank", () => S().messages.length === 0, 300);
-  const firstBlank = frames.findIndex((f) => f.messages.length === 0);
-  assert.ok(firstBlank >= 0);
-  await waitFor("the clear intent", () => box.intents.at(-1)?.type === "clear");
-  assert.equal(box.intents.at(-1)!.convId, "main");
-  // The box's cleared record arrives, its work runs and ends: still blank on every frame.
-  await waitFor("box cleared", () => !!box.picture("main").meta.cleared && !box.picture("main").meta.clearing, 5000);
-  await new Promise((r) => setTimeout(r, 900));
   unsub();
-  box.pollDelay = 0;
-  for (const f of frames.slice(firstBlank)) {
-    assert.deepEqual(f.messages, [], "nothing to scroll back into, on any frame");
-    assert.equal(f.busy, false);
-  }
-  assert.equal(S().messages.length, 0);
-  // What comes after shows as usual.
+  assert.ok(frames.some((f) => f.length === 0));
+  await new Promise((r) => setTimeout(r, 300));
+  assert.equal(box.intents.length, intents0, "nothing went to the box");
+  assert.ok(threads && box.picture("main").items.some((x: any) => String(x.text ?? "").includes("CLEARED-TEXT")), "the conversation still has it");
+  // A new message shows as usual, and only it.
   await chat.sendMessage("a fresh start");
   await waitFor("fresh", () => S().messages.some((m) => m.content === "a fresh start" && !m.boxPending));
-  assert.deepEqual(S().messages.map((m) => m.content), ["a fresh start"]);
-  assert.ok(!S().messages.some((m) => /summarized|CLEARED-TEXT/.test(m.content)));
+  box.stream("main", "assistant", "ok");
+  box.endTurn("main");
+  await waitFor("reply", () => S().messages.some((m) => m.content === "ok"));
+  assert.deepEqual(S().messages.map((m) => m.content), ["a fresh start", "ok"]);
+  // A restart of this client: still cleared here (kept on this device).
+  bc.stopBoxChat();
+  useStore.setState({ conversations: [], messages: [] } as any);
+  await bc.startBoxChat(vault);
+  await waitFor("reloaded", () => S().messages.some((m) => m.content === "ok"), 8000);
+  assert.ok(!S().messages.some((m) => /CLEARED-TEXT|hello Main/.test(m.content)));
+});
+
+test("/compact is a command to the box, not a message", async () => {
+  const sent0 = box.intents.length;
+  await chat.sendMessage("/compact keep the essay plan");
+  await waitFor("compact intent", () => box.intents.length > sent0);
+  assert.deepEqual(box.intents.at(-1), { type: "compact", convId: "main", focus: "keep the essay plan", client: "laptop" });
+  assert.ok(!S().messages.some((m) => m.content.startsWith("/compact")));
 });
 
 test("an older chat opens read-only from Older chats; New separate chat makes a chat of kind separate", async () => {

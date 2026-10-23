@@ -1,4 +1,4 @@
-// Main and Clear end to end: the real bundle, the engine on the fake pi (fakePiCli.mjs: pi's RPC,
+// Main and /compact end to end: the real bundle, the engine on the fake pi (fakePiCli.mjs: pi's RPC,
 // its `compact` command and its session file in pi's format), a fake OpenRouter. What the model
 // is sent is what the fake OpenRouter records; what a client shows is the fold of /poll.
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
@@ -64,37 +64,30 @@ describe("Main over HTTP", () => {
     expect(sent).not.toContain("overlap 128");
   });
 
-  it("Clear: blank at once; behind it the save turn, the vc-clear note in pi's context and pi's compaction", async () => {
-    const calls0 = or.calls.length;
-    const r = await post("/api/v2/intent", { type: "clear", convId: "main", clientId: "clr-x" });
-    expect(r).toMatchObject({ ok: true, cleared: true });
-    // At once: the fold shows nothing.
-    expect(shown(await picture("main"))).toEqual([]);
-    await waitFor(() => idle("main"), 60_000);
-    // The save turn reached the model, with the instruction to reply NO_REPLY; its reply is not shown.
-    expect(JSON.stringify(or.calls.slice(calls0))).toContain("[Clear] Carl pressed Clear");
-    const p = await picture("main");
-    expect(shown(p)).toEqual([]);
-    // pi's session file: the save turn, then the note (a custom message), then the compaction; the raw history kept.
+  it("/compact: pi compacts Main's context now (a compaction entry in pi's file, the raw history kept); the thread shows the summary divider", async () => {
+    const r = await post("/api/v2/intent", { type: "compact", convId: "main", focus: "the Friday deadline" });
+    expect(r).toMatchObject({ ok: true, compacted: true });
     const dir = join(home, "state", "pi", "sessions");
     const file = readdirSync(dir).map((n) => join(dir, n)).find((f) => f.endsWith(".jsonl") && readFileSync(f, "utf8").includes("MARKER-ONE"))!;
     const entries = readFileSync(file, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l));
-    const iNote = entries.findIndex((e) => e.type === "custom_message" && e.customType === "vc-clear");
-    const iComp = entries.findIndex((e) => e.type === "compaction");
-    expect(iNote).toBeGreaterThan(0);
-    expect(iComp).toBeGreaterThan(iNote);
+    expect(entries.some((e) => e.type === "compaction")).toBe(true);
     expect(readFileSync(file, "utf8")).toContain("MARKER-ONE");
+    await waitFor(async () => shown(await picture("main")).some((x) => x.kind === "compaction"), 10_000);
+    // Clear is not the box's: there is no such intent.
+    expect((await post("/api/v2/intent", { type: "clear", convId: "main" })).error).toMatch(/unknown intent/);
   });
 
-  it("after Clear the agent knows: the next call carries the note and the memory again, the view only the new turn", async () => {
+  it("after /compact the agent gets its memory again with the next turn; the thread still has everything", async () => {
     const calls0 = or.calls.length;
-    const r = await post("/api/v2/intent", { type: "send", clientId: "c-2", text: "What was I saying?" });
+    const r = await post("/api/v2/intent", { type: "send", clientId: "c-2", text: "What was I saying?", client: "phone" });
     expect(r.convId).toBe("main");
     await waitFor(() => idle("main"), 30_000);
     const sent = JSON.stringify(or.calls.slice(calls0));
-    expect(sent).toContain("Carl cleared this thread's view");
     expect(sent).toContain("Carl likes one worked example");
-    expect(shown(await picture("main")).map((x) => x.text)).toEqual(["What was I saying?", "NO_REPLY"]);
+    expect(sent).toContain("[Carl, on his phone]");
+    const texts = shown(await picture("main")).map((x) => x.text ?? "");
+    expect(texts.some((t) => t.includes("MARKER-ONE"))).toBe(true);
+    expect(texts).toContain("What was I saying?");
   });
 
   it("the agent's model is one setting the laptop changes (Settings and the composer): the next turn runs on it", async () => {

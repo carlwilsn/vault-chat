@@ -33,7 +33,7 @@ import { boxFileChanged } from "./liveReload";
 import type { Conversation } from "./conversations";
 import type { LogRecord, PollAnswer } from "./convlog/protocol";
 import { emptyPicture, emptyRow, foldInto, pendingOf, reduceRow, type Picture, type RowState } from "./convlog/reduce";
-import { makeChatView, type ChatView } from "./convlog/view";
+import { afterClear, makeChatView, type ChatView } from "./convlog/view";
 import { MAIN_ID } from "./threads";
 
 export const BOX_UNREACHABLE = "Box unreachable";
@@ -234,8 +234,8 @@ class BoxChatSession {
   private down: number | false | null = null;
   /** The ids this client sent (a delivered steer or queued message drops its chip). */
   private sent = new Set<string>();
-  /** Clear pressed here: the thread shows blank at once, until the box's `cleared` (this id) is in the fold. */
-  private blank = new Map<string, string>();
+  /** Clear on this surface (src/viewClear.ts): each conversation shows only what came after this device's own Clear. */
+  private clearedAt: Record<string, string> = {};
 
   constructor(
     readonly vault: string,
@@ -243,6 +243,7 @@ class BoxChatSession {
   ) {}
 
   start(): void {
+    this.clearedAt = readCleared(this.vault);
     this.applyCache();
     let lastActive = useStore.getState().activeConversationId;
     this.unsub = useStore.subscribe((s) => {
@@ -486,12 +487,9 @@ class BoxChatSession {
         }
         if (row.deleted) continue;
         const p = this.pics.get(id);
-        // Clear pressed here: blank now, before the box's record arrives (then the fold itself is blank).
-        const tok = this.blank.get(id);
-        if (tok && p?.meta.cleared && (p.meta.cleared as { id?: string }).id === tok) this.blank.delete(id);
-        const blank = this.blank.has(id);
-        const view = p && !blank ? this.viewOf(id)(p) : null;
-        const base = (blank ? [] : (view?.messages ?? prev?.messages.filter((m) => !m.boxPending && !m.boxLocal) ?? [])) as ChatMessage[];
+        const view = p ? this.viewOf(id)(p) : null;
+        // What this surface cleared is not shown here (the conversation, and every other surface, still has it).
+        const base = afterClear((view?.messages ?? prev?.messages.filter((m) => !m.boxPending && !m.boxLocal) ?? []) as ChatMessage[], this.clearedAt[id]);
         const messages = this.overlay(id, base);
         // Sending: running as far as this client knows, until the log says so.
         const sending = (this.outgoing.get(id) ?? []).some((o) => !o.failed && (o.role ?? "user") === "user" && !o.line);
@@ -509,7 +507,7 @@ class BoxChatSession {
           runStartedAt: running ? (view?.startedAt ?? prev?.runStartedAt ?? Date.now()) : undefined,
           project: row.project,
           kind: row.kind,
-          clearing: row.clearing || blank,
+          clearing: row.clearing,
           state: row.state as Conversation["state"],
           working: row.working,
           nextWakeAt: row.nextWakeAt,
@@ -607,16 +605,15 @@ class BoxChatSession {
     this.sent.add(id);
   }
 
-  /** Clear pressed here: the thread is blank on this client at once (and its own messages on their way go too). */
-  blankNow(convId: string, id: string): void {
-    this.blank.set(convId, id);
-    this.outgoing.delete(convId);
+  /** Clear on this surface: everything shown so far goes from this device's view (nothing changes on the box). */
+  clearHere(convId: string): void {
+    const shown = useStore.getState().conversations.find((c) => c.id === convId)?.messages.filter((m) => !m.boxPending && !m.boxLocal) ?? [];
+    const last = shown[shown.length - 1]?.mid;
     this.notices.delete(convId);
+    if (!last) return;
+    this.clearedAt = { ...this.clearedAt, [convId]: last };
+    saveCleared(this.vault, this.clearedAt);
     this.project(new Set([convId]));
-  }
-
-  unblank(convId: string): void {
-    if (this.blank.delete(convId)) this.project(new Set([convId]));
   }
 
   /** The id of the log's last message shown for a conversation (where a local line is anchored). */
@@ -908,23 +905,46 @@ export async function boxLines(lines: { role: "user" | "assistant"; text: string
 }
 
 /**
- * Clear a thread (Carl's Clear): blank here at once, no divider, nothing to scroll back into. The box then
- * saves what lasts, tells the agent and compacts, behind the blank view (server/engine/engine.ts clear).
- * False = not box mode. A refusal puts the thread back and says why.
+ * Clear (Carl, 2026-10-23: "the visual clearing should be surface by surface so a phone clear doesn't affect a
+ * laptop"): this device's view of the thread goes blank, with no divider and nothing to scroll back into; the
+ * conversation itself, its context and every other surface are untouched (auto-compaction and /compact keep the
+ * context small). Kept on this device across restarts. False = not box mode.
  */
-export async function boxClear(convId: string): Promise<boolean> {
+export function boxClear(convId: string): boolean {
   if (!boxChatOn() || !session) return false;
-  const sess = session;
-  const clientId = newClientId();
-  sess.blankNow(convId, clientId);
-  const r = await intent(sess, { type: "clear", convId, clientId });
-  if (!r.ok) {
-    sess.unblank(convId);
-    sess.notice(convId, `⚠️ ${r.network ? BOX_UNREACHABLE : "The box refused"}: ${r.error}. Not cleared.`);
-    if (r.network) sess.kick();
-  }
+  session.clearHere(convId);
   return true;
 }
+
+/** /compact [focus]: pi compacts the conversation's context now (server/engine/engine.ts compact). A refusal is said in the thread. */
+export async function boxCompact(convId: string, focus: string): Promise<boolean> {
+  if (!boxChatOn() || !session) return false;
+  const sess = session;
+  const r = await intent(sess, { type: "compact", convId, ...(focus.trim() ? { focus: focus.trim() } : {}) });
+  if (!r.ok) {
+    sess.notice(convId, `⚠️ ${r.network ? BOX_UNREACHABLE : "Not compacted"}: ${r.error}`);
+    if (r.network) sess.kick();
+  } else if (r.data?.compacted === false) sess.notice(convId, "Nothing to compact yet.");
+  return true;
+}
+
+const CLEARED_PREFIX = "vault-chat:cleared:";
+function readCleared(vault: string): Record<string, string> {
+  try {
+    const v = JSON.parse(localStorage.getItem(CLEARED_PREFIX + vault) ?? "{}");
+    return v && typeof v === "object" ? v : {};
+  } catch {
+    return {};
+  }
+}
+function saveCleared(vault: string, v: Record<string, string>): void {
+  try {
+    localStorage.setItem(CLEARED_PREFIX + vault, JSON.stringify(v));
+  } catch {
+    /* no storage: this session only */
+  }
+}
+
 
 /** Delete a conversation on the box (a record in its log; every client drops it). False = not box mode. */
 export async function boxDelete(convId: string): Promise<boolean> {

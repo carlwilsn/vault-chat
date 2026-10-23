@@ -121,15 +121,6 @@ const LEGACY_SOURCES = new Set(["mission", "worker", "ask"]);
 const ARCHIVED = "This is an archived mission thread (the old missions system): readable, never run. Start a new chat.";
 const INTERRUPTED_TEXT = "⚠️ Interrupted by a restart — the command it was running was killed and may not have finished.";
 
-/** Clear's silent turn (OpenClaw's pre-compaction memory flush). */
-export const CLEAR_FLUSH = "[Clear]";
-const CLEAR_FLUSH_TEXT = `${CLEAR_FLUSH} Carl pressed Clear: his view of this thread is now blank, and what was said so far becomes background. Before it does, save anything that must outlast it (a decision, his correction or preference, a deadline, an open commitment) to the right memory file under your memory rules: this project's ## Memory, or .vault-chat/MEMORY.md. Save nothing that is already there or that the files already say. Do nothing else. Then reply exactly NO_REPLY (also when there was nothing to save).`;
-/** What the agent is told Clear means (a hidden pi custom message, `vc-clear`). */
-export function clearNote(at: number): string {
-  return `[Carl cleared this thread's view at ${new Date(at).toISOString()}. Everything said before this point is background: don't bring up earlier topics unless he does. Open commitments, scheduled wakes, jobs and delegated work still stand.]`;
-}
-const CLEAR_COMPACT_FOCUS =
-  "Carl cleared his view: everything so far is background. Keep, briefly: open commitments and promises, delegated work, jobs and wakes still pending, and decisions he made. Finished topics: one line each, or nothing.";
 
 // The server is going down (SIGTERM/SIGINT): pi's processes die with it, and
 // that is not a crash. A turn cut by the shutdown stays open in the log for the
@@ -330,6 +321,14 @@ export const ENGINE_TOOL_SPECS = [
   },
   {
     type: "function",
+    name: "Compact",
+    readOnly: true,
+    description:
+      "Compact this conversation's context now (pi's own summary of the earlier conversation; the raw history stays in its file), when Carl asks for it (\"compact\", \"/compact\", \"make the context smaller\"). Optional `focus`: what the summary must keep. It runs when the current turn ends. Never on your own: compaction also happens automatically.",
+    inputSchema: { type: "object", properties: { focus: { type: "string" } }, additionalProperties: false },
+  },
+  {
+    type: "function",
     name: "SearchHistory",
     readOnly: true,
     description:
@@ -390,8 +389,8 @@ export class Engine {
    *  folder: context/builder.ts turnSections): a turn sends a section again only when it changed. Forgotten when the
    *  thread compacts (the summary may have dropped them). In memory; after a restart a resumed thread gets them once more. */
   private sectionsSent = new Map<string, Map<string, string>>();
-  /** Clear's work, per conversation (the save turn, the note, compaction): Carl's next message waits for it. */
-  private clearing = new Map<string, Promise<void>>();
+  /** A /compact running per conversation (one at a time). */
+  private compacting = new Map<string, Promise<Record<string, unknown>>>();
   /** Waiting for a conversation's turn to end. */
   private turnWaiters = new Map<string, (() => void)[]>();
   /** History from before a conversation's thread, handed to its first turn once (a legacy chat, a lost thread). */
@@ -673,8 +672,8 @@ export class Engine {
         }
         return { ok: true, convId: id };
       }
-      case "clear":
-        return this.clear(String(b.convId ?? "") || MAIN_ID, typeof b.clientId === "string" ? b.clientId.slice(0, 80) : undefined);
+      case "compact":
+        return this.compact(String(b.convId ?? "") || MAIN_ID, typeof b.focus === "string" ? b.focus : undefined);
       case "delete": {
         const id = String(b.convId ?? "");
         if (!this.picture(id)) return { ok: false, error: `conversation ${id} not found` };
@@ -736,9 +735,6 @@ export class Engine {
     if (!conv) return { error: `conversation ${body.convId} not found` };
     if (LEGACY_SOURCES.has(conv.source)) return { error: ARCHIVED };
     const id = conv.id;
-    // Clear's work still running behind the blank view: this message starts after it.
-    const clearing = this.clearing.get(id);
-    if (clearing) await clearing;
     // The same message again (a retry, a service worker's replay): already here.
     const pic0 = this.picture(id);
     if (pic0 && (pic0.items.some((x) => x.id === clientId) || pendingOf(pic0).some((x) => x.id === clientId))) return { ok: true, convId: id, duplicate: true };
@@ -792,14 +788,20 @@ export class Engine {
       await new Promise((r) => setTimeout(r, 100));
     }
     const l = this.live.get(id);
+    const origin = body.source === "voice" ? "voice" : typeof body.client === "string" && body.client ? body.client.slice(0, 20) : body.source ? String(body.source).slice(0, 20) : undefined;
+    // Which surface he is on (one conversation, several surfaces at once): the agent answers and shows things there.
+    const surface = body.source === "voice" ? `a voice call${body.client ? ` (${String(body.client).slice(0, 20)})` : ""}` : typeof body.client === "string" && body.client ? `his ${body.client.slice(0, 20)}` : null;
+    if (surface) context = [`[Carl, on ${surface}]`, context].filter(Boolean).join("\n");
     const sent = context ? `${context}\n\n${shown}` : shown;
     if (l && !l.finished && l.started) {
       // A running turn: steer it (pi delivers it after the current tool calls), or queue it as
       // pi's follow-up (delivered when the agent would otherwise stop). Either way it is pending
-      // until pi takes it, and enters the transcript where pi puts it.
-      const kind = body.queue ? "queue" : "steer";
+      // until pi takes it, and enters the transcript where pi puts it. A message from another surface
+      // than the running turn's (two conversations at once in one thread) waits its turn instead of steering it.
+      const elsewhere = !!origin && !!l.turnOpts.origin && origin !== l.turnOpts.origin;
+      const kind = body.queue || elsewhere ? "queue" : "steer";
       this.setPending(id, { id: clientId, kind, text: shown, at: Date.now() });
-      l.feed.expect({ kind, text: sent, clientId, shown, via: body.via ?? kind, images: itemImages });
+      l.feed.expect({ kind, text: sent, clientId, shown, via: body.via ?? kind, images: itemImages, ...(origin ? { device: origin } : {}) });
       l.rec.q(kind, clientId);
       try {
         if (kind === "queue") await this.d.backend.followUp(l.threadId, { texts: [sent], images: paths });
@@ -813,7 +815,6 @@ export class Engine {
         return { ok: false, convId: id, error: `the running turn did not take it: ${(e as Error).message}` };
       }
     }
-    const origin = body.source === "voice" ? "voice" : typeof body.client === "string" && body.client ? body.client.slice(0, 20) : body.source ? String(body.source).slice(0, 20) : undefined;
     void this.run(id, shown, "user", { images: paths, context, itemImages, clientId, origin, ...(body.via ? { via: body.via } : {}) }).catch((e) => this.log(`turn failed: ${e}`));
     return { ok: true, convId: id };
   }
@@ -973,56 +974,40 @@ export class Engine {
   }
 
   /**
-   * Clear (Carl, 2026-10-21): the view goes blank at once (a `cleared` field every client folds: no divider,
-   * nothing to scroll back into), and behind it, in order: one silent "save what lasts" turn (OpenClaw's
-   * pre-compaction flush: the agent updates MEMORY.md or the project's memory, replying NO_REPLY), a hidden
-   * pi custom message telling the agent Carl cleared (earlier topics are background), then pi's own
-   * compaction. pi's file keeps the full raw history. A running turn is stopped first; Carl's next message
-   * waits for the work to finish.
+   * /compact (Carl, 2026-10-23: "there should be a compact skill"): pi's own compaction of the conversation's
+   * context now, with an optional focus for its summary. Clear is a view marker on each surface (it never touches
+   * the context), so this is how Carl makes the shared context small on purpose. It waits for a running turn to
+   * end (pi can't compact mid-turn) and runs before the next one; pi's file keeps the raw history.
    */
-  async clear(convId: string, clientId?: string): Promise<Record<string, unknown>> {
+  async compact(convId: string, focus?: string): Promise<Record<string, unknown>> {
     const p = this.picture(convId);
     if (!p) return { ok: false, error: `conversation ${convId} not found` };
-    const busy = this.clearing.get(convId);
-    if (busy) return { ok: true, convId, cleared: true };
-    const at = Date.now();
-    this.emit(convId, { type: "meta", patch: { cleared: { at, ...(clientId ? { id: clientId } : {}) }, clearing: true, pending: null } });
-    const work = this.scoped(() => this.clearWork(convId, at))
-      .catch((e) => this.log(`clear on ${convId}: ${(e as Error).message}`))
-      .finally(() => {
-        this.clearing.delete(convId);
-        this.emit(convId, { type: "meta", patch: { clearing: null } });
-      });
-    this.clearing.set(convId, work);
-    return { ok: true, convId, cleared: true };
+    const busy = this.compacting.get(convId);
+    if (busy) return busy;
+    const work = this.serial(convId, () => this.scoped(() => this.compactNow(convId, focus)));
+    this.compacting.set(convId, work);
+    void work.finally(() => this.compacting.delete(convId));
+    return work;
   }
 
-  private async clearWork(convId: string, at: number): Promise<void> {
-    if (this.live.has(convId)) {
-      await this.interrupt(convId, false);
-      await this.turnEnd(convId);
-    }
-    const conv0 = await readConv(this.d.vault, convId);
-    // Nothing said yet in pi: nothing to save, mark or compact.
-    if (!conv0?.threadId) return;
-    // 1. Save what lasts (one turn).
-    await this.run(convId, CLEAR_FLUSH_TEXT, "wake", { via: "clear" });
+  private async compactNow(convId: string, focus?: string): Promise<Record<string, unknown>> {
     await this.turnEnd(convId);
-    const conv = (await readConv(this.d.vault, convId)) ?? conv0;
-    const threadId = String(conv.threadId ?? "");
-    const file = String(conv.threadPath ?? "");
-    if (!threadId) return;
-    await this.d.backend.resumeThread(threadId, { model: this.d.model(), subagents: capabilitiesOf(this.d.model()).subagents, cwd: this.cwdOf(conv) });
-    // 2. The agent is told (a custom message in its context, never shown).
-    if (!(await this.d.backend.note(threadId, { kind: "clear", at, text: clearNote(at) }))) this.log(`clear on ${convId}: the note did not reach pi`);
-    // 3. pi's own compaction, focused on what still stands.
+    const conv = await readConv(this.d.vault, convId);
+    const threadId = String(conv?.threadId ?? "");
+    const file = String(conv?.threadPath ?? "");
+    if (!conv || !threadId) return { ok: true, convId, compacted: false, note: "nothing to compact yet" };
     try {
-      await this.d.backend.compact(threadId, CLEAR_COMPACT_FOCUS);
+      await this.d.backend.resumeThread(threadId, { model: this.d.model(), subagents: capabilitiesOf(this.d.model()).subagents, cwd: this.cwdOf(conv) });
+      const r = await this.d.backend.compact(threadId, focus?.trim() ? `Carl asked to compact now. Keep in particular: ${focus.trim().slice(0, 500)}` : undefined);
+      this.log(`compacted ${convId}${focus ? ` (focus: ${focus.slice(0, 80)})` : ""}${r.tokensBefore ? ` from ${r.tokensBefore} tokens` : ""}`);
+      return { ok: true, convId, compacted: true, ...(r.tokensBefore ? { tokensBefore: r.tokensBefore } : {}) };
     } catch (e) {
-      this.log(`clear on ${convId}: compaction: ${(e as Error).message}`);
+      return { ok: false, convId, error: `pi did not compact: ${(e as Error).message}` };
+    } finally {
+      // The summary may have dropped the turn sections (memory, project.md): the next turn sends them again.
+      this.sectionsSent.delete(threadId);
+      if (file) this.catchUp(convId, file);
     }
-    this.sectionsSent.delete(threadId);
-    if (file) this.catchUp(convId, file);
   }
 
   /** A one-shot on the box itself (a note's title): pi, no session, no tools; the final text. */
@@ -1086,7 +1071,7 @@ export class Engine {
 
   /** How an engine input shows (a wake, a job, a resume). */
   private engineInput(input: string, kind: TurnKind): { via: string; shown: string } {
-    const via = kind === "wake" ? (/^Job \S+ /.test(input) ? "job" : input.startsWith(CLEAR_FLUSH) ? "clear" : "wake") : "resume";
+    const via = kind === "wake" ? (/^Job \S+ /.test(input) ? "job" : "wake") : "resume";
     return { via, shown: kind === "wake" ? input.replace(/^Wake:\s*/, "") : input };
   }
 
@@ -1209,7 +1194,7 @@ export class Engine {
       if (opts.context) body = `${opts.context}\n\n${body}`;
       // What Carl did elsewhere is not in the prompt: pi's extension adds it (the "you" layer, a vc-you custom message).
       const texts = [rules, kind === "wake" ? input : body].filter(Boolean);
-      live.feed.expect({ kind: "prompt", text: texts.join("\n\n"), clientId: kind === "user" ? clientId : undefined, ...shownInput, ...(opts.itemImages?.length ? { images: opts.itemImages } : {}) });
+      live.feed.expect({ kind: "prompt", text: texts.join("\n\n"), clientId: kind === "user" ? clientId : undefined, ...shownInput, ...(opts.itemImages?.length ? { images: opts.itemImages } : {}), ...(kind === "user" && opts.origin ? { device: opts.origin } : {}) });
       try {
         await this.d.backend.startTurn(threadId, { texts, images: opts.images ?? [], model, turnId });
         live.started = true;
@@ -1607,6 +1592,13 @@ export class Engine {
           return text(await webSearch(String(a.query ?? ""), this.d.apiKey(), this.d.webSearchModel));
         case "StartJob":
           return text(startJob(this.d.jobEnv, vault, a, convId));
+        case "Compact": {
+          if (!convId) return text("No conversation to compact.");
+          void this.compact(convId, typeof a.focus === "string" ? a.focus : undefined).then((r) => {
+            if (r && r.ok === false) this.log(`compact on ${convId}: ${String(r.error)}`);
+          });
+          return text("Compaction starts as soon as this turn ends (the thread then shows \"Earlier conversation summarized\"). Tell Carl in one line; don't wait for it.");
+        }
         case "SearchHistory": {
           const want = String(a.thread ?? "").trim();
           let target = conv.id ? conv : null;
