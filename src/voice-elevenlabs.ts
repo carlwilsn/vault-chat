@@ -10,7 +10,7 @@ import { awaitScroll } from "./scrollTarget";
 import { stripAudioTags } from "./voiceTags";
 import { QuietGate } from "./voiceQuiet";
 import { RECONNECT_NUDGE, RECONNECTING_LINE, FillerWatch, TimeoutRetry, VoiceTurnStats, couldntReconnectLine, isLlmTimeoutClose, plainCloseReason, reconnectRecap } from "./voiceTimeout";
-import { vlog as debugVlog } from "./debugLog";
+import { onVlog, vlog as debugVlog } from "./debugLog";
 import { VoiceLogShipper } from "./voiceShip";
 import { SPEECH_LEVEL, VoiceHealth, connectionOptions, pickTransport, type HealthEvent, type Transport } from "./voiceHealth";
 import { AUDIO_WARN_LINE, MicPin, audioBlocked, canPickOutput, deviceLists, listAudioDevices, type MicDevice } from "./voiceMic";
@@ -23,6 +23,10 @@ function vlog(tag: string, data?: unknown): void {
   debugVlog(tag, data);
   ship.add(tag, data);
 }
+// The voice's console lines ("[voice-eleven] microphone not reaching ElevenLabs", a failed start) go with them.
+onVlog((tag, data) => {
+  if (tag.startsWith("console.") && typeof data === "string" && data.startsWith("[voice-eleven]")) ship.add("voice console", { level: tag.slice(8), line: data });
+});
 /** [tests] The laptop's voice-log shipper. */
 export function voiceShipperForTests(): VoiceLogShipper {
   return ship;
@@ -487,6 +491,7 @@ export async function startElevenLabsSession(opts?: { recap?: string }): Promise
         } else if (role === "agent") {
           const filler = text === SOFT_TIMEOUT_MESSAGE;
           if (fillerWatch.agentLine(filler)) vlog("voice filler in silence", { turn: turnStats.turns });
+          turnStats.agentText(text, filler || isFillerLine(text));
           if (filler) turnStats.fillerSpoken();
           else logTurn(turnStats.firstResponse("text", Date.now(), text.length));
           // A holding line ("One sec", "on it") is spoken, never written into the thread.

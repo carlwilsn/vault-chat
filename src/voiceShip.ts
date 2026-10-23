@@ -8,9 +8,13 @@
 // SSH. The board's voice lines go to board.jsonl by its own log (board/src/log.ts).
 
 /** The lines worth shipping (the rest stay in the device's local trail). */
-export const SHIPPED = /^voice (end|start|dropout|mic|output|devices|closed|turn|silent playback|playback|filler in silence|long task|audio|connected|session|transport|interruption|media device|connection poor)/;
+export const SHIPPED = /^voice (end|start|dropout|mic|output|devices|closed|turn|silent playback|playback|filler in silence|long task|audio|connected|session|transport|interruption|media device|connection poor|update|mute|status|metadata|timeout|reconnect|handoff|moved|console)/;
 
-export type ShipBody = { source: "voice"; device: string; session: string; v?: string; events: { at: string; ev: string; [k: string]: unknown }[] };
+/** The laptop app's lines worth shipping (source "app" → <state>/logs/app.jsonl, src/appShip.ts): its errors and its
+ *  connection to the box (box.feed: dropped with the error, connected with how long it was down). */
+export const APP_SHIPPED = /^(console\.error|window\.error|unhandledrejection|box\.feed|box\.intent|boot$|app\.)/;
+
+export type ShipBody = { source: "voice" | "app"; device: string; session: string; v?: string; events: { at: string; ev: string; [k: string]: unknown }[] };
 
 export class VoiceLogShipper {
   private queue: ShipBody["events"] = [];
@@ -20,10 +24,10 @@ export class VoiceLogShipper {
   /** Where a batch goes (null: nowhere yet — queued until there is a box). `keepalive`: the page is going away. */
   post: ((body: ShipBody, keepalive: boolean) => Promise<unknown>) | null = null;
 
-  constructor(private readonly o: { device: string; v?: string; everyMs?: number; max?: number }) {}
+  constructor(private readonly o: { device: string; v?: string; everyMs?: number; max?: number; source?: "voice" | "app"; only?: RegExp }) {}
 
   add(tag: string, data?: unknown): void {
-    if (!SHIPPED.test(tag)) return;
+    if (!(this.o.only ?? SHIPPED).test(tag)) return;
     const rest = data && typeof data === "object" && !Array.isArray(data) ? (data as Record<string, unknown>) : data === undefined ? {} : { data };
     this.queue.push({ ...rest, at: new Date().toISOString(), ev: tag });
     const max = this.o.max ?? 300;
@@ -48,7 +52,7 @@ export class VoiceLogShipper {
     this.queue = [];
     this.sending = true;
     try {
-      await this.post({ source: "voice", device: this.o.device, session: this.session, ...(this.o.v ? { v: this.o.v } : {}), events }, keepalive);
+      await this.post({ source: this.o.source ?? "voice", device: this.o.device, session: this.session, ...(this.o.v ? { v: this.o.v } : {}), events }, keepalive);
     } catch {
       this.queue = [...events, ...this.queue].slice(-(this.o.max ?? 300));
     } finally {

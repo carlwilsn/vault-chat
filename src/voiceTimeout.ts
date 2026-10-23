@@ -85,6 +85,11 @@ export class VoiceTurnStats {
   private first: { via: string; at: number } | null = null;
   private filler = false;
   private lastTool: string | null = null;
+  /** The turn's first line from the voice, and whether it was a holding line ("One sec", the platform's filler). */
+  private reply: string | null = null;
+  private holding = false;
+  /** His speech's end (the mic level) to the transcript: ElevenLabs' turn detection, apart from the model's time. */
+  private detectMs: number | null = null;
 
   startSession(promptChars: number): void {
     this.sessionChars = 0;
@@ -95,6 +100,9 @@ export class VoiceTurnStats {
     this.first = null;
     this.filler = false;
     this.lastTool = null;
+    this.reply = null;
+    this.holding = false;
+    this.detectMs = null;
   }
   /** Carl's final transcript; `speechEndedAt` when the mic level says when he stopped. */
   userTurn(text: string, now = Date.now(), speechEndedAt?: number | null): void {
@@ -103,9 +111,18 @@ export class VoiceTurnStats {
     this.fromSpeech = typeof speechEndedAt === "number" && speechEndedAt <= now;
     this.turnStart = this.fromSpeech ? (speechEndedAt as number) : now;
     this.transcriptAt = now;
+    this.detectMs = this.fromSpeech ? now - (speechEndedAt as number) : null;
     this.first = null;
     this.filler = false;
     this.lastTool = null;
+    this.reply = null;
+    this.holding = false;
+  }
+  /** A line the voice said (its text) in the open turn: the first is the turn's reply0; `holding` when it only holds. */
+  agentText(text: string, holding: boolean): void {
+    if (this.turnStart === null || this.reply !== null) return;
+    this.reply = text;
+    this.holding = holding;
   }
   /** The filler ("One sec.") the platform speaks when the model is slow: noted, not a response. */
   fillerSpoken(): void {
@@ -146,6 +163,9 @@ export class VoiceTurnStats {
       transcriptToAudioMs: audioAt === null ? null : audioAt - this.transcriptAt,
       from: this.fromSpeech ? "speech-end" : "transcript",
       filler: this.filler,
+      holding: this.filler || this.holding,
+      reply0: this.reply === null ? null : this.reply.slice(0, 40),
+      speechEndToTranscriptMs: this.detectMs,
       ...this.size(),
     };
   }

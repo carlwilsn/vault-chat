@@ -81,12 +81,26 @@ export function vlog(tag: string, data?: unknown): void {
     safe = capText(redactText(String(data)), 500);
   }
   buf.push({ t: Date.now(), tag, data: safe, v: APP_VERSION });
+  for (const fn of taps) {
+    try {
+      fn(tag, safe);
+    } catch {
+      /* a listener never breaks logging */
+    }
+  }
   if (buf.length > MAX_ENTRIES) buf = buf.slice(-MAX_ENTRIES);
   // Throttle the synchronous localStorage write so a hot loop calling
   // vlog() thousands of times doesn't itself become the bottleneck — but
   // because we key off wall-clock time, a long synchronous loop still
   // leaves a trail every ~200ms.
   if (Date.now() - lastPersist >= PERSIST_INTERVAL_MS) persistNow();
+}
+
+const taps = new Set<(tag: string, data: unknown) => void>();
+/** Every logged line, made safe, as it is logged (the shippers to the box: src/appShip.ts, src/voice-elevenlabs.ts). Returns the off switch. */
+export function onVlog(fn: (tag: string, data: unknown) => void): () => void {
+  taps.add(fn);
+  return () => taps.delete(fn);
 }
 
 /** Force a synchronous persist — call before known-risky operations. */

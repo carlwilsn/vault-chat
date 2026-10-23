@@ -25,6 +25,7 @@ import { afterVaultReady, bootMark, installBootTiming } from "./bootTiming";
 import { installAutosaveNet } from "./autosave";
 import { initBackgroundMode } from "./background";
 import { installClientEvents } from "./clientEvents";
+import { installAppShip } from "./appShip";
 import { installDiagShortcut } from "./diag";
 
 // Install the freeze diagnostic logger before anything else runs, so a
@@ -75,6 +76,8 @@ if (isPopout) {
   // What the screen did (client-events.jsonl) and the "something just went wrong" bundle
   // (Ctrl+Shift+D → .vault-chat/diag/). Main window only.
   installClientEvents();
+  // Its errors and box drops on the box too (<state>/logs/app.jsonl).
+  installAppShip();
   installDiagShortcut();
   // Reconcile "run in background" (always-on tray daemon) with the Rust
   // close-to-tray gate and the OS login item. Main window only; popouts must

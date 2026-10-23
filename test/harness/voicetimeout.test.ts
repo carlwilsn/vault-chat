@@ -233,6 +233,22 @@ test("timings: each turn's first response, the session's size and images, the ti
   assert.equal(silent.from, "transcript");
   assert.equal(c.images, 2);
   assert.equal(c.estTokens, Math.round((20_000 + "rewrite the note".length + 2000 + 100 + "and again".length) / 4));
+  // Whether the turn only held, its first 40 characters, and turn detection (speech end → transcript) apart from the model.
+  assert.equal(r.holding, true, "the platform's filler holds");
+  assert.equal(r.speechEndToTranscriptMs, 400);
+  assert.equal(silent.speechEndToTranscriptMs, null, "no speech end seen: no detection time");
+  s.userTurn("what's lemma two", 40_000, 36_600);
+  s.agentText("One sec. One sec. Lemma two says a contraction has exactly one fixed point.", true);
+  s.agentText("a later line", false);
+  const held = s.audioPlaying(41_000)!;
+  assert.equal(held.holding, true);
+  assert.equal(held.reply0, "One sec. One sec. Lemma two says a contr");
+  assert.equal(held.speechEndToTranscriptMs, 3400);
+  s.userTurn("and three", 50_000, 49_000);
+  s.agentText("Lemma three is the converse.", false);
+  const plain = s.audioPlaying(50_500)!;
+  assert.equal(plain.holding, false);
+  assert.equal(plain.reply0, "Lemma three is the converse.");
   assert.equal(T.isLlmTimeoutClose(TIMEOUT_CLOSE), true);
   assert.equal(T.isLlmTimeoutClose({ reason: "user" }), false);
   assert.equal(T.isLlmTimeoutClose({ reason: "error", message: "voice not found" }), false);

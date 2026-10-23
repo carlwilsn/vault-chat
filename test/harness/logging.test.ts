@@ -111,6 +111,10 @@ test("client events: shortcuts only (never a typed character), and what the scre
     ],
   );
   assert.deepEqual(diffSnap(base, { ...base }), []);
+  // The box going down says why; coming back says how long it was down.
+  const down = { ...base, box: "down", boxReason: "Failed to connect to thinkbox", boxDownAt: 1_000 };
+  assert.deepEqual(diffSnap(base, down, 1_000), [{ ev: "box", data: { state: "down", err: "Failed to connect to thinkbox" } }]);
+  assert.deepEqual(diffSnap(down, { ...base, box: "up" }, 65_000), [{ ev: "box", data: { state: "up", downMs: 64_000 } }]);
 
   const { useStore } = await import("../../src/store.ts");
   useStore.setState({ vaultPath: vault });

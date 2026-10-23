@@ -454,3 +454,41 @@ test("silence rule: a greeting or a question always gets an answer; skip_turn on
   assert.match(VOICE_SILENCE_RULE, /skip_turn is only for turns where he has said nothing to you/);
   assert.match(VOICE_SILENCE_RULE, /an empty or unintelligible transcript/);
 });
+
+test("on the box: the voice's update / mute / status lines and its [voice-eleven] console lines (voice.jsonl); the app's errors and box drops (app.jsonl)", async () => {
+  const { SHIPPED, APP_SHIPPED } = await import("../../src/voiceShip.ts");
+  for (const t of ["voice update", "voice updates", "voice update held", "voice mute", "voice status", "voice metadata", "voice mic ended", "voice mic reacquire failed", "voice timeout", "voice console"]) assert.match(t, SHIPPED, t);
+  const { vlog } = await import("../../src/debugLog.ts");
+  // A call started earlier in this file: the voice's shipper has its box.
+  vlog("console.error", "[voice-eleven] microphone not reaching ElevenLabs: no level for 8 s");
+  vlog("console.info", "[other] not the voice's");
+  await voice.voiceShipperForTests().flush();
+  const con = shippedEv("voice console");
+  assert.ok(con.some((e) => e.level === "error" && /microphone not reaching ElevenLabs/.test(e.line)), "the voice's console error is on the box");
+  assert.ok(!con.some((e) => /not the voice's/.test(e.line)));
+
+  const { installAppShip, appShipperForTests } = await import("../../src/appShip.ts");
+  for (const t of ["console.error", "window.error", "unhandledrejection", "box.feed", "box.intent", "boot"]) assert.match(t, APP_SHIPPED, t);
+  assert.doesNotMatch("file.open", APP_SHIPPED);
+  useStore.setState({ vaultPath: vault });
+  installAppShip();
+  vlog("box.feed", { state: "dropped", cursor: 4, error: "Failed to connect to thinkbox" });
+  vlog("box.feed", { state: "connected", cursor: 4, downMs: 64_000 });
+  vlog("console.error", "render failed: x is undefined");
+  vlog("console.error", "[voice-eleven] session start failed: y");
+  vlog("debugLog installed", {});
+  await appShipperForTests().flush();
+  const app = shipped.filter((b) => b.source === "app");
+  assert.ok(app.length && app.every((b) => b.device === "laptop"));
+  const evs = app.flatMap((b) => b.events);
+  assert.deepEqual(
+    evs.filter((e) => e.ev === "box.feed").map((e) => [e.state, e.error ?? e.downMs]),
+    [
+      ["dropped", "Failed to connect to thinkbox"],
+      ["connected", 64_000],
+    ],
+  );
+  assert.ok(evs.some((e) => e.ev === "console.error" && e.data === "render failed: x is undefined"));
+  assert.ok(!evs.some((e) => /voice-eleven/.test(String(e.data))), "the voice's own lines go with the voice's");
+  assert.ok(!evs.some((e) => e.ev === "debugLog installed"));
+});

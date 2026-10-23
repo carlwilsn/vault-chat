@@ -23,6 +23,8 @@ export type BoxDiag = {
   board: unknown[];
   /** The laptop's and the phone's voice diagnostics (voice.jsonl). */
   voice: unknown[];
+  /** The laptop app's errors and box drops (app.jsonl). */
+  app: unknown[];
   journal: string[];
   phoneEvents: unknown[];
   notes: string[];
@@ -85,6 +87,7 @@ export function boxDiag(o: { stateDir: string; vault: string; vaultName: string;
     turns: logs.turns.since(since).map((x) => safeData(x, { depth: 5 })),
     board: logs.board.since(since).map((x) => safeData(x, { depth: 5 })),
     voice: logs.voice.since(since).map((x) => safeData(x, { depth: 5 })),
+    app: logs.app.since(since).map((x) => safeData(x, { depth: 5 })),
     journal: j.lines,
     phoneEvents: jsonlSince(join(o.vault, ".vault-chat", "client-events.jsonl"), since),
     notes,
@@ -92,12 +95,13 @@ export function boxDiag(o: { stateDir: string; vault: string; vaultName: string;
 }
 
 /** One board batch (POST /api/v1/board/log): each event its own line, stamped and made safe. A batch with
- *  source "voice" (the laptop's and the phone's voice diagnostics, src/voiceShip.ts) goes to voice.jsonl. */
+ *  source "voice" (the laptop's and the phone's voice diagnostics, src/voiceShip.ts) goes to voice.jsonl, one with
+ *  source "app" (the laptop app's errors and box drops, src/appShip.ts) to app.jsonl. */
 export function boardLogPost(o: { stateDir: string; vaultName: string; ua: string }, body: any): { status: number; body: Record<string, unknown> } {
   const evs: unknown[] = Array.isArray(body?.events) ? body.events.slice(0, 300) : [];
   if (!evs.length) return { status: 400, body: { error: "events: a non-empty list is required" } };
-  const voice = body?.source === "voice";
-  const log = voice ? boxLogs(o.stateDir).voice : boxLogs(o.stateDir).board;
+  const voice = body?.source === "voice" || body?.source === "app";
+  const log = body?.source === "app" ? boxLogs(o.stateDir).app : voice ? boxLogs(o.stateDir).voice : boxLogs(o.stateDir).board;
   const from = voice && typeof body?.device === "string" ? body.device.slice(0, 20) : null;
   const ua = /iPad|iPhone|Macintosh|Android|Windows|Linux/.exec(o.ua)?.[0] ?? "?";
   const sess = typeof body?.session === "string" ? body.session.slice(0, 40) : null;

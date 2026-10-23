@@ -66,7 +66,8 @@ export function shortcutOf(e: { key: string; ctrlKey: boolean; metaKey: boolean;
 }
 
 type Snap = ReturnType<typeof snap>;
-function snap(s: ReturnType<typeof useStore.getState>) {
+function snap(s: ReturnType<typeof useStore.getState>, prev?: { box: string; boxDownAt: number | null }, now = Date.now()) {
+  const box = s.boxChat?.on ? (s.boxChat.reachable === null ? "connecting" : s.boxChat.reachable ? "up" : "down") : "off";
   const pane = s.panes?.find((p) => p.id === s.activePaneId);
   return {
     file: s.currentFile,
@@ -88,13 +89,16 @@ function snap(s: ReturnType<typeof useStore.getState>) {
     voiceError: s.voiceError,
     voiceText: s.voiceTextPanelOpen,
     follow: s.followAlong,
-    box: s.boxChat?.on ? (s.boxChat.reachable === null ? "connecting" : s.boxChat.reachable ? "up" : "down") : "off",
+    box,
+    /** Why the box is out of reach (the feed's error), and since when (a "box" event says both). */
+    boxReason: box === "down" ? s.boxChat?.reason || null : null,
+    boxDownAt: box !== "down" ? null : prev?.box === "down" ? prev.boxDownAt : now,
     vault: s.vaultPath ? s.vaultPath.replace(/\\/g, "/").split("/").pop() : null,
   };
 }
 
 /** What changed between two snapshots, as events. Pure (the tests drive it). */
-export function diffSnap(a: Snap, b: Snap): { ev: string; data: Record<string, unknown> }[] {
+export function diffSnap(a: Snap, b: Snap, now = Date.now()): { ev: string; data: Record<string, unknown> }[] {
   const out: { ev: string; data: Record<string, unknown> }[] = [];
   const flag = (k: keyof Snap, ev: string) => {
     if (a[k] !== b[k]) out.push({ ev, data: { on: !!b[k] } });
@@ -119,7 +123,8 @@ export function diffSnap(a: Snap, b: Snap): { ev: string; data: Record<string, u
   flag("voiceText", "voice.text");
   flag("follow", "follow.along");
   if (a.voiceError !== b.voiceError && b.voiceError) out.push({ ev: "voice.error", data: { error: b.voiceError } });
-  if (a.box !== b.box) out.push({ ev: "box", data: { state: b.box } });
+  if (a.box !== b.box)
+    out.push({ ev: "box", data: { state: b.box, ...(b.box === "down" && b.boxReason ? { err: b.boxReason } : {}), ...(a.box === "down" && a.boxDownAt !== null ? { downMs: now - a.boxDownAt } : {}) } });
   return out;
 }
 
@@ -130,7 +135,7 @@ export function installClientEvents(): void {
   let prev = snap(useStore.getState());
   cev("app.start", { vault: prev.vault, file: prev.file, conv: prev.conv });
   useStore.subscribe((s) => {
-    const next = snap(s);
+    const next = snap(s, prev);
     // A vault switch: what was queued belongs to the old vault's file.
     if (next.vault !== prev.vault) void flushClientEvents();
     for (const e of diffSnap(prev, next)) cev(e.ev, e.data);
