@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
@@ -23,6 +23,36 @@ const HOLD_MOVE = 3;
 const AUTO_EXPAND_MS = 600;
 const GHOST_OFFSET = { x: 14, y: 12 };
 type DragGhostInfo = { name: string; isDir: boolean; count: number; x: number; y: number };
+
+// The drag must never wait on a FileTree render: with a real vault (thousands
+// of entries) one render of the tree is a few hundred ms, and every render
+// during a drag (the chip appearing, the highlight moving to the next folder)
+// left the chip that far behind the pointer. So the chip lives in its own
+// tiny store and component, its position is written straight into its
+// transform on each pointermove, and the drop highlight is a data attribute
+// set on the row (styled in App.css). The tree re-renders only when a folder
+// really opens.
+let chipNow: DragGhostInfo | null = null;
+let chipEl: HTMLDivElement | null = null;
+const chipSubs = new Set<() => void>();
+const setChip = (c: DragGhostInfo | null) => {
+  chipNow = c;
+  for (const f of chipSubs) f();
+};
+const placeChip = (x: number, y: number) => {
+  if (chipEl) chipEl.style.transform = `translate3d(${x + GHOST_OFFSET.x}px, ${y + GHOST_OFFSET.y}px, 0)`;
+};
+function DragChip() {
+  const info = useSyncExternalStore(
+    (f) => {
+      chipSubs.add(f);
+      return () => chipSubs.delete(f);
+    },
+    () => chipNow,
+  );
+  if (!info) return null;
+  return createPortal(<DragGhost ref={(el) => void (chipEl = el)} info={info} />, document.body);
+}
 type TreeHit = { inTree: boolean; target: string | null | undefined };
 
 export function FileTree() {
@@ -54,7 +84,6 @@ export function FileTree() {
   const [anchor, setAnchor] = useState<string | null>(null);
   // Drop target is either a specific folder path or null for the tree root
   // (vault root). undefined means no drop in progress.
-  const [dropTarget, setDropTarget] = useState<string | null | undefined>(undefined);
   // Open state for the header "+" menu (New file / New folder / Upload).
   const [addMenuOpen, setAddMenuOpen] = useState(false);
   const lastVaultRef = useRef<string | null>(null);
@@ -79,11 +108,16 @@ export function FileTree() {
     y: number;
     autoOpened: Set<string>;
     raf: number;
+    shield: HTMLElement;
+    row: HTMLElement;
   } | null>(null);
   const suppressClickRef = useRef(false);
   const treeRef = useRef<HTMLDivElement | null>(null);
-  const ghostRef = useRef<HTMLDivElement | null>(null);
-  const [ghost, setGhost] = useState<DragGhostInfo | null>(null);
+  // The drop target now (null = the vault root), the element showing it, and
+  // the timer that opens a hovered closed folder.
+  const targetRef = useRef<{ dir: string | null | undefined; el: HTMLElement | null; timer: number }>({ dir: undefined, el: null, timer: 0 });
+  const expandedRef = useRef(expanded);
+  expandedRef.current = expanded;
 
   useEffect(() => {
     if (vaultPath && vaultPath !== lastVaultRef.current) {
@@ -133,17 +167,30 @@ export function FileTree() {
     return () => window.removeEventListener("keydown", onKey);
   }, [confirmDelete, confirmDeleteMulti]);
 
-  // Hovering a closed folder during a drag opens it after a beat, like
-  // Finder's spring-loaded folders. A cancelled drag closes them again.
-  useEffect(() => {
-    if (!dropTarget || expanded.has(dropTarget)) return;
-    const d = dragRef.current;
-    const t = window.setTimeout(() => {
-      d?.autoOpened.add(dropTarget);
-      setExpanded((prev) => new Set(prev).add(dropTarget));
-    }, AUTO_EXPAND_MS);
-    return () => window.clearTimeout(t);
-  }, [dropTarget, expanded]);
+  // Show the drop target (a data attribute, no render). Hovering a closed
+  // folder opens it after a beat, like Finder's spring-loaded folders; a
+  // cancelled drag closes them again.
+  const markTarget = (dir: string | null | undefined) => {
+    const t = targetRef.current;
+    if (dir === t.dir) return;
+    t.el?.removeAttribute("data-drop");
+    window.clearTimeout(t.timer);
+    t.dir = dir;
+    t.el = null;
+    if (dir === undefined) return;
+    const el =
+      dir === null
+        ? treeRef.current
+        : treeRef.current?.querySelector<HTMLElement>(`[data-tree-path="${CSS.escape(dir)}"]`) ?? null;
+    el?.setAttribute("data-drop", "");
+    t.el = el;
+    if (dir && !expandedRef.current.has(dir)) {
+      t.timer = window.setTimeout(() => {
+        dragRef.current?.autoOpened.add(dir);
+        setExpanded((prev) => new Set(prev).add(dir));
+      }, AUTO_EXPAND_MS);
+    }
+  };
 
   const openFile = async (f: FileEntry) => {
     if (f.is_dir) return;
@@ -192,7 +239,7 @@ export function FileTree() {
   ) => {
     e.preventDefault();
     e.stopPropagation();
-    setDropTarget(undefined);
+    markTarget(undefined);
     if (!vaultPath) return;
     const files = e.dataTransfer.files;
     if (!files || files.length === 0) return;
@@ -316,20 +363,22 @@ export function FileTree() {
     return dir === vaultPath ? null : dir;
   };
 
-  const hitAt = (x: number, y: number, sources: string[]): TreeHit => {
-    const el = document.elementFromPoint(x, y);
+  // Under the shield (the drag's cursor), what is really there.
+  const underAt = (x: number, y: number): Element | null =>
+    document.elementsFromPoint(x, y).find((e) => !(e as HTMLElement).dataset?.dragShield) ?? null;
+  const hitUnder = (x: number, y: number, sources: string[]): TreeHit => {
+    const el = underAt(x, y);
     if (!el || !treeRef.current?.contains(el)) return { inTree: false, target: undefined };
     return { inTree: true, target: dirAt(el, sources) };
   };
 
-  // One frame of a drag: move the chip, find the target, tell the others.
+  // Once a frame: find the target under the pointer, tell the others.
   const frame = () => {
     const d = dragRef.current;
     if (!d) return;
     d.raf = 0;
-    if (ghostRef.current) ghostRef.current.style.transform = `translate3d(${d.x + GHOST_OFFSET.x}px, ${d.y + GHOST_OFFSET.y}px, 0)`;
-    const hit = hitAt(d.x, d.y, d.sources);
-    setDropTarget(hit.target);
+    const hit = hitUnder(d.x, d.y, d.sources);
+    markTarget(hit.target);
     treeDrag.move(hit.inTree ? null : { paths: d.sources, path: d.path, x: d.x, y: d.y });
   };
 
@@ -338,13 +387,14 @@ export function FileTree() {
     if (!d) return;
     dragRef.current = null;
     if (d.raf) cancelAnimationFrame(d.raf);
-    document.documentElement.classList.remove("vc-dragging");
-    setGhost(null);
-    setDropTarget(undefined);
+    const hit = hitUnder(d.x, d.y, d.sources);
+    d.shield.remove();
+    d.row.style.cursor = "";
+    setChip(null);
+    markTarget(undefined);
     treeDrag.move(null);
     let used = false;
     if (commit) {
-      const hit = hitAt(d.x, d.y, d.sources);
       if (hit.inTree) {
         if (hit.target !== undefined && vaultPath) {
           handleInternalMove(d.sources, hit.target ?? vaultPath);
@@ -374,9 +424,17 @@ export function FileTree() {
       } catch {
         /* the pointer is already gone */
       }
-      dragRef.current = { sources: group, path: f.path, x: ev.clientX, y: ev.clientY, autoOpened: new Set(), raf: 0 };
-      document.documentElement.classList.add("vc-dragging");
-      setGhost({ name: f.name, isDir: f.is_dir, count: group.length, x: ev.clientX, y: ev.clientY });
+      // The cursor: a transparent shield over the page with the grabbing
+      // hand (one element restyled, not the whole page), and the same on the
+      // captured row; the shield also keeps hover effects and text selection
+      // still underneath.
+      const shield = document.createElement("div");
+      shield.dataset.dragShield = "1";
+      shield.style.cssText = "position:fixed;inset:0;z-index:999;cursor:grabbing;user-select:none;";
+      document.body.appendChild(shield);
+      el.style.cursor = "grabbing";
+      dragRef.current = { sources: group, path: f.path, x: ev.clientX, y: ev.clientY, autoOpened: new Set(), raf: 0, shield, row: el };
+      setChip({ name: f.name, isDir: f.is_dir, count: group.length, x: ev.clientX, y: ev.clientY });
       frame();
     };
     const move = (ev: PointerEvent) => {
@@ -390,6 +448,7 @@ export function FileTree() {
       }
       d.x = ev.clientX;
       d.y = ev.clientY;
+      placeChip(d.x, d.y);
       if (!d.raf) d.raf = requestAnimationFrame(frame);
     };
     const finish = (ev: PointerEvent, commit: boolean) => {
@@ -819,10 +878,8 @@ export function FileTree() {
         </div>
       )}
       <div
-        className={cn(
-          "flex-1 overflow-auto py-1",
-          dropTarget === null && "bg-primary/[0.06] shadow-[inset_0_0_0_1px_hsl(var(--primary)/0.45)]",
-        )}
+        className="flex-1 overflow-auto py-1"
+        data-tree-root
         onContextMenu={(e) => {
           if (!vaultPath) return;
           e.preventDefault();
@@ -833,12 +890,12 @@ export function FileTree() {
           if (!vaultPath || !isExternalFileDrop(e.dataTransfer)) return;
           e.preventDefault();
           e.dataTransfer.dropEffect = "copy";
-          setDropTarget(dirAt(e.target as Element, []));
+          markTarget(dirAt(e.target as Element, []));
         }}
         onDragLeave={(e) => {
           if (!vaultPath) return;
           if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
-          setDropTarget(undefined);
+          markTarget(undefined);
         }}
         onDrop={(e) => {
           if (!vaultPath || !isExternalFileDrop(e.dataTransfer)) return;
@@ -898,7 +955,6 @@ export function FileTree() {
                     isActive && "bg-accent text-accent-foreground",
                     isSelectedDir && "bg-accent/40",
                     isMultiSelected && "bg-primary/15 text-foreground",
-                    f.is_dir && dropTarget === f.path && "bg-primary/15 text-foreground ring-1 ring-inset ring-primary/70",
                   )}
                   style={{ paddingLeft: 8 + f.depth * 12 }}
                   data-tree-path={f.path}
@@ -1222,15 +1278,15 @@ export function FileTree() {
           </div>
         </div>
       )}
-      {ghost && createPortal(<DragGhost ref={ghostRef} info={ghost} />, document.body)}
+      <DragChip />
     </div>
   );
 }
 
 // The drag chip: an opaque card with the icon, the name and, for several
 // items, a count badge over a second card. Portalled to the body so no pane
-// clips it; it follows the pointer by a transform set once a frame (React only
-// sets the first one).
+// clips it; it follows the pointer by a transform written on each pointermove
+// (React only sets the first one).
 export function DragGhost({ info, ref }: { info: DragGhostInfo; ref?: React.Ref<HTMLDivElement> }) {
   const Icon = info.isDir ? Folder : FileText;
   return (
