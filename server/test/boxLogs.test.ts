@@ -10,6 +10,34 @@ import { RotatingLog, boxLogs } from "../boxLogs";
 import { TurnRecorder, turnSummary } from "../engine/turnLog";
 import { boardLogPost, boxDiag, jsonlSince } from "../diag";
 import { assistant, toolStart, toolEnd } from "./fakePi";
+import { frustration, noteUserLine } from "../signal";
+import { EventEmitter } from "node:events";
+import { SideRuns, type SideLog } from "../engine/pi/side";
+
+describe("a side request pi retried", () => {
+  it("answers (no failure, no red row) when pi's auto-retry got through after a dropped connection; fails only when the last try failed", async () => {
+    const runs = new SideRuns({} as any, () => {});
+    clearInterval((runs as any).timer);
+    const lines: any[] = [];
+    const go = async (events: any[]) => {
+      const proc = Object.assign(new EventEmitter(), { request: async () => ({ data: { text: "Lecture 6 covers MSTs." } }), close: async () => {} });
+      const log: SideLog = { vault: "v", conv: "c", via: "voice-ask", version: "dev", act: true, allowed: ["read", "write"], write: (l) => lines.push(l) };
+      const run: any = { id: `side-${lines.length}`, text: "", v: 0, done: false, error: null, busy: true, waiters: new Set(), meta: { model: "m" }, proc, log, rec: new TurnRecorder({ vault: "v", conv: "c", turn: "t", session: "s", mode: "side", via: "voice-ask", cmid: null, model: "m", start: Date.now(), version: "dev" }) };
+      (runs as any).attach(run);
+      for (const e of events) proc.emit("event", e);
+      for (let i = 0; i < 50 && !run.done; i++) await new Promise((r) => setTimeout(r, 10));
+      return run;
+    };
+    const dropped = { type: "message_end", message: { role: "assistant", content: [], stopReason: "error", errorMessage: "Connection error." } };
+    const answered = { type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "Lecture 6 covers MSTs." }], stopReason: "stop" } };
+    const ok = await go([dropped, { type: "auto_retry_start", attempt: 1, errorMessage: "Connection error." }, answered, { type: "auto_retry_end", success: true }, { type: "agent_settled" }]);
+    expect(ok).toMatchObject({ done: true, error: null, text: "Lecture 6 covers MSTs." });
+    expect(lines[0]).toMatchObject({ status: "completed", outcome: "ok", error: null, act: true, allowed: ["read", "write"] });
+    const bad = await go([answered, dropped, { type: "agent_settled" }]);
+    expect(bad).toMatchObject({ done: true, error: "Connection error." });
+    expect(lines[1]).toMatchObject({ status: "failed", error: "Connection error." });
+  });
+});
 
 const root = tmp("vcl-");
 afterAll(() => cleanup(root));
@@ -168,6 +196,36 @@ describe("the board's log and the diag window", () => {
     expect(last.v).toBeUndefined();
   });
 
+  it("the laptop app's batches (source app): its errors and box drops go to app.jsonl, stamped with the device; the diag window has them", () => {
+    const stateDir = join(root, "state-app");
+    const out = boardLogPost({ stateDir, vaultName: "school2", ua: "Mozilla/5.0 (Windows NT 10.0)" }, {
+      source: "app",
+      device: "laptop",
+      session: "a1",
+      events: [
+        { at: "2026-10-22T03:00:00.000Z", ev: "box.feed", state: "dropped", error: `Failed to connect to thinkbox (key ${KEY})` },
+        { at: "2026-10-22T03:01:04.000Z", ev: "box.feed", state: "connected", downMs: 64_000 },
+        { at: "2026-10-22T03:02:00.000Z", ev: "console.error", data: "render failed" },
+      ],
+    });
+    expect(out).toEqual({ status: 200, body: { ok: true, n: 3 } });
+    const logs = boxLogs(stateDir);
+    const lines = readFileSync(logs.app.path, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    expect(lines.map((l) => [l.ev, l.state ?? l.data])).toEqual([
+      ["box.feed", "dropped"],
+      ["box.feed", "connected"],
+      ["console.error", "render failed"],
+    ]);
+    expect(lines.every((l) => l.device === "laptop" && l.session === "a1" && l.vault === "school2" && l.ua === "Windows")).toBe(true);
+    expect(lines[1].downMs).toBe(64_000);
+    expect(JSON.stringify(lines)).not.toContain(KEY);
+    // Not in the voice's or the board's log.
+    expect(existsSync(logs.voice.path)).toBe(false);
+    expect(existsSync(logs.board.path)).toBe(false);
+    const d = boxDiag({ stateDir, vault: join(root, "vault-app"), vaultName: "school2", version: "x", rev: null, minutes: 15, now: Date.parse("2026-10-22T03:05:00.000Z") });
+    expect(d.app).toHaveLength(3);
+  });
+
   it("diag: the last N minutes of the turn log, the board log and the phone's events, redacted", () => {
     const stateDir = join(root, "state-c");
     const vault = join(root, "vault-c");
@@ -186,5 +244,39 @@ describe("the board's log and the diag window", () => {
     expect(d.phoneEvents).toEqual([{ ts: now - 60_000, kind: "tap" }]);
     expect(JSON.stringify(d)).not.toContain(KEY);
     expect(jsonlSince(join(vault, "missing.jsonl"), 0)).toEqual([]);
+  });
+});
+
+describe("the frustration signal on Carl's lines", () => {
+  it("a repeat of his previous line, or a reply starting no / what? / hello? / stop / again (after a lead-in)", () => {
+    expect(frustration("Can you make the tree image?", "can you make the tree image")).toEqual(["repeat"]);
+    expect(frustration("Can you make a tree image please?", "Can you make the tree image?")).toEqual(["repeat"]);
+    expect(frustration("No, you didn't do that.")).toEqual(["no"]);
+    expect(frustration("Nope.")).toEqual(["no"]);
+    expect(frustration("Wait, what? ... What?")).toEqual(["what"]);
+    expect(frustration("Sorry, what?")).toEqual(["what"]);
+    expect(frustration("Huh?")).toEqual(["what"]);
+    expect(frustration("Hello?")).toEqual(["hello"]);
+    expect(frustration("Yo, dude, stop saying one sec.")).toEqual(["stop"]);
+    expect(frustration("Again, the iterations are wrong")).toEqual(["again"]);
+    expect(frustration("hello?", "Hello?")).toEqual(["repeat", "hello"]);
+    // Not frustration: ordinary questions and words that only start the same.
+    for (const t of ["What does lemma 2 say?", "Nobody said that", "Hello there", "Stopping criteria for Bellman-Ford", "Hello.", "...", "  "]) expect(frustration(t), t).toEqual([]);
+    expect(frustration("ok", "ok"), "too short to call a repeat").toEqual([]);
+    expect(frustration("Draft part B now", "Let's discuss part A")).toEqual([]);
+  });
+
+  it("writes {ev:signal, conv, via, kinds, head} to turns.jsonl: kinds and the first 60 characters only; per conversation", () => {
+    const stateDir = join(root, "state-sig");
+    const long = "No. I asked you to save it into the notes panel, and that's not what you did at all, again.";
+    expect(noteUserLine({ stateDir, vault: "school2", conv: "c1", via: "voice", text: "Make the tree image." })).toEqual([]);
+    expect(noteUserLine({ stateDir, vault: "school2", conv: "c2", via: "laptop", text: "Make the tree image." }), "another conversation: no repeat").toEqual([]);
+    expect(noteUserLine({ stateDir, vault: "school2", conv: "c1", via: "voice", text: "Make the tree image!" })).toEqual(["repeat"]);
+    noteUserLine({ stateDir, vault: "school2", conv: "c1", via: "laptop", text: long });
+    const lines = readFileSync(boxLogs(stateDir).turns.path, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toMatchObject({ ev: "signal", vault: "school2", conv: "c1", via: "voice", kinds: ["repeat"], head: "Make the tree image!" });
+    expect(lines[1]).toMatchObject({ ev: "signal", conv: "c1", via: "laptop", kinds: ["no"], head: long.slice(0, 60) });
+    expect(JSON.stringify(lines[1])).not.toContain("at all");
   });
 });

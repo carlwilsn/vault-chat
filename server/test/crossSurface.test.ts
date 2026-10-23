@@ -980,8 +980,8 @@ describe("m. Board voice: \"put problem 3 on my laptop\", then \"I'm not near my
   });
   pass("m", "the agent (every surface)", "Show is one of the agent's own tools (typed chat, laptop / board / phone voice through Ask)", () => {
     expect(backend.threads.every((t) => t.tools.includes("Show"))).toBe(true);
-    // And voice's Asks, questions too (a side request: read-only tools and Show).
+    // And voice's Asks, questions too: every Ask has the action tools (Show, BoardSend …), pi decides what it needs.
     expect(showHostTools).toContain("Show");
-    expect(showHostTools).not.toContain("BoardSend");
+    expect(showHostTools).toContain("BoardSend");
   });
 });

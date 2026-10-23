@@ -30,12 +30,12 @@ export type VoiceToolDef = { name: string; description: string; parameters: { ty
 const ASK_DEF: VoiceToolDef = {
   name: ASK,
   description:
-    "Hand a request to the agent of this conversation — the same agent as Carl's typed chat, with every tool: files (read, write, edit), notes, his whiteboard inbox, his own vault tools (calendar …), conversations, the web, Python and the shell. Use it for ANY action and for anything you would otherwise have to work out or guess: arithmetic and math (it runs Python), facts in files, what's on the board inbox, searches. Pass Carl's request in his own words (short). It runs in the background as a side request (it never interrupts the agent's own work in the chat) and returns at once with a request id; the answer comes to you later as a message starting [vc:result]. Never say it is done before that.",
+    "Hand a request to the agent of this conversation — the same agent as Carl's typed chat, with every tool: files (read, write, edit), notes, his whiteboard inbox, his own vault tools (calendar …), conversations, the web, Python and the shell. Use it for ANY action and for anything you would otherwise have to work out or guess: arithmetic and math (it runs Python), facts in files, what's on the board inbox, searches. Every Ask has all those tools — it can make files and images, render, and send to his inbox — so never tell Carl something can't be done before you Ask. Pass Carl's request in his own words (short). It runs in the background as a side request (it never interrupts the agent's own work in the chat) and returns at once with a request id; the answer comes to you later as a message starting [vc:result]. Never say it is done before that.",
   parameters: {
     type: "object",
     properties: {
       request: { type: "string", description: "Carl's request in his own words, with what he pointed at (a file, a page). Short: one or two sentences." },
-      act: { type: "boolean", description: "true only when he asked for a change: write or edit a file, save a note, send something. Leave it out for a question or a lookup." },
+      act: { type: "boolean", description: "true when he asked for a change (write or edit a file, save a note, send something): it then waits for the agent's own running work in this chat, so the two never edit the same files. Leave it out for a question or a lookup. Every Ask has the full tools either way." },
     },
     required: ["request"],
   },

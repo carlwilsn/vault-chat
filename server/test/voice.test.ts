@@ -196,10 +196,11 @@ describe("voice's one tool that acts: Ask, a request to the conversation's agent
     // It never says it is done: the answer comes as [vc:result].
     expect(r.result).toContain("[vc:result]");
     expect(r.result).toMatch(/don't say it is done/);
-    // A side thread of this conversation (read-only: a question), told it came by voice; not a turn of it.
+    // A side thread of this conversation, told it came by voice; not a turn of it. A question has the action tools too
+    // (Carl, 2026-10-21: a read-only Ask told him four times it could not make an image): pi decides what it needs.
     const side = lastSide();
-    expect(side).toMatchObject({ kind: "voice-ask", convId: chat });
-    expect(side.tools).toBeUndefined();
+    expect(side).toMatchObject({ kind: "voice-ask", convId: chat, tools: "act" });
+    expect(side.text).toMatch(/with the agent's tools .*If he asked for something to be made, changed or sent, do it now/);
     expect(side.text).toContain(voice.ASK_CONTEXT);
     expect(side.text).toContain("What does lemma 2 say?");
     await new Promise((res) => setTimeout(res, 100));
@@ -219,6 +220,13 @@ describe("voice's one tool that acts: Ask, a request to the conversation's agent
     expect(msgs.filter((m) => m.voiceAsk).map((m) => m.voiceAsk)).toEqual([{ request: "What does lemma 2 say?", result: "Lemma 2: a contraction on a complete metric space has exactly one fixed point.", failed: false }]);
     expect(msgs.some((m) => m.role === "user" && m.content.includes("lemma 2 say"))).toBe(false);
     expect(msgs.some((m) => m.toolCalls?.some((t) => t.name === "VoiceAsk"))).toBe(false);
+  });
+
+  it("the voice is told every Ask has the full tools (it never refuses before asking); act only orders a change after the running work", async () => {
+    const { voiceToolDefs } = await import("../../src/voicePrompt");
+    const ask = voiceToolDefs("laptop").find((t) => t.name === "Ask")!;
+    expect(ask.description).toMatch(/Every Ask has all those tools — it can make files and images, render, and send to his inbox — so never tell Carl something can't be done before you Ask/);
+    expect(ask.parameters.properties.act!.description).toMatch(/waits for the agent's own running work .* Every Ask has the full tools either way/);
   });
 
   it("an Ask during a running turn: no steer, the running turn and its queue untouched; an action waits for the turn to end", async () => {
@@ -344,6 +352,13 @@ describe("voice's one tool that acts: Ask, a request to the conversation's agent
     await voice.voiceAsksSettled();
     const got = await voice.voiceUpdates(deps, { convId: chat, cursor: start.cursor, waitMs: 1000 });
     expect(got.updates.find((u) => u.kind === "result")?.text).toMatch(/could not do it .*still starting.*Tell Carl it didn't happen/);
+    // The same failure again, and again: one red row in the thread, not a stack; voice hears each.
+    for (const r of ["y", "z"]) await voice.voiceTool(starting, { name: "Ask", args: { request: r }, convId: chat });
+    await voice.voiceAsksSettled();
+    const rows = convs.pictureOf(vault, chat)!.items.filter((x) => x.kind === "tool" && x.name === "VoiceAsk");
+    expect(rows.map((x) => x.result)).toEqual(["Error: the agent engine is still starting — try again in a minute"]);
+    const again = await voice.voiceUpdates(deps, { convId: chat, cursor: got.cursor, waitMs: 1000 });
+    expect(again.updates.filter((u) => u.kind === "result")).toHaveLength(2);
   });
 
   it("an Ask never drops on a timeout: it returns while the side request still works, and its answer reaches the call once", async () => {
@@ -360,6 +375,9 @@ describe("voice's one tool that acts: Ask, a request to the conversation's agent
     const res = got.updates.find((u) => u.kind === "result")!;
     expect(res.speak).toBe(true);
     expect(res.text).toMatch(/^\[vc:result\] The agent answered \(request ask-[a-z0-9-]+\): Section 4 says every measurable function/);
+    // Said briefly, and not at all once Carl said he has it or moved on ("Slowpoke, I found it already").
+    expect(res.text).toContain(voice.TELL_RESULT);
+    expect(voice.TELL_RESULT).toMatch(/if he has since said he has it, found it, moved on or no longer needs it, say nothing \(skip your turn\) or one word at most: never the result/);
     // Once: the cursor moved past it.
     const again = await voice.voiceUpdates(deps, { convId: chat, cursor: got.cursor, waitMs: 200 });
     expect(again.updates.filter((u) => u.kind === "result")).toEqual([]);

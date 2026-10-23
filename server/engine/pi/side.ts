@@ -60,7 +60,8 @@ export type SideStart = {
   log?: SideLog;
 };
 
-export type SideLog = { vault: string; conv: string | null; via: string; version: string; write: (line: TurnLine) => void };
+/** `act`: the side thread has pi's write tools (bash, edit, write); `allowed`: pi's tools it was given (its line shows both). */
+export type SideLog = { vault: string; conv: string | null; via: string; version: string; act?: boolean; allowed?: string[]; write: (line: TurnLine) => void };
 
 export type SideState = { id: string; text: string; v: number; done: boolean; error: string | null; file: string | null };
 
@@ -202,8 +203,10 @@ export class SideRuns {
       } else if (e?.type === "message_update" && e.assistantMessageEvent?.type === "text_delta") {
         run.text += String(e.assistantMessageEvent.delta ?? "");
         this.bump(run);
-      } else if (e?.type === "message_end" && e.message?.role === "assistant" && e.message.stopReason === "error") {
-        run.error = String(e.message.errorMessage ?? "the model failed").slice(0, 500);
+      } else if (e?.type === "message_end" && e.message?.role === "assistant") {
+        // Only the last answer's failure counts: pi auto-retries a dropped connection, and a retry that answers
+        // clears it (10-22: retried side asks that answered were shown as "failed: Connection error").
+        run.error = e.message.stopReason === "error" ? String(e.message.errorMessage ?? "the model failed").slice(0, 500) : null;
       } else if (e?.type === "agent_settled") {
         void (async () => {
           const t = await proc.request({ type: "get_last_assistant_text" }, 15_000).catch(() => null);
@@ -260,7 +263,8 @@ export class SideRuns {
     if (rec && run.log) {
       const stopped = error === "stopped";
       try {
-        run.log.write(rec.line({ status: error ? (stopped ? "interrupted" : "failed") : "completed", outcome: error ? (stopped ? "stopped" : "error") : "ok", error: stopped ? null : error }));
+        const l = run.log;
+        run.log.write({ ...rec.line({ status: error ? (stopped ? "interrupted" : "failed") : "completed", outcome: error ? (stopped ? "stopped" : "error") : "ok", error: stopped ? null : error }), ...(l.act !== undefined ? { act: l.act } : {}), ...(l.allowed ? { allowed: l.allowed } : {}) });
       } catch (e) {
         this.log(`side turn log: ${(e as Error).message}`);
       }

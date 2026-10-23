@@ -198,6 +198,22 @@ describe("Ctrl+L and Ctrl+K are requests to pi", () => {
     expect(sideFiles(sessionsDir()).length).toBe(before);
   });
 
+  it("each side request's turn line says whether it had the write tools and which of pi's: Ctrl+L read-only; a voice Ask the action set, and pi takes its write", async () => {
+    or.script.push({ toolCall: { name: "write", args: { path: "notes/tree.md", content: "a tree" } } }, { text: "I made notes/tree.md." });
+    const r = await post("/api/v1/side", { kind: "voice-ask", convId: conv, text: "make me a tree file", tools: "act" });
+    expect(r.status).toBe(200);
+    const { final } = await follow(r.body.id, r.body.v);
+    expect(final.text).toBe("I made notes/tree.md.");
+    const lines = readFileSync(join(home, "state", "logs", "turns.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l)).filter((l) => l.mode === "side");
+    const ask = lines.find((l) => l.session === askId)!;
+    expect(ask).toMatchObject({ via: "ask", act: false, allowed: ["read", "grep", "find", "ls"] });
+    const voice = lines.find((l) => l.session === r.body.id)!;
+    expect(voice).toMatchObject({ via: "voice-ask", conv, act: true });
+    expect(voice.allowed).toEqual(expect.arrayContaining(["read", "bash", "edit", "write"]));
+    // pi took the write (the fake pi runs only read; a tool it was not given comes back "not found", ok false).
+    expect(voice.tools).toContainEqual(expect.objectContaining({ name: "write", ok: true }));
+  });
+
   it("refusals: no text, an unknown side thread", async () => {
     expect((await post("/api/v1/side", { kind: "ask", text: "  " })).status).toBe(400);
     expect((await get("/api/v1/side/nope?after=0&wait=0")).status).toBe(404);
