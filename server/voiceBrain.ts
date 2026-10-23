@@ -381,7 +381,7 @@ async function completions(d: BrainDeps, req: IncomingMessage, res: ServerRespon
     const n = await c.engine.stopWork(c.convId).catch(() => 0);
     log(d, { ev: "turn.stop", call: c.id, req: s.id, workers: n });
   }
-  const out = await c.engine.message({ convId: c.convId, text, source: "voice", via: "voice", client: c.device, clientMsgId: `v-${s.id}` }).catch((e): Record<string, unknown> => ({ error: (e as Error).message }));
+  const out = await c.engine.message({ convId: c.convId, text, via: "voice", client: c.device, clientMsgId: `v-${s.id}` }).catch((e): Record<string, unknown> => ({ error: (e as Error).message }));
   log(d, { ev: "turn.start", call: c.id, req: s.id, chars: text.length, steered: !!out?.steered, msgMs: Date.now() - t0, ...(out?.error ? { error: String(out.error).slice(0, 200) } : {}) });
   if (!out || out.error) {
     writeChunk(s, "Sorry, that didn't reach the agent.");
