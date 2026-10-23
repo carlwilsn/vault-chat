@@ -129,6 +129,9 @@ type Call = {
   sink: Sink | null;
   /** The rest of an interrupted reply is not spoken (until the next request or the turn's end). */
   dropping: boolean;
+  /** The running turn is this call's to speak: its own lines, a typed line on its own device, its work's results.
+   *  A reply to something typed on another surface is that surface's (one context, each surface its own exchange). */
+  ownTurn: boolean;
   /** Text since the last cut (spoken form), one per turn. */
   speak: Speakable;
   /** The pipeline's speak channel(s). */
@@ -196,6 +199,7 @@ export async function startCall(d: BrainDeps, b: { convId?: unknown; device?: un
     startedAt: Date.now(),
     sink: null,
     dropping: false,
+    ownTurn: true,
     speak: new Speakable(),
     channels: new Set(),
     untap: () => {},
@@ -250,6 +254,12 @@ function callOf(req: IncomingMessage, id?: string): Call | null {
 // ---------------------------------------------------------------- pi's events → speech
 
 function onPi(d: BrainDeps, c: Call, ev: any): void {
+  if (ev?.type === "vc_turn_start") {
+    const origin = typeof ev.origin === "string" ? ev.origin : null;
+    c.ownTurn = ev.kind !== "user" || !origin || origin === "voice" || origin === c.device;
+    if (!c.ownTurn) log(d, { ev: "turn.other-surface", call: c.id, origin });
+    return;
+  }
   if (ev?.type === "message_update" && ev.assistantMessageEvent?.type === "text_delta") {
     if (c.sink && !c.sink.done) {
       c.sink.tDelta ??= Date.now();
@@ -279,7 +289,7 @@ function say(c: Call, pieces: string[]): void {
     if (!p) continue;
     if (c.sink && !c.sink.done) {
       writeChunk(c.sink, p);
-    } else if (!c.dropping) {
+    } else if (!c.dropping && c.ownTurn) {
       const line = `data: ${JSON.stringify({ text: p, at: Date.now() })}\n\n`;
       for (const ch of c.channels) ch.write(line);
     }

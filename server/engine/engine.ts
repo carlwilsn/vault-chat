@@ -1267,6 +1267,8 @@ export class Engine {
       // What Carl did elsewhere is not in the prompt: pi's extension adds it (the "you" layer, a vc-you custom message).
       const texts = [rules, kind === "wake" ? input : body].filter(Boolean);
       live.feed.expect({ kind: "prompt", text: texts.join("\n\n"), clientId: kind === "user" ? clientId : undefined, ...shownInput, ...(opts.itemImages?.length ? { images: opts.itemImages } : {}), ...(kind === "user" && opts.origin ? { device: opts.origin } : {}) });
+      // A live call learns where this turn came from (a call speaks only its own surface's exchange).
+      if (this.taps.has(convId)) this.tapEmit(convId, { type: "vc_turn_start", kind, origin: opts.origin ?? null });
       try {
         await this.d.backend.startTurn(threadId, { texts, images: opts.images ?? [], model, turnId, ...(talker?.thinking ? { thinking: talker.thinking } : {}) });
         live.started = true;

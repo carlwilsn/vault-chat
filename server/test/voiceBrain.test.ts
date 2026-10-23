@@ -203,6 +203,32 @@ describe("voice with one brain", () => {
     for (const t of ["stop the timer at 5", "don't stop", "nevermind the second part, what about the first?"]) expect(STOP_RE.test(t), t).toBe(false);
   });
 
+  it("one context, each surface its own exchange: a reply to a line typed on another device is not spoken on this call; one typed on its own device is", async () => {
+    const c = await call(); // on the board
+    const ac = new AbortController();
+    const res = await fetch(`${base}/api/v1/brain/call/${c.id}/speak`, { headers: { authorization: `Bearer ${c.token}` }, signal: ac.signal });
+    const reader = res.body!.getReader();
+    const dec = new TextDecoder();
+    let got = "";
+    void (async () => {
+      for (;;) {
+        const r = await reader.read().catch(() => ({ done: true, value: undefined }));
+        if (r.done) return;
+        got += dec.decode(r.value);
+      }
+    })();
+    eng.emit({ type: "vc_turn_start", kind: "user", origin: "laptop" });
+    eng.emit(delta("The laptop's answer, for the laptop. "));
+    eng.emit({ type: "vc_turn_end", status: "completed" });
+    eng.emit({ type: "vc_turn_start", kind: "user", origin: "board" });
+    eng.emit(delta("The board's own answer. "));
+    eng.emit({ type: "vc_turn_end", status: "completed" });
+    await until(() => got.includes("board's own answer"));
+    ac.abort();
+    expect(got).toContain("The board's own answer.");
+    expect(got).not.toContain("for the laptop");
+  });
+
   it("lastUserText takes only Carl's newest words", () => {
     expect(lastUserText({ messages: [{ role: "user", content: "a" }, { role: "assistant", content: "b" }] })).toBe("");
     expect(lastUserText({ messages: [{ role: "user", content: [{ type: "text", text: "hello" }] }] })).toBe("hello");
