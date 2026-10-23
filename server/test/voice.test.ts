@@ -221,6 +221,28 @@ describe("voice's one tool that acts: Ask, a request to the conversation's agent
     expect(msgs.some((m) => m.toolCalls?.some((t) => t.name === "VoiceAsk"))).toBe(false);
   });
 
+  it("one context, each surface its own exchange: a phone call never reads out a reply typed on the laptop; a laptop call does", async () => {
+    const chat = await typed("What's on the board?", "Three problems from lecture 7.");
+    const cur = { at: 0, you: Date.now() };
+    const phone = voice.voiceUpdatesSince(deps, chat, cur, { you: false, device: "phone" });
+    expect(phone.updates.some((u) => u.speak)).toBe(false);
+    const laptop = voice.voiceUpdatesSince(deps, chat, cur, { you: false, device: "laptop" });
+    expect(laptop.updates.some((u) => u.speak && u.text.includes("Three problems from lecture 7."))).toBe(true);
+  });
+
+  it("an answer that lands after the call ended is the agent's line in the conversation, never lost (10-22: 3 of 6 calls ended while he waited)", async () => {
+    const chat = await typed("Lecture 7.", "Ready.");
+    const sid = voice.startVoiceSessionForTests(vault, "phone", chat);
+    await voice.voiceTool(deps, { name: "Ask", args: { request: "Summarise lecture 7 in two lines.", act: true }, convId: chat, device: "phone", sessionId: sid });
+    // He hangs up before it is done.
+    await voice.voiceTranscript(deps, { convId: chat, role: "assistant", text: "Voice session ended.", system: true, ended: true, sessionId: sid });
+    lastSide().answer("Lecture 7: completeness, and the approximation property of the supremum.");
+    await voice.voiceAsksSettled();
+    const items = convs.pictureOf(vault, chat)!.items;
+    expect(items.some((x) => x.kind === "assistant" && String(x.text).includes("approximation property of the supremum"))).toBe(true);
+    voice.resetVoiceSessionsForTests();
+  });
+
   it("an Ask shows at once as working (its row, its start), says one named line for real work, and a status question gets its status — never a second job (Carl, 10-22)", async () => {
     const chat = await typed("Checkpoint time.", "Ready.");
     const items = () => convs.pictureOf(vault, chat)!.items.filter((x) => x.kind === "tool" && x.name === "VoiceAsk");

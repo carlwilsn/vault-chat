@@ -54,9 +54,12 @@ class FakeTrack extends EventTarget {
 type Started = { opts: any; conv: any; track: FakeTrack };
 let started: Started[] = [];
 let failNext: Error | null = null;
+/** Set: the next start waits on it (a slow connect). */
+let gate: Promise<void> | null = null;
 let level = { input: 0.2, output: 0 };
 const sdk = {
   async startSession(opts: any) {
+    if (gate) await gate;
     if (failNext) {
       const e = failNext;
       failNext = null;
@@ -452,6 +455,39 @@ test("one voice at a time: the box says the call moved — the laptop ends it an
   } finally {
     updatesBody = null;
     useStore.setState({ voiceNotice: null });
+    if (voice.isVoiceSessionActive()) await voice.endElevenLabsSession();
+  }
+});
+
+test("a second press while the call connects does nothing; an earlier call's late close never tears down the live call (10-22: 70 minutes of lines lost)", async () => {
+  sessionBody = { systemPrompt: "prompt", toolNames: [], voiceId: "v1", conversationToken: "tok_1" };
+  started = [];
+  let release!: () => void;
+  gate = new Promise<void>((r) => (release = r));
+  try {
+    voice.toggleVoice("ctrl+d");
+    for (let i = 0; i < 100 && !useStore.getState().voiceConnecting; i++) await tick();
+    assert.equal(useStore.getState().voiceConnecting, true, "connecting");
+    voice.toggleVoice("ctrl+d");
+    assert.equal(useStore.getState().voiceMode, true, "the second press did not end it");
+    release();
+    for (let i = 0; i < 100 && !voice.isVoiceSessionActive(); i++) await new Promise((r) => setTimeout(r, 10));
+    assert.equal(voice.isVoiceSessionActive(), true, "the one call connected");
+    assert.equal(started.length, 1, "one start");
+  } finally {
+    gate = null;
+    if (voice.isVoiceSessionActive()) await voice.endElevenLabsSession();
+  }
+  // Call A, ended; call B live; then A's close arrives late: B keeps going.
+  const a = await startCall({ conversationToken: "tok_a" });
+  await voice.endElevenLabsSession();
+  const b = await startCall({ conversationToken: "tok_b" });
+  try {
+    a.opts.onDisconnect?.({ reason: "error", message: "late close of the earlier call" });
+    await tick();
+    assert.equal(voice.isVoiceSessionActive(), true, "the live call is untouched");
+    assert.notEqual(a, b);
+  } finally {
     if (voice.isVoiceSessionActive()) await voice.endElevenLabsSession();
   }
 });

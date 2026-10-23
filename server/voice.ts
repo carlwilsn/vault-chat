@@ -187,6 +187,11 @@ export function followVoice(vault: string, convId: string): boolean {
 const threadOf = (sessionId: unknown, convId: unknown): unknown => voiceSessionsById.get(s(sessionId))?.followed ?? convId;
 
 /** [tests] Forget every session. */
+/** [tests] A call's session as voiceSession mints it (no ElevenLabs): its id. */
+export function startVoiceSessionForTests(vault: string, device: VoiceDevice, convId: string | null): string {
+  return startLiveVoice(vault, device, convId).session.id;
+}
+
 export function resetVoiceSessionsForTests(): void {
   voiceSessionsById.clear();
   liveVoice = null;
@@ -333,7 +338,7 @@ export async function voiceTool(d: VoiceDeps, body: any): Promise<{ result: stri
   const a = args && typeof args === "object" ? args : {};
   const device = voiceDevice(body?.device);
   try {
-    if (name === ASK) return await ask(d, a, body?.convId, device);
+    if (name === ASK) return await ask(d, a, body?.convId, device, s(body?.sessionId) || null);
     if (SCREEN_TOOLS.has(name)) {
       return {
         result:
@@ -409,7 +414,7 @@ export async function voiceAsksSettled(): Promise<void> {
  * turn of the conversation ends). It never writes a message into the thread and never steers a running turn. Returns at once, so no timeout
  * of the call can drop it; the answer comes back through /updates and is kept as one collapsed row. The one
  * exception is the agent's own open question: Carl's spoken answer goes to it as his answer. */
-async function ask(d: VoiceDeps, a: Record<string, unknown>, convId: unknown, device: VoiceDevice): Promise<{ result: string; convId?: string }> {
+async function ask(d: VoiceDeps, a: Record<string, unknown>, convId: unknown, device: VoiceDevice, sessionId: string | null = null): Promise<{ result: string; convId?: string }> {
   const request = s(a.request ?? a.task).trim();
   if (!request) return { result: `Error: ${ASK} needs the request (Carl's words). Nothing was handed over.` };
   const id = await attached(d, convId, true, request);
@@ -432,7 +437,7 @@ async function ask(d: VoiceDeps, a: Record<string, unknown>, convId: unknown, de
   const act = a.act === true || a.act === "true";
   const waits = act && !!p?.meta.running;
   asksRunningMeta.set(rid, { vault: d.vault, convId: id, request, startedAt: Date.now() });
-  const run = runAsk(d, { rid, convId: id, request, act }).finally(() => {
+  const run = runAsk(d, { rid, convId: id, request, act, sessionId }).finally(() => {
     asksRunning.delete(rid);
     asksRunningMeta.delete(rid);
   });
@@ -458,7 +463,7 @@ async function untilIdle(vault: string, convId: string, maxMs = 60 * 60_000): Pr
 }
 
 /** The side request, then its one row in the thread and its answer for the live call. */
-async function runAsk(d: VoiceDeps, o: { rid: string; convId: string; request: string; act: boolean }): Promise<void> {
+async function runAsk(d: VoiceDeps, o: { rid: string; convId: string; request: string; act: boolean; sessionId?: string | null }): Promise<void> {
   let text = "";
   let error: string | null = null;
   // Its row is in the thread at once, working (a spinner, the time it has run), and becomes the result in place
@@ -512,6 +517,15 @@ async function runAsk(d: VoiceDeps, o: { rid: string; convId: string; request: s
   }
   // The acknowledgement window ends with the answer: what voice says after it is its reply.
   ackDue.delete(o.convId);
+  // The call it came from is over and no call hears this conversation now (3 of 6 calls on 10-22 ended while he
+  // waited): the answer is the agent's line in the conversation, where he will see it — never lost.
+  const live = liveVoiceSession();
+  if (o.sessionId && voiceSessionsById.has(o.sessionId) && !(live && live.convId === o.convId)) {
+    await writeNotes(d.vault, o.convId, [
+      { kind: "line", role: "assistant", text: error ? `I couldn't finish "${clip(oneLine(o.request), 120)}": ${clip(oneLine(error), 300)}` : text.slice(0, 20_000), clientId: `voice-${o.rid}-after` },
+    ]).catch((e) => console.warn("[voice] the answer after the call:", e));
+    d.onWrite?.();
+  }
   asksDone.push({ vault: d.vault, convId: o.convId, id: o.rid, at: Date.now(), text, error });
   while (asksDone.length > 200) asksDone.shift();
 }
@@ -535,7 +549,12 @@ const cursorOf = (at: number, you: number) => `${Math.floor(at)}:${Math.floor(yo
 
 /** What happened in the conversation (and elsewhere) since `cur`: the agent's finished answers, its open question,
  * and the "you" layer. A turn still running is held until it ends (never a half answer). */
-export function voiceUpdatesSince(d: VoiceDeps, convId: string | null, cur: { at: number; you: number }, o: { you?: boolean } = {}): { updates: VoiceUpdate[]; at: number; you: number } {
+export function voiceUpdatesSince(
+  d: VoiceDeps,
+  convId: string | null,
+  cur: { at: number; you: number },
+  o: { you?: boolean; /** The call's device: a reply typed on another surface is that surface's, never read out here. */ device?: VoiceDevice | null } = {},
+): { updates: VoiceUpdate[]; at: number; you: number } {
   const updates: VoiceUpdate[] = [];
   let at = cur.at;
   let you = cur.you;
@@ -577,7 +596,7 @@ export function voiceUpdatesSince(d: VoiceDeps, convId: string | null, cur: { at
             speak: true,
             text: controlLine("result", `The agent answered: ${answer}${failed.length ? `\n(Its turn reported: ${clip(failed.join(" "), 300)})` : ""}\n${TELL_RESULT}`),
           });
-        } else if (typed && last.at > typed.at) {
+        } else if (typed && last.at > typed.at && !(o.device && typed.device && typed.device !== o.device)) {
           // One agent on every surface: what the agent answered to his typed message is spoken by the call, in full
           // (code blocks and tables skipped), and the voice never answers the typed message itself.
           const spoken = speakMath(spokenReply(replies.filter((x) => x.at > typed.at).map((x) => s(x.text).trim()).join("\n\n")));
@@ -628,13 +647,15 @@ export async function voiceUpdates(
   voiceActivity(d.vault);
   await speechReady();
   let lastYou = 0;
+  // One context, each surface its own exchange: a call hears what was typed on its own device, not on another's.
+  const callDevice = (q.session ? voiceSessionsById.get(s(q.session))?.device : null) ?? null;
   for (let i = 0; ; i++) {
     // The layer reads the activity log, the newest board and the notes: every 2 s, not every look.
     const withYou = Date.now() - lastYou >= 2000;
     if (withYou) lastYou = Date.now();
     const m = movedNow();
     if (m) return { updates: [], cursor: cursorOf(cur.at, cur.you), moved: m };
-    const r = voiceUpdatesSince(d, convId, cur, { you: withYou });
+    const r = voiceUpdatesSince(d, convId, cur, { you: withYou, device: callDevice });
     if (r.updates.length || Date.now() >= deadline || q.signal?.closed) return { updates: r.updates, cursor: cursorOf(r.at, r.you) };
     cur.at = r.at;
     cur.you = r.you;

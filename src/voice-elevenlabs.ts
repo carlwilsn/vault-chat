@@ -161,6 +161,8 @@ const VIEWPORT_TEXT_CAP = 4000;
 type ActiveConversation = VoiceConversation;
 
 let activeConversation: ActiveConversation | null = null;
+/** The newest call started (each start takes the next number). */
+let liveCall = 0;
 /** The soft-timeout filler said into his silence (it belongs only to a slow reply to his line): logged. */
 const fillerWatch = new FillerWatch();
 // The SDK's entry point ([tests] replaceable: a mocked SDK).
@@ -286,6 +288,8 @@ function isMicProblem(e: unknown): boolean {
 
 export async function startElevenLabsSession(opts?: { recap?: string }): Promise<void> {
   if (activeConversation) return;
+  // This start's own number: only the newest call's close may clear the call's state (transcript, updates).
+  const myCall = ++liveCall;
   const state = useStore.getState();
   // Voice is the box's: its agent, its key, its tools (one agent, one key
   // place). No box, or the box out of reach: voice says so and does not start.
@@ -446,6 +450,11 @@ export async function startElevenLabsSession(opts?: { recap?: string }): Promise
         useStore.getState().setVoiceThinking(false);
       },
       onDisconnect: (details?: any) => {
+        // An earlier call's close (one that a later start replaced) is not this call's: it tears nothing down.
+        if (myCall !== liveCall) {
+          vlog("voice closed (an earlier call)", { reason: details?.reason });
+          return;
+        }
         // Every close, ours included, with its reason (one ended at 01:07 with no trace).
         vlog("voice closed", {
           transport,
@@ -854,6 +863,12 @@ export async function endElevenLabsSession(by = "app"): Promise<void> {
  *  goes on at once so the click shows; startElevenLabsSession's error paths and
  *  onDisconnect turn it off again. */
 export function toggleVoice(by: string = "toggle"): void {
+  // A press while the call is still connecting does nothing (10-22: two presses in a 17 s connect left a call whose
+  // lines reached no record for 70 minutes). It connects, or fails and says so; then the mic toggles as always.
+  if (useStore.getState().voiceConnecting && !activeConversation) {
+    vlog("voice toggle ignored", { why: "connecting", by: typeof by === "string" ? by : "toggle" });
+    return;
+  }
   if (!useStore.getState().voiceMode) {
     vlog("voice start", { by: typeof by === "string" ? by : "toggle" });
     // A retry: the red waves go back to normal while it connects.
