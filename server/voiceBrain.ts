@@ -64,11 +64,9 @@ export type BrainDeps = {
 /** A whole utterance that means "stop what you're doing" (never a sentence that merely contains "stop"). */
 export const STOP_RE = /^\s*(?:ok(?:ay)?,?\s+)?(?:stop|stop (?:it|that)|never ?mind|cancel(?: (?:it|that))?|forget (?:it|that)|scratch that|don'?t bother)(?: please)?[.!]*\s*$/i;
 
-/** The same words again within this long are the pipeline re-asking, never a second turn. */
+/** The same words again within this long, with no new line from Carl in the pipeline's context, are the pipeline
+ * re-asking, never a second turn. A new line with the same words is Carl asking again (he didn't catch it): answered. */
 export const REASK_MS = 10_000;
-/** ...but once that turn's reply is complete, the same words are Carl asking again (he didn't catch it), unless they
- * come so soon after that they can only be a late copy of the same transcript. */
-export const REPEAT_AFTER_END_MS = 1_500;
 
 export const brainEnabled = (): boolean => process.env.VC_VOICE_BRAIN !== "off";
 
@@ -143,7 +141,7 @@ type Call = {
   engine: BrainEngine;
   turns: number;
   /** The last words sent to pi, and when (the same words again at once are a re-ask, not a new turn). */
-  lastText: { text: string; at: number; endedAt?: number } | null;
+  lastText: { text: string; at: number; lines: number; endedAt?: number } | null;
   /** Its last request or speak-channel activity (a call whose pipeline died without ending it is reaped). */
   lastActive: number;
   /** A barge-in stopped the turn that was talking: the next request waits for it to end. */
@@ -322,6 +320,12 @@ function finishSink(c: Call, s: Sink): void {
 }
 
 /** Carl's newest words in an OpenAI-shaped request (the pipeline sends its whole context; only these matter). */
+/** How many lines from Carl the pipeline's context holds. */
+export function userLines(body: any): number {
+  const msgs = Array.isArray(body?.messages) ? body.messages : [];
+  return msgs.filter((m: any) => m?.role === "user").length;
+}
+
 export function lastUserText(body: any): string {
   const msgs = Array.isArray(body?.messages) ? body.messages : [];
   const last = msgs[msgs.length - 1];
@@ -359,12 +363,12 @@ async function completions(d: BrainDeps, req: IncomingMessage, res: ServerRespon
   c.turns++;
   // The pipeline asking again with nothing new from Carl (a retry after an interruption that carried no words): the
   // same turn, not a second one — the reply already on its way streams into this response.
-  // Once that turn has answered in full, the same words again (after a moment) are a new question: he asks again
-  // because he didn't catch it, and silence would look broken (the 30-minute session: 24 repeats went unanswered).
+  // A re-ask carries no new line from him; the same words as a new line are him asking again (he didn't catch it, or
+  // talked over the answer), and silence would look broken (the 30-minute sessions: 24, then 2, went unanswered).
+  const lines = userLines(body);
   const last = c.lastText;
-  const answered = last?.endedAt != null && Date.now() - last.endedAt >= REPEAT_AFTER_END_MS;
-  const again = !!last && last.text === text && Date.now() - last.at < REASK_MS && !answered;
-  c.lastText = { text, at: Date.now() };
+  const again = !!last && last.text === text && Date.now() - last.at < REASK_MS && lines <= last.lines;
+  c.lastText = { text, at: Date.now(), lines };
   c.lastActive = Date.now();
   res.on("close", () => {
     if (!s.done) {
@@ -381,6 +385,8 @@ async function completions(d: BrainDeps, req: IncomingMessage, res: ServerRespon
   });
   if (again) {
     log(d, { ev: "turn.reask", call: c.id, req: s.id });
+    // That turn already answered: nothing more is coming for this response (it used to stay open until he spoke).
+    if (last?.endedAt != null) finishSink(c, s);
     return;
   }
   // "Stop" / "never mind": the running work stops first (in code, not left to the model), then the words go to pi

@@ -4,7 +4,7 @@ import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { speechReady } from "../speakMath";
-import { REPEAT_AFTER_END_MS, STOP_RE, brainRoute, lastUserText, resetBrainForTests, voiceCallRules, type BrainDeps, type BrainEngine } from "../voiceBrain";
+import { STOP_RE, brainRoute, lastUserText, resetBrainForTests, voiceCallRules, type BrainDeps, type BrainEngine } from "../voiceBrain";
 
 type Fake = BrainEngine & { emit(ev: any): void; messages: any[]; talker: any; interrupted: number; running: boolean; stopped: number };
 
@@ -184,16 +184,22 @@ describe("voice with one brain", () => {
     expect(lines.join("")).toContain("Octopuses have three hearts.");
   });
 
-  it("the same words again once the reply was complete are a new question (he didn't catch it): answered, not swallowed", async () => {
+  it("the same words again as a new line are a new question (he didn't catch it): answered; a re-ask after the answer ends at once", async () => {
     const c = await call();
-    const ask = () => fetch(`${base}/v1/chat/completions`, { method: "POST", headers: { authorization: `Bearer ${c.token}` }, body: JSON.stringify({ messages: [{ role: "user", content: "what's seven times eight plus three?" }] }) });
-    const first = ask();
+    const q = "what's seven times eight plus three?";
+    const ask = (messages: unknown[]) => fetch(`${base}/v1/chat/completions`, { method: "POST", headers: { authorization: `Bearer ${c.token}` }, body: JSON.stringify({ messages }) });
+    const first = ask([{ role: "user", content: q }]);
     await until(() => eng.messages.length);
     eng.emit(delta("Fifty-nine. "));
     eng.emit({ type: "vc_turn_end", status: "completed" });
     await sse(await first);
-    await new Promise((r) => setTimeout(r, REPEAT_AFTER_END_MS + 100));
-    const second = ask();
+    // The pipeline asking again with nothing new: no second turn, and the response ends now (not when he next speaks).
+    const t0 = Date.now();
+    await sse(await ask([{ role: "user", content: q }]));
+    expect(Date.now() - t0).toBeLessThan(1000);
+    expect(eng.messages).toHaveLength(1);
+    // He says it again (a new line after the answer): a turn, answered.
+    const second = ask([{ role: "user", content: q }, { role: "assistant", content: "Fifty-nine." }, { role: "user", content: q }]);
     await until(() => eng.messages.length === 2);
     eng.emit(delta("Fifty-nine. "));
     eng.emit({ type: "vc_turn_end", status: "completed" });

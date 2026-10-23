@@ -210,14 +210,22 @@ def _words(text: str) -> list[str]:
     return re.sub(r"[^\w\s']", " ", text.lower()).split()
 
 
+# Sounds a listener makes while the other one talks: never a reason to stop the reply.
+BACKCHANNEL = {"mm", "hmm", "mhm", "mmhmm", "uh", "huh", "um", "ah", "oh", "yeah", "yep", "yes", "ok", "okay", "right", "sure", "cool", "got", "it", "i", "see"}
+
+
 class FreshWordsStartStrategy(MinWordsUserTurnStartStrategy):
-    """MinWords, minus the echo of the line that just ended a turn.
+    """MinWords, minus the echo of the line that just ended a turn, and minus backchannel over a reply.
 
     ElevenLabs can deliver the last partial of a line just after committing it. Pipecat counts that partial as new
     speech: a new turn starts, and its interruption cancels the reply's request before it reaches the box, so the
     question is lost without a word (seen 2026-10-23: "what's seven times eight plus three?" committed, the turn
     stopped, a 7-word partial 2 ms later started a new turn and the request died after 39 ms). A partial whose words
     all belong to the last committed line, within ECHO_SECS of it, is not a new turn.
+
+    While the reply is playing, "mm-hmm", "yeah", "okay" alone are him listening, not taking the turn: they used to cut
+    the reply and then, with nothing to answer, the turn ended empty and he heard nothing (the 30-minute session, twice:
+    "And why does that matter for-" answered, then "Mm-hmm." stopped it). More words than that still interrupt.
     """
 
     ECHO_SECS = 1.5
@@ -231,10 +239,14 @@ class FreshWordsStartStrategy(MinWordsUserTurnStartStrategy):
         if isinstance(frame, TranscriptionFrame):
             self._last = set(_words(frame.text))
             self._last_at = time.monotonic()
-        elif isinstance(frame, InterimTranscriptionFrame) and self._last and time.monotonic() - self._last_at < self.ECHO_SECS:
+        if isinstance(frame, (TranscriptionFrame, InterimTranscriptionFrame)):
             w = _words(frame.text)
-            if w and set(w) <= self._last:
+            if self._bot_speaking and w and set(w) <= BACKCHANNEL:
+                await self.trigger_reset_aggregation()
                 return ProcessFrameResult.CONTINUE
+            if isinstance(frame, InterimTranscriptionFrame) and self._last and time.monotonic() - self._last_at < self.ECHO_SECS:
+                if w and set(w) <= self._last:
+                    return ProcessFrameResult.CONTINUE
         return await super().process_frame(frame)
 
 
