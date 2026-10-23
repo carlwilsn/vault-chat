@@ -2372,7 +2372,7 @@ export function boot(): void {
   }
   /** The New voice's call: the phone is the mic and the speaker; its lines are the conversation's turns on the box. */
   async function vStartBrain() {
-    const cid = vVoiceConv || "v" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+    const cid = vVoiceConv || MAIN_ID; // no chat open: the one main conversation
     vVoiceConv = cid;
     vSessionId = null;
     const post = async (path: string, body: Record<string, unknown>) => {

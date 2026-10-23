@@ -17,6 +17,7 @@ import { AUDIO_WARN_LINE, MicPin, audioBlocked, canPickOutput, deviceLists, list
 import { PlaybackMonitor, roomAudioStats } from "./voiceStats";
 import { layoutLine, sideOf } from "./paneLayout";
 import { BrainConversation, type BrainPost } from "./voiceBrainClient";
+import { MAIN_ID } from "./threads";
 
 /** The voice's diagnostics: the local trail, and the box (voiceShip.ts: <state>/logs/voice.jsonl). */
 const ship = new VoiceLogShipper({ device: "laptop" });
@@ -313,7 +314,7 @@ export async function startElevenLabsSession(opts?: { recap?: string }): Promise
   {
     const { boxGet } = await import("./boxChat");
     const engine = await boxGet(box.link, "/api/v1/brain/engine", 4000).catch(() => null);
-    if (engine?.engine === "new") return startBrainSession(box.link, state.activeConversationId ?? useStore.getState().newConversation());
+    if (engine?.engine === "new") return startBrainSession(box.link, state.activeConversationId ?? MAIN_ID);
   }
 
   // "Connecting…" lights up the cockpit immediately so the user

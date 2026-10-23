@@ -167,7 +167,7 @@ function log(d: BrainDeps | { logDir: string | null }, o: Record<string, unknown
 /** Start a call on `convId`: its turns go to the talker model, its pi events to the call. One call per conversation. */
 export async function startCall(d: BrainDeps, b: { convId?: unknown; device?: unknown; model?: unknown; thinking?: unknown }): Promise<{ status: number; body: Record<string, unknown> }> {
   const convId = typeof b.convId === "string" ? b.convId.trim() : "";
-  if (!/^[A-Za-z0-9_-]{6,80}$/.test(convId)) return { status: 400, body: { error: "convId required" } };
+  if (!/^[A-Za-z0-9_-]{1,80}$/.test(convId)) return { status: 400, body: { error: "convId required" } };
   const device: Device = DEVICES.includes(b.device as Device) ? (b.device as Device) : "phone";
   // One voice at a time on a conversation: a new call replaces the old one.
   const old = callByConv.get(convId);

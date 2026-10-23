@@ -531,7 +531,8 @@ export class VoiceController {
   /** The New voice's call: the board is the mic and the speaker; its lines are the conversation's turns on the box, so
    *  nothing is saved, pushed or polled from here (pi reads the board itself: overview.png and view.png). */
   private async startBrain(gen: number, chat: ChatRow | null): Promise<void> {
-    const convId = chat?.id ?? `v${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+    // No chat picked: the one main conversation (never a new chat per call).
+    const convId = chat?.id ?? MAIN_ID;
     this.convId = convId;
     this.sessionId = null;
     try {
