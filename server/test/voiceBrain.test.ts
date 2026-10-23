@@ -4,7 +4,7 @@ import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { speechReady } from "../speakMath";
-import { STOP_RE, brainRoute, lastUserText, resetBrainForTests, voiceCallRules, type BrainDeps, type BrainEngine } from "../voiceBrain";
+import { STOP_RE, toolAck, brainRoute, lastUserText, resetBrainForTests, voiceCallRules, type BrainDeps, type BrainEngine } from "../voiceBrain";
 
 type Fake = BrainEngine & { emit(ev: any): void; messages: any[]; talker: any; interrupted: number; running: boolean; stopped: number };
 
@@ -127,6 +127,33 @@ describe("voice with one brain", () => {
     const lines = await sse(await p);
     expect(lines.at(-1)).toBe("[DONE]");
     expect(lines.join("")).toContain("On it");
+  });
+
+  it("a reply that reaches for a tool before saying anything gets one short spoken line at once; the answer follows on the channel", async () => {
+    const c = await call();
+    const ac = new AbortController();
+    const ch = await fetch(`${base}/api/v1/brain/call/${c.id}/speak`, { headers: { authorization: `Bearer ${c.token}` }, signal: ac.signal });
+    const reader = ch.body!.getReader();
+    const p = fetch(`${base}/v1/chat/completions`, { method: "POST", headers: { authorization: `Bearer ${c.token}` }, body: JSON.stringify({ messages: [{ role: "user", content: "read me the first theorem" }] }) });
+    await until(() => eng.messages.length);
+    eng.emit({ type: "message_end", message: { role: "assistant" } });
+    eng.emit({ type: "tool_execution_start", toolName: "read" });
+    const lines = await sse(await p);
+    expect(lines.at(-1)).toBe("[DONE]");
+    const said = lines.filter((l) => l !== "[DONE]").map((l) => JSON.parse(l).choices[0].delta.content ?? "").join("");
+    expect(said).toBe("Let me look.");
+    // Later tools in the same turn say nothing more; the answer is spoken on the channel.
+    eng.emit({ type: "tool_execution_start", toolName: "bash" });
+    eng.emit(delta("Theorem 1.1: zero is unique. "));
+    eng.emit({ type: "vc_turn_end", status: "completed" });
+    let got = "";
+    for (let i = 0; i < 5 && !got.includes("unique"); i++) got += new TextDecoder().decode((await reader.read()).value);
+    ac.abort();
+    expect(got).toContain("zero is unique");
+    expect(got).not.toContain("Let me look");
+    expect(toolAck("Delegate")).toBe("On it.");
+    expect(toolAck("web_search")).toBe("Let me look that up.");
+    expect(toolAck("PdfRead")).toBe("Let me look.");
   });
 
   it("what the conversation says outside a request (a typed turn, a result) goes to the speak channel", async () => {

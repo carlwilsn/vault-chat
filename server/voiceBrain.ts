@@ -107,11 +107,20 @@ type Device = "laptop" | "board" | "phone";
 const DEVICES: Device[] = ["laptop", "board", "phone"];
 
 /** What pi is told once, in front of the call's first turn (it stays in the session). */
+/** The line the voice says when the reply reaches for a tool before saying anything: the call never goes quiet while
+ *  the agent works (the recorded proof: three reads, 6.6 s of silence before the first word). Pure. */
+export function toolAck(tool: string): string {
+  if (/^delegate$/i.test(tool)) return "On it.";
+  if (/search|fetch|web|browse/i.test(tool)) return "Let me look that up.";
+  if (/^(read|bash|grep|find|ls|glob|pdf|vault|file|note|open)/i.test(tool)) return "Let me look.";
+  return "One moment.";
+}
+
 export function voiceCallRules(device: Device): string {
   const where = device === "board" ? "his iPad board" : device === "phone" ? "his phone" : "his laptop";
   // One reply, written as always (markdown); the voice reads it aloud as written (server/speakable.ts). Only a light
   // nudge on length, and the one rule a live call needs: slow work goes to Delegate, so the voice never goes quiet.
-  return `[A voice call is live on ${where}: your replies are shown as always and also read aloud as written. Keep them conversational in length. Anything that takes more than a few seconds goes to Delegate {title, task}: say in a line that you've sent it and carry on; its report comes back to you as a "Delegated work finished" turn, then tell him the result. Say something was done only when it was.]`;
+  return `[A voice call is live on ${where}: your replies are shown as always and also read aloud as written. Keep them conversational in length. Before you use any tool, first say one short line of what you're doing ("Let me look at the workbook."). Anything that takes more than a few seconds goes to Delegate {title, task}: say in a line that you've sent it and carry on; its report comes back to you as a "Delegated work finished" turn, then tell him the result. Say something was done only when it was.]`;
 }
 
 // ---------------------------------------------------------------- calls
@@ -271,9 +280,17 @@ function onPi(d: BrainDeps, c: Call, ev: any): void {
     // An assistant message ended (before its tool calls, or the turn's last): what is left of it is a sentence.
     say(c, c.speak.flush());
   } else if (ev?.type === "tool_execution_start") {
-    // The reply's spoken part is over once it calls a tool after saying something ("on it", then Delegate):
-    // the pipeline's response ends here, so the voice is free; what the turn says later goes to the channel.
-    if (c.sink && c.sink.sent > 0) finishSink(c, c.sink);
+    // The reply's spoken part is over once it calls a tool ("on it", then Delegate; "let me look", then a read): the
+    // pipeline's response ends here, so the voice is free; what the turn says later goes to the channel. If it said
+    // nothing first, the voice says the one short line itself, so he never sits in silence while it works.
+    if (c.sink && !c.sink.done && !c.dropping) {
+      if (c.sink.sent === 0) {
+        const line = toolAck(String(ev.toolName ?? ""));
+        writeChunk(c.sink, line);
+        log(d, { ev: "turn.ack", call: c.id, req: c.sink.id, tool: String(ev.toolName ?? ""), afterMs: Date.now() - c.sink.t0 });
+      }
+      finishSink(c, c.sink);
+    }
   } else if (ev?.type === "vc_turn_end") {
     say(c, c.speak.flush());
     if (c.sink) {
