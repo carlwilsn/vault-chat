@@ -252,3 +252,13 @@ export function memoryCapNote(toolName, input, cwd, read) {
   }
   return null;
 }
+
+/** A host tool's answer as pi's tool content: its text, and the images the host attaches (BoardLook's board
+ *  pictures) as pi's own image blocks ({type: "image", data: base64, mimeType}), as its read tool gives an image. */
+export function hostToolContent(r) {
+  const images = (Array.isArray(r?.images) ? r.images : [])
+    .filter((im) => im && typeof im.data === "string" && im.data)
+    .slice(0, 4)
+    .map((im) => ({ type: "image", data: im.data, mimeType: String(im.mimeType || "image/png") }));
+  return [{ type: "text", text: String(r?.text ?? "") }, ...images];
+}

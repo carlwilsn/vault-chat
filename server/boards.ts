@@ -312,3 +312,81 @@ export function overviewPng(vault: string, slug: string): Out {
     return { status: 404, body: { error: "no snapshot yet" } };
   }
 }
+
+/** A board's pictures for the agent's eyes: what it attaches to a tool result (base64, PNG). */
+export type BoardImage = { data: string; mimeType: string };
+
+const LOOK_FILLER = new Set(["my", "the", "a", "his", "board", "whiteboard", "white", "boards", "just", "on", "ipad"]);
+const words = (s: string) => s.toLowerCase().split(/[^a-z0-9]+/).filter((w) => w && !LOOK_FILLER.has(w));
+
+/** The board `query` names (its slug, its name, or words of its name: "physics", "the Physics whiteboard"), or — no
+ *  query, or only "my whiteboard" — the one changed last. Null when nothing matches. */
+export function findBoard(boards: BoardSummary[], query: unknown): BoardSummary | null {
+  const q = typeof query === "string" ? query.trim() : "";
+  if (!q) return boards[0] ?? null;
+  const lower = q.toLowerCase();
+  const exact = boards.find((b) => b.slug === q || b.name.toLowerCase() === lower);
+  if (exact) return exact;
+  const want = words(q);
+  if (!want.length) return boards[0] ?? null;
+  // Every word he said is in its name or slug; else any of them; the newest such board (boards come newest first).
+  const all = boards.find((b) => {
+    const have = new Set([...words(b.name), ...words(b.slug)]);
+    return want.every((w) => have.has(w));
+  });
+  if (all) return all;
+  return boards.find((b) => want.some((w) => `${b.name} ${b.slug}`.toLowerCase().includes(w))) ?? null;
+}
+
+/** BoardLook: one of Carl's boards as its files have it — on a screen or not — with the picture of the part he had
+ *  in view on the iPad at its last save (view.png) and of the whole board (overview.png). */
+export function lookBoard(vault: string, query?: unknown): { ok: boolean; text: string; images: BoardImage[] } {
+  let boards: BoardSummary[] = [];
+  try {
+    boards = listBoards(vault);
+  } catch {
+    boards = [];
+  }
+  if (!boards.length) return { ok: true, text: "Carl has no whiteboard boards yet.", images: [] };
+  const names = (except?: string) =>
+    boards
+      .filter((b) => b.slug !== except)
+      .slice(0, 12)
+      .map((b) => `"${b.name}"`)
+      .join(", ");
+  const b = findBoard(boards, query);
+  if (!b) return { ok: false, text: `No board matches "${String(query).slice(0, 80)}". His boards, newest first: ${names()}.`, images: [] };
+  const dir = boardDir(vault, b.slug);
+  const images: BoardImage[] = [];
+  const attached: string[] = [];
+  for (const [file, what] of [
+    [VIEW_FILE, "the part he had in view on the iPad"],
+    [OVERVIEW_FILE, "the whole board"],
+  ] as const) {
+    try {
+      if (!dir) break;
+      const png = readFileSync(join(dir, file));
+      if (!png.length || png.length > PNG_CAP || !png.subarray(0, 8).equals(PNG_MAGIC)) continue;
+      images.push({ data: png.toString("base64"), mimeType: "image/png" });
+      attached.push(`${what} (${BOARDS_DIR}/${b.slug}/${file})`);
+    } catch {
+      /* not saved yet */
+    }
+  }
+  const saved = new Date(b.updated).toISOString().replace(/\.\d+Z$/, "Z");
+  const named = typeof query === "string" && words(query).length > 0;
+  const others = names(b.slug);
+  return {
+    ok: true,
+    text: [
+      `Board "${b.name}"${named ? "" : " (his most recently changed board)"}, ${BOARDS_DIR}/${b.slug}/, last saved ${saved}: ${b.strokes} stroke${b.strokes === 1 ? "" : "s"} of his handwriting, ${b.items} item${b.items === 1 ? "" : "s"}.`,
+      attached.length
+        ? `Attached, as saved (whether or not the board is on a screen now): ${attached.join("; ")}. Look at them.`
+        : "It has no saved picture yet (the iPad writes one when the board is saved).",
+      others ? `His other boards: ${others}.` : "",
+    ]
+      .filter(Boolean)
+      .join(" "),
+    images,
+  };
+}

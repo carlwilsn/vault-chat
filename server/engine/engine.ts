@@ -35,6 +35,7 @@ import { Ledger } from "./ledger";
 import { pdfPages, pdfPagesSpec, pdfRead, webSearch } from "./extraTools";
 import { failMake, inboxLog, listEntries, readEntry, sendEntry, startMake, type InboxEvent } from "../inbox";
 import { BOARD_MAKER_PROMPT, boardMakeTask, makerStats } from "./boardTools";
+import { lookBoard } from "../boards";
 import { show, SHOW_DESCRIPTION, SHOW_SCHEMA } from "../show";
 import { startJob, jobStatus, jobList, jobStop, reapJobs, type PiJobEnv } from "./pi/jobs";
 import { ENGINE_ROLE_PROMPT } from "./prompt";
@@ -270,6 +271,14 @@ export const ENGINE_TOOL_SPECS = [
   },
   {
     type: "function",
+    name: "BoardLook",
+    readOnly: true,
+    description:
+      "See one of Carl's whiteboard boards as it was last saved, whether or not it is on any screen (on his laptop he may be looking at a PDF: that is not the board). `board`: its name or words of it (\"physics\"); left out, his most recently changed board. Attaches the part he had in view on the iPad at that save and a picture of the whole board. Use it for \"look at my whiteboard\" or \"what did I write on the board\": never answer from his screen instead, and never ask him to bring the board up.",
+    inputSchema: { type: "object", properties: { board: { type: "string", description: "The board's name or words of it; empty: the most recent." } }, additionalProperties: false },
+  },
+  {
+    type: "function",
     name: "Show",
     description: SHOW_DESCRIPTION,
     inputSchema: SHOW_SCHEMA as unknown as Record<string, unknown>,
@@ -352,6 +361,13 @@ export function voiceSideToolSpecs(act: boolean): ToolSpec[] {
 }
 
 const text = (t: string) => ({ success: true, contentItems: [{ type: "inputText", text: t }] });
+
+/** A tool's answer for pi: its text, and the images it attaches (BoardLook's board pictures) as pi's image blocks. */
+export function toolAnswer(r: any): { ok: boolean; text: string; images?: { data: string; mimeType: string }[] } {
+  const items: any[] = Array.isArray(r?.contentItems) ? r.contentItems : [];
+  const images = items.filter((c) => c?.type === "inputImage" && typeof c.data === "string" && c.data).map((c) => ({ data: String(c.data), mimeType: String(c.mimeType || "image/png") }));
+  return { ok: r?.success !== false, text: items.filter((c) => c?.type !== "inputImage").map((c) => c?.text ?? "").join("\n"), ...(images.length ? { images } : {}) };
+}
 
 /** pi's own tools (and the subagent tool): a vault tool of the same name is not registered over them. */
 const PI_BUILTIN_TOOLS = ["read", "write", "edit", "bash", "grep", "find", "ls", "subagent"];
@@ -518,14 +534,14 @@ export class Engine {
       toolCall: (threadId, name, args) =>
         this.scoped(async () => {
           const r: any = await this.onToolCall({ threadId, tool: name, arguments: args });
-          return { ok: r?.success !== false, text: (r?.contentItems ?? []).map((c: any) => c?.text ?? "").join("\n") };
+          return toolAnswer(r);
         }),
       userInput: (threadId, question, options) => this.scoped(() => this.waitForAnswer(threadId, question, options)),
       you: (q) => this.scoped(async () => this.you(q)),
       sideTool: (convId, name, args) =>
         this.scoped(async () => {
           const r: any = await this.onToolCall({ side: { convId }, tool: name, arguments: args });
-          return { ok: r?.success !== false, text: (r?.contentItems ?? []).map((c: any) => c?.text ?? "").join("\n") };
+          return toolAnswer(r);
         }),
     });
     // Main and every project's thread exist from the start (src/threads.ts): every surface opens one.
@@ -1574,6 +1590,10 @@ export class Engine {
         }
         case "BoardInbox":
           return text(boardInboxText(vault, a.id ? String(a.id) : null));
+        case "BoardLook": {
+          const r = lookBoard(vault, a.board);
+          return { success: r.ok, contentItems: [{ type: "inputText", text: r.text }, ...r.images.map((im) => ({ type: "inputImage", data: im.data, mimeType: im.mimeType }))] };
+        }
         case "Show": {
           // On the device he names (or is on): a signal the laptop / phone acks, or the inbox's validated send.
           const r = await show({ vault, emit: (ev) => this.d.broadcast?.(ev), sendBoard: (b) => sendEntry(vault, b, { conversation: convId, emit: (ev) => this.inboxEvent(ev) }) }, a);

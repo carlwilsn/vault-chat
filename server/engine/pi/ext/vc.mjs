@@ -25,7 +25,7 @@ import { Type } from "typebox";
 import { createBashToolDefinition } from "@earendil-works/pi-coding-agent";
 import { registerSubagentTool } from "./subagent.mjs";
 import { registerPdfParts } from "./pdf.mjs";
-import { CLEAR_TYPE, VOICE_TYPE, YOU_TYPE, addCacheMarkers, memoryCapNote, costFromStreamEvent, guardToolCall, resolveList, scrubEnv, shq, toTypebox, voiceLineContent, youSince } from "./policy.mjs";
+import { CLEAR_TYPE, VOICE_TYPE, YOU_TYPE, addCacheMarkers, hostToolContent, memoryCapNote, costFromStreamEvent, guardToolCall, resolveList, scrubEnv, shq, toTypebox, voiceLineContent, youSince } from "./policy.mjs";
 
 const E = process.env;
 const HOME = E.HOME || "/";
@@ -127,7 +127,7 @@ export default function vaultChat(pi) {
         const v = await ctx.ui.editor("vc:host-call", JSON.stringify({ tool: s.name, args: params ?? {}, toolCallId }));
         if (v === undefined) return { content: [{ type: "text", text: `${s.name}: vault-chat did not answer.` }], details: undefined, isError: true };
         const r = json(v, { text: String(v) });
-        return { content: [{ type: "text", text: String(r.text ?? "") }], details: undefined, ...(r.isError ? { isError: true } : {}) };
+        return { content: hostToolContent(r), details: undefined, ...(r.isError ? { isError: true } : {}) };
       },
     });
   }

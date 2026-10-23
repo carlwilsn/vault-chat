@@ -22,7 +22,7 @@
 // get_last_assistant_text. Nothing here writes a session file.
 import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { sinceOf, type PiBackend, type ToolSpec } from "./backend";
+import { sinceOf, type PiBackend, type ToolAnswer, type ToolSpec } from "./backend";
 import type { PiProc } from "./proc";
 import { TurnRecorder, type TurnLine } from "../turnLog";
 
@@ -233,8 +233,8 @@ export class SideRuns {
         const name = String(call?.tool ?? "");
         const h = this.b.handlers?.sideTool;
         if (h && (run.meta.hostTools ?? []).some((t) => t.name === name)) {
-          const r = await h(run.meta.you?.convId ?? null, name, call.args ?? {}).catch((e) => ({ ok: false, text: `${name} failed: ${(e as Error).message}` }));
-          return reply({ value: JSON.stringify({ text: r.text, ...(r.ok ? {} : { isError: true }) }) });
+          const r: ToolAnswer = await h(run.meta.you?.convId ?? null, name, call.args ?? {}).catch((e) => ({ ok: false, text: `${name} failed: ${(e as Error).message}` }));
+          return reply({ value: JSON.stringify({ text: r.text, ...(r.images?.length ? { images: r.images } : {}), ...(r.ok ? {} : { isError: true }) }) });
         }
         return reply({ value: JSON.stringify({ text: "Not available here: this request has read-only tools.", isError: true }) });
       }

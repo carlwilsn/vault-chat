@@ -5,9 +5,10 @@
 // refused, and the mic button pressing through the chrome's rule (chrome.ts) into start and end.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { VoiceController, boardContextText, recentChats, type BoardSource, type SessionOpts, type VoiceApi, type VoiceClose, type VoiceConv } from "../../board/src/voice.ts";
+import { LOOK_THEN_ANSWER, VoiceController, boardContextText, recentChats, type BoardSource, type SessionOpts, type VoiceApi, type VoiceClose, type VoiceConv } from "../../board/src/voice.ts";
 import { ChromeTaps, routeChrome } from "../../board/src/chrome.ts";
 import type { Item } from "../../src/boardFormat.ts";
+import { VOICE_SILENCE_RULE } from "../../src/voicePrompt.ts";
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -48,6 +49,7 @@ function fakeSdk() {
     sendContextualUpdate: (text, o) => log.updates.push({ text, contextId: o?.contextId }),
     uploadFile: async () => ({ fileId: `f${++log.uploads}` }),
     sendMultimodalMessage: (m) => log.files.push(m.text),
+    getId: () => "conv_el_1",
   };
   const sdk = {
     Conversation: {
@@ -480,4 +482,64 @@ test("mute is the SDK's own and instant; a result still reaches the call while m
   conv.setMuted(false);
   assert.equal(f.log.muted, false, "unmuted at once");
   await conv.end();
+});
+
+// 2026-10-22, the iPad: Carl said "Hello?", "Interesting.", "Hello?" on the board and the voice never answered — the
+// box saw only his lines (and a board.look right at each "Hello?": the voice looked, then said nothing) and no line
+// said what the agent did with them. Now: the look ends by telling the voice to answer, and every line of his is a
+// "voice turn" line saying whether it was answered, what ran (skip_turn too) and the ElevenLabs conversation id.
+test("a line of Carl's: the look tells the voice to answer; each turn is logged with whether it was answered, its tools and skip_turn", async () => {
+  const box = fakeBox();
+  const f = fakeSdk();
+  const board = fakeBoard();
+  const logs: Record<string, unknown>[] = [];
+  const v = new VoiceController({ api: box.api, sdk: async () => f.sdk, mic, debounceMs: 30, turnWaitMs: 60, log: (ev, d) => logs.push({ ev, ...d }) });
+  v.setBoard(board.b);
+  await v.start();
+  await wait(10);
+  assert.equal(f.log.uploads, 1, "the start's picture");
+  const connected = logs.find((l) => l.ev === "voice connected");
+  assert.equal(connected?.el, "conv_el_1", "ElevenLabs' conversation id, to find its history");
+  const o = f.opts();
+
+  // "Hello?" → the voice looks (the view is the one it already has) → ElevenLabs reports skip_turn → nothing said.
+  o.onMessage({ role: "user", message: "Hello?" });
+  const look = await o.clientTools.LookAtScreen!({});
+  assert.match(look, /already have/);
+  assert.ok(look.endsWith(LOOK_THEN_ANSWER), "a look always ends by telling the voice to answer him");
+  assert.doesNotMatch(look, /Nothing in view has changed|Don't describe the board/, "nothing in it reads as 'nothing new: stay silent'");
+  o.onAgentToolResponse?.({ tool_name: "LookAtScreen", tool_type: "client" });
+  o.onAgentToolResponse?.({ tool_name: "skip_turn", tool_type: "system" });
+  const tool = logs.find((l) => l.ev === "voice tool");
+  assert.deepEqual({ name: tool?.name, look: tool?.look, error: tool?.error, turn: tool?.turn }, { name: "LookAtScreen", look: "duplicate", error: false, turn: 1 });
+  await wait(100);
+  const unanswered = logs.filter((l) => l.ev === "voice turn");
+  assert.equal(unanswered.length, 1, "logged once the wait for a reply ran out");
+  assert.deepEqual(
+    { turn: unanswered[0]!.turn, replied: unanswered[0]!.replied, end: unanswered[0]!.end, tools: unanswered[0]!.tools, agentTools: unanswered[0]!.agentTools, skipped: unanswered[0]!.skipped, audio: unanswered[0]!.audio, el: unanswered[0]!.el },
+    { turn: 1, replied: false, end: "timeout", tools: ["LookAtScreen"], agentTools: ["skip_turn"], skipped: true, audio: false, el: "conv_el_1" },
+  );
+
+  // "Interesting." then "Hello?" at once: the first is logged unanswered when the next line comes.
+  o.onMessage({ role: "user", message: "Interesting." });
+  o.onMessage({ role: "user", message: "Hello?" });
+  // Answered: the voice speaks, then its line.
+  o.onModeChange({ mode: "speaking" });
+  o.onMessage({ role: "agent", message: "Hi, I'm here." });
+  const turns = logs.filter((l) => l.ev === "voice turn");
+  assert.deepEqual(turns.map((t) => [t.turn, t.replied, t.end]), [[1, false, "timeout"], [2, false, "next-line"], [3, true, "reply"]]);
+  assert.equal(turns[2]!.audio, true);
+  assert.equal(typeof turns[2]!.replyMs, "number");
+  await wait(100);
+  assert.equal(logs.filter((l) => l.ev === "voice turn").length, 3, "an answered turn is logged once");
+
+  // A line still waiting when the call ends is logged then.
+  o.onMessage({ role: "user", message: "Can you see this?" });
+  await v.end();
+  const last = logs.filter((l) => l.ev === "voice turn").at(-1)!;
+  assert.deepEqual([last.turn, last.replied, last.end], [4, false, "call-end"]);
+});
+
+test("the prompt: a look is part of the answer to his line, never the end of it", () => {
+  assert.match(VOICE_SILENCE_RULE, /A look you took for his line \(at his screen or his board\) is part of your answer to it, never the end: when the look comes back, answer him out loud/);
 });

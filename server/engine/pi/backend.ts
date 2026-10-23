@@ -42,14 +42,16 @@ export class ThreadUnknownError extends Error {
   readonly threadUnknown = true;
 }
 
-export type ToolCallHandler = (threadId: string, name: string, args: any) => Promise<{ ok: boolean; text: string }>;
+/** A host tool's answer: its text, and images it attaches (pi image blocks: base64 + mime). */
+export type ToolAnswer = { ok: boolean; text: string; images?: { data: string; mimeType: string }[] };
+export type ToolCallHandler = (threadId: string, name: string, args: any) => Promise<ToolAnswer>;
 export type UserInputHandler = (threadId: string, question: string, options: string[]) => Promise<string>;
 /** The "you" layer for a session (the extension's before_agent_start asks before each prompt): what Carl
  * did since `since` (that session's last layer). A conversation's thread names itself by `threadId`; a
  * Ctrl+K / Ctrl+L side thread by the conversation it was forked from (`convId`, or none). */
 export type YouHandler = (q: { threadId?: string; convId?: string | null; since: number | null }) => Promise<{ text: string; until: number }>;
 /** A read-only vault-chat tool called from a Ctrl+K / Ctrl+L side thread, as of the conversation it was opened from (or none). */
-export type SideToolHandler = (convId: string | null, name: string, args: any) => Promise<{ ok: boolean; text: string }>;
+export type SideToolHandler = (convId: string | null, name: string, args: any) => Promise<ToolAnswer>;
 export type Handlers = { toolCall: ToolCallHandler; userInput: UserInputHandler; you?: YouHandler; sideTool?: SideToolHandler };
 
 export type PiSandbox = {
@@ -702,8 +704,8 @@ export class PiBackend extends EventEmitter {
         const r = await this.subs.run(t.id, call.args ?? {}).catch((e) => ({ ok: false, text: `subagent failed: ${(e as Error).message}` }));
         return reply({ value: JSON.stringify(r) });
       }
-      const r = await this.h.toolCall(t.id, String(call.tool ?? ""), call.args ?? {}).catch((e) => ({ ok: false, text: `${call.tool} failed: ${(e as Error).message}` }));
-      return reply({ value: JSON.stringify({ text: r.text, ...(r.ok ? {} : { isError: true }) }) });
+      const r: ToolAnswer = await this.h.toolCall(t.id, String(call.tool ?? ""), call.args ?? {}).catch((e) => ({ ok: false, text: `${call.tool} failed: ${(e as Error).message}` }));
+      return reply({ value: JSON.stringify({ text: r.text, ...(r.images?.length ? { images: r.images } : {}), ...(r.ok ? {} : { isError: true }) }) });
     }
     if (req.method === "select" || req.method === "confirm" || req.method === "input" || req.method === "editor") return reply({ cancelled: true });
     // notify / setStatus / …: fire-and-forget.

@@ -552,7 +552,7 @@ describe("c. Writing a proof on the board, then the laptop chat: \"check what I 
   pass("c", "laptop chat (pi instructions)", "the agent is told boards live at boards/<slug>/ with an overview.png it can read", () => {
     const instr = backend.threads.map((x) => x.instructions).join("\n");
     expect(instr).toContain("boards/<slug>/");
-    expect(instr).toContain("read overview.png to see what he wrote or drew");
+    expect(instr).toContain("BoardLook {board?} shows a board as last saved");
   });
 });
 
@@ -852,7 +852,8 @@ describe("k. Board voice: \"look at the mark again\" (d1c77940-651, 2026-10-18)"
   });
   pass("k", "board voice", "LookAtScreen gives a fresh look (answered on the board, never \"not available\")", () => {
     expect(look).not.toMatch(/^Error|not available/);
-    expect(look).toMatch(/Attached a picture of the part of his board in view|Nothing in view has changed/);
+    expect(look).toMatch(/Attached a picture of the part of his board in view|looks exactly as in the picture of his board you already have/);
+    expect(look).toMatch(/now answer what Carl said, out loud/);
   });
   pass("k", "phone voice", "a look on the phone says plainly there is no screen there (never a guess)", () => {
     expect(phoneLook).toMatch(/this call is on Carl's phone: nothing was looked at/);

@@ -59,6 +59,8 @@ export type VoiceConv = {
   sendMultimodalMessage(m: { text?: string; fileId: string }): void;
   getOutputVolume?(): number;
   getInputVolume?(): number;
+  /** ElevenLabs' id of this conversation (its history on their side: what the agent did with each turn). */
+  getId?(): string;
   /** The SDK's device switch (the pinned mic, or its replacement when it was unplugged). */
   changeInputDevice?(c: { inputDeviceId: string }): Promise<void>;
   /** The SDK's output switch (setSinkId underneath; Chromium only). */
@@ -80,6 +82,8 @@ export type SessionOpts = {
   onError(m: unknown): void;
   onMessage(m: { message: string; role: string }): void;
   onModeChange(m: { mode: string }): void;
+  /** Every tool the agent ran, as ElevenLabs reports it (skip_turn among them: the turns it chose to stay silent). */
+  onAgentToolResponse?(r: { tool_name?: string; tool_type?: string; is_error?: boolean }): void;
 };
 export type VoiceSdk = { Conversation: { startSession(o: SessionOpts): Promise<VoiceConv> } };
 
@@ -135,8 +139,8 @@ function itemName(it: Item): string {
   return `${it.kind === "image" ? "an" : "a"} ${it.kind}${typeof it.alt === "string" && it.alt ? ` ("${it.alt.slice(0, 80)}")` : ""}`;
 }
 
-/** The contextual update: the board, the inbox parts on it (with their labels), the ink. */
-export function boardContextText(b: { name: string; items: Item[]; strokes: number }): string {
+/** What is on the board, in a few sentences: its name, the inbox parts on it (with their labels), the ink. */
+export function boardFacts(b: { name: string; items: Item[]; strokes: number }): string[] {
   const fromInbox = b.items.filter((it) => it.inbox && typeof it.inbox === "object");
   const own = b.items.length - fromInbox.length;
   const lines = [`[Carl is on his iPad whiteboard, the board "${b.name.slice(0, 120)}".`];
@@ -146,9 +150,19 @@ export function boardContextText(b: { name: string; items: Item[]; strokes: numb
   } else lines.push("Nothing from the board inbox is on it.");
   if (own) lines.push(`${own} picture${own === 1 ? "" : "s"} he inserted himself.`);
   lines.push(b.strokes ? `${b.strokes} stroke${b.strokes === 1 ? "" : "s"} of his handwriting.` : "No handwriting yet.");
+  return lines;
+}
+
+/** The contextual update: the board's facts, and how voice uses them (never a reason to talk). */
+export function boardContextText(b: { name: string; items: Item[]; strokes: number }): string {
+  const lines = boardFacts(b);
   lines.push("A picture of what he sees comes with this when it changes; LookAtScreen looks again right now. To put something on his board, Ask the agent to send it to his board inbox. Don't describe the board unless he asks.]");
   return lines.join(" ");
 }
+
+/** How every look ends (2026-10-22: Carl said "Hello?" on the board, twice, and the voice looked each time and then
+ *  said nothing — the look's "nothing in view has changed … don't describe the board" read as "nothing new: skip_turn"). */
+export const LOOK_THEN_ANSWER = "The look is done: now answer what Carl said, out loud (a look is never a reason to stay silent).";
 
 /** Tools the board page answers itself (the box has no screen to look at). */
 export const BOARD_LOCAL_TOOLS = new Set(["LookAtScreen"]);
@@ -198,6 +212,8 @@ export type VoiceDeps = {
   unlock?: () => void;
   debounceMs?: number;
   connectTimeoutMs?: number;
+  /** How long a line of Carl's waits for the agent's reply before its turn is logged as unanswered (20 s). */
+  turnWaitMs?: number;
 };
 
 export class VoiceController {
@@ -242,6 +258,13 @@ export class VoiceController {
   private updates: VoiceUpdates | null = null;
   /** This call's id on the box (one voice at a time: its lines, tools and polls carry it). */
   private sessionId: string | null = null;
+  /** Carl's open turn (the "voice turn" log): from his line to the agent's reply, his next line, or 20 s of nothing. */
+  private turn: { n: number; at: number; tools: string[]; agentTools: string[]; audio: boolean; timer: ReturnType<typeof setTimeout> | null } | null = null;
+  private turns = 0;
+  /** How the last LookAtScreen ended (sent, duplicate, empty …), for its "voice tool" line. */
+  private lastLook: string | null = null;
+  /** ElevenLabs' id of the live conversation (its history there): in the connect and turn lines. */
+  private elConv: string | null = null;
   /** Updates and pictures sent this session (for the preview and the tests). */
   readonly sent = { updates: [] as string[], images: 0, looks: 0 };
 
@@ -396,21 +419,37 @@ export class VoiceController {
           this.teardown(was === "connecting" ? "The voice connection closed before it started." : `Voice disconnected${why ? ` (${why})` : ""}. Tap the mic to go on with this chat.`);
         },
         onError: (m) => {
-          if (gen === this.gen && this.state.phase !== "live") this.set({ error: typeof m === "string" ? m : ((m as Error)?.message ?? "voice error") });
+          const msg = typeof m === "string" ? m : ((m as Error)?.message ?? "voice error");
+          if (gen !== this.gen) return;
+          // While live the call goes on, but the error is logged (a client tool that failed, a refused message …).
+          if (this.state.phase === "live") this.d.log?.("voice error", { error: String(msg).slice(0, 300), turn: this.turn?.n ?? null });
+          else this.set({ error: msg });
         },
         onMessage: ({ message, role }) => {
           const raw = (message || "").trim();
           // The box's own updates ([vc:result] …) come back as user lines: they are not Carl's.
           if (role === "user" && isControlLine(raw)) return;
           const text = role === "user" ? raw : stripAudioTags(raw);
+          if (gen === this.gen && text) {
+            if (role === "user") this.userTurn();
+            else this.closeTurn("reply");
+          }
           // A holding line ("One sec", "on it") is spoken, never written into the thread.
           if (role !== "user" && isFillerLine(text)) return;
           if (text) this.saveLine(role === "user" ? "user" : "assistant", text);
         },
         // Leaving "speaking" = the playback drained: the held pushes go after a settle.
         onModeChange: ({ mode }) => {
+          if (mode === "speaking" && this.turn) this.turn.audio = true;
           this.set({ speaking: mode === "speaking" });
           this.gate.modeChanged();
+        },
+        // ElevenLabs' own tools too (skip_turn: the agent chose silence), into Carl's open turn.
+        onAgentToolResponse: (r) => {
+          if (gen !== this.gen || !r?.tool_name) return;
+          if (r.tool_type === "client" || BOARD_LOCAL_TOOLS.has(r.tool_name) || (cfg!.toolNames ?? []).includes(r.tool_name)) return;
+          this.turn?.agentTools.push(r.tool_name);
+          if (r.is_error) this.d.log?.("voice agent tool", { name: r.tool_name, type: r.tool_type ?? null, error: true });
         },
       });
       // The pinned device refused (gone since the listing, held elsewhere): the system default.
@@ -453,6 +492,13 @@ export class VoiceController {
       }
       this.conv = conv;
       this.transport = transport;
+      try {
+        this.elConv = conv.getId?.() ?? null;
+      } catch {
+        this.elConv = null;
+      }
+      this.turns = 0;
+      this.d.log?.("voice connected", { transport, el: this.elConv, session: this.sessionId, conv: this.convId });
       this.watchDevices(conv);
       this.watchAudio(conv);
       // The SDK may connect before startSession resolves: what onConnect couldn't send yet goes now.
@@ -658,6 +704,7 @@ export class VoiceController {
   }
 
   async end(by: "mic" | "pill" | "switch" = "mic"): Promise<void> {
+    this.closeTurn("call-end");
     const c = this.conv;
     if (this.state.phase === "live" || this.state.phase === "connecting") this.report(by);
     this.gen++;
@@ -766,32 +813,39 @@ export class VoiceController {
 
   // ---------------------------------------------------------------- the box's path
 
-  /** LookAtScreen on the board: the part in view, now, as a picture (through the image path), and the board as text. */
+  /** LookAtScreen on the board: the part in view, now, as a picture (through the image path), and the board as text.
+   *  Every answer ends by telling the voice to answer Carl: the look is a step of its reply, never the end of it. */
   async lookAtBoard(): Promise<string> {
+    const r = await this.lookOnce();
+    this.lastLook = r.outcome;
+    return `${r.text} ${LOOK_THEN_ANSWER}`;
+  }
+
+  private async lookOnce(): Promise<{ outcome: string; text: string }> {
     const conv = this.conv, b = this.board;
-    if (!b) return "Carl is not on a board right now (the board list is open), so there is nothing to look at.";
-    const text = boardContextText({ name: b.name(), items: b.items(), strokes: b.strokes() }).replace(/^\[|\]$/g, "");
+    if (!b) return { outcome: "no-board", text: "Carl is not on a board right now (the board list is open), so there is nothing to look at." };
+    const text = boardFacts({ name: b.name(), items: b.items(), strokes: b.strokes() }).join(" ").replace(/^\[/, "");
     let blob: Blob | null;
     try {
       blob = await b.snapshot();
     } catch (e) {
-      return `Error: the board's picture could not be taken on the iPad (${String((e as Error)?.message ?? e)}). ${text}`;
+      return { outcome: "error", text: `Error: the board's picture could not be taken on the iPad (${String((e as Error)?.message ?? e)}). ${text}` };
     }
-    if (!blob) return `The part of the board in view is empty: no handwriting or items there. ${text}`;
-    if (!conv) return `Error: the call is not connected, so the picture could not be attached. ${text}`;
+    if (!blob) return { outcome: "empty", text: `The part of the board in view is empty: no handwriting or items there. ${text}` };
+    if (!conv) return { outcome: "no-call", text: `Error: the call is not connected, so the picture could not be attached. ${text}` };
     const key = `board:${b.slug}:${await blobKey(blob)}`;
     const sink = { uploadFile: (x: Blob) => conv.uploadFile(x), sendMultimodalMessage: (m: { text?: string; fileId: string }) => conv.sendMultimodalMessage(m) };
     const [r] = await this.pusher.pushMany({ ...sink, sendFiles: (t, ids) => sendFilesMessage(sink, t, ids) }, [{ key, blob }], lookingAtNote(`his whiteboard "${b.name()}"`, "the part in view"), () => this.conv === conv);
     if (r === "sent") {
       this.sent.images++;
       this.sent.looks++;
-      return `Attached a picture of the part of his board in view, as he sees it now — look at it. ${text}`;
+      return { outcome: "sent", text: `Attached a picture of the part of his board in view, as he sees it now — look at it. ${text}` };
     }
     if (r === "duplicate") {
       this.sent.looks++;
-      return `Nothing in view has changed since the picture of his board you already have — look at that one. ${text}`;
+      return { outcome: "duplicate", text: `The part in view looks exactly as in the picture of his board you already have (attached earlier) — look at that one. ${text}` };
     }
-    return `Error: the picture could not be attached (${String(r)}). ${text}`;
+    return { outcome: String(r), text: `Error: the picture could not be attached (${String(r)}). ${text}` };
   }
 
   private clientTools(names: string[]): Record<string, (p: unknown) => Promise<string>> {
@@ -811,7 +865,58 @@ export class VoiceController {
         }
       };
     }
+    // Every call logged ("voice tool": what it was, how long, how it ended) and counted into Carl's open turn.
+    for (const [name, fn] of Object.entries(tools)) {
+      tools[name] = async (params) => {
+        const t0 = Date.now();
+        this.turn?.tools.push(name);
+        if (name === "LookAtScreen") this.lastLook = null;
+        const result = await fn(params);
+        this.d.log?.("voice tool", {
+          name,
+          ms: Date.now() - t0,
+          error: /^Error\b/.test(result),
+          ...(name === "LookAtScreen" ? { look: this.lastLook } : {}),
+          chars: result.length,
+          turn: this.turn?.n ?? null,
+        });
+        return result;
+      };
+    }
     return tools;
+  }
+
+  // ---------------------------------------------------------------- the turn log
+
+  /** Carl's line: the turn before it is logged (no reply if none came), and a new one opens. */
+  private userTurn(): void {
+    this.closeTurn("next-line");
+    const n = ++this.turns;
+    const timer = setTimeout(() => this.turn?.n === n && this.closeTurn("timeout"), this.d.turnWaitMs ?? 20_000);
+    (timer as { unref?: () => void }).unref?.();
+    this.turn = { n, at: Date.now(), tools: [], agentTools: [], audio: false, timer };
+  }
+
+  /** One "voice turn" line per line of Carl's, as the laptop logs: did the agent reply (a spoken line), how fast, what
+   *  it ran (its client tools, and ElevenLabs' own: skip_turn = it chose silence), whether audio played. */
+  private closeTurn(end: "reply" | "next-line" | "timeout" | "call-end"): void {
+    const t = this.turn;
+    if (!t) return;
+    this.turn = null;
+    if (t.timer) clearTimeout(t.timer);
+    const replied = end === "reply";
+    this.d.log?.("voice turn", {
+      turn: t.n,
+      replied,
+      replyMs: replied ? Date.now() - t.at : null,
+      end,
+      tools: t.tools,
+      agentTools: t.agentTools,
+      skipped: t.agentTools.includes("skip_turn"),
+      audio: t.audio,
+      transport: this.transport,
+      el: this.elConv,
+    });
   }
 
   private sid(): { sessionId?: string } {
@@ -821,6 +926,7 @@ export class VoiceController {
   /** Voice moved to another device (one voice at a time): this call ends at once and the pill says where it went. */
   private movedAway(line: string): void {
     if (this.state.phase !== "live" && this.state.phase !== "connecting") return;
+    this.closeTurn("call-end");
     const c = this.conv;
     this.report("moved");
     this.gen++;
@@ -877,6 +983,7 @@ export class VoiceController {
 
   private fail(gen: number, why: string): void {
     if (gen !== this.gen) return;
+    this.closeTurn("call-end");
     this.gen++;
     const c = this.conv;
     this.conv = null;
@@ -888,6 +995,7 @@ export class VoiceController {
   }
 
   private teardown(why: string): void {
+    this.closeTurn("call-end");
     const was = this.state.phase;
     if (was === "live") this.saveLine("assistant", "Voice session ended.", true);
     this.updates?.stop();

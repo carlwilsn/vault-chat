@@ -73,7 +73,8 @@ export const voice = new VoiceController({
   // The call's mic: pinned, switched when unplugged, and every device change (src/voiceMic.ts).
   ...(FAKE ? { devices: null } : {}),
   audioContexts: () => [actx],
-  log: (ev, data) => blog(ev.replace(/^voice /, "voice.").replace(/ /g, "-"), data),
+  // "voice turn" keeps the laptop's name (one query finds every device's turns); the rest are the board's own.
+  log: (ev, data) => blog(ev === "voice turn" ? ev : ev.replace(/^voice /, "voice.").replace(/ /g, "-"), data),
 });
 
 (window as unknown as { __voice: VoiceController }).__voice = voice;

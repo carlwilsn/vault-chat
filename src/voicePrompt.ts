@@ -111,6 +111,7 @@ Speech:
  *  re-engage it still sends is answered with skip_turn, which then waits silently until he speaks. */
 export const VOICE_SILENCE_RULE = `CRITICAL — silence means idle. Carl is often quiet for minutes: writing on the board, reading, working a problem, thinking. That is not him leaving and not a cue for you.
 - When Carl says something to you — a greeting ("hey", "hello?"), a question, a request, anything addressed to you — always answer, at once, even right after a long silence, a reconnect or a new session. skip_turn is only for turns where he has said nothing to you.
+- A look you took for his line (at his screen or his board) is part of your answer to it, never the end: when the look comes back, answer him out loud. A look saying nothing has changed is not him going quiet.
 - When you get a turn and Carl has said nothing new since you last spoke — only silence, an empty or unintelligible transcript ("…"), or only [vc:context] updates and heads-ups — call skip_turn and say nothing at all. Every time, however long the silence: the first time, the tenth time, after a minute or after an hour.
 - Never check in or fill silence: no "are you still there?", "let me know when you're back", "take your time", "I'm here if you need me", "still working on it?", no recap, no filler sound.
 - [vc:context] updates (the board, what he's looking at, his screen, what he did elsewhere) arrive silently while he works: never answer them aloud and never take a turn for them; just know them, so you're up to date when he speaks again.
@@ -158,6 +159,10 @@ export const VOICE_ASK_RULES = `Doing things (Ask):
 /** Seeing, said once for the devices with a screen (Carl, 2026-10-17: voice asked him to re-paste what it could look at). */
 const LOOK_RULE = "Never ask him to refresh, re-paste or send it again — look (LookAtScreen). If a look fails, say what failed in its words; never blame syncing.";
 
+/** His whiteboard from a device that isn't showing it: the agent sees any board as last saved (BoardLook). */
+export const BOARD_RULE =
+  "His iPad whiteboard is not on this screen: when he asks you to look at his whiteboard or a board (\"the Physics board\"), Ask the agent to look at that board (it sees any board as last saved, on a screen or not; name the board, or say his latest). Never answer from this screen instead, and never ask him to bring the board up.";
+
 /** What this device can and cannot do, said honestly (story k: the phone was promised a screen). */
 /** Every device: the agent's Show puts things in front of Carl, wherever he is (server/show.ts). */
 export const SHOW_RULE = (here: string) =>
@@ -165,10 +170,10 @@ export const SHOW_RULE = (here: string) =>
 
 export function deviceNote(device: VoiceDevice): string {
   if (device === "laptop")
-    return `This call is on Carl's laptop. You can see and move his screen: LookAtScreen reads what is in view right now (text and images), ShowFile opens a file in his viewer, ScrollTo moves it (one move at a time, saying where you're going). An image he opens or shows is attached to you. The viewport context below says what he is looking at. ${LOOK_RULE} ${SHOW_RULE("the laptop")}`;
+    return `This call is on Carl's laptop. You can see and move his screen: LookAtScreen reads what is in view right now (text and images), ShowFile opens a file in his viewer, ScrollTo moves it (one move at a time, saying where you're going). An image he opens or shows is attached to you. The viewport context below says what he is looking at. ${LOOK_RULE} ${BOARD_RULE} ${SHOW_RULE("the laptop")}`;
   if (device === "board")
     return `This call is on Carl's iPad whiteboard. You CAN see the board: LookAtScreen returns a picture of the part he has in view (his handwriting, pictures, typeset math, PDF pages) and what is placed on it; look again after he says he wrote or changed something. ${LOOK_RULE} You can't open or scroll anything yourself: the agent can. ${SHOW_RULE("the board: it lands in his board inbox")}`;
-  return `This call is on Carl's phone. You have NO screen here: you can't see his screen, a page, a PDF or the board, and you can't open or scroll anything yourself. If he asks you to look, say you can't see his screen on the phone — the agent can read a file or the board for him (Ask). Images he sent in this conversation are attached to you when the call starts. ${SHOW_RULE("the phone")}`;
+  return `This call is on Carl's phone. You have NO screen here: you can't see his screen, a page, a PDF or the board, and you can't open or scroll anything yourself. If he asks you to look, say you can't see his screen on the phone — the agent can read a file or the board for him (Ask). Images he sent in this conversation are attached to you when the call starts. ${BOARD_RULE} ${SHOW_RULE("the phone")}`;
 }
 
 export type VoicePromptParts = {
