@@ -98,9 +98,9 @@ async function pipelineUp(d: BrainDeps): Promise<boolean> {
   }
 }
 /** The talker: a fast model for turns while a call is live (the conversation's own model does the delegated work). */
-export const talkerModel = (): string => process.env.VC_VOICE_TALKER_MODEL || "google/gemini-3.8-flash";
+export const talkerModel = (): string => process.env.VC_VOICE_TALKER_MODEL || "anthropic/claude-haiku-5.5";
 /** The talker's thinking (pi's levels: off, minimal, low, medium, high): a spoken reply wants little. */
-export const talkerThinking = (): string => process.env.VC_VOICE_TALKER_THINKING || "low";
+export const talkerThinking = (): string => process.env.VC_VOICE_TALKER_THINKING || "off";
 
 type Device = "laptop" | "board" | "phone";
 const DEVICES: Device[] = ["laptop", "board", "phone"];

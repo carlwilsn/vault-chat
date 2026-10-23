@@ -294,6 +294,7 @@ function ModelsSection() {
           <CheckLine check={voiceCheck} />
         </div>
       </div>
+      <VoiceEngineRow />
       <BoxModelChecks />
     </section>
   );
@@ -625,7 +626,6 @@ function VoiceSection() {
         </div>
       )}
       {error && <p className="text-[11px] text-amber-500/90">{error}</p>}
-      <VoiceEngineRow />
     </section>
   );
 }
@@ -661,17 +661,25 @@ function VoiceEngineRow() {
     if (useStore.getState().voiceMode) setErr("Takes effect with the next voice session.");
   };
   return (
-    <div className="flex items-center gap-2 pt-1">
-      <span className="text-[12px] text-foreground/90">Engine</span>
-      {(["new", "classic"] as const).map((e) => (
-        <Button key={e} size="sm" variant={st.engine === e ? "default" : "outline"} className="h-6 px-2 text-[11px]" onClick={() => void pick(e)}>
-          {e === "new" ? "New" : "Classic"}
-        </Button>
-      ))}
-      <span className="text-[11px] text-muted-foreground truncate">
-        {st.engine === "new" ? (st.pipeline ? "The voice is the agent." : "The box's voice pipeline isn't running.") : "ElevenLabs' agent, asking yours."}
-      </span>
-      {err && <span className="text-[11px] text-amber-500/90">{err}</span>}
+    <div className="flex items-start justify-between gap-3" data-el="voice-engine">
+      <span className="text-[12px] text-foreground/70 shrink-0 pt-1">Voice</span>
+      <div className="min-w-0 flex-1 max-w-[62%] space-y-0.5">
+        <div className="flex gap-1">
+          {(["new", "classic"] as const).map((e) => (
+            <Button key={e} size="sm" variant={st.engine === e ? "default" : "outline"} className="h-6 px-2 text-[11px]" onClick={() => void pick(e)}>
+              {e === "new" ? "New" : "Classic"}
+            </Button>
+          ))}
+        </div>
+        <p className="text-[10.5px] text-muted-foreground px-0.5">
+          {st.engine === "new"
+            ? st.pipeline
+              ? "The agent hears and speaks on the call itself (the box's voice)."
+              : "The box's voice is setting up or not running; Classic still works."
+            : "ElevenLabs hears and speaks, with the quick-replies model; the agent does the work."}
+        </p>
+        {err && <p className="text-[10.5px] text-amber-500/90 px-0.5">{err}</p>}
+      </div>
     </div>
   );
 }
