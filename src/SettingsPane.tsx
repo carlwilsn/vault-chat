@@ -625,7 +625,54 @@ function VoiceSection() {
         </div>
       )}
       {error && <p className="text-[11px] text-amber-500/90">{error}</p>}
+      <VoiceEngineRow />
     </section>
+  );
+}
+
+/** Voice engine, kept on the box (every device follows it): New — the voice is the conversation's own agent, heard and
+ *  spoken by the box (server/voiceBrain.ts); Classic — ElevenLabs' agent handing requests to it. The rollback is one click. */
+function VoiceEngineRow() {
+  const vault = useStore((s) => s.vaultPath);
+  const [st, setSt] = useState<{ engine: "classic" | "new"; pipeline: boolean } | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  useEffect(() => {
+    let alive = true;
+    void (async () => {
+      const { boxLinkFor, boxGet } = await import("./boxChat");
+      const link = await boxLinkFor(vault).catch(() => null);
+      if (!link) return;
+      const r = await boxGet(link, "/api/v1/brain/engine", 5000).catch(() => null);
+      if (alive && r) setSt({ engine: r.engine === "new" ? "new" : "classic", pipeline: !!r.pipeline });
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [vault]);
+  if (!st) return null;
+  const pick = async (engine: "classic" | "new") => {
+    setErr(null);
+    const { boxLinkFor, boxPost } = await import("./boxChat");
+    const link = await boxLinkFor(vault).catch(() => null);
+    if (!link) return;
+    const r = await boxPost(link, "/api/v1/brain/engine", { engine });
+    if (!r.ok) return setErr(r.error ?? "the box did not take it");
+    setSt({ engine, pipeline: !!r.data?.pipeline });
+    if (useStore.getState().voiceMode) setErr("Takes effect with the next voice session.");
+  };
+  return (
+    <div className="flex items-center gap-2 pt-1">
+      <span className="text-[12px] text-foreground/90">Engine</span>
+      {(["new", "classic"] as const).map((e) => (
+        <Button key={e} size="sm" variant={st.engine === e ? "default" : "outline"} className="h-6 px-2 text-[11px]" onClick={() => void pick(e)}>
+          {e === "new" ? "New" : "Classic"}
+        </Button>
+      ))}
+      <span className="text-[11px] text-muted-foreground truncate">
+        {st.engine === "new" ? (st.pipeline ? "The voice is the agent." : "The box's voice pipeline isn't running.") : "ElevenLabs' agent, asking yours."}
+      </span>
+      {err && <span className="text-[11px] text-amber-500/90">{err}</span>}
+    </div>
   );
 }
 

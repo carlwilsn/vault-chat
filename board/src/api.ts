@@ -222,6 +222,10 @@ export const voiceTool = (body: { name: string; args: unknown; convId: string | 
 /** One line of the call, saved on the box into its conversation (the first makes a new one when there is none). */
 export const voiceTranscript = (body: { convId: string | null; role: string; text: string; system?: boolean; ended?: boolean; device: "board" }) =>
   call<{ convId?: string | null }>("/api/v1/voice/transcript", { method: "POST", body: JSON.stringify(body) });
+/** The box's voice engine (Settings → Voice engine on the laptop): "new" = the voice is the conversation's agent. */
+export const brainEngine = () => call<{ engine: "classic" | "new"; pipeline: boolean }>("/api/v1/brain/engine");
+/** The New voice's calls (src/voiceBrainClient.ts): start, offer, end. */
+export const brainPost = (path: string, body: Record<string, unknown>) => call<any>(path, { method: "POST", body: JSON.stringify(body) });
 /** One long poll of the live call's updates: the agent's answers, what Carl did elsewhere. */
 export const voiceUpdates = (convId: string, cursor: string | null, session?: string | null) =>
   call<{ updates: { id: string; kind: string; text: string; speak: boolean }[]; cursor: string; moved?: { to: string; line: string } | null }>(

@@ -14,6 +14,7 @@ import { PlaybackMonitor, roomAudioStats } from "../../src/voiceStats";
 import { VoiceLogShipper } from "../../src/voiceShip";
 import { VoiceImagePusher } from "../../src/voiceImages";
 import { VoiceUpdates, pushStartImages } from "../../src/voiceFront";
+import { BrainConversation } from "../../src/voiceBrainClient";
 import type { LogRecord } from "../../src/convlog/protocol";
 import { emptyPicture, emptyRow, foldInto, pendingOf, reduceRow, shown, type Picture, type RowState } from "../../src/convlog/reduce";
 import { afterClear, makeChatView, type ChatView } from "../../src/convlog/view";
@@ -2298,6 +2299,12 @@ export function boot(): void {
       // ours could leave iOS capturing one and muting the other).
       const micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
       for (const t of micStream.getTracks()) t.stop();
+      // Settings → Voice engine "New": the voice IS the conversation's agent (the box hears and speaks; pi answers).
+      {
+        const er = await api("/api/v1/brain/engine").catch(() => null);
+        const eng = er && er.ok ? await er.json().catch(() => null) : null;
+        if (eng && eng.engine === "new") { await vStartBrain(); return; }
+      }
       let cfg = null;
       let sessErr = "";
       for (let a = 0; a < 6; a++) {
@@ -2363,7 +2370,34 @@ export function boot(): void {
       setVErr(String((e && e.message) || e));
     }
   }
-  function vTeardown() { vUnwatchAll(); void vShip.flush(); vMicPin.reset(); vOutPin.reset(); vOutputLost = false; vAudioWarn = ""; document.body.classList.remove("vaudiowarn"); if (vLive) vSaveLine("assistant", "Voice session ended.", true); if (vUpdates) { vUpdates.stop(); vUpdates = null; } vGate.reset(); vLive = false; cancelAnimationFrame(vRafId); vRafId = 0; vTeardownAudio(); vAutoRetried = false; vAgentSpeaking = false; vAgentEnvReset(); vSmoothed.fill(0); for (const b of vBars) b.style.transform = "scaleY(.16)"; document.body.classList.remove("voice", "voicemin", "vconnecting", "vmicmuted"); vMuted = false; { const vh = $("vhint"); if (vh) vh.textContent = ""; } vConv = null; vConnecting = false; }
+  /** The New voice's call: the phone is the mic and the speaker; its lines are the conversation's turns on the box. */
+  async function vStartBrain() {
+    const cid = vVoiceConv || "v" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+    vVoiceConv = cid;
+    vSessionId = null;
+    const post = async (path: string, body: Record<string, unknown>) => {
+      const r = await api(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(j.error || "HTTP " + r.status);
+      return j;
+    };
+    const vListed = await vMicPin.devices();
+    const vMicId = await vMicPin.atStart(vListed);
+    const vOutId = canPickOutput() ? await vOutPin.atStart(vListed) : (vOutPin.reset(), undefined);
+    vTransport = "webrtc";
+    vConv = await BrainConversation.start({
+      post,
+      convId: cid,
+      device: "phone",
+      ...(vMicId ? { inputDeviceId: vMicId } : {}),
+      ...(vOutId ? { outputDeviceId: vOutId } : {}),
+      log: (ev, d) => vLog(ev, d),
+      onConnect: () => { vConnecting = false; vAutoRetried = false; vLive = true; document.body.classList.remove("vconnecting"); vMeter(); },
+      onMode: (m) => { vAgentSpeaking = m === "speaking"; },
+      onDisconnect: (d) => { vLog("voice closed", { transport: "brain", reason: d.reason, message: d.message }); vTeardown(); },
+    });
+  }
+  function vTeardown() { vUnwatchAll(); void vShip.flush(); vMicPin.reset(); vOutPin.reset(); vOutputLost = false; vAudioWarn = ""; document.body.classList.remove("vaudiowarn"); if (vLive && !(vConv instanceof BrainConversation)) vSaveLine("assistant", "Voice session ended.", true); if (vUpdates) { vUpdates.stop(); vUpdates = null; } vGate.reset(); vLive = false; cancelAnimationFrame(vRafId); vRafId = 0; vTeardownAudio(); vAutoRetried = false; vAgentSpeaking = false; vAgentEnvReset(); vSmoothed.fill(0); for (const b of vBars) b.style.transform = "scaleY(.16)"; document.body.classList.remove("voice", "voicemin", "vconnecting", "vmicmuted"); vMuted = false; { const vh = $("vhint"); if (vh) vh.textContent = ""; } vConv = null; vConnecting = false; }
   async function vStop() { try { if (vConv) await vConv.endSession(); } catch {} vTeardown(); }
   $("voiceRow").onclick = () => {
     closeMenu();

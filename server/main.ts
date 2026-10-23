@@ -261,6 +261,7 @@ async function main(): Promise<void> {
       botUrl: process.env.VC_VOICE_PIPELINE_URL || "http://127.0.0.1:8857",
       selfUrl: `http://127.0.0.1:${cfg.port}`,
       logDir: join(cfg.stateDir, "logs"),
+      stateDir: cfg.stateDir,
     }),
     // Voice (server/voice.ts) in the request's vault: its conversations, its engine (Ask hands
     // Carl's request to the conversation's agent), its sync.

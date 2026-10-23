@@ -16,6 +16,7 @@ import { SPEECH_LEVEL, VoiceHealth, connectionOptions, pickTransport, type Healt
 import { AUDIO_WARN_LINE, MicPin, audioBlocked, canPickOutput, deviceLists, listAudioDevices, type MicDevice } from "./voiceMic";
 import { PlaybackMonitor, roomAudioStats } from "./voiceStats";
 import { layoutLine, sideOf } from "./paneLayout";
+import { BrainConversation, type BrainPost } from "./voiceBrainClient";
 
 /** The voice's diagnostics: the local trail, and the box (voiceShip.ts: <state>/logs/voice.jsonl). */
 const ship = new VoiceLogShipper({ device: "laptop" });
@@ -306,6 +307,13 @@ export async function startElevenLabsSession(opts?: { recap?: string }): Promise
   if (!box) {
     reportVoiceError("Connect your box to talk — voice runs on the box (Settings → Box).");
     return;
+  }
+  // Settings → Voice engine "New": the voice IS the conversation's agent — the box hears, pi answers, the box speaks
+  // (src/voiceBrainClient.ts, server/voiceBrain.ts). Kept on the box, so every device follows the same choice.
+  {
+    const { boxGet } = await import("./boxChat");
+    const engine = await boxGet(box.link, "/api/v1/brain/engine", 4000).catch(() => null);
+    if (engine?.engine === "new") return startBrainSession(box.link, state.activeConversationId ?? useStore.getState().newConversation());
   }
 
   // "Connecting…" lights up the cockpit immediately so the user
@@ -701,6 +709,64 @@ function looksLikeEnd(text: string): boolean {
     .replace(/[.,!?]+$/g, "")
     .trim();
   return END_PHRASES.has(cleaned);
+}
+
+/** The New voice's call on this laptop: the mic and speaker only. Its lines are the conversation's own turns on the
+ *  box (the chat shows them as they land), so nothing here appends, mirrors or pushes context. */
+async function startBrainSession(link: Parameters<typeof import("./boxChat").boxPost>[0], convId: string): Promise<void> {
+  useStore.getState().setVoiceConnecting(true);
+  useStore.setState({ voiceNotice: null });
+  const { boxPost } = await import("./boxChat");
+  const post: BrainPost = async (path, body) => {
+    const r = await boxPost(link, path, body);
+    if (!r.ok) throw new Error(r.error ?? "the box did not answer");
+    return r.data;
+  };
+  const startedAt = Date.now();
+  try {
+    const listed = await micPin.devices();
+    const micId = await micPin.atStart(listed);
+    const outId = canPickOutput() ? await outPin.atStart(listed) : (outPin.reset(), undefined);
+    const conv = await BrainConversation.start({
+      post,
+      convId,
+      device: "laptop",
+      ...(micId ? { inputDeviceId: micId } : {}),
+      ...(outId ? { outputDeviceId: outId } : {}),
+      log: (ev, data) => vlog(ev, data),
+      onConnect: () => {
+        vlog("voice connected", { transport: "brain", connectMs: Date.now() - startedAt });
+        useStore.setState({ voiceError: null });
+        useStore.getState().setVoiceConnecting(false);
+        useStore.getState().setVoiceListening(true);
+        useStore.getState().setVoiceSpeaking(false);
+        useStore.getState().setVoiceThinking(false);
+      },
+      onMode: (mode) => {
+        useStore.getState().setVoiceListening(mode === "listening");
+        useStore.getState().setVoiceSpeaking(mode === "speaking");
+        useStore.getState().setVoiceThinking(mode === "thinking");
+      },
+      onDisconnect: (d) => {
+        vlog("voice closed", { transport: "brain", reason: d.reason, message: d.message, afterMs: Date.now() - startedAt });
+        if (activeConversation !== (conv as unknown as ActiveConversation)) return;
+        void endElevenLabsSession("connection lost").finally(() => reportVoiceError(`Voice dropped: ${d.message ?? d.reason}.`));
+      },
+    });
+    activeConversation = conv as unknown as ActiveConversation;
+    activeTransport = "webrtc";
+  } catch (e) {
+    console.error("[voice] the New voice did not start:", e);
+    activeConversation = null;
+    activeTransport = null;
+    useStore.getState().setVoiceConnecting(false);
+    const msg = (e as any)?.message ?? String(e);
+    if (isMicProblem(e)) {
+      reportVoiceError(`Microphone access denied or unavailable: ${msg}. Check Windows Settings → Privacy → Microphone, and the system's default input device.`);
+      return;
+    }
+    reportVoiceError(`The New voice couldn't start: ${msg}.`);
+  }
 }
 
 /** Why ElevenLabs closed the session, or "" for a normal end (ours, or the agent's 1000). */
@@ -1419,6 +1485,11 @@ export function sendVoiceUserText(text: string): boolean {
   if (!conv) return false;
   const trimmed = text.trim();
   if (!trimmed) return false;
+  if ((conv as unknown) instanceof BrainConversation) {
+    // The New voice: typed and spoken are the same kind of turn — a chat message; the box speaks its reply.
+    void import("./boxChat").then(({ boxSend }) => boxSend({ text: trimmed, convId: useStore.getState().activeConversationId }));
+    return true;
+  }
   try {
     conv.sendUserMessage(trimmed);
   } catch (e) {

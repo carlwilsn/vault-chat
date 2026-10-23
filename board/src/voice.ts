@@ -47,6 +47,7 @@ import { VoiceUpdates, pushStartImages, type UpdatesPage } from "../../src/voice
 import type { Item } from "../../src/boardFormat";
 import type { ChatRow, VoiceConfig } from "./api";
 import { MAIN_ID, isOlderChat } from "../../src/threads";
+import { BrainConversation, type BrainOptions } from "../../src/voiceBrainClient";
 
 /** The SDK's conversation, as much of it as the board uses. */
 export type VoiceConv = {
@@ -97,6 +98,9 @@ export type VoiceApi = {
   voiceTranscript(b: { convId: string | null; role: string; text: string; system?: boolean; ended?: boolean; device: "board"; sessionId?: string }): Promise<{ convId?: string | null }>;
   /** One long poll of the call's updates (none: the call gets no updates); `session`: this call's id on the box. */
   voiceUpdates?(convId: string, cursor: string | null, session?: string | null): Promise<UpdatesPage>;
+  /** The New voice (src/voiceBrainClient.ts): the box's engine choice, and its call routes. None: Classic only. */
+  brainEngine?(): Promise<{ engine: "classic" | "new"; pipeline?: boolean }>;
+  brainPost?(path: string, body: Record<string, unknown>): Promise<any>;
 };
 
 /** What the board tells voice (view.ts). */
@@ -214,6 +218,8 @@ export type VoiceDeps = {
   connectTimeoutMs?: number;
   /** How long a line of Carl's waits for the agent's reply before its turn is logged as unanswered (20 s). */
   turnWaitMs?: number;
+  /** [tests] The New voice's browser parts (mic, peer connection, audio). */
+  brainDeps?: BrainOptions["deps"];
 };
 
 export class VoiceController {
@@ -358,6 +364,12 @@ export class VoiceController {
     const stillPicked = !!picked && (!latest || latest.id === picked.id || (latest.lastActivityAt ?? 0) <= Math.max(this.pickedAt, picked.lastActivityAt ?? 0));
     const chat = (chatId ? chats.find((c) => c.id === chatId) : null) ?? (stillPicked ? picked : null) ?? chats.find((c) => c.id === MAIN_ID) ?? latest;
     this.set({ chats, chat });
+    // Settings → Voice engine "New": the voice IS the conversation's agent (the box hears and speaks; pi answers).
+    if (this.d.api.brainEngine && this.d.api.brainPost) {
+      const eng = await this.d.api.brainEngine().catch(() => null);
+      if (gen !== this.gen) return;
+      if (eng?.engine === "new") return this.startBrain(gen, chat);
+    }
     let cfg: BoardVoiceConfig | null = null;
     let why = "";
     for (let a = 0; a < 3 && !cfg; a++) {
@@ -511,6 +523,52 @@ export class VoiceController {
         .catch(() => {});
       // The agent's answers and what Carl did elsewhere, into the live call (held while the voice speaks).
       this.startUpdates(conv, cfg.cursor ?? null);
+    } catch (e) {
+      return this.fail(gen, `Voice couldn't connect: ${String((e as Error)?.message ?? e)}`);
+    }
+  }
+
+  /** The New voice's call: the board is the mic and the speaker; its lines are the conversation's turns on the box, so
+   *  nothing is saved, pushed or polled from here (pi reads the board itself: overview.png and view.png). */
+  private async startBrain(gen: number, chat: ChatRow | null): Promise<void> {
+    const convId = chat?.id ?? `v${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+    this.convId = convId;
+    this.sessionId = null;
+    try {
+      const listed = await this.pin.devices();
+      const micId = await this.pin.atStart(listed);
+      const outId = canPickOutput() ? await this.outPin.atStart(listed) : (this.outPin.reset(), undefined);
+      if (gen !== this.gen) return;
+      const conv = await BrainConversation.start({
+        post: this.d.api.brainPost!,
+        convId,
+        device: "board",
+        ...(micId ? { inputDeviceId: micId } : {}),
+        ...(outId ? { outputDeviceId: outId } : {}),
+        ...(this.d.brainDeps ? { deps: this.d.brainDeps } : {}),
+        log: (ev, data) => this.d.log?.(ev, data),
+        onConnect: () => {
+          if (gen !== this.gen) return;
+          this.liveAt = Date.now();
+          this.set({ phase: "live", error: "" });
+        },
+        onMode: (mode) => {
+          if (gen === this.gen) this.set({ speaking: mode === "speaking" });
+        },
+        onDisconnect: (d) => {
+          this.lastClose = { transport: "brain", reason: d.reason, message: d.message };
+          if (gen !== this.gen) return;
+          this.report("remote", d);
+          this.teardown(`Voice disconnected (${d.message ?? d.reason}). Tap the mic to go on with this chat.`);
+        },
+      });
+      if (gen !== this.gen) {
+        void conv.endSession().catch(() => {});
+        return;
+      }
+      this.conv = conv as unknown as VoiceConv;
+      this.transport = "webrtc";
+      if (!chat) this.set({ chat: { id: convId, title: "Voice", lastActivityAt: Date.now(), source: "voice" } });
     } catch (e) {
       return this.fail(gen, `Voice couldn't connect: ${String((e as Error)?.message ?? e)}`);
     }

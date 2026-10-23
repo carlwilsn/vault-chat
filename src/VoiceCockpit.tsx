@@ -19,7 +19,9 @@ const LEVEL_DECAY = 0.85;
 export function VoiceCockpit() {
   const voiceMode = useStore((s) => s.voiceMode);
   const voiceConnecting = useStore((s) => s.voiceConnecting);
-  // With the chat open its rows say what is running; closed, a tiny line beside the waves does.
+  const muted = useStore((s) => s.voiceMicMuted);
+  // Chat open (docked, fullscreen or popped out): its rows say what is running and the composer has Mute; closed,
+  // the waves are the voice's one control (a click mutes) with a tiny line beside them for work still running.
   const chatOpen = useStore((s) => !s.rightCollapsed || s.chatFullscreen || s.popoutOpen);
 
   if (!voiceMode) return null;
@@ -36,20 +38,38 @@ export function VoiceCockpit() {
         <div className="text-[10.5px] font-medium tabular-nums whitespace-nowrap text-muted-foreground animate-pulse">
           Connecting…
         </div>
-      ) : (
+      ) : chatOpen ? (
         <VoiceBars />
+      ) : (
+        <button
+          type="button"
+          data-el="voice-waves-mute"
+          aria-pressed={muted}
+          onClick={() => toggleVoiceMute()}
+          title={muted ? "Muted: nothing is sent. Click (or Ctrl+Shift+M) to talk" : "Listening. Click to mute (Ctrl+Shift+M)"}
+          className={`relative flex items-center rounded px-0.5 ${muted ? "opacity-40" : ""}`}
+        >
+          <VoiceBars />
+          {muted && <span aria-hidden className="pointer-events-none absolute left-1/2 top-1/2 h-[1.5px] w-[22px] -translate-x-1/2 -translate-y-1/2 -rotate-45 rounded bg-foreground/80" />}
+        </button>
       )}
       {!voiceConnecting && !chatOpen && <WaitingOn />}
     </div>
   );
 }
 
-/** Work the agent is still doing for something said on the call (its Ask rows still working), as a very small line beside
- *  the waves — only while it runs, only with the chat closed. Elapsed time only (no made-up progress). */
+/** Work still running for the conversation, as a very small line beside the waves — only while it runs, only with the
+ *  chat closed (inside the chat its rows already say it): something said on a Classic call (its Ask row, working) and
+ *  work the New voice handed off (Delegate workers: meta.subagents). Elapsed time only: a progress bar would need real
+ *  steps, and none are reported, so none is drawn (never a made-up percentage). */
 function WaitingOn() {
-  // The open conversation's messages (a stable reference; the running ones are picked here).
+  // Stable references from the store (a fresh array from a selector would re-render forever); picked here.
   const messages = useStore((s) => s.messages);
-  const running = messages.filter((m) => m.voiceAsk?.running && m.voiceAsk.startedAt);
+  const subs = useStore((s) => s.conversations.find((x) => x.id === s.activeConversationId)?.subagents);
+  const running = [
+    ...messages.filter((m) => m.voiceAsk?.running && m.voiceAsk.startedAt).map((m) => ({ key: m.mid ?? m.voiceAsk!.request, label: m.voiceAsk!.request, at: m.voiceAsk!.startedAt! })),
+    ...(subs ?? []).filter((a) => (a.state ?? a.status) === "running" && a.startedAt).map((a) => ({ key: a.threadId, label: a.title ?? a.task ?? a.prompt ?? "working", at: a.startedAt! })),
+  ];
   const [, tick] = useState(0);
   useEffect(() => {
     if (!running.length) return;
@@ -63,9 +83,9 @@ function WaitingOn() {
   };
   return (
     <div data-el="voice-waiting" className="ml-2 flex flex-col leading-[11px] text-[10px] text-muted-foreground whitespace-nowrap">
-      {running.slice(-2).map((m) => (
-        <span key={m.mid ?? m.voiceAsk!.request} title={m.voiceAsk!.request}>
-          {m.voiceAsk!.request.slice(0, 28)} · {since(m.voiceAsk!.startedAt!)}
+      {running.slice(-2).map((r) => (
+        <span key={r.key} title={r.label}>
+          {r.label.slice(0, 28)} · {since(r.at)}
         </span>
       ))}
     </div>

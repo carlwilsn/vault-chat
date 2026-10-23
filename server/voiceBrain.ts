@@ -26,7 +26,7 @@
 //   POST /v1/chat/completions          OpenAI-compatible, SSE   (loopback + the call's token only)
 //   GET  /api/v1/brain/call/<id>/speak SSE {text, turn}        (loopback + the call's token only)
 import { randomBytes, timingSafeEqual } from "node:crypto";
-import { appendFileSync, mkdirSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { Speakable } from "./speakable";
@@ -52,9 +52,41 @@ export type BrainDeps = {
   selfUrl: string;
   /** Where brain.jsonl goes (one line per spoken turn: the latency figures). */
   logDir: string | null;
+  /** Where the voice engine choice is kept (Settings → Voice engine: every device follows the box's). */
+  stateDir?: string | null;
 };
 
-export const brainEnabled = (): boolean => process.env.VC_VOICE_BRAIN === "pi";
+/** The routes are on unless the box turns them off; which voice a device uses is the engine setting below. */
+export const brainEnabled = (): boolean => process.env.VC_VOICE_BRAIN !== "off";
+
+export type VoiceEngine = "classic" | "new";
+const engineFile = (d: { stateDir?: string | null }) => (d.stateDir ? join(d.stateDir, "voice-engine.json") : null);
+/** The box's voice engine: "new" (one brain, the box's pipeline) or "classic" (ElevenLabs' agent). Classic until chosen. */
+export function voiceEngine(d: { stateDir?: string | null }): VoiceEngine {
+  const f = engineFile(d);
+  if (!f) return "classic";
+  try {
+    return JSON.parse(readFileSync(f, "utf8"))?.engine === "new" ? "new" : "classic";
+  } catch {
+    return "classic";
+  }
+}
+function setVoiceEngine(d: { stateDir?: string | null }, e: VoiceEngine): boolean {
+  const f = engineFile(d);
+  if (!f) return false;
+  mkdirSync(d.stateDir!, { recursive: true });
+  writeFileSync(f, JSON.stringify({ engine: e, at: new Date().toISOString() }));
+  return true;
+}
+/** Is the pipeline up (its /health on loopback, 1.5 s)? */
+async function pipelineUp(d: BrainDeps): Promise<boolean> {
+  try {
+    const r = await fetch(`${d.botUrl}/health`, { signal: AbortSignal.timeout(1500) });
+    return r.ok;
+  } catch {
+    return false;
+  }
+}
 /** The talker: a fast model for turns while a call is live (the conversation's own model does the delegated work). */
 export const talkerModel = (): string => process.env.VC_VOICE_TALKER_MODEL || "google/gemini-3.8-flash";
 /** The talker's thinking (pi's levels: off, minimal, low, medium, high): a spoken reply wants little. */
@@ -402,6 +434,19 @@ export async function brainRoute(
   if (path === "/api/v1/brain/offer" && method === "POST") {
     const r = await offer(d, await readJson());
     json(res, r.status, r.body);
+    return true;
+  }
+  // Settings → Voice engine (every device reads it when voice starts).
+  if (path === "/api/v1/brain/engine" && method === "GET") {
+    json(res, 200, { engine: voiceEngine(d), pipeline: await pipelineUp(d), model: talkerModel() });
+    return true;
+  }
+  if (path === "/api/v1/brain/engine" && method === "POST") {
+    const b = await readJson();
+    const e: VoiceEngine = b?.engine === "new" ? "new" : "classic";
+    if (!setVoiceEngine(d, e)) return json(res, 503, { error: "no state dir" }), true;
+    log(d, { ev: "engine", engine: e });
+    json(res, 200, { ok: true, engine: e, pipeline: await pipelineUp(d) });
     return true;
   }
   if (path === "/api/v1/brain/calls" && method === "GET") {

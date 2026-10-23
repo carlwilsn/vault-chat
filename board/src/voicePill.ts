@@ -35,7 +35,7 @@ function unlockAudio(): void {
   s.start(0);
 }
 
-const realApi: VoiceApi = { listChats: api.listChats, voiceSession: api.voiceSession, voiceTool: api.voiceTool, voiceTranscript: api.voiceTranscript, voiceUpdates: api.voiceUpdates };
+const realApi: VoiceApi = { listChats: api.listChats, voiceSession: api.voiceSession, voiceTool: api.voiceTool, voiceTranscript: api.voiceTranscript, voiceUpdates: api.voiceUpdates, brainEngine: api.brainEngine, brainPost: api.brainPost };
 
 /** The board's one voice conversation, remembered on this iPad for THREAD_MS (a new day starts from the latest chat). */
 const THREAD_KEY = "vc_board_voice_thread";
