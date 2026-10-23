@@ -81,6 +81,16 @@ describe("streaming says exactly the whole rendering", () => {
     expect(s.push(" And more")).toEqual(["The longer part comes next."]);
   });
 
+  it("the reply's first piece may end at a clause once it has some length (the voice starts sooner); later ones end at sentences", () => {
+    const s = new Speakable();
+    expect(s.push("No, it is")).toEqual([]);
+    expect(s.push(" a one-way statement only, because the converse")).toEqual(["No, it is a one-way statement only,"]);
+    expect(s.push(" fails, as shown")).toEqual([]);
+    expect(s.push(" here. Next")).toEqual(["because the converse fails, as shown here."]);
+    const li = new Speakable();
+    expect(li.push("- First item, longer than the minimum, still")).toEqual([]);
+  });
+
   it("never cuts inside math or a code block", () => {
     const s = new Speakable();
     expect(s.push("It is $\\frac{1}{2}. x$")).toEqual([]);

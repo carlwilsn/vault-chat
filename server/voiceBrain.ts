@@ -54,6 +54,8 @@ export type BrainDeps = {
   logDir: string | null;
   /** Where the voice engine choice is kept (Settings → Voice engine: every device follows the box's). */
   stateDir?: string | null;
+  /** The engine changed (the server starts or stops the pipeline: server/voicePipeline.ts). */
+  onEngine?: (e: VoiceEngine) => void;
 };
 
 /** The routes are on unless the box turns them off; which voice a device uses is the engine setting below. */
@@ -446,6 +448,9 @@ export async function brainRoute(
     const e: VoiceEngine = b?.engine === "new" ? "new" : "classic";
     if (!setVoiceEngine(d, e)) return json(res, 503, { error: "no state dir" }), true;
     log(d, { ev: "engine", engine: e });
+    d.onEngine?.(e);
+    // A first switch to New sets the pipeline up (minutes once): say so rather than "not running".
+    if (e === "new") await new Promise((r) => setTimeout(r, 1500));
     json(res, 200, { ok: true, engine: e, pipeline: await pipelineUp(d) });
     return true;
   }

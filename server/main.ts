@@ -6,6 +6,11 @@ import "./shims/globals";
 import { spawnSync } from "node:child_process";
 import { existsSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { voiceEngine } from "./voiceBrain";
+import { stopPipeline, wantPipeline } from "./voicePipeline";
+
+/** Where the New voice's pipeline listens (loopback only). */
+const VOICE_PIPELINE_PORT = Number(process.env.VC_VOICE_PIPELINE_PORT) || 8857;
 import { loadConfig, SERVER_VERSION, SERVER_REV } from "./config";
 import { registerCommands } from "./commands";
 import { loadKeyStore, hasKey, keychainCommands, saveKeys, keyNames } from "./keys";
@@ -258,7 +263,8 @@ async function main(): Promise<void> {
       engine: async () => engineOf(v),
       elKey: () => useStore.getState().serviceKeys.elevenlabs || null,
       voiceId: () => localStorage.getItem("vault_chat_elevenlabs_voice") || "nPczCjzI2devNBz1zQrb",
-      botUrl: process.env.VC_VOICE_PIPELINE_URL || "http://127.0.0.1:8857",
+      botUrl: `http://127.0.0.1:${VOICE_PIPELINE_PORT}`,
+      onEngine: (e) => wantPipeline({ stateDir: cfg.stateDir, port: VOICE_PIPELINE_PORT, log: (s) => console.log(s) }, e === "new" && process.env.VC_VOICE_PIPELINE !== "off"),
       selfUrl: `http://127.0.0.1:${cfg.port}`,
       logDir: join(cfg.stateDir, "logs"),
       stateDir: cfg.stateDir,
@@ -315,6 +321,10 @@ async function main(): Promise<void> {
     });
   };
   process.on("SIGTERM", () => shutdown("SIGTERM"));
+  // The New voice's pipeline runs as this server's child while the box's engine is "new" (server/voicePipeline.ts).
+  if (voiceEngine({ stateDir: cfg.stateDir }) === "new" && process.env.VC_VOICE_PIPELINE !== "off")
+    wantPipeline({ stateDir: cfg.stateDir, port: VOICE_PIPELINE_PORT, log: (s) => console.log(s) }, true);
+  process.on("exit", () => stopPipeline());
   process.on("SIGINT", () => shutdown("SIGINT"));
 }
 

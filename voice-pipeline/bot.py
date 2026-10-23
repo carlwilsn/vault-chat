@@ -99,11 +99,15 @@ def make_stt(call: dict):
 def make_tts(call: dict):
     if TTS == "elevenlabs":
         from pipecat.services.elevenlabs.tts import ElevenLabsTTSService
+        from pipecat.services.tts_service import TextAggregationMode
 
         return ElevenLabsTTSService(
             api_key=call["elKey"],
             voice_id=call.get("voiceId") or "nPczCjzI2devNBz1zQrb",
             settings=ElevenLabsTTSService.Settings(model="eleven_flash_v2_5"),
+            # The brain already sends whole speakable pieces (server/speakable.ts): synthesise each as it comes, no
+            # second round of sentence buffering here (it held a first clause until the sentence ended).
+            text_aggregation_mode=TextAggregationMode.TOKEN if BRAIN == "pi" else TextAggregationMode.SENTENCE,
         )
     raise ValueError(f"unknown TTS {TTS}")
 

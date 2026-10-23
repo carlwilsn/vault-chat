@@ -134,10 +134,15 @@ function openMath(t: string): boolean {
  * block by block (toSpeech's rules); inside the line still being written, a sentence that has ended (". " outside
  * math) is read at once, so the voice starts on the first sentence, not the first paragraph.
  */
+/** The first piece may end at a clause only after this many characters (shorter: wait for more). */
+export const FIRST_CLAUSE_MIN = 24;
+
 export class Speakable {
   private buf = "";
   /** Characters of the current (unfinished) line already spoken. */
   private spokenInLine = 0;
+  /** Something of this reply was said already (only the first piece may end at a clause). */
+  private said = false;
 
   push(delta: string): string[] {
     this.buf += delta.replace(/\r\n?/g, "\n");
@@ -157,12 +162,16 @@ export class Speakable {
     // Mid-line: the current line's finished sentences (not inside a block that waits for its end).
     const cur = this.buf.includes("\n") ? "" : this.buf;
     if (cur && !fenceOf(cur) && !isTableLine(cur) && !/^\s*(\$\$|\\\[)/.test(cur)) {
-      const re = /[.!?](?=\s)/g;
+      // The reply's very first piece may end at a clause (", " "; " ": " "—") once it has some length: the voice starts
+      // on it instead of waiting for the whole first sentence. Not in a heading or a list item (they end as sentences).
+      const clause = !this.said && !/^\s{0,3}#|^\s*(?:[-*+]|\d{1,3}[.)])\s/.test(cur);
+      const re = clause ? /[.!?,;:—–](?=\s)/g : /[.!?](?=\s)/g;
       let m: RegExpExecArray | null;
       let cut = -1;
       while ((m = re.exec(cur))) {
         const end = m.index + 1;
         if (end <= this.spokenInLine) continue;
+        if (!/[.!?]/.test(m[0]) && end < FIRST_CLAUSE_MIN) continue;
         const head = cur.slice(0, end);
         if (/(?:\be\.g|\bi\.e|\bvs|\bDr|\bMr|\bMs|\bSt|\bFig|\bEq|^\s*\d{1,3})\.$/i.test(head)) continue;
         if (openMath(head)) continue;
@@ -174,7 +183,9 @@ export class Speakable {
         this.spokenInLine = cut;
       }
     }
-    return out.map(fold).filter(Boolean);
+    const said = out.map(fold).filter(Boolean);
+    if (said.length) this.said = true;
+    return said;
   }
 
   flush(): string[] {
