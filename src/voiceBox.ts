@@ -129,7 +129,7 @@ export async function boxVoiceSession(
  * it under this id when it is a new chat). `done()` resolves once every line so far is saved (Ask waits on it, so
  * the agent reads Carl's words before his request). */
 export function voiceTranscriptMirror(b: BoxVoice, convId: string, post: Post = boxPost, sessionId: string | null = null) {
-  const id = convId;
+  let id = convId;
   let chain: Promise<unknown> = Promise.resolve();
   const push = (m: ChatMessage): Promise<unknown> => {
     const call = m.toolCalls?.[0];
@@ -161,5 +161,6 @@ export function voiceTranscriptMirror(b: BoxVoice, convId: string, post: Post = 
     });
     return chain;
   };
-  return { push, id: () => id, done: () => chain };
+  // follow: Carl moved the call to another thread (OpenProject); its next lines show and land there.
+  return { push, id: () => id, done: () => chain, follow: (to: string) => void (id = to) };
 }

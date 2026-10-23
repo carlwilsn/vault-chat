@@ -26,6 +26,8 @@ export class FakeBox {
   down = false;
   /** The vault Show (server/show.ts) counts this feed's clients for (the laptop test's vault). */
   showVault = this.dir;
+  /** The box's own copies of vault files (GET /api/v1/vault/file, vault-relative path → bytes); others 404. */
+  files = new Map<string, Buffer>();
   /** Answer /poll this many ms late (the tailnet). */
   pollDelay = 0;
   private server!: http.Server;
@@ -230,7 +232,10 @@ export class FakeBox {
           this.intents.push(b);
           return send(200, this.intent(b));
         }
-        if (route === "GET /api/v1/vault/file") return send(404, { error: "no" });
+        if (route === "GET /api/v1/vault/file") {
+          const f = this.files.get(u.searchParams.get("path") ?? "");
+          return f ? send(200, { path: u.searchParams.get("path"), size: f.length, base64: f.toString("base64") }) : send(404, { error: "no" });
+        }
         const ack = /^\/api\/v1\/show\/([^/]+)\/ack$/.exec(u.pathname);
         if (ack && req.method === "POST") return send(200, { ok: true, waiting: ackShow(decodeURIComponent(ack[1]!), raw ? JSON.parse(raw) : {}) });
         return send(404, { error: "not found" });

@@ -126,7 +126,7 @@ export function activeVoiceSessions(now = Date.now()): number {
 
 // ---------------------------------------------------------------- one voice at a time
 
-export type LiveVoice = { id: string; vault: string; device: VoiceDevice; convId: string | null; at: number; ended: boolean; movedTo: VoiceDevice | null };
+export type LiveVoice = { id: string; vault: string; device: VoiceDevice; convId: string | null; at: number; ended: boolean; movedTo: VoiceDevice | null; followed?: string };
 /** Sessions minted on this box (the newest few, for their "moved" answers), and the live one. */
 const voiceSessionsById = new Map<string, LiveVoice>();
 let liveVoice: LiveVoice | null = null;
@@ -163,14 +163,28 @@ function startLiveVoice(vault: string, device: VoiceDevice, convId: string | nul
   return { session, from };
 }
 
-/** A line, a tool call or a poll from `sessionId`: it is alive (and its conversation is `convId`). */
+/** A line, a tool call or a poll from `sessionId`: it is alive (and its conversation is `convId`, unless the call followed Carl to another thread). */
 function touchSession(sessionId: unknown, convId?: string | null, ended = false): void {
   const v = voiceSessionsById.get(s(sessionId));
   if (!v || v.movedTo) return;
   v.at = Date.now();
-  if (convId) v.convId = convId;
+  if (convId && !v.followed) v.convId = convId;
   if (ended) v.ended = true;
 }
+
+/** Carl asked to work in another thread (OpenProject, server/projectRoutes.ts): the live call in `vault` follows him
+ *  there. From now on its lines, tools and updates are that thread's, whatever conversation its client still names
+ *  (one agent; the thread is where it works). False: no live call there. */
+export function followVoice(vault: string, convId: string): boolean {
+  const v = liveVoiceSession();
+  if (!v || resolve(v.vault) !== resolve(vault)) return false;
+  v.convId = convId;
+  v.followed = convId;
+  return true;
+}
+
+/** The thread a session followed Carl to, or `convId` (what its client sent). */
+const threadOf = (sessionId: unknown, convId: unknown): unknown => voiceSessionsById.get(s(sessionId))?.followed ?? convId;
 
 /** [tests] Forget every session. */
 export function resetVoiceSessionsForTests(): void {
@@ -214,6 +228,7 @@ export async function voiceTranscript(d: VoiceDeps, b: any): Promise<{ status: n
   // Control tags ("[skip_turn]") and audio tags shape the call, not the transcript; our own [vc:…] messages are not his.
   const text = role === "assistant" && !system ? stripAudioTags(said) : said;
   const ended = b?.ended === true || (system && ENDED_LINE.test(text));
+  b = { ...b, convId: threadOf(b?.sessionId, b?.convId) };
   // A session another device took over: nothing of it lands (one voice in the thread, in order).
   const moved = supersededBy(b?.sessionId);
   if (moved) return { status: 409, body: { error: movedLine(moved), moved: { to: moved, line: movedLine(moved) } } };
@@ -310,6 +325,7 @@ export async function voiceTool(d: VoiceDeps, body: any): Promise<{ result: stri
   const moved = supersededBy(body?.sessionId);
   if (moved) return { result: `Error: voice moved to Carl's ${deviceLabel(moved)}; this call is over and nothing was done. Say nothing.`, moved: { to: moved, line: movedLine(moved) } };
   voiceActivity(d.vault);
+  body = { ...body, convId: threadOf(body?.sessionId, body?.convId) };
   touchSession(body?.sessionId, s(body?.convId) || null);
   const a = args && typeof args === "object" ? args : {};
   const device = voiceDevice(body?.device);
@@ -531,7 +547,7 @@ export async function voiceUpdates(
   if (m0) return { updates: [], cursor: s(q.cursor) || cursorOf(now, now), moved: m0 };
   if (!cur) return { updates: [], cursor: cursorOf(now, now) };
   touchSession(q.session);
-  const convId = s(q.convId).trim() || null;
+  const convId = s(threadOf(q.session, q.convId)).trim() || null;
   const deadline = now + Math.max(0, Math.min(Number(q.waitMs) || 0, 25_000));
   voiceActivity(d.vault);
   await speechReady();

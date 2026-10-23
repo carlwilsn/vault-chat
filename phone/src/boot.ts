@@ -1144,6 +1144,8 @@ export function boot(): void {
         if (s.type === "notif") { void refreshBadge(); if (page === "alerts") softReload(loadAlerts); }
         else if (s.type === "project") { if (s.convId === convId) void loadProjects(); listChanged = true; }
         else if (s.type === "show" && s.to === "phone" && s.id) void showOnPhone(s);
+        // Carl asked to work in another thread (the agent's OpenProject): the phone follows.
+        else if (s.type === "follow" && typeof s.convId === "string" && s.convId) { void loadProjects(); if (s.convId !== convId) void openThread(s.convId, typeof s.title === "string" ? s.title : undefined); }
         continue;
       }
       // The drawer's dots: which of your chats run now, and which finished while you looked elsewhere.

@@ -37,6 +37,7 @@ import { failMake, inboxLog, listEntries, readEntry, sendEntry, startMake, type 
 import { BOARD_MAKER_PROMPT, boardMakeTask, makerStats } from "./boardTools";
 import { lookBoard } from "../boards";
 import { show, SHOW_DESCRIPTION, SHOW_SCHEMA } from "../show";
+import { openProject, OPEN_PROJECT_DESCRIPTION, OPEN_PROJECT_SCHEMA } from "../projectRoutes";
 import { startJob, jobStatus, jobList, jobStop, reapJobs, type PiJobEnv } from "./pi/jobs";
 import { ENGINE_ROLE_PROMPT } from "./prompt";
 import { isNoteTool, noteTool, noteToolSpecs } from "../notesTools";
@@ -273,6 +274,12 @@ export const ENGINE_TOOL_SPECS = [
     name: "Show",
     description: SHOW_DESCRIPTION,
     inputSchema: SHOW_SCHEMA as unknown as Record<string, unknown>,
+  },
+  {
+    type: "function",
+    name: "OpenProject",
+    description: OPEN_PROJECT_DESCRIPTION,
+    inputSchema: OPEN_PROJECT_SCHEMA as unknown as Record<string, unknown>,
   },
   {
     type: "function",
@@ -1503,7 +1510,7 @@ export class Engine {
     const conv = found ?? ({ id: "", title: "", messages: [] } as unknown as NonNullable<typeof found>);
     const a = p?.arguments ?? {};
     try {
-      // ListProjects only reads: no agent tool makes a project or moves a chat (Carl does, in the app).
+      // ListProjects only reads. A project is made only by Carl: in the app, or by asking for it (OpenProject below).
       if (isContextTool(name)) return await handleContextTool(name, a, { conv: conv as any, convs: (await allConvs(vault)) as any });
       // The notes tools: the same code voice runs (server/notesTools.ts), every result read back from the file.
       if (isNoteTool(name)) {
@@ -1582,6 +1589,11 @@ export class Engine {
         case "Show": {
           // On the device he names (or is on): a signal the laptop / phone acks, or the inbox's validated send.
           const r = await show({ vault, emit: (ev) => this.d.broadcast?.(ev), sendBoard: (b) => sendEntry(vault, b, { conversation: convId, emit: (ev) => this.inboxEvent(ev) }) }, a);
+          return { success: r.ok, contentItems: [{ type: "inputText", text: r.text }] };
+        }
+        case "OpenProject": {
+          // Carl asked to start or work on a project: made (or found), and his screens and a live call follow to its thread.
+          const r = await openProject(vault, a, { emit: (ev) => this.d.broadcast?.(ev), message: (b) => this.message(b) });
           return { success: r.ok, contentItems: [{ type: "inputText", text: r.text }] };
         }
         case "PdfRead":

@@ -34,6 +34,7 @@ fake.setHandler("vault_box_config", () => ({ box: box.url, vault: "v" }));
 fake.setHandler("box_get_json", ({ url, timeoutMs }) => fetchVia(url, { method: "GET" }, timeoutMs ?? 20000));
 fake.setHandler("box_post_json", ({ url, body }) => fetchVia(url, { method: "POST", body, headers: { "content-type": "application/json" } }, 20000));
 fake.setHandler("path_exists", ({ path }) => fs.existsSync(path));
+fake.setHandler("read_binary_file", ({ path }) => [...fs.readFileSync(path)]);
 fake.setHandler("conversations_write_all", () => null);
 
 // ---------------------------------------------------------------- the vault
@@ -273,18 +274,80 @@ test("a place that does not fit the type is refused before anything is sent", as
   assert.equal(sent.length, n, "no signal");
 });
 
-test("a file the laptop does not have yet: an honest no, after one sync", async () => {
-  // On the box only (the tool checks its own vault; the laptop's copy has not synced it).
-  W("hw/new.md", "# New\n");
-  const local = `${vault}/hw/new.md`;
-  const exists = fake.calls.length;
-  fake.setHandler("path_exists", ({ path }) => (String(path).endsWith("new.md") ? false : fs.existsSync(path)));
-  const r = await Show({ path: "hw/new.md" });
+// ---------------------------------------------------------------- a sync lag is never a failure
+
+// The laptop's disk, as the test says it is (the box's vault is the real files; the laptop sees these instead).
+const laptopDisk = new Map<string, Buffer | null>(); // vault-relative path → bytes, or null: not there yet
+const rel = (p: string) => String(p).replace(/\\/g, "/").slice(vault.replace(/\\/g, "/").length + 1);
+fake.setHandler("path_exists", ({ path }) => (laptopDisk.has(rel(path)) ? laptopDisk.get(rel(path)) !== null : fs.existsSync(path)));
+fake.setHandler("read_binary_file", ({ path }) => {
+  const d = laptopDisk.get(rel(path));
+  if (d === null) throw `No such file: ${path}`;
+  return [...(d ?? fs.readFileSync(path))];
+});
+const fileReads: string[] = [];
+fake.setHandler("read_text_file", ({ path }) => {
+  fileReads.push(rel(path));
+  const d = laptopDisk.get(rel(path));
+  if (d === null) throw `No such file: ${path}`;
+  return (d ?? fs.readFileSync(path)).toString("utf8");
+});
+const fetched = () => box.seen.filter((x) => x.route === "GET /api/v1/vault/file").length;
+
+test("a file the agent just made, not on the laptop yet: it opens from the box's copy at once (no error, no wait for the sync)", async () => {
+  const body = "# New\n\nPractice problems for HW4.\n\n## Problem 1\n\nShow it.\n";
+  W("hw/new.md", body);
+  box.files.set("hw/new.md", Buffer.from(body));
+  laptopDisk.set("hw/new.md", null);
+  const t0 = Date.now();
+  const r = await Show({ path: "hw/new.md", heading: "Problem 1" });
+  assert.equal(r.ok, true, r.text);
+  assert.match(r.text, /^Shown on the laptop: opened new\.md; scrolled to heading "Problem 1" in new\.md\.$/);
+  assert.doesNotMatch(r.text, /sync/i);
+  assert.equal(name(S().currentFile!), "new.md");
+  assert.equal(S().currentContent, body, "the box's text is what shows");
+  assert.ok(!fileReads.includes("hw/new.md"), "nothing was read from the laptop's disk");
+  assert.ok(Date.now() - t0 < 5000);
+});
+
+test("an older copy on the laptop: the box's copy shows (its sha differs), not the stale one", async () => {
+  const fresh = "# Stale\n\nThe agent's new line.\n";
+  W("hw/stale.md", fresh);
+  box.files.set("hw/stale.md", Buffer.from(fresh));
+  laptopDisk.set("hw/stale.md", Buffer.from("# Stale\n\nThe old line.\n"));
+  const r = await Show({ path: "hw/stale.md" });
+  assert.equal(r.ok, true, r.text);
+  assert.equal(r.text, "Shown on the laptop: opened stale.md.");
+  assert.equal(S().currentContent, fresh);
+  // The same copy on both: the laptop's own file opens, nothing is fetched.
+  laptopDisk.set("hw/stale.md", Buffer.from(fresh));
+  useStore.setState({ currentFile: null, currentContent: "" });
+  const n = fetched();
+  const again = await Show({ path: "hw/stale.md" });
+  assert.equal(again.ok, true, again.text);
+  assert.equal(fetched(), n, "an up-to-date file is never fetched");
+  assert.equal(S().currentContent, fresh);
+});
+
+test("a PDF not on the laptop yet: its viewer draws the box's bytes and lands on the page", async () => {
+  const bytes = Buffer.from("%PDF-1.4 the box's copy");
+  W("papers/new.pdf", bytes);
+  box.files.set("papers/new.pdf", bytes);
+  laptopDisk.set("papers/new.pdf", null);
+  const r = await Show({ path: "papers/new.pdf", page: 3 });
+  assert.equal(r.ok, true, r.text);
+  assert.match(r.text, /opened new\.pdf; scrolled to page 3 of 6 in new\.pdf/);
+  const { readShownBytes } = await import("../../src/liveReload.ts");
+  assert.equal(Buffer.from(await readShownBytes(S().currentFile!)).toString(), "%PDF-1.4 the box's copy");
+});
+
+test("only a file neither the box nor the laptop can give is a no (after one sync), and it says what happened", async () => {
+  W("hw/gone.md", "# Gone\n");
+  laptopDisk.set("hw/gone.md", null);
+  const r = await Show({ path: "hw/gone.md" });
   assert.equal(r.ok, false);
-  assert.match(r.text, /is not on the laptop yet/);
-  assert.ok(fake.calls.length > exists);
-  fake.setHandler("path_exists", ({ path }) => fs.existsSync(path));
-  fs.rmSync(local);
+  assert.match(r.text, /could not be fetched from the box and is not on the laptop; nothing was opened/);
+  laptopDisk.clear();
 });
 
 // ---------------------------------------------------------------- the split screen (pane)

@@ -1,7 +1,8 @@
 // Projects are plain groupings, and the agent works directly (Carl, 2026-10-18).
 // On a fake pi, through the real engine and the box's voice routes:
-//   - no agent tool makes a project or moves a chat (pi or voice; voice's Ask
-//     carries only Carl's request); Carl's own choice in the app applies directly;
+//   - no agent tool makes a project on its own or moves a chat (pi or voice; voice's Ask
+//     carries only Carl's request; his explicit ask is OpenProject, openProject.test.ts);
+//     Carl's own choice in the app applies directly;
 //   - a project is context, not a boundary: a chat in project X edits a file
 //     of project Y like any vault file;
 //   - every thread is told the size rule, do-it-now and read-back;

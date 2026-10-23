@@ -5,7 +5,10 @@
 //   laptop  a {type:"show", to:"laptop", id, path | url, target?, pane?} signal on the
 //           vault's feed (/poll); the laptop app opens it as a click in the file
 //           tree does, scrolled to the target (src/showOnLaptop.ts), and acks
-//           (POST /api/v1/show/<id>/ack). Success is only ever that ack. A laptop
+//           (POST /api/v1/show/<id>/ack). Success is only ever that ack. The signal
+//           carries the file's sha256: a laptop whose copy is missing or different
+//           (the vault sync not there yet) shows the box's copy, fetched over the
+//           same link (GET /api/v1/vault/file), and the sync catches up behind it. A laptop
 //           with no live feed gets nothing sent and an honest "not online".
 //           `pane` ("left" | "right") puts it in that pane of the split screen,
 //           turning split on (src/paneLayout.ts); the ack then names which pane
@@ -233,7 +236,9 @@ async function run(d: ShowDeps, a: Record<string, unknown>): Promise<ShowResult>
   const bad = targetError(kind, t, name);
   if (bad) return fail(bad);
   if (where === "board") return toBoard(d, f, kind, target, a);
-  return toClient(d, where, { path: f.rel, ...(hasTarget(t) ? { target: t } : {}), ...(pane ? { pane } : {}) }, `${name}${pane ? ` in the ${pane} pane` : ""}${hasTarget(t) ? ` at ${spotLabel(t)}` : ""}`, because);
+  // The laptop opens the box's copy whenever its own is missing or not this one (`sha`): a sync lag is never a failure.
+  const sha = where === "laptop" ? createHash("sha256").update(readFileSync(f.abs)).digest("hex") : undefined;
+  return toClient(d, where, { path: f.rel, ...(sha ? { sha } : {}), ...(hasTarget(t) ? { target: t } : {}), ...(pane ? { pane } : {}) }, `${name}${pane ? ` in the ${pane} pane` : ""}${hasTarget(t) ? ` at ${spotLabel(t)}` : ""}`, because);
 }
 
 function spotTakes(kind: FileKind): string {

@@ -71,6 +71,23 @@ export async function readShownBytes(path: string): Promise<Uint8Array> {
   return new Uint8Array(await invoke<number[]>("read_binary_file", { path }));
 }
 
+/**
+ * Show the box's copy of `path` ahead of this disk: Show opened a file the vault sync has not brought yet (or
+ * brought an older one of). A PDF or an image draws these bytes; a text file's view gets the returned text. Nothing
+ * is written here: the merge catches the disk up behind it, and refreshOpenFiles drops the override then.
+ */
+export function holdBoxCopy(path: string, bytes: Uint8Array): string | null {
+  const k = norm(path);
+  if (isUnreadableAsText(path)) {
+    boxBytes.set(k, bytes);
+    bumpRev(k);
+    return null;
+  }
+  const text = new TextDecoder().decode(bytes);
+  boxText.set(k, text);
+  return text;
+}
+
 /** What a pane's Reload should show: the box's newer text if there is one, else null (read the disk). */
 export function pendingBoxText(path: string): string | null {
   return boxText.get(norm(path)) ?? null;

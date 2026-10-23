@@ -2,7 +2,8 @@
 // chats (ListConversations, ReadConversation: the "you" layer points at Carl's
 // messages in other chats by title; their content is read only on request).
 // Carl decides what is a project (the app's New project and move-to-project
-// menu); no agent tool creates a project or moves a chat in or out of one. The
+// menu, or his own explicit ask, which the engine's OpenProject carries out:
+// server/projectRoutes.ts); no tool here creates a project or moves a chat. The
 // agent may still read and write a project's files (its project.md, anything
 // in its folder) with its ordinary file tools.
 import { conversationObjects as readConversationObjects } from "../engine/convs";
@@ -21,7 +22,7 @@ export const contextToolSpecs: DynamicToolSpec[] = [
     name: "ListProjects",
     readOnly: true,
     description:
-      "Carl's projects (folders of chats, each with an optional shared notes file, project.md) and the chats in each. Without `project`: every project with its chats' titles. With `project` (name or slug): its notes file and all its chats. Read-only: only Carl makes projects and moves chats between them, in the app. You may read and edit a project's files (its project.md included) with your file tools.",
+      "Carl's projects (folders of chats, each with an optional shared notes file, project.md) and the chats in each. Without `project`: every project with its chats' titles. With `project` (name or slug): its notes file and all its chats. Read-only: only Carl makes projects (in the app, or by asking you: OpenProject) and moves chats between them. You may read and edit a project's files (its project.md included) with your file tools.",
     inputSchema: {
       type: "object",
       properties: { project: { type: "string", description: "A project's name or slug." } },
@@ -98,11 +99,11 @@ export function listProjectsText(project?: string | null, currentProject?: strin
     };
   }
   const all = listProjects();
-  if (!all.length) return { ok: true, text: "Carl has no projects yet. Only he makes them, in the app." };
+  if (!all.length) return { ok: true, text: "Carl has no projects yet. Only he makes them: in the app, or by asking you (OpenProject)." };
   return {
     ok: true,
     text:
-      `Carl's projects (only he makes them and moves chats into them, in the app):\n` +
+      `Carl's projects (only he makes them: in the app, or by asking you):\n` +
       all
         .map((p) => {
           const mine = rows.filter((r) => r.project === p.slug);

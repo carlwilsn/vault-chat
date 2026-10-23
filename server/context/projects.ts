@@ -3,7 +3,8 @@
 // optional shared file, `agent-projects/<slug>/project.md` — the project's
 // instructions and notes, which the agent reads as context (like a CLAUDE.md).
 // Carl makes projects and moves chats (the app's New project and the
-// move-to-project menu); no agent tool creates a project or assigns a chat.
+// move-to-project menu, or by asking the agent in so many words: OpenProject,
+// server/projectRoutes.ts); the agent never makes one on its own initiative.
 // The folder is hidden from the file tree by default (src/agentProjects.ts).
 // Older projects may still hold memory.md / plan.md / progress.md: they stay on
 // disk, untouched, and are no longer loaded.

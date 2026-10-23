@@ -422,9 +422,19 @@ class BoxChatSession {
         if (e.to !== "laptop" || !id) return;
         const link = this.link;
         void import("./showOnLaptop")
-          .then((m) => m.showOnLaptop(e as unknown as import("./showOnLaptop").ShowSignal, { sync: () => boxSyncNow(this.vault, { pull: true }) }))
+          .then((m) => m.showOnLaptop(e as unknown as import("./showOnLaptop").ShowSignal, { sync: () => boxSyncNow(this.vault, { pull: true }), boxFile: (rel) => fetchBoxFile(link, rel) }))
           .then((ack) => httpPost(link, `/api/v1/show/${encodeURIComponent(id)}/ack`, ack))
           .catch((err) => console.warn("[box-chat] show failed:", err));
+        return;
+      }
+      case "follow": {
+        // Carl asked to work in another thread (the agent's OpenProject, server/projectRoutes.ts): this screen follows.
+        if (typeof e.convId !== "string" || !e.convId) return;
+        const to = e.convId;
+        const title = typeof e.title === "string" && e.title ? e.title : undefined;
+        if (typeof window !== "undefined" && typeof window.dispatchEvent === "function") window.dispatchEvent(new CustomEvent("vc-projects-changed"));
+        if (useStore.getState().voiceMode) void import("./voice-elevenlabs").then((v) => v.voiceFollow(to)).catch(() => {});
+        if (useStore.getState().activeConversationId !== to) void import("./projects").then((m) => m.openThread(to, title)).catch((err) => console.warn("[box-chat] follow failed:", err));
         return;
       }
       case "vault_changed":

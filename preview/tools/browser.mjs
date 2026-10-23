@@ -38,7 +38,8 @@ export async function launch({ width = 1400, height = 900, headless = true, reco
   const tries = [{ channel: "msedge" }, { channel: "chrome" }, { executablePath: browserPath() }, {}];
   for (const t of tries) {
     try {
-      browser = await chromium.launch({ ...t, headless, timeout: 30000 });
+      // Muted always: a preview never plays sound through the laptop's speakers (a voice check would).
+      browser = await chromium.launch({ ...t, headless, timeout: 30000, args: ["--mute-audio"] });
       break;
     } catch {
       /* next */

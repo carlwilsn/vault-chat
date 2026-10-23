@@ -7,24 +7,35 @@
 // the viewer's answer, src/scrollTarget.ts), and acks the box with what
 // actually happened: the spot it landed on, or the viewer's error.
 //
+// A file the vault sync has not brought yet, or brought an older copy of (the
+// signal's `sha` is the box's copy), opens from the box's copy (GET
+// /api/v1/vault/file, the same bytes liveReload shows ahead of the disk while a
+// merge is on its way), and the sync is kicked to catch the disk up behind it.
+// A sync lag is never an error; only a file neither the box nor the disk can
+// give is.
+//
 // With `pane` ("left" | "right", src/paneLayout.ts's names) it goes into that
 // pane of the split screen instead, turning split on when one other file is
 // open (the store's drop-at-edge). Whenever the screen is split afterwards, the
 // ack says which pane holds what, so the agent can describe and rebuild it.
 import { invoke } from "@tauri-apps/api/core";
 import { useStore } from "./store";
-import { isUnreadableAsText } from "./fileKind";
+import { fileKind, isUnreadableAsText } from "./fileKind";
+import { holdBoxCopy } from "./liveReload";
 import { awaitScroll } from "./scrollTarget";
 import { encodeTarget, hasTarget, type ViewTarget } from "./viewTarget";
 import { layoutLine, placeInPane, PANE_SIDES, type PaneSide } from "./paneLayout";
 
-export type ShowSignal = { type: "show"; id: string; to?: string; path?: string; url?: string; target?: ViewTarget; pane?: string };
+/** `sha`: the sha256 (hex) of the box's copy of `path`. */
+export type ShowSignal = { type: "show"; id: string; to?: string; path?: string; url?: string; target?: ViewTarget; pane?: string; sha?: string };
 /** `pane`: the pane it was put in (only when one was asked for — an older app has none). `layout`: the split afterwards. */
 export type ShowAck = { ok: boolean; landed?: string; error?: string; pane?: PaneSide; layout?: string };
 
 export type ShowDeps = {
   /** Bring the box's latest files here now (a file the agent just made may not have synced yet). */
   sync?: () => Promise<void>;
+  /** The box's copy of a vault-relative file (null: the box did not give it). */
+  boxFile?: (rel: string) => Promise<Uint8Array | null>;
   /** Open a web address outside the app. */
   openUrl?: (url: string) => Promise<void>;
   /** How long the viewer has to say where it landed (a PDF loads first). */
@@ -53,6 +64,27 @@ async function exists(path: string): Promise<boolean> {
   }
 }
 
+async function shaOf(path: string): Promise<string | null> {
+  try {
+    const bytes = new Uint8Array(await invoke<number[]>("read_binary_file", { path }));
+    const d = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
+    return Array.from(d, (b) => b.toString(16).padStart(2, "0")).join("");
+  } catch {
+    return null;
+  }
+}
+
+/** The box's copy, when it can be shown ahead of the disk (text, PDFs, images). */
+async function boxCopy(deps: ShowDeps, rel: string, path: string): Promise<Uint8Array | null> {
+  const kind = fileKind(path).kind;
+  if (!deps.boxFile || kind === "video" || kind === "unsupported") return null;
+  try {
+    return await deps.boxFile(rel);
+  } catch {
+    return null;
+  }
+}
+
 /** Do what the signal asks; never throws (the answer is the ack). */
 export async function showOnLaptop(sig: ShowSignal, deps: ShowDeps = {}): Promise<ShowAck> {
   try {
@@ -72,11 +104,22 @@ export async function showOnLaptop(sig: ShowSignal, deps: ShowDeps = {}): Promis
     // On screen already (the main view or a split pane): it is not opened again, only moved.
     const shown = [s.currentFile, ...s.panes.map((p) => p.file)].find((f): f is string => !!f && norm(f) === norm(want));
     const path = shown ?? want;
-    if (!shown && !(await exists(want))) {
-      await deps.sync?.().catch(() => {});
-      if (!(await exists(want))) return { ok: false, error: `${sig.path} is not on the laptop yet (the vault sync has not brought it); nothing was opened` };
+    // Not here yet, or an older copy: the box's copy is shown now and the sync catches the disk up behind it.
+    let ahead: Uint8Array | null = null;
+    if (!shown) {
+      const here = await exists(want);
+      const stale = here && !!sig.sha && (await shaOf(want)) !== sig.sha;
+      if (!here || stale) {
+        ahead = await boxCopy(deps, sig.path, want);
+        if (ahead) void deps.sync?.().catch(() => {});
+        else if (!here) {
+          await deps.sync?.().catch(() => {});
+          if (!(await exists(want))) return { ok: false, error: `${sig.path} could not be fetched from the box and is not on the laptop; nothing was opened` };
+        }
+      }
     }
-    const read = async () => (isUnreadableAsText(path) ? "" : await invoke<string>("read_text_file", { path }));
+    const copy = ahead;
+    const read = async () => (copy ? (holdBoxCopy(path, copy) ?? "") : isUnreadableAsText(path) ? "" : await invoke<string>("read_text_file", { path }));
     let opened = false;
     if (pane) {
       const r = placeInPane(pane, path, shown ? "" : await read());

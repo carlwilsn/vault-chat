@@ -63,7 +63,7 @@ const AGENT_NAME = "vault-chat";
 
 // Box mode: the session's lines are saved on the box as they land (voiceBox.ts
 // voiceTranscriptMirror). Null when voice runs here.
-let transcriptMirror: { push: (m: ChatMessage) => unknown; id?: () => string; done?: () => Promise<unknown> } | null = null;
+let transcriptMirror: { push: (m: ChatMessage) => unknown; id?: () => string; done?: () => Promise<unknown>; follow?: (to: string) => void } | null = null;
 // The live session's chats: its own thread (box mode: the box's id once the
 // first line made it) and the one it started from.
 let voiceChats: { own: () => string | null; from: string | null; local?: string } | null = null;
@@ -370,6 +370,11 @@ export async function startElevenLabsSession(opts?: { recap?: string }): Promise
   // The call's lines go into the attached conversation on the box, in order (the box writes them into its pi session).
   transcriptMirror = voiceTranscriptMirror(box, convId, undefined, sessionId);
   voiceChats = { own: () => convId, from: convId, local: convId };
+  followCall = (to) => {
+    convId = to;
+    transcriptMirror?.follow?.(to);
+    voiceChats = { own: () => convId, from: to, local: to };
+  };
   boxVaultRoot = boxSession.vaultRoot ?? null;
   startViewportWatch();
 
@@ -731,6 +736,7 @@ export function voiceSessionClosed(details?: { reason?: string; message?: string
   updates = null;
   quietGate.reset();
   voiceChats = null;
+  followCall = null;
   activeConversation = null;
   stopViewportWatch();
   // Flip the mic-button source of truth off so it matches
@@ -1331,6 +1337,14 @@ export function announceAtNextPause(line: string): void {
       console.warn("[voice-eleven] announce failed:", e);
     }
   });
+}
+
+/** The live call's move to another thread (set while a box call runs). */
+let followCall: ((convId: string) => void) | null = null;
+/** Carl asked to work in another thread (the agent's OpenProject; the box already sends the call's lines there): this
+ *  client's call shows its lines there too. No live call: nothing. */
+export function voiceFollow(convId: string): void {
+  if (activeConversation && voiceChats?.own() !== convId) followCall?.(convId);
 }
 
 export function isVoiceSessionActive(): boolean {
