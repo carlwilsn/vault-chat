@@ -1443,6 +1443,7 @@ export const MessageBubble = memo(function MessageBubble({
     );
   }
   if (message.voiceAsk) return <VoiceAskRow ask={message.voiceAsk} />;
+  if (message.job) return <JobRow job={message.job} />;
   if (message.voice) return <VoiceLine message={message} cont={voiceCont} />;
   const isUser = message.role === "user";
   return (
@@ -1576,6 +1577,22 @@ function VoiceAskRow({ ask }: { ask: NonNullable<ChatMessage["voiceAsk"]> }) {
           <Markdown source={ask.result || "(nothing came back)"} profile="chat" components={chatComponents} />
         </div>
       </div>
+    </details>
+  );
+}
+
+// A background job that ended: one quiet row like a tool row ("Job finished · board safety copies"), red when
+// it failed; its last output lines when opened. (The agent gets the whole wake: exit code and output.)
+function JobRow({ job }: { job: NonNullable<ChatMessage["job"]> }) {
+  return (
+    <details className="group" data-el="job-end">
+      <summary className={cn("flex items-center gap-1.5 text-[11px] cursor-pointer hover:text-foreground list-none select-none min-w-0", job.failed ? "text-destructive/90" : "text-muted-foreground")} title={job.id}>
+        <ChevronDown className="h-3 w-3 shrink-0 transition-transform group-open:rotate-0 -rotate-90" />
+        <Wrench className="h-3 w-3 shrink-0" />
+        <span className="shrink-0">Job {job.status}</span>
+        <span className="truncate opacity-80">· {job.name}</span>
+      </summary>
+      <pre className="mt-2 pl-4 border-l border-border text-[11px] text-muted-foreground whitespace-pre-wrap break-all font-mono">{job.output || "(no output)"}</pre>
     </details>
   );
 }

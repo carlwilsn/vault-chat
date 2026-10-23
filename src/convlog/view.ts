@@ -30,6 +30,8 @@ export type ViewMessage = {
   /** The items this message shows (in order). */
   items?: string[];
   voice?: boolean;
+  /** A background job that ended (StartJob's wake): one quiet row, its last output lines folded under it. */
+  job?: JobEnd;
   /** A voice Ask (server/voice.ts, a background side request): one collapsed row. */
   voiceAsk?: { request: string; result: string; failed: boolean; act?: boolean };
 };
@@ -73,10 +75,32 @@ export const toolName = (n: string | undefined): string => TOOL_NAMES[n ?? ""] ?
 
 const ENGINE_VIA = new Set(["wake", "nudge", "resume", "job"]);
 
+export type JobEnd = { id: string; name: string; status: string; failed: boolean; output: string };
+
+/** The wake a job's end gives its conversation (server/engine/engine.ts tickJobs): "Job <id> <how>." then its last output. */
+export function jobEndOf(text: string): JobEnd | null {
+  const m = /^Job (\S+) (finished: exit (-?\d+)|was stopped by its time limit|was stopped|ended without an exit code[^\n]*?)\.\s*(?:\n--- last output ---\n([\s\S]*))?$/.exec(text.trim());
+  if (!m) return null;
+  const id = m[1]!;
+  const exit = m[3] !== undefined ? Number(m[3]) : null;
+  const how = m[2]!;
+  const status = exit !== null ? (exit === 0 ? "finished" : `failed (exit ${exit})`) : /time limit/.test(how) ? "timed out" : /^was stopped/.test(how) ? "stopped" : "ended without an exit code";
+  const failed = exit !== null ? exit !== 0 : !/^was stopped$/.test(how);
+  // StartJob's id is its name, slugged, then 8 random characters.
+  const name = id.replace(/-[a-z0-9]{8}$/, "").replace(/[-_]+/g, " ").trim() || id;
+  const out = (m[4] ?? "").replace(/\s+$/, "");
+  const output = out && out !== "(none)" ? out.split("\n").slice(-8).join("\n") : "";
+  return { id, name, status, failed, output };
+}
+
 /** One non-tool item → its message(s). */
 function messagesOfItem(it: Item): ViewMessage[] {
   switch (it.kind) {
     case "user":
+      if (it.via === "job") {
+        const job = jobEndOf(it.text ?? "");
+        if (job) return [{ role: "user", system: true, content: `Job ${job.status} · ${job.name}`, mid: it.id, job }];
+      }
       if (ENGINE_VIA.has(it.via ?? "")) return [{ role: "user", system: true, content: `${it.via === "wake" || it.via === "job" ? "⏰" : "↻"} ${it.text ?? ""}`.trim(), mid: it.id }];
       return [
         {
