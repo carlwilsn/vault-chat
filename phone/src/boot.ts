@@ -1393,7 +1393,7 @@ export function boot(): void {
   function alertMeta(n) {
     if (n.intention || n.icon) return { intention: n.intention || "Update", icon: n.icon || "•", cls: n.cls || "" };
     if (n.kind === "ask") return { intention: "Needs your call", icon: "?", cls: "a" };
-    if (/^blocked|fail|error|diverg|crash|wedge|❌|⚠/i.test(n.title)) return { intention: "Something failed", icon: "!", cls: "r" };
+    if (/^blocked\b|fail|error|diverg|crash|wedge|❌|⚠/i.test(n.title)) return { intention: "Something failed", icon: "!", cls: "r" };
     if (/complete|done|finished/i.test(n.title)) return { intention: "Finished", icon: "✓", cls: "g" };
     if (/stopped|idle|cost|\$/i.test(n.title)) return { intention: "Cost / cleanup", icon: "$", cls: "r" };
     if (/brief|coach|morning|daily|check-?in/i.test(n.title)) return { intention: "Briefing", icon: "≡", cls: "" };

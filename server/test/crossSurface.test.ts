@@ -32,7 +32,7 @@
 // entries) are in test/harness/crosssurface.test.ts.
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { EventEmitter } from "node:events";
-import { mkdirSync, writeFileSync, appendFileSync, readFileSync } from "node:fs";
+import { mkdirSync, writeFileSync, appendFileSync, readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { deflateSync } from "node:zlib";
 import { piOf } from "./fakePi";
@@ -807,8 +807,11 @@ describe("j. Voice is asked for a small HTML edit and hands it to pi (IEMS 469 C
     // A side request of the call's conversation: no session to fork yet, so the agent's own instructions and what was said.
     await until(() => backend.sides.length > before);
     const o = backend.sides.at(-1)!;
-    instructions = o.instr ? readFileSync(o.instr, "utf8") : "";
-    texts = o.text;
+    // Main already has a session (earlier stories): the side request forks it, with that thread's instructions.
+    const forked = o.fork ? backend.threads.find((x) => backend.threadSource(x.threadId)?.file === o.fork) : null;
+    instructions = forked ? forked.instructions : o.instr ? readFileSync(o.instr, "utf8") : "";
+    // What it sees: its prompt, and (forked) the conversation's session it continues, where his spoken line already is.
+    texts = o.text + (o.fork ? JSON.stringify(convs.pictureOf(vault, String(line.body.convId))?.items ?? []) : "");
     sideOf(`side${backend.sides.length}`).resolve({ text: "Done: the figure's labels are larger.", error: null });
     await voice.voiceAsksSettled();
   });
@@ -816,9 +819,8 @@ describe("j. Voice is asked for a small HTML edit and hands it to pi (IEMS 469 C
     expect(texts).toContain("Can you make the section 7 figure in course-notes.html clearer?");
     expect(texts).toContain("Make the section 7 figure in course-notes.html clearer.");
   });
-  // Voice with no chat open should continue Main (one main conversation); server/voice.ts attached() still makes a
-  // conversation of its own (one line there: no convId → "main"). Voice's own file: the single-brain voice's to close.
-  hole("j", "voice, no chat open", "the call's conversation is Main", async () => {
+  // Voice with no chat open continues Main (one main conversation): server/voice.ts attached(), no convId → "main".
+  pass("j", "voice, no chat open", "the call's conversation is Main", async () => {
     expect(convId).toBe("main");
   });
   pass("j", "voice → pi", "no tool creates or assigns a project: the hand-off is an ordinary message, no project made", async () => {

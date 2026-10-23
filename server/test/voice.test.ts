@@ -211,13 +211,43 @@ describe("voice's one tool that acts: Ask, a request to the conversation's agent
     // One collapsed row: what voice asked and what came back.
     const rows = items().filter((x) => x.kind === "tool" && x.name === "VoiceAsk");
     expect(rows.length).toBe(1);
-    expect(rows[0]!.args).toEqual({ request: "What does lemma 2 say?" });
+    expect(rows[0]!.args).toMatchObject({ request: "What does lemma 2 say?" });
+    expect(typeof rows[0]!.args.ms).toBe("number");
     expect(rows[0]!.result).toBe("Lemma 2: a contraction on a complete metric space has exactly one fixed point.");
     const { messagesOf } = await import("../../src/convlog/view");
     const msgs = messagesOf(convs.pictureOf(vault, chat)!);
-    expect(msgs.filter((m) => m.voiceAsk).map((m) => m.voiceAsk)).toEqual([{ request: "What does lemma 2 say?", result: "Lemma 2: a contraction on a complete metric space has exactly one fixed point.", failed: false }]);
+    expect(msgs.filter((m) => m.voiceAsk).map((m) => ({ ...m.voiceAsk, ms: undefined }))).toEqual([{ request: "What does lemma 2 say?", result: "Lemma 2: a contraction on a complete metric space has exactly one fixed point.", failed: false, ms: undefined }]);
     expect(msgs.some((m) => m.role === "user" && m.content.includes("lemma 2 say"))).toBe(false);
     expect(msgs.some((m) => m.toolCalls?.some((t) => t.name === "VoiceAsk"))).toBe(false);
+  });
+
+  it("an Ask shows at once as working (its row, its start), says one named line for real work, and a status question gets its status — never a second job (Carl, 10-22)", async () => {
+    const chat = await typed("Checkpoint time.", "Ready.");
+    const items = () => convs.pictureOf(vault, chat)!.items.filter((x) => x.kind === "tool" && x.name === "VoiceAsk");
+    const r = await voice.voiceTool(deps, { name: "Ask", args: { request: "Make a board checkpoint and a sectioned PDF.", act: true }, convId: chat, device: "laptop" });
+    // Real work: one short line naming it, now; a lookup gets none.
+    expect(r.result).toMatch(/Now say ONE short plain line naming the work/);
+    await new Promise((res) => setTimeout(res, 100));
+    // The row is there while it works, with when it started.
+    expect(items()).toHaveLength(1);
+    expect(items()[0]!.status).toBe("pending");
+    const { messagesOf } = await import("../../src/convlog/view");
+    const ask = messagesOf(convs.pictureOf(vault, chat)!).find((m) => m.voiceAsk)!.voiceAsk!;
+    expect(ask).toMatchObject({ running: true, act: true, request: "Make a board checkpoint and a sectioned PDF." });
+    expect(typeof ask.startedAt).toBe("number");
+    // "Are you working on that?": the running request's status, nothing new started.
+    const before = sides.length;
+    const s = await voice.voiceTool(deps, { name: "Ask", args: { request: "Are you working on that?" }, convId: chat, device: "laptop" });
+    expect(s.result).toMatch(/^Still working on it: "Make a board checkpoint and a sectioned PDF\.", started \d+ seconds ago, nothing back yet/);
+    expect(sides.length).toBe(before);
+    expect(voice.isStatusQuestion("is it done yet?")).toBe(true);
+    expect(voice.isStatusQuestion("what's the derivative of x squared?")).toBe(false);
+    // The answer lands in the same row (one row, in place).
+    lastSide().answer("Checkpoint saved and the PDF is in your inbox.");
+    await voice.voiceAsksSettled();
+    expect(items()).toHaveLength(1);
+    expect(items()[0]!.status).toBe("done");
+    expect(items()[0]!.result).toBe("Checkpoint saved and the PDF is in your inbox.");
   });
 
   it("the voice is told every Ask has the full tools (it never refuses before asking); act only orders a change after the running work", async () => {
@@ -458,13 +488,13 @@ describe("POST /api/v1/voice/transcript: every line goes into the attached conve
     expect((await convs.readConv(vault, chat))?.source).not.toBe("voice");
   });
 
-  it("with no chat (or a new one the laptop named), the first line makes the conversation, under that id", async () => {
+  it("with no chat open the call is Main's (never a new chat per call); a new chat the laptop named is made under that id", async () => {
     const a = await voice.voiceTranscript(deps, { convId: "local-new-chat-1", role: "user", text: "What does the writeup say?" });
     expect(a.body.convId).toBe("local-new-chat-1");
     const b = await voice.voiceTranscript(deps, { role: "user", text: "a call with nothing open" });
-    const c = await convs.readConv(vault, String(b.body.convId));
-    expect(c?.source).toBe("voice");
-    expect(c?.title).toBe("a call with nothing open");
+    expect(b.body.convId).toBe("main");
+    const c = await convs.readConv(vault, "main");
+    expect(c?.messages.some((m: any) => m.content === "a call with nothing open")).toBe(true);
     // The end of a call where nothing was said makes no conversation.
     expect((await voice.voiceTranscript(deps, { role: "assistant", text: "Voice session ended.", system: true, ended: true })).body.convId).toBeNull();
     expect((await voice.voiceTranscript(deps, { role: "user", text: "  " })).status).toBe(400);
@@ -481,8 +511,10 @@ describe("POST /api/v1/voice/transcript: every line goes into the attached conve
 
   it("per vault: a vault's lines land in its own conversations, never the other's", async () => {
     const line = await voice.voiceTranscript(deps2, { role: "user", text: "plan for the lab?" });
-    expect((await convs.readConv(vault2, String(line.body.convId)))?.source).toBe("voice");
-    expect(await convs.readConv(vault, String(line.body.convId))).toBeNull();
+    expect(line.body.convId).toBe("main");
+    expect((await convs.readConv(vault2, "main"))?.messages.length).toBeGreaterThan(0);
+    // Each vault has its own Main: this line is in vault2's, never in vault's.
+    expect(((await convs.readConv(vault, "main"))?.messages ?? []).some((m: any) => m.content === "plan for the lab?")).toBe(false);
   });
 
   it("a conversation with no pi thread yet: an Ask's side request gets its voice lines, and so does the agent's first turn", async () => {

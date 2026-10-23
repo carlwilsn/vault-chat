@@ -19,6 +19,8 @@ const LEVEL_DECAY = 0.85;
 export function VoiceCockpit() {
   const voiceMode = useStore((s) => s.voiceMode);
   const voiceConnecting = useStore((s) => s.voiceConnecting);
+  // With the chat open its rows say what is running; closed, a tiny line beside the waves does.
+  const chatOpen = useStore((s) => !s.rightCollapsed || s.chatFullscreen || s.popoutOpen);
 
   if (!voiceMode) return null;
 
@@ -37,6 +39,35 @@ export function VoiceCockpit() {
       ) : (
         <VoiceBars />
       )}
+      {!voiceConnecting && !chatOpen && <WaitingOn />}
+    </div>
+  );
+}
+
+/** Work the agent is still doing for something said on the call (its Ask rows still working), as a very small line beside
+ *  the waves — only while it runs, only with the chat closed. Elapsed time only (no made-up progress). */
+function WaitingOn() {
+  // The open conversation's messages (a stable reference; the running ones are picked here).
+  const messages = useStore((s) => s.messages);
+  const running = messages.filter((m) => m.voiceAsk?.running && m.voiceAsk.startedAt);
+  const [, tick] = useState(0);
+  useEffect(() => {
+    if (!running.length) return;
+    const t = setInterval(() => tick((n) => n + 1), 1000);
+    return () => clearInterval(t);
+  }, [running.length]);
+  if (!running.length) return null;
+  const since = (at: number) => {
+    const s = Math.max(0, Math.floor((Date.now() - at) / 1000));
+    return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+  };
+  return (
+    <div data-el="voice-waiting" className="ml-2 flex flex-col leading-[11px] text-[10px] text-muted-foreground whitespace-nowrap">
+      {running.slice(-2).map((m) => (
+        <span key={m.mid ?? m.voiceAsk!.request} title={m.voiceAsk!.request}>
+          {m.voiceAsk!.request.slice(0, 28)} · {since(m.voiceAsk!.startedAt!)}
+        </span>
+      ))}
     </div>
   );
 }

@@ -228,7 +228,44 @@ const VFS_MATH: Record<string, string> = {
   [VFS.a3]: "That's a local maximum near $\\theta_1 = 2$; the descent steers around it.",
 };
 
+/** Work the agent is doing for something said on a call (Carl, 2026-10-22: one agent): its row in the chat says so
+ *  at once (spinner, the request, the time it has run); with the chat closed, a tiny line beside the titlebar waves. */
+const askWorkingStart: Step = {
+  run: async () => {
+    phase = "user";
+    const { useStore } = await import(/* @vite-ignore */ "/src/store.ts");
+    const v: any = await import(/* @vite-ignore */ "/src/voice-elevenlabs.ts");
+    useStore.getState().newConversation();
+    v.adoptVoiceSessionForPreview(scriptedConversation());
+    // An earlier one, done: the agent's own work (the tools it ran, how long), then its spoken reply.
+    useStore.getState().appendMessage({ role: "user", content: "What does lemma 2 say?" });
+    useStore.getState().appendMessage({
+      role: "assistant",
+      content: "",
+      voiceAsk: { request: "What does lemma 2 say?", result: "Lemma 2: a contraction on a complete metric space has exactly one fixed point.", failed: false, tools: ["read", "PdfRead"], ms: 6_000 },
+    } as any);
+    useStore.getState().appendMessage({ role: "assistant", content: "A contraction on a complete metric space has exactly one fixed point." });
+    useStore.getState().appendMessage({ role: "user", content: "Make a board checkpoint and a sectioned PDF of this lecture." });
+    useStore.getState().appendMessage({
+      role: "assistant",
+      content: "",
+      voiceAsk: { request: "Make a board checkpoint and a sectioned PDF of this lecture.", result: "", failed: false, act: true, running: true, startedAt: Date.now() - 12_000 },
+    } as any);
+  },
+};
+
 export const voiceScenarios: Scenario[] = [
+  {
+    id: "voice-ask-working",
+    title: "Said on a call: the agent's work shows at once, as its own",
+    group: "Voice · Box",
+    notes:
+      "Something Carl said on a call that takes work shows in the chat the moment it starts, as the agent working (a spinner, his words, the time it has run), and becomes the agent's own work row (the tools it ran, how long) when it lands, with its spoken reply after — never a \"voice asked the agent\" row. With the chat closed, a tiny \"request · 0:12\" line sits beside the titlebar waves while it runs.",
+    clock: "2026-10-22T20:00:00",
+    build: (ctx) => P3.build(ctx),
+    open: [{ chat: true }, { sleep: 400 }, askWorkingStart, { sleep: 1500 }],
+    surfaces: ["desktop"],
+  },
   {
     id: "voice-fullscreen",
     title: "Voice in fullscreen chat — waves at the bottom, math rendered, it sees the image",

@@ -117,8 +117,8 @@ export type ChatMessage = {
   display?: string;
   // A line said on a voice call (Carl's or the voice's): shown as a compact voice turn, not a bubble.
   voice?: boolean;
-  // Voice asked the agent something in the background (server/voice.ts Ask): one collapsed row, never a bubble.
-  voiceAsk?: { request: string; result: string; failed: boolean; act?: boolean };
+  // Work done for something Carl said on a call (server/voice.ts Ask), shown as the agent's own: one collapsed row.
+  voiceAsk?: { request: string; result: string; failed: boolean; act?: boolean; running?: boolean; startedAt?: number; tools?: string[]; ms?: number };
   /** A background job that ended (src/convlog/view.ts jobEndOf): one quiet row. */
   job?: import("./convlog/view").JobEnd;
   // [ask redesign] A fresh option set the ask agent proposed mid-conversation

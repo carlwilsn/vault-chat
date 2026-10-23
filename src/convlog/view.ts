@@ -139,7 +139,16 @@ function voiceAskMessage(it: Item): ViewMessage {
     role: "assistant",
     content: "",
     mid: it.id,
-    voiceAsk: { request: String(a?.request ?? ""), result: result.replace(/^Error:\s*/, ""), failed: it.status === "error" || /^error/i.test(result), ...(a?.act ? { act: true } : {}) },
+    voiceAsk: {
+      request: String(a?.request ?? ""),
+      result: result.replace(/^Error:\s*/, ""),
+      failed: it.status === "error" || /^error/i.test(result),
+      ...(a?.act ? { act: true } : {}),
+      ...(Array.isArray(a?.tools) ? { tools: (a.tools as unknown[]).map(String) } : {}),
+      ...(typeof a?.ms === "number" ? { ms: a.ms } : {}),
+      // Still working: its row shows that (a spinner, the time it has run) until the result lands in place.
+      ...(it.status === "pending" ? { running: true, startedAt: typeof a?.startedAt === "number" ? a.startedAt : it.at } : {}),
+    },
   };
 }
 

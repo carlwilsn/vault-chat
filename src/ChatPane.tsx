@@ -2,7 +2,7 @@ import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState, type
 import { Markdown, StreamingMarkdown } from "./Markdown";
 import { localPathFromUrl } from "./mdPipeline";
 import { planDone, planIndex } from "./planPlace";
-import { Plus, Square, ArrowUp, ChevronDown, ChevronUp, Wrench, X, MessageSquare, Mic, Paperclip, Scan, AtSign, AlertCircle, Info, Eraser } from "lucide-react";
+import { Plus, Square, ArrowUp, ChevronDown, ChevronUp, Wrench, X, MessageSquare, Mic, Paperclip, Scan, AtSign, AlertCircle, Info, Eraser, Loader2 } from "lucide-react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { usePending, type PendingKind } from "./pendingInput";
 import { voiceImageMime } from "./voiceImages";
@@ -1557,21 +1557,34 @@ function VoiceLine({ message, cont }: { message: ChatMessage; cont: boolean }) {
   );
 }
 
-// Voice asked the agent in the background (server/voice.ts Ask): one row, collapsed, styled like a tool row —
-// what voice asked and what came back, when opened. Never a bubble of Carl's.
+// The agent's work on something Carl said on a call (server/voice.ts Ask), shown as its own — one agent (Carl,
+// 2026-10-22: "we are all one agent"): working (a spinner, the time it has run), then the tools it ran and what
+// came back, collapsed like a tool row; the spoken reply is the line after it. Never a "voice asked" row.
 function VoiceAskRow({ ask }: { ask: NonNullable<ChatMessage["voiceAsk"]> }) {
   const line = ask.result.replace(/\s+/g, " ").trim();
+  // Handed over and still working: said at once (Carl, 2026-10-22: no feedback until the result read as nothing
+  // happening) — a spinner, what was asked, and how long it has run; the result replaces it in place.
+  if (ask.running) {
+    return (
+      <div data-el="voice-ask" data-running="1" className="flex items-center gap-1.5 text-[11px] text-muted-foreground min-w-0">
+        <Loader2 className="h-3 w-3 shrink-0 animate-spin" />
+        <span className="shrink-0">Working</span>
+        <span className="truncate opacity-80">· {ask.request}</span>
+        {ask.startedAt ? <Elapsed since={ask.startedAt} /> : null}
+      </div>
+    );
+  }
   return (
     <details className="group" data-el="voice-ask">
       <summary className={cn("flex items-center gap-1.5 text-[11px] cursor-pointer hover:text-foreground list-none select-none min-w-0", ask.failed ? "text-destructive/90" : "text-muted-foreground")}>
         <ChevronDown className="h-3 w-3 shrink-0 transition-transform group-open:rotate-0 -rotate-90" />
-        <Mic className="h-3 w-3 shrink-0" />
-        <span className="shrink-0">{ask.act ? "Voice asked the agent to do it" : "Voice asked the agent"}</span>
-        <span className="truncate opacity-80">· {ask.failed ? `failed: ${line}` : line || "no answer"}</span>
+        <Wrench className="h-3 w-3 shrink-0" />
+        <span className="shrink-0">{ask.failed ? "Couldn't finish" : `Worked${ask.ms ? ` ${workedFor(ask.ms)}` : ""}`}</span>
+        <span className="truncate opacity-80">· {ask.failed ? line : ask.tools?.length ? ask.tools.join(", ") : ask.request}</span>
       </summary>
       <div className="mt-2 space-y-1.5 pl-4 border-l border-border text-[11.5px]">
         <div className="text-muted-foreground">
-          <span className="font-medium">Asked:</span> {ask.request}
+          <span className="font-medium">You said:</span> {ask.request}
         </div>
         <div className="prose-chat text-foreground/90">
           <Markdown source={ask.result || "(nothing came back)"} profile="chat" components={chatComponents} />
@@ -1595,6 +1608,20 @@ function JobRow({ job }: { job: NonNullable<ChatMessage["job"]> }) {
       <pre className="mt-2 pl-4 border-l border-border text-[11px] text-muted-foreground whitespace-pre-wrap break-all font-mono">{job.output || "(no output)"}</pre>
     </details>
   );
+}
+
+/** "for 34 s", "for 2 min". */
+const workedFor = (ms: number) => (ms < 90_000 ? `for ${Math.max(1, Math.round(ms / 1000))} s` : `for ${Math.round(ms / 60_000)} min`);
+
+/** "0:12": how long something has run, ticking each second. */
+function Elapsed({ since }: { since: number }) {
+  const [, tick] = useState(0);
+  useEffect(() => {
+    const t = setInterval(() => tick((n) => n + 1), 1000);
+    return () => clearInterval(t);
+  }, []);
+  const s = Math.max(0, Math.floor((Date.now() - since) / 1000));
+  return <span className="shrink-0 tabular-nums opacity-70">{`${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`}</span>;
 }
 
 // Where the earlier conversation was summarized: the quiet system-line divider,

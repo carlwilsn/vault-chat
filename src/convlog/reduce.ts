@@ -214,7 +214,7 @@ function onEntry(d: Draft, r: Extract<LogRecord, { type: "entry" }>): void {
     if (data.kind === "tool") {
       // A tool call voice made (its result with it): a tool row, as the text agent's are.
       const result = String(data.result ?? "");
-      place(d, [{ id: r.clientId ?? data.clientId ?? e.id, kind: "tool", status: data.isError || /^error/i.test(result) ? "error" : "done", name: String(data.name ?? "tool"), args: data.args ?? {}, result: cap(result), ...(data.via ? { via: String(data.via) } : {}), at: r.at }]);
+      place(d, [{ id: r.clientId ?? data.clientId ?? e.id, kind: "tool", status: data.status === "running" ? "pending" : data.isError || /^error\b/i.test(result) ? "error" : "done", name: String(data.name ?? "tool"), args: data.args ?? {}, result: cap(result), ...(data.via ? { via: String(data.via) } : {}), at: r.at }]);
       return;
     }
     if (data.kind === "divider") place(d, [{ id: r.clientId ?? data.clientId ?? e.id, kind: "compaction", status: "done", text: String(data.text ?? ""), ...(data.rollover ? { rollover: true } : {}), at: r.at }]);

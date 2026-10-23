@@ -2376,7 +2376,7 @@ function formatToolMarker(name: string, args: any): string {
       return "Looked at the screen";
     case "Ask": {
       const req = String(args.request ?? "").trim().replace(/\s+/g, " ");
-      return `Asked the agent: "${req.length > 70 ? req.slice(0, 67) + "…" : req}"`;
+      return `Working on: "${req.length > 70 ? req.slice(0, 67) + "…" : req}"`;
     }
     default:
       return name;

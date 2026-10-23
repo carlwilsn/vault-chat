@@ -268,7 +268,7 @@ async function main(): Promise<void> {
             for (;;) {
               const st = await (await engineOf(v)).sidePoll(id, Number.MAX_SAFE_INTEGER, 25_000);
               if (!st) return { text: "", error: "the side request is gone" };
-              if (st.done) return { text: st.text, error: st.error };
+              if (st.done) return { text: st.text, error: st.error, file: st.file };
             }
           },
         },
