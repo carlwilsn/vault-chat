@@ -298,10 +298,14 @@ describe("speed: one warm browser, parts checked in parallel, a make streamed pa
     const pid = warmBrowserPid()!;
     expect(pid).toBeGreaterThan(0);
     killProcessTree(pid); // the browser and its helpers (taskkill /T on Windows; already gone is fine)
-    for (let i = 0; i < 50 && warmBrowserPid() === pid; i++) await new Promise((r) => setTimeout(r, 100));
+    // (taskkill /T is not waited for, and takes seconds on Windows: wait for the browser to be gone.)
+    for (let i = 0; i < 300 && warmBrowserPid() === pid; i++) await new Promise((r) => setTimeout(r, 100));
+    expect(warmBrowserPid()).not.toBe(pid);
     expect((await headless(page, { w: 200, h: 100 })).verdict).toBe("ok");
     expect(warmBrowserPid()).not.toBe(pid);
-    expect(headlessStats.launches - before.launches).toBe(2);
+    // Exactly one browser started again, at the first try: a stalled check that killed a healthy browser and launched
+    // another (the old flake) shows as a retry.
+    expect({ launches: headlessStats.launches - before.launches, retries: headlessStats.retries - before.retries, warmFailures: headlessStats.warmFailures - before.warmFailures, oneShot: headlessStats.oneShotChecks - before.oneShotChecks }).toEqual({ launches: 2, retries: 0, warmFailures: 0, oneShot: 0 });
   });
 
   it("parts are checked in parallel: landed and refused in send order", async () => {

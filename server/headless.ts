@@ -13,6 +13,7 @@
 // msedge on PATH, the Nix store, or the usual Windows and macOS locations.
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -93,13 +94,15 @@ function launch(bin: string, profile: string, w: number, h: number): ChildProces
 /** The DevTools port (and the browser's websocket path) a browser started with `--remote-debugging-port=0` wrote into its profile. */
 async function devtoolsPort(profile: string, deadline: number): Promise<{ port: number; path: string }> {
   for (;;) {
-    if (Date.now() > deadline) throw new Error("the headless browser did not start");
+    // Looked at before the deadline is: a wait that overran (this process was busy) still sees a port
+    // the browser wrote in time, instead of killing a browser that started fine and launching another.
     try {
       const [p, path] = readFileSync(join(profile, "DevToolsActivePort"), "utf8").split(/\r?\n/);
       if (Number(p)) return { port: Number(p), path: path ?? "" };
     } catch {
       /* not yet */
     }
+    if (Date.now() > deadline) throw new Error("the headless browser did not start");
     await sleep(100);
   }
 }
@@ -217,13 +220,18 @@ async function runPage(page: Page, file: string, o: HeadlessOpts): Promise<Headl
 type Warm = { proc: ChildProcess; pid: number | null; conn: Conn; dir: string; active: number; idle: ReturnType<typeof setTimeout> | null };
 
 /**
- * Kill a process and everything it started, now: `taskkill /F /T` on Windows (a browser is a tree of processes, and
- * a signal reaches only the one), SIGKILL elsewhere. A process already gone (ESRCH, taskkill's "not found") is fine.
+ * Kill a process and everything it started: `taskkill /F /T` on Windows (a browser is a tree of processes, and a
+ * signal reaches only the one), SIGKILL elsewhere. A process already gone (ESRCH, taskkill's "not found") is fine.
+ * Not waited for: taskkill /T takes seconds on Windows (7 s measured under the server tests), and waiting on it
+ * stalled this whole process — a new browser's DevTools port then went unread past its deadline, and a browser
+ * that had started fine was killed and launched again.
  */
 export function killProcessTree(pid: number | null | undefined): void {
   if (!pid || pid <= 0) return;
   if (process.platform === "win32") {
-    spawnSync("taskkill", ["/F", "/T", "/PID", String(pid)], { stdio: "ignore", windowsHide: true });
+    const k = spawn("taskkill", ["/F", "/T", "/PID", String(pid)], { stdio: "ignore", windowsHide: true });
+    k.on("error", () => {});
+    k.unref();
     return;
   }
   try {
@@ -231,6 +239,13 @@ export function killProcessTree(pid: number | null | undefined): void {
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code !== "ESRCH") throw e;
   }
+}
+
+/** The same, waited for: only where nothing runs afterwards (this process exiting). */
+function killProcessTreeSync(pid: number | null | undefined): void {
+  if (!pid || pid <= 0) return;
+  if (process.platform === "win32") spawnSync("taskkill", ["/F", "/T", "/PID", String(pid)], { stdio: "ignore", windowsHide: true });
+  else killProcessTree(pid);
 }
 let warmP: Promise<Warm> | null = null;
 let warmNow: Warm | null = null;
@@ -240,7 +255,8 @@ const WIDGET_W = 640, WIDGET_H = 480;
 /** How long the warm browser outlives its last check (ms). */
 const WARM_IDLE_MS = Number(process.env.VC_HEADLESS_IDLE_MS) || 120_000;
 /** Launches and checks since this process started (the tests read them). */
-export const headlessStats = { launches: 0, warmChecks: 0, oneShotChecks: 0, warmFailures: 0 };
+/** `retries`: second launches after a first start that never opened its DevTools port (counted in `launches` too). */
+export const headlessStats = { launches: 0, retries: 0, warmChecks: 0, oneShotChecks: 0, warmFailures: 0 };
 
 function killWarm(w: Warm): void {
   if (w.idle) clearTimeout(w.idle);
@@ -264,11 +280,8 @@ function killWarm(w: Warm): void {
         /* gone */
       }
     }
-    try {
-      rmSync(w.dir, { recursive: true, force: true });
-    } catch {
-      /* the OS cleans tmp */
-    }
+    // Not rmSync: a browser profile is hundreds of files, and this process serves requests meanwhile.
+    void rm(w.dir, { recursive: true, force: true }).catch(() => {});
   }, 300).unref?.();
 }
 
@@ -286,6 +299,7 @@ async function startWarm(bin: string): Promise<Warm> {
     } catch {
       proc.kill("SIGKILL");
       headlessStats.launches++;
+      headlessStats.retries++;
       proc = launch(bin, join(dir, "profile2"), WIDGET_W, WIDGET_H);
       found = await devtoolsPort(join(dir, "profile2"), Date.now() + 15_000);
     }
@@ -313,7 +327,7 @@ async function startWarm(bin: string): Promise<Warm> {
       process.on("exit", () => {
         try {
           warmNow?.proc.kill("SIGKILL");
-          if (warmNow?.pid && warmNow.pid !== warmNow.proc.pid) killProcessTree(warmNow.pid);
+          if (warmNow?.pid && warmNow.pid !== warmNow.proc.pid) killProcessTreeSync(warmNow.pid);
         } catch {
           /* gone */
         }
@@ -439,6 +453,7 @@ async function oneShot(bin: string, html: string, o: HeadlessOpts): Promise<Head
     } catch {
       proc.kill("SIGKILL");
       headlessStats.launches++;
+      headlessStats.retries++;
       proc = launch(bin, join(dir, "profile2"), o.w, o.h);
       cdp = await connectPage(join(dir, "profile2"), deadline);
     }

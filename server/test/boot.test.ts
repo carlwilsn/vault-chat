@@ -214,7 +214,8 @@ describe("boot + phone routes", () => {
       expect(srv.logs()).toMatch(/\[push\] held trigger=laptop sync why=failed "Needs you: sync conflict in school2" — Carl is looking \(laptop\)/);
       expect(srv.logs()).toMatch(/\[push\] dropped trigger=self-update why=failed "Server update failed" — nothing for Carl to do/);
       // The 400s: the dead subscription refused that push and two more; the third refusal removes it.
-      expect(subs()).toContainEqual([dead.subscription.endpoint, 1]);
+      // (The held push goes to both phones in turn: the good one answers first, so wait for the refusal to be written.)
+      await waitFor(async () => subs().some(([e, n]) => e === dead.subscription.endpoint && n === 1), 10_000);
       for (const n of [2, 3]) expect((await alert({ title: `Needs you: test ${n}`, body: "x", tag: `t${n}` })).sent).toBe(1);
       expect(subs()).toEqual([[push.subscription.endpoint, 0]]);
       expect(srv.logs()).toMatch(/answered 400: \{"reason":"BadJwtToken"\}/);

@@ -725,6 +725,8 @@ export function boot(): void {
     return div;
   }
   const atBottom = () => msgsEl.scrollHeight - msgsEl.scrollTop - msgsEl.clientHeight < 80;
+  // `force`: scroll to the end. A render measures "was he at the bottom" BEFORE it appends and
+  // passes that: measured after, a reply landing in one chunk taller than 80 px never followed.
   const scrollDown = (force) => { if (force || atBottom()) msgsEl.scrollTop = msgsEl.scrollHeight; };
 
   let streamEl = null, runlineEl = null, _shownTool = null;
@@ -782,11 +784,12 @@ export function boot(): void {
     }
   }
   function renderStream() {
+    const stick = atBottom();
     if (!streamText) { if (streamEl) { streamEl.remove(); streamEl = null; } renderRunline(); return; }
     if (!streamEl) { streamEl = document.createElement("div"); streamEl.className = "amsg stream"; msgsEl.appendChild(streamEl); }
     streamEl.innerHTML = '<div class="md">' + md(streamText, true) + '</div>';
     typeset(streamEl);
-    renderRunline(); scrollDown(false);
+    renderRunline(); scrollDown(stick);
   }
   function clearThreadUi() { running = false; stopping = false; streamText = ""; streamTool = ""; streamEl = null; runlineEl = null; msgsEl.innerHTML = ""; syncSendBtn(); }
   // A rotating greeting, Claude-style (note 25b7b572) — the same small-bold
@@ -858,6 +861,7 @@ export function boot(): void {
   /** The thread on screen = the fold: each message's node kept while its message is the same object, put in the log's order. */
   function renderThread() {
     if (!convId) return;
+    const stick = atBottom();
     // Clear pressed here: blank until the box's own `cleared` (this id) is in the fold, which is blank itself.
     const v = pic && picView ? picView(pic) : null;
     const have = new Set([...(pic ? shown(pic) : []).map((x) => x.id), ...(pic ? pendingOf(pic) : []).map((x) => x.id)]);
@@ -909,7 +913,7 @@ export function boot(): void {
       convSource = m.source || convSource;
       convMeta = { project: m.project, state: m.state, nextWakeAt: m.nextWakeAt, costUsd: m.costUsd, verdict: m.verdict, todos: v ? v.todos : undefined, subagents: m.subagents || [] };
     }
-    renderStream(); renderRunline(); renderExtras(); renderOngoing(); syncArchived(); setHeader(); scrollDown(false);
+    renderStream(); renderRunline(); renderExtras(); renderOngoing(); syncArchived(); setHeader(); scrollDown(stick);
   }
   let renderQueued = false;
   function scheduleRender() {
