@@ -26,7 +26,11 @@
 //! - GitHub backup: when the vault has a remote named `github`, a successful
 //!   cycle starts a push of `master` and the fetched box branch (as `box`)
 //!   there in the background, after the box push, at most every 10 minutes and
-//!   only when GitHub is behind. A failure is a warning, never a gate.
+//!   only when GitHub is behind. A failure is a warning, never a gate. A
+//!   backlog over 32 MB (or one whose push is cut off) goes up a few commits
+//!   at a time through a scratch branch, so no upload is big enough for the
+//!   connection to drop it; the status says what went wrong in one word
+//!   (`github_problem`) for the app to tell in plain words.
 //!
 //! Speed (every git process costs ~0.15–0.2 s on Windows): the cycle reads the
 //! repo's config once, the working tree once (`status --porcelain=v2`), the
@@ -419,6 +423,15 @@ pub struct BoxSyncReport {
     pub github_warning: Option<String>,
     /// ms since the epoch of the last successful GitHub backup (this session).
     pub github_pushed_at: Option<u64>,
+    /// What went wrong with the GitHub backup, in one word, for the plain-words status:
+    /// "too_big" (the upload was cut off), "offline", "auth", "rejected" or "other".
+    pub github_problem: Option<String>,
+    /// Commits GitHub did not have at the last attempt.
+    pub github_pending: Option<u32>,
+    /// A backup is uploading now.
+    pub github_uploading: bool,
+    /// ms since the epoch of the next attempt, while one is failing.
+    pub github_next_try_at: Option<u64>,
 }
 
 fn now_ms() -> u64 {
@@ -1239,69 +1252,331 @@ fn changes_waiting(vault: &str) -> u32 {
         .unwrap_or(0)
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 struct GithubState {
     attempted: Option<Instant>,
     pushed_at: Option<u64>,
     warning: Option<String>,
+    problem: Option<&'static str>,
+    pending: Option<u32>,
     running: bool,
+    /// Bytes (uncompressed, of the files the commits add) one upload may carry: halved
+    /// when an upload is cut off, back up after a backup that went through.
+    step_budget: u64,
+}
+
+impl Default for GithubState {
+    fn default() -> Self {
+        GithubState {
+            attempted: None,
+            pushed_at: None,
+            warning: None,
+            problem: None,
+            pending: None,
+            running: false,
+            step_budget: GITHUB_STEP_BYTES,
+        }
+    }
 }
 
 static GITHUB_LAST: Mutex<Option<HashMap<String, GithubState>>> = Mutex::new(None);
+
+/// One upload to GitHub carries at most about this much (the files its commits add,
+/// uncompressed: a board's text deltas to far less, a binary does not). One push of
+/// 129 commits (212 MB packed, most of it 121 .tar.gz backups) was cut off by the
+/// connection every time ("RPC failed; curl 55 … Connection was aborted").
+pub const GITHUB_STEP_BYTES: u64 = 32 * 1024 * 1024;
+/// The branch the steps go to on GitHub (deleted once master and box are up).
+const GITHUB_UPLOAD_BRANCH: &str = "vault-chat-upload";
+/// An upload step may take this long (it runs off the sync's path).
+const GITHUB_STEP_TIMEOUT_SECS: u64 = 600;
+
+/// What a failed push to GitHub means, for the plain-words status.
+pub fn github_problem(stderr: &str) -> &'static str {
+    let e = stderr.to_ascii_lowercase();
+    let has = |xs: &[&str]| xs.iter().any(|x| e.contains(x));
+    if has(&["could not resolve host", "failed to connect", "couldn't connect", "network is unreachable", "no route to host", "connection refused"]) {
+        "offline"
+    } else if has(&["authentication failed", "could not read username", "could not read password", "permission denied", "the requested url returned error: 403", "repository not found"]) {
+        "auth"
+    } else if has(&["[rejected]", "non-fast-forward", "fetch first"]) {
+        "rejected"
+    } else if has(&[
+        "rpc failed",
+        "remote end hung up",
+        "send failure",
+        "connection was aborted",
+        "connection was reset",
+        "connection reset",
+        "early eof",
+        "pack exceeds maximum allowed size",
+        "unpacker error",
+        "unpack failed",
+        "returned error: 413",
+        "returned error: 500",
+        "returned error: 502",
+        "returned error: 503",
+        "returned error: 504",
+        "git timed out after",
+        "timed out",
+    ]) {
+        "too_big"
+    } else {
+        "other"
+    }
+}
+
+/// Run git with `input` on stdin (local, read-only plumbing: no network, no token).
+fn git_with_input(vault: &str, args: &[&str], input: &str) -> Result<String, String> {
+    use std::io::Write;
+    #[cfg(windows)]
+    let mut cmd = {
+        use std::os::windows::process::CommandExt;
+        let mut c = std::process::Command::new("git");
+        c.creation_flags(0x08000000);
+        c
+    };
+    #[cfg(not(windows))]
+    let mut cmd = std::process::Command::new("git");
+    cmd.current_dir(vault)
+        .args(args)
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let mut child = cmd.spawn().map_err(|e| e.to_string())?;
+    let mut stdin = child.stdin.take().ok_or("no stdin")?;
+    let body = input.to_string();
+    // Write on a thread: git answers while it reads, and a full stdout pipe would block both.
+    let writer = std::thread::spawn(move || {
+        let _ = stdin.write_all(body.as_bytes());
+    });
+    let out = child.wait_with_output().map_err(|e| e.to_string())?;
+    let _ = writer.join();
+    if !out.status.success() {
+        return Err(format!("git {} failed: {}", args.join(" "), String::from_utf8_lossy(&out.stderr).trim()));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// The commits GitHub lacks, oldest first (each after its parents), with the bytes of
+/// the files each one adds. "Lacks" = not reachable from any `refs/remotes/github/*`
+/// (what the last pushes and fetches left; a push negotiates the rest).
+fn github_missing(vault: &str, with_box: bool) -> Result<Vec<(String, u64)>, String> {
+    let mut args = vec!["rev-list", "--reverse", "--topo-order", "refs/heads/master"];
+    if with_box {
+        args.push(BOX_REF);
+    }
+    args.extend(["--not", "--remotes=github"]);
+    let commits: Vec<String> = match sg(vault, &args)? {
+        (o, _, 0) => o.lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect(),
+        (o, e, c) => return Err(full_err(&o, &e, c, "git rev-list")),
+    };
+    if commits.is_empty() {
+        return Ok(vec![]);
+    }
+    // The blobs each commit adds (a merge adds none of its own: its sides come first).
+    let raw = git_with_input(vault, &["diff-tree", "--stdin", "-r", "--root", "--no-renames", "--no-abbrev"], &(commits.join("\n") + "\n"))?;
+    let mut added: HashMap<String, Vec<String>> = HashMap::new();
+    let mut cur = String::new();
+    for l in raw.lines() {
+        if let Some(rest) = l.strip_prefix(':') {
+            let f: Vec<&str> = rest.split_whitespace().collect();
+            if f.len() >= 4 && f[3].chars().any(|c| c != '0') {
+                added.entry(cur.clone()).or_default().push(f[3].to_string());
+            }
+        } else if !l.trim().is_empty() {
+            cur = l.trim().to_string();
+        }
+    }
+    let mut blobs: Vec<String> = added.values().flatten().cloned().collect();
+    blobs.sort();
+    blobs.dedup();
+    let mut size: HashMap<String, u64> = HashMap::new();
+    if !blobs.is_empty() {
+        let out = git_with_input(vault, &["cat-file", "--batch-check=%(objectname) %(objectsize)"], &(blobs.join("\n") + "\n"))?;
+        for l in out.lines() {
+            if let Some((id, n)) = l.split_once(' ') {
+                size.insert(id.to_string(), n.trim().parse().unwrap_or(0));
+            }
+        }
+    }
+    let mut seen = std::collections::HashSet::new();
+    Ok(commits
+        .into_iter()
+        .map(|c| {
+            let bytes = added
+                .get(&c)
+                .map(|bs| bs.iter().filter(|b| seen.insert((*b).clone())).map(|b| size.get(b).copied().unwrap_or(0)).sum())
+                .unwrap_or(0);
+            (c, bytes)
+        })
+        .collect())
+}
+
+/// Cut `missing` into upload steps of at most `budget` bytes (a commit bigger than
+/// that is a step of its own). Returns the last commit of each step.
+pub fn github_steps(missing: &[(String, u64)], budget: u64) -> Vec<String> {
+    let mut steps = Vec::new();
+    let mut acc = 0u64;
+    for (i, (c, n)) in missing.iter().enumerate() {
+        if acc > 0 && acc + n > budget {
+            steps.push(missing[i - 1].0.clone());
+            acc = 0;
+        }
+        acc += n;
+        if i + 1 == missing.len() {
+            steps.push(c.clone());
+        }
+    }
+    steps
+}
+
+/// Push to GitHub, bounded, with full stderr on failure.
+fn github_push(vault: &str, args: &[&str], what: &str) -> Result<(), String> {
+    match run_git_timeout(vault, &as_strs(&sync_args(vault, args)), GITHUB_STEP_TIMEOUT_SECS) {
+        Ok((_, _, 0)) => Ok(()),
+        Ok((o, e, c)) => Err(full_err(&o, &e, c, what)),
+        Err(e) => Err(format!("{} failed: {}", what, e)),
+    }
+}
+
+/// One backup. What GitHub lacks goes up in one push when it is under `budget` bytes;
+/// otherwise (or when that push is cut off) in steps of at most `budget` bytes to a
+/// scratch branch (a step that is cut off is retried at once with half of what it
+/// carried), then master and box, then the scratch branch is deleted.
+/// Ok(the budget for next time) / Err((full stderr, the budget for next time)).
+fn github_upload(vault: &str, first: bool, budget: u64, pending: &mut Option<u32>) -> Result<u64, (String, u64)> {
+    let refs = read_refs(vault);
+    let current = !first
+        && refs.master.is_some()
+        && refs.github_master == refs.master
+        && (refs.box_box.is_none() || refs.github_box == refs.box_box);
+    if current {
+        *pending = Some(0);
+        return Ok(budget);
+    }
+    let with_box = refs.box_box.is_some();
+    let mut budget = budget;
+    let missing = github_missing(vault, with_box).map_err(|e| (e, budget))?;
+    *pending = Some(missing.len() as u32);
+    let total: u64 = missing.iter().map(|m| m.1).sum();
+    let box_spec = format!("{}:refs/heads/box", BOX_REF);
+    let mut args: Vec<&str> = vec!["push", "--porcelain", GITHUB_REMOTE, "refs/heads/master:refs/heads/master"];
+    if with_box {
+        args.push(&box_spec);
+    }
+    let push_refs = || github_push(vault, &args, "GitHub backup (git push github)");
+    // Small enough for one upload: try that first; cut off, it goes up in steps.
+    let mut stepped = total > budget;
+    if !stepped {
+        match push_refs() {
+            Ok(()) => {}
+            Err(e) if github_problem(&e) == "too_big" && missing.len() > 1 => {
+                budget = (total / 2).max(1);
+                stepped = true;
+            }
+            Err(e) => return Err((e, budget)),
+        }
+    }
+    if stepped {
+        let upload_spec = |c: &str| format!("+{}:refs/heads/{}", c, GITHUB_UPLOAD_BRANCH);
+        let mut done = 0usize; // commits of `missing` already up
+        let mut tries = 0;
+        while done < missing.len() {
+            tries += 1;
+            let steps = github_steps(&missing[done..], budget);
+            let target = steps[0].clone();
+            let spec = upload_spec(&target);
+            match github_push(vault, &["push", "--porcelain", GITHUB_REMOTE, &spec], "GitHub backup (git push github, one step)") {
+                Ok(()) => {
+                    done += missing[done..].iter().position(|m| m.0 == target).map(|p| p + 1).unwrap_or(missing.len() - done);
+                    *pending = Some((missing.len() - done) as u32);
+                }
+                Err(e) => {
+                    let n = missing[done..].iter().position(|m| m.0 == target).map(|p| p + 1).unwrap_or(1);
+                    // Cut off: try again at once with half of what that step carried, down to one commit a step.
+                    if github_problem(&e) == "too_big" && n > 1 && tries < 40 {
+                        let carried: u64 = missing[done..done + n].iter().map(|m| m.1).sum();
+                        budget = (carried / 2).max(1);
+                        continue;
+                    }
+                    let one = missing[done].1;
+                    let e = if n == 1 && github_problem(&e) == "too_big" {
+                        format!("{}\n\n(one change alone adds {} MB)", e, one / (1024 * 1024))
+                    } else {
+                        e
+                    };
+                    return Err((e, budget.max(1)));
+                }
+            }
+        }
+        push_refs().map_err(|e| (e, budget))?;
+    }
+    *pending = Some(0);
+    // The scratch branch, if a backup made one.
+    let scratch = format!("refs/remotes/{}/{}", GITHUB_REMOTE, GITHUB_UPLOAD_BRANCH);
+    if matches!(sg(vault, &["rev-parse", "--verify", "-q", &scratch]), Ok((_, _, 0))) {
+        let del = format!(":refs/heads/{}", GITHUB_UPLOAD_BRANCH);
+        let _ = github_push(vault, &["push", "--porcelain", GITHUB_REMOTE, &del], "GitHub backup (delete the upload branch)");
+    }
+    Ok((budget.saturating_mul(2)).min(GITHUB_STEP_BYTES))
+}
 
 /// Back up master + the box branch to the `github` remote, off the critical
 /// path: started after the box push, run on its own thread, at most every 10
 /// minutes (attempts too, so a failing backup doesn't retry every cycle), and
 /// a push only when GitHub's refs are behind (the first backup in a session
-/// always pushes). Every cycle reports the last outcome, so a failure stays
-/// visible until a push succeeds.
+/// always pushes). A backlog goes up a few commits at a time (`github_upload`),
+/// so no single upload is big enough for the connection to cut it off. Every
+/// cycle reports the last outcome, so a failure stays visible until a push
+/// succeeds; it is retried on its own.
 fn github_backup(vault: &str, rc: &RepoConfig, report: &mut BoxSyncReport) {
     if rc.get("remote.github.url").is_none() {
         return;
     }
-    let first = {
+    let (first, budget) = {
         let mut g = GITHUB_LAST.lock().unwrap_or_else(|p| p.into_inner());
         let st = g.get_or_insert_with(HashMap::new).entry(vault.to_string()).or_default();
         report.github_pushed_at = st.pushed_at;
         report.github_warning = st.warning.clone();
+        report.github_problem = st.problem.map(str::to_string);
+        report.github_pending = st.pending;
+        report.github_uploading = st.running;
+        if st.warning.is_some() {
+            report.github_next_try_at = st.attempted.map(|a| {
+                now_ms() + GITHUB_DEBOUNCE.saturating_sub(a.elapsed()).as_millis() as u64
+            });
+        }
         if st.running || st.attempted.map(|a| a.elapsed() < GITHUB_DEBOUNCE).unwrap_or(false) {
             return;
         }
         let first = st.attempted.is_none();
         st.running = true;
         st.attempted = Some(Instant::now());
-        first
+        (first, st.step_budget)
     };
+    report.github_uploading = true;
     let v = vault.to_string();
     std::thread::spawn(move || {
-        let refs = read_refs(&v);
-        let current = !first
-            && refs.master.is_some()
-            && refs.github_master == refs.master
-            && (refs.box_box.is_none() || refs.github_box == refs.box_box);
-        let outcome: Result<(), String> = if current {
-            Ok(())
-        } else {
-            let box_spec = format!("{}:refs/heads/box", BOX_REF);
-            let mut args: Vec<&str> = vec!["push", "--porcelain", GITHUB_REMOTE, "refs/heads/master:refs/heads/master"];
-            if refs.box_box.is_some() {
-                args.push(&box_spec);
-            }
-            match sg_net(&v, &args) {
-                Ok((_, _, 0)) => Ok(()),
-                Ok((o, e, c)) => Err(full_err(&o, &e, c, "GitHub backup (git push github)")),
-                Err(e) => Err(format!("GitHub backup failed: {}", e)),
-            }
-        };
+        let mut pending = None;
+        let outcome = github_upload(&v, first, budget, &mut pending);
         let mut g = GITHUB_LAST.lock().unwrap_or_else(|p| p.into_inner());
         let st = g.get_or_insert_with(HashMap::new).entry(v).or_default();
         st.running = false;
+        st.pending = pending.or(st.pending);
         match outcome {
-            Ok(()) => {
+            Ok(b) => {
                 st.pushed_at = Some(now_ms());
                 st.warning = None;
+                st.problem = None;
+                st.step_budget = b;
             }
-            Err(w) => st.warning = Some(w),
+            Err((w, b)) => {
+                st.problem = Some(github_problem(&w));
+                st.warning = Some(w);
+                st.step_budget = b;
+            }
         }
     });
 }

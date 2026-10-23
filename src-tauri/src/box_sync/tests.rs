@@ -684,3 +684,93 @@ fn bench_box_sync() {
         time(&format!("idle after typical {}", i));
     }
 }
+
+#[test]
+fn github_problem_reads_the_push_errors_in_plain_kinds() {
+    // The laptop's push of school2's backlog on 2026-10-23 (129 commits, 212 MB packed).
+    let carl = "GitHub backup (git push github) failed (exit 1):\nerror: RPC failed; curl 55 Send failure: Connection was aborted\nsend-pack: unexpected disconnect while reading sideband packet\nfatal: the remote end hung up unexpectedly\nEverything up-to-date";
+    assert_eq!(github_problem(carl), "too_big");
+    assert_eq!(github_problem("remote: fatal: pack exceeds maximum allowed size\n! [remote rejected] master -> master (unpacker error)"), "too_big");
+    assert_eq!(github_problem("fatal: unable to access 'https://github.com/x/y.git/': Could not resolve host: github.com"), "offline");
+    assert_eq!(github_problem("remote: Invalid username or password.\nfatal: Authentication failed for 'https://github.com/x/y.git/'"), "auth");
+    assert_eq!(github_problem(" ! [rejected]        master -> master (fetch first)"), "rejected");
+    assert_eq!(github_problem("fatal: something else"), "other");
+}
+
+#[test]
+fn github_steps_cut_a_backlog_by_bytes() {
+    let m = |v: &[(&str, u64)]| v.iter().map(|(c, n)| (c.to_string(), *n)).collect::<Vec<_>>();
+    let steps = github_steps(&m(&[("a", 10), ("b", 10), ("c", 10), ("d", 25), ("e", 0), ("f", 5)]), 20);
+    assert_eq!(steps, vec!["b", "c", "d", "f"]);
+    // A commit over the budget is a step of its own; merges (0 bytes) ride along.
+    assert_eq!(github_steps(&m(&[("m", 0), ("big", 99), ("n", 0)]), 20), vec!["big", "n"]);
+    assert_eq!(github_steps(&m(&[("a", 1), ("b", 1)]), 20), vec!["b"]);
+    assert!(github_steps(&[], 20).is_empty());
+}
+
+/// Bytes that do not compress (a binary file, an archive).
+fn noise(seed: u64, n: usize) -> Vec<u8> {
+    let mut x = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+    (0..n)
+        .map(|_| {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            (x >> 24) as u8
+        })
+        .collect()
+}
+
+#[test]
+fn github_backup_uploads_a_backlog_in_steps_when_one_push_is_cut_off() {
+    let r = rig("githubsteps");
+    let gh = r.base.join("github.git");
+    std::fs::create_dir_all(&gh).unwrap();
+    git(&gh, &["init", "-q", "--bare", "-b", "master"]);
+    // GitHub stand-in that refuses any upload over 700 KB (as the connection cut off the real one).
+    git(&gh, &["config", "receive.maxInputSize", "700000"]);
+    for i in 0..6u64 {
+        std::fs::create_dir_all(r.laptop.join("bin")).unwrap();
+        std::fs::write(r.laptop.join("bin").join(format!("f{}.bin", i)), noise(i + 1, 300_000)).unwrap();
+        git(&r.laptop, &["add", "-A"]);
+        git(&r.laptop, &["commit", "-q", "-m", &format!("binary {}", i)]);
+    }
+    git(&r.laptop, &["remote", "add", "github", &s(&gh)]);
+    // One push of everything (~1.8 MB) is refused: the backup goes up in steps on its own.
+    let all = run_git(&s(&r.laptop), &["push", "--porcelain", "github", "master:refs/heads/probe"]).unwrap();
+    assert_ne!(all.2, 0, "the stand-in must refuse one big upload");
+    assert_eq!(github_problem(&format!("{}\n{}", all.0, all.1)), "too_big", "{}\n{}", all.0, all.1);
+    let rep = r.cycle();
+    assert!(rep.ok, "{:?}", rep.error);
+    wait_github_backup(&s(&r.laptop));
+    let rep = r.cycle();
+    assert!(rep.github_warning.is_none(), "{:?}", rep.github_warning);
+    assert!(rep.github_pushed_at.is_some());
+    assert_eq!(rep.github_pending, Some(0));
+    assert_eq!(git(&gh, &["rev-parse", "refs/heads/master"]), r.head());
+    assert_eq!(git(&gh, &["rev-parse", "refs/heads/box"]), git(&r.bare, &["rev-parse", "refs/heads/box"]));
+    assert_ne!(git_code(&gh, &["rev-parse", "--verify", "-q", "refs/heads/vault-chat-upload"]), 0, "the upload branch is gone");
+    r.done();
+}
+
+#[test]
+fn github_backup_names_one_change_too_big_to_upload() {
+    let r = rig("githubonebig");
+    let gh = r.base.join("github.git");
+    std::fs::create_dir_all(&gh).unwrap();
+    git(&gh, &["init", "-q", "--bare", "-b", "master"]);
+    git(&gh, &["config", "receive.maxInputSize", "200000"]);
+    std::fs::write(r.laptop.join("one.bin"), noise(7, 400_000)).unwrap();
+    git(&r.laptop, &["add", "-A"]);
+    git(&r.laptop, &["commit", "-q", "-m", "one big"]);
+    git(&r.laptop, &["remote", "add", "github", &s(&gh)]);
+    r.cycle();
+    wait_github_backup(&s(&r.laptop));
+    let rep = r.cycle();
+    assert!(rep.ok, "the sync itself is fine: {:?}", rep.error);
+    assert_eq!(rep.github_problem.as_deref(), Some("too_big"), "{:?}", rep.github_warning);
+    assert!(rep.github_warning.as_deref().unwrap_or("").contains("pack exceeds maximum allowed size"), "{:?}", rep.github_warning);
+    assert!(rep.github_pending.unwrap_or(0) >= 1);
+    assert!(rep.github_next_try_at.is_some(), "it retries on its own");
+    r.done();
+}

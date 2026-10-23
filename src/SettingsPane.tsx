@@ -9,6 +9,7 @@ import {
   subscribeBoxSync,
   boxSyncNow,
   fmtSize,
+  githubPlain,
   type BoxConfig,
   type BoxSyncState,
   boxName,
@@ -1060,6 +1061,7 @@ function BoxSyncPanel({ vault, box, onDisconnected }: { vault: string; box: BoxC
     return () => window.clearInterval(id);
   }, []);
   const r = st?.report ?? null;
+  const gh = r ? githubPlain(r) : null;
   const ago = (t: number | null | undefined) => {
     if (!t) return "never";
     const s = Math.max(0, Math.round((Date.now() - t) / 1000));
@@ -1108,13 +1110,26 @@ function BoxSyncPanel({ vault, box, onDisconnected }: { vault: string; box: BoxC
       {r &&
         row(
           "GitHub backup",
-          r.github_warning ? "failing (see details below)" : r.github_pushed_at ? ago(r.github_pushed_at) : "no github remote, or not yet",
-          r.github_warning ? "warn" : undefined,
+          gh
+            ? gh.line
+            : r.github_uploading
+              ? `uploading…${r.github_pending ? ` (${r.github_pending} commit${r.github_pending === 1 ? "" : "s"} to go)` : ""}`
+              : r.github_pushed_at
+                ? ago(r.github_pushed_at)
+                : "no github remote, or not yet",
+          gh ? "warn" : undefined,
         )}
-      {(r?.error || r?.github_warning) && (
+      {gh && <div className="text-[11.5px] leading-relaxed text-foreground/90 pt-0.5">{gh.detail}</div>}
+      {r?.error && (
         <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words font-mono text-[10.5px] leading-relaxed text-muted-foreground pt-1">
-          {[r?.error, r?.github_warning].filter(Boolean).join("\n\n")}
+          {r.error}
         </pre>
+      )}
+      {r?.github_warning && (
+        <details className="text-[10.5px] text-muted-foreground">
+          <summary className="cursor-pointer select-none">What git said</summary>
+          <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words font-mono leading-relaxed pt-1">{r.github_warning}</pre>
+        </details>
       )}
       <div className="pt-1 flex items-center gap-2">
         <button

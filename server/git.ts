@@ -138,35 +138,141 @@ async function changedPaths(repo: string): Promise<{ path: string; deleted: bool
   return res;
 }
 
-/** Stage everything except files over 50 MB. An oversized untracked file is
- * also written to .git/info/exclude so it stays out for good. Returns the
- * skipped paths. Caller holds the repo lock. */
-export async function stageAllExceptLarge(repo: string, gitArgs: string[] = []): Promise<string[]> {
-  const skipped: string[] = [];
-  const trackedSkips: string[] = [];
+/** A commit carries at most this much new content: a bigger set of new files is spread over the next
+ * commits (the laptop uploads the history to GitHub a few commits at a time, so no commit may be huge). */
+export const COMMIT_MAX_BYTES = 100 * 1024 * 1024;
+/** A board being drawn on is committed once it has been still this long… */
+export const BOARD_QUIET_MS = 2 * 60_000;
+/** …or this long after its first uncommitted change, whichever comes first. */
+export const BOARD_MAX_HOLD_MS = 10 * 60_000;
+/** Archives and compressed backups (by name). The box never commits a new one: bulk output a job makes belongs
+ * in the vault's work area (`~/agent-work/<vault>/`), not in the synced, backed-up vault. */
+export const ARCHIVE_RE = /\.(zip|tar|tgz|tbz2?|txz|gz|bz2|xz|zst|7z|rar)$/i;
+const BOARD_PATH_RE = /^boards\/([^./][^/]*)\//;
+
+export type StageResult = {
+  /** Over 50 MB: never staged (an untracked one is excluded for good). */
+  tooLarge: string[];
+  /** New archives: never staged (excluded for good); they belong in the work area. */
+  archives: string[];
+  /** Board folders (`boards/<slug>`) being drawn on: held out of this commit. */
+  heldBoards: string[];
+  /** Files left for the next commit so this one stays under COMMIT_MAX_BYTES of new content. */
+  deferred: string[];
+};
+
+export type StageOpts = {
+  /** Hold boards that are being drawn on (the sync's autosave). Off: commit them now. */
+  holdBoards?: boolean;
+  now?: number;
+  quietMs?: number;
+  maxHoldMs?: number;
+  commitMaxBytes?: number;
+};
+
+/** When each held board was first seen with uncommitted changes (key: repo + board folder). */
+const boardPendingSince = new Map<string, number>();
+
+/** Stage what the box commits, by these rules (caller holds the repo lock):
+ * - a file over 50 MB is never staged (an untracked one goes to .git/info/exclude);
+ * - a new archive (.zip, .tar.gz, …) is never staged and is excluded for good: backups and exports go in the
+ *   work area outside the vault;
+ * - with `holdBoards`, a board folder whose files changed in the last 2 min is held back, at most 10 min from
+ *   its first held change: an evening's drawing is a commit per pause (or per 10 min), not one per 15 s
+ *   autosave (each a whole board.json and overview.png);
+ * - the commit's new content stays under 100 MB: the rest waits for the next commit;
+ * - the conversation log is never staged. */
+export async function stageForCommit(repo: string, gitArgs: string[] = [], opts: StageOpts = {}): Promise<StageResult> {
+  const now = opts.now ?? Date.now();
+  const quietMs = opts.quietMs ?? BOARD_QUIET_MS;
+  const maxHoldMs = opts.maxHoldMs ?? BOARD_MAX_HOLD_MS;
+  const budget = opts.commitMaxBytes ?? COMMIT_MAX_BYTES;
+  const res: StageResult = { tooLarge: [], archives: [], heldBoards: [], deferred: [] };
+  const excludes: string[] = [];
   // The conversations are the server's event log, never synced by git: the log stays out of it
   // for good, and the older conversation files (tracked from before) are never staged (nor deleted).
   excludeLocally(repo, CONV_LOG_DIR + "/", true);
-  for (const c of await changedPaths(repo)) {
+  const changes = await changedPaths(repo);
+  const sizes = new Map<string, { size: number; mtime: number }>();
+  for (const c of changes) {
     if (c.deleted) continue;
     try {
       const st = statSync(join(repo, c.path));
-      if (st.isFile() && st.size > MAX_FILE_BYTES) {
-        skipped.push(c.path);
-        // Untracked: ignore it for good (then `add -A` skips it). Tracked and
-        // grown past the cap: leave the change unstaged via a pathspec.
-        if (c.untracked) excludeLocally(repo, c.path);
-        else trackedSkips.push(c.path);
-      }
+      if (st.isFile()) sizes.set(c.path, { size: st.size, mtime: st.mtimeMs });
     } catch {
       /* vanished */
     }
   }
-  const pathspec = ["--", ".", ...trackedSkips.map((p) => `:(exclude,literal)${p}`)];
-  await git(repo, [...gitArgs, "add", "-A", ...pathspec]);
+  const out = new Set<string>();
+  for (const c of changes) {
+    const st = sizes.get(c.path);
+    if (!st) continue;
+    if (st.size > MAX_FILE_BYTES) {
+      res.tooLarge.push(c.path);
+      // Untracked: ignore it for good (then `add -A` skips it). Tracked and
+      // grown past the cap: leave the change unstaged via a pathspec.
+      if (c.untracked) excludeLocally(repo, c.path);
+      else excludes.push(c.path);
+      out.add(c.path);
+    } else if (c.untracked && ARCHIVE_RE.test(c.path)) {
+      res.archives.push(c.path);
+      excludeLocally(repo, c.path);
+      out.add(c.path);
+    }
+  }
+  // Boards being drawn on.
+  const boards = new Map<string, { last: number; live: boolean }>();
+  for (const c of changes) {
+    const m = BOARD_PATH_RE.exec(c.path);
+    if (!m || out.has(c.path)) continue;
+    const dir = `boards/${m[1]}`;
+    const b = boards.get(dir) ?? { last: 0, live: false };
+    const st = sizes.get(c.path);
+    if (st) {
+      b.last = Math.max(b.last, st.mtime);
+      b.live = true;
+    }
+    boards.set(dir, b);
+  }
+  const key = lockKey(repo);
+  for (const [dir, b] of boards) {
+    const k = `${key}|${dir}`;
+    // A board that was deleted or moved away (only removals) is committed at once.
+    if (!opts.holdBoards || !b.live) {
+      boardPendingSince.delete(k);
+      continue;
+    }
+    const since = boardPendingSince.get(k) ?? now;
+    if (now - b.last < quietMs && now - since < maxHoldMs) {
+      boardPendingSince.set(k, since);
+      res.heldBoards.push(dir);
+      excludes.push(dir);
+    } else {
+      boardPendingSince.delete(k);
+    }
+  }
+  const held = (p: string) => res.heldBoards.some((d) => p.startsWith(d + "/"));
+  // The commit's budget of new content, in path order; at least one file always goes.
+  let total = 0;
+  let any = false;
+  for (const c of [...changes].sort((a, b) => (a.path < b.path ? -1 : 1))) {
+    const st = sizes.get(c.path);
+    if (!st || out.has(c.path) || held(c.path)) continue;
+    if (any && total + st.size > budget) {
+      res.deferred.push(c.path);
+      excludes.push(c.path);
+      continue;
+    }
+    total += st.size;
+    any = true;
+  }
+  // Pathspecs on stdin (a deferred set can be thousands of paths).
+  const pathspecs = excludes.map((p) => `:(exclude,literal)${p}`).join("\0");
+  if (pathspecs) await git(repo, [...gitArgs, "add", "-A", "--pathspec-from-file=-", "--pathspec-file-nul"], { input: pathspecs });
+  else await git(repo, [...gitArgs, "add", "-A", "--", "."]);
   // Unstaged again, whatever ignore rules say about them (a pathspec naming an ignored path makes `add` fail).
   await runGit(repo, ["reset", "-q", "--", ...NEVER_STAGED]);
-  return skipped;
+  return res;
 }
 
 /** The conversation event log (server/convlog). */
@@ -203,20 +309,24 @@ function excludeLocally(repo: string, rel: string, dir = false): void {
 /** Identity flags (lib.rs:2532 run_git_as) for the agent. */
 export const AGENT_IDENTITY_ARGS = ["-c", `user.name=${AGENT_GIT_NAME}`, "-c", `user.email=${AGENT_GIT_EMAIL}`];
 
-/** Listeners told about files the 50 MB rule refused (the sync status + an
- * alert). Registered by server/sync.ts. */
-type SkipListener = (paths: string[]) => void;
-const skipListeners: SkipListener[] = [];
-export function onLargeFilesSkipped(fn: SkipListener): void {
-  skipListeners.push(fn);
+/** Listeners told what a commit left out (the sync status + its alerts). Registered by server/sync.ts. */
+type StageListener = (repo: string, r: StageResult) => void;
+const stageListeners: StageListener[] = [];
+export function onStageResult(fn: StageListener): void {
+  stageListeners.push(fn);
 }
-export function reportSkipped(paths: string[]): void {
-  if (!paths.length) return;
-  for (const fn of skipListeners) {
+export function reportStageResult(repo: string, r: StageResult): void {
+  if (!r.tooLarge.length && !r.archives.length) return;
+  for (const fn of stageListeners) {
     try {
-      fn(paths);
+      fn(repo, r);
     } catch {
       /* listener bug must not break a commit */
     }
   }
+}
+
+/** The same repository (paths compared as the repo lock does). */
+export function sameRepo(a: string, b: string): boolean {
+  return lockKey(a) === lockKey(b);
 }

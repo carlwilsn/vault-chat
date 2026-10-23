@@ -2,7 +2,10 @@
 //   • the working copy (VC_VAULT) lives on branch `box`, written only here;
 //   • every cycle (15 s, plus after each mission turn):
 //       1. commit the working copy as the agent ("[agent] …"), under the
-//          shared repo lock, never staging a file over 50 MB;
+//          shared repo lock, by the staging rules (git.ts stageForCommit):
+//          never a file over 50 MB nor a new archive; a board being drawn
+//          on waits until it is still (2 min, at most 10); at most 100 MB
+//          of new content a commit;
 //       2. push `box` to the bare repo (a local path);
 //       3. fetch `master` from it and fast-forward `box` when master
 //          contains it — never a merge on the box;
@@ -10,9 +13,9 @@
 //     from, over /git (see gitHttp.ts). The box does not mirror to GitHub
 //     (its credential is gone); the laptop does the backup.
 import { existsSync, mkdirSync, writeFileSync, chmodSync, readFileSync, readdirSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { loadConfig } from "./config";
-import { runGit, git, withRepoLock, abortStuckMergeOrRebase, stageAllExceptLarge, onLargeFilesSkipped, AGENT_IDENTITY_ARGS } from "./git";
+import { runGit, git, withRepoLock, abortStuckMergeOrRebase, stageForCommit, onStageResult, sameRepo, AGENT_IDENTITY_ARGS, type StageResult } from "./git";
 
 const BRANCH = "box";
 const HUB = "master";
@@ -39,6 +42,10 @@ export type SyncStatus = {
   ahead: number | null;
   behind: number | null;
   largeFilesSkipped: string[];
+  /** New archives the box never commits (they belong in ~/agent-work/<vault>/). */
+  archivesSkipped: string[];
+  /** Boards being drawn on, not committed yet (they go once still). */
+  heldBoards: string[];
   mirror: string;
 };
 
@@ -77,9 +84,13 @@ export class BoxSync {
       ahead: null,
       behind: null,
       largeFilesSkipped: [],
+      archivesSkipped: [],
+      heldBoards: [],
       mirror: "off — the box does not mirror to GitHub; the laptop pushes master and box to its github remote",
     };
-    onLargeFilesSkipped((paths) => this.noteLarge(paths));
+    onStageResult((repo, r) => {
+      if (sameRepo(repo, this.vault)) this.noteStaged(r);
+    });
   }
 
   /** Make sure the bare repo and the working copy exist and are wired up.
@@ -220,21 +231,7 @@ exit 0
 
         // 1. Commit.
         try {
-          const st = await git(vault, ["status", "--porcelain", "--ignore-submodules=dirty"]);
-          let detail = "clean";
-          if (st.trim()) {
-            const skipped = await stageAllExceptLarge(vault, AGENT_IDENTITY_ARGS);
-            this.noteLarge(skipped);
-            const staged = await runGit(vault, ["diff", "--cached", "--quiet"]);
-            if (staged.code !== 0) {
-              const n = (await git(vault, ["diff", "--cached", "--name-only"])).trim().split("\n").filter(Boolean).length;
-              await git(vault, [...AGENT_IDENTITY_ARGS, "commit", "-q", "-m", `[agent] box autosave: ${n} file(s)`]);
-              detail = `committed ${n} file(s)`;
-            } else {
-              detail = skipped.length ? `only oversized files changed (${skipped.length} skipped)` : "nothing to stage";
-            }
-          }
-          s.steps.commit = { ok: true, at: Date.now(), detail };
+          s.steps.commit = { ok: true, at: Date.now(), detail: await this.commitWorkingCopy(true) };
         } catch (e) {
           s.steps.commit = { ok: false, at: Date.now(), error: errText(e) };
           throw e;
@@ -277,6 +274,13 @@ exit 0
           const masterSha = (await git(vault, ["rev-parse", HUB_REF])).trim();
           if (boxSha === masterSha) {
             s.steps.fastForward = { ok: true, at: Date.now(), detail: "box == master" };
+          } else if ((await runGit(vault, ["merge-base", "--is-ancestor", "HEAD", HUB_REF])).code === 0 && (await this.heldBoardsIn(HUB_REF))) {
+            // Master changed a board that is being drawn on here: commit the drawing now (box is then ahead and
+            // waits for the laptop's merge) rather than let the fast-forward refuse to overwrite it.
+            const detail = await this.commitWorkingCopy(false);
+            s.steps.commit = { ok: true, at: Date.now(), detail };
+            await this.pushBox();
+            s.steps.fastForward = { ok: true, at: Date.now(), detail: "master changed a board being drawn on: committed it, waiting for the laptop to merge" };
           } else if ((await runGit(vault, ["merge-base", "--is-ancestor", "HEAD", HUB_REF])).code === 0) {
             await git(vault, ["merge", "--ff-only", "-q", HUB_REF]);
             s.steps.fastForward = { ok: true, at: Date.now(), detail: `fast-forwarded ${boxSha.slice(0, 8)} → ${masterSha.slice(0, 8)}` };
@@ -313,6 +317,41 @@ exit 0
     }
   }
 
+  /** Commit the working copy as the agent (caller holds the repo lock). `hold`: boards being drawn on wait. */
+  private async commitWorkingCopy(hold: boolean): Promise<string> {
+    const vault = this.vault;
+    const st = await git(vault, ["status", "--porcelain", "--ignore-submodules=dirty"]);
+    if (!st.trim()) {
+      this.status.heldBoards = [];
+      return "clean";
+    }
+    const r = await stageForCommit(vault, AGENT_IDENTITY_ARGS, { holdBoards: hold });
+    this.noteStaged(r);
+    this.status.heldBoards = r.heldBoards;
+    const staged = await runGit(vault, ["diff", "--cached", "--quiet"]);
+    const notes = [
+      r.heldBoards.length ? `held while drawn on: ${r.heldBoards.join(", ")}` : "",
+      r.deferred.length ? `${r.deferred.length} file(s) left for the next commit (100 MB a commit)` : "",
+      r.archives.length ? `${r.archives.length} archive(s) kept out` : "",
+      r.tooLarge.length ? `${r.tooLarge.length} file(s) over 50 MB kept out` : "",
+    ].filter(Boolean);
+    const tail = notes.length ? `; ${notes.join("; ")}` : "";
+    if (staged.code === 0) return `nothing to commit${tail}`;
+    const n = (await git(vault, ["diff", "--cached", "--name-only"])).trim().split("\n").filter(Boolean).length;
+    await git(vault, [...AGENT_IDENTITY_ARGS, "commit", "-q", "-m", `[agent] box autosave: ${n} file(s)`]);
+    // More waits (a set of new files over the commit's budget): the next cycle takes it at once.
+    if (r.deferred.length) this.again = true;
+    return `committed ${n} file(s)${tail}`;
+  }
+
+  /** Does `ref` change a board this box is holding (being drawn on)? */
+  private async heldBoardsIn(ref: string): Promise<boolean> {
+    const held = this.status.heldBoards;
+    if (!held.length) return false;
+    const r = await runGit(this.vault, ["diff", "--name-only", "HEAD", ref, "--", ...held]);
+    return r.code !== 0 || r.stdout.trim() !== "";
+  }
+
   private async pushBox(): Promise<void> {
     const s = this.status;
     try {
@@ -345,19 +384,33 @@ exit 0
     }
   }
 
-  private noteLarge(paths: string[]): void {
-    if (!paths.length) return;
-    const set = new Set(this.status.largeFilesSkipped);
-    for (const p of paths) set.add(p);
-    this.status.largeFilesSkipped = [...set].sort();
-    const fresh = paths.filter((p) => !this.alertedLarge.has(p));
-    if (!fresh.length) return;
-    for (const p of fresh) this.alertedLarge.add(p);
-    void this.alert(
-      "File too large to sync",
-      `Not committed (over 50 MB): ${fresh.slice(0, 5).join(", ")}${fresh.length > 5 ? ` and ${fresh.length - 5} more` : ""}. It stays on the box only.`,
-      "vault-chat-sync",
-    ).catch(() => {});
+  /** What a commit left out for good: in the status, and one alert per new path. */
+  private noteStaged(r: StageResult): void {
+    const fresh = (paths: string[], into: "largeFilesSkipped" | "archivesSkipped") => {
+      if (!paths.length) return [];
+      const set = new Set(this.status[into]);
+      for (const p of paths) set.add(p);
+      this.status[into] = [...set].sort();
+      const out = paths.filter((p) => !this.alertedLarge.has(p));
+      for (const p of out) this.alertedLarge.add(p);
+      return out;
+    };
+    const list = (ps: string[]) => `${ps.slice(0, 5).join(", ")}${ps.length > 5 ? ` and ${ps.length - 5} more` : ""}`;
+    const large = fresh(r.tooLarge, "largeFilesSkipped");
+    if (large.length) {
+      void this.alert("File too large to sync", `Not committed (over 50 MB): ${list(large)}. It stays on the box only.`, "vault-chat-sync").catch(() => {});
+    }
+    const arch = fresh(r.archives, "archivesSkipped");
+    if (arch.length) {
+      const dirs = [...new Set(arch.map((p) => (p.includes("/") ? p.slice(0, p.lastIndexOf("/") + 1) : "the vault's top folder")))];
+      void this.alert(
+        "Archives kept out of sync",
+        `${arch.length === 1 ? "An archive" : `${arch.length} archives`} in ${list(dirs)} ${arch.length === 1 ? "was" : "were"} not committed: ` +
+          `backups and archives belong in ~/agent-work/${basename(this.vault)}/, outside the vault, which is synced and backed up to GitHub with every change. ` +
+          `They stay on the box only.`,
+        "vault-chat-sync",
+      ).catch(() => {});
+    }
   }
 }
 
@@ -476,5 +529,5 @@ export function syncStatus(): unknown {
 export function syncSummary(): Record<string, unknown> {
   if (!instance) return { enabled: false, ok: false, error: setupError };
   const s = instance.status;
-  return { enabled: true, ok: s.ok, lastOkAt: s.lastOkAt, failingSince: s.failingSince, lastError: s.lastError, ahead: s.ahead, behind: s.behind, largeFilesSkipped: s.largeFilesSkipped.length };
+  return { enabled: true, ok: s.ok, lastOkAt: s.lastOkAt, failingSince: s.failingSince, lastError: s.lastError, ahead: s.ahead, behind: s.behind, largeFilesSkipped: s.largeFilesSkipped.length, archivesSkipped: s.archivesSkipped.length, heldBoards: s.heldBoards };
 }

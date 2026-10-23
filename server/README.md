@@ -191,14 +191,32 @@ without it those tests skip. `server/test/piPolicy.test.ts` needs nothing. The o
 Every `VC_SYNC_INTERVAL_MS`, after every turn that ends, and after a push over `/git`:
 
 1. commit the working copy on `box` as `vault-chat-agent` with an `[agent] box autosave: N file(s)` message,
-   under the same per-repo lock as the app's own end-of-turn commits; a file over 50 MB is never staged (an
-   untracked one goes to `.git/info/exclude`), is listed in the status and alerts once;
+   under the same per-repo lock as the app's own end-of-turn commits, by the staging rules (`git.ts`
+   `stageForCommit`, the same for end-of-turn commits):
+   - a file over 50 MB is never staged (an untracked one goes to `.git/info/exclude`), is listed in the status
+     and alerts once;
+   - a new archive (`.zip`, `.tar`, `.tar.gz`, `.tgz`, `.gz`, `.7z`, …) is never staged and is excluded for
+     good, listed (`archivesSkipped`) and alerted once per folder: backups and archives belong in the work
+     area `~/agent-work/<vault>/`, and the agents are told so. (On 2026-10-22 a job wrote a `.tar.gz` of a
+     board every 10 s into `Whiteboard Backups/`: 121 files, 257 MB in the history.)
+   - a board being drawn on (`boards/<slug>/`, any file in it changed in the last 2 min) is held back, at most
+     10 min from its first held change (`heldBoards`). The board app saves every ~15 s and every save rewrites
+     the whole `board.json` and `overview.png`; committing each one made 413 commits in one evening (262 MB of
+     loose objects, 37 MB uploaded); held, the same evening is 16 commits (11 MB loose, 2.6 MB uploaded).
+     The file stays one stroke per line, so what is committed deltas small. If the laptop's `master` changes a
+     held board, it is committed at once (before the fast-forward would refuse it);
+   - one commit carries at most 100 MB of new content; the rest goes in the next commits, at once — the
+     laptop uploads to GitHub a few commits at a time, so no commit may be huge;
 2. push `box` to the bare repo;
 3. fetch `master`; fast-forward `box` when `master` contains it. **Never a merge on the box.**
 
 The bare repo's `pre-receive` hook keeps `box` box-only (refused over `/git`) and stops the box from writing
 `master`. Failing for over 10 min → one push alert; one more on recovery. The box does **not** mirror to
-GitHub (no credential there); the laptop backs up.
+GitHub (no credential there); the laptop backs up (`src-tauri/src/box_sync.rs` `github_backup`): a backlog
+over 32 MB, or one whose single push is cut off ("RPC failed; curl 55 … the remote end hung up"), goes up in
+steps through a scratch branch `vault-chat-upload` (deleted after), halving a step that is cut off; the
+titlebar and Settings say what is wrong in plain words (`githubPlain` in `src/vaultSync.ts`) and git's
+message is one click behind it.
 
 ## Box notes
 

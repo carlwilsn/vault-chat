@@ -461,7 +461,74 @@ export type BoxSyncReport = {
   big_files: { path: string; size: number }[];
   github_warning: string | null;
   github_pushed_at: number | null;
+  /** What went wrong with the GitHub backup (src-tauri box_sync.rs github_problem). */
+  github_problem?: GithubProblem | null;
+  /** Commits GitHub did not have at the last attempt. */
+  github_pending?: number | null;
+  /** A backup is uploading now (a backlog goes up a few commits at a time). */
+  github_uploading?: boolean;
+  /** ms since the epoch of the next attempt, while one is failing. */
+  github_next_try_at?: number | null;
 };
+
+export type GithubProblem = "too_big" | "offline" | "auth" | "rejected" | "other";
+
+/** The GitHub backup's trouble in plain words: one line for the chip, the story for its popover and
+ *  Settings (git's own message stays available beside it). Null when it is fine. */
+export function githubPlain(r: BoxSyncReport): { text: string; line: string; detail: string } | null {
+  if (!r.github_warning) return null;
+  const n = r.github_pending ?? null;
+  const waiting = n === null ? "" : n === 0 ? "" : ` ${plural(n, "change")} ${n === 1 ? "is" : "are"} waiting for GitHub.`;
+  const retry = r.github_next_try_at
+    ? ` It tries again by itself at ${new Date(r.github_next_try_at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}.`
+    : " It tries again by itself every 10 minutes.";
+  const safe = " Nothing is lost: this laptop and the box have every change.";
+  const one = /one change alone adds (\d+) MB/.exec(r.github_warning);
+  switch (r.github_problem ?? "other") {
+    case "too_big":
+      return one
+        ? {
+            text: "GitHub backup stuck on a big change",
+            line: `stuck: one change adds ${one[1]} MB, more than an upload carries`,
+            detail:
+              `The upload to GitHub keeps being cut off: one change on its own adds ${one[1]} MB, more than the connection carries in one upload. ` +
+              `Move the big files out of the vault (or ask the agent to find them).${waiting}${retry}${safe}`,
+          }
+        : {
+            text: "GitHub backup catching up",
+            line: "catching up: the last upload was cut off, now sending a few changes at a time",
+            detail:
+              `The last upload to GitHub was cut off part-way: it was more than the connection would carry in one go. ` +
+              `The app now sends the backlog a few changes at a time.${waiting}${retry}${safe}`,
+          };
+    case "offline":
+      return {
+        text: "GitHub unreachable",
+        line: "GitHub unreachable from this laptop",
+        detail: `This laptop couldn't reach github.com, so the backup is waiting.${waiting}${retry}${safe}`,
+      };
+    case "auth":
+      return {
+        text: "GitHub backup: sign-in needed",
+        line: "GitHub refused this laptop's sign-in",
+        detail: `GitHub refused this laptop's sign-in. Sign in again (\`gh auth login\` in a terminal) and the backup resumes by itself.${waiting}${safe}`,
+      };
+    case "rejected":
+      return {
+        text: "GitHub has changes this laptop doesn't",
+        line: "GitHub's copy has changes this laptop doesn't (nothing overwritten)",
+        detail:
+          `GitHub's copy of the vault has commits this laptop doesn't have, so the backup won't overwrite them. ` +
+          `Ask the agent to look at the GitHub remote and bring them in.${waiting}${safe}`,
+      };
+    default:
+      return {
+        text: "GitHub backup failing",
+        line: `failing: ${firstLine(r.github_warning)}`,
+        detail: `The backup to GitHub failed.${waiting}${retry}${safe}`,
+      };
+  }
+}
 
 /** A merge brought in notes (or we don't know which files it changed). */
 export function mergedNotes(paths: string[] | undefined | null): boolean {
@@ -706,12 +773,13 @@ export function boxAttentionOf(st: BoxSyncState, now = Date.now()): BoxAttention
       since: st.bigSince,
     };
   }
-  if (r.github_warning && st.githubFailingSince !== null && now - st.githubFailingSince >= BOX_RED_AFTER_MS) {
+  const gh = githubPlain(r);
+  if (gh && st.githubFailingSince !== null && now - st.githubFailingSince >= BOX_RED_AFTER_MS) {
     return {
       kind: "github",
       level: "amber",
-      text: "GitHub backup failing",
-      detail: r.github_warning,
+      text: gh.text,
+      detail: `${gh.detail}\n\nWhat git said:\n${r.github_warning}`,
       since: st.githubFailingSince,
     };
   }

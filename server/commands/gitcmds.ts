@@ -2,7 +2,7 @@
 // gitLogSubdir; store.ts gitRepoRootForFile).
 import { realpathSync, existsSync, statSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
-import { runGit, git, withRepoLock, abortStuckMergeOrRebase, stageAllExceptLarge, reportSkipped, AGENT_GIT_NAME, AGENT_GIT_EMAIL } from "../git";
+import { runGit, git, withRepoLock, abortStuckMergeOrRebase, stageForCommit, reportStageResult, AGENT_GIT_NAME, AGENT_GIT_EMAIL } from "../git";
 import type { CommandFn } from "./registry";
 
 /** lib.rs:2500 human_identity — the repo's effective user.*, else the app's. */
@@ -15,7 +15,8 @@ async function humanIdentity(repo: string): Promise<[string, string]> {
   return [(await get("user.name")) ?? "vault-chat", (await get("user.email")) ?? "vault-chat@local"];
 }
 
-/** lib.rs:4016 git_commit_all, plus the server's 50 MB staging rule. */
+/** lib.rs:4016 git_commit_all, by the box's staging rules (git.ts stageForCommit). A board being drawn on is
+ * held here too (a voice turn ends every few seconds while Carl draws); the sync commits it once it is still. */
 export async function gitCommitAll(vault: string, message: string, agent: boolean): Promise<string | null> {
   return withRepoLock(vault, async () => {
     await abortStuckMergeOrRebase(vault);
@@ -23,10 +24,9 @@ export async function gitCommitAll(vault: string, message: string, agent: boolea
     if (!st.trim()) return null;
     const [name, email] = agent ? [AGENT_GIT_NAME, AGENT_GIT_EMAIL] : await humanIdentity(vault);
     const id = ["-c", `user.name=${name}`, "-c", `user.email=${email}`];
-    const skipped = await stageAllExceptLarge(vault, id);
-    reportSkipped(skipped);
+    reportStageResult(vault, await stageForCommit(vault, id, { holdBoards: true }));
     const staged = await runGit(vault, ["diff", "--cached", "--quiet"]);
-    if (staged.code === 0) return null; // only oversized files changed
+    if (staged.code === 0) return null; // only files the rules keep out (or hold) changed
     await git(vault, [...id, "commit", "-q", "-m", message]);
     return (await git(vault, ["rev-parse", "--short", "HEAD"])).trim();
   });

@@ -192,3 +192,43 @@ test("a box merge that brings in notes reloads the Notes panel (and only for not
   assert.equal(reads, after, "a merge without notes does not reload them");
   un();
 });
+
+test("a failing GitHub backup is told in plain words, with git's message behind it", () => {
+  const now = Date.now();
+  // What the laptop's push of school2's backlog said on 2026-10-23.
+  const curl55 =
+    "GitHub backup (git push github) failed (exit 1):\nerror: RPC failed; curl 55 Send failure: Connection was aborted\n" +
+    "send-pack: unexpected disconnect while reading sideband packet\nfatal: the remote end hung up unexpectedly";
+  const report = { ...okReport, github_warning: curl55, github_problem: "too_big", github_pending: 129, github_next_try_at: now + 600_000 } as any;
+  const st = {
+    vault: "/v",
+    box: BOX,
+    running: false,
+    lastCycleAt: now,
+    lastOkAt: now,
+    report,
+    failingSince: null,
+    bigSince: null,
+    githubFailingSince: now - 11 * 60_000,
+    tailscale: null,
+    attention: null,
+  };
+  const a = vs.boxAttentionOf(st, now)!;
+  assert.equal(a.kind, "github");
+  assert.equal(a.text, "GitHub backup catching up");
+  assert.match(a.detail, /cut off part-way/);
+  assert.match(a.detail, /129 changes are waiting for GitHub/);
+  assert.match(a.detail, /tries again by itself at/);
+  assert.match(a.detail, /Nothing is lost/);
+  assert.match(a.detail, /What git said:\n.*RPC failed; curl 55/s);
+  assert.doesNotMatch(a.text, /curl|RPC/);
+  // Not before ten minutes (it usually recovers on its own first).
+  assert.equal(vs.boxAttentionOf({ ...st, githubFailingSince: now - 60_000 }, now), null);
+  // The other kinds.
+  const k = (github_problem: string, extra = "") => vs.githubPlain({ ...report, github_problem, github_warning: curl55 + extra })!;
+  assert.equal(k("offline").text, "GitHub unreachable");
+  assert.match(k("auth").detail, /gh auth login/);
+  assert.match(k("rejected").detail, /won't overwrite/);
+  assert.match(k("too_big", "\n\n(one change alone adds 257 MB)").detail, /one change on its own adds 257 MB/);
+  assert.equal(vs.githubPlain(okReport as any), null);
+});

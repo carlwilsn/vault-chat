@@ -1,7 +1,7 @@
 // The box sync loop against two local repos: the bare hub and the box's
 // working copy, plus a "laptop" clone playing the other side.
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { writeFileSync, readFileSync, existsSync, mkdirSync, openSync, closeSync, ftruncateSync } from "node:fs";
+import { writeFileSync, readFileSync, existsSync, mkdirSync, openSync, closeSync, ftruncateSync, utimesSync } from "node:fs";
 import { join } from "node:path";
 import { BoxSync } from "../sync";
 import { tmp, cleanup, makeVault, git, sh, waitFor } from "./helpers";
@@ -130,6 +130,62 @@ describe("box sync loop", () => {
     await sync.runOnce();
     expect(alerts.filter((a) => a.title === "File too large to sync")).toHaveLength(1);
     expect(git(box, "status", "--porcelain").trim()).toBe("");
+  });
+
+  it("never commits a new archive: excluded for good, reported, one alert naming the work area", async () => {
+    // What filled the backup on 2026-10-22: a job wrote a .tar.gz of a board every 10 s into the vault.
+    const dir = join(box, "Whiteboard Backups", "checkpoints-1");
+    mkdirSync(dir, { recursive: true });
+    for (let i = 0; i < 3; i++) writeFileSync(join(dir, `00${i}.tar.gz`), Buffer.alloc(1024, i));
+    writeFileSync(join(box, "notes", "real.md"), "a real change\n");
+    await sync.runOnce();
+    expect(sync.status.ok, JSON.stringify(sync.status.steps)).toBe(true);
+    expect(git(box, "ls-files").split("\n")).toEqual(expect.arrayContaining(["notes/real.md"]));
+    expect(git(box, "ls-files", "Whiteboard Backups").trim()).toBe("");
+    expect(sync.status.archivesSkipped).toHaveLength(3);
+    const a = alerts.filter((x) => x.title === "Archives kept out of sync");
+    expect(a).toHaveLength(1);
+    expect(a[0]!.body).toMatch(/3 archives in Whiteboard Backups\/checkpoints-1\//);
+    expect(a[0]!.body).toContain(`~/agent-work/school2/`);
+    // The next one alerts again; the old ones do not.
+    writeFileSync(join(dir, "003.tar.gz"), Buffer.alloc(10, 3));
+    await sync.runOnce();
+    await sync.runOnce();
+    expect(alerts.filter((x) => x.title === "Archives kept out of sync")).toHaveLength(2);
+    expect(git(box, "status", "--porcelain").trim()).toBe("");
+  });
+
+  it("holds a board while it is drawn on, commits it once still; a ff that touches it commits it first", async () => {
+    const b = join(box, "boards", "b1");
+    mkdirSync(b, { recursive: true });
+    writeFileSync(join(b, "board.json"), '{"v":2,"strokes":[\n{"id":"s1"}\n]}\n');
+    writeFileSync(join(b, "overview.png"), Buffer.alloc(100, 1));
+    writeFileSync(join(box, "notes", "other.md"), "other\n");
+    await sync.runOnce();
+    expect(sync.status.ok, JSON.stringify(sync.status.steps)).toBe(true);
+    expect(sync.status.heldBoards).toEqual(["boards/b1"]);
+    expect(git(box, "show", "--name-only", "--format=", "HEAD").trim()).toBe("notes/other.md");
+    expect(sync.status.steps.commit?.detail).toMatch(/held while drawn on: boards\/b1/);
+    // Still for over 2 minutes → committed.
+    const past = new Date(Date.now() - 3 * 60_000);
+    for (const f of ["board.json", "overview.png"]) utimesSync(join(b, f), past, past);
+    await sync.runOnce();
+    expect(sync.status.heldBoards).toEqual([]);
+    expect(git(box, "show", "--name-only", "--format=", "HEAD").trim().split("\n").sort()).toEqual(["boards/b1/board.json", "boards/b1/overview.png"]);
+    expect(bareRef("refs/heads/box")).toBe(head(box));
+
+    // Drawing again while master (the laptop) changed the same board: committed now, no failed fast-forward.
+    cloneLaptop();
+    git(laptop, "checkout", "-q", "-b", "master", "origin/box");
+    writeFileSync(join(laptop, "boards", "b1", "board.json"), '{"v":2,"strokes":[\n{"id":"s1"},\n{"id":"laptop"}\n]}\n');
+    git(laptop, "commit", "-qam", "laptop draws");
+    sh(laptop, "git", ["push", "-q", "origin", "master"], { VC_PUSHER: "http" });
+    writeFileSync(join(b, "board.json"), '{"v":2,"strokes":[\n{"id":"s1"},\n{"id":"box"}\n]}\n');
+    await sync.runOnce();
+    expect(sync.status.ok, sync.status.lastError ?? "").toBe(true);
+    expect(sync.status.steps.fastForward?.detail).toMatch(/committed it, waiting for the laptop/);
+    expect(git(box, "status", "--porcelain").trim()).toBe("");
+    expect(git(box, "show", "HEAD:boards/b1/board.json")).toContain('"box"');
   });
 
   it("the bare repo refuses a push to box over /git", async () => {
