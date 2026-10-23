@@ -1521,25 +1521,31 @@ export const MessageBubble = memo(function MessageBubble({
 
 // A line said on a voice call looks like the thread around it (Carl, 2026-10-21: the separate "YOU" voice style
 // looked broken next to the bubbles): his spoken words are his bubble, the voice's replies are agent text, each
-// with a tiny mic so a spoken line is still told apart from a typed one.
+// with a tiny mic so a spoken line is still told apart from a typed one. The mic sits in a box exactly one text
+// line tall (13px type, leading-relaxed = 1.625em), centred on the first line; the text keeps at least that
+// height, so an empty or "…" line, or one still streaming, never shifts it.
 function VoiceLine({ message, cont }: { message: ChatMessage; cont: boolean }) {
   const isUser = message.role === "user";
-  const mic = <Mic className={cn("inline h-2.5 w-2.5 shrink-0", isUser ? "opacity-70" : "text-muted-foreground/70")} aria-label="said aloud" />;
+  const mic = (
+    <span className="flex h-[1.625em] w-2.5 shrink-0 items-center" data-el="voice-mic">
+      <Mic className={cn("block h-2.5 w-2.5", isUser ? "opacity-70" : "text-muted-foreground/70")} aria-label="said aloud" />
+    </span>
+  );
   if (isUser)
     return (
       <div className={cn("flex flex-col items-end", cont && "-mt-1")} data-el="voice-line" data-role="user">
         <div className="max-w-[85%] rounded-2xl rounded-br-md bg-primary/90 text-primary-foreground px-3.5 py-2 text-[13px] leading-relaxed break-words overflow-hidden prose-user flex items-start gap-1.5">
-          <span className="pt-[5px]">{mic}</span>
-          <div className="min-w-0">
+          {mic}
+          <div className="min-w-0 min-h-[1.625em]">
             <Markdown source={message.display ?? message.content} profile="user" components={chatComponents} />
           </div>
         </div>
       </div>
     );
   return (
-    <div className={cn("w-full flex items-start gap-1.5", cont && "-mt-1")} data-el="voice-line" data-role={message.role}>
-      <span className="pt-[6px]">{mic}</span>
-      <div className="min-w-0 flex-1">
+    <div className={cn("w-full flex items-start gap-1.5 text-[13px] leading-relaxed", cont && "-mt-1")} data-el="voice-line" data-role={message.role}>
+      {mic}
+      <div className="min-w-0 flex-1 min-h-[1.625em]">
         <Markdown source={message.display ?? message.content} profile="chat" components={chatComponents} />
       </div>
     </div>
