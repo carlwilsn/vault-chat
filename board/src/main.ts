@@ -8,8 +8,11 @@ import { isField } from "./chrome";
 import { blog, flushBoardLog, installBoardLog } from "./log";
 import { ackLocal, getLocal, localKey, putLocal, type LocalRec } from "./local";
 import type { Board, BoardHistory } from "../../src/boardFormat";
+import { startAttentionBeat } from "../../src/attentionBeat";
 
 installBoardLog();
+// On screen = Carl is at the iPad: the box keeps his phone quiet meanwhile (src/attentionBeat.ts).
+startAttentionBeat({ device: "board", post: (b) => api.postAttention({ ...b, device: "board" }) });
 // For the preview checks (board/preview/*.mjs): send the log now.
 (window as unknown as { __flushLog: () => Promise<void> }).__flushLog = () => flushBoardLog();
 

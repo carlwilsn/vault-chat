@@ -352,6 +352,12 @@ export async function sendPush(title: string, body: string, url = "/phone", tag 
   for (const sub of subs) {
     try {
       if (!sub?.endpoint || !sub?.keys?.p256dh || !sub?.keys?.auth) continue;
+      // Made under another VAPID key (the phone says which, phone/src/boot.ts): the push service refuses it, always.
+      if (typeof sub.key === "string" && sub.key && sub.key !== pubB64u) {
+        void invoke("phone_push_unsub", { endpoint: sub.endpoint }).catch(() => {});
+        console.warn("[phone-push] dropped a subscription made under an older VAPID key");
+        continue;
+      }
       const aud = new URL(sub.endpoint).origin;
       const jwt = await vapidJwt(aud);
       const bodyBytes = await encryptForSub(sub, payload);
@@ -370,8 +376,11 @@ export async function sendPush(title: string, body: string, url = "/phone", tag 
         void invoke("phone_push_unsub", { endpoint: sub.endpoint }).catch(() => {});
       } else if (status >= 200 && status < 300) {
         sent++;
+        void invoke("phone_push_result", { endpoint: sub.endpoint, ok: true }).catch(() => {});
       } else {
-        console.warn("[phone-push] push service answered", status);
+        // 400/403 on every push is a subscription the service will never take: pruned after a few in a row.
+        const gone = status >= 400 && status < 500 && status !== 429 ? await invoke<boolean>("phone_push_result", { endpoint: sub.endpoint, ok: false }).catch(() => false) : false;
+        console.warn(`[phone-push] push service answered ${status}${gone ? " — the subscription is dead, removed" : ""}`);
       }
     } catch (e) {
       console.warn("[phone-push] delivery failed:", e);

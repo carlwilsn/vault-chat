@@ -19,6 +19,7 @@ import type { LogRecord } from "../../src/convlog/protocol";
 import { emptyPicture, emptyRow, foldInto, pendingOf, reduceRow, shown, type Picture, type RowState } from "../../src/convlog/reduce";
 import { afterClear, makeChatView, type ChatView } from "../../src/convlog/view";
 import { MAIN_ID, MAIN_TITLE, isOlderChat, panelModel, projectThreadId } from "../../src/threads";
+import { startAttentionBeat, type AttentionBeat } from "../../src/attentionBeat";
 
 export function boot(): void {
   const qs = new URLSearchParams(location.search);
@@ -128,6 +129,8 @@ export function boot(): void {
   // A new chat started "in" a project: sent with the first /message.
   let newChatProject = "";
   let convId = null, convTitle = "New chat";
+  // Says to the box whether Carl is looking at the phone (started under "lifecycle").
+  let attention: AttentionBeat | null = null;
   // The open thread's source ("phone" | "mission" | "worker" | …). Missions and
   // workers run in the BACKGROUND (their executor being busy is not "your turn
   // generating"), so the composer must never offer the stop square for them —
@@ -795,11 +798,12 @@ export function boot(): void {
     msgsEl.innerHTML = '<div class="hint"><b>' + g + "</b></div>";
   }
 
-  // The open thread is sticky: reopening the app returns you to the chat you
-  // were in, not a blank new one — replies keep landing where you expect.
-  const LAST_CONV_KEY = "vc_phone_conv";
-  function rememberConv() { try { if (convId) localStorage.setItem(LAST_CONV_KEY, JSON.stringify({ id: convId, title: convTitle })); else localStorage.removeItem(LAST_CONV_KEY); } catch {} }
-  function newChat(project?: string) { convId = null; convTitle = "New chat"; convSource = null; convMeta = {}; newChatProject = project || ""; rememberConv(); clearThreadUi(); showHint(); setPage("chat"); setHeader(); renderOngoing(); syncArchived(); }
+  // The phone opens on Main, always (Carl: "the phone should default to main chat ofc"): a cold
+  // open and every return to the app (see "lifecycle") land there. A project thread stays open only
+  // within the visit he opened it in. Nothing remembers the last thread across visits; the key the
+  // phone used to keep it under is gone.
+  try { localStorage.removeItem("vc_phone_conv"); } catch {}
+  function newChat(project?: string) { convId = null; convTitle = "New chat"; convSource = null; convMeta = {}; newChatProject = project || ""; clearThreadUi(); showHint(); setPage("chat"); setHeader(); renderOngoing(); syncArchived(); }
   // An archived mission thread is history: the composer says so and won't send.
   function syncArchived() {
     // An old mission thread, or an older chat from before one main conversation (src/threads.ts): read only.
@@ -916,6 +920,7 @@ export function boot(): void {
   }
 
   async function openThread(id: string, title?: string) {
+    if (convId !== id) setTimeout(() => attention?.poke(), 0);
     convId = id; convTitle = title || "New chat"; convSource = null; convMeta = {}; newChatProject = ""; clearThreadUi(); markSeen(id); renderOngoing();
     for (const [, n] of shownNodes) n.el.remove();
     shownNodes.clear();
@@ -930,7 +935,7 @@ export function boot(): void {
       pic = foldInto(d.picture as Picture, loadingRecs || []);
       loadingRecs = null;
       clearThreadUi();
-      renderThread(); scrollDown(true); rememberConv();
+      renderThread(); scrollDown(true);
     } catch (e) {
       loadingRecs = null;
       if (/not found|404/i.test(String(e.message || e))) { if (id !== MAIN_ID) void openThread(MAIN_ID, MAIN_TITLE); else newChat(); return; }
@@ -962,7 +967,7 @@ export function boot(): void {
     if (forced === undefined) { input.value = ""; input.style.height = "auto"; pendingImgs = []; renderPending(); }
     // A new chat gets its id here: the box makes the conversation under it.
     const fresh = !convId;
-    if (fresh) { convId = clientId(); convTitle = text.split("\n")[0].slice(0, 60); pic = null; picView = makeChatView(); for (const [, n] of shownNodes) n.el.remove(); shownNodes.clear(); rememberConv(); }
+    if (fresh) { convId = clientId(); convTitle = text.split("\n")[0].slice(0, 60); pic = null; picView = makeChatView(); for (const [, n] of shownNodes) n.el.remove(); shownNodes.clear(); }
     const target = convId;
     userEngaged.add(target);
     const id = clientId();
@@ -2012,18 +2017,28 @@ export function boot(): void {
     const reg = await navigator.serviceWorker.register("/phone-sw.js"); await navigator.serviceWorker.ready;
     const vd = await (await api("/push/vapid")).json(); if (!vd.key) throw new Error(vd.error || "no VAPID key from box");
     const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64uToBytes(vd.key) });
-    const r = await api("/push/subscribe", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(sub.toJSON()) });
+    const r = await api("/push/subscribe", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(subBody(sub)) });
     if (!r.ok) throw new Error("subscribe store failed");
     return true;
   }
+  // A subscription carries the VAPID key it was made under: the box drops one made under another
+  // key (the push service refuses it with a 400 on every push, server/commands/phone.ts).
+  const bytesToB64u = (buf) => { const b = new Uint8Array(buf); let s = ""; for (const c of b) s += String.fromCharCode(c); return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, ""); };
+  const subKey = (sub) => { try { const k = sub.options && sub.options.applicationServerKey; return k ? bytesToB64u(k) : ""; } catch { return ""; } };
+  const subBody = (sub) => { const k = subKey(sub); return k ? { ...sub.toJSON(), key: k } : sub.toJSON(); };
   // Default-ON keeper: whenever permission is already granted but the device has
   // no live subscription (fresh install, iOS evicted it), re-subscribe silently.
   async function pushAutoOn() {
     if (MOCK || !pushSupported()) return;
     try {
       if (Notification.permission !== "granted" || localStorage.getItem("vc_push_optout") === "1") return;
-      const sub = await currentSub();
-      if (sub) { api("/push/subscribe", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(sub.toJSON()) }).catch(() => {}); }
+      let sub = await currentSub();
+      // Made under a key the box no longer signs with: every push to it fails. Make a fresh one.
+      if (sub && subKey(sub)) {
+        const vd = await (await api("/push/vapid")).json().catch(() => ({}));
+        if (vd.key && vd.key !== subKey(sub)) { await sub.unsubscribe().catch(() => {}); sub = null; }
+      }
+      if (sub) { api("/push/subscribe", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(subBody(sub)) }).catch(() => {}); }
       else { await pushSubscribe(); }
       refreshPushUi();
     } catch {}
@@ -2413,9 +2428,26 @@ export function boot(): void {
   $("vpill").onclick = () => { document.body.classList.add("voice"); document.body.classList.remove("voicemin"); };
 
   // ---------- lifecycle ----------
+  // A visit ends when the app has been out of sight this long (a quick look at another app is the
+  // same visit). Coming back starts a new one, on Main — unless a push he tapped is taking him to
+  // its thread, or a voice call is running in the thread he is in.
+  const VISIT_GAP_MS = 60_000;
+  let hiddenAt = 0, deepLinkAt = 0;
+  function backToMain() {
+    if (convId === MAIN_ID || vLive || vConnecting) return;
+    if (Date.now() - deepLinkAt < 5000) return; // a tapped push is opening its own thread
+    logEvent("visit_main", { from: convId });
+    closeMenu();
+    void openThread(MAIN_ID, MAIN_TITLE);
+  }
   document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "visible") { void pollLoop(); void refreshState(); void refreshBadge(); void refreshConvMeta(); if (page === "alerts") softReload(loadAlerts); }
+    if (document.visibilityState === "hidden") { hiddenAt = Date.now(); return; }
+    if (hiddenAt && Date.now() - hiddenAt >= VISIT_GAP_MS) setTimeout(backToMain, 400);
+    hiddenAt = 0;
+    void pollLoop(); void refreshState(); void refreshBadge(); void refreshConvMeta(); if (page === "alerts") softReload(loadAlerts);
   });
+  // Whether Carl is looking at the phone (the app on screen): the box keeps the phone quiet meanwhile (server/pushGate.ts).
+  attention = startAttentionBeat({ device: "phone", convId: () => convId, post: (b) => (MOCK ? undefined : api("/api/v1/attention", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(b), keepalive: true })) });
   // Touching a list at all marks it briefly busy, so a background tick can't
   // rebuild it (scroll → top) while you're reading or reaching for a card.
   ["alScroll", "notesScroll"].forEach((id) => { const s = $(id); if (s) s.addEventListener("touchstart", () => markListBusy(2500), { passive: true }); });
@@ -2463,6 +2495,7 @@ export function boot(): void {
     navigator.serviceWorker.addEventListener("message", (e) => {
       const d = (e && e.data) || {};
       if (d.type !== "deeplink" || !d.url) return;
+      deepLinkAt = Date.now();
       try {
         const p = new URLSearchParams(String(d.url).split("?")[1] || "");
         // [ask redesign] An ask push deep-links to the ask surface (?ask=), not
@@ -2522,12 +2555,11 @@ export function boot(): void {
   } else if (bootConv) {
     void openThread(bootConv);
   } else {
-    // Main, every surface's default (src/threads.ts); or the project thread you were in last session.
-    let saved: any = null;
-    try { saved = JSON.parse(localStorage.getItem(LAST_CONV_KEY) || "null"); } catch {}
-    if (saved && typeof saved.id === "string" && saved.id.startsWith("project-")) void openThread(saved.id, saved.title);
-    else void openThread(MAIN_ID, MAIN_TITLE);
+    // Main, every surface's default (src/threads.ts) — and the phone's on every open.
+    void openThread(MAIN_ID, MAIN_TITLE);
   }
+  // A push's deep link is for this open only: a reload (an update) must not land on that thread again.
+  if (bootConv || bootAsk) { try { const u = new URL(location.href); u.searchParams.delete("conv"); u.searchParams.delete("ask"); history.replaceState(history.state, "", u.pathname + u.search + u.hash); } catch {} }
   void refreshState();
   void refreshBadge();
   void pollLoop();

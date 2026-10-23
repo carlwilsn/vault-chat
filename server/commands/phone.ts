@@ -51,6 +51,32 @@ export function pushSubsAdd(sub: any): void {
   writeSubs(list);
 }
 
+/** A subscription the push service refused this many times in a row (not 404/410, which prune at once) is dead:
+ * an iPhone's old subscription made under another VAPID key answers 400 on every push, forever. */
+export const PUSH_MAX_REFUSALS = 3;
+
+/** One delivery's outcome: a refusal counts, a delivery clears the count; the third refusal in a row removes it. True: removed. */
+export function pushSubsResult(endpoint: string, ok: boolean): boolean {
+  const list = readSubs();
+  const i = list.findIndex((s) => s?.endpoint === endpoint);
+  if (i < 0) return false;
+  const sub = list[i];
+  if (ok) {
+    if (!sub.refusals) return false;
+    delete sub.refusals;
+    writeSubs(list);
+    return false;
+  }
+  sub.refusals = (Number(sub.refusals) || 0) + 1;
+  if (sub.refusals >= PUSH_MAX_REFUSALS) {
+    list.splice(i, 1);
+    writeSubs(list);
+    return true;
+  }
+  writeSubs(list);
+  return false;
+}
+
 /** voice_server.rs:1462 push_subs_remove. */
 export function pushSubsRemove(endpoint: string): void {
   const list = readSubs();
@@ -97,6 +123,7 @@ export const phoneCommands: Record<string, CommandFn> = {
     pushSubsRemove(String(endpoint));
     return null;
   },
+  phone_push_result: ({ endpoint, ok }) => pushSubsResult(String(endpoint), ok === true),
   // lib.rs:6838
   notification_add: ({ vault, json }) => {
     notificationAppend(String(vault), String(json));

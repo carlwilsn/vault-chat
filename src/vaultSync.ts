@@ -804,12 +804,13 @@ function markAlerted(key: string): void {
   }
 }
 
-async function postBoxAlert(box: string, title: string, body: string, tag: string): Promise<boolean> {
+/** An alert for Carl's phone (the box's push rule decides when it buzzes: server/pushGate.ts). `resolved`: it is over — a held one never goes out. */
+async function postBoxAlert(box: string, title: string, body: string, tag: string, resolved = false): Promise<boolean> {
   try {
     const token = useStore.getState().boxToken || null;
     const r = await invoke<{ status: number; body: string }>("box_post_json", {
       url: `${box}/api/v1/alert`,
-      body: JSON.stringify({ title, body, tag }),
+      body: JSON.stringify(resolved ? { tag, resolved: true } : { title, body, tag }),
       token,
     });
     return r.status >= 200 && r.status < 300;
@@ -869,6 +870,7 @@ function startBoxSyncLoop(vault: string, cfg: BoxConfig): void {
     if (openVault() === vault) emitOpen();
   };
 
+  let failAlerted = false;
   const maybeAlert = async (st: BoxSyncState) => {
     const r = st.report;
     if (!r) return;
@@ -878,7 +880,7 @@ function startBoxSyncLoop(vault: string, cfg: BoxConfig): void {
       if (!sent.has(key)) {
         const ok = await postBoxAlert(
           cfg.box,
-          `Sync conflict in ${vaultName}`,
+          `Needs you: sync conflict in ${vaultName}`,
           `The laptop can't merge the box's changes (${r.conflict.files.join(", ")}). On the laptop, ask the agent to resolve the sync conflict.`,
           `vc-sync-conflict-${cfg.vault}`,
         );
@@ -890,12 +892,20 @@ function startBoxSyncLoop(vault: string, cfg: BoxConfig): void {
       if (!sent.has(key)) {
         const ok = await postBoxAlert(
           cfg.box,
-          `Laptop sync failing (${vaultName})`,
+          `Needs you: laptop sync failing (${vaultName})`,
           `${firstLine(r.error)} · ${plural(r.changes_waiting, "change")} waiting on the laptop.`,
           `vc-sync-laptop-${cfg.vault}`,
         );
-        if (ok) markAlerted(key);
+        if (ok) {
+          markAlerted(key);
+          failAlerted = true;
+        }
       }
+    }
+    // Recovered: a failure alert the box is still holding (Carl was at a screen) never goes out.
+    if (st.failingSince === null && failAlerted) {
+      failAlerted = false;
+      void postBoxAlert(cfg.box, "", "", `vc-sync-laptop-${cfg.vault}`, true);
     }
   };
 

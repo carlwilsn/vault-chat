@@ -116,6 +116,13 @@ export function voiceActivity(vault: string, ended = false, now = Date.now()): v
   else voiceLive.set(vault, now);
 }
 
+/** A voice call is live in this vault (Carl is in it: the phone stays quiet, server/pushGate.ts). */
+export function voiceLiveIn(vault: string, now = Date.now()): boolean {
+  const want = resolve(vault).toLowerCase();
+  for (const [v, at] of voiceLive) if (resolve(v).toLowerCase() === want && now - at < VOICE_IDLE_MS) return true;
+  return false;
+}
+
 /** Live voice sessions on this box (one per vault at most): the health's busy
  * counts them, so the updater never restarts the server under someone talking. */
 export function activeVoiceSessions(now = Date.now()): number {

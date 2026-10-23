@@ -160,10 +160,46 @@ async function main(): Promise<void> {
     if (!name || name === cfg.vaultName) return { name: cfg.vaultName, path: cfg.vault, bare: cfg.bareRepo, main: true };
     return vaultRefs().find((v) => v.name === name) ?? null;
   };
-  // The tag becomes the Web Push tag, so a repeat alert replaces the last one.
-  const alert = async (title: string, body: string, tag?: string) => {
+  // When the phone buzzes: one rule (server/pushGate.ts). Carl is "looking" while a surface says
+  // so (POST /api/v1/attention), while his own activity reached the vault's context stream in the
+  // last two minutes, or while a voice call is live.
+  const { configurePushGate, ACTIVITY_MS } = await import("./pushGate");
+  const { voiceLiveIn } = await import("./voice");
+  const { readActivity } = await import("./activity");
+  const gate = configurePushGate({
+    send: (title, body, url, tag) => sendPush(title, body, url, tag),
+    attention: (vault, now) => {
+      if (voiceLiveIn(vault, now)) return { looking: true, where: "a voice call" };
+      const mine = readActivity(vault, now, ACTIVITY_MS).filter((e) => e.device || e.kind === "voice");
+      const last = mine[mine.length - 1];
+      return last ? { looking: true, where: `${last.device === "board" ? "iPad" : (last.device ?? "voice")} activity ${Math.round((now - last.ts) / 1000)} s ago` } : { looking: false, where: null };
+    },
+  });
+  // An alert (box sync, the self-updater, the laptop's sync) is a failure he must act on: it waits
+  // while he is looking and goes out when he leaves. `needsYou: false` (a recovery, a rollback that
+  // fixed itself) never buzzes. The tag becomes the Web Push tag, so a repeat replaces the last one.
+  const alert = async (title: string, body: string, tag?: string, needsYou = true) => {
+    const t = tag || "vault-chat";
+    const syncTag = t === "vault-chat-sync";
+    const offer = {
+      vault: cfg.vault,
+      why: "failed" as const,
+      title,
+      body,
+      url: "/phone",
+      tag: t,
+      trigger: syncTag ? "box sync" : t.startsWith("vc-sync") ? "laptop sync" : t === "vault-chat-update" ? "self-update" : "alert",
+      // Box sync failing: only while it still fails.
+      ...(syncTag && /failing/i.test(title) ? { stillNeeded: () => (syncStatus() as { ok?: boolean } | null)?.ok !== true } : {}),
+    };
+    if (!needsYou) {
+      gate.resolve(t);
+      console.log(`[push] dropped trigger=${offer.trigger} why=failed "${title.slice(0, 80)}" — nothing for Carl to do`);
+      return 0;
+    }
     try {
-      return await sendPush(title, body, "/phone", tag || "vault-chat");
+      const d = await gate.offer(offer);
+      return d.sent ?? 0;
     } catch (e) {
       console.warn("[alert] push failed:", e);
       return 0;

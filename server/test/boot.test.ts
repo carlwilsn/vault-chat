@@ -191,6 +191,42 @@ describe("boot + phone routes", () => {
     }
   });
 
+  it("the push rule: an alert waits while Carl is at a screen; a recovery never buzzes; a dead subscription is dropped", async () => {
+    const push = await fakePushService();
+    const dead = await fakePushService(400);
+    const subsFile = join(home, "phone-push-subs.json");
+    const subs = () => (JSON.parse(readFileSync(subsFile, "utf8")) as { endpoint: string; refusals?: number }[]).map((s) => [s.endpoint, s.refusals ?? 0]);
+    const alert = (b: Record<string, unknown>) => fetch(srv.base + "/api/v1/alert", { method: "POST", headers: viaServe, body: JSON.stringify(b) }).then((r) => r.json());
+    const attention = (looking: boolean) => fetch(srv.base + "/api/v1/attention", { method: "POST", headers: viaServe, body: JSON.stringify({ device: "laptop", looking, convId: "main" }) });
+    try {
+      for (const s of [push.subscription, dead.subscription]) await fetch(srv.base + "/push/subscribe", { method: "POST", headers: viaServe, body: JSON.stringify(s) });
+      expect((await fetch(srv.base + "/api/v1/attention", { method: "POST", headers: viaServe, body: JSON.stringify({ device: "toaster", looking: true }) })).status).toBe(400);
+      // At the laptop: held.
+      expect((await attention(true)).status).toBe(200);
+      expect((await alert({ title: "Needs you: sync conflict in school2", body: "notes/a.md", tag: "vc-sync-conflict-school2" })).sent).toBe(0);
+      expect(push.received).toHaveLength(0);
+      // Fixed itself: never.
+      expect((await alert({ title: "Server update failed", body: "rolled back", tag: "vault-chat-update", needsYou: false })).sent).toBe(0);
+      // He leaves: the held alert goes out (the gate looks again every 15 s).
+      await attention(false);
+      await waitFor(async () => push.received.length === 1, 30_000);
+      expect(push.received[0]!.payload).toMatchObject({ title: "Needs you: sync conflict in school2", tag: "vc-sync-conflict-school2" });
+      expect(srv.logs()).toMatch(/\[push\] held trigger=laptop sync why=failed "Needs you: sync conflict in school2" — Carl is looking \(laptop\)/);
+      expect(srv.logs()).toMatch(/\[push\] dropped trigger=self-update why=failed "Server update failed" — nothing for Carl to do/);
+      // The 400s: the dead subscription refused that push and two more; the third refusal removes it.
+      expect(subs()).toContainEqual([dead.subscription.endpoint, 1]);
+      for (const n of [2, 3]) expect((await alert({ title: `Needs you: test ${n}`, body: "x", tag: `t${n}` })).sent).toBe(1);
+      expect(subs()).toEqual([[push.subscription.endpoint, 0]]);
+      expect(srv.logs()).toMatch(/answered 400: \{"reason":"BadJwtToken"\}/);
+      expect(srv.logs()).toMatch(/push service answered 400 — the subscription is dead, removed/);
+    } finally {
+      await fetch(srv.base + "/push/unsubscribe", { method: "POST", headers: viaServe, body: JSON.stringify({ endpoint: push.subscription.endpoint }) });
+      await fetch(srv.base + "/push/unsubscribe", { method: "POST", headers: viaServe, body: JSON.stringify({ endpoint: dead.subscription.endpoint }) });
+      await push.close();
+      await dead.close();
+    }
+  });
+
   it("a thread from the old missions system is archived: readable, never run", async () => {
     const dir = join(vault, ".vault-chat", "conversations");
     const now = Date.now();

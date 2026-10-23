@@ -8,7 +8,7 @@ import { homedir, userInfo } from "node:os";
 import { basename, dirname, isAbsolute, join, relative } from "node:path";
 import { loadCatalog, modelMeta } from "./catalog";
 import { configureContext, ctxConfig, prepareProjects } from "./context";
-import { Engine } from "./engine";
+import { Engine, type EngineNotice } from "./engine";
 export { engineShuttingDown } from "./engine";
 import { Ledger } from "./ledger";
 import { excludeLocalDir } from "./wakes";
@@ -22,6 +22,7 @@ import { logOf } from "./convs";
 import { signal } from "../convlog/log";
 import { agentKeyEnv } from "../keys";
 import { sweepJobEnvFiles } from "./pi/jobs";
+import { PushGate, pushGate } from "../pushGate";
 
 /** A vault on this box: its working copy and bare repo. The main one keeps the paths it always had. */
 export type VaultRef = { name: string; path: string; bare: string; main: boolean };
@@ -72,28 +73,47 @@ export function engineModel(): string {
 }
 
 /** Web Push + notifications.jsonl + the /poll "notif" event, . A vault other
- * than the main one: its own feed, and the push opens the phone on that vault. */
+ * than the main one: its own feed, and the push opens the phone on that vault.
+ * The feed always gets the card; the phone buzzes only as the push gate's rule says. */
 export function engineNotify(b: EngineBoot, v?: VaultRef) {
   const vault = v?.path ?? b.vault;
   const q = v && !v.main ? `&vault=${encodeURIComponent(v.name)}` : "";
-  return async (n: { kind: "info" | "ask"; title: string; body: string; convId: string; options?: string[] }): Promise<string | null> => {
+  let own: PushGate | null = null;
+  const gateOf = () => pushGate() ?? (own ??= new PushGate({ send: b.sendPush }));
+  return async (n: EngineNotice): Promise<string | null> => {
     const id = Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
-    const rec: Record<string, unknown> = { id, ts: Date.now(), kind: n.kind, title: n.title.slice(0, 90), body: n.body.slice(0, 2000), convId: n.convId };
-    if (n.kind === "ask") {
-      rec.deliberation = {
-        ask: n.body.slice(0, 600),
-        options: (n.options ?? []).slice(0, 6).map((o) => ({ answer: o.slice(0, 200), title: o.slice(0, 120), body: "" })),
-      };
+    if (!n.pushOnly) {
+      const rec: Record<string, unknown> = { id, ts: Date.now(), kind: n.kind, title: n.title.slice(0, 90), body: n.body.slice(0, 2000), convId: n.convId };
+      if (n.kind === "ask") {
+        rec.deliberation = {
+          ask: n.body.slice(0, 600),
+          options: (n.options ?? []).slice(0, 6).map((o) => ({ answer: o.slice(0, 200), title: o.slice(0, 120), body: "" })),
+        };
+      }
+      try {
+        b.notificationAppend(vault, JSON.stringify(rec));
+      } catch {
+        /* feed is best effort */
+      }
+      signal(vault, { type: "notif" });
     }
-    try {
-      b.notificationAppend(vault, JSON.stringify(rec));
-    } catch {
-      /* feed is best effort */
-    }
-    signal(vault, { type: "notif" });
     // One push per conversation: the tag is the conversation id (a newer push replaces the older one).
-    const sent = await b.sendPush(n.title.slice(0, 90), n.body.slice(0, 180), `/phone?conv=${encodeURIComponent(n.convId)}${q}`, n.convId).catch(() => 0);
-    return sent ? id : null;
+    const d = await gateOf()
+      .offer({
+        vault,
+        why: n.why ?? (n.kind === "ask" ? "ask" : "finished"),
+        title: n.title.slice(0, 90),
+        body: n.body.slice(0, 180),
+        url: `/phone?conv=${encodeURIComponent(n.convId)}${q}`,
+        tag: n.convId,
+        convId: n.convId,
+        trigger: n.trigger ?? (n.kind === "ask" ? "AskUser" : "Notify"),
+        byCarl: n.byCarl,
+        stillNeeded: n.stillNeeded,
+      })
+      .catch(() => null);
+    // The card's id when there is one (the feed), else whether the phone was sent it.
+    return !n.pushOnly || (d?.act === "push" && d.sent) ? id : null;
   };
 }
 

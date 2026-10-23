@@ -101,9 +101,9 @@ current_version() {
 
 health() { curl -fsS --max-time 5 "$SERVER_URL/api/v1/health" 2>/dev/null; }
 
-alert() {  # alert <title> <body>; never fails the script
+alert() {  # alert <title> <body> [fixed]; never fails the script. "fixed": nothing for Carl to do — the box logs it, the phone stays quiet (server/pushGate.ts).
   local payload
-  payload="$(node -e 'process.stdout.write(JSON.stringify({title:process.argv[1],body:process.argv[2],tag:"vault-chat-update"}))' "$1" "$2")"
+  payload="$(node -e 'process.stdout.write(JSON.stringify({title:process.argv[1],body:process.argv[2],tag:"vault-chat-update",needsYou:process.argv[3]!=="fixed"}))' "$1" "$2" "${3:-}")"
   if ! curl -fsS --max-time 10 -H 'Content-Type: application/json' \
        -d "$payload" "$SERVER_URL/api/v1/alert" >/dev/null 2>&1; then
     log "could not deliver alert: $1 — $2"
@@ -275,13 +275,13 @@ else
     point_current "$prev"
     systemctl --user restart "$UNIT" || log "systemctl restart (rollback) returned non-zero"
     if wait_for_version "$cur" "$HEALTH_WAIT_S"; then
-      alert "Server update failed" "v$ver did not come up healthy within ${HEALTH_WAIT_S}s; rolled back to v$cur."
+      alert "Server update failed" "v$ver did not come up healthy within ${HEALTH_WAIT_S}s; rolled back to v$cur." fixed
     else
-      alert "Server update failed" "v$ver did not come up healthy and the rollback to v$cur is not healthy either."
+      alert "Needs you: the box server is down" "v$ver did not come up healthy and the rollback to v$cur is not healthy either. Check vault-chat-server on the box."
     fi
   else
     log "$ver did not report healthy within ${HEALTH_WAIT_S}s and there is nothing to roll back to"
-    alert "Server install failed" "v$ver did not come up healthy within ${HEALTH_WAIT_S}s (no earlier version to roll back to)."
+    alert "Needs you: the box server is down" "v$ver did not come up healthy within ${HEALTH_WAIT_S}s (no earlier version to roll back to). Check vault-chat-server on the box."
   fi
   exit 1
 fi

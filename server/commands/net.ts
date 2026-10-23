@@ -82,7 +82,9 @@ export const netCommands: Record<string, CommandFn> = {
     const h: Record<string, string> = {};
     for (const [k, v] of (headers ?? []) as [string, string][]) h[k] = v;
     const resp = await fetchWithTimeout(String(endpoint), { method: "POST", headers: h, body: Buffer.from(String(bodyB64), "base64") }, 20_000);
-    await resp.arrayBuffer().catch(() => undefined);
+    const why = await resp.text().catch(() => "");
+    // The push service's reason (Apple: {"reason":"BadJwtToken"} …), never the endpoint (it names the device).
+    if (resp.status >= 400) console.warn(`[phone-push] ${new URL(String(endpoint)).origin} answered ${resp.status}${why ? `: ${why.replace(/\s+/g, " ").slice(0, 200)}` : ""}`);
     return resp.status;
   },
 };

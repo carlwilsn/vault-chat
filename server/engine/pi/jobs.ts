@@ -43,6 +43,8 @@ export type JobRec = {
   state: "running" | "finished" | "stopped" | "timeout" | "gone";
   exit?: number;
   endedAt?: number;
+  /** Started by a turn Carl started (its finish may buzz his phone, server/pushGate.ts). */
+  byCarl?: boolean;
 };
 
 const unitOf = (id: string) => `vc-job-${id}`;
@@ -186,7 +188,7 @@ export function runningJobs(env: PiJobEnv): JobRec[] {
   return readJobs(env).filter((j) => j.state === "running");
 }
 
-export function startJob(env: PiJobEnv, cwd: string, a: { command?: string; name?: string; timeout?: unknown }, conv?: string): string {
+export function startJob(env: PiJobEnv, cwd: string, a: { command?: string; name?: string; timeout?: unknown }, conv?: string, byCarl = false): string {
   const cmd = String(a?.command ?? "").trim();
   if (!cmd) return "StartJob needs a command.";
   if (process.platform !== "linux" && !env.exec) return "StartJob needs Linux (systemd + bubblewrap).";
@@ -218,7 +220,7 @@ export function startJob(env: PiJobEnv, cwd: string, a: { command?: string; name
     rmSync(envFile, { force: true });
   }
   if (r.status !== 0) return `StartJob failed: ${(r.stderr || r.stdout || "").trim().slice(0, 400)}`;
-  writeJobs(env, [...readJobs(env), { id, ...(conv ? { conv } : {}), name, command: cmd.slice(0, 2000), startedAt: Date.now(), timeoutS, state: "running" }]);
+  writeJobs(env, [...readJobs(env), { id, ...(conv ? { conv } : {}), ...(byCarl ? { byCarl } : {}), name, command: cmd.slice(0, 2000), startedAt: Date.now(), timeoutS, state: "running" }]);
   const h = Math.round((timeoutS / 3600) * 10) / 10;
   return `Started job ${id} (survives this turn and restarts; stopped after ${h} h). Output: ${log}. When it ends you get a wake turn with its exit code and last lines; JobStatus{id:"${id}"} checks it before that.`;
 }

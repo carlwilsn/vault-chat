@@ -65,7 +65,7 @@ export type EngineDeps = {
   webSearchModel: string;
   apiKey: () => string | null;
   /** Web Push + notifications.jsonl + the /poll "notif" signal. */
-  notify: (n: { kind: "info" | "ask"; title: string; body: string; convId: string; options?: string[] }) => Promise<string | null>;
+  notify: (n: EngineNotice) => Promise<string | null>;
   /** One-line log. */
   log?: (s: string) => void;
   /** A vault-level signal on /poll (the inbox, notifications). */
@@ -82,6 +82,26 @@ export type EngineDeps = {
   turnLog?: (line: TurnLine) => void;
   /** The per-command sandbox the vault's own tools run in (server/vaultTools.ts); null: none (not Linux). */
   shell?: () => string[] | null | undefined;
+};
+
+/** What the engine raises: a question (kind "ask") or a line for Carl (kind "info"), with what the
+ * push gate needs to decide whether the phone buzzes (server/pushGate.ts). */
+export type EngineNotice = {
+  kind: "info" | "ask";
+  title: string;
+  body: string;
+  convId: string;
+  options?: string[];
+  /** Why the phone would buzz: a question, a finish, a failure he must act on. Default: ask for an ask, else finished. */
+  why?: "ask" | "finished" | "failed";
+  /** Carl started what finished (his message, or a wake or job his own turn set). */
+  byCarl?: boolean;
+  /** Still needs him (an ask: not answered yet). */
+  stillNeeded?: () => boolean;
+  /** What raised it, for the push log. */
+  trigger?: string;
+  /** Only the buzz: no feed card (a turn's own end: the chat already shows it). */
+  pushOnly?: boolean;
 };
 
 type TurnKind = "user" | "wake" | "resume";
@@ -109,12 +129,14 @@ type Live = {
   finished: boolean;
   /** What started the turn (for the silent retry). */
   input: string;
+  /** Carl started it: his message, or a wake or job a turn of his set (server/pushGate.ts: only his finishes buzz). */
+  byCarl: boolean;
   turnOpts: TurnOpts;
   /** The thread's working folder (the vault, or a project's main folder): relative tool paths start here. */
   cwd: string;
 };
 
-type TurnOpts = { images?: string[]; context?: string; itemImages?: ItemImage[]; clientId?: string; /** What the chat shows (Carl's answer to a question asked before a restart). */ shown?: string; via?: string; /** Which client sent it (the turn log's `via`: laptop, phone, voice …). */ origin?: string };
+type TurnOpts = { images?: string[]; context?: string; itemImages?: ItemImage[]; clientId?: string; /** What the chat shows (Carl's answer to a question asked before a restart). */ shown?: string; via?: string; /** Which client sent it (the turn log's `via`: laptop, phone, voice …). */ origin?: string; /** A wake, job or resume of something Carl started. */ byCarl?: boolean };
 
 const RESUME_TEXT =
   "The box restarted (or the engine stopped) while your last turn was running, so any command it was running was killed and may not have finished. Re-check reality (files, processes, logs), then continue from where you were.";
@@ -162,10 +184,11 @@ export const ENGINE_TOOL_SPECS = [
   {
     type: "function",
     name: "Notify",
-    description: "Send Carl a push notification (for news he should see now, not for questions).",
+    description:
+      "Tell Carl that something he asked for finished, or that something needs him (a failure he must act on). It lands in his alerts; his phone buzzes only when he is away from every screen, and a finish only when he started the work. The title says plainly what finished or what is needed (\"Done: …\", \"Needs you: …\"). Not for progress, not for background work he did not ask about, not for questions (AskUser).",
     inputSchema: {
       type: "object",
-      properties: { title: { type: "string" }, body: { type: "string" } },
+      properties: { title: { type: "string" }, body: { type: "string" }, needsYou: { type: "boolean", description: "true when Carl must act (a failure, something blocked on him); false or absent for a finish." } },
       required: ["title"],
       additionalProperties: false,
     },
@@ -1241,6 +1264,7 @@ export class Engine {
         started: false,
         finished: false,
         input,
+        byCarl: kind === "user" || !!opts.byCarl,
         turnOpts: opts,
         cwd: (typeof this.d.backend.threadSource === "function" ? this.d.backend.threadSource(threadId)?.cwd : null) || this.d.vault,
       };
@@ -1475,7 +1499,7 @@ export class Engine {
       return;
     }
     l.cut = true;
-    void this.finishTurn(l, "interrupted", null).then(() => this.run(l.convId, RESUME_TEXT, "resume")).catch((err) => this.log(`resume ${l.convId} failed: ${err}`));
+    void this.finishTurn(l, "interrupted", null).then(() => this.run(l.convId, RESUME_TEXT, "resume", { byCarl: l.byCarl })).catch((err) => this.log(`resume ${l.convId} failed: ${err}`));
   }
 
   private spawnCall(convId: string, itemId: string | undefined): string | null {
@@ -1516,12 +1540,38 @@ export class Engine {
     this.log(`turn ${l.kind} on ${l.convId} ${status}${l.cut ? " (cut)" : ""} → ${state}`);
     const outcome = l.cut ? "cut" : l.stopped ? "stopped" : status === "completed" ? "ok" : status;
     this.turnLine(l.rec, { status, outcome, state, error: errStr || null });
+    this.offerTurnPush(l, outcome, state, errStr, conv?.title ?? conv0?.title ?? "");
     this.d.onTurnEnded?.(l.convId);
     for (const w of this.turnWaiters.get(l.convId)?.splice(0) ?? []) w();
     if (this.taps.has(l.convId)) this.tapEmit(l.convId, { type: "vc_turn_end", status, kind: l.kind });
 
     // Cost, from the session's own figures (async; lands a few seconds later).
     void this.settleCost(l.convId, conv?.threadPath ?? conv0?.threadPath, l.turnId);
+  }
+
+  /** A turn Carl started ended: offered to the push gate (server/pushGate.ts), which buzzes only if he is away from every screen. */
+  private offerTurnPush(l: Live, outcome: string, state: string, errStr: string, title: string): void {
+    if (!l.byCarl || state === "waiting_user") return; // a question pushes on its own (AskUser)
+    const name = title && title !== "New chat" ? title : "your chat";
+    let why: "finished" | "failed";
+    let head: string;
+    let body: string;
+    if (outcome === "ok") {
+      const items = this.picture(l.convId)?.items ?? [];
+      const reply = [...items].reverse().find((x) => x.kind === "assistant" && x.at >= l.startedAt && (x.text ?? "").trim());
+      const t = (reply?.text ?? "").replace(/\s+/g, " ").trim();
+      if (!t || /^NO_REPLY\b/.test(t)) return;
+      why = "finished";
+      head = `Done: ${name}`;
+      body = t.slice(0, 180);
+    } else if (outcome === "failed") {
+      why = "failed";
+      head = `Failed: ${name}`;
+      body = `${(errStr || "the turn failed").slice(0, 140)} — open it to retry.`;
+    } else return; // stopped or cut: he stopped it, or the restart resumes it
+    void this.d
+      .notify({ kind: "info", title: head.slice(0, 90), body, convId: l.convId, why, byCarl: true, trigger: l.kind === "user" ? "turn end" : `${l.turnOpts.via ?? l.kind} end`, pushOnly: true })
+      .catch(() => undefined);
   }
 
   private updateSubagent(convId: string, threadId: string, patch: Record<string, unknown>): void {
@@ -1605,7 +1655,7 @@ export class Engine {
           // minute of this time, stands.
           const same = readWakes(vault).find((w) => w.conv === convId && (w.reason.trim().toLowerCase() === reason.toLowerCase() || Math.abs(w.at - at) < 60_000));
           if (same) return text(`A wake is already set for ${new Date(same.at).toISOString()} ("${same.reason}"); no second one was added. Stop now: do not call any more tools this turn.`);
-          addWake(vault, { conv: convId, at, reason });
+          addWake(vault, { conv: convId, at, reason, ...(this.live.get(convId)?.byCarl ? { byCarl: true } : {}) });
           await patchMeta(vault, convId, { nextWakeAt: nextWakeFor(vault, convId) });
           return text(`Wake set for ${new Date(at).toISOString()} ("${reason}"). Stop now: do not call any more tools this turn.`);
         }
@@ -1619,8 +1669,10 @@ export class Engine {
             return text("Not sent: this conversation already pinged Carl 4 times this hour. Only ping for a decision, a finish, or a real problem; batch the rest into your next reply.");
           }
           this.pings.set(convId, [...recent, Date.now()]);
-          const sent = await this.d.notify({ kind: "info", title: String(a.title ?? "vault-chat").slice(0, 90), body: String(a.body ?? "").slice(0, 2000), convId });
-          return text(sent ? "Notified." : "Recorded in the feed (no phone subscribed).");
+          // The phone buzzes by the push rule (server/pushGate.ts): a finish only if Carl started it, never while he looks.
+          const needsYou = a.needsYou === true;
+          await this.d.notify({ kind: "info", title: String(a.title ?? "vault-chat").slice(0, 90), body: String(a.body ?? "").slice(0, 2000), convId, why: needsYou ? "failed" : "finished", byCarl: !!this.live.get(convId)?.byCarl, trigger: "Notify" });
+          return text("In Carl's alerts. His phone buzzes only if he is away from every screen (and, for a finish, only if he started the work).");
         }
         case "BoardSend": {
           const r = await sendEntry(vault, a, { conversation: convId, emit: (ev) => this.inboxEvent(ev) });
@@ -1692,7 +1744,7 @@ export class Engine {
         case "WebSearch":
           return text(await webSearch(String(a.query ?? ""), this.d.apiKey(), this.d.webSearchModel));
         case "StartJob":
-          return text(startJob(this.d.jobEnv, vault, a, convId));
+          return text(startJob(this.d.jobEnv, vault, a, convId, !!this.live.get(convId)?.byCarl));
         case "Compact": {
           if (!convId) return text("No conversation to compact.");
           void this.compact(convId, typeof a.focus === "string" ? a.focus : undefined).then((r) => {
@@ -1772,7 +1824,8 @@ export class Engine {
       l.ask = { resolve, question, itemId };
     });
     this.emit(convId, { type: "meta", patch: { asking: { question, options, at: Date.now() }, state: "waiting_user" } });
-    await this.d.notify({ kind: "ask", title: (conv?.title ? `Needs you: ${conv.title}` : "Needs your call").slice(0, 90), body: question, convId, options });
+    // The phone buzzes only once he is away from every screen, and only while the question is still open.
+    await this.d.notify({ kind: "ask", title: (conv?.title ? `Needs your answer: ${conv.title}` : "Needs your answer").slice(0, 90), body: question, convId, options, why: "ask", trigger: "AskUser", stillNeeded: () => this.live.get(convId)?.ask?.itemId === itemId });
     return p;
   }
 
@@ -1851,7 +1904,7 @@ export class Engine {
     if (!conv) return;
     await patchMeta(this.d.vault, w.conv, { nextWakeAt: nextWakeFor(this.d.vault, w.conv) ?? undefined });
     this.log(`wake ${w.id} → ${w.conv}: ${w.reason}`);
-    await this.run(w.conv, `Wake: ${w.reason}`, "wake").catch((e) => this.log(`wake failed: ${e}`));
+    await this.run(w.conv, `Wake: ${w.reason}`, "wake", { byCarl: !!w.byCarl }).catch((e) => this.log(`wake failed: ${e}`));
   }
 
   /** A job that ended wakes the conversation that started it. */
@@ -1871,7 +1924,7 @@ export class Engine {
       const how =
         j.state === "finished" ? `finished: exit ${j.exit}` : j.state === "timeout" ? "was stopped by its time limit" : j.state === "stopped" ? "was stopped" : "ended without an exit code (stopped, or killed: out of memory?)";
       const tail = j.tail.split("\n").slice(-30).join("\n").slice(-3000);
-      void this.run(j.conv, `Job ${j.id} ${how}.\n--- last output ---\n${tail || "(none)"}`, "wake").catch((e) => this.log(`job wake ${j.conv}: ${e}`));
+      void this.run(j.conv, `Job ${j.id} ${how}.\n--- last output ---\n${tail || "(none)"}`, "wake", { byCarl: !!j.byCarl }).catch((e) => this.log(`job wake ${j.conv}: ${e}`));
     }
   }
 

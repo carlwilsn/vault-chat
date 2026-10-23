@@ -46,6 +46,7 @@ autosave, commit-controller, alert-summary, compactor, providers, modelCatalog (
 | `phone_broadcast` | 6812 → voice_server.rs:1394 | commands/phone.ts | into the `/poll` ring (ring.ts) |
 | `phone_set_vapid` | 6819 | commands/phone.ts | |
 | `phone_push_subs` / `phone_push_unsub` | 6825 / 6831 → voice_server.rs:1435–1470 | commands/phone.ts | file `VC_PUSH_SUBS` (default `~/.config/com.vault-chat.app/phone-push-subs.json`, the desktop's `app_config_dir`); absent file = no subscriptions |
+| `phone_push_result` | box only | commands/phone.ts | a delivery's outcome: a refusal (4xx but 404/410/429) counts on the subscription (`refusals`), a delivery clears it, the third refusal in a row removes it |
 | `notification_add` | 6838 → voice_server.rs:1937 | commands/phone.ts | |
 | `default_system_prompt` … `default_assistant_prompt` | 6511–6546 | commands/index.ts | the bundled `src-tauri/defaults/*.md` |
 

@@ -6,7 +6,8 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync, appendFileSync } fr
 import { join } from "node:path";
 import { renameRetry } from "../atomic";
 
-export type Wake = { conv: string; at: number; reason: string; id: string };
+/** `byCarl`: set by a turn Carl started (its finish may buzz his phone, server/pushGate.ts). */
+export type Wake = { conv: string; at: number; reason: string; id: string; byCarl?: boolean };
 
 export function wakesPath(vault: string): string {
   return join(vault, ".vault-chat", "local", "wakes.json");

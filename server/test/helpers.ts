@@ -328,7 +328,8 @@ export type FakePush = {
 
 /** RFC 8291 receiver: a P-256 subscription whose endpoint is a local server
  * that decrypts every aes128gcm POST back to its JSON payload. */
-export async function fakePushService(): Promise<FakePush> {
+/** `status`: what it answers (Apple answers 400 on every push to a subscription made under another VAPID key). */
+export async function fakePushService(status = 201): Promise<FakePush> {
   const ecdh = createECDH("prime256v1");
   const uaPub = ecdh.generateKeys();
   const auth = randomBytes(16);
@@ -352,8 +353,8 @@ export async function fakePushService(): Promise<FakePush> {
       const plain = Buffer.concat([d.update(ct.subarray(0, ct.length - 16)), d.final()]);
       const end = plain.lastIndexOf(2);
       received.push({ headers: req.headers, payload: JSON.parse(plain.subarray(0, end).toString("utf8")) });
-      res.writeHead(201);
-      res.end();
+      res.writeHead(status, { "Content-Type": "application/json" });
+      res.end(status >= 400 ? JSON.stringify({ reason: "BadJwtToken" }) : undefined);
     });
   });
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));

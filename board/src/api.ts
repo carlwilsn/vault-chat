@@ -52,6 +52,8 @@ const enc = encodeURIComponent;
 export const postBoardLog = (b: { session: string; v?: string; touch?: number; standalone?: boolean; events: unknown[] }, keepalive = false) =>
   call<{ ok: true; n: number }>("/api/v1/board/log", { method: "POST", body: JSON.stringify(b), ...(keepalive ? { keepalive: true } : {}) });
 
+/** Whether Carl is looking at the iPad (server/pushGate.ts: his phone stays quiet while he is). */
+export const postAttention = (b: { device: "board"; looking: boolean; convId: string | null }) => call<{ ok: true }>("/api/v1/attention", { method: "POST", body: JSON.stringify(b), keepalive: true });
 export const listBoards = () => call<{ boards: BoardSummary[] }>("/api/v1/boards").then((r) => r.boards);
 export const createBoard = (name: string) => call<{ slug: string; board: Board }>("/api/v1/boards", { method: "POST", body: JSON.stringify({ name }) });
 export const getBoard = (slug: string) => call<Board>(`/api/v1/boards/${enc(slug)}`);

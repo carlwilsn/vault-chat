@@ -30,6 +30,7 @@ import { addAsset, assetFile, copyAssets, createBoard, deleteBoard, getBoard, ge
 import { addToBoard, getEntry, listEntries, markAdded, markRead, partFile, sendEntry, type InboxCtx } from "./inbox";
 import { boxLogs } from "./boxLogs";
 import { ackShow, feedOpened } from "./show";
+import { noteAttention, pushGate } from "./pushGate";
 import { boardLogPost, boxDiag } from "./diag";
 import { noteUserLine } from "./signal";
 
@@ -39,7 +40,7 @@ export type VaultScope = { name: string; path: string; bare: string; main: boole
 export type ServerHooks = {
   health: () => Promise<Record<string, unknown>>;
   syncStatus: () => unknown;
-  alert: (title: string, body: string, tag?: string) => Promise<number>;
+  alert: (title: string, body: string, tag?: string, needsYou?: boolean) => Promise<number>;
   onGitPushed: (vault: string) => void;
   /** Settings → Box on the laptop: this box's vaults, and its own OpenRouter key. */
   vaults?: { list: () => unknown; add: (name: string) => Promise<Record<string, unknown>> };
@@ -309,8 +310,10 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
     const b = await jsonBody(req);
     const title = String(b.title ?? "").trim();
     const body = String(b.body ?? "").trim();
+    // `resolved`: what the tag's alert was about is over (the laptop's sync recovered): a held push never goes out.
+    if (b.resolved === true && typeof b.tag === "string") return json(res, 200, { ok: true, resolved: pushGate()?.resolve(b.tag) ?? 0 });
     if (!title && !body) return json(res, 400, { error: "alert needs a title or body" });
-    const sent = await hooks.alert(title || "vault-chat", body, typeof b.tag === "string" ? b.tag : undefined);
+    const sent = await hooks.alert(title || "vault-chat", body, typeof b.tag === "string" ? b.tag : undefined, b.needsYou !== false);
     return json(res, 200, { ok: true, sent });
   }
 
@@ -441,6 +444,14 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
       const st = await side.poll(scope, id, Number(url.searchParams.get("after") ?? -1), Number(url.searchParams.get("wait") ?? 20_000));
       return st ? json(res, 200, st) : json(res, 404, { error: "no such side thread" });
     }
+  }
+
+  // Is Carl looking (server/pushGate.ts): a surface says so while it is on screen (and, on the
+  // laptop, used), and says when it no longer is. The phone buzzes only when no surface is.
+  if (path === "/api/v1/attention" && method === "POST") {
+    const b = await jsonBody(req);
+    if (!noteAttention(vault, b.device, b.looking === true, b.convId)) return json(res, 400, { error: "device: laptop, phone or board" });
+    return json(res, 200, { ok: true });
   }
 
   // The shared context stream (server/activity.ts): this vault's log only.

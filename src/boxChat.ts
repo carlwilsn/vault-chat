@@ -23,6 +23,7 @@
 // outcome, ms) when this client sends, `box.turn` (conv, turn: start / end)
 // and `box.shown` (conv, cmid, pi's entry id) when the feed brings them back,
 // and `box.feed` for the poll itself (connect, drop, reset, resync, cursor).
+import { LAPTOP_IDLE_MS, startAttentionBeat, type AttentionBeat } from "./attentionBeat";
 import { invoke } from "@tauri-apps/api/core";
 import { vlog } from "./debugLog";
 import { projectForSend } from "./projects";
@@ -236,6 +237,8 @@ class BoxChatSession {
   private sent = new Set<string>();
   /** Clear on this surface (src/viewClear.ts): each conversation shows only what came after this device's own Clear. */
   private clearedAt: Record<string, string> = {};
+  /** Says to the box whether Carl is looking at the laptop (server/pushGate.ts: the phone stays quiet while he is). */
+  private beat: AttentionBeat | null = null;
 
   constructor(
     readonly vault: string,
@@ -250,14 +253,27 @@ class BoxChatSession {
       if (s.activeConversationId !== lastActive) {
         lastActive = s.activeConversationId;
         if (lastActive) this.open(lastActive);
+        this.beat?.poke();
       }
     });
     if (lastActive) this.open(lastActive);
     void this.loop();
+    try {
+      this.beat = startAttentionBeat({
+        device: "laptop",
+        idleMs: LAPTOP_IDLE_MS,
+        convId: () => useStore.getState().activeConversationId,
+        post: (b) => httpPost(this.link, "/api/v1/attention", b),
+      });
+    } catch {
+      /* no window here (tests): nothing to say */
+    }
   }
 
   stop(): void {
     this.stopped = true;
+    this.beat?.stop();
+    this.beat = null;
     this.unsub?.();
     if (this.cacheTimer) clearTimeout(this.cacheTimer);
     this.wake?.();

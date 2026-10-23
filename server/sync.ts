@@ -49,7 +49,8 @@ export type SyncStatus = {
   mirror: string;
 };
 
-type Alert = (title: string, body: string, tag?: string) => Promise<unknown>;
+/** `needsYou: false`: said in the journal only, never a buzz (server/pushGate.ts). */
+type Alert = (title: string, body: string, tag?: string, needsYou?: boolean) => Promise<unknown>;
 
 export class BoxSync {
   status: SyncStatus;
@@ -298,7 +299,7 @@ exit 0
       s.lastError = null;
       s.lastOkAt = Date.now();
       if (s.failingSince !== null && this.alertedFailure) {
-        void this.alert("Box sync recovered", `Sync is working again after ${Math.round((Date.now() - s.failingSince) / 60_000)} min.`, "vault-chat-sync").catch(() => {});
+        void this.alert("Box sync recovered", `Sync is working again after ${Math.round((Date.now() - s.failingSince) / 60_000)} min.`, "vault-chat-sync", false).catch(() => {});
       }
       s.failingSince = null;
       this.alertedFailure = false;
@@ -309,7 +310,7 @@ exit 0
       console.warn("[sync] cycle failed:", s.lastError);
       if (!this.alertedFailure && Date.now() - s.failingSince >= this.alertAfterMs) {
         this.alertedFailure = true;
-        void this.alert("Box sync failing", `For ${Math.round((Date.now() - s.failingSince) / 60_000)} min: ${s.lastError.slice(0, 300)}`, "vault-chat-sync").catch(() => {});
+        void this.alert("Needs you: box sync is failing", `For ${Math.round((Date.now() - s.failingSince) / 60_000)} min, the box and the laptop are not syncing: ${s.lastError.slice(0, 300)}`, "vault-chat-sync").catch(() => {});
       }
       await this.refreshRefs().catch(() => {});
     } finally {
@@ -398,7 +399,7 @@ exit 0
     const list = (ps: string[]) => `${ps.slice(0, 5).join(", ")}${ps.length > 5 ? ` and ${ps.length - 5} more` : ""}`;
     const large = fresh(r.tooLarge, "largeFilesSkipped");
     if (large.length) {
-      void this.alert("File too large to sync", `Not committed (over 50 MB): ${list(large)}. It stays on the box only.`, "vault-chat-sync").catch(() => {});
+      void this.alert("Needs you: a file is too large to sync", `Not committed (over 50 MB): ${list(large)}. It stays on the box only.`, "vault-chat-sync").catch(() => {});
     }
     const arch = fresh(r.archives, "archivesSkipped");
     if (arch.length) {
@@ -409,6 +410,8 @@ exit 0
           `backups and archives belong in ~/agent-work/${basename(this.vault)}/, outside the vault, which is synced and backed up to GitHub with every change. ` +
           `They stay on the box only.`,
         "vault-chat-sync",
+        // Nothing for Carl to do (the agent's archives belong outside the vault): logged, never a buzz.
+        false,
       ).catch(() => {});
     }
   }

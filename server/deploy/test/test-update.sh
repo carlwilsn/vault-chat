@@ -149,6 +149,7 @@ check "rollback: restarted twice (new, old)"  [ "$(restarts)" = 2 ]
 check "rollback: server back on 1.0.1"        [ "$(cat "$FIX/server-state")" = 1.0.1 ]
 check "rollback: one alert sent"              [ "$(wc -l < "$FIX/alerts.log" | tr -d ' ')" = 1 ]
 check "rollback: alert names both versions"   grep -q 'v1.0.2.*rolled back to v1.0.1' "$FIX/alerts.log"
+check "rollback: fixed itself, no buzz"         grep -q '"needsYou":false' "$FIX/alerts.log"
 check "rollback: 1.0.2 marked failed"         [ -e "$STATE/failed/1.0.2" ]
 
 reset_logs

@@ -126,9 +126,9 @@ describe("box sync loop", () => {
     expect(tracked).not.toContain("data/huge.bin");
     expect(readFileSync(join(box, ".git", "info", "exclude"), "utf8")).toContain("/data/huge.bin");
     expect(sync.status.largeFilesSkipped).toEqual(["data/huge.bin"]);
-    expect(alerts.filter((a) => a.title === "File too large to sync")).toHaveLength(1);
+    expect(alerts.filter((a) => a.title === "Needs you: a file is too large to sync")).toHaveLength(1);
     await sync.runOnce();
-    expect(alerts.filter((a) => a.title === "File too large to sync")).toHaveLength(1);
+    expect(alerts.filter((a) => a.title === "Needs you: a file is too large to sync")).toHaveLength(1);
     expect(git(box, "status", "--porcelain").trim()).toBe("");
   });
 
@@ -219,22 +219,25 @@ describe("box sync loop", () => {
     expect(git(box, "show", "--name-only", "--format=", "HEAD").trim()).toBe("notes/late.md");
   });
 
-  it("reports full stderr, alerts on persistent failure and again on recovery", async () => {
-    sync = new BoxSync(box, join(root, "missing.git"), 60_000, async (title, body) => {
+  it("reports full stderr, alerts on persistent failure; the recovery is logged, never a buzz", async () => {
+    const needs: boolean[] = [];
+    sync = new BoxSync(box, join(root, "missing.git"), 60_000, async (title, body, _tag, needsYou) => {
       alerts.push({ title, body });
+      needs.push(needsYou !== false);
     }, 0);
     await sync.runOnce();
     expect(sync.status.ok).toBe(false);
     expect(sync.status.steps.push?.ok).toBe(false);
     expect(sync.status.lastError).toMatch(/git push box \(exit \d+\): .+/);
-    expect(alerts.map((a) => a.title)).toContain("Box sync failing");
+    expect(alerts.map((a) => a.title)).toContain("Needs you: box sync is failing");
     await sync.runOnce();
-    expect(alerts.filter((a) => a.title === "Box sync failing")).toHaveLength(1);
+    expect(alerts.filter((a) => a.title === "Needs you: box sync is failing")).toHaveLength(1);
     // Fix it: point at a real bare repo.
     sh(root, "git", ["init", "--bare", "-q", "-b", "master", join(root, "missing.git")]);
     await sync.runOnce();
     expect(sync.status.ok).toBe(true);
     expect(alerts.map((a) => a.title)).toContain("Box sync recovered");
+    expect(needs).toEqual([true, false]);
   });
 
   it("refuses to sync a working copy that is not on box", async () => {
