@@ -758,6 +758,11 @@ export class BoardView {
     }
     t.c = this.freshCanvas();
     if (this.paintTile(t)) return t;
+    // Still none: pdf.js's bitmaps go back too (each page shows its stored PNG, which is always under them).
+    release(t.c);
+    this.items.dropPdfBitmaps(true);
+    t.c = this.freshCanvas();
+    if (this.paintTile(t)) return t;
     release(t.c);
     this.trouble("tile: no canvas context");
     return null;
@@ -830,6 +835,10 @@ export class BoardView {
     this.onResizeFrom(`show:${e.type}`);
     this.snapCam();
     this.drawS = this.screenScale();
+    // pdf.js's bitmaps are canvases too, and theirs may be the pixels that were dropped: given back and rendered
+    // again for the pages in view (their PNG shows meanwhile).
+    this.items.dropPdfBitmaps();
+    this.sharpenPdfs();
     this.refreshVisible();
     blog("board.show", { via: e.type, tiles: this.tiles.size });
   };
@@ -842,7 +851,10 @@ export class BoardView {
       // Never a half-drawn board left on screen: start the tiles over next frame (and say so in the log).
       this.trouble(`renderBase: ${String((e as Error)?.message ?? e)}`);
       this.dropAllTiles();
+      // Next frame, three times; then on the safety net's beat until it draws (never given up on: a board left blank
+      // until a pan is the bug this guards against).
       if (this.retries++ < 3) this.queueBase();
+      else this.refreshSoon();
       return;
     }
     this.retries = 0;
@@ -959,9 +971,12 @@ export class BoardView {
       return;
     }
     if (it.kind === "pdf") {
-      // The sharper of pdf.js's render and the page's stored PNG (shown at once on opening).
+      // The page's stored PNG is always the base (or the grey placeholder until it loads); pdf.js's sharper render
+      // is an upgrade drawn over it. A bitmap whose pixels iPadOS dropped (in the background, or under memory
+      // pressure) is transparent, so the page never shows blank: the PNG is under it.
       const bm = this.items.pdfBitmap(it), snap = this.pdfSnap(it);
-      drawItem(ctx, it, bm && (!snap || bm.width >= snap.naturalWidth) ? bm : (snap ?? bm));
+      drawItem(ctx, it, snap);
+      if (bm && bm.width && (!snap || bm.width > snap.naturalWidth)) ctx.drawImage(bm, it.x, it.y, it.w, it.h);
       // A sheet of paper on the paper: a hairline edge.
       ctx.save();
       ctx.strokeStyle = "rgba(0,0,0,0.14)";

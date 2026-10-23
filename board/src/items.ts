@@ -31,9 +31,10 @@ export function release(c: HTMLCanvasElement): void {
   c.width = 0;
   c.height = 0;
 }
-/** A PDF page's bitmap is at most this many pixels (48 MB), and all of them together at most PDF_BUDGET. */
+/** A PDF page's bitmap is at most this many pixels (48 MB), and all of them together at most PDF_BUDGET (96 MB: with
+ *  the tiles, their pool and the two screen canvases, under iPadOS's canvas memory cap with room for a render). */
 const PDF_MAX_PX = 12e6;
-const PDF_BUDGET = 40e6;
+const PDF_BUDGET = 24e6;
 const num = (v: unknown, d: number) => (typeof v === "number" && Number.isFinite(v) && v > 0 ? v : d);
 
 // ---------------------------------------------------------------- pdf
@@ -189,11 +190,14 @@ export function mathSize(url: string, w: number): Promise<{ w: number; h: number
 // ---------------------------------------------------------------- the renderer
 
 type Dom = { el: HTMLElement; src: string };
-type PdfBitmap = { c: HTMLCanvasElement | null; px: number; want: number; p?: Promise<void>; used: number };
+/** gen: bumped when the bitmaps are dropped (dropPdfBitmaps); a render begun before that is thrown away when it lands. */
+type PdfBitmap = { c: HTMLCanvasElement | null; px: number; want: number; p?: Promise<void>; used: number; gen: number };
 
 export class Items {
   private dom = new Map<string, Dom>();
   private pdf = new Map<string, PdfBitmap>();
+  /** All the pages' bitmaps together at most this many px: PDF_BUDGET, halved each time the canvas memory ran out. */
+  private budget = PDF_BUDGET;
 
   constructor(
     private slug: string,
@@ -216,18 +220,33 @@ export class Items {
     return rec.c;
   }
 
-  /** Over PDF_BUDGET: the least recently drawn pages' bitmaps given back (they fall back to their stored PNG, and
+  /** Over the budget: the least recently drawn pages' bitmaps given back (they fall back to their stored PNG, and
    *  are rendered again when seen close up). */
   private trimPdf(keep: PdfBitmap): void {
     const live = [...this.pdf.values()].filter((r) => r.c);
     let total = live.reduce((n, r) => n + r.c!.width * r.c!.height, 0);
     for (const r of live.sort((a, b) => a.used - b.used)) {
-      if (total <= PDF_BUDGET) break;
+      if (total <= this.budget) break;
       if (r === keep) continue;
       total -= r.c!.width * r.c!.height;
       release(r.c!);
       r.c = null;
       r.px = r.want = 0;
+    }
+  }
+
+  /** Every page's bitmap given back (after the background, where iPadOS may have dropped their pixels): the pages
+   *  fall back to their stored PNG and are rendered again when wanted; a render in flight (its canvas may have been
+   *  dropped half way) is thrown away when it lands. */
+  dropPdfBitmaps(squeeze = false): void {
+    // Out of canvas memory (squeeze): less for pdf.js from now on, so its renders and the tiles stop pushing each
+    // other out (never under one 12 MP page: the PNG stays under it anyway).
+    if (squeeze) this.budget = Math.max(PDF_MAX_PX, this.budget / 2);
+    for (const r of this.pdf.values()) {
+      if (r.c) release(r.c);
+      r.c = null;
+      r.px = r.want = 0;
+      r.gen++;
     }
   }
 
@@ -241,13 +260,13 @@ export class Items {
     const k = this.pdfKey(it);
     const cur = this.pdf.get(k);
     if (cur && (cur.px >= want || cur.want >= want)) return;
-    const rec: PdfBitmap = cur ?? { c: null, px: 0, want: 0, used: performance.now() };
+    const rec: PdfBitmap = cur ?? { c: null, px: 0, want: 0, used: performance.now(), gen: 0 };
     rec.want = want;
     this.pdf.set(k, rec);
-    const page = num(it.page, 1), src = it.src;
+    const page = num(it.page, 1), src = it.src, gen = rec.gen;
     rec.p = renderPdfPage(api.assetUrl(this.slug, src), page, want)
       .then((c) => {
-        if (rec.want !== want && rec.px >= want) return release(c);
+        if (rec.gen !== gen || (rec.want !== want && rec.px >= want)) return release(c);
         if (rec.c && rec.c !== c) release(rec.c);
         rec.c = c;
         rec.px = want;
@@ -256,7 +275,7 @@ export class Items {
         this.changed(src, page);
       })
       .catch(() => {
-        rec.want = rec.px;
+        if (rec.gen === gen) rec.want = rec.px;
       });
   }
 
