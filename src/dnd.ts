@@ -1,18 +1,41 @@
 import { invoke } from "@tauri-apps/api/core";
 
-export const VAULT_PATH_MIME = "application/x-vault-path";
-// Multi-path payload for drags from a Shift-click selection. Value is
-// a JSON-encoded string[] of absolute vault paths. VAULT_PATH_MIME is
-// also set (to the drag source) so single-path consumers still work.
-export const VAULT_PATHS_MIME = "application/x-vault-paths";
 export const VAULT_PANE_MIME = "application/x-vault-pane";
+
+// A file-tree drag is a pointer drag, not an HTML5 one (FileTree). While it is
+// off the tree it is offered here: a drop target subscribes to see where the
+// pointer is (to show its own highlight) and registers a drop handler, which
+// returns true when the point was its own.
+export type TreeDragPoint = { paths: string[]; path: string; x: number; y: number };
+let treeDragNow: TreeDragPoint | null = null;
+const treeDragSubs = new Set<() => void>();
+const treeDropHandlers = new Set<(d: TreeDragPoint) => boolean>();
+export const treeDrag = {
+  current: (): TreeDragPoint | null => treeDragNow,
+  move(d: TreeDragPoint | null): void {
+    if (d === treeDragNow) return;
+    treeDragNow = d;
+    for (const f of treeDragSubs) f();
+  },
+  subscribe(f: () => void): () => void {
+    treeDragSubs.add(f);
+    return () => treeDragSubs.delete(f);
+  },
+  onDrop(h: (d: TreeDragPoint) => boolean): () => void {
+    treeDropHandlers.add(h);
+    return () => treeDropHandlers.delete(h);
+  },
+  drop(d: TreeDragPoint): boolean {
+    for (const h of treeDropHandlers) if (h(d)) return true;
+    return false;
+  },
+};
 
 // True if the DataTransfer carries external OS files (i.e. an external
 // drop from the user's file manager) rather than a drag we initiated
 // ourselves within the app.
 export function isExternalFileDrop(dt: DataTransfer | null): boolean {
   if (!dt) return false;
-  if (dt.types.includes(VAULT_PATH_MIME)) return false;
   if (dt.types.includes(VAULT_PANE_MIME)) return false;
   // Some platforms expose the files under "Files" in types even before
   // drop — covers both drop and dragover.

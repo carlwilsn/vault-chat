@@ -1,10 +1,10 @@
 import { useState, useEffect, useRef } from "react";
-import { createPortal, flushSync } from "react-dom";
+import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { FileText, ChevronRight, ChevronDown, FilePlus, FolderPlus, Pencil, Trash2, EyeOff, FolderOpen, Plus, Upload, AlertTriangle, Folder } from "lucide-react";
 import { useStore, type FileEntry } from "./store";
-import { VAULT_PATH_MIME, VAULT_PATHS_MIME, isExternalFileDrop, copyExternalFilesInto } from "./dnd";
+import { isExternalFileDrop, copyExternalFilesInto, treeDrag } from "./dnd";
 import { cn } from "./lib/utils";
 import { isUnreadableAsText } from "./fileKind";
 import { revealInFileExplorer } from "./opener";
@@ -13,15 +13,17 @@ import { commitFsAction } from "./commit-controller";
 type PendingKind = "file" | "folder";
 type Menu = { x: number; y: number; entry: FileEntry | null } | null;
 
-// Drag and drop (see the note in FileTree): how far the pointer must travel,
-// or how long a row must be held, before a drag can drop anywhere; how long a
-// closed folder must be hovered before it opens; and where the pointer holds
-// the drag chip.
+// Drag and drop (see the note in FileTree): how far the pointer must travel
+// before a press becomes a drag (or how long it must be held, then a small
+// move); how long a closed folder must be hovered before it opens; and where
+// the chip sits relative to the pointer.
 const DRAG_THRESHOLD = 7;
 const HOLD_MS = 300;
+const HOLD_MOVE = 3;
 const AUTO_EXPAND_MS = 600;
-const GHOST_GRAB = { x: 6, y: 6 };
-type DragGhostInfo = { name: string; isDir: boolean; count: number };
+const GHOST_OFFSET = { x: 14, y: 12 };
+type DragGhostInfo = { name: string; isDir: boolean; count: number; x: number; y: number };
+type TreeHit = { inTree: boolean; target: string | null | undefined };
 
 export function FileTree() {
   const {
@@ -58,24 +60,28 @@ export function FileTree() {
   const lastVaultRef = useRef<string | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const renameRef = useRef<HTMLInputElement | null>(null);
-  // Drag and drop. Rows stay statically `draggable` (WebKitGTK only honours
-  // the flag as it stood at mousedown), so the webview starts a native drag
-  // at its own ~4 px threshold. That is too twitchy: a click that slips a few
-  // pixels used to drop the file into the next folder. So a drag only counts
-  // once it is *armed*: the pointer has travelled DRAG_THRESHOLD px from the
-  // press (measured on dragover, whose coordinates are right on WebView2 and
-  // WebKitGTK alike), or the row was held HOLD_MS before it moved. Until then
-  // nothing highlights and a drop does nothing; a release that never armed is
-  // the click it was meant to be. Escape cancels (the webview ends the drag
-  // with dropEffect "none") and folders the hover opened close again.
-  const pressRef = useRef<{ x: number; y: number; at: number } | null>(null);
+  // Moving files is a pointer drag, not an HTML5 one: over an HTML5 drag
+  // WebView2 draws the OS drag cursor (the no-drop sign) and its own image,
+  // which never felt native. A press on a row becomes a drag only after
+  // DRAG_THRESHOLD px of travel (or HOLD_MS held, then a small move), so a
+  // click never moves a file. Then the pointer is captured, the chip follows
+  // it (a transform, once a frame), the target under it is found by
+  // hit-testing (a folder row; a file row means its own folder; the empty
+  // area means the vault root), the cursor is the grabbing hand everywhere, a
+  // closed folder opens after a hover, and Escape cancels (closing what the
+  // hover opened). Off the tree the drag is offered to the app's other drop
+  // targets (dnd.ts treeDrag: the editor area opens the file at an edge).
+  // Files dropped in from the OS still arrive as HTML5 drops.
   const dragRef = useRef<{
+    sources: string[];
+    path: string;
     x: number;
     y: number;
-    armed: boolean;
-    sources: string[];
     autoOpened: Set<string>;
+    raf: number;
   } | null>(null);
+  const suppressClickRef = useRef(false);
+  const treeRef = useRef<HTMLDivElement | null>(null);
   const ghostRef = useRef<HTMLDivElement | null>(null);
   const [ghost, setGhost] = useState<DragGhostInfo | null>(null);
 
@@ -182,7 +188,7 @@ export function FileTree() {
 
   const handleExternalDrop = async (
     e: React.DragEvent<HTMLElement>,
-    targetDir: string,
+    targetDir: string | null | undefined,
   ) => {
     e.preventDefault();
     e.stopPropagation();
@@ -191,7 +197,7 @@ export function FileTree() {
     const files = e.dataTransfer.files;
     if (!files || files.length === 0) return;
     try {
-      await copyExternalFilesInto(targetDir, files);
+      await copyExternalFilesInto(targetDir ?? vaultPath, files);
       await refreshFiles();
     } catch (err) {
       console.error("[drop] copy failed:", err);
@@ -203,14 +209,7 @@ export function FileTree() {
   // tree root). Filters out no-op, self-parent, and into-descendant
   // moves so the backend never sees them. Accepts a list so Shift-
   // click multi-selections drag as a group.
-  const handleInternalMove = async (
-    e: React.DragEvent<HTMLElement>,
-    sources: string[],
-    dstDir: string,
-  ) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setDropTarget(undefined);
+  const handleInternalMove = async (sources: string[], dstDir: string) => {
     if (!vaultPath) return;
     const dstClean = dstDir.replace(/\/$/, "");
     const moves: { from: string; to: string }[] = [];
@@ -303,71 +302,129 @@ export function FileTree() {
     }
   };
 
-  const readDropSources = (dt: DataTransfer): string[] => {
-    const multi = dt.getData(VAULT_PATHS_MIME);
-    if (multi) {
-      try {
-        const parsed = JSON.parse(multi);
-        if (Array.isArray(parsed)) return parsed.filter((p) => typeof p === "string");
-      } catch {
-        /* fall through to single */
-      }
-    }
-    const one = dt.getData(VAULT_PATH_MIME);
-    return one ? [one] : [];
+  // The folder a drop on this element lands in: a folder row itself, a file
+  // row's own folder (like VS Code), anything else in the tree the vault root.
+  // null = the vault root; undefined = not a place to drop these sources.
+  const dirAt = (el: Element | null, sources: string[]): string | null | undefined => {
+    if (!vaultPath) return undefined;
+    const rowEl = el?.closest<HTMLElement>("[data-tree-path]");
+    const p = rowEl?.dataset.treePath;
+    const dir = !p ? vaultPath : rowEl!.dataset.treeDir ? p : p.slice(0, p.lastIndexOf("/")) || vaultPath;
+    // Into itself or a descendant: refused. Already there: nothing to do.
+    if (sources.some((s) => s === dir || dir.startsWith(s + "/"))) return undefined;
+    if (sources.length > 0 && sources.every((s) => s.slice(0, s.lastIndexOf("/")) === dir)) return undefined;
+    return dir === vaultPath ? null : dir;
   };
 
-  const isInternalDrag = (dt: DataTransfer | null): boolean =>
-    !!dt && dt.types.includes(VAULT_PATH_MIME);
+  const hitAt = (x: number, y: number, sources: string[]): TreeHit => {
+    const el = document.elementFromPoint(x, y);
+    if (!el || !treeRef.current?.contains(el)) return { inTree: false, target: undefined };
+    return { inTree: true, target: dirAt(el, sources) };
+  };
 
-  // The folder a drop on this row lands in: the folder itself, or a file's
-  // own folder (like VS Code), so hovering a sibling file never means "the
-  // vault root".
-  const dirOf = (f: FileEntry): string =>
-    f.is_dir ? f.path : f.path.slice(0, f.path.lastIndexOf("/")) || vaultPath || "";
-
-  // Arm the drag once the pointer is far enough from the press. A drag that
-  // came from outside this tree (OS files, a pane header) is always armed.
-  const armed = (e: React.DragEvent): boolean => {
+  // One frame of a drag: move the chip, find the target, tell the others.
+  const frame = () => {
     const d = dragRef.current;
-    if (!d) return true;
-    if (!d.armed && Math.hypot(e.clientX - d.x, e.clientY - d.y) >= DRAG_THRESHOLD) d.armed = true;
-    return d.armed;
+    if (!d) return;
+    d.raf = 0;
+    if (ghostRef.current) ghostRef.current.style.transform = `translate3d(${d.x + GHOST_OFFSET.x}px, ${d.y + GHOST_OFFSET.y}px, 0)`;
+    const hit = hitAt(d.x, d.y, d.sources);
+    setDropTarget(hit.target);
+    treeDrag.move(hit.inTree ? null : { paths: d.sources, path: d.path, x: d.x, y: d.y });
   };
 
-  // Shared by every drop zone (rows, and the empty area = the vault root).
-  const onZoneOver = (e: React.DragEvent<HTMLElement>, dir: string) => {
-    if (!vaultPath) return;
-    const internal = isInternalDrag(e.dataTransfer);
-    if (!internal && !isExternalFileDrop(e.dataTransfer)) return;
-    e.preventDefault();
-    e.stopPropagation();
-    e.dataTransfer.dropEffect = internal ? "move" : "copy";
-    if (!armed(e)) return;
-    const sources = internal ? dragRef.current?.sources ?? [] : [];
-    // Into itself or a descendant: refused. Already there: nothing to show.
-    if (sources.some((p) => p === dir || dir.startsWith(p + "/"))) {
-      e.dataTransfer.dropEffect = "none";
-      setDropTarget(undefined);
-      return;
+  const endDrag = (commit: boolean) => {
+    const d = dragRef.current;
+    if (!d) return;
+    dragRef.current = null;
+    if (d.raf) cancelAnimationFrame(d.raf);
+    document.documentElement.classList.remove("vc-dragging");
+    setGhost(null);
+    setDropTarget(undefined);
+    treeDrag.move(null);
+    let used = false;
+    if (commit) {
+      const hit = hitAt(d.x, d.y, d.sources);
+      if (hit.inTree) {
+        if (hit.target !== undefined && vaultPath) {
+          handleInternalMove(d.sources, hit.target ?? vaultPath);
+          used = true;
+        }
+      } else used = treeDrag.drop({ paths: d.sources, path: d.path, x: d.x, y: d.y });
     }
-    const noop = sources.length > 0 && sources.every((p) => p.slice(0, p.lastIndexOf("/")) === dir);
-    setDropTarget(noop ? undefined : dir === vaultPath ? null : dir);
+    if (!used && d.autoOpened.size > 0) {
+      setExpanded((prev) => {
+        const next = new Set(prev);
+        for (const p of d.autoOpened) next.delete(p);
+        return next;
+      });
+    }
   };
 
-  const onZoneDrop = (e: React.DragEvent<HTMLElement>, dir: string) => {
-    if (!vaultPath) return;
-    if (isInternalDrag(e.dataTransfer)) {
-      if (!armed(e)) {
-        e.preventDefault();
-        e.stopPropagation();
-        setDropTarget(undefined);
+  const onRowPointerDown = (e: React.PointerEvent<HTMLElement>, f: FileEntry) => {
+    if (e.button !== 0 || !e.isPrimary || dragRef.current) return;
+    const el = e.currentTarget;
+    const press = { x: e.clientX, y: e.clientY, at: performance.now(), id: e.pointerId };
+    let over = false; // an Escape ended this press's drag: the rest of it is inert
+    const begin = (ev: PointerEvent) => {
+      // A selected row drags the whole selection; any other row, itself.
+      const group = selected.has(f.path) && selected.size > 1 ? Array.from(selected) : [f.path];
+      try {
+        el.setPointerCapture(press.id);
+      } catch {
+        /* the pointer is already gone */
+      }
+      dragRef.current = { sources: group, path: f.path, x: ev.clientX, y: ev.clientY, autoOpened: new Set(), raf: 0 };
+      document.documentElement.classList.add("vc-dragging");
+      setGhost({ name: f.name, isDir: f.is_dir, count: group.length, x: ev.clientX, y: ev.clientY });
+      frame();
+    };
+    const move = (ev: PointerEvent) => {
+      if (ev.pointerId !== press.id || over) return;
+      const d = dragRef.current;
+      if (!d) {
+        const dist = Math.hypot(ev.clientX - press.x, ev.clientY - press.y);
+        const held = performance.now() - press.at >= HOLD_MS;
+        if (dist >= DRAG_THRESHOLD || (held && dist >= HOLD_MOVE)) begin(ev);
         return;
       }
-      handleInternalMove(e, readDropSources(e.dataTransfer), dir);
-    } else if (isExternalFileDrop(e.dataTransfer)) {
-      handleExternalDrop(e, dir);
-    }
+      d.x = ev.clientX;
+      d.y = ev.clientY;
+      if (!d.raf) d.raf = requestAnimationFrame(frame);
+    };
+    const finish = (ev: PointerEvent, commit: boolean) => {
+      if (ev.pointerId !== press.id) return;
+      stop();
+      const d = dragRef.current;
+      if (!d) return;
+      // The click this release makes is not a click on the row.
+      suppressClickRef.current = true;
+      window.setTimeout(() => (suppressClickRef.current = false), 0);
+      d.x = ev.clientX;
+      d.y = ev.clientY;
+      endDrag(commit);
+    };
+    const up = (ev: PointerEvent) => finish(ev, true);
+    const cancel = (ev: PointerEvent) => finish(ev, false);
+    const key = (ev: KeyboardEvent) => {
+      if (ev.key !== "Escape" || !dragRef.current) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      over = true;
+      suppressClickRef.current = true;
+      endDrag(false);
+    };
+    const stop = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", cancel);
+      window.removeEventListener("keydown", key, true);
+      if (over) window.setTimeout(() => (suppressClickRef.current = false), 0);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", cancel);
+    window.addEventListener("keydown", key, true);
   };
 
   const onRowClick = (f: FileEntry, shift: boolean) => {
@@ -771,13 +828,22 @@ export function FileTree() {
           e.preventDefault();
           setMenu({ x: e.clientX, y: e.clientY, entry: null });
         }}
-        onDragOver={(e) => vaultPath && onZoneOver(e, vaultPath)}
+        ref={treeRef}
+        onDragOver={(e) => {
+          if (!vaultPath || !isExternalFileDrop(e.dataTransfer)) return;
+          e.preventDefault();
+          e.dataTransfer.dropEffect = "copy";
+          setDropTarget(dirAt(e.target as Element, []));
+        }}
         onDragLeave={(e) => {
           if (!vaultPath) return;
           if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
           setDropTarget(undefined);
         }}
-        onDrop={(e) => vaultPath && onZoneDrop(e, vaultPath)}
+        onDrop={(e) => {
+          if (!vaultPath || !isExternalFileDrop(e.dataTransfer)) return;
+          handleExternalDrop(e, dirAt(e.target as Element, []));
+        }}
       >
         {!vaultPath && (
           <div className="px-4 py-8 text-center text-[12px] text-muted-foreground">
@@ -835,70 +901,17 @@ export function FileTree() {
                     f.is_dir && dropTarget === f.path && "bg-primary/15 text-foreground ring-1 ring-inset ring-primary/70",
                   )}
                   style={{ paddingLeft: 8 + f.depth * 12 }}
-                  draggable
+                  data-tree-path={f.path}
+                  data-tree-dir={f.is_dir ? "1" : undefined}
                   onMouseDown={(e) => {
-                    if (e.button === 2) {
-                      e.stopPropagation();
+                    if (e.button === 2) e.stopPropagation();
+                  }}
+                  onPointerDown={(e) => onRowPointerDown(e, f)}
+                  onClick={(ev) => {
+                    if (suppressClickRef.current) {
+                      suppressClickRef.current = false;
                       return;
                     }
-                    if (e.button === 0) pressRef.current = { x: e.clientX, y: e.clientY, at: performance.now() };
-                  }}
-                  onDragStart={(e) => {
-                    // If the dragged row is part of a multi-selection,
-                    // ship the whole set; otherwise just this row.
-                    const group =
-                      selected.has(f.path) && selected.size > 1
-                        ? Array.from(selected)
-                        : [f.path];
-                    const p = pressRef.current;
-                    pressRef.current = null;
-                    dragRef.current = {
-                      x: p?.x ?? e.clientX,
-                      y: p?.y ?? e.clientY,
-                      armed: !!p && performance.now() - p.at >= HOLD_MS,
-                      sources: group,
-                      autoOpened: new Set(),
-                    };
-                    e.dataTransfer.setData(VAULT_PATH_MIME, f.path);
-                    // Intentionally NOT setting text/plain. Nothing in
-                    // this app consumes it, and Monaco / CodeMirror
-                    // grab text/plain off any drop and insert it into
-                    // the editor — so dragging a tree row over an open
-                    // file in edit mode used to paste its path into
-                    // the buffer instead of opening the split-screen
-                    // pane the MarkdownArea drop handler is wired up
-                    // for.
-                    if (group.length > 1) {
-                      e.dataTransfer.setData(VAULT_PATHS_MIME, JSON.stringify(group));
-                    }
-                    // copyMove — ChatPane treats it as copy (attach),
-                    // folder targets treat it as move.
-                    e.dataTransfer.effectAllowed = "copyMove";
-                    // The drag image: a solid chip (icon, name, count),
-                    // rendered now so the webview can snapshot it.
-                    flushSync(() => setGhost({ name: f.name, isDir: f.is_dir, count: group.length }));
-                    if (ghostRef.current) e.dataTransfer.setDragImage(ghostRef.current, GHOST_GRAB.x, GHOST_GRAB.y);
-                  }}
-                  onDragEnd={(e) => {
-                    const d = dragRef.current;
-                    dragRef.current = null;
-                    setDropTarget(undefined);
-                    setGhost(null);
-                    if (!d) return;
-                    const cancelled = e.dataTransfer.dropEffect === "none";
-                    if (cancelled && d.autoOpened.size > 0) {
-                      setExpanded((prev) => {
-                        const next = new Set(prev);
-                        for (const p of d.autoOpened) next.delete(p);
-                        return next;
-                      });
-                    }
-                    // Released before it armed, inside the tree: a click.
-                    if (!d.armed && !cancelled) onRowClick(f, e.shiftKey);
-                  }}
-                  onDragOver={(e) => onZoneOver(e, dirOf(f))}
-                  onDrop={(e) => onZoneDrop(e, dirOf(f))}
-                  onClick={(ev) => {
                     if (ev.shiftKey) ev.preventDefault();
                     onRowClick(f, ev.shiftKey);
                   }}
@@ -1214,9 +1227,10 @@ export function FileTree() {
   );
 }
 
-// The drag image: an opaque chip with the icon, the name and, for several
-// items, a count badge over a second card. It sits off-screen, portalled to
-// the body so no pane clips it; the webview snapshots it when the drag starts.
+// The drag chip: an opaque card with the icon, the name and, for several
+// items, a count badge over a second card. Portalled to the body so no pane
+// clips it; it follows the pointer by a transform set once a frame (React only
+// sets the first one).
 export function DragGhost({ info, ref }: { info: DragGhostInfo; ref?: React.Ref<HTMLDivElement> }) {
   const Icon = info.isDir ? Folder : FileText;
   return (
@@ -1224,8 +1238,8 @@ export function DragGhost({ info, ref }: { info: DragGhostInfo; ref?: React.Ref<
       ref={ref}
       aria-hidden
       data-testid="drag-ghost"
-      className="fixed pointer-events-none"
-      style={{ left: -10000, top: -10000, padding: 10 }}
+      className="fixed left-0 top-0 z-[1000] pointer-events-none will-change-transform"
+      style={{ transform: `translate3d(${info.x + GHOST_OFFSET.x}px, ${info.y + GHOST_OFFSET.y}px, 0)` }}
     >
       <div className="relative">
         {info.count > 1 && (

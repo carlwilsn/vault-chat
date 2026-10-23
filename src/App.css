@@ -532,3 +532,10 @@ input[type="number"]::-webkit-outer-spin-button {
 /* Show / ScrollTo: the line range it landed on, flashed for a moment (Monaco, CodeView, notebook cells). */
 .vc-line-flash { background: rgba(250, 204, 21, 0.28); transition: background 0.6s; }
 .vc-cell-flash { outline: 2px solid rgba(250, 204, 21, 0.7); outline-offset: 4px; border-radius: 6px; }
+
+/* A file-tree drag (FileTree): the grabbing hand everywhere, no text selection. */
+html.vc-dragging,
+html.vc-dragging * {
+  cursor: grabbing !important;
+  user-select: none !important;
+}
