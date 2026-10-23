@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useSyncExternalStore } from "react";
+import { useState, useEffect, useLayoutEffect, useMemo, useRef, useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
@@ -54,6 +54,16 @@ function DragChip() {
   return createPortal(<DragGhost ref={(el) => void (chipEl = el)} info={info} />, document.body);
 }
 type TreeHit = { inTree: boolean; target: string | null | undefined };
+
+// The tree is virtualized: only the rows in view (plus OVERSCAN either side)
+// are in the DOM, each exactly ROW_H tall, between two spacers. With a real
+// vault (thousands of entries, several folders open) rendering every row made
+// opening a folder a long frame of most of a second.
+const ROW_H = 25;
+const OVERSCAN = 12;
+// A drag held this close to the tree's top or bottom edge scrolls it.
+const EDGE = 28;
+type TreeItem = { kind: "row"; f: FileEntry } | { kind: "pending"; depth: number };
 
 export function FileTree() {
   const {
@@ -113,6 +123,8 @@ export function FileTree() {
   } | null>(null);
   const suppressClickRef = useRef(false);
   const treeRef = useRef<HTMLDivElement | null>(null);
+  // The scrolled window of the tree: its scrollTop and height.
+  const [view, setView] = useState({ top: 0, h: 0 });
   // The drop target now (null = the vault root), the element showing it, and
   // the timer that opens a hovered closed folder.
   const targetRef = useRef<{ dir: string | null | undefined; el: HTMLElement | null; timer: number }>({ dir: undefined, el: null, timer: 0 });
@@ -172,19 +184,25 @@ export function FileTree() {
   // cancelled drag closes them again.
   const markTarget = (dir: string | null | undefined) => {
     const t = targetRef.current;
-    if (dir === t.dir) return;
+    const same = dir === t.dir;
+    // Same target, still on screen: nothing to do.
+    if (same && (dir === undefined || t.el?.isConnected)) return;
     t.el?.removeAttribute("data-drop");
-    window.clearTimeout(t.timer);
-    t.dir = dir;
     t.el = null;
+    if (!same) {
+      window.clearTimeout(t.timer);
+      t.dir = dir;
+    }
     if (dir === undefined) return;
+    // (A virtualized row that scrolled away and back is a new element: it is
+    // marked again, and its open-on-hover timer keeps running.)
     const el =
       dir === null
         ? treeRef.current
         : treeRef.current?.querySelector<HTMLElement>(`[data-tree-path="${CSS.escape(dir)}"]`) ?? null;
     el?.setAttribute("data-drop", "");
     t.el = el;
-    if (dir && !expandedRef.current.has(dir)) {
+    if (!same && dir && !expandedRef.current.has(dir)) {
       t.timer = window.setTimeout(() => {
         dragRef.current?.autoOpened.add(dir);
         setExpanded((prev) => new Set(prev).add(dir));
@@ -209,22 +227,6 @@ export function FileTree() {
       else next.add(path);
       return next;
     });
-  };
-
-  const isHidden = (f: FileEntry) => {
-    if (!vaultPath) return false;
-    // Walk up from the immediate parent to the vault root, treating any
-    // ancestor that isn't in `expanded` as collapsed (default closed).
-    if (!f.path.startsWith(vaultPath + "/")) return false;
-    const rel = f.path.slice(vaultPath.length + 1);
-    if (!rel.includes("/")) return false; // top-level entry
-    const parts = rel.split("/");
-    let acc = vaultPath;
-    for (let i = 0; i < parts.length - 1; i++) {
-      acc = `${acc}/${parts[i]}`;
-      if (!expanded.has(acc)) return true;
-    }
-    return false;
   };
 
   const refreshFiles = async () => {
@@ -377,6 +379,20 @@ export function FileTree() {
     const d = dragRef.current;
     if (!d) return;
     d.raf = 0;
+    // Held near the tree's top or bottom edge: scroll it, faster the closer.
+    const tree = treeRef.current;
+    if (tree) {
+      const r = tree.getBoundingClientRect();
+      if (d.x >= r.left && d.x <= r.right) {
+        const up = r.top + EDGE - d.y;
+        const down = d.y - (r.bottom - EDGE);
+        const step = up > 0 ? -Math.min(up, EDGE) / 2 : down > 0 ? Math.min(down, EDGE) / 2 : 0;
+        if (step && tree.scrollTop + step >= 0 && tree.scrollTop + step <= tree.scrollHeight - tree.clientHeight + 1) {
+          tree.scrollTop += step;
+          d.raf = requestAnimationFrame(frame);
+        }
+      }
+    }
     const hit = hitUnder(d.x, d.y, d.sources);
     markTarget(hit.target);
     treeDrag.move(hit.inTree ? null : { paths: d.sources, path: d.path, x: d.x, y: d.y });
@@ -431,6 +447,19 @@ export function FileTree() {
       const shield = document.createElement("div");
       shield.dataset.dragShield = "1";
       shield.style.cssText = "position:fixed;inset:0;z-index:999;cursor:grabbing;user-select:none;";
+      // The shield takes the wheel; scroll what is under it instead.
+      shield.addEventListener(
+        "wheel",
+        (w) => {
+          w.preventDefault();
+          let n = underAt(w.clientX, w.clientY) as HTMLElement | null;
+          while (n && !(n.scrollHeight > n.clientHeight && /(auto|scroll)/.test(getComputedStyle(n).overflowY))) n = n.parentElement;
+          n?.scrollBy({ top: w.deltaY, left: w.deltaX });
+          const dd = dragRef.current;
+          if (dd && !dd.raf) dd.raf = requestAnimationFrame(frame);
+        },
+        { passive: false },
+      );
       document.body.appendChild(shield);
       el.style.cursor = "grabbing";
       dragRef.current = { sources: group, path: f.path, x: ev.clientX, y: ev.clientY, autoOpened: new Set(), raf: 0, shield, row: el };
@@ -823,6 +852,47 @@ export function FileTree() {
       ? (files.find((f) => f.path === pending.parent)?.depth ?? 0) + 1
       : 0;
 
+  // Every row the tree shows, in order: the open entries, and the new-entry
+  // row under its folder (or last, for the vault root).
+  const items = useMemo<TreeItem[]>(() => {
+    const out: TreeItem[] = [];
+    // One pass: the list is depth-first (a folder, then what is in it), so an
+    // entry shows when the folder one level up both shows and is open.
+    const openAt: boolean[] = [];
+    for (const f of files) {
+      const shown = !f.hidden && (f.depth === 0 || !!openAt[f.depth - 1]);
+      if (f.is_dir) openAt[f.depth] = shown && expanded.has(f.path);
+      if (!shown) continue;
+      out.push({ kind: "row", f });
+      if (pending && pending.parent === f.path) out.push({ kind: "pending", depth: pendingParentDepth });
+    }
+    if (pending && pending.parent === vaultPath) out.push({ kind: "pending", depth: 0 });
+    return out;
+  }, [files, expanded, vaultPath, pending, pendingParentDepth]);
+
+  // Follow the tree's scroll and size.
+  useLayoutEffect(() => {
+    const el = treeRef.current;
+    if (!el) return;
+    const read = () => setView((v) => (v.top === el.scrollTop && v.h === el.clientHeight ? v : { top: el.scrollTop, h: el.clientHeight }));
+    read();
+    const ro = new ResizeObserver(read);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [vaultPath]);
+
+  // The rows to render: those in view and OVERSCAN either side, widened to
+  // keep a row being renamed or created mounted (its input holds the focus).
+  let first = Math.max(0, Math.floor(view.top / ROW_H) - OVERSCAN);
+  let last = Math.min(items.length, Math.ceil((view.top + (view.h || 800)) / ROW_H) + OVERSCAN);
+  for (let i = 0; i < items.length; i++) {
+    const it = items[i];
+    if (it.kind === "pending" || (renaming && it.f.path === renaming.path)) {
+      first = Math.min(first, i);
+      last = Math.max(last, i + 1);
+    }
+  }
+
   return (
     <div className="h-full flex flex-col bg-card border-r border-border">
       {vaultPath && (
@@ -886,6 +956,10 @@ export function FileTree() {
           setMenu({ x: e.clientX, y: e.clientY, entry: null });
         }}
         ref={treeRef}
+        onScroll={(e) => {
+          const el = e.currentTarget;
+          setView((v) => (v.top === el.scrollTop && v.h === el.clientHeight ? v : { top: el.scrollTop, h: el.clientHeight }));
+        }}
         onDragOver={(e) => {
           if (!vaultPath || !isExternalFileDrop(e.dataTransfer)) return;
           e.preventDefault();
@@ -907,9 +981,23 @@ export function FileTree() {
             Open a folder to begin.
           </div>
         )}
-        {files.map((f) => {
-          if (f.hidden) return null;
-          if (isHidden(f)) return null;
+        {first > 0 && <div style={{ height: first * ROW_H }} aria-hidden />}
+        {items.slice(first, last).map((it) => {
+          if (it.kind === "pending")
+            return (
+              <div key="\u0000pending" className="mx-1" style={{ height: ROW_H }}>
+                <PendingRow
+                  kind={pending!.kind}
+                  depth={it.depth}
+                  name={pendingName}
+                  onChange={setPendingName}
+                  onCommit={commitCreate}
+                  onCancel={cancelCreate}
+                  inputRef={inputRef}
+                />
+              </div>
+            );
+          const f = it.f;
           const multiSelecting = selected.size > 1;
           // When the user is shift-building a multi-selection, the only
           // row visual that should read as "selected" is the clicked
@@ -921,10 +1009,10 @@ export function FileTree() {
           const isOpen = f.is_dir && expanded.has(f.path);
           const isRenaming = renaming?.path === f.path;
           return (
-            <div key={f.path} className="mx-1 rounded-sm">
+            <div key={f.path} className="mx-1 rounded-sm" style={{ height: ROW_H }}>
               {isRenaming ? (
                 <div
-                  className="flex items-center gap-1 px-2 py-1 text-[12.5px] rounded-sm bg-accent/30"
+                  className="flex items-center gap-1 px-2 h-[25px] text-[12.5px] rounded-sm bg-accent/30"
                   style={{ paddingLeft: 8 + f.depth * 12 }}
                 >
                   {f.is_dir ? (
@@ -948,7 +1036,7 @@ export function FileTree() {
               ) : (
                 <div
                   className={cn(
-                    "flex items-center gap-1 px-2 py-1 text-[12.5px] cursor-pointer select-none rounded-sm",
+                    "flex items-center gap-1 px-2 h-[25px] text-[12.5px] cursor-pointer select-none rounded-sm",
                     f.is_dir
                       ? "text-muted-foreground hover:text-foreground/90"
                       : "hover:bg-accent/60",
@@ -1008,31 +1096,10 @@ export function FileTree() {
                   )}
                 </div>
               )}
-              {pending && pending.parent === f.path && (
-                <PendingRow
-                  kind={pending.kind}
-                  depth={pendingParentDepth}
-                  name={pendingName}
-                  onChange={setPendingName}
-                  onCommit={commitCreate}
-                  onCancel={cancelCreate}
-                  inputRef={inputRef}
-                />
-              )}
             </div>
           );
         })}
-        {pending && pending.parent === vaultPath && (
-          <PendingRow
-            kind={pending.kind}
-            depth={0}
-            name={pendingName}
-            onChange={setPendingName}
-            onCommit={commitCreate}
-            onCancel={cancelCreate}
-            inputRef={inputRef}
-          />
-        )}
+        {last < items.length && <div style={{ height: (items.length - last) * ROW_H }} aria-hidden />}
       </div>
       {menu && (
         <div
@@ -1334,7 +1401,7 @@ function PendingRow({
 }) {
   return (
     <div
-      className="flex items-center gap-1 px-2 py-1 text-[12.5px] mx-1 rounded-sm bg-accent/30"
+      className="flex items-center gap-1 px-2 h-[25px] text-[12.5px] rounded-sm bg-accent/30"
       style={{ paddingLeft: 8 + depth * 12 }}
     >
       {kind === "folder" ? (
