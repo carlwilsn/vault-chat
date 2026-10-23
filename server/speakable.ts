@@ -135,7 +135,7 @@ function openMath(t: string): boolean {
  * math) is read at once, so the voice starts on the first sentence, not the first paragraph.
  */
 /** The first piece may end at a clause only after this many characters (shorter: wait for more). */
-export const FIRST_CLAUSE_MIN = 24;
+export const FIRST_CLAUSE_MIN = 16;
 
 export class Speakable {
   private buf = "";
