@@ -38,6 +38,8 @@ export type BrainEngine = {
   tap(convId: string, fn: (ev: any) => void): () => void;
   isRunning(convId: string): boolean;
   interrupt(convId: string, byUser: boolean): Promise<boolean>;
+  /** Stop the running turn and the work it handed off (server/engine stopWork). */
+  stopWork?(convId: string): Promise<number>;
 };
 
 export type BrainDeps = {
@@ -59,6 +61,9 @@ export type BrainDeps = {
 };
 
 /** The routes are on unless the box turns them off; which voice a device uses is the engine setting below. */
+/** A whole utterance that means "stop what you're doing" (never a sentence that merely contains "stop"). */
+export const STOP_RE = /^\s*(?:ok(?:ay)?,?\s+)?(?:stop|stop (?:it|that)|never ?mind|cancel(?: (?:it|that))?|forget (?:it|that)|scratch that|don'?t bother)(?: please)?[.!]*\s*$/i;
+
 /** The same words again within this long are the pipeline re-asking, never a second turn. */
 export const REASK_MS = 10_000;
 
@@ -359,6 +364,12 @@ async function completions(d: BrainDeps, req: IncomingMessage, res: ServerRespon
   if (again) {
     log(d, { ev: "turn.reask", call: c.id, req: s.id });
     return;
+  }
+  // "Stop" / "never mind": the running work stops first (in code, not left to the model), then the words go to pi
+  // like any line, so the conversation records them and it can answer in a word.
+  if (STOP_RE.test(text) && c.engine.stopWork) {
+    const n = await c.engine.stopWork(c.convId).catch(() => 0);
+    log(d, { ev: "turn.stop", call: c.id, req: s.id, workers: n });
   }
   const out = await c.engine.message({ convId: c.convId, text, source: "voice", via: "voice", client: c.device, clientMsgId: `v-${s.id}` }).catch((e): Record<string, unknown> => ({ error: (e as Error).message }));
   log(d, { ev: "turn.start", call: c.id, req: s.id, chars: text.length, steered: !!out?.steered, msgMs: Date.now() - t0, ...(out?.error ? { error: String(out.error).slice(0, 200) } : {}) });

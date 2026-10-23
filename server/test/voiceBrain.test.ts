@@ -4,9 +4,9 @@ import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { speechReady } from "../speakMath";
-import { brainRoute, lastUserText, resetBrainForTests, voiceCallRules, type BrainDeps, type BrainEngine } from "../voiceBrain";
+import { STOP_RE, brainRoute, lastUserText, resetBrainForTests, voiceCallRules, type BrainDeps, type BrainEngine } from "../voiceBrain";
 
-type Fake = BrainEngine & { emit(ev: any): void; messages: any[]; talker: any; interrupted: number; running: boolean };
+type Fake = BrainEngine & { emit(ev: any): void; messages: any[]; talker: any; interrupted: number; running: boolean; stopped: number };
 
 function fakeEngine(): Fake {
   const taps = new Set<(ev: any) => void>();
@@ -14,6 +14,7 @@ function fakeEngine(): Fake {
     messages: [],
     talker: null,
     interrupted: 0,
+    stopped: 0,
     running: false,
     async message(b) {
       f.messages.push(b);
@@ -31,6 +32,11 @@ function fakeEngine(): Fake {
       f.interrupted++;
       f.running = false;
       return true;
+    },
+    async stopWork() {
+      f.stopped++;
+      f.running = false;
+      return 1;
     },
     emit(ev) {
       for (const t of taps) t(ev);
@@ -176,6 +182,25 @@ describe("voice with one brain", () => {
     const lines = await sse(await second);
     expect(eng.messages).toHaveLength(1);
     expect(lines.join("")).toContain("Octopuses have three hearts.");
+  });
+
+  it("\"never mind\" / \"stop\" stops the running work in code (the turn and its workers), then reaches pi as his line; a sentence with \"stop\" in it does not", async () => {
+    const c = await call();
+    const say = (t: string) =>
+      fetch(`${base}/v1/chat/completions`, { method: "POST", headers: { authorization: `Bearer ${c.token}` }, body: JSON.stringify({ messages: [{ role: "user", content: t }] }) });
+    const p = say("Never mind.");
+    await until(() => eng.messages.length);
+    expect(eng.stopped).toBe(1);
+    expect(eng.messages[0].text).toBe("Never mind.");
+    eng.emit({ type: "vc_turn_end", status: "completed" });
+    await p;
+    const q = say("Where does the bus stop on campus?");
+    await until(() => eng.messages.length === 2);
+    expect(eng.stopped).toBe(1);
+    eng.emit({ type: "vc_turn_end", status: "completed" });
+    await q;
+    for (const t of ["stop", "Stop.", "okay, stop", "forget it", "cancel that", "scratch that"]) expect(STOP_RE.test(t), t).toBe(true);
+    for (const t of ["stop the timer at 5", "don't stop", "nevermind the second part, what about the first?"]) expect(STOP_RE.test(t), t).toBe(false);
   });
 
   it("lastUserText takes only Carl's newest words", () => {

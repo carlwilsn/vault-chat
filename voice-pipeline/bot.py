@@ -55,7 +55,7 @@ from pipecat.processors.aggregators.llm_response_universal import (
 )
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.transports.base_transport import TransportParams
-from pipecat.turns.user_start import VADUserTurnStartStrategy
+from pipecat.turns.user_start import MinWordsUserTurnStartStrategy
 from pipecat.turns.user_turn_strategies import UserTurnStrategies
 from pipecat.transports.smallwebrtc.request_handler import (
     SmallWebRTCRequest,
@@ -212,10 +212,11 @@ async def run_call(connection, call: dict):
         context,
         user_params=LLMUserAggregatorParams(
             vad_analyzer=SileroVADAnalyzer(params=VADParams(start_secs=VAD_START_SECS, stop_secs=VAD_STOP_SECS)),
-            # A turn starts on voice only: a transcript that lands just after the turn ended (STT finishing late)
-            # must not open a second, empty turn that cancels the reply (seen: +5 s on one turn in twelve).
-            # Stop: Smart Turn v3 (the default).
-            user_turn_strategies=UserTurnStrategies(start=[VADUserTurnStartStrategy()]),
+            # A turn (and an interruption of a reply) starts on a WORD, never on sound alone: keyboard clacks, a
+            # cough or a chair are not Carl talking (the ground-truths audit). The reply goes silent at once on his
+            # device anyway (src/voiceBrainClient.ts barge-in); this is the box's stop and the turn. A late transcript
+            # that would repeat his last words is caught by the server's re-ask guard. Stop: Smart Turn v3.
+            user_turn_strategies=UserTurnStrategies(start=[MinWordsUserTurnStartStrategy(min_words=1, use_interim=True)]),
             # A browser that stops sending in silence (a muted or digitally silent track, Opus DTX) leaves the VAD
             # "speaking" until this idle timeout forces a stop: Pipecat's default 1.0 s added a second to every
             # such turn (measured: speech end → the box's VAD stop 1.0–1.1 s late from Edge). Treat 0.25 s of no

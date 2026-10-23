@@ -1039,6 +1039,16 @@ export class Engine {
     }
   }
 
+  /** "Stop" / "never mind" on a call: the running turn stops and so does the work it handed off (its Delegate
+   *  workers, background or not). How many workers were stopped. */
+  async stopWork(convId: string): Promise<number> {
+    await this.interrupt(convId, true).catch(() => false);
+    const subs = ((this.picture(convId)?.meta.subagents ?? []) as { threadId: string; state?: string; status?: string }[]).filter((s) => (s.state ?? s.status) === "running");
+    let n = 0;
+    for (const s of subs) if ((await this.d.backend.subagentControl(s.threadId, "stop").catch(() => ({ ok: false }))).ok) n++;
+    return n;
+  }
+
   /** A voice call on `convId` (null: it ended). Its turns run on `model`; `rules` go in front of the call's first turn. */
   setTalker(convId: string, t: { model: string; rules: string; thinking?: string } | null): void {
     if (t) this.talkers.set(convId, { ...t, sent: false });
