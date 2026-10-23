@@ -48,6 +48,9 @@ export type TurnLine = {
   tokens: { in: number; out: number; cacheRead: number; cacheWrite: number };
   cost: number | null;
   queue: QueueEv[];
+  /** A side thread's (mode "side"): whether it had the write tools, and pi's tools it was given. */
+  act?: boolean;
+  allowed?: string[];
 };
 
 const MAX_TOOLS = 60;

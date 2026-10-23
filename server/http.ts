@@ -28,6 +28,7 @@ import { addToBoard, getEntry, listEntries, markAdded, markRead, partFile, sendE
 import { boxLogs } from "./boxLogs";
 import { ackShow, feedOpened } from "./show";
 import { boardLogPost, boxDiag } from "./diag";
+import { noteUserLine } from "./signal";
 
 /** A vault on this box, as the routes see it (engine/index.ts VaultRef). */
 export type VaultScope = { name: string; path: string; bare: string; main: boolean };
@@ -387,6 +388,9 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
     const d = (await hooks.voice?.(scope)) ?? { error: "voice not available" };
     if ("error" in d) return json(res, 503, d);
     const out = await voiceTranscript(d, b);
+    // Carl's spoken line: a frustration signal in the turn log when it looks like one (server/signal.ts).
+    if (out.status === 200 && b?.role === "user" && b?.system !== true && !out.body.skipped && !out.body.duplicate)
+      noteUserLine({ stateDir: cfg.stateDir, vault: scope.name, conv: typeof out.body.convId === "string" ? out.body.convId : null, via: "voice", text: String(b.text ?? "") });
     return json(res, out.status, out.body);
   }
 
@@ -718,6 +722,9 @@ function logIntent(stateDir: string, vault: string, req: IncomingMessage, b: any
     ...(result.length ? { outcome: result.join(",") } : {}),
     ...(out?.error ? { error: String(out.error).slice(0, 300) } : {}),
   });
+  // Carl's typed line: a frustration signal when it looks like one (server/signal.ts).
+  if (["send", "steer", "queue", "message", "answer"].includes(String(b?.type)) && typeof b?.text === "string" && b.text.trim() && !out?.error && !out?.duplicate)
+    noteUserLine({ stateDir, vault, conv: (typeof b?.convId === "string" && b.convId) || (typeof out?.convId === "string" ? out.convId : null), via: client ?? "typed", text: b.text });
 }
 
 /** The old voice page's current voice conversation, per vault. */
