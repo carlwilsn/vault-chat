@@ -2,9 +2,13 @@
 // A fake engine stands in for pi's turn; the routes run on a real HTTP server.
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
+import { mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+const logDir = mkdtempSync(join(tmpdir(), "vc-brain-test-"));
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { speechReady } from "../speakMath";
-import { STOP_RE, toolAck, brainRoute, lastUserText, resetBrainForTests, voiceCallRules, type BrainDeps, type BrainEngine } from "../voiceBrain";
+import { STOP_RE, brainRoute, lastUserText, resetBrainForTests, voiceCallRules, type BrainDeps, type BrainEngine } from "../voiceBrain";
 
 type Fake = BrainEngine & { emit(ev: any): void; messages: any[]; talker: any; interrupted: number; running: boolean; stopped: number };
 
@@ -60,7 +64,7 @@ beforeEach(async () => {
   process.env.VC_VOICE_BRAIN = "pi";
   await speechReady();
   eng = fakeEngine();
-  const d: BrainDeps = { vault: "/v", engine: async () => eng, elKey: () => "k", voiceId: () => "v", botUrl: "http://127.0.0.1:1", selfUrl: "", logDir: null };
+  const d: BrainDeps = { vault: "/v", engine: async () => eng, elKey: () => "k", voiceId: () => "v", botUrl: "http://127.0.0.1:1", selfUrl: "", logDir };
   server = createServer(async (req, res) => {
     const url = new URL(req.url ?? "/", "http://x");
     const body = async () => {
@@ -85,7 +89,7 @@ afterEach(async () => {
 /** A call, with the pipeline's token (the route hides it from devices; the test reads it from startCall). */
 async function call(): Promise<{ id: string; token: string }> {
   const { startCall } = await import("../voiceBrain");
-  const r = await startCall({ vault: "/v", engine: async () => eng, elKey: () => "k", voiceId: () => "v", botUrl: "", selfUrl: "", logDir: null }, { convId: "conv-123456", device: "board" });
+  const r = await startCall({ vault: "/v", engine: async () => eng, elKey: () => "k", voiceId: () => "v", botUrl: "", selfUrl: "", logDir }, { convId: "conv-123456", device: "board" });
   return { id: String(r.body.callId), token: String(r.body.token) };
 }
 
@@ -129,31 +133,47 @@ describe("voice with one brain", () => {
     expect(lines.join("")).toContain("On it");
   });
 
-  it("a reply that reaches for a tool before saying anything gets one short spoken line at once; the answer follows on the channel", async () => {
+  it("a reply that reaches for a tool before saying anything gets no words put in its mouth; whether it spoke first is logged", async () => {
     const c = await call();
-    const ac = new AbortController();
-    const ch = await fetch(`${base}/api/v1/brain/call/${c.id}/speak`, { headers: { authorization: `Bearer ${c.token}` }, signal: ac.signal });
-    const reader = ch.body!.getReader();
     const p = fetch(`${base}/v1/chat/completions`, { method: "POST", headers: { authorization: `Bearer ${c.token}` }, body: JSON.stringify({ messages: [{ role: "user", content: "read me the first theorem" }] }) });
     await until(() => eng.messages.length);
     eng.emit({ type: "message_end", message: { role: "assistant" } });
     eng.emit({ type: "tool_execution_start", toolName: "read" });
-    const lines = await sse(await p);
-    expect(lines.at(-1)).toBe("[DONE]");
-    const said = lines.filter((l) => l !== "[DONE]").map((l) => JSON.parse(l).choices[0].delta.content ?? "").join("");
-    expect(said).toBe("Let me look.");
-    // Later tools in the same turn say nothing more; the answer is spoken on the channel.
-    eng.emit({ type: "tool_execution_start", toolName: "bash" });
     eng.emit(delta("Theorem 1.1: zero is unique. "));
+    eng.emit({ type: "message_end", message: { role: "assistant" } });
     eng.emit({ type: "vc_turn_end", status: "completed" });
-    let got = "";
-    for (let i = 0; i < 5 && !got.includes("unique"); i++) got += new TextDecoder().decode((await reader.read()).value);
+    const said = (await sse(await p)).filter((l) => l !== "[DONE]").map((l) => JSON.parse(l).choices[0].delta.content ?? "").join("");
+    expect(said.trim()).toBe("Theorem 1.1: zero is unique.");
+    const logged = readFileSync(join(logDir, "brain.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l)).filter((e) => e.ev === "turn.tool");
+    expect(logged.at(-1)).toMatchObject({ tool: "read", spokeFirst: false });
+  });
+
+  it("talking over an inline read never stops the work: his words join the running turn, whether or not it spoke first", async () => {
+    const c = await call();
+    const req = (t: string, signal?: AbortSignal) => fetch(`${base}/v1/chat/completions`, { method: "POST", headers: { authorization: `Bearer ${c.token}` }, body: JSON.stringify({ messages: [{ role: "user", content: t }] }), signal });
+    eng.running = true;
+    // It said its line, then reached for a read: the response is over, the read runs.
+    const p1 = req("read me the first theorem");
+    await until(() => eng.messages.length === 1);
+    eng.emit(delta("Let me look at the workbook. "));
+    eng.emit({ type: "message_end", message: { role: "assistant" } });
+    eng.emit({ type: "tool_execution_start", toolName: "read" });
+    await sse(await p1);
+    const p2 = req("and the second one too");
+    await until(() => eng.messages.length === 2);
+    expect(eng.interrupted).toBe(0);
+    // Nothing said yet, a read running, and he talks: the pipeline cancels its request, the turn goes on.
+    const ac = new AbortController();
+    const p3 = req("actually just the statement", ac.signal).catch(() => null);
+    await until(() => eng.messages.length === 3);
+    eng.emit({ type: "tool_execution_start", toolName: "read" });
     ac.abort();
-    expect(got).toContain("zero is unique");
-    expect(got).not.toContain("Let me look");
-    expect(toolAck("Delegate")).toBe("On it.");
-    expect(toolAck("web_search")).toBe("Let me look that up.");
-    expect(toolAck("PdfRead")).toBe("Let me look.");
+    await p3;
+    await new Promise((r) => setTimeout(r, 100));
+    expect(eng.interrupted).toBe(0);
+    expect(eng.running).toBe(true);
+    eng.emit({ type: "vc_turn_end", status: "completed" });
+    await p2.then((r) => sse(r)).catch(() => null);
   });
 
   it("what the conversation says outside a request (a typed turn, a result) goes to the speak channel", async () => {
