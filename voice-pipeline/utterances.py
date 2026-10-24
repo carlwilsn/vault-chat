@@ -27,6 +27,17 @@ LINES = [
     "So what would you say is the hardest part of this chapter?",
     "Cool, thanks. Can you summarise what we covered?",
 ]
+# Questions that need the vault (a tool): what the "say a line before a tool" rule is measured on.
+LOOKUP = [
+    "Read me theorem one point two from the proof workbook.",
+    "What does my progress list say about theorem one point three?",
+    "How many theorems are in part one of the chapter one workbook?",
+    "What's the first problem in my sequences workbook?",
+    "Find where I wrote about the completeness axiom and read me that bit.",
+    "Which theorems in chapter one are marked as needing a fix?",
+    "What does axiom two say, exactly?",
+    "Is there anything in my vault about the monotone convergence theorem?",
+]
 VOICE = "21m00Tcm4TlvDq8ikWAM"  # Rachel: a different voice from the bot's
 
 
@@ -48,10 +59,12 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default="/tmp/vcs-brain/utt")
     ap.add_argument("--store", default=os.path.expanduser("~/.config/vault-chat"))
+    ap.add_argument("--set", choices=["chat", "lookup"], default="chat", help="chat: u00..; lookup: l00.. (questions that need a tool)")
     o = ap.parse_args()
     key = el_key(o.store)
     os.makedirs(o.out, exist_ok=True)
-    for i, text in enumerate(LINES):
+    lines, prefix = (LOOKUP, "l") if o.set == "lookup" else (LINES, "u")
+    for i, text in enumerate(lines):
         r = urllib.request.Request(
             f"https://api.elevenlabs.io/v1/text-to-speech/{VOICE}?output_format=pcm_48000",
             data=json.dumps({"text": text, "model_id": "eleven_flash_v2_5"}).encode(),
@@ -60,7 +73,7 @@ def main():
         )
         with urllib.request.urlopen(r, timeout=60) as f:
             pcm = f.read()
-        path = os.path.join(o.out, f"u{i:02d}.wav")
+        path = os.path.join(o.out, f"{prefix}{i:02d}.wav")
         with wave.open(path, "wb") as w:
             w.setnchannels(1)
             w.setsampwidth(2)

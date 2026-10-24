@@ -54,6 +54,15 @@ async function until(f: () => unknown, ms = 5000): Promise<void> {
   while (!f() && Date.now() < end) await new Promise((r) => setTimeout(r, 10));
 }
 
+/** What the server logged (logs/brain.jsonl), for waiting on its state instead of on a clock. */
+const brainEvents = (): Record<string, unknown>[] => {
+  try {
+    return readFileSync(join(logDir, "brain.jsonl"), "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l));
+  } catch {
+    return [];
+  }
+};
+
 const delta = (t: string) => ({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: t } });
 
 let server: Server;
@@ -169,7 +178,10 @@ describe("voice with one brain", () => {
     eng.emit({ type: "tool_execution_start", toolName: "read" });
     ac.abort();
     await p3;
-    await new Promise((r) => setTimeout(r, 100));
+    // Its cancelled response has been handled (logged as cut, not stopped) before we look: no clock in the check.
+    const cut = () => brainEvents().some((e) => e.ev === "turn.cut" && e.call === c.id && e.stopped === false);
+    await until(cut);
+    expect(cut()).toBe(true);
     expect(eng.interrupted).toBe(0);
     expect(eng.running).toBe(true);
     eng.emit({ type: "vc_turn_end", status: "completed" });
@@ -234,7 +246,11 @@ describe("voice with one brain", () => {
     ac.abort();
     await first;
     const second = ask();
-    await new Promise((r) => setTimeout(r, 100));
+    // The re-ask must have reached the server before the reply streams (it streams into the open response); a fixed
+    // sleep raced it under load (the reply then went to the channel and the re-ask, after the turn ended, closed empty).
+    const reasked = () => brainEvents().some((e) => e.ev === "turn.reask" && e.call === c.id);
+    await until(reasked);
+    expect(reasked()).toBe(true);
     eng.emit(delta("Octopuses have three hearts. "));
     eng.emit({ type: "vc_turn_end", status: "completed" });
     const lines = await sse(await second);
