@@ -814,7 +814,7 @@ export function boot(): void {
     // An old mission thread, or an older chat from before one main conversation (src/threads.ts): read only.
     const older = !!convId && !!pic && isOlderChat({ id: convId, kind: (pic.meta as any).kind });
     const arch = (!!convSource && ARCHIVED_SOURCES.has(convSource)) || older;
-    input.disabled = arch; input.placeholder = arch ? (older ? "An older chat — read only. Main carries on." : "Archived mission thread — read only") : "Message…";
+    input.disabled = arch; input.placeholder = arch ? (older ? "Older chat — read only" : "Archived — read only") : "Message…";
   }
   // ---------- the open thread: a fold of the box's log ----------
   // The thread on screen is the box's conversation log folded with the one
@@ -966,13 +966,13 @@ export function boot(): void {
     // Photos ride with a typed send (not with a tapped option).
     const imgs = forced === undefined ? pendingImgs.slice() : [];
     if (!typed && !imgs.length) return;
-    if (!imgs.length && (await compactCommand(typed))) { if (forced === undefined) { input.value = ""; input.style.height = "auto"; } return; }
+    if (!imgs.length && (await compactCommand(typed))) { if (forced === undefined) { input.value = ""; input.style.height = "auto"; input.style.overflowY = "hidden"; } return; }
     // The box records a photo-only turn as "(image)".
     const text = typed || "(image)";
     if (convSource && ARCHIVED_SOURCES.has(convSource)) { toast("Archived mission thread — start a new chat."); return; }
     if (convId && pic && isOlderChat({ id: convId, kind: (pic.meta as any).kind })) { toast("An older chat — read only. Main carries on."); return; }
     sending = true;
-    if (forced === undefined) { input.value = ""; input.style.height = "auto"; pendingImgs = []; renderPending(); }
+    if (forced === undefined) { input.value = ""; input.style.height = "auto"; input.style.overflowY = "hidden"; pendingImgs = []; renderPending(); }
     // A new chat gets its id here: the box makes the conversation under it.
     const fresh = !convId;
     if (fresh) { convId = clientId(); convTitle = text.split("\n")[0].slice(0, 60); pic = null; picView = makeChatView(); for (const [, n] of shownNodes) n.el.remove(); shownNodes.clear(); }
@@ -1009,7 +1009,16 @@ export function boot(): void {
   let autosizeRAF = 0;
   function scheduleAutosize() {
     if (autosizeRAF) return;
-    autosizeRAF = requestAnimationFrame(() => { autosizeRAF = 0; input.style.height = "auto"; input.style.height = Math.min(input.scrollHeight, 120) + "px"; });
+    // The real text's height (an empty composer is one line; never sized to the placeholder), and a scrollbar
+    // only once the text passes the cap.
+    autosizeRAF = requestAnimationFrame(() => {
+      autosizeRAF = 0;
+      input.style.height = "auto";
+      input.style.overflowY = "hidden";
+      if (!input.value) return;
+      input.style.height = Math.min(input.scrollHeight, 120) + "px";
+      if (input.scrollHeight > 120) input.style.overflowY = "auto";
+    });
   }
   input.addEventListener("input", scheduleAutosize);
   // Stop the open thread's turn (an intent: the box's own stop). Honest: the

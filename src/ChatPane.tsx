@@ -38,8 +38,11 @@ import { OngoingLine } from "./OngoingLine";
 import { isArchivedThread, ARCHIVED_THREAD, OLDER_CHAT } from "./conversations";
 import { isOlderChat } from "./threads";
 import { AgentModelPicker } from "./AgentModelPicker";
+import { useFittedPlaceholder } from "./fitPlaceholder";
 
 type MentionHit = { path: string; name: string; rel: string };
+/** The composer grows with its text up to this height, then scrolls. */
+const COMPOSER_MAX_PX = 200;
 const NO_SUBAGENTS: SubagentRec[] = [];
 
 // Markdown (math, tables, code, safe HTML, URLs) renders through the shared
@@ -554,9 +557,18 @@ export function ChatPane() {
     // tall on mount and reset on first keystroke. Only grow when there
     // is actual content to fit.
     el.style.height = "auto";
+    // Never a scrollbar until the text itself passes the cap (an empty or one-line composer has none).
+    el.style.overflowY = "hidden";
     if (input.length === 0) return;
-    el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
+    el.style.height = `${Math.min(el.scrollHeight, COMPOSER_MAX_PX)}px`;
+    if (el.scrollHeight > COMPOSER_MAX_PX) el.style.overflowY = "auto";
   }, [input]);
+
+  // One line at any width, cut with an ellipsis (src/fitPlaceholder.ts).
+  const placeholder = useFittedPlaceholder(
+    inputRef,
+    archived ? (older ? OLDER_CHAT : ARCHIVED_THREAD) : boxDown ? `${BOX_UNREACHABLE} — ${downWhy}. Retrying…` : !ready ? (vaultPath ? "Connecting to the box…" : "Open a vault first") : busy ? "Enter to steer · Tab to queue · Esc to stop" : "Ask anything, or / for commands…",
+  );
 
   if (showSettings) return <SettingsPane />;
 
@@ -1234,10 +1246,10 @@ export function ChatPane() {
                 onChange={(e) => onInputChange(e.target.value)}
                 onKeyDown={onKey}
                 onPaste={onPaste}
-                placeholder={archived ? (older ? OLDER_CHAT : ARCHIVED_THREAD) : boxDown ? `${BOX_UNREACHABLE} — ${downWhy}. Retrying…` : !ready ? (vaultPath ? "Connecting to the box…" : "Open a vault first") : busy ? "Enter to steer · Tab to queue · Esc to stop" : "Ask anything, or / for commands…"}
+                placeholder={placeholder}
                 disabled={!ready}
                 rows={1}
-                className={cn("border-0 bg-transparent min-h-0 max-h-[200px] focus-visible:ring-0 shadow-none !py-2", voiceMode || voiceNotice ? (chatFullscreen ? "!pr-52" : "!pr-40") : chatFullscreen && voiceError ? "!pr-32" : "!pr-20", "!pl-11")}
+                className={cn("composer-input border-0 bg-transparent min-h-0 max-h-[200px] overflow-y-hidden focus-visible:ring-0 shadow-none !py-2", voiceMode || voiceNotice ? (chatFullscreen ? "!pr-52" : "!pr-40") : chatFullscreen && voiceError ? "!pr-32" : "!pr-20", "!pl-11")}
               />
               <div className="absolute right-3 bottom-2 flex items-center gap-1">
                 {/* Mute, by the composer while voice is on (or where voice went, when it moved to another device). */}

@@ -268,7 +268,8 @@ body.page-notes #pNotes{display:flex}
 .mic:active{background:var(--raised)}
 .mic svg{width:20px;height:20px}
 .field{flex:1;position:relative;display:flex;align-items:flex-end;min-width:0}
-.composer textarea{flex:1;resize:none;background:var(--surface);color:var(--text);border:1px solid var(--line);border-radius:21px;padding:10px 50px 10px 15px;font-size:16px;line-height:1.4;font-family:inherit;max-height:120px;outline:none;min-width:0}
+.composer textarea{flex:1;resize:none;background:var(--surface);color:var(--text);border:1px solid var(--line);border-radius:21px;padding:10px 50px 10px 15px;font-size:16px;line-height:1.4;font-family:inherit;max-height:120px;outline:none;min-width:0;overflow-y:hidden}
+.composer textarea::placeholder{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .send{position:absolute;right:5px;bottom:5px;width:33px;height:33px;border-radius:50%;background:var(--primary);color:var(--primary-fg);font-weight:700;font-size:16px;display:flex;align-items:center;justify-content:center}
 .send:disabled{opacity:.35}
 /* Stop = interrupt generation, the same calm affordance as send — NOT a red
