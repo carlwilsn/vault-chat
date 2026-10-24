@@ -15,14 +15,15 @@ type Menu = { x: number; y: number; entry: FileEntry | null } | null;
 
 // Drag and drop (see the note in FileTree): how far the pointer must travel
 // before a press becomes a drag (or how long it must be held, then a small
-// move); how long a closed folder must be hovered before it opens; and where
-// the chip sits relative to the pointer.
+// move); and how long a closed folder must be hovered before it opens.
 const DRAG_THRESHOLD = 7;
 const HOLD_MS = 300;
 const HOLD_MOVE = 3;
 const AUTO_EXPAND_MS = 600;
-const GHOST_OFFSET = { x: 14, y: 12 };
-type DragGhostInfo = { name: string; isDir: boolean; count: number; x: number; y: number };
+// Where the press was inside the row's name: dx from the name's left edge,
+// dy from its middle. The chip keeps that point under the pointer.
+type Grab = { dx: number; dy: number };
+type DragGhostInfo = { name: string; isDir: boolean; count: number; x: number; y: number; grab: Grab };
 
 // The drag must never wait on a FileTree render: with a real vault (thousands
 // of entries) one render of the tree is a few hundred ms, and every render
@@ -32,15 +33,38 @@ type DragGhostInfo = { name: string; isDir: boolean; count: number; x: number; y
 // transform on each pointermove, and the drop highlight is a data attribute
 // set on the row (styled in App.css). The tree re-renders only when a folder
 // really opens.
+//
+// The chip lifts off the row where it was, like a native drag: the point of
+// the name that was pressed stays under the pointer (clamped to the chip, so
+// a press out past a short name still holds the chip, not empty space).
 let chipNow: DragGhostInfo | null = null;
 let chipEl: HTMLDivElement | null = null;
+// Pointer → chip corner, set once the chip is laid out.
+let chipShift = { x: 0, y: 0 };
 const chipSubs = new Set<() => void>();
 const setChip = (c: DragGhostInfo | null) => {
   chipNow = c;
   for (const f of chipSubs) f();
 };
 const placeChip = (x: number, y: number) => {
-  if (chipEl) chipEl.style.transform = `translate3d(${x + GHOST_OFFSET.x}px, ${y + GHOST_OFFSET.y}px, 0)`;
+  if (chipNow) (chipNow.x = x), (chipNow.y = y);
+  if (chipEl) chipEl.style.transform = `translate3d(${x - chipShift.x}px, ${y - chipShift.y}px, 0)`;
+};
+// The chip was just laid out (a ref callback runs before the first paint):
+// find its own name and work out the shift that puts the grab point there.
+const mountChip = (el: HTMLDivElement | null) => {
+  chipEl = el;
+  if (!el || !chipNow) return;
+  const box = el.getBoundingClientRect();
+  const name = el.querySelector<HTMLElement>("[data-chip-name]")?.getBoundingClientRect() ?? box;
+  const nx = name.left - box.left;
+  const ny = name.top + name.height / 2 - box.top;
+  const g = chipNow.grab;
+  chipShift = {
+    x: nx + Math.min(Math.max(g.dx, 4 - nx), box.width - 4 - nx),
+    y: ny + Math.min(Math.max(g.dy, 4 - ny), box.height - 4 - ny),
+  };
+  placeChip(chipNow.x, chipNow.y);
 };
 function DragChip() {
   const info = useSyncExternalStore(
@@ -51,7 +75,7 @@ function DragChip() {
     () => chipNow,
   );
   if (!info) return null;
-  return createPortal(<DragGhost ref={(el) => void (chipEl = el)} info={info} />, document.body);
+  return createPortal(<DragGhost ref={mountChip} info={info} />, document.body);
 }
 type TreeHit = { inTree: boolean; target: string | null | undefined };
 
@@ -463,7 +487,10 @@ export function FileTree() {
       document.body.appendChild(shield);
       el.style.cursor = "grabbing";
       dragRef.current = { sources: group, path: f.path, x: ev.clientX, y: ev.clientY, autoOpened: new Set(), raf: 0, shield, row: el };
-      setChip({ name: f.name, isDir: f.is_dir, count: group.length, x: ev.clientX, y: ev.clientY });
+      // Where the press was in the row's name (the chip keeps that point).
+      const nm = el.querySelector<HTMLElement>("[data-row-name]")?.getBoundingClientRect();
+      const grab = nm ? { dx: press.x - nm.left, dy: press.y - (nm.top + nm.height / 2) } : { dx: 0, dy: 0 };
+      setChip({ name: f.name, isDir: f.is_dir, count: group.length, x: ev.clientX, y: ev.clientY, grab });
       frame();
     };
     const move = (ev: PointerEvent) => {
@@ -1074,7 +1101,7 @@ export function FileTree() {
                   ) : (
                     <FileText className="h-3.5 w-3.5 shrink-0 opacity-70 ml-3.5" />
                   )}
-                  <span className="truncate">{f.name.replace(/\.md$/, "")}</span>
+                  <span className="truncate" data-row-name>{f.name.replace(/\.md$/, "")}</span>
                   {/* Nested git repo signals. We no longer surface branch names
                       or a routine "detached" label — with auto-attach/auto-own
                       those are noise. Show only what's actionable: a warning when
@@ -1352,8 +1379,9 @@ export function FileTree() {
 
 // The drag chip: an opaque card with the icon, the name and, for several
 // items, a count badge over a second card. Portalled to the body so no pane
-// clips it; it follows the pointer by a transform written on each pointermove
-// (React only sets the first one).
+// clips it, and never a hit target (pointer-events: none). It follows the
+// pointer by a transform written on each pointermove; it renders off screen
+// and mountChip places it before the first paint.
 export function DragGhost({ info, ref }: { info: DragGhostInfo; ref?: React.Ref<HTMLDivElement> }) {
   const Icon = info.isDir ? Folder : FileText;
   return (
@@ -1362,7 +1390,7 @@ export function DragGhost({ info, ref }: { info: DragGhostInfo; ref?: React.Ref<
       aria-hidden
       data-testid="drag-ghost"
       className="fixed left-0 top-0 z-[1000] pointer-events-none will-change-transform"
-      style={{ transform: `translate3d(${info.x + GHOST_OFFSET.x}px, ${info.y + GHOST_OFFSET.y}px, 0)` }}
+      style={{ transform: "translate3d(-10000px, -10000px, 0)" }}
     >
       <div className="relative">
         {info.count > 1 && (
@@ -1370,7 +1398,7 @@ export function DragGhost({ info, ref }: { info: DragGhostInfo; ref?: React.Ref<
         )}
         <div className="relative flex items-center gap-1.5 max-w-[240px] rounded-md border border-border bg-popover px-2.5 py-1.5 text-[12.5px] leading-4 text-popover-foreground shadow-[0_6px_16px_rgba(0,0,0,0.28),0_1px_3px_rgba(0,0,0,0.18)]">
           <Icon className="h-3.5 w-3.5 shrink-0 opacity-70" />
-          <span className="truncate font-medium">{info.name.replace(/\.md$/, "")}</span>
+          <span className="truncate font-medium" data-chip-name>{info.name.replace(/\.md$/, "")}</span>
           {info.count > 1 && (
             <span className="ml-0.5 shrink-0 rounded-full bg-primary px-1.5 text-[10.5px] font-semibold leading-4 tabular-nums text-primary-foreground">
               {info.count}
