@@ -46,6 +46,8 @@ from pipecat.frames.frames import (
     TTSSpeakFrame,
     UserStartedSpeakingFrame,
     UserStoppedSpeakingFrame,
+    VADUserStartedSpeakingFrame,
+    VADUserStoppedSpeakingFrame,
 )
 from pipecat.observers.user_bot_latency_observer import UserBotLatencyObserver
 from pipecat.pipeline.pipeline import Pipeline
@@ -151,30 +153,80 @@ class EchoBrain(FrameProcessor):
             await self.push_frame(frame, direction)
 
 
+class Gate:
+    """When speech that isn't an answer to him (a finished job's result, a typed turn's reply) may start: only in a real
+    gap. Never while he talks (his voice, before a word is transcribed too), never while his turn is still being
+    endpointed, never while his exchange is open (his turn ended and its reply hasn't finished), never while the voice
+    is speaking; then QUIET_SECS of all that. However long he goes on, it waits (Carl: "if I'm talking to it while the
+    bar completes, I'm not interrupted"). Pure: frames and a clock in, idle() out (tested without a pipeline)."""
+
+    QUIET_SECS = 1.2
+    # An exchange whose reply never came back (cancelled by an interruption with no words) stops holding the gate.
+    OWED_MAX_SECS = 90.0
+
+    def __init__(self, now: float):
+        self.voice = False  # his voice (VAD), from the first sound
+        self.user = False  # his turn: started on a word, ended by the turn model (endpointing in between)
+        self.bot = False  # the voice's audio playing
+        self.owed: float | None = None  # his turn ended at this time and its reply is not done
+        self.changed = now
+
+    def on_frame(self, frame: Frame, now: float) -> None:
+        if isinstance(frame, VADUserStartedSpeakingFrame):
+            self.voice = True
+        elif isinstance(frame, VADUserStoppedSpeakingFrame):
+            self.voice = False
+        elif isinstance(frame, UserStartedSpeakingFrame):
+            self.user, self.owed = True, None
+        elif isinstance(frame, UserStoppedSpeakingFrame):
+            self.user, self.owed = False, now
+        elif isinstance(frame, BotStartedSpeakingFrame):
+            self.bot = True
+        elif isinstance(frame, BotStoppedSpeakingFrame):
+            self.bot = False
+        else:
+            return
+        self.changed = now
+
+    def reply_done(self, now: float) -> None:
+        """The brain finished its reply to his turn (its audio may still be playing: `bot` covers that)."""
+        self.owed, self.changed = None, now
+
+    def idle(self, now: float) -> bool:
+        owed = self.owed is not None and now - self.owed < self.OWED_MAX_SECS
+        return not (self.voice or self.user or self.bot or owed) and now - self.changed >= self.QUIET_SECS
+
+
 class Quiet(FrameProcessor):
-    """Who is talking right now: speech that isn't an answer waits until both are quiet."""
+    """The Gate, fed from the pipeline: before the brain it sees him and the voice's audio; ReplyEnd (after the brain)
+    tells it when a reply to him is complete."""
 
     def __init__(self):
         super().__init__()
-        self.user = False
-        self.bot = False
-        self.changed = time.monotonic()
+        self.gate = Gate(time.monotonic())
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
-        if isinstance(frame, UserStartedSpeakingFrame):
-            self.user, self.changed = True, time.monotonic()
-        elif isinstance(frame, UserStoppedSpeakingFrame):
-            self.user, self.changed = False, time.monotonic()
-        elif isinstance(frame, BotStartedSpeakingFrame):
-            self.bot, self.changed = True, time.monotonic()
-        elif isinstance(frame, BotStoppedSpeakingFrame):
-            self.bot, self.changed = False, time.monotonic()
+        self.gate.on_frame(frame, time.monotonic())
         await self.push_frame(frame, direction)
 
-    async def until_idle(self, quiet_secs: float = 1.2):
-        while self.user or self.bot or time.monotonic() - self.changed < quiet_secs:
+    async def until_idle(self):
+        while not self.gate.idle(time.monotonic()):
             await asyncio.sleep(0.1)
+
+
+class ReplyEnd(FrameProcessor):
+    """After the brain: a reply to him is complete (its text; the audio is the Gate's `bot`)."""
+
+    def __init__(self, quiet: Quiet):
+        super().__init__()
+        self.quiet = quiet
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        await super().process_frame(frame, direction)
+        if isinstance(frame, LLMFullResponseEndFrame) and direction == FrameDirection.DOWNSTREAM:
+            self.quiet.gate.reply_done(time.monotonic())
+        await self.push_frame(frame, direction)
 
 
 async def speak_channel(call: dict, task: PipelineTask, quiet: Quiet):
@@ -289,6 +341,7 @@ async def run_call(connection, call: dict):
             pair.user(),
             quiet,
             make_brain(call),
+            ReplyEnd(quiet),
             make_tts(call),
             transport.output(),
             pair.assistant(),
