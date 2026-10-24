@@ -174,7 +174,7 @@ export class Subagents {
     // One entry per spawn: the parent's own `subagent` tool call (its toolCallId) carries the children.
     const itemId = typeof a?.toolCallId === "string" && a.toolCallId ? a.toolCallId : `sub-${id}`;
     this.b.ev({ kind: "subagents", threadId: parentId, itemId, children: [id], op: "spawnAgent", prompt: task, model, done: false, ok: false });
-    this.b.ev({ kind: "subagentStatus", threadId: parentId, child: id, status: "running", path: file, patch: { task: task.slice(0, 500), ...(a?.title ? { title: String(a.title).slice(0, 120) } : {}), ...(child.background ? { background: true } : {}), agent: child.agent, model, state: "running", startedAt: child.startedAt, sessionFile: file, costUsd: 0, toolCallId: itemId } });
+    this.b.ev({ kind: "subagentStatus", threadId: parentId, child: id, status: "running", path: file, patch: { task: task.slice(0, 500), ...(a?.title ? { title: String(a.title).slice(0, 120) } : {}), ...(a?.expect === "short" || a?.expect === "long" ? { expect: a.expect } : {}), ...(child.background ? { background: true } : {}), agent: child.agent, model, state: "running", startedAt: child.startedAt, sessionFile: file, costUsd: 0, toolCallId: itemId } });
 
     proc.on("event", (e: any) => {
       if (e?.type === "message_end" && e.message?.role === "assistant") {

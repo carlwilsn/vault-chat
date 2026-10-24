@@ -5,6 +5,7 @@ import { reconnectVoiceAudio, toggleVoice, toggleVoiceMute, voiceBarLevels } fro
 import { AUDIO_WARN_LINE } from "./voiceMic";
 import { isPopout } from "./windowKind";
 import { relayedVoiceLevels } from "./sync";
+import { WaitTracker, calibFrom, renderWaitLine, waitInputs, type WaitCalib } from "./voiceWaitLine";
 
 const NUM_BARS = 12;
 const LEVEL_DECAY = 0.85;
@@ -39,7 +40,7 @@ export function VoiceCockpit() {
           Connecting…
         </div>
       ) : chatOpen ? (
-        <VoiceBars />
+        <VoiceWaves />
       ) : (
         <button
           type="button"
@@ -49,47 +50,58 @@ export function VoiceCockpit() {
           title={muted ? "Muted: nothing is sent. Click (or Ctrl+Shift+M) to talk" : "Listening. Click to mute (Ctrl+Shift+M)"}
           className={`relative flex items-center rounded px-0.5 ${muted ? "opacity-40" : ""}`}
         >
-          <VoiceBars />
+          <VoiceWaves />
           {muted && <span aria-hidden className="pointer-events-none absolute left-1/2 top-1/2 h-[1.5px] w-[22px] -translate-x-1/2 -translate-y-1/2 -rotate-45 rounded bg-foreground/80" />}
         </button>
       )}
-      {!voiceConnecting && !chatOpen && <WaitingOn />}
     </div>
   );
 }
 
-/** Work still running for the conversation, as a very small line beside the waves — only while it runs, only with the
- *  chat closed (inside the chat its rows already say it): something said on a Classic call (its Ask row, working) and
- *  work the New voice handed off (Delegate workers: meta.subagents). Elapsed time only: a progress bar would need real
- *  steps, and none are reported, so none is drawn (never a made-up percentage). */
-function WaitingOn() {
-  // Stable references from the store (a fresh array from a selector would re-render forever); picked here.
-  const messages = useStore((s) => s.messages);
-  const subs = useStore((s) => s.conversations.find((x) => x.id === s.activeConversationId)?.subagents);
-  const running = [
-    ...messages.filter((m) => m.voiceAsk?.running && m.voiceAsk.startedAt).map((m) => ({ key: m.mid ?? m.voiceAsk!.request, label: m.voiceAsk!.request, at: m.voiceAsk!.startedAt! })),
-    ...(subs ?? []).filter((a) => (a.state ?? a.status) === "running" && a.startedAt).map((a) => ({ key: a.threadId, label: a.title ?? a.task ?? a.prompt ?? "working", at: a.startedAt! })),
-  ];
-  const [, tick] = useState(0);
-  useEffect(() => {
-    if (!running.length) return;
-    const t = setInterval(() => tick((n) => n + 1), 1000);
-    return () => clearInterval(t);
-  }, [running.length]);
-  if (!running.length) return null;
-  const since = (at: number) => {
-    const s = Math.max(0, Math.floor((Date.now() - at) / 1000));
-    return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
-  };
+/** The bars, and under them the waiting line (src/voiceWaitLine.ts): one element, the same on every surface. */
+function VoiceWaves() {
   return (
-    <div data-el="voice-waiting" className="ml-2 flex flex-col leading-[11px] text-[10px] text-muted-foreground whitespace-nowrap">
-      {running.slice(-2).map((r) => (
-        <span key={r.key} title={r.label}>
-          {r.label.slice(0, 28)} · {since(r.at)}
-        </span>
-      ))}
+    <div className="flex flex-col items-stretch text-primary">
+      <VoiceBars />
+      <WaitLine />
     </div>
   );
+}
+
+let boxCalib: { at: number; calib: WaitCalib } | null = null;
+
+/** What the voice is waiting on, as one line: the running turn's tools (with the agent's plan, if it made one), the
+ *  work it handed off (Delegate workers) and, on Classic, what was asked on the call (its Ask row). Gone when the voice
+ *  speaks. Read from the store every 250 ms; drawn by renderWaitLine. */
+function WaitLine() {
+  const ref = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const tracker = new WaitTracker();
+    if (!boxCalib || Date.now() - boxCalib.at > 10 * 60_000) {
+      void (async () => {
+        try {
+          const { boxGet, boxLinkFor } = await import("./boxChat");
+          const link = await boxLinkFor(useStore.getState().vaultPath);
+          const r = link ? await boxGet(link, "/api/v1/brain/expect", 5000) : null;
+          if (r?.calib) boxCalib = { at: Date.now(), calib: r.calib };
+        } catch {
+          /* the line's defaults */
+        }
+      })();
+    }
+    const tick = () => {
+      const s = useStore.getState();
+      const now = Date.now();
+      const conv = s.conversations.find((x) => x.id === s.activeConversationId);
+      const { works, plan, samples } = waitInputs({ running: s.busy, tools: s.liveTools, subagents: conv?.subagents, todos: conv?.todos, messages: s.messages, now });
+      const calib = calibFrom(samples, boxCalib?.calib ?? {});
+      if (ref.current) renderWaitLine(ref.current, tracker.update({ works, plan, calib, now, speaking: s.voiceSpeaking }));
+    };
+    tick();
+    const t = setInterval(tick, 250);
+    return () => clearInterval(t);
+  }, []);
+  return <div ref={ref} />;
 }
 
 // The titlebar's voice control — the mic, and the keyboard that slides out of

@@ -2,13 +2,13 @@
 // A fake engine stands in for pi's turn; the routes run on a real HTTP server.
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 const logDir = mkdtempSync(join(tmpdir(), "vc-brain-test-"));
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { speechReady } from "../speakMath";
-import { STOP_RE, brainRoute, lastUserText, resetBrainForTests, voiceCallRules, type BrainDeps, type BrainEngine } from "../voiceBrain";
+import { STOP_RE, workCalibration, brainRoute, lastUserText, resetBrainForTests, voiceCallRules, type BrainDeps, type BrainEngine } from "../voiceBrain";
 
 type Fake = BrainEngine & { emit(ev: any): void; messages: any[]; talker: any; interrupted: number; running: boolean; stopped: number };
 
@@ -174,6 +174,17 @@ describe("voice with one brain", () => {
     expect(eng.running).toBe(true);
     eng.emit({ type: "vc_turn_end", status: "completed" });
     await p2.then((r) => sse(r)).catch(() => null);
+  });
+
+  it("the waiting line's calibration: what turns with tools, and each tool, took before (the box's turn log)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "vc-calib-"));
+    const turn = (ms: number, tools: { name: string; ms: number }[], outcome = "ok") => JSON.stringify({ ev: "turn", outcome, ms, tools });
+    writeFileSync(join(dir, "turns.jsonl"), [turn(3000, [{ name: "read", ms: 40 }]), turn(5000, [{ name: "read", ms: 60 }]), turn(7000, [{ name: "read", ms: 50 }, { name: "bash", ms: 900 }]), turn(1200, []), turn(90000, [{ name: "read", ms: 10 }], "error"), "not json"].join("\n") + "\n");
+    const c = workCalibration(dir, 1);
+    expect(c.turn).toEqual({ n: 3, p50Ms: 5000, p90Ms: 5000 });
+    expect(c.read).toEqual({ n: 3, p50Ms: 50, p90Ms: 50 });
+    expect(c.bash).toBeUndefined();
+    expect(workCalibration(null)).toEqual({});
   });
 
   it("what the conversation says outside a request (a typed turn, a result) goes to the speak channel", async () => {

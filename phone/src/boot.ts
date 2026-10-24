@@ -15,6 +15,7 @@ import { VoiceLogShipper } from "../../src/voiceShip";
 import { VoiceImagePusher } from "../../src/voiceImages";
 import { VoiceUpdates, pushStartImages } from "../../src/voiceFront";
 import { BrainConversation } from "../../src/voiceBrainClient";
+import { WaitTracker, calibFrom, renderWaitLine, waitInputs, type WaitCalib } from "../../src/voiceWaitLine";
 import type { LogRecord } from "../../src/convlog/protocol";
 import { emptyPicture, emptyRow, foldInto, pendingOf, reduceRow, shown, type Picture, type RowState } from "../../src/convlog/reduce";
 import { afterClear, makeChatView, type ChatView } from "../../src/convlog/view";
@@ -137,6 +138,7 @@ export function boot(): void {
   // see stopMode().
   let convSource = null;
   let running = false, stopping = false, streamText = "", streamTool = "", streamStartedAt = null;
+  let vWaitTools: any[] = [], vWaitMsgs: any[] = []; // the voice's waiting line reads these (vWaitLine)
   // Per-conversation activity, for the drawer rows AND the conversations icon:
   //  • convRunning — convIds generating right now → a white pulsing "thinking" dot.
   //  • convUnseen  — convIds whose run FINISHED while you were looking at another
@@ -906,6 +908,8 @@ export function boot(): void {
     const t = v && v.live.tools.length ? v.live.tools[v.live.tools.length - 1] : null;
     const arg = t && t.input ? t.input.path || t.input.file_path || t.input.command || t.input.pattern || t.input.url || "" : "";
     streamTool = t ? t.name + (arg ? " " + String(arg).split("\n")[0].slice(0, 80) : "") : "";
+    vWaitTools = running && v ? v.live.tools : [];
+    vWaitMsgs = msgs;
     streamStartedAt = v ? v.startedAt : null;
     if (pic) {
       const m = pic.meta as any;
@@ -2138,6 +2142,24 @@ export function boot(): void {
 
   // ---------- voice (verbatim iOS-hardened connect) ----------
   const NUM_BARS = 12, DECAY = 0.85;
+  // The waiting line under the bars (and along the pill's foot): what the voice waits on, until it speaks.
+  let vWaitAt = 0, vBoxCalib: WaitCalib = {}, vCalibAsked = false;
+  const vWaitTracker = new WaitTracker();
+  function vWaitLine(now: number) {
+    if (now - vWaitAt < 250) return;
+    vWaitAt = now;
+    if (!vCalibAsked) {
+      vCalibAsked = true;
+      api("/api/v1/brain/expect").then((r) => (r.ok ? r.json() : null)).then((j) => { if (j && j.calib) vBoxCalib = j.calib; }).catch(() => {});
+    }
+    const t = Date.now();
+    const { works, plan, samples } = waitInputs({ running: vWaitTools.length > 0, tools: vWaitTools, startedAt: streamStartedAt, subagents: (convMeta && convMeta.subagents) || [], todos: (convMeta && convMeta.todos) || [], messages: vWaitMsgs, now: t });
+    const calib = calibFrom(samples, vBoxCalib);
+    const view = vWaitTracker.update({ works, plan, calib, now: t, speaking: vAgentSpeaking });
+    const a = $("vwait"), b = $("vpwait");
+    if (a) renderWaitLine(a, view);
+    if (b) renderWaitLine(b, view);
+  }
   const vizEl = $("viz"), verrEl = $("verr"); const vBars = [];
   for (let i = 0; i < NUM_BARS; i++) { const b = document.createElement("div"); b.className = "vbar"; vizEl.appendChild(b); vBars.push(b); }
   let vConv = null, vConnecting = false, vRafId = 0, vLive = false, vAutoRetried = false, vMuted = false;
@@ -2186,6 +2208,7 @@ export function boot(): void {
     // Nothing audible can play, or the inbound audio stalled mid-reply: flat (the hint says why) — never waves over silence.
     if (vAudioWarn || (vPlayback && vPlayback.stalled)) raw = new Array(NUM_BARS).fill(0);
     for (let i = 0; i < NUM_BARS; i++) { const decayed = vSmoothed[i] * DECAY; vSmoothed[i] = raw[i] > decayed ? raw[i] : decayed; const h = 0.16 + Math.min(1, vSmoothed[i]) * 0.84; vBars[i].style.transform = `scaleY(${h.toFixed(3)})`; }
+    vWaitLine(performance.now());
     vRafId = requestAnimationFrame(vMeter);
   }
   // Voice is the front of house of the open chat (D3, server/voice.ts): its one tool that acts, Ask, is a request

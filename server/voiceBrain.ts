@@ -26,11 +26,12 @@
 //   POST /v1/chat/completions          OpenAI-compatible, SSE   (loopback + the call's token only)
 //   GET  /api/v1/brain/call/<id>/speak SSE {text, turn}        (loopback + the call's token only)
 import { randomBytes, timingSafeEqual } from "node:crypto";
-import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, closeSync, mkdirSync, openSync, readFileSync, readSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { Speakable } from "./speakable";
 import { speechReady } from "./speakMath";
+import { calibFrom } from "../src/voiceWaitLine";
 
 export type BrainEngine = {
   message(b: { convId?: string | null; text?: string; source?: string; via?: string; client?: string; clientMsgId?: string }): Promise<Record<string, unknown> | null>;
@@ -40,6 +41,8 @@ export type BrainEngine = {
   interrupt(convId: string, byUser: boolean): Promise<boolean>;
   /** Stop the running turn and the work it handed off (server/engine stopWork). */
   stopWork?(convId: string): Promise<number>;
+  /** What a voice on the conversation waits on (the waiting line's inputs). */
+  waitInputs?(convId: string): { works: unknown[]; plan: unknown; samples: Record<string, number[]> } | null;
 };
 
 export type BrainDeps = {
@@ -111,7 +114,7 @@ export function voiceCallRules(device: Device): string {
   const where = device === "board" ? "his iPad board" : device === "phone" ? "his phone" : "his laptop";
   // One reply, written as always (markdown); the voice reads it aloud as written (server/speakable.ts). Only a light
   // nudge on length, and the one rule a live call needs: slow work goes to Delegate, so the voice never goes quiet.
-  return `[A voice call is live on ${where}: your replies are shown as always and also read aloud as written. Keep them conversational in length. Before you use any tool, first say one short line of what you're doing ("Let me look at the workbook."). Anything that takes more than a few seconds goes to Delegate {title, task}: say in a line that you've sent it and carry on; its report comes back to you as a "Delegated work finished" turn, then tell him the result. Say something was done only when it was.]`;
+  return `[A voice call is live on ${where}: your replies are shown as always and also read aloud as written. Keep them conversational in length. Before you use any tool, first say one short line of what you're doing ("Let me look at the workbook."). A lookup is one step where it can be: find and read together (grep -rn with a few lines of context, or read with an offset), and independent calls at once, not one after another. Anything that takes more than a few seconds goes to Delegate {title, task, expect: "short" or "long"}: say in a line that you've sent it and carry on; its report comes back to you as a "Delegated work finished" turn, then tell him the result. Say something was done only when it was.]`;
 }
 
 // ---------------------------------------------------------------- calls
@@ -325,6 +328,53 @@ function finishSink(c: Call, s: Sink): void {
 }
 
 /** Carl's newest words in an OpenAI-shaped request (the pipeline sends its whole context; only these matter). */
+// ---------------------------------------------------------------- the waiting line's calibration
+
+let calibCache: { at: number; dir: string; calib: Record<string, { n: number; p50Ms: number; p90Ms: number }> } | null = null;
+
+/** What work took before, from the box's turn log (logs/turns.jsonl, its last few MB): "turn" (a turn that used tools,
+ *  start to end) and each tool by name. The waiting line's pace when the agent didn't say (src/voiceWaitLine.ts). */
+export function workCalibration(dir: string | null, now = Date.now()): Record<string, { n: number; p50Ms: number; p90Ms: number }> {
+  if (!dir) return {};
+  if (calibCache && calibCache.dir === dir && now - calibCache.at < 60_000) return calibCache.calib;
+  const samples: Record<string, number[]> = {};
+  const add = (k: string, ms: unknown) => {
+    if (typeof ms === "number" && Number.isFinite(ms) && ms > 0) (samples[k] ??= []).push(ms);
+  };
+  try {
+    const f = join(dir, "turns.jsonl");
+    const size = statSync(f).size;
+    const fd = openSync(f, "r");
+    const len = Math.min(size, 4 * 1024 * 1024);
+    const buf = Buffer.alloc(len);
+    readSync(fd, buf, 0, len, size - len);
+    closeSync(fd);
+    for (const line of buf.toString("utf8").split("\n")) {
+      if (!line.startsWith("{")) continue;
+      let t: any;
+      try {
+        t = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      if (t?.ev !== "turn" || t.outcome !== "ok" || !Array.isArray(t.tools) || !t.tools.length) continue;
+      add("turn", t.ms);
+      for (const x of t.tools) add(String(x?.name ?? "?"), x?.ms);
+    }
+  } catch {
+    /* no log yet: no calibration, the line's defaults */
+  }
+  const calib: Record<string, { n: number; p50Ms: number; p90Ms: number }> = {};
+  for (const [k, xs] of Object.entries(samples)) {
+    if (xs.length < 3) continue;
+    xs.sort((a, b) => a - b);
+    const q = (p: number) => xs[Math.min(xs.length - 1, Math.floor((xs.length - 1) * p))]!;
+    calib[k] = { n: xs.length, p50Ms: q(0.5), p90Ms: q(0.9) };
+  }
+  calibCache = { at: now, dir, calib };
+  return calib;
+}
+
 /** How many lines from Carl the pipeline's context holds. */
 export function userLines(body: any): number {
   const msgs = Array.isArray(body?.messages) ? body.messages : [];
@@ -506,6 +556,19 @@ export async function brainRoute(
     // A first switch to New sets the pipeline up (minutes once): say so rather than "not running".
     if (e === "new") await new Promise((r) => setTimeout(r, 1500));
     json(res, 200, { ok: true, engine: e, pipeline: await pipelineUp(d) });
+    return true;
+  }
+  // The waiting line for a surface with no conversation feed of its own (the iPad board): its inputs, and the box's
+  // calibration merged with this conversation's history.
+  const wait = /^\/api\/v1\/brain\/wait\/([A-Za-z0-9_-]{1,80})$/.exec(path);
+  if (wait && method === "GET") {
+    const engine = await d.engine();
+    const w = engine.waitInputs?.(wait[1]!) ?? { works: [], plan: null, samples: {} };
+    json(res, 200, { works: w.works, plan: w.plan, calib: calibFrom(w.samples, workCalibration(d.logDir)), now: Date.now() });
+    return true;
+  }
+  if (path === "/api/v1/brain/expect" && method === "GET") {
+    json(res, 200, { calib: workCalibration(d.logDir) });
     return true;
   }
   if (path === "/api/v1/brain/calls" && method === "GET") {

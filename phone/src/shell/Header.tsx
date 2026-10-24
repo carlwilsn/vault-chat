@@ -16,6 +16,7 @@ export function Header() {
       </button>
       <button className="vpill" id="vpill">
         <span className="d"></span> voice
+        <span className="vpwait" id="vpwait"></span>
       </button>
       <button className="icbtn" id="menuBtn" aria-label="menu">
         <Burger />

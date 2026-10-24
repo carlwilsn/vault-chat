@@ -17,6 +17,8 @@ import { icon, toolIcon } from "./icons";
 import { onInboxEvent } from "./inbox";
 import { AUDIO_WARN_LINE, VoiceController, type VoiceApi, type VoiceSdk, type VoiceState } from "./voice";
 import { blog, setStatSource, tapLine } from "./log";
+import { WaitTracker, renderWaitLine, type WaitCalib, type WaitPlan, type WaitWork } from "../../src/voiceWaitLine";
+import { MAIN_ID } from "../../src/threads";
 
 const FAKE = /[?&]voice=fake\b/.test(location.search);
 const BARS = 5;
@@ -150,7 +152,8 @@ export function mountVoicePill(): void {
       bars = [];
       return;
     }
-    const waves = `<div class="waves flex h-4 shrink-0 items-center gap-[2.5px] px-0.5" aria-hidden="true">${'<i class="block h-full w-[3px] origin-center rounded-full"></i>'.repeat(BARS)}</div>`;
+    // The waves, and under them the waiting line (src/voiceWaitLine.ts): the same element as on the laptop and phone.
+    const waves = `<div class="flex shrink-0 flex-col items-stretch text-sys-label/70"><div class="waves flex h-4 shrink-0 items-center gap-[2.5px] px-0.5" aria-hidden="true">${'<i class="block h-full w-[3px] origin-center rounded-full"></i>'.repeat(BARS)}</div><div class="v-waitline"></div></div>`;
     if (s.phase === "error") {
       root.innerHTML = `<div class="pointer-events-auto material hairline shadow-float flex min-h-10 max-w-[460px] items-center gap-2 rounded-[20px] py-1 pl-3 pr-1 animate-pop-in" role="${isMoved(s) ? "status" : "alert"}" data-voice="${isMoved(s) ? "moved" : "error"}">
         ${waves}
@@ -220,6 +223,37 @@ export function mountVoicePill(): void {
     loop(s);
   };
 
+  // The waiting line: what the voice waits on, from the box (the board has no conversation feed), until it speaks.
+  let waitTimer = 0;
+  let waitTracker = new WaitTracker();
+  let wait: { works: WaitWork[]; plan: WaitPlan | null; calib: WaitCalib; skew: number } = { works: [], plan: null, calib: {}, skew: 0 };
+  let waitBusy = false;
+  const waitLoop = (s: VoiceState) => {
+    if (s.phase !== "live") {
+      clearInterval(waitTimer);
+      waitTimer = 0;
+      waitTracker = new WaitTracker();
+      return;
+    }
+    if (waitTimer) return;
+    let n = 0;
+    waitTimer = window.setInterval(() => {
+      const st = voice.state;
+      if (n++ % 2 === 0 && !waitBusy) {
+        waitBusy = true;
+        api
+          .brainWait(st.chat?.id ?? MAIN_ID)
+          .then((r) => (wait = { works: r.works ?? [], plan: r.plan ?? null, calib: r.calib ?? {}, skew: Date.now() - (r.now ?? Date.now()) }))
+          .catch(() => {})
+          .finally(() => (waitBusy = false));
+      }
+      const el = root.querySelector<HTMLElement>(".v-waitline");
+      // Box times on this clock (the box's now vs ours).
+      const works = wait.works.map((w) => ({ ...w, startedAt: w.startedAt + wait.skew }));
+      if (el) renderWaitLine(el, waitTracker.update({ works, plan: wait.plan, calib: wait.calib, now: Date.now(), speaking: st.speaking }));
+    }, 300);
+  };
+
   // The waves: the SDK's mic level while Carl talks (flat while muted), the agent's output while it speaks.
   const loop = (s: VoiceState) => {
     cancelAnimationFrame(raf);
@@ -251,6 +285,7 @@ export function mountVoicePill(): void {
   voice.on((s) => {
     if (s.phase !== "live" && s.phase !== "connecting") chatsOpen = false;
     build(s);
+    waitLoop(s);
   });
 
   // ---- presses (chrome.ts): on pointerup, once; the click after it is dropped

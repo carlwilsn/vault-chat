@@ -48,7 +48,8 @@ import { appendActivity, contextImage, searchActivity, youLayer } from "../activ
 import { CAPTURE_FRESH_MS, chatPointerEntry } from "../../src/activityCore";
 import type { EventBody, ItemImage, PendingInput } from "../../src/convlog/protocol";
 import { isOpen, pendingOf, shown, type Picture } from "../../src/convlog/reduce";
-import { toolName } from "../../src/convlog/view";
+import { makeChatView, toolName } from "../../src/convlog/view";
+import { waitInputs } from "../../src/voiceWaitLine";
 import { readEntries } from "../convlog/piSession";
 import { PiFeed } from "./piFeed";
 import { READ_ONLY_TOOLS, type SideLog, type SideState } from "./pi/side";
@@ -380,6 +381,7 @@ export const ENGINE_TOOL_SPECS = [
       properties: {
         title: { type: "string", description: "What it is doing, in a few words, for Carl's waiting-on line (\"Pulling the lecture notes\")." },
         task: { type: "string", description: "The whole task with everything the worker needs: it does not see this conversation. Say what to report back." },
+        expect: { type: "string", enum: ["short", "long"], description: "How long you expect it to take: short (seconds) or long (a minute or more). Sets the pace of Carl's waiting line." },
       },
       required: ["title", "task"],
       additionalProperties: false,
@@ -1072,6 +1074,15 @@ export class Engine {
     return n;
   }
 
+  private waitView = makeChatView();
+  /** What a voice on `convId` is waiting on (src/voiceWaitLine.ts), for a surface with no feed of its own (the board). */
+  waitInputs(convId: string): ReturnType<typeof waitInputs> | null {
+    const p = this.picture(convId);
+    if (!p) return null;
+    const v = this.waitView(p);
+    return waitInputs({ running: v.running, tools: v.live.tools, startedAt: v.startedAt, subagents: p.meta.subagents as any, todos: v.todos as any, messages: v.messages as any, now: Date.now() });
+  }
+
   /** A voice call on `convId` (null: it ended). Its turns run on `model`; `rules` go in front of the call's first turn. */
   setTalker(convId: string, t: { model: string; rules: string; thinking?: string } | null): void {
     if (t) this.talkers.set(convId, { ...t, sent: false });
@@ -1689,6 +1700,7 @@ export class Engine {
             // The conversation's own model, not a live call's talker: the work wants the strong one.
             model: this.d.model(),
             title,
+            ...(a.expect === "short" || a.expect === "long" ? { expect: a.expect } : {}),
           });
           void started
             .then((r: any) => {

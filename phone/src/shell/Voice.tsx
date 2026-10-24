@@ -11,6 +11,7 @@ export function Voice() {
       </div>
       <div className="vmid">
         <div className="viz" id="viz"></div>
+        <div className="vwait" id="vwait"></div>
         <div className="vconn">Connecting…</div>
         <div className="verr" id="verr"></div>
       </div>
