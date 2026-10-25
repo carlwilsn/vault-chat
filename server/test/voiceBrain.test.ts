@@ -199,6 +199,31 @@ describe("voice with one brain", () => {
     expect(workCalibration(null)).toEqual({});
   });
 
+  it("a result's pieces on the speak channel share their turn's number (said whole, gated once); the next turn's is new", async () => {
+    const c = await call();
+    const ac = new AbortController();
+    const res = await fetch(`${base}/api/v1/brain/call/${c.id}/speak`, { headers: { authorization: `Bearer ${c.token}` }, signal: ac.signal });
+    const reader = res.body!.getReader();
+    eng.emit({ type: "vc_turn_start", kind: "wake", origin: null });
+    eng.emit(delta("The sectioned PDF of lecture seven is ready in your notes folder now. "));
+    eng.emit(delta("It has three sections, one for each of the main proofs we went through today. "));
+    eng.emit(delta("The last one has the figure you asked for at the end of the class. "));
+    eng.emit({ type: "message_end", message: { role: "assistant" } });
+    eng.emit({ type: "vc_turn_end", status: "completed" });
+    eng.emit({ type: "vc_turn_start", kind: "wake", origin: null });
+    eng.emit(delta("The board checkpoint is saved. "));
+    eng.emit({ type: "vc_turn_end", status: "completed" });
+    let got = "";
+    for (let i = 0; i < 8 && !got.includes("checkpoint"); i++) got += new TextDecoder().decode((await reader.read()).value);
+    ac.abort();
+    const pieces = got.split("\n").filter((l) => l.startsWith("data:")).map((l) => JSON.parse(l.slice(5)));
+    const first = pieces.filter((p) => /PDF|sections|figure/.test(p.text));
+    expect(first.length).toBeGreaterThanOrEqual(2);
+    expect(new Set(first.map((p) => p.utt)).size).toBe(1);
+    const second = pieces.find((p) => /checkpoint/.test(p.text));
+    expect(second.utt).toBe(first[0].utt + 1);
+  });
+
   it("what the conversation says outside a request (a typed turn, a result) goes to the speak channel", async () => {
     const c = await call();
     const ac = new AbortController();
@@ -295,8 +320,20 @@ describe("voice with one brain", () => {
     expect(eng.stopped).toBe(1);
     eng.emit({ type: "vc_turn_end", status: "completed" });
     await q;
-    for (const t of ["stop", "Stop.", "okay, stop", "forget it", "cancel that", "scratch that"]) expect(STOP_RE.test(t), t).toBe(true);
-    for (const t of ["stop the timer at 5", "don't stop", "nevermind the second part, what about the first?"]) expect(STOP_RE.test(t), t).toBe(false);
+    // His real phrasing, both ways.
+    for (const t of [
+      "stop", "Stop.", "okay, stop", "forget it", "cancel that", "scratch that",
+      "Actually, never mind that.", "actually never mind that", "Never mind, I found it.", "never mind I found it",
+      "Nah, forget it.", "nah forget it", "Stop, I got it.", "stop I got it", "No, wait, stop.", "Okay, you can stop now.",
+      "Forget about it, it's fine.", "Never mind that. What time is it?", "Nevermind.", "Um, never mind.", "No need, I found it.",
+      "Stop please.", "Don't worry about it.", "Cancel it — I'll do it myself.",
+    ]) expect(STOP_RE.test(t), t).toBe(true);
+    for (const t of [
+      "stop the timer at 5", "don't stop", "nevermind the second part, what about the first?",
+      "I don't mind.", "Never mind the second part, do the first.", "Cancel my 3pm meeting.", "Can you stop by the library note?",
+      "Forget the proof, what's the statement?", "I never mind doing proofs.", "Wait, what's seven times eight plus three?",
+      "Stopping times are next week, right?", "Is there a stop condition in the loop?",
+    ]) expect(STOP_RE.test(t), t).toBe(false);
   });
 
   it("one context, each surface its own exchange: a reply to a line typed on another device is not spoken on this call; one typed on its own device is", async () => {

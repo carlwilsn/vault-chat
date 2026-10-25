@@ -20,7 +20,7 @@ from pipecat.frames.frames import (  # noqa: E402
     VADUserStoppedSpeakingFrame,
 )
 
-from bot import Gate  # noqa: E402
+from bot import Gate, ResultFlow  # noqa: E402
 
 Q = Gate.QUIET_SECS
 
@@ -111,6 +111,38 @@ def test_a_reply_that_never_comes_stops_holding():
     g.on_frame(UserStoppedSpeakingFrame(), 2.0)
     assert not g.idle(2.0 + Gate.OWED_MAX_SECS - 1)
     assert g.idle(2.0 + Gate.OWED_MAX_SECS + 0.1)
+
+
+def test_a_result_is_said_whole_gated_once():
+    # One result in four sentences: the gap is waited for once, then the rest goes straight on (no 1.2 s per piece).
+    f = ResultFlow()
+    assert f.next(7, 0) == "gate"
+    f.started(7, 0)
+    assert [f.next(7, 0) for _ in range(3)] == ["go", "go", "go"]
+    # The next result waits for its own gap.
+    assert f.next(8, 0) == "gate"
+
+
+def test_talking_over_a_result_stops_the_rest():
+    f = ResultFlow()
+    f.started(3, 2)
+    assert f.next(3, 3) == "drop"  # he started a turn while it played: a barge-in
+    assert f.next(3, 3) == "drop"
+    assert f.next(4, 3) == "gate"  # a later result is said (after its gap)
+
+
+def test_an_untagged_piece_is_gated_like_before():
+    f = ResultFlow()
+    f.started(None, 0)
+    assert f.next(None, 0) == "gate"
+
+
+def test_gate_counts_his_turns():
+    g = fresh()
+    g.on_frame(UserStartedSpeakingFrame(), 1.0)
+    g.on_frame(UserStoppedSpeakingFrame(), 2.0)
+    g.on_frame(UserStartedSpeakingFrame(), 3.0)
+    assert g.user_turns == 2
 
 
 if __name__ == "__main__":

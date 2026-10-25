@@ -65,7 +65,14 @@ export type BrainDeps = {
 
 /** The routes are on unless the box turns them off; which voice a device uses is the engine setting below. */
 /** A whole utterance that means "stop what you're doing" (never a sentence that merely contains "stop"). */
-export const STOP_RE = /^\s*(?:ok(?:ay)?,?\s+)?(?:stop|stop (?:it|that)|never ?mind|cancel(?: (?:it|that))?|forget (?:it|that)|scratch that|don'?t bother)(?: please)?[.!]*\s*$/i;
+// "Stop" / "never mind" as he says it: the line opens with it (after a filler: "actually, never mind that", "nah forget it",
+// "no, wait, stop") and it is the clause, ending there or before a pause or a new clause ("never mind, I found it",
+// "stop, I got it", "never mind I found it"). Never when it takes an object ("never mind the second part, do the
+// first", "stop the timer", "cancel my 3pm") or isn't at the start ("I don't mind", "don't stop").
+const STOP_FILLER = String.raw`(?:(?:actually|oh|ok(?:ay)?|nah|no|nope|wait|um+|uh+|hey|so|right|alright|well|sorry)[,.!]?\s+)*`;
+const STOP_PHRASE = String.raw`(?:stop(?: (?:it|that|now))?|never ?mind(?: (?:that|it))?|cancel(?: (?:it|that))?|forget (?:it|that|about it)|scratch that|don'?t bother|(?:you can|please) stop(?: now)?|no need|don'?t worry about it)`;
+const STOP_END = String.raw`(?:$|[,.!;?\u2014\u2013-]|\s+(?:i|i'm|i've|i'll|we|thanks|thank you)\b)`;
+export const STOP_RE = new RegExp(String.raw`^\s*` + STOP_FILLER + STOP_PHRASE + String.raw`(?:,?\s*please)?\s*` + STOP_END, "i");
 
 /** The same words again within this long, with no new line from Carl in the pipeline's context, are the pipeline
  * re-asking, never a second turn. A new line with the same words is Carl asking again (he didn't catch it): answered. */
@@ -143,6 +150,9 @@ type Call = {
   untap: () => void;
   engine: BrainEngine;
   turns: number;
+  /** The turn now speaking (counts pi's turns on the call): the speak channel's pieces of one result share it, so the
+   *  pipeline waits for a gap once, at the result's start, then says its pieces back to back. */
+  utt: number;
   /** The last words sent to pi, and when (the same words again at once are a re-ask, not a new turn). */
   lastText: { text: string; at: number; lines: number; endedAt?: number } | null;
   /** Its last request or speak-channel activity (a call whose pipeline died without ending it is reaped). */
@@ -209,6 +219,7 @@ export async function startCall(d: BrainDeps, b: { convId?: unknown; device?: un
     untap: () => {},
     engine,
     turns: 0,
+    utt: 0,
     lastText: null,
     lastActive: Date.now(),
     stopping: null,
@@ -259,6 +270,7 @@ function callOf(req: IncomingMessage, id?: string): Call | null {
 
 function onPi(d: BrainDeps, c: Call, ev: any): void {
   if (ev?.type === "vc_turn_start") {
+    c.utt++;
     const origin = typeof ev.origin === "string" ? ev.origin : null;
     c.ownTurn = ev.kind !== "user" || !origin || origin === "voice" || origin === c.device;
     if (!c.ownTurn) log(d, { ev: "turn.other-surface", call: c.id, origin });
@@ -300,7 +312,7 @@ function say(c: Call, pieces: string[]): void {
     if (c.sink && !c.sink.done) {
       writeChunk(c.sink, p);
     } else if (!c.dropping && c.ownTurn) {
-      const line = `data: ${JSON.stringify({ text: p, at: Date.now() })}\n\n`;
+      const line = `data: ${JSON.stringify({ text: p, utt: c.utt, at: Date.now() })}\n\n`;
       for (const ch of c.channels) ch.write(line);
     }
   }

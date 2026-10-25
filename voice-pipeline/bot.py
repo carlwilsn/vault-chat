@@ -169,6 +169,7 @@ class Gate:
         self.user = False  # his turn: started on a word, ended by the turn model (endpointing in between)
         self.bot = False  # the voice's audio playing
         self.owed: float | None = None  # his turn ended at this time and its reply is not done
+        self.user_turns = 0  # his turns so far (a result he talks over stops there)
         self.changed = now
 
     def on_frame(self, frame: Frame, now: float) -> None:
@@ -178,6 +179,7 @@ class Gate:
             self.voice = False
         elif isinstance(frame, UserStartedSpeakingFrame):
             self.user, self.owed = True, None
+            self.user_turns += 1
         elif isinstance(frame, UserStoppedSpeakingFrame):
             self.user, self.owed = False, now
         elif isinstance(frame, BotStartedSpeakingFrame):
@@ -197,6 +199,25 @@ class Gate:
         return not (self.voice or self.user or self.bot or owed) and now - self.changed >= self.QUIET_SECS
 
 
+class ResultFlow:
+    """One result, said whole: the Gate is waited on once, at its first piece; its later pieces (the same `utt`) go
+    straight on, back to back, never a 1.2 s gap after each sentence. If he starts a turn while it plays, that is a
+    barge-in: the rest of that result is not said. Pure (tested in test_gate.py)."""
+
+    def __init__(self):
+        self.utt = None
+        self.turns_at = 0
+
+    def next(self, utt, user_turns: int) -> str:
+        """'gate' (a new result: wait for a gap first), 'go' (its next piece: say it now) or 'drop' (he talked over it)."""
+        if utt is None or utt != self.utt:
+            return "gate"
+        return "go" if user_turns == self.turns_at else "drop"
+
+    def started(self, utt, user_turns: int) -> None:
+        self.utt, self.turns_at = utt, user_turns
+
+
 class Quiet(FrameProcessor):
     """The Gate, fed from the pipeline: before the brain it sees him and the voice's audio; ReplyEnd (after the brain)
     tells it when a reply to him is complete."""
@@ -213,6 +234,16 @@ class Quiet(FrameProcessor):
     async def until_idle(self):
         while not self.gate.idle(time.monotonic()):
             await asyncio.sleep(0.1)
+
+    async def say_piece(self, flow: ResultFlow, utt, text: str, task) -> None:
+        """A speak-channel piece: a new result waits for a gap once; the rest of it follows at once (or not at all)."""
+        act = flow.next(utt, self.gate.user_turns)
+        if act == "drop":
+            return
+        if act == "gate":
+            await self.until_idle()
+            flow.started(utt, self.gate.user_turns)
+        await task.queue_frame(TTSSpeakFrame(text))
 
 
 class ReplyEnd(FrameProcessor):
@@ -233,6 +264,7 @@ async def speak_channel(call: dict, task: PipelineTask, quiet: Quiet):
     """The conversation's speech outside a request (typed turns, results): said when both are quiet."""
     url = f"{call['base']}/api/v1/brain/call/{call['id']}/speak"
     headers = {"Authorization": f"Bearer {call['token']}"}
+    flow = ResultFlow()
     while True:
         try:
             async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=None, sock_read=60)) as s:
@@ -244,10 +276,10 @@ async def speak_channel(call: dict, task: PipelineTask, quiet: Quiet):
                         line = raw.decode("utf8").strip()
                         if not line.startswith("data:"):
                             continue
-                        text = json.loads(line[5:]).get("text", "")
+                        msg = json.loads(line[5:])
+                        text = msg.get("text", "")
                         if text:
-                            await quiet.until_idle()
-                            await task.queue_frame(TTSSpeakFrame(text))
+                            await quiet.say_piece(flow, msg.get("utt"), text, task)
         except asyncio.CancelledError:
             return
         except Exception as e:  # the server restarted: reconnect
