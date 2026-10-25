@@ -50,6 +50,7 @@ import type { EventBody, ItemImage, PendingInput } from "../../src/convlog/proto
 import { isOpen, pendingOf, shown, type Picture } from "../../src/convlog/reduce";
 import { makeChatView, toolName } from "../../src/convlog/view";
 import { waitInputs } from "../../src/voiceWaitLine";
+import { lookup } from "./lookup";
 import { readEntries } from "../convlog/piSession";
 import { PiFeed } from "./piFeed";
 import { READ_ONLY_TOOLS, type SideLog, type SideState } from "./pi/side";
@@ -367,6 +368,22 @@ export const ENGINE_TOOL_SPECS = [
     inputSchema: {
       type: "object",
       properties: { query: { type: "string" }, thread: { type: "string" }, limit: { type: "number" } },
+      required: ["query"],
+      additionalProperties: false,
+    },
+  },
+  {
+    type: "function",
+    name: "Lookup",
+    description:
+      "Find something in Carl's notes and read it, in one call: give his words (and part of a file name if you know it). Returns the best-matching passages with the lines around them, from the files that match best. Use it instead of a find, grep, read chain.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "What to find, in his words (\"theorem 1.2 proof workbook\")." },
+        file: { type: "string", description: "Only files whose path contains this (\"Real 320-1\", \"Workbook\")." },
+        lines: { type: "number", description: "Lines to show after each match (default 14, max 40)." },
+      },
       required: ["query"],
       additionalProperties: false,
     },
@@ -1690,6 +1707,8 @@ export class Engine {
           if (!r.ok) return { success: false, contentItems: [{ type: "inputText", text: `Refused (nothing reached the inbox):\n- ${r.refusals.join("\n- ")}` }] };
           return text(JSON.stringify({ id: r.id, parts: r.parts }) + " — in Carl's whiteboard inbox.");
         }
+        case "Lookup":
+          return text(lookup(vault, a));
         case "Delegate": {
           const title = String(a.title ?? "").trim().slice(0, 120);
           const task = String(a.task ?? "").trim();

@@ -114,7 +114,7 @@ export function voiceCallRules(device: Device): string {
   const where = device === "board" ? "his iPad board" : device === "phone" ? "his phone" : "his laptop";
   // One reply, written as always (markdown); the voice reads it aloud as written (server/speakable.ts). Only a light
   // nudge on length, and the one rule a live call needs: slow work goes to Delegate, so the voice never goes quiet.
-  return `[A voice call is live on ${where}: your replies are shown as always and also read aloud as written. Keep them conversational in length. Before you use any tool, first say one short line of what you're doing ("Let me look at the workbook."). A lookup is one step where it can be: find and read together (grep -rn with a few lines of context, or read with an offset), and independent calls at once, not one after another. Anything that takes more than a few seconds goes to Delegate {title, task, expect: "short" or "long"}: say in a line that you've sent it and carry on; its report comes back to you as a "Delegated work finished" turn, then tell him the result. Say something was done only when it was.]`;
+  return `[A voice call is live on ${where}: your replies are shown as always and also read aloud as written. Keep them conversational in length. A lookup in his notes is one Lookup {query} call (it finds and reads together); independent calls go at once, not one after another. Anything that takes more than a few seconds goes to Delegate {title, task, expect: "short" or "long"}: say in a line that you've sent it and carry on; its report comes back to you as a "Delegated work finished" turn, then tell him the result. Say something was done only when it was.]`;
 }
 
 // ---------------------------------------------------------------- calls
@@ -274,8 +274,8 @@ function onPi(d: BrainDeps, c: Call, ev: any): void {
     // An assistant message ended (before its tool calls, or the turn's last): what is left of it is a sentence.
     say(c, c.speak.flush());
   } else if (ev?.type === "tool_execution_start") {
-    // Whether the reply said its own line before reaching for a tool (the call rules ask it to; nothing is said for it):
-    // the rule's compliance, counted from this log.
+    // Whether the reply said anything before reaching for a tool (nothing is said for it; the waiting line covers the wait):
+    // counted from this log.
     if (c.sink && !c.sink.done) {
       log(d, { ev: "turn.tool", call: c.id, req: c.sink.id, tool: String(ev.toolName ?? ""), spokeFirst: c.sink.sent > 0, afterMs: Date.now() - c.sink.t0 });
     }
