@@ -291,6 +291,22 @@ export class FakeBox {
       case "delete":
         this.meta(conv, { deleted: true });
         return { ok: true };
+      case "deleteProject": {
+        // Engine.deleteProject: the thread gone (every surface on it lands on Main), the clients told.
+        const id = `project-${String(b.slug ?? "")}`;
+        if (!b.slug || b.slug === "main" || !this.log.picture(id)?.exists) return { ok: false, error: `no project ${b.slug}` };
+        this.meta(id, { deleted: true });
+        this.emit(null, { type: "signal", signal: { type: "project", slug: b.slug, deleted: true, convId: id, to: "main" } });
+        return { ok: true, slug: b.slug, convId: id, to: "main", movedTo: `agent-projects/.deleted/${b.slug}-20261025-120000` };
+      }
+      case "renameProject": {
+        const id = `project-${String(b.slug ?? "")}`;
+        const name = String(b.name ?? "").trim();
+        if (!name) return { ok: false, error: "a project needs a name" };
+        this.meta(id, { title: name });
+        this.emit(null, { type: "signal", signal: { type: "project", slug: b.slug, renamed: name } });
+        return { ok: true, slug: b.slug, name };
+      }
       default:
         return { error: "unknown intent" };
     }

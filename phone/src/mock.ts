@@ -238,6 +238,9 @@ export function installMock() {
     const q = new URLSearchParams(String(url).split("?")[1] || "");
     const body = opts && opts.body ? JSON.parse(opts.body as string) : {};
     if (DB.script && u !== "/poll") window.__vcPhonePosts.push({ url: String(url), method: (opts && opts.method) || "GET", body });
+    // Delete / Rename a project: the project list follows (the box's feed takes the thread, below).
+    if (u === "/api/v2/intent" && body.type === "deleteProject") DB.projects = (DB.projects || []).filter((x) => x.slug !== body.slug);
+    if (u === "/api/v2/intent" && body.type === "renameProject") DB.projects = (DB.projects || []).map((x) => (x.slug === body.slug ? { ...x, name: String(body.name || "").trim() || x.name } : x));
     // The log's routes: /poll, /api/v2/conversations[/<id>/checkpoint], /api/v2/intent.
     const routed = await box.route((opts && opts.method) || "GET", u, q, body, DB.script ? 2400 : 2500);
     if (routed) return new Response(JSON.stringify(routed.body), { status: routed.status, headers: { "Content-Type": "application/json" } });

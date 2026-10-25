@@ -8,8 +8,8 @@
 // The folder is hidden from the file tree by default (src/agentProjects.ts).
 // Older projects may still hold memory.md / plan.md / progress.md: they stay on
 // disk, untouched, and are no longer loaded.
-import { readdirSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { mkdirSync, readdirSync, renameSync, statSync } from "node:fs";
+import { join, relative, sep } from "node:path";
 import { ctxConfig } from "./config";
 import { exists, readOr, slugify, writeFile } from "./files";
 import { ensureProjectsHidden, prepareProjects, projectsPath } from "./layout";
@@ -117,6 +117,38 @@ export function ensureProject(name: string, description = ""): { project: Projec
   const found = findProject(name);
   if (found) return { project: found, created: false };
   return { project: createProject(name, description), created: true };
+}
+
+/** Where a deleted project's own files go (recoverable; git keeps them too). Never listed: not a slug. */
+export const DELETED_DIR = ".deleted";
+
+/**
+ * Carl's Delete on a project: its own folder (agent-projects/<slug>/: project.md with its memory, rules.md)
+ * moves to agent-projects/.deleted/<slug>-<date>/, never deleted. The front-facing folder project.md names
+ * (`folder:`) and every other file of his are not touched. Returns where it went (vault-relative).
+ */
+export function deleteProjectFiles(slug: string, now = new Date()): { name: string; movedTo: string } {
+  if (!projectExists(slug)) throw new Error(`no project ${slug}`);
+  const name = nameOf(slug);
+  const stamp = now.toISOString().replace(/[-:]/g, "").replace(/\..*$/, "").replace("T", "-");
+  const base = projectsPath(vault(), DELETED_DIR);
+  mkdirSync(base, { recursive: true });
+  let dest = join(base, `${slug}-${stamp}`);
+  for (let i = 2; exists(dest); i++) dest = join(base, `${slug}-${stamp}-${i}`);
+  renameSync(projectDir(slug), dest);
+  return { name, movedTo: relative(vault(), dest).split(sep).join("/") };
+}
+
+/** Carl's Rename: project.md's first `# ` heading (the slug, its folder and its thread stay). */
+export function renameProject(slug: string, name: string): ProjectInfo {
+  const n = name.trim().replace(/\s+/g, " ").slice(0, 80);
+  if (!n) throw new Error("a project needs a name");
+  if (!projectExists(slug)) throw new Error(`no project ${slug}`);
+  const p = projectNotesPath(slug);
+  const text = readOr(p);
+  const next = /^#\s+.+$/m.test(text) ? text.replace(/^#\s+.+$/m, `# ${n}`) : `# ${n}\n${text ? `\n${text}` : ""}`;
+  writeFile(p, next);
+  return { slug, name: nameOf(slug), dir: projectDir(slug) };
 }
 
 /** `.vault-chat/rules.md` (global) — "" when absent. */

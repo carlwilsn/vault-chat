@@ -492,6 +492,11 @@ export function boot(): void {
         const r = convRow({ id: e.id, title: projectName(e.slug) || e.title, lastActivityAt: (chats.find((c) => c.id === e.id) || {}).lastActivityAt, preview: (chats.find((c) => c.id === e.id) || {}).preview || "" }, e.running);
         r.dataset.el = "thread-project";
         if (e.active) r.classList.add("on");
+        // ⋯: Rename / Delete (Main has none). A span, not a button: the row itself is one.
+        const more = el('<span class="cmore" role="button" aria-label="Project options" data-el="project-menu">⋯</span>');
+        const slug = e.slug, pname = projectName(e.slug) || e.title;
+        more.onclick = (ev) => { ev.stopPropagation(); closeConvs(); openProjectMenu(slug, pname); };
+        r.querySelector(".t").appendChild(more);
         box.appendChild(r);
       }
     } catch (e) {
@@ -518,6 +523,73 @@ export function boot(): void {
       }),
     });
     setTimeout(() => ($("sheetFoot").querySelector(".rinp") as HTMLTextAreaElement | null)?.focus(), 250);
+  }
+  /** A project's ⋯: Rename (its name; its thread and folder stay) or Delete (asked once: its chat and notes go,
+   *  kept in agent-projects/.deleted/ on the box; the folder it names stays). Main has no such sheet. */
+  async function projectIntent(body: Record<string, unknown>) {
+    const r = await api("/api/v2/intent", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...body, client: "phone" }) });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok || d.error || d.ok === false) throw new Error(d.error || r.status);
+    return d;
+  }
+  function openProjectMenu(slug: string, name: string) {
+    const row = (k: string, label: string, cls = "") => '<button class="arch-row' + cls + '" data-k="' + k + '"><span class="arch-t">' + esc(label) + "</span></button>";
+    openSheet({
+      intent: "Project", title: name, ico: "◎",
+      bodyHtml: row("rename", "Rename") + row("delete", "Delete", " danger"),
+      wire: (body) => {
+        body.querySelectorAll(".arch-row[data-k]").forEach((b) => {
+          b.onclick = () => (b.dataset.k === "rename" ? openRenameProjectSheet(slug, name) : openDeleteProjectSheet(slug, name));
+        });
+      },
+    });
+  }
+  function openRenameProjectSheet(slug: string, name: string) {
+    openSheet({
+      intent: "Project", title: "Rename", ico: "◎",
+      back: () => openProjectMenu(slug, name),
+      bodyHtml: '<div class="md dim" style="padding:0 18px 10px">Its thread, notes and folder stay; only the name changes.</div>',
+      footHtml: '<div class="reply"><textarea class="rinp" rows="1" enterkeyhint="enter" placeholder="Project name…" autocomplete="off"></textarea><button class="rsend">' + SEND_ARROW_SVG + "</button></div>",
+      wire: (_b, foot) => {
+        const ta = foot.querySelector(".rinp") as HTMLTextAreaElement | null;
+        if (ta) ta.value = name;
+        wireReply(foot, async (text) => {
+          const n = String(text || "").trim();
+          if (!n || n === name) { closeSheet(); return; }
+          try {
+            const d = await projectIntent({ type: "renameProject", slug, name: n });
+            closeSheet();
+            await loadProjects();
+            if (convId === projectThreadId(slug)) { convTitle = d.name || n; setHeader(); }
+            toast("Renamed.");
+          } catch (e: any) { toast("Not renamed: " + (e.message || e)); }
+        });
+      },
+    });
+    setTimeout(() => { const ta = $("sheetFoot").querySelector(".rinp") as HTMLTextAreaElement | null; if (ta) { ta.focus(); ta.select(); } }, 250);
+  }
+  function openDeleteProjectSheet(slug: string, name: string) {
+    const row = (k: string, label: string, cls = "") => '<button class="arch-row' + cls + '" data-k="' + k + '"><span class="arch-t">' + esc(label) + "</span></button>";
+    openSheet({
+      intent: "Project", title: "Delete", ico: "◎",
+      back: () => openProjectMenu(slug, name),
+      bodyHtml: '<div class="md" data-el="project-delete-confirm" style="padding:0 18px 12px">Delete project <b>' + esc(name) + "</b>? Its chat and notes go; your folder stays.</div>" + row("yes", "Delete", " danger") + row("no", "Cancel"),
+      wire: (body) => {
+        body.querySelectorAll(".arch-row[data-k]").forEach((b) => {
+          b.onclick = async () => {
+            if (b.dataset.k !== "yes") { closeSheet(); return; }
+            (b as HTMLButtonElement).disabled = true;
+            try {
+              await projectIntent({ type: "deleteProject", slug });
+              closeSheet();
+              await loadProjects();
+              if (convId === projectThreadId(slug)) void openThread(MAIN_ID, MAIN_TITLE);
+              toast("Deleted " + name + ".");
+            } catch (e: any) { (b as HTMLButtonElement).disabled = false; toast("Not deleted: " + (e.message || e)); }
+          };
+        });
+      },
+    });
   }
   function convRow(c, isRunning) {
     const b = document.createElement("button");
@@ -1165,7 +1237,15 @@ export function boot(): void {
       if (rec.conv === null) {
         const s: any = rec.type === "signal" ? rec.signal : {};
         if (s.type === "notif") { void refreshBadge(); if (page === "alerts") softReload(loadAlerts); }
-        else if (s.type === "project") { if (s.convId === convId) void loadProjects(); listChanged = true; }
+        else if (s.type === "project") {
+          void loadProjects();
+          // A project Carl deleted (here or elsewhere): this phone, and a call in it, go on in Main.
+          if (s.deleted && s.convId) {
+            if (vVoiceConv === s.convId) vVoiceConv = MAIN_ID;
+            if (s.convId === convId) void openThread(MAIN_ID, MAIN_TITLE);
+          }
+          listChanged = true;
+        }
         else if (s.type === "show" && s.to === "phone" && s.id) void showOnPhone(s);
         // Carl asked to work in another thread (the agent's OpenProject): the phone follows.
         else if (s.type === "follow" && typeof s.convId === "string" && s.convId) { void loadProjects(); if (s.convId !== convId) void openThread(s.convId, typeof s.title === "string" ? s.title : undefined); }

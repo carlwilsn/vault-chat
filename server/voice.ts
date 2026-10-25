@@ -223,6 +223,8 @@ async function attached(d: VoiceDeps, convId: unknown, create: boolean, first = 
   if (!id) return (await ensureMain(d.vault)).id;
   const p = id ? pictureOf(d.vault, id) : null;
   if (p && !p.meta.deleted && !ARCHIVED.has(String(p.meta.source))) return id;
+  // A call in a project Carl deleted: it goes on in Main.
+  if (p?.meta.deleted && p.meta.kind === "project") return (await ensureMain(d.vault)).id;
   if (!create) return null;
   const fresh = CONV_ID.test(id) && !logOf(d.vault).has(id) ? id : undefined;
   return (await createConv(d.vault, { source: "voice" }, first, fresh)).id;

@@ -453,6 +453,13 @@ class BoxChatSession {
         if (useStore.getState().activeConversationId !== to) void import("./projects").then((m) => m.openThread(to, title)).catch((err) => console.warn("[box-chat] follow failed:", err));
         return;
       }
+      case "project": {
+        // Carl renamed or deleted a project (here or on another surface): the list re-reads; a screen on a
+        // deleted project's thread lands on Main (the row going away does it too, if this signal was missed).
+        if (typeof window !== "undefined" && typeof window.dispatchEvent === "function") window.dispatchEvent(new CustomEvent("vc-projects-changed"));
+        if (e.deleted && typeof e.convId === "string") this.leaveDeleted(e.convId);
+        return;
+      }
       case "vault_changed":
         // The agent on the box edited files and published them: fetch and merge them now.
         void boxSyncNow(this.vault, { pull: true });
@@ -511,7 +518,11 @@ class BoxChatSession {
           if (s.activeConversationId === id) Object.assign(patch, { messages, busy: running });
           continue;
         }
-        if (row.deleted) continue;
+        if (row.deleted) {
+          // Gone (a project Carl deleted): the list is rebuilt without it, even when nothing else changed.
+          if (prev) conversations ??= s.conversations.slice();
+          continue;
+        }
         const p = this.pics.get(id);
         const view = p ? this.viewOf(id)(p) : null;
         // What this surface cleared is not shown here (the conversation, and every other surface, still has it).
@@ -570,11 +581,19 @@ class BoxChatSession {
       if (runtime) patch.convRuntime = runtime;
       if (conversations) {
         const gone = new Set([...this.rows.values()].filter((r) => (r as Deletable).deleted).map((r) => r.id));
+        if (s.activeConversationId && gone.has(s.activeConversationId)) queueMicrotask(() => this.leaveDeleted(s.activeConversationId!));
         patch.conversations = (conversations as Conversation[]).filter((c) => !gone.has(c.id)).sort((a, b) => b.lastActivityAt - a.lastActivityAt);
       }
       return Object.keys(patch).length ? patch : {};
     });
     this.scheduleCache();
+  }
+
+  /** The open thread was deleted (a project Carl deleted): this screen, and a voice call on it, go to Main. */
+  private leaveDeleted(id: string): void {
+    if (useStore.getState().activeConversationId !== id) return;
+    if (useStore.getState().voiceMode) void import("./voice-elevenlabs").then((v) => v.voiceFollow(MAIN_ID)).catch(() => {});
+    void import("./projects").then((m) => m.openThread(MAIN_ID)).catch((err) => console.warn("[box-chat] to Main failed:", err));
   }
 
   /** The log's messages, then this client's own still on their way (by id: one the log holds is the log's). */

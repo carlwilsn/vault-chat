@@ -19,6 +19,8 @@ export {
   projectCost,
   ctxConfig,
   readProject,
+  deleteProjectFiles,
+  renameProject,
   ensureProject,
   projectDir,
   prepareProjects,

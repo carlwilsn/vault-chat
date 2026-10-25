@@ -422,6 +422,22 @@ export class MemoryBox {
       case "delete":
         this.meta(conv, { deleted: true });
         return { ok: true };
+      case "deleteProject": {
+        // Engine.deleteProject: the thread gone (every surface on it lands on Main), the clients told; Main can't be.
+        const id = `project-${String(b.slug ?? "")}`;
+        if (!b.slug || !this.picture(id) || this.picture(id)!.meta.deleted) return { ok: false, error: `no project ${b.slug}` };
+        this.meta(id, { deleted: true });
+        this.emit(null, { type: "signal", signal: { type: "project", slug: b.slug, deleted: true, convId: id, to: "main" } });
+        return { ok: true, slug: b.slug, convId: id, to: "main" };
+      }
+      case "renameProject": {
+        const id = `project-${String(b.slug ?? "")}`;
+        const name = String(b.name ?? "").trim();
+        if (!name || !this.picture(id)) return { ok: false, error: "a project needs a name" };
+        this.meta(id, { title: name });
+        this.emit(null, { type: "signal", signal: { type: "project", slug: b.slug, renamed: name } });
+        return { ok: true, slug: b.slug, name };
+      }
       default:
         return { error: "unknown intent" };
     }

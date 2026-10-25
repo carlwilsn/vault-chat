@@ -120,6 +120,12 @@ export async function ensureProjectThread(vault: string, slug: string, name: str
   const id = projectThreadId(slug);
   const have = pictureOf(vault, id);
   if (have && !have.meta.deleted) return toEngineConv(have);
+  // A project made again under a deleted one's name: the same thread id, empty (the old transcript stays in
+  // its pi file, never shown here), a new pi session.
+  if (have) {
+    emitTo(vault, id, { type: "meta", patch: { deleted: null, deletedProject: null, cleared: { at: Date.now() }, threadId: null, threadPath: null, sessionFrom: null, kind: "project", source: "project", project: slug, title: name || slug } });
+    return toEngineConv(pictureOf(vault, id)!);
+  }
   return createConv(vault, { kind: "project", source: "project", project: slug, title: name || slug } as Partial<EngineConv>, name || slug, id);
 }
 

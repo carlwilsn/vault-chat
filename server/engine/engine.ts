@@ -22,13 +22,15 @@ import {
   turnSections,
   projectFolder,
   readProject,
+  deleteProjectFiles,
+  renameProject,
   listProjects,
   projectCost,
   ctxConfig,
   type EngineConv,
 } from "./context";
 import { patchMeta, readConv, allConvs, createConv, newMessageId, emitTo, pictureOf, logOf, writeNotes, appendNotes, setNoteWriter, ensureMain, ensureProjectThread, type NoteData } from "./convs";
-import { MAIN_ID, projectOfThread, threadKindOf } from "../../src/threads";
+import { MAIN_ID, projectOfThread, projectThreadId, threadKindOf } from "../../src/threads";
 import { searchHistory } from "./history";
 import { addWake, readWakes, removeWakes, nextWakeFor, parseDelay, type Wake } from "./wakes";
 import { Ledger } from "./ledger";
@@ -641,8 +643,13 @@ export class Engine {
     }
     if (!convId || convId === MAIN_ID) return ensureMain(this.d.vault);
     const have = await readConv(this.d.vault, convId);
-    if (have) return have;
     const slug = projectOfThread(convId);
+    // A deleted project's thread (a surface still on it): Main — unless the project was made again.
+    if ((have as { deleted?: boolean } | null)?.deleted && slug) {
+      const p = readProject(slug);
+      return p ? ensureProjectThread(this.d.vault, slug, p.name) : ensureMain(this.d.vault);
+    }
+    if (have) return have;
     if (slug) {
       const p = readProject(slug);
       return p ? ensureProjectThread(this.d.vault, slug, p.name) : null;
@@ -745,6 +752,19 @@ export class Engine {
       }
       case "compact":
         return this.compact(String(b.convId ?? "") || MAIN_ID, typeof b.focus === "string" ? b.focus : undefined);
+      case "deleteProject":
+        return this.deleteProject(String(b.slug ?? ""));
+      case "renameProject": {
+        const slug = String(b.slug ?? "");
+        try {
+          const p = renameProject(slug, String(b.name ?? ""));
+          if (this.picture(projectThreadId(slug))) this.emit(projectThreadId(slug), { type: "meta", patch: { title: p.name } });
+          this.d.broadcast?.({ type: "project", slug, renamed: p.name });
+          return { ok: true, slug, name: p.name };
+        } catch (e) {
+          return { ok: false, error: (e as Error).message };
+        }
+      }
       case "delete": {
         const id = String(b.convId ?? "");
         if (!this.picture(id)) return { ok: false, error: `conversation ${id} not found` };
@@ -1037,6 +1057,33 @@ export class Engine {
     return this.d.backend.side.stop(id);
   }
 
+  /**
+   * Carl's Delete on a project: its running turn stops, its own files move to agent-projects/.deleted/ (never
+   * the folder it names, nothing else of his), its thread is gone from every list (each surface on it lands
+   * on Main: the clients follow the row), and Main's next turn tells the agent once.
+   */
+  async deleteProject(slug: string): Promise<Record<string, unknown>> {
+    const id = projectThreadId(slug);
+    if (!slug || projectOfThread(id) !== slug) return { ok: false, error: "not a project" };
+    if (this.live.has(id)) {
+      await this.interrupt(id, true);
+      await this.turnEnd(id);
+    }
+    let moved: { name: string; movedTo: string };
+    try {
+      moved = deleteProjectFiles(slug);
+    } catch (e) {
+      return { ok: false, error: (e as Error).message };
+    }
+    if (this.picture(id)) this.emit(id, { type: "meta", patch: { deleted: true, deletedProject: { name: moved.name, at: Date.now(), movedTo: moved.movedTo } } });
+    const main = await ensureMain(this.d.vault);
+    const tell = [...((this.picture(main.id)?.meta.tellAgent as string[] | undefined) ?? []), `Carl deleted the project "${moved.name}" (its thread and notes are gone; its files were kept at ${moved.movedTo}). Don't bring it up or treat it as a project any more unless he does.`];
+    this.emit(main.id, { type: "meta", patch: { tellAgent: tell } });
+    this.d.broadcast?.({ type: "project", slug, deleted: true, convId: id, to: MAIN_ID });
+    this.log(`project ${slug} deleted (files: ${moved.movedTo})`);
+    return { ok: true, slug, name: moved.name, movedTo: moved.movedTo, convId: id, to: MAIN_ID };
+  }
+
   /** Resolves when the conversation's running turn (if any) has ended. */
   private turnEnd(convId: string): Promise<void> {
     const l = this.live.get(convId);
@@ -1311,6 +1358,12 @@ export class Engine {
       // again: only a section that changed goes in front of the turn (the rules mechanism, for all of them).
       const rules = this.changedSections(threadId, conv);
       if (opts.context) body = `${opts.context}\n\n${body}`;
+      // Something Carl did that the agent must hear once (a project he deleted): in front of this turn, then gone.
+      const tell = this.picture(convId)?.meta.tellAgent as string[] | undefined;
+      if (tell?.length) {
+        body = `${tell.map((t) => `[${t}]`).join("\n")}\n\n${body}`;
+        this.emit(convId, { type: "meta", patch: { tellAgent: null } });
+      }
       // A live voice call: its rules once per call, in front of its first turn (they stay in the session after).
       if (talker && !talker.sent) {
         talker.sent = true;

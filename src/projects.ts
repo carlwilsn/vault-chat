@@ -248,6 +248,64 @@ export async function createProjectThread(name: string): Promise<{ ok: true; id:
   return { ok: true, id, slug };
 }
 
+function projectsChanged(): void {
+  if (typeof window !== "undefined" && typeof window.dispatchEvent === "function") window.dispatchEvent(new CustomEvent("vc-projects-changed"));
+}
+
+/**
+ * Carl's Delete on a project (the ⋯ menu, after its confirm): its thread and its own notes go (moved to
+ * agent-projects/.deleted/, recoverable), the folder it names and the rest of his files stay. A screen on its
+ * thread lands on Main. On the box, every surface follows (server: Engine.deleteProject).
+ */
+export async function deleteProject(slug: string): Promise<{ ok: true } | { ok: false; error: string }> {
+  const vault = useStore.getState().vaultPath;
+  if (!vault || !slug) return { ok: false, error: "no project" };
+  const id = projectThreadId(slug);
+  const link = await boxLinkFor(vault);
+  if (link) {
+    const r = await boxPost(link, "/api/v2/intent", { type: "deleteProject", slug, client: "laptop" });
+    if (!r.ok) return { ok: false, error: r.error ?? "the box refused" };
+  } else {
+    const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\..*$/, "").replace("T", "-");
+    try {
+      await invoke("create_dir", { path: `${vault}/${PROJECTS_DIR}/.deleted` }).catch(() => {});
+      await invoke("rename_path", { from: `${vault}/${PROJECTS_DIR}/${slug}`, to: `${vault}/${PROJECTS_DIR}/.deleted/${slug}-${stamp}` });
+    } catch (e) {
+      return { ok: false, error: String((e as Error)?.message ?? e) };
+    }
+  }
+  projectsChanged();
+  if (useStore.getState().activeConversationId === id) openThread(MAIN_ID);
+  return { ok: true };
+}
+
+/** Carl's Rename on a project: the name (project.md's first heading); its slug, folder and thread stay. */
+export async function renameProject(slug: string, name: string): Promise<{ ok: true; name: string } | { ok: false; error: string }> {
+  const vault = useStore.getState().vaultPath;
+  const want = name.trim().replace(/\s+/g, " ");
+  if (!vault || !slug || !want) return { ok: false, error: "a project needs a name" };
+  const link = await boxLinkFor(vault);
+  let got = want;
+  if (link) {
+    const r = await boxPost(link, "/api/v2/intent", { type: "renameProject", slug, name: want, client: "laptop" });
+    if (!r.ok) return { ok: false, error: r.error ?? "the box refused" };
+    got = String(r.data?.name ?? want);
+  } else {
+    const p = `${vault}/${PROJECTS_DIR}/${slug}/project.md`;
+    try {
+      const text = await invoke<string>("read_text_file", { path: p }).catch(() => "");
+      const next = /^#\s+.+$/m.test(text) ? text.replace(/^#\s+.+$/m, `# ${want}`) : `# ${want}\n${text ? `\n${text}` : ""}`;
+      await invoke("write_text_file", { path: p, contents: next });
+    } catch (e) {
+      return { ok: false, error: String((e as Error)?.message ?? e) };
+    }
+  }
+  const id = projectThreadId(slug);
+  useStore.setState((st) => ({ conversations: st.conversations.map((c) => (c.id === id ? { ...c, title: got } : c)) }));
+  projectsChanged();
+  return { ok: true, name: got };
+}
+
 /** A fresh chat already tagged with `slug`. */
 export function newChatInProject(slug: string): string {
   const id = useStore.getState().newConversation();

@@ -156,6 +156,8 @@ button.csec.wsec:active{background:var(--surface)}
 .crow2 .rd.unseen{background:var(--primary)}
 .crow2 .nm{flex:1;min-width:0;font-weight:600;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .crow2 .ag{color:var(--label-2);font-size:11.5px;flex:none}
+.crow2 .cmore{flex:none;margin:-8px -10px -8px 0;padding:8px 10px;color:var(--label-2);font-size:16px;line-height:1;letter-spacing:1px}
+.crow2 .cmore:active{color:var(--text-body)}
 .crow2 .p{color:var(--dim);font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px;padding-left:0}
 
 /* pages */
@@ -311,6 +313,7 @@ body.page-notes #pNotes{display:flex}
 .arch-cv{font-size:10px;color:var(--faint);width:11px;flex:none}
 .arch-row{display:flex;align-items:center;gap:9px;width:100%;text-align:left;margin:0 14px 7px;width:calc(100% - 28px);padding:10px 14px;background:var(--surface);border:1px solid var(--line);border-radius:14px}
 .arch-row:active{background:var(--raised)}
+.arch-row.danger .arch-t{color:var(--err)}
 .arch-ico{flex:none;display:flex;align-items:center;color:var(--dim)}
 .arch-ico.r{color:var(--err)}
 .arch-ico svg{width:16px;height:16px;display:block}
