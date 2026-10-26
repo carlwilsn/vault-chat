@@ -20,7 +20,7 @@ from pipecat.frames.frames import (  # noqa: E402
     VADUserStoppedSpeakingFrame,
 )
 
-from bot import Gate, ResultFlow  # noqa: E402
+from bot import Gate, ResultFlow, SttWatch, clean_noise  # noqa: E402
 
 Q = Gate.QUIET_SECS
 
@@ -152,6 +152,39 @@ def test_talking_over_a_result_well_into_it_is_a_barge_in_not_a_replay():
     assert not f.collided(user_turns=1, turn_at=104.5)  # 4.5 s in: he heard it and talked over it
     assert f.next(6, 1) == "drop"
     assert not f.collided(user_turns=0, turn_at=-1e9)  # no turn of his: nothing was cut
+
+
+def test_a_line_that_never_came_back_as_words_is_said_so_once():
+    # Scribe dropped a whole line: 2.9 s of his voice, no partial, no final (the roleplay's "Dude, don't spoil it.").
+    w = SttWatch()
+    w.voice_start(10.0)
+    w.voice_stop(12.9)
+    assert not w.due(13.0, bot_speaking=False)
+    assert w.due(12.9 + SttWatch.WAIT_SECS, bot_speaking=False)
+    assert not w.due(20.0, bot_speaking=False)  # once
+
+
+def test_words_arriving_late_or_a_short_sound_are_not_a_miss():
+    w = SttWatch()
+    w.voice_start(0.0)
+    w.voice_stop(2.0)
+    w.words()  # the final came 0.4 s after his voice stopped
+    assert not w.due(10.0, bot_speaking=False)
+    w.voice_start(20.0)
+    w.voice_stop(20.4)  # a cough, a click: too short to be a line
+    assert not w.due(30.0, bot_speaking=False)
+    w.voice_start(40.0)
+    w.voice_stop(42.0)
+    assert not w.due(44.6, bot_speaking=True)  # never over the voice
+    assert w.due(45.0, bot_speaking=False)
+
+
+def test_scribes_noise_marks_come_out_of_his_words():
+    assert clean_noise("Okay, so the reason you only need B minus one passes is that a shortest path- Mm-hmm ... if there's no negative cycle,") == "Okay, so the reason you only need B minus one passes is that a shortest path- if there's no negative cycle,"
+    assert clean_noise("Mm-hmm ... I'm gonna think about question two.") == "I'm gonna think about question two."
+    assert clean_noise("Mm-hmm ...") == ""
+    assert clean_noise("Mm-hmm.") == "Mm-hmm."  # him saying it: kept
+    assert clean_noise("Hmm. Okay, so B is three.") == "Hmm. Okay, so B is three."
 
 
 def test_an_untagged_piece_is_gated_like_before():

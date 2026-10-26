@@ -286,6 +286,100 @@ class Quiet(FrameProcessor):
             await task.queue_frame(TTSSpeakFrame(p))
 
 
+# Scribe's mark for room noise it half-heard: "Mm-hmm ..." (with the ellipsis) inside or before his words. Carl saying
+# "Mm-hmm." himself has no ellipsis and is kept (FreshWordsStartStrategy treats it as listening).
+NOISE_MARK = re.compile(r"(?:^|(?<=[\s\-–—]))(?:mm-?hmm|mhm|hmm)[,.]?\s*(?:\.\.\.|…)\s*", re.I)
+
+
+def clean_noise(text: str) -> str:
+    """His words without Scribe's noise marks ("Okay, so the reason- Mm-hmm ... if there's no negative cycle")."""
+    out = NOISE_MARK.sub(" ", text)
+    out = re.sub(r"\s{2,}", " ", out).strip()
+    return out
+
+
+class SttWatch:
+    """A line he said that never came back as words: his voice for MIN_SPEECH_SECS (VAD), then no partial or final
+    transcript within WAIT_SECS of its end. Said once: "Sorry, I didn't catch that." — instead of silence, a 'thinking'
+    that never ends, and a line lost from the chat (the roleplay, 2026-10-25: "Dude, don't spoil it." got no transcript
+    at all from Scribe). Pure (tested in test_gate.py)."""
+
+    MIN_SPEECH_SECS = 1.0
+    WAIT_SECS = 2.5
+
+    def __init__(self):
+        self.voice_at: float | None = None
+        self.heard = False
+        self.due_at: float | None = None
+
+    def voice_start(self, now: float) -> None:
+        self.voice_at = now
+        self.heard = False
+
+    def voice_stop(self, now: float) -> None:
+        if self.voice_at is not None and now - self.voice_at >= self.MIN_SPEECH_SECS and not self.heard:
+            self.due_at = now + self.WAIT_SECS
+        self.voice_at = None
+
+    def words(self) -> None:
+        self.heard = True
+        self.due_at = None
+
+    def due(self, now: float, bot_speaking: bool) -> bool:
+        if self.due_at is not None and now >= self.due_at and not bot_speaking and self.voice_at is None:
+            self.due_at = None
+            return True
+        return False
+
+
+class AfterStt(FrameProcessor):
+    """Between Scribe and his turn: noise marks out of his words, and a line lost in STT said so (SttWatch).
+    With VC_VOICE_TEST=1, POST /test/drop-transcripts {secs} (loopback) drops every transcript for that long: Scribe
+    losing a whole line, on demand (tests only)."""
+
+    MISSED = "Sorry, I didn't catch that."
+
+    def __init__(self, quiet: "Quiet"):
+        super().__init__()
+        self.quiet = quiet
+        self.watch = SttWatch()
+        self.task: PipelineTask | None = None
+        self.loop: asyncio.Task | None = None
+
+    def start(self, task: "PipelineTask") -> None:
+        self.task = task
+        self.loop = asyncio.create_task(self._poll())
+
+    async def _poll(self):
+        while True:
+            await asyncio.sleep(0.25)
+            if self.task and self.watch.due(time.monotonic(), self.quiet.gate.bot):
+                jlog(ev="stt.miss")
+                await self.task.queue_frame(TTSSpeakFrame(self.MISSED))
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        await super().process_frame(frame, direction)
+        now = time.monotonic()
+        if isinstance(frame, (VADUserStartedSpeakingFrame, VADUserStoppedSpeakingFrame)):
+            # His voice reaches only this side of his turn (the aggregator sends VAD upstream): the Gate hears it here
+            # ("never while he talks, from the first sound" — downstream of the aggregator it never saw his voice).
+            self.quiet.gate.on_frame(frame, now)
+        if isinstance(frame, VADUserStartedSpeakingFrame):
+            self.watch.voice_start(now)
+        elif isinstance(frame, VADUserStoppedSpeakingFrame):
+            self.watch.voice_stop(now)
+        elif isinstance(frame, (TranscriptionFrame, InterimTranscriptionFrame)) and direction == FrameDirection.DOWNSTREAM:
+            if time.monotonic() < TEST_DROP["until"]:
+                return
+            text = clean_noise(frame.text or "")
+            if not text:
+                return
+            if text != frame.text:
+                frame.text = text
+            self.watch.words()
+        await self.push_frame(frame, direction)
+
+
 class ReplyEnd(FrameProcessor):
     """After the brain: a reply to him is complete (its text; the audio is the Gate's `bot`)."""
 
@@ -406,10 +500,12 @@ async def run_call(connection, call: dict):
         ),
     )
     quiet = Quiet()
+    after_stt = AfterStt(quiet)
     pipeline = Pipeline(
         [
             transport.input(),
             make_stt(call),
+            after_stt,
             pair.user(),
             quiet,
             make_brain(call),
@@ -435,6 +531,14 @@ async def run_call(connection, call: dict):
         idle_timeout_secs=None,  # silence is Carl working, never a reason to end
     )
     side = asyncio.create_task(speak_channel(call, task, quiet)) if BRAIN == "pi" else None
+    after_stt.start(task)
+    # The device offered this call again (its connection dropped and it reconnected): this pipeline replaces the old
+    # one, which ends without ending the call on the box.
+    old = RUNS.get(call["id"])
+    RUNS[call["id"]] = task
+    if old is not None:
+        jlog(ev="call.reconnect", call=call["id"])
+        await old.cancel()
 
     @transport.event_handler("on_client_disconnected")
     async def _gone(_t, _c):
@@ -446,9 +550,15 @@ async def run_call(connection, call: dict):
     finally:
         if side:
             side.cancel()
-        jlog(ev="call.end", call=call["id"])
-        # The device is gone: the call ends on the box too (its turns go back to the conversation's own model).
-        if call.get("base"):
+        if after_stt.loop:
+            after_stt.loop.cancel()
+        replaced = RUNS.get(call["id"]) is not task
+        if not replaced:
+            RUNS.pop(call["id"], None)
+        jlog(ev="call.end", call=call["id"], replaced=replaced)
+        # The device is gone: the call ends on the box too (its turns go back to the conversation's own model) —
+        # unless a reconnect took it over.
+        if call.get("base") and not replaced:
             try:
                 async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=5)) as s:
                     await s.post(f"{call['base']}/api/v1/brain/call/{call['id']}/end", headers={"Authorization": f"Bearer {call['token']}"})
@@ -459,6 +569,20 @@ async def run_call(connection, call: dict):
 # ---------------------------------------------------------------- signalling (loopback)
 
 handler = SmallWebRTCRequestHandler()
+# Tests only (VC_VOICE_TEST=1): transcripts dropped until then (AfterStt).
+TEST_DROP = {"until": 0.0}
+
+
+async def test_drop(request: web.Request) -> web.Response:
+    if request.remote not in ("127.0.0.1", "::1"):
+        return web.json_response({"error": "loopback only"}, status=403)
+    b = await request.json()
+    TEST_DROP["until"] = time.monotonic() + float(b.get("secs", 8))
+    return web.json_response({"ok": True})
+
+
+# The pipeline running each call (a reconnect's offer replaces it).
+RUNS: dict[str, PipelineTask] = {}
 
 
 async def offer(request: web.Request) -> web.Response:
@@ -485,6 +609,8 @@ async def offer(request: web.Request) -> web.Response:
 def main():
     app = web.Application()
     app.router.add_post("/offer", offer)
+    if os.environ.get("VC_VOICE_TEST") == "1":
+        app.router.add_post("/test/drop-transcripts", test_drop)
     app.router.add_get("/health", lambda _r: web.json_response({"ok": True, "brain": BRAIN, "stt": STT, "tts": TTS}))
     web.run_app(app, host="127.0.0.1", port=PORT, print=None)
 
