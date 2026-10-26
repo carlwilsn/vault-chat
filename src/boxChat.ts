@@ -590,9 +590,14 @@ class BoxChatSession {
 
   /** The open thread was deleted (a project Carl deleted): this screen, and a voice call on it, go to Main. */
   private leaveDeleted(id: string): void {
-    if (useStore.getState().activeConversationId !== id) return;
+    const still = () => useStore.getState().activeConversationId === id;
+    if (!still()) return;
     if (useStore.getState().voiceMode) void import("./voice-elevenlabs").then((v) => v.voiceFollow(MAIN_ID)).catch(() => {});
-    void import("./projects").then((m) => m.openThread(MAIN_ID)).catch((err) => console.warn("[box-chat] to Main failed:", err));
+    // Checked again once the module is in: the signal and the row both call this, and he may have opened
+    // another thread meanwhile — a late move to Main must never take him from it.
+    void import("./projects")
+      .then((m) => still() && m.openThread(MAIN_ID))
+      .catch((err) => console.warn("[box-chat] to Main failed:", err));
   }
 
   /**

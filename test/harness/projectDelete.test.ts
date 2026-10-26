@@ -106,8 +106,21 @@ test("another surface deletes the project open here: this screen lands on Main",
   await waitFor("row gone", () => !S().conversations.some((c) => c.id === "project-psych-221"));
 });
 
+test("a late move to Main never takes him from the thread he opened after the delete", async () => {
+  // The delete's two ways to Main (the signal, the row) arrive after he has already moved on.
+  project("optics", "Optics", Date.now() - 5_000);
+  await waitFor("optics listed", () => S().conversations.some((c) => c.id === "project-optics"));
+  projects.openThread("project-optics");
+  await fetch(`${box.url}/api/v2/intent`, { method: "POST", body: JSON.stringify({ type: "deleteProject", slug: "optics", client: "phone" }) });
+  projects.openThread("project-thesis");
+  await waitFor("optics gone", () => !S().conversations.some((c) => c.id === "project-optics"));
+  await new Promise((r) => setTimeout(r, 300));
+  assert.equal(S().activeConversationId, "project-thesis");
+});
+
 test("Main can't be deleted; a refused delete leaves this screen where it is", async () => {
   projects.openThread("project-thesis");
+  await waitFor("in thesis", () => S().activeConversationId === "project-thesis");
   const r = await projects.deleteProject("main");
   assert.equal(r.ok, false);
   assert.equal(S().activeConversationId, "project-thesis");
