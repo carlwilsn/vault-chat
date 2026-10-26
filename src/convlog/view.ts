@@ -34,7 +34,15 @@ export type ViewMessage = {
   job?: JobEnd;
   /** A voice Ask (server/voice.ts, a background side request): one collapsed row. */
   voiceAsk?: { request: string; result: string; failed: boolean; act?: boolean };
+  /** The failed line of the turn that ended on it, the last thing in the chat: offers Try again (RETRY_TEXT). */
+  retry?: boolean;
 };
+
+/** What Try again sends (a "send" intent with via "retry"): shown as a quiet system line, not as Carl's words. */
+export const RETRY_TEXT = "Try again: the last reply failed before it finished. Continue from where you were.";
+
+/** A failed request a turn ended on (reduce.ts blocksOf's `<ts>:-1` line, closed). */
+const isTurnFailure = (it: Item) => it.kind === "notice" && it.level === "error" && it.id.endsWith(":-1") && !isOpen(it);
 
 export type ViewTool = { id: string; name: string; input: any; result?: string; startedAt?: number; inputChars?: number };
 
@@ -104,8 +112,8 @@ export function jobEndOf(text: string): JobEnd | null {
   return { id, name, status, failed, output };
 }
 
-/** One non-tool item → its message(s). */
-function messagesOfItem(it: Item): ViewMessage[] {
+/** One non-tool item → its message(s). `retry`: the turn that ended on this failure is the last thing here (Try again). */
+function messagesOfItem(it: Item, retry = false): ViewMessage[] {
   switch (it.kind) {
     case "user":
       if (it.via === "job") {
@@ -116,6 +124,8 @@ function messagesOfItem(it: Item): ViewMessage[] {
         const job = taskEndOf(it.text ?? "");
         if (job) return [{ role: "user", system: true, content: `Background task ${job.status} · ${job.name}`, mid: it.id, job }];
       }
+      // Try again on a failed turn: a quiet line, not Carl's words (the agent gets RETRY_TEXT).
+      if (it.via === "retry") return [{ role: "user", system: true, content: "↻ Trying again", mid: it.id }];
       if (ENGINE_VIA.has(it.via ?? "")) return [{ role: "user", system: true, content: `${it.via === "wake" || it.via === "job" || it.via === "delegate" ? "⏰" : "↻"} ${it.text ?? ""}`.trim(), mid: it.id }];
       return [
         {
@@ -138,7 +148,9 @@ function messagesOfItem(it: Item): ViewMessage[] {
         ? [{ role: "assistant", system: true, content: DIVIDER_TEXT, mid: it.id, rollover: { recap: it.text ?? "", at: it.at } }]
         : [{ role: "assistant", system: true, content: DIVIDER_TEXT, mid: it.id, compaction: { summary: it.text ?? "", at: it.at } }];
     case "notice":
-      return [{ role: "assistant", system: true, content: it.text ?? "", mid: it.id, ...(it.level === "error" ? { failed: true } : {}) }];
+      // A failed request pi may still retry (reduce.ts blocksOf): not shown; the quiet "Retrying…" line says it.
+      if (it.level === "error" && isOpen(it)) return [];
+      return [{ role: "assistant", system: true, content: it.text ?? "", mid: it.id, ...(it.level === "error" ? { failed: true } : {}), ...(retry ? { retry: true } : {}) }];
     case "tool":
       return [];
   }
@@ -256,7 +268,9 @@ export function makeChatView(): (p: Picture, opts?: { split?: boolean }) => Chat
         if (last.name === "AskUser") use(`ask:${last.id}`, [last], "", () => askMessages(last));
         continue;
       }
-      use(it.id, [it], "", () => messagesOfItem(it));
+      // A turn that ended on a failed request, and nothing since: its line offers Try again.
+      const retry = isTurnFailure(it) && i === items.length - 1 && !p.meta.running;
+      use(it.id, [it], retry ? "retry" : "", () => messagesOfItem(it, retry));
       i++;
     }
     cache = next;

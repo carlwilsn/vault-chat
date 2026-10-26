@@ -81,7 +81,7 @@ export async function makeKeyStore(dir: string, map: Record<string, string>): Pr
   return dir;
 }
 
-export type ScriptStep = { text?: string; toolCall?: { name: string; args: unknown } };
+export type ScriptStep = { text?: string; toolCall?: { name: string; args: unknown }; drop?: boolean };
 
 export type FakeOpenRouter = {
   url: string;
@@ -123,6 +123,12 @@ export async function fakeOpenRouter(reply = "Acknowledged. Mission started."): 
       const model = parsed.model ?? "openai/gpt-5.6-sol";
       const usage = { prompt_tokens: 100, completion_tokens: 10, total_tokens: 110, cost: 0.001 };
       const step = state.script.shift();
+      // OpenRouter's edge closing the connection after the whole request arrived, no answer (the box's
+      // "Connection error.": undici's "other side closed").
+      if (step?.drop) {
+        req.socket.destroy();
+        return;
+      }
       if (step?.toolCall && parsed.stream) {
         res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache" });
         const tc = { index: 0, id: `call_${state.calls.length}`, type: "function", function: { name: step.toolCall.name, arguments: JSON.stringify(step.toolCall.args) } };

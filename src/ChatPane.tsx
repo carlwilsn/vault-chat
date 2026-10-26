@@ -19,7 +19,7 @@ import { isUnreadableAsText } from "./fileKind";
 import { SettingsPane } from "./SettingsPane";
 import { Button, Textarea } from "./ui";
 import { cn } from "./lib/utils";
-import { ATTACH_MAX_BYTES, BOX_UNREACHABLE, NO_BOX, boxAnswer, boxChatOn, boxLinkFor, boxSubagent, fetchBoxFile, unreachableWhy } from "./boxChat";
+import { ATTACH_MAX_BYTES, BOX_UNREACHABLE, NO_BOX, boxAnswer, boxChatOn, boxLinkFor, boxRetry, boxSubagent, fetchBoxFile, unreachableWhy } from "./boxChat";
 import { tailscaleCheck, type TailscaleState } from "./vaultSync";
 import {
   AskOptions,
@@ -425,6 +425,9 @@ export function ChatPane() {
     const id = useStore.getState().activeConversationId;
     if (boxChatOn() && id) void boxAnswer(id, answer);
     else dispatchChatAction({ kind: "send", text: answer });
+  }, []);
+  const retryTurn = useCallback(() => {
+    void boxRetry(useStore.getState().activeConversationId);
   }, []);
   const controlSubagent = useCallback((sid: string, op: "steer" | "stop", text?: string) => {
     const id = useStore.getState().activeConversationId;
@@ -1070,6 +1073,7 @@ export function ChatPane() {
                 onAsk={answerAsk}
                 spawns={subagentsInline ? spawnsAt[i] : undefined}
                 onSubagent={controlSubagent}
+                onRetry={retryTurn}
                 voiceCont={!!m.voice && i > 0 && !!messages[i - 1]?.voice && !messages[i - 1]?.hidden}
               />
               {/* The plan sits with the turn that last wrote it (planPlace.ts). */}
@@ -1569,9 +1573,12 @@ export const MessageBubble = memo(function MessageBubble({
   onAsk,
   spawns,
   onSubagent,
+  onRetry,
   voiceCont = false,
 }: {
   message: ChatMessage;
+  /** Try again on a turn that ended on a failed request (its line's `retry`). */
+  onRetry?: () => void;
   /** A voice line right after another: the same voice turn (no marker of its own). */
   voiceCont?: boolean;
   /** AskUser options on this reply: still the open fork, and the answer given. */
@@ -1594,6 +1601,11 @@ export const MessageBubble = memo(function MessageBubble({
       <div className={cn("flex items-start gap-1.5 text-[11px] leading-snug", message.failed ? "text-destructive/90" : "text-muted-foreground")} data-el="notice">
         {message.failed ? <AlertCircle className="h-3 w-3 mt-px shrink-0" /> : <Info className="h-3 w-3 mt-px shrink-0" />}
         <span className="break-words min-w-0">{message.content}</span>
+        {message.retry && onRetry && (
+          <button type="button" data-el="retry" onClick={onRetry} className="shrink-0 ml-1 underline underline-offset-2 hover:text-foreground">
+            Try again
+          </button>
+        )}
       </div>
     );
   }

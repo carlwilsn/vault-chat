@@ -297,7 +297,7 @@ test("AskUser and an error: the question waits, Carl's answer is his line under 
   const feed = seqErrorAsk(log);
   assert.equal(feed.lastError, "upstream 529 overloaded");
   const p = fold(log.recs, C);
-  assert.deepEqual(view(log.recs), ["user:Pick a fruit.", "tools:AskUser=Carl answered: pear", "assistant:**❓ Apple or pear?**\n\n1. apple\n2. pear", "user:pear", "system:⚠️ upstream 529 overloaded"]);
+  assert.deepEqual(view(log.recs), ["user:Pick a fruit.", "tools:AskUser=Carl answered: pear", "assistant:**❓ Apple or pear?**\n\n1. apple\n2. pear", "user:pear", "system:Couldn't get a reply: upstream 529 overloaded"]);
   const ans = p.items.find((x) => x.id === "ans1")!;
   assert.deepEqual([ans.kind, ans.via, ans.text], ["user", "answer", "pear"]);
   const mid = fold(log.recs.slice(0, log.recs.findIndex((r) => r.type === "meta" && r.patch.asking === null)), C);

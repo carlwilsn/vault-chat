@@ -114,6 +114,8 @@ export type ChatMessage = {
   // exception), not a clean finish. The completion path reads this so a crashed
   // worker reports "FAILED" instead of a false "done — completed its task".
   failed?: boolean;
+  // The failed line of a box turn that ended on it, the last thing in the chat: offers Try again (src/convlog/view.ts).
+  retry?: boolean;
   // Stable per-message id, minted at creation (release 1 of the message-identity
   // cure). Optional — legacy messages on disk lack it; readers must tolerate its
   // absence. INERT for now (no merge logic reads it yet); it just rides on disk

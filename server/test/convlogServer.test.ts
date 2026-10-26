@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { readFileSync } from "node:fs";
 import { tmp, cleanup, makeVault, makeKeyStore, fakeOpenRouter, startServer, waitFor, type Running, type FakeOpenRouter } from "./helpers";
 import { fold, pendingOf, rowFromPicture, shown, isOpen } from "../../src/convlog/reduce";
-import { messagesOf } from "../../src/convlog/view";
+import { RETRY_TEXT, messagesOf } from "../../src/convlog/view";
 
 let home: string, vault: string, secrets: string;
 let or: FakeOpenRouter;
@@ -180,6 +180,59 @@ describe("the feed over HTTP", () => {
     const at = p.items.indexOf(ask);
     expect(p.items.slice(at + 1).find((x) => x.kind === "user")).toMatchObject({ id: "c-ans-1", via: "answer", text: "pear" });
     expect(p.items.filter((x) => x.kind === "assistant").at(-1)?.text).toBe("Pear it is.");
+  });
+
+  it("a dropped connection pi's retry recovers: a quiet 'Retrying…' while it retries, no red line, then nothing of it", async () => {
+    const since = await head();
+    // OpenRouter's edge closes the connection once (the box's "Connection error."), then answers.
+    or.script.push({ drop: true }, { text: "Recovered answer." });
+    await intent({ type: "send", convId: conv, clientId: "c-drop-1", text: "Explain attention briefly." });
+    await waitFor(async () => (await recsOf(conv)).filter((x) => x.seq > since && isEnd(x)).length >= 1, 30_000);
+    const recs = await recsOf(conv);
+    const turn = recs.filter((x) => x.seq > since);
+    // pi did retry (its own events are in the feed) and wrote the failed attempt.
+    const retryAt = turn.findIndex((x) => x.type === "live" && x.ev.type === "auto_retry_start");
+    expect(retryAt).toBeGreaterThan(-1);
+    expect(turn.some((x) => x.type === "live" && x.ev.type === "auto_retry_end" && x.ev.success)).toBe(true);
+    // While it retried, every client showed one quiet line and no failure.
+    const during = messagesOf(fold(recs.filter((x) => x.seq <= turn[retryAt].seq), conv));
+    expect(during.filter((m) => m.failed)).toEqual([]);
+    expect(during.filter((m) => m.system && /Retrying/.test(m.content))).toEqual([expect.objectContaining({ content: "Retrying…" })]);
+    expect(during.some((m) => /Connection error/.test(m.content))).toBe(false);
+    // Recovered: the reply, and nothing about the retry (no red line, no "Retrying").
+    const after = messagesOf(fold(recs, conv));
+    const mine = after.slice(after.findIndex((m) => m.mid === "c-drop-1"));
+    expect(mine.map((m) => [m.role, m.content, !!m.failed])).toEqual([
+      ["user", "Explain attention briefly.", false],
+      ["assistant", "Recovered answer.", false],
+    ]);
+    expect(after.some((m) => /Connection error|Retrying/.test(m.content))).toBe(false);
+  });
+
+  it("every retry fails: one red line, said once, with Try again; Try again runs a turn that continues", async () => {
+    const since = await head();
+    or.script.push({ drop: true }, { drop: true }, { drop: true }, { drop: true }, { drop: true });
+    await intent({ type: "send", convId: conv, clientId: "c-drop-2", text: "And multi-head attention?" });
+    await waitFor(async () => (await recsOf(conv)).filter((x) => x.seq > since && isEnd(x)).length >= 1, 30_000);
+    let msgs = messagesOf(fold(await recsOf(conv), conv));
+    const failed = msgs.filter((m) => m.failed);
+    expect(failed).toHaveLength(1);
+    expect(failed[0]).toMatchObject({ system: true, retry: true, content: "Couldn't get a reply (tried 5 times): Connection error." });
+    expect(msgs.at(-1)).toBe(failed[0]);
+    expect(msgs.some((m) => /Retrying/.test(m.content))).toBe(false);
+    // Try again (what the laptop's and the phone's button send).
+    const since2 = await head();
+    or.script.push({ text: "Multi-head attention runs several attentions in parallel." });
+    const r = await intent({ type: "send", convId: conv, clientId: "c-retry-1", text: RETRY_TEXT, via: "retry" });
+    expect(r.ok).toBe(true);
+    await waitFor(async () => (await recsOf(conv)).filter((x) => x.seq > since2 && isEnd(x)).length >= 1, 30_000);
+    msgs = messagesOf(fold(await recsOf(conv), conv));
+    const at = msgs.findIndex((m) => m.failed);
+    expect(msgs[at]!.retry).toBeUndefined();
+    expect(msgs.slice(at + 1).map((m) => [m.role, m.content, !!m.system])).toEqual([
+      ["user", "↻ Trying again", true],
+      ["assistant", "Multi-head attention runs several attentions in parallel.", false],
+    ]);
   });
 
   it("a restart in the middle of a turn: the feed is intact, a client resumes from its cursor with no gap", async () => {

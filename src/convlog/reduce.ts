@@ -19,7 +19,7 @@ import type { ConvMeta, ConvRow, ItemImage, LogRecord, PendingInput, PiBlock, Pi
 import { VC_NOTE, VC_VOICE } from "./protocol";
 
 /** Bumped when the fold's meaning changes: a checkpoint from another version is folded again. */
-export const REDUCER_VERSION = 4;
+export const REDUCER_VERSION = 5;
 
 export type ItemKind = "user" | "assistant" | "thinking" | "tool" | "compaction" | "notice";
 export type ItemStatus = "streaming" | "pending" | "running" | "done" | "error" | "stopped";
@@ -112,8 +112,14 @@ function touch(d: Draft, at: number): void {
   if (at > d.meta.lastActivityAt) d.meta = { ...d.meta, lastActivityAt: at };
 }
 
-/** An assistant message's blocks as items (the entry's, or message_end's). */
-function blocksOf(m: PiMessage, at: number, status: ItemStatus): Item[] {
+/** The id of the line an assistant message that failed shows (`<message timestamp>:-1`). */
+const failId = (ts: number | null | undefined) => blockId(ts, -1);
+const isFailLine = (it: Item) => it.kind === "notice" && it.level === "error" && it.id.endsWith(":-1");
+
+/** An assistant message's blocks as items (the entry's, or message_end's). A failed request's line is
+ *  provisional (`pending`) while its turn runs: pi may retry it (auto_retry), and a retry that recovers
+ *  takes it away. Only a turn that ends on it shows it (closeOpen). */
+function blocksOf(m: PiMessage, at: number, status: ItemStatus, running = false): Item[] {
   const out: Item[] = [];
   const content = Array.isArray(m.content) ? m.content : [];
   const stopped = m.stopReason === "aborted";
@@ -127,8 +133,20 @@ function blocksOf(m: PiMessage, at: number, status: ItemStatus): Item[] {
       out.push({ id: String(b.id), kind: "tool", status: "pending", name: String(b.name ?? "tool"), args: b.arguments ?? {}, at });
     }
   });
-  if (m.stopReason === "error") out.push({ id: blockId(m.timestamp, -1), kind: "notice", status: "done", level: "error", text: `⚠️ ${m.errorMessage || "The model's request failed."}`, at });
+  if (m.stopReason === "error") out.push({ id: failId(m.timestamp), kind: "notice", status: running ? "pending" : "done", level: "error", text: failText(m.errorMessage), at });
   return out;
+}
+
+/** A failed request, said once and plainly (pi's own text, its first line, capped). */
+function failText(msg: string | undefined, tries = 1): string {
+  const first = String(msg ?? "").trim().split(/\r?\n/)[0]!.slice(0, 240) || "the model's request failed";
+  return `Couldn't get a reply${tries > 1 ? ` (tried ${tries} times)` : ""}: ${first}`;
+}
+
+/** A retry recovered (or a later reply came): the failed requests of this turn are not shown. */
+function dropFailLines(d: Draft): void {
+  if (d.items.some((x) => isFailLine(x) && isOpen(x))) d.items = d.items.filter((x) => !(isFailLine(x) && isOpen(x)));
+  if (d.inflight.some(isFailLine)) d.inflight = d.inflight.filter((x) => !isFailLine(x));
 }
 
 /** Put items in place: an item already there (from the message in flight) keeps its place and takes the new fields. */
@@ -169,7 +187,9 @@ function onEntry(d: Draft, r: Extract<LogRecord, { type: "entry" }>): void {
         d.inflightTs = null;
       }
       if (typeof m.timestamp === "number") d.written = [...d.written.slice(-7), m.timestamp];
-      place(d, blocksOf(m, r.at, "done"));
+      // A reply after a failed request: pi's retry worked; the failure is not this turn's.
+      if (m.stopReason !== "error") dropFailLines(d);
+      place(d, blocksOf(m, r.at, "done", !!d.meta.running));
       const u = m.usage;
       if (u) {
         const ctx = Number(u.input ?? 0) + Number(u.cacheRead ?? 0) + Number(u.cacheWrite ?? 0);
@@ -283,7 +303,8 @@ function onLive(d: Draft, r: Extract<LogRecord, { type: "live" }>): void {
       if (m.role !== "assistant") return;
       d.inflightTs = Number(m.timestamp ?? d.inflightTs);
       const keep = d.inflight.filter((x) => x.kind === "compaction" || x.kind === "notice");
-      d.inflight = [...keep, ...blocksOf(m, r.at, "done")];
+      if (m.stopReason !== "error") dropFailLines(d);
+      d.inflight = [...keep, ...blocksOf(m, r.at, "done", !!d.meta.running)];
       return;
     }
     case "tool_execution_start": {
@@ -314,10 +335,12 @@ function onLive(d: Draft, r: Extract<LogRecord, { type: "live" }>): void {
       if (!ev.result && !ev.aborted && ev.errorMessage) d.items.push({ id: `compaction-failed:${r.seq}`, kind: "notice", status: "done", level: "warn", text: `Summarizing the earlier conversation failed: ${String(ev.errorMessage).slice(0, 300)}`, at: r.at });
       return;
     case "auto_retry_start":
-      d.inflight = [...d.inflight.filter((x) => !x.id.startsWith("retry:")), { id: `retry:${r.seq}`, kind: "notice", status: "running", level: "warn", text: `Retrying (${ev.attempt ?? "?"}/${ev.maxAttempts ?? "?"}): ${String(ev.errorMessage ?? "the provider failed").slice(0, 300)}`, at: r.at }];
+      // pi retries a failed request: one quiet line while it does (the failure itself is not shown unless the turn ends on it).
+      d.inflight = [...d.inflight.filter((x) => !x.id.startsWith("retry:")), { id: `retry:${r.seq}`, kind: "notice", status: "running", level: "info", text: "Retrying…", at: r.at }];
       return;
     case "auto_retry_end":
       d.inflight = d.inflight.filter((x) => !x.id.startsWith("retry:"));
+      if (ev.success) dropFailLines(d);
       return;
     default:
       return;
@@ -326,6 +349,15 @@ function onLive(d: Draft, r: Extract<LogRecord, { type: "live" }>): void {
 
 /** The turn is over: what was in flight and never written stays, closed (a stop, a crash); nothing streams or runs forever. */
 function closeOpen(d: Draft): void {
+  // The turn ended on a failed request (every retry failed too): one line, the last failure, said once.
+  const fails = [...d.items, ...d.inflight].filter((x) => isFailLine(x) && isOpen(x));
+  if (fails.length) {
+    const last = fails[fails.length - 1]!;
+    d.items = d.items.filter((x) => !(isFailLine(x) && isOpen(x)));
+    d.inflight = d.inflight.filter((x) => !isFailLine(x));
+    const msg = (last.text ?? "").replace(/^Couldn't get a reply(?: \(tried \d+ times\))?: /, "");
+    d.items.push({ ...last, status: "done", text: failText(msg, fails.length) });
+  }
   if (d.inflight.length) {
     const kept = d.inflight.filter((x) => x.kind !== "compaction" && !(x.kind === "notice" && x.id.startsWith("retry:")) && (x.kind !== "assistant" || (x.text ?? "").trim()));
     for (const it of kept) d.items.push({ ...it, status: isOpen(it) ? "stopped" : it.status });

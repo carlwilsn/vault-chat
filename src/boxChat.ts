@@ -34,7 +34,7 @@ import { boxFileChanged } from "./liveReload";
 import type { Conversation } from "./conversations";
 import type { LogRecord, PollAnswer } from "./convlog/protocol";
 import { emptyPicture, emptyRow, foldInto, pendingOf, reduceRow, type Picture, type RowState } from "./convlog/reduce";
-import { afterClear, makeChatView, type ChatView } from "./convlog/view";
+import { RETRY_TEXT, afterClear, makeChatView, type ChatView } from "./convlog/view";
 import { MAIN_ID } from "./threads";
 
 export const BOX_UNREACHABLE = "Box unreachable";
@@ -1001,6 +1001,19 @@ export async function boxStop(convId: string | null): Promise<boolean> {
   const r = await intent(sess, { type: "stop", convId });
   if (!r.ok) {
     sess.notice(convId, `⚠️ Couldn't stop it on the box: ${r.error}`);
+    if (r.network) sess.kick();
+  }
+  return true;
+}
+
+/** Try again on a turn that ended on a failed request: a new turn that continues (a quiet "↻ Trying again" line). */
+export async function boxRetry(conv: string | null): Promise<boolean> {
+  if (!boxChatOn() || !session) return false;
+  const sess = session;
+  const convId = conv ?? MAIN_ID;
+  const r = await intent(sess, { type: "send", convId, clientId: newClientId(), text: RETRY_TEXT, via: "retry" });
+  if (!r.ok) {
+    sess.notice(convId, `⚠️ Couldn't try again: ${r.error}`);
     if (r.network) sess.kick();
   }
   return true;

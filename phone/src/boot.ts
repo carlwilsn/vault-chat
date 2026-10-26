@@ -18,7 +18,7 @@ import { BrainConversation } from "../../src/voiceBrainClient";
 import { WaitTracker, calibFrom, renderWaitLine, waitInputs, type WaitCalib } from "../../src/voiceWaitLine";
 import type { LogRecord } from "../../src/convlog/protocol";
 import { emptyPicture, emptyRow, foldInto, pendingOf, reduceRow, shown, type Picture, type RowState } from "../../src/convlog/reduce";
-import { afterClear, makeChatView, type ChatView } from "../../src/convlog/view";
+import { RETRY_TEXT, afterClear, makeChatView, type ChatView } from "../../src/convlog/view";
 import { MAIN_ID, MAIN_TITLE, isOlderChat, panelModel, projectThreadId } from "../../src/threads";
 import { startAttentionBeat, type AttentionBeat } from "../../src/attentionBeat";
 
@@ -780,8 +780,10 @@ export function boot(): void {
     // Agent replies are bubble-free (full-width markdown); user + system keep
     // their bubbles.
     const asst = role !== "user" && !opts.system;
-    div.className = (asst ? "amsg" : "m " + (role === "user" ? "user" : "sys")) + (opts.queued ? " queued" : "");
+    div.className = (asst ? "amsg" : "m " + (role === "user" ? "user" : "sys")) + (opts.queued ? " queued" : "") + (opts.failLine ? " fail" : "");
     if (!asst) div.textContent = content;
+    // A turn that ended on a failed request (and nothing since): one line, and Try again.
+    if (opts.retry) div.insertAdjacentHTML("beforeend", ' <button class="retrybtn" data-el="retry">Try again</button>');
     else div.innerHTML = X.thoughtHtml(opts.thinking) + '<div class="md">' + md(Array.isArray(opts.askOptions) && opts.askOptions.length ? X.withoutOptionList(content, opts.askOptions) : content) + "</div>";
     // Images sent with a user turn: thumbnails above its text.
     if (!asst && Array.isArray(opts.images) && opts.images.length)
@@ -912,7 +914,9 @@ export function boot(): void {
       divider: m.compaction ? m.compaction.summary : m.rollover ? m.rollover.recap : undefined,
       spawns: (m.toolCalls || []).flatMap((t) => t.subagents || []),
       images: (m.attachments || []).map((a) => a.imageDataUrl || (a.capturedFilePath ? fileUrl(a.capturedFilePath) : "")).filter(Boolean),
-      queued: !!m.failed,
+      queued: !!m.failed && !m.system,
+      failLine: !!m.system && m.failed === true,
+      retry: !!m.retry,
     };
     if (Array.isArray(m.askOptions) && m.askOptions.length) {
       o.askOptions = m.askOptions;
@@ -1193,6 +1197,16 @@ export function boot(): void {
       const ot = opt.querySelector(".ot"); if (ot) ot.insertAdjacentHTML("beforeend", '<span class="pick">✓ your call</span>');
       void send(ans);
       void api("/decision-record", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ answer: ans, title: convTitle || "Inline decision", question: q, convId: convId || "" }) }).catch(() => {});
+      return;
+    }
+    // Try again on a failed turn: a new turn that continues (shown as a quiet "↻ Trying again" line).
+    const rb = e.target.closest(".retrybtn");
+    if (rb) {
+      if (rb.disabled) return;
+      rb.disabled = true;
+      void api("/api/v2/intent", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ type: "send", convId: convId || undefined, clientId: clientId(), client: "phone", text: RETRY_TEXT, via: "retry" }) })
+        .then(async (r) => { const d = await r.json().catch(() => ({})); if (!r.ok || d.error) throw new Error(d.error || r.status); })
+        .catch((err) => { rb.disabled = false; toast("Couldn't try again: " + (err.message || err)); });
       return;
     }
     const sh = e.target.closest(".steps-h");

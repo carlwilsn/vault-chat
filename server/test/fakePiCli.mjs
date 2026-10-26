@@ -279,6 +279,31 @@ async function streamText(text, ci, slow) {
   return true;
 }
 
+/** pi's auto_retry (settings retry.maxRetries): a dropped connection is pi-ai's "Connection error." (the
+ *  OpenAI SDK's APIConnectionError over undici's "other side closed"); pi writes the failed message,
+ *  then retries the same request after a delay, and says auto_retry_end once a reply comes. */
+const RETRY_MAX = 4;
+async function callModelRetrying() {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return { reply: await callModel(), retried: attempt };
+    } catch (e) {
+      const why = `${e?.message ?? e} ${e?.cause?.code ?? ""} ${e?.cause?.message ?? ""}`;
+      if (aborted || !/fetch failed|other side closed|ECONNRESET|UND_ERR_SOCKET/i.test(why)) throw e;
+      if (attempt >= RETRY_MAX) {
+        out({ type: "auto_retry_end", success: false, attempt, finalError: "Connection error." });
+        throw new Error("Connection error.");
+      }
+      const am = { role: "assistant", content: [], stopReason: "error", errorMessage: "Connection error.", timestamp: stamp() };
+      out({ type: "message_start", message: am });
+      out({ type: "message_end", message: am });
+      append({ type: "message", message: am }); // in the session file, not in what the model is sent (pi's context_edit)
+      out({ type: "auto_retry_start", attempt: attempt + 1, maxAttempts: RETRY_MAX, delayMs: 50, errorMessage: "Connection error." });
+      await sleep(50);
+    }
+  }
+}
+
 function deliver(list) {
   for (const m of list.splice(0)) {
     const msg = { role: "user", content: [{ type: "text", text: m.message }], timestamp: stamp() };
@@ -312,7 +337,7 @@ async function run(first) {
   }
   try {
     for (let step = 0; step < 12 && !aborted; step++) {
-      const reply = await callModel();
+      const { reply, retried } = await callModelRetrying();
       if (aborted) break;
       const text = String(reply.content ?? "");
       const calls = Array.isArray(reply.tool_calls) ? reply.tool_calls : [];
@@ -348,6 +373,7 @@ async function run(first) {
       const am = { role: "assistant", content, stopReason: calls.length ? "toolUse" : "stop", usage: { input: 1200, output: 40, cacheRead: 0, cacheWrite: 0 }, timestamp: ts };
       out({ type: "message_end", message: am });
       record(am);
+      if (retried) out({ type: "auto_retry_end", success: true, attempt: retried });
       for (const tc of content.filter((c) => c.type === "toolCall")) {
         out({ type: "tool_execution_start", toolCallId: tc.id, toolName: tc.name, args: tc.arguments });
         // vault-chat's own tools are host calls (its extension's editor dialog, ext/vc.mjs); of pi's built-ins only read runs.
