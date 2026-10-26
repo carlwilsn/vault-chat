@@ -23,6 +23,8 @@ import {
   projectFolder,
   readProject,
   deleteProjectFiles,
+  restoreProjectFiles,
+  listDeletedProjects,
   renameProject,
   listProjects,
   projectCost,
@@ -307,6 +309,18 @@ export const ENGINE_TOOL_SPECS = [
     name: "OpenProject",
     description: OPEN_PROJECT_DESCRIPTION,
     inputSchema: OPEN_PROJECT_SCHEMA as unknown as Record<string, unknown>,
+  },
+  {
+    type: "function",
+    name: "RestoreProject",
+    description:
+      "Bring back a project Carl deleted, only when he asks for it back. Without project: lists what is deleted (name, slug, when). With project (its name, slug, or a listed entry): the project comes back whole — its folder, notes and memory, its thread with its whole conversation — on every one of his screens. " +
+      "This is the only way back: never move or copy anything in agent-projects/.deleted/ yourself (a project put back by hand shows up half-way).",
+    inputSchema: {
+      type: "object",
+      properties: { project: { type: "string", description: "The deleted project's name, slug or .deleted entry; omit to list them." } },
+      additionalProperties: false,
+    },
   },
   {
     type: "function",
@@ -620,6 +634,8 @@ export class Engine {
     void this.scoped(() => this.ensureThreads()).catch((e) => this.log(`threads: ${(e as Error).message}`));
     this.timers.push(setInterval(() => this.scoped(() => void this.tickWakes()), 2_000));
     this.timers.push(setInterval(() => this.scoped(() => void this.tickJobs()), 15_000));
+    // A project's folder that came back without the engine (moved back by hand): its thread back on every list.
+    this.timers.push(setInterval(() => void this.scoped(() => this.ensureThreads()).catch(() => {}), 15_000));
   }
 
   stop(): void {
@@ -629,7 +645,7 @@ export class Engine {
   /** Main, and one thread per project (made once; never a write when they exist). */
   async ensureThreads(): Promise<void> {
     await ensureMain(this.d.vault);
-    for (const p of listProjects()) await ensureProjectThread(this.d.vault, p.slug, p.name);
+    for (const p of listProjects()) await ensureProjectThread(this.d.vault, p.slug, p.name, { onRevived: (id) => this.revived(id) });
   }
 
   /** The conversation a message without one goes to (Main), or the one named: a project's thread or a
@@ -642,17 +658,18 @@ export class Engine {
       return ensureProjectThread(this.d.vault, info.slug, info.name);
     }
     if (!convId || convId === MAIN_ID) return ensureMain(this.d.vault);
+    const revived = { onRevived: (id: string) => this.revived(id) };
     const have = await readConv(this.d.vault, convId);
     const slug = projectOfThread(convId);
     // A deleted project's thread (a surface still on it): Main — unless the project was made again.
     if ((have as { deleted?: boolean } | null)?.deleted && slug) {
       const p = readProject(slug);
-      return p ? ensureProjectThread(this.d.vault, slug, p.name) : ensureMain(this.d.vault);
+      return p ? ensureProjectThread(this.d.vault, slug, p.name, revived) : ensureMain(this.d.vault);
     }
     if (have) return have;
     if (slug) {
       const p = readProject(slug);
-      return p ? ensureProjectThread(this.d.vault, slug, p.name) : null;
+      return p ? ensureProjectThread(this.d.vault, slug, p.name, revived) : null;
     }
     // A client's optimistic new chat (Carl asked for a separate one): the id it chose becomes the conversation's.
     if (/^[A-Za-z0-9_-]{6,80}$/.test(convId) && !logOf(this.d.vault).has(convId)) return createConv(this.d.vault, { ...init, kind: "separate" } as Partial<EngineConv>, first, convId);
@@ -754,6 +771,8 @@ export class Engine {
         return this.compact(String(b.convId ?? "") || MAIN_ID, typeof b.focus === "string" ? b.focus : undefined);
       case "deleteProject":
         return this.deleteProject(String(b.slug ?? ""));
+      case "restoreProject":
+        return this.restoreProject(String(b.slug ?? b.entry ?? ""));
       case "renameProject": {
         const slug = String(b.slug ?? "");
         try {
@@ -1077,11 +1096,48 @@ export class Engine {
     }
     if (this.picture(id)) this.emit(id, { type: "meta", patch: { deleted: true, deletedProject: { name: moved.name, at: Date.now(), movedTo: moved.movedTo } } });
     const main = await ensureMain(this.d.vault);
-    const tell = [...((this.picture(main.id)?.meta.tellAgent as string[] | undefined) ?? []), `Carl deleted the project "${moved.name}" (its thread and notes are gone; its files were kept at ${moved.movedTo}). Don't bring it up or treat it as a project any more unless he does.`];
+    const tell = [...((this.picture(main.id)?.meta.tellAgent as string[] | undefined) ?? []), `Carl deleted the project "${moved.name}" (its thread and notes are gone from his screens). Don't bring it up or treat it as a project any more unless he does. If he wants it back, RestoreProject brings it back whole; never move its files yourself.`];
     this.emit(main.id, { type: "meta", patch: { tellAgent: tell } });
     this.d.broadcast?.({ type: "project", slug, deleted: true, convId: id, to: MAIN_ID });
     this.log(`project ${slug} deleted (files: ${moved.movedTo})`);
     return { ok: true, slug, name: moved.name, movedTo: moved.movedTo, convId: id, to: MAIN_ID };
+  }
+
+  /**
+   * The inverse of deleteProject (Carl's Undo, or the agent's RestoreProject when he asks): the project's
+   * folder back from agent-projects/.deleted/, its thread back with its transcript and pi session, every
+   * surface's list showing it again (the signal), and Main's agent told unless it never heard of the delete.
+   */
+  async restoreProject(slugNameOrEntry: string): Promise<Record<string, unknown>> {
+    if (!slugNameOrEntry.trim()) return { ok: false, error: "which project? (slug, name or .deleted entry)" };
+    let back: { slug: string; name: string; entry: string };
+    try {
+      back = restoreProjectFiles(slugNameOrEntry);
+    } catch (e) {
+      return { ok: false, error: (e as Error).message };
+    }
+    const id = projectThreadId(back.slug);
+    await ensureProjectThread(this.d.vault, back.slug, back.name);
+    // Main: a delete notice it has not read yet is simply dropped; otherwise it hears the project is back.
+    const main = this.picture(MAIN_ID);
+    const pending = (main?.meta.tellAgent as string[] | undefined) ?? [];
+    const mine = (t: string) => t.startsWith(`Carl deleted the project "${back.name}"`);
+    if (pending.some(mine)) {
+      const rest = pending.filter((t) => !mine(t));
+      this.emit(MAIN_ID, { type: "meta", patch: { tellAgent: rest.length ? rest : null } });
+    } else if (main) {
+      this.emit(MAIN_ID, { type: "meta", patch: { tellAgent: [...pending, `The project "${back.name}" is back (restored with its thread and notes); it is one of Carl's projects again.`] } });
+    }
+    this.d.broadcast?.({ type: "project", slug: back.slug, restored: true, convId: id, name: back.name });
+    this.log(`project ${back.slug} restored (from .deleted/${back.entry})`);
+    return { ok: true, slug: back.slug, name: back.name, convId: id, from: back.entry };
+  }
+
+  /** A deleted project's thread came back on its own (its folder was moved back by hand): the lists show it. */
+  private revived(convId: string): void {
+    const slug = projectOfThread(convId);
+    this.log(`project thread ${convId} revived (its folder is back)`);
+    this.d.broadcast?.({ type: "project", slug, restored: true, convId });
   }
 
   /** Resolves when the conversation's running turn (if any) has ended. */
@@ -1815,6 +1871,16 @@ export class Engine {
           // On the device he names (or is on): a signal the laptop / phone acks, or the inbox's validated send.
           const r = await show({ vault, emit: (ev) => this.d.broadcast?.(ev), sendBoard: (b) => sendEntry(vault, b, { conversation: convId, emit: (ev) => this.inboxEvent(ev) }) }, a);
           return { success: r.ok, contentItems: [{ type: "inputText", text: r.text }] };
+        }
+        case "RestoreProject": {
+          const want = typeof a.project === "string" ? a.project.trim() : "";
+          if (!want) {
+            const all = listDeletedProjects();
+            const when = (t: number) => new Date(t).toISOString().slice(0, 16).replace("T", " ") + " UTC";
+            return text(all.length ? `Deleted projects (newest first):\n${all.map((d) => `- ${d.name} (slug ${d.slug}, entry ${d.entry}, deleted ${when(d.deletedAt)})`).join("\n")}` : "Nothing is deleted.");
+          }
+          const r = await this.restoreProject(want);
+          return { success: !!r.ok, contentItems: [{ type: "inputText", text: r.ok ? `Restored project ${r.name}: its notes and its thread (${r.convId}) are back on his screens.` : `Not restored: ${r.error}.` }] };
         }
         case "OpenProject": {
           // Carl asked to start or work on a project: made (or found), and his screens and a live call follow to its thread.

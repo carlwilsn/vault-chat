@@ -299,6 +299,14 @@ export class FakeBox {
         this.emit(null, { type: "signal", signal: { type: "project", slug: b.slug, deleted: true, convId: id, to: "main" } });
         return { ok: true, slug: b.slug, convId: id, to: "main", movedTo: `agent-projects/.deleted/${b.slug}-20261025-120000` };
       }
+      case "restoreProject": {
+        // Engine.restoreProject: the thread back as it was (its transcript), the clients told.
+        const id = `project-${String(b.slug ?? "")}`;
+        if (!this.log.picture(id)?.meta.deleted) return { ok: false, error: `nothing deleted under "${b.slug}"` };
+        this.meta(id, { deleted: null, deletedProject: null });
+        this.emit(null, { type: "signal", signal: { type: "project", slug: b.slug, restored: true, convId: id } });
+        return { ok: true, slug: b.slug, convId: id };
+      }
       case "renameProject": {
         const id = `project-${String(b.slug ?? "")}`;
         const name = String(b.name ?? "").trim();

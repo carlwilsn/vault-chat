@@ -139,6 +139,48 @@ export function deleteProjectFiles(slug: string, now = new Date()): { name: stri
   return { name, movedTo: relative(vault(), dest).split(sep).join("/") };
 }
 
+export type DeletedProject = { slug: string; name: string; entry: string; deletedAt: number };
+
+/** What agent-projects/.deleted/ holds: each deleted project's folder (`<slug>-<YYYYMMDD-HHMMSS>[-n]`), newest first. */
+export function listDeletedProjects(): DeletedProject[] {
+  const base = projectsPath(vault(), DELETED_DIR);
+  let names: string[];
+  try {
+    names = readdirSync(base);
+  } catch {
+    return [];
+  }
+  const out: DeletedProject[] = [];
+  for (const entry of names) {
+    const m = /^(.+)-(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})(?:-\d+)?$/.exec(entry);
+    if (!m) continue;
+    try {
+      if (!statSync(join(base, entry)).isDirectory()) continue;
+    } catch {
+      continue;
+    }
+    const h = /^#\s+(.+?)\s*$/m.exec(readOr(join(base, entry, PROJECT_NOTES_FILE)));
+    const deletedAt = Date.UTC(+m[2]!, +m[3]! - 1, +m[4]!, +m[5]!, +m[6]!, +m[7]!);
+    out.push({ slug: m[1]!, name: h ? h[1]! : m[1]!, entry, deletedAt });
+  }
+  return out.sort((a, b) => b.deletedAt - a.deletedAt || b.entry.localeCompare(a.entry));
+}
+
+/**
+ * The inverse of deleteProjectFiles: a deleted project's folder back to agent-projects/<slug>/ — the newest
+ * one of that slug (or name), or the exact `.deleted/` entry named. Refused when a project of that slug exists.
+ */
+export function restoreProjectFiles(slugNameOrEntry: string): { slug: string; name: string; entry: string } {
+  const want = slugNameOrEntry.trim();
+  const all = listDeletedProjects();
+  const low = want.toLowerCase();
+  const hit = all.find((d) => d.entry === want) ?? all.find((d) => d.slug === want || d.slug === slugify(want) || d.name.toLowerCase() === low);
+  if (!hit) throw new Error(`nothing deleted under "${want}"${all.length ? ` (deleted: ${all.map((d) => d.name).join(", ")})` : ""}`);
+  if (projectExists(hit.slug)) throw new Error(`a project "${nameOf(hit.slug)}" (${hit.slug}) exists already`);
+  renameSync(join(projectsPath(vault(), DELETED_DIR), hit.entry), projectDir(hit.slug));
+  return { slug: hit.slug, name: nameOf(hit.slug), entry: hit.entry };
+}
+
 /** Carl's Rename: project.md's first `# ` heading (the slug, its folder and its thread stay). */
 export function renameProject(slug: string, name: string): ProjectInfo {
   const n = name.trim().replace(/\s+/g, " ").slice(0, 80);

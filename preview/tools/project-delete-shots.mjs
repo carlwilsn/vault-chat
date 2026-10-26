@@ -89,6 +89,24 @@ async function desktop(side) {
       await page.keyboard.press("Enter");
       await page.waitForTimeout(900);
       await shot("renamed");
+      // Carl asks the agent for Coconut back: its RestoreProject (the box acts; this screen is not refreshed).
+      await page.evaluate(async () => {
+        const url = performance.getEntriesByType("resource").map((e) => e.name).find((n) => /\/preview\/runtime\/backend\/host\.ts/.test(n));
+        (await import(url)).fakeBoxLog().intent({ type: "restoreProject", slug: "coconut" });
+      });
+      await page.waitForTimeout(2500);
+      await shot("restored");
+      await page.click("[data-thread='project-coconut']");
+      await page.waitForTimeout(900);
+      await shot("restored-thread");
+      // Back and forth: each thread its own talk.
+      for (const id of ["project-psych-221", "project-coconut", "main", "project-coconut"]) {
+        await page.click(`[data-thread='${id}']`);
+        await page.waitForTimeout(500);
+      }
+      await shot("switched");
+      const txt = await page.evaluate(() => document.body.innerText);
+      console.log(`desktop after restore + switching: coconut talk shown=${txt.includes("128 px on 1024 tiles")}; psych talk shown=${txt.includes("Introduction, the two studies")}`);
     }
     const errs = [...log.pageErrors.map((e) => e.text.split("\n")[0]), ...log.console.filter((m) => m.type === "error").map((m) => m.text.slice(0, 200))];
     console.log(`desktop ${side}: ${errs.length ? errs.slice(0, 4).join(" | ") : "no page errors"}`);
@@ -124,6 +142,10 @@ async function phone(side) {
       await page.click("#convBtn").catch(() => {});
       await page.waitForTimeout(1200);
       await shot("phone-deleted");
+      // The agent's RestoreProject brings it back: the open list shows it without a reload.
+      await page.evaluate(() => fetch("/api/v2/intent", { method: "POST", body: JSON.stringify({ type: "restoreProject", slug: "bitnet-160m" }) }));
+      await page.waitForTimeout(2500);
+      await shot("phone-restored");
       const still = await page.$$eval("[data-el='thread-project'] .nm", (els) => els.map((e) => e.textContent));
       console.log(`phone after delete of ${name}: rows=${JSON.stringify(still)}`);
     }

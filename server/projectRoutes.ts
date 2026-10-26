@@ -58,7 +58,8 @@ export async function createProjectWithThread(vault: string, body: { name?: unkn
   if (!name) return { error: "name required" };
   try {
     const { project, created } = withVault(vault, () => ensureProject(name));
-    const conv = await ensureProjectThread(vault, project.slug, project.name);
+    // A new folder: a new thread even where a deleted project of that name had one (RestoreProject brings that back).
+    const conv = await ensureProjectThread(vault, project.slug, project.name, { fresh: created });
     return { ok: true, slug: project.slug, name: project.name, convId: conv.id, created };
   } catch (e) {
     return { error: String((e as Error)?.message ?? e) };

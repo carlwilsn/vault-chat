@@ -430,6 +430,14 @@ export class MemoryBox {
         this.emit(null, { type: "signal", signal: { type: "project", slug: b.slug, deleted: true, convId: id, to: "main" } });
         return { ok: true, slug: b.slug, convId: id, to: "main" };
       }
+      case "restoreProject": {
+        // Engine.restoreProject (the agent's RestoreProject): the thread back as it was, the clients told.
+        const id = `project-${String(b.slug ?? "")}`;
+        if (!this.picture(id)?.meta.deleted) return { ok: false, error: `nothing deleted under "${b.slug}"` };
+        this.meta(id, { deleted: null, deletedProject: null });
+        this.emit(null, { type: "signal", signal: { type: "project", slug: b.slug, restored: true, convId: id } });
+        return { ok: true, slug: b.slug, convId: id, name: this.picture(id)!.meta.title };
+      }
       case "renameProject": {
         const id = `project-${String(b.slug ?? "")}`;
         const name = String(b.name ?? "").trim();

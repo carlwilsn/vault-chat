@@ -116,12 +116,19 @@ export async function ensureMain(vault: string): Promise<EngineConv> {
 }
 
 /** A project's one thread, made the first time it is needed (its title: the project's name). */
-export async function ensureProjectThread(vault: string, slug: string, name: string): Promise<EngineConv> {
+export async function ensureProjectThread(vault: string, slug: string, name: string, opts: { fresh?: boolean; onRevived?: (id: string) => void } = {}): Promise<EngineConv> {
   const id = projectThreadId(slug);
   const have = pictureOf(vault, id);
   if (have && !have.meta.deleted) return toEngineConv(have);
-  // A project made again under a deleted one's name: the same thread id, empty (the old transcript stays in
-  // its pi file, never shown here), a new pi session.
+  // A deleted project's folder is back (restored, or moved back by hand): its thread comes back as it was —
+  // its transcript, its pi session.
+  if (have && !opts.fresh) {
+    emitTo(vault, id, { type: "meta", patch: { deleted: null, deletedProject: null, kind: "project", source: "project", project: slug, title: name || slug } });
+    opts.onRevived?.(id);
+    return toEngineConv(pictureOf(vault, id)!);
+  }
+  // A new project (Carl's New project) under a deleted one's name: the same thread id, empty (the old
+  // transcript stays in its pi file, never shown here), a new pi session.
   if (have) {
     emitTo(vault, id, { type: "meta", patch: { deleted: null, deletedProject: null, cleared: { at: Date.now() }, threadId: null, threadPath: null, sessionFrom: null, kind: "project", source: "project", project: slug, title: name || slug } });
     return toEngineConv(pictureOf(vault, id)!);

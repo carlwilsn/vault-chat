@@ -20,6 +20,8 @@ export {
   ctxConfig,
   readProject,
   deleteProjectFiles,
+  restoreProjectFiles,
+  listDeletedProjects,
   renameProject,
   ensureProject,
   projectDir,

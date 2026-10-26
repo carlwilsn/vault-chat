@@ -225,6 +225,8 @@ interface MockDB {
   notifClearTs?: number;
   /** The vault's projects (GET /projects). */
   projects?: Array<{ slug: string; name: string }>;
+  /** Projects deleted in the mock (restoreProject puts them back). */
+  deletedProjects?: Array<{ slug: string; name: string }>;
   /** The box's other vaults (GET /api/v1/vaults lists them; ?vault=<name> shows one). */
   vaults?: Record<string, Partial<MockDB>>;
   /** preview: localStorage entries set before the page reads them (the UI choices) */

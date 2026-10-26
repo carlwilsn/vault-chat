@@ -122,3 +122,54 @@ test("Rename: the name changes here at once; the thread, its id and this screen 
   assert.equal(S().conversations.find((c) => c.id === "project-thesis")?.title, "Thesis draft");
   assert.equal(S().activeConversationId, "project-thesis");
 });
+
+// Real use (2026-10-26): Carl deleted four projects by mistake, asked the agent to bring one back, and going
+// back and forth between his threads afterwards was "buggy". Restore is the box's (Engine.restoreProject);
+// here: what the laptop shows through delete → restore → switching, the project's talk always its own.
+const said = (conv: string, user: string, reply: string) => {
+  box.startTurn(conv);
+  box.user(conv, `u-${conv}-${user.length}`, user);
+  box.stream(conv, "assistant", reply);
+  box.endTurn(conv);
+};
+const shown = () => S().messages.map((m) => m.content).join(" | ");
+
+test("delete → restore → switching back and forth: each thread shows its own talk, nothing lost or mixed", async () => {
+  project("physics", "Physics", Date.now() - 10_000);
+  said("project-physics", "Derive the pendulum period.", "T = 2π√(L/g) for small angles. PHYSICS-REPLY");
+  project("iems-469", "IEMS 469", Date.now() - 9_000);
+  said("project-iems-469", "Summarise lecture 7 on MDPs.", "Bellman equations and value iteration. IEMS-REPLY");
+  await waitFor("both listed", () => ["project-physics", "project-iems-469"].every((id) => S().conversations.some((c) => c.id === id)));
+
+  // In Physics; 469 is deleted (from here), then brought back (the agent's RestoreProject: the box acts).
+  projects.openThread("project-physics");
+  await waitFor("physics shown", () => shown().includes("PHYSICS-REPLY"));
+  assert.equal((await projects.deleteProject("iems-469")).ok, true);
+  await waitFor("469 gone", () => !S().conversations.some((c) => c.id === "project-iems-469"));
+  assert.equal(S().activeConversationId, "project-physics");
+  assert.ok(shown().includes("PHYSICS-REPLY"));
+  await fetch(`${box.url}/api/v2/intent`, { method: "POST", body: JSON.stringify({ type: "restoreProject", slug: "iems-469" }) });
+  // Back on the list without a refresh.
+  await waitFor("469 back", () => S().conversations.some((c) => c.id === "project-iems-469"));
+
+  for (let i = 0; i < 3; i++) {
+    projects.openThread("project-iems-469");
+    await waitFor(`469 shown (${i})`, () => S().activeConversationId === "project-iems-469" && shown().includes("IEMS-REPLY"));
+    assert.ok(!shown().includes("PHYSICS-REPLY"), shown());
+    projects.openThread("project-physics");
+    await waitFor(`physics shown (${i})`, () => S().activeConversationId === "project-physics" && shown().includes("PHYSICS-REPLY"));
+    assert.ok(!shown().includes("IEMS-REPLY"), shown());
+  }
+
+  // The project he is in, deleted and restored: he is on Main meanwhile; going back shows its whole talk.
+  assert.equal((await projects.deleteProject("physics")).ok, true);
+  assert.equal(S().activeConversationId, "main");
+  await fetch(`${box.url}/api/v2/intent`, { method: "POST", body: JSON.stringify({ type: "restoreProject", slug: "physics" }) });
+  await waitFor("physics back", () => S().conversations.some((c) => c.id === "project-physics"));
+  projects.openThread("project-physics");
+  await waitFor("physics talk back", () => S().activeConversationId === "project-physics" && shown().includes("PHYSICS-REPLY"));
+  projects.openThread("project-iems-469");
+  await waitFor("469 again", () => shown().includes("IEMS-REPLY") && !shown().includes("PHYSICS-REPLY"));
+  projects.openThread("main");
+  await waitFor("main", () => S().activeConversationId === "main" && !shown().includes("IEMS-REPLY") && !shown().includes("PHYSICS-REPLY"));
+});

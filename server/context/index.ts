@@ -24,6 +24,8 @@ export {
   ensureProjectsHidden,
   readGlobalRules,
   deleteProjectFiles,
+  restoreProjectFiles,
+  listDeletedProjects,
   renameProject,
   DELETED_DIR,
   projectNotesPath,

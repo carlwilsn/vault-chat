@@ -148,3 +148,74 @@ describe("Rename a project", () => {
     expect((await rig.engine.intent({ type: "renameProject", slug: "nope", name: "X" })).ok).toBe(false);
   });
 });
+
+describe("Restore a project (the inverse of Delete; Carl asks the agent, it uses RestoreProject)", () => {
+  const items = (id: string) => convs.pictureOf(rig.vault, id)!.items.length;
+
+  it("restoreProject: the folder back, the thread back with its transcript and pi session, every surface told; Main's unread notice dropped", async () => {
+    put("agent-projects/physics/project.md", "# Physics\n\n## Memory\n\n- pendulum done\n");
+    await rig.engine.ensureThreads();
+    const t = await turn("Derive the pendulum period.", "project-physics");
+    const before = { threadId: (await rig.readConv("project-physics")).threadId, items: items("project-physics") };
+    expect(before.items).toBeGreaterThan(0);
+    expect((await rig.engine.intent({ type: "deleteProject", slug: "physics" })).ok).toBe(true);
+    expect(convs.pictureOf(rig.vault, "main")?.meta.tellAgent).toEqual([expect.stringContaining('Carl deleted the project "Physics"')]);
+
+    signals.length = 0;
+    const r = await rig.engine.intent({ type: "restoreProject", slug: "physics" });
+    expect(r).toMatchObject({ ok: true, slug: "physics", name: "Physics", convId: "project-physics" });
+    expect(readFileSync(join(rig.vault, "agent-projects", "physics", "project.md"), "utf8")).toContain("- pendulum done");
+    expect(readdirSync(join(rig.vault, "agent-projects", ".deleted")).some((e) => e.startsWith("physics-"))).toBe(false);
+    const back = await rig.readConv("project-physics");
+    expect(back.deleted).toBeFalsy();
+    expect(back.threadId).toBe(before.threadId);
+    expect(items("project-physics")).toBe(before.items);
+    expect(convs.conversationObjects(rig.vault).map((c: any) => c.id)).toContain("project-physics");
+    expect(signals).toContainEqual(expect.objectContaining({ type: "project", slug: "physics", restored: true, convId: "project-physics" }));
+    // Main never read the delete notice: it is dropped (nothing to tell).
+    expect(convs.pictureOf(rig.vault, "main")?.meta.tellAgent).toBeUndefined();
+    // The thread goes on in its own pi session.
+    const again = await turn("And for large angles?", "project-physics");
+    expect(again.tid).toBe(t.tid);
+    // Nothing deleted under that name any more; a project that exists is not overwritten.
+    expect((await rig.engine.intent({ type: "restoreProject", slug: "physics" })).ok).toBe(false);
+  });
+
+  it("the agent's RestoreProject: lists what is deleted, then brings one back by name", async () => {
+    put("agent-projects/iems-469-course-notes-visuals/project.md", "# IEMS 469 course notes visuals\n");
+    await rig.engine.ensureThreads();
+    await turn("Make the lecture 7 figure.", "project-iems-469-course-notes-visuals");
+    expect((await rig.engine.intent({ type: "deleteProject", slug: "iems-469-course-notes-visuals" })).ok).toBe(true);
+    const m = await turn("Bring 469 back.");
+    const list = await rig.backend.call(m.tid, "RestoreProject", {});
+    expect(JSON.stringify(list)).toContain("IEMS 469 course notes visuals (slug iems-469-course-notes-visuals");
+    signals.length = 0;
+    const r = await rig.backend.call(m.tid, "RestoreProject", { project: "IEMS 469 course notes visuals" });
+    expect(JSON.stringify(r)).toContain("Restored project IEMS 469 course notes visuals");
+    expect(signals).toContainEqual(expect.objectContaining({ type: "project", restored: true, convId: "project-iems-469-course-notes-visuals" }));
+    expect((await import("../context")).listProjects().map((p) => p.slug)).toContain("iems-469-course-notes-visuals");
+    expect(items("project-iems-469-course-notes-visuals")).toBeGreaterThan(0);
+    const miss = await rig.backend.call(m.tid, "RestoreProject", { project: "Nothing like it" });
+    expect(JSON.stringify(miss)).toContain("Not restored");
+  });
+
+  it("the real incident: a folder moved back by hand — the thread comes back whole (not blank, not a new session) and every list is told", async () => {
+    const { renameSync } = await import("node:fs");
+    put("agent-projects/optics/project.md", "# Optics\n");
+    await rig.engine.ensureThreads();
+    const t = await turn("Snell's law, please.", "project-optics");
+    const before = { threadId: (await rig.readConv("project-optics")).threadId, items: items("project-optics") };
+    const d = await rig.engine.intent({ type: "deleteProject", slug: "optics" });
+    renameSync(join(rig.vault, String(d.movedTo)), join(rig.vault, "agent-projects", "optics"));
+    signals.length = 0;
+    // The engine's periodic pass (or his next message there) finds it back.
+    await rig.engine.ensureThreads();
+    expect(signals).toContainEqual(expect.objectContaining({ type: "project", restored: true, convId: "project-optics" }));
+    const back = await rig.readConv("project-optics");
+    expect(back.deleted).toBeFalsy();
+    expect(back.threadId).toBe(before.threadId);
+    expect(items("project-optics")).toBe(before.items);
+    const again = await turn("And total internal reflection?", "project-optics");
+    expect(again.tid).toBe(t.tid);
+  });
+});
