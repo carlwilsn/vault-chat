@@ -54,7 +54,7 @@ import type { EventBody, ItemImage, PendingInput } from "../../src/convlog/proto
 import { isOpen, pendingOf, shown, type Picture } from "../../src/convlog/reduce";
 import { makeChatView, toolName } from "../../src/convlog/view";
 import { waitInputs } from "../../src/voiceWaitLine";
-import { lookup } from "./lookup";
+import { lookupAll } from "./lookup";
 import { attachmentAt, attachmentsNote } from "../attachments";
 import { readEntries } from "../convlog/piSession";
 import { PiFeed } from "./piFeed";
@@ -401,7 +401,7 @@ export const ENGINE_TOOL_SPECS = [
     type: "function",
     name: "Lookup",
     description:
-      "Find something in Carl's notes and read it, in one call: give his words (and part of a file name if you know it). Returns the best-matching passages with the lines around them, from the files that match best. Use it instead of a find, grep, read chain.",
+      "Find something in Carl's notes and PDFs (lecture notes, homework) and read it, in one call: give his words (and part of a file name if you know it). Returns the best-matching passages with the lines around them (a PDF's with its page), from the files that match best. Use it instead of a find, grep, read chain.",
     inputSchema: {
       type: "object",
       properties: {
@@ -842,7 +842,11 @@ export class Engine {
     client?: string;
     /** How the message shows (its item's `via`): "voice-ask" for a request voice handed over (server/voice.ts Ask). */
     via?: string;
+    /** The rest of his previous line (a pause on a call cut it in two): a Delegate for it refines the worker he just
+     *  started instead of starting another. */
+    continues?: boolean;
   }): Promise<Record<string, unknown> | null> {
+    if (body.continues && body.convId) this.continuedAt.set(body.convId, Date.now());
     const clientId = typeof body.clientMsgId === "string" && body.clientMsgId.trim() ? body.clientMsgId.trim().slice(0, 80) : newMessageId();
     if (typeof body?.unqueue === "string" && body.convId) return this.takeBack(body.convId, body.unqueue);
     const textIn = String(body?.text ?? "").trim();
@@ -1246,15 +1250,23 @@ export class Engine {
 
   /** "Stop" / "never mind" on a call: the running turn stops and so does the work it handed off (its Delegate
    *  workers, background or not). How many workers were stopped. */
-  async stopWork(convId: string): Promise<number> {
-    await this.interrupt(convId, true).catch(() => false);
-    const subs = ((this.picture(convId)?.meta.subagents ?? []) as { threadId: string; state?: string; status?: string }[]).filter((s) => (s.state ?? s.status) === "running");
+  async stopWork(convId: string, since?: number): Promise<number> {
+    const turn = await this.interrupt(convId, true).catch(() => false);
+    const running = ((this.picture(convId)?.meta.subagents ?? []) as { threadId: string; state?: string; status?: string; startedAt?: number }[]).filter((s) => (s.state ?? s.status) === "running");
+    // "Never mind" is about what he just asked for: the work started since his previous line. Older work he didn't
+    // mention keeps going ("forget the flashcards" stopped the midterm guide started minutes before). With nothing that
+    // new and no turn running, it is the newest work ("how's it going?" … "never mind, cancel it").
+    let subs = since == null ? running : running.filter((s) => (s.startedAt ?? 0) >= since);
+    if (since != null && !subs.length && !turn && running.length) subs = [running.reduce((a, b) => ((b.startedAt ?? 0) > (a.startedAt ?? 0) ? b : a))];
     let n = 0;
     for (const s of subs) if ((await this.d.backend.subagentControl(s.threadId, "stop").catch(() => ({ ok: false }))).ok) n++;
     return n;
   }
 
   private waitView = makeChatView();
+  /** The last worker a conversation started (Delegate), and when his last line that continued the one before came. */
+  private lastDelegate = new Map<string, { title: string; at: number }>();
+  private continuedAt = new Map<string, number>();
   /** What a voice on `convId` is waiting on (src/voiceWaitLine.ts), for a surface with no feed of its own (the board). */
   waitInputs(convId: string): ReturnType<typeof waitInputs> | null {
     const p = this.picture(convId);
@@ -1441,6 +1453,8 @@ export class Engine {
         delivered: (id) => {
           this.setPending(convId, undefined, id);
           rec.q("delivered", id);
+          // A call's voice speaks what answers his newest words from here on (server/voiceBrain.ts).
+          if (this.taps.has(convId)) this.tapEmit(convId, { type: "vc_delivered", clientId: id });
         },
       });
       // Anything pi wrote that the feed missed (a crash between its write and the pointer) comes first.
@@ -1958,11 +1972,25 @@ export class Engine {
           return text(JSON.stringify({ id: r.id, parts: r.parts }) + " — in Carl's whiteboard inbox.");
         }
         case "Lookup":
-          return text(lookup(vault, a));
+          return text(await lookupAll(vault, a));
         case "Delegate": {
           const title = String(a.title ?? "").trim().slice(0, 120);
           const task = String(a.task ?? "").trim();
           if (!title || !task) return text("Delegate needs a title and a task.");
+          // He went on after asking (a pause cut his request in two; the rest reached this turn as a steer) and the
+          // turn delegates again: that is the same request, refined — the worker already on it gets the addition
+          // (roleplay: "make me a midterm guide" … "all seven lectures, one section each" started two workers).
+          const prior = this.lastDelegate.get(convId);
+          if (prior && (this.continuedAt.get(convId) ?? 0) > prior.at && Date.now() - prior.at < 120_000) {
+            const subs = ((this.picture(convId)?.meta.subagents ?? []) as { threadId: string; title?: string; state?: string; status?: string }[]).filter((x) => (x.state ?? x.status) === "running" && x.title === prior.title);
+            const sid = subs.at(-1)?.threadId;
+            const r = sid ? await this.d.backend.subagentControl(sid, "steer", `Carl added to this request: ${task}`).catch(() => ({ ok: false })) : { ok: false };
+            if (r.ok) {
+              prior.at = Date.now();
+              return text(`He was still adding to the request he made a moment ago, so this went to "${prior.title}" (already running) as an addition; no second worker started. Say in a line that it's included.`);
+            }
+          }
+          this.lastDelegate.set(convId, { title, at: Date.now() });
           const started = this.d.backend.background(p.threadId, {
             agent: { name: "worker", systemPrompt: DELEGATE_WORKER_PROMPT, tools: ["read", "bash", "edit", "write", "grep", "find", "ls", "Notify", "PdfRead", "WebSearch", "BoardSend"] },
             task,

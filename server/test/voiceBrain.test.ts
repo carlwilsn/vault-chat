@@ -8,7 +8,7 @@ import { join } from "node:path";
 const logDir = mkdtempSync(join(tmpdir(), "vc-brain-test-"));
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { speechReady } from "../speakMath";
-import { STOP_RE, workCalibration, brainRoute, lastUserText, resetBrainForTests, voiceCallRules, type BrainDeps, type BrainEngine } from "../voiceBrain";
+import { HOLD_MS, STOP_RE, workCalibration, brainRoute, lastUserText, resetBrainForTests, voiceCallRules, type BrainDeps, type BrainEngine } from "../voiceBrain";
 
 type Fake = BrainEngine & { emit(ev: any): void; messages: any[]; talker: any; interrupted: number; running: boolean; stopped: number };
 
@@ -22,7 +22,8 @@ function fakeEngine(): Fake {
     running: false,
     async message(b) {
       f.messages.push(b);
-      return { ok: true, convId: b.convId };
+      // A turn running: pi's steer (delivered later), as the engine answers.
+      return { ok: true, convId: b.convId, ...(f.running ? { steered: true } : {}) };
     },
     setTalker(_c, t) {
       f.talker = t;
@@ -186,6 +187,89 @@ describe("voice with one brain", () => {
     expect(eng.running).toBe(true);
     eng.emit({ type: "vc_turn_end", status: "completed" });
     await p2.then((r) => sse(r)).catch(() => null);
+  });
+
+  it("a pause mid-thought: the answer to the first half is never said, only the answer to all he said (roleplay: 'Yo.' / 'Okay, so…' / 'Okay.' each got a spoken reply, 80 s)", async () => {
+    const c = await call();
+    const ac = new AbortController();
+    const res = await fetch(`${base}/api/v1/brain/call/${c.id}/speak`, { headers: { authorization: `Bearer ${c.token}` }, signal: ac.signal });
+    const reader = res.body!.getReader();
+    let channel = "";
+    void (async () => {
+      for (;;) {
+        const r = await reader.read().catch(() => ({ done: true, value: undefined }));
+        if (r.done) return;
+        channel += new TextDecoder().decode(r.value);
+      }
+    })();
+    const req = (t: string, signal?: AbortSignal) => fetch(`${base}/v1/chat/completions`, { method: "POST", headers: { authorization: `Bearer ${c.token}` }, body: JSON.stringify({ messages: [{ role: "user", content: t }] }), signal });
+    // "Yo." ends a turn; he goes on before anything is said: the pipeline cancels that request.
+    const cut = new AbortController();
+    const p1 = req("Yo.", cut.signal).catch(() => null);
+    await until(() => eng.messages.length === 1);
+    eng.running = true;
+    eng.emit({ type: "vc_turn_start", kind: "user", origin: "voice" });
+    cut.abort();
+    await p1;
+    await until(() => brainEvents().some((e) => e.ev === "turn.cut" && e.call === c.id));
+    // The turn answers "Yo." — held, not said.
+    eng.emit(delta("Hey Carl, what are we working on tonight? "));
+    // His next words steer the running turn: what streams before pi delivers them is still the answer to "Yo.".
+    const p2 = req("Can you find the Bellman-Ford lecture?");
+    await until(() => eng.messages.length === 2);
+    await until(() => brainEvents().some((e) => e.ev === "turn.merge" && e.call === c.id));
+    eng.emit(delta("Are you on homework three? "));
+    eng.emit({ type: "message_end", message: { role: "assistant" } });
+    eng.emit({ type: "vc_delivered", clientId: "x" });
+    eng.emit(delta("It's lecture six, pages three and four. "));
+    eng.emit({ type: "message_end", message: { role: "assistant" } });
+    eng.emit({ type: "vc_turn_end", status: "completed" });
+    const said = (await sse(await p2)).filter((l) => l !== "[DONE]").map((l) => JSON.parse(l).choices[0].delta.content ?? "").join("");
+    expect(said.trim()).toBe("It's lecture six, pages three and four.");
+    await new Promise((r) => setTimeout(r, 100));
+    ac.abort();
+    expect(channel).not.toContain("Hey Carl");
+    expect(channel).not.toContain("homework three");
+  });
+
+  it("the rest of a line after a pause joins its first half while pi has not delivered it: one steer, one answer", async () => {
+    const c = await call();
+    const req = (t: string, signal?: AbortSignal) => fetch(`${base}/v1/chat/completions`, { method: "POST", headers: { authorization: `Bearer ${c.token}` }, body: JSON.stringify({ messages: [{ role: "user", content: t }] }), signal });
+    eng.running = true;
+    const cut = new AbortController();
+    const p1 = req("Make the component graph.", cut.signal).catch(() => null);
+    await until(() => eng.messages.length === 1);
+    cut.abort();
+    await p1;
+    await until(() => brainEvents().some((e) => e.ev === "turn.cut" && e.call === c.id));
+    const p2 = req("Topologically sort it.");
+    await until(() => eng.messages.length === 3);
+    expect(eng.messages[1].unqueue).toBe(eng.messages[0].clientMsgId);
+    expect(eng.messages[2].text).toBe("Make the component graph. Topologically sort it.");
+    eng.emit({ type: "vc_turn_end", status: "completed" });
+    await p2.then((r) => sse(r)).catch(() => null);
+  });
+
+  it("a cut with no words after it (a noise): what the turn says is said after all, a moment later", async () => {
+    const c = await call();
+    const ac = new AbortController();
+    const res = await fetch(`${base}/api/v1/brain/call/${c.id}/speak`, { headers: { authorization: `Bearer ${c.token}` }, signal: ac.signal });
+    const reader = res.body!.getReader();
+    const cut = new AbortController();
+    const p1 = fetch(`${base}/v1/chat/completions`, { method: "POST", headers: { authorization: `Bearer ${c.token}` }, body: JSON.stringify({ messages: [{ role: "user", content: "what's the runtime of Bellman-Ford" }] }), signal: cut.signal }).catch(() => null);
+    await until(() => eng.messages.length === 1);
+    eng.emit({ type: "vc_turn_start", kind: "user", origin: "voice" });
+    cut.abort();
+    await p1;
+    await until(() => brainEvents().some((e) => e.ev === "turn.cut" && e.call === c.id));
+    const t0 = Date.now();
+    eng.emit(delta("It's V times E. "));
+    eng.emit({ type: "vc_turn_end", status: "completed" });
+    let got = "";
+    for (let i = 0; i < 5 && !got.includes("V times E"); i++) got += new TextDecoder().decode((await reader.read()).value);
+    ac.abort();
+    expect(got).toContain("It's V times E.");
+    expect(Date.now() - t0).toBeGreaterThanOrEqual(HOLD_MS - 100);
   });
 
   it("the waiting line's calibration: what turns with tools, and each tool, took before (the box's turn log)", () => {

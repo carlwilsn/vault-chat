@@ -34,15 +34,15 @@ import { speechReady } from "./speakMath";
 import { calibFrom } from "../src/voiceWaitLine";
 
 export type BrainEngine = {
-  message(b: { convId?: string | null; text?: string; source?: string; via?: string; client?: string; clientMsgId?: string }): Promise<Record<string, unknown> | null>;
+  message(b: { convId?: string | null; text?: string; source?: string; via?: string; client?: string; clientMsgId?: string; continues?: boolean; unqueue?: string }): Promise<Record<string, unknown> | null>;
   setTalker(convId: string, t: { model: string; rules: string; thinking?: string } | null): void;
   tap(convId: string, fn: (ev: any) => void): () => void;
   isRunning(convId: string): boolean;
   interrupt(convId: string, byUser: boolean): Promise<boolean>;
-  /** Stop the running turn and the work it handed off (server/engine stopWork). */
-  stopWork?(convId: string): Promise<number>;
+  /** Stop the running turn and the work started since `since` (his previous line; server/engine stopWork). */
+  stopWork?(convId: string, since?: number): Promise<number>;
   /** What a voice on the conversation waits on (the waiting line's inputs). */
-  waitInputs?(convId: string): { works: unknown[]; plan: unknown; samples: Record<string, number[]> } | null;
+  waitInputs?(convId: string): { works: unknown[]; plan: unknown; samples: Record<string, number[]>; running?: boolean } | null;
 };
 
 export type BrainDeps = {
@@ -121,7 +121,7 @@ export function voiceCallRules(device: Device): string {
   const where = device === "board" ? "his iPad board" : device === "phone" ? "his phone" : "his laptop";
   // One reply, written as always (markdown); the voice reads it aloud as written (server/speakable.ts). Only a light
   // nudge on length, and the one rule a live call needs: slow work goes to Delegate, so the voice never goes quiet.
-  return `[A voice call is live on ${where}: your replies are shown as always and also read aloud as written. Keep them conversational in length. A lookup in his notes is one Lookup {query} call (it finds and reads together); independent calls go at once, not one after another. Anything that takes more than a few seconds goes to Delegate {title, task, expect: "short" or "long"}: say in a line that you've sent it and carry on; its report comes back to you as a "Delegated work finished" turn, then tell him the result. Say something was done only when it was.]`;
+  return `[A voice call is live on ${where}: your replies are shown as always and also read aloud as written. Keep them short: two or three spoken sentences answer what he asked (offer more, don't give it); when he is thinking aloud rather than asking, a line at most. A lookup in his notes is one Lookup {query} call (it finds and reads together); independent calls go at once, not one after another. Anything that takes more than a few seconds — making or rebuilding a file (a PDF, a sheet, a page) always does — goes to Delegate {title, task, expect: "short" or "long"}: say in a line that you've sent it and carry on; its report comes back to you as a "Delegated work finished" turn, then tell him the result. Say something was done only when it was.]`;
 }
 
 // ---------------------------------------------------------------- calls
@@ -159,7 +159,19 @@ type Call = {
   lastActive: number;
   /** A barge-in stopped the turn that was talking: the next request waits for it to end. */
   stopping: Promise<unknown> | null;
+  /** His line was cut off by more of his own words before anything was said (a pause mid-thought ended the turn):
+   *  what that turn says is held, not spoken — if he went on, it answered half a thought and is dropped (the chat keeps
+   *  it); if no words follow (a noise cut it), it is said after HOLD_MS. Only the turn running at the cut (`utt`). */
+  held: { utt: number; pieces: string[]; timer: NodeJS.Timeout } | null;
+  /** The text now streaming answers his newest words: false from a steer until pi delivers it (what comes before is
+   *  the answer to the words he went on from). */
+  armed: boolean;
+  /** His last line, sent as a steer pi has not delivered yet: the rest of it (after a pause) is joined to it, one line. */
+  steer: { clientId: string; text: string } | null;
 };
+
+/** A reply to words he went on from is held this long for his next words before it is said after all. */
+export const HOLD_MS = 2_500;
 
 const calls = new Map<string, Call>();
 /** A call with no request and no open speak channel for this long is over (its pipeline died without ending it). */
@@ -220,6 +232,9 @@ export async function startCall(d: BrainDeps, b: { convId?: unknown; device?: un
     engine,
     turns: 0,
     utt: 0,
+    held: null,
+    armed: true,
+    steer: null,
     lastText: null,
     lastActive: Date.now(),
     stopping: null,
@@ -240,6 +255,7 @@ export function endCall(d: { logDir: string | null }, id: string, why = "ended")
   calls.delete(id);
   if (callByConv.get(c.convId) === id) callByConv.delete(c.convId);
   c.untap();
+  if (c.held) clearTimeout(c.held.timer);
   c.engine.setTalker(c.convId, null);
   if (c.sink) finishSink(c, c.sink);
   for (const ch of c.channels) ch.end();
@@ -269,8 +285,18 @@ function callOf(req: IncomingMessage, id?: string): Call | null {
 // ---------------------------------------------------------------- pi's events → speech
 
 function onPi(d: BrainDeps, c: Call, ev: any): void {
+  if (ev?.type === "vc_delivered" && c.steer?.clientId === ev.clientId) c.steer = null;
+  if (ev?.type === "vc_delivered" || (ev?.type === "message_start" && ev.message?.role === "user")) {
+    // pi delivered a message (his steer): what streams from here answers it.
+    if (!c.armed) c.speak.flush();
+    c.armed = true;
+    return;
+  }
   if (ev?.type === "vc_turn_start") {
     c.utt++;
+    c.steer = null;
+    if (!c.armed) c.speak.flush();
+    c.armed = true;
     const origin = typeof ev.origin === "string" ? ev.origin : null;
     c.ownTurn = ev.kind !== "user" || !origin || origin === "voice" || origin === c.device;
     if (!c.ownTurn) log(d, { ev: "turn.other-surface", call: c.id, origin });
@@ -309,13 +335,29 @@ function onPi(d: BrainDeps, c: Call, ev: any): void {
 function say(c: Call, pieces: string[]): void {
   for (const p of pieces) {
     if (!p) continue;
+    // The answer to the words he went on from: shown in the chat, never said (his newest words get the answer).
+    if (!c.armed) continue;
     if (c.sink && !c.sink.done) {
       writeChunk(c.sink, p);
     } else if (!c.dropping && c.ownTurn) {
-      const line = `data: ${JSON.stringify({ text: p, utt: c.utt, at: Date.now() })}\n\n`;
-      for (const ch of c.channels) ch.write(line);
+      if (c.held && c.held.utt === c.utt) c.held.pieces.push(p);
+      else toChannel(c, p, c.utt);
     }
   }
+}
+
+function toChannel(c: Call, p: string, utt: number): void {
+  const line = `data: ${JSON.stringify({ text: p, utt, at: Date.now() })}\n\n`;
+  for (const ch of c.channels) ch.write(line);
+}
+
+/** No more words came after the cut (a noise cut it, not him): what the turn said is said after all. */
+function releaseHeld(c: Call): void {
+  const h = c.held;
+  if (!h) return;
+  clearTimeout(h.timer);
+  c.held = null;
+  if (!c.dropping && c.ownTurn) for (const p of h.pieces) toChannel(c, p, h.utt);
 }
 
 function writeChunk(s: Sink, text: string): void {
@@ -446,23 +488,51 @@ async function completions(d: BrainDeps, req: IncomingMessage, res: ServerRespon
       if (s.sent > 0) {
         c.dropping = true;
         c.stopping = c.engine.interrupt(c.convId, false).catch(() => false);
+      } else if (!c.held) {
+        // Cut before a word was said: he may be going on (a pause ended his turn mid-thought). Hold what it says.
+        c.held = { utt: c.utt, pieces: [], timer: setTimeout(() => releaseHeld(c), HOLD_MS) };
       }
       log(d, { ev: "turn.cut", call: c.id, req: s.id, afterMs: Date.now() - t0, spokenChars: s.text.length, stopped: s.sent > 0 });
     }
   });
   if (again) {
+    // Nothing new from him: what the turn says streams into this response (no longer held for his next words).
+    if (c.held) {
+      clearTimeout(c.held.timer);
+      c.held = null;
+    }
     log(d, { ev: "turn.reask", call: c.id, req: s.id });
     // That turn already answered: nothing more is coming for this response (it used to stay open until he spoke).
     if (last?.endedAt != null) finishSink(c, s);
     return;
   }
+  // He went on after a pause that ended his turn: the answer to the first half is not said (it stays in the chat), and
+  // if that turn is still running his words steer it — what it says from their delivery on is the answer.
+  const wentOn = !!c.held;
+  if (c.held) {
+    clearTimeout(c.held.timer);
+    log(d, { ev: "turn.merge", call: c.id, req: s.id, dropped: c.held.pieces.length });
+    c.held = null;
+  }
+  if (wentOn && c.engine.isRunning(c.convId)) c.armed = false;
+  // The first half is still waiting to be delivered as a steer: take it back and send the whole line as he said it
+  // (pi answered each half as its own message: "Make the component graph." / "Topologically sort it." / …).
+  let said = text;
+  if (wentOn && c.steer) {
+    const back = await c.engine.message({ convId: c.convId, unqueue: c.steer.clientId }).catch(() => null);
+    if (back?.ok) said = `${c.steer.text} ${text}`;
+    c.steer = null;
+  }
   // "Stop" / "never mind": the running work stops first (in code, not left to the model), then the words go to pi
   // like any line, so the conversation records them and it can answer in a word.
   if (STOP_RE.test(text) && c.engine.stopWork) {
-    const n = await c.engine.stopWork(c.convId).catch(() => 0);
+    // What he just asked for: work started since his previous line (never older work he didn't mention).
+    const n = await c.engine.stopWork(c.convId, last?.at).catch(() => 0);
     log(d, { ev: "turn.stop", call: c.id, req: s.id, workers: n });
   }
-  const out = await c.engine.message({ convId: c.convId, text, via: "voice", client: c.device, clientMsgId: `v-${s.id}` }).catch((e): Record<string, unknown> => ({ error: (e as Error).message }));
+  const out = await c.engine.message({ convId: c.convId, text: said, via: "voice", client: c.device, clientMsgId: `v-${s.id}`, ...(wentOn ? { continues: true } : {}) }).catch((e): Record<string, unknown> => ({ error: (e as Error).message }));
+  if (!out?.steered) c.armed = true;
+  c.steer = out?.steered ? { clientId: `v-${s.id}`, text: said } : null;
   log(d, { ev: "turn.start", call: c.id, req: s.id, chars: text.length, steered: !!out?.steered, msgMs: Date.now() - t0, ...(out?.error ? { error: String(out.error).slice(0, 200) } : {}) });
   if (!out || out.error) {
     writeChunk(s, "Sorry, that didn't reach the agent.");
@@ -575,8 +645,8 @@ export async function brainRoute(
   const wait = /^\/api\/v1\/brain\/wait\/([A-Za-z0-9_-]{1,80})$/.exec(path);
   if (wait && method === "GET") {
     const engine = await d.engine();
-    const w = engine.waitInputs?.(wait[1]!) ?? { works: [], plan: null, samples: {} };
-    json(res, 200, { works: w.works, plan: w.plan, calib: calibFrom(w.samples, workCalibration(d.logDir)), now: Date.now() });
+    const w = engine.waitInputs?.(wait[1]!) ?? { works: [], plan: null, samples: {}, running: false };
+    json(res, 200, { works: w.works, plan: w.plan, running: !!w.running, calib: calibFrom(w.samples, workCalibration(d.logDir)), now: Date.now() });
     return true;
   }
   if (path === "/api/v1/brain/expect" && method === "GET") {
