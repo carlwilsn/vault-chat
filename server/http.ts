@@ -33,6 +33,7 @@ import { ackShow, feedOpened } from "./show";
 import { noteAttention, pushGate } from "./pushGate";
 import { boardLogPost, boxDiag } from "./diag";
 import { noteUserLine } from "./signal";
+import { ATTACH_BODY_LIMIT, ATTACH_MAX_BYTES, mb, saveAttachment } from "./attachments";
 
 /** A vault on this box, as the routes see it (engine/index.ts VaultRef). */
 export type VaultScope = { name: string; path: string; bare: string; main: boolean };
@@ -212,9 +213,9 @@ function readBody(req: IncomingMessage, limit = 20 * 1024 * 1024): Promise<strin
   });
 }
 
-async function jsonBody(req: IncomingMessage): Promise<any> {
+async function jsonBody(req: IncomingMessage, limit?: number): Promise<any> {
   try {
-    const v = JSON.parse(await readBody(req));
+    const v = JSON.parse(await readBody(req, limit));
     return v && typeof v === "object" ? v : {};
   } catch {
     return {};
@@ -555,6 +556,14 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
     }
     const after = Math.max(0, Number.parseInt(q("after") || "0", 10) || 0);
     return json(res, 200, { events: log.eventsOf(id, after).filter((r) => r.seq <= Math.max(next, pic.seq)), next: Math.max(next, pic.seq), epoch: log.epoch });
+  }
+  // A file Carl attached from outside the vault: its bytes, saved in the vault's hidden attachments area
+  // (server/attachments.ts); the message then names it by the path this returns.
+  if (path === "/api/v2/attachment" && method === "POST") {
+    const b = await jsonBody(req, ATTACH_BODY_LIMIT);
+    if (!b.dataBase64) return json(res, 413, { error: `the file did not arrive (too big? an attachment can be at most ${mb(ATTACH_MAX_BYTES)})` });
+    const out = saveAttachment(vault, b);
+    return out.ok ? json(res, 200, out) : json(res, out.status, { error: out.error });
   }
   if (path === "/api/v2/intent" && method === "POST") {
     if (!hooks.engine) return json(res, 503, { error: "engine not running" });

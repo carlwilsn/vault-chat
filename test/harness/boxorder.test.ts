@@ -51,7 +51,8 @@ function frame(): Frame {
   for (const m of s.messages) {
     if (m.boxLocal) continue;
     const items = ((m as any).items as string[] | undefined) ?? (m.mid ? [m.mid] : []);
-    ids.push(...items);
+    // A message still waiting for the agent's next step is not in the log's order yet: it shows below the live tail.
+    if (!m.waiting) ids.push(...items);
     if (m.content.trim()) texts.push(m.content.trim());
     if (m.thinking?.trim()) texts.push(m.thinking.trim());
   }
@@ -92,7 +93,7 @@ test("a whole turn with thinking, two tool calls, a steer, an outage and a box r
   box.tool(conv, "call_b", "Read", { path: "papers/b.md" });
   await sleep(150);
   // Carl steers while the tools run.
-  await chat.sendMidTurn("steer", "Only the 4-bit results, please.");
+  await chat.sendMessage("Only the 4-bit results, please.");
   const steer = box.intents.at(-1)!;
   box.toolDone(conv, "call_a", "paper A text");
   await sleep(80);

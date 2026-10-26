@@ -15,6 +15,7 @@ import { appendEntries, newSessionFile, vcNote } from "../../server/convlog/piSe
 import type { EventBody, LogRecord, PendingInput, PiEntry } from "../../src/convlog/protocol.ts";
 import { fold, pendingOf, shown } from "../../src/convlog/reduce.ts";
 import { ackShow, feedOpened } from "../../server/show.ts";
+import { saveAttachment } from "../../server/attachments.ts";
 
 export class FakeBox {
   url = "";
@@ -28,6 +29,8 @@ export class FakeBox {
   showVault = this.dir;
   /** The box's own copies of vault files (GET /api/v1/vault/file, vault-relative path → bytes); others 404. */
   files = new Map<string, Buffer>();
+  /** The box's vault for attachments (POST /api/v2/attachment, the real server/attachments.ts). */
+  attachVault = fs.mkdtempSync(path.join(os.tmpdir(), "vc-fakebox-attach-"));
   /** Answer /poll this many ms late (the tailnet). */
   pollDelay = 0;
   private server!: http.Server;
@@ -232,6 +235,10 @@ export class FakeBox {
           this.intents.push(b);
           return send(200, this.intent(b));
         }
+        if (route === "POST /api/v2/attachment") {
+          const out = saveAttachment(this.attachVault, raw ? JSON.parse(raw) : {});
+          return out.ok ? send(200, out) : send(out.status, { error: out.error });
+        }
         if (route === "GET /api/v1/vault/file") {
           const f = this.files.get(u.searchParams.get("path") ?? "");
           return f ? send(200, { path: u.searchParams.get("path"), size: f.length, base64: f.toString("base64") }) : send(404, { error: "no" });
@@ -268,6 +275,15 @@ export class FakeBox {
         if (!p || !pendingOf(p).some((x) => x.id === b.id)) return { ok: false, error: "already delivered" };
         this.setPending(conv, undefined, b.id);
         return { ok: true };
+      case "now": {
+        // The engine's sendNow: the step is cut (no "Stopped." line), the message starts the next turn.
+        const x = p && pendingOf(p).find((y) => y.id === b.id);
+        if (!x || !p?.meta.running) return { ok: false, error: "already delivered" };
+        this.endTurn(conv, "stopped");
+        this.startTurn(conv);
+        this.user(conv, x.id, x.text);
+        return { ok: true, convId: conv, now: x.id };
+      }
       case "stop":
         if (p?.meta.running) {
           const turn = p.meta.running.turn;

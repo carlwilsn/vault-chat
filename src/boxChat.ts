@@ -27,8 +27,7 @@ import { LAPTOP_IDLE_MS, startAttentionBeat, type AttentionBeat } from "./attent
 import { invoke } from "@tauri-apps/api/core";
 import { vlog } from "./debugLog";
 import { projectForSend } from "./projects";
-import { useStore, type ChatAttachment, type ChatMessage, type LiveTool } from "./store";
-import { addPending, removePending, pendingFor } from "./pendingInput";
+import { useStore, type ChatAttachment, type ChatMessage, type FileUpload, type LiveTool } from "./store";
 import { readBoxConfig, boxSyncNow } from "./vaultSync";
 import { boxFileChanged } from "./liveReload";
 import type { Conversation } from "./conversations";
@@ -38,6 +37,8 @@ import { afterClear, makeChatView, type ChatView } from "./convlog/view";
 import { MAIN_ID } from "./threads";
 
 export const BOX_UNREACHABLE = "Box unreachable";
+/** How long a waiting message may be missing from both the log's pending and its transcript before it is called dropped. */
+const DROP_GRACE_MS = 3000;
 /** No box for this vault: the chat has nothing to run on. */
 export const NO_BOX = "Connect your box to chat";
 
@@ -189,6 +190,12 @@ type Outgoing = {
   after?: string | null;
   /** A voice line (it starts no turn). */
   line?: boolean;
+  /** Sent while a turn ran (pi's steer): waiting for the agent's next step until the log has it. */
+  steer?: boolean;
+  /** The log held it as pending (so its going away without delivery means it was dropped: a Stop). */
+  seen?: boolean;
+  /** "Send now" asked: the step is being cut and it starts the next turn. */
+  now?: boolean;
 };
 /** A line only this client shows (the box was unreachable): it stays where it was said, after the log's messages it followed. */
 type Notice = { id: string; text: string; after: string | null };
@@ -484,14 +491,6 @@ class BoxChatSession {
   /** What the store shows for these conversations: their rows and pictures, plus this client's own messages on their way. */
   project(ids: Set<string>): void {
     if (!this.live()) return;
-    // A steer or queued message the log now holds (pending, or delivered): its chip is the log's.
-    for (const id of ids) {
-      const p = this.pics.get(id);
-      for (const chip of pendingFor(id)) {
-        if (!chip.qid || !this.sent.has(chip.qid)) continue;
-        if (p && (pendingOf(p).some((x) => x.id === chip.qid) || p.items.some((x) => x.id === chip.qid))) removePending(chip.id);
-      }
-    }
     useStore.setState((s) => {
       const index = new Map(s.conversations.map((c, i) => [c.id, i]));
       let conversations: Conversation[] | null = null;
@@ -527,9 +526,9 @@ class BoxChatSession {
         const view = p ? this.viewOf(id)(p) : null;
         // What this surface cleared is not shown here (the conversation, and every other surface, still has it).
         const base = afterClear((view?.messages ?? prev?.messages.filter((m) => !m.boxPending && !m.boxLocal) ?? []) as ChatMessage[], this.clearedAt[id]);
-        const messages = this.overlay(id, base);
+        const messages = this.overlay(id, base, view?.pending ?? (p ? pendingOf(p) : []), !!(view ? view.running : row.running));
         // Sending: running as far as this client knows, until the log says so.
-        const sending = (this.outgoing.get(id) ?? []).some((o) => !o.failed && (o.role ?? "user") === "user" && !o.line);
+        const sending = (this.outgoing.get(id) ?? []).some((o) => !o.failed && (o.role ?? "user") === "user" && !o.line && (!o.steer || !!o.now));
         const running = (view ? view.running : row.running && !row.asking) || sending;
         const ask = p?.meta.asking ?? (row.asking && prev?.pendingAsk ? prev.pendingAsk : undefined);
         const next = {
@@ -596,18 +595,33 @@ class BoxChatSession {
     void import("./projects").then((m) => m.openThread(MAIN_ID)).catch((err) => console.warn("[box-chat] to Main failed:", err));
   }
 
-  /** The log's messages, then this client's own still on their way (by id: one the log holds is the log's). */
-  private overlay(id: string, base: ChatMessage[]): ChatMessage[] {
+  /**
+   * The log's messages, then this client's own still on their way (by id: one the log holds is the log's).
+   * A message sent while the agent works shows at once as sent, marked `waiting` until pi takes it at the
+   * agent's next step (the log's `pending`); one another surface sent shows the same way. Delivered, it is
+   * the log's message where pi put it.
+   */
+  private overlay(id: string, base: ChatMessage[], pending: { id: string; text: string }[] = [], running = false): ChatMessage[] {
     const out = this.outgoing.get(id) ?? [];
     const notes = this.notices.get(id) ?? [];
-    if (!out.length && !notes.length) return base;
+    if (!out.length && !notes.length && !pending.length) return base;
     const have = new Set(base.map((m) => m.mid));
     const still = out.filter((o) => !have.has(o.id));
     if (still.length !== out.length) {
       if (still.length) this.outgoing.set(id, still);
       else this.outgoing.delete(id);
     }
-    if (!still.length && !notes.length) return base;
+    const waitingIds = new Set(pending.map((x) => x.id));
+    for (const o of still) {
+      if (!o.steer || o.failed) continue;
+      if (waitingIds.has(o.id)) o.seen = true;
+      // Held as pending, then gone without being delivered, with nothing running: a Stop dropped it (pi's queue is
+      // cleared). Said on it after a moment (the delivered message may still be on its way in the feed).
+      else if (o.seen && !o.now && !running) this.checkDropped(id, o.id);
+    }
+    const mineIds = new Set(still.map((o) => o.id));
+    const others = pending.filter((x) => !have.has(x.id) && !mineIds.has(x.id));
+    if (!still.length && !notes.length && !others.length) return base;
     // What never reached the box (a notice, a message not delivered) stays after the log's message
     // it followed (by id); this client's messages on their way come last.
     const anchored = new Map<string | null, ChatMessage[]>();
@@ -615,10 +629,12 @@ class BoxChatSession {
     for (const n of notes) anchor(n.after, [{ role: "assistant", system: true, boxLocal: true, content: n.text, mid: n.id }]);
     const mine: ChatMessage[] = [];
     for (const o of still) {
-      const msg: ChatMessage = { role: o.role ?? "user", content: o.text, mid: o.id, ...(o.failed ? { boxLocal: true } : { boxPending: true }), ...(o.attachments?.length ? { attachments: o.attachments } : {}) };
+      const waiting = !!o.steer && !o.failed && !o.now;
+      const msg: ChatMessage = { role: o.role ?? "user", content: o.text, mid: o.id, ...(o.failed ? { boxLocal: true } : { boxPending: true }), ...(waiting ? { waiting: true } : {}), ...(o.attachments?.length ? { attachments: o.attachments } : {}) };
       if (o.failed) anchor(o.after, [msg, { role: "assistant", system: true, boxLocal: true, content: o.failed, mid: `${o.id}:failed` }]);
       else mine.push(msg);
     }
+    for (const x of others) mine.push({ role: "user", content: x.text, mid: x.id, boxPending: true, waiting: true });
     if (!anchored.size) return [...base, ...mine];
     const out2: ChatMessage[] = [...(anchored.get(null) ?? [])];
     const placed = new Set<string | null>([null]);
@@ -633,6 +649,36 @@ class BoxChatSession {
     return [...out2, ...mine];
   }
 
+  private dropChecks = new Set<string>();
+  /** A waiting message that left the log's pending without being delivered: still not there after a moment, it is said. */
+  private checkDropped(convId: string, id: string): void {
+    if (this.dropChecks.has(id)) return;
+    this.dropChecks.add(id);
+    setTimeout(() => {
+      this.dropChecks.delete(id);
+      const o = (this.outgoing.get(convId) ?? []).find((x) => x.id === id);
+      if (!o || o.failed || o.now) return;
+      const p = this.pics.get(convId);
+      if (p && (p.items.some((x) => x.id === id) || pendingOf(p).some((x) => x.id === id) || p.meta.running)) return;
+      this.failOutgoing(convId, id, "Not delivered: the turn was stopped before the agent read it.");
+    }, DROP_GRACE_MS);
+  }
+
+  /** A waiting message's state: "Send now" asked (it starts the next turn), or taken back (gone). */
+  markNow(convId: string, id: string): void {
+    const o = (this.outgoing.get(convId) ?? []).find((x) => x.id === id);
+    if (o) o.now = true;
+    this.project(new Set([convId]));
+  }
+
+  dropOutgoing(convId: string, id: string): Outgoing | null {
+    const all = this.outgoing.get(convId) ?? [];
+    const o = all.find((x) => x.id === id) ?? null;
+    if (o) this.outgoing.set(convId, all.filter((x) => x !== o));
+    this.project(new Set([convId]));
+    return o;
+  }
+
   /** This client's message, shown at once under the id the box will echo. */
   addOutgoing(convId: string, o: Outgoing): void {
     this.outgoing.set(convId, [...(this.outgoing.get(convId) ?? []), o]);
@@ -644,10 +690,6 @@ class BoxChatSession {
     const after = this.lastLogged(convId);
     this.outgoing.set(convId, (this.outgoing.get(convId) ?? []).map((o) => (o.id === id ? { ...o, failed: why, after } : o)));
     this.project(new Set([convId]));
-  }
-
-  noteSent(id: string): void {
-    this.sent.add(id);
   }
 
   /** Clear on this surface: everything shown so far goes from this device's view (nothing changes on the box). */
@@ -821,10 +863,13 @@ function logRecord(r: LogRecord): void {
 
 /**
  * Send one chat turn to the box. Returns false when this isn't box mode (the
- * caller then runs its own path). While a turn runs it steers it (Enter) or
- * queues after it (Tab, `mode: "queue"`); an open question takes it as the answer.
+ * caller then runs its own path). While a turn runs it goes into it (pi's steer,
+ * at the agent's next step — or at the turn's end if no step comes), shown at
+ * once as sent; an open question takes it as the answer. `uploads`: files from
+ * outside the vault — their bytes go to the box first (boxUploadFile), and the
+ * message names them by their path there.
  */
-export async function boxSend(opts: { text: string; contextPreamble?: string; attachments?: ChatAttachment[]; convId?: string | null; mode?: "steer" | "queue" }): Promise<boolean> {
+export async function boxSend(opts: { text: string; contextPreamble?: string; attachments?: ChatAttachment[]; uploads?: FileUpload[]; convId?: string | null }): Promise<boolean> {
   if (!boxChatOn() || !session) return false;
   const sess = session;
   const s = useStore.getState();
@@ -833,68 +878,106 @@ export async function boxSend(opts: { text: string; contextPreamble?: string; at
   // No conversation named: Main, the default everywhere.
   const convId = opts.convId ?? s.activeConversationId ?? MAIN_ID;
   const images = boxImages(opts.attachments);
-  if (!trimmed && !images.length) return true;
-  const shown = trimmed || "(image)";
+  const uploads = opts.uploads ?? [];
+  if (!trimmed && !images.length && !uploads.length) return true;
+  const shown = trimmed || (uploads.length ? uploads.map((u) => u.name).join(", ") : "(image)");
+  const clientId = newClientId();
   if (s.boxChat?.reachable === false) {
     // Kept on screen as Carl's, marked as not sent (never dropped).
     sess.kick();
-    const id = newClientId();
-    sess.addOutgoing(convId, { id, text: shown, attachments: opts.attachments });
-    sess.failOutgoing(convId, id, `⚠️ ${BOX_UNREACHABLE}. The message was NOT sent.`);
+    sess.addOutgoing(convId, { id: clientId, text: shown, attachments: opts.attachments });
+    sess.failOutgoing(convId, clientId, `⚠️ ${BOX_UNREACHABLE}. The message was NOT sent.`);
     return true;
   }
   const row = sess.row(convId);
   const conv = s.conversations.find((c) => c.id === convId);
+  const kind: "answer" | "steer" | "send" = row?.asking ? "answer" : row?.running || conv?.status === "running" ? "steer" : "send";
+  // Shown at once, under the id the box echoes back; a message into a running turn waits for the agent's next step.
+  sess.addOutgoing(convId, { id: clientId, text: shown, attachments: opts.attachments, ...(kind === "steer" ? { steer: true } : {}) });
+  const refused = (r: { network?: boolean; error?: string }, what: string) =>
+    r.network ? `⚠️ ${BOX_UNREACHABLE}: ${r.error}. The ${what} was NOT delivered.` : `⚠️ The box refused the ${what}: ${r.error}`;
+  // Attached files go up first (never a path on this laptop in the prompt: the box cannot open it).
+  const files: string[] = [];
+  for (const u of uploads) {
+    const up = await boxUploadFile(u.name, fromBase64(u.dataBase64));
+    if (!up.ok) {
+      sess.failOutgoing(convId, clientId, `⚠️ ${u.name} did not reach the box: ${up.error} The message was NOT sent.`);
+      return true;
+    }
+    files.push(up.path);
+  }
   const ctx = (opts.contextPreamble ?? "").trim();
-  const clientId = newClientId();
   const base: Record<string, unknown> = {
     convId,
     clientId,
     text: relativize(trimmed, vault),
     ...(images.length ? { images } : {}),
+    ...(files.length ? { files } : {}),
     ...(ctx ? { context: relativize(ctx, vault) } : {}),
   };
-  const refused = (r: { network?: boolean; error?: string }, what: string) =>
-    r.network ? `⚠️ ${BOX_UNREACHABLE}: ${r.error}. The ${what} was NOT delivered.` : `⚠️ The box refused the ${what}: ${r.error}`;
-  // An open question: this is the answer.
-  if (row?.asking) {
-    sess.addOutgoing(convId, { id: clientId, text: shown, attachments: opts.attachments });
-    const r = await intent(sess, { ...base, type: "answer" });
-    if (!r.ok) {
-      sess.failOutgoing(convId, clientId, refused(r, "answer"));
-      if (r.network) sess.kick();
-    }
-    return true;
-  }
-  // A running turn: pi's steer (Enter) or follow-up (Tab). A chip until the log has it.
-  if (row?.running || conv?.status === "running") {
-    const kind = opts.mode === "queue" ? "queue" : "steer";
-    sess.noteSent(clientId);
-    const chip = addPending({ convId, kind, text: shown, sending: true, qid: clientId });
-    const r = await intent(sess, { ...base, type: kind });
-    if (!r.ok) {
-      removePending(chip.id);
-      sess.notice(convId, refused(r, "message"));
-      if (r.network) sess.kick();
-    }
-    return true;
-  }
-  // A new turn: Carl's message shows at once, under the id the box echoes back.
-  sess.addOutgoing(convId, { id: clientId, text: shown, attachments: opts.attachments });
-  if (conv?.project && !row) base.project = projectForSend(conv.project);
-  const r = await intent(sess, { ...base, type: "send" });
+  if (kind === "send" && conv?.project && !row) base.project = projectForSend(conv.project);
+  const r = await intent(sess, { ...base, type: kind });
   if (!r.ok) {
-    sess.failOutgoing(convId, clientId, refused(r, "message"));
+    sess.failOutgoing(convId, clientId, refused(r, kind === "answer" ? "answer" : "message"));
     if (r.network) sess.kick();
   }
   return true;
 }
 
-/** Take a queued (or steering) message back from the box before pi delivers it. */
+function fromBase64(b64: string): Uint8Array {
+  const bin = atob(b64.replace(/^data:[^,]*,/, ""));
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+
+/** Take a waiting message back from the box before pi delivers it. */
 export async function boxUnqueue(convId: string, id: string): Promise<boolean> {
   if (!boxChatOn() || !session) return false;
   const r = await intent(session, { type: "unqueue", convId, id });
+  if (r.ok) session.dropOutgoing(convId, id);
   return r.ok;
+}
+
+/**
+ * "Send now" on a waiting message (Claude Code's interrupt-and-send): the box cuts the agent's
+ * current step and the message starts the next turn at once. False: it was already taken.
+ */
+export async function boxSendNow(convId: string, id: string): Promise<boolean> {
+  if (!boxChatOn() || !session) return false;
+  const sess = session;
+  sess.markNow(convId, id);
+  const r = await intent(sess, { type: "now", convId, id });
+  if (!r.ok && r.network) sess.kick();
+  return r.ok;
+}
+
+/** The biggest file an attachment may be (server/attachments.ts ATTACH_MAX_BYTES). */
+export const ATTACH_MAX_BYTES = 25 * 1024 * 1024;
+
+/**
+ * A file from outside the vault, uploaded to the box with the message (Claude Code reads an attached
+ * file itself; the box cannot open a path on this laptop). Saved in the vault's hidden attachments
+ * area; returns its path there, or why not.
+ */
+export async function boxUploadFile(name: string, bytes: Uint8Array): Promise<{ ok: true; path: string } | { ok: false; error: string }> {
+  if (!boxChatOn() || !session) return { ok: false, error: "no box connected" };
+  if (bytes.length > ATTACH_MAX_BYTES) return { ok: false, error: tooBig(name, bytes.length) };
+  const t0 = Date.now();
+  const r = await httpPost(session.link, "/api/v2/attachment", { name, dataBase64: toBase64(bytes) });
+  vlog("box.attach", { name: name.slice(0, 80), bytes: bytes.length, ok: r.ok, ms: Date.now() - t0, ...(r.ok ? {} : { error: r.error }) });
+  if (!r.ok || typeof r.data?.path !== "string") return { ok: false, error: r.error ?? "the box did not take it" };
+  return { ok: true, path: r.data.path };
+}
+
+export function tooBig(name: string, size: number): string {
+  return `${name} is ${(size / (1024 * 1024)).toFixed(1)} MB; an attachment can be at most ${ATTACH_MAX_BYTES / (1024 * 1024)} MB.`;
+}
+
+function toBase64(bytes: Uint8Array): string {
+  let s = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return btoa(s);
 }
 
 /** Stop the box's turn on this conversation. False = not box mode. */

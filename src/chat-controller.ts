@@ -1,10 +1,9 @@
 // The chat's intents. Every agent turn runs on the box (pi): this client sends
-// the message, the steer, the queue, the take-back or the stop to the box
+// the message (into the running turn, if one runs), "send now", the take-back or the stop to the box
 // (boxChat.ts) and shows the box's conversation feed. With no box connected,
 // or the box unreachable, nothing runs here: the chat pane says so.
 import { isArchivedThread } from "./conversations";
-import { useStore, type ChatAttachment } from "./store";
-import type { Pending, PendingKind } from "./pendingInput";
+import { useStore, type ChatAttachment, type FileUpload } from "./store";
 
 /** The open vault's box chat, started if it is not yet. Null: no box for this vault. */
 async function boxReady(): Promise<typeof import("./boxChat") | null> {
@@ -17,23 +16,18 @@ async function boxReady(): Promise<typeof import("./boxChat") | null> {
 }
 
 /**
- * A message sent while the agent works (pendingInput.ts). `steer` (Enter) goes
- * into the running turn at its next step; `queue` (Tab) runs after it ends —
- * both held by the box's engine.
+ * A message still waiting for the agent's next step: "Send now" cuts the current step and it starts
+ * the next turn at once (Claude Code's interrupt-and-send).
  */
-export async function sendMidTurn(kind: PendingKind, text: string, contextPreamble?: string, attachments?: ChatAttachment[]): Promise<void> {
-  if (await compactCommand(text, useStore.getState().activeConversationId)) return;
-  const bc = await boxReady();
-  if (!bc) return;
-  await bc.boxSend({ text, contextPreamble, attachments, convId: useStore.getState().activeConversationId, mode: kind });
+export async function sendNow(convId: string, id: string): Promise<boolean> {
+  const bc = await import("./boxChat");
+  return bc.boxSendNow(convId, id);
 }
 
-/** Take a queued message back from the box (a chip's ×, or its edit). */
-export async function cancelPending(id: string): Promise<Pending | null> {
-  if (!id.startsWith("box:")) return null;
-  const [, convId, qid] = id.split(":");
+/** Take a waiting message back before the agent reads it (its Edit or Cancel). */
+export async function takeBack(convId: string, id: string): Promise<boolean> {
   const bc = await import("./boxChat");
-  return (await bc.boxUnqueue(convId!, qid!)) ? { id, convId: convId!, kind: "queue", text: "" } : null;
+  return bc.boxUnqueue(convId, id);
 }
 
 /** "/compact [focus]": compact the open conversation's context now (not a message to the agent). */
@@ -47,8 +41,8 @@ async function compactCommand(text: string, convId: string | null): Promise<bool
   return true;
 }
 
-/** Send a message to the box: a new turn, or a steer into the running one. */
-export async function sendMessage(text: string, contextPreamble?: string, attachments?: ChatAttachment[], convId?: string): Promise<void> {
+/** Send a message to the box: a new turn, or into the running one (at the agent's next step). */
+export async function sendMessage(text: string, contextPreamble?: string, attachments?: ChatAttachment[], convId?: string, uploads?: FileUpload[]): Promise<void> {
   const s = useStore.getState();
   if (await compactCommand(text, convId ?? s.activeConversationId)) return;
   // Threads from the old missions system are archived: readable, never run.
@@ -56,7 +50,7 @@ export async function sendMessage(text: string, contextPreamble?: string, attach
   if (t && isArchivedThread(t)) return;
   const bc = await boxReady();
   if (!bc) return;
-  await bc.boxSend({ text, contextPreamble, attachments, convId: convId ?? null });
+  await bc.boxSend({ text, contextPreamble, attachments, uploads, convId: convId ?? null });
 }
 
 /** Stop is the box's /kill. The thread reads running until the box says it ended. */

@@ -61,6 +61,13 @@ export type ChatAttachment = {
   capturedFilePath?: string;
 };
 
+/**
+ * A file attached from outside the vault (dropped, picked, pasted, or an @ of a
+ * path on this laptop): read when attached, its bytes go to the box with the
+ * message (boxChat.ts boxUploadFile; src/attachFiles.ts).
+ */
+export type FileUpload = { name: string; size: number; dataBase64: string };
+
 export type ChatMessage = {
   role: ChatRole;
   content: string;
@@ -132,6 +139,9 @@ export type ChatMessage = {
   // `mid`); `boxLocal`, a line the box never got (unreachable, refused).
   boxPending?: boolean;
   boxLocal?: boolean;
+  // Sent while the agent works, not yet taken by it (pi takes it at its next
+  // step): shown as sent, quietly marked, with "Send now" on hover.
+  waiting?: boolean;
   // A compaction divider (always `system: true`): the earlier conversation was
   // summarized here. The model sees this summary plus only the messages AFTER
   // the divider; the chat shows a quiet divider whose summary expands. See

@@ -2,15 +2,16 @@ import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState, type
 import { Markdown, StreamingMarkdown } from "./Markdown";
 import { localPathFromUrl } from "./mdPipeline";
 import { planDone, planIndex } from "./planPlace";
-import { Plus, Square, ArrowUp, ChevronDown, ChevronUp, Wrench, X, MessageSquare, Mic, Paperclip, Scan, AtSign, AlertCircle, Info, Eraser, Loader2 } from "lucide-react";
+import { Plus, Square, ArrowUp, ChevronDown, ChevronUp, Wrench, X, MessageSquare, Mic, Paperclip, Scan, AtSign, AlertCircle, Info, Eraser, Loader2, FileText } from "lucide-react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { usePending, type PendingKind } from "./pendingInput";
+import { attachBlob, attachPath, insideVault, pathMentions, sizeLabel } from "./attachFiles";
+import { isExternalFileDrop } from "./dnd";
 import { voiceImageMime } from "./voiceImages";
 import { fileKind } from "./fileKind";
 import { invoke } from "@tauri-apps/api/core";
 import { dispatchChatAction, isPopout } from "./sync";
 import { COMPACTION_DIVIDER_TEXT, isCompactionDivider, dividerSummary } from "./chatContext";
-import { useStore, type ChatMessage, type FileEntry, type LiveTool, type TodoItem } from "./store";
+import { useStore, type ChatMessage, type FileEntry, type FileUpload, type LiveTool, type TodoItem } from "./store";
 import { buildViewportContextText, toggleVoice } from "./voice-elevenlabs";
 import { InlineVoiceWaves, VoiceMuteButton } from "./VoiceCockpit";
 import { loadSkills } from "./skills";
@@ -18,7 +19,7 @@ import { isUnreadableAsText } from "./fileKind";
 import { SettingsPane } from "./SettingsPane";
 import { Button, Textarea } from "./ui";
 import { cn } from "./lib/utils";
-import { BOX_UNREACHABLE, NO_BOX, boxAnswer, boxChatOn, boxSubagent, unreachableWhy } from "./boxChat";
+import { ATTACH_MAX_BYTES, BOX_UNREACHABLE, NO_BOX, boxAnswer, boxChatOn, boxSubagent, unreachableWhy } from "./boxChat";
 import { tailscaleCheck, type TailscaleState } from "./vaultSync";
 import {
   AskOptions,
@@ -372,8 +373,6 @@ export function ChatPane() {
   const toggleChatsPanel = () =>
     chatFullscreen ? useStore.getState().toggleChatSidebar() : setShowChatsPanel(!showChatsPanel);
   const activeConv = conversations.find((c) => c.id === activeConversationId);
-  // Messages sent while the agent works, until delivered (pendingInput.ts).
-  const localPending = usePending(activeConversationId);
   // What the thread shows beside the text (chatExtras.tsx; uiChoices.ts picks
   // where each goes while Carl decides). Stable props, so the bubbles' memo
   // holds while a reply streams.
@@ -442,6 +441,17 @@ export function ChatPane() {
       });
     }
   }, [chatPaneLastCapture, setChatPaneLastCapture, vaultPath]);
+  // Files from outside the vault, read when attached; uploaded to the box with the message (attachFiles.ts).
+  const [pendingFiles, setPendingFiles] = useState<FileUpload[]>([]);
+  const [attachError, setAttachError] = useState<string | null>(null);
+  const [dropOver, setDropOver] = useState(false);
+  const addAttached = useCallback((rs: Awaited<ReturnType<typeof attachPath>>[]) => {
+    const ok = rs.flatMap((r) => (r.ok ? [r.file] : []));
+    const bad = rs.flatMap((r) => (r.ok ? [] : [r.error]));
+    if (ok.length) setPendingFiles((prev) => [...prev, ...ok]);
+    setAttachError(bad.length ? bad.join(" ") : null);
+    if (bad.length) console.warn(`[attach] ${bad.join(" ")}`.slice(0, 300));
+  }, []);
   const [input, setInput] = useState("");
   // Skill menu opens on a /word-boundary token at the caret — same
   // shape as fileMention so it can appear mid-message, not just at
@@ -458,6 +468,17 @@ export function ChatPane() {
   >([]);
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  // A waiting message's Edit: its text back into the composer, ahead of anything typed since.
+  useEffect(() => {
+    const onInsert = (e: Event) => {
+      const t = String((e as CustomEvent).detail ?? "");
+      if (!t) return;
+      setInput((prev) => (prev.trim() ? `${t}\n${prev}` : t));
+      requestAnimationFrame(() => inputRef.current?.focus());
+    };
+    window.addEventListener("vc-composer-insert", onInsert);
+    return () => window.removeEventListener("vc-composer-insert", onInsert);
+  }, []);
   // Track whether the user is pinned near the bottom. If they scroll up
   // mid-stream, stop auto-scrolling so they can read older messages in
   // peace. Re-pins automatically when they scroll back to the bottom.
@@ -567,7 +588,7 @@ export function ChatPane() {
   // One line at any width, cut with an ellipsis (src/fitPlaceholder.ts).
   const placeholder = useFittedPlaceholder(
     inputRef,
-    archived ? (older ? OLDER_CHAT : ARCHIVED_THREAD) : boxDown ? `${BOX_UNREACHABLE} — ${downWhy}. Retrying…` : !ready ? (vaultPath ? "Connecting to the box…" : "Open a vault first") : busy ? "Enter to steer · Tab to queue · Esc to stop" : "Ask anything, or / for commands…",
+    archived ? (older ? OLDER_CHAT : ARCHIVED_THREAD) : boxDown ? `${BOX_UNREACHABLE} — ${downWhy}. Retrying…` : !ready ? (vaultPath ? "Connecting to the box…" : "Open a vault first") : "Ask anything, or / for commands…",
   );
 
   if (showSettings) return <SettingsPane />;
@@ -596,14 +617,32 @@ export function ChatPane() {
   let lastVisible = -1;
   for (let i = messages.length - 1; i >= 0; i--) if (!messages[i]!.hidden && !messages[i]!.system) { lastVisible = i; break; }
 
-  // While the agent works the composer stays open: Enter steers the running
-  // turn (at its next step), Tab queues a follow-up for after it, Esc stops
-  // (pendingInput.ts; chips above the composer until delivered).
-  const send = async (mid?: PendingKind) => {
+  // While the agent works the composer stays open, as in Claude Code: a message
+  // goes to the running agent at once (it reads it at its next step) and shows
+  // in the thread as sent; Esc, or the button with nothing typed, stops.
+  const send = async () => {
     if (!ready) return;
-    const text = input.trim();
-    if (!text && pendingImages.length === 0) return;
-    const actionKind: "send" | PendingKind = busy ? mid ?? "steer" : "send";
+    let text = input.trim();
+    if (!text && pendingImages.length === 0 && pendingFiles.length === 0) return;
+    // "@C:\path\to\file.pdf" typed or pasted: a file on this laptop. Outside the vault it is read and goes up
+    // with the message (the box cannot open a path here); inside, it is an ordinary @-reference.
+    const uploads: FileUpload[] = [...pendingFiles];
+    const typedRefs: Array<{ rel: string; path: string; isDir?: boolean }> = [];
+    const vaultNorm = (vaultPath ?? "").replace(/\\/g, "/").replace(/\/+$/, "");
+    for (const m of pathMentions(text)) {
+      const path = m.path.replace(/\\/g, "/");
+      if (insideVault(path, vaultPath)) {
+        typedRefs.push({ rel: path.slice(vaultNorm.length + 1), path });
+        continue;
+      }
+      const r = await attachPath(path);
+      if (!r.ok) {
+        setAttachError(r.error);
+        return;
+      }
+      uploads.push(r.file);
+      text = text.replace(m.raw, `@${r.file.name}`);
+    }
     // Resolve every @name token in the text — not just the ones picked
     // from the dropdown. Users type @name manually all the time, and
     // without resolution the agent just sees a literal "@foo.md" and
@@ -620,6 +659,8 @@ export function ChatPane() {
     for (const tok of tokens) {
       const lower = tok.toLowerCase();
       if (mentions.some((m) => m.name.toLowerCase() === lower)) continue;
+      // An attached file's own name (it goes up with the message, not by reference).
+      if (uploads.some((u) => u.name.toLowerCase().startsWith(lower))) continue;
       // Case-insensitive basename match — users type however they type.
       const hits = files.filter((f) => !f.hidden && f.name.toLowerCase() === lower);
       if (hits.length === 0) {
@@ -634,6 +675,18 @@ export function ChatPane() {
         }
       }
     }
+    for (const t of typedRefs) if (!byPath.has(t.path)) byPath.set(t.path, t);
+    // A path outside the vault never goes in the prompt (the box cannot open it): those files are uploaded.
+    for (const [p, r] of [...byPath]) {
+      if (!vaultPath || insideVault(p, vaultPath) || r.isDir) continue;
+      byPath.delete(p);
+      const got = await attachPath(p);
+      if (!got.ok) {
+        setAttachError(got.error);
+        return;
+      }
+      if (!uploads.some((u) => u.name === got.file.name && u.size === got.file.size)) uploads.push(got.file);
+    }
     const resolved = Array.from(byPath.values());
     const mentionPreamble = await buildMentionPreamble(resolved);
     const viewportCtx = buildViewportContextText(useStore.getState());
@@ -646,21 +699,27 @@ export function ChatPane() {
       resolved.length > 0
         ? `\n\n[attached: ${resolved.map((r) => `@${r.rel.split("/").pop()} → ${r.path}`).join(", ")}]`
         : "";
+    // The attached files' names on the message (chips on its bubble: splitFilesLine).
+    const filesLine = uploads.length > 0 ? `\n\n[files: ${uploads.map((u) => u.name.replace(/[\]|\n]/g, " ")).join(" | ")}]` : "";
     const imagesToSend = pendingImages;
     setInput("");
     setMentions([]);
     setSkillMention(null);
     setFileMention(null);
     setPendingImages([]);
+    setPendingFiles([]);
+    setAttachError(null);
     dispatchChatAction({
-      kind: actionKind,
-      text: text + pathFooter,
+      kind: "send",
+      text: text + filesLine + pathFooter,
       contextPreamble: contextPreamble || undefined,
       attachments: imagesToSend.length > 0 ? imagesToSend : undefined,
+      uploads: uploads.length > 0 ? uploads : undefined,
     });
   };
 
   const stop = () => dispatchChatAction({ kind: "stop" });
+  const hasDraft = !!input.trim() || pendingImages.length > 0 || pendingFiles.length > 0;
 
   const onPaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
     // Snapshot items synchronously — clipboardData is invalidated as
@@ -670,13 +729,18 @@ export function ChatPane() {
     // a paste-then-Enter race (if the user hits send before all
     // readers fire, only the resolved ones land).
     const blobs: File[] = [];
+    const others: File[] = [];
     for (const item of Array.from(e.clipboardData.items)) {
-      if (!item.type.startsWith("image/")) continue;
+      if (item.kind !== "file") continue;
       const file = item.getAsFile();
-      if (file) blobs.push(file);
+      if (!file) continue;
+      if (item.type.startsWith("image/")) blobs.push(file);
+      else others.push(file);
     }
-    if (blobs.length === 0) return;
+    if (blobs.length === 0 && others.length === 0) return;
     e.preventDefault();
+    // A file copied in Explorer and pasted here: attached like a dropped one.
+    if (others.length) void Promise.all(others.map((f) => attachBlob(f.name, f))).then(addAttached);
     Promise.all(
       blobs.map(
         (b) =>
@@ -745,12 +809,7 @@ export function ChatPane() {
       // Enter that commits a composition must not send the message.
       if ((e.nativeEvent as { isComposing?: boolean }).isComposing) return;
       e.preventDefault();
-      void send(busy ? "steer" : undefined);
-      return;
-    }
-    if (busy && e.key === "Tab" && !e.shiftKey && (input.trim() || pendingImages.length > 0)) {
-      e.preventDefault();
-      void send("queue");
+      void send();
       return;
     }
     if (busy && e.key === "Escape") {
@@ -758,21 +817,6 @@ export function ChatPane() {
       stop();
     }
   };
-  // Pending chips: this machine's (local mode, or a box message in flight) and
-  // what the box's log holds as pending for this conversation (a steer or a
-  // queued message pi has not delivered yet).
-  const boxQueued = activeConv?.queued ?? [];
-  const onBox = new Set(boxQueued.map((q) => q.id));
-  const chips = [
-    ...localPending.filter((p) => !(p.qid && onBox.has(p.qid))).map((p) => ({ id: p.id, kind: p.kind, text: p.text, sending: !!p.sending })),
-    ...boxQueued.map((q) => ({ id: `box:${activeConv!.id}:${q.id}`, kind: (q.kind ?? "queue") as PendingKind, text: q.text, sending: false })),
-  ];
-  const editChip = (c: { id: string; text: string }) => {
-    dispatchChatAction({ kind: "unqueue", id: c.id });
-    setInput((prev) => (prev.trim() ? `${c.text}\n${prev}` : c.text));
-    requestAnimationFrame(() => inputRef.current?.focus());
-  };
-
   const onInputChange = (v: string) => {
     setInput(v);
     const caret = inputRef.current?.selectionStart ?? v.length;
@@ -893,6 +937,7 @@ export function ChatPane() {
     }
     const paths = (picked == null ? [] : Array.isArray(picked) ? picked : [picked]).map((p) => p.replace(/\\/g, "/"));
     const refs: Array<{ rel: string; path: string; name: string; raw: string }> = [];
+    const outside: string[] = [];
     for (const path of paths) {
       const name = path.split("/").pop() ?? path;
       const mime = voiceImageMime(path);
@@ -911,9 +956,15 @@ export function ChatPane() {
           console.warn("[attach] image read failed:", e);
         }
       }
-      const rel = vaultPath && path.startsWith(vaultPath + "/") ? path.slice(vaultPath.length + 1) : path;
+      // Outside the vault: read now, uploaded with the message (the box has no copy of it).
+      if (!insideVault(path, vaultPath)) {
+        outside.push(path);
+        continue;
+      }
+      const rel = path.slice((vaultPath ?? "").replace(/\\/g, "/").replace(/\/+$/, "").length + 1);
       refs.push({ rel, path, name, raw: `@${name}` });
     }
+    if (outside.length) addAttached(await Promise.all(outside.map((p) => attachPath(p))));
     if (refs.length) {
       setMentions((prev) => [...prev, ...refs.filter((r) => !prev.some((m) => m.path === r.path))]);
       setInput((prev) => `${prev}${prev && !/\s$/.test(prev) ? " " : ""}${refs.map((r) => r.raw).join(" ")} `);
@@ -983,7 +1034,7 @@ export function ChatPane() {
         )}
 
         {messages.map((m, i) =>
-          m.hidden ? null : (
+          m.hidden || m.waiting ? null : (
             <Fragment key={i}>
               <MessageBubble
                 message={m}
@@ -1054,6 +1105,13 @@ export function ChatPane() {
             }
           />
         )}
+
+        {/* Sent while the agent works, not read by it yet: below what it is doing now, as in Claude Code. */}
+        {messages.some((m) => m.waiting) && (
+          <div className="space-y-2" data-el="waiting-messages">
+            {messages.map((m, i) => (m.waiting && !m.hidden ? <MessageBubble key={m.mid ?? i} message={m} /> : null))}
+          </div>
+        )}
         </div>
       </div>
 
@@ -1085,44 +1143,34 @@ export function ChatPane() {
               verdict={uiChoice("verdict") === "ongoing"}
             />
           )}
-          {chips.length > 0 && !voiceBar && (
-            <div className="mb-1.5 flex flex-col gap-1" data-el="pending-chips">
-              {chips.map((c) => (
-                <div
-                  key={c.id}
-                  data-el="pending"
-                  data-kind={c.kind}
-                  className="group flex items-center gap-2 rounded-lg border border-border/70 bg-muted/30 pl-2.5 pr-1 py-1 text-[12px]"
-                >
-                  <span className="shrink-0 text-[10.5px] text-muted-foreground">
-                    {c.kind === "steer" ? "Steering · next step" : "Queued · after this turn"}
-                  </span>
-                  <span className="flex-1 min-w-0 truncate text-foreground/90">{c.text}</span>
-                  {!c.sending && (
-                    <>
-                      <button
-                        onClick={() => editChip(c)}
-                        className="h-5 px-1.5 rounded text-[10.5px] text-muted-foreground hover:text-foreground hover:bg-accent/60"
-                        title="Edit — back into the composer"
-                      >
-                        Edit
-                      </button>
-                      <button
-                        onClick={() => dispatchChatAction({ kind: "unqueue", id: c.id })}
-                        className="h-5 w-5 flex items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-accent/60"
-                        title="Remove"
-                        data-el="pending-remove"
-                      >
-                        <X className="h-3 w-3" />
-                      </button>
-                    </>
-                  )}
-                </div>
-              ))}
-            </div>
-          )}
           {(
-          <div className="relative flex flex-col rounded-2xl border border-border bg-background focus-within:border-ring/40 focus-within:ring-[0.5px] focus-within:ring-ring/20 transition-colors">
+          <div
+            className={cn("relative flex flex-col rounded-2xl border border-border bg-background focus-within:border-ring/40 focus-within:ring-[0.5px] focus-within:ring-ring/20 transition-colors", dropOver && "border-ring/60 ring-1 ring-ring/30")}
+            data-el="composer"
+            // A file dropped from Explorer: attached (images as images; anything else uploaded with the message).
+            onDragOver={(e) => {
+              if (!ready || !isExternalFileDrop(e.dataTransfer)) return;
+              e.preventDefault();
+              e.dataTransfer.dropEffect = "copy";
+              if (!dropOver) setDropOver(true);
+            }}
+            onDragLeave={() => setDropOver(false)}
+            onDrop={(e) => {
+              setDropOver(false);
+              if (!ready || !isExternalFileDrop(e.dataTransfer)) return;
+              e.preventDefault();
+              const dropped = Array.from(e.dataTransfer.files);
+              const images = dropped.filter((f) => f.type.startsWith("image/") && f.size <= ATTACH_MAX_BYTES);
+              const rest = dropped.filter((f) => !images.includes(f));
+              for (const f of images) {
+                const r = new FileReader();
+                r.onload = () => setPendingImages((prev) => [...prev, { imageDataUrl: String(r.result), sourcePath: f.name }]);
+                r.readAsDataURL(f);
+              }
+              if (rest.length) void Promise.all(rest.map((f) => attachBlob(f.name, f))).then(addAttached);
+              requestAnimationFrame(() => inputRef.current?.focus());
+            }}
+          >
             {skillMention && filteredSkills.length > 0 && (
               <div className="absolute bottom-full left-0 right-0 max-h-[240px] overflow-auto bg-popover border-t border-x border-border shadow-lg z-10">
                 {filteredSkills.slice(0, 8).map((s, i) => (
@@ -1171,6 +1219,33 @@ export function ChatPane() {
                     </span>
                   </div>
                 ))}
+              </div>
+            )}
+            {pendingFiles.length > 0 && (
+              <div className="flex flex-wrap gap-1.5 px-3 pt-2" data-el="attached-files">
+                {pendingFiles.map((f, i) => (
+                  <div key={i} className="group relative flex items-center gap-1.5 rounded-md border border-border/70 bg-muted/40 pl-2 pr-2.5 py-1 text-[11.5px]" data-el="attached-file">
+                    <FileText className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                    <span className="max-w-[220px] truncate text-foreground/90" title={f.name}>{f.name}</span>
+                    <span className="text-[10.5px] text-muted-foreground">{sizeLabel(f.size)}</span>
+                    <button
+                      onClick={() => setPendingFiles((prev) => prev.filter((_, j) => j !== i))}
+                      className="absolute -top-1.5 -right-1.5 h-4 w-4 flex items-center justify-center rounded-full bg-card border border-border text-muted-foreground hover:text-destructive opacity-0 group-hover:opacity-100"
+                      title="Remove"
+                    >
+                      <X className="h-2.5 w-2.5" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+            {attachError && (
+              <div className="flex items-start gap-1.5 px-3 pt-2 text-[11px] text-destructive/90" data-el="attach-error">
+                <AlertCircle className="h-3 w-3 mt-px shrink-0" />
+                <span className="min-w-0 break-words">{attachError}</span>
+                <button onClick={() => setAttachError(null)} className="ml-auto shrink-0 text-muted-foreground hover:text-foreground" title="Dismiss">
+                  <X className="h-3 w-3" />
+                </button>
               </div>
             )}
             {pendingImages.length > 0 && (
@@ -1270,27 +1345,27 @@ export function ChatPane() {
                     <Mic className="h-3.5 w-3.5" strokeWidth={voiceMode ? 2.5 : 2} />
                   </button>
                 )}
-                {/* Two states for the trailing button group:
-                    - idle: just the Send arrow.
-                    - busy: just the Stop square (Send is hidden entirely). */}
-                {busy && (
+                {/* As in Claude Code: with something to send the button is Send (while the agent works too: it reads
+                    the message at its next step); with nothing typed while it works, Stop. */}
+                {busy && !hasDraft ? (
                   <Button
                     size="icon"
                     variant="secondary"
                     onClick={stop}
                     className="h-7 w-7 rounded-lg"
-                    title="Stop the agent"
+                    title="Stop the agent (Esc)"
+                    data-el="composer-stop"
                   >
                     <Square className="h-3 w-3 fill-current" />
                   </Button>
-                )}
-                {!busy && (
+                ) : (
                   <Button
                     size="icon"
                     onClick={() => void send()}
-                    disabled={!ready || (!input.trim() && pendingImages.length === 0)}
+                    disabled={!ready || !hasDraft}
                     className="h-7 w-7 rounded-lg"
-                    title="Send"
+                    title={busy ? "Send — the agent reads it at its next step" : "Send"}
+                    data-el="composer-send"
                   >
                     <ArrowUp className="h-3.5 w-3.5" />
                   </Button>
@@ -1421,6 +1496,45 @@ function stripAttachedFooter(src: string): string {
   return src.replace(/\n*\[attached:[^\]]*\]\s*$/, "");
 }
 
+/** The "[files: a | b]" line a message with attached files carries (ChatPane send): its text, and the names. */
+export function splitFilesLine(src: string): { text: string; files: string[] } {
+  const m = /\n*\[files: ([^\]]*)\]\s*$/.exec(src);
+  if (!m) return { text: src, files: [] };
+  return { text: src.slice(0, m.index), files: m[1]!.split(" | ").map((x) => x.trim()).filter(Boolean) };
+}
+
+/**
+ * A message sent while the agent works, not yet read by it: on hover, "Send now" (cut the agent's
+ * current step; it answers this next), Edit (back into the composer) and Cancel.
+ */
+function WaitingActions({ message }: { message: ChatMessage }) {
+  const convId = useStore((s) => s.activeConversationId);
+  if (!convId || !message.mid) return null;
+  const id = message.mid;
+  const btn = "h-5 px-1.5 rounded text-[10.5px] text-muted-foreground hover:text-foreground hover:bg-accent/60";
+  return (
+    <div className="flex items-center gap-0.5 opacity-0 group-hover/msg:opacity-100 focus-within:opacity-100 transition-opacity" data-el="waiting-actions">
+      <button className={btn} onClick={() => dispatchChatAction({ kind: "sendNow", convId, id })} title="Interrupt the agent's current step and send this now" data-el="send-now">
+        Send now
+      </button>
+      <button
+        className={btn}
+        onClick={() => {
+          dispatchChatAction({ kind: "unqueue", convId, id });
+          window.dispatchEvent(new CustomEvent("vc-composer-insert", { detail: splitFilesLine(stripAttachedFooter(message.content)).text }));
+        }}
+        title="Take it back into the composer"
+        data-el="waiting-edit"
+      >
+        Edit
+      </button>
+      <button className={btn} onClick={() => dispatchChatAction({ kind: "unqueue", convId, id })} title="Take it back (not sent)" data-el="waiting-cancel">
+        Cancel
+      </button>
+    </div>
+  );
+}
+
 export const MessageBubble = memo(function MessageBubble({
   message,
   askLive = false,
@@ -1458,10 +1572,12 @@ export const MessageBubble = memo(function MessageBubble({
   if (message.job) return <JobRow job={message.job} />;
   if (message.voice) return <VoiceLine message={message} cont={voiceCont} />;
   const isUser = message.role === "user";
+  const userText = isUser ? splitFilesLine(stripAttachedFooter(message.display ?? message.content)) : null;
   return (
-    <div className={cn("flex flex-col gap-1.5", isUser && "items-end")}>
+    <div className={cn("flex flex-col gap-1.5", isUser && "items-end group/msg")} {...(message.waiting ? { "data-el": "waiting-message" } : {})}>
       {isUser ? (
-        <div className="max-w-[85%] rounded-2xl rounded-br-md bg-primary/90 text-primary-foreground px-3.5 py-2 text-[13px] leading-relaxed break-words overflow-hidden prose-user">
+        <>
+        <div className={cn("max-w-[85%] rounded-2xl rounded-br-md bg-primary/90 text-primary-foreground px-3.5 py-2 text-[13px] leading-relaxed break-words overflow-hidden prose-user", message.waiting && "opacity-60")}>
           {message.attachments && message.attachments.length > 0 && (
             <div className="flex flex-wrap gap-2 mb-1.5">
               {message.attachments.map((a, i) => {
@@ -1484,8 +1600,27 @@ export const MessageBubble = memo(function MessageBubble({
               })}
             </div>
           )}
-          <Markdown source={stripAttachedFooter(message.display ?? message.content)} profile="user" components={chatComponents} />
+          {userText!.files.length > 0 && (
+            <div className="flex flex-wrap gap-1.5 mb-1.5" data-el="message-files">
+              {userText!.files.map((f, i) => (
+                <span key={i} className="inline-flex items-center gap-1 rounded-md bg-primary-foreground/15 px-1.5 py-0.5 text-[11px]">
+                  <FileText className="h-3 w-3 shrink-0 opacity-80" />
+                  <span className="max-w-[240px] truncate">{f}</span>
+                </span>
+              ))}
+            </div>
+          )}
+          {userText!.text.trim() && <Markdown source={userText!.text} profile="user" components={chatComponents} />}
         </div>
+        {message.waiting && (
+          <div className="flex items-center gap-1.5 -mt-0.5">
+            <WaitingActions message={message} />
+            <span className="text-[10.5px] text-muted-foreground" data-el="waiting-mark" title="Sent — the agent reads it at its next step">
+              pending
+            </span>
+          </div>
+        )}
+        </>
       ) : (
         <div className="w-full space-y-2">
           {message.thinking && <Thought text={message.thinking} />}

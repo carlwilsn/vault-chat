@@ -11,6 +11,7 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmp, cleanup } from "./helpers";
 import { withPiSessions } from "./fakeSession";
+import { pendingOf } from "../../src/convlog/reduce";
 
 const root = tmp("vcq-");
 const vault = join(root, "vault");
@@ -62,7 +63,10 @@ class FakeBackend extends EventEmitter {
   pi(threadId: string, evs: any[]) {
     for (const ev of evs) this.emit("event", { threadId, kind: "pi", ev });
   }
-  async interrupt() {}
+  interrupts: string[] = [];
+  async interrupt(threadId: string) {
+    this.interrupts.push(threadId);
+  }
   usageCalls() {
     return [];
   }
@@ -234,6 +238,48 @@ describe("steer and queue", () => {
     ]);
     expect(msgs[2].toolCalls.map((t: any) => [t.name, t.result])).toEqual([["Read", "text"], ["subagent", "spawned"]]);
     expect(msgs[2].toolCalls[1].subagents).toEqual(["sa1"]);
+  });
+
+  it("Send now: a waiting message cuts the agent's current step and starts the next turn at once; the others still waiting follow it; no Stopped line", async () => {
+    const r = await engine.message({ text: "Read all five chapters.", convId: "sep-now1" });
+    await until(() => backend.turns.some((t) => t.texts?.join(" ").includes("five chapters")));
+    const turnsBefore = backend.turns.length;
+    const tid = backend.turns[turnsBefore - 1].threadId;
+    backend.pi(tid, [...assistant([{ text: "Reading chapter one." }])]);
+    expect((await engine.message({ convId: r.convId, text: "Only chapter two.", clientMsgId: "c-now" })).steered).toBe(true);
+    expect((await engine.message({ convId: r.convId, text: "And keep it short.", clientMsgId: "c-after" })).steered).toBe(true);
+    const waiting = () => pendingOf(engine.picture(r.convId)).map((q: any) => q.id);
+    expect(waiting()).toEqual(["c-now", "c-after"]);
+    // Send now on the first: pi's stop (its queue is cleared), then the turn ends as interrupted…
+    const p = engine.intent({ type: "now", convId: r.convId, id: "c-now" });
+    await until(() => backend.interrupts.includes(tid));
+    backend.ev(tid, { kind: "turnCompleted", turnId: `pt-${turnsBefore}`, status: "interrupted" });
+    const out = await p;
+    expect(out).toMatchObject({ ok: true, now: "c-now" });
+    // …and the message starts the next turn, in pi's thread (the same conversation), as Carl's own message.
+    await until(() => backend.turns.length === turnsBefore + 1);
+    const next = backend.turns[turnsBefore];
+    expect(next.threadId).toBe(tid);
+    expect(next.texts.join("\n")).toContain("Only chapter two.");
+    // The other waiting message follows it (pi's steer into the new turn), still pending until pi takes it.
+    await until(() => backend.steers.filter((x) => x.texts.join() === "And keep it short.").length === 2);
+    await until(() => waiting().join() === "c-after");
+    backend.pi(tid, [...userMsg("Only chapter two."), ...assistant([{ text: "Chapter two, then." }]), ...userMsg("And keep it short."), ...assistant([{ text: "Short." }])]);
+    backend.ev(tid, { kind: "turnCompleted", turnId: `pt-${turnsBefore + 1}`, status: "completed" });
+    await until(async () => (await readConv(vault, r.convId))?.state === "idle");
+    const c = await readConv(vault, r.convId);
+    expect(c.messages.some((m: any) => m.system && /Stopped/.test(m.content))).toBe(false);
+    expect(c.messages.filter((m: any) => !m.system).map((m: any) => [m.role, m.content])).toEqual([
+      ["user", "Read all five chapters."],
+      ["assistant", "Reading chapter one."],
+      ["user", "Only chapter two."],
+      ["assistant", "Chapter two, then."],
+      ["user", "And keep it short."],
+      ["assistant", "Short."],
+    ]);
+    expect(c.messages.filter((m: any) => m.role === "user").map((m: any) => m.mid).slice(1)).toEqual(["c-now", "c-after"]);
+    // Already taken: Send now says so.
+    expect((await engine.intent({ type: "now", convId: r.convId, id: "c-now" })).ok).toBe(false);
   });
 
   it("queue with nothing running is an ordinary message", async () => {

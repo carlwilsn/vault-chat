@@ -55,6 +55,7 @@ import { isOpen, pendingOf, shown, type Picture } from "../../src/convlog/reduce
 import { makeChatView, toolName } from "../../src/convlog/view";
 import { waitInputs } from "../../src/voiceWaitLine";
 import { lookup } from "./lookup";
+import { attachmentAt, attachmentsNote } from "../attachments";
 import { readEntries } from "../convlog/piSession";
 import { PiFeed } from "./piFeed";
 import { READ_ONLY_TOOLS, type SideLog, type SideState } from "./pi/side";
@@ -129,6 +130,8 @@ type Live = {
   open: Map<string, { name: string; input: any }>;
   cut: boolean;
   stopped: boolean;
+  /** Ended by "Send now": Carl's waiting message starts the next turn (no "Stopped." line). */
+  sendNow?: boolean;
   controller: AbortController;
   /** pi accepted the prompt. */
   started: boolean;
@@ -741,6 +744,8 @@ export class Engine {
         return (await this.message({ ...b, clientMsgId: b.clientId, queue: true })) ?? { error: "legacy conversation" };
       case "unqueue":
         return (await this.message({ convId: b.convId, unqueue: String(b.id ?? "") })) ?? { error: "legacy conversation" };
+      case "now":
+        return this.sendNow(String(b.convId ?? ""), String(b.id ?? ""));
       case "stop":
         return (await this.kill({ convId: b.convId })) ?? { error: "legacy conversation" };
       case "answer":
@@ -817,6 +822,8 @@ export class Engine {
     context?: string;
     images?: { name?: string; mime?: string; dataBase64?: string }[];
     imagePaths?: string[];
+    /** Files Carl attached from outside the vault, by the path the upload gave them (server/attachments.ts). */
+    files?: string[];
     /** Who started it: "voice" (the voice's Ask); a phone chat otherwise. */
     source?: string;
     /** Hold it until the running turn ends (a follow-up), instead of steering. */
@@ -833,7 +840,9 @@ export class Engine {
     if (typeof body?.unqueue === "string" && body.convId) return this.takeBack(body.convId, body.unqueue);
     const textIn = String(body?.text ?? "").trim();
     const hasImages = (body.images?.length ?? 0) + (body.imagePaths?.length ?? 0) > 0;
-    if (!textIn && !hasImages) return { error: "empty message" };
+    const files = (Array.isArray(body.files) ? body.files : []).slice(0, 10).map((p) => attachmentAt(this.d.vault, p));
+    if (files.some((f) => !f)) return { error: "an attached file is not on the box (upload it first: POST /api/v2/attachment)" };
+    if (!textIn && !hasImages && !files.length) return { error: "empty message" };
     // No conversation named: Main (every surface's default). A project's thread or a separate chat is made on first use.
     const projectAsked = !body.convId && typeof body.project === "string" && body.project.trim() ? body.project.trim() : undefined;
     let conv: EngineConv | null;
@@ -861,7 +870,10 @@ export class Engine {
     let context = typeof body.context === "string" && body.context.trim() ? body.context.trim() : undefined;
     // An attachment that arrived empty is said, never guessed at (P17: the agent described an image it never got).
     if (empty) context = [context, `[Carl attached ${empty === 1 ? "an image" : `${empty} images`}, but ${empty === 1 ? "it" : "they"} arrived empty (no data): you have NOT seen ${empty === 1 ? "it" : "them"}. Say so plainly; don't guess what ${empty === 1 ? "it shows" : "they show"}.]`].filter(Boolean).join("\n\n");
-    const shown = textIn || "(image)";
+    // Attached files: the agent gets each one's path on the box (never a path on Carl's laptop).
+    const filesNote = attachmentsNote(files as NonNullable<(typeof files)[number]>[]);
+    if (filesNote) context = [context, filesNote].filter(Boolean).join("\n\n");
+    const shown = textIn || (files.length ? files.map((f) => f!.name).join(", ") : "(image)");
     // "This plot", "what I circled": the latest capture itself goes with the turn (one, capped), once per chat.
     const given = this.imagesGiven.get(id) ?? new Set<string>();
     this.imagesGiven.set(id, given);
@@ -951,6 +963,44 @@ export class Engine {
     }
     this.setPending(convId, undefined, id);
     return { ok: true, convId, unqueued: id };
+  }
+
+  /**
+   * "Send now" on a message still waiting for the agent's next step (Claude Code's interrupt-and-send):
+   * the current step is cut (pi's abort), and the message starts the next turn at once, so the agent
+   * answers it next and goes on from there. The other waiting messages follow it, in order.
+   */
+  private async sendNow(convId: string, id: string): Promise<Record<string, unknown>> {
+    const p = this.picture(convId);
+    if (!p || !pendingOf(p).some((x) => x.id === id)) return { ok: false, error: "already delivered" };
+    const l = this.live.get(convId);
+    if (!l || l.finished || !l.started) return { ok: false, error: "nothing is running" };
+    const waiting = l.feed.undelivered();
+    const first = waiting.find((e) => e.clientId === id);
+    if (!first) return { ok: false, error: "already delivered" };
+    const rest = waiting.filter((e) => e !== first && e.clientId);
+    l.sendNow = true;
+    const ended = this.turnEnd(convId);
+    try {
+      // pi's own stop: its queue is cleared (these messages go again below), then the step is aborted.
+      await this.d.backend.interrupt(l.threadId, l.turnId);
+    } catch (e) {
+      this.log(`send now on ${convId}: ${(e as Error).message}`);
+    }
+    await Promise.race([ended, new Promise((r) => setTimeout(r, 60_000))]);
+    const vault = this.d.vault;
+    const again = (e: (typeof waiting)[number]) =>
+      this.run(convId, e.text, "user", {
+        shown: e.shown,
+        clientId: e.clientId,
+        itemImages: e.images,
+        images: (e.images ?? []).map((im) => join(vault, im.path)),
+        ...(e.device ? { origin: e.device } : {}),
+        ...(e.via && e.via !== "steer" && e.via !== "queue" ? { via: e.via } : {}),
+      }).catch((err) => this.log(`send now on ${convId}: ${err}`));
+    void again(first);
+    for (const e of rest) void again(e);
+    return { ok: true, convId, now: id };
   }
 
   private saveImages(convId: string, body: { images?: { name?: string; mime?: string; dataBase64?: string }[]; imagePaths?: string[] }): { paths: string[]; itemImages: ItemImage[]; empty: number } {
@@ -1672,7 +1722,7 @@ export class Engine {
     if (l.cut) await this.notice(l.convId, INTERRUPTED_TEXT, "error");
     // (A failure pi's own message carries is shown from that message: not said twice.)
     else if (status === "failed" && errStr !== l.feed.lastError) await this.notice(l.convId, `⚠️ The turn failed: ${errStr}`, "error");
-    else if (status === "interrupted") await this.notice(l.convId, "Stopped.", "info");
+    else if (status === "interrupted" && !l.sendNow) await this.notice(l.convId, "Stopped.", "info");
     const conv = await readConv(vault, l.convId);
     this.log(`turn ${l.kind} on ${l.convId} ${status}${l.cut ? " (cut)" : ""} → ${state}`);
     const outcome = l.cut ? "cut" : l.stopped ? "stopped" : status === "completed" ? "ok" : status;

@@ -55,6 +55,8 @@ export function MarkdownArea() {
       const mode = at(d.x, d.y);
       setTreeDrop(null);
       if (!mode) return false;
+      // A folder is not a file to open (reading one is "Access is denied (os error 5)" on Windows: the 10-24 log line).
+      if (useStore.getState().files.find((f) => f.path === d.path)?.is_dir) return true;
       const side: DropSide = mode.kind === "edge" ? mode.side : "right";
       (async () => {
         try {

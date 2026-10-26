@@ -1,7 +1,7 @@
 import { emit, emitTo, listen } from "@tauri-apps/api/event";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { useStore, type ChatMessage, type FileEntry, type LiveTool, type Theme } from "./store";
-import { sendMessage, stopAgent, clearThread, interruptAndSend, sendMidTurn, cancelPending } from "./chat-controller";
+import { sendMessage, stopAgent, clearThread, interruptAndSend, sendNow, takeBack } from "./chat-controller";
 import type { Conversation } from "./conversations";
 import { newConversationId } from "./conversations";
 import { listProjects, openProjectNotes, openThread, routeProjectChangesTo, routeProjectNotesTo, setConversationProject } from "./projects";
@@ -67,6 +67,8 @@ export type ChatAction =
       text: string;
       contextPreamble?: string;
       attachments?: import("./store").ChatAttachment[];
+      /** Files from outside the vault: uploaded to the box with the message. */
+      uploads?: import("./store").FileUpload[];
     }
   // Mid-generation interruption. Aborts the current run, captures
   // whatever the agent had streamed so far as a final assistant
@@ -78,14 +80,9 @@ export type ChatAction =
       contextPreamble?: string;
       attachments?: import("./store").ChatAttachment[];
     }
-  // Sent while the agent works: into the running turn (steer) or after it (queue).
-  | {
-      kind: "steer" | "queue";
-      text: string;
-      contextPreamble?: string;
-      attachments?: import("./store").ChatAttachment[];
-    }
-  | { kind: "unqueue"; id: string }
+  // A message waiting for the agent's next step: delivered now (the step is cut), or taken back.
+  | { kind: "sendNow"; convId: string; id: string }
+  | { kind: "unqueue"; convId: string; id: string }
   | { kind: "stop" }
   | { kind: "clear" }
   | { kind: "startCapture" }
@@ -135,10 +132,10 @@ function takeStreamSnapshot(): StreamSnapshot {
 function applyActionLocal(a: ChatAction) {
   // One brain answers each turn: what Carl types goes to the conversation's agent even while voice is live on it
   // (voice hears it, and the agent's answer, as context it never answers aloud: server/voice.ts updates).
-  if (a.kind === "send") sendMessage(a.text, a.contextPreamble, a.attachments);
+  if (a.kind === "send") sendMessage(a.text, a.contextPreamble, a.attachments, undefined, a.uploads);
   else if (a.kind === "interrupt") interruptAndSend(a.text, a.contextPreamble, a.attachments);
-  else if (a.kind === "steer" || a.kind === "queue") void sendMidTurn(a.kind, a.text, a.contextPreamble, a.attachments);
-  else if (a.kind === "unqueue") void cancelPending(a.id);
+  else if (a.kind === "sendNow") void sendNow(a.convId, a.id);
+  else if (a.kind === "unqueue") void takeBack(a.convId, a.id);
   else if (a.kind === "stop") stopAgent();
   // Clear: the open thread's view goes blank; the box saves what lasts and compacts (chat-controller.ts).
   else if (a.kind === "clear") clearThread();

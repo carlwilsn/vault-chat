@@ -9,7 +9,7 @@ src/                   React + TypeScript frontend
   App.tsx              Top-level layout (Allotment 3-pane) + global shortcuts
   main.tsx             Boot: hydrateKeychain, render App
   store.ts             Zustand store — single source of UI truth
-  chat-controller.ts   The chat's intents (send, steer, queue, take back, stop) → the box
+  chat-controller.ts   The chat's intents (send, send now, take back, stop) → the box
   boxChat.ts           The box's conversation feed (/poll), intents, reachability
   convlog/             The feed's protocol and the one reducer every client folds
   complete.ts          Model requests on the box, all in pi: Ctrl+K / Ctrl+L side threads, one-shots (note titles, voice math)
@@ -44,7 +44,7 @@ docs/                  Subsystem documentation (this folder)
 ## One user turn — the happy path
 
 1. **ChatPane.tsx** — user types, hits Enter. `send()` resolves `@name` tokens into a hidden preamble (text files inlined, binaries by path).
-2. **chat-controller.ts** — `sendMessage` hands it to **boxChat.ts** `boxSend`: the message shows at once under the id the box will echo, and goes to the box as an intent (send; or steer / queue while a turn runs; or the answer to an open question).
+2. **chat-controller.ts** — `sendMessage` hands it to **boxChat.ts** `boxSend`: the message shows at once under the id the box will echo, and goes to the box as an intent (send; or, while a turn runs, pi's steer — shown as sent, marked pending until the agent takes it at its next step, with "Send now" on hover; or the answer to an open question). Files from outside the vault are uploaded first (`/api/v2/attachment`, kept in `.vault-chat/attachments/`) and the message names them by their path on the box.
 3. **The box** (server/engine) runs the turn in pi and writes it to the vault's conversation feed.
 4. **boxChat.ts** long-polls the feed (`/poll?after=N`), folds the records with the one reducer (`convlog/reduce.ts`) and projects them into the store (`messages`, the live text, tools and context).
 5. **store.ts** — the chat UI re-renders; the popout gets the same state over `chat:state` / `chat:stream`.

@@ -5,6 +5,8 @@
 // conversation, never runs a model, and after any outage or box restart its
 // picture is exactly the box's.
 import { test, before, after } from "node:test";
+import fs from "node:fs";
+import path from "node:path";
 import assert from "node:assert/strict";
 import { installFakeTauri, makeTempVault } from "./fakes.ts";
 import { FakeBox } from "./fakeBox.ts";
@@ -124,32 +126,104 @@ test("the same message twice (a retry) is one message", async () => {
   assert.equal(box.records(c1).length, before);
 });
 
-test("Enter while it runs steers, Tab queues: chips until the log has them, then Carl's message where pi delivers it", async () => {
+const waitingOf = () => S().messages.filter((m) => m.waiting).map((m) => m.content);
+
+test("a message while it runs goes in at once (Claude Code): shown as sent, marked waiting until pi takes it at the next step, then the log's message where pi put it", async () => {
   S().selectConversation(c1);
   await chat.sendMessage("Go through the chapters.");
   await waitFor("running", () => S().busy);
-  await chat.sendMidTurn("steer", "shorter please");
-  await chat.sendMidTurn("queue", "then a summary");
-  const [steer, queue] = box.intents.slice(-2);
-  assert.deepEqual([steer.type, queue.type], ["steer", "queue"]);
-  await waitFor("pending on the box", () => (S().conversations.find((c) => c.id === c1)?.queued ?? []).length === 2);
-  assert.deepEqual(S().conversations.find((c) => c.id === c1)!.queued!.map((q) => [q.kind, q.text]), [["steer", "shorter please"], ["queue", "then a summary"]]);
-  const pend = await import("../../src/pendingInput.ts");
-  await waitFor("local chips gone (the log's chips show)", () => pend.pendingFor(c1).length === 0);
-  // pi delivers the steer after the current step.
+  const p = chat.sendMessage("shorter please");
+  // At once, in the thread (no chip above the composer), before the box answered.
+  await waitFor("shown as sent", () => S().messages.at(-1)?.content === "shorter please");
+  assert.equal(S().messages.at(-1)!.waiting, true);
+  await p;
+  const steer = box.intents.at(-1)!;
+  assert.equal(steer.type, "steer", "pi's steer: in at the agent's next step");
+  await waitFor("pending on the box", () => (S().conversations.find((c) => c.id === c1)?.queued ?? []).length === 1);
+  await chat.sendMessage("then a summary");
+  const second = box.intents.at(-1)!;
+  assert.equal(second.type, "steer");
+  assert.deepEqual(waitingOf(), ["shorter please", "then a summary"], "each shown once, in order, waiting");
+  // pi takes the first after the current step: it is the log's message there, not waiting any more.
   box.stream(c1, "assistant", "Chapter one.");
   box.deliver(c1, steer.clientId);
-  await waitFor("steer in place", () => S().messages.some((m) => m.mid === steer.clientId));
+  await waitFor("delivered in place", () => S().messages.some((m) => m.mid === steer.clientId && !m.waiting && !m.boxPending));
   const at = S().messages.findIndex((m) => m.mid === steer.clientId);
   assert.equal(S().messages[at - 1]!.content, "Chapter one.");
-  // Taken back before delivery.
-  assert.equal(await bc.boxUnqueue(c1, queue.clientId), true);
-  await waitFor("taken back", () => (S().conversations.find((c) => c.id === c1)?.queued ?? []).length === 0);
+  assert.equal(S().messages.filter((m) => m.content === "shorter please").length, 1, "never doubled");
+  assert.deepEqual(waitingOf(), ["then a summary"]);
+  // Cancel (or Edit) on the bubble takes it back before pi reads it.
+  assert.equal(await chat.takeBack(c1, second.clientId), true);
+  await waitFor("taken back", () => !S().messages.some((m) => m.content === "then a summary"));
   box.stream(c1, "assistant", "Short.");
   box.endTurn(c1);
   await waitFor("idle", () => !S().busy);
   assert.deepEqual(shown(), boxShows(c1));
-  assert.ok(!S().messages.some((m) => m.content === "then a summary"));
+});
+
+test("Send now on a waiting message: the box cuts the step and the message starts the next turn at once (no Stopped line)", async () => {
+  S().selectConversation(c1);
+  await chat.sendMessage("Read all the chapters.");
+  await waitFor("running", () => S().busy);
+  box.stream(c1, "assistant", "Reading chapter one…");
+  await chat.sendMessage("actually just chapter two");
+  const m = box.intents.at(-1)!;
+  await waitFor("waiting", () => waitingOf().includes("actually just chapter two") && (S().conversations.find((c) => c.id === c1)?.queued ?? []).length === 1);
+  assert.equal(await chat.sendNow(c1, m.clientId), true);
+  assert.deepEqual([box.intents.at(-1)!.type, box.intents.at(-1)!.id], ["now", m.clientId]);
+  await waitFor("delivered as the next turn", () => S().messages.some((x) => x.mid === m.clientId && !x.waiting && !x.boxPending));
+  assert.equal(S().busy, true, "the agent goes on, now answering it");
+  assert.ok(!S().messages.some((x) => x.content === "Stopped."), "Send now is not a Stop");
+  box.stream(c1, "assistant", "Chapter two only.");
+  box.endTurn(c1);
+  await waitFor("idle", () => !S().busy);
+  assert.deepEqual(shown(), boxShows(c1));
+});
+
+test("a waiting message from another surface shows the same way; a Stop that drops a waiting message says so (never silently lost)", async () => {
+  // Its own chat: the line it leaves is this laptop's own (the box's log has no such line).
+  const c1 = S().newConversation();
+  await chat.sendMessage("Long job.");
+  await waitFor("running", () => S().busy);
+  const r = await fetch(`${box.url}/api/v2/intent?vault=v`, { method: "POST", body: JSON.stringify({ type: "steer", convId: c1, clientId: "phone-1", text: "from my phone" }) });
+  assert.equal((await r.json()).steered, true);
+  await waitFor("the phone's message, waiting", () => waitingOf().includes("from my phone"));
+  await chat.sendMessage("and from the laptop");
+  await waitFor("both waiting", () => waitingOf().length === 2);
+  chat.stopAgent();
+  await waitFor("stopped", () => !S().busy && S().messages.some((x) => x.content === "Stopped."));
+  await waitFor("dropped, said", () => S().messages.some((x) => /Not delivered: the turn was stopped/.test(x.content)), 8000);
+  assert.ok(S().messages.some((x) => x.content === "and from the laptop" && x.boxLocal), "the text stays, marked not delivered");
+  assert.ok(!S().messages.some((x) => x.waiting), "nothing still claims to be waiting");
+});
+
+test("an attached file from outside the vault (a PDF from Downloads): its bytes go to the box with the message; the agent gets the box's path, never this laptop's", async () => {
+  const af = await import("../../src/attachFiles.ts");
+  // A dropped / picked file outside the vault; the composer reads it when attached.
+  const pdf = new Blob([Buffer.from("%PDF-1.4\n% Discussion 5 notes\n")]);
+  const got = await af.attachBlob("Discussion_5_Supplementary Notes.pdf", pdf);
+  assert.ok(got.ok);
+  // An @ of a path on this laptop, typed or pasted, is found (quoted when it has spaces).
+  const typed = 'read @"C:\\Users\\wada2\\Downloads\\Discussion_5_Supplementary Notes.pdf" please';
+  assert.deepEqual(af.pathMentions(typed).map((x) => x.path), ["C:\\Users\\wada2\\Downloads\\Discussion_5_Supplementary Notes.pdf"]);
+  assert.equal(af.insideVault("C:/Users/wada2/Downloads/x.pdf", "C:/Users/wada2/github/school2"), false);
+  assert.equal(af.insideVault("c:/users/wada2/github/school2/Physics/x.pdf", "C:/Users/wada2/github/school2"), true);
+  // Too big: refused when attached, with the reason.
+  const big = await af.attachBlob("huge.pdf", new Blob([new Uint8Array(26 * 1024 * 1024)]));
+  assert.ok(!big.ok && /at most 25 MB/.test(big.error));
+  const c1 = S().newConversation();
+  if (!got.ok) throw new Error("not attached");
+  await chat.sendMessage("summarise this\n\n[files: Discussion_5_Supplementary Notes.pdf]", undefined, undefined, undefined, [got.file]);
+  const sent = box.intents.at(-1)!;
+  assert.equal(sent.type, "send");
+  assert.equal(sent.files.length, 1);
+  assert.match(sent.files[0], /^\.vault-chat\/attachments\/\d{4}-\d{2}-\d{2}\/Discussion_5_Supplementary Notes\.pdf$/);
+  const onBox = fs.readFileSync(path.join(box.attachVault, ...sent.files[0].split("/")), "utf8");
+  assert.match(onBox, /Discussion 5 notes/, "the bytes are on the box");
+  assert.ok(!JSON.stringify(sent).includes("Downloads"), "no path on this laptop goes to the box");
+  assert.ok(S().messages.some((m) => m.mid === sent.clientId));
+  box.endTurn(c1);
+  await waitFor("idle", () => !S().busy);
 });
 
 test("Stop is the box's: its line in the log, nothing claimed here before it", async () => {

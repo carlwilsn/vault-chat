@@ -400,6 +400,16 @@ export class MemoryBox {
         if (!p || !pendingOf(p).some((x) => x.id === b.id)) return { ok: false, error: "already delivered" };
         this.setPending(conv, undefined, b.id);
         return { ok: true };
+      case "now": {
+        // The engine's sendNow: the step is cut (no "Stopped." line), the message starts the next turn.
+        const x = p && pendingOf(p).find((y) => y.id === b.id);
+        if (!x || !p?.meta.running) return { ok: false, error: "already delivered" };
+        this.endTurn(conv, "stopped");
+        this.startTurn(conv);
+        this.userLine(conv, x.id, x.text);
+        this.onSend(conv, { ...b, type: "send", clientId: x.id, text: x.text });
+        return { ok: true, convId: conv, now: x.id };
+      }
       case "stop":
         if (p?.meta.running) {
           this.endTurn(conv, "stopped");
