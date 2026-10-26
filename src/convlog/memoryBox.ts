@@ -389,7 +389,7 @@ export class MemoryBox {
         if (p?.meta.running) return this.intent({ ...b, type: "steer", convId: conv });
         this.startTurn(conv);
         const images: ItemImage[] = (b.images ?? []).map((i: any) => ({ path: "", dataUrl: `data:${i.mime};base64,${i.dataBase64}` }));
-        this.userLine(conv, b.clientId, String(b.text ?? "").trim() || "(image)", "chat", images);
+        this.userLine(conv, b.clientId, String(b.text ?? "").trim() || "(image)", typeof b.via === "string" && b.via ? b.via : "chat", images);
         this.onSend(conv, b);
         return { ok: true, convId: conv };
       }

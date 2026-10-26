@@ -9,6 +9,7 @@ import { convFullScenarios } from "./convFull";
 import { voiceScenarios } from "./voice";
 import { voiceOneAgentScenarios } from "./voiceOneAgent";
 import { steerScenarios } from "./steer";
+import { retryScenarios } from "./retry";
 import { markdownScenarios } from "./markdown";
 import { visualScenarios } from "./visual";
 import { liveEditScenarios } from "./liveEdit";
@@ -839,6 +840,7 @@ export const scenarios: Scenario[] = [
   ...voiceScenarios,
   ...voiceOneAgentScenarios,
   ...steerScenarios,
+  ...retryScenarios,
   ...markdownScenarios,
   ...visualScenarios,
   ...liveEditScenarios,
