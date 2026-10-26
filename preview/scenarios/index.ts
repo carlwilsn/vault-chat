@@ -10,6 +10,7 @@ import { voiceScenarios } from "./voice";
 import { voiceOneAgentScenarios } from "./voiceOneAgent";
 import { steerScenarios } from "./steer";
 import { markdownScenarios } from "./markdown";
+import { visualScenarios } from "./visual";
 import { liveEditScenarios } from "./liveEdit";
 import { backgroundScenarios } from "./background";
 import type { Script } from "../runtime/llm";
@@ -839,6 +840,7 @@ export const scenarios: Scenario[] = [
   ...voiceOneAgentScenarios,
   ...steerScenarios,
   ...markdownScenarios,
+  ...visualScenarios,
   ...liveEditScenarios,
   ...backgroundScenarios,
 ];

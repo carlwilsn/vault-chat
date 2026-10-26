@@ -41,6 +41,7 @@ import { failMake, inboxLog, listEntries, readEntry, sendEntry, startMake, type 
 import { BOARD_MAKER_PROMPT, boardMakeTask, makerStats } from "./boardTools";
 import { lookBoard } from "../boards";
 import { show, SHOW_DESCRIPTION, SHOW_SCHEMA } from "../show";
+import { boardGuard } from "../boardGuard";
 import { openProject, OPEN_PROJECT_DESCRIPTION, OPEN_PROJECT_SCHEMA } from "../projectRoutes";
 import { startJob, jobStatus, jobList, jobStop, reapJobs, type PiJobEnv } from "./pi/jobs";
 import { ENGINE_ROLE_PROMPT } from "./prompt";
@@ -266,7 +267,7 @@ export const ENGINE_TOOL_SPECS = [
     type: "function",
     name: "BoardSend",
     description:
-      "Send something to Carl's iPad whiteboard inbox (he adds it to a board himself). Use it directly only when everything already exists: PDF pages, math you have written, an image or widget file already in the vault. Parts (ordered, each addable on its own): {kind:\"pdf\", path, pages:[3,4,5] (1-based, ≤20)} | {kind:\"math\", markdown (with $…$ / $…$), label?} | {kind:\"image\", path (PNG/JPEG/WebP/SVG in the vault), alt} | {kind:\"widget\", path (one TypeScript module exporting mount(el, api); api: size(), onResize(fn), theme; no network), alt, layout?:{w,h}}. Optional width (canvas units; the view is 1000 wide) and label per part. A problem set is one math part per problem. A bad send is refused with every reason: fix them and send again. Returns the entry id.",
+      "Send something to Carl's iPad whiteboard inbox (he adds it to a board himself). Only when Carl asks for the board or his iPad (\"send it to my iPad\", \"put it on the board\") or is at the board now (the \"you\" layer's Device: board, or a call on the board); a visual for him anywhere else goes where he is talking: an image in your reply, or Show. When he is on another device and did not ask, it is refused with why; asked: true when he did ask (earlier, or in other words). Use it directly only when everything already exists: PDF pages, math you have written, an image or widget file already in the vault. Parts (ordered, each addable on its own): {kind:\"pdf\", path, pages:[3,4,5] (1-based, ≤20)} | {kind:\"math\", markdown (with $…$ / $…$), label?} | {kind:\"image\", path (PNG/JPEG/WebP/SVG in the vault), alt} | {kind:\"widget\", path (one TypeScript module exporting mount(el, api); api: size(), onResize(fn), theme; no network), alt, layout?:{w,h}}. Optional width (canvas units; the view is 1000 wide) and label per part. A problem set is one math part per problem. A bad send is refused with every reason: fix them and send again. Returns the entry id.",
     inputSchema: {
       type: "object",
       properties: {
@@ -274,6 +275,7 @@ export const ENGINE_TOOL_SPECS = [
         note: { type: "string" },
         parts: { type: "array", items: { type: "object" } },
         make: { type: "string", description: "Only inside a BoardMake: the id of the entry being made." },
+        asked: { type: "boolean", description: "Carl asked for the board or iPad (earlier, or in words the check did not catch)." },
         more: { type: "boolean", description: "Only with make: these parts land now and the entry stays being made; the last send leaves it out." },
       },
       required: ["title", "parts"],
@@ -284,12 +286,13 @@ export const ENGINE_TOOL_SPECS = [
     type: "function",
     name: "BoardMake",
     description:
-      "Have something made for Carl's whiteboard in the background (a problem set, a graph, a widget) and land in his iPad inbox. Returns at once; a sub-agent in this vault makes the files, sends them through BoardSend and fixes refusals itself. The inbox shows it as being made, then the result or why it couldn't be made. Never wait for it: tell Carl it's on its way and carry on.",
+      "Have something made for Carl's iPad whiteboard in the background (a problem set, a graph, a widget) and land in its inbox. Only when Carl asks for the board or his iPad, or is at the board now (Device: board, or a call on the board); never for \"visualize this\" while he is on his laptop or phone — make that picture yourself and put it in your reply. When he is elsewhere and did not ask, it is refused with why; asked: true when he did ask. Returns at once; a sub-agent in this vault makes the files, sends them through BoardSend and fixes refusals itself. The inbox shows it as being made, then the result or why it couldn't be made. Never wait for it: tell Carl it's on its way and carry on.",
     inputSchema: {
       type: "object",
       properties: {
         request: { type: "string", description: "What to make, with everything the maker needs (the maker does not see this conversation)." },
         title: { type: "string", description: "The inbox title, one line." },
+        asked: { type: "boolean", description: "Carl asked for the board or iPad (earlier, or in words the check did not catch)." },
       },
       required: ["request", "title"],
       additionalProperties: false,
@@ -1997,6 +2000,10 @@ export class Engine {
           return text("In Carl's alerts. His phone buzzes only if he is away from every screen (and, for a finish, only if he started the work).");
         }
         case "BoardSend": {
+          // A maker's sends were decided when BoardMake was (server/boardGuard.ts).
+          const no = a.make ? null : boardGuard({ vault, request: lastRequest(conv, this.live.get(convId)?.input), asked: a.asked === true, tool: "BoardSend" });
+          if (no) return { success: false, contentItems: [{ type: "inputText", text: no }] };
+          delete a.asked;
           const r = await sendEntry(vault, a, { conversation: convId, emit: (ev) => this.inboxEvent(ev) });
           if (!r.ok) return { success: false, contentItems: [{ type: "inputText", text: `Refused (nothing reached the inbox):\n- ${r.refusals.join("\n- ")}` }] };
           return text(JSON.stringify({ id: r.id, parts: r.parts }) + " — in Carl's whiteboard inbox.");
@@ -2036,6 +2043,8 @@ export class Engine {
           const request = String(a.request ?? "").trim();
           const title = String(a.title ?? "").trim();
           if (!request || !title) return text("BoardMake needs a request and a title.");
+          const no = boardGuard({ vault, request: lastRequest(conv, this.live.get(convId)?.input), asked: a.asked === true, tool: "BoardMake" });
+          if (no) return { success: false, contentItems: [{ type: "inputText", text: no }] };
           const entry = startMake(vault, { title, request }, { conversation: convId, emit: (ev) => this.inboxEvent(ev) });
           const t0 = Date.now();
           const started = this.d.backend.background(p.threadId, {
@@ -2062,6 +2071,11 @@ export class Engine {
         }
         case "Show": {
           // On the device he names (or is on): a signal the laptop / phone acks, or the inbox's validated send.
+          // The board named by the agent, not by Carl, while he is elsewhere: refused with why (server/boardGuard.ts).
+          const toBoard = typeof a.where === "string" && /^(board|ipad)$/i.test(a.where.trim());
+          const no = toBoard ? boardGuard({ vault, request: lastRequest(conv, this.live.get(convId)?.input), asked: a.asked === true, tool: "Show" }) : null;
+          if (no) return { success: false, contentItems: [{ type: "inputText", text: no }] };
+          delete a.asked;
           const r = await show({ vault, emit: (ev) => this.d.broadcast?.(ev), sendBoard: (b) => sendEntry(vault, b, { conversation: convId, emit: (ev) => this.inboxEvent(ev) }) }, a);
           return { success: r.ok, contentItems: [{ type: "inputText", text: r.text }] };
         }
@@ -2296,6 +2310,13 @@ function errText(e: any): string {
   return String(e.message ?? JSON.stringify(e)).slice(0, 500);
 }
 
+
+/** Carl's latest message in the conversation (his words, as the chat shows them), else what started the turn. */
+function lastRequest(conv: { messages?: { role: string; content?: unknown }[] }, input?: string | null): string {
+  const ms = conv.messages ?? [];
+  for (let i = ms.length - 1; i >= 0; i--) if (ms[i]!.role === "user" && !(ms[i] as { system?: boolean }).system) return String(ms[i]!.content ?? "");
+  return String(input ?? "");
+}
 
 /** BoardInbox's answer: entries, their status, and whether added items are still on their boards. */
 function boardInboxText(vault: string, id: string | null): string {

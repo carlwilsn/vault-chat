@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="520" viewBox="0 0 800 520">
+<rect width="800" height="520" fill="white"/>
+<g font-family="Arial, sans-serif" fill="#172033">
+<text x="40" y="42" font-size="25" font-weight="700">Same BFS level ≠ far apart</text>
+<text x="40" y="73" font-size="17">Marked vertices: s, u, v (blue). BFS starts at s.</text>
+<g stroke="#e2e8f0" stroke-width="2" stroke-dasharray="6 6">
+<path d="M180 125H730 M180 210H730 M180 295H730 M180 400H730"/>
+</g>
+<g fill="#64748b" font-size="17">
+<text x="45" y="131">Level 0</text><text x="45" y="216">Level 1</text><text x="45" y="301">Level 2</text><text x="45" y="406">Level 3</text>
+</g>
+<g stroke="#94a3b8" stroke-width="4"><path d="M420 125V210 M420 210V295"/></g>
+<path d="M300 400L420 295L540 400" fill="none" stroke="#e47716" stroke-width="7" stroke-linecap="round"/>
+<g stroke-width="3">
+<circle cx="420" cy="125" r="25" fill="#dbeafe" stroke="#2563eb"/>
+<circle cx="420" cy="210" r="23" fill="white" stroke="#94a3b8"/>
+<circle cx="420" cy="295" r="23" fill="white" stroke="#94a3b8"/>
+<circle cx="300" cy="400" r="25" fill="#dbeafe" stroke="#2563eb"/>
+<circle cx="540" cy="400" r="25" fill="#dbeafe" stroke="#2563eb"/>
+</g>
+<g font-size="22" text-anchor="middle" dominant-baseline="central" font-weight="700">
+<text x="420" y="125">s</text><text x="420" y="210">a</text><text x="420" y="295">b</text><text x="300" y="400">u</text><text x="540" y="400">v</text>
+</g>
+<text x="465" y="160" font-size="17" fill="#2563eb">d(s, u) = d(s, v) = 3</text>
+<rect x="160" y="451" width="570" height="46" rx="10" fill="#fff4e6"/>
+<text x="445" y="480" text-anchor="middle" font-size="19" fill="#9a480b" font-weight="700">Closest marked pair: u → b → v, distance 2</text>
+</g>
+</svg>

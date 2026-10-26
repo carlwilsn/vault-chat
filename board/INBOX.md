@@ -103,6 +103,10 @@ default view is 1000 wide. Without one, a part lands 60% of the view wide.
 - **Scaling:** always uniform. Nothing ever stretches, and there is no free-form resize.
 - **Widgets:** a widget scales as a whole too. It is laid out once at its send size, then zoomed like an image. Reshaping a widget, so its layout reflows, is a possible later option; it is not built.
 
+## Only when he asks, or is at the board (Carl, 2026-10-26)
+
+The answer appears where Carl is talking. A visual or file made for him goes to the device he is on: an image in the reply (it shows inline in the chat) or `Show` with where "here". The inbox is for when he names it ("send it to my iPad", "put it on the board", "I'm not near my laptop") or is at the board now (his newest activity is on the board, or a call is live there). Otherwise `BoardSend`, `BoardMake` and `Show` "board" are refused with why and what to do instead (`server/boardGuard.ts`); `asked: true` sends when he asked in an earlier message. A maker's own sends (`make`) are not checked again. Why: he asked "can you visualize for me?" on his laptop and a diagram went to the iPad across the room.
+
 ## Sending never blocks the conversation (Carl, 2026-10-16)
 
 Carl keeps talking while things are made. The rule:

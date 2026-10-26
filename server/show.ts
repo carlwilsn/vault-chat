@@ -132,14 +132,14 @@ export type ShowDeps = {
 
 export type ShowResult = { ok: boolean; text: string; where?: Device };
 
-const SHOW_KEYS = ["path", "url", "where", "pane", "title", "pages", "page", "line", "endLine", "heading", "text", "anchor", "cell", "label"];
+const SHOW_KEYS = ["path", "url", "where", "pane", "title", "pages", "page", "line", "endLine", "heading", "text", "anchor", "cell", "label", "asked"];
 
 export const SHOW_DESCRIPTION =
   "Put something in front of Carl: open a vault file (or a web address) on one of his screens, at a place in it. " +
   'where: "laptop" (the laptop app\'s viewer/editor, scrolled to the place; an open file only scrolls — use this to scroll his laptop too), ' +
   '"board" (his iPad whiteboard inbox: PDF pages, markdown — one item per section —, an image, code or notebook cells as text, an HTML page as a picture), ' +
   '"phone" (the phone app: markdown and images shown, PDFs and pages opened in the phone\'s viewer), ' +
-  'or "here"/omitted (the device he is on now, from the "you" layer). ' +
+  'or "here"/omitted (the device he is on now, from the "you" layer) — the default: things appear where he is talking. "board" only when he asks for the board or his iPad, or is at the board. ' +
   'The laptop has a split screen: two files side by side, a left pane and a right pane (the turn prefix and the "you" layer say which file is in which, and whether split is on). ' +
   'pane: "left" or "right" (laptop only) puts the file in that pane, turning split on when another file is open; without pane it replaces the file in the active pane. ' +
   'To set up or rebuild a layout (two files side by side), call Show twice: one file with pane "left", the other with pane "right". The result says which pane holds what. Pick where from what he says ("I\'m not near my laptop", "send it to my iPad"); only show what he asked to see, or work you made for him. ' +
@@ -166,6 +166,7 @@ export const SHOW_SCHEMA = {
     anchor: { type: "string" },
     cell: { type: "number" },
     label: { type: "string" },
+    asked: { type: "boolean", description: 'Board only: Carl asked for the board or iPad (the board while he is on another device is refused otherwise).' },
   },
   additionalProperties: false,
 } as const;
@@ -282,7 +283,7 @@ async function toClient(d: ShowDeps, where: Device, payload: Record<string, unkn
   d.emit({ type: "show", id, to: where, ...payload });
   const ack = await got;
   console.log(`[show] to=${where} ${ack ? (ack.ok ? "ok" : "refused") : "no-ack"} ${Date.now() - t0}ms`);
-  if (!ack) return fail(`Sent ${what} to the ${dev}${because}, but it did not confirm within ${Math.round(ms / 1000)} s — it may not have opened. Don't tell Carl it's open; ask him to check, or send it to the board instead.`, where);
+  if (!ack) return fail(`Sent ${what} to the ${dev}${because}, but it did not confirm within ${Math.round(ms / 1000)} s — it may not have opened. Don't tell Carl it's open; ask him to check (the image in your reply still shows in the chat).`, where);
   if (!ack.ok) return fail(`On the ${dev}${because}: ${ack.error ?? "it could not be shown"}`, where);
   const phoneNote = where === "phone" && what.includes(" at ") ? " (the phone shows it whole; it can't jump to a place)" : "";
   // An app from before panes opens it in the active pane and does not say a pane: say so, never claim the split.

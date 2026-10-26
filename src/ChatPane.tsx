@@ -19,7 +19,7 @@ import { isUnreadableAsText } from "./fileKind";
 import { SettingsPane } from "./SettingsPane";
 import { Button, Textarea } from "./ui";
 import { cn } from "./lib/utils";
-import { ATTACH_MAX_BYTES, BOX_UNREACHABLE, NO_BOX, boxAnswer, boxChatOn, boxSubagent, unreachableWhy } from "./boxChat";
+import { ATTACH_MAX_BYTES, BOX_UNREACHABLE, NO_BOX, boxAnswer, boxChatOn, boxLinkFor, boxSubagent, fetchBoxFile, unreachableWhy } from "./boxChat";
 import { tailscaleCheck, type TailscaleState } from "./vaultSync";
 import {
   AskOptions,
@@ -106,35 +106,53 @@ const ChatImage = memo(function ChatImage({
 
     let cancelled = false;
     let objectUrl: string | null = null;
+    const show = (path: string, bytes: ArrayLike<number>) => {
+      const dot = path.lastIndexOf(".");
+      const ext = dot > 0 ? path.slice(dot + 1).toLowerCase() : "";
+      const mime =
+        ext === "svg"
+          ? "image/svg+xml"
+          : ext === "jpg" || ext === "jpeg"
+            ? "image/jpeg"
+            : ext === "png"
+              ? "image/png"
+              : ext === "gif"
+                ? "image/gif"
+                : ext === "webp"
+                  ? "image/webp"
+                  : ext === "bmp"
+                    ? "image/bmp"
+                    : ext === "ico"
+                      ? "image/x-icon"
+                      : `image/${ext || "png"}`;
+      const blob = new Blob([new Uint8Array(bytes)], { type: mime });
+      objectUrl = URL.createObjectURL(blob);
+      setUrl(objectUrl);
+    };
     (async () => {
       for (const path of candidates) {
         try {
           const bytes = await invoke<number[]>("read_binary_file", { path });
           if (cancelled) return;
-          const dot = path.lastIndexOf(".");
-          const ext = dot > 0 ? path.slice(dot + 1).toLowerCase() : "";
-          const mime =
-            ext === "svg"
-              ? "image/svg+xml"
-              : ext === "jpg" || ext === "jpeg"
-                ? "image/jpeg"
-                : ext === "png"
-                  ? "image/png"
-                  : ext === "gif"
-                    ? "image/gif"
-                    : ext === "webp"
-                      ? "image/webp"
-                      : ext === "bmp"
-                        ? "image/bmp"
-                        : ext === "ico"
-                          ? "image/x-icon"
-                          : `image/${ext || "png"}`;
-          const blob = new Blob([new Uint8Array(bytes)], { type: mime });
-          objectUrl = URL.createObjectURL(blob);
-          setUrl(objectUrl);
+          show(path, bytes);
           return;
         } catch {
           // try next candidate
+        }
+      }
+      // A picture the agent just made on the box (box mode): the vault sync may not have brought it yet — show
+      // the box's copy (GET /api/v1/vault/file, the same route Show uses), and the sync catches up behind it.
+      if (!/^[a-zA-Z]:[\/\\]/.test(cleaned)) {
+        try {
+          const link = await boxLinkFor(vaultPath);
+          const bytes = link ? await fetchBoxFile(link, cleaned.replace(/^\.\/+/, "")) : null;
+          if (cancelled) return;
+          if (bytes) {
+            show(cleaned, bytes);
+            return;
+          }
+        } catch {
+          // not on the box either
         }
       }
       if (!cancelled) {
