@@ -78,6 +78,24 @@ export const TICK_MS = 25;
  *  75 ms of voice, so a keyboard's 12 ms clicks still never count). The waves keep their own 512 analyser. */
 export const LEVEL_FFT = 2048;
 
+/** His voice, not a keyboard: the level above SPEECH_RMS in at least SPEECH_TICKS of the last SPEECH_WINDOW ticks
+ *  (250 ms). Speech is loud nearly every tick; typing is short clicks (a tick or two each, 60–240 ms apart) and used to
+ *  turn "thinking" on with no words at all (the roleplay: 22 s of keyboard clatter, "thinking" shown, nothing said). */
+export const SPEECH_WINDOW = 10;
+export const SPEECH_TICKS = 7;
+/** Pure: the next window (a bit per tick, newest lowest) and whether it is his voice. */
+export function voiced(bits: number, loud: boolean): { bits: number; voice: boolean } {
+  const next = ((bits << 1) | (loud ? 1 : 0)) & ((1 << SPEECH_WINDOW) - 1);
+  let n = 0;
+  for (let b = next; b; b &= b - 1) n++;
+  return { bits: next, voice: n >= SPEECH_TICKS };
+}
+
+/** A dropped connection is offered again once (on the same call: the box keeps it) before the call is given up;
+ *  at most once a minute, and the new connection has this long to come up. */
+export const RECONNECT_EVERY_MS = 60_000;
+export const RECONNECT_MS = 10_000;
+
 /** Pure: the call's mode from what the levels did and when. */
 export function brainMode(s: { now: number; lastPlaying: number; lastSpeech: number; speechSince: number | null; thinkingSince: number | null }): BrainMode {
   if (s.now - s.lastPlaying < SPEAKING_HANG_MS) return "speaking";
@@ -113,6 +131,11 @@ export class BrainConversation {
   /** The reply is silenced here because Carl started talking over it (local barge-in). */
   private ducked = false;
   private bargeSince: number | null = null;
+  /** The last SPEECH_WINDOW ticks of his level (voiced()). */
+  private loudBits = 0;
+  /** Offering the dropped connection again (reconnect), and when that last happened. */
+  private reconnecting = false;
+  private reconnectAt = -Infinity;
 
   private constructor(
     private o: BrainOptions,
@@ -180,7 +203,13 @@ export class BrainConversation {
   }
 
   private wire(): void {
-    const { pc } = this;
+    this.wirePeer(this.pc);
+    const buf = new Float32Array(512);
+    const lbuf = new Float32Array(LEVEL_FFT);
+    this.timer = setInterval(() => this.tick(buf, lbuf), TICK_MS);
+  }
+
+  private wirePeer(pc: RTCPeerConnection): void {
     pc.ontrack = (ev) => {
       const stream = ev.streams[0] ?? new MediaStream([ev.track]);
       this.el.srcObject = stream;
@@ -192,22 +221,23 @@ export class BrainConversation {
     };
     let lostAt: number | null = null;
     pc.onconnectionstatechange = () => {
+      // A connection this call replaced (reconnect) closing is not the call's.
+      if (pc !== this.pc) return;
       const s = pc.connectionState;
       this.o.log?.("voice brain connection", { state: s });
       if (s === "connected") {
         lostAt = null;
+        if (this.reconnecting) this.o.log?.("voice brain reconnected", { ms: this.d.now() - this.reconnectAt });
+        this.reconnecting = false;
         this.o.onConnect?.();
       } else if (s === "failed" || s === "closed") {
         this.lost(s);
       } else if (s === "disconnected") {
         // WebRTC often recovers a short drop by itself: give it 5 s.
         lostAt = this.d.now();
-        setTimeout(() => lostAt !== null && pc.connectionState === "disconnected" && this.lost("disconnected"), 5000);
+        setTimeout(() => pc === this.pc && lostAt !== null && pc.connectionState === "disconnected" && this.lost("disconnected"), 5000);
       }
     };
-    const buf = new Float32Array(512);
-    const lbuf = new Float32Array(LEVEL_FFT);
-    this.timer = setInterval(() => this.tick(buf, lbuf), TICK_MS);
   }
 
   private tick(buf: Float32Array, lbuf: Float32Array): void {
@@ -241,7 +271,9 @@ export class BrainConversation {
           this.el.volume = this.volume;
         }
       }
-      if (level > SPEECH_RMS && (!playing || this.ducked)) {
+      const v = voiced(this.loudBits, level > SPEECH_RMS);
+      this.loudBits = v.bits;
+      if (v.voice && (!playing || this.ducked)) {
         this.speechSince ??= now;
         this.lastSpeech = now;
         this.thinkingSince = null;
@@ -259,9 +291,56 @@ export class BrainConversation {
   }
 
   private lost(reason: string): void {
+    if (this.ended || this.reconnecting) return;
+    // A blip (the network, the box's media path): offer the connection again on the same call before giving it up.
+    if (this.d.now() - this.reconnectAt >= RECONNECT_EVERY_MS) {
+      void this.reconnect(reason);
+      return;
+    }
+    this.giveUp(reason);
+  }
+
+  private giveUp(reason: string): void {
     if (this.ended) return;
     this.teardown();
     this.o.onDisconnect?.({ reason: "error", message: `the call's connection ${reason}` });
+  }
+
+  /** A new connection for the same call: the mic's track, a new offer; the box swaps its media path (bot.py). */
+  private async reconnect(reason: string): Promise<void> {
+    this.reconnecting = true;
+    this.reconnectAt = this.d.now();
+    this.o.log?.("voice brain reconnect", { reason });
+    const old = this.pc;
+    try {
+      const pc = this.d.peer();
+      for (const t of this.mic.getAudioTracks()) pc.addTrack(t, this.mic);
+      this.pc = pc;
+      try {
+        old.close();
+      } catch {
+        /* closed */
+      }
+      this.wirePeer(pc);
+      await pc.setLocalDescription(await pc.createOffer());
+      await new Promise<void>((res) => {
+        if (pc.iceGatheringState === "complete") return res();
+        pc.addEventListener("icegatheringstatechange", () => pc.iceGatheringState === "complete" && res());
+        setTimeout(res, 2000);
+      });
+      const ans = await this.o.post("/api/v1/brain/offer", { callId: this.callId, sdp: pc.localDescription!.sdp, type: pc.localDescription!.type });
+      if (!ans?.sdp) throw new Error(ans?.error ?? "no answer");
+      await pc.setRemoteDescription({ sdp: ans.sdp, type: ans.type });
+      setTimeout(() => {
+        if (this.reconnecting && pc === this.pc) {
+          this.reconnecting = false;
+          this.giveUp(`${reason} (it did not come back)`);
+        }
+      }, RECONNECT_MS);
+    } catch (e) {
+      this.reconnecting = false;
+      this.giveUp(`${reason} (reconnect: ${String((e as Error)?.message ?? e).slice(0, 120)})`);
+    }
   }
 
   private teardown(): void {
