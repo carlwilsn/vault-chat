@@ -100,3 +100,19 @@ describe("times of day stay times", () => {
     expect(speakMath("5 mV")).toContain("millivolt");
   });
 });
+
+describe("asymptotic notation (the roleplay: 'O(V+E)' was read 'O times open paren V plus E close paren')", () => {
+  it("big O, Theta, Omega, in prose and in LaTeX", async () => {
+    const { toSpeech } = await import("../speakable");
+    const say = (t: string) => toSpeech(t);
+    expect(say("Everything is O(V+E), so the whole test is linear.")).toBe("Everything is big O of V plus E, so the whole test is linear.");
+    expect(say("Bellman-Ford is O(V·E).")).toMatch(/^Bellman-Ford is big O of V (times|dot) E\.$/);
+    expect(say("Runtime is O((V+E) log V) with a heap.")).toBe("Runtime is big O of V plus E log V with a heap.");
+    expect(say("Dijkstra with a binary heap runs in O((V + E) log V), and Bellman-Ford in O(VE).")).toBe("Dijkstra with a binary heap runs in big O of V plus E log V, and Bellman-Ford in big O of V E.");
+    expect(say(String.raw`It's $O(n \log n)$ and $\Theta(n^2)$ worst case.`)).toMatch(/big O of n log n.*big Theta of n squared/);
+    expect(say(String.raw`Use $\mathcal{O}(m + n \log n)$; the lower bound is $\Omega(n)$.`)).toMatch(/big O of m plus n log n.*big Omega of n/);
+    for (const t of ["Everything is O(V+E).", "Runtime is O((V+E) log V).", String.raw`$\mathcal{O}(m + n \log n)$`]) expect(say(t)).not.toMatch(/times open paren|l o g/);
+    // A function applied to x is still read as before.
+    expect(latexToSpeech("f(x) = x + 1")).toContain("f of x");
+  });
+});

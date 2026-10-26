@@ -135,10 +135,45 @@ function tidy(speech: string): string {
 const cache = new Map<string, string>();
 const CACHE_CAP = 2000;
 
+/** Asymptotic notation: O(V + E) is "big O of V plus E" — ClearSpeak read the O as a variable times a bracket
+ *  ("O times open paren V plus E close paren", the voice roleplay). Θ, Ω and little o the same way. */
+const ASYMPTOTIC = /(\\mathcal\s*\{\s*O\s*\}|\\mathcal\s*O\b|\\operatorname\s*\{\s*O\s*\}|\\Theta|\\Omega|\\omega|Θ|Ω|ω|\bO|\bo)\s*(\\left\s*)?\(/;
+const ASYMPTOTIC_NAME = (head: string): string => {
+  if (/Theta|Θ/.test(head)) return "big Theta of";
+  if (/Omega|Ω/.test(head)) return "big Omega of";
+  if (/omega|ω/.test(head)) return "little omega of";
+  if (/^o$/.test(head)) return "little o of";
+  return "big O of";
+};
+
+/** The formula with each O(…) said as words around the rest (spoken by ClearSpeak); null when it has none. */
+function asymptotic(tex: string): string | null {
+  const m = ASYMPTOTIC.exec(tex);
+  if (!m) return null;
+  // Its argument: up to the bracket that closes this one.
+  const open = m.index + m[0].length;
+  let depth = 1;
+  let i = open;
+  for (; i < tex.length && depth > 0; i++) {
+    if (tex[i] === "(") depth++;
+    else if (tex[i] === ")") depth--;
+  }
+  if (depth !== 0) return null;
+  const inner = tex.slice(open, i - 1).replace(/\\right\s*$/, "");
+  const before = tex.slice(0, m.index).trim();
+  const after = tex.slice(i).trim();
+  const say = (t: string) => (t ? latexToSpeech(t) : "");
+  // Inside O(…) brackets only group: "O((V+E) log V)" is said "big O of V plus E log V", as people say it.
+  const arg = say(inner).replace(/(?:open|close) paren/g, " ").replace(/times (?=log|l n|the log)/g, "").replace(/\s+/g, " ").trim();
+  return [say(before), `${ASYMPTOTIC_NAME(m[1]!)} ${arg}`, say(after)].filter(Boolean).join(" ");
+}
+
 /** One LaTeX formula (no delimiters) as ClearSpeak English. Never throws; a formula KaTeX can't read is said plainly. */
 export function latexToSpeech(tex: string): string {
   const src = tex.trim();
   if (!src) return "";
+  const asym = asymptotic(src);
+  if (asym !== null) return asym;
   const hit = cache.get(src);
   if (hit !== undefined) return hit;
   let out = "";
@@ -293,9 +328,31 @@ const PLAIN_UNIT = new RegExp(`(?<![\\w.])(\\d+(?:\\.\\d+)?)\\s?((?:${PREFIXES})
 const PLAIN_UNIT_SKIP = new Set(["A", "F", "T", "s", "m", "g", "h", "l", "L", "K", "a", "min", "pm", "am"]);
 
 /** The text as the voice should say it: every bit of math in words, everything else as it was. */
+/** O(…), Θ(…), Ω(…) written in prose ("O((V+E) log V) with a heap"): a span each, up to the closing bracket. */
+function asymptoticInProse(text: string, taken: Span[]): Span[] {
+  const out: Span[] = [];
+  const re = /(?<![\w\\])(?:O|Θ|Ω)\(/g;
+  for (let m: RegExpExecArray | null; (m = re.exec(text)); ) {
+    if (taken.some((t) => m!.index >= t.start && m!.index < t.end)) continue;
+    let depth = 0;
+    let i = m.index + m[0].length - 1;
+    for (; i < text.length; i++) {
+      if (text[i] === "(") depth++;
+      else if (text[i] === ")" && --depth === 0) break;
+    }
+    if (depth !== 0) continue;
+    const raw = text.slice(m.index, i + 1);
+    out.push({ start: m.index, end: i + 1, tex: plainToTex(raw).replace(/(?<![\\\w])(log|ln|lg)(?!\w)/g, "\\$1 ").replace(/·/g, "\\cdot ") });
+    re.lastIndex = i + 1;
+  }
+  return out;
+}
+
 export function speakMath(text: string): string {
   if (!text) return text;
   const spans = delimited(text);
+  spans.push(...asymptoticInProse(text, spans));
+  spans.sort((a, b) => a.start - b.start);
   // The prose between delimited math: bare LaTeX and plain-text math.
   const prose: Span[] = [];
   let at = 0;
