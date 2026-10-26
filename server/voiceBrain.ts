@@ -121,7 +121,7 @@ export function voiceCallRules(device: Device): string {
   const where = device === "board" ? "his iPad board" : device === "phone" ? "his phone" : "his laptop";
   // One reply, written as always (markdown); the voice reads it aloud as written (server/speakable.ts). Only a light
   // nudge on length, and the one rule a live call needs: slow work goes to Delegate, so the voice never goes quiet.
-  return `[A voice call is live on ${where}: your replies are shown as always and also read aloud as written. Keep them short: two or three spoken sentences answer what he asked (offer more, don't give it); when he is thinking aloud rather than asking, a line at most. A lookup in his notes is one Lookup {query} call (it finds and reads together); independent calls go at once, not one after another. Anything that takes more than a few seconds — making or rebuilding a file (a PDF, a sheet, a page) always does — goes to Delegate {title, task, expect: "short" or "long"}: say in a line that you've sent it and carry on; its report comes back to you as a "Delegated work finished" turn, then tell him the result. Say something was done only when it was.]`;
+  return `[A voice call is live on ${where}: your replies are shown as always and also read aloud as written. Keep them short: two or three spoken sentences answer what he asked (offer more, don't give it); when he is thinking aloud rather than asking, a line at most. A lookup in his notes is one Lookup {query} call (it finds and reads together); independent calls go at once, not one after another. Anything that takes more than a few seconds — making, changing or rebuilding a file (a PDF, a sheet, a page) always does, and a change to a source includes rebuilding what is built from it (the PDF he reads) — goes to Delegate {title, task, expect: "short" or "long"}: say in a line that you've sent it and carry on; its report comes back to you as a "Delegated work finished" turn, then tell him the result. Say something was done only when it was.]`;
 }
 
 // ---------------------------------------------------------------- calls
@@ -202,6 +202,15 @@ export const isOpener = (text: string): boolean => {
 /** "Don't spoil it" (and the like) asks for no answers until he lifts it ("just tell me", "next question"). */
 export const NO_SPOIL_RE = /\b(?:don'?t|do not|no)\s+spoil|\bdon'?t (?:give|tell) me the (?:answer|rest)|\bwithout (?:your|any) help\b|\btrying to (?:do|work out|figure out) (?:it|this|that|the rest) (?:myself|on my own)\b/i;
 export const SPOIL_OK_RE = /\b(?:you can spoil it|spoil it now|just tell me|tell me the answer|give me the answer|show me the (?:answer|solution)|next (?:question|problem)|new problem|(?:question|problem) (?:two|three|four|five|[2-9])\b|part (?:b|c|d|two|three)\b)/i;
+/** Him thinking aloud, not asking (a long line, no question, no request): one short line back at most, or nothing.
+ *  The call rules ask for that once; Haiku drifted to 70 s replies, so each such line carries it. */
+export const THINKING_ALOUD_NOTE =
+  "[He is thinking aloud, not asking: answer in one short spoken line at most — agree, or flag the one thing that is wrong — or say nothing.]";
+const REQUEST_RE = /\?|\b(?:can|could|would|will) you\b|\bplease\b|^(?:\W*\w+\W+){0,3}?(?:make|send|find|show|read|open|give|check|write|draw|put|look|tell|explain|summari[sz]e|build|fix|delete|start|stop|help)\b|\b(?:what|how|why|where|which|who|when)\b|\b(?:right|correct|yeah)\s*[?.!]*\s*$/i;
+export const isThinkingAloud = (text: string): boolean => {
+  const t = text.trim();
+  return t.split(/\s+/).length >= 12 && !REQUEST_RE.test(t);
+};
 export const NO_SPOIL_NOTE =
   "[He asked not to be told the answers (\"don't spoil it\"), and that holds until he lifts it: confirm or correct only what he just said (look the problem up to check it: that is not spoiling), and ask him what comes next; never state the next step, a later value or the answer.]";
 
@@ -601,6 +610,7 @@ async function completions(d: BrainDeps, req: IncomingMessage, res: ServerRespon
   if (NO_SPOIL_RE.test(text)) c.noSpoil = true;
   else if (SPOIL_OK_RE.test(text)) c.noSpoil = false;
   if (c.noSpoil) notes.push(NO_SPOIL_NOTE);
+  if (isThinkingAloud(said)) notes.push(THINKING_ALOUD_NOTE);
   const out = await c.engine.message({ convId: c.convId, text: said, ...(notes.length ? { context: notes.join("\n") } : {}), via: "voice", client: c.device, clientMsgId: `v-${s.id}`, ...(wentOn ? { continues: true } : {}) }).catch((e): Record<string, unknown> => ({ error: (e as Error).message }));
   if (!out?.steered) c.armed = true;
   c.steer = out?.steered ? { clientId: `v-${s.id}`, text: said } : null;

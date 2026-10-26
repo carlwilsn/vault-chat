@@ -8,7 +8,7 @@ import { join } from "node:path";
 const logDir = mkdtempSync(join(tmpdir(), "vc-brain-test-"));
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { speechReady } from "../speakMath";
-import { HOLD_MS, NO_SPOIL_NOTE, OPENER_MS, STOP_RE, workCalibration, brainRoute, lastUserText, resetBrainForTests, voiceCallRules, type BrainDeps, type BrainEngine } from "../voiceBrain";
+import { HOLD_MS, NO_SPOIL_NOTE, OPENER_MS, STOP_RE, isThinkingAloud, workCalibration, brainRoute, lastUserText, resetBrainForTests, voiceCallRules, type BrainDeps, type BrainEngine } from "../voiceBrain";
 
 type Fake = BrainEngine & { emit(ev: any): void; messages: any[]; talker: any; interrupted: number; running: boolean; stopped: number };
 
@@ -503,6 +503,22 @@ describe("voice with one brain", () => {
     ac.abort();
     expect(got).toContain("The board's own answer.");
     expect(got).not.toContain("for the laptop");
+  });
+
+  it("thinking aloud (a long line, no question, no request) is told apart from asking", () => {
+    for (const t of [
+      "Okay so while that runs, I'm gonna think about question two. Semi-connected means for every pair, one can reach the other. So I take the strongly connected components first, hmm.",
+      "Okay and then for part b I need a counterexample, like a graph that's weakly connected but not semi-connected, so maybe a star with two leaves both pointing into the middle.",
+    ])
+      expect(isThinkingAloud(t)).toBe(true);
+    for (const t of [
+      "Can you make me a one page cheat sheet PDF with just the runtimes of Dijkstra, Bellman-Ford and BFS?",
+      "Okay so the reason you only need V minus one passes is that a shortest path never repeats a vertex, right?",
+      "Make me a full midterm study guide for CS 336, all seven lectures, one section per lecture, as a PDF.",
+      "Yo.",
+      "What's the actual difference between Dijkstra and Bellman-Ford, in like one sentence",
+    ])
+      expect(isThinkingAloud(t)).toBe(false);
   });
 
   it("lastUserText takes only Carl's newest words", () => {
