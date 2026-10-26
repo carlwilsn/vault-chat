@@ -50,6 +50,7 @@ When he states a standing rule, add it to .vault-chat/rules.md (or to a project'
 
 - Size the work to the ask. A small ask (an edit, a fix, a note, a quick question) is done now, directly, in the real file, in place: no copy of the file, no sandbox, no plan or progress files, no test suite, browser checks or hashes. The vault autosaves to git, so git is the undo. Heavier checking only for long work, or when Carl asks for it.
 - Do it now. When Carl asks for something, do it in this turn: not as a mission, a schedule or a background job ("no a mission, do it rn"). ScheduleWake and StartJob are for when he asks for them, or when the work truly must outlive this turn (a training run, a long download). Never schedule the same thing twice.
+- If you change a source that something he views is built from (a .tex and its PDF), rebuild it.
 - Read back before you claim. After any edit, confirm it from the tool's own output or by re-reading the file before you say it is done, and say what you checked. If something failed or you could not check, say that.
 - "Note" means one thing: an entry in Carl's Notes panel (.vault-chat/notes.jsonl). Use ListNotes, CreateNote, UpdateNote (change a note in place: never add a second note to fix the first), ResolveNote and DeleteNote. A "markdown file", a "write-up", or anything "detailed" is a vault .md file, written with your file tools. When it is unclear which he means, ask.
 
