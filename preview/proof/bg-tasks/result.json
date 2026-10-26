@@ -1,0 +1,168 @@
+{
+ "origin": "http://127.0.0.1:1560/before",
+ "shots": [
+  {
+   "name": "1-started-turn-over",
+   "at": 1792980512873,
+   "chip": "1 background task running· starting · 0:00",
+   "inlineChips": [],
+   "rows": [],
+   "pulse": true,
+   "taskEnd": [],
+   "raw": false,
+   "tokens": false,
+   "busy": false,
+   "last": [
+    "Morning! What are we working on?",
+    "On it — I'm building it in the background. Keep talking to me; I'll tell you when it's ready.",
+    ""
+   ]
+  },
+  {
+   "name": "2-moving-reading",
+   "at": 1792980515151,
+   "chip": "1 background task running· reading notes/physics/projectile-motion.md · 1 step · 0:02",
+   "inlineChips": [],
+   "rows": [],
+   "pulse": true,
+   "taskEnd": [],
+   "raw": false,
+   "tokens": false,
+   "busy": false,
+   "last": [
+    "Morning! What are we working on?",
+    "On it — I'm building it in the background. Keep talking to me; I'll tell you when it's ready.",
+    ""
+   ]
+  },
+  {
+   "name": "3-moving-writing",
+   "at": 1792980517498,
+   "chip": "1 background task running· writing physics.html · 2 steps · 0:04",
+   "inlineChips": [],
+   "rows": [],
+   "pulse": true,
+   "taskEnd": [],
+   "raw": false,
+   "tokens": false,
+   "busy": false,
+   "last": [
+    "Morning! What are we working on?",
+    "On it — I'm building it in the background. Keep talking to me; I'll tell you when it's ready.",
+    ""
+   ]
+  },
+  {
+   "name": "4-answered-while-running",
+   "at": 1792980520603,
+   "chip": "1 background task running· writing physics.html · 2 steps · 0:07",
+   "inlineChips": [],
+   "rows": [],
+   "pulse": true,
+   "taskEnd": [],
+   "raw": false,
+   "tokens": false,
+   "busy": false,
+   "last": [
+    "On it — I'm building it in the background. Keep talking to me; I'll tell you when it's ready.",
+    "",
+    "Brought it back: 469 is restored with its notes and its thread, as it was before you deleted it."
+   ]
+  },
+  {
+   "name": "5-list-open-stop-steer",
+   "at": 1792980522612,
+   "chip": "1 background task running",
+   "inlineChips": [],
+   "rows": [
+    {
+     "state": "running",
+     "text": "guided physics animation0:09SteerStopwriting physics.html · 2 steps",
+     "stop": true,
+     "steer": true
+    }
+   ],
+   "pulse": true,
+   "taskEnd": [],
+   "raw": false,
+   "tokens": false,
+   "busy": false,
+   "last": [
+    "On it — I'm building it in the background. Keep talking to me; I'll tell you when it's ready.",
+    "",
+    "Brought it back: 469 is restored with its notes and its thread, as it was before you deleted it."
+   ]
+  },
+  {
+   "name": "6-moving-check",
+   "at": 1792980526631,
+   "chip": "1 background task running",
+   "inlineChips": [],
+   "rows": [
+    {
+     "state": "running",
+     "text": "guided physics animation0:13SteerStoprunning node check-physics.js · 5 steps",
+     "stop": true,
+     "steer": true
+    }
+   ],
+   "pulse": true,
+   "taskEnd": [],
+   "raw": false,
+   "tokens": false,
+   "busy": false,
+   "last": [
+    "On it — I'm building it in the background. Keep talking to me; I'll tell you when it's ready.",
+    "",
+    "Brought it back: 469 is restored with its notes and its thread, as it was before you deleted it."
+   ]
+  },
+  {
+   "name": "6b-chat-closed-titlebar",
+   "at": 1792980527396,
+   "chip": "1 background task running",
+   "inlineChips": [],
+   "rows": [
+    {
+     "state": "running",
+     "text": "guided physics animation0:14SteerStoprunning node check-physics.js · 5 steps",
+     "stop": true,
+     "steer": true
+    }
+   ],
+   "pulse": true,
+   "taskEnd": [],
+   "raw": false,
+   "tokens": false,
+   "busy": false,
+   "last": [
+    "On it — I'm building it in the background. Keep talking to me; I'll tell you when it's ready.",
+    "",
+    "Brought it back: 469 is restored with its notes and its thread, as it was before you deleted it."
+   ],
+   "titlebar": "1 running"
+  },
+  {
+   "name": "7-result-arrived",
+   "at": 1792980529446,
+   "chip": null,
+   "inlineChips": [
+    "1 background task done"
+   ],
+   "rows": [],
+   "pulse": false,
+   "taskEnd": [
+    "Background task finished· guided physics animation"
+   ],
+   "raw": false,
+   "tokens": false,
+   "busy": false,
+   "last": [
+    "",
+    "Brought it back: 469 is restored with its notes and its thread, as it was before you deleted it.",
+    "Your physics animation is ready: physics.html — a 7-minute guided walk through projectile motion, six scenes with narration cues, and I checked that every scene renders."
+   ]
+  }
+ ],
+ "errors": []
+}

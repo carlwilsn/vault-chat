@@ -155,6 +155,7 @@ export function registerSubagentTool(pi) {
       "Modes: single (agent + task), parallel (tasks array), chain (sequential with {previous} placeholder).",
       `At most ${MAX_PARALLEL_TASKS} tasks per call, ${MAX_CONCURRENCY} at once.`,
       "Subagents cannot ask Carl anything: they report back to you, and you decide what reaches him.",
+      "This tool waits: your turn stays open until they report. Use it only for quick fan-out (seconds); anything longer goes to Delegate, which runs in the background while you keep talking. If Carl writes while it waits, the children move to the background and their reports come back as new turns.",
       `Agents: ${discoverAgents().map((a) => `${a.name}: ${a.description}`).join("; ") || "none"}.`,
     ].join(" "),
     parameters: SubagentParams,

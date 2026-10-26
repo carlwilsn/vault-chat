@@ -4,12 +4,28 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import { FolderOpen, Minus, Square, Copy, X, Settings, PanelLeft, PanelRight, ExternalLink, Eye, Terminal, RefreshCw, StickyNote, GitMerge, CloudOff, FileWarning, AlertTriangle, WifiOff } from "lucide-react";
 import { useStore, type FileEntry } from "./store";
+import { runningTaskCount } from "./backgroundTasks";
 import { openChatPopout } from "./sync";
 import { gitInitIfNeeded } from "./git";
 import { stopAgent } from "./chat-controller";
 import { VoiceCockpit, VoiceMicGroup } from "./VoiceCockpit";
 import { subscribeBoxSync, openTailscale, boxSyncNow, type BoxSyncState } from "./vaultSync";
 import { openTerminal, subscribeTerminalNote, terminalBoxName, terminalTitle } from "./terminal";
+
+/** With the chat closed: "1 running" while the agent's background tasks work; a click opens the chat. */
+function TasksRunning({ hidden, onOpen }: { hidden: boolean; onOpen: () => void }) {
+  const n = useStore((s) => runningTaskCount(s.conversations));
+  if (hidden || !n) return null;
+  return (
+    <button onClick={onOpen} data-el="titlebar-tasks" title="Background tasks running — open the chat" className="h-6 mr-2 px-2 flex items-center gap-1.5 rounded-full border border-border/60 text-[11px] text-muted-foreground hover:text-foreground hover:bg-accent/60">
+      <span className="relative inline-flex h-1.5 w-1.5">
+        <span className="absolute inset-0 rounded-full bg-primary opacity-60 animate-ping" />
+        <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-primary" />
+      </span>
+      <span className="tabular-nums">{n} running</span>
+    </button>
+  );
+}
 
 export function Titlebar() {
   const {
@@ -184,6 +200,8 @@ export function Titlebar() {
       <div data-tauri-drag-region className="flex-1 h-full" />
 
       <SyncChip />
+
+      <TasksRunning hidden={!rightCollapsed || popoutOpen} onOpen={toggleRight} />
 
       <div className="flex items-center">
         <button

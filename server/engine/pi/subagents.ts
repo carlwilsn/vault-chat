@@ -43,10 +43,80 @@ type Child = {
   stopReason: string | null;
   error: string | null;
   stopped: ChildState | null;
-  /** Started by BoardMake: outlives the parent's turn (only the parent's process ending stops it). */
+  /** Started in the background (Delegate, BoardMake) or moved there (detach): outlives the parent's turn (only the
+   *  parent's process ending stops it). */
   background: boolean;
   settle: (aborted: boolean) => void;
+  /** Resolves when the child's run settles (true: aborted). */
+  done: Promise<boolean>;
+  timer: NodeJS.Timeout | null;
+  /** The parent's call that carries it (its toolCallId), for its row. */
+  itemId: string;
+  /** What Carl reads in its row: Delegate's title, else the task's first words. */
+  title: string;
+  /** What it is doing now, from its own pi events: its latest tool and target, tool calls done, its latest words. */
+  activity: string;
+  steps: number;
+  said: string;
+  /** A blocking `subagent` call that Carl talked over: the parent's call answers at once, the report comes later. */
+  detach: () => void;
+  detached: Promise<void>;
+  /** Its report, once it ends. */
+  result: Promise<Record<string, unknown>> | null;
 };
+
+/** A child moved to the background: its id, title and the report it will give. */
+export type Detached = { id: string; title: string; result: Promise<Record<string, unknown>> };
+
+/** A running child as the agent's JobList / JobStatus read it. */
+export type LiveChild = { id: string; parent: string; title: string; activity: string; steps: number; said: string; startedAt: number; background: boolean };
+
+/** A child's latest tool call in a few words ("writing physics.html", "running npm test"), from pi's tool_execution_start. */
+export function activityOf(tool: string, args: any): string {
+  const base = (p: unknown) => String(p ?? "").replace(/\\/g, "/").split("/").filter(Boolean).pop() ?? "";
+  const one = (v: unknown, n = 60) => {
+    const t = String(v ?? "").replace(/\s+/g, " ").trim();
+    return t.length > n ? `${t.slice(0, n - 1)}…` : t;
+  };
+  const path = base(args?.path ?? args?.file_path);
+  switch (tool) {
+    case "write":
+      return path ? `writing ${path}` : "writing a file";
+    case "edit":
+      return path ? `editing ${path}` : "editing a file";
+    case "read":
+    case "PdfRead":
+      return path ? `reading ${path}` : "reading";
+    case "bash":
+      return args?.command ? `running ${one(args.command)}` : "running a command";
+    case "grep":
+      return args?.pattern ? `searching for ${one(args.pattern, 40)}` : "searching";
+    case "find":
+    case "ls":
+      return "looking through files";
+    case "WebSearch":
+      return args?.query ? `searching the web for ${one(args.query, 40)}` : "searching the web";
+    case "BoardSend":
+      return "sending to the whiteboard";
+    case "Notify":
+      return "notifying Carl";
+    default:
+      return tool;
+  }
+}
+
+/** An assistant message's text, its last non-empty line, short (a child's latest words in its row). */
+function lastWords(m: any): string {
+  const t = (Array.isArray(m?.content) ? m.content : []).filter((c: any) => c?.type === "text").map((c: any) => String(c.text ?? "")).join("\n");
+  const line = t.split("\n").map((l: string) => l.trim()).filter(Boolean).pop() ?? "";
+  return line.length > 160 ? `${line.slice(0, 159)}…` : line;
+}
+
+/** A task's first words, for a row with no title. */
+function firstWords(task: string): string {
+  const t = task.replace(/\s+/g, " ").trim();
+  return t.length > 80 ? `${t.slice(0, 79)}…` : t;
+}
 
 const PI_BUILTINS = ["read", "bash", "edit", "write", "grep", "find", "ls"];
 /** Host tools a child may have; AskUser, subagent, ScheduleWake, StartJob… never. */
@@ -105,19 +175,66 @@ export class Subagents {
     this.waiters.shift()?.();
   }
 
-  /** One child, start to report. Never throws. */
+  /** One child, start to report. Never throws. A child moved to the background while it runs (detach) answers at
+   *  once with a line saying so; its report then comes through detach's `result`. */
   async run(parentId: string, a: any): Promise<Record<string, unknown>> {
     await this.acquire();
-    try {
-      return await this.runOne(parentId, a);
-    } catch (e) {
-      return { ok: false, state: "failed", text: `The subagent could not start: ${(e as Error).message}` };
-    } finally {
+    let held = true;
+    const release = () => {
+      if (!held) return;
+      held = false;
       this.release();
+    };
+    try {
+      const c = await this.startOne(parentId, a);
+      if (!isChild(c)) {
+        release();
+        return c;
+      }
+      const result = this.finishOne(c).finally(release);
+      c.result = result;
+      const first = await Promise.race([result, c.detached.then(() => null)]);
+      if (first) return first;
+      const chain = a?.mode === "chain";
+      return {
+        ok: !chain,
+        state: "background",
+        childId: c.id,
+        text: `Carl wrote while this subagent ran, so it moved to the background and keeps working${chain ? " (the chain stopped here: its later steps did not run)" : ""}. Its report comes back to you as a new turn ("Delegated work finished: …"). Answer Carl now; don't wait for it and don't start it again.`,
+      };
+    } catch (e) {
+      release();
+      return { ok: false, state: "failed", text: `The subagent could not start: ${(e as Error).message}` };
     }
   }
 
-  private async runOne(parentId: string, a: any): Promise<Record<string, unknown>> {
+  /** Carl wrote while the parent's `subagent` call was waiting: its running children move to the background (each
+   *  parent call answers at once, each child keeps working); their reports arrive through `result`. */
+  detach(parentId: string): Detached[] {
+    const out: Detached[] = [];
+    for (const c of this.children.values()) {
+      if (c.parent !== parentId || c.background || c.stopped || !c.result) continue;
+      c.background = true;
+      this.b.ev({ kind: "subagentStatus", threadId: parentId, child: c.id, status: "running", patch: { background: true } });
+      this.log(`subagent ${c.id} moved to the background (Carl wrote)`);
+      c.detach();
+      out.push({ id: c.id, title: c.title, result: c.result });
+    }
+    return out;
+  }
+
+  /** A running child (JobList / JobStatus), or null. */
+  live(childId: string): LiveChild | null {
+    const c = this.children.get(childId);
+    return c ? { id: c.id, parent: c.parent, title: c.title, activity: c.activity, steps: c.steps, said: c.said, startedAt: c.startedAt, background: c.background } : null;
+  }
+
+  /** The running children of a parent thread (JobList). */
+  liveOf(parentId: string): LiveChild[] {
+    return [...this.children.values()].filter((c) => c.parent === parentId).map((c) => this.live(c.id)!);
+  }
+
+  private async startOne(parentId: string, a: any): Promise<Child | Record<string, unknown>> {
     const agent = a?.agent ?? {};
     const task = String(a?.task ?? "").trim();
     if (!task) return { ok: false, state: "failed", text: "subagent needs a task." };
@@ -150,6 +267,10 @@ export class Subagents {
     let settled = false;
     let resolveDone!: (aborted: boolean) => void;
     const done = new Promise<boolean>((r) => (resolveDone = r));
+    let detachNow!: () => void;
+    const detached = new Promise<void>((r) => (detachNow = r));
+    // One entry per spawn: the parent's own `subagent` tool call (its toolCallId) carries the children.
+    const itemId = typeof a?.toolCallId === "string" && a.toolCallId ? a.toolCallId : `sub-${id}`;
     const child: Child = {
       id,
       parent: parentId,
@@ -168,18 +289,51 @@ export class Subagents {
         settled = true;
         resolveDone(aborted);
       },
+      done,
+      timer: null,
+      itemId,
+      title: String(a?.title ?? "").trim().slice(0, 120) || firstWords(task),
+      activity: "starting",
+      steps: 0,
+      said: "",
+      detach: () => detachNow(),
+      detached,
+      result: null,
     };
     this.children.set(id, child);
     this.files.set(id, file);
-    // One entry per spawn: the parent's own `subagent` tool call (its toolCallId) carries the children.
-    const itemId = typeof a?.toolCallId === "string" && a.toolCallId ? a.toolCallId : `sub-${id}`;
     this.b.ev({ kind: "subagents", threadId: parentId, itemId, children: [id], op: "spawnAgent", prompt: task, model, done: false, ok: false });
-    this.b.ev({ kind: "subagentStatus", threadId: parentId, child: id, status: "running", path: file, patch: { task: task.slice(0, 500), ...(a?.title ? { title: String(a.title).slice(0, 120) } : {}), ...(a?.expect === "short" || a?.expect === "long" ? { expect: a.expect } : {}), ...(child.background ? { background: true } : {}), agent: child.agent, model, state: "running", startedAt: child.startedAt, sessionFile: file, costUsd: 0, toolCallId: itemId } });
+    this.b.ev({ kind: "subagentStatus", threadId: parentId, child: id, status: "running", path: file, patch: { task: task.slice(0, 500), title: child.title, ...(a?.expect === "short" || a?.expect === "long" ? { expect: a.expect } : {}), ...(child.background ? { background: true } : {}), agent: child.agent, model, state: "running", startedAt: child.startedAt, sessionFile: file, costUsd: 0, toolCallId: itemId } });
 
+    // What it is doing, from its own pi events, onto its row: at most one update a second, the newest always lands.
+    let lastPush = 0;
+    let pushTimer: NodeJS.Timeout | null = null;
+    const push = () => {
+      pushTimer = null;
+      lastPush = Date.now();
+      if (settled) return;
+      this.b.ev({ kind: "subagentStatus", threadId: parentId, child: id, status: "running", patch: { activity: child.activity, steps: child.steps, ...(child.said ? { said: child.said } : {}), activityAt: lastPush } });
+    };
+    const changed = () => {
+      if (pushTimer) return;
+      pushTimer = setTimeout(push, Math.max(0, 1000 - (Date.now() - lastPush)));
+      pushTimer.unref?.();
+    };
     proc.on("event", (e: any) => {
       if (e?.type === "message_end" && e.message?.role === "assistant") {
         child.stopReason = e.message.stopReason ?? null;
         child.error = e.message.stopReason === "error" ? String(e.message.errorMessage ?? "error").slice(0, 500) : null;
+        const words = lastWords(e.message);
+        if (words) {
+          child.said = words;
+          changed();
+        }
+      } else if (e?.type === "tool_execution_start") {
+        child.activity = activityOf(String(e.toolName ?? "tool"), e.args ?? {});
+        changed();
+      } else if (e?.type === "tool_execution_end") {
+        child.steps++;
+        changed();
       } else if (e?.type === "agent_settled") child.settle(!!e.aborted);
     });
     proc.on("ui", (r: any) => void this.onChildUi(child, r));
@@ -192,14 +346,22 @@ export class Subagents {
       void this.stop(child, "timeout");
     }, this.o.timeoutMs);
     timer.unref?.();
+    child.timer = timer;
 
     const r = await proc.request({ type: "prompt", message: `Task: ${task}` }, 60_000).catch((e) => ({ success: false, error: (e as Error).message }));
     if (!r?.success) {
       child.error = String(r?.error ?? "prompt rejected");
       child.settle(false);
     }
-    await done;
-    clearTimeout(timer);
+    return child;
+  }
+
+  /** A started child, to its report. */
+  private async finishOne(child: Child): Promise<Record<string, unknown>> {
+    const { proc, id, file, task, model, itemId } = child;
+    const parentId = child.parent;
+    await child.done;
+    if (child.timer) clearTimeout(child.timer);
     let text = "";
     if (proc.isAlive()) {
       const t = await proc.request({ type: "get_last_assistant_text" }, 15_000).catch(() => null);
@@ -213,7 +375,7 @@ export class Subagents {
     const report = text || "";
     const ok = state === "completed";
     this.b.ev({ kind: "subagents", threadId: parentId, itemId, children: [id], op: "spawnAgent", prompt: task, model, done: true, ok });
-    this.b.ev({ kind: "subagentStatus", threadId: parentId, child: id, status: state, patch: { state, costUsd, endedAt: Date.now(), ...(report ? { summary: report.slice(0, 500) } : {}) } });
+    this.b.ev({ kind: "subagentStatus", threadId: parentId, child: id, status: state, patch: { state, costUsd, steps: child.steps, endedAt: Date.now(), ...(report ? { summary: report.slice(0, 500) } : {}) } });
     this.log(`subagent ${id} (${child.agent}, ${model}) ${state}, $${costUsd}`);
     const failText = state === "timeout" ? "The subagent ran out of time and was stopped." : state === "stopped" ? "The subagent was stopped." : state === "killed" ? "The subagent's process ended unexpectedly." : child.error ?? "";
     return { ok, state, text: ok ? report || "(no output)" : [failText, report].filter(Boolean).join("\n\n"), childId: id, model, costUsd, sessionFile: file };
@@ -281,4 +443,8 @@ export class Subagents {
 
 function round(n: number): number {
   return Math.round(n * 1e7) / 1e7;
+}
+
+function isChild(c: Child | Record<string, unknown>): c is Child {
+  return typeof (c as Child).detach === "function";
 }

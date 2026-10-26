@@ -237,21 +237,27 @@ export const ENGINE_TOOL_SPECS = [
     type: "function",
     name: "JobList",
     readOnly: true,
-    description: "This conversation's jobs (all: true for every job in the vault): id, state, age, command.",
+    description: "This conversation's background work: its running Delegate workers (id, title, what each is doing now) and its StartJob jobs (all: true for every job in the vault): id, state, age, command.",
     inputSchema: { type: "object", properties: { all: { type: "boolean" } }, additionalProperties: false },
   },
   {
     type: "function",
     name: "JobStop",
-    description: "Stop a running job (its whole process tree).",
+    description: "Stop a running Delegate worker or StartJob job by its id (JobList). A stopped worker's turn still follows, saying it was stopped.",
     inputSchema: { type: "object", properties: { id: { type: "string" } }, required: ["id"], additionalProperties: false },
   },
   {
     type: "function",
     name: "JobStatus",
     readOnly: true,
-    description: "State and last output lines of a job started with StartJob.",
+    description: "What a Delegate worker is doing now (its latest step, steps done, time), or a StartJob job's state and last output lines.",
     inputSchema: { type: "object", properties: { id: { type: "string" }, tail: { type: "number" } }, required: ["id"], additionalProperties: false },
+  },
+  {
+    type: "function",
+    name: "JobSteer",
+    description: "Pass Carl's change to a running Delegate worker (\"make it shorter\"): it takes it up after its current step and keeps going. The id is from JobList.",
+    inputSchema: { type: "object", properties: { id: { type: "string" }, message: { type: "string" } }, required: ["id", "message"], additionalProperties: false },
   },
   {
     type: "function",
@@ -434,7 +440,7 @@ export function sideToolSpecs(): ToolSpec[] {
   return agentToolSpecs().filter((t) => t.readOnly === true);
 }
 /** The agent's tools a side thread can't use: they belong to a turn (its question, plan, background maker, job, wake). */
-const TURN_ONLY_TOOLS = new Set(["AskUser", "TodoWrite", "BoardMake", "Delegate", "StartJob", "JobStop", "ScheduleWake"]);
+const TURN_ONLY_TOOLS = new Set(["AskUser", "TodoWrite", "BoardMake", "Delegate", "StartJob", "JobStop", "JobSteer", "ScheduleWake"]);
 /** Voice's Ask (server/voice.ts), a side thread: a question has the read-only tools and Show; an action every tool a
  *  side thread can use (BoardSend, Show, the notes …), with pi's own file tools (sideStart). */
 export function voiceSideToolSpecs(act: boolean): ToolSpec[] {
@@ -721,6 +727,7 @@ export class Engine {
         if (p.meta.asking) continue;
         if (p.meta.threadId) this.resumeQueue.add(r.id);
       }
+      this.reapLostWorkers();
     }
     const q = [...this.resumeQueue];
     this.resumeQueue.clear();
@@ -925,6 +932,9 @@ export class Engine {
       this.setPending(id, { id: clientId, kind, text: shown, at: Date.now() });
       l.feed.expect({ kind, text: sent, clientId, shown, via: body.via ?? kind, images: itemImages, ...(origin ? { device: origin } : {}) });
       l.rec.q(kind, clientId);
+      // A turn waiting on a `subagent` call would take him up only when its children end (minutes): they move to
+      // the background, the call answers at once, and his message is taken up now; each report comes as its own turn.
+      this.detachWaiting(id, l.threadId);
       try {
         if (kind === "queue") await this.d.backend.followUp(l.threadId, { texts: [sent], images: paths });
         else await this.d.backend.steer(l.threadId, l.turnId, { texts: [sent], images: paths });
@@ -1362,6 +1372,9 @@ export class Engine {
             this.setPending(convId, { id, kind: "steer", text: opts.shown ?? input, at: Date.now() });
             existing.feed.expect({ kind: "steer", text: sent, clientId: id, shown: opts.shown ?? input, via: opts.via ?? "steer", images: opts.itemImages });
             existing.rec.q("steer", id);
+            // pi delivers a steer after the running tool calls: a `subagent` call can wait minutes, so its children
+            // move to the background and he is answered now (like Claude Code's background tasks).
+            this.detachWaiting(convId, existing.threadId);
             await b.steer(existing.threadId, existing.turnId, { texts: [sent], images: opts.images ?? [] }).catch(() => {
               existing.feed.forget(id);
               this.setPending(convId, undefined, id);
@@ -1696,7 +1709,7 @@ export class Engine {
     if (itemId && all.some((x) => x.kind === "tool" && x.id === itemId)) return itemId;
     for (let j = all.length - 1; j >= 0; j--) {
       const x = all[j]!;
-      if (x.kind === "tool" && x.name === "subagent" && isOpen(x)) return x.id;
+      if (x.kind === "tool" && (x.name === "subagent" || x.name === "Delegate") && isOpen(x)) return x.id;
     }
     return itemId || null;
   }
@@ -1759,6 +1772,80 @@ export class Engine {
     void this.d
       .notify({ kind: "info", title: head.slice(0, 90), body, convId: l.convId, why, byCarl: true, trigger: l.kind === "user" ? "turn end" : `${l.turnOpts.via ?? l.kind} end`, pushOnly: true })
       .catch(() => undefined);
+  }
+
+  /** A background worker's report (Delegate's, or a `subagent` call moved to the background) comes back to its
+   *  conversation as one new turn, "Delegated work finished: …" — exactly once. If that turn cannot start, the
+   *  report is still written into the conversation as a line, never dropped. */
+  private reportWhenDone(convId: string, title: string, result: Promise<Record<string, unknown>>): void {
+    void result
+      .then(
+        (r: any) => `Delegated work ${r?.ok ? "finished" : `failed (${r?.state ?? "error"})`}: "${title}"\n\n${String(r?.text ?? "").slice(0, 12_000) || "(no report)"}`,
+        (err: Error) => `Delegated work failed: "${title}"\n\n${err?.message ?? err}`,
+      )
+      .then((input) =>
+        this.scoped(() =>
+          this.run(convId, input, "wake").catch((err: Error) => {
+            this.log(`delegate result on ${convId}: ${err.message}`);
+            return this.notice(convId, `${input.split("\n")[0]} — the agent could not take it up (${err.message}).\n\n${input.split("\n").slice(2).join("\n").slice(0, 4000)}`, "warn");
+          }),
+        ),
+      );
+  }
+
+  /** At boot: workers a restart of the server took down (their processes went with it) still read "running". Each
+   *  is marked ended; a background one's conversation gets its "failed" turn (the agent says so, or starts it again);
+   *  a blocking one belonged to a turn that the restart cut, and that turn's resume takes it up. */
+  private reapLostWorkers(): void {
+    const log = logOf(this.d.vault);
+    for (const convId of log.ids()) {
+      const subs = (this.picture(convId)?.meta.subagents ?? []) as Record<string, any>[];
+      for (const s of subs) {
+        if ((s.state ?? s.status) !== "running" || this.d.backend.liveChild?.(s.threadId)) continue;
+        this.updateSubagent(convId, s.threadId, { status: "killed", state: "killed", endedAt: Date.now(), summary: "Stopped by a restart of the server before it reported." });
+        // (A whiteboard make reports in Carl's inbox instead: BoardMake marks its entry failed on its own path.)
+        if (!s.background || s.agent === "board-maker") continue;
+        this.log(`worker ${s.threadId} on ${convId} was lost in a restart: reporting it`);
+        this.reportWhenDone(convId, String(s.title ?? s.task ?? "background work").slice(0, 120), Promise.resolve({ ok: false, state: "killed", text: "The server restarted while this worker ran, so it stopped before it reported. Start it again if it is still wanted." }));
+      }
+    }
+  }
+
+  /** A worker (subagent) of this conversation, as its row has it. */
+  private workerRec(convId: string, id: string): Record<string, any> | null {
+    if (!id) return null;
+    const subs = (this.picture(convId)?.meta.subagents ?? []) as Record<string, any>[];
+    return subs.find((s) => s.threadId === id) ?? null;
+  }
+
+  /** One worker for JobStatus: state, what it is doing (from its own pi events), steps, time; its report once ended. */
+  private workerStatus(convId: string, id: string): string | null {
+    const rec = this.workerRec(convId, id);
+    if (!rec) return null;
+    const live = this.d.backend.liveChild?.(id) ?? null;
+    const since = Number(rec.startedAt) || Date.now();
+    const dur = (ms: number) => (ms < 90_000 ? `${Math.round(ms / 1000)} s` : `${Math.round(ms / 60_000)} min`);
+    if (live) return `Worker ${id} ("${live.title}"): running for ${dur(Date.now() - since)}, ${live.steps} tool call(s) done, now ${live.activity}.${live.said ? `\nIts latest words: ${live.said}` : ""}`;
+    const state = String(rec.state ?? rec.status ?? "ended");
+    return `Worker ${id} ("${rec.title ?? rec.task ?? ""}"): ${state === "running" ? "no longer running (its report is on its way)" : state}${rec.endedAt ? `, after ${dur(Number(rec.endedAt) - since)}` : ""}.${rec.summary ? `\nIts report began: ${String(rec.summary).slice(0, 400)}` : ""}`;
+  }
+
+  /** This conversation's running workers, one line each (JobList), or "" when none. */
+  private workerList(convId: string): string {
+    const subs = (this.picture(convId)?.meta.subagents ?? []) as Record<string, any>[];
+    const out: string[] = [];
+    for (const s of subs) {
+      const live = this.d.backend.liveChild?.(s.threadId);
+      if (!live) continue;
+      out.push(`- ${s.threadId}: "${live.title}", running ${Math.round((Date.now() - (Number(s.startedAt) || Date.now())) / 60_000)} min, ${live.steps} step(s), now ${live.activity}`);
+    }
+    return out.join("\n");
+  }
+
+  /** Carl wrote while the turn waits on a `subagent` call: its children move to the background, the call answers
+   *  at once (so his message is taken up now), and each report comes back as its own turn. */
+  private detachWaiting(convId: string, threadId: string): void {
+    for (const d of this.d.backend.detach?.(threadId) ?? []) this.reportWhenDone(convId, d.title, d.result);
   }
 
   private updateSubagent(convId: string, threadId: string, patch: Record<string, unknown>): void {
@@ -1880,14 +1967,8 @@ export class Engine {
             title,
             ...(a.expect === "short" || a.expect === "long" ? { expect: a.expect } : {}),
           });
-          void started
-            .then((r: any) => {
-              const how = r?.ok ? "finished" : `failed (${r?.state ?? "error"})`;
-              return this.run(convId, `Delegated work ${how}: "${title}"\n\n${String(r?.text ?? "").slice(0, 12_000) || "(no report)"}`, "wake");
-            })
-            .catch((err: Error) => this.run(convId, `Delegated work failed: "${title}"\n\n${err.message}`, "wake"))
-            .catch((err: Error) => this.log(`delegate result on ${convId}: ${err.message}`));
-          return text(`Started in the background ("${title}"). Its report comes back to you as a new turn when it is done. If you already told Carl you sent it, end your turn now without another line; otherwise say so in one short line.`);
+          this.reportWhenDone(convId, title, started);
+          return text(`Started in the background ("${title}"). Its report comes back to you as a new turn when it is done; JobList shows it running. If you already told Carl you sent it, end your turn now without another line; otherwise say so in one short line, then end your turn.`);
         }
         case "BoardMake": {
           const request = String(a.request ?? "").trim();
@@ -1966,11 +2047,28 @@ export class Engine {
         case "RecentActivity":
           return text(searchActivity(vault, { query: typeof a.query === "string" ? a.query : "", hours: Number(a.hours) || undefined, limit: Number(a.limit) || undefined }));
         case "JobStatus":
-          return text(jobStatus(this.d.jobEnv, a));
-        case "JobList":
-          return text(jobList(this.d.jobEnv, convId, a.all === true));
-        case "JobStop":
-          return text(jobStop(this.d.jobEnv, String(a.id ?? "").trim(), convId));
+          return text(this.workerStatus(convId, String(a.id ?? "").trim()) ?? jobStatus(this.d.jobEnv, a));
+        case "JobList": {
+          const workers = this.workerList(convId);
+          const jobs = jobList(this.d.jobEnv, convId, a.all === true);
+          return text(workers ? `Background workers (Delegate):\n${workers}\n\nShell jobs (StartJob):\n${jobs}` : jobs);
+        }
+        case "JobStop": {
+          const id = String(a.id ?? "").trim();
+          if (this.workerRec(convId, id)) {
+            const r = await this.d.backend.subagentControl(id, "stop");
+            return text(r.ok ? `Stopping worker ${id}; its "Delegated work failed (stopped)" turn follows.` : `Not stopped: ${r.error ?? "it is not running"}.`);
+          }
+          return text(jobStop(this.d.jobEnv, id, convId));
+        }
+        case "JobSteer": {
+          const id = String(a.id ?? "").trim();
+          const message = String(a.message ?? "").trim();
+          if (!this.workerRec(convId, id)) return text(`No background worker ${id} in this conversation (JobList shows them).`);
+          if (!message) return text("JobSteer needs a message.");
+          const r = await this.d.backend.subagentControl(id, "steer", message);
+          return text(r.ok ? `Passed to worker ${id}; it takes it up after its current step.` : `Not passed: ${r.error ?? "it is not running"}.`);
+        }
         case "TodoWrite": {
           const todos = (Array.isArray(a.todos) ? a.todos : [])
             .slice(0, 30)

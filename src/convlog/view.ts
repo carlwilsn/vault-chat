@@ -73,9 +73,20 @@ export function argsOf(it: Item): any {
 const TOOL_NAMES: Record<string, string> = { bash: "Bash", read: "Read", write: "Write", edit: "Edit", grep: "Grep", find: "Glob", ls: "LS" };
 export const toolName = (n: string | undefined): string => TOOL_NAMES[n ?? ""] ?? (n || "tool");
 
-const ENGINE_VIA = new Set(["wake", "nudge", "resume", "job"]);
+const ENGINE_VIA = new Set(["wake", "nudge", "resume", "job", "delegate"]);
 
-export type JobEnd = { id: string; name: string; status: string; failed: boolean; output: string };
+export type JobEnd = { id: string; name: string; status: string; failed: boolean; output: string; task?: boolean };
+
+/** A background worker's report turn (Delegate, server/engine/engine.ts reportWhenDone): "Delegated work <how>: "<title>"".
+ *  Its row says which task ended and how; the report itself is the agent's to tell (its next message), never shown raw. */
+export function taskEndOf(text: string): JobEnd | null {
+  const m = /^Delegated work (finished|failed(?: \(([^)]*)\))?): "([^"\n]*)"/.exec(text.trim());
+  if (!m) return null;
+  const failed = m[1] !== "finished";
+  const why = m[2] ?? "";
+  const status = !failed ? "finished" : why === "stopped" ? "stopped" : why === "killed" ? "lost in a restart" : why === "timeout" ? "timed out" : "failed";
+  return { id: m[3]!, name: m[3]!, status, failed: failed && why !== "stopped", output: "", task: true };
+}
 
 /** The wake a job's end gives its conversation (server/engine/engine.ts tickJobs): "Job <id> <how>." then its last output. */
 export function jobEndOf(text: string): JobEnd | null {
@@ -101,7 +112,11 @@ function messagesOfItem(it: Item): ViewMessage[] {
         const job = jobEndOf(it.text ?? "");
         if (job) return [{ role: "user", system: true, content: `Job ${job.status} · ${job.name}`, mid: it.id, job }];
       }
-      if (ENGINE_VIA.has(it.via ?? "")) return [{ role: "user", system: true, content: `${it.via === "wake" || it.via === "job" ? "⏰" : "↻"} ${it.text ?? ""}`.trim(), mid: it.id }];
+      if (it.via === "delegate") {
+        const job = taskEndOf(it.text ?? "");
+        if (job) return [{ role: "user", system: true, content: `Background task ${job.status} · ${job.name}`, mid: it.id, job }];
+      }
+      if (ENGINE_VIA.has(it.via ?? "")) return [{ role: "user", system: true, content: `${it.via === "wake" || it.via === "job" || it.via === "delegate" ? "⏰" : "↻"} ${it.text ?? ""}`.trim(), mid: it.id }];
       return [
         {
           role: "user",

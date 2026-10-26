@@ -34,6 +34,7 @@ import {
   type SubagentRec,
 } from "./chatExtras";
 import { uiChoice } from "./uiChoices";
+import { taskState } from "./backgroundTasks";
 import { formatCost } from "./ongoingWork";
 import { OngoingLine } from "./OngoingLine";
 import { isArchivedThread, ARCHIVED_THREAD, OLDER_CHAT } from "./conversations";
@@ -376,24 +377,32 @@ export function ChatPane() {
   // What the thread shows beside the text (chatExtras.tsx; uiChoices.ts picks
   // where each goes while Carl decides). Stable props, so the bubbles' memo
   // holds while a reply streams.
+  // Background tasks (backgroundTasks.ts), as Claude Code shows them: while any runs, one chip above the composer
+  // (always in view, live); once a spawn's tasks have all ended, its chip sits collapsed under the reply that
+  // started them ("1 background task done"). The finished set only changes when a task ends, so the bubbles' memo
+  // holds while a running task's activity ticks.
   const subagents = activeConv?.subagents ?? NO_SUBAGENTS;
   const subagentsInline = uiChoice("subagents") === "inline";
+  const runningTasks = useMemo(() => subagents.filter((s) => taskState(s) === "running"), [subagents]);
+  const endedKey = subagents.filter((s) => taskState(s) !== "running").map((s) => `${s.threadId}:${s.state ?? s.status}:${s.toolCallId ?? ""}`).join("|");
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const endedTasks = useMemo(() => subagents.filter((s) => taskState(s) !== "running"), [endedKey]);
   const spawnsAt = useMemo(
     () => messages.map((m) => {
-      const r = subagentsOfMessage(m, subagents);
-      return r.length ? r : undefined;
+      const all = subagentsOfMessage(m, subagents);
+      // A spawn shows in the thread once none of its tasks still runs (a running one is in the chip above the composer).
+      if (!all.length || all.some((s) => taskState(s) === "running")) return undefined;
+      return subagentsOfMessage(m, endedTasks);
     }),
-    [messages, subagents],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [messages, endedTasks, runningTasks.length],
   );
-  // The strip shows the newest spawn (one `subagent` call's children).
-  const latestSpawn = useMemo(() => {
-    const last = subagents[subagents.length - 1];
-    return last ? subagents.filter((x) => (x.toolCallId ?? "") === (last.toolCallId ?? "")) : NO_SUBAGENTS;
-  }, [subagents]);
   const unplacedSubagents = useMemo(() => {
     const placed = new Set(spawnsAt.flatMap((r) => (r ?? []).map((x) => x.threadId)));
-    return subagents.filter((x) => !placed.has(x.threadId));
-  }, [spawnsAt, subagents]);
+    const spawnedBy = new Set(messages.flatMap((m) => subagentsOfMessage(m, subagents).map((x) => x.threadId)));
+    return endedTasks.filter((x) => !placed.has(x.threadId) && !spawnedBy.has(x.threadId));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [spawnsAt, endedTasks, messages]);
   const answerAsk = useCallback((answer: string) => {
     const id = useStore.getState().activeConversationId;
     if (boxChatOn() && id) void boxAnswer(id, answer);
@@ -1129,7 +1138,7 @@ export function ChatPane() {
         )}
 
         <div className="p-3 max-w-[820px] mx-auto w-full">
-          {!subagentsInline && latestSpawn.length > 0 && <Subagents list={latestSpawn} variant="strip" onControl={controlSubagent} />}
+          {runningTasks.length > 0 && <Subagents list={runningTasks} variant="strip" onControl={controlSubagent} />}
           {todos.length > 0 && uiChoice("todos") === "pinned" && (busy || todos.some((t) => t.status !== "completed")) && (
             <div className="mb-1.5 max-h-40 overflow-auto" data-el="todos-pinned">
               <AgentTodoList todos={todos} />
@@ -1559,6 +1568,8 @@ export const MessageBubble = memo(function MessageBubble({
   if (isCompactionDivider(message)) {
     return <CompactionDivider message={message} />;
   }
+  // A job's or a background task's end is a system line of its own kind (before the generic notice).
+  if (message.job) return <JobRow job={message.job} />;
   if (message.system) {
     // A quiet notice (voice ended, an error): left, in the tool rows' small muted type.
     return (
@@ -1569,7 +1580,6 @@ export const MessageBubble = memo(function MessageBubble({
     );
   }
   if (message.voiceAsk) return <VoiceAskRow ask={message.voiceAsk} />;
-  if (message.job) return <JobRow job={message.job} />;
   if (message.voice) return <VoiceLine message={message} cont={voiceCont} />;
   const isUser = message.role === "user";
   const userText = isUser ? splitFilesLine(stripAttachedFooter(message.display ?? message.content)) : null;
@@ -1744,6 +1754,15 @@ function VoiceAskRow({ ask }: { ask: NonNullable<ChatMessage["voiceAsk"]> }) {
 // A background job that ended: one quiet row like a tool row ("Job finished · board safety copies"), red when
 // it failed; its last output lines when opened. (The agent gets the whole wake: exit code and output.)
 function JobRow({ job }: { job: NonNullable<ChatMessage["job"]> }) {
+  // A background task's end: the row only (the agent's next message tells the result).
+  if (job.task)
+    return (
+      <div data-el="task-end" data-failed={job.failed ? "1" : "0"} className={cn("flex items-center gap-1.5 text-[11px] min-w-0", job.failed ? "text-destructive/90" : "text-muted-foreground")}>
+        <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", job.failed ? "bg-destructive/80" : job.status === "finished" ? "bg-emerald-600" : "bg-muted-foreground/50")} />
+        <span className="shrink-0">Background task {job.status}</span>
+        <span className="truncate opacity-80">· {job.name}</span>
+      </div>
+    );
   return (
     <details className="group" data-el="job-end">
       <summary className={cn("flex items-center gap-1.5 text-[11px] cursor-pointer hover:text-foreground list-none select-none min-w-0", job.failed ? "text-destructive/90" : "text-muted-foreground")} title={job.id}>
@@ -1864,9 +1883,9 @@ function LiveToolTicker({ tools }: { tools: LiveTool[] }) {
   const latest =
     tools.find((t) => !t.result) ?? tools[tools.length - 1];
   if (!latest) return null;
-  const total = tools.length;
-  const done = tools.filter((t) => t.result).length;
   const running = !latest.result;
+  // A subagent call waiting on its children: the background-tasks chip shows them moving, not a bare timer.
+  if (running && (latest.name === "subagent" || latest.name === "Delegate")) return null;
   return (
     <div data-el="live-tool" className="flex items-center gap-2 text-[11px] font-mono text-muted-foreground overflow-hidden">
       <Wrench className={cn("h-3 w-3 shrink-0", running && "animate-pulse")} />
@@ -1883,11 +1902,6 @@ function LiveToolTicker({ tools }: { tools: LiveTool[] }) {
       {running && latest.etaSeconds && latest.etaSeconds >= 15 && (
         <span className="shrink-0 tabular-nums opacity-50" title="Estimated by Haiku">
           ~{formatEta(latest.etaSeconds)} expected
-        </span>
-      )}
-      {total > 1 && (
-        <span className="shrink-0 opacity-50">
-          {done}/{total}
         </span>
       )}
       {running ? (
@@ -1978,10 +1992,8 @@ export function ThinkingIndicator({
   reasoning?: boolean;
   liveChars?: number;
 }) {
-  // Live token estimate while streaming. Per-turn usage isn't available
-  // until the "done" event fires, so we approximate from character count
-  // — Claude / GPT tokenizers average roughly 4 chars/token on English.
-  const liveTokens = liveChars ? Math.max(1, Math.round(liveChars / 4)) : 0;
+  // No raw token count: it said nothing about the work (Carl). The pulse alone says it runs.
+  void liveChars;
   return (
     <div className="flex items-center gap-2 py-1 text-foreground/80">
       <span className="relative inline-flex h-3 w-3 vc-pulse-drift">
@@ -1993,11 +2005,6 @@ export function ThinkingIndicator({
       {silent && (
         <span data-el="live-thinking" data-silent="" className="vc-shimmer text-[13px]">
           Thinking
-        </span>
-      )}
-      {!silent && liveTokens > 0 && (
-        <span className="text-[10.5px] font-mono tabular-nums text-muted-foreground">
-          {formatTokens(liveTokens)} tokens
         </span>
       )}
     </div>

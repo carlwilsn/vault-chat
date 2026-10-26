@@ -4,6 +4,7 @@
 // in the page's own vocabulary (the "N steps" pill, the option cards, the quiet
 // system line). The presentation choices Carl has open are the laptop's
 // localStorage switches (src/uiChoices.ts), read here under the same keys.
+import { elapsedText, taskActivity, taskElapsed, taskName, taskState, tasksSummary } from "../../src/backgroundTasks";
 
 // The first option is the default. Thinking is settled: the collapsed "Thought" pill.
 const CHOICES: Record<string, readonly string[]> = {
@@ -53,26 +54,27 @@ export function dividerHtml(bodyHtml: string): string {
   return '<div class="xblk pdiv" data-el="divider"><button class="xh"><span class="pl"></span>Earlier conversation summarized' + CHEV + '<span class="pl"></span></button><div class="xbody md">' + bodyHtml + "</div></div>";
 }
 
-export type PhoneSubagent = { threadId: string; task?: string; agent?: string; model?: string; state?: string; costUsd?: number; summary?: string; toolCallId?: string };
+export type PhoneSubagent = { threadId: string; task?: string; title?: string; agent?: string; model?: string; state?: string; costUsd?: number; summary?: string; toolCallId?: string; startedAt?: number; endedAt?: number; activity?: string; steps?: number };
 
+/** Background tasks as on the laptop (src/backgroundTasks.ts): "2 background tasks: 1 running, 1 done", each row its
+ *  name, what it is doing now (or how it ended) and its time; Stop / Steer on a running one. Never a raw report. */
 export function subagentsHtml(list: PhoneSubagent[], variant: "inline" | "strip"): string {
   if (!list.length) return "";
-  const running = list.filter((s) => (s.state ?? "running") === "running").length;
+  const now = Date.now();
   const rows = list
     .map((s) => {
-      const st = s.state ?? "running";
+      const st = taskState(s as any);
       const on = st === "running";
-      const meta = [on ? "running" : st, (s.model ?? "").split("/").pop(), choice("cost") === "none" ? "" : fmtCost(s.costUsd)].filter(Boolean).join(" · ");
+      const meta = [taskActivity(s as any), elapsedText(taskElapsed(s as any, now))].filter(Boolean).join(" · ");
       return (
         '<div class="sa" data-el="subagent" data-sid="' + esc(s.threadId) + '" data-state="' + esc(st) + '">' +
-        '<div class="sa-h"><span class="sd ' + (on ? "run" : st === "completed" ? "ok" : "bad") + '"></span><span class="sa-t">' + esc(s.task ?? "subagent") + "</span></div>" +
+        '<div class="sa-h"><span class="sd ' + (on ? "run" : st === "done" ? "ok" : "bad") + '"></span><span class="sa-t">' + esc(taskName(s as any)) + "</span></div>" +
         '<div class="sa-m">' + esc(meta) + (on ? '<button class="sa-b" data-op="steer">Steer</button><button class="sa-b" data-op="stop">Stop</button>' : "") + "</div>" +
-        (!on && s.summary ? '<div class="sa-s" data-el="subagent-summary">' + esc(s.summary) + "</div>" : "") +
         "</div>"
       );
     })
     .join("");
-  return '<div class="pcard sas ' + variant + '" data-el="subagents" data-variant="' + variant + '"><div class="pc-h"><span>Subagents</span><span>' + (running ? running + " running" : list.length + " done") + "</span></div>" + rows + "</div>";
+  return '<div class="pcard sas ' + variant + '" data-el="subagents" data-variant="' + variant + '"><div class="pc-h"><span>' + esc(tasksSummary(list as any)) + "</span></div>" + rows + "</div>";
 }
 
 export type PhoneTodo = { content: string; status: string; activeForm?: string };

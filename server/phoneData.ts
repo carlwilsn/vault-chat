@@ -150,7 +150,7 @@ export function conversationDetail(vault: string, id: string, n: number, full = 
     ...ongoingMeta(c, msgs),
     ...(c.verdict && typeof c.verdict === "object" ? { verdict: c.verdict } : {}),
     ...(Array.isArray(c.todos) && c.todos.length ? { todos: c.todos } : {}),
-    ...(Array.isArray(c.subagents) && c.subagents.length ? { subagents: c.subagents.map((x: any) => ({ threadId: x.threadId, task: x.task ?? x.prompt, agent: x.agent, model: x.model, state: x.state ?? x.status, costUsd: x.costUsd, summary: x.summary, toolCallId: x.toolCallId, startedAt: x.startedAt, endedAt: x.endedAt })) } : {}),
+    ...(Array.isArray(c.subagents) && c.subagents.length ? { subagents: c.subagents.map((x: any) => ({ threadId: x.threadId, task: x.task ?? x.prompt, agent: x.agent, model: x.model, state: x.state ?? x.status, costUsd: x.costUsd, toolCallId: x.toolCallId, startedAt: x.startedAt, endedAt: x.endedAt, title: x.title, activity: x.activity, steps: x.steps })) } : {}),
     messages: visible.map((m) => ({
       role: str(m.role, "assistant"),
       content: truncateChars(str(m.content), 20_000),

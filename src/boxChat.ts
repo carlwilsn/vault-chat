@@ -27,7 +27,8 @@ import { LAPTOP_IDLE_MS, startAttentionBeat, type AttentionBeat } from "./attent
 import { invoke } from "@tauri-apps/api/core";
 import { vlog } from "./debugLog";
 import { projectForSend } from "./projects";
-import { useStore, type ChatAttachment, type ChatMessage, type FileUpload, type LiveTool } from "./store";
+import { useStore, type ChatAttachment, type ChatMessage, type FileUpload, type LiveTool, type TodoItem } from "./store";
+import { planAfterClear, tasksAfterClear } from "./backgroundTasks";
 import { readBoxConfig, boxSyncNow } from "./vaultSync";
 import { boxFileChanged } from "./liveReload";
 import type { Conversation } from "./conversations";
@@ -551,7 +552,7 @@ class BoxChatSession {
           queued: (view?.pending ?? []).map((x) => ({ id: x.id, text: x.text, kind: x.kind })),
           pendingAsk: ask ? { question: ask.question ?? "", options: ask.options ?? [], at: ask.at } : undefined,
           ...(p
-            ? { todos: view?.todos ?? undefined, subagents: (p.meta.subagents ?? []) as Conversation["subagents"], contextWindow: view?.window ?? prev?.contextWindow, threadId: p.meta.threadId }
+            ? { ...this.afterClearFields(id, view?.todos ?? undefined, (p.meta.subagents ?? []) as Conversation["subagents"], base), contextWindow: view?.window ?? prev?.contextWindow, threadId: p.meta.threadId }
             : {}),
         } as Conversation;
         if (prev && s.activeConversationId !== id && next.lastActivityAt > prev.lastActivityAt && messages.length > prev.messages.length) next.unread = true;
@@ -695,6 +696,13 @@ class BoxChatSession {
     const after = this.lastLogged(convId);
     this.outgoing.set(convId, (this.outgoing.get(convId) ?? []).map((o) => (o.id === id ? { ...o, failed: why, after } : o)));
     this.project(new Set([convId]));
+  }
+
+  /** The plan and the background tasks this surface shows: after its Clear, a plan written since and the tasks
+   *  started since or still running (backgroundTasks.ts); everything when it never cleared. */
+  private afterClearFields(id: string, todos: TodoItem[] | undefined, subagents: Conversation["subagents"], after: ChatMessage[]): Pick<Conversation, "todos" | "subagents"> {
+    if (!this.clearedAt[id]) return { todos, subagents };
+    return { todos: planAfterClear(todos, after), subagents: tasksAfterClear(subagents ?? [], after) };
   }
 
   /** Clear on this surface: everything shown so far goes from this device's view (nothing changes on the box). */

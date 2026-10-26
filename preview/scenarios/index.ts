@@ -11,6 +11,7 @@ import { voiceOneAgentScenarios } from "./voiceOneAgent";
 import { steerScenarios } from "./steer";
 import { markdownScenarios } from "./markdown";
 import { liveEditScenarios } from "./liveEdit";
+import { backgroundScenarios } from "./background";
 import type { Script } from "../runtime/llm";
 
 const MIN = 60_000;
@@ -825,4 +826,5 @@ export const scenarios: Scenario[] = [
   ...steerScenarios,
   ...markdownScenarios,
   ...liveEditScenarios,
+  ...backgroundScenarios,
 ];

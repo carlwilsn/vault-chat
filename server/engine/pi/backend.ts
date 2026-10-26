@@ -11,7 +11,7 @@ import { isAbsolute, join, relative } from "node:path";
 import type { CallRecord } from "../ledger";
 import type { ThreadTokenUsage } from "../context";
 import { PiProc } from "./proc";
-import { Subagents, type SubagentOptions } from "./subagents";
+import { Subagents, type Detached, type LiveChild, type SubagentOptions } from "./subagents";
 import { SideRuns } from "./side";
 import { modelWindow, type PiCatalogRow, type PiPaths } from "./config";
 import type { PiInstall } from "./install";
@@ -616,6 +616,19 @@ export class PiBackend extends EventEmitter {
 
   subagentControl(childId: string, op: "steer" | "stop", text?: string): Promise<{ ok: boolean; error?: string }> {
     return this.subs.control(childId, op, text);
+  }
+
+  /** Carl wrote while the parent's `subagent` call waits: its children move to the background (subagents.ts detach). */
+  detach(parentThreadId: string): Detached[] {
+    return this.subs.detach(parentThreadId);
+  }
+
+  /** A running subagent as the agent's JobList / JobStatus read it (null: not running), and a parent's running ones. */
+  liveChild(childId: string): LiveChild | null {
+    return this.subs.live(childId);
+  }
+  liveChildren(parentThreadId: string): LiveChild[] {
+    return this.subs.liveOf(parentThreadId);
   }
 
   // ---------------------------------------------------------------- pi → neutral events

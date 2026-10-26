@@ -176,6 +176,28 @@ function hostCall(tool, args) {
   });
 }
 
+/** The `subagent` tool as ext/subagent.mjs runs it: each child is the host call `__subagent` (the server starts it as
+ *  a sibling pi), single mode or parallel (`tasks`); the tool's answer is the children's reports. */
+async function subagentTool(tc) {
+  const a = tc.arguments ?? {};
+  const one = async (t, mode) => {
+    const id = `ui-${++uiSeq}`;
+    out({ type: "extension_ui_request", id, method: "editor", title: "vc:host-call", prefill: JSON.stringify({ tool: "__subagent", args: { agent: { name: t.agent ?? "worker", tools: null, model: null, systemPrompt: "" }, task: t.task, mode, toolCallId: tc.id } }) });
+    const v = await new Promise((resolve) => uiWaiters.set(id, resolve));
+    try {
+      return JSON.parse(v ?? "");
+    } catch {
+      return { ok: false, text: "vault-chat did not answer for this subagent." };
+    }
+  };
+  if (Array.isArray(a.tasks) && a.tasks.length) {
+    const rs = await Promise.all(a.tasks.map((t) => one(t, "parallel")));
+    return { text: rs.map((r) => r.text ?? "").join("\n\n---\n\n"), isError: false };
+  }
+  const r = await one(a, "single");
+  return { text: String(r.text ?? ""), isError: !r.ok };
+}
+
 /** The extension's before_agent_start: the host's "you" layer since this session last saw it, or null. */
 async function youLayer() {
   if (process.env.VC_PI_YOU !== "1") return null;
@@ -333,7 +355,9 @@ async function run(first) {
         const r =
           allowed && !allowed.has(tc.name)
             ? { text: `Tool ${tc.name} not found`, isError: true }
-            : host
+            : tc.name === "subagent" && process.env.VC_PI_SUBAGENTS === "1"
+              ? await subagentTool(tc)
+              : host
               ? await hostCall(tc.name, tc.arguments)
               : tc.name === "read"
                 ? readTool(tc.arguments)
