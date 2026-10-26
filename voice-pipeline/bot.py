@@ -38,6 +38,7 @@ from pipecat.frames.frames import (
     BotStoppedSpeakingFrame,
     Frame,
     InterimTranscriptionFrame,
+    InterruptionFrame,
     LLMContextFrame,
     LLMFullResponseEndFrame,
     LLMFullResponseStartFrame,
@@ -166,6 +167,7 @@ class Gate:
 
     def __init__(self, now: float):
         self.voice = False  # his voice (VAD), from the first sound
+        self.voice_off_at = -1e9  # when his voice last stopped
         self.user = False  # his turn: started on a word, ended by the turn model (endpointing in between)
         self.bot = False  # the voice's audio playing
         self.owed: float | None = None  # his turn ended at this time and its reply is not done
@@ -178,6 +180,7 @@ class Gate:
             self.voice = True
         elif isinstance(frame, VADUserStoppedSpeakingFrame):
             self.voice = False
+            self.voice_off_at = now
         elif isinstance(frame, UserStartedSpeakingFrame):
             self.user, self.owed = True, None
             self.user_turns += 1
@@ -380,6 +383,58 @@ class AfterStt(FrameProcessor):
         await self.push_frame(frame, direction)
 
 
+def turn_settled(voice: bool, voice_off_at: float, now: float, settle: float) -> bool:
+    """His turn is really over: his voice off, and off for `settle` (a pause between his sentences is shorter)."""
+    return not voice and now - voice_off_at >= settle
+
+
+class ReplyHold(FrameProcessor):
+    """A reply to him starts only once his turn is really over: his voice quiet for SETTLE_SECS. In a monologue the
+    turn model ends his turn at each sentence, and the reply to half a thought started in his next breath (the
+    roleplay's 38-s monologue: replies began inside his pauses and were barged out within 0.8 s). Held, the reply is
+    dropped by the interruption his next words bring; if he has really stopped, it plays (it is ready by then anyway:
+    the reply takes ~1.5 s, the settle ends 1.0 s after his last sound). Never longer than MAX_HOLD_SECS."""
+
+    SETTLE_SECS = 0.8
+    MAX_HOLD_SECS = 6.0
+    HELD = (LLMFullResponseStartFrame, LLMTextFrame, LLMFullResponseEndFrame)
+
+    def __init__(self, quiet: "Quiet"):
+        super().__init__()
+        self.quiet = quiet
+        self.q: list[Frame] = []
+        self.since: float | None = None
+        self.loop: asyncio.Task | None = None
+
+    def settled(self, now: float) -> bool:
+        g = self.quiet.gate
+        return turn_settled(g.voice, g.voice_off_at, now, self.SETTLE_SECS)
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        await super().process_frame(frame, direction)
+        if isinstance(frame, InterruptionFrame):
+            if self.q:
+                jlog(ev="reply.dropped", frames=len(self.q))
+            self.q.clear()
+            self.since = None
+        elif direction == FrameDirection.DOWNSTREAM and isinstance(frame, self.HELD) and (self.q or not self.settled(time.monotonic())):
+            self.q.append(frame)
+            self.since = self.since or time.monotonic()
+            if self.loop is None or self.loop.done():
+                self.loop = asyncio.create_task(self._drain())
+            return
+        await self.push_frame(frame, direction)
+
+    async def _drain(self):
+        while self.q:
+            await asyncio.sleep(0.05)
+            now = time.monotonic()
+            if self.q and (self.settled(now) or (self.since is not None and now - self.since >= self.MAX_HOLD_SECS)):
+                held, self.q, self.since = self.q, [], None
+                for f in held:
+                    await self.push_frame(f, FrameDirection.DOWNSTREAM)
+
+
 class ReplyEnd(FrameProcessor):
     """After the brain: a reply to him is complete (its text; the audio is the Gate's `bot`)."""
 
@@ -510,6 +565,7 @@ async def run_call(connection, call: dict):
             quiet,
             make_brain(call),
             ReplyEnd(quiet),
+            ReplyHold(quiet),
             make_tts(call),
             transport.output(),
             pair.assistant(),

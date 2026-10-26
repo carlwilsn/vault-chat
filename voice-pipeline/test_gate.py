@@ -20,7 +20,7 @@ from pipecat.frames.frames import (  # noqa: E402
     VADUserStoppedSpeakingFrame,
 )
 
-from bot import Gate, ResultFlow, SttWatch, clean_noise  # noqa: E402
+from bot import Gate, ResultFlow, SttWatch, clean_noise, turn_settled  # noqa: E402
 
 Q = Gate.QUIET_SECS
 
@@ -185,6 +185,18 @@ def test_scribes_noise_marks_come_out_of_his_words():
     assert clean_noise("Mm-hmm ...") == ""
     assert clean_noise("Mm-hmm.") == "Mm-hmm."  # him saying it: kept
     assert clean_noise("Hmm. Okay, so B is three.") == "Hmm. Okay, so B is three."
+
+
+def test_a_reply_waits_until_his_turn_is_really_over():
+    S = 0.8
+    assert not turn_settled(True, 0.0, 10.0, S)  # he is talking
+    assert not turn_settled(False, 10.0, 10.5, S)  # a pause between his sentences (0.5 s)
+    assert turn_settled(False, 10.0, 10.8, S)  # quiet long enough: he has stopped
+    # The Gate keeps when his voice stopped.
+    g = fresh()
+    g.on_frame(VADUserStartedSpeakingFrame(), 1.0)
+    g.on_frame(VADUserStoppedSpeakingFrame(), 3.0)
+    assert g.voice_off_at == 3.0 and not g.voice
 
 
 def test_an_untagged_piece_is_gated_like_before():
