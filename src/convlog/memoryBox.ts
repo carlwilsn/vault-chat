@@ -44,6 +44,8 @@ export class MemoryBox {
   private clock = Date.now();
   /** Every intent a client sent. */
   intents: any[] = [];
+  /** Files a client uploaded with a message (POST /api/v2/attachment). */
+  attachments: { path: string; size: number; dataBase64: string }[] = [];
   /** What a send does after Carl's message (default: nothing — the script replies). */
   onSend: (conv: string, intent: any) => void = () => {};
   now: () => number = () => Date.now();
@@ -505,6 +507,14 @@ export class MemoryBox {
     if (method === "POST" && path === "/api/v2/intent") {
       const out = this.intent(body ?? {});
       return { status: (out as any).error ? 409 : 200, body: out };
+    }
+    if (method === "POST" && path === "/api/v2/attachment") {
+      // As server/attachments.ts names it (the bytes are kept in memory for a check to read back).
+      const name = String(body?.name ?? "attachment").replace(/[\\/]/g, "_");
+      const size = Math.floor((String(body?.dataBase64 ?? "").length * 3) / 4);
+      const rel = `.vault-chat/attachments/${new Date(this.now()).toISOString().slice(0, 10)}/${name}`;
+      this.attachments.push({ path: rel, size, dataBase64: String(body?.dataBase64 ?? "") });
+      return { status: 200, body: { ok: true, path: rel, abs: `/home/carl/vault/${rel}`, name, size } };
     }
     return null;
   }
