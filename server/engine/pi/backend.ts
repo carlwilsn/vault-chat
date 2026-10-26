@@ -52,7 +52,14 @@ export type UserInputHandler = (threadId: string, question: string, options: str
 export type YouHandler = (q: { threadId?: string; convId?: string | null; since: number | null }) => Promise<{ text: string; until: number }>;
 /** A read-only vault-chat tool called from a Ctrl+K / Ctrl+L side thread, as of the conversation it was opened from (or none). */
 export type SideToolHandler = (convId: string | null, name: string, args: any) => Promise<ToolAnswer>;
-export type Handlers = { toolCall: ToolCallHandler; userInput: UserInputHandler; you?: YouHandler; sideTool?: SideToolHandler };
+export type Handlers = {
+  toolCall: ToolCallHandler;
+  userInput: UserInputHandler;
+  you?: YouHandler;
+  sideTool?: SideToolHandler;
+  /** A worker (a parent thread's child) wrote a file: its write/edit input (the screens showing it refresh). */
+  childWrote?: (parentThreadId: string, input: Record<string, unknown>) => void;
+};
 
 export type PiSandbox = {
   /** bubblewrap argv for pi itself (ends with "--"), or null (no sandbox). */

@@ -319,6 +319,7 @@ export class Subagents {
       pushTimer = setTimeout(push, Math.max(0, 1000 - (Date.now() - lastPush)));
       pushTimer.unref?.();
     };
+    const writes = new Map<string, Record<string, unknown>>();
     proc.on("event", (e: any) => {
       if (e?.type === "message_end" && e.message?.role === "assistant") {
         child.stopReason = e.message.stopReason ?? null;
@@ -330,9 +331,15 @@ export class Subagents {
         }
       } else if (e?.type === "tool_execution_start") {
         child.activity = activityOf(String(e.toolName ?? "tool"), e.args ?? {});
+        if (e.toolName === "write" || e.toolName === "edit") writes.set(String(e.toolCallId ?? ""), e.args ?? {});
         changed();
       } else if (e?.type === "tool_execution_end") {
         child.steps++;
+        // A worker's file edit reaches the screens showing that file at once, as the agent's own does (it waited for
+        // the next sync: the roleplay's delegated LaTeX edit landed on the box and the open pane kept the old text).
+        const w = writes.get(String(e.toolCallId ?? ""));
+        writes.delete(String(e.toolCallId ?? ""));
+        if (w && !e.isError) this.b.handlers?.childWrote?.(child.parent, w);
         changed();
       } else if (e?.type === "agent_settled") child.settle(!!e.aborted);
     });
