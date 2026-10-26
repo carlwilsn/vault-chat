@@ -145,7 +145,7 @@ type Live = {
   cwd: string;
 };
 
-type TurnOpts = { images?: string[]; context?: string; itemImages?: ItemImage[]; clientId?: string; /** What the chat shows (Carl's answer to a question asked before a restart). */ shown?: string; via?: string; /** Which client sent it (the turn log's `via`: laptop, phone, voice …). */ origin?: string; /** A wake, job or resume of something Carl started. */ byCarl?: boolean };
+type TurnOpts = { images?: string[]; context?: string; itemImages?: ItemImage[]; clientId?: string; /** What the chat shows (Carl's answer to a question asked before a restart). */ shown?: string; via?: string; /** Which client sent it (the turn log's `via`: laptop, phone, voice …). */ origin?: string; /** A wake, job or resume of something Carl started. */ byCarl?: boolean; /** An engine input that runs as its own turn once the running one ends, never folded into it (a background report: pi may settle the turn before a follow-up is taken, and a turn parked on a question takes none). */ ownTurn?: boolean };
 
 const RESUME_TEXT =
   "The box restarted (or the engine stopped) while your last turn was running, so any command it was running was killed and may not have finished. Re-check reality (files, processes, logs), then continue from where you were.";
@@ -1363,6 +1363,10 @@ export class Engine {
     return this.serial(convId, async () => {
       const existing = this.live.get(convId);
       if (existing && !existing.finished) {
+        if (opts.ownTurn && kind !== "user") {
+          void this.turnEnd(convId).then(() => this.run(convId, input, kind, opts)).catch((e) => this.log(`after-turn input on ${convId}: ${e}`));
+          return;
+        }
         if (existing.started && !existing.ask) {
           const b = this.d.backend;
           if (kind === "user") {
@@ -1785,7 +1789,7 @@ export class Engine {
       )
       .then((input) =>
         this.scoped(() =>
-          this.run(convId, input, "wake").catch((err: Error) => {
+          this.run(convId, input, "wake", { ownTurn: true }).catch((err: Error) => {
             this.log(`delegate result on ${convId}: ${err.message}`);
             return this.notice(convId, `${input.split("\n")[0]} — the agent could not take it up (${err.message}).\n\n${input.split("\n").slice(2).join("\n").slice(0, 4000)}`, "warn");
           }),
