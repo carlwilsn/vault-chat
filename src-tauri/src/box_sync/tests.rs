@@ -774,3 +774,13 @@ fn github_backup_names_one_change_too_big_to_upload() {
     assert!(rep.github_next_try_at.is_some(), "it retries on its own");
     r.done();
 }
+
+#[test]
+fn classify_error_ignores_numbers_inside_hashes() {
+    assert_eq!(classify_error("a1b2503..c3d4504 master -> master [rejected]"), "git");
+    assert_eq!(
+        classify_error("fatal: unable to access 'https://x/': The requested URL returned error: 503"),
+        "unreachable"
+    );
+    assert_eq!(classify_error("Could not resolve host: x"), "unreachable");
+}

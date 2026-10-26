@@ -146,7 +146,7 @@ async function syncLogHost(): Promise<string> {
   return hostCache;
 }
 
-type SyncLogLevel = "error" | "recovered" | "merge";
+type SyncLogLevel = "error" | "recovered" | "merge" | "sync";
 
 // Fire-and-forget: logging must never throw into or stall the sync loop.
 function appendSyncLog(
@@ -976,6 +976,7 @@ function startBoxSyncLoop(vault: string, cfg: BoxConfig): void {
         // Notes written on the box (voice, the agent) show in the Notes panel now.
         if (mergedNotes(r.merged_paths) && useStore.getState().vaultPath === vault) void useStore.getState().loadNotes();
       } else if (r.committed) {
+        if (r.ok) appendSyncLog(vault, "sync", "box-sync", r.message, { committed: true, ahead: r.changes_waiting });
         void forceRefreshFileTree(vault);
       }
       const st = boxStates.get(vault);

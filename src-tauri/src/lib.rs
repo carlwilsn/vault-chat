@@ -1254,6 +1254,8 @@ async fn append_sync_log(vault_path: String, line: String) -> Result<(), String>
     tauri::async_runtime::spawn_blocking(move || {
         const CAP_BYTES: u64 = 512 * 1024;
         const KEEP_LINES: usize = 1500;
+        static LOG_LOCK: Mutex<()> = Mutex::new(());
+        let _guard = LOG_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let dir = std::path::Path::new(&vault_path).join(".vault-chat");
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
         let path = dir.join("sync-log.jsonl");

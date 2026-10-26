@@ -483,9 +483,12 @@ fn classify_error(stderr: &str) -> &'static str {
         "network is unreachable",
         "no route to host",
         "could not read from remote",
-        "502",
-        "503",
-        "504",
+        "returned error: 502",
+        "returned error: 503",
+        "returned error: 504",
+        "http 502",
+        "http 503",
+        "http 504",
         "does not appear to be a git repository",
         "unable to access",
     ];
@@ -767,7 +770,11 @@ fn load_state(vault: &str) -> PersistedState {
 
 fn save_state(vault: &str, st: &PersistedState) {
     if let Ok(s) = serde_json::to_string(st) {
-        let _ = std::fs::write(state_path(vault), s);
+        let path = state_path(vault);
+        let tmp = path.with_extension("json.tmp");
+        if std::fs::write(&tmp, s).is_ok() && std::fs::rename(&tmp, &path).is_err() {
+            let _ = std::fs::remove_file(&tmp);
+        }
     }
 }
 
