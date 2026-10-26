@@ -5,7 +5,7 @@
 // engine.ts; pi itself is pi/backend.ts.
 import { mkdirSync, statSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
-import { basename, dirname, isAbsolute, join, relative } from "node:path";
+import { dirname, isAbsolute, join, relative } from "node:path";
 import { loadCatalog, modelMeta } from "./catalog";
 import { configureContext, ctxConfig, prepareProjects } from "./context";
 import { Engine, type EngineNotice } from "./engine";
@@ -16,6 +16,7 @@ import { boxLogs } from "../boxLogs";
 import { turnSummary } from "./turnLog";
 import { initCapabilities } from "./capabilities";
 import { ensurePi, findBwrap, type PiInstall } from "./pi/install";
+import { agentWorkDir } from "../workArea";
 import { listPiModels, modelWindow, piPaths, vaultPiPaths, writePiConfig, type PiPaths } from "./pi/config";
 import { PiBackend, outerWith, type PiSandbox } from "./pi/backend";
 import { logOf } from "./convs";
@@ -167,10 +168,8 @@ export function serverEnvFile(home: string): string {
   return process.env.VC_ENV_FILE || join(home, ".config", "vault-chat-server.env");
 }
 
-/** A vault's work area outside the vault (code checkouts, builds, scratch): `~/agent-work/<vault>/`, writable in the sandbox. */
-export function agentWorkDir(home: string, vault: string): string {
-  return join(home, "agent-work", basename(vault.replace(/[\\/]+$/, "")));
-}
+/** A vault's work area outside the vault (server/workArea.ts). */
+export { agentWorkDir } from "../workArea";
 
 const under = (p: string, dir: string) => {
   const r = relative(dir, p);

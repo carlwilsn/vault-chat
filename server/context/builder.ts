@@ -1,7 +1,8 @@
 // The developer instructions for an engine thread, and the rules prefix for every turn.
+import { agentWorkDir } from "../workArea";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, join, relative } from "node:path";
+import { join, relative } from "node:path";
 import { ctxConfig } from "./config";
 import { cap } from "./files";
 import { listProjects, projectNotesPath, readGlobalRules, readProject } from "./projects";
@@ -172,8 +173,7 @@ export function buildDeveloperInstructions(conv: ContextConv, opts: BuildOptions
 
 /** The vault's work area outside the vault (the sandbox makes it writable; engine/index.ts agentWorkDir). */
 export function agentWorkArea(vault: string): string {
-  const home = process.env.HOME || homedir();
-  return join(home, "agent-work", basename(vault.replace(/[\\/]+$/, "")));
+  return agentWorkDir(process.env.HOME || homedir(), vault);
 }
 
 /**

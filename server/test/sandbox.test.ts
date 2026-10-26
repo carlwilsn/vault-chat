@@ -7,7 +7,7 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { spawnSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { tmp, cleanup } from "./helpers";
 
 const home = tmp("vcsb-");
@@ -251,5 +251,18 @@ describe("the machine section of the developer instructions", () => {
     expect(envNameForKey("api.groq")).toBe("GROQ_API_KEY");
     expect(envNameForKey("keystore.passphrase")).toBeNull();
     expect(keyEnv([["api.openrouter", "a"], ["keystore.passphrase", "p"], ["user.x", ""], ["user.OPENROUTER_API_KEY", "b"]])).toEqual({ OPENROUTER_API_KEY: "a" });
+  });
+});
+
+describe("the work area belongs to this vault (a test copy never shares the live vault's)", () => {
+  it("~/vaults/<name> keeps ~/agent-work/<name>; a copy elsewhere with the same name gets its own", async () => {
+    const { agentWorkDir: wd } = await import("../workArea");
+    const home = "/home/carl";
+    expect(wd(home, "/home/carl/vaults/school2")).toBe(join(home, "agent-work", "school2"));
+    expect(wd(home, "/home/carl/vaults/school2/")).toBe(join(home, "agent-work", "school2"));
+    const copy = wd(home, "/tmp/vcs-brain/vaults/school2");
+    expect(copy).not.toBe(join(home, "agent-work", "school2"));
+    expect(basename(copy)).toMatch(/^school2-[0-9a-f]{8}$/);
+    expect(wd(home, "/tmp/vcs-brain/vaults/school2")).toBe(copy);
   });
 });
