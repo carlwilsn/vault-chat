@@ -51,18 +51,34 @@ export function waitView(o: { works: WaitWork[]; plan?: WaitPlan | null; calib: 
   return { frac, pace: slow ? "long" : "short" };
 }
 
+/** Between two spoken pieces of one reply the voice is quiet this long; the line stays down meanwhile (it flickered
+ *  on in every gap while a worker ran). */
+export const SPEECH_GAP_MS = 1_500;
+
 /** The line over time: running → complete (held until the voice speaks) → gone. One per surface. */
 export class WaitTracker {
   private last: WaitView | null = null;
   private completeAt: number | null = null;
+  /** The running turn's work, kept between its tool calls while the turn still runs (it is still working: writing
+   *  the next call, reading what came back). Without it the line showed "complete" for 20 s while the turn went on. */
+  private turn: WaitWork | null = null;
+  private spokeAt = -Infinity;
 
-  update(o: { works: WaitWork[]; plan?: WaitPlan | null; calib: WaitCalib; now: number; speaking: boolean }): WaitView | null {
+  /** `running`: the conversation's turn is still running (its tools come and go; the turn is the work). */
+  update(o: { works: WaitWork[]; plan?: WaitPlan | null; calib: WaitCalib; now: number; speaking: boolean; running?: boolean }): WaitView | null {
     if (o.speaking) {
       // The voice talks back: the line has done its job.
       this.last = null;
       this.completeAt = null;
+      this.turn = null;
+      this.spokeAt = o.now;
       return null;
     }
+    if (o.now - this.spokeAt < SPEECH_GAP_MS) return null;
+    const live = o.works.find((w) => w.kind === "turn");
+    if (live) this.turn = { ...live, startedAt: Math.min(live.startedAt, this.turn?.startedAt ?? live.startedAt) };
+    else if (!o.running) this.turn = null;
+    if (!live && this.turn && o.running) o = { ...o, works: [...o.works, this.turn] };
     const v = waitView(o);
     if (v) {
       this.last = v;
@@ -91,7 +107,7 @@ export function waitInputs(o: {
   todos?: { status: string }[] | null;
   messages?: { mid?: string; voiceAsk?: { request: string; running?: boolean; startedAt?: number; ms?: number } }[];
   now: number;
-}): { works: WaitWork[]; plan: WaitPlan | null; samples: Record<string, number[]> } {
+}): { works: WaitWork[]; plan: WaitPlan | null; samples: Record<string, number[]>; running: boolean } {
   const works: WaitWork[] = [];
   const tools = o.running ? o.tools : [];
   if (tools.length) works.push({ key: "turn", kind: "turn", startedAt: Math.min(...tools.map((t) => t.startedAt ?? o.startedAt ?? o.now)) });
@@ -107,7 +123,7 @@ export function waitInputs(o: {
     Delegate: (o.subagents ?? []).filter((a) => a.startedAt && a.endedAt).map((a) => a.endedAt! - a.startedAt!),
     VoiceAsk: (o.messages ?? []).filter((m) => m.voiceAsk && !m.voiceAsk.running && m.voiceAsk.ms).map((m) => m.voiceAsk!.ms!),
   };
-  return { works, plan, samples };
+  return { works, plan, samples, running: o.running };
 }
 
 /** Calibration from history this surface can see (finished Delegate workers, finished Classic Asks), merged over the

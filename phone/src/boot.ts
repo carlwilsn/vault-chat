@@ -2244,7 +2244,7 @@ export function boot(): void {
     const t = Date.now();
     const { works, plan, samples } = waitInputs({ running: vWaitTools.length > 0, tools: vWaitTools, startedAt: streamStartedAt, subagents: (convMeta && convMeta.subagents) || [], todos: (convMeta && convMeta.todos) || [], messages: vWaitMsgs, now: t });
     const calib = calibFrom(samples, vBoxCalib);
-    const view = vWaitTracker.update({ works, plan, calib, now: t, speaking: vAgentSpeaking });
+    const view = vWaitTracker.update({ works, plan, calib, now: t, speaking: vAgentSpeaking, running });
     const a = $("vwait"), b = $("vpwait");
     if (a) renderWaitLine(a, view);
     if (b) renderWaitLine(b, view);

@@ -2,7 +2,7 @@
 // Carl: "wait until the bar is complete for the voice to talk back to me" — so it never lies.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { COMPLETE_HOLD_MS, LONG_MS, WaitTracker, calibFrom, expectedMs, waitView } from "../../src/voiceWaitLine.ts";
+import { COMPLETE_HOLD_MS, SPEECH_GAP_MS, LONG_MS, WaitTracker, calibFrom, expectedMs, waitView } from "../../src/voiceWaitLine.ts";
 
 const T0 = 1_000_000;
 
@@ -69,4 +69,25 @@ test("no line before any work: him talking and the voice answering at once never
   const tr = new WaitTracker();
   assert.equal(tr.update({ works: [], calib: {}, now: T0, speaking: false }), null);
   assert.equal(tr.update({ works: [], calib: {}, now: T0 + 2000, speaking: true }), null);
+});
+
+test("between its tool calls the turn is still working: no 'complete' until it ends (roleplay: 22 s of 'complete' mid-turn)", () => {
+  const tr = new WaitTracker();
+  const turn = [{ key: "turn", kind: "turn", startedAt: T0 }];
+  assert.equal(tr.update({ works: turn, calib: {}, now: T0 + 500, speaking: false, running: true })!.frac, null);
+  // The tool returned; the model writes its next call for 20 s: still working, and past a quick expectation it turns slow.
+  assert.deepEqual(tr.update({ works: [], calib: {}, now: T0 + 2_000, speaking: false, running: true }), { frac: null, pace: "short" });
+  assert.deepEqual(tr.update({ works: [], calib: {}, now: T0 + 22_000, speaking: false, running: true }), { frac: null, pace: "long" });
+  // The turn ends: now it completes.
+  assert.equal(tr.update({ works: [], calib: {}, now: T0 + 23_000, speaking: false, running: false })!.frac, 1);
+});
+
+test("the gaps between the spoken pieces of one reply never bring the line back (it flickered on in each while a worker ran)", () => {
+  const tr = new WaitTracker();
+  const works = [{ key: "d", kind: "Delegate", startedAt: T0 }];
+  assert.equal(tr.update({ works, calib: {}, now: T0 + 1_000, speaking: true }), null);
+  assert.equal(tr.update({ works, calib: {}, now: T0 + 1_400, speaking: false }), null);
+  assert.equal(tr.update({ works, calib: {}, now: T0 + 1_800, speaking: true }), null);
+  // Quiet for good: the worker is still what it waits on.
+  assert.deepEqual(tr.update({ works, calib: {}, now: T0 + 1_800 + SPEECH_GAP_MS, speaking: false }), { frac: null, pace: "long" });
 });

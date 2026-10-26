@@ -228,7 +228,7 @@ export const voiceTranscript = (body: { convId: string | null; role: string; tex
 export const brainEngine = () => call<{ engine: "classic" | "new"; pipeline: boolean }>("/api/v1/brain/engine");
 /** The New voice's calls (src/voiceBrainClient.ts): start, offer, end. */
 /** What the voice waits on (the waiting line under the pill's waves): server/voiceBrain.ts GET /api/v1/brain/wait. */
-export const brainWait = (convId: string) => call<{ works: any[]; plan: any; calib: any; now: number }>(`/api/v1/brain/wait/${enc(convId)}`);
+export const brainWait = (convId: string) => call<{ works: any[]; plan: any; calib: any; now: number; running?: boolean }>(`/api/v1/brain/wait/${enc(convId)}`);
 export const brainPost = (path: string, body: Record<string, unknown>) => call<any>(path, { method: "POST", body: JSON.stringify(body) });
 /** One long poll of the live call's updates: the agent's answers, what Carl did elsewhere. */
 export const voiceUpdates = (convId: string, cursor: string | null, session?: string | null) =>

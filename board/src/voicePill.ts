@@ -226,7 +226,7 @@ export function mountVoicePill(): void {
   // The waiting line: what the voice waits on, from the box (the board has no conversation feed), until it speaks.
   let waitTimer = 0;
   let waitTracker = new WaitTracker();
-  let wait: { works: WaitWork[]; plan: WaitPlan | null; calib: WaitCalib; skew: number } = { works: [], plan: null, calib: {}, skew: 0 };
+  let wait: { works: WaitWork[]; plan: WaitPlan | null; calib: WaitCalib; skew: number; running: boolean } = { works: [], plan: null, calib: {}, skew: 0, running: false };
   let waitBusy = false;
   const waitLoop = (s: VoiceState) => {
     if (s.phase !== "live") {
@@ -243,14 +243,14 @@ export function mountVoicePill(): void {
         waitBusy = true;
         api
           .brainWait(st.chat?.id ?? MAIN_ID)
-          .then((r) => (wait = { works: r.works ?? [], plan: r.plan ?? null, calib: r.calib ?? {}, skew: Date.now() - (r.now ?? Date.now()) }))
+          .then((r) => (wait = { works: r.works ?? [], plan: r.plan ?? null, calib: r.calib ?? {}, skew: Date.now() - (r.now ?? Date.now()), running: !!r.running }))
           .catch(() => {})
           .finally(() => (waitBusy = false));
       }
       const el = root.querySelector<HTMLElement>(".v-waitline");
       // Box times on this clock (the box's now vs ours).
       const works = wait.works.map((w) => ({ ...w, startedAt: w.startedAt + wait.skew }));
-      if (el) renderWaitLine(el, waitTracker.update({ works, plan: wait.plan, calib: wait.calib, now: Date.now(), speaking: st.speaking }));
+      if (el) renderWaitLine(el, waitTracker.update({ works, plan: wait.plan, calib: wait.calib, now: Date.now(), speaking: st.speaking, running: wait.running }));
     }, 300);
   };
 

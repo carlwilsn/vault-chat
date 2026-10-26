@@ -93,9 +93,9 @@ function WaitLine() {
       const s = useStore.getState();
       const now = Date.now();
       const conv = s.conversations.find((x) => x.id === s.activeConversationId);
-      const { works, plan, samples } = waitInputs({ running: s.busy, tools: s.liveTools, subagents: conv?.subagents, todos: conv?.todos, messages: s.messages, now });
+      const { works, plan, samples, running } = waitInputs({ running: s.busy, tools: s.liveTools, subagents: conv?.subagents, todos: conv?.todos, messages: s.messages, now });
       const calib = calibFrom(samples, boxCalib?.calib ?? {});
-      if (ref.current) renderWaitLine(ref.current, tracker.update({ works, plan, calib, now, speaking: s.voiceSpeaking }));
+      if (ref.current) renderWaitLine(ref.current, tracker.update({ works, plan, calib, now, speaking: s.voiceSpeaking, running }));
     };
     tick();
     const t = setInterval(tick, 250);
