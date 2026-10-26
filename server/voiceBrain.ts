@@ -34,13 +34,13 @@ import { speechReady } from "./speakMath";
 import { calibFrom } from "../src/voiceWaitLine";
 
 export type BrainEngine = {
-  message(b: { convId?: string | null; text?: string; source?: string; via?: string; client?: string; clientMsgId?: string; continues?: boolean; unqueue?: string }): Promise<Record<string, unknown> | null>;
+  message(b: { convId?: string | null; text?: string; context?: string; source?: string; via?: string; client?: string; clientMsgId?: string; continues?: boolean; unqueue?: string }): Promise<Record<string, unknown> | null>;
   setTalker(convId: string, t: { model: string; rules: string; thinking?: string } | null): void;
   tap(convId: string, fn: (ev: any) => void): () => void;
   isRunning(convId: string): boolean;
   interrupt(convId: string, byUser: boolean): Promise<boolean>;
   /** Stop the running turn and the work started since `since` (his previous line; server/engine stopWork). */
-  stopWork?(convId: string, since?: number): Promise<number>;
+  stopWork?(convId: string, since?: number, stopped?: string[]): Promise<number>;
   /** What a voice on the conversation waits on (the waiting line's inputs). */
   waitInputs?(convId: string): { works: unknown[]; plan: unknown; samples: Record<string, number[]>; running?: boolean } | null;
 };
@@ -126,7 +126,24 @@ export function voiceCallRules(device: Device): string {
 
 // ---------------------------------------------------------------- calls
 
-type Sink = { res: ServerResponse; id: string; sent: number; t0: number; tFirst: number | null; tDelta: number | null; deltas: number; text: string; created: number; done: boolean };
+type Sink = {
+  res: ServerResponse;
+  id: string;
+  sent: number;
+  t0: number;
+  tFirst: number | null;
+  tDelta: number | null;
+  deltas: number;
+  text: string;
+  created: number;
+  done: boolean;
+  /** An opener ("Yo.", "Okay, cool."): its reply waits until then in `queued`, so the rest of his line can still come. */
+  holdUntil?: number;
+  queued?: string[];
+  flushT?: NodeJS.Timeout;
+  /** The turn ended while its reply was still held: the response ends when it is written. */
+  endAfter?: boolean;
+};
 
 type Call = {
   id: string;
@@ -166,12 +183,27 @@ type Call = {
   /** The text now streaming answers his newest words: false from a steer until pi delivers it (what comes before is
    *  the answer to the words he went on from). */
   armed: boolean;
+  /** He asked not to be told the answers ("don't spoil it"): every line of his carries that, until he lifts it. */
+  noSpoil: boolean;
   /** His last line, sent as a steer pi has not delivered yet: the rest of it (after a pause) is joined to it, one line. */
   steer: { clientId: string; text: string } | null;
 };
 
 /** A reply to words he went on from is held this long for his next words before it is said after all. */
 export const HOLD_MS = 2_500;
+/** The reply to an opener ("Yo.", "Okay, cool.", "Hmm.": three words or fewer, no question) starts this long after
+ *  his line at the earliest — the rest of what he is saying usually follows (the roleplay: "Yo." got "Hey Carl, what
+ *  do you need?" spoken 1.7 s in, cut by the rest of his line). */
+export const OPENER_MS = 1_200;
+export const isOpener = (text: string): boolean => {
+  const t = text.trim();
+  return !!t && t.split(/\s+/).length <= 3 && !/\?\s*$/.test(t) && !STOP_RE.test(t);
+};
+/** "Don't spoil it" (and the like) asks for no answers until he lifts it ("just tell me", "next question"). */
+export const NO_SPOIL_RE = /\b(?:don'?t|do not|no)\s+spoil|\bdon'?t (?:give|tell) me the (?:answer|rest)|\bwithout (?:your|any) help\b|\btrying to (?:do|work out|figure out) (?:it|this|that|the rest) (?:myself|on my own)\b/i;
+export const SPOIL_OK_RE = /\b(?:you can spoil it|spoil it now|just tell me|tell me the answer|give me the answer|show me the (?:answer|solution)|next (?:question|problem)|new problem|(?:question|problem) (?:two|three|four|five|[2-9])\b|part (?:b|c|d|two|three)\b)/i;
+export const NO_SPOIL_NOTE =
+  "[He asked not to be told the answers (\"don't spoil it\"), and that holds until he lifts it: confirm or correct only what he just said (look the problem up to check it: that is not spoiling), and ask him what comes next; never state the next step, a later value or the answer.]";
 
 const calls = new Map<string, Call>();
 /** A call with no request and no open speak channel for this long is over (its pipeline died without ending it). */
@@ -235,6 +267,7 @@ export async function startCall(d: BrainDeps, b: { convId?: unknown; device?: un
     held: null,
     armed: true,
     steer: null,
+    noSpoil: false,
     lastText: null,
     lastActive: Date.now(),
     stopping: null,
@@ -319,7 +352,7 @@ function onPi(d: BrainDeps, c: Call, ev: any): void {
     }
     // The reply's spoken part is over once it calls a tool after saying something ("on it", then Delegate):
     // the pipeline's response ends here, so the voice is free; what the turn says later goes to the channel.
-    if (c.sink && c.sink.sent > 0) finishSink(c, c.sink);
+    if (c.sink && (c.sink.sent > 0 || c.sink.queued?.length)) finishSink(c, c.sink);
   } else if (ev?.type === "vc_turn_end") {
     say(c, c.speak.flush());
     if (c.sink) {
@@ -361,6 +394,11 @@ function releaseHeld(c: Call): void {
 }
 
 function writeChunk(s: Sink, text: string): void {
+  if (s.holdUntil && Date.now() < s.holdUntil) {
+    (s.queued ??= []).push(text);
+    s.flushT ??= setTimeout(() => flushQueued(s), Math.max(0, s.holdUntil - Date.now()));
+    return;
+  }
   if (s.tFirst == null) s.tFirst = Date.now();
   const piece = (s.sent > 0 ? " " : "") + text;
   s.sent++;
@@ -368,10 +406,32 @@ function writeChunk(s: Sink, text: string): void {
   s.res.write(`data: ${JSON.stringify({ id: s.id, object: "chat.completion.chunk", created: s.created, model: "pi", choices: [{ index: 0, delta: { content: piece }, finish_reason: null }] })}\n\n`);
 }
 
+/** An opener's held reply: he didn't go on, so it is said now (and the response ends if its turn already did). */
+function flushQueued(s: Sink): void {
+  s.holdUntil = 0;
+  if (s.flushT) clearTimeout(s.flushT);
+  s.flushT = undefined;
+  if (s.done) return;
+  const q = s.queued ?? [];
+  s.queued = [];
+  for (const p of q) writeChunk(s, p);
+  if (s.endAfter) endSink(s);
+}
+
 function finishSink(c: Call, s: Sink): void {
   if (s.done) return;
-  s.done = true;
   if (c.sink === s) c.sink = null;
+  if (s.queued?.length && s.holdUntil) {
+    // Its reply is still held for his next words: the response ends once it is written (or he goes on and it isn't).
+    s.endAfter = true;
+    return;
+  }
+  endSink(s);
+}
+
+function endSink(s: Sink): void {
+  if (s.done) return;
+  s.done = true;
   try {
     s.res.write(`data: ${JSON.stringify({ id: s.id, object: "chat.completion.chunk", created: s.created, model: "pi", choices: [{ index: 0, delta: {}, finish_reason: "stop" }] })}\n\n`);
     s.res.write("data: [DONE]\n\n");
@@ -454,6 +514,7 @@ async function completions(d: BrainDeps, req: IncomingMessage, res: ServerRespon
   res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive" });
   res.flushHeaders();
   const s: Sink = { res, id: `chatcmpl-${rid(6)}`, sent: 0, t0, tFirst: null, tDelta: null, deltas: 0, text: "", created: Math.floor(t0 / 1000), done: false };
+  if (isOpener(text)) s.holdUntil = t0 + OPENER_MS;
   if (!text) {
     // Nothing new from Carl (an empty turn): nothing to say.
     finishSink(c, s);
@@ -485,13 +546,14 @@ async function completions(d: BrainDeps, req: IncomingMessage, res: ServerRespon
       // (the next request). Mid-reply, he barged in: the rest of the reply is not said, and the turn stops.
       s.done = true;
       if (c.sink === s) c.sink = null;
+      if (s.flushT) clearTimeout(s.flushT);
       if (s.sent > 0) {
         c.dropping = true;
         c.stopping = c.engine.interrupt(c.convId, false).catch(() => false);
       } else if (!c.held) {
         // Cut before a word was said: he may be going on (a pause ended his turn mid-thought). Hold what it says.
-        c.held = { utt: c.utt, pieces: [], timer: setTimeout(() => releaseHeld(c), HOLD_MS) };
-      }
+        c.held = { utt: c.utt, pieces: [...(s.queued ?? [])], timer: setTimeout(() => releaseHeld(c), HOLD_MS) };
+      } else if (s.queued?.length) c.held.pieces.push(...s.queued);
       log(d, { ev: "turn.cut", call: c.id, req: s.id, afterMs: Date.now() - t0, spokenChars: s.text.length, stopped: s.sent > 0 });
     }
   });
@@ -525,12 +587,21 @@ async function completions(d: BrainDeps, req: IncomingMessage, res: ServerRespon
   }
   // "Stop" / "never mind": the running work stops first (in code, not left to the model), then the words go to pi
   // like any line, so the conversation records them and it can answer in a word.
+  const notes: string[] = [];
   if (STOP_RE.test(text) && c.engine.stopWork) {
     // What he just asked for: work started since his previous line (never older work he didn't mention).
-    const n = await c.engine.stopWork(c.convId, last?.at).catch(() => 0);
+    const stopped: string[] = [];
+    const turn = c.engine.isRunning(c.convId);
+    const n = await c.engine.stopWork(c.convId, last?.at, stopped).catch(() => 0);
     log(d, { ev: "turn.stop", call: c.id, req: s.id, workers: n });
+    // pi is told what the code already did, so its line is true (it said "I can't stop the worker" when it was stopped).
+    const what = [...(turn ? ["the turn that was running"] : []), ...stopped.map((t) => `the background worker "${t}"`)];
+    if (what.length) notes.push(`[Stopped in code as he said it: ${what.join(" and ")}. It is already stopped; don't try to stop it again, and say so in a line.]`);
   }
-  const out = await c.engine.message({ convId: c.convId, text: said, via: "voice", client: c.device, clientMsgId: `v-${s.id}`, ...(wentOn ? { continues: true } : {}) }).catch((e): Record<string, unknown> => ({ error: (e as Error).message }));
+  if (NO_SPOIL_RE.test(text)) c.noSpoil = true;
+  else if (SPOIL_OK_RE.test(text)) c.noSpoil = false;
+  if (c.noSpoil) notes.push(NO_SPOIL_NOTE);
+  const out = await c.engine.message({ convId: c.convId, text: said, ...(notes.length ? { context: notes.join("\n") } : {}), via: "voice", client: c.device, clientMsgId: `v-${s.id}`, ...(wentOn ? { continues: true } : {}) }).catch((e): Record<string, unknown> => ({ error: (e as Error).message }));
   if (!out?.steered) c.armed = true;
   c.steer = out?.steered ? { clientId: `v-${s.id}`, text: said } : null;
   log(d, { ev: "turn.start", call: c.id, req: s.id, chars: text.length, steered: !!out?.steered, msgMs: Date.now() - t0, ...(out?.error ? { error: String(out.error).slice(0, 200) } : {}) });

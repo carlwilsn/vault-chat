@@ -1250,7 +1250,7 @@ export class Engine {
 
   /** "Stop" / "never mind" on a call: the running turn stops and so does the work it handed off (its Delegate
    *  workers, background or not). How many workers were stopped. */
-  async stopWork(convId: string, since?: number): Promise<number> {
+  async stopWork(convId: string, since?: number, stopped?: string[]): Promise<number> {
     const turn = await this.interrupt(convId, true).catch(() => false);
     const running = ((this.picture(convId)?.meta.subagents ?? []) as { threadId: string; state?: string; status?: string; startedAt?: number }[]).filter((s) => (s.state ?? s.status) === "running");
     // "Never mind" is about what he just asked for: the work started since his previous line. Older work he didn't
@@ -1259,7 +1259,13 @@ export class Engine {
     let subs = since == null ? running : running.filter((s) => (s.startedAt ?? 0) >= since);
     if (since != null && !subs.length && !turn && running.length) subs = [running.reduce((a, b) => ((b.startedAt ?? 0) > (a.startedAt ?? 0) ? b : a))];
     let n = 0;
-    for (const s of subs) if ((await this.d.backend.subagentControl(s.threadId, "stop").catch(() => ({ ok: false }))).ok) n++;
+    for (const s of subs)
+      if ((await this.d.backend.subagentControl(s.threadId, "stop").catch(() => ({ ok: false }))).ok) {
+        n++;
+        const title = (s as { title?: string }).title || "background work";
+        stopped?.push(title);
+        if (stopped) this.stoppedOnHisWord.add(`${convId}\n${title}`);
+      }
     return n;
   }
 
@@ -1267,6 +1273,8 @@ export class Engine {
   /** The last worker a conversation started (Delegate), and when his last line that continued the one before came. */
   private lastDelegate = new Map<string, { title: string; at: number }>();
   private continuedAt = new Map<string, number>();
+  /** Workers he stopped on a call ("never mind"; the voice already told him): their report is not a turn. */
+  private stoppedOnHisWord = new Set<string>();
   /** What a voice on `convId` is waiting on (src/voiceWaitLine.ts), for a surface with no feed of its own (the board). */
   waitInputs(convId: string): ReturnType<typeof waitInputs> | null {
     const p = this.picture(convId);
@@ -1801,14 +1809,18 @@ export class Engine {
         (r: any) => `Delegated work ${r?.ok ? "finished" : `failed (${r?.state ?? "error"})`}: "${title}"\n\n${String(r?.text ?? "").slice(0, 12_000) || "(no report)"}`,
         (err: Error) => `Delegated work failed: "${title}"\n\n${err?.message ?? err}`,
       )
-      .then((input) =>
-        this.scoped(() =>
+      .then((input) => {
+        // He stopped it himself ("never mind"), and the agent already said so: its "stopped" report is a line in the
+        // chat, not a turn — the voice said it was stopped twice (the roleplay's second round).
+        const key = `${convId}\n${title}`;
+        if (this.stoppedOnHisWord.delete(key) && !input.startsWith("Delegated work finished")) return this.notice(convId, `Stopped as he asked: "${title}".`);
+        return this.scoped(() =>
           this.run(convId, input, "wake", { ownTurn: true }).catch((err: Error) => {
             this.log(`delegate result on ${convId}: ${err.message}`);
             return this.notice(convId, `${input.split("\n")[0]} — the agent could not take it up (${err.message}).\n\n${input.split("\n").slice(2).join("\n").slice(0, 4000)}`, "warn");
           }),
-        ),
-      );
+        );
+      });
   }
 
   /** At boot: workers a restart of the server took down (their processes went with it) still read "running". Each

@@ -8,7 +8,7 @@ import { join } from "node:path";
 const logDir = mkdtempSync(join(tmpdir(), "vc-brain-test-"));
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { speechReady } from "../speakMath";
-import { HOLD_MS, STOP_RE, workCalibration, brainRoute, lastUserText, resetBrainForTests, voiceCallRules, type BrainDeps, type BrainEngine } from "../voiceBrain";
+import { HOLD_MS, NO_SPOIL_NOTE, OPENER_MS, STOP_RE, workCalibration, brainRoute, lastUserText, resetBrainForTests, voiceCallRules, type BrainDeps, type BrainEngine } from "../voiceBrain";
 
 type Fake = BrainEngine & { emit(ev: any): void; messages: any[]; talker: any; interrupted: number; running: boolean; stopped: number };
 
@@ -38,9 +38,10 @@ function fakeEngine(): Fake {
       f.running = false;
       return true;
     },
-    async stopWork() {
+    async stopWork(_c, _since, stopped) {
       f.stopped++;
       f.running = false;
+      stopped?.push("Lecture 7 flashcards");
       return 1;
     },
     emit(ev) {
@@ -248,6 +249,64 @@ describe("voice with one brain", () => {
     expect(eng.messages[2].text).toBe("Make the component graph. Topologically sort it.");
     eng.emit({ type: "vc_turn_end", status: "completed" });
     await p2.then((r) => sse(r)).catch(() => null);
+  });
+
+  it("an opener's reply waits a moment for the rest of his line: 'Yo.' then the question gets one answer, nothing said for 'Yo.'", async () => {
+    const c = await call();
+    const req = (t: string, signal?: AbortSignal) => fetch(`${base}/v1/chat/completions`, { method: "POST", headers: { authorization: `Bearer ${c.token}` }, body: JSON.stringify({ messages: [{ role: "user", content: t }] }), signal });
+    const cut = new AbortController();
+    const p1 = req("Yo.", cut.signal);
+    await until(() => eng.messages.length === 1);
+    eng.emit({ type: "vc_turn_start", kind: "user", origin: "voice" });
+    eng.emit(delta("Hey Carl, what do you need? "));
+    eng.emit({ type: "message_end", message: { role: "assistant" } });
+    eng.emit({ type: "vc_turn_end", status: "completed" });
+    // He goes on 0.6 s later (before the opener's hold is over): the pipeline cancels the "Yo." request.
+    await new Promise((r) => setTimeout(r, 600));
+    cut.abort();
+    const got1 = await p1.then((r) => r.text()).catch(() => "");
+    expect(got1).not.toContain("Hey Carl");
+    await until(() => brainEvents().some((e) => e.ev === "turn.cut" && e.call === c.id));
+    const p2 = req("Can you find the Bellman-Ford lecture?");
+    await until(() => eng.messages.length === 2);
+    expect(brainEvents().some((e) => e.ev === "turn.merge" && e.call === c.id && e.dropped === 1)).toBe(true);
+    eng.emit({ type: "vc_turn_start", kind: "user", origin: "voice" });
+    eng.emit(delta("It's lecture six. "));
+    eng.emit({ type: "vc_turn_end", status: "completed" });
+    const said = (await sse(await p2)).filter((l) => l !== "[DONE]").map((l) => JSON.parse(l).choices[0].delta.content ?? "").join("");
+    expect(said.trim()).toBe("It's lecture six.");
+  });
+
+  it("an opener he doesn't follow up is answered after the hold, and its response ends", async () => {
+    const c = await call();
+    const t0 = Date.now();
+    const p = fetch(`${base}/v1/chat/completions`, { method: "POST", headers: { authorization: `Bearer ${c.token}` }, body: JSON.stringify({ messages: [{ role: "user", content: "Okay, cool." }] }) });
+    await until(() => eng.messages.length === 1);
+    eng.emit({ type: "vc_turn_start", kind: "user", origin: "voice" });
+    eng.emit(delta("Good. Want to check part b next? "));
+    eng.emit({ type: "vc_turn_end", status: "completed" });
+    const lines = await sse(await p);
+    expect(Date.now() - t0).toBeGreaterThanOrEqual(OPENER_MS - 50);
+    expect(lines.join("")).toContain("Good.");
+    expect(lines.at(-1)).toBe("[DONE]");
+  });
+
+  it("'don't spoil it' holds for his next lines until he lifts it; 'never mind' tells pi what the code stopped", async () => {
+    const c = await call();
+    const say = async (t: string) => {
+      const n = eng.messages.length;
+      const p = fetch(`${base}/v1/chat/completions`, { method: "POST", headers: { authorization: `Bearer ${c.token}` }, body: JSON.stringify({ messages: [{ role: "user", content: t }] }) });
+      await until(() => eng.messages.length > n);
+      eng.emit({ type: "vc_turn_end", status: "completed" });
+      await p.then((r) => r.text()).catch(() => null);
+      return eng.messages.at(-1);
+    };
+    expect((await say("What's the first step for this one?")).context ?? "").not.toContain("don't spoil it");
+    expect((await say("Dude, don't spoil it. I'm trying to do the rest myself.")).context).toBe(NO_SPOIL_NOTE);
+    expect((await say("Okay so b is three, then d is minus three.")).context).toBe(NO_SPOIL_NOTE);
+    expect((await say("Okay, next question.")).context ?? "").not.toContain("don't spoil it");
+    const m = await say("Actually, never mind, forget the flashcards.");
+    expect(m.context).toContain('Stopped in code as he said it: the background worker "Lecture 7 flashcards"');
   });
 
   it("a cut with no words after it (a noise): what the turn says is said after all, a moment later", async () => {
