@@ -55,6 +55,7 @@ import { isOpen, pendingOf, shown, type Picture } from "../../src/convlog/reduce
 import { makeChatView, toolName } from "../../src/convlog/view";
 import { waitInputs } from "../../src/voiceWaitLine";
 import { lookupAll } from "./lookup";
+import { REBUILD_MARK, rebuildNote, sourcesChangedSince, staleBuilt } from "./builtFiles";
 import { attachmentAt, attachmentsNote } from "../attachments";
 import { readEntries } from "../convlog/piSession";
 import { PiFeed } from "./piFeed";
@@ -143,6 +144,8 @@ type Live = {
   turnOpts: TurnOpts;
   /** The thread's working folder (the vault, or a project's main folder): relative tool paths start here. */
   cwd: string;
+  /** Files this turn wrote (absolute): a built file older than its changed source is rebuilt (builtFiles.ts). */
+  written?: Set<string>;
 };
 
 type TurnOpts = { images?: string[]; context?: string; itemImages?: ItemImage[]; clientId?: string; /** What the chat shows (Carl's answer to a question asked before a restart). */ shown?: string; via?: string; /** Which client sent it (the turn log's `via`: laptop, phone, voice …). */ origin?: string; /** A wake, job or resume of something Carl started. */ byCarl?: boolean; /** An engine input that runs as its own turn once the running one ends, never folded into it (a background report: pi may settle the turn before a follow-up is taken, and a turn parked on a question takes none). */ ownTurn?: boolean };
@@ -458,7 +461,7 @@ export function toolAnswer(r: any): { ok: boolean; text: string; images?: { data
 }
 
 /** A Delegate worker's instructions (on top of the subagent preamble). */
-const DELEGATE_WORKER_PROMPT = `You do one piece of work for vault-chat's agent, in Carl's vault, in the background while it keeps talking with him. Do it fully and carefully, in place (git autosave is the undo). Read back what you changed. End with a short report the agent can say aloud in two or three sentences: what you did or found, and what you checked; then any detail it may need.`;
+const DELEGATE_WORKER_PROMPT = `You do one piece of work for vault-chat's agent, in Carl's vault, in the background while it keeps talking with him. Do it fully and carefully, in place (git autosave is the undo). Read back what you changed. If you change a file that another is built from (a PDF or a page from its .md or .tex source), rebuild that file too and check it: he reads the built file. End with a short report the agent can say aloud in two or three sentences: what you did or found, and what you checked; then any detail it may need.`;
 
 /** pi's own tools (and the subagent tool): a vault tool of the same name is not registered over them. */
 const PI_BUILTIN_TOOLS = ["read", "write", "edit", "bash", "grep", "find", "ls", "subagent"];
@@ -1705,6 +1708,8 @@ export class Engine {
           const input = rel && !isAbsolute(rel) && l.cwd !== this.d.vault ? { ...o.input, path: resolve(l.cwd, rel) } : o.input;
           const p = writtenPath(this.d.vault, input);
           if (p) this.d.onFilesWritten?.([p]);
+          const abs = String(input?.path ?? input?.file_path ?? "");
+          if (abs) (l.written ??= new Set()).add(isAbsolute(abs) ? abs : resolve(l.cwd, abs));
         }
         l.open.delete(id);
         break;
@@ -1768,6 +1773,14 @@ export class Engine {
     this.turnLine(l.rec, { status, outcome, state, error: errStr || null });
     this.offerTurnPush(l, outcome, state, errStr, conv?.title ?? conv0?.title ?? "");
     this.d.onTurnEnded?.(l.convId);
+    // It changed a source whose built file he uses (a PDF from its .md): the built file follows, before "done".
+    if (outcome === "ok" && l.written?.size && !l.input.startsWith(REBUILD_MARK)) {
+      const stale = staleBuilt(vault, [...l.written]);
+      if (stale.length) {
+        this.log(`built files stale after a turn on ${l.convId}: ${stale.map((x) => x.built).join(", ")}`);
+        void this.scoped(() => this.run(l.convId, rebuildNote(stale), "wake", { ownTurn: true }).catch((e: Error) => this.log(`rebuild on ${l.convId}: ${e.message}`)));
+      }
+    }
     for (const w of this.turnWaiters.get(l.convId)?.splice(0) ?? []) w();
     if (this.taps.has(l.convId)) this.tapEmit(l.convId, { type: "vc_turn_end", status, kind: l.kind });
 
@@ -1803,10 +1816,15 @@ export class Engine {
   /** A background worker's report (Delegate's, or a `subagent` call moved to the background) comes back to its
    *  conversation as one new turn, "Delegated work finished: …" — exactly once. If that turn cannot start, the
    *  report is still written into the conversation as a line, never dropped. */
-  private reportWhenDone(convId: string, title: string, result: Promise<Record<string, unknown>>): void {
+  private reportWhenDone(convId: string, title: string, result: Promise<Record<string, unknown>>, since?: number): void {
     void result
       .then(
-        (r: any) => `Delegated work ${r?.ok ? "finished" : `failed (${r?.state ?? "error"})`}: "${title}"\n\n${String(r?.text ?? "").slice(0, 12_000) || "(no report)"}`,
+        (r: any) => {
+          const report = `Delegated work ${r?.ok ? "finished" : `failed (${r?.state ?? "error"})`}: "${title}"\n\n${String(r?.text ?? "").slice(0, 12_000) || "(no report)"}`;
+          // The worker changed a source and left the file he uses behind: the agent is told before it tells him.
+          const stale = r?.ok && since ? staleBuilt(this.d.vault, sourcesChangedSince(this.d.vault, since)) : [];
+          return stale.length ? `${report}\n\n${rebuildNote(stale)}` : report;
+        },
         (err: Error) => `Delegated work failed: "${title}"\n\n${err?.message ?? err}`,
       )
       .then((input) => {
@@ -2011,7 +2029,7 @@ export class Engine {
             title,
             ...(a.expect === "short" || a.expect === "long" ? { expect: a.expect } : {}),
           });
-          this.reportWhenDone(convId, title, started);
+          this.reportWhenDone(convId, title, started, Date.now());
           return text(`Started in the background ("${title}"). Its report comes back to you as a new turn when it is done; JobList shows it running. If you already told Carl you sent it, end your turn now without another line; otherwise say so in one short line, then end your turn.`);
         }
         case "BoardMake": {
