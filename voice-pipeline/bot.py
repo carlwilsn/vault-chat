@@ -170,6 +170,7 @@ class Gate:
         self.bot = False  # the voice's audio playing
         self.owed: float | None = None  # his turn ended at this time and its reply is not done
         self.user_turns = 0  # his turns so far (a result he talks over stops there)
+        self.turn_at = -1e9  # when his last turn started (his first word)
         self.changed = now
 
     def on_frame(self, frame: Frame, now: float) -> None:
@@ -180,6 +181,7 @@ class Gate:
         elif isinstance(frame, UserStartedSpeakingFrame):
             self.user, self.owed = True, None
             self.user_turns += 1
+            self.turn_at = now
         elif isinstance(frame, UserStoppedSpeakingFrame):
             self.user, self.owed = False, now
         elif isinstance(frame, BotStartedSpeakingFrame):
@@ -202,20 +204,36 @@ class Gate:
 class ResultFlow:
     """One result, said whole: the Gate is waited on once, at its first piece; its later pieces (the same `utt`) go
     straight on, back to back, never a 1.2 s gap after each sentence. If he starts a turn while it plays, that is a
-    barge-in: the rest of that result is not said. Pure (tested in test_gate.py)."""
+    barge-in: the rest of that result is not said — unless his turn began with it (his first word within COLLIDE_SECS of
+    its start: the gap closed as it opened, he never heard it and didn't mean to cut it; a word takes 1-2.5 s to be
+    transcribed): then the whole result is said again at the next gap, once (the roleplay: a finished study guide started 0.7 s after he began talking, his words cut it,
+    and the result was never heard). Pure (tested in test_gate.py)."""
+
+    COLLIDE_SECS = 3.0
 
     def __init__(self):
         self.utt = None
         self.turns_at = 0
+        self.at = 0.0
+        self.pieces: list[str] = []
+        self.replaying = False
+        self.replayed: set = set()
 
     def next(self, utt, user_turns: int) -> str:
-        """'gate' (a new result: wait for a gap first), 'go' (its next piece: say it now) or 'drop' (he talked over it)."""
+        """'gate' (a new result: wait for a gap first), 'go' (its next piece: say it now), 'hold' (keep it for the replay)
+        or 'drop' (he talked over it)."""
         if utt is None or utt != self.utt:
             return "gate"
+        if self.replaying:
+            return "hold"
         return "go" if user_turns == self.turns_at else "drop"
 
-    def started(self, utt, user_turns: int) -> None:
-        self.utt, self.turns_at = utt, user_turns
+    def started(self, utt, user_turns: int, now: float = 0.0) -> None:
+        self.utt, self.turns_at, self.at, self.pieces = utt, user_turns, now, []
+
+    def collided(self, user_turns: int, turn_at: float) -> bool:
+        """He took a turn over this result as it began: say it again whole."""
+        return self.utt is not None and self.utt not in self.replayed and user_turns != self.turns_at and 0 <= turn_at - self.at <= self.COLLIDE_SECS
 
 
 class Quiet(FrameProcessor):
@@ -240,10 +258,32 @@ class Quiet(FrameProcessor):
         act = flow.next(utt, self.gate.user_turns)
         if act == "drop":
             return
+        if act == "hold":
+            flow.pieces.append(text)
+            return
         if act == "gate":
             await self.until_idle()
-            flow.started(utt, self.gate.user_turns)
+            flow.started(utt, self.gate.user_turns, time.monotonic())
+            if utt is not None:
+                asyncio.create_task(self.watch_collision(flow, utt, task))
+        flow.pieces.append(text)
         await task.queue_frame(TTSSpeakFrame(text))
+
+    async def watch_collision(self, flow: ResultFlow, utt, task) -> None:
+        """A result his voice ran into as it started (the gap closed as it opened): said again, whole, at the next gap."""
+        await asyncio.sleep(ResultFlow.COLLIDE_SECS + 0.2)
+        if flow.utt != utt or not flow.collided(self.gate.user_turns, self.gate.turn_at):
+            return
+        flow.replaying = True
+        jlog(ev="result.collide", utt=utt, turn_after=round(self.gate.turn_at - flow.at, 2))
+        await self.until_idle()
+        pieces = list(flow.pieces)
+        flow.replayed.add(utt)
+        flow.started(utt, self.gate.user_turns, time.monotonic())
+        flow.replaying = False
+        for p in pieces:
+            flow.pieces.append(p)
+            await task.queue_frame(TTSSpeakFrame(p))
 
 
 class ReplyEnd(FrameProcessor):

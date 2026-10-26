@@ -131,6 +131,29 @@ def test_talking_over_a_result_stops_the_rest():
     assert f.next(4, 3) == "gate"  # a later result is said (after its gap)
 
 
+def test_a_result_his_voice_ran_into_as_it_started_is_said_again_whole():
+    # The gap closed as it opened: his first word was transcribed 2.6 s into the result and cut it. He never heard it.
+    f = ResultFlow()
+    f.started(5, 0, now=100.0)
+    assert f.collided(user_turns=1, turn_at=102.6)
+    # While it waits for the next gap, later pieces of that result are kept for the replay, not said or dropped.
+    f.replaying = True
+    assert f.next(5, 1) == "hold"
+    # Said again once: a second collision on the same result is a real barge-in.
+    f.replayed.add(5)
+    f.replaying = False
+    f.started(5, 1, now=120.0)
+    assert not f.collided(user_turns=2, turn_at=120.2)
+
+
+def test_talking_over_a_result_well_into_it_is_a_barge_in_not_a_replay():
+    f = ResultFlow()
+    f.started(6, 0, now=100.0)
+    assert not f.collided(user_turns=1, turn_at=104.5)  # 4.5 s in: he heard it and talked over it
+    assert f.next(6, 1) == "drop"
+    assert not f.collided(user_turns=0, turn_at=-1e9)  # no turn of his: nothing was cut
+
+
 def test_an_untagged_piece_is_gated_like_before():
     f = ResultFlow()
     f.started(None, 0)
