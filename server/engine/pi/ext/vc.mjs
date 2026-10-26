@@ -99,11 +99,20 @@ export default function vaultChat(pi) {
   });
 
   // ---- path guard for the in-process tools ------------------------------------------
+  const CALL_WRITE_REASON =
+    "Not on a live call: you don't edit files yourself while a voice call is live (no edit, no write, and no editing through bash). Call Delegate {title, task, expect} now with this change — the worker makes it and checks it — and say in one line that you've sent it.";
   const denyRead = resolveList(json(E.VC_PI_DENY_READ, []), HOME);
   const denyWrite = resolveList(json(E.VC_PI_DENY_WRITE, []), HOME);
   pi.on("tool_call", async (event, ctx) => {
     const why = guardToolCall(event.toolName, event.input, { cwd: ctx?.cwd || process.cwd(), home: HOME, denyRead, denyWrite });
-    return why ? { block: true, reason: why } : undefined;
+    if (why) return { block: true, reason: why };
+    // On a live voice call the talker hands file changes to a worker (Delegate) and keeps talking: it edited inline and
+    // went quiet for 16 s, the call rule notwithstanding. The host says whether a call is live on this thread.
+    if (event.toolName === "write" || event.toolName === "edit") {
+      const v = await ctx.ui.editor("vc:host-call", JSON.stringify({ tool: "__fileWrite", args: {} })).catch(() => undefined);
+      if (json(v, {}).text === "call") return { block: true, reason: CALL_WRITE_REASON };
+    }
+    return undefined;
   });
 
   // ---- memory near its cap: the write's own result says so (Claude Code's near-cap reminder) ----
