@@ -818,6 +818,20 @@ export const scenarios: Scenario[] = [
     fastTimers: syncTimers,
     open: [...deskOpen(NOTE, "c-spectral"), { sleep: 1500 }],
   },
+  // [roleplay] The real desktop frontend against a REAL vault-chat server (VC_REALBOX=<url> on the dev server; the
+  // vault there is ?vault=<name>): its chat, voice and waiting line are the box's, nothing is scripted. No chats of its
+  // own (the box serves them); the laptop's vault is the synthetic one (files only, never synced anywhere).
+  {
+    id: "realbox",
+    title: "Real box (VC_REALBOX): the desktop against a running server",
+    group: "Roleplay",
+    notes: "Start the dev server with VC_REALBOX=http://127.0.0.1:<port> and open ?scenario=realbox&vault=<name>.",
+    // The real clock: the box's times (a job's startedAt) are real.
+    clock: new Date().toISOString(),
+    build: () => {},
+    host: () => ({ sync: { box: { box: "http://realbox.localhost", vault: new URLSearchParams(location.search).get("vault") || "main" }, reports: [{ configured: true, ok: true, message: "ok" }] } }),
+    surfaces: ["desktop"],
+  },
   ...phase3Scenarios,
   ...phase2Scenarios,
   ...convFullScenarios,

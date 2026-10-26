@@ -127,6 +127,24 @@ export function previewPlugin(opts) {
         if (prefix !== "/" && (url.pathname + "/").startsWith(prefix)) url.pathname = "/" + url.pathname.slice(prefix.length);
         res.setHeader("Content-Security-Policy", CSP);
         res.setHeader("Access-Control-Allow-Origin", "*");
+        // [roleplay] /__realbox/* → a real vault-chat server (VC_REALBOX): see host.ts realBox.
+        if (url.pathname.startsWith("/__realbox/") && process.env.VC_REALBOX) {
+          const chunks = [];
+          for await (const c of req) chunks.push(c);
+          try {
+            const up = await fetch(process.env.VC_REALBOX + url.pathname.slice("/__realbox".length) + url.search, {
+              method: req.method,
+              headers: { "Content-Type": "application/json" },
+              body: req.method === "GET" || req.method === "HEAD" ? undefined : Buffer.concat(chunks),
+            });
+            res.statusCode = up.status;
+            res.setHeader("content-type", up.headers.get("content-type") ?? "application/json");
+            return void res.end(Buffer.from(await up.arrayBuffer()));
+          } catch (e) {
+            res.statusCode = 502;
+            return void res.end(JSON.stringify({ error: `realbox: ${e?.message ?? e}` }));
+          }
+        }
         if (url.pathname.startsWith("/__preview/fixture/")) {
           const [, , , base, ...rest] = url.pathname.split("/");
           const p = fixtureFile(decodeURIComponent(base), rest.map(decodeURIComponent).join("/"));

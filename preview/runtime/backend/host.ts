@@ -8,6 +8,17 @@ import { gitDirty } from "./memgit";
 import { MemoryBox } from "../../../src/convlog/memoryBox";
 import { answerComplete } from "../llm";
 
+/** [roleplay] A REAL box behind the preview: a scenario whose box is http://realbox.localhost sends every box request
+ *  to the dev server's /__realbox proxy (VC_REALBOX, e.g. an ssh tunnel to a throwaway test instance), so the real
+ *  desktop frontend runs against a real server: its chat, its voice call, its waiting line. */
+export const REALBOX_HOST = "realbox.localhost";
+async function realBox(url: string, method: string, body?: string): Promise<{ status: number; body: string } | null> {
+  const u = new URL(url);
+  if (u.hostname !== REALBOX_HOST) return null;
+  const r = await fetch(`${import.meta.env.BASE_URL}__realbox${u.pathname}${u.search}`, { method, headers: { "Content-Type": "application/json" }, body: method === "GET" ? undefined : body });
+  return { status: r.status, body: await r.text() };
+}
+
 /** The box's side threads (server/engine/pi/side.ts): Ctrl+K / Ctrl+L and the one-shots, answered by the scenario's scripts. */
 type PreviewSide = { sys: string; text: string; v: number; done: boolean; error: string | null; wait: Promise<void> };
 const sides = new Map<string, PreviewSide>();
@@ -340,6 +351,8 @@ export const hostCommands: Record<string, (a: Record<string, any>) => unknown> =
   // (sync.boxChat, none by default) and an event ring fed by boxNext(). A
   // scenario overrides them to make it unreachable.
   box_get_json: async ({ url }) => {
+    const real = await realBox(String(url), "GET");
+    if (real) return real;
     const u = new URL(String(url));
     if (u.pathname === "/api/v1/health") {
       const b = fakeBox(u);
@@ -417,6 +430,8 @@ export const hostCommands: Record<string, (a: Record<string, any>) => unknown> =
     return { status: 404, body: JSON.stringify({ error: "not found" }) };
   },
   box_post_json: async ({ url, body }) => {
+    const real = await realBox(String(url), "POST", String(body ?? "{}"));
+    if (real) return real;
     const u = new URL(String(url));
     if (u.pathname === "/api/v1/keys" || u.pathname === "/api/v1/vaults") {
       const b = fakeBox(u);
