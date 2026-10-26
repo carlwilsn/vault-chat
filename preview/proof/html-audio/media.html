@@ -1,0 +1,54 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>media test</title>
+<style>
+@font-face { font-family: TestMono; src: url("assets/mono.ttf"); }
+body { font-family: sans-serif; padding: 12px; }
+#fonted { font-family: TestMono, serif; font-size: 20px; }
+pre { background: #eee; padding: 8px; font-size: 12px; }
+</style>
+<script type="module" src="assets/mod.js"></script>
+</head><body>
+<h1>Relative media in a vault page</h1>
+<p id="fonted">Font from assets/mono.ttf</p>
+<img id="markupImg" src="../shared/pic.png" alt="markup image">
+<span id="scriptImgHost"></span>
+<video id="vid" src="assets/clip.mp4" muted playsinline width="320"></video>
+<button id="play" type="button">Play</button>
+<pre id="out">waiting</pre>
+<script>
+var R = window.__media = { audio: {}, video: {}, img: {}, font: null, fetch: null, outside: null, dot: null, module: null, events: [] };
+var audio = new Audio();
+audio.src = 'assets/tone.mp3';
+audio.preload = 'auto';
+['loadedmetadata','playing','timeupdate','ended','error'].forEach(function (ev) {
+  audio.addEventListener(ev, function () {
+    R.events.push(ev);
+    R.audio = { src: audio.currentSrc, readyState: audio.readyState, currentTime: audio.currentTime, duration: audio.duration, ended: audio.ended, error: audio.error && audio.error.code, paused: audio.paused };
+    show();
+  });
+});
+var vid = document.getElementById('vid');
+['playing','timeupdate','ended','error'].forEach(function (ev) {
+  vid.addEventListener(ev, function () { R.video = { src: vid.currentSrc, currentTime: vid.currentTime, ended: vid.ended, error: vid.error && vid.error.code, w: vid.videoWidth }; show(); });
+});
+document.getElementById('play').addEventListener('click', function () {
+  audio.play().then(function () { R.events.push('audio.play resolved'); }, function (e) { R.events.push('audio.play rejected: ' + e.name); show(); });
+  vid.play().catch(function (e) { R.events.push('video.play rejected: ' + e.name); });
+});
+var img = new Image();
+img.onload = function () { R.img.script = { ok: true, w: img.naturalWidth, src: img.src }; show(); };
+img.onerror = function () { R.img.script = { ok: false, src: img.src }; show(); };
+img.src = '../shared/pic.png';
+document.getElementById('scriptImgHost').appendChild(img);
+var mi = document.getElementById('markupImg');
+function markup() { R.img.markup = { ok: mi.complete && mi.naturalWidth > 0, w: mi.naturalWidth, src: mi.currentSrc }; show(); }
+mi.addEventListener('load', markup); mi.addEventListener('error', markup);
+document.fonts.load('20px TestMono').then(function (f) { R.font = { loaded: f.length > 0 && document.fonts.check('20px TestMono') }; show(); }, function (e) { R.font = { loaded: false, err: String(e) }; show(); });
+fetch('assets/data.json').then(function (r) { return r.json(); }).then(function (j) { R.fetch = { ok: true, value: j.value }; show(); }, function (e) { R.fetch = { ok: false, err: String(e) }; show(); });
+// Must be refused: a hidden folder and a path out of the vault.
+fetch('../.secret/hidden.txt').then(function (r) { R.dot = { status: r.status }; show(); }, function (e) { R.dot = { blocked: String(e) }; show(); });
+fetch('../../outside.txt').then(function (r) { R.outside = { status: r.status }; show(); }, function (e) { R.outside = { blocked: String(e) }; show(); });
+function show() { document.getElementById('out').textContent = JSON.stringify(R, null, 1); }
+show();
+</script>
+</body></html>

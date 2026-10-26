@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { rewriteAssetUrls, resolveRelative } from "./htmlAssets";
+import { rewriteAssetUrls, resolveRelative, pageBaseUrl, withBase } from "./htmlAssets";
 import { invoke } from "@tauri-apps/api/core";
 import { isUnreadableAsText } from "./fileKind";
 import { openUrl, isExternalHref } from "./opener";
@@ -259,6 +259,47 @@ const scrollKeeper = (y: number) => `<script>(function(){
   }, { passive: true });
 })();</script>`;
 
+// The open vault, registered once with the vcpage protocol (vault_page.rs):
+// its index in page URLs, or null where there is no protocol (the preview,
+// a host without it) and pages keep the markup rewrite.
+const pageRoots = new Map<string, Promise<number | null>>();
+function pageRoot(vault: string): Promise<number | null> {
+  let p = pageRoots.get(vault);
+  if (!p) {
+    p = invoke<number>("vault_page_root", { root: vault }).then(
+      (i) => (typeof i === "number" ? i : null),
+      (err) => {
+        console.warn("[html] vault pages load without their folder:", err);
+        return null;
+      },
+    );
+    pageRoots.set(vault, p);
+  }
+  return p;
+}
+const settledRoots = new Map<string, number | null>();
+
+/** The page's folder as its base URL (null: no base); undefined while the vault registers. */
+function usePageBase(path: string | null | undefined): string | null | undefined {
+  const vault = useStore((s) => s.vaultPath);
+  const [, rerender] = useState(0);
+  useEffect(() => {
+    if (!vault || settledRoots.has(vault)) return;
+    let live = true;
+    void pageRoot(vault).then((i) => {
+      settledRoots.set(vault, i);
+      if (live) rerender((n) => n + 1);
+    });
+    return () => {
+      live = false;
+    };
+  }, [vault]);
+  if (!vault || !path) return null;
+  if (!settledRoots.has(vault)) return undefined;
+  const i = settledRoots.get(vault);
+  return i == null ? null : pageBaseUrl(i, vault, path);
+}
+
 function injectHeadScripts(html: string, scrollY = 0): string {
   const payload = SCROLLBAR_INJECT + LINK_INTERCEPT + MARQUEE_BRIDGE + SCROLL_BRIDGE + scrollKeeper(scrollY);
   if (/<head[^>]*>/i.test(html)) {
@@ -309,10 +350,15 @@ export function HtmlView({ content, path }: { content: string; path?: string | n
   // The page's last scroll (reported by scrollKeeper); a new path starts at the top.
   const scrollRef = useRef<{ path: string | null | undefined; y: number }>({ path, y: 0 });
   if (scrollRef.current.path !== path) scrollRef.current = { path, y: 0 };
-  const srcDoc = useMemo(
-    () => injectHeadScripts(path ? rewriteAssetUrls(content, path) : content, scrollRef.current.y),
-    [content, path],
-  );
+  // The page loads its own files as from its folder: a base at that folder
+  // (relative URLs in markup, CSS and script alike); the markup rewrite only
+  // for absolute paths, or for a page with no base.
+  const base = usePageBase(path);
+  const srcDoc = useMemo(() => {
+    if (base === undefined) return null;
+    const html = path ? rewriteAssetUrls(content, path, !base) : content;
+    return injectHeadScripts(base ? withBase(html, base) : html, scrollRef.current.y);
+  }, [content, path, base]);
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const hostRef = useRef<HTMLDivElement | null>(null);
   const [marqueeOn, setMarqueeOn] = useState(false);
@@ -556,7 +602,7 @@ export function HtmlView({ content, path }: { content: string; path?: string | n
   return (
     <div className="flex-1 flex flex-col overflow-hidden bg-background relative">
       <div className="flex-1 relative">
-        <iframe
+        {srcDoc !== null && <iframe
           ref={iframeRef}
           data-look-frame
           sandbox="allow-scripts"
@@ -567,7 +613,7 @@ export function HtmlView({ content, path }: { content: string; path?: string | n
           style={{ colorScheme: "light" }}
           className="absolute inset-0 w-full h-full bg-white"
           title="HTML preview"
-        />
+        />}
         {marqueeOn && (
           <div
             ref={hostRef}

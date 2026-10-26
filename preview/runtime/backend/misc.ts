@@ -97,7 +97,9 @@ export const miscCommands: Record<string, (a: Record<string, any>) => unknown> =
   compile_tex: () => {
     throw "preview: TeX compilation is not available in the preview";
   },
-  run_script: ({ path }) => ({ stdout: "", stderr: `preview: scripts don't run in the preview (${path})`, code: 1, timed_out: false }),
+  // No vcpage protocol in a browser: HTML pages keep the markup rewrite (blob URLs).
+  vault_page_root: () => null,
+  run_script: ({ path }) =>({ stdout: "", stderr: `preview: scripts don't run in the preview (${path})`, code: 1, timed_out: false }),
 
   // ---- boot timing (src/bootTiming.ts): no main-thread watcher in a browser ----
   boot_timing: () => ({ uptime_ms: Math.round(performance.now()), stalls: [] }),

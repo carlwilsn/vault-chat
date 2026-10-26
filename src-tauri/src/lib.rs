@@ -2,6 +2,7 @@ mod voice_server;
 mod boot_watch;
 mod agent_projects;
 mod box_sync;
+mod vault_page;
 
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
@@ -6089,6 +6090,12 @@ pub fn run() {
             None,
         ))
         .manage(RunInBackground(AtomicBool::new(false)))
+        // A vault HTML page's own files (audio, video, images, fonts, data),
+        // relative to its folder, for HtmlView's sandboxed iframe: the open
+        // vault only (vault_page.rs).
+        .register_asynchronous_uri_scheme_protocol(vault_page::SCHEME, |_ctx, request, responder| {
+            std::thread::spawn(move || responder.respond(vault_page::respond(&request)));
+        })
         .on_window_event(|window, event| {
             // Close-to-tray: when "run in background" is on, intercept the
             // main window's close and hide it instead of letting the app
@@ -6243,6 +6250,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            vault_page::vault_page_root,
             list_markdown_files,
             read_text_file,
             read_binary_file,

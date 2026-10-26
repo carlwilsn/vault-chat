@@ -1,0 +1,481 @@
+{
+ "label": "after",
+ "lessonBase": "http://vcpage.localhost/0/Physics%20135/",
+ "lesson": [
+  {
+   "src": "http://vcpage.localhost/0/Physics%20135/electricity-audio/00.mp3",
+   "currentTime": 0.63,
+   "paused": false,
+   "readyState": 4,
+   "error": null,
+   "status": ""
+  },
+  {
+   "src": "http://vcpage.localhost/0/Physics%20135/electricity-audio/00.mp3",
+   "currentTime": 1.66,
+   "paused": false,
+   "readyState": 4,
+   "error": null,
+   "status": ""
+  },
+  {
+   "src": "http://vcpage.localhost/0/Physics%20135/electricity-audio/00.mp3",
+   "currentTime": 2.71,
+   "paused": false,
+   "readyState": 4,
+   "error": null,
+   "status": ""
+  },
+  {
+   "src": "http://vcpage.localhost/0/Physics%20135/electricity-audio/00.mp3",
+   "currentTime": 3.77,
+   "paused": false,
+   "readyState": 4,
+   "error": null,
+   "status": ""
+  },
+  {
+   "src": "http://vcpage.localhost/0/Physics%20135/electricity-audio/00.mp3",
+   "currentTime": 4.83,
+   "paused": false,
+   "readyState": 4,
+   "error": null,
+   "status": ""
+  },
+  {
+   "src": "http://vcpage.localhost/0/Physics%20135/electricity-audio/00.mp3",
+   "currentTime": 5.85,
+   "paused": false,
+   "readyState": 4,
+   "error": null,
+   "status": ""
+  }
+ ],
+ "mediaBase": "http://vcpage.localhost/0/media-test/",
+ "media": {
+  "audio": {
+   "src": "http://vcpage.localhost/0/media-test/assets/tone.mp3",
+   "readyState": 4,
+   "currentTime": 3,
+   "duration": 3,
+   "ended": true,
+   "error": null,
+   "paused": true
+  },
+  "video": {
+   "src": "http://vcpage.localhost/0/media-test/assets/clip.mp4",
+   "currentTime": 4,
+   "ended": true,
+   "error": null,
+   "w": 320
+  },
+  "img": {
+   "script": {
+    "ok": true,
+    "w": 120,
+    "src": "http://vcpage.localhost/0/shared/pic.png"
+   },
+   "markup": {
+    "ok": true,
+    "w": 120,
+    "src": "http://vcpage.localhost/0/shared/pic.png"
+   }
+  },
+  "font": {
+   "loaded": true
+  },
+  "fetch": {
+   "ok": true,
+   "value": 42
+  },
+  "outside": {
+   "status": 404
+  },
+  "dot": {
+   "status": 404
+  },
+  "module": {
+   "ran": true
+  },
+  "events": [
+   "loadedmetadata",
+   "playing",
+   "audio.play resolved",
+   "timeupdate",
+   "timeupdate",
+   "timeupdate",
+   "timeupdate",
+   "timeupdate",
+   "timeupdate",
+   "timeupdate",
+   "timeupdate",
+   "timeupdate",
+   "timeupdate",
+   "timeupdate",
+   "timeupdate",
+   "ended"
+  ]
+ },
+ "net": [
+  {
+   "url": "http://ipc.localhost/git_commit_all",
+   "failed": "net::ERR_ABORTED"
+  },
+  {
+   "url": "http://vcpage.localhost/0/media-test/assets/mod.js",
+   "status": 200,
+   "type": "text/javascript; charset=utf-8"
+  },
+  {
+   "url": "http://vcpage.localhost/0/shared/pic.png",
+   "status": 200,
+   "type": "image/png"
+  },
+  {
+   "url": "http://vcpage.localhost/0/.secret/hidden.txt",
+   "failed": "net::ERR_ABORTED"
+  },
+  {
+   "url": "http://vcpage.localhost/0/media-test/assets/data.json",
+   "status": 200,
+   "type": "application/json"
+  },
+  {
+   "url": "http://vcpage.localhost/0/media-test/assets/mono.ttf",
+   "status": 200,
+   "type": "font/ttf"
+  },
+  {
+   "url": "http://vcpage.localhost/0/media-test/assets/clip.mp4",
+   "status": 206,
+   "type": "video/mp4"
+  },
+  {
+   "url": "http://vcpage.localhost/0/media-test/assets/tone.mp3",
+   "status": 206,
+   "type": "audio/mpeg"
+  },
+  {
+   "url": "http://vcpage.localhost/outside.txt",
+   "failed": "net::ERR_ABORTED"
+  },
+  {
+   "url": "http://vcpage.localhost/0/Physics%20135/electricity-audio/00.mp3",
+   "status": 206,
+   "type": "audio/mpeg"
+  },
+  {
+   "url": "http://vcpage.localhost/0/Physics%20135/electricity-audio/00.mp3",
+   "failed": "net::ERR_ABORTED"
+  },
+  {
+   "url": "http://vcpage.localhost/0/Physics%20135/electricity-audio/01.mp3",
+   "status": 206,
+   "type": "audio/mpeg"
+  },
+  {
+   "url": "http://vcpage.localhost/0/Physics%20135/electricity-audio/01.mp3",
+   "failed": "net::ERR_ABORTED"
+  },
+  {
+   "url": "http://vcpage.localhost/0/Physics%20135/electricity-audio/02.mp3",
+   "status": 206,
+   "type": "audio/mpeg"
+  },
+  {
+   "url": "http://vcpage.localhost/0/Physics%20135/electricity-audio/02.mp3",
+   "failed": "net::ERR_ABORTED"
+  },
+  {
+   "url": "http://vcpage.localhost/0/Physics%20135/electricity-audio/03.mp3",
+   "status": 206,
+   "type": "audio/mpeg"
+  },
+  {
+   "url": "http://vcpage.localhost/0/Physics%20135/electricity-audio/03.mp3",
+   "failed": "net::ERR_ABORTED"
+  },
+  {
+   "url": "http://vcpage.localhost/0/Physics%20135/electricity-audio/04.mp3",
+   "status": 206,
+   "type": "audio/mpeg"
+  },
+  {
+   "url": "http://vcpage.localhost/0/Physics%20135/electricity-audio/04.mp3",
+   "failed": "net::ERR_ABORTED"
+  },
+  {
+   "url": "http://vcpage.localhost/0/Physics%20135/electricity-audio/05.mp3",
+   "status": 206,
+   "type": "audio/mpeg"
+  },
+  {
+   "url": "http://vcpage.localhost/0/Physics%20135/electricity-audio/05.mp3",
+   "failed": "net::ERR_ABORTED"
+  },
+  {
+   "url": "http://vcpage.localhost/0/Physics%20135/electricity-audio/06.mp3",
+   "status": 206,
+   "type": "audio/mpeg"
+  },
+  {
+   "url": "http://vcpage.localhost/0/Physics%20135/electricity-audio/06.mp3",
+   "failed": "net::ERR_ABORTED"
+  },
+  {
+   "url": "http://vcpage.localhost/0/Physics%20135/electricity-audio/07.mp3",
+   "status": 206,
+   "type": "audio/mpeg"
+  },
+  {
+   "url": "http://vcpage.localhost/0/Physics%20135/electricity-audio/07.mp3",
+   "failed": "net::ERR_ABORTED"
+  },
+  {
+   "url": "http://vcpage.localhost/0/Physics%20135/electricity-audio/08.mp3",
+   "status": 206,
+   "type": "audio/mpeg"
+  },
+  {
+   "url": "http://vcpage.localhost/0/Physics%20135/electricity-audio/08.mp3",
+   "failed": "net::ERR_ABORTED"
+  },
+  {
+   "url": "http://vcpage.localhost/0/Physics%20135/electricity-audio/09.mp3",
+   "status": 206,
+   "type": "audio/mpeg"
+  },
+  {
+   "url": "http://vcpage.localhost/0/Physics%20135/electricity-audio/09.mp3",
+   "failed": "net::ERR_ABORTED"
+  },
+  {
+   "url": "http://vcpage.localhost/0/Physics%20135/electricity-audio/10.mp3",
+   "status": 206,
+   "type": "audio/mpeg"
+  },
+  {
+   "url": "http://vcpage.localhost/0/Physics%20135/electricity-audio/10.mp3",
+   "failed": "net::ERR_ABORTED"
+  },
+  {
+   "url": "http://vcpage.localhost/0/Physics%20135/electricity-audio/11.mp3",
+   "status": 206,
+   "type": "audio/mpeg"
+  },
+  {
+   "url": "http://vcpage.localhost/0/Physics%20135/electricity-audio/11.mp3",
+   "failed": "net::ERR_ABORTED"
+  },
+  {
+   "url": "http://vcpage.localhost/0/Physics%20135/electricity-audio/12.mp3",
+   "status": 206,
+   "type": "audio/mpeg"
+  },
+  {
+   "url": "http://vcpage.localhost/0/Physics%20135/electricity-audio/12.mp3",
+   "failed": "net::ERR_ABORTED"
+  },
+  {
+   "url": "http://vcpage.localhost/0/Physics%20135/electricity-audio/13.mp3",
+   "status": 206,
+   "type": "audio/mpeg"
+  },
+  {
+   "url": "http://vcpage.localhost/0/Physics%20135/electricity-audio/13.mp3",
+   "failed": "net::ERR_ABORTED"
+  },
+  {
+   "url": "http://vcpage.localhost/0/Physics%20135/electricity-audio/14.mp3",
+   "status": 206,
+   "type": "audio/mpeg"
+  },
+  {
+   "url": "http://vcpage.localhost/0/Physics%20135/electricity-audio/14.mp3",
+   "failed": "net::ERR_ABORTED"
+  },
+  {
+   "url": "http://vcpage.localhost/0/Physics%20135/electricity-audio/15.mp3",
+   "status": 206,
+   "type": "audio/mpeg"
+  },
+  {
+   "url": "http://vcpage.localhost/0/Physics%20135/electricity-audio/15.mp3",
+   "failed": "net::ERR_ABORTED"
+  },
+  {
+   "url": "http://vcpage.localhost/0/Physics%20135/electricity-audio/16.mp3",
+   "status": 206,
+   "type": "audio/mpeg"
+  },
+  {
+   "url": "http://vcpage.localhost/0/Physics%20135/electricity-audio/16.mp3",
+   "failed": "net::ERR_ABORTED"
+  },
+  {
+   "url": "http://vcpage.localhost/0/Physics%20135/electricity-audio/17.mp3",
+   "status": 206,
+   "type": "audio/mpeg"
+  },
+  {
+   "url": "http://vcpage.localhost/0/Physics%20135/electricity-audio/17.mp3",
+   "failed": "net::ERR_ABORTED"
+  },
+  {
+   "url": "http://vcpage.localhost/0/Physics%20135/electricity-audio/18.mp3",
+   "status": 206,
+   "type": "audio/mpeg"
+  },
+  {
+   "url": "http://vcpage.localhost/0/Physics%20135/electricity-audio/18.mp3",
+   "failed": "net::ERR_ABORTED"
+  },
+  {
+   "url": "http://vcpage.localhost/0/Physics%20135/electricity-audio/19.mp3",
+   "status": 206,
+   "type": "audio/mpeg"
+  },
+  {
+   "url": "http://vcpage.localhost/0/Physics%20135/electricity-audio/19.mp3",
+   "failed": "net::ERR_ABORTED"
+  },
+  {
+   "url": "http://vcpage.localhost/0/Physics%20135/electricity-audio/20.mp3",
+   "status": 206,
+   "type": "audio/mpeg"
+  },
+  {
+   "url": "http://vcpage.localhost/0/Physics%20135/electricity-audio/20.mp3",
+   "failed": "net::ERR_ABORTED"
+  },
+  {
+   "url": "http://vcpage.localhost/0/Physics%20135/electricity-audio/21.mp3",
+   "status": 206,
+   "type": "audio/mpeg"
+  },
+  {
+   "url": "http://vcpage.localhost/0/Physics%20135/electricity-audio/21.mp3",
+   "failed": "net::ERR_ABORTED"
+  },
+  {
+   "url": "http://vcpage.localhost/0/Physics%20135/electricity-audio/22.mp3",
+   "status": 206,
+   "type": "audio/mpeg"
+  },
+  {
+   "url": "http://vcpage.localhost/0/Physics%20135/electricity-audio/22.mp3",
+   "failed": "net::ERR_ABORTED"
+  },
+  {
+   "url": "http://vcpage.localhost/0/Physics%20135/electricity-audio/23.mp3",
+   "status": 206,
+   "type": "audio/mpeg"
+  },
+  {
+   "url": "http://vcpage.localhost/0/Physics%20135/electricity-audio/23.mp3",
+   "failed": "net::ERR_ABORTED"
+  },
+  {
+   "url": "http://vcpage.localhost/0/Physics%20135/electricity-audio/24.mp3",
+   "status": 206,
+   "type": "audio/mpeg"
+  },
+  {
+   "url": "http://vcpage.localhost/0/Physics%20135/electricity-audio/24.mp3",
+   "failed": "net::ERR_ABORTED"
+  },
+  {
+   "url": "http://vcpage.localhost/0/Physics%20135/electricity-audio/25.mp3",
+   "status": 206,
+   "type": "audio/mpeg"
+  },
+  {
+   "url": "http://vcpage.localhost/0/Physics%20135/electricity-audio/25.mp3",
+   "failed": "net::ERR_ABORTED"
+  },
+  {
+   "url": "http://vcpage.localhost/0/Physics%20135/electricity-audio/26.mp3",
+   "status": 206,
+   "type": "audio/mpeg"
+  },
+  {
+   "url": "http://vcpage.localhost/0/Physics%20135/electricity-audio/26.mp3",
+   "failed": "net::ERR_ABORTED"
+  },
+  {
+   "url": "http://vcpage.localhost/0/Physics%20135/electricity-audio/27.mp3",
+   "status": 206,
+   "type": "audio/mpeg"
+  },
+  {
+   "url": "http://vcpage.localhost/0/Physics%20135/electricity-audio/27.mp3",
+   "failed": "net::ERR_ABORTED"
+  },
+  {
+   "url": "http://vcpage.localhost/0/Physics%20135/electricity-audio/28.mp3",
+   "status": 206,
+   "type": "audio/mpeg"
+  },
+  {
+   "url": "http://vcpage.localhost/0/Physics%20135/electricity-audio/28.mp3",
+   "failed": "net::ERR_ABORTED"
+  },
+  {
+   "url": "http://vcpage.localhost/0/Physics%20135/electricity-audio/01.mp3",
+   "status": 206,
+   "type": "audio/mpeg"
+  },
+  {
+   "url": "http://vcpage.localhost/0/Physics%20135/electricity-audio/00.mp3",
+   "status": 206,
+   "type": "audio/mpeg"
+  },
+  {
+   "url": "http://vcpage.localhost/0/media-test/assets/mod.js",
+   "status": 200,
+   "type": "text/javascript; charset=utf-8"
+  },
+  {
+   "url": "http://vcpage.localhost/0/shared/pic.png",
+   "status": 200,
+   "type": "image/png"
+  },
+  {
+   "url": "http://vcpage.localhost/0/media-test/assets/tone.mp3",
+   "status": 206,
+   "type": "audio/mpeg"
+  },
+  {
+   "url": "http://vcpage.localhost/0/media-test/assets/clip.mp4",
+   "status": 206,
+   "type": "video/mp4"
+  },
+  {
+   "url": "http://vcpage.localhost/0/.secret/hidden.txt",
+   "failed": "net::ERR_ABORTED"
+  },
+  {
+   "url": "http://vcpage.localhost/outside.txt",
+   "failed": "net::ERR_ABORTED"
+  },
+  {
+   "url": "http://vcpage.localhost/0/media-test/assets/data.json",
+   "status": 200,
+   "type": "application/json"
+  },
+  {
+   "url": "http://vcpage.localhost/0/media-test/assets/mono.ttf",
+   "status": 200,
+   "type": "font/ttf"
+  }
+ ],
+ "console": [
+  "warning: IPC custom protocol failed, Tauri will now use the postMessage interface instead TypeError: Failed to fetch\n    at Object.sendIpcMessage (<anonymous>:83:7)\n    at Object.<anonymous> (<anonymous>:177:38)\n    at action (<anonymous>:336:38)\n    at <anonymous>:345:11\n    at new Promise (<anonym",
+  "warning: IPC custom protocol failed, Tauri will now use the postMessage interface instead TypeError: Failed to fetch\n    at Object.sendIpcMessage (<anonymous>:83:7)\n    at Object.<anonymous> (<anonymous>:177:38)\n    at action (<anonymous>:336:38)\n    at <anonymous>:345:11\n    at new Promise (<anonym",
+  "warning: IPC custom protocol failed, Tauri will now use the postMessage interface instead TypeError: Failed to fetch\n    at Object.sendIpcMessage (<anonymous>:83:7)\n    at Object.<anonymous> (<anonymous>:177:38)\n    at action (<anonymous>:336:38)\n    at <anonymous>:345:11\n    at new Promise (<anonym",
+  "error: Failed to load resource: the server responded with a status of 404 (Not Found)",
+  "error: Failed to load resource: the server responded with a status of 404 (Not Found)",
+  "error: Failed to load resource: the server responded with a status of 404 (Not Found)",
+  "error: Failed to load resource: the server responded with a status of 404 (Not Found)"
+ ]
+}

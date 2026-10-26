@@ -1,0 +1,320 @@
+{
+ "label": "before",
+ "lessonBase": "http://tauri.localhost/",
+ "lesson": [
+  {
+   "src": "http://tauri.localhost/electricity-audio/00.mp3",
+   "currentTime": 0,
+   "paused": true,
+   "readyState": 0,
+   "error": 4,
+   "status": "Recorded audio unavailable. Check electricity-audio, then press Play to retry."
+  },
+  {
+   "src": "http://tauri.localhost/electricity-audio/00.mp3",
+   "currentTime": 0,
+   "paused": true,
+   "readyState": 0,
+   "error": 4,
+   "status": "Recorded audio unavailable. Check electricity-audio, then press Play to retry."
+  },
+  {
+   "src": "http://tauri.localhost/electricity-audio/00.mp3",
+   "currentTime": 0,
+   "paused": true,
+   "readyState": 0,
+   "error": 4,
+   "status": "Recorded audio unavailable. Check electricity-audio, then press Play to retry."
+  },
+  {
+   "src": "http://tauri.localhost/electricity-audio/00.mp3",
+   "currentTime": 0,
+   "paused": true,
+   "readyState": 0,
+   "error": 4,
+   "status": "Recorded audio unavailable. Check electricity-audio, then press Play to retry."
+  },
+  {
+   "src": "http://tauri.localhost/electricity-audio/00.mp3",
+   "currentTime": 0,
+   "paused": true,
+   "readyState": 0,
+   "error": 4,
+   "status": "Recorded audio unavailable. Check electricity-audio, then press Play to retry."
+  },
+  {
+   "src": "http://tauri.localhost/electricity-audio/00.mp3",
+   "currentTime": 0,
+   "paused": true,
+   "readyState": 0,
+   "error": 4,
+   "status": "Recorded audio unavailable. Check electricity-audio, then press Play to retry."
+  }
+ ],
+ "mediaBase": "http://tauri.localhost/",
+ "media": {
+  "audio": {
+   "src": "http://tauri.localhost/assets/tone.mp3",
+   "readyState": 0,
+   "currentTime": 0,
+   "duration": null,
+   "ended": false,
+   "error": 4,
+   "paused": true
+  },
+  "video": {
+   "src": "http://asset.localhost/C%3A%2FUsers%2Fwada2%2FAppData%2FLocal%2FTemp%2Fclaude%2FC--Users-wada2-github-AgentOS%2Fb6a339ef-16ee-4e9c-9388-85324f57cb3b%2Fscratchpad%2Ftestvault%2Fmedia-test%2Fassets%2Fclip.mp4",
+   "currentTime": 4,
+   "ended": true,
+   "error": null,
+   "w": 320
+  },
+  "img": {
+   "markup": {
+    "ok": true,
+    "w": 120,
+    "src": "http://asset.localhost/C%3A%2FUsers%2Fwada2%2FAppData%2FLocal%2FTemp%2Fclaude%2FC--Users-wada2-github-AgentOS%2Fb6a339ef-16ee-4e9c-9388-85324f57cb3b%2Fscratchpad%2Ftestvault%2Fshared%2Fpic.png"
+   },
+   "script": {
+    "ok": false,
+    "src": "http://tauri.localhost/shared/pic.png"
+   }
+  },
+  "font": {
+   "loaded": false,
+   "err": "NetworkError: A network error occurred."
+  },
+  "fetch": {
+   "ok": false,
+   "err": "TypeError: Failed to fetch"
+  },
+  "outside": {
+   "blocked": "TypeError: Failed to fetch"
+  },
+  "dot": {
+   "blocked": "TypeError: Failed to fetch"
+  },
+  "module": null,
+  "events": [
+   "error",
+   "audio.play rejected: NotSupportedError"
+  ]
+ },
+ "net": [
+  {
+   "url": "http://ipc.localhost/client_event_append",
+   "failed": "net::ERR_ABORTED"
+  },
+  {
+   "url": "http://ipc.localhost/git_commit_all",
+   "failed": "net::ERR_ABORTED"
+  },
+  {
+   "url": "http://tauri.localhost/electricity-audio/00.mp3",
+   "status": 200,
+   "type": "text/html"
+  },
+  {
+   "url": "http://tauri.localhost/electricity-audio/01.mp3",
+   "status": 200,
+   "type": "text/html"
+  },
+  {
+   "url": "http://tauri.localhost/electricity-audio/02.mp3",
+   "status": 200,
+   "type": "text/html"
+  },
+  {
+   "url": "http://tauri.localhost/electricity-audio/03.mp3",
+   "status": 200,
+   "type": "text/html"
+  },
+  {
+   "url": "http://tauri.localhost/electricity-audio/04.mp3",
+   "status": 200,
+   "type": "text/html"
+  },
+  {
+   "url": "http://tauri.localhost/electricity-audio/05.mp3",
+   "status": 200,
+   "type": "text/html"
+  },
+  {
+   "url": "http://tauri.localhost/electricity-audio/06.mp3",
+   "status": 200,
+   "type": "text/html"
+  },
+  {
+   "url": "http://tauri.localhost/electricity-audio/07.mp3",
+   "status": 200,
+   "type": "text/html"
+  },
+  {
+   "url": "http://tauri.localhost/electricity-audio/08.mp3",
+   "status": 200,
+   "type": "text/html"
+  },
+  {
+   "url": "http://tauri.localhost/electricity-audio/09.mp3",
+   "status": 200,
+   "type": "text/html"
+  },
+  {
+   "url": "http://tauri.localhost/electricity-audio/10.mp3",
+   "status": 200,
+   "type": "text/html"
+  },
+  {
+   "url": "http://tauri.localhost/electricity-audio/11.mp3",
+   "status": 200,
+   "type": "text/html"
+  },
+  {
+   "url": "http://tauri.localhost/electricity-audio/12.mp3",
+   "status": 200,
+   "type": "text/html"
+  },
+  {
+   "url": "http://tauri.localhost/electricity-audio/13.mp3",
+   "status": 200,
+   "type": "text/html"
+  },
+  {
+   "url": "http://tauri.localhost/electricity-audio/14.mp3",
+   "status": 200,
+   "type": "text/html"
+  },
+  {
+   "url": "http://tauri.localhost/electricity-audio/15.mp3",
+   "status": 200,
+   "type": "text/html"
+  },
+  {
+   "url": "http://tauri.localhost/electricity-audio/16.mp3",
+   "status": 200,
+   "type": "text/html"
+  },
+  {
+   "url": "http://tauri.localhost/electricity-audio/17.mp3",
+   "status": 200,
+   "type": "text/html"
+  },
+  {
+   "url": "http://tauri.localhost/electricity-audio/18.mp3",
+   "status": 200,
+   "type": "text/html"
+  },
+  {
+   "url": "http://tauri.localhost/electricity-audio/19.mp3",
+   "status": 200,
+   "type": "text/html"
+  },
+  {
+   "url": "http://tauri.localhost/electricity-audio/20.mp3",
+   "status": 200,
+   "type": "text/html"
+  },
+  {
+   "url": "http://tauri.localhost/electricity-audio/21.mp3",
+   "status": 200,
+   "type": "text/html"
+  },
+  {
+   "url": "http://tauri.localhost/electricity-audio/22.mp3",
+   "status": 200,
+   "type": "text/html"
+  },
+  {
+   "url": "http://tauri.localhost/electricity-audio/23.mp3",
+   "status": 200,
+   "type": "text/html"
+  },
+  {
+   "url": "http://tauri.localhost/electricity-audio/24.mp3",
+   "status": 200,
+   "type": "text/html"
+  },
+  {
+   "url": "http://tauri.localhost/electricity-audio/25.mp3",
+   "status": 200,
+   "type": "text/html"
+  },
+  {
+   "url": "http://tauri.localhost/electricity-audio/26.mp3",
+   "status": 200,
+   "type": "text/html"
+  },
+  {
+   "url": "http://tauri.localhost/electricity-audio/27.mp3",
+   "status": 200,
+   "type": "text/html"
+  },
+  {
+   "url": "http://tauri.localhost/electricity-audio/28.mp3",
+   "status": 200,
+   "type": "text/html"
+  },
+  {
+   "url": "http://tauri.localhost/electricity-audio/00.mp3",
+   "status": 200,
+   "type": "text/html"
+  },
+  {
+   "url": "http://tauri.localhost/electricity-audio/01.mp3",
+   "status": 200,
+   "type": "text/html"
+  },
+  {
+   "url": "http://asset.localhost/C%3A%2FUsers%2Fwada2%2FAppData%2FLocal%2FTemp%2Fclaude%2FC--Users-wada2-github-AgentOS%2Fb6a339ef-16ee-4e9c-9388-85324f57cb3b%2Fscratchpad%2Ftestvault%2Fshared%2Fpic.png",
+   "status": 200,
+   "type": "image/png"
+  },
+  {
+   "url": "http://tauri.localhost/assets/mono.ttf",
+   "failed": "net::ERR_FAILED"
+  },
+  {
+   "url": "http://asset.localhost/C%3A%2FUsers%2Fwada2%2FAppData%2FLocal%2FTemp%2Fclaude%2FC--Users-wada2-github-AgentOS%2Fb6a339ef-16ee-4e9c-9388-85324f57cb3b%2Fscratchpad%2Ftestvault%2Fmedia-test%2Fassets%2Fmod.js",
+   "failed": "net::ERR_FAILED"
+  },
+  {
+   "url": "http://asset.localhost/C%3A%2FUsers%2Fwada2%2FAppData%2FLocal%2FTemp%2Fclaude%2FC--Users-wada2-github-AgentOS%2Fb6a339ef-16ee-4e9c-9388-85324f57cb3b%2Fscratchpad%2Ftestvault%2Fmedia-test%2Fassets%2Fclip.mp4",
+   "status": 206,
+   "type": "video/mp4"
+  },
+  {
+   "url": "http://tauri.localhost/shared/pic.png",
+   "status": 200,
+   "type": "text/html"
+  },
+  {
+   "url": "http://tauri.localhost/assets/data.json",
+   "failed": "net::ERR_FAILED"
+  },
+  {
+   "url": "http://tauri.localhost/.secret/hidden.txt",
+   "failed": "net::ERR_FAILED"
+  },
+  {
+   "url": "http://tauri.localhost/outside.txt",
+   "failed": "net::ERR_FAILED"
+  }
+ ],
+ "console": [
+  "warning: IPC custom protocol failed, Tauri will now use the postMessage interface instead TypeError: Failed to fetch\n    at Object.sendIpcMessage (<anonymous>:83:7)\n    at Object.<anonymous> (<anonymous>:177:38)\n    at action (<anonymous>:336:38)\n    at <anonymous>:345:11\n    at new Promise (<anonym",
+  "warning: IPC custom protocol failed, Tauri will now use the postMessage interface instead TypeError: Failed to fetch\n    at Object.sendIpcMessage (<anonymous>:83:7)\n    at Object.<anonymous> (<anonymous>:177:38)\n    at action (<anonymous>:336:38)\n    at <anonymous>:345:11\n    at new Promise (<anonym",
+  "warning: IPC custom protocol failed, Tauri will now use the postMessage interface instead TypeError: Failed to fetch\n    at Object.sendIpcMessage (<anonymous>:83:7)\n    at Object.<anonymous> (<anonymous>:177:38)\n    at action (<anonymous>:336:38)\n    at <anonymous>:345:11\n    at new Promise (<anonym",
+  "warning: [TAURI] Couldn't find callback id 3148162454. This might happen when the app is reloaded while Rust is running an asynchronous operation.",
+  "warning: [TAURI] Couldn't find callback id 3559456897. This might happen when the app is reloaded while Rust is running an asynchronous operation.",
+  "error: Access to font at 'http://tauri.localhost/assets/mono.ttf' from origin 'null' has been blocked by CORS policy: The 'Access-Control-Allow-Origin' header has a value 'http://tauri.localhost' that is not equal to the supplied origin.",
+  "error: Failed to load resource: net::ERR_FAILED",
+  "error: Access to script at 'http://asset.localhost/C%3A%2FUsers%2Fwada2%2FAppData%2FLocal%2FTemp%2Fclaude%2FC--Users-wada2-github-AgentOS%2Fb6a339ef-16ee-4e9c-9388-85324f57cb3b%2Fscratchpad%2Ftestvault%2Fmedia-test%2Fassets%2Fmod.js' from origin 'null' has been blocked by CORS policy: The 'Access-Co",
+  "error: Failed to load resource: net::ERR_FAILED",
+  "error: Access to fetch at 'http://tauri.localhost/assets/data.json' from origin 'null' has been blocked by CORS policy: The 'Access-Control-Allow-Origin' header has a value 'http://tauri.localhost' that is not equal to the supplied origin. Have the server send the header with a valid value.",
+  "error: Failed to load resource: net::ERR_FAILED",
+  "error: Access to fetch at 'http://tauri.localhost/.secret/hidden.txt' from origin 'null' has been blocked by CORS policy: The 'Access-Control-Allow-Origin' header has a value 'http://tauri.localhost' that is not equal to the supplied origin. Have the server send the header with a valid value.",
+  "error: Failed to load resource: net::ERR_FAILED",
+  "error: Access to fetch at 'http://tauri.localhost/outside.txt' from origin 'null' has been blocked by CORS policy: The 'Access-Control-Allow-Origin' header has a value 'http://tauri.localhost' that is not equal to the supplied origin. Have the server send the header with a valid value.",
+  "error: Failed to load resource: net::ERR_FAILED"
+ ]
+}
