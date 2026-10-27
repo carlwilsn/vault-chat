@@ -1,5 +1,6 @@
 // What the agent sees of the board, and how fresh: from the Pencil lifting to the box's boards/<slug>/overview.png
-// (the whole board) and view.png (the part in view) being rewritten, on a busy board (600 strokes of handwriting,
+// (the whole board) and view.png (the part in view) being rewritten once the pen has rested (2 s; never between
+// strokes, where drawing them held the next pen down), on a busy board (600 strokes of handwriting,
 // an image), in WebKit as Carl's iPad. And LookAtScreen's picture: the part in view and the whole board side by
 // side in one image, how long it takes on the iPad, and that it never holds up writing (the time the main thread
 // spends drawing the pictures).
@@ -123,7 +124,25 @@ const worst = Math.max(...fresh.map((f) => Math.max(f.overview, f.view)));
 const med = (a) => [...a].sort((x, y) => x - y)[a.length >> 1];
 const pics = logged.filter((e) => e.ev === "board.pictures" || e.type === "board.pictures" || e.event === "board.pictures");
 console.log(JSON.stringify({ fresh, pictures: pics.slice(-3) }));
-check(worst <= 1500, "pen-up → fresh overview.png and view.png on the box within 1.5 s (600 strokes on the board)", `median ${med(fresh.map((f) => f.overview))} / ${med(fresh.map((f) => f.view))} ms, worst ${worst} ms`);
+// They wait for the pen to rest (view.ts PICTURES_IDLE_MS, 2 s) and then take what drawing them takes.
+check(worst <= 4000, "pen-up → fresh overview.png and view.png on the box within 4 s: 2 s of rest, then drawn (600 strokes on the board)", `median ${med(fresh.map((f) => f.overview))} / ${med(fresh.map((f) => f.view))} ms, worst ${worst} ms`);
+check(Math.min(...fresh.map((f) => Math.min(f.overview, f.view))) >= 1900, "…and never before the pen has rested 2 s (they are not drawn between strokes)");
+
+// Writing on (a stroke every 0.6 s for 6 s, the pen lifting between): no picture is drawn until the pen rests.
+{
+  await page.waitForTimeout(4000); // the pictures after the strokes above have landed
+  const start = Date.now();
+  let lastUp = 0;
+  for (let k = 0; k < 10; k++) {
+    lastUp = await page.evaluate((p) => window.__penPath(p), line(470 + k * 12).slice(0, 30));
+    await page.waitForTimeout(400);
+  }
+  const during = Math.max(mtime("overview.png"), mtime("view.png"));
+  let after = 0;
+  for (const t0 = Date.now(); Date.now() - t0 < 6000 && !after; await new Promise((r) => setTimeout(r, 20))) if (mtime("overview.png") > lastUp && mtime("view.png") > lastUp) after = Date.now() - lastUp;
+  check(during < start, "writing on for 6 s, a stroke every 0.6 s: no picture was made between the strokes", during >= start ? `one written ${Math.round(during - start)} ms into the writing` : "");
+  check(after >= 1900 && after <= 4000, "…they come 2–4 s after the last stroke", `${after} ms`);
+}
 
 // LookAtScreen's picture.
 const look = await page.evaluate(async () => {

@@ -19,6 +19,7 @@ import { AUDIO_WARN_LINE, VoiceController, type VoiceApi, type VoiceSdk, type Vo
 import { blog, setStatSource, tapLine } from "./log";
 import { WaitTracker, renderWaitLine, type WaitCalib, type WaitPlan, type WaitWork } from "../../src/voiceWaitLine";
 import { MAIN_ID } from "../../src/threads";
+import { penState } from "./inkPerf";
 
 const FAKE = /[?&]voice=fake\b/.test(location.search);
 const BARS = 5;
@@ -263,6 +264,11 @@ export function mountVoicePill(): void {
       return;
     }
     const frame = () => {
+      // While a stroke is written the waves hold still: the frame is the ink's (no style change, no audio level read).
+      if (penState.down) {
+        raf = requestAnimationFrame(frame);
+        return;
+      }
       const st = voice.state;
       let lv: number[];
       if (st.speaking) {

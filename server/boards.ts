@@ -12,6 +12,10 @@
 //   POST /api/v1/boards/<slug>/rename {name}  → {ok, name}
 //   POST /api/v1/boards/<slug>/delete         → {ok} — moved to boards/.trash/<slug>-<time>, never removed
 //   GET  /api/v1/boards/<slug>/overview.png   → the snapshot of the whole board
+//   POST /api/v1/boards/<slug>/pictures {rev, overview?, view?: base64 PNGs}
+//                                             → {ok, rev, wrote} | 409 when the board is no longer at `rev` — the
+//                                               agent's pictures of that rev, sent by the app on their own once the pen
+//                                               is idle (never drawn while Carl writes); the rev does not change
 //   POST /api/v1/boards/<slug>/assets {data: base64 PNG/JPEG}
 //                                             → {src: "assets/<name>", w, h} — a file for an item
 //   GET  /api/v1/boards/<slug>/assets/<name>  → that file
@@ -235,6 +239,38 @@ function saveNow(vault: string, slug: string, body: any): Out {
   // Version 1's page snapshots are gone with its pages.
   for (const f of readdirSync(dir)) if (/^page-\d+\.png$/.test(f)) rmSync(join(dir, f), { force: true });
   return { status: 200, body: { ok: true, rev: next.rev, updated: next.updated } };
+}
+
+/** A base64 PNG field of a request: null when absent, or the reason it is refused. */
+function pngField(v: unknown, what: string): Buffer | null | { error: string } {
+  if (typeof v !== "string") return null;
+  const b = Buffer.from(v.replace(/^data:image\/png;base64,/, ""), "base64");
+  return b.length > PNG_CAP || !b.subarray(0, 8).equals(PNG_MAGIC) ? { error: `${what}: not a PNG` } : b;
+}
+
+/** POST …/pictures: overview.png and view.png of the board at `rev`, written in turn with the board's saves. */
+export function saveBoardPictures(vault: string, slug: string, body: any): Promise<Out> {
+  const key = `${vault}\0${slug}`;
+  const run = (chains.get(key) ?? Promise.resolve()).then((): Out => {
+    const dir = boardDir(vault, slug);
+    if (!dir) return { status: validSlug(slug) ? 404 : 400, body: { error: validSlug(slug) ? "no such board" : "invalid board name" } };
+    const cur = readBoard(dir);
+    if (!cur || typeof body?.rev !== "number" || body.rev !== cur.rev) return { status: 409, body: { error: "the board is no longer at that rev", rev: cur?.rev ?? null } };
+    const pics: [string, Buffer][] = [];
+    for (const [file, field] of [[OVERVIEW_FILE, "overview"], [VIEW_FILE, "view"]] as const) {
+      const b = pngField(body?.[field], field);
+      if (b && !Buffer.isBuffer(b)) return { status: 400, body: b };
+      if (b) pics.push([file, b]);
+    }
+    for (const [file, png] of pics) {
+      const f = join(dir, file);
+      writeFileSync(`${f}.tmp`, png);
+      renameRetry(`${f}.tmp`, f);
+    }
+    return { status: 200, body: { ok: true, rev: cur.rev, wrote: pics.length } };
+  });
+  chains.set(key, run.catch(() => {}));
+  return run;
 }
 
 /** GET …/history: the undo and redo the app saved with the board (rev -1 and empty when none, or unreadable). */

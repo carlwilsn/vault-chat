@@ -27,6 +27,11 @@
 //                                                gestures undone by a palm, each palm rejection by reason
 //                                                (size, third-touch, late-second, pen-down, pen-hover,
 //                                                pen-lock, hand-side, rested) and the largest contact (css px)
+//   ink.perf      {strokes, samples, hz, lat, disp, gaps, gapMax, liveMs, long, during, voice, pred}
+//                                                how the board kept up with the Pencil since the last batch
+//                                                (inkPerf.ts): input → frame and input → handler latency, the
+//                                                frame rate while writing, dropped frames, heavy work that ran
+//                                                with the pen down (should be none)
 //   voice.close   {reason, code, closeReason, transport, secs, by}  why a voice session ended
 //   dialog        {what, how, focused, keyboard, vvh, ih}  the name dialog: how it was opened, whether its
 //                                                field took focus and whether the keyboard came up;

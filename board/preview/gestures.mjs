@@ -22,6 +22,8 @@ await page.route("**/api/v1/board/log", async (route) => {
 await page.addInitScript(touchScript());
 
 async function openBoard(fresh) {
+  // A board still saving finishes first (navigating away cuts its request off: WebKit reports that as a page error).
+  await page.evaluate(() => window.__board?.flush?.()).catch(() => {});
   await page.goto(url);
   if (fresh) await page.evaluate(() => localStorage.clear());
   const slug = await page.evaluate(async () => {

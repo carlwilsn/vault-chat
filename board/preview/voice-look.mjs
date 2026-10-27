@@ -48,7 +48,7 @@ await page.waitForFunction(() => window.__voice.state.phase === "live", null, { 
 const tools = await page.evaluate(() => window.__voiceFake.tools);
 check(tools.includes("LookAtScreen"), "the board's session has LookAtScreen as a client tool", JSON.stringify(tools));
 const prompt = await page.evaluate(() => window.__voiceFake.prompt ?? "");
-check(/You CAN see it: LookAtScreen/.test(prompt), "the session's prompt says it can look at the board");
+check(/You CAN see the board: LookAtScreen/.test(prompt), "the session's prompt says it can look at the board");
 const empty = await look();
 check(/empty/.test(empty) && /Look \d+/.test(empty), "an empty view: the tool says so, with the board's name", empty.slice(0, 120));
 
@@ -65,7 +65,7 @@ check(/1 stroke/.test(r1), "…with the board as text (its strokes)", r1.slice(0
 
 // Asked again with nothing changed: no new upload, and it says the picture it has is current.
 const r2 = await look();
-check(/Nothing in view has changed/.test(r2) && (await files()) === f1, "unchanged: nothing re-sent, the tool says so", r2.slice(0, 80));
+check(/looks exactly as in the picture of his board you already have/.test(r2) && (await files()) === f1, "unchanged: nothing re-sent, the tool says so", r2.slice(0, 80));
 
 // A new stroke: a new picture, different from the first.
 await pen([420, 560], [760, 600]);

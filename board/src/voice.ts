@@ -111,6 +111,9 @@ export type BoardSource = {
   strokes(): number;
   /** The visible region as a downscaled JPEG (null: nothing in view). */
   snapshot(): Promise<Blob | null>;
+  /** Resolves once the Pencil rests (view.ts penIdle): the pushes of the board's picture wait for it, so drawing the
+   *  picture never lands on a stroke. LookAtScreen (asked for) does not wait. */
+  idle?(): Promise<void>;
 };
 
 export type Phase = "idle" | "connecting" | "live" | "error";
@@ -253,6 +256,8 @@ export class VoiceController {
   private playback: PlaybackMonitor | null = null;
   private lastText = "";
   private debounceT: ReturnType<typeof setTimeout> | null = null;
+  /** A push of the board's picture is waiting for the pen to rest (pushNow). */
+  private imgWaiting = false;
   /** The conversation this call is attached to (its lines go there; null until the box made a new one). */
   private convId: string | null = null;
   /** The chat Carl picked in the pill, and when: it is continued until another chat is more recently active. */
@@ -855,7 +860,13 @@ export class VoiceController {
         }
       });
     }
-    void b.snapshot().then(async (blob) => {
+    // One picture waiting for the pen at a time (it is taken when the pen rests, so it shows the latest anyway).
+    if (this.imgWaiting) return;
+    this.imgWaiting = true;
+    void (b.idle?.() ?? Promise.resolve())
+      .then(() => (this.conv === conv && this.board === b ? b.snapshot() : null))
+      .finally(() => (this.imgWaiting = false))
+      .then(async (blob) => {
       if (!blob || this.conv !== conv) return;
       const key = `board:${b.slug}:${await blobKey(blob)}`;
       if (this.pusher.has(key)) return;

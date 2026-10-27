@@ -35,11 +35,15 @@ sync cycle commits it like any other vault write):
   strokes or items are gone ends that direction rather than breaking anything. Not committed (`boards/.gitignore`).
   Proof: `board/preview/undo-persist.mjs`.
 - `overview.png`: the whole board, fitted to its content, ≤ 1600 px on its long
-  side, and `view.png`: the part in view on the iPad (≤ 1280 px; not committed), both written by the save 0.5 s
-  after the pen lifts (a pen down in between postpones it). The overview is the list's thumbnail; the agent reads
-  either (the "you" layer names both). Voice's LookAtScreen gets one picture with the view and the whole board side
-  by side (the view outlined on it). Proof: `board/preview/board-pictures.mjs` (pen-up → both files fresh on the box,
-  on a board of 600 strokes).
+  side, and `view.png`: the part in view on the iPad (≤ 1280 px; not committed). They are drawn only once the
+  Pencil has rested 2 s (not touching, not hovering, no gesture) and sent on their own (`POST …/pictures {rev}`,
+  refused once the board has moved past that rev); leaving the board sends them at once. Until 2026-10-27 every save
+  drew them, 0.5 s after the pen lifted: 30–50 ms of the page's thread on the iPad (`board.pictures` drawMs), so
+  between words the next pen down waited on them. The board's save carries only the board. The overview is the
+  list's thumbnail; the agent reads either (the "you" layer names both). Voice's LookAtScreen gets one picture with
+  the view and the whole board side by side (the view outlined on it); voice's own pushes of the view wait for the
+  pen to rest too. Proof: `board/preview/board-pictures.mjs` (pen-up → both files fresh on the box 2–4 s later, on
+  a board of 600 strokes; writing on for 6 s, none made between the strokes).
 
 Rendering (`src/view.ts`): cached 512 px bitmap tiles under a live canvas, both at the device's pixel ratio.
 Once the camera settles, tiles are drawn at exactly the screen's scale (zoom × devicePixelRatio) on whole device
@@ -248,8 +252,28 @@ mentioned at the next pause. The conversation's newest images go with the call's
 line. `?voice=fake` swaps the SDK and the session for `src/voiceFake.ts` (`window.__voiceFake` logs what was
 sent). Tests: `test/harness/board-voice.test.ts`.
 
+## Keeping up with the Pencil
+
+- **Measured on the iPad** (`src/inkPerf.ts`, one `ink.perf` line per log batch with strokes in it): input → frame
+  (from the Pencil being at a sample, its event's own timeStamp, to the animation frame that drew it), input →
+  handler, the frame rate while writing (`hz`: ~60 means Safari's "Prefer Page Rendering Updates near 60fps" flag is
+  on, which is iPadOS's default, Home Screen apps included; off, ProMotion reaches the page at 120), frames over
+  20 ms apart with the pen down, the live frame's own work, and any of the board's heavy work that still ran with the
+  pen down (`during`: should be empty).
+- **Nothing heavy while the pen is down.** The agent's pictures and voice's picture wait for the pen to rest 2 s;
+  the save and the device's copy that come due mid-stroke run as it lifts; the voice pill's waves hold still during
+  a stroke.
+- **A stroke's frame is small.** Only the area the last frame drew and this one draws is cleared on the live canvas
+  (the stroke's box, not the whole screen); a pointer move never reads the stage's rect (no forced layout); every
+  coalesced sample is used (Safari 18.2's came without a pointerId, and were dropped); the tip is UIKit's predicted
+  touch (`getPredictedEvents`, iPadOS 18.2+: the furthest that carries the line straight on, ≤ 8 css px, drawn for
+  that frame only).
+- Proof (relative: headless WebKit on Windows draws in software): `board/preview/pen-perf.mjs`, a 600-stroke board,
+  handwriting at 240 samples a second delivered per 120 Hz frame, voice on and off, the pictures as built or
+  stubbed.
+
 ## What only a real iPad can judge
 
-Pen latency (rAF at 120 Hz needs Safari's "Prefer Page Rendering Updates near
-60fps" feature flag off), stroke widths, the palm rules' numbers against a real
+Pen latency (the `ink.perf` lines; rAF at 120 Hz needs Safari's "Prefer Page Rendering Updates near 60fps" feature
+flag off: Settings → Apps → Safari → Advanced → Feature Flags), stroke widths, the palm rules' numbers against a real
 resting hand (`?debug=touch`), and pinch feel.

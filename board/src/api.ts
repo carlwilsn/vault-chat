@@ -123,6 +123,12 @@ export function saveBoard(
     x.send(body);
   });
 }
+/**
+ * The agent's pictures of the board at `rev` (overview.png, view.png: base64 PNGs), sent on their own once the pen has
+ * been idle (view.ts), never with a save: a 409 means the board has moved past `rev` (a newer save brings its own).
+ */
+export const savePictures = (slug: string, rev: number, p: { overview?: string; view?: string }) =>
+  call<{ ok: true }>(`/api/v1/boards/${enc(slug)}/pictures`, { method: "POST", body: JSON.stringify({ rev, ...p }) });
 /** The undo and redo saved with the board (rev -1 when there are none). */
 export const getHistory = (slug: string) => call<BoardHistory>(`/api/v1/boards/${enc(slug)}/history`);
 /** Copy another board's files into this one (items pasted from it keep their names). */

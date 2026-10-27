@@ -33,6 +33,7 @@ import { blog, flushBoardLog, setStatSource, setTapSource } from "./log";
 import { ackLocal, localKey, putLocal } from "./local";
 import { mountVoicePill, voice, voiceButton } from "./voicePill";
 import type { BoardSource } from "./voice";
+import { InkPerf, penState } from "./inkPerf";
 
 /** A PDF page's stored PNG: this many px on its long side (sharp up to about a screen's width on a 2× iPad). */
 const PDF_SNAP_PX = 1600;
@@ -60,8 +61,15 @@ const LOCAL_DELAY = 400;
 const LOCAL_MAX = 3000;
 /** A change the box has not acknowledged this long shows "Not saved", whatever the reason ("saving" too). */
 const STALL_MS = 10_000;
-/** The agent's pictures may hold a save up this long at most (then it goes without them). */
+/** Drawing the agent's pictures gives up after this long (they are tried again at the next idle). */
 const PICTURES_MS = 15_000;
+/**
+ * The agent's pictures (overview.png, view.png) and voice's picture of the view are drawn only once the Pencil has
+ * been away this long: not touching, not hovering (iPad Pro M2+), no gesture. Drawing them takes 30–50 ms of the
+ * page's thread on the iPad (board.jsonl `board.pictures` drawMs), so drawn between words they held the next pen
+ * down; they never go with a save, which carries only the board.
+ */
+const PICTURES_IDLE_MS = 2000;
 /** How long a scribble's erased strokes take to fade out. */
 const FADE_MS = 280;
 /** How long Show's outline stays on the item it centred. */
@@ -334,6 +342,8 @@ export class BoardView {
   private synthClick = false;
 
   private g: ToolG | null = null;
+  /** When the gesture in `g` started (performance.now()). */
+  private gAt = 0;
   private view: { cam0: { x: number; y: number; z: number }; anchor: XY } | null = null;
   private txn: { strokes: Stroke[]; items: Item[] } | null = null;
   private sel: { strokes: Set<Stroke>; items: Set<Item> } | null = null;
@@ -370,6 +380,19 @@ export class BoardView {
   private saveAgain = false;
   private conflict = false;
   private disposed = false;
+  /** Pen-latency numbers for the log (inkPerf.ts: `ink.perf`). */
+  private perf = new InkPerf();
+  /** Work that came due while the pen was down, run as it lifts: the save, the device's copy. */
+  private saveDue = false;
+  private localDue = false;
+  /** The agent's pictures: the rev they are wanted for (0: none wanted), and the timer that waits for the pen to rest. */
+  private picsRev = 0;
+  private picsT = 0;
+  private picsRunning: Promise<void> | null = null;
+  /** The stage's rect, read once per pointer down (a move never forces a layout to learn where the stage is). */
+  private stageRect: DOMRect | null = null;
+  /** The live canvas's area drawn by the last frame (device px), cleared by the next: "all" when unknown. */
+  private liveDrawn: { x0: number; y0: number; x1: number; y1: number; cam: string } | "all" = "all";
   /**
    * The save's bookkeeping (board/src/local.ts, server/boards.ts). `writer`: this page's id for the board (a
    * recovered record's, when the board opened from one); `gen`: how far the edits have got (grows with every change,
@@ -495,7 +518,7 @@ export class BoardView {
     this.syncToolbar();
     this.setStatus("saved");
     this.offBadge = inboxBadge(this.el.querySelector(".badge") as HTMLElement);
-    this.voiceSrc = { slug, name: () => this.board.name, items: () => this.board.items, strokes: () => this.board.strokes.length, snapshot: () => this.snapshotView() };
+    this.voiceSrc = { slug, name: () => this.board.name, items: () => this.board.items, strokes: () => this.board.strokes.length, snapshot: () => this.snapshotView(), idle: () => this.penIdle() };
     this.offVoice = voiceButton(this.el.querySelector('[data-act="voice"]') as HTMLElement);
     mountVoicePill();
     // The floating controls keep clear of each other as their widths change (the mic hides during a call).
@@ -556,6 +579,7 @@ export class BoardView {
       const g = this.arb.takeStats();
       return g.pan || g.pinch || g.pan1 || g.undo || g.reverted || Object.keys(g.palm).length ? g : null;
     });
+    setStatSource("ink.perf", "ink.perf", () => this.perf.take());
     blog("board.open", { slug: this.slug, rev: this.rev, items: this.board.items.length, strokes: this.board.strokes.length, tool: this.prefs.mode });
   }
 
@@ -569,6 +593,10 @@ export class BoardView {
     voice.setBoard(null);
     setTapSource(null);
     setStatSource("gestures", "gestures", null);
+    setStatSource("ink.perf", "ink.perf", null);
+    this.perf.dispose();
+    clearTimeout(this.picsT);
+    penState.down = false;
     blog("board.close", { slug: this.slug, rev: this.rev, items: this.board.items.length, strokes: this.board.strokes.length });
     void flushBoardLog();
     window.removeEventListener("resize", this.onResize);
@@ -598,7 +626,7 @@ export class BoardView {
   // ------------------------------------------------------------ layout & camera
 
   private measure(via = "mount"): void {
-    const r = this.stage.getBoundingClientRect();
+    const r = (this.stageRect = this.stage.getBoundingClientRect());
     const was = { W: this.W, H: this.H, dpr: this.dpr };
     this.W = Math.max(1, r.width);
     this.H = Math.max(1, r.height);
@@ -607,6 +635,7 @@ export class BoardView {
       c.width = Math.round(this.W * this.dpr);
       c.height = Math.round(this.H * this.dpr);
     }
+    this.liveDrawn = "all";
     this.homeZ = clamp((this.W - 32) / SHEET, 0.2, 4);
     if (via === "mount" || was.W !== this.W || was.H !== this.H || was.dpr !== this.dpr || r.left || r.top) this.logView(via, r);
   }
@@ -1040,10 +1069,30 @@ export class BoardView {
 
   private renderLive(): void {
     if (this.disposed) return;
+    const t0 = performance.now();
     const ctx = this.lctx, z = this.cam.z;
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.clearRect(0, 0, this.live.width, this.live.height);
     const g = this.g;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    // While only a stroke is being written (the frame that has to keep up with the Pencil), only the part of the live
+    // canvas the last frame drew and this one draws is cleared: the stroke's own box, not the whole screen.
+    const liveXY = g?.k === "draw" ? (g.pred ? g.xy.concat(g.pred.x, g.pred.y) : g.xy) : null;
+    let inkBox: { x0: number; y0: number; x1: number; y1: number; cam: string } | null = null;
+    if (g?.k === "draw" && liveXY && !this.shown && !this.dimmed.size && !this.fades.length && !this.sel && !DEBUG_TOUCH) {
+      const b = xyBox(liveXY, g.w / 2 + 2), d = this.dpr, s = z * d;
+      inkBox = {
+        x0: Math.max(0, Math.floor((b.x0 - this.cam.x) * s) - 2),
+        y0: Math.max(0, Math.floor((b.y0 - this.cam.y) * s) - 2),
+        x1: Math.min(this.live.width, Math.ceil((b.x1 - this.cam.x) * s) + 2),
+        y1: Math.min(this.live.height, Math.ceil((b.y1 - this.cam.y) * s) + 2),
+        cam: `${this.cam.x},${this.cam.y},${z},${this.live.width},${this.live.height}`,
+      };
+    }
+    const was = this.liveDrawn;
+    if (inkBox && was !== "all" && was.cam === inkBox.cam) {
+      const x0 = Math.min(was.x0, inkBox.x0), y0 = Math.min(was.y0, inkBox.y0);
+      ctx.clearRect(x0, y0, Math.max(was.x1, inkBox.x1) - x0, Math.max(was.y1, inkBox.y1) - y0);
+    } else ctx.clearRect(0, 0, this.live.width, this.live.height);
+    this.liveDrawn = inkBox ?? "all";
     // The highlighter being drawn looks as it will once it lands: the live canvas multiplies onto the board below
     // it, and the pen's ink it crosses is cut out of it, so the ink stays on top, its colour untouched.
     const hlLive = g?.k === "draw" && g.tool === "hl";
@@ -1074,9 +1123,9 @@ export class BoardView {
       for (const st of paintOrder(this.dimmed)) drawStroke(ctx, st);
       ctx.restore();
     }
-    if (g?.k === "draw") {
+    if (g?.k === "draw" && liveXY) {
       // The same function of the same samples as the finished stroke (ink.ts): nothing moves when the pen lifts.
-      const xy = g.pred ? g.xy.concat(g.pred.x, g.pred.y) : g.xy;
+      const xy = liveXY;
       this.worldTransform(ctx);
       ctx.save();
       inkStyle(ctx, g.tool, g.color, g.w, g.style);
@@ -1180,6 +1229,7 @@ export class BoardView {
       }
       if (st.touches.length) this.queueLive();
     }
+    if (g?.k === "draw") this.perf.frame(t0, performance.now() - t0, !!g.pred);
   }
 
   private placeSelbar(): void {
@@ -1192,8 +1242,9 @@ export class BoardView {
     }
     const a = b && this.toScreen(b.x0, b.y0), c = b && this.toScreen(b.x1, b.y1);
     if (!b || !a || !c) {
-      this.selbar.hidden = true;
-      this.selbar.dataset.k = "";
+      // (Every frame of a stroke comes here: no DOM write when there is nothing to change.)
+      if (!this.selbar.hidden) this.selbar.hidden = true;
+      if (this.selbar.dataset.k) this.selbar.dataset.k = "";
       return;
     }
     // Cut, Copy and Delete, and Interact when the selection is one widget; Done while a widget is being used.
@@ -1415,9 +1466,12 @@ export class BoardView {
 
   private onPointer(e: PointerEvent): void {
     if (this.disposed) return;
-    let r = this.stage.getBoundingClientRect();
-    if (e.type === "pointerdown" && this.stage.contains(e.target as Node) && this.checkGeometry(r)) r = this.stage.getBoundingClientRect();
+    // The stage's rect is read at a pointer down (and after a resize); a move uses it as it was, so a Pencil's 120
+    // moves a second never force a style and layout pass (the voice pill's waves change styles every frame).
+    let r = e.type === "pointerdown" || !this.stageRect ? (this.stageRect = this.stage.getBoundingClientRect()) : this.stageRect;
+    if (e.type === "pointerdown" && this.stage.contains(e.target as Node) && this.checkGeometry(r)) r = this.stageRect = this.stage.getBoundingClientRect();
     const kind = e.pointerType === "pen" ? "pen" : e.pointerType === "touch" ? "touch" : "mouse";
+    if (kind === "pen") penState.at = performance.now();
     const type = e.type === "pointerdown" ? "down" : e.type === "pointermove" ? "move" : e.type === "pointerup" ? "up" : e.type === "pointercancel" ? "cancel" : "leave";
     if (type === "leave" && (kind !== "pen" || e.target !== this.el)) return;
     const pe: PEvent = { type, id: e.pointerId, kind, x: e.clientX - r.left, y: e.clientY - r.top, w: e.width, h: e.height, t: e.timeStamp, button: e.button, buttons: e.buttons };
@@ -1526,16 +1580,46 @@ export class BoardView {
   /** The DOM samples behind a move: every one the hardware delivered (240 Hz from a Pencil). */
   private samples(ev: PEvent): (XY & { t: number })[] {
     const e = this.domEv;
-    const r = this.stage.getBoundingClientRect();
-    const evs = e ? (e.getCoalescedEvents?.() ?? []).filter((c) => c.pointerId === e.pointerId) : [];
+    const r = this.stageRect ?? (this.stageRect = this.stage.getBoundingClientRect());
+    // Safari 18.2's coalesced events came without a pointerId (0): they are this event's own samples all the same
+    // (only another pointer's id is left out, which the spec never gives).
+    const evs = e ? (e.getCoalescedEvents?.() ?? []).filter((c) => !c.pointerId || c.pointerId === e.pointerId) : [];
     if (!evs.length) return [{ ...this.toWorld(ev.x, ev.y), t: ev.t }];
     return evs.map((c) => ({ ...this.toWorld(c.clientX - r.left, c.clientY - r.top), t: c.timeStamp }));
+  }
+
+  /**
+   * Where the Pencil is about to be: iPadOS 18.2+ gives a move UIKit's predicted touches (getPredictedEvents; empty
+   * elsewhere). The furthest one that carries the line straight on is drawn as the stroke's tip for this frame only
+   * (never one that bends it back, and at most 8 css px ahead): the ink keeps up with the Pencil without wobbling, and
+   * the stroke kept is the real samples alone.
+   */
+  private predicted(xy: number[]): XY | null {
+    const e = this.domEv as (PointerEvent & { getPredictedEvents?: () => PointerEvent[] }) | null;
+    const pe = e?.getPredictedEvents?.();
+    const n = xy.length;
+    if (!pe?.length || n < 4) return null;
+    const bx = xy[n - 2]!, by = xy[n - 1]!;
+    // The direction the line is going: from a kept sample at least 2 css px back (the last two can be 0.5 px apart).
+    let k = n - 4;
+    while (k > 0 && Math.hypot(bx - xy[k]!, by - xy[k + 1]!) < 2 / this.cam.z) k -= 2;
+    const ux = bx - xy[k]!, uy = by - xy[k + 1]!, ul = Math.hypot(ux, uy);
+    if (!ul) return null;
+    const r = this.stageRect ?? (this.stageRect = this.stage.getBoundingClientRect());
+    for (let i = pe.length - 1; i >= 0; i--) {
+      const c = pe[i]!;
+      const w = this.toWorld(c.clientX - r.left, c.clientY - r.top);
+      const vx = w.x - bx, vy = w.y - by, d = Math.hypot(vx, vy);
+      if (d > 0 && d < 8 / this.cam.z && ux * vx + uy * vy > 0.7 * ul * d) return { x: r2(w.x), y: r2(w.y) };
+    }
+    return null;
   }
 
   private startTool(ev: PEvent): void {
     const p = this.toWorld(ev.x, ev.y);
     const touch = ev.kind === "touch";
     const m = this.prefs.mode;
+    this.gAt = performance.now();
     // A pen down postpones the save, unless the work has waited long already (continuous writing still saves).
     if (!this.unsavedSince || Date.now() - this.unsavedSince < SAVE_POSTPONE_MAX) clearTimeout(this.saveT);
     if (m === "pen" || m === "hl") {
@@ -1544,6 +1628,9 @@ export class BoardView {
       // closer than INK.minStep css px to the last are left out.
       const style = !hl && this.prefs.penStyle !== "solid" ? this.prefs.penStyle : undefined;
       this.g = { k: "draw", id: ev.id, touch, tool: m, color: hl ? this.prefs.hlColor : this.prefs.penColor, w: hl ? this.prefs.hl : this.prefs.pen, ...(style ? { style } : {}), xy: [r2(p.x), r2(p.y)], minStep: INK.minStep / this.cam.z, pred: null, raw: [{ ...p, t: ev.t }], scribAt: 0 };
+      this.perf.penDown(voice.state.phase === "live");
+      this.perf.input([ev.t], performance.now());
+      penState.down = true;
     } else if (m === "erase" || m === "cut") {
       this.begin();
       this.g = { k: "erase", id: ev.id, touch, precise: m === "cut", last: p, at: p };
@@ -1576,26 +1663,15 @@ export class BoardView {
     const g = this.g;
     if (!g || g.id !== ev.id) return;
     if (g.k === "draw") {
-      for (const q of this.samples(ev)) {
+      const got = this.samples(ev);
+      const ts: number[] = [];
+      for (const q of got) {
         g.raw.push(q);
         addSample(g.xy, q.x, q.y, g.minStep);
+        ts.push(q.t);
       }
-      // One predicted sample at most, and only one that carries the line on (never one that bends it back): the
-      // tip keeps up with the Pencil without wobbling.
-      const e = this.domEv as (PointerEvent & { getPredictedEvents?: () => PointerEvent[] }) | null;
-      const c = e?.getPredictedEvents?.()[0];
-      g.pred = null;
-      if (c) {
-        const r = this.stage.getBoundingClientRect();
-        const w = this.toWorld(c.clientX - r.left, c.clientY - r.top);
-        const n = g.xy.length;
-        if (n >= 4) {
-          const ax = g.xy[n - 4]!, ay = g.xy[n - 3]!, bx = g.xy[n - 2]!, by = g.xy[n - 1]!;
-          const ux = bx - ax, uy = by - ay, vx = w.x - bx, vy = w.y - by;
-          const d = Math.hypot(vx, vy);
-          if (d > 0 && d < 8 / this.cam.z && ux * vx + uy * vy > 0.7 * Math.hypot(ux, uy) * d) g.pred = { x: r2(w.x), y: r2(w.y) };
-        }
-      }
+      this.perf.input(ts, performance.now());
+      g.pred = this.predicted(g.xy);
       // The scribble preview: classified at most every 60 ms, and once more 60 ms after the last move (the pen
       // resting before it lifts sees where it got to).
       if (g.tool === "pen" && this.prefs.scribble) {
@@ -1634,10 +1710,24 @@ export class BoardView {
     const g = this.g;
     if (!g || g.id !== id) return;
     this.g = null;
+    if (g.k === "draw") {
+      this.perf.penUp();
+      penState.down = false;
+    }
     // A pen down postponed the save (startTool); a gesture that changes nothing must not leave it unscheduled.
     if (this.dirty && !this.conflict) {
       clearTimeout(this.saveT);
-      this.saveT = window.setTimeout(() => void this.save(), SAVE_DELAY);
+      this.saveT = window.setTimeout(() => this.saveFromTimer(), SAVE_DELAY);
+    }
+    // What came due while the pen was down runs now, between strokes, after this frame.
+    if (this.saveDue || this.localDue) {
+      const save = this.saveDue, local = this.localDue;
+      this.saveDue = this.localDue = false;
+      setTimeout(() => {
+        if (this.disposed) return;
+        if (local) void this.persistLocal();
+        if (save) this.saveFromTimer();
+      }, 0);
     }
     if (g.k === "draw") {
       if (drop) {
@@ -2574,7 +2664,7 @@ export class BoardView {
     this.setStatus("unsaved");
     clearTimeout(this.saveT);
     // Debounced from the pen lifting: a pen down cancels it (startTool).
-    this.saveT = window.setTimeout(() => void this.save(), SAVE_DELAY);
+    this.saveT = window.setTimeout(() => this.saveFromTimer(), SAVE_DELAY);
     voice.boardChanged(this.voiceSrc);
   }
 
@@ -2592,6 +2682,11 @@ export class BoardView {
     if (this.localGen < this.gen) void this.persistLocal();
     if (this.saving) await this.saving;
     if (this.dirty) await this.save();
+    // Leaving the board (or the page hiding): the agent's pictures of what was saved go now, idle or not.
+    if (this.picsRev && this.picsRev === this.rev) {
+      clearTimeout(this.picsT);
+      await this.picturesNow();
+    }
   }
 
   /** The board as JSON at the current gen (one stringify for the device's copy and the save). */
@@ -2606,8 +2701,76 @@ export class BoardView {
     clearTimeout(this.localT);
     this.localT = window.setTimeout(() => {
       if (this.g && Date.now() - this.localSince < LOCAL_MAX) return this.persistSoon();
+      // Past LOCAL_MAX with the pen down: as it lifts (endTool), not in the middle of the stroke (a stroke stuck
+      // down for 10 s does not hold it any longer).
+      if (this.g && performance.now() - this.gAt < 10_000) {
+        this.localDue = true;
+        return;
+      }
+      this.perf.work("local");
       void this.persistLocal();
     }, LOCAL_DELAY);
+  }
+
+  /** The save's timer: a save that comes due while the pen is down goes as it lifts (endTool). */
+  private saveFromTimer(): void {
+    if (this.disposed) return;
+    if (this.g && performance.now() - this.gAt < 10_000) {
+      this.saveDue = true;
+      return;
+    }
+    this.perf.work("save");
+    void this.save();
+  }
+
+  /** Resolves once the Pencil has been away PICTURES_IDLE_MS (not touching, not hovering) and no gesture is on. */
+  penIdle(): Promise<void> {
+    return new Promise((res) => {
+      const check = () => {
+        if (this.disposed) return res();
+        const left = PICTURES_IDLE_MS - (performance.now() - penState.at);
+        if (this.g || this.view || left > 0) return void setTimeout(check, Math.max(100, left));
+        res();
+      };
+      check();
+    });
+  }
+
+  /**
+   * The agent's pictures of the board at the rev just saved: drawn once the pen rests (penIdle), sent on their own
+   * (api.savePictures). A newer save while they wait or draw makes them for its rev instead.
+   */
+  private picturesSoon(rev: number): void {
+    this.picsRev = rev;
+    clearTimeout(this.picsT);
+    this.picsT = window.setTimeout(() => {
+      void this.penIdle().then(() => this.picturesNow());
+    }, 50);
+  }
+
+  private picturesNow(): Promise<void> {
+    if (this.picsRunning) return this.picsRunning;
+    const rev = this.picsRev;
+    if (!rev || this.disposed || this.dirty || this.saving || rev !== this.rev) return Promise.resolve();
+    this.perf.work("pictures");
+    this.picsRunning = (async () => {
+      try {
+        const pics = await within(this.exportPictures(), PICTURES_MS);
+        if (!pics.overview && !pics.view) return;
+        await api.savePictures(this.slug, rev, pics);
+        if (this.picsRev === rev) this.picsRev = 0;
+      } catch (e) {
+        if (e instanceof api.HttpError && e.status === 409) return; // the board moved on: its next save brings them
+        blog("pictures.fail", { slug: this.slug, error: String((e as Error)?.message ?? e).slice(0, 200) });
+        if (this.picsRev === rev && !this.disposed) {
+          clearTimeout(this.picsT);
+          this.picsT = window.setTimeout(() => this.picturesSoon(rev), 5000);
+        }
+      } finally {
+        this.picsRunning = null;
+      }
+    })();
+    return this.picsRunning;
   }
 
   /** Write the board to the device now (nothing when the device already has this gen, or the box acknowledged it). */
@@ -2736,6 +2899,7 @@ export class BoardView {
    * empty.
    */
   async snapshotView(): Promise<Blob | null> {
+    this.perf.work("look");
     const t0 = performance.now();
     const H = 720, GAP = 16, LABEL = 28;
     const all = await this.boardCanvas(H, 1.5);
@@ -2805,17 +2969,14 @@ export class BoardView {
     this.saveStarted = Date.now();
     this.setStatus("saving");
     try {
-      // The agent's pictures never hold the board's save: past PICTURES_MS (or failing) it goes without them.
-      const pics = await within(this.exportPictures(), PICTURES_MS).catch((e) => {
-        blog("pictures.fail", { slug: this.slug, error: String((e as Error)?.message ?? e).slice(0, 200) });
-        return {} as { overview?: string; view?: string };
-      });
+      // The board alone: the agent's pictures follow on their own once the pen rests (picturesSoon).
       const s = this.serial();
       this.sinceCapture = 0;
-      const r = await api.saveBoard(this.slug, s.json, this.rev, { overview: pics.overview, history: this.historyOut(), view: pics.view, writer: this.writer, gen: s.gen });
+      const r = await api.saveBoard(this.slug, s.json, this.rev, { history: this.historyOut(), writer: this.writer, gen: s.gen });
       this.rev = r.rev;
       this.board.rev = r.rev;
       this.board.updated = r.updated;
+      this.picturesSoon(r.rev);
       this.ser = null; // its rev is stale now
       this.acked(s.gen);
       if (r.already) blog("save.already", { slug: this.slug, rev: r.rev });
@@ -2833,7 +2994,7 @@ export class BoardView {
       this.dirty = true;
       this.setStatus("offline");
       clearTimeout(this.saveT);
-      this.saveT = window.setTimeout(() => void this.save(), 5000);
+      this.saveT = window.setTimeout(() => this.saveFromTimer(), 5000);
     }
   }
 

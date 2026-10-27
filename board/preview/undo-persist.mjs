@@ -30,6 +30,8 @@ const mk = (name) => page.evaluate(async (n) => (await (await fetch("/api/v1/boa
 const slug = await mk(`Undo ${Date.now() % 100000}`);
 
 const open = async (s) => {
+  // A board still saving finishes first (navigating away cuts its request off: WebKit reports that as a page error).
+  await page.evaluate(() => window.__board?.flush?.()).catch(() => {});
   await page.goto("about:blank");
   await page.goto(`${url}#/b/${s}`);
   await page.waitForFunction(() => !!window.__board?.debug);
@@ -130,6 +132,8 @@ await page.screenshot({ path: join(OUT, "undo-persist-reopened.png") });
 await saved();
 
 // A reload.
+// A board still saving finishes first (navigating away cuts its request off: WebKit reports that as a page error).
+await page.evaluate(() => window.__board?.flush?.()).catch(() => {});
 await page.reload();
 await page.waitForFunction(() => !!window.__board?.debug);
 await page.waitForTimeout(400);

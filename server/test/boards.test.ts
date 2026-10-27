@@ -257,4 +257,25 @@ describe("boards", () => {
     const b2 = (await (await get("/api/v1/boards/lecture-3-fourier")).json()) as any;
     expect((await post("/api/v1/boards/lecture-3-fourier", { board: b2, base: b2.rev, view: Buffer.from("<svg/>").toString("base64") })).status).toBe(400);
   });
+
+  it("takes the agent's pictures on their own, for the rev they show; the rev does not move", async () => {
+    const board = (await (await get("/api/v1/boards/lecture-3-fourier")).json()) as any;
+    // The app saves the board alone (no pictures)…
+    const saved = (await (await post("/api/v1/boards/lecture-3-fourier", { board, base: board.rev })).json()) as any;
+    const dir = join(vault, "boards", "lecture-3-fourier");
+    const before = readFileSync(join(dir, "overview.png"));
+    // …and its pictures once the pen rests: written beside it, the board's rev unchanged. (A 2×2 PNG.)
+    const other = "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAEklEQVR42mP8z8DwnwEJMDIgAQBNMAIBkDTtmwAAAABJRU5ErkJggg==";
+    const r = await post("/api/v1/boards/lecture-3-fourier/pictures", { rev: saved.rev, overview: other, view: other });
+    expect(r.status).toBe(200);
+    expect(((await r.json()) as any).wrote).toBe(2);
+    expect(readFileSync(join(dir, "overview.png")).equals(before)).toBe(false);
+    expect(readFileSync(join(dir, "view.png")).equals(Buffer.from(other, "base64"))).toBe(true);
+    expect(((await (await get("/api/v1/boards/lecture-3-fourier")).json()) as any).rev).toBe(saved.rev);
+    // Pictures of a rev the board has moved past are refused (the newer save brings its own), as is a non-PNG.
+    expect((await post("/api/v1/boards/lecture-3-fourier/pictures", { rev: saved.rev - 1, overview: PNG })).status).toBe(409);
+    expect((await post("/api/v1/boards/lecture-3-fourier/pictures", { overview: PNG })).status).toBe(409);
+    expect((await post("/api/v1/boards/lecture-3-fourier/pictures", { rev: saved.rev, view: Buffer.from("<svg/>").toString("base64") })).status).toBe(400);
+    expect((await post("/api/v1/boards/no-such-board/pictures", { rev: 1, overview: PNG })).status).toBe(404);
+  });
 });
