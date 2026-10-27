@@ -7,6 +7,7 @@
 // "N tool calls" fold). So the screen shows exactly the log's order.
 import type { PendingInput, Todo } from "./protocol";
 import { isOpen, pendingOf, planOf, shown, type Item, type Picture } from "./reduce";
+import { ASK_TOOLS, REVIEW_TOOL, reviewCard } from "../review";
 
 export const DIVIDER_TEXT = "Earlier conversation summarized";
 
@@ -24,7 +25,7 @@ export type ViewMessage = {
   costUsd?: number;
   toolCalls?: { id?: string; name: string; input: any; result?: string; subagents?: string[] }[];
   attachments?: { imageDataUrl: string; capturedFilePath?: string; sourcePath?: string }[];
-  askOptions?: { answer: string; title: string; body: string }[];
+  askOptions?: { answer: string; title: string; body: string; primary?: boolean }[];
   compaction?: { summary: string; at?: number };
   rollover?: { at?: number; recap?: string };
   /** The items this message shows (in order). */
@@ -179,9 +180,14 @@ function voiceAskMessage(it: Item): ViewMessage {
   };
 }
 
-/** AskUser: the question (its options as cards); Carl's answer is his own line after it (the reducer's). */
+/** AskUser: the question (its options as cards); Carl's answer is his own line after it (the reducer's).
+ *  ReadyForReview (src/review.ts): the proof card, with Keep and Send back. */
 function askMessages(it: Item): ViewMessage[] {
   const a = argsOf(it);
+  if (it.name === REVIEW_TOOL) {
+    const card = reviewCard(it.id, a);
+    return [{ role: "assistant", content: card.content, mid: it.id, askOptions: card.options }];
+  }
   const options: string[] = Array.isArray(a?.options) ? a.options.map(String) : [];
   const q: ViewMessage = {
     role: "assistant",
@@ -201,7 +207,7 @@ export function liveStart(items: Item[]): number {
     else break;
   }
   let j = k;
-  while (j > 0 && items[j - 1]!.kind === "tool" && items[j - 1]!.name !== "AskUser" && items[j - 1]!.name !== VOICE_ASK) j--;
+  while (j > 0 && items[j - 1]!.kind === "tool" && !ASK_TOOLS.has(String(items[j - 1]!.name)) && items[j - 1]!.name !== VOICE_ASK) j--;
   if (j < k && items.slice(j, k).some(isOpen)) k = j;
   return k;
 }
@@ -243,7 +249,7 @@ export function makeChatView(): (p: Picture, opts?: { split?: boolean }) => Chat
         const group: Item[] = [];
         while (i < cut && items[i]!.kind === "tool" && items[i]!.name !== VOICE_ASK) {
           group.push(items[i++]!);
-          if (group[group.length - 1]!.name === "AskUser") break;
+          if (ASK_TOOLS.has(String(group[group.length - 1]!.name))) break;
         }
         const extra = group.map((t) => spawnsOf(t.id).join(",")).join("|");
         use(`t:${group[0]!.id}`, group, extra, () => [
@@ -265,7 +271,7 @@ export function makeChatView(): (p: Picture, opts?: { split?: boolean }) => Chat
         ]);
         // A question: its card after the call (Carl's answer is his own line after that).
         const last = group[group.length - 1]!;
-        if (last.name === "AskUser") use(`ask:${last.id}`, [last], "", () => askMessages(last));
+        if (ASK_TOOLS.has(String(last.name))) use(`ask:${last.id}`, [last], "", () => askMessages(last));
         continue;
       }
       // A turn that ended on a failed request, and nothing since: its line offers Try again.

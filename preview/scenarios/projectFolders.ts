@@ -7,6 +7,7 @@
 import type { Scenario, Step } from "./types";
 import * as P3 from "./phase3";
 
+
 const BOX = { box: "https://thinkbox.tail0a1b2.ts.net", vault: "summer-demo" };
 const FOLDER = "/home/carl/github/vault-chat";
 
@@ -59,3 +60,87 @@ export const projectFolderScenarios: Scenario[] = [
     open: [openPanel, { sleep: 500 }],
   },
 ];
+
+// "You keep it" (server/projectChanges.ts): Vault Chat is a git repo, so its agent works on a branch in its own
+// clone and hands the change over with a proof card — what changed, why, the tests, a screenshot — and two
+// actions, Keep and Send back. The thread waits for Carl's answer.
+const REVIEW_ARGS = {
+  title: "Bigger tap targets on the phone",
+  branch: "agent/bigger-tap-targets",
+  what: "The phone's thread rows and the composer's send button are 44 px tall (they were 32 px).",
+  why: "You asked for the rows to be easier to hit with a thumb.",
+  tests: "npm run test:harness  → 405 passed, 0 failed\nnpm run test:server   → 541 passed, 0 failed\ntsc ×4                → clean",
+  images: ["proof/phone-after.svg"],
+};
+const PROOF_SVG =
+  '<svg xmlns="http://www.w3.org/2000/svg" width="390" height="260" viewBox="0 0 390 260"><rect width="390" height="260" rx="14" fill="#1f2023"/>' +
+  [0, 1, 2, 3].map((i) => `<rect x="16" y="${20 + i * 56}" width="358" height="44" rx="10" fill="#2c2d31"/><text x="32" y="${48 + i * 56}" fill="#e6e6e6" font-family="Inter,Arial" font-size="15">${["Main", "Vault Chat", "Psych 221", "Lecture Tools"][i]}</text>`).join("") +
+  "</svg>";
+
+export const projectReviewScenarios: Scenario[] = [
+  {
+    id: "project-review",
+    title: "You keep it — a git project's change handed over with its proof: Keep or Send back",
+    group: "Projects",
+    clock: "2026-10-27T10:00:00",
+    notes:
+      "Box mode, Vault Chat's thread (a git repo). The agent made the change on agent/bigger-tap-targets in its own clone and handed it over: the proof card says what changed, why, the test results and shows the screenshot, with Keep (the box merges the branch into main and pushes) and Send back (type what to change; it goes on with the same branch). Nothing reaches main without Keep.",
+    build: (c) => {
+      P3.build(c);
+      c.write(".vault-chat/proof/call_rr1/1-phone-after.svg", PROOF_SVG);
+    },
+    host: () => {
+      const h = host();
+      h.sync.boxChat.convs["project-vault-chat"].messages = [{ role: "user", content: "Make the phone's rows easier to tap." }, { role: "assistant", content: "On it — I'll make the change on a branch in my clone and hand it over with the proof." }];
+      return {
+        ...h,
+        sync: {
+          ...h.sync,
+          boxChat: {
+            ...h.sync.boxChat,
+            steps: [
+              {
+                log: (b: any) => {
+                  b.startTurn("project-vault-chat");
+                  b.tool("project-vault-chat", "call_rr1", "ReadyForReview", REVIEW_ARGS);
+                  b.emit("project-vault-chat", { type: "meta", patch: { asking: { question: "Ready to keep: Bigger tap targets on the phone", options: ["Keep", "Send back"], at: Date.now() }, state: "waiting_user" } });
+                },
+              },
+            ],
+          },
+        },
+      };
+    },
+    open: [{ conversation: "project-vault-chat" }, { run: () => (window as any).__preview?.boxNext?.() }, { sleep: 900 }],
+  },
+];
+
+/** The phone: the same card in Vault Chat's thread, folded from the open call by the same view as the laptop
+ *  folds the call with the same view, src/convlog/view.ts, which test/harness/reviewCard.test.ts checks). */
+function phoneReviewDb(db: any, now: number): void {
+
+  const id = "project-vault-chat";
+  const messages = [
+    { role: "user", content: "Make the phone's rows easier to tap." },
+    { role: "assistant", content: "On it — I'll make the change on a branch in my clone and hand it over with the proof.", tools: ["bash", "edit", "bash"] },
+    // The hand-over as pi records it: the open ReadyForReview call, which the phone folds into the card with the same view as the laptop.
+    { role: "assistant", content: "", toolCalls: [{ id: "call_rr1", name: "ReadyForReview", input: REVIEW_ARGS }] },
+  ];
+  db.convs = [{ id, title: "Vault Chat", source: "project", kind: "project", project: "vault-chat", role: "", lastActivityAt: now - 60_000, msgCount: 3, preview: "Ready to keep: Bigger tap targets on the phone", goal: "" }, ...db.convs];
+  db.threads[id] = { id, title: "Vault Chat", source: "project", kind: "project", project: "vault-chat", status: "idle", state: "waiting_user", messages };
+  db.projects = [{ slug: "vault-chat", name: "Vault Chat" }, ...(db.projects ?? [])];
+}
+
+projectReviewScenarios.push({
+  id: "project-review-phone",
+  title: "You keep it — the proof card on the phone: Keep or Send back",
+  group: "Projects",
+  clock: "2026-10-27T10:00:00",
+  notes: "The phone: Vault Chat's thread with the agent's hand-over — what changed, why, the tests, the screenshot — and Keep / Send back, the same card as the laptop's.",
+  build: (c) => {
+    P3.build(c);
+    c.write(".vault-chat/proof/call_rr1/1-phone-after.svg", PROOF_SVG);
+  },
+  surfaces: ["phone"],
+  phone: { clicks: ["#convBtn", "?text:Vault Chat"], db: phoneReviewDb },
+} as Scenario);

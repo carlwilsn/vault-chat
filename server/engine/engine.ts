@@ -49,6 +49,7 @@ import { isNoteTool, noteTool, noteToolSpecs } from "../notesTools";
 import { capabilitiesOf, capabilityNote, learn } from "./capabilities";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { projectFolderOf, retireFolder, reviveFolder } from "../projectFolders";
+import { KEEP, OUTCOME_SEP, REVIEW_TOOL, SEND_BACK, answerReview, cloneDirOf, ensureClone, isGitProject, pendingReview, prepareReview, proofQuestion } from "../projectChanges";
 import { WRITE_TOOLS, writtenPath } from "../liveEdits";
 import { appendActivity, contextImage, searchActivity, youLayer } from "../activity";
 import { CAPTURE_FRESH_MS, chatPointerEntry } from "../../src/activityCore";
@@ -178,6 +179,27 @@ export const ENGINE_TOOL_SPECS = [
       type: "object",
       properties: { question: { type: "string" }, options: { type: "array", items: { type: "string" } } },
       required: ["question"],
+      additionalProperties: false,
+    },
+  },
+  {
+    type: "function",
+    name: REVIEW_TOOL,
+    description:
+      "Only in the thread of a project that is a git repo, when a change is done and checked: hand it to Carl. You work in your clone of the project on a branch agent/<short-name>; commit everything there first. " +
+      "Carl gets a proof card in this thread (laptop and phone) with what changed, why, the test results and your screenshots, and two actions: Keep (the server merges your branch into the project's main branch and pushes) or Send back (his note comes back to you; go on with the same branch and call this again). " +
+      "This waits for his answer. Never merge, push or change the project's main branch yourself: you can't, and only Keep does.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        title: { type: "string", description: "The change in a few words (it names the branch when you have none)." },
+        branch: { type: "string", description: "Your branch, agent/<short-name> (optional: the one checked out in your clone)." },
+        what: { type: "string", description: "What changed, for Carl: a few lines." },
+        why: { type: "string", description: "Why: the ask or the fault it answers." },
+        tests: { type: "string", description: "The checks you ran and their results, as they printed (pass counts, failures)." },
+        images: { type: "array", items: { type: "string" }, description: "Screenshots (or a short video) of the change, paths in your clone or absolute: the proof he looks at." },
+      },
+      required: ["title", "what", "why", "tests"],
       additionalProperties: false,
     },
   },
@@ -445,7 +467,7 @@ export function sideToolSpecs(): ToolSpec[] {
   return agentToolSpecs().filter((t) => t.readOnly === true);
 }
 /** The agent's tools a side thread can't use: they belong to a turn (its question, plan, background maker, job, wake). */
-const TURN_ONLY_TOOLS = new Set(["AskUser", "TodoWrite", "BoardMake", "Delegate", "StartJob", "JobStop", "JobSteer", "ScheduleWake"]);
+const TURN_ONLY_TOOLS = new Set(["AskUser", REVIEW_TOOL, "TodoWrite", "BoardMake", "Delegate", "StartJob", "JobStop", "JobSteer", "ScheduleWake"]);
 /** Voice's Ask (server/voice.ts), a side thread: a question has the read-only tools and Show; an action every tool a
  *  side thread can use (BoardSend, Show, the notes …), with pi's own file tools (sideStart). */
 export function voiceSideToolSpecs(act: boolean): ToolSpec[] {
@@ -631,9 +653,9 @@ export class Engine {
     b.on("up", () => this.scoped(() => void this.onUp()));
     setNoteWriter(this.d.vault, (convId, notes) => this.scoped(() => this.noteViaPi(convId, notes)));
     b.setHandlers({
-      toolCall: (threadId, name, args) =>
+      toolCall: (threadId, name, args, toolCallId) =>
         this.scoped(async () => {
-          const r: any = await this.onToolCall({ threadId, tool: name, arguments: args });
+          const r: any = await this.onToolCall({ threadId, tool: name, arguments: args, toolCallId });
           return toolAnswer(r);
         }),
       userInput: (threadId, question, options) => this.scoped(() => this.waitForAnswer(threadId, question, options)),
@@ -1558,12 +1580,30 @@ export class Engine {
 
   /** A project thread's working folder: the folder Carl chose for it on the box (server/projectFolders.ts), else its
    *  main folder in the vault (project.md's `folder:`), else the vault. */
-  private folderOf(conv: EngineConv): { abs: string; rel: string; outside?: boolean } | { error: string } | null {
+  private inVault(p: string): boolean {
+    const rel = relative(resolve(this.d.vault), p);
+    return !!rel && !rel.startsWith("..") && !isAbsolute(rel);
+  }
+
+  /** A git project's clone, made before its pi starts there (its folder's main branch, the first time). */
+  private async prepareFolder(conv: EngineConv): Promise<void> {
+    const f = this.folderOf(conv);
+    if (!f || !("git" in f) || !f.git) return;
+    const slug = projectOfThread(conv.id)!;
+    const r = await ensureClone(this.d.vault, slug, f.git.folder);
+    if ("error" in r) this.log(`project ${slug}: ${r.error}`);
+  }
+
+  private folderOf(conv: EngineConv): { abs: string; rel: string; outside?: boolean; git?: { folder: string; clone: string } } | { error: string } | null {
     const slug = projectOfThread(conv.id);
     const p = slug ? readProject(slug) : null;
     if (!p) return null;
     const chosen = projectFolderOf(this.d.vault, p.slug);
     if (chosen && "error" in chosen) return { error: `the folder chosen for this project can't be used: ${chosen.error}` };
+    if (chosen && isGitProject(chosen.abs) && !this.inVault(chosen.abs)) {
+      // A git repo: the agent works in its clone, on an agent/ branch; the folder itself is Carl's (Keep).
+      return { abs: cloneDirOf(this.d.vault, p.slug), rel: chosen.abs.split(sep).join("/"), outside: true, git: { folder: chosen.abs.split(sep).join("/"), clone: cloneDirOf(this.d.vault, p.slug).split(sep).join("/") } };
+    }
     if (chosen) {
       const rel = relative(resolve(this.d.vault), chosen.abs).split(sep).join("/");
       const inVault = !!rel && !rel.startsWith("..") && !isAbsolute(rel);
@@ -1595,6 +1635,7 @@ export class Engine {
     // Subagents only for models where they work (learned from use; see capabilities.ts).
     const subagents = capabilitiesOf(model).subagents;
     // A project's thread runs in its main folder (pi loads that folder's AGENTS.md itself); a change of folder restarts its pi.
+    await this.prepareFolder(conv);
     const cwd = this.cwdOf(conv);
     if (conv.threadId) {
       try {
@@ -1963,6 +2004,19 @@ export class Engine {
         return { success: r.ok, contentItems: [{ type: "inputText", text: r.text }] };
       }
       switch (name) {
+        case REVIEW_TOOL: {
+          // "You keep it" (server/projectChanges.ts): the proof card, then Carl's Keep (the server's merge) or Send back.
+          const slug = projectOfThread(convId);
+          const chosen = slug ? projectFolderOf(vault, slug) : null;
+          if (!slug || !chosen || "error" in chosen || !isGitProject(chosen.abs)) return text(`${REVIEW_TOOL} is only for the thread of a project that works in a git repo on the box.`);
+          const prep = await prepareReview({ vault, convId, slug, folder: chosen.abs, toolCallId: String(p.toolCallId ?? `rr-${Date.now()}`), args: a });
+          if ("error" in prep) return text(prep.error);
+          const ans = await this.waitForAnswer(p.threadId, proofQuestion(prep.review, prep.stat), [KEEP, SEND_BACK]);
+          const live = pendingReview(vault, convId);
+          const out = live ? await answerReview(vault, live, ans) : { kept: false, text: "(already settled)" };
+          this.log(`review ${prep.review.branch} on ${convId}: ${out.kept ? "kept" : "not kept"}`);
+          return text(`Carl answered: ${ans}${OUTCOME_SEP}${out.text}`);
+        }
         case "AskUser": {
           const opts = Array.isArray(a.options) ? a.options.map(String).filter(Boolean).slice(0, 6) : [];
           const ans = await this.waitForAnswer(p.threadId, String(a.question ?? "").trim() || "?", opts);
@@ -2222,8 +2276,15 @@ export class Engine {
       a.resolve(answer);
       return;
     }
-    // The turn that asked is gone (a restart): a new turn carries the answer.
+    // The turn that asked is gone (a restart): a new turn carries the answer. A proof card's answer is acted on
+    // here first (Keep is the server's merge, never the agent's), and the new turn says what was done.
     const q = ask?.question;
+    const review = pendingReview(this.d.vault, convId);
+    if (review) {
+      const out = await answerReview(this.d.vault, review, answer);
+      void this.run(convId, `Carl's answer to your hand-over of ${review.branch}: ${answer}. ${out.text}`, "user", { clientId, shown: answer, via: "answer" });
+      return;
+    }
     void this.run(convId, q ? `Carl's answer to your question "${q}": ${answer}` : answer, "user", { clientId, shown: answer, via: "answer" });
   }
 

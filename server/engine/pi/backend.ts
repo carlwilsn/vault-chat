@@ -44,7 +44,7 @@ export class ThreadUnknownError extends Error {
 
 /** A host tool's answer: its text, and images it attaches (pi image blocks: base64 + mime). */
 export type ToolAnswer = { ok: boolean; text: string; images?: { data: string; mimeType: string }[] };
-export type ToolCallHandler = (threadId: string, name: string, args: any) => Promise<ToolAnswer>;
+export type ToolCallHandler = (threadId: string, name: string, args: any, toolCallId?: string) => Promise<ToolAnswer>;
 export type UserInputHandler = (threadId: string, question: string, options: string[]) => Promise<string>;
 /** The "you" layer for a session (the extension's before_agent_start asks before each prompt): what Carl
  * did since `since` (that session's last layer). A conversation's thread names itself by `threadId`; a
@@ -77,6 +77,9 @@ export type PiSandbox = {
   /** The project folders Carl chose outside the vault (server/projectFolders.ts), read at each spawn: each is
    * bound read-write, and nothing else new. */
   projects?: () => string[];
+  /** Project folders that are git repos (server/projectChanges.ts): read-only, even where the home is not (the
+   * agent works in its clone; only Carl's Keep changes the project). */
+  readOnly?: () => string[];
   /** What the layers hide (credentials, the key store, tokens): hidden again inside a project folder's bind. */
   hidden?: string[];
 };
@@ -129,6 +132,15 @@ function withExtras(sb: PiSandbox, base: string[] | null): string[] | null {
     }
     folders.push(p);
     binds.push("--bind", p, p);
+  }
+  for (const p of sb.readOnly?.() ?? []) {
+    try {
+      if (!statSync(p).isDirectory()) continue;
+    } catch {
+      continue;
+    }
+    folders.push(p);
+    binds.push("--ro-bind", p, p);
   }
   const rehide = folders.length ? (sb.hidden ?? []).filter((h) => folders.some((f) => inside(h, f))) : [];
   const extra = [...binds, ...hideArgs([...rehide, ...others.filter((p) => !gone(p) || folders.some((f) => inside(p, f)))])];
@@ -765,7 +777,7 @@ export class PiBackend extends EventEmitter {
         const r = await this.subs.run(t.id, call.args ?? {}).catch((e) => ({ ok: false, text: `subagent failed: ${(e as Error).message}` }));
         return reply({ value: JSON.stringify(r) });
       }
-      const r: ToolAnswer = await this.h.toolCall(t.id, String(call.tool ?? ""), call.args ?? {}).catch((e) => ({ ok: false, text: `${call.tool} failed: ${(e as Error).message}` }));
+      const r: ToolAnswer = await this.h.toolCall(t.id, String(call.tool ?? ""), call.args ?? {}, typeof call.toolCallId === "string" ? call.toolCallId : undefined).catch((e) => ({ ok: false, text: `${call.tool} failed: ${(e as Error).message}` }));
       return reply({ value: JSON.stringify({ text: r.text, ...(r.images?.length ? { images: r.images } : {}), ...(r.ok ? {} : { isError: true }) }) });
     }
     if (req.method === "select" || req.method === "confirm" || req.method === "input" || req.method === "editor") return reply({ cancelled: true });

@@ -18,6 +18,7 @@ import { initCapabilities } from "./capabilities";
 import { ensurePi, findBwrap, type PiInstall } from "./pi/install";
 import { agentWorkDir } from "../workArea";
 import { HOME_CREDENTIALS, activeFolders, setFolderWalls, under as underDir } from "../projectFolders";
+import { isGitProject } from "../projectChanges";
 import { listPiModels, modelWindow, piPaths, vaultPiPaths, writePiConfig, type PiPaths } from "./pi/config";
 import { PiBackend, outerWith, type PiSandbox } from "./pi/backend";
 import { logOf } from "./convs";
@@ -313,7 +314,9 @@ export async function startEngine(b: EngineBoot): Promise<EngineHandle> {
       }),
       others,
       // The project folders Carl chose outside the vault: read-write, read at each spawn.
-      projects: () => activeFolders(v.path).map((f) => f.abs).filter((f) => !underDir(f, v.path)),
+      projects: () => activeFolders(v.path).map((f) => f.abs).filter((f) => !underDir(f, v.path) && !isGitProject(f)),
+      // A project that is a git repo: its folder read-only; the agent works in its clone in the work area (Keep is Carl's).
+      readOnly: () => activeFolders(v.path).map((f) => f.abs).filter((f) => !underDir(f, v.path) && isGitProject(f)),
     };
     const backend = new PiBackend({
       install,

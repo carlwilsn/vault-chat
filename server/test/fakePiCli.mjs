@@ -162,9 +162,9 @@ const declared = (() => {
 const uiWaiters = new Map();
 let uiSeq = 0;
 /** A vault-chat tool, as its extension calls the host: an editor dialog titled vc:host-call. */
-function hostCall(tool, args) {
+function hostCall(tool, args, toolCallId) {
   const id = `ui-${++uiSeq}`;
-  out({ type: "extension_ui_request", id, method: "editor", title: "vc:host-call", prefill: JSON.stringify({ tool, args }) });
+  out({ type: "extension_ui_request", id, method: "editor", title: "vc:host-call", prefill: JSON.stringify({ tool, args, ...(toolCallId ? { toolCallId } : {}) }) });
   return new Promise((resolve) => {
     uiWaiters.set(id, (v) => {
       try {
@@ -420,7 +420,7 @@ async function run(first) {
             : tc.name === "subagent" && process.env.VC_PI_SUBAGENTS === "1"
               ? await subagentTool(tc)
               : host
-              ? await hostCall(tc.name, tc.arguments)
+              ? await hostCall(tc.name, tc.arguments, tc.id)
               : tc.name === "read"
                 ? readTool(tc.arguments)
                 : tc.name === "write"

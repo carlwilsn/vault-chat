@@ -14,7 +14,7 @@ import { markdownScenarios } from "./markdown";
 import { visualScenarios } from "./visual";
 import { liveEditScenarios } from "./liveEdit";
 import { backgroundScenarios } from "./background";
-import { projectFolderScenarios } from "./projectFolders";
+import { projectFolderScenarios, projectReviewScenarios } from "./projectFolders";
 import type { Script } from "../runtime/llm";
 
 const MIN = 60_000;
@@ -847,4 +847,5 @@ export const scenarios: Scenario[] = [
   ...liveEditScenarios,
   ...backgroundScenarios,
   ...projectFolderScenarios,
+  ...projectReviewScenarios,
 ];

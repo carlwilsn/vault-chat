@@ -17,6 +17,7 @@
 // reconnect, a checkpoint plus its tail) never applies anything twice.
 import type { ConvMeta, ConvRow, ItemImage, LogRecord, PendingInput, PiBlock, PiEntry, PiMessage, Todo } from "./protocol";
 import { VC_NOTE, VC_VOICE } from "./protocol";
+import { answerOf } from "../review";
 
 /** Bumped when the fold's meaning changes: a checkpoint from another version is folded again. */
 export const REDUCER_VERSION = 5;
@@ -204,9 +205,9 @@ function onEntry(d: Draft, r: Extract<LogRecord, { type: "entry" }>): void {
         d.items.push({ id: m.toolCallId, kind: "tool", status: m.isError ? "error" : "done", name: String(m.toolName ?? "tool"), args: {}, result: res, at: r.at });
       }
       // Carl's answer to a question: his line, under the id his client sent it with.
-      const ans = /^Carl answered: ([\s\S]*)$/.exec(textOf(m.content));
-      if (m.toolName === "AskUser" && ans) {
-        place(d, [{ id: r.clientId ?? `${m.toolCallId}:answer`, kind: "user", status: "done", text: ans[1]!.trim(), via: "answer", at: r.at }]);
+      const ans = answerOf(m.toolName, textOf(m.content));
+      if (ans !== null) {
+        place(d, [{ id: r.clientId ?? `${m.toolCallId}:answer`, kind: "user", status: "done", text: ans, via: "answer", at: r.at }]);
         touch(d, r.at);
       }
       return;
@@ -523,7 +524,7 @@ export function reduceRow(row: RowState, r: LogRecord): RowState {
   if (r.type === "entry") {
     // Carl's answer to a question (the AskUser result): his line, so activity.
     const m = r.entry.message;
-    if (r.entry.type === "message" && m?.role === "toolResult" && m.toolName === "AskUser" && /^Carl answered: /.test(textOf(m.content))) {
+    if (r.entry.type === "message" && m?.role === "toolResult" && answerOf(m.toolName, textOf(m.content)) !== null) {
       return { ...row, seq: r.seq, lastActivityAt: Math.max(row.lastActivityAt, r.at) };
     }
     const voice = r.entry.type === "custom_message" && r.entry.customType === VC_VOICE;
