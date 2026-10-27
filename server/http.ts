@@ -606,7 +606,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
       return c ? json(res, 200, c) : json(res, 404, { error: "conversation not found" });
     }
     case "GET /file":
-      return serveVaultFile(res, vault, url);
+      return serveVaultFile(req, res, vault, url);
     case "GET /poll":
       return poll(res, url, scope.path);
     case "GET /notifications":
@@ -873,7 +873,7 @@ function projectFileWrite(res: ServerResponse, vault: string, b: any): void {
 }
 
 /** voice_server.rs:2256 serve_vault_file. */
-function serveVaultFile(res: ServerResponse, vault: string, url: URL): void {
+function serveVaultFile(req: IncomingMessage, res: ServerResponse, vault: string, url: URL): void {
   const p = url.searchParams.get("path");
   if (p === null) return json(res, 400, { error: "missing path" });
   const full = withinVault(vault, p);
@@ -887,7 +887,19 @@ function serveVaultFile(res: ServerResponse, vault: string, url: URL): void {
   if (size > 50 * 1024 * 1024) return json(res, 413, { error: "file too large (50MB cap)" });
   try {
     const bytes = readFileSync(full);
-    res.writeHead(200, { "Content-Type": mimeFor(full) });
+    // Byte ranges: Safari plays a video only from a server that answers them (RecordUI's videos in the chat).
+    const range = /^bytes=(\d*)-(\d*)$/.exec(String(req.headers.range ?? "").trim());
+    if (range && (range[1] || range[2])) {
+      let start = range[1] ? Number(range[1]) : Math.max(0, size - Number(range[2]));
+      let end = range[1] && range[2] ? Math.min(Number(range[2]), size - 1) : size - 1;
+      if (start >= size || start > end) {
+        res.writeHead(416, { "Content-Range": `bytes */${size}` });
+        return void res.end();
+      }
+      res.writeHead(206, { "Content-Type": mimeFor(full), "Accept-Ranges": "bytes", "Content-Range": `bytes ${start}-${end}/${size}`, "Content-Length": String(end - start + 1) });
+      return void res.end(bytes.subarray(start, end + 1));
+    }
+    res.writeHead(200, { "Content-Type": mimeFor(full), "Accept-Ranges": "bytes", "Content-Length": String(size) });
     res.end(bytes);
   } catch (e) {
     json(res, 500, { error: (e as Error).message });

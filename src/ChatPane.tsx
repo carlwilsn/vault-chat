@@ -109,8 +109,8 @@ const ChatImage = memo(function ChatImage({
     const show = (path: string, bytes: ArrayLike<number>) => {
       const dot = path.lastIndexOf(".");
       const ext = dot > 0 ? path.slice(dot + 1).toLowerCase() : "";
-      const mime =
-        ext === "svg"
+      const mime = videoMime(path) ??
+        (ext === "svg"
           ? "image/svg+xml"
           : ext === "jpg" || ext === "jpeg"
             ? "image/jpeg"
@@ -124,7 +124,7 @@ const ChatImage = memo(function ChatImage({
                     ? "image/bmp"
                     : ext === "ico"
                       ? "image/x-icon"
-                      : `image/${ext || "png"}`;
+                      : `image/${ext || "png"}`);
       const blob = new Blob([new Uint8Array(bytes)], { type: mime });
       objectUrl = URL.createObjectURL(blob);
       setUrl(objectUrl);
@@ -178,8 +178,17 @@ const ChatImage = memo(function ChatImage({
       </span>
     );
   }
+  // A video (RecordUI's proof, any .webm / .mp4): played inline, muted, with controls.
+  if (isVideoSrc(src)) return <video src={url} controls muted playsInline preload="metadata" title={alt} data-el="chat-video" className="max-w-full rounded-md border border-border/60" />;
   return <img src={url} alt={alt} {...rest} />;
 });
+
+const VIDEO_EXT: Record<string, string> = { webm: "video/webm", mp4: "video/mp4", m4v: "video/mp4", mov: "video/quicktime" };
+function videoMime(src: string | undefined): string | null {
+  const m = /\.([a-z0-9]+)(?:[?#].*)?$/i.exec(src ?? "");
+  return m ? (VIDEO_EXT[m[1]!.toLowerCase()] ?? null) : null;
+}
+const isVideoSrc = (src: string | undefined) => !!videoMime(src);
 
 const chatComponents = { img: ChatImage } as const;
 

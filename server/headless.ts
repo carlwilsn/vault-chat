@@ -502,3 +502,46 @@ export async function headless(html: string, o: HeadlessOpts): Promise<HeadlessR
   }
   return oneShot(bin, html, o);
 }
+
+/**
+ * A browser of its own with one page, for a caller that drives the page itself (server/recordUI.ts): `call` and
+ * `on` speak to that page over the DevTools protocol; `close` ends the browser and removes its profile. Muted,
+ * headless, the same flags as every check here.
+ */
+export async function openPage(w: number, h: number, timeoutMs = 30_000): Promise<{ call: (method: string, params?: object, deadlineMs?: number) => Promise<any>; on: (ev: string, fn: (p: any) => void) => void; close: () => Promise<void> }> {
+  const bin = findBrowser();
+  if (!bin) throw new Error("no headless browser on this machine (install Chromium, or set VC_HEADLESS_BROWSER)");
+  const dir = mkdtempSync(join(tmpdir(), "vc-page-"));
+  const deadline = Date.now() + timeoutMs;
+  let proc = launch(bin, join(dir, "profile"), w, h);
+  let cdp: Conn;
+  try {
+    try {
+      cdp = await connectPage(join(dir, "profile"), Math.min(deadline, Date.now() + 15_000));
+    } catch {
+      proc.kill("SIGKILL");
+      proc = launch(bin, join(dir, "profile2"), w, h);
+      cdp = await connectPage(join(dir, "profile2"), deadline);
+    }
+  } catch (e) {
+    proc.kill("SIGKILL");
+    rmSync(dir, { recursive: true, force: true });
+    throw e;
+  }
+  const c = cdp;
+  return {
+    call: (m, p, ms = 45_000) => c.call(m, p ?? {}, undefined, Date.now() + ms),
+    on: (ev, fn) => c.on(ev, fn),
+    close: async () => {
+      await c.call("Browser.close", {}, undefined, Date.now() + 1000).catch(() => {});
+      c.close();
+      try {
+        proc.kill("SIGKILL");
+      } catch {
+        /* gone */
+      }
+      await sleep(300);
+      await rm(dir, { recursive: true, force: true }).catch(() => {});
+    },
+  };
+}

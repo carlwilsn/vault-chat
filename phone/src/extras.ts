@@ -54,7 +54,7 @@ export function dividerHtml(bodyHtml: string): string {
   return '<div class="xblk pdiv" data-el="divider"><button class="xh"><span class="pl"></span>Earlier conversation summarized' + CHEV + '<span class="pl"></span></button><div class="xbody md">' + bodyHtml + "</div></div>";
 }
 
-export type PhoneSubagent = { threadId: string; task?: string; title?: string; agent?: string; model?: string; state?: string; costUsd?: number; summary?: string; toolCallId?: string; startedAt?: number; endedAt?: number; activity?: string; steps?: number };
+export type PhoneSubagent = { threadId: string; kind?: string; task?: string; title?: string; agent?: string; model?: string; state?: string; costUsd?: number; summary?: string; toolCallId?: string; startedAt?: number; endedAt?: number; activity?: string; steps?: number };
 
 /** Background tasks as on the laptop (src/backgroundTasks.ts): "2 background tasks: 1 running, 1 done", each row its
  *  name, what it is doing now (or how it ended) and its time; Stop / Steer on a running one. Never a raw report. */
@@ -69,7 +69,7 @@ export function subagentsHtml(list: PhoneSubagent[], variant: "inline" | "strip"
       return (
         '<div class="sa" data-el="subagent" data-sid="' + esc(s.threadId) + '" data-state="' + esc(st) + '">' +
         '<div class="sa-h"><span class="sd ' + (on ? "run" : st === "done" ? "ok" : "bad") + '"></span><span class="sa-t">' + esc(taskName(s as any)) + "</span></div>" +
-        '<div class="sa-m">' + esc(meta) + (on ? '<button class="sa-b" data-op="steer">Steer</button><button class="sa-b" data-op="stop">Stop</button>' : "") + "</div>" +
+        '<div class="sa-m">' + esc(meta) + (on ? (s.kind === "job" ? "" : '<button class="sa-b" data-op="steer">Steer</button>') + '<button class="sa-b" data-op="stop">Stop</button>' : "") + "</div>" +
         "</div>"
       );
     })

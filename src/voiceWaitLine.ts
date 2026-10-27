@@ -103,7 +103,7 @@ export function waitInputs(o: {
   running: boolean;
   tools: { startedAt?: number }[];
   startedAt?: number | null;
-  subagents?: { threadId: string; state?: string; status?: string; startedAt?: number; endedAt?: number; expect?: Expect }[];
+  subagents?: { threadId: string; kind?: string; state?: string; status?: string; startedAt?: number; endedAt?: number; expect?: Expect }[];
   todos?: { status: string }[] | null;
   messages?: { mid?: string; voiceAsk?: { request: string; running?: boolean; startedAt?: number; ms?: number } }[];
   now: number;
@@ -111,7 +111,9 @@ export function waitInputs(o: {
   const works: WaitWork[] = [];
   const tools = o.running ? o.tools : [];
   if (tools.length) works.push({ key: "turn", kind: "turn", startedAt: Math.min(...tools.map((t) => t.startedAt ?? o.startedAt ?? o.now)) });
+  // A StartJob job (a dev server) is not work the voice waits on.
   for (const a of o.subagents ?? []) {
+    if (a.kind === "job") continue;
     if ((a.state ?? a.status) === "running" && a.startedAt) works.push({ key: a.threadId, kind: "Delegate", startedAt: a.startedAt, ...(a.expect ? { expect: a.expect } : {}) });
   }
   for (const m of o.messages ?? []) {
@@ -120,7 +122,7 @@ export function waitInputs(o: {
   const todos = o.todos ?? [];
   const plan = tools.length && todos.some((t) => t.status === "in_progress") ? { done: todos.filter((t) => t.status === "completed").length, total: todos.length } : null;
   const samples = {
-    Delegate: (o.subagents ?? []).filter((a) => a.startedAt && a.endedAt).map((a) => a.endedAt! - a.startedAt!),
+    Delegate: (o.subagents ?? []).filter((a) => a.kind !== "job" && a.startedAt && a.endedAt).map((a) => a.endedAt! - a.startedAt!),
     VoiceAsk: (o.messages ?? []).filter((m) => m.voiceAsk && !m.voiceAsk.running && m.voiceAsk.ms).map((m) => m.voiceAsk!.ms!),
   };
   return { works, plan, samples, running: o.running };

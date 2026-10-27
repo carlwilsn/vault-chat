@@ -368,4 +368,6 @@ process.on("unhandledRejection", (e) => {
   console.error("[vault-chat-server] unhandled rejection:", e);
 });
 
-main().catch((e) => fatal(`boot failed: ${e instanceof Error ? (e.stack ?? e.message) : String(e)}`, 1));
+// `vault-chat-server.mjs record-ui`: the RecordUI tool's recorder, run by the tool inside the agent's sandbox (server/recordUI.ts).
+if (process.argv[2] === "record-ui") void import("./recordUI").then((m) => m.recordCli());
+else main().catch((e) => fatal(`boot failed: ${e instanceof Error ? (e.stack ?? e.message) : String(e)}`, 1));

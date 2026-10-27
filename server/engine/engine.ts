@@ -43,7 +43,10 @@ import { lookBoard } from "../boards";
 import { show, SHOW_DESCRIPTION, SHOW_SCHEMA } from "../show";
 import { boardGuard } from "../boardGuard";
 import { openProject, OPEN_PROJECT_DESCRIPTION, OPEN_PROJECT_SCHEMA } from "../projectRoutes";
-import { startJob, jobStatus, jobList, jobStop, reapJobs, type PiJobEnv } from "./pi/jobs";
+import { startJobWith, jobStatus, jobList, jobStop, reapJobs, readJobs, type PiJobEnv } from "./pi/jobs";
+import { devProxies, jobPorts } from "../devProxy";
+import { recordUITool, RECORD_DESCRIPTION, RECORD_SCHEMA } from "../recordUI";
+import { loadConfig } from "../config";
 import { ENGINE_ROLE_PROMPT } from "./prompt";
 import { isNoteTool, noteTool, noteToolSpecs } from "../notesTools";
 import { capabilitiesOf, capabilityNote, learn } from "./capabilities";
@@ -250,7 +253,7 @@ export const ENGINE_TOOL_SPECS = [
     type: "function",
     name: "StartJob",
     description:
-      "Start a long-running shell command that must outlive this turn (training, downloads, builds). It runs detached, sandboxed, in the vault, with a memory ceiling and a low CPU share; output goes to a log. It is stopped after `timeout` (default \"24h\", at most \"7d\"). At most 4 run at once in the vault. When it ends, this conversation gets a wake turn with its exit code and last lines. Returns a job id.",
+      "Start a long-running shell command that must outlive this turn (training, downloads, builds, a dev server such as `npm run dev`: Show {url: \"http://localhost:<port>\"} then opens it on Carl's devices). It runs detached, sandboxed, in the vault, with a memory ceiling and a low CPU share; output goes to a log. It is stopped after `timeout` (default \"24h\", at most \"7d\"). At most 4 run at once in the vault. When it ends, this conversation gets a wake turn with its exit code and last lines. Returns a job id.",
     inputSchema: {
       type: "object",
       properties: { command: { type: "string" }, name: { type: "string" }, timeout: { type: "string", description: "e.g. \"36h\", \"90m\"; default 24h, max 7d" } },
@@ -339,6 +342,12 @@ export const ENGINE_TOOL_SPECS = [
     name: "Show",
     description: SHOW_DESCRIPTION,
     inputSchema: SHOW_SCHEMA as unknown as Record<string, unknown>,
+  },
+  {
+    type: "function",
+    name: "RecordUI",
+    description: RECORD_DESCRIPTION,
+    inputSchema: RECORD_SCHEMA as unknown as Record<string, unknown>,
   },
   {
     type: "function",
@@ -1104,7 +1113,17 @@ export class Engine {
   async subagent(convId: string, sid: string, op: "steer" | "stop", body: { text?: string }): Promise<Record<string, unknown>> {
     const conv = await readConv(this.d.vault, convId);
     if (!conv) return { ok: false, error: `conversation ${convId} not found` };
-    if (!(conv.subagents ?? []).some((s: any) => s.threadId === sid)) return { ok: false, error: `no subagent ${sid} on this conversation` };
+    const rec = (conv.subagents ?? []).find((s: any) => s.threadId === sid) as Record<string, unknown> | undefined;
+    if (!rec) return { ok: false, error: `no subagent ${sid} on this conversation` };
+    if (rec.kind === "job") {
+      // A StartJob job (a dev server, a build): Stop stops its unit; there is no one to steer.
+      if (op === "steer") return { ok: false, error: "a shell job can't be steered: stop it, or tell the agent" };
+      const out = jobStop(this.d.jobEnv, sid);
+      if (!/^Stopped job /.test(out)) return { ok: false, error: out };
+      this.jobRowEnded(convId, sid, "stopped");
+      this.devSweep();
+      return { ok: true };
+    }
     return this.d.backend.subagentControl(sid, op, body?.text);
   }
 
@@ -1287,7 +1306,7 @@ export class Engine {
    *  workers, background or not). How many workers were stopped. */
   async stopWork(convId: string, since?: number, stopped?: string[]): Promise<number> {
     const turn = await this.interrupt(convId, true).catch(() => false);
-    const running = ((this.picture(convId)?.meta.subagents ?? []) as { threadId: string; state?: string; status?: string; startedAt?: number }[]).filter((s) => (s.state ?? s.status) === "running");
+    const running = ((this.picture(convId)?.meta.subagents ?? []) as { threadId: string; state?: string; status?: string; startedAt?: number; kind?: string }[]).filter((s) => (s.state ?? s.status) === "running" && s.kind !== "job");
     // "Never mind" is about what he just asked for: the work started since his previous line. Older work he didn't
     // mention keeps going ("forget the flashcards" stopped the midterm guide started minutes before). With nothing that
     // new and no turn running, it is the newest work ("how's it going?" … "never mind, cancel it").
@@ -1894,7 +1913,8 @@ export class Engine {
     for (const convId of log.ids()) {
       const subs = (this.picture(convId)?.meta.subagents ?? []) as Record<string, any>[];
       for (const s of subs) {
-        if ((s.state ?? s.status) !== "running" || this.d.backend.liveChild?.(s.threadId)) continue;
+        // A StartJob job outlives a restart (tickJobs ends its row when it ends).
+        if ((s.state ?? s.status) !== "running" || s.kind === "job" || this.d.backend.liveChild?.(s.threadId)) continue;
         this.updateSubagent(convId, s.threadId, { status: "killed", state: "killed", endedAt: Date.now(), summary: "Stopped by a restart of the server before it reported." });
         // (A whiteboard make reports in Carl's inbox instead: BoardMake marks its entry failed on its own path.)
         if (!s.background || s.agent === "board-maker") continue;
@@ -1908,7 +1928,7 @@ export class Engine {
   private workerRec(convId: string, id: string): Record<string, any> | null {
     if (!id) return null;
     const subs = (this.picture(convId)?.meta.subagents ?? []) as Record<string, any>[];
-    return subs.find((s) => s.threadId === id) ?? null;
+    return subs.find((s) => s.threadId === id && s.kind !== "job") ?? null;
   }
 
   /** One worker for JobStatus: state, what it is doing (from its own pi events), steps, time; its report once ended. */
@@ -1939,6 +1959,54 @@ export class Engine {
    *  at once (so his message is taken up now), and each report comes back as its own turn. */
   private detachWaiting(convId: string, threadId: string): void {
     for (const d of this.d.backend.detach?.(threadId) ?? []) this.reportWhenDone(convId, d.title, d.result);
+  }
+
+  /** A job's row in the chip ended (its own end, JobStop, or Stop in the chip). */
+  private jobRowEnded(convId: string, id: string, state: "completed" | "stopped" | "failed", activity?: string): void {
+    const rec = ((this.picture(convId)?.meta.subagents ?? []) as Record<string, any>[]).find((s) => s.threadId === id);
+    if (!rec || rec.kind !== "job" || (rec.state ?? rec.status) !== "running") return;
+    this.updateSubagent(convId, id, { state, status: state, endedAt: Date.now(), activity: activity ?? state });
+  }
+
+  /** Running jobs' rows say what they serve ("serving localhost:5173"), from the ports they listen on. */
+  private jobActivity(): void {
+    if (process.platform !== "linux") return;
+    const running = readJobs(this.d.jobEnv).filter((j) => j.state === "running" && j.conv);
+    if (!running.length) return;
+    let ports: ReturnType<typeof jobPorts>;
+    try {
+      ports = jobPorts();
+    } catch {
+      return;
+    }
+    for (const j of running) {
+      const mine = [...ports.entries()].filter(([, o]) => o.job === j.id).map(([p]) => p).sort((a, b) => a - b);
+      const activity = mine.length ? `serving ${mine.map((p) => `localhost:${p}`).join(", ")}` : "running";
+      const rec = ((this.picture(j.conv!)?.meta.subagents ?? []) as Record<string, any>[]).find((s) => s.threadId === j.id);
+      if (rec && rec.kind === "job" && (rec.state ?? rec.status) === "running" && rec.activity !== activity) this.updateSubagent(j.conv!, j.id, { activity });
+    }
+  }
+
+  /** Show's dev servers: a loopback port one of this vault's running jobs listens on → its tailnet origin. */
+  private devUrl(port: number): Promise<{ origin: string } | { error: string }> {
+    const jobs = new Set(readJobs(this.d.jobEnv).filter((j) => j.state === "running").map((j) => j.id));
+    return this.devs().url(port, jobs);
+  }
+  private devs() {
+    let own: number[] = [];
+    try {
+      own = [loadConfig().port];
+    } catch {
+      /* no config (tests) */
+    }
+    return devProxies([...own, Number(process.env.VC_VOICE_PIPELINE_PORT) || 8857]);
+  }
+  private devSweep(): void {
+    try {
+      this.devs().sweep();
+    } catch {
+      /* next tick */
+    }
   }
 
   private updateSubagent(convId: string, threadId: string, patch: Record<string, unknown>): void {
@@ -2077,7 +2145,7 @@ export class Engine {
           // (roleplay: "make me a midterm guide" … "all seven lectures, one section each" started two workers).
           const prior = this.lastDelegate.get(convId);
           if (prior && (this.continuedAt.get(convId) ?? 0) >= prior.at && Date.now() - prior.at < 120_000) {
-            const subs = ((this.picture(convId)?.meta.subagents ?? []) as { threadId: string; title?: string; state?: string; status?: string }[]).filter((x) => (x.state ?? x.status) === "running" && x.title === prior.title);
+            const subs = ((this.picture(convId)?.meta.subagents ?? []) as { threadId: string; title?: string; state?: string; status?: string }[]).filter((x) => (x.state ?? x.status) === "running" && x.title === prior.title && (x as { kind?: string }).kind !== "job");
             const sid = subs.at(-1)?.threadId;
             const r = sid ? await this.d.backend.subagentControl(sid, "steer", `Carl added to this request: ${task}`).catch(() => ({ ok: false })) : { ok: false };
             if (r.ok) {
@@ -2134,7 +2202,7 @@ export class Engine {
           const no = toBoard ? boardGuard({ vault, request: lastRequest(conv, this.live.get(convId)?.input), asked: a.asked === true, tool: "Show" }) : null;
           if (no) return { success: false, contentItems: [{ type: "inputText", text: no }] };
           delete a.asked;
-          const r = await show({ vault, emit: (ev) => this.d.broadcast?.(ev), sendBoard: (b) => sendEntry(vault, b, { conversation: convId, emit: (ev) => this.inboxEvent(ev) }) }, a);
+          const r = await show({ vault, emit: (ev) => this.d.broadcast?.(ev), sendBoard: (b) => sendEntry(vault, b, { conversation: convId, emit: (ev) => this.inboxEvent(ev) }), dev: (port) => this.devUrl(port) }, a);
           return { success: r.ok, contentItems: [{ type: "inputText", text: r.text }] };
         }
         case "RestoreProject": {
@@ -2158,8 +2226,14 @@ export class Engine {
           return text(await pdfPages(vault, a));
         case "WebSearch":
           return text(await webSearch(String(a.query ?? ""), this.d.apiKey(), this.d.webSearchModel));
-        case "StartJob":
-          return text(startJob(this.d.jobEnv, vault, a, convId, !!this.live.get(convId)?.byCarl));
+        case "StartJob": {
+          const r = startJobWith(this.d.jobEnv, vault, a, convId, !!this.live.get(convId)?.byCarl);
+          // The job is a row of the background-tasks chip (kind "job": Stop, no Steer) until it ends.
+          if (r.job && convId) this.updateSubagent(convId, r.job.id, { kind: "job", title: r.job.name, task: r.job.command.slice(0, 300), status: "running", state: "running", startedAt: r.job.startedAt, background: true, activity: "starting" });
+          return text(r.text);
+        }
+        case "RecordUI":
+          return text(await recordUITool(this.d.shell?.(), vault, a));
         case "Compact": {
           if (!convId) return text("No conversation to compact.");
           void this.compact(convId, typeof a.focus === "string" ? a.focus : undefined).then((r) => {
@@ -2193,7 +2267,12 @@ export class Engine {
             const r = await this.d.backend.subagentControl(id, "stop");
             return text(r.ok ? `Stopping worker ${id}; its "Delegated work failed (stopped)" turn follows.` : `Not stopped: ${r.error ?? "it is not running"}.`);
           }
-          return text(jobStop(this.d.jobEnv, id, convId));
+          const out = jobStop(this.d.jobEnv, id, convId);
+          if (/^Stopped job /.test(out)) {
+            this.jobRowEnded(convId, id, "stopped");
+            this.devSweep();
+          }
+          return text(out);
         }
         case "JobSteer": {
           const id = String(a.id ?? "").trim();
@@ -2355,8 +2434,11 @@ export class Engine {
     } catch (e) {
       this.log(`jobs: ${(e as Error).message}`);
     }
+    if (ended.length) this.devSweep();
+    this.jobActivity();
     for (const j of ended) {
       this.log(`job ${j.id} ended: ${j.state}${j.exit !== undefined ? ` (exit ${j.exit})` : ""}`);
+      if (j.conv) this.jobRowEnded(j.conv, j.id, j.state === "finished" && j.exit === 0 ? "completed" : j.state === "stopped" ? "stopped" : "failed", j.state === "finished" ? `exit ${j.exit}` : j.state);
       if (!j.conv) continue;
       const conv = await readConv(this.d.vault, j.conv);
       if (!conv) continue;

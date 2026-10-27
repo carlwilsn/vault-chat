@@ -34,6 +34,7 @@ import { hasTarget, spotLabel, targetError, targetOf, type ViewTarget } from "..
 import { matchSection, notFound, type Section } from "../src/scrollTarget";
 import { parsePages, MAX_PARTS } from "../src/inboxFormat";
 import { readActivity } from "./activity";
+import { loopbackUrl } from "./devProxy";
 import type { SendResult } from "./inbox";
 
 export type Device = "laptop" | "board" | "phone";
@@ -128,11 +129,14 @@ export type ShowDeps = {
   ackMs?: Partial<Record<Device, number>>;
   /** Render an HTML page to a PNG (default: the box's headless browser). Null: none here. */
   renderHtml?: ((html: string) => Promise<{ png: Buffer; cut: number | null } | string>) | null;
+  /** A dev server on the box (a loopback port a StartJob job of this vault listens on) → the origin Carl's devices
+   *  reach it on (server/devProxy.ts), or why not. Absent: loopback addresses are refused. */
+  dev?: (port: number) => Promise<{ origin: string } | { error: string }>;
 };
 
 export type ShowResult = { ok: boolean; text: string; where?: Device };
 
-const SHOW_KEYS = ["path", "url", "where", "pane", "title", "pages", "page", "line", "endLine", "heading", "text", "anchor", "cell", "label", "asked"];
+const SHOW_KEYS = ["path", "url", "port", "where", "pane", "title", "pages", "page", "line", "endLine", "heading", "text", "anchor", "cell", "label", "asked"];
 
 export const SHOW_DESCRIPTION =
   "Put something in front of Carl: open a vault file (or a web address) on one of his screens, at a place in it. " +
@@ -147,13 +151,15 @@ export const SHOW_DESCRIPTION =
   "Markdown: line (a source line, as read numbers them), heading (its text or slug) or text. Code/plain text: line, or line + endLine (the range is highlighted). " +
   "HTML: anchor (an element id), heading or text. Notebook (.ipynb): cell (1-based) or text. Image: none. " +
   'Board with no path: label — centre the item with that label (e.g. "Problem 3") on his board. ' +
+  'A dev server you started with StartJob (vite, a web app): url "http://localhost:5173" (or port: 5173) opens it live on his laptop or phone through the box (only ports a StartJob job listens on; hot reload works). ' +
   "The result is the confirmed outcome (the place it landed, or why not, with the valid range or nearest headings) — never assume it opened.";
 
 export const SHOW_SCHEMA = {
   type: "object",
   properties: {
     path: { type: "string", description: "A file in the vault (vault-relative)." },
-    url: { type: "string", description: "A web address (laptop: the browser; phone: a link). Not for the board." },
+    url: { type: "string", description: "A web address (laptop: the browser; phone: a link). Not for the board. http://localhost:<port>/… is a dev server you started with StartJob, opened through the box." },
+    port: { type: "number", description: "A dev server's port on the box (one a StartJob job listens on): the same as url http://localhost:<port>/." },
     where: { type: "string", enum: ["laptop", "board", "phone", "here"] },
     pane: { type: "string", enum: ["left", "right"], description: 'Laptop only: the split-screen pane to open it in (split turns on). Omitted: the active pane, as before.' },
     title: { type: "string", description: "Board only: the inbox title (default: the file's name and place)." },
@@ -189,6 +195,7 @@ async function run(d: ShowDeps, a: Record<string, unknown>): Promise<ShowResult>
   const rawPath = typeof a.path === "string" ? a.path.trim() : "";
   const url = typeof a.url === "string" ? a.url.trim() : "";
   if (rawPath && url) return fail("Error: give path or url, not both.");
+  if (a.port !== undefined && (rawPath || url)) return fail("Error: port alone opens a dev server; with a url, put the port in it.");
 
   // Where: named, or the device he is on.
   const asked = typeof a.where === "string" ? a.where.trim().toLowerCase() : "here";
@@ -211,6 +218,19 @@ async function run(d: ShowDeps, a: Record<string, unknown>): Promise<ShowResult>
     if (where !== "laptop") return fail(`Error: pane is for the laptop's split screen; the ${DEVICE_NAME[where]}${because} has no panes. Leave pane out, or pass where: "laptop".`);
     if (url) return fail("Error: a web address opens in the browser, not in a pane; pane is for a vault file.");
     pane = p;
+  }
+
+  // A dev server on the box: through the box's proxy, on its own tailnet origin (server/devProxy.ts).
+  const loop = url ? loopbackUrl(url) : a.port !== undefined ? { port: Number(a.port), path: "/" } : null;
+  if (loop) {
+    if (where === "board") return fail("The board doesn't open web pages or dev servers. Show it on the laptop or phone.", where);
+    if (hasTarget(target)) return fail("Error: a web address takes no place in it (page, line, heading…); open it, then say where to look.");
+    if (!d.dev) return fail("Error: dev servers on the box can't be opened on Carl's devices here (no proxy in this server).");
+    const r = await d.dev(loop.port);
+    if ("error" in r) return fail(`Not shown: ${r.error}`, where);
+    const shown = r.origin + loop.path;
+    const local = url || `http://localhost:${loop.port}/`;
+    return toClient(d, where, { url: shown, local }, `${local} (as ${shown}, through the box)`, because);
   }
 
   // A label alone: an item on the board.

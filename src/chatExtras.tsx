@@ -169,9 +169,11 @@ function TaskRow({ s, now, onControl }: { s: SubagentRec; now: number; onControl
         </span>
         {running && onControl && (
           <span className="shrink-0 flex items-center gap-2 text-[10.5px]">
-            <button className="text-muted-foreground hover:text-foreground" onClick={() => setSteering((v) => !v)} data-el="task-steer">
-              Steer
-            </button>
+            {s.kind !== "job" && (
+              <button className="text-muted-foreground hover:text-foreground" onClick={() => setSteering((v) => !v)} data-el="task-steer">
+                Steer
+              </button>
+            )}
             <button className="text-muted-foreground hover:text-destructive" onClick={() => void control("stop")} data-el="task-stop">
               Stop
             </button>

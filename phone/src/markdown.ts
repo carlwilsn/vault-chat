@@ -44,6 +44,9 @@ export function createPhoneMarkdown(opts: PhoneMarkdownOptions) {
     },
     img: ({ node: _n, src, alt, ...rest }) => {
       const url = typeof src === "string" && isVaultPath(src) ? opts.fileUrl(vaultPath(src)) : src;
+      // A video (RecordUI's proof, any .webm / .mp4) plays inline, muted, with controls.
+      if (typeof src === "string" && /\.(webm|mp4|m4v|mov)(?:[?#].*)?$/i.test(src))
+        return createElement("video", { src: url, controls: true, muted: true, playsInline: true, preload: "metadata", title: alt ?? "", "data-el": "chat-video", className: "mvideo" });
       return createElement("img", { ...rest, src: url, alt: alt ?? "", loading: "lazy" });
     },
   };

@@ -1,6 +1,7 @@
 // Auth, /poll continuity across a restart, and starting without a key.
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { join } from "node:path";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { tmp, cleanup, makeVault, makeKeyStore, startServer, type Running } from "./helpers";
 
 const TOKEN = "canary-phone-token-1111";
@@ -11,6 +12,8 @@ describe("auth", () => {
   beforeAll(async () => {
     home = tmp();
     const vault = makeVault(join(home, "vault"));
+    mkdirSync(join(vault, "clips"));
+    writeFileSync(join(vault, "clips", "proof.webm"), Buffer.from(Array.from({ length: 1000 }, (_, i) => i % 256)));
     const secrets = await makeKeyStore(join(home, "secrets"), { "api.openrouter": "sk-or-canary" });
     srv = await startServer({ home, vault, secrets, token: TOKEN });
   });
@@ -74,6 +77,25 @@ describe("auth", () => {
     expect((await get(".git/config")).status).toBe(403);
     expect((await get("notes/missing.md")).status).toBe(404);
     expect((await get("notes/ideas.md", viaServe)).status).toBe(401);
+  });
+  it("/file: a video in the chat is served as video, with byte ranges (Safari plays only from a server that answers them)", async () => {
+    const get = (h: Record<string, string> = {}) => fetch(`${srv.base}/file?path=${encodeURIComponent("clips/proof.webm")}`, { headers: h });
+    const whole = await get();
+    expect(whole.status).toBe(200);
+    expect(whole.headers.get("content-type")).toBe("video/webm");
+    expect(whole.headers.get("accept-ranges")).toBe("bytes");
+    expect((await whole.arrayBuffer()).byteLength).toBe(1000);
+    const part = await get({ range: "bytes=100-199" });
+    expect(part.status).toBe(206);
+    expect(part.headers.get("content-range")).toBe("bytes 100-199/1000");
+    const b = Buffer.from(await part.arrayBuffer());
+    expect([b.length, b[0], b[99]]).toEqual([100, 100, 199]);
+    const tail = await get({ range: "bytes=-10" });
+    expect(tail.headers.get("content-range")).toBe("bytes 990-999/1000");
+    const open = await get({ range: "bytes=995-" });
+    expect(open.headers.get("content-range")).toBe("bytes 995-999/1000");
+    expect((await get({ range: "bytes=2000-" })).status).toBe(416);
+    expect((await fetch(`${srv.base}/file?path=clips/proof.webm`, { headers: viaServe })).status).toBe(401);
   });
   it("/api/v1/board/log and /api/v1/diag: the board's batch lands in the box's log and comes back in the diag window, redacted, behind auth", async () => {
     const post = (h: Record<string, string> = {}) =>

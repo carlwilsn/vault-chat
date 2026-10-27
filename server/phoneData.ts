@@ -338,7 +338,12 @@ export function mimeFor(path: string): string {
     case "jsonl":
       return "application/json";
     case "mp4":
+    case "m4v":
       return "video/mp4";
+    case "webm":
+      return "video/webm";
+    case "mov":
+      return "video/quicktime";
     case "mp3":
       return "audio/mpeg";
     default:

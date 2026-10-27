@@ -189,14 +189,20 @@ export function runningJobs(env: PiJobEnv): JobRec[] {
 }
 
 export function startJob(env: PiJobEnv, cwd: string, a: { command?: string; name?: string; timeout?: unknown }, conv?: string, byCarl = false): string {
+  return startJobWith(env, cwd, a, conv, byCarl).text;
+}
+
+/** StartJob, with the record of the job it started (none when it did not start). */
+export function startJobWith(env: PiJobEnv, cwd: string, a: { command?: string; name?: string; timeout?: unknown }, conv?: string, byCarl = false): { text: string; job?: JobRec } {
+  const no = (text: string) => ({ text });
   const cmd = String(a?.command ?? "").trim();
-  if (!cmd) return "StartJob needs a command.";
-  if (process.platform !== "linux" && !env.exec) return "StartJob needs Linux (systemd + bubblewrap).";
-  if (!env.wrap) return "StartJob is unavailable: bubblewrap was not found on the box.";
+  if (!cmd) return no("StartJob needs a command.");
+  if (process.platform !== "linux" && !env.exec) return no("StartJob needs Linux (systemd + bubblewrap).");
+  if (!env.wrap) return no("StartJob is unavailable: bubblewrap was not found on the box.");
   const max = env.max ?? (Number(process.env.VC_JOB_MAX) || 4);
   const running = runningJobs(env);
   if (running.length >= max) {
-    return `Not started: ${running.length} jobs are already running in this vault (the cap is ${max}). Wait for one to finish, or stop one (JobList, JobStop): ${running.map((j) => j.id).join(", ")}.`;
+    return no(`Not started: ${running.length} jobs are already running in this vault (the cap is ${max}). Wait for one to finish, or stop one (JobList, JobStop): ${running.map((j) => j.id).join(", ")}.`);
   }
   const name = String(a?.name ?? "job").toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, 24) || "job";
   const id = `${name}-${Date.now().toString(36)}`;
@@ -210,7 +216,7 @@ export function startJob(env: PiJobEnv, cwd: string, a: { command?: string; name
   try {
     envFile = writeJobEnvFile(dir, id, env.env);
   } catch (e) {
-    return `StartJob failed: could not write its environment file (${(e as Error).message.slice(0, 200)}).`;
+    return no(`StartJob failed: could not write its environment file (${(e as Error).message.slice(0, 200)}).`);
   }
   let r: ReturnType<ReturnType<typeof exec>>;
   try {
@@ -219,10 +225,11 @@ export function startJob(env: PiJobEnv, cwd: string, a: { command?: string; name
     // Started (Type=exec: the file was read) or failed: either way it is no longer needed.
     rmSync(envFile, { force: true });
   }
-  if (r.status !== 0) return `StartJob failed: ${(r.stderr || r.stdout || "").trim().slice(0, 400)}`;
-  writeJobs(env, [...readJobs(env), { id, ...(conv ? { conv } : {}), ...(byCarl ? { byCarl } : {}), name, command: cmd.slice(0, 2000), startedAt: Date.now(), timeoutS, state: "running" }]);
+  if (r.status !== 0) return no(`StartJob failed: ${(r.stderr || r.stdout || "").trim().slice(0, 400)}`);
+  const job: JobRec = { id, ...(conv ? { conv } : {}), ...(byCarl ? { byCarl } : {}), name, command: cmd.slice(0, 2000), startedAt: Date.now(), timeoutS, state: "running" };
+  writeJobs(env, [...readJobs(env), job]);
   const h = Math.round((timeoutS / 3600) * 10) / 10;
-  return `Started job ${id} (survives this turn and restarts; stopped after ${h} h). Output: ${log}. When it ends you get a wake turn with its exit code and last lines; JobStatus{id:"${id}"} checks it before that.`;
+  return { job, text: `Started job ${id} (survives this turn and restarts; stopped after ${h} h). Output: ${log}. When it ends you get a wake turn with its exit code and last lines; JobStatus{id:"${id}"} checks it before that. A dev server it starts shows on Carl's devices with Show {url: "http://localhost:<port>"}; JobStop stops it.` };
 }
 
 /** A job's state now: from its log's "[exit N]" line, else systemd's view of its unit. */
