@@ -10,6 +10,7 @@ import { MEMORY_REL, loadedMemory, projectMemoryNote } from "./memory";
 import { threadKindOf } from "../../src/threads";
 import type { ContextConv, RolloverInfo } from "./types";
 import { agentKeyEnvNames } from "../keys";
+import { registeredFolder } from "../projectFolders";
 
 export const ROLE_PROMPT = `You are vault-chat's agent. You run on Carl's box ("thinkbox"), in his vault's working copy; he talks to you from his laptop, his phone, his whiteboard and by voice, and it is one conversation wherever he is.`;
 
@@ -80,7 +81,7 @@ export type TurnSection = { key: "rules" | "memory" | "project" | "projects" | "
  * of projects with each one's file path (never another project's memory itself).
  * `folder`: the thread's working folder (a project's main folder), or why it could not be used.
  */
-export function turnSections(conv: ContextConv, o: { folder?: { rel: string } | { error: string } | null } = {}): TurnSection[] {
+export function turnSections(conv: ContextConv, o: { folder?: { rel: string; outside?: boolean } | { error: string } | null } = {}): TurnSection[] {
   const { caps, vault } = ctxConfig();
   const out: TurnSection[] = [{ key: "rules", text: rulesPrefixForTurn(conv).trim() }];
   const mem = loadedMemory(vault);
@@ -103,7 +104,9 @@ export function turnSections(conv: ContextConv, o: { folder?: { rel: string } | 
         text:
           "error" in f
             ? `<working-folder>The vault root: ${f.error}.</working-folder>`
-            : `<working-folder>${f.rel}/ is this project's main folder: relative paths and your shell start there. The vault root is ${vault}; write vault files such as ${MEMORY_REL} or agent-projects/... by their absolute path.</working-folder>`,
+            : f.outside
+              ? `<working-folder>${f.rel}/ is this project's folder on the box (Carl chose it; outside the vault, with its own git, never synced with the vault): relative paths and your shell start there, and its AGENTS.md is loaded. This project's notes and memory stay in the vault: write ${rel} and ${MEMORY_REL} by their absolute path under ${vault}.</working-folder>`
+              : `<working-folder>${f.rel}/ is this project's main folder: relative paths and your shell start there. The vault root is ${vault}; write vault files such as ${MEMORY_REL} or agent-projects/... by their absolute path.</working-folder>`,
       });
     }
   } else {
@@ -113,7 +116,10 @@ export function turnSections(conv: ContextConv, o: { folder?: { rel: string } | 
       text: all.length
         ? `<projects>\nCarl's projects (each has its own thread; read a project's file before you touch its files):\n${all
             .slice(0, 40)
-            .map((x) => `- ${x.name}: ${relative(vault, projectNotesPath(x.slug)).split("\\").join("/")}`)
+            .map((x) => {
+              const f = registeredFolder(vault, x.slug);
+              return `- ${x.name}: ${relative(vault, projectNotesPath(x.slug)).split("\\").join("/")}${f ? ` (works in ${f.split("\\").join("/")})` : ""}`;
+            })
             .join("\n")}\n</projects>`
         : "<projects>(none yet)</projects>",
     });

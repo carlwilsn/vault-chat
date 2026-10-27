@@ -5,6 +5,7 @@ import { useProjects } from "./ProjectChip";
 import { createProjectThread, deleteProject, openProjectNotes, openThread, projectName, renameProject } from "./projects";
 import { panelModel, type PanelEntry } from "./threads";
 import { cn } from "./lib/utils";
+import { NewProjectForm } from "./NewProjectForm";
 
 type Props = {
   open: boolean;
@@ -136,13 +137,13 @@ function ThreadsList({
     openThread(id, title);
     onPicked?.();
   };
-  const create = async (name: string) => {
-    setNaming(null);
-    const r = await createProjectThread(name);
+  const create = async (name: string, where: { folder?: string; newFolder?: boolean } = {}) => {
+    const r = await createProjectThread(name, where);
     if (!r.ok) {
       setErr(r.error);
       return;
     }
+    setNaming(null);
     setErr(null);
     focusChat();
   };
@@ -183,25 +184,7 @@ function ThreadsList({
                 New project
               </button>
             ) : (
-              // Name it here: Enter makes the project and opens its thread.
-              <div key="new-project" className="px-4 pt-2 pb-1">
-                <input
-                  autoFocus
-                  value={naming}
-                  data-el="new-project-name"
-                  onChange={(ev) => setNaming(ev.target.value)}
-                  onKeyDown={(ev) => {
-                    if (ev.key === "Enter" && naming.trim()) void create(naming.trim());
-                    if (ev.key === "Escape") {
-                      ev.stopPropagation();
-                      setNaming(null);
-                    }
-                  }}
-                  onBlur={() => !naming.trim() && setNaming(null)}
-                  placeholder="Project name, then Enter"
-                  className="w-full h-7 px-2 rounded bg-background border border-border text-[12px] placeholder:text-muted-foreground/60 focus:outline-none focus:border-ring/40"
-                />
-              </div>
+              <NewProjectForm key="new-project" onCancel={() => setNaming(null)} onCreate={(name, where) => void create(name, where)} />
             )
           ) : (
             <ThreadRow

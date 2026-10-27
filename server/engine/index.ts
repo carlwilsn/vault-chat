@@ -17,6 +17,7 @@ import { turnSummary } from "./turnLog";
 import { initCapabilities } from "./capabilities";
 import { ensurePi, findBwrap, type PiInstall } from "./pi/install";
 import { agentWorkDir } from "../workArea";
+import { HOME_CREDENTIALS, activeFolders, setFolderWalls, under as underDir } from "../projectFolders";
 import { listPiModels, modelWindow, piPaths, vaultPiPaths, writePiConfig, type PiPaths } from "./pi/config";
 import { PiBackend, outerWith, type PiSandbox } from "./pi/backend";
 import { logOf } from "./convs";
@@ -133,29 +134,8 @@ const isFile = (p: string) => {
   }
 };
 
-/** Credential locations in the user's home the agent never sees (hidden in both layers, denied to pi's own tools). */
-export const HOME_CREDENTIALS = [
-  ".ssh",
-  ".gnupg",
-  ".config/gh",
-  ".config/hub",
-  ".config/git/credentials",
-  ".git-credentials",
-  ".netrc",
-  ".npmrc",
-  ".pypirc",
-  ".docker",
-  ".aws",
-  ".kube",
-  ".password-store",
-  ".local/share/keyrings",
-  ".config/rclone",
-  ".local/state/thinkbox",
-  // The default key store and server env file, hidden even when this server is configured elsewhere
-  // (a second instance — the test one — must not expose the live box's).
-  ".config/vault-chat",
-  ".config/vault-chat-server.env",
-];
+/** Credential locations in the user's home the agent never sees (server/projectFolders.ts). */
+export { HOME_CREDENTIALS } from "../projectFolders";
 
 /** A job's sandbox: the agent's outer layer with its own pid namespace (a job cannot see or signal the
  *  server, pi or other jobs) but not tied to the turn — the systemd unit is its parent, not pi. */
@@ -229,9 +209,12 @@ export function buildSandbox(o: {
   for (const f of ["settings.json", "models.json"]) if (isFile(join(o.agentDir, f))) mounts.push("--ro-bind", join(o.agentDir, f), join(o.agentDir, f));
   // The conversation log (and the older conversation files) and wakes are the server's to write.
   for (const d of [join(o.vault, ".vault-chat", "conversations"), join(o.vault, ".vault-chat", "events"), join(o.vault, ".vault-chat", "local")]) if (isDir(d)) mounts.push("--ro-bind", d, d);
+  const hidden: string[] = [];
   const hide = (p: string) => {
     if (isDir(p)) mounts.push("--tmpfs", p);
     else if (isFile(p)) mounts.push("--ro-bind", "/dev/null", p);
+    else return;
+    hidden.push(p);
   };
   hide(o.secretsDir);
   for (const f of o.hideFiles) hide(f);
@@ -242,7 +225,7 @@ export function buildSandbox(o: {
     hide(`/tmp/tmux-${o.uid}`);
   }
   const head = [o.bwrap, "--dev-bind", "/", "/", "--proc", "/proc", "--unshare-pid", "--die-with-parent"];
-  return { outer: [...head, ...mounts, "--"], shell: [...head, ...mounts, "--"], denyRead, denyWrite, roots };
+  return { outer: [...head, ...mounts, "--"], shell: [...head, ...mounts, "--"], denyRead, denyWrite, roots, hidden };
 }
 
 /** Boot the engine on pi. */
@@ -305,6 +288,14 @@ export async function startEngine(b: EngineBoot): Promise<EngineHandle> {
     const workDir = agentWorkDir(home, v.path);
     if (bwrap) mkdirSync(workDir, { recursive: true });
     const others = () => otherVaultPaths(v, vaults(), (w) => stateOf(w).walls);
+    const vaultRoots = [...new Set([dirname(b.vault), dirname(v.path), join(home, "vaults")])];
+    // A project folder Carl chose (server/projectFolders.ts) may be neither inside nor around anything this
+    // sandbox hides or keeps read-only: the server's state and env file, the key store, the tokens, the
+    // other vaults and their repos, the vault roots.
+    setFolderWalls(v.path, {
+      home,
+      protect: () => [b.stateDir, b.secretsDir, serverEnvFile(home), b.tokenPath, b.localStoragePath, b.pushSubsPath, ...vaultRoots.filter((r) => !underDir(home, r)), ...others()].filter(Boolean),
+    });
     const sandbox: PiSandbox = {
       ...buildSandbox({
         bwrap,
@@ -318,9 +309,11 @@ export async function startEngine(b: EngineBoot): Promise<EngineHandle> {
         uid,
         jobsDir: st.jobs,
         workDir,
-        vaultRoots: [...new Set([dirname(b.vault), dirname(v.path), join(home, "vaults")])],
+        vaultRoots,
       }),
       others,
+      // The project folders Carl chose outside the vault: read-write, read at each spawn.
+      projects: () => activeFolders(v.path).map((f) => f.abs).filter((f) => !underDir(f, v.path)),
     };
     const backend = new PiBackend({
       install,

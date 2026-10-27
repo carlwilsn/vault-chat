@@ -13,6 +13,7 @@ import { listProjects, ensureProject, findProject } from "./context/projects";
 import { ensureProjectThread, patchMeta } from "./engine/convs";
 import { MAIN_ID, MAIN_TITLE } from "../src/threads";
 import { followVoice } from "./voice";
+import { checkFolder, newProjectFolder, projectFolderOf, registerFolder, unregisterFolder } from "./projectFolders";
 
 function ready(vault: string): void {
   let v = "";
@@ -24,10 +25,15 @@ function ready(vault: string): void {
   if (!v) configureContext({ vault });
 }
 
-/** The vault's projects, by name. */
-export function projectsList(vault: string): { projects: { slug: string; name: string }[] } {
+/** The vault's projects, by name; `folder`: the folder on the box Carl chose for one (server/projectFolders.ts). */
+export function projectsList(vault: string): { projects: { slug: string; name: string; folder?: string }[] } {
   ready(vault);
-  return withVault(vault, () => ({ projects: listProjects().map((p) => ({ slug: p.slug, name: p.name })) }));
+  return withVault(vault, () => ({
+    projects: listProjects().map((p) => {
+      const f = projectFolderOf(vault, p.slug);
+      return { slug: p.slug, name: p.name, ...(f && "abs" in f ? { folder: f.abs.split("\\").join("/") } : {}) };
+    }),
+  }));
 }
 
 export async function setProject(
@@ -51,16 +57,36 @@ export async function setProject(
   return { ok: true, project: slug };
 }
 
-/** Carl's "+ New project": the project (create-or-attach by name) and its one thread (src/threads.ts). */
-export async function createProjectWithThread(vault: string, body: { name?: unknown }): Promise<{ ok: true; slug: string; name: string; convId: string; created: boolean } | { error: string }> {
+/**
+ * Carl's "+ New project": the project (create-or-attach by name) and its one thread (src/threads.ts).
+ * `folder`: a folder on the box he chose for it to work in (checked first: server/projectFolders.ts), or
+ * `newFolder: true` for a new ~/projects/<slug>; neither: no folder of its own (the vault, as before).
+ */
+export async function createProjectWithThread(
+  vault: string,
+  body: { name?: unknown; folder?: unknown; newFolder?: unknown },
+): Promise<{ ok: true; slug: string; name: string; convId: string; created: boolean; folder?: string } | { error: string }> {
   ready(vault);
   const name = typeof body.name === "string" ? body.name.trim() : "";
   if (!name) return { error: "name required" };
+  const want = typeof body.folder === "string" && body.folder.trim() ? body.folder.trim() : null;
+  // The folder is checked before anything is made: a refused one makes no project.
+  if (want) {
+    const c = checkFolder(vault, want);
+    if ("error" in c) return { error: c.error };
+  }
   try {
     const { project, created } = withVault(vault, () => ensureProject(name));
+    let folder: string | undefined;
+    if (want || body.newFolder === true) {
+      const r = want ? registerFolder(vault, project.slug, want) : newProjectFolder(vault, project.slug);
+      if ("error" in r) return { error: r.error };
+      if (!want) registerFolder(vault, project.slug, r.abs);
+      folder = r.abs.split("\\").join("/");
+    } else if (created) unregisterFolder(vault, project.slug);
     // A new folder: a new thread even where a deleted project of that name had one (RestoreProject brings that back).
     const conv = await ensureProjectThread(vault, project.slug, project.name, { fresh: created });
-    return { ok: true, slug: project.slug, name: project.name, convId: conv.id, created };
+    return { ok: true, slug: project.slug, name: project.name, convId: conv.id, created, ...(folder ? { folder } : {}) };
   } catch (e) {
     return { error: String((e as Error)?.message ?? e) };
   }

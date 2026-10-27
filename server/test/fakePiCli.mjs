@@ -19,7 +19,8 @@
 // --no-session (nothing written), --tools (an allowlist: any other tool call is
 // refused, as pi would not have declared it) and --no-tools; --system-prompt
 // (a file) goes to the model as the system message. Of pi's built-ins only
-// `read` runs (a file under the working folder); the others answer a canned line.
+// `read` and `write` run (relative to the working folder); the others answer a canned line. pi's context files
+// (AGENTS.md in the working folder and the folders above it) go to the model in the system prompt, as pi sends them.
 // The model is sent the active tools as pi declares them: the built-ins (pi's
 // defaults read/bash/edit/write, or the allowlist's) and the extension's
 // vault-chat tools ($VC_PI_TOOLS), each only if the allowlist names it.
@@ -35,7 +36,7 @@
 //
 // Knobs (in the user's message): "[slow]" streams the reply in 30 deltas, 250 ms apart.
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve as resolvePath } from "node:path";
 import { pathToFileURL } from "node:url";
 import { randomUUID } from "node:crypto";
 
@@ -213,6 +214,40 @@ async function youLayer() {
   }
 }
 
+/** pi's context files: AGENTS.md (else CLAUDE.md) in the working folder and each folder above it, outermost first,
+ *  given to the model in the system prompt under "# Project Context" — pi's own loading (its README: Context Files). */
+const contextFiles = (() => {
+  const found = [];
+  let dir = process.cwd();
+  for (;;) {
+    for (const n of ["AGENTS.md", "CLAUDE.md"]) {
+      const f = join(dir, n);
+      if (existsSync(f)) {
+        found.unshift({ path: f, text: readFileSync(f, "utf8") });
+        break;
+      }
+    }
+    const up = dirname(dir);
+    if (up === dir) break;
+    dir = up;
+  }
+  return found;
+})();
+const projectContext = contextFiles.length ? `# Project Context\n\n${contextFiles.map((c) => `## ${c.path}\n\n${c.text}`).join("\n\n")}` : "";
+
+/** pi's write: the file (relative to the working folder) with `content`, its folder made. A refusal (a read-only
+ *  folder) is the tool's error, as pi reports it. */
+function writeTool(a) {
+  try {
+    const p = resolvePath(process.cwd(), String(a?.path ?? ""));
+    mkdirSync(dirname(p), { recursive: true });
+    writeFileSync(p, String(a?.content ?? ""));
+    return { text: `Successfully wrote ${String(a?.content ?? "").length} bytes to ${a?.path}`, isError: false };
+  } catch (e) {
+    return { text: String(e?.message ?? e), isError: true };
+  }
+}
+
 function readTool(a) {
   try {
     return { text: readFileSync(join(process.cwd(), String(a?.path ?? "")), "utf8"), isError: false };
@@ -227,7 +262,8 @@ let steering = [];
 let followUp = [];
 
 async function callModel() {
-  const messages = (system ? [{ role: "system", content: system }] : []).concat(history).map((m) => ({ role: m.role === "toolResult" ? "tool" : m.role, content: typeof m.content === "string" ? m.content : (m.content ?? []).filter((c) => c.type === "text").map((c) => c.text).join("\n"), ...(m.toolCallId ? { tool_call_id: m.toolCallId } : {}) }));
+  const sys = [system ?? "", system ? "" : projectContext].filter(Boolean).join("\n\n");
+  const messages = (sys ? [{ role: "system", content: sys }] : []).concat(history).map((m) => ({ role: m.role === "toolResult" ? "tool" : m.role, content: typeof m.content === "string" ? m.content : (m.content ?? []).filter((c) => c.type === "text").map((c) => c.text).join("\n"), ...(m.toolCallId ? { tool_call_id: m.toolCallId } : {}) }));
   const payload = { model, messages, stream: true, ...(declared.length ? { tools: declared } : {}) };
   const r = await fetch(`${baseUrl}/chat/completions`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${key}` }, body: JSON.stringify(withPdfParts(payload) ?? payload) });
   const body = await r.text();
@@ -387,7 +423,9 @@ async function run(first) {
               ? await hostCall(tc.name, tc.arguments)
               : tc.name === "read"
                 ? readTool(tc.arguments)
-                : { text: `(fake pi: ${tc.name} not run)`, isError: false };
+                : tc.name === "write"
+                  ? writeTool(tc.arguments)
+                  : { text: `(fake pi: ${tc.name} not run)`, isError: false };
         const result = { content: [{ type: "text", text: r.text }], details: {} };
         out({ type: "tool_execution_end", toolCallId: tc.id, toolName: tc.name, result, isError: !!r.isError });
         record({ role: "toolResult", toolCallId: tc.id, toolName: tc.name, content: result.content, isError: !!r.isError, timestamp: stamp() });

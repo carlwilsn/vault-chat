@@ -3,8 +3,9 @@
 // relayed in-process to phoneApp's `phone:*` handlers (bus.relay), exactly
 // the relay_request pattern the Rust server used.
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from "node:http";
-import { readFileSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { dirname, join, sep } from "node:path";
+import { browseFolders, inProjectFolder, projectDirListing } from "./projectFolders";
 import { loadConfig, SERVER_VERSION, SERVER_REV } from "./config";
 import { trackWrites } from "./drain";
 import { inputSurface, noteInput } from "./presence";
@@ -423,6 +424,18 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
   // Live edits (server/liveEdits.ts): a file the agent just wrote, as it is on
   // the box now — the laptop shows it in the open pane before the sync lands.
   if (path === "/api/v1/vault/file" && method === "GET") return vaultFileRoute(res, vault, url.searchParams.get("path"));
+  // A project's folder on the box (server/projectFolders.ts): the app's file tree lists it, opens its files
+  // through the route above and writes Carl's edits back here. Only inside a folder he chose for a project.
+  if (path === "/api/v1/vault/file" && method === "POST") return projectFileWrite(res, vault, await jsonBody(req, PROJECT_FILE_CAP + 1024 * 1024));
+  if (path === "/api/v1/box/dir" && method === "GET") {
+    const out = projectDirListing(vault, url.searchParams.get("path") ?? "");
+    return json(res, "error" in out ? 403 : 200, out);
+  }
+  // "+ New project"'s folder chooser: the folders on the box, each marked whether it may be a project's.
+  if (path === "/api/v1/box/folders" && method === "GET") {
+    const out = browseFolders(vault, url.searchParams.get("path"));
+    return json(res, "error" in out ? 403 : 200, out);
+  }
 
   const q = (k: string) => url.searchParams.get(k) ?? "";
 
@@ -820,7 +833,11 @@ function vaultFileRoute(res: ServerResponse, vault: string, p: string | null): v
   try {
     ({ abs, rel } = voicePath(vault, p, "read"));
   } catch (e) {
-    return json(res, 403, { error: String(e) });
+    // A file in a project's folder on the box (an absolute path): its path is its name.
+    const hit = inProjectFolder(vault, p);
+    if (!hit) return json(res, 403, { error: String(e) });
+    abs = hit.abs;
+    rel = hit.abs.split(sep).join("/");
   }
   try {
     const st = statSync(abs);
@@ -829,6 +846,28 @@ function vaultFileRoute(res: ServerResponse, vault: string, p: string | null): v
     return json(res, 200, { path: rel, size: st.size, mtimeMs: st.mtimeMs, base64: readFileSync(abs).toString("base64") });
   } catch (e) {
     return json(res, 404, { error: (e as Error).message });
+  }
+}
+
+const PROJECT_FILE_CAP = 10 * 1024 * 1024;
+
+/** POST /api/v1/vault/file {path, text} → {ok, path, size, mtimeMs}: Carl's edit to a file in a project's folder on
+ * the box (never a vault file: those are written on the laptop and synced). */
+function projectFileWrite(res: ServerResponse, vault: string, b: any): void {
+  const p = typeof b?.path === "string" ? b.path : "";
+  if (typeof b?.text !== "string") return json(res, 400, { error: "missing text" });
+  if (Buffer.byteLength(b.text) > PROJECT_FILE_CAP) return json(res, 413, { error: "file too large" });
+  const hit = inProjectFolder(vault, p);
+  if (!hit) return json(res, 403, { error: `${p || "(no path)"} is not in a project's folder` });
+  try {
+    if (existsSync(hit.abs) && !statSync(hit.abs).isFile()) return json(res, 400, { error: "not a file" });
+    if (!existsSync(dirname(hit.abs))) return json(res, 404, { error: "its folder does not exist" });
+    // In place: the file keeps its mode (a script stays executable) and a symlink stays one.
+    writeFileSync(hit.abs, b.text);
+    const st = statSync(hit.abs);
+    return json(res, 200, { ok: true, path: hit.abs.split(sep).join("/"), size: st.size, mtimeMs: st.mtimeMs });
+  } catch (e) {
+    return json(res, 500, { error: (e as Error).message });
   }
 }
 

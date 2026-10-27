@@ -47,7 +47,8 @@ import { startJob, jobStatus, jobList, jobStop, reapJobs, type PiJobEnv } from "
 import { ENGINE_ROLE_PROMPT } from "./prompt";
 import { isNoteTool, noteTool, noteToolSpecs } from "../notesTools";
 import { capabilitiesOf, capabilityNote, learn } from "./capabilities";
-import { isAbsolute, join, resolve } from "node:path";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { projectFolderOf, retireFolder, reviveFolder } from "../projectFolders";
 import { WRITE_TOOLS, writtenPath } from "../liveEdits";
 import { appendActivity, contextImage, searchActivity, youLayer } from "../activity";
 import { CAPTURE_FRESH_MS, chatPointerEntry } from "../../src/activityCore";
@@ -1167,6 +1168,8 @@ export class Engine {
     } catch (e) {
       return { ok: false, error: (e as Error).message };
     }
+    // The folder Carl chose for it on the box is never touched; the choice goes with its files (a restore brings it back).
+    retireFolder(this.d.vault, slug, moved.movedTo.split("/").pop()!);
     if (this.picture(id)) this.emit(id, { type: "meta", patch: { deleted: true, deletedProject: { name: moved.name, at: Date.now(), movedTo: moved.movedTo } } });
     const main = await ensureMain(this.d.vault);
     const tell = [...((this.picture(main.id)?.meta.tellAgent as string[] | undefined) ?? []), `Carl deleted the project "${moved.name}" (its thread and notes are gone from his screens). Don't bring it up or treat it as a project any more unless he does. If he wants it back, RestoreProject brings it back whole; never move its files yourself.`];
@@ -1189,6 +1192,7 @@ export class Engine {
     } catch (e) {
       return { ok: false, error: (e as Error).message };
     }
+    reviveFolder(this.d.vault, back.entry, back.slug);
     const id = projectThreadId(back.slug);
     await ensureProjectThread(this.d.vault, back.slug, back.name);
     // Main: a delete notice it has not read yet is simply dropped; otherwise it hears the project is back.
@@ -1552,11 +1556,20 @@ export class Engine {
     return { text: r.text, until: r.until };
   }
 
-  /** A project thread's working folder: its main folder (project.md's `folder:`), else the vault. */
-  private folderOf(conv: EngineConv): { abs: string; rel: string } | { error: string } | null {
+  /** A project thread's working folder: the folder Carl chose for it on the box (server/projectFolders.ts), else its
+   *  main folder in the vault (project.md's `folder:`), else the vault. */
+  private folderOf(conv: EngineConv): { abs: string; rel: string; outside?: boolean } | { error: string } | null {
     const slug = projectOfThread(conv.id);
     const p = slug ? readProject(slug) : null;
-    return p ? projectFolder(this.d.vault, p.notes) : null;
+    if (!p) return null;
+    const chosen = projectFolderOf(this.d.vault, p.slug);
+    if (chosen && "error" in chosen) return { error: `the folder chosen for this project can't be used: ${chosen.error}` };
+    if (chosen) {
+      const rel = relative(resolve(this.d.vault), chosen.abs).split(sep).join("/");
+      const inVault = !!rel && !rel.startsWith("..") && !isAbsolute(rel);
+      return inVault ? { abs: chosen.abs, rel } : { abs: chosen.abs, rel: chosen.abs.split(sep).join("/"), outside: true };
+    }
+    return projectFolder(this.d.vault, p.notes);
   }
 
   private cwdOf(conv: EngineConv): string {

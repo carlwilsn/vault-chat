@@ -13,8 +13,9 @@
 //
 // A project may name a main folder (`folder:` in project.md's front matter, vault-relative): its
 // thread runs pi with that folder as the working directory, so pi loads the folder's AGENTS.md
-// itself (and the vault's, walking up). Only a folder inside the vault: the sandbox lets the
-// agent write there, and pi walks up to the vault's AGENTS.md.
+// itself (and the vault's, walking up). Only a folder inside the vault: project.md is the agent's
+// to write, so it can never make a folder writable. A folder elsewhere on the box is Carl's own
+// choice in the app, recorded where the agent cannot write (server/projectFolders.ts).
 import { statSync } from "node:fs";
 import { isAbsolute, relative, resolve } from "node:path";
 import { readOr } from "./files";

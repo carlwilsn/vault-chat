@@ -103,6 +103,8 @@ export type BoxChatScript = {
    *  `results[name]` (else "(ran <name> on the box)"); AskAgent starts a box
    *  chat (running, the task as its first message) and AgentStatus reads it. */
   voice?: { results?: Record<string, string>; /** GET /api/v1/voice/session answers this error (the box couldn't start voice). */ sessionError?: { status: number; body: string } };
+  /** Projects that work in a folder on the box (server/projectFolders.ts): slug → the folder. */
+  projectFolders?: Record<string, string>;
 };
 /** `vault`: the vault the laptop named (?vault=), as the real box scopes it. */
 export type BoxPost = { path: string; body: any; vault?: string | null };
@@ -119,6 +121,69 @@ export type HostConfig = {
 };
 
 let cfg: HostConfig = {};
+// The fake box's own disk beyond the vault (server/projectFolders.ts): a few folders under /home/carl,
+// project folders the laptop reads and writes through the box's routes. A path → its text; null: a folder.
+const BOX_HOME = "/home/carl";
+const BOX_DISK_SEED: Record<string, string | null> = {
+  "/home/carl": null,
+  "/home/carl/github": null,
+  "/home/carl/github/vault-chat": null,
+  "/home/carl/github/vault-chat/AGENTS.md": "# vault-chat\n\nRun the gates (tsc ×4, test:harness, test:server, build:server) before you push.\n",
+  "/home/carl/github/vault-chat/README.md": "# vault-chat\n\nA viewer + chat for a folder of notes, with its agent on the box.\n",
+  "/home/carl/github/vault-chat/package.json": '{\n  "name": "vault-chat",\n  "version": "0.7.4"\n}\n',
+  "/home/carl/github/vault-chat/src": null,
+  "/home/carl/github/vault-chat/src/main.tsx": 'import { App } from "./App";\n',
+  "/home/carl/github/vault-chat/src/boxFiles.ts": '// A project\'s folder on the box, shown and edited from the laptop.\nexport const BOX_PREFIX = "box:";\n',
+  "/home/carl/github/vault-chat/server": null,
+  "/home/carl/github/vault-chat/server/projectFolders.ts": "// A project's folder on the box.\n",
+  "/home/carl/github/AgentOS": null,
+  "/home/carl/machine": null,
+  "/home/carl/machine/DESIGN.md": "# AgentOS\n",
+  "/home/carl/projects": null,
+  "/home/carl/vaults": null,
+  "/home/carl/.ssh": null,
+  "/home/carl/.config": null,
+};
+let boxDisk = new Map<string, string | null>(Object.entries(BOX_DISK_SEED));
+let boxFolders: Record<string, string> = {};
+const parentOf = (p: string) => p.replace(/\/[^/]+$/, "") || "/";
+const childrenOf = (dir: string) =>
+  [...boxDisk.keys()]
+    .filter((k) => k !== dir && parentOf(k) === dir)
+    .sort((a, b) => {
+      const da = boxDisk.get(a) === null;
+      const db = boxDisk.get(b) === null;
+      return da === db ? a.localeCompare(b) : da ? -1 : 1;
+    });
+const inBoxFolder = (p: string) => Object.values(boxFolders).some((f) => p === f || p.startsWith(`${f}/`));
+/** server/projectFolders.ts checkFolder, as far as the preview's disk goes. */
+const folderOk = (p: string) => boxDisk.get(p) === null && p.startsWith(`${BOX_HOME}/`) && !/\/\./.test(p.slice(BOX_HOME.length)) && !p.startsWith(`${BOX_HOME}/vaults`);
+function boxDiskGet(u: URL): { status: number; body: string } | null {
+  const ok = (v: unknown) => ({ status: 200, body: JSON.stringify(v) });
+  const no = (error: string) => ({ status: 403, body: JSON.stringify({ error }) });
+  if (u.pathname.endsWith("/api/v1/box/folders")) {
+    const at = (u.searchParams.get("path") || BOX_HOME).replace(/\/+$/, "") || "/";
+    if (boxDisk.get(at) !== null) return no(`${at} does not exist`);
+    const dirs = childrenOf(at).filter((k) => boxDisk.get(k) === null && !k.split("/").pop()!.startsWith("."));
+    const why = folderOk(at) ? {} : { why: at === BOX_HOME ? "~ is your whole home folder: choose a folder in it" : `${at} can't be a project's folder` };
+    return ok({ path: at, parent: at === "/" ? null : parentOf(at), home: BOX_HOME, ok: folderOk(at), ...why, dirs: dirs.map((d) => ({ name: d.split("/").pop(), path: d, is_dir: true, ok: folderOk(d) })) });
+  }
+  if (u.pathname.endsWith("/api/v1/box/dir")) {
+    const at = (u.searchParams.get("path") ?? "").replace(/\/+$/, "");
+    if (!inBoxFolder(at) || boxDisk.get(at) !== null) return no(`${at} is not in a project's folder`);
+    return ok({ path: at, entries: childrenOf(at).map((k) => ({ name: k.split("/").pop(), path: k, is_dir: boxDisk.get(k) === null })) });
+  }
+  if (u.pathname.endsWith("/api/v1/vault/file") && (u.searchParams.get("path") ?? "").startsWith("/")) {
+    const at = u.searchParams.get("path")!;
+    const text = boxDisk.get(at);
+    if (!inBoxFolder(at) || typeof text !== "string") return no(`${at} is not in a project's folder`);
+    const bytes = new TextEncoder().encode(text);
+    let bin = "";
+    for (const b of bytes) bin += String.fromCharCode(b);
+    return ok({ path: at, size: bytes.length, base64: btoa(bin) });
+  }
+  return null;
+}
 // The fake box's live state for box-mode chat.
 let box = new MemoryBox();
 let boxPollDelay = 0;
@@ -148,6 +213,10 @@ export function boxPlay(st: BoxStep): void {
   if (st.down !== undefined) boxDown = st.down;
 }
 /** The fake box itself (checks drive it directly). */
+/** The fake box's disk beyond the vault (checks read what the laptop wrote there). */
+export function fakeBoxDisk(): Map<string, string | null> {
+  return boxDisk;
+}
 export function fakeBoxLog(): MemoryBox {
   return box;
 }
@@ -178,6 +247,8 @@ export function setHostConfig(c: HostConfig, now: () => number): void {
   boxDown = false;
   boxProc = 1;
   laptopVault = null;
+  boxDisk = new Map(Object.entries(BOX_DISK_SEED));
+  boxFolders = { ...(cfg.sync?.boxChat?.projectFolders ?? {}) };
   boxStep = 0;
   boxPosts.length = 0;
   keys.clear();
@@ -395,6 +466,8 @@ export const hostCommands: Record<string, (a: Record<string, any>) => unknown> =
       await st.wait;
       return { status: 200, body: JSON.stringify({ id: sideM[1], text: st.text, v: st.v, done: st.done, error: st.error }) };
     }
+    const disk = boxDiskGet(u);
+    if (disk) return disk;
     if (u.pathname.endsWith("/api/v1/vault/file")) {
       // server/http.ts vaultFileRoute: a file as the box has it now (its agent's
       // edits not merged here yet included), base64; inside the vault only.
@@ -412,7 +485,7 @@ export const hostCommands: Record<string, (a: Record<string, any>) => unknown> =
     }
     const p = u.pathname.replace(/^.*?(\/(poll|api\/v2\/.*|status|api\/v1\/models|projects))$/, "$1");
     // The box's projects (server/projectRoutes.ts): each project's one thread, its title the name (src/threads.ts).
-    if (p === "/projects") return { status: 200, body: JSON.stringify({ projects: box.rows().filter((r) => r.kind === "project" && r.project).map((r) => ({ slug: r.project, name: r.title })) }) };
+    if (p === "/projects") return { status: 200, body: JSON.stringify({ projects: box.rows().filter((r) => r.kind === "project" && r.project).map((r) => ({ slug: r.project, name: r.title, ...(boxFolders[r.project!] ? { folder: boxFolders[r.project!] } : {}) })) }) };
     if (p === "/api/v1/models" && cfg.sync?.boxChat?.models) return { status: 200, body: JSON.stringify(cfg.sync.boxChat.models) };
     const ok = (v: unknown) => ({ status: 200, body: JSON.stringify(v) });
     if (p === "/status") return ok({ runs: box.rows().filter((r) => r.running).map((r) => ({ convId: r.id })) });
@@ -473,8 +546,24 @@ export const hostCommands: Record<string, (a: Record<string, any>) => unknown> =
       const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
       if (!slug) return { status: 400, body: JSON.stringify({ error: "name required" }) };
       const convId = `project-${slug}`;
+      // A folder on the box it works in (server/projectFolders.ts): one Carl chose, or a new ~/projects/<slug>.
+      let folder: string | undefined;
+      if (typeof b.folder === "string" && b.folder) {
+        if (!folderOk(b.folder)) return { status: 400, body: JSON.stringify({ error: `${b.folder} can't be a project's folder` }) };
+        folder = b.folder;
+      } else if (b.newFolder === true) {
+        folder = `${BOX_HOME}/projects/${slug}`;
+        boxDisk.set(folder, null);
+      }
+      if (folder) boxFolders[slug] = folder;
       if (!box.picture(convId)) box.create(convId, { title: name, source: "project", kind: "project", project: slug });
-      return { status: 200, body: JSON.stringify({ ok: true, slug, name, convId, created: true }) };
+      return { status: 200, body: JSON.stringify({ ok: true, slug, name, convId, created: true, ...(folder ? { folder } : {}) }) };
+    }
+    if (path === "/api/v1/vault/file") {
+      const at = String(b.path ?? "");
+      if (!inBoxFolder(at) || typeof b.text !== "string") return { status: 403, body: JSON.stringify({ error: `${at} is not in a project's folder` }) };
+      boxDisk.set(at, b.text);
+      return { status: 200, body: JSON.stringify({ ok: true, path: at, size: b.text.length }) };
     }
     if (path === "/api/v1/voice/tool") return { status: 200, body: JSON.stringify({ result: boxVoiceTool(String(b.name ?? ""), b.args ?? {}) }) };
     if (path === "/api/v1/voice/transcript") return { status: 200, body: JSON.stringify(boxVoiceLine(b)) };

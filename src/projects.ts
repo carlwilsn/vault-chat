@@ -51,7 +51,8 @@ async function runPrepare(vault: string): Promise<Prepared | null> {
   }
 }
 
-export type ProjectInfo = { slug: string; name: string };
+/** `folder`: the folder on the box the project works in, when Carl chose one outside the vault (server/projectFolders.ts). */
+export type ProjectInfo = { slug: string; name: string; folder?: string };
 
 /** The same slug rule as server/context/files.ts. */
 export function slugify(name: string): string {
@@ -223,15 +224,20 @@ export function openThread(id: string, title?: string): void {
  * Carl's "+ New project": the project (its folder and project.md) and its one thread, then that thread open.
  * On the box (`POST /projects`) or, without one, the files here. Returns the thread's id, or an error.
  */
-export async function createProjectThread(name: string): Promise<{ ok: true; id: string; slug: string } | { ok: false; error: string }> {
+export async function createProjectThread(
+  name: string,
+  where: { folder?: string; newFolder?: boolean } = {},
+): Promise<{ ok: true; id: string; slug: string } | { ok: false; error: string }> {
   const vault = useStore.getState().vaultPath;
   const want = name.trim();
   if (!vault || !want) return { ok: false, error: "no name" };
   const link = await boxLinkFor(vault);
   let slug: string;
   let title = want;
+  if (!link && (where.folder || where.newFolder)) return { ok: false, error: "a folder on the box needs the box connected" };
   if (link) {
-    const r = await boxPost(link, "/projects", { name: want });
+    // A folder on the box it works in (one Carl chose, or a new ~/projects/<slug>): the box checks it first.
+    const r = await boxPost(link, "/projects", { name: want, ...(where.folder ? { folder: where.folder } : where.newFolder ? { newFolder: true } : {}) });
     if (!r.ok) return { ok: false, error: r.error ?? "the box refused" };
     slug = String(r.data?.slug ?? slugify(want));
     title = String(r.data?.name ?? want);

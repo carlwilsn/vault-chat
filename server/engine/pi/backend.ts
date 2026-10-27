@@ -74,6 +74,11 @@ export type PiSandbox = {
   others?: () => string[];
   /** The vault roots the sandbox empties (tmpfs): another vault under one is already gone, never re-walled. */
   roots?: string[];
+  /** The project folders Carl chose outside the vault (server/projectFolders.ts), read at each spawn: each is
+   * bound read-write, and nothing else new. */
+  projects?: () => string[];
+  /** What the layers hide (credentials, the key store, tokens): hidden again inside a project folder's bind. */
+  hidden?: string[];
 };
 
 /** bubblewrap args hiding each path that exists (a dir behind an empty tmpfs, a file behind /dev/null). */
@@ -91,18 +96,43 @@ export function hideArgs(paths: string[]): string[] {
   return out;
 }
 
-/** The outer bubblewrap argv with the other vaults hidden (null without a sandbox). */
+/** The outer bubblewrap argv with the other vaults hidden and the project folders bound (null without a sandbox). */
 export function outerWith(sb: PiSandbox): string[] | null {
-  if (!sb.outer) return null;
+  return withExtras(sb, sb.outer);
+}
+
+/** The per-command shell layer, the same way: a command in a project folder writes there too. */
+export function shellWith(sb: PiSandbox): string[] | null {
+  return withExtras(sb, sb.shell);
+}
+
+const inside = (p: string, d: string) => {
+  const rel = relative(d, p);
+  return rel === "" || (!!rel && !rel.startsWith("..") && !isAbsolute(rel));
+};
+
+function withExtras(sb: PiSandbox, base: string[] | null): string[] | null {
+  if (!base) return null;
   // A path under an emptied vault root does not exist in the sandbox; a --tmpfs on it would create an
   // empty stub named after that vault. Only what lies elsewhere (e.g. its engine state) is walled.
-  const gone = (p: string) =>
-    (sb.roots ?? []).some((r) => {
-      const rel = relative(r, p);
-      return rel === "" || (!!rel && !rel.startsWith("..") && !isAbsolute(rel));
-    });
-  const extra = hideArgs((sb.others?.() ?? []).filter((p) => !gone(p)));
-  return extra.length ? [...sb.outer.slice(0, -1), ...extra, "--"] : sb.outer;
+  const gone = (p: string) => (sb.roots ?? []).some((r) => inside(p, r));
+  const others = sb.others?.() ?? [];
+  // Carl's project folders: read-write, after the read-only home. Anything hidden that lies inside one is
+  // hidden again after it (a later mount wins), as are the other vaults.
+  const binds: string[] = [];
+  const folders: string[] = [];
+  for (const p of sb.projects?.() ?? []) {
+    try {
+      if (!statSync(p).isDirectory()) continue;
+    } catch {
+      continue;
+    }
+    folders.push(p);
+    binds.push("--bind", p, p);
+  }
+  const rehide = folders.length ? (sb.hidden ?? []).filter((h) => folders.some((f) => inside(h, f))) : [];
+  const extra = [...binds, ...hideArgs([...rehide, ...others.filter((p) => !gone(p) || folders.some((f) => inside(p, f)))])];
+  return extra.length ? [...base.slice(0, -1), ...extra, "--"] : base;
 }
 
 export type PiBackendOptions = {
@@ -296,7 +326,7 @@ export class PiBackend extends EventEmitter {
         : {}),
       VC_PI_DENY_READ: JSON.stringify([...this.o.sandbox.denyRead, ...(this.o.sandbox.others?.() ?? [])]),
       VC_PI_DENY_WRITE: JSON.stringify(this.o.sandbox.denyWrite),
-      ...(this.o.sandbox.shell ? { VC_PI_SHELL_WRAP: JSON.stringify(this.o.sandbox.shell) } : {}),
+      ...(this.o.sandbox.shell ? { VC_PI_SHELL_WRAP: JSON.stringify(shellWith(this.o.sandbox)) } : {}),
       ...(process.env.VC_PI_SHELL_TIMEOUT_S ? { VC_PI_SHELL_TIMEOUT_S: process.env.VC_PI_SHELL_TIMEOUT_S } : {}),
       ...(process.env.VC_PI_GEMINI_CACHE ? { VC_PI_GEMINI_CACHE: process.env.VC_PI_GEMINI_CACHE } : {}),
       ...(process.env.VC_PI_CACHE_RETENTION ? { PI_CACHE_RETENTION: process.env.VC_PI_CACHE_RETENTION } : {}),

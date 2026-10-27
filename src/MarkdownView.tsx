@@ -1,6 +1,7 @@
 import { lazy, memo, startTransition, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ComponentPropsWithoutRef, MouseEvent as ReactMouseEvent } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { isBoxPath, readTextAt, writeTextAt } from "./boxFiles";
 import { FileText, Eye, Pencil, X } from "lucide-react";
 import { useStore } from "./store";
 import { LiveEditor } from "./LiveEditor";
@@ -343,7 +344,7 @@ export function MarkdownView({ paneId }: Props) {
       // silently destroy that change, and reloading would destroy the
       // typing. Neither: the header asks (Reload · Keep mine).
       try {
-        const onDisk = await invoke<string>("read_text_file", { path: file });
+        const onDisk = await readTextAt(file);
         if (onDisk !== lastSaved.current) {
           setDiskChanged(file, true);
           return;
@@ -352,13 +353,13 @@ export function MarkdownView({ paneId }: Props) {
         return;
       }
       try {
-        await invoke("write_text_file", { path: file, contents: value });
+        await writeTextAt(file, value);
         lastSaved.current = value;
         // Tell the commit-controller this file is dirty; once the
         // user pauses for ~10 s, all the edits in the burst land as
         // a single "edit foo.md" commit, so the vault's git history
         // carries their own typing, not just the agent's writes.
-        noteEditedFile(file);
+        if (!isBoxPath(file)) noteEditedFile(file);
       } catch (e) {
         console.error("autosave failed", e);
       }
@@ -369,7 +370,7 @@ export function MarkdownView({ paneId }: Props) {
     if (!file) return;
     try {
       // Box mode: the box's copy when it is ahead of this disk (a live edit not merged yet).
-      const onDisk = pendingBoxText(file) ?? (await invoke<string>("read_text_file", { path: file }));
+      const onDisk = pendingBoxText(file) ?? (await readTextAt(file));
       lastSaved.current = onDisk;
       lastUserValue.current = onDisk;
       if (saveTimer.current) window.clearTimeout(saveTimer.current);
@@ -381,11 +382,11 @@ export function MarkdownView({ paneId }: Props) {
   const keepMine = async () => {
     if (!file) return;
     try {
-      await invoke("write_text_file", { path: file, contents: content });
+      await writeTextAt(file, content);
       lastSaved.current = content;
       lastUserValue.current = content;
       setDiskChanged(file, false);
-      noteEditedFile(file);
+      if (!isBoxPath(file)) noteEditedFile(file);
     } catch (e) {
       console.error("save failed", e);
     }
