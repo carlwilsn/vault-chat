@@ -296,3 +296,12 @@ describe("Show of a localhost address", () => {
     }
   });
 });
+
+describe("tailscale serve's status", () => {
+  it("counts its own ports and every foreground session's", async () => {
+    const { servedPorts } = await import("../devProxy");
+    const st = { TCP: { "443": { HTTPS: true } }, Web: {}, Foreground: { abc: { TCP: { "5173": { HTTPS: true } } } } };
+    expect([...servedPorts(st)].sort()).toEqual([443, 5173]);
+    expect([...servedPorts({})]).toEqual([]);
+  });
+});

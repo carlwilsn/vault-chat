@@ -217,6 +217,17 @@ export type Exposer = {
   close(port: number): void;
 };
 
+/** The ports a `tailscale serve status --json` serves: its own TCP entries and every foreground session's. */
+export function servedPorts(st: any): Set<number> {
+  const out = new Set<number>();
+  const add = (tcp: unknown) => {
+    if (tcp && typeof tcp === "object") for (const k of Object.keys(tcp)) if (Number(k)) out.add(Number(k));
+  };
+  add(st?.TCP);
+  for (const f of Object.values(st?.Foreground ?? {})) add((f as any)?.TCP);
+  return out;
+}
+
 /** `tailscale serve --https=<port> http://127.0.0.1:<to>`, in the foreground: the entry lives as long as the child. */
 export function tailscaleExposer(bin: string): Exposer {
   const kids = new Map<number, ChildProcess>();
@@ -235,7 +246,7 @@ export function tailscaleExposer(bin: string): Exposer {
   const served = (port: number): boolean => {
     const r = ts(["serve", "status", "--json"]);
     try {
-      return !!JSON.parse(r.stdout || "{}").TCP?.[String(port)];
+      return servedPorts(JSON.parse(r.stdout || "{}")).has(port);
     } catch {
       return false;
     }
@@ -246,8 +257,9 @@ export function tailscaleExposer(bin: string): Exposer {
       if (!host) return { error: "this box's tailnet name is unknown (tailscale status)" };
       if (served(port)) return { error: `port ${port} is already served on the tailnet by something else (tailscale serve status)` };
       let err = "";
+      let said = "";
       const kid = spawn(bin, ["serve", `--https=${port}`, `http://127.0.0.1:${to}`], { stdio: ["ignore", "pipe", "pipe"] });
-      kid.stdout?.on("data", () => {});
+      kid.stdout?.on("data", (c) => (said += c));
       kid.stderr?.on("data", (c) => (err += c));
       let exited = false;
       kid.on("exit", () => {
@@ -259,7 +271,8 @@ export function tailscaleExposer(bin: string): Exposer {
       const until = Date.now() + 10_000;
       while (Date.now() < until) {
         if (exited) return { error: `tailscale serve refused: ${err.trim().slice(0, 300) || "it exited"}` };
-        if (served(port)) return { origin: `https://${host}:${port}` };
+        // It says "Available within your tailnet: https://<host>:<port>/" once the entry is in.
+        if (said.includes(`${host}:${port}`) || served(port)) return { origin: `https://${host}:${port}` };
         await new Promise((r) => setTimeout(r, 250));
       }
       kid.kill();
