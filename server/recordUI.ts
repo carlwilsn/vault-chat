@@ -30,10 +30,10 @@ export type RecordArgs = { url?: string; steps?: Step[]; seconds?: number; out?:
 export type RecordOut = { ok: true; path: string; seconds: number; frames: number; bytes: number; width: number; height: number; log: string[] } | { ok: false; error: string; log?: string[] };
 
 export const RECORD_DESCRIPTION =
-  "Record a short video (WebM, muted, headless) of a web page working, as proof: e.g. the dev server you started with StartJob (http://localhost:5173) or a vault HTML file. " +
+  "Record a short video (WebM, muted, headless) of a web page working, as proof: e.g. the dev server you started with StartJob (http://localhost:5173) or an HTML file in your working folder. " +
   "steps run in order with real mouse and keyboard input, each followed by a short pause so the video shows its effect: " +
   '{"click": "css selector"} or {"click": {"text": "Save"}}, {"type": "hello", "into": "#name"}, {"press": "Enter"}, {"scroll": 600}, ' +
-  '{"wait": 1000}, {"waitFor": "css selector"} or {"waitFor": {"text": "Done"}}, {"goto": "url"}, {"run": "shell command"} (in your sandbox, cwd = the vault: e.g. an edit, to film hot reload). ' +
+  '{"wait": 1000}, {"waitFor": "css selector"} or {"waitFor": {"text": "Done"}}, {"goto": "url"}, {"run": "shell command"} (in your sandbox, in your working folder: e.g. an edit, to film hot reload). ' +
   "seconds: the least length of the video (default 4, at most 90). Returns the video's path: put it in your reply as ![what it shows](path) and it plays inline in the chat on his laptop and phone. " +
   "Say what the video shows in a line; watch it only through what the tool returns (frames, length), never claim more.";
 
@@ -43,7 +43,7 @@ export const RECORD_SCHEMA = {
     url: { type: "string", description: "http(s) address to open, e.g. http://localhost:5173 (a vault .html file: its path)." },
     steps: { type: "array", items: { type: "object" }, description: "What to do on the page, in order (see the tool's description)." },
     seconds: { type: "number", description: "Least length in seconds (default 4, max 90)." },
-    out: { type: "string", description: "Where to write the .webm, relative to the vault (default .vault-chat/visuals/recording-<time>.webm)." },
+    out: { type: "string", description: "Where to write the .webm, relative to the vault (default .vault-chat/visuals/recording-<time>.webm); the chat shows a video in the vault." },
     width: { type: "number", description: "Viewport width in px (default 1280)." },
     height: { type: "number", description: "Viewport height in px (default 800)." },
   },
@@ -60,7 +60,7 @@ type Frame = { data: string; t: number };
 // ---------------------------------------------------------------- the recording (runs in the sandbox)
 
 /** Record `a.url` with its steps into `cwd`-relative `a.out` (a .webm). */
-export async function record(cwd: string, a: RecordArgs): Promise<RecordOut> {
+export async function record(cwd: string, a: RecordArgs, vault = cwd): Promise<RecordOut> {
   const log: string[] = [];
   const url = String(a.url ?? "").trim();
   let target: string;
@@ -70,7 +70,8 @@ export async function record(cwd: string, a: RecordArgs): Promise<RecordOut> {
   const w = clampInt(a.width, 1280, 320, 1920) & ~1;
   const h = clampInt(a.height, 800, 320, 1600) & ~1;
   const least = Math.min(MAX_SECONDS, Math.max(1, Number(a.seconds) || 4));
-  const out = outPath(cwd, a.out);
+  // The video goes in the vault (the chat shows a vault file), whatever folder the steps run in.
+  const out = outPath(vault, a.out);
   if (typeof out !== "string") return { ok: false, error: out.error };
   const steps = Array.isArray(a.steps) ? a.steps : [];
 
@@ -360,8 +361,8 @@ export async function recordCli(): Promise<void> {
   for await (const c of process.stdin) raw += c;
   let out: RecordOut;
   try {
-    const a = JSON.parse(raw || "{}");
-    out = await record(process.cwd(), a);
+    const { vault, ...a } = JSON.parse(raw || "{}");
+    out = await record(process.cwd(), a, typeof vault === "string" && vault ? vault : process.cwd());
   } catch (e) {
     out = { ok: false, error: (e as Error)?.message ?? String(e) };
   }
@@ -369,11 +370,12 @@ export async function recordCli(): Promise<void> {
   process.exit(0);
 }
 
-/** RecordUI for the agent: the recorder in the sandbox (`shell`), cwd = the vault; a line for the agent. */
-export async function recordUITool(shell: string[] | null | undefined, vault: string, a: Record<string, unknown>, o: { entry?: string[] } = {}): Promise<string> {
+/** RecordUI for the agent: the recorder in the sandbox (`shell`), in the thread's folder (`o.cwd`, default the
+ *  vault); the video goes in the vault. A line for the agent. */
+export async function recordUITool(shell: string[] | null | undefined, vault: string, a: Record<string, unknown>, o: { entry?: string[]; cwd?: string } = {}): Promise<string> {
   const entry = o.entry ?? [process.execPath, process.argv[1] ?? "", "record-ui"];
   const seconds = Math.min(MAX_SECONDS, Math.max(1, Number(a?.seconds) || 4));
-  const r = await runSandboxed(shell, entry, { cwd: vault, timeoutMs: (seconds + 120) * 1000, stdin: JSON.stringify(a ?? {}), extraEnv: { TMPDIR: "/tmp" } });
+  const r = await runSandboxed(shell, entry, { cwd: o.cwd ?? vault, timeoutMs: (seconds + 120) * 1000, stdin: JSON.stringify({ ...(a ?? {}), vault }), extraEnv: { TMPDIR: "/tmp" } });
   if ("refused" in r) return `RecordUI is unavailable: ${r.refused}`;
   const line = r.out.split("@@vc-record@@")[1];
   let res: RecordOut | null = null;

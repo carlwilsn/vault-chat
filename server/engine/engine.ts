@@ -2227,13 +2227,14 @@ export class Engine {
         case "WebSearch":
           return text(await webSearch(String(a.query ?? ""), this.d.apiKey(), this.d.webSearchModel));
         case "StartJob": {
-          const r = startJobWith(this.d.jobEnv, vault, a, convId, !!this.live.get(convId)?.byCarl);
+          // In the thread's working folder (a project's own folder, else the vault), as its shell commands run.
+          const r = startJobWith(this.d.jobEnv, this.cwdOf(conv), a, convId, !!this.live.get(convId)?.byCarl);
           // The job is a row of the background-tasks chip (kind "job": Stop, no Steer) until it ends.
           if (r.job && convId) this.updateSubagent(convId, r.job.id, { kind: "job", title: r.job.name, task: r.job.command.slice(0, 300), status: "running", state: "running", startedAt: r.job.startedAt, background: true, activity: "starting" });
           return text(r.text);
         }
         case "RecordUI":
-          return text(await recordUITool(this.d.shell?.(), vault, a));
+          return text(await recordUITool(this.d.shell?.(), vault, a, { cwd: this.cwdOf(conv) }));
         case "Compact": {
           if (!convId) return text("No conversation to compact.");
           void this.compact(convId, typeof a.focus === "string" ? a.focus : undefined).then((r) => {
