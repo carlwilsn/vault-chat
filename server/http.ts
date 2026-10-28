@@ -11,6 +11,7 @@ import { trackWrites } from "./drain";
 import { inputSurface, noteInput } from "./presence";
 import { authorize, isDirectLoopback, phoneToken } from "./auth";
 import { createExternalMcpHandler, type ExternalContext } from "./mcp/external";
+import { externalMcpHosts } from "./mcp/hosts";
 import type { BoundTools } from "./mcp/tools";
 import { brainEnabled, brainRoute, type BrainDeps } from "./voiceBrain";
 import { relay, emitLocal } from "./bus";
@@ -239,7 +240,7 @@ async function relayRoute(res: ServerResponse, event: string, payload: Record<st
 
 export function startHttpServer(hooks: ServerHooks): Promise<Server> {
   const cfg = loadConfig();
-  const mcpHosts = new Set((process.env.VC_MCP_HOSTS ?? "").split(",").map((h) => h.trim().toLowerCase()).filter(Boolean));
+  const mcpHosts = externalMcpHosts();
   const mcp = createExternalMcpHandler({ version: SERVER_VERSION, allowedHosts: mcpHosts, bind: async (name, context) => {
     const vault = hooks.vault?.(name);
     return vault?.name === name && hooks.mcp ? hooks.mcp(vault, context) : null;

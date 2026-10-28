@@ -1,6 +1,52 @@
-# Native MCP migration — final review evidence
+# Native MCP migration — review evidence
 
-## Verdict and version
+## Sent-back revision (supersedes the historical claims below)
+
+The branch was rebased, without conflicts, onto the actual box main
+`a3a359fa2ba398195994b8997c605d090549e542`, not the stale local main
+`94b7daad`. Local main and production were not changed. All `memory/` files
+from the fetched main were read before the rebase and retained afterward.
+
+The nine cascading boxchat failures are now repaired rather than explained
+away: `FakeBox.holdPolls()` gates responses even for polls already waiting,
+and the first send test asserts the message remains pending **after** the POST
+is accepted and its authoritative log echo exists, until that gate is released.
+Release, unsubscribe and turn cleanup are unconditional. No assertion was
+removed and no timeout was increased. Five fresh focused runs each pass all
+15 boxchat tests (`.review-proof/mcp-tools/repair-boxchat-{1..5}.log`).
+
+The external route no longer requires a new deployment opt-in: absent
+`VC_MCP_HOSTS`, its exact private Host is discovered read-only from the local
+Tailscale daemon using the existing CLI locator. The existing identity and
+header-credential checks, installed token loader and scoped tool rights remain
+unchanged; there is no loopback exemption, public listener or new credential.
+A built-server integration test uses that normal `/mcp` mount, default Host
+discovery, a real reverse-proxy hop, installed bubblewrap and the real token
+loader with isolated test credentials. It lists tools and calls BoardLook,
+then checks denied requests. This is reachability/authentication evidence for
+an isolated build, **not** a claim of changed production HTTPS or laptop pairing.
+
+Focused revision checks: **35/35 pass** across `mcpHosts`, `mcpDeployment`,
+`mcpExternal`, `devProxy` and normal server auth tests (`repair-auth-tests.log`).
+All four typechecks and `npm run build:server` pass (`repair-typecheck-*.log`,
+`repair-build-server.log`); the build retains bundle-size warnings. These checks
+precede the final revision commit. Full harness/server gates remain the
+supervising agent's next step and are not claimed green here.
+
+Read-only `tailscale status --json` and `tailscale serve status --json` on the
+box confirm `thinkbox.tailbb647d.ts.net` and an existing private HTTPS port 443
+`/` proxy to `http://127.0.0.1:8848`. [README.md](README.md#claude-code-on-the-laptop)
+now contains the exact Claude Code URL and literal environment-reference
+header configuration. Carl pairs after Keep; production still runs the old
+build until then. No real credential was read, printed or copied for this work.
+
+**The recordings and gate tables below are historical, not final-revision
+proof.** The supervising agent must run full gates and capture a fresh recording
+at the final application commit, including typed and external Show, BoardLook,
+BoardSend and RecordUI calls and a non-filesystem voice tool. Do not reuse this
+older montage as evidence of that commit or declare the change ready from it.
+
+## Historical verdict and version
 
 **Not green; requested external production pairing remains incomplete.** This is
 an evidence handoff, not a release/readiness certification. Mandatory full

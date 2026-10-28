@@ -25,3 +25,8 @@
   key files stay hidden. Never print them, never commit them, never pass them on a command line (they were moved off
   `systemd-run` argv into an EnvironmentFile for that reason).
 - **Test instances you start, you clean up** (units, `tailscale serve` entries, `/tmp` dirs). Never `rm` state dirs.
+- **Private MCP uses the existing deployment**, not another listener/token. Its default exact Host comes from
+  local Tailscale `Self.DNSName`, using the existing CLI locator; `VC_MCP_HOSTS` is only an optional replacement
+  allowlist (explicit empty disables). Existing private identity + header credential and scoped rights still apply.
+  An isolated normal-route SDK test proves that build's wiring, not the running box: production reachability of a
+  changed endpoint can only be claimed after Keep deploys it, and laptop pairing is a separate client check.

@@ -101,7 +101,7 @@ Background result/report handling stays with the existing engine.
 The existing HTTP server mounts standard Streamable HTTP at:
 
 ```
-https://<private-host>/mcp?vault=<explicit-name>&device=laptop&conversation=none
+https://thinkbox.tailbb647d.ts.net/mcp?vault=vault-chat&device=laptop&conversation=none
 ```
 
 Use `device=laptop|phone|board`. `conversation` must be a real explicit thread
@@ -110,9 +110,17 @@ the foreground chat. Unknown vaults/conversations are rejected. The session's
 scope includes authenticated identity, vault, device and conversation; changing
 any of those cannot reuse the session.
 
-The server-side `VC_MCP_HOSTS` setting is a comma-separated exact Host allowlist
-(including port where applicable), configured for the private service. An empty
-allowlist disables the endpoint. Each request requires **both**:
+By default the Host guard discovers this box's exact private hostname from
+`tailscale status --json` (`Self.DNSName`), using the existing Tailscale CLI
+locator. It accepts that hostname with the default HTTPS port (implicit or
+`:443`), not a wildcard and not a hostname supplied by a request. No new server
+setting, token, listener or Serve configuration is required after Keep deploys
+this build: the existing private HTTPS `/` proxy also routes `/mcp`.
+
+`VC_MCP_HOSTS` is an optional comma-separated **replacement** exact Host
+allowlist (including ports for nondefault HTTPS services/aliases). An explicitly
+empty override disables the endpoint; missing/invalid local discovery fails
+closed. Each request requires **both** existing checks:
 
 1. an allowlisted Tailscale Serve user login on the existing HTTPS private path;
 2. the existing phone/laptop credential in the `X-Vault-Token` header.
@@ -151,12 +159,16 @@ arguments selecting a different authority. The native per-turn hook is unchanged
 
 ### Claude Code on the laptop
 
-The laptop must be signed into the allowed Tailscale identity and able to reach
-its private HTTPS hostname. On the server running this implementation, set
-`VC_MCP_HOSTS` to that exact private hostname (for example
-`thinkbox.tailbb647d.ts.net`, without a scheme or path). This is a server
-configuration change/restart, not something an MCP client can enable. Do not
-change Tailscale Serve to a public listener or bypass authentication to test it.
+**After Keep deploys this implementation**, the laptop must be signed into the
+allowed Tailscale identity and able to reach `thinkbox.tailbb647d.ts.net`.
+Read-only daemon checks on the box confirmed this exact `Self.DNSName` and the
+existing HTTPS port 443 `/` proxy to `http://127.0.0.1:8848`; no production setting
+was changed. The default Host discovery above uses that same name. Do not add a
+new credential, enable Funnel, expose another listener or bypass authentication.
+The box continues loading its already-installed phone/laptop token through
+`phoneToken()`/`tokenOk()`; this change neither reads nor rotates it for setup.
+Carl supplies his existing client credential when pairing; no agent needs to
+retrieve or print it.
 
 Claude Code supports HTTP transports and environment expansion in `.mcp.json`
 ([official client documentation](https://code.claude.com/docs/en/mcp)). Use:
@@ -166,15 +178,15 @@ Claude Code supports HTTP transports and environment expansion in `.mcp.json`
   "mcpServers": {
     "vault_chat": {
       "type": "http",
-      "url": "${VAULT_CHAT_MCP_URL}",
+      "url": "https://thinkbox.tailbb647d.ts.net/mcp?vault=vault-chat&device=laptop&conversation=none",
       "headers": { "X-Vault-Token": "${VAULT_CHAT_TOKEN}" }
     }
   }
 }
 ```
 
-Set `VAULT_CHAT_MCP_URL` in the laptop's launch environment to
-`https://<private-host>/mcp?vault=vault-chat&device=laptop&conversation=none`.
+This literal URL binds the existing `vault-chat` vault. To bind Carl's school
+vault instead, change only `vault=vault-chat` to `vault=school2`.
 Supply `VAULT_CHAT_TOKEN` through the laptop's existing credential-manager/secret
 injection facility, using its existing vault-chat credential. Do not paste a
 credential into a shell command, configuration file, URL, transcript or issue;
@@ -186,10 +198,16 @@ BoardLook to tell me whether any boards exist; change nothing.” An explicit
 conversation ID may replace `none` only when the client should be bound to that
 real thread. Keep `none` for an independent client.
 
-A missing variable, disabled Host allowlist, wrong vault/conversation, absent
-header credential, or missing Tailscale login must fail closed. A successful
-SDK call over an internal per-process capability does **not** establish that
-this private HTTPS route or the laptop's Claude Code configuration works.
+A missing credential variable, explicitly disabled Host allowlist, failed local
+Host discovery, wrong vault/conversation, absent header credential or missing
+Tailscale login must fail closed. `mcpDeployment.test.ts` proves an independent
+SDK can list tools and call BoardLook through the **built server's normal
+`/mcp` mount**, default Host discovery, a real loopback proxy hop and the actual
+existing-token loader, using isolated synthetic credentials and installed
+bubblewrap. It also tests rejection paths; it does not replace laptop pairing.
+A successful SDK call over an internal per-process capability does **not**
+establish this route. Production HTTPS at the changed build remains unproven
+until Keep deploys it; Carl will pair Claude Code himself afterward.
 
 ## Verification and limitations
 
@@ -204,6 +222,9 @@ Focused tests:
   and requested `PdfPages` slice bytes in the next provider payload;
 - `mcpExternal.test.ts`: private authority requirements, explicit scope, standard
   SDK client and session/device isolation;
+- `mcpHosts.test.ts`, `mcpDeployment.test.ts`: exact default private Host discovery,
+  optional override/disable, and the built server's ordinary authenticated mount
+  using its existing credential loader (isolated reverse proxy, not live HTTPS);
 - `mcpFilesystem.test.ts`: installed real pi factories inside real bubblewrap,
   independent standard SDK read/write/edit/grep/find/ls, lexical/absolute/symlink
   escapes, protected paths, read-only and voice authorization, scoped worker
