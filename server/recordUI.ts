@@ -105,6 +105,11 @@ export async function record(cwd: string, a: RecordArgs, vault = cwd): Promise<R
     page.on("Log.entryAdded", (p: any) => {
       if (p?.entry?.level === "error") err(`${p.entry.source}: ${p.entry.text}${p.entry.url ? ` (${p.entry.url})` : ""}`);
     });
+    // An alert / confirm / prompt would hold the page (and every call to it): accepted, and said.
+    page.on("Page.javascriptDialogOpening", (p: any) => {
+      log.push(`a ${p?.type ?? "dialog"} said "${String(p?.message ?? "").slice(0, 200)}": accepted`);
+      page.call("Page.handleJavaScriptDialog", { accept: true }).catch(() => {});
+    });
     const shotsDir = out.replace(/(\.(mp4|webm))?$/i, "") + "-shots";
     page.on("Page.screencastFrame", (p: any) => {
       frames.push({ data: p.data, t: Number(p.metadata?.timestamp) * 1000 || Date.now() });

@@ -253,7 +253,7 @@ export const ENGINE_TOOL_SPECS = [
     type: "function",
     name: "StartJob",
     description:
-      "Start a long-running shell command that must outlive this turn (training, downloads, builds, a dev server such as `npm run dev`: Show {url: \"http://localhost:<port>\"} then opens it on Carl's devices). It runs detached, sandboxed, in the vault, with a memory ceiling and a low CPU share; output goes to a log. It is stopped after `timeout` (default \"24h\", at most \"7d\"). At most 4 run at once in the vault. When it ends, this conversation gets a wake turn with its exit code and last lines. Returns a job id.",
+      "Start a long-running shell command that must outlive this turn (training, downloads, builds, a dev server such as `npm run dev`: Show {url: \"http://localhost:<port>\"} then opens it on Carl's devices, behind his login; keep it on localhost, never --host 0.0.0.0, which would put it on his network unguarded). It runs detached, sandboxed, in the vault, with a memory ceiling and a low CPU share; output goes to a log. It is stopped after `timeout` (default \"24h\", at most \"7d\"). At most 4 run at once in the vault. When it ends, this conversation gets a wake turn with its exit code and last lines. Returns a job id.",
     inputSchema: {
       type: "object",
       properties: { command: { type: "string" }, name: { type: "string" }, timeout: { type: "string", description: "e.g. \"36h\", \"90m\"; default 24h, max 7d" } },
