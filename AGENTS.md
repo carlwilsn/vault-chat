@@ -1,138 +1,46 @@
-# vault-chat
+# vault-chat — rules for the agent that builds it
 
-A minimal desktop app: file tree on the left, rendered markdown in the middle, Claude chat on the right. Built to be a bare-bones Obsidian + Claude Code replacement without baking in any workflow-specific structure.
+vault-chat is Carl's own Claude Code / Codex: a UI over a real agent engine (pi) that runs on his home server (the box,
+`thinkbox`), with a laptop app (Tauri), a phone web app, an iPad whiteboard and voice. This project folder is a clone of
+github.com/carlwilsn/vault-chat; you work on your own branch, and only Carl's **Keep** brings your change to main.
 
-## What this is (and isn't)
+## Carl's rules
 
-- **Is:** a viewer + chat. Point it at any folder; browse `.md` files; chat with an agent that can read/write files in that folder.
-- **Isn't:** an editor, a full Obsidian replacement, a multi-tab IDE, a plugin host, an agent framework. Deliberately.
+- **Thin layer over pi.** vault-chat is a UI/UX surface. Agent abilities come from pi (sessions, compaction, steer and
+  follow-up, skills, AGENTS.md, subagents) and from mature libraries. Before building anything, check whether pi or a
+  library already does it. A bug in a layer that duplicates pi (state, streaming, tool events, a second brain) is fixed
+  by removing that duplicate, one piece at a time — never by adding rules to keep copies in sync. Say plainly when a
+  change is a patch to a duplicated layer.
+- **Prove, never claim.** "Done" means: the gates pass (`npx tsc --noEmit -p .`, `npm run typecheck:phone`,
+  `typecheck:board`, `typecheck:server`, `npm run test:harness`, `npm run test:server`, `npm run build:server`) **and**
+  the change is shown working in the real UI — screenshots or a recording of the real app on real data, never a mockup.
+  A check that can't run is a failure, not a pass.
+- **Real UI, minimal UI.** Few options on screen at a time, nested one level at a time. No per-turn cost in the chat.
+- **Push, then rollback.** Proven work is pushed without asking; Carl asks for a rollback if he dislikes it. Still ask
+  before anything a git revert can't undo: deleting his data, spending money, anything public.
+- **Finish the batch, test once, push.** Answer "is it pushed?" with yes or no plus one line on what's left.
+- **Say what is half-baked.** One honest route beats three. Staged is not done.
+- **Don't re-ask settled scope.** A clear ask means do it; ask only at real forks (spend, irreversible, taste).
+- **Tests never use his speakers.** Every test browser is muted (`--mute-audio`) or captures audio in-page.
+- **Secrets stay secret.** Never print or commit keys or tokens. The agent may use the keys Carl added to vault-chat
+  (they reach your commands as environment variables).
+- **Decisions that stand:** the engine is pi (Codex dropped). The voice talker is Haiku with thinking off — Gemini was
+  rejected for sycophancy. No forced filler line before a tool ("One sec", "On it" are banned). Projects are Carl's:
+  never create or assign one yourself. Carl rarely live-edits PDFs; his edit flows are LaTeX and HTML.
 
-## Stack
+## How the pieces fit (read before changing them)
 
-- **Tauri 2** (Rust shell) + **React 19 + TypeScript + Vite**
-- **react-markdown + remark-gfm + remark-math + rehype-katex + rehype-highlight** for the render pipeline
-- **allotment** for resizable 3-pane layout
-- **zustand** for app state
-- **@anthropic-ai/sdk** (not the agent SDK) with `dangerouslyAllowBrowser: true`, plus a hand-rolled ~50-line tool loop in `src/agent.ts`
+- **Box server** (`server/`, Node): one pi engine per vault; the conversation log; `/poll` feed; voice routes
+  (`server/voiceBrain.ts`); projects with the "you keep it" gate (an agent works on `agent/<name>` in its own clone;
+  Keep merges on the box; the laptop pushes the kept main to GitHub — the box has no GitHub credentials).
+- **Voice (New):** `voice-pipeline/bot.py` (Pipecat: Silero VAD, Smart Turn, ElevenLabs Scribe/Flash) is ears and mouth
+  only; pi is the one brain (`server/voiceBrain.ts`); the device client is `src/voiceBrainClient.ts`; the waiting line
+  is `src/voiceWaitLine.ts`.
+- **Laptop app** (`src/`, React + Tauri); **phone** (`phone/`); **whiteboard** (`board/`).
+- **Preview harness** (`preview/`): the real frontend against a fake backend, or against a real server (`realbox`).
+- **Release:** pushing main → CI builds and tags; the box self-updates (`vault-chat-update` timer).
 
-### Why the regular SDK, not the Claude Agent SDK
+## Where to look for history
 
-The Agent SDK is Node-first and doesn't run cleanly in a Tauri renderer (browser context). Bundling a Node sidecar was more work than writing a tiny tool loop. If you ever want Agent SDK features (MCP, compaction, sub-agents, hooks), the migration path is: add a Node sidecar binary via Tauri, move `agent.ts` into it, and IPC between renderer and sidecar.
-
-## Architecture
-
-```
-src/
-├── App.tsx           3-pane Allotment shell
-├── FileTree.tsx      folder picker + list of .md files
-├── MarkdownView.tsx  renders the selected file
-├── ChatPane.tsx      conversation UI + streaming + tool-call display
-├── agent.ts          Anthropic client + tool loop + tool definitions
-├── store.ts          Zustand store (vault, files, current file, messages, api key)
-├── App.css           all styles
-└── main.tsx
-
-src-tauri/
-├── src/lib.rs        3 Rust commands: list_markdown_files, read_text_file, write_text_file
-├── Cargo.toml        adds tauri-plugin-dialog, tauri-plugin-fs, walkdir
-├── tauri.conf.json   window 1400x900, min 800x500
-└── capabilities/default.json   permissions: dialog:allow-open, fs:default
-```
-
-### Data flow
-
-1. **Open vault** → dialog returns path → Zustand `vaultPath`
-2. `list_markdown_files` (Rust, uses walkdir, skips dotdirs + node_modules + target) → file tree renders
-3. Click file → `read_text_file` → Zustand `currentContent` → react-markdown renders it
-4. Chat: user message → `runAgent()` in `agent.ts` loops: call Anthropic → if `tool_use` stop reason, execute tools via Tauri invokes → send `tool_result` back → repeat until `end_turn`
-5. On agent turn end: refresh file tree + reload current file (so edits the agent made appear live)
-
-### Tools the agent has
-
-Defined in `agent.ts`:
-- `read_file(path)` → wraps `read_text_file` Rust command
-- `write_file(path, contents)` → wraps `write_text_file`
-- `list_files()` → wraps `list_markdown_files`, returns paths joined by newlines
-
-All paths are absolute inside the vault. The model is user-selectable from `providers.ts`; `DEFAULT_MODEL_ID` is the fallback.
-
-### State (zustand)
-
-Fields on the store:
-- `vaultPath`, `files` (FileEntry[]), `currentFile`, `currentContent`
-- `messages` (ChatMessage[]), `busy`
-- `apiKey` — persisted in `localStorage` under key `anthropic_api_key`
-
-## Build
-
-```bash
-npm run tauri dev     # dev with hot reload — USE THIS FOR ITERATION
-npm run tauri build   # prod MSI + NSIS installers — only for shipping a new copy
-```
-
-### Dev workflow (important — tell the user this if they forget)
-
-**The user does not need to reinstall the app to test changes.** Default to `npm run tauri dev` for all iteration.
-
-- `tauri dev` opens the app from source with React hot reload; TS changes update instantly, Rust changes auto-recompile in ~30s.
-- `tauri build` is only for producing a distributable installer. It's slow (~3–5 min incremental, ~18 min first time on a clean `target/`) and has no iteration benefit.
-- The installed app (from the MSI/NSIS) and `tauri dev` share the same `localStorage` because they use the same app identifier (`com.vault-chat.app`). So the saved API key persists across both.
-- **Only rebuild the installer when the user explicitly asks for a new shipped copy**, or when you've completed a meaningful milestone and they want to use it outside a dev shell.
-
-If asked about slow builds: the only genuinely slow path is *first-ever* Rust compile or after a `Cargo.toml` dependency change (~18 min). Normal Rust edits incremental-compile in ~30s. TS-only edits are instant via Vite HMR.
-
-Artifacts land at:
-- `src-tauri/target/release/vault-chat.exe` — raw exe
-- `src-tauri/target/release/bundle/msi/vault-chat_0.1.0_x64_en-US.msi`
-- `src-tauri/target/release/bundle/nsis/vault-chat_0.1.0_x64-setup.exe`
-
-Unsigned → SmartScreen warning on first launch.
-
-## Conventions
-
-- **Chat math**: agent is system-prompted to use `$$...$$` display math only. The chat pane's renderer supports both, but user preference (from the parent Obsidian vault's CLAUDE.md) is display-only in chat.
-- **File math**: `.md` files use standard Obsidian conventions (`$...$` inline, `$$...$$` display). Both render in MarkdownView and ChatPane.
-- **No comments in source files** unless explaining a non-obvious *why*.
-
-## Known limitations (v1 non-goals — don't add without a reason)
-
-- No editor (viewer only)
-- No tabs / split editor
-- No wikilinks, backlinks, tags, graph view
-- No PDF rendering (filtered out of the tree)
-- No code signing (unsigned installers)
-- No multi-vault memory (opens one folder at a time)
-- No chat history persistence across app restarts
-- Chat pane is Anthropic-only (no OpenAI/local model fallback)
-
-## Reasonable next improvements
-
-In rough priority order, each scoped small:
-
-1. **Persist chat history** per vault (write to `.vault-chat/history.json` in the vault root, gitignored).
-2. **Editor mode** — ~2 hrs, not 1–2 days. Copy Obsidian + Claude Code's policy: filesystem is source of truth, no locking, no conflict UI. CodeMirror 6 with debounced autosave (300 ms) → `write_text_file`. Tauri file watcher on the currently-open file → re-invoke `read_text_file` on external change and replace the buffer. Last write wins. Don't build dirty-state tracking, reload prompts, or diff views — they're not in the Obsidian experience the user was happy with.
-3. **Wikilinks** (`[[foo]]`) — write a remark plugin that rewrites to `<a href="#foo">`; add click handler in MarkdownView to `setCurrentFile` on match.
-4. **Streaming responses** — swap `client.messages.create` for `client.messages.stream` in `agent.ts`. Requires splitting the current event shape but otherwise clean.
-5. **Non-md file support** — images inline, PDFs via `pdfjs-dist`, plain text as-is.
-6. **API key in OS keychain** via `@tauri-apps/plugin-stronghold` or Windows Credential Manager instead of localStorage.
-7. **System-prompt awareness of vault conventions** — if the vault has a `CLAUDE.md`, load it into the agent's system prompt automatically.
-8. **Model picker** in settings (Sonnet/Haiku/Opus).
-9. **Tool call approval prompt** — intercept `write_file` and ask the user before executing. Currently auto-runs.
-10. **Windows code signing** — real cert or sigstore; kills the SmartScreen warning.
-
-## Gotchas when extending
-
-- **Tauri permissions**: any new filesystem or OS operation needs a permission added to `src-tauri/capabilities/default.json`. If something silently fails, check the DevTools console (Ctrl+Shift+I) — permission denials show there.
-- **Adding a Rust command**: define it in `lib.rs` with `#[tauri::command]`, add to `generate_handler![]`, call from TS via `invoke<T>("cmd_name", { argName })`. Argument names in JS are camelCase and match the Rust snake_case automatically? No — **Tauri converts camelCase JS args to snake_case Rust args by default**. If you name a Rust arg `vault_path`, call it with `{ vaultPath: ... }` from JS.
-- **React 19 + strict mode**: effects run twice in dev. The agent loop guards against that via the `busy` flag; anything stateful you add should too.
-- **Building takes forever the first time** (~18 min). Incremental rebuilds are fast (~30 sec for Rust-only changes, instant for TS).
-- **CSS is all in `App.css`** — single file, no CSS modules. Keep it that way unless the file gets painful.
-
-## File-size landmarks
-
-- `agent.ts` ≈ 130 lines — the whole agent loop
-- `ChatPane.tsx` ≈ 140 lines
-- `lib.rs` ≈ 65 lines
-- `App.css` ≈ 200 lines
-
-If any of these cross 300 lines, split before it becomes unreadable.
+Reports from earlier work (decisions, measurements, failures) were written in Carl's AgentOS repo under `reports/`;
+the summaries that matter are folded into this file. Ask Carl if something here contradicts what you find in the code.
