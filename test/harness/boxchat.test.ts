@@ -85,38 +85,47 @@ test("the list and an older chat come from the log: in its order, the tool calls
 let c1 = "";
 test("a send: shown at once under the client's id, confirmed in place by the box's echo; the reply streams, then lands", async () => {
   c1 = S().newConversation();
-  box.pollDelay = 400; // the echo comes late: the message must never blink
+  const release = box.holdPolls();
   const frames: string[][] = [];
   const unsub = useStore.subscribe((s) => frames.push(s.messages.map((m) => m.content)));
-  const p = chat.sendMessage("hello box");
-  // At once, before the box has answered anything.
-  await waitFor("optimistic", () => S().messages.some((m) => m.content === "hello box"));
-  const mine = S().messages.find((m) => m.content === "hello box")!;
-  assert.equal(mine.boxPending, true);
-  await p;
-  const sent = box.intents.at(-1)!;
-  assert.equal(sent.type, "send");
-  assert.equal(sent.convId, c1, "the client's own id for a new chat");
-  assert.equal(sent.clientId, mine.mid);
-  await waitFor("echo", () => S().messages.some((m) => m.mid === mine.mid && !m.boxPending));
-  box.pollDelay = 0;
-  unsub();
-  const firstShown = frames.findIndex((f) => f.includes("hello box"));
-  assert.ok(firstShown >= 0);
-  assert.ok(frames.slice(firstShown).every((f) => f.filter((x) => x === "hello box").length === 1), "from the first frame on: never gone, never doubled");
-  assert.equal(S().busy, true);
-  // The reply streams in the live view, then is a message in the same update the stream empties.
-  const s = box.open(c1, "assistant");
-  s.delta("Hi ");
-  await waitFor("streaming", () => S().streamingText === "Hi ");
-  s.delta("Carl");
-  await waitFor("streaming 2", () => S().streamingText === "Hi Carl");
-  s.end();
-  box.endTurn(c1);
-  await waitFor("landed", () => !S().busy && S().messages.at(-1)?.content === "Hi Carl");
-  assert.equal(S().streamingText, "");
-  assert.deepEqual(shown(), boxShows(c1));
-  assert.deepEqual(writes, [], "the laptop never writes a conversation");
+  try {
+    const p = chat.sendMessage("hello box");
+    // The box accepts the POST while ALL poll responses (even an already-waiting
+    // poll) are held. HTTP acknowledgement is not the authoritative log echo.
+    await waitFor("optimistic", () => S().messages.some((m) => m.content === "hello box"));
+    const mine = S().messages.find((m) => m.content === "hello box")!;
+    assert.equal(mine.boxPending, true);
+    await p;
+    const sent = box.intents.at(-1)!;
+    assert.equal(sent.type, "send");
+    assert.equal(sent.convId, c1, "the client's own id for a new chat");
+    assert.equal(sent.clientId, mine.mid);
+    assert.ok(boxShows(c1).some(([role, text]) => role === "user" && text === "hello box"), "the authoritative echo already exists on the box");
+    assert.equal(S().messages.find((m) => m.mid === mine.mid)?.boxPending, true, "POST accepted, but still pending until its log echo arrives");
+    release();
+    await waitFor("echo", () => S().messages.some((m) => m.mid === mine.mid && !m.boxPending));
+    unsub();
+    const firstShown = frames.findIndex((f) => f.includes("hello box"));
+    assert.ok(firstShown >= 0);
+    assert.ok(frames.slice(firstShown).every((f) => f.filter((x) => x === "hello box").length === 1), "from the first frame on: never gone, never doubled");
+    assert.equal(S().busy, true);
+    // The reply streams in the live view, then is a message in the same update the stream empties.
+    const s = box.open(c1, "assistant");
+    s.delta("Hi ");
+    await waitFor("streaming", () => S().streamingText === "Hi ");
+    s.delta("Carl");
+    await waitFor("streaming 2", () => S().streamingText === "Hi Carl");
+    s.end();
+    box.endTurn(c1);
+    await waitFor("landed", () => !S().busy && S().messages.at(-1)?.content === "Hi Carl");
+    assert.equal(S().streamingText, "");
+    assert.deepEqual(shown(), boxShows(c1));
+    assert.deepEqual(writes, [], "the laptop never writes a conversation");
+  } finally {
+    release();
+    unsub();
+    if (box.picture(c1).meta.running) box.endTurn(c1);
+  }
 });
 
 test("the same message twice (a retry) is one message", async () => {

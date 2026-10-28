@@ -36,6 +36,12 @@ because something passed a weaker check and broke for Carl.
 - **Don't drive a screen or pointer he is using**; it fights him for the input. Use your own thread and test data,
   never his current conversation (a test once typed into his live chat).
 
+## Stateful fixture timing
+- **Hold delivery, not the next request.** In boxchat, setting FakeBox's poll delay after a long-poll was already
+  waiting let the echo beat the optimistic-pending assertion; its skipped cleanup then cascaded into nine failures.
+  Use `holdPolls()` and release in `finally`. Assert pending after the POST is accepted and the box's log contains
+  the echo, then explicitly release delivery. Larger sleeps or deleting the pending assertion do not test the contract.
+
 ## Shared working copies
 Several agents and sessions have worked in the same checkout at once. One switched branches mid-session and the next
 `rebase`+`push` went to the wrong branch; another swept someone else's edits into its commit. *Apply:* re-check the
