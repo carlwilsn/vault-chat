@@ -55,6 +55,9 @@ test("phone: a video in a reply plays inline from the box's file route; an image
   const html = md("Here it is working:\n\n![the counter going up](.vault-chat/visuals/counter.webm)\n\n![chart](.vault-chat/visuals/c.png)");
   assert.match(html, /<video [^>]*src="\/file\?path=\.vault-chat%2Fvisuals%2Fcounter\.webm"/);
   assert.match(html, /<video [^>]*controls=""/);
+  // Muted as an attribute in the HTML the page sets (React keeps `muted` as a property only), exactly once.
+  assert.match(html, /<video [^>]*muted=""/);
+  assert.equal((html.match(/muted=/g) ?? []).length, 1);
   assert.match(html, /<video [^>]*playsInline=""|<video [^>]*playsinline=""/i);
   assert.match(html, /<img [^>]*src="\/file\?path=\.vault-chat%2Fvisuals%2Fc\.png"/);
   assert.match(md("![demo](https://example.com/clip.mp4)"), /<video [^>]*src="https:\/\/example\.com\/clip\.mp4"/);

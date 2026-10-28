@@ -179,7 +179,8 @@ const ChatImage = memo(function ChatImage({
     );
   }
   // A video (RecordUI's proof, any .webm / .mp4): played inline, muted, with controls.
-  if (isVideoSrc(src)) return <video src={url} controls muted playsInline preload="metadata" title={alt} data-el="chat-video" className="max-w-full rounded-md border border-border/60" />;
+  // muted as a property, set on the element: React does not always reflect the prop, and a video must start muted.
+  if (isVideoSrc(src)) return <video src={url} ref={muteVideo} controls muted playsInline preload="metadata" title={alt} data-el="chat-video" className="max-w-full rounded-md border border-border/60" />;
   return <img src={url} alt={alt} {...rest} />;
 });
 
@@ -189,6 +190,12 @@ function videoMime(src: string | undefined): string | null {
   return m ? (VIDEO_EXT[m[1]!.toLowerCase()] ?? null) : null;
 }
 const isVideoSrc = (src: string | undefined) => !!videoMime(src);
+const muteVideo = (el: HTMLVideoElement | null) => {
+  if (el) {
+    el.defaultMuted = true;
+    el.muted = true;
+  }
+};
 
 const chatComponents = { img: ChatImage } as const;
 

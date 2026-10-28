@@ -44,7 +44,7 @@ import { show, SHOW_DESCRIPTION, SHOW_SCHEMA } from "../show";
 import { boardGuard } from "../boardGuard";
 import { openProject, OPEN_PROJECT_DESCRIPTION, OPEN_PROJECT_SCHEMA } from "../projectRoutes";
 import { startJobWith, jobStatus, jobList, jobStop, reapJobs, readJobs, type PiJobEnv } from "./pi/jobs";
-import { devProxies, jobPorts } from "../devProxy";
+import { devProxies, exposedNote, jobPorts } from "../devProxy";
 import { recordUITool, RECORD_DESCRIPTION, RECORD_SCHEMA } from "../recordUI";
 import { loadConfig } from "../config";
 import { ENGINE_ROLE_PROMPT } from "./prompt";
@@ -1981,9 +1981,22 @@ export class Engine {
     }
     for (const j of running) {
       const mine = [...ports.entries()].filter(([, o]) => o.job === j.id).map(([p]) => p).sort((a, b) => a - b);
-      const activity = mine.length ? `serving ${mine.map((p) => `localhost:${p}`).join(", ")}` : "running";
+      // A port bound to every interface works, but answers on the tailnet without Carl's login: said in the row.
+      const open = mine.filter((p) => ports.get(p)?.all);
+      const activity = mine.length ? `serving ${mine.map((p) => `localhost:${p}`).join(", ")}${open.length ? ` · listening on all interfaces (${open.join(", ")})` : ""}` : "running";
       const rec = ((this.picture(j.conv!)?.meta.subagents ?? []) as Record<string, any>[]).find((s) => s.threadId === j.id);
       if (rec && rec.kind === "job" && (rec.state ?? rec.status) === "running" && rec.activity !== activity) this.updateSubagent(j.conv!, j.id, { activity });
+    }
+  }
+
+  /** JobStatus of a job one of whose ports listens on every interface: says so, and to restart it on localhost. */
+  private withExposed(id: string, status: string): string {
+    if (process.platform !== "linux") return status;
+    try {
+      const open = [...jobPorts().entries()].filter(([, o]) => o.job === id && o.all).map(([p]) => p);
+      return open.length ? `${status}\n\n${exposedNote(open)}` : status;
+    } catch {
+      return status;
     }
   }
 
@@ -2256,7 +2269,7 @@ export class Engine {
         case "RecentActivity":
           return text(searchActivity(vault, { query: typeof a.query === "string" ? a.query : "", hours: Number(a.hours) || undefined, limit: Number(a.limit) || undefined }));
         case "JobStatus":
-          return text(this.workerStatus(convId, String(a.id ?? "").trim()) ?? jobStatus(this.d.jobEnv, a));
+          return text(this.workerStatus(convId, String(a.id ?? "").trim()) ?? this.withExposed(String(a.id ?? "").trim(), jobStatus(this.d.jobEnv, a)));
         case "JobList": {
           const workers = this.workerList(convId);
           const jobs = jobList(this.d.jobEnv, convId, a.all === true);

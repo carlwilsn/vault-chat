@@ -24,7 +24,8 @@ import { authorize, phoneToken } from "./auth";
 
 // ---------------------------------------------------------------- which ports are the agent's
 
-export type Listener = { port: number; host: string; inode: string };
+/** `all`: bound to every address (0.0.0.0 or ::), so reachable on the tailnet without the proxy's login check. */
+export type Listener = { port: number; host: string; inode: string; all?: boolean };
 
 /** Listening TCP sockets on loopback or every address (a dev server bound to 0.0.0.0 is reachable on loopback too). */
 export function listeners(proc = "/proc"): Listener[] {
@@ -42,7 +43,8 @@ export function listeners(proc = "/proc"): Listener[] {
       const [hexIp, hexPort] = f[1]!.split(":");
       const host = v6 ? ipv6(hexIp!) : ipv4(hexIp!);
       if (!host) continue;
-      out.push({ port: parseInt(hexPort!, 16), host, inode: f[9]! });
+      const all = v6 ? hexIp === "00000000000000000000000000000000" : hexIp === "00000000";
+      out.push({ port: parseInt(hexPort!, 16), host, inode: f[9]!, ...(all ? { all } : {}) });
     }
   }
   return out;
@@ -86,11 +88,12 @@ export function jobPids(proc = "/proc"): Map<number, string> {
   return out;
 }
 
-/** port → {job id, the loopback address to reach it on}: the loopback ports StartJob jobs listen on. */
-export function jobPorts(proc = "/proc"): Map<number, { job: string; host: string }> {
+/** port → {job id, the loopback address to reach it on, `all`: some socket of it listens on every address}:
+ *  the loopback ports StartJob jobs listen on. */
+export function jobPorts(proc = "/proc"): Map<number, { job: string; host: string; all?: boolean }> {
   const socks = new Map<string, Listener>();
   for (const l of listeners(proc)) socks.set(l.inode, l);
-  const out = new Map<number, { job: string; host: string }>();
+  const out = new Map<number, { job: string; host: string; all?: boolean }>();
   if (!socks.size) return out;
   for (const [pid, job] of jobPids(proc)) {
     let fds: string[] = [];
@@ -108,8 +111,11 @@ export function jobPorts(proc = "/proc"): Map<number, { job: string; host: strin
       }
       const m = /^socket:\[(\d+)\]$/.exec(link);
       const l = m ? socks.get(m[1]!) : undefined;
-      if (l && !out.has(l.port)) out.set(l.port, { job, host: l.host });
-      else if (l && out.get(l.port)!.host !== "127.0.0.1" && l.host === "127.0.0.1") out.set(l.port, { job, host: l.host });
+      if (!l) continue;
+      const had = out.get(l.port);
+      const all = !!(had?.all || l.all);
+      const host = had && !(had.host !== "127.0.0.1" && l.host === "127.0.0.1") ? had.host : l.host;
+      out.set(l.port, { job, host, ...(all ? { all } : {}) });
     }
   }
   return out;
@@ -408,6 +414,27 @@ export function devProxies(refuse: number[] = []): DevProxies {
     process.on("exit", () => shared?.closeAll());
   }
   return shared;
+}
+
+/** The line a job's row and JobStatus give when it listens on every address (0.0.0.0): it works, but on the tailnet
+ *  that port answers without Carl's login, so the agent is told to restart it on 127.0.0.1. Empty when none does. */
+export function exposedNote(ports: number[]): string {
+  if (!ports.length) return "";
+  const list = ports.join(", ");
+  return `Port ${list} listens on all interfaces (0.0.0.0), so on the tailnet it answers without Carl's login. Restart it on localhost: JobStop it, then StartJob again with --host 127.0.0.1 (or without --host; Vite's default is localhost). Show still opens it through the box.`;
+}
+
+/** Common dev servers read these for the address they bind: StartJob sets them (an explicit flag still wins). */
+export const DEV_HOST_ENV: Record<string, string> = { HOST: "127.0.0.1" };
+
+/** A command that asks for every interface (`--host` alone or 0.0.0.0, `-H 0.0.0.0`, `--bind 0.0.0.0`, `--hostname 0.0.0.0`). */
+export function asksAllInterfaces(cmd: string): boolean {
+  const end = String.raw`(?=\s|$|[;&|)'"])`;
+  return (
+    new RegExp(String.raw`(?:^|\s)(?:--host|--hostname|--bind|-H|-b)(?:[= ]+['"]?(?:0\.0\.0\.0|::|\[::\]|true)['"]?${end})`).test(cmd) ||
+    // `--host` with no value (Vite: every interface).
+    new RegExp(String.raw`(?:^|\s)--host(?=\s+-|\s*$|\s*[;&|)])`).test(cmd)
+  );
 }
 
 /** "http://localhost:5173/x?y" → {port: 5173, path: "/x?y"}; null when it is not a loopback address. */

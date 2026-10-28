@@ -166,7 +166,8 @@ describe("which ports", () => {
     // 127.0.0.1:5173 (0x1435) LISTEN, 127.0.0.1:8848 (0x2290) LISTEN, 127.0.0.1:9000 (0x2328) LISTEN, an established socket.
     writeFileSync(join(p, "net", "tcp"), hdr + row(0, "0100007F:1435", "0A", 111) + row(1, "0100007F:2290", "0A", 222) + row(2, "0100007F:2328", "0A", 333) + row(3, "0100007F:1436", "01", 444));
     // [::1]:3000 (0x0BB8) LISTEN by the job too.
-    writeFileSync(join(p, "net", "tcp6"), hdr + row(0, "00000000000000000000000001000000:0BB8", "0A", 555));
+    // [::1]:3000 (0x0BB8) LISTEN by the job too, and [::]:4173 (0x104D, every interface) by the job.
+    writeFileSync(join(p, "net", "tcp6"), hdr + row(0, "00000000000000000000000001000000:0BB8", "0A", 555) + row(1, "00000000000000000000000000000000:104D", "0A", 666));
     const proc = (pid: number, cgroup: string, inodes: number[]) => {
       mkdirSync(join(p, String(pid), "fd"), { recursive: true });
       writeFileSync(join(p, String(pid), "cgroup"), cgroup);
@@ -179,7 +180,7 @@ describe("which ports", () => {
         }
       });
     };
-    proc(10, "0::/user.slice/user-1000.slice/user@1000.service/app.slice/vc-job-vite-abc123.service\n", [111, 555]);
+    proc(10, "0::/user.slice/user-1000.slice/user@1000.service/app.slice/vc-job-vite-abc123.service\n", [111, 555, 666]);
     proc(20, "0::/user.slice/user-1000.slice/user@1000.service/app.slice/vault-chat-server.service\n", [222]);
     proc(30, "0::/system.slice/keystore.service\n", [333]);
     return p;
@@ -189,7 +190,7 @@ describe("which ports", () => {
     const { listeners, jobPids } = await import("../devProxy");
     const p = fakeProc();
     const ls = listeners(p);
-    expect(ls.map((l) => `${l.host}:${l.port}`).sort()).toEqual(["127.0.0.1:5173", "127.0.0.1:8848", "127.0.0.1:9000", "::1:3000"]);
+    expect(ls.map((l) => `${l.host}:${l.port}${l.all ? " (all)" : ""}`).sort()).toEqual(["127.0.0.1:4173 (all)", "127.0.0.1:5173", "127.0.0.1:8848", "127.0.0.1:9000", "::1:3000"]);
     expect([...jobPids(p).entries()]).toEqual([[10, "vite-abc123"]]);
   });
 
@@ -199,8 +200,20 @@ describe("which ports", () => {
     if (!links) return t.skip();
     expect([...jobPorts(p).entries()].sort()).toEqual([
       [3000, { job: "vite-abc123", host: "::1" }],
+      [4173, { job: "vite-abc123", host: "127.0.0.1", all: true }],
       [5173, { job: "vite-abc123", host: "127.0.0.1" }],
     ]);
+  });
+
+  it("knows a command that binds every interface, and says how to put it back on localhost", async () => {
+    const { asksAllInterfaces, exposedNote, DEV_HOST_ENV } = await import("../devProxy");
+    for (const c of ["npx vite --host 0.0.0.0 --port 5173", "vite --host", "npm run dev -- --host", "vite --host=0.0.0.0", "next dev -H 0.0.0.0", "python -m http.server --bind 0.0.0.0 8000", "vite --host :: && echo", "vite --host --port 5173"])
+      expect([c, asksAllInterfaces(c)]).toEqual([c, true]);
+    for (const c of ["npm run dev", "vite --host 127.0.0.1", "vite --host localhost --port 5173", "next dev -H 127.0.0.1", "echo --hostname-test"])
+      expect([c, asksAllInterfaces(c)]).toEqual([c, false]);
+    expect(exposedNote([])).toBe("");
+    expect(exposedNote([5173])).toMatch(/Port 5173 listens on all interfaces .*without Carl's login.*--host 127\.0\.0\.1/);
+    expect(DEV_HOST_ENV).toEqual({ HOST: "127.0.0.1" });
   });
 
   it("proxies only a port a job of this vault listens on; never the server's own, another service or another vault's job", async () => {

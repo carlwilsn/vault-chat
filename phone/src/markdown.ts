@@ -68,6 +68,9 @@ export function createPhoneMarkdown(opts: PhoneMarkdownOptions) {
       html = opts.toHtml(
         createElement(ReactMarkdown, { remarkPlugins, rehypePlugins, urlTransform: markdownUrlTransform, components }, prepareMarkdown(src)),
       );
+      // React keeps `muted` as a property, never an attribute, so the HTML string the page sets would lose it: the
+      // attribute goes in here, and every inline video starts muted (its muted state comes from the attribute).
+      html = html.replace(/<video (?![^>]*\smuted[\s=>])/g, "<video muted=\"\" ");
     } catch (err) {
       // Never a blank bubble: the source as text.
       console.warn("[markdown] render failed; showing the source as text:", err);

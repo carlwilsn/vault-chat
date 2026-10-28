@@ -12,6 +12,7 @@ import { chmodSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writ
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { writeAtomic } from "../../atomic";
+import { asksAllInterfaces, DEV_HOST_ENV } from "../../devProxy";
 
 export type PiJobEnv = {
   logDir: string;
@@ -214,7 +215,8 @@ export function startJobWith(env: PiJobEnv, cwd: string, a: { command?: string; 
   sweepJobEnvFiles(dir);
   let envFile: string;
   try {
-    envFile = writeJobEnvFile(dir, id, env.env);
+    // A dev server that reads HOST binds to loopback (the box serves it to Carl behind his login: server/devProxy.ts).
+    envFile = writeJobEnvFile(dir, id, { ...DEV_HOST_ENV, ...env.env });
   } catch (e) {
     return no(`StartJob failed: could not write its environment file (${(e as Error).message.slice(0, 200)}).`);
   }
@@ -229,7 +231,7 @@ export function startJobWith(env: PiJobEnv, cwd: string, a: { command?: string; 
   const job: JobRec = { id, ...(conv ? { conv } : {}), ...(byCarl ? { byCarl } : {}), name, command: cmd.slice(0, 2000), startedAt: Date.now(), timeoutS, state: "running" };
   writeJobs(env, [...readJobs(env), job]);
   const h = Math.round((timeoutS / 3600) * 10) / 10;
-  return { job, text: `Started job ${id} (survives this turn and restarts; stopped after ${h} h). Output: ${log}. When it ends you get a wake turn with its exit code and last lines; JobStatus{id:"${id}"} checks it before that. A dev server it starts shows on Carl's devices with Show {url: "http://localhost:<port>"}; JobStop stops it.` };
+  return { job, text: `Started job ${id} (survives this turn and restarts; stopped after ${h} h). Output: ${log}. When it ends you get a wake turn with its exit code and last lines; JobStatus{id:"${id}"} checks it before that. A dev server it starts shows on Carl's devices with Show {url: "http://localhost:<port>"}; JobStop stops it.${asksAllInterfaces(cmd) ? " Warning: this command binds every interface (0.0.0.0 / a bare --host), so on the tailnet its port answers without Carl's login. Stop it (JobStop) and start it again on localhost (--host 127.0.0.1, or no --host): Show reaches it through the box either way." : ""}` };
 }
 
 /** A job's state now: from its log's "[exit N]" line, else systemd's view of its unit. */
