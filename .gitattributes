@@ -1,3 +1,17 @@
+# Managed by vault-chat. Keeps cross-machine git sync conflict-free.
+* text=auto eol=lf
+*.jsonl merge=union
+*.pdf binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.zip binary
+*.gz binary
+*.bundle binary
+
 *.pdf binary
 *.sh text eol=lf
 server/deploy/* text eol=lf

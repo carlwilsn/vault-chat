@@ -1,3 +1,19 @@
+# Managed by vault-chat. Ephemeral machine-local state — never synced.
+.vault-chat/run-heartbeat.json
+.vault-chat/firer-heartbeat.json
+.vault-chat/*heartbeat*.conflict
+.vault-chat/app-log.txt
+.vault-chat/app-log.1.txt
+.vault-chat/client-events.jsonl
+.vault-chat/client-events.1.jsonl
+.vault-chat/diag/
+.vault-chat/sync-log.jsonl
+.vault-chat/pending-wakes.json
+.vault-chat/*.bak
+.vault-chat/*.tmp
+__pycache__/
+*.pyc
+
 # Logs
 logs
 *.log
