@@ -217,7 +217,8 @@ describe("steer and queue", () => {
     await new Promise((res) => setTimeout(res, 50));
     const s1 = await engine.message({ convId: r.convId, text: "still working?", clientMsgId: "c-still" });
     expect(s1.steered).toBe(true);
-    backend.ev(tid, { kind: "subagents", itemId: "c2", children: ["sa1"], op: "spawnAgent", done: true, ok: true });
+    // Native MCP's request id is not pi's model tool-call id (c2).
+    backend.ev(tid, { kind: "subagents", itemId: "mcp-request-42", children: ["sa1"], op: "spawnAgent", done: true, ok: true });
     backend.pi(tid, [
       toolEnd("c2", "subagent", "spawned"),
       ...userMsg("still working?"),
@@ -237,7 +238,12 @@ describe("steer and queue", () => {
       ["assistant", "", ["c3"]],
     ]);
     expect(msgs[2].toolCalls.map((t: any) => [t.name, t.result])).toEqual([["Read", "text"], ["subagent", "spawned"]]);
-    expect(msgs[2].toolCalls[1].subagents).toEqual(["sa1"]);
+    // The worker owns its task row, independent of the tool-call transcript.
+    // Do not guess ownership from c2 just because it was the newest open call.
+    const workers = engine.picture(r.convId).meta.subagents;
+    expect(workers).toEqual([expect.objectContaining({ threadId: "sa1", status: "running" })]);
+    expect(workers[0].toolCallId).toBeUndefined();
+    expect(msgs[2].toolCalls[1].subagents).toBeUndefined();
   });
 
   it("Send now: a waiting message cuts the agent's current step and starts the next turn at once; the others still waiting follow it; no Stopped line", async () => {
