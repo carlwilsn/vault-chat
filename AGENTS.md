@@ -40,7 +40,13 @@ github.com/carlwilsn/vault-chat; you work on your own branch, and only Carl's **
 - **Preview harness** (`preview/`): the real frontend against a fake backend, or against a real server (`realbox`).
 - **Release:** pushing main → CI builds and tags; the box self-updates (`vault-chat-update` timer).
 
-## Where to look for history
+## Memory: read before you start
 
-Reports from earlier work (decisions, measurements, failures) were written in Carl's AgentOS repo under `reports/`;
-the summaries that matter are folded into this file. Ask Carl if something here contradicts what you find in the code.
+`memory/` holds what earlier agents learned building vault-chat — each rule with its why. `memory/INDEX.md` maps
+it. Read `carl.md` once per project; then, before the work at hand: UI or any claim of "done" → `proof.md`; phone →
+`phone.md`; voice → `voice.md`; sync, git or anything written to disk → `data.md`; prompts, agent behaviour or a
+second layer → `agent.md`; the box, a release or an update → `box.md`; "why don't we have X?" → `history.md`.
+Personal notes about Carl are in `.vault-chat/memory.md` (not in git). When you learn something durable, add it to
+the right file in the same change. The code wins over a memory that contradicts it; fix the memory.
+
+Older reports (decisions, measurements, failures) are in Carl's AgentOS repo under `reports/`.

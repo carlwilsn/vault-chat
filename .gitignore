@@ -42,3 +42,6 @@ dist-server/
 
 # preview screenshots (before/after proof)
 preview-proof/
+
+# This project folder's own local notes (personal memory; never committed)
+/.vault-chat/
