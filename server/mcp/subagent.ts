@@ -47,7 +47,9 @@ export async function runSubagentTool(params: any, options: { dirs: string[]; ma
     options.signal.throwIfAborted();
     const agent = agents.find((a) => a.name === task.agent);
     if (!agent) return { ok: false, text: `Unknown agent: ${String(task.agent)}. Available: ${agents.map((a) => a.name).join(", ") || "none"}.` };
-    const r = await options.run({ agent, task: String(task.task), cwd: task.cwd ?? null, model: task.model ?? null });
+    // The existing runner must know a detached chain is a failed step: its
+    // report is not available yet and must never feed the next chain task.
+    const r = await options.run({ agent, task: String(task.task), cwd: task.cwd ?? null, model: task.model ?? null, mode: hasChain ? "chain" : hasTasks ? "parallel" : "single" });
     return { ok: r.ok === true, text: String(r.text ?? "(no output)") };
   };
   if (hasChain) {

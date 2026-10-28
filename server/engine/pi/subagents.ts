@@ -1,5 +1,5 @@
-// Subagents: a parent pi's `subagent` tool (ext/subagent.mjs, vendored from
-// pi's example) asks the host, per child, over the extension bridge; the host
+// Subagents: a parent pi's native MCP `subagent` tool (mcp/subagent.ts,
+// adapted from pi's example) asks the host, per child; the host
 // starts the child here as a SIBLING of the parent — the same launch as any pi
 // (its own bubblewrap, pid namespace and process group, the key on its own fd,
 // scrubbed env, path guard), in RPC mode so it can be steered and stopped, on a
@@ -11,6 +11,7 @@
 // subagents[] on the meta. A parent that stops or dies takes its children down.
 import { mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { hostToolName } from "../../../src/mcpNames";
 import type { PiBackend, ToolSpec } from "./backend";
 import type { PiProc } from "./proc";
 
@@ -79,7 +80,7 @@ export function activityOf(tool: string, args: any): string {
     return t.length > n ? `${t.slice(0, n - 1)}…` : t;
   };
   const path = base(args?.path ?? args?.file_path);
-  switch (tool) {
+  switch (hostToolName(tool)) {
     case "write":
       return path ? `writing ${path}` : "writing a file";
     case "edit":

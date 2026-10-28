@@ -9,6 +9,8 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { McpRuntime } from "../mcp/runtime";
 import { PiProc } from "../engine/pi/proc";
 import type { ToolSpec } from "../engine/pi/backend";
+import { pdfPages, pdfPagesSpec } from "../engine/extraTools";
+import { makePdf, textPage } from "./pdfgen";
 
 const spec: ToolSpec = { type: "function", name: "Echo", description: "Protocol test", inputSchema: { type: "object", properties: { text: { type: "string" } }, required: ["text"], additionalProperties: false } };
 const runtimes: McpRuntime[] = [];
@@ -70,19 +72,25 @@ describe("revocable process scopes and stateful HTTP", () => {
     expect((await fetch(new URL("/context/file-write", binding.bootstrap.url), { method: "POST", headers: { Authorization: binding.bootstrap.authorization }, body: "{}" })).status).toBe(401);
   });
 
-  it("uses native pinned pi MCP, not tool re-registration or an editor bridge", async () => {
+  it.each(["Echo", "PdfPages"])("uses native pinned pi MCP for %s, including provider context/binary attachments", async (tool) => {
     const root = mkdtempSync(join(tmpdir(), "vc-native-mcp-"));
     const agentDir = join(root, "agent"); mkdirSync(agentDir);
     // Deterministic local provider fixture, not a UI/mockup or a model request.
     // Native pi still parses the provider tool call and owns the entire pipeline.
     let requests = 0;
+    const payloads: any[] = [];
+    const source = makePdf([textPage("Not requested", []), textPage("Requested page", ["Native MCP PDF bytes"])]);
+    writeFileSync(join(root, "source.pdf"), source);
+    const nativeName = `mcp__vault_chat__${tool}`;
+    const args = tool === "PdfPages" ? { path: "source.pdf", pages: "2" } : { text: "native-pi" };
     const provider = createServer(async (req, res) => {
       const chunks: Buffer[] = []; for await (const part of req) chunks.push(Buffer.from(part));
       const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      payloads.push(body);
       const first = requests++ === 0;
       const declared = body.tools?.map((t: any) => t.function?.name) ?? [];
-      const delta = first && declared.includes("mcp__vault_chat__Echo")
-        ? { role: "assistant", tool_calls: [{ index: 0, id: "native-call", type: "function", function: { name: "mcp__vault_chat__Echo", arguments: JSON.stringify({ text: "native-pi" }) } }] }
+      const delta = first && declared.includes(nativeName)
+        ? { role: "assistant", tool_calls: [{ index: 0, id: "native-call", type: "function", function: { name: nativeName, arguments: JSON.stringify(args) } }] }
         : { role: "assistant", content: first ? "MCP not declared" : "finished" };
       res.writeHead(200, { "Content-Type": "text/event-stream" });
       const chunk = (delta: unknown, finish_reason: string | null) => `data: ${JSON.stringify({ id: "test", object: "chat.completion.chunk", created: 1, model: "test", choices: [{ index: 0, delta, finish_reason }] })}\n\n`;
@@ -90,23 +98,48 @@ describe("revocable process scopes and stateful HTTP", () => {
     });
     await new Promise<void>((r) => provider.listen(0, "127.0.0.1", r));
     writeFileSync(join(agentDir, "models.json"), JSON.stringify({ providers: { test: { baseUrl: `http://127.0.0.1:${(provider.address() as {port: number}).port}/v1`, apiKey: "test-only-not-a-key", api: "openai-completions", models: [{ id: "test", name: "test", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 32000, maxTokens: 1000 }] } } }));
-    const binding = await runtime().bind({ specs: [spec], call: async (_name, args) => ({ ok: true, text: String(args.text) }) }, { fileWrite: async () => true, env: () => ({}) });
+    const seenSince: (number | null)[] = [];
+    const binding = await runtime().bind({
+      specs: [tool === "PdfPages" ? pdfPagesSpec : spec],
+      call: async (_name, args) => ({ ok: true, text: tool === "PdfPages" ? await pdfPages(root, args) : String(args.text) }),
+    }, {
+      fileWrite: async () => true, env: () => ({}),
+      you: async (since) => { seenSince.push(since); return { text: "<you>Focus: native-context.pdf</you>", until: 123 }; },
+    });
     // Explicit pinned installation, never the invoking agent's env/config/keys.
     const prefix = process.env.VC_TEST_PI_DIR ?? join(homedir(), ".local/state/vault-chat-server/pi/1.1.0");
     const cli = join(prefix, "node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js");
     const proc = new PiProc({
       argv: [process.execPath, cli, "--mode", "rpc", "--no-session", "-ne", "-e", "builtin:mcp", "-e", resolve("server/engine/pi/ext/vc.mjs"), "--model", "test/test", "-na", "--offline", "-ns", "-np", "--no-themes"],
-      cwd: root, env: { PATH: process.env.PATH, HOME: root, PI_CODING_AGENT_DIR: agentDir, PI_SKIP_VERSION_CHECK: "1", PI_OFFLINE: "1" }, key: null,
+      cwd: root, env: { PATH: process.env.PATH, HOME: root, PI_CODING_AGENT_DIR: agentDir, PI_SKIP_VERSION_CHECK: "1", PI_OFFLINE: "1", VC_PI_YOU: "1" }, key: null,
       bootstrap: JSON.stringify({ ...binding.bootstrap, tools: true }),
     });
     try {
       proc.start();
       expect((await proc.request({ type: "get_state" }, 30_000).catch((error) => { throw new Error(`${error.message}: ${proc.stderrTail}`); })).success).toBe(true);
       const settled = new Promise<void>((r) => proc.on("event", (e) => { if (e.type === "agent_settled") r(); }));
-      const response = await proc.request({ type: "prompt", message: "Call Echo" }, 30_000);
+      const response = await proc.request({ type: "prompt", message: `Call ${tool}` }, 30_000);
       expect(response.success).toBe(true); await settled;
       const messages = (await proc.request({ type: "get_messages" })).data.messages;
-      expect(messages.find((m: any) => m.role === "toolResult")).toMatchObject({ toolCallId: "native-call", toolName: "mcp__vault_chat__Echo", content: [{ type: "text", text: "native-pi" }] });
+      const result = messages.find((m: any) => m.role === "toolResult");
+      expect(result).toMatchObject({ toolCallId: "native-call", toolName: nativeName, isError: false });
+      expect(seenSince).toEqual([null]);
+      expect(JSON.stringify(payloads[0].messages)).toContain("<you>Focus: native-context.pdf</you>");
+      if (tool === "PdfPages") {
+        expect(result.content[0].text).toContain("[PDF pages attached:");
+        const parts = payloads[1].messages.flatMap((m: any) => Array.isArray(m.content) ? m.content : []).filter((p: any) => p.type === "file");
+        expect(parts).toHaveLength(1);
+        expect(parts[0].file.file_data).toMatch(/^data:application\/pdf;base64,/);
+        const bytes = Buffer.from(parts[0].file.file_data.split(",")[1], "base64");
+        const pdfjs = await import("pdfjs-dist");
+        const doc = await pdfjs.getDocument({ data: new Uint8Array(bytes), verbosity: 0 }).promise;
+        try {
+          expect(doc.numPages).toBe(1);
+          const page = await doc.getPage(1);
+          expect(JSON.stringify(await page.getTextContent())).toContain("Requested page");
+          expect(JSON.stringify(await page.getTextContent())).not.toContain("Not requested");
+        } finally { await doc.destroy(); }
+      } else expect(result.content).toEqual([{ type: "text", text: "native-pi" }]);
       expect(requests).toBe(2);
     } finally {
       await proc.close(); await binding.revoke();

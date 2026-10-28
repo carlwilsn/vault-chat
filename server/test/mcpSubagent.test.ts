@@ -28,6 +28,18 @@ describe("host-owned MCP subagent orchestration", () => {
     expect(result).toEqual({ ok: true, text: "then first" });
     expect(calls[0].agent).toMatchObject({ name: "worker", tools: ["read"], systemPrompt: "Report only." });
     expect(calls[1].task).toBe("then first");
+    expect(calls.map((args) => args.mode)).toEqual(["chain", "chain"]);
+  });
+  it("stops a chain when Carl's interruption detaches its current child", async () => {
+    const calls: Record<string, unknown>[] = [];
+    const result = await runSubagentTool({ chain: [{ agent: "worker", task: "slow first" }, { agent: "worker", task: "consume {previous}" }] }, {
+      dirs: [agents()], maxTasks: 8, concurrency: 4, signal: new AbortController().signal,
+      // Subagents.run returns ok:false for a detached chain, ok:true for a
+      // detached single/parallel task. Preserve that existing runner contract.
+      run: async (args) => { calls.push(args); return { ok: args.mode !== "chain", state: "background", text: "Still working; report comes later." }; },
+    });
+    expect(calls).toHaveLength(1);
+    expect(result).toEqual({ ok: false, text: "Chain stopped at step 1: Still working; report comes later." });
   });
   it("never starts queued work once its SDK signal has been cancelled", async () => {
     const abort = new AbortController(); abort.abort(); let calls = 0;

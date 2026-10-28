@@ -15,7 +15,9 @@ subagent schema/orchestration; `pi/subagents.ts` retains process management,
 limits, results, cost and reports. There is no replacement agent loop.
 
 `tools.ts` validates both the catalog and each call with the same schemas, and
-adapts existing `ToolAnswer` text/image/PDF results to standard MCP content.
+adapts existing `ToolAnswer` text/image results to standard MCP content.
+`PdfPages` is currently a local-path text marker, not standard MCP PDF content
+(see the limitations below).
 `http.ts` is the SDK's stateful Streamable HTTP transport. Every request,
 including cancellation, GET and DELETE, is authenticated. Sessions are bound to
 host authority, not used as authority themselves. Host/Origin validation, body,
@@ -153,11 +155,36 @@ Focused tests:
 - `mcpTools.test.ts`: shared schemas/results and authenticated HTTP tool access;
 - `mcpRuntime.test.ts`: official SDK cancellation in separate HTTP requests,
   capability isolation, revocation, and actual installed pinned pi discovery +
-  native MCP execution via a deterministic local provider protocol fixture;
+  native MCP execution via a deterministic local provider protocol fixture,
+  including the private you-layer hook and requested `PdfPages` slice bytes in
+  the next provider payload;
 - `mcpExternal.test.ts`: private authority requirements, explicit scope, standard
   SDK client and session/device isolation;
 - `side.test.ts`, `backgroundTasks.test.ts`, `projectChanges.test.ts`: existing
   real-server integration surfaces through the MCP-speaking test pi fixture.
+
+### Incomplete original scope
+
+The external catalog is the host/vault-defined catalog, **not** pi's native
+filesystem/shell catalog. `read`, `write`, `edit`, `bash`, `grep`, `find` and
+`ls` still run only inside pi with `vc.mjs`'s existing path guards, guarded
+writes, env scrubbing and bash sandbox. Therefore standard external MCP
+reading/writing of ordinary vault files is **not implemented**. Closing that
+gap requires adapting mature pi tool definitions with the **same** policy,
+not new filesystem implementations or a weaker external authority path.
+
+`PdfPages` works for native pi through `pdf.mjs`: the host returns a
+server-local slice path and that extension adds its bytes to the provider
+request. The external MCP adapter currently returns only that text marker;
+it supplies neither PDF bytes nor a resolvable MCP resource. An external
+client cannot see the pages from the server-local path. `PdfRead` text support
+and native-pi PDF tests do **not** establish external binary PDF support.
+
+The incremental you-layer remains a private pi service, enabled for typed/
+voice-brain conversation turns and Ctrl+K/Ctrl+L/voice sides. Workers and
+one-shots deliberately do not receive it. External MCP connections also do
+not get that automatic prompt injection; their vault/device/conversation
+scope is authority, not an injected context layer.
 
 The native-pi provider fixture is a protocol test, **not** a model/UI proof.
 Local SDK/temporary-board tests are not proof from Carl's external laptop.
