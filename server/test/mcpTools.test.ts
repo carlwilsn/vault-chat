@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { ProgressNotificationSchema } from "@modelcontextprotocol/sdk/types.js";
 import { createToolServer, type BoundTools } from "../mcp/tools";
 import { createMcpHttpHandler } from "../mcp/http";
 import type { ToolSpec } from "../engine/pi/backend";
@@ -116,6 +117,46 @@ describe("vault-chat's single catalog over MCP", () => {
       await result;
       await aborted;
     } finally { await c.close(); }
+  });
+
+  it("sends requested progress (including token 0), isolates concurrent calls, and drains in order before results", async () => {
+    const server = createToolServer({ specs: [boardSpec], call: async (_n, args, ctx) => {
+      if (args.board === "silent") expect(ctx.progress).toBeUndefined();
+      else {
+        void ctx.progress?.(`${args.board}: first`);
+        void ctx.progress?.(`${args.board}: second`);
+      }
+      return { ok: true, text: String(args.board) };
+    } }, "test");
+    const client = new Client({ name: "progress-test", version: "test" });
+    const [a, b] = InMemoryTransport.createLinkedPair();
+    const send = a.send.bind(a);
+    const wire: any[] = [];
+    a.send = async (message, options) => {
+      if ("method" in message && message.method === "notifications/progress") await new Promise((r) => setTimeout(r, 15));
+      wire.push(message);
+      await send(message, options);
+    };
+    const updates: any[] = [];
+    client.setNotificationHandler(ProgressNotificationSchema, async (n) => { updates.push(n.params); });
+    await server.connect(a); await client.connect(b);
+    try {
+      await Promise.all([
+        client.callTool({ name: "BoardLook", arguments: { board: "zero" }, _meta: { progressToken: 0 } }),
+        client.callTool({ name: "BoardLook", arguments: { board: "other" }, _meta: { progressToken: "other" } }),
+        client.callTool({ name: "BoardLook", arguments: { board: "silent" } }),
+      ]);
+      expect(updates.filter((u) => u.progressToken === 0)).toEqual([
+        { progressToken: 0, progress: 1, message: "zero: first" },
+        { progressToken: 0, progress: 2, message: "zero: second" },
+      ]);
+      expect(updates.filter((u) => u.progressToken === "other").map((u) => u.message)).toEqual(["other: first", "other: second"]);
+      expect(updates).toHaveLength(4);
+      for (const name of ["zero", "other"]) {
+        const result = wire.findIndex((m) => m.result?.content?.[0]?.text === name);
+        expect(wire.findIndex((m) => m.params?.message === `${name}: second`)).toBeLessThan(result);
+      }
+    } finally { await client.close(); await server.close(); }
   });
 
   it("fails closed on duplicate names, internal names and malformed schemas", () => {

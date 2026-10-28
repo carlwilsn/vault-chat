@@ -176,7 +176,7 @@ function messagesEqual(a: ChatMessage[], b: ChatMessage[]): boolean {
 }
 
 
-export type LiveTool = { id: string; name: string; input: any; result?: string; startedAt?: number; inputChars?: number; etaSeconds?: number };
+export type LiveTool = { id: string; name: string; input: any; result?: string; partial?: string; startedAt?: number; inputChars?: number; etaSeconds?: number };
 
 export type TodoStatus = "pending" | "in_progress" | "completed";
 export type TodoItem = { content: string; status: TodoStatus; activeForm?: string };
@@ -212,6 +212,7 @@ function liveToolsEqual(a: LiveTool[], b: LiveTool[]): boolean {
       x.id !== y.id ||
       x.name !== y.name ||
       x.result !== y.result ||
+      x.partial !== y.partial ||
       (x.inputChars ?? 0) !== (y.inputChars ?? 0) ||
       (x.etaSeconds ?? 0) !== (y.etaSeconds ?? 0)
     )

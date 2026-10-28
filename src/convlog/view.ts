@@ -46,7 +46,7 @@ export const RETRY_TEXT = "Try again: the last reply failed before it finished. 
 /** A failed request a turn ended on (reduce.ts blocksOf's `<ts>:-1` line, closed). */
 const isTurnFailure = (it: Item) => it.kind === "notice" && it.level === "error" && it.id.endsWith(":-1") && !isOpen(it);
 
-export type ViewTool = { id: string; name: string; input: any; result?: string; startedAt?: number; inputChars?: number };
+export type ViewTool = { id: string; name: string; input: any; result?: string; partial?: string; startedAt?: number; inputChars?: number };
 
 export type ChatView = {
   messages: ViewMessage[];
@@ -291,6 +291,7 @@ export function makeChatView(): (p: Picture, opts?: { split?: boolean }) => Chat
         name: toolName(x.name),
         input: argsOf(x),
         ...(x.result !== undefined ? { result: x.result } : {}),
+        ...(isOpen(x) && x.partial ? { partial: x.partial } : {}),
         startedAt: x.at,
         ...(x.args === undefined && x.argsText ? { inputChars: x.argsText.length } : {}),
       }));

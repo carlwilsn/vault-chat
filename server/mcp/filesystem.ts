@@ -37,7 +37,7 @@ export async function filesystemBinding(o: FilesystemOptions): Promise<BoundTool
     context.signal.throwIfAborted();
     const argv = [o.node, o.script, "--execute"];
     const command = o.outer ? [...o.outer, ...argv] : argv;
-    const run = () => new Promise<any>((resolve, reject) => {
+    const run = async () => {
       context.signal.throwIfAborted();
       const child = spawn(command[0]!, command.slice(1), {
         cwd: o.cwd, detached: true, stdio: ["pipe", "pipe", "pipe"],
@@ -45,7 +45,11 @@ export async function filesystemBinding(o: FilesystemOptions): Promise<BoundTool
         // keys, if any, are sent only on stdin and only for bash.
         env: { PATH: process.env.PATH, HOME: o.home },
       });
-      let output = "";
+      const closed = new Promise<number | null>((resolve, reject) => {
+        child.once("error", reject);
+        child.once("close", resolve);
+      });
+      void closed.catch(() => {});
       const kill = () => { try { if (process.platform === "win32") child.kill("SIGKILL"); else process.kill(-child.pid!, "SIGKILL"); } catch { /* exited */ } };
       const stop = () => {
         // Let pi's mature bash operations cancel their own detached command
@@ -54,28 +58,52 @@ export async function filesystemBinding(o: FilesystemOptions): Promise<BoundTool
         const fallback = setTimeout(kill, 2000); fallback.unref();
         child.once("close", () => clearTimeout(fallback));
       };
-      const abort = () => { stop(); reject(new Error("Operation aborted")); };
+      const fail = (message: string) => { stop(); child.stdout.destroy(new Error(message)); };
+      const abort = () => fail("Operation aborted");
       context.signal.addEventListener("abort", abort, { once: true });
-      const timer = setTimeout(() => { stop(); reject(new Error("Filesystem tool timed out")); }, 14_410_000);
-      child.stdout.on("data", (chunk) => {
-        output += chunk.toString();
-        if (output.length > 32 * 1024 * 1024) { stop(); reject(new Error("Tool result exceeds transport budget")); }
-      });
+      const timer = setTimeout(() => fail("Filesystem tool timed out"), 14_410_000);
       child.stderr.resume(); // Never return process diagnostics containing ambient data.
-      child.on("error", reject);
-      child.on("close", (code) => {
-        clearTimeout(timer); context.signal.removeEventListener("abort", abort);
-        try { if (code !== 0) throw new Error("Sandboxed filesystem process failed"); resolve(JSON.parse(output)); }
-        catch (error) { reject(error); }
-      });
       child.stdin.on("error", () => {});
       child.stdin.end(JSON.stringify({
         modulePath, cwd: o.cwd, name, args, home: o.home,
         denyRead: o.denyRead, denyWrite: o.denyWrite, root: o.root,
         shell: o.shell, defaultTimeout: Number(process.env.VC_PI_SHELL_TIMEOUT_S) || 1800,
-        env: name === "bash" ? o.env() : {},
+        env: name === "bash" ? o.env() : {}, progress: !!context.progress,
       }));
-    });
+      try {
+        // Bound each NDJSON frame, not the cumulative lifetime output of a long
+        // command. Async iteration + awaited progress keeps pipe backpressure.
+        const maxFrame = 32 * 1024 * 1024;
+        let pending = Buffer.alloc(0);
+        let final: any;
+        for await (const chunk of child.stdout) {
+          context.signal.throwIfAborted();
+          pending = Buffer.concat([pending, chunk]);
+          let newline: number;
+          while ((newline = pending.indexOf(10)) !== -1) {
+            context.signal.throwIfAborted();
+            if (newline > maxFrame) throw new Error("Tool frame exceeds transport budget");
+            const frame = JSON.parse(pending.subarray(0, newline).toString("utf8"));
+            pending = pending.subarray(newline + 1);
+            if (final) throw new Error("Unexpected frame after filesystem result");
+            if (frame.type === "update" && typeof frame.text === "string") {
+              await context.progress?.(frame.text);
+            } else if (frame.type === "final" && typeof frame.ok === "boolean") final = frame;
+            else throw new Error("Invalid filesystem frame");
+          }
+          if (pending.length > maxFrame) throw new Error("Tool frame exceeds transport budget");
+        }
+        if (await closed !== 0) throw new Error("Sandboxed filesystem process failed");
+        context.signal.throwIfAborted();
+        if (pending.length || !final) throw new Error("Incomplete filesystem result");
+        return final;
+      } catch (error) {
+        stop();
+        throw error;
+      } finally {
+        clearTimeout(timer); context.signal.removeEventListener("abort", abort);
+      }
+    };
     // Keep pi's mature per-file mutation queue across MCP clients/processes,
     // not one short-lived queue per sandbox executor.
     const result: any = ["write", "edit"].includes(name)

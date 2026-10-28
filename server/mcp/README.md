@@ -29,6 +29,17 @@ injection and bounded timeout. The shared policy module still applies the
 realpath guards. Pi's own per-file mutation queue serializes writes/edits across
 MCP bindings. A cancelled call kills its sandbox process group.
 
+Clients requesting progress receive standard `notifications/progress` messages
+(including numeric token `0`). Cumulative text previews from pi's factory cross
+the executor pipe as bounded NDJSON frames, with awaited consumers providing
+backpressure; the 32 MiB limit applies per frame, not per command lifetime.
+Notifications are ordered and drained before the final result, isolated per
+request, and suppressed after cancellation. Pi's native MCP extension turns
+these into normal `tool_execution_update` events. The existing conversation-log
+projection exposes the open tool's preview in the chat ticker; final tool
+content remains unchanged. This repairs the existing UI projection rather than
+adding another streaming/event engine.
+
 Native pi's explicit active-tool allowlist contains only `mcp__vault_chat__...`
 names: no duplicate native read/write/edit/bash tools. Chat retains its coding
 loadout; side queries retain read/grep/find/ls; worker definitions retain their
@@ -184,21 +195,26 @@ this private HTTPS route or the laptop's Claude Code configuration works.
 
 Focused tests:
 
-- `mcpTools.test.ts`: shared schemas/results and authenticated HTTP tool access;
+- `mcpTools.test.ts`: shared schemas/results, authenticated HTTP tool access,
+  progress token `0`, concurrent request isolation and notification drain order;
 - `mcpRuntime.test.ts`: official SDK cancellation in separate HTTP requests,
   capability isolation, revocation, and actual installed pinned pi discovery +
   native MCP execution via a deterministic local provider protocol fixture,
-  including the private you-layer hook and requested `PdfPages` slice bytes in
-  the next provider payload;
+  including the private you-layer hook, live bash updates before tool completion,
+  and requested `PdfPages` slice bytes in the next provider payload;
 - `mcpExternal.test.ts`: private authority requirements, explicit scope, standard
   SDK client and session/device isolation;
 - `mcpFilesystem.test.ts`: installed real pi factories inside real bubblewrap,
   independent standard SDK read/write/edit/grep/find/ls, lexical/absolute/symlink
   escapes, protected paths, read-only and voice authorization, scoped worker
-  bash, PNG/JPEG/GIF/WebP/BMP transport, standard PDF slice bytes and scoped
+  bash, live cumulative previews, cancellation without late updates,
+  PNG/JPEG/GIF/WebP/BMP transport, standard PDF slice bytes and scoped
   context resources. Tests require the pinned pi installation (`VC_TEST_PI_DIR`
   overrides its default location); the scripted CLI fixture re-exports those
   actual factories rather than faking a filesystem;
+- `mcpFilesystemFrames.test.ts`: split UTF-8/coalesced NDJSON, bounded frames
+  over a >32 MiB stream lifetime, awaited consumers, malformed/incomplete/late
+  frames, nonzero executor exit and cancellation under backpressure;
 - `side.test.ts`, `backgroundTasks.test.ts`, `projectChanges.test.ts`: existing
   real-server integration surfaces through the MCP-speaking test pi fixture.
 
@@ -212,11 +228,12 @@ local filesystem into a new isolation boundary; the installed mount/hide policy
 remains the protection for host credentials. No external command/env capability
 is issued.
 
-Each filesystem call starts a sandbox executor (startup overhead), and the
-current host `ToolAnswer` MCP adapter returns the finalized result, not live bash
-stdout updates. Pi still owns tool execution events and the agent loop; there
-is no replacement session/state/streaming engine. Large results remain subject
-to pi/MCP's own transport/output limits.
+Each filesystem call starts a sandbox executor (startup overhead). Live text
+previews require the client to request standard MCP progress; clients that do
+not request it still receive the final result. Binary attachments remain final
+content, not preview frames. Pi still owns tool execution events and the agent
+loop; there is no replacement session/state/streaming engine. Large results
+retain pi's tail/full-output-file behavior and transport/output limits.
 
 The incremental you-layer hook is still enabled only for typed/voice-brain
 conversation turns and Ctrl+K/Ctrl+L/voice sides. Workers and one-shots do not
@@ -225,7 +242,13 @@ resource instead of receiving automatic prompt injection.
 
 The native-pi provider fixture is a protocol test, **not** a model/UI proof.
 Local SDK/temporary-board tests are not proof from Carl's external laptop.
-Real-app screenshots/video and an authenticated external-client proof still
-must be collected before calling the migration proven. Full regression gates
+The isolated real-app `streaming-native-mcp.mp4` and
+`streaming-before-completion.png` show the first stdout line while a 12-second
+bash command is still running; `streaming-completed.png` shows both final lines.
+`streaming-ui-result.json` records the live stop control, first/final timestamps
+and no page errors. These are in the vault's `.vault-chat/visuals/mcp-tools/`;
+the realbox preview navigation is fixture chrome, not the isolated real chat
+backend. This is not authenticated private-HTTPS/laptop-client proof, which is
+still missing. Full regression gates
 are run separately by the supervising agent; do not confuse focused passes
 with those gates or claim that this document supplies release evidence.

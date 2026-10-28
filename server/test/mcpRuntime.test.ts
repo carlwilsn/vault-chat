@@ -73,7 +73,7 @@ describe("revocable process scopes and stateful HTTP", () => {
     expect((await fetch(new URL("/context/file-write", binding.bootstrap.url), { method: "POST", headers: { Authorization: binding.bootstrap.authorization }, body: "{}" })).status).toBe(401);
   });
 
-  it.each(["Echo", "PdfPages", "read", "write"])("uses native pinned pi MCP for %s, including provider context/binary attachments", async (tool) => {
+  it.each(["Echo", "PdfPages", "read", "write", "bash"])("uses native pinned pi MCP for %s, including provider context/binary attachments", async (tool) => {
     const root = mkdtempSync(join(tmpdir(), "vc-native-mcp-"));
     const agentDir = join(root, "agent"); mkdirSync(agentDir);
     // Deterministic local provider fixture, not a UI/mockup or a model request.
@@ -84,10 +84,10 @@ describe("revocable process scopes and stateful HTTP", () => {
     writeFileSync(join(root, "source.pdf"), source);
     const nativeName = `mcp__vault_chat__${tool}`;
     writeFileSync(join(root, "note.txt"), "shared file read");
-    const args = tool === "PdfPages" ? { path: "source.pdf", pages: "2" } : tool === "read" ? { path: "note.txt" } : tool === "write" ? { path: "written.txt", content: "shared file write" } : { text: "native-pi" };
+    const args = tool === "PdfPages" ? { path: "source.pdf", pages: "2" } : tool === "read" ? { path: "note.txt" } : tool === "write" ? { path: "written.txt", content: "shared file write" } : tool === "bash" ? { command: "printf 'native-first\\n'; sleep 0.5; printf 'native-final\\n'", timeout: 5 } : { text: "native-pi" };
     const prefix = process.env.VC_TEST_PI_DIR ?? join(homedir(), ".local/state/vault-chat-server/pi/1.1.0");
     const cli = join(prefix, "node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js");
-    const fs = await filesystemBinding({ cli, node: process.execPath, script: resolve("server/engine/pi/ext/filesystem.mjs"), cwd: root, home: root, outer: null, shell: null, denyRead: [], denyWrite: [], allowed: ["read", "write"], env: () => ({}), fileWrite: async () => true });
+    const fs = await filesystemBinding({ cli, node: process.execPath, script: resolve("server/engine/pi/ext/filesystem.mjs"), cwd: root, home: root, outer: null, shell: null, denyRead: [], denyWrite: [], allowed: ["read", "write", "bash"], env: () => ({}), fileWrite: async () => true });
     const provider = createServer(async (req, res) => {
       const chunks: Buffer[] = []; for await (const part of req) chunks.push(Buffer.from(part));
       const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
@@ -105,8 +105,8 @@ describe("revocable process scopes and stateful HTTP", () => {
     writeFileSync(join(agentDir, "models.json"), JSON.stringify({ providers: { test: { baseUrl: `http://127.0.0.1:${(provider.address() as {port: number}).port}/v1`, apiKey: "test-only-not-a-key", api: "openai-completions", models: [{ id: "test", name: "test", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 32000, maxTokens: 1000 }] } } }));
     const seenSince: (number | null)[] = [];
     const binding = await runtime().bind({
-      specs: tool === "read" || tool === "write" ? fs.specs.filter((s) => s.name === tool) : [tool === "PdfPages" ? pdfPagesSpec : spec],
-      call: async (name, args, context) => tool === "PdfPages" ? pdfPagesAnswer(root, args) : tool === "read" || tool === "write" ? fs.call(name, args, context) : { ok: true, text: String(args.text) },
+      specs: tool === "read" || tool === "write" || tool === "bash" ? fs.specs.filter((s) => s.name === tool) : [tool === "PdfPages" ? pdfPagesSpec : spec],
+      call: async (name, args, context) => tool === "PdfPages" ? pdfPagesAnswer(root, args) : tool === "read" || tool === "write" || tool === "bash" ? fs.call(name, args, context) : { ok: true, text: String(args.text) },
     }, {
       fileWrite: async () => true, env: () => ({}),
       you: async (since) => { seenSince.push(since); return { text: "<you>Focus: native-context.pdf</you>", until: 123 }; },
@@ -120,7 +120,14 @@ describe("revocable process scopes and stateful HTTP", () => {
     try {
       proc.start();
       expect((await proc.request({ type: "get_state" }, 30_000).catch((error) => { throw new Error(`${error.message}: ${proc.stderrTail}`); })).success).toBe(true);
-      const settled = new Promise<void>((r) => proc.on("event", (e) => { if (e.type === "agent_settled") r(); }));
+      const events: any[] = [];
+      let endSeen = false;
+      const settled = new Promise<void>((r) => proc.on("event", (e) => {
+        events.push(e);
+        if (e.type === "tool_execution_end") endSeen = true;
+        if (e.type === "tool_execution_update") expect(endSeen).toBe(false);
+        if (e.type === "agent_settled") r();
+      }));
       const response = await proc.request({ type: "prompt", message: `Call ${tool}` }, 30_000);
       expect(response.success).toBe(true); await settled;
       const messages = (await proc.request({ type: "get_messages" })).data.messages;
@@ -144,7 +151,12 @@ describe("revocable process scopes and stateful HTTP", () => {
         } finally { await doc.destroy(); }
       } else if (tool === "read") expect(result.content[0].text).toContain("shared file read");
       else if (tool === "write") expect(readFileSync(join(root, "written.txt"), "utf8")).toBe("shared file write");
-      else expect(result.content).toEqual([{ type: "text", text: "native-pi" }]);
+      else if (tool === "bash") {
+        const previews = events.filter((e) => e.type === "tool_execution_update");
+        expect(previews.some((e) => e.partialResult?.content?.[0]?.text === "native-first\n")).toBe(true);
+        expect(result.content[0].text).toBe("native-first\nnative-final\n");
+        expect(events.findIndex((e) => e.type === "tool_execution_update")).toBeLessThan(events.findIndex((e) => e.type === "tool_execution_end"));
+      } else expect(result.content).toEqual([{ type: "text", text: "native-pi" }]);
       expect(payloads[0].tools.map((t: any) => t.function.name)).toEqual([nativeName]);
       expect(requests).toBe(2);
     } finally {

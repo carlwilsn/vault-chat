@@ -101,17 +101,56 @@ describe("one pi filesystem definition through standard MCP", () => {
     expect(readFileSync(join(vault, "worker.txt"), "utf8")).toBe("worker");
   });
 
+  it("streams cumulative real SDK previews before completion with concurrent request isolation and unchanged final output", async () => {
+    const c = await connect(FILE_TOOLS, true, false);
+    const updates: Record<string, string[]> = { alpha: [], beta: [] };
+    const run = async (label: string) => {
+      let completed = false;
+      const result = await c.callTool({ name: "bash", arguments: { command: `printf '${label}-first\\n'; sleep 0.4; printf '${label}-middle\\n'; sleep 0.4; printf '${label}-final\\n'`, timeout: 5 } }, undefined, {
+        onprogress: (p) => { expect(completed).toBe(false); updates[label]!.push(p.message!); },
+      });
+      completed = true;
+      expect(result.isError).not.toBe(true);
+      expect(text(result)).toBe(`${label}-first\n${label}-middle\n${label}-final\n`);
+      expect(updates[label]!.some((s) => s === `${label}-first\n`)).toBe(true);
+      expect(updates[label]!.some((s) => s === `${label}-first\n${label}-middle\n`)).toBe(true);
+      expect(updates[label]!.every((s) => !s.includes(label === "alpha" ? "beta" : "alpha"))).toBe(true);
+      const count = updates[label]!.length;
+      await new Promise((r) => setTimeout(r, 40));
+      expect(updates[label]).toHaveLength(count);
+    };
+    await Promise.all([run("alpha"), run("beta")]);
+  });
+
+  it("keeps pi's large-output tail and full-output file behavior rather than truncating the stream lifetime", async () => {
+    const c = await connect(FILE_TOOLS, true, false);
+    let count = 0;
+    const result = await c.callTool({ name: "bash", arguments: { command: "seq 1 15000", timeout: 5 } }, undefined, { onprogress: () => { count++; } });
+    expect(result.isError).not.toBe(true);
+    expect(text(result)).toContain("15000");
+    expect(text(result)).toMatch(/(full output|Full output)/);
+    expect(count).toBeGreaterThan(0);
+  });
+
   it.each([false, true])("SDK cancellation stops the actual command tree (unsafe native mode: %s)", async (unsafe) => {
     const c = await connect(FILE_TOOLS, true, false, unsafe);
     const marker = `began-${unsafe}.txt`, late = `late-${unsafe}.txt`;
     const controller = new AbortController();
-    const pending = c.callTool({ name: "bash", arguments: { command: `printf began > ${marker}; sleep 2; printf escaped > ${late}` } }, undefined, { signal: controller.signal });
+    const updates: string[] = [];
+    let first!: () => void;
+    const began = new Promise<void>((r) => { first = r; });
+    const pending = c.callTool({ name: "bash", arguments: { command: `printf began > ${marker}; printf 'live-before-cancel\\n'; sleep 2; printf escaped > ${late}; printf too-late` } }, undefined, {
+      signal: controller.signal, onprogress: (p) => { updates.push(p.message!); if (p.message?.includes("live-before-cancel")) first(); },
+    });
     const caught = expect(pending).rejects.toBeDefined();
-    for (let i = 0; i < 100 && !existsSync(join(vault, marker)); i++) await new Promise((r) => setTimeout(r, 20));
+    await began;
     expect(existsSync(join(vault, marker))).toBe(true);
+    expect(updates.some((s) => s.includes("live-before-cancel"))).toBe(true);
     controller.abort(); await caught;
+    const count = updates.length;
     await new Promise((r) => setTimeout(r, 2300));
     expect(existsSync(join(vault, late))).toBe(false);
+    expect(updates).toHaveLength(count);
   });
 
   it("transports real PNG/JPEG/GIF/WebP/BMP images via the standard SDK", async () => {

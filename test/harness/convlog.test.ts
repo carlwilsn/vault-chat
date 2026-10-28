@@ -246,6 +246,8 @@ test("tool calls with streamed arguments, run in parallel: one item each, args p
   const at = log.recs.findIndex((r) => r.type === "live" && r.ev.type === "tool_execution_update");
   assert.equal(fold(log.recs.slice(0, at + 1), C).items.find((x) => x.id === "c2")!.partial, "partial b");
   assert.equal(p.items.find((x) => x.id === "c2")!.partial, undefined);
+  assert.equal(makeChatView()(fold(log.recs.slice(0, at + 1), C)).live.tools.find((x) => x.id === "c2")!.partial, "partial b");
+  assert.ok(makeChatView()(p).live.tools.every((x) => x.partial === undefined));
   // The live tail while both run: the two calls, after the text.
   const run = log.recs.findIndex((r) => r.type === "live" && r.ev.type === "tool_execution_start" && r.ev.toolCallId === "c2");
   const v = makeChatView()(fold(log.recs.slice(0, run + 1), C));

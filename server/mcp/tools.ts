@@ -10,6 +10,8 @@ export type McpCallContext = {
   signal: AbortSignal;
   /** MCP request id, NOT pi's model tool-call id. Never use it as a chat item id. */
   requestId: string | number;
+  /** Cumulative preview, not a delta. Absent when the client did not request progress. */
+  progress?: (message: string) => Promise<void>;
 };
 
 /** Trusted, request-local authority, created by the host, never from tools/call
@@ -61,9 +63,29 @@ export function createToolServer(binding: BoundTools, version: string): Server {
     if (!tool) throw new McpError(ErrorCode.InvalidParams, `Tool not available in this scope: ${name}`);
     const checked = tool.validate(request.params.arguments ?? {});
     if (!checked.valid) throw new McpError(ErrorCode.InvalidParams, `${name}: ${checked.errorMessage}`);
+    const token = request.params._meta?.progressToken;
+    let sends = Promise.resolve();
+    let sequence = 0;
+    let finished = false;
+    const progress = token === undefined ? undefined : (message: string) => {
+      if (finished || extra.signal.aborted) return Promise.resolve();
+      const progress = ++sequence;
+      // Request-local ordering, including fire-and-forget host callbacks. Drain
+      // before returning the result; never send previews after cancellation.
+      sends = sends.then(async () => {
+        if (!extra.signal.aborted) await extra.sendNotification({
+          method: "notifications/progress", params: { progressToken: token, progress, message },
+        });
+      });
+      // Attach a rejection handler immediately even if the host ignores it.
+      void sends.catch(() => {});
+      return sends;
+    };
     try {
       extra.signal.throwIfAborted();
-      const answer = await binding.call(name, checked.data, { signal: extra.signal, requestId: extra.requestId });
+      const answer = await binding.call(name, checked.data, { signal: extra.signal, requestId: extra.requestId, progress });
+      finished = true;
+      await sends;
       return {
         content: [
           { type: "text", text: answer.text },
@@ -73,6 +95,8 @@ export function createToolServer(binding: BoundTools, version: string): Server {
         ...(answer.ok ? {} : { isError: true }),
       };
     } catch (error) {
+      finished = true;
+      await sends.catch(() => {});
       return { isError: true, content: [{ type: "text", text: `${name} failed: ${error instanceof Error ? error.message : "unknown failure"}` }] };
     }
   });
