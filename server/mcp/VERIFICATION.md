@@ -2,6 +2,18 @@
 
 ## Sent-back revision (supersedes the historical claims below)
 
+The later external-RecordUI correction replaces the deliberate refusal described
+in historical sections below. It binds the existing recorder to the explicit
+vault without a turn owner, allows only browser http(s) input, rejects shell
+steps/local-file navigation/client-selected output, validates the visuals parent
+with shared realpath/write policy, and allocates an exclusive output directory.
+Installed sandboxing is required, and request cancellation kills the recorder
+process tree. An independent official SDK test through the built server's normal
+`/mcp` route drives a real click/wait/screenshot and verifies real video bytes;
+this is focused integration evidence, not the final commit's UI recording or
+production deployment. Native RecordUI's existing sandboxed shell steps remain.
+
+
 The branch was rebased, without conflicts, onto the actual box main
 `a3a359fa2ba398195994b8997c605d090549e542`, not the stale local main
 `94b7daad`. Local main and production were not changed. All `memory/` files

@@ -11,7 +11,7 @@
 // agent's command sandbox (server/vaultTools.ts runSandboxed): the browser sees what the agent's shell sees and
 // no more, and a `run` step is a command in that sandbox.
 import { execSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { pathToFileURL } from "node:url";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
@@ -65,12 +65,36 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const STEP_PAUSE_MS = 700;
 const MAX_SECONDS = 90;
 
+/** External clients receive browser input, not the native turn's shell authority. */
+export function browserOnlyError(a: RecordArgs): string | null {
+  const http = (value: unknown) => {
+    if (typeof value !== "string") return false;
+    try { const u = new URL(value); return ["http:", "https:"].includes(u.protocol) && !u.username && !u.password; } catch { return false; }
+  };
+  if (!http(a.url)) return "External RecordUI requires an http(s) URL without credentials; local file navigation is unavailable.";
+  if (a.steps !== undefined && !Array.isArray(a.steps)) return "RecordUI steps must be an array.";
+  const actions = ["wait", "click", "hover", "shot", "type", "press", "scroll", "goto", "waitFor"];
+  for (const s of a.steps ?? []) {
+    if (!s || typeof s !== "object" || Array.isArray(s)) return "Invalid browser step.";
+    if ("run" in s) return "External RecordUI does not allow run steps or shell commands.";
+    const keys = Object.keys(s);
+    const action = actions.filter((k) => k in s);
+    if (action.length !== 1 || keys.some((k) => !actions.includes(k) && !(k === "into" && action[0] === "type") && !(k === "timeout" && action[0] === "waitFor"))) return "External RecordUI requires one browser action per step; unknown step fields are refused.";
+    if ("goto" in s && !http(s.goto)) return "External RecordUI goto requires an http(s) URL without credentials.";
+  }
+  return null;
+}
+
 type Frame = { data: string; t: number };
 
 // ---------------------------------------------------------------- the recording (runs in the sandbox)
 
 /** Record `a.url` with its steps into `cwd`-relative `a.out` (a .webm). */
-export async function record(cwd: string, a: RecordArgs, vault = cwd): Promise<RecordOut> {
+export async function record(cwd: string, a: RecordArgs, vault = cwd, browserOnly = false): Promise<RecordOut> {
+  if (browserOnly) {
+    const why = browserOnlyError(a);
+    if (why) return { ok: false, error: why };
+  }
   const log: string[] = [];
   const url = String(a.url ?? "").trim();
   let target: string;
@@ -95,6 +119,17 @@ export async function record(cwd: string, a: RecordArgs, vault = cwd): Promise<R
     await page.call("Emulation.setDeviceMetricsOverride", { width: w, height: h, deviceScaleFactor: 1, mobile });
     if (mobile) await page.call("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 5 }).catch(() => {});
     await page.call("Page.enable");
+    // External recordings cannot reach local files through links, redirects or
+    // subresources either. Encoding's own trusted file is opened only after
+    // the page's final capture, when interception is removed below.
+    if (browserOnly) {
+      page.on("Fetch.requestPaused", (p: any) => {
+        const protocol = String(p.request?.url ?? "").split(":")[0]?.toLowerCase();
+        const method = ["http", "https", "data", "blob", "about"].includes(protocol ?? "") ? "Fetch.continueRequest" : "Fetch.failRequest";
+        void page.call(method, { requestId: p.requestId, ...(method === "Fetch.failRequest" ? { errorReason: "BlockedByClient" } : {}) }).catch(() => {});
+      });
+      await page.call("Fetch.enable", { patterns: [{ urlPattern: "*" }] });
+    }
     await page.call("Runtime.enable");
     await page.call("Log.enable").catch(() => {});
     const err = (m: string) => errors.length < 30 && errors.push(m.slice(0, 400));
@@ -150,6 +185,11 @@ export async function record(cwd: string, a: RecordArgs, vault = cwd): Promise<R
     const startT = all[0]!.t;
     // MP4 (H.264) plays everywhere, the iPhone included; WebM (VP8) where this browser has no H.264 encoder.
     const want: "mp4" | "webm" = /\.webm$/i.test(out) ? "webm" : "mp4";
+    if (browserOnly) {
+      // Destroy the untrusted page before lifting its local-file restriction.
+      await navigate(page, "about:blank", []);
+      await page.call("Fetch.disable");
+    }
     const enc = await encode(page, all.map((f) => ({ data: f.data, t: f.t - startT })), w, h, want);
     const durMs = last.t - startT;
     const file = enc.kind === "mp4" ? mp4(enc.chunks, w, h, durMs, enc.description!) : webm(enc.chunks, w, h, durMs);
@@ -548,11 +588,20 @@ export async function recordCli(): Promise<void> {
   let raw = "";
   for await (const c of process.stdin) raw += c;
   let out: RecordOut;
+  const scratch: string[] = [];
   try {
-    const { vault, ...a } = JSON.parse(raw || "{}");
-    out = await record(process.cwd(), a, typeof vault === "string" && vault ? vault : process.cwd());
+    const { vault, browserOnly, ...a } = JSON.parse(raw || "{}");
+    // The installed sandbox keeps HOME read-only. Chromium's crashpad/config
+    // must use private writable scratch space, not the real home directory.
+    process.env.XDG_CONFIG_HOME = mkdtempSync(join(tmpdir(), "vc-rec-config-"));
+    scratch.push(process.env.XDG_CONFIG_HOME);
+    process.env.XDG_CACHE_HOME = mkdtempSync(join(tmpdir(), "vc-rec-cache-"));
+    scratch.push(process.env.XDG_CACHE_HOME);
+    out = await record(process.cwd(), a, typeof vault === "string" && vault ? vault : process.cwd(), browserOnly === true);
   } catch (e) {
     out = { ok: false, error: (e as Error)?.message ?? String(e) };
+  } finally {
+    for (const path of scratch) rmSync(path, { recursive: true, force: true });
   }
   process.stdout.write("\n@@vc-record@@" + JSON.stringify(out) + "\n");
   process.exit(0);
@@ -560,10 +609,10 @@ export async function recordCli(): Promise<void> {
 
 /** RecordUI for the agent: the recorder in the sandbox (`shell`), in the thread's folder (`o.cwd`, default the
  *  vault); the video goes in the vault. A line for the agent. */
-export async function recordUITool(shell: string[] | null | undefined, vault: string, a: Record<string, unknown>, o: { entry?: string[]; cwd?: string } = {}): Promise<string> {
+export async function recordUITool(shell: string[] | null | undefined, vault: string, a: Record<string, unknown>, o: { entry?: string[]; cwd?: string; browserOnly?: boolean; signal?: AbortSignal } = {}): Promise<string> {
   const entry = o.entry ?? [process.execPath, process.argv[1] ?? "", "record-ui"];
   const seconds = Math.min(MAX_SECONDS, Math.max(1, Number(a?.seconds) || 4));
-  const r = await runSandboxed(shell, entry, { cwd: o.cwd ?? vault, timeoutMs: (seconds + 120) * 1000, stdin: JSON.stringify({ ...(a ?? {}), vault }), extraEnv: { TMPDIR: "/tmp" } });
+  const r = await runSandboxed(shell, entry, { cwd: o.cwd ?? vault, timeoutMs: (seconds + 120) * 1000, stdin: JSON.stringify({ ...(a ?? {}), vault, browserOnly: o.browserOnly === true }), extraEnv: { TMPDIR: "/tmp" }, signal: o.signal });
   if ("refused" in r) return `RecordUI is unavailable: ${r.refused}`;
   const line = r.out.split("@@vc-record@@")[1];
   let res: RecordOut | null = null;

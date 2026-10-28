@@ -3,7 +3,7 @@
 // and the model backend are fixtures; no model runs. This is not live HTTPS.
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { join } from "node:path";
-import { writeFileSync } from "node:fs";
+import { existsSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer, request, type Server } from "node:http";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
@@ -16,6 +16,7 @@ const headers = { Host: HOST, "x-forwarded-proto": "https", "x-forwarded-for": "
 
 describe("built server MCP on its default private route", () => {
   let home: string;
+  let vault: string;
   let srv: Running;
   let proxy: Server;
   let router: FakeOpenRouter;
@@ -23,7 +24,7 @@ describe("built server MCP on its default private route", () => {
   beforeAll(async () => {
     vi.stubEnv("VC_MCP_HOSTS", undefined);
     home = tmp();
-    const vault = makeVault(join(home, "notes"));
+    vault = makeVault(join(home, "notes"));
     const cli = join(home, "tailscale-status.cjs");
     writeFileSync(cli, `#!${process.execPath}\nif (process.argv.slice(2).join(' ') !== 'status --json') process.exit(1);\nconsole.log(JSON.stringify({Self:{DNSName:'${HOST}.'}}));\n`, { mode: 0o700 });
     const bwrap = findBwrap();
@@ -35,6 +36,11 @@ describe("built server MCP on its default private route", () => {
     // does. fetch/undici may discard a caller-supplied Host header, so do not
     // silently allow the ephemeral loopback Host just to make this test pass.
     proxy = createServer((req, res) => {
+      if (req.url === "/record-proof") {
+        res.writeHead(200, { "Content-Type": "text/html" });
+        res.end('<!doctype html><body><button id="add" onclick="this.textContent=\'Recorded real input\'">Click me</button></body>');
+        return;
+      }
       const forwarded = { ...req.headers, host: String(req.headers["x-test-proxy-host"] ?? HOST) };
       delete forwarded["x-test-proxy-host"];
       const upstream = request(srv.base + req.url, { method: req.method, headers: forwarded }, (answer) => {
@@ -70,6 +76,52 @@ describe("built server MCP on its default private route", () => {
       expect(JSON.stringify(result)).toMatch(/board/i);
     } finally { await client.close(); }
     expect(srv.logs()).not.toContain(TOKEN);
+  });
+
+  it("executes external RecordUI with explicit vault authority and real browser input, never an owning turn", async () => {
+    const client = new Client({ name: "independent-browser-recorder", version: "test" });
+    try {
+      await client.connect(new StreamableHTTPClientTransport(new URL(url), { requestInit: { headers } }));
+      const target = `${new URL(url).origin}/record-proof`;
+      const result = await client.callTool({ name: "RecordUI", arguments: {
+        url: target, seconds: 1, width: 640, height: 480,
+        steps: [{ click: "#add" }, { waitFor: { text: "Recorded real input" } }, { shot: "clicked" }],
+      } });
+      expect(result.isError, JSON.stringify(result)).not.toBe(true);
+      const text = JSON.stringify(result);
+      expect(text).toContain("Every step ran.");
+      expect(text).toContain("Recorded real input");
+      const path = text.match(/\.vault-chat\/visuals\/mcp-recording-[^/]+\/recording\.(mp4|webm)/)?.[0];
+      expect(path, text).toBeTruthy();
+      expect(readFileSync(join(vault, path!)).length).toBeGreaterThan(1000);
+      expect(existsSync(join(vault, path!.replace(/\.(mp4|webm)$/, ".png")))).toBe(true);
+      for (const args of [
+        { url: target, steps: [{ run: "touch external-command-must-not-run" }] },
+        { url: target, steps: [{ click: "#add", run: "touch external-command-must-not-run" }] },
+        { url: "file:///etc/hosts" },
+        { url: target, steps: [{ goto: "file:///etc/hosts" }] },
+        { url: target, steps: [{ goto: "javascript:alert(1)" }] },
+        { url: target, out: "../escape.mp4" },
+      ]) {
+        const denied = await client.callTool({ name: "RecordUI", arguments: args });
+        expect(denied.isError, JSON.stringify(denied)).toBe(true);
+      }
+      expect(existsSync(join(vault, "external-command-must-not-run"))).toBe(false);
+      expect(existsSync(join(home, "escape.mp4"))).toBe(false);
+      const visuals = join(vault, ".vault-chat", "visuals");
+      const kept = visuals + "-kept";
+      renameSync(visuals, kept);
+      try {
+        for (const destination of [home, join(vault, ".vault-chat", "events")]) {
+          symlinkSync(destination, visuals);
+          try {
+            const denied = await client.callTool({ name: "RecordUI", arguments: { url: target } });
+            expect(denied.isError, JSON.stringify(denied)).toBe(true);
+            expect(JSON.stringify(denied)).toMatch(/outside|read-only/);
+          } finally { rmSync(visuals); }
+        }
+      } finally { renameSync(kept, visuals); }
+    } finally { await client.close(); }
   });
 
   it("does not admit loopback, wrong Hosts, missing/wrong credentials or missing private identity", async () => {

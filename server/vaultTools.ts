@@ -21,7 +21,8 @@ type RunOut = { code: number; out: string; err: string; timedOut: boolean } | { 
 
 /** Run argv in the engine's per-command sandbox (`shell`: its argv prefix ending in "--"; null: the engine
  * runs without one — not Linux, or VC_PI_UNSAFE; undefined: no engine) with a minimal environment plus `extraEnv`. */
-export function runSandboxed(shell: string[] | null | undefined, argv: string[], o: { cwd: string; timeoutMs: number; stdin?: string; extraEnv?: Record<string, string> }): Promise<RunOut> {
+export function runSandboxed(shell: string[] | null | undefined, argv: string[], o: { cwd: string; timeoutMs: number; stdin?: string; extraEnv?: Record<string, string>; signal?: AbortSignal }): Promise<RunOut> {
+  o.signal?.throwIfAborted();
   let prog: string;
   let args: string[];
   if (shell && shell.length) {
@@ -57,16 +58,21 @@ export function runSandboxed(shell: string[] | null | undefined, argv: string[],
     child.stderr!.on("data", (c) => (err += c));
     child.stdin!.on("error", () => {});
     child.stdin!.end(o.stdin ?? "");
+    const abort = () => killTree(child.pid);
+    o.signal?.addEventListener("abort", abort, { once: true });
+    if (o.signal?.aborted) abort();
     const timer = setTimeout(() => {
       timedOut = true;
       killTree(child.pid);
     }, o.timeoutMs);
     child.on("error", (e) => {
       clearTimeout(timer);
+      o.signal?.removeEventListener("abort", abort);
       done({ refused: e.message });
     });
     child.on("close", (code) => {
       clearTimeout(timer);
+      o.signal?.removeEventListener("abort", abort);
       done({ code: timedOut ? -1 : (code ?? -1), out, err, timedOut });
     });
   });

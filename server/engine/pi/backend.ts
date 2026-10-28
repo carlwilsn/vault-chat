@@ -346,14 +346,15 @@ export class PiBackend extends EventEmitter {
 
   /** External host tools that consume files use the same realpath/deny policy,
    * not a lexical prefix check (and never an ambient main-vault fallback). */
-  async externalPath(root: string, path: unknown): Promise<string | null> {
+  async externalPath(root: string, path: unknown, write = false): Promise<string | null> {
     const policy = await import(/* @vite-ignore */ pathToFileURL(join(this.o.paths.extDir, "policy.mjs")).href);
     const home = process.env.HOME ?? "/";
     if (typeof path !== "string" || !path.trim()) return "An explicit vault file path is required.";
     const resolved = policy.realish(path, root, home);
     if (!policy.isUnder(resolved, policy.realish(root, root, home))) return "Path is outside the explicitly bound vault.";
-    return policy.guardToolCall("ls", { path }, { cwd: root, home,
-      denyRead: policy.resolveList([...this.o.sandbox.denyRead, ...(this.o.sandbox.others?.() ?? [])], home), denyWrite: [],
+    return policy.guardToolCall(write ? "write" : "ls", { path }, { cwd: root, home,
+      denyRead: policy.resolveList([...this.o.sandbox.denyRead, ...(this.o.sandbox.others?.() ?? [])], home),
+      denyWrite: policy.resolveList(this.o.sandbox.denyWrite, home),
     });
   }
 

@@ -148,8 +148,17 @@ External filesystem access fails closed without the installed sandbox, even
 when unsafe native test mode is enabled. No command keys are provided to this
 loadout. External bash is intentionally unavailable: the existing native shell
 sandbox allows more than one vault and is not a vault-only external shell
-policy. `StartJob` remains turn-owned; `RecordUI` is also refused externally
-rather than providing an indirect command-execution route.
+policy. `StartJob` remains turn-owned. `RecordUI` instead has a narrow external
+browser-only binding: explicit http(s) pages, real browser input, no `run`
+steps, no local-file navigation (including page requests), no inherited browser
+profile or command keys, and an installed sandbox is mandatory. It uses the
+bound vault as cwd, never a foreground conversation or borrowed turn. Omit `out`:
+a fresh exclusive `.vault-chat/visuals/mcp-recording-*/` directory contains its
+video and screenshots, after the shared realpath and write-deny policy accepts
+that parent. Chromium uses private temporary writable config/cache because the
+installed sandbox correctly keeps HOME read-only. Request cancellation kills
+the recorder process tree. Native turn recordings retain their existing shell
+step authority; this is not external shell parity.
 
 Standard clients can explicitly list/read `vault-chat://context/you`, a text
 resource produced by the existing authoritative you-layer for their bound
@@ -225,6 +234,10 @@ Focused tests:
 - `mcpHosts.test.ts`, `mcpDeployment.test.ts`: exact default private Host discovery,
   optional override/disable, and the built server's ordinary authenticated mount
   using its existing credential loader (isolated reverse proxy, not live HTTPS);
+  the independent SDK also executes browser-only RecordUI with real click input,
+  writes a real video/screenshot and rejects command/file-navigation/output escapes;
+- `mcpRecordUI.test.ts`: preflight command/malformed-step refusals, sandbox requirement,
+  client output-path refusal, and realpath/write-deny policy before any output;
 - `mcpFilesystem.test.ts`: installed real pi factories inside real bubblewrap,
   independent standard SDK read/write/edit/grep/find/ls, lexical/absolute/symlink
   escapes, protected paths, read-only and voice authorization, scoped worker

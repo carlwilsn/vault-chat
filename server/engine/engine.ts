@@ -46,6 +46,7 @@ import { openProject, OPEN_PROJECT_DESCRIPTION, OPEN_PROJECT_SCHEMA } from "../p
 import { startJobWith, jobStatus, jobList, jobStop, reapJobs, readJobs, type PiJobEnv } from "./pi/jobs";
 import { devProxies, exposedNote, jobPorts } from "../devProxy";
 import { recordUITool, RECORD_DESCRIPTION, RECORD_SCHEMA } from "../recordUI";
+import { externalRecordUI } from "../mcp/recordUI";
 import { loadConfig } from "../config";
 import { ENGINE_ROLE_PROMPT } from "./prompt";
 import { isNoteTool, noteTool, noteToolSpecs } from "../notesTools";
@@ -701,7 +702,7 @@ export class Engine {
   async mcpBinding(context: { conversation: string | null; device: "laptop" | "phone" | "board" }) {
     return this.scoped(async () => {
       if (context.conversation && !(await readConv(this.d.vault, context.conversation))) return null;
-      const builtin = agentToolSpecs();
+      const builtin = agentToolSpecs().map((t) => t.name === "RecordUI" ? { ...t, description: `${t.description} External clients: browser-only http(s) pages; run steps and local-file navigation are refused. Omit out: a fresh vault visuals directory is allocated.` } : t);
       const own = await vaultToolSpecsFor(this.d.vault, [...builtin.map((t) => t.name), ...PI_BUILTIN_TOOLS]);
       const fs = await this.d.backend.filesystem(this.d.vault, PI_BUILTIN_TOOLS.filter((n) => n !== "bash"), { fileWrite: async () => true }, this.d.vault);
       return {
@@ -713,7 +714,9 @@ export class Engine {
         },
         call: async (name: string, args: Record<string, unknown>, contextOfCall: { signal: AbortSignal }) => this.scoped(async () => {
           if (PI_BUILTIN_TOOLS.includes(name)) return fs.call(name, args, { ...contextOfCall, requestId: "external" });
-          if (TURN_ONLY_TOOLS.has(name) || name === "Compact" || name === "RecordUI") return { ok: false, text: `${name} needs an owning vault-chat turn; an external MCP client cannot borrow a chat's live turn.` };
+          if (TURN_ONLY_TOOLS.has(name) || name === "Compact") return { ok: false, text: `${name} needs an owning vault-chat turn; an external MCP client cannot borrow a chat's live turn.` };
+          if (name === "RecordUI") return externalRecordUI(this.d.shell?.(), this.d.vault, args,
+            (path, write) => this.d.backend.externalPath(this.d.vault, path, write), { signal: contextOfCall.signal });
           if (name === "PdfRead" || name === "PdfPages") {
             const why = await this.d.backend.externalPath(this.d.vault, args.path);
             if (why) return { ok: false, text: why };
