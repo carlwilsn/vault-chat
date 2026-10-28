@@ -8,6 +8,7 @@ import { createMcpHttpHandler, type HttpBinding } from "./http";
 
 export type ProcessServices = {
   you?: (since: number | null) => Promise<{ text: string; until: number }>;
+  /** Host-only filesystem policy callbacks, never HTTP services. */
   env?: () => Record<string, string>;
   fileWrite?: () => Promise<boolean>;
 };
@@ -45,8 +46,7 @@ export class McpRuntime {
         if (req.url === "/context/you" && scope.services.you) {
           const n = body?.since;
           result = await scope.services.you(typeof n === "number" && Number.isFinite(n) ? n : null);
-        } else if (req.url === "/context/env" && scope.services.env) result = { env: scope.services.env() };
-        else if (req.url === "/context/file-write" && scope.services.fileWrite) result = { allowed: await scope.services.fileWrite() };
+        }
         else { res.writeHead(404).end(); return; }
         res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(result));
       })().catch(() => { if (!res.headersSent) res.writeHead(503).end(); else res.end(); }); });
@@ -69,7 +69,7 @@ export class McpRuntime {
     await this.start();
     const authorization = `Bearer ${randomBytes(32).toString("base64url")}`;
     const scopeId = randomUUID();
-    this.scopes.set(authorization, { binding: { ...binding, scopeId }, services });
+    this.scopes.set(authorization, { binding: { ...binding, scopeId }, services: { you: services.you } });
     return {
       bootstrap: { url: `${this.origin}/mcp`, authorization },
       revoke: async () => { this.scopes.delete(authorization); await this.handler?.revoke(scopeId); },

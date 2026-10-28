@@ -1,6 +1,6 @@
 // Real pi + official SDK protocol tests; no model calls, no UI proof, no keys.
 import { afterEach, describe, expect, it } from "vitest";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { createServer } from "node:http";
 import { join, resolve } from "node:path";
@@ -9,7 +9,8 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { McpRuntime } from "../mcp/runtime";
 import { PiProc } from "../engine/pi/proc";
 import type { ToolSpec } from "../engine/pi/backend";
-import { pdfPages, pdfPagesSpec } from "../engine/extraTools";
+import { pdfPagesAnswer, pdfPagesSpec } from "../engine/extraTools";
+import { filesystemBinding } from "../mcp/filesystem";
 import { makePdf, textPage } from "./pdfgen";
 
 const spec: ToolSpec = { type: "function", name: "Echo", description: "Protocol test", inputSchema: { type: "object", properties: { text: { type: "string" } }, required: ["text"], additionalProperties: false } };
@@ -72,7 +73,7 @@ describe("revocable process scopes and stateful HTTP", () => {
     expect((await fetch(new URL("/context/file-write", binding.bootstrap.url), { method: "POST", headers: { Authorization: binding.bootstrap.authorization }, body: "{}" })).status).toBe(401);
   });
 
-  it.each(["Echo", "PdfPages"])("uses native pinned pi MCP for %s, including provider context/binary attachments", async (tool) => {
+  it.each(["Echo", "PdfPages", "read", "write"])("uses native pinned pi MCP for %s, including provider context/binary attachments", async (tool) => {
     const root = mkdtempSync(join(tmpdir(), "vc-native-mcp-"));
     const agentDir = join(root, "agent"); mkdirSync(agentDir);
     // Deterministic local provider fixture, not a UI/mockup or a model request.
@@ -82,7 +83,11 @@ describe("revocable process scopes and stateful HTTP", () => {
     const source = makePdf([textPage("Not requested", []), textPage("Requested page", ["Native MCP PDF bytes"])]);
     writeFileSync(join(root, "source.pdf"), source);
     const nativeName = `mcp__vault_chat__${tool}`;
-    const args = tool === "PdfPages" ? { path: "source.pdf", pages: "2" } : { text: "native-pi" };
+    writeFileSync(join(root, "note.txt"), "shared file read");
+    const args = tool === "PdfPages" ? { path: "source.pdf", pages: "2" } : tool === "read" ? { path: "note.txt" } : tool === "write" ? { path: "written.txt", content: "shared file write" } : { text: "native-pi" };
+    const prefix = process.env.VC_TEST_PI_DIR ?? join(homedir(), ".local/state/vault-chat-server/pi/1.1.0");
+    const cli = join(prefix, "node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js");
+    const fs = await filesystemBinding({ cli, node: process.execPath, script: resolve("server/engine/pi/ext/filesystem.mjs"), cwd: root, home: root, outer: null, shell: null, denyRead: [], denyWrite: [], allowed: ["read", "write"], env: () => ({}), fileWrite: async () => true });
     const provider = createServer(async (req, res) => {
       const chunks: Buffer[] = []; for await (const part of req) chunks.push(Buffer.from(part));
       const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
@@ -100,17 +105,15 @@ describe("revocable process scopes and stateful HTTP", () => {
     writeFileSync(join(agentDir, "models.json"), JSON.stringify({ providers: { test: { baseUrl: `http://127.0.0.1:${(provider.address() as {port: number}).port}/v1`, apiKey: "test-only-not-a-key", api: "openai-completions", models: [{ id: "test", name: "test", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 32000, maxTokens: 1000 }] } } }));
     const seenSince: (number | null)[] = [];
     const binding = await runtime().bind({
-      specs: [tool === "PdfPages" ? pdfPagesSpec : spec],
-      call: async (_name, args) => ({ ok: true, text: tool === "PdfPages" ? await pdfPages(root, args) : String(args.text) }),
+      specs: tool === "read" || tool === "write" ? fs.specs.filter((s) => s.name === tool) : [tool === "PdfPages" ? pdfPagesSpec : spec],
+      call: async (name, args, context) => tool === "PdfPages" ? pdfPagesAnswer(root, args) : tool === "read" || tool === "write" ? fs.call(name, args, context) : { ok: true, text: String(args.text) },
     }, {
       fileWrite: async () => true, env: () => ({}),
       you: async (since) => { seenSince.push(since); return { text: "<you>Focus: native-context.pdf</you>", until: 123 }; },
     });
     // Explicit pinned installation, never the invoking agent's env/config/keys.
-    const prefix = process.env.VC_TEST_PI_DIR ?? join(homedir(), ".local/state/vault-chat-server/pi/1.1.0");
-    const cli = join(prefix, "node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js");
     const proc = new PiProc({
-      argv: [process.execPath, cli, "--mode", "rpc", "--no-session", "-ne", "-e", "builtin:mcp", "-e", resolve("server/engine/pi/ext/vc.mjs"), "--model", "test/test", "-na", "--offline", "-ns", "-np", "--no-themes"],
+      argv: [process.execPath, cli, "--mode", "rpc", "--no-session", "-ne", "-e", "builtin:mcp", "-e", resolve("server/engine/pi/ext/vc.mjs"), "--model", "test/test", "-na", "--offline", "-ns", "-np", "--no-themes", "--tools", nativeName],
       cwd: root, env: { PATH: process.env.PATH, HOME: root, PI_CODING_AGENT_DIR: agentDir, PI_SKIP_VERSION_CHECK: "1", PI_OFFLINE: "1", VC_PI_YOU: "1" }, key: null,
       bootstrap: JSON.stringify({ ...binding.bootstrap, tools: true }),
     });
@@ -139,7 +142,10 @@ describe("revocable process scopes and stateful HTTP", () => {
           expect(JSON.stringify(await page.getTextContent())).toContain("Requested page");
           expect(JSON.stringify(await page.getTextContent())).not.toContain("Not requested");
         } finally { await doc.destroy(); }
-      } else expect(result.content).toEqual([{ type: "text", text: "native-pi" }]);
+      } else if (tool === "read") expect(result.content[0].text).toContain("shared file read");
+      else if (tool === "write") expect(readFileSync(join(root, "written.txt"), "utf8")).toBe("shared file write");
+      else expect(result.content).toEqual([{ type: "text", text: "native-pi" }]);
+      expect(payloads[0].tools.map((t: any) => t.function.name)).toEqual([nativeName]);
       expect(requests).toBe(2);
     } finally {
       await proc.close(); await binding.revoke();

@@ -36,7 +36,7 @@ import { MAIN_ID, projectOfThread, projectThreadId, threadKindOf } from "../../s
 import { searchHistory } from "./history";
 import { addWake, readWakes, removeWakes, nextWakeFor, parseDelay, type Wake } from "./wakes";
 import { Ledger } from "./ledger";
-import { pdfPages, pdfPagesSpec, pdfRead, webSearch } from "./extraTools";
+import { pdfPagesAnswer, pdfPagesSpec, pdfRead, webSearch } from "./extraTools";
 import { failMake, inboxLog, listEntries, readEntry, sendEntry, startMake, type InboxEvent } from "../inbox";
 import { BOARD_MAKER_PROMPT, boardMakeTask, makerStats } from "./boardTools";
 import { lookBoard } from "../boards";
@@ -488,10 +488,10 @@ export function voiceSideToolSpecs(act: boolean): ToolSpec[] {
 const text = (t: string) => ({ success: true, contentItems: [{ type: "inputText", text: t }] });
 
 /** A tool's answer for pi: its text, and the images it attaches (BoardLook's board pictures) as pi's image blocks. */
-export function toolAnswer(r: any): { ok: boolean; text: string; images?: { data: string; mimeType: string }[] } {
+export function toolAnswer(r: any): import("./pi/backend").ToolAnswer {
   const items: any[] = Array.isArray(r?.contentItems) ? r.contentItems : [];
   const images = items.filter((c) => c?.type === "inputImage" && typeof c.data === "string" && c.data).map((c) => ({ data: String(c.data), mimeType: String(c.mimeType || "image/png") }));
-  return { ok: r?.success !== false, text: items.filter((c) => c?.type !== "inputImage").map((c) => c?.text ?? "").join("\n"), ...(images.length ? { images } : {}) };
+  return { ok: r?.success !== false, text: items.filter((c) => c?.type !== "inputImage").map((c) => c?.text ?? "").join("\n"), ...(images.length ? { images } : {}), ...(r?.resources ? { resources: r.resources } : {}) };
 }
 
 /** A Delegate worker's instructions (on top of the subagent preamble). */
@@ -703,10 +703,21 @@ export class Engine {
       if (context.conversation && !(await readConv(this.d.vault, context.conversation))) return null;
       const builtin = agentToolSpecs();
       const own = await vaultToolSpecsFor(this.d.vault, [...builtin.map((t) => t.name), ...PI_BUILTIN_TOOLS]);
+      const fs = await this.d.backend.filesystem(this.d.vault, PI_BUILTIN_TOOLS.filter((n) => n !== "bash"), { fileWrite: async () => true }, this.d.vault);
       return {
-        specs: [...builtin, ...own] as ToolSpec[],
+        specs: [...builtin, ...own, ...fs.specs] as ToolSpec[],
+        resources: [{ uri: "vault-chat://context/you", name: "Authorized device and file context", mimeType: "text/plain" }],
+        readResource: async (uri: string) => {
+          if (uri !== "vault-chat://context/you") throw new Error("Resource unavailable in this scope");
+          return `Bound device: ${context.device}; conversation: ${context.conversation ?? "none"}.\n${(await this.scoped(() => this.you({ convId: context.conversation, since: null }))).text}`;
+        },
         call: async (name: string, args: Record<string, unknown>, contextOfCall: { signal: AbortSignal }) => this.scoped(async () => {
-          if (TURN_ONLY_TOOLS.has(name) || name === "Compact") return { ok: false, text: `${name} needs an owning vault-chat turn; an external MCP client cannot borrow a chat's live turn.` };
+          if (PI_BUILTIN_TOOLS.includes(name)) return fs.call(name, args, { ...contextOfCall, requestId: "external" });
+          if (TURN_ONLY_TOOLS.has(name) || name === "Compact" || name === "RecordUI") return { ok: false, text: `${name} needs an owning vault-chat turn; an external MCP client cannot borrow a chat's live turn.` };
+          if (name === "PdfRead" || name === "PdfPages") {
+            const why = await this.d.backend.externalPath(this.d.vault, args.path);
+            if (why) return { ok: false, text: why };
+          }
           const a = { ...args };
           if (name === "Show" && (!a.where || a.where === "here")) a.where = context.device;
           const toBoard = name === "BoardSend" || (name === "Show" && /^(board|ipad)$/i.test(String(a.where)));
@@ -2251,8 +2262,10 @@ export class Engine {
         }
         case "PdfRead":
           return text(await pdfRead(vault, a));
-        case "PdfPages":
-          return text(await pdfPages(vault, a));
+        case "PdfPages": {
+          const answer = await pdfPagesAnswer(vault, a);
+          return { ...text(answer.text), resources: answer.resources };
+        }
         case "WebSearch":
           return text(await webSearch(String(a.query ?? ""), this.d.apiKey(), this.d.webSearchModel));
         case "StartJob": {

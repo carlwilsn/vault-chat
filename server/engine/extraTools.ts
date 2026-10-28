@@ -2,10 +2,10 @@
 // ranges, never the whole document by default), PdfPages (the pages themselves,
 // to the model as a PDF) and WebSearch (OpenRouter's web plugin on a cheap
 // model). Detached jobs are in pi/jobs.ts.
-import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, realpathSync, lstatSync, renameSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
-import type { ToolSpec } from "./pi/backend";
+import type { ToolSpec, ToolAnswer } from "./pi/backend";
 
 // ---- PdfRead ----
 const PDF_DEFAULT_PAGES = "1-3";
@@ -78,7 +78,7 @@ function rangesOf(ps: number[]): string {
   return r.map(([a, b]) => (a === b ? `${a}` : `${a}-${b}`)).join(",");
 }
 
-export async function pdfPages(vault: string, a: { path?: string; pages?: string }): Promise<string> {
+export async function pdfPages(vault: string, a: { path?: string; pages?: string }, attach?: (blob: string, filename: string) => void): Promise<string> {
   const raw = String(a?.path ?? "").trim();
   if (!raw) return "PdfPages needs a path.";
   const path = isAbsolute(raw) ? raw : resolve(vault, raw);
@@ -92,17 +92,32 @@ export async function pdfPages(vault: string, a: { path?: string; pages?: string
     if (!pages.length) return `${raw} has ${total} page(s); none of "${a?.pages}" is among them.`;
     if (pages.length > PDF_PAGES_MAX) return `That is ${pages.length} pages; PdfPages takes at most ${PDF_PAGES_MAX} a call.`;
     const dir = join(vault, ".vault-chat", "local", "pdf-pages");
+    mkdirSync(dir, { recursive: true });
+    if (realpathSync(dir) !== join(realpathSync(vault), ".vault-chat", "local", "pdf-pages")) throw new Error("PDF cache must not escape through symlinks");
     const slice = join(dir, `${createHash("sha256").update(bytes).digest("hex").slice(0, 16)}-p${rangesOf(pages)}.pdf`);
+    if (existsSync(slice) && !lstatSync(slice).isFile()) throw new Error("PDF cache entry must be a regular file");
     if (!existsSync(slice)) {
       const out: Uint8Array = await doc.extractPages([{ document: null, includePages: pages.map((p) => p - 1) }]);
       mkdirSync(dir, { recursive: true });
-      writeFileSync(slice + ".tmp", out);
-      renameSync(slice + ".tmp", slice);
+      const temporary = `${slice}.${randomUUID()}.tmp`;
+      writeFileSync(temporary, out, { flag: "wx" });
+      renameSync(temporary, slice);
     }
+    attach?.(readFileSync(slice).toString("base64"), slice.slice(dir.length + 1));
     return `${raw}: ${total} page(s). Page ${rangesOf(pages)} attached below as a PDF (its text and page images).\n[PDF pages attached: ${slice}]`;
   } finally {
     void doc.destroy();
   }
+}
+
+/** Standard MCP attachment plus the existing private provider marker. Never
+ * infer a host file to read from arbitrary tool-result text. */
+export async function pdfPagesAnswer(vault: string, a: { path?: string; pages?: string }): Promise<ToolAnswer> {
+  const resources: NonNullable<ToolAnswer["resources"]> = [];
+  const text = await pdfPages(vault, a, (blob, filename) => resources.push({
+    uri: `vault-chat://pdf-pages/${filename}`, mimeType: "application/pdf", blob,
+  }));
+  return { ok: true, text, resources };
 }
 
 // ---- WebSearch ----

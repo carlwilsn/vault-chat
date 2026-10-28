@@ -8,12 +8,14 @@
 import { EventEmitter } from "node:events";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, relative } from "node:path";
+import { pathToFileURL } from "node:url";
 import type { CallRecord } from "../ledger";
 import type { ThreadTokenUsage } from "../context";
 import { PiProc } from "./proc";
 import { McpRuntime, type ProcessServices } from "../../mcp/runtime";
 import { runSubagentTool, subagentTool } from "../../mcp/subagent";
 import type { BoundTools } from "../../mcp/tools";
+import { FILE_TOOLS, filesystemBinding } from "../../mcp/filesystem";
 import { Subagents, type Detached, type LiveChild, type SubagentOptions } from "./subagents";
 import { SideRuns } from "./side";
 import { modelWindow, type PiCatalogRow, type PiPaths } from "./config";
@@ -46,7 +48,7 @@ export class ThreadUnknownError extends Error {
 }
 
 /** A host tool's answer: its text, and images it attaches (pi image blocks: base64 + mime). */
-export type ToolAnswer = { ok: boolean; text: string; images?: { data: string; mimeType: string }[] };
+export type ToolAnswer = { ok: boolean; text: string; images?: { data: string; mimeType: string }[]; resources?: { uri: string; mimeType: string; blob: string }[] };
 export type ToolCallHandler = (threadId: string, name: string, args: any, signal?: AbortSignal) => Promise<ToolAnswer>;
 export type UserInputHandler = (threadId: string, question: string, options: string[]) => Promise<string>;
 /** The "you" layer for a session (the extension's before_agent_start asks before each prompt): what Carl
@@ -342,6 +344,33 @@ export class PiBackend extends EventEmitter {
     });
   }
 
+  /** External host tools that consume files use the same realpath/deny policy,
+   * not a lexical prefix check (and never an ambient main-vault fallback). */
+  async externalPath(root: string, path: unknown): Promise<string | null> {
+    const policy = await import(/* @vite-ignore */ pathToFileURL(join(this.o.paths.extDir, "policy.mjs")).href);
+    const home = process.env.HOME ?? "/";
+    if (typeof path !== "string" || !path.trim()) return "An explicit vault file path is required.";
+    const resolved = policy.realish(path, root, home);
+    if (!policy.isUnder(resolved, policy.realish(root, root, home))) return "Path is outside the explicitly bound vault.";
+    return policy.guardToolCall("ls", { path }, { cwd: root, home,
+      denyRead: policy.resolveList([...this.o.sandbox.denyRead, ...(this.o.sandbox.others?.() ?? [])], home), denyWrite: [],
+    });
+  }
+
+  /** The shared filesystem authority: native loadouts retain the installed
+   * sandbox; external callers are explicitly vault-bound and get no shell or keys. */
+  async filesystem(cwd: string, allowed: string[], services: ProcessServices, root?: string): Promise<BoundTools> {
+    return filesystemBinding({
+      cli: this.o.install.cli, node: this.o.install.node,
+      script: join(this.o.paths.extDir, "filesystem.mjs"), cwd,
+      home: process.env.HOME ?? "/", outer: outerWith(this.o.sandbox), shell: shellWith(this.o.sandbox),
+      denyRead: [...this.o.sandbox.denyRead, ...(this.o.sandbox.others?.() ?? [])],
+      denyWrite: this.o.sandbox.denyWrite, allowed, root,
+      env: root ? () => ({}) : () => services.env?.() ?? {},
+      fileWrite: () => services.fileWrite?.() ?? Promise.resolve(false),
+    });
+  }
+
   /** Spawn pi on a session (new when `file` is null) and wait for it to answer. Children (subagents) and
    * side threads (side.ts) pass their own session dir and tool list; they don't count against maxProcs.
    * `fork`: pi's --fork (a new session holding that session's history, its header naming it as parent);
@@ -353,18 +382,24 @@ export class PiBackend extends EventEmitter {
     let threadId = "";
     const specs: ToolSpec[] = JSON.parse(readFileSync(o.tools, "utf8"));
     if (o.subagents) specs.push(subagentTool(this.o.subagents.agentsDirs, this.o.subagents.maxTasks, this.o.subagents.concurrency));
-    const scope = await this.mcp.bind({ specs, call: o.hostCall ?? (async (name, args, context) => {
+    const services = o.services ?? {
+      env: () => this.agentEnv(),
+      ...(o.you ? { you: (since: number | null) => this.you({ threadId, since }) } : {}),
+      fileWrite: async () => !!threadId && !!(await this.h?.fileWrite?.(threadId)),
+    };
+    const fs = await this.filesystem(o.cwd, o.builtins ?? ["read", "bash", "edit", "write"], services);
+    specs.push(...fs.specs);
+    const hostCall: BoundTools["call"] = o.hostCall ?? (async (name, args, context) => {
       if (!threadId || !this.h) return { ok: false, text: "Engine not ready." };
       if (name === "subagent" && o.subagents) return runSubagentTool(args, {
         dirs: this.o.subagents.agentsDirs, maxTasks: this.o.subagents.maxTasks, concurrency: this.o.subagents.concurrency,
         signal: context.signal, run: (a) => this.subs.run(threadId, a, context.signal),
       });
       return this.h.toolCall(threadId, name, args, context.signal);
-    }) }, o.services ?? {
-      env: () => this.agentEnv(),
-      ...(o.you ? { you: (since: number | null) => this.you({ threadId, since }) } : {}),
-      fileWrite: async () => !!threadId && !!(await this.h?.fileWrite?.(threadId)),
     });
+    const scope = await this.mcp.bind({ specs, call: (name, args, context) =>
+      FILE_TOOLS.includes(name) ? fs.call(name, args, context) : hostCall(name, args, context),
+    }, services);
     const session = o.fork ? ["--fork", o.fork] : o.ephemeral ? ["--no-session"] : o.file ? ["--session", o.file] : [];
     const args = [
       this.o.install.cli,
@@ -375,7 +410,7 @@ export class PiBackend extends EventEmitter {
       "-ne", ...(specs.length ? ["-e", "builtin:mcp"] : ["--no-mcp"]), "-ns", "-np", "--no-themes", "-na", "--offline",
       "-e", this.o.paths.ext,
       ...(o.system ? ["--system-prompt", o.system] : ["--append-system-prompt", o.instr]),
-      ...(o.builtins ? (o.builtins.length ? ["--tools", [...o.builtins.filter((n) => !specs.some((s) => s.name === n)), ...specs.map((s) => `mcp__vault_chat__${s.name}`)].join(",")] : ["--no-tools"]) : []),
+      ...(specs.length ? ["--tools", specs.map((s) => `mcp__vault_chat__${s.name}`).join(",")] : ["--no-tools"]),
       ...session,
     ];
     const outer = outerWith(this.o.sandbox);

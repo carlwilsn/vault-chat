@@ -210,8 +210,8 @@ describe("Ctrl+L and Ctrl+K are requests to pi", () => {
     const voice = lines.find((l) => l.session === r.body.id)!;
     expect(voice).toMatchObject({ via: "voice-ask", conv, act: true });
     expect(voice.allowed).toEqual(expect.arrayContaining(["read", "bash", "edit", "write"]));
-    // pi took the write (the fake pi runs only read; a tool it was not given comes back "not found", ok false).
-    expect(voice.tools).toContainEqual(expect.objectContaining({ name: "write", ok: true }));
+    // pi took the write through the shared MCP filesystem, using the real factory.
+    expect(voice.tools).toContainEqual(expect.objectContaining({ name: "mcp__vault_chat__write", ok: true }));
   });
 
   it("refusals: no text, an unknown side thread", async () => {

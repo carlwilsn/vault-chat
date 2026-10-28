@@ -15,9 +15,26 @@ subagent schema/orchestration; `pi/subagents.ts` retains process management,
 limits, results, cost and reports. There is no replacement agent loop.
 
 `tools.ts` validates both the catalog and each call with the same schemas, and
-adapts existing `ToolAnswer` text/image results to standard MCP content.
-`PdfPages` is currently a local-path text marker, not standard MCP PDF content
-(see the limitations below).
+adapts `ToolAnswer` text, images and embedded binary resources to standard MCP
+content. `PdfPages` attaches the actual requested PDF slice as an embedded
+`application/pdf` resource, while retaining the marker used by native pi's
+provider hook. It never reads a host file inferred from arbitrary result text.
+
+`filesystem.ts` imports definitions directly from the installed pinned pi's
+`createAllToolDefinitions`; there are no copied filesystem schemas or tool
+bodies. The same factories execute in `pi/ext/filesystem.mjs`, a plain one-call
+subprocess inside the existing outer sandbox (not another agent loop). Bash
+retains the nested shell sandbox, scrubbed environment, authorized command-key
+injection and bounded timeout. The shared policy module still applies the
+realpath guards. Pi's own per-file mutation queue serializes writes/edits across
+MCP bindings. A cancelled call kills its sandbox process group.
+
+Native pi's explicit active-tool allowlist contains only `mcp__vault_chat__...`
+names: no duplicate native read/write/edit/bash tools. Chat retains its coding
+loadout; side queries retain read/grep/find/ls; worker definitions retain their
+explicit tools. Missing tools are refused before dispatch. Voice talkers cannot
+write/edit **or bash around the write gate** and must Delegate. Explicit voice
+action side runs and authorized workers retain their write authority.
 `http.ts` is the SDK's stateful Streamable HTTP transport. Every request,
 including cancellation, GET and DELETE, is authenticated. Sessions are bound to
 host authority, not used as authority themselves. Host/Origin validation, body,
@@ -41,13 +58,11 @@ that exact namespace is shortened for vault-chat display/reducer logic. Other
 MCP server names remain intact. `-ne -e builtin:mcp` excludes unrelated MCP
 configuration; the one-shots with no host tools use `--no-mcp`.
 
-The extension retains private services for incremental context, per-command key
-env and guarded file writes. They are **not discoverable agent tools**:
-
-- `POST /context/you`: only when the host explicitly enables incremental context;
-- `POST /context/env`: only for command-capable loadouts;
-- `POST /context/file-write`: only for write/edit loadouts, and still refused for
-  a voice talker that must delegate file work.
+The extension retains only the private incremental-context service:
+`POST /context/you`, when the host explicitly enables it. It is **not a
+discoverable agent tool**. Command-key env and write-authorization callbacks now
+stay in the host-owned shared filesystem binding, not private HTTP endpoints.
+`/context/env` and `/context/file-write` are no longer mounted.
 
 An independent process binding cannot use another's MCP session or private
 services. Process exit revokes the capability and closes all its sessions.
@@ -103,8 +118,25 @@ explicitly allowed by the adapter (the external endpoint allows none).
 and handlers. External tools cannot borrow a live turn's question, proof gate,
 worker or compaction ownership. They receive an actionable refusal instead.
 Show defaults to the bound device; board sending requires the external client's
-explicit request, not ambient screen presence. Private context/env/write
-services are **not** mounted at this external endpoint.
+explicit request, not ambient screen presence. Private services are **not**
+mounted at this external endpoint.
+
+External read/write/edit/grep/find/ls use those same pi factories with explicit
+vault-root authority, realpath containment (including missing write tails), the
+installed deny-read/deny-write policy and outer sandbox. `PdfRead`/`PdfPages`
+also validate external source paths against the bound root and deny policy.
+External filesystem access fails closed without the installed sandbox, even
+when unsafe native test mode is enabled. No command keys are provided to this
+loadout. External bash is intentionally unavailable: the existing native shell
+sandbox allows more than one vault and is not a vault-only external shell
+policy. `StartJob` remains turn-owned; `RecordUI` is also refused externally
+rather than providing an indirect command-execution route.
+
+Standard clients can explicitly list/read `vault-chat://context/you`, a text
+resource produced by the existing authoritative you-layer for their bound
+vault/conversation, labelled with their bound device. This does not auto-inject
+a prompt, expose the private service, return command keys or accept model/client
+arguments selecting a different authority. The native per-turn hook is unchanged.
 
 ### Claude Code on the laptop
 
@@ -160,31 +192,36 @@ Focused tests:
   the next provider payload;
 - `mcpExternal.test.ts`: private authority requirements, explicit scope, standard
   SDK client and session/device isolation;
+- `mcpFilesystem.test.ts`: installed real pi factories inside real bubblewrap,
+  independent standard SDK read/write/edit/grep/find/ls, lexical/absolute/symlink
+  escapes, protected paths, read-only and voice authorization, scoped worker
+  bash, PNG/JPEG/GIF/WebP/BMP transport, standard PDF slice bytes and scoped
+  context resources. Tests require the pinned pi installation (`VC_TEST_PI_DIR`
+  overrides its default location); the scripted CLI fixture re-exports those
+  actual factories rather than faking a filesystem;
 - `side.test.ts`, `backgroundTasks.test.ts`, `projectChanges.test.ts`: existing
   real-server integration surfaces through the MCP-speaking test pi fixture.
 
-### Incomplete original scope
+### Remaining limitations
 
-The external catalog is the host/vault-defined catalog, **not** pi's native
-filesystem/shell catalog. `read`, `write`, `edit`, `bash`, `grep`, `find` and
-`ls` still run only inside pi with `vc.mjs`'s existing path guards, guarded
-writes, env scrubbing and bash sandbox. Therefore standard external MCP
-reading/writing of ordinary vault files is **not implemented**. Closing that
-gap requires adapting mature pi tool definitions with the **same** policy,
-not new filesystem implementations or a weaker external authority path.
+External bash is not exposed; this is a deliberate scoped limitation, not shell
+parity. The existing native Linux sandbox is retained, not a new hermetic
+filesystem: system tools and explicitly configured native project folders keep
+their installed permissions. Realpath checks do not turn a concurrently hostile
+local filesystem into a new isolation boundary; the installed mount/hide policy
+remains the protection for host credentials. No external command/env capability
+is issued.
 
-`PdfPages` works for native pi through `pdf.mjs`: the host returns a
-server-local slice path and that extension adds its bytes to the provider
-request. The external MCP adapter currently returns only that text marker;
-it supplies neither PDF bytes nor a resolvable MCP resource. An external
-client cannot see the pages from the server-local path. `PdfRead` text support
-and native-pi PDF tests do **not** establish external binary PDF support.
+Each filesystem call starts a sandbox executor (startup overhead), and the
+current host `ToolAnswer` MCP adapter returns the finalized result, not live bash
+stdout updates. Pi still owns tool execution events and the agent loop; there
+is no replacement session/state/streaming engine. Large results remain subject
+to pi/MCP's own transport/output limits.
 
-The incremental you-layer remains a private pi service, enabled for typed/
-voice-brain conversation turns and Ctrl+K/Ctrl+L/voice sides. Workers and
-one-shots deliberately do not receive it. External MCP connections also do
-not get that automatic prompt injection; their vault/device/conversation
-scope is authority, not an injected context layer.
+The incremental you-layer hook is still enabled only for typed/voice-brain
+conversation turns and Ctrl+K/Ctrl+L/voice sides. Workers and one-shots do not
+receive it; independent clients may explicitly read the scoped standard
+resource instead of receiving automatic prompt injection.
 
 The native-pi provider fixture is a protocol test, **not** a model/UI proof.
 Local SDK/temporary-board tests are not proof from Carl's external laptop.

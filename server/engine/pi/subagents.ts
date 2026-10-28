@@ -345,7 +345,7 @@ export class Subagents {
         }
       } else if (e?.type === "tool_execution_start") {
         child.activity = activityOf(String(e.toolName ?? "tool"), e.args ?? {});
-        if (e.toolName === "write" || e.toolName === "edit") writes.set(String(e.toolCallId ?? ""), e.args ?? {});
+        if (["write", "edit"].includes(hostToolName(String(e.toolName ?? "")))) writes.set(String(e.toolCallId ?? ""), e.args ?? {});
         changed();
       } else if (e?.type === "tool_execution_end") {
         child.steps++;

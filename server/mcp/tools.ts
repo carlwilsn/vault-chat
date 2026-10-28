@@ -3,7 +3,7 @@
 // The existing ToolSpecs and handlers remain the only definitions/implementations.
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { AjvJsonSchemaValidator } from "@modelcontextprotocol/sdk/validation/ajv";
-import { CallToolRequestSchema, ErrorCode, ListToolsRequestSchema, McpError, type CallToolResult, type Tool } from "@modelcontextprotocol/sdk/types.js";
+import { CallToolRequestSchema, ErrorCode, ListToolsRequestSchema, ListResourcesRequestSchema, ReadResourceRequestSchema, McpError, type CallToolResult, type Tool } from "@modelcontextprotocol/sdk/types.js";
 import type { ToolAnswer, ToolSpec } from "../engine/pi/backend";
 
 export type McpCallContext = {
@@ -17,6 +17,8 @@ export type McpCallContext = {
  * allowed specs, and execution enforces that same list. No ambient main vault. */
 export type BoundTools = {
   specs: readonly ToolSpec[];
+  resources?: { uri: string; name: string; mimeType: string }[];
+  readResource?: (uri: string) => Promise<string>;
   call: (name: string, args: Record<string, unknown>, context: McpCallContext) => Promise<ToolAnswer>;
 };
 
@@ -41,10 +43,18 @@ export function createToolServer(binding: BoundTools, version: string): Server {
     });
   }
   const server = new Server({ name: "vault-chat", version }, {
-    capabilities: { tools: {} },
+    capabilities: { tools: {}, ...(binding.readResource ? { resources: {} } : {}) },
     instructions: "Carl's vault-chat tools. Tools act only within the authority bound by the host to this connection/request.",
   });
   server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [...tools.values()].map((t) => structuredClone(t.spec)) }));
+  if (binding.readResource) {
+    server.setRequestHandler(ListResourcesRequestSchema, async () => ({ resources: binding.resources ?? [] }));
+    server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
+      const resource = binding.resources?.find((r) => r.uri === request.params.uri);
+      if (!resource) throw new McpError(ErrorCode.InvalidParams, "Resource unavailable in this scope");
+      return { contents: [{ uri: resource.uri, mimeType: resource.mimeType, text: await binding.readResource!(resource.uri) }] };
+    });
+  }
   server.setRequestHandler(CallToolRequestSchema, async (request, extra): Promise<CallToolResult> => {
     const name = request.params.name;
     const tool = tools.get(name);
@@ -58,6 +68,7 @@ export function createToolServer(binding: BoundTools, version: string): Server {
         content: [
           { type: "text", text: answer.text },
           ...(answer.images ?? []).map((image) => ({ type: "image" as const, data: image.data, mimeType: image.mimeType })),
+          ...(answer.resources ?? []).map((resource) => ({ type: "resource" as const, resource })),
         ],
         ...(answer.ok ? {} : { isError: true }),
       };
