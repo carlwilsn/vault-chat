@@ -23,6 +23,8 @@ import { boxGet, boxPost } from "./boxChat";
 import { pushKeysToBox, keysChanged, subscribeKeyPush } from "./boxKeys";
 import { checkVoiceModel, NEED_LABEL, type Check as ModelCheck } from "./modelCaps";
 import { BoxModelChecks } from "./BoxModelChecks";
+import { MasterSection } from "./MasterSection";
+import { openVaultAt } from "./openVault";
 import { modelLabel, setAgentModel, useAgentModel } from "./agentModel";
 import { openShortcutSheet } from "./ShortcutSheet";
 import { chordText } from "./shortcuts";
@@ -43,7 +45,7 @@ import {
   type VoiceDetail,
 } from "./voiceLibraryBrowse";
 
-// Five sections: Models, Keys, Voice, Box, Appearance; then Keyboard shortcuts (the Ctrl+/ sheet).
+// Six sections: Models, Keys, Voice, vault-chat folder, Box, Appearance; then Keyboard shortcuts (the Ctrl+/ sheet).
 
 const mask = (k?: string) => (k ? `${k.slice(0, 6)}…${k.slice(-4)}` : "not set");
 
@@ -77,6 +79,8 @@ export function SettingsPane() {
         <KeysSection />
         <Divider />
         <VoiceSection />
+        <Divider />
+        <MasterSection openVault={openVaultAt} />
         <Divider />
         <BoxSection />
         <Divider />

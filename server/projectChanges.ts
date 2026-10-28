@@ -13,6 +13,8 @@ import { runGit } from "./git";
 import { agentWorkDir } from "./workArea";
 import { wallsOf } from "./projectFolders";
 import { writeAtomic } from "./atomic";
+import { masterProjectOf, syncedWithoutRemote, triggerProjectAt } from "./master";
+import { withRepoLock } from "./git";
 
 // The card's names and its images' place in the vault: one definition for the box, the laptop and the phone.
 import { KEEP, OUTCOME_SEP, REVIEW_TOOL, SEND_BACK, proofImagePath } from "../src/review";
@@ -29,6 +31,12 @@ export function isGitProject(folder: string): boolean {
   } catch {
     return false;
   }
+}
+
+/** The "you keep it" gate applies: a git project, unless it is a project in the vault-chat folder with no remote of
+ * its own (synced with the laptop like a vault; the agent writes it directly). */
+export function isGatedProject(folder: string): boolean {
+  return isGitProject(folder) && !syncedWithoutRemote(folder);
 }
 
 /** Where the agent works on a git project: its clone in the vault's work area. */
@@ -181,6 +189,14 @@ export function proofQuestion(r: { title: string; branch: string; base: string }
  * repo has a remote. A merge that can't be made cleanly is undone and said; main is then as it was.
  */
 export async function keepReview(vault: string, r: Review): Promise<{ ok: boolean; text: string }> {
+  // Under the folder's repo lock: a project in the vault-chat folder is also committed and pushed by its sync.
+  const out = await withRepoLock(r.folder, () => keepLocked(vault, r));
+  // Its sync takes the kept change to the hub now; the laptop's sync brings it to the laptop (and to its remote).
+  if (out.ok) triggerProjectAt(r.folder);
+  return out;
+}
+
+async function keepLocked(vault: string, r: Review): Promise<{ ok: boolean; text: string }> {
   const { folder, base, branch } = r;
   const head = await baseBranch(folder);
   const tip = (await git(folder, ["rev-parse", branch])).out;
@@ -211,6 +227,8 @@ export async function keepReview(vault: string, r: Review): Promise<{ ok: boolea
   if (remote) {
     const p = await git(folder, ["push", "--quiet", remote, `${base}:${base}`], 120_000);
     push = p.ok ? `pushed to ${remote}` : `not pushed: ${p.err.split("\n").filter(Boolean).pop()?.slice(0, 200) ?? "the push failed"}`;
+    // A project in the vault-chat folder: the laptop, which has the credentials, pushes it after its sync pulls it.
+    if (!p.ok && masterProjectOf(folder)) push = `not pushed from the box (no credentials here); the laptop's sync pushes ${base} to ${remote} once it has it`;
   }
   settle(vault, r.convId);
   // The clone back on main for the next change.

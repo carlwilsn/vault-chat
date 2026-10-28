@@ -1,5 +1,6 @@
 // "+ New project" in the left panel: its name, and where it works (Claude Code's working folder).
-// No folder (the vault, as before), a new ~/projects/<name>, or a folder Carl chooses on the box
+// No folder (the vault, as before), a new <box's vault-chat folder>/projects/<name> (synced; ~/projects/<name>
+// without one), or a folder Carl chooses on the box (not synced unless it is in the vault-chat folder)
 // (FolderChooser: the box's folders, each marked whether it may be a project's; server/projectFolders.ts).
 // A folder needs the box; without one the form is the name alone.
 import { useEffect, useState } from "react";
@@ -8,9 +9,19 @@ import { useStore } from "./store";
 import { boxLinkFor } from "./boxChat";
 import { browseBoxFolders, tildePath, type FolderListing } from "./boxFiles";
 import { slugify } from "./projects";
+import { boxMasterInfo } from "./master";
 import { cn } from "./lib/utils";
 
 export type Where = { folder?: string; newFolder?: boolean };
+
+/** What syncs: the vault always; a new folder in the box's vault-chat folder too (its projects/); a folder elsewhere on
+ *  the box stays on the box. */
+export function projectSyncNote(choice: { kind: string; path?: string }, boxMaster: string | null): string {
+  if (choice.kind === "none") return "In the vault: synced with this laptop.";
+  const inFolder = (p: string) => !!boxMaster && p.replace(/\/+$/, "").startsWith(`${boxMaster.replace(/\/+$/, "")}/projects/`);
+  if (choice.kind === "new") return boxMaster ? "A new folder in the box's vault-chat folder: synced with this laptop." : "A new folder on the box: not synced (set the box's vault-chat folder in Settings to sync new projects).";
+  return choice.path && inFolder(choice.path) ? "In the box's vault-chat folder: synced with this laptop." : "Stays on the box: a folder outside the vault-chat folder does not sync.";
+}
 type Choice = { kind: "none" } | { kind: "new" } | { kind: "pick"; path: string };
 
 export function NewProjectForm({ onCreate, onCancel }: { onCreate: (name: string, where: Where) => void; onCancel: () => void }) {
@@ -20,9 +31,15 @@ export function NewProjectForm({ onCreate, onCancel }: { onCreate: (name: string
   const [home, setHome] = useState<string | null>(null);
   const [choice, setChoice] = useState<Choice>({ kind: "none" });
   const [choosing, setChoosing] = useState(false);
+  // The box's vault-chat folder (server/master.ts): a new folder goes in its projects/ and syncs with the laptop.
+  const [boxMaster, setBoxMaster] = useState<string | null>(null);
   useEffect(() => {
     let live = true;
-    void boxLinkFor(vault).then((l) => live && setOnBox(!!l));
+    void boxLinkFor(vault).then((l) => {
+      if (!live) return;
+      setOnBox(!!l);
+      if (l) void boxMasterInfo(l.url).then((i) => live && setBoxMaster(i?.master ?? null));
+    });
     return () => {
       live = false;
     };
@@ -70,8 +87,11 @@ export function NewProjectForm({ onCreate, onCancel }: { onCreate: (name: string
           </div>
           <div className="mt-1 flex flex-wrap gap-1">
             {chip(choice.kind === "none", "The vault", () => setChoice({ kind: "none" }), "folder-none")}
-            {chip(choice.kind === "new", `~/projects/${slug}`, () => setChoice({ kind: "new" }), "folder-new")}
+            {chip(choice.kind === "new", boxMaster ? `${tildePath(boxMaster, home)}/projects/${slug}` : `~/projects/${slug}`, () => setChoice({ kind: "new" }), "folder-new")}
             {chip(choice.kind === "pick", choice.kind === "pick" ? tildePath(choice.path, home) : "A folder on the box…", () => setChoosing(true), "folder-pick")}
+          </div>
+          <div className="mt-1 text-[10.5px] text-muted-foreground/80" data-el="new-project-sync-note">
+            {projectSyncNote(choice, boxMaster)}
           </div>
           {choosing && (
             <FolderChooser

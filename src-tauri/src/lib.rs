@@ -2,6 +2,7 @@ mod voice_server;
 mod boot_watch;
 mod agent_projects;
 mod box_sync;
+mod master;
 mod vault_page;
 
 use serde::Serialize;
@@ -4386,17 +4387,43 @@ struct BoxConfigOut {
     box_url: String,
     vault: String,
     name: Option<String>,
+    branch: String,
+    project: bool,
 }
 
-/// The box this vault syncs with, from `.vault-chat/sync.json` (None = old mode).
+/// The box this vault syncs with, from `.vault-chat/sync.json` or, for a repo in the vault-chat folder, the
+/// folder's own file (None = old mode).
 #[tauri::command]
 async fn vault_box_config(vault: String) -> Option<BoxConfigOut> {
     tauri::async_runtime::spawn_blocking(move || {
-        box_sync::box_config(&vault).map(|c| BoxConfigOut { box_url: c.box_url, vault: c.vault, name: c.name })
+        box_sync::box_config(&vault).map(|c| BoxConfigOut { box_url: c.box_url, vault: c.vault, name: c.name, branch: c.branch, project: c.project })
     })
     .await
     .ok()
     .flatten()
+}
+
+/// A repo in the vault-chat folder (master.rs): made here, synced with the box's hub at `remote_url`.
+#[tauri::command]
+async fn master_repo_init(dest: String, remote_url: String, branch: String, origin_url: Option<String>) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || master::repo_init(&dest, &remote_url, &branch, origin_url.as_deref()))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// The migration's copy (master.rs): a repo copied whole into the vault-chat folder, then verified.
+#[tauri::command]
+async fn master_copy_repo(from: String, to: String) -> Result<master::CopyCheck, String> {
+    tauri::async_runtime::spawn_blocking(move || master::copy_repo(&from, &to))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn master_verify_copy(from: String, to: String) -> Result<master::CopyCheck, String> {
+    tauri::async_runtime::spawn_blocking(move || master::verify_copy(&from, &to))
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// Settings → Box: the tailnet machines that answer as a vault-chat server.
@@ -6299,6 +6326,9 @@ pub fn run() {
             vault_sync_role,
             vault_box_sync,
             vault_box_config,
+            master_repo_init,
+            master_copy_repo,
+            master_verify_copy,
             box_discover,
             tailscale_check,
             tailscale_open,

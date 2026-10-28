@@ -47,6 +47,8 @@ export type ServerHooks = {
   /** Settings → Box on the laptop: this box's vaults, and its own OpenRouter key. */
   vaults?: { list: () => unknown; add: (name: string) => Promise<Record<string, unknown>> };
   setKeys?: (keys: Record<string, string>) => Promise<boolean>;
+  /** The vault-chat folder (server/master.ts): its layout, vaults and projects; Settings sets it. */
+  master?: { masterInfo: () => unknown; setMasterDir: (p: string) => Promise<{ ok: true; path: string } | { error: string }> };
   /** The vault a request names (`?vault=` or `X-VC-Vault`), null when this box
    * has no such vault. No name = the main vault (older laptops, the phone). */
   vault?: (name: string | null) => VaultScope | null;
@@ -333,6 +335,16 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
     } catch (e) {
       return json(res, 500, { error: String((e as Error)?.message ?? e) });
     }
+  }
+  // The vault-chat folder: Settings on the laptop shows and sets the box's; the laptop clones the repos it lacks.
+  if (path === "/api/v1/master" && method === "GET") {
+    return hooks.master ? json(res, 200, hooks.master.masterInfo()) : json(res, 503, { error: "not available" });
+  }
+  if (path === "/api/v1/master" && method === "POST") {
+    if (!hooks.master) return json(res, 503, { error: "not available" });
+    const b = await jsonBody(req);
+    const out = await hooks.master.setMasterDir(typeof b.path === "string" ? b.path : "");
+    return "error" in out ? json(res, 400, out) : json(res, 200, { ...out, ...(hooks.master.masterInfo() as object) });
   }
   // The laptop's keychain, the whole set ({name: value}); a name missing here
   // is removed. Stored in the box's own key store. Never echoed.

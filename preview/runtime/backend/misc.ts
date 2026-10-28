@@ -52,6 +52,16 @@ export const miscCommands: Record<string, (a: Record<string, any>) => unknown> =
     return null;
   },
   path_exists: ({ path }) => fs.existsSync(path),
+  // The vault-chat folder (src-tauri master.rs): a repo made here from the box's hub, and the migration's copy.
+  master_repo_init: ({ dest }) => {
+    fs.mkdirSync(String(dest), { recursive: true });
+    return "cloned from the box (preview)";
+  },
+  master_copy_repo: ({ from, to }) => {
+    fs.mkdirSync(String(to), { recursive: true });
+    return { ok: true, problems: [], files: [1284, 1284], bytes: [52_011_334, 52_011_334], head: ["9f2c1e7a", "9f2c1e7a"], branch: ["master", "master"], from };
+  },
+  master_verify_copy: () => ({ ok: true, problems: [], files: [1284, 1284], bytes: [52_011_334, 52_011_334], head: ["9f2c1e7a", "9f2c1e7a"], branch: ["master", "master"] }),
   rename_path: ({ from, to }) => {
     if (!fs.existsSync(from)) throw `path does not exist: ${from}`;
     if (fs.existsSync(to)) throw `destination already exists: ${to}`;

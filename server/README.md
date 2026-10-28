@@ -218,6 +218,51 @@ steps through a scratch branch `vault-chat-upload` (deleted after), halving a st
 titlebar and Settings say what is wrong in plain words (`githubPlain` in `src/vaultSync.ts`) and git's
 message is one click behind it.
 
+## The vault-chat folder (`server/master.ts`, the laptop's `src/master.ts`)
+
+One folder per machine, the same shape on both: `<folder>/vaults/<name>/` and `<folder>/projects/<name>/`, each
+its own git repo, synced laptop ⇄ box by the sync above (`BoxSync` here, `box_sync.rs` there), one instance per
+repo, the box the hub: `<folder>/.hub/vaults/<name>.git` (served at `/git/<name>.git`) and
+`<folder>/.hub/projects/<name>.git` (served at `/git/projects/<name>.git`).
+
+- Where: `VC_MASTER`, else what Settings set (`<state>/master.json`, `POST /api/v1/master {path}`), else none —
+  and with none everything is as before. `GET /api/v1/master` lists the folder, its vaults and projects.
+- A vault: branches as above (`box` here, `master` on the laptop). Vaults added from Settings go in the folder.
+- A project: its working copy here stays on its own main branch (Keep merges there,
+  `server/projectChanges.ts`), pushed to its hub as `box`; the laptop's `main` is the hub's `main`. A project with
+  no remote of its own is written by the agent directly (synced like a vault); one with its own remote (`origin`,
+  e.g. GitHub) keeps the "you keep it" gate. The box has no credentials: Keep tries `origin` and says when it
+  can't; the laptop's sync pushes `main` to `origin` after it pulls a change from the box (logged as
+  `push-origin`; owed until it goes).
+- "+ New project" with a new folder: `<folder>/projects/<slug>` (git, `main`, synced). A folder elsewhere on the
+  box is still allowed and does not sync.
+- The laptop: Settings → vault-chat folder (this laptop's, the box's); the titlebar's vault name lists
+  `<folder>/vaults/*` with New vault; every 5 min it makes here what the box has and it lacks (never a vault it
+  already syncs from elsewhere). Inside the folder the folder's file (`.vault-chat-master.json`) names the box,
+  even over a `sync.json` the vault carries.
+
+### Moving the live box and laptop into it (ready, not run)
+
+Proven on the throwaway instance (`/tmp/vcs-master`, port 8858, a copy of school2). Never deletes or moves an
+original; switching back is one step. On the box (`B=~/.local/state/vault-chat-server/current/vault-chat-server.mjs`):
+
+```sh
+systemctl --user stop vault-chat-server                      # no sync while copying
+node $B master copy --master ~/vc --vault ~/vaults/school2 --bare ~/vaults/school2.git   # copy + verify (exit 3 if they differ)
+node $B master adopt --master ~/vc --project ~/github/vault-chat --vault ~/vc/vaults/school2   # optional: a project, its origin kept
+node $B master switch --master ~/vc --name school2           # ~/.config/vault-chat-server.env names the copy; the old file is kept beside it
+systemctl --user start vault-chat-server
+node $B master verify --master ~/vc --name school2           # counts and HEAD again, any time
+# back, in one step:
+systemctl --user stop vault-chat-server && node $B master back --master ~/vc && systemctl --user start vault-chat-server
+```
+
+The vault keeps its name, so `/git/school2.git` is the same URL: the laptop's school2 keeps syncing through the
+switch. Then on the laptop: Settings → vault-chat folder → set `C:\Users\wada2\vc`, open school2, "Copy school2
+into the folder" (whole copy, verified), "Use the copy" (the original stops syncing and stays on disk); "Switch
+back" is one step. The work area stays `~/agent-work/school2` only for `~/vc` (a test folder elsewhere gets its
+own).
+
 ## Box notes
 
 - `tools.ts` drops the Bash tool when `localStorage["vault_chat_bash_disabled"]` is absent or `"true"`

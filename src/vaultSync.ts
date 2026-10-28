@@ -146,7 +146,10 @@ async function syncLogHost(): Promise<string> {
   return hostCache;
 }
 
-type SyncLogLevel = "error" | "recovered" | "merge";
+type SyncLogLevel = "error" | "recovered" | "merge" | "push-origin";
+
+/** Where a repo's sync log goes when not in the repo itself (a project in the vault-chat folder: src/master.ts). */
+const logDirs = new Map<string, string>();
 
 // Fire-and-forget: logging must never throw into or stall the sync loop.
 function appendSyncLog(
@@ -166,7 +169,8 @@ function appendSyncLog(
         message,
         ...(extra ?? {}),
       });
-      await invoke("append_sync_log", { vaultPath: vault, line });
+      // A project's log lives beside the vault-chat folder, never inside the project's own repo.
+      await invoke("append_sync_log", { vaultPath: logDirs.get(vault) ?? vault, line });
     } catch {
       // best-effort
     }
@@ -399,6 +403,24 @@ function startAutosaveLoop(vault: string): void {
   });
 }
 
+/** A project in the vault-chat folder (src/master.ts): the same box cycle as a vault (box_sync.rs, its branch and
+ *  rules from the folder's file), without the vault's own steps (projects, the tracked list). Its log goes to
+ *  `logDir` (outside the project's repo). Idempotent. */
+export function ensureProjectSyncLoop(path: string, logDir: string): Promise<void> {
+  logDirs.set(path, logDir);
+  return serializeStart(path, async () => {
+    if (loops.has(path)) return;
+    boxConfigCache.delete(path);
+    const box = await readBoxConfig(path);
+    if (box) startBoxSyncLoop(path, box);
+  });
+}
+
+/** The last box-sync state of every repo with a loop (Settings' vault-chat folder list). */
+export function boxSyncStates(): Map<string, BoxSyncState> {
+  return new Map(boxStates);
+}
+
 // Stop one vault's loop, or ALL of them when called with no argument (app
 // unmount). Stopping a vault clears its snapshot; if it was the open vault, the
 // UI status row clears too.
@@ -434,7 +456,7 @@ export function activeSyncVaults(): string[] {
 // src-tauri/src/box_sync.rs. This loop only schedules cycles, keeps the
 // attention state for the Titlebar chip, and sends the one phone alert.
 
-export type BoxConfig = { box: string; vault: string; name?: string | null };
+export type BoxConfig = { box: string; vault: string; name?: string | null; branch?: string; project?: boolean };
 
 /** The box's short name: sync.json's name, else the first label of its host. */
 export function boxName(cfg: { box: string; name?: string | null }): string {
@@ -469,6 +491,10 @@ export type BoxSyncReport = {
   github_uploading?: boolean;
   /** ms since the epoch of the next attempt, while one is failing. */
   github_next_try_at?: number | null;
+  /** A project in the vault-chat folder: its branch pushed to its own remote this cycle (after a change from the box). */
+  origin_push?: string | null;
+  /** That push failed (full stderr); tried again next cycle. */
+  origin_warning?: string | null;
 };
 
 export type GithubProblem = "too_big" | "offline" | "auth" | "rejected" | "other";
@@ -968,6 +994,9 @@ function startBoxSyncLoop(vault: string, cfg: BoxConfig): void {
         }
         lastFailSig = sig;
       }
+      // A project with its own remote: the laptop pushed (or could not push) the box's change there. Said in the log.
+      if (r.origin_push) appendSyncLog(vault, "push-origin", "box-sync", r.origin_push);
+      if (r.origin_warning) appendSyncLog(vault, "error", "push-origin", r.origin_warning);
       if (r.merged) {
         appendSyncLog(vault, "merge", "box-sync", r.message);
         void refreshFileTreeIfChanged(vault);

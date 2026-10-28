@@ -69,20 +69,91 @@ const EXCLUDE_END: &str = "# <<< vault-chat";
 pub struct BoxConfig {
     /// Base URL of the box, without a trailing slash.
     pub box_url: String,
-    /// The vault's name on the box (`<box>/git/<vault>.git`).
+    /// The vault's name on the box (`<box>/git/<vault>.git`), or the project's folder name.
     pub vault: String,
     /// The box's display name (its hostname), when Settings wrote one.
     pub name: Option<String>,
+    /// The branch this laptop writes (and pushes to the hub): `master` for a vault, the project's main
+    /// branch (`main`) for a project in the vault-chat folder.
+    pub branch: String,
+    /// A project in the vault-chat folder (`<folder>/projects/<name>`): synced by the same cycle, without the
+    /// vault's own rules (its managed .gitignore/.gitattributes, the mission zone), and pushed to its own
+    /// `origin` after it pulls a change from the box (the box has no credentials).
+    pub project: bool,
 }
 
 impl BoxConfig {
     pub fn remote_url(&self) -> String {
-        format!("{}/git/{}.git", self.box_url, self.vault)
+        if self.project {
+            format!("{}/git/projects/{}.git", self.box_url, self.vault)
+        } else {
+            format!("{}/git/{}.git", self.box_url, self.vault)
+        }
     }
 }
 
-/// Read `<vault>/.vault-chat/sync.json`. `None` = no box: old behaviour.
+/// The vault-chat folder's own file on this laptop: `<folder>/.vault-chat-master.json`
+/// (`{"box": "https://thinkbox…", "name": "thinkbox", "projects": {"<name>": {"branch": "main"}}}`),
+/// written by Settings (src/master.ts).
+pub const MASTER_FILE: &str = ".vault-chat-master.json";
+
+/// `<folder>/<kind>/<name>` → (folder, kind, name) when `<folder>` holds the vault-chat folder's file.
+pub fn master_repo_of(path: &str) -> Option<(PathBuf, String, String)> {
+    let p = PathBuf::from(path.trim_end_matches(['/', '\\']));
+    let name = p.file_name()?.to_string_lossy().to_string();
+    let kind_dir = p.parent()?;
+    let kind = kind_dir.file_name()?.to_string_lossy().to_string();
+    if kind != "vaults" && kind != "projects" {
+        return None;
+    }
+    let master = kind_dir.parent()?.to_path_buf();
+    if !master.join(MASTER_FILE).is_file() || !valid_box_vault_name(&name) {
+        return None;
+    }
+    Some((master, kind, name))
+}
+
+/// A repo in the vault-chat folder whose file names a box: the vault or project of that name on the box.
+fn master_box_config(path: &str) -> Option<BoxConfig> {
+    let (master, kind, name) = master_repo_of(path)?;
+    let raw = std::fs::read_to_string(master.join(MASTER_FILE)).ok()?;
+    let v: serde_json::Value = serde_json::from_str(raw.trim_start_matches('\u{feff}')).ok()?;
+    let box_url = v.get("box")?.as_str()?.trim().trim_end_matches('/').to_string();
+    if box_url.is_empty() {
+        return None;
+    }
+    let display = v.get("name").and_then(|x| x.as_str()).map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+    let project = kind == "projects";
+    let branch = if project {
+        v.get("projects")
+            .and_then(|p| p.get(&name))
+            .and_then(|p| p.get("branch"))
+            .and_then(|b| b.as_str())
+            .map(String::from)
+            .filter(|b| !b.is_empty() && b != "box")
+            .unwrap_or_else(|| "main".into())
+    } else {
+        "master".into()
+    };
+    Some(BoxConfig { box_url, vault: name, name: display, branch, project })
+}
+
+/// Is this a project in the vault-chat folder (synced without the vault's own rules)?
+pub fn is_master_project(path: &str) -> bool {
+    matches!(master_repo_of(path), Some((_, k, _)) if k == "projects")
+}
+
+/// A repo in the vault-chat folder: the folder's file (its box wins over a sync.json the vault carries: a copy of
+/// a vault in a test folder must never sync with the box its sync.json names). Anywhere else:
+/// `<vault>/.vault-chat/sync.json`. `None` = no box: old behaviour.
 pub fn box_config(vault: &str) -> Option<BoxConfig> {
+    if master_repo_of(vault).is_some() {
+        return master_box_config(vault);
+    }
+    sync_json_config(vault)
+}
+
+fn sync_json_config(vault: &str) -> Option<BoxConfig> {
     let raw = std::fs::read_to_string(PathBuf::from(vault).join(".vault-chat").join("sync.json")).ok()?;
     let v: serde_json::Value = serde_json::from_str(raw.trim_start_matches('\u{feff}')).ok()?;
     let box_url = v.get("box")?.as_str()?.trim().trim_end_matches('/').to_string();
@@ -104,7 +175,7 @@ pub fn box_config(vault: &str) -> Option<BoxConfig> {
         .and_then(|x| x.as_str())
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
-    Some(BoxConfig { box_url, vault: name, name: display })
+    Some(BoxConfig { box_url, vault: name, name: display, branch: "master".into(), project: false })
 }
 
 /// `box_config(vault).is_some()` behind a short cache, for hot paths
@@ -432,6 +503,10 @@ pub struct BoxSyncReport {
     pub github_uploading: bool,
     /// ms since the epoch of the next attempt, while one is failing.
     pub github_next_try_at: Option<u64>,
+    /// A project: what the push of its branch to its own `origin` did this cycle (after a change from the box).
+    pub origin_push: Option<String>,
+    /// A project: that push failed (full stderr); it is tried again next cycle.
+    pub origin_warning: Option<String>,
 }
 
 fn now_ms() -> u64 {
@@ -535,7 +610,7 @@ fn parse_config_z(out: &str) -> RepoConfig {
 }
 
 fn read_repo_config(vault: &str) -> RepoConfig {
-    let re = r"^(remote\.(box|github)\.(url|fetch)|fetch\.recursesubmodules|submodule\.recurse|user\.(name|email)|core\.hookspath)$";
+    let re = r"^(remote\.(box|github|origin)\.(url|fetch)|fetch\.recursesubmodules|submodule\.recurse|user\.(name|email)|core\.hookspath)$";
     match run_git(vault, &["config", "-z", "--get-regexp", re]) {
         Ok((o, _, 0)) => parse_config_z(&o),
         _ => RepoConfig::default(),
@@ -711,16 +786,18 @@ struct Refs {
     github_box: Option<String>,
 }
 
-fn read_refs(vault: &str) -> Refs {
+fn read_refs(vault: &str, branch: &str) -> Refs {
     let mut r = Refs::default();
+    let head = format!("refs/heads/{}", branch);
+    let box_head = format!("refs/remotes/box/{}", branch);
     if let Ok((o, _, 0)) = run_git(
         vault,
         &[
             "for-each-ref",
             "--format=%(objectname) %(refname)",
-            "refs/heads/master",
+            &head,
             BOX_REF,
-            "refs/remotes/box/master",
+            &box_head,
             "refs/remotes/github/master",
             "refs/remotes/github/box",
         ],
@@ -728,13 +805,17 @@ fn read_refs(vault: &str) -> Refs {
         for l in o.lines() {
             let Some((oid, name)) = l.trim().split_once(' ') else { continue };
             let oid = Some(oid.to_string());
-            match name {
-                "refs/heads/master" => r.master = oid,
-                "refs/remotes/box/box" => r.box_box = oid,
-                "refs/remotes/box/master" => r.box_master = oid,
-                "refs/remotes/github/master" => r.github_master = oid,
-                "refs/remotes/github/box" => r.github_box = oid,
-                _ => {}
+            if name == head {
+                r.master = oid;
+            } else if name == box_head {
+                r.box_master = oid;
+            } else {
+                match name {
+                    "refs/remotes/box/box" => r.box_box = oid,
+                    "refs/remotes/github/master" => r.github_master = oid,
+                    "refs/remotes/github/box" => r.github_box = oid,
+                    _ => {}
+                }
             }
         }
     }
@@ -752,6 +833,9 @@ fn head_branch_fs(vault: &str) -> Option<String> {
 #[derive(Serialize, serde::Deserialize, Default)]
 struct PersistedState {
     conflict: Option<ConflictState>,
+    /// A project pulled a change from the box that its `origin` does not have yet.
+    #[serde(default)]
+    origin_owed: bool,
 }
 
 fn state_path(vault: &str) -> PathBuf {
@@ -822,13 +906,17 @@ static UNTRACK_SEEN: Mutex<Option<HashMap<String, String>>> = Mutex::new(None);
 /// (a write only when it isn't), and the tracked-but-ignored sweep only when
 /// the ignore rules or the index changed since it last ran in this process.
 fn prepare_box_repo(vault: &str, rc: &RepoConfig) {
-    ensure_vault_gitattributes(vault);
-    ensure_vault_gitignore(vault);
     for key in ["fetch.recurseSubmodules", "submodule.recurse"] {
         if rc.get(&key.to_ascii_lowercase()).map(str::trim) != Some("false") {
             let _ = run_git_mut(vault, &["config", key, "false"]);
         }
     }
+    // A project's own .gitignore/.gitattributes and index are its own: only a vault gets the managed ones.
+    if is_master_project(vault) {
+        return;
+    }
+    ensure_vault_gitattributes(vault);
+    ensure_vault_gitignore(vault);
     let key = untrack_key(vault);
     let seen = {
         let g = UNTRACK_SEEN.lock().unwrap_or_else(|p| p.into_inner());
@@ -1026,8 +1114,12 @@ fn never_staged(path: &str) -> bool {
 /// conversations never staged. Caller holds the repo lock. Returns the big
 /// files and whether anything was staged.
 fn stage_from_status(vault: &str, st: &WorkStatus, name: &str, email: &str) -> Result<(Vec<BigFile>, bool), String> {
-    let zone_reset = sanitize_zone_to(vault, BOX_REF);
-    ensure_exclude_line(vault, "/.vault-chat/events/");
+    // The mission zone and the conversation log are a vault's; a project has neither.
+    let project = is_master_project(vault);
+    let zone_reset = if project { Vec::new() } else { sanitize_zone_to(vault, BOX_REF) };
+    if !project {
+        ensure_exclude_line(vault, "/.vault-chat/events/");
+    }
     // Untracked files over 50 MB → the managed exclude block.
     let mut excluded: Vec<String> = read_exclude_block(vault).into_iter().filter(|p| is_big(vault, p)).collect();
     for e in st.entries.iter().filter(|e| e.untracked) {
@@ -1178,7 +1270,7 @@ fn merge_gate(vault: &str, rc: &RepoConfig, refs: &Refs) -> Result<Gate, String>
         }
         _ => return Err(full_err(&out, &err, code, "git merge-tree")),
     };
-    let zone_only = !conflicted.is_empty() && conflicted.iter().all(|p| is_zone_path(vault, p, BOX_REF));
+    let zone_only = !conflicted.is_empty() && !is_master_project(vault) && conflicted.iter().all(|p| is_zone_path(vault, p, BOX_REF));
     if !conflicted.is_empty() && !zone_only {
         return Ok(Gate::Conflict(conflicted));
     }
@@ -1447,7 +1539,7 @@ fn github_push(vault: &str, args: &[&str], what: &str) -> Result<(), String> {
 /// carried), then master and box, then the scratch branch is deleted.
 /// Ok(the budget for next time) / Err((full stderr, the budget for next time)).
 fn github_upload(vault: &str, first: bool, budget: u64, pending: &mut Option<u32>) -> Result<u64, (String, u64)> {
-    let refs = read_refs(vault);
+    let refs = read_refs(vault, "master");
     let current = !first
         && refs.master.is_some()
         && refs.github_master == refs.master
@@ -1631,9 +1723,11 @@ fn cycle(vault: &str, push: bool) -> BoxSyncReport {
             return Err("this vault is not a git repository".into());
         }
         let b = head_branch_fs(vault).unwrap_or_default();
-        if b != "master" {
+        if b != cfg.branch {
             return Err(format!(
-                "box sync works on branch master, but this vault is on '{}'",
+                "box sync works on branch {}, but this {} is on '{}'",
+                cfg.branch,
+                if cfg.project { "project" } else { "vault" },
                 if b.is_empty() { "a detached HEAD" } else { b.as_str() }
             ));
         }
@@ -1704,10 +1798,10 @@ fn cycle(vault: &str, push: bool) -> BoxSyncReport {
     let mut master_moved = r.committed;
     if hand_merge {
         r.message = "a merge is in progress (being resolved by hand); waiting".into();
-        refs = with_repo_lock(vault, || read_refs(vault));
+        refs = with_repo_lock(vault, || read_refs(vault, &cfg.branch));
     } else {
         let gate = with_repo_lock(vault, || {
-            refs = read_refs(vault);
+            refs = read_refs(vault, &cfg.branch);
             merge_gate(vault, &rc, &refs)
         });
         match gate {
@@ -1767,9 +1861,10 @@ fn cycle(vault: &str, push: bool) -> BoxSyncReport {
             let mut g = LAST_PUSH.lock().unwrap_or_else(|p| p.into_inner());
             g.get_or_insert_with(HashMap::new).insert(vault.to_string(), Instant::now());
         }
-        match sg_net(vault, &["push", "--porcelain", BOX_REMOTE, "refs/heads/master:refs/heads/master"]) {
+        let spec = format!("refs/heads/{0}:refs/heads/{0}", cfg.branch);
+        match sg_net(vault, &["push", "--porcelain", BOX_REMOTE, &spec]) {
             Ok((_, _, 0)) => {
-                let _ = run_git(vault, &["update-ref", "refs/remotes/box/master", "refs/heads/master"]);
+                let _ = run_git(vault, &["update-ref", &format!("refs/remotes/box/{}", cfg.branch), &format!("refs/heads/{}", cfg.branch)]);
                 if r.error.is_none() {
                     r.ok = true;
                 }
@@ -1777,7 +1872,7 @@ fn cycle(vault: &str, push: bool) -> BoxSyncReport {
                 r.changes_waiting = 0;
             }
             Ok((o, e, c)) => {
-                fail(&mut r, full_err(&o, &e, c, "git push box master"));
+                fail(&mut r, full_err(&o, &e, c, &format!("git push box {}", cfg.branch)));
                 r.changes_waiting = changes_waiting(vault);
             }
             Err(e) => {
@@ -1790,6 +1885,30 @@ fn cycle(vault: &str, push: bool) -> BoxSyncReport {
     // 5. GitHub backup, after a good cycle only, in the background.
     if r.ok {
         github_backup(vault, &rc, &mut r);
+    }
+    // 6. A project with its own remote: the box has no credentials, so after this laptop pulls a change from the
+    // box (a kept change, a box edit) it pushes the branch to `origin` itself. Owed until it succeeds.
+    if cfg.project && rc.get("remote.origin.url").is_some() {
+        if r.merged {
+            st.origin_owed = true;
+            save_state(vault, &st);
+        }
+        if st.origin_owed && r.error.is_none() && r.conflict.is_none() {
+            let spec = format!("refs/heads/{0}:refs/heads/{0}", cfg.branch);
+            match sg_net(vault, &["push", "--porcelain", "origin", &spec]) {
+                Ok((o, _, 0)) => {
+                    st.origin_owed = false;
+                    save_state(vault, &st);
+                    r.origin_push = Some(if o.contains("[up to date]") {
+                        format!("origin already had {}", cfg.branch)
+                    } else {
+                        format!("pushed {} to origin (the box has no credentials)", cfg.branch)
+                    });
+                }
+                Ok((o, e, c)) => r.origin_warning = Some(full_err(&o, &e, c, &format!("git push origin {}", cfg.branch))),
+                Err(e) => r.origin_warning = Some(e),
+            }
+        }
     }
     r.message = match (&r.error, &r.conflict, r.merged) {
         (Some(_), _, _) => "sync failed".into(),

@@ -774,3 +774,256 @@ fn github_backup_names_one_change_too_big_to_upload() {
     assert!(rep.github_next_try_at.is_some(), "it retries on its own");
     r.done();
 }
+
+// ---------- the vault-chat folder: several repos, a project with its own remote ----------
+
+/// `<base>/vc` with its file naming the stand-in box (`<base>/boxhost`); each repo's box side is a clone of its hub.
+struct MasterRig {
+    base: PathBuf,
+    master: PathBuf,
+    boxhost: PathBuf,
+}
+
+fn master_rig(name: &str) -> MasterRig {
+    let base = std::env::temp_dir().join(format!("vc_master_{}_{}", name, std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    let boxhost = base.join("boxhost");
+    let master = base.join("vc");
+    std::fs::create_dir_all(master.join("vaults")).unwrap();
+    std::fs::create_dir_all(master.join("projects")).unwrap();
+    write(&master, MASTER_FILE, &format!("{{\"box\":\"{}\",\"projects\":{{\"site\":{{\"branch\":\"main\"}}}}}}\n", s(&boxhost)));
+    MasterRig { base, master, boxhost }
+}
+
+/// A hub on the stand-in box with a box-side clone that publishes `box`.
+fn hub_with_box(base: &Path, hub: &Path, wc: &Path, branch: &str, seed: &[(&str, &str)]) {
+    std::fs::create_dir_all(hub).unwrap();
+    git(hub, &["init", "-q", "--bare", "-b", branch]);
+    git(base, &["clone", "-q", &s(hub), &s(wc)]);
+    ident(wc);
+    git(wc, &["checkout", "-q", "-b", branch]);
+    for (rel, body) in seed {
+        write(wc, rel, body);
+    }
+    git(wc, &["add", "-A"]);
+    git(wc, &["commit", "-q", "-m", "box seed"]);
+    git(wc, &["push", "-q", "origin", &format!("{}:box", branch)]);
+}
+
+#[test]
+fn a_repo_in_the_vault_chat_folder_gets_its_box_from_the_folder() {
+    let m = master_rig("cfg");
+    let v = m.master.join("vaults").join("physics");
+    let p = m.master.join("projects").join("site");
+    let c = box_config(&s(&v)).expect("a vault in the folder");
+    assert_eq!((c.branch.as_str(), c.project), ("master", false));
+    assert_eq!(c.remote_url(), format!("{}/git/physics.git", s(&m.boxhost)));
+    let c = box_config(&s(&p)).expect("a project in the folder");
+    assert_eq!((c.branch.as_str(), c.project), ("main", true));
+    assert_eq!(c.remote_url(), format!("{}/git/projects/site.git", s(&m.boxhost)));
+    assert!(box_config(&s(&m.base.join("elsewhere").join("x"))).is_none());
+    // A vault in the folder whose committed sync.json names another box (a copy of the live vault in a test
+    // folder): the folder's box wins, never the one sync.json names.
+    write(&v, ".vault-chat/sync.json", "{\"hub\":\"laptop\",\"box\":\"https://live-box.example\",\"vault\":\"school2\"}");
+    let c = box_config(&s(&v)).unwrap();
+    assert_eq!(c.remote_url(), format!("{}/git/physics.git", s(&m.boxhost)));
+    let _ = std::fs::remove_dir_all(&m.base);
+}
+
+#[test]
+fn a_two_vaults_and_a_project_sync_both_ways_and_a_kept_change_reaches_github_from_the_laptop() {
+    let m = master_rig("multi");
+    // The box's side: two vaults and a project, each with its hub.
+    let boxes = m.base.join("boxside");
+    std::fs::create_dir_all(&boxes).unwrap();
+    for v in ["school2", "physics"] {
+        hub_with_box(&m.base, &m.boxhost.join("git").join(format!("{}.git", v)), &boxes.join(v), "box", &[("box.md", v)]);
+    }
+    // "GitHub" for the project; the box's project working copy is on main.
+    let gh = m.base.join("github").join("site.git");
+    std::fs::create_dir_all(&gh).unwrap();
+    git(&gh, &["init", "-q", "--bare", "-b", "main"]);
+    let phub = m.boxhost.join("git").join("projects").join("site.git");
+    hub_with_box(&m.base, &phub, &boxes.join("site"), "main", &[("index.html", "<h1>v1</h1>\n")]);
+    git(&boxes.join("site"), &["push", "-q", &s(&gh), "main:main"]);
+
+    // The laptop makes each repo from the box's hub (as Settings does for what it lacks).
+    for (kind, name, branch) in [("vaults", "school2", "master"), ("vaults", "physics", "master"), ("projects", "site", "main")] {
+        let dest = m.master.join(kind).join(name);
+        let url = box_config(&s(&dest)).unwrap().remote_url();
+        let origin = if kind == "projects" { Some(s(&gh)) } else { None };
+        let what = crate::master::repo_init(&s(&dest), &url, branch, origin.as_deref()).unwrap();
+        assert!(what.contains("cloned from the box"), "{}", what);
+        ident(&dest);
+        let rep = box_sync_cycle(&s(&dest));
+        assert!(rep.ok, "{} first cycle: {:?}", name, rep.error);
+    }
+    // The project keeps its own .gitignore: no vault rules were written into it.
+    assert!(!m.master.join("projects/site/.gitignore").exists());
+    assert!(m.master.join("vaults/physics/.gitignore").exists());
+    // Laptop to box: each repo's laptop branch is in its hub.
+    write(&m.master.join("vaults/physics"), "laptop.md", "from the laptop\n");
+    write(&m.master.join("projects/site"), "notes.md", "laptop notes\n");
+    for (kind, name, branch, hub) in [
+        ("vaults", "physics", "master", m.boxhost.join("git/physics.git")),
+        ("projects", "site", "main", phub.clone()),
+    ] {
+        let dest = m.master.join(kind).join(name);
+        let rep = box_sync_cycle(&s(&dest));
+        assert!(rep.ok && rep.committed, "{}: {:?}", name, rep.error);
+        assert_eq!(git(&hub, &["rev-parse", &format!("refs/heads/{}", branch)]), git(&dest, &["rev-parse", "HEAD"]));
+    }
+    assert_eq!(git(&m.boxhost.join("git/physics.git"), &["show", "master:laptop.md"]), "from the laptop");
+    // The laptop's own autosave in the project did not go to GitHub: nothing came from the box yet.
+    assert_eq!(git(&gh, &["rev-parse", "main"]), git(&boxes.join("site"), &["rev-parse", "main"]));
+
+    // Box to laptop: a box edit in school2, and a kept change in the project (Keep merged agent/v2 into the box's
+    // main; its sync pushed it to the hub as `box`). The box cannot push to GitHub.
+    let sb = boxes.join("school2");
+    write(&sb, "agent.md", "the agent wrote this\n");
+    git(&sb, &["add", "-A"]);
+    git(&sb, &["commit", "-q", "-m", "[agent] box autosave"]);
+    git(&sb, &["push", "-q", "origin", "box:box"]);
+    let pb = boxes.join("site");
+    git(&pb, &["fetch", "-q", "origin", "main"]);
+    git(&pb, &["merge", "-q", "--no-edit", "origin/main"]);
+    git(&pb, &["checkout", "-q", "-b", "agent/v2"]);
+    write(&pb, "index.html", "<h1>v2</h1>\n");
+    git(&pb, &["commit", "-q", "-am", "v2"]);
+    git(&pb, &["checkout", "-q", "main"]);
+    git(&pb, &["merge", "-q", "--ff-only", "agent/v2"]);
+    git(&pb, &["push", "-q", "origin", "main:box"]);
+
+    let rep = box_sync_cycle(&s(&m.master.join("vaults/school2")));
+    assert!(rep.ok && rep.merged, "{:?}", rep.error);
+    assert_eq!(read(&m.master.join("vaults/school2"), "agent.md"), "the agent wrote this\n");
+    assert!(rep.origin_push.is_none(), "a vault has no origin push");
+    let site = m.master.join("projects/site");
+    let rep = box_sync_cycle(&s(&site));
+    assert!(rep.ok && rep.merged, "{:?}", rep.error);
+    assert_eq!(read(&site, "index.html").replace("\r\n", "\n"), "<h1>v2</h1>\n");
+    assert_eq!(rep.origin_push.as_deref(), Some("pushed main to origin (the box has no credentials)"), "{:?}", rep.origin_warning);
+    assert_eq!(git(&gh, &["rev-parse", "main"]), git(&site, &["rev-parse", "main"]));
+    assert_eq!(git(&gh, &["show", "main:index.html"]), "<h1>v2</h1>");
+    // Nothing owed any more: the next cycle pushes nothing.
+    let rep = box_sync_cycle(&s(&site));
+    assert!(rep.ok && rep.origin_push.is_none(), "{:?}", rep.origin_push);
+    let _ = std::fs::remove_dir_all(&m.base);
+}
+
+#[test]
+fn a_failed_origin_push_is_said_and_owed_until_it_goes() {
+    let m = master_rig("owed");
+    let gh = m.base.join("github").join("site.git");
+    std::fs::create_dir_all(&gh).unwrap();
+    git(&gh, &["init", "-q", "--bare", "-b", "main"]);
+    let phub = m.boxhost.join("git").join("projects").join("site.git");
+    let pb = m.base.join("boxside").join("site");
+    std::fs::create_dir_all(pb.parent().unwrap()).unwrap();
+    hub_with_box(&m.base, &phub, &pb, "main", &[("a.txt", "a\n")]);
+    let site = m.master.join("projects/site");
+    let url = box_config(&s(&site)).unwrap().remote_url();
+    crate::master::repo_init(&s(&site), &url, "main", Some(&s(&gh))).unwrap();
+    ident(&site);
+    // GitHub refuses (as without credentials).
+    write(&gh, "hooks/pre-receive", "#!/bin/sh\necho 'Authentication failed' >&2\nexit 1\n");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(gh.join("hooks/pre-receive"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    write(&pb, "b.txt", "b\n");
+    git(&pb, &["add", "-A"]);
+    git(&pb, &["commit", "-q", "-m", "kept"]);
+    git(&pb, &["push", "-q", "origin", "main:box"]);
+    let rep = box_sync_cycle(&s(&site));
+    assert!(rep.ok && rep.merged, "{:?}", rep.error);
+    assert!(rep.origin_warning.as_deref().unwrap_or("").contains("Authentication failed"), "{:?}", rep.origin_warning);
+    std::fs::remove_file(gh.join("hooks/pre-receive")).unwrap();
+    let rep = box_sync_cycle(&s(&site));
+    assert_eq!(rep.origin_push.as_deref(), Some("pushed main to origin (the box has no credentials)"), "{:?}", rep.origin_warning);
+    assert_eq!(git(&gh, &["rev-parse", "main"]), git(&site, &["rev-parse", "main"]));
+    let _ = std::fs::remove_dir_all(&m.base);
+}
+
+/// Against a real box instance (the throwaway one, never live): VC_E2E_BOX = its URL (an SSH tunnel to its
+/// loopback port), VC_E2E_DIR = an empty folder on this laptop. The laptop's own engine makes school2 and the
+/// project `site` from the box's hubs, syncs both ways, and pushes a change the box kept to the project's
+/// "GitHub" (a bare repo here) since the box has no credentials. Run by hand:
+///   VC_E2E_BOX=http://127.0.0.1:18858 VC_E2E_DIR=… cargo test --lib e2e_master -- --ignored --nocapture
+#[test]
+#[ignore]
+fn e2e_master_against_a_box() {
+    let (Ok(boxurl), Ok(dir)) = (std::env::var("VC_E2E_BOX"), std::env::var("VC_E2E_DIR")) else {
+        panic!("set VC_E2E_BOX and VC_E2E_DIR");
+    };
+    let base = PathBuf::from(dir);
+    let master = base.join("vc");
+    std::fs::create_dir_all(master.join("vaults")).unwrap();
+    std::fs::create_dir_all(master.join("projects")).unwrap();
+    write(&master, MASTER_FILE, &format!("{{\"box\":\"{}\",\"projects\":{{\"site\":{{\"branch\":\"main\"}}}}}}\n", boxurl));
+    let gh = base.join("github").join("site.git");
+    std::fs::create_dir_all(&gh).unwrap();
+    git(&gh, &["init", "-q", "--bare", "-b", "main"]);
+    for (kind, name, branch) in [("vaults", "school2", "master"), ("projects", "site", "main")] {
+        let dest = master.join(kind).join(name);
+        let url = box_config(&s(&dest)).unwrap().remote_url();
+        let origin = if kind == "projects" { Some(s(&gh)) } else { None };
+        let t = Instant::now();
+        let what = crate::master::repo_init(&s(&dest), &url, branch, origin.as_deref()).unwrap();
+        println!("{}: {} ({} ms) from {}", name, what, t.elapsed().as_millis(), url);
+        ident(&dest);
+        let rep = box_sync_cycle(&s(&dest));
+        println!("{} first cycle: ok={} merged={} msg={} err={:?}", name, rep.ok, rep.merged, rep.message, rep.error);
+        assert!(rep.ok, "{:?}", rep.error);
+    }
+    let files = walkdir::WalkDir::new(master.join("vaults/school2")).into_iter().flatten().filter(|e| e.file_type().is_file()).count();
+    println!("school2 here: {} files, HEAD {}", files, git(&master.join("vaults/school2"), &["rev-parse", "--short", "HEAD"]));
+    // Laptop → box: a file in each.
+    let stamp = format!("{}", now_ms());
+    write(&master.join("vaults/school2"), "e2e/from-laptop.md", &format!("laptop {}\n", stamp));
+    write(&master.join("projects/site"), "from-laptop.md", &format!("laptop {}\n", stamp));
+    for (kind, name) in [("vaults", "school2"), ("projects", "site")] {
+        let rep = box_sync_cycle(&s(&master.join(kind).join(name)));
+        println!("{} push: ok={} committed={} msg={} err={:?}", name, rep.ok, rep.committed, rep.message, rep.error);
+        assert!(rep.ok && rep.committed, "{:?}", rep.error);
+    }
+    println!("STAMP {}", stamp);
+    write(&base, "stamp", &stamp);
+    // The box side runs next (the caller commits a Keep there and writes a file), then VC_E2E_PHASE=2 checks it.
+    if std::env::var("VC_E2E_WAIT").is_ok() {
+        let flag = base.join("box-done");
+        let _ = std::fs::remove_file(&flag);
+        println!("waiting for {}", flag.display());
+        let end = Instant::now() + Duration::from_secs(600);
+        while !flag.exists() && Instant::now() < end {
+            std::thread::sleep(Duration::from_millis(500));
+        }
+        assert!(flag.exists(), "the box side never said it was done");
+        let site = master.join("projects/site");
+        let mut rep = box_sync_cycle(&s(&site));
+        for _ in 0..20 {
+            if rep.merged {
+                break;
+            }
+            std::thread::sleep(Duration::from_secs(2));
+            rep = box_sync_cycle(&s(&site));
+        }
+        println!("site after Keep: ok={} merged={} origin_push={:?} origin_warning={:?}", rep.ok, rep.merged, rep.origin_push, rep.origin_warning);
+        assert!(rep.merged);
+        assert_eq!(rep.origin_push.as_deref(), Some("pushed main to origin (the box has no credentials)"));
+        assert_eq!(git(&gh, &["rev-parse", "main"]), git(&site, &["rev-parse", "main"]));
+        println!("GitHub stand-in main: {} ({})", git(&gh, &["rev-parse", "--short", "main"]), git(&gh, &["log", "-1", "--format=%s", "main"]));
+        let sv = master.join("vaults/school2");
+        for _ in 0..30 {
+            let rep = box_sync_cycle(&s(&sv));
+            println!("school2 cycle: ok={} merged={} paths={:?} err={:?}", rep.ok, rep.merged, rep.merged_paths, rep.error);
+            if read(&sv, "e2e/from-box.md").contains(&stamp) {
+                break;
+            }
+            std::thread::sleep(Duration::from_secs(2));
+        }
+        assert!(read(&sv, "e2e/from-box.md").contains(&stamp), "the box's write never arrived");
+        println!("school2 has the box's write: {}", read(&sv, "e2e/from-box.md").trim());
+    }
+}

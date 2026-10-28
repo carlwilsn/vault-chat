@@ -52,7 +52,7 @@ import { isNoteTool, noteTool, noteToolSpecs } from "../notesTools";
 import { capabilitiesOf, capabilityNote, learn } from "./capabilities";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { projectFolderOf, retireFolder, reviveFolder } from "../projectFolders";
-import { KEEP, OUTCOME_SEP, REVIEW_TOOL, SEND_BACK, answerReview, cloneDirOf, ensureClone, isGitProject, pendingReview, prepareReview, proofQuestion } from "../projectChanges";
+import { KEEP, OUTCOME_SEP, REVIEW_TOOL, SEND_BACK, answerReview, cloneDirOf, ensureClone, isGatedProject, pendingReview, prepareReview, proofQuestion } from "../projectChanges";
 import { WRITE_TOOLS, writtenPath } from "../liveEdits";
 import { appendActivity, contextImage, searchActivity, youLayer } from "../activity";
 import { CAPTURE_FRESH_MS, chatPointerEntry } from "../../src/activityCore";
@@ -1619,7 +1619,7 @@ export class Engine {
     if (!p) return null;
     const chosen = projectFolderOf(this.d.vault, p.slug);
     if (chosen && "error" in chosen) return { error: `the folder chosen for this project can't be used: ${chosen.error}` };
-    if (chosen && isGitProject(chosen.abs) && !this.inVault(chosen.abs)) {
+    if (chosen && isGatedProject(chosen.abs) && !this.inVault(chosen.abs)) {
       // A git repo: the agent works in its clone, on an agent/ branch; the folder itself is Carl's (Keep).
       return { abs: cloneDirOf(this.d.vault, p.slug), rel: chosen.abs.split(sep).join("/"), outside: true, git: { folder: chosen.abs.split(sep).join("/"), clone: cloneDirOf(this.d.vault, p.slug).split(sep).join("/") } };
     }
@@ -2089,7 +2089,7 @@ export class Engine {
           // "You keep it" (server/projectChanges.ts): the proof card, then Carl's Keep (the server's merge) or Send back.
           const slug = projectOfThread(convId);
           const chosen = slug ? projectFolderOf(vault, slug) : null;
-          if (!slug || !chosen || "error" in chosen || !isGitProject(chosen.abs)) return text(`${REVIEW_TOOL} is only for the thread of a project that works in a git repo on the box.`);
+          if (!slug || !chosen || "error" in chosen || !isGatedProject(chosen.abs)) return text(`${REVIEW_TOOL} is only for the thread of a project that works in a git repo on the box.`);
           const prep = await prepareReview({ vault, convId, slug, folder: chosen.abs, toolCallId: String(p.toolCallId ?? `rr-${Date.now()}`), args: a });
           if ("error" in prep) return text(prep.error);
           const ans = await this.waitForAnswer(p.threadId, proofQuestion(prep.review, prep.stat), [KEEP, SEND_BACK]);

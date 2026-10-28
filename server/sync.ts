@@ -15,12 +15,18 @@
 import { existsSync, mkdirSync, writeFileSync, chmodSync, readFileSync, readdirSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { loadConfig } from "./config";
+import { masterDir, masterRepoNames, repoPaths, startMasterProjects, triggerProject, flushProject } from "./master";
 import { runGit, git, withRepoLock, abortStuckMergeOrRebase, stageForCommit, onStageResult, sameRepo, AGENT_IDENTITY_ARGS, type StageResult } from "./git";
 
-const BRANCH = "box";
-const HUB = "master";
-const HUB_REF = "refs/remotes/hub/master";
+/** The box's branch in the hub, written only by the box. */
+const BOX_BRANCH = "box";
 const ALERT_AFTER_MS = 10 * 60_000;
+
+/** The branches one synced repo uses. A vault: the working copy on `box`, the laptop's `master`. A project under
+ * the vault-chat folder (server/master.ts): the working copy on its own main branch (Keep merges there), pushed to
+ * the hub as `box`; the laptop's copy of that branch is the hub's `main`. */
+export type SyncBranches = { local: string; hub: string };
+export const VAULT_BRANCHES: SyncBranches = { local: BOX_BRANCH, hub: "master" };
 
 export type StepResult = { ok: boolean; at: number; detail?: string; error?: string };
 
@@ -50,7 +56,7 @@ export type SyncStatus = {
 };
 
 /** `needsYou: false`: said in the journal only, never a buzz (server/pushGate.ts). */
-type Alert = (title: string, body: string, tag?: string, needsYou?: boolean) => Promise<unknown>;
+export type Alert = (title: string, body: string, tag?: string, needsYou?: boolean) => Promise<unknown>;
 
 export class BoxSync {
   status: SyncStatus;
@@ -67,12 +73,13 @@ export class BoxSync {
     private intervalMs: number,
     private alert: Alert,
     private alertAfterMs = ALERT_AFTER_MS,
+    private branches: SyncBranches = VAULT_BRANCHES,
   ) {
     this.status = {
       enabled: true,
       vault,
       bareRepo: bare,
-      branch: BRANCH,
+      branch: branches.local,
       ok: false,
       running: false,
       lastRunAt: null,
@@ -94,6 +101,16 @@ export class BoxSync {
     });
   }
 
+  private get BRANCH(): string {
+    return this.branches.local;
+  }
+  private get HUB(): string {
+    return this.branches.hub;
+  }
+  private get HUB_REF(): string {
+    return `refs/remotes/hub/${this.branches.hub}`;
+  }
+
   /** Make sure the bare repo and the working copy exist and are wired up.
    * Creates them only with `init` (VC_INIT=1); otherwise a missing piece is
    * an error in the status, never a silent auto-create in prod. */
@@ -108,11 +125,11 @@ export class BoxSync {
       }
       if (!bareOk) {
         mkdirSync(this.bare, { recursive: true });
-        await git(this.bare, ["init", "--bare", "-q", "-b", HUB]);
+        await git(this.bare, ["init", "--bare", "-q", "-b", this.HUB]);
       }
       if (!wcOk) {
         mkdirSync(this.vault, { recursive: true });
-        await git(this.vault, ["init", "-q", "-b", BRANCH]);
+        await git(this.vault, ["init", "-q", "-b", this.BRANCH]);
       }
     }
     // Receive settings + the guard that keeps `box` box-only.
@@ -121,12 +138,12 @@ export class BoxSync {
     this.installPreReceive();
     // The working copy must be on `box`. An unborn repo just switches.
     const head = (await runGit(this.vault, ["symbolic-ref", "--short", "HEAD"])).stdout.trim();
-    if (head !== BRANCH) {
+    if (head !== this.BRANCH) {
       const hasCommits = (await runGit(this.vault, ["rev-parse", "--verify", "HEAD"])).code === 0;
       if (!hasCommits || init) {
-        await git(this.vault, ["checkout", "-q", "-B", BRANCH]);
+        await git(this.vault, ["checkout", "-q", "-B", this.BRANCH]);
       } else {
-        throw new Error(`working copy ${this.vault} is on "${head || "(detached)"}", not "${BRANCH}" — refusing to sync`);
+        throw new Error(`working copy ${this.vault} is on "${head || "(detached)"}", not "${this.BRANCH}" — refusing to sync`);
       }
     }
   }
@@ -136,14 +153,14 @@ export class BoxSync {
     const body = `#!/bin/sh
 # Installed by vault-chat-server. Branch ownership (contract):
 #   box    — written only by the box (local pushes; never over /git)
-#   master — written only by the laptop (over /git)
+#   ${this.HUB} — written only by the laptop (over /git)
 # Pushes with no VC_PUSHER label (an admin on the box) are not restricted.
 while read old new ref; do
   if [ "$VC_PUSHER" = "http" ] && [ "$ref" = "refs/heads/box" ]; then
     echo "refs/heads/box is written only by the box" >&2; exit 1
   fi
-  if [ "$VC_PUSHER" = "box" ] && [ "$ref" = "refs/heads/master" ]; then
-    echo "refs/heads/master is written only by the laptop" >&2; exit 1
+  if [ "$VC_PUSHER" = "box" ] && [ "$ref" = "refs/heads/${this.HUB}" ]; then
+    echo "refs/heads/${this.HUB} is written only by the laptop" >&2; exit 1
   fi
 done
 exit 0
@@ -227,7 +244,7 @@ exit 0
       await withRepoLock(vault, async () => {
         // 0. Still on box?
         const head = (await runGit(vault, ["symbolic-ref", "--short", "HEAD"])).stdout.trim();
-        if (head !== BRANCH) throw new Error(`working copy is on "${head || "(detached)"}", not "${BRANCH}"`);
+        if (head !== this.BRANCH) throw new Error(`working copy is on "${head || "(detached)"}", not "${this.BRANCH}"`);
         await abortStuckMergeOrRebase(vault);
 
         // 1. Commit.
@@ -242,13 +259,13 @@ exit 0
         if (!hasHead) {
           // A vault added from Settings starts empty: once the laptop has
           // pushed master, box starts from it.
-          const f = await runGit(vault, ["fetch", "-q", bare, `+refs/heads/${HUB}:${HUB_REF}`]);
+          const f = await runGit(vault, ["fetch", "-q", bare, `+refs/heads/${this.HUB}:${this.HUB_REF}`]);
           if (f.code !== 0) {
             s.steps.push = { ok: true, at: Date.now(), detail: "no commits yet" };
             return;
           }
-          await git(vault, ["checkout", "-q", "-B", BRANCH, HUB_REF]);
-          s.steps.fetch = { ok: true, at: Date.now(), detail: `box started from ${HUB}` };
+          await git(vault, ["checkout", "-q", "-B", this.BRANCH, this.HUB_REF]);
+          s.steps.fetch = { ok: true, at: Date.now(), detail: `box started from ${this.HUB}` };
         }
 
         // 2. Push box → bare.
@@ -256,14 +273,14 @@ exit 0
 
         // 3. Fetch master; fast-forward box when master contains it.
         try {
-          const r = await runGit(vault, ["fetch", "-q", bare, `+refs/heads/${HUB}:${HUB_REF}`]);
+          const r = await runGit(vault, ["fetch", "-q", bare, `+refs/heads/${this.HUB}:${this.HUB_REF}`]);
           if (r.code !== 0) {
             if (/couldn't find remote ref|could not find remote ref/i.test(r.stderr)) {
-              s.steps.fetch = { ok: true, at: Date.now(), detail: `no ${HUB} in the bare repo yet` };
+              s.steps.fetch = { ok: true, at: Date.now(), detail: `no ${this.HUB} in the bare repo yet` };
               s.steps.fastForward = { ok: true, at: Date.now(), detail: "nothing to fast-forward to" };
               return;
             }
-            throw new Error(`git fetch ${HUB} (exit ${r.code}): ${r.stderr.trim()}`);
+            throw new Error(`git fetch ${this.HUB} (exit ${r.code}): ${r.stderr.trim()}`);
           }
           s.steps.fetch = { ok: true, at: Date.now() };
         } catch (e) {
@@ -272,18 +289,18 @@ exit 0
         }
         try {
           const boxSha = (await git(vault, ["rev-parse", "HEAD"])).trim();
-          const masterSha = (await git(vault, ["rev-parse", HUB_REF])).trim();
+          const masterSha = (await git(vault, ["rev-parse", this.HUB_REF])).trim();
           if (boxSha === masterSha) {
             s.steps.fastForward = { ok: true, at: Date.now(), detail: "box == master" };
-          } else if ((await runGit(vault, ["merge-base", "--is-ancestor", "HEAD", HUB_REF])).code === 0 && (await this.heldBoardsIn(HUB_REF))) {
+          } else if ((await runGit(vault, ["merge-base", "--is-ancestor", "HEAD", this.HUB_REF])).code === 0 && (await this.heldBoardsIn(this.HUB_REF))) {
             // Master changed a board that is being drawn on here: commit the drawing now (box is then ahead and
             // waits for the laptop's merge) rather than let the fast-forward refuse to overwrite it.
             const detail = await this.commitWorkingCopy(false);
             s.steps.commit = { ok: true, at: Date.now(), detail };
             await this.pushBox();
             s.steps.fastForward = { ok: true, at: Date.now(), detail: "master changed a board being drawn on: committed it, waiting for the laptop to merge" };
-          } else if ((await runGit(vault, ["merge-base", "--is-ancestor", "HEAD", HUB_REF])).code === 0) {
-            await git(vault, ["merge", "--ff-only", "-q", HUB_REF]);
+          } else if ((await runGit(vault, ["merge-base", "--is-ancestor", "HEAD", this.HUB_REF])).code === 0) {
+            await git(vault, ["merge", "--ff-only", "-q", this.HUB_REF]);
             s.steps.fastForward = { ok: true, at: Date.now(), detail: `fast-forwarded ${boxSha.slice(0, 8)} → ${masterSha.slice(0, 8)}` };
             await this.pushBox();
           } else {
@@ -356,10 +373,10 @@ exit 0
   private async pushBox(): Promise<void> {
     const s = this.status;
     try {
-      const r = await runGit(this.vault, ["push", "-q", this.bare, `refs/heads/${BRANCH}:refs/heads/${BRANCH}`], {
+      const r = await runGit(this.vault, ["push", "-q", this.bare, `refs/heads/${this.BRANCH}:refs/heads/${BOX_BRANCH}`], {
         env: { VC_PUSHER: "box" },
       });
-      if (r.code !== 0) throw new Error(`git push ${BRANCH} (exit ${r.code}): ${r.stderr.trim()}`);
+      if (r.code !== 0) throw new Error(`git push ${this.BRANCH === BOX_BRANCH ? BOX_BRANCH : `${this.BRANCH} → ${BOX_BRANCH}`} (exit ${r.code}): ${r.stderr.trim()}`);
       s.steps.push = { ok: true, at: Date.now() };
     } catch (e) {
       s.steps.push = { ok: false, at: Date.now(), error: errText(e) };
@@ -374,9 +391,9 @@ exit 0
       return r.code === 0 ? r.stdout.trim() : null;
     };
     s.box = await rp("HEAD");
-    s.master = await rp(HUB_REF);
+    s.master = await rp(this.HUB_REF);
     if (s.box && s.master) {
-      const r = await runGit(this.vault, ["rev-list", "--left-right", "--count", `HEAD...${HUB_REF}`]);
+      const r = await runGit(this.vault, ["rev-list", "--left-right", "--count", `HEAD...${this.HUB_REF}`]);
       const [a, b] = r.stdout.trim().split(/\s+/).map(Number);
       s.ahead = Number.isFinite(a) ? a! : null;
       s.behind = Number.isFinite(b) ? b! : null;
@@ -432,32 +449,42 @@ export function validVaultName(n: unknown): n is string {
   return typeof n === "string" && /^[A-Za-z0-9._-]{1,64}$/.test(n) && !n.startsWith(".") && !n.endsWith(".git");
 }
 
-/** Where a vault lives: the main one from the config, the rest beside it
- * (`~/vaults/<name>` + `~/vaults/<name>.git`). */
+/** Where a vault lives: the main one from the config; with a vault-chat folder (server/master.ts) the rest in
+ * `<folder>/vaults/<name>` + `<folder>/.hub/vaults/<name>.git`; without one, beside the main one
+ * (`~/vaults/<name>` + `~/vaults/<name>.git`). A vault already beside the main one stays there. */
 export function vaultPaths(name: string): { vault: string; bare: string } {
   const cfg = loadConfig();
   if (name === cfg.vaultName) return { vault: cfg.vault, bare: cfg.bareRepo };
   const root = dirname(cfg.vault);
-  return { vault: join(root, name), bare: join(root, `${name}.git`) };
+  const legacy = { vault: join(root, name), bare: join(root, `${name}.git`) };
+  const m = masterDir();
+  if (m) {
+    const p = repoPaths(m, "vaults", name);
+    if (existsSync(p.wc) || !existsSync(join(legacy.bare, "HEAD"))) return { vault: p.wc, bare: p.bare };
+  }
+  return legacy;
 }
 
-/** Every vault this box has: the main one plus each `<name>.git` beside it
- * that has its working copy. */
+/** Every vault this box has: the main one, each vault in the vault-chat folder, and each `<name>.git` beside the
+ * main one that has its working copy. */
 export function listVaults(): Array<{ name: string; main: boolean; syncing: boolean }> {
   const cfg = loadConfig();
   const out = [{ name: cfg.vaultName, main: true, syncing: !!instance }];
-  let entries: string[] = [];
+  const names = new Set<string>([cfg.vaultName]);
+  const m = masterDir();
+  const candidates: string[] = m ? masterRepoNames(m, "vaults") : [];
   try {
-    entries = readdirSync(dirname(cfg.vault));
+    for (const e of readdirSync(dirname(cfg.vault))) if (e.endsWith(".git")) candidates.push(e.slice(0, -4));
   } catch {
     /* no root */
   }
-  for (const e of entries.sort()) {
-    if (!e.endsWith(".git")) continue;
-    const name = e.slice(0, -4);
-    if (name === cfg.vaultName || !validVaultName(name)) continue;
+  for (const name of candidates.sort()) {
+    if (names.has(name) || !validVaultName(name)) continue;
     const { vault, bare } = vaultPaths(name);
-    if (existsSync(join(bare, "HEAD")) && existsSync(join(vault, ".git"))) out.push({ name, main: false, syncing: added.has(name) });
+    if (existsSync(join(bare, "HEAD")) && existsSync(join(vault, ".git"))) {
+      names.add(name);
+      out.push({ name, main: false, syncing: added.has(name) });
+    }
   }
   return out;
 }
@@ -484,6 +511,8 @@ export async function startBoxSync(alert: Alert): Promise<BoxSync | null> {
     setupError = "disabled (VC_SYNC=0)";
     return null;
   }
+  // Every project in the vault-chat folder syncs with the laptop the same way (server/master.ts).
+  await startMasterProjects(alert).catch((e) => console.error("[sync] projects:", errText(e)));
   // Vaults added earlier come back with the server.
   for (const v of listVaults()) {
     if (v.main) continue;
@@ -513,12 +542,14 @@ export async function startBoxSync(alert: Alert): Promise<BoxSync | null> {
 
 /** Run a cycle now: the main vault, or the named one. */
 export function triggerSync(name?: string): void {
+  if (name?.startsWith("projects/")) return triggerProject(name.slice("projects/".length));
   if (name && added.has(name)) added.get(name)!.trigger();
   else instance?.trigger();
 }
 
 /** Commit and publish a vault now (an agent's edit): resolves when the cycle is done; no-op without sync. */
 export async function syncNow(name?: string): Promise<void> {
+  if (name?.startsWith("projects/")) return flushProject(name.slice("projects/".length));
   const s = name && added.has(name) ? added.get(name)! : instance;
   if (s) await s.flush();
 }

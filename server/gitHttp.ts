@@ -8,16 +8,21 @@ import { basename, dirname, join } from "node:path";
 import { existsSync } from "node:fs";
 import { loadConfig } from "./config";
 import { validVaultName, vaultPaths } from "./sync";
+import { masterDir, repoPaths, validRepoName } from "./master";
 
 export function isGitPath(pathname: string): boolean {
   return pathname.startsWith("/git/");
 }
 
 export function handleGitHttp(req: IncomingMessage, res: ServerResponse, url: URL, user: string, onPushed: (vault: string) => void): void {
-  const m = /^\/git\/([^/]+?)(?:\.git)?(\/.*)?$/.exec(url.pathname);
-  // The main vault, or one added from Settings (~/vaults/<name>.git).
-  const name = m?.[1] ?? "";
-  const bareRepo = name === loadConfig().vaultName || validVaultName(name) ? vaultPaths(name).bare : "";
+  // /git/<vault>.git: the main vault, or one added from Settings; /git/projects/<name>.git: a project in the
+  // vault-chat folder (server/master.ts), its hub <folder>/.hub/projects/<name>.git.
+  const pm = /^\/git\/projects\/([^/]+?)(?:\.git)?(\/.*)?$/.exec(url.pathname);
+  const m = pm ?? /^\/git\/([^/]+?)(?:\.git)?(\/.*)?$/.exec(url.pathname);
+  const repo = m?.[1] ?? "";
+  const master = pm ? masterDir() : null;
+  const bareRepo = pm ? (master && validRepoName(repo) ? repoPaths(master, "projects", repo).bare : "") : repo === loadConfig().vaultName || validVaultName(repo) ? vaultPaths(repo).bare : "";
+  const name = pm ? `projects/${repo}` : repo;
   if (!m || !bareRepo || !existsSync(join(bareRepo, "HEAD"))) {
     res.writeHead(404, { "content-type": "application/json" });
     res.end(JSON.stringify({ error: "no such repository" }));

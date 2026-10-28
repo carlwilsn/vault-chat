@@ -18,7 +18,8 @@ import { initCapabilities } from "./capabilities";
 import { ensurePi, findBwrap, type PiInstall } from "./pi/install";
 import { agentWorkDir } from "../workArea";
 import { HOME_CREDENTIALS, activeFolders, setFolderWalls, under as underDir } from "../projectFolders";
-import { isGitProject } from "../projectChanges";
+import { isGatedProject } from "../projectChanges";
+import { masterDir, masterLayout } from "../master";
 import { listPiModels, modelWindow, piPaths, vaultPiPaths, writePiConfig, type PiPaths } from "./pi/config";
 import { PiBackend, outerWith, type PiSandbox } from "./pi/backend";
 import { logOf } from "./convs";
@@ -289,7 +290,9 @@ export async function startEngine(b: EngineBoot): Promise<EngineHandle> {
     const workDir = agentWorkDir(home, v.path);
     if (bwrap) mkdirSync(workDir, { recursive: true });
     const others = () => otherVaultPaths(v, vaults(), (w) => stateOf(w).walls);
-    const vaultRoots = [...new Set([dirname(b.vault), dirname(v.path), join(home, "vaults")])];
+    // The vault-chat folder's hubs (server/master.ts) are hidden like the vault roots.
+    const m = masterDir();
+    const vaultRoots = [...new Set([dirname(b.vault), dirname(v.path), join(home, "vaults"), ...(m ? [masterLayout(m).vaults, masterLayout(m).hub] : [])])];
     // A project folder Carl chose (server/projectFolders.ts) may be neither inside nor around anything this
     // sandbox hides or keeps read-only: the server's state and env file, the key store, the tokens, the
     // other vaults and their repos, the vault roots.
@@ -314,9 +317,9 @@ export async function startEngine(b: EngineBoot): Promise<EngineHandle> {
       }),
       others,
       // The project folders Carl chose outside the vault: read-write, read at each spawn.
-      projects: () => activeFolders(v.path).map((f) => f.abs).filter((f) => !underDir(f, v.path) && !isGitProject(f)),
+      projects: () => activeFolders(v.path).map((f) => f.abs).filter((f) => !underDir(f, v.path) && !isGatedProject(f)),
       // A project that is a git repo: its folder read-only; the agent works in its clone in the work area (Keep is Carl's).
-      readOnly: () => activeFolders(v.path).map((f) => f.abs).filter((f) => !underDir(f, v.path) && isGitProject(f)),
+      readOnly: () => activeFolders(v.path).map((f) => f.abs).filter((f) => !underDir(f, v.path) && isGatedProject(f)),
     };
     const backend = new PiBackend({
       install,

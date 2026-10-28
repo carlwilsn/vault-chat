@@ -1,14 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
-import { FolderOpen, Minus, Square, Copy, X, Settings, PanelLeft, PanelRight, ExternalLink, Eye, Terminal, RefreshCw, StickyNote, GitMerge, CloudOff, FileWarning, AlertTriangle, WifiOff } from "lucide-react";
+import { Minus, Square, Copy, X, Settings, PanelLeft, PanelRight, ExternalLink, Eye, Terminal, RefreshCw, StickyNote, GitMerge, CloudOff, FileWarning, AlertTriangle, WifiOff } from "lucide-react";
 import { useStore, type FileEntry } from "./store";
 import { runningTaskCount } from "./backgroundTasks";
 import { openChatPopout } from "./sync";
-import { gitInitIfNeeded } from "./git";
-import { stopAgent } from "./chat-controller";
 import { VoiceCockpit, VoiceMicGroup } from "./VoiceCockpit";
+import { VaultPicker } from "./VaultPicker";
 import { subscribeBoxSync, openTailscale, boxSyncNow, type BoxSyncState } from "./vaultSync";
 import { openTerminal, subscribeTerminalNote, terminalBoxName, terminalTitle } from "./terminal";
 
@@ -30,9 +28,7 @@ function TasksRunning({ hidden, onOpen }: { hidden: boolean; onOpen: () => void 
 export function Titlebar() {
   const {
     vaultPath,
-    setVault,
     setFiles,
-    setCurrentFile,
     setShowSettings,
     showSettings,
     leftCollapsed,
@@ -63,24 +59,6 @@ export function Titlebar() {
     }
   };
 
-
-  const pickVault = async () => {
-    const picked = await open({ directory: true, multiple: false });
-    if (typeof picked === "string") {
-      const normalized = picked.replace(/\\/g, "/");
-      const switching = normalized !== vaultPath;
-      if (switching && useStore.getState().busy) {
-        stopAgent();
-      }
-      setVault(normalized);
-      if (switching) setCurrentFile(null, "");
-      const listed = await invoke<FileEntry[]>("list_markdown_files", { vault: picked });
-      setFiles(listed);
-      // Ensure the vault is a git repo so agent turns can auto-commit.
-      // Silent no-op if already one.
-      gitInitIfNeeded(normalized).catch(() => {});
-    }
-  };
 
   const openHidden = async () => {
     if (!vaultPath) return;
@@ -131,7 +109,6 @@ export function Titlebar() {
 
   // The mic button; Ctrl+D (App.tsx, so it works in fullscreen chat too) runs
   // the same toggleVoice.
-  const vaultName = vaultPath ? vaultPath.split("/").filter(Boolean).pop() : null;
   const isMac =
     typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.userAgent);
 
@@ -153,14 +130,7 @@ export function Titlebar() {
         >
           <PanelLeft className="h-3.5 w-3.5" />
         </button>
-        <button
-          onClick={pickVault}
-          className="h-7 flex items-center gap-1.5 px-2 rounded hover:bg-accent/60 text-[12px] text-foreground/90"
-          title="Open vault"
-        >
-          <FolderOpen className="h-3.5 w-3.5 opacity-80" />
-          <span className="max-w-[220px] truncate">{vaultName ?? "Open vault"}</span>
-        </button>
+        <VaultPicker />
         {vaultPath && (
           <>
             <button

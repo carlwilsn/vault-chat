@@ -55,7 +55,13 @@ export function loadConfig(): ServerConfig {
     port: Number(env("VC_PORT") ?? 8848),
     vault,
     vaultName,
-    bareRepo: resolve(env("VC_BARE_REPO") ?? join(vault, "..", `${vaultName}.git`)),
+    // A vault in the vault-chat folder (VC_MASTER, server/master.ts) has its hub in <folder>/.hub/vaults/.
+    bareRepo: resolve(
+      env("VC_BARE_REPO") ??
+        (env("VC_MASTER") && resolve(vault, "..") === resolve(env("VC_MASTER")!, "vaults")
+          ? join(env("VC_MASTER")!, ".hub", "vaults", `${vaultName}.git`)
+          : join(vault, "..", `${vaultName}.git`)),
+    ),
     localStoragePath: resolve(env("VC_LOCALSTORAGE") ?? join(APP_DATA, "mission-engine.localstorage")),
     // voice_server.rs:1435 subs_path() = app_config_dir()/phone-push-subs.json;
     // Tauri's app_config_dir on Linux is ~/.config/<identifier>.

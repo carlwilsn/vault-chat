@@ -13,6 +13,7 @@ import { listProjects, ensureProject, findProject } from "./context/projects";
 import { ensureProjectThread, patchMeta } from "./engine/convs";
 import { MAIN_ID, MAIN_TITLE } from "../src/threads";
 import { followVoice } from "./voice";
+import { masterDir, newMasterProject } from "./master";
 import { checkFolder, newProjectFolder, projectFolderOf, registerFolder, unregisterFolder } from "./projectFolders";
 
 function ready(vault: string): void {
@@ -60,7 +61,7 @@ export async function setProject(
 /**
  * Carl's "+ New project": the project (create-or-attach by name) and its one thread (src/threads.ts).
  * `folder`: a folder on the box he chose for it to work in (checked first: server/projectFolders.ts), or
- * `newFolder: true` for a new ~/projects/<slug>; neither: no folder of its own (the vault, as before).
+ * `newFolder: true` for a new folder (<vault-chat folder>/projects/<slug>, else ~/projects/<slug>); neither: no folder of its own (the vault, as before).
  */
 export async function createProjectWithThread(
   vault: string,
@@ -79,7 +80,9 @@ export async function createProjectWithThread(
     const { project, created } = withVault(vault, () => ensureProject(name));
     let folder: string | undefined;
     if (want || body.newFolder === true) {
-      const r = want ? registerFolder(vault, project.slug, want) : newProjectFolder(vault, project.slug);
+      // A new folder: <vault-chat folder>/projects/<slug> when the box has one (a git repo, synced with the laptop),
+      // else ~/projects/<slug> as before.
+      const r = want ? registerFolder(vault, project.slug, want) : masterDir() ? await newMasterProject(project.slug) : newProjectFolder(vault, project.slug);
       if ("error" in r) return { error: r.error };
       if (!want) registerFolder(vault, project.slug, r.abs);
       folder = r.abs.split("\\").join("/");

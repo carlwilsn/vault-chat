@@ -33,7 +33,7 @@ import {
 } from "./vaultSync";
 import { startActivityWatch } from "./activity";
 import { startLayoutPersist } from "./paneLayout";
-import { bootMark } from "./bootTiming";
+import { afterVaultReady, bootMark } from "./bootTiming";
 import "./App.css";
 
 export default function App() {
@@ -305,7 +305,13 @@ export default function App() {
         }
       }
     })();
+    // Every repo in the vault-chat folder (src/master.ts): what the box has and this laptop lacks is made here, and
+    // each syncs; again every 5 minutes (a vault or project made on the box arrives on its own).
+    const masterPass = () => void import("./master").then((m) => m.syncMasterFolder()).catch(() => {});
+    void afterVaultReady().then(masterPass);
+    const masterTimer = window.setInterval(masterPass, 5 * 60_000);
     return () => {
+      window.clearInterval(masterTimer);
       stopVaultSyncLoop(); // stop ALL loops on app unmount
     };
   }, []);
