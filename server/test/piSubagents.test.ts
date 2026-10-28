@@ -192,10 +192,11 @@ describe.skipIf(!PI_DIR)("pi subagents (real pi children, fake OpenRouter)", () 
   it("children get file/shell + Notify, never AskUser or subagent; an AskUser attempt fails", async () => {
     const child = or.calls.find((b) => isChild(b));
     const names = toolNames(child);
-    for (const t of ["bash", "read", "write", "edit", "Notify"]) expect(names).toContain(t);
-    for (const t of ["AskUser", "subagent", "ScheduleWake", "StartJob"]) expect(names).not.toContain(t);
+    // Assert the exact provider declarations, not the transcript's display aliases.
+    for (const t of ["mcp__vault_chat__bash", "mcp__vault_chat__read", "mcp__vault_chat__write", "mcp__vault_chat__edit", "mcp__vault_chat__Notify"]) expect(names).toContain(t);
+    for (const t of ["mcp__vault_chat__AskUser", "mcp__vault_chat__subagent", "mcp__vault_chat__ScheduleWake", "mcp__vault_chat__StartJob"]) expect(names).not.toContain(t);
     const parent = or.calls.find((b) => !isChild(b) && lastUser(b).includes("SUB1"));
-    expect(toolNames(parent)).toContain("subagent");
+    expect(toolNames(parent)).toContain("mcp__vault_chat__subagent");
     const r = await post("/message", { text: "SUBASK try it" });
     const c = await says(r.convId, /SUBASK done:/);
     expect(c.state).not.toBe("waiting_user");
