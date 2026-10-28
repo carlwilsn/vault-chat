@@ -118,7 +118,7 @@ describe("a git project: the agent works on a branch in its clone; only Keep rea
   it("Send back: his note reaches the agent; main unchanged; the branch stays", async () => {
     const r = await post("/api/v2/intent", { type: "answer", clientId: "c-3", convId: CONV, text: "Make it 3em, not 2." });
     expect(r.body.ok).toBe(true);
-    await waitFor(() => or.calls.some((c) => JSON.stringify(c).includes("Sent back: Make it 3em, not 2.")), 30_000);
+    await waitFor(() => or.calls.some((c) => JSON.stringify(c).includes("Sent back: Make it 3em, not 2. main is unchanged")), 30_000);
     expect(mainSha()).toBe(start);
     expect(git(repo, "branch", "--list", "agent/bigger-heading")).toContain("agent/bigger-heading");
     await waitFor(async () => !(await picture(CONV)).meta.running, 20_000);

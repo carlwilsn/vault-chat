@@ -45,13 +45,14 @@ describe("which folders may be a project's", () => {
     };
     expect(why(process.platform === "win32" ? "C:\\" : "/")).toMatch(/whole machine/);
     expect(why(home)).toMatch(/your whole home folder/);
-    expect(why("~/.ssh")).toMatch(/inside ~\/\.ssh, which the agent never touches/);
-    expect(why(state)).toMatch(/inside ~\/\.local\/state/);
+    expect(why("~/.ssh")).toBe("~/.ssh is off limits: the agent never touches it");
+    expect(why(join(home, ".ssh", "keys"))).toMatch(/inside ~\/\.ssh, which the agent never touches|does not exist/);
+    expect(why(state)).toMatch(/inside ~\/\.local\/state|off limits/);
     expect(why(join(home, ".local"))).toMatch(/^~\/\.local holds ~\/\.local\/(state|share)/);
-    expect(why(keys)).toMatch(/inside ~\/\.config\/vault-chat/);
+    expect(why(keys)).toMatch(/^~\/\.config\/vault-chat is off limits/);
     expect(why(join(home, "vaults", "physics"))).toMatch(/inside ~\/vaults/);
     expect(why(join(home, "vaults"))).toMatch(/inside ~\/vaults|holds/);
-    expect(why(join(vault, ".vault-chat"))).toMatch(/inside ~\/vaults\/school2\/\.vault-chat/);
+    expect(why(join(vault, ".vault-chat"))).toMatch(/^~\/vaults\/school2\/\.vault-chat is off limits/);
     expect(why(join(home, "nope"))).toMatch(/does not exist/);
     expect(why("github/vault-chat")).toMatch(/not a full path/);
     if (process.platform !== "win32") {

@@ -152,6 +152,7 @@ export function checkFolder(vault: string, raw: string, w: FolderWalls = wallsOf
   const inVault = under(abs, vaultReal);
   for (const p of protectedPaths(vault, w)) {
     if (inVault && !under(p, vaultReal) && under(vaultReal, p)) continue; // the vault's own root (~/vaults) holds it: fine
+    if (abs === p) return { error: `${tilde(abs, home)} is off limits: the agent never touches it` };
     if (under(abs, p)) return { error: `${tilde(abs, home)} is inside ${tilde(p, home)}, which the agent never touches` };
     if (under(p, abs)) return { error: `${tilde(abs, home)} holds ${tilde(p, home)}, which the agent never touches: choose a folder inside it` };
   }

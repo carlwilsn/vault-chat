@@ -222,7 +222,7 @@ export async function keepReview(vault: string, r: Review): Promise<{ ok: boolea
 /** Send back: his note to the agent; the branch stays as it is. */
 export function sendBack(vault: string, r: Review, note: string): string {
   settle(vault, r.convId);
-  const n = note.trim() && note.trim().toLowerCase() !== SEND_BACK.toLowerCase() ? note.trim() : "";
+  const n = note.trim() && note.trim().toLowerCase() !== SEND_BACK.toLowerCase() ? note.trim().replace(/[.!?]+$/, "") : "";
   return `Sent back${n ? `: ${n}` : " (no note: ask him what to change)"}. ${r.base} is unchanged. Go on with ${r.branch} in your clone and hand it over again with ReadyForReview.`;
 }
 
