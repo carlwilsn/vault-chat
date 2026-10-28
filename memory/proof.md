@@ -31,10 +31,22 @@ because something passed a weaker check and broke for Carl.
 - **Line endings:** an editor flipped a whole file to CRLF (a 4,700-line phantom diff). Normalize to LF before
   committing.
 - **Before adding a tiny helper** (`now_ms`, `clamp`) to a big file, grep for an existing one — a duplicate broke CI.
+- **A fetch deadline includes its body.** Clearing an abort timer after `fetch()` returned headers let an OpenRouter
+  catalog body stall engine startup forever; the server listened but never became engine-ready. Keep the deadline
+  through body consumption and cleanup in `finally`; do not weaken readiness checks to accept a listening socket.
+- **Give age-based file fixtures explicit mtimes.** Filesystem timestamps can be fractions of a millisecond ahead
+  of `Date.now()` on the same tick; a zero-age sweep then correctly leaves a just-written file. Set known ages
+  rather than sleeping or changing production cutoffs.
 - **Tests never use his speakers** (AGENTS.md). A headless browser with autoplay once played test speech through the
   laptop while he worked; he thought voice was broken. If he reports phantom audio, look for test processes first.
 - **Don't drive a screen or pointer he is using**; it fights him for the input. Use your own thread and test data,
   never his current conversation (a test once typed into his live chat).
+
+## Stateful fixture timing
+- **Hold delivery, not the next request.** In boxchat, setting FakeBox's poll delay after a long-poll was already
+  waiting let the echo beat the optimistic-pending assertion; its skipped cleanup then cascaded into nine failures.
+  Use `holdPolls()` and release in `finally`. Assert pending after the POST is accepted and the box's log contains
+  the echo, then explicitly release delivery. Larger sleeps or deleting the pending assertion do not test the contract.
 
 ## Shared working copies
 Several agents and sessions have worked in the same checkout at once. One switched branches mid-session and the next

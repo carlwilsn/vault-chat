@@ -8,9 +8,14 @@
 import { EventEmitter } from "node:events";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, relative } from "node:path";
+import { pathToFileURL } from "node:url";
 import type { CallRecord } from "../ledger";
 import type { ThreadTokenUsage } from "../context";
 import { PiProc } from "./proc";
+import { McpRuntime, type ProcessServices } from "../../mcp/runtime";
+import { runSubagentTool, subagentTool } from "../../mcp/subagent";
+import type { BoundTools } from "../../mcp/tools";
+import { FILE_TOOLS, filesystemBinding } from "../../mcp/filesystem";
 import { Subagents, type Detached, type LiveChild, type SubagentOptions } from "./subagents";
 import { SideRuns } from "./side";
 import { modelWindow, type PiCatalogRow, type PiPaths } from "./config";
@@ -43,20 +48,22 @@ export class ThreadUnknownError extends Error {
 }
 
 /** A host tool's answer: its text, and images it attaches (pi image blocks: base64 + mime). */
-export type ToolAnswer = { ok: boolean; text: string; images?: { data: string; mimeType: string }[] };
-export type ToolCallHandler = (threadId: string, name: string, args: any, toolCallId?: string) => Promise<ToolAnswer>;
+export type ToolAnswer = { ok: boolean; text: string; images?: { data: string; mimeType: string }[]; resources?: { uri: string; mimeType: string; blob: string }[] };
+export type ToolCallHandler = (threadId: string, name: string, args: any, signal?: AbortSignal) => Promise<ToolAnswer>;
 export type UserInputHandler = (threadId: string, question: string, options: string[]) => Promise<string>;
 /** The "you" layer for a session (the extension's before_agent_start asks before each prompt): what Carl
  * did since `since` (that session's last layer). A conversation's thread names itself by `threadId`; a
  * Ctrl+K / Ctrl+L side thread by the conversation it was forked from (`convId`, or none). */
 export type YouHandler = (q: { threadId?: string; convId?: string | null; since: number | null }) => Promise<{ text: string; until: number }>;
 /** A read-only vault-chat tool called from a Ctrl+K / Ctrl+L side thread, as of the conversation it was opened from (or none). */
-export type SideToolHandler = (convId: string | null, name: string, args: any) => Promise<ToolAnswer>;
+export type SideToolHandler = (convId: string | null, name: string, args: any, signal?: AbortSignal) => Promise<ToolAnswer>;
 export type Handlers = {
   toolCall: ToolCallHandler;
   userInput: UserInputHandler;
   you?: YouHandler;
   sideTool?: SideToolHandler;
+  /** Enforced private service, never an agent-callable MCP tool. */
+  fileWrite?: (threadId: string) => Promise<boolean>;
   /** A worker (a parent thread's child) wrote a file: its write/edit input (the screens showing it refresh). */
   childWrote?: (parentThreadId: string, input: Record<string, unknown>) => void;
 };
@@ -186,6 +193,7 @@ export class PiBackend extends EventEmitter {
   readonly name = "pi";
   readonly version: string;
   private threads = new Map<string, Thread>();
+  private mcp = new McpRuntime();
   private h: Handlers | null = null;
   private seq = 0;
   private stats = { spawns: 0, crashes: 0 };
@@ -314,7 +322,7 @@ export class PiBackend extends EventEmitter {
     }
   }
 
-  piEnv(toolsFile: string, subagents = false, you = false): NodeJS.ProcessEnv {
+  piEnv(you = false): NodeJS.ProcessEnv {
     const env: NodeJS.ProcessEnv = {};
     for (const [k, v] of Object.entries(process.env)) {
       if (v === undefined || /OPENROUTER|API_KEY|APIKEY|SECRET|PASSW|_TOKEN$|^VC_|^PI_/i.test(k)) continue;
@@ -326,16 +334,7 @@ export class PiBackend extends EventEmitter {
       PI_TELEMETRY: "0",
       PI_OFFLINE: "1",
       VC_KEY_FD: "3",
-      VC_PI_TOOLS: toolsFile,
       ...(you ? { VC_PI_YOU: "1" } : {}),
-      ...(subagents
-        ? {
-            VC_PI_SUBAGENTS: "1",
-            VC_PI_AGENTS_DIRS: JSON.stringify(this.o.subagents.agentsDirs),
-            VC_PI_SUBAGENT_CONCURRENCY: String(this.o.subagents.concurrency),
-            VC_PI_SUBAGENT_MAX_TASKS: String(this.o.subagents.maxTasks),
-          }
-        : {}),
       VC_PI_DENY_READ: JSON.stringify([...this.o.sandbox.denyRead, ...(this.o.sandbox.others?.() ?? [])]),
       VC_PI_DENY_WRITE: JSON.stringify(this.o.sandbox.denyWrite),
       ...(this.o.sandbox.shell ? { VC_PI_SHELL_WRAP: JSON.stringify(shellWith(this.o.sandbox)) } : {}),
@@ -345,14 +344,63 @@ export class PiBackend extends EventEmitter {
     });
   }
 
+  /** External host tools that consume files use the same realpath/deny policy,
+   * not a lexical prefix check (and never an ambient main-vault fallback). */
+  async externalPath(root: string, path: unknown, write = false): Promise<string | null> {
+    const policy = await import(/* @vite-ignore */ pathToFileURL(join(this.o.paths.extDir, "policy.mjs")).href);
+    const home = process.env.HOME ?? "/";
+    if (typeof path !== "string" || !path.trim()) return "An explicit vault file path is required.";
+    const resolved = policy.realish(path, root, home);
+    if (!policy.isUnder(resolved, policy.realish(root, root, home))) return "Path is outside the explicitly bound vault.";
+    return policy.guardToolCall(write ? "write" : "ls", { path }, { cwd: root, home,
+      denyRead: policy.resolveList([...this.o.sandbox.denyRead, ...(this.o.sandbox.others?.() ?? [])], home),
+      denyWrite: policy.resolveList(this.o.sandbox.denyWrite, home),
+    });
+  }
+
+  /** The shared filesystem authority: native loadouts retain the installed
+   * sandbox; external callers are explicitly vault-bound and get no shell or keys. */
+  async filesystem(cwd: string, allowed: string[], services: ProcessServices, root?: string): Promise<BoundTools> {
+    return filesystemBinding({
+      cli: this.o.install.cli, node: this.o.install.node,
+      script: join(this.o.paths.extDir, "filesystem.mjs"), cwd,
+      home: process.env.HOME ?? "/", outer: outerWith(this.o.sandbox), shell: shellWith(this.o.sandbox),
+      denyRead: [...this.o.sandbox.denyRead, ...(this.o.sandbox.others?.() ?? [])],
+      denyWrite: this.o.sandbox.denyWrite, allowed, root,
+      env: root ? () => ({}) : () => services.env?.() ?? {},
+      fileWrite: () => services.fileWrite?.() ?? Promise.resolve(false),
+    });
+  }
+
   /** Spawn pi on a session (new when `file` is null) and wait for it to answer. Children (subagents) and
    * side threads (side.ts) pass their own session dir and tool list; they don't count against maxProcs.
    * `fork`: pi's --fork (a new session holding that session's history, its header naming it as parent);
    * `ephemeral`: pi's --no-session; `system`: pi's --system-prompt (replaces pi's own) instead of
    * --append-system-prompt `instr`; `builtins: []`: pi's --no-tools. `you`: the extension asks for the
    * "you" layer before each prompt (conversations and Ctrl+K / Ctrl+L; not subagents or one-shots). */
-  async spawn(o: { cwd: string; model: string; file: string | null; instr: string; tools: string; subagents?: boolean; sessionDir?: string; builtins?: string[]; fork?: string; ephemeral?: boolean; system?: string; thinking?: string; you?: boolean }): Promise<{ proc: PiProc; id: string; file: string }> {
+  async spawn(o: { cwd: string; model: string; file: string | null; instr: string; tools: string; subagents?: boolean; sessionDir?: string; builtins?: string[]; fork?: string; ephemeral?: boolean; system?: string; thinking?: string; you?: boolean; hostCall?: BoundTools["call"]; services?: ProcessServices }): Promise<{ proc: PiProc; id: string; file: string }> {
     if (!o.sessionDir) await this.makeRoom();
+    let threadId = "";
+    const specs: ToolSpec[] = JSON.parse(readFileSync(o.tools, "utf8"));
+    if (o.subagents) specs.push(subagentTool(this.o.subagents.agentsDirs, this.o.subagents.maxTasks, this.o.subagents.concurrency));
+    const services = o.services ?? {
+      env: () => this.agentEnv(),
+      ...(o.you ? { you: (since: number | null) => this.you({ threadId, since }) } : {}),
+      fileWrite: async () => !!threadId && !!(await this.h?.fileWrite?.(threadId)),
+    };
+    const fs = await this.filesystem(o.cwd, o.builtins ?? ["read", "bash", "edit", "write"], services);
+    specs.push(...fs.specs);
+    const hostCall: BoundTools["call"] = o.hostCall ?? (async (name, args, context) => {
+      if (!threadId || !this.h) return { ok: false, text: "Engine not ready." };
+      if (name === "subagent" && o.subagents) return runSubagentTool(args, {
+        dirs: this.o.subagents.agentsDirs, maxTasks: this.o.subagents.maxTasks, concurrency: this.o.subagents.concurrency,
+        signal: context.signal, run: (a) => this.subs.run(threadId, a, context.signal),
+      });
+      return this.h.toolCall(threadId, name, args, context.signal);
+    });
+    const scope = await this.mcp.bind({ specs, call: (name, args, context) =>
+      FILE_TOOLS.includes(name) ? fs.call(name, args, context) : hostCall(name, args, context),
+    }, services);
     const session = o.fork ? ["--fork", o.fork] : o.ephemeral ? ["--no-session"] : o.file ? ["--session", o.file] : [];
     const args = [
       this.o.install.cli,
@@ -360,29 +408,32 @@ export class PiBackend extends EventEmitter {
       "--session-dir", o.sessionDir ?? this.o.paths.sessionsDir,
       "--model", `openrouter/${o.model}`,
       "--thinking", o.thinking ?? this.o.thinking,
-      "-ne", "--no-mcp", "-ns", "-np", "--no-themes", "-na", "--offline",
+      "-ne", ...(specs.length ? ["-e", "builtin:mcp"] : ["--no-mcp"]), "-ns", "-np", "--no-themes", "-na", "--offline",
       "-e", this.o.paths.ext,
       ...(o.system ? ["--system-prompt", o.system] : ["--append-system-prompt", o.instr]),
-      ...(o.builtins ? (o.builtins.length ? ["--tools", o.builtins.join(",")] : ["--no-tools"]) : []),
+      ...(specs.length ? ["--tools", specs.map((s) => `mcp__vault_chat__${s.name}`).join(",")] : ["--no-tools"]),
       ...session,
     ];
     const outer = outerWith(this.o.sandbox);
     const argv = outer ? [...outer, this.o.install.node, ...args] : [this.o.install.node, ...args];
-    const proc = new PiProc({ argv, cwd: o.cwd, env: this.piEnv(o.tools, !!o.subagents, !!o.you), key: this.o.apiKey() });
-    proc.start();
-    this.stats.spawns++;
+    const proc = new PiProc({ argv, cwd: o.cwd, env: this.piEnv(!!o.you), key: this.o.apiKey(), bootstrap: JSON.stringify({ ...scope.bootstrap, tools: specs.length > 0 }) });
+    proc.once("exit", () => { void scope.revoke(); });
     let st: any;
     try {
+      proc.start();
+      this.stats.spawns++;
       st = await proc.request({ type: "get_state" }, 60_000);
     } catch (e) {
       proc.killGroup("SIGKILL");
+      await scope.revoke();
       const tail = proc.stderrTail.trim().split("\n").slice(-3).join(" | ").slice(0, 400);
       throw new Error(`pi did not start: ${(e as Error).message}${tail ? ` — ${tail}` : ""}`);
     }
-    const id = String(st?.data?.sessionId ?? "");
+    const id = threadId = String(st?.data?.sessionId ?? "");
     const file = String(st?.data?.sessionFile ?? "");
     if (!id || (!file && !o.ephemeral)) {
       proc.killGroup("SIGKILL");
+      await scope.revoke();
       throw new Error("pi reported no session");
     }
     return { proc, id, file };
@@ -758,37 +809,12 @@ export class PiBackend extends EventEmitter {
     }
   }
 
-  /** The extension's host calls (vault-chat's tools, AskUser included) and any other dialog. */
+  /** Unhandled interactive extension dialogs are cancelled; tools use MCP. */
   private async onUi(t: Thread, req: any): Promise<void> {
     const reply = (o: Record<string, unknown>) => t.proc.write({ type: "extension_ui_response", id: req.id, ...o });
-    if (req.method === "editor" && req.title === "vc:host-call") {
-      let call: any = {};
-      try {
-        call = JSON.parse(String(req.prefill ?? "{}"));
-      } catch {
-        return reply({ value: JSON.stringify({ text: "bad host call", isError: true }) });
-      }
-      // The extension's Bash asks for the keys before each command (never shown to the model).
-      if (call.tool === "__env") return reply({ value: JSON.stringify({ env: this.agentEnv() }) });
-      if (call.tool === "__you") return reply({ value: JSON.stringify(await this.you({ threadId: t.id, since: sinceOf(call.args) })) });
-      if (!this.h) return reply({ value: JSON.stringify({ text: "engine not ready", isError: true }) });
-      if (call.tool === "__subagent") {
-        if (!t.subagents) return reply({ value: JSON.stringify({ ok: false, text: "Subagents are off for this conversation." }) });
-        const r = await this.subs.run(t.id, call.args ?? {}).catch((e) => ({ ok: false, text: `subagent failed: ${(e as Error).message}` }));
-        return reply({ value: JSON.stringify(r) });
-      }
-      const r: ToolAnswer = await this.h.toolCall(t.id, String(call.tool ?? ""), call.args ?? {}, typeof call.toolCallId === "string" ? call.toolCallId : undefined).catch((e) => ({ ok: false, text: `${call.tool} failed: ${(e as Error).message}` }));
-      return reply({ value: JSON.stringify({ text: r.text, ...(r.images?.length ? { images: r.images } : {}), ...(r.ok ? {} : { isError: true }) }) });
-    }
     if (req.method === "select" || req.method === "confirm" || req.method === "input" || req.method === "editor") return reply({ cancelled: true });
     // notify / setStatus / …: fire-and-forget.
   }
-}
-
-/** The `since` of a `__you` host call (a number, or null for a session that has seen no layer). */
-export function sinceOf(args: any): number | null {
-  const n = Number(args?.since);
-  return args?.since != null && Number.isFinite(n) ? n : null;
 }
 
 function hash(s: string): string {

@@ -1,6 +1,6 @@
 // Long work runs in the background, as Claude Code's background tasks do (Carl, 2026-10-26: "I both could not
 // speak to the agent and didn't see it running"). The real bundle and engine, the fake pi (fakePiCli.mjs, which
-// runs the `subagent` tool as ext/subagent.mjs does: each child a `__subagent` host call the server starts as a
+// calls the host-owned `subagent` tool over MCP; the server starts each child as a
 // sibling pi), a fake OpenRouter. A child's model calls are those whose first user message starts "Task:".
 //   - Delegate starts a worker and the turn ENDS; a message while it works is answered at once;
 //   - the worker's row moves from its own pi events (its latest tool and target, steps);

@@ -10,6 +10,9 @@ import { loadConfig, SERVER_VERSION, SERVER_REV } from "./config";
 import { trackWrites } from "./drain";
 import { inputSurface, noteInput } from "./presence";
 import { authorize, isDirectLoopback, phoneToken } from "./auth";
+import { createExternalMcpHandler, type ExternalContext } from "./mcp/external";
+import { externalMcpHosts } from "./mcp/hosts";
+import type { BoundTools } from "./mcp/tools";
 import { brainEnabled, brainRoute, type BrainDeps } from "./voiceBrain";
 import { relay, emitLocal } from "./bus";
 import { convLog, signal } from "./convlog/log";
@@ -54,6 +57,8 @@ export type ServerHooks = {
   vault?: (name: string | null) => VaultScope | null;
   /** /status for a vault other than the main one (the main one's comes from the app). */
   vaultStatus?: (v: VaultScope) => Promise<Record<string, unknown>>;
+  /** Standard MCP with an explicit vault/device/conversation, never defaults. */
+  mcp?: (vault: VaultScope, context: ExternalContext) => Promise<BoundTools | null>;
   /** The engine takes these routes; a handler returning null hands the
    * request to the legacy relay (old mission threads). */
   engine?: {
@@ -235,13 +240,20 @@ async function relayRoute(res: ServerResponse, event: string, payload: Record<st
 
 export function startHttpServer(hooks: ServerHooks): Promise<Server> {
   const cfg = loadConfig();
+  const mcpHosts = externalMcpHosts();
+  const mcp = createExternalMcpHandler({ version: SERVER_VERSION, allowedHosts: mcpHosts, bind: async (name, context) => {
+    const vault = hooks.vault?.(name);
+    return vault?.name === name && hooks.mcp ? hooks.mcp(vault, context) : null;
+  } });
   const server = createServer((req, res) => {
-    handle(req, res, hooks).catch((e) => {
+    const handled = new URL(req.url ?? "/", "http://localhost/").pathname === "/mcp" ? mcp(req, res) : handle(req, res, hooks);
+    handled.catch((e) => {
       console.error("[http] handler error:", e);
       if (!res.headersSent) json(res, 500, { error: String((e as Error)?.message ?? e) });
       else res.end();
     });
   });
+  server.on("close", () => { void mcp.close(); });
   // Long-polls hold for 25 s; don't let node's defaults cut them.
   server.requestTimeout = 0;
   server.headersTimeout = 70_000;

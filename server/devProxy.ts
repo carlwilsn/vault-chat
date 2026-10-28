@@ -234,6 +234,19 @@ export function servedPorts(st: any): Set<number> {
   return out;
 }
 
+/** This machine's exact private HTTPS hostname, from the local Tailscale daemon.
+ * Read-only discovery shared by development previews and the MCP Host guard. */
+export function tailscaleDnsName(bin: string): string | null {
+  const r = spawnSync(bin, ["status", "--json"], { encoding: "utf8", timeout: 10_000 });
+  if (r.status !== 0) return null;
+  try {
+    const n = String(JSON.parse(r.stdout).Self?.DNSName ?? "").replace(/\.$/, "").toLowerCase();
+    return n || null;
+  } catch {
+    return null;
+  }
+}
+
 /** `tailscale serve --https=<port> http://127.0.0.1:<to>`, in the foreground: the entry lives as long as the child. */
 export function tailscaleExposer(bin: string): Exposer {
   const kids = new Map<number, ChildProcess>();
@@ -241,13 +254,7 @@ export function tailscaleExposer(bin: string): Exposer {
   let dns: string | null = null;
   const dnsName = (): string | null => {
     if (dns) return dns;
-    const r = ts(["status", "--json"]);
-    try {
-      const n = String(JSON.parse(r.stdout).Self?.DNSName ?? "").replace(/\.$/, "");
-      return (dns = n || null);
-    } catch {
-      return null;
-    }
+    return (dns = tailscaleDnsName(bin));
   };
   const served = (port: number): boolean => {
     const r = ts(["serve", "status", "--json"]);

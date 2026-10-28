@@ -36,7 +36,7 @@ import { MAIN_ID, projectOfThread, projectThreadId, threadKindOf } from "../../s
 import { searchHistory } from "./history";
 import { addWake, readWakes, removeWakes, nextWakeFor, parseDelay, type Wake } from "./wakes";
 import { Ledger } from "./ledger";
-import { pdfPages, pdfPagesSpec, pdfRead, webSearch } from "./extraTools";
+import { pdfPagesAnswer, pdfPagesSpec, pdfRead, webSearch } from "./extraTools";
 import { failMake, inboxLog, listEntries, readEntry, sendEntry, startMake, type InboxEvent } from "../inbox";
 import { BOARD_MAKER_PROMPT, boardMakeTask, makerStats } from "./boardTools";
 import { lookBoard } from "../boards";
@@ -46,6 +46,7 @@ import { openProject, OPEN_PROJECT_DESCRIPTION, OPEN_PROJECT_SCHEMA } from "../p
 import { startJobWith, jobStatus, jobList, jobStop, reapJobs, readJobs, type PiJobEnv } from "./pi/jobs";
 import { devProxies, exposedNote, jobPorts } from "../devProxy";
 import { recordUITool, RECORD_DESCRIPTION, RECORD_SCHEMA } from "../recordUI";
+import { externalRecordUI } from "../mcp/recordUI";
 import { loadConfig } from "../config";
 import { ENGINE_ROLE_PROMPT } from "./prompt";
 import { isNoteTool, noteTool, noteToolSpecs } from "../notesTools";
@@ -57,7 +58,7 @@ import { WRITE_TOOLS, writtenPath } from "../liveEdits";
 import { appendActivity, contextImage, searchActivity, youLayer } from "../activity";
 import { CAPTURE_FRESH_MS, chatPointerEntry } from "../../src/activityCore";
 import type { EventBody, ItemImage, PendingInput } from "../../src/convlog/protocol";
-import { isOpen, pendingOf, shown, type Picture } from "../../src/convlog/reduce";
+import { pendingOf, type Picture } from "../../src/convlog/reduce";
 import { makeChatView, toolName } from "../../src/convlog/view";
 import { waitInputs } from "../../src/voiceWaitLine";
 import { lookupAll } from "./lookup";
@@ -195,6 +196,7 @@ export const ENGINE_TOOL_SPECS = [
     inputSchema: {
       type: "object",
       properties: {
+        proofId: { type: "string", pattern: "^[A-Za-z0-9_-]{16,60}$", description: "A fresh unique handoff ID (e.g. a UUID), never reused. Proof artifacts belong to this handoff, not to a model tool-call ID." },
         title: { type: "string", description: "The change in a few words (it names the branch when you have none)." },
         branch: { type: "string", description: "Your branch, agent/<short-name> (optional: the one checked out in your clone)." },
         what: { type: "string", description: "What changed, for Carl: a few lines." },
@@ -202,7 +204,7 @@ export const ENGINE_TOOL_SPECS = [
         tests: { type: "string", description: "The checks you ran and their results, as they printed (pass counts, failures)." },
         images: { type: "array", items: { type: "string" }, description: "Screenshots (or a short video) of the change, paths in your clone or absolute: the proof he looks at." },
       },
-      required: ["title", "what", "why", "tests"],
+      required: ["proofId", "title", "what", "why", "tests"],
       additionalProperties: false,
     },
   },
@@ -487,10 +489,10 @@ export function voiceSideToolSpecs(act: boolean): ToolSpec[] {
 const text = (t: string) => ({ success: true, contentItems: [{ type: "inputText", text: t }] });
 
 /** A tool's answer for pi: its text, and the images it attaches (BoardLook's board pictures) as pi's image blocks. */
-export function toolAnswer(r: any): { ok: boolean; text: string; images?: { data: string; mimeType: string }[] } {
+export function toolAnswer(r: any): import("./pi/backend").ToolAnswer {
   const items: any[] = Array.isArray(r?.contentItems) ? r.contentItems : [];
   const images = items.filter((c) => c?.type === "inputImage" && typeof c.data === "string" && c.data).map((c) => ({ data: String(c.data), mimeType: String(c.mimeType || "image/png") }));
-  return { ok: r?.success !== false, text: items.filter((c) => c?.type !== "inputImage").map((c) => c?.text ?? "").join("\n"), ...(images.length ? { images } : {}) };
+  return { ok: r?.success !== false, text: items.filter((c) => c?.type !== "inputImage").map((c) => c?.text ?? "").join("\n"), ...(images.length ? { images } : {}), ...(r?.resources ? { resources: r.resources } : {}) };
 }
 
 /** A Delegate worker's instructions (on top of the subagent preamble). */
@@ -509,6 +511,7 @@ export class Engine {
   private resumeQueue = new Set<string>();
   private firstUp = true;
   private timers: NodeJS.Timeout[] = [];
+  private reviewPreparing = new Set<string>();
   private firing = new Set<string>();
   private childOf = new Map<string, string>(); // subagent threadId → parent conversation id
   /** Captures already sent to each conversation's model (in memory): one is never attached twice. */
@@ -662,9 +665,10 @@ export class Engine {
     b.on("up", () => this.scoped(() => void this.onUp()));
     setNoteWriter(this.d.vault, (convId, notes) => this.scoped(() => this.noteViaPi(convId, notes)));
     b.setHandlers({
-      toolCall: (threadId, name, args, toolCallId) =>
+      fileWrite: async (threadId) => !this.talkers.has(this.byThread.get(threadId) ?? ""),
+      toolCall: (threadId, name, args, signal) =>
         this.scoped(async () => {
-          const r: any = await this.onToolCall({ threadId, tool: name, arguments: args, toolCallId });
+          const r: any = await this.onToolCall({ threadId, tool: name, arguments: args, signal });
           return toolAnswer(r);
         }),
       userInput: (threadId, question, options) => this.scoped(() => this.waitForAnswer(threadId, question, options)),
@@ -674,9 +678,9 @@ export class Engine {
         const p = writtenPath(this.d.vault, input);
         if (p) this.d.onFilesWritten?.([p]);
       },
-      sideTool: (convId, name, args) =>
+      sideTool: (convId, name, args, signal) =>
         this.scoped(async () => {
-          const r: any = await this.onToolCall({ side: { convId }, tool: name, arguments: args });
+          const r: any = await this.onToolCall({ side: { convId }, tool: name, arguments: args, signal });
           return toolAnswer(r);
         }),
     });
@@ -690,6 +694,42 @@ export class Engine {
 
   stop(): void {
     for (const t of this.timers) clearInterval(t);
+  }
+
+  /** External clients have explicit vault/device/conversation context, never
+   * whichever chat happens to be foreground. No external caller borrows a
+   * running pi turn: questions, proof gates and workers require their owner. */
+  async mcpBinding(context: { conversation: string | null; device: "laptop" | "phone" | "board" }) {
+    return this.scoped(async () => {
+      if (context.conversation && !(await readConv(this.d.vault, context.conversation))) return null;
+      const builtin = agentToolSpecs().map((t) => t.name === "RecordUI" ? { ...t, description: `${t.description} External clients: browser-only http(s) pages; run steps and local-file navigation are refused. Omit out: a fresh vault visuals directory is allocated.` } : t);
+      const own = await vaultToolSpecsFor(this.d.vault, [...builtin.map((t) => t.name), ...PI_BUILTIN_TOOLS]);
+      const fs = await this.d.backend.filesystem(this.d.vault, PI_BUILTIN_TOOLS.filter((n) => n !== "bash"), { fileWrite: async () => true }, this.d.vault);
+      return {
+        specs: [...builtin, ...own, ...fs.specs] as ToolSpec[],
+        resources: [{ uri: "vault-chat://context/you", name: "Authorized device and file context", mimeType: "text/plain" }],
+        readResource: async (uri: string) => {
+          if (uri !== "vault-chat://context/you") throw new Error("Resource unavailable in this scope");
+          return `Bound device: ${context.device}; conversation: ${context.conversation ?? "none"}.\n${(await this.scoped(() => this.you({ convId: context.conversation, since: null }))).text}`;
+        },
+        call: async (name: string, args: Record<string, unknown>, contextOfCall: { signal: AbortSignal }) => this.scoped(async () => {
+          if (PI_BUILTIN_TOOLS.includes(name)) return fs.call(name, args, { ...contextOfCall, requestId: "external" });
+          if (TURN_ONLY_TOOLS.has(name) || name === "Compact") return { ok: false, text: `${name} needs an owning vault-chat turn; an external MCP client cannot borrow a chat's live turn.` };
+          if (name === "RecordUI") return externalRecordUI(this.d.shell?.(), this.d.vault, args,
+            (path, write) => this.d.backend.externalPath(this.d.vault, path, write), { signal: contextOfCall.signal });
+          if (name === "PdfRead" || name === "PdfPages") {
+            const why = await this.d.backend.externalPath(this.d.vault, args.path);
+            if (why) return { ok: false, text: why };
+          }
+          const a = { ...args };
+          if (name === "Show" && (!a.where || a.where === "here")) a.where = context.device;
+          const toBoard = name === "BoardSend" || (name === "Show" && /^(board|ipad)$/i.test(String(a.where)));
+          if (toBoard && context.device !== "board" && a.asked !== true) return { ok: false, text: "Board sending requires an explicit request (asked: true) from this external client, not ambient screen presence." };
+          if (toBoard && context.device === "board") a.asked = true; // explicit bound board, not global presence
+          return toolAnswer(await this.onToolCall({ side: { convId: context.conversation }, tool: name, arguments: a, signal: contextOfCall.signal }));
+        }),
+      };
+    });
   }
 
   /** Main, and one thread per project (made once; never a write when they exist). */
@@ -1736,10 +1776,8 @@ export class Engine {
             this.updateSubagent(l.convId, t, { prompt: String(e.prompt ?? "").slice(0, 300), model: e.model ?? this.d.model(), status: "running", startedAt: Date.now() });
           }
         }
-        // The children ride on the parent's own `subagent` tool call (its id; an older extension
-        // without it: the newest `subagent` call still open).
-        const call = this.spawnCall(l.convId, e.itemId);
-        if (call) for (const t of e.children) this.updateSubagent(l.convId, t, { toolCallId: call });
+        // Workers own independent task rows; MCP request ids and pi model call
+        // ids are unrelated. Never guess ownership from the newest open call.
         if (e.done && e.ok && e.op === "spawnAgent" && e.children.length) {
           if (learn(this.d.model(), "subagents", true, `spawned ${e.children.length} subagent(s) in a real turn`)) this.log(`learned: ${this.d.model()} subagents on`);
         }
@@ -1808,18 +1846,6 @@ export class Engine {
     }
     l.cut = true;
     void this.finishTurn(l, "interrupted", null).then(() => this.run(l.convId, RESUME_TEXT, "resume", { byCarl: l.byCarl })).catch((err) => this.log(`resume ${l.convId} failed: ${err}`));
-  }
-
-  private spawnCall(convId: string, itemId: string | undefined): string | null {
-    const p = this.picture(convId);
-    if (!p) return null;
-    const all = shown(p);
-    if (itemId && all.some((x) => x.kind === "tool" && x.id === itemId)) return itemId;
-    for (let j = all.length - 1; j >= 0; j--) {
-      const x = all[j]!;
-      if (x.kind === "tool" && (x.name === "subagent" || x.name === "Delegate") && isOpen(x)) return x.id;
-    }
-    return itemId || null;
   }
 
   private async finishTurn(l: Live, status: string, error: any): Promise<void> {
@@ -2077,6 +2103,7 @@ export class Engine {
     const conv = found ?? ({ id: "", title: "", messages: [] } as unknown as NonNullable<typeof found>);
     const a = p?.arguments ?? {};
     try {
+      p.signal?.throwIfAborted();
       // ListProjects only reads. A project is made only by Carl: in the app, or by asking for it (OpenProject below).
       if (isContextTool(name)) return await handleContextTool(name, a, { conv: conv as any, convs: (await allConvs(vault)) as any });
       // The notes tools: the same code voice runs (server/notesTools.ts), every result read back from the file.
@@ -2090,17 +2117,23 @@ export class Engine {
           const slug = projectOfThread(convId);
           const chosen = slug ? projectFolderOf(vault, slug) : null;
           if (!slug || !chosen || "error" in chosen || !isGatedProject(chosen.abs)) return text(`${REVIEW_TOOL} is only for the thread of a project that works in a git repo on the box.`);
-          const prep = await prepareReview({ vault, convId, slug, folder: chosen.abs, toolCallId: String(p.toolCallId ?? `rr-${Date.now()}`), args: a });
+          if (pendingReview(vault, convId) || this.reviewPreparing.has(convId)) return text("A handoff is already waiting for Carl in this conversation. Do not replace it.");
+          if (this.live.get(convId)?.ask) return text("Carl is answering a question already; finish that before handing over a review.");
+          this.reviewPreparing.add(convId);
+          let prep: Awaited<ReturnType<typeof prepareReview>>;
+          try { prep = await prepareReview({ vault, convId, slug, folder: chosen.abs, args: a }); }
+          finally { this.reviewPreparing.delete(convId); }
           if ("error" in prep) return text(prep.error);
-          const ans = await this.waitForAnswer(p.threadId, proofQuestion(prep.review, prep.stat), [KEEP, SEND_BACK]);
+          const ans = await this.waitForAnswer(p.threadId, proofQuestion(prep.review, prep.stat), [KEEP, SEND_BACK], p.signal);
           const live = pendingReview(vault, convId);
           const out = live ? await answerReview(vault, live, ans) : { kept: false, text: "(already settled)" };
           this.log(`review ${prep.review.branch} on ${convId}: ${out.kept ? "kept" : "not kept"}`);
           return text(`Carl answered: ${ans}${OUTCOME_SEP}${out.text}`);
         }
         case "AskUser": {
+          if (this.reviewPreparing.has(convId)) return text("A review handoff is being prepared; do not ask another question concurrently.");
           const opts = Array.isArray(a.options) ? a.options.map(String).filter(Boolean).slice(0, 6) : [];
-          const ans = await this.waitForAnswer(p.threadId, String(a.question ?? "").trim() || "?", opts);
+          const ans = await this.waitForAnswer(p.threadId, String(a.question ?? "").trim() || "?", opts, p.signal);
           return text(`Carl answered: ${ans}`);
         }
         case "ScheduleWake": {
@@ -2146,9 +2179,6 @@ export class Engine {
         }
         case "Lookup":
           return text(await lookupAll(vault, a));
-        case "__fileWrite":
-          // The extension asks before write/edit (pi/ext/vc.mjs): on a live call the voice hands file changes to a worker.
-          return text(this.talkers.has(convId) ? "call" : "ok");
         case "Delegate": {
           const title = String(a.title ?? "").trim().slice(0, 120);
           const task = String(a.task ?? "").trim();
@@ -2235,8 +2265,10 @@ export class Engine {
         }
         case "PdfRead":
           return text(await pdfRead(vault, a));
-        case "PdfPages":
-          return text(await pdfPages(vault, a));
+        case "PdfPages": {
+          const answer = await pdfPagesAnswer(vault, a);
+          return { ...text(answer.text), resources: answer.resources };
+        }
         case "WebSearch":
           return text(await webSearch(String(a.query ?? ""), this.d.apiKey(), this.d.webSearchModel));
         case "StartJob": {
@@ -2337,21 +2369,36 @@ export class Engine {
 
 
   /** Park the turn on a question until Carl answers (via /message, /answer or an answer intent). */
-  private async waitForAnswer(threadId: string, question: string, options: string[]): Promise<string> {
+  private async waitForAnswer(threadId: string, question: string, options: string[], signal?: AbortSignal): Promise<string> {
+    signal?.throwIfAborted();
     const convId = this.byThread.get(threadId) ?? this.childOf.get(threadId);
     const l = convId ? this.live.get(convId) : undefined;
     if (!convId || !l) return "No one is available to answer right now. Continue with your best judgement and say what you assumed.";
+    if (l.ask) return "A question is already waiting for Carl. Do not ask another concurrently.";
     const vault = this.d.vault;
-    const conv = await readConv(vault, convId);
     l.asks++;
     const itemId = `${l.turnId}:ask:${l.asks}`;
     const p = new Promise<string>((resolve) => {
       l.ask = { resolve, question, itemId };
     });
     this.emit(convId, { type: "meta", patch: { asking: { question, options, at: Date.now() }, state: "waiting_user" } });
-    // The phone buzzes only once he is away from every screen, and only while the question is still open.
-    await this.d.notify({ kind: "ask", title: (conv?.title ? `Needs your answer: ${conv.title}` : "Needs your answer").slice(0, 90), body: question, convId, options, why: "ask", trigger: "AskUser", stillNeeded: () => this.live.get(convId)?.ask?.itemId === itemId });
-    return p;
+    const cancel = () => {
+      if (l.ask?.itemId !== itemId) return;
+      l.ask.resolve("");
+      l.ask = null;
+      this.emit(convId, { type: "meta", patch: { asking: null, state: "running" } });
+    };
+    signal?.addEventListener("abort", cancel, { once: true });
+    if (signal?.aborted) cancel();
+    try {
+      const conv = await readConv(vault, convId);
+      signal?.throwIfAborted();
+      // Buzz only while this exact question is still open.
+      await this.d.notify({ kind: "ask", title: (conv?.title ? `Needs your answer: ${conv.title}` : "Needs your answer").slice(0, 90), body: question, convId, options, why: "ask", trigger: "AskUser", stillNeeded: () => this.live.get(convId)?.ask?.itemId === itemId });
+      const answer = await p;
+      signal?.throwIfAborted();
+      return answer;
+    } finally { signal?.removeEventListener("abort", cancel); }
   }
 
   /** Carl's answer: his message (under his client's id), the question closed, the turn resumed (or a new one). */

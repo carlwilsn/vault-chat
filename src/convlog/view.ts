@@ -8,6 +8,7 @@
 import type { PendingInput, Todo } from "./protocol";
 import { isOpen, pendingOf, planOf, shown, type Item, type Picture } from "./reduce";
 import { ASK_TOOLS, REVIEW_TOOL, reviewCard } from "../review";
+import { hostToolName } from "../mcpNames";
 
 export const DIVIDER_TEXT = "Earlier conversation summarized";
 
@@ -45,7 +46,7 @@ export const RETRY_TEXT = "Try again: the last reply failed before it finished. 
 /** A failed request a turn ended on (reduce.ts blocksOf's `<ts>:-1` line, closed). */
 const isTurnFailure = (it: Item) => it.kind === "notice" && it.level === "error" && it.id.endsWith(":-1") && !isOpen(it);
 
-export type ViewTool = { id: string; name: string; input: any; result?: string; startedAt?: number; inputChars?: number };
+export type ViewTool = { id: string; name: string; input: any; result?: string; partial?: string; startedAt?: number; inputChars?: number };
 
 export type ChatView = {
   messages: ViewMessage[];
@@ -80,7 +81,7 @@ export function argsOf(it: Item): any {
 
 /** pi's tool names → the names the clients' renderers know. */
 const TOOL_NAMES: Record<string, string> = { bash: "Bash", read: "Read", write: "Write", edit: "Edit", grep: "Grep", find: "Glob", ls: "LS" };
-export const toolName = (n: string | undefined): string => TOOL_NAMES[n ?? ""] ?? (n || "tool");
+export const toolName = (n: string | undefined): string => TOOL_NAMES[hostToolName(n)] ?? (hostToolName(n) || "tool");
 
 const ENGINE_VIA = new Set(["wake", "nudge", "resume", "job", "delegate"]);
 
@@ -290,6 +291,7 @@ export function makeChatView(): (p: Picture, opts?: { split?: boolean }) => Chat
         name: toolName(x.name),
         input: argsOf(x),
         ...(x.result !== undefined ? { result: x.result } : {}),
+        ...(isOpen(x) && x.partial ? { partial: x.partial } : {}),
         startedAt: x.at,
         ...(x.args === undefined && x.argsText ? { inputChars: x.argsText.length } : {}),
       }));

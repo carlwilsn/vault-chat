@@ -1,5 +1,5 @@
-// Subagents: a parent pi's `subagent` tool (ext/subagent.mjs, vendored from
-// pi's example) asks the host, per child, over the extension bridge; the host
+// Subagents: a parent pi's native MCP `subagent` tool (mcp/subagent.ts,
+// adapted from pi's example) asks the host, per child; the host
 // starts the child here as a SIBLING of the parent — the same launch as any pi
 // (its own bubblewrap, pid namespace and process group, the key on its own fd,
 // scrubbed env, path guard), in RPC mode so it can be steered and stopped, on a
@@ -11,6 +11,7 @@
 // subagents[] on the meta. A parent that stops or dies takes its children down.
 import { mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { hostToolName } from "../../../src/mcpNames";
 import type { PiBackend, ToolSpec } from "./backend";
 import type { PiProc } from "./proc";
 
@@ -79,7 +80,7 @@ export function activityOf(tool: string, args: any): string {
     return t.length > n ? `${t.slice(0, n - 1)}…` : t;
   };
   const path = base(args?.path ?? args?.file_path);
-  switch (tool) {
+  switch (hostToolName(tool)) {
     case "write":
       return path ? `writing ${path}` : "writing a file";
     case "edit":
@@ -177,7 +178,8 @@ export class Subagents {
 
   /** One child, start to report. Never throws. A child moved to the background while it runs (detach) answers at
    *  once with a line saying so; its report then comes through detach's `result`. */
-  async run(parentId: string, a: any): Promise<Record<string, unknown>> {
+  async run(parentId: string, a: any, signal?: AbortSignal): Promise<Record<string, unknown>> {
+    signal?.throwIfAborted();
     await this.acquire();
     let held = true;
     const release = () => {
@@ -186,12 +188,16 @@ export class Subagents {
       this.release();
     };
     try {
+      signal?.throwIfAborted();
       const c = await this.startOne(parentId, a);
       if (!isChild(c)) {
         release();
         return c;
       }
-      const result = this.finishOne(c).finally(release);
+      const cancel = () => { void this.stop(c, "stopped"); };
+      signal?.addEventListener("abort", cancel, { once: true });
+      if (signal?.aborted) cancel();
+      const result = this.finishOne(c).finally(() => { signal?.removeEventListener("abort", cancel); release(); });
       c.result = result;
       const first = await Promise.race([result, c.detached.then(() => null)]);
       if (first) return first;
@@ -263,14 +269,22 @@ export class Subagents {
     const sessionDir = join(this.b.paths.sessionsDir, "sub", parentId, `${Date.now().toString(36)}-${n}`);
     mkdirSync(sessionDir, { recursive: true });
 
-    const { proc, id, file } = await this.b.spawn({ cwd, model, file: null, instr, tools, sessionDir, builtins: [...(builtins.length ? builtins : ["read"]), ...hostTools] }); // pi's --tools names every active tool, extension ones too
+    const { proc, id, file } = await this.b.spawn({
+      cwd, model, file: null, instr, tools, sessionDir,
+      builtins: [...(builtins.length ? builtins : ["read"]), ...hostTools],
+      hostCall: async (name, args, context) => this.b.handlers ? this.b.handlers.toolCall(parentId, name, args, context.signal) : { ok: false, text: "Parent unavailable." },
+      services: {
+        ...(builtins.includes("bash") ? { env: () => this.b.agentEnv() } : {}),
+        fileWrite: async () => builtins.includes("write") || builtins.includes("edit"),
+      },
+    });
     let settled = false;
     let resolveDone!: (aborted: boolean) => void;
     const done = new Promise<boolean>((r) => (resolveDone = r));
     let detachNow!: () => void;
     const detached = new Promise<void>((r) => (detachNow = r));
-    // One entry per spawn: the parent's own `subagent` tool call (its toolCallId) carries the children.
-    const itemId = typeof a?.toolCallId === "string" && a.toolCallId ? a.toolCallId : `sub-${id}`;
+    // A worker owns its task row. No model/MCP call-id correlation or newest-call fallback.
+    const itemId = `sub-${id}`;
     const child: Child = {
       id,
       parent: parentId,
@@ -303,7 +317,7 @@ export class Subagents {
     this.children.set(id, child);
     this.files.set(id, file);
     this.b.ev({ kind: "subagents", threadId: parentId, itemId, children: [id], op: "spawnAgent", prompt: task, model, done: false, ok: false });
-    this.b.ev({ kind: "subagentStatus", threadId: parentId, child: id, status: "running", path: file, patch: { task: task.slice(0, 500), title: child.title, ...(a?.expect === "short" || a?.expect === "long" ? { expect: a.expect } : {}), ...(child.background ? { background: true } : {}), agent: child.agent, model, state: "running", startedAt: child.startedAt, sessionFile: file, costUsd: 0, toolCallId: itemId } });
+    this.b.ev({ kind: "subagentStatus", threadId: parentId, child: id, status: "running", path: file, patch: { task: task.slice(0, 500), title: child.title, ...(a?.expect === "short" || a?.expect === "long" ? { expect: a.expect } : {}), ...(child.background ? { background: true } : {}), agent: child.agent, model, state: "running", startedAt: child.startedAt, sessionFile: file, costUsd: 0 } });
 
     // What it is doing, from its own pi events, onto its row: at most one update a second, the newest always lands.
     let lastPush = 0;
@@ -331,7 +345,7 @@ export class Subagents {
         }
       } else if (e?.type === "tool_execution_start") {
         child.activity = activityOf(String(e.toolName ?? "tool"), e.args ?? {});
-        if (e.toolName === "write" || e.toolName === "edit") writes.set(String(e.toolCallId ?? ""), e.args ?? {});
+        if (["write", "edit"].includes(hostToolName(String(e.toolName ?? "")))) writes.set(String(e.toolCallId ?? ""), e.args ?? {});
         changed();
       } else if (e?.type === "tool_execution_end") {
         child.steps++;
@@ -388,22 +402,9 @@ export class Subagents {
     return { ok, state, text: ok ? report || "(no output)" : [failText, report].filter(Boolean).join("\n\n"), childId: id, model, costUsd, sessionFile: file };
   }
 
-  /** A child's host calls: Notify/PdfRead/WebSearch/BoardSend run as the parent's; nothing else. Its final message is its report. */
+  /** A child's tool capability is fixed at spawn; interactive UI is unavailable. */
   private async onChildUi(c: Child, req: any): Promise<void> {
     const reply = (o: Record<string, unknown>) => c.proc.write({ type: "extension_ui_response", id: req.id, ...o });
-    if (req.method === "editor" && req.title === "vc:host-call") {
-      let call: any = {};
-      try {
-        call = JSON.parse(String(req.prefill ?? "{}"));
-      } catch {
-        return reply({ value: JSON.stringify({ text: "bad host call", isError: true }) });
-      }
-      const name = String(call.tool ?? "");
-      if (name === "__env") return reply({ value: JSON.stringify({ env: this.b.agentEnv() }) });
-      if (!CHILD_HOST_TOOLS.includes(name) || !this.b.handlers) return reply({ value: JSON.stringify({ text: `${name} is not available to subagents; report to the parent agent instead.`, isError: true }) });
-      const r = await this.b.handlers.toolCall(c.parent, name, call.args ?? {}).catch((e) => ({ ok: false, text: `${name} failed: ${(e as Error).message}` }));
-      return reply({ value: JSON.stringify({ text: r.text, ...(r.ok ? {} : { isError: true }) }) });
-    }
     if (["select", "confirm", "input", "editor"].includes(req.method)) return reply({ cancelled: true });
   }
 

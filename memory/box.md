@@ -25,3 +25,13 @@
   key files stay hidden. Never print them, never commit them, never pass them on a command line (they were moved off
   `systemd-run` argv into an EnvironmentFile for that reason).
 - **Test instances you start, you clean up** (units, `tailscale serve` entries, `/tmp` dirs). Never `rm` state dirs.
+- **Private MCP uses the existing deployment**, not another listener/token. Its default exact Host comes from
+  local Tailscale `Self.DNSName`, using the existing CLI locator; `VC_MCP_HOSTS` is only an optional replacement
+  allowlist (explicit empty disables). Existing private identity + header credential and scoped rights still apply.
+  An isolated normal-route SDK test proves that build's wiring, not the running box: production reachability of a
+  changed endpoint can only be claimed after Keep deploys it, and laptop pairing is a separate client check.
+- **External RecordUI is browser authority, not shell authority.** It can use explicit http(s) pages and real
+  browser input without borrowing a chat turn, but rejects `run`, local-file navigation and client-selected
+  output. Shared realpath/write policy protects the parent of a fresh exclusive visuals directory; the installed
+  sandbox remains mandatory. Chromium needs private writable XDG config/cache inside the recorder because the
+  sandbox's read-only HOME makes crashpad fail to start otherwise. A passing unsandboxed browser test missed this.

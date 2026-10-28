@@ -99,7 +99,7 @@ describe("a git project: the agent works on a branch in its clone; only Keep rea
   });
 
   it("ReadyForReview: the branch beside main in the repo, the proof card with Keep and Send back; main unchanged", async () => {
-    or.script.push({ toolCall: { name: "ReadyForReview", args: { title: "Bigger heading", what: "The h1 is 2em.", why: "Carl asked for a bigger heading.", tests: "npm test: 12 passed, 0 failed", images: ["proof/after.png"] } } });
+    or.script.push({ toolCall: { name: "ReadyForReview", args: { proofId: "handoff-bigger-heading-2", title: "Bigger heading", what: "The h1 is 2em.", why: "Carl asked for a bigger heading.", tests: "npm test: 12 passed, 0 failed", images: ["proof/after.png"] } } });
     await post("/api/v2/intent", { type: "send", clientId: "c-2", convId: CONV, text: "Hand it over, GATE-2." });
     await waitFor(asking, 30_000);
     expect(git(repo, "rev-parse", "agent/bigger-heading")).toBe(git(work, "rev-parse", "HEAD"));
@@ -130,7 +130,7 @@ describe("a git project: the agent works on a branch in its clone; only Keep rea
   it("Keep: the branch merged into main by the server and pushed to the remote", async () => {
     writeFileSync(join(work, "index.html"), "<h1 style=\"font-size:3em\">Hello</h1>\n");
     git(work, "commit", "-q", "-am", "3em");
-    or.script.push({ toolCall: { name: "ReadyForReview", args: { title: "Bigger heading", what: "The h1 is 3em.", why: "His note.", tests: "npm test: 12 passed, 0 failed" } } });
+    or.script.push({ toolCall: { name: "ReadyForReview", args: { proofId: "handoff-bigger-heading-3", title: "Bigger heading", what: "The h1 is 3em.", why: "His note.", tests: "npm test: 12 passed, 0 failed" } } });
     await post("/api/v2/intent", { type: "send", clientId: "c-4", convId: CONV, text: "Again, GATE-4." });
     await waitFor(asking, 30_000);
     expect(mainSha()).toBe(start);
@@ -149,7 +149,7 @@ describe("a git project: the agent works on a branch in its clone; only Keep rea
     writeFileSync(join(work, "footer.html"), "<footer>bye</footer>\n");
     git(work, "add", "footer.html");
     git(work, "commit", "-q", "-m", "Footer");
-    or.script.push({ toolCall: { name: "ReadyForReview", args: { title: "A footer", what: "footer.html", why: "asked", tests: "ok" } } });
+    or.script.push({ toolCall: { name: "ReadyForReview", args: { proofId: "handoff-footer-added", title: "A footer", what: "footer.html", why: "asked", tests: "ok" } } });
     await post("/api/v2/intent", { type: "send", clientId: "c-r1", convId: CONV, text: "Footer, GATE-R." });
     await waitFor(asking, 30_000);
     const before = mainSha();
@@ -164,12 +164,12 @@ describe("a git project: the agent works on a branch in its clone; only Keep rea
   }, 120_000);
 
   it("a hand-over with nothing committed is refused, and so is ReadyForReview outside a git project", async () => {
-    or.script.push({ toolCall: { name: "ReadyForReview", args: { title: "Nothing", what: "x", why: "x", tests: "x" } } });
+    or.script.push({ toolCall: { name: "ReadyForReview", args: { proofId: "handoff-nothing-new", title: "Nothing", what: "x", why: "x", tests: "x" } } });
     await post("/api/v2/intent", { type: "send", clientId: "c-6", convId: CONV, text: "Hand over nothing, GATE-6." });
     await waitFor(() => or.calls.some((c) => JSON.stringify(c).includes("Nothing to keep")), 30_000);
     expect(await asking()).toBe(false);
     await waitFor(async () => !(await picture(CONV)).meta.running, 20_000);
-    or.script.push({ toolCall: { name: "ReadyForReview", args: { title: "Main", what: "x", why: "x", tests: "x" } } });
+    or.script.push({ toolCall: { name: "ReadyForReview", args: { proofId: "handoff-main-invalid", title: "Main", what: "x", why: "x", tests: "x" } } });
     await post("/api/v2/intent", { type: "send", clientId: "c-7", text: "In Main, GATE-7." });
     await waitFor(() => or.calls.some((c) => JSON.stringify(c).includes("is only for the thread of a project that works in a git repo")), 30_000);
   });

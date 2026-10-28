@@ -2,11 +2,12 @@
 // a scripted fake OpenRouter, and the built server bundle as a real child
 // process.
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, copyFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
-import { tmpdir } from "node:os";
+import { tmpdir, homedir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import { Encrypter } from "age-encryption";
+import { pathToFileURL } from "node:url";
 
 export const ROOT = resolve(__dirname, "..", "..");
 export const BUNDLE = join(ROOT, "dist-server", "vault-chat-server.mjs");
@@ -17,7 +18,18 @@ export function fakePiDir(home: string): string {
   const pkg = join(dir, "node_modules", "@earendil-works", "pi-coding-agent");
   mkdirSync(join(pkg, "dist", "bundle"), { recursive: true });
   writeFileSync(join(pkg, "package.json"), JSON.stringify({ name: "@earendil-works/pi-coding-agent", version: "1.1.0", type: "module" }));
-  copyFileSync(join(ROOT, "server", "test", "fakePiCli.mjs"), join(pkg, "dist", "bundle", "cli.js"));
+  // Resolve the official SDK from this checkout even though the fixture CLI
+  // lives in a throwaway npm prefix (also works without symlink privileges).
+  const source = readFileSync(join(ROOT, "server", "test", "fakePiCli.mjs"), "utf8")
+    .replace('"@modelcontextprotocol/sdk/client/index.js"', JSON.stringify(pathToFileURL(join(ROOT, "node_modules/@modelcontextprotocol/sdk/dist/esm/client/index.js")).href))
+    .replace('"@modelcontextprotocol/sdk/client/streamableHttp.js"', JSON.stringify(pathToFileURL(join(ROOT, "node_modules/@modelcontextprotocol/sdk/dist/esm/client/streamableHttp.js")).href));
+  writeFileSync(join(pkg, "dist", "bundle", "cli.js"), source);
+  // Filesystem tools are the real pinned pi factories, even when the model
+  // loop is scripted. Never maintain a fake second filesystem implementation.
+  const tools = join(process.env.VC_TEST_PI_DIR ?? join(homedir(), ".local/state/vault-chat-server/pi/1.1.0"), "node_modules/@earendil-works/pi-coding-agent/dist/core/tools/index.js");
+  if (!existsSync(tools)) throw new Error("Tests require installed pi 1.1.0 tool factories (VC_TEST_PI_DIR)");
+  mkdirSync(join(pkg, "dist", "core", "tools"), { recursive: true });
+  writeFileSync(join(pkg, "dist", "core", "tools", "index.js"), `export * from ${JSON.stringify(pathToFileURL(tools).href)};`);
   return dir;
 }
 
@@ -131,7 +143,11 @@ export async function fakeOpenRouter(reply = "Acknowledged. Mission started."): 
       }
       if (step?.toolCall && parsed.stream) {
         res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache" });
-        const tc = { index: 0, id: `call_${state.calls.length}`, type: "function", function: { name: step.toolCall.name, arguments: JSON.stringify(step.toolCall.args) } };
+        // Scripts name logical tools; the provider must return the exact name
+        // actually declared by pi (native MCP names are not display aliases).
+        const native = `mcp__vault_chat__${step.toolCall.name}`;
+        const name = parsed.tools?.some((t: any) => t.function?.name === native) ? native : step.toolCall.name;
+        const tc = { index: 0, id: `call_${state.calls.length}`, type: "function", function: { name, arguments: JSON.stringify(step.toolCall.args) } };
         const ch = (delta: any, finish: string | null, extra: any = {}) =>
           `data: ${JSON.stringify({ id, object: "chat.completion.chunk", created: 1, model, choices: [{ index: 0, delta, finish_reason: finish }], ...extra })}
 

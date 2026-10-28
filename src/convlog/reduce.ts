@@ -18,9 +18,10 @@
 import type { ConvMeta, ConvRow, ItemImage, LogRecord, PendingInput, PiBlock, PiEntry, PiMessage, Todo } from "./protocol";
 import { VC_NOTE, VC_VOICE } from "./protocol";
 import { answerOf } from "../review";
+import { hostToolName } from "../mcpNames";
 
 /** Bumped when the fold's meaning changes: a checkpoint from another version is folded again. */
-export const REDUCER_VERSION = 5;
+export const REDUCER_VERSION = 6;
 
 export type ItemKind = "user" | "assistant" | "thinking" | "tool" | "compaction" | "notice";
 export type ItemStatus = "streaming" | "pending" | "running" | "done" | "error" | "stopped";
@@ -131,7 +132,7 @@ function blocksOf(m: PiMessage, at: number, status: ItemStatus, running = false)
     } else if (b.type === "thinking" && typeof b.thinking === "string") {
       if (b.thinking.trim()) out.push({ id, kind: "thinking", status: stopped ? "stopped" : status, text: b.thinking, at });
     } else if (b.type === "toolCall" && b.id) {
-      out.push({ id: String(b.id), kind: "tool", status: "pending", name: String(b.name ?? "tool"), args: b.arguments ?? {}, at });
+      out.push({ id: String(b.id), kind: "tool", status: "pending", name: hostToolName(b.name) || "tool", args: b.arguments ?? {}, at });
     }
   });
   if (m.stopReason === "error") out.push({ id: failId(m.timestamp), kind: "notice", status: running ? "pending" : "done", level: "error", text: failText(m.errorMessage), at });
@@ -202,7 +203,7 @@ function onEntry(d: Draft, r: Extract<LogRecord, { type: "entry" }>): void {
     if (m.role === "toolResult" && m.toolCallId) {
       const res = cap(`${m.isError ? "[error] " : ""}${textOf(m.content)}`);
       if (!patchItem(d, m.toolCallId, { result: res, status: m.isError ? "error" : "done", partial: undefined })) {
-        d.items.push({ id: m.toolCallId, kind: "tool", status: m.isError ? "error" : "done", name: String(m.toolName ?? "tool"), args: {}, result: res, at: r.at });
+        d.items.push({ id: m.toolCallId, kind: "tool", status: m.isError ? "error" : "done", name: hostToolName(m.toolName) || "tool", args: {}, result: res, at: r.at });
       }
       // Carl's answer to a question: his line, under the id his client sent it with.
       const ans = answerOf(m.toolName, textOf(m.content));
@@ -283,7 +284,7 @@ function onLive(d: Draft, r: Extract<LogRecord, { type: "live" }>): void {
           return upsert({ id, kind: "thinking", status: "done", text: String(ae.content ?? ""), at: r.at });
         case "toolcall_start": {
           const tid = String(ae.id ?? ae.toolCall?.id ?? id);
-          return upsert({ id: tid, kind: "tool", status: "streaming", name: String(ae.toolName ?? "tool"), argsText: "", at: r.at });
+          return upsert({ id: tid, kind: "tool", status: "streaming", name: hostToolName(ae.toolName) || "tool", argsText: "", at: r.at });
         }
         case "toolcall_delta": {
           const t = [...d.inflight].reverse().find((x) => x.kind === "tool" && x.status === "streaming");
@@ -292,7 +293,7 @@ function onLive(d: Draft, r: Extract<LogRecord, { type: "live" }>): void {
         }
         case "toolcall_end": {
           const tc = ae.toolCall ?? {};
-          if (tc.id) upsert({ id: String(tc.id), kind: "tool", status: "pending", name: String(tc.name ?? "tool"), args: tc.arguments ?? {}, at: r.at });
+          if (tc.id) upsert({ id: String(tc.id), kind: "tool", status: "pending", name: hostToolName(tc.name) || "tool", args: tc.arguments ?? {}, at: r.at });
           return;
         }
         default:
@@ -311,7 +312,7 @@ function onLive(d: Draft, r: Extract<LogRecord, { type: "live" }>): void {
     case "tool_execution_start": {
       const id = String(ev.toolCallId ?? "");
       if (!id) return;
-      if (!patchItem(d, id, { status: "running", ...(ev.args !== undefined ? { args: ev.args } : {}) })) d.items.push({ id, kind: "tool", status: "running", name: String(ev.toolName ?? "tool"), args: ev.args ?? {}, at: r.at });
+      if (!patchItem(d, id, { status: "running", ...(ev.args !== undefined ? { args: ev.args } : {}) })) d.items.push({ id, kind: "tool", status: "running", name: hostToolName(ev.toolName) || "tool", args: ev.args ?? {}, at: r.at });
       return;
     }
     case "tool_execution_update": {

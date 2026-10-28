@@ -23,10 +23,10 @@
 // (AGENTS.md in the working folder and the folders above it) go to the model in the system prompt, as pi sends them.
 // The model is sent the active tools as pi declares them: the built-ins (pi's
 // defaults read/bash/edit/write, or the allowlist's) and the extension's
-// vault-chat tools ($VC_PI_TOOLS), each only if the allowlist names it.
+// vault-chat tools (official MCP client), each only if the allowlist names it.
 //
 // The extension's "you" layer (ext/vc.mjs, VC_PI_YOU=1) as pi runs it: before
-// each prompt, the host call `__you` with `since` from the session's last
+// each prompt, a private context request with `since` from the session's last
 // `vc-you` custom message (policy.mjs youSince, the extension's own code); a
 // layer comes back as a custom_message entry after the user message, and goes
 // to the model as a user message (pi's convertToLlm), now and on every resume.
@@ -39,6 +39,8 @@ import { appendFileSync, mkdirSync, readFileSync, writeFileSync, existsSync } fr
 import { dirname, join, resolve as resolvePath } from "node:path";
 import { pathToFileURL } from "node:url";
 import { randomUUID } from "node:crypto";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 
 const argv = process.argv.slice(2);
 const arg = (k) => {
@@ -46,12 +48,13 @@ const arg = (k) => {
   return i >= 0 ? argv[i + 1] : undefined;
 };
 // The extension's own helpers, from where pi is told to load it (`-e <dir>/vc.mjs`, policy.mjs beside it).
-const { YOU_TYPE, youSince } = arg("-e")
-  ? await import(pathToFileURL(join(dirname(arg("-e")), "policy.mjs")).href)
+const extension = argv.filter((value, i) => argv[i - 1] === "-e" && !value.startsWith("builtin:")).at(-1);
+const { YOU_TYPE, youSince } = extension
+  ? await import(pathToFileURL(join(dirname(extension), "policy.mjs")).href)
   : { YOU_TYPE: "vc-you", youSince: () => null };
 // pi's before_provider_request as the extension hooks it (pdf.mjs: PdfPages' slices as native PDF parts).
-const { withPdfParts } = arg("-e") && existsSync(join(dirname(arg("-e")), "pdf.mjs"))
-  ? await import(pathToFileURL(join(dirname(arg("-e")), "pdf.mjs")).href)
+const { withPdfParts } = extension && existsSync(join(dirname(extension), "pdf.mjs"))
+  ? await import(pathToFileURL(join(dirname(extension), "pdf.mjs")).href)
   : { withPdfParts: () => undefined };
 if (argv.includes("--list-models")) process.exit(0);
 
@@ -147,67 +150,37 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const BUILTINS = new Set(["bash", "read", "write", "edit", "grep", "find", "ls"]);
 /** The tools pi declares to the model: its built-ins and the extension's, filtered by --tools. */
+const bootstrap = JSON.parse(readFileSync(4, "utf8"));
+const mcp = new Client({ name: "fake-pi-protocol-fixture", version: "test" });
+let specs = [];
+if (bootstrap.tools && !argv.includes("--no-mcp")) {
+  await mcp.connect(new StreamableHTTPClientTransport(new URL(bootstrap.url), { requestInit: { headers: { Authorization: bootstrap.authorization } } }));
+  specs = (await mcp.listTools()).tools;
+}
 const declared = (() => {
-  let specs = [];
-  try {
-    specs = process.env.VC_PI_TOOLS ? JSON.parse(readFileSync(process.env.VC_PI_TOOLS, "utf8")) : [];
-  } catch {}
   const builtins = [...BUILTINS].filter((n) => (allowed ? allowed.has(n) : ["read", "bash", "edit", "write"].includes(n)));
-  const host = specs.filter((t) => t && typeof t.name === "string" && (!allowed || allowed.has(t.name)));
+  const host = specs.filter((t) => !allowed || allowed.has(`mcp__vault_chat__${t.name}`));
   return [
     ...builtins.map((name) => ({ type: "function", function: { name, description: `pi's ${name}`, parameters: { type: "object", properties: {} } } })),
-    ...host.map((t) => ({ type: "function", function: { name: t.name, description: String(t.description ?? t.name), parameters: t.inputSchema ?? { type: "object", properties: {} } } })),
+    ...host.map((t) => ({ type: "function", function: { name: `mcp__vault_chat__${t.name}`, description: t.description, parameters: t.inputSchema } })),
   ];
 })();
 const uiWaiters = new Map();
-let uiSeq = 0;
-/** A vault-chat tool, as its extension calls the host: an editor dialog titled vc:host-call. */
-function hostCall(tool, args, toolCallId) {
-  const id = `ui-${++uiSeq}`;
-  out({ type: "extension_ui_request", id, method: "editor", title: "vc:host-call", prefill: JSON.stringify({ tool, args, ...(toolCallId ? { toolCallId } : {}) }) });
-  return new Promise((resolve) => {
-    uiWaiters.set(id, (v) => {
-      try {
-        const j = JSON.parse(v ?? "{}");
-        resolve({ text: String(j.text ?? ""), isError: !!j.isError });
-      } catch {
-        resolve({ text: String(v ?? ""), isError: false });
-      }
-    });
-  });
-}
-
-/** The `subagent` tool as ext/subagent.mjs runs it: each child is the host call `__subagent` (the server starts it as
- *  a sibling pi), single mode or parallel (`tasks`); the tool's answer is the children's reports. */
-async function subagentTool(tc) {
-  const a = tc.arguments ?? {};
-  const one = async (t, mode) => {
-    const id = `ui-${++uiSeq}`;
-    out({ type: "extension_ui_request", id, method: "editor", title: "vc:host-call", prefill: JSON.stringify({ tool: "__subagent", args: { agent: { name: t.agent ?? "worker", tools: null, model: null, systemPrompt: "" }, task: t.task, mode, toolCallId: tc.id } }) });
-    const v = await new Promise((resolve) => uiWaiters.set(id, resolve));
-    try {
-      return JSON.parse(v ?? "");
-    } catch {
-      return { ok: false, text: "vault-chat did not answer for this subagent." };
-    }
-  };
-  if (Array.isArray(a.tasks) && a.tasks.length) {
-    const rs = await Promise.all(a.tasks.map((t) => one(t, "parallel")));
-    return { text: rs.map((r) => r.text ?? "").join("\n\n---\n\n"), isError: false };
-  }
-  const r = await one(a, "single");
-  return { text: String(r.text ?? ""), isError: !r.ok };
+/** Protocol fixture: host calls use the official SDK, never extension UI. */
+async function hostCall(tool, args) {
+  try {
+    const result = await mcp.callTool({ name: tool.replace(/^mcp__vault_chat__/, ""), arguments: args });
+    return { text: result.content.filter((p) => p.type === "text").map((p) => p.text).join("\n"), isError: !!result.isError };
+  } catch (e) { return { text: e.message, isError: true }; }
 }
 
 /** The extension's before_agent_start: the host's "you" layer since this session last saw it, or null. */
 async function youLayer() {
   if (process.env.VC_PI_YOU !== "1") return null;
-  const id = `ui-${++uiSeq}`;
   const since = youSince(customs);
-  out({ type: "extension_ui_request", id, method: "editor", title: "vc:host-call", prefill: JSON.stringify({ tool: "__you", args: { since } }) });
-  const v = await new Promise((resolve) => uiWaiters.set(id, resolve));
   try {
-    const r = JSON.parse(v ?? "null");
+    const response = await fetch(new URL("/context/you", bootstrap.url), { method: "POST", headers: { Authorization: bootstrap.authorization, "Content-Type": "application/json" }, body: JSON.stringify({ since }) });
+    const r = await response.json();
     return r && typeof r.text === "string" && r.text.trim() && Number.isFinite(Number(r.until)) ? { text: r.text, until: Number(r.until), since } : null;
   } catch {
     return null;
@@ -376,7 +349,11 @@ async function run(first) {
       const { reply, retried } = await callModelRetrying();
       if (aborted) break;
       const text = String(reply.content ?? "");
-      const calls = Array.isArray(reply.tool_calls) ? reply.tool_calls : [];
+      // Historical scripted fixtures name host tools without their native prefix.
+      const calls = (Array.isArray(reply.tool_calls) ? reply.tool_calls : []).map((call) => {
+        const name = call.function?.name;
+        return specs.some((s) => s.name === name) ? { ...call, function: { ...call.function, name: `mcp__vault_chat__${name}` } } : call;
+      });
       const ts = stamp();
       out({ type: "message_start", message: { role: "assistant", content: [], timestamp: ts } });
       const content = [];
@@ -412,14 +389,12 @@ async function run(first) {
       if (retried) out({ type: "auto_retry_end", success: true, attempt: retried });
       for (const tc of content.filter((c) => c.type === "toolCall")) {
         out({ type: "tool_execution_start", toolCallId: tc.id, toolName: tc.name, args: tc.arguments });
-        // vault-chat's own tools are host calls (its extension's editor dialog, ext/vc.mjs); of pi's built-ins only read runs.
+        // Host tools go through MCP; the fixture implements only selected built-ins.
         const host = !BUILTINS.has(tc.name);
         const r =
           allowed && !allowed.has(tc.name)
             ? { text: `Tool ${tc.name} not found`, isError: true }
-            : tc.name === "subagent" && process.env.VC_PI_SUBAGENTS === "1"
-              ? await subagentTool(tc)
-              : host
+            : host
               ? await hostCall(tc.name, tc.arguments, tc.id)
               : tc.name === "read"
                 ? readTool(tc.arguments)

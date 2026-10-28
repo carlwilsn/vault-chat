@@ -1933,6 +1933,7 @@ function LiveToolTicker({ tools }: { tools: LiveTool[] }) {
   // A subagent call waiting on its children: the background-tasks chip shows them moving, not a bare timer.
   if (running && (latest.name === "subagent" || latest.name === "Delegate")) return null;
   return (
+    <div className="space-y-1">
     <div data-el="live-tool" className="flex items-center gap-2 text-[11px] font-mono text-muted-foreground overflow-hidden">
       <Wrench className={cn("h-3 w-3 shrink-0", running && "animate-pulse")} />
       <span
@@ -1955,6 +1956,12 @@ function LiveToolTicker({ tools }: { tools: LiveTool[] }) {
       ) : (
         <span className="text-emerald-500 shrink-0">✓</span>
       )}
+    </div>
+    {running && latest.partial && (
+      <pre data-el="live-tool-output" className="max-h-40 overflow-auto whitespace-pre-wrap break-all rounded border border-border/40 bg-muted/30 p-2 text-[10.5px] font-mono text-muted-foreground">
+        {latest.partial}
+      </pre>
+    )}
     </div>
   );
 }

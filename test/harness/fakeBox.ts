@@ -33,6 +33,22 @@ export class FakeBox {
   attachVault = fs.mkdtempSync(path.join(os.tmpdir(), "vc-fakebox-attach-"));
   /** Answer /poll this many ms late (the tailnet). */
   pollDelay = 0;
+  private pollGate: Promise<void> | null = null;
+  /** Hold every poll response, including one already waiting for events.
+   * Release in finally: unlike pollDelay this synchronizes an echo assertion
+   * with delivery, not with the arrival time of the next HTTP request. */
+  holdPolls(): () => void {
+    if (this.pollGate) throw new Error("polls are already held");
+    let release!: () => void;
+    this.pollGate = new Promise<void>((resolve) => { release = resolve; });
+    let held = true;
+    return () => {
+      if (!held) return;
+      held = false;
+      this.pollGate = null;
+      release();
+    };
+  }
   private server!: http.Server;
   private n = 0;
   private clock = Date.now();
@@ -211,6 +227,7 @@ export class FakeBox {
           const leave = feedOpened(this.showVault, u.searchParams.get("client"));
           res.on("close", leave);
           if (this.pollDelay) await new Promise((r) => setTimeout(r, this.pollDelay));
+          await this.pollGate;
           const a = u.searchParams.get("after") ?? "latest";
           const epoch = u.searchParams.get("epoch");
           if (a === "latest") return send(200, { next: this.log.latest(), events: [], epoch: this.log.epoch });
@@ -218,6 +235,7 @@ export class FakeBox {
           const after = Number(a);
           const deadline = Date.now() + 1500;
           for (;;) {
+            await this.pollGate;
             const got = this.log.after(after);
             if (got.reset || got.events.length || Date.now() > deadline || this.down) return send(200, { ...got, epoch: this.log.epoch });
             await this.log.wait(100);

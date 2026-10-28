@@ -65,7 +65,7 @@ describe("PdfPages: PDF pages to the model natively", () => {
     await waitFor(async () => or.calls.slice(n).some((c) => JSON.stringify(c.messages ?? []).includes("tent-shaped")) || or.calls.length >= n + 3, 30_000);
     const calls = or.calls.slice(n);
     // Offered to the main agent, read-only beside PdfRead.
-    expect((calls[0].tools ?? []).map((t: any) => t.function?.name)).toEqual(expect.arrayContaining(["PdfRead", "PdfPages"]));
+    expect((calls[0].tools ?? []).map((t: any) => t.function?.name)).toEqual(expect.arrayContaining(["mcp__vault_chat__PdfRead", "mcp__vault_chat__PdfPages"]));
     // PdfRead: page 3 has no text layer, and the result says to look with PdfPages.
     expect(JSON.stringify(calls[1].messages)).toMatch(/No text layer on page 3[^"]*PdfPages/);
     expect(fileParts(calls[1])).toEqual([]);
@@ -88,7 +88,7 @@ describe("PdfPages: PDF pages to the model natively", () => {
     expect(r.id).toBeTruthy();
     await waitFor(async () => (await get(`/api/v1/side/${r.id}?after=0&wait=2000`)).done, 30_000);
     const calls = or.calls.slice(n);
-    expect((calls[0].tools ?? []).map((t: any) => t.function?.name)).toContain("PdfPages");
+    expect((calls[0].tools ?? []).map((t: any) => t.function?.name)).toContain("mcp__vault_chat__PdfPages");
     const parts = fileParts(calls[1]);
     expect(parts.length).toBe(1);
     expect(await pagesOf(parts[0])).toEqual([expect.stringContaining("Problem 1.")]);

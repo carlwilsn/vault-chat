@@ -14,6 +14,8 @@ export type PiProcOptions = {
   env: NodeJS.ProcessEnv;
   /** Written to fd 3 then closed. */
   key: string | null;
+  /** Private extension bootstrap, written once on fd 4; never inherited by bash. */
+  bootstrap?: string;
   log?: (s: string) => void;
 };
 
@@ -44,7 +46,7 @@ export class PiProc extends EventEmitter {
     const child = spawn(cmd!, args, {
       cwd: this.o.cwd,
       env: this.o.env,
-      stdio: ["pipe", "pipe", "pipe", "pipe"],
+      stdio: ["pipe", "pipe", "pipe", "pipe", "pipe"],
       // Its own process group: the whole group is signalled on kill.
       detached: process.platform !== "win32",
       windowsHide: true,
@@ -54,6 +56,11 @@ export class PiProc extends EventEmitter {
     if (fd3) {
       (fd3 as any).on?.("error", () => undefined);
       fd3.end(this.o.key ? this.o.key + "\n" : "");
+    }
+    const fd4 = child.stdio[4] as NodeJS.WritableStream | null;
+    if (fd4) {
+      (fd4 as any).on?.("error", () => undefined);
+      fd4.end(this.o.bootstrap ?? "");
     }
     child.stdin?.on("error", () => undefined);
     child.stdout?.setEncoding("utf8");

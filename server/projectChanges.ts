@@ -76,7 +76,7 @@ export async function ensureClone(vault: string, slug: string, folder: string): 
 
 // ---------------------------------------------------------------- the reviews waiting for Carl
 
-export type Review = { convId: string; slug: string; folder: string; clone: string; base: string; branch: string; sha: string; title: string; at: string; toolCallId?: string };
+export type Review = { convId: string; slug: string; folder: string; clone: string; base: string; branch: string; sha: string; title: string; at: string; proofId?: string; toolCallId?: string };
 
 function reviewsFile(vault: string): string {
   return join(vault, ".vault-chat", "local", "reviews.json");
@@ -124,15 +124,18 @@ export function shortName(s: string): string {
 
 const IMAGE_EXT = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".mp4", ".webm"]);
 
-export type ReadyArgs = { title?: unknown; branch?: unknown; what?: unknown; why?: unknown; tests?: unknown; images?: unknown };
+export type ReadyArgs = { proofId?: unknown; title?: unknown; branch?: unknown; what?: unknown; why?: unknown; tests?: unknown; images?: unknown };
 
 /**
  * ReadyForReview, before Carl sees it: the change committed on agent/<name> in the clone, ahead of main;
  * the branch fetched into the project's repo beside main; the proof images copied into the vault. Returns
  * the review, or what the agent must do first.
  */
-export async function prepareReview(o: { vault: string; convId: string; slug: string; folder: string; toolCallId: string; args: ReadyArgs }): Promise<{ review: Review; images: string[]; stat: string } | { error: string }> {
+export async function prepareReview(o: { vault: string; convId: string; slug: string; folder: string; args: ReadyArgs }): Promise<{ review: Review; images: string[]; stat: string } | { error: string }> {
   const { vault, slug, folder } = o;
+  // Explicit artifact identity, never an MCP request id or model tool-call id.
+  const proofId = typeof o.args.proofId === "string" ? o.args.proofId : "";
+  if (!/^[A-Za-z0-9_-]{16,60}$/.test(proofId)) return { error: "ReadyForReview needs a fresh proofId (16–60 letters, digits, _ or -)." };
   const title = String(o.args.title ?? "").trim().slice(0, 120);
   if (!title) return { error: "ReadyForReview needs title: the change in a few words." };
   const c = await ensureClone(vault, slug, folder);
@@ -159,6 +162,9 @@ export async function prepareReview(o: { vault: string; convId: string; slug: st
   const stat = (await git(clone, ["diff", "--stat", `origin/${base}...HEAD`])).out.split("\n").slice(-12).join("\n");
   // The proof: images copied into the vault where the card shows them (laptop and phone).
   const images: string[] = [];
+  const dir = join(vault, ".vault-chat", "proof", proofId);
+  mkdirSync(join(dir, ".."), { recursive: true });
+  try { mkdirSync(dir); } catch { return { error: "proofId already used; choose a fresh ID. Existing proof was not changed." }; }
   const list = Array.isArray(o.args.images) ? o.args.images.map(String).filter(Boolean).slice(0, 8) : [];
   for (let i = 0; i < list.length; i++) {
     const src = isAbsolute(list[i]!) ? list[i]! : resolve(clone, list[i]!);
@@ -167,12 +173,12 @@ export async function prepareReview(o: { vault: string; convId: string; slug: st
     } catch {
       return { error: `images: ${list[i]} does not exist` };
     }
-    const rel = proofImagePath(o.toolCallId, i, src);
+    const rel = proofImagePath(proofId, i, src);
     mkdirSync(join(vault, rel, ".."), { recursive: true });
     copyFileSync(src, join(vault, rel));
     images.push(rel);
   }
-  const review: Review = { convId: o.convId, slug, folder, clone, base, branch, sha, title, at: new Date().toISOString(), toolCallId: o.toolCallId };
+  const review: Review = { convId: o.convId, slug, folder, clone, base, branch, sha, title, at: new Date().toISOString(), proofId };
   const all = readReviews(vault);
   all[o.convId] = review;
   writeReviews(vault, all);

@@ -19,6 +19,7 @@
 import type { EventBody, ItemImage, PiEntry } from "../../src/convlog/protocol";
 import { VC_NOTE, VC_VOICE } from "../../src/convlog/protocol";
 import { ASK_TOOLS } from "../../src/review";
+import { hostToolName } from "../../src/mcpNames";
 import { SessionTail, shownEntry } from "../convlog/piSession";
 
 export type Expected = {
@@ -141,7 +142,7 @@ export class PiFeed {
       for (const b of Array.isArray(m.content) ? m.content : []) if (b?.type === "text" && typeof b.text === "string" && b.text.trim()) this.replies.push(b.text);
       this.lastError = m.stopReason === "error" && m.errorMessage ? String(m.errorMessage).slice(0, 500) : null;
     }
-    if (e.type === "message" && m?.role === "toolResult" && ASK_TOOLS.has(String(m.toolName)) && this.answers.length) {
+    if (e.type === "message" && m?.role === "toolResult" && ASK_TOOLS.has(hostToolName(m.toolName)) && this.answers.length) {
       return this.o.emit({ type: "entry", file: this.o.file, entry: e, clientId: this.answers.shift()! });
     }
     if (e.type === "custom" && e.customType === VC_NOTE && typeof e.data?.clientId === "string") {

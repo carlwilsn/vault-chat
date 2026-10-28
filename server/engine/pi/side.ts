@@ -22,7 +22,7 @@
 // get_last_assistant_text. Nothing here writes a session file.
 import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { sinceOf, type PiBackend, type ToolAnswer, type ToolSpec } from "./backend";
+import { type PiBackend, type ToolSpec } from "./backend";
 import type { PiProc } from "./proc";
 import { TurnRecorder, type TurnLine } from "../turnLog";
 
@@ -176,6 +176,17 @@ export class SideRuns {
       // pi's --tools names every active tool, extension ones too.
       builtins: [...meta.tools, ...(meta.hostTools ?? []).map((t) => t.name)],
       you: !!meta.you,
+      hostCall: async (name, args, context) => {
+        const h = this.b.handlers?.sideTool;
+        return h ? h(meta.you?.convId ?? null, name, args, context.signal) : { ok: false, text: "Side tools unavailable." };
+      },
+      services: {
+        ...(meta.you ? { you: (since: number | null) => this.b.you({ convId: meta.you!.convId, since }) } : {}),
+        // Actions may use shell keys, never a parent capability. Read-only runs
+        // cannot obtain keys or write through this private service.
+        ...(meta.tools.includes("bash") ? { env: () => this.b.agentEnv() } : {}),
+        fileWrite: async () => meta.tools.includes("write") || meta.tools.includes("edit"),
+      },
     });
   }
 
@@ -219,25 +230,9 @@ export class SideRuns {
         })();
       }
     });
-    // Host calls: the "you" layer and the read-only vault-chat tools (as of the conversation it was opened from); dialogs are cancelled.
+    // Tool/context services are independently scoped at spawn; UI dialogs are cancelled.
     proc.on("ui", async (req: any) => {
       const reply = (o: Record<string, unknown>) => proc.write({ type: "extension_ui_response", id: req.id, ...o });
-      if (req.method === "editor" && req.title === "vc:host-call") {
-        let call: any = {};
-        try {
-          call = JSON.parse(String(req.prefill ?? "{}"));
-        } catch {
-          /* not a call */
-        }
-        if (call?.tool === "__you" && run.meta.you) return reply({ value: JSON.stringify(await this.b.you({ convId: run.meta.you.convId, since: sinceOf(call.args) })) });
-        const name = String(call?.tool ?? "");
-        const h = this.b.handlers?.sideTool;
-        if (h && (run.meta.hostTools ?? []).some((t) => t.name === name)) {
-          const r: ToolAnswer = await h(run.meta.you?.convId ?? null, name, call.args ?? {}).catch((e) => ({ ok: false, text: `${name} failed: ${(e as Error).message}` }));
-          return reply({ value: JSON.stringify({ text: r.text, ...(r.images?.length ? { images: r.images } : {}), ...(r.ok ? {} : { isError: true }) }) });
-        }
-        return reply({ value: JSON.stringify({ text: "Not available here: this request has read-only tools.", isError: true }) });
-      }
       if (["select", "confirm", "input", "editor"].includes(req.method)) reply({ cancelled: true });
     });
     proc.on("exit", () => {
