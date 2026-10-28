@@ -30,7 +30,7 @@ test("laptop chip: a job row has Stop and no Steer; a worker keeps both", () => 
 });
 
 test("phone chip: the same", () => {
-  const html = subagentsHtml([job, worker] as any, "strip");
+  const html = subagentsHtml([job, worker] as any, "strip", true);
   const [, a, b] = html.split('data-el="subagent"');
   assert.match(a!, /data-op="stop"/);
   assert.doesNotMatch(a!, /data-op="steer"/);
