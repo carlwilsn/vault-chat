@@ -102,18 +102,19 @@ server/engine/
   prompt.ts         vault-chat's role prompt
   pi/backend.ts     PiBackend: thread = pi session (id; ref = its session file), one pi process per thread with work
                     in hand (idle 10 min → closed; ≤ 6), RPC prompt/steer/follow_up/abort, pi events → the engine's
-                    events, host calls from the extension → the engine's tool handlers, usage from vc-cost entries
+                    events, scoped native MCP → the engine's tool handlers, usage from vc-cost entries
   pi/subagents.ts   subagents: each child a sibling pi the host starts (see below)
   pi/proc.ts        one `pi --mode rpc` child: strict LF-split JSONL, own process group, key written to fd 3 then closed
   pi/install.ts     npm-installs pi 1.1.0 into $VC_STATE_DIR/pi/1.1.0 (VC_PI_DIR overrides); finds bwrap
   pi/config.ts      $VC_STATE_DIR/pi/{agent/settings.json (compaction per model: at ¾ of the window, ≤ 375k),
                     agent/models.json (models pi's catalog lacks), agents/, ext/, instr/, sessions/}
   pi/jobs.ts        StartJob/JobStatus: `systemd-run --user` + bubblewrap with the same hiding
-  pi/ext/vc.mjs     the pi extension (copied to $VC_STATE_DIR/pi/ext at boot): vault-chat's tools as blocking host calls
-                    (`extension_ui_request` editor "vc:host-call"), the key from fd 3 (runtime key, in-process), the
+  pi/ext/vc.mjs     the pi extension (copied to $VC_STATE_DIR/pi/ext at boot): native MCP server registration from
+                    fd 4 (revocable per-process capability), the key from fd 3 (runtime key, in-process), the
                     scrubbed + bubblewrapped `bash` with a default timeout, the path guard, vc-cost ledger entries,
                     Gemini cache markers
-  pi/ext/subagent.mjs  the `subagent` tool, vendored from pi's example extension (MIT; modes, agents, output)
+  mcp/subagent.ts   one host-owned subagent schema and single/parallel/chain orchestration
+  mcp/             stateful SDK MCP transport, process capabilities and private external /mcp (see mcp/README.md)
   pi/ext/policy.mjs pure helpers (env scrub, path guard with symlinks resolved, cache markers, schema → TypeBox)
 ```
 
@@ -168,11 +169,11 @@ names; such a thread is unknown to pi, so its next turn starts a fresh session w
 | `VC_PI_SUBAGENT_TIMEOUT_MS` / `VC_PI_SUBAGENT_GRACE_MS` | 30 min / 5 s | wall-clock limit per child; abort → SIGKILL of its group after the grace |
 
 **Subagents.** On models whose tool calls work (`capabilities.subagents`), the parent pi has a `subagent` tool
-(`pi/ext/subagent.mjs`, vendored from pi 1.1.0's example extension, MIT, attribution kept): single
+(`mcp/subagent.ts`, host-owned native MCP tool): single
 `{agent, task}`, parallel `{tasks: [...]}` (≤ 8, 4 at once) or chain `{chain: [...]}` with `{previous}`. Agents
 are markdown with frontmatter (`name, description, tools, model`): built-ins `worker` and `scout` in
 `$VC_STATE_DIR/pi/agents/`, overridden or added by `.vault-chat/agents/*.md` in the vault. The tool never spawns
-anything itself: per child it asks the host (`__subagent` over the extension bridge), and `pi/subagents.ts` starts
+a child process itself: its orchestration calls `pi/subagents.ts`, which starts
 the child as a **sibling** of the parent — the same launch as any pi (its own bubblewrap, pid namespace and process
 group, the key on its own fd 3, scrubbed env, the path guard), in RPC mode, on a persisted session in
 `sessions/sub/<parent session>/<child>/`. A child's tools are its agent's allow-list: pi's file/shell tools plus at
