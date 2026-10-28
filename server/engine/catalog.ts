@@ -41,11 +41,12 @@ export async function loadCatalog(cachePath: string, timeoutMs = 15_000): Promis
     byId = new Map();
   }
   let source: "live" | "cache" | "none" = byId.size ? "cache" : "none";
+  const ctl = new AbortController();
+  const t = setTimeout(() => ctl.abort(), timeoutMs);
   try {
-    const ctl = new AbortController();
-    const t = setTimeout(() => ctl.abort(), timeoutMs);
+    // Keep the deadline through body consumption: headers alone do not mean
+    // the catalog arrived, and engine startup awaits this refresh.
     const r = await fetch("https://openrouter.ai/api/v1/models", { signal: ctl.signal });
-    clearTimeout(t);
     if (r.ok) {
       const json = await r.json();
       const live = parseCatalog(json);
@@ -73,6 +74,8 @@ export async function loadCatalog(cachePath: string, timeoutMs = 15_000): Promis
     }
   } catch {
     /* offline: keep the cache */
+  } finally {
+    clearTimeout(t);
   }
   return { models: byId.size, source };
 }

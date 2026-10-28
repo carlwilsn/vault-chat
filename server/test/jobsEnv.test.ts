@@ -87,6 +87,11 @@ describe("job environment file", () => {
     const fresh = writeJobEnvFile(dir, "new-1", { OPENROUTER_API_KEY: fakeKey });
     const old = (Date.now() - 10 * 60_000) / 1000;
     utimesSync(stale, old, old);
+    // Still fresh for the one-minute sweep, but unambiguously before the
+    // zero-age cutoff: filesystem mtimes can have sub-millisecond precision
+    // beyond Date.now() even when the write has already completed.
+    const recent = (Date.now() - 1000) / 1000;
+    utimesSync(fresh, recent, recent);
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, "notes.txt"), "keep");
     expect(sweepJobEnvFiles(dir)).toBe(1);
