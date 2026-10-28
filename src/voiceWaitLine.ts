@@ -145,7 +145,7 @@ export function calibFrom(samples: Record<string, number[]>, base: WaitCalib = {
 
 const STYLE_ID = "vc-wait-line-style";
 const CSS = `
-.vc-wait{position:relative;height:1.5px;width:100%;margin-top:3px;border-radius:1px;overflow:hidden;opacity:0;transition:opacity .25s}
+.vc-wait{position:relative;height:3px;width:100%;margin-top:3px;border-radius:1px;overflow:hidden;opacity:0;transition:opacity .25s}
 .vc-wait.on{opacity:1}
 .vc-wait::before{content:"";position:absolute;inset:0;background:currentColor;opacity:.18}
 .vc-wait>i{position:absolute;top:0;bottom:0;left:0;background:currentColor;opacity:.75;border-radius:1px;transition:width .35s ease-out}
