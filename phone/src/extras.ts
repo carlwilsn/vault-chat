@@ -58,23 +58,31 @@ export type PhoneSubagent = { threadId: string; kind?: string; task?: string; ti
 
 /** Background tasks as on the laptop (src/backgroundTasks.ts): "2 background tasks: 1 running, 1 done", each row its
  *  name, what it is doing now (or how it ended) and its time; Stop / Steer on a running one. Never a raw report. */
-export function subagentsHtml(list: PhoneSubagent[], variant: "inline" | "strip"): string {
+export function subagentsHtml(list: PhoneSubagent[], variant: "inline" | "strip", open = false): string {
   if (!list.length) return "";
   const now = Date.now();
-  const rows = list
-    .map((s) => {
-      const st = taskState(s as any);
-      const on = st === "running";
-      const meta = [taskActivity(s as any), elapsedText(taskElapsed(s as any, now))].filter(Boolean).join(" · ");
-      return (
-        '<div class="sa" data-el="subagent" data-sid="' + esc(s.threadId) + '" data-state="' + esc(st) + '">' +
-        '<div class="sa-h"><span class="sd ' + (on ? "run" : st === "done" ? "ok" : "bad") + '"></span><span class="sa-t">' + esc(taskName(s as any)) + "</span></div>" +
-        '<div class="sa-m">' + esc(meta) + (on ? (s.kind === "job" ? "" : '<button class="sa-b" data-op="steer">Steer</button>') + '<button class="sa-b" data-op="stop">Stop</button>' : "") + "</div>" +
-        "</div>"
-      );
-    })
-    .join("");
-  return '<div class="pcard sas ' + variant + '" data-el="subagents" data-variant="' + variant + '"><div class="pc-h"><span>' + esc(tasksSummary(list as any)) + "</span></div>" + rows + "</div>";
+  const running = list.filter((s) => taskState(s as any) === "running");
+  const lead = running[running.length - 1];
+  // One line until tapped (Claude Code's background-tasks chip): the count, and the running task's latest step.
+  const line =
+    '<button class="sa-chip" data-el="tasks-chip">' + (lead ? '<span class="sd run"></span>' : "") + '<span data-el="tasks-summary">' + esc(tasksSummary(list as any)) + "</span>" +
+    (lead && !open ? '<span class="sa-lead" data-el="tasks-lead"> · ' + esc(taskActivity(lead as any)) + " · " + esc(elapsedText(taskElapsed(lead as any, now))) + "</span>" : "") + "</button>";
+  const rows = !open
+    ? ""
+    : list
+        .map((s) => {
+          const st = taskState(s as any);
+          const on = st === "running";
+          const meta = [taskActivity(s as any), elapsedText(taskElapsed(s as any, now))].filter(Boolean).join(" · ");
+          return (
+            '<div class="sa" data-el="subagent" data-sid="' + esc(s.threadId) + '" data-state="' + esc(st) + '">' +
+            '<div class="sa-h"><span class="sd ' + (on ? "run" : st === "done" ? "ok" : "bad") + '"></span><span class="sa-t">' + esc(taskName(s as any)) + "</span></div>" +
+            '<div class="sa-m">' + esc(meta) + (on ? (s.kind === "job" ? "" : '<button class="sa-b" data-op="steer">Steer</button>') + '<button class="sa-b" data-op="stop">Stop</button>' : "") + "</div>" +
+            "</div>"
+          );
+        })
+        .join("");
+  return '<div class="pcard sas ' + variant + '" data-el="subagents" data-variant="' + variant + '" data-open="' + (open ? "1" : "0") + '">' + line + rows + "</div>";
 }
 
 export type PhoneTodo = { content: string; status: string; activeForm?: string };

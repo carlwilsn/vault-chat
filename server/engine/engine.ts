@@ -1713,9 +1713,13 @@ export class Engine {
       return;
     }
     // A subagent's end can arrive after its parent's turn is gone (the parent crashed): still record it.
+    // A worker's row belongs to the conversation it was started in, whatever thread the parent is on by then.
     if (e.kind === "subagentStatus" && !this.liveByThread(e.threadId)) {
-      const convId = this.byThread.get(e.threadId);
-      if (convId) this.updateSubagent(convId, e.child, { status: e.status, ...(e.patch ?? {}) });
+      const convId = this.childOf.get(e.child) ?? this.byThread.get(e.threadId);
+      if (convId) {
+        this.childOf.set(e.child, convId);
+        this.updateSubagent(convId, e.child, { status: e.status, ...(e.patch ?? {}) });
+      } else this.log(`worker ${e.child}: no conversation for its ${e.status} (thread ${e.threadId})`);
       return;
     }
     const l = this.liveByThread(e.threadId);
@@ -1920,6 +1924,25 @@ export class Engine {
         if (!s.background || s.agent === "board-maker") continue;
         this.log(`worker ${s.threadId} on ${convId} was lost in a restart: reporting it`);
         this.reportWhenDone(convId, String(s.title ?? s.task ?? "background work").slice(0, 120), Promise.resolve({ ok: false, state: "killed", text: "The server restarted while this worker ran, so it stopped before it reported. Start it again if it is still wanted." }));
+      }
+    }
+  }
+
+  /** Every 15 s: a worker row still "running" whose worker is not running in this process (its end was never
+   *  recorded) is closed with how it really ended (or as lost), so a dead task never lingers on screen. A StartJob
+   *  job's row is tickJobs' (it may rightly run for days: a dev server). */
+  private closeDeadWorkerRows(): void {
+    if (!this.d.backend.liveChild) return;
+    const now = Date.now();
+    for (const convId of logOf(this.d.vault).ids()) {
+      const subs = (this.picture(convId)?.meta.subagents ?? []) as Record<string, any>[];
+      for (const s of subs) {
+        if ((s.state ?? s.status) !== "running" || s.kind === "job") continue;
+        if (now - (Number(s.startedAt) || now) < 60_000 || this.d.backend.liveChild?.(s.threadId)) continue;
+        const end = this.d.backend.endedChild?.(s.threadId) ?? null;
+        const state = end?.state ?? "killed";
+        this.log(`worker ${s.threadId} on ${convId}: its row still said running; closed as ${state}`);
+        this.updateSubagent(convId, s.threadId, { status: state, state, endedAt: end?.endedAt ?? now });
       }
     }
   }
@@ -2450,6 +2473,7 @@ export class Engine {
     }
     if (ended.length) this.devSweep();
     this.jobActivity();
+    this.closeDeadWorkerRows();
     for (const j of ended) {
       this.log(`job ${j.id} ended: ${j.state}${j.exit !== undefined ? ` (exit ${j.exit})` : ""}`);
       if (j.conv) this.jobRowEnded(j.conv, j.id, j.state === "finished" && j.exit === 0 ? "completed" : j.state === "stopped" ? "stopped" : "failed", j.state === "finished" ? `exit ${j.exit}` : j.state);

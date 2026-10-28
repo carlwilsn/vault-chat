@@ -676,6 +676,10 @@ export class PiBackend extends EventEmitter {
   liveChild(childId: string): LiveChild | null {
     return this.subs.live(childId);
   }
+  /** A child that ended in this process: its end state (null: still running, or never seen here). */
+  endedChild(childId: string): { state: string; endedAt: number } | null {
+    return this.subs.endedChild(childId);
+  }
   liveChildren(parentThreadId: string): LiveChild[] {
     return this.subs.liveOf(parentThreadId);
   }

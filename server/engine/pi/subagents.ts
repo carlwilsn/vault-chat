@@ -223,6 +223,16 @@ export class Subagents {
     return out;
   }
 
+  /** How recently ended children ended (the engine's sweep closes a row whose end it missed). */
+  private ended = new Map<string, { state: ChildState; endedAt: number }>();
+  private remember(id: string, state: ChildState): void {
+    this.ended.set(id, { state, endedAt: Date.now() });
+    if (this.ended.size > 200) this.ended.delete(this.ended.keys().next().value!);
+  }
+  endedChild(id: string): { state: ChildState; endedAt: number } | null {
+    return this.ended.get(id) ?? null;
+  }
+
   /** A running child (JobList / JobStatus), or null. */
   live(childId: string): LiveChild | null {
     const c = this.children.get(childId);
@@ -378,6 +388,7 @@ export class Subagents {
     this.children.delete(id);
 
     const state: ChildState = child.stopped ?? (child.error ? "failed" : "completed");
+    this.remember(id, state);
     const costUsd = round(this.b.usageCalls(file).reduce((s, c) => s + (typeof c.cost === "number" ? c.cost : 0), 0));
     const report = text || "";
     const ok = state === "completed";

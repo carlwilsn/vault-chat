@@ -29,7 +29,6 @@ import {
   VerdictLine,
   chosenAnswer,
   isLegacySubagentRecord,
-  subagentsOfMessage,
   withoutOptionList,
   type SubagentRec,
 } from "./chatExtras";
@@ -411,32 +410,11 @@ export function ChatPane() {
   // What the thread shows beside the text (chatExtras.tsx; uiChoices.ts picks
   // where each goes while Carl decides). Stable props, so the bubbles' memo
   // holds while a reply streams.
-  // Background tasks (backgroundTasks.ts), as Claude Code shows them: while any runs, one chip above the composer
-  // (always in view, live); once a spawn's tasks have all ended, its chip sits collapsed under the reply that
-  // started them ("1 background task done"). The finished set only changes when a task ends, so the bubbles' memo
-  // holds while a running task's activity ticks.
+  // Background tasks (backgroundTasks.ts), as Claude Code shows them: while any runs, one compact chip above the
+  // composer; it opens only on a click. A finished task leaves the screen (Carl: "when the tasks are done, I don't
+  // think I care to see them"): the agent's reply carries the result; a failed one is one quiet line in the thread.
   const subagents = activeConv?.subagents ?? NO_SUBAGENTS;
-  const subagentsInline = uiChoice("subagents") === "inline";
   const runningTasks = useMemo(() => subagents.filter((s) => taskState(s) === "running"), [subagents]);
-  const endedKey = subagents.filter((s) => taskState(s) !== "running").map((s) => `${s.threadId}:${s.state ?? s.status}:${s.toolCallId ?? ""}`).join("|");
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  const endedTasks = useMemo(() => subagents.filter((s) => taskState(s) !== "running"), [endedKey]);
-  const spawnsAt = useMemo(
-    () => messages.map((m) => {
-      const all = subagentsOfMessage(m, subagents);
-      // A spawn shows in the thread once none of its tasks still runs (a running one is in the chip above the composer).
-      if (!all.length || all.some((s) => taskState(s) === "running")) return undefined;
-      return subagentsOfMessage(m, endedTasks);
-    }),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [messages, endedTasks, runningTasks.length],
-  );
-  const unplacedSubagents = useMemo(() => {
-    const placed = new Set(spawnsAt.flatMap((r) => (r ?? []).map((x) => x.threadId)));
-    const spawnedBy = new Set(messages.flatMap((m) => subagentsOfMessage(m, subagents).map((x) => x.threadId)));
-    return endedTasks.filter((x) => !placed.has(x.threadId) && !spawnedBy.has(x.threadId));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [spawnsAt, endedTasks, messages]);
   const answerAsk = useCallback((answer: string) => {
     const id = useStore.getState().activeConversationId;
     if (boxChatOn() && id) void boxAnswer(id, answer);
@@ -1087,7 +1065,6 @@ export function ChatPane() {
                 askLive={!!m.askOptions?.length && i === lastVisible && !busy}
                 askChosen={m.askOptions?.length ? chosenAnswer(messages, i) : undefined}
                 onAsk={answerAsk}
-                spawns={subagentsInline ? spawnsAt[i] : undefined}
                 onSubagent={controlSubagent}
                 onRetry={retryTurn}
                 voiceCont={!!m.voice && i > 0 && !!messages[i - 1]?.voice && !messages[i - 1]?.hidden}
@@ -1098,7 +1075,6 @@ export function ChatPane() {
           ),
         )}
 
-        {subagentsInline && unplacedSubagents.length > 0 && <Subagents list={unplacedSubagents} variant="inline" onControl={controlSubagent} />}
 
         {planInline && planAt < 0 && <AgentTodoList todos={todos} />}
 
@@ -1610,7 +1586,8 @@ export const MessageBubble = memo(function MessageBubble({
     return <CompactionDivider message={message} />;
   }
   // A job's or a background task's end is a system line of its own kind (before the generic notice).
-  if (message.job) return <JobRow job={message.job} />;
+  // A finished one says nothing here (the agent's reply carries the result); a failed or stopped one is one quiet line.
+  if (message.job) return message.job.failed || message.job.status === "stopped" ? <JobRow job={message.job} /> : null;
   if (message.system) {
     // A quiet notice (voice ended, an error): left, in the tool rows' small muted type.
     return (

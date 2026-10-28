@@ -665,13 +665,14 @@ export function boot(): void {
   // The thread's tail (subagents no reply carries yet, the to-dos, the verdict
   // line) and the pinned area above the composer, per Carl's open choices.
   let tailEl = null;
+  let tasksOpen = false;
   function renderExtras() {
     const subs = convId ? convMeta.subagents || [] : [];
-    const placed = new Set();
-    msgsEl.querySelectorAll('[data-el="subagent"]').forEach((e) => { if (!e.closest("#xtail")) placed.add(e.dataset.sid); });
-    const inline = X.choice("subagents") === "inline";
-    const tail = (inline ? X.subagentsHtml(subs.filter((x) => !placed.has(x.threadId)), "inline") : "")
-      + (X.choice("todos") === "inline" ? X.todosHtml(convId ? convMeta.todos || [] : []) : "")
+    // Background tasks, as on the laptop: only while one runs, one line above the composer that a tap opens.
+    // A finished one leaves the screen (the agent's reply carries the result).
+    const runningTasks = subs.filter((x) => (x.state || x.status || "running") === "running");
+    if (!runningTasks.length) tasksOpen = false;
+    const tail = (X.choice("todos") === "inline" ? X.todosHtml(convId ? convMeta.todos || [] : []) : "")
       + X.verdictHtml(convId ? convMeta.verdict : undefined, convMeta.state);
     if (tail && !msgsEl.querySelector(".hint")) {
       if (!tailEl) { tailEl = document.createElement("div"); tailEl.id = "xtail"; }
@@ -679,22 +680,19 @@ export function boot(): void {
       const before = streamEl || runlineEl;
       if (before && before.parentNode === msgsEl) msgsEl.insertBefore(tailEl, before); else msgsEl.appendChild(tailEl);
     } else if (tailEl) { tailEl.remove(); }
-    // In-place updates of the inline cards already in replies (state, cost, summary).
-    if (inline) msgsEl.querySelectorAll(".amsg").forEach((a) => {
-      const card = a.querySelector(':scope > [data-el="subagents"]');
-      if (!card) return;
-      const ids = [...card.querySelectorAll('[data-el="subagent"]')].map((e) => e.dataset.sid);
-      const fresh = subs.filter((x) => ids.includes(x.threadId));
-      if (fresh.length) card.outerHTML = X.subagentsHtml(fresh, "inline");
-    });
     const pin = $("pinned");
-    // The strip: the newest spawn (one call's children). The pinned plan: while it has work left.
-    const last = subs[subs.length - 1];
-    const latest = last ? subs.filter((x) => (x.toolCallId || "") === (last.toolCallId || "")) : [];
+    // The pinned plan: while it has work left.
     const todos = convId ? convMeta.todos || [] : [];
     const planOpen = running || todos.some((t) => t.status !== "completed");
-    if (pin) pin.innerHTML = (!inline ? X.subagentsHtml(latest, "strip") : "") + (X.choice("todos") === "pinned" && planOpen ? X.todosHtml(todos) : "");
+    if (pin) pin.innerHTML = X.subagentsHtml(runningTasks, "strip", tasksOpen) + (X.choice("todos") === "pinned" && planOpen ? X.todosHtml(todos) : "");
   }
+  // The tasks chip opens on a tap and folds on a second tap or a tap anywhere else.
+  document.addEventListener("click", (e) => {
+    const t = e.target as HTMLElement;
+    const chip = t.closest?.('[data-el="tasks-chip"]');
+    if (chip) { tasksOpen = !tasksOpen; renderExtras(); return; }
+    if (tasksOpen && !t.closest?.('[data-el="subagents"]')) { tasksOpen = false; renderExtras(); }
+  }, true);
   setInterval(() => { renderOngoing(); }, 60000);
   // The project sheet: tap the chat's title. Pick, create, clear, or start a
   // new chat in the project. Before the first message it sets the new chat's.
@@ -790,8 +788,7 @@ export function boot(): void {
       div.insertAdjacentHTML("afterbegin", '<div class="mimgs">' + opts.images.map((u) => '<img src="' + esc(u) + '" alt="">').join("") + "</div>");
     // Finished-turn tool calls collapse to a "Ran N steps" summary at the end.
     if (asst) div.insertAdjacentHTML("beforeend", stepsStr(tools));
-    // The subagents this turn spawned (inline option), and what the turn cost.
-    if (asst && X.choice("subagents") === "inline") div.insertAdjacentHTML("beforeend", X.subagentsHtml(X.spawnsOf(opts.spawns, convMeta.subagents || []), "inline"));
+    // What the turn cost.
     if (asst) div.insertAdjacentHTML("beforeend", X.costHtml(opts.costUsd));
     // [unified ask] Tappable option cards land WITH the reply that argues for
     // them (a presence-gated AskUser — no push was sent, you're here).
@@ -945,7 +942,7 @@ export function boot(): void {
     const have = new Set([...(pic ? shown(pic) : []).map((x) => x.id), ...(pic ? pendingOf(pic) : []).map((x) => x.id)]);
     const mine = outgoing.filter((o) => o.convId === convId && !have.has(o.id));
     outgoing = outgoing.filter((o) => o.convId !== convId || !(pic ? shown(pic) : []).some((x) => x.id === o.id));
-    const msgs: any[] = [...afterClear(v ? v.messages : [], clearedAt[convId]).filter((m) => !m.hidden)];
+    const msgs: any[] = [...afterClear(v ? v.messages : [], clearedAt[convId]).filter((m) => !m.hidden && !(m.job && !m.job.failed && m.job.status !== "stopped"))];
     // What pi has not delivered yet (a steer, a queued message): after the thread, labelled.
     for (const p of v ? v.pending : []) msgs.push({ role: "user", content: p.text, mid: p.id, __pending: p.kind });
     for (const o of mine) {

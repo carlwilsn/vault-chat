@@ -1,0 +1,75 @@
+{
+ "origin": "http://127.0.0.1:1560/before",
+ "shots": [
+  {
+   "name": "1-one-line",
+   "chip": "2 background tasks running · writing physics.html · 2 steps · 0:40",
+   "open": false,
+   "rows": [],
+   "px": 31,
+   "inThread": 0,
+   "finishedRow": false
+  },
+  {
+   "name": "2-tap-opens",
+   "chip": "2 background tasks running",
+   "open": true,
+   "rows": [
+    "dev serverready on http://localhost:5173 · 2:00:00Stop",
+    "guided physics animationwriting physics.html · 2 steps · 0:40SteerStop"
+   ],
+   "px": 122,
+   "inThread": 0,
+   "finishedRow": false
+  },
+  {
+   "name": "3-tap-again-folds",
+   "chip": "2 background tasks running · writing physics.html · 2 steps · 0:41",
+   "open": false,
+   "rows": [],
+   "px": 31,
+   "inThread": 0,
+   "finishedRow": false
+  },
+  {
+   "name": "4-open-again",
+   "chip": "2 background tasks running",
+   "open": true,
+   "rows": [
+    "dev serverready on http://localhost:5173 · 2:00:02Stop",
+    "guided physics animationwriting physics.html · 2 steps · 0:42SteerStop"
+   ],
+   "px": 122,
+   "inThread": 0,
+   "finishedRow": false
+  },
+  {
+   "name": "5-tap-elsewhere-folds",
+   "chip": "2 background tasks running · writing physics.html · 2 steps · 0:42",
+   "open": false,
+   "rows": [],
+   "px": 31,
+   "inThread": 0,
+   "finishedRow": false
+  },
+  {
+   "name": "6-done-leaves",
+   "chip": "1 background task running · ready on http://localhost:5173 · 2:00:03",
+   "open": false,
+   "rows": [],
+   "px": 31,
+   "inThread": 0,
+   "finishedRow": false
+  },
+  {
+   "name": "7-nothing-running-no-chip",
+   "chip": null,
+   "open": false,
+   "rows": [],
+   "px": 0,
+   "inThread": 0,
+   "finishedRow": false
+  }
+ ],
+ "errors": []
+}
