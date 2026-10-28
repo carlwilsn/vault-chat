@@ -33,6 +33,7 @@ import {
 } from "./context";
 import { patchMeta, readConv, allConvs, createConv, newMessageId, emitTo, pictureOf, logOf, writeNotes, appendNotes, setNoteWriter, ensureMain, ensureProjectThread, type NoteData } from "./convs";
 import { MAIN_ID, projectOfThread, projectThreadId, threadKindOf } from "../../src/threads";
+import { isProjectConv } from "../convlog/log";
 import { searchHistory } from "./history";
 import { addWake, readWakes, removeWakes, nextWakeFor, parseDelay, type Wake } from "./wakes";
 import { Ledger } from "./ledger";
@@ -95,7 +96,16 @@ export type EngineDeps = {
   turnLog?: (line: TurnLine) => void;
   /** The per-command sandbox the vault's own tools run in (server/vaultTools.ts); null: none (not Linux). */
   shell?: () => string[] | null | undefined;
+  /** This engine runs the projects' threads (server/projectsHome.ts): the box's home engine. Default true (a lone engine). */
+  runsProjects?: boolean;
+  /** An engine that does not run them (another vault's): the one that does. A project thread's request goes there. */
+  projectsEngine?: () => Promise<Engine>;
+  /** pi's sessions folder for the projects' threads (the projects home's), when it is not the engine's own. */
+  projectSessions?: string;
 };
+
+/** The intents about a project itself: the engine that runs the projects does them. */
+const PROJECT_INTENTS = new Set(["deleteProject", "restoreProject", "renameProject"]);
 
 /** What the engine raises: a question (kind "ask") or a line for Carl (kind "info"), with what the
  * push gate needs to decide whether the phone buzzes (server/pushGate.ts). */
@@ -360,7 +370,7 @@ export const ENGINE_TOOL_SPECS = [
     name: "RestoreProject",
     description:
       "Bring back a project Carl deleted, only when he asks for it back. Without project: lists what is deleted (name, slug, when). With project (its name, slug, or a listed entry): the project comes back whole — its folder, notes and memory, its thread with its whole conversation — on every one of his screens. " +
-      "This is the only way back: never move or copy anything in agent-projects/.deleted/ yourself (a project put back by hand shows up half-way).",
+      "This is the only way back: never move or copy anything in the projects home's .deleted/ yourself (a project put back by hand shows up half-way).",
     inputSchema: {
       type: "object",
       properties: { project: { type: "string", description: "The deleted project's name, slug or .deleted entry; omit to list them." } },
@@ -534,8 +544,34 @@ export class Engine {
     // events, handlers and timers in start().
     for (const k of ["message", "answerRoute", "subagent", "kill", "intent", "sideStart", "once"] as const) {
       const f = (this as any)[k].bind(this);
-      (this as any)[k] = (...a: unknown[]) => this.scoped(() => f(...a));
+      (this as any)[k] = (...a: unknown[]) => {
+        // A project's thread is the machine's, not this vault's: the home engine runs it, whatever vault asked.
+        if (this.d.projectsEngine && this.d.runsProjects === false && this.forProjects(k, a)) return this.d.projectsEngine().then((e) => (e as any)[k](...a));
+        return this.scoped(() => f(...a));
+      };
     }
+  }
+
+  /** Whether this engine runs project threads (and makes them). */
+  private get runsProjects(): boolean {
+    return this.d.runsProjects !== false;
+  }
+
+  /** A request about a project's thread (or a project), for an engine that does not run them. */
+  private forProjects(k: string, a: unknown[]): boolean {
+    const x = a[0] as any;
+    if (k === "subagent") return isProjectConv(typeof x === "string" ? x : null);
+    if (!x || typeof x !== "object") return false;
+    if (k === "intent" && PROJECT_INTENTS.has(String(x.type))) return true;
+    if (isProjectConv(typeof x.convId === "string" ? x.convId : null)) return true;
+    // "New chat in project" from an older client: no conversation, a project named.
+    const sends = k === "message" || (k === "intent" && ["send", "steer", "queue"].includes(String(x.type)));
+    return sends && !x.convId && typeof x.project === "string" && !!x.project.trim();
+  }
+
+  /** This engine's conversations: a project's thread only where projects run. */
+  private owns(convId: string): boolean {
+    return this.runsProjects || !isProjectConv(convId);
   }
 
   private scoped<T>(fn: () => T): T {
@@ -660,7 +696,7 @@ export class Engine {
     const b = this.d.backend;
     b.on("event", (e: BackendEvent) => this.scoped(() => this.onEvent(e)));
     b.on("up", () => this.scoped(() => void this.onUp()));
-    setNoteWriter(this.d.vault, (convId, notes) => this.scoped(() => this.noteViaPi(convId, notes)));
+    setNoteWriter(this.d.vault, (convId, notes) => this.scoped(() => this.noteViaPi(convId, notes)), this.runsProjects);
     b.setHandlers({
       toolCall: (threadId, name, args, toolCallId) =>
         this.scoped(async () => {
@@ -695,6 +731,7 @@ export class Engine {
   /** Main, and one thread per project (made once; never a write when they exist). */
   async ensureThreads(): Promise<void> {
     await ensureMain(this.d.vault);
+    if (!this.runsProjects) return;
     for (const p of listProjects()) await ensureProjectThread(this.d.vault, p.slug, p.name, { onRevived: (id) => this.revived(id) });
   }
 
@@ -750,7 +787,7 @@ export class Engine {
       // was waiting on Carl, whose answer starts the next turn.
       const log = logOf(this.d.vault);
       for (const r of log.rows()) {
-        if (this.live.has(r.id)) continue;
+        if (this.live.has(r.id) || !this.owns(r.id)) continue;
         if (r.legacy) {
           // An older file that says a turn was running (a restart during the upgrade): resume it once.
           if (r.state !== "running") continue;
@@ -1192,7 +1229,7 @@ export class Engine {
   }
 
   /**
-   * Carl's Delete on a project: its running turn stops, its own files move to agent-projects/.deleted/ (never
+   * Carl's Delete on a project: its running turn stops, its own files move to the projects home's .deleted/ (never
    * the folder it names, nothing else of his), its thread is gone from every list (each surface on it lands
    * on Main: the clients follow the row), and Main's next turn tells the agent once.
    */
@@ -1210,7 +1247,7 @@ export class Engine {
       return { ok: false, error: (e as Error).message };
     }
     // The folder Carl chose for it on the box is never touched; the choice goes with its files (a restore brings it back).
-    retireFolder(this.d.vault, slug, moved.movedTo.split("/").pop()!);
+    retireFolder(slug, moved.movedTo.split("/").pop()!);
     if (this.picture(id)) this.emit(id, { type: "meta", patch: { deleted: true, deletedProject: { name: moved.name, at: Date.now(), movedTo: moved.movedTo } } });
     const main = await ensureMain(this.d.vault);
     const tell = [...((this.picture(main.id)?.meta.tellAgent as string[] | undefined) ?? []), `Carl deleted the project "${moved.name}" (its thread and notes are gone from his screens). Don't bring it up or treat it as a project any more unless he does. If he wants it back, RestoreProject brings it back whole; never move its files yourself.`];
@@ -1222,7 +1259,7 @@ export class Engine {
 
   /**
    * The inverse of deleteProject (Carl's Undo, or the agent's RestoreProject when he asks): the project's
-   * folder back from agent-projects/.deleted/, its thread back with its transcript and pi session, every
+   * folder back from the projects home's .deleted/, its thread back with its transcript and pi session, every
    * surface's list showing it again (the signal), and Main's agent told unless it never heard of the delete.
    */
   async restoreProject(slugNameOrEntry: string): Promise<Record<string, unknown>> {
@@ -1233,7 +1270,7 @@ export class Engine {
     } catch (e) {
       return { ok: false, error: (e as Error).message };
     }
-    reviveFolder(this.d.vault, back.entry, back.slug);
+    reviveFolder(back.entry, back.slug);
     const id = projectThreadId(back.slug);
     await ensureProjectThread(this.d.vault, back.slug, back.name);
     // Main: a delete notice it has not read yet is simply dropped; otherwise it hears the project is back.
@@ -1617,7 +1654,7 @@ export class Engine {
     const slug = projectOfThread(conv.id);
     const p = slug ? readProject(slug) : null;
     if (!p) return null;
-    const chosen = projectFolderOf(this.d.vault, p.slug);
+    const chosen = projectFolderOf(p.slug);
     if (chosen && "error" in chosen) return { error: `the folder chosen for this project can't be used: ${chosen.error}` };
     if (chosen && isGatedProject(chosen.abs) && !this.inVault(chosen.abs)) {
       // A git repo: the agent works in its clone, on an agent/ branch; the folder itself is Carl's (Keep).
@@ -1680,6 +1717,8 @@ export class Engine {
       instructions,
       tools: [...builtin, ...own] as any,
       subagents,
+      // A project's thread keeps its pi session with the project (the projects home), not with a vault.
+      ...(isProjectConv(conv.id) && this.d.projectSessions ? { sessionDir: this.d.projectSessions } : {}),
     });
     this.byThread.set(threadId, conv.id);
     // The instructions carry the rules in full; the rest of the sections go with the first turn.
@@ -1915,6 +1954,7 @@ export class Engine {
   private reapLostWorkers(): void {
     const log = logOf(this.d.vault);
     for (const convId of log.ids()) {
+      if (!this.owns(convId)) continue;
       const subs = (this.picture(convId)?.meta.subagents ?? []) as Record<string, any>[];
       for (const s of subs) {
         // A StartJob job outlives a restart (tickJobs ends its row when it ends).
@@ -2071,6 +2111,7 @@ export class Engine {
   private async reconcileCosts(): Promise<void> {
     const log = logOf(this.d.vault);
     for (const id of log.ids()) {
+      if (!this.owns(id)) continue;
       const p = this.picture(id);
       const path = p?.meta.threadPath;
       if (!p || !path) continue;
@@ -2111,7 +2152,7 @@ export class Engine {
         case REVIEW_TOOL: {
           // "You keep it" (server/projectChanges.ts): the proof card, then Carl's Keep (the server's merge) or Send back.
           const slug = projectOfThread(convId);
-          const chosen = slug ? projectFolderOf(vault, slug) : null;
+          const chosen = slug ? projectFolderOf(slug) : null;
           if (!slug || !chosen || "error" in chosen || !isGatedProject(chosen.abs)) return text(`${REVIEW_TOOL} is only for the thread of a project that works in a git repo on the box.`);
           const prep = await prepareReview({ vault, convId, slug, folder: chosen.abs, toolCallId: String(p.toolCallId ?? `rr-${Date.now()}`), args: a });
           if ("error" in prep) return text(prep.error);
@@ -2444,7 +2485,8 @@ export class Engine {
   private async tickWakes(): Promise<void> {
     if (shuttingDown) return;
     const now = Date.now();
-    const due = readWakes(this.d.vault).filter((w) => w.at <= now && !this.firing.has(w.id));
+    // (A project thread's wakes are the home engine's: it is the one that sets them.)
+    const due = readWakes(this.d.vault).filter((w) => w.at <= now && !this.firing.has(w.id) && this.owns(w.conv));
     for (const w of due) {
       const l = this.live.get(w.conv);
       if (l?.ask) continue; // waiting on Carl: the wake waits too
@@ -2477,7 +2519,7 @@ export class Engine {
     for (const j of ended) {
       this.log(`job ${j.id} ended: ${j.state}${j.exit !== undefined ? ` (exit ${j.exit})` : ""}`);
       if (j.conv) this.jobRowEnded(j.conv, j.id, j.state === "finished" && j.exit === 0 ? "completed" : j.state === "stopped" ? "stopped" : "failed", j.state === "finished" ? `exit ${j.exit}` : j.state);
-      if (!j.conv) continue;
+      if (!j.conv || !this.owns(j.conv)) continue;
       const conv = await readConv(this.d.vault, j.conv);
       if (!conv) continue;
       const how =

@@ -20,6 +20,7 @@ import { agentWorkDir } from "../workArea";
 import { HOME_CREDENTIALS, activeFolders, setFolderWalls, under as underDir } from "../projectFolders";
 import { isGatedProject } from "../projectChanges";
 import { masterDir, masterLayout } from "../master";
+import { homeLayout } from "../projectsHome";
 import { listPiModels, modelWindow, piPaths, vaultPiPaths, writePiConfig, type PiPaths } from "./pi/config";
 import { PiBackend, outerWith, type PiSandbox } from "./pi/backend";
 import { logOf } from "./convs";
@@ -37,6 +38,8 @@ export type EngineBoot = {
   vaultName?: string;
   /** Every vault on the box, the main one included (sync.ts listVaults). */
   vaults?: () => VaultRef[];
+  /** The projects home (server/projectsHome.ts): every project, whatever vault is open. Its threads run on the main vault's engine. */
+  projectsHome?: string;
   /** A turn ended in a vault other than the main one (a sync cycle brings the result to the laptop). */
   onTurnEnded?: (name: string) => void;
   /** The agent wrote files in a vault (vault-relative paths): publish them now (server/liveEdits.ts). */
@@ -256,7 +259,8 @@ export async function startEngine(b: EngineBoot): Promise<EngineHandle> {
   const model = engineModel();
   const visionModel = process.env.VC_VISION_MODEL || "openai/gpt-6.1-sol";
   const win = modelWindow(model, piCat);
-  configureContext({ vault: b.vault, agentModel: model });
+  configureContext({ vault: b.vault, agentModel: model, ...(b.projectsHome ? { projectsHome: b.projectsHome } : {}) });
+  const P = b.projectsHome ? homeLayout(b.projectsHome) : null;
 
   const base = piPaths(b.stateDir);
   const baseUrl = b.openrouterBase ? b.openrouterBase.replace(/\/+$/, "") : undefined;
@@ -277,6 +281,12 @@ export async function startEngine(b: EngineBoot): Promise<EngineHandle> {
   const vaults = (): VaultRef[] => b.vaults?.() ?? [mainRef];
   const stateOf = (v: VaultRef) => vaultState(b.stateDir, base, v);
 
+  // The main vault's engine: the one that runs every project's thread (set once it is made, before any other vault's).
+  let mainEngine: Engine | null = null;
+  const homeEngine = (): Engine => {
+    if (!mainEngine) throw new Error("the main engine is not up yet");
+    return mainEngine;
+  };
   const make = (v: VaultRef): Engine => {
     const st = stateOf(v);
     excludeLocalDir(v.path);
@@ -289,17 +299,35 @@ export async function startEngine(b: EngineBoot): Promise<EngineHandle> {
     // Its work area outside the vault, writable in the sandbox (the rest of the home is read-only there).
     const workDir = agentWorkDir(home, v.path);
     if (bwrap) mkdirSync(workDir, { recursive: true });
-    const others = () => otherVaultPaths(v, vaults(), (w) => stateOf(w).walls);
+    // The main vault's engine runs every project's thread (the projects are the machine's: server/projectsHome.ts).
+    const runsProjects = v.main;
+    // The project folders on the box: the main engine's agent works in all of them; another vault's in those that
+    // lie in no other vault (a folder inside a vault is that vault's files).
+    const folders = () => {
+      const all = activeFolders().map((f) => f.abs);
+      if (runsProjects) return all;
+      const elsewhere = vaults().filter((w) => w.path !== v.path);
+      return all.filter((f) => !elsewhere.some((w) => underDir(f, w.path)));
+    };
+    // What this vault's agent never sees: the other vaults (a vault holding a project folder the main engine works
+    // in: only its .git and .vault-chat), their repos and engine state.
+    const others = () => {
+      const fs = runsProjects ? folders() : [];
+      return otherVaultPaths(v, vaults(), (w) => stateOf(w).walls).flatMap((p) => (fs.some((f) => underDir(f, p)) ? [join(p, ".git"), join(p, ".vault-chat")] : [p]));
+    };
     // The vault-chat folder's hubs (server/master.ts) are hidden like the vault roots.
     const m = masterDir();
     const vaultRoots = [...new Set([dirname(b.vault), dirname(v.path), join(home, "vaults"), ...(m ? [masterLayout(m).vaults, masterLayout(m).hub] : [])])];
-    // A project folder Carl chose (server/projectFolders.ts) may be neither inside nor around anything this
-    // sandbox hides or keeps read-only: the server's state and env file, the key store, the tokens, the
-    // other vaults and their repos, the vault roots.
-    setFolderWalls(v.path, {
-      home,
-      protect: () => [b.stateDir, b.secretsDir, serverEnvFile(home), b.tokenPath, b.localStoragePath, b.pushSubsPath, ...vaultRoots.filter((r) => !underDir(home, r)), ...others()].filter(Boolean),
-    });
+    // A project folder Carl chose (server/projectFolders.ts) may be neither inside nor around anything a sandbox
+    // hides or keeps read-only: the server's state and env file, the key store, the tokens, the vaults' repos and
+    // engine state, the vault roots (a folder inside a vault is fine; never its .git or .vault-chat).
+    if (v.main)
+      setFolderWalls({
+        home,
+        protect: () =>
+          [b.stateDir, b.secretsDir, serverEnvFile(home), b.tokenPath, b.localStoragePath, b.pushSubsPath, ...vaultRoots.filter((r) => !underDir(home, r)), ...vaults().flatMap((w) => [...(w.bare ? [w.bare] : []), ...stateOf(w).walls])].filter(Boolean),
+        vaults: () => vaults().map((w) => w.path),
+      });
     const sandbox: PiSandbox = {
       ...buildSandbox({
         bwrap,
@@ -316,11 +344,15 @@ export async function startEngine(b: EngineBoot): Promise<EngineHandle> {
         vaultRoots,
       }),
       others,
-      // The project folders Carl chose outside the vault: read-write, read at each spawn.
-      projects: () => activeFolders(v.path).map((f) => f.abs).filter((f) => !underDir(f, v.path) && !isGatedProject(f)),
+      // The project folders Carl chose outside the vault: read-write, read at each spawn. The main engine: the projects
+      // home too (each project's project.md, its memory, and the projects' pi sessions).
+      projects: () => [...(runsProjects && P ? [P.home] : []), ...folders().filter((f) => !underDir(f, v.path) && !isGatedProject(f))],
       // A project that is a git repo: its folder read-only; the agent works in its clone in the work area (Keep is Carl's).
-      readOnly: () => activeFolders(v.path).map((f) => f.abs).filter((f) => !underDir(f, v.path) && isGatedProject(f)),
+      // The projects' log and the folder registry are the server's (read-only, after the home's read-write bind).
+      readOnly: () => [...folders().filter((f) => !underDir(f, v.path) && isGatedProject(f)), ...(runsProjects && P ? [P.events, P.local] : [])],
     };
+    // pi's own write tools never write the projects' log or the registry either.
+    if (runsProjects && P) sandbox.denyWrite = [...sandbox.denyWrite, P.events, P.local];
     const backend = new PiBackend({
       install,
       paths: st.pi,
@@ -341,6 +373,7 @@ export async function startEngine(b: EngineBoot): Promise<EngineHandle> {
       },
       keyEnv: agentKeyEnv,
       ...(v.main ? {} : { log: (m: string) => console.log(`[pi:${v.name}] ${m}`) }),
+      ...(runsProjects && P ? { extraSessionDirs: [P.sessions] } : {}),
     });
     // A job's keys travel in a 0600 EnvironmentFile (never systemd-run's argv) that is
     // deleted once the unit started; one a crash left behind is swept here, at boot.
@@ -371,6 +404,8 @@ export async function startEngine(b: EngineBoot): Promise<EngineHandle> {
       ...(v.main ? {} : { log: (m: string) => console.log(`[engine:${v.name}] ${m}`) }),
       onFilesWritten: (paths) => b.onFilesWritten?.(v.name, paths),
       vaultName: v.name,
+      runsProjects,
+      ...(runsProjects ? (P ? { projectSessions: P.sessions } : {}) : { projectsEngine: async (): Promise<Engine> => homeEngine() }),
       // The vault's own tools run in the same sandbox as the agent's commands (the other vaults hidden).
       shell: () => outerWith(sandbox),
       // One line per turn: the full record in <state>/logs/turns.jsonl, a summary in the journal.
@@ -384,7 +419,8 @@ export async function startEngine(b: EngineBoot): Promise<EngineHandle> {
     return engine;
   };
 
-  const engine = make(mainRef);
+  const engine: Engine = make(mainRef);
+  mainEngine = engine;
   const engines = new Map<string, Engine>([[mainRef.name, engine]]);
   const opening = new Map<string, Promise<Engine>>();
   const open = (v: VaultRef): Promise<Engine> => {

@@ -13,6 +13,27 @@ import { spawnSync } from "node:child_process";
 import { cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { masterLayout, repoPaths, validRepoName } from "./master";
+import { rewriteSessionPaths, type Rewritten } from "./sessionPaths";
+
+/** The engine's pi sessions and thread records to rewrite when a vault's path changes (server/sessionPaths.ts). */
+export type SessionDirs = { sessions: string[]; instr: string[] };
+
+/** Every moved repo's old path → its new one, in the sessions and thread records (pi refuses a session whose stored
+ *  folder is gone). `back`: the other way. */
+function rewriteMoves(rec: Rec, dirs: SessionDirs | undefined, back: boolean, only?: string): Rewritten {
+  const total: Rewritten = { sessions: 0, records: 0, files: [] };
+  if (!dirs) return total;
+  const moves: [string, string][] = [];
+  for (const [name, v] of Object.entries(rec.vaults)) if (!only || name === only) moves.push([v.from, v.to]);
+  for (const p of Object.values(rec.projects)) moves.push([p.from, p.to]);
+  for (const [from, to] of moves) {
+    const r = rewriteSessionPaths({ ...dirs, from: back ? to : from, to: back ? from : to });
+    total.sessions += r.sessions;
+    total.records += r.records;
+    total.files.push(...r.files);
+  }
+  return total;
+}
 
 export const RECORD = ".migration.json";
 
@@ -188,7 +209,7 @@ export function withEnv(text: string, set: Record<string, string>): string {
 }
 
 /** Point the server at the copy: VC_MASTER, VC_VAULT, VC_BARE_REPO. The file as it was is kept (<env>.before-master). */
-export function switchToCopy(o: { master: string; name: string; envFile: string }): { envFile: string; backup: string; set: Record<string, string> } {
+export function switchToCopy(o: { master: string; name: string; envFile: string; sessions?: SessionDirs }): { envFile: string; backup: string; set: Record<string, string>; rewritten: { sessions: number; records: number } } {
   const m = resolve(o.master);
   const rec = readRec(m);
   const v = rec.vaults[o.name];
@@ -202,19 +223,24 @@ export function switchToCopy(o: { master: string; name: string; envFile: string 
   writeFileSync(o.envFile, withEnv(cur, set));
   rec.switched = { envFile: o.envFile, backup, at: new Date().toISOString(), vault: o.name };
   writeRec(m, rec);
-  return { envFile: o.envFile, backup, set };
+  // The sessions that ran in the original now run in the copy: their stored folder follows.
+  const rw = rewriteMoves(rec, o.sessions, false, o.name);
+  return { envFile: o.envFile, backup, set, rewritten: { sessions: rw.sessions, records: rw.records } };
 }
 
 /** Back, in one step: the env file exactly as it was before the first switch. The copy stays where it is. */
-export function switchBack(o: { master: string; envFile: string }): { envFile: string; restored: boolean } {
+export function switchBack(o: { master: string; envFile: string; sessions?: SessionDirs }): { envFile: string; restored: boolean; rewritten: { sessions: number; records: number } } {
   const m = resolve(o.master);
   const backup = `${o.envFile}.before-master`;
-  if (!existsSync(backup)) return { envFile: o.envFile, restored: false };
+  if (!existsSync(backup)) return { envFile: o.envFile, restored: false, rewritten: { sessions: 0, records: 0 } };
   writeFileSync(o.envFile, readFileSync(backup, "utf8"));
   const rec = readRec(m);
+  const was = rec.switched?.vault;
   rec.switched = null;
   writeRec(m, rec);
-  return { envFile: o.envFile, restored: true };
+  // And the sessions' stored folders back to the originals.
+  const rw = rewriteMoves(rec, o.sessions, true, was ?? undefined);
+  return { envFile: o.envFile, restored: true, rewritten: { sessions: rw.sessions, records: rw.records } };
 }
 
 export function migrationRecord(master: string): Rec {

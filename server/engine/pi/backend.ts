@@ -7,7 +7,8 @@
 // the session as `vc-cost` entries (usageCalls reads them back).
 import { EventEmitter } from "node:events";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
-import { isAbsolute, join, relative } from "node:path";
+import { dirname, isAbsolute, join, relative } from "node:path";
+import { healSessionCwd } from "../../sessionPaths";
 import type { CallRecord } from "../ledger";
 import type { ThreadTokenUsage } from "../context";
 import { PiProc } from "./proc";
@@ -160,6 +161,8 @@ export type PiBackendOptions = {
   /** The keys as environment variables (server/keys.ts agentKeyEnv), read at each command: the agent's Bash gets them. */
   keyEnv?: () => Record<string, string>;
   log?: (s: string) => void;
+  /** Other folders a thread's session may live in (the projects home's: server/projectsHome.ts). */
+  extraSessionDirs?: string[];
 };
 
 type Thread = {
@@ -351,13 +354,13 @@ export class PiBackend extends EventEmitter {
    * `ephemeral`: pi's --no-session; `system`: pi's --system-prompt (replaces pi's own) instead of
    * --append-system-prompt `instr`; `builtins: []`: pi's --no-tools. `you`: the extension asks for the
    * "you" layer before each prompt (conversations and Ctrl+K / Ctrl+L; not subagents or one-shots). */
-  async spawn(o: { cwd: string; model: string; file: string | null; instr: string; tools: string; subagents?: boolean; sessionDir?: string; builtins?: string[]; fork?: string; ephemeral?: boolean; system?: string; thinking?: string; you?: boolean }): Promise<{ proc: PiProc; id: string; file: string }> {
+  async spawn(o: { cwd: string; model: string; file: string | null; instr: string; tools: string; subagents?: boolean; sessionDir?: string; threadDir?: string; builtins?: string[]; fork?: string; ephemeral?: boolean; system?: string; thinking?: string; you?: boolean }): Promise<{ proc: PiProc; id: string; file: string }> {
     if (!o.sessionDir) await this.makeRoom();
     const session = o.fork ? ["--fork", o.fork] : o.ephemeral ? ["--no-session"] : o.file ? ["--session", o.file] : [];
     const args = [
       this.o.install.cli,
       "--mode", "rpc",
-      "--session-dir", o.sessionDir ?? this.o.paths.sessionsDir,
+      "--session-dir", o.sessionDir ?? o.threadDir ?? this.o.paths.sessionsDir,
       "--model", `openrouter/${o.model}`,
       "--thinking", o.thinking ?? this.o.thinking,
       "-ne", "--no-mcp", "-ns", "-np", "--no-themes", "-na", "--offline",
@@ -438,8 +441,18 @@ export class PiBackend extends EventEmitter {
 
   private sessionFileOf(id: string): string | null {
     try {
-      const hit = readdirSync(this.o.paths.sessionsDir).find((n) => n.endsWith(`_${id}.jsonl`));
-      return hit ? join(this.o.paths.sessionsDir, hit) : null;
+      // The projects home first: a moved project's session is its copy there (the original stays where it was).
+      for (const d of [...(this.o.extraSessionDirs ?? []), this.o.paths.sessionsDir]) {
+        let names: string[];
+        try {
+          names = readdirSync(d);
+        } catch {
+          continue;
+        }
+        const hit = names.find((n) => n.endsWith(`_${id}.jsonl`));
+        if (hit) return join(d, hit);
+      }
+      return null;
     } catch {
       return null;
     }
@@ -455,12 +468,12 @@ export class PiBackend extends EventEmitter {
 
   // ---------------------------------------------------------------- threads & turns
 
-  async startThread(o: { cwd: string; model: string; instructions: string; tools: ToolSpec[]; subagents: boolean }): Promise<{ threadId: string; ref?: string }> {
+  async startThread(o: { cwd: string; model: string; instructions: string; tools: ToolSpec[]; subagents: boolean; sessionDir?: string }): Promise<{ threadId: string; ref?: string }> {
     mkdirSync(this.o.paths.instrDir, { recursive: true });
     const instr = join(this.o.paths.instrDir, `${Date.now().toString(36)}-${++this.seq}.md`);
     writeFileSync(instr, o.instructions);
     const tools = this.writeTools(o.tools);
-    const { proc, id, file } = await this.spawn({ cwd: o.cwd, model: o.model, file: null, instr, tools, subagents: o.subagents, you: true });
+    const { proc, id, file } = await this.spawn({ cwd: o.cwd, model: o.model, file: null, instr, tools, subagents: o.subagents, you: true, ...(o.sessionDir ? { threadDir: o.sessionDir } : {}) });
     // The session's instructions and tools live beside it, so any later pi on it gets the same prompt (cache-stable).
     writeFileSync(join(this.o.paths.instrDir, `${id}.json`), JSON.stringify({ instr, tools, cwd: o.cwd, subagents: o.subagents }));
     this.attach({ id, subagents: o.subagents, file, proc, model: o.model, lastUsed: Date.now(), turnId: null, msgIndex: 0, crashes: [], restoreModel: null });
@@ -497,7 +510,10 @@ export class PiBackend extends EventEmitter {
     }
     // The tool set is the session's own (a cache-stable prompt); subagents only if it was started with them.
     const subagents = !!meta.subagents && o.subagents;
-    const { proc } = await this.spawn({ cwd: meta.cwd, model: o.model, file, instr: meta.instr, tools: meta.tools, subagents, you: true });
+    // The folder pi stored for the session is gone or hidden (its vault moved: ~/vaults/x → ~/vc/vaults/x): pi would
+    // refuse to resume it. It runs in the thread's folder now instead (server/sessionPaths.ts).
+    if (healSessionCwd(file, meta.cwd, this.o.sandbox.roots ?? [])) this.log(`thread ${threadId}: its stored folder is gone; it resumes in ${meta.cwd}`);
+    const { proc } = await this.spawn({ cwd: meta.cwd, model: o.model, file, instr: meta.instr, tools: meta.tools, subagents, you: true, threadDir: dirname(file) });
     this.attach({ id: threadId, subagents, file, proc, model: o.model, lastUsed: Date.now(), turnId: null, msgIndex: 0, crashes: [], restoreModel: null });
   }
 

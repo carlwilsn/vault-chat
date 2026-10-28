@@ -339,7 +339,8 @@ beforeAll(async () => {
   const store = (await import("../../src/store")).useStore;
   store.setState({ vaultPath: vault, conversationsLoaded: true });
   const ctx = await import("../context");
-  ctx.configureContext({ vault, agentModel: "openai/gpt-6.1-sol" });
+  (await import("../convlog/log")).setProjectsHomeLog(join(root, "projects-home"));
+  ctx.configureContext({ vault, agentModel: "openai/gpt-6.1-sol", projectsHome: join(root, "projects-home") });
   const { Engine } = await import("../engine/engine");
   backend = withPiSessions(new FakeBackend(), join(root, "pi"));
   engine = new Engine({
@@ -721,8 +722,8 @@ describe("h. Switching conversations: what carries over, what stays per conversa
   let b1: Turn | null = null;
   let a2: Turn | null = null;
   it("setup: A is a project's thread (Coconut), B is Main, back to A", async () => {
-    mkdirSync(join(vault, "agent-projects", "coconut"), { recursive: true });
-    writeFileSync(join(vault, "agent-projects", "coconut", "project.md"), "# Coconut\n");
+    mkdirSync(join(root, "projects-home", "coconut"), { recursive: true });
+    writeFileSync(join(root, "projects-home", "coconut", "project.md"), "# Coconut\n");
     a1 = await turn({ text: "Project Coconut: tile size?", convId: "project-coconut", client: "laptop" }, "1024 with 128 overlap.");
     act.activityPost(vault, { entry: { kind: "focus", modality: "editor", text: "opened the file", path: "papers/yolo.pdf", project: "coconut" } });
     b1 = await turn({ text: "Unrelated: what's a sigma-algebra?", client: "laptop" }, "A family of sets closed under complements and countable unions.");

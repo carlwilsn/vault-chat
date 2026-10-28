@@ -47,7 +47,8 @@ export type BrainEngine = {
 
 export type BrainDeps = {
   vault: string;
-  engine: () => Promise<BrainEngine>;
+  /** The engine of a conversation (a project's thread: the home engine, whatever vault the call is in). */
+  engine: (convId?: string) => Promise<BrainEngine>;
   /** The box's ElevenLabs key (the key store); never logged. */
   elKey: () => string | null;
   voiceId: () => string;
@@ -252,7 +253,7 @@ export async function startCall(d: BrainDeps, b: { convId?: unknown; device?: un
   // One voice at a time on a conversation: a new call replaces the old one.
   const old = callByConv.get(convId);
   if (old) endCall(d, old, "replaced");
-  const engine = await d.engine();
+  const engine = await d.engine(convId);
   await speechReady();
   const token = randomBytes(32);
   const call: Call = {
@@ -725,7 +726,7 @@ export async function brainRoute(
   // calibration merged with this conversation's history.
   const wait = /^\/api\/v1\/brain\/wait\/([A-Za-z0-9_-]{1,80})$/.exec(path);
   if (wait && method === "GET") {
-    const engine = await d.engine();
+    const engine = await d.engine(wait[1]!);
     const w = engine.waitInputs?.(wait[1]!) ?? { works: [], plan: null, samples: {}, running: false };
     json(res, 200, { works: w.works, plan: w.plan, running: !!w.running, calib: calibFrom(w.samples, workCalibration(d.logDir)), now: Date.now() });
     return true;

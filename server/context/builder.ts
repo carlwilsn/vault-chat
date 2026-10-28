@@ -2,7 +2,7 @@
 import { agentWorkDir } from "../workArea";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, relative } from "node:path";
+import { join } from "node:path";
 import { ctxConfig } from "./config";
 import { cap } from "./files";
 import { listProjects, projectNotesPath, readGlobalRules, readProject } from "./projects";
@@ -19,7 +19,7 @@ export const MEMORY_RULE = `# Memory
 
 You keep two memory files yourself, with your file tools: plain markdown, one line per fact with an absolute date (\`- 2026-10-21: midterm is Nov 4, covers ch. 1-6\`).
 - Global: ${MEMORY_REL} (about 200 lines). It comes with your turns.
-- A project's: the \`## Memory\` section at the end of its agent-projects/<slug>/project.md (about 60 lines). Carl's instructions sit above it: never change those unless he asks.
+- A project's: the \`## Memory\` section at the end of its project.md (about 60 lines), in the projects home, not in any vault (its absolute path comes with the project's turns). Carl's instructions sit above it: never change those unless he asks.
 
 When to save:
 - "Remember X": save it at once, in the current project's memory when it is about that project, else in ${MEMORY_REL}, and say where in one line ("Saved to Psych 221's memory"). "Make it a rule" goes to rules.md instead.
@@ -39,7 +39,7 @@ export const WORK_RULES = `# How to work
 - "Note" means one thing: an entry in Carl's Notes panel (.vault-chat/notes.jsonl). Use ListNotes, CreateNote, UpdateNote (change a note in place: never add a second note to fix the first), ResolveNote and DeleteNote. A "markdown file", a "write-up", or anything "detailed" is a vault .md file, written with your file tools. When it is unclear which he means, ask.`;
 
 /** What a project is, said once wherever projects come up. */
-export const PROJECTS_RULE = `Carl's conversation is one thread, Main, that every device and call continues; each of his projects has one thread of its own. A project is a folder agent-projects/<slug>/ with a project.md: his instructions on top, the project's memory under ## Memory; it may name a main folder (\`folder:\` in its front matter). Only Carl makes projects: in the app, or by asking you in so many words, spoken or typed ("start a project for HW4"); then OpenProject makes it. Never make one on your own initiative. When he says to work on a project ("let's work on Physics") or to go back to Main, OpenProject takes you there, and his screens and a live call follow: there is one of you, Main is home, and a project's thread is a place you work. A project is context, not a wall: from any thread you may read and write anywhere in the vault and in your work area. Before you change files in a project's folder or main folder from outside its thread, read that project's project.md first, and keep to it. ListProjects shows the projects.`;
+export const PROJECTS_RULE = `Main is this vault's conversation: every device and call in the vault continues it. Carl's projects belong to no vault: they are the machine's, the same whatever vault is open, on every device. Each project has one thread of its own, a working folder on the box (its thread runs there and pi loads that folder's AGENTS.md), and a project.md in the projects home (its absolute path is listed with your turns): his instructions on top, the project's memory under ## Memory. Only Carl makes projects: in the app, or by asking you in so many words, spoken or typed ("start a project for HW4"); then OpenProject makes it. Never make one on your own initiative. When he says to work on a project ("let's work on Physics") or to go back to Main, OpenProject takes you there, and his screens and a live call follow: there is one of you, Main is home, and a project's thread is a place you work. A project is context, not a wall: from any thread you may read and write in the vault, your work area and the project folders you can write. Before you change files in a project's folder from outside its thread, read that project's project.md first, and keep to it. ListProjects shows the projects.`;
 
 export const RECHECK_RULE = `Notes, recaps and earlier messages can be stale or wrong. Before you act on one (a job "running", a file "done", a number), re-check reality: read the file, run the command, look at the process. Say what you checked.`;
 
@@ -93,7 +93,7 @@ export function turnSections(conv: ContextConv, o: { folder?: { rel: string; out
   });
   const p = conv.project ? readProject(conv.project) : null;
   if (p) {
-    const rel = `agent-projects/${p.slug}/project.md`;
+    const rel = projectNotesPath(p.slug).split("\\").join("/");
     const notes = p.notes.trim() ? cap(p.notes, caps.project, `the rest is in ${rel}`) : "(empty)";
     const note = p.notes.trim() ? projectMemoryNote(p.notes, rel, caps.project) : null;
     out.push({ key: "project", text: `<project name="${p.name}" file="${rel}">\n${notes}\n</project>${note ? `\n<memory-note>${note}</memory-note>` : ""}` });
@@ -105,10 +105,10 @@ export function turnSections(conv: ContextConv, o: { folder?: { rel: string; out
           "error" in f
             ? `<working-folder>The vault root: ${f.error}.</working-folder>`
             : f.git
-              ? `<working-folder>This project is the git repo ${f.git.folder} on the box (Carl chose it; outside the vault, never synced with it). You work in your own clone of it, ${f.git.clone}/: relative paths and your shell start there, and its AGENTS.md is loaded. Make each change on a branch agent/<short-name> (git switch -c agent/<short-name>), commit it, check it, then hand it to Carl with ReadyForReview (what changed, why, the test results, screenshots). The project's main branch is his: only his Keep merges your branch into it; you never merge or push it (its folder is read-only to you). This project's notes and memory stay in the vault: write ${rel} and ${MEMORY_REL} by their absolute path under ${vault}.</working-folder>`
+              ? `<working-folder>This project is the git repo ${f.git.folder} on the box (Carl chose it; outside the vault, never synced with it). You work in your own clone of it, ${f.git.clone}/: relative paths and your shell start there, and its AGENTS.md is loaded. Make each change on a branch agent/<short-name> (git switch -c agent/<short-name>), commit it, check it, then hand it to Carl with ReadyForReview (what changed, why, the test results, screenshots). The project's main branch is his: only his Keep merges your branch into it; you never merge or push it (its folder is read-only to you). This project's notes and memory are ${rel} (the projects home, not the vault); the global memory is ${MEMORY_REL} under ${vault}: write both by their absolute paths.</working-folder>`
               : f.outside
-              ? `<working-folder>${f.rel}/ is this project's folder on the box (Carl chose it; outside the vault, with its own git, never synced with the vault): relative paths and your shell start there, and its AGENTS.md is loaded. This project's notes and memory stay in the vault: write ${rel} and ${MEMORY_REL} by their absolute path under ${vault}.</working-folder>`
-              : `<working-folder>${f.rel}/ is this project's main folder: relative paths and your shell start there. The vault root is ${vault}; write vault files such as ${MEMORY_REL} or agent-projects/... by their absolute path.</working-folder>`,
+              ? `<working-folder>${f.rel}/ is this project's folder on the box (Carl chose it; outside the vault, with its own git, never synced with the vault): relative paths and your shell start there, and its AGENTS.md is loaded. This project's notes and memory are ${rel} (the projects home, not the vault); the global memory is ${MEMORY_REL} under ${vault}: write both by their absolute paths.</working-folder>`
+              : `<working-folder>${f.rel}/ is this project's main folder: relative paths and your shell start there. The vault root is ${vault}; write ${MEMORY_REL} by its absolute path there, and this project's notes and memory at ${rel}.</working-folder>`,
       });
     }
   } else {
@@ -116,11 +116,11 @@ export function turnSections(conv: ContextConv, o: { folder?: { rel: string; out
     out.push({
       key: "projects",
       text: all.length
-        ? `<projects>\nCarl's projects (each has its own thread; read a project's file before you touch its files):\n${all
+        ? `<projects>\nCarl's projects (the machine's, the same in every vault; each has its own thread; read a project's file before you touch its files):\n${all
             .slice(0, 40)
             .map((x) => {
-              const f = registeredFolder(vault, x.slug);
-              return `- ${x.name}: ${relative(vault, projectNotesPath(x.slug)).split("\\").join("/")}${f ? ` (works in ${f.split("\\").join("/")})` : ""}`;
+              const f = registeredFolder(x.slug);
+              return `- ${x.name}: ${projectNotesPath(x.slug).split("\\").join("/")}${f ? ` (works in ${f.split("\\").join("/")})` : ""}`;
             })
             .join("\n")}\n</projects>`
         : "<projects>(none yet)</projects>",

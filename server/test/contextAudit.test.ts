@@ -158,7 +158,12 @@ function duplicates(all: string): { text: string; count: number }[] {
 const REMOVED = /SetProject|ProjectMemory|ProjectCost|Done means proved|^## (memory|plan|progress).md|SetBudget|SetCheck|SetMetric|RunWorkers|TaskAdd|TaskClaim|TaskUpdate|TaskList|<status>|budget|plateau|worker conversation|Done when.*command|pinned check/i;
 
 function normalise(s: string): string {
+  const projects = join(root, "projects-home");
   return s
+    .split(projects.replace(/\\/g, "/"))
+    .join("<projects>")
+    .split(projects)
+    .join("<projects>")
     .split(vault.replace(/\\/g, "/"))
     .join("<vault>")
     .split(vault)
@@ -208,9 +213,10 @@ beforeAll(async () => {
   const store = (await import("../../src/store")).useStore;
   store.setState({ vaultPath: vault, conversationsLoaded: true });
   const ctx = await import("../context");
-  ctx.configureContext({ vault, agentModel: "openai/gpt-6.1-sol" });
+  (await import("../convlog/log")).setProjectsHomeLog(join(root, "projects-home"));
+  ctx.configureContext({ vault, agentModel: "openai/gpt-6.1-sol", projectsHome: join(root, "projects-home") });
   ctx.withVault(vault, () => ctx.ensureProject("Coconut", "Detect coconuts in drone images."));
-  const pdir = join(vault, "agent-projects", "coconut");
+  const pdir = join(root, "projects-home", "coconut");
   writeFileSync(join(pdir, "memory.md"), "# Memory\n\n## Decisions\n\n- YOLOv8 at 640px; tiles of 1024 with 128 overlap.\n- Labels in labels/ (CVAT export).\n\n## Learned\n\n- Shadows cause false positives before 9am.\n");
   writeFileSync(join(pdir, "plan.md"), "# Plan\n\n1. Tile the March flight.\n2. Train v3.\n3. Count per hectare.\n");
   writeFileSync(join(pdir, "progress.md"), "# Progress\n\n- 2026-10-14: tiled the March flight (4,812 tiles).\n- 2026-10-15: v3 training started, mAP50 0.71 at epoch 20.\n");

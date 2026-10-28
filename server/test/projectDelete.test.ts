@@ -1,7 +1,7 @@
 // Carl's Delete and Rename on a project (2026-10-25: "where is the delete button for projects"), through the
 // real engine on a fake pi:
 //   - Delete takes the project off the list and its thread away, moves its own files (project.md with its
-//     memory, rules.md) to agent-projects/.deleted/<slug>-<date>/ (recoverable), and never touches the folder
+//     memory, rules.md) to the projects home's .deleted/<slug>-<date>/ (recoverable), and never touches the folder
 //     it names or anything else of his;
 //   - a running turn in it stops; every surface on it lands on Main (the signal, the row, a message or a
 //     voice line still aimed at it);
@@ -18,7 +18,8 @@ let convs: typeof import("../engine/convs");
 const signals: Record<string, unknown>[] = [];
 
 const put = (rel: string, s: string) => {
-  const p = join(rig.vault, rel);
+  // A project's own files live in the projects home (in no vault): "agent-projects/<slug>/…" is written there.
+  const p = rel.startsWith("agent-projects/") ? join(rig.projects, rel.slice("agent-projects/".length)) : join(rig.vault, rel);
   mkdirSync(join(p, ".."), { recursive: true });
   writeFileSync(p, s);
 };
@@ -58,7 +59,7 @@ describe("Delete a project", () => {
     expect(await rig.readConv("main")).toBeTruthy();
   });
 
-  it("its running turn stops; its files move to agent-projects/.deleted/; its folder and his files stay; its thread is gone", async () => {
+  it("its running turn stops; its files move to the projects home's .deleted/; its folder and his files stay; its thread is gone", async () => {
     await turn("Tile the first batch.", "project-coconut");
     // A turn still running when he deletes it.
     const n = rig.backend.turns.length;
@@ -68,17 +69,17 @@ describe("Delete a project", () => {
 
     const r = await rig.engine.intent({ type: "deleteProject", slug: "coconut", client: "laptop" });
     expect(r).toMatchObject({ ok: true, slug: "coconut", name: "Coconut", convId: "project-coconut", to: "main" });
-    expect(String(r.movedTo)).toMatch(/^agent-projects\/\.deleted\/coconut-\d{8}-\d{6}$/);
+    expect(String(r.movedTo)).toMatch(/^\.deleted\/coconut-\d{8}-\d{6}$/);
 
     // Recoverable: the whole folder, word for word.
-    const kept = join(rig.vault, String(r.movedTo));
+    const kept = join(rig.projects, String(r.movedTo));
     expect(readFileSync(join(kept, "project.md"), "utf8")).toContain("- 2026-10-20: tiles of 1024");
     expect(readFileSync(join(kept, "rules.md"), "utf8")).toBe("Python only.\n");
-    expect(existsSync(join(rig.vault, "agent-projects", "coconut"))).toBe(false);
+    expect(existsSync(join(rig.projects, "coconut"))).toBe(false);
     // His folder and its files: untouched.
     expect(readFileSync(join(rig.vault, "code", "coconut", "tiles.py"), "utf8")).toBe("print('tiles')\n");
     // The other project: untouched.
-    expect(readFileSync(join(rig.vault, "agent-projects", "psych-221", "project.md"), "utf8")).toBe("# Psych 221\n\nEssays in APA style.\n");
+    expect(readFileSync(join(rig.projects, "psych-221", "project.md"), "utf8")).toBe("# Psych 221\n\nEssays in APA style.\n");
 
     // Off the list, the thread gone from every list, the turn ended.
     const { listProjects } = await import("../context");
@@ -118,7 +119,7 @@ describe("Delete a project", () => {
   it("deleting it again is refused; nothing else moves", async () => {
     const r = await rig.engine.intent({ type: "deleteProject", slug: "coconut" });
     expect(r.ok).toBe(false);
-    expect(readdirSync(join(rig.vault, "agent-projects", ".deleted"))).toHaveLength(1);
+    expect(readdirSync(join(rig.projects, ".deleted"))).toHaveLength(1);
   });
 
   it("a new project under the same name starts empty (the old chat is not back)", async () => {
@@ -139,7 +140,7 @@ describe("Rename a project", () => {
     const before = await rig.readConv("project-psych-221");
     const r = await rig.engine.intent({ type: "renameProject", slug: "psych-221", name: "  Psych 221: Cognition " });
     expect(r).toMatchObject({ ok: true, slug: "psych-221", name: "Psych 221: Cognition" });
-    expect(readFileSync(join(rig.vault, "agent-projects", "psych-221", "project.md"), "utf8")).toBe("# Psych 221: Cognition\n\nEssays in APA style.\n");
+    expect(readFileSync(join(rig.projects, "psych-221", "project.md"), "utf8")).toBe("# Psych 221: Cognition\n\nEssays in APA style.\n");
     const after = await rig.readConv("project-psych-221");
     expect(after).toMatchObject({ id: "project-psych-221", title: "Psych 221: Cognition", project: "psych-221" });
     expect(after.createdAt).toBe(before.createdAt);
@@ -164,8 +165,8 @@ describe("Restore a project (the inverse of Delete; Carl asks the agent, it uses
     signals.length = 0;
     const r = await rig.engine.intent({ type: "restoreProject", slug: "physics" });
     expect(r).toMatchObject({ ok: true, slug: "physics", name: "Physics", convId: "project-physics" });
-    expect(readFileSync(join(rig.vault, "agent-projects", "physics", "project.md"), "utf8")).toContain("- pendulum done");
-    expect(readdirSync(join(rig.vault, "agent-projects", ".deleted")).some((e) => e.startsWith("physics-"))).toBe(false);
+    expect(readFileSync(join(rig.projects, "physics", "project.md"), "utf8")).toContain("- pendulum done");
+    expect(readdirSync(join(rig.projects, ".deleted")).some((e) => e.startsWith("physics-"))).toBe(false);
     const back = await rig.readConv("project-physics");
     expect(back.deleted).toBeFalsy();
     expect(back.threadId).toBe(before.threadId);
@@ -206,7 +207,7 @@ describe("Restore a project (the inverse of Delete; Carl asks the agent, it uses
     const t = await turn("Snell's law, please.", "project-optics");
     const before = { threadId: (await rig.readConv("project-optics")).threadId, items: items("project-optics") };
     const d = await rig.engine.intent({ type: "deleteProject", slug: "optics" });
-    renameSync(join(rig.vault, String(d.movedTo)), join(rig.vault, "agent-projects", "optics"));
+    renameSync(join(rig.projects, String(d.movedTo)), join(rig.projects, "optics"));
     signals.length = 0;
     // The engine's periodic pass (or his next message there) finds it back.
     await rig.engine.ensureThreads();

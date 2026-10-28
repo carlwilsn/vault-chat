@@ -10,7 +10,7 @@
 //     are pi's, read back from the file; voice reaches them through pi (Ask);
 //   - ScheduleWake never adds the same wake twice.
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { cleanup } from "./helpers";
 import { makeRig, until, type Rig } from "./longRig";
@@ -62,7 +62,7 @@ describe("projects: only Carl decides what is a project", () => {
     // A model that calls one anyway: refused, nothing made, the chat untouched.
     const r = await rig.backend.call(s.tid, "SetProject", { name: "Typos" });
     expect(r.ok).toBe(false);
-    expect(existsSync(join(rig.vault, "agent-projects", "typos"))).toBe(false);
+    expect(existsSync(join(rig.projects, "typos"))).toBe(false);
     expect((await rig.readConv(s.convId)).project).toBeUndefined();
     expect((await rig.readConv(s.convId)).pendingAsk).toBeFalsy();
     await settle(s);
@@ -72,7 +72,7 @@ describe("projects: only Carl decides what is a project", () => {
     const s = await rig.start("Start a big new research effort on coconut detection.");
     expect((await rig.readConv(s.convId)).project).toBeUndefined();
     await settle(s);
-    expect(existsSync(join(rig.vault, "agent-projects"))).toBe(false);
+    expect(readdirSync(rig.projects).filter((n) => !n.startsWith("."))).toEqual([]);
   });
 
   it("voice's Ask hands the work over as an ordinary message: no project, even if a model passes one", async () => {
@@ -88,7 +88,7 @@ describe("projects: only Carl decides what is a project", () => {
     // No chat named: the call is Main's (never a new chat per call).
     expect(r.convId).toBe("main");
     expect(c.project).toBeUndefined();
-    expect(existsSync(join(rig.vault, "agent-projects", "iems-469-course-notes-visuals"))).toBe(false);
+    expect(existsSync(join(rig.projects, "iems-469-course-notes-visuals"))).toBe(false);
     // A side request of that conversation, Carl's words in it; no turn of it.
     expect(asked.at(-1)!.text).toContain("Make the section 7 figure in course-notes.html clearer.");
     expect(rig.backend.turns.length).toBe(before);
@@ -103,8 +103,8 @@ describe("projects: only Carl decides what is a project", () => {
     const { setProject } = await import("../projectRoutes");
     expect(await setProject(rig.vault, { convId: s.convId, project: "Coconut" })).toEqual({ ok: true, project: "coconut" });
     expect((await rig.readConv(s.convId)).project).toBe("coconut");
-    expect(existsSync(join(rig.vault, "agent-projects", "coconut", "project.md"))).toBe(true);
-    for (const f of ["memory.md", "plan.md", "progress.md"]) expect(existsSync(join(rig.vault, "agent-projects", "coconut", f))).toBe(false);
+    expect(existsSync(join(rig.projects, "coconut", "project.md"))).toBe(true);
+    for (const f of ["memory.md", "plan.md", "progress.md"]) expect(existsSync(join(rig.projects, "coconut", f))).toBe(false);
     // ListProjects (pi) now shows it with this chat.
     const t = await rig.start("Which projects do I have?");
     const r = await rig.backend.call(t.tid, "ListProjects", {});
@@ -113,9 +113,9 @@ describe("projects: only Carl decides what is a project", () => {
   });
 
   it("a project is context, not a boundary: a chat in project X edits a file of project Y", async () => {
-    mkdirSync(join(rig.vault, "agent-projects", "psych-221"), { recursive: true });
-    writeFileSync(join(rig.vault, "agent-projects", "psych-221", "project.md"), "# Psych 221\n\nEssays in APA style.\n");
-    writeFileSync(join(rig.vault, "agent-projects", "psych-221", "reading-list.md"), "- Kahneman\n");
+    mkdirSync(join(rig.projects, "psych-221"), { recursive: true });
+    writeFileSync(join(rig.projects, "psych-221", "project.md"), "# Psych 221\n\nEssays in APA style.\n");
+    writeFileSync(join(rig.projects, "psych-221", "reading-list.md"), "- Kahneman\n");
     const threads = rig.backend.threads.length;
     const s = await rig.start("Add Tversky to the Psych 221 reading list.", { project: "coconut" });
     const th = rig.backend.threads[threads];
@@ -125,12 +125,12 @@ describe("projects: only Carl decides what is a project", () => {
     // The working directory is the vault (no main folder named); the instructions say the vault is open to it.
     expect(th.cwd).toBe(rig.vault);
     expect(th.instructions).toContain('This is the thread of Carl\'s project "Coconut"');
-    expect(th.instructions).toContain("A project is context, not a wall: from any thread you may read and write anywhere in the vault and in your work area");
+    expect(th.instructions).toContain("A project is context, not a wall: from any thread you may read and write in the vault, your work area and the project folders you can write");
     // pi's own write/edit tools: the path guard lets a project-X chat write project Y's files.
     const { guardToolCall } = await import("../engine/pi/ext/policy.mjs" as any);
     const opts = { cwd: rig.vault, home: rig.root, denyRead: [join(rig.root, "secrets")], denyWrite: [join(rig.vault, ".vault-chat", "conversations")] };
     expect(guardToolCall("edit", { path: "agent-projects/psych-221/reading-list.md" }, opts)).toBeNull();
-    expect(guardToolCall("write", { path: join(rig.vault, "agent-projects", "psych-221", "project.md") }, opts)).toBeNull();
+    expect(guardToolCall("write", { path: join(rig.projects, "psych-221", "project.md") }, opts)).toBeNull();
     // Voice in the same chat: its Ask is a side request of this chat (forked from it, as of it), never a turn of it.
     await settle(s);
     const before = rig.backend.turns.length;
@@ -138,7 +138,7 @@ describe("projects: only Carl decides what is a project", () => {
     await voice.voiceAsksSettled();
     expect(asked.at(-1)).toMatchObject({ convId: s.convId, tools: "act" });
     expect(rig.backend.turns.length).toBe(before);
-    expect(readFileSync(join(rig.vault, "agent-projects", "psych-221", "reading-list.md"), "utf8")).toBe("- Kahneman\n");
+    expect(readFileSync(join(rig.projects, "psych-221", "reading-list.md"), "utf8")).toBe("- Kahneman\n");
   });
 });
 

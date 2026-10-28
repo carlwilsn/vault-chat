@@ -67,6 +67,8 @@ export class FakeBackend extends EventEmitter {
 export type Rig = {
   root: string;
   vault: string;
+  /** The projects home (server/projectsHome.ts): every project, whatever vault. */
+  projects: string;
   engine: any;
   backend: FakeBackend;
   pings: any[];
@@ -98,7 +100,10 @@ export async function makeRig(opts: { deps?: Record<string, unknown> } = {}): Pr
   store.setState({ vaultPath: vault, conversationsLoaded: true });
   const convs = await import("../engine/convs");
   const { configureContext } = await import("../context");
-  configureContext({ vault });
+  const projects = join(root, "projects");
+  mkdirSync(projects, { recursive: true });
+  (await import("../convlog/log")).setProjectsHomeLog(projects);
+  configureContext({ vault, projectsHome: projects });
   const { Engine } = await import("../engine/engine");
   const backend = withPiSessions(new FakeBackend(), join(root, "pi"));
   const pings: any[] = [];
@@ -123,6 +128,7 @@ export async function makeRig(opts: { deps?: Record<string, unknown> } = {}): Pr
   const rig: Rig = {
     root,
     vault,
+    projects,
     engine,
     backend,
     pings,

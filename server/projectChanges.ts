@@ -41,7 +41,7 @@ export function isGatedProject(folder: string): boolean {
 
 /** Where the agent works on a git project: its clone in the vault's work area. */
 export function cloneDirOf(vault: string, slug: string): string {
-  return join(agentWorkDir(wallsOf(vault).home, vault), "changes", slug);
+  return join(agentWorkDir(wallsOf().home, vault), "changes", slug);
 }
 
 async function git(cwd: string, args: string[], timeoutMs = 60_000): Promise<{ ok: boolean; out: string; err: string }> {

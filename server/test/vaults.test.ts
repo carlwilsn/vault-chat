@@ -19,6 +19,7 @@ const mainVault = join(root, "vaults", "school2");
 const second = join(root, "vaults", "physics");
 for (const v of [mainVault, second]) mkdirSync(join(v, ".vault-chat", "conversations"), { recursive: true });
 const state = join(root, "state");
+const projectsHome = join(root, "projects-home");
 process.env.VC_VAULT = mainVault;
 process.env.VC_STATE_DIR = state;
 process.env.VC_LOCALSTORAGE = join(root, "ls.json");
@@ -87,7 +88,11 @@ describe("two vaults on one box (engines on fake backends)", () => {
 
   const boot = (vault: string, thread: string, tag?: string) => {
     const backend = withPiSessions(new FakeBackend(thread), join(root, `pi-${thread}`));
-    const engine = new Engine({
+    // The main vault's engine runs the projects' threads (server/engine/index.ts); another vault's hands them to it.
+    const home = vault === mainVault;
+    const engine: any = new Engine({
+      runsProjects: home,
+      ...(home ? {} : { projectsEngine: async () => a.engine }),
       vault,
       backend,
       ledger: { settle: async () => ({ calls: 0, usd: 0, missing: 0, byId: {} }), has: () => false },
@@ -113,7 +118,9 @@ describe("two vaults on one box (engines on fake backends)", () => {
     store.setState({ vaultPath: mainVault, conversationsLoaded: true });
     ({ readConv } = await import("../engine/convs"));
     const { configureContext } = await import("../context");
-    configureContext({ vault: mainVault, agentModel: "openai/gpt-6.1-sol" });
+    mkdirSync(projectsHome, { recursive: true });
+    (await import("../convlog/log")).setProjectsHomeLog(projectsHome);
+    configureContext({ vault: mainVault, agentModel: "openai/gpt-6.1-sol", projectsHome });
     ({ Engine } = await import("../engine/engine"));
     a = boot(mainVault, "ta");
     b = boot(second, "tb", "physics");
@@ -124,40 +131,60 @@ describe("two vaults on one box (engines on fake backends)", () => {
     cleanup(root);
   });
 
-  let convA = "";
-  let convB = "";
+  const convA = "main";
+  const convB = "main";
 
-  it("a message to each lands in its own vault: conversation, project, live events", async () => {
-    const ra = await a.engine.message({ text: "main vault: hello", project: "Alpha" });
-    const rb = await b.engine.message({ text: "physics vault: hello", project: "Beta" });
-    convA = ra.convId;
-    convB = rb.convId;
+  it("Main is each vault's own: a message to each lands in its own vault's log", async () => {
+    await a.engine.message({ text: "main vault: hello" });
+    await b.engine.message({ text: "physics vault: hello" });
     await until(() => a.backend.turns.length === 1 && b.backend.turns.length === 1);
     a.backend.end("answer from main");
     b.backend.end("answer from physics");
-    await until(async () => !!(await readConv(second, convB))?.messages.some((m: any) => m.role === "assistant"));
-    await until(async () => !!(await readConv(mainVault, convA))?.messages.some((m: any) => m.role === "assistant"));
-
-    // Each vault's own log (its Main and its projects' threads, src/threads.ts); never a conversation file.
-    expect(convA).toBe("project-alpha");
-    expect(convB).toBe("project-beta");
-    expect(logFiles(mainVault)).toContain(`${convA}.jsonl`);
-    expect(logFiles(mainVault)).not.toContain(`${convB}.jsonl`);
-    expect(logFiles(second)).toContain(`${convB}.jsonl`);
-    expect(logFiles(second)).not.toContain(`${convA}.jsonl`);
+    await until(async () => !!(await readConv(second, "main"))?.messages.some((m: any) => m.role === "assistant"));
+    await until(async () => !!(await readConv(mainVault, "main"))?.messages.some((m: any) => m.role === "assistant"));
+    expect((await readConv(mainVault, "main")).messages.map((m: any) => m.content).join(" ")).not.toMatch(/physics/);
+    expect((await readConv(second, "main")).messages.map((m: any) => m.content).join(" ")).not.toMatch(/main vault/);
+    expect(logFiles(mainVault)).toContain("main.jsonl");
+    expect(logFiles(second)).toContain("main.jsonl");
     expect(convFiles(mainVault)).toEqual([]);
     expect(convFiles(second)).toEqual([]);
-    expect(await readConv(mainVault, convB)).toBeNull();
-    expect((await readConv(second, convB)).project).toBe("beta");
-    // Projects are the vault's own (CONTEXT runs scoped to the engine's vault).
-    expect(existsSync(join(second, "agent-projects", "beta"))).toBe(true);
-    expect(existsSync(join(mainVault, "agent-projects", "beta"))).toBe(false);
-    expect(existsSync(join(mainVault, "agent-projects", "alpha"))).toBe(true);
     // No app store holds a conversation: each is its vault's log.
-    expect(store.getState().conversations.map((c: any) => c.id)).not.toContain(convA);
+    expect(store.getState().conversations.map((c: any) => c.id)).not.toContain("main");
+  });
+
+  it("a project is the machine's: made from either vault, its thread runs on the home engine, in the projects home's log, the same from both", async () => {
+    const turnsA = a.backend.turns.length;
+    const turnsB = b.backend.turns.length;
+    // From the physics vault: "New chat in project" (a project named, no conversation).
+    const rb = await b.engine.message({ text: "physics vault: start on optics", project: "Optics" });
+    expect(rb.convId).toBe("project-optics");
+    await until(() => a.backend.turns.length === turnsA + 1);
+    // The home engine ran it, not the physics vault's.
+    expect(b.backend.turns.length).toBe(turnsB);
+    a.backend.end("optics answer");
+    await until(async () => !!(await readConv(mainVault, "project-optics"))?.messages.some((m: any) => m.role === "assistant"));
+    // Its files: the projects home, no vault.
+    expect(existsSync(join(projectsHome, "optics", "project.md"))).toBe(true);
+    for (const v of [mainVault, second]) expect(existsSync(join(v, "agent-projects"))).toBe(false);
+    // Its thread: the projects home's log, never a vault's.
+    expect(readdirSync(join(projectsHome, ".vault-chat", "events"))).toContain("project-optics.jsonl");
+    for (const v of [mainVault, second]) expect(logFiles(v)).not.toContain("project-optics.jsonl");
+    // The same thread from either vault: every line, in order.
+    const fromMain = (await readConv(mainVault, "project-optics")).messages.map((m: any) => [m.role, m.content]);
+    const fromPhys = (await readConv(second, "project-optics")).messages.map((m: any) => [m.role, m.content]);
+    expect(fromPhys).toEqual(fromMain);
+    expect(fromMain).toEqual(expect.arrayContaining([["user", "physics vault: start on optics"], ["assistant", "optics answer"]]));
+    // And a message from the main vault continues the same thread.
+    await a.engine.message({ convId: "project-optics", text: "main vault: more optics" });
+    await until(() => a.backend.turns.length === turnsA + 2);
+    a.backend.end("more optics answer");
+    await until(async () => (await readConv(second, "project-optics")).messages.some((m: any) => m.content === "more optics answer"));
+    // Each vault's list: its own Main, and the same project threads.
     const { logOf } = await import("../engine/convs");
-    expect(logOf(mainVault).ids().sort()).toEqual(["main", convA].sort());
-    expect(logOf(second).ids().sort()).toEqual(["main", convB].sort());
+    expect(logOf(mainVault).ids().sort()).toEqual(["main", "project-optics"]);
+    expect(logOf(second).ids().sort()).toEqual(["main", "project-optics"]);
+    const { listProjects, withVault } = await import("../context");
+    expect(withVault(second, () => listProjects().map((p: any) => p.slug))).toEqual(withVault(mainVault, () => listProjects().map((p: any) => p.slug)));
   });
 
   it("each agent's path guard refuses the other vault (the env pi gets, read as the extension reads it)", async () => {
@@ -273,30 +300,59 @@ describe("vault-scoped routes (the real server)", () => {
     expect((await post("/notes?vault=physics", { text: "x" })).status).toBe(409);
   });
 
-  it("projects, notifications and /poll are per vault", async () => {
-    const latest = (await (await fetch(srv.base + "/poll?after=latest")).json()).next;
+  it("projects are the machine's (the same list and threads from every vault); notifications, chats and /poll's other records stay per vault", async () => {
     const r = await (await post("/conversation/project?vault=physics", { convId: "cphys", project: "Optics" })).json();
     expect(r).toEqual({ ok: true, project: "optics" });
-    expect(existsSync(join(home, "physics", "agent-projects", "optics"))).toBe(true);
-    expect(existsSync(join(main, "agent-projects", "optics"))).toBe(false);
-    expect((await (await fetch(srv.base + "/projects?vault=physics")).json()).projects.map((p: any) => p.slug)).toEqual(["optics"]);
-    expect((await (await fetch(srv.base + "/projects")).json()).projects).toEqual([]);
-    expect((await post("/conversation/project", { convId: "cphys", project: "Optics" })).status).toBe(400); // not in the main vault
+    // In the projects home, no vault (no vault-chat folder here: ~/.local/share/vault-chat/projects).
+    const home2 = join(home, ".local", "share", "vault-chat", "projects");
+    expect(existsSync(join(home2, "optics", "project.md"))).toBe(true);
+    expect(existsSync(join(home, "physics", "agent-projects"))).toBe(false);
+    expect(existsSync(join(main, "agent-projects"))).toBe(false);
+    const list = async (q: string) => (await (await fetch(srv.base + `/projects${q}`)).json()).projects.map((p: any) => p.slug);
+    expect(await list("?vault=physics")).toEqual(["optics"]);
+    expect(await list("")).toEqual(["optics"]);
+    // The tag itself is the chat's, and the chat is the physics vault's.
+    expect((await post("/conversation/project", { convId: "cphys", project: "Optics" })).status).toBe(400);
 
-    // Each vault's /poll is its own log (its own sequence): the tag is a record of cphys, the project a signal.
+    // A project's thread, made from one vault, is the same from the other: rows and events.
+    const made = await (await post("/projects?vault=physics", { name: "Lab Reports" })).json();
+    expect(made).toMatchObject({ ok: true, slug: "lab-reports", convId: "project-lab-reports" });
+    const rows = async (q: string) => (await (await fetch(srv.base + `/api/v2/conversations${q}`)).json()).rows.filter((x: any) => x.id.startsWith("project-")).map((x: any) => [x.id, x.title]);
+    expect(await rows("?vault=physics")).toEqual(await rows(""));
+    expect(await rows("")).toEqual(expect.arrayContaining([["project-lab-reports", "Lab Reports"]]));
+    const ev = async (q: string) => (await (await fetch(srv.base + `/api/v2/conversations/project-lab-reports/events?after=0${q}`)).json()).events.map((e: any) => [e.seq, e.type]);
+    expect(await ev("&vault=physics")).toEqual(await ev(""));
+    // A line sent to it from physics goes to the main engine (which runs every project's thread) and is in the thread
+    // from both vaults. (The first build forwarded it to the physics engine itself, over and over, until the heap ran out.)
+    const sent = await (await post("/api/v2/intent?vault=physics", { type: "send", clientId: "lab-1", convId: "project-lab-reports", text: "From physics: LAB-LINE" })).json();
+    expect(sent).toMatchObject({ ok: true, convId: "project-lab-reports" });
+    const lines = async (q: string) => (await (await fetch(srv.base + `/api/v2/conversations/project-lab-reports/events?after=0${q}`)).json()).events.filter((e: any) => e.type === "entry" && JSON.stringify(e.entry).includes("LAB-LINE")).length;
+    await waitFor(async () => (await lines("")) > 0, 20_000);
+    expect(await lines("&vault=physics")).toBe(await lines(""));
+    expect((await (await fetch(srv.base + "/api/v1/health")).json()).ok ?? true).toBeTruthy();
+
+    // Each vault's /poll: its own records, and every project's (one sequence): the tag is a record of cphys, the project a signal both see.
     const phys = await (await fetch(`${srv.base}/poll?after=0&vault=physics`)).json();
-    expect(phys.events.filter((e: any) => e.type === "meta" && "project" in e.patch)).toEqual([expect.objectContaining({ conv: "cphys", patch: { project: "optics" } })]);
-    expect(phys.events.filter((e: any) => e.type === "signal")).toEqual([expect.objectContaining({ conv: null, signal: { type: "project", convId: "cphys", project: "optics" } })]);
+    expect(phys.events.filter((e: any) => e.type === "meta" && "project" in e.patch && e.conv === "cphys")).toEqual([expect.objectContaining({ conv: "cphys", patch: { project: "optics" } })]);
+    expect(phys.events.filter((e: any) => e.type === "signal" && e.signal.type === "project")).toEqual(expect.arrayContaining([expect.objectContaining({ conv: null, signal: { type: "project", convId: "cphys", project: "optics" } })]));
+    const mainAll = await (await fetch(`${srv.base}/poll?after=0`)).json();
+    expect(mainAll.events.some((e: any) => e.conv === "cphys")).toBe(false);
+    expect(mainAll.events.some((e: any) => e.type === "signal" && e.signal.type === "project" && e.signal.convId === "cphys")).toBe(true);
+    expect(mainAll.events.some((e: any) => e.conv === "project-lab-reports")).toBe(true);
+    const seqs = mainAll.events.map((e: any) => e.seq);
+    expect([...seqs].sort((x: number, y: number) => x - y)).toEqual(seqs);
+    const latestNow = (await (await fetch(srv.base + "/poll?after=latest")).json()).next;
     // The main vault's client gets nothing of it (and its cursor still moves past it).
     const t0 = Date.now();
-    const mainPoll = fetch(`${srv.base}/poll?after=${latest}`).then((x) => x.json());
+    const mainPoll = fetch(`${srv.base}/poll?after=${latestNow}`).then((x) => x.json());
     await post("/notifications/clear?vault=physics", {});
     await post("/conversation/project", { convId: "cmain", project: "Notes" });
     const m = await mainPoll;
     expect(Date.now() - t0).toBeLessThan(20_000);
     // The main vault's poll answers with the main vault's records only (the tag on cmain), nothing of physics.
     expect(m.events.length).toBeGreaterThan(0);
-    expect(m.events.every((e: any) => e.conv === "cmain" || (e.type === "signal" && e.signal.convId === "cmain"))).toBe(true);
+    expect(m.events.every((e: any) => e.conv === "cmain" || String(e.conv).startsWith("project-") || (e.type === "signal" && (e.signal.convId === "cmain" || e.signal.type === "project")))).toBe(true);
+    expect(m.events.some((e: any) => e.conv === "cphys")).toBe(false);
 
     await post("/decision-record?vault=physics", { answer: "yes", title: "t", question: "q", convId: "cphys" });
     await waitFor(() => existsSync(join(home, "physics", ".vault-chat", "notifications.jsonl")), 5000);
@@ -310,7 +366,9 @@ describe("vault-scoped routes (the real server)", () => {
     const log = join(home, "physics", ".vault-chat", "local", "activity.jsonl");
     expect(existsSync(log)).toBe(true);
     expect(readFileSync(log, "utf8")).toContain("shorten the optics intro");
-    expect(existsSync(join(main, ".vault-chat", "local", "activity.jsonl"))).toBe(false);
+    // (The main vault's stream has the project thread's line above — the main engine runs projects — never this.)
+    const mainLog = join(main, ".vault-chat", "local", "activity.jsonl");
+    expect(existsSync(mainLog) ? readFileSync(mainLog, "utf8") : "").not.toContain("shorten the optics intro");
     expect((await post("/api/v1/activity?vault=physics", { entry: { kind: "nope", text: "x" } })).status).toBe(400);
   });
 });

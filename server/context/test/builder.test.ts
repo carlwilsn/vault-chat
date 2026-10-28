@@ -6,12 +6,13 @@ import type { ContextConv } from "../types";
 import { tempVault } from "./helpers";
 
 let vault: string;
+let projects: string;
 let cleanup: () => void;
-beforeEach(() => ({ vault, cleanup } = tempVault()));
+beforeEach(() => ({ vault, projects, cleanup } = tempVault()));
 afterEach(() => cleanup());
 
 const vc = (...p: string[]) => join(vault, ".vault-chat", ...p);
-const ap = (...p: string[]) => join(vault, "agent-projects", ...p);
+const ap = (...p: string[]) => join(projects, ...p);
 
 describe("rules on every turn", () => {
   it("rulesPrefixForTurn carries the global and project rules in full, read fresh each turn", () => {
@@ -94,7 +95,7 @@ describe("buildDeveloperInstructions", () => {
     const s = buildDeveloperInstructions({ id: "c", project: "big" });
     expect(s).toContain("NOTES-START");
     expect(s).not.toContain("NOTES-END");
-    expect(s).toMatch(/\[… \d+ more characters — the rest is in agent-projects\/big\/project\.md\]/);
+    expect(s).toContain(`more characters — the rest is in ${ap("big", "project.md").split("\\").join("/")}]`);
     for (const x of ["MEMORY-TEXT", "PLAN-TEXT", "PROGRESS-TEXT"]) expect(s).not.toContain(x);
   });
 

@@ -9,19 +9,20 @@ import type { ContextConv, ToolContext } from "../types";
 import { tempVault, writeConv } from "./helpers";
 
 let vault: string;
+let projects: string;
 let cleanup: () => void;
 let conv: ContextConv;
 let ctx: ToolContext;
 
 beforeEach(() => {
-  ({ vault, cleanup } = tempVault());
+  ({ vault, projects, cleanup } = tempVault());
   conv = { id: "c1", title: "t", messages: [] };
   ctx = { conv };
 });
 afterEach(() => cleanup());
 
 const text = (r: { contentItems: { text: string }[] }) => r.contentItems.map((c) => c.text).join("");
-const pdir = (slug: string) => join(vault, "agent-projects", slug);
+const pdir = (slug: string) => join(projects, slug);
 
 describe("projects are plain groupings", () => {
   it("the agent's only project tool is ListProjects: none creates a project or moves a chat", async () => {
@@ -33,6 +34,7 @@ describe("projects are plain groupings", () => {
       const r = await handleContextTool(name, { name: "Coconut", action: "append", text: "x" }, ctx);
       expect(r.success).toBe(false);
     }
+    expect(readdirSync(projects)).toEqual([]);
     expect(existsSync(join(vault, "agent-projects"))).toBe(false);
     expect(conv.project).toBeUndefined();
   });
@@ -85,7 +87,7 @@ describe("projects are plain groupings", () => {
     expect(text(r)).toMatch(/only he makes them and moves chats into them/);
     expect(text(r)).not.toContain("Unfiled chat");
     r = await handleContextTool("ListProjects", { project: "psych 221" }, { conv, convs });
-    expect(text(r)).toContain("Notes file: agent-projects/psych-221/project.md");
+    expect(text(r)).toContain(`Notes file: ${join(projects, "psych-221", "project.md").split("\\").join("/")}`);
     expect(text(r)).toContain("Readings and essays.");
     expect(text(r)).toContain('- "Essay outline" (b)\n- "Week 3 reading" (a)');
     r = await handleContextTool("ListProjects", { project: "nope" }, ctx);

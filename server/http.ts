@@ -435,17 +435,17 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
 
   // Live edits (server/liveEdits.ts): a file the agent just wrote, as it is on
   // the box now — the laptop shows it in the open pane before the sync lands.
-  if (path === "/api/v1/vault/file" && method === "GET") return vaultFileRoute(res, vault, url.searchParams.get("path"));
+  if (path === "/api/v1/vault/file" && method === "GET") return vaultFileRoute(res, sharedFileVault(vault, cfg.vault, url.searchParams.get("path")), url.searchParams.get("path"));
   // A project's folder on the box (server/projectFolders.ts): the app's file tree lists it, opens its files
   // through the route above and writes Carl's edits back here. Only inside a folder he chose for a project.
   if (path === "/api/v1/vault/file" && method === "POST") return projectFileWrite(res, vault, await jsonBody(req, PROJECT_FILE_CAP + 1024 * 1024));
   if (path === "/api/v1/box/dir" && method === "GET") {
-    const out = projectDirListing(vault, url.searchParams.get("path") ?? "");
+    const out = projectDirListing(url.searchParams.get("path") ?? "");
     return json(res, "error" in out ? 403 : 200, out);
   }
   // "+ New project"'s folder chooser: the folders on the box, each marked whether it may be a project's.
   if (path === "/api/v1/box/folders" && method === "GET") {
-    const out = browseFolders(vault, url.searchParams.get("path"));
+    const out = browseFolders(url.searchParams.get("path"));
     return json(res, "error" in out ? 403 : 200, out);
   }
 
@@ -836,6 +836,19 @@ async function pollLog(res: ServerResponse, url: URL, vault: string): Promise<vo
   }
 }
 
+/** A project thread's images (a proof card, a capture, a Show) are in the main vault, whose engine runs every project
+ *  (server/projectsHome.ts): asked from another vault, such a file that is not there comes from the main vault. */
+const SHARED_FILES = /^\.vault-chat\/(proof|captures|visuals|local\/captures)\//;
+function sharedFileVault(vault: string, mainVault: string, p: string | null): string {
+  if (!p || vault === mainVault || !SHARED_FILES.test(p.split("\\").join("/"))) return vault;
+  try {
+    if (existsSync(join(vault, p))) return vault;
+  } catch {
+    return vault;
+  }
+  return existsSync(join(mainVault, p)) ? mainVault : vault;
+}
+
 /** GET /api/v1/vault/file?path= → {path, size, mtimeMs, base64}: one file's
  * bytes, inside the vault only (realpath; never .git). */
 const VAULT_FILE_CAP = 25 * 1024 * 1024;
@@ -847,7 +860,7 @@ function vaultFileRoute(res: ServerResponse, vault: string, p: string | null): v
     ({ abs, rel } = voicePath(vault, p, "read"));
   } catch (e) {
     // A file in a project's folder on the box (an absolute path): its path is its name.
-    const hit = inProjectFolder(vault, p);
+    const hit = inProjectFolder(p);
     if (!hit) return json(res, 403, { error: String(e) });
     abs = hit.abs;
     rel = hit.abs.split(sep).join("/");
@@ -870,7 +883,7 @@ function projectFileWrite(res: ServerResponse, vault: string, b: any): void {
   const p = typeof b?.path === "string" ? b.path : "";
   if (typeof b?.text !== "string") return json(res, 400, { error: "missing text" });
   if (Buffer.byteLength(b.text) > PROJECT_FILE_CAP) return json(res, 413, { error: "file too large" });
-  const hit = inProjectFolder(vault, p);
+  const hit = inProjectFolder(p);
   if (!hit) return json(res, 403, { error: `${p || "(no path)"} is not in a project's folder` });
   try {
     if (existsSync(hit.abs) && !statSync(hit.abs).isFile()) return json(res, 400, { error: "not a file" });

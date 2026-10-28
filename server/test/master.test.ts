@@ -197,15 +197,41 @@ describe("migration on a copy", () => {
     const env = join(root, "server.env");
     const orig = `VC_HOST=127.0.0.1\nVC_VAULT=${vault}\nVC_ALLOWED_LOGINS=carwilson0929@gmail.com\n`;
     writeFileSync(env, orig);
-    const sw = switchToCopy({ master: m2, name: "school2", envFile: env });
+    // pi's sessions remember where they ran (the live bug, 2026-10-28: "Stored session working directory does not
+    // exist: /home/carlwilsn/vaults/school2"): a switch moves each stored folder to the copy, back moves it back.
+    const st = join(root, "state-sw");
+    const sess = join(st, "pi", "sessions");
+    const instr = join(st, "pi", "instr");
+    mkdirSync(sess, { recursive: true });
+    mkdirSync(instr, { recursive: true });
+    const sfile = join(sess, "2026-10-28_abc.jsonl");
+    const tail = `{"type":"message","id":"e1","message":{"role":"user","content":"hi"}}\n`;
+    writeFileSync(sfile, JSON.stringify({ type: "session", version: 3, id: "abc", cwd: vault }) + "\n" + tail);
+    const pfile = join(sess, "2026-10-28_def.jsonl");
+    writeFileSync(pfile, JSON.stringify({ type: "session", version: 3, id: "def", cwd: join(proj, "src") }) + "\n");
+    const other = join(sess, "2026-10-28_ghi.jsonl");
+    writeFileSync(other, JSON.stringify({ type: "session", version: 3, id: "ghi", cwd: "/somewhere/else" }) + "\n");
+    writeFileSync(join(instr, "abc.json"), JSON.stringify({ instr: join(instr, "x.md"), tools: "t.json", cwd: join(vault, "courses") }));
+    const head = (f: string) => String(JSON.parse(readFileSync(f, "utf8").split("\n")[0]!).cwd).replace(/\\/g, "/");
+    const fw = (p: string) => p.replace(/\\/g, "/");
+    const sw = switchToCopy({ master: m2, name: "school2", envFile: env, sessions: { sessions: [sess], instr: [instr] } });
+    expect(sw.rewritten).toEqual({ sessions: 2, records: 1 });
+    expect(head(sfile)).toBe(fw(c.to));
+    expect(readFileSync(sfile, "utf8").endsWith(tail)).toBe(true);
+    expect(head(pfile)).toBe(fw(join(a.to, "src")));
+    expect(head(other)).toBe("/somewhere/else");
+    expect(fw(JSON.parse(readFileSync(join(instr, "abc.json"), "utf8")).cwd)).toBe(fw(join(c.to, "courses")));
     const now = readFileSync(env, "utf8");
     expect(now).toContain(`VC_VAULT=${c.to}\n`);
     expect(now).toContain(`VC_MASTER=${m2}\n`);
     expect(now).toContain(`VC_BARE_REPO=${c.bareTo}\n`);
     expect(now).toContain("VC_ALLOWED_LOGINS=carwilson0929@gmail.com\n");
     expect(readFileSync(sw.backup, "utf8")).toBe(orig);
-    expect(switchBack({ master: m2, envFile: env })).toEqual({ envFile: env, restored: true });
+    expect(switchBack({ master: m2, envFile: env, sessions: { sessions: [sess], instr: [instr] } })).toEqual({ envFile: env, restored: true, rewritten: { sessions: 2, records: 1 } });
     expect(readFileSync(env, "utf8")).toBe(orig);
+    expect(head(sfile)).toBe(fw(vault));
+    expect(head(pfile)).toBe(fw(join(proj, "src")));
+    expect(readFileSync(sfile, "utf8").endsWith(tail)).toBe(true);
     // The originals: all there, as they were.
     expect(git(vault, "rev-parse", "HEAD")).toBe(before.head);
     expect(readFileSync(join(vault, "untracked-draft.md"), "utf8")).toBe(before.files);

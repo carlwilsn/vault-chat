@@ -4,13 +4,22 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { configureContext, resetContextConfig } from "../config";
 
-/** A temp vault with `.vault-chat/`, CONTEXT configured on it. */
-export function tempVault(): { vault: string; cleanup: () => void } {
+/** A temp vault with `.vault-chat/`, and a projects home beside it (in no vault), CONTEXT configured on both. */
+export function tempVault(): { vault: string; projects: string; cleanup: () => void } {
   const vault = mkdtempSync(join(tmpdir(), "vc-context-"));
+  const projects = `${vault}-projects`;
   mkdirSync(join(vault, ".vault-chat", "conversations"), { recursive: true });
+  mkdirSync(projects, { recursive: true });
   resetContextConfig();
-  configureContext({ vault });
-  return { vault, cleanup: () => rmSync(vault, { recursive: true, force: true }) };
+  configureContext({ vault, projectsHome: projects });
+  return {
+    vault,
+    projects,
+    cleanup: () => {
+      rmSync(vault, { recursive: true, force: true });
+      rmSync(projects, { recursive: true, force: true });
+    },
+  };
 }
 
 export function writeConv(vault: string, meta: Record<string, unknown>, messages: Record<string, unknown>[] = []): void {

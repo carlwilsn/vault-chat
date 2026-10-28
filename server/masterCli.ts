@@ -7,9 +7,13 @@
 //   master verify   --master DIR --name NAME
 //   master switch   --master DIR --name NAME [--env FILE]    (box: the server's env file names the copy)
 //   master back     --master DIR [--env FILE]                (box: the env file exactly as before)
+// switch and back also rewrite the folder each pi session and thread record stored (old path ↔ new path) under the
+// server's state (--state DIR, else its env file's VC_STATE_DIR): pi refuses a session whose folder is gone.
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { adoptProject, copyVault, migrationRecord, switchBack, switchToCopy, verifyCopy } from "./masterMigrate";
+import { adoptProject, copyVault, migrationRecord, switchBack, switchToCopy, verifyCopy, type SessionDirs } from "./masterMigrate";
+import { stateSessionDirs } from "./sessionPaths";
+import { loadEnvFile } from "./projectsCli";
 
 function arg(argv: string[], k: string): string | undefined {
   const i = argv.indexOf(`--${k}`);
@@ -28,6 +32,14 @@ export async function runMasterCli(argv: string[]): Promise<number> {
   const master = arg(argv, "master") ?? process.env.VC_MASTER ?? join(home, "vc");
   const envFile = arg(argv, "env") ?? process.env.VC_ENV_FILE ?? join(home, ".config", "vault-chat-server.env");
   const out = (o: unknown) => console.log(JSON.stringify(o, null, 2));
+  // The server's pi sessions and thread records (its state folder as its env file says): a switch rewrites the folder
+  // each stored, both ways. --state overrides.
+  const sessions = async (): Promise<SessionDirs> => {
+    loadEnvFile(envFile);
+    const { loadConfig } = await import("./config");
+    const { resolveProjectsHome } = await import("./projectsHome");
+    return stateSessionDirs(arg(argv, "state") ?? loadConfig().stateDir, resolveProjectsHome());
+  };
   try {
     switch (cmd) {
       case "status":
@@ -49,10 +61,10 @@ export async function runMasterCli(argv: string[]): Promise<number> {
         return r.ok ? 0 : 3;
       }
       case "switch":
-        out({ ...switchToCopy({ master, name: need(argv, "name"), envFile }), next: "systemctl --user restart vault-chat-server" });
+        out({ ...switchToCopy({ master, name: need(argv, "name"), envFile, sessions: await sessions() }), next: "systemctl --user restart vault-chat-server" });
         return 0;
       case "back":
-        out({ ...switchBack({ master, envFile }), next: "systemctl --user restart vault-chat-server" });
+        out({ ...switchBack({ master, envFile, sessions: await sessions() }), next: "systemctl --user restart vault-chat-server" });
         return 0;
       default:
         console.error("usage: master status|copy|adopt|verify|switch|back (see server/masterCli.ts)");

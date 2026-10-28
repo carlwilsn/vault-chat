@@ -10,6 +10,8 @@ export type ContextConfig = {
   agentModel: string;
   /** The fast model (one-shots: a note's title, spoken math). */
   recapModel: string;
+  /** The projects home (server/projectsHome.ts): every project, whatever vault is open. "": none configured. */
+  projectsHome: string;
   /** Builder caps, in characters: a project's shared notes (project.md) and an older roll-over's recap. */
   caps: { project: number; recap: number };
 };
@@ -17,6 +19,7 @@ export type ContextConfig = {
 function defaults(): ContextConfig {
   return {
     vault: "",
+    projectsHome: "",
     agentModel: "openai/gpt-6.1-sol",
     recapModel: "google/gemini-3.8-flash",
     caps: { project: 8_000, recap: 12_000 },
@@ -48,4 +51,16 @@ export function ctxConfig(): ContextConfig {
   if (s) return { ...cfg, vault: s.vault };
   if (!cfg.vault) throw new Error("context: configureContext({vault}) was not called");
   return cfg;
+}
+
+/** The projects home (the same whatever vault a call runs in); throws when none is configured. */
+export function projectsRoot(): string {
+  const h = cfg.projectsHome;
+  if (!h) throw new Error("no projects home is configured (server/projectsHome.ts)");
+  return h;
+}
+
+/** Whether a projects home is configured. */
+export function hasProjectsHome(): boolean {
+  return !!cfg.projectsHome;
 }

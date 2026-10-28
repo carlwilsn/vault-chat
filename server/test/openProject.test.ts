@@ -55,9 +55,9 @@ describe("OpenProject", () => {
     const n = signals.length;
     const r = await rig.backend.call(s.tid, "OpenProject", { project: "HW4", create: true, request: "Make me practice problems for HW4." });
     expect(r.ok).toBe(true);
-    expect(out(r)).toMatch(/^Started project HW4 \(agent-projects\/hw4\/project\.md\); its thread is project-hw4\. His screens are there now/);
+    expect(out(r)).toContain(`Started project HW4 (${join(rig.projects, "hw4", "project.md").split("\\").join("/")}); its thread is project-hw4. His screens are there now`);
     expect(out(r)).toContain("His request went to that thread, which is doing it now: don't do it here too.");
-    expect(existsSync(join(rig.vault, "agent-projects", "hw4", "project.md"))).toBe(true);
+    expect(existsSync(join(rig.projects, "hw4", "project.md"))).toBe(true);
     expect(signals.slice(n)).toContainEqual({ type: "follow", convId: "project-hw4", title: "HW4", project: "hw4", created: true });
     // The work is the project thread's own turn, with his words.
     await until(async () => (await said("project-hw4")).includes("Make me practice problems for HW4."));
@@ -75,7 +75,7 @@ describe("OpenProject", () => {
     const miss = await rig.backend.call(s.tid, "OpenProject", { project: "Physics" });
     expect(miss.ok).toBe(false);
     expect(out(miss)).toBe('Carl has no project "Physics" (his projects: HW4). Nothing changed. If he asked to start it, call OpenProject again with create: true; otherwise ask him which one he means.');
-    expect(existsSync(join(rig.vault, "agent-projects", "physics"))).toBe(false);
+    expect(existsSync(join(rig.projects, "physics"))).toBe(false);
     // Back home.
     const home = await rig.backend.call(s.tid, "OpenProject", { project: "main" });
     expect(out(home)).toBe("Back in Main. His screens are there now; what he says next arrives there.");

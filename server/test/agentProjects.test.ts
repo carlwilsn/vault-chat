@@ -57,16 +57,20 @@ describe("one name for the folder", () => {
 });
 
 describe("what the agent is told", () => {
-  it("the instructions name agent-projects/, never the old place", async () => {
+  it("the instructions say projects belong to no vault; a project's thread is told its own project.md in the projects home", async () => {
     const { PROJECTS_RULE, ROLE_PROMPT, contextToolSpecs, buildDeveloperInstructions } = await import("../context");
     const { ENGINE_ROLE_PROMPT: ENGINE_PROMPT } = await import("../engine/prompt");
-    expect(PROJECTS_RULE).toContain("agent-projects/<slug>/");
-    for (const t of [PROJECTS_RULE, ROLE_PROMPT, ENGINE_PROMPT, ...contextToolSpecs.map((x) => x.description)]) expect(t).not.toContain(".vault-chat/projects");
+    expect(PROJECTS_RULE).toMatch(/projects belong to no vault/);
+    for (const t of [PROJECTS_RULE, ROLE_PROMPT, ENGINE_PROMPT, ...contextToolSpecs.map((x) => x.description)]) {
+      expect(t).not.toContain(".vault-chat/projects");
+      expect(t).not.toContain("agent-projects");
+    }
     const v = join(root, "v");
+    const home = join(root, "projects");
     mkdirSync(join(v, ".vault-chat"), { recursive: true });
-    configureContext({ vault: v });
+    configureContext({ vault: v, projectsHome: home });
     createProject("Coconut");
-    expect(buildDeveloperInstructions({ id: "project-coconut", project: "coconut" })).toContain(`This is the thread of Carl's project "Coconut" (${join(v, PROJECTS_DIR, "coconut")}).`);
+    expect(buildDeveloperInstructions({ id: "project-coconut", project: "coconut" })).toContain(`This is the thread of Carl's project "Coconut" (${join(home, "coconut")}).`);
   });
 });
 
@@ -120,44 +124,38 @@ describe("hidden by default, once", () => {
     expect(read(join(v, HIDE_FILE))).toBe("private/diary.md\nagent-projects\n");
   });
 
-  it("unhidden in the Hidden files modal, it stays unhidden (a new project, a restart, the app's command)", () => {
+  it("unhidden in the Hidden files modal, it stays unhidden (a restart, the app's command)", () => {
     const v = join(root, "v");
-    mkdirSync(join(v, ".vault-chat"), { recursive: true });
-    configureContext({ vault: v });
-    createProject("Alpha");
+    mkdirSync(join(v, PROJECTS_DIR, "alpha"), { recursive: true });
+    expect(ensureProjectsHidden(v)).toBe(true);
     expect(hidden(v)).toEqual(["agent-projects"]);
     // The modal's "Unhide" (remove_from_ignore) takes the line out.
     writeFileSync(join(v, HIDE_FILE), "");
     expect(hidden(v)).toEqual([]);
-    createProject("Beta");
-    expect(listProjects().map((p) => p.slug)).toEqual(["alpha", "beta"]);
     expect(ensureProjectsHidden(v)).toBe(false);
     expect(fsCommands.prepare_agent_projects({ vault: v })).toEqual({ moved: [], kept: [], hidden: false });
     expect(hidden(v)).toEqual([]);
   });
 
-  it("a vault's first project (Carl's New project: createProject) hides the folder; the second changes nothing", () => {
+  it("a new project (Carl's New project: createProject) is made in the projects home: the vault is not touched", () => {
     const v = join(root, "v");
+    const home = join(root, "projects");
     mkdirSync(join(v, ".vault-chat"), { recursive: true });
-    configureContext({ vault: v });
+    configureContext({ vault: v, projectsHome: home });
     createProject("Coconut");
-    expect(existsSync(join(v, PROJECTS_DIR, "coconut", "project.md"))).toBe(true);
-    const once = read(join(v, HIDE_FILE));
-    expect(once).toBe("agent-projects\n");
-    createProject("BitNet 160M");
-    expect(read(join(v, HIDE_FILE))).toBe(once);
+    expect(existsSync(join(home, "coconut", "project.md"))).toBe(true);
+    expect(existsSync(join(v, PROJECTS_DIR))).toBe(false);
+    expect(existsSync(join(v, HIDE_FILE))).toBe(false);
   });
 
-  it("listing projects on an old vault moves them and hides the folder (the box at boot / GET /projects)", () => {
+  it("listing projects reads the projects home only: an old vault's folders are left for the migration (server/projectsMigrate.ts)", () => {
     const v = legacyVault();
-    configureContext({ vault: v });
-    expect(listProjects().map((p) => [p.slug, p.name])).toEqual([
-      ["bitnet-160m", "BitNet 160M"],
-      ["coconut", "Coconut"],
-    ]);
-    expect(listProjects()[1]!.dir).toBe(join(v, PROJECTS_DIR, "coconut"));
-    expect(existsSync(join(v, LEGACY_PROJECTS_DIR))).toBe(false);
-    expect(hidden(v)).toEqual(["agent-projects"]);
+    const home = join(root, "projects");
+    mkdirSync(join(home, "optics"), { recursive: true });
+    writeFileSync(join(home, "optics", "project.md"), "# Optics\n");
+    configureContext({ vault: v, projectsHome: home });
+    expect(listProjects().map((p) => [p.slug, p.name, p.dir])).toEqual([["optics", "Optics", join(home, "optics")]]);
+    expect(existsSync(join(v, LEGACY_PROJECTS_DIR))).toBe(true);
   });
 });
 

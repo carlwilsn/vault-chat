@@ -15,7 +15,7 @@ import { loadConfig, SERVER_VERSION, SERVER_REV } from "./config";
 import { registerCommands } from "./commands";
 import { loadKeyStore, hasKey, keychainCommands, saveKeys, keyNames } from "./keys";
 import { hostname, userInfo } from "node:os";
-import { setLegacySource, signal, convLog } from "./convlog/log";
+import { isProjectConv, setLegacySource, setProjectsHomeLog, signal, convLog } from "./convlog/log";
 import { legacySource } from "./convlog/importer";
 
 function fatal(msg: string, code = 2): never {
@@ -54,6 +54,11 @@ async function main(): Promise<void> {
   registerCommands();
   // Every vault's conversations are its event log; an older conversation file is imported when first opened.
   setLegacySource(legacySource);
+  // Projects are the machine's (server/projectsHome.ts): one home, its log in every vault's feed. Before any log opens.
+  const { resolveProjectsHome, ensureHome } = await import("./projectsHome");
+  const projectsHome = ensureHome(resolveProjectsHome()).home;
+  setProjectsHomeLog(projectsHome);
+  console.log(`[vault-chat-server] projects home ${projectsHome}`);
 
   // Keys: in-process from the box's encrypted store. No OpenRouter key, no
   // missions — refuse to start rather than run turns with zero keys.
@@ -81,7 +86,7 @@ async function main(): Promise<void> {
   console.log(`[vault-chat-server] ${loaded} conversation(s) in the log; keys: ${Object.keys(useStore.getState().apiKeys).join(", ") || "none"}`);
 
   // CONTEXT needs only the vault and the key store (the engine adds the rest when it is up).
-  (await import("./context/config")).configureContext({ vault: cfg.vault });
+  (await import("./context/config")).configureContext({ vault: cfg.vault, projectsHome });
   const { startPhoneAppHost, sendPush } = await import("../src/phoneApp");
   await startPhoneAppHost();
 
@@ -115,6 +120,7 @@ async function main(): Promise<void> {
     vault: cfg.vault,
     vaultName: cfg.vaultName,
     vaults: vaultRefs,
+    projectsHome,
     onTurnEnded: (name) => triggerSync(name),
     onFilesWritten: (name, paths) => liveEdits.note(name, paths),
     stateDir: cfg.stateDir,
@@ -141,6 +147,8 @@ async function main(): Promise<void> {
     const main = ready();
     return v.main || !engine.open ? main : await engine.open(v);
   };
+  // A project's thread runs on the home engine (the main vault's), whatever vault asks (server/projectsHome.ts).
+  const engineFor = async (v: { name: string; path: string; bare: string; main: boolean }, convId?: unknown) => (isProjectConv(typeof convId === "string" ? convId : null) ? ready() : engineOf(v));
   // One-shots on the box itself (a note's title): pi, no session, no tools (engine/pi/side.ts).
   (await import("../src/complete")).setComplete((req) => ready().once(req));
   void engineBoot
@@ -290,14 +298,15 @@ async function main(): Promise<void> {
           intent: async (v, b) => (await engineOf(v)).intent(b),
           side: {
             start: async (v, b) => (await engineOf(v)).sideStart(b),
-            poll: async (v, id, after, wait) => (await engineOf(v)).sidePoll(id, after, wait),
-            stop: async (v, id) => (await engineOf(v)).sideStop(id),
+            // A side run of a project's thread ran on the home engine: asked there when this vault's has none of that id.
+            poll: async (v, id, after, wait) => (await (await engineOf(v)).sidePoll(id, after, wait)) ?? (v.main ? null : ready().sidePoll(id, after, wait)),
+            stop: async (v, id) => (await (await engineOf(v)).sideStop(id)) || (!v.main && (await ready().sideStop(id))),
           },
         },
     // Voice with one brain (server/voiceBrain.ts): the conversation's engine, the box's ElevenLabs key, the pipeline on loopback.
     brain: (v) => ({
       vault: v.path,
-      engine: async () => engineOf(v),
+      engine: async (convId?: string) => engineFor(v, convId),
       elKey: () => useStore.getState().serviceKeys.elevenlabs || null,
       voiceId: () => localStorage.getItem("vault_chat_elevenlabs_voice") || "nPczCjzI2devNBz1zQrb",
       botUrl: `http://127.0.0.1:${VOICE_PIPELINE_PORT}`,
@@ -373,4 +382,6 @@ process.on("unhandledRejection", (e) => {
 // `vault-chat-server.mjs master …`: the vault-chat folder's CLI (server/masterCli.ts), never the server.
 if (process.argv[2] === "record-ui") void import("./recordUI").then((m) => m.recordCli());
 else if (process.argv[2] === "master") void import("./masterCli").then(async (m) => process.exit(await m.runMasterCli(process.argv.slice(3))));
+// `vault-chat-server.mjs projects …`: moving the projects out of the vaults (server/projectsCli.ts), never the server.
+else if (process.argv[2] === "projects") void import("./projectsCli").then(async (m) => process.exit(await m.runProjectsCli(process.argv.slice(3))));
 else main().catch((e) => fatal(`boot failed: ${e instanceof Error ? (e.stack ?? e.message) : String(e)}`, 1));

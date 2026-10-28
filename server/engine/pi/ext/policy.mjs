@@ -217,7 +217,7 @@ const MEMORY_CAPS = { lines: 200, chars: 25_000, projectChars: 8_000, projectMem
 
 /**
  * The near-cap reminder for a write or edit that touched a memory file — `.vault-chat/MEMORY.md` or a
- * project's `agent-projects/<slug>/project.md` — appended to that tool's result (pi's tool_result hook),
+ * project's `<projects home>/<slug>/project.md` — appended to that tool's result (pi's tool_result hook),
  * or null. `read(abs)` returns the file's text after the write.
  */
 export function memoryCapNote(toolName, input, cwd, read) {
@@ -238,7 +238,7 @@ export function memoryCapNote(toolName, input, cwd, read) {
     if (n < MEMORY_CAPS.lines * MEMORY_CAPS.near && text.length < MEMORY_CAPS.chars * MEMORY_CAPS.near) return null;
     return `[memory] MEMORY.md is at ${n} of ${MEMORY_CAPS.lines} lines: merge related lines and drop stale ones now${n > MEMORY_CAPS.lines ? " (past the cap the rest is not loaded)" : ""}.`;
   }
-  if (/\/agent-projects\/[a-z0-9-]+\/project\.md$/.test(norm)) {
+  if (/\/[a-z0-9]+(?:-[a-z0-9]+)*\/project\.md$/.test(norm)) {
     const m = /^##\s+Memory\s*$/im.exec(text);
     let n = 0;
     if (m) {

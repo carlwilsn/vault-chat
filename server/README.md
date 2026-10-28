@@ -263,6 +263,51 @@ into the folder" (whole copy, verified), "Use the copy" (the original stops sync
 back" is one step. The work area stays `~/agent-work/school2` only for `~/vc` (a test folder elsewhere gets its
 own).
 
+## Projects are the machine's (`server/projectsHome.ts`, 2026-10-28)
+
+A project belongs to no vault: the list and every project thread are the same whatever vault is open, on the
+laptop, the phone and the board. Main stays each vault's own conversation (its cwd is the vault).
+
+```
+<home>/<slug>/project.md            its name, Carl's instructions, its memory (## Memory); rules.md optional
+<home>/.deleted/<slug>-<stamp>/     deleted projects (Delete / RestoreProject)
+<home>/.vault-chat/events/          the projects' log: every project's one thread
+<home>/.vault-chat/sessions/        their pi sessions
+<home>/.vault-chat/local/           the server's: project-folders.json (each project's working folder), the migration record
+```
+
+`<home>` is `VC_PROJECTS_HOME`, else `<vault-chat folder>/.projects` (`~/vc/.projects` on the box), else
+`~/.local/share/vault-chat/projects`. A project works in its own folder (`<folder>/projects/<name>`, a folder
+anywhere on the box, or a folder inside a vault); pi loads that folder's AGENTS.md. Every vault's feed is its own
+log plus the projects' (`server/convlog/log.ts` `RoutedLog`, one sequence across both), and every project thread runs
+on the main vault's engine (another vault's engine hands it over), so a request from any vault reaches the same
+thread. A project with no folder of its own runs in the main vault.
+
+### Moving existing projects out of the vaults (`server/projectsMigrate.ts`)
+
+Each `<vault>/agent-projects/<slug>/` (and `.deleted/`), its registered folder (a project.md `folder:` inside the
+vault becomes that folder's absolute path), its thread (`<vault>/.vault-chat/events/project-<slug>.jsonl`,
+renumbered into the projects' log, its pi session files copied with it) is copied, verified (files byte for byte,
+the thread folds to the same items), and only then are the originals moved to
+`<vault>/.vault-chat/local/moved-projects/<stamp>/` (out of git, out of the agent's reach; never deleted). A slug the
+home already has is left alone and reported. With the server STOPPED, on the box
+(`B=~/.local/state/vault-chat-server/current/vault-chat-server.mjs`; the env file says which vault, folder and state):
+
+```sh
+node $B projects status                       # where the home is; what each vault still holds
+systemctl --user stop vault-chat-server
+node $B projects migrate --dry-run            # what would move; changes nothing
+node $B projects migrate                      # exit 0: done; exit 3: a copy did not verify (originals untouched)
+systemctl --user start vault-chat-server
+# back, in one step (originals back where they were; the home's copies set aside in <home>/.vault-chat/local/rolled-back/):
+systemctl --user stop vault-chat-server && node $B projects back && systemctl --user start vault-chat-server
+```
+
+pi stores each session's working folder and refuses a session whose folder is gone. `master switch`/`back` rewrite
+the stored folder of every session and thread record under the server's state (old path ↔ new), and a resume
+falls back to the thread's current folder when its stored one is gone or hidden by the sandbox
+(`server/sessionPaths.ts`).
+
 ## Box notes
 
 - `tools.ts` drops the Bash tool when `localStorage["vault_chat_bash_disabled"]` is absent or `"true"`

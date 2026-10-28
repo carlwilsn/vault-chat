@@ -18,7 +18,7 @@ import { newMessageId } from "../../src/conversations";
 import type { EventBody, ItemImage, LogRecord } from "../../src/convlog/protocol";
 import { pendingOf, planOf, type Picture } from "../../src/convlog/reduce";
 import { messagesOf } from "../../src/convlog/view";
-import { convLog, type ConvLog } from "../convlog/log";
+import { convLog, isProjectConv, type Feed } from "../convlog/log";
 import { appendEntries, newSessionFile, vcNote, vcVoice } from "../convlog/piSession";
 import { readConversationObjects } from "../commands/conversations";
 import type { EngineConv } from "./context";
@@ -26,7 +26,7 @@ import { MAIN_ID, MAIN_TITLE, projectThreadId } from "../../src/threads";
 
 export { newMessageId };
 
-export function logOf(vault: string): ConvLog {
+export function logOf(vault: string): Feed {
   return convLog(vault);
 }
 
@@ -162,15 +162,18 @@ export type NoteData = { kind: "line" | "notice" | "divider" | "tool"; clientId?
 export type NoteWriter = (convId: string, notes: NoteData[]) => Promise<boolean>;
 const writers = new Map<string, NoteWriter>();
 
-export function setNoteWriter(vault: string, fn: NoteWriter | null): void {
+export function setNoteWriter(vault: string, fn: NoteWriter | null, projects = false): void {
   if (fn) writers.set(vault, fn);
   else writers.delete(vault);
+  // The engine that runs the projects' threads writes their notes, whatever vault a note comes from.
+  if (projects) projectsWriter = fn;
 }
+let projectsWriter: NoteWriter | null = null;
 
 /** Write notes into the conversation's transcript: through pi when it has the session, else straight into a pi-format file. */
 export async function writeNotes(vault: string, convId: string, notes: NoteData[]): Promise<void> {
   if (!notes.length) return;
-  const w = writers.get(vault);
+  const w = (isProjectConv(convId) ? projectsWriter : null) ?? writers.get(vault);
   if (w && (await w(convId, notes))) return;
   appendNotes(vault, convId, notes);
 }

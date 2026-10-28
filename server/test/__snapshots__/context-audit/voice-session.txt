@@ -74,14 +74,8 @@ Detect coconuts in drone images.
 
 Session start: don't greet with an inventory or read out his notes or files. Stay quiet until he speaks (skip_turn if you are given a turn before he has).
 
-Vault files (for ShowFile and ScrollTo; 8 files, relative to <vault>):
-.vaultchatignore
+Vault files (for ShowFile and ScrollTo; 2 files, relative to <vault>):
 AGENTS.md
-agent-projects/coconut/memory.md
-agent-projects/coconut/plan.md
-agent-projects/coconut/progress.md
-agent-projects/coconut/project.md
-agent-projects/coconut/rules.md
 papers/attention.md
 
 What he is looking at now (refreshed as he scrolls):

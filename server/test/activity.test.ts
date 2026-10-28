@@ -132,7 +132,8 @@ beforeAll(async () => {
   const store = (await import("../../src/store")).useStore;
   store.setState({ vaultPath: vault, conversationsLoaded: true });
   const { configureContext } = await import("../context");
-  configureContext({ vault, agentModel: "openai/gpt-6.1-sol" });
+  (await import("../convlog/log")).setProjectsHomeLog(join(root, "projects-home"));
+  configureContext({ vault, agentModel: "openai/gpt-6.1-sol", projectsHome: join(root, "projects-home") });
   const { Engine } = await import("../engine/engine");
   backend = withPiSessions(new FakeBackend("a"), join(root, "pi-a"));
   backend2 = withPiSessions(new FakeBackend("b"), join(root, "pi-b"));
@@ -320,8 +321,8 @@ describe("the you layer (buildYouLayer)", () => {
     const { ensureProject } = await import("../context");
     const { withVault } = await import("../context");
     withVault(vault, () => ensureProject("Coconut", "Detect coconuts in drone images."));
-    writeFileSync(join(vault, "agent-projects", "coconut", "project.md"), `# Coconut\n\nDetect coconuts in drone images.\n\n- use YOLO\n${"filler ".repeat(3000)}`);
-    writeFileSync(join(vault, "agent-projects", "coconut", "memory.md"), "# Memory\n\n- OLD-MEMORY\n");
+    writeFileSync(join(root, "projects-home", "coconut", "project.md"), `# Coconut\n\nDetect coconuts in drone images.\n\n- use YOLO\n${"filler ".repeat(3000)}`);
+    writeFileSync(join(root, "projects-home", "coconut", "memory.md"), "# Memory\n\n- OLD-MEMORY\n");
     writeFileSync(join(vault, ".vault-chat", "rules.md"), "Always cite the page.\n");
     const p = await act.projectContextFor(vault, "coconut");
     expect(p).toMatch(/^<project_context>/);

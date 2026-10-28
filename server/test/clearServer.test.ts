@@ -32,8 +32,9 @@ const idle = async (id: string) => {
 beforeAll(async () => {
   home = tmp("vcclear-");
   vault = makeVault(join(home, "vault"));
-  mkdirSync(join(vault, "agent-projects", "coconut"), { recursive: true });
-  writeFileSync(join(vault, "agent-projects", "coconut", "project.md"), "# Coconut\n\n## Memory\n\n- 2026-10-20: overlap 128\n");
+  // The projects home (no vault-chat folder here: ~/.local/share/vault-chat/projects).
+  mkdirSync(join(home, ".local", "share", "vault-chat", "projects", "coconut"), { recursive: true });
+  writeFileSync(join(home, ".local", "share", "vault-chat", "projects", "coconut", "project.md"), "# Coconut\n\n## Memory\n\n- 2026-10-20: overlap 128\n");
   mkdirSync(join(vault, ".vault-chat"), { recursive: true });
   writeFileSync(join(vault, ".vault-chat", "MEMORY.md"), "# Memory\n\n- 2026-10-01: Carl likes one worked example\n");
   secrets = await makeKeyStore(join(home, "secrets"), { "api.openrouter": "sk-or-canary-not-real" });
@@ -60,7 +61,7 @@ describe("Main over HTTP", () => {
     await waitFor(() => idle("main"), 30_000);
     const sent = JSON.stringify(or.calls.at(-1));
     expect(sent).toContain("Carl likes one worked example");
-    expect(sent).toContain("agent-projects/coconut/project.md");
+    expect(sent).toContain("/.local/share/vault-chat/projects/coconut/project.md");
     expect(sent).not.toContain("overlap 128");
   });
 

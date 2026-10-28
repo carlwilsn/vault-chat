@@ -12,6 +12,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useStore, type FileEntry } from "./store";
 import { boxLinkFor, boxGet, boxPost } from "./boxChat";
+import { boxPathOf, readTextAt } from "./boxFiles";
 import { PROJECTS_DIR } from "./agentProjects";
 import { emptyConversation } from "./conversations";
 import { MAIN_ID, MAIN_TITLE, projectOfThread, projectThreadId } from "./threads";
@@ -51,8 +52,9 @@ async function runPrepare(vault: string): Promise<Prepared | null> {
   }
 }
 
-/** `folder`: the folder on the box the project works in, when Carl chose one outside the vault (server/projectFolders.ts). */
-export type ProjectInfo = { slug: string; name: string; folder?: string };
+/** `folder`: the folder on the box the project works in (server/projectFolders.ts); `notes`: its project.md on the box
+ *  (the projects home, server/projectsHome.ts: the machine's, the same whatever vault is open). */
+export type ProjectInfo = { slug: string; name: string; folder?: string; notes?: string };
 
 /** The same slug rule as server/context/files.ts. */
 export function slugify(name: string): string {
@@ -350,6 +352,19 @@ export async function openProjectNotes(slug: string, name: string): Promise<stri
   const s = useStore.getState();
   const vault = s.vaultPath;
   if (!vault || !slug || slug !== slugify(slug)) return null;
+  // On the box (box mode) a project's project.md is in the projects home, not in any vault: opened there.
+  const link = await boxLinkFor(vault);
+  if (link) {
+    const d = await boxGet(link, "/projects").catch(() => null);
+    const hit = (Array.isArray(d?.projects) ? (d.projects as ProjectInfo[]) : []).find((x) => x.slug === slug);
+    if (!hit?.notes) return null;
+    const bp = boxPathOf(hit.notes);
+    const text = await readTextAt(bp);
+    const st = useStore.getState();
+    if (st.chatFullscreen) st.toggleChatFullscreen();
+    st.setCurrentFile(bp, text);
+    return bp;
+  }
   const p = projectNotesPath(vault, slug);
   let content: string;
   const exists = await invoke<boolean>("path_exists", { path: p }).catch(() => false);

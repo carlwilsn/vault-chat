@@ -1,7 +1,7 @@
 # server/context — projects and instructions (Order C)
 
-A library ENGINE (Order A) calls. It owns plain files under `<vault>/.vault-chat/` and `<vault>/agent-projects/`
-and makes no model calls. It never writes conversation files: ENGINE does, from what these functions return.
+A library ENGINE (Order A) calls. It owns plain files under `<vault>/.vault-chat/` and the projects home (the
+machine's, in no vault: `server/projectsHome.ts`, `configureContext({projectsHome})`) and makes no model calls. It never writes conversation files: ENGINE does, from what these functions return.
 Long sessions are pi's own compaction (no roll-over here since 2026-10-18), and there is no Done verifier: the
 agent reads back what it changed (`WORK_RULES`).
 
@@ -16,8 +16,9 @@ Import everything from `server/context/index.ts`.
 
 ```
 .vault-chat/rules.md                       Carl's global rules (short; written by hand or by the agent's shell)
-agent-projects/<slug>/project.md          # <Name>, then the project's shared instructions and notes (optional)
-agent-projects/<slug>/rules.md            optional project rules
+<projects home>/<slug>/project.md        # <Name>, then the project's shared instructions and notes, then ## Memory
+<projects home>/<slug>/rules.md          optional project rules
+(before 2026-10-28 these were <vault>/agent-projects/<slug>/; `vault-chat-server.mjs projects migrate` moves them)
 ```
 
 **Projects are plain groupings** (Carl, 2026-10-18), like Claude.ai / ChatGPT Projects: a folder of chats (a

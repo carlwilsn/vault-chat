@@ -9,7 +9,7 @@
 // The layout and the create-or-attach rule are CONTEXT's
 // (server/context/projects.ts); the tag is a record in the conversation's log.
 import { configureContext, ctxConfig, withVault } from "./context/config";
-import { listProjects, ensureProject, findProject } from "./context/projects";
+import { listProjects, ensureProject, findProject, projectNotesPath } from "./context/projects";
 import { ensureProjectThread, patchMeta } from "./engine/convs";
 import { MAIN_ID, MAIN_TITLE } from "../src/threads";
 import { followVoice } from "./voice";
@@ -26,13 +26,14 @@ function ready(vault: string): void {
   if (!v) configureContext({ vault });
 }
 
-/** The vault's projects, by name; `folder`: the folder on the box Carl chose for one (server/projectFolders.ts). */
-export function projectsList(vault: string): { projects: { slug: string; name: string; folder?: string }[] } {
+/** Carl's projects — the machine's, the same whatever vault asks (server/projectsHome.ts) — by name. `folder`: the
+ *  folder on the box it works in (server/projectFolders.ts); `notes`: its project.md on the box (the app opens it there). */
+export function projectsList(vault: string): { projects: { slug: string; name: string; folder?: string; notes: string }[] } {
   ready(vault);
   return withVault(vault, () => ({
     projects: listProjects().map((p) => {
-      const f = projectFolderOf(vault, p.slug);
-      return { slug: p.slug, name: p.name, ...(f && "abs" in f ? { folder: f.abs.split("\\").join("/") } : {}) };
+      const f = projectFolderOf(p.slug);
+      return { slug: p.slug, name: p.name, notes: projectNotesPath(p.slug).split("\\").join("/"), ...(f && "abs" in f ? { folder: f.abs.split("\\").join("/") } : {}) };
     }),
   }));
 }
@@ -73,7 +74,7 @@ export async function createProjectWithThread(
   const want = typeof body.folder === "string" && body.folder.trim() ? body.folder.trim() : null;
   // The folder is checked before anything is made: a refused one makes no project.
   if (want) {
-    const c = checkFolder(vault, want);
+    const c = checkFolder(want);
     if ("error" in c) return { error: c.error };
   }
   try {
@@ -82,11 +83,11 @@ export async function createProjectWithThread(
     if (want || body.newFolder === true) {
       // A new folder: <vault-chat folder>/projects/<slug> when the box has one (a git repo, synced with the laptop),
       // else ~/projects/<slug> as before.
-      const r = want ? registerFolder(vault, project.slug, want) : masterDir() ? await newMasterProject(project.slug) : newProjectFolder(vault, project.slug);
+      const r = want ? registerFolder(project.slug, want) : masterDir() ? await newMasterProject(project.slug) : newProjectFolder(project.slug);
       if ("error" in r) return { error: r.error };
-      if (!want) registerFolder(vault, project.slug, r.abs);
+      if (!want) registerFolder(project.slug, r.abs);
       folder = r.abs.split("\\").join("/");
-    } else if (created) unregisterFolder(vault, project.slug);
+    } else if (created) unregisterFolder(project.slug);
     // A new folder: a new thread even where a deleted project of that name had one (RestoreProject brings that back).
     const conv = await ensureProjectThread(vault, project.slug, project.name, { fresh: created });
     return { ok: true, slug: project.slug, name: project.name, convId: conv.id, created, ...(folder ? { folder } : {}) };
@@ -104,7 +105,7 @@ export type OpenProjectDeps = {
 
 export const OPEN_PROJECT_DESCRIPTION =
   `Only when Carl asks, in so many words, spoken or typed: "start a project for HW4" (create: true) or "let's work on project Physics" / "back to Main" (project: "main"). Never on your own initiative and never as a suggestion you then act on. ` +
-  "There is one of you: a project's thread is a place you work, and Main is home. This makes the project when he asked to start one (create-or-attach by name: its folder agent-projects/<slug>/ with project.md, and its one thread), finds it otherwise, and takes his screens and a live voice call to its thread: what he says or types next arrives there. " +
+  "There is one of you: a project's thread is a place you work, and Main is home. This makes the project when he asked to start one (create-or-attach by name: its project.md in the projects home, the machine's and not any vault's, and its one thread), finds it otherwise, and takes his screens and a live voice call to its thread: what he says or types next arrives there. " +
   "request: what he asked to be done there, in his words; it goes to that thread, which does the work (do not also do it here). Without request, say in a few words that you are there.";
 
 export const OPEN_PROJECT_SCHEMA = {
@@ -161,6 +162,6 @@ export async function openProject(vault: string, args: Record<string, unknown>, 
     const out = await d.message({ convId, text: request, queue: true, context: `[Carl asked for this and you moved to ${slug ? `the thread of his project "${title}"` : "Main"} to do it (OpenProject). Do it here.]` });
     handed = out && !out.error ? " His request went to that thread, which is doing it now: don't do it here too." : ` His request did not reach that thread (${String(out?.error ?? "no answer")}): do it there with him.`;
   }
-  const where = slug ? `${created ? "Started" : "Opened"} project ${title} (agent-projects/${slug}/project.md); its thread is ${convId}` : "Back in Main";
+  const where = slug ? `${created ? "Started" : "Opened"} project ${title} (${projectNotesPath(slug).split("\\").join("/")}); its thread is ${convId}` : "Back in Main";
   return { ok: true, convId, text: `${where}. His screens${call ? " and the live call" : ""} are there now; what he says next arrives there.${handed}` };
 }

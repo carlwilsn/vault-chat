@@ -26,10 +26,13 @@ describe("which folders may be a project's", () => {
     for (const d of [join(vault, "courses", "psych"), join(vault, ".vault-chat", "local"), join(home, "vaults", "physics"), join(home, "github", "vault-chat"), join(home, "machine"), join(home, ".ssh"), state, keys, join(home, "projects")])
       mkdirSync(d, { recursive: true });
     pf = await import("../projectFolders");
-    walls = { home, protect: () => [state, keys, join(home, "vaults"), join(home, "vaults", "physics")] };
+    const { configureContext } = await import("../context/config");
+    mkdirSync(join(home, ".projects"), { recursive: true });
+    configureContext({ vault, projectsHome: join(home, ".projects") });
+    walls = { home, protect: () => [state, keys, join(home, "vaults")], vaults: () => [vault, join(home, "vaults", "physics")] };
   });
   afterAll(() => cleanup(home));
-  const ok = (p: string) => pf.checkFolder(vault, p, walls);
+  const ok = (p: string) => pf.checkFolder(p, walls);
 
   it("any folder of his on the box: a checkout, ~/machine, ~/projects/x, ~/-paths, a folder in the vault", () => {
     expect(ok(join(home, "github", "vault-chat"))).toEqual({ abs: join(home, "github", "vault-chat") });
@@ -38,7 +41,7 @@ describe("which folders may be a project's", () => {
     expect(ok(join(vault, "courses", "psych"))).toEqual({ abs: join(vault, "courses", "psych") });
   });
 
-  it("refused, each with a line saying why: the root, the home, credentials, the server's state, the key store, other vaults, around the vault", () => {
+  it("refused, each with a line saying why: the root, the home, credentials, the server's state, the key store, a vault itself and its .git/.vault-chat, the projects home", () => {
     const why = (p: string) => {
       const r = ok(p);
       return "error" in r ? r.error : "";
@@ -50,7 +53,11 @@ describe("which folders may be a project's", () => {
     expect(why(state)).toMatch(/inside ~\/\.local\/state|off limits/);
     expect(why(join(home, ".local"))).toMatch(/^~\/\.local holds ~\/\.local\/(state|share)/);
     expect(why(keys)).toMatch(/^~\/\.config\/vault-chat is off limits/);
-    expect(why(join(home, "vaults", "physics"))).toMatch(/inside ~\/vaults/);
+    expect(why(join(home, "vaults", "physics"))).toMatch(/inside ~\/vaults|holds/);
+    // A folder inside any vault is fine (a course folder), never the projects home or anything in it.
+    mkdirSync(join(home, "vaults", "physics", "labs"), { recursive: true });
+    expect(ok(join(home, "vaults", "physics", "labs"))).toEqual({ abs: join(home, "vaults", "physics", "labs") });
+    expect(why(join(home, ".projects"))).toMatch(/off limits/);
     expect(why(join(home, "vaults"))).toMatch(/inside ~\/vaults|holds/);
     expect(why(join(vault, ".vault-chat"))).toMatch(/^~\/vaults\/school2\/\.vault-chat is off limits/);
     expect(why(join(home, "nope"))).toMatch(/does not exist/);
@@ -61,18 +68,21 @@ describe("which folders may be a project's", () => {
     }
   });
 
-  it("the registry is the server's: register, retire with a delete, revive with a restore", () => {
-    mkdirSync(join(vault, "agent-projects", "vc"), { recursive: true });
-    const w = pf.registerFolder(vault, "vc", join(home, "github", "vault-chat"));
+  it("the registry is the server's, one for the machine (the projects home's): register, retire with a delete, revive with a restore", () => {
+    mkdirSync(join(home, ".projects", "vc"), { recursive: true });
+    pf.setFolderWalls(walls);
+    const w = pf.registerFolder("vc", join(home, "github", "vault-chat"));
     expect("abs" in w).toBe(true);
     expect(fwd(pf.FOLDERS_FILE)).toBe(".vault-chat/local/project-folders.json");
-    expect(pf.activeFolders(vault).map((f) => f.slug)).toEqual(["vc"]);
-    pf.retireFolder(vault, "vc", "vc-20261027-120000");
-    expect(pf.activeFolders(vault)).toEqual([]);
-    pf.reviveFolder(vault, "vc-20261027-120000", "vc");
-    expect(pf.registeredFolder(vault, "vc")).toBe(join(home, "github", "vault-chat"));
-    // A project.md the agent writes can't name one: a folder outside the vault only through the registry.
-    expect(readdirSync(join(vault, ".vault-chat", "local"))).toContain("project-folders.json");
+    expect(pf.activeFolders().map((f) => f.slug)).toEqual(["vc"]);
+    pf.retireFolder("vc", "vc-20261027-120000");
+    expect(pf.activeFolders()).toEqual([]);
+    pf.reviveFolder("vc-20261027-120000", "vc");
+    expect(pf.registeredFolder("vc")).toBe(join(home, "github", "vault-chat"));
+    // In the projects home's server state, in no vault.
+    expect(readdirSync(join(home, ".projects", ".vault-chat", "local"))).toContain("project-folders.json");
+    expect(existsSync(join(vault, ".vault-chat", "local", "project-folders.json"))).toBe(false);
+    pf.setFolderWalls(null);
   });
 });
 
@@ -153,11 +163,17 @@ describe("end to end: a project working in a folder outside the vault (real engi
     const r = await fetch(srv.base + p, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(b) });
     return { status: r.status, body: await r.json() };
   };
-  const sessionsDir = () => join(home, "state", "pi", "sessions");
+  // The projects home: no vault-chat folder here, so ~/.local/share/vault-chat/projects (server/projectsHome.ts).
+  const projectsHome = () => join(home, ".local", "share", "vault-chat", "projects");
+  // Main's pi sessions are the engine's; a project thread's are the projects home's.
+  const sessionsDirs = () => [join(home, "state", "pi", "sessions"), join(projectsHome(), ".vault-chat", "sessions")];
   const sessionCwd = (marker: string) => {
-    for (const n of readdirSync(sessionsDir()).filter((f) => f.endsWith(".jsonl"))) {
-      const text = readFileSync(join(sessionsDir(), n), "utf8");
-      if (text.includes(marker)) return JSON.parse(text.split("\n")[0]!).cwd as string;
+    for (const d of sessionsDirs()) {
+      if (!existsSync(d)) continue;
+      for (const n of readdirSync(d).filter((f) => f.endsWith(".jsonl"))) {
+        const text = readFileSync(join(d, n), "utf8");
+        if (text.includes(marker)) return JSON.parse(text.split("\n")[0]!).cwd as string;
+      }
     }
     return null;
   };
@@ -194,16 +210,16 @@ describe("end to end: a project working in a folder outside the vault (real engi
       expect(r.status).toBe(400);
       expect(r.body.error).toMatch(why);
     }
-    expect(existsSync(join(vault, "agent-projects", "bad"))).toBe(false);
+    expect(existsSync(join(projectsHome(), "bad"))).toBe(false);
   });
 
   it("+ New project with a folder on the box: its thread runs pi in that folder, which loads its AGENTS.md", async () => {
     const r = await post("/projects", { name: "Vault Chat", folder: fwd(folder) });
     expect(r.body).toMatchObject({ ok: true, slug: "vault-chat", convId: "project-vault-chat", created: true, folder: fwd(folder) });
     // Its notes and memory stay where projects keep them; the choice is the server's, not project.md's.
-    expect(readFileSync(join(vault, "agent-projects", "vault-chat", "project.md"), "utf8")).toBe("# Vault Chat\n");
-    expect(JSON.parse(readFileSync(join(vault, ".vault-chat", "local", "project-folders.json"), "utf8")).folders["vault-chat"].path).toBe(folder);
-    expect((await get("/projects")).body.projects).toContainEqual({ slug: "vault-chat", name: "Vault Chat", folder: fwd(folder) });
+    expect(readFileSync(join(projectsHome(), "vault-chat", "project.md"), "utf8")).toBe("# Vault Chat\n");
+    expect(JSON.parse(readFileSync(join(projectsHome(), ".vault-chat", "local", "project-folders.json"), "utf8")).folders["vault-chat"].path).toBe(folder);
+    expect((await get("/projects")).body.projects).toContainEqual({ slug: "vault-chat", name: "Vault Chat", folder: fwd(folder), notes: fwd(join(projectsHome(), "vault-chat", "project.md")) });
 
     const s = await post("/api/v2/intent", { type: "send", clientId: "c-pf-1", convId: "project-vault-chat", text: "Hello in the checkout, CWD-MARKER." });
     expect(s.body).toMatchObject({ ok: true, convId: "project-vault-chat" });
@@ -212,7 +228,7 @@ describe("end to end: a project working in a folder outside the vault (real engi
     const sent = JSON.stringify(or.calls.find((c) => JSON.stringify(c).includes("CWD-MARKER")));
     expect(sent).toContain("PROJECT-AGENTS-MARKER: run the gates before you push.");
     expect(sent).toContain(`${fwd(folder)}/ is this project's folder on the box`);
-    expect(sent).toContain("agent-projects/vault-chat/project.md");
+    expect(sent).toContain(fwd(join(projectsHome(), "vault-chat", "project.md")));
   });
 
   it("its writes land in the folder (relative to it); none of it reaches the vault", async () => {
@@ -230,7 +246,7 @@ describe("end to end: a project working in a folder outside the vault (real engi
     await waitFor(() => or.calls.some((c) => JSON.stringify(c).includes("MAIN-MARKER")), 30_000);
     expect(sessionCwd("MAIN-MARKER")).toBe(vault);
     const sent = JSON.stringify(or.calls.find((c) => JSON.stringify(c).includes("MAIN-MARKER")));
-    expect(sent).toContain(`Vault Chat: agent-projects/vault-chat/project.md (works in ${fwd(folder)})`);
+    expect(sent).toContain(`Vault Chat: ${fwd(join(projectsHome(), "vault-chat", "project.md"))} (works in ${fwd(folder)})`);
     expect(sent).not.toContain("PROJECT-AGENTS-MARKER");
   });
 
@@ -291,7 +307,7 @@ describe("end to end: a project working in a folder outside the vault (real engi
     expect((await get(`/api/v1/box/dir?path=${encodeURIComponent(fwd(folder))}`)).status).toBe(403);
     const back = await post("/api/v2/intent", { type: "restoreProject", slug: "vault-chat", client: "laptop" });
     expect(back.body).toMatchObject({ ok: true, slug: "vault-chat" });
-    expect((await get("/projects")).body.projects).toContainEqual({ slug: "vault-chat", name: "Vault Chat", folder: fwd(folder) });
+    expect((await get("/projects")).body.projects).toContainEqual({ slug: "vault-chat", name: "Vault Chat", folder: fwd(folder), notes: fwd(join(projectsHome(), "vault-chat", "project.md")) });
     expect(readdirSync(folder).sort()).toEqual(before);
   });
 });

@@ -162,10 +162,13 @@ function lastSeq(file: string): number {
   }
 }
 
+/** Where seqs come from. A log alone has its own; the logs a vault's feed merges (the vault's and the projects
+ *  home's: RoutedLog below) share one, so every seq they hand out is above every seq either handed out before. */
+export type SeqClock = { next: number; floorFile?: string; floor?: number };
+
 export class ConvLog {
   readonly dir: string;
   readonly epoch: string;
-  private next = 1;
   /** The highest seq written (the head a client sees); new seqs start above the reserved floor. */
   private last = 0;
   private reservedUpTo = 0;
@@ -187,6 +190,7 @@ export class ConvLog {
     readonly vault: string,
     private legacy: LegacySource | null = null,
     dir?: string,
+    private clock: SeqClock = { next: 1 },
   ) {
     this.dir = dir ?? join(vault, ".vault-chat", "events");
     mkdirSync(this.dir, { recursive: true });
@@ -214,8 +218,8 @@ export class ConvLog {
       floor = 0;
     }
     this.last = max;
-    this.next = Math.max(max, floor) + 1;
-    this.reserve();
+    this.clock.next = Math.max(this.clock.next, max + 1, floor + 1, (this.clock.floor ?? 0) + 1);
+    this.reserve(this.clock.next);
     this.refreshLegacy();
   }
 
@@ -232,14 +236,26 @@ export class ConvLog {
     return v;
   }
 
-  private reserve(): void {
-    this.reservedUpTo = this.next + BLOCK - 1;
+  private reserve(from: number): void {
+    this.reservedUpTo = from + BLOCK - 1;
     const p = join(this.dir, "_seq");
     try {
       writeFileSync(p + ".tmp", String(this.reservedUpTo));
       renameRetry(p + ".tmp", p);
     } catch (e) {
       console.warn("[convlog] could not persist the seq floor:", (e as Error).message);
+    }
+    // A shared clock: its own floor too, so a log opened late after a restart never hands out a seq below one another
+    // log of the same feed handed out before it.
+    const c = this.clock;
+    if (c.floorFile && (c.floor ?? 0) < this.reservedUpTo) {
+      c.floor = this.reservedUpTo;
+      try {
+        writeFileSync(c.floorFile + ".tmp", String(c.floor));
+        renameRetry(c.floorFile + ".tmp", c.floorFile);
+      } catch (e) {
+        console.warn("[convlog] could not persist the shared seq floor:", (e as Error).message);
+      }
     }
   }
 
@@ -290,8 +306,8 @@ export class ConvLog {
 
   /** Append one record for `conv` (null: a vault-level signal). Written before anyone hears of it. */
   emit(conv: string | null, body: EventBody, at = Date.now()): LogRecord {
-    const seq = this.next++;
-    if (seq >= this.reservedUpTo) this.reserve();
+    const seq = this.clock.next++;
+    if (seq >= this.reservedUpTo) this.reserve(seq);
     const rec = { seq, conv, at, ...body } as LogRecord;
     if (rec.type === "entry") rec.file = this.abs(rec.file);
     this.last = seq;
@@ -550,34 +566,230 @@ export class ConvLog {
   }
 }
 
-// ---------------------------------------------------------------- one log per vault
+// ---------------------------------------------------------------- one log per vault, and the projects' log
+
+/** What a vault's feed is to its readers and writers: its own log, or (projects home set) RoutedLog. */
+export type Feed = Pick<
+  ConvLog,
+  | "vault"
+  | "dir"
+  | "epoch"
+  | "sessionsDir"
+  | "emit"
+  | "pointedIn"
+  | "sessionFilesOf"
+  | "ownSession"
+  | "onRecord"
+  | "latest"
+  | "has"
+  | "picture"
+  | "rows"
+  | "ids"
+  | "eventsOf"
+  | "after"
+  | "wait"
+  | "rescanLegacy"
+  | "checkpointOf"
+  | "checkpointNow"
+  | "existsOnDisk"
+>;
 
 const logs = new Map<string, ConvLog>();
+const routed = new Map<string, RoutedLog>();
 let legacyFor: ((vault: string) => LegacySource | null) | null = null;
+/** The projects home (server/projectsHome.ts): its log holds every project's thread, whatever vault is open. */
+let projectsHome: string | null = null;
+let shared: SeqClock | null = null;
 
 /** The importer for older conversation files (set once at boot; tests may leave it unset). */
 export function setLegacySource(fn: (vault: string) => LegacySource | null): void {
   legacyFor = fn;
 }
 
-export function convLog(vault: string): ConvLog {
-  let l = logs.get(vault);
+const PROJECT_THREAD = /^project-[a-z0-9]+(?:-[a-z0-9]+)*$/;
+/** A project's thread (src/threads.ts projectOfThread): it lives in the projects home's log. */
+export function isProjectConv(id: string | null | undefined): boolean {
+  return !!id && PROJECT_THREAD.test(id) && id.length <= 68;
+}
+
+/**
+ * Projects are the machine's, not a vault's: every project thread is in one log, the projects home's, and every
+ * vault's feed shows it (RoutedLog). Set at boot, before any log is opened; null: every vault keeps its own (tests).
+ */
+export function setProjectsHomeLog(home: string | null): void {
+  projectsHome = home ? resolve(home) : null;
+  routed.clear();
+  shared = null;
+  if (projectsHome) {
+    const dir = join(projectsHome, ".vault-chat", "events");
+    mkdirSync(dir, { recursive: true });
+    const floorFile = join(dir, "_clock");
+    let floor = 0;
+    try {
+      floor = Number(readFileSync(floorFile, "utf8").trim()) || 0;
+    } catch {
+      floor = 0;
+    }
+    shared = { next: floor + 1, floorFile, floor };
+  }
+}
+
+/** The projects home whose log every vault's feed shows, or null. */
+export function projectsHomeOfLogs(): string | null {
+  return projectsHome;
+}
+
+function raw(vault: string): ConvLog {
+  const key = projectsHome && resolve(vault) === projectsHome ? projectsHome : vault;
+  let l = logs.get(key);
   if (!l) {
-    l = new ConvLog(vault, legacyFor?.(vault) ?? null);
-    logs.set(vault, l);
+    l = new ConvLog(key, key === projectsHome ? null : (legacyFor?.(key) ?? null), undefined, shared ?? undefined);
+    logs.set(key, l);
   }
   return l;
+}
+
+/** A vault's feed: its own conversations and, with a projects home, every project's thread (one log, shared). */
+export function convLog(vault: string): Feed {
+  if (!projectsHome) return raw(vault);
+  if (resolve(vault) === projectsHome) return raw(projectsHome);
+  let r = routed.get(vault);
+  if (!r) {
+    r = new RoutedLog(raw(vault), raw(projectsHome));
+    routed.set(vault, r);
+  }
+  return r;
 }
 
 /** Tests: forget the open logs (a restart). */
 export function _resetConvLogs(): void {
   logs.clear();
+  routed.clear();
+  if (projectsHome) setProjectsHomeLog(projectsHome);
+}
+
+/**
+ * A vault's feed with a projects home: the vault's own log for its conversations (Main, separate and older chats),
+ * the projects home's log for every project thread and the projects' signals — one feed for the clients, one
+ * sequence (the two logs share a clock), so /poll?after=N stays exact across both.
+ */
+export class RoutedLog implements Feed {
+  constructor(
+    private v: ConvLog,
+    private p: ConvLog,
+  ) {}
+  get vault(): string {
+    return this.v.vault;
+  }
+  get dir(): string {
+    return this.v.dir;
+  }
+  get sessionsDir(): string {
+    return this.v.sessionsDir;
+  }
+  /** Both logs' identities: a client holding a cursor of the vault's log alone (before projects moved) starts over. */
+  get epoch(): string {
+    return `${this.v.epoch}.${this.p.epoch}`;
+  }
+  private of(id: string | null): ConvLog {
+    return isProjectConv(id) ? this.p : this.v;
+  }
+  /** A record this feed shows: the vault's own (never a project thread left behind in it), the projects log's threads and signals. */
+  private mine(r: LogRecord, fromP: boolean): boolean {
+    return fromP ? r.conv === null || isProjectConv(r.conv) : !isProjectConv(r.conv);
+  }
+  emit(conv: string | null, body: EventBody, at?: number): LogRecord {
+    return this.of(conv).emit(conv, body, at);
+  }
+  pointedIn(conv: string, file: string): Set<string> {
+    return this.of(conv).pointedIn(conv, file);
+  }
+  sessionFilesOf(conv: string): string[] {
+    return this.of(conv).sessionFilesOf(conv);
+  }
+  ownSession(conv: string): string {
+    return this.of(conv).ownSession(conv);
+  }
+  onRecord(fn: (r: LogRecord) => void): () => void {
+    const a = this.v.onRecord((r) => {
+      if (this.mine(r, false)) fn(r);
+    });
+    const b = this.p.onRecord((r) => {
+      if (this.mine(r, true)) fn(r);
+    });
+    return () => {
+      a();
+      b();
+    };
+  }
+  latest(): number {
+    return Math.max(this.v.latest(), this.p.latest());
+  }
+  has(id: string): boolean {
+    return this.of(id).has(id);
+  }
+  picture(id: string): Picture | null {
+    return this.of(id).picture(id);
+  }
+  rows(): RowState[] {
+    return [...this.v.rows().filter((r) => !isProjectConv(r.id)), ...this.p.rows().filter((r) => isProjectConv(r.id))].sort((a, b) => b.lastActivityAt - a.lastActivityAt);
+  }
+  ids(): string[] {
+    return [...this.v.ids().filter((id) => !isProjectConv(id)), ...this.p.ids().filter((id) => isProjectConv(id))];
+  }
+  eventsOf(id: string, after = 0): LogRecord[] {
+    return this.of(id).eventsOf(id, after);
+  }
+  after(after: number, limit = POLL_LIMIT): PollAnswer {
+    const latest = this.latest();
+    if (after > latest) return { next: latest, events: [], reset: true };
+    if (after === latest) return { next: latest, events: [] };
+    const sides: [ConvLog, boolean][] = [
+      [this.v, false],
+      [this.p, true],
+    ];
+    let cut = Infinity;
+    let all: LogRecord[] = [];
+    for (const [log, fromP] of sides) {
+      if (after >= log.latest()) continue;
+      const a = log.after(after, limit);
+      // A side cut short (`more`) is complete only up to its last record: nothing past that goes out yet.
+      if (a.more) cut = Math.min(cut, a.events[a.events.length - 1]?.seq ?? after);
+      all = all.concat(a.events.filter((r) => this.mine(r, fromP)));
+    }
+    let events = all.filter((r) => r.seq <= cut).sort((a, b) => a.seq - b.seq);
+    let more = cut !== Infinity;
+    if (events.length > limit) {
+      events = events.slice(0, limit);
+      more = true;
+    }
+    if (!more) return { next: latest, events };
+    const next = events.length ? events[events.length - 1]!.seq : Math.min(cut, latest);
+    return { next, events, more: true };
+  }
+  wait(ms: number): Promise<void> {
+    return Promise.race([this.v.wait(ms), this.p.wait(ms)]);
+  }
+  rescanLegacy(): void {
+    this.v.rescanLegacy();
+  }
+  checkpointOf(id: string): { seq: number; picture: Picture } | null {
+    return this.of(id).checkpointOf(id);
+  }
+  checkpointNow(id: string): void {
+    this.of(id).checkpointNow(id);
+  }
+  existsOnDisk(id: string): boolean {
+    return this.of(id).existsOnDisk(id);
+  }
 }
 
 /** A vault-level signal on /poll (the vault changed, a file changed, the inbox, notifications, a project). */
 export function signal(vault: string, ev: Record<string, unknown>): void {
   try {
-    convLog(vault).emit(null, { type: "signal", signal: ev });
+    // A project changed (made, renamed, deleted, restored): every vault's screens list it, so it goes on the projects' log.
+    if (projectsHome && ev.type === "project") raw(projectsHome).emit(null, { type: "signal", signal: ev });
+    else convLog(vault).emit(null, { type: "signal", signal: ev });
   } catch (e) {
     console.warn("[convlog] signal failed:", (e as Error).message);
   }

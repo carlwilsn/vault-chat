@@ -1,18 +1,19 @@
-// Projects are plain groupings, like Claude.ai / ChatGPT Projects: a folder of
-// chats (a conversation carries the slug in its `project` meta field) plus one
-// optional shared file, `agent-projects/<slug>/project.md` — the project's
-// instructions and notes, which the agent reads as context (like a CLAUDE.md).
-// Carl makes projects and moves chats (the app's New project and the
-// move-to-project menu, or by asking the agent in so many words: OpenProject,
-// server/projectRoutes.ts); the agent never makes one on its own initiative.
-// The folder is hidden from the file tree by default (src/agentProjects.ts).
-// Older projects may still hold memory.md / plan.md / progress.md: they stay on
-// disk, untouched, and are no longer loaded.
+// Projects are the machine's, not a vault's (Carl, 2026-10-28: "a vault is my UI thing, projects are general
+// machine path stuff"). Every project lives in the projects home (server/projectsHome.ts), the same whatever
+// vault is open, on the laptop, the phone and the board:
+//
+//   <home>/<slug>/project.md   its name (the first `# ` heading), Carl's instructions, then its memory under
+//                              `## Memory` (the agent's own lines); rules.md optional, binding like .vault-chat/rules.md
+//   <home>/.deleted/           deleted projects (Carl's Delete; RestoreProject brings one back whole)
+//
+// A project has one thread (src/threads.ts, `project-<slug>`), in the projects home's log; it works in its own
+// folder (server/projectFolders.ts), whose AGENTS.md pi loads. Carl makes projects (the app's "+ New project", or
+// by asking the agent in so many words: OpenProject, server/projectRoutes.ts); the agent never makes one on its
+// own initiative.
 import { mkdirSync, readdirSync, renameSync, statSync } from "node:fs";
-import { join, relative, sep } from "node:path";
-import { ctxConfig } from "./config";
+import { join } from "node:path";
+import { ctxConfig, hasProjectsHome, projectsRoot } from "./config";
 import { exists, readOr, slugify, writeFile } from "./files";
-import { ensureProjectsHidden, prepareProjects, projectsPath } from "./layout";
 
 export { ensureProjectsHidden, migrateLegacyProjects, prepareProjects, projectsPath } from "./layout";
 
@@ -20,6 +21,8 @@ export { ensureProjectsHidden, migrateLegacyProjects, prepareProjects, projectsP
 export const PROJECT_NOTES_FILE = "project.md";
 /** Optional project rules, binding like .vault-chat/rules.md. */
 export const PROJECT_RULES_FILE = "rules.md";
+/** Where a deleted project's own files go (recoverable). Never listed: not a slug. */
+export const DELETED_DIR = ".deleted";
 
 export type ProjectInfo = { slug: string; name: string; dir: string };
 
@@ -30,16 +33,17 @@ export type Project = ProjectInfo & {
   rules: string;
 };
 
-function vault(): string {
-  return ctxConfig().vault;
+/** A path in the projects home. */
+export function homePath(...parts: string[]): string {
+  return join(projectsRoot(), ...parts);
 }
 
 export function projectDir(slug: string): string {
-  return projectsPath(vault(), slug);
+  return homePath(slug);
 }
 
 export function projectNotesPath(slug: string): string {
-  return projectsPath(vault(), slug, PROJECT_NOTES_FILE);
+  return homePath(slug, PROJECT_NOTES_FILE);
 }
 
 /** The display name: project.md's first `# ` heading, else the slug. */
@@ -48,19 +52,19 @@ function nameOf(slug: string): string {
   return m ? m[1]! : slug;
 }
 
+/** Every project, by slug (none when no projects home is configured). */
 export function listProjects(): ProjectInfo[] {
-  prepareProjects(vault());
-  const root = projectsPath(vault());
+  if (!hasProjectsHome()) return [];
   let names: string[];
   try {
-    names = readdirSync(root);
+    names = readdirSync(projectsRoot());
   } catch {
     return [];
   }
   return names
     .filter((n) => {
       try {
-        return statSync(projectsPath(vault(), n)).isDirectory() && n === slugify(n);
+        return n === slugify(n) && statSync(homePath(n)).isDirectory();
       } catch {
         return false;
       }
@@ -70,8 +74,7 @@ export function listProjects(): ProjectInfo[] {
 }
 
 export function projectExists(slug: string): boolean {
-  prepareProjects(vault());
-  if (!slug || slug !== slugify(slug)) return false;
+  if (!hasProjectsHome() || !slug || slug !== slugify(slug)) return false;
   try {
     return statSync(projectDir(slug)).isDirectory();
   } catch {
@@ -86,7 +89,7 @@ export function readProject(slug: string): Project | null {
     name: nameOf(slug),
     dir: projectDir(slug),
     notes: readOr(projectNotesPath(slug)),
-    rules: readOr(projectsPath(vault(), slug, PROJECT_RULES_FILE)),
+    rules: readOr(homePath(slug, PROJECT_RULES_FILE)),
   };
 }
 
@@ -98,17 +101,14 @@ export function findProject(nameOrSlug: string): ProjectInfo | null {
 }
 
 /**
- * A new project, for Carl's own actions only (New project, move to a new
- * project): its folder and a project.md that names it — the shared notes he
- * may fill in. An existing project.md is never overwritten.
+ * A new project, for Carl's own actions only (New project, move to a new project): its folder in the projects home
+ * and a project.md that names it — the shared notes he may fill in. An existing project.md is never overwritten.
  */
 export function createProject(name: string, description = ""): ProjectInfo {
   const slug = slugify(name);
   if (!slug) throw new Error(`"${name}" does not make a project name`);
-  prepareProjects(vault());
   const p = projectNotesPath(slug);
   if (!exists(p)) writeFile(p, `# ${name.trim()}\n${description.trim() ? `\n${description.trim()}\n` : ""}`);
-  ensureProjectsHidden(vault());
   return { slug, name: nameOf(slug), dir: projectDir(slug) };
 }
 
@@ -119,31 +119,29 @@ export function ensureProject(name: string, description = ""): { project: Projec
   return { project: createProject(name, description), created: true };
 }
 
-/** Where a deleted project's own files go (recoverable; git keeps them too). Never listed: not a slug. */
-export const DELETED_DIR = ".deleted";
-
 /**
- * Carl's Delete on a project: its own folder (agent-projects/<slug>/: project.md with its memory, rules.md)
- * moves to agent-projects/.deleted/<slug>-<date>/, never deleted. The front-facing folder project.md names
- * (`folder:`) and every other file of his are not touched. Returns where it went (vault-relative).
+ * Carl's Delete on a project: its own folder in the projects home (project.md with its memory, rules.md) moves to
+ * <home>/.deleted/<slug>-<date>/, never deleted. Its working folder and every other file of his are not touched.
+ * Returns where it went (relative to the projects home).
  */
 export function deleteProjectFiles(slug: string, now = new Date()): { name: string; movedTo: string } {
   if (!projectExists(slug)) throw new Error(`no project ${slug}`);
   const name = nameOf(slug);
   const stamp = now.toISOString().replace(/[-:]/g, "").replace(/\..*$/, "").replace("T", "-");
-  const base = projectsPath(vault(), DELETED_DIR);
+  const base = homePath(DELETED_DIR);
   mkdirSync(base, { recursive: true });
-  let dest = join(base, `${slug}-${stamp}`);
-  for (let i = 2; exists(dest); i++) dest = join(base, `${slug}-${stamp}-${i}`);
-  renameSync(projectDir(slug), dest);
-  return { name, movedTo: relative(vault(), dest).split(sep).join("/") };
+  let entry = `${slug}-${stamp}`;
+  for (let i = 2; exists(join(base, entry)); i++) entry = `${slug}-${stamp}-${i}`;
+  renameSync(projectDir(slug), join(base, entry));
+  return { name, movedTo: `${DELETED_DIR}/${entry}` };
 }
 
 export type DeletedProject = { slug: string; name: string; entry: string; deletedAt: number };
 
-/** What agent-projects/.deleted/ holds: each deleted project's folder (`<slug>-<YYYYMMDD-HHMMSS>[-n]`), newest first. */
+/** What <home>/.deleted/ holds: each deleted project's folder (`<slug>-<YYYYMMDD-HHMMSS>[-n]`), newest first. */
 export function listDeletedProjects(): DeletedProject[] {
-  const base = projectsPath(vault(), DELETED_DIR);
+  if (!hasProjectsHome()) return [];
+  const base = homePath(DELETED_DIR);
   let names: string[];
   try {
     names = readdirSync(base);
@@ -167,8 +165,8 @@ export function listDeletedProjects(): DeletedProject[] {
 }
 
 /**
- * The inverse of deleteProjectFiles: a deleted project's folder back to agent-projects/<slug>/ — the newest
- * one of that slug (or name), or the exact `.deleted/` entry named. Refused when a project of that slug exists.
+ * The inverse of deleteProjectFiles: a deleted project's folder back to <home>/<slug>/ — the newest one of that
+ * slug (or name), or the exact `.deleted/` entry named. Refused when a project of that slug exists.
  */
 export function restoreProjectFiles(slugNameOrEntry: string): { slug: string; name: string; entry: string } {
   const want = slugNameOrEntry.trim();
@@ -177,7 +175,7 @@ export function restoreProjectFiles(slugNameOrEntry: string): { slug: string; na
   const hit = all.find((d) => d.entry === want) ?? all.find((d) => d.slug === want || d.slug === slugify(want) || d.name.toLowerCase() === low);
   if (!hit) throw new Error(`nothing deleted under "${want}"${all.length ? ` (deleted: ${all.map((d) => d.name).join(", ")})` : ""}`);
   if (projectExists(hit.slug)) throw new Error(`a project "${nameOf(hit.slug)}" (${hit.slug}) exists already`);
-  renameSync(join(projectsPath(vault(), DELETED_DIR), hit.entry), projectDir(hit.slug));
+  renameSync(homePath(DELETED_DIR, hit.entry), projectDir(hit.slug));
   return { slug: hit.slug, name: nameOf(hit.slug), entry: hit.entry };
 }
 
@@ -193,7 +191,7 @@ export function renameProject(slug: string, name: string): ProjectInfo {
   return { slug, name: nameOf(slug), dir: projectDir(slug) };
 }
 
-/** `.vault-chat/rules.md` (global) — "" when absent. */
+/** `.vault-chat/rules.md` (global, the vault's) — "" when absent. */
 export function readGlobalRules(): string {
-  return readOr(join(vault(), ".vault-chat", "rules.md"));
+  return readOr(join(ctxConfig().vault, ".vault-chat", "rules.md"));
 }

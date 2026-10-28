@@ -155,7 +155,8 @@ beforeAll(async () => {
   store = (await import("../../src/store")).useStore;
   store.setState({ vaultPath: vault, conversationsLoaded: true });
   const { configureContext } = await import("../context");
-  configureContext({ vault, agentModel: "openai/gpt-6.1-sol" });
+  (await import("../convlog/log")).setProjectsHomeLog(join(root, "projects-home"));
+  configureContext({ vault, agentModel: "openai/gpt-6.1-sol", projectsHome: join(root, "projects-home") });
   const { Engine } = await import("../engine/engine");
   backend = withPiSessions(new FakeBackend(), join(root, "pi"));
   engine = new Engine({
@@ -374,7 +375,7 @@ describe("voice's one tool that acts: Ask, a request to the conversation's agent
     expect(readFileSync(join(vault, "notes", "a.md"), "utf8")).toBe(before);
     expect(existsSync(join(vault, "notes", "b.md"))).toBe(false);
     expect(existsSync(join(vault, ".vault-chat", "notes.jsonl"))).toBe(notes);
-    expect(existsSync(join(vault, "agent-projects", "whiteboard"))).toBe(false);
+    expect(existsSync(join(root, "projects-home", "whiteboard"))).toBe(false);
     // And the client side has no definitions of them either: the device's tools, exactly.
     const p = await import("../../src/voicePrompt");
     expect(p.voiceToolNames("laptop")).toEqual(["Ask", "LookAtScreen", "ShowFile", "ScrollTo"]);

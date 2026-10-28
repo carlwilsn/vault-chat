@@ -10,7 +10,6 @@ import { conversationObjects as readConversationObjects } from "../engine/convs"
 import { ctxConfig } from "./config";
 import { cap } from "./files";
 import { findProject, listProjects, projectNotesPath, readProject } from "./projects";
-import { relative } from "node:path";
 import type { ContextConv, DynamicToolCallResponse, DynamicToolSpec, ToolContext } from "./types";
 
 export const CONTEXT_TOOL_NAMES = ["ListProjects", "ListConversations", "ReadConversation"] as const;
@@ -78,7 +77,8 @@ function chats(given?: ContextConv[]): ChatRow[] {
     .sort((a, b) => b.at - a.at);
 }
 
-const rel = (p: string) => relative(ctxConfig().vault, p).split("\\").join("/");
+/** A project file's path as the agent writes it: absolute (the projects home is in no vault). */
+const rel = (p: string) => p.split("\\").join("/");
 
 /** ListProjects as text: the shared answer for pi and voice. `convs` defaults to every conversation in the vault. */
 export function listProjectsText(project?: string | null, currentProject?: string | null, convs?: ContextConv[]): { ok: boolean; text: string } {
