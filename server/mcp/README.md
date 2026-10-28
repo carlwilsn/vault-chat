@@ -104,6 +104,48 @@ Show defaults to the bound device; board sending requires the external client's
 explicit request, not ambient screen presence. Private context/env/write
 services are **not** mounted at this external endpoint.
 
+### Claude Code on the laptop
+
+The laptop must be signed into the allowed Tailscale identity and able to reach
+its private HTTPS hostname. On the server running this implementation, set
+`VC_MCP_HOSTS` to that exact private hostname (for example
+`thinkbox.tailbb647d.ts.net`, without a scheme or path). This is a server
+configuration change/restart, not something an MCP client can enable. Do not
+change Tailscale Serve to a public listener or bypass authentication to test it.
+
+Claude Code supports HTTP transports and environment expansion in `.mcp.json`
+([official client documentation](https://code.claude.com/docs/en/mcp)). Use:
+
+```json
+{
+  "mcpServers": {
+    "vault_chat": {
+      "type": "http",
+      "url": "${VAULT_CHAT_MCP_URL}",
+      "headers": { "X-Vault-Token": "${VAULT_CHAT_TOKEN}" }
+    }
+  }
+}
+```
+
+Set `VAULT_CHAT_MCP_URL` in the laptop's launch environment to
+`https://<private-host>/mcp?vault=vault-chat&device=laptop&conversation=none`.
+Supply `VAULT_CHAT_TOKEN` through the laptop's existing credential-manager/secret
+injection facility, using its existing vault-chat credential. Do not paste a
+credential into a shell command, configuration file, URL, transcript or issue;
+do not run a CLI command that expands it into persisted header text. The
+variable references above are literal references, not example credentials.
+Start Claude Code from that environment, approve the configured server, and use
+`/mcp` to check its connection. A harmless first request is “Use vault_chat's
+BoardLook to tell me whether any boards exist; change nothing.” An explicit
+conversation ID may replace `none` only when the client should be bound to that
+real thread. Keep `none` for an independent client.
+
+A missing variable, disabled Host allowlist, wrong vault/conversation, absent
+header credential, or missing Tailscale login must fail closed. A successful
+SDK call over an internal per-process capability does **not** establish that
+this private HTTPS route or the laptop's Claude Code configuration works.
+
 ## Verification and limitations
 
 Focused tests:
