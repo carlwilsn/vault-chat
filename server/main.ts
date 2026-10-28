@@ -277,6 +277,7 @@ async function main(): Promise<void> {
       }
       return changed;
     },
+    mcp: process.env.VC_ENGINE === "0" ? undefined : async (v, context) => (await engineOf(v)).mcpBinding(context),
     engine: process.env.VC_ENGINE === "0"
       ? undefined
       : {

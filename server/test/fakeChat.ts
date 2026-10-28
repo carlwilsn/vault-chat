@@ -130,8 +130,12 @@ export async function fakeChat(): Promise<FakeChat> {
         chunk({ choices: [{ index: 0, delta: { content: text.slice(half) }, finish_reason: null }] });
       }
       if ("call" in step) {
+        // Follow the actual tool declaration (native MCP has a server prefix),
+        // while preserving readable shorthand in scripted scenarios.
+        const native = `mcp__vault_chat__${step.call.name}`;
+        const name = body.tools?.some((t: any) => t.function?.name === native) ? native : step.call.name;
         chunk({
-          choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: `call_${n}`, type: "function", function: { name: step.call.name, arguments: JSON.stringify(step.call.args) } }] }, finish_reason: null }],
+          choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: `call_${n}`, type: "function", function: { name, arguments: JSON.stringify(step.call.args) } }] }, finish_reason: null }],
         });
       }
       chunk({ choices: [{ index: 0, delta: {}, finish_reason: "call" in step ? "tool_calls" : "stop" }] });

@@ -11,7 +11,6 @@ import { renameRetry } from "../../atomic";
 import { modelMeta } from "../catalog";
 import EXT_SOURCE from "./ext/vc.mjs?raw";
 import POLICY_SOURCE from "./ext/policy.mjs?raw";
-import SUBAGENT_SOURCE from "./ext/subagent.mjs?raw";
 import PDF_SOURCE from "./ext/pdf.mjs?raw";
 import type { PiInstall } from "./install";
 
@@ -147,7 +146,6 @@ export function writePiConfig(c: PiConfigInput): void {
   writeAtomic(join(p.agentDir, "models.json"), JSON.stringify({ providers: Object.keys(provider).length ? { openrouter: provider } : {} }, null, 2));
   writeAtomic(p.ext, EXT_SOURCE);
   writeAtomic(join(p.extDir, "policy.mjs"), POLICY_SOURCE);
-  writeAtomic(join(p.extDir, "subagent.mjs"), SUBAGENT_SOURCE);
   writeAtomic(join(p.extDir, "pdf.mjs"), PDF_SOURCE);
   mkdirSync(p.agentsDir, { recursive: true });
   for (const [name, text] of Object.entries(BUILTIN_AGENTS)) writeAtomic(join(p.agentsDir, `${name}.md`), text);

@@ -153,7 +153,7 @@ describe("standard Streamable HTTP with request-local authority", () => {
         if (req.headers["x-test-authorized"] !== "yes") return null;
         const vault = req.url === "/a" ? vaultA : req.url === "/b" ? vaultB : null;
         if (!vault) return null;
-        return { specs: [boardSpec], call: async (_name, args) => lookBoard(vault, args.board) };
+        return { scopeId: vault, specs: [boardSpec], call: async (_name, args) => lookBoard(vault, args.board) };
       },
     });
   });

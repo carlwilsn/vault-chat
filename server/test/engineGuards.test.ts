@@ -198,4 +198,18 @@ describe("engine guards", () => {
     expect(backend.steered).toEqual([{ threadId: "w-guide", text: "Carl added to this request: All seven lectures, one section per lecture." }]);
   });
 
+  it("native parallel questions cannot replace each other and SDK cancellation clears only its own question", async () => {
+    const before = backend.turns.length;
+    const r = await engine.message({ convId: "question-cancel", text: "Choose one." });
+    await until(() => backend.turns.length === before + 1);
+    const tid = backend.turns[before].threadId;
+    const abort = new AbortController();
+    const first = backend.h.toolCall(tid, "AskUser", { question: "First?" }, abort.signal);
+    const second = await backend.h.toolCall(tid, "AskUser", { question: "Second?" });
+    expect(second.text).toContain("already waiting");
+    abort.abort();
+    expect((await first).ok).toBe(false);
+    await until(async () => !(await readConv(vault, r.convId))?.asking);
+    backend.ev(tid, { kind: "turnCompleted", status: "completed" });
+  });
 });

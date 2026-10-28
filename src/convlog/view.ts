@@ -8,6 +8,7 @@
 import type { PendingInput, Todo } from "./protocol";
 import { isOpen, pendingOf, planOf, shown, type Item, type Picture } from "./reduce";
 import { ASK_TOOLS, REVIEW_TOOL, reviewCard } from "../review";
+import { hostToolName } from "../mcpNames";
 
 export const DIVIDER_TEXT = "Earlier conversation summarized";
 
@@ -80,7 +81,7 @@ export function argsOf(it: Item): any {
 
 /** pi's tool names → the names the clients' renderers know. */
 const TOOL_NAMES: Record<string, string> = { bash: "Bash", read: "Read", write: "Write", edit: "Edit", grep: "Grep", find: "Glob", ls: "LS" };
-export const toolName = (n: string | undefined): string => TOOL_NAMES[n ?? ""] ?? (n || "tool");
+export const toolName = (n: string | undefined): string => TOOL_NAMES[hostToolName(n)] ?? (hostToolName(n) || "tool");
 
 const ENGINE_VIA = new Set(["wake", "nudge", "resume", "job", "delegate"]);
 

@@ -202,7 +202,7 @@ describe.skipIf(!PI_DIR)("pi engine (real pi 1.1.0, fake chat-completions OpenRo
     expect(existsSync(c.threadPath)).toBe(true); // its session file
     // Every vault-chat tool was declared to the model.
     const first0 = or.calls.find((b) => lastUser(b).includes("CHAT1"));
-    const names = (first0.tools ?? []).map((t: any) => t.function?.name);
+    const names = (first0.tools ?? []).map((t: any) => t.function?.name?.replace(/^mcp__vault_chat__/, ""));
     for (const t of ["AskUser", "ScheduleWake", "Notify", "StartJob", "JobStatus", "PdfRead", "WebSearch", "RecentActivity", "ListProjects", "ListNotes", "CreateNote", "UpdateNote", "DeleteNote", "bash", "read", "write", "edit"]) expect(names).toContain(t);
     // The ceremony tools are gone (2026-10-18): no keep-going mode, no Done verifier, no Blocked.
     for (const t of ["KeepWorking", "Done", "Blocked"]) expect(names).not.toContain(t);

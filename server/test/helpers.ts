@@ -2,11 +2,12 @@
 // a scripted fake OpenRouter, and the built server bundle as a real child
 // process.
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, copyFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import { Encrypter } from "age-encryption";
+import { pathToFileURL } from "node:url";
 
 export const ROOT = resolve(__dirname, "..", "..");
 export const BUNDLE = join(ROOT, "dist-server", "vault-chat-server.mjs");
@@ -17,7 +18,12 @@ export function fakePiDir(home: string): string {
   const pkg = join(dir, "node_modules", "@earendil-works", "pi-coding-agent");
   mkdirSync(join(pkg, "dist", "bundle"), { recursive: true });
   writeFileSync(join(pkg, "package.json"), JSON.stringify({ name: "@earendil-works/pi-coding-agent", version: "1.1.0", type: "module" }));
-  copyFileSync(join(ROOT, "server", "test", "fakePiCli.mjs"), join(pkg, "dist", "bundle", "cli.js"));
+  // Resolve the official SDK from this checkout even though the fixture CLI
+  // lives in a throwaway npm prefix (also works without symlink privileges).
+  const source = readFileSync(join(ROOT, "server", "test", "fakePiCli.mjs"), "utf8")
+    .replace('"@modelcontextprotocol/sdk/client/index.js"', JSON.stringify(pathToFileURL(join(ROOT, "node_modules/@modelcontextprotocol/sdk/dist/esm/client/index.js")).href))
+    .replace('"@modelcontextprotocol/sdk/client/streamableHttp.js"', JSON.stringify(pathToFileURL(join(ROOT, "node_modules/@modelcontextprotocol/sdk/dist/esm/client/streamableHttp.js")).href));
+  writeFileSync(join(pkg, "dist", "bundle", "cli.js"), source);
   return dir;
 }
 

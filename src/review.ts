@@ -2,6 +2,8 @@
 // laptop and the phone. Its call (ReadyForReview) is shown like AskUser's question: the card, then two actions,
 // Keep and Send back; Carl's answer is his own line after it. Pure: the box, the laptop and the phone use it.
 
+import { hostToolName } from "./mcpNames";
+
 export const REVIEW_TOOL = "ReadyForReview";
 export const KEEP = "Keep";
 export const SEND_BACK = "Send back";
@@ -13,7 +15,7 @@ export const ASK_TOOLS = new Set(["AskUser", REVIEW_TOOL]);
 
 /** Carl's answer in a question tool's result ("Carl answered: …"), without what the server did after; null when none. */
 export function answerOf(toolName: string | undefined, result: string): string | null {
-  if (!toolName || !ASK_TOOLS.has(toolName)) return null;
+  if (!toolName || !ASK_TOOLS.has(hostToolName(toolName))) return null;
   const m = /^Carl answered: ([\s\S]*)$/.exec(result);
   if (!m) return null;
   return m[1]!.split(OUTCOME_SEP)[0]!.trim();
@@ -38,9 +40,12 @@ export function reviewCard(callId: string, a: Record<string, unknown> | null | u
   if (s("what")) parts.push(`**What changed.** ${s("what")}`);
   if (s("why")) parts.push(`**Why.** ${s("why")}`);
   if (s("tests")) parts.push(`**Tests.**\n\n\`\`\`\n${s("tests")}\n\`\`\``);
-  const shots = images.map((p, i) => proofImagePath(callId, i, p)).filter((p) => !/\.(mp4|webm)$/i.test(p));
+  // New handoffs have their own explicit artifact ID. Historical transcripts
+  // still locate their proof by the old call id.
+  const proofId = s("proofId") || callId;
+  const shots = images.map((p, i) => proofImagePath(proofId, i, p)).filter((p) => !/\.(mp4|webm)$/i.test(p));
   if (shots.length) parts.push(shots.map((p, i) => `![proof ${i + 1}](${p})`).join("\n"));
-  const videos = images.map((p, i) => proofImagePath(callId, i, p)).filter((p) => /\.(mp4|webm)$/i.test(p));
+  const videos = images.map((p, i) => proofImagePath(proofId, i, p)).filter((p) => /\.(mp4|webm)$/i.test(p));
   if (videos.length) parts.push(videos.map((p) => `[▶ ${base(p)}](${p})`).join("\n"));
   return {
     content: parts.join("\n\n"),
