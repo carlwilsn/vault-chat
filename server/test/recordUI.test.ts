@@ -120,14 +120,54 @@ describe.skipIf(!browser)("a real recording", () => {
   it("refuses what it can't record, with why", async () => {
     expect(await record(dir, { url: "ftp://x" })).toMatchObject({ ok: false, error: expect.stringMatching(/http/) });
     expect(await record(dir, { url: "app.html", out: "../outside.webm" })).toMatchObject({ ok: false, error: expect.stringMatching(/inside the vault/) });
-    expect(await record(dir, { url: "app.html", out: "x.mp4" })).toMatchObject({ ok: false, error: expect.stringMatching(/\.webm/) });
+    expect(await record(dir, { url: "app.html", out: "x.gif" })).toMatchObject({ ok: false, error: expect.stringMatching(/\.mp4 or \.webm/) });
   });
 
   it("the tool: the recorder runs as a child process and the agent gets the path to put in its reply", async () => {
     // As the box runs it (`vault-chat-server.mjs record-ui`), with tsx standing in for the bundle.
     const entry = [process.execPath, "--import", pathToFileURL(join(ROOT, "node_modules", "tsx", "dist", "esm", "index.mjs")).href, join(__dirname, "recordEntry.mts")];
     const text = await recordUITool(null, dir, { url: "app.html", out: ".vault-chat/visuals/tool.webm", seconds: 2, width: 640, height: 480 }, { entry });
-    expect(text).toMatch(/^Recorded \d+(\.\d)? s \(640×480, \d+ frames, \d+ KB\): \.vault-chat\/visuals\/tool\.webm\. Put it in your reply as !\[what it shows\]\(\.vault-chat\/visuals\/tool\.webm\)/);
+    expect(text).toMatch(/^Every step ran\. Recorded \d+(\.\d)? s \(640×480, \d+ frames, \d+ KB\): \.vault-chat\/visuals\/tool\.webm\. Put it in your reply as !\[what it shows\]\(\.vault-chat\/visuals\/tool\.webm\)/);
     expect(existsSync(join(dir, ".vault-chat", "visuals", "tool.webm"))).toBe(true);
+    expect(text).toContain("Page errors: none.");
+    expect(text).toMatch(/Screenshots \(read them to see the result\): \.vault-chat\/visuals\/tool\.png/);
+    expect(text).toContain("Counter");
+  });
+
+  it("tests a UI like a person: an app inside a same-origin iframe (the preview harness), a Ctrl shortcut, a screenshot, page errors, a failing assertion", async () => {
+    writeFileSync(
+      join(dir, "inner.html"),
+      `<!doctype html><body style="font:20px system-ui"><button id="go">Open palette</button><div id="pal" hidden>Palette open</div>
+       <script>document.getElementById("go").onclick=function(){console.error("clicked: a logged error");};
+       addEventListener("keydown",function(e){if(e.ctrlKey&&e.key==="k"){e.preventDefault();document.getElementById("pal").hidden=false;}});</script></body>`,
+    );
+    writeFileSync(join(dir, "shell.html"), `<!doctype html><body style="margin:0"><h3>shell</h3><iframe src="inner.html" style="width:600px;height:300px;border:0;margin-left:40px"></iframe></body>`);
+    // Served over http on loopback, as a dev server is (file:// pages are not same-origin with each other).
+    const { createServer } = await import("node:http");
+    const srv = createServer((req, res) => {
+      const f = join(dir, (req.url ?? "/").split("?")[0]!.replace(/^\/+/, "") || "shell.html");
+      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+      try {
+        res.end(readFileSync(f));
+      } catch {
+        res.end("");
+      }
+    });
+    await new Promise<void>((ok) => srv.listen(0, "127.0.0.1", () => ok()));
+    const port = (srv.address() as { port: number }).port;
+    const r = await record(dir, { url: `http://localhost:${port}/shell.html`, out: "proof/ui", seconds: 2, width: 800, height: 500, steps: [{ click: { text: "Open palette" } }, { press: "Control+K" }, { waitFor: { text: "Palette open" } }, { shot: "palette" }, { waitFor: { text: "Never there" }, timeout: 800 }, { click: "#go" }] });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.failed).toBe(true);
+    expect(r.log.slice(1, 4)).toEqual([expect.stringMatching(/^click .* ok$/), "press \"Control+K\" ok", expect.stringMatching(/^waitFor .*Palette open.* ok$/)]);
+    expect(r.log.find((l) => /failed/.test(l))).toMatch(/step 5 .*Never there.*did not appear/);
+    expect(r.errors.join(" | ")).toContain("clicked: a logged error");
+    expect(r.shots.length).toBe(2);
+    for (const f of r.shots) expect(readFileSync(f).subarray(1, 4).toString()).toBe("PNG");
+    // No extension: MP4 (H.264) when this browser has the encoder, else WebM.
+    expect(r.path).toMatch(/proof[\\/]ui\.(mp4|webm)$/);
+    const head = readFileSync(r.path).subarray(0, 12);
+    if (r.path.endsWith(".mp4")) expect(head.subarray(4, 8).toString()).toBe("ftyp");
+    srv.close();
   });
 });
