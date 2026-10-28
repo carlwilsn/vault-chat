@@ -8,6 +8,8 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { makePdf, textPage } from "./pdfgen";
+import { uploadAttachment } from "../../phone/src/attach";
+import { filesLine } from "../../src/filesLine";
 import { tmp, cleanup, makeVault, makeKeyStore, fakeOpenRouter, startServer, waitFor, type Running, type FakeOpenRouter } from "./helpers";
 
 let home: string, vault: string, secrets: string;
@@ -61,6 +63,25 @@ describe("attachments from outside the vault", () => {
     const second = JSON.stringify(or.calls[n + 1].messages);
     expect(second).toContain("Gauss law: the flux through a closed surface");
     expect(second).toContain("A sphere of radius R");
+  }, 60_000);
+
+  it("the phone's \"+\": a PDF from the iOS Files picker goes up through the same route and reaches the agent by its box path", async () => {
+    const pdf = makePdf([textPage("Lab 3", ["Ohm's law: V equals I times R."])]);
+    // What Safari hands the page for a file from Files, uploaded by the phone's own code (phone/src/attach.ts).
+    const up = await uploadAttachment((p, init) => fetch(srv.base + p, init), new File([pdf], "Lab 3 handout.pdf", { type: "application/pdf" }));
+    expect(up.ok).toBe(true);
+    if (!up.ok) return;
+    expect(up.path).toMatch(/^\.vault-chat\/attachments\/\d{4}-\d{2}-\d{2}\/Lab 3 handout\.pdf$/);
+    expect(readFileSync(join(vault, ...up.path.split("/"))).equals(pdf)).toBe(true);
+    const n = or.calls.length;
+    or.script.push({ text: "It's the Lab 3 handout." });
+    // The phone's send (boot.ts): its text with the files line, the box paths in files[].
+    const r = await post("/api/v2/intent", { type: "send", clientId: "c-attach-phone", text: "what's this?" + filesLine([up.name]), files: [up.path], client: "phone" });
+    expect(r.ok).toBe(true);
+    await waitFor(async () => or.calls.length >= n + 1, 30_000);
+    const first = JSON.stringify(or.calls[n].messages);
+    expect(first).toContain(JSON.stringify(join(vault, ...up.path.split("/"))).slice(1, -1));
+    expect(first).toMatch(/Lab 3 handout\.pdf \(\d+ KB, a PDF: read it with PdfRead/);
   }, 60_000);
 
   it("a file over the cap is refused with the reason; a path outside the attachments area is refused", async () => {

@@ -8,6 +8,7 @@ import { attachBlob, attachPath, insideVault, pathMentions, sizeLabel } from "./
 import { isExternalFileDrop } from "./dnd";
 import { voiceImageMime } from "./voiceImages";
 import { fileKind } from "./fileKind";
+import { filesLine, splitFilesLine } from "./filesLine";
 import { invoke } from "@tauri-apps/api/core";
 import { dispatchChatAction, isPopout } from "./sync";
 import { COMPACTION_DIVIDER_TEXT, isCompactionDivider, dividerSummary } from "./chatContext";
@@ -724,7 +725,7 @@ export function ChatPane() {
         ? `\n\n[attached: ${resolved.map((r) => `@${r.rel.split("/").pop()} → ${r.path}`).join(", ")}]`
         : "";
     // The attached files' names on the message (chips on its bubble: splitFilesLine).
-    const filesLine = uploads.length > 0 ? `\n\n[files: ${uploads.map((u) => u.name.replace(/[\]|\n]/g, " ")).join(" | ")}]` : "";
+    const filesLn = filesLine(uploads.map((u) => u.name));
     const imagesToSend = pendingImages;
     setInput("");
     setMentions([]);
@@ -735,7 +736,7 @@ export function ChatPane() {
     setAttachError(null);
     dispatchChatAction({
       kind: "send",
-      text: text + filesLine + pathFooter,
+      text: text + filesLn + pathFooter,
       contextPreamble: contextPreamble || undefined,
       attachments: imagesToSend.length > 0 ? imagesToSend : undefined,
       uploads: uploads.length > 0 ? uploads : undefined,
@@ -1519,12 +1520,6 @@ function stripAttachedFooter(src: string): string {
   return src.replace(/\n*\[attached:[^\]]*\]\s*$/, "");
 }
 
-/** The "[files: a | b]" line a message with attached files carries (ChatPane send): its text, and the names. */
-export function splitFilesLine(src: string): { text: string; files: string[] } {
-  const m = /\n*\[files: ([^\]]*)\]\s*$/.exec(src);
-  if (!m) return { text: src, files: [] };
-  return { text: src.slice(0, m.index), files: m[1]!.split(" | ").map((x) => x.trim()).filter(Boolean) };
-}
 
 /**
  * A message sent while the agent works, not yet read by it: on hover, "Send now" (cut the agent's

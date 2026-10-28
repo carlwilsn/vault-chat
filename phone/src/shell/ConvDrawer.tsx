@@ -1,5 +1,5 @@
 // The left panel (left header button) and its scrim: Main, the projects, "+ New project"
-// (src/threads.ts panelModel). The ⋯ menu: New separate chat, Clear, Older chats, Memory.
+// (src/threads.ts panelModel). Clear is in the thread's own bar (Header.tsx), one tap.
 
 export function ConvDrawer() {
   return (
@@ -8,9 +8,6 @@ export function ConvDrawer() {
       <div className="cdraw" id="cdraw">
         <div className="cdtop">
           <b>Chats</b>
-          <button className="newbtn more" id="newBtn" aria-label="More">
-            ⋯
-          </button>
         </div>
         <div className="clist" id="clist"></div>
       </div>
