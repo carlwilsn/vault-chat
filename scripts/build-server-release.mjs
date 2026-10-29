@@ -34,7 +34,7 @@ if (!/^\d+\.\d+\.\d+([-+][0-9A-Za-z.-]+)?$/.test(version)) fail(`VERSION must be
 if (!/^[0-9a-f]{40}$/.test(rev)) fail(`REV must be a full git sha, got '${rev}'`);
 if (!existsSync(bundle)) fail(`${bundle} is missing — run \`npm run build:server\` first`);
 // Query the actual executable, not server-version.json or the build environment's intent.
-// build-info exits in the bundle banner before app initialization: no listener, keys or voice.
+// build-info uses the lazy bundle entry before app initialization: no listener, keys or voice.
 const verifiedBundleSha = createHash("sha256").update(readFileSync(bundle)).digest("hex");
 let compiled;
 try {

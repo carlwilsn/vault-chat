@@ -115,7 +115,19 @@ mkdirSync(outdir, { recursive: true });
 const wantMeta = process.argv.includes("--metafile");
 
 const result = await build({
-  entryPoints: [join(root, "server", "main.ts")],
+  // The metadata command must execute the SAME compiled constants the server uses, but before
+  // main's static app imports initialize storage/voice. Keep the whole application lazy here.
+  stdin: {
+    contents: `import { SERVER_VERSION, SERVER_REV } from "./server/config";
+if (process.argv[2] === "build-info") {
+  process.stdout.write(JSON.stringify({ version: SERVER_VERSION, rev: SERVER_REV }) + "\\n");
+} else {
+  await import("./server/main.ts");
+}`,
+    resolveDir: root,
+    sourcefile: "server-entry.ts",
+    loader: "ts",
+  },
   outfile: join(outdir, "vault-chat-server.mjs"),
   bundle: true,
   platform: "node",
@@ -130,10 +142,7 @@ const result = await build({
   external: ["esbuild"],
   // CJS deps bundled into ESM need a real require for node builtins.
   banner: {
-    // Exit before ANY bundled application module initializes (including storage and keys).
-    // These are the same build inputs used for SERVER_VERSION/SERVER_REV below.
-    js: `import { createRequire as __vcCreateRequire } from 'node:module'; const require = __vcCreateRequire(import.meta.url);
-if (process.argv[2] === "build-info") { process.stdout.write(${JSON.stringify(JSON.stringify({ version: pkg.version, rev }) + "\n")}); process.exit(0); }`,
+    js: "import { createRequire as __vcCreateRequire } from 'node:module'; const require = __vcCreateRequire(import.meta.url);",
   },
   define: {
     "import.meta.env.DEV": "false",
