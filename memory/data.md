@@ -53,3 +53,10 @@ nested-repo automation is off. Most of the rules below were paid for with lost o
 Agent-written commits carry `[agent]` and the agent's identity; his edits keep his identity. He measures his own
 deep work by `git log --grep='^\[agent\]'` vs the rest, so mis-crediting agent work to him corrupts that signal. When
 in doubt, mark it agent.
+- **Two laptop copies of one vault race each other (2026-10-29).** After school2 moved into the vault-chat folder, the
+  old `C:/Users/wada2/github/school2` kept its `sync.json` and kept syncing beside the new copy: both pushed `master` to
+  the box ("cannot lock ref … expected …" every minute) and both backed up to GitHub, ten minutes apart each but
+  landing within seconds of each other (20:09:41, 20:39:57/20:40:05, 20:49:52/20:50:12 CDT). The one that lost said
+  "git push github exited 1". v0.7.17 stops a copy outside the folder (`shadowedByFolder`). GitHub failures now go to
+  `sync-log.jsonl` with git's whole message (op `github-backup`): before, the message lived only in Settings' memory
+  and was gone once the retry worked.

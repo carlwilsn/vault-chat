@@ -232,3 +232,26 @@ test("a failing GitHub backup is told in plain words, with git's message behind 
   assert.match(k("too_big", "\n\n(one change alone adds 257 MB)").detail, /one change on its own adds 257 MB/);
   assert.equal(vs.githubPlain(okReport as any), null);
 });
+
+test("a failing GitHub backup leaves git's own words in sync-log.jsonl, once, and its recovery (2026-10-29: the failure was unreadable once the retry worked)", () => {
+  // Two laptop copies of one vault pushed master and box to GitHub at the same moment (school2's old
+  // C:/Users/wada2/github/school2 and the folder's copy, 01:09:41Z). The real message was never kept; this one is the
+  // shape git gives such a race (illustrative).
+  const raced =
+    "GitHub backup (git push github) failed (exit 1):\nerror: failed to push some refs to 'https://github.com/carlwilsn/school2.git'\n" +
+    "To https://github.com/carlwilsn/school2.git\n!\trefs/remotes/box/box:refs/heads/box\t[remote rejected] (cannot lock ref 'refs/heads/box': is at 3c0b6837 but expected 5040897f)\nDone";
+  const failing = { ok: true, github_warning: raced, github_problem: "other", github_pending: 7, github_pushed_at: 1 } as any;
+  const a = vs.githubLogLine(null, failing);
+  assert.equal(a.line?.level, "error");
+  assert.equal(a.line?.message, raced, "git's whole message, not its first line");
+  assert.deepEqual(a.line?.extra, { problem: "other", pending: 7 });
+  // The same failure on the next cycles: not again.
+  assert.equal(vs.githubLogLine(a.sig, failing).line, null);
+  // A cycle that failed before the backup ran: no story about GitHub either way.
+  assert.equal(vs.githubLogLine(a.sig, { ok: false, github_warning: null, github_pushed_at: 1 } as any).line, null);
+  // It worked again.
+  const b = vs.githubLogLine(a.sig, { ok: true, github_warning: null, github_pushed_at: 2 } as any);
+  assert.equal(b.line?.level, "recovered");
+  assert.equal(b.sig, null);
+  assert.equal(vs.githubLogLine(b.sig, { ok: true, github_warning: null, github_pushed_at: 3 } as any).line, null);
+});

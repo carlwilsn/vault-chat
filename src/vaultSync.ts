@@ -177,6 +177,24 @@ function appendSyncLog(
   })();
 }
 
+/** The GitHub backup's durable log line, if this cycle's report changes its story: git's full message the first
+ *  time a failure is seen (it lived only in memory before, in Settings' "What git said", and was gone once the retry
+ *  worked: school2's failure of 2026-10-29 01:09Z could not be read back), one line when it works again.
+ *  Returns the new signature and the line to write (null: nothing new). */
+export function githubLogLine(
+  prev: string | null,
+  r: Pick<BoxSyncReport, "ok" | "github_warning" | "github_problem" | "github_pending" | "github_pushed_at">,
+): { sig: string | null; line: { level: SyncLogLevel; message: string; extra: Record<string, unknown> } | null } {
+  // A cycle that failed before the backup's turn says nothing about it.
+  if (!r.ok && !r.github_warning) return { sig: prev, line: null };
+  const sig = r.github_warning ? `github|${r.github_warning}` : null;
+  if (sig === prev) return { sig, line: null };
+  if (sig)
+    return { sig, line: { level: "error", message: r.github_warning!, extra: { problem: r.github_problem ?? null, pending: r.github_pending ?? null } } };
+  if (prev && r.github_pushed_at) return { sig, line: { level: "recovered", message: "GitHub backup pushed", extra: { from: prev } } };
+  return { sig: prev, line: null };
+}
+
 // ---- in-process sync loop ----
 //
 // One loop per vault: the box cycle when sync.json names a box, otherwise the
@@ -859,6 +877,7 @@ function startBoxSyncLoop(vault: string, cfg: BoxConfig): void {
   let cancelled = false;
   let inFlight = false;
   let lastFailSig: string | null = null;
+  let lastGithubSig: string | null = null;
   const vaultName = vault.split("/").filter(Boolean).pop() ?? cfg.vault;
   // Tailscale is asked only when a cycle finds the box unreachable, and at
   // most every 30 s while it stays so.
@@ -1004,6 +1023,10 @@ function startBoxSyncLoop(vault: string, cfg: BoxConfig): void {
         }
         lastFailSig = sig;
       }
+      // The GitHub backup: its failure with git's own words, and its recovery (the report keeps the last outcome).
+      const gh = githubLogLine(lastGithubSig, r);
+      lastGithubSig = gh.sig;
+      if (gh.line) appendSyncLog(vault, gh.line.level, "github-backup", gh.line.message, gh.line.extra);
       // A project with its own remote: the laptop pushed (or could not push) the box's change there. Said in the log.
       if (r.origin_push) appendSyncLog(vault, "push-origin", "box-sync", r.origin_push);
       if (r.origin_warning) appendSyncLog(vault, "error", "push-origin", r.origin_warning);
