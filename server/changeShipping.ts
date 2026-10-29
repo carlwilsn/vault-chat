@@ -14,7 +14,8 @@ export type AcceptedChange = {
   check: import("./changeHost").SubmitCheck;
   preparedAt: string; acceptedAt?: string; release?: PublishedChangeRelease; rollbackOf?: string;
 };
-type Journal = { format: 1; changes: AcceptedChange[] };
+export type ShippingJournal = { format: 1; changes: AcceptedChange[]; delivery?: import("./changeDelivery").DeliveryState };
+type Journal = ShippingJournal;
 const sha = (s: string) => /^[a-f0-9]{40}$/.test(s);
 
 async function journalPath(repo: string): Promise<string> {
@@ -68,6 +69,18 @@ export async function reconcileAcceptancesLocked(repo: string): Promise<Accepted
 }
 export async function acceptedChanges(repo: string): Promise<AcceptedChange[]> {
   return withRepoLock(repo, () => reconcileAcceptancesLocked(repo));
+}
+
+/** Serialize delivery facts with acceptance under the SAME repository mutex and durable file.
+ * Never consumes permits or accepts client-written projection files as authority. */
+export async function updateShippingJournal<T>(repo: string, fn: (journal: ShippingJournal) => T | Promise<T>): Promise<T> {
+  return withRepoLock(repo, async () => {
+    await reconcileAcceptancesLocked(repo);
+    const path = await journalPath(repo), journal = read(path), before = JSON.stringify(journal);
+    const result = await fn(journal);
+    if (JSON.stringify(journal) !== before) save(path, journal);
+    return result;
+  });
 }
 
 /** No GitHub credentials, git config URL rewrites, SSH, arbitrary remote hosts or supplied release URLs.
@@ -134,26 +147,29 @@ async function fetchPublicTag(repo: string, repository: string, release: Publish
 }
 
 /** Called in the ordinary project sync cycle BEFORE its repo-locked commit/ff sequence. No second timer.
- * Existing accepted changes opt a repo in; old Keep projects and non-GitHub projects remain untouched. */
+ * Accepted changes opt a repo in; the application also follows already-published CI releases before its
+ * first acceptance journal exists. Other legacy Keep projects and non-GitHub projects stay untouched. */
 export async function followAcceptedRelease(repo: string, adapters: {
   discover?: typeof discoverPublicRelease;
   fetch?: (repo: string, repository: string, release: PublishedChangeRelease) => Promise<void>;
 } = {}): Promise<PublishedChangeRelease | null> {
-  // Legacy projects are the common case until activation: no subprocess/network work on their sync path.
-  if (existsSync(join(repo, ".git", "HEAD")) && !existsSync(join(repo, ".git", "vault-chat-shipping", "accepted.json"))) return null;
   const initial = await acceptedChanges(repo);
-  if (!initial.length) return null;
-  const origin = (await git(repo, ["config", "--get", "remote.origin.url"])).trim();
+  const originResult = await runGit(repo, ["config", "--get", "remote.origin.url"]);
+  if (originResult.code !== 0) { if (!initial.length) return null; throw new Error("Accepted project has no public origin"); }
+  const origin = originResult.stdout.trim();
   const repository = publicGithubRepository(origin);
-  if (!repository) throw new Error("Release following requires a normalized public GitHub origin");
+  if (!repository) { if (!initial.length) return null; throw new Error("Release following requires a normalized public GitHub origin"); }
+  // Existing application projects follow already-published CI releases even before the first service acceptance.
+  // Other legacy Keep projects are NOT opted into a new release policy.
+  if (!initial.length && repository !== "carlwilsn/vault-chat") return null;
   const release = await (adapters.discover ?? discoverPublicRelease)(repository);
   if (!sha(release.revision) || !/^v\d+\.\d+\.\d+(?:[-+][\w.-]+)?$/.test(release.tag) || release.version !== release.tag.slice(1)) throw new Error("Invalid published release identity");
   const followed = await withRepoLock(repo, async () => {
     const changes = await reconcileAcceptancesLocked(repo);
     if ((await git(repo, ["config", "--get", "remote.origin.url"])).trim() !== origin) throw new Error("Project origin changed during release discovery");
     const path = await journalPath(repo), j = read(path);
-    const latest = changes.at(-1)!;
-    const base = latest.review.base;
+    const latest = changes.at(-1);
+    const base = latest?.review.base ?? "main";
     if ((await git(repo, ["symbolic-ref", "--short", "HEAD"])).trim() !== base || (await git(repo, ["status", "--porcelain"])).trim()) throw new Error("Release follow blocked: main must be checked out and clean");
     if (adapters.fetch || (await runGit(repo, ["cat-file", "-e", `${release.revision}^{commit}`])).code !== 0) await (adapters.fetch ?? fetchPublicTag)(repo, repository, release);
     const isAncestor = async (a: string, b: string) => (await runGit(repo, ["merge-base", "--is-ancestor", a, b])).code === 0;
@@ -162,8 +178,15 @@ export async function followAcceptedRelease(repo: string, adapters: {
     // An older release not containing any service acceptance is not a deploy of this submission.
     const approved = included.at(-1);
     if (!approved) {
-      if (!await isAncestor(release.revision, (await git(repo, ["rev-parse", "HEAD"])).trim())) throw new Error("Published release does not descend from any service acceptance and is not an older main ancestor");
-      return false;
+      const head = (await git(repo, ["rev-parse", "HEAD"])).trim();
+      if (await isAncestor(release.revision, head)) return false;
+      if (!await isAncestor(head, release.revision)) throw new Error("Release follow blocked: project main diverges from the published release; no reset or merge attempted");
+      // No local acceptance is being authorized here: this source is ALREADY a public CI release.
+      // Require the known publisher's version-only final commit, then ff without manufacturing a merge.
+      if (latest) throw new Error("Published release does not descend from latest service acceptance");
+      await verifyPublisherCommit(repo, release);
+      await git(repo, ["-c", "core.hooksPath=/dev/null", "merge", "--ff-only", "--quiet", release.revision]);
+      return true;
     }
     // CI may only add its own version bump after accepted source. Check this EVEN IF laptop sync
     // already brought the release commit here, or later accepted main is ahead of the published release.
@@ -187,7 +210,7 @@ export async function followAcceptedRelease(repo: string, adapters: {
     const head = (await git(repo, ["rev-parse", "HEAD"])).trim();
     if (!await isAncestor(release.revision, head)) {
       if (!await isAncestor(head, release.revision)) throw new Error("Release follow blocked: project main diverges from the published release; no reset or merge attempted");
-      if (!await isAncestor(latest.source.head, release.revision)) throw new Error("Published release does not descend from latest service acceptance");
+      if (latest && !await isAncestor(latest.source.head, release.revision)) throw new Error("Published release does not descend from latest service acceptance");
       await git(repo, ["-c", "core.hooksPath=/dev/null", "merge", "--ff-only", "--quiet", release.revision]);
     }
     let changed = false;
@@ -196,4 +219,21 @@ export async function followAcceptedRelease(repo: string, adapters: {
     return true;
   });
   return followed ? release : null;
+}
+
+async function verifyPublisherCommit(repo: string, release: PublishedChangeRelease): Promise<void> {
+  const parents = (await git(repo, ["rev-list", "--parents", "-n", "1", release.revision])).trim().split(" ");
+  if (parents.length !== 2 || (await git(repo, ["show", "-s", "--format=%s", release.revision])).trim() !== `v${release.version} [skip ci]`) throw new Error("Published release lacks the CI version commit");
+  const files = (await git(repo, ["diff-tree", "--no-commit-id", "--name-only", "-r", release.revision])).trim().split("\n");
+  if (!files.length || files.some(f => !["package.json", "src-tauri/Cargo.toml", "src-tauri/tauri.conf.json"].includes(f))) throw new Error("Published release final commit is not version-only");
+  for (const f of files) {
+    const before = await git(repo, ["show", `${parents[1]}:${f}`]), after = await git(repo, ["show", `${release.revision}:${f}`]);
+    if (f.endsWith(".json")) {
+      const a = JSON.parse(before), b = JSON.parse(after);
+      if (b.version !== release.version || typeof a.version !== "string") throw new Error("CI version mismatch");
+      b.version = a.version;
+      if (JSON.stringify(a) !== JSON.stringify(b)) throw new Error("Release changes non-version JSON content");
+    } else if (before.replace(/^(version\s*=\s*)"[^"]+"/m, `$1"${release.version}"`) !== after) throw new Error("Release changes non-version Cargo content");
+  }
+  if (JSON.parse(await git(repo, ["show", `${release.revision}:package.json`])).version !== release.version) throw new Error("CI version mismatch");
 }

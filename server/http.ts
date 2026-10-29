@@ -37,6 +37,7 @@ import { ackShow, feedOpened } from "./show";
 import { noteAttention, pushGate } from "./pushGate";
 import { boardLogPost, boxDiag } from "./diag";
 import { noteUserLine } from "./signal";
+import { deliveryChallenge, deliveryRepos, laptopTransportIdentity, reportLaptopHealth, requestDeliveryRollback, shipmentCards, shipmentRepo } from "./changeDelivery";
 import { ATTACH_BODY_LIMIT, ATTACH_MAX_BYTES, mb, saveAttachment } from "./attachments";
 
 /** A vault on this box, as the routes see it (engine/index.ts VaultRef). */
@@ -378,6 +379,37 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
   const scope: VaultScope | null = hooks.vault ? hooks.vault(want) : !want || want === cfg.vaultName ? { name: cfg.vaultName, path: cfg.vault, bare: cfg.bareRepo, main: true } : null;
   if (!scope) return json(res, 404, { error: `no vault ${String(want).slice(0, 64)} on this box` });
   const vault = scope.path;
+  if (path === "/api/v1/shipments" && method === "GET") {
+    try { return json(res, 200, { shipments: await shipmentCards(vault, scope.name, url.searchParams.get("project") || undefined) }); }
+    catch (e) { console.error("[delivery] cards", e); return json(res, 503, { error: "Shipment facts unavailable; needs attention" }); }
+  }
+  const rollbackShipment = /^\/api\/v1\/shipments\/([^/]+)\/rollback$/.exec(path);
+  if (rollbackShipment && method === "POST") {
+    try {
+      const id = decodeURIComponent(rollbackShipment[1]!), repo = await shipmentRepo(vault, id);
+      if (!repo) return json(res, 404, { error: "Accepted change not found in this vault" });
+      const rollback = await requestDeliveryRollback(repo, id, "Carl requested rollback");
+      return json(res, 200, { ok: true, rollback });
+    } catch (e) { console.error("[delivery] rollback", e); return json(res, 503, { error: "Source recovery unavailable; needs attention" }); }
+  }
+  if ((path === "/api/v1/release-health/challenge" && method === "GET") || (path === "/api/v1/release-health/laptop" && method === "POST")) {
+    const identity = laptopTransportIdentity(req);
+    if (!identity) return json(res, 403, { error: "Paired native laptop transport required" });
+    try {
+      const repos = deliveryRepos(vault);
+      if (method === "GET") {
+        for (const repo of repos) { const challenge = await deliveryChallenge(repo, identity); if (challenge) return json(res, 200, { challenge }); }
+        return json(res, 200, { challenge: null });
+      }
+      const b = await jsonBody(req, 16 * 1024);
+      if (typeof b?.releaseId !== "string") return json(res, 400, { error: "Release identity required" });
+      // Select only a registered vault project whose private journal issued this challenge.
+      for (const repo of repos) {
+        try { await reportLaptopHealth(repo, identity, b); return json(res, 200, { ok: true }); } catch { /* next registered project */ }
+      }
+      return json(res, 409, { error: "Expired, consumed or mismatched native release challenge" });
+    } catch (e) { console.error("[delivery] native health", e); return json(res, 503, { error: "Release health unavailable" }); }
+  }
   // A vault-level signal in this vault's log (/poll).
   const tagged = (ev: Record<string, unknown>) => signal(scope.path, ev);
   // The old app (the relay) knows only the main vault.

@@ -7,10 +7,12 @@ import { spawnSync } from "node:child_process";
 import { existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { voiceEngine } from "./voiceBrain";
-import { stopPipeline, wantPipeline } from "./voicePipeline";
+import { pipelineState, stopPipeline, wantPipeline } from "./voicePipeline";
 
 /** Where the New voice's pipeline listens (loopback only). */
 const VOICE_PIPELINE_PORT = Number(process.env.VC_VOICE_PIPELINE_PORT) || 8857;
+import { configureChangeDelivery, currentDeliveryRecovery, dispatchSourceRollback } from "./changeDelivery";
+import { observeReleaseVoiceHealth, type BoxReleaseHealth } from "./releaseHealth";
 import { loadConfig, SERVER_VERSION, SERVER_REV } from "./config";
 import { registerCommands } from "./commands";
 import { loadKeyStore, hasKey, keychainCommands, saveKeys, keyNames } from "./keys";
@@ -210,6 +212,18 @@ async function main(): Promise<void> {
   const { drainServer, SHUTDOWN_GRACE_MS } = await import("./drain");
   const { activeVoiceSessions } = await import("./voice");
   const { recentInput } = await import("./presence");
+  const bootedAt = Date.now();
+  const boxReleaseHealth = async (): Promise<BoxReleaseHealth> => {
+    const pi = engine.health() as { pi?: { state?: string } };
+    const pipeline = pipelineState();
+    const required = voiceEngine({ stateDir: cfg.stateDir }) === "new" && process.env.VC_VOICE_PIPELINE !== "off";
+    return { version: SERVER_VERSION, revision: SERVER_REV, observedAt: Date.now(), ready: !!engine.engine && !engine.error && pi.pi?.state === "up",
+      ...(engine.error ? { error: "Box agent engine failed to initialize" } : {}),
+      // Check the managed child, listener ownership and actual runtime HTTP schema; never process-running alone.
+      voice: await observeReleaseVoiceHealth({ required, pipeline, stateDir: cfg.stateDir, port: VOICE_PIPELINE_PORT, startupDeadline: bootedAt + 10 * 60_000 }) };
+  };
+  configureChangeDelivery({ boxHealth: boxReleaseHealth, requestSourceRollback: dispatchSourceRollback,
+    vaults: () => vaultRefs().map(v => ({ name: v.name, path: v.path })), stateDir: cfg.stateDir });
   const server = await startHttpServer({
     health: async () => ({
       ok: true,
@@ -228,6 +242,13 @@ async function main(): Promise<void> {
       keyNames: keyNames(),
       version: SERVER_VERSION,
       rev: SERVER_REV,
+      releaseReadiness: await (async () => {
+        const b = await boxReleaseHealth();
+        const recovery = await currentDeliveryRecovery(SERVER_VERSION, SERVER_REV);
+        const failed = !!b.error || b.voice?.state === "failed" || recovery.failed;
+        const ready = b.ready && (!b.voice?.required || (b.voice.state === "ready" && b.voice.owned));
+        return { status: failed ? "failed" : ready ? "healthy" : "pending", binaryFallback: recovery.binaryFallback, reason: failed ? "Actual release readiness failed" : ready ? "Box ready; laptop verification tracked separately" : "Waiting for actual engine/voice readiness" };
+      })(),
       vault: cfg.vaultName,
       git: gitState,
       keys: { openrouter: hasKey("api.openrouter"), elevenlabs: hasKey("service.elevenlabs") },

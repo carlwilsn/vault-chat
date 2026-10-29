@@ -117,16 +117,72 @@ sha_ok() {  # sha_ok <file> <file.sha256>
   [ -n "$want" ] && [ "$want" = "$got" ]
 }
 
-wait_for_version() {  # wait_for_version <ver> <seconds>; 0 when health reports it
-  local want="$1" deadline=$(( $(date +%s) + $2 )) h v
+wait_for_version() {  # <version> <seconds> [revision] [legacy-fallback]; 2 = matching but pending
+  local want="$1" deadline=$(( $(date +%s) + $2 )) want_rev="${3:-}" legacy="${4:-}" h v rev readiness saw_pending=0
   while :; do
+    saw_pending=0
     if h="$(health)"; then
       v="$(strip_v "$(printf '%s' "$h" | json_field version)")"
-      [ "$v" = "$want" ] && return 0
+      rev="$(printf '%s' "$h" | json_field rev)"
+      if [ "$v" = "$want" ] && { [ -z "$want_rev" ] || [ "$rev" = "$want_rev" ]; }; then
+        readiness="$(printf '%s' "$h" | json_field releaseReadiness.status)"
+        [ "$readiness" = failed ] && return 1
+        [ "$readiness" = healthy ] && return 0
+        # Only the RETAINED old binary may predate the actual readiness contract.
+        [ "$legacy" = legacy-fallback ] && [ -z "$readiness" ] && return 0
+        [ "$readiness" = pending ] && saw_pending=1
+      fi
     fi
-    [ "$(date +%s)" -ge "$deadline" ] && return 1
+    if [ "$(date +%s)" -ge "$deadline" ]; then
+      [ "$saw_pending" = 1 ] && return 2
+      return 1
+    fi
     sleep "$HEALTH_POLL_S"
   done
+}
+
+record_failure() { # durable private host observation, not a synced card or public write API
+  mkdir -p "$STATE/release-failures"
+  node - "$STATE" "$ver" "$expected_rev" <<'NODE'
+const fs = require("fs"), path = require("path"), crypto = require("crypto");
+const [root, version, revision] = process.argv.slice(2);
+const directory = path.join(root, "release-failures");
+const file = path.join(directory, crypto.createHash("sha256").update(version).digest("hex") + ".json");
+if (!fs.existsSync(file)) {
+  const tmp = file + ".tmp", fd = fs.openSync(tmp, "w", 0o600);
+  try { fs.writeFileSync(fd, JSON.stringify({version,revision,observedAt:Date.now(),reason:"Actual box release readiness failed"})); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+  fs.renameSync(tmp, file);
+  for (const p of [directory, root]) { const d = fs.openSync(p, "r"); try { fs.fsyncSync(d); } finally { fs.closeSync(d); } }
+}
+NODE
+  : > "failed/$ver"
+}
+
+recover_failed_release() {
+  record_failure
+  local observed
+  if observed="$(health)" && [ "$(printf '%s' "$observed" | json_field releaseReadiness.binaryFallback)" = false ]; then
+    log "$ver is a failed recovery release; no revert-of-revert or automatic binary bounce"
+    alert "Needs you: recovery release failed" "v$ver is a recovery release and failed actual readiness. Failure is durably recorded; automatic reversal is stopped."
+    return 1
+  fi
+  if [ -n "$prev" ] && [ -d "$prev" ]; then
+    local oldver oldrev
+    oldver="$(strip_v "$(json_field version < "$prev/$META")")"
+    oldrev="$(json_field rev < "$prev/$META")"
+    log "$ver failed actual release readiness — restoring retained v$oldver; source recovery remains pending"
+    point_current "$prev"
+    systemctl --user restart "$UNIT" || log "systemctl restart (rollback) returned non-zero"
+    if wait_for_version "$oldver" "$HEALTH_WAIT_S" "$oldrev" legacy-fallback; then
+      alert "Needs attention: source recovery pending" "v$ver failed actual release readiness; retained v$oldver is running. The durable failure is recorded for change-specific source recovery; restoring a binary does not ship a revert."
+    else
+      alert "Needs you: the box server is down" "v$ver failed readiness and retained v$oldver is not healthy either. Check vault-chat-server."
+    fi
+  else
+    log "$ver failed readiness and there is nothing to restore"
+    alert "Needs you: the box server is down" "v$ver failed actual release readiness (no retained version). Check vault-chat-server."
+  fi
+  return 1
 }
 
 # refresh_self <dir>: install the release's deploy files (DEPLOY_FILES) from <dir> where
@@ -175,6 +231,16 @@ case "$ver" in *[!0-9A-Za-z.+-]*|"") die "refusing odd version '$ver'";; esac
 
 cur="$(strip_v "$(current_version)")"
 if [ "$ver" = "$cur" ]; then
+  # The laptop can report a fresh negative AFTER the original box install succeeded. The ordinary
+  # updater timer observes this durable server result too; no second watchdog or version ping-pong.
+  if h="$(health)" && [ "$(printf '%s' "$h" | json_field releaseReadiness.status)" = failed ]; then
+    expected_rev="$(json_field rev < "$(read_current)/$META")"
+    prev=""
+    if [ -f "versions/$ver/previous.json" ]; then prev="$(json_field previous < "versions/$ver/previous.json")"; fi
+    case "$prev" in versions/*) ;; *) prev="" ;; esac
+    recover_failed_release
+    exit 1
+  fi
   log "up to date ($ver)"
   refresh_self "$(read_current)/deploy"
   exit 0
@@ -212,11 +278,15 @@ sha_ok "$stage/$BUNDLE" "$stage/$BUNDLE.sha256" \
   || die "sha256 mismatch for $BUNDLE in $tag — refusing to install it"
 meta_ver="$(strip_v "$(json_field version < "$stage/$META")")"
 [ "$meta_ver" = "$ver" ] || die "$META says '$meta_ver' but the release is $ver — refusing"
+expected_rev="$(json_field rev < "$stage/$META")"
+[[ "$expected_rev" =~ ^[a-f0-9]{40}$ ]] || die "release metadata has no pinned source revision"
+[ "$(sha256sum "$stage/$BUNDLE" | awk '{print $1}')" = "$(json_field sha256 < "$stage/$META")" ] || die "bundle does not match release metadata"
 
 if fetch "$ASSETS" optional; then
   fetch "$ASSETS.sha256"
   sha_ok "$stage/$ASSETS" "$stage/$ASSETS.sha256" \
     || die "sha256 mismatch for $ASSETS in $tag — refusing to install it"
+  [ "$(sha256sum "$stage/$ASSETS" | awk '{print $1}')" = "$(json_field assetsSha256 < "$stage/$META")" ] || die "assets do not match release metadata"
   mkdir -p "$stage/assets"
   tar -xzf "$stage/$ASSETS" -C "$stage/assets"
   rm -f "$stage/$ASSETS"
@@ -227,6 +297,7 @@ if fetch "$DEPLOY" optional; then
   fetch "$DEPLOY.sha256"
   sha_ok "$stage/$DEPLOY" "$stage/$DEPLOY.sha256" \
     || die "sha256 mismatch for $DEPLOY in $tag — refusing to install it"
+  [ "$(sha256sum "$stage/$DEPLOY" | awk '{print $1}')" = "$(json_field deploySha256 < "$stage/$META")" ] || die "deploy files do not match release metadata"
   mkdir -p "$stage/deploy"
   tar -xzf "$stage/$DEPLOY" -C "$stage/deploy"
   rm -f "$stage/$DEPLOY" "$stage/$DEPLOY.sha256"
@@ -260,29 +331,23 @@ fi
 
 # ── 4. swap and restart ─────────────────────────────────────────────────────
 prev="$(read_current)"
+node -e 'const fs=require("fs"); const f=process.argv[1];const fd=fs.openSync(f,"w",0o600);try{fs.writeFileSync(fd,JSON.stringify({previous:process.argv[2]}));fs.fsyncSync(fd);}finally{fs.closeSync(fd);}' "versions/$ver/previous.json" "$prev"
 point_current "versions/$ver"
 systemctl --user restart "$UNIT" || log "systemctl restart returned non-zero"
 
 # ── 5. prove it, or roll back ───────────────────────────────────────────────
-if wait_for_version "$ver" "$HEALTH_WAIT_S"; then
-  log "now running $ver"
-  # ── 7. the updater and units of the version now running ──
+status=0
+wait_for_version "$ver" "$HEALTH_WAIT_S" "$expected_rev" || status=$?
+if [ "$status" = 0 ]; then
+  log "now running $ver with actual box readiness; physical laptop verification is separate"
+  refresh_self "versions/$ver/deploy"
+elif [ "$status" = 2 ]; then
+  # An unsupported/starting voice adapter is UNKNOWN, not proof of failure. Offline laptop is likewise
+  # never a reason to undo source. Keep the installed version and show the pending server/card state.
+  log "$ver matches source/version but actual readiness remains pending; not confirmed and not reverted"
   refresh_self "versions/$ver/deploy"
 else
-  : > "failed/$ver"
-  if [ -n "$prev" ] && [ -d "$prev" ]; then
-    log "$ver did not report healthy within ${HEALTH_WAIT_S}s — rolling back to $prev"
-    point_current "$prev"
-    systemctl --user restart "$UNIT" || log "systemctl restart (rollback) returned non-zero"
-    if wait_for_version "$cur" "$HEALTH_WAIT_S"; then
-      alert "Server update failed" "v$ver did not come up healthy within ${HEALTH_WAIT_S}s; rolled back to v$cur." fixed
-    else
-      alert "Needs you: the box server is down" "v$ver did not come up healthy and the rollback to v$cur is not healthy either. Check vault-chat-server on the box."
-    fi
-  else
-    log "$ver did not report healthy within ${HEALTH_WAIT_S}s and there is nothing to roll back to"
-    alert "Needs you: the box server is down" "v$ver did not come up healthy within ${HEALTH_WAIT_S}s (no earlier version to roll back to). Check vault-chat-server on the box."
-  fi
+  recover_failed_release
   exit 1
 fi
 
