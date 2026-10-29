@@ -40,6 +40,28 @@ describe("host-run proof authority", () => {
     await expect(f.proof.consume(permit, source)).resolves.toMatchObject({ source });
     await expect(f.proof.consume(permit, source)).rejects.toThrow("already-used");
   });
+  it("allows only exact host-authorized rollback removals, never ordinary removal or a new failure", async () => {
+    const executor = fixture().host.execute;
+    const execute: ProofHost["execute"] = async (revision, gate, command) => {
+      const r = await executor(revision, gate, command);
+      if (revision === head && r.tests) r.tests = r.tests.filter(t => t.name !== "passing test");
+      return r;
+    };
+    await expect(fixture({execute}).proof.prove(source, ask)).rejects.toThrow("removed test");
+    const policy: NonNullable<ProofHost["authorizeRemovedTests"]> = async (pins, before, after) => {
+      expect(pins).toEqual(source); expect(before).toHaveLength(7); expect(after).toHaveLength(7);
+      // Mutation of policy inputs cannot rewrite actual gate receipts.
+      before[0]!.exitCode = 9;
+      return { "test:harness": [{file:"test/file.test.ts",name:"passing test"}], "test:server": [{file:"test/file.test.ts",name:"passing test"}] };
+    };
+    await expect(fixture({execute, authorizeRemovedTests:policy}).proof.prove(source, ask)).resolves.toHaveProperty("permit");
+    const newFailure: ProofHost["execute"] = async (...args) => {
+      const r = await execute(...args);
+      if (args[0] === head && r.tests) r.tests.push({file:"test/file.test.ts",name:"new failure",status:"failed"});
+      return r;
+    };
+    await expect(fixture({execute:newFailure,authorizeRemovedTests:policy}).proof.prove(source, ask)).rejects.toThrow("new named failure");
+  });
   it("rejects fabricated/serialized permits and permits from another service or before restart", async () => {
     const f = fixture(), other = fixture();
     const { permit } = await f.proof.prove(source, ask);

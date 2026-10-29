@@ -71,3 +71,22 @@ export const HARNESS_REPORTER_SOURCE = `export default async function* (source) 
   yield JSON.stringify({type:"vc:complete"}) + "\\n";
 }
 `;
+
+/** Runs in the real Vitest coordinator, not a candidate npm script or writable /tmp JSON file.
+ * Test console output is worker data, not this reporter's result. Tests remain trusted for their intent;
+ * this is not a security boundary against arbitrary hostile code inside the framework's own VM. */
+export const VITEST_REPORT_PREFIX = "@@vc-vitest@@";
+export const VITEST_REPORTER_SOURCE = `import { JsonReporter } from 'vitest/reporters';
+export default class extends JsonReporter {
+  errors = [];
+  async onFinished(files, errors = [], coverage) {
+    this.errors = errors;
+    await super.onFinished(files, errors, coverage);
+  }
+  async writeReport(raw) {
+    const report = JSON.parse(raw);
+    report.unhandledErrors = this.errors.map(e => String(e?.message || e));
+    process.stdout.write("${VITEST_REPORT_PREFIX}" + JSON.stringify(report) + "\\n");
+  }
+}
+`;

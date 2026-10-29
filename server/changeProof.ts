@@ -55,7 +55,11 @@ export type ChangeReceipt = {
 };
 /** Deliberately opaque and non-serializable authority: JSON read from disk cannot be a permit. */
 export type ChangePermit = { readonly id: string };
+export type RemovedTestAllowance = Partial<Record<ChangeGate, readonly Pick<TestCase, "file" | "name">[]>>;
+/** Installed recovery policy verifies an exact service-generated revert and original receipt; never tool input. */
+export type RollbackTestPolicy = (source: ProofSource, baseline: readonly GateReceipt[], candidate: readonly GateReceipt[]) => Promise<RemovedTestAllowance>;
 export type ProofHost = {
+  authorizeRemovedTests?: RollbackTestPolicy;
   /** Assert a clean immutable snapshot (including HEAD/tree) before AND after execution. */
   assertSource(source: string): Promise<void>;
   /** Same installed toolchain/dependencies/environment for both runs, sandboxed without live ports or secrets.
@@ -90,7 +94,7 @@ function cases(r: GateReceipt): Map<string, TestCase> {
 /** Same named failures ONLY. Equal failure counts are insufficient. Removed/passing→skipped tests regress.
  * Non-test commands must succeed on both sources; a broken baseline/build is never an allowance to ship.
  */
-export function compareChangeGates(baseline: readonly GateReceipt[], candidate: readonly GateReceipt[]): void {
+export function compareChangeGates(baseline: readonly GateReceipt[], candidate: readonly GateReceipt[], removed: RemovedTestAllowance = {}): void {
   for (const list of [baseline, candidate]) {
     if (list.length !== CHANGE_GATES.length || new Set(list.map((r) => r.gate)).size !== CHANGE_GATES.length) throw new Error("Missing or duplicate required gate");
   }
@@ -105,7 +109,10 @@ export function compareChangeGates(baseline: readonly GateReceipt[], candidate: 
     const before = cases(b), after = cases(c);
     for (const [key, test] of before) {
       const next = after.get(key);
-      if (!next) throw new Error(`${gate}: removed test ${key}`);
+      if (!next) {
+        if (removed[gate]?.some(t => testKey({ ...t, status: "passed" }) === key)) continue;
+        throw new Error(`${gate}: removed test ${key}`);
+      }
       if (["passed", "failed"].includes(test.status) && ["skipped", "todo"].includes(next.status)) throw new Error(`${gate}: previously executed test no longer runs ${key}`);
     }
     for (const [key, test] of after) {
@@ -145,7 +152,8 @@ export function createChangeProofService(host: ProofHost) {
       // Copy immediately: callers cannot change pins while long gates run.
       source = structuredClone(source); ask = structuredClone(ask);
       const baseline = await run(source.base), candidate = await run(source.head);
-      compareChangeGates(baseline, candidate);
+      const removed = host.authorizeRemovedTests ? await host.authorizeRemovedTests(structuredClone(source), structuredClone(baseline), structuredClone(candidate)) : {};
+      compareChangeGates(baseline, candidate, removed);
       const ui = structuredClone(await host.record(source));
       assertUI(ui, source);
       await host.assertArtifact(ui);

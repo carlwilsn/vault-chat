@@ -5,8 +5,8 @@ import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import { constants, chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
-import { createChangeProofService, CHANGE_COMMANDS, type AskCheck, type GateExecution, type ProofHost, type ProofSource, type UIReceipt } from "./changeProof";
-import { HARNESS_REPORTER_SOURCE, parseHarnessReport, parseVitestReport } from "./changeTestReports";
+import { createChangeProofService, CHANGE_COMMANDS, type AskCheck, type GateExecution, type ProofHost, type ProofSource, type UIReceipt, type RollbackTestPolicy } from "./changeProof";
+import { HARNESS_REPORTER_SOURCE, VITEST_REPORTER_SOURCE, VITEST_REPORT_PREFIX, parseHarnessReport, parseVitestReport } from "./changeTestReports";
 import { git, withRepoLock } from "./git";
 import { acceptProvenReview, baseBranch, type Review } from "./projectChanges";
 import { killTree } from "./commands/proc";
@@ -21,11 +21,49 @@ export type ChangeHostOptions = {
   shell: readonly string[]; home: string; privateRoot: string;
   installedEntry: string; dependencies: string; dependencyLock: string;
   node: string; npm: string; path: string; browser?: string;
-  /** Installed credential-free npm provisioner; candidate only supplies committed manifests. */
+  /** Installed credential-free provisioner, used only with the installed trusted toolchain manifests. */
   provision?: (manifest: string, lock: string) => Promise<{ dependencies: string; dependencyLock: string }>;
   timeoutMs?: number; signal?: AbortSignal;
+  /** Service-verified exact source recovery only; never populated from submission tool arguments. */
+  rollbackRemovedTests?: RollbackTestPolicy;
+  rollbackGateInfrastructure?: (source: ProofSource) => Promise<void>;
   onProgress?: (text: string) => void;
 };
+
+/** Fixed vault-chat gate profile. Accepted main is the immutable trust anchor for local gate files.
+ * A change to gate infrastructure/dependencies needs an installed host upgrade, not self-approval.
+ * These are labels only; execution below never interprets package scripts (including lifecycle hooks). */
+export const PROOF_GATE_SCRIPTS: Readonly<Record<string, string>> = Object.freeze({
+  "typecheck:phone": "tsc --noEmit -p phone", "typecheck:board": "tsc --noEmit -p board",
+  "typecheck:server": "tsc -p server/tsconfig.json",
+  "test:harness": 'node --import tsx --import ./test/harness/register.mjs --test "test/harness/*.test.ts"',
+  "test:server": "node server/build.mjs && vitest run --config server/vitest.config.ts",
+  "build:phone": "vite build --config phone/vite.config.ts", "build:board": "vite build --config board/vite.config.ts",
+  "build:server": "npm run build:phone && npm run build:board && node server/build.mjs --phone-app --board-app",
+});
+const gateControlFile = (name: string): boolean =>
+  /(^|\/)(package\.json|tsconfig[^/]*\.json|(?:vite|vitest|tailwind|postcss|babel)\.config\.[^/]+|\.(?:babelrc|postcssrc|browserslistrc)(?:\.[^/]+)?)$/.test(name)
+  || ["server/build.mjs", "server/katexCssGen.mjs", "test/harness/register.mjs", "test/harness/loader.mjs"].includes(name)
+  || name.startsWith("server/shims/");
+
+/** Never trust a candidate-selected config, loader, build plugin or lifecycle hook to certify itself. */
+export async function assertGateInfrastructure(repo: string, source: ProofSource, installedScripts: Record<string, string>, recovery?: (source: ProofSource) => Promise<void>): Promise<void> {
+  for (const [name, expected] of Object.entries(PROOF_GATE_SCRIPTS)) {
+    if (installedScripts[name] !== expected) throw new Error(`Installed gate profile needs upgrade: ${name}`);
+  }
+  const baseline = JSON.parse(await git(repo, ["show", `${source.base}:package.json`]));
+  const candidate = JSON.parse(await git(repo, ["show", `${source.head}:package.json`]));
+  for (const [name, expected] of Object.entries(PROOF_GATE_SCRIPTS)) {
+    if (baseline.scripts?.[name] !== expected) throw new Error(`Unsupported baseline gate profile: ${name}`);
+  }
+  if (recovery) { await recovery(structuredClone(source)); return; }
+  if (JSON.stringify(baseline.scripts) !== JSON.stringify(candidate.scripts)) throw new Error("Gate infrastructure changed: package scripts; installed host upgrade required");
+  const changed = (await git(repo, ["diff", "--name-only", "-z", source.base, source.head])).split("\0").filter(Boolean);
+  for (const name of changed) {
+    if (name !== "package.json" && gateControlFile(name)) throw new Error(`Gate infrastructure changed: ${name}; installed host upgrade required`);
+  }
+}
+
 export type SubmitCheck = { assessment: string; evidence: string[]; ui: Omit<RecordArgs, "url" | "out">; surface: "phone" | "board" | "desktop" };
 export type PinnedChange = { vault: string; source: ProofSource; review: Review };
 
@@ -83,13 +121,13 @@ export async function checkSourceLinks(repo: string, revision: string): Promise<
 }
 
 /** Real isolated runner. Installed dependencies are shared read-only only when BOTH lockfiles match that
- * installed dependency set. Dependency changes fail visibly until provisioned; never npm-exec host credentials.
+ * installed dependency set. Dependency changes need a host upgrade; never npm-exec host credentials.
  */
 export async function createInstalledChangeHost(o: ChangeHostOptions, repo: string, source: ProofSource, check: SubmitCheck): Promise<{ host: ProofHost; root: string; close(): void }> {
   if (!o.shell.length || o.shell.at(-1) !== "--" || !o.shell[0]!.includes("bwrap")) throw new Error("Proof requires the installed bubblewrap guard");
   if (!isAbsolute(o.privateRoot) || !isAbsolute(o.installedEntry)) throw new Error("Installed absolute proof storage and entry are required");
   const entry = realpathSync(o.installedEntry);
-  const installedDependencies = o.provision ? o.dependencies : realpathSync(o.dependencies);
+  let installedDependencies = o.provision ? o.dependencies : realpathSync(o.dependencies);
   const lockBytes = readFileSync(o.dependencyLock);
   const lockHash = hash(lockBytes);
   const installedManifest = JSON.parse(readFileSync(join(dirname(o.dependencyLock), "package.json"), "utf8"));
@@ -103,17 +141,14 @@ export async function createInstalledChangeHost(o: ChangeHostOptions, repo: stri
   chmodSync(root, 0o700);
   const hostDir = join(root, "host"), logs = join(root, "logs"), evidence = join(root, "evidence");
   for (const d of [hostDir, logs, evidence]) mkdirSync(d);
-  const dependencies = join(root, "dependencies");
   cpSync(entry, join(hostDir, "service.mjs"));
   writeFileSync(join(hostDir, "harness-reporter.mjs"), HARNESS_REPORTER_SOURCE);
   writeFileSync(join(hostDir, "npm-user"), "");
   writeFileSync(join(hostDir, "npm-global"), "");
+  writeFileSync(join(hostDir, "vitest-reporter.mjs"), VITEST_REPORTER_SOURCE);
   const snapshots = new Map<string, { dir: string; files: string[]; tree: string; dependencies: string }>();
   const dependencyCopies = new Map<string, string>();
   const sourceDependencies: Record<string, { manifest: string; lock: string }> = {};
-  // npm invokes `node` from PATH. Insert reporter options BEFORE --test's file arguments, without modifying
-  // pinned package.json or relying on candidate text as test results. The installed reporter owns stdout.
-  writeFileSync(join(hostDir, "node"), `#!/bin/sh\nfor arg do\n if [ "$arg" = "--test" ]; then exec ${quote(o.node)} --test-reporter=${quote(join(hostDir, "harness-reporter.mjs"))} "$@"; fi\ndone\nexec ${quote(o.node)} "$@"\n`, { mode: 0o755 });
   const toolPath = o.path.split(":").filter(Boolean).map(p => { try { return realpathSync(p); } catch { return ""; } }).filter(p => p && !inside(p, o.home)).join(":");
   const env = (revision: string): Record<string, string> => ({
     PATH: `${hostDir}:${toolPath}`, HOME: "/tmp/proof-home", LANG: "C.UTF-8", TMPDIR: "/tmp", CI: "1",
@@ -124,16 +159,26 @@ export async function createInstalledChangeHost(o: ChangeHostOptions, repo: stri
   /** Overlay the existing credential-hiding guard, additionally removing the host home, shared tmp/runtime
    * sockets and ALL host networking. Tests and UI use their own loopback inside this net namespace.
    * The service bundle/reporter/logs are never writable by candidate processes. */
-  const sandbox = (s: { dir: string; files: string[]; dependencies: string }, writeEvidence = false): string[] => {
+  const sandbox = (s: { dir: string; files: string[]; dependencies: string }, writeEvidence = false, gateExecution = false): string[] => {
     const args = [...o.shell.slice(0, -1), "--unshare-net", "--tmpfs", o.home, "--tmpfs", "/tmp", "--tmpfs", "/run", "--tmpfs", "/var/tmp",
       "--ro-bind", hostDir, hostDir, "--bind", s.dir, s.dir, "--ro-bind", s.dependencies, join(s.dir, "node_modules"),
       "--ro-bind", join(s.dir, ".git"), join(s.dir, ".git")];
     for (const cache of [".vite", ".vite-temp", ".vite-preview-before"]) args.push("--tmpfs", join(s.dir, "node_modules", cache));
     for (const f of s.files) if (!lstatSync(join(s.dir, f)).isSymbolicLink()) args.push("--ro-bind", join(s.dir, f), join(s.dir, f));
+    if (gateExecution && o.rollbackGateInfrastructure) {
+      // Only a service-attested exact revert can use this mode. Preserve actual candidate source and
+      // tests, but execute the same immutable current-main gate implementations on both revisions.
+      const trusted = snapshots.get(source.base)!;
+      for (const file of trusted.files.filter(f => f !== "package.json" && gateControlFile(f))) {
+        args.push("--ro-bind", join(trusted.dir, file), join(s.dir, file));
+      }
+    }
     if (writeEvidence) args.push("--bind", evidence, evidence);
     return [...args, "--"];
   };
   try {
+    await assertGateInfrastructure(repo, source, installedManifest.scripts, o.rollbackGateInfrastructure);
+    if (o.provision) installedDependencies = (await o.provision(JSON.stringify(installedManifest), lockBytes.toString())).dependencies;
     for (const revision of new Set([source.base, source.head])) {
       await checkSourceLinks(repo, revision);
       const dir = join(root, revision);
@@ -143,19 +188,14 @@ export async function createInstalledChangeHost(o: ChangeHostOptions, repo: stri
       const manifestBytes = readFileSync(join(dir, "package.json"), "utf8"), snapshotLock = readFileSync(join(dir, "package-lock.json"), "utf8");
       const manifest = JSON.parse(manifestBytes);
       sourceDependencies[revision] = { manifest: hash(manifestBytes), lock: hash(snapshotLock) };
-      let provisioned = installedDependencies;
-      if (o.provision) {
-        o.onProgress?.(`${revision}: provision public integrity-checked dependencies (no install scripts)`);
-        provisioned = (await o.provision(manifestBytes, snapshotLock)).dependencies;
-        o.signal?.throwIfAborted();
-      } else {
-        if (hash(snapshotLock) !== lockHash) throw new Error(`Installed dependency lock does not match ${revision}; provision that lock before proof`);
-        if (dependencyFields.some(field => normalized(manifest[field]) !== normalized(installedManifest[field]))) throw new Error(`Dependency manifest differs from installed lock at ${revision}; provision dependencies before proof`);
-      }
-      const dependencyKey = hash(snapshotLock + normalized(dependencyFields.map(f => manifest[f])));
+      // Candidate-provisioned compilers/runners (and transitive plugins) are not authority.
+      if (!o.rollbackGateInfrastructure && hash(snapshotLock) !== lockHash) throw new Error(`Installed gate dependency lock does not match ${revision}; installed host upgrade required`);
+      if (!o.rollbackGateInfrastructure && dependencyFields.some(field => normalized(manifest[field]) !== normalized(installedManifest[field]))) throw new Error(`Dependency manifest differs from installed lock at ${revision}; installed host upgrade required`);
+      const provisioned = installedDependencies;
+      const dependencyKey = lockHash;
       let copy = dependencyCopies.get(dependencyKey);
       if (!copy) {
-        copy = join(dependencies, dependencyKey);
+        copy = join(hostDir, "node_modules");
         cpSync(realpathSync(provisioned), copy, { recursive: true, verbatimSymlinks: true, mode: constants.COPYFILE_FICLONE, filter: p => ![".vite", ".cache"].includes(p.split("/").at(-1)!) && !p.split("/").at(-1)!.startsWith(".vite-") });
         for (const cache of [".vite", ".vite-temp", ".vite-preview-before"]) mkdirSync(join(copy, cache), { recursive: true });
         dependencyCopies.set(dependencyKey, copy);
@@ -173,7 +213,8 @@ export async function createInstalledChangeHost(o: ChangeHostOptions, repo: stri
   const snapshot = (revision: string) => { const s = snapshots.get(revision); if (!s) throw new Error("Unknown source pin"); return s; };
   let recorded: UIReceipt | undefined;
   const host: ProofHost = {
-    runnerVersion: `installed-change-host/1:${hash(readFileSync(entry))}`,
+    authorizeRemovedTests: o.rollbackRemovedTests,
+    runnerVersion: `installed-change-host/2:${hash(readFileSync(entry))}`,
     environment: JSON.stringify({ node: o.node, version: process.version, installedLock: lockHash, dependencies: sourceDependencies, network: "private-loopback", voice: "off" }),
     async assertSource(revision) {
       const s = snapshot(revision);
@@ -183,21 +224,33 @@ export async function createInstalledChangeHost(o: ChangeHostOptions, repo: stri
     async execute(revision, gate, command): Promise<GateExecution> {
       if (JSON.stringify(command) !== JSON.stringify(CHANGE_COMMANDS[gate])) throw new Error("Only the fixed seven installed gates may run");
       const s = snapshot(revision);
+      if (o.rollbackGateInfrastructure) await o.rollbackGateInfrastructure(structuredClone(source));
       o.onProgress?.(`${revision}: ${gate}`);
-      // Vitest supports reporter flags after `npm run ... --`. The harness needs the node shim above.
-      const argv = command[0] === "npm" ? [o.node, o.npm, ...command.slice(1)] : [...command];
-      if (gate === "test:server") argv.push("--", "--reporter=json", "--outputFile=/tmp/server-tests.json");
+      const tool = (file: string, ...args: string[]) => [o.node, join(hostDir, "node_modules", file), ...args];
+      const build = [o.node, "server/build.mjs"];
+      const commands: Record<string, string[][]> = {
+        "typecheck:desktop": [tool("typescript/bin/tsc", "--noEmit", "-p", ".")],
+        "typecheck:phone": [tool("typescript/bin/tsc", "--noEmit", "-p", "phone")],
+        "typecheck:board": [tool("typescript/bin/tsc", "--noEmit", "-p", "board")],
+        "typecheck:server": [tool("typescript/bin/tsc", "-p", "server/tsconfig.json")],
+        "test:harness": [[o.node, `--test-reporter=${join(hostDir, "harness-reporter.mjs")}`, "--import", join(hostDir, "node_modules/tsx/dist/loader.mjs"), "--import", "./test/harness/register.mjs", "--test", "test/harness/*.test.ts"]],
+        "test:server": [build, tool("vitest/vitest.mjs", "run", "--config", "server/vitest.config.ts", `--reporter=${join(hostDir, "vitest-reporter.mjs")}`)],
+        "build:server": [tool("vite/bin/vite.js", "build", "--config", "phone/vite.config.ts"), tool("vite/bin/vite.js", "build", "--config", "board/vite.config.ts"), [...build, "--phone-app", "--board-app"]],
+      };
+      const argv = commands[gate]!;
       const suffix = gate.replace(":", "-");
-      // The report is copied to stdout by installed shell AFTER npm exits. A distinct host-owned file is kept
-      // for each complete command; no clipped tool output or candidate-supplied path is parsed.
-      const script = `${argv.map(quote).join(" ")}; code=$?; ${gate === "test:server" ? 'printf "\\n@@vc-vitest@@\\n"; cat /tmp/server-tests.json; ' : ""}exit "$code"`;
-      const r = await runProofCommand(sandbox(s), ["sh", "-c", script], { cwd: s.dir, env: env(revision), timeoutMs: o.timeoutMs ?? 30 * 60_000, signal: o.signal });
+      // Only installed host argv is interpreted. No npm lifecycle, candidate CLI or writable report file.
+      const script = argv.map(args => args.map(quote).join(" ")).join(" && ");
+      const r = await runProofCommand(sandbox(s, false, true), ["sh", "-c", script], { cwd: s.dir, env: env(revision), timeoutMs: o.timeoutMs ?? 30 * 60_000, signal: o.signal });
       const logArtifact = join(logs, `${revision}-${suffix}.json`);
       writeFileSync(logArtifact, JSON.stringify({ command, argv, ...r }));
       let tests: ReturnType<typeof parseVitestReport> | undefined;
-      if (gate === "test:server") tests = parseVitestReport(r.stdout.split("\n@@vc-vitest@@\n").at(-1) ?? "", s.dir);
+      if (gate === "test:server") {
+        const reports = r.stdout.split("\n").filter(l => l.startsWith(VITEST_REPORT_PREFIX));
+        tests = parseVitestReport(reports.length === 1 ? reports[0]!.slice(VITEST_REPORT_PREFIX.length) : "", s.dir);
+      }
       if (gate === "test:harness") {
-        // npm's own script banner is not runner output. Only the installed reporter's NDJSON is parsed.
+        // The real Node coordinator filters child stdout/stderr events; only its reporter is authority.
         const lines = r.stdout.split("\n").filter(l => l.startsWith('{"type":"test:') || l.startsWith('{"type":"vc:complete"'));
         tests = parseHarnessReport(lines.join("\n"), s.dir);
       }
@@ -231,7 +284,7 @@ export async function createInstalledChangeHost(o: ChangeHostOptions, repo: stri
   return { host, root, close() {
     // Retain full logs, UI and receipt. Snapshots alone are disposable; no vault/project files are removed.
     for (const s of snapshots.values()) rmSync(s.dir, { recursive: true, force: true });
-    rmSync(dependencies, { recursive: true, force: true });
+    rmSync(join(hostDir, "node_modules"), { recursive: true, force: true });
   } };
 }
 

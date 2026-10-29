@@ -37,15 +37,12 @@ describe("unmocked installed submission orchestration", () => {
       // Immutable committed source, not the shared working tree another agent may still be editing.
       const archive = execFileSync("git", ["archive", "HEAD"], { cwd: root, maxBuffer: 64 * 1024 * 1024 });
       execFileSync("tar", ["-x", "-C", repo], { input: archive });
-      const pkg = JSON.parse(readFileSync(join(repo, "package.json"), "utf8"));
-      for (const name of ["typecheck:phone", "typecheck:board", "typecheck:server"]) pkg.scripts[name] = "tsc --noEmit -p .";
-      pkg.scripts["test:harness"] = "node --test proof.fixture.node.mjs";
-      pkg.scripts["test:server"] = "vitest run --config proof.fixture.config.mjs";
-      writeFileSync(join(repo, "package.json"), JSON.stringify(pkg));
       writeFileSync(join(repo, "tsconfig.json"), JSON.stringify({ compilerOptions: { target: "ES2022", module: "ESNext", moduleResolution: "bundler", skipLibCheck: true, jsx: "react-jsx", types: [] }, files: ["proof.fixture.ts"] }));
       writeFileSync(join(repo, "proof.fixture.ts"), "export const source: number = 1;\n");
-      writeFileSync(join(repo, "proof.fixture.node.mjs"), "import {it} from 'node:test'; import assert from 'node:assert/strict'; it('actual Node runner',()=>assert.equal(2+2,4));\n");
-      writeFileSync(join(repo, "proof.fixture.config.mjs"), 'export default {test:{include:["proof.fixture.test.ts"],fileParallelism:false}};');
+      for (const app of ["phone", "board", "server"]) writeFileSync(join(repo, app, "tsconfig.json"), JSON.stringify({ compilerOptions: { target:"ES2022",module:"ESNext",moduleResolution:"bundler",skipLibCheck:true,types:[] }, files:["../proof.fixture.ts"] }));
+      for (const name of execFileSync("find", [join(repo,"test/harness"), "-maxdepth", "1", "-name", "*.test.ts"], {encoding:"utf8"}).trim().split("\n").filter(Boolean)) rmSync(name);
+      writeFileSync(join(repo, "test/harness/proof.fixture.test.ts"), "import {it} from 'node:test'; import assert from 'node:assert/strict'; it('actual Node runner',()=>assert.equal(2+2,4));\n");
+      writeFileSync(join(repo, "server/vitest.config.ts"), 'export default {test:{include:["proof.*.test.ts"],fileParallelism:false}};');
       writeFileSync(join(repo, "proof.fixture.test.ts"), "import {it,expect} from 'vitest'; it('actual Vitest runner',()=>expect(2+2).toBe(4));\n");
       git(repo, "init", "-qb", "main"); git(repo, "add", "."); git(repo, "commit", "-qm", "Real application, lightweight runner fixtures");
       const base = git(repo, "rev-parse", "HEAD");
@@ -53,7 +50,10 @@ describe("unmocked installed submission orchestration", () => {
       const registered = registerFolder(vault, "app", repo); if ("error" in registered) throw new Error(registered.error);
       const cloned = await ensureClone(vault, "app", repo); if ("error" in cloned) throw new Error(cloned.error);
       const clone = cloneDirOf(vault, "app"); git(clone, "switch", "-qc", "agent/submission");
-      writeFileSync(join(clone, "proof.fixture.ts"), "export const source: number = 2;\n"); git(clone, "commit", "-qam", "[agent] requested fixture source");
+      writeFileSync(join(clone, "proof.fixture.ts"), "export const source: number = 2;\n");
+      writeFileSync(join(clone, "test/harness/added.test.ts"), "import {it} from 'node:test'; import assert from 'node:assert/strict'; it('accepted new Node case',()=>assert.equal(3+3,6));\n");
+      writeFileSync(join(clone, "proof.added.test.ts"), "import {it,expect} from 'vitest'; it('accepted new Vitest case',()=>expect(3+3).toBe(6));\n");
+      git(clone, "add", "."); git(clone, "commit", "-qm", "[agent] requested fixture source and new tests");
       const head = git(clone, "rev-parse", "HEAD");
       await ensureProjectThread(vault, "app", "App");
       appendNotes(vault, "project-app", [{ kind: "line", role: "user", text: "Change fixture source to 2 and verify the real app remains usable.", clientId: "native-actual-ask" }]);
@@ -74,6 +74,8 @@ describe("unmocked installed submission orchestration", () => {
       expect(accepted[0].review.title).toBe("Requested source change");
       const receipt = JSON.parse(readFileSync(join(accepted[0].proofDir, "receipt.json"), "utf8"));
       expect(receipt.ui).toMatchObject({ sourceVerified: true, stepsPassed: true, recorder: "RecordUI" });
+      expect(receipt.candidate.find((r: any) => r.gate === "test:harness").tests.some((t: any) => t.name === "accepted new Node case")).toBe(true);
+      expect(receipt.candidate.find((r: any) => r.gate === "test:server").tests.some((t: any) => t.name === "accepted new Vitest case")).toBe(true);
       expect(receipt.ask.requestText).toContain("Change fixture source to 2");
       expect((await readConv(vault, "project-app"))?.pendingAsk).toBeFalsy();
       const reverted = await requestRollback({ vault, accepted: accepted[0], reason: "Restore the specific accepted source change", jobs, host });
@@ -82,6 +84,9 @@ describe("unmocked installed submission orchestration", () => {
       await finish(jobs, reverted.job!);
       expect(readFileSync(join(repo, "proof.fixture.ts"), "utf8")).toContain("= 1");
       const final = await acceptedChanges(repo); expect(final).toHaveLength(2);
+      const recoveryReceipt = JSON.parse(readFileSync(join(final[1].proofDir, "receipt.json"), "utf8"));
+      expect(recoveryReceipt.candidate.find((r: any) => r.gate === "test:harness").tests.some((t: any) => t.name === "accepted new Node case")).toBe(false);
+      expect(recoveryReceipt.candidate.find((r: any) => r.gate === "test:server").tests.some((t: any) => t.name === "accepted new Vitest case")).toBe(false);
       expect(final[1].rollbackOf).toBe(accepted[0].id);
       expect((await requestRollback({ vault, accepted: accepted[0], reason: "Already recovered", jobs, host })).job).toBeUndefined();
       expect(git(repo, "remote")).toBe("");

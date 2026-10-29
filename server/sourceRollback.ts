@@ -7,7 +7,7 @@ import { git, withRepoLock } from "./git";
 import { baseBranch } from "./projectChanges";
 import { pinChange, type PinnedChange, type SubmitCheck } from "./changeHost";
 import type { AcceptedChange } from "./changeShipping";
-import { CHANGE_GATES, type ChangeReceipt, type RollbackTestPolicy, type RemovedTestAllowance } from "./changeProof";
+import { CHANGE_GATES, type ChangeReceipt, type RollbackTestPolicy, type RemovedTestAllowance, type ProofSource } from "./changeProof";
 
 /** Host-owned recovery smoke, deliberately not agent-dependent and not a replay of UI a revert removes.
  * Source recovery is established by git revert of the accepted range; this proves usable real pre-change
@@ -42,7 +42,7 @@ export async function sourceRollbackCommits(repo: string, a: AcceptedChange): Pr
   return expected;
 }
 
-export async function prepareSourceRollback(o: { vault: string; accepted: AcceptedChange; privateRoot: string }): Promise<{ pinned: PinnedChange; rollbackRemovedTests: RollbackTestPolicy; close(): void }> {
+export async function prepareSourceRollback(o: { vault: string; accepted: AcceptedChange; privateRoot: string }): Promise<{ pinned: PinnedChange; rollbackRemovedTests: RollbackTestPolicy; rollbackGateInfrastructure(source: ProofSource): Promise<void>; close(): void }> {
   const a = o.accepted, folder = a.review.folder;
   if (!a.acceptedAt || a.rollbackOf) throw new Error("Only an accepted original change can be rolled back; a revert release needs attention, never another automatic revert");
   mkdirSync(o.privateRoot, { recursive: true, mode: 0o700 });
@@ -82,10 +82,13 @@ export async function prepareSourceRollback(o: { vault: string; accepted: Accept
       receipt = JSON.parse(receiptBytes.toString()) as ChangeReceipt;
       if (receipt.id !== a.id || JSON.stringify(receipt.source) !== JSON.stringify(a.source)) throw new Error("Original recovery receipt does not match accepted identity");
     }
-    const rollbackRemovedTests: RollbackTestPolicy = async (source, baseline, candidate) => {
+    const rollbackGateInfrastructure = async (source: ProofSource): Promise<void> => {
       if (JSON.stringify(source) !== JSON.stringify(expected) || (await git(clone, ["rev-parse", "HEAD"])).trim() !== expected.head || (await git(clone, ["rev-parse", "HEAD^{tree}"])).trim() !== expected.tree || (await git(clone, ["status", "--porcelain"])).trim()) throw new Error("Recovery test policy requires the exact service-generated revert");
       if (a.basis !== "legacy-bootstrap" && !receipt) throw new Error("Original private service receipt is required to authorize removed tests");
       if (receiptBytes && !readFileSync(receiptPath).equals(receiptBytes)) throw new Error("Original recovery receipt changed during proof");
+    };
+    const rollbackRemovedTests: RollbackTestPolicy = async (source, baseline, candidate) => {
+      await rollbackGateInfrastructure(source);
       const allowed: RemovedTestAllowance = {};
       for (const gate of CHANGE_GATES) {
         if (gate !== "test:harness" && gate !== "test:server") continue;
@@ -105,6 +108,6 @@ export async function prepareSourceRollback(o: { vault: string; accepted: Accept
       }
       return allowed;
     };
-    return { pinned, rollbackRemovedTests, close };
+    return { pinned, rollbackRemovedTests, rollbackGateInfrastructure, close };
   } catch (e) { close(); throw e; }
 }
