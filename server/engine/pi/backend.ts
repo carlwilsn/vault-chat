@@ -11,6 +11,7 @@ import { isAbsolute, join, relative } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { CallRecord } from "../ledger";
 import type { ThreadTokenUsage } from "../context";
+import { healSessionCwd } from "../../sessionPaths";
 import { PiProc } from "./proc";
 import { McpRuntime, type ProcessServices } from "../../mcp/runtime";
 import { runSubagentTool, subagentTool } from "../../mcp/subagent";
@@ -559,6 +560,10 @@ export class PiBackend extends EventEmitter {
     }
     // Same pi session/file/leaf and history, current host schemas. Subagents only if started with them.
     const subagents = !!meta.subagents && o.subagents;
+    // The folder pi stored in the session's header is gone or hidden (its vault moved: ~/vaults/x -> ~/vc/vaults/x):
+    // pi would refuse to resume it ("Stored session working directory does not exist"). It resumes in the thread's
+    // folder now instead (server/sessionPaths.ts).
+    if (healSessionCwd(file, meta.cwd, this.o.sandbox.roots ?? [])) this.log(`thread ${threadId}: its stored folder is gone; it resumes in ${meta.cwd}`);
     const { proc } = await this.spawn({ cwd: meta.cwd, model: o.model, file, instr: meta.instr, tools: meta.tools, subagents, you: true });
     this.attach({ id: threadId, subagents, file, proc, model: o.model, lastUsed: Date.now(), turnId: null, msgIndex: 0, crashes: [], restoreModel: null });
   }
