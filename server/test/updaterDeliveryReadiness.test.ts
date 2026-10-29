@@ -42,6 +42,23 @@ describe("actual updater readiness contract (real bash helper, no network or lis
   });
 });
 
+describe("retained published source recovery after binary fallback", () => {
+  it("invokes the retained recovery CLI only after fallback readiness, without provider credentials", () => {
+    const root = mkdtempSync(join(tmpdir(), "vc-updater-recovery-")); roots.push(root);
+    const bin = join(root, "bin"), previous = join(root, "versions", "1.0.0");
+    mkdirSync(bin); mkdirSync(previous, { recursive: true }); mkdirSync(join(root, "failed"));
+    writeFileSync(join(previous, "server-version.json"), JSON.stringify({ version: "1.0.0", rev: "b".repeat(40) }));
+    const invocation = join(root, "invocation.json"), order = join(root, "order");
+    const capture = `require("fs").appendFileSync(${JSON.stringify(order)}, "recovery\\n"); require("fs").writeFileSync(${JSON.stringify(invocation)}, JSON.stringify({args:process.argv.slice(1), providerPresent:Object.hasOwn(process.env,"OPENAI_API_KEY"), state:process.env.VC_STATE_DIR, master:process.env.VC_MASTER, recovery:process.env.VC_UPDATER_RECOVERY}));`;
+    writeFileSync(join(bin, "node"), `#!/bin/sh\nif [ "$2" = "recover-published-release" ]; then\nexec '${process.execPath}' -e '${capture.replaceAll("'", "'\\''")}' "$@"\nfi\nexec '${process.execPath}' "$@"\n`, { mode: 0o755 });
+    const result = spawnSync("bash", ["-c", `set -eu; PATH="$TEST_PATH"; STATE="$TEST_ROOT"; ver=1.0.1; expected_rev="$TEST_REV"; prev=versions/1.0.0; META=server-version.json; BUNDLE=vault-chat-server.mjs; UNIT=test-only; HEALTH_WAIT_S=0; cd "$STATE";\n${helpers}\nlog() { :; }; alert() { :; }; health() { printf '%s' '{"releaseReadiness":{"status":"healthy"}}'; }; point_current() { printf 'fallback\\n' >> "$STATE/order"; }; systemctl() { :; }; wait_for_version() { printf 'ready\\n' >> "$STATE/order"; return 0; }; recover_failed_release;`], { env: { PATH: `${bin}:${dirname(process.execPath)}:${process.env.PATH ?? ""}`, TEST_PATH: `${bin}:${dirname(process.execPath)}:${process.env.PATH ?? ""}`, HOME: root, TEST_ROOT: root, TEST_REV: "a".repeat(40), VC_MASTER: join(root, "master"), OPENAI_API_KEY: "fixture-not-a-secret" }, encoding: "utf8" });
+    // The update itself remains a failed release, even though recovery was submitted.
+    expect(result.status, result.stderr).toBe(1);
+    expect(readFileSync(order, "utf8")).toBe("fallback\nready\nrecovery\n");
+    expect(JSON.parse(readFileSync(invocation, "utf8"))).toEqual({ args: [join(root, "versions", "1.0.1", "vault-chat-server.mjs"), "recover-published-release"], providerPresent: false, state: root, master: join(root, "master"), recovery: "1" });
+  });
+});
+
 describe("voice runtime readiness is owned and schema-checked, not a process-running green", () => {
   it("keeps unsupported readiness pending even beyond box deadline", () => {
     const result = evaluateReleaseHealth({ target: { id: "r", version: "1.0.1", revision: "a".repeat(40), installedAt: 1, previousVersion: "1.0.0" }, now: 10_000, boxDeadline: 500, maxReportAgeMs: 100_000, laptopClientId: "device", challenge: "challenge", box: { version: "1.0.1", revision: "a".repeat(40), observedAt: 10_000, ready: true, voice: { required: true, state: "unverified", owned: true, startupDeadline: 500 } } });

@@ -174,7 +174,19 @@ recover_failed_release() {
     point_current "$prev"
     systemctl --user restart "$UNIT" || log "systemctl restart (rollback) returned non-zero"
     if wait_for_version "$oldver" "$HEALTH_WAIT_S" "$oldrev" legacy-fallback; then
-      alert "Needs attention: source recovery pending" "v$ver failed actual release readiness; retained v$oldver is running. The durable failure is recorded for change-specific source recovery; restoring a binary does not ship a revert."
+      # The restored binary may predate automatic shipping. Continue recovery with the retained,
+      # checksummed failed release's service CLI, not an HTTP sidecar or a serialized proof permit.
+      # Only path configuration survives; provider keys and credentials never enter this process.
+      log "retained v$oldver is healthy; proving the change-specific source revert with installed v$ver"
+      if env -i HOME="$HOME" PATH="$PATH" \
+          VC_UPDATER_RECOVERY=1 VC_STATE_DIR="${VC_STATE_DIR:-$STATE}" \
+          VC_MASTER="${VC_MASTER:-}" VC_VAULT="${VC_VAULT:-}" VC_VAULT_NAME="${VC_VAULT_NAME:-}" \
+          VC_BARE_REPO="${VC_BARE_REPO:-}" VC_SECRETS_DIR="${VC_SECRETS_DIR:-}" \
+          node "$STATE/versions/$ver/$BUNDLE" recover-published-release; then
+        alert "Recovery: source revert submitted" "v$ver failed readiness; retained v$oldver is running. Source recovery was checked by the installed service; laptop sync, CI and device health determine completion." fixed
+      else
+        alert "Needs you: source recovery failed" "v$ver failed readiness; retained v$oldver is running, but the proven source revert could not finish. Check vault-chat-update logs; restoring a binary did not ship a revert."
+      fi
     else
       alert "Needs you: the box server is down" "v$ver failed readiness and retained v$oldver is not healthy either. Check vault-chat-server."
     fi

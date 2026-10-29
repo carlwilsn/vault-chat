@@ -395,5 +395,6 @@ process.on("unhandledRejection", (e) => {
 // `vault-chat-server.mjs master …`: the vault-chat folder's CLI (server/masterCli.ts), never the server.
 if (process.argv[2] === "record-ui") void import("./recordUI").then((m) => m.recordCli());
 else if (process.argv[2] === "prove-change-ui" || process.argv[2] === "verify-change-video") void import("./changeUI").then(m => m.changeUICli(process.argv[2]!, process.argv[3]!));
+else if (process.argv[2] === "recover-published-release") void import("./publishedRecovery").then(async m => process.exit(await m.runPublishedRecoveryCli())).catch(e => fatal(`source recovery failed: ${String(e)}`, 1));
 else if (process.argv[2] === "master") void import("./masterCli").then(async (m) => process.exit(await m.runMasterCli(process.argv.slice(3))));
 else main().catch((e) => fatal(`boot failed: ${e instanceof Error ? (e.stack ?? e.message) : String(e)}`, 1));
