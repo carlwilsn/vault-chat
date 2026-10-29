@@ -53,7 +53,7 @@ import { isNoteTool, noteTool, noteToolSpecs } from "../notesTools";
 import { capabilitiesOf, capabilityNote, learn } from "./capabilities";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { projectFolderOf, retireFolder, reviveFolder } from "../projectFolders";
-import { KEEP, OUTCOME_SEP, REVIEW_TOOL, SEND_BACK, answerReview, cloneDirOf, ensureClone, isGatedProject, pendingReview, prepareReview, proofQuestion } from "../projectChanges";
+import { answerReview, cloneDirOf, ensureClone, isGatedProject, pendingReview } from "../projectChanges";
 import { WRITE_TOOLS, writtenPath } from "../liveEdits";
 import { appendActivity, contextImage, searchActivity, youLayer } from "../activity";
 import { CAPTURE_FRESH_MS, chatPointerEntry } from "../../src/activityCore";
@@ -69,6 +69,8 @@ import { READ_ONLY_TOOLS, type SideLog, type SideState } from "./pi/side";
 import { TurnRecorder, type TurnLine } from "./turnLog";
 import { SERVER_VERSION } from "../config";
 import { runVaultTool, vaultToolSpecsFor } from "../vaultTools";
+import { submitChangeJob, requestRollback, SUBMIT_CHANGE_SCHEMA } from "../submitChange";
+import type { ChangeHostOptions } from "../changeHost";
 
 export type EngineDeps = {
   vault: string;
@@ -96,6 +98,8 @@ export type EngineDeps = {
   turnLog?: (line: TurnLine) => void;
   /** The per-command sandbox the vault's own tools run in (server/vaultTools.ts); null: none (not Linux). */
   shell?: () => string[] | null | undefined;
+  /** Installed service authority, never supplied by a tool or pi process. */
+  changeHost?: () => Promise<Omit<ChangeHostOptions, "privateRoot" | "signal">>;
 };
 
 /** What the engine raises: a question (kind "ask") or a line for Carl (kind "info"), with what the
@@ -188,25 +192,9 @@ export const ENGINE_TOOL_SPECS = [
   },
   {
     type: "function",
-    name: REVIEW_TOOL,
-    description:
-      "Only in the thread of a project that is a git repo, when a change is done and checked: hand it to Carl. You work in your clone of the project on a branch agent/<short-name>; commit everything there first. " +
-      "Carl gets a proof card in this thread (laptop and phone) with what changed, why, the test results and your screenshots, and two actions: Keep (the server merges your branch into the project's main branch and pushes) or Send back (his note comes back to you; go on with the same branch and call this again). " +
-      "This waits for his answer. Never merge, push or change the project's main branch yourself: you can't, and only Keep does.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        proofId: { type: "string", pattern: "^[A-Za-z0-9_-]{16,60}$", description: "A fresh unique handoff ID (e.g. a UUID), never reused. Proof artifacts belong to this handoff, not to a model tool-call ID." },
-        title: { type: "string", description: "The change in a few words (it names the branch when you have none)." },
-        branch: { type: "string", description: "Your branch, agent/<short-name> (optional: the one checked out in your clone)." },
-        what: { type: "string", description: "What changed, for Carl: a few lines." },
-        why: { type: "string", description: "Why: the ask or the fault it answers." },
-        tests: { type: "string", description: "The checks you ran and their results, as they printed (pass counts, failures)." },
-        images: { type: "array", items: { type: "string" }, description: "Screenshots (or a short video) of the change, paths in your clone or absolute: the proof he looks at." },
-      },
-      required: ["proofId", "title", "what", "why", "tests"],
-      additionalProperties: false,
-    },
+    name: "SubmitChange",
+    description: "Submit the committed agent/<name> change in this project's clone. The installed service pins main and your candidate, runs all seven gates on both, records actual candidate-backed UI input/assertions, and accepts only with its live proof permit. Supply your explicit self-check against Carl's last request and RecordUI browser steps (no run/goto). Returns a background job; inspect with JobStatus. No Keep wait. Acceptance is not Shipped: laptop sync, CI and actual box/laptop health still follow. Never merge or push main yourself.",
+    inputSchema: SUBMIT_CHANGE_SCHEMA,
   },
   {
     type: "function",
@@ -478,7 +466,7 @@ export function sideToolSpecs(): ToolSpec[] {
   return agentToolSpecs().filter((t) => t.readOnly === true);
 }
 /** The agent's tools a side thread can't use: they belong to a turn (its question, plan, background maker, job, wake). */
-const TURN_ONLY_TOOLS = new Set(["AskUser", REVIEW_TOOL, "TodoWrite", "BoardMake", "Delegate", "StartJob", "JobStop", "JobSteer", "ScheduleWake"]);
+const TURN_ONLY_TOOLS = new Set(["AskUser", "SubmitChange", "TodoWrite", "BoardMake", "Delegate", "StartJob", "JobStop", "JobSteer", "ScheduleWake"]);
 /** Voice's Ask (server/voice.ts), a side thread: a question has the read-only tools and Show; an action every tool a
  *  side thread can use (BoardSend, Show, the notes …), with pi's own file tools (sideStart). */
 export function voiceSideToolSpecs(act: boolean): ToolSpec[] {
@@ -511,7 +499,6 @@ export class Engine {
   private resumeQueue = new Set<string>();
   private firstUp = true;
   private timers: NodeJS.Timeout[] = [];
-  private reviewPreparing = new Set<string>();
   private firing = new Set<string>();
   private childOf = new Map<string, string>(); // subagent threadId → parent conversation id
   /** Captures already sent to each conversation's model (in memory): one is never attached twice. */
@@ -731,6 +718,14 @@ export class Engine {
         }),
       };
     });
+  }
+
+  /** Card click or actual negative release health: deterministic host recovery, no model turn. */
+  async requestRollback(accepted: import("../changeShipping").AcceptedChange, reason: string, byCarl = false) {
+    if (!this.d.changeHost) throw new Error("Installed proof toolchain unavailable; rollback needs attention");
+    const result = await requestRollback({ vault: this.d.vault, accepted, reason, byCarl, jobs: this.d.jobEnv, host: await this.d.changeHost() });
+    if (result.job) this.updateSubagent(accepted.review.convId, result.job.id, { kind: "job", title: result.job.name, task: result.job.command, status: "running", state: "running", startedAt: result.job.startedAt, background: true, activity: "proving source recovery" });
+    return result;
   }
 
   /** Main, and one thread per project (made once; never a write when they exist). */
@@ -1661,7 +1656,7 @@ export class Engine {
     const chosen = projectFolderOf(this.d.vault, p.slug);
     if (chosen && "error" in chosen) return { error: `the folder chosen for this project can't be used: ${chosen.error}` };
     if (chosen && isGatedProject(chosen.abs) && !this.inVault(chosen.abs)) {
-      // A git repo: the agent works in its clone, on an agent/ branch; the folder itself is Carl's (Keep).
+      // A git repo: the agent works in its clone, on an agent/ branch; the folder itself is service-owned (proof-gated acceptance).
       return { abs: cloneDirOf(this.d.vault, p.slug), rel: chosen.abs.split(sep).join("/"), outside: true, git: { folder: chosen.abs.split(sep).join("/"), clone: cloneDirOf(this.d.vault, p.slug).split(sep).join("/") } };
     }
     if (chosen) {
@@ -2143,26 +2138,13 @@ export class Engine {
         return { success: r.ok, contentItems: [{ type: "inputText", text: r.text }] };
       }
       switch (name) {
-        case REVIEW_TOOL: {
-          // "You keep it" (server/projectChanges.ts): the proof card, then Carl's Keep (the server's merge) or Send back.
-          const slug = projectOfThread(convId);
-          const chosen = slug ? projectFolderOf(vault, slug) : null;
-          if (!slug || !chosen || "error" in chosen || !isGatedProject(chosen.abs)) return text(`${REVIEW_TOOL} is only for the thread of a project that works in a git repo on the box.`);
-          if (pendingReview(vault, convId) || this.reviewPreparing.has(convId)) return text("A handoff is already waiting for Carl in this conversation. Do not replace it.");
-          if (this.live.get(convId)?.ask) return text("Carl is answering a question already; finish that before handing over a review.");
-          this.reviewPreparing.add(convId);
-          let prep: Awaited<ReturnType<typeof prepareReview>>;
-          try { prep = await prepareReview({ vault, convId, slug, folder: chosen.abs, args: a }); }
-          finally { this.reviewPreparing.delete(convId); }
-          if ("error" in prep) return text(prep.error);
-          const ans = await this.waitForAnswer(p.threadId, proofQuestion(prep.review, prep.stat), [KEEP, SEND_BACK], p.signal);
-          const live = pendingReview(vault, convId);
-          const out = live ? await answerReview(vault, live, ans) : { kept: false, text: "(already settled)" };
-          this.log(`review ${prep.review.branch} on ${convId}: ${out.kept ? "kept" : "not kept"}`);
-          return text(`Carl answered: ${ans}${OUTCOME_SEP}${out.text}`);
+        case "SubmitChange": {
+          if (!this.d.changeHost) throw new Error("Installed proof toolchain is unavailable; no acceptance was attempted");
+          const r = await submitChangeJob({ vault, convId, byCarl: !!this.live.get(convId)?.byCarl, jobs: this.d.jobEnv, host: await this.d.changeHost() }, a);
+          if (r.job) this.updateSubagent(convId, r.job.id, { kind: "job", title: r.job.name, task: r.job.command.slice(0, 300), status: "running", state: "running", startedAt: r.job.startedAt, background: true, activity: "proving change" });
+          return text(r.text);
         }
         case "AskUser": {
-          if (this.reviewPreparing.has(convId)) return text("A review handoff is being prepared; do not ask another question concurrently.");
           const opts = Array.isArray(a.options) ? a.options.map(String).filter(Boolean).slice(0, 6) : [];
           const ans = await this.waitForAnswer(p.threadId, String(a.question ?? "").trim() || "?", opts, p.signal);
           return text(`Carl answered: ${ans}`);

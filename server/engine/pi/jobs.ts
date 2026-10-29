@@ -60,7 +60,7 @@ const serviceKey = (env: PiJobEnv, id: string) => `${env.logDir}/${id}`;
  * Restart requires rerunning proof: no receipt JSON is an acceptance permit. */
 export function startServiceJob(env: PiJobEnv, a: { name: string; command: string; timeout?: unknown; conv: string; byCarl: boolean }, run: (signal: AbortSignal, log: (text: string) => void) => Promise<string>): { text: string; job?: JobRec } {
   const max = env.max ?? (Number(process.env.VC_JOB_MAX) || 4);
-  if (runningJobs(env).length >= max) return { text: `Not started: this vault already has ${max} running jobs.` };
+  if (runningJobs(env).filter(j => j.kind !== "service" || probeJob(env, j).state === "running").length >= max) return { text: `Not started: this vault already has ${max} running jobs.` };
   const name = a.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, 24) || "service";
   const id = `${name}-${Date.now().toString(36)}-${randomUUID().slice(0, 8)}`;
   const timeoutS = jobTimeoutS(a.timeout);

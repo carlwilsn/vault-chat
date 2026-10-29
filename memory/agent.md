@@ -63,22 +63,28 @@ extensions (same problems, new place). Migrate one duplicated piece per bug; no 
   Reconstruct definitions from the current host loadout policy, preserve the pi session/file/history, and rebind
   only idle processes (running turns and children pin their existing scope). Persist side loadout semantics or
   legacy explicit names, never infer broader grants from a schema refresh; workers retain their child allowlist.
-  Source changes still require a server restart; this is not permission for an agent to deploy or bypass Keep.
+  Source changes still require a server restart; this is not permission for an agent to deploy or bypass installed service authority.
 
-## Auto-ship authority foundation (2026-10-29, not activated)
-- Carl requested replacing mandatory Keep with service-owned proof-gated acceptance and an after-the-fact
-  Shipped/proof/Roll back card. The agent still never merges or pushes main. `changeProof.ts` introduces
-  single-use host-process permits; receipt JSON/model test prose is not acceptance authority. Compare exact
-  named baseline failures, not counts. Main/head/tree/branch pins are rechecked under the existing repo lock;
-  fast-forward only avoids manufacturing an unproved merge tree. `acceptProvenReview` never pushes or resets
-  another actor's clone. The installed host adapters/tool/card are not wired yet: see `docs/auto-ship-foundation.md`.
-- The first deployment cannot self-authorize through an entry point the installed server does not have.
-  A candidate sidecar against the real repo would bypass authority, not solve bootstrap. Report the constraint;
-  no manual main merge/push or unapproved production drop-in is implied by implementing the new service.
-- Concrete sandbox/RecordUI adapter and internal request-bound service job now exist in `changeHost.ts`,
-  `changeUI.ts`, `submitChange.ts`; default tool/release/card cutover remains unfinished. Continue from
-  `docs/auto-ship-host-integration.md`, not by exposing SubmitChange before release/rollback is wired.
-  Installed dependency copies must preserve relative symlinks (`verbatimSymlinks`) and canonicalize the
-  toolchain/browser before hiding `/run`; otherwise npx executes hidden host paths. Use distinct empty npm
-  user/global config files, not `/dev/null` twice. A baseline test-process OOM/SIGABRT remains incomplete
-  proof, never an allowed ordinary named failure; stabilize its fixture before service acceptance.
+## Auto-ship authority (2026-10-29)
+- Mandatory Keep is replaced by native SubmitChange once A is installed. The service resolves the actual
+  conversation ask, pins both sources, runs seven gates on each, records actual candidate UI, and accepts
+  only its same-process single-use proof permit under the existing repo mutex. Receipt JSON and agent
+  test prose are not authority. Laptop sync alone pushes; CI publishes; actual authenticated device health
+  determines Shipped. Historical cards remain readable, not a new default review gate.
+- Carl explicitly approved ONE final legacy installed-service handoff for A + voice-mic fixture fix after
+  complete candidate checks and real UI proof. A need not fake self-SubmitChange proof against immutable
+  broken 6fcc7f6: its OOM is still incomplete/failure. No manual main merge/push or candidate sidecar is
+  authorized. Parent performs that final handoff; B and later changes use installed A.
+- Installed release assets include exact proof manifests. The host provisions each pinned lock once using
+  credential-free public npm ci --ignore-scripts, no npmrc/hooks, registry-only SHA-512 entries. Both
+  sources have independent immutable dependency snapshots; toolchain and Chromium use canonical paths
+  before hiding HOME and /run. Missing network/tools fail visibly, never a weaker proof fallback.
+- Specific source rollback is a service-owned branch from current main, git revert --no-commit of only
+  accepted base..head. Later unrelated work survives; conflicts/merge ambiguity need attention, never
+  reset/force. It uses the SAME gates/RecordUI/permit/acceptance path with rollbackOf journal identity.
+  Notes-save UI smoke proves recovered app usability without replaying a feature the revert removes.
+  Failed/stopped/timed-out jobs are terminal attention, not infinite health-triggered retries. Process-lost
+  gone jobs may re-prove from the accepted identity; accepted rollbackOf dedupes across restart.
+- Local clone --no-hardlinks alone races source auto-GC's temporary pack files. --no-local uses git's
+  object transport for isolated clones; disable fetch auto-GC during source pinning. The unmocked real
+  submission→UI→acceptance→source-revert integration exposed and verifies this case.

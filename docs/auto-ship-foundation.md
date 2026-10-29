@@ -1,4 +1,4 @@
-# Auto-ship: service authority foundation (not activated)
+# Auto-ship: service authority foundation
 
 ## Verified starting point
 
@@ -38,71 +38,28 @@ in the project's vault documents the previous manual push as an exception, not a
   requires readiness plus exclusive instance ownership. An explicit setup deadline can outlast box startup
   grace; a foreign health 200 is not readiness. B owns the actual adapter and lifecycle.
 
-## Deliberately not activated / remaining
+## Native integration and current authority
 
-This is a foundation, **not a completed A implementation and not a shipped release**. There is no new public
-`SubmitChange` tool or route yet. Existing ReadyForReview/Keep behavior remains operational until a complete
-replacement is installed. `ProofHost` is a host adapter boundary, not permission for a model to supply booleans.
-Tests inject host adapters to exercise policy; they do not prove a real candidate UI or deployment.
+The foundation is now connected to native SubmitChange, installed public-only dependency provisioning,
+existing service jobs, actual RecordUI, locked ff acceptance, durable release delivery and specific-change
+source rollback. See `auto-ship-host-integration.md` for the current implementation/contracts and honest
+check boundaries. This document's foundation policy remains in force: no parser relaxation, serialized
+permit replay, count-based baseline allowance or model-authored evidence becomes authority.
 
-Integration must supply these concrete installed-host responsibilities before connecting acceptance:
+## Settled one-time bootstrap
 
-1. Pin current project main and agent branch/tree under the project lock, resolve the original request from
-   the conversation, prepare clean isolated snapshots, and provision the same dependencies/toolchain.
-2. Run the fixed commands in the installed sandbox, without inherited secrets or live ports. Use isolated
-   server ports in 190xx and explicit voice ports in 191xx until B prevents accidental shared listeners.
-   The service owns the reporter, report locations and full raw logs; candidate prose/JSON is not authority.
-   Recheck snapshots throughout. The installed adapter uses the parsers above and persists actual receipts.
-3. Start the candidate-backed real app/server, observe source provenance, run existing RecordUI with real
-   input/assertions, decode/hash the actual recording and retain its evidence. Require this before acceptance.
-4. Connect `SubmitChange` to this single gate and acceptance path. Remove the mandatory Keep wait rather
-   than adding a parallel judge. If an optional per-project review mode complicates this, omit it.
-5. Preserve laptop-sync-only GitHub push. CI remains the publisher. Follow verified GitHub **release commits**
-   into box project main by fast-forward only under its repo lock; never force/reset divergent work. A moved
-   main invalidates proof and triggers a fresh baseline comparison before acceptance.
-6. Wire real box readiness plus actual authenticated Tauri post-update readiness (including its mounted UI,
-   connection, sync and updater checks). Extend the existing box updater's retained-version fallback rather
-   than replacing it. Offline laptop = pending with an honest timeout indication, not automatically healthy
-   and not automatic failure. Retain explicit negative health until resolved; do not overwrite it with ping.
-7. Persist release→specific accepted-change identity. Make rollback idempotent by that identity: server
-   prepares a change-specific source revert, proves it, accepts it, laptop sync pushes, CI publishes. Do not
-   revert unrelated later work, and never autorevert a revert release. Retained-binary fallback is not “done”.
-8. Emit the real after-the-fact `Shipped: what · proof · Roll back` card only on actual publishing/device
-   readiness. The rollback action invokes that source-revert path. Record the real UI on real data.
-9. Run all final gates against a fresh main baseline, retaining exact named failures and complete logs.
-   Focused policy tests below are not those full gates or real-UI proof.
+Carl explicitly approved ONE final legacy installed-service handoff for A plus the voice-mic fixture fix,
+after full candidate gates and real UI proof. The parent performs that handoff. This is NOT A self-proof
+against broken immutable `6fcc7f6`, whose actual child OOM/SIGABRT remains incomplete/failure. No re-ask,
+manual main merge/push, candidate sidecar or unapproved production drop-in is implied. B and future
+changes must use newly installed A's complete SubmitChange path. No worker's temporary test receipt
+transfers authority across process/restart/deployment.
 
-## Exact bootstrap constraint
+## Check boundaries
 
-The installed v0.7.18 service does not contain these new adapters or an auto-submit entry point. Its updater
-can only install an already-published release; laptop sync can only push a main the service has accepted.
-Therefore merely implementing A cannot make the first A deployment authorize itself. Running an unpublished
-candidate against the real project to merge main would bypass the installed authority, even if called a service.
-
-No manual merge, main push, systemd drop-in, sidecar merge script or production deployment was attempted.
-An explicitly authorized one-time activation mechanism (e.g. a final existing-service acceptance or authorized
-installation of the proven host through an operator-controlled deployment path) is still needed. This is a
-bootstrap decision for the coordinator/operator, not an assumed Keep exception or a reason to revive mandatory
-Keep thereafter. Once installed, A must accept B through the new complete service path; B is not shipped yet.
-
-## Checks for this unit
-
-Focused command (no server listeners, no speakers):
-
-```
-npx vitest run --config server/vitest.config.ts server/test/changeProof.test.ts server/test/releaseHealth.test.ts
-npm run typecheck:server
-```
-
-The tests exercise real git acceptance in temporary repos with an empty bare remote and a pre-push sentinel;
-no push is attempted. They do not touch project main, GitHub or production listeners. Full-suite baseline,
-build and real-UI recording remain the parent coordinator's final-source checks, not claims of this unit.
-
-## Continuation pointer
-
-`auto-ship-host-integration.md` now records concrete installed-host proof/job integration plus durable
-acceptance reconciliation and public release following through the existing project sync cycle. Those code
-paths are connected internally, not a new public SubmitChange/default Keep cutover. Native provisioning,
-actual device/updater health, source revert and Shipped card remain unfinished; the immutable 6fcc baseline
-OOM still blocks permits. See that document's explicit conditional operator bootstrap alternatives before
-considering any activation. No production deployment or main change has occurred.
+The focused tests prove policy and actual orchestration in temporary git repos, without touching live
+project main or GitHub. The new unmocked SubmitChange integration runs actual sandbox runner fixtures,
+builds/records the real tracked app, consumes proof/accepts and proves/accepts its specific source revert.
+Those small runner fixtures are NOT final application gates, the final card UI, or physical Tauri readiness.
+The parent still owns complete final-source checks, real UI proof, final authorized handoff and actual
+post-install box/authenticated laptop observations. Acceptance/publication alone never means Shipped.

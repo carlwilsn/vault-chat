@@ -1,16 +1,14 @@
-// "You keep it" (Carl, 2026-10-27): in a project that is a git repo, the agent's change happens on a branch
-// agent/<short-name> in its own clone, never on the project's main branch; it hands the change over with a proof
-// card (what changed, why, the tests, screenshots); Carl keeps it (the server merges it into main and pushes) or
-// sends it back (his note goes to the agent, which goes on with the branch). Nothing reaches main without Keep.
-// The real bundle and engine on the fake pi (fakePiCli.mjs), a fake OpenRouter, real git: the project is a repo
-// with a bare remote; the agent's commits are made in its clone as its shell would.
+// Native SubmitChange cutover on the real engine/fake pi provider, real temporary git.
+// Historical cards remain settleable; no new native ReadyForReview or mandatory Keep wait.
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmp, cleanup, makeVault, makeKeyStore, fakeOpenRouter, startServer, waitFor, type Running, type FakeOpenRouter } from "./helpers";
-import { fold, shown } from "../../src/convlog/reduce";
-import { makeChatView } from "../../src/convlog/view";
+import { fold } from "../../src/convlog/reduce";
+import { prepareReview, answerReview } from "../projectChanges";
+import { setFolderWalls } from "../projectFolders";
+import { agentToolSpecs } from "../engine/engine";
 
 const fwd = (p: string) => p.split("\\").join("/");
 const git = (cwd: string, ...args: string[]) => execFileSync("git", ["-c", "user.name=Carl", "-c", "user.email=carl@example.com", ...args], { cwd, encoding: "utf8" }).trim();
@@ -65,7 +63,7 @@ afterAll(async () => {
   cleanup(home);
 });
 
-describe("a git project: the agent works on a branch in its clone; only Keep reaches main", () => {
+describe("a git project: service proof owns main; legacy cards remain readable", () => {
   let work = "";
   const first = () => mainSha();
   let start = "";
@@ -79,7 +77,8 @@ describe("a git project: the agent works on a branch in its clone; only Keep rea
     await waitFor(() => or.calls.some((c) => JSON.stringify(c).includes("GATE-1")), 30_000);
     const sent = JSON.stringify(or.calls.find((c) => JSON.stringify(c).includes("GATE-1")));
     expect(sent).toContain("SITE-AGENTS: keep the font at 16px.");
-    expect(sent).toContain("only his Keep merges your branch into it");
+    expect(sent).toContain("then call SubmitChange");
+    expect(sent).not.toContain("only his Keep merges your branch into it");
     const m = /You work in your own clone of it, ([^ ]+?)\/: relative/.exec(JSON.parse(sent).messages.map((x: any) => x.content).join("\n"));
     expect(m).toBeTruthy();
     work = m![1]!;
@@ -98,81 +97,40 @@ describe("a git project: the agent works on a branch in its clone; only Keep rea
     expect(mainSha()).toBe(start);
   });
 
-  it("ReadyForReview: the branch beside main in the repo, the proof card with Keep and Send back; main unchanged", async () => {
-    or.script.push({ toolCall: { name: "ReadyForReview", args: { proofId: "handoff-bigger-heading-2", title: "Bigger heading", what: "The h1 is 2em.", why: "Carl asked for a bigger heading.", tests: "npm test: 12 passed, 0 failed", images: ["proof/after.png"] } } });
-    await post("/api/v2/intent", { type: "send", clientId: "c-2", convId: CONV, text: "Hand it over, GATE-2." });
-    await waitFor(asking, 30_000);
-    expect(git(repo, "rev-parse", "agent/bigger-heading")).toBe(git(work, "rev-parse", "HEAD"));
-    expect(mainSha()).toBe(start);
-    // The card, as the laptop and the phone show it (the same view).
-    const msgs = makeChatView()(await picture(CONV)).messages;
-    const card = msgs.find((m: any) => m.askOptions?.length);
-    expect(card.content).toContain("**Ready to keep: Bigger heading**");
-    expect(card.content).toContain("**Tests.**");
-    expect(card.content).toContain("npm test: 12 passed, 0 failed");
-    const img = /!\[proof 1\]\(([^)]+)\)/.exec(card.content)![1]!;
-    expect(existsSync(join(vault, img))).toBe(true);
-    expect(card.askOptions.map((o: any) => o.answer)).toEqual(["Keep", "Send back"]);
+  it("publishes SubmitChange rather than ReadyForReview in the actual provider catalog", async () => {
+    const native = agentToolSpecs();
+    expect(native.some(t => t.name === "ReadyForReview")).toBe(false);
+    expect(native.find(t => t.name === "SubmitChange")?.inputSchema.required).toContain("assessment");
+    const names = or.calls.flatMap((c: any) => (c.tools ?? []).map((t: any) => t.function?.name ?? t.name));
+    expect(names).toContain("mcp__vault_chat__SubmitChange");
+    expect(names).not.toContain("mcp__vault_chat__ReadyForReview");
+    expect(await asking()).toBe(false);
   });
 
-  it("Send back: his note reaches the agent; main unchanged; the branch stays", async () => {
-    const r = await post("/api/v2/intent", { type: "answer", clientId: "c-3", convId: CONV, text: "Make it 3em, not 2." });
-    expect(r.body.ok).toBe(true);
-    await waitFor(() => or.calls.some((c) => JSON.stringify(c).includes("Sent back: Make it 3em, not 2. main is unchanged")), 30_000);
+  it("historical Send back still settles without merging; no new native handoff is exposed", async () => {
+    setFolderWalls(vault, { home, protect: () => [] });
+    const prep = await prepareReview({ vault, convId: CONV, slug: "site", folder: repo, args: { proofId: "historical-heading-card", title: "Bigger heading", what: "2em", why: "asked", tests: "historical text only" } });
+    if ("error" in prep) throw new Error(prep.error);
+    const answer = await answerReview(vault, prep.review, "Make it 3em, not 2.");
+    expect(answer).toMatchObject({ kept: false, text: expect.stringContaining("Sent back") });
     expect(mainSha()).toBe(start);
-    expect(git(repo, "branch", "--list", "agent/bigger-heading")).toContain("agent/bigger-heading");
-    await waitFor(async () => !(await picture(CONV)).meta.running, 20_000);
-    // His line in the thread is his answer alone.
-    const p = await picture(CONV);
-    expect(shown(p).some((x: any) => x.kind === "user" && x.text === "Make it 3em, not 2.")).toBe(true);
+    expect(git(work, "branch", "--show-current")).toBe("agent/bigger-heading");
   });
 
-  it("Keep: the branch merged into main by the server and pushed to the remote", async () => {
-    writeFileSync(join(work, "index.html"), "<h1 style=\"font-size:3em\">Hello</h1>\n");
-    git(work, "commit", "-q", "-am", "3em");
-    or.script.push({ toolCall: { name: "ReadyForReview", args: { proofId: "handoff-bigger-heading-3", title: "Bigger heading", what: "The h1 is 3em.", why: "His note.", tests: "npm test: 12 passed, 0 failed" } } });
-    await post("/api/v2/intent", { type: "send", clientId: "c-4", convId: CONV, text: "Again, GATE-4." });
-    await waitFor(asking, 30_000);
-    expect(mainSha()).toBe(start);
-    await post("/api/v2/intent", { type: "answer", clientId: "c-5", convId: CONV, text: "Keep" });
-    await waitFor(() => or.calls.some((c) => JSON.stringify(c).includes("Kept: agent/bigger-heading is in main")), 30_000);
-    expect(mainSha()).toBe(git(work, "rev-parse", "agent/bigger-heading"));
+  it("historical Keep still settles on the server after restart, without restoring a native Keep tool", async () => {
+    writeFileSync(join(work, "index.html"), '<h1 style="font-size:3em">Hello</h1>\n');
+    git(work, "commit", "-qam", "3em");
+    const prep = await prepareReview({ vault, convId: CONV, slug: "site", folder: repo, args: { proofId: "historical-heading-card-2", title: "Bigger heading", what: "3em", why: "asked", tests: "historical only" } });
+    if ("error" in prep) throw new Error(prep.error);
+    await srv.stop(); srv = await startServer({ home, vault, secrets, openrouter: or.url });
+    const answer = await answerReview(vault, prep.review, "Keep");
+    expect(answer.kept).toBe(true);
     expect(readFileSync(join(repo, "index.html"), "utf8")).toContain("3em");
-    expect(git(bare, "rev-parse", "main")).toBe(mainSha());
-    expect(JSON.stringify(or.calls.at(-1))).toContain("pushed to origin");
-    // The clone is back on main for the next change.
-    expect(git(work, "symbolic-ref", "--short", "HEAD")).toBe("main");
-  });
-
-  it("a hand-over still open across a restart: Carl's Keep afterwards is still the server's merge", async () => {
-    git(work, "switch", "-q", "-c", "agent/footer");
-    writeFileSync(join(work, "footer.html"), "<footer>bye</footer>\n");
-    git(work, "add", "footer.html");
-    git(work, "commit", "-q", "-m", "Footer");
-    or.script.push({ toolCall: { name: "ReadyForReview", args: { proofId: "handoff-footer-added", title: "A footer", what: "footer.html", why: "asked", tests: "ok" } } });
-    await post("/api/v2/intent", { type: "send", clientId: "c-r1", convId: CONV, text: "Footer, GATE-R." });
-    await waitFor(asking, 30_000);
-    const before = mainSha();
-    await srv.stop();
-    srv = await startServer({ home, vault, secrets, openrouter: or.url });
-    expect(mainSha()).toBe(before);
-    await post("/api/v2/intent", { type: "answer", clientId: "c-r2", convId: CONV, text: "Keep" });
-    await waitFor(() => mainSha() === git(work, "rev-parse", "agent/footer"), 30_000);
-    expect(git(bare, "rev-parse", "main")).toBe(mainSha());
-    await waitFor(() => or.calls.some((c) => JSON.stringify(c).includes("Kept: agent/footer is in main")), 30_000);
-    await waitFor(async () => !(await picture(CONV)).meta.running, 20_000);
+    expect(git(bare, "rev-parse", "main")).toBe(start);
+    expect(git(work, "branch", "--show-current")).toBe("agent/bigger-heading");
+    expect(agentToolSpecs().some(t => t.name === "ReadyForReview")).toBe(false);
   }, 120_000);
 
-  it("a hand-over with nothing committed is refused, and so is ReadyForReview outside a git project", async () => {
-    or.script.push({ toolCall: { name: "ReadyForReview", args: { proofId: "handoff-nothing-new", title: "Nothing", what: "x", why: "x", tests: "x" } } });
-    await post("/api/v2/intent", { type: "send", clientId: "c-6", convId: CONV, text: "Hand over nothing, GATE-6." });
-    await waitFor(() => or.calls.some((c) => JSON.stringify(c).includes("Nothing to keep")), 30_000);
-    expect(await asking()).toBe(false);
-    await waitFor(async () => !(await picture(CONV)).meta.running, 20_000);
-    or.script.push({ toolCall: { name: "ReadyForReview", args: { proofId: "handoff-main-invalid", title: "Main", what: "x", why: "x", tests: "x" } } });
-    await post("/api/v2/intent", { type: "send", clientId: "c-7", text: "In Main, GATE-7." });
-    await waitFor(() => or.calls.some((c) => JSON.stringify(c).includes("is only for the thread of a project that works in a git repo")), 30_000);
-  });
 });
 
 describe("the sandbox for a git project: its folder read-only, the clone writable", () => {

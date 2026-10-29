@@ -2,7 +2,7 @@
 
 vault-chat is Carl's own Claude Code / Codex: a UI over a real agent engine (pi) that runs on his home server (the box,
 `thinkbox`), with a laptop app (Tauri), a phone web app, an iPad whiteboard and voice. This project folder is a clone of
-github.com/carlwilsn/vault-chat; you work on your own branch, and only Carl's **Keep** brings your change to main.
+github.com/carlwilsn/vault-chat; you work on your own branch. The installed service's **SubmitChange** runs pinned baseline/candidate gates and real UI proof before accepting main; agents never merge or push main.
 
 ## Carl's rules
 
@@ -16,6 +16,7 @@ github.com/carlwilsn/vault-chat; you work on your own branch, and only Carl's **
   the change is shown working in the real UI — screenshots or a recording of the real app on real data, never a mockup.
   A check that can't run is a failure, not a pass.
 - **Real UI, minimal UI.** Few options on screen at a time, nested one level at a time. No per-turn cost in the chat.
+- **Installed service acceptance, not review.** SubmitChange is the default; no mandatory Keep wait. Acceptance is not Shipped: laptop sync → CI → actual box and authenticated Tauri health must verify first. Source rollback reverts the specific accepted range and passes the same proof path. Historical Keep cards remain readable. Carl explicitly approved ONE final old-service handoff for A plus the voice-mic fixture fix after full candidate checks and real UI proof; this bootstrap is not self-A proof against broken `6fcc7f6` and does not authorize manual main merges/pushes or candidate sidecars. B uses installed A thereafter.
 - **Push, then rollback.** Proven work is pushed without asking; Carl asks for a rollback if he dislikes it. Still ask
   before anything a git revert can't undo: deleting his data, spending money, anything public.
 - **Finish the batch, test once, push.** Answer "is it pushed?" with yes or no plus one line on what's left.
@@ -31,8 +32,8 @@ github.com/carlwilsn/vault-chat; you work on your own branch, and only Carl's **
 ## How the pieces fit (read before changing them)
 
 - **Box server** (`server/`, Node): one pi engine per vault; the conversation log; `/poll` feed; voice routes
-  (`server/voiceBrain.ts`); projects with the "you keep it" gate (an agent works on `agent/<name>` in its own clone;
-  Keep merges on the box; the laptop pushes the kept main to GitHub — the box has no GitHub credentials).
+  (`server/voiceBrain.ts`); proof-gated projects (an agent works on `agent/<name>` in its own clone;
+  SubmitChange accepts on the box with a live host proof permit; laptop sync pushes main to GitHub — the box has no GitHub credentials).
 - **Voice (New):** `voice-pipeline/bot.py` (Pipecat: Silero VAD, Smart Turn, ElevenLabs Scribe/Flash) is ears and mouth
   only; pi is the one brain (`server/voiceBrain.ts`); the device client is `src/voiceBrainClient.ts`; the waiting line
   is `src/voiceWaitLine.ts`.

@@ -1,19 +1,13 @@
-// "You keep it": the gate on a project that is a git repo (Carl, 2026-10-27). The agent never changes the
-// project's main branch. It works in a clone of the project in its work area (~/agent-work/<vault>/changes/
-// <slug>), on a branch agent/<short-name>; the project's own folder is read-only to it (the sandbox binds it
-// so). When a change is ready it calls ReadyForReview: the branch is fetched into the project's repo (beside
-// main, never into it) and a proof card goes to the project's thread — what changed, why, the test results,
-// the screenshots — with two actions, Keep and Send back, on the laptop and the phone (the AskUser card).
-// Keep is the server's, never the agent's: the branch merged into the project's main branch (fast-forward,
-// else a merge commit) and pushed when the repo has a remote that takes it. Send back: Carl's note goes to the
-// agent, which goes on with the same branch. Nothing reaches main without Keep.
+// Service-owned project main. SubmitChange runs installed host proof and accepts only an exact ff under
+// this repo's existing mutex. Agents work in their own clone and never merge/push main. Legacy review
+// functions remain ONLY to read/settle historical cards and the explicitly approved final bootstrap.
 import { copyFileSync, existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { extname, isAbsolute, join, resolve } from "node:path";
 import { runGit } from "./git";
 import { agentWorkDir } from "./workArea";
 import { wallsOf } from "./projectFolders";
 import { writeAtomic } from "./atomic";
-import { masterProjectOf, syncedWithoutRemote, triggerProjectAt } from "./master";
+import { syncedWithoutRemote, triggerProjectAt } from "./master";
 import { withRepoLock } from "./git";
 import type { ChangePermit, ChangeProofService } from "./changeProof";
 import { prepareAcceptanceLocked, reconcileAcceptancesLocked } from "./changeShipping";
@@ -35,7 +29,7 @@ export function isGitProject(folder: string): boolean {
   }
 }
 
-/** The "you keep it" gate applies: a git project, unless it is a project in the vault-chat folder with no remote of
+/** Service-owned main applies: a git project, unless it is a project in the vault-chat folder with no remote of
  * its own (synced with the laptop like a vault; the agent writes it directly). */
 export function isGatedProject(folder: string): boolean {
   return isGitProject(folder) && !syncedWithoutRemote(folder);
@@ -193,8 +187,8 @@ export function proofQuestion(r: { title: string; branch: string; base: string }
 }
 
 /**
- * Keep: the branch into the project's main branch (fast-forward, else a merge commit), then a push when the
- * repo has a remote. A merge that can't be made cleanly is undone and said; main is then as it was.
+ * Historical Keep: the branch into the project's main branch (fast-forward, else a merge commit).
+ * Only laptop sync pushes. A merge that can't be made cleanly is undone and said; main is then as it was.
  */
 export async function keepReview(vault: string, r: Review): Promise<{ ok: boolean; text: string }> {
   // Under the folder's repo lock: a project in the vault-chat folder is also committed and pushed by its sync.
@@ -229,20 +223,10 @@ async function keepLocked(vault: string, r: Review): Promise<{ ok: boolean; text
     how = "fast-forward";
   }
   const sha = (await git(folder, ["rev-parse", "--short", base])).out;
-  // Pushed when the repo has a remote and the credentials on the box take it.
-  let push = "not pushed (no remote)";
-  const remote = (await git(folder, ["config", "--get", `branch.${base}.remote`])).out || ((await git(folder, ["remote"])).out.split("\n").includes("origin") ? "origin" : "");
-  if (remote) {
-    const p = await git(folder, ["push", "--quiet", remote, `${base}:${base}`], 120_000);
-    push = p.ok ? `pushed to ${remote}` : `not pushed: ${p.err.split("\n").filter(Boolean).pop()?.slice(0, 200) ?? "the push failed"}`;
-    // A project in the vault-chat folder: the laptop, which has the credentials, pushes it after its sync pulls it.
-    if (!p.ok && masterProjectOf(folder)) push = `not pushed from the box (no credentials here); the laptop's sync pushes ${base} to ${remote} once it has it`;
-  }
   settle(vault, r.convId);
-  // The clone back on main for the next change.
-  await git(r.clone, ["fetch", "--quiet", "origin"]);
-  await git(r.clone, ["switch", "-C", base, `origin/${base}`]);
-  return { ok: true, text: `Kept: ${branch} is in ${base} (${how}, now ${sha}); ${push}. Your clone is back on ${base}; start the next change on a new agent/<name> branch.` };
+  // Historical settlement obeys the same ownership rule: laptop sync alone pushes. Never fetch/reset
+  // the agent clone: another turn or worker may already have new work there.
+  return { ok: true, text: `Kept: ${branch} is in ${base} (${how}, now ${sha}); laptop sync must push it. Your clone is unchanged.` };
 }
 
 /** Auto-ship foundation: same service repo lock as Keep/sync, but ONLY a host-run proof permit authorizes
@@ -252,6 +236,7 @@ async function keepLocked(vault: string, r: Review): Promise<{ ok: boolean; text
  */
 export async function acceptProvenReview(vault: string, r: Review, proof: ChangeProofService, permit: ChangePermit, assertRequest?: () => Promise<void>, record?: { proofDir: string; check: import("./changeHost").SubmitCheck; rollbackOf?: string }): Promise<{ ok: boolean; text: string }> {
   const out = await withRepoLock(r.folder, async () => {
+    if (record?.rollbackOf && (await reconcileAcceptancesLocked(r.folder)).some(c => c.rollbackOf === record.rollbackOf)) return { ok: false, text: "Source rollback already accepted for this specific change; no second revert was accepted." };
     const current = await baseBranch(r.folder);
     if (current !== r.base) return { ok: false, text: "Acceptance blocked: the project's base branch is not checked out." };
     const dirty = await git(r.folder, ["status", "--porcelain"]);

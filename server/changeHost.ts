@@ -21,6 +21,8 @@ export type ChangeHostOptions = {
   shell: readonly string[]; home: string; privateRoot: string;
   installedEntry: string; dependencies: string; dependencyLock: string;
   node: string; npm: string; path: string; browser?: string;
+  /** Installed credential-free npm provisioner; candidate only supplies committed manifests. */
+  provision?: (manifest: string, lock: string) => Promise<{ dependencies: string; dependencyLock: string }>;
   timeoutMs?: number; signal?: AbortSignal;
   onProgress?: (text: string) => void;
 };
@@ -38,7 +40,7 @@ export async function pinChange(o: { vault: string; convId: string; slug: string
     const head = (await git(o.clone, ["rev-parse", "HEAD"])).trim();
     const before = (await git(o.folder, ["rev-parse", "HEAD"])).trim();
     // A local fetch only. No credentials, push or reset; no merge until proof.consume under the lock.
-    await git(o.folder, ["-c", "core.hooksPath=/dev/null", "fetch", "--no-tags", o.clone, `refs/heads/${branch}:refs/heads/${branch}`]);
+    await git(o.folder, ["-c", "core.hooksPath=/dev/null", "-c", "gc.auto=0", "fetch", "--no-tags", o.clone, `refs/heads/${branch}:refs/heads/${branch}`]);
     if ((await git(o.folder, ["rev-parse", branch])).trim() !== head) throw new Error("Agent branch moved during pinning");
     await git(o.folder, ["merge-base", "--is-ancestor", before, head]);
     if (before === head) throw new Error("No change beyond the project's current main");
@@ -86,7 +88,8 @@ export async function checkSourceLinks(repo: string, revision: string): Promise<
 export async function createInstalledChangeHost(o: ChangeHostOptions, repo: string, source: ProofSource, check: SubmitCheck): Promise<{ host: ProofHost; root: string; close(): void }> {
   if (!o.shell.length || o.shell.at(-1) !== "--" || !o.shell[0]!.includes("bwrap")) throw new Error("Proof requires the installed bubblewrap guard");
   if (!isAbsolute(o.privateRoot) || !isAbsolute(o.installedEntry)) throw new Error("Installed absolute proof storage and entry are required");
-  const entry = realpathSync(o.installedEntry), installedDependencies = realpathSync(o.dependencies);
+  const entry = realpathSync(o.installedEntry);
+  const installedDependencies = o.provision ? o.dependencies : realpathSync(o.dependencies);
   const lockBytes = readFileSync(o.dependencyLock);
   const lockHash = hash(lockBytes);
   const installedManifest = JSON.parse(readFileSync(join(dirname(o.dependencyLock), "package.json"), "utf8"));
@@ -105,7 +108,9 @@ export async function createInstalledChangeHost(o: ChangeHostOptions, repo: stri
   writeFileSync(join(hostDir, "harness-reporter.mjs"), HARNESS_REPORTER_SOURCE);
   writeFileSync(join(hostDir, "npm-user"), "");
   writeFileSync(join(hostDir, "npm-global"), "");
-  const snapshots = new Map<string, { dir: string; files: string[]; tree: string }>();
+  const snapshots = new Map<string, { dir: string; files: string[]; tree: string; dependencies: string }>();
+  const dependencyCopies = new Map<string, string>();
+  const sourceDependencies: Record<string, { manifest: string; lock: string }> = {};
   // npm invokes `node` from PATH. Insert reporter options BEFORE --test's file arguments, without modifying
   // pinned package.json or relying on candidate text as test results. The installed reporter owns stdout.
   writeFileSync(join(hostDir, "node"), `#!/bin/sh\nfor arg do\n if [ "$arg" = "--test" ]; then exec ${quote(o.node)} --test-reporter=${quote(join(hostDir, "harness-reporter.mjs"))} "$@"; fi\ndone\nexec ${quote(o.node)} "$@"\n`, { mode: 0o755 });
@@ -119,9 +124,9 @@ export async function createInstalledChangeHost(o: ChangeHostOptions, repo: stri
   /** Overlay the existing credential-hiding guard, additionally removing the host home, shared tmp/runtime
    * sockets and ALL host networking. Tests and UI use their own loopback inside this net namespace.
    * The service bundle/reporter/logs are never writable by candidate processes. */
-  const sandbox = (s: { dir: string; files: string[] }, writeEvidence = false): string[] => {
+  const sandbox = (s: { dir: string; files: string[]; dependencies: string }, writeEvidence = false): string[] => {
     const args = [...o.shell.slice(0, -1), "--unshare-net", "--tmpfs", o.home, "--tmpfs", "/tmp", "--tmpfs", "/run", "--tmpfs", "/var/tmp",
-      "--ro-bind", hostDir, hostDir, "--bind", s.dir, s.dir, "--ro-bind", dependencies, join(s.dir, "node_modules"),
+      "--ro-bind", hostDir, hostDir, "--bind", s.dir, s.dir, "--ro-bind", s.dependencies, join(s.dir, "node_modules"),
       "--ro-bind", join(s.dir, ".git"), join(s.dir, ".git")];
     for (const cache of [".vite", ".vite-temp", ".vite-preview-before"]) args.push("--tmpfs", join(s.dir, "node_modules", cache));
     for (const f of s.files) if (!lstatSync(join(s.dir, f)).isSymbolicLink()) args.push("--ro-bind", join(s.dir, f), join(s.dir, f));
@@ -133,27 +138,43 @@ export async function createInstalledChangeHost(o: ChangeHostOptions, repo: stri
       await checkSourceLinks(repo, revision);
       const dir = join(root, revision);
       // --no-hardlinks avoids mutable object aliasing; local clone never contacts GitHub.
-      await git(root, ["-c", "core.hooksPath=/dev/null", "clone", "--quiet", "--no-hardlinks", "--no-checkout", repo, dir]);
+      await git(root, ["-c", "core.hooksPath=/dev/null", "clone", "--quiet", "--no-local", "--no-hardlinks", "--no-checkout", repo, dir]);
       await git(dir, ["-c", "core.hooksPath=/dev/null", "checkout", "--quiet", "--detach", revision]);
-      if (hash(readFileSync(join(dir, "package-lock.json"))) !== lockHash) throw new Error(`Installed dependency lock does not match ${revision}; provision that lock before proof`);
-      const manifest = JSON.parse(readFileSync(join(dir, "package.json"), "utf8"));
-      if (dependencyFields.some(field => normalized(manifest[field]) !== normalized(installedManifest[field]))) throw new Error(`Dependency manifest differs from installed lock at ${revision}; provision dependencies before proof`);
+      const manifestBytes = readFileSync(join(dir, "package.json"), "utf8"), snapshotLock = readFileSync(join(dir, "package-lock.json"), "utf8");
+      const manifest = JSON.parse(manifestBytes);
+      sourceDependencies[revision] = { manifest: hash(manifestBytes), lock: hash(snapshotLock) };
+      let provisioned = installedDependencies;
+      if (o.provision) {
+        o.onProgress?.(`${revision}: provision public integrity-checked dependencies (no install scripts)`);
+        provisioned = (await o.provision(manifestBytes, snapshotLock)).dependencies;
+        o.signal?.throwIfAborted();
+      } else {
+        if (hash(snapshotLock) !== lockHash) throw new Error(`Installed dependency lock does not match ${revision}; provision that lock before proof`);
+        if (dependencyFields.some(field => normalized(manifest[field]) !== normalized(installedManifest[field]))) throw new Error(`Dependency manifest differs from installed lock at ${revision}; provision dependencies before proof`);
+      }
+      const dependencyKey = hash(snapshotLock + normalized(dependencyFields.map(f => manifest[f])));
+      let copy = dependencyCopies.get(dependencyKey);
+      if (!copy) {
+        copy = join(dependencies, dependencyKey);
+        cpSync(realpathSync(provisioned), copy, { recursive: true, verbatimSymlinks: true, mode: constants.COPYFILE_FICLONE, filter: p => ![".vite", ".cache"].includes(p.split("/").at(-1)!) && !p.split("/").at(-1)!.startsWith(".vite-") });
+        for (const cache of [".vite", ".vite-temp", ".vite-preview-before"]) mkdirSync(join(copy, cache), { recursive: true });
+        dependencyCopies.set(dependencyKey, copy);
+      }
       const modules = join(dir, "node_modules");
       if (existsSync(modules)) throw new Error("Tracked node_modules is not a trusted dependency set");
       mkdirSync(modules);
       const files = (await git(dir, ["ls-files", "-z"])).split("\0").filter(Boolean);
       const tree = (await git(dir, ["rev-parse", "HEAD^{tree}"])).trim();
-      snapshots.set(revision, { dir, files, tree });
+      snapshots.set(revision, { dir, files, tree, dependencies: copy });
     }
-    cpSync(installedDependencies, dependencies, { recursive: true, verbatimSymlinks: true, mode: constants.COPYFILE_FICLONE, filter: p => ![".vite", ".cache"].includes(p.split("/").at(-1)!) && !p.split("/").at(-1)!.startsWith(".vite-") });
-    for (const cache of [".vite", ".vite-temp", ".vite-preview-before"]) mkdirSync(join(dependencies, cache), { recursive: true });
+
   } catch (e) { rmSync(root, { recursive: true, force: true }); throw e; }
   if (snapshots.get(source.head)?.tree !== source.tree) { rmSync(root, { recursive: true, force: true }); throw new Error("Candidate tree does not match pinned source"); }
   const snapshot = (revision: string) => { const s = snapshots.get(revision); if (!s) throw new Error("Unknown source pin"); return s; };
   let recorded: UIReceipt | undefined;
   const host: ProofHost = {
     runnerVersion: `installed-change-host/1:${hash(readFileSync(entry))}`,
-    environment: JSON.stringify({ node: o.node, version: process.version, dependencies: lockHash, network: "private-loopback", voice: "off" }),
+    environment: JSON.stringify({ node: o.node, version: process.version, installedLock: lockHash, dependencies: sourceDependencies, network: "private-loopback", voice: "off" }),
     async assertSource(revision) {
       const s = snapshot(revision);
       if ((await git(s.dir, ["rev-parse", "HEAD"])).trim() !== revision || (await git(s.dir, ["rev-parse", "HEAD^{tree}"])).trim() !== s.tree || (await git(s.dir, ["status", "--porcelain", "--untracked-files=no"])).trim()) throw new Error("Pinned snapshot changed during proof");
@@ -216,7 +237,7 @@ export async function createInstalledChangeHost(o: ChangeHostOptions, repo: stri
 
 /** Concrete proof → same-process permit → existing locked acceptance. The caller must resolve AskCheck's
  * request from its conversation (not tool args). This never pushes and never labels acceptance Shipped.
- * Release tracking/tool cutover must be connected before exposing this as the default public tool.
+ * Native submissions and source recovery both use this installed path.
  */
 export async function proveAndAcceptChange(o: ChangeHostOptions, pinned: PinnedChange, ask: AskCheck, check: SubmitCheck, assertRequest?: () => Promise<void>, rollbackOf?: string): Promise<{ accepted: boolean; text: string; proofDir: string }> {
   const runner = await createInstalledChangeHost(o, pinned.review.folder, pinned.source, check);

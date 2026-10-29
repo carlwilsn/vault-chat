@@ -44,15 +44,24 @@ copyFileSync(bundle, join(out, "vault-chat-server.mjs"));
 const bundleSha = sha256(join(out, "vault-chat-server.mjs"));
 writeFileSync(join(out, "vault-chat-server.mjs.sha256"), `${bundleSha}  vault-chat-server.mjs\n`);
 
+// Proof needs dev tools after a bundle-only update. Ship exact manifests in the SAME checksummed
+// asset tarball; the installed host provisions public integrity-checked npm packages without hooks/keys.
+const stagedAssets = join(out, "asset-staging");
+mkdirSync(join(stagedAssets, "proof"), { recursive: true });
+for (const a of assets) copyFileSync(join(assetDir, a), join(stagedAssets, a));
+for (const a of ["package.json", "package-lock.json"]) copyFileSync(a, join(stagedAssets, "proof", a));
+const packedAssets = [...assets, "proof"];
+
 // Reproducible-ish tarball: fixed order, owner and mtime (GNU tar on the CI runner).
 const tarball = join(out, "vault-chat-server-assets.tar.gz");
 const gnuFlags = ["--sort=name", "--owner=0", "--group=0", "--numeric-owner", "--mtime=@0"];
 try {
-  execFileSync("tar", [...gnuFlags, "-czf", tarball, "-C", assetDir, ...assets], { stdio: "inherit" });
+  execFileSync("tar", [...gnuFlags, "-czf", tarball, "-C", stagedAssets, ...packedAssets], { stdio: "inherit" });
 } catch {
   // Non-GNU tar (e.g. a dev machine): same contents, just not byte-reproducible.
-  execFileSync("tar", ["-czf", tarball, "-C", assetDir, ...assets], { stdio: "inherit" });
+  execFileSync("tar", ["-czf", tarball, "-C", stagedAssets, ...packedAssets], { stdio: "inherit" });
 }
+rmSync(stagedAssets, { recursive: true, force: true });
 const assetsSha = sha256(tarball);
 writeFileSync(`${tarball}.sha256`, `${assetsSha}  vault-chat-server-assets.tar.gz\n`);
 

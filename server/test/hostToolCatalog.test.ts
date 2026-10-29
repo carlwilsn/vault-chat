@@ -21,14 +21,15 @@ afterAll(() => { rig?.engine.stop(); cleanup(rig?.root); });
 
 describe("current host loadout policy", () => {
   it("uses current built-in definitions and collision-filtered vault tools on every resolution", async () => {
-    own("shadow-review", "ReadyForReview"); own("shadow-read", "read");
+    own("shadow-review", "SubmitChange"); own("shadow-read", "read");
     const added = own("custom", "CalendarFixture");
     const all = await catalog("conversation");
-    expect(all.find((t) => t.name === "ReadyForReview")).toEqual(agentToolSpecs().find((t) => t.name === "ReadyForReview"));
-    expect(all.filter((t) => t.name === "ReadyForReview")).toHaveLength(1);
+    expect(all.some(t => t.name === "ReadyForReview")).toBe(false);
+    expect(all.find((t) => t.name === "SubmitChange")).toEqual(agentToolSpecs().find((t) => t.name === "SubmitChange"));
+    expect(all.filter((t) => t.name === "SubmitChange")).toHaveLength(1);
     expect(all.find((t) => t.name === "read")).toBeUndefined(); // filesystem is bound independently
     expect(all.some((t) => t.name === "CalendarFixture")).toBe(true);
-    expect(all.find((t) => t.name === "ReadyForReview")!.inputSchema.required).toContain("proofId");
+    expect(all.find((t) => t.name === "SubmitChange")!.inputSchema.required).toContain("assessment");
     rmSync(added, { recursive: true });
     expect((await catalog("conversation")).some((t) => t.name === "CalendarFixture")).toBe(false);
   });
@@ -44,7 +45,7 @@ describe("current host loadout policy", () => {
       expect(selected.filter((t) => t.name !== "CalendarFixture")).toEqual(voiceSideToolSpecs(loadout === "voiceAct"));
       // Existing voice policy intentionally permits Carl's own vault tools.
       expect(selected.some((t) => t.name === "CalendarFixture")).toBe(true);
-      expect(selected.some((t) => t.name === "ReadyForReview")).toBe(false);
+      expect(selected.some((t) => t.name === "SubmitChange")).toBe(false);
       expect(selected.some((t) => t.name === "AskUser")).toBe(false);
     }
   });
