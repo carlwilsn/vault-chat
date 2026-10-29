@@ -282,8 +282,10 @@ describe("speed: one warm browser, parts checked in parallel, a make streamed pa
   const FRAC_BAD = "$" + String.fromCharCode(92) + "frac{1$";
 
   it.skipIf(!browser)("the headless checks share one warm browser (a tab each), and a browser that died is started again", async () => {
+    // startMake in the preceding suite can leave a lazy warm-up in flight.
+    // A real check joins that promise; stopWarmBrowser only stops a ready browser.
+    expect((await headless(page, { w: 200, h: 100, shot: false })).verdict).toBe("ok");
     stopWarmBrowser();
-    await new Promise((r) => setTimeout(r, 400));
     const before = { ...headlessStats };
     const [a, b] = await Promise.all([headless(page, { w: 200, h: 100 }), headless(page, { w: 300, h: 120 })]);
     const c = await headless(page, { w: 200, h: 100, shot: false });

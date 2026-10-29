@@ -398,17 +398,23 @@ describe("voice's one tool that acts: Ask, a request to the conversation's agent
     const chat = await typed("A chat for a failing ask.", "OK.");
     const start = await voice.voiceUpdates(deps, { convId: chat });
     const starting = { vault, side: { start: async () => ({ error: "the agent engine is still starting — try again in a minute" }), wait: fakeSide.wait } };
+    // Updates use an exclusive millisecond cursor. Put these immediate fake
+    // failures after it; settling the work alone does not advance the clock.
+    await until(() => Date.now() > Number(start.cursor.split(":")[0]));
     expect((await voice.voiceTool(starting, { name: "Ask", args: { request: "x" }, convId: chat })).result).toMatch(/side request/);
     await voice.voiceAsksSettled();
     const got = await voice.voiceUpdates(deps, { convId: chat, cursor: start.cursor, waitMs: 1000 });
     expect(got.updates.find((u) => u.kind === "result")?.text).toMatch(/could not do it .*still starting.*Tell Carl it didn't happen/);
     // The same failure again, and again: one red row in the thread, not a stack; voice hears each.
+    await until(() => Date.now() > Number(got.cursor.split(":")[0]));
     for (const r of ["y", "z"]) await voice.voiceTool(starting, { name: "Ask", args: { request: r }, convId: chat });
     await voice.voiceAsksSettled();
     const rows = convs.pictureOf(vault, chat)!.items.filter((x) => x.kind === "tool" && x.name === "VoiceAsk");
     expect(rows.map((x) => x.result)).toEqual(["Error: the agent engine is still starting — try again in a minute"]);
     const again = await voice.voiceUpdates(deps, { convId: chat, cursor: got.cursor, waitMs: 1000 });
     expect(again.updates.filter((u) => u.kind === "result")).toHaveLength(2);
+    const consumed = await voice.voiceUpdates(deps, { convId: chat, cursor: again.cursor });
+    expect(consumed.updates.filter((u) => u.kind === "result")).toEqual([]);
   });
 
   it("an Ask never drops on a timeout: it returns while the side request still works, and its answer reaches the call once", async () => {
