@@ -3,7 +3,7 @@
 // the Done verifier's verdict and what a reply cost. Quiet, in the chat's own
 // vocabulary (the tool-call summary line, the plan card, the system line).
 // Where Carl has a presentation choice to make, uiChoices.ts picks the option.
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ChevronDown } from "lucide-react";
 import type { Conversation } from "./conversations";
 import type { ChatMessage } from "./store";
@@ -224,10 +224,31 @@ export function Subagents({
   const [open, setOpen] = useState(!!defaultOpen);
   const running = list.filter((s) => taskState(s) === "running");
   const now = useTick(running.length > 0);
+  const box = useRef<HTMLDivElement>(null);
+  // Open only while he looks: Esc or a click anywhere else folds it back to its one line.
+  useEffect(() => {
+    if (!open) return;
+    const away = (e: PointerEvent) => {
+      if (box.current && !box.current.contains(e.target as Node)) setOpen(false);
+    };
+    const esc = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      // This Esc only folds the list (it never also stops the agent).
+      e.stopPropagation();
+      e.preventDefault();
+      setOpen(false);
+    };
+    document.addEventListener("pointerdown", away, true);
+    document.addEventListener("keydown", esc, true);
+    return () => {
+      document.removeEventListener("pointerdown", away, true);
+      document.removeEventListener("keydown", esc, true);
+    };
+  }, [open]);
   if (!list.length) return null;
   const lead = running[running.length - 1];
   return (
-    <div data-el="subagents" data-variant={variant} data-open={open ? "1" : "0"} data-running={running.length} className={cn("rounded-md border border-border/60 bg-muted/30", variant === "strip" && "mb-1.5")}>
+    <div ref={box} data-el="subagents" data-variant={variant} data-open={open ? "1" : "0"} data-running={running.length} className={cn("rounded-md border border-border/60 bg-muted/30", variant === "strip" && "mb-1.5")}>
       <button type="button" onClick={() => setOpen((v) => !v)} data-el="tasks-chip" className="flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-[11px] text-muted-foreground hover:text-foreground min-w-0">
         <ChevronDown className={cn("h-3 w-3 shrink-0 transition-transform", open ? "rotate-0" : "-rotate-90")} />
         {lead ? <TaskDot state="running" /> : null}

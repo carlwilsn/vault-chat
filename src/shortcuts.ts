@@ -66,7 +66,7 @@ export const SHORTCUTS = [
     keys: ["Esc"],
     label: "Close / cancel",
     group: "Views & windows",
-    where: "popovers, panels, dialogs, a capture",
+    where: "popovers, panels, dialogs, a capture, the open background-tasks list",
     files: [
       "src/App.tsx",
       "src/ShortcutSheet.tsx",
@@ -86,6 +86,7 @@ export const SHORTCUTS = [
       "src/PdfView.tsx",
       "src/HtmlView.tsx",
       "src/ImageView.tsx",
+      "src/chatExtras.tsx",
     ],
   },
 

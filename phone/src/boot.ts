@@ -19,6 +19,8 @@ import { WaitTracker, calibFrom, renderWaitLine, waitInputs, type WaitCalib } fr
 import type { LogRecord } from "../../src/convlog/protocol";
 import { emptyPicture, emptyRow, foldInto, pendingOf, reduceRow, shown, type Picture, type RowState } from "../../src/convlog/reduce";
 import { RETRY_TEXT, afterClear, makeChatView, type ChatView } from "../../src/convlog/view";
+import { filesLine, splitFilesLine } from "../../src/filesLine";
+import { ATTACH_MAX_BYTES, isPhoto, pendingFile, sizeLabel, tooBig, type PendingFile } from "./attach";
 import { MAIN_ID, MAIN_TITLE, isOlderChat, panelModel, projectThreadId } from "../../src/threads";
 import { startAttentionBeat, type AttentionBeat } from "../../src/attentionBeat";
 
@@ -230,6 +232,8 @@ export function boot(): void {
   }
   // composer glyphs are drawn, not typed — one icon voice with the rest of the app
   const SEND_ARROW_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V6M6 12l6-6 6 6"/></svg>';
+  const MAIN_ICON_SVG = '<svg class="mainico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.992 16.342a2 2 0 0 1 .094 1.167l-1.065 3.29a1 1 0 0 0 1.236 1.168l3.413-.998a2 2 0 0 1 1.099.092 10 10 0 1 0-4.777-4.719"/></svg>';
+  const FILE_ICON_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/></svg>';
   const SEND_STOP_SVG = '<svg viewBox="0 0 24 24" fill="currentColor"><rect x="7" y="7" width="10" height="10" rx="2"/></svg>';
 
   // Cosmetic "clear chats": a per-device hidden set. Never deletes anything on
@@ -270,6 +274,10 @@ export function boot(): void {
     } else { tx.textContent = page === "notes" ? "Notes" : "Alerts"; sub.textContent = ""; }
     const mAl = $("mAl"); mAl.textContent = unreadN; mAl.classList.toggle("zero", unreadN === 0);
     $("menudot").classList.toggle("on", unreadN > 0 && page !== "alerts");
+    // Clear: with a thread open on the chat page (a read-only one too: it is a view, not the thread).
+    const clr = $("clearBtn") as HTMLButtonElement;
+    clr.hidden = page !== "chat" || !convId;
+    clr.disabled = !msgsEl || !msgsEl.querySelector(".m, .amsg, .tdecision");
   }
   function setOffline(off) { document.body.classList.toggle("offline", off); setHeader(); }
 
@@ -377,23 +385,9 @@ export function boot(): void {
     document.addEventListener("touchend", onEnd, { passive: true });
     document.addEventListener("touchcancel", onEnd, { passive: true });
   })();
-  // The ⋯ menu: what is not in the panel itself (src/threads.ts).
-  $("newBtn").onclick = () => { closeConvs(); openThreadsMenu(); };
-  function openThreadsMenu() {
-    const row = (k: string, label: string) => '<button class="arch-row" data-k="' + k + '"><span class="arch-t">' + esc(label) + "</span></button>";
-    openSheet({
-      intent: "Chats", title: "More", ico: "◎",
-      bodyHtml: convId ? row("clear", "Clear this thread") : '<div class="md dim" style="padding:0 18px 10px">Nothing to clear.</div>',
-      wire: (body) => {
-        body.querySelectorAll(".arch-row[data-k]").forEach((b) => {
-          b.onclick = () => {
-            const k = b.dataset.k;
-            if (k === "clear") { closeSheet(); clearThread(); }
-          };
-        });
-      },
-    });
-  }
+  // Clear: one tap in the thread's bar (the laptop's Clear, src/ChatPane.tsx: no confirm — nothing is
+  // deleted; the conversation and the agent keep everything, and other surfaces keep their view).
+  wireTap($("clearBtn"), () => clearThread());
   /** Clear on this phone only (the laptop's view, the conversation and its context are untouched): what is
    *  shown now leaves this view, kept across reloads (src/boxChat.ts afterClear, the laptop's own). */
   const CLEARED_KEY = "vc_phone_cleared";
@@ -478,6 +472,8 @@ export function boot(): void {
           const r = convRow({ id: e.id, title: "Main", lastActivityAt: (chats.find((c) => c.id === e.id) || {}).lastActivityAt, preview: "" }, e.running);
           r.dataset.el = "thread-main";
           r.classList.add("main");
+          // Main = your conversation: a chat bubble (Lucide's, the laptop's set), not a house.
+          r.querySelector(".nm")!.insertAdjacentHTML("beforebegin", MAIN_ICON_SVG);
           if (e.active) r.classList.add("on");
           box.appendChild(r);
           box.appendChild(sectionLabel("Projects"));
@@ -665,13 +661,14 @@ export function boot(): void {
   // The thread's tail (subagents no reply carries yet, the to-dos, the verdict
   // line) and the pinned area above the composer, per Carl's open choices.
   let tailEl = null;
+  let tasksOpen = false;
   function renderExtras() {
     const subs = convId ? convMeta.subagents || [] : [];
-    const placed = new Set();
-    msgsEl.querySelectorAll('[data-el="subagent"]').forEach((e) => { if (!e.closest("#xtail")) placed.add(e.dataset.sid); });
-    const inline = X.choice("subagents") === "inline";
-    const tail = (inline ? X.subagentsHtml(subs.filter((x) => !placed.has(x.threadId)), "inline") : "")
-      + (X.choice("todos") === "inline" ? X.todosHtml(convId ? convMeta.todos || [] : []) : "")
+    // Background tasks, as on the laptop: only while one runs, one line above the composer that a tap opens.
+    // A finished one leaves the screen (the agent's reply carries the result).
+    const runningTasks = subs.filter((x) => (x.state || x.status || "running") === "running");
+    if (!runningTasks.length) tasksOpen = false;
+    const tail = (X.choice("todos") === "inline" ? X.todosHtml(convId ? convMeta.todos || [] : []) : "")
       + X.verdictHtml(convId ? convMeta.verdict : undefined, convMeta.state);
     if (tail && !msgsEl.querySelector(".hint")) {
       if (!tailEl) { tailEl = document.createElement("div"); tailEl.id = "xtail"; }
@@ -679,22 +676,19 @@ export function boot(): void {
       const before = streamEl || runlineEl;
       if (before && before.parentNode === msgsEl) msgsEl.insertBefore(tailEl, before); else msgsEl.appendChild(tailEl);
     } else if (tailEl) { tailEl.remove(); }
-    // In-place updates of the inline cards already in replies (state, cost, summary).
-    if (inline) msgsEl.querySelectorAll(".amsg").forEach((a) => {
-      const card = a.querySelector(':scope > [data-el="subagents"]');
-      if (!card) return;
-      const ids = [...card.querySelectorAll('[data-el="subagent"]')].map((e) => e.dataset.sid);
-      const fresh = subs.filter((x) => ids.includes(x.threadId));
-      if (fresh.length) card.outerHTML = X.subagentsHtml(fresh, "inline");
-    });
     const pin = $("pinned");
-    // The strip: the newest spawn (one call's children). The pinned plan: while it has work left.
-    const last = subs[subs.length - 1];
-    const latest = last ? subs.filter((x) => (x.toolCallId || "") === (last.toolCallId || "")) : [];
+    // The pinned plan: while it has work left.
     const todos = convId ? convMeta.todos || [] : [];
     const planOpen = running || todos.some((t) => t.status !== "completed");
-    if (pin) pin.innerHTML = (!inline ? X.subagentsHtml(latest, "strip") : "") + (X.choice("todos") === "pinned" && planOpen ? X.todosHtml(todos) : "");
+    if (pin) pin.innerHTML = X.subagentsHtml(runningTasks, "strip", tasksOpen) + (X.choice("todos") === "pinned" && planOpen ? X.todosHtml(todos) : "");
   }
+  // The tasks chip opens on a tap and folds on a second tap or a tap anywhere else.
+  document.addEventListener("click", (e) => {
+    const t = e.target as HTMLElement;
+    const chip = t.closest?.('[data-el="tasks-chip"]');
+    if (chip) { tasksOpen = !tasksOpen; renderExtras(); return; }
+    if (tasksOpen && !t.closest?.('[data-el="subagents"]')) { tasksOpen = false; renderExtras(); }
+  }, true);
   setInterval(() => { renderOngoing(); }, 60000);
   // The project sheet: tap the chat's title. Pick, create, clear, or start a
   // new chat in the project. Before the first message it sets the new chat's.
@@ -781,17 +775,20 @@ export function boot(): void {
     // their bubbles.
     const asst = role !== "user" && !opts.system;
     div.className = (asst ? "amsg" : "m " + (role === "user" ? "user" : "sys")) + (opts.queued ? " queued" : "") + (opts.failLine ? " fail" : "");
-    if (!asst) div.textContent = content;
+    // His message's attached files (its "[files: …]" line): chips under its text.
+    const userFiles = role === "user" ? splitFilesLine(content) : null;
+    const text = userFiles ? userFiles.text : content;
+    if (!asst) div.textContent = text;
     // A turn that ended on a failed request (and nothing since): one line, and Try again.
     if (opts.retry) div.insertAdjacentHTML("beforeend", ' <button class="retrybtn" data-el="retry">Try again</button>');
-    else div.innerHTML = X.thoughtHtml(opts.thinking) + '<div class="md">' + md(Array.isArray(opts.askOptions) && opts.askOptions.length ? X.withoutOptionList(content, opts.askOptions) : content) + "</div>";
+    else div.innerHTML = X.thoughtHtml(opts.thinking) + (text.trim() ? '<div class="md">' + md(Array.isArray(opts.askOptions) && opts.askOptions.length ? X.withoutOptionList(text, opts.askOptions) : text) + "</div>" : "");
+    if (userFiles && userFiles.files.length) div.insertAdjacentHTML("beforeend", '<div class="mfiles" data-el="message-files">' + userFiles.files.map((n) => '<span class="mfile">' + FILE_ICON_SVG + "<span>" + esc(n) + "</span></span>").join("") + "</div>");
     // Images sent with a user turn: thumbnails above its text.
     if (!asst && Array.isArray(opts.images) && opts.images.length)
       div.insertAdjacentHTML("afterbegin", '<div class="mimgs">' + opts.images.map((u) => '<img src="' + esc(u) + '" alt="">').join("") + "</div>");
     // Finished-turn tool calls collapse to a "Ran N steps" summary at the end.
     if (asst) div.insertAdjacentHTML("beforeend", stepsStr(tools));
-    // The subagents this turn spawned (inline option), and what the turn cost.
-    if (asst && X.choice("subagents") === "inline") div.insertAdjacentHTML("beforeend", X.subagentsHtml(X.spawnsOf(opts.spawns, convMeta.subagents || []), "inline"));
+    // What the turn cost.
     if (asst) div.insertAdjacentHTML("beforeend", X.costHtml(opts.costUsd));
     // [unified ask] Tappable option cards land WITH the reply that argues for
     // them (a presence-gated AskUser — no push was sent, you're here).
@@ -945,7 +942,7 @@ export function boot(): void {
     const have = new Set([...(pic ? shown(pic) : []).map((x) => x.id), ...(pic ? pendingOf(pic) : []).map((x) => x.id)]);
     const mine = outgoing.filter((o) => o.convId === convId && !have.has(o.id));
     outgoing = outgoing.filter((o) => o.convId !== convId || !(pic ? shown(pic) : []).some((x) => x.id === o.id));
-    const msgs: any[] = [...afterClear(v ? v.messages : [], clearedAt[convId]).filter((m) => !m.hidden)];
+    const msgs: any[] = [...afterClear(v ? v.messages : [], clearedAt[convId]).filter((m) => !m.hidden && !(m.job && !m.job.failed && m.job.status !== "stopped"))];
     // What pi has not delivered yet (a steer, a queued message): after the thread, labelled.
     for (const p of v ? v.pending : []) msgs.push({ role: "user", content: p.text, mid: p.id, __pending: p.kind });
     for (const o of mine) {
@@ -1039,16 +1036,24 @@ export function boot(): void {
   async function send(forced?) {
     if (sending) return;
     const typed = (forced !== undefined ? String(forced) : input.value).trim();
-    // Photos ride with a typed send (not with a tapped option).
+    // Photos and files ride with a typed send (not with a tapped option).
     const imgs = forced === undefined ? pendingImgs.slice() : [];
-    if (!typed && !imgs.length) return;
-    if (!imgs.length && (await compactCommand(typed))) { if (forced === undefined) { input.value = ""; input.style.height = "auto"; input.style.overflowY = "hidden"; } return; }
+    const pfiles = forced === undefined ? pendingFiles.slice() : [];
+    if (!typed && !imgs.length && !pfiles.length) return;
+    if (!imgs.length && !pfiles.length && (await compactCommand(typed))) { if (forced === undefined) { input.value = ""; input.style.height = "auto"; input.style.overflowY = "hidden"; } return; }
+    // A file still on its way to the box: the send waits for it; one that did not get there keeps the message here.
+    if (pfiles.some((f) => f.state === "uploading")) { sending = true; sendBtn.disabled = true; await Promise.all(pfiles.map((f) => f.done)); sendBtn.disabled = false; sending = false; }
+    const lost = pfiles.find((f) => f.state === "failed");
+    if (lost) { toast(lost.name + " did not reach the box — remove it to send"); return; }
+    // The files go by their path on the box; their names end the text (chips on the bubble, the laptop's line).
+    const files = pfiles.map((f) => f.path!);
     // The box records a photo-only turn as "(image)".
-    const text = typed || "(image)";
+    const text = (typed || (pfiles.length ? "" : "(image)")) + filesLine(pfiles.map((f) => f.name));
+    const sentText = typed + filesLine(pfiles.map((f) => f.name));
     if (convSource && ARCHIVED_SOURCES.has(convSource)) { toast("Archived mission thread — start a new chat."); return; }
     if (convId && pic && isOlderChat({ id: convId, kind: (pic.meta as any).kind })) { toast("An older chat — read only. Main carries on."); return; }
     sending = true;
-    if (forced === undefined) { input.value = ""; input.style.height = "auto"; input.style.overflowY = "hidden"; pendingImgs = []; renderPending(); }
+    if (forced === undefined) { input.value = ""; input.style.height = "auto"; input.style.overflowY = "hidden"; pendingImgs = []; pendingFiles = []; renderPending(); }
     // A new chat gets its id here: the box makes the conversation under it.
     const fresh = !convId;
     if (fresh) { convId = clientId(); convTitle = text.split("\n")[0].slice(0, 60); pic = null; picView = makeChatView(); for (const [, n] of shownNodes) n.el.remove(); shownNodes.clear(); }
@@ -1061,7 +1066,7 @@ export function boot(): void {
     outgoing.push({ id, convId: target, text, images: imgs.map((x) => x.url), ...(kind === "steer" ? { kind: "steer" as const } : {}) });
     scheduleRender(); scrollDown(true);
     try {
-      const r = await api("/api/v2/intent", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ type: kind, convId: target, clientId: id, client: "phone", text: typed, ...(imgs.length ? { images: imgs.map((x) => ({ name: x.name, mime: x.mime, dataBase64: x.url.slice(x.url.indexOf(",") + 1) })) } : {}), ...(fresh && newChatProject ? { project: projects.find((x) => x.slug === newChatProject)?.name || newChatProject } : {}) }) });
+      const r = await api("/api/v2/intent", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ type: kind, convId: target, clientId: id, client: "phone", text: sentText, ...(files.length ? { files } : {}), ...(imgs.length ? { images: imgs.map((x) => ({ name: x.name, mime: x.mime, dataBase64: x.url.slice(x.url.indexOf(",") + 1) })) } : {}), ...(fresh && newChatProject ? { project: projects.find((x) => x.slug === newChatProject)?.name || newChatProject } : {}) }) });
       const d = await r.json();
       if (!r.ok || d.error || d.ok === false) throw new Error(d.error || r.status);
       if (fresh) { if (newChatProject) convMeta.project = newChatProject; newChatProject = ""; }
@@ -1107,15 +1112,18 @@ export function boot(): void {
     toast(d.result || "Stop sent.");
   }
 
-  // ---------- photos in the composer ----------
-  // Picked from the library or taken with the camera (the OS offers both),
-  // shown as thumbnails above the composer, sent as images[] with the message.
+  // ---------- "+": photos and files in the composer ----------
+  // One picker (iOS: Take Photo, Photo Library, Choose File). Photos show as thumbnails and go as
+  // images[]; other files upload to the box at once and show as chips (attach.ts), sent as files[].
   let pendingImgs: { url: string; mime: string; name: string }[] = [];
+  let pendingFiles: PendingFile[] = [];
   function renderPending() {
     const el = $("pendImgs");
     if (!el) return;
-    el.className = pendingImgs.length ? "on" : "";
-    el.innerHTML = pendingImgs.map((x, i) => '<span class="pimg" data-i="' + i + '"><img src="' + esc(x.url) + '" alt=""><button class="px" aria-label="remove">×</button></span>').join("");
+    el.className = pendingImgs.length || pendingFiles.length ? "on" : "";
+    el.innerHTML =
+      pendingImgs.map((x, i) => '<span class="pimg" data-i="' + i + '"><img src="' + esc(x.url) + '" alt=""><button class="px" aria-label="remove">×</button></span>').join("") +
+      pendingFiles.map((f) => '<span class="pfile ' + f.state + '" data-k="' + f.key + '" data-el="attach-chip"' + (f.error ? ' title="' + esc(f.error) + '"' : "") + ">" + FILE_ICON_SVG + '<span class="pfn">' + esc(f.name) + '</span><span class="pfs">' + (f.state === "uploading" ? "uploading…" : f.state === "failed" ? "didn't upload" : sizeLabel(f.size)) + '</span><button class="px" aria-label="remove">×</button></span>').join("");
   }
   // Big photos are scaled down (longest side 1600 px, JPEG) before they go.
   function shrink(file: File): Promise<{ url: string; mime: string; name: string }> {
@@ -1127,7 +1135,7 @@ export function boot(): void {
         const img = new Image();
         img.onload = () => {
           const k = Math.min(1, 1600 / Math.max(img.width, img.height));
-          if (k >= 1 && file.size < 1_500_000) return resolve({ url, mime: file.type || "image/png", name: file.name || "photo" });
+          if (k >= 1 && file.size < 1_500_000 && /^image\/(png|jpe?g|gif|webp)$/i.test(file.type)) return resolve({ url, mime: file.type || "image/png", name: file.name || "photo" });
           const c = document.createElement("canvas");
           c.width = Math.round(img.width * k); c.height = Math.round(img.height * k);
           c.getContext("2d")!.drawImage(img, 0, 0, c.width, c.height);
@@ -1142,9 +1150,14 @@ export function boot(): void {
   const imgInput = $("imgInput");
   wireTap($("imgBtn"), () => imgInput && imgInput.click());
   if (imgInput) imgInput.addEventListener("change", async () => {
-    const files = [...(imgInput.files || [])].filter((f: File) => f.type.startsWith("image/")).slice(0, 4);
+    const picked = [...(imgInput.files || [])] as File[];
     imgInput.value = "";
-    for (const f of files) { try { pendingImgs.push(await shrink(f)); } catch {} }
+    for (const f of picked.filter((x) => !isPhoto(x)).slice(0, 10 - pendingFiles.length)) {
+      pendingFiles.push(pendingFile(api, f, renderPending));
+      if (f.size > ATTACH_MAX_BYTES) toast(tooBig(f.name, f.size));
+    }
+    renderPending();
+    for (const f of picked.filter(isPhoto).slice(0, 4)) { try { pendingImgs.push(await shrink(f)); } catch {} }
     pendingImgs = pendingImgs.slice(0, 4);
     renderPending();
   });
@@ -1152,8 +1165,10 @@ export function boot(): void {
   if (pendEl) pendEl.addEventListener("click", (e) => {
     const x = (e.target as HTMLElement).closest(".px");
     if (!x) return;
-    const i = Number((x.closest(".pimg") as HTMLElement).dataset.i);
-    pendingImgs.splice(i, 1); renderPending();
+    const chip = x.closest(".pfile") as HTMLElement | null;
+    if (chip) pendingFiles = pendingFiles.filter((f) => f.key !== chip.dataset.k);
+    else pendingImgs.splice(Number((x.closest(".pimg") as HTMLElement).dataset.i), 1);
+    renderPending();
   });
 
   // Steer / stop a running subagent (its card in the thread or the strip).

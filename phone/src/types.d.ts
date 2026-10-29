@@ -16,6 +16,7 @@ interface Window {
   __vcPhoneNext?: () => boolean;
   /** preview: what the page sent to the scripted box */
   __vcPhonePosts?: { url: string; method: string; body: any }[];
+  __vcPhoneAttachments?: { path: string; name: string; size: number }[];
   /** KaTeX auto-render (bundled; set in main.tsx) */
   renderMathInElement?: (el: Element, opts?: unknown) => void;
 }

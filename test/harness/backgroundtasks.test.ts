@@ -159,3 +159,29 @@ test("Clear with a task still running: it stays reachable (the chip), the finish
   box.endTurn("main");
   await waitFor("the new plan", () => (main().todos ?? []).map((t) => t.content).join() === "new step");
 });
+
+// ---------------------------------------------------------------- done tasks leave the screen (Carl, 2026-10-28)
+
+test("a finished task's row is gone from the thread (the reply carries the result); a failed or stopped one is one quiet line", async () => {
+  const { MessageBubble } = await import("../../src/ChatPane.tsx");
+  const bubble = (job: any) => renderToStaticMarkup(createElement(MessageBubble as any, { message: { role: "user", system: true, content: `Background task ${job.status} · ${job.name}`, job } }));
+  assert.equal(bubble({ id: "a", name: "physics animation", status: "finished", failed: false, output: "", task: true }), "");
+  assert.equal(bubble({ id: "j", name: "build", status: "finished", failed: false, output: "ok" }), "", "a job that exited 0 says nothing either");
+  const failed = bubble({ id: "b", name: "physics animation", status: "failed", failed: true, output: "", task: true });
+  assert.match(failed, /data-el="task-end"/);
+  assert.match(failed, /Background task failed/);
+  assert.match(bubble({ id: "c", name: "x", status: "stopped", failed: false, output: "", task: true }), /Background task stopped/);
+});
+
+test("the phone: one compact line until tapped (count and the running task's latest step); the rows only when opened", async () => {
+  const X = await import("../../phone/src/extras.ts");
+  const closed = X.subagentsHtml([running] as any, "strip");
+  assert.match(closed, /data-el="tasks-summary">1 background task running</);
+  assert.match(closed, /data-el="tasks-lead"> · writing physics\.html · 3 steps · /);
+  assert.doesNotMatch(closed, /data-el="subagent"/);
+  const open = X.subagentsHtml([running] as any, "strip", true);
+  assert.match(open, /data-open="1"/);
+  assert.match(open, /data-el="subagent"[^>]*data-state="running"/);
+  assert.match(open, /data-op="stop"/);
+  assert.equal(X.subagentsHtml([], "strip"), "");
+});

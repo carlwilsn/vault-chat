@@ -1,5 +1,5 @@
 // The three pages; `body.page-*` (set by setPage) picks the visible one.
-import { Photo, SendArrow } from "./icons";
+import { Plus, SendArrow } from "./icons";
 
 export function Pages() {
   return (
@@ -11,10 +11,13 @@ export function Pages() {
         <div id="pendImgs"></div>
         <div className="composer">
           <div className="field">
-            <button className="imgbtn" id="imgBtn" aria-label="photo">
-              <Photo />
+            {/* "+": one picker for anything — iOS offers Take Photo, Photo Library and Choose File itself
+                (no `accept`, no `capture`: either would narrow its menu). Photos go as images; other
+                files upload to the box (POST /api/v2/attachment) and the agent gets their paths. */}
+            <button className="imgbtn" id="imgBtn" data-el="attach" aria-label="Attach a photo or file">
+              <Plus />
             </button>
-            <input type="file" id="imgInput" accept="image/*" multiple hidden />
+            <input type="file" id="imgInput" multiple hidden />
             <textarea id="input" rows={1} placeholder="Message…" enterKeyHint="enter" autoComplete="off"></textarea>
             <button className="send" id="sendBtn" aria-label="send">
               <SendArrow />

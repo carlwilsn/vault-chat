@@ -242,6 +242,14 @@ export function installMock() {
     if (u === "/api/v2/intent" && body.type === "deleteProject") { (DB.deletedProjects = DB.deletedProjects || []).push(...(DB.projects || []).filter((x) => x.slug === body.slug)); DB.projects = (DB.projects || []).filter((x) => x.slug !== body.slug); }
     if (u === "/api/v2/intent" && body.type === "restoreProject") { const back = (DB.deletedProjects || []).filter((x) => x.slug === body.slug); DB.deletedProjects = (DB.deletedProjects || []).filter((x) => x.slug !== body.slug); (DB.projects = DB.projects || []).push(...back); }
     if (u === "/api/v2/intent" && body.type === "renameProject") DB.projects = (DB.projects || []).map((x) => (x.slug === body.slug ? { ...x, name: String(body.name || "").trim() || x.name } : x));
+    // A file from "+": kept as the box keeps it (server/attachments.ts), by name under the day's folder.
+    if (u === "/api/v2/attachment") {
+      const size = Math.floor((String(body.dataBase64 || "").length * 3) / 4);
+      if (!size) return new Response(JSON.stringify({ error: "arrived empty" }), { status: 400 });
+      const path = ".vault-chat/attachments/" + new Date().toISOString().slice(0, 10) + "/" + String(body.name || "attachment");
+      (window.__vcPhoneAttachments = window.__vcPhoneAttachments || []).push({ path, name: body.name, size });
+      return reply({ ok: true, path, abs: "/home/box/vault/" + path, name: body.name, size });
+    }
     // The log's routes: /poll, /api/v2/conversations[/<id>/checkpoint], /api/v2/intent.
     const routed = await box.route((opts && opts.method) || "GET", u, q, body, DB.script ? 2400 : 2500);
     if (routed) return new Response(JSON.stringify(routed.body), { status: routed.status, headers: { "Content-Type": "application/json" } });

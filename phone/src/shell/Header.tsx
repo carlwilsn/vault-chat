@@ -1,27 +1,39 @@
 // Top of the page: the header bar, the offline bar and the burger menu.
-import { Burger, Gear } from "./icons";
+import { Burger, Eraser, Gear } from "./icons";
 
 export function Header() {
+  // Three columns: the side groups take equal room while there is room, so the title stays centred
+  // over the thread whatever sits on either side of it.
   return (
     <div className="hdr">
-      <button className="icbtn" id="convBtn" aria-label="conversations">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-          <path d="M4 8.5h16M4 15.5h11.2" />
-        </svg>
-        <span className="reddot" id="convdot"></span>
-      </button>
+      <div className="hside l">
+        <button className="icbtn" id="convBtn" aria-label="conversations">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M4 8.5h16M4 15.5h11.2" />
+          </svg>
+          <span className="reddot" id="convdot"></span>
+        </button>
+      </div>
       <button className="title" id="titleBtn">
         <span className="tx" id="titleTx">connecting…</span>
         <span className="sub" id="titleSub"></span>
       </button>
-      <button className="vpill" id="vpill">
-        <span className="d"></span> voice
-        <span className="vpwait" id="vpwait"></span>
-      </button>
-      <button className="icbtn" id="menuBtn" aria-label="menu">
-        <Burger />
-        <span className="reddot" id="menudot"></span>
-      </button>
+      <div className="hside r">
+        <button className="vpill" id="vpill">
+          <span className="d"></span> voice
+          <span className="vpwait" id="vpwait"></span>
+        </button>
+        {/* Clear: the open thread's view on this phone goes blank, one tap (the laptop's Clear: same
+            icon, no confirm; the conversation and the agent keep everything). Shown with a thread open. */}
+        <button className="icbtn clrbtn" id="clearBtn" data-el="clear-thread" aria-label="Clear this thread" hidden>
+          <Eraser />
+          <span className="clrlbl">Clear</span>
+        </button>
+        <button className="icbtn" id="menuBtn" aria-label="menu">
+          <Burger />
+          <span className="reddot" id="menudot"></span>
+        </button>
+      </div>
     </div>
   );
 }
