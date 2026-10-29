@@ -6,10 +6,11 @@ import { dirname, extname, join, resolve, sep } from "node:path";
 import { isIP } from "node:net";
 import type { IncomingMessage } from "node:http";
 import { isLoopbackAddr, tailnetLoginOk } from "./auth";
-import { acceptedChanges, updateShippingJournal, type AcceptedChange, type ShippingJournal } from "./changeShipping";
+import { acceptedChanges, importLegacyBootstrap, updateShippingJournal, type AcceptedChange, type ShippingJournal } from "./changeShipping";
 import { evaluateReleaseHealth, type BoxReleaseHealth, type LaptopReleaseHealth, type ReleaseHealthResult, type ReleaseTarget } from "./releaseHealth";
 import type { LaptopHealthReport, ReleaseHealthChallenge, ShipmentCard, ShipmentRollback } from "../src/shippingProtocol";
 import { activeFolders } from "./projectFolders";
+import { SERVER_REV } from "./config";
 
 export type DeliveryRelease = {
   target: ReleaseTarget; box?: BoxReleaseHealth; result?: ReleaseHealthResult;
@@ -130,6 +131,10 @@ export async function requestDeliveryRollback(repo: string, id: string, reason: 
 /** Called by master.ts inside BoxSync's existing cycle, no new scheduling loop. */
 export async function observeChangeDelivery(repo: string): Promise<void> {
   if (!adapters) return;
+  // The first A was kept by the old installed service, so it has no new acceptance journal.
+  // Import only its protected completed Keep + matching public compiled release; no authorization.
+  const contexts = adapters.vaults().flatMap(v => activeFolders(v.path).filter(f => resolve(f.abs) === resolve(repo)).map(f => ({ vault: v.path, slug: f.slug })));
+  if (contexts.length) await importLegacyBootstrap(repo, SERVER_REV, contexts);
   const box = await adapters.boxHealth(), now = Date.now();
   const requests = await updateShippingJournal(repo, j => {
     const requests: { id: string; reason: string; automatic: boolean }[] = [];
@@ -177,7 +182,7 @@ function proofProjection(vaultPath: string, vaultName: string, c: AcceptedChange
   let summary = `# ${c.review.title.replace(/[\r\n]/g, " ")}\n\nAccepted source: ${c.source.head}\n\nRelease and actual device health are tracked separately.\n`;
   const mediaUrls: string[] = [];
   const receiptFile = join(c.proofDir, "receipt.json");
-  if (existsSync(receiptFile)) {
+  if (c.basis !== "legacy-bootstrap" && existsSync(receiptFile)) {
     const receipt = JSON.parse(readFileSync(receiptFile, "utf8"));
     if (receipt.id !== c.id || receipt.source?.head !== c.source.head || receipt.source?.tree !== c.source.tree) throw new Error("Proof source mismatch");
     for (const side of ["baseline", "candidate"] as const) {
@@ -200,7 +205,22 @@ function proofProjection(vaultPath: string, vaultName: string, c: AcceptedChange
     if (!existsSync(target) || createHash("sha256").update(readFileSync(target)).digest("hex") !== receipt.ui.artifactHash) writeFileSync(target, bytes);
     mediaUrls.push(fileUrl(vaultName, `${rel}/${name}`));
   }
-  if (!existsSync(receiptFile)) summary += "\nRetained detailed proof is unavailable; acceptance is recorded in the service journal.\n";
+  if (c.basis === "legacy-bootstrap") {
+    if (!c.bootstrap || c.bootstrap.proofId !== c.id) throw new Error("Invalid bootstrap proof identity");
+    summary += "\n## Explicit one-time legacy bootstrap\nCarl kept the final A + voice mic fixture repair using the previous installed service. Its native completed Keep result and exact published source were verified before importing this historical acceptance fact. This is not a new seven-gate host receipt or a replayable permit.\n\nThe original checks and UI are retained on the completed ReadyForReview card. The media below is the original retained UI proof, not a new recording.\n";
+    const root = realpathSync(c.proofDir);
+    for (const [i, media] of c.bootstrap.media.entries()) {
+      if (!/^[^/\\]+\.(?:png|jpe?g|webp|mp4|webm)$/i.test(media.name) || !/^[a-f0-9]{64}$/.test(media.hash)) throw new Error("Invalid legacy proof media identity");
+      const path = join(c.proofDir, media.name);
+      if (lstatSync(path).isSymbolicLink() || !lstatSync(path).isFile() || !realpathSync(path).startsWith(root + sep)) throw new Error("Unsafe legacy proof media");
+      const bytes = readFileSync(path);
+      if (createHash("sha256").update(bytes).digest("hex") !== media.hash) throw new Error("Legacy proof artifact changed");
+      const name = `legacy-${i + 1}${extname(media.name).toLowerCase()}`, target = join(dest, name);
+      if (existsSync(target) && (lstatSync(target).isSymbolicLink() || !lstatSync(target).isFile())) throw new Error("Unsafe legacy proof projection");
+      writeFileSync(target, bytes);
+      mediaUrls.push(fileUrl(vaultName, `${rel}/${name}`));
+    }
+  } else if (!existsSync(receiptFile)) summary += "\nRetained detailed proof is unavailable; acceptance is recorded in the service journal.\n";
   writeFileSync(join(dest, "summary.md"), summary);
   return { summaryUrl: fileUrl(vaultName, `${rel}/summary.md`), mediaUrls };
 }

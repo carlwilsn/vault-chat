@@ -1,17 +1,25 @@
 /** Durable service acceptance/release journal. This records facts, NEVER authorization: restart cannot
  * reconstruct a proof permit. Stored in git's private directory, outside the synced working tree. */
-import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { dirname, isAbsolute, join, resolve } from "node:path";
-import { randomUUID } from "node:crypto";
+import { closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
+import { dirname, extname, isAbsolute, join, resolve, sep } from "node:path";
+import { createHash, randomUUID } from "node:crypto";
 import { git, runGit, withRepoLock } from "./git";
 import type { ChangeReceipt } from "./changeProof";
 import type { Review } from "./projectChanges";
+import { logOf } from "./engine/convs";
+import { hostToolName } from "../src/mcpNames";
+import { KEEP, OUTCOME_SEP, proofImagePath, REVIEW_TOOL } from "../src/review";
 
 export type PublishedChangeRelease = { id: string; version: string; revision: string; tag: string; publishedAt: string };
 export type AcceptedChange = {
   id: string; source: ChangeReceipt["source"]; review: Review; proofDir: string;
   /** Retain the recorder request with the receipt; these steps are NOT evidence in themselves. */
   check: import("./changeHost").SubmitCheck;
+  /** One explicitly approved old-service handoff. This is a historical fact, NEVER a proof permit. */
+  basis?: "legacy-bootstrap";
+  /** Bootstrap only: host verifies the exact range excluding the separate voice fixture baseline repair. */
+  revertCommits?: string[];
+  bootstrap?: { proofId: string; toolCallId: string; fixtureCommit: string; media: { name: string; hash: string }[] };
   preparedAt: string; acceptedAt?: string; release?: PublishedChangeRelease; rollbackOf?: string;
 };
 export type ShippingJournal = { format: 1; changes: AcceptedChange[]; delivery?: import("./changeDelivery").DeliveryState };
@@ -236,4 +244,108 @@ async function verifyPublisherCommit(repo: string, release: PublishedChangeRelea
     } else if (before.replace(/^(version\s*=\s*)"[^"]+"/m, `$1"${release.version}"`) !== after) throw new Error("Release changes non-version Cargo content");
   }
   if (JSON.parse(await git(repo, ["show", `${release.revision}:package.json`])).version !== release.version) throw new Error("CI version mismatch");
+}
+
+/** ONE final old-service handoff, not a general importer for historical Keeps. The cue is fixed in
+ * installed source so a caller cannot choose a different review/base/branch to import. */
+export const LEGACY_BOOTSTRAP = Object.freeze({
+  base: "6fcc7f683d32598ba2657918e266e4e25c770547",
+  fixtureCommit: "5a83c620305301dba9f33be7b3272a82f8dd71dd",
+  branch: "agent/auto-ship",
+  proofId: "auto_ship_bootstrap_A_6fcc7f68",
+  title: "Automatic delivery A + voice mic fixture repair",
+});
+
+/** Import an ALREADY published, user-kept fact. No ref movement, merge, push, permit, transcript
+ * writes or tool/client endpoint. installedRevision comes from this running binary's build metadata.
+ * Public release verification and the protected native conversation stream are both mandatory. */
+export async function importLegacyBootstrap(repo: string, installedRevision: string,
+  contexts: { vault: string; slug: string }[],
+  discover: typeof discoverPublicRelease = discoverPublicRelease,
+  fetch: typeof fetchPublicTag = fetchPublicTag): Promise<AcceptedChange | null> {
+  if (!sha(installedRevision)) return null; // unbundled development is not an installed release
+  const existing = (await acceptedChanges(repo)).find(c => c.basis === "legacy-bootstrap");
+  if (existing) return existing;
+  const originResult = await runGit(repo, ["config", "--get", "remote.origin.url"]);
+  const origin = originResult.stdout.trim();
+  if (originResult.code !== 0 || publicGithubRepository(origin) !== "carlwilsn/vault-chat") return null;
+  const release = await discover("carlwilsn/vault-chat");
+  if (release.revision !== installedRevision) return null; // not the actual installed published release
+  // A can fail before ordinary project sync fetched the CI version commit. Fetch only its verified
+  // public tag OBJECTS using the same credential-free transport; no local refs are moved.
+  if ((await runGit(repo, ["cat-file", "-e", `${installedRevision}^{commit}`])).code !== 0) await fetch(repo, "carlwilsn/vault-chat", release);
+  const parents = (await git(repo, ["rev-list", "--parents", "-n", "1", installedRevision])).trim().split(" ");
+  if (parents.length !== 2) return null;
+  const head = parents[1]!;
+  // Old pre-A binaries/releases cannot be misidentified as this exception.
+  if ((await runGit(repo, ["merge-base", "--is-ancestor", LEGACY_BOOTSTRAP.fixtureCommit, head])).code !== 0) return null;
+  await verifyPublisherCommit(repo, release);
+  const fail = (why: string): never => { throw new Error(`Bootstrap A acceptance needs attention: ${why}; no acceptance imported`); };
+  const branch = await runGit(repo, ["rev-parse", `refs/heads/${LEGACY_BOOTSTRAP.branch}`]);
+  if (branch.code !== 0 || branch.stdout.trim() !== head) fail("published source does not match the pinned final A branch");
+  if ((await runGit(repo, ["merge-base", "--is-ancestor", LEGACY_BOOTSTRAP.base, head])).code !== 0 ||
+      (await runGit(repo, ["merge-base", "--is-ancestor", head, "refs/heads/main"])).code !== 0) fail("actual main does not contain the exact bootstrap source");
+  const matches: { vault: string; slug: string; convId: string; toolCallId: string; args: Record<string, unknown>; at: number }[] = [];
+  for (const { vault, slug } of contexts) {
+    const log = logOf(vault);
+    for (const row of log.rows().filter(r => r.project === slug)) {
+      // Read the framework's protected server stream, NOT agent-written conversation JSON or a
+      // review/settled-review cache. Only native pi messages can supply a call and completed result.
+      const entries = new Map<string, { message: import("../src/convlog/protocol").PiMessage; at: number }>();
+      for (const r of log.eventsOf(row.id)) if (r.type === "entry" && r.entry.type === "message" && r.entry.message && !r.entry.id.startsWith("imp")) {
+        const old = entries.get(r.entry.id);
+        if (old && JSON.stringify(old.message) !== JSON.stringify(r.entry.message)) fail("ambiguous conversation entry");
+        entries.set(r.entry.id, { message: r.entry.message, at: r.at });
+      }
+      for (const { message, at: callAt } of entries.values()) {
+        if (message.role !== "assistant" || !Array.isArray(message.content)) continue;
+        for (const b of message.content) {
+          if (b.type !== "toolCall" || hostToolName(b.name ?? "") !== REVIEW_TOOL || b.arguments?.proofId !== LEGACY_BOOTSTRAP.proofId) continue;
+          const a = b.arguments as Record<string, unknown>;
+          if (!b.id || a.branch !== LEGACY_BOOTSTRAP.branch || a.title !== LEGACY_BOOTSTRAP.title || typeof a.tests !== "string" || !a.tests.trim() || !Array.isArray(a.images) || !a.images.length || a.images.length > 8 || a.images.some(i => typeof i !== "string" || !i)) fail("final handoff cue, checks or UI media are missing");
+          const results = [...entries.values()].filter(e => e.message.role === "toolResult" && e.message.toolCallId === b.id && hostToolName(e.message.toolName ?? "") === REVIEW_TOOL);
+          if (results.length !== 1) fail("missing or ambiguous completed user Keep receipt");
+          const result = results[0]!, m = result.message;
+          const text = typeof m.content === "string" ? m.content : (m.content ?? []).filter(c => c.type === "text").map(c => c.text ?? "").join("");
+          const prefix = `Carl answered: ${KEEP}${OUTCOME_SEP}Kept: ${LEGACY_BOOTSTRAP.branch} is in main (fast-forward, now `;
+          const short = text.startsWith(prefix) ? /^([a-f0-9]{7,40})\); /.exec(text.slice(prefix.length))?.[1] : undefined;
+          if (m.isError || !short || !head.startsWith(short) || !Number.isFinite(result.at) || result.at < callAt || !Number.isFinite(Date.parse(release.publishedAt)) || result.at > Date.parse(release.publishedAt)) fail("completed user Keep does not match the published source");
+          // Resolve the actual object, not just a convenient prefix comparison (ambiguous short SHAs fail).
+          const resolved = await runGit(repo, ["rev-parse", "--verify", `${short}^{commit}`]);
+          if (resolved.code !== 0 || resolved.stdout.trim() !== head) fail("Keep source identity is ambiguous");
+          matches.push({ vault, slug, convId: row.id, toolCallId: b.id!, args: a, at: result.at });
+        }
+      }
+    }
+  }
+  if (matches.length !== 1) fail("missing or ambiguous protected final ReadyForReview/Keep receipt");
+  const match = matches[0]!, proofDir = join(match.vault, ".vault-chat", "proof", LEGACY_BOOTSTRAP.proofId);
+  const media = (match.args.images as string[]).map((image, i) => {
+    const path = join(match.vault, proofImagePath(LEGACY_BOOTSTRAP.proofId, i, image));
+    // Check every path component. Synced/model-written symlinks must not expose private host files.
+    let dir = resolve(match.vault);
+    for (const component of path.slice(join(match.vault).length + 1).split(sep)) {
+      dir = join(dir, component);
+      if (!existsSync(dir) || lstatSync(dir).isSymbolicLink()) fail("retained legacy UI media is missing or unsafe");
+    }
+    if (!lstatSync(path).isFile() || !realpathSync(path).startsWith(realpathSync(proofDir) + sep) || ![".png", ".jpg", ".jpeg", ".webp", ".mp4", ".webm"].includes(extname(path).toLowerCase())) fail("retained legacy UI media is invalid");
+    return { name: path.slice(proofDir.length + 1), hash: createHash("sha256").update(readFileSync(path)).digest("hex") };
+  });
+  const at = new Date(match.at).toISOString(), tree = (await git(repo, ["rev-parse", `${head}^{tree}`])).trim();
+  const change: AcceptedChange = { id: LEGACY_BOOTSTRAP.proofId, basis: "legacy-bootstrap",
+    bootstrap: { proofId: LEGACY_BOOTSTRAP.proofId, toolCallId: match.toolCallId, fixtureCommit: LEGACY_BOOTSTRAP.fixtureCommit, media },
+    source: { base: LEGACY_BOOTSTRAP.base, head, tree, branch: LEGACY_BOOTSTRAP.branch },
+    review: { convId: match.convId, slug: match.slug, folder: repo, clone: repo, base: "main", branch: LEGACY_BOOTSTRAP.branch, sha: head, title: LEGACY_BOOTSTRAP.title, at, proofId: LEGACY_BOOTSTRAP.proofId, toolCallId: match.toolCallId },
+    proofDir, check: { assessment: "Explicit final legacy bootstrap handoff; not a new host proof receipt", evidence: [], surface: "phone", ui: { steps: [] } },
+    revertCommits: (await git(repo, ["rev-list", "--topo-order", head, `^${LEGACY_BOOTSTRAP.base}`])).trim().split("\n").filter(rev => rev && rev !== LEGACY_BOOTSTRAP.fixtureCommit),
+    preparedAt: at, acceptedAt: at, release };
+  return updateShippingJournal(repo, async j => {
+    const old = j.changes.find(c => c.basis === "legacy-bootstrap" || c.id === change.id);
+    if (old) { if (old.source.head !== head || old.basis !== "legacy-bootstrap") fail("bootstrap identity already conflicts with the journal"); return structuredClone(old); }
+    // Recheck host refs under the same lock as the ordinary acceptance journal. This path NEVER moves them.
+    if ((await git(repo, ["config", "--get", "remote.origin.url"])).trim() !== origin ||
+        (await git(repo, ["rev-parse", `refs/heads/${LEGACY_BOOTSTRAP.branch}`])).trim() !== head ||
+        (await runGit(repo, ["merge-base", "--is-ancestor", head, "refs/heads/main"])).code !== 0) fail("source moved during migration");
+    j.changes.push(change); return structuredClone(change);
+  });
 }
