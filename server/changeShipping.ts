@@ -277,6 +277,13 @@ export const LEGACY_BOOTSTRAP = Object.freeze({
   title: "Automatic delivery A + voice mic fixture repair",
 });
 
+/** Fresh artifacts may retry this ONE fixed handoff; never truncate/sanitize an identity into authority. */
+export function isLegacyBootstrapProofId(value: unknown): value is string {
+  return typeof value === "string" && value.length <= 60 && !/[^A-Za-z0-9_-]/.test(value) &&
+    (value === LEGACY_BOOTSTRAP.proofId ||
+      (value.startsWith(LEGACY_BOOTSTRAP.proofId + "_") && /^[A-Za-z0-9_-]+$/.test(value.slice(LEGACY_BOOTSTRAP.proofId.length + 1))));
+}
+
 /** Import an ALREADY published, user-kept fact. No ref movement, merge, push, permit, transcript
  * writes or tool/client endpoint. installedRevision comes from this running binary's build metadata.
  * Public release verification and the protected native conversation stream are both mandatory. */
@@ -306,7 +313,7 @@ export async function importLegacyBootstrap(repo: string, installedRevision: str
   if (branch.code !== 0 || branch.stdout.trim() !== head) fail("published source does not match the pinned final A branch");
   if ((await runGit(repo, ["merge-base", "--is-ancestor", LEGACY_BOOTSTRAP.base, head])).code !== 0 ||
       (await runGit(repo, ["merge-base", "--is-ancestor", head, "refs/heads/main"])).code !== 0) fail("actual main does not contain the exact bootstrap source");
-  const matches: { vault: string; slug: string; convId: string; toolCallId: string; args: Record<string, unknown>; at: number }[] = [];
+  const matches: { vault: string; slug: string; convId: string; toolCallId: string; proofId: string; args: Record<string, unknown>; at: number }[] = [];
   for (const { vault, slug } of contexts) {
     const log = logOf(vault);
     for (const row of log.rows().filter(r => r.project === slug)) {
@@ -321,28 +328,33 @@ export async function importLegacyBootstrap(repo: string, installedRevision: str
       for (const { message, at: callAt } of entries.values()) {
         if (message.role !== "assistant" || !Array.isArray(message.content)) continue;
         for (const b of message.content) {
-          if (b.type !== "toolCall" || hostToolName(b.name ?? "") !== REVIEW_TOOL || b.arguments?.proofId !== LEGACY_BOOTSTRAP.proofId) continue;
+          if (b.type !== "toolCall" || hostToolName(b.name ?? "") !== REVIEW_TOOL || !isLegacyBootstrapProofId(b.arguments?.proofId)) continue;
           const a = b.arguments as Record<string, unknown>;
           if (!b.id || a.branch !== LEGACY_BOOTSTRAP.branch || a.title !== LEGACY_BOOTSTRAP.title || typeof a.tests !== "string" || !a.tests.trim() || !Array.isArray(a.images) || !a.images.length || a.images.length > 8 || a.images.some(i => typeof i !== "string" || !i)) fail("final handoff cue, checks or UI media are missing");
           const results = [...entries.values()].filter(e => e.message.role === "toolResult" && e.message.toolCallId === b.id && hostToolName(e.message.toolName ?? "") === REVIEW_TOOL);
           if (results.length !== 1) fail("missing or ambiguous completed user Keep receipt");
           const result = results[0]!, m = result.message;
           const text = typeof m.content === "string" ? m.content : (m.content ?? []).filter(c => c.type === "text").map(c => c.text ?? "").join("");
+          // A completed rejection/error consumed its artifact, not the handoff. Never ignore a
+          // claimed Keep (even an error or malformed receipt) just because another retry succeeded.
+          const outcome = text.split(OUTCOME_SEP)[1] ?? "";
+          const claimsKeep = /^Carl answered: Keep\b/.test(text) || /(?:^|\n)Kept:/.test(outcome);
+          if (!claimsKeep && (m.isError || (text.startsWith("Carl answered: ") && /^Sent back(?:[ :(])/.test(outcome)))) continue;
           const prefix = `Carl answered: ${KEEP}${OUTCOME_SEP}Kept: ${LEGACY_BOOTSTRAP.branch} is in main (fast-forward, now `;
           const short = text.startsWith(prefix) ? /^([a-f0-9]{7,40})\); /.exec(text.slice(prefix.length))?.[1] : undefined;
           if (m.isError || !short || !head.startsWith(short) || !Number.isFinite(result.at) || result.at < callAt || !Number.isFinite(Date.parse(release.publishedAt)) || result.at > Date.parse(release.publishedAt)) fail("completed user Keep does not match the published source");
           // Resolve the actual object, not just a convenient prefix comparison (ambiguous short SHAs fail).
           const resolved = await runGit(repo, ["rev-parse", "--verify", `${short}^{commit}`]);
           if (resolved.code !== 0 || resolved.stdout.trim() !== head) fail("Keep source identity is ambiguous");
-          matches.push({ vault, slug, convId: row.id, toolCallId: b.id!, args: a, at: result.at });
+          matches.push({ vault, slug, convId: row.id, toolCallId: b.id!, proofId: b.arguments.proofId, args: a, at: result.at });
         }
       }
     }
   }
   if (matches.length !== 1) fail("missing or ambiguous protected final ReadyForReview/Keep receipt");
-  const match = matches[0]!, proofDir = join(match.vault, ".vault-chat", "proof", LEGACY_BOOTSTRAP.proofId);
+  const match = matches[0]!, proofDir = join(match.vault, ".vault-chat", "proof", match.proofId);
   const media = (match.args.images as string[]).map((image, i) => {
-    const path = join(match.vault, proofImagePath(LEGACY_BOOTSTRAP.proofId, i, image));
+    const path = join(match.vault, proofImagePath(match.proofId, i, image));
     // Check every path component. Synced/model-written symlinks must not expose private host files.
     let dir = resolve(match.vault);
     for (const component of path.slice(join(match.vault).length + 1).split(sep)) {
@@ -354,9 +366,9 @@ export async function importLegacyBootstrap(repo: string, installedRevision: str
   });
   const at = new Date(match.at).toISOString(), tree = (await git(repo, ["rev-parse", `${head}^{tree}`])).trim();
   const change: AcceptedChange = { id: LEGACY_BOOTSTRAP.proofId, basis: "legacy-bootstrap",
-    bootstrap: { proofId: LEGACY_BOOTSTRAP.proofId, toolCallId: match.toolCallId, fixtureCommit: LEGACY_BOOTSTRAP.fixtureCommit, media },
+    bootstrap: { proofId: match.proofId, toolCallId: match.toolCallId, fixtureCommit: LEGACY_BOOTSTRAP.fixtureCommit, media },
     source: { base: LEGACY_BOOTSTRAP.base, head, tree, branch: LEGACY_BOOTSTRAP.branch },
-    review: { convId: match.convId, slug: match.slug, folder: repo, clone: repo, base: "main", branch: LEGACY_BOOTSTRAP.branch, sha: head, title: LEGACY_BOOTSTRAP.title, at, proofId: LEGACY_BOOTSTRAP.proofId, toolCallId: match.toolCallId },
+    review: { convId: match.convId, slug: match.slug, folder: repo, clone: repo, base: "main", branch: LEGACY_BOOTSTRAP.branch, sha: head, title: LEGACY_BOOTSTRAP.title, at, proofId: match.proofId, toolCallId: match.toolCallId },
     proofDir, check: { assessment: "Explicit final legacy bootstrap handoff; not a new host proof receipt", evidence: [], surface: "phone", ui: { steps: [] } },
     revertCommits: (await git(repo, ["rev-list", "--topo-order", head, `^${LEGACY_BOOTSTRAP.base}`])).trim().split("\n").filter(rev => rev && rev !== LEGACY_BOOTSTRAP.fixtureCommit),
     preparedAt: at, acceptedAt: at, release };

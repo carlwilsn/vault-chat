@@ -63,9 +63,15 @@ describe("service-owned specific source recovery", () => {
       source: { base: BOOTSTRAP_BASE, head, tree: git(repo, "rev-parse", "HEAD^{tree}"), branch: "agent/auto-ship" },
       review: { ...o.accepted.review, folder: repo, branch: "agent/auto-ship", sha: head, proofId: "auto_ship_bootstrap_A_6fcc7f68", toolCallId: "native-bootstrap-call" }, revertCommits: commits.filter(c => c !== BOOTSTRAP_FIXTURE) };
     expect(await sourceRollbackCommits(repo, accepted)).toEqual(accepted.revertCommits);
+    const fresh = { ...accepted, review: { ...accepted.review, proofId: "auto_ship_bootstrap_A_6fcc7f68_r2" }, bootstrap: { ...accepted.bootstrap!, proofId: "auto_ship_bootstrap_A_6fcc7f68_r2" } };
+    expect(await sourceRollbackCommits(repo, fresh)).toEqual(accepted.revertCommits);
+    for (const proofId of ["auto_ship_bootstrap_A_6fcc7f68r2", "auto_ship_bootstrap_A_6fcc7f68_", "auto_ship_bootstrap_A_6fcc7f68_r2/unsafe", "auto_ship_bootstrap_A_6fcc7f68_" + "x".repeat(60)]) {
+      await expect(sourceRollbackCommits(repo, { ...fresh, review: { ...fresh.review, proofId }, bootstrap: { ...fresh.bootstrap, proofId } })).rejects.toThrow("identity");
+    }
+    await expect(sourceRollbackCommits(repo, { ...fresh, bootstrap: accepted.bootstrap })).rejects.toThrow("identity");
     await expect(sourceRollbackCommits(repo, { ...accepted, revertCommits: commits })).rejects.toThrow("preserving only");
     await expect(sourceRollbackCommits(repo, { ...accepted, revertCommits: accepted.revertCommits!.slice(1) })).rejects.toThrow("preserving only");
-    const r = await prepareSourceRollback({ ...o, repo, accepted });
+    const r = await prepareSourceRollback({ ...o, repo, accepted: fresh });
     try {
       expect(git(repo, "rev-parse", "HEAD")).toBe(head);
       expect(git(repo, "diff", "--name-only", BOOTSTRAP_BASE, r.pinned.source.head)).toBe("test/harness/voicemic.test.ts");

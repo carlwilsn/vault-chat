@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { git, withRepoLock } from "./git";
 import { baseBranch } from "./projectChanges";
 import { pinChange, type PinnedChange, type SubmitCheck } from "./changeHost";
-import type { AcceptedChange } from "./changeShipping";
+import { isLegacyBootstrapProofId, type AcceptedChange } from "./changeShipping";
 import { CHANGE_GATES, type ChangeReceipt, type RollbackTestPolicy, type RemovedTestAllowance, type ProofSource } from "./changeProof";
 
 /** Host-owned recovery smoke, deliberately not agent-dependent and not a replay of UI a revert removes.
@@ -34,7 +34,7 @@ export async function sourceRollbackCommits(repo: string, a: AcceptedChange): Pr
     if (selected.revertCommits) throw new Error("Selective source revert is only valid for the exact host-verified legacy bootstrap");
     return range;
   }
-  if (a.source.base !== BOOTSTRAP_BASE || a.source.branch !== "agent/auto-ship" || a.review.branch !== "agent/auto-ship" || a.review.proofId !== "auto_ship_bootstrap_A_6fcc7f68" || a.bootstrap?.proofId !== a.review.proofId || a.bootstrap.fixtureCommit !== BOOTSTRAP_FIXTURE || a.bootstrap.toolCallId !== a.review.toolCallId || !a.bootstrap.toolCallId || !range.includes(BOOTSTRAP_FIXTURE)) throw new Error("Legacy bootstrap recovery identity does not match the approved A + fixture handoff");
+  if (a.source.base !== BOOTSTRAP_BASE || a.source.branch !== "agent/auto-ship" || a.review.branch !== "agent/auto-ship" || !isLegacyBootstrapProofId(a.review.proofId) || a.bootstrap?.proofId !== a.review.proofId || a.bootstrap.fixtureCommit !== BOOTSTRAP_FIXTURE || a.bootstrap.toolCallId !== a.review.toolCallId || !a.bootstrap.toolCallId || !range.includes(BOOTSTRAP_FIXTURE)) throw new Error("Legacy bootstrap recovery identity does not match the approved A + fixture handoff");
   const files = (await git(repo, ["diff-tree", "--no-commit-id", "--name-only", "-r", BOOTSTRAP_FIXTURE])).trim();
   if (files !== "test/harness/voicemic.test.ts") throw new Error("Pinned bootstrap fixture repair has unexpected scope");
   const expected = range.filter(c => c !== BOOTSTRAP_FIXTURE);

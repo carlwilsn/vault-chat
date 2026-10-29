@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
-import { acceptedChanges, importLegacyBootstrap, LEGACY_BOOTSTRAP, type PublishedChangeRelease } from "../changeShipping";
+import { acceptedChanges, importLegacyBootstrap, isLegacyBootstrapProofId, LEGACY_BOOTSTRAP, type PublishedChangeRelease } from "../changeShipping";
 import { createConv, emitTo, logOf } from "../engine/convs";
 import { appendEntries, newSessionFile } from "../convlog/piSession";
 import { importConversation } from "../convlog/importer";
@@ -54,6 +54,16 @@ async function fixture(o: { result?: string; duplicate?: boolean; call?: Record<
   return { root, repo, vault, g, head, revision, release, media, file, append, result, discover, contexts, run };
 }
 
+const retryProofId = LEGACY_BOOTSTRAP.proofId + "_r2";
+function retry(f: Awaited<ReturnType<typeof fixture>>, o: { proofId?: string; result?: string; media?: boolean } = {}) {
+  const proofId = o.proofId ?? retryProofId;
+  f.append({ role: "assistant", content: [{ type: "toolCall", id: "actual-native-retry", name: "ReadyForReview", arguments: { ...LEGACY_BOOTSTRAP, proofId, tests: "checks", images: ["/candidate/actual-ui.png"] } }] });
+  f.append({ role: "toolResult", toolCallId: "actual-native-retry", toolName: "ReadyForReview", content: [{ type: "text", text: o.result ?? f.result }] });
+  const media = join(f.vault, proofImagePath(proofId, 0, "/candidate/actual-ui.png"));
+  if (o.media !== false) { mkdirSync(join(media, ".."), { recursive: true }); writeFileSync(media, "retry artifact, not original"); }
+  return media;
+}
+
 describe("one explicitly authorized final legacy bootstrap, facts not permits", () => {
   it("imports actual native completed Keep + exact published compiled source without moving refs or rewriting history", async () => {
     const f = await fixture(), refs = f.g("show-ref"), session = readFileSync(f.file, "utf8");
@@ -69,6 +79,32 @@ describe("one explicitly authorized final legacy bootstrap, facts not permits", 
     expect(f.discover).toHaveBeenCalledTimes(1);
     expect(existsSync(join(f.vault, ".vault-chat", "settled-reviews.json"))).toBe(false);
     expect(existsSync(join(c!.proofDir, "receipt.json"))).toBe(false);
+  });
+  it.each([
+    { result: `Carl answered: I don't see the auto-ship card, submit it now.${OUTCOME_SEP}Sent back: submit it now. main is unchanged.` },
+    { isError: true, result: "Native review failed before an answer" },
+  ])("imports the unique successful fresh retry after a consumed rejection/error: %j", async rejected => {
+    const f = await fixture(rejected);
+    // fixture.result is the rejection; the retry must have its own actual completed Keep.
+    const result = `Carl answered: ${KEEP}${OUTCOME_SEP}Kept: ${LEGACY_BOOTSTRAP.branch} is in main (fast-forward, now ${f.head}); laptop sync must push it.`;
+    const media = retry(f, { result });
+    rmSync(f.media); // canonical media is neither required nor used
+    const c = await f.run();
+    expect(c).toMatchObject({ id: LEGACY_BOOTSTRAP.proofId, proofDir: join(f.vault, ".vault-chat", "proof", retryProofId),
+      review: { proofId: retryProofId, toolCallId: "actual-native-retry" },
+      bootstrap: { proofId: retryProofId, toolCallId: "actual-native-retry", media: [{ name: "1-actual-ui.png", hash: createHash("sha256").update(readFileSync(media)).digest("hex") }] } });
+    expect(await f.run()).toEqual(c); expect(await acceptedChanges(f.repo)).toHaveLength(1);
+  });
+  it.each(["pending", "incomplete", "wrong-source", "wrong-branch", "error-Keep", "wrong-media", "two-Keeps", "lookalike"])('rejects unsafe retries even beside another call: %s', async kind => {
+    const f = await fixture(kind === "pending" ? { noResult: true } : kind === "incomplete" ? { result: "Carl answered: Keep" } : kind === "wrong-source" ? { result: `Carl answered: Keep${OUTCOME_SEP}Kept: agent/auto-ship is in main (fast-forward, now deadbee); pushed` } : kind === "wrong-branch" ? { call: { branch: "agent/other" } } : kind === "error-Keep" ? { isError: true } : kind === "two-Keeps" ? {} : { result: `Carl answered: Send back${OUTCOME_SEP}Sent back: retry. main is unchanged.` });
+    const result = `Carl answered: ${KEEP}${OUTCOME_SEP}Kept: ${LEGACY_BOOTSTRAP.branch} is in main (fast-forward, now ${f.head}); laptop sync must push it.`;
+    retry(f, { result, media: kind !== "wrong-media", proofId: kind === "lookalike" ? LEGACY_BOOTSTRAP.proofId + "r2" : retryProofId });
+    await expect(f.run()).rejects.toThrow("Bootstrap A acceptance needs attention");
+    expect(await acceptedChanges(f.repo)).toEqual([]);
+  });
+  it("only accepts the fixed canonical artifact or a bounded safe fresh suffix", () => {
+    for (const id of [LEGACY_BOOTSTRAP.proofId, retryProofId, LEGACY_BOOTSTRAP.proofId + "_" + "x".repeat(60 - LEGACY_BOOTSTRAP.proofId.length - 1)]) expect(isLegacyBootstrapProofId(id)).toBe(true);
+    for (const id of [undefined, "other", LEGACY_BOOTSTRAP.proofId + "_", LEGACY_BOOTSTRAP.proofId + "r2", retryProofId + "/x", retryProofId + ".", retryProofId + "\n", LEGACY_BOOTSTRAP.proofId + "_" + "x".repeat(60)]) expect(isLegacyBootstrapProofId(id)).toBe(false);
   });
   it("uses the normal health/card/proof/rollback route; imported acceptance alone is never Shipped", async () => {
     const f = await fixture(); await f.run();
