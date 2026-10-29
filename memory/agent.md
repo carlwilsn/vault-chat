@@ -56,3 +56,11 @@ extensions (same problems, new place). Migrate one duplicated piece per bug; no 
   compaction, plus a few durable written memories (like this folder), is the chosen model.
 - Very long single threads degrade (judgment made deep in a huge context was the worst); state worth keeping belongs
   in files the agent re-reads.
+
+## Tool catalogs across server updates (2026-10-28)
+- **Saved schemas are bootstrap artifacts, not session authority.** Resuming pi with a thread's frozen
+  `tools-*.json` left old ReadyForReview parameters in the model request after its host gate required `proofId`.
+  Reconstruct definitions from the current host loadout policy, preserve the pi session/file/history, and rebind
+  only idle processes (running turns and children pin their existing scope). Persist side loadout semantics or
+  legacy explicit names, never infer broader grants from a schema refresh; workers retain their child allowlist.
+  Source changes still require a server restart; this is not permission for an agent to deploy or bypass Keep.

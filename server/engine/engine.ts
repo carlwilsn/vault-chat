@@ -11,7 +11,7 @@
 // host calls.
 import { appendFileSync, existsSync, readFileSync, statSync, mkdirSync, writeFileSync } from "node:fs";
 import { holdRun, registerRun, unregisterRun } from "../../src/runRegistry";
-import type { BackendEvent, PiBackend, ToolSpec } from "./pi/backend";
+import type { BackendEvent, PiBackend, ToolSpec, HostLoadout } from "./pi/backend";
 import {
   withVault,
   contextToolSpecs,
@@ -665,6 +665,7 @@ export class Engine {
     b.on("up", () => this.scoped(() => void this.onUp()));
     setNoteWriter(this.d.vault, (convId, notes) => this.scoped(() => this.noteViaPi(convId, notes)));
     b.setHandlers({
+      toolCatalog: (loadout) => this.scoped(() => this.hostToolCatalog(loadout)),
       fileWrite: async (threadId) => !this.talkers.has(this.byThread.get(threadId) ?? ""),
       toolCall: (threadId, name, args, signal) =>
         this.scoped(async () => {
@@ -1192,7 +1193,7 @@ export class Engine {
       if (kind === "once") {
         s = await side.start({ kind, system: String(b.system ?? ""), cwd: this.d.vault, model, tools: [], ephemeral: true, thinking: "off", sessionDir: dir("once"), text, images, log: this.sideLog(null, "once", []) });
       } else if (typeof b.side === "string" && b.side) {
-        s = await side.start({ kind, side: b.side, cwd: this.d.vault, model, tools: READ_ONLY_TOOLS, hostTools: sideToolSpecs(), sessionDir: "", text, images });
+        s = await side.start({ kind, side: b.side, cwd: this.d.vault, model, tools: READ_ONLY_TOOLS, hostLoadout: "readOnly", hostTools: sideToolSpecs(), sessionDir: "", text, images });
       } else {
         conv = typeof b.convId === "string" && b.convId ? await readConv(this.d.vault, b.convId) : null;
         const src = conv?.threadId ? this.d.backend.threadSource(conv.threadId) : null;
@@ -1210,9 +1211,9 @@ export class Engine {
         const act = voice && b.tools === "act";
         const tools = act ? [...READ_ONLY_TOOLS, "bash", "edit", "write"] : READ_ONLY_TOOLS;
         // Voice's Asks also have Carl's own vault tools (his calendar …): voice reached them through the agent before.
-        const own = voice ? await vaultToolSpecsFor(this.d.vault, [...agentToolSpecs().map((t) => t.name), ...PI_BUILTIN_TOOLS]) : [];
-        const hostTools = voice ? [...voiceSideToolSpecs(act), ...(own as ToolSpec[])] : sideToolSpecs();
-        s = await side.start({ kind, fork: src?.file ?? null, instr, cwd: src?.cwd || this.d.vault, model, tools, hostTools, sessionDir: dir(conv?.id ?? "none"), text, images, you: { convId: conv?.id ?? null }, log: this.sideLog(conv?.id ?? null, String(b.kind ?? kind).slice(0, 40), tools) });
+        const hostLoadout: HostLoadout = voice ? (act ? "voiceAct" : "voiceRead") : "readOnly";
+        const hostTools = await this.hostToolCatalog(hostLoadout);
+        s = await side.start({ kind, fork: src?.file ?? null, instr, cwd: src?.cwd || this.d.vault, model, tools, hostTools, hostLoadout, sessionDir: dir(conv?.id ?? "none"), text, images, you: { convId: conv?.id ?? null }, log: this.sideLog(conv?.id ?? null, String(b.kind ?? kind).slice(0, 40), tools) });
       }
       this.log(`side ${kind} ${s.id}${conv ? ` (forked from ${conv.id})` : ""} on ${model}${s.file ? `: ${s.file}` : ""}`);
       return { ok: true, id: s.id, v: s.v };
@@ -1689,6 +1690,15 @@ export class Engine {
     return out.join("\n\n");
   }
 
+  /** One current host policy for new and resumed sessions; vault tools keep collision checks. */
+  private async hostToolCatalog(loadout: HostLoadout): Promise<ToolSpec[]> {
+    if (loadout === "readOnly") return sideToolSpecs();
+    const builtin = agentToolSpecs();
+    const own = await vaultToolSpecsFor(this.d.vault, [...builtin.map((t) => t.name), ...PI_BUILTIN_TOOLS]);
+    const selected = loadout === "conversation" ? builtin : voiceSideToolSpecs(loadout === "voiceAct");
+    return [...selected, ...own] as ToolSpec[];
+  }
+
   private async ensureThread(conv: EngineConv, current: string | null = null): Promise<{ threadId: string; fresh: boolean }> {
     const model = this.d.model();
     // Subagents only for models where they work (learned from use; see capabilities.ts).
@@ -1711,14 +1721,12 @@ export class Engine {
     }
     const note = capabilityNote(model);
     const instructions = buildDeveloperInstructions(conv as any, { rolePrompt: ENGINE_ROLE_PROMPT + (note ? `\n\n${note}` : "") });
-    const builtin = agentToolSpecs();
-    // Carl's own vault tools (.vault-chat/tools): the agent's on every surface (voice reaches them through it).
-    const own = await vaultToolSpecsFor(this.d.vault, [...builtin.map((t) => t.name), ...PI_BUILTIN_TOOLS]);
+    // The same current host policy is used by resumeThread (never a saved schema).
     const { threadId, ref } = await this.d.backend.startThread({
       cwd,
       model,
       instructions,
-      tools: [...builtin, ...own] as any,
+      tools: await this.hostToolCatalog("conversation"),
       subagents,
     });
     this.byThread.set(threadId, conv.id);

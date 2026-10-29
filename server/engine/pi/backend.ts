@@ -57,7 +57,10 @@ export type UserInputHandler = (threadId: string, question: string, options: str
 export type YouHandler = (q: { threadId?: string; convId?: string | null; since: number | null }) => Promise<{ text: string; until: number }>;
 /** A read-only vault-chat tool called from a Ctrl+K / Ctrl+L side thread, as of the conversation it was opened from (or none). */
 export type SideToolHandler = (convId: string | null, name: string, args: any, signal?: AbortSignal) => Promise<ToolAnswer>;
+/** Host policy identifiers, not persisted schema snapshots. */
+export type HostLoadout = "conversation" | "readOnly" | "voiceRead" | "voiceAct";
 export type Handlers = {
+  toolCatalog: (loadout: HostLoadout) => Promise<ToolSpec[]>;
   toolCall: ToolCallHandler;
   userInput: UserInputHandler;
   you?: YouHandler;
@@ -496,6 +499,11 @@ export class PiBackend extends EventEmitter {
     }
   }
 
+  async currentTools(loadout: HostLoadout): Promise<ToolSpec[]> {
+    if (!this.h) throw new Error("Host tool policy unavailable");
+    return this.h.toolCatalog(loadout);
+  }
+
   writeTools(tools: ToolSpec[]): string {
     mkdirSync(this.o.paths.extDir, { recursive: true });
     const json = JSON.stringify(tools);
@@ -512,7 +520,7 @@ export class PiBackend extends EventEmitter {
     writeFileSync(instr, o.instructions);
     const tools = this.writeTools(o.tools);
     const { proc, id, file } = await this.spawn({ cwd: o.cwd, model: o.model, file: null, instr, tools, subagents: o.subagents, you: true });
-    // The session's instructions and tools live beside it, so any later pi on it gets the same prompt (cache-stable).
+    // Instructions persist; tools is only the bootstrap used by this process, never resume authority.
     writeFileSync(join(this.o.paths.instrDir, `${id}.json`), JSON.stringify({ instr, tools, cwd: o.cwd, subagents: o.subagents }));
     this.attach({ id, subagents: o.subagents, file, proc, model: o.model, lastUsed: Date.now(), turnId: null, msgIndex: 0, crashes: [], restoreModel: null });
     return { threadId: id, ref: file };
@@ -528,25 +536,28 @@ export class PiBackend extends EventEmitter {
     } catch {
       meta = null;
     }
+    const tools = this.writeTools(await this.currentTools("conversation"));
     const moved = !!meta && !!o.cwd && meta.cwd !== o.cwd;
-    if (have?.proc.isAlive() && (!moved || have.turnId)) {
+    const changed = !!meta && meta.tools !== tools;
+    // Never replace a capability underneath a turn or its background children.
+    // The next idle resume rebinds; running work keeps its original loadout.
+    if (have?.proc.isAlive() && ((!moved && !changed) || have.turnId || this.subs.childrenOf(threadId).length)) {
       have.lastUsed = Date.now();
       return;
     }
-    if (meta && moved) {
-      meta = { ...meta, cwd: o.cwd! };
+    if (meta && (moved || changed)) {
+      meta = { ...meta, tools, cwd: o.cwd ?? meta.cwd };
       writeFileSync(join(this.o.paths.instrDir, `${threadId}.json`), JSON.stringify(meta));
-      this.log(`thread ${threadId} now runs in ${o.cwd}`);
+      this.log(`thread ${threadId} rebound to current host tools in ${meta.cwd}`);
     }
     const file = this.sessionFileOf(threadId);
     if (!meta || !file) throw new ThreadUnknownError(`no pi session ${threadId}`);
     // Before any resume, whatever ran this session last is gone (its group, its namespace).
     if (have) {
-      have.proc.killGroup("SIGKILL");
-      await have.proc.waitExit(5000);
+      await have.proc.close(3000);
       if (this.threads.get(threadId) === have) this.threads.delete(threadId);
     }
-    // The tool set is the session's own (a cache-stable prompt); subagents only if it was started with them.
+    // Same pi session/file/leaf and history, current host schemas. Subagents only if started with them.
     const subagents = !!meta.subagents && o.subagents;
     const { proc } = await this.spawn({ cwd: meta.cwd, model: o.model, file, instr: meta.instr, tools: meta.tools, subagents, you: true });
     this.attach({ id: threadId, subagents, file, proc, model: o.model, lastUsed: Date.now(), turnId: null, msgIndex: 0, crashes: [], restoreModel: null });

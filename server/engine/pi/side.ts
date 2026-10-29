@@ -22,7 +22,7 @@
 // get_last_assistant_text. Nothing here writes a session file.
 import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { type PiBackend, type ToolSpec } from "./backend";
+import { type PiBackend, type ToolSpec, type HostLoadout } from "./backend";
 import type { PiProc } from "./proc";
 import { TurnRecorder, type TurnLine } from "../turnLog";
 
@@ -46,6 +46,8 @@ export type SideStart = {
   tools: string[];
   /** vault-chat tools (the extension registers them; the engine answers): Ctrl+K / Ctrl+L get the read-only ones. */
   hostTools?: ToolSpec[];
+  /** Host-selected policy; refinements cannot change an existing session's authority. */
+  hostLoadout?: Exclude<HostLoadout, "conversation">;
   /** --no-session (one-shots). */
   ephemeral?: boolean;
   thinking?: string;
@@ -69,7 +71,7 @@ type Run = {
   id: string;
   proc: PiProc | null;
   file: string | null;
-  meta: { instr?: string; system?: string; cwd: string; model: string; tools: string[]; hostTools?: ToolSpec[]; thinking?: string; sessionDir: string; ephemeral: boolean; you?: { convId: string | null } | null };
+  meta: { instr?: string; system?: string; cwd: string; model: string; tools: string[]; hostTools?: ToolSpec[]; hostLoadout?: Exclude<HostLoadout, "conversation">; hostToolNames?: string[]; thinking?: string; sessionDir: string; ephemeral: boolean; you?: { convId: string | null } | null };
   text: string;
   v: number;
   done: boolean;
@@ -117,11 +119,18 @@ export class SideRuns {
     if (run?.busy) throw new Error("that side thread is still answering");
     if (!run) {
       run = await this.open(o);
-    } else if (!run.proc?.isAlive()) {
-      // Closed while idle: pi resumes its session file.
-      if (!run.file) throw new Error("that side thread is gone");
-      run.proc = (await this.spawn(run.meta, { file: run.file })).proc;
-      this.attach(run);
+    } else {
+      // Reconstruct from host policy, not the old schemas. Legacy sides retain
+      // their explicit names (no inferred grant of newly added tools).
+      const previous = JSON.stringify(run.meta.hostTools ?? []);
+      await this.refreshTools(run.meta);
+      if (run.proc?.isAlive() && previous !== JSON.stringify(run.meta.hostTools ?? [])) await run.proc.close(3000);
+      if (!run.proc?.isAlive()) {
+        if (!run.file) throw new Error("that side thread is gone");
+        run.proc = (await this.spawn(run.meta, { file: run.file })).proc;
+        this.attach(run);
+      }
+      this.save(run);
     }
     run.text = "";
     run.error = null;
@@ -144,20 +153,37 @@ export class SideRuns {
   }
 
   private async open(o: SideStart): Promise<Run> {
-    const meta: Run["meta"] = { instr: o.instr, system: o.system, cwd: o.cwd, model: o.model, tools: o.tools, hostTools: o.hostTools ?? [], thinking: o.thinking, sessionDir: o.sessionDir, ephemeral: !!o.ephemeral, you: o.you ?? null };
+    const meta: Run["meta"] = { instr: o.instr, system: o.system, cwd: o.cwd, model: o.model, tools: o.tools, hostTools: o.hostTools ?? [], hostLoadout: o.hostLoadout, hostToolNames: o.hostLoadout ? undefined : (o.hostTools ?? []).map((t) => t.name), thinking: o.thinking, sessionDir: o.sessionDir, ephemeral: !!o.ephemeral, you: o.you ?? null };
     if (o.system) {
       // pi's --system-prompt takes a file's contents too (no prompt in argv).
       mkdirSync(this.b.paths.instrDir, { recursive: true });
       meta.system = join(this.b.paths.instrDir, `side-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}.md`);
       writeFileSync(meta.system, o.system);
     }
+    await this.refreshTools(meta);
     const { proc, id, file } = await this.spawn(meta, { fork: o.fork ?? null });
     const run: Run = { id, proc, file: file || null, meta, text: "", v: 0, done: false, error: null, busy: false, lastUsed: Date.now(), waiters: new Set() };
     this.runs.set(id, run);
     // Beside the session: how to reopen it (a refinement after the box restarted).
-    if (run.file) writeFileSync(join(this.b.paths.instrDir, `side-${id}.json`), JSON.stringify({ file: run.file, meta }));
+    this.save(run);
     this.attach(run);
     return run;
+  }
+
+  private save(run: Run): void {
+    if (run.file) writeFileSync(join(this.b.paths.instrDir, `side-${run.id}.json`), JSON.stringify({ file: run.file, meta: run.meta }));
+  }
+
+  private async refreshTools(meta: Run["meta"]): Promise<void> {
+    if (meta.hostLoadout) {
+      meta.hostTools = await this.b.currentTools(meta.hostLoadout);
+    } else {
+      // Old snapshots convey only an explicit allowlist, never definitions.
+      meta.hostToolNames ??= (meta.hostTools ?? []).map((t) => t.name);
+      if (!meta.hostToolNames.length) { meta.hostTools = []; return; }
+      const policy = meta.tools.some((t) => ["bash", "edit", "write"].includes(t)) ? "voiceAct" : "voiceRead";
+      meta.hostTools = (await this.b.currentTools(policy)).filter((t) => meta.hostToolNames!.includes(t.name));
+    }
   }
 
   private spawn(meta: Run["meta"], at: { fork?: string | null; file?: string | null }) {
