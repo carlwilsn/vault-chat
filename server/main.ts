@@ -57,8 +57,18 @@ async function main(): Promise<void> {
   // Projects are the machine's (server/projectsHome.ts): one home, its log in every vault's feed. Before any log opens.
   const { resolveProjectsHome, ensureHome } = await import("./projectsHome");
   const projectsHome = ensureHome(resolveProjectsHome()).home;
-  setProjectsHomeLog(projectsHome);
-  console.log(`[vault-chat-server] projects home ${projectsHome}`);
+  // Until `projects migrate` ran here, a vault that still holds its projects keeps them (server/projectsMigrate.ts).
+  const { listVaults: vaultsAtBoot, vaultPaths: pathsAtBoot } = await import("./sync");
+  const { projectsMode } = await import("./projectsMigrate");
+  const pm = projectsMode(projectsHome, vaultsAtBoot().map((v) => (v.main ? cfg.vault : pathsAtBoot(v.name).vault)));
+  const legacyProjects = pm.mode === "vaults";
+  setProjectsHomeLog(legacyProjects ? null : projectsHome);
+  if (legacyProjects)
+    console.warn(`[vault-chat-server] projects: still in their vaults (${pm.waiting.join(", ")}): run \`vault-chat-server.mjs projects migrate\` with the server stopped to move them to ${projectsHome}`);
+  else {
+    console.log(`[vault-chat-server] projects home ${projectsHome}`);
+    if (pm.waiting.length) console.warn(`[vault-chat-server] projects: ${pm.waiting.join(", ")} hold projects again (not listed): \`projects migrate\` moves them`);
+  }
 
   // Keys: in-process from the box's encrypted store. No OpenRouter key, no
   // missions — refuse to start rather than run turns with zero keys.
@@ -86,7 +96,7 @@ async function main(): Promise<void> {
   console.log(`[vault-chat-server] ${loaded} conversation(s) in the log; keys: ${Object.keys(useStore.getState().apiKeys).join(", ") || "none"}`);
 
   // CONTEXT needs only the vault and the key store (the engine adds the rest when it is up).
-  (await import("./context/config")).configureContext({ vault: cfg.vault, projectsHome });
+  (await import("./context/config")).configureContext({ vault: cfg.vault, projectsHome, legacyProjects });
   const { startPhoneAppHost, sendPush } = await import("../src/phoneApp");
   await startPhoneAppHost();
 
@@ -120,7 +130,7 @@ async function main(): Promise<void> {
     vault: cfg.vault,
     vaultName: cfg.vaultName,
     vaults: vaultRefs,
-    projectsHome,
+    ...(legacyProjects ? { legacyProjects: true } : { projectsHome }),
     onTurnEnded: (name) => triggerSync(name),
     onFilesWritten: (name, paths) => liveEdits.note(name, paths),
     stateDir: cfg.stateDir,

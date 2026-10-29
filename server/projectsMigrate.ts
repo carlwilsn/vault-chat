@@ -489,3 +489,30 @@ export function migrateBack(o: { home: string; stamp?: string; log?: (s: string)
   writeJson(join(H.local, RECORD), rec);
   return { ok: problems.length === 0, stamp: run.stamp, restored, problems };
 }
+
+/** The vaults that still hold projects of their own (agent-projects/<slug>/, a deleted one, a project thread in their log). */
+export function vaultsWithProjects(vaults: string[]): string[] {
+  return vaults.filter((v) => {
+    const src = join(v, PROJECTS_DIR);
+    const ev = join(v, ".vault-chat", "events");
+    const slugs = isDir(src) ? readdirSync(src).filter((n) => (SLUG.test(n) || n === ".deleted") && isDir(join(src, n))) : [];
+    const deleted = slugs.includes(".deleted") ? readdirSync(join(src, ".deleted")).length > 0 : false;
+    const threads = isDir(ev) ? readdirSync(ev).some((n) => /^project-[a-z0-9-]+\.jsonl$/.test(n)) : false;
+    return slugs.some((n) => n !== ".deleted") || deleted || threads;
+  });
+}
+
+/** Whether `projects migrate` has run into this home (its record): from then on the home is the projects' place. */
+export function migratedInto(home: string): boolean {
+  return readRec(home).runs.length > 0;
+}
+
+/**
+ * At boot: the projects home is used once the migration ran, or when no vault holds projects of its own (a new box).
+ * Until then each vault keeps its projects where they were (an update never hides them before the move).
+ */
+export function projectsMode(home: string, vaults: string[]): { mode: "home" | "vaults"; waiting: string[] } {
+  const waiting = vaultsWithProjects(vaults);
+  if (migratedInto(home) || !waiting.length) return { mode: "home", waiting };
+  return { mode: "vaults", waiting };
+}

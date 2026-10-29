@@ -7,7 +7,7 @@ import { mkdirSync, statSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { dirname, isAbsolute, join, relative } from "node:path";
 import { loadCatalog, modelMeta } from "./catalog";
-import { configureContext, ctxConfig, prepareProjects } from "./context";
+import { configureContext, ctxConfig, prepareProjects, withVault } from "./context";
 import { Engine, type EngineNotice } from "./engine";
 export { engineShuttingDown } from "./engine";
 import { Ledger } from "./ledger";
@@ -40,6 +40,8 @@ export type EngineBoot = {
   vaults?: () => VaultRef[];
   /** The projects home (server/projectsHome.ts): every project, whatever vault is open. Its threads run on the main vault's engine. */
   projectsHome?: string;
+  /** Not migrated yet (server/projectsMigrate.ts projectsMode): each vault's engine runs its own projects, as before. */
+  legacyProjects?: boolean;
   /** A turn ended in a vault other than the main one (a sync cycle brings the result to the laptop). */
   onTurnEnded?: (name: string) => void;
   /** The agent wrote files in a vault (vault-relative paths): publish them now (server/liveEdits.ts). */
@@ -259,7 +261,7 @@ export async function startEngine(b: EngineBoot): Promise<EngineHandle> {
   const model = engineModel();
   const visionModel = process.env.VC_VISION_MODEL || "openai/gpt-6.1-sol";
   const win = modelWindow(model, piCat);
-  configureContext({ vault: b.vault, agentModel: model, ...(b.projectsHome ? { projectsHome: b.projectsHome } : {}) });
+  configureContext({ vault: b.vault, agentModel: model, ...(b.projectsHome ? { projectsHome: b.projectsHome } : {}), ...(b.legacyProjects ? { legacyProjects: true } : {}) });
   const P = b.projectsHome ? homeLayout(b.projectsHome) : null;
 
   const base = piPaths(b.stateDir);
@@ -300,11 +302,12 @@ export async function startEngine(b: EngineBoot): Promise<EngineHandle> {
     const workDir = agentWorkDir(home, v.path);
     if (bwrap) mkdirSync(workDir, { recursive: true });
     // The main vault's engine runs every project's thread (the projects are the machine's: server/projectsHome.ts).
-    const runsProjects = v.main;
+    const runsProjects = v.main || !!b.legacyProjects;
     // The project folders on the box: the main engine's agent works in all of them; another vault's in those that
     // lie in no other vault (a folder inside a vault is that vault's files).
     const folders = () => {
-      const all = activeFolders().map((f) => f.abs);
+      // (Read in this vault's scope: before the migration each vault has its own registry.)
+      const all = withVault(v.path, () => activeFolders()).map((f) => f.abs);
       if (runsProjects) return all;
       const elsewhere = vaults().filter((w) => w.path !== v.path);
       return all.filter((f) => !elsewhere.some((w) => underDir(f, w.path)));

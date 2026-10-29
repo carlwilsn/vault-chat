@@ -69,6 +69,14 @@ export async function createProjectWithThread(
   body: { name?: unknown; folder?: unknown; newFolder?: unknown },
 ): Promise<{ ok: true; slug: string; name: string; convId: string; created: boolean; folder?: string } | { error: string }> {
   ready(vault);
+  // In the vault's scope: before the migration a vault's projects and registry are its own (context/config.ts legacyProjects).
+  return withVault(vault, () => createIn(vault, body));
+}
+
+async function createIn(
+  vault: string,
+  body: { name?: unknown; folder?: unknown; newFolder?: unknown },
+): Promise<{ ok: true; slug: string; name: string; convId: string; created: boolean; folder?: string } | { error: string }> {
   const name = typeof body.name === "string" ? body.name.trim() : "";
   if (!name) return { error: "name required" };
   const want = typeof body.folder === "string" && body.folder.trim() ? body.folder.trim() : null;

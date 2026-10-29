@@ -19,7 +19,15 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSyn
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { writeAtomic } from "./atomic";
-import { hasProjectsHome, projectsRoot } from "./context/config";
+import { ctxConfig, hasProjectsHome, projectsRoot } from "./context/config";
+
+const legacyProjects = (): boolean => {
+  try {
+    return !!ctxConfig().legacyProjects;
+  } catch {
+    return false;
+  }
+};
 
 /** Credential locations in the user's home the agent never sees (hidden in both sandbox layers, denied to pi's own tools). */
 export const HOME_CREDENTIALS = [
@@ -108,7 +116,7 @@ function protectedPaths(w: FolderWalls): string[] {
   const home = w.home;
   const fixed = [...HOME_CREDENTIALS, ".local/state"].map((p) => join(home, p));
   const own = (w.vaults?.() ?? []).flatMap((v) => [join(v, ".git"), join(v, ".vault-chat")]);
-  const projects = hasProjectsHome() ? [projectsRoot()] : [];
+  const projects = hasProjectsHome() && !legacyProjects() ? [projectsRoot()] : [];
   const all = [...fixed, ...own, ...projects, ...w.protect()].filter(Boolean).map((p) => resolve(p));
   return [...new Set(all.flatMap((p) => [p, realish(p)]))];
 }
@@ -173,6 +181,8 @@ type Registry = { folders: Record<string, Entry>; deleted: Record<string, Entry 
 
 /** The registry's file (in the projects home); null when no projects home is configured. */
 export function registryPath(): string | null {
+  // Not migrated yet (legacyProjects): each vault's own registry, as before.
+  if (legacyProjects()) return join(ctxConfig().vault, FOLDERS_FILE);
   return hasProjectsHome() ? join(projectsRoot(), FOLDERS_FILE) : null;
 }
 
@@ -356,7 +366,7 @@ export function inProjectFolder(raw: string, exists: Exists = projectThere()): {
   if (!raw || !isAbsolute(raw)) return null;
   const abs = realish(resolve(raw));
   // A project's own folder in the projects home (its project.md, rules.md): Carl opens its notes from any vault.
-  if (hasProjectsHome()) {
+  if (hasProjectsHome() && !legacyProjects()) {
     const home = realish(projectsRoot());
     const rel = relative(home, abs);
     const slug = rel.split(sep)[0] ?? "";

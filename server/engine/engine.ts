@@ -696,7 +696,7 @@ export class Engine {
     const b = this.d.backend;
     b.on("event", (e: BackendEvent) => this.scoped(() => this.onEvent(e)));
     b.on("up", () => this.scoped(() => void this.onUp()));
-    setNoteWriter(this.d.vault, (convId, notes) => this.scoped(() => this.noteViaPi(convId, notes)), this.runsProjects);
+    setNoteWriter(this.d.vault, (convId, notes) => this.scoped(() => this.noteViaPi(convId, notes)), this.runsProjects && !!this.d.projectSessions);
     b.setHandlers({
       toolCall: (threadId, name, args, toolCallId) =>
         this.scoped(async () => {

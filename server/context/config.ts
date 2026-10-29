@@ -2,6 +2,7 @@
 // it at temp vaults. Every function also works with the defaults, except that
 // `vault` must be set.
 import { AsyncLocalStorage } from "node:async_hooks";
+import { join } from "node:path";
 
 export type ContextConfig = {
   /** The box working copy. `.vault-chat/` lives under it. */
@@ -12,6 +13,9 @@ export type ContextConfig = {
   recapModel: string;
   /** The projects home (server/projectsHome.ts): every project, whatever vault is open. "": none configured. */
   projectsHome: string;
+  /** Until `projects migrate` has run on this box (server/projectsMigrate.ts): each vault's projects stay where they
+   *  were (<vault>/agent-projects/, its own registry and log), so an update never hides them before the move. */
+  legacyProjects?: boolean;
   /** Builder caps, in characters: a project's shared notes (project.md) and an older roll-over's recap. */
   caps: { project: number; recap: number };
 };
@@ -55,6 +59,7 @@ export function ctxConfig(): ContextConfig {
 
 /** The projects home (the same whatever vault a call runs in); throws when none is configured. */
 export function projectsRoot(): string {
+  if (cfg.legacyProjects) return join(ctxConfig().vault, "agent-projects");
   const h = cfg.projectsHome;
   if (!h) throw new Error("no projects home is configured (server/projectsHome.ts)");
   return h;
@@ -62,5 +67,5 @@ export function projectsRoot(): string {
 
 /** Whether a projects home is configured. */
 export function hasProjectsHome(): boolean {
-  return !!cfg.projectsHome;
+  return !!cfg.projectsHome || !!cfg.legacyProjects;
 }

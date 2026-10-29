@@ -342,3 +342,34 @@ describe("migration of a project from a second vault (the live shape: vault-chat
     expect(L.picture("project-vault-chat")!.items.map((i: any) => i.text)).toEqual(["roleplay: fix it"]);
   });
 });
+
+describe("the update before the move: until `projects migrate` ran, each vault keeps its projects (no window where they vanish)", () => {
+  const root = tmp("vcpg-mode-");
+  const a = join(root, "vaults", "school2");
+  const b = join(root, "vaults", "physics");
+  const home = join(root, "vc", ".projects");
+  afterAll(() => cleanup(root));
+
+  it("projectsMode: a vault with projects of its own and no migration yet → each vault's; a new box → the home; after the migration → the home", async () => {
+    const { projectsMode, migrateProjects } = await import("../projectsMigrate");
+    for (const v of [a, b]) mkdirSync(join(v, ".vault-chat", "events"), { recursive: true });
+    expect(projectsMode(home, [a, b])).toEqual({ mode: "home", waiting: [] });
+    mkdirSync(join(a, "agent-projects", "coconut"), { recursive: true });
+    writeFileSync(join(a, "agent-projects", "coconut", "project.md"), "# Coconut\n");
+    expect(projectsMode(home, [a, b])).toEqual({ mode: "vaults", waiting: [a] });
+    // The legacy context reads each vault's own projects, scoped to the vault a call runs in.
+    const { configureContext, resetContextConfig, listProjects, withVault } = await import("../context");
+    resetContextConfig();
+    configureContext({ vault: a, projectsHome: home, legacyProjects: true });
+    expect(withVault(a, () => listProjects().map((p) => p.slug))).toEqual(["coconut"]);
+    expect(withVault(b, () => listProjects().map((p) => p.slug))).toEqual([]);
+    const r = migrateProjects({ home, vaults: [a, b].map((v) => ({ path: v, piSessions: join(root, "s"), piInstr: join(root, "i") })), mainInstr: join(root, "i"), mainVault: a, log: () => {} });
+    expect(r.ok).toBe(true);
+    expect(projectsMode(home, [a, b])).toEqual({ mode: "home", waiting: [] });
+    // A vault that gets projects again later (a laptop in local mode) does not flip the box back: reported only.
+    mkdirSync(join(b, "agent-projects", "optics"), { recursive: true });
+    writeFileSync(join(b, "agent-projects", "optics", "project.md"), "# Optics\n");
+    expect(projectsMode(home, [a, b])).toEqual({ mode: "home", waiting: [b] });
+    resetContextConfig();
+  });
+});
