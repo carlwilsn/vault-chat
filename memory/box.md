@@ -35,3 +35,9 @@
   output. Shared realpath/write policy protects the parent of a fresh exclusive visuals directory; the installed
   sandbox remains mandatory. Chromium needs private writable XDG config/cache inside the recorder because the
   sandbox's read-only HOME makes crashpad fail to start otherwise. A passing unsandboxed browser test missed this.
+- **Release-health foundation (not yet wired):** `releaseHealth.ts` distinguishes fresh actual paired Tauri
+  post-update readiness from a box ping. Offline/stale laptop = pending, not healthy and not auto-failure.
+  Required New Voice readiness includes exclusive instance ownership and explicit setup grace, never just a
+  successful HTTP response from a shared port. The existing updater's retained-version fallback is recovery,
+  not source rollback: the specific change must be reverted and the revert shipped via laptop sync/CI.
+  A failing revert release needs attention rather than ping-pong autoreverts. Host adapters remain to be built.

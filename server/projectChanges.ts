@@ -15,6 +15,7 @@ import { wallsOf } from "./projectFolders";
 import { writeAtomic } from "./atomic";
 import { masterProjectOf, syncedWithoutRemote, triggerProjectAt } from "./master";
 import { withRepoLock } from "./git";
+import type { ChangePermit, ChangeProofService } from "./changeProof";
 
 // The card's names and its images' place in the vault: one definition for the box, the laptop and the phone.
 import { KEEP, OUTCOME_SEP, REVIEW_TOOL, SEND_BACK, proofImagePath } from "../src/review";
@@ -241,6 +242,37 @@ async function keepLocked(vault: string, r: Review): Promise<{ ok: boolean; text
   await git(r.clone, ["fetch", "--quiet", "origin"]);
   await git(r.clone, ["switch", "-C", base, `origin/${base}`]);
   return { ok: true, text: `Kept: ${branch} is in ${base} (${how}, now ${sha}); ${push}. Your clone is back on ${base}; start the next change on a new agent/<name> branch.` };
+}
+
+/** Auto-ship foundation: same service repo lock as Keep/sync, but ONLY a host-run proof permit authorizes
+ * acceptance. No model summary, user answer, disk JSON or naked SHA can replace that permit. This is not yet
+ * a tool/route: the installed runner, release-health and rollback adapters must be connected before activation.
+ * Never push here: only laptop sync is allowed to push the accepted main to GitHub.
+ */
+export async function acceptProvenReview(vault: string, r: Review, proof: ChangeProofService, permit: ChangePermit): Promise<{ ok: boolean; text: string }> {
+  const out = await withRepoLock(r.folder, async () => {
+    const current = await baseBranch(r.folder);
+    if (current !== r.base) return { ok: false, text: "Acceptance blocked: the project's base branch is not checked out." };
+    const dirty = await git(r.folder, ["status", "--porcelain"]);
+    if (!dirty.ok || dirty.out) return { ok: false, text: "Acceptance blocked: the project has local edits; no files were changed." };
+    const base = await git(r.folder, ["rev-parse", r.base]);
+    const tip = await git(r.folder, ["rev-parse", r.branch]);
+    const tree = await git(r.folder, ["rev-parse", `${r.sha}^{tree}`]);
+    if (!base.ok || !tip.ok || !tree.ok || tip.out !== r.sha) return { ok: false, text: "Acceptance blocked: candidate branch moved; rerun proof." };
+    const ancestor = await git(r.folder, ["merge-base", "--is-ancestor", base.out, r.sha]);
+    if (!ancestor.ok) return { ok: false, text: "Acceptance blocked: candidate is not based on current main; update it and rerun proof." };
+    try {
+      await proof.consume(permit, { base: base.out, head: r.sha, tree: tree.out, branch: r.branch });
+    } catch (e) { return { ok: false, text: `Acceptance blocked: ${e instanceof Error ? e.message : String(e)}` }; }
+    // Fast-forward only: a new merge commit would have an unproved tree/source identity.
+    const merged = await git(r.folder, ["merge", "--ff-only", "--quiet", r.sha]);
+    if (!merged.ok) return { ok: false, text: `Acceptance blocked: ${merged.err.slice(0, 200)}. Rerun proof before retrying.` };
+    settle(vault, r.convId);
+    // Leave the agent clone alone: another actor may already be working there.
+    return { ok: true, text: `Accepted: ${r.title} (${r.sha}). Laptop sync must push it; release and device health are still pending. This is not yet Shipped.` };
+  });
+  if (out.ok) triggerProjectAt(r.folder);
+  return out;
 }
 
 /** Send back: his note to the agent; the branch stays as it is. */

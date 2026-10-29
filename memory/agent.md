@@ -64,3 +64,14 @@ extensions (same problems, new place). Migrate one duplicated piece per bug; no 
   only idle processes (running turns and children pin their existing scope). Persist side loadout semantics or
   legacy explicit names, never infer broader grants from a schema refresh; workers retain their child allowlist.
   Source changes still require a server restart; this is not permission for an agent to deploy or bypass Keep.
+
+## Auto-ship authority foundation (2026-10-29, not activated)
+- Carl requested replacing mandatory Keep with service-owned proof-gated acceptance and an after-the-fact
+  Shipped/proof/Roll back card. The agent still never merges or pushes main. `changeProof.ts` introduces
+  single-use host-process permits; receipt JSON/model test prose is not acceptance authority. Compare exact
+  named baseline failures, not counts. Main/head/tree/branch pins are rechecked under the existing repo lock;
+  fast-forward only avoids manufacturing an unproved merge tree. `acceptProvenReview` never pushes or resets
+  another actor's clone. The installed host adapters/tool/card are not wired yet: see `docs/auto-ship-foundation.md`.
+- The first deployment cannot self-authorize through an entry point the installed server does not have.
+  A candidate sidecar against the real repo would bypass authority, not solve bootstrap. Report the constraint;
+  no manual main merge/push or unapproved production drop-in is implied by implementing the new service.
