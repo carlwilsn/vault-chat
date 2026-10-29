@@ -6,7 +6,7 @@ import { dirname, extname, join, resolve, sep } from "node:path";
 import { isIP } from "node:net";
 import type { IncomingMessage } from "node:http";
 import { isLoopbackAddr, tailnetLoginOk } from "./auth";
-import { acceptedChanges, importLegacyBootstrap, updateShippingJournal, type AcceptedChange, type ShippingJournal } from "./changeShipping";
+import { acceptedChanges, importLegacyBootstrap, selectAcceptedFailedRelease, updateShippingJournal, type AcceptedChange, type ShippingJournal } from "./changeShipping";
 import { evaluateReleaseHealth, type BoxReleaseHealth, type LaptopReleaseHealth, type ReleaseHealthResult, type ReleaseTarget } from "./releaseHealth";
 import type { LaptopHealthReport, ReleaseHealthChallenge, ShipmentCard, ShipmentRollback } from "../src/shippingProtocol";
 import { activeFolders } from "./projectFolders";
@@ -101,6 +101,7 @@ export async function reportLaptopHealth(repo: string, clientId: string, b: Lapt
       tauri: b.tauri, frontendMounted: b.frontendMounted, boxConnected: b.boxConnected, syncReady: b.syncReady, updaterReady: b.updaterReady,
       ...(b.error ? { error: "Actual laptop release readiness check failed" } : {}) };
     evaluate(r, now);
+    if (r.result?.status === "failed") selectAcceptedFailedRelease(j, r.target.id, r.target.revision);
   });
 }
 /** Persist before calling the core's idempotent, change-specific source revert. Crash recovery reuses the
@@ -109,6 +110,7 @@ export async function requestDeliveryRollback(repo: string, id: string, reason: 
   const old = await updateShippingJournal(repo, j => {
     const c = j.changes.find(c => c.id === id && c.acceptedAt);
     if (!c) throw new Error("Accepted change not found");
+    if (j.changes.some(other => other.acceptedAt && other.rollbackOf === id)) return state(j).rollbacks[id] = { status: "accepted" };
     if (c.rollbackOf && automatic) {
       return state(j).rollbacks[id] ??= { status: "failed", error: "A recovery release failed; needs attention, no automatic revert of a revert" };
     }
@@ -137,7 +139,8 @@ export async function observeChangeDelivery(repo: string): Promise<void> {
   if (contexts.length) await importLegacyBootstrap(repo, SERVER_REV, contexts);
   const box = await adapters.boxHealth(), now = Date.now();
   const requests = await updateShippingJournal(repo, j => {
-    const requests: { id: string; reason: string; automatic: boolean }[] = [];
+    const requests: { id: string; reason: string; automatic: boolean; releaseId?: string }[] = [];
+    const failedReleases = new Set<string>();
     for (const c of j.changes.filter(c => c.acceptedAt)) {
       if (c.release) {
         const r = ensureRelease(j, c);
@@ -154,15 +157,28 @@ export async function observeChangeDelivery(repo: string): Promise<void> {
           }
         }
         evaluate(r, now);
-        const releaseOwner = j.changes.filter(other => other.acceptedAt && other.release?.id === c.release!.id).at(-1);
-        if (r.result?.status === "failed" && releaseOwner?.id === c.id && !state(j).rollbacks[c.id]) requests.push({ id: c.id, reason: r.result.reason, automatic: true });
+        if (r.result?.status === "failed" && !failedReleases.has(c.release.id)) {
+          failedReleases.add(c.release.id);
+          const selected = selectAcceptedFailedRelease(j, c.release.id, c.release.revision);
+          // Never partially recover a release containing a recovery: no automatic revert of reverts.
+          if (selected.some(change => change.rollbackOf)) {
+            for (const change of selected) state(j).rollbacks[change.id] ??= { status: "failed", error: "A recovery release failed; needs attention, no automatic revert of a revert" };
+          } else for (const change of selected) requests.push({ id: change.id, reason: r.result.reason, automatic: true, releaseId: c.release.id });
+        }
       }
       const rb = state(j).rollbacks[c.id];
-      if (rb?.status === "requested" || rb?.status === "running") requests.push({ id: c.id, reason: "Resume durable source recovery request", automatic: false });
+      const automaticMember = Object.values(j.recoverySelections ?? {}).some(s => s.changeIds.includes(c.id));
+      if (!automaticMember && (rb?.status === "requested" || rb?.status === "running")) requests.push({ id: c.id, reason: "Resume durable source recovery request", automatic: false });
     }
     return requests;
   });
-  for (const request of requests) await requestDeliveryRollback(repo, request.id, request.reason, request.automatic);
+  const blocked = new Set<string>();
+  for (const request of requests) {
+    if (request.releaseId && blocked.has(request.releaseId)) continue;
+    const outcome = await requestDeliveryRollback(repo, request.id, request.reason, request.automatic);
+    // Dependencies are reversed newest-first, one accepted revert at a time. Failure is durable.
+    if (request.releaseId && outcome.status !== "accepted") blocked.add(request.releaseId);
+  }
   // Project may be associated with more than one vault. Publish only into its registered vault contexts.
   for (const v of adapters.vaults()) if (activeFolders(v.path).some(f => resolve(f.abs) === resolve(repo))) await shipmentCards(v.path, v.name);
 }

@@ -1,12 +1,13 @@
 /** Specific accepted-change source recovery. This prepares a private service branch; the ONLY path from
  * it to main is the ordinary seven-gate/baseline/real-UI proof and same-process acceptance permit. */
 import { createHash, randomUUID } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { git, withRepoLock } from "./git";
 import { baseBranch } from "./projectChanges";
 import { pinChange, type PinnedChange, type SubmitCheck } from "./changeHost";
 import type { AcceptedChange } from "./changeShipping";
+import { CHANGE_GATES, type ChangeReceipt, type RollbackTestPolicy, type RemovedTestAllowance } from "./changeProof";
 
 /** Host-owned recovery smoke, deliberately not agent-dependent and not a replay of UI a revert removes.
  * Source recovery is established by git revert of the accepted range; this proves usable real pre-change
@@ -41,7 +42,7 @@ export async function sourceRollbackCommits(repo: string, a: AcceptedChange): Pr
   return expected;
 }
 
-export async function prepareSourceRollback(o: { vault: string; accepted: AcceptedChange; privateRoot: string }): Promise<{ pinned: PinnedChange; close(): void }> {
+export async function prepareSourceRollback(o: { vault: string; accepted: AcceptedChange; privateRoot: string }): Promise<{ pinned: PinnedChange; rollbackRemovedTests: RollbackTestPolicy; close(): void }> {
   const a = o.accepted, folder = a.review.folder;
   if (!a.acceptedAt || a.rollbackOf) throw new Error("Only an accepted original change can be rolled back; a revert release needs attention, never another automatic revert");
   mkdirSync(o.privateRoot, { recursive: true, mode: 0o700 });
@@ -69,6 +70,41 @@ export async function prepareSourceRollback(o: { vault: string; accepted: Accept
       await git(clone, ["-c", "user.name=vault-chat-agent", "-c", "user.email=agent@vault-chat.local", "commit", "--quiet", "-m", `[agent] Roll back ${a.id}: ${a.review.title}`]);
     });
     const pinned = await pinChange({ vault: o.vault, convId: a.review.convId, slug: a.review.slug, folder, clone, title: `Roll back: ${a.review.title}` });
-    return { pinned, close };
+    const expected = structuredClone(pinned.source);
+    const key = (t: { file: string; name: string }) => JSON.stringify([t.file.replace(/\\/g, "/"), t.name]);
+    const receiptPath = join(a.proofDir, "receipt.json");
+    // Ordinary authority is the original private service receipt, never caller-chosen case names.
+    // Legacy bootstrap has no such receipt; only its exact historical range was separately verified.
+    let receiptBytes: Buffer | undefined, receipt: ChangeReceipt | undefined;
+    if (a.basis !== "legacy-bootstrap" && existsSync(receiptPath)) {
+      if (!lstatSync(receiptPath).isFile() || lstatSync(receiptPath).isSymbolicLink()) throw new Error("Original recovery receipt must be a private regular file");
+      receiptBytes = readFileSync(receiptPath);
+      receipt = JSON.parse(receiptBytes.toString()) as ChangeReceipt;
+      if (receipt.id !== a.id || JSON.stringify(receipt.source) !== JSON.stringify(a.source)) throw new Error("Original recovery receipt does not match accepted identity");
+    }
+    const rollbackRemovedTests: RollbackTestPolicy = async (source, baseline, candidate) => {
+      if (JSON.stringify(source) !== JSON.stringify(expected) || (await git(clone, ["rev-parse", "HEAD"])).trim() !== expected.head || (await git(clone, ["rev-parse", "HEAD^{tree}"])).trim() !== expected.tree || (await git(clone, ["status", "--porcelain"])).trim()) throw new Error("Recovery test policy requires the exact service-generated revert");
+      if (a.basis !== "legacy-bootstrap" && !receipt) throw new Error("Original private service receipt is required to authorize removed tests");
+      if (receiptBytes && !readFileSync(receiptPath).equals(receiptBytes)) throw new Error("Original recovery receipt changed during proof");
+      const allowed: RemovedTestAllowance = {};
+      for (const gate of CHANGE_GATES) {
+        if (gate !== "test:harness" && gate !== "test:server") continue;
+        const before = baseline.find(r => r.gate === gate), after = candidate.find(r => r.gate === gate);
+        if (!before?.complete || !after?.complete || !before.tests || !after.tests) throw new Error("Recovery requires complete current test receipts");
+        const present = new Set(after.tests.map(key));
+        let introduced: Set<string> | undefined;
+        if (receipt) {
+          const originalBase = receipt.baseline.find(r => r.gate === gate), originalHead = receipt.candidate.find(r => r.gate === gate);
+          if (!originalBase?.complete || !originalHead?.complete || !originalBase.tests || !originalHead.tests || originalBase.source !== a.source.base || originalHead.source !== a.source.head) throw new Error("Original recovery test receipts are incomplete or mismatched");
+          const prior = new Set(originalBase.tests.map(key));
+          introduced = new Set(originalHead.tests.filter(t => !prior.has(key(t))).map(key));
+        }
+        // Exact bootstrap reversal is already source-attested and preserves the pinned mic fixture.
+        // No generic missing-test exemption reaches ordinary submissions or later unrelated edits.
+        allowed[gate] = before.tests.filter(t => !present.has(key(t)) && (!introduced || introduced.has(key(t)))).map(t => ({ file: t.file, name: t.name }));
+      }
+      return allowed;
+    };
+    return { pinned, rollbackRemovedTests, close };
   } catch (e) { close(); throw e; }
 }

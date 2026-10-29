@@ -7,7 +7,7 @@ import { homedir } from "node:os";
 import { join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadConfig, SERVER_REV, SERVER_VERSION } from "./config";
-import { acceptedChanges, importLegacyBootstrap, updateShippingJournal, type AcceptedChange } from "./changeShipping";
+import { acceptedChanges, acceptedFailedRelease, importLegacyBootstrap, updateShippingJournal, type AcceptedChange } from "./changeShipping";
 import { activeFolders } from "./projectFolders";
 import { installedChangeHostOptions } from "./changeHostConfig";
 import { buildSandbox } from "./engine/index";
@@ -78,12 +78,15 @@ export async function runPublishedRecoveryCli(): Promise<number> {
       // This verifies public publication + protected completed Keep receipt, never mints a permit.
       await importLegacyBootstrap(repo, SERVER_REV, contexts);
       const changes = await acceptedChanges(repo);
-      const originals = changes.filter(c => c.release?.revision === SERVER_REV && verifiedRecoveryFailure(cfg.stateDir, c));
+      const failed = changes.filter(c => c.release?.revision === SERVER_REV && verifiedRecoveryFailure(cfg.stateDir, c));
+      const releaseIds = [...new Set(failed.map(c => c.release!.id))];
+      const originals: AcceptedChange[] = [];
+      for (const id of releaseIds) originals.push(...await acceptedFailedRelease(repo, id, SERVER_REV));
       matching += originals.length;
       // One release may include several accepted changes. Reverse acceptance/source order preserves
       // dependencies; each gets its own exact source revert, full proof and live permit.
-      for (const accepted of originals.reverse()) {
-        if (accepted.rollbackOf) throw new Error("A recovery release failed; needs attention, never revert its revert");
+      if (originals.some(c => c.rollbackOf)) throw new Error("A recovery release failed; needs attention, never revert its revert");
+      for (const accepted of originals) {
         const already = (await acceptedChanges(repo)).find(c => c.rollbackOf === accepted.id);
         if (already) { await flushRecoveredProject(repo, accepted.review.base); confirmed++; continue; }
         const prior = await updateShippingJournal(repo, j => j.delivery?.rollbacks[accepted.id]);

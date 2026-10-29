@@ -80,7 +80,7 @@ describe("durable delivery observations, not synchronized card authority", () =>
     await report(f, { updaterReady: false }); await observeChangeDelivery(f.repo);
     expect(f.rollback).toHaveBeenCalledTimes(1);
   });
-  it("selects only the last accepted change for one failed published release, not every included change", async () => {
+  it("selects all accepted changes newest-first for one failed published release", async () => {
     const f = await fixture();
     writeFileSync(join(f.repo, "second.txt"), "second accepted change"); f.g("add", "."); f.g("commit", "-qm", "second candidate");
     const head = f.g("rev-parse", "HEAD"), tree = f.g("rev-parse", "HEAD^{tree}");
@@ -89,8 +89,9 @@ describe("durable delivery observations, not synchronized card authority", () =>
     await withRepoLock(f.repo, () => prepareAcceptanceLocked(f.repo, { ...f.c, id: "second-accepted", source: { ...f.c.source, base: f.c.source.head, head, tree }, release }));
     f.release = release; f.box.revision = head;
     await observeChangeDelivery(f.repo); await report(f, { updaterReady: false }); await observeChangeDelivery(f.repo);
-    expect(f.rollback).toHaveBeenCalledTimes(1);
-    expect(f.rollback).toHaveBeenCalledWith(f.repo, "second-accepted", expect.any(String));
+    expect(f.rollback).toHaveBeenCalledTimes(2);
+    expect(f.rollback).toHaveBeenNthCalledWith(1, f.repo, "second-accepted", expect.any(String));
+    expect(f.rollback).toHaveBeenNthCalledWith(2, f.repo, f.c.id, expect.any(String));
   });
   it("copies source-pinned proof media and a sanitized summary, never private receipt paths/request/environment", async () => {
     const f = await fixture(), artifact = join(f.proof, "recording.mp4"), bytes = Buffer.from("fixture-media-not-physical-proof");

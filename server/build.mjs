@@ -15,11 +15,13 @@ const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
 let rev = process.env.VC_REV || "";
 if (!rev) {
   try {
-    rev = execSync("git rev-parse --short HEAD", { cwd: root }).toString().trim();
+    rev = execSync("git rev-parse HEAD", { cwd: root }).toString().trim();
   } catch {
     rev = "";
   }
 }
+
+if (rev && !/^[0-9a-f]{40}$/.test(rev)) throw new Error("VC_REV must be a full 40-character source revision");
 
 const ALIASES = {
   "@tauri-apps/api/core": join(shims, "core.ts"),
@@ -128,7 +130,10 @@ const result = await build({
   external: ["esbuild"],
   // CJS deps bundled into ESM need a real require for node builtins.
   banner: {
-    js: "import { createRequire as __vcCreateRequire } from 'node:module'; const require = __vcCreateRequire(import.meta.url);",
+    // Exit before ANY bundled application module initializes (including storage and keys).
+    // These are the same build inputs used for SERVER_VERSION/SERVER_REV below.
+    js: `import { createRequire as __vcCreateRequire } from 'node:module'; const require = __vcCreateRequire(import.meta.url);
+if (process.argv[2] === "build-info") { process.stdout.write(${JSON.stringify(JSON.stringify({ version: pkg.version, rev }) + "\n")}); process.exit(0); }`,
   },
   define: {
     "import.meta.env.DEV": "false",

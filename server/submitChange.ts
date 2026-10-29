@@ -85,7 +85,7 @@ export async function requestRollback(o: { vault: string; accepted: import("./ch
     try {
       log(`Recovery request: ${o.reason}\nRevert only ${accepted.source.base}..${accepted.source.head}${accepted.basis === "legacy-bootstrap" ? "; preserve the separately approved exact voice-mic baseline fixture" : ""}; preserve later work.`);
       const ask: AskCheck = { requestId: `rollback:${accepted.id}`, requestText: o.reason, assessment: ROLLBACK_CHECK.assessment, evidence: [...ROLLBACK_CHECK.evidence] };
-      const result = await proveAndAcceptChange({ ...o.host, privateRoot: root, signal, onProgress: log }, recovery.pinned, ask, ROLLBACK_CHECK, async () => {
+      const result = await proveAndAcceptChange({ ...o.host, privateRoot: root, signal, onProgress: log, rollbackRemovedTests: recovery.rollbackRemovedTests }, recovery.pinned, ask, ROLLBACK_CHECK, async () => {
         signal.throwIfAborted();
         // Acceptance's repo mutex is already held here. Journal dedupe is checked again there by
         // projectChanges, avoiding a nested lock and a second acceptance after a crash/race.

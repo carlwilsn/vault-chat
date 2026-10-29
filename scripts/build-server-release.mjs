@@ -31,8 +31,20 @@ const fail = (msg) => {
   process.exit(1);
 };
 if (!/^\d+\.\d+\.\d+([-+][0-9A-Za-z.-]+)?$/.test(version)) fail(`VERSION must be x.y.z, got '${version}'`);
-if (!/^[0-9a-f]{7,40}$/.test(rev)) fail(`REV must be a git sha, got '${rev}'`);
+if (!/^[0-9a-f]{40}$/.test(rev)) fail(`REV must be a full git sha, got '${rev}'`);
 if (!existsSync(bundle)) fail(`${bundle} is missing — run \`npm run build:server\` first`);
+// Query the actual executable, not server-version.json or the build environment's intent.
+// build-info exits in the bundle banner before app initialization: no listener, keys or voice.
+const verifiedBundleSha = createHash("sha256").update(readFileSync(bundle)).digest("hex");
+let compiled;
+try {
+  compiled = JSON.parse(execFileSync(process.execPath, [bundle, "build-info"], {
+    encoding: "utf8", timeout: 15_000, maxBuffer: 4096,
+    env: { PATH: process.env.PATH, VC_VOICE_PIPELINE: "0" },
+  }));
+} catch { fail("bundle build-info failed; refusing an unverified executable"); }
+if (compiled.version !== version || compiled.rev !== rev) fail("compiled bundle identity does not match VERSION/REV");
+if (createHash("sha256").update(readFileSync(bundle)).digest("hex") !== verifiedBundleSha) fail("bundle changed during executable identity verification");
 for (const a of assets) if (!existsSync(join(assetDir, a))) fail(`${assetDir}/${a} is missing`);
 
 const sha256 = (file) => createHash("sha256").update(readFileSync(file)).digest("hex");
@@ -42,6 +54,7 @@ mkdirSync(out, { recursive: true });
 
 copyFileSync(bundle, join(out, "vault-chat-server.mjs"));
 const bundleSha = sha256(join(out, "vault-chat-server.mjs"));
+if (bundleSha !== verifiedBundleSha) fail("bundle changed after executable identity verification");
 writeFileSync(join(out, "vault-chat-server.mjs.sha256"), `${bundleSha}  vault-chat-server.mjs\n`);
 
 // Proof needs dev tools after a bundle-only update. Ship exact manifests in the SAME checksummed

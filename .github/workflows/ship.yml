@@ -325,6 +325,8 @@ jobs:
       - run: npm ci
 
       - name: Build the server bundle
+        env:
+          VC_REV: ${{ needs.prepare.outputs.sha }}
         run: npm run build:server
 
       - name: Package the release files

@@ -22,7 +22,28 @@ export type AcceptedChange = {
   bootstrap?: { proofId: string; toolCallId: string; fixtureCommit: string; media: { name: string; hash: string }[] };
   preparedAt: string; acceptedAt?: string; release?: PublishedChangeRelease; rollbackOf?: string;
 };
-export type ShippingJournal = { format: 1; changes: AcceptedChange[]; delivery?: import("./changeDelivery").DeliveryState };
+export type ShippingJournal = { format: 1; changes: AcceptedChange[]; delivery?: import("./changeDelivery").DeliveryState; recoverySelections?: Record<string, FailedReleaseSelection> };
+/** Frozen at the first trusted negative observation, shared by live and retained recovery. */
+export type FailedReleaseSelection = { revision: string; changeIds: string[]; selectedAt: string };
+export function selectAcceptedFailedRelease(j: ShippingJournal, releaseId: string, revision: string): AcceptedChange[] {
+  const selections = j.recoverySelections ??= {};
+  let selection = selections[releaseId];
+  if (!selection) {
+    const changes = j.changes.filter(c => c.acceptedAt && c.release?.id === releaseId && c.release.revision === revision);
+    if (!changes.length) throw new Error("Failed release has no accepted source changes");
+    selection = selections[releaseId] = { revision, changeIds: changes.map(c => c.id).reverse(), selectedAt: new Date().toISOString() };
+  }
+  if (selection.revision !== revision || !selection.changeIds.length || new Set(selection.changeIds).size !== selection.changeIds.length) throw new Error("Invalid frozen failed-release recovery selection");
+  return selection.changeIds.map(id => {
+    const c = j.changes.find(c => c.id === id && c.acceptedAt && c.release?.id === releaseId && c.release.revision === revision);
+    if (!c) throw new Error("Frozen failed-release source identity no longer matches acceptance");
+    return c;
+  });
+}
+/** Call only after a trusted negative has been verified. Selection is fsynced before any revert. */
+export async function acceptedFailedRelease(repo: string, releaseId: string, revision: string): Promise<AcceptedChange[]> {
+  return updateShippingJournal(repo, j => structuredClone(selectAcceptedFailedRelease(j, releaseId, revision)));
+}
 type Journal = ShippingJournal;
 const sha = (s: string) => /^[a-f0-9]{40}$/.test(s);
 
