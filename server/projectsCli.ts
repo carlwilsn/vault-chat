@@ -34,12 +34,13 @@ export async function runProjectsCli(argv: string[]): Promise<number> {
   const home = process.env.HOME || process.env.USERPROFILE || homedir();
   const envFile = arg(argv, "env") ?? process.env.VC_ENV_FILE ?? join(home, ".config", "vault-chat-server.env");
   loadEnvFile(envFile);
-  const { loadConfig } = await import("./config");
+  const { reloadConfig } = await import("./config");
   const { listVaults, vaultPaths } = await import("./sync");
   const { resolveProjectsHome } = await import("./projectsHome");
   const { migrateProjects, migrateBack } = await import("./projectsMigrate");
   const { agentWorkDir } = await import("./workArea");
-  const cfg = loadConfig();
+  // The env file as the server reads it (something may have read the config before it was loaded).
+  const cfg = reloadConfig();
   const projectsHome = resolveProjectsHome();
   const out = (o: unknown) => console.log(JSON.stringify(o, null, 2));
   const vaults = listVaults().map((v) => {
@@ -61,6 +62,11 @@ export async function runProjectsCli(argv: string[]): Promise<number> {
         return 0;
       }
       case "migrate": {
+        // Never under a running server (it writes the logs this moves): refused while its port answers.
+        if (!argv.includes("--dry-run") && (await serverUp(cfg.host, cfg.port))) {
+          console.error(`projects migrate: the server answers on ${cfg.host}:${cfg.port}: stop it first (systemctl --user stop vault-chat-server)`);
+          return 4;
+        }
         const r = migrateProjects({
           home: projectsHome,
           vaults: vaults.map((v) => ({ path: v.path, piSessions: v.piSessions, piInstr: v.piInstr })),
@@ -73,6 +79,10 @@ export async function runProjectsCli(argv: string[]): Promise<number> {
         return r.ok ? 0 : 3;
       }
       case "back": {
+        if (await serverUp(cfg.host, cfg.port)) {
+          console.error(`projects back: the server answers on ${cfg.host}:${cfg.port}: stop it first (systemctl --user stop vault-chat-server)`);
+          return 4;
+        }
         const r = migrateBack({ home: projectsHome, stamp: arg(argv, "stamp") });
         out({ projectsHome, ...r });
         return r.ok ? 0 : 3;
@@ -84,5 +94,15 @@ export async function runProjectsCli(argv: string[]): Promise<number> {
   } catch (e) {
     console.error(`projects ${cmd}: ${(e as Error).message}`);
     return 1;
+  }
+}
+
+/** Whether a vault-chat server answers on this port (its health route). */
+async function serverUp(host: string, port: number): Promise<boolean> {
+  try {
+    const r = await fetch(`http://${host === "0.0.0.0" ? "127.0.0.1" : host}:${port}/api/v1/health`, { signal: AbortSignal.timeout(2000) });
+    return r.status > 0;
+  } catch {
+    return false;
   }
 }

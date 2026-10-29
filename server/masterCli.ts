@@ -36,9 +36,9 @@ export async function runMasterCli(argv: string[]): Promise<number> {
   // each stored, both ways. --state overrides.
   const sessions = async (): Promise<SessionDirs> => {
     loadEnvFile(envFile);
-    const { loadConfig } = await import("./config");
+    const { reloadConfig } = await import("./config");
     const { resolveProjectsHome } = await import("./projectsHome");
-    return stateSessionDirs(arg(argv, "state") ?? loadConfig().stateDir, resolveProjectsHome());
+    return stateSessionDirs(arg(argv, "state") ?? reloadConfig().stateDir, resolveProjectsHome());
   };
   try {
     switch (cmd) {

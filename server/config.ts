@@ -88,3 +88,9 @@ export const SERVER_REV: string = typeof __VC_REV__ !== "undefined" ? __VC_REV__
 
 declare const __VC_VERSION__: string;
 declare const __VC_REV__: string;
+
+/** Read the environment again (a CLI that loaded the server's env file after something read the config). */
+export function reloadConfig(): ServerConfig {
+  cached = null;
+  return loadConfig();
+}
