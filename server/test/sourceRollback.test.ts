@@ -2,8 +2,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { prepareSourceRollback, ROLLBACK_CHECK } from "../sourceRollback";
+import { join, resolve } from "node:path";
+import { prepareSourceRollback, ROLLBACK_CHECK, BOOTSTRAP_BASE, BOOTSTRAP_FIXTURE, sourceRollbackCommits } from "../sourceRollback";
 import type { AcceptedChange } from "../changeShipping";
 const dirs: string[] = [];
 const git = (cwd: string, ...args: string[]) => execFileSync("git", ["-c", "core.hooksPath=/dev/null", "-c", "user.name=test", "-c", "user.email=test@local", ...args], { cwd, encoding: "utf8" }).trim();
@@ -49,6 +49,29 @@ describe("service-owned specific source recovery", () => {
     await expect(prepareSourceRollback(o)).rejects.toThrow("clean and checked out");
     expect(readFileSync(join(o.repo, "local.txt"), "utf8")).toBe("Carl's work");
   });
+  it("only the exact host bootstrap preserves the pinned fixture; ordinary selection is forbidden", async () => {
+    const o = setup();
+    await expect(sourceRollbackCommits(o.repo, { ...o.accepted, revertCommits: [] })).rejects.toThrow("only valid");
+    await expect(sourceRollbackCommits(o.repo, { ...o.accepted, basis: "legacy-bootstrap", revertCommits: [] })).rejects.toThrow("identity");
+    // Real historical objects, private actual refs/worktree. No live branch, journal or conversation write.
+    const real = resolve("."), head = git(real, "rev-parse", "HEAD");
+    const repo = join(o.dir, "bootstrap"); mkdirSync(repo); git(repo, "init", "-qb", "main");
+    writeFileSync(join(repo, ".git", "objects", "info", "alternates"), resolve(real, git(real, "rev-parse", "--git-common-dir"), "objects") + "\n");
+    git(repo, "reset", "--hard", head);
+    const commits = git(repo, "rev-list", "--topo-order", head, `^${BOOTSTRAP_BASE}`).split("\n");
+    const accepted: AcceptedChange = { ...o.accepted, basis: "legacy-bootstrap", bootstrap: { proofId: "auto_ship_bootstrap_A_6fcc7f68", toolCallId: "native-bootstrap-call", fixtureCommit: BOOTSTRAP_FIXTURE, media: [] },
+      source: { base: BOOTSTRAP_BASE, head, tree: git(repo, "rev-parse", "HEAD^{tree}"), branch: "agent/auto-ship" },
+      review: { ...o.accepted.review, folder: repo, branch: "agent/auto-ship", sha: head, proofId: "auto_ship_bootstrap_A_6fcc7f68", toolCallId: "native-bootstrap-call" }, revertCommits: commits.filter(c => c !== BOOTSTRAP_FIXTURE) };
+    expect(await sourceRollbackCommits(repo, accepted)).toEqual(accepted.revertCommits);
+    await expect(sourceRollbackCommits(repo, { ...accepted, revertCommits: commits })).rejects.toThrow("preserving only");
+    await expect(sourceRollbackCommits(repo, { ...accepted, revertCommits: accepted.revertCommits!.slice(1) })).rejects.toThrow("preserving only");
+    const r = await prepareSourceRollback({ ...o, repo, accepted });
+    try {
+      expect(git(repo, "rev-parse", "HEAD")).toBe(head);
+      expect(git(repo, "diff", "--name-only", BOOTSTRAP_BASE, r.pinned.source.head)).toBe("test/harness/voicemic.test.ts");
+      expect(git(repo, "show", `${r.pinned.source.head}:test/harness/voicemic.test.ts`)).toBe(git(repo, "show", `${BOOTSTRAP_FIXTURE}:test/harness/voicemic.test.ts`));
+    } finally { r.close(); }
+  }, 120_000);
   it("uses host-owned actual input and assertions without replaying the feature being removed", () => {
     expect(ROLLBACK_CHECK.ui.steps?.some(s => "click" in s)).toBe(true);
     expect(ROLLBACK_CHECK.ui.steps?.some(s => "waitFor" in s)).toBe(true);

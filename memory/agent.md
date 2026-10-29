@@ -88,3 +88,9 @@ extensions (same problems, new place). Migrate one duplicated piece per bug; no 
 - Local clone --no-hardlinks alone races source auto-GC's temporary pack files. --no-local uses git's
   object transport for isolated clones; disable fetch auto-GC during source pinning. The unmocked real
   submission→UI→acceptance→source-revert integration exposed and verifies this case.
+- First A can fail before its new recovery server is up: the reviewed updater must execute the retained,
+  checksummed failed bundle's no-listener `recover-published-release` CLI only after healthy old fallback.
+  Reuse the same installed proof/job pipeline; no model, key-store read, serialized permit or agent sidecar.
+  Exit zero requires all matched source rollbacks accepted AND ordinary hub transport confirmed. No
+  accepted/public identity is needs-attention, never a successful no-op. Preserve only the exact separately
+  approved voice fixture in the ONE host-verified legacy A bootstrap; normal rollbacks remain full range.

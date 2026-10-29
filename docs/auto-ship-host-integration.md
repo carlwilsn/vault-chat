@@ -92,3 +92,26 @@ actual tools; successful installation alone is not proof. No new dependency was 
 - Parent must still run all seven final-source application gates, real final UI/card proof, the authorized
   legacy handoff, normal laptop/CI installation, and actual paired box/Tauri health. No production/main
   change or claim of complete A delivery was made by this worker.
+
+## First installed A: retained-bundle recovery, not another agent
+
+The updater invokes `recover-published-release` from the retained, checksummed FAILED installed bundle
+only AFTER restoring a healthy retained binary. `runPublishedRecoveryCli()` checks the installed entry's
+canonical version path, full source identity, bundle hash and durable matching release failure before
+reading accepted identities. It imports only the strict public-published + protected completed legacy Keep
+fact when first A died before normal import, then uses `requestRollback` and the SAME sandbox gates,
+RecordUI, live single-use permit and repo-mutex ff acceptance. It opens no HTTP listener, engine or model
+and reads no key store. A private context of the existing service-job primitive prevents a pre-A reaper
+mistaking its unknown service jobs for lost shell units and waking a model. Terminal recovery failures
+remain attention. Success requires ALL matched originals have accepted rollbackOf AND confirmed ordinary
+BoxSync hub transport; absent/ambiguous/unverified identity returns nonzero. Laptop push, CI and actual
+device health still determine shipped status. No permit is serialized or inherited from the old process.
+
+There is exactly ONE bootstrap source-selection exception: host-imported `basis:legacy-bootstrap` with
+fixed base `6fcc7f683d32598ba2657918e266e4e25c770547`, branch `agent/auto-ship` and proof ID
+`auto_ship_bootstrap_A_6fcc7f68`. Its `revertCommits` MUST equal the complete accepted reverse-topological
+range minus ONLY `5a83c620305301dba9f33be7b3272a82f8dd71dd`, the separately approved one-file voice-mic
+baseline fixture repair. Source recovery independently validates the exact metadata and Git object/scope;
+ordinary changes reject selective lists. This preserves the fixed strict-proof baseline without relabeling
+immutable broken `6fcc7f6` as green or weakening parsers/gates. Historical Keep no longer directly pushes
+or resets the worker clone: laptop sync owns public push, and subsequent worker edits stay untouched.

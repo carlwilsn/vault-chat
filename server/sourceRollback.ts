@@ -22,6 +22,25 @@ export const ROLLBACK_CHECK: SubmitCheck = {
   ] },
 };
 
+export const BOOTSTRAP_BASE = "6fcc7f683d32598ba2657918e266e4e25c770547";
+export const BOOTSTRAP_FIXTURE = "5a83c620305301dba9f33be7b3272a82f8dd71dd";
+/** Only the host-verified ONE-TIME legacy bootstrap separates its two logical changes. The exact
+ * already-approved fixture repair must survive recovery of A; normal accepted changes revert in full. */
+export async function sourceRollbackCommits(repo: string, a: AcceptedChange): Promise<string[]> {
+  const range = (await git(repo, ["rev-list", "--topo-order", a.source.head, `^${a.source.base}`])).trim().split("\n").filter(Boolean);
+  const selected = a;
+  if (selected.basis !== "legacy-bootstrap") {
+    if (selected.revertCommits) throw new Error("Selective source revert is only valid for the exact host-verified legacy bootstrap");
+    return range;
+  }
+  if (a.source.base !== BOOTSTRAP_BASE || a.source.branch !== "agent/auto-ship" || a.review.branch !== "agent/auto-ship" || a.review.proofId !== "auto_ship_bootstrap_A_6fcc7f68" || a.bootstrap?.proofId !== a.review.proofId || a.bootstrap.fixtureCommit !== BOOTSTRAP_FIXTURE || a.bootstrap.toolCallId !== a.review.toolCallId || !a.bootstrap.toolCallId || !range.includes(BOOTSTRAP_FIXTURE)) throw new Error("Legacy bootstrap recovery identity does not match the approved A + fixture handoff");
+  const files = (await git(repo, ["diff-tree", "--no-commit-id", "--name-only", "-r", BOOTSTRAP_FIXTURE])).trim();
+  if (files !== "test/harness/voicemic.test.ts") throw new Error("Pinned bootstrap fixture repair has unexpected scope");
+  const expected = range.filter(c => c !== BOOTSTRAP_FIXTURE);
+  if (!expected.length || JSON.stringify(selected.revertCommits) !== JSON.stringify(expected)) throw new Error("Bootstrap source recovery must revert exactly A while preserving only the exact approved fixture repair");
+  return expected;
+}
+
 export async function prepareSourceRollback(o: { vault: string; accepted: AcceptedChange; privateRoot: string }): Promise<{ pinned: PinnedChange; close(): void }> {
   const a = o.accepted, folder = a.review.folder;
   if (!a.acceptedAt || a.rollbackOf) throw new Error("Only an accepted original change can be rolled back; a revert release needs attention, never another automatic revert");
@@ -36,7 +55,7 @@ export async function prepareSourceRollback(o: { vault: string; accepted: Accept
       if (!base || base !== a.review.base || (await git(folder, ["status", "--porcelain"])).trim()) throw new Error("Source recovery blocked: project main must be clean and checked out; no files were changed");
       await git(folder, ["merge-base", "--is-ancestor", a.source.head, "HEAD"]);
       if ((await git(folder, ["rev-parse", `${a.source.head}^{tree}`])).trim() !== a.source.tree) throw new Error("Accepted change tree does not match its recorded identity");
-      const commits = (await git(folder, ["rev-list", "--topo-order", a.source.head, `^${a.source.base}`])).trim().split("\n").filter(Boolean);
+      const commits = await sourceRollbackCommits(folder, a);
       if (!commits.length) throw new Error("Accepted range has no commits to revert");
       // No guessed merge mainline: ambiguous recovery must surface a conflict, not revert unrelated work.
       for (const rev of commits) if ((await git(folder, ["rev-list", "--parents", "-n", "1", rev])).trim().split(" ").length !== 2) throw new Error("Accepted range contains a merge/root commit; source recovery needs attention (no force/reset)");
