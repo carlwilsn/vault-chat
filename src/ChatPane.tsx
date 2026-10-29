@@ -1,3 +1,7 @@
+import { ShipmentCards } from "./ShipmentCards";
+import { shipmentsForThread } from "./shipmentView";
+import { projectOfThread } from "./threads";
+import { ShipmentProofViewer } from "./ShipmentProofViewer";
 import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef } from "react";
 import { Markdown, StreamingMarkdown } from "./Markdown";
 import { localPathFromUrl } from "./mdPipeline";
@@ -20,7 +24,7 @@ import { isUnreadableAsText } from "./fileKind";
 import { SettingsPane } from "./SettingsPane";
 import { Button, Textarea } from "./ui";
 import { cn } from "./lib/utils";
-import { ATTACH_MAX_BYTES, BOX_UNREACHABLE, NO_BOX, boxAnswer, boxChatOn, boxLinkFor, boxRetry, boxSubagent, fetchBoxFile, unreachableWhy } from "./boxChat";
+import { ATTACH_MAX_BYTES, BOX_UNREACHABLE, NO_BOX, boxRollbackShipment, boxAnswer, boxChatOn, boxLinkFor, boxRetry, boxSubagent, fetchBoxFile, unreachableWhy } from "./boxChat";
 import { tailscaleCheck, type TailscaleState } from "./vaultSync";
 import {
   AskOptions,
@@ -346,6 +350,16 @@ export function ChatPane() {
   // 60+ times per second.
   const vaultPath = useStore((s) => s.vaultPath);
   const messages = useStore((s) => s.messages);
+  const shipments = useStore((s) => s.shipments);
+  const [artifactBase, setArtifactBase] = useState("");
+  const [shipmentProof, setShipmentProof] = useState<string | null>(null);
+  useEffect(() => {
+    let live = true;
+    setArtifactBase("");
+    setShipmentProof(null);
+    void boxLinkFor(vaultPath).then((link) => { if (live) setArtifactBase(link?.url || ""); });
+    return () => { live = false; };
+  }, [vaultPath]);
   const skills = useStore((s) => s.skills);
   const busy = useStore((s) => s.busy);
   const showSettings = useStore((s) => s.showSettings);
@@ -408,6 +422,7 @@ export function ChatPane() {
   const toggleChatsPanel = () =>
     chatFullscreen ? useStore.getState().toggleChatSidebar() : setShowChatsPanel(!showChatsPanel);
   const activeConv = conversations.find((c) => c.id === activeConversationId);
+  const threadShipments = shipmentsForThread(shipments, activeConversationId, activeConv?.project || projectOfThread(activeConversationId));
   // What the thread shows beside the text (chatExtras.tsx; uiChoices.ts picks
   // where each goes while Carl decides). Stable props, so the bubbles' memo
   // holds while a reply streams.
@@ -1045,7 +1060,7 @@ export function ChatPane() {
         onScroll={onScroll}
       >
         <div className="max-w-[820px] mx-auto space-y-4">
-        {messages.length === 0 && !streamingText && (
+        {messages.length === 0 && !streamingText && threadShipments.length === 0 && (
           <div className="absolute inset-0 flex items-center justify-center pointer-events-none" data-el="greeting">
             {boxDown ? (
               <div className="text-center space-y-1">
@@ -1076,6 +1091,9 @@ export function ChatPane() {
           ),
         )}
 
+
+        <ShipmentCards cards={threadShipments} artifactBase={artifactBase} onRollback={boxRollbackShipment} onOpenProof={async (url) => { setShipmentProof(url); }} />
+        {shipmentProof && <ShipmentProofViewer url={shipmentProof} vault={vaultPath} onClose={() => setShipmentProof(null)} />}
 
         {planInline && planAt < 0 && <AgentTodoList todos={todos} />}
 

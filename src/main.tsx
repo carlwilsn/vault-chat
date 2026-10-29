@@ -14,6 +14,7 @@ import "@fontsource/jetbrains-mono/400.css";
 import "@fontsource/jetbrains-mono/500.css";
 import { applyHljsTheme } from "./hljsTheme";
 import App from "./App";
+import { LaptopReleaseHealthMount } from "./laptopReleaseHealth";
 import { ChatWindow } from "./ChatWindow";
 import { installMainSync, installPopoutSync } from "./sync";
 import {
@@ -98,6 +99,7 @@ vlog("pre-render", { isPopout });
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
     <Root />
+    {!isPopout && <LaptopReleaseHealthMount />}
   </React.StrictMode>,
 );
 vlog("post-render");

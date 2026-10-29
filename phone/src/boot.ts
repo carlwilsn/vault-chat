@@ -1,3 +1,8 @@
+import { createElement } from "react";
+import { createRoot } from "react-dom/client";
+import { ShipmentCards } from "../../src/ShipmentCards";
+import { shipmentsForThread } from "../../src/shipmentView";
+import type { ShipmentCard } from "../../src/shippingProtocol";
 // The phone app's behaviour: the former <script id="phone-ts"> body of
 // src-tauri/assets/phone.html, unchanged except for the module wrapper and the
 // bundled imports (ElevenLabs from npm instead of esm.sh). It drives the shell
@@ -21,7 +26,7 @@ import { emptyPicture, emptyRow, foldInto, pendingOf, reduceRow, shown, type Pic
 import { RETRY_TEXT, afterClear, makeChatView, type ChatView } from "../../src/convlog/view";
 import { filesLine, splitFilesLine } from "../../src/filesLine";
 import { ATTACH_MAX_BYTES, isPhoto, pendingFile, sizeLabel, tooBig, type PendingFile } from "./attach";
-import { MAIN_ID, MAIN_TITLE, isOlderChat, panelModel, projectThreadId } from "../../src/threads";
+import { MAIN_ID, MAIN_TITLE, isOlderChat, panelModel, projectThreadId, projectOfThread } from "../../src/threads";
 import { startAttentionBeat, type AttentionBeat } from "../../src/attentionBeat";
 
 export function boot(): void {
@@ -217,6 +222,32 @@ export function boot(): void {
   let vaultName = "", boxModel = "", boxVersion = "";
   let unreadN = 0, offlineStreak = 0;
   const msgsEl = $("msgs"), input = $("input"), sendBtn = $("sendBtn");
+  // Delivery journal is a read-only server projection alongside the existing chat feed.
+  let shipments: ShipmentCard[] = [];
+  let shipmentsAt = 0, shipmentsLoading = false;
+  const shipmentEl = document.createElement("div");
+  shipmentEl.className = "thread-shipments";
+  const shipmentRoot = createRoot(shipmentEl);
+  async function refreshShipments(force = false) {
+    if (shipmentsLoading || !force && Date.now() - shipmentsAt < 5000) return;
+    shipmentsLoading = true; shipmentsAt = Date.now();
+    try {
+      const response = await api("/api/v1/shipments");
+      if (!response.ok) return;
+      const data = await response.json();
+      if (Array.isArray(data.shipments) && JSON.stringify(shipments) !== JSON.stringify(data.shipments)) {
+        shipments = data.shipments; scheduleRender();
+      }
+    } catch { /* Offline/old box: never manufacture a delivery outcome. */ }
+    finally { shipmentsLoading = false; }
+  }
+  async function rollbackShipment(id: string) {
+    const response = await api("/api/v1/shipments/" + encodeURIComponent(id) + "/rollback", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+    const data = await response.json();
+    if (!response.ok || !data.ok || data.rollback?.status === "failed") throw new Error(data.rollback?.error || data.error || "Roll back was not accepted");
+    await refreshShipments(true);
+  }
+
   // One-tap send with the keyboard up (note 85933e24). A plain onclick needed
   // TWO taps on iOS: the first tap blurred the textarea → the keyboard
   // collapsed → the layout shifted → the click landed nowhere. preventDefault
@@ -990,6 +1021,12 @@ export function boot(): void {
       convSource = m.source || convSource;
       convMeta = { project: m.project, state: m.state, nextWakeAt: m.nextWakeAt, costUsd: m.costUsd, verdict: m.verdict, todos: v ? v.todos : undefined, subagents: m.subagents || [] };
     }
+    const threadShipments = shipmentsForThread(shipments, convId, convMeta?.project || projectOfThread(convId));
+    if (threadShipments.length) {
+      msgsEl.querySelector(".hint")?.remove();
+      msgsEl.appendChild(shipmentEl);
+    } else shipmentEl.remove();
+    shipmentRoot.render(createElement(ShipmentCards, { cards: threadShipments, artifactBase: location.origin, onRollback: rollbackShipment }));
     renderStream(); renderRunline(); renderExtras(); renderOngoing(); syncArchived(); setHeader(); scrollDown(stick);
   }
   let renderQueued = false;
@@ -1255,6 +1292,7 @@ export function boot(): void {
           continue;
         }
         applyRecords(d.events || []);
+        void refreshShipments();
         cursor = Math.max(cursor ?? 0, Number(d.next) || 0);
       } catch { offlineStreak++; if (offlineStreak >= 2) setOffline(true); await new Promise((res) => setTimeout(res, 3000)); }
     }
@@ -2707,6 +2745,7 @@ export function boot(): void {
   if (bootConv || bootAsk) { try { const u = new URL(location.href); u.searchParams.delete("conv"); u.searchParams.delete("ask"); history.replaceState(history.state, "", u.pathname + u.search + u.hash); } catch {} }
   void refreshState();
   void refreshBadge();
+  void refreshShipments();
   void pollLoop();
   setInterval(() => { void refreshState(); }, 45000);
 }

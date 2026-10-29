@@ -40,6 +40,7 @@ type StateSnapshot = {
   activeConversationId: string | null;
   /** The chat runs on main's box: its state (on, reachable, why) for the popout's composer. */
   boxChat: import("./boxChat").BoxChatState | null;
+  shipments: import("./shippingProtocol").ShipmentCard[];
   // Voice runs in main; the popout's mic and waves show its state.
   voice: {
     voiceMode: boolean;
@@ -108,6 +109,7 @@ function takeStateSnapshot(): StateSnapshot {
     conversations: s.conversations.map((c) => (c.messages.length ? { ...c, messages: [] } : c)),
     activeConversationId: s.activeConversationId,
     boxChat: s.boxChat,
+    shipments: s.shipments,
     voice: {
       voiceMode: s.voiceMode,
       voiceConnecting: s.voiceConnecting,
@@ -223,7 +225,8 @@ export async function installMainSync() {
       state.voiceListening !== prev.voiceListening ||
       state.voiceMicMuted !== prev.voiceMicMuted ||
       state.voiceError !== prev.voiceError ||
-      state.boxChat !== prev.boxChat;
+      state.boxChat !== prev.boxChat ||
+      state.shipments !== prev.shipments;
     const streamChanged =
       state.busy !== prev.busy ||
       state.streamingText !== prev.streamingText ||

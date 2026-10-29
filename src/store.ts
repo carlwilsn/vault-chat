@@ -523,6 +523,8 @@ type State = {
   // [phase 2] Box mode: the open vault's chat runs on the box (boxChat.ts).
   // null = not box mode.
   boxChat: import("./boxChat").BoxChatState | null;
+  /** Persisted delivery journal projected by the box, not local shipping authority. */
+  shipments: import("./shippingProtocol").ShipmentCard[];
   showChatsPanel: boolean;
 
   // Git repo root for the currently-open file. When the file lives inside a
@@ -617,6 +619,7 @@ type State = {
     voice?: Pick<State, "voiceMode" | "voiceConnecting" | "voiceSpeaking" | "voiceListening" | "voiceMicMuted" | "voiceError">;
     // The chat runs on main's box: the popout's composer follows its state.
     boxChat?: State["boxChat"];
+    shipments?: State["shipments"];
   }) => void;
   applyChatStream: (s: {
     busy: boolean;
@@ -715,6 +718,7 @@ export const useStore = create<State>((set) => ({
   activeConversationId: null,
   conversationsLoaded: false,
   boxChat: null,
+  shipments: [],
   showChatsPanel: false,
   repoRoot: null,
 
@@ -744,6 +748,7 @@ export const useStore = create<State>((set) => ({
         activeConversationId: null,
         conversationsLoaded: false,
         boxChat: null,
+        shipments: [],
         showChatsPanel: false,
         currentFile: null,
         currentContent: "",
@@ -1341,6 +1346,7 @@ export const useStore = create<State>((set) => ({
         ...(s.activeConversationId !== undefined ? { activeConversationId: s.activeConversationId } : {}),
         ...(s.voice ?? {}),
         ...(s.boxChat !== undefined ? { boxChat: s.boxChat } : {}),
+        ...(s.shipments !== undefined ? { shipments: s.shipments } : {}),
       };
     }),
   applyChatStream: (s) =>
