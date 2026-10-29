@@ -11,7 +11,7 @@
 //   - Safari/iOS (no virtual default listed): nothing pinned.
 //   - A suspended playback context: the pill warns, and a tap resumes it (logged).
 //   - Dropouts classified from the inbound WebRTC stats: network, source, local.
-import { test, before, after } from "node:test";
+import { test, before, after, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { installFakeTauri, makeTempVault } from "./fakes.ts";
 import { MicPin, micFor, resolveVirtualMic, type MicDevice } from "../../src/voiceMic.ts";
@@ -85,8 +85,26 @@ test("pin: the physical device behind 'Default - …' by label and group; iOS (n
 const vault = makeTempVault("vc-voicemic-");
 const fake = installFakeTauri(vault);
 fake.setHandler("vault_box_config", ({ vault: v }) => (v === vault ? { box: "http://127.0.0.1:9", vault: "v" } : null));
+// An idle box holds /voice/updates open. Returning an already-resolved empty
+// page instead spins VoiceUpdates in microtasks: the test's timers (including
+// hang-up) never run, and FakeTauri retains requests until the child OOMs.
+// Hold delivery explicitly, then release only after the call's loop is stopped.
+const pendingUpdates = new Set<() => void>();
+let updatePolls = 0;
 fake.setHandler("box_get_json", async ({ url }) => {
   if (String(url).includes("/api/v1/voice/session")) return { status: 200, body: JSON.stringify({ systemPrompt: "p", toolNames: [], voiceId: "v1", conversationToken: "tok", signedUrl: "wss://s" }) };
+  if (String(url).includes("/api/v1/voice/updates")) {
+    updatePolls++;
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    pendingUpdates.add(release);
+    try {
+      await held;
+      return { status: 200, body: JSON.stringify({ updates: [], cursor: "" }) };
+    } finally {
+      pendingUpdates.delete(release);
+    }
+  }
   return { status: 200, body: "{}" };
 });
 /** What reached the box's log route (voiceShip.ts). */
@@ -159,15 +177,27 @@ const tagged = (t: string) => logs().filter((e) => e.tag === t);
 
 let md: FakeMediaDevices;
 const realMd = Object.getOwnPropertyDescriptor(g.navigator ?? {}, "mediaDevices");
+const realUa = Object.getOwnPropertyDescriptor(g.navigator ?? {}, "userAgent");
 before(() => {
   voice.setVoiceSdkForTests(sdk);
   useStore.setState({ vaultPath: vault, serviceKeys: {} } as any);
   Object.defineProperty(g.navigator, "userAgent", { configurable: true, value: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" });
 });
+async function finishCall(): Promise<void> {
+  // Stop first: releasing a live poll would immediately start another one.
+  await voice.endElevenLabsSession("test cleanup");
+  for (const release of pendingUpdates) release();
+  // Drain the response through boxGet and VoiceUpdates, not just the IPC stub.
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(pendingUpdates.size, 0, "all held update requests settled after hang-up");
+}
+afterEach(finishCall);
 after(() => {
   voice.setVoiceSdkForTests(null);
   if (realMd) Object.defineProperty(g.navigator, "mediaDevices", realMd);
   else delete g.navigator.mediaDevices;
+  if (realUa) Object.defineProperty(g.navigator, "userAgent", realUa);
+  else delete g.navigator.userAgent;
 });
 
 async function startCall(list: MicDevice[]): Promise<Call> {
@@ -179,6 +209,23 @@ async function startCall(list: MicDevice[]): Promise<Call> {
   assert.ok(voice.isVoiceSessionActive(), "the call is live");
   return calls[calls.length - 1]!;
 }
+
+test("fixture: idle voice updates stay pending, timers run, and hang-up settles the poll without restarting it", async () => {
+  // Two calls prove cleanup does not leak a previous call's pending request.
+  for (let i = 0; i < 2; i++) {
+    const before = updatePolls;
+    try {
+      await startCall(windows({ def: INTEL, comm: INTEL }));
+      assert.equal(pendingUpdates.size, 1, "one idle long-poll, not immediate empty pages");
+      await wait(0); // A real timer must get an event-loop turn during the call.
+      assert.equal(updatePolls, before + 1, "idle polling cannot spin or retain more IPC calls");
+    } finally {
+      await finishCall();
+    }
+    assert.equal(voice.isVoiceSessionActive(), false);
+    assert.equal(updatePolls, before + 1, "the released response cannot restart a stopped call");
+  }
+});
 
 test("laptop: Windows flipping default → communications mid-call changes neither the call's mic nor its output, and ends nothing", async () => {
   await withSinkId(async () => {
