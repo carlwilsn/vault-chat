@@ -1,10 +1,9 @@
 //! The vault-chat folder on this laptop (src/master.ts; the box's is server/master.ts):
 //! `<folder>/vaults/<name>` and `<folder>/projects/<name>`, each its own git repo, synced with the box by the
 //! one box-sync cycle (box_sync.rs, one per repo). Here: making a repo there (a new vault, or one the box has
-//! that this laptop lacks, from the box's hub), and the migration's copy + verify (the original is only read).
+//! that this laptop lacks, from the box's hub).
 
-use serde::Serialize;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use super::{run_git, run_git_timeout};
 
@@ -62,127 +61,4 @@ pub fn repo_init(dest: &str, remote_url: &str, branch: &str, origin_url: Option<
         return Ok(format!("cloned from the box on {}", branch));
     }
     Ok(format!("new, empty, on {}", branch))
-}
-
-#[derive(Serialize, Debug, Clone, PartialEq)]
-pub struct CopyCheck {
-    pub ok: bool,
-    pub files: [u64; 2],
-    pub bytes: [u64; 2],
-    pub head: [Option<String>; 2],
-    pub branch: [Option<String>; 2],
-    pub problems: Vec<String>,
-}
-
-fn count(dir: &Path, files: &mut u64, bytes: &mut u64) {
-    let Ok(rd) = std::fs::read_dir(dir) else { return };
-    for e in rd.flatten() {
-        let Ok(ft) = e.file_type() else { continue };
-        if ft.is_dir() {
-            count(&e.path(), files, bytes);
-        } else {
-            *files += 1;
-            if !ft.is_symlink() {
-                *bytes += e.metadata().map(|m| m.len()).unwrap_or(0);
-            }
-        }
-    }
-}
-
-fn head_of(dir: &str) -> (Option<String>, Option<String>) {
-    let h = run_git(dir, &["rev-parse", "HEAD"]).ok().filter(|r| r.2 == 0).map(|r| r.0.trim().to_string());
-    let b = run_git(dir, &["symbolic-ref", "--short", "HEAD"]).ok().filter(|r| r.2 == 0).map(|r| r.0.trim().to_string());
-    (h, b)
-}
-
-/// The copy against the original: the same files (count and bytes), HEAD and branch.
-pub fn verify_copy(from: &str, to: &str) -> CopyCheck {
-    let (mut fa, mut ba, mut fb, mut bb) = (0, 0, 0, 0);
-    count(Path::new(from), &mut fa, &mut ba);
-    count(Path::new(to), &mut fb, &mut bb);
-    let (ha, bra) = head_of(from);
-    let (hb, brb) = head_of(to);
-    let mut problems = Vec::new();
-    if fa != fb {
-        problems.push(format!("{} files in the original, {} in the copy", fa, fb));
-    }
-    if ba != bb {
-        problems.push(format!("{} bytes in the original, {} in the copy", ba, bb));
-    }
-    if ha.is_none() || ha != hb {
-        problems.push(format!("HEAD {:?} in the original, {:?} in the copy", ha, hb));
-    }
-    if bra != brb {
-        problems.push(format!("branch {:?} in the original, {:?} in the copy", bra, brb));
-    }
-    CopyCheck { ok: problems.is_empty(), files: [fa, fb], bytes: [ba, bb], head: [ha, hb], branch: [bra, brb], problems }
-}
-
-fn copy_dir(from: &Path, to: &Path) -> Result<(), String> {
-    std::fs::create_dir_all(to).map_err(|e| format!("{}: {}", to.display(), e))?;
-    for e in std::fs::read_dir(from).map_err(|e| format!("{}: {}", from.display(), e))?.flatten() {
-        let ft = e.file_type().map_err(|e| e.to_string())?;
-        let dst = to.join(e.file_name());
-        if ft.is_dir() {
-            copy_dir(&e.path(), &dst)?;
-        } else if ft.is_symlink() {
-            // Kept as a link where the system allows it; else its target's bytes.
-            let target = std::fs::read_link(e.path()).map_err(|e| e.to_string())?;
-            #[cfg(unix)]
-            std::os::unix::fs::symlink(&target, &dst).map_err(|e| e.to_string())?;
-            #[cfg(not(unix))]
-            {
-                let _ = target;
-                std::fs::copy(e.path(), &dst).map_err(|e| e.to_string())?;
-            }
-        } else {
-            std::fs::copy(e.path(), &dst).map_err(|e| format!("{}: {}", e, dst.display()))?;
-        }
-    }
-    Ok(())
-}
-
-/// Copy a repo whole (every file, `.git` and its history) to `to`, then verify. Never over an existing folder;
-/// the original is only read.
-pub fn copy_repo(from: &str, to: &str) -> Result<CopyCheck, String> {
-    let f = PathBuf::from(from);
-    let t = PathBuf::from(to);
-    if !f.join(".git").exists() {
-        return Err(format!("{} is not a git repo", from));
-    }
-    if t.exists() {
-        return Err(format!("{} already exists: refusing to copy over it (nothing was changed)", to));
-    }
-    copy_dir(&f, &t)?;
-    Ok(verify_copy(from, to))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn s(p: &Path) -> String {
-        p.to_string_lossy().replace('\\', "/")
-    }
-
-    #[test]
-    fn copy_verifies_and_never_overwrites() {
-        let base = std::env::temp_dir().join(format!("vc_master_copy_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&base);
-        let src = base.join("school2");
-        std::fs::create_dir_all(src.join("notes")).unwrap();
-        std::fs::write(src.join("notes/a.md"), "a\n").unwrap();
-        git_ok(&s(&src), &["init", "-q", "-b", "master"], "init").unwrap();
-        git_ok(&s(&src), &["-c", "user.name=t", "-c", "user.email=t@t", "add", "-A"], "add").unwrap();
-        git_ok(&s(&src), &["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "a"], "commit").unwrap();
-        std::fs::write(src.join("draft.md"), "uncommitted\n").unwrap();
-        let dst = base.join("vc/vaults/school2");
-        let c = copy_repo(&s(&src), &s(&dst)).unwrap();
-        assert!(c.ok, "{:?}", c.problems);
-        assert_eq!(c.head[0], c.head[1]);
-        assert_eq!(std::fs::read_to_string(dst.join("draft.md")).unwrap(), "uncommitted\n");
-        assert!(copy_repo(&s(&src), &s(&dst)).unwrap_err().contains("already exists"));
-        assert!(src.join("notes/a.md").exists());
-        let _ = std::fs::remove_dir_all(&base);
-    }
 }

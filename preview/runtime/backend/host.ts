@@ -105,8 +105,8 @@ export type BoxChatScript = {
   voice?: { results?: Record<string, string>; /** GET /api/v1/voice/session answers this error (the box couldn't start voice). */ sessionError?: { status: number; body: string } };
   /** Projects that work in a folder on the box (server/projectFolders.ts): slug → the folder. */
   projectFolders?: Record<string, string>;
-  /** The box's vault-chat folder (server/master.ts, GET /api/v1/master); Settings can set it (POST). */
-  master?: { master: string | null; suggested?: string; fromEnv?: boolean; vaults: { name: string; path: string }[]; projects: { name: string; path: string; branch: string | null; origin: string | null; syncing: boolean; ok: boolean | null; error: string | null }[] };
+  /** The box's vault-chat folder (server/master.ts, GET /api/v1/master; VC_MASTER, set at install). */
+  master?: { master: string | null; vaults: { name: string; path: string }[]; projects: { name: string; path: string; branch: string | null; origin: string | null; syncing: boolean; ok: boolean | null; error: string | null }[] };
 };
 /** `vault`: the vault the laptop named (?vault=), as the real box scopes it. */
 export type BoxPost = { path: string; body: any; vault?: string | null };
@@ -460,8 +460,8 @@ export const hostCommands: Record<string, (a: Record<string, any>) => unknown> =
       return { status: 200, body: JSON.stringify({ vaults: (b.vaults ?? []).map((name, i) => ({ name, main: i === 0, syncing: true })) }) };
     }
     if (u.pathname === "/api/v1/master") {
-      const m = cfg.sync?.boxChat?.master ?? { master: null, suggested: "/home/carl/vc", vaults: [], projects: [] };
-      return { status: 200, body: JSON.stringify({ suggested: "/home/carl/vc", ...m }) };
+      const m = cfg.sync?.boxChat?.master ?? { master: null, vaults: [], projects: [] };
+      return { status: 200, body: JSON.stringify(m) };
     }
     const miss = unknownVault(u);
     if (miss) return miss;
@@ -512,13 +512,6 @@ export const hostCommands: Record<string, (a: Record<string, any>) => unknown> =
     const real = await realBox(String(url), "POST", String(body ?? "{}"));
     if (real) return real;
     const u = new URL(String(url));
-    if (u.pathname === "/api/v1/master") {
-      const j = JSON.parse(String(body || "{}"));
-      const bc = (cfg.sync ??= {} as any).boxChat ??= {} as any;
-      bc.master = { ...(bc.master ?? { vaults: [], projects: [] }), master: String(j.path) };
-      await sleep(300);
-      return { status: 200, body: JSON.stringify({ ok: true, path: String(j.path), ...bc.master }) };
-    }
     if (u.pathname === "/api/v1/keys" || u.pathname === "/api/v1/vaults") {
       const b = fakeBox(u);
       const j = JSON.parse(String(body || "{}"));

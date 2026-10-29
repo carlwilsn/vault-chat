@@ -7,23 +7,21 @@
 //
 // Every repo under it is synced by the one box-sync cycle (box_sync.rs), one loop per repo. Changing vaults is a
 // pick from <folder>/vaults; "New vault" makes one here and on the box. The box's repos this laptop lacks are made
-// here from the box's hub. The migration copies a vault whole into the folder (never moving the original) and
-// switches to the copy; switching back is one step.
+// here from the box's hub. Everything lives in the folder (Carl, 2026-10-28): no vault from elsewhere. A repo whose
+// .git holds `vault-chat-no-sync` (a copy being brought in) never syncs, here or in box_sync.rs.
 import { invoke } from "@tauri-apps/api/core";
 import { useStore } from "./store";
 import { boxGet, boxPost, type Link } from "./boxChat";
-import { ensureProjectSyncLoop, ensureVaultSyncLoop, readBoxConfig, stopVaultSyncLoop, boxVaultName, trackedVaults } from "./vaultSync";
+import { ensureProjectSyncLoop, ensureVaultSyncLoop, readBoxConfig, boxVaultName, trackedVaults } from "./vaultSync";
 
 export const MASTER_KEY = "vault_chat_master_path";
 export const MASTER_FILE = ".vault-chat-master.json";
-const MIGRATION_KEY = "vault_chat_master_migration";
-const TRACKED_VAULTS_KEY = "vault_chat_tracked_vaults";
+/** In a repo's .git: never sync it (a copy being brought into the folder). Same name in box_sync.rs. */
+export const NO_SYNC_MARK = "vault-chat-no-sync";
 
 export type MasterFile = { box?: string; name?: string; projects?: Record<string, { branch?: string; origin?: string | null }> };
 export type BoxMasterInfo = {
   master: string | null;
-  suggested: string;
-  fromEnv?: boolean;
   vaults: { name: string; path: string }[];
   projects: { name: string; path: string; branch: string | null; origin: string | null; syncing: boolean; ok: boolean | null; error: string | null }[];
 };
@@ -129,13 +127,26 @@ export async function localProjects(m: string | null = masterPath()): Promise<st
   return m ? dirsIn(masterLayout(m).projects) : [];
 }
 
-export type PickerItem = { kind: "vault"; name: string; path: string; open: boolean } | { kind: "new" } | { kind: "other" };
+export type PickerItem = { kind: "vault"; name: string; path: string; open: boolean } | { kind: "new" };
 
-/** The vault picker: every vault in the folder (the open one marked), then New vault, then a folder elsewhere. */
+/** The vault picker: every vault in the folder (the open one marked), then New vault. Nothing from elsewhere. */
 export function pickerItems(m: string | null, names: string[], openPath: string | null): PickerItem[] {
+  if (!m) return [];
   const open = openPath ? fwd(openPath).toLowerCase() : null;
-  const vaults: PickerItem[] = m ? names.map((name) => { const path = joinPath(masterLayout(m).vaults, name); return { kind: "vault" as const, name, path, open: path.toLowerCase() === open }; }) : [];
-  return [...vaults, ...(m ? [{ kind: "new" as const }] : []), { kind: "other" as const }];
+  const vaults: PickerItem[] = names.map((name) => {
+    const path = joinPath(masterLayout(m).vaults, name);
+    return { kind: "vault" as const, name, path, open: path.toLowerCase() === open };
+  });
+  return [...vaults, { kind: "new" as const }];
+}
+
+/** Is this repo marked never to sync (a copy being brought in)? */
+export async function noSync(repo: string): Promise<boolean> {
+  try {
+    return await invoke<boolean>("path_exists", { path: joinPath(repo, ".git", NO_SYNC_MARK) });
+  } catch {
+    return false;
+  }
 }
 
 /** What the laptop lacks of the box's folder: each vault and project to make here from the box's hub. */
@@ -164,14 +175,6 @@ export async function boxMasterInfo(box?: string): Promise<BoxMasterInfo | null>
   }
 }
 
-/** Set the box's folder (Settings). */
-export async function setBoxMaster(path: string): Promise<{ ok: boolean; error?: string; info?: BoxMasterInfo }> {
-  const b = await masterBox();
-  if (!b) return { ok: false, error: "no box connected" };
-  const r = await boxPost(linkOf(b.box), "/api/v1/master", { path });
-  return r.ok ? { ok: true, info: r.data as unknown as BoxMasterInfo } : { ok: false, error: r.error };
-}
-
 /** One pass: make here what the box has and this laptop lacks, then keep every repo in the folder syncing (one loop
  *  each). Returns what it made. */
 export async function syncMasterFolder(): Promise<{ made: string[]; errors: string[] }> {
@@ -184,7 +187,7 @@ export async function syncMasterFolder(): Promise<{ made: string[]; errors: stri
     const info = await boxMasterInfo(f.box);
     if (info?.master) {
       // A vault this laptop already syncs from a folder elsewhere (school2 before its migration) is never made here
-      // too: two copies would both write `master`. The migration brings it in (copyVaultIn, switchToCopy).
+      // too: two copies would both write `master`. It is brought in by hand, once (server/README.md).
       const plan = missingHere(info, [...(await localVaults(m)), ...(await syncedElsewhere(m))], await localProjects(m));
       for (const x of plan) {
         const dest = joinPath(m, x.kind, x.name);
@@ -201,8 +204,15 @@ export async function syncMasterFolder(): Promise<{ made: string[]; errors: stri
       }
     }
   }
-  for (const name of await localVaults(m)) await ensureVaultSyncLoop(joinPath(masterLayout(m).vaults, name)).catch(() => {});
-  for (const name of await localProjects(m)) await ensureProjectSyncLoop(joinPath(masterLayout(m).projects, name), joinPath(masterLayout(m).logs, name)).catch(() => {});
+  // A repo marked never to sync (a copy being brought in) gets no loop at all: not the box's, not the local autosave.
+  for (const name of await localVaults(m)) {
+    const v = joinPath(masterLayout(m).vaults, name);
+    if (!(await noSync(v))) await ensureVaultSyncLoop(v).catch(() => {});
+  }
+  for (const name of await localProjects(m)) {
+    const p = joinPath(masterLayout(m).projects, name);
+    if (!(await noSync(p))) await ensureProjectSyncLoop(p, joinPath(masterLayout(m).logs, name)).catch(() => {});
+  }
   return { made, errors };
 }
 
@@ -216,6 +226,18 @@ async function syncedElsewhere(m: string): Promise<string[]> {
     if (cfg && !cfg.project) out.push(cfg.vault);
   }
   return out;
+}
+
+/** A vault outside the folder whose box vault is also in the folder (the copy brought in): the folder's copy is the
+ *  one that syncs; this one never starts at launch again (it stays on disk as it is). Two laptop copies of one vault
+ *  must never both write `master`. */
+export async function shadowedByFolder(vault: string, m: string | null = masterPath()): Promise<boolean> {
+  if (!m) return false;
+  if (fwd(vault).toLowerCase().startsWith(masterLayout(m).vaults.toLowerCase() + "/")) return false;
+  const cfg = await readBoxConfig(vault).catch(() => null);
+  if (!cfg || cfg.project) return false;
+  const here = joinPath(masterLayout(m).vaults, cfg.vault);
+  return (await localVaults(m)).includes(cfg.vault) && !(await noSync(here));
 }
 
 /** "New vault": made in the folder here and on the box (POST /api/v1/vaults), then synced. Returns its path. */
@@ -236,87 +258,4 @@ export async function newVault(raw: string): Promise<{ path: string } | { error:
     return { error: String((e as Error)?.message ?? e) };
   }
   return { path };
-}
-
-// ---------------------------------------------------------------- the migration (laptop side)
-
-export type Migration = { name: string; from: string; to: string; at: string; check: { ok: boolean; problems: string[]; files: number[]; head: (string | null)[] }; active: boolean };
-
-export function migrationState(): Migration | null {
-  try {
-    const v = JSON.parse(localStorage.getItem(MIGRATION_KEY) ?? "null");
-    return v && typeof v.from === "string" ? (v as Migration) : null;
-  } catch {
-    return null;
-  }
-}
-
-function saveMigration(m: Migration | null): void {
-  try {
-    if (m) localStorage.setItem(MIGRATION_KEY, JSON.stringify(m));
-    else localStorage.removeItem(MIGRATION_KEY);
-  } catch {
-    /* no storage */
-  }
-}
-
-/** The vaults this laptop keeps syncing at launch, with `from` swapped for `to` (never both: two copies of one vault
- *  would both write `master`). */
-export function swapTracked(list: string[], from: string, to: string): string[] {
-  const k = (p: string) => fwd(p).toLowerCase();
-  const out = list.filter((v) => k(v) !== k(from) && k(v) !== k(to));
-  return [...out, to];
-}
-
-function retrack(from: string, to: string): void {
-  try {
-    const list = JSON.parse(localStorage.getItem(TRACKED_VAULTS_KEY) ?? "[]");
-    localStorage.setItem(TRACKED_VAULTS_KEY, JSON.stringify(swapTracked(Array.isArray(list) ? list : [], from, to)));
-  } catch {
-    /* no storage */
-  }
-}
-
-/** Copy the open vault whole into the folder (every file, .git and its history), then verify. The original is
- *  untouched; nothing switches yet. */
-export async function copyVaultIn(from: string): Promise<Migration | { error: string }> {
-  const m = masterPath();
-  if (!m) return { error: "set the vault-chat folder first" };
-  const name = boxVaultName(from);
-  const to = joinPath(masterLayout(m).vaults, name);
-  try {
-    const check = await invoke<Migration["check"]>("master_copy_repo", { from, to });
-    const mig: Migration = { name, from: fwd(from), to, at: new Date().toISOString(), check, active: false };
-    saveMigration(mig);
-    return mig;
-  } catch (e) {
-    return { error: String((e as Error)?.message ?? e) };
-  }
-}
-
-/** Use the copy: the original's sync stops (it stays on disk as it is), the copy syncs and opens. */
-export async function switchToCopy(open: (path: string) => Promise<void> | void): Promise<Migration | { error: string }> {
-  const mig = migrationState();
-  if (!mig) return { error: "nothing copied yet" };
-  if (!mig.check.ok) return { error: `the copy did not verify: ${mig.check.problems.join("; ")}` };
-  stopVaultSyncLoop(mig.from);
-  retrack(mig.from, mig.to);
-  await open(mig.to);
-  await ensureVaultSyncLoop(mig.to);
-  const next = { ...mig, active: true };
-  saveMigration(next);
-  return next;
-}
-
-/** Back, in one step: the copy's sync stops, the original syncs and opens again. The copy stays on disk. */
-export async function switchBack(open: (path: string) => Promise<void> | void): Promise<Migration | { error: string }> {
-  const mig = migrationState();
-  if (!mig) return { error: "nothing to switch back from" };
-  stopVaultSyncLoop(mig.to);
-  retrack(mig.to, mig.from);
-  await open(mig.from);
-  await ensureVaultSyncLoop(mig.from);
-  const next = { ...mig, active: false };
-  saveMigration(next);
-  return next;
 }

@@ -45,6 +45,9 @@ else
   chmod 0644 "$ENVF"
   echo "wrote $ENVF from the example — check VC_VAULT and VC_LOCALSTORAGE"
 fi
+# The vault-chat folder (VC_MASTER, ~/vc): made here with its layout; Settings never changes it.
+MASTER="$(sed -n 's/^VC_MASTER=//p' "$ENVF" | tail -1)"
+if [ -n "$MASTER" ]; then mkdir -p "$MASTER/vaults" "$MASTER/projects" "$MASTER/.hub/vaults" "$MASTER/.hub/projects"; fi
 
 systemctl --user daemon-reload
 systemctl --user enable vault-chat-server.service vault-chat-update.timer
