@@ -87,6 +87,8 @@ describe("durable delivery observations, not synchronized card authority", () =>
     const release = { ...f.release, revision: head };
     await updateShippingJournal(f.repo, j => { j.changes[0].release = release; });
     await withRepoLock(f.repo, () => prepareAcceptanceLocked(f.repo, { ...f.c, id: "second-accepted", source: { ...f.c.source, base: f.c.source.head, head, tree }, release }));
+    // Match real acceptance: reconcile its prepared intent against actual main before delivery observes it.
+    expect(await acceptedChanges(f.repo)).toHaveLength(2);
     f.release = release; f.box.revision = head;
     await observeChangeDelivery(f.repo); await report(f, { updaterReady: false }); await observeChangeDelivery(f.repo);
     expect(f.rollback).toHaveBeenCalledTimes(2);

@@ -110,7 +110,8 @@ describe("the vault-chat folder", () => {
     git(seed, "add", "-A");
     git(seed, "commit", "-q", "-m", "v1");
     git(seed, "push", "-q", "origin", "HEAD:main");
-    writeFileSync(join(gh, "hooks", "pre-receive"), "#!/bin/sh\necho 'Authentication failed (no credentials on the box)' >&2\nexit 1\n");
+    const pushAttempt = join(root, "box-origin-push-attempt");
+    writeFileSync(join(gh, "hooks", "pre-receive"), `#!/bin/sh\ntouch '${pushAttempt}'\necho 'Authentication failed (no credentials on the box)' >&2\nexit 1\n`);
     try {
       execFileSync("chmod", ["+x", join(gh, "hooks", "pre-receive")]);
     } catch {
@@ -131,10 +132,13 @@ describe("the vault-chat folder", () => {
     git(wc, "checkout", "-q", "main");
     const clone = join(root, "agent-clone");
     git(root, "clone", "-q", wc, clone);
+    const cloneHead = git(clone, "rev-parse", "HEAD");
     const vault = makeVault(join(root, "vault-k"));
     const out = await keepReview(vault, { convId: "c1", slug: "site", folder: wc, clone, base: "main", branch: "agent/v2", sha: git(wc, "rev-parse", "agent/v2"), title: "v2", at: "" });
     expect(out.ok).toBe(true);
-    expect(out.text).toMatch(/not pushed from the box .*the laptop's sync pushes main to origin/);
+    expect(out.text).toContain("laptop sync must push it");
+    expect(existsSync(pushAttempt)).toBe(false); // not even an attempted origin push from the box
+    expect(git(clone, "rev-parse", "HEAD")).toBe(cloneHead);
     expect(readT(join(wc, "index.html"))).toBe("<h1>v2</h1>\n");
     await s.flush();
     const hub = join(master, ".hub", "projects", "site.git");
