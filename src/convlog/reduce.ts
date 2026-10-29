@@ -22,7 +22,7 @@ import { answerOf } from "../review";
 import { hostToolName } from "../mcpNames";
 
 /** Bumped when the fold's meaning changes: a checkpoint from another version is folded again. */
-export const REDUCER_VERSION = 6;
+export const REDUCER_VERSION = 7;
 
 export type ItemKind = "user" | "assistant" | "thinking" | "tool" | "compaction" | "notice";
 export type ItemStatus = "streaming" | "pending" | "running" | "done" | "error" | "stopped";
