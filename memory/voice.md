@@ -37,3 +37,9 @@ Today: **New** (Pipecat ears and mouth on the box, `voice-pipeline/bot.py`; pi t
   bugs (double answers, dropped actions, mental arithmetic, `[skip_turn]` leaking into the transcript, guessing at an
   empty attachment) came from voice being a second brain.
 - Only Gemini receives a PDF natively; other voice models need extracted text.
+- **Only the reply is spoken, never progress commentary (2026-10-29).** GPT-6.1 Sol writes "I'll find and open Chan
+  work.md…" as plain text beside its tool calls (OpenAI's `phase: "commentary"` is lost through OpenRouter's chat
+  completions); the voice read it aloud and the chat showed it as a reply. The rule for every model is
+  `src/convlog/commentary.ts`: text in a message that calls a tool is commentary. The chat folds it under "Thought";
+  `server/voiceBrain.ts` holds a message's sentences until its end and says them only if it called no tool (first audio
+  waits for the message to finish: a short spoken reply streams in well under a second).

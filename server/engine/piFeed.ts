@@ -21,6 +21,7 @@ import { VC_NOTE, VC_VOICE } from "../../src/convlog/protocol";
 import { ASK_TOOLS } from "../../src/review";
 import { hostToolName } from "../../src/mcpNames";
 import { SessionTail, shownEntry } from "../convlog/piSession";
+import { replyTextOf } from "../../src/convlog/commentary";
 
 export type Expected = {
   /** prompt: the turn's own input (the first user message of the turn); silent: an engine input given mid-turn. */
@@ -139,7 +140,9 @@ export class PiFeed {
     if (e.type === "message" && m?.role === "user") return this.userEntry(e, textOf(m.content));
     if (e.type === "message" && m?.role === "assistant") {
       if (typeof m.timestamp === "number") this.written.add(m.timestamp);
-      for (const b of Array.isArray(m.content) ? m.content : []) if (b?.type === "text" && typeof b.text === "string" && b.text.trim()) this.replies.push(b.text);
+      // The reply only: text beside a tool call is progress commentary (src/convlog/commentary.ts).
+      const reply = replyTextOf(m);
+      if (reply.trim()) this.replies.push(reply);
       this.lastError = m.stopReason === "error" && m.errorMessage ? String(m.errorMessage).slice(0, 500) : null;
     }
     if (e.type === "message" && m?.role === "toolResult" && ASK_TOOLS.has(hostToolName(m.toolName)) && this.answers.length) {

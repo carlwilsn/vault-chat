@@ -30,6 +30,7 @@ import { appendFileSync, closeSync, mkdirSync, openSync, readFileSync, readSync,
 import { join } from "node:path";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { Speakable } from "./speakable";
+import { isCommentary } from "../src/convlog/commentary";
 import { speechReady } from "./speakMath";
 import { calibFrom } from "../src/voiceWaitLine";
 
@@ -187,6 +188,9 @@ type Call = {
   noSpoil: boolean;
   /** His last line, sent as a steer pi has not delivered yet: the rest of it (after a pause) is joined to it, one line. */
   steer: { clientId: string; text: string } | null;
+  /** The assistant message streaming now: its sentences, said at its end unless it calls a tool (then it was
+   *  progress commentary, never said). */
+  msg?: { pieces: string[]; commentary: boolean } | null;
 };
 
 /** A reply to words he went on from is held this long for his next words before it is said after all. */
@@ -330,29 +334,49 @@ function onPi(d: BrainDeps, c: Call, ev: any): void {
   if (ev?.type === "vc_delivered" && c.steer?.clientId === ev.clientId) c.steer = null;
   if (ev?.type === "vc_delivered" || (ev?.type === "message_start" && ev.message?.role === "user")) {
     // pi delivered a message (his steer): what streams from here answers it.
-    if (!c.armed) c.speak.flush();
+    if (!c.armed) {
+      c.speak.flush();
+      if (c.msg) c.msg.pieces = [];
+    }
     c.armed = true;
     return;
   }
   if (ev?.type === "vc_turn_start") {
     c.utt++;
     c.steer = null;
-    if (!c.armed) c.speak.flush();
+    if (!c.armed) {
+      c.speak.flush();
+      if (c.msg) c.msg.pieces = [];
+    }
     c.armed = true;
     const origin = typeof ev.origin === "string" ? ev.origin : null;
     c.ownTurn = ev.kind !== "user" || !origin || origin === "voice" || origin === c.device;
     if (!c.ownTurn) log(d, { ev: "turn.other-surface", call: c.id, origin });
     return;
   }
-  if (ev?.type === "message_update" && ev.assistantMessageEvent?.type === "text_delta") {
+  // Only the reply is spoken, never the agent's progress commentary (src/convlog/commentary.ts): a message's sentences
+  // wait for its end and are said only when it called no tool; the first tool call drops what it said so far.
+  if (ev?.type === "message_start" && ev.message?.role === "assistant") {
+    c.msg = { pieces: [], commentary: false };
+  } else if (ev?.type === "message_update" && ev.assistantMessageEvent?.type === "text_delta") {
     if (c.sink && !c.sink.done) {
       c.sink.tDelta ??= Date.now();
       c.sink.deltas++;
     }
-    say(c, c.speak.push(String(ev.assistantMessageEvent.delta ?? "")));
+    const m = (c.msg ??= { pieces: [], commentary: false });
+    const pieces = c.speak.push(String(ev.assistantMessageEvent.delta ?? ""));
+    if (!m.commentary && c.armed) m.pieces.push(...pieces);
+  } else if (ev?.type === "message_update" && ev.assistantMessageEvent?.type === "toolcall_start") {
+    const m = (c.msg ??= { pieces: [], commentary: false });
+    m.commentary = true;
+    m.pieces = [];
+    c.speak.flush();
   } else if (ev?.type === "message_end" && ev.message?.role === "assistant") {
-    // An assistant message ended (before its tool calls, or the turn's last): what is left of it is a sentence.
-    say(c, c.speak.flush());
+    // An assistant message ended: its reply (if it is one) is said now, the rest of it a sentence too.
+    const m = c.msg ?? { pieces: [], commentary: false };
+    c.msg = null;
+    const rest = c.speak.flush();
+    if (!m.commentary && !isCommentary(ev.message)) say(c, [...m.pieces, ...rest]);
   } else if (ev?.type === "tool_execution_start") {
     // Whether the reply said anything before reaching for a tool (nothing is said for it; the waiting line covers the wait):
     // counted from this log.
@@ -363,7 +387,10 @@ function onPi(d: BrainDeps, c: Call, ev: any): void {
     // the pipeline's response ends here, so the voice is free; what the turn says later goes to the channel.
     if (c.sink && (c.sink.sent > 0 || c.sink.queued?.length)) finishSink(c, c.sink);
   } else if (ev?.type === "vc_turn_end") {
-    say(c, c.speak.flush());
+    const m = c.msg;
+    c.msg = null;
+    const rest = c.speak.flush();
+    if (!m?.commentary) say(c, [...(m?.pieces ?? []), ...rest]);
     if (c.sink) {
       log(d, { ev: "turn.end", call: c.id, req: c.sink.id, firstMs: c.sink.tFirst != null ? c.sink.tFirst - c.sink.t0 : null, deltaMs: c.sink.tDelta != null ? c.sink.tDelta - c.sink.t0 : null, deltas: c.sink.deltas, ms: Date.now() - c.sink.t0, chars: c.sink.text.length });
       finishSink(c, c.sink);

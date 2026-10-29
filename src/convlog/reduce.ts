@@ -15,6 +15,7 @@
 //
 // A record at or below the picture's `seq` is skipped: replaying an overlap (a
 // reconnect, a checkpoint plus its tail) never applies anything twice.
+import { isCommentary } from "./commentary";
 import type { ConvMeta, ConvRow, ItemImage, LogRecord, PendingInput, PiBlock, PiEntry, PiMessage, Todo } from "./protocol";
 import { VC_NOTE, VC_VOICE } from "./protocol";
 import { answerOf } from "../review";
@@ -125,9 +126,14 @@ function blocksOf(m: PiMessage, at: number, status: ItemStatus, running = false)
   const out: Item[] = [];
   const content = Array.isArray(m.content) ? m.content : [];
   const stopped = m.stopReason === "aborted";
+  // Text beside a tool call is the agent's progress commentary (./commentary.ts): it goes with the reasoning, under
+  // "Thought", never in the reply.
+  const commentary = isCommentary(m);
   content.forEach((b: PiBlock, ci) => {
     const id = blockId(m.timestamp, ci);
-    if (b.type === "text" && typeof b.text === "string") {
+    if (b.type === "text" && typeof b.text === "string" && commentary) {
+      if (b.text.trim()) out.push({ id, kind: "thinking", status: stopped ? "stopped" : status, text: b.text, at });
+    } else if (b.type === "text" && typeof b.text === "string") {
       if (b.text.trim() || stopped) out.push({ id, kind: "assistant", status: stopped ? "stopped" : status, text: b.text, at });
     } else if (b.type === "thinking" && typeof b.thinking === "string") {
       if (b.thinking.trim()) out.push({ id, kind: "thinking", status: stopped ? "stopped" : status, text: b.thinking, at });
@@ -283,6 +289,8 @@ function onLive(d: Draft, r: Extract<LogRecord, { type: "live" }>): void {
         case "thinking_end":
           return upsert({ id, kind: "thinking", status: "done", text: String(ae.content ?? ""), at: r.at });
         case "toolcall_start": {
+          // The message calls a tool: what it wrote so far was commentary, not the reply.
+          d.inflight = d.inflight.map((x) => (x.kind === "assistant" ? { ...x, kind: "thinking" as const } : x));
           const tid = String(ae.id ?? ae.toolCall?.id ?? id);
           return upsert({ id: tid, kind: "tool", status: "streaming", name: hostToolName(ae.toolName) || "tool", argsText: "", at: r.at });
         }

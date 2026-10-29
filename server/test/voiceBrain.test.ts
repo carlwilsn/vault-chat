@@ -132,16 +132,28 @@ describe("voice with one brain", () => {
     expect(said).not.toContain("**");
   });
 
-  it("a reply that says a line and then delegates ends the spoken response at the tool call", async () => {
+  it("progress commentary written beside a tool call is never spoken; the answer after the tool is (any model: GPT-6.1 Sol's 'I'll check…' preamble)", async () => {
     const c = await call();
-    const p = fetch(`${base}/v1/chat/completions`, { method: "POST", headers: { authorization: `Bearer ${c.token}` }, body: JSON.stringify({ messages: [{ role: "user", content: "summarise lecture 7" }] }) });
+    const p = fetch(`${base}/v1/chat/completions`, { method: "POST", headers: { authorization: `Bearer ${c.token}` }, body: JSON.stringify({ messages: [{ role: "user", content: "what's in chan work" }] }) });
     await until(() => eng.messages.length);
-    eng.emit(delta("On it, I'll tell you when it's ready."));
-    eng.emit({ type: "message_end", message: { role: "assistant" } });
-    eng.emit({ type: "tool_execution_start", toolName: "Delegate" });
-    const lines = await sse(await p);
-    expect(lines.at(-1)).toBe("[DONE]");
-    expect(lines.join("")).toContain("On it");
+    // pi streams the commentary as text, then the tool call, in one message.
+    eng.emit({ type: "message_start", message: { role: "assistant" } });
+    eng.emit(delta("I need to check the file first. Then I'll summarize it. "));
+    eng.emit({ type: "message_update", assistantMessageEvent: { type: "toolcall_start", toolName: "read" } });
+    eng.emit({ type: "message_end", message: { role: "assistant", stopReason: "toolUse", content: [{ type: "text", text: "I need to check the file first. Then I'll summarize it." }, { type: "toolCall", id: "t1", name: "read", arguments: {} }] } });
+    eng.emit({ type: "tool_execution_start", toolName: "read" });
+    // A message that only ends with a tool call (no toolcall_start seen live) is commentary too.
+    eng.emit(delta("Reconnaissance: the bridge has two hops. "));
+    eng.emit({ type: "message_end", message: { role: "assistant", stopReason: "toolUse", content: [{ type: "text", text: "Reconnaissance: the bridge has two hops." }, { type: "toolCall", id: "t2", name: "bash", arguments: {} }] } });
+    eng.emit({ type: "tool_execution_start", toolName: "bash" });
+    eng.emit({ type: "message_start", message: { role: "assistant" } });
+    eng.emit(delta("It holds a link and some R code for the Poisson exercise."));
+    eng.emit({ type: "message_end", message: { role: "assistant", stopReason: "stop", content: [{ type: "text", text: "It holds a link and some R code for the Poisson exercise." }] } });
+    eng.emit({ type: "vc_turn_end", status: "completed" });
+    const said = (await sse(await p)).filter((l) => l !== "[DONE]").map((l) => JSON.parse(l).choices[0].delta.content ?? "").join("");
+    expect(said).not.toContain("check the file");
+    expect(said).not.toContain("Reconnaissance");
+    expect(said.trim()).toBe("It holds a link and some R code for the Poisson exercise.");
   });
 
   it("a reply that reaches for a tool before saying anything gets no words put in its mouth; whether it spoke first is logged", async () => {
@@ -388,7 +400,9 @@ describe("voice with one brain", () => {
     const reader = res.body!.getReader();
     await until(() => eng.messages.length);
     eng.emit(delta("Entropy measures how many ways a system can be arranged. "));
-    eng.emit(delta("It grows when"));
+    eng.emit(delta("It grows when heat flows in."));
+    // A message is said once it ended without a tool call (only the reply is spoken, never commentary).
+    eng.emit({ type: "message_end", message: { role: "assistant", stopReason: "stop", content: [{ type: "text", text: "Entropy measures how many ways a system can be arranged. It grows when heat flows in." }] } });
     await reader.read();
     ac.abort();
     await until(() => eng.interrupted);

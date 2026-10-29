@@ -241,7 +241,8 @@ test("tool calls with streamed arguments, run in parallel: one item each, args p
     ["c2", "read", { path: "b.md" }, "B", "done"],
   ]);
   assert.ok(lives(log.recs, "toolcall_delta").length >= 2, "the arguments streamed");
-  assert.deepEqual(view(log.recs), ["user:Read both papers.", "assistant:Reading both.", "tools:Read=A,Read=B", "assistant:A is better."]);
+  // "Reading both." was written beside the tool calls: progress commentary, shown under Thought, never as the reply.
+  assert.deepEqual(view(log.recs), ["user:Read both papers.", "thinking:Reading both.", "tools:Read=A,Read=B", "assistant:A is better."]);
   // While c2 runs: its partial output shows; when it ends, the partial is gone.
   const at = log.recs.findIndex((r) => r.type === "live" && r.ev.type === "tool_execution_update");
   assert.equal(fold(log.recs.slice(0, at + 1), C).items.find((x) => x.id === "c2")!.partial, "partial b");
@@ -252,7 +253,12 @@ test("tool calls with streamed arguments, run in parallel: one item each, args p
   const run = log.recs.findIndex((r) => r.type === "live" && r.ev.type === "tool_execution_start" && r.ev.toolCallId === "c2");
   const v = makeChatView()(fold(log.recs.slice(0, run + 1), C));
   assert.deepEqual(v.live.tools.map((t) => t.id), ["c1", "c2"]);
-  assert.deepEqual(v.messages.map((m) => m.content), ["Read both papers.", "Reading both."]);
+  assert.deepEqual(v.messages.map((m) => m.content || `thinking:${m.thinking}`), ["Read both papers.", "thinking:Reading both."]);
+  // The moment the message reaches for a tool, what it wrote so far leaves the reply (before pi writes it).
+  const tc = log.recs.findIndex((r) => r.type === "live" && r.ev.type === "message_update" && r.ev.assistantMessageEvent?.type === "toolcall_start");
+  const atTool = makeChatView()(fold(log.recs.slice(0, tc + 1), C));
+  assert.equal(atTool.live.text, "");
+  assert.equal(shown(fold(log.recs.slice(0, tc + 1), C)).find((x) => x.text === "Reading both.")?.kind, "thinking");
 });
 
 test("a steer and a queued message: pending, then Carl's message where pi delivers it, under the client's id", () => {
@@ -260,7 +266,7 @@ test("a steer and a queued message: pending, then Carl's message where pi delive
   seqSteerQueue(log);
   const p = fold(log.recs, C);
   assert.deepEqual(pendingOf(p), []);
-  assert.deepEqual(view(log.recs), ["user:Go through the chapters.", "assistant:Chapter one.", "tools:Bash=ch1 ch2", "user:Shorter.", "assistant:Short then.", "user:Then summarize.", "assistant:Summary."]);
+  assert.deepEqual(view(log.recs), ["user:Go through the chapters.", "thinking:Chapter one.", "tools:Bash=ch1 ch2", "user:Shorter.", "assistant:Short then.", "user:Then summarize.", "assistant:Summary."]);
   assert.deepEqual(p.items.filter((x) => x.kind === "user").map((x) => [x.id, x.via]), [["t1-u", "chat"], ["s1", "steer"], ["q1", "queue"]]);
   // Before pi delivered them: both pending, neither in the transcript.
   const firstSteer = log.recs.findIndex((r) => r.type === "entry" && r.clientId === "s1");
