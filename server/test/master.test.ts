@@ -39,24 +39,16 @@ afterAll(() => {
 });
 
 describe("the vault-chat folder", () => {
-  it("is off until set: vaults beside VC_VAULT, nothing listed, ~/vc only suggested", () => {
+  it("is off without VC_MASTER: vaults beside VC_VAULT, nothing listed", () => {
     expect(M.masterDir()).toBeNull();
-    expect(M.masterInfo()).toMatchObject({ master: null, suggested: join(home, "vc"), projects: [], vaults: [] });
+    expect(M.masterInfo()).toMatchObject({ master: null, projects: [], vaults: [] });
     expect(S.vaultPaths("physics")).toEqual({ vault: join(root, "old", "vaults", "physics"), bare: join(root, "old", "vaults", "physics.git") });
   });
 
-  it("refuses the home and what holds it, a relative path, the server's state", async () => {
-    expect(await M.setMasterDir(home)).toMatchObject({ error: /whole home/ });
-    expect(await M.setMasterDir(root)).toMatchObject({ error: /home/ });
-    expect(await M.setMasterDir("vc")).toMatchObject({ error: /full path/ });
-    expect(await M.setMasterDir(join(root, "state", "x"))).toMatchObject({ error: /inside or around/ });
-    expect(M.masterDir()).toBeNull();
-  });
-
-  it("set from Settings: made with its layout; vaults and their hubs go under it", async () => {
-    expect(await M.setMasterDir("~/vc")).toEqual({ ok: true, path: master });
+  it("VC_MASTER (set at install, never from Settings): vaults and their hubs go under it", async () => {
+    process.env.VC_MASTER = "~/vc";
+    for (const d of ["vaults", "projects", ".hub"]) mkdirSync(join(master, d), { recursive: true });
     expect(M.masterDir()).toBe(master);
-    for (const d of ["vaults", "projects", ".hub"]) expect(existsSync(join(master, d))).toBe(true);
     expect(S.vaultPaths("physics")).toEqual({ vault: join(master, "vaults", "physics"), bare: join(master, ".hub", "vaults", "physics.git") });
     expect(S.vaultPaths("school2").vault).toBe(join(root, "old", "vaults", "school2")); // the main vault stays where VC_VAULT says
     const added = await S.addVault("physics");

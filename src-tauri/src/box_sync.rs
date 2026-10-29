@@ -97,6 +97,9 @@ impl BoxConfig {
 /// written by Settings (src/master.ts).
 pub const MASTER_FILE: &str = ".vault-chat-master.json";
 
+/// In a repo's .git: never sync it (a copy being brought in). Same name in src/master.ts.
+pub const NO_SYNC_MARK: &str = "vault-chat-no-sync";
+
 /// `<folder>/<kind>/<name>` → (folder, kind, name) when `<folder>` holds the vault-chat folder's file.
 pub fn master_repo_of(path: &str) -> Option<(PathBuf, String, String)> {
     let p = PathBuf::from(path.trim_end_matches(['/', '\\']));
@@ -147,6 +150,11 @@ pub fn is_master_project(path: &str) -> bool {
 /// a vault in a test folder must never sync with the box its sync.json names). Anywhere else:
 /// `<vault>/.vault-chat/sync.json`. `None` = no box: old behaviour.
 pub fn box_config(vault: &str) -> Option<BoxConfig> {
+    // A copy being brought into the folder never syncs until it is switched in (src/master.ts NO_SYNC_MARK): a
+    // half-copied vault once committed the files not copied yet as deleted and pushed that (2026-10-28).
+    if PathBuf::from(vault).join(".git").join(NO_SYNC_MARK).exists() {
+        return None;
+    }
     if master_repo_of(vault).is_some() {
         return master_box_config(vault);
     }

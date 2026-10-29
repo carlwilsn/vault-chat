@@ -827,6 +827,11 @@ fn a_repo_in_the_vault_chat_folder_gets_its_box_from_the_folder() {
     write(&v, ".vault-chat/sync.json", "{\"hub\":\"laptop\",\"box\":\"https://live-box.example\",\"vault\":\"school2\"}");
     let c = box_config(&s(&v)).unwrap();
     assert_eq!(c.remote_url(), format!("{}/git/physics.git", s(&m.boxhost)));
+    // A copy being brought in (its .git marked) never syncs: no box at all, so no cycle commits or pushes it.
+    write(&v, &format!(".git/{}", NO_SYNC_MARK), "");
+    assert!(box_config(&s(&v)).is_none());
+    let rep = box_sync_cycle(&s(&v));
+    assert!(!rep.configured);
     let _ = std::fs::remove_dir_all(&m.base);
 }
 

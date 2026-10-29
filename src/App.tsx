@@ -30,6 +30,7 @@ import {
   focusVaultSync,
   readVaultSyncConfig,
   trackedVaults,
+  untrackVault,
 } from "./vaultSync";
 import { startActivityWatch } from "./activity";
 import { clearSavedLayouts } from "./paneLayout";
@@ -296,8 +297,14 @@ export default function App() {
   // torn down only on app unmount.
   useEffect(() => {
     void (async () => {
+      const { shadowedByFolder } = await import("./master");
       for (const v of trackedVaults()) {
         try {
+          // Moved into the vault-chat folder: the folder's copy syncs, this one stays on disk and never syncs again.
+          if (await shadowedByFolder(v)) {
+            untrackVault(v);
+            continue;
+          }
           const cfg = await readVaultSyncConfig(v);
           if (cfg.enabled) await ensureVaultSyncLoop(v);
         } catch {

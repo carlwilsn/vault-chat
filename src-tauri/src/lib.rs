@@ -4411,20 +4411,6 @@ async fn master_repo_init(dest: String, remote_url: String, branch: String, orig
         .map_err(|e| e.to_string())?
 }
 
-/// The migration's copy (master.rs): a repo copied whole into the vault-chat folder, then verified.
-#[tauri::command]
-async fn master_copy_repo(from: String, to: String) -> Result<master::CopyCheck, String> {
-    tauri::async_runtime::spawn_blocking(move || master::copy_repo(&from, &to))
-        .await
-        .map_err(|e| e.to_string())?
-}
-
-#[tauri::command]
-async fn master_verify_copy(from: String, to: String) -> Result<master::CopyCheck, String> {
-    tauri::async_runtime::spawn_blocking(move || master::verify_copy(&from, &to))
-        .await
-        .map_err(|e| e.to_string())
-}
 
 /// Settings → Box: the tailnet machines that answer as a vault-chat server.
 #[tauri::command]
@@ -6327,8 +6313,6 @@ pub fn run() {
             vault_box_sync,
             vault_box_config,
             master_repo_init,
-            master_copy_repo,
-            master_verify_copy,
             box_discover,
             tailscale_check,
             tailscale_open,

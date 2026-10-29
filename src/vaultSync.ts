@@ -302,6 +302,16 @@ function trackVault(vault: string): void {
   }
 }
 
+/** No longer started at launch (a vault that moved into the vault-chat folder: src/master.ts shadowedByFolder). */
+export function untrackVault(vault: string): void {
+  const k = (p: string) => p.split(String.fromCharCode(92)).join("/").replace(/\/+$/, "").toLowerCase();
+  try {
+    localStorage.setItem(TRACKED_VAULTS_KEY, JSON.stringify(trackedVaults().filter((v) => k(v) !== k(vault))));
+  } catch {
+    /* no storage */
+  }
+}
+
 export function ensureVaultSyncLoop(vault: string): Promise<void> {
   trackVault(vault);
   return serializeStart(vault, async () => {

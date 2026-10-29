@@ -15,13 +15,12 @@
 // remote is pushed from where credentials exist. Keep tries here; the laptop's sync pushes after it pulls a kept
 // change.
 //
-// Where it is: VC_MASTER, else what Settings set (<state>/master.json), else none. Without one everything is as
-// before (vaults beside VC_VAULT, new projects in ~/projects/<name>, no project syncs).
+// Where it is: VC_MASTER (~/vc, set at install: server/deploy/install.sh). Without one everything is as before
+// (vaults beside VC_VAULT, new projects in ~/projects/<name>, no project syncs). Settings never changes it.
 import { existsSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { loadConfig } from "./config";
-import { writeAtomic } from "./atomic";
 import { runGit, git, AGENT_IDENTITY_ARGS } from "./git";
 import { BoxSync, type Alert } from "./sync";
 
@@ -57,25 +56,12 @@ export function expandPath(raw: string): string | null {
   return isAbsolute(e) ? resolve(e) : null;
 }
 
-/** The default Settings suggests (never active until set): ~/vc. */
-export function defaultMaster(): string {
-  return join(home(), "vc");
-}
-
-function stateFile(): string {
-  return join(loadConfig().stateDir, "master.json");
-}
-
-/** This machine's vault-chat folder, or null (none set: everything as before). */
+/** This box's vault-chat folder: VC_MASTER (~/vc, written into the env file at install), or null (none: everything as
+ * before). The box is a server: its folder is set where it is installed, never from Settings. */
 export function masterDir(): string | null {
   const env = process.env.VC_MASTER;
   if (env && env.trim()) return expandPath(env) ?? resolve(env);
-  try {
-    const j = JSON.parse(readFileSync(stateFile(), "utf8"));
-    return typeof j?.path === "string" && j.path ? resolve(j.path) : null;
-  } catch {
-    return null;
-  }
+  return null;
 }
 
 export function masterLayout(m: string): { vaults: string; projects: string; hub: string } {
@@ -98,38 +84,11 @@ export function masterRepoNames(m: string, kind: RepoKind): string[] {
   return names.filter((n) => validRepoName(n) && existsSync(join(m, kind, n, ".git"))).sort();
 }
 
-function under(p: string, dir: string): boolean {
-  const r = relative(dir, p);
-  return r === "" || (!!r && r !== ".." && !r.startsWith(`..${sep}`) && !isAbsolute(r));
-}
-
-/** Set the folder (Settings): made with its layout; the projects in it start syncing. VC_MASTER, when set, wins. */
-export async function setMasterDir(raw: string): Promise<{ ok: true; path: string } | { error: string }> {
-  const abs = expandPath(raw);
-  if (!abs) return { error: `"${String(raw ?? "").trim()}" is not a full path (start it with / or ~/)` };
-  if (process.env.VC_MASTER) return { error: "this box's folder is set by VC_MASTER in its env file: change it there" };
-  const h = resolve(home());
-  if (abs === h || under(h, abs)) return { error: `${abs} is your whole home folder or holds it: choose a folder in it (e.g. ~/vc)` };
-  const cfg = loadConfig();
-  for (const p of [cfg.stateDir, cfg.secretsDir, join(h, ".ssh"), join(h, ".config"), join(h, ".local")]) {
-    if (under(abs, p) || under(p, abs)) return { error: `${abs} is inside or around ${p}: choose another folder` };
-  }
-  try {
-    for (const d of Object.values(masterLayout(abs))) mkdirSync(d, { recursive: true });
-  } catch (e) {
-    return { error: `could not make ${abs}: ${(e as Error).message}` };
-  }
-  mkdirSync(cfg.stateDir, { recursive: true });
-  writeAtomic(stateFile(), JSON.stringify({ path: abs, at: new Date().toISOString() }, null, 2) + "\n");
-  await restartMasterProjects();
-  return { ok: true, path: abs };
-}
-
 // ---------------------------------------------------------------- the projects' syncs
 
 const projects = new Map<string, { sync: BoxSync; path: string }>();
 let alertFn: Alert = async () => 0;
-let projectErrors = new Map<string, string>();
+const projectErrors = new Map<string, string>();
 
 /** The branch a working copy has checked out (its main), or null (detached, no repo). */
 async function headBranch(dir: string): Promise<string | null> {
@@ -170,12 +129,6 @@ export async function startMasterProjects(alert?: Alert): Promise<void> {
   const m = masterDir();
   if (!m) return;
   for (const name of masterRepoNames(m, "projects")) await startProjectSync(name).catch((e) => console.error(`[sync] project ${name}:`, e));
-}
-
-async function restartMasterProjects(): Promise<void> {
-  stopMasterProjects();
-  projectErrors = new Map();
-  await startMasterProjects();
 }
 
 export function stopMasterProjects(): void {
@@ -251,8 +204,6 @@ export async function newMasterProject(raw: string): Promise<{ abs: string } | {
 export type MasterProjectInfo = { name: string; path: string; branch: string | null; origin: string | null; syncing: boolean; ok: boolean | null; error: string | null; lastOkAt: number | null };
 export type MasterInfo = {
   master: string | null;
-  suggested: string;
-  fromEnv: boolean;
   layout: { vaults: string; projects: string; hub: string } | null;
   vaults: Array<{ name: string; path: string }>;
   projects: MasterProjectInfo[];
@@ -261,7 +212,7 @@ export type MasterInfo = {
 /** GET /api/v1/master: the folder, its layout, its vaults and its projects (the laptop clones what it lacks). */
 export function masterInfo(): MasterInfo {
   const m = masterDir();
-  const out: MasterInfo = { master: m, suggested: defaultMaster(), fromEnv: !!process.env.VC_MASTER, layout: m ? masterLayout(m) : null, vaults: [], projects: [] };
+  const out: MasterInfo = { master: m, layout: m ? masterLayout(m) : null, vaults: [], projects: [] };
   if (!m) return out;
   out.vaults = masterRepoNames(m, "vaults").map((name) => ({ name, path: repoPaths(m, "vaults", name).wc }));
   for (const name of masterRepoNames(m, "projects")) {

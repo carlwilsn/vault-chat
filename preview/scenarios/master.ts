@@ -1,11 +1,9 @@
-// The vault-chat folder (src/master.ts; the box's server/master.ts). Box mode. This laptop's folder is
-// /home/carl/vc with vaults school2 and physics and the project vault-chat; the box's folder has those plus
-// summer-demo and the project lecture-tools. At launch the laptop brings in lecture-tools (made from the box's hub) but
-// not summer-demo: it already syncs from ~/vaults/summer-demo, and two copies would both write `master` (its
-// migration, Copy into the folder, brings it in).
-// The titlebar's vault name opens the picker: the vaults in the folder, New vault, a folder elsewhere. Settings has
-// the folder for this laptop and for the box, the repos in it, and "Copy summer-demo into the folder" (the open
-// vault is still outside it). "+ New project" offers a new folder in the box's vault-chat folder (synced).
+// The vault-chat folder (src/master.ts; the box's server/master.ts, VC_MASTER). Box mode. This laptop's folder is
+// /home/carl/vc with vaults school2 and physics and the project vault-chat; the box's folder has those plus the
+// project lecture-tools, which the laptop brings in at launch (made from the box's hub). The titlebar's vault name
+// opens the picker: the vaults in the folder and New vault, nothing from elsewhere. Settings has this laptop's folder
+// (the only setting; the box's is shown), the repos in it and whether each syncs. "+ New project" offers the vault or
+// a new folder in projects/ (synced). (The preview's open vault is its fixture at ~/vaults/summer-demo.)
 import type { BuildCtx, Scenario, Step } from "./types";
 import * as P3 from "./phase3";
 
@@ -15,7 +13,6 @@ const GH = "https://github.com/carlwilsn/vault-chat.git";
 
 const boxMaster = {
   master: "/home/carl/vc",
-  suggested: "/home/carl/vc",
   vaults: ["physics", "school2", "summer-demo"].map((name) => ({ name, path: `/home/carl/vc/vaults/${name}` })),
   projects: [
     { name: "lecture-tools", path: "/home/carl/vc/projects/lecture-tools", branch: "main", origin: null, syncing: true, ok: true, error: null },
@@ -57,7 +54,7 @@ export const masterScenarios: Scenario[] = [
     group: "Projects",
     clock: "2026-10-27T10:00:00",
     notes:
-      "Box mode. Click the vault name in the titlebar: the vaults in /home/carl/vc (lecture-tools arrives from the box at launch; summer-demo does not, it syncs from ~/vaults), New vault, A folder elsewhere…. Settings → vault-chat folder: this laptop's and the box's folder, the repos in it, Copy summer-demo into the folder. + New project offers /home/carl/vc/projects/<name> on the box, synced.",
+      "Box mode. Click the vault name in the titlebar: the vaults in /home/carl/vc and New vault (nothing from elsewhere). Settings → vault-chat folder: this laptop's folder (the box's is only shown), the repos in it (lecture-tools arrived from the box at launch). + New project: the vault, or /home/carl/vc/projects/<name> on the box, synced.",
     build,
     host,
     open: [{ sleep: 1500 }],

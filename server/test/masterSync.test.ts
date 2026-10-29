@@ -72,7 +72,7 @@ beforeAll(async () => {
   git(join(master, "projects", "site"), "config", "core.autocrlf", "false");
   const secrets = await makeKeyStore(join(home, "secrets"), { "api.openrouter": "sk-or-canary-not-real" });
   or = await fakeOpenRouter("Done.");
-  srv = await startServer({ home, vault: school2, bare: hub, secrets, openrouter: or.url, extra: { VC_MASTER: master, VC_SYNC_INTERVAL_MS: "600000" } });
+  srv = await startServer({ home, vault: school2, bare: hub, secrets, openrouter: or.url, extra: { VC_MASTER: master, VC_SYNC_INTERVAL_MS: "3000" } });
   await waitFor(() => ref(hub, "refs/heads/box"), 30_000);
 }, 120_000);
 
@@ -84,18 +84,17 @@ afterAll(async () => {
 });
 
 describe("the vault-chat folder on the box", () => {
-  it("GET /api/v1/master: the folder from VC_MASTER, its layout, its vaults and projects (the adopted one syncing)", async () => {
+  it("GET /api/v1/master: the folder from VC_MASTER (no Settings route), its layout, its vaults and projects (the adopted one syncing)", async () => {
     const info = await waitFor(async () => {
       const i = await get("/api/v1/master");
       return i.projects?.[0]?.syncing ? i : null;
     });
     expect(fwd(info.master)).toBe(fwd(master));
-    expect(info.fromEnv).toBe(true);
     expect(info.vaults.map((v: any) => v.name)).toEqual(["school2"]);
     expect(info.projects).toMatchObject([{ name: "site", branch: "main", origin: fwd(join(home, "github", "site.git")).replace(/\//g, process.platform === "win32" ? "\\" : "/"), syncing: true }].map((p) => ({ ...p, origin: expect.any(String) })));
     expect(existsSync(join(master, ".hub", "projects", "site.git", "HEAD"))).toBe(true);
-    // Set by the env file: Settings can't change it.
-    expect((await post("/api/v1/master", { path: join(home, "other") })).status).toBe(400);
+    // Set at install (VC_MASTER): there is no route to change it.
+    expect((await post("/api/v1/master", { path: join(home, "other") })).status).toBe(404);
   });
 
   it("a vault added from Settings goes in the folder, its hub in .hub", async () => {
@@ -157,11 +156,7 @@ describe("the vault-chat folder on the box", () => {
     }
     // Box → laptop: the box writes in each; the sync publishes it as `box`; the laptop fetches it.
     for (const [i, r] of repos.entries()) writeFileSync(join(r.wc, `from-box-${i}.md`), `box ${i}\n`);
-    // A push of anything wakes the syncs; a write needs the next cycle: poke each with an empty laptop push.
-    for (const [i, r] of repos.entries()) {
-      git(lap(i), "commit", "-q", "--allow-empty", "-m", "poke");
-      git(lap(i), "push", "-q", "origin", r.branch);
-    }
+    // Each repo's sync runs every 3 s here: the box commits its write and publishes it as `box`.
     for (const [i, r] of repos.entries()) {
       await waitFor(() => {
         try {
@@ -178,7 +173,7 @@ describe("the vault-chat folder on the box", () => {
     git(lap(2), "merge", "-q", "--no-edit", "origin/box");
     git(lap(2), "commit", "-q", "--allow-empty", "-m", "try box");
     expect(() => git(lap(2), "push", "-q", "origin", "main:box")).toThrow(/written only by the box|declined/);
-  });
+  }, 300_000);
 
   it("a project folder elsewhere on the box is still allowed, and not synced (no hub)", async () => {
     const elsewhere = join(home, "github", "notes-tool");

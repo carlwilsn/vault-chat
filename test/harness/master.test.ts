@@ -41,15 +41,14 @@ fake.setHandler("master_repo_init", (a: any) => {
   dirs.set(parent, [...(dirs.get(parent) ?? []), name]);
   return "cloned from the box";
 });
-fake.setHandler("master_copy_repo", ({ from, to }: any) => ({ ok: true, problems: [], files: [42, 42], bytes: [9, 9], head: ["abc", "abc"], branch: ["master", "master"] }));
 for (const c of ["append_sync_log", "machine_host", "read_vault_config"]) fake.setHandler(c, () => null);
 fake.setHandler("vault_sync_status", () => ({ has_changes: false, nested_repos: [] }));
 fake.setHandler("vault_commit_local", () => ({ ok: true, message: "no local changes", error: false }));
 fake.setHandler("vault_box_sync", () => ({ configured: true, ok: true, message: "synced", committed: false, merged: false, conflict: null, error: null, error_kind: null, changes_waiting: 0, big_files: [], github_warning: null, github_pushed_at: null }));
 
-test("the picker without a folder: only a folder elsewhere", () => {
+test("the picker without a folder: nothing to pick (Settings says where to set it)", () => {
   assert.equal(M.masterPath(), null);
-  assert.deepEqual(M.pickerItems(null, [], null), [{ kind: "other" }]);
+  assert.deepEqual(M.pickerItems(null, [], null), []);
 });
 
 test("setting the folder: its layout made, its file names the open vault's box", async () => {
@@ -96,14 +95,13 @@ test("what the box has and this laptop lacks is made here from its hub: two vaul
   assert.equal(inits.length, 0);
 });
 
-test("the vault picker: every vault in the folder, the open one ticked, then New vault and a folder elsewhere", async () => {
+test("the vault picker: every vault in the folder, the open one ticked, then New vault — nothing from elsewhere", async () => {
   const names = await M.localVaults();
   assert.deepEqual(names, ["physics"]);
   assert.deepEqual(M.pickerItems(M.masterPath(), ["physics", "school2"], "C:/Users/carl/vc/vaults/school2"), [
     { kind: "vault", name: "physics", path: "C:/Users/carl/vc/vaults/physics", open: false },
     { kind: "vault", name: "school2", path: "C:/Users/carl/vc/vaults/school2", open: true },
     { kind: "new" },
-    { kind: "other" },
   ]);
 });
 
@@ -116,32 +114,40 @@ test("New vault: made on the box (POST /api/v1/vaults) and here, from the box's 
   assert.deepEqual(inits.map((i) => [i.dest, i.remoteUrl, i.branch]), [["C:/Users/carl/vc/vaults/Linear-Algebra", `${BOX}/git/Linear-Algebra.git`, "master"]]);
 });
 
-test("+ New project says what syncs: a new folder in the box's vault-chat folder does, one elsewhere does not", () => {
-  assert.match(projectSyncNote({ kind: "new" }, "/home/carl/vc"), /synced with this laptop/);
-  assert.match(projectSyncNote({ kind: "new" }, null), /not synced/);
-  assert.match(projectSyncNote({ kind: "pick", path: "/home/carl/vc/projects/site" }, "/home/carl/vc"), /synced/);
-  assert.match(projectSyncNote({ kind: "pick", path: "/home/carl/github/AgentOS" }, "/home/carl/vc"), /does not sync/);
+test("+ New project says what syncs: its folder in projects/ does (no folder elsewhere to pick)", () => {
+  assert.match(projectSyncNote({ kind: "new" }, "/home/carl/vc"), /projects\/: synced with this laptop/);
+  assert.match(projectSyncNote({ kind: "new" }, null), /does not sync/);
   assert.match(projectSyncNote({ kind: "none" }, "/home/carl/vc"), /vault/);
 });
 
-test("migration: copy in (verified), use the copy (the original stops syncing), back in one step", async () => {
-  localStorage.setItem("vault_chat_tracked_vaults", JSON.stringify(["C:/Users/carl/github/school2", "C:/Users/carl/notes"]));
-  const from = "C:/Users/carl/github/school2";
-  dirs.delete("C:/Users/carl/vc/vaults");
-  const c = await M.copyVaultIn(from);
-  assert.ok(!("error" in c));
-  assert.equal((c as any).to, "C:/Users/carl/vc/vaults/school2");
-  const opened: string[] = [];
-  const sw = await M.switchToCopy((p) => void opened.push(p));
-  assert.ok(!("error" in sw) && sw.active);
-  assert.deepEqual(opened, ["C:/Users/carl/vc/vaults/school2"]);
-  assert.deepEqual(JSON.parse(localStorage.getItem("vault_chat_tracked_vaults")!), ["C:/Users/carl/notes", "C:/Users/carl/vc/vaults/school2"]);
-  const back = await M.switchBack((p) => void opened.push(p));
-  assert.ok(!("error" in back) && !back.active);
-  assert.equal(opened[1], from);
-  assert.deepEqual(JSON.parse(localStorage.getItem("vault_chat_tracked_vaults")!), ["C:/Users/carl/notes", from]);
+test("a copy being brought in (its .git marked) gets no sync loop at all", async () => {
+  const marked = "C:/Users/carl/vc/vaults/incoming";
+  dirs.set("C:/Users/carl/vc/vaults", [...(dirs.get("C:/Users/carl/vc/vaults") ?? []), "incoming"]);
+  fake.setHandler("path_exists", ({ path }: any) => path === `${marked}/.git/vault-chat-no-sync`);
+  boxInfo = { ...boxInfo, vaults: boxInfo.vaults.filter((v: any) => v.name !== "incoming") };
+  const before = fake.calls.length;
+  await M.syncMasterFolder();
+  const touched = fake.calls.slice(before).filter((x: any) => JSON.stringify(x.args ?? {}).includes("/vaults/incoming") && x.cmd !== "path_exists");
+  assert.deepEqual(touched.map((x: any) => x.cmd), []);
+  const { activeSyncVaults } = await import("../../src/vaultSync.ts");
+  assert.ok(!activeSyncVaults().includes(marked));
+  assert.ok(activeSyncVaults().includes("C:/Users/carl/vc/vaults/physics"));
 });
 
-test("swapTracked never leaves both copies", () => {
-  assert.deepEqual(M.swapTracked(["a/x", "A/X/", "b"], "a/x", "c/x"), ["b", "c/x"]);
+test("a vault elsewhere whose copy is in the folder never syncs again at launch (two laptop copies never both write master)", async () => {
+  fake.setHandler("path_exists", () => false);
+  dirs.set("C:/Users/carl/vc/vaults", ["physics", "school2"]);
+  assert.equal(await M.shadowedByFolder("C:/Users/carl/github/school2"), true);
+  assert.equal(await M.shadowedByFolder("C:/Users/carl/vc/vaults/school2"), false);
+  dirs.set("C:/Users/carl/vc/vaults", ["physics"]);
+  assert.equal(await M.shadowedByFolder("C:/Users/carl/github/school2"), false);
+  // Its copy still being brought in (marked): the original keeps syncing until the copy is switched in.
+  dirs.set("C:/Users/carl/vc/vaults", ["physics", "school2"]);
+  fake.setHandler("path_exists", ({ path }: any) => path === "C:/Users/carl/vc/vaults/school2/.git/vault-chat-no-sync");
+  assert.equal(await M.shadowedByFolder("C:/Users/carl/github/school2"), false);
+  fake.setHandler("path_exists", () => false);
+  const { untrackVault, trackedVaults } = await import("../../src/vaultSync.ts");
+  localStorage.setItem("vault_chat_tracked_vaults", JSON.stringify(["C:/Users/carl/github/school2", "C:/Users/carl/notes"]));
+  untrackVault(["C:", "Users", "carl", "github", "school2", ""].join(String.fromCharCode(92)));
+  assert.deepEqual(trackedVaults(), ["C:/Users/carl/notes"]);
 });

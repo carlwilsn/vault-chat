@@ -1,9 +1,8 @@
 // Changing vaults: the titlebar's vault name opens a short list of the vaults in the vault-chat folder
-// (src/master.ts), the open one ticked; then "New vault" (made here and on the box, then synced) and a folder
-// elsewhere (the old dialog). Without a folder set, the list says where to set it.
+// (src/master.ts), the open one ticked, then "New vault" (made here and on the box, then synced). Everything lives in
+// the folder (Carl, 2026-10-28): no folder elsewhere. Without a folder set, the list says where to set it.
 import { useEffect, useRef, useState } from "react";
-import { open } from "@tauri-apps/plugin-dialog";
-import { Check, FolderOpen, Plus, FolderSearch } from "lucide-react";
+import { Check, FolderOpen, Plus } from "lucide-react";
 import { useStore } from "./store";
 import { localVaults, masterPath, newVault, pickerItems, type PickerItem } from "./master";
 import { openVaultAt } from "./openVault";
@@ -43,11 +42,6 @@ export function VaultPicker() {
     close();
     await openVaultAt(path);
   };
-  const other = async () => {
-    close();
-    const picked = await open({ directory: true, multiple: false });
-    if (typeof picked === "string") await openVaultAt(picked);
-  };
   const create = async () => {
     const r = await newVault(name);
     if ("error" in r) return setErr(r.error);
@@ -82,7 +76,7 @@ export function VaultPicker() {
                 <span className="w-3.5 shrink-0">{it.open && <Check className="h-3.5 w-3.5 text-primary" />}</span>
                 <span className="truncate">{it.name}</span>
               </button>
-            ) : it.kind === "new" ? (
+            ) : (
               naming ? (
                 <div key="new" className="px-1.5 py-1">
                   <input
@@ -105,11 +99,6 @@ export function VaultPicker() {
                   <span>New vault</span>
                 </button>
               )
-            ) : (
-              <button key="other" data-el="vault-picker-other" className={row} onClick={() => void other()}>
-                <FolderSearch className="h-3.5 w-3.5 text-muted-foreground" />
-                <span className="text-muted-foreground">A folder elsewhere…</span>
-              </button>
             ),
           )}
         </div>

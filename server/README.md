@@ -226,7 +226,7 @@ its own git repo, synced laptop ⇄ box by the sync above (`BoxSync` here, `box_
 repo, the box the hub: `<folder>/.hub/vaults/<name>.git` (served at `/git/<name>.git`) and
 `<folder>/.hub/projects/<name>.git` (served at `/git/projects/<name>.git`).
 
-- Where: `VC_MASTER`, else what Settings set (`<state>/master.json`, `POST /api/v1/master {path}`), else none —
+- Where: `VC_MASTER` (`~/vc`, written into the env file at install; never changed from Settings), else none —
   and with none everything is as before. `GET /api/v1/master` lists the folder, its vaults and projects.
 - A vault: branches as above (`box` here, `master` on the laptop). Vaults added from Settings go in the folder.
 - A project: its working copy here stays on its own main branch (Keep merges there,
@@ -235,17 +235,20 @@ repo, the box the hub: `<folder>/.hub/vaults/<name>.git` (served at `/git/<name>
   e.g. GitHub) keeps the "you keep it" gate. The box has no credentials: Keep tries `origin` and says when it
   can't; the laptop's sync pushes `main` to `origin` after it pulls a change from the box (logged as
   `push-origin`; owed until it goes).
-- "+ New project" with a new folder: `<folder>/projects/<slug>` (git, `main`, synced). A folder elsewhere on the
-  box is still allowed and does not sync.
-- The laptop: Settings → vault-chat folder (this laptop's, the box's); the titlebar's vault name lists
-  `<folder>/vaults/*` with New vault; every 5 min it makes here what the box has and it lacks (never a vault it
-  already syncs from elsewhere). Inside the folder the folder's file (`.vault-chat-master.json`) names the box,
-  even over a `sync.json` the vault carries.
+- "+ New project": the vault, or a new folder `<folder>/projects/<slug>` (git, `main`, synced). The app offers no
+  folder elsewhere (Carl, 2026-10-28: everything lives in the folder); the route still takes one.
+- The laptop: Settings → vault-chat folder (the only setting; the box's is shown); the titlebar's vault name lists
+  `<folder>/vaults/*` and New vault, nothing from elsewhere; every 5 min it makes here what the box has and it
+  lacks (never a vault it already syncs from elsewhere). Inside the folder the folder's file
+  (`.vault-chat-master.json`) names the box, even over a `sync.json` the vault carries. A repo whose `.git` holds
+  `vault-chat-no-sync` never syncs (a copy being brought in: a half-copied school2 once committed the files not
+  copied yet as deleted and pushed that). At launch, a vault outside the folder whose box vault is also in the
+  folder is no longer synced (the folder's copy is), and stays on disk.
 
-### Moving the live box and laptop into it (ready, not run)
+### Moving a box vault into it (the CLI, for the record)
 
-Proven on the throwaway instance (`/tmp/vcs-master`, port 8858, a copy of school2). Never deletes or moves an
-original; switching back is one step. On the box (`B=~/.local/state/vault-chat-server/current/vault-chat-server.mjs`):
+Done for school2 on 2026-10-28. Never deletes or moves an original; switching back is one step. On the box
+(`B=~/.local/state/vault-chat-server/current/vault-chat-server.mjs`):
 
 ```sh
 systemctl --user stop vault-chat-server                      # no sync while copying
@@ -258,11 +261,9 @@ node $B master verify --master ~/vc --name school2           # counts and HEAD a
 systemctl --user stop vault-chat-server && node $B master back --master ~/vc && systemctl --user start vault-chat-server
 ```
 
-The vault keeps its name, so `/git/school2.git` is the same URL: the laptop's school2 keeps syncing through the
-switch. Then on the laptop: Settings → vault-chat folder → set `C:\Users\wada2\vc`, open school2, "Copy school2
-into the folder" (whole copy, verified), "Use the copy" (the original stops syncing and stays on disk); "Switch
-back" is one step. The work area stays `~/agent-work/school2` only for `~/vc` (a test folder elsewhere gets its
-own).
+The vault keeps its name, so `/git/school2.git` is the same URL. The laptop has no copy-in in the app any more:
+its school2 was brought into `C:\Users\wada2\vc\vaults\school2` once, by hand (copied whole, the hub's `box`
+merged, verified file by file against the original). The work area stays `~/agent-work/school2` only for `~/vc`.
 
 ## Box notes
 

@@ -24,7 +24,6 @@ import { pushKeysToBox, keysChanged, subscribeKeyPush } from "./boxKeys";
 import { checkVoiceModel, NEED_LABEL, type Check as ModelCheck } from "./modelCaps";
 import { BoxModelChecks } from "./BoxModelChecks";
 import { MasterSection } from "./MasterSection";
-import { openVaultAt } from "./openVault";
 import { modelLabel, setAgentModel, useAgentModel } from "./agentModel";
 import { openShortcutSheet } from "./ShortcutSheet";
 import { chordText } from "./shortcuts";
@@ -80,7 +79,7 @@ export function SettingsPane() {
         <Divider />
         <VoiceSection />
         <Divider />
-        <MasterSection openVault={openVaultAt} />
+        <MasterSection />
         <Divider />
         <BoxSection />
         <Divider />
