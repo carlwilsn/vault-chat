@@ -182,6 +182,14 @@ describe("service acceptance: real git, no pushes or agent-clone reset", () => {
       expect(existsSync(join(dir, "push-attempt"))).toBe(false);
     });
   });
+  it("rechecks the captured request/cancellation under acceptance lock after artifact verification", async () => {
+    await repoTest(async ({ dir, repo, r, proof, permit, pins }) => {
+      const result = await acceptProvenReview(dir, r, proof, permit, async () => { throw new Error("Last user request changed"); });
+      expect(result.ok).toBe(false); expect(result.text).toContain("Last user request changed");
+      expect(git(repo, "rev-parse", "main")).toBe(pins.base);
+      await expect(proof.consume(permit, pins)).rejects.toThrow("already-used");
+    });
+  });
   it("refuses moved main instead of creating an unproved merge commit", async () => {
     await repoTest(async ({ dir, repo, r, proof, permit }) => {
       writeFileSync(join(repo, "unrelated.txt"), "new main"); git(repo, "add", "."); git(repo, "commit", "-m", "new main");

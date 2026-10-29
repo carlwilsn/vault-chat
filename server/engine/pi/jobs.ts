@@ -8,7 +8,8 @@
 // keeps a registry (<logDir>/jobs.json): which conversation started which job,
 // so a finished job wakes its conversation, and at most `max` run at once.
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { appendFileSync, chmodSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { writeAtomic } from "../../atomic";
@@ -46,7 +47,46 @@ export type JobRec = {
   endedAt?: number;
   /** Started by a turn Carl started (its finish may buzz his phone, server/pushGate.ts). */
   byCarl?: boolean;
+  /** Trusted host task in this service process; same registry/poll/reap/wake as shell jobs. A restart loses
+   * its in-memory permits, so it becomes gone, never an implicitly resumed successful acceptance. */
+  kind?: "service";
 };
+
+const serviceJobs = new Map<string, { controller: AbortController; state: "running" | "finished" | "stopped" | "timeout"; exit?: number }>();
+const serviceKey = (env: PiJobEnv, id: string) => `${env.logDir}/${id}`;
+
+/** A trusted installed-host task, not agent shell/prose. It can outlive the turn but NOT this process.
+ * Reuse StartJob's durable registry, cap, status, stop, reaper, conversation wake and background rows.
+ * Restart requires rerunning proof: no receipt JSON is an acceptance permit. */
+export function startServiceJob(env: PiJobEnv, a: { name: string; command: string; timeout?: unknown; conv: string; byCarl: boolean }, run: (signal: AbortSignal, log: (text: string) => void) => Promise<string>): { text: string; job?: JobRec } {
+  const max = env.max ?? (Number(process.env.VC_JOB_MAX) || 4);
+  if (runningJobs(env).length >= max) return { text: `Not started: this vault already has ${max} running jobs.` };
+  const name = a.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, 24) || "service";
+  const id = `${name}-${Date.now().toString(36)}-${randomUUID().slice(0, 8)}`;
+  const timeoutS = jobTimeoutS(a.timeout);
+  const job: JobRec = { id, name, command: a.command, conv: a.conv, byCarl: a.byCarl, startedAt: Date.now(), timeoutS, state: "running", kind: "service" };
+  const rec: NonNullable<ReturnType<typeof serviceJobs.get>> = { controller: new AbortController(), state: "running" };
+  const key = serviceKey(env, id);
+  const log = (text: string) => appendFileSync(join(env.logDir, `${id}.log`), text + "\n");
+  writeJobs(env, [...readJobs(env), job]);
+  serviceJobs.set(key, rec);
+  const timer = setTimeout(() => { if (rec.state === "running") { rec.state = "timeout"; rec.controller.abort(); } }, timeoutS * 1000);
+  timer.unref();
+  // The microtask starts only after the registry is durable and the caller has a job id. Never tie this
+  // controller to pi's turn signal: the proof legitimately outlives the turn that submitted it.
+  void Promise.resolve().then(async () => {
+    try {
+      rec.controller.signal.throwIfAborted();
+      const result = await run(rec.controller.signal, log);
+      log(result);
+      if (rec.state === "running") { rec.state = "finished"; rec.exit = 0; }
+    } catch (e) {
+      try { log(`Host task failed: ${e instanceof Error ? e.message : String(e)}`); } catch { /* disk failure: still fail the registry state, never unhandled rejection */ }
+      if (rec.state === "running") { rec.state = "finished"; rec.exit = 1; }
+    } finally { clearTimeout(timer); }
+  });
+  return { job, text: `Started ${id}. Service-owned proof runs in background; JobStatus/JobStop use this same job. Acceptance is not Shipped; laptop push, CI and both devices must still verify. Restart invalidates proof and requires rerun.` };
+}
 
 const unitOf = (id: string) => `vc-job-${id}`;
 export const JOB_DEFAULT_TIMEOUT_S = 24 * 3600;
@@ -242,6 +282,11 @@ export function probeJob(env: PiJobEnv, j: JobRec): { state: JobRec["state"]; ex
   } catch {
     /* no output yet */
   }
+  if (j.kind === "service") {
+    if (j.state !== "running") return { state: j.state, exit: j.exit, tail: lines.slice(-40).join("\n") };
+    const rec = serviceJobs.get(serviceKey(env, j.id));
+    return { state: rec?.state ?? "gone", ...(rec?.exit !== undefined ? { exit: rec.exit } : {}), tail: lines.slice(-40).join("\n") };
+  }
   const exit = /^\[exit (\d+)\]$/.exec(lines.at(-1)?.trim() ?? "");
   const tail = lines.slice(-40).join("\n");
   if (exit) return { state: "finished", exit: Number(exit[1]), tail };
@@ -298,6 +343,13 @@ export function jobStop(env: PiJobEnv, id: string, conv?: string): string {
   if (!j) return `No job ${id}.`;
   if (conv && j.conv && j.conv !== conv) return `Job ${id} belongs to another conversation; only it (or Carl) stops it.`;
   if (j.state !== "running") return `Job ${id} is not running (${j.state}).`;
+  if (j.kind === "service") {
+    const rec = serviceJobs.get(serviceKey(env, id));
+    if (!rec || rec.state !== "running") return `Job ${id} already ended (${rec?.state ?? "gone"}); its next status/reap records that outcome.`;
+    rec.state = "stopped"; rec.controller.abort();
+    // Leave it running in the durable registry until reapJobs emits its one terminal wake/row update.
+    return `Stopped job ${id}. A completed acceptance cannot be cancelled; use its source rollback instead.`;
+  }
   const r = exec(env)("systemctl", ["--user", "stop", unitOf(id)]);
   if (r.status !== 0) return `JobStop failed: ${(r.stderr || r.stdout).trim().slice(0, 300)}`;
   patchJob(env, id, { state: "stopped", endedAt: Date.now() });
@@ -312,6 +364,7 @@ export function reapJobs(env: PiJobEnv): (JobRec & { tail: string })[] {
     if (p.state === "running") continue;
     const rec = patchJob(env, j.id, { state: p.state, ...(p.exit !== undefined ? { exit: p.exit } : {}), endedAt: Date.now() });
     if (rec) out.push({ ...rec, tail: p.tail });
+    if (j.kind === "service") serviceJobs.delete(serviceKey(env, j.id));
   }
   return out;
 }

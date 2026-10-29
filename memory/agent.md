@@ -75,3 +75,10 @@ extensions (same problems, new place). Migrate one duplicated piece per bug; no 
 - The first deployment cannot self-authorize through an entry point the installed server does not have.
   A candidate sidecar against the real repo would bypass authority, not solve bootstrap. Report the constraint;
   no manual main merge/push or unapproved production drop-in is implied by implementing the new service.
+- Concrete sandbox/RecordUI adapter and internal request-bound service job now exist in `changeHost.ts`,
+  `changeUI.ts`, `submitChange.ts`; default tool/release/card cutover remains unfinished. Continue from
+  `docs/auto-ship-host-integration.md`, not by exposing SubmitChange before release/rollback is wired.
+  Installed dependency copies must preserve relative symlinks (`verbatimSymlinks`) and canonicalize the
+  toolchain/browser before hiding `/run`; otherwise npx executes hidden host paths. Use distinct empty npm
+  user/global config files, not `/dev/null` twice. A baseline test-process OOM/SIGABRT remains incomplete
+  proof, never an allowed ordinary named failure; stabilize its fixture before service acceptance.

@@ -52,10 +52,20 @@ export function parseHarnessReport(raw: string, root: string): ParsedTestReport 
  * No imports of candidate code here. node:test wraps test stdout/stderr as events, which are not authority.
  */
 export const HARNESS_REPORTER_SOURCE = `export default async function* (source) {
+  const paths = new Map();
   for await (const e of source) {
-    if (!["test:pass", "test:fail"].includes(e.type)) continue;
     const d = e.data;
-    yield JSON.stringify({type:e.type,data:{name:d.name,file:d.file,details:{type:d.details?.type},skip:d.skip,todo:d.todo,
+    // Node emits test:start in reporting order, including parent starts before child results, even when
+    // execution is concurrent. Keep each file separate; leaf names alone alias tests in different suites.
+    if (e.type === "test:start") {
+      const path = (paths.get(d.file) || []).slice(0, d.nesting);
+      path[d.nesting] = d.name; paths.set(d.file, path); continue;
+    }
+    if (!["test:pass", "test:fail"].includes(e.type)) continue;
+    const path = (paths.get(d.file) || []).slice(0, d.nesting + 1);
+    const name = path.length === d.nesting + 1 && path[d.nesting] === d.name
+      ? (path.length === 1 ? d.name : JSON.stringify(path)) : null;
+    yield JSON.stringify({type:e.type,data:{name,file:d.file,details:{type:d.details?.type},skip:d.skip,todo:d.todo,
       failureType:d.details?.error?.failureType,processFailure:d.details?.error?.exitCode !== undefined || !!d.details?.error?.signal}}) + "\\n";
   }
   yield JSON.stringify({type:"vc:complete"}) + "\\n";

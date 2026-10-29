@@ -249,7 +249,7 @@ async function keepLocked(vault: string, r: Review): Promise<{ ok: boolean; text
  * a tool/route: the installed runner, release-health and rollback adapters must be connected before activation.
  * Never push here: only laptop sync is allowed to push the accepted main to GitHub.
  */
-export async function acceptProvenReview(vault: string, r: Review, proof: ChangeProofService, permit: ChangePermit): Promise<{ ok: boolean; text: string }> {
+export async function acceptProvenReview(vault: string, r: Review, proof: ChangeProofService, permit: ChangePermit, assertRequest?: () => Promise<void>): Promise<{ ok: boolean; text: string }> {
   const out = await withRepoLock(r.folder, async () => {
     const current = await baseBranch(r.folder);
     if (current !== r.base) return { ok: false, text: "Acceptance blocked: the project's base branch is not checked out." };
@@ -263,6 +263,9 @@ export async function acceptProvenReview(vault: string, r: Review, proof: Change
     if (!ancestor.ok) return { ok: false, text: "Acceptance blocked: candidate is not based on current main; update it and rerun proof." };
     try {
       await proof.consume(permit, { base: base.out, head: r.sha, tree: tree.out, branch: r.branch });
+      // A long-running job may outlive a turn or a new user request. Check the captured ask/cancellation
+      // under this same acceptance lock AFTER artifact decoding, immediately before the ff transaction.
+      await assertRequest?.();
     } catch (e) { return { ok: false, text: `Acceptance blocked: ${e instanceof Error ? e.message : String(e)}` }; }
     // Fast-forward only: a new merge commit would have an unproved tree/source identity.
     const merged = await git(r.folder, ["merge", "--ff-only", "--quiet", r.sha]);
