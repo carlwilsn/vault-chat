@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { CHANGE_GATES, createChangeProofService, type AskCheck, type GateExecution, type ProofHost, type ProofSource, type UIReceipt } from "../changeProof";
 import { HARNESS_REPORTER_SOURCE, parseHarnessReport, parseVitestReport } from "../changeTestReports";
 import { acceptProvenReview, type Review } from "../projectChanges";
+import { acceptedChanges } from "../changeShipping";
 
 const base = "a".repeat(40), head = "b".repeat(40), tree = "c".repeat(40);
 const source: ProofSource = { base, head, tree, branch: "agent/test" };
@@ -180,6 +181,13 @@ describe("service acceptance: real git, no pushes or agent-clone reset", () => {
       expect(git(repo, "rev-parse", "main")).toBe(pins.head);
       expect(readFileSync(join(repo, "file.txt"), "utf8")).toBe("candidate");
       expect(existsSync(join(dir, "push-attempt"))).toBe(false);
+    });
+  });
+  it("installed host acceptance durably records proof/UI identity inside the ff transaction", async () => {
+    await repoTest(async ({ dir, repo, r, proof, permit, pins }) => {
+      const result = await acceptProvenReview(dir, r, proof, permit, undefined, { proofDir: "/private/retained-proof", check: { assessment: "agent self-check", evidence: ["file.txt"], surface: "phone", ui: { steps: [{ click: "button" }, { waitFor: "main" }] } } });
+      expect(result.ok).toBe(true);
+      expect(await acceptedChanges(repo)).toEqual([expect.objectContaining({ id: permit.id, source: pins, proofDir: "/private/retained-proof", acceptedAt: expect.any(String), review: r })]);
     });
   });
   it("rechecks the captured request/cancellation under acceptance lock after artifact verification", async () => {

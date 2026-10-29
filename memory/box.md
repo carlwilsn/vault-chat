@@ -41,3 +41,8 @@
   successful HTTP response from a shared port. The existing updater's retained-version fallback is recovery,
   not source rollback: the specific change must be reverted and the revert shipped via laptop sync/CI.
   A failing revert release needs attention rather than ping-pong autoreverts. Host adapters remain to be built.
+- `changeShipping.ts` now connects installed-host acceptance to a durable private git journal and the ordinary
+  project BoxSync cycle to verified public release-tag following (no extra poller/queue). Version-only CI
+  content is checked, not only ancestry/filenames; ff-only, no GitHub push. Public lookup failure is reported
+  AFTER hub transport so it cannot strand accepted source away from the laptop. This is not finished auto-ship:
+  native cutover, authenticated Tauri/box health, source revert and the Shipped card still await integration.

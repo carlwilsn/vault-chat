@@ -97,3 +97,12 @@ npm run typecheck:server
 The tests exercise real git acceptance in temporary repos with an empty bare remote and a pre-push sentinel;
 no push is attempted. They do not touch project main, GitHub or production listeners. Full-suite baseline,
 build and real-UI recording remain the parent coordinator's final-source checks, not claims of this unit.
+
+## Continuation pointer
+
+`auto-ship-host-integration.md` now records concrete installed-host proof/job integration plus durable
+acceptance reconciliation and public release following through the existing project sync cycle. Those code
+paths are connected internally, not a new public SubmitChange/default Keep cutover. Native provisioning,
+actual device/updater health, source revert and Shipped card remain unfinished; the immutable 6fcc baseline
+OOM still blocks permits. See that document's explicit conditional operator bootstrap alternatives before
+considering any activation. No production deployment or main change has occurred.

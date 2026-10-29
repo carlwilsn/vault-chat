@@ -23,6 +23,7 @@ import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { loadConfig } from "./config";
 import { runGit, git, AGENT_IDENTITY_ARGS } from "./git";
 import { BoxSync, type Alert } from "./sync";
+import { followAcceptedRelease } from "./changeShipping";
 
 export type RepoKind = "vaults" | "projects";
 export const HUB_DIR = ".hub";
@@ -110,7 +111,7 @@ export async function startProjectSync(name: string): Promise<BoxSync | null> {
     return null;
   }
   const cfg = loadConfig();
-  const s = new BoxSync(wc, bare, cfg.syncIntervalMs, alertFn, undefined, { local: branch, hub: branch });
+  const s = new BoxSync(wc, bare, cfg.syncIntervalMs, alertFn, undefined, { local: branch, hub: branch }, () => followAcceptedRelease(wc));
   try {
     await s.ensure(true);
   } catch (e) {

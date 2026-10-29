@@ -74,6 +74,7 @@ export class BoxSync {
     private alert: Alert,
     private alertAfterMs = ALERT_AFTER_MS,
     private branches: SyncBranches = VAULT_BRANCHES,
+    private beforeCycle?: () => Promise<unknown>,
   ) {
     this.status = {
       enabled: true,
@@ -241,6 +242,9 @@ exit 0
     const vault = this.vault;
     const bare = this.bare;
     try {
+      // Release observation must not stop hub transport (especially while GitHub is offline).
+      let observationError: unknown;
+      try { await this.beforeCycle?.(); } catch (e) { observationError = e; }
       await withRepoLock(vault, async () => {
         // 0. Still on box?
         const head = (await runGit(vault, ["symbolic-ref", "--short", "HEAD"])).stdout.trim();
@@ -311,6 +315,7 @@ exit 0
           throw e;
         }
       });
+      if (observationError) throw observationError;
       await this.refreshRefs();
       s.ok = true;
       s.lastError = null;

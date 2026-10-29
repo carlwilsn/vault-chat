@@ -16,6 +16,7 @@ import { writeAtomic } from "./atomic";
 import { masterProjectOf, syncedWithoutRemote, triggerProjectAt } from "./master";
 import { withRepoLock } from "./git";
 import type { ChangePermit, ChangeProofService } from "./changeProof";
+import { prepareAcceptanceLocked, reconcileAcceptancesLocked } from "./changeShipping";
 
 // The card's names and its images' place in the vault: one definition for the box, the laptop and the phone.
 import { KEEP, OUTCOME_SEP, REVIEW_TOOL, SEND_BACK, proofImagePath } from "../src/review";
@@ -249,7 +250,7 @@ async function keepLocked(vault: string, r: Review): Promise<{ ok: boolean; text
  * a tool/route: the installed runner, release-health and rollback adapters must be connected before activation.
  * Never push here: only laptop sync is allowed to push the accepted main to GitHub.
  */
-export async function acceptProvenReview(vault: string, r: Review, proof: ChangeProofService, permit: ChangePermit, assertRequest?: () => Promise<void>): Promise<{ ok: boolean; text: string }> {
+export async function acceptProvenReview(vault: string, r: Review, proof: ChangeProofService, permit: ChangePermit, assertRequest?: () => Promise<void>, record?: { proofDir: string; check: import("./changeHost").SubmitCheck; rollbackOf?: string }): Promise<{ ok: boolean; text: string }> {
   const out = await withRepoLock(r.folder, async () => {
     const current = await baseBranch(r.folder);
     if (current !== r.base) return { ok: false, text: "Acceptance blocked: the project's base branch is not checked out." };
@@ -262,14 +263,18 @@ export async function acceptProvenReview(vault: string, r: Review, proof: Change
     const ancestor = await git(r.folder, ["merge-base", "--is-ancestor", base.out, r.sha]);
     if (!ancestor.ok) return { ok: false, text: "Acceptance blocked: candidate is not based on current main; update it and rerun proof." };
     try {
-      await proof.consume(permit, { base: base.out, head: r.sha, tree: tree.out, branch: r.branch });
+      const receipt = await proof.consume(permit, { base: base.out, head: r.sha, tree: tree.out, branch: r.branch });
       // A long-running job may outlive a turn or a new user request. Check the captured ask/cancellation
       // under this same acceptance lock AFTER artifact decoding, immediately before the ff transaction.
       await assertRequest?.();
+      if (record) await prepareAcceptanceLocked(r.folder, { id: receipt.id, source: receipt.source, review: r,
+        proofDir: record.proofDir, check: record.check, preparedAt: new Date().toISOString(),
+        ...(record.rollbackOf ? { rollbackOf: record.rollbackOf } : {}) });
     } catch (e) { return { ok: false, text: `Acceptance blocked: ${e instanceof Error ? e.message : String(e)}` }; }
     // Fast-forward only: a new merge commit would have an unproved tree/source identity.
     const merged = await git(r.folder, ["merge", "--ff-only", "--quiet", r.sha]);
     if (!merged.ok) return { ok: false, text: `Acceptance blocked: ${merged.err.slice(0, 200)}. Rerun proof before retrying.` };
+    if (record) await reconcileAcceptancesLocked(r.folder);
     settle(vault, r.convId);
     // Leave the agent clone alone: another actor may already be working there.
     return { ok: true, text: `Accepted: ${r.title} (${r.sha}). Laptop sync must push it; release and device health are still pending. This is not yet Shipped.` };

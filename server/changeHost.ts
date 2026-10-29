@@ -218,13 +218,12 @@ export async function createInstalledChangeHost(o: ChangeHostOptions, repo: stri
  * request from its conversation (not tool args). This never pushes and never labels acceptance Shipped.
  * Release tracking/tool cutover must be connected before exposing this as the default public tool.
  */
-export async function proveAndAcceptChange(o: ChangeHostOptions, pinned: PinnedChange, ask: AskCheck, check: SubmitCheck, assertRequest?: () => Promise<void>): Promise<{ accepted: boolean; text: string; proofDir: string }> {
+export async function proveAndAcceptChange(o: ChangeHostOptions, pinned: PinnedChange, ask: AskCheck, check: SubmitCheck, assertRequest?: () => Promise<void>, rollbackOf?: string): Promise<{ accepted: boolean; text: string; proofDir: string }> {
   const runner = await createInstalledChangeHost(o, pinned.review.folder, pinned.source, check);
   try {
     const proof = createChangeProofService(runner.host);
-    const { permit, receipt } = await proof.prove(pinned.source, ask);
-    const out = await acceptProvenReview(pinned.vault, pinned.review, proof, permit, assertRequest);
-    if (out.ok) writeFileSync(join(runner.root, "accepted.json"), JSON.stringify({ id: receipt.id, source: receipt.source, review: pinned.review, acceptedAt: new Date().toISOString(), status: "accepted-awaiting-laptop-push-ci-and-device-health" }, null, 2), { flag: "wx", mode: 0o600 });
+    const { permit } = await proof.prove(pinned.source, ask);
+    const out = await acceptProvenReview(pinned.vault, pinned.review, proof, permit, assertRequest, { proofDir: runner.root, check, rollbackOf });
     return { accepted: out.ok, text: out.text, proofDir: runner.root };
   } finally { runner.close(); }
 }
