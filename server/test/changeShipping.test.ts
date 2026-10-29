@@ -64,9 +64,19 @@ describe("durable service acceptance facts, not persisted authority", () => {
 });
 
 describe("actual published release commits follow accepted source, ff-only", () => {
-  it("does nothing to old Keep repos without a service acceptance; no network lookup", async () => {
+  it("follows a verified application release before the first service acceptance, without pushing", async () => {
+    const f = fixture(), release = f.publish();
+    expect(await f.follow(release)).toEqual(release);
+    expect(f.g("rev-parse", "main")).toBe(release.revision);
+    expect(await acceptedChanges(f.repo)).toEqual([]);
+    expect(existsSync(join(f.repo, "push-attempt"))).toBe(false);
+  });
+  it("does not opt other legacy Keep projects into release following", async () => {
     const f = fixture(), discover = vi.fn();
-    expect(await followAcceptedRelease(f.repo, { discover })).toBeNull(); expect(discover).not.toHaveBeenCalled();
+    f.g("remote", "set-url", "origin", "git@github.com:carlwilsn/another-project.git");
+    expect(await followAcceptedRelease(f.repo, { discover })).toBeNull();
+    expect(discover).not.toHaveBeenCalled();
+    expect(f.g("rev-parse", "main")).toBe(f.base);
   });
   it("follows only the public release version commit, records identity, and never pushes origin", async () => {
     const f = fixture(); await f.accept(); const r = f.publish();
