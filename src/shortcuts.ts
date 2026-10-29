@@ -87,6 +87,7 @@ export const SHORTCUTS = [
       "src/HtmlView.tsx",
       "src/ImageView.tsx",
       "src/chatExtras.tsx",
+      "src/ShipmentProofViewer.tsx",
     ],
   },
 
