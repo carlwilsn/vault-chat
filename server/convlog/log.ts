@@ -6,7 +6,7 @@
 // Layout: <vault>/.vault-chat/events/
 //   <conv>.jsonl      one conversation's records, in seq order (one JSON line each);
 //                     an entry record is a pointer {file, id, clientId?, shown?, via?};
-//                     reads also accept future changed-worker-row records; writes remain full meta
+//                     worker snapshots store changed rows plus identity references; reads expand full meta
 //   <conv>.ckpt.json  its picture at some seq K, exactly fold(records <= K) (a cache: deleting it is harmless)
 //   sessions/         pi-format session files for what no pi wrote (an imported older
 //                     conversation, a voice-only chat, a line after a failed start)
@@ -29,7 +29,7 @@ import { randomBytes } from "node:crypto";
 import { renameRetry } from "../atomic";
 import type { EventBody, LogRecord, PiEntry, PollAnswer, StoredRecord } from "../../src/convlog/protocol";
 import { readEntries } from "./piSession";
-import { REDUCER_VERSION, emptyPicture, emptyRow, expandSubagents, foldInto, reduce, reduceRow, rowFromPicture, type Picture, type RowState } from "../../src/convlog/reduce";
+import { REDUCER_VERSION, compactSubagents, emptyPicture, emptyRow, expandSubagents, foldInto, reduce, reduceRow, rowFromPicture, type Picture, type RowState } from "../../src/convlog/reduce";
 
 const BLOCK = 1000;
 /** Records kept in memory for /poll's fast path. */
@@ -373,8 +373,9 @@ export class ConvLog {
     return isAbsolute(file) ? file : resolve(this.dir, file);
   }
 
-  /** Entry pointers only. Metadata stays legacy-full until a separately proven reader release. */
+  /** Disk-only presentation; listeners, checkpoints and poll keep full public records. */
   private pointer(rec: LogRecord): unknown {
+    if (rec.type === "meta" && rec.conv !== null) return compactSubagents(this.convs.get(rec.conv)?.picture ?? emptyPicture(rec.conv), rec);
     if (rec.type !== "entry") return rec;
     const { entry, file, images, ...rest } = rec;
     // An image the entry itself carries (pi stores it base64) is not copied: only its path.

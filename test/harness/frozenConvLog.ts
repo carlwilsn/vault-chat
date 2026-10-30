@@ -11,9 +11,12 @@ import type { ConvLog } from "../../server/convlog/log.ts";
 
 export const OLD_SERVER = "46bb33304233b64739df23fb5b0d520706d8e050";
 const root = fileURLToPath(new URL("../../", import.meta.url));
-let frozen: Promise<typeof ConvLog> | undefined;
-export function frozenConvLog(): Promise<typeof ConvLog> {
-  return frozen ??= (async () => {
+export const PREPARED_READER = "d578fb0d91582dce91c38c3810d827fa14ecc840";
+const frozen = new Map<string, Promise<typeof ConvLog>>();
+export function frozenConvLog(ref = OLD_SERVER): Promise<typeof ConvLog> {
+  let resultPromise = frozen.get(ref);
+  if (resultPromise) return resultPromise;
+  resultPromise = (async () => {
     const result = await build({
       entryPoints: ["server/convlog/log.ts"], bundle: true, platform: "node", format: "cjs", write: false,
       plugins: [{ name: "frozen-server-git-tree", setup(b) {
@@ -23,14 +26,14 @@ export function frozenConvLog(): Promise<typeof ConvLog> {
           const base = importer ? posix.normalize(posix.join(posix.dirname(importer), path)) : path;
           for (const name of [base, `${base}.ts`, `${base}.mjs`]) {
             try {
-              execFileSync("git", ["cat-file", "-e", `${OLD_SERVER}:${name}`], { cwd: root, stdio: "ignore" });
+              execFileSync("git", ["cat-file", "-e", `${ref}:${name}`], { cwd: root, stdio: "ignore" });
               return { path: name, namespace: "frozen" };
             } catch { /* extensionless import: try the next exact git path */ }
           }
           throw new Error(`Missing frozen module: ${base}`);
         });
         b.onLoad({ filter: /.*/, namespace: "frozen" }, ({ path }) => ({
-          contents: execFileSync("git", ["show", `${OLD_SERVER}:${path}`], { cwd: root, encoding: "utf8" }),
+          contents: execFileSync("git", ["show", `${ref}:${path}`], { cwd: root, encoding: "utf8" }),
           loader: path.endsWith(".ts") ? "ts" : "js",
         }));
       } }],
@@ -42,4 +45,6 @@ export function frozenConvLog(): Promise<typeof ConvLog> {
       return createRequire(import.meta.url)(file).ConvLog as typeof ConvLog;
     } finally { rmSync(dir, { recursive: true, force: true }); }
   })();
+  frozen.set(ref, resultPromise);
+  return resultPromise;
 }

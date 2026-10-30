@@ -6,9 +6,9 @@ import { makeRig } from "./longRig";
 import { cleanup } from "./helpers";
 import { ConvLog, convLog } from "../convlog/log";
 import { fold, foldInto } from "../../src/convlog/reduce";
-import { frozenConvLog } from "../../test/harness/frozenConvLog";
+import { frozenConvLog, PREPARED_READER } from "../../test/harness/frozenConvLog";
 
-it("reader-first engine writes legacy rows readable by frozen old SERVER, retaining reports and controls", async () => {
+it("engine writes changed rows readable by frozen prepared SERVER, retaining reports and controls", async () => {
   const rig = await makeRig();
   try {
     const { convId, tid } = await rig.start("Worker disk compatibility fixture");
@@ -27,11 +27,11 @@ it("reader-first engine writes legacy rows readable by frozen old SERVER, retain
     expect(await rig.engine.subagent(convId, "active", "steer", { text: "Keep going" })).toEqual({ ok: true });
     expect(await rig.engine.subagent(convId, "missing", "steer", { text: "No" })).toMatchObject({ ok: false });
     const stored = readFileSync(join(log.dir, `${convId}.jsonl`), "utf8").trim().split("\n").map((s) => JSON.parse(s));
-    expect(stored.some((r) => r.type === "subagents")).toBe(false);
-    const workerRecords = stored.filter((r) => r.type === "meta" && Array.isArray(r.patch.subagents));
+    expect(stored.some((r) => r.type === "subagents")).toBe(true);
+    const workerRecords = stored.filter((r) => r.type === "subagents" || (r.type === "meta" && Array.isArray(r.patch.subagents)));
     expect(workerRecords).toHaveLength(103);
-    expect(workerRecords.slice(-100).every((r) => r.patch.subagents.length === 2 &&
-      r.patch.subagents[0].summary === "A completed report must remain available")).toBe(true);
+    expect(workerRecords.slice(-100).every((r) => r.type === "subagents" && r.updates.length === 1 &&
+      r.updates[0].threadId === "active" && r.order.length === 2)).toBe(true);
     log.checkpointNow(convId);
     const cold = new ConvLog(rig.vault);
     expect(cold.picture(convId)).toEqual(before);
@@ -43,7 +43,7 @@ it("reader-first engine writes legacy rows readable by frozen old SERVER, retain
     expect(after.meta.subagents![1]).toMatchObject({ threadId: "active", state: "killed", said: "Update 99" });
     expect(rig.engine.workerStatus(convId, "ended")).toContain("A completed report must remain available");
     expect(new ConvLog(rig.vault).picture(convId)).toEqual(after);
-    const OldConvLog = await frozenConvLog();
+    const OldConvLog = await frozenConvLog(PREPARED_READER);
     const old = new OldConvLog(rig.vault);
     expect(old.picture(convId)).toEqual(after);
     expect(old.rows()).toEqual(log.rows());

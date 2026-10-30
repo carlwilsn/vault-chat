@@ -382,6 +382,27 @@ function closeOpen(d: Draft): void {
   });
 }
 
+/** Disk boundary only: compare against the existing conversation picture, never a second cache.
+ * Whole changed rows preserve removed fields, reports and arbitrary legacy row data. Identity
+ * references retain exact replacement order/removal. Unusual legacy shapes remain verbatim.
+ * Activation requires an installed delta-capable reader AND compatible retained fallback. */
+export function compactSubagents(previous: Picture, rec: LogRecord): StoredRecord {
+  if (rec.type !== "meta" || rec.conv === null || rec.conv !== previous.id || !Array.isArray(rec.patch.subagents)) return rec;
+  const before = previous.meta.subagents ?? [];
+  const next = rec.patch.subagents;
+  const valid = (rows: unknown[]): rows is SubagentRec[] => rows.every((r: any) =>
+    r && typeof r === "object" && !Array.isArray(r) && typeof r.threadId === "string" && !!r.threadId) &&
+    new Set(rows.map((r: any) => r.threadId)).size === rows.length;
+  if (!Array.isArray(before) || !valid(before) || !valid(next)) return rec;
+  const old = new Map(before.map((row) => [row.threadId, row]));
+  const compact: StoredSubagentsRecord = { seq: rec.seq, conv: rec.conv, at: rec.at, type: "subagents", base: previous.seq,
+    patch: { ...rec.patch, subagents: null },
+    updates: next.filter((row) => JSON.stringify(row) !== JSON.stringify(old.get(row.threadId))),
+    order: next.map((row) => row.threadId) };
+  // Small/initial snapshots need no new framing. Also keeps malformed legacy rows untouched.
+  return JSON.stringify(compact).length < JSON.stringify(rec).length ? compact : rec;
+}
+
 /** Expand ONLY the explicit disk form; public patch.subagents always means full replacement.
  * No mutation: pictures, listener records and canonical references can share their rows. */
 export function expandSubagents(p: Picture, r: StoredSubagentsRecord): LogRecord {

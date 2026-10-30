@@ -70,3 +70,12 @@ in doubt, mark it agent.
   first (always writes legacy full metadata), then writer activation only after that reader is actually
   installed and the retained fallback is verified to understand deltas. Do not combine into one CI
   release or rely on flags/version labels; keep release proof explicit. Live compaction stays separate.
+
+- Full-conversation metadata handed to `patchMeta` / `appendMessage` previously copied unchanged worker
+  prompts on unrelated edits. Compare supplied keys against the EXISTING feed picture, omit unchanged
+  keys and preserve explicit null removal; do not create a mirror/cache. This producer fix is legacy-format
+  compatible separately from disk deltas. Offline compact copies must verify every expanded logical
+  record hash (not merely the final picture); all intermediate prompts, tool/reasoning events, seqs and
+  pointer identities matter. A verified append-active prefix backup is NOT a final quiesced backup, and
+  HTTP drain/repo locks do NOT exclude background event writers. No installed compaction API was found;
+  maintainer-owned all-writer exclusion and reader/fallback rollout remain prerequisites for live work.

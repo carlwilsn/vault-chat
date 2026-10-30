@@ -1,4 +1,4 @@
-// Reader-first: production writes legacy metadata; compact records are offline fixtures only.
+// Writer activation fixtures; installed reader/fallback rollout is a separate required gate.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, writeFileSync, appendFileSync, rmSync } from "node:fs";
@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ConvLog, lastSeq } from "../../server/convlog/log.ts";
 import { emptyPicture, fold, foldInto, reduce, rowFromPicture } from "../../src/convlog/reduce.ts";
-import { frozenConvLog, OLD_SERVER } from "./frozenConvLog.ts";
+import { frozenConvLog, PREPARED_READER } from "./frozenConvLog.ts";
 import type { LogRecord, StoredRecord, StoredSubagentsRecord, SubagentRec } from "../../src/convlog/protocol.ts";
 
 const C = "workers";
@@ -28,8 +28,8 @@ function page(log: ConvLog, cursor = 0): LogRecord[] {
   }
 }
 
-test("reader-first legacy writes survive frozen old SERVER; offline future deltas replay exactly", async () => {
-  const OldConvLog = await frozenConvLog();
+test("compact writes survive frozen prepared SERVER; mixed legacy and delta replay exactly", async () => {
+  const OldConvLog = await frozenConvLog(PREPARED_READER);
   fixture((dir, log, file) => {
     const wire: LogRecord[] = [];
     log.onRecord((r) => wire.push(r));
@@ -52,10 +52,10 @@ test("reader-first legacy writes survive frozen old SERVER; offline future delta
     const raw = readFileSync(file, "utf8");
     const legacy = wire.map((r) => JSON.stringify(r) + "\n").join("");
     const stored = disk(file);
-    assert.ok(stored.every((r) => r.type === "meta"), "no new record types written");
-    assert.equal(raw, legacy, "reader release has ZERO storage savings / legacy full metadata");
+    assert.ok(stored.some((r) => r.type === "subagents"), "writer stores explicit changed rows");
+    assert.ok(Buffer.byteLength(raw) < Buffer.byteLength(legacy) / 10, "bounded changed-row storage");
     const old = new OldConvLog(dir);
-    assert.deepEqual(old.picture(C), log.picture(C), `frozen old SERVER ${OLD_SERVER} picture`);
+    assert.deepEqual(old.picture(C), log.picture(C), `frozen old SERVER ${PREPARED_READER} picture`);
     assert.deepEqual(old.rows(), log.rows());
     assert.equal(JSON.stringify(old.eventsOf(C)), JSON.stringify(wire));
     assert.equal(JSON.stringify(page(old)), JSON.stringify(wire));
@@ -70,7 +70,7 @@ test("reader-first legacy writes survive frozen old SERVER; offline future delta
     assert.deepEqual(new OldConvLog(dir).picture(C), log.picture(C), "old SERVER full replay without checkpoint");
     writeFileSync(checkpointFile, checkpoint);
 
-    // Explicit offline future-format fixtures. Never emitted by this release.
+    // Also exercise all-delta offline fixtures, including the initial full-row delta.
     const compact: StoredRecord[] = wire.map((r, i) => {
       if (r.type !== "meta" || !Array.isArray(r.patch.subagents)) return r;
       return { seq: r.seq, conv: C, at: r.at, type: "subagents", base: wire[i - 1]!.seq,
@@ -200,6 +200,64 @@ test("over-64KB legacy and future-delta tails retain last seq and exact checkpoi
     assert.equal(replay.picture(C)!.meta.subagents![0]!.summary, worker.summary);
     const next = replay.emit(C, { type: "meta", patch: { costUsd: 1 } }, 3);
     assert.ok(next.seq > tail.seq, "restart never reuses the last seq");
-    assert.ok(disk(file).at(-1)!.type === "meta", "production writer stays legacy after future-format replay");
+    assert.ok(disk(file).at(-1)!.type === "meta", "unrelated patch remains ordinary meta");
+  });
+});
+
+test("175 large-prompt workers: unrelated patches <256 bytes, unchanged refs <8KiB, one update <16KiB", (t) => fixture((dir, log, file) => {
+  let workers: SubagentRec[] = Array.from({ length: 175 }, (_, i) => ({
+    threadId: `worker-${String(i).padStart(3, "0")}-${"i".repeat(24)}`, state: "completed",
+    task: `original prompt ${i}: ` + "p".repeat(4096), summary: `report ${i}: ` + "r".repeat(2048),
+    sessionFile: `/synthetic/pi/${i}`, toolCallId: `caller-${i}`,
+  }));
+  const wire: LogRecord[] = [];
+  log.onRecord(r => wire.push(r));
+  log.emit(C, { type: "meta", patch: { title: "Big worker history", subagents: workers } }, 1);
+  const original = log.picture(C)!;
+  const frozen = JSON.stringify(original);
+  log.checkpointNow(C);
+  log.emit(C, { type: "meta", patch: { costUsd: 2 } }, 2);
+  log.emit(C, { type: "meta", patch: { costUsd: 3, subagents: workers } }, 3);
+  workers = workers.map((r, i) => i === 174 ? { ...r, state: "killed", said: "terminal drift cleared" } : r);
+  log.emit(C, { type: "meta", patch: { subagents: workers } }, 4);
+  const lines = readFileSync(file, "utf8").trimEnd().split("\n");
+  assert.ok(Buffer.byteLength(lines[0]!) > 1_000_000);
+  assert.ok(Buffer.byteLength(lines[1]!) < 256);
+  assert.ok(Buffer.byteLength(lines[2]!) < 8 * 1024);
+  assert.ok(Buffer.byteLength(lines[3]!) < 16 * 1024);
+  t.diagnostic(JSON.stringify({ workers: 175, initialBytes: Buffer.byteLength(lines[0]!) + 1, unrelatedBytes: Buffer.byteLength(lines[1]!) + 1, unchangedRefsBytes: Buffer.byteLength(lines[2]!) + 1, oneWorkerUpdateBytes: Buffer.byteLength(lines[3]!) + 1 }));
+  assert.equal(JSON.parse(lines[2]!).updates.length, 0);
+  assert.equal(JSON.parse(lines[3]!).updates.length, 1);
+  assert.equal(JSON.stringify(original), frozen, "no new metadata mirror or mutation");
+  assert.deepEqual(new ConvLog(dir).eventsOf(C), wire);
+  assert.deepEqual(new ConvLog(dir).picture(C), log.picture(C));
+  for (const r of wire) assert.deepEqual(new ConvLog(dir).eventsOf(C, r.seq), wire.filter(x => x.seq > r.seq));
+  rmSync(file.replace(/\.jsonl$/, ".ckpt.json"));
+  assert.deepEqual(new ConvLog(dir).picture(C), log.picture(C));
+  assert.equal(log.picture(C)!.meta.subagents![0]!.task, workers[0]!.task);
+}));
+
+test("legacy malformed worker identities remain full; whole-row field removal and clear never resurrect history", () => fixture((dir, log, file) => {
+  const row = { threadId: "one", task: "retain ".repeat(100), state: "running", said: "stale drift" };
+  log.emit(C, { type: "meta", patch: { subagents: [row] } }, 1);
+  const { said, ...terminal } = row;
+  log.emit(C, { type: "meta", patch: { subagents: [{ ...terminal, state: "completed" }] } }, 2);
+  assert.equal(log.picture(C)!.meta.subagents![0]!.said, undefined);
+  log.emit(C, { type: "meta", patch: { subagents: null, cleared: { at: 3 } } }, 3);
+  log.emit(C, { type: "meta", patch: { subagents: [row, row] } }, 4);
+  assert.equal(disk(file).at(-1)!.type, "meta", "ambiguous duplicate ids are not encoded");
+  log.emit(C, { type: "meta", patch: { subagents: [] } }, 5);
+  assert.deepEqual(new ConvLog(dir).picture(C), log.picture(C));
+  assert.deepEqual(log.picture(C)!.meta.subagents, []);
+}));
+
+test("writer requires prepared reader: legacy server without checkpoint cannot replay deltas", async () => {
+  const Old = await frozenConvLog();
+  fixture((dir, log, file) => {
+    const row = { threadId: "one", state: "running", task: "original full prompt ".repeat(100) };
+    log.emit(C, { type: "meta", patch: { subagents: [row, { ...row, threadId: "retained" }] } }, 1);
+    log.emit(C, { type: "meta", patch: { subagents: [{ ...row, state: "completed", summary: "terminal report" }, { ...row, threadId: "retained" }] } }, 2);
+    assert.equal(disk(file)[1]!.type, "subagents");
+    assert.notDeepEqual(new Old(dir).picture(C), log.picture(C), "must not install writer while old reader/fallback remains");
   });
 });
