@@ -2,7 +2,8 @@
 // conversation of its own (server/context/projects.ts); the list is the box's, whatever vault is open:
 //   GET  /projects                         → {projects:[{slug, name, folder, vault, rel}]}: every vault's projects
 //   POST /projects {folder}                → {ok, slug, name, convId}: "Make this a project" (a folder on the box)
-//   POST /projects {name}                  → the same for a new folder of that name in the open vault ("+ New project")
+//   POST /projects {name}                  → the same for a new folder of that name in the open vault ("+ New project");
+//                                            {name, newFolder: true}: a new repo of its own in <vault-chat folder>/projects/
 //   POST /conversation/project {convId, project: name|slug|null}
 //                                          → {ok, project: slug|null}
 //   POST /api/v1/folders {op: rename|delete, path, name?}
@@ -16,7 +17,7 @@ import { allProjects, ensureProject, folderName, makeProject } from "./context/p
 import { ensureProjectThread, patchMeta } from "./engine/convs";
 import { MAIN_ID, MAIN_TITLE, projectThreadId } from "../src/threads";
 import { followVoice } from "./voice";
-import { masterDir } from "./master";
+import { masterDir, newMasterProject } from "./master";
 import { checkFolder, deletedFolders, registeredFolder, registeredFolders } from "./projectFolders";
 import { ownerVault } from "./convlog/log";
 import { deleteFolder, folderOpsWalls, renameFolder } from "./folderOps";
@@ -116,13 +117,19 @@ export async function setProject(
  */
 export async function createProjectWithThread(
   vault: string,
-  body: { name?: unknown; folder?: unknown },
+  body: { name?: unknown; folder?: unknown; newFolder?: unknown },
   vaults: VaultRef[] = [{ name: "main", path: vault, main: true }],
 ): Promise<{ ok: true; slug: string; name: string; convId: string; created: boolean; folder: string; vault: string } | { error: string }> {
   ready(vault);
   const name = typeof body.name === "string" ? body.name.trim() : "";
   const wanted = body.folder !== undefined && body.folder !== null && body.folder !== "";
-  const folder = wanted ? boxPathOf(body.folder) : null;
+  let folder = wanted ? boxPathOf(body.folder) : null;
+  // `newFolder: true`: a repo of its own, <vault-chat folder>/projects/<name> (its hub, synced with the laptop).
+  if (!wanted && body.newFolder === true && name && masterDir()) {
+    const r = await newMasterProject(name);
+    if ("error" in r) return { error: r.error };
+    folder = r.abs;
+  }
   if (wanted && !folder) return { error: `"${String(body.folder).slice(0, 120)}" is not a folder in the vault-chat folder` };
   if (!folder && !name) return { error: "a folder or a name is required" };
   const here = vaults.find((v) => resolve(v.path) === resolve(vault)) ?? { name: "main", path: vault, main: true };

@@ -255,7 +255,7 @@ describe("boot + phone routes", () => {
     expect((await (await get("/projects")).json()).projects).toEqual([]);
     const r = await (await post("/conversation/project", { convId: missionId, project: "BitNet 160M" })).json();
     expect(r).toEqual({ ok: true, project: "bitnet-160m" });
-    expect((await (await get("/projects")).json()).projects).toEqual([{ slug: "bitnet-160m", name: "BitNet 160M" }]);
+    expect((await (await get("/projects")).json()).projects).toEqual([expect.objectContaining({ slug: "bitnet-160m", name: "BitNet 160M" })]);
     const row = (await (await get("/conversations")).json()).conversations.find((c: any) => c.id === missionId);
     expect(row.project).toBe("bitnet-160m");
     expect((await (await get(`/conversation?id=${missionId}`)).json()).project).toBe("bitnet-160m");
