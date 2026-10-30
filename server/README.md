@@ -70,10 +70,10 @@ server/
   mutations are relayed in-process to `phoneApp.ts`'s `phone:*` handlers. `/session` (voice) answers 503 —
   there is no voice host headless; `/tool` uses the read-only voice tool fallback. The Claude/feedback
   screen's `/feedback`, `/coder*` and `/alert-followup` are gone (404; Phase 3).
-- **Projects** (Phase 3): `GET /projects` → `{projects:[{slug,name}]}`; `POST /conversation/project
-  {convId, project: name|slug|null}` → `{ok, project}` (create-or-attach via `server/context`; a `project`
-  event on `/poll`). `/conversations` rows and `/conversation` carry `project`, `state`, `nextWakeAt`,
-  `costUsd`, `working` and (sleeping) `wakeReason` when set — the clients' ongoing-work line.
+- **Projects**: `GET /projects` → `{projects:[{slug,name,folder,vault,rel}]}`, every vault's; `POST /projects
+  {folder}` ("Make this a project", a folder relative to the vault-chat folder) or `{name}` (a new folder in the open
+  vault); `POST /api/v1/folders {op: rename|delete, path, name?}` (a folder that is not a project; recoverable:
+  `server/folderOps.ts`); `POST /conversation/project {convId, project}`. See "Folders and projects" below.
 - **`GET /api/v1/health`** → `{ok, version, rev, vault, git:"ok"|"missing", keys:{openrouter}, busy:{runs}, conversations, sync:{…}}`
 - **`POST /api/v1/alert`** `{title, body, tag?}` → Web Push to every subscribed phone → `{ok, sent}`
 - **`GET /api/v1/sync`** → full sync status (every step with its full stderr on failure).
@@ -244,6 +244,33 @@ repo, the box the hub: `<folder>/.hub/vaults/<name>.git` (served at `/git/<name>
   `vault-chat-no-sync` never syncs (a copy being brought in: a half-copied school2 once committed the files not
   copied yet as deleted and pushed that). At launch, a vault outside the folder whose box vault is also in the
   folder is no longer synced (the folder's copy is), and stays on disk.
+
+### Folders and projects (Carl, 2026-10-29)
+
+Everything is a folder under the vault-chat folder. A **project** is a folder with a conversation of its own: its thread
+(`project-<slug>`, in the log of the vault that owns it), its folder as the thread's cwd (registered in that vault's
+`.vault-chat/local/project-folders.json`, which only Carl's actions write), and in the folder `AGENTS.md` (pi loads it),
+`.vault-chat/project-memory.md` and `.vault-chat/rules.md`. Every project is a vault; not every vault is a project (a
+vault itself may be one). **Main** is one conversation for the box (the main vault's log).
+
+- Conversations never change with the open vault: the clients read one feed over every vault's log
+  (`server/convlog/log.ts` GlobalFeed; the logs share a seq clock, `<state>/convlog-clock`), and a request about a
+  conversation goes to the vault that holds it. A vault's file signals reach only the surfaces on that vault.
+- Delete on a project: the conversation only (the folder stays, a plain folder; the registry keeps the choice and
+  RestoreProject brings it back), or everything (the folder committed, then removed in git; a repo of its own moved to
+  `<vault-chat folder>/.deleted/`). Rename renames the folder (not a repo of its own).
+- The move from `agent-projects/` (server stopped; never deletes, backup + manifest under
+  `<state>/migrations/projects-<stamp>/`):
+
+```
+systemctl --user stop vault-chat-server
+node $B projects status
+node $B projects migrate --dry-run --map "iems-469-course-notes-visuals=IEMS 469"
+node $B projects migrate --map "iems-469-course-notes-visuals=IEMS 469"
+systemctl --user start vault-chat-server
+# back, byte for byte:
+systemctl --user stop vault-chat-server && node $B projects back && systemctl --user start vault-chat-server
+```
 
 ### Moving a box vault into it (the CLI, for the record)
 
