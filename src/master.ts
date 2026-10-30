@@ -127,19 +127,6 @@ export async function localProjects(m: string | null = masterPath()): Promise<st
   return m ? dirsIn(masterLayout(m).projects) : [];
 }
 
-export type PickerItem = { kind: "vault"; name: string; path: string; open: boolean } | { kind: "new" };
-
-/** The vault picker: every vault in the folder (the open one marked), then New vault. Nothing from elsewhere. */
-export function pickerItems(m: string | null, names: string[], openPath: string | null): PickerItem[] {
-  if (!m) return [];
-  const open = openPath ? fwd(openPath).toLowerCase() : null;
-  const vaults: PickerItem[] = names.map((name) => {
-    const path = joinPath(masterLayout(m).vaults, name);
-    return { kind: "vault" as const, name, path, open: path.toLowerCase() === open };
-  });
-  return [...vaults, { kind: "new" as const }];
-}
-
 /** Is this repo marked never to sync (a copy being brought in)? */
 export async function noSync(repo: string): Promise<boolean> {
   try {

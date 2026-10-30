@@ -5,7 +5,7 @@
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from "node:http";
 import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, sep } from "node:path";
-import { browseFolders, inProjectFolder, projectDirListing } from "./projectFolders";
+import { inProjectFolder } from "./projectFolders";
 import { loadConfig, SERVER_VERSION, SERVER_REV } from "./config";
 import { trackWrites } from "./drain";
 import { inputSurface, noteInput } from "./presence";
@@ -15,13 +15,13 @@ import { externalMcpHosts } from "./mcp/hosts";
 import type { BoundTools } from "./mcp/tools";
 import { brainEnabled, brainRoute, type BrainDeps } from "./voiceBrain";
 import { relay, emitLocal } from "./bus";
-import { convLog, signal } from "./convlog/log";
+import { globalFeed, ownerVault, signal } from "./convlog/log";
 import { conversationsSummary, conversationDetail, notificationsFeed, notesFeed, withinVault, mimeFor, dispatchVoiceTool } from "./phoneData";
 import { notificationAppend, pushSubsAdd, pushSubsRemove, vapidPublicKey } from "./commands/phone";
 import { isGitPath, handleGitHttp } from "./gitHttp";
 import { validVaultName } from "./sync";
 import { validKeyName } from "./keys";
-import { createProjectWithThread, projectsList, setProject } from "./projectRoutes";
+import { createProjectWithThread, folderRoute, projectsList, setProject } from "./projectRoutes";
 import { voiceTool, voiceSession, voiceTranscript, voiceUpdates, voicePath, type VoiceDeps } from "./voice";
 import { activityImageRoute, activityPost } from "./activity";
 import PHONE_PAGE_INLINE from "../src-tauri/assets/phone.html";
@@ -56,6 +56,8 @@ export type ServerHooks = {
   /** The vault a request names (`?vault=` or `X-VC-Vault`), null when this box
    * has no such vault. No name = the main vault (older laptops, the phone). */
   vault?: (name: string | null) => VaultScope | null;
+  /** Every vault on the box (the main one first): conversations are the box's, whatever vault a request names. */
+  vaultList?: () => VaultScope[];
   /** /status for a vault other than the main one (the main one's comes from the app). */
   vaultStatus?: (v: VaultScope) => Promise<Record<string, unknown>>;
   /** Standard MCP with an explicit vault/device/conversation, never defaults. */
@@ -222,13 +224,57 @@ function readBody(req: IncomingMessage, limit = 20 * 1024 * 1024): Promise<strin
   });
 }
 
-async function jsonBody(req: IncomingMessage, limit?: number): Promise<any> {
-  try {
-    const v = JSON.parse(await readBody(req, limit));
-    return v && typeof v === "object" ? v : {};
-  } catch {
-    return {};
+/** A request's JSON body, read once (a route may look at it before the handler does). */
+const bodies = new WeakMap<IncomingMessage, Promise<any>>();
+function jsonBody(req: IncomingMessage, limit?: number): Promise<any> {
+  let p = bodies.get(req);
+  if (!p) {
+    p = (async () => {
+      try {
+        const v = JSON.parse(await readBody(req, limit));
+        return v && typeof v === "object" ? v : {};
+      } catch {
+        return {};
+      }
+    })();
+    bodies.set(req, p);
   }
+  return p;
+}
+
+/** Routes about one conversation: they go to the vault whose log holds it (Main: the main vault), whatever vault the
+ *  request names; one that names none (a new conversation) goes to the main vault. */
+const CONVERSATION_ROUTES = new Set([
+  "/message",
+  "/answer",
+  "/kill",
+  "/surface",
+  "/conversation",
+  "/session",
+  "/tool",
+  "/voice-transcript",
+  "/conversation/project",
+  "/api/v2/intent",
+  "/api/v1/side",
+  "/api/v1/voice/tool",
+  "/api/v1/voice/session",
+  "/api/v1/voice/updates",
+  "/api/v1/voice/transcript",
+]);
+
+/** The conversation a request is about (its query, else its JSON body), or null. */
+async function conversationOf(req: IncomingMessage, url: URL, path: string): Promise<string | null> {
+  const sub = /^\/api\/v1\/conversations\/([^/]+)\/subagents\//.exec(path);
+  if (sub) return decodeURIComponent(sub[1]!);
+  if (!CONVERSATION_ROUTES.has(path)) return null;
+  const q = url.searchParams.get("convId") || url.searchParams.get("conv") || (path === "/conversation" ? url.searchParams.get("id") : null);
+  if (q) return q;
+  if (req.method !== "POST" || path === "/tool") return null;
+  const b = await jsonBody(req);
+  if (typeof b.convId === "string" && b.convId) return b.convId;
+  // A project's own intents (Rename, Delete) name its slug: its thread's vault.
+  if (typeof b.slug === "string" && b.slug) return `project-${b.slug}`;
+  return null;
 }
 
 /** POST → relay → the app's answer, 503 if it doesn't answer (voice_server.rs
@@ -376,8 +422,19 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
 
   // Everything below is one vault's: the one the request names, else the main one.
   const want = url.searchParams.get("vault") || String(req.headers["x-vc-vault"] ?? "") || null;
-  const scope: VaultScope | null = hooks.vault ? hooks.vault(want) : !want || want === cfg.vaultName ? { name: cfg.vaultName, path: cfg.vault, bare: cfg.bareRepo, main: true } : null;
+  let scope: VaultScope | null = hooks.vault ? hooks.vault(want) : !want || want === cfg.vaultName ? { name: cfg.vaultName, path: cfg.vault, bare: cfg.bareRepo, main: true } : null;
   if (!scope) return json(res, 404, { error: `no vault ${String(want).slice(0, 64)} on this box` });
+  // The open vault (files, boards, the inbox, the feed's file signals) …
+  const open = scope;
+  // … and, for a route about a conversation, the vault whose log holds it (server/convlog/log.ts GlobalFeed).
+  if (hooks.vaultList && (CONVERSATION_ROUTES.has(path) || path.startsWith("/api/v1/conversations/"))) {
+    const all = hooks.vaultList();
+    const main = all.find((v) => v.main) ?? scope;
+    const id = await conversationOf(req, url, path);
+    const at = id ? ownerVault(id, main.path) : null;
+    const owner = at ? all.find((v) => v.path === at) : null;
+    scope = owner ?? main;
+  }
   const vault = scope.path;
   if (path === "/api/v1/shipments" && method === "GET") {
     try { return json(res, 200, { shipments: await shipmentCards(vault, scope.name, url.searchParams.get("project") || undefined) }); }
@@ -473,18 +530,14 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
 
   // Live edits (server/liveEdits.ts): a file the agent just wrote, as it is on
   // the box now — the laptop shows it in the open pane before the sync lands.
-  if (path === "/api/v1/vault/file" && method === "GET") return vaultFileRoute(res, vault, url.searchParams.get("path"));
+  // A file in a project's folder (an absolute path on the box) is the vault's that owns the project, whatever vault is open.
+  const folderVault = (p: unknown) => (typeof p === "string" && p.startsWith("/") ? ((hooks.vaultList?.() ?? [scope]).find((v) => inProjectFolder(v.path, p))?.path ?? vault) : vault);
+  if (path === "/api/v1/vault/file" && method === "GET") return vaultFileRoute(res, folderVault(url.searchParams.get("path")), url.searchParams.get("path"));
   // A project's folder on the box (server/projectFolders.ts): the app's file tree lists it, opens its files
   // through the route above and writes Carl's edits back here. Only inside a folder he chose for a project.
-  if (path === "/api/v1/vault/file" && method === "POST") return projectFileWrite(res, vault, await jsonBody(req, PROJECT_FILE_CAP + 1024 * 1024));
-  if (path === "/api/v1/box/dir" && method === "GET") {
-    const out = projectDirListing(vault, url.searchParams.get("path") ?? "");
-    return json(res, "error" in out ? 403 : 200, out);
-  }
-  // "+ New project"'s folder chooser: the folders on the box, each marked whether it may be a project's.
-  if (path === "/api/v1/box/folders" && method === "GET") {
-    const out = browseFolders(vault, url.searchParams.get("path"));
-    return json(res, "error" in out ? 403 : 200, out);
+  if (path === "/api/v1/vault/file" && method === "POST") {
+    const b = await jsonBody(req, PROJECT_FILE_CAP + 1024 * 1024);
+    return projectFileWrite(res, folderVault(b?.path), b);
   }
 
   const q = (k: string) => url.searchParams.get(k) ?? "";
@@ -602,13 +655,13 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
   //   GET  /api/v2/conversations/<id>/checkpoint     → {seq, picture, events, next}: a materialised picture plus the tail
   //   POST /api/v2/intent {type, …}            → {ok, convId, …}: the box does it; its effect arrives in the log
   if (path === "/api/v2/conversations" && method === "GET") {
-    const log = convLog(vault);
+    const log = globalFeed(open.path);
     const seq = log.latest();
     return json(res, 200, { rows: log.rows().filter((r) => !(r as any).deleted), seq, epoch: log.epoch });
   }
   const v2 = /^\/api\/v2\/conversations\/([^/]+)\/(events|checkpoint)$/.exec(path);
   if (v2 && method === "GET") {
-    const log = convLog(vault);
+    const log = globalFeed(open.path);
     const id = decodeURIComponent(v2[1]!);
     // Read the head first: every record of this conversation up to it is in the answer.
     const next = log.latest();
@@ -643,8 +696,14 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
       return send(res, 200, "text/html; charset=utf-8", asset("voice.html", VOICE_PAGE_INLINE));
     case "GET /phone":
       return send(res, 200, "text/html; charset=utf-8", phonePage());
-    case "GET /conversations":
-      return json(res, 200, conversationsSummary(vault));
+    case "GET /conversations": {
+      // Every vault's conversations (Main: the main vault's), whatever vault is open.
+      if (!hooks.vaultList) return json(res, 200, conversationsSummary(vault));
+      const parts = hooks.vaultList().map((v) => ({ v, s: conversationsSummary(v.path) as { vault: string; conversations: any[] } }));
+      const rows = parts.flatMap(({ v, s }) => s.conversations.filter((c) => v.main || c.id !== "main"));
+      rows.sort((a, b) => (b.lastActivityAt ?? 0) - (a.lastActivityAt ?? 0));
+      return json(res, 200, { vault: (conversationsSummary(open.path) as { vault: string }).vault, conversations: rows.slice(0, 60) });
+    }
     case "GET /surface": {
       const id = q("id");
       if (id && scope.main) void relay("phone:surface", { convId: id }, 4000);
@@ -658,7 +717,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
     case "GET /file":
       return serveVaultFile(req, res, vault, url);
     case "GET /poll":
-      return poll(res, url, scope.path);
+      return poll(res, url, open.path);
     case "GET /notifications":
       return json(res, 200, notificationsFeed(vault));
     case "GET /notes":
@@ -797,13 +856,20 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
       return send(res, 200, "text/plain; charset=utf-8", (await voiceTool(vd, b)).result);
     }
     // Projects: the chat chip and "New chat in project" (desktop box mode, phone).
+    // Every vault's projects, whatever vault is open (a project is a folder with its own conversation).
     case "GET /projects":
-      return json(res, 200, projectsList(vault));
+      return json(res, 200, projectsList(hooks.vaultList?.() ?? [scope]));
     case "POST /projects": {
       const b = await jsonBody(req);
-      const out = await createProjectWithThread(vault, b);
-      if ("ok" in out) tagged({ type: "project", convId: out.convId, project: out.slug });
+      const out = await createProjectWithThread(open.path, b, hooks.vaultList?.() ?? [scope]);
+      if ("ok" in out) tagged({ type: "project", convId: out.convId, project: out.slug, created: out.created });
       return json(res, "ok" in out ? 200 : 400, out);
+    }
+    // Carl's ⋯ on a folder (Rename, Delete): done on the box, recoverable (server/folderOps.ts).
+    case "POST /api/v1/folders": {
+      const out = await folderRoute(await jsonBody(req), hooks.vaultList?.() ?? [scope]);
+      if (out.ok) tagged({ type: "folders" });
+      return json(res, out.ok ? 200 : 400, out);
     }
     case "POST /conversation/project": {
       const b = await jsonBody(req);
@@ -856,7 +922,7 @@ async function poll(res: ServerResponse, url: URL, vault: string): Promise<void>
 }
 
 async function pollLog(res: ServerResponse, url: URL, vault: string): Promise<void> {
-  const log = convLog(vault);
+  const log = globalFeed(vault);
   const raw = url.searchParams.get("after") ?? "";
   const epoch = url.searchParams.get("epoch");
   const head = (extra: Record<string, unknown> = {}) => json(res, 200, { next: log.latest(), events: [], epoch: log.epoch, ...extra });

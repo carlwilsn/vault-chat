@@ -1,6 +1,6 @@
 // A project's folder on the box, from the laptop (src/boxFiles.ts, src/projects.ts createProjectThread,
 // src/NewProjectForm.tsx): a `box:` path is read and written through the box's routes (never this disk), any
-// other path through Tauri as before; "+ New project" sends where it works; the chooser browses the box.
+// other path through Tauri as before; "Make this a project" sends the folder, "+ New project" the name.
 // The box here is a small HTTP stand-in for server/http.ts's routes (the real routes: server/test/projectFolders.test.ts).
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
@@ -43,8 +43,6 @@ const server = http.createServer((req, res) => {
       const t = disk.get(u.searchParams.get("path") ?? "");
       return t === undefined ? send(403, { error: "no" }) : send(200, { path: u.searchParams.get("path"), base64: Buffer.from(t).toString("base64") });
     }
-    if (u.pathname === "/api/v1/box/dir") return send(200, { entries: [{ name: "src", path: "/home/carl/github/vault-chat/src", is_dir: true }, { name: "README.md", path: "/home/carl/github/vault-chat/README.md", is_dir: false }] });
-    if (u.pathname === "/api/v1/box/folders") return send(200, { path: u.searchParams.get("path") ?? "/home/carl", parent: "/home", home: "/home/carl", ok: false, dirs: [{ name: "github", path: "/home/carl/github", is_dir: true, ok: true }] });
     if (u.pathname.endsWith("/projects")) return send(200, { projects: [] });
     return send(404, { error: "not found" });
   });
@@ -87,29 +85,18 @@ test("any other path is this disk's, as before", async () => {
   assert.equal(await bf.readTextAt(local), "local\n");
 });
 
-test("the tree's listing and the chooser come from the box", async () => {
-  const bf = await import("../../src/boxFiles.ts");
-  assert.deepEqual((await bf.listBoxDir("/home/carl/github/vault-chat")).map((e) => [e.name, e.is_dir]), [["src", true], ["README.md", false]]);
-  const f = await bf.browseBoxFolders();
-  assert.equal(f.home, "/home/carl");
-  assert.equal(bf.tildePath("/home/carl/github/vault-chat", f.home), "~/github/vault-chat");
-  assert.equal(bf.tildePath("/home/carl", f.home), "~");
-  assert.equal(bf.tildePath("/srv/data", f.home), "/srv/data");
-});
-
-test("+ New project sends where it works: a chosen folder, a new ~/projects/<name>, or nothing (the vault)", async () => {
+test("Make this a project sends the folder (relative to the vault-chat folder); + New project sends the name", async () => {
   const projects = await import("../../src/projects.ts");
   posts.length = 0;
-  assert.equal((await projects.createProjectThread("Lecture Tools", { folder: "/home/carl/github/AgentOS" })).ok, true);
-  assert.equal((await projects.createProjectThread("Lecture Tools", { newFolder: true })).ok, true);
+  assert.equal((await projects.createProjectThread("IEMS 469", { folder: "vaults/school2/IEMS 469" })).ok, true);
   assert.equal((await projects.createProjectThread("Lecture Tools")).ok, true);
   assert.deepEqual(
     posts.filter((p) => p.path.endsWith("/projects")).map((p) => p.body),
-    [{ name: "Lecture Tools", folder: "/home/carl/github/AgentOS" }, { name: "Lecture Tools", newFolder: true }, { name: "Lecture Tools" }],
+    [{ folder: "vaults/school2/IEMS 469" }, { name: "Lecture Tools" }],
   );
 });
 
-test("the form: the name first; where it works only once the box answers (laptop only)", async () => {
+test("the form: the name only (a new folder of that name in the open folder)", async () => {
   const { NewProjectForm } = await import("../../src/NewProjectForm.tsx");
   const html = renderToStaticMarkup(createElement(NewProjectForm, { onCreate: () => {}, onCancel: () => {} }));
   assert.match(html, /data-el="new-project-name"/);

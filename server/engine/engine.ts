@@ -20,7 +20,6 @@ import {
   buildDeveloperInstructions,
   rulesPrefixForTurn,
   turnSections,
-  projectFolder,
   readProject,
   deleteProjectFiles,
   restoreProjectFiles,
@@ -52,7 +51,8 @@ import { ENGINE_ROLE_PROMPT } from "./prompt";
 import { isNoteTool, noteTool, noteToolSpecs } from "../notesTools";
 import { capabilitiesOf, capabilityNote, learn } from "./capabilities";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
-import { projectFolderOf, retireFolder, reviveFolder } from "../projectFolders";
+import { projectFolderOf, reviveFolder } from "../projectFolders";
+import { deleteFolder, folderOpsWalls } from "../folderOps";
 import { answerReview, cloneDirOf, ensureClone, isGatedProject, pendingReview } from "../projectChanges";
 import { WRITE_TOOLS, writtenPath } from "../liveEdits";
 import { appendActivity, contextImage, searchActivity, youLayer } from "../activity";
@@ -859,7 +859,7 @@ export class Engine {
       case "compact":
         return this.compact(String(b.convId ?? "") || MAIN_ID, typeof b.focus === "string" ? b.focus : undefined);
       case "deleteProject":
-        return this.deleteProject(String(b.slug ?? ""));
+        return this.deleteProject(String(b.slug ?? ""), { folder: b.folder === true });
       case "restoreProject":
         return this.restoreProject(String(b.slug ?? b.entry ?? ""));
       case "renameProject": {
@@ -1232,28 +1232,38 @@ export class Engine {
    * the folder it names, nothing else of his), its thread is gone from every list (each surface on it lands
    * on Main: the clients follow the row), and Main's next turn tells the agent once.
    */
-  async deleteProject(slug: string): Promise<Record<string, unknown>> {
+  async deleteProject(slug: string, o: { folder?: boolean } = {}): Promise<Record<string, unknown>> {
     const id = projectThreadId(slug);
     if (!slug || projectOfThread(id) !== slug) return { ok: false, error: "not a project" };
     if (this.live.has(id)) {
       await this.interrupt(id, true);
       await this.turnEnd(id);
     }
-    let moved: { name: string; movedTo: string };
+    let moved: { name: string; movedTo: string; folder: string };
     try {
+      // The conversation goes; the registry keeps the choice (a restore brings it back).
       moved = deleteProjectFiles(slug);
     } catch (e) {
       return { ok: false, error: (e as Error).message };
     }
-    // The folder Carl chose for it on the box is never touched; the choice goes with its files (a restore brings it back).
-    retireFolder(this.d.vault, slug, moved.movedTo.split("/").pop()!);
-    if (this.picture(id)) this.emit(id, { type: "meta", patch: { deleted: true, deletedProject: { name: moved.name, at: Date.now(), movedTo: moved.movedTo } } });
+    // Carl's second choice: the folder goes too — recoverably (committed, then removed in git; a repo moved aside).
+    let folderGone: Record<string, unknown> | null = null;
+    if (o.folder) {
+      const w = folderOpsWalls();
+      const r = w ? await deleteFolder(moved.folder, w) : { error: "folders are not available on this box" };
+      if ("error" in r) {
+        reviveFolder(this.d.vault, moved.movedTo, slug);
+        return { ok: false, error: `the folder could not be deleted (${r.error}); nothing changed` };
+      }
+      folderGone = r;
+    }
+    if (this.picture(id)) this.emit(id, { type: "meta", patch: { deleted: true, deletedProject: { name: moved.name, at: Date.now(), movedTo: moved.movedTo, ...(folderGone ? { folder: moved.folder, folderGone } : {}) } } });
     const main = await ensureMain(this.d.vault);
-    const tell = [...((this.picture(main.id)?.meta.tellAgent as string[] | undefined) ?? []), `Carl deleted the project "${moved.name}" (its thread and notes are gone from his screens). Don't bring it up or treat it as a project any more unless he does. If he wants it back, RestoreProject brings it back whole; never move its files yourself.`];
+    const tell = [...((this.picture(main.id)?.meta.tellAgent as string[] | undefined) ?? []), `Carl deleted the project "${moved.name}" (its thread is gone from his screens${o.folder ? ", and its folder" : "; its folder stays, a plain folder"}). Don't bring it up or treat it as a project any more unless he does. If he wants it back, RestoreProject brings it back whole; never move its files yourself.`];
     this.emit(main.id, { type: "meta", patch: { tellAgent: tell } });
     this.d.broadcast?.({ type: "project", slug, deleted: true, convId: id, to: MAIN_ID });
-    this.log(`project ${slug} deleted (files: ${moved.movedTo})`);
-    return { ok: true, slug, name: moved.name, movedTo: moved.movedTo, convId: id, to: MAIN_ID };
+    this.log(`project ${slug} deleted (kept as ${moved.movedTo}${folderGone ? `; its folder too: ${String(folderGone.how)} ${String(folderGone.where)}` : "; its folder stays"})`);
+    return { ok: true, slug, name: moved.name, movedTo: moved.movedTo, convId: id, to: MAIN_ID, ...(folderGone ? { folderGone } : {}) };
   }
 
   /**
@@ -1269,7 +1279,6 @@ export class Engine {
     } catch (e) {
       return { ok: false, error: (e as Error).message };
     }
-    reviveFolder(this.d.vault, back.entry, back.slug);
     const id = projectThreadId(back.slug);
     await ensureProjectThread(this.d.vault, back.slug, back.name);
     // Main: a delete notice it has not read yet is simply dropped; otherwise it hears the project is back.
@@ -1654,19 +1663,19 @@ export class Engine {
     const p = slug ? readProject(slug) : null;
     if (!p) return null;
     const chosen = projectFolderOf(this.d.vault, p.slug);
-    if (chosen && "error" in chosen) return { error: `the folder chosen for this project can't be used: ${chosen.error}` };
+    if (!chosen) return { error: `the project's folder is not registered` };
+    if ("error" in chosen) return { error: `the folder chosen for this project can't be used: ${chosen.error}` };
     if (chosen && isGatedProject(chosen.abs) && !this.inVault(chosen.abs)) {
       // A git repo: the agent works in its clone, on an agent/ branch; the folder itself is service-owned (proof-gated acceptance).
       return { abs: cloneDirOf(this.d.vault, p.slug), rel: chosen.abs.split(sep).join("/"), outside: true, git: { folder: chosen.abs.split(sep).join("/"), clone: cloneDirOf(this.d.vault, p.slug).split(sep).join("/") } };
     }
-    if (chosen) {
-      const rel = relative(resolve(this.d.vault), chosen.abs).split(sep).join("/");
-      const inVault = !!rel && !rel.startsWith("..") && !isAbsolute(rel);
-      return inVault ? { abs: chosen.abs, rel } : { abs: chosen.abs, rel: chosen.abs.split(sep).join("/"), outside: true };
-    }
-    return projectFolder(this.d.vault, p.notes);
+    const rel = relative(resolve(this.d.vault), chosen.abs).split(sep).join("/");
+    const inVault = !!rel && !rel.startsWith("..") && !isAbsolute(rel);
+    return inVault ? { abs: chosen.abs, rel } : { abs: chosen.abs, rel: chosen.abs.split(sep).join("/"), outside: true };
   }
 
+  /** A thread's working folder: a project's folder, else the vault (Main runs in the main vault: it is no
+   *  folder's conversation, but its tools and the agent's habits work from the vault root). */
   private cwdOf(conv: EngineConv): string {
     const f = this.folderOf(conv);
     return f && "abs" in f ? f.abs : this.d.vault;

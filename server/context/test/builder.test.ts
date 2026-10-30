@@ -44,7 +44,7 @@ describe("rules on every turn", () => {
 
 describe("buildDeveloperInstructions", () => {
   it("has the role prompt, how to work, the project's shared notes, the re-check rule; no project lists the projects", () => {
-    createProject("Coconut", "Find coconuts.");
+    createProject("Coconut");
     createProject("Thesis");
     let s = buildDeveloperInstructions({ id: "c" });
     expect(s.startsWith(ROLE_PROMPT)).toBe(true);

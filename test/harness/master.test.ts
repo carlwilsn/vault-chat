@@ -1,7 +1,8 @@
 // The vault-chat folder on the laptop (src/master.ts): the vault picker's list, setting the folder (its file names
 // the box the open vault syncs with), bringing what the box has and this laptop lacks (each vault and project made
-// from its hub, a project with its own remote and branch), "New vault" (made on the box and here), "+ New project"'s
-// note on what syncs, and the migration's switch and one-step switch back (never both copies syncing).
+// from its hub, a project with its own remote and branch), "New vault" (made on the box and here), the folder
+// picker's rows (src/VaultPicker.tsx folderRows), and the migration's switch and one-step switch back (never both
+// copies syncing).
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { installFakeTauri, makeTempVault } from "./fakes.ts";
@@ -9,7 +10,7 @@ import { installFakeTauri, makeTempVault } from "./fakes.ts";
 const vault = makeTempVault("vc-master-");
 const fake = installFakeTauri(vault);
 const M = await import("../../src/master.ts");
-const { projectSyncNote } = await import("../../src/NewProjectForm.tsx");
+const { folderRows } = await import("../../src/VaultPicker.tsx");
 const { useStore } = await import("../../src/store.ts");
 
 after(async () => (await import("../../src/vaultSync.ts")).stopVaultSyncLoop());
@@ -48,7 +49,6 @@ fake.setHandler("vault_box_sync", () => ({ configured: true, ok: true, message: 
 
 test("the picker without a folder: nothing to pick (Settings says where to set it)", () => {
   assert.equal(M.masterPath(), null);
-  assert.deepEqual(M.pickerItems(null, [], null), []);
 });
 
 test("setting the folder: its layout made, its file names the open vault's box", async () => {
@@ -95,16 +95,6 @@ test("what the box has and this laptop lacks is made here from its hub: two vaul
   assert.equal(inits.length, 0);
 });
 
-test("the vault picker: every vault in the folder, the open one ticked, then New vault — nothing from elsewhere", async () => {
-  const names = await M.localVaults();
-  assert.deepEqual(names, ["physics"]);
-  assert.deepEqual(M.pickerItems(M.masterPath(), ["physics", "school2"], "C:/Users/carl/vc/vaults/school2"), [
-    { kind: "vault", name: "physics", path: "C:/Users/carl/vc/vaults/physics", open: false },
-    { kind: "vault", name: "school2", path: "C:/Users/carl/vc/vaults/school2", open: true },
-    { kind: "new" },
-  ]);
-});
-
 test("New vault: made on the box (POST /api/v1/vaults) and here, from the box's hub", async () => {
   posts.length = 0;
   inits.length = 0;
@@ -114,10 +104,25 @@ test("New vault: made on the box (POST /api/v1/vaults) and here, from the box's 
   assert.deepEqual(inits.map((i) => [i.dest, i.remoteUrl, i.branch]), [["C:/Users/carl/vc/vaults/Linear-Algebra", `${BOX}/git/Linear-Algebra.git`, "master"]]);
 });
 
-test("+ New project says what syncs: its folder in projects/ does (no folder elsewhere to pick)", () => {
-  assert.match(projectSyncNote({ kind: "new" }, "/home/carl/vc"), /projects\/: synced with this laptop/);
-  assert.match(projectSyncNote({ kind: "new" }, null), /does not sync/);
-  assert.match(projectSyncNote({ kind: "none" }, "/home/carl/vc"), /vault/);
+test("the folder picker: Vaults lists every folder (a project inside a vault says where), Projects the ones with a conversation", () => {
+  const projects = [
+    { slug: "iems-469", name: "IEMS 469", folder: "/home/c/vc/vaults/school2/IEMS 469", rel: "vaults/school2/IEMS 469", vault: "school2" },
+    { slug: "vault-chat", name: "vault-chat", folder: "/home/c/vc/projects/vault-chat", rel: "projects/vault-chat", vault: "vault-chat" },
+  ];
+  const r = folderRows(["school2", "vault-chat"], ["vault-chat"], projects);
+  assert.deepEqual(
+    r.vaults.map((x: any) => [x.rel, x.name, x.repo, x.where, x.project?.slug ?? null]),
+    [
+      ["projects/vault-chat", "vault-chat", "projects/vault-chat", null, "vault-chat"],
+      ["vaults/school2", "school2", "vaults/school2", null, null],
+      ["vaults/school2/IEMS 469", "IEMS 469", "vaults/school2", "school2", "iems-469"],
+      ["vaults/vault-chat", "vault-chat", "vaults/vault-chat", null, null],
+    ],
+  );
+  assert.deepEqual(r.projects.map((x: any) => [x.name, x.rel, x.repo]), [
+    ["IEMS 469", "vaults/school2/IEMS 469", "vaults/school2"],
+    ["vault-chat", "projects/vault-chat", "projects/vault-chat"],
+  ]);
 });
 
 test("a copy being brought in (its .git marked) gets no sync loop at all", async () => {

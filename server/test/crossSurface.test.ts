@@ -36,7 +36,7 @@ import { mkdirSync, writeFileSync, appendFileSync, readFileSync, existsSync } fr
 import { join } from "node:path";
 import { deflateSync } from "node:zlib";
 import { piOf } from "./fakePi";
-import { tmp, cleanup, git } from "./helpers";
+import { tmp, cleanup, git, seedProject } from "./helpers";
 import { withPiSessions } from "./fakeSession";
 
 const root = tmp("vccross-");
@@ -721,8 +721,7 @@ describe("h. Switching conversations: what carries over, what stays per conversa
   let b1: Turn | null = null;
   let a2: Turn | null = null;
   it("setup: A is a project's thread (Coconut), B is Main, back to A", async () => {
-    mkdirSync(join(vault, "agent-projects", "coconut"), { recursive: true });
-    writeFileSync(join(vault, "agent-projects", "coconut", "project.md"), "# Coconut\n");
+    seedProject(vault, "coconut", { folder: "Coconut", memory: "# Coconut: memory\n" });
     a1 = await turn({ text: "Project Coconut: tile size?", convId: "project-coconut", client: "laptop" }, "1024 with 128 overlap.");
     act.activityPost(vault, { entry: { kind: "focus", modality: "editor", text: "opened the file", path: "papers/yolo.pdf", project: "coconut" } });
     b1 = await turn({ text: "Unrelated: what's a sigma-algebra?", client: "laptop" }, "A family of sets closed under complements and countable unions.");

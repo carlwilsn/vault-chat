@@ -66,22 +66,23 @@ I study ML papers. Explain with one worked example.
 ## Project rules
 - Report mAP50 and the count error together.
 
-## Shared notes (project.md)
-# Coconut
+## Project memory (.vault-chat/memory.md)
+# Coconut: memory
 
-Detect coconuts in drone images.
+- <date>: YOLOv8, 640px input; 1024 tiles, 128 overlap.
+- Labels in labels/ (CVAT export).
+- Shadows cause false positives before 9am.
+- <date>: tiled the March flight (4,812 tiles).
+- <date>: v3 training started, mAP50 0.71 at epoch 20.
 </project_context>
 
 Session start: don't greet with an inventory or read out his notes or files. Stay quiet until he speaks (skip_turn if you are given a turn before he has).
 
-Vault files (for ShowFile and ScrollTo; 8 files, relative to <vault>):
-.vaultchatignore
+Vault files (for ShowFile and ScrollTo; 5 files, relative to <vault>):
 AGENTS.md
-agent-projects/coconut/memory.md
-agent-projects/coconut/plan.md
-agent-projects/coconut/progress.md
-agent-projects/coconut/project.md
-agent-projects/coconut/rules.md
+Coconut/.vault-chat/memory.md
+Coconut/.vault-chat/rules.md
+Coconut/AGENTS.md
 papers/attention.md
 
 What he is looking at now (refreshed as he scrolls):
@@ -115,7 +116,7 @@ Images (captures and pasted; read a path to see it):
 - [N min ago] capture of papers/yolo.pdf (page 4) — captured a region: .vault-chat/local/captures/<capture>.png
 Elsewhere (Ctrl+K/L, voice, inbox):
 - [N min ago] Ctrl+L ask · papers/yolo.pdf (page 4): asked "what does the decoupled head change?" — answer: classification and box regression get separate branches, which speeds convergence.
-- [N min ago] Ctrl+K edit · agent-projects/coconut/project.md: "tighten this paragraph" (accepted) — replaced 3 line(s) with 2: "We use a detector that..." → "We use YOLOv8..."
+- [N min ago] Ctrl+K edit · Coconut/AGENTS.md: "tighten this paragraph" (accepted) — replaced 3 line(s) with 2: "We use a detector that..." → "We use YOLOv8..."
 - [N min ago] Voice: Carl said: "how many tiles did the March flight make?"
 - [N min ago] Ctrl+L ask: asked "what is mAP50?" — answer: mean average precision at IoU 0.5.
 </you>

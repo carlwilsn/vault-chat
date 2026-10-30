@@ -59,6 +59,34 @@ export const masterScenarios: Scenario[] = [
     host,
     open: [{ sleep: 1500 }],
   },
+  // [final-model] Carl's final folder model (2026-10-29) against a REAL box: start preview/tools/finalModelBox.ts (the
+  // real server bundle on a migrated copy of a live-shaped vault-chat folder), then the dev server with
+  // VC_REALBOX=<its base>. This laptop's folder mirrors the box's: vaults school2 (IEMS 469 inside it) and vault-chat,
+  // and the repo projects/vault-chat. The titlebar's folder name opens the picker: Vaults and Projects.
+  {
+    id: "folders-final",
+    title: "Everything is a folder: the picker's Vaults and Projects, ⋯ Rename / Delete / Make this a project (real box)",
+    group: "Projects",
+    notes:
+      "Start preview/tools/finalModelBox.ts, then the dev server with VC_REALBOX=<its base>. The folder picker: Vaults (every folder; IEMS 469 shows where it is) and Projects (folders with a conversation). Picking a vault opens it and the chat stays as it is; picking a project opens its folder and its thread.",
+    clock: new Date().toISOString(),
+    build: (ctx: BuildCtx) => {
+      const up = "../../vc";
+      ctx.write(`${up}/.vault-chat-master.json`, JSON.stringify({ box: "http://realbox.localhost", name: "box" }, null, 2) + "\n");
+      ctx.write(`${up}/vaults/school2/README.md`, "# school2\n");
+      ctx.write(`${up}/vaults/school2/IEMS 469/course-notes.html`, "<html><body><h1>IEMS 469</h1></body></html>\n");
+      ctx.write(`${up}/vaults/school2/IEMS 469/lectures/lecture-07.md`, "# Lecture 7: value iteration\n");
+      ctx.write(`${up}/vaults/school2/Psych 221/essay.md`, "# Essay draft\n\nOn memory.\n");
+      ctx.write(`${up}/vaults/school2/Physics 135/ps5.md`, "# Problem set 5\n");
+      ctx.write(`${up}/vaults/vault-chat/reports/QUEUE.md`, "# Queue\n\n1. the folder model\n");
+      ctx.write(`${up}/projects/vault-chat/AGENTS.md`, "# vault-chat\n\nThe rules for the agent that builds vault-chat.\n");
+      ctx.write(`${up}/projects/vault-chat/src/main.tsx`, "export {};\n");
+      ctx.ls["vault_chat_master_path"] = LAPTOP_MASTER;
+    },
+    host: () => ({ sync: { box: { box: "http://realbox.localhost", vault: "school2" }, boxPerVault: true, reports: [{ configured: true, ok: true, message: "ok" }] } as any }),
+    surfaces: ["desktop"],
+    open: [{ sleep: 1500 }],
+  },
 ];
 
 export { openSettings };

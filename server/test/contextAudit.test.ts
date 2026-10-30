@@ -209,11 +209,12 @@ beforeAll(async () => {
   store.setState({ vaultPath: vault, conversationsLoaded: true });
   const ctx = await import("../context");
   ctx.configureContext({ vault, agentModel: "openai/gpt-6.1-sol" });
-  ctx.withVault(vault, () => ctx.ensureProject("Coconut", "Detect coconuts in drone images."));
-  const pdir = join(vault, "agent-projects", "coconut");
-  writeFileSync(join(pdir, "memory.md"), "# Memory\n\n## Decisions\n\n- YOLOv8 at 640px; tiles of 1024 with 128 overlap.\n- Labels in labels/ (CVAT export).\n\n## Learned\n\n- Shadows cause false positives before 9am.\n");
-  writeFileSync(join(pdir, "plan.md"), "# Plan\n\n1. Tile the March flight.\n2. Train v3.\n3. Count per hectare.\n");
-  writeFileSync(join(pdir, "progress.md"), "# Progress\n\n- 2026-10-14: tiled the March flight (4,812 tiles).\n- 2026-10-15: v3 training started, mAP50 0.71 at epoch 20.\n");
+  // A project is a folder with its own conversation: Coconut/ with its AGENTS.md, .vault-chat/memory.md and rules.md.
+  ctx.withVault(vault, () => ctx.ensureProject("Coconut"));
+  const folder = join(vault, "Coconut");
+  const pdir = join(folder, ".vault-chat");
+  writeFileSync(join(folder, "AGENTS.md"), "# Coconut\n\nDetect coconuts in drone images.\n");
+  writeFileSync(join(pdir, "memory.md"), "# Coconut: memory\n\n- 2026-10-12: YOLOv8, 640px input; 1024 tiles, 128 overlap.\n- Labels in labels/ (CVAT export).\n- Shadows cause false positives before 9am.\n- 2026-10-14: tiled the March flight (4,812 tiles).\n- 2026-10-15: v3 training started, mAP50 0.71 at epoch 20.\n");
   writeFileSync(join(pdir, "rules.md"), "- Report mAP50 and the count error together.\n");
   const { Engine } = await import("../engine/engine");
   backend = withPiSessions(new FakeBackend(), join(root, "pi"));
@@ -235,7 +236,7 @@ beforeAll(async () => {
   act.activityPost(vault, { entry: { kind: "focus", modality: "editor", text: 'selected "anchor-free detection head"', path: "papers/yolo.pdf", where: "selection", project: "coconut" } });
   act.activityPost(vault, { entry: { kind: "capture", modality: "capture", text: "captured a region", path: "papers/yolo.pdf", where: "page 4", project: "coconut" }, imageBase64: PNG, imageMime: "image/png" });
   act.activityPost(vault, { entry: { kind: "ask", modality: "ctrl-l", text: 'asked "what does the decoupled head change?"', detail: "answer: classification and box regression get separate branches, which speeds convergence.", path: "papers/yolo.pdf", where: "page 4", project: "coconut" } });
-  act.activityPost(vault, { entry: { kind: "edit", modality: "ctrl-k", text: '"tighten this paragraph"', detail: 'replaced 3 line(s) with 2: "We use a detector that..." → "We use YOLOv8..."', outcome: "accepted", path: "agent-projects/coconut/project.md", project: "coconut" } });
+  act.activityPost(vault, { entry: { kind: "edit", modality: "ctrl-k", text: '"tighten this paragraph"', detail: 'replaced 3 line(s) with 2: "We use a detector that..." → "We use YOLOv8..."', outcome: "accepted", path: "Coconut/AGENTS.md", project: "coconut" } });
   act.activityPost(vault, { entry: { kind: "voice", modality: "voice", text: 'Carl said: "how many tiles did the March flight make?"' } });
   act.activityPost(vault, { entry: { kind: "voice", modality: "voice", text: 'Voice replied: "4,812 tiles, from the progress notes."' } });
 });

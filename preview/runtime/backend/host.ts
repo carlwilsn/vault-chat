@@ -356,6 +356,11 @@ export const hostCommands: Record<string, (a: Record<string, any>) => unknown> =
   // ---- sync ----
   vault_box_config: ({ vault }) => {
     if (vault) laptopVault = String(vault);
+    // [final-model] Each vault in the laptop's vault-chat folder names its own box vault (as its sync.json does);
+    // anything else is the box's main vault.
+    const per = (cfg.sync as { boxPerVault?: boolean } | undefined)?.boxPerVault;
+    const m = per && vault ? /\/vaults\/([^/]+)\/?$/.exec(String(vault).split("\\").join("/")) : null;
+    if (cfg.sync?.box && per) return { ...cfg.sync.box, vault: m ? m[1] : "" };
     return cfg.sync?.box ?? null;
   },
   vault_box_sync: async ({ vault }) => {

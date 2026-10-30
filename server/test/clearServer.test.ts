@@ -4,10 +4,10 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { join } from "node:path";
 import { readFileSync, readdirSync, writeFileSync, mkdirSync } from "node:fs";
-import { tmp, cleanup, makeVault, makeKeyStore, fakeOpenRouter, startServer, waitFor, type Running, type FakeOpenRouter } from "./helpers";
+import { tmp, cleanup, makeVault, makeKeyStore, fakeOpenRouter, startServer, waitFor, seedProject, type Running, type FakeOpenRouter } from "./helpers";
 import { fold, shown } from "../../src/convlog/reduce";
 
-let home: string, vault: string, secrets: string;
+let home: string, vault: string, secrets: string, coconut: string;
 let or: FakeOpenRouter;
 let srv: Running;
 
@@ -32,8 +32,7 @@ const idle = async (id: string) => {
 beforeAll(async () => {
   home = tmp("vcclear-");
   vault = makeVault(join(home, "vault"));
-  mkdirSync(join(vault, "agent-projects", "coconut"), { recursive: true });
-  writeFileSync(join(vault, "agent-projects", "coconut", "project.md"), "# Coconut\n\n## Memory\n\n- 2026-10-20: overlap 128\n");
+  coconut = seedProject(vault, "coconut", { folder: "Coconut", memory: "# Coconut: memory\n\n- 2026-10-20: overlap 128\n" });
   mkdirSync(join(vault, ".vault-chat"), { recursive: true });
   writeFileSync(join(vault, ".vault-chat", "MEMORY.md"), "# Memory\n\n- 2026-10-01: Carl likes one worked example\n");
   secrets = await makeKeyStore(join(home, "secrets"), { "api.openrouter": "sk-or-canary-not-real" });
@@ -60,7 +59,8 @@ describe("Main over HTTP", () => {
     await waitFor(() => idle("main"), 30_000);
     const sent = JSON.stringify(or.calls.at(-1));
     expect(sent).toContain("Carl likes one worked example");
-    expect(sent).toContain("agent-projects/coconut/project.md");
+    // Where each project is (its folder), never what it remembers.
+    expect(sent).toContain(`- Coconut: ${coconut.split("\\").join("/")}`);
     expect(sent).not.toContain("overlap 128");
   });
 
@@ -103,7 +103,7 @@ describe("Main over HTTP", () => {
     await post("/api/v1/models/agent", { model: before.box.chat.id });
   });
 
-  it("+ New project makes the project and its thread; a send to it carries its project.md", async () => {
+  it("+ New project makes the project and its thread; a send to a project carries its memory", async () => {
     const r = await post("/projects", { name: "Psych 221" });
     expect(r).toMatchObject({ ok: true, slug: "psych-221", convId: "project-psych-221" });
     const calls0 = or.calls.length;

@@ -12,7 +12,7 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { cleanup } from "./helpers";
+import { cleanup, seedProject } from "./helpers";
 import { makeRig, until, type Rig } from "./longRig";
 
 let rig: Rig;
@@ -103,34 +103,35 @@ describe("projects: only Carl decides what is a project", () => {
     const { setProject } = await import("../projectRoutes");
     expect(await setProject(rig.vault, { convId: s.convId, project: "Coconut" })).toEqual({ ok: true, project: "coconut" });
     expect((await rig.readConv(s.convId)).project).toBe("coconut");
-    expect(existsSync(join(rig.vault, "agent-projects", "coconut", "project.md"))).toBe(true);
-    for (const f of ["memory.md", "plan.md", "progress.md"]) expect(existsSync(join(rig.vault, "agent-projects", "coconut", f))).toBe(false);
+    // A project is a folder with its own conversation: a new folder of that name, its memory file, nothing else.
+    expect(existsSync(join(rig.vault, "Coconut", ".vault-chat", "memory.md"))).toBe(true);
+    for (const f of ["plan.md", "progress.md", "project.md"]) expect(existsSync(join(rig.vault, "Coconut", ".vault-chat", f))).toBe(false);
+    expect(existsSync(join(rig.vault, "agent-projects"))).toBe(false);
     // ListProjects (pi) now shows it with this chat.
     const t = await rig.start("Which projects do I have?");
     const r = await rig.backend.call(t.tid, "ListProjects", {});
-    expect(out(r)).toContain('- Coconut (coconut): 1 chat(s): "A chat with no project."');
+    expect(out(r)).toMatch(/- Coconut \(coconut\), the folder \S.*Coconut: 1 chat\(s\): "A chat with no project."/);
     await settle(t);
   });
 
   it("a project is context, not a boundary: a chat in project X edits a file of project Y", async () => {
-    mkdirSync(join(rig.vault, "agent-projects", "psych-221"), { recursive: true });
-    writeFileSync(join(rig.vault, "agent-projects", "psych-221", "project.md"), "# Psych 221\n\nEssays in APA style.\n");
-    writeFileSync(join(rig.vault, "agent-projects", "psych-221", "reading-list.md"), "- Kahneman\n");
+    const psych = seedProject(rig.vault, "psych-221", { folder: "Psych 221", agents: "Essays in APA style.\n" });
+    writeFileSync(join(psych, "reading-list.md"), "- Kahneman\n");
     const threads = rig.backend.threads.length;
     const s = await rig.start("Add Tversky to the Psych 221 reading list.", { project: "coconut" });
     const th = rig.backend.threads[threads];
     // The project's one thread (src/threads.ts).
     expect(s.convId).toBe("project-coconut");
     expect((await rig.readConv(s.convId)).project).toBe("coconut");
-    // The working directory is the vault (no main folder named); the instructions say the vault is open to it.
-    expect(th.cwd).toBe(rig.vault);
+    // The working directory is the project's folder; the instructions say the rest is open to it.
+    expect(th.cwd).toBe((await import("../projectFolders")).registeredFolder(rig.vault, "coconut"));
     expect(th.instructions).toContain('This is the thread of Carl\'s project "Coconut"');
-    expect(th.instructions).toContain("A project is context, not a wall: from any thread you may read and write anywhere in the vault and in your work area");
+    expect(th.instructions).toContain("A project is context, not a wall: from any thread you may read and write anywhere the sandbox lets you");
     // pi's own write/edit tools: the path guard lets a project-X chat write project Y's files.
     const { guardToolCall } = await import("../engine/pi/ext/policy.mjs" as any);
     const opts = { cwd: rig.vault, home: rig.root, denyRead: [join(rig.root, "secrets")], denyWrite: [join(rig.vault, ".vault-chat", "conversations")] };
-    expect(guardToolCall("edit", { path: "agent-projects/psych-221/reading-list.md" }, opts)).toBeNull();
-    expect(guardToolCall("write", { path: join(rig.vault, "agent-projects", "psych-221", "project.md") }, opts)).toBeNull();
+    expect(guardToolCall("edit", { path: "Psych 221/reading-list.md" }, opts)).toBeNull();
+    expect(guardToolCall("write", { path: join(psych, ".vault-chat", "memory.md") }, opts)).toBeNull();
     // Voice in the same chat: its Ask is a side request of this chat (forked from it, as of it), never a turn of it.
     await settle(s);
     const before = rig.backend.turns.length;
@@ -138,7 +139,7 @@ describe("projects: only Carl decides what is a project", () => {
     await voice.voiceAsksSettled();
     expect(asked.at(-1)).toMatchObject({ convId: s.convId, tools: "act" });
     expect(rig.backend.turns.length).toBe(before);
-    expect(readFileSync(join(rig.vault, "agent-projects", "psych-221", "reading-list.md"), "utf8")).toBe("- Kahneman\n");
+    expect(readFileSync(join(psych, "reading-list.md"), "utf8")).toBe("- Kahneman\n");
   });
 });
 
@@ -152,7 +153,7 @@ describe("direct action, sized to the ask, read back", () => {
     expect(instr).toContain("Read back before you claim. After any edit, confirm it from the tool's own output or by re-reading the file");
     expect(instr).toContain("finish by reading back what you changed and saying what you checked");
     // No ceremony tools or modes: no keep-going, no Done verifier, no project tools.
-    expect(instr).not.toMatch(/KeepWorking|keep-going|\bDone\b|\bBlocked\b|Done means proved|SetProject|ProjectMemory|memory\.md|plan\.md/);
+    expect(instr).not.toMatch(/KeepWorking|keep-going|\bDone\b|\bBlocked\b|Done means proved|SetProject|ProjectMemory|plan\.md/);
     await settle(s);
   });
 

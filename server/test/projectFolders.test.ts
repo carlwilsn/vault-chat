@@ -4,7 +4,7 @@
 //     read-write, nothing else new, what is hidden stays hidden inside it). The argv itself runs under real
 //     bubblewrap on Linux (the last test; the box runs it);
 //   - end to end, the real bundle and engine on the fake pi (fakePiCli.mjs: pi's RPC, its context-file loading
-//     and its write tool) with a fake OpenRouter: "+ New project" with a folder outside the vault, its thread's
+//     and its write tool) with a fake OpenRouter: "Make this a project" on a folder outside the vault, its thread's
 //     pi in that folder with its AGENTS.md, its writes there, a system path refused, the file tree's listing,
 //     reading and writing its files, and Delete/Restore leaving the folder untouched.
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
@@ -62,7 +62,6 @@ describe("which folders may be a project's", () => {
   });
 
   it("the registry is the server's: register, retire with a delete, revive with a restore", () => {
-    mkdirSync(join(vault, "agent-projects", "vc"), { recursive: true });
     const w = pf.registerFolder(vault, "vc", join(home, "github", "vault-chat"));
     expect("abs" in w).toBe(true);
     expect(fwd(pf.FOLDERS_FILE)).toBe(".vault-chat/local/project-folders.json");
@@ -71,7 +70,7 @@ describe("which folders may be a project's", () => {
     expect(pf.activeFolders(vault)).toEqual([]);
     pf.reviveFolder(vault, "vc-20261027-120000", "vc");
     expect(pf.registeredFolder(vault, "vc")).toBe(join(home, "github", "vault-chat"));
-    // A project.md the agent writes can't name one: a folder outside the vault only through the registry.
+    // The agent can't name one: a folder becomes a project only through the registry (the server's own state).
     expect(readdirSync(join(vault, ".vault-chat", "local"))).toContain("project-folders.json");
   });
 });
@@ -197,13 +196,14 @@ describe("end to end: a project working in a folder outside the vault (real engi
     expect(existsSync(join(vault, "agent-projects", "bad"))).toBe(false);
   });
 
-  it("+ New project with a folder on the box: its thread runs pi in that folder, which loads its AGENTS.md", async () => {
-    const r = await post("/projects", { name: "Vault Chat", folder: fwd(folder) });
-    expect(r.body).toMatchObject({ ok: true, slug: "vault-chat", convId: "project-vault-chat", created: true, folder: fwd(folder) });
-    // Its notes and memory stay where projects keep them; the choice is the server's, not project.md's.
-    expect(readFileSync(join(vault, "agent-projects", "vault-chat", "project.md"), "utf8")).toBe("# Vault Chat\n");
+  it("Make this a project on a folder on the box: its thread runs pi in that folder, which loads its AGENTS.md", async () => {
+    const r = await post("/projects", { folder: fwd(folder) });
+    // The project is named after its folder.
+    expect(r.body).toMatchObject({ ok: true, slug: "vault-chat", name: "vault-chat", convId: "project-vault-chat", created: true, folder: fwd(folder), vault: "school2" });
+    // Its memory is in the folder; the choice is the server's (the registry), never the agent's.
+    expect(readFileSync(join(folder, ".vault-chat", "memory.md"), "utf8")).toBe("# vault-chat: memory\n");
     expect(JSON.parse(readFileSync(join(vault, ".vault-chat", "local", "project-folders.json"), "utf8")).folders["vault-chat"].path).toBe(folder);
-    expect((await get("/projects")).body.projects).toContainEqual({ slug: "vault-chat", name: "Vault Chat", folder: fwd(folder) });
+    expect((await get("/projects")).body.projects).toContainEqual({ slug: "vault-chat", name: "vault-chat", folder: fwd(folder), vault: "school2", rel: null });
 
     const s = await post("/api/v2/intent", { type: "send", clientId: "c-pf-1", convId: "project-vault-chat", text: "Hello in the checkout, CWD-MARKER." });
     expect(s.body).toMatchObject({ ok: true, convId: "project-vault-chat" });
@@ -212,7 +212,7 @@ describe("end to end: a project working in a folder outside the vault (real engi
     const sent = JSON.stringify(or.calls.find((c) => JSON.stringify(c).includes("CWD-MARKER")));
     expect(sent).toContain("PROJECT-AGENTS-MARKER: run the gates before you push.");
     expect(sent).toContain(`${fwd(folder)}/ is this project's folder on the box`);
-    expect(sent).toContain("agent-projects/vault-chat/project.md");
+    expect(sent).toContain(`${fwd(folder)}/.vault-chat/memory.md`);
   });
 
   it("its writes land in the folder (relative to it); none of it reaches the vault", async () => {
@@ -230,18 +230,8 @@ describe("end to end: a project working in a folder outside the vault (real engi
     await waitFor(() => or.calls.some((c) => JSON.stringify(c).includes("MAIN-MARKER")), 30_000);
     expect(sessionCwd("MAIN-MARKER")).toBe(vault);
     const sent = JSON.stringify(or.calls.find((c) => JSON.stringify(c).includes("MAIN-MARKER")));
-    expect(sent).toContain(`Vault Chat: agent-projects/vault-chat/project.md (works in ${fwd(folder)})`);
+    expect(sent).toContain(`- vault-chat: ${fwd(folder)}`);
     expect(sent).not.toContain("PROJECT-AGENTS-MARKER");
-  });
-
-  it("the file tree: the folder's entries from the box (folders first, .git left out); nothing outside a project folder", async () => {
-    const d = await get(`/api/v1/box/dir?path=${encodeURIComponent(fwd(folder))}`);
-    expect(d.status).toBe(200);
-    expect(d.body.entries.map((e: any) => [e.name, e.is_dir])).toEqual([["src", true], ["AGENTS.md", false], ["NOTES.md", false], ["README.md", false]]);
-    expect(d.body).toMatchObject({ slug: "vault-chat", root: fwd(folder) });
-    const sub = await get(`/api/v1/box/dir?path=${encodeURIComponent(fwd(join(folder, "src")))}`);
-    expect(sub.body.entries.map((e: any) => e.name)).toEqual(["main.ts"]);
-    for (const p of [fwd(home), fwd(join(home, "secrets")), fwd(join(folder, ".git")), "relative/path"]) expect((await get(`/api/v1/box/dir?path=${encodeURIComponent(p)}`)).status).toBe(403);
   });
 
   it("opening and editing a file: read through the box file route, Carl's edit written back to the box", async () => {
@@ -259,24 +249,10 @@ describe("end to end: a project working in a folder outside the vault (real engi
     }
   });
 
-  it("the folder chooser: the box's folders from the home, each marked whether it may be a project's", async () => {
-    const r = await get("/api/v1/box/folders");
-    expect(r.status).toBe(200);
-    expect(r.body.path).toBe(fwd(home));
-    expect(r.body.ok).toBe(false);
-    const names = Object.fromEntries(r.body.dirs.map((d: any) => [d.name, d.ok]));
-    expect(names.github).toBe(true);
-    expect(names.secrets).toBeUndefined(); // the key store is not even listed
-    expect(names.state).toBeUndefined();
-    const g = await get(`/api/v1/box/folders?path=${encodeURIComponent(fwd(join(home, "github")))}`);
-    expect(g.body.dirs.map((d: any) => [d.name, d.ok])).toEqual([["vault-chat", true]]);
-    expect((await get(`/api/v1/box/folders?path=${encodeURIComponent(fwd(join(home, "secrets")))}`)).status).toBe(403);
-  });
-
-  it("+ New project with a new folder: ~/projects/<slug> is made and chosen", async () => {
-    const r = await post("/projects", { name: "Whiteboard Lab", newFolder: true });
-    expect(r.body).toMatchObject({ ok: true, slug: "whiteboard-lab", folder: fwd(join(home, "projects", "whiteboard-lab")) });
-    expect(existsSync(join(home, "projects", "whiteboard-lab"))).toBe(true);
+  it("+ New project by name: a new folder of that name in the open vault, made a project", async () => {
+    const r = await post("/projects", { name: "Whiteboard Lab" });
+    expect(r.body).toMatchObject({ ok: true, slug: "whiteboard-lab", name: "Whiteboard Lab", folder: fwd(join(vault, "Whiteboard Lab")) });
+    expect(existsSync(join(vault, "Whiteboard Lab", ".vault-chat", "memory.md"))).toBe(true);
   });
 
   it("Delete leaves the folder and every file in it untouched (its listing gone with the project); Restore brings the choice back", async () => {
@@ -288,10 +264,10 @@ describe("end to end: a project working in a folder outside the vault (real engi
     expect(readFileSync(join(folder, "AGENTS.md"), "utf8")).toContain("PROJECT-AGENTS-MARKER");
     expect((await get("/projects")).body.projects.map((p: any) => p.slug)).not.toContain("vault-chat");
     // A deleted project's folder is no longer the app's (nor the sandbox's) to write.
-    expect((await get(`/api/v1/box/dir?path=${encodeURIComponent(fwd(folder))}`)).status).toBe(403);
+    expect((await post("/api/v1/vault/file", { path: fwd(join(folder, "README.md")), text: "no" })).status).toBe(403);
     const back = await post("/api/v2/intent", { type: "restoreProject", slug: "vault-chat", client: "laptop" });
     expect(back.body).toMatchObject({ ok: true, slug: "vault-chat" });
-    expect((await get("/projects")).body.projects).toContainEqual({ slug: "vault-chat", name: "Vault Chat", folder: fwd(folder) });
+    expect((await get("/projects")).body.projects).toContainEqual(expect.objectContaining({ slug: "vault-chat", name: "vault-chat", folder: fwd(folder) }));
     expect(readdirSync(folder).sort()).toEqual(before);
   });
 });

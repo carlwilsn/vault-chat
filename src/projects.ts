@@ -1,20 +1,17 @@
-// Projects on the desktop: the project chip in the chat, "New chat in project"
-// and the chat list grouped by project.
+// Projects on the desktop: the folder picker's Projects tab, the chat panel's project rows, the chip.
 //
-// A project is a plain grouping: a folder `<vault>/agent-projects/<slug>/`
-// (src/agentProjects.ts names it; server/context/projects.ts reads it) whose
-// project.md is the project's shared notes, hidden from the file tree by
-// default; a conversation carries the slug in its `project` meta field. Only
-// Carl makes projects and moves chats (this chip, the chats list): no agent
-// tool does. In box mode the box authors every conversation, so the
-// list and the tagging go to the box (`GET /projects`,
-// `POST /conversation/project`); otherwise they are read and written here.
+// A project is a folder with a conversation of its own (server/context/projects.ts): its thread
+// (project-<slug>), its folder (the thread's cwd: AGENTS.md, .vault-chat/memory.md, .vault-chat/rules.md).
+// Main and the projects are the box's, whatever folder is open here (GET /projects lists every vault's).
+// Only Carl makes projects ("Make this a project" on a folder, "+ New project"): no agent tool does on
+// its own. Without a box the older local form (agent-projects/<slug>/project.md) is read and written here.
 import { invoke } from "@tauri-apps/api/core";
 import { useStore, type FileEntry } from "./store";
 import { boxLinkFor, boxGet, boxPost } from "./boxChat";
 import { PROJECTS_DIR } from "./agentProjects";
 import { emptyConversation } from "./conversations";
 import { MAIN_ID, MAIN_TITLE, projectOfThread, projectThreadId } from "./threads";
+import { boxPathOf, readTextAt } from "./boxFiles";
 
 export type Prepared = { moved: string[]; kept: string[]; hidden: boolean };
 
@@ -51,8 +48,9 @@ async function runPrepare(vault: string): Promise<Prepared | null> {
   }
 }
 
-/** `folder`: the folder on the box the project works in, when Carl chose one outside the vault (server/projectFolders.ts). */
-export type ProjectInfo = { slug: string; name: string; folder?: string };
+/** `folder`: the project's folder on the box; `rel`: that folder relative to the vault-chat folder (null: outside it);
+ *  `vault`: the vault that owns it on the box. */
+export type ProjectInfo = { slug: string; name: string; folder?: string; rel?: string | null; vault?: string };
 
 /** The same slug rule as server/context/files.ts. */
 export function slugify(name: string): string {
@@ -226,18 +224,18 @@ export function openThread(id: string, title?: string): void {
  */
 export async function createProjectThread(
   name: string,
-  where: { folder?: string; newFolder?: boolean } = {},
+  where: { folder?: string } = {},
 ): Promise<{ ok: true; id: string; slug: string } | { ok: false; error: string }> {
   const vault = useStore.getState().vaultPath;
   const want = name.trim();
-  if (!vault || !want) return { ok: false, error: "no name" };
+  if (!vault || (!want && !where.folder)) return { ok: false, error: "no name" };
   const link = await boxLinkFor(vault);
   let slug: string;
   let title = want;
-  if (!link && (where.folder || where.newFolder)) return { ok: false, error: "a folder on the box needs the box connected" };
+  if (!link && where.folder) return { ok: false, error: "a project needs the box connected" };
   if (link) {
-    // A folder on the box it works in (one Carl chose, or a new ~/projects/<slug>): the box checks it first.
-    const r = await boxPost(link, "/projects", { name: want, ...(where.folder ? { folder: where.folder } : where.newFolder ? { newFolder: true } : {}) });
+    // "Make this a project" (`folder`: relative to the vault-chat folder) or a new folder of that name in the open vault.
+    const r = await boxPost(link, "/projects", where.folder ? { folder: where.folder } : { name: want });
     if (!r.ok) return { ok: false, error: r.error ?? "the box refused" };
     slug = String(r.data?.slug ?? slugify(want));
     title = String(r.data?.name ?? want);
@@ -263,13 +261,14 @@ function projectsChanged(): void {
  * agent-projects/.deleted/, recoverable), the folder it names and the rest of his files stay. A screen on its
  * thread lands on Main. On the box, every surface follows (server: Engine.deleteProject).
  */
-export async function deleteProject(slug: string): Promise<{ ok: true } | { ok: false; error: string }> {
+export async function deleteProject(slug: string, o: { folder?: boolean } = {}): Promise<{ ok: true } | { ok: false; error: string }> {
   const vault = useStore.getState().vaultPath;
   if (!vault || !slug) return { ok: false, error: "no project" };
   const id = projectThreadId(slug);
   const link = await boxLinkFor(vault);
   if (link) {
-    const r = await boxPost(link, "/api/v2/intent", { type: "deleteProject", slug, client: "laptop" });
+    // `folder`: Carl's second choice — the folder goes too (recoverably: committed, then removed in git).
+    const r = await boxPost(link, "/api/v2/intent", { type: "deleteProject", slug, ...(o.folder ? { folder: true } : {}), client: "laptop" });
     if (!r.ok) return { ok: false, error: r.error ?? "the box refused" };
   } else {
     const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\..*$/, "").replace("T", "-");
@@ -331,9 +330,20 @@ export function routeProjectNotesTo(fn: (slug: string, name: string) => void): v
   notesToMain = fn;
 }
 
-/** A project's shared notes file, `<vault>/agent-projects/<slug>/project.md`. */
+/** A project's notes file without a box: `<vault>/agent-projects/<slug>/project.md` (the older local form). */
 export function projectNotesPath(vault: string, slug: string): string {
   return `${vault}/${PROJECTS_DIR}/${slug}/project.md`;
+}
+
+/** Carl's ⋯ on a folder that is not a project (the picker): Rename or Delete, done on the box (server/folderOps.ts:
+ *  recoverable through git). `rel`: relative to the vault-chat folder. */
+export async function folderAction(op: "rename" | "delete", rel: string, name?: string): Promise<{ ok: true; rel?: string | null } | { ok: false; error: string }> {
+  const link = await boxLinkFor(useStore.getState().vaultPath);
+  if (!link) return { ok: false, error: "the box is not connected" };
+  const r = await boxPost(link, "/api/v1/folders", { op, path: rel, ...(name ? { name } : {}) });
+  if (!r.ok) return { ok: false, error: r.error ?? "the box refused" };
+  projectsChanged();
+  return { ok: true, rel: (r.data?.rel as string | null | undefined) ?? null };
 }
 
 /**
@@ -350,6 +360,18 @@ export async function openProjectNotes(slug: string, name: string): Promise<stri
   const s = useStore.getState();
   const vault = s.vaultPath;
   if (!vault || !slug || slug !== slugify(slug)) return null;
+  // On the box: the project's memory in its folder, read and written through the box (src/boxFiles.ts).
+  const link = await boxLinkFor(vault);
+  if (link) {
+    const p = (await listProjects(vault)).find((x) => x.slug === slug);
+    if (!p?.folder) return null;
+    const path = boxPathOf(`${p.folder}/.vault-chat/memory.md`);
+    const content = await readTextAt(path).catch(() => `# ${p.name}: memory\n`);
+    const st = useStore.getState();
+    if (st.chatFullscreen) st.toggleChatFullscreen();
+    st.setCurrentFile(path, content);
+    return path;
+  }
   const p = projectNotesPath(vault, slug);
   let content: string;
   const exists = await invoke<boolean>("path_exists", { path: p }).catch(() => false);

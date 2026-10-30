@@ -38,7 +38,7 @@ describe("projects are plain groupings", () => {
   });
 
   it("a new project (Carl's action) is its folder and a project.md that names it: no plan, progress or memory files", () => {
-    const p = createProject("Coconut Detector", "Find coconuts in photos.");
+    const p = createProject("Coconut Detector");
     expect(p).toEqual({ slug: "coconut-detector", name: "Coconut Detector", dir: pdir("coconut-detector") });
     expect(readdirSync(pdir("coconut-detector"))).toEqual(["project.md"]);
     expect(readFileSync(join(pdir("coconut-detector"), "project.md"), "utf8")).toBe("# Coconut Detector\n\nFind coconuts in photos.\n");
@@ -68,7 +68,7 @@ describe("projects are plain groupings", () => {
   });
 
   it("ListProjects lists the projects with their chats, and one project's notes and chats; it changes nothing", async () => {
-    createProject("Psych 221", "Readings and essays.");
+    createProject("Psych 221");
     createProject("Whiteboard");
     const convs: ContextConv[] = [
       { id: "a", title: "Week 3 reading", project: "psych-221", lastActivityAt: 3 },

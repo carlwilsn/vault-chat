@@ -17,7 +17,7 @@ import { loadConfig, SERVER_VERSION, SERVER_REV } from "./config";
 import { registerCommands } from "./commands";
 import { loadKeyStore, hasKey, keychainCommands, saveKeys, keyNames } from "./keys";
 import { hostname, userInfo } from "node:os";
-import { setLegacySource, signal, convLog } from "./convlog/log";
+import { setLegacySource, signal, convLog, setSharedClock, setFeedVaults } from "./convlog/log";
 import { legacySource } from "./convlog/importer";
 
 function fatal(msg: string, code = 2): never {
@@ -56,6 +56,8 @@ async function main(): Promise<void> {
   registerCommands();
   // Every vault's conversations are its event log; an older conversation file is imported when first opened.
   setLegacySource(legacySource);
+  // Every vault's log takes its seqs from one clock: the clients read one feed over all of them (GlobalFeed).
+  setSharedClock(join(cfg.stateDir, "convlog-clock"));
 
   // Keys: in-process from the box's encrypted store. No OpenRouter key, no
   // missions — refuse to start rather than run turns with zero keys.
@@ -97,6 +99,9 @@ async function main(): Promise<void> {
   // Every vault on the box; the main one keeps its own paths (config).
   const vaultRefs = () =>
     listVaults().map((v) => (v.main ? { name: v.name, path: cfg.vault, bare: cfg.bareRepo, main: true } : { name: v.name, path: vaultPaths(v.name).vault, bare: vaultPaths(v.name).bare, main: false }));
+  // The clients' feed: every vault's conversations, whatever vault is open; Main is the main vault's.
+  setFeedVaults(cfg.vault, () => vaultRefs().map((v) => v.path));
+  for (const v of vaultRefs()) convLog(v.path);
   const liveEdits = new LiveEdits({
     flush: (name) => syncNow(name === cfg.vaultName ? undefined : name),
     // A signal in that vault's log.
@@ -143,6 +148,19 @@ async function main(): Promise<void> {
     const main = ready();
     return v.main || !engine.open ? main : await engine.open(v);
   };
+  // Conversations are the box's, not a vault's: a message to one goes to the engine of the vault whose log holds it
+  // (Main: the main vault's; OpenProject's hand-over to a project of another vault).
+  const { setConversationRouter } = await import("./projectRoutes");
+  const { ownerVault } = await import("./convlog/log");
+  setConversationRouter(async (b) => {
+    const at = ownerVault(b.convId, cfg.vault);
+    const v = vaultRefs().find((x) => x.path === at) ?? vaultRefs().find((x) => x.main)!;
+    return (await engineOf(v)).message(b);
+  }, vaultRefs);
+  // Carl's ⋯ on a folder (server/folderOps.ts): what it may act on.
+  const { setFolderOpsWalls } = await import("./folderOps");
+  const { masterDir } = await import("./master");
+  setFolderOpsWalls(() => ({ master: masterDir(), mainVault: cfg.vault, vaults: vaultRefs().map((v) => v.path) }));
   // One-shots on the box itself (a note's title): pi, no session, no tools (engine/pi/side.ts).
   (await import("../src/complete")).setComplete((req) => ready().once(req));
   void engineBoot
@@ -280,6 +298,7 @@ async function main(): Promise<void> {
       },
     },
     vault: vaultOf,
+    vaultList: vaultRefs,
     vaultStatus: async (v) => {
       const h: any = engine.engine ? (await engineOf(v)).health() : {};
       return {
@@ -397,4 +416,5 @@ if (process.argv[2] === "record-ui") void import("./recordUI").then((m) => m.rec
 else if (process.argv[2] === "prove-change-ui" || process.argv[2] === "verify-change-video") void import("./changeUI").then(m => m.changeUICli(process.argv[2]!, process.argv[3]!));
 else if (process.argv[2] === "recover-published-release") void import("./publishedRecovery").then(async m => process.exit(await m.runPublishedRecoveryCli())).catch(e => fatal(`source recovery failed: ${String(e)}`, 1));
 else if (process.argv[2] === "master") void import("./masterCli").then(async (m) => process.exit(await m.runMasterCli(process.argv.slice(3))));
+else if (process.argv[2] === "projects") void import("./projectsCli").then(async (m) => process.exit(await m.runProjectsCli(process.argv.slice(3))));
 else main().catch((e) => fatal(`boot failed: ${e instanceof Error ? (e.stack ?? e.message) : String(e)}`, 1));

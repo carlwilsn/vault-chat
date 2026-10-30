@@ -162,10 +162,13 @@ function lastSeq(file: string): number {
   }
 }
 
+/** Where seqs come from. A log alone has its own; the box's logs share one (setSharedClock), so every seq any of them
+ *  hands out is above every seq any of them handed out before, and the global feed (GlobalFeed) stays one sequence. */
+export type SeqClock = { next: number; floorFile?: string; floor?: number };
+
 export class ConvLog {
   readonly dir: string;
   readonly epoch: string;
-  private next = 1;
   /** The highest seq written (the head a client sees); new seqs start above the reserved floor. */
   private last = 0;
   private reservedUpTo = 0;
@@ -187,6 +190,7 @@ export class ConvLog {
     readonly vault: string,
     private legacy: LegacySource | null = null,
     dir?: string,
+    private clock: SeqClock = { next: 1 },
   ) {
     this.dir = dir ?? join(vault, ".vault-chat", "events");
     mkdirSync(this.dir, { recursive: true });
@@ -214,8 +218,8 @@ export class ConvLog {
       floor = 0;
     }
     this.last = max;
-    this.next = Math.max(max, floor) + 1;
-    this.reserve();
+    this.clock.next = Math.max(this.clock.next, max + 1, floor + 1, (this.clock.floor ?? 0) + 1);
+    this.reserve(this.clock.next);
     this.refreshLegacy();
   }
 
@@ -232,14 +236,26 @@ export class ConvLog {
     return v;
   }
 
-  private reserve(): void {
-    this.reservedUpTo = this.next + BLOCK - 1;
+  private reserve(from: number): void {
+    this.reservedUpTo = from + BLOCK - 1;
     const p = join(this.dir, "_seq");
     try {
       writeFileSync(p + ".tmp", String(this.reservedUpTo));
       renameRetry(p + ".tmp", p);
     } catch (e) {
       console.warn("[convlog] could not persist the seq floor:", (e as Error).message);
+    }
+    // A shared clock keeps its own floor too: a log opened late after a restart never hands out a seq below one
+    // another log handed out before it.
+    const c = this.clock;
+    if (c.floorFile && (c.floor ?? 0) < this.reservedUpTo) {
+      c.floor = this.reservedUpTo;
+      try {
+        writeFileSync(c.floorFile + ".tmp", String(c.floor));
+        renameRetry(c.floorFile + ".tmp", c.floorFile);
+      } catch (e) {
+        console.warn("[convlog] could not persist the shared seq floor:", (e as Error).message);
+      }
     }
   }
 
@@ -290,8 +306,8 @@ export class ConvLog {
 
   /** Append one record for `conv` (null: a vault-level signal). Written before anyone hears of it. */
   emit(conv: string | null, body: EventBody, at = Date.now()): LogRecord {
-    const seq = this.next++;
-    if (seq >= this.reservedUpTo) this.reserve();
+    const seq = this.clock.next++;
+    if (seq >= this.reservedUpTo) this.reserve(seq);
     const rec = { seq, conv, at, ...body } as LogRecord;
     if (rec.type === "entry") rec.file = this.abs(rec.file);
     this.last = seq;
@@ -550,20 +566,40 @@ export class ConvLog {
   }
 }
 
-// ---------------------------------------------------------------- one log per vault
+// ---------------------------------------------------------------- one log per vault, one feed for the box
 
 const logs = new Map<string, ConvLog>();
 let legacyFor: ((vault: string) => LegacySource | null) | null = null;
+let shared: SeqClock | null = null;
+let sharedFloorFile: string | null = null;
 
 /** The importer for older conversation files (set once at boot; tests may leave it unset). */
 export function setLegacySource(fn: (vault: string) => LegacySource | null): void {
   legacyFor = fn;
 }
 
+/**
+ * Every log opened after this takes its seqs from one clock (its floor persisted in `floorFile`), so the global feed
+ * over all of them is one sequence. Set at boot, before any log is opened. null: each log its own clock (tests).
+ */
+export function setSharedClock(floorFile: string | null): void {
+  sharedFloorFile = floorFile;
+  shared = null;
+  if (!floorFile) return;
+  let floor = 0;
+  try {
+    floor = Number(readFileSync(floorFile, "utf8").trim()) || 0;
+  } catch {
+    floor = 0;
+  }
+  shared = { next: floor + 1, floorFile, floor };
+}
+
+/** A vault's own log: its conversations and its signals. The engines write here; the clients read the global feed. */
 export function convLog(vault: string): ConvLog {
   let l = logs.get(vault);
   if (!l) {
-    l = new ConvLog(vault, legacyFor?.(vault) ?? null);
+    l = new ConvLog(vault, legacyFor?.(vault) ?? null, undefined, shared ?? undefined);
     logs.set(vault, l);
   }
   return l;
@@ -572,6 +608,144 @@ export function convLog(vault: string): ConvLog {
 /** Tests: forget the open logs (a restart). */
 export function _resetConvLogs(): void {
   logs.clear();
+  feed = null;
+  if (sharedFloorFile) setSharedClock(sharedFloorFile);
+}
+
+/** Main's id (src/threads.ts MAIN_ID): one conversation for the whole box, the main vault's. */
+const MAIN = "main";
+
+/** Signals about conversations: every surface hears them whatever vault it has open. Every other signal (a file or
+ *  the vault changed, the inbox, a Show) is about one vault's files and reaches only the surfaces on that vault. */
+const CONVERSATION_SIGNALS = new Set(["follow", "project", "notif"]);
+
+/**
+ * The box's conversations, whatever vault is open (Carl, 2026-10-29: "conversations never change when the workspace
+ * changes"): one feed over every vault's log. Main is the main vault's (another vault's old Main is never shown);
+ * every other conversation is the one log that holds it. One sequence (the logs share a clock), so /poll?after=N is
+ * exact across all of them. Writing stays each engine's, into its own log. `here`: the open vault, whose own
+ * signals this view carries too.
+ */
+export class GlobalFeed {
+  constructor(
+    private main: () => ConvLog,
+    private all: () => ConvLog[],
+    private here: () => ConvLog = main,
+  ) {}
+  private logs(): ConvLog[] {
+    const m = this.main();
+    const h = this.here();
+    return [...new Set([m, h, ...this.all()])];
+  }
+  /** A row of `log` this feed shows: everything but another vault's old Main. */
+  private shows(log: ConvLog, conv: string | null): boolean {
+    return conv !== MAIN || log === this.main();
+  }
+  /** A record of `log` this feed shows: its conversations' (as above); its signals when it is the open vault's, or
+   *  when they are about conversations. */
+  private carries(log: ConvLog, r: LogRecord): boolean {
+    if (r.conv !== null) return this.shows(log, r.conv);
+    if (log === this.here()) return true;
+    const t = (r as { signal?: { type?: unknown } }).signal?.type;
+    return typeof t === "string" && CONVERSATION_SIGNALS.has(t);
+  }
+  /** The log holding conversation `id` (Main: the main vault's), or null. */
+  owner(id: string): ConvLog | null {
+    if (id === MAIN) return this.main();
+    for (const l of this.logs()) if (l.has(id)) return l;
+    return null;
+  }
+  get vault(): string {
+    return this.main().vault;
+  }
+  /** Every log's identity: a cursor from one vault's log alone (before the feed was one) starts over. */
+  get epoch(): string {
+    const ls = this.logs();
+    return ls.length === 1 ? ls[0]!.epoch : `g.${ls.map((l) => l.epoch).join(".")}`;
+  }
+  latest(): number {
+    return Math.max(0, ...this.logs().map((l) => l.latest()));
+  }
+  has(id: string): boolean {
+    return !!this.owner(id);
+  }
+  picture(id: string): Picture | null {
+    return this.owner(id)?.picture(id) ?? null;
+  }
+  rows(): RowState[] {
+    const out: RowState[] = [];
+    const seen = new Set<string>();
+    for (const l of this.logs())
+      for (const r of l.rows()) {
+        if (!this.shows(l, r.id) || seen.has(r.id)) continue;
+        seen.add(r.id);
+        out.push(r);
+      }
+    return out.sort((a, b) => b.lastActivityAt - a.lastActivityAt);
+  }
+  eventsOf(id: string, after = 0): LogRecord[] {
+    return this.owner(id)?.eventsOf(id, after) ?? [];
+  }
+  /** Exactly the records after `after` across every log, in seq order (see ConvLog.after). */
+  after(after: number, limit = POLL_LIMIT): PollAnswer {
+    const latest = this.latest();
+    if (after > latest) return { next: latest, events: [], reset: true };
+    if (after === latest) return { next: latest, events: [] };
+    let cut = Infinity;
+    let all: LogRecord[] = [];
+    for (const l of this.logs()) {
+      if (after >= l.latest()) continue;
+      const a = l.after(after, limit);
+      // A log cut short (`more`) is complete only up to its last record: nothing past that goes out yet.
+      if (a.more) cut = Math.min(cut, a.events[a.events.length - 1]?.seq ?? after);
+      all = all.concat(a.events.filter((r) => this.carries(l, r)));
+    }
+    let events = all.filter((r) => r.seq <= cut).sort((a, b) => a.seq - b.seq);
+    let more = cut !== Infinity;
+    if (events.length > limit) {
+      events = events.slice(0, limit);
+      more = true;
+    }
+    if (!more) return { next: latest, events };
+    const next = events.length ? events[events.length - 1]!.seq : Math.min(cut, latest);
+    return { next, events, more: true };
+  }
+  wait(ms: number): Promise<void> {
+    return Promise.race(this.logs().map((l) => l.wait(ms)));
+  }
+}
+
+let feed: { main: string; vaults: () => string[]; views: Map<string, GlobalFeed> } | null = null;
+
+/** The box's vaults (the main one first), set at boot: the global feed reads all of their logs. */
+export function setFeedVaults(main: string, vaults: () => string[]): void {
+  feed = { main, vaults, views: new Map() };
+}
+
+/** The feed the clients read on `vault`: every vault's conversations (setFeedVaults) and `vault`'s own signals;
+ *  without setFeedVaults, `vault`'s own log. */
+export function globalFeed(vault: string): GlobalFeed | ConvLog {
+  if (!feed) return convLog(vault);
+  const f = feed;
+  let v = f.views.get(vault);
+  if (!v) {
+    v = new GlobalFeed(
+      () => convLog(f.main),
+      () => [...new Set([f.main, ...f.vaults()])].map((x) => convLog(x)),
+      () => convLog(vault),
+    );
+    f.views.set(vault, v);
+  }
+  return v;
+}
+
+/** The vault whose log holds conversation `id` (Main: the main vault), or null when none does. Without
+ *  setFeedVaults: `fallback` when its log has it. */
+export function ownerVault(id: string, fallback: string): string | null {
+  if (!feed) return convLog(fallback).has(id) ? fallback : null;
+  if (id === MAIN) return feed.main;
+  for (const v of [...new Set([feed.main, ...feed.vaults()])]) if (convLog(v).has(id)) return v;
+  return null;
 }
 
 /** A vault-level signal on /poll (the vault changed, a file changed, the inbox, notifications, a project). */

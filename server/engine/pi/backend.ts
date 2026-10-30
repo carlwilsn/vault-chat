@@ -153,6 +153,16 @@ function withExtras(sb: PiSandbox, base: string[] | null): string[] | null {
     folders.push(p);
     binds.push("--ro-bind", p, p);
   }
+  // A read-only project folder (a git repo the agent works on in its clone): its own files — memory, rules in
+  // <folder>/.vault-chat (server/context/projects.ts) — stay the agent's to write.
+  for (const p of sb.readOnly?.() ?? []) {
+    const own = join(p, ".vault-chat");
+    try {
+      if (statSync(own).isDirectory()) binds.push("--bind", own, own);
+    } catch {
+      /* none yet */
+    }
+  }
   const rehide = folders.length ? (sb.hidden ?? []).filter((h) => folders.some((f) => inside(h, f))) : [];
   const extra = [...binds, ...hideArgs([...rehide, ...others.filter((p) => !gone(p) || folders.some((f) => inside(p, f)))])];
   return extra.length ? [...base.slice(0, -1), ...extra, "--"] : base;

@@ -9,8 +9,9 @@
 import { conversationObjects as readConversationObjects } from "../engine/convs";
 import { ctxConfig } from "./config";
 import { cap } from "./files";
-import { findProject, listProjects, projectNotesPath, readProject } from "./projects";
-import { relative } from "node:path";
+import { allProjects, PROJECT_DIR, PROJECT_NOTES_FILE } from "./projects";
+import { readOr, slugify } from "./files";
+import { join } from "node:path";
 import type { ContextConv, DynamicToolCallResponse, DynamicToolSpec, ToolContext } from "./types";
 
 export const CONTEXT_TOOL_NAMES = ["ListProjects", "ListConversations", "ReadConversation"] as const;
@@ -78,27 +79,28 @@ function chats(given?: ContextConv[]): ChatRow[] {
     .sort((a, b) => b.at - a.at);
 }
 
-const rel = (p: string) => relative(ctxConfig().vault, p).split("\\").join("/");
 
 /** ListProjects as text: the shared answer for pi and voice. `convs` defaults to every conversation in the vault. */
 export function listProjectsText(project?: string | null, currentProject?: string | null, convs?: ContextConv[]): { ok: boolean; text: string } {
   const rows = chats(convs);
   const want = typeof project === "string" ? project.trim() : "";
   if (want) {
-    const info = findProject(want);
-    if (!info) return { ok: false, text: `No project "${want}". ListProjects without a name lists them.` };
-    const p = readProject(info.slug)!;
-    const mine = rows.filter((r) => r.project === info.slug);
+    const low = want.toLowerCase();
+    const p = allProjects().find((x) => x.slug === slugify(want) || x.name.toLowerCase() === low);
+    if (!p) return { ok: false, text: `No project "${want}". ListProjects without a name lists them.` };
+    const memFile = join(p.folder, PROJECT_DIR, PROJECT_NOTES_FILE).split("\\").join("/");
+    const notes = readOr(memFile);
+    const mine = rows.filter((r) => r.project === p.slug);
     return {
       ok: true,
       text:
         `Project ${p.name} (${p.slug})${currentProject === p.slug ? " — this chat is in it" : ""}\n` +
-        `Notes file: ${rel(projectNotesPath(p.slug))}${p.notes.trim() ? "" : " (empty or missing)"}\n\n` +
-        (p.notes.trim() ? `${cap(p.notes, 20_000, "read the file for the rest")}\n\n` : "") +
+        `Folder: ${p.folder.split("\\").join("/")} (its AGENTS.md: the instructions)\nMemory: ${memFile}${notes.trim() ? "" : " (empty or missing)"}\n\n` +
+        (notes.trim() ? `${cap(notes, 20_000, "read the file for the rest")}\n\n` : "") +
         `Chats (${mine.length}):\n${mine.length ? mine.map((r) => `- "${r.title}" (${r.id})`).join("\n") : "(none yet)"}`,
     };
   }
-  const all = listProjects();
+  const all = allProjects();
   if (!all.length) return { ok: true, text: "Carl has no projects yet. Only he makes them: in the app, or by asking you (OpenProject)." };
   return {
     ok: true,
@@ -108,7 +110,7 @@ export function listProjectsText(project?: string | null, currentProject?: strin
         .map((p) => {
           const mine = rows.filter((r) => r.project === p.slug);
           const shown = mine.slice(0, 8).map((r) => `"${r.title}"`).join(", ");
-          return `- ${p.name} (${p.slug})${currentProject === p.slug ? " — this chat" : ""}: ${mine.length} chat(s)${shown ? `: ${shown}${mine.length > 8 ? ", …" : ""}` : ""}`;
+          return `- ${p.name} (${p.slug}), the folder ${p.folder.split("\\").join("/")}${currentProject === p.slug ? " — this chat" : ""}: ${mine.length} chat(s)${shown ? `: ${shown}${mine.length > 8 ? ", …" : ""}` : ""}`;
         })
         .join("\n"),
   };

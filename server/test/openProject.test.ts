@@ -34,7 +34,7 @@ describe("the rule: Carl makes projects in the app or by asking, never the agent
   it("every thread is told so, and pi has OpenProject (ListProjects still only reads)", async () => {
     const { PROJECTS_RULE } = await import("../context");
     expect(PROJECTS_RULE).not.toContain("you never do");
-    expect(PROJECTS_RULE).toContain('Only Carl makes projects: in the app, or by asking you in so many words, spoken or typed ("start a project for HW4"); then OpenProject makes it. Never make one on your own initiative.');
+    expect(PROJECTS_RULE).toContain('Only Carl makes projects: in the app ("Make this a project", "+ New project"), or by asking you in so many words, spoken or typed ("start a project for HW4"); then OpenProject makes it. Never make one on your own initiative.');
     const s = await rig.start("Fix the typo in notes/a.md.");
     const th = rig.backend.threads.at(-1);
     const tool = (th.tools as any[]).find((t) => t.name === "OpenProject");
@@ -55,9 +55,10 @@ describe("OpenProject", () => {
     const n = signals.length;
     const r = await rig.backend.call(s.tid, "OpenProject", { project: "HW4", create: true, request: "Make me practice problems for HW4." });
     expect(r.ok).toBe(true);
-    expect(out(r)).toMatch(/^Started project HW4 \(agent-projects\/hw4\/project\.md\); its thread is project-hw4\. His screens are there now/);
+    // A project is a folder with its own conversation: a new folder HW4 in the vault.
+    expect(out(r)).toMatch(/^Started project HW4 \(the folder \S.*HW4\); its thread is project-hw4\. His screens are there now/);
     expect(out(r)).toContain("His request went to that thread, which is doing it now: don't do it here too.");
-    expect(existsSync(join(rig.vault, "agent-projects", "hw4", "project.md"))).toBe(true);
+    expect(existsSync(join(rig.vault, "HW4", ".vault-chat", "memory.md"))).toBe(true);
     expect(signals.slice(n)).toContainEqual({ type: "follow", convId: "project-hw4", title: "HW4", project: "hw4", created: true });
     // The work is the project thread's own turn, with his words.
     await until(async () => (await said("project-hw4")).includes("Make me practice problems for HW4."));
@@ -75,7 +76,7 @@ describe("OpenProject", () => {
     const miss = await rig.backend.call(s.tid, "OpenProject", { project: "Physics" });
     expect(miss.ok).toBe(false);
     expect(out(miss)).toBe('Carl has no project "Physics" (his projects: HW4). Nothing changed. If he asked to start it, call OpenProject again with create: true; otherwise ask him which one he means.');
-    expect(existsSync(join(rig.vault, "agent-projects", "physics"))).toBe(false);
+    expect(existsSync(join(rig.vault, "Physics"))).toBe(false);
     // Back home.
     const home = await rig.backend.call(s.tid, "OpenProject", { project: "main" });
     expect(out(home)).toBe("Back in Main. His screens are there now; what he says next arrives there.");

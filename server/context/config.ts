@@ -12,6 +12,8 @@ export type ContextConfig = {
   recapModel: string;
   /** Builder caps, in characters: a project's shared notes (project.md) and an older roll-over's recap. */
   caps: { project: number; recap: number };
+  /** Every vault on the box (the main one first): projects are the box's, listed from every vault's registry. */
+  vaults?: () => string[];
 };
 
 function defaults(): ContextConfig {

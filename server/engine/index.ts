@@ -7,7 +7,7 @@ import { mkdirSync, statSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { dirname, isAbsolute, join, relative } from "node:path";
 import { loadCatalog, modelMeta } from "./catalog";
-import { configureContext, ctxConfig, prepareProjects } from "./context";
+import { configureContext, ctxConfig } from "./context";
 import { Engine, type EngineNotice } from "./engine";
 export { engineShuttingDown } from "./engine";
 import { Ledger } from "./ledger";
@@ -259,7 +259,7 @@ export async function startEngine(b: EngineBoot): Promise<EngineHandle> {
   const model = engineModel();
   const visionModel = process.env.VC_VISION_MODEL || "openai/gpt-6.1-sol";
   const win = modelWindow(model, piCat);
-  configureContext({ vault: b.vault, agentModel: model });
+  configureContext({ vault: b.vault, agentModel: model, vaults: () => (b.vaults?.() ?? []).map((v) => v.path) });
 
   const base = piPaths(b.stateDir);
   const baseUrl = b.openrouterBase ? b.openrouterBase.replace(/\/+$/, "") : undefined;
@@ -283,8 +283,6 @@ export async function startEngine(b: EngineBoot): Promise<EngineHandle> {
   const make = (v: VaultRef): Engine => {
     const st = stateOf(v);
     excludeLocalDir(v.path);
-    // Projects moved out of .vault-chat/ into agent-projects/ (hidden by default): move this vault's now.
-    prepareProjects(v.path);
     // The sandbox read-only-binds these; they must exist when it is built.
     for (const d of [join(v.path, ".vault-chat", "conversations"), join(v.path, ".vault-chat", "events"), join(v.path, ".vault-chat", "local"), st.jobs, st.pi.sessionsDir, st.pi.instrDir]) mkdirSync(d, { recursive: true });
     // Its conversation log is open (older files are imported as they are opened).

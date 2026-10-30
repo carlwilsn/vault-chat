@@ -77,11 +77,12 @@ test("a project's row has the ⋯ menu; Main's has none (it can't be renamed or 
   assert.ok(proj.includes('title="More"'));
 });
 
-test("Delete asks once, in so many words: its chat and notes go, the folder stays", () => {
+test("Delete asks once, in so many words: the conversation only (the folder stays), or everything", () => {
   const html = renderToStaticMarkup(createElement(panel.DeleteProjectConfirm, { name: "Coconut", busy: false, onCancel: () => {}, onYes: () => {} }));
   const text = html.replace(/<[^>]+>/g, "");
-  assert.ok(text.includes("Delete project Coconut? Its chat and notes go; your folder stays."), text);
-  assert.ok(html.includes('data-el="project-delete-yes"') && html.includes('data-el="project-delete-cancel"'));
+  assert.ok(text.includes("Delete project Coconut? Git keeps a copy either way."), text);
+  assert.ok(text.includes("Remove the conversation, keep the folder") && text.includes("Delete everything, the folder too"), text);
+  assert.ok(html.includes('data-el="project-delete-yes"') && html.includes('data-el="project-delete-everything"') && html.includes('data-el="project-delete-cancel"'));
   const busy = renderToStaticMarkup(createElement(panel.DeleteProjectConfirm, { name: "Coconut", busy: true, onCancel: () => {}, onYes: () => {} }));
   assert.ok(busy.includes("Deleting…"));
 });

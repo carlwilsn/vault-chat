@@ -1,16 +1,16 @@
-// Carl's Delete and Rename on a project (2026-10-25: "where is the delete button for projects"), through the
-// real engine on a fake pi:
-//   - Delete takes the project off the list and its thread away, moves its own files (project.md with its
-//     memory, rules.md) to agent-projects/.deleted/<slug>-<date>/ (recoverable), and never touches the folder
-//     it names or anything else of his;
+// Carl's Delete and Rename on a project (2026-10-25: "where is the delete button for projects"; 2026-10-29: a project
+// is a folder with its own conversation), through the real engine on a fake pi:
+//   - Delete (the conversation only) takes the project off the list and its thread away; the registry keeps the
+//     choice (Restore brings it back) and the folder stays, a plain folder again, its memory and rules in it;
+//     Delete everything also removes the folder, recoverably (committed, then removed in git);
 //   - a running turn in it stops; every surface on it lands on Main (the signal, the row, a message or a
 //     voice line still aimed at it);
 //   - Main's next turn tells the agent once; Main itself can't be deleted;
-//   - Rename changes the name (project.md's heading, the thread's title), nothing else.
+//   - Rename renames the folder (its name is the project's), and the thread's title; the slug and thread stay.
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { cleanup } from "./helpers";
+import { cleanup, git, seedProject } from "./helpers";
 import { makeRig, until, type Rig } from "./longRig";
 
 let rig: Rig;
@@ -37,11 +37,10 @@ async function turn(text: string, convId?: string): Promise<{ convId: string; ti
 beforeAll(async () => {
   rig = await makeRig({ deps: { broadcast: (ev: Record<string, unknown>) => void signals.push(ev) } });
   rig.engine.stop();
-  // Coconut works in Carl's own folder (code/coconut), which is his and must stay.
-  put("code/coconut/tiles.py", "print('tiles')\n");
-  put("agent-projects/coconut/project.md", "# Coconut\n\nfolder: code/coconut\n\nTile the satellite images.\n\n## Memory\n\n- 2026-10-20: tiles of 1024\n");
-  put("agent-projects/coconut/rules.md", "Python only.\n");
-  put("agent-projects/psych-221/project.md", "# Psych 221\n\nEssays in APA style.\n");
+  // Coconut is Carl's folder code/Coconut, which is his and must stay.
+  put("code/Coconut/tiles.py", "print('tiles')\n");
+  seedProject(rig.vault, "coconut", { folder: "code/Coconut", agents: "Tile the satellite images.\n", memory: "# Coconut: memory\n\n- 2026-10-20: tiles of 1024\n", rules: "Python only.\n" });
+  seedProject(rig.vault, "psych-221", { folder: "Psych 221", agents: "Essays in APA style.\n" });
   convs = await import("../engine/convs");
   await rig.engine.ensureThreads();
 });
@@ -58,7 +57,7 @@ describe("Delete a project", () => {
     expect(await rig.readConv("main")).toBeTruthy();
   });
 
-  it("its running turn stops; its files move to agent-projects/.deleted/; its folder and his files stay; its thread is gone", async () => {
+  it("its running turn stops; its folder stays with its memory and rules; the registry keeps the choice; its thread is gone", async () => {
     await turn("Tile the first batch.", "project-coconut");
     // A turn still running when he deletes it.
     const n = rig.backend.turns.length;
@@ -68,17 +67,17 @@ describe("Delete a project", () => {
 
     const r = await rig.engine.intent({ type: "deleteProject", slug: "coconut", client: "laptop" });
     expect(r).toMatchObject({ ok: true, slug: "coconut", name: "Coconut", convId: "project-coconut", to: "main" });
-    expect(String(r.movedTo)).toMatch(/^agent-projects\/\.deleted\/coconut-\d{8}-\d{6}$/);
-
-    // Recoverable: the whole folder, word for word.
-    const kept = join(rig.vault, String(r.movedTo));
-    expect(readFileSync(join(kept, "project.md"), "utf8")).toContain("- 2026-10-20: tiles of 1024");
-    expect(readFileSync(join(kept, "rules.md"), "utf8")).toBe("Python only.\n");
-    expect(existsSync(join(rig.vault, "agent-projects", "coconut"))).toBe(false);
-    // His folder and its files: untouched.
-    expect(readFileSync(join(rig.vault, "code", "coconut", "tiles.py"), "utf8")).toBe("print('tiles')\n");
+    expect(String(r.movedTo)).toMatch(/^coconut-\d{8}-\d{6}$/);
+    const reg = JSON.parse(readFileSync(join(rig.vault, ".vault-chat", "local", "project-folders.json"), "utf8"));
+    expect(reg.folders.coconut).toBeUndefined();
+    expect(reg.deleted[String(r.movedTo)]).toMatchObject({ slug: "coconut" });
+    // The folder, its files, its memory and rules: untouched (a plain folder again).
+    const folder = join(rig.vault, "code", "Coconut");
+    expect(readFileSync(join(folder, "tiles.py"), "utf8")).toBe("print('tiles')\n");
+    expect(readFileSync(join(folder, ".vault-chat", "memory.md"), "utf8")).toContain("- 2026-10-20: tiles of 1024");
+    expect(readFileSync(join(folder, ".vault-chat", "rules.md"), "utf8")).toBe("Python only.\n");
     // The other project: untouched.
-    expect(readFileSync(join(rig.vault, "agent-projects", "psych-221", "project.md"), "utf8")).toBe("# Psych 221\n\nEssays in APA style.\n");
+    expect(readFileSync(join(rig.vault, "Psych 221", "AGENTS.md"), "utf8")).toBe("Essays in APA style.\n");
 
     // Off the list, the thread gone from every list, the turn ended.
     const { listProjects } = await import("../context");
@@ -118,12 +117,13 @@ describe("Delete a project", () => {
   it("deleting it again is refused; nothing else moves", async () => {
     const r = await rig.engine.intent({ type: "deleteProject", slug: "coconut" });
     expect(r.ok).toBe(false);
-    expect(readdirSync(join(rig.vault, "agent-projects", ".deleted"))).toHaveLength(1);
+    const reg = JSON.parse(readFileSync(join(rig.vault, ".vault-chat", "local", "project-folders.json"), "utf8"));
+    expect(Object.keys(reg.deleted)).toHaveLength(1);
   });
 
-  it("a new project under the same name starts empty (the old chat is not back)", async () => {
+  it("its folder made a project again starts empty (the old chat is not back: Restore does that)", async () => {
     const { createProjectWithThread } = await import("../projectRoutes");
-    const r: any = await createProjectWithThread(rig.vault, { name: "Coconut" });
+    const r: any = await createProjectWithThread(rig.vault, { folder: join(rig.vault, "code", "Coconut") });
     expect(r).toMatchObject({ ok: true, convId: "project-coconut" });
     const c = await rig.readConv("project-coconut");
     expect(c).toMatchObject({ kind: "project", project: "coconut", title: "Coconut" });
@@ -135,15 +135,17 @@ describe("Delete a project", () => {
 });
 
 describe("Rename a project", () => {
-  it("changes its name (project.md's heading, the thread's title); its slug, notes and thread stay", async () => {
+  it("renames its folder (its name) and the thread's title; its slug, memory and thread stay", async () => {
     const before = await rig.readConv("project-psych-221");
     const r = await rig.engine.intent({ type: "renameProject", slug: "psych-221", name: "  Psych 221: Cognition " });
-    expect(r).toMatchObject({ ok: true, slug: "psych-221", name: "Psych 221: Cognition" });
-    expect(readFileSync(join(rig.vault, "agent-projects", "psych-221", "project.md"), "utf8")).toBe("# Psych 221: Cognition\n\nEssays in APA style.\n");
+    // A folder name takes no ":" on every system: it becomes a space.
+    expect(r).toMatchObject({ ok: true, slug: "psych-221", name: "Psych 221 Cognition" });
+    expect(readFileSync(join(rig.vault, "Psych 221 Cognition", "AGENTS.md"), "utf8")).toBe("Essays in APA style.\n");
+    expect(existsSync(join(rig.vault, "Psych 221"))).toBe(false);
     const after = await rig.readConv("project-psych-221");
-    expect(after).toMatchObject({ id: "project-psych-221", title: "Psych 221: Cognition", project: "psych-221" });
+    expect(after).toMatchObject({ id: "project-psych-221", title: "Psych 221 Cognition", project: "psych-221" });
     expect(after.createdAt).toBe(before.createdAt);
-    expect(signals).toContainEqual(expect.objectContaining({ type: "project", slug: "psych-221", renamed: "Psych 221: Cognition" }));
+    expect(signals).toContainEqual(expect.objectContaining({ type: "project", slug: "psych-221", renamed: "Psych 221 Cognition" }));
     expect((await rig.engine.intent({ type: "renameProject", slug: "psych-221", name: "   " })).ok).toBe(false);
     expect((await rig.engine.intent({ type: "renameProject", slug: "nope", name: "X" })).ok).toBe(false);
   });
@@ -152,8 +154,8 @@ describe("Rename a project", () => {
 describe("Restore a project (the inverse of Delete; Carl asks the agent, it uses RestoreProject)", () => {
   const items = (id: string) => convs.pictureOf(rig.vault, id)!.items.length;
 
-  it("restoreProject: the folder back, the thread back with its transcript and pi session, every surface told; Main's unread notice dropped", async () => {
-    put("agent-projects/physics/project.md", "# Physics\n\n## Memory\n\n- pendulum done\n");
+  it("restoreProject: the project back, the thread back with its transcript and pi session, every surface told; Main's unread notice dropped", async () => {
+    seedProject(rig.vault, "physics", { folder: "Physics", memory: "# Physics: memory\n\n- pendulum done\n" });
     await rig.engine.ensureThreads();
     const t = await turn("Derive the pendulum period.", "project-physics");
     const before = { threadId: (await rig.readConv("project-physics")).threadId, items: items("project-physics") };
@@ -164,8 +166,10 @@ describe("Restore a project (the inverse of Delete; Carl asks the agent, it uses
     signals.length = 0;
     const r = await rig.engine.intent({ type: "restoreProject", slug: "physics" });
     expect(r).toMatchObject({ ok: true, slug: "physics", name: "Physics", convId: "project-physics" });
-    expect(readFileSync(join(rig.vault, "agent-projects", "physics", "project.md"), "utf8")).toContain("- pendulum done");
-    expect(readdirSync(join(rig.vault, "agent-projects", ".deleted")).some((e) => e.startsWith("physics-"))).toBe(false);
+    expect(readFileSync(join(rig.vault, "Physics", ".vault-chat", "memory.md"), "utf8")).toContain("- pendulum done");
+    const reg = JSON.parse(readFileSync(join(rig.vault, ".vault-chat", "local", "project-folders.json"), "utf8"));
+    expect(reg.folders.physics).toBeTruthy();
+    expect(Object.keys(reg.deleted).some((e) => e.startsWith("physics-"))).toBe(false);
     const back = await rig.readConv("project-physics");
     expect(back.deleted).toBeFalsy();
     expect(back.threadId).toBe(before.threadId);
@@ -182,7 +186,7 @@ describe("Restore a project (the inverse of Delete; Carl asks the agent, it uses
   });
 
   it("the agent's RestoreProject: lists what is deleted, then brings one back by name", async () => {
-    put("agent-projects/iems-469-course-notes-visuals/project.md", "# IEMS 469 course notes visuals\n");
+    seedProject(rig.vault, "iems-469-course-notes-visuals", { folder: "IEMS 469 course notes visuals" });
     await rig.engine.ensureThreads();
     await turn("Make the lecture 7 figure.", "project-iems-469-course-notes-visuals");
     expect((await rig.engine.intent({ type: "deleteProject", slug: "iems-469-course-notes-visuals" })).ok).toBe(true);
@@ -199,23 +203,25 @@ describe("Restore a project (the inverse of Delete; Carl asks the agent, it uses
     expect(JSON.stringify(miss)).toContain("Not restored");
   });
 
-  it("the real incident: a folder moved back by hand — the thread comes back whole (not blank, not a new session) and every list is told", async () => {
-    const { renameSync } = await import("node:fs");
-    put("agent-projects/optics/project.md", "# Optics\n");
+  it("Delete everything: the folder goes too, committed first and removed in git, so git has every byte", async () => {
+    const { setFolderOpsWalls } = await import("../folderOps");
+    git(rig.vault, "init", "-q");
+    put("Optics/snell.md", "# Snell\n");
+    seedProject(rig.vault, "optics", { folder: "Optics", memory: "# Optics: memory\n\n- n1 sin a = n2 sin b\n" });
     await rig.engine.ensureThreads();
-    const t = await turn("Snell's law, please.", "project-optics");
-    const before = { threadId: (await rig.readConv("project-optics")).threadId, items: items("project-optics") };
-    const d = await rig.engine.intent({ type: "deleteProject", slug: "optics" });
-    renameSync(join(rig.vault, String(d.movedTo)), join(rig.vault, "agent-projects", "optics"));
-    signals.length = 0;
-    // The engine's periodic pass (or his next message there) finds it back.
-    await rig.engine.ensureThreads();
-    expect(signals).toContainEqual(expect.objectContaining({ type: "project", restored: true, convId: "project-optics" }));
-    const back = await rig.readConv("project-optics");
-    expect(back.deleted).toBeFalsy();
-    expect(back.threadId).toBe(before.threadId);
-    expect(items("project-optics")).toBe(before.items);
-    const again = await turn("And total internal reflection?", "project-optics");
-    expect(again.tid).toBe(t.tid);
+    await turn("Snell's law, please.", "project-optics");
+    // No walls: refused, nothing changed.
+    setFolderOpsWalls(null as any);
+    expect((await rig.engine.intent({ type: "deleteProject", slug: "optics", folder: true })).ok).toBe(false);
+    expect((await import("../context")).listProjects().map((p) => p.slug)).toContain("optics");
+    setFolderOpsWalls(() => ({ master: null, mainVault: rig.root, vaults: [rig.vault] }));
+    const r = await rig.engine.intent({ type: "deleteProject", slug: "optics", folder: true });
+    expect(r).toMatchObject({ ok: true, slug: "optics", folderGone: { ok: true, how: "git", where: "Optics" } });
+    expect(existsSync(join(rig.vault, "Optics"))).toBe(false);
+    expect(git(rig.vault, "show", "HEAD~1:Optics/snell.md").trim()).toBe("# Snell");
+    expect(git(rig.vault, "show", "HEAD~1:Optics/.vault-chat/memory.md")).toContain("n1 sin a = n2 sin b");
+    expect(convs.conversationObjects(rig.vault).map((c: any) => c.id)).not.toContain("project-optics");
+    // Its folder is gone: Restore says so (git has it).
+    expect((await rig.engine.intent({ type: "restoreProject", slug: "optics" })).error).toMatch(/gone/);
   });
 });

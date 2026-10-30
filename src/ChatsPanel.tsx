@@ -137,8 +137,8 @@ function ThreadsList({
     openThread(id, title);
     onPicked?.();
   };
-  const create = async (name: string, where: { folder?: string; newFolder?: boolean } = {}) => {
-    const r = await createProjectThread(name, where);
+  const create = async (name: string) => {
+    const r = await createProjectThread(name);
     if (!r.ok) {
       setErr(r.error);
       return;
@@ -184,7 +184,7 @@ function ThreadsList({
                 New project
               </button>
             ) : (
-              <NewProjectForm key="new-project" onCancel={() => setNaming(null)} onCreate={(name, where) => void create(name, where)} />
+              <NewProjectForm key="new-project" onCancel={() => setNaming(null)} onCreate={(name) => void create(name)} />
             )
           ) : (
             <ThreadRow
@@ -197,8 +197,8 @@ function ThreadsList({
                 const r = await renameProject(e.slug, to);
                 setErr(r.ok ? null : r.error);
               }}
-              onDelete={async () => {
-                const r = await deleteProject(e.slug);
+              onDelete={async (folder) => {
+                const r = await deleteProject(e.slug, { folder });
                 setErr(r.ok ? null : r.error);
               }}
             />
@@ -228,7 +228,8 @@ export function ThreadRow({
   onSelect: () => void;
   onNotes?: () => void;
   onRename?: (name: string) => Promise<void>;
-  onDelete?: () => Promise<void>;
+  /** `folder`: Carl's second choice — the folder goes too. */
+  onDelete?: (folder: boolean) => Promise<void>;
 }) {
   const { active, running, unread } = entry;
   const isMain = entry.type === "main";
@@ -370,9 +371,9 @@ export function ThreadRow({
         name={name}
         busy={busy}
         onCancel={() => setMode(null)}
-        onYes={async () => {
+        onYes={async (folder) => {
           setBusy(true);
-          await onDelete?.();
+          await onDelete?.(folder);
           setBusy(false);
           setMode(null);
         }}
@@ -382,25 +383,25 @@ export function ThreadRow({
   );
 }
 
-/** Delete, asked once, right under the project's row: what goes and what stays. */
-export function DeleteProjectConfirm({ name, busy, onCancel, onYes }: { name: string; busy: boolean; onCancel: () => void; onYes: () => void }) {
+/** Delete, asked once, right under the project's row: the conversation only (the folder stays, a plain folder again),
+ *  or everything (the folder too). Nothing is lost for good: git keeps a copy. */
+export function DeleteProjectConfirm({ name, busy, onCancel, onYes }: { name: string; busy: boolean; onCancel: () => void; onYes: (folder: boolean) => void }) {
   return (
     <div data-el="project-delete-confirm" className="mx-3 mb-1.5 mt-0.5 px-3 py-2 rounded-md border border-border bg-muted/40 text-[12px]">
       <div className="text-foreground/90 leading-snug">
-        Delete project <span className="font-medium">{name}</span>? Its chat and notes go; your folder stays.
+        Delete project <span className="font-medium">{name}</span>? Git keeps a copy either way.
       </div>
-      <div className="mt-2 flex justify-end gap-1.5">
-        <button data-el="project-delete-cancel" disabled={busy} onClick={onCancel} className="h-6 px-2.5 rounded text-[11.5px] text-muted-foreground hover:bg-accent hover:text-foreground">
-          Cancel
+      <div className="mt-2 flex flex-col gap-1">
+        <button data-el="project-delete-yes" disabled={busy} autoFocus onClick={() => onYes(false)} className="h-6 px-2 rounded text-left text-[11.5px] hover:bg-accent disabled:opacity-60">
+          Remove the conversation, keep the folder
         </button>
-        <button
-          data-el="project-delete-yes"
-          disabled={busy}
-          autoFocus
-          onClick={onYes}
-          className="h-6 px-2.5 rounded text-[11.5px] font-medium bg-destructive text-destructive-foreground hover:bg-destructive/90 disabled:opacity-60"
-        >
-          {busy ? "Deleting…" : "Delete"}
+        <button data-el="project-delete-everything" disabled={busy} onClick={() => onYes(true)} className="h-6 px-2 rounded text-left text-[11.5px] text-destructive hover:bg-accent disabled:opacity-60">
+          Delete everything, the folder too
+        </button>
+      </div>
+      <div className="mt-1 flex justify-end">
+        <button data-el="project-delete-cancel" disabled={busy} onClick={onCancel} className="h-6 px-2.5 rounded text-[11.5px] text-muted-foreground hover:bg-accent hover:text-foreground">
+          {busy ? "Deleting…" : "Cancel"}
         </button>
       </div>
     </div>

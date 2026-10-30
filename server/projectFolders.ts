@@ -1,26 +1,21 @@
-// A project's folder on the box (Carl, 2026-10-27: "a vault is my UI thing, projects are general
-// machine-path stuff", modelled on Claude Code's working directory).
-//
-// A project (agent-projects/<slug>/project.md: its notes and memory, in the vault as before) may
-// work in any folder on the box Carl chose: ~/github/vault-chat, ~/machine, ~/projects/<name>.
-// That folder is its thread's working directory (pi loads the folder's AGENTS.md itself), has its
-// own git, and is never synced with the vault.
+// A project's folder (Carl, 2026-10-29: "a project = a folder that has its own conversation"): the registry is the
+// project's record — its slug (its thread: project-<slug>) and its folder, the thread's working directory (pi loads
+// the folder's AGENTS.md itself). A folder in the vault, or one elsewhere on the box (a repo under the vault-chat
+// folder's projects/: its own git, never synced with the vault).
 //
 // Who may name such a folder matters: the sandbox makes it writable. So the choice is recorded
 // where the agent cannot write — `.vault-chat/local/project-folders.json`, the server's own state
 // (read-only in the sandbox, out of git) — and only Carl's own action writes it (the app's
-// "+ New project", POST /projects). A `folder:` the agent writes into a project.md reaches only a
-// folder inside the vault, as before.
+// "Make this a project" and "+ New project", or his explicit ask through OpenProject).
 //
 // Never a project folder: the root, the system's folders, the home itself or anything holding it,
 // and every path the agent never sees (the key store, ~/.ssh and the other credentials,
 // ~/.local/state, the server's state and env file, other vaults and their repos), nor anything
 // that holds one of those.
-import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { mkdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { writeAtomic } from "./atomic";
-import { PROJECTS_DIR } from "../src/agentProjects";
 
 /** Credential locations in the user's home the agent never sees (hidden in both sandbox layers, denied to pi's own tools). */
 export const HOME_CREDENTIALS = [
@@ -163,7 +158,8 @@ export function checkFolder(vault: string, raw: string, w: FolderWalls = wallsOf
 // ---------------------------------------------------------------- the registry
 
 type Entry = { path: string; at: string };
-type Registry = { folders: Record<string, Entry>; deleted: Record<string, Entry & { slug: string }> };
+export type DeletedEntry = Entry & { slug: string };
+type Registry = { folders: Record<string, Entry>; deleted: Record<string, DeletedEntry> };
 
 function regPath(vault: string): string {
   return join(vault, FOLDERS_FILE);
@@ -187,6 +183,27 @@ function writeReg(vault: string, r: Registry): void {
 export function registeredFolder(vault: string, slug: string): string | null {
   const e = readReg(vault).folders[slug];
   return e && typeof e.path === "string" && e.path ? e.path : null;
+}
+
+/** Every project of this vault: its slug and its folder (as recorded). */
+export function registeredFolders(vault: string): { slug: string; path: string }[] {
+  return Object.entries(readReg(vault).folders)
+    .filter(([, e]) => e && typeof e.path === "string" && e.path)
+    .map(([slug, e]) => ({ slug, path: e.path }));
+}
+
+/** The deleted projects' choices, by their entry. */
+export function deletedFolders(vault: string): Record<string, DeletedEntry> {
+  return readReg(vault).deleted;
+}
+
+/** A project's folder was renamed (server/context/projects.ts renameProject): the record follows. */
+export function setRegisteredPath(vault: string, slug: string, path: string): void {
+  const r = readReg(vault);
+  const e = r.folders[slug];
+  if (!e) return;
+  r.folders[slug] = { ...e, path };
+  writeReg(vault, r);
 }
 
 /** Carl's choice: `slug` works in `raw` (checked first). Replaces an earlier one. */
@@ -229,15 +246,9 @@ export function reviveFolder(vault: string, entry: string, slug: string): void {
 
 type Exists = (slug: string) => boolean;
 
-/** Whether the project `slug` is there (its own folder, agent-projects/<slug>/). */
+/** Whether the project `slug` is there: registered (a project is its folder and its thread). */
 export function projectThere(vault: string): Exists {
-  return (slug) => {
-    try {
-      return /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug) && statSync(join(vault, PROJECTS_DIR, slug)).isDirectory();
-    } catch {
-      return false;
-    }
-  };
+  return (slug) => /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug) && !!registeredFolder(vault, slug);
 }
 
 /** A project's folder now: registered, its project still there, and still allowed (a moved or changed path is not). */
@@ -269,62 +280,6 @@ export function newProjectFolder(vault: string, slug: string): { abs: string } |
   return checkFolder(vault, dir, w);
 }
 
-// ---------------------------------------------------------------- the box's files, for the app
-
-export type DirEntry = { name: string; path: string; is_dir: boolean; ok?: boolean };
-
-const MAX_ENTRIES = 2000;
-
-function listDir(abs: string, dirsOnly: boolean): DirEntry[] {
-  const out: DirEntry[] = [];
-  let names: string[];
-  try {
-    names = readdirSync(abs);
-  } catch {
-    return [];
-  }
-  for (const name of names) {
-    if (name === ".git") continue;
-    if (dirsOnly && name.startsWith(".")) continue;
-    const p = join(abs, name);
-    let dir = false;
-    try {
-      dir = statSync(p).isDirectory();
-    } catch {
-      continue;
-    }
-    if (dirsOnly && !dir) continue;
-    out.push({ name, path: p.split(sep).join("/"), is_dir: dir });
-    if (out.length >= MAX_ENTRIES) break;
-  }
-  return out.sort((a, b) => (a.is_dir === b.is_dir ? a.name.localeCompare(b.name) : a.is_dir ? -1 : 1));
-}
-
-/**
- * The folder chooser (GET /api/v1/box/folders?path=): the folders in `raw` (default: the home),
- * each marked `ok` when it may be a project's folder. Never lists inside a protected path.
- */
-export function browseFolders(vault: string, raw: string | null): { path: string; parent: string | null; home: string; ok: boolean; why?: string; dirs: DirEntry[] } | { error: string } {
-  const w = wallsOf(vault);
-  const home = resolve(w.home);
-  const want = raw && raw.trim() ? expandFolder(raw, home) : home;
-  if (!want) return { error: `"${raw}" is not a full path` };
-  let abs: string;
-  try {
-    abs = realpathSync(want);
-    if (!statSync(abs).isDirectory()) return { error: `${want} is not a folder` };
-  } catch {
-    return { error: `${want} does not exist` };
-  }
-  for (const p of protectedPaths(vault, w)) if (under(abs, p) && !under(abs, realish(vault))) return { error: `${tilde(abs, home)} is off limits` };
-  const here = checkFolder(vault, abs, w);
-  const dirs = listDir(abs, true)
-    .filter((d) => !protectedPaths(vault, w).some((p) => under(d.path, p) && !under(d.path, realish(vault))))
-    .map((d) => ({ ...d, ok: "abs" in checkFolder(vault, d.path, w) }));
-  const parent = dirname(abs) === abs ? null : dirname(abs).split(sep).join("/");
-  return { path: abs.split(sep).join("/"), parent, home: home.split(sep).join("/"), ok: "abs" in here, ...("error" in here ? { why: here.error } : {}), dirs };
-}
-
 /** The project folder `raw` (an absolute path) lies in, and the path itself; null when it is in none. */
 export function inProjectFolder(vault: string, raw: string, exists: Exists = projectThere(vault)): { slug: string; root: string; abs: string } | null {
   if (!raw || !isAbsolute(raw)) return null;
@@ -336,12 +291,4 @@ export function inProjectFolder(vault: string, raw: string, exists: Exists = pro
     return { slug: f.slug, root: f.abs, abs };
   }
   return null;
-}
-
-/** A project folder's entries (GET /api/v1/box/dir?path=): files and folders, folders first, .git left out. */
-export function projectDirListing(vault: string, raw: string, exists: Exists = projectThere(vault)): { path: string; root: string; slug: string; entries: DirEntry[] } | { error: string } {
-  const hit = inProjectFolder(vault, raw, exists);
-  if (!hit) return { error: `${raw} is not in a project's folder` };
-  if (!existsSync(hit.abs)) return { error: `${raw} does not exist` };
-  return { path: hit.abs.split(sep).join("/"), root: hit.root.split(sep).join("/"), slug: hit.slug, entries: listDir(hit.abs, false) };
 }

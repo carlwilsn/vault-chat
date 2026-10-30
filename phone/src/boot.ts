@@ -40,17 +40,10 @@ export function boot(): void {
     if (TOKEN) localStorage.setItem("vc_phone_token", TOKEN);
     else TOKEN = localStorage.getItem("vc_phone_token") || "";
   } catch {}
-  // The box's vault this page shows: ?vault= (a push names its vault), else the
-  // one picked last; none = the box's main vault. A push for a conversation
-  // without a vault is the main vault's.
-  let VAULT = qs.get("vault") || "";
-  try {
-    if (qs.has("vault") || qs.has("conv")) {
-      if (VAULT) localStorage.setItem("vc_phone_vault", VAULT);
-      else localStorage.removeItem("vc_phone_vault");
-    } else VAULT = localStorage.getItem("vc_phone_vault") || "";
-  } catch {}
-  const inVault = (path: string) => (VAULT ? path + (path.includes("?") ? "&" : "?") + "vault=" + encodeURIComponent(VAULT) : path);
+  // The phone has no folders (Carl, 2026-10-29): Main and the projects, which are the box's whatever vault a
+  // request names, so every request goes to the box's main vault. (A vault picked here before is forgotten.)
+  try { localStorage.removeItem("vc_phone_vault"); } catch {}
+  const inVault = (path: string) => path;
   const $ = (id: string): any => document.getElementById(id);
   const toastEl = $("toast");
   let toastT = 0;
@@ -319,41 +312,6 @@ export function boot(): void {
   document.addEventListener("click", closeMenu);
   menu.addEventListener("click", (e) => e.stopPropagation());
   $("settingsRow").onclick = () => { closeMenu(); openDrawer(); };
-  // The vault switcher: a row per vault at the top of the menu, only when the
-  // box has two or more. Picking one reloads the page on it.
-  function switchVault(name: string) {
-    try { if (name) localStorage.setItem("vc_phone_vault", name); else localStorage.removeItem("vc_phone_vault"); } catch {}
-    const q = new URLSearchParams(location.search);
-    q.delete("conv");
-    if (name) q.set("vault", name); else q.delete("vault");
-    const s = q.toString();
-    location.replace(location.pathname + (s ? "?" + s : ""));
-  }
-  let vaultIsMain = true;
-  async function loadVaults() {
-    try {
-      const d = await (await api("/api/v1/vaults")).json();
-      const list: { name: string; main?: boolean }[] = Array.isArray(d.vaults) ? d.vaults : [];
-      // The vault picked here is gone from the box: back to the main one.
-      if (VAULT && list.length && !list.some((v) => v.name === VAULT)) return switchVault("");
-      const box = $("vaultRows");
-      if (!box || list.length < 2) return;
-      vaultIsMain = !VAULT || !!list.find((v) => v.name === VAULT)?.main;
-      const cur = VAULT || list.find((v) => v.main)?.name || "";
-      box.innerHTML = "";
-      for (const v of list) {
-        const b = document.createElement("button");
-        b.className = "mrow" + (v.name === cur ? " cur" : "");
-        b.dataset.vault = v.name;
-        b.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg><span class="nm"></span>';
-        b.querySelector(".nm")!.textContent = v.name;
-        b.onclick = () => { closeMenu(); if (v.name !== cur) switchVault(v.name); };
-        box.appendChild(b);
-      }
-      box.hidden = false;
-    } catch {}
-  }
-  void loadVaults();
 
   const cdraw = $("cdraw"), scrim = $("scrim");
   function openConvs() { scrim.classList.add("on"); cdraw.classList.add("on"); document.body.classList.add("cdraw-open"); void loadConvs(); }
@@ -2687,8 +2645,6 @@ export function boot(): void {
         const aid = p.get("ask");
         if (aid) { void openAskById(aid); return; }
         const cid = p.get("conv");
-        // A push from another of the box's vaults: open the page on that vault.
-        if (cid && (p.get("vault") || "") !== VAULT && !(VAULT && !p.get("vault") && vaultIsMain)) { location.replace(String(d.url)); return; }
         if (cid) void openThread(cid);
       } catch {}
     });

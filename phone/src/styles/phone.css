@@ -122,9 +122,6 @@ body.offline .offbar{display:flex}
 .mrow .ct{font-size:11.5px;color:var(--primary-fg);background:var(--primary);border-radius:10px;min-width:18px;height:18px;display:flex;align-items:center;justify-content:center;padding:0 5px;font-weight:600}
 .mrow .ct.warn{background:var(--warn)}
 .mrow .ct.zero{display:none}
-.vrows{border-bottom:1px solid var(--line);margin-bottom:6px;padding-bottom:6px}
-.vrows[hidden]{display:none}
-.vrows .mrow .nm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .mdiv{height:1px;background:var(--fill-3);margin:5px 8px}
 
 /* left conversations drawer */

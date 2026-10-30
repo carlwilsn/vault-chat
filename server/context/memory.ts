@@ -57,10 +57,11 @@ export function memoryNote(raw: string): string | null {
   return null;
 }
 
-/** The lines under project.md's `## Memory` heading (to the next `## `). */
+/** A project's memory lines: under a `## Memory` heading (to the next `## `) when the file has one, else every
+ *  `- ` line (a project's .vault-chat/memory.md is all memory). */
 export function projectMemoryLines(projectMd: string): string[] {
   const m = /^##\s+Memory\s*$/im.exec(projectMd);
-  if (!m) return [];
+  if (!m) return projectMd.split(/\r?\n/).filter((l) => /^\s*- /.test(l));
   const rest = projectMd.slice(m.index + m[0].length);
   const end = /^##\s+/m.exec(rest);
   return (end ? rest.slice(0, end.index) : rest).split(/\r?\n/).filter((l) => l.trim());
@@ -70,9 +71,9 @@ export function projectMemoryLines(projectMd: string): string[] {
 export function projectMemoryNote(projectMd: string, rel: string, maxChars: number): string | null {
   const n = projectMemoryLines(projectMd).length;
   const parts: string[] = [];
-  if (n >= PROJECT_MEMORY_MAX_LINES * NEAR_CAP) parts.push(`its ## Memory is at ${n} of ${PROJECT_MEMORY_MAX_LINES} lines`);
+  if (n >= PROJECT_MEMORY_MAX_LINES * NEAR_CAP) parts.push(`its memory is at ${n} of ${PROJECT_MEMORY_MAX_LINES} lines`);
   if (projectMd.trim().length >= maxChars * NEAR_CAP) parts.push(`the file is at ${Math.round(projectMd.trim().length / 100) / 10}k of ${maxChars / 1000}k characters loaded`);
-  return parts.length ? `${rel}: ${parts.join(", and ")}: merge related memory lines and drop stale ones (never Carl's instructions above ## Memory).` : null;
+  return parts.length ? `${rel}: ${parts.join(", and ")}: merge related memory lines and drop stale ones.` : null;
 }
 
 /** project.md's front matter `folder:` (vault-relative), or null. */

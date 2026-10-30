@@ -9,9 +9,6 @@ import { cn } from "./lib/utils";
 import { isUnreadableAsText } from "./fileKind";
 import { revealInFileExplorer } from "./opener";
 import { commitFsAction } from "./commit-controller";
-import { useProjects } from "./ProjectChip";
-import { ProjectTree } from "./ProjectTree";
-import { projectOfThread } from "./threads";
 
 type PendingKind = "file" | "folder";
 type Menu = { x: number; y: number; entry: FileEntry | null } | null;
@@ -92,36 +89,9 @@ const OVERSCAN = 12;
 const EDGE = 28;
 type TreeItem = { kind: "row"; f: FileEntry } | { kind: "pending"; depth: number };
 
-/**
- * The left file tree. In the thread of a project that works in a folder on the box (outside the vault),
- * two tabs: that folder, read live from the box (ProjectTree), and the vault.
- */
+/** The left file tree: always the open folder (Carl, 2026-10-29: no second tab for a project's folder). */
 export function FileTree() {
-  const activeId = useStore((s) => s.activeConversationId);
-  const projects = useProjects();
-  const slug = projectOfThread(activeId);
-  const proj = slug ? projects.find((p) => p.slug === slug && p.folder) : undefined;
-  const [pick, setPick] = useState<Record<string, "vault" | "project">>({});
-  if (!proj?.folder) return <VaultTree />;
-  const mode = pick[proj.slug] ?? "project";
-  const tab = (m: "vault" | "project", label: string) => (
-    <button
-      data-el={`tree-tab-${m}`}
-      onClick={() => setPick((p) => ({ ...p, [proj.slug]: m }))}
-      className={cn("px-2 h-6 rounded text-[11.5px] truncate max-w-[60%]", mode === m ? "bg-accent text-foreground font-medium" : "text-muted-foreground hover:text-foreground hover:bg-accent/50")}
-    >
-      {label}
-    </button>
-  );
-  return (
-    <div className="h-full flex flex-col bg-card border-r border-border">
-      <div className="flex items-center gap-1 px-1.5 py-1 border-b border-border/60 shrink-0" data-el="tree-tabs">
-        {tab("project", proj.name)}
-        {tab("vault", "Vault")}
-      </div>
-      <div className="flex-1 min-h-0">{mode === "project" ? <ProjectTree root={proj.folder} home={/^\/home\/[^/]+/.exec(proj.folder)?.[0] ?? null} /> : <VaultTree />}</div>
-    </div>
-  );
+  return <VaultTree />;
 }
 
 function VaultTree() {
@@ -931,6 +901,34 @@ function VaultTree() {
     if (pending && pending.parent === vaultPath) out.push({ kind: "pending", depth: 0 });
     return out;
   }, [files, expanded, vaultPath, pending, pendingParentDepth]);
+
+  // Reveal a folder (the folder picker opened a project inside this vault): it and its parents open, it selected
+  // and scrolled to.
+  const [revealing, setRevealing] = useState<string | null>(null);
+  useEffect(() => {
+    const norm = (p: string) => p.split("\\").join("/").replace(/\/+$/, "");
+    const on = (e: Event) => {
+      const want = norm(String((e as CustomEvent).detail?.path ?? ""));
+      if (!want) return;
+      const ups = useStore
+        .getState()
+        .files.filter((f) => f.is_dir && (norm(f.path) === want || want.startsWith(norm(f.path) + "/")))
+        .map((f) => f.path);
+      if (!ups.length) return;
+      setExpanded((s) => new Set([...s, ...ups]));
+      const hit = ups.find((p) => norm(p) === want) ?? null;
+      setSelectedDir(hit);
+      setRevealing(hit);
+    };
+    window.addEventListener("vc-reveal-folder", on);
+    return () => window.removeEventListener("vc-reveal-folder", on);
+  }, []);
+  useEffect(() => {
+    if (!revealing) return;
+    const i = items.findIndex((it) => it.kind === "row" && it.f.path === revealing);
+    if (i >= 0 && treeRef.current) treeRef.current.scrollTop = Math.max(0, (i - 2) * ROW_H);
+    setRevealing(null);
+  }, [revealing, items]);
 
   // Follow the tree's scroll and size.
   useLayoutEffect(() => {

@@ -316,12 +316,13 @@ describe("the you layer (buildYouLayer)", () => {
     expect(s).toContain("capture of paper.pdf (page 2) — captured a region for the chat: .vault-chat/local/captures/x.png");
   });
 
-  it("the project's shared notes (project.md) and the rules, capped; an old memory.md is not read", async () => {
+  it("the project's memory (.vault-chat/memory.md in its folder) and the rules, capped; an old agent-projects/ file is not read", async () => {
     const { ensureProject } = await import("../context");
     const { withVault } = await import("../context");
-    withVault(vault, () => ensureProject("Coconut", "Detect coconuts in drone images."));
-    writeFileSync(join(vault, "agent-projects", "coconut", "project.md"), `# Coconut\n\nDetect coconuts in drone images.\n\n- use YOLO\n${"filler ".repeat(3000)}`);
-    writeFileSync(join(vault, "agent-projects", "coconut", "memory.md"), "# Memory\n\n- OLD-MEMORY\n");
+    withVault(vault, () => ensureProject("Coconut"));
+    writeFileSync(join(vault, "Coconut", ".vault-chat", "memory.md"), `# Coconut: memory\n\nDetect coconuts in drone images.\n\n- use YOLO\n${"filler ".repeat(3000)}`);
+    mkdirSync(join(vault, "agent-projects", "coconut"), { recursive: true });
+    writeFileSync(join(vault, "agent-projects", "coconut", "project.md"), "# Coconut\n\n- OLD-MEMORY\n");
     writeFileSync(join(vault, ".vault-chat", "rules.md"), "Always cite the page.\n");
     const p = await act.projectContextFor(vault, "coconut");
     expect(p).toMatch(/^<project_context>/);

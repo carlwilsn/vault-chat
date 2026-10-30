@@ -1,13 +1,14 @@
-// Projects as a vault folder: `<vault>/agent-projects/<slug>/`, hidden by
-// default through the vault's hide list (.vaultchatignore — the file tree's
-// "Hidden files"), once. Projects in the old place (.vault-chat/projects/) move
-// there on both machines; the moves are the same on each, so a git merge of the
-// two is clean. The server's own project state stays in .vault-chat/local/.
+// The older layouts of projects: `<vault>/agent-projects/<slug>/`, hidden by default through the vault's hide list
+// (.vaultchatignore — the file tree's "Hidden files"), once; and before that `.vault-chat/projects/`, which both
+// machines still move to agent-projects/ (the laptop app's prepare_agent_projects; the moves are the same on each, so
+// a git merge of the two is clean). Since 2026-10-29 a project is a folder with its own conversation
+// (server/context/projects.ts): a new one never makes agent-projects/, and `projects migrate` moves the old ones.
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { tmp, cleanup } from "./helpers";
+import { realpathSync } from "node:fs";
 import { HIDE_DEFAULTS_FILE, HIDE_FILE, LEGACY_PROJECTS_DIR, PROJECTS_DIR, hideOnce } from "../../src/agentProjects";
 import { ensureProjectsHidden, migrateLegacyProjects, prepareAgentProjects } from "../context/layout";
 import { configureContext, createProject, listProjects, resetContextConfig } from "../context";
@@ -57,16 +58,19 @@ describe("one name for the folder", () => {
 });
 
 describe("what the agent is told", () => {
-  it("the instructions name agent-projects/, never the old place", async () => {
+  it("the instructions name the project's folder, never agent-projects/ or the older place", async () => {
     const { PROJECTS_RULE, ROLE_PROMPT, contextToolSpecs, buildDeveloperInstructions } = await import("../context");
     const { ENGINE_ROLE_PROMPT: ENGINE_PROMPT } = await import("../engine/prompt");
-    expect(PROJECTS_RULE).toContain("agent-projects/<slug>/");
-    for (const t of [PROJECTS_RULE, ROLE_PROMPT, ENGINE_PROMPT, ...contextToolSpecs.map((x) => x.description)]) expect(t).not.toContain(".vault-chat/projects");
+    expect(PROJECTS_RULE).toContain("A project is a folder with its own thread");
+    for (const t of [PROJECTS_RULE, ROLE_PROMPT, ENGINE_PROMPT, ...contextToolSpecs.map((x) => x.description)]) {
+      expect(t).not.toContain(".vault-chat/projects");
+      expect(t).not.toContain("agent-projects");
+    }
     const v = join(root, "v");
     mkdirSync(join(v, ".vault-chat"), { recursive: true });
     configureContext({ vault: v });
     createProject("Coconut");
-    expect(buildDeveloperInstructions({ id: "project-coconut", project: "coconut" })).toContain(`This is the thread of Carl's project "Coconut" (${join(v, PROJECTS_DIR, "coconut")}).`);
+    expect(buildDeveloperInstructions({ id: "project-coconut", project: "coconut" })).toContain(`This is the thread of Carl's project "Coconut", the folder ${realpathSync(join(v, "Coconut"))}.`);
   });
 });
 
@@ -120,44 +124,39 @@ describe("hidden by default, once", () => {
     expect(read(join(v, HIDE_FILE))).toBe("private/diary.md\nagent-projects\n");
   });
 
-  it("unhidden in the Hidden files modal, it stays unhidden (a new project, a restart, the app's command)", () => {
+  it("unhidden in the Hidden files modal, it stays unhidden (a restart, the app's command)", () => {
     const v = join(root, "v");
-    mkdirSync(join(v, ".vault-chat"), { recursive: true });
-    configureContext({ vault: v });
-    createProject("Alpha");
+    mkdirSync(join(v, PROJECTS_DIR, "alpha"), { recursive: true });
+    expect(ensureProjectsHidden(v)).toBe(true);
     expect(hidden(v)).toEqual(["agent-projects"]);
     // The modal's "Unhide" (remove_from_ignore) takes the line out.
     writeFileSync(join(v, HIDE_FILE), "");
-    expect(hidden(v)).toEqual([]);
-    createProject("Beta");
-    expect(listProjects().map((p) => p.slug)).toEqual(["alpha", "beta"]);
     expect(ensureProjectsHidden(v)).toBe(false);
     expect(fsCommands.prepare_agent_projects({ vault: v })).toEqual({ moved: [], kept: [], hidden: false });
     expect(hidden(v)).toEqual([]);
   });
 
-  it("a vault's first project (Carl's New project: createProject) hides the folder; the second changes nothing", () => {
+  it("a new project is a folder of its own: agent-projects/ is never made and the hide list is not touched", () => {
     const v = join(root, "v");
     mkdirSync(join(v, ".vault-chat"), { recursive: true });
     configureContext({ vault: v });
     createProject("Coconut");
-    expect(existsSync(join(v, PROJECTS_DIR, "coconut", "project.md"))).toBe(true);
-    const once = read(join(v, HIDE_FILE));
-    expect(once).toBe("agent-projects\n");
     createProject("BitNet 160M");
-    expect(read(join(v, HIDE_FILE))).toBe(once);
-  });
-
-  it("listing projects on an old vault moves them and hides the folder (the box at boot / GET /projects)", () => {
-    const v = legacyVault();
-    configureContext({ vault: v });
+    expect(existsSync(join(v, "Coconut", ".vault-chat", "memory.md"))).toBe(true);
+    expect(existsSync(join(v, PROJECTS_DIR))).toBe(false);
+    expect(existsSync(join(v, HIDE_FILE))).toBe(false);
     expect(listProjects().map((p) => [p.slug, p.name])).toEqual([
       ["bitnet-160m", "BitNet 160M"],
       ["coconut", "Coconut"],
     ]);
-    expect(listProjects()[1]!.dir).toBe(join(v, PROJECTS_DIR, "coconut"));
-    expect(existsSync(join(v, LEGACY_PROJECTS_DIR))).toBe(false);
-    expect(hidden(v)).toEqual(["agent-projects"]);
+  });
+
+  it("an old vault's agent-projects/ or .vault-chat/projects/ folders are not projects (`projects migrate` moves them)", () => {
+    const v = legacyVault();
+    put(join(v, PROJECTS_DIR, "whiteboard", "project.md"), "# Whiteboard\n");
+    configureContext({ vault: v });
+    expect(listProjects()).toEqual([]);
+    expect(existsSync(join(v, LEGACY_PROJECTS_DIR))).toBe(true);
   });
 });
 

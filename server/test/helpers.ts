@@ -2,10 +2,10 @@
 // a scripted fake OpenRouter, and the built server bundle as a real child
 // process.
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readFileSync, realpathSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { tmpdir, homedir } from "node:os";
-import { join, resolve, dirname } from "node:path";
+import { join, resolve, dirname, isAbsolute } from "node:path";
 import { Encrypter } from "age-encryption";
 import { pathToFileURL } from "node:url";
 
@@ -387,4 +387,29 @@ export async function fakePushService(status = 201): Promise<FakePush> {
     received,
     close: () => new Promise((r) => server.close(() => r())),
   };
+}
+
+/**
+ * A project as the box keeps it (server/context/projects.ts): a folder registered in its vault's registry
+ * (.vault-chat/local/project-folders.json), its AGENTS.md (instructions), .vault-chat/memory.md and
+ * .vault-chat/rules.md inside it. `folder`: vault-relative or absolute (default: the slug). Returns the folder.
+ */
+export function seedProject(vault: string, slug: string, o: { folder?: string; agents?: string; memory?: string; rules?: string } = {}): string {
+  const raw = o.folder ? (isAbsolute(o.folder) ? o.folder : join(vault, o.folder)) : join(vault, slug);
+  mkdirSync(join(raw, ".vault-chat"), { recursive: true });
+  const folder = realpathSync(raw);
+  if (o.agents !== undefined) writeFileSync(join(folder, "AGENTS.md"), o.agents);
+  if (o.memory !== undefined) writeFileSync(join(folder, ".vault-chat", "memory.md"), o.memory);
+  if (o.rules !== undefined) writeFileSync(join(folder, ".vault-chat", "rules.md"), o.rules);
+  const reg = join(vault, ".vault-chat", "local", "project-folders.json");
+  let r: { folders: Record<string, unknown>; deleted: Record<string, unknown> } = { folders: {}, deleted: {} };
+  try {
+    r = JSON.parse(readFileSync(reg, "utf8"));
+  } catch {
+    /* none yet */
+  }
+  r.folders[slug] = { path: folder, at: new Date().toISOString() };
+  mkdirSync(dirname(reg), { recursive: true });
+  writeFileSync(reg, JSON.stringify(r, null, 2) + "\n");
+  return folder;
 }
