@@ -87,7 +87,12 @@ export function projectExists(slug: string): boolean {
 export function readProject(slug: string): Project | null {
   if (!projectExists(slug)) return null;
   const p = infoOf(slug, registeredFolder(vault(), slug)!);
-  return { ...p, notes: readOr(join(p.dir, PROJECT_NOTES_FILE)), rules: readOr(join(p.dir, PROJECT_RULES_FILE)) };
+  // Until `projects migrate` has run (a release lands before it): the project's files where they were, so its rules
+  // and memory never go missing in between.
+  const old = join(vault(), "agent-projects", slug);
+  const notes = readOr(join(p.dir, PROJECT_NOTES_FILE)) || readOr(join(old, "project.md"));
+  const rules = existsSync(join(p.dir, PROJECT_RULES_FILE)) ? readOr(join(p.dir, PROJECT_RULES_FILE)) : readOr(join(old, PROJECT_RULES_FILE));
+  return { ...p, notes, rules };
 }
 
 /** Every project on the box, from every vault's registry (configureContext({vaults})); `vault`: the one that owns it. */
