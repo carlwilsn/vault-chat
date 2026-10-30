@@ -110,6 +110,19 @@ describe("durable delivery observations, not synchronized card authority", () =>
     await expect(shipmentCards(f.vault, "school")).rejects.toThrow("Unsafe");
     expect(readFileSync(victim, "utf8")).toBe("safe");
   });
+  it.each(["receipt-id", "source-head", "source-tree", "artifact-root", "artifact-hash"])("keeps current receipt projection fail-closed: %s", async kind => {
+    const f = await fixture(), artifact = join(f.proof, "recording.mp4"), bytes = Buffer.from("fixture-media-not-physical-proof");
+    writeFileSync(artifact, bytes);
+    const receipt = { id: f.c.id, source: { ...f.c.source }, baseline: [], candidate: [],
+      ui: { artifact, artifactHash: createHash("sha256").update(bytes).digest("hex"), assertions: 2, frames: 30, sourceVerified: true } };
+    if (kind === "receipt-id") receipt.id += "-other";
+    if (kind === "source-head") receipt.source.head = "f".repeat(40);
+    if (kind === "source-tree") receipt.source.tree = "f".repeat(40);
+    if (kind === "artifact-root") { receipt.ui.artifact = join(f.root, "outside.mp4"); writeFileSync(receipt.ui.artifact, bytes); }
+    if (kind === "artifact-hash") receipt.ui.artifactHash = "f".repeat(64);
+    writeFileSync(join(f.proof, "receipt.json"), JSON.stringify(receipt));
+    await expect(shipmentCards(f.vault, "school")).rejects.toThrow(kind === "artifact-root" ? "Invalid proof artifact" : kind === "artifact-hash" ? "Proof artifact changed" : "Proof source mismatch");
+  });
   it("recovers a persisted requested rollback after a pre-dispatch crash, but never starts a second accepted recovery", async () => {
     const f = await fixture();
     await updateShippingJournal(f.repo, j => { j.delivery = { releases: {}, rollbacks: { [f.c.id]: { status: "requested" } } }; });

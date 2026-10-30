@@ -12,6 +12,7 @@ import { acceptProvenReview, baseBranch, type Review } from "./projectChanges";
 import { killTree } from "./commands/proc";
 import type { RecordArgs } from "./recordUI";
 import { browserOnlyError } from "./recordUI";
+import { PI_VERSION, piVersionAt, type PiInstall } from "./engine/pi/install";
 
 const hash = (s: string | Buffer) => createHash("sha256").update(s).digest("hex");
 const inside = (p: string, root: string) => { const r = relative(root, p); return !isAbsolute(r) && r !== ".." && !r.startsWith("../"); };
@@ -23,6 +24,8 @@ export type ChangeHostOptions = {
   node: string; npm: string; path: string; browser?: string;
   /** Installed credential-free provisioner, used only with the installed trusted toolchain manifests. */
   provision?: (manifest: string, lock: string) => Promise<{ dependencies: string; dependencyLock: string }>;
+  /** Actual engine install, resolved by the installed host, never a candidate environment variable. */
+  pi?: Pick<PiInstall, "dir" | "version">;
   timeoutMs?: number; signal?: AbortSignal;
   /** Service-verified exact source recovery only; never populated from submission tool arguments. */
   rollbackRemovedTests?: RollbackTestPolicy;
@@ -127,6 +130,9 @@ export async function createInstalledChangeHost(o: ChangeHostOptions, repo: stri
   if (!o.shell.length || o.shell.at(-1) !== "--" || !o.shell[0]!.includes("bwrap")) throw new Error("Proof requires the installed bubblewrap guard");
   if (!isAbsolute(o.privateRoot) || !isAbsolute(o.installedEntry)) throw new Error("Installed absolute proof storage and entry are required");
   const entry = realpathSync(o.installedEntry);
+  const pi = o.pi && realpathSync(o.pi.dir);
+  if (pi && (o.pi!.version !== PI_VERSION || piVersionAt(pi) !== PI_VERSION)) throw new Error("Proof requires the actual pinned pi runtime");
+  const proofPi = `/tmp/proof-home/.local/state/vault-chat-server/pi/${PI_VERSION}`;
   let installedDependencies = o.provision ? o.dependencies : realpathSync(o.dependencies);
   const lockBytes = readFileSync(o.dependencyLock);
   const lockHash = hash(lockBytes);
@@ -152,6 +158,7 @@ export async function createInstalledChangeHost(o: ChangeHostOptions, repo: stri
   const toolPath = o.path.split(":").filter(Boolean).map(p => { try { return realpathSync(p); } catch { return ""; } }).filter(p => p && !inside(p, o.home)).join(":");
   const env = (revision: string): Record<string, string> => ({
     PATH: `${hostDir}:${toolPath}`, HOME: "/tmp/proof-home", LANG: "C.UTF-8", TMPDIR: "/tmp", CI: "1",
+    ...(pi ? { VC_TEST_PI_DIR: proofPi } : {}),
     VC_REV: revision, VC_VOICE_PIPELINE: "off", VC_VOICE_PIPELINE_PORT: "19101", VC_PORT: "19001",
     npm_config_cache: "/tmp/npm-cache", npm_config_userconfig: join(hostDir, "npm-user"), npm_config_globalconfig: join(hostDir, "npm-global"),
     ...(o.browser ? { VC_HEADLESS_BROWSER: realpathSync(o.browser) } : {}),
@@ -163,6 +170,9 @@ export async function createInstalledChangeHost(o: ChangeHostOptions, repo: stri
     const args = [...o.shell.slice(0, -1), "--unshare-net", "--tmpfs", o.home, "--tmpfs", "/tmp", "--tmpfs", "/run", "--tmpfs", "/var/tmp",
       "--ro-bind", hostDir, hostDir, "--bind", s.dir, s.dir, "--ro-bind", s.dependencies, join(s.dir, "node_modules"),
       "--ro-bind", join(s.dir, ".git"), join(s.dir, ".git")];
+    // Re-expose only the engine runtime after hiding HOME/tmp; no agent settings, sessions or credentials.
+    // The private-HOME alias also supports tests using the normal pi installation fallback.
+    if (pi) args.push("--ro-bind", pi, proofPi);
     for (const cache of [".vite", ".vite-temp", ".vite-preview-before"]) args.push("--tmpfs", join(s.dir, "node_modules", cache));
     for (const f of s.files) if (!lstatSync(join(s.dir, f)).isSymbolicLink()) args.push("--ro-bind", join(s.dir, f), join(s.dir, f));
     if (gateExecution && o.rollbackGateInfrastructure) {

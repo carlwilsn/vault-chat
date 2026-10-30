@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
-import { acceptedChanges, importLegacyBootstrap, isLegacyBootstrapProofId, LEGACY_BOOTSTRAP, type PublishedChangeRelease } from "../changeShipping";
+import { acceptedChanges, importLegacyBootstrap, isLegacyBootstrapProofId, LEGACY_BOOTSTRAP, updateShippingJournal, type PublishedChangeRelease } from "../changeShipping";
 import { createConv, emitTo, logOf } from "../engine/convs";
 import { appendEntries, newSessionFile } from "../convlog/piSession";
 import { importConversation } from "../convlog/importer";
@@ -124,6 +124,53 @@ describe("one explicitly authorized final legacy bootstrap, facts not permits", 
     expect(rollback).toHaveBeenCalledWith(f.repo, LEGACY_BOOTSTRAP.proofId, "Carl requested rollback");
     writeFileSync(f.media, "changed after acceptance");
     await expect(shipmentCards(f.vault, "school")).rejects.toThrow("artifact changed");
+  });
+  it("projects the actual r3 identity class across repeated delivery cycles without replaying acceptance", async () => {
+    const f = await fixture({ isError: true, result: "Native review failed before an answer" });
+    const proofId = LEGACY_BOOTSTRAP.proofId + "_r3";
+    const media = retry(f, { proofId, result: `Carl answered: ${KEEP}${OUTCOME_SEP}Kept: ${LEGACY_BOOTSTRAP.branch} is in main (fast-forward, now ${f.head}); laptop sync must push it.` });
+    rmSync(f.media);
+    const accepted = await f.run(), refs = f.g("show-ref"), session = readFileSync(f.file, "utf8");
+    expect(accepted).toMatchObject({ id: LEGACY_BOOTSTRAP.proofId, review: { proofId }, bootstrap: { proofId } });
+    const rollback = vi.fn();
+    configureChangeDelivery({ boxHealth: async () => ({ version: f.release.version, revision: f.revision, observedAt: Date.now(), ready: true }),
+      requestSourceRollback: rollback, vaults: () => [{ path: f.vault, name: "school" }], stateDir: join(f.root, "state") });
+    for (let cycle = 0; cycle < 3; cycle++) {
+      await observeChangeDelivery(f.repo);
+      const [card] = await shipmentCards(f.vault, "school");
+      expect(card).toMatchObject({ id: LEGACY_BOOTSTRAP.proofId, sourceRevision: f.head, status: "health-pending" });
+      const projected = new URL(card.proof.mediaUrls[0], "http://local").searchParams.get("path")!;
+      expect(readFileSync(join(f.vault, projected))).toEqual(readFileSync(media));
+      const summary = readFileSync(join(f.vault, new URL(card.proof.summaryUrl, "http://local").searchParams.get("path")!), "utf8");
+      expect(summary).toContain("not a new seven-gate host receipt");
+      expect(summary).toContain(f.head);
+    }
+    expect(rollback).not.toHaveBeenCalled();
+    expect(await acceptedChanges(f.repo)).toEqual([accepted]);
+    expect(f.discover).toHaveBeenCalledTimes(1);
+    expect(f.g("show-ref")).toBe(refs); expect(readFileSync(f.file, "utf8")).toBe(session);
+  });
+  it.each(["acceptance-id", "foreign-proof", "traversal", "newline", "review-proof", "tool-call", "missing-bootstrap", "fixture", "source-base", "source-branch", "review-branch", "review-source", "proof-directory"])("fails closed on legacy projection identity mismatch: %s", async kind => {
+    const f = await fixture(); await f.run();
+    // Only this test's disposable private journal is modified, never installed acceptance metadata.
+    await updateShippingJournal(f.repo, j => {
+      const c = j.changes[0];
+      if (kind === "acceptance-id") c.id += "_r3";
+      if (kind === "foreign-proof" || kind === "traversal" || kind === "newline") {
+        const proofId = kind === "foreign-proof" ? "other" : LEGACY_BOOTSTRAP.proofId + (kind === "traversal" ? "_r3/../x" : "_r3\n");
+        c.bootstrap!.proofId = proofId; c.review.proofId = proofId;
+      }
+      if (kind === "review-proof") c.review.proofId += "_r3";
+      if (kind === "tool-call") c.bootstrap!.toolCallId += "-other";
+      if (kind === "missing-bootstrap") delete c.bootstrap;
+      if (kind === "fixture") c.bootstrap!.fixtureCommit = "f".repeat(40);
+      if (kind === "source-base") c.source.base = "f".repeat(40);
+      if (kind === "source-branch") c.source.branch = "agent/other";
+      if (kind === "review-branch") c.review.branch = "agent/other";
+      if (kind === "review-source") c.review.sha = "f".repeat(40);
+      if (kind === "proof-directory") c.proofDir = join(f.vault, ".vault-chat", "proof", LEGACY_BOOTSTRAP.proofId + "_r3");
+    });
+    await expect(shipmentCards(f.vault, "school")).rejects.toThrow("Invalid bootstrap proof identity");
   });
   it.each([
     { noCall: true }, { noResult: true }, { duplicate: true }, { isError: true },

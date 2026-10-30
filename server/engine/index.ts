@@ -374,7 +374,7 @@ export async function startEngine(b: EngineBoot): Promise<EngineHandle> {
       vaultName: v.name,
       // The vault's own tools run in the same sandbox as the agent's commands (the other vaults hidden).
       shell: () => outerWith(sandbox),
-      changeHost: () => installedChangeHostOptions(outerWith(sandbox)),
+      changeHost: () => installedChangeHostOptions(outerWith(sandbox), install),
       // One line per turn: the full record in <state>/logs/turns.jsonl, a summary in the journal.
       turnLog: (line) => {
         boxLogs(b.stateDir).turns.append(line);

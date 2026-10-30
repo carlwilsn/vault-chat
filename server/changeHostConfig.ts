@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 import { findBrowser } from "./headless";
 import type { ChangeHostOptions } from "./changeHost";
 import { killTree } from "./commands/proc";
+import type { PiInstall } from "./engine/pi/install";
 
 const hash = (s: string) => createHash("sha256").update(s).digest("hex");
 const pending = new Map<string, Promise<{ dependencies: string; dependencyLock: string }>>();
@@ -76,7 +77,7 @@ export function provisionProofDependencies(o: { root: string; node: string; npm:
 
 /** Called by native submission and release-health rollback alike. No environment knobs or TOFU config
  * are needed after installing a normal release: manifests arrive inside checksummed release assets. */
-export async function installedChangeHostOptions(shell: readonly string[] | null | undefined): Promise<Omit<ChangeHostOptions, "privateRoot" | "signal">> {
+export async function installedChangeHostOptions(shell: readonly string[] | null | undefined, pi: PiInstall): Promise<Omit<ChangeHostOptions, "privateRoot" | "signal">> {
   if (!shell?.length || !shell[0]?.includes("bwrap") || shell.at(-1) !== "--") throw new Error("Installed bubblewrap is required for SubmitChange");
   const entry = realpathSync(fileURLToPath(import.meta.url));
   const release = dirname(entry);
@@ -90,5 +91,5 @@ export async function installedChangeHostOptions(shell: readonly string[] | null
   const provision = (manifest: string, lock: string) => provisionProofDependencies({ root, node, npm, path }, manifest, lock);
   // Provisioning belongs to the background host job, not the submitting model turn.
   const store = { dependencies: root, dependencyLock: join(manifestRoot, "package-lock.json") };
-  return { shell: [...shell], home: homedir(), installedEntry: entry, ...store, node, npm, path, browser: realpathSync(browser), provision };
+  return { shell: [...shell], pi: { dir: realpathSync(pi.dir), version: pi.version }, home: homedir(), installedEntry: entry, ...store, node, npm, path, browser: realpathSync(browser), provision };
 }

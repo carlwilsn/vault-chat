@@ -11,7 +11,7 @@ import { acceptedChanges, acceptedFailedRelease, importLegacyBootstrap, updateSh
 import { activeFolders } from "./projectFolders";
 import { installedChangeHostOptions } from "./changeHostConfig";
 import { buildSandbox } from "./engine/index";
-import { findBwrap } from "./engine/pi/install";
+import { ensurePi, findBwrap } from "./engine/pi/install";
 import { probeJob, readJobs, type PiJobEnv } from "./engine/pi/jobs";
 import { requestRollback } from "./submitChange";
 import { BoxSync, listVaults, vaultPaths } from "./sync";
@@ -97,7 +97,7 @@ export async function runPublishedRecoveryCli(): Promise<number> {
         const home = homedir(), runtime = join(cfg.stateDir, "retained-recovery", owner.name);
         for (const dir of [runtime, join(runtime, "sessions"), join(runtime, "agent"), join(runtime, "jobs")]) mkdirSync(dir, { recursive: true, mode: 0o700 });
         const shell = buildSandbox({ bwrap, home, stateDir: cfg.stateDir, secretsDir: cfg.secretsDir, hideFiles: [cfg.tokenPath, cfg.pushSubsPath, cfg.localStoragePath], sessionsDir: join(runtime, "sessions"), agentDir: join(runtime, "agent"), vault: owner.vault, uid: process.getuid?.() ?? -1, envFile: process.env.VC_ENV_FILE }).shell;
-        const host = await installedChangeHostOptions(shell);
+        const host = await installedChangeHostOptions(shell, await ensurePi(cfg.stateDir, { allowInstall: false }));
         // Same job primitive, private updater-owned context. The pre-A server must not reap this as a
         // missing shell unit and wake a model merely because it cannot recognize A's service-job kind.
         const jobs: PiJobEnv = { logDir: join(runtime, "jobs"), wrap: null, env: {} };

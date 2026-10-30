@@ -48,7 +48,26 @@ describe("installed change host: actual sandbox, git pins and seven fixed comman
     writeFileSync(join(repo, "server/build.mjs"), 'import {build} from "esbuild"; await build({entryPoints:["source.mjs"],outfile:"dist-server/source.mjs",bundle:true});');
     writeFileSync(join(repo, "test/harness/register.mjs"), '/* trusted fixture has no web imports */');
     writeFileSync(join(repo, "server/vitest.config.ts"), 'export default {test:{include:["tiny.vitest.test.ts"],fileParallelism:false}};\n');
-    writeFileSync(join(repo, "tiny.vitest.test.ts"), 'import {it,expect} from "vitest"; it("actual vitest passes",()=>expect(1+1).toBe(2));\n');
+    writeFileSync(join(repo, "tiny.vitest.test.ts"), `
+      import {it,expect} from "vitest";
+      import {homedir} from "node:os";
+      import {join} from "node:path";
+      import {existsSync,writeFileSync} from "node:fs";
+      it("actual vitest passes",()=>expect(1+1).toBe(2));
+      for (const origin of ["env", "HOME"]) it(origin + " real native factories", async () => {
+        const prefix = origin === "env" ? process.env.VC_TEST_PI_DIR : join(homedir(), ".local/state/vault-chat-server/pi/1.1.0");
+        expect(prefix).toBe("/tmp/proof-home/.local/state/vault-chat-server/pi/1.1.0");
+        const api = await import(join(prefix, "node_modules/@earendil-works/pi-coding-agent/dist/core/tools/index.js"));
+        for (const factory of ["createReadTool", "createBashTool", "createEditTool", "createWriteTool"]) expect(typeof api[factory]).toBe("function");
+        const path = "/tmp/native-" + origin;
+        await api.createWriteTool(process.cwd()).execute("write", {path,content:"actual factory output"});
+        const read = await api.createReadTool(process.cwd()).execute("read", {path});
+        expect(read.content).toContainEqual({type:"text",text:"actual factory output"});
+        expect(() => writeFileSync(join(prefix,"must-not-write"),"no")).toThrow();
+        expect(existsSync(${JSON.stringify(join(repo, "outside-marker"))})).toBe(false);
+        expect(process.env.VC_PROOF_TEST_MARKER).toBeUndefined();
+      });
+    `);
     writeFileSync(join(repo, "outside-marker"), "host-only marker");
     writeFileSync(join(repo, "test/harness/tiny.test.ts"), `import {it,describe} from 'node:test'; import assert from 'node:assert/strict'; import fs from 'node:fs'; import net from 'node:net';
       describe('first suite',()=>it('same leaf',()=>assert.equal(2+2,4)));
@@ -71,6 +90,7 @@ describe("installed change host: actual sandbox, git pins and seven fixed comman
     const shell = buildSandbox({ bwrap, home: homedir(), stateDir: join(dir, "state"), secretsDir: join(dir, "never-read-secrets"), hideFiles: [], sessionsDir: join(dir, "sessions"), agentDir: join(dir, "agent"), vault: join(dir, "vault"), uid: process.getuid!() }).shell!;
     const npm = execFileSync("sh", ["-c", "command -v npm"], { encoding: "utf8" }).trim();
     opts = { shell, home: homedir(), privateRoot: join(dir, "proofs"), installedEntry: join(root, "dist-server/vault-chat-server.mjs"),
+      pi: { dir: process.env.VC_TEST_PI_DIR ?? join(homedir(), ".local/state/vault-chat-server/pi/1.1.0"), version: "1.1.0" },
       dependencies: join(root, "node_modules"), dependencyLock: join(root, "package-lock.json"), node: process.execPath, npm, path: process.env.PATH!, timeoutMs: 60_000 };
     process.env.VC_PROOF_TEST_MARKER = "must-not-inherit";
     runner = await createInstalledChangeHost(opts, repo, pinned.source, ui);
@@ -96,11 +116,21 @@ describe("installed change host: actual sandbox, git pins and seven fixed comman
           expect(r.tests?.some(t => t.name === "forged pass")).toBe(false);
           expect(r.tests?.filter(t => t.name.includes("same leaf")).map(t => t.name)).toEqual(['["first suite","same leaf"]', '["second suite","same leaf"]']);
         }
-        if (gate === "test:server") expect(r.tests).toEqual([{ file: "tiny.vitest.test.ts", name: "actual vitest passes", status: "passed" }]);
+        if (gate === "test:server") expect(r.tests).toEqual(["actual vitest passes", "env real native factories", "HOME real native factories"].map(name => ({ file: "tiny.vitest.test.ts", name, status: "passed" })));
         await runner.host.assertSource(revision);
       }
     }
   }, 120_000);
+  it("mounts the actual pinned pi read-only for both env and private-HOME factory imports", async () => {
+    for (const revision of [pinned.source.base, pinned.source.head]) {
+      const result = await runner.host.execute(revision, "test:server", CHANGE_COMMANDS["test:server"]);
+      expect(result.exitCode, result.stderr + result.stdout).toBe(0);
+      expect(result.complete).toBe(true);
+      expect(result.tests).toHaveLength(3);
+      expect(result.tests?.every(t => t.status === "passed")).toBe(true);
+    }
+    await expect(createInstalledChangeHost({ ...opts, pi: { ...opts.pi!, version: "wrong-pin" } }, repo, pinned.source, ui)).rejects.toThrow("actual pinned pi");
+  });
   it("refuses a command override or a model-authored/prerecorded artifact", async () => {
     await expect(runner.host.execute(pinned.source.head, "build:server", ["sh", "-c", "true"])).rejects.toThrow("fixed seven");
     await expect(runner.host.assertArtifact({} as never)).rejects.toThrow("host-observed");

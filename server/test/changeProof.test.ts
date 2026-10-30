@@ -121,18 +121,18 @@ describe("same named failures, never just a count", () => {
     await expect(f.proof.prove(source, ask)).rejects.toThrow("new named failure");
   });
   it.each([
-    (r: any) => { r.tests.pop(); },
-    (r: any) => { r.tests[1].status = "skipped"; },
-    (r: any) => { r.tests.push({ file: "new.ts", name: "untested", status: "todo" }); },
-    (r: any) => { r.tests.push(r.tests[0]); },
-    (r: any) => { r.tests = []; },
-    (r: any) => { r.tests = undefined; },
-    (r: any) => { r.complete = false; },
-    (r: any) => { r.logArtifact = ""; },
-    (r: any) => { r.timedOut = true; },
-    (r: any) => { r.exitCode = 0; },
-    (r: any) => { r.exitCode = 137; },
-  ])("refuses removed, skipped, ambiguous, unavailable, malformed or crashed checks", async (mutation) => {
+    { name: "removed baseline test", mutation: (r: any) => { r.tests.pop(); } },
+    { name: "new skipped test", mutation: (r: any) => { r.tests[1].status = "skipped"; } },
+    { name: "new todo test", mutation: (r: any) => { r.tests.push({ file: "new.ts", name: "untested", status: "todo" }); } },
+    { name: "duplicate test identity", mutation: (r: any) => { r.tests.push(r.tests[0]); } },
+    { name: "empty test report", mutation: (r: any) => { r.tests = []; } },
+    { name: "missing test report", mutation: (r: any) => { r.tests = undefined; } },
+    { name: "incomplete execution", mutation: (r: any) => { r.complete = false; } },
+    { name: "missing log artifact", mutation: (r: any) => { r.logArtifact = ""; } },
+    { name: "timed out runner", mutation: (r: any) => { r.timedOut = true; } },
+    { name: "exit code contradicts failing tests", mutation: (r: any) => { r.exitCode = 0; } },
+    { name: "crashed runner", mutation: (r: any) => { r.exitCode = 137; } },
+  ])("refuses removed, skipped, ambiguous, unavailable, malformed or crashed checks: $name", async ({ mutation }) => {
     await expect(changed(mutation).proof.prove(source, ask)).rejects.toThrow();
   });
   it("requires build/typecheck success even when the same command failed on main", async () => {

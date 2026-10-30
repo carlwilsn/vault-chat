@@ -46,3 +46,9 @@
   content is checked, not only ancestry/filenames; ff-only, no GitHub push. Public lookup failure is reported
   AFTER hub transport so it cannot strand accepted source away from the laptop. This is not finished auto-ship:
   native cutover, authenticated Tauri/box health, source revert and the Shipped card still await integration.
+- **Proof-host self-repair has no maintenance entry point (2026-10-30).** The ordinary updater only installs
+  published releases; its install script installs units, and retained recovery only proves an already accepted
+  change's exact revert. None settles an ambiguous pinned baseline or installs unaccepted local host code.
+  A read-only sandbox plus an immutable duplicate-name baseline cannot be unblocked by candidate labels or
+  an idle restart. Report the missing trusted outside-host baseline/deployment capability explicitly; never
+  reinterpret updater test hooks, a data-pause permission or historical bootstrap as upgrade authority.

@@ -2,11 +2,11 @@
  * per-vault JSONL is only a union-mergeable display projection and is never read back for decisions. */
 import { appendFileSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
-import { dirname, extname, join, resolve, sep } from "node:path";
+import { basename, dirname, extname, join, resolve, sep } from "node:path";
 import { isIP } from "node:net";
 import type { IncomingMessage } from "node:http";
 import { isLoopbackAddr, tailnetLoginOk } from "./auth";
-import { acceptedChanges, importLegacyBootstrap, selectAcceptedFailedRelease, updateShippingJournal, type AcceptedChange, type ShippingJournal } from "./changeShipping";
+import { acceptedChanges, importLegacyBootstrap, isLegacyBootstrapProofId, LEGACY_BOOTSTRAP, selectAcceptedFailedRelease, updateShippingJournal, type AcceptedChange, type ShippingJournal } from "./changeShipping";
 import { evaluateReleaseHealth, type BoxReleaseHealth, type LaptopReleaseHealth, type ReleaseHealthResult, type ReleaseTarget } from "./releaseHealth";
 import type { LaptopHealthReport, ReleaseHealthChallenge, ShipmentCard, ShipmentRollback } from "../src/shippingProtocol";
 import { activeFolders } from "./projectFolders";
@@ -222,7 +222,13 @@ function proofProjection(vaultPath: string, vaultName: string, c: AcceptedChange
     mediaUrls.push(fileUrl(vaultName, `${rel}/${name}`));
   }
   if (c.basis === "legacy-bootstrap") {
-    if (!c.bootstrap || c.bootstrap.proofId !== c.id) throw new Error("Invalid bootstrap proof identity");
+    // The journal id names the ONE handoff; the retained proof/review id names its successful
+    // native attempt (possibly _r3). The importer deliberately keeps those identities distinct.
+    if (c.id !== LEGACY_BOOTSTRAP.proofId || !c.bootstrap || !isLegacyBootstrapProofId(c.bootstrap.proofId) ||
+        c.bootstrap.proofId !== c.review.proofId || basename(c.proofDir) !== c.bootstrap.proofId ||
+        !c.bootstrap.toolCallId || c.bootstrap.toolCallId !== c.review.toolCallId || c.bootstrap.fixtureCommit !== LEGACY_BOOTSTRAP.fixtureCommit ||
+        c.source.base !== LEGACY_BOOTSTRAP.base || c.source.branch !== LEGACY_BOOTSTRAP.branch ||
+        c.review.branch !== LEGACY_BOOTSTRAP.branch || c.review.sha !== c.source.head) throw new Error("Invalid bootstrap proof identity");
     summary += "\n## Explicit one-time legacy bootstrap\nCarl kept the final A + voice mic fixture repair using the previous installed service. Its native completed Keep result and exact published source were verified before importing this historical acceptance fact. This is not a new seven-gate host receipt or a replayable permit.\n\nThe original checks and UI are retained on the completed ReadyForReview card. The media below is the original retained UI proof, not a new recording.\n";
     const root = realpathSync(c.proofDir);
     for (const [i, media] of c.bootstrap.media.entries()) {
