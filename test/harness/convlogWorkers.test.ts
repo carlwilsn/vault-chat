@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, writeFileSync, appendFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ConvLog } from "../../server/convlog/log.ts";
+import { ConvLog, lastSeq } from "../../server/convlog/log.ts";
 import { emptyPicture, fold, foldInto, reduce, rowFromPicture } from "../../src/convlog/reduce.ts";
 import { frozenConvLog, OLD_SERVER } from "./frozenConvLog.ts";
 import type { LogRecord, StoredRecord, StoredSubagentsRecord, SubagentRec } from "../../src/convlog/protocol.ts";
@@ -165,3 +165,41 @@ test("framed malformed/missing-base/reordered deltas fail closed; torn final app
   healed.emit(C, { type: "meta", patch: { subagents: [{ threadId: "one", summary: "after healing", state: "completed" }] } }, 3);
   assert.deepEqual(new ConvLog(dir).picture(C), healed.picture(C));
 }));
+
+// Regression for the 44dc0048 long-tail fix interacting with checkpoint-seeded
+// reader projection. All writes are disposable fixtures, never a live log.
+test("over-64KB legacy and future-delta tails retain last seq and exact checkpoint replay", () => {
+  for (const future of [false, true]) fixture((dir, log, file) => {
+    const ended: SubagentRec = { threadId: "ended", state: "completed", task: "original task", summary: "retained report" };
+    const first = log.emit(C, { type: "meta", patch: { title: "Long tail", subagents: [ended] } }, 1);
+    log.checkpointNow(C);
+    const ck = log.checkpointOf(C)!;
+    assert.equal(ck.seq, first.seq);
+    const worker = { ...ended, summary: "large completed report ".repeat(10_000) };
+    const tail: LogRecord = { seq: first.seq + 1, conv: C, at: 2, type: "meta", patch: { subagents: [worker] } };
+    const stored: StoredRecord = future ? { seq: tail.seq, conv: C, at: tail.at, type: "subagents", base: first.seq,
+      patch: { subagents: null }, updates: [worker], order: [worker.threadId] } : tail;
+    const line = JSON.stringify(stored) + "\n";
+    assert.ok(Buffer.byteLength(line) > 1 << 16);
+    appendFileSync(file, line);
+    assert.equal(lastSeq(file), tail.seq, "must not return zero and refuse a valid checkpoint");
+    const expected = fold([first, tail], C);
+    const cold = new ConvLog(dir);
+    assert.equal(cold.latest(), tail.seq);
+    assert.deepEqual(cold.checkpointOf(C), ck, "original checkpoint is retained, not replaced");
+    assert.deepEqual(cold.picture(C), expected, "checkpoint-seeded reader expands the long tail");
+    assert.deepEqual(cold.eventsOf(C, ck.seq), [tail]);
+    assert.deepEqual(foldInto(ck.picture, cold.eventsOf(C, ck.seq)), expected);
+    assert.deepEqual(page(cold, ck.seq), [tail]);
+    assert.deepEqual(page(cold), [first, tail]);
+    rmSync(file.replace(/\.jsonl$/, ".ckpt.json"));
+    const replay = new ConvLog(dir);
+    assert.deepEqual(replay.picture(C), expected, "full replay and checkpoint plus tail agree");
+    assert.deepEqual(replay.rows(), [rowFromPicture(expected)]);
+    assert.equal(replay.picture(C)!.meta.subagents![0]!.task, ended.task);
+    assert.equal(replay.picture(C)!.meta.subagents![0]!.summary, worker.summary);
+    const next = replay.emit(C, { type: "meta", patch: { costUsd: 1 } }, 3);
+    assert.ok(next.seq > tail.seq, "restart never reuses the last seq");
+    assert.ok(disk(file).at(-1)!.type === "meta", "production writer stays legacy after future-format replay");
+  });
+});
