@@ -14,6 +14,7 @@ import { existsSync } from "node:fs";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { configureContext, ctxConfig, withVault } from "./context/config";
 import { allProjects, ensureProject, folderName, makeProject } from "./context/projects";
+import { slugify } from "./context/files";
 import { ensureProjectThread, patchMeta } from "./engine/convs";
 import { MAIN_ID, MAIN_TITLE, projectThreadId } from "../src/threads";
 import { followVoice } from "./voice";
@@ -126,7 +127,7 @@ export async function createProjectWithThread(
   let folder = wanted ? boxPathOf(body.folder) : null;
   // `newFolder: true`: a repo of its own, <vault-chat folder>/projects/<name> (its hub, synced with the laptop).
   if (!wanted && body.newFolder === true && name && masterDir()) {
-    const r = await newMasterProject(name);
+    const r = await newMasterProject(slugify(name));
     if ("error" in r) return { error: r.error };
     folder = r.abs;
   }
