@@ -138,7 +138,7 @@ test("mixed legacy full snapshots and deltas preserve exact replacement, orderin
   assert.equal((fold([initial, a, b], C).meta.subagents![1]!).summary, "Full old report");
 }));
 
-test("framed malformed/missing-base/reordered deltas fail closed; torn final append heals by existing rules", () => fixture((dir, log, file) => {
+test("a malformed/missing-base/reordered delta loses only that worker update (the conversation still loads); torn final append heals by existing rules", () => fixture((dir, log, file) => {
   const first = log.emit(C, { type: "meta", patch: { subagents: [{ threadId: "one", state: "completed", summary: "keep" }] } }, 1);
   const second = log.emit(C, { type: "meta", patch: { subagents: [{ threadId: "one", state: "completed", summary: "keep", said: "new" }] } }, 2);
   const original = readFileSync(file, "utf8");
@@ -152,7 +152,7 @@ test("framed malformed/missing-base/reordered deltas fail closed; torn final app
     { ...delta, order: [] }, { ...delta, patch: { subagents: [] } },
   ]) {
     writeFileSync(file, JSON.stringify(rows[0]) + "\n" + JSON.stringify(bad) + "\n");
-    assert.throws(() => new ConvLog(dir), /Invalid subagents disk delta/);
+    assert.deepEqual(new ConvLog(dir).picture(C)!.meta.subagents, [{ threadId: "one", state: "completed", summary: "keep" }]);
     assert.throws(() => reduce(fold([first], C), bad as StoredSubagentsRecord), /Invalid subagents disk delta/);
   }
   writeFileSync(file, JSON.stringify(delta) + "\n" + JSON.stringify(rows[0]) + "\n");

@@ -120,8 +120,17 @@ function readRecords(file: string, after = 0, resolveEntry?: (rec: any) => LogRe
       continue; // existing torn/invalid JSON recovery
     }
     projection ??= emptyPicture(stored.conv ?? "");
-    // Validation errors in a framed delta are NOT torn JSON: fail closed.
-    const rec = stored.type === "subagents" ? expandSubagents(projection, stored) : stored;
+    // An invalid worker delta loses only that worker update (the previous list stays), never
+    // the conversation: worker rows are display state, the thread must always load.
+    let rec: LogRecord;
+    if (stored.type === "subagents") {
+      try {
+        rec = expandSubagents(projection, stored);
+      } catch {
+        const { subagents: _drop, ...patch } = stored.patch;
+        rec = { seq: stored.seq, conv: stored.conv, at: stored.at, type: "meta", patch } as LogRecord;
+      }
+    } else rec = stored;
     if (rec.type === "meta") projection = reduce(projection, rec);
     else projection = { ...projection, seq: rec.seq };
     if (rec.seq <= after) continue;
