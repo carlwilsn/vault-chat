@@ -86,15 +86,23 @@ export async function allConvs(vault: string): Promise<EngineConv[]> {
 const DERIVED = new Set(["id", "messages", "status", "runStartedAt", "pendingAsk", "todos", "queued", "createdAt", "lastActivityAt", "unread"]);
 
 /** The conversation fields of a patch (undefined → null: removes it). */
-function metaPatch(meta: Record<string, unknown>): Record<string, unknown> {
+function metaPatch(meta: Record<string, unknown>, previous?: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(meta)) if (!DERIVED.has(k)) out[k] = v === undefined ? null : v;
+  for (const [k, v] of Object.entries(meta)) {
+    if (DERIVED.has(k)) continue;
+    const value = v === undefined ? null : v;
+    // Callers may hand back a whole EngineConv. Compare to the existing canonical fold,
+    // not a new cache: unrelated edits must not append every worker task/report again.
+    if (previous && (value === null ? previous[k] === undefined : JSON.stringify(value) === JSON.stringify(previous[k]))) continue;
+    out[k] = value;
+  }
   return out;
 }
 
 export async function patchMeta(vault: string, id: string, meta: Partial<EngineConv> | Record<string, unknown>): Promise<EngineConv | null> {
-  if (!pictureOf(vault, id)) return null;
-  const patch = metaPatch(meta as Record<string, unknown>);
+  const previous = pictureOf(vault, id);
+  if (!previous) return null;
+  const patch = metaPatch(meta as Record<string, unknown>, previous.meta);
   if (Object.keys(patch).length) emitTo(vault, id, { type: "meta", patch });
   return readConv(vault, id);
 }
@@ -215,7 +223,7 @@ export async function appendMessage(vault: string, id: string, m: ChatMessage & 
     } else note = { kind: "line", role: "assistant", text: m.content ?? "", ...(voice ? { via: "voice" } : {}), clientId: itemId };
     await writeNotes(vault, id, [note]);
   }
-  const patch = metaPatch(meta as Record<string, unknown>);
+  const patch = metaPatch(meta as Record<string, unknown>, pictureOf(vault, id)?.meta);
   if (Object.keys(patch).length) emitTo(vault, id, { type: "meta", patch });
   return readConv(vault, id);
 }
