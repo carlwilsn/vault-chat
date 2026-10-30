@@ -8,7 +8,7 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmp, cleanup, makeVault, git } from "./helpers";
-import { ConvLog, convLog, globalFeed, ownerVault, setFeedVaults, setSharedClock, _resetConvLogs } from "../convlog/log";
+import { ConvLog, convLog, globalFeed, lastSeq, ownerVault, setFeedVaults, setSharedClock, _resetConvLogs } from "../convlog/log";
 import { configureContext, withVault } from "../context/config";
 import { allProjects, createProject, deleteProjectFiles, listProjects, makeProject, readProject, renameProject, restoreProjectFiles } from "../context/projects";
 import { registeredFolder } from "../projectFolders";
@@ -66,6 +66,11 @@ describe("one feed for the box: conversations never change when the open vault d
     expect(globalFeed(B).after(n).events.map((e) => (e.conv ?? `signal:${(e as any).signal.type}`))).toEqual(["project-vault-chat", "main", "signal:file_changed", "signal:project"]);
     // Exact: nothing after the head.
     expect(f.after(f.latest()).events).toEqual([]);
+  });
+
+  it("a log whose last record is longer than the tail window still reads its last seq (else its checkpoint is refused)", () => {
+    const r = convLog(B).emit("project-vault-chat", { type: "meta", patch: { note: "x".repeat(200_000) } } as any);
+    expect(lastSeq(join(B, ".vault-chat", "events", "project-vault-chat.jsonl"))).toBe(r.seq);
   });
 
   it("after a restart (logs reopened in another order) no seq is handed out below one a client saw", () => {

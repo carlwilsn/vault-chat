@@ -140,21 +140,28 @@ class Entries {
   }
 }
 
-function lastSeq(file: string): number {
+export function lastSeq(file: string): number {
   let fd: number | null = null;
   try {
     fd = openSync(file, "r");
     const size = fstatSync(fd).size;
     if (!size) return 0;
-    const look = Math.min(size, 1 << 16);
-    const buf = Buffer.alloc(look);
-    readSync(fd, buf, 0, look, size - look);
-    const lines = buf.toString("utf8").split("\n").filter(Boolean);
-    for (let i = lines.length - 1; i >= 0; i--) {
-      const s = seqOfLine(lines[i]!);
-      if (s) return s;
+    // The tail, wider until it holds a whole record: a last record longer than the window (a big tool result:
+    // 186 KB on the box, 2026-10-30) must not read as "no seq" — the checkpoint would be refused and the whole log
+    // folded from the start (past half a gigabyte, more than a string can hold: the conversation vanished).
+    for (let look = Math.min(size, 1 << 16); ; look = Math.min(size, look * 4)) {
+      const buf = Buffer.alloc(look);
+      readSync(fd, buf, 0, look, size - look);
+      const text = buf.toString("utf8");
+      // Only whole lines: the first piece is a line's tail unless the window starts the file.
+      const lines = text.split("\n");
+      if (look < size) lines.shift();
+      for (let i = lines.length - 1; i >= 0; i--) {
+        const s = lines[i] ? seqOfLine(lines[i]!) : 0;
+        if (s) return s;
+      }
+      if (look >= size) return 0;
     }
-    return 0;
   } catch {
     return 0;
   } finally {
