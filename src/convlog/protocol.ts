@@ -107,6 +107,20 @@ export type EventBody =
 
 export type LogRecord = EventBody & { seq: number; conv: string | null; at: number };
 
+/** Disk-only worker snapshot delta. Never sent to clients: ConvLog expands it to
+ * the original full `meta` record. Checkpoints and PROTOCOL_VERSION stay unchanged. */
+export type StoredSubagentsRecord = {
+  seq: number; conv: string; at: number; type: "subagents";
+  /** Previous conversation sequence: a missing/reordered base must not lose workers silently. */
+  base: number;
+  /** subagents:null is a disk placeholder preserving patch key order, never a public removal. */
+  patch: Record<string, unknown>;
+  updates: SubagentRec[];
+  /** Full identity order, including ended workers; permits exact replacement/removal too. */
+  order: string[];
+};
+export type StoredRecord = LogRecord | StoredSubagentsRecord;
+
 /** GET /poll?after=N → exactly the records after N (one vault). */
 export type PollAnswer = { next: number; events: LogRecord[]; reset?: boolean; more?: boolean; epoch?: string };
 

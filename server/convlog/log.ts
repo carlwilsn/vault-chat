@@ -5,7 +5,8 @@
 //
 // Layout: <vault>/.vault-chat/events/
 //   <conv>.jsonl      one conversation's records, in seq order (one JSON line each);
-//                     an entry record is a pointer {file, id, clientId?, shown?, via?}
+//                     an entry record is a pointer {file, id, clientId?, shown?, via?};
+//                     reads also accept future changed-worker-row records; writes remain full meta
 //   <conv>.ckpt.json  its picture at some seq K, exactly fold(records <= K) (a cache: deleting it is harmless)
 //   sessions/         pi-format session files for what no pi wrote (an imported older
 //                     conversation, a voice-only chat, a line after a failed start)
@@ -26,9 +27,9 @@ import { appendFileSync, closeSync, existsSync, fstatSync, mkdirSync, openSync, 
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { randomBytes } from "node:crypto";
 import { renameRetry } from "../atomic";
-import type { EventBody, LogRecord, PiEntry, PollAnswer } from "../../src/convlog/protocol";
+import type { EventBody, LogRecord, PiEntry, PollAnswer, StoredRecord } from "../../src/convlog/protocol";
 import { readEntries } from "./piSession";
-import { REDUCER_VERSION, emptyPicture, emptyRow, foldInto, reduce, reduceRow, rowFromPicture, type Picture, type RowState } from "../../src/convlog/reduce";
+import { REDUCER_VERSION, emptyPicture, emptyRow, expandSubagents, foldInto, reduce, reduceRow, rowFromPicture, type Picture, type RowState } from "../../src/convlog/reduce";
 
 const BLOCK = 1000;
 /** Records kept in memory for /poll's fast path. */
@@ -99,7 +100,7 @@ function healTail(file: string): void {
   }
 }
 
-function readRecords(file: string, after = 0, resolveEntry?: (rec: any) => LogRecord): LogRecord[] {
+function readRecords(file: string, after = 0, resolveEntry?: (rec: any) => LogRecord, base?: Picture): LogRecord[] {
   let raw = "";
   try {
     raw = readFileSync(file, "utf8");
@@ -107,15 +108,24 @@ function readRecords(file: string, after = 0, resolveEntry?: (rec: any) => LogRe
     return [];
   }
   const out: LogRecord[] = [];
+  // Only metadata is needed to expand worker rows. Reuse the reducer, not a second
+  // worker registry. Disk polls replay the prefix; checkpoint loads start at K.
+  let projection = base;
   for (const line of raw.split("\n")) {
-    if (!line) continue;
-    if (after && seqOfLine(line) <= after) continue;
+    if (!line || (base && seqOfLine(line) <= base.seq)) continue;
+    let stored: StoredRecord;
     try {
-      const rec = JSON.parse(line);
-      out.push(resolveEntry && rec?.type === "entry" ? resolveEntry(rec) : rec);
+      stored = JSON.parse(line);
     } catch {
-      /* a torn line (healed on open) */
+      continue; // existing torn/invalid JSON recovery
     }
+    projection ??= emptyPicture(stored.conv ?? "");
+    // Validation errors in a framed delta are NOT torn JSON: fail closed.
+    const rec = stored.type === "subagents" ? expandSubagents(projection, stored) : stored;
+    if (rec.type === "meta") projection = reduce(projection, rec);
+    else projection = { ...projection, seq: rec.seq };
+    if (rec.seq <= after) continue;
+    out.push(resolveEntry && rec.type === "entry" ? resolveEntry(rec) : rec);
   }
   return out;
 }
@@ -279,7 +289,7 @@ export class ConvLog {
     let pic: Picture;
     let tail: LogRecord[];
     if (ck) {
-      tail = readRecords(file, ck.seq, this.resolve);
+      tail = readRecords(file, ck.seq, this.resolve, ck.pic);
       pic = foldInto(ck.pic, tail);
     } else {
       tail = readRecords(file, 0, this.resolve);
@@ -363,7 +373,7 @@ export class ConvLog {
     return isAbsolute(file) ? file : resolve(this.dir, file);
   }
 
-  /** An entry record as it is written: the pointer (the entry stays in pi's file). */
+  /** Entry pointers only. Metadata stays legacy-full until a separately proven reader release. */
   private pointer(rec: LogRecord): unknown {
     if (rec.type !== "entry") return rec;
     const { entry, file, images, ...rest } = rec;

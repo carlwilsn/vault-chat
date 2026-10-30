@@ -60,3 +60,13 @@ in doubt, mark it agent.
   "git push github exited 1". v0.7.17 stops a copy outside the folder (`shadowedByFolder`). GitHub failures now go to
   `sync-log.jsonl` with git's whole message (op `github-backup`): before, the message lived only in Settings' memory
   and was gone once the retry worked.
+
+## Worker snapshot disk amplification (2026-10-30)
+- Event-feed size can be historical `meta.subagents` arrays, not images: measure structural bytes first.
+  Store changed complete rows only at the presentation disk boundary; retain ended reports/identity and
+  reconstruct full legacy metadata through the existing reducer before poll/listeners/checkpoints.
+  A disk-only optimization does not reduce old-client wire/RAM cost or authorize live compaction.
+  Legacy client compatibility is not old-server rollback compatibility. Use TWO releases: reader-only
+  first (always writes legacy full metadata), then writer activation only after that reader is actually
+  installed and the retained fallback is verified to understand deltas. Do not combine into one CI
+  release or rely on flags/version labels; keep release proof explicit. Live compaction stays separate.

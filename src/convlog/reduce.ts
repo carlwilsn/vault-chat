@@ -16,7 +16,7 @@
 // A record at or below the picture's `seq` is skipped: replaying an overlap (a
 // reconnect, a checkpoint plus its tail) never applies anything twice.
 import { isCommentary } from "./commentary";
-import type { ConvMeta, ConvRow, ItemImage, LogRecord, PendingInput, PiBlock, PiEntry, PiMessage, Todo } from "./protocol";
+import type { ConvMeta, ConvRow, ItemImage, LogRecord, PendingInput, PiBlock, PiEntry, PiMessage, StoredRecord, StoredSubagentsRecord, SubagentRec, Todo } from "./protocol";
 import { VC_NOTE, VC_VOICE } from "./protocol";
 import { answerOf } from "../review";
 import { hostToolName } from "../mcpNames";
@@ -382,7 +382,35 @@ function closeOpen(d: Draft): void {
   });
 }
 
-function step(d: Draft, r: LogRecord): void {
+/** Expand ONLY the explicit disk form; public patch.subagents always means full replacement.
+ * No mutation: pictures, listener records and canonical references can share their rows. */
+export function expandSubagents(p: Picture, r: StoredSubagentsRecord): LogRecord {
+  const fail = (): never => { throw new Error("Invalid subagents disk delta"); };
+  if (r.conv !== p.id || r.base !== p.seq || !Number.isSafeInteger(r.seq) || r.seq <= r.base ||
+      !r.patch || typeof r.patch !== "object" || Array.isArray(r.patch) || r.patch.subagents !== null ||
+      !Array.isArray(r.updates) || !Array.isArray(r.order)) return fail();
+  const rows = new Map<string, SubagentRec>();
+  const valid = (row: SubagentRec) => row && typeof row === "object" && !Array.isArray(row) && typeof row.threadId === "string" && !!row.threadId;
+  const previous = p.meta.subagents ?? [];
+  if (!Array.isArray(previous)) return fail();
+  for (const row of previous) {
+    if (!valid(row) || rows.has(row.threadId)) return fail();
+    rows.set(row.threadId, row);
+  }
+  const changed = new Set<string>();
+  for (const row of r.updates) {
+    if (!valid(row) || changed.has(row.threadId)) return fail();
+    changed.add(row.threadId);
+    rows.set(row.threadId, row);
+  }
+  const ids = new Set(r.order);
+  if (ids.size !== r.order.length || r.order.some((id) => typeof id !== "string" || !id || !rows.has(id)) ||
+      [...changed].some((id) => !ids.has(id))) return fail();
+  return { seq: r.seq, conv: r.conv, at: r.at, type: "meta", patch: { ...r.patch, subagents: r.order.map((id) => rows.get(id)!) } };
+}
+
+function step(d: Draft, stored: StoredRecord): void {
+  const r = stored.type === "subagents" ? expandSubagents(d, stored) : stored;
   if (r.conv !== d.id || r.seq <= d.seq) return;
   d.seq = r.seq;
   switch (r.type) {
@@ -428,7 +456,7 @@ function step(d: Draft, r: LogRecord): void {
 }
 
 /** One record → a new picture (the old one is untouched). */
-export function reduce(p: Picture, r: LogRecord): Picture {
+export function reduce(p: Picture, r: StoredRecord): Picture {
   if (r.conv !== p.id || r.seq <= p.seq) return p;
   const d = draft(p);
   step(d, r);
@@ -436,7 +464,7 @@ export function reduce(p: Picture, r: LogRecord): Picture {
 }
 
 /** Many records → a new picture, copying once. */
-export function foldInto(p: Picture, records: Iterable<LogRecord>): Picture {
+export function foldInto(p: Picture, records: Iterable<StoredRecord>): Picture {
   let d: Draft | null = null;
   for (const r of records) {
     if (r.conv !== p.id || r.seq <= (d?.seq ?? p.seq)) continue;
@@ -446,7 +474,7 @@ export function foldInto(p: Picture, records: Iterable<LogRecord>): Picture {
   return d ?? p;
 }
 
-export function fold(records: Iterable<LogRecord>, id: string): Picture {
+export function fold(records: Iterable<StoredRecord>, id: string): Picture {
   return foldInto(emptyPicture(id), records);
 }
 
