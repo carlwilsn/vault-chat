@@ -143,6 +143,8 @@ export function checkFolder(vault: string, raw: string, w: FolderWalls = wallsOf
   const realHome = realish(home);
   if (abs === realHome || under(realHome, abs)) return { error: `${tilde(abs, home)} is ${abs === realHome ? "your whole home folder" : "around your home folder"}: choose a folder in it` };
   const vaultReal = realish(vault);
+  // The vault itself (every project is a vault; a vault may be a project): its own root, already the agent's.
+  if (abs === vaultReal) return { abs };
   // Inside the vault (as projects always could be), away from its .git and .vault-chat.
   const inVault = under(abs, vaultReal);
   for (const p of protectedPaths(vault, w)) {

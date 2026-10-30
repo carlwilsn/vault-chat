@@ -58,7 +58,7 @@ describe("OpenProject", () => {
     // A project is a folder with its own conversation: a new folder HW4 in the vault.
     expect(out(r)).toMatch(/^Started project HW4 \(the folder \S.*HW4\); its thread is project-hw4\. His screens are there now/);
     expect(out(r)).toContain("His request went to that thread, which is doing it now: don't do it here too.");
-    expect(existsSync(join(rig.vault, "HW4", ".vault-chat", "memory.md"))).toBe(true);
+    expect(existsSync(join(rig.vault, "HW4", ".vault-chat", "project-memory.md"))).toBe(true);
     expect(signals.slice(n)).toContainEqual({ type: "follow", convId: "project-hw4", title: "HW4", project: "hw4", created: true });
     // The work is the project thread's own turn, with his words.
     await until(async () => (await said("project-hw4")).includes("Make me practice problems for HW4."));

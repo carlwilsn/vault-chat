@@ -108,7 +108,8 @@ export function VaultPicker() {
   const openFolder = async (r: FolderRow) => {
     if (!m || !r.repo) return;
     await openVaultAt(joinPath(m, r.repo));
-    if (r.rel !== r.repo) window.dispatchEvent(new CustomEvent("vc-reveal-folder", { detail: { path: joinPath(m, r.rel) } }));
+    // After the tree has taken the newly opened folder (it starts closed): then the folder inside it is opened.
+    if (r.rel !== r.repo) setTimeout(() => window.dispatchEvent(new CustomEvent("vc-reveal-folder", { detail: { path: joinPath(m, r.rel) } })), 300);
   };
   const pick = async (r: FolderRow, t: Tab) => {
     close();
@@ -284,10 +285,10 @@ export function VaultPicker() {
                             Delete project <span className="font-medium">{r.name}</span>? Git keeps a copy either way.
                           </div>
                           <div className="mt-1.5 flex flex-col gap-1">
-                            <button data-el="picker-delete-conversation" disabled={busy} onClick={() => void remove(r, false)} className="h-6 px-2 rounded text-left hover:bg-accent">
+                            <button data-el="picker-delete-conversation" disabled={busy} onClick={() => void remove(r, false)} className="min-h-6 py-1 px-2 rounded text-left leading-snug hover:bg-accent">
                               Remove the conversation, keep the folder
                             </button>
-                            <button data-el="picker-delete-everything" disabled={busy} onClick={() => void remove(r, true)} className="h-6 px-2 rounded text-left text-destructive hover:bg-accent">
+                            <button data-el="picker-delete-everything" disabled={busy} onClick={() => void remove(r, true)} className="min-h-6 py-1 px-2 rounded text-left leading-snug text-destructive hover:bg-accent">
                               Delete everything, the folder too
                             </button>
                           </div>

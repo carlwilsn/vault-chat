@@ -209,7 +209,7 @@ beforeAll(async () => {
   store.setState({ vaultPath: vault, conversationsLoaded: true });
   const ctx = await import("../context");
   ctx.configureContext({ vault, agentModel: "openai/gpt-6.1-sol" });
-  // A project is a folder with its own conversation: Coconut/ with its AGENTS.md, .vault-chat/memory.md and rules.md.
+  // A project is a folder with its own conversation: Coconut/ with its AGENTS.md, .vault-chat/project-memory.md and rules.md.
   ctx.withVault(vault, () => ctx.ensureProject("Coconut"));
   const folder = join(vault, "Coconut");
   const pdir = join(folder, ".vault-chat");

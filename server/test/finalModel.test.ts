@@ -101,7 +101,7 @@ describe("a project is a folder with its own conversation", () => {
     expect("error" in p).toBe(false);
     if ("error" in p) return;
     expect(p).toMatchObject({ slug: "iems-469", name: "IEMS 469" });
-    expect(readFileSync(join(vault, "IEMS 469", ".vault-chat", "memory.md"), "utf8")).toBe("# IEMS 469: memory\n");
+    expect(readFileSync(join(vault, "IEMS 469", ".vault-chat", "project-memory.md"), "utf8")).toBe("# IEMS 469: memory\n");
     expect(readFileSync(join(vault, "IEMS 469", "lectures", "l1.md"), "utf8")).toBe("# Lecture 1\n");
     expect(withVault(vault, () => listProjects()).map((x) => x.name)).toEqual(["IEMS 469"]);
     // Again: the same project.
@@ -112,7 +112,7 @@ describe("a project is a folder with its own conversation", () => {
   it("a new project by name is a new folder of that name; the list is every vault's", () => {
     const p = withVault(other, () => createProject("Build Notes"));
     expect(p).toMatchObject({ slug: "build-notes", name: "Build Notes" });
-    expect(existsSync(join(other, "Build Notes", ".vault-chat", "memory.md"))).toBe(true);
+    expect(existsSync(join(other, "Build Notes", ".vault-chat", "project-memory.md"))).toBe(true);
     expect(withVault(vault, () => allProjects()).map((x) => `${x.name}@${fwd(x.vault).split("/").pop()}`)).toEqual(["Build Notes@vault-chat", "IEMS 469@school2"]);
     const rows = projectsList([{ name: "school2", path: vault, main: true }, { name: "vault-chat", path: other }]).projects;
     expect(rows.map((r) => [r.name, r.vault, r.rel])).toEqual([
@@ -124,7 +124,7 @@ describe("a project is a folder with its own conversation", () => {
   it("rename renames the folder; the slug (its thread) stays; a repo of its own is refused", () => {
     const p = withVault(other, () => renameProject("build-notes", "Build Log"));
     expect(p).toMatchObject({ slug: "build-notes", name: "Build Log" });
-    expect(existsSync(join(other, "Build Log", ".vault-chat", "memory.md"))).toBe(true);
+    expect(existsSync(join(other, "Build Log", ".vault-chat", "project-memory.md"))).toBe(true);
     expect(existsSync(join(other, "Build Notes"))).toBe(false);
     expect(fwd(registeredFolder(other, "build-notes")!)).toBe(fwd(join(other, "Build Log")));
     const repo = makeVault(join(root, "vc", "projects", "app"));
@@ -136,7 +136,7 @@ describe("a project is a folder with its own conversation", () => {
 
   it("delete (the conversation only) keeps the folder, a plain folder again; restore brings the project back", () => {
     const d = withVault(other, () => deleteProjectFiles("build-notes"));
-    expect(existsSync(join(other, "Build Log", ".vault-chat", "memory.md"))).toBe(true);
+    expect(existsSync(join(other, "Build Log", ".vault-chat", "project-memory.md"))).toBe(true);
     expect(withVault(other, () => readProject("build-notes"))).toBe(null);
     expect(registeredFolder(other, "build-notes")).toBe(null);
     const back = withVault(other, () => restoreProjectFiles("build-notes"));
@@ -242,14 +242,14 @@ describe("the migration on a copy of a live-shaped layout, and back", () => {
     expect(man.dryRun).toBe(false);
     // IEMS 469: registered under its old slug (its thread stays project-iems-469-course-notes-visuals), memory carried.
     expect(fwd(JSON.parse(readFileSync(join(school2, ".vault-chat", "local", "project-folders.json"), "utf8")).folders["iems-469-course-notes-visuals"].path)).toBe(fwd(join(school2, "IEMS 469")));
-    const mem = readFileSync(join(school2, "IEMS 469", ".vault-chat", "memory.md"), "utf8");
+    const mem = readFileSync(join(school2, "IEMS 469", ".vault-chat", "project-memory.md"), "utf8");
     expect(mem).toContain("Patched only `IEMS 469/course-notes-copy.html`.");
     expect(mem).toContain("2026-10-18 03:58 Created section 7 sandbox visual");
     expect(mem).not.toContain("(no plan yet)");
     // The only instruction-like section (Status) became its AGENTS.md; the placeholders did not.
     expect(readFileSync(join(school2, "IEMS 469", "AGENTS.md"), "utf8")).toBe("# IEMS 469\n\n## Status\n\nstarted 2026-10-18\n");
     // vault-chat: its repo untouched but .vault-chat/ (kept out of its git), memory and rules there.
-    expect(readFileSync(join(code, ".vault-chat", "memory.md"), "utf8")).toContain("- 2026-10-29: Carl authorized one final handover");
+    expect(readFileSync(join(code, ".vault-chat", "project-memory.md"), "utf8")).toContain("- 2026-10-29: Carl authorized one final handover");
     expect(readFileSync(join(code, ".vault-chat", "rules.md"), "utf8")).toContain("This agent never merges or pushes main");
     expect(readFileSync(join(code, ".git", "info", "exclude"), "utf8")).toMatch(/^\/\.vault-chat\/$/m);
     expect(git(code, "status", "--porcelain")).toBe("");

@@ -1,5 +1,5 @@
 // A file in a project's folder on the box, opened and edited from the laptop (server/projectFolders.ts): a project's
-// memory (<folder>/.vault-chat/memory.md, which no sync brings here) opens in the viewer through the same route Show
+// memory (<folder>/.vault-chat/project-memory.md, which no sync brings here) opens in the viewer through the same route Show
 // uses for the box's copy of a file (GET /api/v1/vault/file); Carl's edits go back the same way (POST). In the app such
 // a file's path is `box:` + its path on the box, so nothing that writes the laptop's disk can mistake it for one.
 import { invoke } from "@tauri-apps/api/core";

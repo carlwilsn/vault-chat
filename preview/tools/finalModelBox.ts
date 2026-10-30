@@ -7,8 +7,12 @@
 import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { fakeOpenRouter, makeKeyStore, makeVault, startServer, BUNDLE, tmp, git } from "../../server/test/helpers";
+import { fileURLToPath } from "node:url";
 
+async function main(): Promise<void> {
+  // server/test/helpers.ts reads __dirname (vitest gives it one): the same, here.
+  (globalThis as { __dirname?: string }).__dirname = fileURLToPath(new URL("../../server/test/", import.meta.url));
+  const { fakeOpenRouter, makeKeyStore, makeVault, startServer, BUNDLE, tmp, git } = await import("../../server/test/helpers");
 const argv = process.argv.slice(2);
 const opt = (k: string) => {
   const i = argv.indexOf(`--${k}`);
@@ -48,6 +52,12 @@ for (const v of [school2, vcVault, code]) {
   git(v, "add", "-A");
   git(v, "commit", "-q", "-m", "seed");
 }
+// Each vault's hub (the box lists a vault in the folder that has one).
+for (const n of ["school2", "vault-chat"]) {
+  const hub = join(master, ".hub", "vaults", `${n}.git`);
+  mkdirSync(hub, { recursive: true });
+  git(hub, "init", "-q", "--bare");
+}
 
 const secrets = await makeKeyStore(join(home, "secrets"), { "api.openrouter": "sk-or-test-not-a-key" });
 const or = await fakeOpenRouter("Morning! What are we working on?");
@@ -59,3 +69,9 @@ const box = await startServer({ home, vault: school2, secrets, openrouter: or.ur
 console.log(JSON.stringify({ base: box.base, root, master, migrated: JSON.parse(mig).report }));
 process.on("SIGTERM", () => void box.stop().then(() => process.exit(0)));
 setInterval(() => {}, 1 << 30);
+}
+
+void main().catch((e) => {
+  console.error(e);
+  process.exit(1);
+});

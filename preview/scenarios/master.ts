@@ -78,6 +78,7 @@ export const masterScenarios: Scenario[] = [
       ctx.write(`${up}/vaults/school2/IEMS 469/lectures/lecture-07.md`, "# Lecture 7: value iteration\n");
       ctx.write(`${up}/vaults/school2/Psych 221/essay.md`, "# Essay draft\n\nOn memory.\n");
       ctx.write(`${up}/vaults/school2/Physics 135/ps5.md`, "# Problem set 5\n");
+      ctx.write(`${up}/vaults/physics/ps6.md`, "# Problem set 6\n");
       ctx.write(`${up}/vaults/vault-chat/reports/QUEUE.md`, "# Queue\n\n1. the folder model\n");
       ctx.write(`${up}/projects/vault-chat/AGENTS.md`, "# vault-chat\n\nThe rules for the agent that builds vault-chat.\n");
       ctx.write(`${up}/projects/vault-chat/src/main.tsx`, "export {};\n");

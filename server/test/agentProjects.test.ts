@@ -142,7 +142,7 @@ describe("hidden by default, once", () => {
     configureContext({ vault: v });
     createProject("Coconut");
     createProject("BitNet 160M");
-    expect(existsSync(join(v, "Coconut", ".vault-chat", "memory.md"))).toBe(true);
+    expect(existsSync(join(v, "Coconut", ".vault-chat", "project-memory.md"))).toBe(true);
     expect(existsSync(join(v, PROJECTS_DIR))).toBe(false);
     expect(existsSync(join(v, HIDE_FILE))).toBe(false);
     expect(listProjects().map((p) => [p.slug, p.name])).toEqual([

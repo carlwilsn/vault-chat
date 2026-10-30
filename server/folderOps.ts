@@ -9,7 +9,8 @@
 //
 // Rename renames a subfolder in place (the sync commits the move); a repo of its own is not renamed here (its hub,
 // its sync and the laptop's copy carry its name).
-import { existsSync, mkdirSync, readdirSync, renameSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, statSync } from "node:fs";
+import { renameRetry as renameSync } from "./atomic";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { AGENT_IDENTITY_ARGS, git, withRepoLock } from "./git";
 

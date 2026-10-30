@@ -66,7 +66,7 @@ I study ML papers. Explain with one worked example.
 ## Project rules
 - Report mAP50 and the count error together.
 
-## Project memory (.vault-chat/memory.md)
+## Project memory (.vault-chat/project-memory.md)
 # Coconut: memory
 
 - <date>: YOLOv8, 640px input; 1024 tiles, 128 overlap.
@@ -80,7 +80,7 @@ Session start: don't greet with an inventory or read out his notes or files. Sta
 
 Vault files (for ShowFile and ScrollTo; 5 files, relative to <vault>):
 AGENTS.md
-Coconut/.vault-chat/memory.md
+Coconut/.vault-chat/project-memory.md
 Coconut/.vault-chat/rules.md
 Coconut/AGENTS.md
 papers/attention.md

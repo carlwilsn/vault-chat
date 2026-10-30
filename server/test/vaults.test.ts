@@ -150,9 +150,9 @@ describe("two vaults on one box (engines on fake backends)", () => {
     expect(await readConv(mainVault, convB)).toBeNull();
     expect((await readConv(second, convB)).project).toBe("beta");
     // A project made in a vault's engine is a new folder in that vault (CONTEXT runs scoped to the engine's vault).
-    expect(existsSync(join(second, "Beta", ".vault-chat", "memory.md"))).toBe(true);
+    expect(existsSync(join(second, "Beta", ".vault-chat", "project-memory.md"))).toBe(true);
     expect(existsSync(join(mainVault, "Beta"))).toBe(false);
-    expect(existsSync(join(mainVault, "Alpha", ".vault-chat", "memory.md"))).toBe(true);
+    expect(existsSync(join(mainVault, "Alpha", ".vault-chat", "project-memory.md"))).toBe(true);
     // No app store holds a conversation: each is its vault's log.
     expect(store.getState().conversations.map((c: any) => c.id)).not.toContain(convA);
     const { logOf } = await import("../engine/convs");
@@ -280,7 +280,7 @@ describe("vault-scoped routes (the real server)", () => {
     // Tagging cphys (physics') from the main vault goes to the vault that holds it: the project is made there.
     const r = await (await post("/conversation/project", { convId: "cphys", project: "Optics" })).json();
     expect(r).toEqual({ ok: true, project: "optics" });
-    expect(existsSync(join(home, "physics", "Optics", ".vault-chat", "memory.md"))).toBe(true);
+    expect(existsSync(join(home, "physics", "Optics", ".vault-chat", "project-memory.md"))).toBe(true);
     expect(existsSync(join(main, "Optics"))).toBe(false);
     // Every vault lists every project.
     for (const q of ["/projects", "/projects?vault=physics"]) {

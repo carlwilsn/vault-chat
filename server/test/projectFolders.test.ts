@@ -201,7 +201,7 @@ describe("end to end: a project working in a folder outside the vault (real engi
     // The project is named after its folder.
     expect(r.body).toMatchObject({ ok: true, slug: "vault-chat", name: "vault-chat", convId: "project-vault-chat", created: true, folder: fwd(folder), vault: "school2" });
     // Its memory is in the folder; the choice is the server's (the registry), never the agent's.
-    expect(readFileSync(join(folder, ".vault-chat", "memory.md"), "utf8")).toBe("# vault-chat: memory\n");
+    expect(readFileSync(join(folder, ".vault-chat", "project-memory.md"), "utf8")).toBe("# vault-chat: memory\n");
     expect(JSON.parse(readFileSync(join(vault, ".vault-chat", "local", "project-folders.json"), "utf8")).folders["vault-chat"].path).toBe(folder);
     expect((await get("/projects")).body.projects).toContainEqual({ slug: "vault-chat", name: "vault-chat", folder: fwd(folder), vault: "school2", rel: null });
 
@@ -212,7 +212,7 @@ describe("end to end: a project working in a folder outside the vault (real engi
     const sent = JSON.stringify(or.calls.find((c) => JSON.stringify(c).includes("CWD-MARKER")));
     expect(sent).toContain("PROJECT-AGENTS-MARKER: run the gates before you push.");
     expect(sent).toContain(`${fwd(folder)}/ is this project's folder on the box`);
-    expect(sent).toContain(`${fwd(folder)}/.vault-chat/memory.md`);
+    expect(sent).toContain(`${fwd(folder)}/.vault-chat/project-memory.md`);
   });
 
   it("its writes land in the folder (relative to it); none of it reaches the vault", async () => {
@@ -252,7 +252,7 @@ describe("end to end: a project working in a folder outside the vault (real engi
   it("+ New project by name: a new folder of that name in the open vault, made a project", async () => {
     const r = await post("/projects", { name: "Whiteboard Lab" });
     expect(r.body).toMatchObject({ ok: true, slug: "whiteboard-lab", name: "Whiteboard Lab", folder: fwd(join(vault, "Whiteboard Lab")) });
-    expect(existsSync(join(vault, "Whiteboard Lab", ".vault-chat", "memory.md"))).toBe(true);
+    expect(existsSync(join(vault, "Whiteboard Lab", ".vault-chat", "project-memory.md"))).toBe(true);
   });
 
   it("Delete leaves the folder and every file in it untouched (its listing gone with the project); Restore brings the choice back", async () => {

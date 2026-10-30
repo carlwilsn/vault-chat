@@ -864,6 +864,15 @@ export class Engine {
         return this.restoreProject(String(b.slug ?? b.entry ?? ""));
       case "renameProject": {
         const slug = String(b.slug ?? "");
+        const pid = projectThreadId(slug);
+        if (this.live.has(pid)) return { ok: false, error: "its thread is working: rename it when the turn is done" };
+        // Its pi works in the folder (Windows will not rename a process's working folder): closed first; the next
+        // turn resumes it in the renamed folder.
+        const tid = this.picture(pid)?.meta.threadId;
+        if (typeof tid === "string" && this.d.backend.holds(tid)) {
+          this.d.backend.forget(tid);
+          for (let i = 0; i < 30 && this.d.backend.holds(tid); i++) await new Promise((r) => setTimeout(r, 100));
+        }
         try {
           const p = renameProject(slug, String(b.name ?? ""));
           if (this.picture(projectThreadId(slug))) this.emit(projectThreadId(slug), { type: "meta", patch: { title: p.name } });
@@ -1670,8 +1679,9 @@ export class Engine {
       return { abs: cloneDirOf(this.d.vault, p.slug), rel: chosen.abs.split(sep).join("/"), outside: true, git: { folder: chosen.abs.split(sep).join("/"), clone: cloneDirOf(this.d.vault, p.slug).split(sep).join("/") } };
     }
     const rel = relative(resolve(this.d.vault), chosen.abs).split(sep).join("/");
-    const inVault = !!rel && !rel.startsWith("..") && !isAbsolute(rel);
-    return inVault ? { abs: chosen.abs, rel } : { abs: chosen.abs, rel: chosen.abs.split(sep).join("/"), outside: true };
+    // The vault itself may be a project (its root: rel ".").
+    const inVault = !rel.startsWith("..") && !isAbsolute(rel);
+    return inVault ? { abs: chosen.abs, rel: rel || "." } : { abs: chosen.abs, rel: chosen.abs.split(sep).join("/"), outside: true };
   }
 
   /** A thread's working folder: a project's folder, else the vault (Main runs in the main vault: it is no

@@ -391,7 +391,7 @@ export async function fakePushService(status = 201): Promise<FakePush> {
 
 /**
  * A project as the box keeps it (server/context/projects.ts): a folder registered in its vault's registry
- * (.vault-chat/local/project-folders.json), its AGENTS.md (instructions), .vault-chat/memory.md and
+ * (.vault-chat/local/project-folders.json), its AGENTS.md (instructions), .vault-chat/project-memory.md and
  * .vault-chat/rules.md inside it. `folder`: vault-relative or absolute (default: the slug). Returns the folder.
  */
 export function seedProject(vault: string, slug: string, o: { folder?: string; agents?: string; memory?: string; rules?: string } = {}): string {
@@ -399,7 +399,7 @@ export function seedProject(vault: string, slug: string, o: { folder?: string; a
   mkdirSync(join(raw, ".vault-chat"), { recursive: true });
   const folder = realpathSync(raw);
   if (o.agents !== undefined) writeFileSync(join(folder, "AGENTS.md"), o.agents);
-  if (o.memory !== undefined) writeFileSync(join(folder, ".vault-chat", "memory.md"), o.memory);
+  if (o.memory !== undefined) writeFileSync(join(folder, ".vault-chat", "project-memory.md"), o.memory);
   if (o.rules !== undefined) writeFileSync(join(folder, ".vault-chat", "rules.md"), o.rules);
   const reg = join(vault, ".vault-chat", "local", "project-folders.json");
   let r: { folders: Record<string, unknown>; deleted: Record<string, unknown> } = { folders: {}, deleted: {} };

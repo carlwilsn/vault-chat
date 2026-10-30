@@ -4,14 +4,15 @@
 // server's own state, which the agent cannot write). Nothing else: the folder carries the rest.
 //
 //   <folder>/AGENTS.md              the project's instructions; pi loads it itself (the thread's cwd is the folder)
-//   <folder>/.vault-chat/memory.md  the project's memory: the agent's dated lines
+//   <folder>/.vault-chat/project-memory.md  the project's memory: the agent's dated lines
 //   <folder>/.vault-chat/rules.md   the project's rules, binding on every turn of its thread
 //
 // The name is the folder's name. Carl makes projects (the app's "Make this a project" or "+ New project", or by asking
 // in so many words: OpenProject); the agent never makes one on its own initiative. Delete takes the conversation
 // away (the registry keeps the choice under `deleted`, and the log keeps the thread: Restore brings both back); the
 // folder stays unless Carl also deleted it (server/folderOps.ts, recoverable through git).
-import { existsSync, renameSync, statSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
+import { renameRetry } from "../atomic";
 import { basename, dirname, join } from "node:path";
 import { ctxConfig } from "./config";
 import { readOr, slugify, writeFile } from "./files";
@@ -22,7 +23,7 @@ export { ensureProjectsHidden, migrateLegacyProjects, prepareProjects, projectsP
 /** A project's own files, inside its folder. */
 export const PROJECT_DIR = ".vault-chat";
 /** The project's memory (the agent's dated lines). */
-export const PROJECT_NOTES_FILE = "memory.md";
+export const PROJECT_NOTES_FILE = "project-memory.md";
 /** Optional project rules, binding like the vault's .vault-chat/rules.md. */
 export const PROJECT_RULES_FILE = "rules.md";
 /** The project's instructions: pi loads the cwd's AGENTS.md itself. */
@@ -32,7 +33,7 @@ export const PROJECT_INSTRUCTIONS_FILE = "AGENTS.md";
 export type ProjectInfo = { slug: string; name: string; dir: string; folder: string };
 
 export type Project = ProjectInfo & {
-  /** .vault-chat/memory.md: the project's memory; "" when there is none. */
+  /** .vault-chat/project-memory.md: the project's memory; "" when there is none. */
   notes: string;
   /** .vault-chat/rules.md; "" when there are none. */
   rules: string;
@@ -227,7 +228,7 @@ export function renameProject(slug: string, name: string): ProjectInfo {
   if (existsSync(join(f, ".git"))) throw new Error(`${folderName(f)} is a repository of its own (its hub and its sync carry its name): rename it from the box's shell, not here`);
   const to = join(dirname(f), n);
   if (existsSync(to)) throw new Error(`there is already a ${n} beside it`);
-  renameSync(f, to);
+  renameRetry(f, to);
   setRegisteredPath(vault(), slug, to);
   return infoOf(slug, to);
 }

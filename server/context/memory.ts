@@ -58,7 +58,7 @@ export function memoryNote(raw: string): string | null {
 }
 
 /** A project's memory lines: under a `## Memory` heading (to the next `## `) when the file has one, else every
- *  `- ` line (a project's .vault-chat/memory.md is all memory). */
+ *  `- ` line (a project's .vault-chat/project-memory.md is all memory). */
 export function projectMemoryLines(projectMd: string): string[] {
   const m = /^##\s+Memory\s*$/im.exec(projectMd);
   if (!m) return projectMd.split(/\r?\n/).filter((l) => /^\s*- /.test(l));

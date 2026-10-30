@@ -74,7 +74,7 @@ describe("Delete a project", () => {
     // The folder, its files, its memory and rules: untouched (a plain folder again).
     const folder = join(rig.vault, "code", "Coconut");
     expect(readFileSync(join(folder, "tiles.py"), "utf8")).toBe("print('tiles')\n");
-    expect(readFileSync(join(folder, ".vault-chat", "memory.md"), "utf8")).toContain("- 2026-10-20: tiles of 1024");
+    expect(readFileSync(join(folder, ".vault-chat", "project-memory.md"), "utf8")).toContain("- 2026-10-20: tiles of 1024");
     expect(readFileSync(join(folder, ".vault-chat", "rules.md"), "utf8")).toBe("Python only.\n");
     // The other project: untouched.
     expect(readFileSync(join(rig.vault, "Psych 221", "AGENTS.md"), "utf8")).toBe("Essays in APA style.\n");
@@ -166,7 +166,7 @@ describe("Restore a project (the inverse of Delete; Carl asks the agent, it uses
     signals.length = 0;
     const r = await rig.engine.intent({ type: "restoreProject", slug: "physics" });
     expect(r).toMatchObject({ ok: true, slug: "physics", name: "Physics", convId: "project-physics" });
-    expect(readFileSync(join(rig.vault, "Physics", ".vault-chat", "memory.md"), "utf8")).toContain("- pendulum done");
+    expect(readFileSync(join(rig.vault, "Physics", ".vault-chat", "project-memory.md"), "utf8")).toContain("- pendulum done");
     const reg = JSON.parse(readFileSync(join(rig.vault, ".vault-chat", "local", "project-folders.json"), "utf8"));
     expect(reg.folders.physics).toBeTruthy();
     expect(Object.keys(reg.deleted).some((e) => e.startsWith("physics-"))).toBe(false);
@@ -219,7 +219,7 @@ describe("Restore a project (the inverse of Delete; Carl asks the agent, it uses
     expect(r).toMatchObject({ ok: true, slug: "optics", folderGone: { ok: true, how: "git", where: "Optics" } });
     expect(existsSync(join(rig.vault, "Optics"))).toBe(false);
     expect(git(rig.vault, "show", "HEAD~1:Optics/snell.md").trim()).toBe("# Snell");
-    expect(git(rig.vault, "show", "HEAD~1:Optics/.vault-chat/memory.md")).toContain("n1 sin a = n2 sin b");
+    expect(git(rig.vault, "show", "HEAD~1:Optics/.vault-chat/project-memory.md")).toContain("n1 sin a = n2 sin b");
     expect(convs.conversationObjects(rig.vault).map((c: any) => c.id)).not.toContain("project-optics");
     // Its folder is gone: Restore says so (git has it).
     expect((await rig.engine.intent({ type: "restoreProject", slug: "optics" })).error).toMatch(/gone/);

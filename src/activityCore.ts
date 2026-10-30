@@ -499,7 +499,7 @@ export function captureCaption(e: ActivityEntry, now: number): string {
 
 // ---------------------------------------------------------------- project context
 
-/** A project as the surfaces read it: its memory (.vault-chat/memory.md in its folder) and its rules. */
+/** A project as the surfaces read it: its memory (.vault-chat/project-memory.md in its folder) and its rules. */
 export type ProjectFiles = { slug: string; name: string; notes: string; rules: string };
 
 const capText = (t: string, n: number, keep: "head" | "tail" = "head") => {
@@ -520,7 +520,7 @@ export function projectContextBlock(p: ProjectFiles | null, globalRules = "", ma
     parts.push(
       `# Project: ${p.name} (${p.slug})`,
       sec("Project rules", p.rules, 0.25),
-      sec("Project memory (.vault-chat/memory.md)", p.notes, 0.75),
+      sec("Project memory (.vault-chat/project-memory.md)", p.notes, 0.75),
     );
   }
   const body = parts.filter(Boolean).join("\n\n");

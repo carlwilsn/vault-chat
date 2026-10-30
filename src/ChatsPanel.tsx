@@ -392,10 +392,10 @@ export function DeleteProjectConfirm({ name, busy, onCancel, onYes }: { name: st
         Delete project <span className="font-medium">{name}</span>? Git keeps a copy either way.
       </div>
       <div className="mt-2 flex flex-col gap-1">
-        <button data-el="project-delete-yes" disabled={busy} autoFocus onClick={() => onYes(false)} className="h-6 px-2 rounded text-left text-[11.5px] hover:bg-accent disabled:opacity-60">
+        <button data-el="project-delete-yes" disabled={busy} autoFocus onClick={() => onYes(false)} className="min-h-6 py-1 px-2 rounded text-left leading-snug text-[11.5px] hover:bg-accent disabled:opacity-60">
           Remove the conversation, keep the folder
         </button>
-        <button data-el="project-delete-everything" disabled={busy} onClick={() => onYes(true)} className="h-6 px-2 rounded text-left text-[11.5px] text-destructive hover:bg-accent disabled:opacity-60">
+        <button data-el="project-delete-everything" disabled={busy} onClick={() => onYes(true)} className="min-h-6 py-1 px-2 rounded text-left leading-snug text-[11.5px] text-destructive hover:bg-accent disabled:opacity-60">
           Delete everything, the folder too
         </button>
       </div>

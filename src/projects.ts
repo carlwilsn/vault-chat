@@ -1,7 +1,7 @@
 // Projects on the desktop: the folder picker's Projects tab, the chat panel's project rows, the chip.
 //
 // A project is a folder with a conversation of its own (server/context/projects.ts): its thread
-// (project-<slug>), its folder (the thread's cwd: AGENTS.md, .vault-chat/memory.md, .vault-chat/rules.md).
+// (project-<slug>), its folder (the thread's cwd: AGENTS.md, .vault-chat/project-memory.md, .vault-chat/rules.md).
 // Main and the projects are the box's, whatever folder is open here (GET /projects lists every vault's).
 // Only Carl makes projects ("Make this a project" on a folder, "+ New project"): no agent tool does on
 // its own. Without a box the older local form (agent-projects/<slug>/project.md) is read and written here.
@@ -365,7 +365,7 @@ export async function openProjectNotes(slug: string, name: string): Promise<stri
   if (link) {
     const p = (await listProjects(vault)).find((x) => x.slug === slug);
     if (!p?.folder) return null;
-    const path = boxPathOf(`${p.folder}/.vault-chat/memory.md`);
+    const path = boxPathOf(`${p.folder}/.vault-chat/project-memory.md`);
     const content = await readTextAt(path).catch(() => `# ${p.name}: memory\n`);
     const st = useStore.getState();
     if (st.chatFullscreen) st.toggleChatFullscreen();

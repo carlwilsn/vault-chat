@@ -104,7 +104,7 @@ describe("projects: only Carl decides what is a project", () => {
     expect(await setProject(rig.vault, { convId: s.convId, project: "Coconut" })).toEqual({ ok: true, project: "coconut" });
     expect((await rig.readConv(s.convId)).project).toBe("coconut");
     // A project is a folder with its own conversation: a new folder of that name, its memory file, nothing else.
-    expect(existsSync(join(rig.vault, "Coconut", ".vault-chat", "memory.md"))).toBe(true);
+    expect(existsSync(join(rig.vault, "Coconut", ".vault-chat", "project-memory.md"))).toBe(true);
     for (const f of ["plan.md", "progress.md", "project.md"]) expect(existsSync(join(rig.vault, "Coconut", ".vault-chat", f))).toBe(false);
     expect(existsSync(join(rig.vault, "agent-projects"))).toBe(false);
     // ListProjects (pi) now shows it with this chat.
@@ -131,7 +131,7 @@ describe("projects: only Carl decides what is a project", () => {
     const { guardToolCall } = await import("../engine/pi/ext/policy.mjs" as any);
     const opts = { cwd: rig.vault, home: rig.root, denyRead: [join(rig.root, "secrets")], denyWrite: [join(rig.vault, ".vault-chat", "conversations")] };
     expect(guardToolCall("edit", { path: "Psych 221/reading-list.md" }, opts)).toBeNull();
-    expect(guardToolCall("write", { path: join(psych, ".vault-chat", "memory.md") }, opts)).toBeNull();
+    expect(guardToolCall("write", { path: join(psych, ".vault-chat", "project-memory.md") }, opts)).toBeNull();
     // Voice in the same chat: its Ask is a side request of this chat (forked from it, as of it), never a turn of it.
     await settle(s);
     const before = rig.backend.turns.length;
