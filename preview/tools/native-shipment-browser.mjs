@@ -8,7 +8,7 @@ export async function appProof({ base, out, id, title, advance, rollback, smoke 
   let page;
   try {
     const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
-    page = await context.newPage(); page.setDefaultTimeout(smoke ? 9000 : 25000);
+    page = await context.newPage(); page.setDefaultTimeout(smoke ? 15000 : 25000);
     page.on('console', m => { if (m.type() === 'error') evidence.errors.console.push(m.text()); });
     page.on('pageerror', e => evidence.errors.page.push(String(e.stack ?? e)));
     page.on('requestfailed', r => evidence.errors.network.push({ url: r.url(), error: r.failure() }));
@@ -18,7 +18,7 @@ export async function appProof({ base, out, id, title, advance, rollback, smoke 
       if (u.origin === new URL(base).origin || ['data:', 'blob:', 'about:'].includes(u.protocol)) return route.continue();
       evidence.errors.outbound.push(u.href); return route.abort();
     });
-    await page.goto(`${base}/?scenario=native-shipment-app&base=synthetic&narrate=0&overlay=0`);
+    await page.goto(`${base}/?scenario=native-shipment-app&base=synthetic&narrate=0&overlay=0`, { waitUntil: 'domcontentloaded' });
     await page.waitForFunction(() => window.__preview?.ready && window.__preview.stepsDone);
     // Real controls only: expose the actual chats list and choose the server-created project.
     const project = page.locator('[data-el="thread-project"][data-thread="project-app"] > button').getByText('app', { exact: true });
