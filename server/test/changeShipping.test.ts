@@ -76,7 +76,7 @@ describe("actual published release commits follow accepted source, ff-only", () 
   it("follows a verified application release before the first service acceptance, without pushing", async () => {
     const f = fixture(), release = f.publish();
     expect(await f.follow(release)).toEqual(release);
-    expect(f.g("rev-parse", "main")).toBe(release.revision);
+    expect(f.g("rev-parse", "main")).toBe(f.base);
     expect(await acceptedChanges(f.repo)).toEqual([]);
     expect(existsSync(join(f.repo, "push-attempt"))).toBe(false);
   });
@@ -90,7 +90,7 @@ describe("actual published release commits follow accepted source, ff-only", () 
   it("follows only the public release version commit, records identity, and never pushes origin", async () => {
     const f = fixture(); await f.accept(); const r = f.publish();
     await f.follow(r);
-    expect(f.g("rev-parse", "main")).toBe(r.revision);
+    expect(f.g("rev-parse", "main")).toBe(f.head);
     expect((await acceptedChanges(f.repo))[0].release).toEqual(r);
     await f.follow(r); expect((await acceptedChanges(f.repo))).toHaveLength(1);
     expect(existsSync(join(f.repo, "push-attempt"))).toBe(false);
@@ -111,12 +111,23 @@ describe("actual published release commits follow accepted source, ff-only", () 
     await expect(f.follow(r)).rejects.toThrow("unaccepted source");
     expect((await acceptedChanges(f.repo))[0].release).toBeUndefined();
   });
-  it("refuses divergent local work without force/reset/merge", async () => {
+  it("observes a tag-only sibling while later source main remains untouched", async () => {
     const f = fixture(); await f.accept(); const r = f.publish();
     writeFileSync(join(f.repo, "later.txt"), "preserve me"); f.g("add", "."); f.g("commit", "--quiet", "-m", "later local work");
     const before = f.g("rev-parse", "HEAD");
-    await expect(f.follow(r)).rejects.toThrow("diverges");
+    expect(await f.follow(r)).toEqual(r);
+    expect((await acceptedChanges(f.repo))[0].release).toEqual(r);
     expect(f.g("rev-parse", "HEAD")).toBe(before); expect(readFileSync(join(f.repo, "later.txt"), "utf8")).toBe("preserve me");
+  });
+  it("still rejects a public tag on genuinely unrelated source before local acceptance", async () => {
+    const f = fixture(); const r = f.publish();
+    f.g("switch", "--quiet", "--orphan", "unrelated");
+    writeFileSync(join(f.repo, "other.txt"), "unrelated");
+    f.g("add", "."); f.g("commit", "--quiet", "-m", "unrelated root");
+    f.g("branch", "-f", "main", "HEAD"); f.g("switch", "--quiet", "main");
+    const before = f.g("rev-parse", "HEAD");
+    await expect(f.follow(r)).rejects.toThrow("diverges");
+    expect(f.g("rev-parse", "main")).toBe(before);
   });
   it("does not overwrite dirty data or switch an actor's checked-out branch", async () => {
     const f = fixture(); await f.accept(); const r = f.publish();
@@ -141,7 +152,7 @@ describe("actual published release commits follow accepted source, ff-only", () 
     f.g("switch", "--quiet", "-c", "agent/later"); writeFileSync(join(f.repo, "later.txt"), "next change"); f.g("add", "."); f.g("commit", "--quiet", "-m", "next accepted");
     const head = f.g("rev-parse", "HEAD"), tree = f.g("rev-parse", "HEAD^{tree}");
     f.g("switch", "--quiet", "main");
-    await withRepoLock(f.repo, () => prepareAcceptanceLocked(f.repo, { ...f.c, id: "later-proof", source: { base: r.revision, head, tree, branch: "agent/later" }, review: { ...f.c.review, branch: "agent/later", sha: head } }));
+    await withRepoLock(f.repo, () => prepareAcceptanceLocked(f.repo, { ...f.c, id: "later-proof", source: { base: f.head, head, tree, branch: "agent/later" }, review: { ...f.c.review, branch: "agent/later", sha: head } }));
     f.g("merge", "--ff-only", "--quiet", head); await f.follow(r);
     expect(f.g("rev-parse", "HEAD")).toBe(head);
     expect((await acceptedChanges(f.repo)).map(c => c.release?.id)).toEqual([r.id, undefined]);

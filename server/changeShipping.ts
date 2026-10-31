@@ -182,7 +182,7 @@ async function fetchPublicTag(repo: string, repository: string, release: Publish
   } finally { rmSync(tmp, { recursive: true, force: true }); }
 }
 
-/** Called in the ordinary project sync cycle BEFORE its repo-locked commit/ff sequence. No second timer.
+/** Observe release tags in the ordinary project sync cycle. Never merge a build stamp into source main.
  * Accepted changes opt a repo in; the application also follows already-published CI releases before its
  * first acceptance journal exists. Other legacy Keep projects and non-GitHub projects stay untouched. */
 export async function followAcceptedRelease(repo: string, adapters: {
@@ -216,12 +216,12 @@ export async function followAcceptedRelease(repo: string, adapters: {
     if (!approved) {
       const head = (await git(repo, ["rev-parse", "HEAD"])).trim();
       if (await isAncestor(release.revision, head)) return false;
-      if (!await isAncestor(head, release.revision)) throw new Error("Release follow blocked: project main diverges from the published release; no reset or merge attempted");
-      // No local acceptance is being authorized here: this source is ALREADY a public CI release.
-      // Require the known publisher's version-only final commit, then ff without manufacturing a merge.
+      // The build stamp lives only on a tag, not main. Verify its content and
+      // source relationship, but leave accepted/source refs entirely untouched.
       if (latest) throw new Error("Published release does not descend from latest service acceptance");
       await verifyPublisherCommit(repo, release);
-      await git(repo, ["-c", "core.hooksPath=/dev/null", "merge", "--ff-only", "--quiet", release.revision]);
+      const parent = (await git(repo, ["rev-parse", `${release.revision}^`])).trim();
+      if (!await isAncestor(head, parent) && !await isAncestor(parent, head)) throw new Error("Release follow blocked: project main diverges from the published source; no reset or merge attempted");
       return true;
     }
     // CI may only add its own version bump after accepted source. Check this EVEN IF laptop sync
@@ -243,12 +243,8 @@ export async function followAcceptedRelease(repo: string, adapters: {
       } else if (before.replace(/^(version\s*=\s*)"[^"]+"/m, `$1"${release.version}"`) !== after) throw new Error("Release changes non-version Cargo content");
     }
     if (JSON.parse(await git(repo, ["show", `${release.revision}:package.json`])).version !== release.version) throw new Error("Release commit version does not match the published tag");
-    const head = (await git(repo, ["rev-parse", "HEAD"])).trim();
-    if (!await isAncestor(release.revision, head)) {
-      if (!await isAncestor(head, release.revision)) throw new Error("Release follow blocked: project main diverges from the published release; no reset or merge attempted");
-      if (latest && !await isAncestor(latest.source.head, release.revision)) throw new Error("Published release does not descend from latest service acceptance");
-      await git(repo, ["-c", "core.hooksPath=/dev/null", "merge", "--ff-only", "--quiet", release.revision]);
-    }
+    // The verified child identifies the binary; main remains the frozen source.
+    // A later accepted source can already be ahead of this release's parent.
     let changed = false;
     for (const c of j.changes) if (c.acceptedAt && !c.release && await isAncestor(c.source.head, release.revision)) { c.release = release; changed = true; }
     if (changed) save(path, j);

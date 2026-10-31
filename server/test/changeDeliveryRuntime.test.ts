@@ -248,7 +248,7 @@ describe("trusted device transport, not body platform attestation", () => {
 });
 
 describe("published application release follows before acceptance-journal bootstrap", () => {
-  it("fast-forwards the already-published version-only commit without inventing acceptance or pushing", async () => {
+  it("observes the already-published version-only tag without moving source main or inventing acceptance", async () => {
     const f = await fixture();
     rmSync(join(f.repo, ".git", "vault-chat-shipping"), { recursive: true });
     f.g("remote", "add", "origin", "https://github.com/carlwilsn/vault-chat.git");
@@ -256,7 +256,7 @@ describe("published application release follows before acceptance-journal bootst
     const release = { ...f.release, revision: f.g("rev-parse", "HEAD") };
     f.g("reset", "--hard", f.c.source.head); // isolated fixture only, production follower NEVER resets
     await followAcceptedRelease(f.repo, { discover: async () => release, fetch: async () => {} });
-    expect(f.g("rev-parse", "HEAD")).toBe(release.revision);
+    expect(f.g("rev-parse", "HEAD")).toBe(f.c.source.head);
     expect(await acceptedChanges(f.repo)).toEqual([]);
   });
 });

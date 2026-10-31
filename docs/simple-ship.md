@@ -36,6 +36,25 @@ root, Nix toolchain, their private source/outputs/HOME/tmp and private network n
 key store, host ports, service sockets, or inherited provider environment is exposed. Logs are ordinary
 host files and stdout; `gates.json` is diagnostics, never a signed receipt or permission.
 
+## CI publication: accepted source main, tagged version-stamp child
+
+Laptop sync publishes the exact accepted source to GitHub main; CI never writes main. The existing
+single CI `[skip ci]` metadata commit remains: on detached exact `github.sha`, the established bump
+script changes only the version lines in package.json, Tauri config and Cargo.toml. It selects a version
+above the source version and ALL fetched semver tags, including prereleases. CI pushes only its immutable
+release tag. Every build job, release `target_commitish` and runtime build-info identifies that actual clean
+child, **not** its accepted-source parent. Release discovery resolves the tag rather than trusting
+`target_commitish` or a workflow's input `head_sha`.
+
+The ordinary release observer retains its existing one-child/content/ancestry validation, records the
+release identity and health mapping, and never merges the build stamp into local source main. Later accepted
+source can therefore fast-forward GitHub while an earlier release builds. Health and retained-binary fallback
+remain unchanged. Native source rollback still requires the exact generated tree and sole parent; it may
+restore an old source version unchanged and CI alone stamps a fresh, globally advancing release child.
+No agent-owned version bump, source-tree exemption, acceptance permit or extra source-authority policy is added.
+A failed job can rerun against its pinned draft; a manual dispatch can allocate a fresh version after an
+abandoned tag. No force-tag, origin-main merge, rebase or metadata push to main is permitted in CI.
+
 ## Kept: health rollback and truthful cards
 
 `releaseHealth`, delivery routes/protocol, desktop/phone `ShipmentCard`, native laptop readiness and

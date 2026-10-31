@@ -4,18 +4,18 @@ name: ship
 # changes. The path filter keeps trivial commits (workflow tweaks, docs,
 # scripts) from burning a build. Checks if there are any new commits on
 # main since the last release tag, and if so: bumps the patch version,
-# commits the bump back to main with [skip ci] (which prevents this
-# workflow from re-firing on its own version-bump push), creates the
-# release as a DRAFT, builds + signs installers for Windows and Linux and
-# the headless server bundle, and only then — once every asset and the
+# commits the three version stamps on detached HEAD and pushes ONLY its
+# release tag (never main), creates a DRAFT release, builds + signs installers
+# for Windows and Linux and the headless server bundle, and only then — once every asset and the
 # complete updater manifest are attached — publishes the release.
 #
 # Why draft-first: `releases/latest` (which the desktop updater and the
 # box's vault-chat-update.sh both read) must never point at a release whose
 # latest.json or server bundle is not uploaded yet. A draft is invisible to
-# `latest`; the tag itself is created when the manifest job publishes it.
-# A ship that fails part-way leaves a draft behind and no tag — delete the
-# draft and re-run, nothing installed ever saw it.
+# `latest`; the immutable tag already identifies the version-only build child.
+# A failed ship can leave that tag/draft, but never an incomplete latest release.
+# Re-run failed build jobs against their pinned draft, or manually dispatch a
+# fresh version. Tags are never forced or overwritten.
 #
 # Manual escape hatch: workflow_dispatch this from the Actions UI.
 # (release.yml, the old tag-push workflow, is gone: it published its own
@@ -46,7 +46,7 @@ concurrency:
 jobs:
   # ── Phase 1: run once ─────────────────────────────────────────────────────
   # Check for new commits, generate release notes, bump the version, and
-  # commit the bump back to main. Everything downstream reads the outputs
+  # tag the detached version-only child. Everything downstream reads the outputs
   # of this job so the bump never fires twice.
   prepare:
     if: vars.SHIP_PAUSED != 'true'
@@ -63,6 +63,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
+          ref: ${{ github.sha }}
           fetch-depth: 0
 
       - uses: actions/setup-node@v5
@@ -75,14 +76,16 @@ jobs:
       - name: Check for new commits since last release
         id: changes
         run: |
-          LAST_TAG=$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || echo "")
+          # Tags are siblings of later accepted main, not ancestors. Consider the
+          # newest stable release tag globally, not git describe's reachable tags.
+          LAST_TAG=$(git tag --list 'v*' --sort=-version:refname | awk '/^v[0-9]+\.[0-9]+\.[0-9]+$/ && !seen++ { print }')
           if [ -z "$LAST_TAG" ]; then
             echo "First release — proceeding"
             echo "has_changes=true" >> $GITHUB_OUTPUT
             echo "range=HEAD" >> $GITHUB_OUTPUT
           else
             COUNT=$(git rev-list --count "$LAST_TAG"..HEAD)
-            if [ "$COUNT" -gt 0 ]; then
+            if [ "$COUNT" -gt 0 ] || [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then
               echo "$COUNT new commits since $LAST_TAG — shipping"
               echo "has_changes=true" >> $GITHUB_OUTPUT
               echo "range=$LAST_TAG..HEAD" >> $GITHUB_OUTPUT
@@ -115,11 +118,13 @@ jobs:
         if: steps.changes.outputs.has_changes == 'true'
         id: bump
         run: |
+          [ "$(git rev-parse HEAD)" = "$GITHUB_SHA" ]
+          [ -z "$(git status --porcelain)" ]
           NEW=$(node scripts/bump-version.mjs)
           echo "version=$NEW" >> $GITHUB_OUTPUT
           echo "Bumped to v$NEW"
 
-      - name: Commit version bump back to main
+      - name: Commit version stamp and push only the release tag
         if: steps.changes.outputs.has_changes == 'true'
         id: push
         run: |
@@ -127,15 +132,12 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add package.json src-tauri/tauri.conf.json src-tauri/Cargo.toml
           git commit -m "v${{ steps.bump.outputs.version }} [skip ci]"
-          pushed=0
-          for attempt in 1 2 3; do
-            if git pull --rebase origin main && git push origin HEAD:main; then pushed=1; break; fi
-            echo "push attempt $attempt failed — retrying"
-            sleep 2
-          done
-          [ "$pushed" = 1 ] || { echo "could not push the version bump"; exit 1; }
-          # Every build job checks out exactly this commit (not `main`, which
-          # may have moved on by the time a queued job starts).
+          # A single metadata-only child of the exact accepted input. Never
+          # pull/rebase here: gates certified that input, not newer main.
+          [ "$(git rev-parse HEAD^)" = "$GITHUB_SHA" ]
+          git tag "v${{ steps.bump.outputs.version }}"
+          git push origin "refs/tags/v${{ steps.bump.outputs.version }}"
+          # All build jobs and the release target use the actual tagged child.
           echo "sha=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
 
       - name: Create the draft release
@@ -198,8 +200,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
-          # Upload into the draft prepare created (by id: a draft has no tag
-          # yet, and two jobs creating "the" release by tag would race).
+          # Upload into the one draft prepare created, by its exact id.
           releaseId: ${{ needs.prepare.outputs.release_id }}
           # No per-job manifest: the Windows and Linux jobs used to each upload
           # their own latest.json (only their platforms) and race — last write
@@ -295,8 +296,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
-          # Upload into the draft prepare created (by id: a draft has no tag
-          # yet, and two jobs creating "the" release by tag would race).
+          # Upload into the one draft prepare created, by its exact id.
           releaseId: ${{ needs.prepare.outputs.release_id }}
           # See build_windows: the merged manifest is built by the `manifest`
           # job from the signatures, not per-platform here (which raced).

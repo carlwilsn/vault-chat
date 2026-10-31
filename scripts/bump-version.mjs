@@ -10,6 +10,10 @@
 // Run from the repo root:  node scripts/bump-version.mjs
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { execFileSync } from "node:child_process";
+import { createRequire } from "node:module";
+// Already present in the locked build toolchain; use semver, not string ordering.
+const semver = createRequire(import.meta.url)("semver");
 
 const root = process.cwd();
 
@@ -32,31 +36,31 @@ function nextVersion(version) {
   return `${nMaj}.${nMin}.${nPat}`;
 }
 
-function bumpJson(path) {
-  const src = readFileSync(path, "utf8");
-  const obj = JSON.parse(src);
-  const next = nextVersion(obj.version);
-  obj.version = next;
-  const trailingNl = src.endsWith("\n") ? "\n" : "";
-  writeFileSync(path, JSON.stringify(obj, null, 2) + trailingNl);
-  return next;
-}
-
-const pkgVer = bumpJson(join(root, "package.json"));
-const tauriVer = bumpJson(join(root, "src-tauri", "tauri.conf.json"));
-
-if (pkgVer !== tauriVer) {
-  throw new Error(
-    `Version mismatch after bump: package.json=${pkgVer} tauri.conf.json=${tauriVer}`,
-  );
-}
-
+// Select above ALL fetched release tags, including prereleases and tags whose
+// build child is not on main. An exact source revert may restore an old version.
+const paths = [join(root, "package.json"), join(root, "src-tauri", "tauri.conf.json")];
+const sources = paths.map(path => readFileSync(path, "utf8"));
+const versions = sources.map(src => JSON.parse(src).version);
 const cargoPath = join(root, "src-tauri", "Cargo.toml");
 const cargo = readFileSync(cargoPath, "utf8");
-const updated = cargo.replace(/^(version\s*=\s*)"[^"]+"/m, `$1"${pkgVer}"`);
-if (updated === cargo) {
-  throw new Error(`Failed to find a 'version = "..."' line in ${cargoPath}`);
+const cargoMatch = /^(version\s*=\s*)"([^"]+)"/m.exec(cargo);
+if (!cargoMatch || versions.some(v => !semver.valid(v) || v !== versions[0]) || cargoMatch[2] !== versions[0]) {
+  throw new Error("package.json, tauri.conf.json and Cargo.toml must have the same valid version");
 }
-writeFileSync(cargoPath, updated);
-
-console.log(pkgVer);
+const tags = execFileSync("git", ["tag", "--list", "v*"], { cwd: root, encoding: "utf8" }).trim().split("\n");
+let highest = versions[0];
+for (const tag of tags) {
+  const version = semver.valid(tag.slice(1));
+  if (version && semver.gt(version, highest)) highest = version;
+}
+const next = nextVersion(`${semver.major(highest)}.${semver.minor(highest)}.${semver.patch(highest)}`);
+if (!semver.gt(next, highest)) throw new Error("Release version must advance past every fetched tag");
+// Validate everything before writing; replace only version lines, never reformat
+// a frozen product source file or change non-version metadata.
+for (let i = 0; i < paths.length; i++) {
+  const updated = sources[i].replace(/^(\s*"version"\s*:\s*)"[^"]+"/m, `$1"${next}"`);
+  if (updated === sources[i] || JSON.parse(updated).version !== next) throw new Error("Missing top-level version line");
+}
+for (let i = 0; i < paths.length; i++) writeFileSync(paths[i], sources[i].replace(/^(\s*"version"\s*:\s*)"[^"]+"/m, `$1"${next}"`));
+writeFileSync(cargoPath, cargo.replace(/^(version\s*=\s*)"[^"]+"/m, `$1"${next}"`));
+console.log(next);

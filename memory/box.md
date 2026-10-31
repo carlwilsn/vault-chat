@@ -4,7 +4,8 @@
   engine per vault) as a user unit; the laptop app, phone and board are clients. When the box is unreachable the app
   says so and keeps files and the editor working locally; there is no second engine on the laptop.
 - **How a change reaches Carl:** a push to `main` that touches `src/**`, `src-tauri/**`, `server/**` (or the build
-  config) runs `.github/workflows/ship.yml`: it bumps the version with a `[skip ci]` commit, builds as a draft and
+  config) runs `.github/workflows/ship.yml`: it stamps the three version files in one detached `[skip ci]`
+  child of the exact accepted input, pushes ONLY that release tag (never main), builds as a draft and
   publishes only when every asset and `latest.json` are attached. Docs, `scripts/`, `memory/`, `demos/` don't ship.
   The desktop updater and the box's `vault-chat-update` timer read the latest release; the box waits until it is idle
   (no runs, no surfaces in use) before restarting, then updates anyway after a cap.
@@ -43,7 +44,9 @@
   A failing revert release needs attention rather than ping-pong autoreverts. Host adapters remain to be built.
 - `changeShipping.ts` now connects installed-host acceptance to a durable private git journal and the ordinary
   project BoxSync cycle to verified public release-tag following (no extra poller/queue). Version-only CI
-  content is checked, not only ancestry/filenames; ff-only, no GitHub push. Public lookup failure is reported
+  content is checked, not only ancestry/filenames. Following records the tagged binary identity WITHOUT
+  merging its metadata child into local main; otherwise the next accepted source would diverge from GitHub.
+  No GitHub push. Public lookup failure is reported
   AFTER hub transport so it cannot strand accepted source away from the laptop. This is not finished auto-ship:
   native cutover, authenticated Tauri/box health, source revert and the Shipped card still await integration.
 - **Proof-host self-repair has no maintenance entry point (2026-10-30).** The ordinary updater only installs
@@ -70,3 +73,11 @@
   only the executing build's matching health JSON can pass. Retained fallback and native/device Shipped proof
   remain separate. `reports/http-readiness-urgent.md` records the inspected installed paths, namespace bus
   limitation and inert real-HTTP tests; preparation is not installation or evidence the giant-log startup is fixed.
+
+- **CI stamps are tag-only (2026-10-31).** Accepted source/main never incorporates CI metadata. Build jobs,
+  release target and build-info use the actual clean tagged child, not the accepted parent SHA. The existing
+  release observer still requires exactly one version-only CI child after the latest included acceptance.
+  `bump-version.mjs` selects above every fetched semver tag (including prereleases), not just the checked-out
+  package version: exact native rollback can restore v22 and still ship fresh v26 after tag v25. No source-tree
+  exemptions or post-gate host edits. Failed build jobs can rerun on the pinned draft; manual dispatch can
+  create a fresh version after an abandoned tag/draft. Never force tags or rebase/push CI stamps to main.
