@@ -24,7 +24,7 @@ export async function appProof({ base, out, id, title, advance, rollback, smoke 
     const project = page.locator('[data-el="thread-project"][data-thread="project-app"] > button').getByText('app', { exact: true });
     const pickProject = async () => {
       if (!await page.locator('[data-el="chats-sidebar"]').count()) await page.keyboard.press('Control+Shift+f');
-      if (!await project.isVisible()) await page.getByRole('button', { name: 'Chats', exact: true }).click();
+      await page.locator('[data-el="chats-sidebar"]').waitFor({ state: 'visible' });
       await project.click();
     };
     await pickProject();
