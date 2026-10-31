@@ -116,3 +116,14 @@ in doubt, mark it agent.
 - Offline replacement prepares both log and owner-built checkpoint before rename. A crash between their two
   renames is not atomic success: the old checkpoint must reject the new log identity, preserving recoverable
   artifacts and failing closed rather than prefix-replaying or silently hiding original entries.
+## Offline event-log preparation is not writer exclusion (urgent, 2026-10-31)
+- At canonical v0.7.24 (`4a952dd5`) event appends, startup tail-healing and checkpoint writes
+  have no common OS writer lock. A new CLI taking flock by itself, inactive systemd status,
+  empty cgroup, quiet stats or fuser between short-lived append opens cannot prove exclusion.
+  Offline apply must remain unavailable until all real mutation entrypoints share the same
+  exclusion contract AND offset-bearing checkpoints reject stale log identities after replacement.
+- Backup SHA/size are fresh dynamic transaction identities, not constants from a historical
+  append-active prefix. Keep whole original bytes first, independently verify readback, preserve
+  every expanded logical-record hash and canonical full fold (native original-root pointers,
+  worker state, tools/live and seq); final-picture-only or raw-byte-equality is insufficient.
+  `scripts/offline-event-log.ts` currently prepares external artifacts only; `--apply` refuses.

@@ -1,0 +1,106 @@
+TAP version 13
+# Subtest: offline copy: exact every-record replay, arbitrary cursors/gaps, >64KiB tail, pi pointers/tools/reasoning retained
+ok 1 - offline copy: exact every-record replay, arbitrary cursors/gaps, >64KiB tail, pi pointers/tools/reasoning retained
+  ---
+  duration_ms: 1269.082753
+  type: 'test'
+  ...
+# Subtest: offline compactor fails closed for hash/size mismatch, torn/invalid/reordered rows; never overwrites output
+ok 2 - offline compactor fails closed for hash/size mismatch, torn/invalid/reordered rows; never overwrites output
+  ---
+  duration_ms: 19.480547
+  type: 'test'
+  ...
+# Subtest: offline compactor refuses live .vault-chat paths
+ok 3 - offline compactor refuses live .vault-chat paths
+  ---
+  duration_ms: 1.813163
+  type: 'test'
+  ...
+# Subtest: ordinary CLI has dynamic flags and refuses apply BEFORE even stat/open of nonexistent source
+ok 4 - ordinary CLI has dynamic flags and refuses apply BEFORE even stat/open of nonexistent source
+  ---
+  duration_ms: 130.120154
+  type: 'test'
+  ...
+# Subtest: fresh backup FIRST, arbitrary current sizes/hashes/sequences; dry run never changes source/checkpoint
+ok 5 - fresh backup FIRST, arbitrary current sizes/hashes/sequences; dry run never changes source/checkpoint
+  ---
+  duration_ms: 90.780338
+  type: 'test'
+  ...
+# Subtest: refuse active primary/worker/checker failure before opening even a nonexistent source
+ok 6 - refuse active primary/worker/checker failure before opening even a nonexistent source
+  ---
+  duration_ms: 0.827149
+  type: 'test'
+  ...
+# Subtest: append during idle, after backup, during final verification; rotation/truncate/in-place mutation refuse without tool replacement
+ok 7 - append during idle, after backup, during final verification; rotation/truncate/in-place mutation refuse without tool replacement
+  ---
+  duration_ms: 129.560388
+  type: 'test'
+  ...
+# Subtest: worker restarts after backup: check failure leaves complete original backup and unchanged source
+ok 8 - worker restarts after backup: check failure leaves complete original backup and unchanged source
+  ---
+  duration_ms: 23.836073
+  type: 'test'
+  ...
+# Subtest: tampered backup/candidate and injected failure preserve source and do not emit prepared success
+ok 9 - tampered backup/candidate and injected failure preserve source and do not emit prepared success
+  ---
+  duration_ms: 336.577805
+  type: 'test'
+  ...
+# Subtest: no symlink source or in-vault backup directory
+ok 10 - no symlink source or in-vault backup directory
+  ---
+  duration_ms: 4.575703
+  type: 'test'
+  ...
+# Subtest: canonical full fold includes native pointers/user strings, workers, tools/live reasoning and >64KB payload; no metadata-only equality claim
+ok 11 - canonical full fold includes native pointers/user strings, workers, tools/live reasoning and >64KB payload; no metadata-only equality claim
+  ---
+  duration_ms: 364.370303
+  type: 'test'
+  ...
+# Subtest: torn final JSON, dangling/invalid UTF-8, invalid delta: refuse clearly, never discard source bytes
+ok 12 - torn final JSON, dangling/invalid UTF-8, invalid delta: refuse clearly, never discard source bytes
+  ---
+  duration_ms: 87.505867
+  type: 'test'
+  ...
+# Subtest: bounded I/O handles offsets beyond 5GiB without an old-size cap (virtual file, not a physical live-log test)
+ok 13 - bounded I/O handles offsets beyond 5GiB without an old-size cap (virtual file, not a physical live-log test)
+  ---
+  duration_ms: 11571.487147
+  type: 'test'
+  ...
+# Subtest: line scanner bounds a crossing-chunk large valid JSON record and decodes UTF-8 only at full line boundaries
+ok 14 - line scanner bounds a crossing-chunk large valid JSON record and decodes UTF-8 only at full line boundaries
+  ---
+  duration_ms: 32.28897
+  type: 'test'
+  ...
+# Subtest: physical streamed valid snapshot fixture exceeds historical-size boundaries
+ok 15 - physical streamed valid snapshot fixture exceeds historical-size boundaries # SKIP
+  ---
+  duration_ms: 0.120021
+  type: 'test'
+  ...
+# Subtest: host checker is fail-closed in an agent/non-systemd PID namespace
+ok 16 - host checker is fail-closed in an agent/non-systemd PID namespace
+  ---
+  duration_ms: 1.330386
+  type: 'test'
+  ...
+1..16
+# tests 16
+# suites 0
+# pass 15
+# fail 0
+# cancelled 0
+# skipped 1
+# todo 0
+# duration_ms 12975.526364
