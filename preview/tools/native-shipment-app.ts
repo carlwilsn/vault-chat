@@ -11,7 +11,6 @@ import { acceptedChanges, updateShippingJournal, type AcceptedChange } from '../
 import { promote, prepareRevert } from '../../server/simpleShipHost';
 import { runInstalledShip, requestRollback } from '../../server/submitChange';
 import { readJobs, probeJob } from '../../server/engine/pi/jobs';
-import { cp } from 'node:fs/promises';
 import { ensureMain, appendNotes } from '../../server/engine/convs';
 import { gitCommands } from '../../server/commands/gitcmds';
 import { finishedNativeWorker } from './native-finished-worker';
@@ -78,7 +77,7 @@ try {
   // The complete genuine tree (including native optionals) and all caches stay private.
   const dependencies=join(root,'fixture-deps/node_modules');mkdirSync(dependencies,{recursive:true});
   writeFileSync(join(dirname(dependencies),'package.json'),manifest);writeFileSync(join(dirname(dependencies),'package-lock.json'),lock);
-  for(const p of readdirSync('node_modules')) if(!p.startsWith('.vite'))await cp(realpathSync(join('node_modules',p)),join(dependencies,p),{recursive:true,dereference:true});
+  for(const p of readdirSync('node_modules')) if(!p.startsWith('.vite'))execFileSync('cp',['-aL','--reflink=auto',realpathSync(join('node_modules',p)),join(dependencies,p)]);
   mkdirSync(installed,{recursive:true});
   writeFileSync(join(installed,'config.json'),JSON.stringify({repo,remote:'origin',workRoot:join(root,'native-runs'),dependencies,pi:process.env.VC_TEST_PI_DIR,node:process.execPath,npm:realpathSync(process.env.VC_PROOF_NPM!),bash:realpathSync('/run/current-system/sw/bin/bash'),bwrap:process.env.VC_PROOF_BWRAP,path:process.env.PATH}));
   await build({entryPoints:['server/simpleShipHost.ts'],bundle:true,platform:'node',format:'esm',outfile:join(installed,'simple-ship.mjs')});

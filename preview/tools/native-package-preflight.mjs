@@ -1,8 +1,7 @@
 // Finite private-package check. Uses the UNCHANGED production native sandbox/gate argv.
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { cp, mkdir } from 'node:fs/promises';
-import { mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { build } from 'esbuild';
@@ -11,7 +10,7 @@ const source = process.cwd(), out = join(process.env.VC_APP_PROOF_OUT, 'packages
 assert.equal(process.versions.node.split('.')[0], '22');
 mkdirSync(out);
 const repo = join(out, 'source'), dependencies = join(out, 'dependencies/node_modules');
-mkdirSync(repo); await mkdir(dependencies, { recursive: true });
+mkdirSync(repo); mkdirSync(dependencies, { recursive: true });
 // This is the same existing source dependency tree copied by the full fixture.
 // Dereference ALL nested links, notably @esbuild/linux-x64 and @rollup/*.
 const donor = realpathSync(join(source, 'node_modules'));
@@ -22,7 +21,7 @@ for (const name of native) {
   const pkg = JSON.parse(readFileSync(join(donor, name, 'package.json')));
   assert.equal(pkg.version, lock.packages['node_modules/' + name].version, name + ': genuine lock-matched package required');
 }
-await cp(donor, dependencies, { recursive: true, dereference: true, filter: p => !/\/\.vite[^/]*(\/|$)/.test(p) });
+for (const name of readdirSync(donor)) if (!name.startsWith('.vite')) execFileSync('cp', ['-aL', '--reflink=auto', realpathSync(join(donor, name)), join(dependencies, name)]);
 writeFileSync(join(out, 'dependency-scope.json'), JSON.stringify({ donor, native, lockMatched: true, dereference: true, privateTree: dependencies }, null, 2));
 const put = (name, content) => { mkdirSync(dirname(join(repo, name)), { recursive: true }); writeFileSync(join(repo, name), content); };
 const manifest = JSON.stringify({ name: 'private-native-package-preflight', version: '0.0.0', private: true, type: 'module' });
