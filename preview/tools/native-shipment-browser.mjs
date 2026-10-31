@@ -36,6 +36,14 @@ export async function appProof({ base, out, id, title, advance, rollback, smoke,
     assert.equal(await card.getAttribute('data-shipment-status'), 'accepted');
     assert.match(await card.innerText(), new RegExp(title));
     evidence.states.push({ phase: 'accepted-not-shipped', text: await card.innerText() });
+    await page.getByText('Ready to keep: Historical readable fixture', { exact: true }).waitFor();
+    const historicalOptions = page.locator('[data-el="ask-options"]');
+    assert.equal(await historicalOptions.count(), 1);
+    assert.equal(await historicalOptions.getAttribute('data-live'), '0');
+    const historicalKeep = historicalOptions.getByRole('button', { name: /Keep/ });
+    assert.equal(await historicalKeep.isDisabled(), true);
+    evidence.historicalCard = { readable: true, live: false, keepDisabled: true };
+    await page.screenshot({ path: `${out}/00-historical-readable.png` });
     await page.getByText(/^[12] tool calls?$/).last().click();
 
     evidence.workerChipCount = await page.locator('[data-el="tasks-chip"]').count();
