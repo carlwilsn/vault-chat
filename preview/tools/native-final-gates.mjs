@@ -40,6 +40,9 @@ const donor=realpathSync('/home/carlwilsn/agent-work/vault-chat/changes/vault-ch
 const donorLock=join(dirname(donor),'package-lock.json');
 if(!existsSync(donorLock)||!readFileSync(donorLock).equals(readFileSync(join(repo,'package-lock.json'))))throw Error('Existing dependency lock differs; no installation authorized');
 execFileSync('cp',['-a','--reflink=auto',donor,join(deps,'node_modules')],{env});
+// Never import a donor's Vitest/Vite caches into this private verification.
+const { rmSync } = await import('node:fs');
+for(const name of ['.vite','.vite-temp','.vite-preview-before'])rmSync(join(deps,'node_modules',name),{recursive:true,force:true});
 writeFileSync(join(out,'dependency-scope.json'),JSON.stringify({donor,donorLock,scope:'private copy of existing lock-matched dependencies, not host acceptance provisioning'},null,2));
 execFileSync(join(deps,'node_modules/.bin/esbuild'),['--version'],{cwd:deps,env,stdio:'inherit'});
 execFileSync(process.execPath,['node_modules/vite/bin/vite.js','--version'],{cwd:deps,env,stdio:'inherit'});
@@ -51,7 +54,8 @@ const run=mod.createRunRoot(config);
 const baseline=await mod.runShipGates(config,repo,base,run);writeFileSync(join(out,'baseline.json'),JSON.stringify(baseline,null,2));
 const candidate=await mod.runShipGates(config,repo,pin,run);writeFileSync(join(out,'candidate.json'),JSON.stringify(candidate,null,2));
 let comparison='passed';try{mod.compareChangeGates(baseline,candidate)}catch(e){comparison=String(e);}
-const summary={base,pin,out,run,baseline:baseline.map(({tests,...r})=>({...r,total:tests?.length,failures:tests?.filter(t=>t.status==='failed')})),candidate:candidate.map(({tests,...r})=>({...r,total:tests?.length,failures:tests?.filter(t=>t.status==='failed')})),strictComparison:comparison};
+const summary={base,pin,out,run,baseline:baseline.map(({tests,...r})=>({...r,total:tests?.length,failures:tests?.filter(t=>t.status==='failed')})),candidate:candidate.map(({tests,...r})=>({...r,total:tests?.length,failures:tests?.filter(t=>t.status==='failed')})),ordinaryComparison:comparison};
 writeFileSync(join(out,'summary.json'),JSON.stringify(summary,null,2));console.log(JSON.stringify(summary,null,2));
-// Retirement is explicitly NOT laundered into a normal passing comparison or permission to install.
+// Retired identities remain absent in the full raw reports, never relabeled candidate passes.
+// A passing local comparison is NOT installation/publication authority.
 process.exitCode=comparison==='passed'?0:2;

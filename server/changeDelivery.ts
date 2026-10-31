@@ -1,6 +1,6 @@
 /** Delivery observations, driven by the existing project sync cycle. The private git journal is authority;
  * per-vault JSONL is only a union-mergeable display projection and is never read back for decisions. */
-import { appendFileSync, existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync, readdirSync } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import { join, resolve } from "node:path";
 import { isIP } from "node:net";
@@ -9,6 +9,7 @@ import { isLoopbackAddr, tailnetLoginOk } from "./auth";
 import { acceptedChanges, selectAcceptedFailedRelease, updateShippingJournal, type AcceptedChange, type ShippingJournal } from "./changeShipping";
 import { evaluateReleaseHealth, type BoxReleaseHealth, type LaptopReleaseHealth, type ReleaseHealthResult, type ReleaseTarget } from "./releaseHealth";
 import type { LaptopHealthReport, ReleaseHealthChallenge, ShipmentCard, ShipmentRollback } from "../src/shippingProtocol";
+import { readHistoricalProof } from "./historicalProof";
 import { activeFolders } from "./projectFolders";
 
 export type DeliveryRelease = {
@@ -197,9 +198,20 @@ function proofProjection(vaultPath: string, vaultName: string, c: AcceptedChange
   // Public summary intentionally excludes receipt request text, raw logs, private host paths/environment.
   let summary = `# ${c.review.title.replace(/[\r\n]/g, " ")}\n\nAccepted source: ${c.source.head}\n\nRelease and actual device health are tracked separately.\n`;
   const mediaUrls: string[] = [];
-  // Old receipts/identities never run on sync again. Preserve already projected media, and leave
-  // original conversation attachments/proof files untouched even if their retired receipt is broken.
-  for (const name of ["recording.mp4", "recording.webm", "recording.png"]) {
+  const historical = readHistoricalProof(c);
+  for (const side of ["baseline", "candidate"] as const) for (const g of historical.gates[side]) {
+    summary += `\nHistorical ${side} ${g.gate}: exit ${g.exitCode}; ${g.complete ? "complete" : "incomplete"}; ${g.passed} passed, ${g.failed} named failures.\n`;
+  }
+  if (historical.ui) summary += `\nHistorical UI: ${historical.ui.assertions} assertions; ${historical.ui.frames} decoded frames (not fresh verification).\n`;
+  for (const m of historical.media) {
+    const target = join(dest, m.name), stat = lstatSync(target, { throwIfNoEntry: false });
+    if (stat && (stat.isSymbolicLink() || !stat.isFile())) throw new Error("Unsafe proof projection file");
+    writeFileSync(target, m.bytes);
+  }
+  // Preserve already-public historical media even when original private evidence is unavailable.
+  for (const name of readdirSync(dest).filter(n => /^(?:recording\.(?:mp4|webm|png)|legacy-\d+\.(?:png|jpe?g|webp|mp4|webm))$/i.test(n))) {
+    const stat = lstatSync(join(dest, name));
+    if (stat.isSymbolicLink() || !stat.isFile()) throw new Error("Unsafe proof projection file");
     if (existsSync(join(dest, name))) mediaUrls.push(fileUrl(vaultName, `${rel}/${name}`));
   }
   summary += "\nDetailed historical evidence, if retained, remains on its original conversation card.\n";

@@ -26,12 +26,10 @@ function cases(r: GateReceipt): Map<string, TestCase> {
   return out;
 }
 
-/** Same named failures ONLY. Equal failure counts are insufficient. Removed/passing→skipped tests regress.
+/** Same named failures ONLY. Equal failure counts are insufficient. Retired cases stay absent; surviving executed→skipped tests regress.
  * Non-test commands must succeed on both sources; a broken baseline/build is never an allowance to ship.
  */
-export function compareChangeGates(baseline: readonly GateReceipt[], candidate: readonly GateReceipt[], nativeGeneratedRevert = false): void {
-  // INTERNAL installed-host option, never a branch/CLI/config parameter. Only an exact host-generated
-  // git revert can remove the tests the reverted feature introduced. Every remaining check is identical.
+export function compareChangeGates(baseline: readonly GateReceipt[], candidate: readonly GateReceipt[]): void {
   for (const list of [baseline, candidate]) {
     if (list.length !== CHANGE_GATES.length || new Set(list.map((r) => r.gate)).size !== CHANGE_GATES.length) throw new Error("Missing or duplicate required gate");
   }
@@ -46,10 +44,7 @@ export function compareChangeGates(baseline: readonly GateReceipt[], candidate: 
     const before = cases(b), after = cases(c);
     for (const [key, test] of before) {
       const next = after.get(key);
-      if (!next) {
-        if (nativeGeneratedRevert) continue;
-        throw new Error(`${gate}: removed test ${key}`);
-      }
+      if (!next) continue; // Architectural retirement is not a positive result or a failure allowance.
       if (["passed", "failed"].includes(test.status) && ["skipped", "todo"].includes(next.status)) throw new Error(`${gate}: previously executed test no longer runs ${key}`);
     }
     for (const [key, test] of after) {

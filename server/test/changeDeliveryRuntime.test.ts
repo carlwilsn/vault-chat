@@ -95,7 +95,7 @@ describe("durable delivery observations, not synchronized card authority", () =>
     expect(f.rollback).toHaveBeenNthCalledWith(1, f.repo, "second-accepted", expect.any(String));
     expect(f.rollback).toHaveBeenNthCalledWith(2, f.repo, f.c.id, expect.any(String));
   });
-  it("renders a minimal source/health summary without reopening obsolete historical receipts", async () => {
+  it("keeps malformed historical evidence readable without reviving receipt authority", async () => {
     const f = await fixture();
     writeFileSync(join(f.proof, "receipt.json"), "INVALID obsolete receipt; not authority");
     await observeChangeDelivery(f.repo); await observeChangeDelivery(f.repo);
@@ -131,6 +131,41 @@ describe("durable delivery observations, not synchronized card authority", () =>
     expect(projection).not.toContain(sentinel); expect(projection).not.toContain(f.root);
     expect(card.proof.mediaUrls).toEqual([]); // Private/unprojected files are NOT silently made public.
     expect(readFileSync(join(f.proof, "recording.mp4"), "utf8")).toBe(sentinel);
+  });
+  it("reads the original historical receipt schema into a public numeric summary and real image, not private metadata", async () => {
+    const f = await fixture(), sentinel = "SYNTHETIC_PRIVATE_TOKEN_ENV_COMMAND_PATH";
+    const bytes = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=", "base64");
+    const artifact = join(f.proof, "recording.png"); writeFileSync(artifact, bytes);
+    const receipt = { id: f.c.id, source: f.c.source, ask: { requestText: sentinel }, environment: sentinel,
+      baseline: [], candidate: [{ gate: "test:server", command: [sentinel], logArtifact: sentinel, stdout: sentinel,
+        exitCode: 0, complete: true, tests: [{ file: sentinel, name: sentinel, status: "passed" }] }],
+      ui: { artifact, artifactHash: createHash("sha256").update(bytes).digest("hex"), assertions: 2, frames: 30, sourceVerified: true, command: sentinel }, privatePath: f.root };
+    writeFileSync(join(f.proof, "receipt.json"), JSON.stringify(receipt));
+    const refs = f.g("show-ref"); const before = await acceptedChanges(f.repo);
+    const [card] = await shipmentCards(f.vault, "school");
+    const publicPath = (url: string) => join(f.vault, new URL(url, "http://fixture").searchParams.get("path")!);
+    const summary = readFileSync(publicPath(card.proof.summaryUrl), "utf8");
+    expect(summary).toContain("1 passed"); expect(summary).toContain("2 assertions");
+    expect(card.proof.mediaUrls).toHaveLength(1); expect(readFileSync(publicPath(card.proof.mediaUrls[0]))).toEqual(bytes);
+    expect(summary + JSON.stringify(card)).not.toContain(sentinel); expect(summary + JSON.stringify(card)).not.toContain(f.root);
+    expect(f.g("show-ref")).toBe(refs); expect(await acceptedChanges(f.repo)).toEqual(before);
+    expect(JSON.parse(readFileSync(join(f.proof, "receipt.json"), "utf8"))).toEqual(receipt);
+    // Actual old reader path: valid hash does not turn a link to private data into public media.
+    rmSync(artifact); const victim = join(f.root, "private.png"); writeFileSync(victim, bytes); symlinkSync(victim, artifact);
+    rmSync(publicPath(card.proof.mediaUrls[0]));
+    const [unsafe] = await shipmentCards(f.vault, "school"); expect(unsafe.proof.mediaUrls).toEqual([]);
+    expect(readFileSync(victim)).toEqual(bytes);
+    rmSync(victim); const [dangling] = await shipmentCards(f.vault, "school"); expect(dangling.proof.mediaUrls).toEqual([]);
+  });
+  it("projects original legacy public-media metadata without reviving its deleted bootstrap importer", async () => {
+    const f = await fixture(), bytes = Buffer.from("historical JPEG fixture bytes"), name = "1-actual-ui.jpg";
+    writeFileSync(join(f.proof,name),bytes);
+    await updateShippingJournal(f.repo,j => { Object.assign(j.changes[0], {basis:"legacy-bootstrap",bootstrap:{proofId:"old-display-only",toolCallId:"PRIVATE_TOKEN_COMMAND",media:[{name,hash:createHash("sha256").update(bytes).digest("hex"),environment:"PRIVATE_TOKEN_COMMAND"}]}}); });
+    const [card] = await shipmentCards(f.vault,"school"); expect(card.proof.mediaUrls).toHaveLength(1);
+    const path = new URL(card.proof.mediaUrls[0],"http://fixture").searchParams.get("path")!;
+    expect(readFileSync(join(f.vault,path))).toEqual(bytes); expect(JSON.stringify(card)).not.toContain("PRIVATE_TOKEN_COMMAND");
+    rmSync(join(f.vault,path)); rmSync(join(f.proof,name)); symlinkSync(join(f.root,"absent-private.jpg"),join(f.proof,name));
+    expect((await shipmentCards(f.vault,"school"))[0].proof.mediaUrls).toEqual([]);
   });
   it.each(["summary.md", "recording.mp4", "recording.webm", "recording.png"])("refuses live and dangling historical projection links: %s", async name => {
     const f = await fixture(), victim = join(f.root, "private-victim");

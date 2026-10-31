@@ -1,5 +1,8 @@
 # Shipping reset — one box script
 
+> Current ordinary retirement policy and retained-contract fixes: [ordinary retirement](simple-ship-ordinary-retirement.md).
+> Historical strict-comparator failures below remain failures on their original sources, not certifications of new source.
+
 
 > Subsequent development: [offline repair/audit](simple-ship-offline-audit.md), on a separate branch.
 > The 8b bundle and final pair below remain immutable; they do not certify that newer source.
@@ -11,8 +14,9 @@ Carl's 2026-10-30 reset supersedes the old permit/recorder/bootstrap acceptance 
    installed box script. It is a thin adapter, not a second acceptance service.
 3. The script fetches that exact branch from the configured remote, pins current main, checks ancestry,
    runs all seven gates on both immutable snapshots, and compares complete named test results using
-   the existing normalizers. Failures must be a subset of main's failures. Removing/renaming a baseline
-   case, new skip/todo, runtime crash, timeout, unavailable report, or failed type/build gate blocks.
+   the existing normalizers. Failures must be a subset of main's exact name/file failures. Retired cases
+   remain absent, not passes; a different failed name/file gets no allowance. New skip/todo, surviving
+   executed→skipped/todo, runtime crash, timeout, unavailable report, or failed type/build gate blocks.
 4. Native git `update-ref --stdin` prepares an exact expected-old ref transaction on the still-current
    pinned main, holds its native ref lock during `read-tree -u -m`, then commits only if checkout succeeds.
    No `reset --hard`; worktree/ref/journal are not claimed power-loss-atomic (see offline repair audit). The existing private
@@ -42,21 +46,25 @@ conflicts or failed checks become attention, not repeated recovery jobs. Histori
 media and protected journals remain untouched/readable; their old proof ids are not revalidated/imported
 on every sync. Historical pending Keep can close its card but cannot mutate main.
 
-Forward branches always preserve every baseline test case, even branches named `agent/rollback-*`.
-The installed host's native rollback alone generates `git revert --no-commit` from the recorded accepted
-range on current main, captures its exact native tree, and verifies the fetched commit's tree and sole
-parent before the SAME full baseline/candidate gates are compared. Only that internally generated route
-allows the expected missing test identities: reverting a feature also reverts its added regression tests.
-All remaining named failures, executed→skipped/todo changes, new skips/todos, duplicate/missing reports,
-crashes, timeouts, and type/build failures are checked identically. No CLI/config/agent flag, receipt,
-whitelist or journal label grants this behavior to a submitted branch; extra edits/parents fail the tree
-check. Native rollback does not require Claude to maintain test identities.
+The installed host generates `git revert --no-commit` from the recorded accepted range on current main,
+captures its native tree, and verifies the fetched commit's exact tree **and sole parent**. This native
+rollback correctness check remains. Forward changes and rollback now use the **same ordinary comparator**;
+the old internal test-retirement boolean and unconditional missing-identity rejection are removed, not
+replaced with a waiver, allowlist, permit, intent proof or manual promotion. Architectural retirement is
+agent judgment under the standing same-named-failures rule, not machine-approved metadata.
 
-The ONE initial architectural retirement remains explicit in `simple-ship-retired-tests.md` (114 named
-cases); it is not an ongoing exception. This batch cannot pass the OLD baseline's strict no-removal
-comparison and does not pretend to install itself through it.
+Historical receipt data can be projected read-only through `historicalProof.ts`: fixed gate labels,
+numeric counts and confined hash-matching media only; private request/env/command/path fields never
+leave the reader. Broken records cannot hide the minimal source/history card. Old legacy media remains
+readable without reactivating its bootstrap importer, validator or Keep. A partial failed-release CLI
+batch keeps accepted native reverts, records terminal attention in the existing journal, exits nonzero,
+and does not silently retry or claim the whole release Rolled back/Shipped.
 
-## Final evidence and mandatory review (supersedes pending-run notes)
+The original 114-case retirement inventory remains historical evidence, never a count of candidate passes.
+The old strict implementation's failures below are preserved; the ordinary-policy change does not
+retroactively relabel them green. Only a fresh pinned pair and actual App+CLI proof can certify new source.
+
+## Historical 8b evidence and mandatory review (not current-source certification)
 
 Final complete pair is available: baseline `8e540669f3b3caca9b40da1105895775ad759ce7`,
 tested product `8b4093652629553991f9452b5fdc7bcafd3be23f`, exit **2**. Both four typechecks,

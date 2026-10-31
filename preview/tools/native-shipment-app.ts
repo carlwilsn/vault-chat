@@ -1,5 +1,7 @@
 /** Finite dev fixture. No engine/model, installed authority, main mutation, or private-state file editing. */
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import { proofImagePath } from '../../src/review';
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, readFileSync, writeFileSync, readdirSync, realpathSync, symlinkSync, unlinkSync, chmodSync } from 'node:fs';
 import { join, dirname } from 'node:path';
@@ -84,19 +86,26 @@ try {
   await runInstalledShip(repo,'--branch','agent/fixture-change',title,'app',project.convId,new AbortController().signal,text=>writeFileSync(join(root,'native-forward.log'),text,{flag:'a'}));
  }else await promote(repo,base,head,change);
  assert.equal((await acceptedChanges(repo))[0].source.head,head);
+ // Genuine old-format evidence at this OWN fixture acceptance's original proof directory.
+ // Its read-only public reader may project counts/image, never request/env/command metadata.
+ const historicalChange=(await acceptedChanges(repo))[0];
+ const historicalImage=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aT1sAAAAASUVORK5CYII=','base64');
+ mkdirSync(historicalChange.proofDir,{recursive:true});
+ const oldArtifact=join(historicalChange.proofDir,'recording.png');writeFileSync(oldArtifact,historicalImage);
+ const oldReceipt={id:historicalChange.id,source:historicalChange.source,environment:'VC_FAKE_SECRET',ask:{requestText:'PRIVATE_SENTINEL'},
+  baseline:[],candidate:[{gate:'test:server',command:['PRIVATE_SENTINEL'],logArtifact:'/synthetic/PRIVATE_SENTINEL',environment:'VC_FAKE_SECRET',exitCode:0,complete:true,tests:[{status:'passed',name:'PRIVATE_SENTINEL'}]}],
+  ui:{artifact:oldArtifact,artifactHash:createHash('sha256').update(historicalImage).digest('hex'),assertions:2,frames:30,sourceVerified:true}};
+ writeFileSync(join(historicalChange.proofDir,'receipt.json'),JSON.stringify(oldReceipt));
  const {shipments:initialCards}=await request('/api/v1/shipments');
  const summary=initialCards.find((c:any)=>c.id===head).proof.summaryUrl;
  const legacyFile=await fetch(baseHTTP+summary+'&vault=fixture',{signal:AbortSignal.timeout(10000)});
  assert.equal(legacyFile.status,200);const publicSummary=await legacyFile.text();
- assert.ok(publicSummary.includes(head));assert.doesNotMatch(publicSummary,/PRIVATE_SENTINEL|VC_FAKE_SECRET/);
+ assert.ok(publicSummary.includes(head));assert.ok(publicSummary.includes('1 passed'));assert.ok(publicSummary.includes('2 assertions'));assert.doesNotMatch(publicSummary,/PRIVATE_SENTINEL|VC_FAKE_SECRET|\/synthetic\//);
  writeFileSync(join(root,'file-route.jsonl'),JSON.stringify({phase:'source-proof',status:legacyFile.status,sourceHead:head})+'\n');
- // Preserve a healthy already-projected image through the same production Proof viewer.
- const proofRel=new URL(summary,baseHTTP).searchParams.get('path')!;
- writeFileSync(join(vault,dirname(proofRel),'recording.png'),Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aT1sAAAAASUVORK5CYII=','base64'));
-
  put('later.txt','unrelated later scope preserved\n');g('add','later.txt');g('commit','-qm','Unrelated later scope');const later=g('rev-parse','HEAD');
  // An already-answered historical card: readable transcript, never acceptance authority.
- appendNotes(vault,project.convId,[{kind:'tool',name:'ReadyForReview',args:{title:'Historical readable fixture',branch:'agent/historical-fixture',what:'Historical transcript only.',why:'Readability regression check.',tests:'Historical record; not current gates.'},result:'Carl answered: Keep\n\n---\nHistorical outcome only.'},{kind:'line',role:'user',text:'Keep'}]);
+ const originalImage=join(vault,proofImagePath('historical-public-fixture',0,'/synthetic/private/old.png'));mkdirSync(dirname(originalImage),{recursive:true});writeFileSync(originalImage,historicalImage);
+ appendNotes(vault,project.convId,[{kind:'tool',name:'ReadyForReview',args:{title:'Historical readable fixture',proofId:'historical-public-fixture',images:['/synthetic/private/old.png'],environment:'VC_FAKE_SECRET',command:['PRIVATE_SENTINEL'],privatePath:'/synthetic/PRIVATE_SENTINEL',branch:'agent/historical-fixture',what:'Historical transcript only.',why:'Readability regression check.',tests:'Historical record; not current gates.'},result:'Carl answered: Keep\n\n---\nHistorical outcome only.'},{kind:'line',role:'user',text:'Keep'}]);
  const nativeWorker=await finishedNativeWorker(root,vault,project.convId);
  await appendHistory();
  async function appendHistory(){ const log=await gitCommands.git_log_subdir!({vault,subdir:'app',maxCount:20});appendNotes(vault,project.convId,[{kind:'line',role:'assistant',text:`Private fixture native Git history\n\nAccepted range: ${base}..${head}\n\n\`\`\`text\n${log}\n\`\`\``}]); }

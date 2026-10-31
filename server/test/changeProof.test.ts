@@ -26,9 +26,11 @@ describe("same named failures, never just a count", () => {
     expect(f.check).toThrow("new named failure");
   });
   it.each([
-    { name: "removed baseline test", mutation: (r: any) => { r.tests.pop(); } },
     { name: "new skipped test", mutation: (r: any) => { r.tests[1].status = "skipped"; } },
     { name: "new todo test", mutation: (r: any) => { r.tests.push({ file: "new.ts", name: "untested", status: "todo" }); } },
+    { name: "malformed status", mutation: (r: any) => { r.tests[1].status = "absent"; } },
+    { name: "malformed file", mutation: (r: any) => { r.tests[1].file = "../outside.ts"; } },
+    { name: "missing name", mutation: (r: any) => { r.tests[1].name = ""; } },
     { name: "duplicate test identity", mutation: (r: any) => { r.tests.push(r.tests[0]); } },
     { name: "empty test report", mutation: (r: any) => { r.tests = []; } },
     { name: "missing test report", mutation: (r: any) => { r.tests = undefined; } },
@@ -37,14 +39,15 @@ describe("same named failures, never just a count", () => {
     { name: "timed out runner", mutation: (r: any) => { r.timedOut = true; } },
     { name: "exit code contradicts failing tests", mutation: (r: any) => { r.exitCode = 0; } },
     { name: "crashed runner", mutation: (r: any) => { r.exitCode = 137; } },
-  ])("refuses removed, skipped, ambiguous, unavailable, malformed or crashed checks: $name", async ({ mutation }) => {
+  ])("refuses skipped, ambiguous, unavailable, malformed or crashed checks: $name", async ({ mutation }) => {
     expect(changed(mutation).check).toThrow();
   });
-  it("only the internal native-revert comparison allows removals; all remaining checks stay strict", () => {
+  it("ordinary architectural retirement leaves cases absent, not positive passes; remaining checks stay strict", () => {
     const baseline = fixture(), candidate = fixture();
     candidate.find(r => r.gate === "test:server")!.tests!.pop();
-    expect(() => compareChangeGates(baseline, candidate)).toThrow("removed test");
-    expect(() => compareChangeGates(baseline, candidate, true)).not.toThrow();
+    expect(() => compareChangeGates(baseline, candidate)).not.toThrow();
+    expect(candidate.find(r => r.gate === "test:server")!.tests!.map(t => t.name)).not.toContain("passing test");
+    expect(baseline.find(r => r.gate === "test:server")!.tests![1].status).toBe("passed");
     for (const mutate of [
       (r: GateReceipt) => { r.tests![0].status = "skipped"; r.exitCode = 0; },
       (r: GateReceipt) => { r.tests!.push({ file: "new.ts", name: "new failure", status: "failed" }); },
@@ -56,11 +59,28 @@ describe("same named failures, never just a count", () => {
       (r: GateReceipt) => { r.tests = []; },
     ]) {
       const bad = structuredClone(candidate); mutate(bad.find(r => r.gate === "test:server")!);
-      expect(() => compareChangeGates(baseline, bad, true)).toThrow();
+      expect(() => compareChangeGates(baseline, bad)).toThrow();
     }
     for (const gate of CHANGE_GATES.filter(g => !g.startsWith("test:"))) {
       const bad = structuredClone(candidate); bad.find(r => r.gate === gate)!.exitCode = 1;
-      expect(() => compareChangeGates(baseline, bad, true)).toThrow("must pass");
+      expect(() => compareChangeGates(baseline, bad)).toThrow("must pass");
+    }
+  });
+  it("can retire a failed case but cannot transfer its failure allowance to another name or file", () => {
+    const baseline = fixture(), candidate = fixture(), r = candidate.find(r => r.gate === "test:server")!;
+    r.tests!.shift(); r.exitCode = 0;
+    expect(() => compareChangeGates(baseline, candidate)).not.toThrow();
+    expect(r.tests!.some(t => t.name === "known failing test")).toBe(false);
+    for (const t of [{file:"test/other.test.ts",name:"known failing test",status:"failed" as const}, {file:"test/file.test.ts",name:"new failure",status:"failed" as const}]) {
+      r.tests!.push(t); r.exitCode = 1;
+      expect(() => compareChangeGates(baseline, candidate)).toThrow("new named failure"); r.tests!.pop();
+    }
+  });
+  it("equal broken executions on both sources are not a passing comparison", () => {
+    for (const mutate of [(r: GateReceipt) => { r.complete = false; }, (r: GateReceipt) => { r.exitCode = 137; },
+      (r: GateReceipt) => { r.tests = [{file:"test/file.test.ts",name:"runs",status:"passed"}]; r.exitCode = 1; }]) {
+      const baseline = fixture(); mutate(baseline.find(r=>r.gate==="test:server")!);
+      expect(()=>compareChangeGates(baseline,structuredClone(baseline))).toThrow();
     }
   });
   it("requires build/typecheck success even when the same command failed on main", async () => {

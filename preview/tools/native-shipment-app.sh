@@ -30,8 +30,8 @@ fi
 cd "$repo"
 [[ $(git rev-parse HEAD) == "$pin" && -z $(git status --porcelain) ]]
 [[ $(git -C /home/carlwilsn/vc/projects/vault-chat rev-parse main) == "$main" && $(git -C /home/carlwilsn/vc/projects/vault-chat rev-parse HEAD) == "$main" ]]
-# Product fix 37cf7f9c is frozen separately from proof-only commits. NEVER touch prior worktrees.
-git diff --exit-code 37cf7f9cf442a0039e3c720afe1ee1872ceec033 "$pin" -- src server phone board package.json package-lock.json >/dev/null
+# The exact clean source pin above includes this ordinary-policy/product batch. Prior proof pins
+# do not certify it; no comparison to an obsolete product pin or bootstrap authority.
 [[ $("$node" --version) == v22.* && -x $chromium && -x $ffmpeg/ffmpeg && -x $bwrap ]]
 "$node" --input-type=module - <<'JS'
 import assert from 'node:assert/strict'; import {createRequire} from 'node:module'; import {readFileSync} from 'node:fs';

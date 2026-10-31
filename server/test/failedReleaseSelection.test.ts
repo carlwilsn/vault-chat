@@ -44,6 +44,29 @@ describe("one durable failed-release recovery selection", () => {
     expect(j.recoverySelections?.[f.release.id].changeIds).toEqual(["second", "first"]);
     expect(j.recoverySelections?.["newer-release"]).toBeUndefined();
   });
+  it.each(["missing", "wrong revision", "wrong version", "future", "stale", "nonfinite", "unknown", "unaccepted"])("automatic post-release controller refuses %s marker before selection or rollback", async kind => {
+    const f = await fixture(), now = Date.now();
+    const file = join(f.root, "state/release-failures", createHash("sha256").update(f.release.version).digest("hex") + ".json");
+    const marker = { version: f.release.version, revision: f.release.revision, observedAt: now - 1 };
+    if (kind === "wrong revision") marker.revision = "d".repeat(40);
+    if (kind === "wrong version") marker.version = "9.9.9";
+    if (kind === "future") marker.observedAt = now + 60_000;
+    if (kind === "stale") marker.observedAt = Date.parse(f.release.publishedAt) - 1;
+    if (kind === "nonfinite") marker.observedAt = NaN;
+    if (kind === "missing") rmSync(file); else writeFileSync(file, JSON.stringify(marker));
+    if (kind === "unknown") await updateShippingJournal(f.repo, j => { for (const c of j.changes) c.release = undefined; });
+    if (kind === "unaccepted") {
+      const tree = f.g("rev-parse", "HEAD^{tree}"), head = f.g("commit-tree", tree, "-p", f.g("rev-parse", "HEAD"), "-m", "unaccepted fixture branch");
+      await updateShippingJournal(f.repo, j => { for (const c of j.changes) { c.acceptedAt = undefined; c.source.head = head; c.source.tree = tree; } });
+    }
+    vi.spyOn(Date, "now").mockReturnValue(now);
+    try {
+      await observeChangeDelivery(f.repo);
+      expect(f.rollback).not.toHaveBeenCalled();
+      const j = await updateShippingJournal(f.repo, j => j);
+      expect(j.recoverySelections).toBeUndefined(); expect(Object.keys(j.delivery?.rollbacks ?? {})).toEqual([]);
+    } finally { vi.restoreAllMocks(); }
+  });
   it("manual card recovery remains only that card, not the release batch", async () => {
     const f = await fixture(); await requestDeliveryRollback(f.repo, f.first.id, "Carl selected this card");
     expect(f.rollback.mock.calls.map(c => c[1])).toEqual(["first"]);

@@ -1,5 +1,5 @@
 #!/run/current-system/sw/bin/bash
-# PARENT StartJob ONLY except --check. Original strict comparator, no retirement exemption.
+# PARENT StartJob ONLY except --check. Ordinary shared comparator; no retirement waiver/exception.
 set -euo pipefail
 repo=$(cd -- "$(dirname -- "$0")/../.." && pwd)
 mode=${1:?--check or --run}; pin=${2:?exact full candidate SHA}; base=${3:?exact readonly canonical base SHA}

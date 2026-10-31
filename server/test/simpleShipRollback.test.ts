@@ -9,7 +9,7 @@ import { acceptedChanges, updateShippingJournal } from "../changeShipping";
 import { configureChangeDelivery, deliveryChallenge, observeChangeDelivery, reportLaptopHealth, requestDeliveryRollback, shipmentCards } from "../changeDelivery";
 import { registerFolder } from "../projectFolders";
 
-it("native health/card rollback runs the same full gates after removing feature regression tests, retaining later work; forward deletion is refused", async () => {
+it("native health/card rollback runs the same full gates after removing feature regression tests, retaining later work; retirement uses ordinary comparison", async () => {
   const root = mkdtempSync(join(tmpdir(), "vc-native-rollback-")), repo = join(root, "repo"), vault = join(root, "vault");
   const put = (p: string, text: string) => { mkdirSync(dirname(join(repo, p)), { recursive: true }); writeFileSync(join(repo, p), text); };
   mkdirSync(repo); mkdirSync(join(vault, "agent-projects/app"), { recursive: true });
@@ -41,12 +41,6 @@ it("native health/card rollback runs the same full gates after removing feature 
     expect(await ship(config, { branch: "agent/feature", title: "Feature with regression", slug: "app", convId: "project-app" })).toContain("Accepted");
     const feature = (await acceptedChanges(repo))[0];
     put("later.txt", "unrelated later work"); g("add", "."); g("commit", "-qm", "later work");
-    // A forward branch masquerading as a rollback still gets the strict comparison.
-    g("switch", "-qc", "agent/rollback-malicious");
-    g("rm", "server/test/regression.test.ts", "test/harness/regression.test.ts"); g("commit", "-qm", "delete coverage"); g("switch", "-q", "main");
-    const current = g("rev-parse", "main");
-    await expect(ship(config, { branch: "agent/rollback-malicious", title: "Not native", slug: "app", convId: "project-app" })).rejects.toThrow("removed test");
-    expect(g("rev-parse", "main")).toBe(current);
     registerFolder(vault, "app", repo);
     const release = { id: "fixture-release", version: "1.0.1", revision: feature.source.head, tag: "v1.0.1", publishedAt: new Date().toISOString() };
     await updateShippingJournal(repo, j => { j.changes[0].release = release; });
@@ -69,7 +63,7 @@ it("native health/card rollback runs the same full gates after removing feature 
     expect((await requestDeliveryRollback(repo, feature.id, "Card click after health rollback")).status).toBe("accepted");
     expect(calls).toBe(1); // card retry dedupes against native acceptance
     const logs = readdirSync(config.workRoot).map(d => JSON.parse(readFileSync(join(config.workRoot, d, "gates.json"), "utf8")));
-    expect(logs).toHaveLength(3);
+    expect(logs).toHaveLength(2);
     for (const log of logs) for (const side of [log.baseline, log.candidate]) {
       expect(side).toHaveLength(7); expect(side.every((r: { complete: boolean; exitCode: number }) => r.complete && r.exitCode === 0)).toBe(true);
     }

@@ -44,7 +44,11 @@ export async function appProof({ base, out, id, title, advance, rollback, smoke,
     assert.equal(await historicalKeep.isDisabled(), true);
     assert.equal(await historicalOptions.getByRole('button').count(), 1);
     assert.equal(await historicalOptions.getByRole('button', { name: /Send back/ }).count(), 0);
-    evidence.historicalCard = { readable: true, live: false, keepDisabled: true };
+    const oldImage = page.locator('img[src*="historical-public-fixture"]');
+    await oldImage.waitFor({state:'visible'});
+    await page.waitForFunction(() => { const i = document.querySelector('img[src*="historical-public-fixture"]'); return i?.complete && i.naturalWidth > 0; });
+    assert.doesNotMatch(await page.locator('body').innerText(), /PRIVATE_SENTINEL|VC_FAKE_SECRET|\/synthetic\/private/);
+    evidence.historicalCard = { readable: true, live: false, keepDisabled: true, originalPublicImageDecoded: true, privateMetadataExcluded: true };
     await page.screenshot({ path: `${out}/00-historical-readable.png` });
     await page.getByText(/^[12] tool calls?$/).last().click();
 

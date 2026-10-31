@@ -8,7 +8,7 @@ import { randomUUID } from "node:crypto";
 import { pathToFileURL } from "node:url";
 import { CHANGE_GATES, compareChangeGates, type GateReceipt, type ChangeGate } from "./shipGates";
 import { HARNESS_REPORTER_SOURCE, VITEST_REPORTER_SOURCE, VITEST_REPORT_PREFIX, parseHarnessReport, parseVitestReport } from "./changeTestReports";
-import { withShippingLock, acceptedChanges, acceptedFailedRelease, prepareAcceptanceLocked, reconcileAcceptancesLocked } from "./changeShipping";
+import { withShippingLock, acceptedChanges, acceptedFailedRelease, updateShippingJournal, prepareAcceptanceLocked, reconcileAcceptancesLocked } from "./changeShipping";
 export { compareChangeGates } from "./shipGates";
 import { withRepoLock, git as nativeGit } from "./git";
 import { killTree } from "./commands/proc";
@@ -279,10 +279,10 @@ export async function ship(o: ShipConfig, input: { branch?: string; rollback?: s
   await git(o.repo, ["merge-base", "--is-ancestor", base, head]);
   const baseline = await runShipGates(o, o.repo, base, root, signal), candidate = await runShipGates(o, o.repo, head, root, signal);
   writeFileSync(join(root, "gates.json"), JSON.stringify({ base, head, baseline, candidate }, null, 2));
-  // Only this route can enable expected test removals. No forward branch name, user option,
-  // journal rollbackOf label, or candidate-produced artifact can select it.
+  // Rollback correctness still requires the exact host-generated tree AND sole parent.
+  // Both forward changes and rollback use the same ordinary gate comparison.
   if (nativeRevert) await checkNativeRevert(o.repo, base, head, nativeRevert.tree, signal);
-  compareChangeGates(baseline, candidate, nativeRevert !== undefined);
+  compareChangeGates(baseline, candidate);
   const tree = (await git(o.repo, ["rev-parse", `${head}^{tree}`])).trim(), now = new Date().toISOString();
   await promote(o.repo, base, head, { id: head, source: { base, head, tree, branch }, review: { convId: original?.review.convId ?? input.convId, slug: original?.review.slug ?? input.slug, folder: o.repo, clone: o.repo, base: "main", branch, sha: head, title: input.title, at: now }, proofDir: root, preparedAt: now, ...(original ? { rollbackOf: original.id } : {}) }, signal);
   return `Accepted ${head}. Laptop sync/CI and actual box/laptop health pending; not Shipped. Logs: ${root}`;
@@ -290,13 +290,31 @@ export async function ship(o: ShipConfig, input: { branch?: string; rollback?: s
 
 export async function simpleShipCli(args = process.argv.slice(2), signal?: AbortSignal): Promise<void> {
   if (args[1] === "--failed-release") {
+    // Trusted installed host/updater/operator entry, not an agent/client API. The automatic
+    // caller owns fresh matched health provenance; manual host operation need not fake a marker.
     const o = JSON.parse(readFileSync(args[0]!, "utf8")) as ShipConfig;
     const revision = args[2];
     if (!revision || !/^[a-f0-9]{40}$/.test(revision)) throw new Error("Exact failed release revision required");
     const matching = (await acceptedChanges(o.repo)).filter(c => c.release?.revision === revision);
     if (!matching.length || matching.some(c => c.rollbackOf)) throw new Error("Failed release has no original accepted ranges, or is itself a rollback; needs attention");
     const changes = await acceptedFailedRelease(o.repo, matching[0]!.release!.id, revision);
-    for (const c of changes) console.log(await ship(o, { rollback: c.id, title: `Roll back: ${c.review.title}`, slug: c.review.slug, convId: c.review.convId }, signal));
+    let completed = 0;
+    for (const c of changes) {
+      const failed = await updateShippingJournal(o.repo, j => j.delivery?.rollbacks[c.id]?.status === "failed");
+      if (failed) throw new Error(`Source recovery needs attention; ${completed}/${changes.length} ranges visited, prior failure is terminal (no automatic retry)`);
+      try {
+        console.log(await ship(o, { rollback: c.id, title: `Roll back: ${c.review.title}`, slug: c.review.slug, convId: c.review.convId }, signal));
+        completed++;
+      } catch (cause) {
+        // Native refs/journal already accepted by earlier iterations remain durable. Never undo
+        // them, claim whole-release rollback, or leave a failed remainder silently retryable.
+        await updateShippingJournal(o.repo, j => {
+          j.delivery ??= { releases: {}, rollbacks: {} };
+          j.delivery.rollbacks[c.id] = { status: "failed", error: "Source recovery failed; needs attention (earlier accepted reverts remain)" };
+        });
+        throw new Error(`Source recovery incomplete: ${completed}/${changes.length} accepted; needs attention. Earlier accepted reverts remain; release health is still separate`, { cause });
+      }
+    }
     return;
   }
   const [config, repo, mode, value, title = "Source change", slug = "vault-chat", convId = ""] = args;

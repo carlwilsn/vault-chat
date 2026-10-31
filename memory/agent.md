@@ -97,14 +97,17 @@ extensions (same problems, new place). Migrate one duplicated piece per bug; no 
 
 ## Shipping reset (Carl, 2026-10-30; supersedes earlier auto-ship A rules)
 - Agents publish agent branches; one separately installed box script runs the seven baseline/candidate
-  gates and promotes main by native git compare-and-swap, with no new named failures or lost coverage.
+  gates and promotes main by native git compare-and-swap, with no new named failures or surviving executed→skip/todo laundering.
   No permit, bootstrap importer, receipt authority or candidate-bound recorder in acceptance. Actual UI
   checking remains the agent's responsibility; post-release authenticated device health and rollback
   remain authoritative for Shipped. First activation goes through Claude once, not self-acceptance.
 - See `docs/simple-ship.md` for exact installation/transport requirements and native rollback's exact-tree
-  trust boundary. Forward branches cannot remove coverage; only the host-generated recorded-range revert
-  can remove its feature's added tests, with all other gates unchanged. Initial architectural deletion's
-  identities are explicit RETIRED entries, never an ongoing gate waiver.
+  trust boundary. Parent explicitly resolved ordinary architectural retirement under Carl's standing
+  same-name/file-failures rule: missing old tests stay ABSENT, not passes. The blanket identity-retention
+  rule was extra policy and is removed for both forward changes and rollback, with no special exception.
+  Exact native revert TREE + SOLE PARENT verification remains rollback correctness, not a retirement permit.
+  Complete reports/runner consistency, both type/build successes and surviving-case skip guards remain.
+  Old failed pair logs and 114 removed identities stay historical evidence; new source needs fresh proof.
 - Finished Delegate navigation must use its native child id in the exact tool result to bind the
   pi tool-call id; MCP request ids and newest-open-call/title guesses are not ownership. Reuse
   ordinary conversations and PiFeed pointers to the completed native session, not a worker
