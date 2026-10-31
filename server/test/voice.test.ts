@@ -6,7 +6,7 @@
 // elsewhere come back through the updates; and the session is minted with the
 // box's ElevenLabs key, one agent per device with that device's tools —
 // ElevenLabs faked, no request leaves the process.
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from "vitest";
 import { EventEmitter } from "node:events";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -644,8 +644,17 @@ describe("GET /api/v1/voice/updates: the live call hears what happened, and only
   it("what Carl did on another surface reaches a live call as context (the you layer, pushed)", async () => {
     const chat = await typed("A chat for the push test.", "OK.");
     const cur = (await voice.voiceUpdates(deps, { convId: chat })).cursor;
-    const { activityPost } = await import("../activity");
-    activityPost(vault, { entry: { kind: "focus", modality: "editor", text: "opened the file", path: "notes/measure-theory.md", device: "laptop" } });
+    const { activityPost, readActivity } = await import("../activity");
+    // "After the cursor" is strictly newer, not another operation in the same
+    // Date.now() millisecond. Stamp only this synchronous POST; polling uses real time.
+    const after = Number(cur.split(":")[1]) + 1;
+    const clock = vi.spyOn(Date, "now").mockReturnValue(after);
+    try {
+      expect(activityPost(vault, { entry: { kind: "focus", modality: "editor", text: "opened the file", path: "notes/measure-theory.md", device: "laptop" } }).status).toBe(200);
+    } finally {
+      clock.mockRestore();
+    }
+    expect(readActivity(vault).findLast((x) => x.path === "notes/measure-theory.md")?.ts).toBe(after);
     const got = await voice.voiceUpdates(deps, { convId: chat, cursor: cur, waitMs: 4000 });
     const u = got.updates.find((x) => x.kind === "you")!;
     expect(u.speak).toBe(false);

@@ -28,6 +28,12 @@ Details and bounded RED/GREEN measurements: [`docs/simple-ship.md`](docs/simple-
 The retained real-component/HTTP UI proof is local-only (not installed Tauri); a newly pinned complete
 run after the final batch and installed native release/rollback evidence remain outstanding.
 
+The final test batch also includes the separately measured YOU/activity cursor fixture correction
+from `5f658750`: stamp the synchronous activity strictly after its exclusive cursor and restore
+the clock before polling. Parent verification passed 16 selected GET-updates/youLayer checks
+(`/tmp/vca-you-affected.BFcNcb`); the 28 filtered tests were not passes. This changes no production
+voice code. Final complete paired gates must refer to the combined commit, not `b2e0d119`.
+
 Before activating this reviewed branch:
 
 1. After the final batch, have the parent launch the pinned full-gate job (do not repeat the old failed
