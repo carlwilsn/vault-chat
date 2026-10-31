@@ -42,6 +42,8 @@ export async function appProof({ base, out, id, title, advance, rollback, smoke,
     assert.equal(await historicalOptions.getAttribute('data-live'), '0');
     const historicalKeep = historicalOptions.getByRole('button', { name: /Keep/ });
     assert.equal(await historicalKeep.isDisabled(), true);
+    assert.equal(await historicalOptions.getByRole('button').count(), 1);
+    assert.equal(await historicalOptions.getByRole('button', { name: /Send back/ }).count(), 0);
     evidence.historicalCard = { readable: true, live: false, keepDisabled: true };
     await page.screenshot({ path: `${out}/00-historical-readable.png` });
     await page.getByText(/^[12] tool calls?$/).last().click();

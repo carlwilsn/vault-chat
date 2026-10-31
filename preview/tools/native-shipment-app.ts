@@ -96,7 +96,7 @@ try {
 
  put('later.txt','unrelated later scope preserved\n');g('add','later.txt');g('commit','-qm','Unrelated later scope');const later=g('rev-parse','HEAD');
  // An already-answered historical card: readable transcript, never acceptance authority.
- appendNotes(vault,project.convId,[{kind:'tool',name:'ReadyForReview',args:{title:'Historical readable fixture',branch:'agent/historical-fixture',what:'Historical transcript only.',why:'Readability regression check.',tests:'Historical record; not current gates.'},result:'Carl answered: Keep\n\n---\nHistorical outcome only.'}]);
+ appendNotes(vault,project.convId,[{kind:'tool',name:'ReadyForReview',args:{title:'Historical readable fixture',branch:'agent/historical-fixture',what:'Historical transcript only.',why:'Readability regression check.',tests:'Historical record; not current gates.'},result:'Carl answered: Keep\n\n---\nHistorical outcome only.'},{kind:'line',role:'user',text:'Keep'}]);
  const nativeWorker=await finishedNativeWorker(root,vault,project.convId);
  await appendHistory();
  async function appendHistory(){ const log=await gitCommands.git_log_subdir!({vault,subdir:'app',maxCount:20});appendNotes(vault,project.convId,[{kind:'line',role:'assistant',text:`Private fixture native Git history\n\nAccepted range: ${base}..${head}\n\n\`\`\`text\n${log}\n\`\`\``}]); }
