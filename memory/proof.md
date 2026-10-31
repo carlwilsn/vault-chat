@@ -81,3 +81,12 @@ timestamps and "verified" itself.
   restart recovery and actual Shipped/card UI may remain required after their old authority route
   disappears. Explicit initial Claude review cannot itself make the strict self-install route work.
   See `docs/simple-ship-final-report.md` and exact audit; no new waiver/permit is implied.
+
+## Private native-package closure
+- Resolving only a top-level scoped directory before copying is insufficient: its child
+  packages can still be host-home symlinks (`@esbuild/linux-x64`, `@rollup/*`). The native
+  sandbox correctly cannot resolve those donor paths. Dereference the complete genuine
+  lock-matched package closure into a private dependency tree (existing GNU cp -aL with
+  reflinks is finite here); do not bind a whole writable donor or override binary versions.
+  Before a long fixture, invoke actual esbuild transform/build and Vite/Vitest through
+  the unchanged native gate sandbox/private caches. A host --version check misses this.
