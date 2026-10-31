@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
+import { createServer } from "node:http";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -9,27 +10,39 @@ const script = readFileSync(new URL("../deploy/vault-chat-update.sh", import.met
 const roots: string[] = [];
 afterEach(() => { for (const p of roots.splice(0)) rmSync(p, { recursive: true, force: true }); });
 const helpers = script.slice(script.indexOf("json_field()"), script.indexOf("# refresh_self"));
-function readiness(h: Record<string, unknown>, revision = "a".repeat(40), legacy = "") {
-  return spawnSync("bash", ["-c", 'PATH="$TEST_PATH";\n' + helpers + '\nhealth() { printf "%s" "$TEST_HEALTH"; }; HEALTH_POLL_S=0; wait_for_version 1.0.1 0 "$TEST_REV" "$TEST_LEGACY"'], { env: { PATH: process.env.PATH, TEST_PATH: `${dirname(process.execPath)}:${process.env.PATH ?? ""}`, TEST_HEALTH: JSON.stringify(h), TEST_REV: revision, TEST_LEGACY: legacy }, encoding: "utf8" });
+async function readiness(h: Record<string, unknown>, revision = "a".repeat(40), legacy = "") {
+  const server = createServer((_req, res) => res.end(JSON.stringify({ ok: true, app: "vault-chat-server", ...h })));
+  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("No fixture port");
+  try {
+    return await new Promise<{ status: number | null; stderr: string }>((resolve, reject) => {
+      const child = spawn("bash", ["-c", 'PATH="$TEST_PATH";\n' + helpers + '\nHEALTH_POLL_S=0.03; UNIT=test-only; wait_for_version 1.0.1 0.15 "$TEST_REV" "$TEST_LEGACY"'], { env: { PATH: process.env.PATH, TEST_PATH: `${dirname(process.execPath)}:${process.env.PATH ?? ""}`, SERVER_URL: `http://127.0.0.1:${address.port}`, TEST_REV: revision, TEST_LEGACY: legacy } });
+      let stderr = "";
+      child.stderr.on("data", d => { stderr += d; });
+      child.once("error", reject);
+      child.once("exit", status => resolve({ status, stderr }));
+    });
+  } finally { await new Promise<void>(resolve => server.close(() => resolve())); }
 }
 
-describe("actual updater readiness contract (real bash helper, no network or listeners)", () => {
-  it("requires matching release version AND revision AND readiness", () => {
-    expect(readiness({ version: "1.0.1", rev: "a".repeat(40), releaseReadiness: { status: "healthy" } }).status).toBe(0);
-    expect(readiness({ version: "1.0.1", rev: "b".repeat(40), releaseReadiness: { status: "healthy" } }).status).toBe(1);
-    expect(readiness({ version: "1.0.0", rev: "a".repeat(40), releaseReadiness: { status: "healthy" } }).status).toBe(1);
-    expect(readiness({ version: "1.0.1", rev: "a".repeat(40) }).status).toBe(1);
+describe("actual updater readiness contract (real bash helper and owned ephemeral HTTP)", () => {
+  it("requires matching release version AND revision AND readiness", async () => {
+    expect((await readiness({ version: "1.0.1", rev: "a".repeat(40), releaseReadiness: { status: "healthy" } })).status).toBe(0);
+    expect((await readiness({ version: "1.0.1", rev: "b".repeat(40), releaseReadiness: { status: "healthy" } })).status).toBe(1);
+    expect((await readiness({ version: "1.0.0", rev: "a".repeat(40), releaseReadiness: { status: "healthy" } })).status).toBe(1);
+    expect((await readiness({ version: "1.0.1", rev: "a".repeat(40) })).status).toBe(1);
   });
-  it("distinguishes unknown/pending from a fresh negative; pending does not select binary fallback", () => {
-    expect(readiness({ version: "1.0.1", rev: "a".repeat(40), releaseReadiness: { status: "pending" } }).status).toBe(2);
-    expect(readiness({ version: "1.0.1", rev: "a".repeat(40), releaseReadiness: { status: "failed" } }).status).toBe(1);
+  it("distinguishes unknown/pending from a fresh negative; pending does not select binary fallback", async () => {
+    expect((await readiness({ version: "1.0.1", rev: "a".repeat(40), releaseReadiness: { status: "pending" } })).status).toBe(2);
+    expect((await readiness({ version: "1.0.1", rev: "a".repeat(40), releaseReadiness: { status: "failed" } })).status).toBe(1);
     expect(script).toContain('elif [ "$status" = 2 ]; then');
   });
-  it("allows an old readiness-less server ONLY when verifying the retained fallback", () => {
+  it("allows an old readiness-less server ONLY when verifying the retained fallback", async () => {
     const legacy = { version: "1.0.1", rev: "a".repeat(40) };
-    expect(readiness(legacy).status).toBe(1);
-    expect(readiness(legacy, "a".repeat(40), "legacy-fallback").status).toBe(0);
-    expect(readiness({ ...legacy, releaseReadiness: { status: "failed" } }, "a".repeat(40), "legacy-fallback").status).toBe(1);
+    expect((await readiness(legacy)).status).toBe(1);
+    expect((await readiness(legacy, "a".repeat(40), "legacy-fallback")).status).toBe(0);
+    expect((await readiness({ ...legacy, releaseReadiness: { status: "failed" } }, "a".repeat(40), "legacy-fallback")).status).toBe(1);
   });
   it("writes a source-pinned durable failure BEFORE fallback and retains its first observation on retry", () => {
     const root = mkdtempSync(join(tmpdir(), "vc-updater-delivery-")); roots.push(root);

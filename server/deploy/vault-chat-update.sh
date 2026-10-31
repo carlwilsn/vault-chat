@@ -117,28 +117,81 @@ sha_ok() {  # sha_ok <file> <file.sha256>
   [ -n "$want" ] && [ "$want" = "$got" ]
 }
 
-wait_for_version() {  # <version> <seconds> [revision] [legacy-fallback]; 2 = matching but pending
-  local want="$1" deadline=$(( $(date +%s) + $2 )) want_rev="${3:-}" legacy="${4:-}" h v rev readiness saw_pending=0
-  while :; do
-    saw_pending=0
-    if h="$(health)"; then
-      v="$(strip_v "$(printf '%s' "$h" | json_field version)")"
-      rev="$(printf '%s' "$h" | json_field rev)"
-      if [ "$v" = "$want" ] && { [ -z "$want_rev" ] || [ "$rev" = "$want_rev" ]; }; then
-        readiness="$(printf '%s' "$h" | json_field releaseReadiness.status)"
-        [ "$readiness" = failed ] && return 1
-        [ "$readiness" = healthy ] && return 0
-        # Only the RETAINED old binary may predate the actual readiness contract.
-        [ "$legacy" = legacy-fallback ] && [ -z "$readiness" ] && return 0
-        [ "$readiness" = pending ] && saw_pending=1
-      fi
-    fi
-    if [ "$(date +%s)" -ge "$deadline" ]; then
-      [ "$saw_pending" = 1 ] && return 2
-      return 1
-    fi
-    sleep "$HEALTH_POLL_S"
-  done
+wait_for_version() {  # <version> <seconds> [revision] [legacy-fallback] [restart]
+  # One monotonic budget includes submitting the restart and consuming every HTTP body.
+  # Inline so the existing deploy tar/install closure always carries the executing check.
+  node - "$1" "$2" "${3:-}" "${4:-}" "${5:-}" "$SERVER_URL" "$HEALTH_POLL_S" "$UNIT" <<'NODE' &
+const { execFile } = require("node:child_process");
+const { performance } = require("node:perf_hooks");
+const [want, seconds, revision, legacy, restart, url, poll, unit] = process.argv.slice(2);
+const budget = Number(seconds) * 1000, interval = Number(poll) * 1000;
+if (!Number.isFinite(budget) || budget <= 0 || !Number.isFinite(interval) || interval < 0) process.exit(1);
+const deadline = performance.now() + budget;
+const remaining = () => Math.max(0, deadline - performance.now());
+let child;
+for (const [signal, code] of [["SIGINT", 130], ["SIGTERM", 143]]) {
+  process.on(signal, () => {
+    if (child) { child.once("close", () => process.exit(code)); child.kill("SIGKILL"); }
+    else process.exit(code);
+  });
+}
+function run(file, args, limit) {
+  return new Promise(resolve => {
+    const timeout = Math.floor(Math.min(remaining(), limit));
+    if (timeout < 1) return resolve(null);
+    child = execFile(file, args, { timeout, killSignal: "SIGKILL", maxBuffer: 65536, encoding: "utf8" }, (error, stdout) => {
+      child = undefined;
+      resolve(error || remaining() <= 0 ? null : stdout);
+    });
+  });
+}
+(async () => {
+  if (restart === "restart") {
+    // Do not wait outside the health window for systemd's stop/start job. The queued job
+    // still uses the unit's ordinary StartLimit/Restart/TimeoutStartSec policy.
+    await run("systemctl", ["--user", "--no-block", "restart", unit], budget);
+  }
+  let pending = false;
+  while (remaining() >= 1) {
+    const timeout = Math.min(5000, Math.floor(remaining()));
+    const raw = await run("curl", ["--silent", "--show-error", "--fail", "--noproxy", "*",
+      "--connect-timeout", String(Math.min(1000, timeout) / 1000), "--max-time", String(timeout / 1000),
+      "--write-out", "\n%{http_code}", `${url}/api/v1/health`], timeout);
+    pending = false;
+    if (raw !== null && remaining() > 0) {
+      // Never log the health document: it also contains private vault/key metadata.
+      const split = raw.lastIndexOf("\n");
+      if (raw.slice(split + 1) === "200") {
+        let h;
+        try { h = JSON.parse(raw.slice(0, split)); } catch {}
+        if (h?.ok === true && h.app === "vault-chat-server" &&
+            typeof h.version === "string" && h.version.replace(/^v/, "") === want &&
+            (!revision || h.rev === revision)) {
+          const status = h.releaseReadiness?.status;
+          if (status === "failed") return 1;
+          if (status === "healthy") return 0;
+          if (legacy === "legacy-fallback" && status === undefined) return 0;
+          pending = status === "pending";
+        }
+      }
+    }
+    const left = remaining();
+    // Keep the last observation during the final poll interval, rather than launching
+    // a near-zero-budget request merely because a timer woke a fraction early.
+    const finalPoll = left <= interval * 2;
+    if (left > 0) await new Promise(resolve => setTimeout(resolve, finalPoll ? left : interval));
+    if (finalPoll) break;
+  }
+  return pending ? 2 : 1;
+})().then(code => process.exit(code), () => process.exit(1));
+NODE
+  local readiness_pid=$! status=0
+  # Forward a caller's cancellation and reap the HTTP/systemctl child before leaving.
+  trap 'kill -TERM "$readiness_pid" 2>/dev/null || true; wait "$readiness_pid" || true; exit 143' TERM
+  trap 'kill -INT "$readiness_pid" 2>/dev/null || true; wait "$readiness_pid" || true; exit 130' INT
+  wait "$readiness_pid" || status=$?
+  trap - TERM INT
+  return "$status"
 }
 
 record_failure() { # durable private host observation, not a synced card or public write API
@@ -172,8 +225,7 @@ recover_failed_release() {
     oldrev="$(json_field rev < "$prev/$META")"
     log "$ver failed actual release readiness — restoring retained v$oldver; source recovery remains pending"
     point_current "$prev"
-    systemctl --user restart "$UNIT" || log "systemctl restart (rollback) returned non-zero"
-    if wait_for_version "$oldver" "$HEALTH_WAIT_S" "$oldrev" legacy-fallback; then
+    if wait_for_version "$oldver" "$HEALTH_WAIT_S" "$oldrev" legacy-fallback restart; then
       # The acceptance script lives outside releases/sandboxes, so a broken candidate never owns
       # its own recovery. Same script/gates as branch shipping; no failed-bundle CLI or receipt.
       log "retained v$oldver is healthy; reverting the accepted range with the installed box script"
@@ -342,11 +394,10 @@ fi
 prev="$(read_current)"
 node -e 'const fs=require("fs"); const f=process.argv[1];const fd=fs.openSync(f,"w",0o600);try{fs.writeFileSync(fd,JSON.stringify({previous:process.argv[2]}));fs.fsyncSync(fd);}finally{fs.closeSync(fd);}' "versions/$ver/previous.json" "$prev"
 point_current "versions/$ver"
-systemctl --user restart "$UNIT" || log "systemctl restart returned non-zero"
 
 # ── 5. prove it, or roll back ───────────────────────────────────────────────
 status=0
-wait_for_version "$ver" "$HEALTH_WAIT_S" "$expected_rev" || status=$?
+wait_for_version "$ver" "$HEALTH_WAIT_S" "$expected_rev" "" restart || status=$?
 if [ "$status" = 0 ]; then
   log "now running $ver with actual box readiness; physical laptop verification is separate"
   refresh_self "versions/$ver/deploy"

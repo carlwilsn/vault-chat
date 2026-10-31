@@ -63,3 +63,10 @@
   trust boundary. Forward branches cannot remove coverage; only the host-generated recorded-range revert
   can remove its feature's added tests, with all other gates unchanged. Initial architectural deletion's
   identities are explicit RETIRED entries, never an ongoing gate waiver.
+- **Updater readiness must bound restart plus complete HTTP, not PID lifetime (2026-10-31).**
+  The installed updater already checked version/revision/readiness over HTTP, but blocking `systemctl restart`
+  preceded its wall-clock timer and each final curl/sleep could overrun it. Prepared correction keeps the 90s
+  default, submits `--no-block restart` inside one monotonic budget, and bounds curl through body consumption;
+  only the executing build's matching health JSON can pass. Retained fallback and native/device Shipped proof
+  remain separate. `reports/http-readiness-urgent.md` records the inspected installed paths, namespace bus
+  limitation and inert real-HTTP tests; preparation is not installation or evidence the giant-log startup is fixed.
