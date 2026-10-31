@@ -42,7 +42,7 @@ JS
 printf '%s\n' "$pin" > "$VC_APP_PROOF_OUT/source-pin.txt"
 # Keep raw stdout/stderr and exact failure codes. Every process is owned by this invocation.
 set +e
-timeout --signal=TERM --kill-after=1 27 "$node" --import tsx preview/tools/native-shipment-app.ts --check > "$VC_APP_PROOF_OUT/preflight.log" 2>&1
+timeout --signal=TERM --kill-after=1 27 "$node" --import tsx --import ./preview/tools/native-http-register.mjs preview/tools/native-shipment-app.ts --check > "$VC_APP_PROOF_OUT/preflight.log" 2>&1
 rc=$?
 set -e
 printf '%s\n' "$rc" > "$VC_APP_PROOF_OUT/preflight.exit"
@@ -53,7 +53,7 @@ cat "$VC_APP_PROOF_OUT/preflight.log"
 full="$VC_APP_PROOF_OUT/full"; mkdir "$full"
 export VC_APP_PROOF_OUT="$full" VC_VAULT="$full/vault" VC_STATE_DIR="$full/state"
 set +e
-timeout --signal=TERM --kill-after=5 2400 "$node" --import tsx preview/tools/native-shipment-app.ts --run > "$full/run.log" 2>&1
+timeout --signal=TERM --kill-after=5 2400 "$node" --import tsx --import ./preview/tools/native-http-register.mjs preview/tools/native-shipment-app.ts --run > "$full/run.log" 2>&1
 rc=$?
 set -e
 printf '%s\n' "$rc" > "$full/run.exit"
