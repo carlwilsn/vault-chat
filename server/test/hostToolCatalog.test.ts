@@ -29,7 +29,7 @@ describe("current host loadout policy", () => {
     expect(all.filter((t) => t.name === "SubmitChange")).toHaveLength(1);
     expect(all.find((t) => t.name === "read")).toBeUndefined(); // filesystem is bound independently
     expect(all.some((t) => t.name === "CalendarFixture")).toBe(true);
-    expect(all.find((t) => t.name === "SubmitChange")!.inputSchema.required).toContain("assessment");
+    expect(all.find((t) => t.name === "SubmitChange")!.inputSchema.required).toContain("branch");
     rmSync(added, { recursive: true });
     expect((await catalog("conversation")).some((t) => t.name === "CalendarFixture")).toBe(false);
   });

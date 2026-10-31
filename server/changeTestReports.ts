@@ -1,6 +1,6 @@
 /** Parse machine reports produced by installed runner adapters. Never extract allowance names from prose. */
 import { isAbsolute, relative } from "node:path";
-import type { TestCase } from "./changeProof";
+import type { TestCase } from "./shipGates";
 
 const fileName = (root: string, file: string) => (isAbsolute(file) ? relative(root, file) : file).replace(/\\/g, "/");
 export type ParsedTestReport = { tests: TestCase[]; complete: boolean };

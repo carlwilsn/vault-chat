@@ -29,7 +29,6 @@ import { sweepJobEnvFiles } from "./pi/jobs";
 import { PushGate, pushGate } from "../pushGate";
 import { acceptedChanges } from "../changeShipping";
 import { setDeliveryRollbackHandler } from "../changeDelivery";
-import { installedChangeHostOptions } from "../changeHostConfig";
 
 /** A vault on this box: its working copy and bare repo. The main one keeps the paths it always had. */
 export type VaultRef = { name: string; path: string; bare: string; main: boolean };
@@ -374,7 +373,6 @@ export async function startEngine(b: EngineBoot): Promise<EngineHandle> {
       vaultName: v.name,
       // The vault's own tools run in the same sandbox as the agent's commands (the other vaults hidden).
       shell: () => outerWith(sandbox),
-      changeHost: () => installedChangeHostOptions(outerWith(sandbox), install),
       // One line per turn: the full record in <state>/logs/turns.jsonl, a summary in the journal.
       turnLog: (line) => {
         boxLogs(b.stateDir).turns.append(line);

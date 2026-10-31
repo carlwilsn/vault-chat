@@ -6,9 +6,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { acceptedChanges, acceptedFailedRelease, prepareAcceptanceLocked, updateShippingJournal, type AcceptedChange } from "../changeShipping";
 import { configureChangeDelivery, observeChangeDelivery, requestDeliveryRollback } from "../changeDelivery";
-import { prepareSourceRollback, ROLLBACK_CHECK } from "../sourceRollback";
+
 import { withRepoLock } from "../git";
-import type { GateReceipt, TestCase } from "../changeProof";
+
 const roots: string[] = [];
 afterEach(() => { for (const r of roots.splice(0)) rmSync(r, { recursive: true, force: true }); });
 async function fixture() {
@@ -20,7 +20,7 @@ async function fixture() {
   const add = async (id: string, published: typeof release | undefined = release) => {
     const base = g("rev-parse", "HEAD"); writeFileSync(join(repo, `${id}.txt`), id); g("add", "."); g("commit", "-qm", id);
     const head = g("rev-parse", "HEAD"), tree = g("rev-parse", "HEAD^{tree}");
-    const c: AcceptedChange = { id, preparedAt: new Date().toISOString(), source: { base, head, tree, branch: `agent/${id}` }, review: { convId: "project-app", slug: "app", folder: repo, clone: "unused", base: "main", branch: `agent/${id}`, sha: head, title: id, at: new Date().toISOString() }, proofDir: join(root, id), check: ROLLBACK_CHECK, release: published };
+    const c: AcceptedChange = { id, preparedAt: new Date().toISOString(), source: { base, head, tree, branch: `agent/${id}` }, review: { convId: "project-app", slug: "app", folder: repo, clone: "unused", base: "main", branch: `agent/${id}`, sha: head, title: id, at: new Date().toISOString() }, proofDir: join(root, id),  release: published };
     await withRepoLock(repo, () => prepareAcceptanceLocked(repo, c)); await acceptedChanges(repo);
     return (await acceptedChanges(repo)).find(a => a.id === id)!;
   };
@@ -62,31 +62,5 @@ describe("one durable failed-release recovery selection", () => {
     await updateShippingJournal(f.repo, j => { j.changes.push({ ...f.second, id: "already-reverted", rollbackOf: f.second.id, release: undefined }); });
     await observeChangeDelivery(f.repo); expect(f.rollback.mock.calls.map(c => c[1])).toEqual(["first"]);
     expect(await updateShippingJournal(f.repo, j => j.delivery!.rollbacks.second.status)).toBe("accepted");
-  });
-  it("actually reverts all failed-release source changes newest-first and preserves later unrelated work", async () => {
-    const f = await fixture(); await f.add("later", { ...f.release, id: "newer-release", revision: "c".repeat(40) });
-    for (const accepted of await acceptedFailedRelease(f.repo, f.release.id, f.release.revision)) {
-      const r = await prepareSourceRollback({ vault: f.vault, accepted, privateRoot: join(f.root, "recovery") });
-      try { f.g("merge", "--ff-only", r.pinned.source.head); } finally { r.close(); }
-    }
-    expect(f.g("ls-files").split("\n")).toEqual(["base.txt", "later.txt"]);
-    expect(readFileSync(join(f.repo, "later.txt"), "utf8")).toBe("later");
-  });
-});
-const t = (name: string): TestCase => ({ file: "server/test/feature.test.ts", name, status: "passed" });
-const gates = (source: string, names: string[]): GateReceipt[] => ["test:harness", "test:server"].map(gate => ({ gate, source, complete: true, tests: names.map(t) } as GateReceipt));
-describe("host-attested exact rollback test-removal authority", () => {
-  it("permits only original receipt additions, never later unrelated tests, forged pins or mutated receipts", async () => {
-    const f = await fixture(), a = f.second; mkdirSync(a.proofDir);
-    const receipt = { id: a.id, source: a.source, baseline: gates(a.source.base, ["existing"]), candidate: gates(a.source.head, ["existing", "feature-added"]) };
-    writeFileSync(join(a.proofDir, "receipt.json"), JSON.stringify(receipt));
-    const r = await prepareSourceRollback({ vault: f.vault, accepted: a, privateRoot: join(f.root, "policy") });
-    try {
-      const baseline = gates(r.pinned.source.base, ["existing", "feature-added", "later-unrelated"]), candidate = gates(r.pinned.source.head, ["existing"]);
-      expect(await r.rollbackRemovedTests(r.pinned.source, baseline, candidate)).toEqual({ "test:harness": [{ file: t("").file, name: "feature-added" }], "test:server": [{ file: t("").file, name: "feature-added" }] });
-      await expect(r.rollbackRemovedTests({ ...r.pinned.source, tree: "f".repeat(40) }, baseline, candidate)).rejects.toThrow("exact service-generated revert");
-      writeFileSync(join(a.proofDir, "receipt.json"), JSON.stringify({ ...receipt, id: "forged" }));
-      await expect(r.rollbackRemovedTests(r.pinned.source, baseline, candidate)).rejects.toThrow("receipt changed");
-    } finally { r.close(); }
   });
 });

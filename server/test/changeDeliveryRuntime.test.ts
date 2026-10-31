@@ -26,7 +26,7 @@ async function fixture() {
   const head = g("rev-parse", "HEAD"), tree = g("rev-parse", "HEAD^{tree}");
   const now = Date.now();
   const release = { id: "published-release", version: "1.0.1", revision: head, tag: "v1.0.1", publishedAt: new Date(now - 1000).toISOString() };
-  const c: AcceptedChange = { id: "actual-accepted", source: { base, head, tree, branch: "agent/change" }, review: { convId: "project-app", slug: "app", folder: repo, clone: "/not-exposed", base: "main", branch: "agent/change", sha: head, title: "Actual accepted change", at: new Date(now).toISOString() }, proofDir: proof, preparedAt: new Date(now).toISOString(), release, check: { assessment: "checked", evidence: ["app.txt"], surface: "phone", ui: { steps: [{ waitFor: "main" }] } } };
+  const c: AcceptedChange = { id: "actual-accepted", source: { base, head, tree, branch: "agent/change" }, review: { convId: "project-app", slug: "app", folder: repo, clone: "/not-exposed", base: "main", branch: "agent/change", sha: head, title: "Actual accepted change", at: new Date(now).toISOString() }, proofDir: proof, preparedAt: new Date(now).toISOString(), release };
   await withRepoLock(repo, () => prepareAcceptanceLocked(repo, c)); await acceptedChanges(repo);
   expect(registerFolder(vault, "app", repo)).toEqual({ abs: repo });
   const rollback = vi.fn(async () => ({ status: "accepted" as const, jobId: "recovery-job" }));
@@ -95,33 +95,29 @@ describe("durable delivery observations, not synchronized card authority", () =>
     expect(f.rollback).toHaveBeenNthCalledWith(1, f.repo, "second-accepted", expect.any(String));
     expect(f.rollback).toHaveBeenNthCalledWith(2, f.repo, f.c.id, expect.any(String));
   });
-  it("copies source-pinned proof media and a sanitized summary, never private receipt paths/request/environment", async () => {
-    const f = await fixture(), artifact = join(f.proof, "recording.mp4"), bytes = Buffer.from("fixture-media-not-physical-proof");
-    writeFileSync(artifact, bytes);
-    writeFileSync(join(f.proof, "receipt.json"), JSON.stringify({ id: f.c.id, source: f.c.source, ask: { requestText: "PRIVATE_REQUEST" }, environment: "PRIVATE_ENVIRONMENT", baseline: [], candidate: [{ gate: "test:server", exitCode: 0, complete: true, tests: [{ status: "passed" }] }], ui: { artifact, artifactHash: createHash("sha256").update(bytes).digest("hex"), assertions: 2, frames: 30, sourceVerified: true } }));
+  it("renders a minimal source/health summary without reopening obsolete historical receipts", async () => {
+    const f = await fixture();
+    writeFileSync(join(f.proof, "receipt.json"), "INVALID obsolete receipt; not authority");
+    await observeChangeDelivery(f.repo); await observeChangeDelivery(f.repo);
     const [card] = await shipmentCards(f.vault, "school");
-    expect(card.proof.mediaUrls).toHaveLength(1);
+    expect(card.proof.mediaUrls).toHaveLength(0);
     const summaryPath = new URL(card.proof.summaryUrl, "http://fixture").searchParams.get("path")!;
     const summary = readFileSync(join(f.vault, summaryPath), "utf8");
-    expect(summary).toContain("1 passed"); expect(summary).toContain("2 assertions");
-    expect(summary).not.toContain(f.root); expect(summary).not.toContain("PRIVATE_");
+    expect(summary).toContain(f.c.source.head); expect(summary).toContain("original conversation card");
+    expect(summary).not.toContain(f.root); expect(summary).not.toContain("INVALID");
     const target = join(f.vault, summaryPath), victim = join(f.root, "must-not-overwrite");
     writeFileSync(victim, "safe"); rmSync(target); symlinkSync(victim, target);
     await expect(shipmentCards(f.vault, "school")).rejects.toThrow("Unsafe");
     expect(readFileSync(victim, "utf8")).toBe("safe");
   });
-  it.each(["receipt-id", "source-head", "source-tree", "artifact-root", "artifact-hash"])("keeps current receipt projection fail-closed: %s", async kind => {
-    const f = await fixture(), artifact = join(f.proof, "recording.mp4"), bytes = Buffer.from("fixture-media-not-physical-proof");
-    writeFileSync(artifact, bytes);
-    const receipt = { id: f.c.id, source: { ...f.c.source }, baseline: [], candidate: [],
-      ui: { artifact, artifactHash: createHash("sha256").update(bytes).digest("hex"), assertions: 2, frames: 30, sourceVerified: true } };
-    if (kind === "receipt-id") receipt.id += "-other";
-    if (kind === "source-head") receipt.source.head = "f".repeat(40);
-    if (kind === "source-tree") receipt.source.tree = "f".repeat(40);
-    if (kind === "artifact-root") { receipt.ui.artifact = join(f.root, "outside.mp4"); writeFileSync(receipt.ui.artifact, bytes); }
-    if (kind === "artifact-hash") receipt.ui.artifactHash = "f".repeat(64);
-    writeFileSync(join(f.proof, "receipt.json"), JSON.stringify(receipt));
-    await expect(shipmentCards(f.vault, "school")).rejects.toThrow(kind === "artifact-root" ? "Invalid proof artifact" : kind === "artifact-hash" ? "Proof artifact changed" : "Proof source mismatch");
+  it("keeps existing historical projected media and original evidence files readable without revalidation", async () => {
+    const f = await fixture(); const dest = join(f.vault, ".vault-chat/shipments/proof", createHash("sha256").update(f.c.id).digest("hex"));
+    mkdirSync(dest, { recursive: true }); writeFileSync(join(dest, "recording.mp4"), "retained projected fixture");
+    writeFileSync(join(f.proof, "receipt.json"), "malformed historical receipt");
+    const [card] = await shipmentCards(f.vault, "school");
+    expect(card.proof.mediaUrls).toHaveLength(1);
+    expect(readFileSync(join(dest, "recording.mp4"), "utf8")).toBe("retained projected fixture");
+    expect(readFileSync(join(f.proof, "receipt.json"), "utf8")).toBe("malformed historical receipt");
   });
   it("recovers a persisted requested rollback after a pre-dispatch crash, but never starts a second accepted recovery", async () => {
     const f = await fixture();

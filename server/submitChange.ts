@@ -1,98 +1,63 @@
-/** Native SubmitChange: the installed host, not pi, runs proof via the existing job lifecycle. */
+/** Thin native job adapter: a pushed branch goes to ONE separately installed box script. */
+import { spawn } from "node:child_process";
 import { join } from "node:path";
-import { cloneDirOf, isGatedProject } from "./projectChanges";
+import { homedir } from "node:os";
+import { existsSync } from "node:fs";
+import { isGatedProject } from "./projectChanges";
 import { projectFolderOf } from "./projectFolders";
 import { projectOfThread } from "../src/threads";
-import { readConv } from "./engine/convs";
 import { startServiceJob, readJobs, probeJob, type PiJobEnv } from "./engine/pi/jobs";
-import { pinChange, proveAndAcceptChange, type ChangeHostOptions, type SubmitCheck } from "./changeHost";
-import type { AskCheck } from "./changeProof";
+import { acceptedChanges, type AcceptedChange } from "./changeShipping";
+import { killTree } from "./commands/proc";
 
-export type SubmitChangeArgs = SubmitCheck & { title: string };
-/** No source SHA, request text, folder, shell, command, URL, test result, permit or proof path in tool input. */
-export const SUBMIT_CHANGE_SCHEMA = {
-  type: "object", additionalProperties: false, required: ["title", "assessment", "evidence", "surface", "ui"], properties: {
-    title: { type: "string", description: "What changed, in a few words." },
-    assessment: { type: "string", description: "Your explicit self-check against Carl's last request; an agent judgment, not machine proof of intent." },
-    evidence: { type: "array", items: { type: "string" }, minItems: 1, description: "Implementation locations and observable behavior satisfying the request." },
-    surface: { type: "string", enum: ["phone", "board", "desktop"] },
-    ui: { type: "object", additionalProperties: false, required: ["steps"], properties: {
-      steps: { type: "array", items: { type: "object" }, description: "Existing RecordUI browser steps: actual input and waitFor assertions. No run/goto. Host supplies the candidate URL." },
-      seconds: { type: "number" }, mobile: { type: "boolean" }, width: { type: "number" }, height: { type: "number" },
-    } },
-  },
-} as const;
+export type SubmitChangeArgs = { title: string; branch: string };
+export const SUBMIT_CHANGE_SCHEMA = { type: "object", additionalProperties: false, required: ["title", "branch"], properties: {
+  title: { type: "string", description: "What changed, in a few words." },
+  branch: { type: "string", description: "The agent/<name> branch you have already pushed to the configured remote." },
+} } as const;
 
-/** Called by the installed engine for its current project conversation, never from an arbitrary path route.
- * Capture the last real user message once, before async work; model prose cannot replace the original ask.
- */
-export async function submitChangeJob(o: { vault: string; convId: string; byCarl: boolean; jobs: PiJobEnv; host: Omit<ChangeHostOptions, "privateRoot" | "signal"> }, args: SubmitChangeArgs): Promise<{ text: string; job?: import("./engine/pi/jobs").JobRec }> {
-  const slug = projectOfThread(o.convId);
-  const chosen = slug ? projectFolderOf(o.vault, slug) : null;
-  if (!slug || !chosen || "error" in chosen || !isGatedProject(chosen.abs)) throw new Error("SubmitChange is only for the current git project's own conversation");
-  if (readJobs(o.jobs).some(j => j.conv === o.convId && j.kind === "service" && probeJob(o.jobs, j).state === "running")) throw new Error("A host proof task already belongs to this conversation; inspect its existing job, do not submit twice");
-  if (typeof args.title !== "string" || !args.title.trim() || typeof args.assessment !== "string" || !args.assessment.trim() || !Array.isArray(args.evidence) || !args.evidence.length || args.evidence.some(s => typeof s !== "string" || !s.trim())) throw new Error("SubmitChange needs a title and explicit ask self-check with evidence");
-  const lastUser = async () => {
-    const conv = await readConv(o.vault, o.convId);
-    return conv ? [...conv.messages].reverse().find(m => m.role === "user" && !m.system && !m.hidden) : undefined;
-  };
-  const user = await lastUser();
-  if (!user?.mid || !user.content?.trim()) throw new Error("No existing last user request to bind this submission to");
-  const ask: AskCheck = { requestId: user.mid, requestText: user.content, assessment: args.assessment, evidence: [...args.evidence] };
-  const requestId = user.mid;
-  const title = args.title.trim().slice(0, 120);
-  if (readJobs(o.jobs).some(j => j.conv === o.convId && j.kind === "service" && probeJob(o.jobs, j).state === "running")) throw new Error("A host proof task already started while resolving the request; inspect that existing job");
-  const check = structuredClone(args);
-  return startServiceJob(o.jobs, { name: "submit-change", command: `Prove and accept: ${title}`, conv: o.convId, byCarl: o.byCarl, timeout: "12h" }, async (signal, log) => {
-    const current = await lastUser();
-    if (current?.mid !== requestId) throw new Error("Carl's request changed before proof started; resubmit with a fresh self-check");
-    const pinned = await pinChange({ vault: o.vault, convId: o.convId, slug, folder: chosen.abs, clone: cloneDirOf(o.vault, slug), title });
-    log(`Pinned baseline ${pinned.source.base}, candidate ${pinned.source.head}. Seven gates on each, then candidate-backed RecordUI.`);
-    const result = await proveAndAcceptChange({ ...o.host, privateRoot: join(o.vault, ".vault-chat", "local", "change-proof"), signal, onProgress: log }, pinned, ask, check, async () => {
-      signal.throwIfAborted();
-      if ((await lastUser())?.mid !== requestId) throw new Error("Carl's last request changed during proof; no acceptance, resubmit after reviewing the new ask");
-    });
-    log(`Full host evidence: ${result.proofDir}`);
-    if (!result.accepted) throw new Error(result.text);
-    return result.text;
+/** The path is fixed in installed source, not tool input or agent-writable project config. */
+export function runInstalledShip(repo: string, mode: "--branch" | "--rollback", value: string, title: string, slug: string, convId: string, signal: AbortSignal, log: (text: string) => void): Promise<string> {
+  const root = join(homedir(), ".local", "lib", "vault-chat", "simple-ship");
+  const entry = join(root, "simple-ship.mjs"), config = join(root, "config.json");
+  if (!existsSync(entry) || !existsSync(config)) throw new Error("Simple shipping is not installed. Claude must perform the one-time host installation and configure branch publishing; no old proof fallback was attempted.");
+  signal.throwIfAborted();
+  return new Promise((resolve, reject) => {
+    // flock is native host exclusion, not a permit. This child never inherits provider credentials.
+    const env = { HOME: homedir(), PATH: process.env.PATH, LANG: "C.UTF-8", GIT_TERMINAL_PROMPT: "0", GCM_INTERACTIVE: "never" };
+    const child = spawn("flock", ["-n", join(root, "ship.lock"), process.execPath, entry, config, repo, mode, value, title, slug, convId], { env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
+    let output = "";
+    const stop = () => killTree(child.pid);
+    signal.addEventListener("abort", stop, { once: true });
+    if (signal.aborted) stop();
+    for (const stream of [child.stdout, child.stderr]) stream.on("data", data => { const text = String(data); output += text; log(text); });
+    const cleanup = () => signal.removeEventListener("abort", stop);
+    child.on("error", e => { cleanup(); reject(e); });
+    child.on("close", code => { cleanup(); if (signal.aborted) reject(new Error("Shipping cancelled")); else if (code !== 0) reject(new Error(`Host shipping failed (${code}); inspect the job log. ${output.slice(-1200)}`)); else resolve(output.trim()); });
   });
 }
-
-/** Same installed host pipeline for card clicks and deterministic negative release health. No agent turn,
- * no extra model call, no shell action from the client. Journal rollbackOf is the restart/idempotency key. */
-export async function requestRollback(o: { vault: string; accepted: import("./changeShipping").AcceptedChange; reason: string; jobs: PiJobEnv; host: Omit<ChangeHostOptions, "privateRoot" | "signal">; byCarl?: boolean }): Promise<{ text: string; job?: import("./engine/pi/jobs").JobRec }> {
-  const { acceptedChanges } = await import("./changeShipping");
-  const { prepareSourceRollback, ROLLBACK_CHECK } = await import("./sourceRollback");
-  const accepted = (await acceptedChanges(o.accepted.review.folder)).find(c => c.id === o.accepted.id);
-  if (!accepted) throw new Error("Source rollback requires an existing accepted change identity");
-  if (accepted.rollbackOf) throw new Error("A revert release failed: needs attention, not an automatic revert of its revert");
-  const existing = (await acceptedChanges(accepted.review.folder)).find(c => c.rollbackOf === accepted.id);
-  if (existing) return { text: `Source rollback already accepted: ${existing.id}. Laptop sync/CI/device recovery remains pending.` };
+function running(o: { jobs: PiJobEnv; convId: string }): void {
+  if (readJobs(o.jobs).some(j => j.conv === o.convId && j.kind === "service" && probeJob(o.jobs, j).state === "running")) throw new Error("A shipping job is already running in this conversation");
+}
+export async function submitChangeJob(o: { vault: string; convId: string; byCarl: boolean; jobs: PiJobEnv }, args: SubmitChangeArgs) {
+  const slug = projectOfThread(o.convId), chosen = slug ? projectFolderOf(o.vault, slug) : null;
+  if (!slug || !chosen || "error" in chosen || !isGatedProject(chosen.abs)) throw new Error("SubmitChange requires the current git project's conversation");
+  if (!args.title?.trim() || !/^agent\/[a-z0-9][a-z0-9._/-]{0,100}$/.test(args.branch ?? "")) throw new Error("Provide a title and pushed agent branch");
+  running(o);
+  return startServiceJob(o.jobs, { name: "ship-branch", command: `Check and accept: ${args.title.slice(0, 120)}`, conv: o.convId, byCarl: o.byCarl, timeout: "12h" }, (signal, log) => runInstalledShip(chosen.abs, "--branch", args.branch, args.title, slug, o.convId, signal, log));
+}
+export async function requestRollback(o: { vault: string; accepted: AcceptedChange; reason: string; jobs: PiJobEnv; byCarl?: boolean }) {
+  const changes = await acceptedChanges(o.accepted.review.folder), accepted = changes.find(c => c.id === o.accepted.id);
+  if (!accepted?.acceptedAt || accepted.rollbackOf) throw new Error("Original accepted change required; a failed revert needs attention");
+  if (changes.some(c => c.rollbackOf === accepted.id)) return { text: "Source rollback already accepted; release/device health pending." };
   const marker = `Source rollback ${accepted.id}`;
-  // Synchronous registry check/start after all awaits: concurrent clicks/health observations reuse ONE job.
   const prior = [...readJobs(o.jobs)].reverse().find(j => j.kind === "service" && j.command === marker);
   if (prior) {
-    const observed = probeJob(o.jobs, prior);
-    if (observed.state === "running") return { job: prior, text: `Source rollback already running: ${prior.id}` };
-    if (observed.state !== "gone") throw new Error(`Source rollback proof ${observed.state} without acceptance; needs attention, not another automatic retry. Job: ${prior.id}`);
-    // A service restart lost the live permit/task. Re-run from the durable accepted identity, never
-    // replay a JSON permit or assume the old process completed. Accepted rollbackOf was checked above.
+    if (probeJob(o.jobs, prior).state === "running") return { job: prior, text: `Source rollback already running: ${prior.id}` };
+    throw new Error(`Source rollback did not accept; inspect job ${prior.id}. Needs attention, not automatic retries.`);
   }
-  return startServiceJob(o.jobs, { name: "source-rollback", command: marker, conv: accepted.review.convId, byCarl: !!o.byCarl, timeout: "12h" }, async (signal, log) => {
-    const root = join(o.vault, ".vault-chat", "local", "change-proof");
-    signal.throwIfAborted();
-    const recovery = await prepareSourceRollback({ vault: o.vault, accepted, privateRoot: root });
-    try {
-      log(`Recovery request: ${o.reason}\nRevert only ${accepted.source.base}..${accepted.source.head}${accepted.basis === "legacy-bootstrap" ? "; preserve the separately approved exact voice-mic baseline fixture" : ""}; preserve later work.`);
-      const ask: AskCheck = { requestId: `rollback:${accepted.id}`, requestText: o.reason, assessment: ROLLBACK_CHECK.assessment, evidence: [...ROLLBACK_CHECK.evidence] };
-      const result = await proveAndAcceptChange({ ...o.host, privateRoot: root, signal, onProgress: log, rollbackRemovedTests: recovery.rollbackRemovedTests, rollbackGateInfrastructure: recovery.rollbackGateInfrastructure }, recovery.pinned, ask, ROLLBACK_CHECK, async () => {
-        signal.throwIfAborted();
-        // Acceptance's repo mutex is already held here. Journal dedupe is checked again there by
-        // projectChanges, avoiding a nested lock and a second acceptance after a crash/race.
-      }, accepted.id);
-      log(`Full recovery evidence: ${result.proofDir}`);
-      if (!result.accepted) throw new Error(result.text);
-      return result.text;
-    } finally { recovery.close(); }
+  return startServiceJob(o.jobs, { name: "source-rollback", command: marker, conv: accepted.review.convId, byCarl: !!o.byCarl, timeout: "12h" }, (signal, log) => {
+    log(o.reason);
+    return runInstalledShip(accepted.review.folder, "--rollback", accepted.id, `Roll back: ${accepted.review.title}`, accepted.review.slug, accepted.review.convId, signal, log);
   });
 }

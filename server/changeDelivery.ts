@@ -1,16 +1,15 @@
 /** Delivery observations, driven by the existing project sync cycle. The private git journal is authority;
  * per-vault JSONL is only a union-mergeable display projection and is never read back for decisions. */
-import { appendFileSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
-import { basename, dirname, extname, join, resolve, sep } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { isIP } from "node:net";
 import type { IncomingMessage } from "node:http";
 import { isLoopbackAddr, tailnetLoginOk } from "./auth";
-import { acceptedChanges, importLegacyBootstrap, isLegacyBootstrapProofId, LEGACY_BOOTSTRAP, selectAcceptedFailedRelease, updateShippingJournal, type AcceptedChange, type ShippingJournal } from "./changeShipping";
+import { acceptedChanges, selectAcceptedFailedRelease, updateShippingJournal, type AcceptedChange, type ShippingJournal } from "./changeShipping";
 import { evaluateReleaseHealth, type BoxReleaseHealth, type LaptopReleaseHealth, type ReleaseHealthResult, type ReleaseTarget } from "./releaseHealth";
 import type { LaptopHealthReport, ReleaseHealthChallenge, ShipmentCard, ShipmentRollback } from "../src/shippingProtocol";
 import { activeFolders } from "./projectFolders";
-import { SERVER_REV } from "./config";
 
 export type DeliveryRelease = {
   target: ReleaseTarget; box?: BoxReleaseHealth; result?: ReleaseHealthResult;
@@ -25,7 +24,7 @@ export type DeliveryAdapters = {
 };
 let adapters: DeliveryAdapters | undefined;
 let rollbackHandler: DeliveryAdapters["requestSourceRollback"] | undefined;
-/** Native core host configuration registers its existing job/proof route, never a client hook. */
+/** Register the existing background-job adapter to the standalone host script. */
 export function setDeliveryRollbackHandler(handler: DeliveryAdapters["requestSourceRollback"]): void { rollbackHandler = handler; }
 export async function dispatchSourceRollback(repo: string, id: string, reason: string): Promise<ShipmentRollback> {
   if (!rollbackHandler) return { status: "requested", error: "Source recovery host is not configured; needs attention" };
@@ -105,7 +104,7 @@ export async function reportLaptopHealth(repo: string, clientId: string, b: Lapt
   });
 }
 /** Persist before calling the core's idempotent, change-specific source revert. Crash recovery reuses the
- * same accepted identity; the core owns proof/acceptance/jobs, not this display/delivery adapter. */
+ * same accepted range; the standalone script owns gates/promotion, not this display adapter. */
 export async function requestDeliveryRollback(repo: string, id: string, reason: string, automatic = false): Promise<ShipmentRollback> {
   const old = await updateShippingJournal(repo, j => {
     const c = j.changes.find(c => c.id === id && c.acceptedAt);
@@ -133,10 +132,6 @@ export async function requestDeliveryRollback(repo: string, id: string, reason: 
 /** Called by master.ts inside BoxSync's existing cycle, no new scheduling loop. */
 export async function observeChangeDelivery(repo: string): Promise<void> {
   if (!adapters) return;
-  // The first A was kept by the old installed service, so it has no new acceptance journal.
-  // Import only its protected completed Keep + matching public compiled release; no authorization.
-  const contexts = adapters.vaults().flatMap(v => activeFolders(v.path).filter(f => resolve(f.abs) === resolve(repo)).map(f => ({ vault: v.path, slug: f.slug })));
-  if (contexts.length) await importLegacyBootstrap(repo, SERVER_REV, contexts);
   const box = await adapters.boxHealth(), now = Date.now();
   const requests = await updateShippingJournal(repo, j => {
     const requests: { id: string; reason: string; automatic: boolean; releaseId?: string }[] = [];
@@ -197,52 +192,12 @@ function proofProjection(vaultPath: string, vaultName: string, c: AcceptedChange
   // Public summary intentionally excludes receipt request text, raw logs, private host paths/environment.
   let summary = `# ${c.review.title.replace(/[\r\n]/g, " ")}\n\nAccepted source: ${c.source.head}\n\nRelease and actual device health are tracked separately.\n`;
   const mediaUrls: string[] = [];
-  const receiptFile = join(c.proofDir, "receipt.json");
-  if (c.basis !== "legacy-bootstrap" && existsSync(receiptFile)) {
-    const receipt = JSON.parse(readFileSync(receiptFile, "utf8"));
-    if (receipt.id !== c.id || receipt.source?.head !== c.source.head || receipt.source?.tree !== c.source.tree) throw new Error("Proof source mismatch");
-    for (const side of ["baseline", "candidate"] as const) {
-      summary += `\n## ${side === "baseline" ? "Baseline" : "Candidate"} gates\n`;
-      for (const gate of receipt[side] ?? []) {
-        const tests = Array.isArray(gate.tests) ? gate.tests : [];
-        const passed = tests.filter((t: { status: string }) => t.status === "passed").length;
-        const failed = tests.filter((t: { status: string }) => t.status === "failed").length;
-        const label = String(gate.gate).replace(/[^a-zA-Z0-9:._-]/g, "").slice(0, 80);
-        summary += `- ${label}: exit ${Number(gate.exitCode)}; ${gate.complete ? "complete" : "incomplete"}${tests.length ? `; ${passed} passed, ${failed} named failures` : ""}.\n`;
-      }
-    }
-    summary += `\n## Actual recorded UI\n${Number(receipt.ui.assertions)} assertions; ${Number(receipt.ui.frames)} decoded frames. Candidate source verified: ${receipt.ui.sourceVerified === true ? "yes" : "no"}.\n`;
-    const artifact = realpathSync(receipt.ui.artifact), root = realpathSync(c.proofDir);
-    if (!artifact.startsWith(root + sep) || ![".webm", ".mp4", ".png"].includes(extname(artifact))) throw new Error("Invalid proof artifact");
-    const bytes = readFileSync(artifact);
-    if (createHash("sha256").update(bytes).digest("hex") !== receipt.ui.artifactHash) throw new Error("Proof artifact changed");
-    const name = `recording${extname(artifact)}`;
-    const target = join(dest, name);
-    if (!existsSync(target) || createHash("sha256").update(readFileSync(target)).digest("hex") !== receipt.ui.artifactHash) writeFileSync(target, bytes);
-    mediaUrls.push(fileUrl(vaultName, `${rel}/${name}`));
+  // Old receipts/identities never run on sync again. Preserve already projected media, and leave
+  // original conversation attachments/proof files untouched even if their retired receipt is broken.
+  for (const name of ["recording.mp4", "recording.webm", "recording.png"]) {
+    if (existsSync(join(dest, name))) mediaUrls.push(fileUrl(vaultName, `${rel}/${name}`));
   }
-  if (c.basis === "legacy-bootstrap") {
-    // The journal id names the ONE handoff; the retained proof/review id names its successful
-    // native attempt (possibly _r3). The importer deliberately keeps those identities distinct.
-    if (c.id !== LEGACY_BOOTSTRAP.proofId || !c.bootstrap || !isLegacyBootstrapProofId(c.bootstrap.proofId) ||
-        c.bootstrap.proofId !== c.review.proofId || basename(c.proofDir) !== c.bootstrap.proofId ||
-        !c.bootstrap.toolCallId || c.bootstrap.toolCallId !== c.review.toolCallId || c.bootstrap.fixtureCommit !== LEGACY_BOOTSTRAP.fixtureCommit ||
-        c.source.base !== LEGACY_BOOTSTRAP.base || c.source.branch !== LEGACY_BOOTSTRAP.branch ||
-        c.review.branch !== LEGACY_BOOTSTRAP.branch || c.review.sha !== c.source.head) throw new Error("Invalid bootstrap proof identity");
-    summary += "\n## Explicit one-time legacy bootstrap\nCarl kept the final A + voice mic fixture repair using the previous installed service. Its native completed Keep result and exact published source were verified before importing this historical acceptance fact. This is not a new seven-gate host receipt or a replayable permit.\n\nThe original checks and UI are retained on the completed ReadyForReview card. The media below is the original retained UI proof, not a new recording.\n";
-    const root = realpathSync(c.proofDir);
-    for (const [i, media] of c.bootstrap.media.entries()) {
-      if (!/^[^/\\]+\.(?:png|jpe?g|webp|mp4|webm)$/i.test(media.name) || !/^[a-f0-9]{64}$/.test(media.hash)) throw new Error("Invalid legacy proof media identity");
-      const path = join(c.proofDir, media.name);
-      if (lstatSync(path).isSymbolicLink() || !lstatSync(path).isFile() || !realpathSync(path).startsWith(root + sep)) throw new Error("Unsafe legacy proof media");
-      const bytes = readFileSync(path);
-      if (createHash("sha256").update(bytes).digest("hex") !== media.hash) throw new Error("Legacy proof artifact changed");
-      const name = `legacy-${i + 1}${extname(media.name).toLowerCase()}`, target = join(dest, name);
-      if (existsSync(target) && (lstatSync(target).isSymbolicLink() || !lstatSync(target).isFile())) throw new Error("Unsafe legacy proof projection");
-      writeFileSync(target, bytes);
-      mediaUrls.push(fileUrl(vaultName, `${rel}/${name}`));
-    }
-  } else if (!existsSync(receiptFile)) summary += "\nRetained detailed proof is unavailable; acceptance is recorded in the service journal.\n";
+  summary += "\nDetailed historical evidence, if retained, remains on its original conversation card.\n";
   writeFileSync(join(dest, "summary.md"), summary);
   return { summaryUrl: fileUrl(vaultName, `${rel}/summary.md`), mediaUrls };
 }

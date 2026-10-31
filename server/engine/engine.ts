@@ -70,7 +70,6 @@ import { TurnRecorder, type TurnLine } from "./turnLog";
 import { SERVER_VERSION } from "../config";
 import { runVaultTool, vaultToolSpecsFor } from "../vaultTools";
 import { submitChangeJob, requestRollback, SUBMIT_CHANGE_SCHEMA } from "../submitChange";
-import type { ChangeHostOptions } from "../changeHost";
 
 export type EngineDeps = {
   vault: string;
@@ -98,8 +97,6 @@ export type EngineDeps = {
   turnLog?: (line: TurnLine) => void;
   /** The per-command sandbox the vault's own tools run in (server/vaultTools.ts); null: none (not Linux). */
   shell?: () => string[] | null | undefined;
-  /** Installed service authority, never supplied by a tool or pi process. */
-  changeHost?: () => Promise<Omit<ChangeHostOptions, "privateRoot" | "signal">>;
 };
 
 /** What the engine raises: a question (kind "ask") or a line for Carl (kind "info"), with what the
@@ -193,7 +190,7 @@ export const ENGINE_TOOL_SPECS = [
   {
     type: "function",
     name: "SubmitChange",
-    description: "Submit the committed agent/<name> change in this project's clone. The installed service pins main and your candidate, runs all seven gates on both, records actual candidate-backed UI input/assertions, and accepts only with its live proof permit. Supply your explicit self-check against Carl's last request and RecordUI browser steps (no run/goto). Returns a background job; inspect with JobStatus. No Keep wait. Acceptance is not Shipped: laptop sync, CI and actual box/laptop health still follow. Never merge or push main yourself.",
+    description: "After checking the change and recording its real UI, push your agent/<name> branch to the configured remote, then submit that branch here. One separately installed box script runs the seven baseline/candidate gates and fast-forwards main if there are no new named failures or lost test coverage. Returns an existing background job. Acceptance is not Shipped: laptop sync, CI, actual box and authenticated laptop health follow. Never merge or push main.",
     inputSchema: SUBMIT_CHANGE_SCHEMA,
   },
   {
@@ -722,9 +719,8 @@ export class Engine {
 
   /** Card click or actual negative release health: deterministic host recovery, no model turn. */
   async requestRollback(accepted: import("../changeShipping").AcceptedChange, reason: string, byCarl = false) {
-    if (!this.d.changeHost) throw new Error("Installed proof toolchain unavailable; rollback needs attention");
-    const result = await requestRollback({ vault: this.d.vault, accepted, reason, byCarl, jobs: this.d.jobEnv, host: await this.d.changeHost() });
-    if (result.job) this.updateSubagent(accepted.review.convId, result.job.id, { kind: "job", title: result.job.name, task: result.job.command, status: "running", state: "running", startedAt: result.job.startedAt, background: true, activity: "proving source recovery" });
+    const result = await requestRollback({ vault: this.d.vault, accepted, reason, byCarl, jobs: this.d.jobEnv });
+    if (result.job) this.updateSubagent(accepted.review.convId, result.job.id, { kind: "job", title: result.job.name, task: result.job.command, status: "running", state: "running", startedAt: result.job.startedAt, background: true, activity: "checking source rollback" });
     return result;
   }
 
@@ -2158,9 +2154,8 @@ export class Engine {
       }
       switch (name) {
         case "SubmitChange": {
-          if (!this.d.changeHost) throw new Error("Installed proof toolchain is unavailable; no acceptance was attempted");
-          const r = await submitChangeJob({ vault, convId, byCarl: !!this.live.get(convId)?.byCarl, jobs: this.d.jobEnv, host: await this.d.changeHost() }, a);
-          if (r.job) this.updateSubagent(convId, r.job.id, { kind: "job", title: r.job.name, task: r.job.command.slice(0, 300), status: "running", state: "running", startedAt: r.job.startedAt, background: true, activity: "proving change" });
+          const r = await submitChangeJob({ vault, convId, byCarl: !!this.live.get(convId)?.byCarl, jobs: this.d.jobEnv }, a);
+          if (r.job) this.updateSubagent(convId, r.job.id, { kind: "job", title: r.job.name, task: r.job.command.slice(0, 300), status: "running", state: "running", startedAt: r.job.startedAt, background: true, activity: "checking published branch" });
           return text(r.text);
         }
         case "AskUser": {

@@ -6,7 +6,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmp, cleanup, makeVault, makeKeyStore, fakeOpenRouter, startServer, waitFor, type Running, type FakeOpenRouter } from "./helpers";
 import { fold } from "../../src/convlog/reduce";
-import { prepareReview, answerReview } from "../projectChanges";
+import { answerReview } from "../projectChanges";
 import { setFolderWalls } from "../projectFolders";
 import { agentToolSpecs } from "../engine/engine";
 
@@ -100,36 +100,20 @@ describe("a git project: service proof owns main; legacy cards remain readable",
   it("publishes SubmitChange rather than ReadyForReview in the actual provider catalog", async () => {
     const native = agentToolSpecs();
     expect(native.some(t => t.name === "ReadyForReview")).toBe(false);
-    expect(native.find(t => t.name === "SubmitChange")?.inputSchema.required).toContain("assessment");
+    expect(native.find(t => t.name === "SubmitChange")?.inputSchema.required).toContain("branch");
     const names = or.calls.flatMap((c: any) => (c.tools ?? []).map((t: any) => t.function?.name ?? t.name));
     expect(names).toContain("mcp__vault_chat__SubmitChange");
     expect(names).not.toContain("mcp__vault_chat__ReadyForReview");
     expect(await asking()).toBe(false);
   });
 
-  it("historical Send back still settles without merging; no new native handoff is exposed", async () => {
-    setFolderWalls(vault, { home, protect: () => [] });
-    const prep = await prepareReview({ vault, convId: CONV, slug: "site", folder: repo, args: { proofId: "historical-heading-card", title: "Bigger heading", what: "2em", why: "asked", tests: "historical text only" } });
-    if ("error" in prep) throw new Error(prep.error);
-    const answer = await answerReview(vault, prep.review, "Make it 3em, not 2.");
-    expect(answer).toMatchObject({ kept: false, text: expect.stringContaining("Sent back") });
+  it("historical review settlement cannot move main or revive Keep", async () => {
+    const answer = await answerReview(vault, { convId: CONV, slug: "site", folder: repo, clone: work, base: "main", branch: "agent/bigger-heading", sha: git(work, "rev-parse", "HEAD"), title: "Historical change", at: "" }, "Keep");
+    expect(answer.kept).toBe(false);
+    expect(answer.text).toContain("main is unchanged");
     expect(mainSha()).toBe(start);
     expect(git(work, "branch", "--show-current")).toBe("agent/bigger-heading");
   });
-
-  it("historical Keep still settles on the server after restart, without restoring a native Keep tool", async () => {
-    writeFileSync(join(work, "index.html"), '<h1 style="font-size:3em">Hello</h1>\n');
-    git(work, "commit", "-qam", "3em");
-    const prep = await prepareReview({ vault, convId: CONV, slug: "site", folder: repo, args: { proofId: "historical-heading-card-2", title: "Bigger heading", what: "3em", why: "asked", tests: "historical only" } });
-    if ("error" in prep) throw new Error(prep.error);
-    await srv.stop(); srv = await startServer({ home, vault, secrets, openrouter: or.url });
-    const answer = await answerReview(vault, prep.review, "Keep");
-    expect(answer.kept).toBe(true);
-    expect(readFileSync(join(repo, "index.html"), "utf8")).toContain("3em");
-    expect(git(bare, "rev-parse", "main")).toBe(start);
-    expect(git(work, "branch", "--show-current")).toBe("agent/bigger-heading");
-    expect(agentToolSpecs().some(t => t.name === "ReadyForReview")).toBe(false);
-  }, 120_000);
 
 });
 

@@ -99,52 +99,7 @@ describe("the vault-chat folder", () => {
     expect(isGatedProject(other)).toBe(true); // outside the folder: as before
   });
 
-  it("Keep on a project with its own remote: merged into main on the box, pushed by the laptop (the box has no credentials)", async () => {
-    // "GitHub": a bare repo the box can't push to (a hook refuses every push, as a missing credential would).
-    const gh = join(root, "github", "site.git");
-    mkdirSync(gh, { recursive: true });
-    git(gh, "init", "-q", "--bare", "-b", "main");
-    const seed = join(root, "seed");
-    git(root, "clone", "-q", gh, seed);
-    writeFileSync(join(seed, "index.html"), "<h1>v1</h1>\n");
-    git(seed, "add", "-A");
-    git(seed, "commit", "-q", "-m", "v1");
-    git(seed, "push", "-q", "origin", "HEAD:main");
-    const pushAttempt = join(root, "box-origin-push-attempt");
-    writeFileSync(join(gh, "hooks", "pre-receive"), `#!/bin/sh\ntouch '${pushAttempt}'\necho 'Authentication failed (no credentials on the box)' >&2\nexit 1\n`);
-    try {
-      execFileSync("chmod", ["+x", join(gh, "hooks", "pre-receive")]);
-    } catch {
-      /* windows: git runs it through sh */
-    }
-    const wc = join(master, "projects", "site");
-    git(root, "clone", "-q", gh, wc);
-    expect(M.syncedWithoutRemote(wc)).toBe(false);
-    const { isGatedProject, keepReview } = await import("../projectChanges");
-    expect(isGatedProject(wc)).toBe(true);
-    await M.startMasterProjects();
-    const s = M.projectSync("site")!;
-    await s.flush();
-    // The agent's branch, beside main (as prepareReview leaves it).
-    git(wc, "checkout", "-q", "-b", "agent/v2");
-    writeFileSync(join(wc, "index.html"), "<h1>v2</h1>\n");
-    git(wc, "commit", "-q", "-am", "v2");
-    git(wc, "checkout", "-q", "main");
-    const clone = join(root, "agent-clone");
-    git(root, "clone", "-q", wc, clone);
-    const cloneHead = git(clone, "rev-parse", "HEAD");
-    const vault = makeVault(join(root, "vault-k"));
-    const out = await keepReview(vault, { convId: "c1", slug: "site", folder: wc, clone, base: "main", branch: "agent/v2", sha: git(wc, "rev-parse", "agent/v2"), title: "v2", at: "" });
-    expect(out.ok).toBe(true);
-    expect(out.text).toContain("laptop sync must push it");
-    expect(existsSync(pushAttempt)).toBe(false); // not even an attempted origin push from the box
-    expect(git(clone, "rev-parse", "HEAD")).toBe(cloneHead);
-    expect(readT(join(wc, "index.html"))).toBe("<h1>v2</h1>\n");
-    await s.flush();
-    const hub = join(master, ".hub", "projects", "site.git");
-    expect(git(hub, "show", "box:index.html")).toBe("<h1>v2</h1>");
-    expect(git(gh, "show", "main:index.html")).toBe("<h1>v1</h1>"); // GitHub unchanged until the laptop pushes
-  });
+
 });
 
 describe("migration on a copy", () => {

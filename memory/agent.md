@@ -94,3 +94,12 @@ extensions (same problems, new place). Migrate one duplicated piece per bug; no 
   Exit zero requires all matched source rollbacks accepted AND ordinary hub transport confirmed. No
   accepted/public identity is needs-attention, never a successful no-op. Preserve only the exact separately
   approved voice fixture in the ONE host-verified legacy A bootstrap; normal rollbacks remain full range.
+
+## Shipping reset (Carl, 2026-10-30; supersedes earlier auto-ship A rules)
+- Agents publish agent branches; one separately installed box script runs the seven baseline/candidate
+  gates and promotes main by native git compare-and-swap, with no new named failures or lost coverage.
+  No permit, bootstrap importer, receipt authority or candidate-bound recorder in acceptance. Actual UI
+  checking remains the agent's responsibility; post-release authenticated device health and rollback
+  remain authoritative for Shipped. First activation goes through Claude once, not self-acceptance.
+- See `docs/simple-ship.md` for exact installation/transport requirements and the fail-closed rollback
+  test-removal limitation. Deleted-feature test identities are explicit RETIRED entries, never gate waivers.

@@ -61,3 +61,12 @@ Carl wants you to test on your own, end to end, without him in the loop — but 
 boxes, local processes); real spend stays his call. Never trust a test agent's own report: read the ground truth it
 was supposed to produce (files, logs, the real clock). A run that wrote its own heartbeat log once fabricated
 timestamps and "verified" itself.
+
+## Shipping reset (Carl, 2026-10-30; supersedes earlier auto-ship A rules)
+- Agents publish agent branches; one separately installed box script runs the seven baseline/candidate
+  gates and promotes main by native git compare-and-swap, with no new named failures or lost coverage.
+  No permit, bootstrap importer, receipt authority or candidate-bound recorder in acceptance. Actual UI
+  checking remains the agent's responsibility; post-release authenticated device health and rollback
+  remain authoritative for Shipped. First activation goes through Claude once, not self-acceptance.
+- See `docs/simple-ship.md` for exact installation/transport requirements and the fail-closed rollback
+  test-removal limitation. Deleted-feature test identities are explicit RETIRED entries, never gate waivers.

@@ -52,3 +52,12 @@
   A read-only sandbox plus an immutable duplicate-name baseline cannot be unblocked by candidate labels or
   an idle restart. Report the missing trusted outside-host baseline/deployment capability explicitly; never
   reinterpret updater test hooks, a data-pause permission or historical bootstrap as upgrade authority.
+
+## Shipping reset (Carl, 2026-10-30; supersedes earlier auto-ship A rules)
+- Agents publish agent branches; one separately installed box script runs the seven baseline/candidate
+  gates and promotes main by native git compare-and-swap, with no new named failures or lost coverage.
+  No permit, bootstrap importer, receipt authority or candidate-bound recorder in acceptance. Actual UI
+  checking remains the agent's responsibility; post-release authenticated device health and rollback
+  remain authoritative for Shipped. First activation goes through Claude once, not self-acceptance.
+- See `docs/simple-ship.md` for exact installation/transport requirements and the fail-closed rollback
+  test-removal limitation. Deleted-feature test identities are explicit RETIRED entries, never gate waivers.

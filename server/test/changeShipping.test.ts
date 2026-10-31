@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { acceptedChanges, discoverPublicRelease, followAcceptedRelease, prepareAcceptanceLocked, publicGithubRepository, reconcileAcceptancesLocked, type AcceptedChange, type PublishedChangeRelease } from "../changeShipping";
+import { acceptedChanges, withShippingLock, discoverPublicRelease, followAcceptedRelease, prepareAcceptanceLocked, publicGithubRepository, reconcileAcceptancesLocked, type AcceptedChange, type PublishedChangeRelease } from "../changeShipping";
 import { withRepoLock } from "../git";
 import { BoxSync } from "../sync";
 const roots: string[] = [];
@@ -35,6 +35,15 @@ function fixture() {
 }
 
 describe("durable service acceptance facts, not persisted authority", () => {
+  it("shares a native journal lock across the standalone script and service processes", async () => {
+    if (process.platform !== "linux") return; // standalone host is Linux; other platforms keep their original mutex
+    const f = fixture();
+    await withShippingLock(f.repo, async () => {
+      expect(() => execFileSync("flock", ["-n", join(f.repo, ".git/vault-chat-shipping/journal.lock"), process.execPath, "-e", ""], { stdio: "ignore" })).toThrow();
+      await prepareAcceptanceLocked(f.repo, f.c);
+    });
+    expect(() => execFileSync("flock", ["-n", join(f.repo, ".git/vault-chat-shipping/journal.lock"), process.execPath, "-e", ""], { stdio: "ignore" })).not.toThrow();
+  });
   it("persists intent before ff; a pre-merge crash is inert and cannot move main", async () => {
     const f = fixture(); await f.prepare();
     expect(await acceptedChanges(f.repo)).toEqual([]);

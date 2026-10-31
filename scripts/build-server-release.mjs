@@ -57,13 +57,12 @@ const bundleSha = sha256(join(out, "vault-chat-server.mjs"));
 if (bundleSha !== verifiedBundleSha) fail("bundle changed after executable identity verification");
 writeFileSync(join(out, "vault-chat-server.mjs.sha256"), `${bundleSha}  vault-chat-server.mjs\n`);
 
-// Proof needs dev tools after a bundle-only update. Ship exact manifests in the SAME checksummed
-// asset tarball; the installed host provisions public integrity-checked npm packages without hooks/keys.
+// Application assets only. The one box acceptance script is installed separately from releases.
 const stagedAssets = join(out, "asset-staging");
-mkdirSync(join(stagedAssets, "proof"), { recursive: true });
+mkdirSync(stagedAssets, { recursive: true });
 for (const a of assets) copyFileSync(join(assetDir, a), join(stagedAssets, a));
-for (const a of ["package.json", "package-lock.json"]) copyFileSync(a, join(stagedAssets, "proof", a));
-const packedAssets = [...assets, "proof"];
+
+const packedAssets = [...assets];
 
 // Reproducible-ish tarball: fixed order, owner and mtime (GNU tar on the CI runner).
 const tarball = join(out, "vault-chat-server-assets.tar.gz");
