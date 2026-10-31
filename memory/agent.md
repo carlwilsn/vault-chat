@@ -101,5 +101,7 @@ extensions (same problems, new place). Migrate one duplicated piece per bug; no 
   No permit, bootstrap importer, receipt authority or candidate-bound recorder in acceptance. Actual UI
   checking remains the agent's responsibility; post-release authenticated device health and rollback
   remain authoritative for Shipped. First activation goes through Claude once, not self-acceptance.
-- See `docs/simple-ship.md` for exact installation/transport requirements and the fail-closed rollback
-  test-removal limitation. Deleted-feature test identities are explicit RETIRED entries, never gate waivers.
+- See `docs/simple-ship.md` for exact installation/transport requirements and native rollback's exact-tree
+  trust boundary. Forward branches cannot remove coverage; only the host-generated recorded-range revert
+  can remove its feature's added tests, with all other gates unchanged. Initial architectural deletion's
+  identities are explicit RETIRED entries, never an ongoing gate waiver.

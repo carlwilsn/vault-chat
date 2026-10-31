@@ -40,6 +40,29 @@ describe("same named failures, never just a count", () => {
   ])("refuses removed, skipped, ambiguous, unavailable, malformed or crashed checks: $name", async ({ mutation }) => {
     expect(changed(mutation).check).toThrow();
   });
+  it("only the internal native-revert comparison allows removals; all remaining checks stay strict", () => {
+    const baseline = fixture(), candidate = fixture();
+    candidate.find(r => r.gate === "test:server")!.tests!.pop();
+    expect(() => compareChangeGates(baseline, candidate)).toThrow("removed test");
+    expect(() => compareChangeGates(baseline, candidate, true)).not.toThrow();
+    for (const mutate of [
+      (r: GateReceipt) => { r.tests![0].status = "skipped"; r.exitCode = 0; },
+      (r: GateReceipt) => { r.tests!.push({ file: "new.ts", name: "new failure", status: "failed" }); },
+      (r: GateReceipt) => { r.tests!.push({ file: "new.ts", name: "new skip", status: "skipped" }); },
+      (r: GateReceipt) => { r.tests!.push({ file: "new.ts", name: "new todo", status: "todo" }); },
+      (r: GateReceipt) => { r.exitCode = 137; },
+      (r: GateReceipt) => { r.timedOut = true; },
+      (r: GateReceipt) => { r.complete = false; },
+      (r: GateReceipt) => { r.tests = []; },
+    ]) {
+      const bad = structuredClone(candidate); mutate(bad.find(r => r.gate === "test:server")!);
+      expect(() => compareChangeGates(baseline, bad, true)).toThrow();
+    }
+    for (const gate of CHANGE_GATES.filter(g => !g.startsWith("test:"))) {
+      const bad = structuredClone(candidate); bad.find(r => r.gate === gate)!.exitCode = 1;
+      expect(() => compareChangeGates(baseline, bad, true)).toThrow("must pass");
+    }
+  });
   it("requires build/typecheck success even when the same command failed on main", async () => {
     const baseline = fixture(), candidate = fixture();
     baseline.find(r => r.gate === "build:server")!.exitCode = 1;

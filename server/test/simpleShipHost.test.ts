@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { checkBranch, prepareRevert, promote } from "../simpleShipHost";
+import { checkBranch, checkNativeRevert, prepareRevert, promote } from "../simpleShipHost";
 import { acceptedChanges, type AcceptedChange } from "../changeShipping";
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -43,11 +43,25 @@ describe("single box script: native git promotion and rollback", () => {
     const f = fixture(); await promote(f.repo, f.base, f.head, f.change);
     writeFileSync(join(f.repo, "later.txt"), "later"); f.g("add", "."); f.g("commit", "-qm", "later");
     const base = f.g("rev-parse", "HEAD"), branch = "agent/rollback-test";
-    const head = await prepareRevert(f.repo, f.change, base, f.root, branch), tree = f.g("rev-parse", `${head}^{tree}`);
+    const { head, tree } = await prepareRevert(f.repo, (await acceptedChanges(f.repo))[0], base, f.root, branch);
     await promote(f.repo, base, head, { ...f.change, id: head, source: { base, head, tree, branch }, rollbackOf: f.head });
     expect(readFileSync(join(f.repo, "app.txt"), "utf8")).toBe("base");
     expect(readFileSync(join(f.repo, "later.txt"), "utf8")).toBe("later");
     expect((await acceptedChanges(f.repo)).at(-1)?.rollbackOf).toBe(f.head);
+  });
+  it("rejects unaccepted/altered ranges and extra edits or parents on a generated native revert", async () => {
+    const f = fixture();
+    await expect(prepareRevert(f.repo, f.change, f.head, f.root, "agent/rollback-test")).rejects.toThrow("Original accepted range");
+    await promote(f.repo, f.base, f.head, f.change);
+    const original = (await acceptedChanges(f.repo))[0];
+    await expect(prepareRevert(f.repo, { ...original, source: { ...original.source, tree: f.base } }, f.head, f.root, "agent/rollback-test")).rejects.toThrow("tree no longer matches");
+    const native = await prepareRevert(f.repo, original, f.head, f.root, "agent/rollback-test");
+    await checkNativeRevert(f.repo, f.head, native.head, native.tree);
+    await expect(checkNativeRevert(f.repo, f.head, native.head, f.change.source.tree)).rejects.toThrow("tree/parent changed");
+    const extra = f.g("commit-tree", f.change.source.tree, "-p", f.head, "-m", "Extra edit disguised as rollback");
+    await expect(checkNativeRevert(f.repo, f.head, extra, native.tree)).rejects.toThrow("tree/parent changed");
+    const extraParent = f.g("commit-tree", native.tree, "-p", f.head, "-p", f.base, "-m", "Extra parent");
+    await expect(checkNativeRevert(f.repo, f.head, extraParent, native.tree)).rejects.toThrow("tree/parent changed");
   });
   it("refuses unsafe refs before passing anything to git", () => {
     for (const branch of ["main", "--upload-pack=bad", "agent/../main", "agent/a//b", "agent/b.lock", "agent/x\nmain", "agent/x;touch /tmp/no"]) expect(() => checkBranch(branch)).toThrow();

@@ -38,11 +38,19 @@ conflicts or failed checks become attention, not repeated recovery jobs. Histori
 media and protected journals remain untouched/readable; their old proof ids are not revalidated/imported
 on every sync. Historical pending Keep can close its card but cannot mutate main.
 
-**Deliberate fail-closed limitation:** the normal path has no test-removal exemption, including rollback.
-A revert that removes newly introduced test cases needs explicit host maintenance. This is not secretly waived by a receipt. The one-time installation retires the deleted
-feature's tests explicitly in `simple-ship-retired-tests.md`; subsequent comparisons preserve all cases
-in the newly installed main. This batch cannot pass the OLD baseline's no-removal comparison and does
-not pretend to install itself through it.
+Forward branches always preserve every baseline test case, even branches named `agent/rollback-*`.
+The installed host's native rollback alone generates `git revert --no-commit` from the recorded accepted
+range on current main, captures its exact native tree, and verifies the fetched commit's tree and sole
+parent before the SAME full baseline/candidate gates are compared. Only that internally generated route
+allows the expected missing test identities: reverting a feature also reverts its added regression tests.
+All remaining named failures, executed→skipped/todo changes, new skips/todos, duplicate/missing reports,
+crashes, timeouts, and type/build failures are checked identically. No CLI/config/agent flag, receipt,
+whitelist or journal label grants this behavior to a submitted branch; extra edits/parents fail the tree
+check. Native rollback does not require Claude to maintain test identities.
+
+The ONE initial architectural retirement remains explicit in `simple-ship-retired-tests.md` (114 named
+cases); it is not an ongoing exception. This batch cannot pass the OLD baseline's strict no-removal
+comparison and does not pretend to install itself through it.
 
 ## First installation: Claude ONLY, once
 
@@ -106,8 +114,19 @@ bodies survive in `changeProof.test.ts`, now testing the retained comparator dir
 ### Bounded live sync observation (not fixed yet)
 
 Read-only `journalctl --user -u vault-chat-server.service -n 8 --no-pager -o json`
-showed eight sync/bootstrap-proof error records from **2026-10-31T00:17:41Z** to
-**00:19:27Z**, approximately **15.24 seconds apart**. No key/token store was opened.
-Thus the currently installed service's sync spam is **still recurring**; public health would
-not establish otherwise. Candidate removal of the importer is not a claim that live sync
-has already recovered. Claude must repeat this exact bounded check after initial activation.
+matched the exact **`Error("Invalid bootstrap proof identity")`** literal in seven records from
+**2026-10-31T00:28:04.690613Z** to **00:29:35.578861Z**, **15.133–15.161 seconds apart**
+(one unrelated record was not printed). Only literal matches, timestamps and cadence were extracted;
+no full messages, user content, credentials or protected journal mutations. The canonical source
+throw is `server/changeDelivery.ts:231` in old main; this is NOT the different literal
+`Invalid bootstrap identity`. The installed `current/server-version.json` says **0.7.22**,
+revision **`e74b705dc6168dfc64a6e0bc193f9da2e58c6642`**, and its bundle still contains this
+exact throw. Runtime PID/executable provenance was not readable, so that file is installed-bundle
+metadata, not a proven executing-binary hash. The legacy projection's bootstrap identity validation
+is still reached during recurring sync; which field differs was intentionally not inspected.
+
+Thus sync spam is **still recurring** despite source fixes; public health or a source checkout does
+not establish deployed recovery. Claude must repeat the bounded literal/cadence check after activation.
+First Claude installation, ordinary branch publication, then independently accepted native follow-up,
+laptop sync/CI, actual box/authenticated Tauri health and Shipped-card rollback remain pending. Local
+runner/UI fixtures cannot establish any of those production facts.

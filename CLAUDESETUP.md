@@ -26,9 +26,11 @@ Before activating this reviewed branch:
    actual card rollback, not just a component fixture or retained-binary fallback.
 
 **Current live issue:** a bounded read-only service journal still showed sync/bootstrap-proof errors
-about every 15 seconds at 2026-10-31T00:17–00:19Z. Removing the importer in source is NOT evidence that
+`Invalid bootstrap proof identity` about every 15.14 seconds at 2026-10-31T00:28–00:29Z. Removing the importer in source is NOT evidence that
 live sync is already healthy. Repeat `journalctl --user -u vault-chat-server.service -n 8 --no-pager`
 after activation; no key/token store or broad private-content search is needed.
 
-Normal comparisons have NO test-removal exemption, including source rollback. A revert that removes
-new tests fails closed for explicit maintenance rather than silently weakening the next baseline.
+Forward comparisons have NO test-removal exemption. Only the installed host's recorded-range native
+revert, verified against its generated git tree/parent, can remove the reverted feature's regression
+tests through the SAME seven gates. All remaining checks are unchanged; no manual maintenance is
+needed for ordinary health/card rollback. See the exact trust boundary in `docs/simple-ship.md`.
