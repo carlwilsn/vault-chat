@@ -43,8 +43,10 @@ export async function appProof({ base, out, id, title, advance, rollback, smoke,
     await page.locator('[data-el="tasks-chip"]').click();
     const worker = page.locator(`[data-el="task"][data-sid="${nativeWorker.child}"]`);
     assert.equal(await worker.getAttribute('data-state'), 'done');
+    await page.screenshot({ path: `${out}/00-worker-link.png` });
     await worker.locator('[data-el="task-open"]').click();
     await page.getByText('Correct native child report for fixture-delegate', { exact: true }).waitFor();
+    await page.screenshot({ path: `${out}/00-worker-child.png` });
     await page.locator('[data-el="worker-parent"]').click();
     await page.getByText('Private fixture native Git history', { exact: true }).first().waitFor();
     evidence.workerNavigation = nativeWorker;
@@ -60,6 +62,7 @@ export async function appProof({ base, out, id, title, advance, rollback, smoke,
     await image.waitFor();
     await page.waitForFunction(() => { const img = document.querySelector('[role="dialog"] img'); return img?.complete && img.naturalWidth > 0; });
     evidence.healthyProofImage = true;
+    await page.screenshot({ path: `${out}/02b-healthy-proof-image.png` });
     await dialog.getByRole('button', { name: 'Close', exact: true }).click();
     evidence.identity = await page.evaluate(async () => {
       const m = await import(`${location.pathname}node_modules/@tauri-apps/api/core.js`);

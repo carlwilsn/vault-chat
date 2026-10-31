@@ -105,3 +105,8 @@ extensions (same problems, new place). Migrate one duplicated piece per bug; no 
   trust boundary. Forward branches cannot remove coverage; only the host-generated recorded-range revert
   can remove its feature's added tests, with all other gates unchanged. Initial architectural deletion's
   identities are explicit RETIRED entries, never an ongoing gate waiver.
+- Finished Delegate navigation must use its native child id in the exact tool result to bind the
+  pi tool-call id; MCP request ids and newest-open-call/title guesses are not ownership. Reuse
+  ordinary conversations and PiFeed pointers to the completed native session, not a worker
+  registry or copied report. Production App proof must click the finished chip into that child
+  and return to its parent; recording a missing chip as a diagnostic is not a passing assertion.
