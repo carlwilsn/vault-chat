@@ -2,7 +2,7 @@
  * per-vault JSONL is only a union-mergeable display projection and is never read back for decisions. */
 import { appendFileSync, existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
-import { dirname, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { isIP } from "node:net";
 import type { IncomingMessage } from "node:http";
 import { isLoopbackAddr, tailnetLoginOk } from "./auth";
@@ -223,8 +223,16 @@ export async function shipmentCards(vaultPath: string, vaultName: string, projec
   // One append-only projection log, compatible with existing *.jsonl union merge. Tampering can change
   // offline display only: backend NEVER reads this file or accepts it as rollback/health/acceptance input.
   const path = join(vaultPath, ".vault-chat", "shipments", "cards.jsonl");
-  mkdirSync(dirname(path), { recursive: true });
-  if (existsSync(path) && (lstatSync(path).isSymbolicLink() || !lstatSync(path).isFile())) throw new Error("Unsafe shipment projection file");
+  // Also validate empty-project history: proofProjection may not have visited these parents.
+  let directory = vaultPath;
+  for (const component of [".vault-chat", "shipments"]) {
+    directory = join(directory, component);
+    const stat = lstatSync(directory, { throwIfNoEntry: false });
+    if (stat && (stat.isSymbolicLink() || !stat.isDirectory())) throw new Error("Unsafe shipment projection directory");
+    mkdirSync(directory, { recursive: true });
+  }
+  const stat = lstatSync(path, { throwIfNoEntry: false });
+  if (stat && (stat.isSymbolicLink() || !stat.isFile())) throw new Error("Unsafe shipment projection file");
   const previous = existsSync(path) ? readFileSync(path, "utf8") : "";
   for (const card of out) { const line = JSON.stringify(card); if (!previous.split("\n").includes(line)) appendFileSync(path, `${line}\n`); }
   return out.sort((a, b) => b.acceptedAt.localeCompare(a.acceptedAt));

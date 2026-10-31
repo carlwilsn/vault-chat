@@ -18,8 +18,9 @@ export type GitResult = { stdout: string; stderr: string; code: number };
 export function runGit(
   cwd: string,
   args: string[],
-  opts: { timeoutMs?: number; env?: NodeJS.ProcessEnv; input?: string } = {},
+  opts: { timeoutMs?: number; env?: NodeJS.ProcessEnv; input?: string; signal?: AbortSignal } = {},
 ): Promise<GitResult> {
+  opts.signal?.throwIfAborted();
   return new Promise((resolve, reject) => {
     const env = {
       ...process.env,
@@ -35,6 +36,10 @@ export function runGit(
       windowsHide: true,
       stdio: [opts.input !== undefined ? "pipe" : "ignore", "pipe", "pipe"],
     });
+    const stop = () => killTree(child.pid);
+    opts.signal?.addEventListener("abort", stop, { once: true });
+    if (opts.signal?.aborted) stop();
+    const cleanup = () => opts.signal?.removeEventListener("abort", stop);
     let stdout = "";
     let stderr = "";
     child.stdout!.on("data", (d) => (stdout += d));
@@ -47,12 +52,13 @@ export function runGit(
       killTree(child.pid);
     }, t);
     child.on("error", (e) => {
-      clearTimeout(timer);
+      clearTimeout(timer); cleanup();
       reject(e.message);
     });
     child.on("close", (code) => {
-      clearTimeout(timer);
-      if (timedOut) reject(`git timed out after ${Math.round(t / 1000)}s: git ${args.join(" ")}`);
+      clearTimeout(timer); cleanup();
+      if (opts.signal?.aborted) reject(opts.signal.reason);
+      else if (timedOut) reject(`git timed out after ${Math.round(t / 1000)}s: git ${args.join(" ")}`);
       else resolve({ stdout, stderr, code: code ?? -1 });
     });
   });

@@ -149,6 +149,20 @@ describe("durable delivery observations, not synchronized card authority", () =>
     await expect(shipmentCards(f.vault, "school")).rejects.toThrow("Unsafe");
     expect(readFileSync(join(f.proof, "../repo/app.txt"), "utf8")).toBe("after");
   });
+  it("refuses a dangling card-history append redirect without creating its outside target", async () => {
+    const f=await fixture();await shipmentCards(f.vault,"school");
+    const path=join(f.vault,".vault-chat/shipments/cards.jsonl"), victim=join(f.root,"absent-private-target");
+    rmSync(path);symlinkSync(victim,path);
+    await expect(shipmentCards(f.vault,"school")).rejects.toThrow("Unsafe");
+    expect(() => readFileSync(victim,"utf8")).toThrow();
+  });
+  it("refuses history parent redirects even when no accepted project produces a proof projection", async () => {
+    const root=mkdtempSync(join(tmpdir(),"vc-empty-history-"));roots.push(root);
+    const vault=join(root,"vault"), outside=join(root,"outside");mkdirSync(join(vault,".vault-chat"),{recursive:true});mkdirSync(outside);
+    writeFileSync(join(outside,"cards.jsonl"),"PRIVATE_EMPTY_PROJECT_SENTINEL");symlinkSync(outside,join(vault,".vault-chat/shipments"));
+    await expect(shipmentCards(vault,"school")).rejects.toThrow("Unsafe");
+    expect(readFileSync(join(outside,"cards.jsonl"),"utf8")).toBe("PRIVATE_EMPTY_PROJECT_SENTINEL");
+  });
   it("recovers a persisted requested rollback after a pre-dispatch crash, but never starts a second accepted recovery", async () => {
     const f = await fixture();
     await updateShippingJournal(f.repo, j => { j.delivery = { releases: {}, rollbacks: { [f.c.id]: { status: "requested" } } }; });

@@ -27,11 +27,17 @@ export function runInstalledShip(repo: string, mode: "--branch" | "--rollback", 
     const env = { HOME: homedir(), PATH: process.env.PATH, LANG: "C.UTF-8", GIT_TERMINAL_PROMPT: "0", GCM_INTERACTIVE: "never" };
     const child = spawn("flock", ["-n", join(root, "ship.lock"), process.execPath, entry, config, repo, mode, value, title, slug, convId], { env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
     let output = "";
-    const stop = () => killTree(child.pid);
+    let forceStop: ReturnType<typeof setTimeout> | undefined;
+    const stop = () => {
+      // Give the installed CLI its native cancellation signal before a bounded force-stop.
+      // It owns detached git/bwrap children that are not in flock's process group.
+      try { process.kill(-child.pid!, "SIGTERM"); } catch { killTree(child.pid); }
+      forceStop = setTimeout(() => killTree(child.pid), 5_000); forceStop.unref();
+    };
     signal.addEventListener("abort", stop, { once: true });
     if (signal.aborted) stop();
     for (const stream of [child.stdout, child.stderr]) stream.on("data", data => { const text = String(data); output += text; log(text); });
-    const cleanup = () => signal.removeEventListener("abort", stop);
+    const cleanup = () => { signal.removeEventListener("abort", stop); if (forceStop) clearTimeout(forceStop); };
     child.on("error", e => { cleanup(); reject(e); });
     child.on("close", code => { cleanup(); if (signal.aborted) reject(new Error("Shipping cancelled")); else if (code !== 0) reject(new Error(`Host shipping failed (${code}); inspect the job log. ${output.slice(-1200)}`)); else resolve(output.trim()); });
   });

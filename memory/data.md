@@ -88,3 +88,11 @@ in doubt, mark it agent.
   Use Git's native prepared expected-old ref transaction around native checkout; EOF aborts before
   commit. A plain merge --ff-only cannot pin the original expected-old base across intervening work.
   Do not claim worktree/ref/journal power-loss atomicity or automatic recovery from these fixtures.
+- Normal shipping JobStop must reach detached host git children, not just flock's process group:
+  propagate existing service AbortSignal via SIGTERM to the independently bundled CLI and its
+  existing subprocess helpers. Abort a prepared native ref transaction by EOF, not SIGKILL (which
+  can leave its lock). Check cancellation before commit submission; once Git commits, report actual
+  acceptance even if JobStop already made the service job stopped. No automatic worktree repair.
+- Card-history append needs its own lstat/parent checks, including when there are no accepted projects:
+  summary/media projection checks never ran for an empty project list, and existsSync missed a
+  dangling cards.jsonl redirect. These fixtures still do not prove concurrent-swap/file-serving/UI.
