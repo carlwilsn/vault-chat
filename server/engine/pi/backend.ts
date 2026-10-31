@@ -736,8 +736,8 @@ export class PiBackend extends EventEmitter {
   /** Steer or stop one running subagent (POST /api/v1/conversations/:id/subagents/:sid/{steer,stop}). */
   /** A child that outlives its parent's turn (BoardMake): started now, resolves with its report when it ends. It
    *  is not stopped with the parent's turn, only with the parent's process; it may call BoardSend. */
-  background(parentThreadId: string, a: Record<string, unknown>): Promise<Record<string, unknown>> {
-    return this.subs.run(parentThreadId, { ...a, background: true });
+  background(parentThreadId: string, a: Record<string, unknown>, onStarted?: (id: string) => void): Promise<Record<string, unknown>> {
+    return this.subs.run(parentThreadId, { ...a, background: true }, undefined, onStarted);
   }
 
   subagentControl(childId: string, op: "steer" | "stop", text?: string): Promise<{ ok: boolean; error?: string }> {

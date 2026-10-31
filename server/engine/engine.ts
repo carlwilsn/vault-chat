@@ -1848,6 +1848,13 @@ export class Engine {
           const p = writtenPath(this.d.vault, input);
           if (p) this.d.onFilesWritten?.([p]);
         }
+        if (o?.name === "Delegate" && !ev.isError) {
+          const output = (ev.result?.content ?? []).filter((b: any) => b.type === "text").map((b: any) => String(b.text ?? "")).join("\n");
+          try {
+            const child = JSON.parse(output.split("\n")[0]!).nativeWorkerId;
+            if (typeof child === "string" && this.childOf.get(child) === l.convId) this.updateSubagent(l.convId, child, { toolCallId: id });
+          } catch { /* Historical/steered Delegate results have no spawned child identity. */ }
+        }
         l.open.delete(id);
         break;
       }
@@ -2097,6 +2104,17 @@ export class Engine {
     if (i >= 0) subs[i] = { ...subs[i]!, ...patch };
     else subs.push({ threadId, ...patch });
     this.emit(convId, { type: "meta", patch: { subagents: subs } });
+    const worker = subs.find((s) => s.threadId === threadId) as Record<string, unknown> | undefined;
+    // A finished native session is already the transcript. Expose it through the
+    // same conversation/feed primitives; never copy its report to a new store.
+    if (worker?.kind !== "job" && worker?.toolCallId && worker.sessionFile && worker.state && worker.state !== "running") {
+      if (!this.picture(threadId)) this.emit(threadId, { type: "meta", patch: {
+        title: String(worker.title ?? worker.task ?? "Worker"), source: "worker", kind: "separate",
+        threadId, threadPath: String(worker.sessionFile), createdAt: Number(worker.startedAt ?? Date.now()),
+      } });
+      this.catchUp(threadId, String(worker.sessionFile));
+    }
+
   }
 
   private async settleCost(convId: string, threadPath: string | undefined, turnId: string): Promise<void> {
@@ -2224,6 +2242,8 @@ export class Engine {
             }
           }
           this.lastDelegate.set(convId, { title, at: Date.now() });
+          let workerStarted!: (id: string) => void;
+          const workerId = new Promise<string>((resolve) => { workerStarted = resolve; });
           const started = this.d.backend.background(p.threadId, {
             agent: { name: "worker", systemPrompt: DELEGATE_WORKER_PROMPT, tools: ["read", "bash", "edit", "write", "grep", "find", "ls", "Notify", "PdfRead", "WebSearch", "BoardSend"] },
             task,
@@ -2231,9 +2251,12 @@ export class Engine {
             model: this.d.model(),
             title,
             ...(a.expect === "short" || a.expect === "long" ? { expect: a.expect } : {}),
-          });
+          }, workerStarted);
           this.reportWhenDone(convId, title, started);
-          return text(`Started in the background ("${title}"). Its report comes back to you as a new turn when it is done; JobList shows it running. If you already told Carl you sent it, end your turn now without another line; otherwise say so in one short line, then end your turn.`);
+          // The native child id travels in this exact tool result, not an MCP request id
+          // or a guess based on the latest open call/title. Wait for spawn, never completion.
+          const id = await Promise.race([workerId, started.then(() => "")]);
+          return text(`${id ? JSON.stringify({ nativeWorkerId: id }) + "\n" : ""}Started in the background ("${title}"). Its report comes back to you as a new turn when it is done; JobList shows it running. If you already told Carl you sent it, end your turn now without another line; otherwise say so in one short line, then end your turn.`);
         }
         case "BoardMake": {
           const request = String(a.request ?? "").trim();

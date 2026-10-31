@@ -59,7 +59,8 @@ class FakeBackend extends EventEmitter {
     if (op === "steer") this.steered.push({ threadId, text });
     return { ok: true };
   }
-  background(_threadId: string, o: { title: string; task: string }) {
+  background(_threadId: string, o: { title: string; task: string }, onStarted?: (id: string) => void) {
+    onStarted?.("fixture-worker");
     this.background_.push({ title: o.title, task: o.task });
     return new Promise(() => {});
   }

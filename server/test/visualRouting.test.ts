@@ -60,7 +60,8 @@ class FakeBackend extends EventEmitter {
     return { ok: true };
   }
   made: { title: string; task: string }[] = [];
-  background(_threadId: string, o: { title: string; task: string }) {
+  background(_threadId: string, o: { title: string; task: string }, onStarted?: (id: string) => void) {
+    onStarted?.("fixture-worker");
     this.made.push({ title: o.title, task: o.task });
     return new Promise(() => {});
   }

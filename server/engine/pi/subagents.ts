@@ -178,7 +178,7 @@ export class Subagents {
 
   /** One child, start to report. Never throws. A child moved to the background while it runs (detach) answers at
    *  once with a line saying so; its report then comes through detach's `result`. */
-  async run(parentId: string, a: any, signal?: AbortSignal): Promise<Record<string, unknown>> {
+  async run(parentId: string, a: any, signal?: AbortSignal, onStarted?: (id: string) => void): Promise<Record<string, unknown>> {
     signal?.throwIfAborted();
     await this.acquire();
     let held = true;
@@ -197,6 +197,7 @@ export class Subagents {
       const cancel = () => { void this.stop(c, "stopped"); };
       signal?.addEventListener("abort", cancel, { once: true });
       if (signal?.aborted) cancel();
+      onStarted?.(c.id);
       const result = this.finishOne(c).finally(() => { signal?.removeEventListener("abort", cancel); release(); });
       c.result = result;
       const first = await Promise.race([result, c.detached.then(() => null)]);
