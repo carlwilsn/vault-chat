@@ -6,7 +6,7 @@
 import { useEffect, useRef, useState } from "react";
 import { ChevronDown } from "lucide-react";
 import type { Conversation } from "./conversations";
-import type { ChatMessage } from "./store";
+import { useStore, type ChatMessage } from "./store";
 import { cn } from "./lib/utils";
 import { formatCost } from "./ongoingWork";
 import { uiChoice } from "./uiChoices";
@@ -141,7 +141,8 @@ function TaskDot({ state }: { state: TaskState }) {
   return <span className={cn("inline-flex h-2 w-2 shrink-0 rounded-full", state === "done" ? "bg-emerald-600" : state === "stopped" ? "bg-muted-foreground/50" : "bg-destructive/70")} />;
 }
 
-function TaskRow({ s, now, onControl }: { s: SubagentRec; now: number; onControl?: (sid: string, op: "steer" | "stop", text?: string) => Promise<string | null> }) {
+function TaskRow({ s, now, onControl, onOpen }: { onOpen?: (id: string) => void; s: SubagentRec; now: number; onControl?: (sid: string, op: "steer" | "stop", text?: string) => Promise<string | null> }) {
+  const childExists = useStore((state) => state.conversations.some((c) => c.id === s.threadId));
   const st = taskState(s);
   const running = st === "running";
   const [steering, setSteering] = useState(false);
@@ -162,7 +163,7 @@ function TaskRow({ s, now, onControl }: { s: SubagentRec; now: number; onControl
       <div className="flex items-center gap-2 text-[12px] leading-relaxed">
         <TaskDot state={st} />
         <span className="min-w-0 flex-1 truncate text-foreground/90" title={s.task ?? s.prompt}>
-          {taskName(s)}
+          {onOpen && childExists && s.kind !== "job" ? <button type="button" data-el="task-open" className="hover:underline" onClick={() => onOpen(s.threadId)}>{taskName(s)}</button> : taskName(s)}
         </span>
         <span className="shrink-0 text-[10.5px] text-muted-foreground tabular-nums" data-el="task-elapsed">
           {elapsedText(taskElapsed(s, now))}
@@ -213,11 +214,13 @@ export function Subagents({
   list,
   variant,
   onControl,
+  onOpen,
   defaultOpen,
 }: {
   list: SubagentRec[];
   variant: "inline" | "strip";
   onControl?: (sid: string, op: "steer" | "stop", text?: string) => Promise<string | null>;
+  onOpen?: (id: string) => void;
   /** Start opened (the chip starts closed; tests). */
   defaultOpen?: boolean;
 }) {
@@ -264,7 +267,7 @@ export function Subagents({
       {open && (
         <ul className={cn("space-y-1.5 px-2.5 pb-2", variant === "strip" && "max-h-48 overflow-auto")}>
           {list.map((s) => (
-            <TaskRow key={s.threadId} s={s} now={now} onControl={onControl} />
+            <TaskRow key={s.threadId} s={s} now={now} onControl={onControl} onOpen={onOpen} />
           ))}
         </ul>
       )}

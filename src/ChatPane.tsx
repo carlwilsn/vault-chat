@@ -34,6 +34,7 @@ import {
   VerdictLine,
   chosenAnswer,
   isLegacySubagentRecord,
+  subagentsOfMessage,
   withoutOptionList,
   type SubagentRec,
 } from "./chatExtras";
@@ -430,6 +431,8 @@ export function ChatPane() {
   // composer; it opens only on a click. A finished task leaves the screen (Carl: "when the tasks are done, I don't
   // think I care to see them"): the agent's reply carries the result; a failed one is one quiet line in the thread.
   const subagents = activeConv?.subagents ?? NO_SUBAGENTS;
+  const parentConv = conversations.find((c) => c.subagents?.some((s) => s.kind !== "job" && s.threadId === activeConversationId));
+  const openSubagent = (id: string) => useStore.getState().selectConversation(id);
   const runningTasks = useMemo(() => subagents.filter((s) => taskState(s) === "running"), [subagents]);
   const answerAsk = useCallback((answer: string) => {
     const id = useStore.getState().activeConversationId;
@@ -1073,6 +1076,8 @@ export function ChatPane() {
           </div>
         )}
 
+        {parentConv && <button type="button" data-el="worker-parent" className="text-xs text-muted-foreground hover:text-foreground" onClick={() => openSubagent(parentConv.id)}>Back to {parentConv.title || "parent chat"}</button>}
+
         {messages.map((m, i) =>
           m.hidden || m.waiting ? null : (
             <Fragment key={i}>
@@ -1081,6 +1086,8 @@ export function ChatPane() {
                 askLive={!!m.askOptions?.length && i === lastVisible && !busy}
                 askChosen={m.askOptions?.length ? chosenAnswer(messages, i) : undefined}
                 onAsk={answerAsk}
+                spawns={subagentsOfMessage(m, subagents)}
+                onOpenSubagent={openSubagent}
                 onSubagent={controlSubagent}
                 onRetry={retryTurn}
                 voiceCont={!!m.voice && i > 0 && !!messages[i - 1]?.voice && !messages[i - 1]?.hidden}
@@ -1577,6 +1584,7 @@ export const MessageBubble = memo(function MessageBubble({
   askChosen = "",
   onAsk,
   spawns,
+  onOpenSubagent,
   onSubagent,
   onRetry,
   voiceCont = false,
@@ -1592,6 +1600,7 @@ export const MessageBubble = memo(function MessageBubble({
   onAsk?: (answer: string) => void;
   /** The subagents this reply's `subagent` call spawned (inline option). */
   spawns?: SubagentRec[];
+  onOpenSubagent?: (id: string) => void;
   onSubagent?: (sid: string, op: "steer" | "stop", text?: string) => Promise<string | null>;
 }) {
   const calls = (message.toolCalls ?? []).filter((t) => !isLegacySubagentRecord(t));
@@ -1709,7 +1718,7 @@ export const MessageBubble = memo(function MessageBubble({
               </div>
             </details>
           )}
-          {spawns && spawns.length > 0 && <Subagents list={spawns} variant="inline" onControl={onSubagent} />}
+          {spawns && spawns.length > 0 && <Subagents list={spawns} variant="inline" onControl={onSubagent} onOpen={onOpenSubagent} />}
           <ReplyCost m={message} />
         </div>
       )}

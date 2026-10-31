@@ -952,7 +952,7 @@ function vaultFileRoute(res: ServerResponse, vault: string, p: string | null): v
   } catch (e) {
     // A file in a project's folder on the box (an absolute path): its path is its name.
     const hit = inProjectFolder(vault, p);
-    if (!hit) return json(res, 403, { error: String(e) });
+    if (!hit) return json(res, 403, { error: "File access denied. Choose a file inside the vault or a project folder." });
     abs = hit.abs;
     rel = hit.abs.split(sep).join("/");
   }
@@ -962,7 +962,10 @@ function vaultFileRoute(res: ServerResponse, vault: string, p: string | null): v
     if (st.size > VAULT_FILE_CAP) return json(res, 413, { error: "file too large" });
     return json(res, 200, { path: rel, size: st.size, mtimeMs: st.mtimeMs, base64: readFileSync(abs).toString("base64") });
   } catch (e) {
-    return json(res, 404, { error: (e as Error).message });
+    const code = (e as NodeJS.ErrnoException).code;
+    if (code === "EACCES" || code === "EPERM") return json(res, 403, { error: "File access denied. Check its permissions." });
+    if (code === "ENOENT" || code === "ENOTDIR") return json(res, 404, { error: "File not found. It may have moved or been removed." });
+    return json(res, 500, { error: "File could not be read. Try again or check its availability." });
   }
 }
 
