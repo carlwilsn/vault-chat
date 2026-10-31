@@ -42,8 +42,9 @@ JS
 "$npm" --version > "$VC_APP_PROOF_OUT/npm-version.txt"; python3 --version > "$VC_APP_PROOF_OUT/python-version.txt"; ffmpeg -version > "$VC_APP_PROOF_OUT/ffmpeg-version.txt"
 printf '%s\n' "$pin" > "$VC_APP_PROOF_OUT/source-pin.txt"
 # Fail before App/CLI on incomplete native optionals; unchanged production bwrap/gate argv.
+# Parent-only --run allows cold private package COPYING (not any product gate) up to 120s.
 set +e
-timeout --signal=TERM --kill-after=1 27 "$node" preview/tools/native-package-preflight.mjs > "$VC_APP_PROOF_OUT/packages.log" 2>&1
+timeout --signal=TERM --kill-after=1 "$([[ $mode == --run ]] && echo 120 || echo 27)" "$node" preview/tools/native-package-preflight.mjs > "$VC_APP_PROOF_OUT/packages.log" 2>&1
 rc=$?
 set -e
 printf '%s\n' "$rc" > "$VC_APP_PROOF_OUT/packages.exit"

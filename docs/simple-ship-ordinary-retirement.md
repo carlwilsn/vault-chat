@@ -80,7 +80,7 @@ assertions are separate; neither that inventory nor previous red runs are rewrit
 Short logs are preserved under `/tmp/or-nYQev7` (fresh `env -i` HOME/tmp/empty npm configs; private
 lock-matched dependency trees, caches never shared; genuine Node22/npm/Python/pi1.1.0). Comparator and
 historical-reader causal RED: `run-Q7K1`; GREEN `run-KsKr`; full affected reporter/card tests `run-Cxp6`
-43 passed before final four supplemental comparator cases. Native two-range failure RED `run-x0BZ`
+43 passed; final 22 comparator cases plus the native CLI test passed together in `run-Gg6D` (23 total, ~18 sec). Native two-range failure RED `run-x0BZ`
 (first revert accepted then second owned Git exit42, no partial attention), GREEN `run-F0Fp` one actual
 CLI test in ~12 sec. Earlier fixture failures remain recorded, not product-proof reds. Automatic provenance
 12 passed `run-pYIF`; native host/boundaries 35 passed `run-Llo0`; server types `types.exit=0`.
@@ -89,7 +89,10 @@ No full suite/pair, full combined App+CLI, host install/restart, publication, ma
 paid API, mic/speaker/OS push, or live-user data was used by this worker. The old 506 pair does not certify
 this new source. Fresh final combined native App+CLI and ONE full seven-gate pair are parent StartJob work
 AFTER this batch and parallel startup integration settle on one pin. Short App evidence/launcher checks
-are recorded in the worker handoff; do not confuse them with full CLI/device proof.
+are recorded in the worker handoff; do not confuse them with full CLI/device proof. Initial bounded
+combined `--check` staging attempt `/tmp/sa.M3HkcH` hit the outer 24s cap while COPYING genuine packages
+(no App assertion or product gate ran); it stays a failure. Parent-only full launcher now allows cold
+private package staging 120s, without changing any product gate or browser assertion/deadline.
 
 Existing limitations are intentional and visible: restart-lost and terminal rollback jobs need attention,
 not automatic re-proving/retry loops; checkout-before-ref failure may leave a dirty worktree, never hidden
