@@ -90,3 +90,11 @@ timestamps and "verified" itself.
   reflinks is finite here); do not bind a whole writable donor or override binary versions.
   Before a long fixture, invoke actual esbuild transform/build and Vite/Vitest through
   the unchanged native gate sandbox/private caches. A host --version check misses this.
+
+## Pure chat renderers must not eagerly initialize browser stores (2026-10-30)
+- A runtime useStore import added for native child navigation made importing chatExtras
+  initialize localStorage in Node, breaking both devjobs at file level and historical
+  reviewCard rendering. The real browser navigation still worked. Keep renderer imports
+  type-only and supply child availability from the existing store-owning pane; prove
+  original detailed-reporter red/green plus real native child/parent navigation. A pure
+  render test is not obsolete merely because its historical Keep text is old authority.
