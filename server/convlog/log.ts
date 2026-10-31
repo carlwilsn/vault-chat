@@ -26,6 +26,7 @@
 import { appendFileSync, closeSync, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, ftruncateSync, statSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { randomBytes } from "node:crypto";
+import { constants as bufferConstants } from "node:buffer";
 import { lines, alignStart, boundary, position, validatePosition, checkpointRequired, MAX_RECOVERY_BYTES, MAX_RECORD_BYTES, type Position } from "./reader";
 import { acquireEventDirectory } from "./maintenance";
 import { renameRetry } from "../atomic";
@@ -73,6 +74,8 @@ type Conv = {
   picture: Picture;
   row: RowState;
   sinceCkpt: number;
+  /** Durable checkpoint boundary (zero until the first successful checkpoint). */
+  checkpointOffset: number;
   offset: number;
   observedSize: number;
   records: LogRecord[];
@@ -308,7 +311,10 @@ export class ConvLog {
     let ck: any = null;
     const ckFile = file.replace(/\.jsonl$/, ".ckpt.json");
     if (existsSync(ckFile)) {
-      if (statSync(ckFile).size > MAX_RECOVERY_BYTES) throw checkpointRequired(file, "checkpoint exceeds 16 MiB");
+      // State size is independent of the bounded log tail. Node's UTF-8 file
+      // decoder/JSON parser still needs a representable JavaScript string.
+      if (statSync(ckFile).size > bufferConstants.MAX_STRING_LENGTH)
+        throw checkpointRequired(file, "checkpoint exceeds the Node.js string decoding limit");
       try { ck = JSON.parse(readFileSync(ckFile, "utf8")); } catch { /* small recovery only */ }
     }
     let base: Picture | undefined, offset = 0;
@@ -334,7 +340,7 @@ export class ConvLog {
       let ids = index.get(r.file); if (!ids) index.set(r.file, ids = new Set()); ids.add(r.entry.id);
     }
     const c: Conv = { id, file, maxSeq: pic.seq, picture: pic, row: rowFromPicture(pic), sinceCkpt: tail.length,
-      offset: end, observedSize: size, records: tail, recordsFloor: base?.seq ?? 0, recordBytes: size - offset, identity: position(file, end, pic.seq), pointedComplete: !!ck?.pointed || offset === 0 };
+      checkpointOffset: offset, offset: end, observedSize: size, records: tail, recordsFloor: base?.seq ?? 0, recordBytes: size - offset, identity: position(file, end, pic.seq), pointedComplete: !!ck?.pointed || offset === 0 };
     return c;
   }
 
@@ -411,11 +417,16 @@ export class ConvLog {
       let c = this.convs.get(conv);
       if (!c) {
         const file = join(this.dir, `${fileStem(conv)}.jsonl`);
-        c = { id: conv, file, maxSeq: 0, picture: emptyPicture(conv), row: emptyRow(conv), sinceCkpt: 0, offset: 0, observedSize: 0, records: [], recordsFloor: 0, recordBytes: 0, identity: null as unknown as Position, pointedComplete: true };
+        c = { id: conv, file, maxSeq: 0, picture: emptyPicture(conv), row: emptyRow(conv), sinceCkpt: 0, checkpointOffset: 0, offset: 0, observedSize: 0, records: [], recordsFloor: 0, recordBytes: 0, identity: null as unknown as Position, pointedComplete: true };
         this.convs.set(conv, c);
         this.pointed.set(conv, new Map());
         this.legacyRows.delete(conv);
       }
+      // Checkpoint BEFORE the risky append: a crash immediately after append
+      // must still leave at most 16 MiB after the last durable checkpoint.
+      // Cache eviction and the 400-record timer are not checkpoint boundaries.
+      if (c.offset - c.checkpointOffset + Buffer.byteLength(line) > MAX_RECOVERY_BYTES)
+        this.checkpoint(c, true);
       // A torn suffix from a crash is not a committed record; remove it only when
       // the owning writer actually appends, never as a side effect of startup/read.
       if (existsSync(c.file) && statSync(c.file).size !== c.offset) {
@@ -537,10 +548,12 @@ export class ConvLog {
     return join(this.sessionsDir, `${fileStem(conv)}.jsonl`);
   }
 
-  private checkpoint(c: Conv): void {
+  private checkpoint(c: Conv, requiredBeforeAppend = false): void {
     this.assertWritable();
     const ck = c.file.replace(/\.jsonl$/, ".ckpt.json");
     try {
+      if (requiredBeforeAppend && !c.pointedComplete && statSync(c.file).size > MAX_RECOVERY_BYTES)
+        throw checkpointRequired(c.file, "legacy checkpoint has no session pointer index");
       const pointed: Record<string, string[]> = {};
       if (c.pointedComplete || statSync(c.file).size <= MAX_RECOVERY_BYTES) {
         this.pointedIn(c.id, "");
@@ -550,11 +563,16 @@ export class ConvLog {
       const snapshot: LogCheckpoint = { v: 3, rv: REDUCER_VERSION, seq: c.picture.seq, picture: c.picture,
         position: c.identity, ...(c.pointedComplete || statSync(c.file).size <= MAX_RECOVERY_BYTES ? { pointed } : {}) };
       const encoded = JSON.stringify(snapshot);
-      if (Buffer.byteLength(encoded) > MAX_RECOVERY_BYTES) throw checkpointRequired(c.file, "checkpoint exceeds 16 MiB");
+      if (Buffer.byteLength(encoded) > bufferConstants.MAX_STRING_LENGTH)
+        throw checkpointRequired(c.file, "checkpoint exceeds the Node.js string decoding limit");
       writeFileSync(ck + ".tmp", encoded);
       renameRetry(ck + ".tmp", ck);
       c.sinceCkpt = 0;
+      c.checkpointOffset = c.offset;
+      if (snapshot.pointed) c.pointedComplete = true;
     } catch (e) {
+      if (requiredBeforeAppend)
+        throw new Error(`Conversation checkpoint failed before append: ${c.file}: ${(e as Error).message}. No new record was appended; restore checkpoint storage and retry.`);
       console.warn("[convlog] checkpoint failed:", (e as Error).message);
     }
   }
