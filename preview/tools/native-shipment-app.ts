@@ -28,7 +28,7 @@ const http = await startHttpServer({ health: async () => ({ ok: true, app:'vault
 const baseHTTP = `http://127.0.0.1:${process.env.VC_PORT}`;
 const request = async (path: string, body?: unknown, native = false) => {
  const r = await fetch(baseHTTP + path + (path.includes('?') ? '&' : '?') + 'vault=fixture', { method: body === undefined ? 'GET' : 'POST', headers: { 'Content-Type':'application/json', ...(native ? { 'tailscale-user-login':'fixture@example.invalid', 'x-forwarded-for':'100.64.0.99' } : {}) }, body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(10000) });
- const data = await r.json(); if (!r.ok) throw Error(`${r.status}: ${JSON.stringify(data)}`); return data;
+ const data = await r.json(); writeFileSync(join(root,'private-http.jsonl'),JSON.stringify({method:body===undefined?'GET':'POST',path,status:r.status,nativeFixtureIdentity:native,responseKeys:Object.keys(data)})+'\n',{flag:'a'}); if (!r.ok) throw Error(`${r.status}: ${JSON.stringify(data)}`); return data;
 };
 let vite: any;
 try {
@@ -64,13 +64,19 @@ try {
   // Native bwrap cannot follow host-home symlinks, and caches must never mutate shared packages.
   const dependencies=join(root,'fixture-deps/node_modules');mkdirSync(dependencies,{recursive:true});
   writeFileSync(join(dirname(dependencies),'package.json'),manifest);writeFileSync(join(dirname(dependencies),'package-lock.json'),lock);
-  for(const p of readdirSync('node_modules')) if(!p.startsWith('.vite'))await cp(realpathSync(join('node_modules',p)),join(dependencies,p),{recursive:true});
+  for(const p of readdirSync('node_modules')) if(!p.startsWith('.vite'))await cp(realpathSync(join('node_modules',p)),join(dependencies,p),{recursive:true,verbatimSymlinks:true});
   mkdirSync(installed,{recursive:true});
   writeFileSync(join(installed,'config.json'),JSON.stringify({repo,remote:'origin',workRoot:join(root,'native-runs'),dependencies,pi:process.env.VC_TEST_PI_DIR,node:process.execPath,npm:realpathSync(process.env.VC_PROOF_NPM!),bash:realpathSync('/run/current-system/sw/bin/bash'),bwrap:process.env.VC_PROOF_BWRAP,path:process.env.PATH}));
   await build({entryPoints:['server/simpleShipHost.ts'],bundle:true,platform:'node',format:'esm',outfile:join(installed,'simple-ship.mjs')});
   await runInstalledShip(repo,'--branch','agent/fixture-change',title,'app',project.convId,new AbortController().signal,text=>writeFileSync(join(root,'native-forward.log'),text,{flag:'a'}));
  }else await promote(repo,base,head,change);
  assert.equal((await acceptedChanges(repo))[0].source.head,head);
+ const {shipments:initialCards}=await request('/api/v1/shipments');
+ const summary=initialCards.find((c:any)=>c.id===head).proof.summaryUrl;
+ const legacyFile=await fetch(baseHTTP+summary+'&vault=fixture',{signal:AbortSignal.timeout(10000)});
+ assert.equal(legacyFile.status,200);const publicSummary=await legacyFile.text();
+ assert.ok(publicSummary.includes(head));assert.doesNotMatch(publicSummary,/PRIVATE_SENTINEL|VC_FAKE_SECRET/);
+ writeFileSync(join(root,'file-route.jsonl'),JSON.stringify({phase:'source-proof',status:legacyFile.status,sourceHead:head})+'\n');
  put('later.txt','unrelated later scope preserved\n');g('add','later.txt');g('commit','-qm','Unrelated later scope');const later=g('rev-parse','HEAD');
  appendNotes(vault,project.convId,[{kind:'tool',clientId:'fixture-delegate',name:'Delegate',args:{task:'Inspect synthetic native range'},result:'Private synthetic worker completed'}]);
  await appendHistory();
@@ -108,7 +114,7 @@ try {
     reverted=true;
     assert.equal(readFileSync(join(repo,'app.ts'),'utf8'),'export const value: number = 1;\n');
     assert.equal(readFileSync(join(repo,'later.txt'),'utf8'),'unrelated later scope preserved\n');
-    assert.equal(g('status','--porcelain'),'');await appendHistory();
+    assert.equal(g('status','--porcelain'),'');g('merge-base','--is-ancestor',later,'HEAD');await appendHistory();
     writeFileSync(join(root,'native-tree.json'),JSON.stringify({base,head,later,revert:g('rev-parse','HEAD'),tree:g('rev-parse','HEAD^{tree}'),changes},null,2));break;
    }
    for(const job of readJobs(jobs)){const p=probeJob(jobs,job);if(p.state!=='running'&&p.exit!==0)throw Error('Private native rollback job failed: '+JSON.stringify(p));}
@@ -123,7 +129,10 @@ try {
    await updateShippingJournal(repo,j=>{j.changes.find(c=>c.id===revert.id)!.release=release;});await healthy();
   }else if(phase==='redirect'){
    const {shipments}=await request('/api/v1/shipments');const p=new URL(shipments.find((c:any)=>c.id===head).proof.summaryUrl,baseHTTP).searchParams.get('path')!;
-   const path=join(vault,p);unlinkSync(path);symlinkSync(join(root,'absent-PRIVATE_SENTINEL'),path);return p;
+   const path=join(vault,p);unlinkSync(path);symlinkSync(join(root,'absent-PRIVATE_SENTINEL'),path);
+   const denied=await fetch(baseHTTP+shipments.find((c:any)=>c.id===head).proof.summaryUrl+'&vault=fixture',{signal:AbortSignal.timeout(10000)});
+   assert.equal(denied.status,403);const text=await denied.text();assert.doesNotMatch(text,/PRIVATE_SENTINEL|\/tmp\//);
+   writeFileSync(join(root,'file-route.jsonl'),JSON.stringify({phase:'redirect-rejected',status:denied.status,body:text})+'\n',{flag:'a'});return p;
   }else throw Error('unknown phase');
  }});
  writeFileSync(join(root,'result.json'),JSON.stringify({mode:runFull?'private-native-cli-fixture':'preflight-native-promote-only',scope:'actual App + actual HTTP; synthetic auth observations NOT authenticated installed hardware',source:process.env.VC_APP_SOURCE,base,head,later},null,2));

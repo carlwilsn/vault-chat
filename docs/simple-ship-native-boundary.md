@@ -1,118 +1,101 @@
-# Native cancellation / history boundary follow-up — not Shipped
+# Production App / private native shipping boundary
 
-Parent: `a4286d17ed7ff22feb70e1dca54da764b83f91ae`. New worktree:
-`/home/carlwilsn/agent-work/vault-chat/simple-ship-native-boundary-1030`, branch
-`agent/simple-ship-native-boundary`. Backup `backup/simple-ship-a428-native-boundary`
-retains that parent. The original reset worktree/head was left unchanged.
+## Result and candidate status
 
-## Actual repair, using existing lifecycle
+**Not complete; not shipped; no acceptance claim.** This proof-only worktree starts at
+`fd9125a7a2a958f2168aeefaeac6e2b8a864577d`, on `agent/ship-native-app-proof-1030` in
+`/home/carlwilsn/agent-work/vault-chat/ship-native-app-proof-1030`.
+No `src/`, `server/`, phone/board, dependency manifest or lockfile changes were made.
+The parent's seven-native pair/worktree was not changed or stopped. Canonical main and HEAD
+were read-only checked at `8e540669f3b3caca9b40da1105895775ad759ce7`.
 
-`runInstalledShip` previously SIGKILLed flock's group; the host's detached git helpers
-were outside it. The existing service AbortSignal now sends native SIGTERM first
-(bounded five-second group kill fallback). The actual independently bundled CLI
-handles that signal with an AbortController and passes it through the existing git,
-subprocess, snapshot, dependency and gate calls. No process scanner, registry,
-permissions, proof authority or recovery mechanism was added. The existing bwrap
-`--die-with-parent --unshare-all` includes a native PID namespace, which owns even a
-setsid descendant. The synthetic gate source is not the app or a complete gate pass.
+The actual App/private production HTTP short protocol completed at proof source
+`ed5ab1ee254214acbe78fd739ae47753fffa0f82`, evidence `/tmp/sa.dQqFcQ`.
+It deliberately records **two measured unresolved product gaps**, not a green product result:
 
-Before native ref commit, cancellation closes update-ref stdin: **EOF aborts the
-prepared transaction**. Do not SIGKILL that transaction on normal cancellation:
-a measured intermediate attempt left its native `.lock` behind. The final signal
-check and commit submission have no intervening await; once submitted, Git decides
-the outcome. A commit already acknowledged before JobStop remains accepted, while
-the service job correctly stays stopped. This is not cancellation undo or a claim
-about cross-process signal arrival nanoseconds before Git's commit write.
+1. **Finished worker navigation missing:** a completed synthetic worker linked to a real
+   Delegate log item reaches the production conversation feed, but no `tasks-chip` appears.
+   `ChatPane.tsx` renders `MessageBubble` without the declared `spawns` prop; that bubble's
+   only inline finished-worker renderer depends on `spawns`. Screenshot `01-app-accepted.png`
+   and `app.json.workerChipCount` retain the observation. No UI forcing or product patch.
+2. **Private absolute path disclosure:** a dangling outside-vault proof redirect is visibly
+   rejected, not blank/loading. However `/api/v1/vault/file` returns an ENOENT error with the
+   private absolute fixture path and the actual Proof dialog displays it. Screenshot
+   `07-app-proof-redirect-attention.png` and `remainingPathDisclosureGap` retain this.
+   The private sentinel itself is not displayed. This does not satisfy sanitized-path coverage.
 
-The precommit test deliberately completes checkout before stopping. Main stays at
-base; acceptance stays absent; native ref lock is released; checkout changes remain
-visible. There is **no automatic reset/repair**, nor a power-loss-atomic
-ref/worktree/journal guarantee. This patches the existing subprocess lifecycle; it
-introduces no second job controller.
+**Parent action:** these invalidate a claim that the frozen candidate completes the requested
+worker/history/path-safety coverage. Decide product fixes explicitly and freeze/rerun a new
+candidate; do not quietly patch the already-running pair or count these gaps as covered.
 
-## Measured causal checks (all outputs retained)
+## What actually ran
 
-Fresh `env -i`, empty HOME/cache, distinct empty npm configs, actual Node 22/npm bin,
-Python and read-only Pi SDK, no installs. Package links and Vitest caches belong to
-this new worktree, not a shared writable Vitest cache. All invoked checks were
-short foreground commands; no full pair/build/browser job was started here.
+`preview/tools/native-shipment-app.sh --check SHA MAIN 19441 19442` is a bounded actual-App
+preflight (27-second timeout, then 1-second kill bound), not a separate ShipmentCards page.
+It starts production `startHttpServer` from source and mounts the production React App through
+the existing development preview/native IPC bridge and realbox HTTP transport. Playwright
+uses real keyboard/project-row/Proof/Roll back clicks; no forced clicks or UI status setters.
+`isTauri() === true` proves the explicit preview SDK bridge, **not installed Tauri**.
 
-- `/tmp/soa-eORwyW/results.json`: actual RED **12 pass / 2 fail** on parent source:
-  `server/test/simpleShipHost.test.ts` →
-  `single box script: native git promotion and rollback rejects a pre-aborted promotion without preparing a journal or advancing main`;
-  `... aborts before native ref commit after checkout without hidden worktree repair`.
-- `/tmp/soa-TJNEbB/results.json`: history RED **35 pass / 3 fail**: two new history
-  cases below plus the intermediate ref-lock cleanup error described above.
-- `/tmp/soa-K8uy2y/results.json`: final affected checks **51 pass / 0 fail / 0 skip**:
-  host 15, process 4, delivery reader 23, adapter 9. This is not another claimed
-  83-case audit or a seven-gate certification. Seven genuinely new identities:
-  - host: the two above; `... retains a native commit that wins before abort rather than pretending JobStop undoes acceptance`.
-    Both phase barriers now use **normal startServiceJob/JobStop**, real Git and
-    actual `promote`, not a duplicate implementation. The postcommit barrier is
-    after Git reports `commit: ok`, before the child wrapper acknowledges exit.
-  - process: `native shipping process ownership (private fixture) JobStop reaches the actual bundled CLI and kills detached setsid descendants through bwrap's PID namespace`;
-    `... JobStop reaches an actual CLI's long detached git child before gates and cannot advance main`.
-    These really bundle `server/simpleShipHost.ts` to the private installed entry
-    and invoke **runInstalledShip → native flock → actual CLI**. Only homedir lookup
-    redirects to the fixture. Real bwrap, source/dependency read-only mounts and
-    actual read-only Pi SDK are used. A setsid child has its own native session and
-    advancing heartbeat before stop; heartbeat ceases after namespace destruction.
-    The git barrier substitutes a long helper at private PATH, not Git's internals;
-    its native PID/starttime/parent chain are owned, checked and cleaned. No foreign
-    JobStop/PID discovery or real StartJob job is touched.
-  - reader: `durable delivery observations, not synchronized card authority refuses a dangling card-history append redirect without creating its outside target`;
-    `... refuses history parent redirects even when no accepted project produces a proof projection`.
-    These exposed real missing **cards.jsonl**/empty-project parent checks, distinct
-    from the already repaired summary/media links. `lstat` now checks these too.
-- `/tmp/soa-CKk0VK/run.log`: server source typecheck exit 0. Earlier typecheck
-  `/tmp/soa-oUNUug/run.log` honestly failed for an unused import; it was removed.
-- `git diff --check` passed; source/tests read back. No removed test was renamed.
+The preflight exercises real private Git commits and production `promote` / `prepareRevert`:
+Accepted → published/offline health-pending → synthetic release-health Shipped → actual
+accepted-range source revert retaining the later unrelated commit → pending revert release →
+synthetic release-health Rolled back → visible rejected proof redirect. It checks `app.ts`
+returns to value 1, `later.txt` remains, the later commit is an ancestor, the tree is clean,
+and the production accepted journal records `rollbackOf`. Actual native Git history appears
+in the real project conversation and Proof dialog contains the source head.
 
-## Existing reader coverage — preserved, not new assertions
+The seven screenshots, `app.json`, `native-tree.json`, `result.json`, exact console locations,
+HTTP statuses, page/network errors, IPC calls and unknown methods are kept outside the
+checkout. Deliberate 404 errors are retained, not suppressed: only that exact redirected
+artifact URL plus exact status/message is allowed. Other console/page/network/outbound errors,
+unknown/refused IPC and model calls fail. Release-health observations use the actual challenge
+and laptop HTTP endpoints with **synthetic** fixture headers/login and readiness. No challenge
+nonce or auth secret is copied into evidence. `private-http.jsonl` logs status and response
+field names. `/file` source proof and safe 403 redirect denial are additionally checked in
+`file-route.jsonl`; `/api/v1/vault/file`'s distinct disclosure remains explicitly unresolved.
 
-The original **21** `changeDeliveryRuntime.test.ts` cases remain, plus two new ones.
-Existing names (same describe prefix as above):
+## Full CLI launcher: parent StartJob only, not yet executed here
 
-- `renders a minimal source/health summary without reopening obsolete historical receipts`:
-  actual source head present; private path/obsolete malformed receipt absent;
-  live summary redirect rejected without touching victim.
-- `keeps existing historical projected media and original evidence files readable without revalidation`:
-  retained projected mp4 listed/unchanged, malformed original receipt unchanged.
-- `excludes private request, environment and log sentinels from the historical summary and media listing`:
-  private request/env/log/media not projected, original private media unchanged.
-- Four `refuses live and dangling historical projection links: %s` instances:
-  summary.md, recording.mp4, recording.webm, recording.png; each tests live AND
-  absent target and preserves live victim bytes.
-- Two `refuses historical projection directory redirects: %s` instances:
-  `.vault-chat/shipments`, `.vault-chat/shipments/proof`.
+The `--run` launcher first reruns that same short protocol before any CLI bundle/gate work.
+Only then it starts a separate private fixture with a 2400-second bound. That mode bundles
+unchanged `server/simpleShipHost.ts` under its **private HOME**, uses production
+`runInstalledShip` / flock for forward acceptance, and the production `requestRollback`
+service-job adapter from the real card's HTTP rollback request. It uses native Git and actual
+installed TypeScript, Vite, esbuild, Vitest and Node test runners on a clearly **synthetic tiny
+source project**, with actual baseline/candidate seven-gate inputs and identities. This is
+not certification of the real product's seven gates or host installation. A private dependency
+copy has real package contents and preserved relative symlinks; no npm install or executable
+stubs, shared writable caches, fake package versions or product gate modifications are used.
 
-These exercise the current native read model, not actual `/file` attachment serving,
-concurrent path replacement, a built HTTP reader, original conversation playback or
-real App history navigation. No old recorder/security validator was rebuilt.
+Parent StartJob command (replace `PROOF_SHA` with the exact final SHA in the handoff; do not
+resolve a moving branch when starting the job):
 
-## Still required, with no count laundering
+```sh
+cd /home/carlwilsn/agent-work/vault-chat/ship-native-app-proof-1030
+preview/tools/native-shipment-app.sh --run PROOF_SHA \
+  8e540669f3b3caca9b40da1105895775ad759ce7 19441 19442
+```
 
-The 114 original identities/raw audit outputs and strict comparator are unchanged;
-68 OLD-ROUTE / 36 PARTIAL / 7 GAP / 3 COVERED remain the documented prior audit,
-not newly marked passes. **Initial strict retirement must reject** unless actual
-baseline contains replacement identities. Original 8b full-pair evidence remains
-historical only; neither a428 nor this follow-up has a new final full-pair result.
+The launcher refuses a dirty/wrong HEAD, canonical-main drift, protected ports 8848/8857,
+occupied requested ports, or product-source drift from the frozen pin. It retains logs/exit
+codes and does not kill foreign listeners. Use StartJob for the whole full invocation; the
+subagent has not run a >30-second build, full native run or gate batch.
 
-Parent can now pin this clean branch and run **one** next final pair using the
-checked launcher returned with this report. It is an informational private native
-gate run, not installed acceptance. No inline seven gates were run by this worker.
+## Isolation, pins and limits
 
-Private **actual App + real HTTP/native history/card interaction remains unperformed
-but technically unblocked**; the existing `/tmp/simple-ship-reset-ui-check.mjs` is a
-standalone ShipmentCards page, NOT actual App proof, and must not be relabelled or
-used to clear this obligation. No new fake webpage/permit/bootstrap/sidecar was
-created. A parent-only >30-second real-App proof would need the existing preview
-realbox path and a separately checked private fixture/launcher; none is claimed here.
+Fresh `env -i`, private HOME/TMP/cache/npm configs/vault/state; sync and voice off;
+no models, push, package installs, live projects, secrets or installed host mutation.
+Browsers use `--mute-audio`. Read-only Pi 1.1.0, Node 22.23.2, actual npm/Python,
+Playwright 1.54.0, installed Chromium and FFmpeg are checked/pinned by the launcher.
+SSR uses the production build/test Tauri shims and asset semantics; phone/board virtual assets
+are empty because neither is a proof target. No installed-service, real-device, authenticated
+Tailscale, actual CI/updater or hardware result is inferred from any screenshot.
 
-All seven prior UI/native-host gaps (11/13/108/109 and 97/99/100) remain visible.
-Authenticated installed Tauri, first actual box/laptop sync → CI → both matching
-health, retained installed recovery/transport and original historical media require
-the real path after **Claude's authorized one-time activation**. This worker cannot
-install/restart/promote/main-merge/push main. Branch publication through the provisioned
-path is still not established (previous auth failure; no retry or credential
-inspection). No real main/events/user data/model/mic/audio/push/service effects.
+The unchanged strict initial-reset comparator still rejects retired required identities;
+this proof creates no retirement permit. The one-time Claude host installation and branch
+publishing configuration remain outstanding. A real source fix, rerun seven-native pair,
+old historical-media sanitization, original ask/self-check preservation, restart/background
+recovery, installed acceptance, laptop sync → CI → actual box and authenticated installed
+Tauri health → real rollback remain separate obligations. This finite fixture does **not**
+close all those seven audit gaps or make synthetic Shipped a real shipped release.
