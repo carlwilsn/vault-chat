@@ -1,7 +1,7 @@
 /** Finite dev fixture. No engine/model, installed authority, main mutation, or private-state file editing. */
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, readFileSync, writeFileSync, readdirSync, realpathSync, symlinkSync, unlinkSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync, readdirSync, realpathSync, symlinkSync, unlinkSync, chmodSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { createServer as netServer } from 'node:net';
 import { startHttpServer } from '../../server/http';
@@ -12,7 +12,7 @@ import { promote, prepareRevert } from '../../server/simpleShipHost';
 import { runInstalledShip, requestRollback } from '../../server/submitChange';
 import { readJobs, probeJob } from '../../server/engine/pi/jobs';
 import { cp } from 'node:fs/promises';
-import { ensureMain, appendNotes, patchMeta } from '../../server/engine/convs';
+import { ensureMain, appendNotes, patchMeta, createConv } from '../../server/engine/convs';
 import { gitCommands } from '../../server/commands/gitcmds';
 
 const root = process.env.VC_APP_PROOF_OUT!, repoSource = process.cwd(), runFull = process.argv.includes('--run');
@@ -33,6 +33,18 @@ const request = async (path: string, body?: unknown, native = false) => {
 let vite: any;
 try {
  const repo = join(vault, 'app'); mkdirSync(repo);
+ // Production HTTP rejection matrix. Synthetic sentinels only, no private user files.
+ const outside = join(root,'PRIVATE_SENTINEL-outside'); writeFileSync(outside,'VC_FAKE_SECRET');
+ symlinkSync(outside,join(vault,'live-link')); symlinkSync(join(root,'PRIVATE_SENTINEL-missing'),join(vault,'dangling-link'));
+ const noRead = join(vault,'denied.txt'); writeFileSync(noRead,'VC_FAKE_SECRET'); chmodSync(noRead,0);
+ try {
+  for(const [name,path,status] of [['traversal','../PRIVATE_SENTINEL-outside',403],['live-symlink','live-link',403],['dangling-symlink','dangling-link',404],['missing','missing.txt',404],['permission','denied.txt',403]] as const){
+   const response=await fetch(baseHTTP+'/api/v1/vault/file?vault=fixture&path='+encodeURIComponent(path)); const body=await response.text();
+   assert.equal(response.status,status,name); assert.doesNotMatch(body,/PRIVATE_SENTINEL|VC_FAKE_SECRET|\/tmp\/|ENOENT|EACCES|EPERM|stack/);
+   assert.ok(JSON.parse(body).error); writeFileSync(join(root,'file-boundary.jsonl'),JSON.stringify({name,status:response.status,body})+'\n',{flag:'a'});
+  }
+ } finally { chmodSync(noRead,0o600); }
+
  const put = (p: string, text: string) => { mkdirSync(dirname(join(repo,p)),{recursive:true}); writeFileSync(join(repo,p),text); };
  const g = (...args: string[]) => execFileSync('git', ['-c','core.hooksPath=/dev/null','-c','user.name=Fixture','-c','user.email=fixture@example.invalid',...args], {cwd:repo, encoding:'utf8',stdio:['ignore','pipe','pipe']}).trim();
  put('.gitignore', '.vault-chat/\nnode_modules/\ndist/\ndist-server/\nphone/dist/\nboard/dist/\n');
@@ -77,7 +89,15 @@ try {
  assert.equal(legacyFile.status,200);const publicSummary=await legacyFile.text();
  assert.ok(publicSummary.includes(head));assert.doesNotMatch(publicSummary,/PRIVATE_SENTINEL|VC_FAKE_SECRET/);
  writeFileSync(join(root,'file-route.jsonl'),JSON.stringify({phase:'source-proof',status:legacyFile.status,sourceHead:head})+'\n');
+ // Preserve a healthy already-projected image through the same production Proof viewer.
+ const proofRel=new URL(summary,baseHTTP).searchParams.get('path')!;
+ writeFileSync(join(vault,dirname(proofRel),'recording.png'),Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aT1sAAAAASUVORK5CYII=','base64'));
+
  put('later.txt','unrelated later scope preserved\n');g('add','later.txt');g('commit','-qm','Unrelated later scope');const later=g('rev-parse','HEAD');
+ await createConv(vault,{kind:'worker',source:'worker',project:'app',title:'Native finished worker'},'Native finished worker','fixture-worker');
+ appendNotes(vault,'fixture-worker',[{kind:'line',role:'assistant',text:'Correct native child report for fixture-delegate'}]);
+ // A different call in the same parent must not acquire this worker link.
+ appendNotes(vault,project.convId,[{kind:'tool',clientId:'fixture-other-call',name:'Read',args:{path:'app.ts'},result:'Unrelated call with no worker'}]);
  appendNotes(vault,project.convId,[{kind:'tool',clientId:'fixture-delegate',name:'Delegate',args:{task:'Inspect synthetic native range'},result:'Private synthetic worker completed'}]);
  await appendHistory();
  async function appendHistory(){ const log=await gitCommands.git_log_subdir!({vault,subdir:'app',maxCount:20});appendNotes(vault,project.convId,[{kind:'line',role:'assistant',text:`Private fixture native Git history\n\nAccepted range: ${base}..${head}\n\n\`\`\`text\n${log}\n\`\`\``}]); }
@@ -136,5 +156,5 @@ try {
   }else throw Error('unknown phase');
  }});
  writeFileSync(join(root,'result.json'),JSON.stringify({mode:runFull?'private-native-cli-fixture':'preflight-native-promote-only',scope:'actual App + actual HTTP; synthetic auth observations NOT authenticated installed hardware',source:process.env.VC_APP_SOURCE,base,head,later},null,2));
- console.log(`COMPLETED protocol assertions WITH recorded worker/path-disclosure gaps: ${runFull?'private native CLI App fixture':'short actual App DOM/native history preflight'} ${root}`);
+ console.log(`COMPLETED positive worker navigation and safe visible proof rejection assertions: ${runFull?'private native CLI App fixture':'short actual App DOM/native history preflight'} ${root}`);
 } finally { await vite?.close();http.closeAllConnections();await new Promise<void>(yes=>http.close(()=>yes())); }

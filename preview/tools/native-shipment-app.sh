@@ -29,8 +29,8 @@ fi
 cd "$repo"
 [[ $(git rev-parse HEAD) == "$pin" && -z $(git status --porcelain) ]]
 [[ $(git -C /home/carlwilsn/vc/projects/vault-chat rev-parse main) == "$main" && $(git -C /home/carlwilsn/vc/projects/vault-chat rev-parse HEAD) == "$main" ]]
-# This worktree is proof-only on the frozen product pin. NEVER touch fd worktree/head.
-git diff --exit-code fd9125a7a2a958f2168aeefaeac6e2b8a864577d "$pin" -- src server phone board package.json package-lock.json >/dev/null
+# Product fixes are frozen separately from proof-only commits. NEVER touch fd worktree/head.
+git diff --exit-code 5f96c1eb347e2260130b4ed8168a0e17316e4ac8 "$pin" -- src server phone board package.json package-lock.json >/dev/null
 [[ $("$node" --version) == v22.* && -x $chromium && -x $ffmpeg/ffmpeg && -x $bwrap ]]
 "$node" --input-type=module - <<'JS'
 import assert from 'node:assert/strict'; import {createRequire} from 'node:module'; import {readFileSync} from 'node:fs';

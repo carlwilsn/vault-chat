@@ -36,16 +36,30 @@ export async function appProof({ base, out, id, title, advance, rollback, smoke 
     assert.equal(await card.getAttribute('data-shipment-status'), 'accepted');
     assert.match(await card.innerText(), new RegExp(title));
     evidence.states.push({ phase: 'accepted-not-shipped', text: await card.innerText() });
-    await page.getByText('1 tool call', { exact: true }).click();
+    await page.getByText(/^[12] tool calls?$/).last().click();
     await page.getByText('Private synthetic worker completed', { exact: true }).waitFor();
     evidence.workerChipCount = await page.locator('[data-el="tasks-chip"]').count();
-    evidence.remainingWorkerGap = evidence.workerChipCount === 0 ? 'Finished worker recorded in actual server feed, but App MessageBubble receives no spawns prop; not patched in proof branch.' : null;
+    assert.equal(evidence.workerChipCount, 1, 'finished Delegate must expose its native worker');
+    await page.locator('[data-el="tasks-chip"]').click();
+    const worker = page.locator('[data-el="task"][data-sid="fixture-worker"]');
+    assert.equal(await worker.getAttribute('data-state'), 'done');
+    await worker.locator('[data-el="task-open"]').click();
+    await page.getByText('Correct native child report for fixture-delegate', { exact: true }).waitFor();
+    await page.locator('[data-el="worker-parent"]').click();
+    await page.getByText('Private fixture native Git history', { exact: true }).first().waitFor();
+    evidence.workerNavigation = { child: 'fixture-worker', parent: 'project-app', callId: 'fixture-delegate' };
     await page.screenshot({ path: `${out}/01-app-accepted.png` });
     await card.getByRole('button', { name: 'Proof', exact: true }).click();
     const dialog = page.getByRole('dialog', { name: 'Shipment proof' });
     await dialog.getByText(`Accepted source: ${id}`, { exact: false }).waitFor();
     assert.doesNotMatch(await dialog.innerText(), /PRIVATE_SENTINEL|private-proof|VC_FAKE_SECRET/);
     await page.screenshot({ path: `${out}/02-app-proof-native-source.png` });
+    await dialog.getByRole('button', { name: 'Close', exact: true }).click();
+    await card.getByRole('button', { name: 'Recording 1', exact: true }).click();
+    const image = dialog.getByRole('img', { name: 'Host-recorded proof' });
+    await image.waitFor();
+    await page.waitForFunction(() => { const img = document.querySelector('[role="dialog"] img'); return img?.complete && img.naturalWidth > 0; });
+    evidence.healthyProofImage = true;
     await dialog.getByRole('button', { name: 'Close', exact: true }).click();
     evidence.identity = await page.evaluate(async () => {
       const m = await import(`${location.pathname}node_modules/@tauri-apps/api/core.js`);
@@ -79,11 +93,12 @@ export async function appProof({ base, out, id, title, advance, rollback, smoke 
       rejectedPath = await advance('redirect');
       await card.getByRole('button', { name: 'Proof', exact: true }).click();
       await dialog.getByRole('alert').waitFor();
-      assert.doesNotMatch(await dialog.innerText(), /PRIVATE_SENTINEL|VC_FAKE_SECRET/);
+      assert.doesNotMatch(await dialog.innerText(), /PRIVATE_SENTINEL|VC_FAKE_SECRET|\/tmp\/|ENOENT|EACCES|Error:|at vaultFileRoute/);
       assert.doesNotMatch(await dialog.innerText(), /Loading proof/);
       await page.screenshot({ path: `${out}/07-app-proof-redirect-attention.png` });
       evidence.states.push({ phase: 'private-redirect-rejected-visible', text: await dialog.innerText() });
-      evidence.remainingPathDisclosureGap = /\/tmp\//.test(await dialog.innerText()) ? 'Production file error displays private fixture absolute path; no product patch applied.' : null;
+      assert.match(await dialog.innerText(), /File not found/);
+      evidence.safeVisibleRejection = true;
     }
     await page.evaluate(() => document.fonts.load('500 12px "Inter"'));
     evidence.runtime = await page.evaluate(() => ({ calls: window.__preview.calls(), unknown: window.__preview.unknown(), refused: window.__preview.refused(), llm: window.__preview.llm(), reports: window.__preview.reports() }));
