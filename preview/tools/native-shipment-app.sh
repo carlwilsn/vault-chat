@@ -12,7 +12,7 @@ npm=/nix/store/y2j5pbj8x9kfgwgkd0hdrwm6aksszb44-nodejs-slim-22.23.2-npm/bin/npm
 python=/nix/store/d64q19q1xjdwfhqx6czvrjgrhq0n3lcc-python3-3.14.7/bin
 chromium=/nix/store/agamzskapmh5018k98bqfwrrb738bgpv-chromium-153.0.8010.52/bin/chromium
 ffmpeg=/nix/store/x3z5lz0xv3jxw3ka05ifaajl0w8lhrw8-ffmpeg-headless-9.0.1-bin/bin
-bwrap=$(command -v bwrap)
+bwrap=/nix/store/y0ra9qr3rz81d9wl7dfrldv3j25dc98q-bubblewrap-0.12.0/bin/bwrap
 if [[ ${VC_APP_PRIVATE:-} != yes ]]; then
  out=$(mktemp -d /tmp/sa.XXXXXX)
  mkdir "$out/h" "$out/t" "$out/c"; : > "$out/u"; : > "$out/g"
