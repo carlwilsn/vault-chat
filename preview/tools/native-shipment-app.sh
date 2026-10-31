@@ -51,16 +51,19 @@ printf '%s\n' "$rc" > "$VC_APP_PROOF_OUT/packages.exit"
 cat "$VC_APP_PROOF_OUT/packages.log"
 ((rc==0)) || exit "$rc"
 [[ $mode != --packages ]] || { printf 'CHECKED private native packages: %s\n' "$VC_APP_PROOF_OUT"; exit 0; }
-# Keep raw stdout/stderr and exact failure codes. Every process is owned by this invocation.
-set +e
-timeout --signal=TERM --kill-after=1 27 "$node" preview/tools/native-http-entry.mjs --check > "$VC_APP_PROOF_OUT/preflight.log" 2>&1
-rc=$?
-set -e
-printf '%s\n' "$rc" > "$VC_APP_PROOF_OUT/preflight.exit"
-cat "$VC_APP_PROOF_OUT/preflight.log"
-((rc==0)) || exit "$rc"
-[[ $mode == --run ]] || { printf 'CHECKED actual App/native HTTP preflight: %s\n' "$VC_APP_PROOF_OUT"; exit 0; }
-# Preflight already passed before the first build/full native gate. Separate private fixture.
+# --check is a bounded actual-App-only diagnostic. The parent-only full run executes the
+# SAME assertions plus the full lifecycle once below; do not duplicate a cold App boot first.
+if [[ $mode == --check ]]; then
+ set +e
+ timeout --signal=TERM --kill-after=1 27 "$node" preview/tools/native-http-entry.mjs --check > "$VC_APP_PROOF_OUT/preflight.log" 2>&1
+ rc=$?
+ set -e
+ printf '%s\n' "$rc" > "$VC_APP_PROOF_OUT/preflight.exit"
+ cat "$VC_APP_PROOF_OUT/preflight.log"
+ ((rc==0)) || exit "$rc"
+ printf 'CHECKED actual App/native HTTP preflight: %s\n' "$VC_APP_PROOF_OUT"; exit 0
+fi
+# Package preflight passed. One separate full App+CLI fixture; cold startup is included.
 full="$VC_APP_PROOF_OUT/full"; mkdir "$full"
 export VC_APP_PROOF_OUT="$full" VC_VAULT="$full/vault" VC_STATE_DIR="$full/state"
 set +e

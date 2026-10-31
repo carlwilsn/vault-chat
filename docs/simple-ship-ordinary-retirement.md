@@ -93,6 +93,12 @@ are recorded in the worker handoff; do not confuse them with full CLI/device pro
 combined `--check` staging attempt `/tmp/sa.M3HkcH` hit the outer 24s cap while COPYING genuine packages
 (no App assertion or product gate ran); it stays a failure. Parent-only full launcher now allows cold
 private package staging 120s, without changing any product gate or browser assertion/deadline.
+A direct fresh bounded actual-App diagnostic `/tmp/ou.FuU03F` also hit its 24s outer cap during cold
+Vite/browser startup, after genuine native child + sanitized old-summary HTTP checks but before any
+recorded UI success. `run.exit=124` stays a failure, not UI proof. The parent full launcher runs the
+existing complete App+CLI assertions ONCE after package preflight, rather than duplicating a cold short
+App boot and then the full App boot. Its complete browser assertions are unchanged except the added
+old-format image/private-metadata positives. Full real UI proof remains outstanding.
 
 Existing limitations are intentional and visible: restart-lost and terminal rollback jobs need attention,
 not automatic re-proving/retry loops; checkout-before-ref failure may leave a dirty worktree, never hidden
