@@ -386,6 +386,7 @@ export function ChatPane() {
   const setShowChatsPanel = useStore((s) => s.setShowChatsPanel);
   const showChatsPanel = useStore((s) => s.showChatsPanel);
   const conversations = useStore((s) => s.conversations);
+  const openableThreadIds = useMemo(() => conversations.map((c) => c.id), [conversations]);
   const activeConversationId = useStore((s) => s.activeConversationId);
   // Indicator is for chats you *can't see* — alerts that a background
   // conversation is still running. Suppressed on the active chat since
@@ -1088,6 +1089,7 @@ export function ChatPane() {
                 onAsk={answerAsk}
                 spawns={subagentsOfMessage(m, subagents)}
                 onOpenSubagent={openSubagent}
+                openableThreadIds={openableThreadIds}
                 onSubagent={controlSubagent}
                 onRetry={retryTurn}
                 voiceCont={!!m.voice && i > 0 && !!messages[i - 1]?.voice && !messages[i - 1]?.hidden}
@@ -1585,6 +1587,7 @@ export const MessageBubble = memo(function MessageBubble({
   onAsk,
   spawns,
   onOpenSubagent,
+  openableThreadIds,
   onSubagent,
   onRetry,
   voiceCont = false,
@@ -1601,6 +1604,7 @@ export const MessageBubble = memo(function MessageBubble({
   /** The subagents this reply's `subagent` call spawned (inline option). */
   spawns?: SubagentRec[];
   onOpenSubagent?: (id: string) => void;
+  openableThreadIds?: readonly string[];
   onSubagent?: (sid: string, op: "steer" | "stop", text?: string) => Promise<string | null>;
 }) {
   const calls = (message.toolCalls ?? []).filter((t) => !isLegacySubagentRecord(t));
@@ -1718,7 +1722,7 @@ export const MessageBubble = memo(function MessageBubble({
               </div>
             </details>
           )}
-          {spawns && spawns.length > 0 && <Subagents list={spawns} variant="inline" onControl={onSubagent} onOpen={onOpenSubagent} />}
+          {spawns && spawns.length > 0 && <Subagents list={spawns} variant="inline" onControl={onSubagent} onOpen={onOpenSubagent} openableThreadIds={openableThreadIds} />}
           <ReplyCost m={message} />
         </div>
       )}
