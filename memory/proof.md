@@ -98,3 +98,11 @@ timestamps and "verified" itself.
   type-only and supply child availability from the existing store-owning pane; prove
   original detailed-reporter red/green plus real native child/parent navigation. A pure
   render test is not obsolete merely because its historical Keep text is old authority.
+
+## Historical chat media selectors
+- `ChatImage` reads a public vault path through the normal file API, then displays an
+  opaque blob URL. A filename-in-`img.src` locator cannot find that image, even when
+  the original historical schema/reader works. Use its genuine accessible identity,
+  require visible + native decode/naturalWidth, correlate the exact public API path,
+  and hash rendered bytes against the original fixture. Do not weaken to existence
+  or rewrite old fixture schemas. The retained df21 actual-App 15s failure exposed it.

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { writeFileSync } from 'node:fs';
 import { chromium } from 'playwright-core';
 
-export async function appProof({ base, out, id, title, advance, rollback, smoke, nativeWorker }) {
+export async function appProof({ base, out, id, title, advance, rollback, smoke, nativeWorker, historicalMedia }) {
   const evidence = { scope: 'Production React App + production HTTP + native Git PRIVATE FIXTURE; preview IPC, NOT installed Tauri/CI/device health.', errors: { console: [], page: [], http: [], network: [], outbound: [] }, calls: [], states: [], failure: null };
   const browser = await chromium.launch({ executablePath: process.env.VC_PROOF_CHROMIUM, headless: true, args: ['--mute-audio'] });
   let page; let rejectedPath;
@@ -44,9 +44,28 @@ export async function appProof({ base, out, id, title, advance, rollback, smoke,
     assert.equal(await historicalKeep.isDisabled(), true);
     assert.equal(await historicalOptions.getByRole('button').count(), 1);
     assert.equal(await historicalOptions.getByRole('button', { name: /Send back/ }).count(), 0);
-    const oldImage = page.locator('img[src*="historical-public-fixture"]');
+    // ChatImage reads the original public vault path through the ordinary file API,
+    // then renders a blob URL. The historical path cannot occur in img.src.
+    const oldImage = page.getByRole('img', { name: 'proof 1', exact: true });
     await oldImage.waitFor({state:'visible'});
-    await page.waitForFunction(() => { const i = document.querySelector('img[src*="historical-public-fixture"]'); return i?.complete && i.naturalWidth > 0; });
+    assert.equal(await oldImage.count(), 1);
+    const oldMedia = await oldImage.evaluate(async i => {
+      await i.decode();
+      const bytes = await (await fetch(i.currentSrc)).arrayBuffer();
+      const digest = await crypto.subtle.digest('SHA-256', bytes);
+      return { src: i.currentSrc, complete: i.complete, width: i.naturalWidth,
+        sha256: [...new Uint8Array(digest)].map(b => b.toString(16).padStart(2, '0')).join('') };
+    });
+    assert.equal(oldMedia.complete, true); assert.ok(oldMedia.width > 0);
+    assert.match(oldMedia.src, /^blob:/);
+    assert.equal(oldMedia.sha256, historicalMedia.sha256, 'decoded blob must be the exact original historical image');
+    const fileReads = await page.evaluate(() => window.__preview.calls());
+    const publicReads = fileReads.filter(c => c.cmd === 'box_get_json' && c.ok && (() => {
+      const u = new URL(c.args.url);
+      return u.pathname === '/api/v1/vault/file' && u.searchParams.get('path') === historicalMedia.path;
+    })());
+    assert.ok(publicReads.length > 0, 'original public path must reach the production file API');
+    evidence.historicalMedia = { ...oldMedia, path: historicalMedia.path, publicReads };
     assert.doesNotMatch(await page.locator('body').innerText(), /PRIVATE_SENTINEL|VC_FAKE_SECRET|\/synthetic\/private/);
     evidence.historicalCard = { readable: true, live: false, keepDisabled: true, originalPublicImageDecoded: true, privateMetadataExcluded: true };
     await page.screenshot({ path: `${out}/00-historical-readable.png` });
@@ -140,6 +159,7 @@ export async function appProof({ base, out, id, title, advance, rollback, smoke,
   } finally {
     if (page) {
       evidence.dom = await page.locator('body').innerText().catch(() => 'unavailable');
+      evidence.mediaDOM = await page.locator('img, video').evaluateAll(nodes => nodes.map(n => ({tag:n.tagName,src:n.currentSrc || n.src,alt:n.alt,complete:n.complete,width:n.naturalWidth,rect:n.getBoundingClientRect().toJSON()}))).catch(() => []);
       evidence.calls = await page.evaluate(() => window.__preview?.calls()).catch(() => []);
       evidence.unknown = await page.evaluate(() => window.__preview?.unknown()).catch(() => []);
     }

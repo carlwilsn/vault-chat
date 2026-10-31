@@ -135,7 +135,7 @@ try {
   await request('/api/v1/release-health/laptop',{...challenge,tauri:true,frontendMounted:true,boxConnected:true,syncReady:true,updaterReady:true},true);
   await observeChangeDelivery(repo);
  };
- await appProof({base:`http://127.0.0.1:${process.env.VC_APP_PROOF_PORT}/proof`,out:root,id:head,title,nativeWorker,smoke:!runFull,rollback:async()=>{
+ await appProof({base:`http://127.0.0.1:${process.env.VC_APP_PROOF_PORT}/proof`,out:root,id:head,title,nativeWorker,historicalMedia:{path:proofImagePath('historical-public-fixture',0,'/synthetic/private/old.png'),sha256:createHash('sha256').update(historicalImage).digest('hex')},smoke:!runFull,rollback:async()=>{
   let reverted=false;
   for(let i=0;i<(runFull?12000:100);i++){
    const changes=await acceptedChanges(repo);
