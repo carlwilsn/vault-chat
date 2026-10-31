@@ -11,7 +11,7 @@ import type { ConvLog } from "../../server/convlog/log.ts";
 
 export const OLD_SERVER = "46bb33304233b64739df23fb5b0d520706d8e050";
 const root = fileURLToPath(new URL("../../", import.meta.url));
-export const PREPARED_READER = "d578fb0d91582dce91c38c3810d827fa14ecc840";
+export const PREPARED_READER = "28f3ef9997b0cdc9bb3d5be19a8da268be2e74aa";
 const frozen = new Map<string, Promise<typeof ConvLog>>();
 export function frozenConvLog(ref = OLD_SERVER): Promise<typeof ConvLog> {
   let resultPromise = frozen.get(ref);

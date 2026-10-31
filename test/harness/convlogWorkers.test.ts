@@ -156,7 +156,7 @@ test("a malformed/missing-base/reordered delta loses only that worker update (th
     assert.throws(() => reduce(fold([first], C), bad as StoredSubagentsRecord), /Invalid subagents disk delta/);
   }
   writeFileSync(file, JSON.stringify(delta) + "\n" + JSON.stringify(rows[0]) + "\n");
-  assert.throws(() => new ConvLog(dir), /Invalid subagents disk delta/);
+  assert.doesNotThrow(() => new ConvLog(dir));
   assert.throws(() => reduce(emptyPicture(C), delta), /Invalid subagents disk delta/);
   writeFileSync(file, original + '{"seq":3,"type":"subagents","updates":');
   const healed = new ConvLog(dir);
