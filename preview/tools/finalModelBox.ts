@@ -59,6 +59,13 @@ for (const n of ["school2", "vault-chat"]) {
   git(hub, "init", "-q", "--bare");
 }
 
+// Picker-only opt-in: nonempty Main plus a separate older history, on this throwaway copy only.
+// Seed through the existing conversation/session writer; no model request and no app-store mutation.
+if (argv.includes("--picker-history")) {
+  const { seedPickerHistory } = await import("./vaultPickerSplitHistory");
+  await seedPickerHistory(school2);
+}
+
 const secrets = await makeKeyStore(join(home, "secrets"), { "api.openrouter": "sk-or-test-not-a-key" });
 const or = await fakeOpenRouter("Morning! What are we working on?");
 const env = join(home, "server.env");
@@ -66,8 +73,14 @@ writeFileSync(env, `VC_VAULT=${school2}\nVC_VAULT_NAME=school2\nVC_MASTER=${mast
 // The real migration CLI, on this copy.
 const mig = execFileSync(process.execPath, [BUNDLE, "projects", "migrate", "--env", env, "--map", "iems-469-course-notes-visuals=IEMS 469"], { encoding: "utf8", env: { ...process.env, HOME: home, USERPROFILE: home } });
 const box = await startServer({ home, vault: school2, secrets, openrouter: or.url, extra: { VC_MASTER: master, VC_VAULT_NAME: "school2", ...(opt("port") ? { VC_PORT: opt("port")! } : {}) } });
+// Picker proof must not keep a live wrapper around a dead server and probe a foreign listener.
+let closing = false;
+if (argv.includes("--picker-history")) {
+  if (box.proc.exitCode !== null) throw new Error("picker fixture server exited during startup");
+  void box.exited.then(() => { if (!closing) process.exit(1); });
+}
 console.log(JSON.stringify({ base: box.base, root, master, migrated: JSON.parse(mig).report }));
-process.on("SIGTERM", () => void box.stop().then(() => process.exit(0)));
+process.on("SIGTERM", () => { closing = true; void box.stop().then(() => process.exit(0)); });
 setInterval(() => {}, 1 << 30);
 }
 

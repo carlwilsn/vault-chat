@@ -10,7 +10,7 @@ import { installFakeTauri, makeTempVault } from "./fakes.ts";
 const vault = makeTempVault("vc-master-");
 const fake = installFakeTauri(vault);
 const M = await import("../../src/master.ts");
-const { folderRows } = await import("../../src/VaultPicker.tsx");
+const { folderRows, pickerPathKey } = await import("../../src/VaultPicker.tsx");
 const { useStore } = await import("../../src/store.ts");
 
 after(async () => (await import("../../src/vaultSync.ts")).stopVaultSyncLoop());
@@ -104,25 +104,35 @@ test("New vault: made on the box (POST /api/v1/vaults) and here, from the box's 
   assert.deepEqual(inits.map((i) => [i.dest, i.remoteUrl, i.branch]), [["C:/Users/carl/vc/vaults/Linear-Algebra", `${BOX}/git/Linear-Algebra.git`, "master"]]);
 });
 
-test("the folder picker: Vaults lists every folder (a project inside a vault says where), Projects the ones with a conversation", () => {
+test("the vault picker uses vault registrations, never project names or nested project folders", () => {
   const projects = [
-    { slug: "iems-469", name: "IEMS 469", folder: "/home/c/vc/vaults/school2/IEMS 469", rel: "vaults/school2/IEMS 469", vault: "school2" },
-    { slug: "vault-chat", name: "vault-chat", folder: "/home/c/vc/projects/vault-chat", rel: "projects/vault-chat", vault: "vault-chat" },
+    { slug: "iems-469", name: "IEMS 469", rel: "vaults/school2/IEMS 469", vault: "school2" },
+    { slug: "vault-chat", name: "vault-chat", rel: "projects/vault-chat", vault: "vault-chat" },
   ];
-  const r = folderRows(["school2", "vault-chat"], ["vault-chat"], projects);
-  assert.deepEqual(
-    r.vaults.map((x: any) => [x.rel, x.name, x.repo, x.where, x.project?.slug ?? null]),
-    [
-      ["projects/vault-chat", "vault-chat", "projects/vault-chat", null, "vault-chat"],
-      ["vaults/school2", "school2", "vaults/school2", null, null],
-      ["vaults/school2/IEMS 469", "IEMS 469", "vaults/school2", "school2", "iems-469"],
-      ["vaults/vault-chat", "vault-chat", "vaults/vault-chat", null, null],
-    ],
-  );
-  assert.deepEqual(r.projects.map((x: any) => [x.name, x.rel, x.repo]), [
-    ["IEMS 469", "vaults/school2/IEMS 469", "vaults/school2"],
-    ["vault-chat", "projects/vault-chat", "projects/vault-chat"],
+  const r = folderRows(["school2", "vault-chat"], projects);
+  assert.deepEqual(r.map((x: any) => [x.rel, x.name]), [
+    ["vaults/school2", "school2"], ["vaults/vault-chat", "vault-chat"],
   ]);
+  // The picker does not mutate the projects used by the existing chat pane.
+  assert.deepEqual(projects.map((p) => p.slug), ["iems-469", "vault-chat"]);
+});
+
+test("the vault picker never name-deduplicates vault registrations", () => {
+  // Case-distinct folder identities are legal on the box. No lowercasing/dedupe by display name.
+  const r = folderRows(["vault-chat", "Vault-chat", "vault-chat"], []);
+  assert.equal(r.length, 3);
+  assert.equal(r.filter((x: any) => x.rel === "vaults/vault-chat").length, 2);
+  assert.ok(r.some((x: any) => x.rel === "vaults/Vault-chat"));
+});
+
+test("selected vault identity preserves distinct POSIX paths and normalizes Windows separators/case", () => {
+  assert.notEqual(pickerPathKey("/vc/vaults/vault-chat"), pickerPathKey("/vc/vaults/Vault-chat"));
+  assert.equal(pickerPathKey("C:\\vc\\vaults\\School2\\"), pickerPathKey("c:/vc/vaults/school2"));
+});
+
+test("a vault that also has a project keeps its existing rename/delete semantics", () => {
+  const project = { slug: "physics", name: "physics", rel: "vaults/physics", vault: "physics" };
+  assert.equal(folderRows(["physics"], [project])[0].project, project);
 });
 
 test("a copy being brought in (its .git marked) gets no sync loop at all", async () => {

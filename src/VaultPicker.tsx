@@ -1,69 +1,76 @@
-// The folder picker (the titlebar's folder name; Carl, 2026-10-29): everything is a folder in the vault-chat folder.
-// Two tabs:
-//   - Vaults: every folder — the vaults and the repos under projects/, and every project's folder (one inside a vault
-//     shows where it is). Picking one opens it in the file tree; the conversations stay as they are.
-//   - Projects: the folders with a conversation of their own. Picking one opens its folder and its thread.
-// A ⋯ on hover (or right-click) on a row: Rename, Delete, and on a folder that is not a project "Make this a project".
-// Deleting a project asks what goes: its conversation (the folder stays, a plain folder again), or everything.
-// Nothing is hard-deleted: the box commits a folder before removing it in git (server/folderOps.ts).
+// The titlebar picker lists only vault folders. Main and projects stay in ChatsPanel.
+// Folder/project operations retain their existing recoverable deletion semantics.
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { Check, FolderOpen, MoreHorizontal, Plus } from "lucide-react";
 import { useStore } from "./store";
-import { joinPath, localProjects, localVaults, masterPath, newVault } from "./master";
+import { joinPath, localVaults, masterPath, newVault } from "./master";
 import { openVaultAt } from "./openVault";
-import { createProjectThread, deleteProject, folderAction, listProjects, openThread, renameProject, type ProjectInfo } from "./projects";
-import { projectThreadId } from "./threads";
+import { createProjectThread, deleteProject, folderAction, listProjects, renameProject, type ProjectInfo } from "./projects";
 import { cn } from "./lib/utils";
 
-const fwd = (p: string) => p.replace(/\\/g, "/").replace(/\/+$/, "");
+/** Windows paths are case-insensitive; distinct POSIX vault paths must not share a checkmark. */
+export const pickerPathKey = (p: string) => {
+  const path = p.replace(/\\/g, "/").replace(/\/+$/, "");
+  return /^[a-z]:\//i.test(path) || path.startsWith("//") ? path.toLowerCase() : path;
+};
 
-/** One row of the picker. `rel`: the folder relative to the vault-chat folder; `repo`: the top-level folder that holds it
- *  (what the laptop opens); `where`: for a folder inside one, the folders above it; `project`: its project, if any. */
-export type FolderRow = { rel: string; name: string; repo: string; where: string | null; project: ProjectInfo | null };
+/** A vault folder relative to the vault-chat folder, with existing operation metadata only. */
+export type FolderRow = { rel: string; name: string; repo: string; project: ProjectInfo | null };
 
-/** The rows of both tabs, from this laptop's folder and the box's projects. Pure. */
-export function folderRows(vaults: string[], repos: string[], projects: ProjectInfo[]): { vaults: FolderRow[]; projects: FolderRow[] } {
+/** Vault identities come from localVaults, not the project registry or name deduplication.
+ * Project metadata is retained only for the existing operations on a vault that is itself a project. */
+export function folderRows(vaults: string[], projects: ProjectInfo[]): FolderRow[] {
   const byRel = new Map(projects.filter((p) => p.rel).map((p) => [p.rel!, p]));
-  const top: FolderRow[] = [
-    ...vaults.map((n) => ({ rel: `vaults/${n}`, name: n, repo: `vaults/${n}`, where: null, project: byRel.get(`vaults/${n}`) ?? null })),
-    ...repos.map((n) => ({ rel: `projects/${n}`, name: n, repo: `projects/${n}`, where: null, project: byRel.get(`projects/${n}`) ?? null })),
-  ];
-  const tops = new Set(top.map((r) => r.rel));
-  const nested: FolderRow[] = projects
-    .filter((p) => p.rel && !tops.has(p.rel))
-    .map((p) => {
-      const parts = p.rel!.split("/");
-      return { rel: p.rel!, name: p.name, repo: parts.slice(0, 2).join("/"), where: parts.slice(1, -1).join(" / ") || null, project: p };
-    });
-  const all = [...top, ...nested].sort((a, b) =>
-    a.repo === b.repo ? (a.rel === a.repo ? -1 : b.rel === b.repo ? 1 : a.name.localeCompare(b.name)) : a.repo.localeCompare(b.repo),
-  );
-  const withProjects = projects.map(
-    (p) => all.find((r) => r.project?.slug === p.slug) ?? { rel: p.rel ?? "", name: p.name, repo: p.rel?.split("/").slice(0, 2).join("/") ?? "", where: null, project: p },
-  );
-  return { vaults: all, projects: withProjects.sort((a, b) => a.name.localeCompare(b.name)) };
+  return vaults.map((n) => ({ rel: `vaults/${n}`, name: n, repo: `vaults/${n}`, project: byRel.get(`vaults/${n}`) ?? null }))
+    .sort((a, b) => a.rel.localeCompare(b.rel));
 }
-
-type Tab = "vaults" | "projects";
 
 export function VaultPicker() {
   const vaultPath = useStore((s) => s.vaultPath);
-  const activeId = useStore((s) => s.activeConversationId);
   const [isOpen, setOpen] = useState(false);
-  const [tab, setTab] = useState<Tab>("vaults");
-  const [rows, setRows] = useState<{ vaults: FolderRow[]; projects: FolderRow[] }>({ vaults: [], projects: [] });
+  const [rows, setRows] = useState<FolderRow[]>([]);
   const [naming, setNaming] = useState(false);
   const [name, setName] = useState("");
   const [err, setErr] = useState<string | null>(null);
-  const [menu, setMenu] = useState<string | null>(null);
+  const [menu, setMenu] = useState<{ rel: string; left: number; top: number } | null>(null);
   const [renaming, setRenaming] = useState<{ rel: string; value: string } | null>(null);
   const [deleting, setDeleting] = useState<FolderRow | null>(null);
   const [busy, setBusy] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+  const actionRef = useRef<HTMLDivElement>(null);
+  const actionTrigger = useRef<HTMLButtonElement | null>(null);
   const m = masterPath();
 
+  const dismissActions = () => {
+    setMenu(null);
+    actionTrigger.current?.focus();
+  };
+  const showActions = (r: FolderRow, trigger: HTMLButtonElement) => {
+    if (menu?.rel === r.rel) return dismissActions();
+    actionTrigger.current = trigger;
+    const parent = ref.current?.querySelector('[data-el="vault-picker-menu"]')?.getBoundingClientRect();
+    const row = trigger.getBoundingClientRect();
+    if (!parent) return;
+    // A separate body portal beside the picker, never inside its scrolling list.
+    const width = 176;
+    const rightFits = parent.right + width + 8 <= window.innerWidth;
+    const leftFits = parent.left - width - 8 >= 8;
+    const left = rightFits ? parent.right + 8 : leftFits ? parent.left - width - 8 : Math.max(8, Math.min(parent.left, window.innerWidth - width - 8));
+    const top = rightFits || leftFits ? Math.max(8, Math.min(row.top, window.innerHeight - 120)) : parent.bottom + 8;
+    setMenu({ rel: r.rel, left, top });
+  };
+
+  useEffect(() => {
+    if (!menu) return;
+    actionRef.current?.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus();
+    const dismiss = () => setMenu(null);
+    window.addEventListener("resize", dismiss);
+    return () => window.removeEventListener("resize", dismiss);
+  }, [menu]);
+
   const load = () => {
-    void Promise.all([localVaults(m), localProjects(m), listProjects(useStore.getState().vaultPath)]).then(([v, p, pr]) => setRows(folderRows(v, p, pr)));
+    void Promise.all([localVaults(m), listProjects(useStore.getState().vaultPath)]).then(([v, pr]) => setRows(folderRows(v, pr)));
   };
 
   const close = () => {
@@ -80,7 +87,9 @@ export function VaultPicker() {
     if (!isOpen) return;
     load();
     const onDown = (e: MouseEvent) => {
+      if (actionRef.current?.contains(e.target as Node)) return;
       if (ref.current && !ref.current.contains(e.target as Node)) close();
+      else if (!actionTrigger.current?.contains(e.target as Node)) setMenu(null);
     };
     window.addEventListener("mousedown", onDown);
     window.addEventListener("vc-projects-changed", load);
@@ -95,27 +104,21 @@ export function VaultPicker() {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
       if (menu || renaming || deleting) {
-        setMenu(null);
+        if (menu) dismissActions();
         setRenaming(null);
         setDeleting(null);
-      } else close();
+      } else {
+        close();
+        ref.current?.querySelector<HTMLButtonElement>('[data-el="vault-picker"]')?.focus();
+      }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [isOpen, menu, renaming, deleting]);
 
-  /** Open a row's folder: its top-level folder here, and a folder inside it revealed in the tree. */
-  const openFolder = async (r: FolderRow) => {
-    if (!m || !r.repo) return;
-    await openVaultAt(joinPath(m, r.repo));
-    // After the tree has taken the newly opened folder (it starts closed): then the folder inside it is opened.
-    if (r.rel !== r.repo) setTimeout(() => window.dispatchEvent(new CustomEvent("vc-reveal-folder", { detail: { path: joinPath(m, r.rel) } })), 300);
-  };
-  const pick = async (r: FolderRow, t: Tab) => {
+  const pick = async (r: FolderRow) => {
     close();
-    await openFolder(r);
-    // A project: its conversation too. A plain folder: the conversations stay as they are.
-    if (t === "projects" && r.project) openThread(projectThreadId(r.project.slug), r.project.name);
+    if (m) await openVaultAt(joinPath(m, r.repo));
   };
   const create = async () => {
     const r = await newVault(name);
@@ -139,25 +142,23 @@ export function VaultPicker() {
   };
   const makeProject = async (r: FolderRow) => {
     setMenu(null);
-    if (await act(() => createProjectThread(r.name, { folder: r.rel }))) {
-      setTab("projects");
-    }
+    await act(() => createProjectThread(r.name, { folder: r.rel }));
   };
   const remove = async (r: FolderRow, folderToo: boolean) => {
     const ok = await act(() => (r.project ? deleteProject(r.project.slug, { folder: folderToo }) : folderAction("delete", r.rel)));
     if (!ok) return;
     setDeleting(null);
     // The folder that was open is gone: back to the one that held it.
-    if (folderToo && m && vaultPath && r.rel === r.repo && fwd(vaultPath).toLowerCase() === fwd(joinPath(m, r.rel)).toLowerCase()) {
-      const other = rows.vaults.find((x) => x.rel !== r.rel && x.rel === x.repo);
+    if (folderToo && m && vaultPath && r.rel === r.repo && pickerPathKey(vaultPath) === pickerPathKey(joinPath(m, r.rel))) {
+      const other = rows.find((x) => x.rel !== r.rel && x.rel === x.repo);
       if (other) await openVaultAt(joinPath(m, other.repo));
     }
   };
 
-  const openPath = vaultPath ? fwd(vaultPath).toLowerCase() : null;
-  const isOpenRow = (r: FolderRow) => !!openPath && !!m && r.rel === r.repo && fwd(joinPath(m, r.repo)).toLowerCase() === openPath;
+  const openPath = vaultPath ? pickerPathKey(vaultPath) : null;
+  const isOpenRow = (r: FolderRow) => !!openPath && !!m && r.rel === r.repo && pickerPathKey(joinPath(m, r.repo)) === openPath;
   const vaultName = vaultPath ? vaultPath.split("/").filter(Boolean).pop() : null;
-  const list = tab === "vaults" ? rows.vaults : rows.projects;
+  const list = rows;
   const rowCls = "group relative w-full h-7 pl-2.5 pr-1 flex items-center gap-2 rounded text-[12px] text-left hover:bg-accent/60";
   const item = "w-full text-left px-3 py-1 hover:bg-accent disabled:opacity-50";
 
@@ -167,37 +168,20 @@ export function VaultPicker() {
         onClick={() => (isOpen ? close() : setOpen(true))}
         data-el="vault-picker"
         className="h-7 flex items-center gap-1.5 px-2 rounded hover:bg-accent/60 text-[12px] text-foreground/90"
-        title="Change folder"
+        title="Change vault"
+        aria-expanded={isOpen}
       >
         <FolderOpen className="h-3.5 w-3.5 opacity-80" />
         <span className="max-w-[220px] truncate">{vaultName ?? "Open folder"}</span>
       </button>
       {isOpen && (
         <div data-el="vault-picker-menu" className="absolute left-0 top-8 z-50 w-72 rounded-md border border-border bg-popover shadow-lg p-1">
-          {!m ? (
-            <div className="px-2.5 pt-1 pb-1.5 text-[11px] text-muted-foreground">Set the vault-chat folder in Settings to list your folders here.</div>
-          ) : (
-            <div className="flex items-center gap-1 px-1 pb-1 mb-1 border-b border-border/60" data-el="picker-tabs">
-              {(["vaults", "projects"] as const).map((t) => (
-                <button
-                  key={t}
-                  data-el={`picker-tab-${t}`}
-                  onClick={() => {
-                    setTab(t);
-                    setMenu(null);
-                    setDeleting(null);
-                    setRenaming(null);
-                  }}
-                  className={cn("h-6 px-2 rounded text-[11.5px]", tab === t ? "bg-accent text-foreground font-medium" : "text-muted-foreground hover:text-foreground hover:bg-accent/50")}
-                >
-                  {t === "vaults" ? "Vaults" : "Projects"}
-                </button>
-              ))}
-            </div>
+          {!m && (
+            <div className="px-2.5 pt-1 pb-1.5 text-[11px] text-muted-foreground">Set the vault-chat folder in Settings to list your vaults here.</div>
           )}
-          <div className="max-h-[60vh] overflow-auto">
+          <div className="max-h-[60vh] overflow-auto" onScroll={() => setMenu(null)}>
             {m && !list.length && (
-              <div className="px-2.5 py-2 text-[11.5px] text-muted-foreground">{tab === "vaults" ? "No folders yet." : "No projects yet: ⋯ on a folder makes it one."}</div>
+              <div className="px-2.5 py-2 text-[11.5px] text-muted-foreground">No vaults yet.</div>
             )}
             {list.map((r) =>
               renaming?.rel === r.rel ? (
@@ -221,60 +205,73 @@ export function VaultPicker() {
               ) : (
                 <div key={r.rel}>
                   <div
-                    role="button"
                     data-el="vault-picker-item"
                     data-path={m ? joinPath(m, r.rel) : r.rel}
                     data-rel={r.rel}
-                    data-project={r.project?.slug ?? ""}
                     className={cn(rowCls, "cursor-pointer")}
-                    onClick={() => void pick(r, tab)}
                     onContextMenu={(e) => {
                       e.preventDefault();
-                      setMenu(r.rel);
+                      const trigger = e.currentTarget.querySelector<HTMLButtonElement>('[data-el="picker-row-menu"]');
+                      if (trigger) showActions(r, trigger);
                     }}
                   >
-                    <span className="w-3.5 shrink-0">
-                      {(tab === "vaults" ? isOpenRow(r) : !!r.project && activeId === projectThreadId(r.project.slug)) && <Check className="h-3.5 w-3.5 text-primary" />}
-                    </span>
-                    <span className="truncate flex-1 min-w-0">
-                      {r.name}
-                      {r.where && <span className="ml-1.5 text-[10.5px] text-muted-foreground">in {r.where}</span>}
-                    </span>
-                    {tab === "vaults" && r.project && (
-                      <span className="text-[10px] text-muted-foreground/80 shrink-0" data-el="picker-is-project">
-                        project
+                    <button className="flex items-center gap-2 min-w-0 flex-1 h-full text-left" onClick={() => void pick(r)}>
+                      <span className="w-3.5 shrink-0">
+                        {isOpenRow(r) && <Check className="h-3.5 w-3.5 text-primary" />}
                       </span>
-                    )}
+                      <span className="truncate">{r.name}</span>
+                    </button>
                     <button
                       data-el="picker-row-menu"
                       title="More"
+                      aria-label={`Actions for ${r.name}`}
+                      aria-haspopup="menu"
+                      aria-expanded={menu?.rel === r.rel}
                       onClick={(e) => {
                         e.stopPropagation();
-                        setMenu(menu === r.rel ? null : r.rel);
+                        showActions(r, e.currentTarget);
                       }}
-                      className={cn("h-6 w-6 shrink-0 flex items-center justify-center rounded hover:bg-accent text-muted-foreground", menu === r.rel ? "opacity-100" : "opacity-0 group-hover:opacity-100")}
+                      className="h-6 w-6 shrink-0 flex items-center justify-center rounded hover:bg-accent text-muted-foreground"
                     >
                       <MoreHorizontal className="h-3.5 w-3.5" />
                     </button>
-                    {menu === r.rel && (
+                    {menu?.rel === r.rel && createPortal(
                       <div
+                        ref={actionRef}
+                        role="menu"
+                        aria-label={`Actions for ${r.name}`}
+                        style={{ position: "fixed", left: menu.left, top: menu.top, width: 176 }}
+                        onKeyDown={(e) => {
+                          e.stopPropagation();
+                          if (e.key === "Escape" || e.key === "Tab") {
+                            if (e.key === "Escape") e.preventDefault();
+                            dismissActions();
+                          }
+                          if (["ArrowDown", "ArrowUp", "Home", "End"].includes(e.key)) {
+                            e.preventDefault();
+                            const buttons = Array.from(e.currentTarget.querySelectorAll<HTMLButtonElement>("button:not(:disabled)"));
+                            const index = buttons.indexOf(document.activeElement as HTMLButtonElement);
+                            const next = e.key === "Home" ? 0 : e.key === "End" ? buttons.length - 1 : (index + (e.key === "ArrowDown" ? 1 : -1) + buttons.length) % buttons.length;
+                            buttons[next]?.focus();
+                          }
+                        }}
                         data-el="picker-row-menu-list"
                         onMouseDown={(e) => e.stopPropagation()}
                         onClick={(e) => e.stopPropagation()}
-                        className="absolute right-1 top-7 z-50 min-w-[160px] py-1 rounded-md border border-border bg-popover shadow-md text-[12px]"
+                        className="z-[60] py-1 rounded-md border border-border bg-popover text-popover-foreground shadow-md text-[12px]"
                       >
-                        <button data-el="picker-rename" className={item} onClick={() => (setMenu(null), setRenaming({ rel: r.rel, value: r.name }))}>
+                        <button role="menuitem" data-el="picker-rename" className={item} onClick={() => (setMenu(null), setRenaming({ rel: r.rel, value: r.name }))}>
                           Rename
                         </button>
                         {!r.project && (
-                          <button data-el="picker-make-project" disabled={busy} className={item} onClick={() => void makeProject(r)}>
+                          <button role="menuitem" data-el="picker-make-project" disabled={busy} className={item} onClick={() => void makeProject(r)}>
                             Make this a project
                           </button>
                         )}
-                        <button data-el="picker-delete" className={cn(item, "text-destructive")} onClick={() => (setMenu(null), setDeleting(r))}>
+                        <button role="menuitem" data-el="picker-delete" className={cn(item, "text-destructive")} onClick={() => (setMenu(null), setDeleting(r))}>
                           Delete
                         </button>
-                      </div>
+                      </div>, document.body,
                     )}
                   </div>
                   {deleting?.rel === r.rel && (
@@ -315,7 +312,6 @@ export function VaultPicker() {
             )}
           </div>
           {m &&
-            tab === "vaults" &&
             (naming ? (
               <div className="px-1.5 py-1">
                 <input
