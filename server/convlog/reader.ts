@@ -13,7 +13,7 @@ export function position(file: string, offset: number, seq = 0): Position {
 }
 /** Complete lines only; retain UTF-8 bytes until the newline, including across chunks.
  * A torn final line is left unread. An oversized record fails, never silently drops data. */
-export function* lines(file: string, start = 0, end?: number): Generator<{ text: string; end: number }> {
+export function* lines(file: string, start = 0, end?: number, maxRecordBytes = MAX_RECORD_BYTES): Generator<{ text: string; end: number }> {
   const fd = openSync(file, "r");
   try {
     const size = Math.min(end ?? Infinity, fstatSync(fd).size);
@@ -27,13 +27,13 @@ export function* lines(file: string, start = 0, end?: number): Generator<{ text:
       for (let i = 0; i < n; i++) {
         if (buf[i] !== 10) continue;
         length += i - from;
-        if (length > MAX_RECORD_BYTES) throw checkpointRequired(file, "record exceeds 8 MiB");
+        if (length > maxRecordBytes) throw checkpointRequired(file, maxRecordBytes === MAX_RECORD_BYTES ? "record exceeds 8 MiB" : `record exceeds ${maxRecordBytes} bytes (JavaScript string ceiling)`);
         parts.push(buf.subarray(from, i));
         yield { text: Buffer.concat(parts, length).toString("utf8"), end: at + i + 1 };
         parts = []; length = 0; from = i + 1;
       }
       if (from < n) { parts.push(buf.subarray(from, n)); length += n - from; }
-      if (length > MAX_RECORD_BYTES) throw checkpointRequired(file, "record exceeds 8 MiB");
+      if (length > maxRecordBytes) throw checkpointRequired(file, maxRecordBytes === MAX_RECORD_BYTES ? "record exceeds 8 MiB" : `record exceeds ${maxRecordBytes} bytes (JavaScript string ceiling)`);
       at += n;
     }
   } finally { closeSync(fd); }

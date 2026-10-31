@@ -169,17 +169,17 @@ test("authoritative old checkpoint prevents silent body loss even if source repl
   });
 });
 
-test("offline native sequential resolver finds original prefix IDs beyond runtime's 16MiB window without lifting runtime limit", async () => fixture(async (o, vault) => {
+test("offline native sequential resolver finds original prefix IDs beyond bounded suffix lookup; full native reads remain supported", async () => fixture(async (o, vault) => {
   const { expected, native } = await seed(o, vault, true);
   const filler = JSON.stringify({ type: "custom", id: "unpointed-padding", data: "z".repeat(1024 * 1024) }) + "\n";
   for (let i = 0; i < 20; i++) await appendFile(native, filler.replace("unpointed-padding", `padding-${i}`));
   assert.ok((await stat(native)).size > 20 * 1024 * 1024);
-  assert.throws(() => readEntries(native), /session read exceeds 16 MiB/);
+  assert.ok(readEntries(native).some(e => e.id === "native-original-user"), "full native history remains supported");
   assert.ok(!readEntries(native, true).some(e => e.id === "native-original-user"));
   const result = await prepareOffline({ ...o, mode: "checkpoint-only" }, { assertStopped: stopped });
   const ck = JSON.parse(await readFile(result.checkpoint, "utf8"));
   assert.deepEqual(ck.picture, expected); assert.deepEqual(ck.pointed["native.session"], ["native-original-user", "native-original-assistant"]);
-  assert.throws(() => readEntries(native), /session read exceeds 16 MiB/);
+  assert.ok(readEntries(native).some(e => e.id === "native-original-user"), "full native history remains supported");
 }));
 
 test("runtime SHARED vs offline EXCLUSIVE races: neither backup nor source access while another writer owns directory", async () => fixture(async (o, vault) => {

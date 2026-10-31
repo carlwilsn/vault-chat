@@ -7,6 +7,7 @@
 // custom entry). With no pi on it (a voice-only conversation, a marker after a
 // crash, an imported older conversation) this module appends pi-format entries
 // itself, each a child of the file's last entry, as pi would.
+import { constants as bufferConstants } from "node:buffer";
 import { appendFileSync, closeSync, existsSync, fstatSync, mkdirSync, openSync, writeFileSync } from "node:fs";
 import { lines, alignStart, MAX_RECOVERY_BYTES, checkpointRequired } from "./reader";
 import { dirname } from "node:path";
@@ -39,12 +40,15 @@ function parseLines(raw: string): PiEntry[] {
   return out;
 }
 
-/** Explicit OFFLINE tooling only: sequential native decoding without the runtime
- * 16 MiB recovery window. Caller holds event exclusion and verifies native-file
- * identities. Yields one canonical entry at a time, never a whole-session array.
- * Runtime callers must keep using readEntries/SessionTail with bounded limits. */
+// Native sessions belong to pi, not our canonical-root writer. Preserve native
+// history semantics; only a single JSON string's actual V8 ceiling bounds a record.
+const MAX_NATIVE_RECORD_BYTES = bufferConstants.MAX_STRING_LENGTH;
+
+/** Explicit OFFLINE tooling only: sequential native decoding. Caller holds event
+ * exclusion and verifies native-file identities. Yields one entry at a time,
+ * never a whole-session array; malformed native entries fail offline proof. */
 export function* offlineEntries(file: string): Generator<PiEntry> {
-  for (const { text } of lines(file)) {
+  for (const { text } of lines(file, 0, undefined, MAX_NATIVE_RECORD_BYTES)) {
     if (!text.trim()) continue;
     // Offline proof must not silently discard malformed native entries.
     const e = JSON.parse(text);
@@ -52,16 +56,16 @@ export function* offlineEntries(file: string): Generator<PiEntry> {
   }
 }
 
-/** Every entry of a session file (no header), in append order. */
+/** Every entry of a session file (no header), in append order: explicitly O(history).
+ * suffixOnly is the intentionally bounded 16 MiB root pointer-cache lookup. */
 export function readEntries(file: string, suffixOnly = false): PiEntry[] {
   let fd: number | null = null;
   try {
     fd = openSync(file, "r");
     const size = fstatSync(fd).size;
-    if (!suffixOnly && size > MAX_RECOVERY_BYTES) throw checkpointRequired(file, "session read exceeds 16 MiB; use bounded session history recovery");
     const start = suffixOnly ? alignStart(file, Math.max(0, size - MAX_RECOVERY_BYTES), size) : 0;
     const out: PiEntry[] = [];
-    for (const { text } of lines(file, start, size)) out.push(...parseLines(text));
+    for (const { text } of lines(file, start, size, MAX_NATIVE_RECORD_BYTES)) out.push(...parseLines(text));
     return out;
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
@@ -87,9 +91,8 @@ export class SessionTail {
       fd = openSync(this.file, "r");
       const size = fstatSync(fd).size;
       if (size < this.offset) throw checkpointRequired(this.file, "session truncated while active");
-      if (size - this.offset > MAX_RECOVERY_BYTES) throw checkpointRequired(this.file, "session tail exceeds 16 MiB");
       const out: PiEntry[] = [];
-      for (const { text, end } of lines(this.file, this.offset, size)) {
+      for (const { text, end } of lines(this.file, this.offset, size, MAX_NATIVE_RECORD_BYTES)) {
         out.push(...parseLines(text)); this.offset = end;
       }
       return out;
