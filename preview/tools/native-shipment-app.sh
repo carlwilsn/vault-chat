@@ -1,9 +1,10 @@
 #!/run/current-system/sw/bin/bash
-# --run: PARENT StartJob ONLY. --check: finite (<30s), actual App+HTTP/native Git protocol, no CLI build/full gates.
+# --run: PARENT StartJob ONLY. --packages: finite native package preflight only.
+# --check: package preflight then finite actual App+HTTP/native Git protocol, no full CLI.
 set -euo pipefail
 repo=$(cd -- "$(dirname -- "$0")/../.." && pwd)
 mode=${1:---check}; pin=${2:?exact full proof-source SHA}; main=${3:?observed readonly canonical main SHA}; port=${4:-19441}; web=${5:-19442}
-[[ $mode == --check || $mode == --run ]]
+[[ $mode == --check || $mode == --run || $mode == --packages ]]
 [[ $pin =~ ^[a-f0-9]{40}$ && $main =~ ^[a-f0-9]{40}$ ]]
 for p in "$port" "$web"; do [[ $p =~ ^[0-9]+$ ]] && ((p>1024 && p<65536 && p!=8848 && p!=8857)); done
 [[ $port != "$web" ]]
@@ -40,6 +41,15 @@ assert.equal(JSON.parse(readFileSync(process.env.VC_TEST_PI_DIR+'/node_modules/@
 JS
 "$npm" --version > "$VC_APP_PROOF_OUT/npm-version.txt"; python3 --version > "$VC_APP_PROOF_OUT/python-version.txt"; ffmpeg -version > "$VC_APP_PROOF_OUT/ffmpeg-version.txt"
 printf '%s\n' "$pin" > "$VC_APP_PROOF_OUT/source-pin.txt"
+# Fail before App/CLI on incomplete native optionals; unchanged production bwrap/gate argv.
+set +e
+timeout --signal=TERM --kill-after=1 27 "$node" preview/tools/native-package-preflight.mjs > "$VC_APP_PROOF_OUT/packages.log" 2>&1
+rc=$?
+set -e
+printf '%s\n' "$rc" > "$VC_APP_PROOF_OUT/packages.exit"
+cat "$VC_APP_PROOF_OUT/packages.log"
+((rc==0)) || exit "$rc"
+[[ $mode != --packages ]] || { printf 'CHECKED private native packages: %s\n' "$VC_APP_PROOF_OUT"; exit 0; }
 # Keep raw stdout/stderr and exact failure codes. Every process is owned by this invocation.
 set +e
 timeout --signal=TERM --kill-after=1 27 "$node" preview/tools/native-http-entry.mjs --check > "$VC_APP_PROOF_OUT/preflight.log" 2>&1

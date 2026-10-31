@@ -74,10 +74,11 @@ try {
  const installed=join(process.env.HOME!,'.local/lib/vault-chat/simple-ship');
  if(runFull){
   // Genuine installed packages are copied into this fixture's own dependency root.
-  // Native bwrap cannot follow host-home symlinks, and caches must never mutate shared packages.
+  // Dereference nested scoped-package links too: host-home targets do not exist in native bwrap.
+  // The complete genuine tree (including native optionals) and all caches stay private.
   const dependencies=join(root,'fixture-deps/node_modules');mkdirSync(dependencies,{recursive:true});
   writeFileSync(join(dirname(dependencies),'package.json'),manifest);writeFileSync(join(dirname(dependencies),'package-lock.json'),lock);
-  for(const p of readdirSync('node_modules')) if(!p.startsWith('.vite'))await cp(realpathSync(join('node_modules',p)),join(dependencies,p),{recursive:true,verbatimSymlinks:true});
+  for(const p of readdirSync('node_modules')) if(!p.startsWith('.vite'))await cp(realpathSync(join('node_modules',p)),join(dependencies,p),{recursive:true,dereference:true});
   mkdirSync(installed,{recursive:true});
   writeFileSync(join(installed,'config.json'),JSON.stringify({repo,remote:'origin',workRoot:join(root,'native-runs'),dependencies,pi:process.env.VC_TEST_PI_DIR,node:process.execPath,npm:realpathSync(process.env.VC_PROOF_NPM!),bash:realpathSync('/run/current-system/sw/bin/bash'),bwrap:process.env.VC_PROOF_BWRAP,path:process.env.PATH}));
   await build({entryPoints:['server/simpleShipHost.ts'],bundle:true,platform:'node',format:'esm',outfile:join(installed,'simple-ship.mjs')});
