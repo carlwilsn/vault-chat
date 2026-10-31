@@ -21,13 +21,12 @@ export async function appProof({ base, out, id, title, advance, rollback, smoke 
     await page.goto(`${base}/?scenario=native-shipment-app&base=synthetic&narrate=0&overlay=0`);
     await page.waitForFunction(() => window.__preview?.ready && window.__preview.stepsDone);
     // Real controls only: expose the actual chats list and choose the server-created project.
-    const project = page.getByRole('button', { name: 'app', exact: true });
-    if (!await project.count()) {
-      const chats = page.getByTitle('Chats', { exact: true });
-      if (await chats.count()) await chats.click();
-      else await page.keyboard.press('Control+Shift+l');
-    }
-    await project.click();
+    const project = page.locator('[data-el="thread-project"][data-thread="project-app"] > button').getByText('app', { exact: true });
+    const pickProject = async () => {
+      if (!await project.isVisible()) await page.getByRole('button', { name: 'Chats', exact: true }).click();
+      await project.click();
+    };
+    await pickProject();
     const card = page.locator(`[data-shipment-id="${id}"]`);
     await card.waitFor({ state: 'visible' });
     assert.equal(await card.getAttribute('data-shipment-status'), 'accepted');
@@ -48,23 +47,23 @@ export async function appProof({ base, out, id, title, advance, rollback, smoke 
     if (!smoke) {
       // Observations enter the real release-health HTTP transport, never UI status setters.
       await advance('pending');
-      await page.reload(); await project.click();
+      await page.reload(); await pickProject();
       await page.waitForFunction(id => document.querySelector(`[data-shipment-id="${id}"]`)?.dataset.shipmentStatus === 'health-pending', id);
       evidence.states.push({ phase: 'published-offline-pending', text: await card.innerText() });
       await page.screenshot({ path: `${out}/03-app-health-pending.png` });
       await advance('healthy');
-      await page.reload(); await project.click();
+      await page.reload(); await pickProject();
       await page.waitForFunction(id => document.querySelector(`[data-shipment-id="${id}"]`)?.dataset.shipmentStatus === 'shipped', id);
       evidence.states.push({ phase: 'synthetic-native-transport-healthy', text: await card.innerText() });
       await page.screenshot({ path: `${out}/04-app-fixture-shipped.png` });
       await card.getByRole('button', { name: 'Roll back', exact: true }).click();
       await rollback();
-      await page.reload(); await project.click();
+      await page.reload(); await pickProject();
       await page.waitForFunction(id => document.querySelector(`[data-shipment-id="${id}"]`)?.dataset.shipmentStatus === 'rolling-back', id);
       evidence.states.push({ phase: 'native-source-revert-accepted-not-shipped', text: await card.innerText() });
       await page.screenshot({ path: `${out}/05-app-source-reverted.png` });
       await advance('revert-healthy');
-      await page.reload(); await project.click();
+      await page.reload(); await pickProject();
       await page.waitForFunction(id => document.querySelector(`[data-shipment-id="${id}"]`)?.dataset.shipmentStatus === 'rolled-back', id);
       await page.screenshot({ path: `${out}/06-app-fixture-rolled-back.png` });
       evidence.states.push({ phase: 'synthetic-revert-release-healthy', text: await card.innerText() });
