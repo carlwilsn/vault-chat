@@ -35,7 +35,7 @@ export async function finishedNativeWorker(root: string, vault: string, convId: 
   const deadline=Date.now()+12000;
   while(Date.now()<deadline){
    const parent=await readConv(vault,convId); const worker=parent?.subagents?.find((s:any)=>s.state==='completed'&&s.toolCallId);
-   if(worker){
+   if(worker && parent?.status !== 'running' && parent?.messages.some(m=>m.role==='assistant' && m.content==='Private synthetic worker completed')){
     const child=await readConv(vault,worker.threadId);
     assert.ok(child?.messages.some(m=>m.content==='Correct native child report for fixture-delegate'));
     const call=parent!.messages.flatMap(m=>m.toolCalls??[]).find(t=>t.id===worker.toolCallId);

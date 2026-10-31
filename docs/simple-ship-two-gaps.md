@@ -73,6 +73,9 @@ Focused regression evidence:
 - `/tmp/sgunit.NOiLp5/units.log`: 16/16 existing engine guards, visual routing and tool-start checks passed.
 - New genuine two-request native Delegate and HTTP matrix regressions are included in the
   parent server gate; **not claimed run here** because that suite needs the new built server.
+- `/tmp/sa.I1PYnl` retains a cleanup-timeout failure after all assertions: a native wake
+  could still start while helper cleanup closed the initial process. The helper now waits for
+  the actual native report wake to finish before closing its owned pi processes.
 - `/tmp/sa.Yf8CRp` retains a failed 27-second attempt: the expanded old short seven-phase
   browser protocol exceeded its deadline after native-worker checks. Nothing was erased or
   relabeled passing. The short check was narrowed to the two fixes; full mode retains every
