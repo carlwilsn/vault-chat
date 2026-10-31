@@ -89,6 +89,8 @@ export async function appProof({ base, out, id, title, advance, rollback, smoke,
       await page.waitForFunction(id => document.querySelector(`[data-shipment-id="${id}"]`)?.dataset.shipmentStatus === 'rolled-back', id);
       await page.screenshot({ path: `${out}/06-app-fixture-rolled-back.png` });
       evidence.states.push({ phase: 'synthetic-revert-release-healthy', text: await card.innerText() });
+    }
+    {
       // Proof bytes are now a private dangling redirect: real file reader must fail visibly.
       rejectedPath = await advance('redirect');
       await card.getByRole('button', { name: 'Proof', exact: true }).click();
@@ -108,8 +110,8 @@ export async function appProof({ base, out, id, title, advance, rollback, smoke,
       return rejectedPath && u.origin === new URL(base).origin && u.pathname === '/proof/__realbox/api/v1/vault/file' && u.searchParams.get('path') === rejectedPath && u.searchParams.get('vault') === 'fixture';
     };
     for (const key of ['page', 'network', 'outbound']) assert.deepEqual(evidence.errors[key], [], key);
-    assert.equal(evidence.errors.http.length, smoke ? 0 : 2, 'exact rejected artifact requests (React StrictMode)');
-    assert.equal(evidence.errors.console.length, smoke ? 0 : 2, 'exact rejected artifact browser errors');
+    assert.equal(evidence.errors.http.length, 2, 'exact rejected artifact requests (React StrictMode)');
+    assert.equal(evidence.errors.console.length, 2, 'exact rejected artifact browser errors');
     // Keep every deliberate rejection; narrowly correlate console + HTTP with this one actual fixture redirect.
     for (const e of evidence.errors.http) assert.ok(e.status === 404 && expectedRejectedURL(e.url), JSON.stringify(e));
     for (const e of evidence.errors.console) assert.ok(e.text === 'Failed to load resource: the server responded with a status of 404 (Not Found)' && expectedRejectedURL(e.location.url), JSON.stringify(e));

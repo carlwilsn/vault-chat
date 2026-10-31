@@ -6,6 +6,9 @@ import { Engine } from '../../server/engine/engine';
 import { PiBackend } from '../../server/engine/pi/backend';
 import { piPaths } from '../../server/engine/pi/config';
 import { readConv } from '../../server/engine/convs';
+import { registerAll } from '../../server/commands/registry';
+import { fsCommands } from '../../server/commands/fs';
+import { conversationCommands } from '../../server/commands/conversations';
 import { fakeChat, lastToolResult, lastUser } from '../../server/test/fakeChat';
 
 export async function finishedNativeWorker(root: string, vault: string, convId: string) {
@@ -25,6 +28,7 @@ export async function finishedNativeWorker(root: string, vault: string, convId: 
  const backend=new PiBackend({paths,install:{cli:join(prefix,'node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js'),node:process.execPath,version:'1.1.0',dir:prefix,installed:false},catalog:new Map(),sandbox:{outer:null,shell:null,denyRead:[],denyWrite:[]},apiKey:()=>null,thinking:'off',idleMs:60000,maxProcs:4,subagents:{agentsDirs:[],concurrency:2,maxTasks:4,hostMax:4,timeoutMs:10000,graceMs:1000,defaultModel:null},log:()=>{}});
  const procs:any[]=[]; const spawn=backend.spawn.bind(backend); backend.spawn=async(o)=>{const result=await spawn(o);procs.push(result.proc);return result;};
  const engine=new Engine({vault,backend,ledger:{settle:async()=>({calls:0,usd:0,missing:0,byId:{}}),has:()=>false} as any,jobEnv:{logDir:join(root,'worker-jobs'),wrap:null,env:{}},model:()=>'test/fake-model',webSearchModel:'test/fake-model',apiKey:()=>null,notify:async()=> 'fixture-no-push',broadcast:()=>{},log:()=>{}});
+ registerAll(fsCommands); registerAll(conversationCommands);
  engine.start();
  try{
   await engine.message({convId,text:'Inspect the synthetic source range using one Delegate.'});
