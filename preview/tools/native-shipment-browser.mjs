@@ -23,6 +23,7 @@ export async function appProof({ base, out, id, title, advance, rollback, smoke 
     // Real controls only: expose the actual chats list and choose the server-created project.
     const project = page.locator('[data-el="thread-project"][data-thread="project-app"] > button').getByText('app', { exact: true });
     const pickProject = async () => {
+      if (!await page.locator('[data-el="chats-sidebar"]').count()) await page.keyboard.press('Control+Shift+f');
       if (!await project.isVisible()) await page.getByRole('button', { name: 'Chats', exact: true }).click();
       await project.click();
     };
