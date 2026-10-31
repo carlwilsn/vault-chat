@@ -6,6 +6,7 @@ import { launch } from "./browser.mjs";
 const [base, out, mode = "candidate"] = process.argv.slice(2);
 assert.ok(base && out && ["candidate", "baseline"].includes(mode));
 mkdirSync(out, { recursive: true });
+const preflight = process.argv[5] === "--preflight";
 const size = { width: 1400, height: 900 };
 const { browser, context, page, log } = await launch({ ...size, recordVideo: { dir: out, size } });
 const result = { mode, scope: "Source native frontend + throwaway real server fixture; not user registration, production Tauri or shipment proof", checks: {}, errors: [] };
@@ -60,11 +61,22 @@ try {
     return s.conversationsLoaded && s.activeConversationId === "main" && s.messages.some((m) => m.mid === "picker-main-assistant");
   });
   // Genuine file input before switching: a stale open pane must not survive into another vault.
-  await page.locator('[data-tree-path$=".md"]:not([data-tree-dir])').first().click();
+  // The synthetic laptop vault genuinely starts with collapsed top-level directories.
+  // Choose this known seeded file, not whichever Markdown row happens to appear first.
+  const initialFile = "/home/carl/vaults/summer-demo/reading/README.md";
+  const reading = page.locator('[data-tree-path="/home/carl/vaults/summer-demo/reading"][data-tree-dir]');
+  const initialRow = page.locator(`[data-tree-path="${initialFile}"]:not([data-tree-dir])`);
+  result.checks.treeBeforeExpand = await page.locator("[data-tree-path]").evaluateAll((xs) =>
+    xs.map((x) => ({ path: x.dataset.treePath, directory: x.hasAttribute("data-tree-dir") })));
+  if (!(await initialRow.isVisible())) await reading.click();
+  await initialRow.click();
   await page.waitForFunction(async () => {
     const {useStore} = await import(`${location.pathname.replace(/\/$/, "")}/src/store.ts`);
-    return !!useStore.getState().currentFile;
+    const s = useStore.getState();
+    return s.currentFile === "/home/carl/vaults/summer-demo/reading/README.md"
+      && s.currentContent.startsWith("# Reading list\n");
   });
+  await page.getByRole("heading", { name: "Reading list", exact: true }).waitFor({ state: "visible" });
   result.checks.stateBefore = await snapshot();
   assert.ok(result.checks.stateBefore.currentFile.startsWith(result.checks.stateBefore.vault + '/'));
   assert.equal(result.checks.stateBefore.unknownScopeStatus, 404);
@@ -78,6 +90,7 @@ try {
   }
   await page.getByText("Main history stays in this conversation.", { exact: true }).waitFor({ state: "visible" });
   await shot("01-main-and-projects");
+  if (!preflight) {
   await el("vault-picker").click();
   await page.waitForFunction(() => document.querySelectorAll('[data-el="vault-picker-item"]').length >= 3);
   result.checks.rows = await el("vault-picker-item").evaluateAll((xs) => xs.map((x) => ({ rel: x.dataset.rel, text: x.textContent.trim() })));
@@ -194,10 +207,18 @@ try {
   assert.deepEqual(result.checks.newViewerFile.messages, result.checks.stateBefore.messages);
   assert.deepEqual(result.checks.newViewerFile.history, result.checks.stateBefore.history);
   await shot('09-correct-viewer-file-main-bound');
+  } else result.checks.preflight = "Known seeded Markdown opened through genuine directory and file clicks; Main/history/scopes checked";
 } catch (e) {
   failure = e;
   result.errors.push(String(e.stack ?? e));
   await shot("error").catch(() => {});
+  // Failure evidence is observational only; never let capture replace the primary error.
+  await page.content().then((html) => writeFileSync(join(out, "failure-dom.html"), html)).catch(() => {});
+  await page.evaluate(() => ({ calls: window.__preview?.calls(), unknown: window.__preview?.unknown() }))
+    .then((data) => writeFileSync(join(out, "failure-ipc.json"), JSON.stringify(data, null, 2))).catch(() => {});
+  await snapshot().then((data) => { result.failureState = data; }).catch((err) => {
+    result.failureCaptureError = String(err);
+  });
 } finally {
   const video = page.video();
   await context.close();
