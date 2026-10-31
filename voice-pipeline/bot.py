@@ -267,7 +267,7 @@ class Quiet(FrameProcessor):
         while not self.gate.idle(time.monotonic()):
             await asyncio.sleep(0.1)
 
-    async def say_piece(self, flow: ResultFlow, utt, text: str, task) -> None:
+    async def say_piece(self, flow: ResultFlow, utt, text: str, task, speakable) -> None:
         """A speak-channel piece: a new result waits for a gap once; the rest of it follows at once (or not at all)."""
         act = flow.next(utt, self.gate.user_turns)
         if act == "drop":
@@ -277,13 +277,17 @@ class Quiet(FrameProcessor):
             return
         if act == "gate":
             await self.until_idle()
+            # The original call/utt may have been revoked while waiting. Never bind old text to the
+            # now-current user turn; the server's existing authenticated route is the authority.
+            if not await speakable(utt):
+                return
             flow.started(utt, self.gate.user_turns, time.monotonic())
             if utt is not None:
-                asyncio.create_task(self.watch_collision(flow, utt, task))
+                asyncio.create_task(self.watch_collision(flow, utt, task, speakable))
         flow.pieces.append(text)
         await task.queue_frame(TTSSpeakFrame(text))
 
-    async def watch_collision(self, flow: ResultFlow, utt, task) -> None:
+    async def watch_collision(self, flow: ResultFlow, utt, task, speakable) -> None:
         """A result his voice ran into as it started (the gap closed as it opened): said again, whole, at the next gap."""
         await asyncio.sleep(ResultFlow.COLLIDE_SECS + 0.2)
         if flow.utt != utt or not flow.collided(self.gate.user_turns, self.gate.turn_at):
@@ -291,6 +295,14 @@ class Quiet(FrameProcessor):
         flow.replaying = True
         jlog(ev="result.collide", utt=utt, turn_after=round(self.gate.turn_at - flow.at, 2))
         await self.until_idle()
+        if flow.utt != utt:
+            return
+        current = await speakable(utt)
+        if flow.utt != utt:
+            return
+        if not current:
+            flow.replaying = False
+            return
         pieces = list(flow.pieces)
         flow.replayed.add(utt)
         flow.started(utt, self.gate.user_turns, time.monotonic())
@@ -472,14 +484,50 @@ async def speak_channel(call: dict, task: PipelineTask, quiet: Quiet):
                     if r.status != 200:
                         logger.warning(f"speak channel: HTTP {r.status}")
                         return
-                    async for raw in r.content:
-                        line = raw.decode("utf8").strip()
-                        if not line.startswith("data:"):
-                            continue
-                        msg = json.loads(line[5:])
-                        text = msg.get("text", "")
-                        if text:
-                            await quiet.say_piece(flow, msg.get("utt"), text, task)
+                    async def speakable(utt):
+                        # Fail closed, including missing utterance, replaced/ended call and unavailable server.
+                        if type(utt) is not int:
+                            return False
+                        try:
+                            async with s.get(f"{url}able/{utt}", headers=headers, timeout=aiohttp.ClientTimeout(total=5)) as fresh:
+                                return fresh.status == 200 and (await fresh.json()).get("speak") is True
+                        except Exception:
+                            return False
+
+                    # Only transport buffering: one serial consumer preserves piece order. Keep reading SSE
+                    # while it waits for quiet, so a native interrupt reaches Pipecat immediately, not after TTS.
+                    pending = asyncio.Queue()
+
+                    async def say_pending():
+                        while True:
+                            msg = await pending.get()
+                            try:
+                                await quiet.say_piece(flow, msg.get("utt"), msg["text"], task, speakable)
+                            finally:
+                                pending.task_done()
+
+                    async with asyncio.TaskGroup() as group:
+                        consumer = group.create_task(say_pending())
+                        try:
+                            async for raw in r.content:
+                                line = raw.decode("utf8").strip()
+                                if not line.startswith("data:"):
+                                    continue
+                                msg = json.loads(line[5:])
+                                if msg.get("interrupt") is True:
+                                    # Cancel the held piece (including an in-flight freshness check) and the
+                                    # existing replay flow. Pipecat owns cancellation of already queued audio.
+                                    consumer.cancel()
+                                    await asyncio.gather(consumer, return_exceptions=True)
+                                    flow.started(None, quiet.gate.user_turns)
+                                    flow.replaying = False
+                                    await task.queue_frame(InterruptionFrame())
+                                    consumer = group.create_task(say_pending())
+                                elif msg.get("text"):
+                                    await pending.put(msg)
+                            await pending.join()
+                        finally:
+                            consumer.cancel()
         except asyncio.CancelledError:
             return
         except Exception as e:  # the server restarted: reconnect
