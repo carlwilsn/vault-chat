@@ -1,5 +1,8 @@
 # Production App / private native shipping boundary
 
+Previous cancellation/process-boundary evidence is retained unchanged in
+[`simple-ship-native-cancellation-followup.md`](simple-ship-native-cancellation-followup.md).
+
 ## Result and candidate status
 
 **Not complete; not shipped; no acceptance claim.** This proof-only worktree starts at
@@ -10,11 +13,13 @@ The parent's seven-native pair/worktree was not changed or stopped. Canonical ma
 were read-only checked at `8e540669f3b3caca9b40da1105895775ad759ce7`.
 
 The actual App/private production HTTP short protocol completed at proof source
-`ed5ab1ee254214acbe78fd739ae47753fffa0f82`, evidence `/tmp/sa.dQqFcQ`.
+`8ea84cc8a698969b4a48224633a82167f68a7d9f`, evidence `/tmp/sa.eggFpj`.
+The final handoff also lists the newest exact source/evidence after history-load assertions.
 It deliberately records **two measured unresolved product gaps**, not a green product result:
 
 1. **Finished worker navigation missing:** a completed synthetic worker linked to a real
-   Delegate log item reaches the production conversation feed, but no `tasks-chip` appears.
+   Delegate log item reaches the production conversation feed, but no `tasks-chip` appears
+   after the actual tool-call row is opened.
    `ChatPane.tsx` renders `MessageBubble` without the declared `spawns` prop; that bubble's
    only inline finished-worker renderer depends on `spawns`. Screenshot `01-app-accepted.png`
    and `app.json.workerChipCount` retain the observation. No UI forcing or product patch.
