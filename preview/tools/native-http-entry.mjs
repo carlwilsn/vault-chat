@@ -1,10 +1,15 @@
 // Vite source runner, matching server build/test aliases. Does not listen or build.
 import { createServer } from 'vite';
+import react from '@vitejs/plugin-react';
+import { build } from 'esbuild';
+import { appProof } from './native-shipment-browser.mjs';
+import { previewPlugin } from '../plugin.mjs';
+globalThis.__nativeProofModules={createServer,react,build,appProof,previewPlugin};
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { inlinedKatexCss } from '../../server/katexCssGen.mjs';
 const shim = name => fileURLToPath(new URL('../../server/shims/'+name,import.meta.url));
-const server=await createServer({configFile:false,root:process.cwd(),cacheDir:process.env.VC_APP_PROOF_OUT+'/ssr-cache',server:{middlewareMode:true},resolve:{alias:{
+const server=await createServer({configFile:false,root:process.cwd(),cacheDir:process.env.VC_APP_PROOF_OUT+'/ssr-cache',optimizeDeps:{noDiscovery:true,entries:[]},server:{middlewareMode:true},resolve:{alias:{
  '@tauri-apps/api/core':shim('core.ts'),'@tauri-apps/api/event':shim('event.ts'),'@tauri-apps/api/app':shim('app.ts'),
  '@tauri-apps/api/window':shim('window.ts'),'@tauri-apps/api/webviewWindow':shim('window.ts'),
  '@tauri-apps/plugin-dialog':shim('plugins.ts'),'@tauri-apps/plugin-opener':shim('plugins.ts'),

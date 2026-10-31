@@ -13,15 +13,10 @@ import { acceptedChanges, updateShippingJournal, type AcceptedChange } from '../
 import { promote } from '../../server/simpleShipHost';
 import { ensureMain, appendNotes, patchMeta } from '../../server/engine/convs';
 import { gitCommands } from '../../server/commands/gitcmds';
-import { appProof } from './native-shipment-browser.mjs';
-import { previewPlugin } from '../plugin.mjs';
 
 const root = process.env.VC_APP_PROOF_OUT!, repoSource = process.cwd(), runFull = process.argv.includes('--run');
 assert.ok(root && root !== repoSource); mkdirSync(root, { recursive: true });
-const req = createRequire(join(repoSource, 'package.json'));
-const load = (name: string) => import(pathToFileURL(req.resolve(name)).href);
-const { createServer } = await load('vite'), { default: react } = await load('@vitejs/plugin-react');
-const { build } = await load('esbuild');
+const { createServer, react, build, appProof, previewPlugin } = (globalThis as any).__nativeProofModules;
 const bind = async (port: number) => { const s = netServer(); await new Promise<void>((yes, no) => { s.once('error', no); s.listen(port, '127.0.0.1', yes); }); return s; };
 for (const key of ['VC_PORT', 'VC_APP_PROOF_PORT']) { const port = Number(process.env[key]); assert.ok(port > 1024 && port < 65536 && ![8848,8857].includes(port)); const s = await bind(port); await new Promise<void>(r => s.close(() => r())); }
 // Prove refusal of an occupied private listener without adopting or killing it.
