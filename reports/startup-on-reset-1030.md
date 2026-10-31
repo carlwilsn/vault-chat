@@ -3,6 +3,7 @@
 ## Source and scope
 
 - Reset parent: `506ed12a1a806623c7d7842e552305664dcc535f`.
+- Combined code/test pin: `e0d7d482aa17268a55e2cafecb25935a53fffccc`; this report's final receipt update is documentation-only.
 - Own branch/worktree: `agent/startup-on-reset-1030`, `/home/carlwilsn/agent-work/vault-chat/startup-on-reset-1030`.
 - Original startup tip: `6bd1a44b09ecbc7cca7f1cbbc0b1cc4282198b48`, also retained as `backup/startup-original-6bd1a44b-1030`. Its original worktree and the reset diagnosis worktree remain untouched.
 - Ported only the startup/context diff from original `8e540669..6bd1a44b`, not an old parent or whole replacement files. Original runtime was `7a7aaf04`, documentation pin `c42e7b6f`.
@@ -27,6 +28,8 @@ All commands ran with fresh `env -i`, private HOME/cache/short TMPDIR, separate 
 - Targeted `convlogWorkers.test.ts`: **7 pass**, including over-64KB tail/lastSeq/checkpoint replay and malformed-update-only loss. This is a targeted harness file, **not** a full harness rerun.
 - Faithful final helper caller replay on all three retained successful original scenarios passes: **115 rejecting mutations + 18 native-file shape mutations**; original headerless `readEntries` is unchanged, actual native header and independent seed SID are separate. Exact Stop notice remains `{kind:"notice",text:"Stopped.",level:"info"}`. Source-extracted caller/final assertions, real handler/shared reducer and readonly SDK Abort/append/compaction semantics are exercised. Replay is not a new DOM/timing/UI run.
 - `node server/build.mjs` passes for bounded API checks. It is not the phone/board-inclusive `build:server` gate. The parent launcher must rebuild all combined outputs at the committed source pin.
+
+- Exact-pin combined launcher `--check` passes at `/tmp/sru.iFvd6Z`; the full finite `--preflight` passes at `/tmp/sru.9v7xiT`: recorder, header/caller replay, freshly rebuilt server bundle and **7 native API/prompt/Engine cases** all exit 0. No desktop build or browser ran. These checks use a fresh isolated clone and copied per-package dependencies, not an old UI receipt.
 
 ## Existing evidence is not combined-source delivery
 
