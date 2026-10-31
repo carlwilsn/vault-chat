@@ -154,7 +154,7 @@ type Live = {
 
 };
 
-type TurnOpts = { images?: string[]; context?: string; itemImages?: ItemImage[]; clientId?: string; /** What the chat shows (Carl's answer to a question asked before a restart). */ shown?: string; via?: string; /** Which client sent it (the turn log's `via`: laptop, phone, voice …). */ origin?: string; /** A wake, job or resume of something Carl started. */ byCarl?: boolean; /** An engine input that runs as its own turn once the running one ends, never folded into it (a background report: pi may settle the turn before a follow-up is taken, and a turn parked on a question takes none). */ ownTurn?: boolean };
+type TurnOpts = { images?: string[]; context?: string; hostContext?: string; itemImages?: ItemImage[]; clientId?: string; /** What the chat shows (Carl's answer to a question asked before a restart). */ shown?: string; via?: string; /** Which client sent it (the turn log's `via`: laptop, phone, voice …). */ origin?: string; /** A wake, job or resume of something Carl started. */ byCarl?: boolean; /** An engine input that runs as its own turn once the running one ends, never folded into it (a background report: pi may settle the turn before a follow-up is taken, and a turn parked on a question takes none). */ ownTurn?: boolean };
 
 const RESUME_TEXT =
   "The box restarted (or the engine stopped) while your last turn was running, so any command it was running was killed and may not have finished. Re-check reality (files, processes, logs), then continue from where you were.";
@@ -814,14 +814,14 @@ export class Engine {
    * box is the only writer: an intent's effect reaches every client through
    * the log, never through the answer.
    */
-  async intent(b: Record<string, any>): Promise<Record<string, unknown>> {
+  async intent(b: Record<string, any>, viewerRoot = this.d.vault): Promise<Record<string, unknown>> {
     switch (b?.type) {
       case "send":
-        return (await this.message({ ...b, clientMsgId: b.clientId })) ?? { error: "legacy conversation" };
+        return (await this.message({ ...b, clientMsgId: b.clientId }, viewerRoot)) ?? { error: "legacy conversation" };
       case "steer":
-        return (await this.message({ ...b, clientMsgId: b.clientId, mode: "steer" })) ?? { error: "legacy conversation" };
+        return (await this.message({ ...b, clientMsgId: b.clientId, mode: "steer" }, viewerRoot)) ?? { error: "legacy conversation" };
       case "queue":
-        return (await this.message({ ...b, clientMsgId: b.clientId, queue: true })) ?? { error: "legacy conversation" };
+        return (await this.message({ ...b, clientMsgId: b.clientId, queue: true }, viewerRoot)) ?? { error: "legacy conversation" };
       case "unqueue":
         return (await this.message({ convId: b.convId, unqueue: String(b.id ?? "") })) ?? { error: "legacy conversation" };
       case "now":
@@ -927,7 +927,7 @@ export class Engine {
     /** The rest of his previous line (a pause on a call cut it in two): a Delegate for it refines the worker he just
      *  started instead of starting another. */
     continues?: boolean;
-  }): Promise<Record<string, unknown> | null> {
+  }, viewerRoot = this.d.vault): Promise<Record<string, unknown> | null> {
     if (body.continues && body.convId) this.continuedAt.set(body.convId, Date.now());
     const clientId = typeof body.clientMsgId === "string" && body.clientMsgId.trim() ? body.clientMsgId.trim().slice(0, 80) : newMessageId();
     if (typeof body?.unqueue === "string" && body.convId) return this.takeBack(body.convId, body.unqueue);
@@ -1005,6 +1005,13 @@ export class Engine {
     const surface = body.source === "voice" ? `a voice call${body.client ? ` (${String(body.client).slice(0, 20)})` : ""}` : typeof body.client === "string" && body.client ? `his ${body.client.slice(0, 20)}` : null;
     if (surface) context = [`[Carl, on ${surface}]`, context].filter(Boolean).join("\n");
     const sent = context ? `${context}\n\n${shown}` : shown;
+    // Capture the trusted HTTP viewer scope at receipt, not when a queued ask
+    // eventually runs. This is historical request metadata, never a mutable
+    // "current viewer" and never another copy of the prompt. Pi stores it in
+    // its existing typed host context; the user-role envelope stays unchanged.
+    const hostContext = viewerRoot !== this.d.vault
+      ? `<file-context request=${JSON.stringify(clientId)} device=${JSON.stringify(origin ?? "unknown")} conversation=${JSON.stringify(id)}>Viewer/file-context vault root: ${viewerRoot}/. Conversation owner: ${this.d.vault}/. Resolve viewer-relative file references to absolute paths under that viewer root. Read and Bash relative paths still use the thread/project cwd; this binding does not change tool path resolution. This records the incoming request, not later viewer state.</file-context>`
+      : undefined;
     if (l && !l.finished) {
       // A running turn: steer it (pi delivers it after the current tool calls), or queue it as
       // pi's follow-up (delivered when the agent would otherwise stop). Either way it is pending
@@ -1019,8 +1026,8 @@ export class Engine {
       // the background, the call answers at once, and his message is taken up now; each report comes as its own turn.
       this.detachWaiting(id, l.threadId);
       try {
-        if (kind === "queue") await this.d.backend.followUp(l.threadId, { texts: [sent], images: paths });
-        else await this.d.backend.steer(l.threadId, l.turnId, { texts: [sent], images: paths });
+        if (kind === "queue") await this.d.backend.followUp(l.threadId, { texts: [sent], context: hostContext, images: paths });
+        else await this.d.backend.steer(l.threadId, l.turnId, { texts: [sent], context: hostContext, images: paths });
         return { ok: true, convId: id, ...(kind === "queue" ? { queued: true, qid: clientId } : { steered: true }) };
       } catch (e) {
         l.feed.forget(clientId);
@@ -1030,7 +1037,7 @@ export class Engine {
         return { ok: false, convId: id, error: `the running turn did not take it: ${(e as Error).message}` };
       }
     }
-    void this.run(id, shown, "user", { images: paths, context, itemImages, clientId, origin, ...(body.via ? { via: body.via } : {}) }).catch((e) => this.log(`turn failed: ${e}`));
+    void this.run(id, shown, "user", { images: paths, context, hostContext, itemImages, clientId, origin, ...(body.via ? { via: body.via } : {}) }).catch((e) => this.log(`turn failed: ${e}`));
     return { ok: true, convId: id };
   }
 
@@ -1500,7 +1507,7 @@ export class Engine {
             // pi delivers a steer after the running tool calls: a `subagent` call can wait minutes, so its children
             // move to the background and he is answered now (like Claude Code's background tasks).
             this.detachWaiting(convId, existing.threadId);
-            await b.steer(existing.threadId, existing.turnId, { texts: [sent], images: opts.images ?? [] }).catch(() => {
+            await b.steer(existing.threadId, existing.turnId, { texts: [sent], context: opts.hostContext, images: opts.images ?? [] }).catch(() => {
               existing.feed.forget(id);
               this.setPending(convId, undefined, id);
             });
@@ -1622,7 +1629,7 @@ export class Engine {
       // A live call learns where this turn came from (a call speaks only its own surface's exchange).
       if (this.taps.has(convId)) this.tapEmit(convId, { type: "vc_turn_start", kind, origin: opts.origin ?? null });
       try {
-        await this.d.backend.startTurn(threadId, { texts, context: rules, images: opts.images ?? [], model, turnId, ...(talker?.thinking ? { thinking: talker.thinking } : {}) });
+        await this.d.backend.startTurn(threadId, { texts, context: [rules, opts.hostContext].filter(Boolean).join("\n\n"), images: opts.images ?? [], model, turnId, ...(talker?.thinking ? { thinking: talker.thinking } : {}) });
         live.started = true;
         // Stop may arrive before the prompt itself reached pi (model/context
         // setup). Honor it at native acceptance too, without a fresh prompt.
@@ -1693,7 +1700,11 @@ export class Engine {
     const sent = this.sectionsSent.get(threadId) ?? new Map<string, string>();
     this.sectionsSent.set(threadId, sent);
     const out: string[] = [];
-    for (const x of turnSections(conv as any, { folder: this.folderOf(conv) })) {
+    const roots = ctxConfig().vaults?.() ?? [this.d.vault];
+    // Names/paths only, not other conversations, rules or memories. This section
+    // uses the existing changed-section cache, so it is not repeated every turn.
+    const files = { key: "vault-files", text: `<vault-files>Registered synced vault content (use absolute paths; the project/thread stays here):\n${roots.map(p => `- ${p}/`).join("\n")}\nFile-context paths without a request-specific viewer binding refer to the conversation owner's vault: ${this.d.vault}/. Use absolute paths for vault files. Read and Bash relative paths use the thread/project cwd, not the viewer root.\nOther vaults' .vault-chat and .git are private; service-owned project sources remain read-only.</vault-files>` };
+    for (const x of [...turnSections(conv as any, { folder: this.folderOf(conv) }), files]) {
       if (sent.get(x.key) === x.text) continue;
       sent.set(x.key, x.text);
       out.push(x.text);
@@ -2314,9 +2325,14 @@ export class Engine {
           const r = await openProject(vault, a, { emit: (ev) => this.d.broadcast?.(ev), message: (b) => this.message(b) });
           return { success: r.ok, contentItems: [{ type: "inputText", text: r.text }] };
         }
-        case "PdfRead":
+        case "PdfRead": {
+          const why = await this.d.backend.nativePath?.(vault, a.path);
+          if (why) return { success: false, contentItems: [{ type: "inputText", text: why }] };
           return text(await pdfRead(vault, a));
+        }
         case "PdfPages": {
+          const why = await this.d.backend.nativePath?.(vault, a.path);
+          if (why) return { success: false, contentItems: [{ type: "inputText", text: why }] };
           const answer = await pdfPagesAnswer(vault, a);
           return { ...text(answer.text), resources: answer.resources };
         }

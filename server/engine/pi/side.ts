@@ -78,6 +78,7 @@ type Run = {
   error: string | null;
   busy: boolean;
   lastUsed: number;
+  sandboxKey?: string;
   waiters: Set<() => void>;
   log?: SideLog;
   rec?: TurnRecorder | null;
@@ -124,10 +125,12 @@ export class SideRuns {
       // their explicit names (no inferred grant of newly added tools).
       const previous = JSON.stringify(run.meta.hostTools ?? []);
       await this.refreshTools(run.meta);
-      if (run.proc?.isAlive() && previous !== JSON.stringify(run.meta.hostTools ?? [])) await run.proc.close(3000);
+      if (run.proc?.isAlive() && (previous !== JSON.stringify(run.meta.hostTools ?? []) || run.sandboxKey !== this.b.sandboxKey())) await run.proc.close(3000);
       if (!run.proc?.isAlive()) {
         if (!run.file) throw new Error("that side thread is gone");
-        run.proc = (await this.spawn(run.meta, { file: run.file })).proc;
+        const spawned = await this.spawn(run.meta, { file: run.file });
+        run.proc = spawned.proc;
+        run.sandboxKey = spawned.sandboxKey;
         this.attach(run);
       }
       this.save(run);
@@ -161,8 +164,8 @@ export class SideRuns {
       writeFileSync(meta.system, o.system);
     }
     await this.refreshTools(meta);
-    const { proc, id, file } = await this.spawn(meta, { fork: o.fork ?? null });
-    const run: Run = { id, proc, file: file || null, meta, text: "", v: 0, done: false, error: null, busy: false, lastUsed: Date.now(), waiters: new Set() };
+    const { proc, id, file, sandboxKey } = await this.spawn(meta, { fork: o.fork ?? null });
+    const run: Run = { id, proc, sandboxKey, file: file || null, meta, text: "", v: 0, done: false, error: null, busy: false, lastUsed: Date.now(), waiters: new Set() };
     this.runs.set(id, run);
     // Beside the session: how to reopen it (a refinement after the box restarted).
     this.save(run);

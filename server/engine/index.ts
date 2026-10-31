@@ -9,6 +9,7 @@ import { dirname, isAbsolute, join, relative } from "node:path";
 import { loadCatalog, modelMeta } from "./catalog";
 import { configureContext, ctxConfig } from "./context";
 import { Engine, type EngineNotice } from "./engine";
+import { registeredVaultContent } from "./vaultContent";
 export { engineShuttingDown } from "./engine";
 import { Ledger } from "./ledger";
 import { excludeLocalDir } from "./wakes";
@@ -198,7 +199,7 @@ export function buildSandbox(o: {
   const envFile = o.envFile ?? serverEnvFile(o.home);
   const denyRead = [o.secretsDir, ...o.hideFiles, envFile, ...creds, "/proc", ...(o.uid >= 0 ? [`/run/user/${o.uid}`] : [])];
   const denyWrite = [o.stateDir, join(o.vault, ".vault-chat", "conversations"), join(o.vault, ".vault-chat", "events"), join(o.vault, ".vault-chat", "local")];
-  if (!o.bwrap) return { outer: null, shell: null, denyRead, denyWrite };
+  if (!o.bwrap) return { vault: o.vault, outer: null, shell: null, denyRead, denyWrite };
   const work = o.workDir ?? agentWorkDir(o.home, o.vault);
   const roots = [...new Set((o.vaultRoots ?? [dirname(o.vault), join(o.home, "vaults")]).map((r) => r.replace(/[\\/]+$/, "")))]
     // Never the home itself (or above it), never a root that holds the server's state.
@@ -215,7 +216,7 @@ export function buildSandbox(o: {
   for (const d of [join(o.vault, ".vault-chat", "conversations"), join(o.vault, ".vault-chat", "events"), join(o.vault, ".vault-chat", "local")]) if (isDir(d)) mounts.push("--ro-bind", d, d);
   const hidden: string[] = [];
   const hide = (p: string) => {
-    if (isDir(p)) mounts.push("--tmpfs", p);
+    if (isDir(p)) mounts.push("--tmpfs", p, "--remount-ro", p);
     else if (isFile(p)) mounts.push("--ro-bind", "/dev/null", p);
     else return;
     hidden.push(p);
@@ -229,7 +230,7 @@ export function buildSandbox(o: {
     hide(`/tmp/tmux-${o.uid}`);
   }
   const head = [o.bwrap, "--dev-bind", "/", "/", "--proc", "/proc", "--unshare-pid", "--die-with-parent"];
-  return { outer: [...head, ...mounts, "--"], shell: [...head, ...mounts, "--"], denyRead, denyWrite, roots, hidden };
+  return { vault: o.vault, outer: [...head, ...mounts, "--"], shell: [...head, ...mounts, "--"], denyRead, denyWrite, roots, hidden };
 }
 
 /** Boot the engine on pi. */
@@ -289,13 +290,14 @@ export async function startEngine(b: EngineBoot): Promise<EngineHandle> {
     // Its work area outside the vault, writable in the sandbox (the rest of the home is read-only there).
     const workDir = agentWorkDir(home, v.path);
     if (bwrap) mkdirSync(workDir, { recursive: true });
-    const others = () => otherVaultPaths(v, vaults(), (w) => stateOf(w).walls);
+    const content = registeredVaultContent(v, vaults, (w) => stateOf(w).walls);
+    const others = () => content().hidden;
     // The vault-chat folder's hubs (server/master.ts) are hidden like the vault roots.
     const m = masterDir();
     const vaultRoots = [...new Set([dirname(b.vault), dirname(v.path), join(home, "vaults"), ...(m ? [masterLayout(m).vaults, masterLayout(m).hub] : [])])];
     // A project folder Carl chose (server/projectFolders.ts) may be neither inside nor around anything this
     // sandbox hides or keeps read-only: the server's state and env file, the key store, the tokens, the
-    // other vaults and their repos, the vault roots.
+    // private vault metadata and bare repos, the vault roots.
     setFolderWalls(v.path, {
       home,
       protect: () => [b.stateDir, b.secretsDir, serverEnvFile(home), b.tokenPath, b.localStoragePath, b.pushSubsPath, ...vaultRoots.filter((r) => !underDir(home, r)), ...others()].filter(Boolean),
@@ -316,10 +318,11 @@ export async function startEngine(b: EngineBoot): Promise<EngineHandle> {
         vaultRoots,
       }),
       others,
+      vaultContent: () => content().folders,
       // The project folders Carl chose outside the vault: read-write, read at each spawn.
       projects: () => activeFolders(v.path).map((f) => f.abs).filter((f) => !underDir(f, v.path) && !isGatedProject(f)),
       // A project that is a git repo: its folder read-only; the agent works in its clone in the work area (Keep is Carl's).
-      readOnly: () => activeFolders(v.path).map((f) => f.abs).filter((f) => !underDir(f, v.path) && isGatedProject(f)),
+      readOnly: () => [...new Set(vaults().flatMap(w => activeFolders(w.path).map(f => f.abs)))].filter(f => isGatedProject(f)),
     };
     const backend = new PiBackend({
       install,
@@ -347,7 +350,7 @@ export async function startEngine(b: EngineBoot): Promise<EngineHandle> {
     sweepJobEnvFiles();
     const jobEnv = {
       logDir: st.jobs,
-      // Jobs outlive turns: the same hiding as pi's sandbox (the other vaults included), in a pid namespace of their own.
+      // Jobs outlive turns: the same registered content and private-state walls as pi's sandbox, in a pid namespace of their own.
       get wrap() {
         return jobWrap(outerWith(sandbox));
       },
@@ -371,7 +374,7 @@ export async function startEngine(b: EngineBoot): Promise<EngineHandle> {
       ...(v.main ? {} : { log: (m: string) => console.log(`[engine:${v.name}] ${m}`) }),
       onFilesWritten: (paths) => b.onFilesWritten?.(v.name, paths),
       vaultName: v.name,
-      // The vault's own tools run in the same sandbox as the agent's commands (the other vaults hidden).
+      // The vault's own tools use the same registered content capabilities as commands.
       shell: () => outerWith(sandbox),
       // One line per turn: the full record in <state>/logs/turns.jsonl, a summary in the journal.
       turnLog: (line) => {
@@ -451,7 +454,8 @@ export function vaultState(stateDir: string, base: PiPaths, v: VaultRef): { pi: 
   return { pi: vaultPiPaths(base, join(root, "pi")), jobs: join(root, "jobs"), ledger: join(v.path, ".vault-chat", "local", "ledger.json"), walls: [root] };
 }
 
-/** What one vault's agent may not read or write: every other vault's working copy, bare repo and engine state. */
+/** Legacy full-isolation projection, retained for old policy callers/tests. Runtime
+ * content capabilities use registeredVaultContent; only private paths stay hidden. */
 export function otherVaultPaths(v: VaultRef, all: VaultRef[], walls: (w: VaultRef) => string[]): string[] {
   return all.filter((w) => w.path !== v.path).flatMap((w) => [w.path, ...(w.bare ? [w.bare] : []), ...walls(w)]);
 }

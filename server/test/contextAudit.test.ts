@@ -15,8 +15,10 @@ import { piOf } from "./fakePi";
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { EventEmitter } from "node:events";
 import { mkdirSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { tmp, cleanup, git } from "./helpers";
+import { agentWorkDir } from "../workArea";
 import { withPiSessions } from "./fakeSession";
 
 const root = tmp("vcaudit-");
@@ -159,6 +161,7 @@ const REMOVED = /SetProject|ProjectMemory|ProjectCost|Done means proved|^## (mem
 
 function normalise(s: string): string {
   return s
+    .split(agentWorkDir(homedir(), vault)).join("<work-area>")
     .split(vault.replace(/\\/g, "/"))
     .join("<vault>")
     .split(vault)
@@ -171,6 +174,7 @@ function normalise(s: string): string {
     .replace(/\.vault-chat\/local\/captures\/[a-z0-9]+-[a-z0-9]+\.png/g, ".vault-chat/local/captures/<capture>.png")
     .replace(/Current date and time: [^\n]*/g, "Current date and time: <now>")
     .replace(/\d{4}-\d{2}-\d{2}/g, "<date>")
+    .split(homedir().replace(/\\/g, "/")).join("<home>")
     .replace(/\\/g, "/");
 }
 
@@ -214,7 +218,7 @@ beforeAll(async () => {
   const folder = join(vault, "Coconut");
   const pdir = join(folder, ".vault-chat");
   writeFileSync(join(folder, "AGENTS.md"), "# Coconut\n\nDetect coconuts in drone images.\n");
-  writeFileSync(join(pdir, "memory.md"), "# Coconut: memory\n\n- 2026-10-12: YOLOv8, 640px input; 1024 tiles, 128 overlap.\n- Labels in labels/ (CVAT export).\n- Shadows cause false positives before 9am.\n- 2026-10-14: tiled the March flight (4,812 tiles).\n- 2026-10-15: v3 training started, mAP50 0.71 at epoch 20.\n");
+  writeFileSync(join(pdir, "project-memory.md"), "# Coconut: memory\n\n- 2026-10-12: YOLOv8, 640px input; 1024 tiles, 128 overlap.\n- Labels in labels/ (CVAT export).\n- Shadows cause false positives before 9am.\n- 2026-10-14: tiled the March flight (4,812 tiles).\n- 2026-10-15: v3 training started, mAP50 0.71 at epoch 20.\n");
   writeFileSync(join(pdir, "rules.md"), "- Report mAP50 and the count error together.\n");
   const { Engine } = await import("../engine/engine");
   backend = withPiSessions(new FakeBackend(), join(root, "pi"));
@@ -271,6 +275,9 @@ describe("what each mode sends", () => {
     act.activityPost(vault, { entry: { kind: "ask", modality: "ctrl-l", text: 'asked "what is mAP50?"', detail: "answer: mean average precision at IoU 0.5.", project: "coconut" } });
     const next = await turn({ text: "OK, plan it.", convId }, "Planned in plan.md.");
     expect(next.instructions).toBeNull();
+    // A first snapshot failure used to abort this test before posting this
+    // activity (and before changing the rules), cascading into later snapshots.
+    expect(next.texts.join("\n")).toContain('asked "what is mAP50?"');
     const r2 = await audit("box-chat-next-turn", next.texts.map((t, i) => ({ label: `turn input ${i + 1}`, text: t })));
     // The thread holds instructions + both turns: nothing said twice.
     const thread = [first.instructions!, ...first.texts, ...next.texts].map(normalise).join("\n");

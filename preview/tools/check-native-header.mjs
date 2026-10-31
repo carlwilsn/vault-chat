@@ -184,10 +184,16 @@ const changed=engine.slice(engine.indexOf('  private changedSections('),engine.i
 const onPi=engine.slice(engine.indexOf('  private onPi('),engine.indexOf('  private onThreadLost('));
 assert.ok(changed.includes('sectionsSent')&&onPi.includes('if (ev.result) this.sectionsSent.delete(l.threadId);'));
 const isolated=transformSync('class CacheMethods { '+changed+onPi+' }; return CacheMethods;', {loader:'ts',target:'node22'}).code;
-const CacheMethods=new Function('turnSections',isolated)(()=>[{key:'memory',text:'CANARY'}]);
-const cache=new CacheMethods();cache.sectionsSent=new Map();cache.taps=new Map();cache.folderOf=()=>null;
+const fixtureRoots=['/fixture/owner'];
+const expectedFiles=()=>`<vault-files>Registered synced vault content (use absolute paths; the project/thread stays here):\n${fixtureRoots.map(p=>`- ${p}/`).join('\n')}\nFile-context paths without a request-specific viewer binding refer to the conversation owner's vault: /fixture/owner/. Use absolute paths for vault files. Read and Bash relative paths use the thread/project cwd, not the viewer root.\nOther vaults' .vault-chat and .git are private; service-owned project sources remain read-only.</vault-files>`;
+const expectedSections=()=>`CANARY\n\n${expectedFiles()}`;
+const CacheMethods=new Function('turnSections','ctxConfig',isolated)(()=>[{key:'memory',text:'CANARY'}],()=>({vaults:()=>fixtureRoots}));
+const cache=new CacheMethods();cache.sectionsSent=new Map();cache.taps=new Map();cache.folderOf=()=>null;cache.d={vault:fixtureRoots[0]};
 const turn={threadId:'one-native-session',convId:'main',rec:{pi(){}},feed:{onPi(){}}};
-assert.equal(cache.changedSections(turn.threadId,{}),'CANARY');assert.equal(cache.changedSections(turn.threadId,{}),'');
+assert.equal(cache.changedSections(turn.threadId,{}),expectedSections());assert.equal(cache.changedSections(turn.threadId,{}),'');
+fixtureRoots.push('/fixture/registered');
+const rootChange=cache.changedSections(turn.threadId,{});assert.equal(rootChange,expectedFiles());
+assert.equal(cache.changedSections(turn.threadId,{}),'');fixtureRoots.pop();assert.equal(cache.changedSections(turn.threadId,{}),expectedFiles());
 const {AgentSession}=await import(pathToFileURL(join(sdk,'dist/core/agent-session.js')).href);
 const ns=Object.create(AgentSession.prototype),nsEvents=[];let aborts=0;
 ns.sessionManager=SessionManager.inMemory(root);ns._entryIdsByMessage=new WeakMap();ns._isAgentRunActive=false;
@@ -201,7 +207,7 @@ assert.deepEqual(ns.sessionManager.getEntries(),beforeAbort,'native Abort does n
 assert.equal(cache.changedSections(turn.threadId,{}),'','Abort alone never invalidates Engine.sectionsSent');
 cache.onPi(turn,{type:'compaction_end',aborted:true});assert.equal(cache.changedSections(turn.threadId,{}),'','aborted compaction also leaves cache intact');
 cache.onPi(turn,{type:'compaction_end',aborted:false,result:{summary:'fixture'}});
-assert.equal(cache.changedSections(turn.threadId,{}),'CANARY','successful compaction alone causes unchanged context redelivery');
+assert.equal(cache.changedSections(turn.threadId,{}),expectedSections(),'successful compaction causes unchanged context redelivery');
 assert.equal(cache.changedSections(turn.threadId,{}),'','unnecessary repeat within same phase suppressed by existing production cache');
 await nativeHandler(JSON.stringify({kind:'context',text:'CANARY'}));
 assert.equal(ns.sessionManager.getEntries().filter(e=>e.customType==='vc-context').length,2);

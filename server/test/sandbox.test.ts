@@ -217,6 +217,8 @@ describe("the machine section of the developer instructions", () => {
   it("names the work area and the browser command that works in the sandbox", async () => {
     const { machineText } = await import("../context");
     const t = machineText({ chrome: "/run/current-system/sw/bin/chromium", work: "/home/carl/agent-work/school2" });
+    expect(t).toContain("registered vaults' ordinary synced content (not service-owned project sources)");
+    expect(t).not.toContain("other vaults) are not visible");
     expect(t).toContain("/home/carl/agent-work/school2/");
     expect(t).toMatch(/home directory is read-only/);
     expect(t).toContain(

@@ -164,10 +164,14 @@ export function youLayer(vault: string, o: { since?: number | null; convId?: str
   const now = o.now ?? Date.now();
   try {
     if (!activityOn()) return { text: "", until: now, items: 0 };
-    return buildYouLayer(
+    const layer = buildYouLayer(
       { entries: readActivity(vault, now, YOU_LOOKBACK_MS), board: latestBoard(vault), notes: notesSnapshot(vault) },
       { now, since: o.since ?? null, convId: o.convId ?? null },
     );
+    // Keep the existing focus text, but make its vault-relative path unambiguous
+    // even when pi is working in a different project clone. No other chat is read.
+    if (layer.text) layer.text = layer.text.replace(/^Focus: .+$/m, line => `${line} — file vault: ${vault}/ (not the project cwd)`);
+    return layer;
   } catch (err) {
     console.warn(`[activity] you layer failed: ${(err as Error).message}`);
     return { text: "", until: now, items: 0 };

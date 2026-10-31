@@ -73,6 +73,8 @@ export type Handlers = {
 };
 
 export type PiSandbox = {
+  /** Own vault root (separate from the project cwd). */
+  vault?: string;
   /** bubblewrap argv for pi itself (ends with "--"), or null (no sandbox). */
   outer: string[] | null;
   /** bubblewrap argv for each shell command (ends with "--"), or null. */
@@ -80,9 +82,11 @@ export type PiSandbox = {
   /** Paths pi's in-process tools may not read or write / may not write. */
   denyRead: string[];
   denyWrite: string[];
-  /** The other vaults on the box (working copies, bare repos, their engine state), read at each
-   * spawn so a vault added later is walled off too: hidden in the outer layer, denied to the guard. */
+  /** Private paths (other vault metadata, bare repos and engine state), read at each
+   * spawn: hidden in the outer layer and denied to the native file guard. */
   others?: () => string[];
+  /** Ordinary content of server-registered vaults, never their private metadata. */
+  vaultContent?: () => string[];
   /** The vault roots the sandbox empties (tmpfs): another vault under one is already gone, never re-walled. */
   roots?: string[];
   /** The project folders Carl chose outside the vault (server/projectFolders.ts), read at each spawn: each is
@@ -101,7 +105,7 @@ export function hideArgs(paths: string[]): string[] {
   for (const p of paths) {
     try {
       const st = statSync(p);
-      if (st.isDirectory()) out.push("--tmpfs", p);
+      if (st.isDirectory()) out.push("--tmpfs", p, "--remount-ro", p);
       else if (st.isFile()) out.push("--ro-bind", "/dev/null", p);
     } catch {
       /* missing: nothing to hide */
@@ -130,11 +134,17 @@ function withExtras(sb: PiSandbox, base: string[] | null): string[] | null {
   // A path under an emptied vault root does not exist in the sandbox; a --tmpfs on it would create an
   // empty stub named after that vault. Only what lies elsewhere (e.g. its engine state) is walled.
   const gone = (p: string) => (sb.roots ?? []).some((r) => inside(p, r));
+  const content = sb.vaultContent?.() ?? [];
   const others = sb.others?.() ?? [];
+  const readOnly = sb.readOnly?.() ?? [];
   // Carl's project folders: read-write, after the read-only home. Anything hidden that lies inside one is
   // hidden again after it (a later mount wins), as are the other vaults.
   const binds: string[] = [];
   const folders: string[] = [];
+  for (const p of content) {
+    folders.push(p);
+    binds.push("--bind", p, p);
+  }
   for (const p of sb.projects?.() ?? []) {
     try {
       if (!statSync(p).isDirectory()) continue;
@@ -144,7 +154,7 @@ function withExtras(sb: PiSandbox, base: string[] | null): string[] | null {
     folders.push(p);
     binds.push("--bind", p, p);
   }
-  for (const p of sb.readOnly?.() ?? []) {
+  for (const p of readOnly) {
     try {
       if (!statSync(p).isDirectory()) continue;
     } catch {
@@ -155,7 +165,7 @@ function withExtras(sb: PiSandbox, base: string[] | null): string[] | null {
   }
   // A read-only project folder (a git repo the agent works on in its clone): its own files — memory, rules in
   // <folder>/.vault-chat (server/context/projects.ts) — stay the agent's to write.
-  for (const p of sb.readOnly?.() ?? []) {
+  for (const p of readOnly) {
     const own = join(p, ".vault-chat");
     try {
       if (statSync(own).isDirectory()) binds.push("--bind", own, own);
@@ -163,8 +173,23 @@ function withExtras(sb: PiSandbox, base: string[] | null): string[] | null {
       /* none yet */
     }
   }
+  for (const p of readOnly) {
+    for (const d of ["conversations", "events", "local"]) {
+      const path = join(p, ".vault-chat", d);
+      try { if (statSync(path).isDirectory()) binds.push("--tmpfs", path, "--remount-ro", path); } catch { /* absent */ }
+    }
+  }
   const rehide = folders.length ? (sb.hidden ?? []).filter((h) => folders.some((f) => inside(h, f))) : [];
-  const extra = [...binds, ...hideArgs([...rehide, ...others.filter((p) => !gone(p) || folders.some((f) => inside(p, f)))])];
+  const metadata = content.flatMap(p => [join(p, ".vault-chat"), join(p, ".git")]);
+  const extra = [...binds, ...hideArgs([...rehide, ...others.filter((p) => !metadata.includes(p) && (!gone(p) || folders.some((f) => inside(p, f))))]),
+    ...metadata.flatMap(p => {
+      try { if (statSync(p).isFile()) return ["--ro-bind", "/dev/null", p]; } catch { /* create an empty wall */ }
+      return ["--tmpfs", p, "--remount-ro", p];
+    }),
+    // The masked roots are namespaces, not scratch folders: pi.write creates
+    // missing parents. Make them read-only so an unregistered destination (or
+    // a symlink into one) cannot report a successful edit of an ephemeral copy.
+    ...(sb.vaultContent ? (sb.roots ?? []).flatMap(p => ["--remount-ro", p]) : [])];
   return extra.length ? [...base.slice(0, -1), ...extra, "--"] : base;
 }
 
@@ -191,6 +216,7 @@ type Thread = {
   proc: PiProc;
   model: string;
   lastUsed: number;
+  sandboxKey?: string;
   turnId: string | null;
   msgIndex: number;
   crashes: number[];
@@ -336,6 +362,24 @@ export class PiBackend extends EventEmitter {
     }
   }
 
+  private projectPrivate(): string[] {
+    return (this.o.sandbox.readOnly?.() ?? []).flatMap(p =>
+      ["conversations", "events", "local"].map(d => join(p, ".vault-chat", d)));
+  }
+
+  private readWalls(): string[] {
+    return [...this.o.sandbox.denyRead, ...(this.o.sandbox.others?.() ?? []), ...this.projectPrivate()];
+  }
+
+  private writeWalls(): string[] {
+    return [...this.o.sandbox.denyWrite, ...this.projectPrivate()];
+  }
+
+  /** The existing native process capability snapshot; not persisted authority. */
+  sandboxKey(): string {
+    return JSON.stringify([outerWith(this.o.sandbox), this.o.sandbox.vaultContent?.(), this.o.sandbox.others?.(), this.o.sandbox.readOnly?.(), this.writeWalls()]);
+  }
+
   piEnv(you = false): NodeJS.ProcessEnv {
     const env: NodeJS.ProcessEnv = {};
     for (const [k, v] of Object.entries(process.env)) {
@@ -349,8 +393,8 @@ export class PiBackend extends EventEmitter {
       PI_OFFLINE: "1",
       VC_KEY_FD: "3",
       ...(you ? { VC_PI_YOU: "1" } : {}),
-      VC_PI_DENY_READ: JSON.stringify([...this.o.sandbox.denyRead, ...(this.o.sandbox.others?.() ?? [])]),
-      VC_PI_DENY_WRITE: JSON.stringify(this.o.sandbox.denyWrite),
+      VC_PI_DENY_READ: JSON.stringify(this.readWalls()),
+      VC_PI_DENY_WRITE: JSON.stringify(this.writeWalls()),
       ...(this.o.sandbox.shell ? { VC_PI_SHELL_WRAP: JSON.stringify(shellWith(this.o.sandbox)) } : {}),
       ...(process.env.VC_PI_SHELL_TIMEOUT_S ? { VC_PI_SHELL_TIMEOUT_S: process.env.VC_PI_SHELL_TIMEOUT_S } : {}),
       ...(process.env.VC_PI_GEMINI_CACHE ? { VC_PI_GEMINI_CACHE: process.env.VC_PI_GEMINI_CACHE } : {}),
@@ -367,20 +411,46 @@ export class PiBackend extends EventEmitter {
     const resolved = policy.realish(path, root, home);
     if (!policy.isUnder(resolved, policy.realish(root, root, home))) return "Path is outside the explicitly bound vault.";
     return policy.guardToolCall(write ? "write" : "ls", { path }, { cwd: root, home,
-      denyRead: policy.resolveList([...this.o.sandbox.denyRead, ...(this.o.sandbox.others?.() ?? [])], home),
-      denyWrite: policy.resolveList(this.o.sandbox.denyWrite, home),
+      denyRead: policy.resolveList(this.readWalls(), home),
+      denyWrite: policy.resolveList(this.writeWalls(), home),
     });
+  }
+
+  /** Host-owned readers (PDF extraction) must not bypass native file walls.
+   * No external caller can use this to widen its explicitly bound root. */
+  async nativePath(cwd: string, path: unknown): Promise<string | null> {
+    const policy = await import(/* @vite-ignore */ pathToFileURL(join(this.o.paths.extDir, "policy.mjs")).href);
+    const home = process.env.HOME ?? "/";
+    if (typeof path !== "string" || !path.trim()) return "An explicit file path is required.";
+    const sb = this.o.sandbox;
+    const resolved = policy.realish(path, cwd, home);
+    const why = policy.guardToolCall("ls", { path }, { cwd, home,
+      denyRead: policy.resolveList(this.readWalls(), home), denyWrite: [],
+    });
+    if (why) return why;
+    if (sb.vaultContent && (sb.roots ?? []).some(r => inside(resolved, r))) {
+      const visible = [sb.vault, ...(sb.vaultContent() ?? []), ...(sb.projects?.() ?? []), ...(sb.readOnly?.() ?? [])].filter(Boolean) as string[];
+      if (!visible.some(r => inside(resolved, r))) return "Path is outside registered vault content.";
+    }
+    return null;
   }
 
   /** The shared filesystem authority: native loadouts retain the installed
    * sandbox; external callers are explicitly vault-bound and get no shell or keys. */
   async filesystem(cwd: string, allowed: string[], services: ProcessServices, root?: string): Promise<BoundTools> {
+    const backend = this;
+    const sandbox = this.o.sandbox;
     return filesystemBinding({
       cli: this.o.install.cli, node: this.o.install.node,
       script: join(this.o.paths.extDir, "filesystem.mjs"), cwd,
-      home: process.env.HOME ?? "/", outer: outerWith(this.o.sandbox), shell: shellWith(this.o.sandbox),
-      denyRead: [...this.o.sandbox.denyRead, ...(this.o.sandbox.others?.() ?? [])],
-      denyWrite: this.o.sandbox.denyWrite, allowed, root,
+      // The executor is short-lived. Resolve current registered directories at
+      // EVERY command, not only pi spawn: a replaced root must never be rebound
+      // using stale argv. The native RPC process itself rebinds only when idle.
+      home: process.env.HOME ?? "/",
+      get outer() { return outerWith(sandbox); },
+      get shell() { return shellWith(sandbox); },
+      get denyRead() { return backend.readWalls(); },
+      get denyWrite() { return backend.writeWalls(); }, allowed, root,
       env: root ? () => ({}) : () => services.env?.() ?? {},
       fileWrite: () => services.fileWrite?.() ?? Promise.resolve(false),
     });
@@ -392,7 +462,8 @@ export class PiBackend extends EventEmitter {
    * `ephemeral`: pi's --no-session; `system`: pi's --system-prompt (replaces pi's own) instead of
    * --append-system-prompt `instr`; `builtins: []`: pi's --no-tools. `you`: the extension asks for the
    * "you" layer before each prompt (conversations and Ctrl+K / Ctrl+L; not subagents or one-shots). */
-  async spawn(o: { cwd: string; model: string; file: string | null; instr: string; tools: string; subagents?: boolean; sessionDir?: string; builtins?: string[]; fork?: string; ephemeral?: boolean; system?: string; thinking?: string; you?: boolean; hostCall?: BoundTools["call"]; services?: ProcessServices }): Promise<{ proc: PiProc; id: string; file: string }> {
+  async spawn(o: { cwd: string; model: string; file: string | null; instr: string; tools: string; subagents?: boolean; sessionDir?: string; builtins?: string[]; fork?: string; ephemeral?: boolean; system?: string; thinking?: string; you?: boolean; hostCall?: BoundTools["call"]; services?: ProcessServices }): Promise<{ proc: PiProc; id: string; file: string; sandboxKey: string }> {
+    const sandboxKey = this.sandboxKey();
     if (!o.sessionDir) await this.makeRoom();
     let threadId = "";
     const specs: ToolSpec[] = JSON.parse(readFileSync(o.tools, "utf8"));
@@ -450,7 +521,7 @@ export class PiBackend extends EventEmitter {
       await scope.revoke();
       throw new Error("pi reported no session");
     }
-    return { proc, id, file };
+    return { proc, id, file, sandboxKey };
   }
 
   private attach(t: Thread): void {
@@ -530,10 +601,10 @@ export class PiBackend extends EventEmitter {
     const instr = join(this.o.paths.instrDir, `${Date.now().toString(36)}-${++this.seq}.md`);
     writeFileSync(instr, o.instructions);
     const tools = this.writeTools(o.tools);
-    const { proc, id, file } = await this.spawn({ cwd: o.cwd, model: o.model, file: null, instr, tools, subagents: o.subagents, you: true });
+    const { proc, id, file, sandboxKey } = await this.spawn({ cwd: o.cwd, model: o.model, file: null, instr, tools, subagents: o.subagents, you: true });
     // Instructions persist; tools is only the bootstrap used by this process, never resume authority.
     writeFileSync(join(this.o.paths.instrDir, `${id}.json`), JSON.stringify({ instr, tools, cwd: o.cwd, subagents: o.subagents }));
-    this.attach({ id, subagents: o.subagents, file, proc, model: o.model, lastUsed: Date.now(), turnId: null, msgIndex: 0, crashes: [], restoreModel: null });
+    this.attach({ id, sandboxKey, subagents: o.subagents, file, proc, model: o.model, lastUsed: Date.now(), turnId: null, msgIndex: 0, crashes: [], restoreModel: null });
     return { threadId: id, ref: file };
   }
 
@@ -550,9 +621,10 @@ export class PiBackend extends EventEmitter {
     const tools = this.writeTools(await this.currentTools("conversation"));
     const moved = !!meta && !!o.cwd && meta.cwd !== o.cwd;
     const changed = !!meta && meta.tools !== tools;
+    const scopeChanged = !!have && have.sandboxKey !== this.sandboxKey();
     // Never replace a capability underneath a turn or its background children.
     // The next idle resume rebinds; running work keeps its original loadout.
-    if (have?.proc.isAlive() && ((!moved && !changed) || have.turnId || this.subs.childrenOf(threadId).length)) {
+    if (have?.proc.isAlive() && ((!moved && !changed && !scopeChanged) || have.turnId || this.subs.childrenOf(threadId).length)) {
       have.lastUsed = Date.now();
       return;
     }
@@ -574,8 +646,8 @@ export class PiBackend extends EventEmitter {
     // pi would refuse to resume it ("Stored session working directory does not exist"). It resumes in the thread's
     // folder now instead (server/sessionPaths.ts).
     if (healSessionCwd(file, meta.cwd, this.o.sandbox.roots ?? [])) this.log(`thread ${threadId}: its stored folder is gone; it resumes in ${meta.cwd}`);
-    const { proc } = await this.spawn({ cwd: meta.cwd, model: o.model, file, instr: meta.instr, tools: meta.tools, subagents, you: true });
-    this.attach({ id: threadId, subagents, file, proc, model: o.model, lastUsed: Date.now(), turnId: null, msgIndex: 0, crashes: [], restoreModel: null });
+    const { proc, sandboxKey } = await this.spawn({ cwd: meta.cwd, model: o.model, file, instr: meta.instr, tools: meta.tools, subagents, you: true });
+    this.attach({ id: threadId, sandboxKey, subagents, file, proc, model: o.model, lastUsed: Date.now(), turnId: null, msgIndex: 0, crashes: [], restoreModel: null });
   }
 
   /** pi's own compaction of a thread, now (RPC `compact`, with a focus for its summary). Throws when pi refuses. */
@@ -668,17 +740,23 @@ export class PiBackend extends EventEmitter {
     return { turnId };
   }
 
-  async steer(threadId: string, _turnId: string, o: { texts: string[]; images: string[] }): Promise<void> {
+  async steer(threadId: string, _turnId: string, o: { texts: string[]; context?: string; images: string[] }): Promise<void> {
     const t = this.live(threadId);
     const imgs = this.images(o.images);
+    // The existing native custom-message path owns request metadata too.
+    // It is an immutable captured binding, not a lookup of ambient device state.
+    if (o.context?.trim() && !await this.note(threadId, { kind: "context", text: o.context })) throw new Error("pi could not accept request context");
     const r = await t.proc.request({ type: "steer", message: o.texts.filter(Boolean).join("\n\n"), ...(imgs.length ? { images: imgs } : {}) }, 30_000);
     if (!r?.success) throw new Error(String(r?.error ?? "steer rejected"));
   }
 
   /** Queue a message for when the turn's work is done (pi's follow_up). */
-  async followUp(threadId: string, o: { texts: string[]; images?: string[] }): Promise<void> {
+  async followUp(threadId: string, o: { texts: string[]; context?: string; images?: string[] }): Promise<void> {
     const t = this.live(threadId);
     const imgs = this.images(o.images ?? []);
+    // The existing native custom-message path owns request metadata too.
+    // It is an immutable captured binding, not a lookup of ambient device state.
+    if (o.context?.trim() && !await this.note(threadId, { kind: "context", text: o.context })) throw new Error("pi could not accept request context");
     const r = await t.proc.request({ type: "follow_up", message: o.texts.filter(Boolean).join("\n\n"), ...(imgs.length ? { images: imgs } : {}) }, 30_000);
     if (!r?.success) throw new Error(String(r?.error ?? "follow_up rejected"));
   }

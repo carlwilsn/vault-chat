@@ -140,3 +140,38 @@ extensions (same problems, new place). Migrate one duplicated piece per bug; no 
   original model/feed assertions and verify raw typed entries, never hide the symptom
   or concatenate context back into user text. Eleven integration failures on startup
   source 8f6 were traced to these two fixture omissions; no production retry was needed.
+
+## JobStop audit is not maintenance authority (2026-10-30)
+- Audit the existing explicit native controller rather than add another process/ownership registry.
+  Capture the host-bound caller before awaiting; refusal of disabled/unwritable audit happens before
+  controller invocation. Do not claim rollback if the final audit write fails after the controller.
+  A work-bound call may reach only its exact live native work identity, never sibling/projected jobs.
+- This does not authorize PID/path cleanup, listener adoption or a systemd restart. Such operations
+  still need demonstrable owned native identity plus actual start time; a timestamp in a writable
+  projection is not sufficient. Retired proof-invalidation wording must not be restored for old tests.
+
+## B integration on shipping reset (2026-10-31; prepared only)
+- Preserve the reset's native child-start callback alongside per-ask cwd/tool scope. Scoped host
+  calls receive the actual spawned pi child session id, never the parent's id or an invented fork;
+  the existing child→conversation link resolves that call. Hidden custom context and preflight-stop
+  ownership remain pi's contracts, not worker scope state. Share the CURRENT installed-script
+  adapter (including native cancellation grace), not an older copy from B.
+
+## Cross-vault content is not conversation authority (2026-10-30)
+- A project cwd is context, not file scope. The registered server vault list is the
+  authority for ordinary synced content; never grant arbitrary host paths from
+  user/file/tool text. Bind registered content through the existing sandbox folder
+  capabilities, then hide other vaults' `.vault-chat`, `.git`, bare repos and native
+  state again AFTER project binds. Keep service-owned project sources read-only
+  and their conversations/events/local private. Host PDF readers use the same
+  private-path guard; they are not a way around the native file sandbox. Masked
+  roots must be remounted read-only AFTER content binds: write tools create
+  parents, and a writable tmpfs can falsely report editing a nonexistent copy.
+- Native process mounts are snapshots; short-lived file executors revalidate on
+  every command (never rebind replaced roots from stale argv). Registration changes
+  rebind only idle pi processes (same session file/id/history); never cancel a live
+  turn or its children to refresh mounts. Qualify viewer-relative paths with the
+  server's vault root, and list only registered roots, not other chats/memories.
+- A source commit does not alter the installed engine's capabilities. Editing the
+  original cross-vault file waits for the legitimate engine update; never invent a
+  replacement file or escape the sandbox while installation is pending.

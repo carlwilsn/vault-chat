@@ -324,11 +324,11 @@ async function main(): Promise<void> {
           models: () => (engine.engine ? modelsList() : []),
           boxModels: () => (engine.engine && engine.roles ? boxModelChecks(engine.roles()) : undefined),
           setModel: (m) => (engine.engine && engine.setModel ? engine.setModel(m) : { ok: false, error: "engine not running" }),
-          message: async (v, b) => (await engineOf(v)).message(b),
+          message: async (v, b, viewerRoot) => (await engineOf(v)).message(b, viewerRoot),
           answer: async (v, b) => (await engineOf(v)).answerRoute(b),
           kill: async (v, b) => (await engineOf(v)).kill(b),
           subagent: async (v, c, sid, op, b) => (await engineOf(v)).subagent(c, sid, op, b),
-          intent: async (v, b) => (await engineOf(v)).intent(b),
+          intent: async (v, b, viewerRoot) => (await engineOf(v)).intent(b, viewerRoot),
           side: {
             start: async (v, b) => (await engineOf(v)).sideStart(b),
             poll: async (v, id, after, wait) => (await engineOf(v)).sidePoll(id, after, wait),

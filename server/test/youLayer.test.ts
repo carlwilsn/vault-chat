@@ -89,6 +89,7 @@ describe("the you layer, through pi's extension (before_agent_start → a vc-you
     expect(you.display).toBe(false);
     expect(you.content).toContain("<you>");
     expect(you.content).toContain("Focus: papers/spectral.pdf (page 4 of 12)");
+    expect(you.content).toContain(`file vault: ${vault}/ (not the project cwd)`);
     expect(you.content).toContain("Device: laptop");
     expect(Number.isFinite(you.details.until)).toBe(true);
     // Sent to the model with the turn (pi: a custom message is a user message to the provider).

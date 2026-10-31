@@ -70,12 +70,12 @@ export type ServerHooks = {
     boxModels?: () => unknown;
     /** POST /api/v1/models/agent {model}: the agent's model, from the laptop (one setting: Settings and the composer). */
     setModel?: (model: string) => Record<string, unknown>;
-    message: (v: VaultScope, b: any) => Promise<Record<string, unknown> | null>;
+    message: (v: VaultScope, b: any, viewerRoot?: string) => Promise<Record<string, unknown> | null>;
     answer: (v: VaultScope, b: any) => Promise<Record<string, unknown> | null>;
     kill: (v: VaultScope, b: any) => Promise<Record<string, unknown> | null>;
     subagent: (v: VaultScope, convId: string, sid: string, op: "steer" | "stop", b: any) => Promise<Record<string, unknown>>;
     /** POST /api/v2/intent: every client intent (src/convlog/protocol.ts Intent). */
-    intent: (v: VaultScope, b: any) => Promise<Record<string, unknown>>;
+    intent: (v: VaultScope, b: any, viewerRoot?: string) => Promise<Record<string, unknown>>;
     /** Side threads (server/engine/pi/side.ts): Ctrl+K / Ctrl+L, and the one-shots. */
     side?: {
       start: (v: VaultScope, b: any) => Promise<Record<string, unknown>>;
@@ -686,7 +686,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
     if (!hooks.engine) return json(res, 503, { error: "engine not running" });
     const b = await jsonBody(req);
     const t0 = Date.now();
-    const out = await hooks.engine.intent(scope, b).catch((e) => ({ error: String((e as Error)?.message ?? e) }));
+    const out = await hooks.engine.intent(scope, b, open.path).catch((e) => ({ error: String((e as Error)?.message ?? e) }));
     logIntent(cfg.stateDir, scope.name, req, b, out, Date.now() - t0);
     return json(res, (out as any).error ? 409 : 200, out);
   }
@@ -782,7 +782,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
     case "POST /message": {
       const b = await jsonBody(req);
       const t0 = Date.now();
-      return engineRoute(res, scope, hooks.engine?.message, b, "phone:msg", 15_000, "app not answering — is a vault open?", (out) =>
+      return engineRoute(res, scope, hooks.engine?.message ? (v, b) => hooks.engine!.message(v, b, open.path) : undefined, b, "phone:msg", 15_000, "app not answering — is a vault open?", (out) =>
         logIntent(cfg.stateDir, scope.name, req, { ...b, type: b.queue ? "queue" : "message", clientId: b.clientMsgId }, out, Date.now() - t0),
       );
     }

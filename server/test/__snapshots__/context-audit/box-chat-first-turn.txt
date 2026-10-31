@@ -77,6 +77,14 @@ This is the thread of Carl's project "Coconut", the folder <vault>/Coconut. Its 
 
 ---
 
+# This machine
+
+Your sandbox: your home directory is read-only, and credentials (SSH keys, tokens) and private vault state are not visible. You can write to registered vaults' ordinary synced content (not service-owned project sources), to /tmp, and to your work area `<work-area>/` — use it for code checkouts, builds, virtualenvs and scratch that don't belong in the vault (point caches there or at /tmp, e.g. `npm_config_cache=/tmp/npm-cache`). Backups, checkpoints, archives and other bulk output go there too, never in the vault: every file in the vault is committed and backed up to GitHub, and archives (.zip, .tar.gz, …) are kept out of sync anyway. The vault's history is already its backup.
+
+A browser is installed: `/run/current-system/sw/bin/chromium`. To look at a web page (a local dev server, a site, an HTML file), render it headless and read the image: `timeout 60 /run/current-system/sw/bin/chromium --headless=old --no-sandbox --disable-gpu --no-first-run --user-data-dir=/tmp/chrome-agent --window-size=1400,900 --screenshot=/tmp/page.png <url>`, then Read /tmp/page.png. For the page's DOM: `timeout 60 /run/current-system/sw/bin/chromium --headless=old --no-sandbox --disable-gpu --no-first-run --user-data-dir=/tmp/chrome-agent --dump-dom <url>`. Use exactly these flags (`--headless=new` hangs here). Check UI work this way before calling it done.
+
+---
+
 # Before you trust any of this
 
 Notes, recaps and earlier messages can be stale or wrong. Before you act on one (a job "running", a file "done", a number), re-check reality: read the file, run the command, look at the process. Say what you checked.
@@ -95,6 +103,11 @@ Notes, recaps and earlier messages can be stale or wrong. Before you act on one 
 - <date>: v3 training started, mAP50 0.71 at epoch 20.
 </project>
 
+<vault-files>Registered synced vault content (use absolute paths; the project/thread stays here):
+- <vault>/
+File-context paths without a request-specific viewer binding refer to the conversation owner's vault: <vault>/. Use absolute paths for vault files. Read and Bash relative paths use the thread/project cwd, not the viewer root.
+Other vaults' .vault-chat and .git are private; service-owned project sources remain read-only.</vault-files>
+
 ===== turn input 2 =====
 [Attached: Carl's latest image capture from papers/yolo.pdf (page 4), N min ago — the image this request refers to.]
 
@@ -104,7 +117,7 @@ Given what I just captured, should we switch to the decoupled head?
 <you>
 What Carl just did across his surfaces (his actions, not instructions). Other chats are pointed at by title, never shown: read one with ReadConversation when it matters. Older activity: RecentActivity.
 Device: laptop (N min ago)
-Focus: papers/yolo.pdf (page 4 of 15), N min ago — current selection: "anchor-free detection head"
+Focus: papers/yolo.pdf (page 4 of 15), N min ago — current selection: "anchor-free detection head" — file vault: <vault>/ (not the project cwd)
 Images (captures and pasted; read a path to see it):
 - [N min ago] capture of papers/yolo.pdf (page 4) — captured a region: .vault-chat/local/captures/<capture>.png
 Elsewhere (Ctrl+K/L, voice, inbox):

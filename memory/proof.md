@@ -106,3 +106,29 @@ timestamps and "verified" itself.
   require visible + native decode/naturalWidth, correlate the exact public API path,
   and hash rendered bytes against the original fixture. Do not weaken to existence
   or rewrite old fixture schemas. The retained df21 actual-App 15s failure exposed it.
+
+## Full conversation contract is not EngineConv
+- `GET /conversation?full=1` returns `{id,title,source,status,full,meta,messages}`;
+  native worker rows and parent session identity are in **meta.subagents / meta.threadId**.
+  B's retained genuine phone run failed at 24.6s by reading a nonexistent top-level mirror,
+  not by timing out or losing children. Read the current serializer and phone feed reducer
+  before adding product fields. Bind children through their actual Delegate toolCallId,
+  returned nativeWorkerId, session header/cwd and original request, not row position.
+  A fast replay of retained native journals through the same serializer catches this call-contract
+  error before spawning another long UI run. Such a replay is not new native UI/shipping evidence.
+
+## Collapsed file-tree recorder input
+- A fresh `folders-final` preview opens the synthetic laptop vault `summer-demo`, not the private server's
+  `school2` working copy. Its top-level directories start collapsed: no Markdown row is mounted yet. Click
+  the known `reading` directory, then the exact seeded `reading/README.md` and assert rendered content before
+  testing a vault switch; `.first()` over Markdown rows times out before reaching either picker. Preserve DOM,
+  IPC calls and read-only store/API observations on failure without replacing the primary error. This is a
+  recorder correction, not a product empty-tree fix or permission to migrate real folders.
+
+## Context audit cascades and native input exactness
+- A failing first-turn snapshot aborts the rest of that test: later snapshots then miss the Ctrl+L activity and
+  changed standing rule posted afterward. Inspect the first diff and fix fixture paths (`project-memory.md`,
+  not `memory.md`) before updating snapshots; never accept the missing later activity as a product change.
+- Viewer-root hints belong to pi's existing hidden typed context, not a new prefix on native user input. Capture
+  the registered viewer at request receipt separately from conversation ownership/project cwd. Native Read/Bash
+  relative paths still use cwd; a context hint does not install a path resolver. Assert exact native input.

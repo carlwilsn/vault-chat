@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { PiBackend, type HostLoadout, type ToolSpec } from "../engine/pi/backend";
+import { PiBackend, type HostLoadout, type PiSandbox, type ToolSpec } from "../engine/pi/backend";
 import { piPaths } from "../engine/pi/config";
 import type { PiProc } from "../engine/pi/proc";
 import { fakeChat, chatText } from "./fakeChat";
@@ -28,8 +28,8 @@ async function fixture() {
   const backends: PiBackend[] = [];
   const prefix = process.env.VC_TEST_PI_DIR ?? join(homedir(), ".local/state/vault-chat-server/pi/1.1.0");
   const cli = join(prefix, "node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js");
-  const make = (catalog: () => ToolSpec[]) => {
-    const b = new PiBackend({ paths, install: { cli, node: process.execPath, version: "1.1.0", dir: prefix, installed: false }, catalog: new Map(), sandbox: { outer: null, shell: null, denyRead: [], denyWrite: [] }, apiKey: () => null, thinking: "off", idleMs: 60000, maxProcs: 10, subagents: { agentsDirs: [], concurrency: 2, maxTasks: 4, hostMax: 4, timeoutMs: 30000, graceMs: 1000, defaultModel: null }, log: () => {} });
+  const make = (catalog: () => ToolSpec[], sandbox: PiSandbox = { outer: null, shell: null, denyRead: [], denyWrite: [] }) => {
+    const b = new PiBackend({ paths, install: { cli, node: process.execPath, version: "1.1.0", dir: prefix, installed: false }, catalog: new Map(), sandbox, apiKey: () => null, thinking: "off", idleMs: 60000, maxProcs: 10, subagents: { agentsDirs: [], concurrency: 2, maxTasks: 4, hostMax: 4, timeoutMs: 30000, graceMs: 1000, defaultModel: null }, log: () => {} });
     b.setHandlers({ toolCatalog: async (loadout: HostLoadout) => loadout === "readOnly" ? catalog().filter((t) => t.readOnly) : catalog(), toolCall: async () => ({ ok: true, text: "fixture" }), userInput: async () => "", fileWrite: async () => false });
     const spawn = b.spawn.bind(b);
     b.spawn = async (o) => { const result = await spawn(o); procs.push(result.proc); return result; };
@@ -55,6 +55,30 @@ async function turn(b: PiBackend, threadId: string, text: string) {
 async function sideDone(b: PiBackend, id: string) { return b.side.wait(id); }
 
 describe("existing pi sessions rebind to current host catalog", () => {
+  it("registered vault capability changes resume the same idle native session, without interrupting a running turn or child", async () => {
+    const f = await fixture(); let folders = [join(f.root, "school2")];
+    const b = f.make(() => current, { outer: null, shell: null, denyRead: [], denyWrite: [], vaultContent: () => folders });
+    const session = await b.startThread({ cwd: f.root, model, instructions: "fixture", tools: current, subagents: true });
+    f.provider.respond = () => ({ text: "settled", delayMs: 100 });
+    const first = turn(b, session.threadId, "cross-vault-original-history");
+    const proc = f.procs.at(-1)!;
+    folders = [];
+    await b.resumeThread(session.threadId, { model, subagents: true });
+    expect(f.procs.at(-1)).toBe(proc);
+    await first;
+    const child = b.background(session.threadId, { task: "cross-vault-child", agent: { name: "worker", tools: ["read"] } });
+    while (f.procs.length < 2) await new Promise(r => setTimeout(r, 10));
+    await b.resumeThread(session.threadId, { model, subagents: true });
+    expect(proc.isAlive()).toBe(true);
+    await child;
+    await b.resumeThread(session.threadId, { model, subagents: true });
+    expect(proc.isAlive()).toBe(false);
+    expect(b.threadSource(session.threadId)).toMatchObject({ file: session.ref, cwd: f.root });
+    await turn(b, session.threadId, "after-content-removal");
+    expect(chatText(f.provider.calls.at(-1))).toContain("cross-vault-original-history");
+    expect(JSON.parse(readFileSync(session.ref!, "utf8").split("\n")[0]!).id).toBe(session.threadId);
+  });
+
   it("resumes the SAME native session after a server replacement: current proofId schema, additions/removals, history and IDs retained", async () => {
     const f = await fixture();
     const previous = f.make(() => old);
