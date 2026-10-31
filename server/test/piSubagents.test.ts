@@ -86,6 +86,10 @@ describe.skipIf(!PI_DIR)("pi subagents (real pi children, fake OpenRouter)", () 
       .filter((t: string) => !t.startsWith("<you>") && !t.startsWith('[{"type":"text","text":"<you>'))
       .join("\n");
     const key = Object.keys(parentCalls).filter((k) => all.includes(k)).sort((a, b) => all.lastIndexOf(b) - all.lastIndexOf(a))[0];
+    if (all.includes("DELEGATELINK")) {
+      if (user.startsWith("Delegated work ")) return { text: "DELEGATELINK report received" };
+      return lastToolResult(body) === null ? { call: { name: "Delegate", args: { title: "Native linked worker", task: "CHILDA say hello" } } } : { text: "DELEGATELINK started" };
+    }
     if (all.includes("BOARDMAKE")) {
       const out0 = lastToolResult(body);
       return out0 === null ? { call: { name: "BoardMake", args: { title: "Cauchy set", request: "CHILDBOARD write two problems" } } } : { text: `BOARDMAKE done: ${out0.slice(0, 300)}` };
@@ -149,6 +153,24 @@ describe.skipIf(!PI_DIR)("pi subagents (real pi children, fake OpenRouter)", () 
     await srv?.stop();
     await or?.close();
     cleanup(home);
+  });
+
+  it("Delegate binds the exact native pi call to its finished child conversation, without borrowing another request", async () => {
+    const first = await post("/message", { text: "DELEGATELINK first request", convId: "delegate-link-first" });
+    const second = await post("/message", { text: "DELEGATELINK second request", convId: "delegate-link-second" });
+    const linked: string[] = [];
+    for (const id of [first.convId, second.convId]) {
+      const parent = await waitFor(async () => { const c = await conv(id); return c.subagents?.some((s: any) => s.state === "completed" && s.toolCallId) ? c : null; }, 30_000);
+      const worker = parent.subagents.find((s: any) => s.state === "completed");
+      const call = parent.messages.flatMap((m: any) => m.toolCalls ?? []).find((t: any) => t.id === worker.toolCallId);
+      expect(call.name).toBe("Delegate"); expect(call.result).toContain(worker.threadId);
+      const child = await conv(worker.threadId);
+      expect(child.source).toBe("worker");
+      expect(child.threadPath).toBe(worker.sessionFile);
+      expect(child.messages.some((m: any) => m.role === "assistant" && m.content === "child A reporting")).toBe(true);
+      linked.push(worker.threadId);
+    }
+    expect(linked[0]).not.toBe(linked[1]);
   });
 
   it("single: the parent delegates, gets the report, and the child is on the meta with its cost", async () => {

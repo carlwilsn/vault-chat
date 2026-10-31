@@ -1,7 +1,7 @@
 // Auth, /poll continuity across a restart, and starting without a key.
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { join } from "node:path";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync, symlinkSync, chmodSync } from "node:fs";
 import { tmp, cleanup, makeVault, makeKeyStore, startServer, type Running } from "./helpers";
 
 const TOKEN = "canary-phone-token-1111";
@@ -77,6 +77,25 @@ describe("auth", () => {
     expect((await get(".git/config")).status).toBe(403);
     expect((await get("notes/missing.md")).status).toBe(404);
     expect((await get("notes/ideas.md", viaServe)).status).toBe(401);
+  });
+  it("/api/v1/vault/file keeps denial/not-found status without host paths or filesystem errors", async () => {
+    const vault = join(home, "vault");
+    const outside = join(home, "PRIVATE_SENTINEL");
+    writeFileSync(outside, "VC_FAKE_SECRET");
+    symlinkSync(outside, join(vault, "outside-link"));
+    symlinkSync(join(home, "PRIVATE_SENTINEL-missing"), join(vault, "dangling-link"));
+    const denied = join(vault, "denied.txt"); writeFileSync(denied, "VC_FAKE_SECRET"); chmodSync(denied, 0);
+    try {
+      for (const [path, status] of [["../PRIVATE_SENTINEL", 403], ["outside-link", 403], ["dangling-link", 404], ["missing.txt", 404], ["denied.txt", process.platform === "win32" ? 200 : 403]] as const) {
+        if (process.platform === "win32" && path === "denied.txt") continue;
+        const response = await fetch(`${srv.base}/api/v1/vault/file?path=${encodeURIComponent(path)}`);
+        expect(response.status).toBe(status);
+        const body = await response.text();
+        expect(body).not.toMatch(/PRIVATE_SENTINEL|VC_FAKE_SECRET|ENOENT|EACCES|EPERM|stack/);
+        expect(body).not.toContain(home);
+        if (status !== 200) expect(JSON.parse(body).error).toBeTruthy();
+      }
+    } finally { chmodSync(denied, 0o600); }
   });
   it("/file: a video in the chat is served as video, with byte ranges (Safari plays only from a server that answers them)", async () => {
     const get = (h: Record<string, string> = {}) => fetch(`${srv.base}/file?path=${encodeURIComponent("clips/proof.webm")}`, { headers: h });
