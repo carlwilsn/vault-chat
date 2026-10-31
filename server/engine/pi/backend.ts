@@ -633,7 +633,7 @@ export class PiBackend extends EventEmitter {
     return !!r?.success;
   }
 
-  async startTurn(threadId: string, o: { texts: string[]; images: string[]; model: string; turnId?: string; thinking?: string }): Promise<{ turnId: string | null }> {
+  async startTurn(threadId: string, o: { texts: string[]; /** Host context stored by pi as a hidden custom message, not Carl's input. */ context?: string; images: string[]; model: string; turnId?: string; thinking?: string }): Promise<{ turnId: string | null }> {
     const t = this.live(threadId);
     t.lastUsed = Date.now();
     const prev = t.model;
@@ -647,10 +647,19 @@ export class PiBackend extends EventEmitter {
       if (r?.success) t.thinking = o.thinking ? want : null;
       else this.log(`set_thinking_level ${want} failed: ${r?.error ?? "no answer"}`);
     }
+    // Use the same native message path as Clear/voice; pi owns persistence,
+    // resume and compaction. The prompt itself contains only the actual input.
+    if (o.context?.trim() && !await this.note(threadId, { kind: "context", text: o.context })) {
+      throw new Error("pi could not accept the turn context");
+    }
     const turnId = o.turnId ?? `pt-${Date.now().toString(36)}-${++this.seq}`;
     t.turnId = turnId;
     const imgs = this.images(o.images);
-    const r = await t.proc.request({ type: "prompt", message: o.texts.filter(Boolean).join("\n\n"), ...(imgs.length ? { images: imgs } : {}) }, 60_000).catch((e) => ({ success: false, error: (e as Error).message }));
+    // Native prompt preflight includes compaction (and its provider retries).
+    // Its correlated response, not a transport silence deadline, decides whether
+    // input started. Keep ownership until then; abort and process exit still
+    // settle this same request. Readiness/inspection/abort retain their deadlines.
+    const r = await t.proc.request({ type: "prompt", message: o.texts.filter(Boolean).join("\n\n"), ...(imgs.length ? { images: imgs } : {}) }, 0).catch((e) => ({ success: false, error: (e as Error).message }));
     if (!r?.success) {
       t.turnId = null;
       throw new Error(String(r?.error ?? "prompt rejected"));

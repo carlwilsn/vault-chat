@@ -113,3 +113,30 @@ extensions (same problems, new place). Migrate one duplicated piece per bug; no 
   ordinary conversations and PiFeed pointers to the completed native session, not a worker
   registry or copied report. Production App proof must click the finished chip into that child
   and return to its parent; recording a missing chip as a diagnostic is not a passing assertion.
+
+## Hidden turn context (queue 1 preparation, 2026-10-30; not shipped)
+- Do not concatenate host rules/memory into the native pi user prompt and rely on a feed presentation override
+  to conceal them: recovering the session without that override exposes instructions as Carl's words. Use pi's
+  persisted `custom_message` (`display:false`, model-visible) via the existing `/vc-note` path instead. Keep actual
+  user text/images and native voice messages distinct. This removes forged-user-context encoding, not the host
+  context builder or the broader duplicated presentation layer. Native resume/replay tests cover that distinction.
+
+- Native pi 1.1.0 RPC `prompt` acknowledges only after preflight, which can include slow compaction/retries.
+  Await that correlated native operation without a transport deadline; retain the caller/turn/session until pi
+  accepts/rejects/exits. A 60-second transport timeout cleared ownership while pi later accepted the prompt,
+  causing orphaned input and fresh-prompt/busy errors. This is not slow process startup. Native `steer` and
+  `follow_up` accept input during preflight: no started-state polling loop is needed. Stop must reach native
+  abort before acceptance AND be honored at acceptance if it raced model/context setup. Pi can abort its
+  compaction yet still accept the original prompt. Offline native fake-clock regressions cover these boundaries;
+  they do not prove the live 155k Main or an installed release.
+
+
+## Native protocol fixtures must follow context ownership (2026-10-30)
+- When moving context out of user prompts, update test backends to capture the separate
+  `context` input and fake RPC extensions to persist `custom_message` (model-visible,
+  display:false), not `custom` vc-note (display-only). Otherwise memory assertions fail
+  and a hidden-context notice may appear as an assistant line only in the fake.
+  Diagnose with paired whole affected files and the real pinned pi contract; preserve
+  original model/feed assertions and verify raw typed entries, never hide the symptom
+  or concatenate context back into user text. Eleven integration failures on startup
+  source 8f6 were traced to these two fixture omissions; no production retry was needed.

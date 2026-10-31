@@ -81,6 +81,17 @@ describe("the feed over HTTP", () => {
     // The transcript is pi's session file: the pointers name it, the entries are pi's.
     const file = userEntry.file as string;
     expect(readFileSync(file, "utf8")).toContain('"type":"session"');
+    // Fixture fidelity: hidden turn context must follow native pi's typed
+    // custom-message path, not become a shown vc-note or Carl's user entry.
+    const entries = readFileSync(file, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    const context = entries.find((e) => e.type === "custom_message" && e.customType === "vc-context");
+    expect(context).toMatchObject({ display: false });
+    expect(context.content).toContain('<memory file=".vault-chat/MEMORY.md">');
+    expect(entries.some((e) => e.type === "custom" && e.data?.kind === "context")).toBe(false);
+    expect(entries.filter((e) => e.message?.role === "user").map((e) => e.message.content)).toEqual([
+      [{ type: "text", text: "What is a KV cache?" }],
+    ]);
+    expect(JSON.stringify(or.calls.at(-1))).toContain('<memory file=\\".vault-chat/MEMORY.md\\">');
     const feedOnDisk = readFileSync(join(vault, ".vault-chat", "events", `${conv}.jsonl`), "utf8");
     // (pi's live events for the message in flight are kept; the message itself is pi's entry, pointed to.)
     const pointers = feedOnDisk.trim().split("\n").map((l) => JSON.parse(l)).filter((x) => x.type === "entry");

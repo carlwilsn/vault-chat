@@ -95,7 +95,7 @@ type Handlers = { toolCall: (threadId: string, name: string, args: any) => Promi
 class FakeBackend extends EventEmitter {
   readonly name = "pi";
   threads: { threadId: string; instructions: string; tools: string[] }[] = [];
-  turns: { threadId: string; texts: string[]; images: string[]; turnId: string }[] = [];
+  turns: { threadId: string; texts: string[]; context: string | null; images: string[]; turnId: string }[] = [];
   handlers: Handlers | null = null;
   setHandlers(h: Handlers) {
     this.handlers = h;
@@ -114,8 +114,9 @@ class FakeBackend extends EventEmitter {
   async resumeThread() {}
   async startTurn(threadId: string, o: any) {
     const turnId = `${threadId}-turn${this.turns.length + 1}`;
-    // What the model gets this turn: the prompt, then the "you" layer pi adds after it (the extension, fakeSession.ts).
-    this.turns.push({ threadId, texts: o.you ? [...o.texts, o.you] : o.texts, images: o.images ?? [], turnId });
+    // Preserve the backend's separate typed context input; native pi persists
+    // it before the prompt, then adds the "you" layer (fakeSession.ts).
+    this.turns.push({ threadId, texts: o.you ? [...o.texts, o.you] : o.texts, context: o.context ?? null, images: o.images ?? [], turnId });
     return { turnId };
   }
   async steer() {}
@@ -163,7 +164,7 @@ const until = async (fn: () => Promise<boolean> | boolean, ms = 10_000) => {
   }
 };
 
-type Turn = { texts: string[]; images: string[]; instructions: string | null; convId: string; threadId: string; all: string };
+type Turn = { texts: string[]; context: string | null; images: string[]; instructions: string | null; convId: string; threadId: string; all: string };
 
 /** One user turn through the engine (any client: laptop, phone, board): what pi got, then the reply. */
 async function turn(body: Record<string, unknown>, reply: string, during?: (threadId: string) => Promise<void>): Promise<Turn> {
@@ -177,7 +178,7 @@ async function turn(body: Record<string, unknown>, reply: string, during?: (thre
   if (during) await during(t.threadId);
   backend.reply(reply);
   await until(async () => (await convs.readConv(vault, String(out.convId)))?.state !== "running");
-  return { texts: t.texts, images: t.images, instructions, convId: String(out.convId), threadId: t.threadId, all: [instructions ?? "", ...t.texts].join("\n") };
+  return { texts: t.texts, context: t.context, images: t.images, instructions, convId: String(out.convId), threadId: t.threadId, all: [instructions ?? "", t.context ?? "", ...t.texts].join("\n") };
 }
 
 /** Voice's Asks run as pi side threads (engine.sideStart, on the fake backend): each is answered by the test. */
@@ -739,6 +740,8 @@ describe("h. Switching conversations: what carries over, what stays per conversa
     expect(need(a1, "A").all).toContain(`This is the thread of Carl's project "Coconut"`);
     expect(need(a1, "A").all).toContain(`<project name="Coconut"`);
     expect(b1!.all).not.toContain(`<project name="Coconut"`);
+    expect(need(a1, "A").context).toContain(`<project name="Coconut"`);
+    expect(need(a1, "A").texts.join("\n")).not.toContain(`<project name="Coconut"`);
   });
   pass("h", "back in chat A (pi turn)", "only what changed since A's last turn: B's exchange, not A's own", () => {
     const t = need(a2, "A again").texts.join("\n");

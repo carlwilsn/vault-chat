@@ -169,6 +169,9 @@ export default function vaultChat(pi) {
       if (!d || typeof d !== "object" || typeof d.kind !== "string") return;
       // Clear: the agent is told (in its context, never shown); no turn of its own.
       if (d.kind === "clear") pi.sendMessage({ customType: CLEAR_TYPE, content: String(d.text ?? ""), display: false, details: { at: d.at } }, { triggerTurn: false });
+      // Turn sections (rules, memory, project instructions): model context,
+      // never a user bubble, including a feed recovered without host overrides.
+      else if (d.kind === "context") pi.sendMessage({ customType: "vc-context", content: String(d.text ?? ""), display: false }, { triggerTurn: false });
       else if (d.voice === true && d.kind === "line") pi.sendMessage({ customType: VOICE_TYPE, content: voiceLineContent(d), display: true, details: d }, { triggerTurn: false });
       else pi.appendEntry("vc-note", d);
     },

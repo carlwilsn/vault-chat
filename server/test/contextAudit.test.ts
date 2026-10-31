@@ -57,7 +57,7 @@ class FakeBackend extends EventEmitter {
   async startTurn(threadId: string, o: any) {
     const turnId = `${threadId}-turn${this.turns.length + 1}`;
     // What the model gets this turn: the prompt, then the "you" layer pi adds after it (the extension, fakeSession.ts).
-    this.turns.push({ threadId, texts: o.you ? [...o.texts, o.you] : o.texts, images: o.images ?? [], turnId });
+    this.turns.push({ threadId, texts: [o.context, ...o.texts, o.you].filter(Boolean), images: o.images ?? [], turnId });
     return { turnId };
   }
   async steer() {}

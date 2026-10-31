@@ -31,7 +31,8 @@ const put = (rel: string, s: string) => {
   writeFileSync(p, s);
 };
 const turnsOf = (tid: string) => rig.backend.turns.filter((t) => t.threadId === tid);
-const lastText = (tid: string) => (turnsOf(tid).at(-1)?.texts ?? []).join("\n\n");
+const modelText = (t: any) => [t?.context, ...(t?.texts ?? [])].filter(Boolean).join("\n\n");
+const lastText = (tid: string) => modelText(turnsOf(tid).at(-1));
 const threadOf = (tid: string) => rig.backend.threads.find((t) => t.threadId === tid);
 /** One turn on a conversation (or Main): what pi was handed, then the turn ends. */
 async function turn(text: string, convId?: string): Promise<{ convId: string; tid: string; text: string; instructions: string }> {
@@ -40,7 +41,7 @@ async function turn(text: string, convId?: string): Promise<{ convId: string; ti
   if (!r?.ok) throw new Error(JSON.stringify(r));
   await until(() => rig.backend.turns.length > before);
   const t = rig.backend.turns[before];
-  const out = { convId: String(r.convId), tid: t.threadId, text: (t.texts ?? []).join("\n\n"), instructions: String(threadOf(t.threadId)?.instructions ?? "") };
+  const out = { convId: String(r.convId), tid: t.threadId, text: modelText(t), instructions: String(threadOf(t.threadId)?.instructions ?? "") };
   rig.backend.end(t.threadId);
   await until(async () => (await rig.readConv(out.convId))?.state !== "running");
   return out;
@@ -179,7 +180,7 @@ describe("memory: the project-memory report's probes (the box's side of each)", 
     const instr = String(threadOf(mainTid)?.instructions ?? "");
     expect(instr).toContain("This is Main, Carl's one main conversation");
     expect(instr).toContain("Before you change files in a project's folder from outside its thread, read its AGENTS.md and memory first");
-    const first = turnsOf(mainTid)[0]!.texts.join("\n");
+    const first = modelText(turnsOf(mainTid)[0]);
     expect(first).toContain("<projects>");
     expect(first).toContain(`- Coconut: ${fwd(coconut)}`);
     expect(main.kind).toBe("main");
@@ -349,5 +350,26 @@ describe("a project's folder: its thread's working directory (pi's own AGENTS.md
     const n = await turn("Start.", "project-tiler");
     expect(threadOf(n.tid)!.cwd).toBe(tiler);
     expect(n.text).toContain("<working-folder>code/tiler/ is this project's folder");
+  });
+});
+
+describe("injected context is native context, not Carl's bubble", () => {
+  it("hands rules/memory to pi separately while retaining the actual user text, client ID, device and feed cursor", async () => {
+    put(".vault-chat/MEMORY.md", "# Memory\n\n- 2026-10-30: CONTEXT-ONLY-CANARY\n");
+    const before = convs.logOf(rig.vault).latest();
+    const started = await rig.start("These are Carl's words.", { convId: "sep-hidden-context", clientMsgId: "context-client-id", client: "phone" });
+    const t = turnsOf(started.tid).at(-1)!;
+    expect(t.texts.join("\n\n")).not.toContain("CONTEXT-ONLY-CANARY");
+    expect(t.context).toContain("CONTEXT-ONLY-CANARY");
+    expect(t.texts.join("\n\n")).toContain("These are Carl's words.");
+    rig.backend.end(started.tid);
+    await until(async () => (await rig.readConv(started.convId))?.state !== "running");
+    const p = convs.pictureOf(rig.vault, started.convId)!;
+    const visible = reduce.shown(p);
+    expect(visible.filter((x) => x.kind === "user")).toMatchObject([{ id: "context-client-id", text: "These are Carl's words.", device: "phone" }]);
+    expect(JSON.stringify(visible)).not.toContain("CONTEXT-ONLY-CANARY");
+    expect(convs.logOf(rig.vault).latest()).toBeGreaterThan(before);
+    const entries = readFileSync(String(p.meta.threadPath), "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line));
+    expect(entries.some((e) => e.type === "custom_message" && e.customType === "vc-context" && e.display === false)).toBe(true);
   });
 });

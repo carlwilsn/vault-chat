@@ -64,6 +64,8 @@ export function withPiSessions<T extends EventEmitter>(b: T, dir: string): T {
       const got = await handlers.you({ threadId, since: youSince(readEntries(s.file)) });
       if (got && typeof got.text === "string" && got.text.trim()) you = got;
     }
+    // The extension's /vc-note context path, before the actual user prompt.
+    if (s && o.context?.trim()) write(s, { type: "custom_message", customType: "vc-context", content: o.context, display: false });
     const r = await turn(threadId, { ...o, you: you?.text ?? null });
     if (s) {
       // pi sends the prompt's user message as the turn starts.

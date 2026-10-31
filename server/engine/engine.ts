@@ -996,19 +996,16 @@ export class Engine {
       await this.answer(id, shown, clientId);
       return { ok: true, convId: id, answered: true };
     }
-    // A turn still starting (pi not prompted yet): it is about to run, so the message goes into it.
-    for (let t = 0; t < 600; t++) {
-      const s = this.live.get(id);
-      if (!s || s.finished || s.started) break;
-      await new Promise((r) => setTimeout(r, 100));
-    }
+    // A loaded thread can accept native steer/follow_up even while prompt
+    // preflight compacts. Do not poll a second "started" state for 60 seconds:
+    // pi owns the queue and delivers input when its native run is ready.
     const l = this.live.get(id);
     const origin = body.source === "voice" ? "voice" : typeof body.client === "string" && body.client ? body.client.slice(0, 20) : body.source ? String(body.source).slice(0, 20) : undefined;
     // Which surface he is on (one conversation, several surfaces at once): the agent answers and shows things there.
     const surface = body.source === "voice" ? `a voice call${body.client ? ` (${String(body.client).slice(0, 20)})` : ""}` : typeof body.client === "string" && body.client ? `his ${body.client.slice(0, 20)}` : null;
     if (surface) context = [`[Carl, on ${surface}]`, context].filter(Boolean).join("\n");
     const sent = context ? `${context}\n\n${shown}` : shown;
-    if (l && !l.finished && l.started) {
+    if (l && !l.finished) {
       // A running turn: steer it (pi delivers it after the current tool calls), or queue it as
       // pi's follow-up (delivered when the agent would otherwise stop). Either way it is pending
       // until pi takes it, and enters the transcript where pi puts it. A message from another surface
@@ -1454,7 +1451,7 @@ export class Engine {
       a.resolve("Carl stopped this turn instead of answering. End the turn now; do nothing else.");
     }
     l.stopped = byUser || l.stopped;
-    if (!l.started) return true;
+    // Native preflight (including compaction) is abortable before acceptance.
     try {
       // pi's own stop: its queue is cleared first (what was not delivered is taken back), then abort.
       await this.d.backend.interrupt(l.threadId, l.turnId);
@@ -1619,13 +1616,17 @@ export class Engine {
         body = `${talker.rules}\n\n${body}`;
       }
       // What Carl did elsewhere is not in the prompt: pi's extension adds it (the "you" layer, a vc-you custom message).
-      const texts = [rules, kind === "wake" ? input : body].filter(Boolean);
+      // Host instructions/memory are pi custom context, never a forged user message.
+      const texts = [kind === "wake" ? input : body].filter(Boolean);
       live.feed.expect({ kind: "prompt", text: texts.join("\n\n"), clientId: kind === "user" ? clientId : undefined, ...shownInput, ...(opts.itemImages?.length ? { images: opts.itemImages } : {}), ...(kind === "user" && opts.origin ? { device: opts.origin } : {}) });
       // A live call learns where this turn came from (a call speaks only its own surface's exchange).
       if (this.taps.has(convId)) this.tapEmit(convId, { type: "vc_turn_start", kind, origin: opts.origin ?? null });
       try {
-        await this.d.backend.startTurn(threadId, { texts, images: opts.images ?? [], model, turnId, ...(talker?.thinking ? { thinking: talker.thinking } : {}) });
+        await this.d.backend.startTurn(threadId, { texts, context: rules, images: opts.images ?? [], model, turnId, ...(talker?.thinking ? { thinking: talker.thinking } : {}) });
         live.started = true;
+        // Stop may arrive before the prompt itself reached pi (model/context
+        // setup). Honor it at native acceptance too, without a fresh prompt.
+        if (live.stopped && !live.finished) await this.d.backend.interrupt(threadId, turnId);
       } catch (e) {
         live.finished = true;
         this.live.delete(convId);

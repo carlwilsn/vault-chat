@@ -62,6 +62,26 @@ describe("one pi filesystem definition through standard MCP", () => {
     expect(text(await c.callTool({ name: "ls", arguments: {} }))).toContain("note.txt");
   });
 
+  it("does not turn a markdown read into a header preview; an explicit header-only read says it is incomplete and how to continue", async () => {
+    // Synthetic fixture only, never Carl's Chan work.md.
+    const path = "synthetic-Chan-work.md";
+    const body = "# Chan work\n\nAn important instruction after the heading.\n\nThe final paragraph is part of the same file.\n";
+    writeFileSync(join(vault, path), body);
+    const c = await connect(["read"]);
+    const full = await c.callTool({ name: "read", arguments: { path } });
+    expect(full.isError).not.toBe(true);
+    expect(text(full)).toBe(body);
+    const partial = await c.callTool({ name: "read", arguments: { path, offset: 1, limit: 1 } });
+    expect(partial.isError).not.toBe(true);
+    expect(text(partial)).toMatch(/# Chan work/);
+    expect(text(partial)).toContain("[5 more lines in file. Use offset=2 to continue.]");
+    expect(text(partial)).toMatch(/offset=2/);
+    expect(text(partial)).not.toContain("important instruction");
+    const rest = await c.callTool({ name: "read", arguments: { path, offset: 2 } });
+    expect(text(rest)).toContain("An important instruction after the heading.");
+    expect(text(rest)).toContain("The final paragraph is part of the same file.");
+  });
+
   it("never treats unsafe native test mode as external write authority", async () => {
     await expect(filesystemBinding({ cli, node: process.execPath, script: resolve("server/engine/pi/ext/filesystem.mjs"), cwd: vault, home: root,
       outer: null, shell: null, denyRead: [secret], denyWrite: [], allowed: FILE_TOOLS, root: vault,

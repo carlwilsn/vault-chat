@@ -471,8 +471,17 @@ function handle(line) {
       if (String(c.message ?? "").startsWith("/vc-note ")) {
         try {
           const d = JSON.parse(String(c.message).slice("/vc-note ".length));
-          // The extension: Clear's note is a custom message in context (vc-clear); a voice line likewise (vc-voice); the rest vc-note entries.
-          if (d && d.kind === "clear") {
+          // Match vc.mjs: turn context is a persisted, model-visible custom
+          // MESSAGE, not a vc-note custom entry (which is display-only).
+          if (d && d.kind === "context") {
+            const m = { role: "custom", customType: "vc-context", content: String(d.text ?? ""), display: false, timestamp: stamp() };
+            append({ type: "custom_message", customType: m.customType, content: m.content, display: m.display });
+            customs.push(m);
+            customToHistory(m);
+            // Native idle sendMessage appends first, then emits both events.
+            out({ type: "message_start", message: m });
+            out({ type: "message_end", message: m });
+          } else if (d && d.kind === "clear") {
             const cm = { type: "custom_message", customType: "vc-clear", content: String(d.text ?? ""), display: false, details: { at: d.at } };
             append(cm);
             customs.push(cm);
