@@ -1,5 +1,6 @@
 // Finite private-package check. Uses the UNCHANGED production native sandbox/gate argv.
 import assert from 'node:assert/strict';
+import { relinkPrivateBins } from './private-package-bins.mjs';
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -22,6 +23,7 @@ for (const name of native) {
   assert.equal(pkg.version, lock.packages['node_modules/' + name].version, name + ': genuine lock-matched package required');
 }
 for (const name of readdirSync(donor)) if (!name.startsWith('.vite')) execFileSync('cp', ['-aL', '--reflink=auto', realpathSync(join(donor, name)), join(dependencies, name)]);
+writeFileSync(join(out,'package-entrypoints.json'),JSON.stringify(await relinkPrivateBins(dependencies,donor,join(source,'package-lock.json')),null,2));
 writeFileSync(join(out, 'dependency-scope.json'), JSON.stringify({ donor, native, lockMatched: true, dereference: true, privateTree: dependencies }, null, 2));
 const put = (name, content) => { mkdirSync(dirname(join(repo, name)), { recursive: true }); writeFileSync(join(repo, name), content); };
 const manifest = JSON.stringify({ name: 'private-native-package-preflight', version: '0.0.0', private: true, type: 'module' });

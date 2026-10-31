@@ -1,4 +1,5 @@
 // Parent StartJob only. Pinned, disposable first-install gate verification, NEVER an installer or promotion.
+import { relinkPrivateBins } from './private-package-bins.mjs';
 import { spawn, execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -13,6 +14,7 @@ if (g(canonical, 'rev-parse', 'HEAD') !== base || g(canonical, 'rev-parse', 'mai
 const pinnedNpm='/nix/store/y2j5pbj8x9kfgwgkd0hdrwm6aksszb44-nodejs-slim-22.23.2-npm/lib/node_modules/npm/bin/npm-cli.js';
 const donorCheck=realpathSync('/home/carlwilsn/agent-work/vault-chat/changes/vault-chat/node_modules');
 if(!readFileSync(join(dirname(donorCheck),'package-lock.json')).equals(readFileSync(join(source,'package-lock.json'))))throw Error('Existing donor lock mismatch');
+if(!execFileSync('git',['show',base+':package-lock.json'],{cwd:source}).equals(readFileSync(join(dirname(donorCheck),'package-lock.json'))))throw Error('Baseline donor lock mismatch');
 const installedManifest=JSON.parse(readFileSync(join(dirname(donorCheck),'package.json'))), sourceManifest=JSON.parse(readFileSync(join(source,'package.json')));
 for(const f of ['dependencies','devDependencies','optionalDependencies','peerDependencies','overrides'])if(JSON.stringify(installedManifest[f])!==JSON.stringify(sourceManifest[f]))throw Error('Existing donor dependency field mismatch: '+f);
 for(const p of [pinnedNpm,'/nix/store/d64q19q1xjdwfhqx6czvrjgrhq0n3lcc-python3-3.14.7/bin/python3','/home/carlwilsn/.local/state/vault-chat-server/pi/1.1.0/node_modules/@earendil-works/pi-coding-agent/package.json'])if(!existsSync(p))throw Error('Missing pinned runtime '+p);
@@ -39,7 +41,8 @@ const env={PATH:path,HOME:home,TMPDIR:join(out,'t'),LANG:'C.UTF-8',CI:'1',VC_TES
 const donor=realpathSync('/home/carlwilsn/agent-work/vault-chat/changes/vault-chat/node_modules');
 const donorLock=join(dirname(donor),'package-lock.json');
 if(!existsSync(donorLock)||!readFileSync(donorLock).equals(readFileSync(join(repo,'package-lock.json'))))throw Error('Existing dependency lock differs; no installation authorized');
-execFileSync('cp',['-a','--reflink=auto',donor,join(deps,'node_modules')],{env});
+execFileSync('cp',['-aL','--reflink=auto',donor,join(deps,'node_modules')],{env});
+writeFileSync(join(out,'package-entrypoints.json'),JSON.stringify(await relinkPrivateBins(join(deps,'node_modules'),donor,join(repo,'package-lock.json')),null,2));
 // Never import a donor's Vitest/Vite caches into this private verification.
 const { rmSync } = await import('node:fs');
 for(const name of ['.vite','.vite-temp','.vite-preview-before'])rmSync(join(deps,'node_modules',name),{recursive:true,force:true});

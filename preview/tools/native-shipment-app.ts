@@ -1,5 +1,6 @@
 /** Finite dev fixture. No engine/model, installed authority, main mutation, or private-state file editing. */
 import assert from 'node:assert/strict';
+import { relinkPrivateBins } from './private-package-bins.mjs';
 import { createHash } from 'node:crypto';
 import { proofImagePath } from '../../src/review';
 import { execFileSync } from 'node:child_process';
@@ -81,6 +82,7 @@ try {
   writeFileSync(join(dirname(dependencies),'package.json'),manifest);writeFileSync(join(dirname(dependencies),'package-lock.json'),lock);
   for(const p of readdirSync('node_modules')) if(!p.startsWith('.vite'))execFileSync('cp',['-aL','--reflink=auto',realpathSync(join('node_modules',p)),join(dependencies,p)]);
   mkdirSync(installed,{recursive:true});
+  writeFileSync(join(root,'package-entrypoints.json'),JSON.stringify(await relinkPrivateBins(dependencies,realpathSync('node_modules'),join(repoSource,'package-lock.json')),null,2));
   writeFileSync(join(installed,'config.json'),JSON.stringify({repo,remote:'origin',workRoot:join(root,'native-runs'),dependencies,pi:process.env.VC_TEST_PI_DIR,node:process.execPath,npm:realpathSync(process.env.VC_PROOF_NPM!),bash:realpathSync('/run/current-system/sw/bin/bash'),bwrap:process.env.VC_PROOF_BWRAP,path:process.env.PATH}));
   await build({entryPoints:['server/simpleShipHost.ts'],bundle:true,platform:'node',format:'esm',outfile:join(installed,'simple-ship.mjs')});
   await runInstalledShip(repo,'--branch','agent/fixture-change',title,'app',project.convId,new AbortController().signal,text=>writeFileSync(join(root,'native-forward.log'),text,{flag:'a'}));

@@ -96,3 +96,10 @@ in doubt, mark it agent.
 - Card-history append needs its own lstat/parent checks, including when there are no accepted projects:
   summary/media projection checks never ran for an empty project list, and existsSync missed a
   dangling cards.jsonl redirect. These fixtures still do not prove concurrent-swap/file-serving/UI.
+
+- **Copied npm bins can already be flattened in the donor (2026-10-31).** A faithful `cp -a` or
+  `cp -aL` then runs Vite's real ESM bytes from `.bin/vite`, resolving `../dist` in the wrong directory.
+  Disposable proof dependency copies use genuine npm `bin-links` + normalized actual lock/package
+  metadata to restore private relative entrypoint links, and check native optional hashes and symlink
+  confinement. Never fix this with wrappers, custom resolution, donor writes, installs or a relaxed gate.
+  `preview/tools/private-package-bins.mjs` is private fixture provisioning only, not production authority.

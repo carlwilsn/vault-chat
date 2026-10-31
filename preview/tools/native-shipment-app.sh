@@ -41,6 +41,13 @@ assert.equal(JSON.parse(readFileSync(process.env.VC_TEST_PI_DIR+'/node_modules/@
 JS
 "$npm" --version > "$VC_APP_PROOF_OUT/npm-version.txt"; python3 --version > "$VC_APP_PROOF_OUT/python-version.txt"; ffmpeg -version > "$VC_APP_PROOF_OUT/ffmpeg-version.txt"
 printf '%s\n' "$pin" > "$VC_APP_PROOF_OUT/source-pin.txt"
+# Refuse occupied owned ports BEFORE package staging; never adopt/kill foreign listeners.
+"$node" --input-type=module - "$port" "$web" <<'JS'
+import net from 'node:net';
+for(const port of process.argv.slice(2).map(Number)) {
+ const s=net.createServer();await new Promise((yes,no)=>{s.once('error',no);s.listen(port,'127.0.0.1',yes);});await new Promise(yes=>s.close(yes));
+}
+JS
 # Fail before App/CLI on incomplete native optionals; unchanged production bwrap/gate argv.
 # Parent-only --run allows cold private package COPYING (not any product gate) up to 120s.
 set +e
