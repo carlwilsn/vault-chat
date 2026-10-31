@@ -443,6 +443,9 @@ describe("voice's one tool that acts: Ask, a request to the conversation's agent
     await until(() => backend.turns.length > n);
     const cur = (await voice.voiceUpdates(deps, { convId: chat })).cursor;
     await voice.voiceTool(deps, { name: "Ask", args: { request: "How many sections are there?" }, convId: chat, device: "phone" });
+    // Updates use an exclusive millisecond cursor. The instantaneous fake must
+    // finish after it; waiting for completion alone cannot advance that clock.
+    await until(() => Date.now() > Number(cur.split(":")[0]));
     lastSide().answer("Six sections.");
     await voice.voiceAsksSettled();
     const mid = await voice.voiceUpdates(deps, { convId: chat, cursor: cur, waitMs: 1000 });
@@ -456,6 +459,9 @@ describe("voice's one tool that acts: Ask, a request to the conversation's agent
     const start = await voice.voiceUpdates(deps, { convId: chat });
     await voice.voiceTool(deps, { name: "Ask", args: { request: "What does Cauchy mean, and what's the series?" }, convId: chat, device: "laptop" });
     const latex = String.raw`Cauchy: for every $\epsilon > 0$ there is $N$ with $|x_m - x_n| < \epsilon$ for $m, n > N$. The series is $$\sum_{k=1}^n \frac{(-1)^k}{k}$$ and the field is $\frac{1}{4\pi\epsilon_0}\frac{q}{r^2}$, a drop of 5 mV.`;
+    // As above: put the fake answer strictly after the exclusive cursor, then
+    // await the existing Ask completion (including its persisted LaTeX row).
+    await until(() => Date.now() > Number(start.cursor.split(":")[0]));
     lastSide().answer(latex);
     await voice.voiceAsksSettled();
     const got = await voice.voiceUpdates(deps, { convId: chat, cursor: start.cursor, waitMs: 2000 });

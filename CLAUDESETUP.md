@@ -7,9 +7,32 @@ bootstrap identity importer, candidate-recorder acceptance authority or new daem
 **Do not install or restart from the agent sandbox.** The complete procedure, exact CLI, isolation
 requirements, branch-publication blocker and health/card checks are in [`docs/simple-ship.md`](docs/simple-ship.md).
 
+## Latest completed gate evidence — NOT green
+
+The original complete paired run (`run-all-baseline-and-can-mvvoelfd`, exit **2**) is retained in
+`/tmp/s1030-uuCTDx/{baseline,candidate,summary}.json` and `runs/ship-BO84Zl/`. Baseline
+`8e540669f3b3caca9b40da1105895775ad759ce7` and candidate
+`a634fda197535655126eda8e83226e9654f11c4b` both passed all four typechecks, all **435** harness
+tests and build:server. Server tests failed: baseline **21/905**, candidate **23/810**; exact
+identities show **21 shared failures and TWO newly failing existing voice tests**, not merely the
+114 explicit retirements. The strict comparator still fails on retired identities; no waiver was added.
+
+The two voice failures were causally reproduced on BOTH unchanged baseline and candidate voice
+implementations by completing their instantaneous fake Ask in the captured cursor's millisecond:
+the persisted result exists, but the exclusive `r.at <= cursor.at` filter excludes it. Moving only
+the exclusive query boundary back one millisecond reveals the result. The fixtures now await the
+existing clock predicate before answering and still await `voiceAsksSettled()`; every assertion and timeout remains.
+Paired focused runs pass **2/2 on each source with the fixture correction**, including deliberately
+equal initial clock observations; this is NOT a replacement full-gate pass or proof of deployment.
+Details and bounded RED/GREEN measurements: [`docs/simple-ship.md`](docs/simple-ship.md#completed-paired-gates-and-voice-fixture-diagnosis).
+The retained real-component/HTTP UI proof is local-only (not installed Tauri); a newly pinned complete
+run after the final batch and installed native release/rollback evidence remain outstanding.
+
 Before activating this reviewed branch:
 
-1. Run the parent's pinned full-gate job and actual-app UI recording. Review the explicit **114 RETIRED**
+1. After the final batch, have the parent launch the pinned full-gate job (do not repeat the old failed
+   run or mistake focused diagnostics for seven gates). Refresh actual-app UI evidence as needed.
+   Review the explicit **114 RETIRED**
    testcase identities in [`docs/simple-ship-retired-tests.md`](docs/simple-ship-retired-tests.md), not a
    test-count waiver. This initial architectural deletion cannot self-accept against old main's cases.
 2. Prepare a clean reviewed source with `node scripts/prepare-simple-ship.mjs /tmp/simple-ship-reviewed-UNIQUE`.

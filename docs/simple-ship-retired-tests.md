@@ -5,8 +5,9 @@ These are **RETIRED**, not passing tests or ongoing gate waivers. Names below ca
 the deleted permit, candidate-bound recorder, bootstrap importer, receipt-authorized recovery,
 and legacy Keep acceptance routes; the replaced job/catalog/updater contracts are tested under
 their new semantics. Claude installs this architectural reset once after full checks; the normal
-script has **no removal allowance**, including for rollback. No protected journal or historical
-conversation/card/media is deleted.
+script has **no forward-branch removal allowance**. Only its internally generated native recorded-range
+revert can remove the reverted feature's tests after exact tree/parent verification; see `simple-ship.md`.
+No protected journal or historical conversation/card/media is deleted.
 
 - RETIRED `server/test/submitChange.integration.test.ts` — unmocked installed submission orchestration > runs one request-bound host job, accepts with actual app UI proof, and proves a specific source rollback without a Keep wait
 - RETIRED `server/test/changeHost.test.ts` — installed change host: actual sandbox, git pins and seven fixed commands > pins main and candidate without merging or pushing and does not reset the clone

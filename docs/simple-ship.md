@@ -130,3 +130,114 @@ not establish deployed recovery. Claude must repeat the bounded literal/cadence 
 First Claude installation, ordinary branch publication, then independently accepted native follow-up,
 laptop sync/CI, actual box/authenticated Tauri health and Shipped-card rollback remain pending. Local
 runner/UI fixtures cannot establish any of those production facts.
+
+
+### Completed paired gates and voice fixture diagnosis
+
+**Initial review bundle prepared, NOT installed, accepted, pushed or Shipped.** The original full
+job `run-all-baseline-and-can-mvvoelfd` exited **2**. Its immutable artifacts are
+`/tmp/s1030-uuCTDx/{pins,baseline,candidate,summary}.json` and `runs/ship-BO84Zl/` below that directory.
+Baseline is `8e540669f3b3caca9b40da1105895775ad759ce7`; original candidate is
+`a634fda197535655126eda8e83226e9654f11c4b` (before the two fixture-ordering corrections).
+
+| Completed gate | Baseline | Original candidate |
+| --- | --- | --- |
+| Desktop, phone, board, server typechecks | all 4 pass | all 4 pass |
+| Full harness | 435 pass | 435 pass |
+| Server | 21 failures / 905 cases | 23 failures / 810 cases |
+| build:server | pass | pass |
+| Strict named-case comparison | **REJECTED**: retired old-framework identities; no waiver | **NOT GREEN** |
+
+The failure identity sets have **21 shared** failures and exactly **two new** failures, both existing
+`server/test/voice.test.ts` cases:
+
+- `an Ask never drops on a timeout: it returns while the side request still works, and its answer reaches the call once`
+- `an answer with LaTeX reaches the call as words (server/speakMath.ts); the row keeps the LaTeX`
+
+The 114 RETIRED identities in `simple-ship-retired-tests.md` require explicit one-time architectural
+review, not a count-based exemption. The strict comparator was NOT weakened. The completed run is
+historical failure evidence; do not re-run seven gates blindly or overwrite it. The parent must pin
+and launch one new complete comparison **after** the final repair batch.
+
+#### Bounded causal RED/GREEN (retained worker artifacts, re-inspected)
+
+`/tmp/sv-tq9gx9r2/` retains `metadata.json`, `run-one.sh`, exact original fixtures
+(`base-original.ts`, `cand-original.ts`), per-pin reports and measurements. Both originals were
+byte-checked against `git show <pin>:server/test/voice.test.ts`; all **223** assertion source lines
+also match the retained diagnostic fixtures. The production `server/voice.ts` is byte-identical on
+both pins and the repaired branch (SHA-256
+`20b9a4a9a1e14323adbd49f01bb9540d3cef6dd40c576759815ec3eea892dc0e`). No production voice change.
+
+The Ask result uses the cursor's **first** timestamp field, excluded when `r.at <= cur.at`.
+The diagnostic clock forced the fake answer and its async `voiceAsksSettled()` completion into the
+captured cursor millisecond. The persisted VoiceAsk row existed, but querying at that cursor found
+zero results; moving only the query boundary **back** 1 ms found one. This is a pre-existing exclusive
+cursor/instantaneous-fixture collision, not evidence of a changed Ask API or engine implementation.
+
+| Pin / answer | Cursor = forced completion (ms) | Persisted VoiceAsk rows | Results at cursor / cursor−1 |
+| --- | ---: | ---: | ---: |
+| baseline / Six sections | 1793409516819 | 2 | 0 / 1 |
+| baseline / LaTeX | 1793409518098 | 1 | 0 / 1 |
+| a634fda / Six sections | 1793409527119 | 2 | 0 / 1 |
+| a634fda / LaTeX | 1793409528394 | 1 | 0 / 1 |
+
+These are `{base,cand}-{six,latex}-measurement.json`. `{base,cand}-red.json` each record
+**0 passed / 2 failed** at the original assertions (empty Six-sections results; missing LaTeX result).
+`{base,cand}-green.json` each record **2 passed / 0 failed** using the fixture correction.
+`{base,cand}-boundary-green.json` each also record **2 passed / 0 failed** with a deliberately equal
+first clock observation, released on the next event-loop turn. In the corresponding `*-green-measurement.json`
+files `sawEqual` is true for all four observations and each query sees exactly one result. Diagnostic
+clock overrides/instrumentation exist only in disposable test copies, not committed tests or production.
+
+The committed fix is only `await until(() => Date.now() > Number(cursor.split(":")[0]))` before each
+instantaneous fake answer, retaining the existing `await voiceAsksSettled()`. It uses the existing
+predicate poller and deadline; no assertion, timeout, test identity, API argument, retry or skip changed.
+The diagnostic launcher explicitly selects these **two** cases; its **31 filtered cases are not passes**.
+These retained focused runs are causal evidence, NOT a full voice suite, seven-gate pass or installed proof.
+A fresh check of the final uninstrumented repair also passed **2/2**, **31 filtered**, exit **0**:
+`/tmp/s1030-final-focused-5U4ija/{results.json,run.log}`. It used a fresh private HOME/tmp, an empty
+environment plus explicit Node 22/real npm/Python binary paths, distinct empty npm configs, pinned
+pi 1.1.0, voice off and private positive ports. No broad re-run was performed to finish this repair.
+
+The checked future launcher is `/tmp/simple-ship-reset-final-check.mjs` (syntax-checked, NOT launched).
+After the parent finishes its batch, use its background StartJob, never an inline long wait:
+
+```sh
+/nix/store/ya2lzgl9wj76175dwrhg2x4d3pif1xxg-nodejs-slim-22.23.2/bin/node \
+  /tmp/simple-ship-reset-final-check.mjs \
+  /home/carlwilsn/agent-work/vault-chat/simple-ship-reset-1030 FULL_FINAL_REVIEWED_SHA
+```
+
+It checks clean source/exact HEAD and unchanged canonical HEAD/main, uses credential-free public
+`npm ci --ignore-scripts` with separate empty npm configs/private HOME, real npm bin and genuine Python
+bin, and runs both complete seven-gate snapshots through the prepared host module. It neither installs
+nor promotes. Its strict comparator will still reject the 114 architectural retirements: a new run
+cannot manufacture ordinary self-acceptance for this initial deletion.
+
+The separately measured YOU/activity race uses the cursor's **second** field. Its independent fixture
+commit `5f658750a0e161c42ff962500a4802842f621ab0` is deliberately not cherry-picked into this narrow repair;
+the parent owns that dependency/final batch. Its reported affected run (16 passed, 28 filtered, build
+pass) is not a full-suite pass and does not establish this branch's complete gate status.
+
+#### UI evidence and remaining host handoff
+
+The retained real-component/HTTP proof is `/tmp/s1030-ui-DfbI1C/result.json`, with:
+
+- `01-accepted-desktop.png`
+- `02-source-revert-accepted-desktop.png`
+- `03-source-revert-accepted-phone.png`
+
+Its source pin is `a634fda197535655126eda8e83226e9654f11c4b`; it reports real HTTP routes and adapter,
+no errors, and **`installedTauriProof: false`** / **`unpublished: true`**. This proves local
+component/HTTP behavior only, not protected-main promotion, installed native health or actual card rollback.
+NativePi and native recorded-range revert exact-tree/sole-parent authority are unchanged by this repair.
+
+Ordinary branch publication remains blocked: the earlier branch push exited **128**, unable to obtain
+an HTTPS password. Claude must provision the existing remote's branch-publication capability once;
+no main push, merge, old SubmitChange, installer, restart, fabricated bootstrap or candidate sidecar was
+used here. The one-time read-only installed script/config/dependencies procedure above remains the
+only handoff, followed by an independently pushed ordinary follow-up through the host script, both gate
+sets, expected-old FF, laptop sync, CI, actual box/authenticated native Tauri health and Shipped-card rollback.
+The installed metadata **0.7.22 / e74b705d…** and observed **~15 s `Invalid bootstrap proof identity`**
+recurrence remain historical unresolved evidence, not a deployed fix; repeat the bounded literal/cadence
+check after Claude activates the reviewed source. No claim that the follow-up has shipped is made.
