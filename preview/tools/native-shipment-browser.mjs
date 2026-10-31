@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { writeFileSync } from 'node:fs';
 import { chromium } from 'playwright-core';
 
-export async function appProof({ base, out, id, title, advance, rollback, smoke }) {
+export async function appProof({ base, out, id, title, advance, rollback, smoke, nativeWorker }) {
   const evidence = { scope: 'Production React App + production HTTP + native Git PRIVATE FIXTURE; preview IPC, NOT installed Tauri/CI/device health.', errors: { console: [], page: [], http: [], network: [], outbound: [] }, calls: [], states: [], failure: null };
   const browser = await chromium.launch({ executablePath: process.env.VC_PROOF_CHROMIUM, headless: true, args: ['--mute-audio'] });
   let page; let rejectedPath;
@@ -37,17 +37,17 @@ export async function appProof({ base, out, id, title, advance, rollback, smoke 
     assert.match(await card.innerText(), new RegExp(title));
     evidence.states.push({ phase: 'accepted-not-shipped', text: await card.innerText() });
     await page.getByText(/^[12] tool calls?$/).last().click();
-    await page.getByText('Private synthetic worker completed', { exact: true }).waitFor();
+
     evidence.workerChipCount = await page.locator('[data-el="tasks-chip"]').count();
     assert.equal(evidence.workerChipCount, 1, 'finished Delegate must expose its native worker');
     await page.locator('[data-el="tasks-chip"]').click();
-    const worker = page.locator('[data-el="task"][data-sid="fixture-worker"]');
+    const worker = page.locator(`[data-el="task"][data-sid="${nativeWorker.child}"]`);
     assert.equal(await worker.getAttribute('data-state'), 'done');
     await worker.locator('[data-el="task-open"]').click();
     await page.getByText('Correct native child report for fixture-delegate', { exact: true }).waitFor();
     await page.locator('[data-el="worker-parent"]').click();
     await page.getByText('Private fixture native Git history', { exact: true }).first().waitFor();
-    evidence.workerNavigation = { child: 'fixture-worker', parent: 'project-app', callId: 'fixture-delegate' };
+    evidence.workerNavigation = nativeWorker;
     await page.screenshot({ path: `${out}/01-app-accepted.png` });
     await card.getByRole('button', { name: 'Proof', exact: true }).click();
     const dialog = page.getByRole('dialog', { name: 'Shipment proof' });
@@ -108,6 +108,8 @@ export async function appProof({ base, out, id, title, advance, rollback, smoke 
       return rejectedPath && u.origin === new URL(base).origin && u.pathname === '/proof/__realbox/api/v1/vault/file' && u.searchParams.get('path') === rejectedPath && u.searchParams.get('vault') === 'fixture';
     };
     for (const key of ['page', 'network', 'outbound']) assert.deepEqual(evidence.errors[key], [], key);
+    assert.equal(evidence.errors.http.length, smoke ? 0 : 2, 'exact rejected artifact requests (React StrictMode)');
+    assert.equal(evidence.errors.console.length, smoke ? 0 : 2, 'exact rejected artifact browser errors');
     // Keep every deliberate rejection; narrowly correlate console + HTTP with this one actual fixture redirect.
     for (const e of evidence.errors.http) assert.ok(e.status === 404 && expectedRejectedURL(e.url), JSON.stringify(e));
     for (const e of evidence.errors.console) assert.ok(e.text === 'Failed to load resource: the server responded with a status of 404 (Not Found)' && expectedRejectedURL(e.location.url), JSON.stringify(e));

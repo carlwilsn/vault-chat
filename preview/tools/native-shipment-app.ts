@@ -12,8 +12,9 @@ import { promote, prepareRevert } from '../../server/simpleShipHost';
 import { runInstalledShip, requestRollback } from '../../server/submitChange';
 import { readJobs, probeJob } from '../../server/engine/pi/jobs';
 import { cp } from 'node:fs/promises';
-import { ensureMain, appendNotes, patchMeta, createConv } from '../../server/engine/convs';
+import { ensureMain, appendNotes } from '../../server/engine/convs';
 import { gitCommands } from '../../server/commands/gitcmds';
+import { finishedNativeWorker } from './native-finished-worker';
 
 const root = process.env.VC_APP_PROOF_OUT!, repoSource = process.cwd(), runFull = process.argv.includes('--run');
 assert.ok(root && root !== repoSource); mkdirSync(root, { recursive: true });
@@ -94,14 +95,9 @@ try {
  writeFileSync(join(vault,dirname(proofRel),'recording.png'),Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aT1sAAAAASUVORK5CYII=','base64'));
 
  put('later.txt','unrelated later scope preserved\n');g('add','later.txt');g('commit','-qm','Unrelated later scope');const later=g('rev-parse','HEAD');
- await createConv(vault,{kind:'worker',source:'worker',project:'app',title:'Native finished worker'},'Native finished worker','fixture-worker');
- appendNotes(vault,'fixture-worker',[{kind:'line',role:'assistant',text:'Correct native child report for fixture-delegate'}]);
- // A different call in the same parent must not acquire this worker link.
- appendNotes(vault,project.convId,[{kind:'tool',clientId:'fixture-other-call',name:'Read',args:{path:'app.ts'},result:'Unrelated call with no worker'}]);
- appendNotes(vault,project.convId,[{kind:'tool',clientId:'fixture-delegate',name:'Delegate',args:{task:'Inspect synthetic native range'},result:'Private synthetic worker completed'}]);
+ const nativeWorker=await finishedNativeWorker(root,vault,project.convId);
  await appendHistory();
  async function appendHistory(){ const log=await gitCommands.git_log_subdir!({vault,subdir:'app',maxCount:20});appendNotes(vault,project.convId,[{kind:'line',role:'assistant',text:`Private fixture native Git history\n\nAccepted range: ${base}..${head}\n\n\`\`\`text\n${log}\n\`\`\``}]); }
- await patchMeta(vault,project.convId,{subagents:[{threadId:'fixture-worker',toolCallId:'fixture-delegate',task:'Inspect synthetic native range',state:'completed',startedAt:Date.now()-1000,endedAt:Date.now(),said:`Native Git ${base.slice(0,8)}..${head.slice(0,8)}`} ]});
  let release={id:'fixture-release',version:'0.0.1',revision:head,tag:'fixture-only-v0.0.1',publishedAt:new Date(Date.now()-1000).toISOString()};
  configureChangeDelivery({vaults:()=>[scope],stateDir:join(root,'delivery-state'),boxHealth:async()=>({version:release.version,revision:release.revision,observedAt:Date.now(),ready:true}),requestSourceRollback:async(_repo,id)=>{
    assert.equal(_repo,repo);assert.equal(id,head);
@@ -126,7 +122,7 @@ try {
   await request('/api/v1/release-health/laptop',{...challenge,tauri:true,frontendMounted:true,boxConnected:true,syncReady:true,updaterReady:true},true);
   await observeChangeDelivery(repo);
  };
- await appProof({base:`http://127.0.0.1:${process.env.VC_APP_PROOF_PORT}/proof`,out:root,id:head,title,smoke:false,rollback:async()=>{
+ await appProof({base:`http://127.0.0.1:${process.env.VC_APP_PROOF_PORT}/proof`,out:root,id:head,title,nativeWorker,smoke:false,rollback:async()=>{
   let reverted=false;
   for(let i=0;i<(runFull?12000:100);i++){
    const changes=await acceptedChanges(repo);
