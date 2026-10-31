@@ -1,5 +1,8 @@
 # Final simple-ship handoff report — prepared, not shipped
 
+
+> Subsequent development: [offline repair/audit](simple-ship-offline-audit.md), on a separate branch.
+> The 8b bundle and final pair below remain immutable; they do not certify that newer source.
 ## Exact source and evidence
 
 Tested baseline: `8e540669f3b3caca9b40da1105895775ad759ce7`.

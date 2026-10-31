@@ -1,5 +1,8 @@
 # Shipping reset — one box script
 
+
+> Subsequent development: [offline repair/audit](simple-ship-offline-audit.md), on a separate branch.
+> The 8b bundle and final pair below remain immutable; they do not certify that newer source.
 Carl's 2026-10-30 reset supersedes the old permit/recorder/bootstrap acceptance design.
 
 1. The agent checks its change, records the real app UI, commits, and **pushes only its
@@ -10,8 +13,9 @@ Carl's 2026-10-30 reset supersedes the old permit/recorder/bootstrap acceptance 
    runs all seven gates on both immutable snapshots, and compares complete named test results using
    the existing normalizers. Failures must be a subset of main's failures. Removing/renaming a baseline
    case, new skip/todo, runtime crash, timeout, unavailable report, or failed type/build gate blocks.
-4. Native git `update-ref <new> <expected-old>` promotes only a fast-forward from the still-current
-   pinned main; `read-tree -u -m` updates the index/worktree without `reset --hard`. The existing private
+4. Native git `update-ref --stdin` prepares an exact expected-old ref transaction on the still-current
+   pinned main, holds its native ref lock during `read-tree -u -m`, then commits only if checkout succeeds.
+   No `reset --hard`; worktree/ref/journal are not claimed power-loss-atomic (see offline repair audit). The existing private
    journal retains accepted ranges and release health, not authorization tokens. Native `flock` excludes
    concurrent script launches; a short native journal flock is shared with the running service
    so acceptance cannot overwrite concurrent health facts. Git's compare-and-swap rejects other main writers.

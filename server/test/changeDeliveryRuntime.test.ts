@@ -119,6 +119,36 @@ describe("durable delivery observations, not synchronized card authority", () =>
     expect(readFileSync(join(dest, "recording.mp4"), "utf8")).toBe("retained projected fixture");
     expect(readFileSync(join(f.proof, "receipt.json"), "utf8")).toBe("malformed historical receipt");
   });
+  it("excludes private request, environment and log sentinels from the historical summary and media listing", async () => {
+    const f = await fixture();
+    const sentinel = "OFFLINE_FIXTURE_PRIVATE_SENTINEL";
+    writeFileSync(join(f.proof, "receipt.json"), JSON.stringify({ request: sentinel, environment: { FIXTURE_SECRET: sentinel }, path: f.root }));
+    writeFileSync(join(f.proof, "gate.log"), sentinel);
+    writeFileSync(join(f.proof, "recording.mp4"), sentinel);
+    const [card] = await shipmentCards(f.vault, "school");
+    const path = new URL(card.proof.summaryUrl, "http://fixture").searchParams.get("path")!;
+    const projection = JSON.stringify(card) + readFileSync(join(f.vault, path), "utf8");
+    expect(projection).not.toContain(sentinel); expect(projection).not.toContain(f.root);
+    expect(card.proof.mediaUrls).toEqual([]); // Private/unprojected files are NOT silently made public.
+    expect(readFileSync(join(f.proof, "recording.mp4"), "utf8")).toBe(sentinel);
+  });
+  it.each(["summary.md", "recording.mp4", "recording.webm", "recording.png"])("refuses live and dangling historical projection links: %s", async name => {
+    const f = await fixture(), victim = join(f.root, "private-victim");
+    await shipmentCards(f.vault, "school");
+    const dest = join(f.vault, ".vault-chat/shipments/proof", createHash("sha256").update(f.c.id).digest("hex"));
+    for (const live of [true, false]) {
+      if (live) writeFileSync(victim, "FIXTURE_PRIVATE_DO_NOT_COPY"); else rmSync(victim);
+      rmSync(join(dest, name), { force: true }); symlinkSync(victim, join(dest, name));
+      await expect(shipmentCards(f.vault, "school")).rejects.toThrow("Unsafe");
+      if (live) expect(readFileSync(victim, "utf8")).toBe("FIXTURE_PRIVATE_DO_NOT_COPY");
+    }
+  });
+  it.each([".vault-chat/shipments", ".vault-chat/shipments/proof"])("refuses historical projection directory redirects: %s", async relative => {
+    const f = await fixture(), outside = join(f.root, "outside"); mkdirSync(outside);
+    const path = join(f.vault, relative); mkdirSync(join(path, ".."), { recursive: true }); symlinkSync(outside, path);
+    await expect(shipmentCards(f.vault, "school")).rejects.toThrow("Unsafe");
+    expect(readFileSync(join(f.proof, "../repo/app.txt"), "utf8")).toBe("after");
+  });
   it("recovers a persisted requested rollback after a pre-dispatch crash, but never starts a second accepted recovery", async () => {
     const f = await fixture();
     await updateShippingJournal(f.repo, j => { j.delivery = { releases: {}, rollbacks: { [f.c.id]: { status: "requested" } } }; });

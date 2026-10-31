@@ -79,3 +79,12 @@ in doubt, mark it agent.
   pointer identities matter. A verified append-active prefix backup is NOT a final quiesced backup, and
   HTTP drain/repo locks do NOT exclude background event writers. No installed compaction API was found;
   maintainer-owned all-writer exclusion and reader/fallback rollout remain prerequisites for live work.
+
+## Offline reset boundary fixtures (2026-10-31)
+- `existsSync` follows symlinks: a dangling projection summary link escaped the guard and let
+  `writeFileSync` create its outside target. Check the directory entry with `lstat` even when its target
+  is absent. Read-back/projection symlink tests are not concurrent-swap or original attachment UI proof.
+- Splitting main update-ref from checkout advanced main when a fresh index lock blocked read-tree.
+  Use Git's native prepared expected-old ref transaction around native checkout; EOF aborts before
+  commit. A plain merge --ff-only cannot pin the original expected-old base across intervening work.
+  Do not claim worktree/ref/journal power-loss atomicity or automatic recovery from these fixtures.

@@ -1,5 +1,8 @@
 # Exact 114-identity retirement audit — initial Claude review REQUIRED
 
+
+> Subsequent development: [offline repair/audit](simple-ship-offline-audit.md), on a separate branch.
+> The 8b bundle and final pair below remain immutable; they do not certify that newer source.
 Baseline `8e540669f3b3caca9b40da1105895775ad759ce7`; tested product
 `8b4093652629553991f9452b5fdc7bcafd3be23f`. Inventory is from the final executed
 `/tmp/s1030-final-4q7GP1/{baseline,candidate,named-analysis-parent}.json`, independently

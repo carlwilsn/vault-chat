@@ -1,6 +1,7 @@
 /** One separately installed box entry point. Candidate code only runs in a private network/filesystem.
  * Install this bundle once through Claude; it is never loaded from the submitted branch. */
 import { spawn } from "node:child_process";
+import { createInterface } from "node:readline";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync, lstatSync, symlinkSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -155,13 +156,50 @@ export async function prepareRevert(repo: string, original: Awaited<ReturnType<t
   return { head, tree };
 }
 
+/** Git owns the reference lock and releases an uncommitted transaction on EOF/process loss.
+ * Worktree + refs are not power-failure-atomic; failure remains visible, never a recovery permit. */
+async function checkoutFastForward(repo: string, base: string, head: string): Promise<void> {
+  const child = spawn("git", ["-c", "credential.interactive=false", "update-ref", "--stdin"], {
+    cwd: repo, env: { PATH: process.env.PATH, HOME: process.env.HOME, LANG: "C.UTF-8", GIT_TERMINAL_PROMPT: "0", GCM_INTERACTIVE: "never" },
+    detached: true, stdio: ["pipe", "pipe", "pipe"],
+  });
+  child.stdin.on("error", () => {});
+  let stderr = "", timedOut = false;
+  child.stderr.on("data", data => { stderr += data; });
+  const lines = createInterface({ input: child.stdout });
+  const timer = setTimeout(() => { timedOut = true; killTree(child.pid); }, 90_000);
+  const closed = new Promise<void>((done, fail) => {
+    child.once("error", fail);
+    child.once("close", code => code === 0 && !timedOut ? done() : fail(new Error(`Native git fast-forward failed${timedOut ? " (timeout)" : ""}: ${stderr.trim()}`)));
+  });
+  // Attach immediately; spawn/ref-lock failure must not become an unhandled rejection.
+  const prepared = new Promise<void>((done, fail) => {
+    lines.on("line", line => { if (line === "prepare: ok") done(); });
+    void closed.then(() => fail(new Error("Git ref transaction ended before prepare")), fail);
+  });
+  try {
+    child.stdin.write(`start\nupdate refs/heads/main ${head} ${base}\nprepare\n`);
+    await prepared;
+    await git(repo, ["-c", "core.hooksPath=/dev/null", "read-tree", "-u", "-m", base, head]);
+    child.stdin.end("commit\n");
+    await closed;
+  } finally {
+    // EOF aborts a prepared but uncommitted ref transaction, including any checkout failure.
+    child.stdin.end();
+    await closed.catch(() => {});
+    clearTimeout(timer); lines.close();
+  }
+}
+
 export async function promote(repo: string, base: string, head: string, change: Parameters<typeof prepareAcceptanceLocked>[1]): Promise<void> {
   await withShippingLock(repo, async () => {
     if ((await git(repo, ["rev-parse", "refs/heads/main"])).trim() !== base || (await git(repo, ["symbolic-ref", "--short", "HEAD"])).trim() !== "main" || (await git(repo, ["status", "--porcelain"])).trim()) throw new Error("Main changed during gates; update branch and resubmit");
     await git(repo, ["merge-base", "--is-ancestor", base, head]);
     await prepareAcceptanceLocked(repo, change);
-    await git(repo, ["update-ref", "refs/heads/main", head, base]);
-    await git(repo, ["-c", "core.hooksPath=/dev/null", "read-tree", "-u", "-m", base, head]);
+    // Hold Git's native expected-old ref transaction while checkout takes its native index lock.
+    // A split update-ref then read-tree advanced main on checkout failure; merge --ff-only alone
+    // does not pin the original expected-old base across the journal write. No new authority/state.
+    await checkoutFastForward(repo, base, head);
     await reconcileAcceptancesLocked(repo);
   });
 }

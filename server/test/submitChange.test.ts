@@ -11,7 +11,7 @@ vi.mock("../projectFolders", () => ({ projectFolderOf: () => ({ abs: "/registere
 vi.mock("../projectChanges", () => ({ isGatedProject: () => true }));
 vi.mock("../changeShipping", () => ({ acceptedChanges: async () => state.accepted }));
 import { requestRollback, runInstalledShip, SUBMIT_CHANGE_SCHEMA, submitChangeJob } from "../submitChange";
-import { readJobs, probeJob } from "../engine/pi/jobs";
+import { readJobs, probeJob, writeJobs } from "../engine/pi/jobs";
 const dirs: string[] = [];
 afterEach(() => { for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true }); vi.clearAllMocks(); state.installed = true; });
 function child() { const c = Object.assign(new EventEmitter(), { stdout: new EventEmitter(), stderr: new EventEmitter() }); state.spawn.mockReturnValue(c); return c; }
@@ -48,5 +48,12 @@ describe("pushed branch to one installed box script", () => {
     state.accepted = [accepted, { id: "revert", rollbackOf: "source" }];
     expect((await requestRollback({ ...o, accepted, reason: "Card click" })).text).toContain("already accepted");
     expect(state.spawn).not.toHaveBeenCalled();
+  });  it.each(["gone", "stopped", "timeout", "finished"] as const)("retains visible attention instead of resurrecting a previous rollback job: %s", async status => {
+    const o = setup(); const accepted = { id: "source", acceptedAt: "now", review: { folder: "/registered/project" } } as any;
+    state.accepted = [accepted];
+    writeJobs(o.jobs, [{ id: "previous-private-recovery", name: "source-rollback", command: "Source rollback source", conv: o.convId, startedAt: Date.now(), timeoutS: 60, kind: "service", state: status === "gone" ? "running" : status }]);
+    await expect(requestRollback({ ...o, accepted, reason: "negative health" })).rejects.toThrow("Needs attention, not automatic retries");
+    expect(state.spawn).not.toHaveBeenCalled();
   });
+
 });

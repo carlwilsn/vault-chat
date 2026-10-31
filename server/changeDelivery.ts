@@ -185,10 +185,15 @@ function proofProjection(vaultPath: string, vaultName: string, c: AcceptedChange
   let directory = vaultPath;
   for (const component of rel.split("/")) {
     directory = join(directory, component);
-    if (existsSync(directory) && (lstatSync(directory).isSymbolicLink() || !lstatSync(directory).isDirectory())) throw new Error("Unsafe proof projection directory");
+    const stat = lstatSync(directory, { throwIfNoEntry: false });
+    if (stat && (stat.isSymbolicLink() || !stat.isDirectory())) throw new Error("Unsafe proof projection directory");
     mkdirSync(directory, { recursive: true });
   }
-  for (const name of ["summary.md", "recording.mp4", "recording.webm", "recording.png"]) if (existsSync(join(dest, name)) && (lstatSync(join(dest, name)).isSymbolicLink() || !lstatSync(join(dest, name)).isFile())) throw new Error("Unsafe proof projection file");
+  for (const name of ["summary.md", "recording.mp4", "recording.webm", "recording.png"]) {
+    // existsSync follows links and misses a dangling redirect before writeFileSync follows it.
+    const stat = lstatSync(join(dest, name), { throwIfNoEntry: false });
+    if (stat && (stat.isSymbolicLink() || !stat.isFile())) throw new Error("Unsafe proof projection file");
+  }
   // Public summary intentionally excludes receipt request text, raw logs, private host paths/environment.
   let summary = `# ${c.review.title.replace(/[\r\n]/g, " ")}\n\nAccepted source: ${c.source.head}\n\nRelease and actual device health are tracked separately.\n`;
   const mediaUrls: string[] = [];

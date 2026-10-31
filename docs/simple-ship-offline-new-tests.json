@@ -1,0 +1,201 @@
+{
+  "scope": "New affected identities relative to executed 8b; not replacements or old identity passes",
+  "report": "/tmp/soa-wRBSKx/results.json",
+  "newCases": [
+    {
+      "file": "server/test/changeDeliveryRuntime.test.ts",
+      "name": "durable delivery observations, not synchronized card authority excludes private request, environment and log sentinels from the historical summary and media listing",
+      "status": "passed"
+    },
+    {
+      "file": "server/test/changeDeliveryRuntime.test.ts",
+      "name": "durable delivery observations, not synchronized card authority refuses live and dangling historical projection links: summary.md",
+      "status": "passed"
+    },
+    {
+      "file": "server/test/changeDeliveryRuntime.test.ts",
+      "name": "durable delivery observations, not synchronized card authority refuses live and dangling historical projection links: recording.mp4",
+      "status": "passed"
+    },
+    {
+      "file": "server/test/changeDeliveryRuntime.test.ts",
+      "name": "durable delivery observations, not synchronized card authority refuses live and dangling historical projection links: recording.webm",
+      "status": "passed"
+    },
+    {
+      "file": "server/test/changeDeliveryRuntime.test.ts",
+      "name": "durable delivery observations, not synchronized card authority refuses live and dangling historical projection links: recording.png",
+      "status": "passed"
+    },
+    {
+      "file": "server/test/changeDeliveryRuntime.test.ts",
+      "name": "durable delivery observations, not synchronized card authority refuses historical projection directory redirects: .vault-chat/shipments",
+      "status": "passed"
+    },
+    {
+      "file": "server/test/changeDeliveryRuntime.test.ts",
+      "name": "durable delivery observations, not synchronized card authority refuses historical projection directory redirects: .vault-chat/shipments/proof",
+      "status": "passed"
+    },
+    {
+      "file": "server/test/simpleShipBoundary.test.ts",
+      "name": "external script source and argv boundary (offline) rejects an escaping tracked source link before invoking any candidate command: /outside",
+      "status": "passed"
+    },
+    {
+      "file": "server/test/simpleShipBoundary.test.ts",
+      "name": "external script source and argv boundary (offline) rejects an escaping tracked source link before invoking any candidate command: ../../outside",
+      "status": "passed"
+    },
+    {
+      "file": "server/test/simpleShipBoundary.test.ts",
+      "name": "external script source and argv boundary (offline) rejects an escaping tracked source link before invoking any candidate command: ../outside",
+      "status": "passed"
+    },
+    {
+      "file": "server/test/simpleShipBoundary.test.ts",
+      "name": "external script source and argv boundary (offline) rejects tracked dependency paths and submodules before extraction or commands",
+      "status": "passed"
+    },
+    {
+      "file": "server/test/simpleShipBoundary.test.ts",
+      "name": "external script source and argv boundary (offline) rejects non-public or unverified lock entries before npm/any gate: {\"resolved\":\"https://private.example/pkg.tgz\",\"integrity\":\"sha512-YQ==\"}",
+      "status": "passed"
+    },
+    {
+      "file": "server/test/simpleShipBoundary.test.ts",
+      "name": "external script source and argv boundary (offline) rejects non-public or unverified lock entries before npm/any gate: {\"resolved\":\"https://registry.npmjs.org.evil.example/pkg.tgz\",\"integrity\":\"sha512-YQ==\"}",
+      "status": "passed"
+    },
+    {
+      "file": "server/test/simpleShipBoundary.test.ts",
+      "name": "external script source and argv boundary (offline) rejects non-public or unverified lock entries before npm/any gate: {\"resolved\":\"http://registry.npmjs.org/pkg.tgz\",\"integrity\":\"sha512-YQ==\"}",
+      "status": "passed"
+    },
+    {
+      "file": "server/test/simpleShipBoundary.test.ts",
+      "name": "external script source and argv boundary (offline) rejects non-public or unverified lock entries before npm/any gate: {\"resolved\":\"https://user:fixture-password@registry.npmjs.org/pkg.tgz\",\"integrity\":\"sha512-YQ==\"}",
+      "status": "passed"
+    },
+    {
+      "file": "server/test/simpleShipBoundary.test.ts",
+      "name": "external script source and argv boundary (offline) rejects non-public or unverified lock entries before npm/any gate: {\"resolved\":\"https://registry.npmjs.org/pkg.tgz?fixture=sentinel\",\"integrity\":\"sha512-YQ==\"}",
+      "status": "passed"
+    },
+    {
+      "file": "server/test/simpleShipBoundary.test.ts",
+      "name": "external script source and argv boundary (offline) rejects non-public or unverified lock entries before npm/any gate: {\"resolved\":\"https://registry.npmjs.org/pkg.tgz#fragment\",\"integrity\":\"sha512-YQ==\"}",
+      "status": "passed"
+    },
+    {
+      "file": "server/test/simpleShipBoundary.test.ts",
+      "name": "external script source and argv boundary (offline) rejects non-public or unverified lock entries before npm/any gate: {\"resolved\":\"file:../private.tgz\",\"integrity\":\"sha512-YQ==\"}",
+      "status": "passed"
+    },
+    {
+      "file": "server/test/simpleShipBoundary.test.ts",
+      "name": "external script source and argv boundary (offline) rejects non-public or unverified lock entries before npm/any gate: {\"resolved\":\"https://registry.npmjs.org/pkg.tgz\",\"integrity\":\"sha1-unsafe\"}",
+      "status": "passed"
+    },
+    {
+      "file": "server/test/simpleShipBoundary.test.ts",
+      "name": "external script source and argv boundary (offline) rejects non-public or unverified lock entries before npm/any gate: {\"resolved\":\"https://registry.npmjs.org/pkg.tgz\"}",
+      "status": "passed"
+    },
+    {
+      "file": "server/test/simpleShipBoundary.test.ts",
+      "name": "external script source and argv boundary (offline) rejects non-public or unverified lock entries before npm/any gate: {\"link\":true,\"resolved\":\"../local\"}",
+      "status": "passed"
+    },
+    {
+      "file": "server/test/simpleShipBoundary.test.ts",
+      "name": "external script source and argv boundary (offline) validates the actual release lock against the public-registry boundary before isolated npm argv",
+      "status": "passed"
+    },
+    {
+      "file": "server/test/simpleShipBoundary.test.ts",
+      "name": "external script source and argv boundary (offline) requires a complete v3 package map before npm: {\"lockfileVersion\":2,\"packages\":{}}",
+      "status": "passed"
+    },
+    {
+      "file": "server/test/simpleShipBoundary.test.ts",
+      "name": "external script source and argv boundary (offline) requires a complete v3 package map before npm: {\"lockfileVersion\":3}",
+      "status": "passed"
+    },
+    {
+      "file": "server/test/simpleShipBoundary.test.ts",
+      "name": "external script source and argv boundary (offline) passes npm only private empty configs, scrubbed env, public registry and disabled install scripts",
+      "status": "passed"
+    },
+    {
+      "file": "server/test/simpleShipBoundary.test.ts",
+      "name": "external script source and argv boundary (offline) does not reuse host dependencies when dependency fields differ despite an identical lock",
+      "status": "passed"
+    },
+    {
+      "file": "server/test/simpleShipBoundary.test.ts",
+      "name": "external script source and argv boundary (offline) uses fixed installed tool argv despite forged npm scripts/config and treats missing reports as incomplete",
+      "status": "passed"
+    },
+    {
+      "file": "server/test/simpleShipHost.test.ts",
+      "name": "single box script: native git promotion and rollback leaves main and local edits untouched when later work conflicts with the accepted-range revert",
+      "status": "passed"
+    },
+    {
+      "file": "server/test/simpleShipHost.test.ts",
+      "name": "single box script: native git promotion and rollback does not move main when the private acceptance journal cannot be persisted",
+      "status": "passed"
+    },
+    {
+      "file": "server/test/simpleShipHost.test.ts",
+      "name": "single box script: native git promotion and rollback does not advance main or record acceptance when native git cannot lock its index",
+      "status": "passed"
+    },
+    {
+      "file": "server/test/simpleShipHost.test.ts",
+      "name": "single box script: native git promotion and rollback does not record acceptance when native git cannot take main's expected-old ref lock",
+      "status": "passed"
+    },
+    {
+      "file": "server/test/simpleShipHost.test.ts",
+      "name": "single box script: native git promotion and rollback holds the exact expected-old native ref lock throughout checkout against an independent git writer",
+      "status": "passed"
+    },
+    {
+      "file": "server/test/simpleShipHost.test.ts",
+      "name": "single box script: native git promotion and rollback reverts two recorded failed-release ranges newest-first through native git while preserving later work",
+      "status": "passed"
+    },
+    {
+      "file": "server/test/simpleShipProcess.test.ts",
+      "name": "native shipping process ownership (private fixture) rejects another conversation's stop, then cancels the actual flock process group through JobStop",
+      "status": "passed"
+    },
+    {
+      "file": "server/test/simpleShipProcess.test.ts",
+      "name": "native shipping process ownership (private fixture) rejects a pre-aborted invocation before launching a process",
+      "status": "passed"
+    },
+    {
+      "file": "server/test/submitChange.test.ts",
+      "name": "pushed branch to one installed box script retains visible attention instead of resurrecting a previous rollback job: gone",
+      "status": "passed"
+    },
+    {
+      "file": "server/test/submitChange.test.ts",
+      "name": "pushed branch to one installed box script retains visible attention instead of resurrecting a previous rollback job: stopped",
+      "status": "passed"
+    },
+    {
+      "file": "server/test/submitChange.test.ts",
+      "name": "pushed branch to one installed box script retains visible attention instead of resurrecting a previous rollback job: timeout",
+      "status": "passed"
+    },
+    {
+      "file": "server/test/submitChange.test.ts",
+      "name": "pushed branch to one installed box script retains visible attention instead of resurrecting a previous rollback job: finished",
+      "status": "passed"
+    }
+  ]
+}
