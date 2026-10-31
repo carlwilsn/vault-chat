@@ -294,7 +294,8 @@ export function ThreadRow({
             }
           : undefined
       }
-      className={cn("relative flex items-center gap-1 group", active ? "bg-accent" : "hover:bg-accent/40")}
+      // Keep a fixed trailing status gutter; hover actions must not push the dot into the name column.
+      className={cn("relative flex items-center gap-1 pr-7 group", active ? "bg-accent" : "hover:bg-accent/40")}
     >
       <button onClick={onSelect} className={cn("flex-1 text-left px-4 flex items-center min-w-0", isMain ? "py-2 gap-2.5" : "py-1.5 gap-2")}>
         {isMain ? <Home className="h-3.5 w-3.5 text-foreground/80 shrink-0" /> : <Folder className="h-3 w-3 text-muted-foreground shrink-0" />}
@@ -307,19 +308,19 @@ export function ThreadRow({
           {name}
         </span>
         {running ? (
-          <span className="relative inline-flex h-1.5 w-1.5 shrink-0" title="Working…">
+          <span className="absolute right-4 top-1/2 -translate-y-1/2 inline-flex h-1.5 w-1.5" title="Working…" role="img" aria-label="Working…">
             <span className="absolute inset-0 rounded-full bg-foreground opacity-60 animate-ping" />
             <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-foreground" />
           </span>
         ) : unread ? (
-          <span className="h-1.5 w-1.5 rounded-full bg-primary shrink-0" title="Done — unseen" />
+          <span className="absolute right-4 top-1/2 -translate-y-1/2 h-1.5 w-1.5 rounded-full bg-primary" title="Done — unseen" role="img" aria-label="Done — unseen" />
         ) : null}
       </button>
       {onNotes && (
         <button
           onClick={onNotes}
           data-el="project-notes"
-          className="opacity-0 group-hover:opacity-100 transition-opacity h-7 w-7 mr-2 flex items-center justify-center rounded text-muted-foreground hover:bg-accent/60 hover:text-foreground shrink-0"
+          className="opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity h-7 w-7 mr-2 flex items-center justify-center rounded text-muted-foreground hover:bg-accent/60 hover:text-foreground shrink-0"
           title="Project notes"
         >
           <FileText className="h-3 w-3" />
@@ -332,7 +333,7 @@ export function ThreadRow({
             data-el="project-menu"
             className={cn(
               "transition-opacity h-7 w-7 flex items-center justify-center rounded text-muted-foreground hover:bg-accent/60 hover:text-foreground",
-              menu ? "opacity-100 bg-accent/60" : "opacity-0 group-hover:opacity-100",
+              menu ? "opacity-100 bg-accent/60" : "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100",
             )}
             title="More"
           >
