@@ -13,7 +13,7 @@ The parent's seven-native pair/worktree was not changed or stopped. Canonical ma
 were read-only checked at `8e540669f3b3caca9b40da1105895775ad759ce7`.
 
 The actual App/private production HTTP short protocol completed at proof source
-`8ea84cc8a698969b4a48224633a82167f68a7d9f`, evidence `/tmp/sa.eggFpj`.
+`f5f10bb48180561c75bf36be0c792a4f4e87f320`, evidence `/tmp/sa.UXjXDF`.
 The final handoff also lists the newest exact source/evidence after history-load assertions.
 It deliberately records **two measured unresolved product gaps**, not a green product result:
 

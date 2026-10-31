@@ -28,6 +28,7 @@ export async function appProof({ base, out, id, title, advance, rollback, smoke 
       if (!await page.locator('[data-el="chats-sidebar"]').count()) await page.keyboard.press('Control+Shift+f');
       await page.locator('[data-el="chats-sidebar"]').waitFor({ state: 'visible' });
       await project.click();
+      await page.getByText('Private fixture native Git history', { exact: true }).first().waitFor();
     };
     await pickProject();
     const card = page.locator(`[data-shipment-id="${id}"]`);
