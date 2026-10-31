@@ -1,16 +1,17 @@
 /** Finite dev fixture. No engine/model, installed authority, main mutation, or private-state file editing. */
 import assert from 'node:assert/strict';
-import { execFileSync, spawn } from 'node:child_process';
-import { createRequire } from 'node:module';
-import { mkdirSync, readFileSync, writeFileSync, readdirSync, realpathSync, symlinkSync, unlinkSync, existsSync } from 'node:fs';
-import { join, dirname, resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { execFileSync } from 'node:child_process';
+import { mkdirSync, readFileSync, writeFileSync, readdirSync, realpathSync, symlinkSync, unlinkSync } from 'node:fs';
+import { join, dirname } from 'node:path';
 import { createServer as netServer } from 'node:net';
 import { startHttpServer } from '../../server/http';
 import { configureContext } from '../../server/context/config';
 import { configureChangeDelivery, observeChangeDelivery } from '../../server/changeDelivery';
 import { acceptedChanges, updateShippingJournal, type AcceptedChange } from '../../server/changeShipping';
-import { promote } from '../../server/simpleShipHost';
+import { promote, prepareRevert } from '../../server/simpleShipHost';
+import { runInstalledShip, requestRollback } from '../../server/submitChange';
+import { readJobs, probeJob } from '../../server/engine/pi/jobs';
+import { cp } from 'node:fs/promises';
 import { ensureMain, appendNotes, patchMeta } from '../../server/engine/convs';
 import { gitCommands } from '../../server/commands/gitcmds';
 
@@ -56,38 +57,39 @@ try {
  const head=g('rev-parse','HEAD'), tree=g('rev-parse','HEAD^{tree}');g('switch','-q','main');g('remote','add','origin',repo);
  const title='Synthetic source change';
  const change: AcceptedChange = {id:head,source:{base,head,tree,branch:'agent/fixture-change'},preparedAt:new Date().toISOString(),proofDir:join(root,'PRIVATE_SENTINEL'),review:{convId:project.convId,slug:'app',folder:repo,clone:repo,base:'main',branch:'agent/fixture-change',sha:head,title,at:new Date().toISOString()}};
- const dependencies=join(root,'fixture-deps/node_modules');mkdirSync(dependencies,{recursive:true});writeFileSync(join(dirname(dependencies),'package.json'),manifest);writeFileSync(join(dirname(dependencies),'package-lock.json'),lock);
- for(const p of readdirSync('node_modules')) if(!p.startsWith('.vite'))symlinkSync(realpathSync(join('node_modules',p)),join(dependencies,p));
- const config=join(root,'native-config.json');
- writeFileSync(config,JSON.stringify({repo,remote:'origin',workRoot:join(root,'native-runs'),dependencies,pi:process.env.VC_TEST_PI_DIR,node:process.execPath,npm:realpathSync(process.env.VC_PROOF_NPM!),bash:realpathSync('/run/current-system/sw/bin/bash'),bwrap:process.env.VC_PROOF_BWRAP,path:process.env.PATH}));
- let rollbackDone: Promise<void> | undefined;
- const cli = async (mode: string, value: string, name: string) => {
-  const child=spawn(process.execPath,[join(root,'native-cli.mjs'),config,repo,mode,value,name,'app',project.convId],{env:process.env,stdio:['ignore','pipe','pipe']});
-  let log=''; child.stdout.on('data',d=>log+=d);child.stderr.on('data',d=>log+=d);
-  try { await new Promise<void>((yes,no)=>{ child.once('error',no);child.once('exit',code=>code===0?yes():no(Error(`native CLI exit ${code}`))); }); }
-  finally {writeFileSync(join(root,mode==='--branch'?'native-forward.log':'native-revert.log'),log);}
- };
+ const jobs={logDir:join(root,'jobs'),wrap:null,env:{}};
+ const installed=join(process.env.HOME!,'.local/lib/vault-chat/simple-ship');
  if(runFull){
-  // --run is parent StartJob only; --check's actual App DOM must pass FIRST.
-  await build({entryPoints:['server/simpleShipHost.ts'],bundle:true,platform:'node',format:'esm',outfile:join(root,'native-cli.mjs'),external:['playwright-core'],banner:{js:"import { createRequire as __createRequire } from 'node:module'; const require = __createRequire(import.meta.url);"}});
-  await cli('--branch','agent/fixture-change',title);
- } else await promote(repo,base,head,change);
+  // Genuine installed packages are copied into this fixture's own dependency root.
+  // Native bwrap cannot follow host-home symlinks, and caches must never mutate shared packages.
+  const dependencies=join(root,'fixture-deps/node_modules');mkdirSync(dependencies,{recursive:true});
+  writeFileSync(join(dirname(dependencies),'package.json'),manifest);writeFileSync(join(dirname(dependencies),'package-lock.json'),lock);
+  for(const p of readdirSync('node_modules')) if(!p.startsWith('.vite'))await cp(realpathSync(join('node_modules',p)),join(dependencies,p),{recursive:true});
+  mkdirSync(installed,{recursive:true});
+  writeFileSync(join(installed,'config.json'),JSON.stringify({repo,remote:'origin',workRoot:join(root,'native-runs'),dependencies,pi:process.env.VC_TEST_PI_DIR,node:process.execPath,npm:realpathSync(process.env.VC_PROOF_NPM!),bash:realpathSync('/run/current-system/sw/bin/bash'),bwrap:process.env.VC_PROOF_BWRAP,path:process.env.PATH}));
+  await build({entryPoints:['server/simpleShipHost.ts'],bundle:true,platform:'node',format:'esm',outfile:join(installed,'simple-ship.mjs')});
+  await runInstalledShip(repo,'--branch','agent/fixture-change',title,'app',project.convId,new AbortController().signal,text=>writeFileSync(join(root,'native-forward.log'),text,{flag:'a'}));
+ }else await promote(repo,base,head,change);
  assert.equal((await acceptedChanges(repo))[0].source.head,head);
  put('later.txt','unrelated later scope preserved\n');g('add','later.txt');g('commit','-qm','Unrelated later scope');const later=g('rev-parse','HEAD');
+ appendNotes(vault,project.convId,[{kind:'tool',clientId:'fixture-delegate',name:'Delegate',args:{task:'Inspect synthetic native range'},result:'Private synthetic worker completed'}]);
  await appendHistory();
  async function appendHistory(){ const log=await gitCommands.git_log_subdir!({vault,subdir:'app',maxCount:20});appendNotes(vault,project.convId,[{kind:'line',role:'assistant',text:`Private fixture native Git history\n\nAccepted range: ${base}..${head}\n\n\`\`\`text\n${log}\n\`\`\``}]); }
- await patchMeta(vault,project.convId,{subagents:[{id:'fixture-worker',task:'Inspect synthetic native range',status:'done',startedAt:Date.now()-1000,finishedAt:Date.now(),said:`Native Git ${base.slice(0,8)}..${head.slice(0,8)}`} ]});
+ await patchMeta(vault,project.convId,{subagents:[{threadId:'fixture-worker',toolCallId:'fixture-delegate',task:'Inspect synthetic native range',state:'completed',startedAt:Date.now()-1000,endedAt:Date.now(),said:`Native Git ${base.slice(0,8)}..${head.slice(0,8)}`} ]});
  let release={id:'fixture-release',version:'0.0.1',revision:head,tag:'fixture-only-v0.0.1',publishedAt:new Date(Date.now()-1000).toISOString()};
  configureChangeDelivery({vaults:()=>[scope],stateDir:join(root,'delivery-state'),boxHealth:async()=>({version:release.version,revision:release.revision,observedAt:Date.now(),ready:true}),requestSourceRollback:async(_repo,id)=>{
    assert.equal(_repo,repo);assert.equal(id,head);
-   rollbackDone=cli('--rollback',id,'Synthetic native source revert').then(async()=>{
-    assert.equal(readFileSync(join(repo,'app.ts'),'utf8'),'export const value: number = 1;\n');
-    assert.equal(readFileSync(join(repo,'later.txt'),'utf8'),'unrelated later scope preserved\n');
-    assert.equal(g('status','--porcelain'),'');await appendHistory();
-    const changes=await acceptedChanges(repo);assert.equal(changes.at(-1)?.rollbackOf,head);
-    writeFileSync(join(root,'native-tree.json'),JSON.stringify({base,head,later,revert:g('rev-parse','HEAD'),tree:g('rev-parse','HEAD^{tree}'),changes},null,2));
-   });
-   await rollbackDone;return {status:'accepted'};
+   if(runFull){
+    const accepted=(await acceptedChanges(repo)).find(c=>c.id===id)!;
+    const result=await requestRollback({vault,accepted,reason:'Private fixture card click',jobs,byCarl:false});
+    assert.ok(result.job);return {status:'running',jobId:result.job.id};
+   }
+   const original=(await acceptedChanges(repo)).find(c=>c.id===id)!;
+   const rbBase=g('rev-parse','HEAD'),branch='agent/fixture-revert';
+   const rb=await prepareRevert(repo,original,rbBase,root,branch);
+   await promote(repo,rbBase,rb.head,{...change,id:rb.head,source:{base:rbBase,head:rb.head,tree:rb.tree,branch},rollbackOf:id});
+   return {status:'accepted'};
+
  }});
  process.env.VC_REALBOX=baseHTTP;
  vite=await createServer({configFile:false,root:repoSource,base:'/proof/',clearScreen:false,logLevel:'warn',cacheDir:join(root,'vite-cache'),plugins:[react(),previewPlugin({side:'proof',tree:repoSource,label:'private native fixture',base:'/proof/'})],server:{host:'127.0.0.1',port:Number(process.env.VC_APP_PROOF_PORT),strictPort:true,fs:{allow:[repoSource,realpathSync('node_modules'),...readdirSync('node_modules/@fontsource').map(n=>realpathSync(join('node_modules/@fontsource',n)))]}},optimizeDeps:{entries:['index.html']}});
@@ -98,7 +100,22 @@ try {
   await request('/api/v1/release-health/laptop',{...challenge,tauri:true,frontendMounted:true,boxConnected:true,syncReady:true,updaterReady:true},true);
   await observeChangeDelivery(repo);
  };
- await appProof({base:`http://127.0.0.1:${process.env.VC_APP_PROOF_PORT}/proof`,out:root,id:head,title,smoke:!runFull,rollback:async()=>{assert.ok(rollbackDone);await rollbackDone;},advance:async(phase:string)=>{
+ await appProof({base:`http://127.0.0.1:${process.env.VC_APP_PROOF_PORT}/proof`,out:root,id:head,title,smoke:false,rollback:async()=>{
+  let reverted=false;
+  for(let i=0;i<(runFull?12000:100);i++){
+   const changes=await acceptedChanges(repo);
+   if(changes.some(c=>c.rollbackOf===head)){
+    reverted=true;
+    assert.equal(readFileSync(join(repo,'app.ts'),'utf8'),'export const value: number = 1;\n');
+    assert.equal(readFileSync(join(repo,'later.txt'),'utf8'),'unrelated later scope preserved\n');
+    assert.equal(g('status','--porcelain'),'');await appendHistory();
+    writeFileSync(join(root,'native-tree.json'),JSON.stringify({base,head,later,revert:g('rev-parse','HEAD'),tree:g('rev-parse','HEAD^{tree}'),changes},null,2));break;
+   }
+   for(const job of readJobs(jobs)){const p=probeJob(jobs,job);if(p.state!=='running'&&p.exit!==0)throw Error('Private native rollback job failed: '+JSON.stringify(p));}
+   await new Promise(r=>setTimeout(r,100));
+  }
+  assert.ok(reverted,'native rollback must finish');
+ },advance:async(phase:string)=>{
   if(phase==='pending'){await updateShippingJournal(repo,j=>{j.changes[0]!.release=release;});await observeChangeDelivery(repo);}
   else if(phase==='healthy')await healthy();
   else if(phase==='revert-healthy'){

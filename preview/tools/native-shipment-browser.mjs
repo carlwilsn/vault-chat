@@ -8,7 +8,7 @@ export async function appProof({ base, out, id, title, advance, rollback, smoke 
   let page;
   try {
     const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
-    page = await context.newPage(); page.setDefaultTimeout(smoke ? 15000 : 25000);
+    page = await context.newPage(); page.setDefaultTimeout(15000);
     page.on('console', m => { if (m.type() === 'error') evidence.errors.console.push(m.text()); });
     page.on('pageerror', e => evidence.errors.page.push(String(e.stack ?? e)));
     page.on('requestfailed', r => evidence.errors.network.push({ url: r.url(), error: r.failure() }));
@@ -33,6 +33,8 @@ export async function appProof({ base, out, id, title, advance, rollback, smoke 
     assert.equal(await card.getAttribute('data-shipment-status'), 'accepted');
     assert.match(await card.innerText(), new RegExp(title));
     evidence.states.push({ phase: 'accepted-not-shipped', text: await card.innerText() });
+    await page.locator('[data-el="tasks-chip"]').click();
+    await page.getByText('Inspect synthetic native range', { exact: true }).waitFor();
     await page.screenshot({ path: `${out}/01-app-accepted.png` });
     await card.getByRole('button', { name: 'Proof', exact: true }).click();
     const dialog = page.getByRole('dialog', { name: 'Shipment proof' });
