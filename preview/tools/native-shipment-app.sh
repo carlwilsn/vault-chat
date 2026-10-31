@@ -1,5 +1,5 @@
 #!/run/current-system/sw/bin/bash
-# --run: PARENT StartJob ONLY. --check: finite (<30s), actual App+HTTP/native history, no build or full gates.
+# --run: PARENT StartJob ONLY. --check: finite (<30s), actual App+HTTP/native Git protocol, no CLI build/full gates.
 set -euo pipefail
 repo=$(cd -- "$(dirname -- "$0")/../.." && pwd)
 mode=${1:---check}; pin=${2:?exact full proof-source SHA}; main=${3:?observed readonly canonical main SHA}; port=${4:-19441}; web=${5:-19442}
@@ -28,7 +28,7 @@ if [[ ${VC_APP_PRIVATE:-} != yes ]]; then
 fi
 cd "$repo"
 [[ $(git rev-parse HEAD) == "$pin" && -z $(git status --porcelain) ]]
-[[ $(git -C /home/carlwilsn/vc/projects/vault-chat rev-parse main) == "$main" ]]
+[[ $(git -C /home/carlwilsn/vc/projects/vault-chat rev-parse main) == "$main" && $(git -C /home/carlwilsn/vc/projects/vault-chat rev-parse HEAD) == "$main" ]]
 # This worktree is proof-only on the frozen product pin. NEVER touch fd worktree/head.
 git diff --exit-code fd9125a7a2a958f2168aeefaeac6e2b8a864577d "$pin" -- src server phone board package.json package-lock.json >/dev/null
 [[ $("$node" --version) == v22.* && -x $chromium && -x $ffmpeg/ffmpeg && -x $bwrap ]]
@@ -59,5 +59,5 @@ set -e
 printf '%s\n' "$rc" > "$full/run.exit"
 cat "$full/run.log"
 [[ $(git rev-parse HEAD) == "$pin" && -z $(git status --porcelain) ]]
-[[ $(git -C /home/carlwilsn/vc/projects/vault-chat rev-parse main) == "$main" ]]
+[[ $(git -C /home/carlwilsn/vc/projects/vault-chat rev-parse main) == "$main" && $(git -C /home/carlwilsn/vc/projects/vault-chat rev-parse HEAD) == "$main" ]]
 exit "$rc"

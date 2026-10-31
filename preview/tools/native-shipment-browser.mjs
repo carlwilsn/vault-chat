@@ -5,11 +5,13 @@ import { chromium } from 'playwright-core';
 export async function appProof({ base, out, id, title, advance, rollback, smoke }) {
   const evidence = { scope: 'Production React App + production HTTP + native Git PRIVATE FIXTURE; preview IPC, NOT installed Tauri/CI/device health.', errors: { console: [], page: [], http: [], network: [], outbound: [] }, calls: [], states: [], failure: null };
   const browser = await chromium.launch({ executablePath: process.env.VC_PROOF_CHROMIUM, headless: true, args: ['--mute-audio'] });
-  let page;
+  let page; let rejectedPath;
+  const stop = () => { void browser.close(); };
+  process.once('SIGTERM', stop);
   try {
     const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
     page = await context.newPage(); page.setDefaultTimeout(15000);
-    page.on('console', m => { if (m.type() === 'error') evidence.errors.console.push(m.text()); });
+    page.on('console', m => { if (m.type() === 'error') evidence.errors.console.push({ text: m.text(), location: m.location() }); });
     page.on('pageerror', e => evidence.errors.page.push(String(e.stack ?? e)));
     page.on('requestfailed', r => evidence.errors.network.push({ url: r.url(), error: r.failure() }));
     page.on('response', r => { if (r.status() >= 400) evidence.errors.http.push({ url: r.url(), status: r.status() }); });
@@ -71,21 +73,27 @@ export async function appProof({ base, out, id, title, advance, rollback, smoke 
       await page.screenshot({ path: `${out}/06-app-fixture-rolled-back.png` });
       evidence.states.push({ phase: 'synthetic-revert-release-healthy', text: await card.innerText() });
       // Proof bytes are now a private dangling redirect: real file reader must fail visibly.
-      await advance('redirect');
+      rejectedPath = await advance('redirect');
       await card.getByRole('button', { name: 'Proof', exact: true }).click();
       await dialog.getByRole('alert').waitFor();
       assert.doesNotMatch(await dialog.innerText(), /PRIVATE_SENTINEL|VC_FAKE_SECRET/);
       assert.doesNotMatch(await dialog.innerText(), /Loading proof/);
       await page.screenshot({ path: `${out}/07-app-proof-redirect-attention.png` });
       evidence.states.push({ phase: 'private-redirect-rejected-visible', text: await dialog.innerText() });
+      evidence.remainingPathDisclosureGap = /\/tmp\//.test(await dialog.innerText()) ? 'Production file error displays private fixture absolute path; no product patch applied.' : null;
     }
     await page.evaluate(() => document.fonts.load('500 12px "Inter"'));
     evidence.runtime = await page.evaluate(() => ({ calls: window.__preview.calls(), unknown: window.__preview.unknown(), refused: window.__preview.refused(), llm: window.__preview.llm(), reports: window.__preview.reports() }));
     assert.deepEqual(evidence.runtime.unknown, []); assert.deepEqual(evidence.runtime.refused, []); assert.deepEqual(evidence.runtime.llm, []);
-    for (const key of ['console', 'page', 'network', 'outbound']) assert.deepEqual(evidence.errors[key], [], key);
-    // Deliberately rejected private file is the ONLY allowed non-2xx in full mode.
-    const unexpected = evidence.errors.http.filter(e => !( !smoke && e.status === 403 && e.url.includes('/api/v1/vault/file?')));
-    assert.deepEqual(unexpected, []);
+    const expectedRejectedURL = raw => {
+      const u = new URL(raw);
+      return rejectedPath && u.origin === new URL(base).origin && u.pathname === '/proof/__realbox/api/v1/vault/file' && u.searchParams.get('path') === rejectedPath && u.searchParams.get('vault') === 'fixture';
+    };
+    for (const key of ['page', 'network', 'outbound']) assert.deepEqual(evidence.errors[key], [], key);
+    // Keep every deliberate rejection; narrowly correlate console + HTTP with this one actual fixture redirect.
+    for (const e of evidence.errors.http) assert.ok(e.status === 404 && expectedRejectedURL(e.url), JSON.stringify(e));
+    for (const e of evidence.errors.console) assert.ok(e.text === 'Failed to load resource: the server responded with a status of 404 (Not Found)' && expectedRejectedURL(e.location.url), JSON.stringify(e));
+
   } catch (e) {
     evidence.failure = String(e.stack ?? e);
     if (page) await page.screenshot({ path: `${out}/failure.png` }).catch(() => {});
@@ -96,6 +104,7 @@ export async function appProof({ base, out, id, title, advance, rollback, smoke 
       evidence.calls = await page.evaluate(() => window.__preview?.calls()).catch(() => []);
       evidence.unknown = await page.evaluate(() => window.__preview?.unknown()).catch(() => []);
     }
+    process.removeListener('SIGTERM', stop);
     await browser.close(); writeFileSync(`${out}/app.json`, JSON.stringify(evidence, null, 2));
   }
 }

@@ -87,7 +87,7 @@ try {
    const original=(await acceptedChanges(repo)).find(c=>c.id===id)!;
    const rbBase=g('rev-parse','HEAD'),branch='agent/fixture-revert';
    const rb=await prepareRevert(repo,original,rbBase,root,branch);
-   await promote(repo,rbBase,rb.head,{...change,id:rb.head,source:{base:rbBase,head:rb.head,tree:rb.tree,branch},rollbackOf:id});
+   await promote(repo,rbBase,rb.head,{...change,review:{...change.review,title:'Synthetic native source revert'},id:rb.head,source:{base:rbBase,head:rb.head,tree:rb.tree,branch},rollbackOf:id});
    return {status:'accepted'};
 
  }});
@@ -123,9 +123,9 @@ try {
    await updateShippingJournal(repo,j=>{j.changes.find(c=>c.id===revert.id)!.release=release;});await healthy();
   }else if(phase==='redirect'){
    const {shipments}=await request('/api/v1/shipments');const p=new URL(shipments.find((c:any)=>c.id===head).proof.summaryUrl,baseHTTP).searchParams.get('path')!;
-   const path=join(vault,p);unlinkSync(path);symlinkSync(join(root,'absent-PRIVATE_SENTINEL'),path);
+   const path=join(vault,p);unlinkSync(path);symlinkSync(join(root,'absent-PRIVATE_SENTINEL'),path);return p;
   }else throw Error('unknown phase');
  }});
  writeFileSync(join(root,'result.json'),JSON.stringify({mode:runFull?'private-native-cli-fixture':'preflight-native-promote-only',scope:'actual App + actual HTTP; synthetic auth observations NOT authenticated installed hardware',source:process.env.VC_APP_SOURCE,base,head,later},null,2));
- console.log(`PASS ${runFull?'private native CLI App fixture':'short actual App DOM/native history preflight'} ${root}`);
+ console.log(`COMPLETED protocol assertions WITH recorded worker/path-disclosure gaps: ${runFull?'private native CLI App fixture':'short actual App DOM/native history preflight'} ${root}`);
 } finally { await vite?.close();http.closeAllConnections();await new Promise<void>(yes=>http.close(()=>yes())); }
