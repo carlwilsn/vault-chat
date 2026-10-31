@@ -14,12 +14,14 @@
 //     vault's log) is its conversation, unchanged.
 //   - agent-projects/ leaves the tree (the box's autosave commits that: git keeps it, the deleted projects too).
 //   - The hide lists (.vaultchatignore, .vault-chat/hidden-by-default) lose the entries for paths that are not there.
-import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { folderNameFor, PROJECT_DIR, PROJECT_NOTES_FILE, PROJECT_RULES_FILE } from "./context/projects";
 import { slugify } from "./context/files";
 import { FOLDERS_FILE } from "./projectFolders";
 import { HIDE_DEFAULTS_FILE, HIDE_FILE, listEntries, PROJECTS_DIR } from "../src/agentProjects";
+
+import { acquireEventDirectory } from "./convlog/maintenance";
 
 export type MigrateVault = { name: string; path: string; main: boolean };
 
@@ -79,7 +81,28 @@ export type MigrateOptions = {
   log?: (s: string) => void;
 };
 
+// Lock every existing event DIRECTORY inode before any migration content read or
+// mutation. Canonicalize aliases, sort once, release partially acquired sets on error.
+function exclusiveEvents(dirs: string[], createMissing = false): () => void {
+  if (createMissing) for (const p of [...new Set(dirs)].sort()) mkdirSync(p, { recursive: true });
+  const paths = [...new Set(dirs.flatMap(p => {
+    try {
+      if (!statSync(p).isDirectory()) throw new Error("event path is not a directory");
+      return [realpathSync(p)];
+    } catch (e) { if ((e as NodeJS.ErrnoException).code === "ENOENT") return []; throw e; }
+  }))].sort();
+  const releases: (() => void)[] = [];
+  const release = () => { for (const f of releases.reverse()) f(); };
+  try { for (const p of paths) releases.push(acquireEventDirectory(p, "exclusive")); }
+  catch (e) { release(); throw e; }
+  return release;
+}
+
 export function migrateProjects(o: MigrateOptions): Manifest {
+  const release = exclusiveEvents(o.vaults.map(v => join(v.path, ".vault-chat", "events")));
+  try { return migrateProjectsLocked(o); } finally { release(); }
+}
+function migrateProjectsLocked(o: MigrateOptions): Manifest {
   const now = o.now ?? new Date();
   const stamp = now.toISOString().replace(/[-:]/g, "").replace(/\..*$/, "").replace("T", "-");
   const backup = join(o.stateDir, "migrations", `projects-${stamp}`);
@@ -266,6 +289,16 @@ export function migrateBack(o: { stateDir: string; stamp?: string; log?: (s: str
   const backup = join(o.stateDir, "migrations", `projects-${stamp}`);
   const man = JSON.parse(readFileSync(join(backup, "manifest.json"), "utf8")) as Manifest;
   if (man.dryRun) throw new Error("that was a dry run");
+  // Reading the external migration manifest is necessary to discover affected
+  // directories; no canonical file is read before ALL exclusions are held.
+  const eventDirs = man.changes.flatMap(c => {
+    const match = /^(.*[\\/]\.vault-chat[\\/]events)(?:[\\/]|$)/.exec(resolve(c.path));
+    return match ? [match[1]!] : [];
+  });
+  const release = exclusiveEvents(eventDirs, true);
+  try { return migrateBackLocked(o, stamp, backup, man); } finally { release(); }
+}
+function migrateBackLocked(o: { log?: (s: string) => void }, stamp: string, backup: string, man: Manifest) {
   let restored = 0;
   let undone = 0;
   for (const c of [...man.changes].reverse()) {

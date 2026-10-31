@@ -24,12 +24,12 @@ async function fixture(run: (options: PrepareOptions, text: string, dir: string)
   } finally { await rm(dir, { recursive: true, force: true }); }
 }
 
-test("ordinary CLI has dynamic flags and refuses apply BEFORE even stat/open of nonexistent source", () => {
+test("ordinary CLI has dynamic flags and refuses a host preflight failure before source access", () => {
   const args = ["--source", "/nonexistent-private-source", "--events-dir", "/nonexistent", "--backups-root", "/nonexistent", "--idle-ms", "25", "--apply"];
   assert.equal(parseArgs(args).idleMs, 25);
   for (const bad of [[], [...args, "--dry-run"], [...args, "--old-sha", "a"], [...args.slice(0, -1), "--idle-ms", "0", "--dry-run"]]) assert.throws(() => parseArgs(bad));
   const cli = spawnSync(process.execPath, ["--import", "tsx", "scripts/offline-event-log.ts", ...args], { cwd: resolve(import.meta.dirname, ".."), encoding: "utf8", timeout: 10000 });
-  assert.equal(cli.status, 1); assert.match(cli.stderr, /Apply is unavailable/); assert.equal(cli.stdout, "");
+  assert.equal(cli.status, 1); assert.match(cli.stderr, /reason=host-|reason=server-and-updater-/); assert.equal(cli.stdout, "");
 });
 
 test("fresh backup FIRST, arbitrary current sizes/hashes/sequences; dry run never changes source/checkpoint", async () => fixture(async (options, text) => {
@@ -45,7 +45,7 @@ test("fresh backup FIRST, arbitrary current sizes/hashes/sequences; dry run neve
     }
   } });
   assert.deepEqual(stages, ["idle", "copied", "backup-verified", "compacted"]);
-  assert.equal(first.installed, false); assert.equal(first.writerExcluded, false); assert.equal(first.compact.foldVerified, true);
+  assert.equal(first.installed, false); assert.equal(first.writerExcluded, true); assert.equal(first.compact.foldVerified, true);
   assert.equal(first.backup.sha256, sha(text)); assert.equal(first.compact.lastSeq, 413);
   assert.equal(await readFile(checkpoint, "utf8"), checkpointText);
   assert.equal((await stat(options.source)).ino, sourceStat.ino); assert.equal((await stat(options.source)).mtimeMs, sourceStat.mtimeMs);
@@ -126,12 +126,13 @@ test("canonical full fold includes native pointers/user strings, workers, tools/
   ];
   await writeFile(options.source, records.map(r => JSON.stringify(r) + "\n").join(""));
   const expectedLog = new ConvLog(join(dir, "vault")), expected = expectedLog.picture("thread")!;
+  const expanded = expectedLog.eventsOf("thread");
+  expectedLog.close();
   const result = await prepareOffline(options, { assertStopped: stopped });
   assert.equal(result.compact.foldSha256, sha(JSON.stringify(expected)));
   assert.equal(result.compact.logicalSha256, sha(records.map(r => JSON.stringify(r) + "\n").join("")));
   assert.ok(result.compact.changedRecords > 0);
   assert.match(JSON.stringify(expected.items), /EXACT/);
-  const expanded = expectedLog.eventsOf("thread");
   assert.deepEqual(fold(expanded, "thread"), expected);
   await assert.rejects(prepareOffline(options, { assertStopped: stopped, onStage: async stage => {
     if (stage === "compacted") await appendFile(session, "\n");
@@ -177,9 +178,14 @@ test("physical streamed valid snapshot fixture exceeds historical-size boundarie
     while (bytes < largeMiB * 1024 ** 2) { const line = JSON.stringify({ seq: seq++, conv: "thread", at: 1, type: "meta", patch: { subagents: [worker] } }) + "\n"; await fd.writeFile(line); bytes += Buffer.byteLength(line); }
     await fd.sync();
   } finally { await fd.close(); }
-  const result = await prepareOffline(options, { assertStopped: stopped });
+  const originalInode = (await stat(options.source)).ino;
+  const result = await prepareOffline({ ...options, mode: "apply" }, { assertStopped: stopped });
+  assert.equal(result.installed, true);
+  assert.notEqual((await stat(options.source)).ino, originalInode);
+  const cold = new ConvLog(resolve(options.eventsDir, "../.."));
+  try { assert.equal(cold.picture("thread")!.seq, seq - 1); } finally { cold.close(); }
   assert.ok(result.backup.bytes > 512 * 1024 ** 2); assert.equal(result.compact.foldVerified, true); assert.equal(result.compact.records, seq - 2);
-  console.log(JSON.stringify({ syntheticOnly: true, inputBytes: bytes, compactedBytes: result.compact.output.bytes, records: result.compact.records, sourcePreserved: true }));
+  console.log(JSON.stringify({ syntheticOnly: true, inputBytes: bytes, compactedBytes: result.compact.output.bytes, records: result.compact.records, originalBackupPreserved: true, installed: result.installed }));
 }));
 
 test("host checker is fail-closed in an agent/non-systemd PID namespace", async () => {

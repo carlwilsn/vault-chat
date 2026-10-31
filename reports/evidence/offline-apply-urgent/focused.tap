@@ -1,0 +1,226 @@
+TAP version 13
+# Subtest: offline copy: exact every-record replay, arbitrary cursors/gaps, >64KiB tail, pi pointers/tools/reasoning retained
+ok 1 - offline copy: exact every-record replay, arbitrary cursors/gaps, >64KiB tail, pi pointers/tools/reasoning retained
+  ---
+  duration_ms: 856.869053
+  type: 'test'
+  ...
+# Subtest: offline compactor fails closed for hash/size mismatch, torn/invalid/reordered rows; never overwrites output
+ok 2 - offline compactor fails closed for hash/size mismatch, torn/invalid/reordered rows; never overwrites output
+  ---
+  duration_ms: 30.78863
+  type: 'test'
+  ...
+# Subtest: offline compactor refuses live .vault-chat paths
+ok 3 - offline compactor refuses live .vault-chat paths
+  ---
+  duration_ms: 1.785461
+  type: 'test'
+  ...
+# Subtest: projects migrate locks ALL sorted event inodes before first canonical read/write, and releases finally
+ok 4 - projects migrate locks ALL sorted event inodes before first canonical read/write, and releases finally
+  ---
+  duration_ms: 34.979584
+  type: 'test'
+  ...
+# Subtest: active runtime in LAST directory blocks migration before reading/changing ANY source; partial locks released
+ok 5 - active runtime in LAST directory blocks migration before reading/changing ANY source; partial locks released
+  ---
+  duration_ms: 14.272017
+  type: 'test'
+  ...
+# Subtest: projects back discovers paths only from external manifest then excludes ALL destinations before any restoration
+ok 6 - projects back discovers paths only from external manifest then excludes ALL destinations before any restoration
+  ---
+  duration_ms: 30.001757
+  type: 'test'
+  ...
+# Subtest: ordinary apply: verified dynamic original backup, same-FS candidate inode/EOF checkpoint, restart/poll preserves shown/native IDs
+ok 7 - ordinary apply: verified dynamic original backup, same-FS candidate inode/EOF checkpoint, restart/poll preserves shown/native IDs
+  ---
+  duration_ms: 202.785149
+  type: 'test'
+  ...
+# Subtest: checkpoint-only independently migrates v2 to complete v3 without changing a single original byte/inode
+ok 8 - checkpoint-only independently migrates v2 to complete v3 without changing a single original byte/inode
+  ---
+  duration_ms: 97.937304
+  type: 'test'
+  ...
+# Subtest: crash before-log-rename: original retained, ordinary --recover completes ONLY recognized cohort under exclusion
+ok 9 - crash before-log-rename: original retained, ordinary --recover completes ONLY recognized cohort under exclusion
+  ---
+  duration_ms: 249.66022
+  type: 'test'
+  ...
+# Subtest: crash between-renames: original retained, ordinary --recover completes ONLY recognized cohort under exclusion
+ok 10 - crash between-renames: original retained, ordinary --recover completes ONLY recognized cohort under exclusion
+  ---
+  duration_ms: 208.269717
+  type: 'test'
+  ...
+# Subtest: crash after-renames: original retained, ordinary --recover completes ONLY recognized cohort under exclusion
+ok 11 - crash after-renames: original retained, ordinary --recover completes ONLY recognized cohort under exclusion
+  ---
+  duration_ms: 178.188151
+  type: 'test'
+  ...
+# Subtest: v3 log-first crash rejects old checkpoint identity on actual runtime reopen; ordinary recovery succeeds
+ok 12 - v3 log-first crash rejects old checkpoint identity on actual runtime reopen; ordinary recovery succeeds
+  ---
+  duration_ms: 146.80596
+  type: 'test'
+  ...
+# Subtest: unknown changed source, checkpoint, candidate or backup cannot be blindly overwritten on recovery
+ok 13 - unknown changed source, checkpoint, candidate or backup cannot be blindly overwritten on recovery
+  ---
+  duration_ms: 530.456543
+  type: 'test'
+  ...
+# Subtest: authoritative old checkpoint prevents silent body loss even if source replay and candidate replay both lose the same native pointer
+ok 14 - authoritative old checkpoint prevents silent body loss even if source replay and candidate replay both lose the same native pointer
+  ---
+  duration_ms: 191.423981
+  type: 'test'
+  ...
+# Subtest: offline native sequential resolver finds original prefix IDs beyond runtime's 16MiB window without lifting runtime limit
+ok 15 - offline native sequential resolver finds original prefix IDs beyond runtime's 16MiB window without lifting runtime limit
+  ---
+  duration_ms: 198.131074
+  type: 'test'
+  ...
+# Subtest: runtime SHARED vs offline EXCLUSIVE races: neither backup nor source access while another writer owns directory
+ok 16 - runtime SHARED vs offline EXCLUSIVE races: neither backup nor source access while another writer owns directory
+  ---
+  duration_ms: 125.474387
+  type: 'test'
+  ...
+# Subtest: legacy v2 compaction requires the independent checkpoint-only upgrade, then ordinary apply works on fresh dynamic bytes
+ok 17 - legacy v2 compaction requires the independent checkpoint-only upgrade, then ordinary apply works on fresh dynamic bytes
+  ---
+  duration_ms: 208.096117
+  type: 'test'
+  ...
+# Subtest: record limits: never emit a candidate tail record above core 8MiB; checkpoint-only can leave old prefix unread at EOF
+ok 18 - record limits: never emit a candidate tail record above core 8MiB; checkpoint-only can leave old prefix unread at EOF
+  ---
+  duration_ms: 1680.864879
+  type: 'test'
+  ...
+# Subtest: checkpoint-only also refuses records beyond the offline 32MiB scanner bound without source/checkpoint mutation
+ok 19 - checkpoint-only also refuses records beyond the offline 32MiB scanner bound without source/checkpoint mutation
+  ---
+  duration_ms: 1347.733573
+  type: 'test'
+  ...
+# Subtest: actual child SIGKILL at before-log-rename: kernel exclusion releases and durable intent reopens correct cohort
+ok 20 - actual child SIGKILL at before-log-rename: kernel exclusion releases and durable intent reopens correct cohort
+  ---
+  duration_ms: 367.656317
+  type: 'test'
+  ...
+# Subtest: actual child SIGKILL at between-renames: kernel exclusion releases and durable intent reopens correct cohort
+ok 21 - actual child SIGKILL at between-renames: kernel exclusion releases and durable intent reopens correct cohort
+  ---
+  duration_ms: 376.788117
+  type: 'test'
+  ...
+# Subtest: actual child SIGKILL at after-renames: kernel exclusion releases and durable intent reopens correct cohort
+ok 22 - actual child SIGKILL at after-renames: kernel exclusion releases and durable intent reopens correct cohort
+  ---
+  duration_ms: 376.339608
+  type: 'test'
+  ...
+# Subtest: authoritative checkpoint comparison uses canonical persisted optional fields, retaining completed tools
+ok 23 - authoritative checkpoint comparison uses canonical persisted optional fields, retaining completed tools
+  ---
+  duration_ms: 127.310331
+  type: 'test'
+  ...
+# Subtest: ordinary CLI has dynamic flags and refuses a host preflight failure before source access
+ok 24 - ordinary CLI has dynamic flags and refuses a host preflight failure before source access
+  ---
+  duration_ms: 243.79803
+  type: 'test'
+  ...
+# Subtest: fresh backup FIRST, arbitrary current sizes/hashes/sequences; dry run never changes source/checkpoint
+ok 25 - fresh backup FIRST, arbitrary current sizes/hashes/sequences; dry run never changes source/checkpoint
+  ---
+  duration_ms: 92.375806
+  type: 'test'
+  ...
+# Subtest: refuse active primary/worker/checker failure before opening even a nonexistent source
+ok 26 - refuse active primary/worker/checker failure before opening even a nonexistent source
+  ---
+  duration_ms: 0.659395
+  type: 'test'
+  ...
+# Subtest: append during idle, after backup, during final verification; rotation/truncate/in-place mutation refuse without tool replacement
+ok 27 - append during idle, after backup, during final verification; rotation/truncate/in-place mutation refuse without tool replacement
+  ---
+  duration_ms: 244.603763
+  type: 'test'
+  ...
+# Subtest: worker restarts after backup: check failure leaves complete original backup and unchanged source
+ok 28 - worker restarts after backup: check failure leaves complete original backup and unchanged source
+  ---
+  duration_ms: 36.147923
+  type: 'test'
+  ...
+# Subtest: tampered backup/candidate and injected failure preserve source and do not emit prepared success
+ok 29 - tampered backup/candidate and injected failure preserve source and do not emit prepared success
+  ---
+  duration_ms: 167.794967
+  type: 'test'
+  ...
+# Subtest: no symlink source or in-vault backup directory
+ok 30 - no symlink source or in-vault backup directory
+  ---
+  duration_ms: 6.591412
+  type: 'test'
+  ...
+# Subtest: canonical full fold includes native pointers/user strings, workers, tools/live reasoning and >64KB payload; no metadata-only equality claim
+ok 31 - canonical full fold includes native pointers/user strings, workers, tools/live reasoning and >64KB payload; no metadata-only equality claim
+  ---
+  duration_ms: 152.945994
+  type: 'test'
+  ...
+# Subtest: torn final JSON, dangling/invalid UTF-8, invalid delta: refuse clearly, never discard source bytes
+ok 32 - torn final JSON, dangling/invalid UTF-8, invalid delta: refuse clearly, never discard source bytes
+  ---
+  duration_ms: 118.194022
+  type: 'test'
+  ...
+# Subtest: bounded I/O handles offsets beyond 5GiB without an old-size cap (virtual file, not a physical live-log test)
+ok 33 - bounded I/O handles offsets beyond 5GiB without an old-size cap (virtual file, not a physical live-log test)
+  ---
+  duration_ms: 11506.775418
+  type: 'test'
+  ...
+# Subtest: line scanner bounds a crossing-chunk large valid JSON record and decodes UTF-8 only at full line boundaries
+ok 34 - line scanner bounds a crossing-chunk large valid JSON record and decodes UTF-8 only at full line boundaries
+  ---
+  duration_ms: 33.108776
+  type: 'test'
+  ...
+# Subtest: physical streamed valid snapshot fixture exceeds historical-size boundaries
+ok 35 - physical streamed valid snapshot fixture exceeds historical-size boundaries # SKIP
+  ---
+  duration_ms: 0.189642
+  type: 'test'
+  ...
+# Subtest: host checker is fail-closed in an agent/non-systemd PID namespace
+ok 36 - host checker is fail-closed in an agent/non-systemd PID namespace
+  ---
+  duration_ms: 2.378322
+  type: 'test'
+  ...
+1..36
+# tests 36
+# suites 0
+# pass 35
+# fail 0
+# cancelled 0
+# skipped 1
+# todo 0
+# duration_ms 12916.800345

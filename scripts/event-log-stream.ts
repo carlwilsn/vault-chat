@@ -4,7 +4,7 @@ import { open, stat } from "node:fs/promises";
 
 export const digest = () => createHash("sha256");
 export type File = Awaited<ReturnType<typeof open>>;
-export const identity = (s: Awaited<ReturnType<typeof stat>>) => ({ dev: s.dev, ino: s.ino, size: s.size, mtimeMs: s.mtimeMs, ctimeMs: s.ctimeMs, nlink: s.nlink });
+export const identity = (s: Awaited<ReturnType<typeof stat>>) => ({ dev: s.dev, ino: s.ino, birthtimeMs: s.birthtimeMs, size: s.size, mtimeMs: s.mtimeMs, ctimeMs: s.ctimeMs, nlink: s.nlink });
 export const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 export async function writeAll(fd: File, bytes: Buffer) {
   for (let offset = 0; offset < bytes.length;) {

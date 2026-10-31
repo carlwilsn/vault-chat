@@ -215,7 +215,9 @@ describe("the migration on a copy of a live-shaped layout, and back", () => {
     writeFileSync(join(school2, "vault-chat-guide.html"), "<html>guide</html>\n");
     mkdirSync(join(school2, ".vault-chat"), { recursive: true });
     writeFileSync(join(school2, ".vault-chat", "hidden-by-default"), "# Hidden by default once by vault-chat; unhiding one keeps it shown.\nagent-projects\nboards\n");
-    new ConvLog(school2).emit("main", meta("Main", "main"));
+    const schoolLog = new ConvLog(school2);
+    schoolLog.emit("main", meta("Main", "main"));
+    schoolLog.close();
     // vault-chat: its project (registered to the code repo), an empty old Main, stale hide entries.
     mkdirSync(join(vc, "agent-projects", "vault-chat"), { recursive: true });
     writeFileSync(join(vc, "agent-projects", "vault-chat", "project.md"), "# vault-chat\n\n## Memory\n- 2026-10-29: Carl authorized one final handover\n");
@@ -226,6 +228,7 @@ describe("the migration on a copy of a live-shaped layout, and back", () => {
     const l = new ConvLog(vc);
     l.emit("main", meta("Main", "main"));
     l.emit("project-vault-chat", meta("vault-chat", "project"));
+    l.close();
     before = { school2: snap(school2), vc: snap(vc), code: snap(code) };
   });
   afterAll(() => cleanup(root));

@@ -1,0 +1,204 @@
+TAP version 13
+# Subtest: text and thinking deltas: streamed into one item each, then pi's entry for good
+ok 1 - text and thinking deltas: streamed into one item each, then pi's entry for good
+  ---
+  duration_ms: 12.893588
+  type: 'test'
+  ...
+# Subtest: the feed coalesces deltas: a few records a second, never one per token
+ok 2 - the feed coalesces deltas: a few records a second, never one per token
+  ---
+  duration_ms: 3.245586
+  type: 'test'
+  ...
+# Subtest: tool calls with streamed arguments, run in parallel: one item each, args parsed, results on them, in pi's order
+ok 3 - tool calls with streamed arguments, run in parallel: one item each, args parsed, results on them, in pi's order
+  ---
+  duration_ms: 7.071538
+  type: 'test'
+  ...
+# Subtest: a steer and a queued message: pending, then Carl's message where pi delivers it, under the client's id
+ok 4 - a steer and a queued message: pending, then Carl's message where pi delivers it, under the client's id
+  ---
+  duration_ms: 5.180506
+  type: 'test'
+  ...
+# Subtest: stop: what was written stays, closed as stopped; the turn ends; nothing streams forever
+ok 5 - stop: what was written stays, closed as stopped; the turn ends; nothing streams forever
+  ---
+  duration_ms: 1.81004
+  type: 'test'
+  ...
+# Subtest: a crash mid-stream: what was shown stays (the feed kept pi's live events), closed; the restart's line after it
+ok 6 - a crash mid-stream: what was shown stays (the feed kept pi's live events), closed; the restart's line after it
+  ---
+  duration_ms: 1.36474
+  type: 'test'
+  ...
+# Subtest: AskUser and an error: the question waits, Carl's answer is his line under his id; the provider's error is said once
+ok 7 - AskUser and an error: the question waits, Carl's answer is his line under his id; the provider's error is said once
+  ---
+  duration_ms: 3.664106
+  type: 'test'
+  ...
+# Subtest: a compaction, a wake turn and a subagent
+ok 8 - a compaction, a wake turn and a subagent
+  ---
+  duration_ms: 3.541525
+  type: 'test'
+  ...
+# Subtest: a reconnect at any N, any cut, any overlap: the same picture as one uninterrupted stream
+ok 9 - a reconnect at any N, any cut, any overlap: the same picture as one uninterrupted stream
+  ---
+  duration_ms: 657.153869
+  type: 'test'
+  ...
+# Subtest: nothing shown ever disappears (only pi's own passing status lines: a retry, 'summarizing'), and what stays keeps its order
+ok 10 - nothing shown ever disappears (only pi's own passing status lines: a retry, 'summarizing'), and what stays keeps its order
+  ---
+  duration_ms: 25.162748
+  type: 'test'
+  ...
+# Subtest: the list row folded from the records alone equals the full fold's row, at every record
+ok 11 - the list row folded from the records alone equals the full fold's row, at every record
+  ---
+  duration_ms: 15.320667
+  type: 'test'
+  ...
+# Subtest: on disk an entry record is only a pointer; a checkpoint is exactly the fold; a feed reopened (a restart) reads pi's files back to the same picture
+ok 12 - on disk an entry record is only a pointer; a checkpoint is exactly the fold; a feed reopened (a restart) reads pi's files back to the same picture
+  ---
+  duration_ms: 47.467381
+  type: 'test'
+  ...
+# Subtest: a real pi 1.1.0 recording (3 turns on the box: thinking, 9 shell/read calls, a steer, a queued follow-up): every block and call pi stored, in pi's order, Carl's under his ids
+ok 13 - a real pi 1.1.0 recording (3 turns on the box: thinking, 9 shell/read calls, a steer, a queued follow-up): every block and call pi stored, in pi's order, Carl's under his ids
+  ---
+  duration_ms: 39.637367
+  type: 'test'
+  ...
+# Subtest: kernel directory flock excludes maintenance for runtime lifetime, with no per-event subprocess
+ok 14 - kernel directory flock excludes maintenance for runtime lifetime, with no per-event subprocess
+  ---
+  duration_ms: 15.99
+  type: 'test'
+  ...
+# Subtest: exclusive maintenance blocks startup BEFORE epoch/floor/heal/checkpoint mutation
+ok 15 - exclusive maintenance blocks startup BEFORE epoch/floor/heal/checkpoint mutation
+  ---
+  duration_ms: 9.024461
+  type: 'test'
+  ...
+# Subtest: failed startup releases lock and process crash releases kernel ownership without stale lease cleanup
+ok 16 - failed startup releases lock and process crash releases kernel ownership without stale lease cleanup
+  ---
+  duration_ms: 50.073798
+  type: 'test'
+  ...
+# Subtest: offline replacement cohort rejects interrupted log-only rename and loads matching owner-built checkpoint
+ok 17 - offline replacement cohort rejects interrupted log-only rename and loads matching owner-built checkpoint
+  ---
+  duration_ms: 11.002083
+  type: 'test'
+  ...
+# {"syntheticSparseBytes":5368709243,"startupReadBytes":160198,"prefixReadBytes":0,"unchangedPollReadBytes":0,"elapsedMs":18,"rss":105340928,"peakRss":105340928}
+# Subtest: 5 GiB sparse prefix: startup and repeated polls read ZERO prefix bytes; appends consume only new tail
+ok 18 - 5 GiB sparse prefix: startup and repeated polls read ZERO prefix bytes; appends consume only new tail
+  ---
+  duration_ms: 36.37274
+  type: 'test'
+  ...
+# Subtest: legacy sequence-only checkpoint migrates by bounded suffix lookup, not prefix fold
+ok 19 - legacy sequence-only checkpoint migrates by bounded suffix lookup, not prefix fold
+  ---
+  duration_ms: 10.747055
+  type: 'test'
+  ...
+# Subtest: missing/incompatible/stale/rotated checkpoint fails actionable without prefix replay
+ok 20 - missing/incompatible/stale/rotated checkpoint fails actionable without prefix replay
+  ---
+  duration_ms: 18.938018
+  type: 'test'
+  ...
+# Subtest: original roles/body/IDs and FIFO pending survive checkpoint, unicode split, partial append and worker delta
+ok 21 - original roles/body/IDs and FIFO pending survive checkpoint, unicode split, partial append and worker delta
+  ---
+  duration_ms: 15.919435
+  type: 'test'
+  ...
+# Subtest: oversized new record fails explicitly; no giant string and no silent history loss
+ok 22 - oversized new record fails explicitly; no giant string and no silent history loss
+  ---
+  duration_ms: 40.726776
+  type: 'test'
+  ...
+# Subtest: partial crash checkpoint commits exact complete-byte offset and pointer metadata atomically
+ok 23 - partial crash checkpoint commits exact complete-byte offset and pointer metadata atomically
+  ---
+  duration_ms: 13.113543
+  type: 'test'
+  ...
+# Subtest: bounded large-session pointer lookup preserves original shown/body and never hides an out-of-window entry
+ok 24 - bounded large-session pointer lookup preserves original shown/body and never hides an out-of-window entry
+  ---
+  duration_ms: 14.214436
+  type: 'test'
+  ...
+# Subtest: multiple conversations retain global seq order and root owner/project through stop and queue delivery
+ok 25 - multiple conversations retain global seq order and root owner/project through stop and queue delivery
+  ---
+  duration_ms: 11.793875
+  type: 'test'
+  ...
+# Subtest: compact writes survive frozen prepared SERVER; mixed legacy and delta replay exactly
+ok 26 - compact writes survive frozen prepared SERVER; mixed legacy and delta replay exactly
+  ---
+  duration_ms: 1366.806262
+  type: 'test'
+  ...
+# Subtest: mixed legacy full snapshots and deltas preserve exact replacement, ordering, removal and completed reports
+ok 27 - mixed legacy full snapshots and deltas preserve exact replacement, ordering, removal and completed reports
+  ---
+  duration_ms: 13.463856
+  type: 'test'
+  ...
+# Subtest: a malformed/missing-base/reordered delta loses only that worker update (the conversation still loads); torn final append heals by existing rules
+ok 28 - a malformed/missing-base/reordered delta loses only that worker update (the conversation still loads); torn final append heals by existing rules
+  ---
+  duration_ms: 38.898917
+  type: 'test'
+  ...
+# Subtest: over-64KB legacy and future-delta tails retain last seq and exact checkpoint replay
+ok 29 - over-64KB legacy and future-delta tails retain last seq and exact checkpoint replay
+  ---
+  duration_ms: 31.3968
+  type: 'test'
+  ...
+# Subtest: 175 large-prompt workers: unrelated patches <256 bytes, unchanged refs <8KiB, one update <16KiB
+ok 30 - 175 large-prompt workers: unrelated patches <256 bytes, unchanged refs <8KiB, one update <16KiB
+  ---
+  duration_ms: 85.494248
+  type: 'test'
+  ...
+# {"workers":175,"initialBytes":1107586,"unrelatedBytes":70,"unchangedRefsBytes":6774,"oneWorkerUpdateBytes":13121}
+# Subtest: legacy malformed worker identities remain full; whole-row field removal and clear never resurrect history
+ok 31 - legacy malformed worker identities remain full; whole-row field removal and clear never resurrect history
+  ---
+  duration_ms: 6.155237
+  type: 'test'
+  ...
+# Subtest: writer requires prepared reader: legacy server without checkpoint cannot replay deltas
+ok 32 - writer requires prepared reader: legacy server without checkpoint cannot replay deltas
+  ---
+  duration_ms: 91.308153
+  type: 'test'
+  ...
+1..32
+# tests 32
+# suites 0
+# pass 32
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 2072.499481

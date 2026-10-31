@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { compactOffline } from "./compact-event-log-offline.ts";
-import { ConvLog, lastSeq } from "../server/convlog/log.ts";
+import { ConvLog, lastSeq, checkpointFor } from "../server/convlog/log.ts";
 import { fold, foldInto } from "../src/convlog/reduce.ts";
 import type { LogRecord, SubagentRec } from "../src/convlog/protocol.ts";
 
@@ -17,7 +17,7 @@ async function fixture(run: (dir: string) => Promise<void>) {
 
 test("offline copy: exact every-record replay, arbitrary cursors/gaps, >64KiB tail, pi pointers/tools/reasoning retained", async () => fixture(async dir => {
   const C = "workers";
-  let workers: SubagentRec[] = Array.from({ length: 175 }, (_, i) => ({ threadId: `worker-${i}`, task: "prompt ".repeat(700),
+  let workers: SubagentRec[] = Array.from({ length: 175 }, (_, i) => ({ threadId: `worker-${i}`, task: "prompt ".repeat(350),
     state: "completed", summary: "retained report ".repeat(120), sessionFile: `/pi/session-${i}` }));
   const records: LogRecord[] = [{ seq: 2, conv: C, at: 1, type: "meta", patch: { title: "Preserved", subagents: workers } }];
   for (let i = 0; i < 18; i++) {
@@ -45,12 +45,15 @@ test("offline copy: exact every-record replay, arbitrary cursors/gaps, >64KiB ta
   await mkdir(events, { recursive: true });
   // Reuse the same pi pointer with missing target: BOTH readers have identical missing-entry behavior.
   await writeFile(join(events, `${C}.jsonl`), text);
+  await writeFile(join(events, `${C}.ckpt.json`), JSON.stringify(checkpointFor(join(events, `${C}.jsonl`), m.picture, Buffer.byteLength(text), m.pointed)));
   const old = new ConvLog(vault);
   const expected = old.picture(C)!;
   const full = old.eventsOf(C);
   old.checkpointNow(C);
   const ck = old.checkpointOf(C)!;
+  old.close();
   await writeFile(join(events, `${C}.jsonl`), compact);
+  await writeFile(join(events, `${C}.ckpt.json`), JSON.stringify(checkpointFor(join(events, `${C}.jsonl`), m.picture, Buffer.byteLength(compact), m.pointed)));
   const cold = new ConvLog(vault);
   assert.deepEqual(cold.picture(C), expected);
   assert.deepEqual(cold.eventsOf(C), full);
@@ -68,12 +71,16 @@ test("offline copy: exact every-record replay, arbitrary cursors/gaps, >64KiB ta
     assert.deepEqual(foldInto(fold(full.filter(r => r.seq <= cursor), C), cold.eventsOf(C, cursor)), expected);
   }
   assert.deepEqual(cold.checkpointOf(C), ck);
+  cold.close();
   await rm(join(events, `${C}.ckpt.json`));
-  assert.deepEqual(new ConvLog(vault).picture(C), expected);
+  const noCheckpoint = new ConvLog(vault);
+  assert.deepEqual(noCheckpoint.picture(C), expected);
+  noCheckpoint.close();
   assert.equal(expected.meta.subagents![0]!.task, workers[0]!.task);
   const resumed = new ConvLog(vault);
   const next = resumed.emit(C, { type: "meta", patch: { costUsd: 99 } });
   assert.ok(next.seq > 92);
+  resumed.close();
 }));
 
 test("offline compactor fails closed for hash/size mismatch, torn/invalid/reordered rows; never overwrites output", async () => fixture(async dir => {

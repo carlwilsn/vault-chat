@@ -127,3 +127,17 @@ in doubt, mark it agent.
   every expanded logical-record hash and canonical full fold (native original-root pointers,
   worker state, tools/live and seq); final-picture-only or raw-byte-equality is insufficient.
   `scripts/offline-event-log.ts` currently prepares external artifacts only; `--apply` refuses.
+
+## Offline canonical event maintenance (2026-10-31, candidate source only)
+- New canonical owners share the existing events-directory inode's kernel flock for their lifetime; offline
+  maintenance and projects migrate/back exclude all affected directory inodes before content access. Never rotate
+  that directory. Legacy binaries and arbitrary shell writers ignore advisory flock: their operators must stop
+  them and their supervisors separately; inactive service observations or idle stats are not that proof.
+- A sequence-only v2 checkpoint has no original inode identity. First use the ordinary offline checkpoint-only
+  rebuild (fresh verified external backup, complete original native pointer IDs, canonical checkpoint+tail equality)
+  without changing log bytes. Then compaction can replace log-first with an inode-bound v3 checkpoint second.
+  Never manufacture a pointer index from rendered/client IDs or replace materialized old assistant bodies with a
+  replay that silently omitted missing native entries. A mismatch refuses while preserving originals and backups.
+- Two renames are not an atomic cohort. Retain the durable external intent and both staged inodes; ordinary
+  `--recover INTENT` verifies originals/new hashes and recognized current inodes under exclusion before completing.
+  No manual prefix copy, checkpoint deletion or guessed offsets. These source changes do not authorize a live run.

@@ -1,0 +1,4 @@
+Strict affected TypeScript: ES2022 / ESNext / bundler / allowImportingTsExtensions / strict / noUnusedLocals / noUnusedParameters; noEmit.
+TypeScript exit=0
+Runner bash syntax exit=0
+git diff --check exit=0

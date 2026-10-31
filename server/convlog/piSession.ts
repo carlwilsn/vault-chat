@@ -39,6 +39,19 @@ function parseLines(raw: string): PiEntry[] {
   return out;
 }
 
+/** Explicit OFFLINE tooling only: sequential native decoding without the runtime
+ * 16 MiB recovery window. Caller holds event exclusion and verifies native-file
+ * identities. Yields one canonical entry at a time, never a whole-session array.
+ * Runtime callers must keep using readEntries/SessionTail with bounded limits. */
+export function* offlineEntries(file: string): Generator<PiEntry> {
+  for (const { text } of lines(file)) {
+    if (!text.trim()) continue;
+    // Offline proof must not silently discard malformed native entries.
+    const e = JSON.parse(text);
+    if (e && typeof e.id === "string" && e.type !== "session") yield e;
+  }
+}
+
 /** Every entry of a session file (no header), in append order. */
 export function readEntries(file: string, suffixOnly = false): PiEntry[] {
   let fd: number | null = null;
