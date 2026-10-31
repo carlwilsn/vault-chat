@@ -7,7 +7,8 @@
 // custom entry). With no pi on it (a voice-only conversation, a marker after a
 // crash, an imported older conversation) this module appends pi-format entries
 // itself, each a child of the file's last entry, as pi would.
-import { appendFileSync, closeSync, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, writeFileSync } from "node:fs";
+import { appendFileSync, closeSync, existsSync, fstatSync, mkdirSync, openSync, writeFileSync } from "node:fs";
+import { lines, alignStart, MAX_RECOVERY_BYTES, checkpointRequired } from "./reader";
 import { dirname } from "node:path";
 import { randomBytes, randomUUID } from "node:crypto";
 import type { PiEntry } from "../../src/convlog/protocol";
@@ -39,25 +40,32 @@ function parseLines(raw: string): PiEntry[] {
 }
 
 /** Every entry of a session file (no header), in append order. */
-export function readEntries(file: string): PiEntry[] {
+export function readEntries(file: string, suffixOnly = false): PiEntry[] {
+  let fd: number | null = null;
   try {
-    return parseLines(readFileSync(file, "utf8"));
-  } catch {
+    fd = openSync(file, "r");
+    const size = fstatSync(fd).size;
+    if (!suffixOnly && size > MAX_RECOVERY_BYTES) throw checkpointRequired(file, "session read exceeds 16 MiB; use bounded session history recovery");
+    const start = suffixOnly ? alignStart(file, Math.max(0, size - MAX_RECOVERY_BYTES), size) : 0;
+    const out: PiEntry[] = [];
+    for (const { text } of lines(file, start, size)) out.push(...parseLines(text));
+    return out;
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
     return [];
-  }
+  } finally { if (fd !== null) closeSync(fd); }
 }
 
-/** The new entries of a session file since the last read (pi appends whole lines). */
+/** The new complete entries since the previous read. Bytes, not decoded string
+ * fragments, own the offset; an interrupted UTF-8 codepoint is read again whole. */
 export class SessionTail {
   private offset = 0;
-  private carry = "";
   constructor(readonly file: string, from: "start" | "end" = "start") {
     if (from === "end") {
-      try {
-        this.offset = readFileSync(file).length;
-      } catch {
-        this.offset = 0;
-      }
+      let fd: number | null = null;
+      try { fd = openSync(file, "r"); this.offset = fstatSync(fd).size; }
+      catch (e) { if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e; }
+      finally { if (fd !== null) closeSync(fd); }
     }
   }
   read(): PiEntry[] {
@@ -65,19 +73,17 @@ export class SessionTail {
     try {
       fd = openSync(this.file, "r");
       const size = fstatSync(fd).size;
-      if (size <= this.offset) return [];
-      const buf = Buffer.alloc(size - this.offset);
-      readSync(fd, buf, 0, buf.length, this.offset);
-      this.offset = size;
-      const text = this.carry + buf.toString("utf8");
-      const cut = text.lastIndexOf("\n");
-      this.carry = cut < 0 ? text : text.slice(cut + 1);
-      return parseLines(cut < 0 ? "" : text.slice(0, cut));
-    } catch {
+      if (size < this.offset) throw checkpointRequired(this.file, "session truncated while active");
+      if (size - this.offset > MAX_RECOVERY_BYTES) throw checkpointRequired(this.file, "session tail exceeds 16 MiB");
+      const out: PiEntry[] = [];
+      for (const { text, end } of lines(this.file, this.offset, size)) {
+        out.push(...parseLines(text)); this.offset = end;
+      }
+      return out;
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
       return [];
-    } finally {
-      if (fd !== null) closeSync(fd);
-    }
+    } finally { if (fd !== null) closeSync(fd); }
   }
 }
 

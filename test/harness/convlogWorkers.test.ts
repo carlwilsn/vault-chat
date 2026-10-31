@@ -156,11 +156,11 @@ test("a malformed/missing-base/reordered delta loses only that worker update (th
     assert.throws(() => reduce(fold([first], C), bad as StoredSubagentsRecord), /Invalid subagents disk delta/);
   }
   writeFileSync(file, JSON.stringify(delta) + "\n" + JSON.stringify(rows[0]) + "\n");
-  assert.doesNotThrow(() => new ConvLog(dir));
+  assert.throws(() => new ConvLog(dir), /non-increasing record sequence/, "out-of-order canonical records fail closed, not replay backwards");
   assert.throws(() => reduce(emptyPicture(C), delta), /Invalid subagents disk delta/);
   writeFileSync(file, original + '{"seq":3,"type":"subagents","updates":');
   const healed = new ConvLog(dir);
-  assert.equal(readFileSync(file, "utf8"), original);
+  assert.equal(readFileSync(file, "utf8"), original + '{"seq":3,"type":"subagents","updates":', "startup never rewrites history; the owning append heals the torn suffix");
   assert.deepEqual(healed.picture(C), fold([first, second], C));
   healed.emit(C, { type: "meta", patch: { subagents: [{ threadId: "one", summary: "after healing", state: "completed" }] } }, 3);
   assert.deepEqual(new ConvLog(dir).picture(C), healed.picture(C));

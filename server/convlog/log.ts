@@ -7,7 +7,7 @@
 //   <conv>.jsonl      one conversation's records, in seq order (one JSON line each);
 //                     an entry record is a pointer {file, id, clientId?, shown?, via?};
 //                     worker snapshots store changed rows plus identity references; reads expand full meta
-//   <conv>.ckpt.json  its picture at some seq K, exactly fold(records <= K) (a cache: deleting it is harmless)
+//   <conv>.ckpt.json  its picture and byte position at seq K, exactly fold(records <= K); required for large logs
 //   sessions/         pi-format session files for what no pi wrote (an imported older
 //                     conversation, a voice-only chat, a line after a failed start)
 //   _signals.jsonl    vault-level signals (conv: null)
@@ -26,6 +26,8 @@
 import { appendFileSync, closeSync, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, ftruncateSync, statSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { randomBytes } from "node:crypto";
+import { lines, alignStart, boundary, position, validatePosition, checkpointRequired, MAX_RECOVERY_BYTES, MAX_RECORD_BYTES, type Position } from "./reader";
+import { acquireEventDirectory } from "./maintenance";
 import { renameRetry } from "../atomic";
 import type { EventBody, LogRecord, PiEntry, PollAnswer, StoredRecord } from "../../src/convlog/protocol";
 import { readEntries } from "./piSession";
@@ -40,6 +42,18 @@ const POLL_LIMIT = 2_000;
 const CKPT_EVERY = 400;
 
 const SIGNALS = "_signals";
+
+/** Atomic checkpoint body, shared with offline recovery tooling. */
+export type LogCheckpoint = { v: 3; rv: number; seq: number; picture: Picture; position: Position; pointed?: Record<string, string[]> };
+
+/** Offline replacement builder: use the final candidate inode and complete byte
+ * boundary while holding exclusive directory exclusion. Rename preserves identity.
+ * Complete original session pointer IDs are mandatory; rendered item IDs are not a substitute. */
+export function checkpointFor(file: string, picture: Picture, offset: number, pointed: Record<string, string[]>): LogCheckpoint {
+  const p = position(file, offset, picture.seq);
+  validatePosition(file, p, picture.seq);
+  return { v: 3, rv: REDUCER_VERSION, seq: picture.seq, picture, position: p, pointed };
+}
 
 export type LegacySource = {
   /** The conversations an older file holds that are not in the log yet: their list rows. */
@@ -59,6 +73,13 @@ type Conv = {
   picture: Picture;
   row: RowState;
   sinceCkpt: number;
+  offset: number;
+  observedSize: number;
+  records: LogRecord[];
+  recordsFloor: number;
+  recordBytes: number;
+  identity: Position;
+  pointedComplete: boolean;
 };
 
 const SEQ_AT_START = /^\{"seq":(\d+),/;
@@ -100,41 +121,30 @@ function healTail(file: string): void {
   }
 }
 
-function readRecords(file: string, after = 0, resolveEntry?: (rec: any) => LogRecord, base?: Picture): LogRecord[] {
-  let raw = "";
-  try {
-    raw = readFileSync(file, "utf8");
-  } catch {
-    return [];
-  }
+function readRecords(file: string, after = 0, resolveEntry?: (rec: any) => LogRecord, base?: Picture, offset = 0, end?: number, consumed?: (end: number) => void): LogRecord[] {
   const out: LogRecord[] = [];
-  // Only metadata is needed to expand worker rows. Reuse the reducer, not a second
-  // worker registry. Disk polls replay the prefix; checkpoint loads start at K.
   let projection = base;
-  for (const line of raw.split("\n")) {
-    if (!line || (base && seqOfLine(line) <= base.seq)) continue;
+  let previous = base?.seq ?? 0;
+  for (const { text: line, end: at } of lines(file, offset, end)) {
+    consumed?.(at);
+    if (!line) continue;
     let stored: StoredRecord;
-    try {
-      stored = JSON.parse(line);
-    } catch {
-      continue; // existing torn/invalid JSON recovery
-    }
+    try { stored = JSON.parse(line); } catch { continue; }
+    if (!Number.isSafeInteger(stored.seq) || stored.seq <= previous) throw checkpointRequired(file, "non-increasing record sequence");
+    previous = stored.seq;
+    if (base && stored.seq <= base.seq) throw checkpointRequired(file, "tail sequence precedes checkpoint");
     projection ??= emptyPicture(stored.conv ?? "");
-    // An invalid worker delta loses only that worker update (the previous list stays), never
-    // the conversation: worker rows are display state, the thread must always load.
     let rec: LogRecord;
     if (stored.type === "subagents") {
-      try {
-        rec = expandSubagents(projection, stored);
-      } catch {
-        const { subagents: _drop, ...patch } = stored.patch;
+      try { rec = expandSubagents(projection, stored); }
+      catch {
+        const { subagents: _drop, ...patch } = stored.patch && typeof stored.patch === "object" && !Array.isArray(stored.patch) ? stored.patch : {};
         rec = { seq: stored.seq, conv: stored.conv, at: stored.at, type: "meta", patch } as LogRecord;
       }
     } else rec = stored;
     if (rec.type === "meta") projection = reduce(projection, rec);
     else projection = { ...projection, seq: rec.seq };
-    if (rec.seq <= after) continue;
-    out.push(resolveEntry && rec.type === "entry" ? resolveEntry(rec) : rec);
+    if (rec.seq > after) out.push(resolveEntry && rec.type === "entry" ? resolveEntry(rec) : rec);
   }
   return out;
 }
@@ -146,7 +156,9 @@ class Entries {
     let m = this.files.get(file);
     if (!m || !m.has(id)) {
       // Not read yet, or written since: read it again.
-      m = new Map(readEntries(file).map((e) => [e.id, e] as const));
+      const large = existsSync(file) && statSync(file).size > MAX_RECOVERY_BYTES;
+      m = new Map(readEntries(file, large).map((e) => [e.id, e] as const));
+      if (large && !m.has(id)) throw checkpointRequired(file, "entry pointer is outside the bounded session suffix; original history must be recovered offline");
       this.files.delete(file);
       this.files.set(file, m);
       while (this.files.size > 24) this.files.delete(this.files.keys().next().value!);
@@ -165,23 +177,17 @@ export function lastSeq(file: string): number {
     fd = openSync(file, "r");
     const size = fstatSync(fd).size;
     if (!size) return 0;
-    // The tail, wider until it holds a whole record: a last record longer than the window (a big tool result:
-    // 186 KB on the box, 2026-10-30) must not read as "no seq" — the checkpoint would be refused and the whole log
-    // folded from the start (past half a gigabyte, more than a string can hold: the conversation vanished).
-    for (let look = Math.min(size, 1 << 16); ; look = Math.min(size, look * 4)) {
-      const buf = Buffer.alloc(look);
-      readSync(fd, buf, 0, look, size - look);
-      const text = buf.toString("utf8");
-      // Only whole lines: the first piece is a line's tail unless the window starts the file.
-      const lines = text.split("\n");
-      if (look < size) lines.shift();
-      for (let i = lines.length - 1; i >= 0; i--) {
-        const s = lines[i] ? seqOfLine(lines[i]!) : 0;
-        if (s) return s;
-      }
-      if (look >= size) return 0;
+    // Never grow a tail buffer to file size. A giant record is an explicit recovery error.
+    const start = Math.max(0, size - MAX_RECOVERY_BYTES);
+    let last = 0;
+    for (const l of lines(file, alignStart(file, start, size))) {
+      const seq = seqOfLine(l.text);
+      if (seq) last = seq;
     }
-  } catch {
+    if (!last && start) throw checkpointRequired(file, "no complete sequence in the bounded 16 MiB suffix");
+    return last;
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
     return 0;
   } finally {
     if (fd !== null) closeSync(fd);
@@ -203,6 +209,8 @@ export class ConvLog {
   private signalsMax = 0;
   /** The recent records of the whole vault, in seq order (the /poll fast path). */
   private recent: LogRecord[] = [];
+  private recentBytes = 0;
+  private recentSizes: number[] = [];
   private waiters = new Set<() => void>();
   private listeners = new Set<(r: LogRecord) => void>();
   private legacyRows = new Map<string, RowState>();
@@ -211,6 +219,7 @@ export class ConvLog {
   private pointed = new Map<string, Map<string, Set<string>>>();
   /** Where vault-chat's own pi-format session files live. */
   readonly sessionsDir: string;
+  private releaseWriter: (() => void) | null = null;
 
   constructor(
     readonly vault: string,
@@ -220,33 +229,41 @@ export class ConvLog {
   ) {
     this.dir = dir ?? join(vault, ".vault-chat", "events");
     mkdirSync(this.dir, { recursive: true });
-    this.signalsFile = join(this.dir, `${SIGNALS}.jsonl`);
-    this.sessionsDir = join(this.dir, "sessions");
-    this.epoch = this.loadEpoch();
-    let max = 0;
-    for (const n of readdirSync(this.dir)) {
-      if (!n.endsWith(".jsonl") || n.startsWith("_")) continue;
-      const file = join(this.dir, n);
-      healTail(file);
-      const c = this.load(file);
-      if (c) {
-        this.convs.set(c.id, c);
-        max = Math.max(max, c.maxSeq);
-      }
-    }
-    healTail(this.signalsFile);
-    this.signalsMax = lastSeq(this.signalsFile);
-    max = Math.max(max, this.signalsMax);
-    let floor = 0;
+    this.releaseWriter = acquireEventDirectory(this.dir, "shared");
     try {
-      floor = Number(readFileSync(join(this.dir, "_seq"), "utf8").trim()) || 0;
-    } catch {
-      floor = 0;
-    }
-    this.last = max;
-    this.clock.next = Math.max(this.clock.next, max + 1, floor + 1, (this.clock.floor ?? 0) + 1);
-    this.reserve(this.clock.next);
-    this.refreshLegacy();
+      this.signalsFile = join(this.dir, `${SIGNALS}.jsonl`);
+      this.sessionsDir = join(this.dir, "sessions");
+      this.epoch = this.loadEpoch();
+      let max = 0;
+      for (const n of readdirSync(this.dir)) {
+        if (!n.endsWith(".jsonl") || n.startsWith("_")) continue;
+        const file = join(this.dir, n);
+        const c = this.load(file);
+        if (c) {
+          this.convs.set(c.id, c);
+          max = Math.max(max, c.maxSeq);
+        }
+      }
+      healTail(this.signalsFile);
+      this.signalsMax = lastSeq(this.signalsFile);
+      max = Math.max(max, this.signalsMax);
+      let floor = 0;
+      try {
+        floor = Number(readFileSync(join(this.dir, "_seq"), "utf8").trim()) || 0;
+      } catch {
+        floor = 0;
+      }
+      this.last = max;
+      this.clock.next = Math.max(this.clock.next, max + 1, floor + 1, (this.clock.floor ?? 0) + 1);
+      this.reserve(this.clock.next);
+      this.refreshLegacy();
+    } catch (e) { this.close(); throw e; }
+  }
+
+  /** Explicit lifecycle boundary for maintenance/tests; process death also releases the kernel lock. */
+  close(): void { this.releaseWriter?.(); this.releaseWriter = null; }
+  private assertWritable(): void {
+    if (!this.releaseWriter) throw new Error("Conversation log writer is closed");
   }
 
   private loadEpoch(): string {
@@ -287,26 +304,72 @@ export class ConvLog {
 
   /** A conversation's file → its picture (its checkpoint plus the records after it). */
   private load(file: string): Conv | null {
-    const fileMax = lastSeq(file);
-    let ck: { pic: Picture; seq: number } | null = null;
-    try {
-      const v = JSON.parse(readFileSync(file.replace(/\.jsonl$/, ".ckpt.json"), "utf8"));
-      if (v?.v === 2 && v.rv === REDUCER_VERSION && v.picture && typeof v.seq === "number" && v.seq <= fileMax) ck = { pic: v.picture as Picture, seq: v.seq };
-    } catch {
-      /* none, or unreadable: fold from the start */
+    const size = statSync(file).size;
+    let ck: any = null;
+    const ckFile = file.replace(/\.jsonl$/, ".ckpt.json");
+    if (existsSync(ckFile)) {
+      if (statSync(ckFile).size > MAX_RECOVERY_BYTES) throw checkpointRequired(file, "checkpoint exceeds 16 MiB");
+      try { ck = JSON.parse(readFileSync(ckFile, "utf8")); } catch { /* small recovery only */ }
     }
-    let pic: Picture;
-    let tail: LogRecord[];
-    if (ck) {
-      tail = readRecords(file, ck.seq, this.resolve, ck.pic);
-      pic = foldInto(ck.pic, tail);
-    } else {
-      tail = readRecords(file, 0, this.resolve);
-      const id = tail.find((r) => typeof r.conv === "string")?.conv;
-      if (!id) return null;
-      pic = foldInto(emptyPicture(id), tail);
+    let base: Picture | undefined, offset = 0;
+    if (ck && (ck.v === 2 || ck.v === 3) && ck.rv === REDUCER_VERSION && ck.picture &&
+        Number.isSafeInteger(ck.seq) && ck.seq === ck.picture.seq) {
+      base = ck.picture;
+      if (ck.position) {
+        validatePosition(file, ck.position as Position, ck.seq);
+        offset = ck.position.offset;
+      } else offset = boundary(file, ck.seq, size, ck.picture.id);
+    } else if (size > MAX_RECOVERY_BYTES) throw checkpointRequired(file, "missing or incompatible checkpoint");
+    if (size - offset > MAX_RECOVERY_BYTES) throw checkpointRequired(file, "checkpoint tail exceeds 16 MiB");
+    let end = offset;
+    const tail = readRecords(file, base?.seq ?? 0, this.resolve, base, offset, size, (at) => { end = at; });
+    const id = base?.id ?? tail.find((r) => typeof r.conv === "string")?.conv;
+    if (!id) return null;
+    const pic = foldInto(base ?? emptyPicture(id), tail);
+    if (ck?.pointed && typeof ck.pointed === "object") {
+      this.pointed.set(id, new Map(Object.entries(ck.pointed).map(([f, ids]) => [this.abs(f), new Set(ids as string[])])));
     }
-    return { id: pic.id, file, maxSeq: Math.max(pic.seq, fileMax), picture: pic, row: rowFromPicture(pic), sinceCkpt: tail.length };
+    const index = this.pointed.get(id);
+    if (index) for (const r of tail) if (r.type === "entry") {
+      let ids = index.get(r.file); if (!ids) index.set(r.file, ids = new Set()); ids.add(r.entry.id);
+    }
+    const c: Conv = { id, file, maxSeq: pic.seq, picture: pic, row: rowFromPicture(pic), sinceCkpt: tail.length,
+      offset: end, observedSize: size, records: tail, recordsFloor: base?.seq ?? 0, recordBytes: size - offset, identity: position(file, end, pic.seq), pointedComplete: !!ck?.pointed || offset === 0 };
+    return c;
+  }
+
+  /** The existing Conv owns its byte position and materialized picture. Native
+   * workers normally emit here; a serial external append is consumed once too.
+   * No cursor registry, second reducer, or background replay loop. */
+  private refresh(c: Conv): void {
+    const info = statSync(c.file);
+    const size = info.size;
+    validatePosition(c.file, c.identity, c.maxSeq, info);
+    if (size === c.observedSize) return;
+    if (size - c.offset > MAX_RECOVERY_BYTES) throw checkpointRequired(c.file, "new tail exceeds 16 MiB");
+    let end = c.offset;
+    const tail = readRecords(c.file, c.maxSeq, this.resolve, c.picture, c.offset, size, (at) => { end = at; });
+    c.observedSize = size;
+    // An incomplete suffix stays at the same byte position until it is complete.
+    if (end === c.offset) return;
+    const bytes = end - c.offset;
+    if (c.recordBytes + bytes > MAX_RECOVERY_BYTES || c.records.length + tail.length > RECENT_MAX) {
+      c.records = []; c.recordsFloor = c.maxSeq; c.recordBytes = 0;
+    }
+    c.records.push(...tail); c.recordBytes += bytes;
+    c.picture = foldInto(c.picture, tail); c.maxSeq = c.picture.seq;
+    c.row = rowFromPicture(c.picture); c.offset = end;
+    c.identity = position(c.file, end, c.maxSeq);
+    c.sinceCkpt += tail.length;
+    const index = this.pointed.get(c.id);
+    if (index) for (const r of tail) if (r.type === "entry") {
+      let ids = index.get(r.file); if (!ids) index.set(r.file, ids = new Set()); ids.add(r.entry.id);
+    }
+    // Recent only covers this process's contiguous writes. Never let an appended
+    // record bypass a disk-tail event just because its seq is numerically newer.
+    this.recent = []; this.recentSizes = []; this.recentBytes = 0;
+    this.last = Math.max(this.last, c.maxSeq);
+    this.clock.next = Math.max(this.clock.next, this.last + 1);
   }
 
   private legacyAt = -1;
@@ -332,36 +395,66 @@ export class ConvLog {
 
   /** Append one record for `conv` (null: a vault-level signal). Written before anyone hears of it. */
   emit(conv: string | null, body: EventBody, at = Date.now()): LogRecord {
+    this.assertWritable();
+    for (const c of this.convs.values()) this.refresh(c);
     const seq = this.clock.next++;
     if (seq >= this.reservedUpTo) this.reserve(seq);
     const rec = { seq, conv, at, ...body } as LogRecord;
     if (rec.type === "entry") rec.file = this.abs(rec.file);
-    this.last = seq;
     const line = JSON.stringify(this.pointer(rec)) + "\n";
+    if (Buffer.byteLength(line) > MAX_RECORD_BYTES) throw checkpointRequired(conv ?? this.signalsFile, "new record exceeds 8 MiB");
     if (conv === null) {
       appendFileSync(this.signalsFile, line);
+      this.last = seq;
       this.signalsMax = seq;
     } else {
       let c = this.convs.get(conv);
       if (!c) {
         const file = join(this.dir, `${fileStem(conv)}.jsonl`);
-        c = { id: conv, file, maxSeq: 0, picture: emptyPicture(conv), row: emptyRow(conv), sinceCkpt: 0 };
+        c = { id: conv, file, maxSeq: 0, picture: emptyPicture(conv), row: emptyRow(conv), sinceCkpt: 0, offset: 0, observedSize: 0, records: [], recordsFloor: 0, recordBytes: 0, identity: null as unknown as Position, pointedComplete: true };
         this.convs.set(conv, c);
+        this.pointed.set(conv, new Map());
         this.legacyRows.delete(conv);
       }
+      // A torn suffix from a crash is not a committed record; remove it only when
+      // the owning writer actually appends, never as a side effect of startup/read.
+      if (existsSync(c.file) && statSync(c.file).size !== c.offset) {
+        const fd = openSync(c.file, "r+");
+        try { ftruncateSync(fd, c.offset); } finally { closeSync(fd); }
+      }
       appendFileSync(c.file, line);
+      this.last = seq;
+      c.offset += Buffer.byteLength(line);
+      c.observedSize = c.offset;
+      c.recordBytes += Buffer.byteLength(line);
+      // Trim a whole retained batch, not partial rows/deltas: the materialized
+      // picture remains the authoritative base, and old cursors must reset.
+      if (c.recordBytes > MAX_RECOVERY_BYTES || c.records.length >= RECENT_MAX) {
+        c.records = []; c.recordsFloor = c.maxSeq; c.recordBytes = Buffer.byteLength(line);
+      }
+      c.records.push(rec);
+      c.identity = position(c.file, c.offset, seq);
       c.maxSeq = seq;
       c.picture = reduce(c.picture, rec);
       c.row = reduceRow(c.row, rec);
       c.sinceCkpt++;
       if (rec.type === "entry") {
         this.entries.put(rec.file, rec.entry);
-        this.pointed.get(conv)?.get(rec.file)?.add(rec.entry.id);
+        let byFile = this.pointed.get(conv);
+        if (byFile) {
+          let ids = byFile.get(rec.file);
+          if (!ids) byFile.set(rec.file, ids = new Set());
+          ids.add(rec.entry.id);
+        }
       }
       if (c.sinceCkpt >= CKPT_EVERY || (rec.type === "meta" && rec.patch.running === null)) this.checkpoint(c);
     }
     this.recent.push(rec);
-    if (this.recent.length > RECENT_MAX) this.recent.splice(0, this.recent.length - RECENT_MAX);
+    const bytes = Buffer.byteLength(line);
+    this.recentSizes.push(bytes); this.recentBytes += bytes;
+    while (this.recent.length > RECENT_MAX || this.recentBytes > MAX_RECOVERY_BYTES) {
+      this.recent.shift(); this.recentBytes -= this.recentSizes.shift()!;
+    }
     for (const l of [...this.listeners]) {
       try {
         l(rec);
@@ -408,16 +501,11 @@ export class ConvLog {
     let byFile = this.pointed.get(conv);
     if (!byFile) {
       byFile = new Map();
-      this.pointed.set(conv, byFile);
       const c = this.convs.get(conv);
       if (c) {
-        for (const line of (() => {
-          try {
-            return readFileSync(c.file, "utf8").split("\n");
-          } catch {
-            return [];
-          }
-        })()) {
+        if (!c.pointedComplete && statSync(c.file).size > MAX_RECOVERY_BYTES)
+          throw checkpointRequired(c.file, "legacy checkpoint has no session pointer index");
+        for (const { text: line } of lines(c.file)) {
           if (!line.includes('"type":"entry"')) continue;
           try {
             const r = JSON.parse(line);
@@ -432,6 +520,7 @@ export class ConvLog {
         }
       }
     }
+    this.pointed.set(conv, byFile);
     let set = byFile.get(file);
     if (!set) byFile.set(file, (set = new Set()));
     return set;
@@ -449,9 +538,20 @@ export class ConvLog {
   }
 
   private checkpoint(c: Conv): void {
+    this.assertWritable();
     const ck = c.file.replace(/\.jsonl$/, ".ckpt.json");
     try {
-      writeFileSync(ck + ".tmp", JSON.stringify({ v: 2, rv: REDUCER_VERSION, seq: c.picture.seq, picture: c.picture }));
+      const pointed: Record<string, string[]> = {};
+      if (c.pointedComplete || statSync(c.file).size <= MAX_RECOVERY_BYTES) {
+        this.pointedIn(c.id, "");
+        for (const [f, ids] of this.pointed.get(c.id) ?? []) if (f) pointed[this.rel(f)] = [...ids];
+      }
+      validatePosition(c.file, c.identity, c.picture.seq);
+      const snapshot: LogCheckpoint = { v: 3, rv: REDUCER_VERSION, seq: c.picture.seq, picture: c.picture,
+        position: c.identity, ...(c.pointedComplete || statSync(c.file).size <= MAX_RECOVERY_BYTES ? { pointed } : {}) };
+      const encoded = JSON.stringify(snapshot);
+      if (Buffer.byteLength(encoded) > MAX_RECOVERY_BYTES) throw checkpointRequired(c.file, "checkpoint exceeds 16 MiB");
+      writeFileSync(ck + ".tmp", encoded);
       renameRetry(ck + ".tmp", ck);
       c.sinceCkpt = 0;
     } catch (e) {
@@ -468,6 +568,7 @@ export class ConvLog {
   // ---------------------------------------------------------------- reading
 
   latest(): number {
+    for (const c of this.convs.values()) this.refresh(c);
     return this.last;
   }
 
@@ -479,7 +580,7 @@ export class ConvLog {
   /** A conversation's picture; an older file is imported first. Null: unknown. */
   picture(id: string): Picture | null {
     const c = this.convs.get(id);
-    if (c) return c.picture;
+    if (c) { this.refresh(c); return c.picture; }
     // An older file, listed or one that arrived since (the importer reads it fresh).
     if (!this.legacy) return null;
     this.importLegacy(id);
@@ -487,13 +588,14 @@ export class ConvLog {
   }
 
   private importLegacy(id: string): void {
+    this.assertWritable();
     const recs = this.legacy?.records(id, this.sessionsDir);
     this.legacyRows.delete(id);
     if (!recs?.length) return;
     const at = this.legacy!.at(id);
     for (const b of recs) this.emit(id, b, at);
     const c = this.convs.get(id);
-    if (c) this.checkpoint(c);
+    if (c) { this.refresh(c); this.checkpoint(c); }
   }
 
   /** Every conversation's list row (older files included, not imported yet). */
@@ -501,7 +603,7 @@ export class ConvLog {
     // An older conversation file that appeared since (the folder changed): listed too.
     if (this.legacyStamp() !== this.legacyAt) this.refreshLegacy();
     const out: RowState[] = [...this.legacyRows.values()];
-    for (const c of this.convs.values()) if (c.picture.exists) out.push(c.row);
+    for (const c of this.convs.values()) { this.refresh(c); if (c.picture.exists) out.push(c.row); }
     return out.sort((a, b) => b.lastActivityAt - a.lastActivityAt);
   }
 
@@ -514,10 +616,18 @@ export class ConvLog {
     if (!this.convs.has(id)) this.picture(id);
     const c = this.convs.get(id);
     if (!c) return [];
+    this.refresh(c);
     // The recent tail in memory covers it when it reaches back far enough.
     const r0 = this.recent[0]?.seq ?? Infinity;
     if (after >= r0 - 1) return this.recent.filter((r) => r.conv === id && r.seq > after);
-    return readRecords(c.file, after, this.resolve);
+    if (after >= c.recordsFloor)
+      return c.records.filter((r) => r.seq > after);
+    if (statSync(c.file).size > MAX_RECOVERY_BYTES) throw checkpointRequired(c.file, "cursor predates retained checkpoint tail; reload the conversation checkpoint");
+    // An explicit historical read of a small file is bounded and cached once.
+    // Ordinary checkpoint cursors never enter this recovery path.
+    c.records = readRecords(c.file, 0, this.resolve);
+    c.recordsFloor = 0; c.recordBytes = statSync(c.file).size;
+    return c.records.filter((r) => r.seq > after);
   }
 
   /** Exactly the records after `after`, in seq order (at most POLL_LIMIT; `more` when there are others). */
@@ -540,8 +650,15 @@ export class ConvLog {
     } else {
       // Older than the tail: from the files (every file holding a record after `after`).
       const all: LogRecord[] = [];
-      for (const c of this.convs.values()) if (c.maxSeq > after) all.push(...readRecords(c.file, after, this.resolve));
-      if (this.signalsMax > after) all.push(...readRecords(this.signalsFile, after));
+      for (const c of this.convs.values()) if (c.maxSeq > after) {
+        if (statSync(c.file).size > MAX_RECOVERY_BYTES && after < c.recordsFloor)
+          return { next: latest, events: [], reset: true };
+        all.push(...this.eventsOf(c.id, after));
+      }
+      if (this.signalsMax > after) {
+        if (statSync(this.signalsFile).size > MAX_RECOVERY_BYTES) return { next: latest, events: [], reset: true };
+        all.push(...readRecords(this.signalsFile, after));
+      }
       all.sort((a, b) => a.seq - b.seq);
       events = all.slice(0, limit + 1);
     }
@@ -585,7 +702,7 @@ export class ConvLog {
   /** Tests: force a checkpoint now. */
   checkpointNow(id: string): void {
     const c = this.convs.get(id);
-    if (c) this.checkpoint(c);
+    if (c) { this.refresh(c); this.checkpoint(c); }
   }
 
   existsOnDisk(id: string): boolean {
@@ -634,6 +751,7 @@ export function convLog(vault: string): ConvLog {
 
 /** Tests: forget the open logs (a restart). */
 export function _resetConvLogs(): void {
+  for (const l of logs.values()) l.close();
   logs.clear();
   feed = null;
   if (sharedFloorFile) setSharedClock(sharedFloorFile);
@@ -723,6 +841,7 @@ export class GlobalFeed {
     for (const l of this.logs()) {
       if (after >= l.latest()) continue;
       const a = l.after(after, limit);
+      if (a.reset) return { next: latest, events: [], reset: true };
       // A log cut short (`more`) is complete only up to its last record: nothing past that goes out yet.
       if (a.more) cut = Math.min(cut, a.events[a.events.length - 1]?.seq ?? after);
       all = all.concat(a.events.filter((r) => this.carries(l, r)));

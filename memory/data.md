@@ -103,3 +103,16 @@ in doubt, mark it agent.
   metadata to restore private relative entrypoint links, and check native optional hashes and symlink
   confinement. Never fix this with wrappers, custom resolution, donor writes, installs or a relaxed gate.
   `preview/tools/private-package-bins.mjs` is private fixture provisioning only, not production authority.
+
+## Large conversation logs and offline writer exclusion (urgent preparation, not deployed)
+- A checkpoint's seq alone is not a seek cursor: startup must not read/split the historical JSONL before skipping
+  old seqs. Keep the atomic picture/seq plus inode/generation/byte offset together; bounded migration or an
+  actionable checkpoint-required failure is safer than silent empty history after a giant-string failure.
+- Linux util-linux `flock --shared --nonblock 3` can lock a Node-opened directory FD inherited as child fd 3.
+  The retained parent FD holds that shared open-file-description lock after helper exit; close/crash releases it.
+  Acquire ONCE per runtime log lifetime, not per event. Offline work takes exclusive on the SAME directory inode.
+  All mutators must participate, including projects migration/back, before claiming maintenance exclusion;
+  stopping one service or an exclusive lock ignored by an older writer is not proof. Never rotate the directory.
+- Offline replacement prepares both log and owner-built checkpoint before rename. A crash between their two
+  renames is not atomic success: the old checkpoint must reject the new log identity, preserving recoverable
+  artifacts and failing closed rather than prefix-replaying or silently hiding original entries.
