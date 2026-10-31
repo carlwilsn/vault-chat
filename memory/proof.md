@@ -72,3 +72,12 @@ timestamps and "verified" itself.
   trust boundary. Forward branches cannot remove coverage; only the host-generated recorded-range revert
   can remove its feature's added tests, with all other gates unchanged. Initial architectural deletion's
   identities are explicit RETIRED entries, never an ongoing gate waiver.
+
+## Final initial-reset audit (2026-10-31)
+- A zero-new-failure identity pair is not green when 114 required/obsolete mixed cases disappear.
+  The final 8e→8b pair is complete but strict comparison rejects retirement; the dependency scope
+  is a private existing lock-matched copy, not host npm-ci acceptance provisioning.
+- Review retired assertions individually: historical-media sanitization, original ask/self-check,
+  restart recovery and actual Shipped/card UI may remain required after their old authority route
+  disappears. Explicit initial Claude review cannot itself make the strict self-install route work.
+  See `docs/simple-ship-final-report.md` and exact audit; no new waiver/permit is implied.

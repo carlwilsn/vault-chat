@@ -52,10 +52,25 @@ The ONE initial architectural retirement remains explicit in `simple-ship-retire
 cases); it is not an ongoing exception. This batch cannot pass the OLD baseline's strict no-removal
 comparison and does not pretend to install itself through it.
 
+## Final evidence and mandatory review (supersedes pending-run notes)
+
+Final complete pair is available: baseline `8e540669f3b3caca9b40da1105895775ad759ce7`,
+tested product `8b4093652629553991f9452b5fdc7bcafd3be23f`, exit **2**. Both four typechecks,
+435 harness and build pass; server baseline 876/23/6, candidate 783/21/6 (pass/fail/skip).
+Exact identities: 114 removed, 19 added, zero new failures, two improved. **Strict comparison FAILS**
+on the removed sanitized-summary/private-path security test. No skip is a pass and no removal is waived.
+Final pair dependencies are an existing lock-matched private copy, not host npm-ci provisioning.
+
+Read [final report](simple-ship-final-report.md) and [114-case audit](simple-ship-retired-tests.md).
+External exact-product bundle: `/tmp/simple-ship-reviewed-8b409365-final`; pin 8b, not the later
+not-full-tested docs-only HEAD. Claude's explicit initial review is REQUIRED. Retained security/UI/
+health/recovery obligations are not automatically obsolete; there are flagged gaps and changed contracts.
+Review alone cannot make the strict branch script accept its own initial 114-case retirement.
+
 ## First installation: Claude ONLY, once
 
 Nothing in `prepare-simple-ship.mjs` installs, promotes main, restarts a service, or forges old acceptance.
-After the complete pinned baseline/candidate checks and real-UI evidence have been reviewed:
+After reviewing the completed pair, explicit retirement audit and actual UI evidence (still no installed native proof):
 
 ```sh
 # In the clean agent/simple-ship-reset-1030 source, using the exact reviewed HEAD:
@@ -156,8 +171,7 @@ The failure identity sets have **21 shared** failures and exactly **two new** fa
 
 The 114 RETIRED identities in `simple-ship-retired-tests.md` require explicit one-time architectural
 review, not a count-based exemption. The strict comparator was NOT weakened. The completed run is
-historical failure evidence; do not re-run seven gates blindly or overwrite it. The parent must pin
-and launch one new complete comparison **after** the final repair batch.
+historical failure evidence; do not re-run seven gates blindly or overwrite it. That final comparison is now complete at 8b409365; see the final report. This paragraph describes the original failed run only.
 
 #### Bounded causal RED/GREEN (retained worker artifacts, re-inspected)
 
@@ -199,25 +213,12 @@ A fresh check of the final uninstrumented repair also passed **2/2**, **31 filte
 environment plus explicit Node 22/real npm/Python binary paths, distinct empty npm configs, pinned
 pi 1.1.0, voice off and private positive ports. No broad re-run was performed to finish this repair.
 
-The checked future launcher is `/tmp/simple-ship-reset-final-check.mjs` (syntax-checked, NOT launched).
-After the parent finishes its batch, use its background StartJob, never an inline long wait:
-
-```sh
-/nix/store/ya2lzgl9wj76175dwrhg2x4d3pif1xxg-nodejs-slim-22.23.2/bin/node \
-  /tmp/simple-ship-reset-final-check.mjs \
-  /home/carlwilsn/agent-work/vault-chat/simple-ship-reset-1030 FULL_FINAL_REVIEWED_SHA
-```
-
-It checks clean source/exact HEAD and unchanged canonical HEAD/main, uses credential-free public
-`npm ci --ignore-scripts` with separate empty npm configs/private HOME, real npm bin and genuine Python
-bin, and runs both complete seven-gate snapshots through the prepared host module. It neither installs
-nor promotes. Its strict comparator will still reject the 114 architectural retirements: a new run
-cannot manufacture ordinary self-acceptance for this initial deletion.
-
-The separately measured YOU/activity race uses the cursor's **second** field. Its independent fixture
-commit `5f658750a0e161c42ff962500a4802842f621ab0` is deliberately not cherry-picked into this narrow repair;
-the parent owns that dependency/final batch. Its reported affected run (16 passed, 28 filtered, build
-pass) is not a full-suite pass and does not establish this branch's complete gate status.
+The final full comparison has now completed: `/tmp/s1030-final-4q7GP1/summary.json`.
+Do NOT rerun the historical launcher merely because its initial comments promise npm-ci provisioning:
+the actual final run's `dependency-scope.json` explicitly records an existing lock-matched private copy.
+The final 8b product includes both fixture corrections, including YOU/activity's second timestamp field.
+The original RED/GREEN/focused measurements above remain causal diagnostics, not the final full result.
+Final native host provisioning and final gates remain a separate handoff obligation.
 
 #### UI evidence and remaining host handoff
 

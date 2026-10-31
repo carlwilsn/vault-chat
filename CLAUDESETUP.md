@@ -1,65 +1,60 @@
-# One-time host handoff — Claude only
+# One-time host handoff — Claude only; NOT installed or Shipped
 
-Carl explicitly reset shipping on 2026-10-30: agents push their branches; one separately installed
-box script checks the full baseline/candidate gates and fast-forwards protected main. No permits,
-bootstrap identity importer, candidate-recorder acceptance authority or new daemon/transport.
+Carl's reset uses ONE separately installed host script, native git/flock and the existing sync/CI/
+health/card flow. No new acceptance framework, permit, bootstrap importer or approval registry.
+Do not install, move canonical main, push main or restart from the agent sandbox.
 
-**Do not install or restart from the agent sandbox.** The complete procedure, exact CLI, isolation
-requirements, branch-publication blocker and health/card checks are in [`docs/simple-ship.md`](docs/simple-ship.md).
+## Completed final pair (exit 2, strict comparison FAILED)
 
-## Latest completed gate evidence — NOT green
+- Baseline: `8e540669f3b3caca9b40da1105895775ad759ce7`.
+- Tested product: `8b4093652629553991f9452b5fdc7bcafd3be23f` on `agent/simple-ship-reset-1030`.
+- Actual full results: `/tmp/s1030-final-4q7GP1/{summary,baseline,candidate,pins,dependency-scope,named-analysis-parent}.json`.
+  All fourteen gate runs complete, none timed out. Both: four typechecks, **435 harness**, build pass.
+  Server: baseline **876 passed / 23 failed / 6 skipped = 905**; candidate
+  **783 passed / 21 failed / 6 skipped = 810**. Skips are not passes.
+- Exact identities: **114 removed, 19 added, ZERO new failing identities**; all candidate failures
+  were baseline failures. Two improvements: YOU/activity context and LaTeX Ask. No failure-count policy.
+- Strict comparison rejects the first removed identity: `server/test/changeDeliveryRuntime.test.ts` /
+  `durable delivery observations, not synchronized card authority copies source-pinned proof media and a sanitized summary, never private receipt paths/request/environment`.
+- This run used a private copy of existing lock-matched dependencies, NOT new npm-ci or installed-host
+  handoff provisioning. It is full gate evidence, NOT installed acceptance or a green comparator.
 
-The original complete paired run (`run-all-baseline-and-can-mvvoelfd`, exit **2**) is retained in
-`/tmp/s1030-uuCTDx/{baseline,candidate,summary}.json` and `runs/ship-BO84Zl/`. Baseline
-`8e540669f3b3caca9b40da1105895775ad759ce7` and candidate
-`a634fda197535655126eda8e83226e9654f11c4b` both passed all four typechecks, all **435** harness
-tests and build:server. Server tests failed: baseline **21/905**, candidate **23/810**; exact
-identities show **21 shared failures and TWO newly failing existing voice tests**, not merely the
-114 explicit retirements. The strict comparator still fails on retired identities; no waiver was added.
+## Ready now: exact-product external review bundle
 
-The two voice failures were causally reproduced on BOTH unchanged baseline and candidate voice
-implementations by completing their instantaneous fake Ask in the captured cursor's millisecond:
-the persisted result exists, but the exclusive `r.at <= cursor.at` filter excludes it. Moving only
-the exclusive query boundary back one millisecond reveals the result. The fixtures now await the
-existing clock predicate before answering and still await `voiceAsksSettled()`; every assertion and timeout remains.
-Paired focused runs pass **2/2 on each source with the fixture correction**, including deliberately
-equal initial clock observations; this is NOT a replacement full-gate pass or proof of deployment.
-Details and bounded RED/GREEN measurements: [`docs/simple-ship.md`](docs/simple-ship.md#completed-paired-gates-and-voice-fixture-diagnosis).
-The retained real-component/HTTP UI proof is local-only (not installed Tauri); a newly pinned complete
-run after the final batch and installed native release/rollback evidence remain outstanding.
+`/tmp/simple-ship-reviewed-8b409365-final/` contains the prepared script/config/package files,
+`source-pin.txt` at tested **8b409365…**, raw final reports/logs, exact 114-identity audit and handoff.
+Nothing was installed. No dependency tree or archive is synced into a vault.
+The subsequent documentation-only commit is a **different, not-full-tested HEAD**. The bundle remains
+pinned to product 8b; final native host gates must name the actual source selected for activation.
 
-The final test batch also includes the separately measured YOU/activity cursor fixture correction
-from `5f658750`: stamp the synchronous activity strictly after its exclusive cursor and restore
-the clock before polling. Parent verification passed 16 selected GET-updates/youLayer checks
-(`/tmp/vca-you-affected.BFcNcb`); the 28 filtered tests were not passes. This changes no production
-voice code. Final complete paired gates must refer to the combined commit, not `b2e0d119`.
+Read [`docs/simple-ship-final-report.md`](docs/simple-ship-final-report.md),
+[`docs/simple-ship-retired-tests.md`](docs/simple-ship-retired-tests.md), then
+[`docs/simple-ship.md`](docs/simple-ship.md). **Claude's explicit initial retirement review is REQUIRED**:
+55 old-route retirements, 24 partial replacement checks, **31 retained-scope gaps**, 4 changed contracts.
+The sanitized-summary/media/security assertions cannot be dismissed by old filenames.
 
-Before activating this reviewed branch:
+## Actual initial handoff blockers and one-time sequence
 
-1. After the final batch, have the parent launch the pinned full-gate job (do not repeat the old failed
-   run or mistake focused diagnostics for seven gates). Refresh actual-app UI evidence as needed.
-   Review the explicit **114 RETIRED**
-   testcase identities in [`docs/simple-ship-retired-tests.md`](docs/simple-ship-retired-tests.md), not a
-   test-count waiver. This initial architectural deletion cannot self-accept against old main's cases.
-2. Prepare a clean reviewed source with `node scripts/prepare-simple-ship.mjs /tmp/simple-ship-reviewed-UNIQUE`.
-   Check `source-pin.txt`; install its bundle/config/dependencies OUTSIDE agent-writable directories.
-   The preparer does not install, promote main or restart anything. Pin the actual pi 1.1.0 SDK and
-   real npm executable bin path; use different empty npm user/global configs and private HOME.
-3. Provide WORKING ordinary `agent/*` branch publication to the project's existing GitHub remote,
-   keeping canonical main protected. This box historically lacks GitHub credentials. The clone's
-   `publish` remote is just ordinary git, not a new service. Verify a real branch push/fetch.
-4. Perform the explicitly authorized initial manual source/service/updater activation once. Do not
-   fabricate an old proof permit/bootstrap entry. Preserve protected journals and user records.
-5. Prove a follow-up via the installed script: branch push → both gate sets → expected-old FF → laptop
-   sync → CI → actual box and authenticated native Tauri health → **Shipped · rollback**. Exercise the
-   actual card rollback, not just a component fixture or retained-binary fallback.
+1. Review every exact removed identity and resolve/explicitly decide retained-scope gaps: security/media,
+   source/runner adversarial assertions, original-ask/self-check/cancellation, recovery/restart and actual UI.
+   Agent self-check must compare the actual user ask and preserve post-release health rollback,
+   **Shipped · rollback**, historical cards and real input/UI evidence. Review is not a comparator waiver.
+2. Provision the independent protected host script/config/dependencies outside agent-writable directories.
+   Use credential-free public npm ci, private HOME/cache, distinct empty npm configs, real npm bin,
+   genuine Python and actual pi SDK 1.1.0; instructions are in `docs/simple-ship.md` and bundle HANDOFF.
+3. Fix ordinary branch-only publication to existing remote. Previous push exited **128**, HTTPS
+   credentials unavailable; no retry or credential-store access was attempted here. Preserve main protection.
+4. The strict branch route **cannot install this initial 114-case deletion**. Claude must use the
+   separately authorized one-time manual source/service/updater activation outside this sandbox, or
+   keep it blocked and return for repair. Review alone does not fix this route. No main merge/push by
+   an agent, invented review flag, new permit/bootstrap or approval registry is allowed.
+5. Run final native full gates once on the exact selected final sources; do not repeat long sandbox
+   checks as a substitute. Then prove an independently pushed follow-up through installed script →
+   expected-old FF → laptop sync → CI → actual box + authenticated native Tauri health →
+   **Shipped · rollback**, and click the actual card to prove specific-range rollback with later work retained.
 
-**Current live issue:** a bounded read-only service journal still showed sync/bootstrap-proof errors
-`Invalid bootstrap proof identity` about every 15.14 seconds at 2026-10-31T00:28–00:29Z. Removing the importer in source is NOT evidence that
-live sync is already healthy. Repeat `journalctl --user -u vault-chat-server.service -n 8 --no-pager`
-after activation; no key/token store or broad private-content search is needed.
-
-Forward comparisons have NO test-removal exemption. Only the installed host's recorded-range native
-revert, verified against its generated git tree/parent, can remove the reverted feature's regression
-tests through the SAME seven gates. All remaining checks are unchanged; no manual maintenance is
-needed for ordinary health/card rollback. See the exact trust boundary in `docs/simple-ship.md`.
+Canonical main last read-only verified at **8e540669…**; installed metadata previously showed
+**0.7.22 / e74b705dc6168dfc64a6e0bc193f9da2e58c6642**, not executing-bundle provenance.
+Historical recurring `Invalid bootstrap proof identity` (~15 seconds) remains unresolved until bounded
+post-activation journal verification. Local HTTP/component UI at a634fda is NOT installed Tauri proof.
+All earlier failed runs and causal fixture diagnostics are retained; see the final report for locations.
