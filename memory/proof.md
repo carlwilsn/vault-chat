@@ -152,3 +152,15 @@ timestamps and "verified" itself.
   → custom-to-user conversion → OpenAI provider → captured HTTP body, with >64KiB
   text and decoded native JSON equality (including escaped newlines). A green
   `buildSessionContext` alone does not establish actual provider compatibility.
+
+## File-workspace navigation during native work (2026-11-01)
+- Test the actual picker handler (`openVaultAt`), not only `store.setVault`. The
+  store-only global-workspace test passed while the picker still called
+  `stopAgent()` for busy turns. The real UI canceled pi's blocked Bash and wrote
+  “Stopped.”; zero browser errors did not establish the user contract. Remove
+  that duplicate lifecycle ownership rather than hiding the cancellation.
+- `viewerRootNative.test.ts` now invokes the existing frontend harness against
+  its real HTTP server/native pi: hold a Bash FIFO reader, navigate owner →
+  viewer → other → owner, assert same live thread/process/cwd and no tool result
+  or Stop intent, then explicitly release and require a successful tool result.
+  The causal red recorded POST `/api/v2/intent` type=stop after picker navigation.

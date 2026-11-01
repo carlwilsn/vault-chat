@@ -1,7 +1,7 @@
 // Actual HTTP → Engine → native pi session → local provider. No live roots.
 import { describe, it, expect } from "vitest";
 import { mkdirSync, readFileSync, writeFileSync, existsSync, renameSync } from "node:fs";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { makeVault, startServer, tmp, waitFor, type Running } from "./helpers";
@@ -21,9 +21,13 @@ describe("captured viewer roots in native typed context", () => {
     const state = join(home, "state"), fifo = join(home, "gate"), entered = join(home, "entered");
     execFileSync("mkfifo", [fifo]);
     const provider = await fakeChat();
-    let queuedWrite = false, uiBusy = false;
+    let queuedWrite = false, uiBusy = false, lifecycleBusy = false;
     provider.respond = (body, n) => {
       if (n === 1) return { call: { name: "bash", args: { command: `touch '${entered}'; cat '${fifo}'` } } };
+      if (!lifecycleBusy && chatText(body).includes("WORKSPACE-LIFECYCLE-NATIVE")) {
+        lifecycleBusy = true;
+        return {call:{name:"bash",args:{command:`touch '${join(home,"lifecycle-entered")}'; cat '${fifo}'`}}};
+      }
       const lastUser = [...body.messages].reverse().find((m:any) => m.role === "user");
       if (process.env.VC_GLOBAL_UI_RUNTIME && !uiBusy && JSON.stringify(lastUser).includes("GLOBAL-WORKSPACE-BUSY")) {
         uiBusy = true;
@@ -121,6 +125,19 @@ describe("captured viewer roots in native typed context", () => {
         expect(providerText).toContain("PHYSICS-ORIGINAL-MEMORY");
         expect(providerText).toContain("PHYSICS-ORIGINAL-RULES");
       }
+      // The production picker handler must not own/cancel the native project turn.
+      // Run frontend imports under their existing Node harness (not server Tauri shims).
+      await new Promise<void>((resolve, reject) => {
+        const child = spawn(process.execPath, ["--import", "tsx", "--import", "./test/harness/register.mjs",
+          "test/harness/fixtures/workspaceNativeLifecycle.ts", base, vault, viewer, other, project, made.convId,
+          join(home,"lifecycle-entered"), fifo, join(home,"lifecycle-requests.json")], {cwd:process.cwd(), env:process.env, stdio:["ignore","pipe","pipe"]});
+        let output = "";
+        child.stdout.on("data", b => output += b); child.stderr.on("data", b => output += b);
+        const timer = setTimeout(() => child.kill(), 30000);
+        child.on("error", reject);
+        child.on("close", code => { clearTimeout(timer); writeFileSync(join(home,"lifecycle-client.log"), output);
+          code === 0 ? resolve() : reject(new Error(`workspace native frontend failed (${code}): ${output}`)); });
+      });
       const summary = await (await fetch(base + "/conversations?vault=other")).json();
       expect(summary.conversations.filter((r:any)=>r.id===made.convId)).toHaveLength(1);
       const rows = await (await fetch(base + "/api/v2/conversations?vault=viewer")).json();
