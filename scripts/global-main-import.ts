@@ -38,7 +38,10 @@ export async function materializeMain(sources:Source[],home:Source,artifact:stri
  let picture=emptyPicture('main'),seq=floor;
  type Imported = {item:Picture['items'][number]; origin:Extract<LogRecord,{type:'history-import'}>['origin']; authored?:number; home:boolean};
  const groups:Imported[][]=[];
- const owners=new Map<string,string>(),nativeOwners=new Map<string,string>();
+ // A native request/result pair owns one logical tool, not two colliding
+ // items. Keep this offline validation local; the ordinary reducer owns updates.
+ type NativeOwner={source:string;file:string;ids:Set<string>;requestName?:string;resultId?:string};
+ const owners=new Map<string,string>(),nativeOwners=new Map<string,NativeOwner>();
  const emit=async(r:StoredRecord)=>{
   const bytes=Buffer.from(JSON.stringify(r)+'\n');
   if(bytes.length-1>MAX_RECORD_BYTES)throw new Error(`candidate-record-exceeds-runtime-limit: ${path}`);
@@ -61,11 +64,25 @@ export async function materializeMain(sources:Source[],home:Source,artifact:stri
        const timestamp=resolved.entry.timestamp?Date.parse(resolved.entry.timestamp):resolved.entry.message?.timestamp;
        if(typeof timestamp==='number'&&Number.isFinite(timestamp))authored.set(item.id,timestamp);
       }
-      const nativeId=(logical as unknown as {id:string}).id;
-      const own=JSON.stringify([source.path,abs(logical.file,source.events),nativeId]);
+      const nativeId=(logical as unknown as {id:string}).id,file=abs(logical.file,source.events);
+      const message=resolved.type==='entry'&&resolved.entry.type==='message'?resolved.entry.message:undefined;
+      const calls=item.kind==='tool'&&message?.role==='assistant'&&Array.isArray(message.content)
+       ?message.content.filter(b=>b.type==='toolCall'&&b.id===item.id):[];
+      const requestName=calls.length===1&&typeof calls[0]!.name==='string'?calls[0]!.name:undefined;
+      const resultName=item.kind==='tool'&&message?.role==='toolResult'&&message.toolCallId===item.id?message.toolName:undefined;
       const previous=nativeOwners.get(item.id);
-      if(previous&&previous!==own)throw new Error(`ambiguous-item-identity: main/${item.id} (${previous}, ${own})`);
-      nativeOwners.set(item.id,own);itemOrigins.set(item.id,{seq:logical.seq,at:logical.at});
+      if(previous) {
+       const sameSession=previous.source===source.path&&previous.file===file;
+       if(!sameSession||!previous.ids.has(nativeId)) {
+        // Only ONE result for the exact earlier request in this source/session.
+        // Same-kind duplicates, reused call IDs, other names and user/assistant
+        // collisions still refuse, including identities hidden by source Clear.
+        if(!sameSession||previous.resultId||previous.requestName===undefined||resultName!==previous.requestName)
+         throw new Error(`ambiguous-item-identity: main/${item.id} (${JSON.stringify([previous.source,previous.file,...previous.ids])}, ${JSON.stringify([source.path,file,nativeId])})`);
+        previous.ids.add(nativeId);previous.resultId=nativeId;
+       }
+      } else nativeOwners.set(item.id,{source:source.path,file,ids:new Set([nativeId]),requestName});
+      itemOrigins.set(item.id,{seq:logical.seq,at:logical.at});
      }
      for(const item of [...nativeItems,...fold.picture!.items,...fold.picture!.inflight]) {
       const owner=owners.get(item.id);

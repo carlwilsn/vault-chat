@@ -178,3 +178,15 @@ in doubt, mark it agent.
   order without claiming a total clock. Full native ID duplicates refuse before
   a pointer cache can silently choose a body. Already target-owned project native
   files need no copy; preserve their existing canonical pointers and CAS originals.
+
+## Offline Main import: native tool lifecycle identities (2026-11-01)
+- A pi assistant `toolCall.id` and the later `toolResult.toolCallId` deliberately
+  identify ONE rendered tool, while their native session entry IDs are different.
+  Offline collision validation must admit exactly that request/result pair within
+  one source/session and matching raw tool name; it must still refuse reused calls,
+  second results, user/assistant collisions, cross-source/session collisions and
+  identities hidden by Clear. Keep original pointers/provenance and use the existing
+  reducer for tool updates, not a separate historical-tool projection.
+- c76 native proof passed, but its actual UI setup failed on this normal pair before
+  descriptor creation. A native text-only Main fixture did not cover tools; actual
+  native migration proof now requests a genuine tool in each original Main.

@@ -7,14 +7,21 @@ import {join} from 'node:path';
 import {homedir} from 'node:os';
 import {execFileSync} from 'node:child_process';
 import {makeVault,startServer,tmp,waitFor,type Running} from './helpers';
-import {fakeChat,chatText} from './fakeChat';
+import {fakeChat,chatText,lastUser} from './fakeChat';
 import {previewGlobalConversations,applyGlobalConversations} from '../../scripts/global-conversations-offline';
 it('cold cohort exposes both old Mains in GET Main and one continuing native owner with full peer context; project identity survives',async()=>{
  const root=tmp('vc-global-migration-native-'),master=join(root,'master');
  const home=makeVault(join(master,'vaults/owner')),peer=makeVault(join(master,'vaults/peer')),project=join(root,'external-project');
  mkdirSync(project);writeFileSync(join(project,'AGENTS.md'),'GLOBAL-MIGRATION-ORIGINAL-PROJECT-CWD');
  for(const name of ['owner','peer']){const bare=join(master,'.hub/vaults',name+'.git');mkdirSync(bare,{recursive:true});execFileSync('git',['init','--bare','-q',bare]);}
- const provider=await fakeChat();provider.respond=()=>({text:'Native original context retained.'});
+ const provider=await fakeChat(),requestedTools=new Set<string>();
+ provider.respond=(body)=>{
+  const original=['PEER-ORIGINAL-MAIN','HOME-ORIGINAL-MAIN'].find(marker=>lastUser(body).includes(marker));
+  if(original&&!requestedTools.has(original)) {
+   requestedTools.add(original);return {call:{name:'bash',args:{command:`printf '${original}-TOOL-RESULT'`}}};
+  }
+  return {text:'Native original context retained.'};
+ };
  const network=join(root,'local-only.mjs');
  writeFileSync(network,`const actual=globalThis.fetch;globalThis.fetch=(input,init)=>{const u=new URL(typeof input==='string'?input:input instanceof URL?input.href:input.url);if(u.href==='https://openrouter.ai/api/v1/models')return actual(${JSON.stringify(provider.url+'/models')},init);if(['127.0.0.1','localhost','[::1]'].includes(u.hostname))return actual(input,init);throw Error('External fetch refused');};`);
  const native=process.env.VC_TEST_PI_DIR??join(homedir(),'.local/state/vault-chat-server/pi/1.1.0');
@@ -40,6 +47,16 @@ it('cold cohort exposes both old Mains in GET Main and one continuing native own
   const oldHeader=JSON.parse(oldBytes.toString('utf8').split('\n',1)[0]);expect(oldHeader?.id).toBe(old.meta.threadId);
   await srv.stop();srv=undefined;
   srv=await boot(home,homeState);const homeMain=await ask('main','HOME-ORIGINAL-MAIN'),homeMainFile=homeMain.meta.threadPath,homeMainBytes=readFileSync(homeMainFile);await srv.stop();srv=undefined;
+  // Actual Pi, not handcrafted pointers: each original Main has a tool call
+  // and result with distinct native entry IDs and the SAME logical call ID.
+  for(const bytes of [homeMainBytes,peerMainBytes]) {
+   const entries=bytes.toString('utf8').trim().split('\n').map(line=>JSON.parse(line));
+   const request=entries.find(e=>e.message?.role==='assistant'&&e.message.content.some((b:any)=>b.type==='toolCall'));
+   expect(request).toBeDefined();
+   const call=request.message.content.find((b:any)=>b.type==='toolCall');
+   const result=entries.find(e=>e.message?.role==='toolResult'&&e.message.toolCallId===call.id);
+   expect(result).toBeDefined();expect(result.id).not.toBe(request.id);expect(result.message.toolName).toBe(call.name);
+  }
   const backupsRoot=join(root,'backups');await mkdir(backupsRoot);
   const from={sessionsDir:join(peerState,'state/pi/sessions'),instrDir:join(peerState,'state/pi/instr')},to={sessionsDir:join(homeState,'state/pi/sessions'),instrDir:join(homeState,'state/pi/instr')};
   const p=await previewGlobalConversations({home,piDir:native,sources:[{root:peer,mainAlias:'legacy-peer-main',native:from}],targetNative:to,backupsRoot,idleMs:1},{assertStopped:async()=>{expect(srv).toBeUndefined();}});

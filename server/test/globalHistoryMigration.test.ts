@@ -148,6 +148,75 @@ it('actual original assistant item-ID collision refuses preview without rewritin
  await expect(previewGlobalConversations(f.options,{assertStopped:stopped})).rejects.toThrow(/ambiguous-item-identity/);
  expect(await readFile(o.native,'utf8')).toBe(before);
 });
+// Native pi format: the assistant request and its result are DIFFERENT native
+// entries, but intentionally update ONE rendered tool identity. No ID rewriting.
+async function toolPair(o:Awaited<ReturnType<typeof fixture>>['originals'][number],id:string,seq:number,hidden=false) {
+ const request={type:'message',id:`${id}-request-${seq}`,parentId:null,timestamp:new Date(seq).toISOString(),message:{role:'assistant',content:[{type:'toolCall',id,name:'mcp__vault_chat__bash',arguments:{command:`echo ${id}`}}],timestamp:seq,stopReason:'toolUse'}};
+ const result={type:'message',id:`${id}-result-${seq}`,parentId:request.id,timestamp:new Date(seq+1).toISOString(),message:{role:'toolResult',toolCallId:id,toolName:'mcp__vault_chat__bash',content:[{type:'text',text:`result ${id}`}],isError:false,timestamp:seq+1}};
+ const records=[request,result].map((entry,i)=>({seq:seq+i,conv:'main',at:seq+i,type:'entry',file:o.native,id:entry.id}));
+ await appendFile(o.native,[request,result].map(e=>JSON.stringify(e)+'\n').join(''));
+ const file=join(o.events,'main.jsonl');
+ if(hidden)await writeFile(file,records.map(r=>JSON.stringify(r)+'\n').join('')+await readFile(file,'utf8'));
+ else await appendFile(file,records.map(r=>JSON.stringify(r)+'\n').join(''));
+ return {request,result,records};
+}
+it.each([0,1])('native request/result progression remains one completed tool, including pre-Clear pair; source=%s',async(index)=>{
+ const f=await fixture(),o=f.originals[index];
+ const hidden=await toolPair(o,'hidden-call',2,true),visible=await toolPair(o,'archived-call',35);
+ await fixtureCheckpoint(join(o.events,'main.jsonl'),o.events);
+ const bytes=await readFile(o.native,'utf8'),feed=await readFile(join(o.events,'main.jsonl'),'utf8');
+ const p=await previewGlobalConversations(f.options,{assertStopped:stopped});
+ await applyGlobalConversations(p.intentPath,{assertStopped:stopped});
+ const log=new ConvLog(f.home),main=log.picture('main')!;
+ const tools=main.items.filter(i=>i.kind==='tool');
+ expect(tools).toHaveLength(1);
+ expect(tools[0]).toMatchObject({id:'archived-call',status:'done',name:'bash',args:{command:'echo archived-call'},result:'result archived-call'});
+ expect(main.items.some(i=>i.id==='hidden-call')).toBe(false);
+ expect(main.items.filter(i=>i.kind!=='tool')).toEqual([f.originals[0].expected!.items[0],f.originals[1].expected!.items[0],f.originals[0].expected!.items[1],f.originals[1].expected!.items[1]]);
+ expect(main.meta.sessionFrom).toEqual(f.originals[0].expected!.meta.sessionFrom);
+ expect(main.meta.cleared).toEqual({at:1,id:'clear-0'});
+ for(const entry of [hidden.request,hidden.result,visible.request,visible.result])expect(log.pointedIn('main',o.native).has(entry.id)).toBe(true);
+ log.close();
+ const canonical=(await readFile(join(f.originals[0].events,'main.jsonl'),'utf8')).trim().split('\n').map(line=>JSON.parse(line));
+ for(const original of [...hidden.records,...visible.records]) {
+  const imported=canonical.find(r=>(r.sourceRecord??r).type==='entry'&&(r.sourceRecord??r).id===original.id);
+  expect(imported).toBeDefined();expect(imported.sourceRecord??imported).toEqual(original);
+  if(index===1)expect(imported.origin).toMatchObject({sourceFile:join(o.events,'main.jsonl'),seq:original.seq,at:original.at,sourceCutoff:{at:1,id:'clear-1'}});
+ }
+ const cold=new ConvLog(f.home);expect(cold.picture('main')!.items).toEqual(main.items);cold.close();
+ expect(await readFile(o.native,'utf8')).toBe(bytes);
+ if(index===1)expect(await readFile(join(o.events,'main.jsonl'),'utf8')).toBe(feed);
+});
+it.each(['second-request','second-result','wrong-tool-name','other-session','other-source','reuse-after-clear','user-collision','assistant-collision'])('native tool lifecycle exception still refuses genuine ambiguous identity: %s',async(kind)=>{
+ const f=await fixture(),o=f.originals[1],id='guarded-call';
+ const pair=await toolPair(o,id,35);
+ let native=o.native,entry:any,clientId:string|undefined;
+ if(kind==='reuse-after-clear') {
+  const file=join(o.events,'main.jsonl');await writeFile(file,o.bytes);
+  await toolPair(o,id,2,true);
+  await appendFile(file,pair.records.map(r=>JSON.stringify(r)+'\n').join(''));
+ } else if(kind==='other-source')await toolPair(f.originals[0],id,35);
+ else if(kind==='wrong-tool-name') {
+  const original=await readFile(o.native,'utf8');
+  await writeFile(o.native,original.replace(JSON.stringify(pair.result),JSON.stringify({...pair.result,message:{...pair.result.message,toolName:'mcp__vault_chat__read'}})));
+ } else if(kind==='other-session') {
+  native=join(o.events,'other.session');await writeFile(native,JSON.stringify(pair.result)+'\n');
+  const file=join(o.events,'main.jsonl');await writeFile(file,(await readFile(file,'utf8')).replace(JSON.stringify(pair.records[1]),JSON.stringify({...pair.records[1],file:native})));
+ } else {
+  entry=kind==='second-request'?{...pair.request,id:'another-request',message:{...pair.request.message,content:[{...pair.request.message.content[0],arguments:{command:'DIFFERENT REQUEST'}}]}}
+   :kind==='second-result'?{...pair.result,id:'another-result'}
+   :kind==='user-collision'?{type:'message',id:'another-user',message:{role:'user',content:'unrelated user',timestamp:90}}
+   :{type:'message',id:'another-assistant',message:{role:'assistant',content:[{type:'text',text:'unrelated assistant'}],timestamp:21}};
+  if(kind==='user-collision')clientId=id;
+  await appendFile(native,JSON.stringify(entry)+'\n');
+  await appendFile(join(o.events,'main.jsonl'),JSON.stringify({seq:40,conv:'main',at:40,type:'entry',file:native,id:entry.id,...(clientId?{clientId}:{})})+'\n');
+ }
+ for(const source of f.originals)await fixtureCheckpoint(join(source.events,'main.jsonl'),source.events);
+ const before=await Promise.all(f.originals.map(source=>readFile(source.native,'utf8')));
+ await expect(previewGlobalConversations(f.options,{assertStopped:stopped})).rejects.toThrow(/ambiguous-item-identity/);
+ expect(await Promise.all(f.originals.map(source=>readFile(source.native,'utf8')))).toEqual(before);
+ expect(globalCutover(f.home)).toBeNull();
+});
 it('same project conversation in two roots refuses instead of silently selecting one owner',async()=>{
  const f=await fixture();
  for(const o of f.originals)await writeFile(join(o.events,'project-physics.jsonl'),o.bytes.replaceAll('"conv":"main"','"conv":"project-physics"'));
