@@ -140,3 +140,15 @@ timestamps and "verified" itself.
   read-only donor mount. Preview's optimized-deps cache also defaults under
   node_modules: use a genuine private copied closure, never a writable donor or
   hardlinks. A skipped/blocked check is not a pass; retain failed-run receipts.
+
+## Provider capture must stream-decode UTF-8
+- Node HTTP `data` chunks are Buffers and can end inside a multibyte code point.
+  `raw += chunk` silently decodes each chunk separately: a full model-visible
+  imported native body appeared truncated/corrupt even though the original and
+  imported native JSON were exact. Use `req.setEncoding('utf8')` (Node's streaming
+  decoder) before accumulation. Inspect captured provider structure and original
+  native body before changing product history or weakening exact-body assertions.
+- Cover deliberately split two-/four-byte characters and genuine pi SessionManager
+  → custom-to-user conversion → OpenAI provider → captured HTTP body, with >64KiB
+  text and decoded native JSON equality (including escaped newlines). A green
+  `buildSessionContext` alone does not establish actual provider compatibility.

@@ -268,3 +268,35 @@ with pin-matched real UI and full seven gates. This is complete source correctio
 not a shipped or fully proved change. Never relabel the ba829a6 phone/native checks
 as evidence for this revision. The final parent launcher is recorded in the worker
 handoff under `/tmp/global-main-correction/` and refuses a dirty or different pin.
+
+### Actual native failure at 5263 and focused capture correction
+The parent's actual rebuilt native integration **failed** at pin `5263a77f`:
+GET merged Main/home-owner checks passed, but the exact full peer-text assertion
+in the continuing model request failed. Original receipt is unchanged under
+`/tmp/global-main-native-5263-r1`; this is not a passing native proof.
+
+Inspection of its actual `provider-calls.json` showed the peer custom message
+already converted into user-role text in the final request. Its first mismatch
+at peer character 15830 replaced U+00E9 with two U+FFFD characters. Both original
+peer native and imported home custom_message contain the complete exact peer body
+and zero replacements. The fake provider accumulated Buffer chunks with string
+concatenation, decoding split UTF-8 independently. `chatText` flattening and pi's
+custom-to-user conversion were correct; no product/import change is justified.
+
+The focused fix enables Node's streaming UTF-8 decoder on fakeChat requests.
+New regressions deliberately split accented/emoji/astral UTF-8 across HTTP chunks
+and exercise genuine pi SessionManager → convertToLlm → openai-completions provider
+→ actual HTTP capture with >64KiB text and complete decoded JSON/native body
+(including newlines/quotes). Both regressions failed before the fix (2 failed,
+exit 1), then passed with it. Existing native integration assertions remain; an
+additional assertion requires every original peer native JSON record, including
+original IDs and escaped bodies, in the continuing actual provider request.
+
+Development checks: **35 passed / 0 skipped** (27 migration + 6 compatibility +
+2 capture regressions), server TypeScript and strict explicit operator/native/new
+regression TypeScript passed. Evidence: `/tmp/global-main-correction/utf8-*.log`
+and bounded `utf8-causal-summary.txt`. Genuine Node 22/pi 1.1, env-i/private
+HOME/cache/tmp, read-only root/donor and no-cache/configLoader runner throughout.
+Parent must still rerun the actual native proof at the new exact source pin,
+rebuild pin-matched UI, and run the full seven gates once. No live roots/state,
+service control, promotion, push, installation or paid model calls occurred.

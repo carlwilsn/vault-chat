@@ -64,6 +64,11 @@ it('cold cohort exposes both old Mains in GET Main and one continuing native own
   expect(mainAfter.meta.threadId).toBe(homeMain.meta.threadId);expect(mainAfter.meta.threadPath).toBe(homeMainFile);
   const modelRequest=chatText(provider.calls.at(-1));
   expect(modelRequest).toContain('HOME-ORIGINAL-MAIN');expect(modelRequest).toContain(peerText);
+  // Decode labelled native JSON from the ACTUAL provider request. Preserve all
+  // original IDs/bodies, including JSON-escaped device-prefix newlines.
+  const marker='Full original JSON follows:\n';
+  const capturedNative=provider.calls.at(-1).messages.flatMap((m:any)=>typeof m.content==='string'?[m.content]:(m.content??[]).map((c:any)=>c.text)).filter((text:any)=>typeof text==='string'&&text.includes(marker)).map((text:string)=>JSON.parse(text.slice(text.indexOf(marker)+marker.length)));
+  for(const line of peerMainBytes.toString('utf8').trim().split('\n'))expect(capturedNative).toContainEqual(JSON.parse(line));
   expect(modelRequest).toContain('Native original context retained.');
   expect(modelRequest).not.toContain('<earlier_conversation>');
   expect(provider.calls.at(-1).model).toBe('test/fake-model');

@@ -64,6 +64,9 @@ export async function fakeChat(): Promise<FakeChat> {
   let n = 0;
   const server: Server = createServer((req, res) => {
     let raw = "";
+    // HTTP chunks may end inside a UTF-8 code point. Decode as one stream;
+    // Buffer -> string on each chunk silently corrupts captured model context.
+    req.setEncoding("utf8");
     req.on("data", (d) => (raw += d));
     req.on("end", async () => {
       const url = new URL(req.url ?? "/", "http://x");
