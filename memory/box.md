@@ -81,3 +81,10 @@
   package version: exact native rollback can restore v22 and still ship fresh v26 after tag v25. No source-tree
   exemptions or post-gate host edits. Failed build jobs can rerun on the pinned draft; manual dispatch can
   create a fresh version after an abandoned tag/draft. Never force tags or rebase/push CI stamps to main.
+- **Real-copy startup proof expires when the old writer keeps running.** v0.7.25's real-copy gate passed at
+  21655d54, but the installed v0.7.22 writer added enough full worker snapshots during CI that its sequence-only
+  checkpoint fell outside the new reader's 16 MiB recovery window. Production rejected .25 before HTTP listen;
+  binary fallback was healthy .22, not Shipped. Legacy sequence checkpoints now have a one-time streaming
+  compatibility replay and complete pointer-index scan; positioned checkpoints retain strict recovery bounds.
+  No transcript/log replacement or live compaction is needed. Preserve .25's durable failure and release a new
+  version; never clear its failure marker. The recovery CLI's secondary EADDRINUSE is not the original boot cause.

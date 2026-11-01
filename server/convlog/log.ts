@@ -125,8 +125,7 @@ function healTail(file: string): void {
   }
 }
 
-function readRecords(file: string, after = 0, resolveEntry?: (rec: any) => LogRecord, base?: Picture, offset = 0, end?: number, consumed?: (end: number) => void): LogRecord[] {
-  const out: LogRecord[] = [];
+function* recordStream(file: string, after = 0, resolveEntry?: (rec: any) => LogRecord, base?: Picture, offset = 0, end?: number, consumed?: (end: number) => void): Generator<{ record: LogRecord; end: number }> {
   let projection = base;
   let previous = base?.seq ?? 0;
   for (const { text: line, end: at } of lines(file, offset, end)) {
@@ -148,9 +147,12 @@ function readRecords(file: string, after = 0, resolveEntry?: (rec: any) => LogRe
     } else rec = stored;
     if (rec.type === "meta") projection = reduce(projection, rec);
     else projection = { ...projection, seq: rec.seq };
-    if (rec.seq > after) out.push(resolveEntry && rec.type === "entry" ? resolveEntry(rec) : rec);
+    if (rec.seq > after) yield { record: resolveEntry && rec.type === "entry" ? resolveEntry(rec) : rec, end: at };
   }
-  return out;
+}
+
+function readRecords(file: string, after = 0, resolveEntry?: (rec: any) => LogRecord, base?: Picture, offset = 0, end?: number, consumed?: (end: number) => void): LogRecord[] {
+  return Array.from(recordStream(file, after, resolveEntry, base, offset, end, consumed), ({ record }) => record);
 }
 
 /** pi's session files, read as needed: an entry record on disk names its file and entry id. */
@@ -329,7 +331,14 @@ export class ConvLog {
       if (ck.position) {
         validatePosition(file, ck.position as Position, ck.seq);
         offset = ck.position.offset;
-      } else offset = boundary(file, ck.seq, size, ck.picture.id);
+      } else {
+        try { offset = boundary(file, ck.seq, size, ck.picture.id); }
+        catch (e) {
+          if (!(e instanceof Error) || !e.message.includes("legacy checkpoint boundary is outside")) throw e;
+          return this.loadLegacyCheckpoint(file, ck.picture, size);
+        }
+        if (size - offset > MAX_RECOVERY_BYTES) return this.loadLegacyCheckpoint(file, ck.picture, size);
+      }
     } else if (size > MAX_RECOVERY_BYTES) throw checkpointRequired(file, "missing or incompatible checkpoint");
     if (size - offset > MAX_RECOVERY_BYTES) throw checkpointRequired(file, "checkpoint tail exceeds 16 MiB");
     let end = offset;
@@ -345,6 +354,41 @@ export class ConvLog {
     const c: Conv = { id, file, maxSeq: pic.seq, picture: pic, row: rowFromPicture(pic), sinceCkpt: tail.length,
       checkpointOffset: offset, offset: end, observedSize: size, records: tail, recordsFloor: base?.seq ?? 0, recordBytes: size - offset, identity: position(file, end, pic.seq), pointedComplete: !!ck?.pointed || offset === 0 };
     return c;
+  }
+
+  /** An old writer had no byte-budget checkpoints. Its valid sequence checkpoint
+   * can fall arbitrarily far behind while we wait for CI. Stream that one-time
+   * compatibility replay, never allocate its whole file/tail or discard history.
+   * Positioned checkpoints keep their strict 16 MiB crash-recovery contract. */
+  private loadLegacyCheckpoint(file: string, base: Picture, size: number): Conv {
+    let offset = 0, previous = 0;
+    const index = new Map<string, Set<string>>();
+    for (const { text, end } of lines(file, 0, size)) {
+      let r: LogRecord;
+      try { r = JSON.parse(text); } catch { continue; }
+      if (!Number.isSafeInteger(r.seq) || r.seq <= previous)
+        throw checkpointRequired(file, "non-increasing record sequence");
+      previous = r.seq;
+      if (r.conv !== base.id) throw checkpointRequired(file, "legacy checkpoint conversation mismatch");
+      this.indexPointer(index, r);
+      if (r.seq === base.seq) { offset = end; break; }
+      if (r.seq > base.seq) break;
+    }
+    if (!offset) throw checkpointRequired(file, "legacy checkpoint sequence is absent from the log");
+    let picture = base, end = offset, bytes = 0, floor = base.seq, count = 0;
+    let records: LogRecord[] = [];
+    for (const item of recordStream(file, base.seq, this.resolve, base, offset, size)) {
+      const r = item.record, length = item.end - end;
+      if (bytes + length > MAX_RECOVERY_BYTES || records.length >= RECENT_MAX) {
+        records = []; bytes = 0; floor = picture.seq;
+      }
+      records.push(r); bytes += length; end = item.end; count++;
+      picture = foldInto(picture, [r]); this.indexPointer(index, r);
+    }
+    this.pointed.set(base.id, index);
+    return { id: base.id, file, maxSeq: picture.seq, picture, row: rowFromPicture(picture), sinceCkpt: count,
+      checkpointOffset: offset, offset: end, observedSize: size, records, recordsFloor: floor,
+      recordBytes: bytes, identity: position(file, end, picture.seq), pointedComplete: true };
   }
 
   /** The existing Conv owns its byte position and materialized picture. Native
@@ -528,16 +572,17 @@ export class ConvLog {
       byFile = new Map();
       const c = this.convs.get(conv);
       if (c) {
-        if (!c.pointedComplete && statSync(c.file).size > MAX_RECOVERY_BYTES)
-          throw checkpointRequired(c.file, "legacy checkpoint has no session pointer index");
         for (const { text: line } of lines(c.file)) {
           if (!line.includes('"type":"entry"')) continue;
           try {
             this.indexPointer(byFile, JSON.parse(line));
-          } catch {
-            /* torn */
+          } catch (e) {
+            // Malformed legacy JSON was ignored by the original reader. A valid
+            // pointer with missing identity must not silently become unpointed.
+            if (e instanceof Error && e.message === "invalid-native-pointer") throw e;
           }
         }
+        c.pointedComplete = true;
       }
     }
     this.pointed.set(conv, byFile);
@@ -561,16 +606,12 @@ export class ConvLog {
     this.assertWritable();
     const ck = c.file.replace(/\.jsonl$/, ".ckpt.json");
     try {
-      if (requiredBeforeAppend && !c.pointedComplete && statSync(c.file).size > MAX_RECOVERY_BYTES)
-        throw checkpointRequired(c.file, "legacy checkpoint has no session pointer index");
       const pointed: Record<string, string[]> = {};
-      if (c.pointedComplete || statSync(c.file).size <= MAX_RECOVERY_BYTES) {
-        this.pointedIn(c.id, "");
-        for (const [f, ids] of this.pointed.get(c.id) ?? []) if (f) pointed[this.rel(f)] = [...ids];
-      }
+      this.pointedIn(c.id, "");
+      for (const [f, ids] of this.pointed.get(c.id) ?? []) if (f) pointed[this.rel(f)] = [...ids];
       validatePosition(c.file, c.identity, c.picture.seq);
       const snapshot: LogCheckpoint = { v: 3, rv: REDUCER_VERSION, seq: c.picture.seq, picture: c.picture,
-        position: c.identity, ...(c.pointedComplete || statSync(c.file).size <= MAX_RECOVERY_BYTES ? { pointed } : {}) };
+        position: c.identity, pointed };
       const encoded = JSON.stringify(snapshot);
       if (Buffer.byteLength(encoded) > bufferConstants.MAX_STRING_LENGTH)
         throw checkpointRequired(c.file, "checkpoint exceeds the Node.js string decoding limit");
