@@ -104,9 +104,11 @@ export type ConvMeta = {
  * Originals (including hidden history) remain at sourceFile/verified backup. */
 export type HistoryImport = {
   type: "history-import";
-  origin: { sourceFile: string; backup: string; sha256: string; conv: string; seq: number; at: number };
+  origin: { sourceFile: string; backup: string; sha256: string; conv: string; sourceCutoff?: ConvMeta["cleared"] | null; seq: number; at: number };
   sourceRecord?: LogRecord;
   item?: import("./reduce").Item;
+  /** Materialized placement before an existing home item; omitted means append. */
+  beforeId?: string;
 };
 export type EventBody =
   | { type: "meta"; patch: Record<string, unknown> }

@@ -173,3 +173,8 @@ in doubt, mark it agent.
   peer native records are full labelled historical data, not active peer prompts.
   Retain original home inodes before replacement and journal retention/restoration
   as recoverable stages. Old v22 ignoring new checkpoints is not safe fallback.
+- Merge only eligible source heads by native authored time when both are known;
+  stable source-root order handles ties/missing clocks. This retains every source's
+  order without claiming a total clock. Full native ID duplicates refuse before
+  a pointer cache can silently choose a body. Already target-owned project native
+  files need no copy; preserve their existing canonical pointers and CAS originals.

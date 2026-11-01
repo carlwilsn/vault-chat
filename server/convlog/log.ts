@@ -341,9 +341,7 @@ export class ConvLog {
       this.pointed.set(id, new Map(Object.entries(ck.pointed).map(([f, ids]) => [this.abs(f), new Set(ids as string[])])));
     }
     const index = this.pointed.get(id);
-    if (index) for (const r of tail) if (r.type === "entry") {
-      let ids = index.get(r.file); if (!ids) index.set(r.file, ids = new Set()); ids.add(r.entry.id);
-    }
+    if (index) for (const r of tail) this.indexPointer(index, r);
     const c: Conv = { id, file, maxSeq: pic.seq, picture: pic, row: rowFromPicture(pic), sinceCkpt: tail.length,
       checkpointOffset: offset, offset: end, observedSize: size, records: tail, recordsFloor: base?.seq ?? 0, recordBytes: size - offset, identity: position(file, end, pic.seq), pointedComplete: !!ck?.pointed || offset === 0 };
     return c;
@@ -373,9 +371,7 @@ export class ConvLog {
     c.identity = position(c.file, end, c.maxSeq);
     c.sinceCkpt += tail.length;
     const index = this.pointed.get(c.id);
-    if (index) for (const r of tail) if (r.type === "entry") {
-      let ids = index.get(r.file); if (!ids) index.set(r.file, ids = new Set()); ids.add(r.entry.id);
-    }
+    if (index) for (const r of tail) this.indexPointer(index, r);
     // Recent only covers this process's contiguous writes. Never let an appended
     // record bypass a disk-tail event just because its seq is numerically newer.
     this.recent = []; this.recentSizes = []; this.recentBytes = 0;
@@ -454,6 +450,7 @@ export class ConvLog {
       c.picture = reduce(c.picture, rec);
       c.row = reduceRow(c.row, rec);
       c.sinceCkpt++;
+      if (rec.type === "history-import" && this.pointed.get(conv)) this.indexPointer(this.pointed.get(conv)!, rec);
       if (rec.type === "entry") {
         this.entries.put(rec.file, rec.entry);
         let byFile = this.pointed.get(conv);
@@ -512,6 +509,18 @@ export class ConvLog {
     return { seq, conv, at, type, file, entry, ...extra } as LogRecord;
   };
 
+  /** Import audit pointers participate in the SAME canonical pointer index.
+   * They are not replayed into model/session ownership or a second index. */
+  private indexPointer(index: Map<string, Set<string>>, record: LogRecord): void {
+    const r = record.type === "history-import" ? record.sourceRecord : record;
+    if (r?.type !== "entry") return;
+    const raw = r as unknown as { file: string; id?: string; entry?: PiEntry };
+    const id = raw.id ?? raw.entry?.id;
+    if (!id || typeof raw.file !== "string") throw new Error("invalid-native-pointer");
+    const file = this.abs(raw.file);
+    let ids = index.get(file); if (!ids) index.set(file, ids = new Set()); ids.add(id);
+  }
+
   /** The entries of `file` this conversation's feed already points to (the engine's catch-up skips them). */
   pointedIn(conv: string, file: string): Set<string> {
     let byFile = this.pointed.get(conv);
@@ -524,12 +533,7 @@ export class ConvLog {
         for (const { text: line } of lines(c.file)) {
           if (!line.includes('"type":"entry"')) continue;
           try {
-            const r = JSON.parse(line);
-            if (r?.type !== "entry") continue;
-            const f = this.abs(String(r.file));
-            let set = byFile.get(f);
-            if (!set) byFile.set(f, (set = new Set()));
-            set.add(String(r.id));
+            this.indexPointer(byFile, JSON.parse(line));
           } catch {
             /* torn */
           }

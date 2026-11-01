@@ -193,8 +193,9 @@ has not rerun, altered or republished that early-access slice or its artifacts.
 The configured home Main is the one ordinary continuing conversation/native owner.
 Old peer Mains materialize into its canonical log through one additive
 `history-import` reducer record, not a runtime timeline, registry, alias, or view
-join. Home view comes first, then stable source-root order; each source's order is
-kept. No global FIFO/chronology is claimed for independent source clocks.
+join. Eligible source heads use native authored timestamps when both are available;
+stable source-root order breaks ties/missing clocks. Every source's own order is
+kept (never reversed by timestamps). No global FIFO/chronology is claimed for independent source clocks.
 
 - Each peer's original logical records (including Clear/sessionFrom/worker order)
   and exact original seq/at plus verified backup identity remain import provenance.
@@ -206,7 +207,7 @@ kept. No global FIFO/chronology is claimed for independent source clocks.
 - Original item/client IDs and shown bodies remain unchanged. Cross-source or
   different-native-entry item-ID collisions refuse with diagnostics; no silent
   rename/drop or rendered-text-only dedup. Identical cross-source duplicates also
-  refuse. Stable root ordering is reviewable, not timestamp inference.
+  refuse. The source-head ordering is reviewable, not an invented total clock.
 - The original home log/checkpoint/native inode is retained under a journalled
   `.retained` path before replacement; source originals and fresh verified external
   backups remain. Routing commits last. Recovery recognizes both retention and
@@ -231,10 +232,39 @@ Causal development check: updated three existing Main/recovery expectations firs
 canonical import. Added source-local hidden Clear, >64KiB UTF-8, exact provenance,
 complete pointer-index, global Clear, cross-source ID collision, retention-crash and
 restoration-crash controls: **24 passed** in the affected file. Server typecheck and
-strict explicit operator/test TypeScript passed during development. Logs are under
+strict explicit operator/test TypeScript passed during development at the first correction. The expanded native/ordering follow-up has its own checks below. Logs are under
 `/tmp/global-main-correction/`; sandbox is read-only `/` and donor, writable only
 this checkout and that private temp directory, env-i/private HOME/cache, no-cache
 Vitest/configLoader runner. These are development checks, not seven-gate acceptance
 or real UI proof. Native Main + project regression and actual HTTP/cold-resume
 model capture are being extended for the parent's long job. No live state was read,
 scanned, hashed, migrated, backed up, or modified; no source push/SubmitChange.
+
+
+Follow-up development evidence: genuine installed pi 1.1.0 SessionManager is
+exercised on synthetic native files by the affected migration test (now **25
+passed**), proving home ID/model/branch preservation, native byte-prefix equality,
+peer full model-visible body import, source instruction preservation/no peer
+instruction copy and native rollback. Native authored-time merge also passes.
+The extended actual-server HTTP + fake-provider test is ready for the parent's
+long job; it has NOT yet passed on this new source. Parent must rebuild before
+that run, then final pin-matched UI and the single full seven-gate batch.
+
+
+Final worker affected checks (not the earlier ba829a6 results):
+- `globalHistoryMigration.test.ts`: **27 passed**, including genuine pi SDK,
+  >64KiB original native body, hidden/unpointed native model history, native
+  authored-time source-head ordering, shared already-target-owned project native
+  files (no copies), and deterministic duplicate-native-ID refusal.
+- `globalHistoryPreview/globalProjects/convlogMetaPatch`: **6 passed**.
+- Desktop and server typechecks plus strict explicit operator/migration/native-test
+  TypeScript passed. `git diff --check` clean.
+- Imported provenance pointers now use the ordinary canonical pointer-index path
+  on small full loads/tails as well as offline-built checkpoints. Source-hidden
+  pointers survive a new global Clear, checkpoint and cold reopen.
+
+Full native HTTP/model-request capture remains **pending parent long job**, along
+with pin-matched real UI and full seven gates. This is complete source correction,
+not a shipped or fully proved change. Never relabel the ba829a6 phone/native checks
+as evidence for this revision. The final parent launcher is recorded in the worker
+handoff under `/tmp/global-main-correction/` and refuses a dirty or different pin.

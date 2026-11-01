@@ -43,7 +43,7 @@ it('two Main PREVIEW → fresh verified backups → APPLY → cold canonical run
  const installed=await applyGlobalConversations(preview.intentPath,{assertStopped:stopped});
  expect(globalCutover(f.home)?.legacyRoots).toEqual([f.peer]);
  const log=new ConvLog(f.home),main=log.picture('main')!;
- expect(main.items).toEqual([...f.originals[0].expected!.items,...f.originals[1].expected!.items]);
+ expect(main.items).toEqual([f.originals[0].expected!.items[0],f.originals[1].expected!.items[0],f.originals[0].expected!.items[1],f.originals[1].expected!.items[1]]);
  expect(main.meta.cleared).toEqual({at:1,id:'clear-0'});
  expect(main.meta.sessionFrom).toEqual(f.originals[0].expected!.meta.sessionFrom);
  expect(main.meta.threadPath).toBe(f.originals[0].native);
@@ -71,7 +71,7 @@ it('interrupted installation fails closed on cold runtime and verified forward r
  await expect(applyGlobalConversations(p.intentPath,{assertStopped:stopped,stage:async(stage,path)=>{if(stage==='member-installed'){intent=path;throw Error('power-loss');}}})).rejects.toThrow('power-loss');
  expect(globalCutover(f.home)).toBeNull();expect(()=>new ConvLog(f.home)).toThrow(/maintenance incomplete/);
  expect(await recoverGlobalConversations(intent,{assertStopped:stopped})).toEqual({installed:true});
- const log=new ConvLog(f.home);expect(log.picture('main')!.items).toEqual([...f.originals[0].expected!.items,...f.originals[1].expected!.items]);log.close();
+ const log=new ConvLog(f.home);expect(log.picture('main')!.items).toEqual([f.originals[0].expected!.items[0],f.originals[1].expected!.items[0],f.originals[0].expected!.items[1],f.originals[1].expected!.items[1]]);log.close();
 });
 it('post-cutover appended event refuses rollback without removing routing or history',async()=>{
  const f=await fixture(),p=await previewGlobalConversations(f.options,{assertStopped:stopped}),a=await applyGlobalConversations(p.intentPath,{assertStopped:stopped});
@@ -91,8 +91,8 @@ it('preview refuses alias collision and symlinks rather than rewriting original 
  f.options.sources[0].mainAlias='legacy-school-main';await symlink(f.originals[1].native,join(f.originals[1].events,'redirect'));
  await expect(previewGlobalConversations(f.options,{assertStopped:stopped})).rejects.toThrow(/symlink/);
 });
-it('native runtime session/instructions relocate byte-for-byte without losing thread identity or original pointers on rollback',async()=>{
- const f=await fixture(),from={sessionsDir:join(root,'peer-state/sessions'),instrDir:join(root,'peer-state/instr')},to={sessionsDir:join(root,'owner-state/sessions'),instrDir:join(root,'owner-state/instr')};
+it.each([false,true])('native project session/instructions preserve identity and bytes; already target-owned=%s',async(shared)=>{
+ const f=await fixture(),to={sessionsDir:join(root,'owner-state/sessions'),instrDir:join(root,'owner-state/instr')},from=shared?to:{sessionsDir:join(root,'peer-state/sessions'),instrDir:join(root,'peer-state/instr')};
  for(const dir of [from.sessionsDir,from.instrDir,to.sessionsDir,to.instrDir])await mkdir(dir,{recursive:true});
  const thread='original-native-thread',session=join(from.sessionsDir,`original_${thread}.jsonl`),instr=join(from.instrDir,'original.md');
  const bytes=JSON.stringify({type:'session',version:3,id:thread,cwd:f.peer,timestamp:new Date(0).toISOString()})+'\n'+f.originals[1].nativeBytes;
@@ -169,7 +169,7 @@ it('actual child SIGKILL before routing commit retains recoverable inodes and co
  `],{cwd:process.cwd(),encoding:'utf8',timeout:10000});
  expect(child.signal,child.stderr).toBe('SIGKILL');expect(globalCutover(f.home)).toBeNull();expect(()=>new ConvLog(f.home)).toThrow(/maintenance incomplete/);
  const intent=await readFile(descriptor,'utf8');await recoverGlobalConversations(intent,{assertStopped:stopped});
- const cold=new ConvLog(f.home);expect(cold.picture('main')!.items).toEqual([...f.originals[0].expected!.items,...f.originals[1].expected!.items]);cold.close();
+ const cold=new ConvLog(f.home);expect(cold.picture('main')!.items).toEqual([f.originals[0].expected!.items[0],f.originals[1].expected!.items[0],f.originals[0].expected!.items[1],f.originals[1].expected!.items[1]]);cold.close();
 });
 it('home is part of the authoritative checkpoint/idle/native CAS cohort, not just the destination',async()=>{
  const f=await fixture(),file=join(f.originals[0].events,'main.ckpt.json');
@@ -212,21 +212,23 @@ it('source Clear is local, hidden native pointers and exact source clocks surviv
  const file=join(o.events,'main.jsonl');
  const old=JSON.parse(o.bytes.split('\n')[0]);
  const hiddenRecord={seq:2,conv:'main',at:500,type:'entry',file:o.native,id:hidden.id,clientId:'hidden-client-id'};
- await writeFile(file,[{...old,seq:1,patch:{title:'Main',kind:'main'}},hiddenRecord,...o.bytes.trim().split('\n').map(JSON.parse)].map(r=>JSON.stringify(r)+'\n').join(''));
+ await writeFile(file,[{...old,seq:1,patch:{title:'Main',kind:'main'}},hiddenRecord,...o.bytes.trim().split('\n').map(line=>JSON.parse(line))].map(r=>JSON.stringify(r)+'\n').join(''));
  await fixtureCheckpoint(file,o.events);
  const before=await readFile(o.native,'utf8'),sourceBefore=await readFile(file,'utf8');
  const p=await previewGlobalConversations(f.options,{assertStopped:stopped});await applyGlobalConversations(p.intentPath,{assertStopped:stopped});
  const log=new ConvLog(f.home),main=log.picture('main')!;
- expect(main.items.map(i=>i.id)).toEqual(['client-0','20:0','client-1','21:0']);
+ expect(main.items.map(i=>i.id)).toEqual(['client-0','client-1','20:0','21:0']);
  expect(main.meta.cleared).toEqual({at:1,id:'clear-0'});
  expect(main.meta.sessionFrom).toEqual(f.originals[0].expected!.meta.sessionFrom);
  expect(log.pointedIn('main',o.native).has(hidden.id)).toBe(true);
- const provenance=(await readFile(join(f.originals[0].events,'main.jsonl'),'utf8')).trim().split('\n').map(JSON.parse).filter(r=>r.type==='history-import'&&r.sourceRecord);
+ const provenance=(await readFile(join(f.originals[0].events,'main.jsonl'),'utf8')).trim().split('\n').map(line=>JSON.parse(line)).filter(r=>r.type==='history-import'&&r.sourceRecord);
+ expect(provenance.every(r=>r.origin.sourceCutoff.id==='clear-1')).toBe(true);
  expect(provenance.map(r=>[r.origin.seq,r.origin.at])).toEqual([[1,100],[2,500],[7,100],[10,80],[17,60],[29,40]]);
  expect(provenance.find(r=>r.origin.seq===7).sourceRecord.patch.subagents.map((w:any)=>w.threadId)).toEqual(['worker-a','worker-b']);
  expect(provenance.find(r=>r.origin.seq===7).sourceRecord.patch.subagents[0].task.length).toBeGreaterThan(65536);
  log.emit('main',{type:'meta',patch:{cleared:{at:999,id:'global-clear'}}});
- expect(log.picture('main')!.items).toEqual([]);expect(log.picture('main')!.meta.threadPath).toBe(f.originals[0].native);log.close();
+ expect(log.picture('main')!.items).toEqual([]);expect(log.picture('main')!.meta.threadPath).toBe(f.originals[0].native);log.checkpointNow('main');log.close();
+ const cold=new ConvLog(f.home);expect(cold.pointedIn('main',o.native).has(hidden.id)).toBe(true);cold.close();
  expect(await readFile(o.native,'utf8')).toBe(before);expect(await readFile(file,'utf8')).toBe(sourceBefore);
 });
 it('cross-source original item collision refuses preview with both source identities, without native rewrite',async()=>{
@@ -244,4 +246,54 @@ it('a crash after retaining an original home inode recovers; a crash restoring o
  await expect(rollbackGlobalConversations(intent,{assertStopped:stopped,stage:async(stage)=>{if(stage==='original-restored')throw Error('restore-crash');}})).rejects.toThrow('restore-crash');
  await rollbackGlobalConversations(intent,{assertStopped:stopped});
  for(const o of f.originals)expect(await readFile(join(o.events,'main.jsonl'),'utf8')).toBe(o.bytes);
+});
+
+it('genuine pi SDK preserves continuing Main ID/model/branch and full home context while importing peer native bodies without copying peer instructions',async()=>{
+ const f=await fixture(),piDir=process.env.VC_TEST_PI_DIR??'/home/carlwilsn/.local/state/vault-chat-server/pi/1.1.0';
+ const to={sessionsDir:join(root,'home-native/sessions'),instrDir:join(root,'home-native/instr')},from={sessionsDir:join(root,'peer-native/sessions'),instrDir:join(root,'peer-native/instr')};
+ for(const dir of [to.sessionsDir,to.instrDir,from.sessionsDir,from.instrDir])await mkdir(dir,{recursive:true});
+ const natives=[];
+ for(const [i,location] of [to,from].entries()) {
+  const thread=`continuing-main-${i}`,session=join(location.sessionsDir,`original_${thread}.jsonl`),instr=join(location.instrDir,thread+'.md');
+  const header={type:'session',version:3,id:thread,cwd:f.originals[i].vault,timestamp:new Date(0).toISOString()};
+  const entries=f.originals[i].nativeBytes.trim().split('\n').map(line=>JSON.parse(line)).map((e,j)=>({...e,parentId:j?`user-${i}`:null,timestamp:new Date(j+1).toISOString()}));
+  if(i===1)entries[0].message.content+=' 🧪FULL-NATIVE-BODY '+ '𐐀café'.repeat(20000);
+  // Distinct branch/model identity belongs to the HOME owner only.
+  entries.push({type:'model_change',id:`model-${i}`,parentId:`assistant-${i}`,timestamp:new Date(3).toISOString(),provider:'openai',modelId:`source-model-${i}`});
+  if(i===1)entries.push({type:'custom_message',id:'peer-model-only-history',parentId:'model-1',timestamp:new Date(4).toISOString(),customType:'old-hidden-context',content:'FULL UNPOINTED PEER MODEL HISTORY',display:false});
+  const bytes=[header,...entries].map(e=>JSON.stringify(e)+'\n').join('');await writeFile(session,bytes);await writeFile(instr,`ORIGINAL INSTRUCTIONS ${i}`);
+  await writeFile(join(location.instrDir,thread+'.json'),JSON.stringify({instr,tools:'unused-synthetic',cwd:header.cwd,subagents:false}));
+  const file=join(f.originals[i].events,'main.jsonl'),records=f.originals[i].bytes.trim().split('\n').map(line=>JSON.parse(line));
+  records[0].patch={...records[0].patch,threadId:thread,threadPath:session,sessionFrom:{file:session,after:null}};
+  for(const r of records)if(r.type==='entry')r.file=session;
+  await writeFile(file,records.map(r=>JSON.stringify(r)+'\n').join(''));await fixtureCheckpoint(file,f.originals[i].events);
+  natives.push({thread,session,instr,bytes});
+ }
+ const options={...f.options,piDir,targetNative:to,sources:[{...f.options.sources[0],native:from}]};
+ const p=await previewGlobalConversations(options,{assertStopped:stopped});
+ expect(await readFile(natives[0].session,'utf8')).toBe(natives[0].bytes);
+ const a=await applyGlobalConversations(p.intentPath,{assertStopped:stopped});
+ const {pathToFileURL}=await import('node:url');
+ const sdkPath=pathToFileURL(join(piDir,'node_modules/@earendil-works/pi-coding-agent/dist/core/session-manager.js')).href;
+ const {SessionManager}=await import(/* @vite-ignore */ sdkPath),manager=SessionManager.open(natives[0].session);
+ expect(manager.getSessionId()).toBe(natives[0].thread);
+ const context=manager.buildSessionContext();expect(context.model).toEqual({provider:'openai',modelId:'source-model-0'});
+ const encoded=JSON.stringify(context.messages);
+ expect(encoded).toContain('original 0');expect(encoded).toContain('original 1');expect(encoded).toContain('original assistant 1');expect(encoded).toContain('𐐀café'.repeat(20000));expect(encoded).toContain('FULL UNPOINTED PEER MODEL HISTORY');
+ expect(manager.getBranch().slice(0,3).map((e:any)=>e.id)).toEqual(['user-0','assistant-0','model-0']);
+ expect((await readFile(natives[0].session,'utf8')).startsWith(natives[0].bytes)).toBe(true);
+ expect(await readFile(natives[1].session,'utf8')).toBe(natives[1].bytes);
+ expect(await readdir(to.instrDir)).not.toContain(natives[1].thread+'.json');
+ for(const [i,n] of natives.entries())expect(await readFile(n.instr,'utf8')).toBe(`ORIGINAL INSTRUCTIONS ${i}`);
+ const log=new ConvLog(f.home);expect(log.picture('main')!.meta.threadId).toBe(natives[0].thread);expect(log.picture('legacy-school-main')).toBeNull();log.close();
+ await rollbackGlobalConversations(a.intentPath,{assertStopped:stopped});
+ expect(await readFile(natives[0].session,'utf8')).toBe(natives[0].bytes);
+});
+
+it('duplicate original native IDs refuse deterministically instead of cache-selected body identity',async()=>{
+ const f=await fixture(),o=f.originals[1];
+ await appendFile(o.native,JSON.stringify({type:'message',id:'assistant-1',message:{role:'assistant',content:[{type:'text',text:'DIFFERENT BODY SAME ORIGINAL ID'}],timestamp:99}})+'\n');
+ const before=await readFile(o.native,'utf8');
+ await expect(previewGlobalConversations(f.options,{assertStopped:stopped})).rejects.toThrow(/ambiguous-native-entry-identity/);
+ expect(await readFile(o.native,'utf8')).toBe(before);
 });

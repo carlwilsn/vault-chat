@@ -5,7 +5,7 @@
  * supports recognized forward recovery and CAS-only rollback, not authorization.
  */
 import { constants } from 'node:fs';
-import { materializeMain, importMainNative } from './global-main-import.ts';
+import { materializeMain, importMainNative, verifyNativeIds } from './global-main-import.ts';
 import { open, lstat, realpath, readdir, readFile, mkdir, rename, unlink } from 'node:fs/promises';
 import { dirname, basename, join, resolve, isAbsolute } from 'node:path';
 import { constants as bufferConstants } from 'node:buffer';
@@ -139,7 +139,7 @@ async function validateRegistry(roots: string[]) {
   }
  }
 }
-/** Preview is backup-first and returns deterministic aliases/sequence ranges.
+/** Preview is backup-first and returns canonical conversations/provenance sequence ranges.
  * It does not write logs, checkpoints, registries, or a routing commit. */
 export async function previewGlobalConversations(options: CohortOptions, hooks: CohortHooks) {
  const held=await lock(options,hooks);
@@ -165,20 +165,22 @@ export async function previewGlobalConversations(options: CohortOptions, hooks: 
    const registry=join(root,'.vault-chat/local/project-folders.json'); if(!await absent(registry)) await keep(registry,artifact,kept);else absentPaths.push(registry);
   }
   const mainSources: Parameters<typeof materializeMain>[0]=[];
+  const checkedNative=new Set<string>();
+  const nativeKeep=async(path:string)=>{await keep(path,artifact,kept);if(!checkedNative.has(path)){await verifyNativeIds(path);checkedNative.add(path);}};
   const used=new Set<string>(); let floor=0;
   for(const p of homeFiles) {
    if(dirname(p)===held.dirs[0]&&p.endsWith('.jsonl')&&!p.split('/').at(-1)!.startsWith('_')) {
     const checkpoint=p.replace(/\.jsonl$/,'.ckpt.json');let reference:Reference|undefined;
     if(!await absent(checkpoint)) {reference=JSON.parse(await readFile(checkpoint,'utf8'));if(reference!.v===2)throw new Error(`checkpoint-only-required-before-global-apply: ${p}`);validatePosition(p,(reference as any).position,reference!.seq);}
     const folded=await foldFile(p,held.dirs[0],reference);assertIdle(folded.picture,p);
-    for(const native of folded.nativeFiles) {if(!native.identity)throw new Error('native-pointer-missing');await keep(native.path,artifact,kept);}
+    for(const native of folded.nativeFiles) {if(!native.identity)throw new Error('native-pointer-missing');await nativeKeep(native.path);}
     const thread=folded.picture.meta.threadId;
     if(typeof thread==='string'&&thread) {
      if(!options.targetNative)throw new Error(`native-runtime-locations-required: ${p}/${thread}`);
      const meta=join(options.targetNative.instrDir,thread+'.json');await keep(meta,artifact,kept);
      const data=JSON.parse(await readFile(meta,'utf8'));if(typeof data.instr!=='string'||dirname(data.instr)!==options.targetNative.instrDir)throw new Error(`native-instruction-identity-mismatch: ${thread}`);
      await keep(data.instr,artifact,kept);
-     const session=folded.picture.meta.threadPath;if(typeof session!=='string')throw new Error('native-session-identity-mismatch');await keep(resolve(held.dirs[0],session),artifact,kept);
+     const session=folded.picture.meta.threadPath;if(typeof session!=='string')throw new Error('native-session-identity-mismatch');await nativeKeep(resolve(held.dirs[0],session));
     }
     used.add(folded.picture.id); floor=Math.max(floor,folded.picture.seq);
     if(folded.picture.id==='main') {
@@ -208,7 +210,7 @@ export async function previewGlobalConversations(options: CohortOptions, hooks: 
     if(fileStem(originalId)+'.jsonl'!==name) throw new Error(`conversation-filename-identity-collision: ${path}`);
     assertIdle(original.picture,path);
     if(originalId==='main') {
-     for(const native of original.nativeFiles) {if(!native.identity)throw new Error('native-pointer-missing');await keep(native.path,artifact,kept);}
+     for(const native of original.nativeFiles) {if(!native.identity)throw new Error('native-pointer-missing');await nativeKeep(native.path);}
      // Old Main is NOT a resumable alternate thread. Preserve its original
      // instruction metadata, but never copy/spawn those instructions as Main.
      const thread=original.picture.meta.threadId;
@@ -219,7 +221,10 @@ export async function previewGlobalConversations(options: CohortOptions, hooks: 
       await keep(data.instr,artifact,kept);
       const session=original.picture.meta.threadPath;
       if(typeof session!=='string'||dirname(resolve(events,session))!==source.native.sessionsDir||!basename(session).endsWith(`_${thread}.jsonl`))throw new Error('native-session-identity-mismatch');
-      await keep(resolve(events,session),artifact,kept);
+      await nativeKeep(resolve(events,session));
+      const fd=await open(resolve(events,session),'r');let header;
+      try {for await(const line of lines(fd,(await fd.stat()).size,digest(),bufferConstants.MAX_STRING_LENGTH)){header=parseRecord(line);break;}}finally{await fd.close();}
+      if(header?.type!=='session'||header.id!==thread||header.cwd!==data.cwd)throw new Error(`native-header-identity-mismatch: ${thread}`);
      }
      mainSources.push({path,events,prepared,picture:original.picture,reference});
      continue;
@@ -228,7 +233,7 @@ export async function previewGlobalConversations(options: CohortOptions, hooks: 
     if(used.has(id)) throw new Error(`ambiguous-conversation-identity: ${id} (${path})`); used.add(id);
     const destination=join(held.dirs[0],fileStem(id)+'.jsonl'), checkpointDestination=destination.replace(/\.jsonl$/,'.ckpt.json');
     if(!await absent(destination)||!await absent(checkpointDestination)) throw new Error(`destination-collision: ${id}`);
-    for(const native of original.nativeFiles) { if(!native.identity) throw new Error('native-pointer-missing'); await keep(native.path,artifact,kept); }
+    for(const native of original.nativeFiles) { if(!native.identity) throw new Error('native-pointer-missing'); await nativeKeep(native.path); }
     const thread=original.picture.meta.threadId;
     if(typeof thread==='string' && thread) {
      const from=source.native,to=options.targetNative;
@@ -244,7 +249,11 @@ export async function previewGlobalConversations(options: CohortOptions, hooks: 
      const nativeFd=await open(session,'r');let header;
      try {for await(const line of lines(nativeFd,(await nativeFd.stat()).size,digest(),bufferConstants.MAX_STRING_LENGTH)){header=parseRecord(line);break;}}finally{await nativeFd.close();}
      if(header?.type!=='session'||header.id!==thread||header.cwd!==meta.cwd) throw new Error(`native-header-identity-mismatch: ${thread}`);
+     await nativeKeep(session);
      const copy=async(src:string,destination:string,data?:string)=>{
+      await keep(src,artifact,kept);
+      // A native file already owned by the target runtime needs no duplicate.
+      if(src===destination)return;
       if(!await absent(destination)||nativeCopies.some(c=>c.destination===destination)) throw new Error(`native-destination-collision: ${destination}`);
       const k=await keep(src,artifact,kept),candidatePath=join(artifact,`native-${nativeCopies.length}`);
       if(data===undefined) await copyNew(k.backup,candidatePath); else await writeNew(candidatePath,data);
@@ -323,7 +332,7 @@ export async function previewGlobalConversations(options: CohortOptions, hooks: 
   const m: Intent={replacements,format:'global-conversation-cohort-v1',options,artifact,dirs:held.dirs,absentPaths,kept,homeFiles,members,nativeCopies,commit:null,commitDestination};
   const intentPath=join(artifact,'preview.json'); await writeNew(intentPath,JSON.stringify(m)+'\n');
   await validateKept(m); await hooks.stage?.('prepared',intentPath);
-  return {intentPath,aliases:members.map(m=>({source:m.source,id:m.id,originalId:m.originalId,seqOffset:m.seqOffset,sourceLastSeq:m.prepared.compact.lastSeq,title:m.originalId==='main'?'Main':undefined})),installed:false};
+  return {intentPath,conversations:members.map(m=>({source:m.source,id:m.id,originalId:m.originalId,seqOffset:m.seqOffset,sourceLastSeq:m.prepared.compact.lastSeq,title:m.originalId==='main'?'Main':undefined})),installed:false};
  } finally {held.release();}
 }
 async function loadIntent(path: string) {
@@ -340,6 +349,7 @@ async function loadIntent(path: string) {
   if(dirname(member.destination)!==dirs[0]||fileStem(member.id)+'.jsonl'!==member.destination.split('/').at(-1)||member.checkpointDestination!==member.destination.replace(/\.jsonl$/,'.ckpt.json')||dirname(member.log.path)!==dirs[0]||!member.log.path.endsWith('.pending')||dirname(member.candidate.path)!==m.artifact||!dirs.includes(dirname(member.source))) throw new Error('invalid-cohort-member');
   if(member.checkpoint && (dirname(member.checkpoint.path)!==dirs[0]||!member.checkpoint.path.endsWith('.pending'))) throw new Error('invalid-cohort-checkpoint');
  }
+ for(const r of m.replacements)if(!m.members.some(x=>x.id==='main'&&[x.destination,x.checkpointDestination].includes(r.original.path))&&!m.nativeCopies.some(x=>x.source===x.destination&&x.destination===r.original.path))throw new Error('replacement-not-continuing-main');
  const nativeDirs=[m.options.targetNative?.sessionsDir,m.options.targetNative?.instrDir].filter(Boolean);
  for(const copy of m.nativeCopies) if(!nativeDirs.includes(dirname(copy.destination))||dirname(copy.staged.path)!==dirname(copy.destination)||!copy.staged.path.endsWith('.pending')||dirname(copy.candidate.path)!==m.artifact) throw new Error('invalid-native-cohort-member');
  return m;

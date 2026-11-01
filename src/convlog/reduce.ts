@@ -476,7 +476,9 @@ function step(d: Draft, stored: StoredRecord): void {
       // Keep original item identities; never silently replace a different source.
       if (r.item) {
         if (find(d, r.item.id)) throw new Error(`ambiguous-item-identity: ${d.id}/${r.item.id}`);
-        d.items.push(r.item);
+        const at = r.beforeId === undefined ? d.items.length : d.items.findIndex(it => it.id === r.beforeId);
+        if (at < 0) throw new Error(`import-placement-missing: ${r.beforeId}`);
+        d.items.splice(at, 0, r.item);
       }
       return;
     case "signal":
