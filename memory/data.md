@@ -161,3 +161,15 @@ in doubt, mark it agent.
   native pointer/readback checks). It is preservation evidence, NOT a reviewed
   migration or permission to inspect the live logs. A source pin/UI fixture proof
   is not deployed or shipped.
+
+
+## One Main import is not an alias (candidate correction)
+- Separate resumable aliases do not meet a one-Main merge ask, even if only one row
+  has id `main`. Offline materialize resolved source views through the ordinary
+  reducer, retaining exact source clocks, Clear/session provenance, hidden native
+  pointers and fresh backups; never replay one source's Clear/thread metadata into
+  another source. Refuse item identity collisions instead of renaming/dropping.
+- The continuing home pi owner keeps its native ID/context/instructions. Imported
+  peer native records are full labelled historical data, not active peer prompts.
+  Retain original home inodes before replacement and journal retention/restoration
+  as recoverable stages. Old v22 ignoring new checkpoints is not safe fallback.

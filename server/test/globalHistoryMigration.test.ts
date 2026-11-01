@@ -4,8 +4,9 @@ import {mkdtemp,mkdir,writeFile,readFile,rm,appendFile,readdir,symlink} from 'no
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {previewGlobalConversations,applyGlobalConversations,recoverGlobalConversations,rollbackGlobalConversations} from '../../scripts/global-conversations-offline';
-import {ConvLog,globalFeed,setFeedVaults,_resetConvLogs,ownerVault,convLog} from '../convlog/log';
+import {ConvLog,globalFeed,setFeedVaults,_resetConvLogs,ownerVault,convLog,checkpointFor} from '../convlog/log';
 import {acquireEventDirectory} from '../convlog/maintenance';
+import {OfflineFold} from '../../scripts/event-log-offline-fold';
 import {globalCutover} from '../convlog/globalCutover';
 import {compactSubagents,emptyPicture,reduce} from '../../src/convlog/reduce';
 let root='';
@@ -41,15 +42,14 @@ it('two Main PREVIEW → fresh verified backups → APPLY → cold canonical run
  expect((await readdir(f.originals[0].events)).some(n=>n.startsWith('.global-'))).toBe(false);
  const installed=await applyGlobalConversations(preview.intentPath,{assertStopped:stopped});
  expect(globalCutover(f.home)?.legacyRoots).toEqual([f.peer]);
- const log=new ConvLog(f.home),archived=log.picture('legacy-school-main')!;
- expect(archived.items).toEqual(f.originals[1].expected!.items);
- expect(archived.meta.subagents).toEqual(f.originals[1].expected!.meta.subagents);
- expect(archived.meta.cleared).toEqual({at:1,id:'clear-1'});
- expect(archived.meta.sessionFrom).toEqual(f.originals[1].expected!.meta.sessionFrom);
- expect(archived.seq).toBe(f.originals[1].expected!.seq+preview.aliases[0].seqOffset+1);
- expect(log.picture('main')!.items).toEqual(f.originals[0].expected!.items);log.close();
- setFeedVaults(f.home,()=>[f.home,f.peer]);expect(ownerVault('legacy-school-main',f.peer)).toBe(f.home);
- expect(globalFeed(f.peer).rows().filter(r=>r.id==='main')).toHaveLength(1);_resetConvLogs();
+ const log=new ConvLog(f.home),main=log.picture('main')!;
+ expect(main.items).toEqual([...f.originals[0].expected!.items,...f.originals[1].expected!.items]);
+ expect(main.meta.cleared).toEqual({at:1,id:'clear-0'});
+ expect(main.meta.sessionFrom).toEqual(f.originals[0].expected!.meta.sessionFrom);
+ expect(main.meta.threadPath).toBe(f.originals[0].native);
+ expect(log.picture('legacy-school-main')).toBeNull();log.close();
+ setFeedVaults(f.home,()=>[f.home,f.peer]);
+ expect(globalFeed(f.peer).rows().map(r=>r.id)).toEqual(['main']);_resetConvLogs();
  expect(await rollbackGlobalConversations(installed.intentPath,{assertStopped:stopped})).toEqual({rolledBack:true});
  expect(globalCutover(f.home)).toBeNull();
  for(const o of f.originals){expect(await readFile(join(o.events,'main.jsonl'),'utf8')).toBe(o.bytes);expect(await readFile(o.native,'utf8')).toBe(o.nativeBytes);}
@@ -71,11 +71,11 @@ it('interrupted installation fails closed on cold runtime and verified forward r
  await expect(applyGlobalConversations(p.intentPath,{assertStopped:stopped,stage:async(stage,path)=>{if(stage==='member-installed'){intent=path;throw Error('power-loss');}}})).rejects.toThrow('power-loss');
  expect(globalCutover(f.home)).toBeNull();expect(()=>new ConvLog(f.home)).toThrow(/maintenance incomplete/);
  expect(await recoverGlobalConversations(intent,{assertStopped:stopped})).toEqual({installed:true});
- const log=new ConvLog(f.home);expect(log.picture('legacy-school-main')!.items).toEqual(f.originals[1].expected!.items);log.close();
+ const log=new ConvLog(f.home);expect(log.picture('main')!.items).toEqual([...f.originals[0].expected!.items,...f.originals[1].expected!.items]);log.close();
 });
 it('post-cutover appended event refuses rollback without removing routing or history',async()=>{
  const f=await fixture(),p=await previewGlobalConversations(f.options,{assertStopped:stopped}),a=await applyGlobalConversations(p.intentPath,{assertStopped:stopped});
- const log=new ConvLog(f.home);log.emit('legacy-school-main',{type:'meta',patch:{title:'new user write'}});log.close();
+ const log=new ConvLog(f.home);log.emit('main',{type:'meta',patch:{title:'new user write'}});log.close();
  await expect(rollbackGlobalConversations(a.intentPath,{assertStopped:stopped})).rejects.toThrow(/CAS-refused/);
  expect(globalCutover(f.home)).not.toBeNull();
 });
@@ -98,10 +98,11 @@ it('native runtime session/instructions relocate byte-for-byte without losing th
  const bytes=JSON.stringify({type:'session',version:3,id:thread,cwd:f.peer,timestamp:new Date(0).toISOString()})+'\n'+f.originals[1].nativeBytes;
  await writeFile(session,bytes);await writeFile(instr,'Original model-only instructions.');
  await writeFile(join(from.instrDir,thread+'.json'),JSON.stringify({instr,tools:join(from.instrDir,'old-tools.json'),cwd:f.peer,subagents:true}));
- const log=new ConvLog(f.peer);log.emit('main',{type:'meta',patch:{threadId:thread,threadPath:session,sessionFrom:{file:session,after:'user-1'}}});log.checkpointNow('main');log.close();
+ await writeFile(join(f.originals[1].events,'project-native.jsonl'),f.originals[1].bytes.replaceAll('\"conv\":\"main\"','\"conv\":\"project-native\"'));
+ const log=new ConvLog(f.peer);log.emit('project-native',{type:'meta',patch:{threadId:thread,threadPath:session,sessionFrom:{file:session,after:'user-1'}}});log.checkpointNow('project-native');log.close();
  const options={...f.options,targetNative:to,sources:[{...f.options.sources[0],native:from}]};
  const p=await previewGlobalConversations(options,{assertStopped:stopped}),a=await applyGlobalConversations(p.intentPath,{assertStopped:stopped});
- const cold=new ConvLog(f.home),archived=cold.picture('legacy-school-main')!;cold.close();
+ const cold=new ConvLog(f.home),archived=cold.picture('project-native')!;cold.close();
  expect(archived.meta.threadId).toBe(thread);expect(archived.meta.threadPath).toBe(join(to.sessionsDir,`original_${thread}.jsonl`));
  expect(await readFile(String(archived.meta.threadPath),'utf8')).toBe(bytes);
  const meta=JSON.parse(await readFile(join(to.instrDir,thread+'.json'),'utf8'));expect(await readFile(meta.instr,'utf8')).toBe('Original model-only instructions.');
@@ -134,7 +135,7 @@ it('fresh registry creation after preview refuses apply',async()=>{
 it('recovery refuses a mutated prepared checkpoint instead of declaring the routing cutover complete',async()=>{
  const f=await fixture(),p=await previewGlobalConversations(f.options,{assertStopped:stopped});let intent='';
  await expect(applyGlobalConversations(p.intentPath,{assertStopped:stopped,stage:async(stage,path)=>{if(stage==='member-installed'){intent=path;throw Error('power-loss');}}})).rejects.toThrow('power-loss');
- await appendFile(join(f.originals[0].events,'legacy-school-main.ckpt.json'),' ');
+ await appendFile(join(f.originals[0].events,'main.ckpt.json'),' ');
  await expect(recoverGlobalConversations(intent,{assertStopped:stopped})).rejects.toThrow(/CAS-refused/);expect(globalCutover(f.home)).toBeNull();
 });
 it('actual original assistant item-ID collision refuses preview without rewriting either native entry',async()=>{
@@ -154,7 +155,7 @@ it('same project conversation in two roots refuses instead of silently selecting
 });
 it('rollback rechecks a write racing its durable journal hook and never parks that written history',async()=>{
  const f=await fixture(),p=await previewGlobalConversations(f.options,{assertStopped:stopped}),a=await applyGlobalConversations(p.intentPath,{assertStopped:stopped});
- const file=join(f.originals[0].events,'legacy-school-main.jsonl');
+ const file=join(f.originals[0].events,'main.jsonl');
  await expect(rollbackGlobalConversations(a.intentPath,{assertStopped:stopped,stage:async(stage)=>{if(stage==='rollback-started')await appendFile(file,'\n');}})).rejects.toThrow(/CAS-refused/);
  expect(globalCutover(f.home)).not.toBeNull();expect(await readFile(file,'utf8')).toMatch(/\n\n$/);
 });
@@ -168,7 +169,7 @@ it('actual child SIGKILL before routing commit retains recoverable inodes and co
  `],{cwd:process.cwd(),encoding:'utf8',timeout:10000});
  expect(child.signal,child.stderr).toBe('SIGKILL');expect(globalCutover(f.home)).toBeNull();expect(()=>new ConvLog(f.home)).toThrow(/maintenance incomplete/);
  const intent=await readFile(descriptor,'utf8');await recoverGlobalConversations(intent,{assertStopped:stopped});
- const cold=new ConvLog(f.home);expect(cold.picture('legacy-school-main')!.items).toEqual(f.originals[1].expected!.items);cold.close();
+ const cold=new ConvLog(f.home);expect(cold.picture('main')!.items).toEqual([...f.originals[0].expected!.items,...f.originals[1].expected!.items]);cold.close();
 });
 it('home is part of the authoritative checkpoint/idle/native CAS cohort, not just the destination',async()=>{
  const f=await fixture(),file=join(f.originals[0].events,'main.ckpt.json');
@@ -194,4 +195,53 @@ it('a monolithic pre-feed source refuses rather than disappearing behind global 
 it('an unreviewed pre-feed home history refuses rather than being hidden by a new destination alias',async()=>{
  const f=await fixture();const dir=join(f.home,'.vault-chat/conversations');await mkdir(dir);await writeFile(join(dir,'older.jsonl'),'unreviewed older history\n');
  await expect(previewGlobalConversations(f.options,{assertStopped:stopped})).rejects.toThrow(/legacy-conversations-require-reviewed-import/);
+});
+
+// Test setup only: build a synthetic authoritative checkpoint from the fixture
+// bytes through the same canonical owner, before invoking maintenance.
+async function fixtureCheckpoint(file:string,events:string) {
+ const bytes=await readFile(file,'utf8'),fold=new OfflineFold(events,true);
+ try {for(const line of bytes.trim().split('\n'))fold.add(JSON.parse(line));
+ await writeFile(file.replace(/\.jsonl$/,'.ckpt.json'),JSON.stringify(checkpointFor(file,fold.verify(),Buffer.byteLength(bytes),fold.pointed))+'\n');}
+ finally {fold.close();}
+}
+it('source Clear is local, hidden native pointers and exact source clocks survive; new global Clear is view-only',async()=>{
+ const f=await fixture(),o=f.originals[1];
+ const hidden={type:'message',id:'peer-before-clear',message:{role:'user',content:'HIDDEN ORIGINAL 🧪 '+ '𐐀café'.repeat(20000),timestamp:3}};
+ await appendFile(o.native,JSON.stringify(hidden)+'\n');
+ const file=join(o.events,'main.jsonl');
+ const old=JSON.parse(o.bytes.split('\n')[0]);
+ const hiddenRecord={seq:2,conv:'main',at:500,type:'entry',file:o.native,id:hidden.id,clientId:'hidden-client-id'};
+ await writeFile(file,[{...old,seq:1,patch:{title:'Main',kind:'main'}},hiddenRecord,...o.bytes.trim().split('\n').map(JSON.parse)].map(r=>JSON.stringify(r)+'\n').join(''));
+ await fixtureCheckpoint(file,o.events);
+ const before=await readFile(o.native,'utf8'),sourceBefore=await readFile(file,'utf8');
+ const p=await previewGlobalConversations(f.options,{assertStopped:stopped});await applyGlobalConversations(p.intentPath,{assertStopped:stopped});
+ const log=new ConvLog(f.home),main=log.picture('main')!;
+ expect(main.items.map(i=>i.id)).toEqual(['client-0','20:0','client-1','21:0']);
+ expect(main.meta.cleared).toEqual({at:1,id:'clear-0'});
+ expect(main.meta.sessionFrom).toEqual(f.originals[0].expected!.meta.sessionFrom);
+ expect(log.pointedIn('main',o.native).has(hidden.id)).toBe(true);
+ const provenance=(await readFile(join(f.originals[0].events,'main.jsonl'),'utf8')).trim().split('\n').map(JSON.parse).filter(r=>r.type==='history-import'&&r.sourceRecord);
+ expect(provenance.map(r=>[r.origin.seq,r.origin.at])).toEqual([[1,100],[2,500],[7,100],[10,80],[17,60],[29,40]]);
+ expect(provenance.find(r=>r.origin.seq===7).sourceRecord.patch.subagents.map((w:any)=>w.threadId)).toEqual(['worker-a','worker-b']);
+ expect(provenance.find(r=>r.origin.seq===7).sourceRecord.patch.subagents[0].task.length).toBeGreaterThan(65536);
+ log.emit('main',{type:'meta',patch:{cleared:{at:999,id:'global-clear'}}});
+ expect(log.picture('main')!.items).toEqual([]);expect(log.picture('main')!.meta.threadPath).toBe(f.originals[0].native);log.close();
+ expect(await readFile(o.native,'utf8')).toBe(before);expect(await readFile(file,'utf8')).toBe(sourceBefore);
+});
+it('cross-source original item collision refuses preview with both source identities, without native rewrite',async()=>{
+ const f=await fixture(),o=f.originals[1],before=await readFile(o.native,'utf8');
+ await writeFile(o.native,before.replace('"timestamp":21','"timestamp":20'));
+ await fixtureCheckpoint(join(o.events,'main.jsonl'),o.events);
+ await expect(previewGlobalConversations(f.options,{assertStopped:stopped})).rejects.toThrow(/ambiguous-item-identity/);
+ expect(await readFile(o.native,'utf8')).toBe(before.replace('"timestamp":21','"timestamp":20'));
+});
+it('a crash after retaining an original home inode recovers; a crash restoring one original rolls back safely',async()=>{
+ const f=await fixture(),p=await previewGlobalConversations(f.options,{assertStopped:stopped});let intent='';
+ await expect(applyGlobalConversations(p.intentPath,{assertStopped:stopped,stage:async(stage,path)=>{if(stage==='original-retained'){intent=path;throw Error('retention-crash');}}})).rejects.toThrow('retention-crash');
+ expect(()=>new ConvLog(f.home)).toThrow(/maintenance incomplete/);
+ await recoverGlobalConversations(intent,{assertStopped:stopped});
+ await expect(rollbackGlobalConversations(intent,{assertStopped:stopped,stage:async(stage)=>{if(stage==='original-restored')throw Error('restore-crash');}})).rejects.toThrow('restore-crash');
+ await rollbackGlobalConversations(intent,{assertStopped:stopped});
+ for(const o of f.originals)expect(await readFile(join(o.events,'main.jsonl'),'utf8')).toBe(o.bytes);
 });

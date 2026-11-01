@@ -99,11 +99,21 @@ export type ConvMeta = {
   [k: string]: unknown;
 };
 
+/** Offline, resolved history materialization. Source clocks/control records are
+ * audit provenance only, never replayed as destination Clear/session ownership.
+ * Originals (including hidden history) remain at sourceFile/verified backup. */
+export type HistoryImport = {
+  type: "history-import";
+  origin: { sourceFile: string; backup: string; sha256: string; conv: string; seq: number; at: number };
+  sourceRecord?: LogRecord;
+  item?: import("./reduce").Item;
+};
 export type EventBody =
   | { type: "meta"; patch: Record<string, unknown> }
   | { type: "entry"; file: string; entry: PiEntry; clientId?: string; shown?: string; via?: string; images?: ItemImage[]; device?: string }
   | { type: "live"; ev: any }
-  | { type: "signal"; signal: Record<string, unknown> };
+  | { type: "signal"; signal: Record<string, unknown> }
+  | HistoryImport;
 
 export type LogRecord = EventBody & { seq: number; conv: string | null; at: number };
 

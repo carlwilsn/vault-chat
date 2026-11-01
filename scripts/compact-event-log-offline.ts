@@ -37,7 +37,7 @@ async function external(path: string): Promise<boolean> {
 function unfold(previous: Picture | undefined, stored: StoredRecord) {
   if (!stored || typeof stored !== "object" || typeof stored.conv !== "string" || !stored.conv ||
       !Number.isSafeInteger(stored.seq) || stored.seq < 1 || !Number.isFinite(stored.at) ||
-      !["meta", "subagents", "entry", "live"].includes(stored.type)) throw new Error("Invalid conversation record");
+      !["meta", "subagents", "entry", "live", "history-import"].includes(stored.type)) throw new Error("Invalid conversation record");
   const p = previous ?? emptyPicture(stored.conv);
   if (stored.conv !== p.id || stored.seq <= p.seq) throw new Error("Conversation/sequence mismatch");
   if (stored.type === "meta" && (!stored.patch || typeof stored.patch !== "object" || Array.isArray(stored.patch))) throw new Error("Invalid metadata patch");

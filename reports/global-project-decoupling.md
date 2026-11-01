@@ -69,7 +69,7 @@ text is not path-rewritten. No actual School2 file or live state was read.
 - No live migration, registry/log/state read/hash/scan/backup, install, service
   restart, compaction, sync or School2 permission retry occurred. Poll recovery/
   marker validation/rename/collaborative outline remain the parent's task.
-- The offline two-Main alias preview/apply/recovery/guarded-rollback workflow is now implemented and exercised on synthetic cohorts (below). No live history was consolidated or validated. Collision review and the approved eventual Main home (e.g. defaultvault) are still needed.
+- The offline two-Main alias preview/apply/recovery/guarded-rollback workflow is now implemented and exercised on synthetic cohorts (below). No live history was consolidated or validated. The configured existing home Main is the continuing owner; that settled choice needs no new scope approval. Actual live identity/collision review still awaits the approved maintenance window.
 - Legacy physical engine recovery remains for unmoved original histories. The
   selected workspace no longer owns new conversations/projects, but this is not
   yet removal of every legacy per-vault engine/context/storage behavior.
@@ -87,16 +87,18 @@ text is not path-rewritten. No actual School2 file or live state was read.
 
 `global-conversations-cli.ts` now exposes explicit `preview/apply/recover/rollback`
 using the existing offline backup/fold/apply primitives and shared-directory-FD
-flock. Preview requires explicit roots, Main aliases, external backup root and
+flock. Preview requires explicit roots, obsolete Main link IDs (not new conversations), external backup root and
 native session/instruction locations when native threads exist. Every legacy
 writer **and supervisor** must be stopped: advisory flock cannot stop old v22
 writers. The operator confirmation is not authorization to run it on live data.
 Carl must first review requirements 1–3 and approve the exact cohort.
 
-- The original Main remains Main. Each extra Main is a separately titled archive
-  under its reviewed alias, preserving its original independent Clear/seq domain,
-  item/client IDs, native bodies and `sessionFrom`. Sequence offsets provide unique
-  new feed clocks, **not a claim of chronology between independent old clocks**.
+- **Historical ba829a6 behavior, not completion of the ask:** extra Mains became
+  separate, resumable aliases. Calling those "archives" was wrong: engine and UI
+  allowed continuing them. The tests counted one Main ID but did not prove merged
+  Main history. Those historical results below remain evidence for ba829a6 ONLY.
+- The correction below replaces that behavior with one canonical Main import.
+  Source clocks/controls are provenance, never cross-source chronology or replay.
 - Project logs move to the global owner without duplicating project IDs. Ambiguous
   project IDs/slugs/folders or original item IDs refuse instead of silently merging.
 - Original source logs, registries, instructions and native sessions stay untouched.
@@ -184,3 +186,55 @@ Real desktop/phone/board/voice browser proof and the frozen full seven gates are
 still outstanding. Physical Tauri/Pencil/mic proof is not claimed. Parent reports
 access-only exact `8e117c78` published and r4 real UI proved separately; this work
 has not rerun, altered or republished that early-access slice or its artifacts.
+
+
+## One-Main correction (source work; not installed or fully proved)
+
+The configured home Main is the one ordinary continuing conversation/native owner.
+Old peer Mains materialize into its canonical log through one additive
+`history-import` reducer record, not a runtime timeline, registry, alias, or view
+join. Home view comes first, then stable source-root order; each source's order is
+kept. No global FIFO/chronology is claimed for independent source clocks.
+
+- Each peer's original logical records (including Clear/sessionFrom/worker order)
+  and exact original seq/at plus verified backup identity remain import provenance.
+  Only its resolved final visible items are appended as items; its Clear cannot
+  blank another source, and its thread/instructions cannot replace home ownership.
+  Source-hidden records/pointers are retained and included in the checkpoint pointer
+  index, not filtered away. A later ordinary global Clear blanks the merged view
+  without resetting the home native context.
+- Original item/client IDs and shown bodies remain unchanged. Cross-source or
+  different-native-entry item-ID collisions refuse with diagnostics; no silent
+  rename/drop or rendered-text-only dedup. Identical cross-source duplicates also
+  refuse. Stable root ordering is reviewable, not timestamp inference.
+- The original home log/checkpoint/native inode is retained under a journalled
+  `.retained` path before replacement; source originals and fresh verified external
+  backups remain. Routing commits last. Recovery recognizes both retention and
+  installation stages; rollback CAS-refuses post-cutover writes and can resume an
+  interrupted original-inode restoration. No old binary fallback is safe merely
+  because originals/old v22 metadata still exist.
+- Pi's SessionManager appends full labelled historical native JSON records as
+  model-visible `custom_message` entries to the continuing home context (not a
+  lossy summary and not a second source's active system prompt/model/cwd).
+  Original home native bytes are the prefix; its ID, active branch/model and
+  instruction metadata remain authoritative. Source Main instructions are never
+  copied into resumable alternate owners. Native project relocation is unchanged.
+  **Actual model-request/HTTP integration for this correction is pending.**
+- Obsolete configured Main-link IDs are denied by the engine after cutover rather
+  than optimistically created as separate chats. They are not list/UI threads.
+- Explicit `piDir` pointing to genuine pinned pi 1.1.0 is required for native Main
+  import; no installation or service control occurs in this tool. Pre-feed histories
+  remain unsupported and fail closed; do not hide or delete their metadata.
+
+Causal development check: updated three existing Main/recovery expectations first;
+**3 failed / 18 passed** against the alias implementation, then **21 passed** after
+canonical import. Added source-local hidden Clear, >64KiB UTF-8, exact provenance,
+complete pointer-index, global Clear, cross-source ID collision, retention-crash and
+restoration-crash controls: **24 passed** in the affected file. Server typecheck and
+strict explicit operator/test TypeScript passed during development. Logs are under
+`/tmp/global-main-correction/`; sandbox is read-only `/` and donor, writable only
+this checkout and that private temp directory, env-i/private HOME/cache, no-cache
+Vitest/configLoader runner. These are development checks, not seven-gate acceptance
+or real UI proof. Native Main + project regression and actual HTTP/cold-resume
+model capture are being extended for the parent's long job. No live state was read,
+scanned, hashed, migrated, backed up, or modified; no source push/SubmitChange.

@@ -56,11 +56,14 @@ export class OfflineFold {
     return { file, entry: entry ?? { type: "missing", id: p.id }, ...extra } as LogRecord;
   }
   add(stored: StoredRecord) {
-    if (!stored || typeof stored.conv !== "string" || !stored.conv || !Number.isSafeInteger(stored.seq) || stored.seq < 1 || !Number.isFinite(stored.at) || !["meta", "subagents", "entry", "live"].includes(stored.type)) throw new Error("invalid-conversation-record");
+    if (!stored || typeof stored.conv !== "string" || !stored.conv || !Number.isSafeInteger(stored.seq) || stored.seq < 1 || !Number.isFinite(stored.at) || !["meta", "subagents", "entry", "live", "history-import"].includes(stored.type)) throw new Error("invalid-conversation-record");
     if (stored.type === "meta" && (!stored.patch || typeof stored.patch !== "object" || Array.isArray(stored.patch))) throw new Error("invalid-metadata-patch");
     const before = this.picture ?? emptyPicture(stored.conv);
     if (stored.conv !== before.id || stored.seq <= before.seq) throw new Error("conversation-sequence-mismatch");
     const logical = stored.type === "subagents" ? expandSubagents(before, stored) : stored;
+    // Import provenance preserves the COMPLETE original pointer index, including
+    // entries hidden by a source-local Clear. Do not replay source controls.
+    if (logical.type === "history-import" && logical.sourceRecord?.type === "entry") this.resolve(logical.sourceRecord);
     this.picture = reduce(before, this.resolve(logical));
     if (this.reference && logical.seq === this.reference.seq) {
       // Compare persisted canonical state, not JS-only optional undefined keys

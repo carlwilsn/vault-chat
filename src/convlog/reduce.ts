@@ -471,6 +471,14 @@ function step(d: Draft, stored: StoredRecord): void {
     case "live":
       if (!d.meta.clearing) onLive(d, r);
       return;
+    case "history-import":
+      // Offline importer already resolved each source's Clear/live/native state.
+      // Keep original item identities; never silently replace a different source.
+      if (r.item) {
+        if (find(d, r.item.id)) throw new Error(`ambiguous-item-identity: ${d.id}/${r.item.id}`);
+        d.items.push(r.item);
+      }
+      return;
     case "signal":
       return;
   }

@@ -1,10 +1,11 @@
 /** Operator-only global ownership migration. Explicit stopped cohorts only.
- * Old Main becomes an explicitly named older conversation, NOT an invented
- * chronological merge of independent sequence/clear domains. Original histories
+ * Old Mains materialize into ordinary canonical Main. Source-local controls
+ * are retained as provenance, not replayed across independent Clear domains. Original histories
  * and native files are never moved or rewritten. The external durable intent
  * supports recognized forward recovery and CAS-only rollback, not authorization.
  */
 import { constants } from 'node:fs';
+import { materializeMain, importMainNative } from './global-main-import.ts';
 import { open, lstat, realpath, readdir, readFile, mkdir, rename, unlink } from 'node:fs/promises';
 import { dirname, basename, join, resolve, isAbsolute } from 'node:path';
 import { constants as bufferConstants } from 'node:buffer';
@@ -23,11 +24,12 @@ import type { StoredRecord, LogRecord } from '../src/convlog/protocol.ts';
 type Evidence = { path: string; stamp: ReturnType<typeof identity>; bytes: number; sha256: string };
 type Kept = { original: Evidence; backup: Evidence };
 type NativeLocation = { sessionsDir: string; instrDir: string };
-export type CohortOptions = { home: string; targetNative?: NativeLocation; sources: { root: string; mainAlias: string; native?: NativeLocation }[]; backupsRoot: string; idleMs: number };
+export type CohortOptions = { piDir?: string; home: string; targetNative?: NativeLocation; sources: { root: string; mainAlias: string; native?: NativeLocation }[]; backupsRoot: string; idleMs: number };
 type NativeCopy = { source: string; candidate: Evidence; staged: Evidence; destination: string };
 type Member = { source: string; originalId: string; id: string; seqOffset: number; prepared: Awaited<ReturnType<typeof prepareLocked>>; candidate: Evidence; log: Evidence; checkpoint: Evidence | null; destination: string; checkpointDestination: string; foldSha256: string };
-type Intent = { format: 'global-conversation-cohort-v1'; options: CohortOptions; artifact: string; dirs: string[]; absentPaths: string[]; kept: Kept[]; homeFiles: string[]; members: Member[]; nativeCopies: NativeCopy[]; commit: Evidence | null; commitDestination: string };
-export type CohortHooks = Observations & { stage?: (stage: 'prepared' | 'member-installed' | 'before-commit' | 'committed' | 'rollback-started' | 'rollback-member', intent: string) => Promise<void> };
+type Replacement = { original: Evidence; parked: string };
+type Intent = { replacements: Replacement[]; format: 'global-conversation-cohort-v1'; options: CohortOptions; artifact: string; dirs: string[]; absentPaths: string[]; kept: Kept[]; homeFiles: string[]; members: Member[]; nativeCopies: NativeCopy[]; commit: Evidence | null; commitDestination: string };
+export type CohortHooks = Observations & { stage?: (stage: 'prepared' | 'member-installed' | 'before-commit' | 'committed' | 'rollback-started' | 'rollback-member' | 'original-retained' | 'original-restored', intent: string) => Promise<void> };
 const canonical = (p: unknown) => JSON.parse(JSON.stringify(p));
 const hashPicture = (p: Picture) => digest().update(JSON.stringify(p)).digest('hex');
 async function absent(p: string) { try { await lstat(p); return false; } catch(e) { if ((e as NodeJS.ErrnoException).code === 'ENOENT') return true; throw e; } }
@@ -97,7 +99,9 @@ async function validateKept(m: Intent, homeControlsMayAdvance=false) {
  for(const k of m.kept) {
   await requireMatch(k.backup);
   if(homeControlsMayAdvance && [join(m.dirs[0],'_seq'),join(m.dirs[0],'_epoch')].includes(k.original.path)) continue;
-  await requireMatch(k.original);
+  const replacement=m.replacements.find(r=>r.original.path===k.original.path);
+  if(replacement && !await absent(replacement.parked)) await requireMatch(k.original,replacement.parked,true);
+  else await requireMatch(k.original,k.original.path,!!replacement&&homeControlsMayAdvance);
  }
 }
 async function foldFile(path: string, events: string, reference?: Reference, nativePaths?: ReadonlyMap<string,string>) {
@@ -160,6 +164,7 @@ export async function previewGlobalConversations(options: CohortOptions, hooks: 
   for(const root of [options.home,...options.sources.map(s=>s.root)]) {
    const registry=join(root,'.vault-chat/local/project-folders.json'); if(!await absent(registry)) await keep(registry,artifact,kept);else absentPaths.push(registry);
   }
+  const mainSources: Parameters<typeof materializeMain>[0]=[];
   const used=new Set<string>(); let floor=0;
   for(const p of homeFiles) {
    if(dirname(p)===held.dirs[0]&&p.endsWith('.jsonl')&&!p.split('/').at(-1)!.startsWith('_')) {
@@ -173,15 +178,21 @@ export async function previewGlobalConversations(options: CohortOptions, hooks: 
      const meta=join(options.targetNative.instrDir,thread+'.json');await keep(meta,artifact,kept);
      const data=JSON.parse(await readFile(meta,'utf8'));if(typeof data.instr!=='string'||dirname(data.instr)!==options.targetNative.instrDir)throw new Error(`native-instruction-identity-mismatch: ${thread}`);
      await keep(data.instr,artifact,kept);
+     const session=folded.picture.meta.threadPath;if(typeof session!=='string')throw new Error('native-session-identity-mismatch');await keep(resolve(held.dirs[0],session),artifact,kept);
     }
     used.add(folded.picture.id); floor=Math.max(floor,folded.picture.seq);
+    if(folded.picture.id==='main') {
+     const prepared=await prepareLocked({mode:'dry-run',source:p,eventsDir:held.dirs[0],backupsRoot:backups,idleMs:options.idleMs,strictNative:true},hooks);
+     mainSources.push({path:p,events:held.dirs[0],prepared,picture:folded.picture,reference});
+    }
    }
   }
   for(const k of kept) if(k.original.path.endsWith('/_seq')) { const n=Number(await readFile(k.backup.path,'utf8')); if(!Number.isSafeInteger(n)||n<0) throw new Error('invalid-source-clock'); floor=Math.max(floor,n); }
-  const members: Member[]=[], nativeCopies: NativeCopy[]=[];
+  const members: Member[]=[], nativeCopies: NativeCopy[]=[], replacements: Replacement[]=[];
   const relocations=new Map<string,string>();
   for(const [i,source] of [...options.sources].sort((a,b)=>a.root.localeCompare(b.root)).entries()) {
    if(!/^[A-Za-z0-9_-]{6,80}$/.test(source.mainAlias)||source.mainAlias==='main'||source.mainAlias.startsWith('project-')) throw new Error(`explicit-valid-main-alias-required: ${source.root}`);
+   if(used.has(source.mainAlias)||options.sources.filter(s=>s.mainAlias===source.mainAlias).length!==1)throw new Error(`retired-main-id-collision: ${source.mainAlias}`);
    const events=join(source.root,'.vault-chat/events');
    for(const name of (await readdir(events)).filter(n=>n.endsWith('.jsonl')&&!n.startsWith('_')).sort()) {
     const path=join(events,name);
@@ -196,7 +207,24 @@ export async function previewGlobalConversations(options: CohortOptions, hooks: 
     const original=await foldFile(prepared.backup.path,events,reference), originalId=original.picture.id;
     if(fileStem(originalId)+'.jsonl'!==name) throw new Error(`conversation-filename-identity-collision: ${path}`);
     assertIdle(original.picture,path);
-    const id=originalId==='main'?source.mainAlias:originalId;
+    if(originalId==='main') {
+     for(const native of original.nativeFiles) {if(!native.identity)throw new Error('native-pointer-missing');await keep(native.path,artifact,kept);}
+     // Old Main is NOT a resumable alternate thread. Preserve its original
+     // instruction metadata, but never copy/spawn those instructions as Main.
+     const thread=original.picture.meta.threadId;
+     if(typeof thread==='string'&&thread) {
+      if(!source.native)throw new Error('native-runtime-locations-required');
+      const meta=join(source.native.instrDir,thread+'.json');await keep(meta,artifact,kept);
+      const data=JSON.parse(await readFile(meta,'utf8'));if(typeof data.instr!=='string'||dirname(data.instr)!==source.native.instrDir)throw new Error('native-instruction-identity-mismatch');
+      await keep(data.instr,artifact,kept);
+      const session=original.picture.meta.threadPath;
+      if(typeof session!=='string'||dirname(resolve(events,session))!==source.native.sessionsDir||!basename(session).endsWith(`_${thread}.jsonl`))throw new Error('native-session-identity-mismatch');
+      await keep(resolve(events,session),artifact,kept);
+     }
+     mainSources.push({path,events,prepared,picture:original.picture,reference});
+     continue;
+    }
+    const id=originalId;
     if(used.has(id)) throw new Error(`ambiguous-conversation-identity: ${id} (${path})`); used.add(id);
     const destination=join(held.dirs[0],fileStem(id)+'.jsonl'), checkpointDestination=destination.replace(/\.jsonl$/,'.ckpt.json');
     if(!await absent(destination)||!await absent(checkpointDestination)) throw new Error(`destination-collision: ${id}`);
@@ -260,14 +288,9 @@ export async function previewGlobalConversations(options: CohortOptions, hooks: 
       picture=candidateFold.picture!;
      }
      sourceFold.verify();
-     // Archive only the extra Main; its original Clear boundary and IDs survive.
-     if(originalId==='main') {
-      const rec={seq:picture.seq+1,conv:id,at:original.picture.meta.lastActivityAt,type:'meta',patch:{kind:'separate',title:`Main (${source.mainAlias})`}} as LogRecord;
-      await writeAll(out,Buffer.from(JSON.stringify(rec)+'\n')); candidateFold.add(rec as StoredRecord); picture=candidateFold.picture!;
-     }
      const sourcePicture=sourceFold.verify();
      const qualifiedMeta=qualify({type:'meta',conv:originalId,seq:sourcePicture.seq,at:0,patch:sourcePicture.meta},events,relocations) as Extract<LogRecord,{type:'meta'}>;
-     const expectedPicture={...sourcePicture,id,seq:sourcePicture.seq+seqOffset+(originalId==='main'?1:0),meta:{...qualifiedMeta.patch,...(originalId==='main'?{kind:'separate',title:`Main (${source.mainAlias})`}:{})}};
+     const expectedPicture={...sourcePicture,id,seq:sourcePicture.seq+seqOffset,meta:qualifiedMeta.patch};
      const expected=canonical(expectedPicture), candidate=candidateFold.verify();
      if(!isDeepStrictEqual(expected,canonical(candidate))) throw new Error('canonical-candidate-fold-mismatch');
      const ids=new Set<string>(); for(const item of [...candidate.items,...candidate.inflight]) { if(ids.has(item.id)) throw new Error(`ambiguous-item-identity: ${id}/${item.id}`); ids.add(item.id); }
@@ -280,11 +303,27 @@ export async function previewGlobalConversations(options: CohortOptions, hooks: 
     await keep(outPath,artifact,kept);
    }
   }
+  if(mainSources.some(x=>x.events!==held.dirs[0])) {
+   const homeMain=mainSources.find(x=>x.events===held.dirs[0]);
+   if(!homeMain)throw new Error('continuing-home-main-required');
+   const native=await importMainNative(mainSources,homeMain,options,artifact);
+   if(native) {
+    const original=(await keep(native.destination,artifact,kept)).original;
+    replacements.push({original,parked:join(dirname(native.destination),`.global-${randomUUID()}.retained`)});
+    nativeCopies.push({source:native.destination,candidate:await evidence(native.candidate),staged:{...await evidence(native.candidate),path:join(dirname(native.destination),`.global-${randomUUID()}.pending`)},destination:native.destination});
+   }
+   const result=await materializeMain(mainSources,homeMain,artifact,floor);
+   const destination=homeMain.path, checkpointDestination=destination.replace(/\.jsonl$/,'.ckpt.json');
+   for(const path of [destination,checkpointDestination]) if(!await absent(path)) replacements.push({original:(await keep(path,artifact,kept)).original,parked:join(held.dirs[0],`.global-${randomUUID()}.retained`)});
+   const candidate=await evidence(result.path);
+   members.unshift({source:destination,originalId:'main',id:'main',seqOffset:0,prepared:homeMain.prepared,candidate,log:{...candidate,path:join(held.dirs[0],`.global-${randomUUID()}.pending`)},checkpoint:null,destination,checkpointDestination,foldSha256:hashPicture(result.picture)});
+   await keep(result.path,artifact,kept);
+  }
   if(!members.length) throw new Error('empty-source-cohort');
-  const m: Intent={format:'global-conversation-cohort-v1',options,artifact,dirs:held.dirs,absentPaths,kept,homeFiles,members,nativeCopies,commit:null,commitDestination};
+  const m: Intent={replacements,format:'global-conversation-cohort-v1',options,artifact,dirs:held.dirs,absentPaths,kept,homeFiles,members,nativeCopies,commit:null,commitDestination};
   const intentPath=join(artifact,'preview.json'); await writeNew(intentPath,JSON.stringify(m)+'\n');
   await validateKept(m); await hooks.stage?.('prepared',intentPath);
-  return {intentPath,aliases:members.map(m=>({source:m.source,id:m.id,originalId:m.originalId,seqOffset:m.seqOffset,sourceLastSeq:m.prepared.compact.lastSeq,title:m.originalId==='main'?`Main (${m.id})`:undefined})),installed:false};
+  return {intentPath,aliases:members.map(m=>({source:m.source,id:m.id,originalId:m.originalId,seqOffset:m.seqOffset,sourceLastSeq:m.prepared.compact.lastSeq,title:m.originalId==='main'?'Main':undefined})),installed:false};
  } finally {held.release();}
 }
 async function loadIntent(path: string) {
@@ -293,11 +332,12 @@ async function loadIntent(path: string) {
  if(m.format!=='global-conversation-cohort-v1'||m.artifact!==dirname(path)||m.options.home!==resolve(m.options.home)||m.commitDestination!==join(m.options.home,'.vault-chat/events',GLOBAL_CUTOVER)||!Array.isArray(m.members)||!m.members.length) throw new Error('invalid-global-cohort-intent');
  if(!Array.isArray(m.absentPaths)||m.absentPaths.some(p=>![m.options.home,...m.options.sources.map(s=>s.root)].map(r=>join(r,'.vault-chat/local/project-folders.json')).includes(p))) throw new Error('invalid-cohort-absent-registry');
  if(m.commit && (dirname(m.commit.path)!==m.dirs[0]||!m.commit.path.endsWith('.pending'))) throw new Error('invalid-routing-commit');
- if(!Array.isArray(m.nativeCopies)) throw new Error('invalid-native-cohort');
+ if(!Array.isArray(m.nativeCopies)||!Array.isArray(m.replacements)) throw new Error('invalid-native-cohort');
+ for(const r of m.replacements)if(!m.kept.some(k=>isDeepStrictEqual(k.original,r.original))||dirname(r.parked)!==dirname(r.original.path)||!basename(r.parked).startsWith('.global-')||!r.parked.endsWith('.retained'))throw new Error('invalid-cohort-replacement');
  const dirs=[m.options.home,...m.options.sources.map(s=>s.root)].map(p=>join(p,'.vault-chat/events'));
  if(!isDeepStrictEqual(dirs,m.dirs)) throw new Error('invalid-cohort-directories');
  for(const member of m.members) {
-  if(dirname(member.destination)!==dirs[0]||fileStem(member.id)+'.jsonl'!==member.destination.split('/').at(-1)||member.checkpointDestination!==member.destination.replace(/\.jsonl$/,'.ckpt.json')||dirname(member.log.path)!==dirs[0]||!member.log.path.endsWith('.pending')||dirname(member.candidate.path)!==m.artifact||!dirs.slice(1).includes(dirname(member.source))) throw new Error('invalid-cohort-member');
+  if(dirname(member.destination)!==dirs[0]||fileStem(member.id)+'.jsonl'!==member.destination.split('/').at(-1)||member.checkpointDestination!==member.destination.replace(/\.jsonl$/,'.ckpt.json')||dirname(member.log.path)!==dirs[0]||!member.log.path.endsWith('.pending')||dirname(member.candidate.path)!==m.artifact||!dirs.includes(dirname(member.source))) throw new Error('invalid-cohort-member');
   if(member.checkpoint && (dirname(member.checkpoint.path)!==dirs[0]||!member.checkpoint.path.endsWith('.pending'))) throw new Error('invalid-cohort-checkpoint');
  }
  const nativeDirs=[m.options.targetNative?.sessionsDir,m.options.targetNative?.instrDir].filter(Boolean);
@@ -314,13 +354,13 @@ async function copyNew(source: Evidence, destination: string) {
 async function verifyCandidates(m: Intent, installed: boolean) {
  const mapping=new Map<string,string>();
  for(const copy of m.nativeCopies) {
-  const path=installed?copy.destination:await absent(copy.destination)?copy.staged.path:copy.destination;
+  const path=installed?copy.destination:await matches(copy.staged,copy.destination,true)?copy.destination:copy.staged.path;
   await requireMatch(copy.staged,path,path===copy.destination);mapping.set(copy.destination,path);
  }
  for(const member of m.members) {
   if(!member.checkpoint) throw new Error('cohort-not-staged');
-  const log=installed?member.destination:await absent(member.destination)?member.log.path:member.destination;
-  const checkpoint=installed?member.checkpointDestination:await absent(member.checkpointDestination)?member.checkpoint.path:member.checkpointDestination;
+  const log=installed?member.destination:await matches(member.log,member.destination,true)?member.destination:member.log.path;
+  const checkpoint=installed?member.checkpointDestination:await matches(member.checkpoint,member.checkpointDestination,true)?member.checkpointDestination:member.checkpoint.path;
   await requireMatch(member.log,log,log===member.destination);
   await requireMatch(member.checkpoint,checkpoint,checkpoint===member.checkpointDestination);
   const ck=JSON.parse(await readFile(checkpoint,'utf8'));
@@ -331,6 +371,7 @@ async function verifyCandidates(m: Intent, installed: boolean) {
 }
 async function expectedHomeFiles(m: Intent, allowControls: boolean, allowPartial: boolean) {
  const expected=new Set(m.homeFiles), actual=await files(m.dirs[0]);
+ for(const r of m.replacements)expected.add(r.parked);
  expected.add(join(m.dirs[0],'_global-maintenance.json'));
  expected.add(m.commitDestination);
  if(m.commit) {expected.add(m.commit.path);if(allowPartial) expected.add(m.commit.path+'.rollback');}
@@ -361,19 +402,20 @@ export async function applyGlobalConversations(previewPath: string, hooks: Cohor
   if(m.commit||m.members.some(x=>x.checkpoint)) throw new Error('apply-requires-preview');
   await validateKept(m); await expectedHomeFiles(m,false,false);
   if(!await absent(m.commitDestination)) throw new Error('cohort-already-committed');
-  for(const copy of m.nativeCopies) {if(!await absent(copy.destination)) throw new Error('native-destination-collision');copy.staged=await copyNew(copy.candidate,copy.staged.path);}
+  for(const copy of m.nativeCopies) {if(!await absent(copy.destination)&&!m.replacements.some(r=>r.original.path===copy.destination)) throw new Error('native-destination-collision');copy.staged=await copyNew(copy.candidate,copy.staged.path);}
   const nativePaths=new Map(m.nativeCopies.map(c=>[c.destination,c.staged.path]));
   for(const member of m.members) {
-   if(!await absent(member.destination)||!await absent(member.checkpointDestination)) throw new Error('destination-collision');
+   if([member.destination,member.checkpointDestination].some(p=>!m.replacements.some(r=>r.original.path===p)) && (!await absent(member.destination)||!await absent(member.checkpointDestination))) throw new Error('destination-collision');
    member.log=await copyNew(member.candidate,member.log.path);
    const candidate=await foldFile(member.log.path,m.dirs[0],undefined,nativePaths);
    if(hashPicture(candidate.picture)!==member.foldSha256) throw new Error('candidate-changed-after-preview');
    const ck=checkpointFor(member.log.path,candidate.picture,member.log.bytes,candidate.pointed);
    const path=join(m.dirs[0],`.global-${randomUUID()}-checkpoint.pending`);
-   await writeNew(path,JSON.stringify(ck)+'\n'); member.checkpoint=await evidence(path);
+   const bytes=JSON.stringify(ck)+'\n';if(Buffer.byteLength(bytes)>bufferConstants.MAX_STRING_LENGTH)throw new Error('checkpoint-exceeds-node-string-ceiling');
+   await writeNew(path,bytes); member.checkpoint=await evidence(path);
   }
   const preview=await evidence(previewPath);
-  const commit: GlobalCutover={format:'global-conversation-cutover-v1',home:m.options.home,legacyRoots:m.options.sources.map(s=>s.root),intent:previewPath,intentSha256:preview.sha256};
+  const commit: GlobalCutover={format:'global-conversation-cutover-v1',home:m.options.home,retiredMainIds:m.options.sources.map(s=>s.mainAlias),legacyRoots:m.options.sources.map(s=>s.root),intent:previewPath,intentSha256:preview.sha256};
   const commitPath=join(m.artifact,'commit.pending'); await writeNew(commitPath,JSON.stringify(commit)+'\n');
   // Same-FS staging for the commit itself; durable journal before ANY rename.
   const stagedCommit=join(m.dirs[0],`.global-${randomUUID()}-commit.pending`);
@@ -391,6 +433,10 @@ async function completeGlobalLocked(m: Intent, intentPath: string, hooks: Cohort
  const committed=await matches(m.commit,m.commitDestination,true);
  if(!committed) {await requireMatch(m.commit); if(!await absent(m.commitDestination)) throw new Error('routing-commit-CAS-refused');}
  const guard=await maintenance(m,intentPath);
+ for(const r of m.replacements) {
+  if(await absent(r.parked)) {await requireMatch(r.original);await rename(r.original.path,r.parked);await syncDir(dirname(r.parked));await hooks.stage?.('original-retained',intentPath);}
+  else await requireMatch(r.original,r.parked,true);
+ }
  for(const copy of m.nativeCopies) {
   if(await absent(copy.destination)) {await requireMatch(copy.staged);await rename(copy.staged.path,copy.destination);await syncDir(dirname(copy.destination));}
  }
@@ -423,11 +469,11 @@ export async function rollbackGlobalConversations(intentPath: string, hooks: Coh
   const rollbackPath=join(m.artifact,'rollback.json'), continuing=!await absent(rollbackPath);
   await validateKept(m,true); await expectedHomeFiles(m,true,continuing);
   for(const member of m.members) {
-   await requireMatch(member.log,await absent(member.destination)?member.log.path+'.rollback':member.destination,true);
+   await requireMatch(member.log,await matches(member.log,member.destination,true)?member.destination:member.log.path+'.rollback',true);
    if(!member.checkpoint) throw new Error('cohort-not-staged');
-   await requireMatch(member.checkpoint,await absent(member.checkpointDestination)?member.checkpoint.path+'.rollback':member.checkpointDestination,true);
+   await requireMatch(member.checkpoint,await matches(member.checkpoint,member.checkpointDestination,true)?member.checkpointDestination:member.checkpoint.path+'.rollback',true);
   }
-  for(const copy of m.nativeCopies) await requireMatch(copy.staged,await absent(copy.destination)?copy.staged.path+'.rollback':copy.destination,true);
+  for(const copy of m.nativeCopies) await requireMatch(copy.staged,await matches(copy.staged,copy.destination,true)?copy.destination:copy.staged.path+'.rollback',true);
   const parkedCommit=m.commit.path+'.rollback';
   await requireMatch(m.commit,await absent(m.commitDestination)?parkedCommit:m.commitDestination,true);
   // Full checks finish before changing routing. If interrupted, the same
@@ -437,17 +483,23 @@ export async function rollbackGlobalConversations(intentPath: string, hooks: Coh
   const guard=await maintenance(m,intentPath);await hooks.stage?.('rollback-started',intentPath);
   await validateKept(m,true);
   for(const member of m.members) {
-   await requireMatch(member.log,await absent(member.destination)?member.log.path+'.rollback':member.destination,true);
-   await requireMatch(member.checkpoint!,await absent(member.checkpointDestination)?member.checkpoint!.path+'.rollback':member.checkpointDestination,true);
+   await requireMatch(member.log,await matches(member.log,member.destination,true)?member.destination:member.log.path+'.rollback',true);
+   await requireMatch(member.checkpoint!,await matches(member.checkpoint!,member.checkpointDestination,true)?member.checkpointDestination:member.checkpoint!.path+'.rollback',true);
   }
-  for(const copy of m.nativeCopies) await requireMatch(copy.staged,await absent(copy.destination)?copy.staged.path+'.rollback':copy.destination,true);
+  for(const copy of m.nativeCopies) await requireMatch(copy.staged,await matches(copy.staged,copy.destination,true)?copy.destination:copy.staged.path+'.rollback',true);
   if(!await absent(m.commitDestination)) {await requireMatch(m.commit,m.commitDestination,true);await rename(m.commitDestination,parkedCommit);await syncDir(m.dirs[0]);}
   for(const member of m.members) {
-   if(!await absent(member.destination)) {await requireMatch(member.log,member.destination,true);await rename(member.destination,member.log.path+'.rollback');await syncDir(m.dirs[0]);}
-   if(!await absent(member.checkpointDestination)) {await requireMatch(member.checkpoint!,member.checkpointDestination,true);await rename(member.checkpointDestination,member.checkpoint!.path+'.rollback');await syncDir(m.dirs[0]);}
+   if(await matches(member.log,member.destination,true)) {await requireMatch(member.log,member.destination,true);await rename(member.destination,member.log.path+'.rollback');await syncDir(m.dirs[0]);}
+   if(await matches(member.checkpoint!,member.checkpointDestination,true)) {await requireMatch(member.checkpoint!,member.checkpointDestination,true);await rename(member.checkpointDestination,member.checkpoint!.path+'.rollback');await syncDir(m.dirs[0]);}
    await hooks.stage?.('rollback-member',intentPath);
   }
-  for(const copy of m.nativeCopies) if(!await absent(copy.destination)){await requireMatch(copy.staged,copy.destination,true);await rename(copy.destination,copy.staged.path+'.rollback');await syncDir(dirname(copy.destination));}
+  for(const copy of m.nativeCopies) if(await matches(copy.staged,copy.destination,true)){await requireMatch(copy.staged,copy.destination,true);await rename(copy.destination,copy.staged.path+'.rollback');await syncDir(dirname(copy.destination));}
+  for(const r of m.replacements) {
+   if(!await absent(r.original.path)) {
+    // A recovery after restoration recognizes ONLY the original inode.
+    await requireMatch(r.original,r.original.path,true);
+   } else {await requireMatch(r.original,r.parked,true);await rename(r.parked,r.original.path);await syncDir(dirname(r.original.path));await hooks.stage?.('original-restored',intentPath);}
+  }
   await unlink(guard);await syncDir(m.dirs[0]);return {rolledBack:true};
  } finally {held.release();}
 }

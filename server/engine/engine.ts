@@ -1,3 +1,4 @@
+import { globalCutover } from '../convlog/globalCutover';
 // The engine: every agent turn on the box runs in pi (pi/backend.ts). A
 // conversation maps to one pi session ("thread"; a new one after a roll-over).
 // The transcript is pi's own session file; the vault's feed (server/convlog,
@@ -748,6 +749,8 @@ export class Engine {
       return ensureProjectThread(this.d.vault, info.slug, info.name);
     }
     if (!convId || convId === MAIN_ID) return ensureMain(this.d.vault);
+    // A stale pre-cutover link must not create/resume an alternate old Main.
+    if (globalCutover(this.d.vault)?.retiredMainIds?.includes(convId)) return null;
     const revived = { onRevived: (id: string) => this.revived(id) };
     const have = await readConv(this.d.vault, convId);
     const slug = projectOfThread(convId);
