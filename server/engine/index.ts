@@ -1,3 +1,4 @@
+import { globalCutover } from "../convlog/globalCutover";
 // Boot the engine: install/locate the pinned pi, write its agent dir and
 // extension, build the sandbox, and hand the HTTP layer the routes it takes
 // over (/message, /answer, /kill). Everything runtime-neutral (conversations,
@@ -391,7 +392,7 @@ export async function startEngine(b: EngineBoot): Promise<EngineHandle> {
   const engines = new Map<string, Engine>([[mainRef.name, engine]]);
   const opening = new Map<string, Promise<Engine>>();
   const open = (v: VaultRef): Promise<Engine> => {
-    if (v.main || v.path === b.vault) return Promise.resolve(engine);
+    if (v.main || v.path === b.vault || globalCutover(b.vault)?.legacyRoots.includes(v.path)) return Promise.resolve(engine);
     const hit = opening.get(v.name);
     if (hit) return hit;
     const p = (async () => {

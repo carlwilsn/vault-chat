@@ -49,6 +49,17 @@ const openSettings: Step = { click: "[title='Settings']" };
 
 export const masterScenarios: Scenario[] = [
   {
+    id: "global-workspaces-real", title: "Global project chat across file workspaces (real backend)", group: "Projects",
+    clock: new Date().toISOString(), surfaces: ["desktop"],
+    notes: "Use the owned viewerRootNative VC_GLOBAL_UI_RUNTIME fixture. Chat/engine/native pi are real; laptop file trees alone use the existing synthetic filesystem bridge. No fake chat or voice session.",
+    build: (ctx: BuildCtx) => {
+      ctx.write("../../vc/.vault-chat-master.json", JSON.stringify({box:"http://realbox.localhost",name:"fixture"})+"\n");
+      for(const name of ["owner","viewer","other"]) ctx.write(`../../vc/vaults/${name}/README.md`, `# ${name} file workspace\n\n${name} file-pane marker.\n`);
+      ctx.ls["vault_chat_master_path"] = LAPTOP_MASTER;
+    },
+    host: () => ({sync:{box:{box:"http://realbox.localhost",vault:"owner"},boxPerVault:true,reports:[{configured:true,ok:true,message:"owned local fixture"}]}} as any),
+  },
+  {
     id: "master-folder",
     title: "The vault-chat folder — the vault picker, Settings, + New project",
     group: "Projects",

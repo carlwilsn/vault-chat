@@ -14,7 +14,7 @@ export class OfflineFold {
   private pointedSets = new Map<string, Set<string>>();
   private files = new Map<string, { identity: ReturnType<typeof identity> | null; stream: Generator<PiEntry>; found: Map<string, PiEntry> }>();
   private referenceSeen = false;
-  constructor(readonly events: string, readonly strict = true, readonly reference?: Reference) {
+  constructor(readonly events: string, readonly strict = true, readonly reference?: Reference, readonly nativePaths?: ReadonlyMap<string, string>) {
     if (reference && (![2, 3].includes(reference.v) || reference.rv !== REDUCER_VERSION || reference.seq !== reference.picture?.seq)) throw new Error("authoritative-checkpoint-incompatible");
   }
   private stamp(file: string) {
@@ -31,12 +31,13 @@ export class OfflineFold {
     const seen = this.pointedSets.get(key) ?? new Set<string>();
     this.pointedSets.set(key, seen);
     if (!seen.has(p.id)) { seen.add(p.id); ids.push(p.id); }
-    let f = this.files.get(file);
+    const physicalFile = this.nativePaths?.get(file) ?? file;
+    let f = this.files.get(physicalFile);
     if (!f) {
-      f = { identity: this.stamp(file), stream: offlineEntries(file), found: new Map() };
-      this.files.set(file, f);
+      f = { identity: this.stamp(physicalFile), stream: offlineEntries(physicalFile), found: new Map() };
+      this.files.set(physicalFile, f);
     }
-    if (!same(f.identity, this.stamp(file))) throw new Error("native-session-changed");
+    if (!same(f.identity, this.stamp(physicalFile))) throw new Error("native-session-changed");
     let entry = f.found.get(p.id);
     if (!entry && f.identity) {
       // Historical pointers normally follow native append order. Rewind ONLY
@@ -45,7 +46,7 @@ export class OfflineFold {
         for (let next = f.stream.next(); !next.done; next = f.stream.next()) {
           if (next.value.id === p.id) { entry = next.value; break; }
         }
-        if (!entry && attempt === 0) { f.stream.return(undefined); f.stream = offlineEntries(file); }
+        if (!entry && attempt === 0) { f.stream.return(undefined); f.stream = offlineEntries(physicalFile); }
       }
       if (entry) f.found.set(p.id, entry);
     }

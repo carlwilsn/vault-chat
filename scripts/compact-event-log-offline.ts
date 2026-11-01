@@ -6,6 +6,7 @@
  * Reading native session pointers is optional via eventsDir; no event source is ever replaced.
  * Live use requires installed compatible readers/fallback + maintainer-owned writer exclusion.
  */
+import { constants as bufferConstants } from "node:buffer";
 import { open, mkdir, realpath, stat, access } from "node:fs/promises";
 import { resolve, join, dirname, sep } from "node:path";
 import { execFileSync } from "node:child_process";
@@ -62,7 +63,7 @@ export async function compactOffline(options: { input: string; outDir: string; s
     output = await open(outputPath, "wx", 0o600);
     const raw = digest(), logicalHash = digest();
     let picture: Picture | undefined, fullPicture: Picture | undefined, records = 0, changed = 0, bytes = 0, firstSeq: number | undefined;
-    for await (const line of lines(source, initial.size, raw)) {
+    for await (const line of lines(source, initial.size, raw, bufferConstants.MAX_STRING_LENGTH)) {
       let stored: StoredRecord;
       try { stored = parseRecord(line); } catch { throw new Error("Invalid/blank JSON record; refusing to discard history"); }
       const { before, logical, next } = unfold(picture, stored);

@@ -23,12 +23,13 @@
 // an entry is pointed to only once pi has written it: a record a client has
 // seen is on disk, and a restart loses nothing it showed. On the wire (and in
 // memory) an entry record carries the entry itself, read from pi's file.
-import { appendFileSync, closeSync, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, ftruncateSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, closeSync, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, ftruncateSync, statSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { randomBytes } from "node:crypto";
 import { constants as bufferConstants } from "node:buffer";
 import { lines, alignStart, boundary, position, validatePosition, checkpointRequired, MAX_RECOVERY_BYTES, MAX_RECORD_BYTES, type Position } from "./reader";
 import { acquireEventDirectory } from "./maintenance";
+import { conversationVaults, globalCutover } from "./globalCutover";
 import { renameRetry } from "../atomic";
 import type { EventBody, LogRecord, PiEntry, PollAnswer, StoredRecord } from "../../src/convlog/protocol";
 import { readEntries } from "./piSession";
@@ -234,6 +235,10 @@ export class ConvLog {
     mkdirSync(this.dir, { recursive: true });
     this.releaseWriter = acquireEventDirectory(this.dir, "shared");
     try {
+      try {
+        lstatSync(join(this.dir, "_global-maintenance.json"));
+        throw new Error("Global conversation maintenance incomplete; recover the retained offline intent before startup");
+      } catch (e) { if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e; }
       this.signalsFile = join(this.dir, `${SIGNALS}.jsonl`);
       this.sessionsDir = join(this.dir, "sessions");
       this.epoch = this.loadEpoch();
@@ -759,6 +764,9 @@ export function setSharedClock(floorFile: string | null): void {
 
 /** A vault's own log: its conversations and its signals. The engines write here; the clients read the global feed. */
 export function convLog(vault: string): ConvLog {
+  // After the verified cohort commit, no legacy owner is opened as a writer,
+  // including eager startup/file-signal compatibility callers.
+  if (feed && globalCutover(feed.main)?.legacyRoots.includes(vault)) vault = feed.main;
   let l = logs.get(vault);
   if (!l) {
     l = new ConvLog(vault, legacyFor?.(vault) ?? null, undefined, shared ?? undefined);
@@ -895,7 +903,7 @@ export function globalFeed(vault: string): GlobalFeed | ConvLog {
   if (!v) {
     v = new GlobalFeed(
       () => convLog(f.main),
-      () => [...new Set([f.main, ...f.vaults()])].map((x) => convLog(x)),
+      () => conversationVaults(f.main, f.vaults()).map((x) => convLog(x)),
       () => convLog(vault),
     );
     f.views.set(vault, v);
@@ -908,14 +916,15 @@ export function globalFeed(vault: string): GlobalFeed | ConvLog {
 export function ownerVault(id: string, fallback: string): string | null {
   if (!feed) return convLog(fallback).has(id) ? fallback : null;
   if (id === MAIN) return feed.main;
-  for (const v of [...new Set([feed.main, ...feed.vaults()])]) if (convLog(v).has(id)) return v;
+  for (const v of conversationVaults(feed.main, feed.vaults())) if (convLog(v).has(id)) return v;
   return null;
 }
 
 /** A vault-level signal on /poll (the vault changed, a file changed, the inbox, notifications, a project). */
 export function signal(vault: string, ev: Record<string, unknown>): void {
   try {
-    convLog(vault).emit(null, { type: "signal", signal: ev });
+    const owner = feed && globalCutover(feed.main)?.legacyRoots.includes(vault) ? feed.main : vault;
+    convLog(owner).emit(null, { type: "signal", signal: ev });
   } catch (e) {
     console.warn("[convlog] signal failed:", (e as Error).message);
   }

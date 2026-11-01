@@ -3,6 +3,7 @@
  * No service control, private-log defaults, old source SHA or historical file-size constants.
  */
 import { constants } from "node:fs";
+import { constants as bufferConstants } from "node:buffer";
 import { randomUUID } from "node:crypto";
 import { open, realpath, stat, lstat, access, mkdtemp, rename, chmod, writeFile, readFile, readdir, copyFile, unlink } from "node:fs/promises";
 import { dirname, join, resolve, relative, sep } from "node:path";
@@ -19,13 +20,13 @@ import { validatePosition } from "../server/convlog/reader.ts";
 import { OfflineFold, type Reference } from "./event-log-offline-fold.ts";
 import { completePrepared } from "./event-log-offline-cohort.ts";
 
-export type PrepareOptions = { mode?: "dry-run" | "apply" | "checkpoint-only"; source: string; eventsDir: string; backupsRoot: string; idleMs: number };
+export type PrepareOptions = { mode?: "dry-run" | "apply" | "checkpoint-only"; source: string; eventsDir: string; backupsRoot: string; idleMs: number; strictNative?: boolean };
 export type Stage = "idle" | "copied" | "backup-verified" | "compacted" | "before-log-rename" | "between-renames" | "after-renames";
 // Dependency injection is for disposable fixtures, NOT a CLI bypass of host checks.
 export type Observations = { assertStopped: () => Promise<void>; onStage?: (stage: Stage, artifactDir?: string) => Promise<void> };
 const inside = (path: string, root: string) => path === root || path.startsWith(root + sep);
 
-async function externalBackupRoot(path: string, events: string) {
+export async function externalBackupRoot(path: string, events: string) {
   if (inside(path, events) || inside(events, path) || path.split(sep).includes(".vault-chat")) throw new Error("backup-root-must-be-outside-vault");
   for (let parent = path; ; parent = dirname(parent)) {
     const marker = join(parent, ".vault-chat");
@@ -44,7 +45,8 @@ export async function prepareOffline(options: PrepareOptions, observations: Obse
   const release = acquireEventDirectory(events, "exclusive");
   try { return await prepareLocked(options, observations); } finally { release(); }
 }
-async function prepareLocked(options: PrepareOptions, observations: Observations) {
+/** Internal cohort API: caller must retain exclusive locks for every source directory. */
+export async function prepareLocked(options: PrepareOptions, observations: Observations) {
   if (!Number.isSafeInteger(options.idleMs) || options.idleMs < 1) throw new Error("positive-idle-ms-required");
   // Always check before opening source, even for dry-run.
   await observations.assertStopped();
@@ -63,7 +65,7 @@ async function prepareLocked(options: PrepareOptions, observations: Observations
     let originalCheckpoint: { identity: ReturnType<typeof identity>; sha256: string; bytes: number; path: string } | null = null;
     let reference: Reference | undefined;
     let checkpointBytes: Buffer | undefined;
-    if (applying) {
+    if (applying || options.strictNative) {
       try {
         const cs = await lstat(checkpoint);
         if (!cs.isFile() || cs.nlink !== 1) throw new Error("invalid-checkpoint-file");
@@ -123,7 +125,7 @@ async function prepareLocked(options: PrepareOptions, observations: Observations
     // Legacy v2 carries no original inode identity: after log-first replacement,
     // an interrupted cohort could attach it to the new file. Upgrade metadata
     // independently first; do not invent an identity in the live reader.
-    if (options.mode === "apply" && reference?.v === 2) throw new Error("checkpoint-only-required-before-replacing-v2-log");
+    if ((options.mode === "apply" || options.strictNative) && reference?.v === 2) throw new Error("checkpoint-only-required-before-replacing-v2-log");
     const compact = options.mode === "checkpoint-only" ? await (async () => {
       const fold = new OfflineFold(events, true, reference);
       const fd = await open(backupPath, "r");
@@ -131,7 +133,7 @@ async function prepareLocked(options: PrepareOptions, observations: Observations
         // One sequential original-root canonical fold, including its complete
         // native pointer IDs. No candidate log and no worker-history rewrite.
         const logicalHash = digest(); let records = 0;
-        for await (const line of lines(fd, start.size, digest())) {
+        for await (const line of lines(fd, start.size, digest(), bufferConstants.MAX_STRING_LENGTH)) {
           const { logical } = fold.add(parseRecord(line));
           logicalHash.update(JSON.stringify(logical) + "\n"); records++;
         }
@@ -140,7 +142,7 @@ async function prepareLocked(options: PrepareOptions, observations: Observations
           pointed: fold.pointed, nativeFiles: fold.nativeFiles, foldVerified: true, records, changedRecords: 0, logicalSha256: logicalHash.digest("hex"),
           lastSeq: picture.seq, foldSha256: digest().update(JSON.stringify(picture)).digest("hex") };
       } finally { fold.close(); await fd.close(); }
-    })() : await compactOffline({ input: backupPath, outDir: join(artifactDir, "candidate"), sha256: sourceSha256, bytes: start.size, eventsDir: events, strictNative: applying, reference });
+    })() : await compactOffline({ input: backupPath, outDir: join(artifactDir, "candidate"), sha256: sourceSha256, bytes: start.size, eventsDir: events, strictNative: applying || options.strictNative, reference });
     await observations.onStage?.("compacted", artifactDir);
     await checkSource();
     const finalCandidate = await open(compact.output.path, "r");

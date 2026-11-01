@@ -132,3 +132,11 @@ timestamps and "verified" itself.
 - Viewer-root hints belong to pi's existing hidden typed context, not a new prefix on native user input. Capture
   the registered viewer at request receipt separately from conversation ownership/project cwd. Native Read/Bash
   relative paths still use cwd; a context hint does not install a path resolver. Assert exact native input.
+
+## Shared dependency trees are read-only inputs
+- Vitest `--no-cache` disables result caching but does not stop Vite's bundled TS
+  config from writing `node_modules/.vite-temp`. With an immutable donor closure,
+  use `--no-cache --configLoader runner`, `env -i`, private HOME/tmp/cache and a
+  read-only donor mount. Preview's optimized-deps cache also defaults under
+  node_modules: use a genuine private copied closure, never a writable donor or
+  hardlinks. A skipped/blocked check is not a pass; retain failed-run receipts.

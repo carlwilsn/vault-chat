@@ -227,12 +227,17 @@ test("record limits: never emit a candidate tail record above core 8MiB; checkpo
   finally { cold.close(); }
 }));
 
-test("checkpoint-only also refuses records beyond the offline 32MiB scanner bound without source/checkpoint mutation", async () => fixture(async (o, vault) => {
+test("checkpoint-only accepts historical records above 32MiB below Node string ceiling without mutating original log", async () => fixture(async (o, vault) => {
   await seed(o, vault);
   await appendFile(o.source, JSON.stringify({ seq: 77, conv: "thread", at: 1, type: "meta", patch: { activity: "x".repeat(32 * 1024 * 1024) } }) + "\n");
   const before = identity(await stat(o.source)), checkpoint = await readFile(o.source.replace(/\.jsonl$/, ".ckpt.json"));
-  await assert.rejects(prepareOffline({ ...o, mode: "checkpoint-only" }, { assertStopped: stopped }), /32MiB safety bound/);
+  await assert.rejects(prepareOffline(o, { assertStopped: stopped }), /candidate-record-exceeds-runtime-8MiB-limit/);
   assert.deepEqual(identity(await stat(o.source)), before); assert.deepEqual(await readFile(o.source.replace(/\.jsonl$/, ".ckpt.json")), checkpoint);
+  await prepareOffline({ ...o, mode: "checkpoint-only" }, { assertStopped: stopped });
+  assert.deepEqual(identity(await stat(o.source)), before);
+  const cold = new ConvLog(vault);
+  try { assert.equal(cold.picture("thread")!.seq, 77); assert.equal(String(cold.picture("thread")!.meta.activity).length, 32 * 1024 * 1024); }
+  finally { cold.close(); }
 }));
 
 for (const stage of ["before-log-rename", "between-renames", "after-renames"]) {

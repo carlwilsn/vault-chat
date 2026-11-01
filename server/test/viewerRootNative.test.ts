@@ -21,10 +21,14 @@ describe("captured viewer roots in native typed context", () => {
     const state = join(home, "state"), fifo = join(home, "gate"), entered = join(home, "entered");
     execFileSync("mkfifo", [fifo]);
     const provider = await fakeChat();
-    let queuedWrite = false;
+    let queuedWrite = false, uiBusy = false;
     provider.respond = (body, n) => {
       if (n === 1) return { call: { name: "bash", args: { command: `touch '${entered}'; cat '${fifo}'` } } };
       const lastUser = [...body.messages].reverse().find((m:any) => m.role === "user");
+      if (process.env.VC_GLOBAL_UI_RUNTIME && !uiBusy && JSON.stringify(lastUser).includes("GLOBAL-WORKSPACE-BUSY")) {
+        uiBusy = true;
+        return {call:{name:"bash",args:{command:`touch '${join(home,"ui-entered")}'; cat '${fifo}'`}}};
+      }
       if (!queuedWrite && JSON.stringify(lastUser).includes("Literal queued request")) {
         const match = /request="viewer-queued"[^\n]*?Viewer\/file-context vault root: ([^\n]+?)\/\. Conversation owner:/.exec(chatText(body));
         expect(match?.[1]).toBe(other);
@@ -159,6 +163,14 @@ describe("captured viewer roots in native typed context", () => {
           await page.screenshot({path:join(proof,"phone-main-after-reload.png")});
         } finally { await browser.close(); }
       }
+      if (process.env.VC_GLOBAL_UI_RUNTIME) {
+        const descriptor=process.env.VC_GLOBAL_UI_RUNTIME;
+        if(!descriptor.startsWith("/tmp/")) throw Error("UI fixture descriptor must be in /tmp");
+        writeFileSync(descriptor,JSON.stringify({base,home,vault,viewer,other,project,convId:made.convId,busyGate:fifo,busyEntered:join(home,"ui-entered"),release:descriptor+".release"},null,2));
+        // Parent owns the StartJob/runtime, recorder and cleanup. Only this
+        // temporary test server/provider remain alive; no models/audio/devices.
+        await waitFor(()=>existsSync(descriptor+".release"),15*60_000,250);
+      }
       // Exercise the actual ctxConfig().vaults callback, not a cached root list.
       const added = makeVault(join(master, "vaults/added")), addedBare = join(master, ".hub/vaults/added.git");
       mkdirSync(addedBare, { recursive: true }); execFileSync("git", ["init", "--bare", "-q", addedBare]);
@@ -186,5 +198,5 @@ describe("captured viewer roots in native typed context", () => {
       writeFileSync(join(home, "provider-calls.json"), JSON.stringify(provider.calls, null, 2));
       await provider.close();
     }
-  });
+  }, process.env.VC_GLOBAL_UI_RUNTIME ? 20*60_000 : 120_000);
 });
