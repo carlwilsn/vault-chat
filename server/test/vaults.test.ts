@@ -277,14 +277,20 @@ describe("vault-scoped routes (the real server)", () => {
 
   it("projects and /poll are the box's (one feed, one sequence); notifications are per vault", async () => {
     const latest = (await (await fetch(srv.base + "/poll?after=latest")).json()).next;
-    // Tagging cphys (physics') from the main vault goes to the vault that holds it: the project is made there.
+    // Tagging a physics-owned conversation does not give its file workspace project ownership.
+    // The box has one canonical registry; a new name uses that stable home, never the viewer.
     const r = await (await post("/conversation/project", { convId: "cphys", project: "Optics" })).json();
     expect(r).toEqual({ ok: true, project: "optics" });
-    expect(existsSync(join(home, "physics", "Optics", ".vault-chat", "project-memory.md"))).toBe(true);
-    expect(existsSync(join(main, "Optics"))).toBe(false);
+    expect(existsSync(join(main, "Optics", ".vault-chat", "project-memory.md"))).toBe(true);
+    expect(existsSync(join(home, "physics", "Optics"))).toBe(false);
+    expect(existsSync(join(main, ".vault-chat/local/project-folders.json"))).toBe(true);
+    expect(existsSync(join(home, "physics", ".vault-chat/local/project-folders.json"))).toBe(false);
+    // Conversation provenance remains physics-owned; tagging does not copy/move its history.
+    const original = await (await fetch(srv.base + "/conversation?id=cphys&full=1")).json();
+    expect(original.messages).toEqual(expect.arrayContaining([expect.objectContaining({ role: "user", content: "Physics chat" })]));
     // Every vault lists every project.
     for (const q of ["/projects", "/projects?vault=physics"]) {
-      expect((await (await fetch(srv.base + q)).json()).projects.map((p: any) => [p.slug, p.vault])).toEqual([["optics", "physics"]]);
+      expect((await (await fetch(srv.base + q)).json()).projects.map((p: any) => [p.slug, p.folder])).toEqual([["optics", join(main, "Optics").replace(/\\/g, "/")]]);
     }
 
     // One feed whatever vault: the tag is a record of cphys, the project a signal, on both vaults' /poll.

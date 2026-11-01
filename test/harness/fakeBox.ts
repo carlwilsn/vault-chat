@@ -34,6 +34,9 @@ export class FakeBox {
   /** Answer /poll this many ms late (the tailnet). */
   pollDelay = 0;
   private pollGate: Promise<void> | null = null;
+  private releasePolls: (() => void) | null = null;
+  /** HTTP close drains sockets, not async route callbacks. Disposal waits for both. */
+  private requests = new Set<Promise<void>>();
   /** Hold every poll response, including one already waiting for events.
    * Release in finally: unlike pollDelay this synchronizes an echo assertion
    * with delivery, not with the arrival time of the next HTTP request. */
@@ -42,10 +45,11 @@ export class FakeBox {
     let release!: () => void;
     this.pollGate = new Promise<void>((resolve) => { release = resolve; });
     let held = true;
-    return () => {
+    return this.releasePolls = () => {
       if (!held) return;
       held = false;
       this.pollGate = null;
+      this.releasePolls = null;
       release();
     };
   }
@@ -61,6 +65,7 @@ export class FakeBox {
 
   /** The box restarts: a new process on the same directory (only what is on disk survives). */
   restart(): void {
+    this.log.close();
     this.log = new ConvLog(this.dir, null, path.join(this.dir, "events"));
   }
 
@@ -220,50 +225,58 @@ export class FakeBox {
       let raw = "";
       req.on("data", (c) => (raw += c));
       req.on("end", async () => {
-        const route = `${req.method} ${u.pathname}`;
-        this.seen.push({ route, vault: u.searchParams.get("vault") });
-        if (route === "GET /poll") {
-          // Who follows the feed, as the box's /poll records it (server/show.ts: Show sends only to a live app).
-          const leave = feedOpened(this.showVault, u.searchParams.get("client"));
-          res.on("close", leave);
-          if (this.pollDelay) await new Promise((r) => setTimeout(r, this.pollDelay));
-          await this.pollGate;
-          const a = u.searchParams.get("after") ?? "latest";
-          const epoch = u.searchParams.get("epoch");
-          if (a === "latest") return send(200, { next: this.log.latest(), events: [], epoch: this.log.epoch });
-          if (epoch && epoch !== this.log.epoch) return send(200, { next: this.log.latest(), events: [], epoch: this.log.epoch, reset: true });
-          const after = Number(a);
-          const deadline = Date.now() + 1500;
-          for (;;) {
+        let done!: () => void;
+        const pending = new Promise<void>((resolve) => { done = resolve; });
+        this.requests.add(pending);
+        try {
+          const route = `${req.method} ${u.pathname}`;
+          this.seen.push({ route, vault: u.searchParams.get("vault") });
+          if (route === "GET /poll") {
+            // Who follows the feed, as the box's /poll records it (server/show.ts: Show sends only to a live app).
+            const leave = feedOpened(this.showVault, u.searchParams.get("client"));
+            res.on("close", leave);
+            if (this.pollDelay) await new Promise((r) => setTimeout(r, this.pollDelay));
             await this.pollGate;
-            const got = this.log.after(after);
-            if (got.reset || got.events.length || Date.now() > deadline || this.down) return send(200, { ...got, epoch: this.log.epoch });
-            await this.log.wait(100);
+            const a = u.searchParams.get("after") ?? "latest";
+            const epoch = u.searchParams.get("epoch");
+            if (a === "latest") return send(200, { next: this.log.latest(), events: [], epoch: this.log.epoch });
+            if (epoch && epoch !== this.log.epoch) return send(200, { next: this.log.latest(), events: [], epoch: this.log.epoch, reset: true });
+            const after = Number(a);
+            const deadline = Date.now() + 1500;
+            for (;;) {
+              await this.pollGate;
+              const got = this.log.after(after);
+              if (got.reset || got.events.length || Date.now() > deadline || this.down) return send(200, { ...got, epoch: this.log.epoch });
+              await this.log.wait(100);
+            }
           }
+          if (route === "GET /api/v2/conversations") return send(200, { rows: this.log.rows(), seq: this.log.latest(), epoch: this.log.epoch });
+          const m = /^\/api\/v2\/conversations\/([^/]+)\/checkpoint$/.exec(u.pathname);
+          if (m && req.method === "GET") {
+            const p = this.log.picture(decodeURIComponent(m[1]!));
+            if (!p) return send(404, { error: "conversation not found" });
+            return send(200, { seq: p.seq, picture: JSON.parse(JSON.stringify(p)), next: this.log.latest(), epoch: this.log.epoch });
+          }
+          if (route === "POST /api/v2/intent") {
+            const b = raw ? JSON.parse(raw) : {};
+            this.intents.push(b);
+            return send(200, this.intent(b));
+          }
+          if (route === "POST /api/v2/attachment") {
+            const out = saveAttachment(this.attachVault, raw ? JSON.parse(raw) : {});
+            return out.ok ? send(200, out) : send(out.status, { error: out.error });
+          }
+          if (route === "GET /api/v1/vault/file") {
+            const f = this.files.get(u.searchParams.get("path") ?? "");
+            return f ? send(200, { path: u.searchParams.get("path"), size: f.length, base64: f.toString("base64") }) : send(404, { error: "no" });
+          }
+          const ack = /^\/api\/v1\/show\/([^/]+)\/ack$/.exec(u.pathname);
+          if (ack && req.method === "POST") return send(200, { ok: true, waiting: ackShow(decodeURIComponent(ack[1]!), raw ? JSON.parse(raw) : {}) });
+          return send(404, { error: "not found" });
+        } finally {
+          this.requests.delete(pending);
+          done();
         }
-        if (route === "GET /api/v2/conversations") return send(200, { rows: this.log.rows(), seq: this.log.latest(), epoch: this.log.epoch });
-        const m = /^\/api\/v2\/conversations\/([^/]+)\/checkpoint$/.exec(u.pathname);
-        if (m && req.method === "GET") {
-          const p = this.log.picture(decodeURIComponent(m[1]!));
-          if (!p) return send(404, { error: "conversation not found" });
-          return send(200, { seq: p.seq, picture: JSON.parse(JSON.stringify(p)), next: this.log.latest(), epoch: this.log.epoch });
-        }
-        if (route === "POST /api/v2/intent") {
-          const b = raw ? JSON.parse(raw) : {};
-          this.intents.push(b);
-          return send(200, this.intent(b));
-        }
-        if (route === "POST /api/v2/attachment") {
-          const out = saveAttachment(this.attachVault, raw ? JSON.parse(raw) : {});
-          return out.ok ? send(200, out) : send(out.status, { error: out.error });
-        }
-        if (route === "GET /api/v1/vault/file") {
-          const f = this.files.get(u.searchParams.get("path") ?? "");
-          return f ? send(200, { path: u.searchParams.get("path"), size: f.length, base64: f.toString("base64") }) : send(404, { error: "no" });
-        }
-        const ack = /^\/api\/v1\/show\/([^/]+)\/ack$/.exec(u.pathname);
-        if (ack && req.method === "POST") return send(200, { ok: true, waiting: ackShow(decodeURIComponent(ack[1]!), raw ? JSON.parse(raw) : {}) });
-        return send(404, { error: "not found" });
       });
     });
     await new Promise<void>((r) => this.server.listen(0, "127.0.0.1", r));
@@ -355,8 +368,13 @@ export class FakeBox {
   }
 
   async close(): Promise<void> {
+    this.down = true;
+    this.releasePolls?.();
     this.server.closeAllConnections?.();
     await new Promise<void>((r) => this.server.close(() => r()));
+    await Promise.all(this.requests);
+    this.log.close();
     fs.rmSync(this.dir, { recursive: true, force: true });
+    fs.rmSync(this.attachVault, { recursive: true, force: true });
   }
 }

@@ -164,3 +164,10 @@ timestamps and "verified" itself.
   viewer → other → owner, assert same live thread/process/cwd and no tool result
   or Stop intent, then explicitly release and require a successful tool result.
   The causal red recorded POST `/api/v2/intent` type=stop after picker navigation.
+
+## Async fixture disposal
+- Node HTTP `server.close()` drains connections, not promises in async route callbacks. FakeBox must release held
+  delivery, await its active routes, and close the canonical ConvLog before deleting fixture files. Otherwise an
+  already-running long poll wakes after teardown and the bounded log reader correctly throws ENOENT. Never hide
+  that failure by swallowing file errors or unhandled rejections. ConvLog's close itself is synchronous (writer-lock
+  release), not a background-reader shutdown API; restart must close the old writer too.

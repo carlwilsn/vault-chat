@@ -61,6 +61,8 @@ export const SHORTCUTS = [
   { id: "view.terminal", keys: ["Mod+J"], label: "Terminal", group: "Views & windows", where: "anywhere (the box's, for a box vault)", files: ["src/App.tsx"] },
   { id: "view.terminalOther", keys: ["Mod+Shift+J"], label: "Laptop terminal", group: "Views & windows", where: "anywhere", files: ["src/App.tsx"] },
   { id: "view.theme", keys: ["Alt+L"], label: "Light / dark", group: "Views & windows", where: "anywhere", files: ["src/App.tsx"] },
+  { id: "view.vaultActionMove", keys: ["ArrowDown", "ArrowUp", "Home", "End"], label: "Move between actions", group: "Views & windows", where: "the vault picker's folder-action menu", files: ["src/VaultPicker.tsx"] },
+  { id: "view.vaultActionLeave", keys: ["Tab", "Shift+Tab"], label: "Leave folder actions", group: "Views & windows", where: "the vault picker's folder-action menu; normal tabbing continues", files: ["src/VaultPicker.tsx"] },
   {
     id: "view.close",
     keys: ["Esc"],

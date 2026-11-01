@@ -9,7 +9,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 
 import { join } from "node:path";
 import { tmp, cleanup, makeVault, git } from "./helpers";
 import { ConvLog, convLog, globalFeed, lastSeq, ownerVault, setFeedVaults, setSharedClock, _resetConvLogs } from "../convlog/log";
-import { configureContext, withVault } from "../context/config";
+import { configureContext, resetContextConfig, withVault } from "../context/config";
 import { allProjects, createProject, deleteProjectFiles, listProjects, makeProject, readProject, renameProject, restoreProjectFiles } from "../context/projects";
 import { registeredFolder } from "../projectFolders";
 import { deleteFolder, renameFolder } from "../folderOps";
@@ -88,9 +88,12 @@ describe("a project is a folder with its own conversation", () => {
   const root = tmp("vcfm-proj-");
   const vault = makeVault(join(root, "vc", "vaults", "school2"));
   const other = makeVault(join(root, "vc", "vaults", "vault-chat"));
+  // A canonical registry/folder home outside both file workspaces.
+  const projectHome = join(root, "vc", "projects", "shared");
   beforeAll(() => {
     process.env.VC_MASTER = join(root, "vc");
-    configureContext({ vault, vaults: () => [vault, other] });
+    mkdirSync(projectHome, { recursive: true });
+    configureContext({ vault, conversationRoot: projectHome, vaults: () => [vault, other] });
     mkdirSync(join(vault, "IEMS 469", "lectures"), { recursive: true });
     writeFileSync(join(vault, "IEMS 469", "lectures", "l1.md"), "# Lecture 1\n");
     git(vault, "add", "-A");
@@ -98,6 +101,7 @@ describe("a project is a folder with its own conversation", () => {
   });
   afterAll(() => {
     delete process.env.VC_MASTER;
+    resetContextConfig();
     cleanup(root);
   });
 
@@ -114,24 +118,32 @@ describe("a project is a folder with its own conversation", () => {
     expect(again).toMatchObject({ slug: "iems-469" });
   });
 
-  it("a new project by name is a new folder of that name; the list is every vault's", () => {
+  it("a new project by name has one global folder; every workspace lists the same project", () => {
     const p = withVault(other, () => createProject("Build Notes"));
     expect(p).toMatchObject({ slug: "build-notes", name: "Build Notes" });
-    expect(existsSync(join(other, "Build Notes", ".vault-chat", "project-memory.md"))).toBe(true);
-    expect(withVault(vault, () => allProjects()).map((x) => `${x.name}@${fwd(x.vault).split("/").pop()}`)).toEqual(["Build Notes@vault-chat", "IEMS 469@school2"]);
+    expect(existsSync(join(projectHome, "Build Notes", ".vault-chat", "project-memory.md"))).toBe(true);
+    const expected = [["Build Notes", fwd(join(projectHome, "Build Notes"))], ["IEMS 469", fwd(join(vault, "IEMS 469"))]];
+    for (const viewer of [vault, other, projectHome]) {
+      expect(withVault(viewer, () => allProjects()).map((x) => [x.name, fwd(x.folder)])).toEqual(expected);
+      expect(registeredFolder(viewer, "build-notes")).toBe(join(projectHome, "Build Notes"));
+    }
+    expect(existsSync(join(other, "Build Notes"))).toBe(false);
+    expect(existsSync(join(vault, "Build Notes"))).toBe(false);
+    expect(existsSync(join(projectHome, ".vault-chat/local/project-folders.json"))).toBe(true);
+    for (const viewer of [vault, other]) expect(existsSync(join(viewer, ".vault-chat/local/project-folders.json"))).toBe(false);
     const rows = projectsList([{ name: "school2", path: vault, main: true }, { name: "vault-chat", path: other }]).projects;
-    expect(rows.map((r) => [r.name, r.vault, r.rel])).toEqual([
-      ["Build Notes", "vault-chat", "vaults/vault-chat/Build Notes"],
-      ["IEMS 469", "school2", "vaults/school2/IEMS 469"],
+    expect(rows.map((r) => [r.name, r.folder, r.rel])).toEqual([
+      ["Build Notes", fwd(join(projectHome, "Build Notes")), "projects/shared/Build Notes"],
+      ["IEMS 469", fwd(join(vault, "IEMS 469")), "vaults/school2/IEMS 469"],
     ]);
   });
 
   it("rename renames the folder; the slug (its thread) stays; a repo of its own is refused", () => {
     const p = withVault(other, () => renameProject("build-notes", "Build Log"));
     expect(p).toMatchObject({ slug: "build-notes", name: "Build Log" });
-    expect(existsSync(join(other, "Build Log", ".vault-chat", "project-memory.md"))).toBe(true);
-    expect(existsSync(join(other, "Build Notes"))).toBe(false);
-    expect(fwd(registeredFolder(other, "build-notes")!)).toBe(fwd(join(other, "Build Log")));
+    expect(existsSync(join(projectHome, "Build Log", ".vault-chat", "project-memory.md"))).toBe(true);
+    expect(existsSync(join(projectHome, "Build Notes"))).toBe(false);
+    expect(fwd(registeredFolder(other, "build-notes")!)).toBe(fwd(join(projectHome, "Build Log")));
     const repo = makeVault(join(root, "vc", "projects", "app"));
     const r = withVault(vault, () => makeProject(repo));
     expect(r).toMatchObject({ slug: "app" });
@@ -141,7 +153,7 @@ describe("a project is a folder with its own conversation", () => {
 
   it("delete (the conversation only) keeps the folder, a plain folder again; restore brings the project back", () => {
     const d = withVault(other, () => deleteProjectFiles("build-notes"));
-    expect(existsSync(join(other, "Build Log", ".vault-chat", "project-memory.md"))).toBe(true);
+    expect(existsSync(join(projectHome, "Build Log", ".vault-chat", "project-memory.md"))).toBe(true);
     expect(withVault(other, () => readProject("build-notes"))).toBe(null);
     expect(registeredFolder(other, "build-notes")).toBe(null);
     const back = withVault(other, () => restoreProjectFiles("build-notes"));
@@ -169,7 +181,7 @@ describe("a project is a folder with its own conversation", () => {
     const moved = await deleteFolder(repo, w);
     expect(moved).toMatchObject({ ok: true, how: "moved" });
     expect(existsSync(join((moved as any).where, ".git"))).toBe(true);
-    expect(renameFolder(join(other, "Build Log"), "Build Book", w)).toMatchObject({ ok: true });
+    expect(renameFolder(join(projectHome, "Build Log"), "Build Book", w)).toMatchObject({ ok: true });
   });
 });
 
@@ -277,9 +289,9 @@ describe("the migration on a copy of a live-shaped layout, and back", () => {
     // What the server lists now.
     process.env.VC_MASTER = join(root, "vc");
     try {
-      expect(projectsList(vaults()).projects.map((p) => [p.slug, p.name, p.vault, p.rel])).toEqual([
-        ["iems-469-course-notes-visuals", "IEMS 469", "school2", "vaults/school2/IEMS 469"],
-        ["vault-chat", "vault-chat", "vault-chat", "projects/vault-chat"],
+      expect(projectsList(vaults()).projects.map((p) => [p.slug, p.name, p.folder, p.rel])).toEqual([
+        ["iems-469-course-notes-visuals", "IEMS 469", fwd(join(school2, "IEMS 469")), "vaults/school2/IEMS 469"],
+        ["vault-chat", "vault-chat", fwd(code), "projects/vault-chat"],
       ]);
     } finally {
       delete process.env.VC_MASTER;
