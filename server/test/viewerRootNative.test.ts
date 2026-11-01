@@ -21,9 +21,18 @@ describe("captured viewer roots in native typed context", () => {
     const state = join(home, "state"), fifo = join(home, "gate"), entered = join(home, "entered");
     execFileSync("mkfifo", [fifo]);
     const provider = await fakeChat();
-    provider.respond = (_body, n) => n === 1
-      ? { call: { name: "bash", args: { command: `touch '${entered}'; cat '${fifo}'` } } }
-      : { text: "Viewer fixture complete." };
+    let queuedWrite = false;
+    provider.respond = (body, n) => {
+      if (n === 1) return { call: { name: "bash", args: { command: `touch '${entered}'; cat '${fifo}'` } } };
+      const lastUser = [...body.messages].reverse().find((m:any) => m.role === "user");
+      if (!queuedWrite && JSON.stringify(lastUser).includes("Literal queued request")) {
+        const match = /request="viewer-queued"[^\n]*?Viewer\/file-context vault root: ([^\n]+?)\/\. Conversation owner:/.exec(chatText(body));
+        expect(match?.[1]).toBe(other);
+        queuedWrite = true;
+        return {call:{name:"bash",args:{command:`printf 'captured queued target\\n' > ${JSON.stringify(join(match![1]!,"captured-write.txt"))}`}}};
+      }
+      return { text: "Viewer fixture complete." };
+    };
     const network = join(home, "local-only.mjs");
     writeFileSync(network, `const actual=globalThis.fetch; globalThis.fetch=(input,init)=>{const u=new URL(typeof input==='string'?input:input instanceof URL?input.href:input.url); if(u.href==='https://openrouter.ai/api/v1/models')return actual(${JSON.stringify(provider.url + "/models")},init); if(['127.0.0.1','localhost','[::1]'].includes(u.hostname))return actual(input,init);throw Error('External fetch refused');};`);
     let srv: Running | undefined;
@@ -57,6 +66,8 @@ describe("captured viewer roots in native typed context", () => {
         const c = await (await fetch(base + "/conversation?id=main&full=1&n=200")).json();
         return c.messages?.some((m: any) => m.role === "user" && m.content === queued) && c.state !== "running" && await idle() ? c : null;
       }, 10_000, 20);
+      expect(readFileSync(join(other,"captured-write.txt"),"utf8")).toBe("captured queued target\n");
+      expect(existsSync(join(viewer,"captured-write.txt"))).toBe(false);
       const entries = readEntries(c.meta.threadPath);
       expect(entries.filter(e => e.message?.role === "user").map(e => e.message!.content)).toEqual([
         [{ type: "text", text: `[Carl, on his laptop]\n\n${first}` }],
@@ -74,6 +85,80 @@ describe("captured viewer roots in native typed context", () => {
       expect(JSON.stringify(c.messages)).not.toContain("<file-context");
       expect(readFileSync(c.meta.threadPath, "utf8")).not.toContain("File context from registered vault");
       expect(JSON.stringify(await (await fetch(base + "/poll?after=0")).json())).not.toContain("<file-context");
+      // One external project, one canonical registry/thread. Every surface uses
+      // these same normal routes; a file workspace never owns the project.
+      const project = join(home, "external-physics"); mkdirSync(project);
+      writeFileSync(join(project, "AGENTS.md"), "PHYSICS-CWD-INSTRUCTIONS: use this exact project folder.");
+      mkdirSync(join(project, ".vault-chat"));
+      writeFileSync(join(project, ".vault-chat", "project-memory.md"), "PHYSICS-ORIGINAL-MEMORY");
+      writeFileSync(join(project, ".vault-chat", "rules.md"), "PHYSICS-ORIGINAL-RULES");
+      const made = await (await fetch(base + "/projects?vault=viewer", {method:"POST", headers:{"content-type":"application/json"}, body:JSON.stringify({folder:project})})).json();
+      expect(made).toMatchObject({ok:true, convId:"project-external-physics"});
+      expect(existsSync(join(vault, ".vault-chat/local/project-folders.json"))).toBe(true);
+      expect(existsSync(join(viewer, ".vault-chat/local/project-folders.json"))).toBe(false);
+      for (const surfaceRoot of ["owner", "viewer", "other"]) {
+        const listed = await (await fetch(base + "/projects?vault=" + surfaceRoot)).json();
+        expect(listed.projects).toEqual([{slug:"external-physics",name:"external-physics",folder:project,rel:null}]);
+      }
+      let nativeThread = "";
+      for (const [index, client] of ["laptop", "phone", "board"].entries()) {
+        const rootName = index === 1 ? "other" : "viewer";
+        const text = `PHYSICS-SAME-THREAD-${client}`;
+        await post(rootName, {type:"send",convId:made.convId,client,clientId:text,text});
+        const detail = await waitFor(async () => {
+          const detail = await (await fetch(base + "/conversation?id="+made.convId+"&vault="+rootName+"&full=1&n=200")).json();
+          return detail.messages?.some((m:any)=>m.role==="user"&&m.content===text)&&detail.state!=="running"&&await idle()?detail:null;
+        },10000,20);
+        if (nativeThread) expect(detail.meta.threadPath).toBe(nativeThread);
+        nativeThread = detail.meta.threadPath;
+        expect(JSON.parse(readFileSync(nativeThread,"utf8").split("\n")[0]!).cwd).toBe(project);
+        const providerText = chatText(provider.calls.at(-1));
+        expect(providerText).toContain("PHYSICS-CWD-INSTRUCTIONS");
+        expect(providerText).toContain("PHYSICS-ORIGINAL-MEMORY");
+        expect(providerText).toContain("PHYSICS-ORIGINAL-RULES");
+      }
+      const summary = await (await fetch(base + "/conversations?vault=other")).json();
+      expect(summary.conversations.filter((r:any)=>r.id===made.convId)).toHaveLength(1);
+      const rows = await (await fetch(base + "/api/v2/conversations?vault=viewer")).json();
+      expect(rows.rows.filter((r:any)=>r.id===made.convId)).toHaveLength(1);
+      for (const workspace of [viewer,other]) {
+        expect(existsSync(join(workspace,".vault-chat/events/main.jsonl"))).toBe(false);
+        expect(existsSync(join(workspace,`.vault-chat/events/${made.convId}.jsonl`))).toBe(false);
+      }
+      if (process.env.VC_GLOBAL_UI_PROOF) {
+        const proof = process.env.VC_GLOBAL_UI_PROOF;
+        if (!proof.startsWith("/tmp/")) throw new Error("fixture UI artifacts must be in /tmp");
+        mkdirSync(proof,{recursive:true});
+        const modulePath = join(process.cwd(),"preview/node_modules/playwright-core/index.mjs");
+        const { chromium } = await import(modulePath);
+        const browser = await chromium.launch({executablePath:"/run/current-system/sw/bin/chromium",headless:true,args:["--mute-audio","--no-sandbox"]});
+        try {
+          const page = await browser.newPage({viewport:{width:390,height:844},isMobile:true,hasTouch:true});
+          page.setDefaultTimeout(4000);
+          await page.addInitScript(() => localStorage.setItem("vc_phone_vault","viewer"));
+          await page.goto(`${base}/phone`,{waitUntil:"domcontentloaded"});
+          await page.locator("#titleBtn").click();
+          await page.locator('[data-el="thread-project"]').waitFor();
+          expect(await page.locator('[data-el="thread-main"]').count()).toBe(1);
+          expect(await page.locator('[data-el="thread-project"]').count()).toBe(1);
+          expect(await page.locator("#clist").innerText()).toContain("external-physics");
+          expect(await page.evaluate(() => localStorage.getItem("vc_phone_vault"))).toBe(null);
+          await page.waitForTimeout(500);
+          await page.screenshot({path:join(proof,"phone-main-project-list.png")});
+          await page.locator('[data-el="thread-project"]').click();
+          await page.getByText("PHYSICS-SAME-THREAD-phone",{exact:false}).first().waitFor();
+          await page.waitForTimeout(500);
+          await page.screenshot({path:join(proof,"phone-global-project-thread.png")});
+          await page.locator("#titleBtn").click();
+          await page.locator('[data-el="thread-main"]').click();
+          await page.reload({waitUntil:"domcontentloaded"});
+          await page.locator("#titleBtn").click();
+          await page.locator('[data-el="thread-main"]').waitFor();
+          expect(await page.locator('[data-el="thread-main"]').count()).toBe(1);
+          await page.waitForTimeout(500);
+          await page.screenshot({path:join(proof,"phone-main-after-reload.png")});
+        } finally { await browser.close(); }
+      }
       // Exercise the actual ctxConfig().vaults callback, not a cached root list.
       const added = makeVault(join(master, "vaults/added")), addedBare = join(master, ".hub/vaults/added.git");
       mkdirSync(addedBare, { recursive: true }); execFileSync("git", ["init", "--bare", "-q", addedBare]);

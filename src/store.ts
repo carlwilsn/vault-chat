@@ -250,19 +250,16 @@ const VAULT_STORAGE = "vault_chat_last_vault";
 // token the phone uses. Machine-local by design — never in the synced config.
 // The key keeps its old name (it was the mission host's token).
 const BOX_TOKEN_STORAGE = "vault_chat_mission_host_token";
-// The active/open conversation is PER-DEVICE, not synced: your phone chat and
-// your desktop chat are independent (message CONTENT still syncs via the vault).
-// Persisted per vault so reopening the app restores THIS device's last-open
-// thread instead of auto-jumping to whatever was most-recently touched — a
-// phone chat bumps a thread to the top, which used to yank the desktop onto it.
+// The active conversation is per device, not per file workspace. A legacy per-vault
+// preference is read once as a fallback; future selections use one device key.
 const ACTIVE_CONV_STORAGE = "vault_chat_active_conv";
-function activeConvKey(vault: string): string {
-  return `${ACTIVE_CONV_STORAGE}:${vault}`;
+function activeConvKey(_vault: string): string {
+  return ACTIVE_CONV_STORAGE;
 }
 function savedActiveConvId(vault: string | null): string | null {
   if (!vault) return null;
   try {
-    const id = localStorage.getItem(activeConvKey(vault));
+    const id = localStorage.getItem(activeConvKey(vault)) ?? localStorage.getItem(`${ACTIVE_CONV_STORAGE}:${vault}`);
     // One main conversation: the app opens on Main, or on the project thread it was last on; never an older chat.
     return id === MAIN_ID || projectOfThread(id) ? id : null;
   } catch {
@@ -725,9 +722,7 @@ export const useStore = create<State>((set) => ({
   setVault: (p) =>
     set((s) => {
       localStorage.setItem(VAULT_STORAGE, p);
-      // Switching vaults drops the chat — the prior conversation's
-      // file context no longer applies. Staying on the same vault
-      // leaves the chat untouched.
+      // A vault is only a file workspace. Main/project conversation and live calls stay put.
       if (s.vaultPath === p) {
         return { vaultPath: p };
       }
@@ -736,20 +731,8 @@ export const useStore = create<State>((set) => ({
       // the new vault, breaking save and reload.
       return {
         vaultPath: p,
-        messages: [],
-        lastContext: 0,
-        streamingText: "",
-        streamingReasoning: "",
-        liveTools: [],
-        agentTodos: [],
         notes: [],
         notesLoaded: false,
-        conversations: [],
-        activeConversationId: null,
-        conversationsLoaded: false,
-        boxChat: null,
-        shipments: [],
-        showChatsPanel: false,
         currentFile: null,
         currentContent: "",
         panes: [],

@@ -256,6 +256,8 @@ const CONVERSATION_ROUTES = new Set([
   "/conversation/project",
   "/api/v2/intent",
   "/api/v1/side",
+  "/api/v1/brain/call",
+  "/api/v1/attention",
   "/api/v1/voice/tool",
   "/api/v1/voice/session",
   "/api/v1/voice/updates",
@@ -700,7 +702,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
       // Every vault's conversations (Main: the main vault's), whatever vault is open.
       if (!hooks.vaultList) return json(res, 200, conversationsSummary(vault));
       const parts = hooks.vaultList().map((v) => ({ v, s: conversationsSummary(v.path) as { vault: string; conversations: any[] } }));
-      const rows = parts.flatMap(({ v, s }) => s.conversations.filter((c) => v.main || c.id !== "main"));
+      const rows = parts.flatMap(({ v, s }) => s.conversations.filter((c) => ownerVault(c.id, cfg.vault) === v.path));
       rows.sort((a, b) => (b.lastActivityAt ?? 0) - (a.lastActivityAt ?? 0));
       return json(res, 200, { vault: (conversationsSummary(open.path) as { vault: string }).vault, conversations: rows.slice(0, 60) });
     }

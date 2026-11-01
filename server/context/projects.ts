@@ -1,6 +1,6 @@
-// A project is a folder with a conversation of its own (Carl, 2026-10-29: "everything is a folder"; "every project
-// is a vault; not every vault is a project"). The record is thin: the thread (project-<slug>, in the log of the vault
-// that owns it) and its working folder (cwd), kept in that vault's folder registry (server/projectFolders.ts: the
+// A project is a folder with one global conversation. Vaults are file workspaces, not project owners.
+// The record is thin: the thread (project-<slug>) and its working folder (cwd), kept in the canonical
+// conversation home's folder registry (server/projectFolders.ts: the
 // server's own state, which the agent cannot write). Nothing else: the folder carries the rest.
 //
 //   <folder>/AGENTS.md              the project's instructions; pi loads it itself (the thread's cwd is the folder)
@@ -14,9 +14,9 @@
 import { existsSync, statSync } from "node:fs";
 import { renameRetry } from "../atomic";
 import { basename, dirname, join } from "node:path";
-import { ctxConfig } from "./config";
+import { ctxConfig, conversationRoot } from "./config";
 import { readOr, slugify, writeFile } from "./files";
-import { deletedFolders, registeredFolder, registeredFolders, registerFolder, retireFolder, reviveFolder, setRegisteredPath } from "../projectFolders";
+import { deletedFolders, legacyProjectHome, registeredFolder, registeredFolders, registerFolder, retireFolder, reviveFolder, setRegisteredPath } from "../projectFolders";
 
 export { ensureProjectsHidden, migrateLegacyProjects, prepareProjects, projectsPath } from "./layout";
 
@@ -40,7 +40,7 @@ export type Project = ProjectInfo & {
 };
 
 function vault(): string {
-  return ctxConfig().vault;
+  return conversationRoot(ctxConfig().vault);
 }
 
 const isDir = (p: string) => {
@@ -89,25 +89,16 @@ export function readProject(slug: string): Project | null {
   const p = infoOf(slug, registeredFolder(vault(), slug)!);
   // Until `projects migrate` has run (a release lands before it): the project's files where they were, so its rules
   // and memory never go missing in between.
-  const old = join(vault(), "agent-projects", slug);
-  const notes = readOr(join(p.dir, PROJECT_NOTES_FILE)) || readOr(join(old, "project.md"));
-  const rules = existsSync(join(p.dir, PROJECT_RULES_FILE)) ? readOr(join(p.dir, PROJECT_RULES_FILE)) : readOr(join(old, PROJECT_RULES_FILE));
+  const home = legacyProjectHome(vault(), slug);
+  const old = home ? join(home, "agent-projects", slug) : null;
+  const notes = readOr(join(p.dir, PROJECT_NOTES_FILE)) || (old ? readOr(join(old, "project.md")) : "");
+  const rules = existsSync(join(p.dir, PROJECT_RULES_FILE)) ? readOr(join(p.dir, PROJECT_RULES_FILE)) : old ? readOr(join(old, PROJECT_RULES_FILE)) : "";
   return { ...p, notes, rules };
 }
 
-/** Every project on the box, from every vault's registry (configureContext({vaults})); `vault`: the one that owns it. */
-export function allProjects(): (ProjectInfo & { vault: string })[] {
-  const c = ctxConfig();
-  const vaults = [...new Set([c.vault, ...(c.vaults?.() ?? [])])];
-  const out: (ProjectInfo & { vault: string })[] = [];
-  const seen = new Set<string>();
-  for (const v of vaults)
-    for (const e of registeredFolders(v)) {
-      if (seen.has(e.slug) || !isDir(e.path)) continue;
-      seen.add(e.slug);
-      out.push({ ...infoOf(e.slug, e.path), vault: v });
-    }
-  return out.sort((a, b) => a.name.localeCompare(b.name));
+/** The global projects, regardless of the viewer workspace. */
+export function allProjects(): ProjectInfo[] {
+  return listProjects();
 }
 
 /** Find a project by slug or by name (case-insensitive). */

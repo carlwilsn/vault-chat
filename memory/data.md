@@ -141,3 +141,23 @@ in doubt, mark it agent.
 - Two renames are not an atomic cohort. Retain the durable external intent and both staged inodes; ordinary
   `--recover INTENT` verifies originals/new hashes and recognized current inodes under exclusion before completing.
   No manual prefix copy, checkpoint deletion or guessed offsets. These source changes do not authorize a live run.
+
+## Global conversation ownership (candidate, not installed)
+- A selected vault is a file workspace, not a request to replace the box conversation
+  session. Keep Main/project IDs, native pi cwd and ongoing call independent of
+  the file subscription. The desktop view/Clear cache is keyed by box URL; read
+  old per-workspace preferences/caches only as compatibility fallbacks.
+- Canonical project writes belong to the configured conversation root (initially
+  the existing Main home). Old workspace registries are read-only compatibility
+  sources: mutating one project must not copy its peer registrations. Tombstones
+  shadow legacy entries; conflicting legacy slug/folder mappings require offline
+  review. Legacy memory provenance follows a rename and must never match on slug
+  alone when the folder differs.
+- Legacy recovery engines must not each create Main/global project thread copies
+  during ensureThreads. Only the existing thread owner, or canonical home for a
+  new thread, creates it. This does not migrate, merge, or delete old histories.
+- Two-Main backup-first preview is tested on disposable fixtures through the
+  existing offline-event-log API (shared-directory FD lock, verified backups,
+  native pointer/readback checks). It is preservation evidence, NOT a reviewed
+  migration or permission to inspect the live logs. A source pin/UI fixture proof
+  is not deployed or shipped.

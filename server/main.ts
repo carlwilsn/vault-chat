@@ -85,7 +85,7 @@ async function main(): Promise<void> {
   console.log(`[vault-chat-server] ${loaded} conversation(s) in the log; keys: ${Object.keys(useStore.getState().apiKeys).join(", ") || "none"}`);
 
   // CONTEXT needs only the vault and the key store (the engine adds the rest when it is up).
-  (await import("./context/config")).configureContext({ vault: cfg.vault });
+  (await import("./context/config")).configureContext({ vault: cfg.vault, conversationRoot: cfg.vault });
   const { startPhoneAppHost, sendPush } = await import("../src/phoneApp");
   await startPhoneAppHost();
 

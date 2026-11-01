@@ -2,7 +2,7 @@
 //
 // A project is a folder with a conversation of its own (server/context/projects.ts): its thread
 // (project-<slug>), its folder (the thread's cwd: AGENTS.md, .vault-chat/project-memory.md, .vault-chat/rules.md).
-// Main and the projects are the box's, whatever folder is open here (GET /projects lists every vault's).
+// Main and the projects are the box's, whatever folder is open here (GET /projects lists the global registry).
 // Only Carl makes projects ("Make this a project" on a folder, "+ New project"): no agent tool does on
 // its own. Without a box the older local form (agent-projects/<slug>/project.md) is read and written here.
 import { invoke } from "@tauri-apps/api/core";
@@ -48,9 +48,8 @@ async function runPrepare(vault: string): Promise<Prepared | null> {
   }
 }
 
-/** `folder`: the project's folder on the box; `rel`: that folder relative to the vault-chat folder (null: outside it);
- *  `vault`: the vault that owns it on the box. */
-export type ProjectInfo = { slug: string; name: string; folder?: string; rel?: string | null; vault?: string };
+/** Global project folder on the box; `rel` is only a display path, never ownership. */
+export type ProjectInfo = { slug: string; name: string; folder?: string; rel?: string | null };
 
 /** The same slug rule as server/context/files.ts. */
 export function slugify(name: string): string {

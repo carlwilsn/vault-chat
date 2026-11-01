@@ -16,6 +16,7 @@ import { mkdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { writeAtomic } from "./atomic";
+import { conversationRoot, legacyProjectRoots } from "./context/config";
 
 /** Credential locations in the user's home the agent never sees (hidden in both sandbox layers, denied to pi's own tools). */
 export const HOME_CREDENTIALS = [
@@ -159,21 +160,58 @@ export function checkFolder(vault: string, raw: string, w: FolderWalls = wallsOf
 
 // ---------------------------------------------------------------- the registry
 
-type Entry = { path: string; at: string };
+type Entry = { path: string; at: string; memoryHome?: string };
 export type DeletedEntry = Entry & { slug: string };
 type Registry = { folders: Record<string, Entry>; deleted: Record<string, DeletedEntry> };
 
 function regPath(vault: string): string {
-  return join(vault, FOLDERS_FILE);
+  return join(conversationRoot(vault), FOLDERS_FILE);
 }
 
-function readReg(vault: string): Registry {
+function readRawReg(vault: string): Registry {
   try {
-    const r = JSON.parse(readFileSync(regPath(vault), "utf8"));
+    const r = JSON.parse(readFileSync(join(vault, FOLDERS_FILE), "utf8"));
     return { folders: r?.folders && typeof r.folders === "object" ? r.folders : {}, deleted: r?.deleted && typeof r.deleted === "object" ? r.deleted : {} };
   } catch {
     return { folders: {}, deleted: {} };
   }
+}
+
+/** Legacy registries stay readable in place until a reviewed backup-first cutover.
+ * They are NOT copied or rewritten by a lookup or a mutation of another project. */
+function readReg(vault: string): Registry {
+  const owner = conversationRoot(vault);
+  const local = readRawReg(owner);
+  const result: Registry = { folders: {}, deleted: {} };
+  for (const source of legacyProjectRoots()) {
+    const old = readRawReg(source);
+    for (const [slug, e] of Object.entries(old.folders)) {
+      const previous = result.folders[slug];
+      if (previous && previous.path !== e.path && !local.folders[slug]) throw new Error(`project ${slug} has conflicting legacy folders; offline review required`);
+      result.folders[slug] = e;
+    }
+    Object.assign(result.deleted, old.deleted);
+  }
+  Object.assign(result.folders, local.folders);
+  Object.assign(result.deleted, local.deleted);
+  for (const e of Object.values(local.deleted)) if (!local.folders[e.slug]) delete result.folders[e.slug];
+  for (const [entry, e] of Object.entries(result.deleted)) {
+    const restored = local.folders[e.slug];
+    if (restored && restored.path === e.path && restored.at === e.at) delete result.deleted[entry];
+  }
+  return result;
+}
+
+/** Compatibility location for unmoved legacy memory/rules, not a project owner. */
+export function legacyProjectHome(vault: string, slug: string): string | null {
+  const current = readReg(vault).folders[slug];
+  if (!current) return null;
+  const roots = [...legacyProjectRoots(), conversationRoot(vault)];
+  if (current.memoryHome && roots.includes(current.memoryHome)) return current.memoryHome;
+  return roots.find(root => {
+    const old = readRawReg(root).folders[slug];
+    return !!old && resolve(old.path) === resolve(current.path);
+  }) ?? null;
 }
 
 function writeReg(vault: string, r: Registry): void {
@@ -201,10 +239,11 @@ export function deletedFolders(vault: string): Record<string, DeletedEntry> {
 
 /** A project's folder was renamed (server/context/projects.ts renameProject): the record follows. */
 export function setRegisteredPath(vault: string, slug: string, path: string): void {
-  const r = readReg(vault);
-  const e = r.folders[slug];
+  const e = readReg(vault).folders[slug];
+  const r = readRawReg(conversationRoot(vault));
   if (!e) return;
-  r.folders[slug] = { ...e, path };
+  const memoryHome = legacyProjectHome(vault, slug);
+  r.folders[slug] = { ...e, path, ...(memoryHome ? { memoryHome } : {}) };
   writeReg(vault, r);
 }
 
@@ -212,7 +251,7 @@ export function setRegisteredPath(vault: string, slug: string, path: string): vo
 export function registerFolder(vault: string, slug: string, raw: string, now = new Date()): { abs: string } | { error: string } {
   const c = checkFolder(vault, raw);
   if ("error" in c) return c;
-  const r = readReg(vault);
+  const r = readRawReg(conversationRoot(vault));
   r.folders[slug] = { path: c.abs, at: now.toISOString() };
   writeReg(vault, r);
   return c;
@@ -220,16 +259,14 @@ export function registerFolder(vault: string, slug: string, raw: string, now = n
 
 /** No folder of its own any more (a new project of that slug without one). */
 export function unregisterFolder(vault: string, slug: string): void {
-  const r = readReg(vault);
-  if (!r.folders[slug]) return;
-  delete r.folders[slug];
-  writeReg(vault, r);
+  // A removal must also shadow an unmigrated legacy registration, never copy its peers.
+  retireFolder(vault, slug, `${slug}-unregistered`);
 }
 
 /** Delete: the choice goes with the project's files to agent-projects/.deleted/<entry> (its folder itself is never touched). */
 export function retireFolder(vault: string, slug: string, entry: string): void {
-  const r = readReg(vault);
-  const e = r.folders[slug];
+  const e = readReg(vault).folders[slug];
+  const r = readRawReg(conversationRoot(vault));
   if (!e) return;
   delete r.folders[slug];
   r.deleted[entry] = { ...e, slug };
@@ -238,11 +275,11 @@ export function retireFolder(vault: string, slug: string, entry: string): void {
 
 /** Restore: the choice comes back with the project. */
 export function reviveFolder(vault: string, entry: string, slug: string): void {
-  const r = readReg(vault);
-  const e = r.deleted[entry];
+  const e = readReg(vault).deleted[entry];
+  const r = readRawReg(conversationRoot(vault));
   if (!e) return;
   delete r.deleted[entry];
-  r.folders[slug] = { path: e.path, at: e.at };
+  r.folders[slug] = { path: e.path, at: e.at, ...(e.memoryHome ? { memoryHome: e.memoryHome } : {}) };
   writeReg(vault, r);
 }
 

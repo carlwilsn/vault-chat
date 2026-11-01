@@ -9,6 +9,8 @@
 // (`vc-note`), written by pi while it has the session. Every client folds the
 // feed with one reducer. vault-chat's tools reach pi through its extension as
 // host calls.
+import { conversationRoot } from "../context/config";
+import { ownerVault } from "../convlog/log";
 import { appendFileSync, existsSync, readFileSync, statSync, mkdirSync, writeFileSync } from "node:fs";
 import { holdRun, registerRun, unregisterRun } from "../../src/runRegistry";
 import type { BackendEvent, PiBackend, ToolSpec, HostLoadout } from "./pi/backend";
@@ -726,8 +728,14 @@ export class Engine {
 
   /** Main, and one thread per project (made once; never a write when they exist). */
   async ensureThreads(): Promise<void> {
-    await ensureMain(this.d.vault);
-    for (const p of listProjects()) await ensureProjectThread(this.d.vault, p.slug, p.name, { onRevived: (id) => this.revived(id) });
+    const root = conversationRoot(this.d.vault);
+    if (this.d.vault === root) await ensureMain(root);
+    // Legacy engines may recover their original work, but must never manufacture
+    // another Main or a copy of each globally registered project's thread.
+    for (const p of listProjects()) {
+      const owner = ownerVault(projectThreadId(p.slug), root) ?? root;
+      if (owner === this.d.vault) await ensureProjectThread(owner, p.slug, p.name, { onRevived: (id) => this.revived(id) });
+    }
   }
 
   /** The conversation a message without one goes to (Main), or the one named: a project's thread or a
@@ -1020,7 +1028,7 @@ export class Engine {
       const elsewhere = !!origin && !!l.turnOpts.origin && origin !== l.turnOpts.origin;
       const kind = body.queue || elsewhere ? "queue" : "steer";
       this.setPending(id, { id: clientId, kind, text: shown, at: Date.now() });
-      l.feed.expect({ kind, text: sent, clientId, shown, via: body.via ?? kind, images: itemImages, ...(origin ? { device: origin } : {}) });
+      l.feed.expect({ kind, text: sent, clientId, shown, hostContext, via: body.via ?? kind, images: itemImages, ...(origin ? { device: origin } : {}) });
       l.rec.q(kind, clientId);
       // A turn waiting on a `subagent` call would take him up only when its children end (minutes): they move to
       // the background, the call answers at once, and his message is taken up now; each report comes as its own turn.
@@ -1052,8 +1060,8 @@ export class Engine {
       try {
         await this.d.backend.clearQueue(l.threadId);
         for (const e of rest) {
-          if (e.kind === "queue") await this.d.backend.followUp(l.threadId, { texts: [e.text], images: [] });
-          else await this.d.backend.steer(l.threadId, l.turnId, { texts: [e.text], images: [] });
+          if (e.kind === "queue") await this.d.backend.followUp(l.threadId, { texts: [e.text], context: e.hostContext, images: [] });
+          else await this.d.backend.steer(l.threadId, l.turnId, { texts: [e.text], context: e.hostContext, images: [] });
         }
       } catch (err) {
         this.log(`take back on ${convId}: ${(err as Error).message}`);
@@ -1092,6 +1100,7 @@ export class Engine {
     const again = (e: (typeof waiting)[number]) =>
       this.run(convId, e.text, "user", {
         shown: e.shown,
+        hostContext: e.hostContext,
         clientId: e.clientId,
         itemImages: e.images,
         images: (e.images ?? []).map((im) => join(vault, im.path)),

@@ -253,12 +253,21 @@ class BoxChatSession {
   private beat: AttentionBeat | null = null;
 
   constructor(
-    readonly vault: string,
-    readonly link: Link,
-  ) {}
+    public vault: string,
+    public link: Link,
+  ) { this.cacheHome = `box:${link.url}`; }
+
+  // Device view/cutoff/cache belongs to the conversation connection, not subsequent file workspaces.
+  private readonly cacheHome: string;
+
+  selectWorkspace(vault: string, link: Link): void {
+    this.vault = vault;
+    this.link = link;
+    this.kick();
+  }
 
   start(): void {
-    this.clearedAt = readCleared(this.vault);
+    this.clearedAt = { ...readCleared(this.vault), ...readCleared(this.cacheHome) };
     this.applyCache();
     useStore.setState({ shipments: [] });
     void this.refreshShipments();
@@ -294,7 +303,7 @@ class BoxChatSession {
   }
 
   private live(): boolean {
-    return !this.stopped && useStore.getState().vaultPath === this.vault;
+    return !this.stopped;
   }
 
   isKnown(id: string): boolean {
@@ -340,8 +349,10 @@ class BoxChatSession {
       try {
         if (this.cursor === null) await this.resync();
         if (!this.live()) return;
-        const r = (await httpGet(this.link, `/poll?after=${this.cursor}${this.epoch ? `&epoch=${encodeURIComponent(this.epoch)}` : ""}&client=laptop`, POLL_TIMEOUT_MS)) as PollAnswer & { epoch?: string };
+        const pollLink = this.link;
+        const r = (await httpGet(pollLink, `/poll?after=${this.cursor}${this.epoch ? `&epoch=${encodeURIComponent(this.epoch)}` : ""}&client=laptop`, POLL_TIMEOUT_MS)) as PollAnswer & { epoch?: string };
         if (!this.live()) return;
+        if (pollLink !== this.link) continue; // old workspace file signals must not reach the new viewer
         if (this.down !== false) vlog("box.feed", { state: "connected", cursor: this.cursor, epoch: this.epoch, ...(this.down ? { downMs: Date.now() - this.down } : {}) });
         this.down = false;
         this.setReach(true);
@@ -734,7 +745,7 @@ class BoxChatSession {
     this.notices.delete(convId);
     if (!last) return;
     this.clearedAt = { ...this.clearedAt, [convId]: last };
-    saveCleared(this.vault, this.clearedAt);
+    saveCleared(this.cacheHome, this.clearedAt);
     this.project(new Set([convId]));
   }
 
@@ -762,7 +773,7 @@ class BoxChatSession {
   // ---------- the cache ----------
 
   private applyCache(): void {
-    const c = readBoxCache(this.vault);
+    const c = readBoxCache(this.cacheHome) ?? readBoxCache(this.vault);
     if (!c) return;
     this.epoch = c.epoch;
     this.cursor = c.cursor;
@@ -793,7 +804,7 @@ class BoxChatSession {
         file.pictures.pop();
         body = JSON.stringify(file);
       }
-      localStorage.setItem(cacheKey(this.vault), body);
+      localStorage.setItem(cacheKey(this.cacheHome), body);
     } catch {
       /* best effort: quota or no storage */
     }
@@ -808,15 +819,20 @@ export function startBoxChat(vault: string): Promise<boolean> {
   if (session && !session.stopped && session.vault === vault) return Promise.resolve(true);
   if (starting && starting.vault === vault) return starting.p;
   const p = (async () => {
-    session?.stop();
-    session = null;
     const link = await boxLinkFor(vault);
     if (useStore.getState().vaultPath !== vault) return false;
     if (!link) {
+      if (session && !session.stopped) return true; // file-only workspace cannot take away the global conversation
       useStore.getState().setBoxChat(NO_BOX_STATE);
       useStore.setState({ shipments: [] });
       return false;
     }
+    if (session && !session.stopped && session.link.url === link.url && session.link.token === link.token) {
+      session.selectWorkspace(vault, link);
+      return true;
+    }
+    // Changing a file workspace is not an instruction to move this conversation to another server.
+    if (session && !session.stopped) return true;
     session = new BoxChatSession(vault, link);
     const cur = useStore.getState().boxChat;
     if (!cur?.on) useStore.getState().setBoxChat({ on: true, reachable: null, reason: "" });
@@ -842,7 +858,7 @@ const NO_BOX_STATE: BoxChatState = { on: false, reachable: null, reason: "" };
 /** Is the open vault's chat on the box right now? */
 export function boxChatOn(): boolean {
   const s = useStore.getState();
-  return !!session && !session.stopped && session.vault === s.vaultPath && !!s.boxChat?.on;
+  return !!session && !session.stopped && !!s.boxChat?.on;
 }
 
 /** One server-owned idempotent source revert request (also works in a popout). */
@@ -861,12 +877,6 @@ export function _boxChatSession(): BoxChatSession | null {
   return session;
 }
 
-/** Vault-absolute laptop paths mean nothing on the box: make them relative. */
-function relativize(text: string, vault: string): string {
-  const v = vault.replace(/\\/g, "/").replace(/\/+$/, "");
-  return v ? text.split(v + "/").join("") : text;
-}
-
 /** Pasted / captured images as the box's intents take them. */
 export function boxImages(atts: ChatAttachment[] | undefined): { name?: string; mime: string; dataBase64: string }[] {
   const out: { name?: string; mime: string; dataBase64: string }[] = [];
@@ -880,9 +890,9 @@ export function boxImages(atts: ChatAttachment[] | undefined): { name?: string; 
 }
 
 /** One intent to the box (POST /api/v2/intent), in the app log under the ids the box logs it with. */
-async function intent(sess: BoxChatSession, body: Record<string, unknown>) {
+async function intent(sess: BoxChatSession, body: Record<string, unknown>, link: Link = sess.link) {
   const t0 = Date.now();
-  const r = await httpPost(sess.link, "/api/v2/intent", { ...body, client: "laptop" });
+  const r = await httpPost(link, "/api/v2/intent", { ...body, client: "laptop" });
   const d = r.data ?? {};
   vlog("box.intent", {
     type: body.type,
@@ -922,11 +932,15 @@ export async function boxSend(opts: { text: string; contextPreamble?: string; at
   const sess = session;
   const s = useStore.getState();
   const vault = s.vaultPath!;
+  // Capture before uploads or any other asynchronous work. No mutable current-viewer lookup at send time.
+  const selectedLink = boxLinkFor(vault);
   const trimmed = opts.text.trim();
   // No conversation named: Main, the default everywhere.
   const convId = opts.convId ?? s.activeConversationId ?? MAIN_ID;
   const images = boxImages(opts.attachments);
   const uploads = opts.uploads ?? [];
+  const selected = await selectedLink;
+  const requestLink = selected?.url === sess.link.url ? selected : { ...sess.link, vault: null };
   if (!trimmed && !images.length && !uploads.length) return true;
   const shown = trimmed || (uploads.length ? uploads.map((u) => u.name).join(", ") : "(image)");
   const clientId = newClientId();
@@ -947,7 +961,7 @@ export async function boxSend(opts: { text: string; contextPreamble?: string; at
   // Attached files go up first (never a path on this laptop in the prompt: the box cannot open it).
   const files: string[] = [];
   for (const u of uploads) {
-    const up = await boxUploadFile(u.name, fromBase64(u.dataBase64));
+    const up = await boxUploadFile(u.name, fromBase64(u.dataBase64), requestLink);
     if (!up.ok) {
       sess.failOutgoing(convId, clientId, `⚠️ ${u.name} did not reach the box: ${up.error} The message was NOT sent.`);
       return true;
@@ -958,13 +972,13 @@ export async function boxSend(opts: { text: string; contextPreamble?: string; at
   const base: Record<string, unknown> = {
     convId,
     clientId,
-    text: relativize(trimmed, vault),
+    text: trimmed,
     ...(images.length ? { images } : {}),
     ...(files.length ? { files } : {}),
-    ...(ctx ? { context: relativize(ctx, vault) } : {}),
+    ...(ctx ? { context: ctx } : {}),
   };
   if (kind === "send" && conv?.project && !row) base.project = projectForSend(conv.project);
-  const r = await intent(sess, { ...base, type: kind });
+  const r = await intent(sess, { ...base, type: kind }, requestLink);
   if (!r.ok) {
     sess.failOutgoing(convId, clientId, refused(r, kind === "answer" ? "answer" : "message"));
     if (r.network) sess.kick();
@@ -1008,11 +1022,11 @@ export const ATTACH_MAX_BYTES = 25 * 1024 * 1024;
  * file itself; the box cannot open a path on this laptop). Saved in the vault's hidden attachments
  * area; returns its path there, or why not.
  */
-export async function boxUploadFile(name: string, bytes: Uint8Array): Promise<{ ok: true; path: string } | { ok: false; error: string }> {
+export async function boxUploadFile(name: string, bytes: Uint8Array, capturedLink?: Link): Promise<{ ok: true; path: string } | { ok: false; error: string }> {
   if (!boxChatOn() || !session) return { ok: false, error: "no box connected" };
   if (bytes.length > ATTACH_MAX_BYTES) return { ok: false, error: tooBig(name, bytes.length) };
   const t0 = Date.now();
-  const r = await httpPost(session.link, "/api/v2/attachment", { name, dataBase64: toBase64(bytes) });
+  const r = await httpPost(capturedLink ?? session.link, "/api/v2/attachment", { name, dataBase64: toBase64(bytes) });
   vlog("box.attach", { name: name.slice(0, 80), bytes: bytes.length, ok: r.ok, ms: Date.now() - t0, ...(r.ok ? {} : { error: r.error }) });
   if (!r.ok || typeof r.data?.path !== "string") return { ok: false, error: r.error ?? "the box did not take it" };
   return { ok: true, path: r.data.path };
@@ -1161,3 +1175,10 @@ export function boxOutgoingLine(convId: string, id: string, text: string, role: 
 export function boxRekey(from: string, to: string): void {
   session?.rekey(from, to);
 }
+
+// A file workspace changes the file signal subscription, never the conversation projection or call.
+useStore.subscribe((state, previous) => {
+  if (state.vaultPath && state.vaultPath !== previous.vaultPath && session && !session.stopped) {
+    void startBoxChat(state.vaultPath).catch(e => console.warn("[box-chat] workspace subscription:", e));
+  }
+});

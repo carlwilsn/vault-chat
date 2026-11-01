@@ -259,7 +259,7 @@ export async function startEngine(b: EngineBoot): Promise<EngineHandle> {
   const model = engineModel();
   const visionModel = process.env.VC_VISION_MODEL || "openai/gpt-6.1-sol";
   const win = modelWindow(model, piCat);
-  configureContext({ vault: b.vault, agentModel: model, vaults: () => (b.vaults?.() ?? []).map((v) => v.path) });
+  configureContext({ vault: b.vault, conversationRoot: b.vault, agentModel: model, vaults: () => (b.vaults?.() ?? []).map((v) => v.path) });
 
   const base = piPaths(b.stateDir);
   const baseUrl = b.openrouterBase ? b.openrouterBase.replace(/\/+$/, "") : undefined;

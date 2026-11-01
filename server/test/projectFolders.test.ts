@@ -203,7 +203,7 @@ describe("end to end: a project working in a folder outside the vault (real engi
     // Its memory is in the folder; the choice is the server's (the registry), never the agent's.
     expect(readFileSync(join(folder, ".vault-chat", "project-memory.md"), "utf8")).toBe("# vault-chat: memory\n");
     expect(JSON.parse(readFileSync(join(vault, ".vault-chat", "local", "project-folders.json"), "utf8")).folders["vault-chat"].path).toBe(folder);
-    expect((await get("/projects")).body.projects).toContainEqual({ slug: "vault-chat", name: "vault-chat", folder: fwd(folder), vault: "school2", rel: null });
+    expect((await get("/projects")).body.projects).toContainEqual({ slug: "vault-chat", name: "vault-chat", folder: fwd(folder), rel: null });
 
     const s = await post("/api/v2/intent", { type: "send", clientId: "c-pf-1", convId: "project-vault-chat", text: "Hello in the checkout, CWD-MARKER." });
     expect(s.body).toMatchObject({ ok: true, convId: "project-vault-chat" });

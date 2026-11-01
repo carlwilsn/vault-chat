@@ -12,7 +12,7 @@
 // one — the same create-or-attach, then his screens and a live call follow to its thread.
 import { existsSync } from "node:fs";
 import { isAbsolute, relative, resolve, sep } from "node:path";
-import { configureContext, ctxConfig, withVault } from "./context/config";
+import { configureContext, ctxConfig, withVault, conversationRoot } from "./context/config";
 import { allProjects, ensureProject, folderName, makeProject } from "./context/projects";
 import { slugify } from "./context/files";
 import { ensureProjectThread, patchMeta } from "./engine/convs";
@@ -54,8 +54,8 @@ export function boxPathOf(raw: unknown): string | null {
 
 /** The vault that owns a project in `folder`: the (deepest) vault it is in, else the main vault. */
 export function ownerOfFolder(folder: string, vaults: VaultRef[]): VaultRef {
-  const inside = vaults.filter((v) => under(resolve(folder), resolve(v.path))).sort((a, b) => b.path.length - a.path.length);
-  return inside[0] ?? vaults.find((v) => v.main) ?? vaults[0]!;
+  const owner = conversationRoot((vaults.find(v => v.main) ?? vaults[0]!).path);
+  return vaults.find(v => resolve(v.path) === resolve(owner)) ?? { name: "Main", path: owner, main: true };
 }
 
 /** A slug in use anywhere on the box but `owner`'s own registry (a project, a deleted one, a thread in another log). */
@@ -70,14 +70,14 @@ function slugTaken(vaults: VaultRef[], owner: VaultRef): (slug: string) => boole
   };
 }
 
-export type ProjectRow = { slug: string; name: string; folder: string; vault: string; rel: string | null };
+export type ProjectRow = { slug: string; name: string; folder: string; rel: string | null };
 
 function relOf(abs: string): string | null {
   const m = masterDir();
   return m && under(resolve(abs), resolve(m)) ? fwd(relative(resolve(m), resolve(abs))) : null;
 }
 
-/** Every project on the box: `vault` its owner's name, `rel` its folder relative to the vault-chat folder (null: outside it). */
+/** Global project list; `rel` is only the folder's display path (null outside the master folder). */
 export function projectsList(vaults: VaultRef[]): { projects: ProjectRow[] } {
   const out: ProjectRow[] = [];
   const seen = new Set<string>();
@@ -85,7 +85,7 @@ export function projectsList(vaults: VaultRef[]): { projects: ProjectRow[] } {
     for (const e of registeredFolders(v.path)) {
       if (seen.has(e.slug) || !existsSync(e.path)) continue;
       seen.add(e.slug);
-      out.push({ slug: e.slug, name: folderName(e.path), folder: fwd(e.path), vault: v.name, rel: relOf(e.path) });
+      out.push({ slug: e.slug, name: folderName(e.path), folder: fwd(e.path), rel: relOf(e.path) });
     }
   return { projects: out.sort((a, b) => a.name.localeCompare(b.name)) };
 }
@@ -134,9 +134,8 @@ export async function createProjectWithThread(
   if (wanted && !folder) return { error: `"${String(body.folder).slice(0, 120)}" is not a folder in the vault-chat folder` };
   if (!folder && !name) return { error: "a folder or a name is required" };
   const here = vaults.find((v) => resolve(v.path) === resolve(vault)) ?? { name: "main", path: vault, main: true };
-  // A folder some vault's registry already holds is that vault's project (the vault-chat repo is the vault-chat vault's).
-  const already = folder ? vaults.find((v) => registeredFolders(v.path).some((e) => resolve(e.path) === resolve(folder))) : undefined;
-  const owner = already ?? (folder ? ownerOfFolder(folder, vaults) : here);
+  // A file workspace or an external folder does not become a conversation owner.
+  const owner = ownerOfFolder(folder ?? here.path, vaults);
   try {
     const out = withVault(owner.path, () => {
       if (folder) {
@@ -237,7 +236,7 @@ export async function openProject(vault: string, args: Record<string, unknown>, 
       convId = MAIN_ID;
       title = MAIN_TITLE;
     } else if (found) {
-      convId = (await ensureProjectThread(found.vault, found.slug, found.name)).id;
+      convId = (await ensureProjectThread(ownerVault(projectThreadId(found.slug), conversationRoot(vault)) ?? conversationRoot(vault), found.slug, found.name)).id;
       slug = found.slug;
       title = found.name;
       folder = fwd(found.folder);
