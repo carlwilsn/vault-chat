@@ -433,7 +433,10 @@ export function ChatPane() {
   // think I care to see them"): the agent's reply carries the result; a failed one is one quiet line in the thread.
   const subagents = activeConv?.subagents ?? NO_SUBAGENTS;
   const parentConv = conversations.find((c) => c.subagents?.some((s) => s.kind !== "job" && s.threadId === activeConversationId));
-  const openSubagent = (id: string) => useStore.getState().selectConversation(id);
+  const openSubagent = useCallback((id: string) => useStore.getState().selectConversation(id), []);
+  // A composer keystroke must not change every memoized bubble's props.
+  // Resolve worker links only when the transcript or its workers change.
+  const messageSubagents = useMemo(() => messages.map((m) => subagentsOfMessage(m, subagents)), [messages, subagents]);
   const runningTasks = useMemo(() => subagents.filter((s) => taskState(s) === "running"), [subagents]);
   const answerAsk = useCallback((answer: string) => {
     const id = useStore.getState().activeConversationId;
@@ -1087,7 +1090,7 @@ export function ChatPane() {
                 askLive={!!m.askOptions?.length && i === lastVisible && !busy}
                 askChosen={m.askOptions?.length ? chosenAnswer(messages, i) : undefined}
                 onAsk={answerAsk}
-                spawns={subagentsOfMessage(m, subagents)}
+                spawns={messageSubagents[i]}
                 onOpenSubagent={openSubagent}
                 openableThreadIds={openableThreadIds}
                 onSubagent={controlSubagent}
