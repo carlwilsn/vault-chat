@@ -194,3 +194,6 @@ timestamps and "verified" itself.
   Long-task observations are limited to one per second: absence never proves no blocking. No content,
   key values, paths or conversation IDs are collected. Chromium UA parsing must prefer Chrome/Chromium
   over the earlier AppleWebKit compatibility token.
+- File-open correlation begins at the existing viewer `currentFile` store transition, AFTER the file read.
+  `fileOpenAgeMs` is a signed event/task start offset from the most recent opening and is only retained
+  for its first minute; negative means a long task overlaps the opening. It is not file-I/O duration.

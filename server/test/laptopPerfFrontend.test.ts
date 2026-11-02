@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, it, expect, vi } from "vitest";
-const h = vi.hoisted(() => ({ state: { vaultPath: "fixture", conversationsLoaded: true, chatFullscreen: false, rightCollapsed: true, popoutOpen: false }, subscribe: null as any, posts: [] as any[], observers: {} as Record<string, Function>, link: vi.fn() }));
+const h = vi.hoisted(() => ({ state: { currentFile: null as string | null, vaultPath: "fixture", conversationsLoaded: true, chatFullscreen: false, rightCollapsed: true, popoutOpen: false }, subscribe: null as any, posts: [] as any[], observers: {} as Record<string, Function>, link: vi.fn() }));
 vi.mock("../../src/store", () => ({ useStore: { getState: () => h.state, subscribe: (f: any) => { h.subscribe = f; } } }));
 vi.mock("../../src/boxChat", () => ({ boxLinkFor: h.link, boxPost: async (_link: any, path: string, body: any) => { h.posts.push({ path, body }); return { ok: true }; } }));
 vi.mock("../../src/bootTiming", () => ({ afterVaultReady: () => Promise.resolve(), hasBootMark: () => true }));
@@ -13,7 +13,7 @@ class TestElement {
 let listeners: Record<string, Function>;
 beforeEach(() => {
   vi.resetModules(); vi.useFakeTimers();
-  h.state = { vaultPath: "fixture", conversationsLoaded: true, chatFullscreen: false, rightCollapsed: true, popoutOpen: false };
+  h.state = { currentFile: null as string | null, vaultPath: "fixture", conversationsLoaded: true, chatFullscreen: false, rightCollapsed: true, popoutOpen: false };
   h.posts = []; h.observers = {}; h.link.mockReset().mockResolvedValue({}); listeners = {};
   vi.stubGlobal("Element", TestElement);
   vi.stubGlobal("document", { hidden: false, addEventListener: (name: string, f: Function) => { listeners[name] = f; }, querySelector: () => ({ disabled: false, getClientRects: () => [1] }), getElementById: () => ({ firstElementChild: {} }) });
@@ -92,4 +92,22 @@ it("a slow shortcut dispatch preserves the event start and a remounted root can 
   await vi.advanceTimersByTimeAsync(4000);
   expect(samples()).toContainEqual(expect.objectContaining({ metric: "fullscreen-transition", startPoint: "event", at: new Date(performance.timeOrigin + began).toISOString() }));
   query.mockRestore();
+});
+
+it("marks file-open after the viewer action, correlates subsequent keys/tasks for one minute, and sends no paths", async () => {
+  const { installLaptopPerf } = await import("../../src/laptopPerf");
+  installLaptopPerf();
+  const old = { ...h.state }; h.state.currentFile = "/private/never-ship.md";
+  h.subscribe(h.state, old);
+  const opened = performance.now();
+  await vi.advanceTimersByTimeAsync(100);
+  listeners.keydown(key());
+  h.observers.longtask({ getEntries: () => [{ startTime: opened + 10, duration: 80 }] });
+  await vi.advanceTimersByTimeAsync(4000);
+  expect(samples()).toContainEqual(expect.objectContaining({ metric: "file-open", startPoint: "state-change", fileOpenAgeMs: 0 }));
+  expect(samples()).toContainEqual(expect.objectContaining({ metric: "composer-key", fileOpenAgeMs: 100 }));
+  expect(samples()).toContainEqual(expect.objectContaining({ metric: "main-thread-long-task", fileOpenAgeMs: 10 }));
+  expect(JSON.stringify(h.posts)).not.toContain("never-ship");
+  await vi.advanceTimersByTimeAsync(60000); listeners.keydown(key()); await vi.advanceTimersByTimeAsync(4000);
+  expect(samples().at(-1).fileOpenAgeMs).toBeUndefined();
 });

@@ -51,22 +51,26 @@ export function installLaptopPerf({ popout = false }: { popout?: boolean } = {})
       surface: native ? import.meta.env.PROD ? "tauri-production" : "tauri-development" : "browser",
       runtime, runtimeVersion, eventTiming, clockQuantumMs: Number.isFinite(quantum) ? quantum : null,
       startupTemperature: "unknown",
-      samples: body.events.map(e => ({ at: e.at, metric: e.metric, method: e.method, durationMs: e.durationMs, startPoint: e.startPoint, visibility: e.visibility })) as PerfSample[],
+      samples: body.events.map(e => ({ at: e.at, metric: e.metric, method: e.method, durationMs: e.durationMs, startPoint: e.startPoint, visibility: e.visibility, ...(e.fileOpenAgeMs !== undefined ? { fileOpenAgeMs: e.fileOpenAgeMs } : {}) })) as PerfSample[],
     };
     const r = await boxPost(link, "/api/v1/laptop-perf", batch);
     if (!r.ok) throw new Error("performance batch not sent");
   };
   // Native IPC uses the paired Rust HTTP client, not a renderer fetch to cancel on pagehide.
   ship.installPageHide();
+  let fileOpenedAt = -Infinity;
+  let lastTask = -Infinity;
   const add = (metric: PerfSample["metric"], method: PerfSample["method"], durationMs: number, startPoint: PerfSample["startPoint"], began = performance.now(), visibility = document.hidden ? "hidden" : "visible") => {
     // Date the observation at its native event/task clock, not after a blocked renderer resumes.
-    if (Number.isFinite(durationMs) && durationMs >= 0 && durationMs <= 600_000 && Number.isFinite(began)) ship.add("perf", { metric, method, durationMs, startPoint, visibility }, new Date(performance.timeOrigin + began).toISOString());
+    if (Number.isFinite(durationMs) && durationMs >= 0 && durationMs <= 600_000 && Number.isFinite(began)) ship.add("perf", { metric, method, durationMs, startPoint, visibility,
+      // Offset is signed: a task may start before, but overlap, the file-open store action.
+      ...(Number.isFinite(fileOpenedAt) && began + durationMs >= fileOpenedAt && began - fileOpenedAt <= 60_000 ? { fileOpenAgeMs: began - fileOpenedAt } : {}),
+    }, new Date(performance.timeOrigin + began).toISOString());
   };
   // Bounded, content-free evidence of main-thread blocking; not a count of ALL long tasks.
   // At most one task per second avoids flooding the 32-sample delivery queue.
   try {
     if (PerformanceObserver.supportedEntryTypes.includes("longtask")) {
-      let lastTask = -Infinity;
       new PerformanceObserver(list => {
         for (const e of list.getEntries()) {
           if (e.startTime - lastTask < 1000) continue;
@@ -138,6 +142,13 @@ export function installLaptopPerf({ popout = false }: { popout?: boolean } = {})
   }, true);
   // Existing store transitions cover shortcuts AND mouse opening. No extra UI/controller.
   useStore.subscribe((state, old) => {
+    // Existing viewer action (setCurrentFile/split/link route), AFTER read: no path retained.
+    // Popout mirrors main's file state; do not double-count it as another viewer opening.
+    if (!popout && state.currentFile && state.currentFile !== old.currentFile) {
+      fileOpenedAt = performance.now();
+      lastTask = -Infinity;
+      estimate("file-open", fileOpenedAt, () => true, "state-change");
+    }
     if (!popout && state.chatFullscreen !== old.chatFullscreen) {
       const expected = state.chatFullscreen;
       const fromKey = Number.isFinite(fullscreenKeyAt);

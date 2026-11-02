@@ -1,9 +1,11 @@
 /** Content-free v1 measurements. Methods deliberately distinguish presentation from estimates. */
-export const PERF_METRICS = ["composer-key", "ctrl-k-key", "fullscreen-transition", "chat-panel-open", "launch-interactive", "main-thread-long-task"] as const;
+export const PERF_METRICS = ["composer-key", "ctrl-k-key", "fullscreen-transition", "chat-panel-open", "launch-interactive", "main-thread-long-task", "file-open"] as const;
 export const PERF_METHODS = ["event-timing", "double-raf-estimate", "native-entry-ready-ipc-upper-bound", "navigation-ready-estimate", "raf-timeout-observation", "long-task"] as const;
 export type PerfSample = {
   at: string; metric: typeof PERF_METRICS[number]; method: typeof PERF_METHODS[number]; durationMs: number;
   startPoint: "event" | "state-change" | "native-entry" | "navigation" | "task";
+  /** Signed task/event start offset from latest viewer state change, retained for 60 s. */
+  fileOpenAgeMs?: number;
   visibility?: "visible" | "hidden";
 };
 export type PerfBatch = {
@@ -28,7 +30,8 @@ export function validPerfBatch(b: unknown): b is PerfBatch {
     && typeof v.runtimeVersion === "string" && /^(?:[0-9.]{1,40}|unknown)$/.test(v.runtimeVersion)
     && typeof v.eventTiming === "boolean" && (v.clockQuantumMs === null || (Number.isFinite(v.clockQuantumMs) && v.clockQuantumMs >= 0 && v.clockQuantumMs <= 1000))
     && v.startupTemperature === "unknown" && Array.isArray(v.samples) && v.samples.length > 0 && v.samples.length <= 32
-    && v.samples.every(s => s && typeof s === "object" && keys(s, ["at", "metric", "method", "durationMs", "startPoint"], ["visibility"])
+    && v.samples.every(s => s && typeof s === "object" && keys(s, ["at", "metric", "method", "durationMs", "startPoint"], ["visibility", "fileOpenAgeMs"])
+      && (s.fileOpenAgeMs === undefined || (Number.isFinite(s.fileOpenAgeMs) && s.fileOpenAgeMs >= -600_000 && s.fileOpenAgeMs <= 60_000))
       && (s.visibility === undefined || ["visible", "hidden"].includes(s.visibility))
       && typeof s.at === "string" && /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(s.at) && Number.isFinite(Date.parse(s.at))
       && ["event", "state-change", "native-entry", "navigation", "task"].includes(s.startPoint)
