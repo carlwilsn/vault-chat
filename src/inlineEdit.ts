@@ -74,7 +74,7 @@ function oneMessage(text: string, images: CapturedExtra[]): { text: string; imag
 
 /** Where the request goes: a new side thread of the open conversation, or the popover's own. */
 function target(p: InlineEditParams): Pick<SideRequest, "convId" | "side"> {
-  return p.side ? { side: p.side } : { convId: p.convId ?? null };
+  return { convId: p.convId ?? null, ...(p.side ? { side: p.side } : {}) };
 }
 
 /** Exactly what a Ctrl+K request sends. */
