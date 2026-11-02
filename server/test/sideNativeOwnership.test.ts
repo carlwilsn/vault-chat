@@ -44,7 +44,7 @@ it("project Ctrl+K keeps its native owner/cwd with another vault open, including
     const made = await post("/projects?vault=school2", { folder: project });
     expect(made.ok).toBe(true);
     const convId = made.convId;
-    expect((await post("/api/v2/intent?vault=school2", { type: "send", convId, clientId: "owner-context", text: "SIDE-PARENT-ORIGINAL-CONTEXT" })).ok).toBe(true);
+    expect((await post("/api/v2/intent?vault=school2", { type: "send", convId, client: "laptop", clientId: "owner-context", text: "SIDE-PARENT-ORIGINAL-CONTEXT" })).ok).toBe(true);
     const parent = await waitFor(async () => { const c = (await get(`/conversation?vault=school2&id=${convId}&full=1`)).body; return c.meta?.threadPath && !c.running && !c.meta.running && provider.calls.length ? c : null; }, 30000);
     const parentBytes = readFileSync(parent.meta.threadPath);
     const health = (await get("/api/v1/health")).body;
@@ -88,11 +88,11 @@ it("project Ctrl+K keeps its native owner/cwd with another vault open, including
       expect(r.status).toBe(409);
       expect((await r.json()).error).toBe("no subagent no-such-worker on this conversation");
     }
-    expect((await post("/api/v2/intent?vault=school2", { type: "send", convId, clientId: "question", text: "OWNER-QUESTION" })).ok).toBe(true);
+    expect((await post("/api/v2/intent?vault=school2", { type: "send", convId, client: "laptop", clientId: "question", text: "OWNER-QUESTION" })).ok).toBe(true);
     await waitFor(async () => (await get(`/conversation?id=${convId}&vault=school2&full=1`)).body.pendingAsk, 30000);
     expect(await post("/answer?vault=school2", { convId, text: "Alpha", clientMsgId: "owner-answer" })).toMatchObject({ ok: true, convId, answered: true });
     await waitFor(async () => !(await get(`/conversation?id=${convId}&vault=school2&full=1`)).body.meta.running, 30000);
-    expect((await post("/api/v2/intent?vault=school2", { type: "send", convId, clientId: "kill", text: "OWNER-KILL" })).ok).toBe(true);
+    expect((await post("/api/v2/intent?vault=school2", { type: "send", convId, client: "laptop", clientId: "kill", text: "OWNER-KILL" })).ok).toBe(true);
     await waitFor(() => provider.calls.some(c => turn(c).includes("OWNER-KILL")), 30000);
     expect(await post("/kill?vault=school2", { convId })).toMatchObject({ ok: true });
     await waitFor(async () => !(await get(`/conversation?id=${convId}&vault=school2&full=1`)).body.meta.running, 30000);
