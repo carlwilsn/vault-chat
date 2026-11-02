@@ -44,7 +44,7 @@ it("project Ctrl+K keeps its native owner/cwd with another vault open, including
     const made = await post("/projects?vault=school2", { folder: project });
     expect(made.ok).toBe(true);
     const convId = made.convId;
-    expect((await post("/api/v2/intent?vault=school2", { type: "send", convId, client: "laptop", clientId: "owner-context", text: "SIDE-PARENT-ORIGINAL-CONTEXT" })).ok).toBe(true);
+    expect((await post("/api/v2/intent?vault=vault-chat", { type: "send", convId, client: "laptop", clientId: "owner-context", text: "SIDE-PARENT-ORIGINAL-CONTEXT" })).ok).toBe(true);
     const parent = await waitFor(async () => { const c = (await get(`/conversation?vault=school2&id=${convId}&full=1`)).body; return c.meta?.threadPath && !c.running && !c.meta.running && provider.calls.length ? c : null; }, 30000);
     const parentBytes = readFileSync(parent.meta.threadPath);
     const health = (await get("/api/v1/health")).body;
@@ -68,6 +68,9 @@ it("project Ctrl+K keeps its native owner/cwd with another vault open, including
     expect(chatText(request)).toContain("SIDE-PARENT-ORIGINAL-CONTEXT");
     expect(chatText(request)).toContain("SIDE-OWNER-PROJECT-INSTRUCTIONS");
     expect(chatText(request)).toContain(file);
+    expect(chatText(request)).toContain(`Viewer/file-context vault root: ${viewer}/`);
+    expect(chatText(request)).toContain(`Conversation owner: ${owner}/`);
+    expect(chatText(request)).not.toContain("/untrusted/body/root");
     expect(readFileSync(file, "utf8")).toBe(originalFile);
     const refined = await post("/api/v1/side?vault=school2", { kind: "edit", side: started.id, text: "SIDE-REFINE" });
     expect(refined.id).toBe(started.id);

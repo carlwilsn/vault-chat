@@ -78,7 +78,7 @@ export type ServerHooks = {
     intent: (v: VaultScope, b: any, viewerRoot?: string) => Promise<Record<string, unknown>>;
     /** Side threads (server/engine/pi/side.ts): Ctrl+K / Ctrl+L, and the one-shots. */
     side?: {
-      start: (v: VaultScope, b: any) => Promise<Record<string, unknown>>;
+      start: (v: VaultScope, b: any, viewerRoot?: string) => Promise<Record<string, unknown>>;
       poll: (v: VaultScope, id: string, after: number, waitMs: number) => Promise<Record<string, unknown> | null>;
       stop: (v: VaultScope, id: string) => Promise<boolean>;
     };
@@ -561,7 +561,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
   if (path === "/api/v1/side" && method === "POST") {
     const side = hooks.engine?.side;
     if (!side) return json(res, 503, { error: "engine not running" });
-    const out: Record<string, unknown> = await side.start(scope, await jsonBody(req)).catch((e) => ({ error: String((e as Error)?.message ?? e) }));
+    const out: Record<string, unknown> = await side.start(scope, await jsonBody(req), open.path).catch((e) => ({ error: String((e as Error)?.message ?? e) }));
     return json(res, out.error ? (out.error === "missing text" ? 400 : 502) : 200, out);
   }
   if (sideM) {

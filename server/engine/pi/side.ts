@@ -55,6 +55,8 @@ export type SideStart = {
   sessionDir: string;
   /** Ctrl+K / Ctrl+L: the "you" layer before each request, as of this conversation (null: none open). One-shots: off. */
   you?: { convId: string | null } | null;
+  /** Host-captured viewer binding, recorded once in the native side session. */
+  context?: string;
   text: string;
   /** data: URLs. */
   images?: string[];
@@ -120,6 +122,10 @@ export class SideRuns {
     if (run?.busy) throw new Error("that side thread is still answering");
     if (!run) {
       run = await this.open(o);
+      if (o.context?.trim()) {
+        const noted = await run.proc!.request({ type: "prompt", message: `/vc-note ${JSON.stringify({ kind: "context", text: o.context })}` }, 15_000);
+        if (!noted?.success) throw new Error("pi could not accept side file context");
+      }
     } else {
       // Reconstruct from host policy, not the old schemas. Legacy sides retain
       // their explicit names (no inferred grant of newly added tools).
