@@ -75,6 +75,8 @@ it("project Ctrl+K keeps its native owner/cwd with another vault open, including
     const refined = await post("/api/v1/side?vault=school2", { kind: "edit", side: started.id, text: "SIDE-REFINE" });
     expect(refined.id).toBe(started.id);
     await waitFor(async () => (await get(`/api/v1/side/${started.id}?vault=school2&wait=100`)).body.done, 30000);
+    expect((await post("/api/v2/intent?vault=school2", { type: "send", convId, client: "laptop", clientId: "busy-parent", text: "OWNER-BUSY" })).ok).toBe(true);
+    await waitFor(async () => (await get("/api/v1/health")).body.engine.sdk.instances.some((x: any) => x.thread === original.thread && x.busy), 30000);
     const stopping = await post("/api/v1/side?vault=school2", { kind: "edit", convId, text: "SIDE-STOP" });
     await waitFor(() => provider.calls.some(c => turn(c).includes("SIDE-STOP")), 30000);
     expect(await post(`/api/v1/side/${stopping.id}/stop?vault=school2`, {})).toEqual({ ok: true });
@@ -92,13 +94,13 @@ it("project Ctrl+K keeps its native owner/cwd with another vault open, including
       expect((await r.json()).error).toBe("no subagent no-such-worker on this conversation");
     }
     expect((await post("/api/v2/intent?vault=school2", { type: "send", convId, client: "laptop", clientId: "question", text: "OWNER-QUESTION" })).ok).toBe(true);
-    await waitFor(async () => (await get(`/conversation?id=${convId}&vault=school2&full=1`)).body.meta.asking, 30000);
+    await waitFor(async () => (await get(`/conversation?id=${convId}&vault=school2&full=1`)).body.meta.pendingAsk, 30000);
     expect(await post("/answer?vault=school2", { convId, text: "Alpha", clientMsgId: "owner-answer" })).toMatchObject({ ok: true, convId, answered: true });
-    await waitFor(async () => !(await get(`/conversation?id=${convId}&vault=school2&full=1`)).body.meta.running, 30000);
+    await waitFor(async () => (await get(`/conversation?id=${convId}&vault=school2&full=1`)).body.status !== "running", 30000);
     expect((await post("/api/v2/intent?vault=school2", { type: "send", convId, client: "laptop", clientId: "kill", text: "OWNER-KILL" })).ok).toBe(true);
     await waitFor(() => provider.calls.some(c => turn(c).includes("OWNER-KILL")), 30000);
     expect(await post("/kill?vault=school2", { convId })).toMatchObject({ ok: true });
-    await waitFor(async () => !(await get(`/conversation?id=${convId}&vault=school2&full=1`)).body.meta.running, 30000);
+    await waitFor(async () => (await get(`/conversation?id=${convId}&vault=school2&full=1`)).body.status !== "running", 30000);
   } finally {
     if (srv) { writeFileSync(join(root, "server.log"), srv.logs()); await srv.stop(); }
     writeFileSync(join(root, "provider-calls.json"), JSON.stringify(provider.calls, null, 2));
