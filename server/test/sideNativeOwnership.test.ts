@@ -26,6 +26,7 @@ it("project Ctrl+K keeps its native owner/cwd with another vault open, including
   // tagged turn, not the last custom user message appended by the extension.
   const turn = (body: any) => (body.messages ?? []).filter((m: any) => m.role === "user").map((m: any) => typeof m.content === "string" ? m.content : (m.content ?? []).map((c: any) => c.text ?? "").join("\n")).filter((t: string) => /^(?:\[Carl, on |# Ctrl\+K:|SIDE-(?:STOP|REFINE))/m.test(t)).at(-1) ?? "";
   provider.respond = body => {
+    if (turn(body).includes("OWNER-BUSY")) return { text: "Parent finished normally.", delayMs: 4000 };
     if (turn(body).includes("OWNER-QUESTION") && lastToolResult(body) === null) return { call: { name: "AskUser", args: { question: "Which local label?", options: ["Alpha", "Beta"] } } };
     if (turn(body).includes("OWNER-KILL")) return { text: "late parent", delayMs: 2000 };
     return ({ text: turn(body).includes("SIDE-STOP") ? "Stopped replacement" : "# Edited School2 note", delayMs: turn(body).includes("SIDE-STOP") ? 2000 : 0 });
@@ -45,7 +46,7 @@ it("project Ctrl+K keeps its native owner/cwd with another vault open, including
     expect(made.ok).toBe(true);
     const convId = made.convId;
     expect((await post("/api/v2/intent?vault=vault-chat", { type: "send", convId, client: "laptop", clientId: "owner-context", text: "SIDE-PARENT-ORIGINAL-CONTEXT" })).ok).toBe(true);
-    const parent = await waitFor(async () => { const c = (await get(`/conversation?vault=school2&id=${convId}&full=1`)).body; return c.meta?.threadPath && !c.running && !c.meta.running && provider.calls.length ? c : null; }, 30000);
+    const parent = await waitFor(async () => { const c = (await get(`/conversation?vault=school2&id=${convId}&full=1`)).body; return c.meta?.threadPath && c.status !== "running" && provider.calls.length ? c : null; }, 30000);
     const parentBytes = readFileSync(parent.meta.threadPath);
     const health = (await get("/api/v1/health")).body;
     const parentProc = health.engine.pi.procs.find((p: any) => p.threadId === parent.meta.threadId);
@@ -76,15 +77,17 @@ it("project Ctrl+K keeps its native owner/cwd with another vault open, including
     expect(refined.id).toBe(started.id);
     await waitFor(async () => (await get(`/api/v1/side/${started.id}?vault=school2&wait=100`)).body.done, 30000);
     expect((await post("/api/v2/intent?vault=school2", { type: "send", convId, client: "laptop", clientId: "busy-parent", text: "OWNER-BUSY" })).ok).toBe(true);
-    await waitFor(async () => (await get("/api/v1/health")).body.engine.sdk.instances.some((x: any) => x.thread === original.thread && x.busy), 30000);
+    await waitFor(() => provider.calls.some(c => turn(c).includes("OWNER-BUSY")), 30000);
+    const busyBytes = readFileSync(parent.meta.threadPath);
     const stopping = await post("/api/v1/side?vault=school2", { kind: "edit", convId, text: "SIDE-STOP" });
     await waitFor(() => provider.calls.some(c => turn(c).includes("SIDE-STOP")), 30000);
     expect(await post(`/api/v1/side/${stopping.id}/stop?vault=school2`, {})).toEqual({ ok: true });
     const stopped = await waitFor(async () => { const r = await get(`/api/v1/side/${stopping.id}?vault=school2&convId=${convId}&wait=100`); expect(r.status).toBe(200); return r.body.done ? r.body : null; }, 30000);
     expect(stopped.error).toBe("stopped");
     const after = (await get("/api/v1/health")).body.engine.pi.procs.find((p: any) => p.threadId === parent.meta.threadId);
-    expect(after).toMatchObject({ pid: parentProc.pid, busy: false });
-    expect(readFileSync(parent.meta.threadPath).equals(parentBytes)).toBe(true);
+    expect(after).toMatchObject({ pid: parentProc.pid, busy: true });
+    expect(readFileSync(parent.meta.threadPath).equals(busyBytes)).toBe(true);
+    await waitFor(async () => (await get(`/conversation?id=${convId}&vault=school2&full=1`)).body.status !== "running", 30000);
     // Audit the existing owner-aware controls without changing their lifecycle.
     // An unknown worker on a known parent must reach that parent's engine, not
     // report the conversation absent in the viewer engine.
