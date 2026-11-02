@@ -18,7 +18,7 @@ export function FullscreenChat({ onFocusComposer, children }: { onFocusComposer:
   const chatSidebarOpen = useStore((s) => s.chatSidebarOpen);
   const toggleChatSidebar = useStore((s) => s.toggleChatSidebar);
   return (
-    <div className="h-full w-full bg-background flex flex-col relative">
+    <div data-perf-view="fullscreen" className="h-full w-full bg-background flex flex-col relative">
       <div className="flex-1 min-h-0 flex relative">
         {chatSidebarOpen && <ChatsSidebar onFocusComposer={onFocusComposer} />}
         <div className="flex-1 min-w-0 flex flex-col bg-card">

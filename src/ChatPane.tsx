@@ -1370,6 +1370,7 @@ export function ChatPane() {
                 </div>
               )}
               <Textarea
+                data-perf-target="composer"
                 ref={inputRef}
                 value={input}
                 onChange={(e) => onInputChange(e.target.value)}

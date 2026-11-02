@@ -116,6 +116,19 @@ describe("auth", () => {
     expect((await get({ range: "bytes=2000-" })).status).toBe(416);
     expect((await fetch(`${srv.base}/file?path=clips/proof.webm`, { headers: viaServe })).status).toBe(401);
   });
+  it("laptop perf: authenticated read/write, no native claim from a phone token, invalid/oversized samples rejected", async () => {
+    const path = "/api/v1/laptop-perf";
+    const b = { schema: 1, version: "0.7.25", revision: "b".repeat(40), session: "browserfixture", surface: "browser", runtime: "browser", runtimeVersion: "130.0", eventTiming: false, clockQuantumMs: null, startupTemperature: "unknown", samples: [{ at: new Date().toISOString(), metric: "ctrl-k-key", method: "double-raf-estimate", durationMs: 18.125, startPoint: "event" }] };
+    const post = (body: unknown, headers = {}) => fetch(srv.base + path, { method: "POST", headers: { "content-type": "application/json", ...headers }, body: JSON.stringify(body) });
+    expect(await status(viaServe, path)).toBe(401);
+    expect((await post(b, viaServe)).status).toBe(401);
+    expect((await post({ ...b, surface: "tauri-production" }, { ...viaServe, "x-vault-token": TOKEN })).status).toBe(403);
+    expect((await post({ ...b, samples: Array(33).fill(b.samples[0]) })).status).toBe(400);
+    expect((await post({ ...b, text: "never retained" })).status).toBe(400);
+    expect((await post(b)).status).toBe(200);
+    const got = await (await fetch(srv.base + path)).json();
+    expect(got.batches).toEqual([expect.objectContaining({ ...b, nativeTransport: false })]);
+  });
   it("/api/v1/board/log and /api/v1/diag: the board's batch lands in the box's log and comes back in the diag window, redacted, behind auth", async () => {
     const post = (h: Record<string, string> = {}) =>
       fetch(srv.base + "/api/v1/board/log", {

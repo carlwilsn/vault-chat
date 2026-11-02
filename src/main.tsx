@@ -28,6 +28,7 @@ import { initBackgroundMode } from "./background";
 import { installClientEvents } from "./clientEvents";
 import { installAppShip } from "./appShip";
 import { installDiagShortcut } from "./diag";
+import { installLaptopPerf } from "./laptopPerf";
 
 // Install the freeze diagnostic logger before anything else runs, so a
 // crash during boot still leaves a trail.
@@ -79,6 +80,7 @@ if (isPopout) {
   installClientEvents();
   // Its errors and box drops on the box too (<state>/logs/app.jsonl).
   installAppShip();
+  installLaptopPerf();
   installDiagShortcut();
   // Reconcile "run in background" (always-on tray daemon) with the Rust
   // close-to-tray gate and the OS login item. Main window only; popouts must

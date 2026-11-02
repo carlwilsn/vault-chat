@@ -813,6 +813,7 @@ export function InlineEditPrompt({
       )}
       <div className="flex items-start gap-1 p-2 shrink-0">
         <textarea
+          data-perf-target="ctrl-k"
           ref={inputRef}
           rows={1}
           value={prompt}

@@ -38,6 +38,7 @@ import { noteAttention, pushGate } from "./pushGate";
 import { boardLogPost, boxDiag } from "./diag";
 import { noteUserLine } from "./signal";
 import { deliveryChallenge, deliveryRepos, laptopTransportIdentity, reportLaptopHealth, requestDeliveryRollback, shipmentCards, shipmentRepo } from "./changeDelivery";
+import { recordLaptopPerf, readLaptopPerf } from "./laptopPerf";
 import { ATTACH_BODY_LIMIT, ATTACH_MAX_BYTES, mb, saveAttachment } from "./attachments";
 
 /** A vault on this box, as the routes see it (engine/index.ts VaultRef). */
@@ -438,6 +439,14 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
     scope = owner ?? main;
   }
   const vault = scope.path;
+  if (path === "/api/v1/laptop-perf") {
+    if (method === "GET") return json(res, 200, { batches: readLaptopPerf(cfg.stateDir) });
+    if (method === "POST") {
+      const result = recordLaptopPerf(cfg.stateDir, await jsonBody(req, 32 * 1024), !!laptopTransportIdentity(req));
+      return json(res, result.status, result.body);
+    }
+  }
+
   if (path === "/api/v1/shipments" && method === "GET") {
     try { return json(res, 200, { shipments: await shipmentCards(vault, scope.name, url.searchParams.get("project") || undefined) }); }
     catch (e) { console.error("[delivery] cards", e); return json(res, 503, { error: "Shipment facts unavailable; needs attention" }); }
