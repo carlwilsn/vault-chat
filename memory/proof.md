@@ -1,7 +1,7 @@
 # Proof: what counts, and the traps that faked a pass
 
-"Done" = the gates in AGENTS.md pass **and** the change is seen working in the real UI. Every rule below exists
-because something passed a weaker check and broke for Carl.
+Shipped means the box and Carl's laptop run the release. The ship script decides acceptance.
+Measure perceived performance on Carl's real laptop; test builds do not establish it.
 
 ## Real UI, real input
 - **Mocks and fixtures prove the mock.** The phone's old `?mock=1` page had its own data and render path: a fix was
