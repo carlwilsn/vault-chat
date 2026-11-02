@@ -12,7 +12,10 @@ Based on canonical main `6436747f`, independently of the unshipped UI-removal br
   proper HTTP readiness and last-good binary fallback with one outcome log line.
   Suppression also applies when the failed version is still current with no fallback.
 - Server bundle entry rejects every unsupported argument before importing main;
-  only no arguments (server) and exact `build-info` are supported.
+  no arguments (server), exact `build-info` / `record-ui`, and the existing
+  `master` / `projects` CLI modes remain supported. The first full development
+  run exposed the over-broad guard breaking RecordUI; the guard now preserves
+  those ordinary commands while still rejecting retired recovery modes before main.
 - `ROLLOVER_RECOVERY_PROTOCOL=1` is only the transitional installed updater refresh
   compatibility marker. It introduces no log-cap activation or source-revert policy.
 

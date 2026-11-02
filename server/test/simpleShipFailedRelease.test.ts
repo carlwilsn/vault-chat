@@ -35,12 +35,17 @@ it("actual server bundle rejects recovery/unknown commands before ANY listener, 
   // Throw before listen can bind even an owned port. This regression can NEVER start a second live server.
   writeFileSync(preload,`const fs=require('node:fs'); const deny=()=>{fs.appendFileSync(${JSON.stringify(marker)},'unexpected initialization\\n');throw Error('forbidden initialization');}; require('node:net').Server.prototype.listen=deny; const cp=require('node:child_process'); for(const k of ['spawn','spawnSync','exec','execSync','execFile','execFileSync','fork'])cp[k]=deny; require('node:module').syncBuiltinESMExports();`);
   const bundle=resolve("dist-server/vault-chat-server.mjs"); expect(existsSync(bundle)).toBe(true);
-  for(const args of [["recover-published-release","id"],["--failed-release","id"],["--rollback","id"],["--unknown"],["build-info","extra"]]) {
+  for(const args of [["recover-published-release","id"],["--failed-release","id"],["--rollback","id"],["--unknown"],["build-info","extra"],["record-ui","extra"]]) {
     const result=spawnSync(process.execPath,["--require",preload,bundle,...args],{cwd:root,env:{HOME:root,PATH:"",VC_HOST:"127.0.0.1"},encoding:"utf8",timeout:3000});
     expect(result.error).toBeUndefined(); expect(result.status,result.stderr).toBe(2); expect(result.stdout).toBe("");
-    expect(result.stderr).toBe("Unsupported server command; start without arguments or use build-info\n");
+    expect(result.stderr).toBe("Unsupported server command; use no arguments, build-info, record-ui, master or projects\n");
   }
   const info=spawnSync(process.execPath,["--require",preload,bundle,"build-info"],{cwd:root,env:{HOME:root,PATH:""},encoding:"utf8",timeout:3000});
   expect(info.status,info.stderr).toBe(0); expect(JSON.parse(info.stdout)).toMatchObject({version:expect.any(String),rev:expect.any(String)});
   expect(existsSync(marker)).toBe(false); expect(existsSync(join(root,".local"))).toBe(false);
+  // Existing recorder transport must still work; malformed stdin stops before browser/scratch work.
+  const recorder=spawnSync(process.execPath,["--require",preload,bundle,"record-ui"],{cwd:root,env:{HOME:root,PATH:"",VC_VOICE_PIPELINE:"off"},input:"{invalid",encoding:"utf8",timeout:3000});
+  expect(recorder.status,recorder.stderr).toBe(0); expect(recorder.stdout).toContain("@@vc-record@@");
+  expect(JSON.parse(recorder.stdout.split("@@vc-record@@")[1]!)).toMatchObject({ok:false});
+  expect(recorder.stdout).not.toContain("starting"); expect(existsSync(marker)).toBe(false);
 });
