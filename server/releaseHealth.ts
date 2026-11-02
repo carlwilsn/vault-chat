@@ -4,7 +4,7 @@ import { join } from "node:path";
  * Offline laptops stay pending, not healthy and not a reason to revert every release. Explicit fresh negative
  * reports do fail. No timers, second deployment state machine or network listener lives in this policy.
  */
-export type ReleaseTarget = { id: string; version: string; revision: string; installedAt: number; previousVersion: string; rollbackOf?: string };
+export type ReleaseTarget = { id: string; version: string; revision: string; installedAt: number; previousVersion: string };
 /** B owns pipeline lifecycle/readiness. Its adapter must report identity/exclusive ownership, not a foreign 200.
  * No port number or port allocation assumption belongs to release health.
  */
@@ -26,10 +26,8 @@ export type LaptopReleaseHealth = {
 };
 export type ReleaseHealthResult = {
   status: "pending" | "healthy" | "failed";
-  action: "wait" | "confirm" | "revert-and-ship" | "needs-attention";
+  action: "wait" | "confirm" | "needs-attention";
   reason: string; box: "pending" | "healthy" | "failed"; laptop: "pending" | "healthy" | "failed";
-  /** A binary fallback is recovery only. It NEVER satisfies source rollback: ship the change-specific revert. */
-  binaryFallback: boolean;
 };
 export function evaluateReleaseHealth(o: {
   target: ReleaseTarget; now: number; boxDeadline: number; maxReportAgeMs: number;
@@ -61,13 +59,11 @@ export function evaluateReleaseHealth(o: {
     else laptop = "healthy";
   }
   if (box === "failed" || laptop === "failed") return {
-    status: "failed", action: target.rollbackOf ? "needs-attention" : "revert-and-ship",
+    status: "failed", action: "needs-attention",
     reason: box === "failed" ? boxReason : laptopReason, box, laptop,
-    // Keep the old box version for either device's confirmed failure. Source revert still travels laptop sync→CI.
-    binaryFallback: !target.rollbackOf,
   };
-  if (box === "healthy" && laptop === "healthy") return { status: "healthy", action: "confirm", reason: "Box and actual laptop verified this release", box, laptop, binaryFallback: false };
-  return { status: "pending", action: "wait", reason: box === "pending" ? boxReason : laptopReason, box, laptop, binaryFallback: false };
+  if (box === "healthy" && laptop === "healthy") return { status: "healthy", action: "confirm", reason: "Box and actual laptop verified this release", box, laptop };
+  return { status: "pending", action: "wait", reason: box === "pending" ? boxReason : laptopReason, box, laptop };
 }
 
 /** Read-only A runtime readiness: managed Python child + its actual listener + a matching HTTP schema.

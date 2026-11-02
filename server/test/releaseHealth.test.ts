@@ -10,7 +10,7 @@ describe("post-release health is actual box AND actual laptop", () => {
     expect(evaluateReleaseHealth(opts)).toMatchObject({ status: "healthy", action: "confirm", box: "healthy", laptop: "healthy" });
   });
   it("never treats box reachability as laptop health; offline laptop stays pending without autorevert", () => {
-    expect(evaluateReleaseHealth({ ...opts, laptop: undefined })).toMatchObject({ status: "pending", action: "wait", laptop: "pending", binaryFallback: false });
+    expect(evaluateReleaseHealth({ ...opts, laptop: undefined })).toMatchObject({ status: "pending", action: "wait", laptop: "pending" });
     expect(evaluateReleaseHealth({ ...opts, now: 100_000, box: { ...box, observedAt: 99_999 }, laptop: undefined })).toMatchObject({ status: "pending", action: "wait", laptop: "pending" });
   });
   it.each([
@@ -19,22 +19,24 @@ describe("post-release health is actual box AND actual laptop", () => {
   ])("cannot confirm from a stale/replayed/mismatching laptop report %j", (patch) => {
     expect(evaluateReleaseHealth({ ...opts, laptop: { ...laptop, ...patch } })).toMatchObject({ status: "pending", laptop: "pending" });
   });
-  it.each(["tauri", "frontendMounted", "boxConnected", "syncReady", "updaterReady"] as const)("a fresh explicit negative laptop %s triggers source revert shipping", (field) => {
-    expect(evaluateReleaseHealth({ ...opts, laptop: { ...laptop, [field]: false } })).toMatchObject({ status: "failed", action: "revert-and-ship", binaryFallback: true });
+  it.each(["tauri", "frontendMounted", "boxConnected", "syncReady", "updaterReady"] as const)("a fresh explicit negative laptop %s is telemetry, not source recovery", (field) => {
+    expect(evaluateReleaseHealth({ ...opts, laptop: { ...laptop, [field]: false } })).toMatchObject({ status: "failed", action: "needs-attention" });
   });
   it("a reported laptop failure is not replaced by a later box-only ping", () => {
-    expect(evaluateReleaseHealth({ ...opts, laptop: { ...laptop, error: "Tauri sync startup failed" } })).toMatchObject({ status: "failed", action: "revert-and-ship", reason: "Tauri sync startup failed" });
+    expect(evaluateReleaseHealth({ ...opts, laptop: { ...laptop, error: "Tauri sync startup failed" } })).toMatchObject({ status: "failed", action: "needs-attention", reason: "Tauri sync startup failed" });
   });
   it("waits for the box before deadline; times out independently of the laptop", () => {
     expect(evaluateReleaseHealth({ ...opts, box: undefined })).toMatchObject({ status: "pending", box: "pending" });
-    expect(evaluateReleaseHealth({ ...opts, now: 4000, box: undefined })).toMatchObject({ status: "failed", action: "revert-and-ship", box: "failed" });
+    expect(evaluateReleaseHealth({ ...opts, now: 4000, box: undefined })).toMatchObject({ status: "failed", action: "needs-attention", box: "failed" });
   });
   it("box version alone is not proof: matching revision AND readiness are required", () => {
     expect(evaluateReleaseHealth({ ...opts, box: { ...box, revision: "other" } })).toMatchObject({ status: "pending" });
     expect(evaluateReleaseHealth({ ...opts, box: { ...box, ready: false } })).toMatchObject({ status: "pending" });
   });
-  it("revert-release failures surface once instead of autoreverting the revert forever", () => {
-    expect(evaluateReleaseHealth({ ...opts, target: { ...target, rollbackOf: "original-change" }, box: { ...box, error: "startup failed" } })).toMatchObject({ status: "failed", action: "needs-attention", binaryFallback: false });
+  it("failure exposes no source-recovery action or binary-selection policy", () => {
+    const result = evaluateReleaseHealth({ ...opts, box: { ...box, error: "startup failed" } });
+    expect(result).toMatchObject({ status: "failed", action: "needs-attention" });
+    expect(result).not.toHaveProperty("binaryFallback");
   });
 });
 
@@ -44,7 +46,7 @@ describe("B's instance-owned voice health extension", () => {
   });
   it("requires readiness and exclusive identity, never a foreign health 200", () => {
     expect(evaluateReleaseHealth({ ...opts, box: { ...box, voice: { required: true, state: "ready", owned: true, startupDeadline: 0 } } })).toMatchObject({ status: "healthy" });
-    expect(evaluateReleaseHealth({ ...opts, box: { ...box, voice: { required: true, state: "ready", owned: false, startupDeadline: 5000 } } })).toMatchObject({ status: "failed", action: "revert-and-ship" });
+    expect(evaluateReleaseHealth({ ...opts, box: { ...box, voice: { required: true, state: "ready", owned: false, startupDeadline: 5000 } } })).toMatchObject({ status: "failed", action: "needs-attention" });
   });
   it("allows an explicit dependency/setup deadline rather than prematurely failing the box", () => {
     const voice = { required: true, state: "starting" as const, owned: false, startupDeadline: 20_000 };

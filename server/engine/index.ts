@@ -29,8 +29,6 @@ import { signal } from "../convlog/log";
 import { agentKeyEnv } from "../keys";
 import { sweepJobEnvFiles } from "./pi/jobs";
 import { PushGate, pushGate } from "../pushGate";
-import { acceptedChanges } from "../changeShipping";
-import { setDeliveryRollbackHandler } from "../changeDelivery";
 
 /** A vault on this box: its working copy and bare repo. The main one keeps the paths it always had. */
 export type VaultRef = { name: string; path: string; bare: string; main: boolean };
@@ -407,16 +405,6 @@ export async function startEngine(b: EngineBoot): Promise<EngineHandle> {
     p.catch(() => opening.delete(v.name));
     return p;
   };
-  setDeliveryRollbackHandler(async (repo, id, reason) => {
-    const accepted = (await acceptedChanges(repo)).find(c => c.id === id);
-    if (!accepted) throw new Error("Accepted change not found");
-    const owner = (b.vaults?.() ?? [mainRef]).find(v => activeFolders(v.path).some(f => f.slug === accepted.review.slug && f.abs === repo));
-    if (!owner) throw new Error("Source recovery project is not registered in an available vault");
-    const result = await (await open(owner)).requestRollback(accepted, reason);
-    if (result.job) return { status: "running", jobId: result.job.id };
-    if ((await acceptedChanges(repo)).some(c => c.rollbackOf === id)) return { status: "accepted" };
-    throw new Error(result.text);
-  });
   return {
     engine,
     error: null,

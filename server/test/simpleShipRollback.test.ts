@@ -6,10 +6,10 @@ import { dirname, join, resolve } from "node:path";
 import { homedir, tmpdir } from "node:os";
 import { ship, type ShipConfig } from "../simpleShipHost";
 import { acceptedChanges, updateShippingJournal } from "../changeShipping";
-import { configureChangeDelivery, deliveryChallenge, observeChangeDelivery, reportLaptopHealth, requestDeliveryRollback, shipmentCards } from "../changeDelivery";
+import { configureChangeDelivery, deliveryChallenge, observeChangeDelivery, reportLaptopHealth, shipmentCards } from "../changeDelivery";
 import { registerFolder } from "../projectFolders";
 
-it("native health/card rollback runs the same full gates after removing feature regression tests, retaining later work; retirement uses ordinary comparison", async () => {
+it("normal branch shipping runs all seven gates; later native failure leaves accepted source and tests untouched", async () => {
   const root = mkdtempSync(join(tmpdir(), "vc-native-rollback-")), repo = join(root, "repo"), vault = join(root, "vault");
   const put = (p: string, text: string) => { mkdirSync(dirname(join(repo, p)), { recursive: true }); writeFileSync(join(repo, p), text); };
   mkdirSync(repo); mkdirSync(join(vault, "agent-projects/app"), { recursive: true });
@@ -47,23 +47,21 @@ it("native health/card rollback runs the same full gates after removing feature 
     let calls = 0;
     configureChangeDelivery({ vaults: () => [{ name: "fixture", path: vault }], stateDir: join(root, "state"),
       boxHealth: async () => ({ version: release.version, revision: release.revision, observedAt: Date.now(), ready: true }),
-      requestSourceRollback: async (_repo, id) => { calls++; await ship(config, { rollback: id, title: "Roll back feature", slug: "app", convId: "project-app" }); return { status: "accepted" }; },
     });
     await observeChangeDelivery(repo);
     const challenge = await deliveryChallenge(repo, "fixture-native");
     await reportLaptopHealth(repo, "fixture-native", { ...challenge!, tauri: true, frontendMounted: true, boxConnected: true, syncReady: true, updaterReady: false });
     await observeChangeDelivery(repo);
-    expect(calls).toBe(1);
-    expect(readFileSync(join(repo, "app.ts"), "utf8")).toContain("= 1");
+    expect(calls).toBe(0);
+    expect(readFileSync(join(repo, "app.ts"), "utf8")).toContain("= 2");
     expect(readFileSync(join(repo, "later.txt"), "utf8")).toBe("unrelated later work");
-    expect(existsSync(join(repo, "server/test/regression.test.ts"))).toBe(false);
-    expect(existsSync(join(repo, "test/harness/regression.test.ts"))).toBe(false);
-    expect((await acceptedChanges(repo)).at(-1)?.rollbackOf).toBe(feature.id);
-    expect((await shipmentCards(vault, "fixture")).find(c => c.id === feature.id)?.rollback?.status).toBe("accepted");
-    expect((await requestDeliveryRollback(repo, feature.id, "Card click after health rollback")).status).toBe("accepted");
-    expect(calls).toBe(1); // card retry dedupes against native acceptance
+    expect(existsSync(join(repo, "server/test/regression.test.ts"))).toBe(true);
+    expect(existsSync(join(repo, "test/harness/regression.test.ts"))).toBe(true);
+    expect(await acceptedChanges(repo)).toHaveLength(1);
+    expect((await shipmentCards(vault, "fixture")).find(c => c.id === feature.id)?.health?.status).toBe("failed");
+    expect(calls).toBe(0); // card retry dedupes against native acceptance
     const logs = readdirSync(config.workRoot).map(d => JSON.parse(readFileSync(join(config.workRoot, d, "gates.json"), "utf8")));
-    expect(logs).toHaveLength(2);
+    expect(logs).toHaveLength(1);
     for (const log of logs) for (const side of [log.baseline, log.candidate]) {
       expect(side).toHaveLength(7); expect(side.every((r: { complete: boolean; exitCode: number }) => r.complete && r.exitCode === 0)).toBe(true);
     }

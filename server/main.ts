@@ -11,7 +11,7 @@ import { pipelineState, stopPipeline, wantPipeline } from "./voicePipeline";
 
 /** Where the New voice's pipeline listens (loopback only). */
 const VOICE_PIPELINE_PORT = Number(process.env.VC_VOICE_PIPELINE_PORT) || 8857;
-import { configureChangeDelivery, currentDeliveryRecovery, dispatchSourceRollback } from "./changeDelivery";
+import { configureChangeDelivery, currentDeliveryHealth } from "./changeDelivery";
 import { observeReleaseVoiceHealth, type BoxReleaseHealth } from "./releaseHealth";
 import { loadConfig, SERVER_VERSION, SERVER_REV } from "./config";
 import { registerCommands } from "./commands";
@@ -240,7 +240,7 @@ async function main(): Promise<void> {
       // Check the managed child, listener ownership and actual runtime HTTP schema; never process-running alone.
       voice: await observeReleaseVoiceHealth({ required, pipeline, stateDir: cfg.stateDir, port: VOICE_PIPELINE_PORT, startupDeadline: bootedAt + 10 * 60_000 }) };
   };
-  configureChangeDelivery({ boxHealth: boxReleaseHealth, requestSourceRollback: dispatchSourceRollback,
+  configureChangeDelivery({ boxHealth: boxReleaseHealth,
     vaults: () => vaultRefs().map(v => ({ name: v.name, path: v.path })), stateDir: cfg.stateDir });
   const server = await startHttpServer({
     health: async () => ({
@@ -262,10 +262,10 @@ async function main(): Promise<void> {
       rev: SERVER_REV,
       releaseReadiness: await (async () => {
         const b = await boxReleaseHealth();
-        const recovery = await currentDeliveryRecovery(SERVER_VERSION, SERVER_REV);
-        const failed = !!b.error || b.voice?.state === "failed" || recovery.failed;
+        const delivery = await currentDeliveryHealth(SERVER_VERSION, SERVER_REV);
+        const failed = !!b.error || b.voice?.state === "failed" || delivery.failed;
         const ready = b.ready && (!b.voice?.required || (b.voice.state === "ready" && b.voice.owned));
-        return { status: failed ? "failed" : ready ? "healthy" : "pending", binaryFallback: recovery.binaryFallback, reason: failed ? "Actual release readiness failed" : ready ? "Box ready; laptop verification tracked separately" : "Waiting for actual engine/voice readiness" };
+        return { status: failed ? "failed" : ready ? "healthy" : "pending", reason: failed ? "Actual release readiness failed" : ready ? "Box ready; laptop verification tracked separately" : "Waiting for actual engine/voice readiness" };
       })(),
       vault: cfg.vaultName,
       git: gitState,

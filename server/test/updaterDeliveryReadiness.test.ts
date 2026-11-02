@@ -55,21 +55,21 @@ describe("actual updater readiness contract (real bash helper and owned ephemera
   });
 });
 
-describe("standalone box-script source rollback after binary fallback", () => {
-  it("invokes the same installed box script only after fallback readiness, without provider credentials", () => {
+describe("binary-only recovery boundary", () => {
+  it.each([0, 1, 2])("retains the last-good pointer and logs once when retained readiness exits %s", status => {
     const root = mkdtempSync(join(tmpdir(), "vc-updater-recovery-")); roots.push(root);
-    const bin = join(root, "bin"), previous = join(root, "versions", "1.0.0");
-    mkdirSync(bin); mkdirSync(previous, { recursive: true }); mkdirSync(join(root, "failed"));
+    const previous = join(root, "versions/1.0.0"); mkdirSync(previous, { recursive: true }); mkdirSync(join(root, "failed"));
     writeFileSync(join(previous, "server-version.json"), JSON.stringify({ version: "1.0.0", rev: "b".repeat(40) }));
-    const invocation = join(root, "invocation.json"), order = join(root, "order");
-    const capture = `require("fs").appendFileSync(${JSON.stringify(order)}, "recovery\\n"); require("fs").writeFileSync(${JSON.stringify(invocation)}, JSON.stringify({args:process.argv.slice(1), providerPresent:Object.hasOwn(process.env,"OPENAI_API_KEY"), }));`;
-    writeFileSync(join(bin, "node"), `#!/bin/sh\nif [ "$3" = "--failed-release" ]; then\nexec '${process.execPath}' -e '${capture.replaceAll("'", "'\\''")}' "$@"\nfi\nexec '${process.execPath}' "$@"\n`, { mode: 0o755 });
-    writeFileSync(join(bin, "flock"), '#!/bin/sh\nshift 2\nexec "$@"\n', { mode: 0o755 });
-    const result = spawnSync("bash", ["-c", `set -eu; PATH="$TEST_PATH"; STATE="$TEST_ROOT"; ver=1.0.1; expected_rev="$TEST_REV"; prev=versions/1.0.0; META=server-version.json; BUNDLE=vault-chat-server.mjs; UNIT=test-only; HEALTH_WAIT_S=0; cd "$STATE";\n${helpers}\nlog() { :; }; alert() { :; }; health() { printf '%s' '{"releaseReadiness":{"status":"healthy"}}'; }; point_current() { printf 'fallback\\n' >> "$STATE/order"; }; systemctl() { :; }; wait_for_version() { printf 'ready\\n' >> "$STATE/order"; return 0; }; recover_failed_release;`], { env: { PATH: `${bin}:${dirname(process.execPath)}:${process.env.PATH ?? ""}`, TEST_PATH: `${bin}:${dirname(process.execPath)}:${process.env.PATH ?? ""}`, HOME: root, TEST_ROOT: root, TEST_REV: "a".repeat(40), VC_MASTER: join(root, "master"), OPENAI_API_KEY: "fixture-not-a-secret" }, encoding: "utf8" });
-    // The update itself remains a failed release, even though recovery was submitted.
+    const result = spawnSync("bash", ["-c", `PATH="$TEST_PATH"; set -eu; STATE="$TEST_ROOT"; ver=1.0.1; expected_rev="$TEST_REV"; prev=versions/1.0.0; META=server-version.json; FAKE_LINKS=1; HEALTH_WAIT_S=1; cd "$STATE";
+${helpers}
+log() { printf '%s\n' "$*"; }; wait_for_version() { printf '%s\n' "$*" > "$STATE/checked"; return ${status}; }; fallback_failed_release;`], { env: { PATH: process.env.PATH, TEST_PATH: process.env.PATH, TEST_ROOT: root, TEST_REV: "a".repeat(40) }, encoding: "utf8" });
     expect(result.status, result.stderr).toBe(1);
-    expect(readFileSync(order, "utf8")).toBe("fallback\nready\nrecovery\n");
-    expect(JSON.parse(readFileSync(invocation, "utf8"))).toEqual({ args: [join(root, ".local/lib/vault-chat/simple-ship/simple-ship.mjs"), join(root, ".local/lib/vault-chat/simple-ship/config.json"), "--failed-release", "a".repeat(40)], providerPresent: false });
+    expect(readFileSync(join(root, "current"), "utf8")).toBe("versions/1.0.0");
+    expect(readFileSync(join(root, "checked"), "utf8")).toBe(`1.0.0 1 ${"b".repeat(40)} legacy-fallback restart\n`);
+    expect(result.stdout.trim().split("\n")).toHaveLength(1);
+    expect(result.stdout).toContain(status === 0 ? "restored healthy retained" : "failed readiness");
+    expect(existsSync(join(root, "failed/1.0.1"))).toBe(true);
+    expect(script).not.toMatch(/--failed-release|--rollback|recover-published-release|simple-ship\.mjs|alert\(\)|\/api\/v1\/alert/);
   });
 });
 

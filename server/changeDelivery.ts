@@ -6,7 +6,7 @@ import { join, resolve } from "node:path";
 import { isIP } from "node:net";
 import type { IncomingMessage } from "node:http";
 import { isLoopbackAddr, tailnetLoginOk } from "./auth";
-import { acceptedChanges, selectAcceptedFailedRelease, updateShippingJournal, type AcceptedChange, type ShippingJournal } from "./changeShipping";
+import { acceptedChanges, updateShippingJournal, type AcceptedChange, type ShippingJournal } from "./changeShipping";
 import { evaluateReleaseHealth, type BoxReleaseHealth, type LaptopReleaseHealth, type ReleaseHealthResult, type ReleaseTarget } from "./releaseHealth";
 import type { LaptopHealthReport, ReleaseHealthChallenge, ShipmentCard, ShipmentRollback } from "../src/shippingProtocol";
 import { readHistoricalProof } from "./historicalProof";
@@ -19,26 +19,14 @@ export type DeliveryRelease = {
 export type DeliveryState = { releases: Record<string, DeliveryRelease>; rollbacks: Record<string, ShipmentRollback> };
 export type DeliveryAdapters = {
   boxHealth: () => Promise<BoxReleaseHealth>;
-  requestSourceRollback: (repo: string, changeId: string, reason: string) => Promise<ShipmentRollback>;
   vaults: () => { name: string; path: string }[];
   stateDir: string;
 };
 let adapters: DeliveryAdapters | undefined;
-let rollbackHandler: DeliveryAdapters["requestSourceRollback"] | undefined;
-/** Register the existing background-job adapter to the standalone host script. */
-export function setDeliveryRollbackHandler(handler: DeliveryAdapters["requestSourceRollback"]): void { rollbackHandler = handler; }
-export async function dispatchSourceRollback(repo: string, id: string, reason: string): Promise<ShipmentRollback> {
-  if (!rollbackHandler) return { status: "requested", error: "Source recovery host is not configured; needs attention" };
-  return rollbackHandler(repo, id, reason);
-}
 export function configureChangeDelivery(a: DeliveryAdapters): void { adapters = a; }
 const MAX_AGE = 5 * 60_000;
 const state = (j: ShippingJournal): DeliveryState => j.delivery ??= { releases: {}, rollbacks: {} };
 const safeId = (s: string) => createHash("sha256").update(s).digest("hex");
-function publicError(error: unknown): string {
-  // Never send raw git/runner errors (which may include host paths) through a card.
-  return error instanceof Error ? "Source recovery failed; check the server delivery logs" : "Source recovery failed";
-}
 /** Normal app reports use Carl's existing authenticated Tailscale transport. Serve strips caller
  * identity headers; the local proxy's exact device source binds the challenge/report, not a body label.
  * This is trusted application telemetry, not cryptographic binary attestation (an IP pin would not be
@@ -57,10 +45,9 @@ function releaseState(j: ShippingJournal, c: AcceptedChange): DeliveryRelease | 
 function ensureRelease(j: ShippingJournal, c: AcceptedChange): DeliveryRelease {
   if (!c.release) throw new Error("Release not published");
   const r = state(j).releases[c.release.id] ??= {
-    target: { id: c.release.id, version: c.release.version, revision: c.release.revision, installedAt: 0, previousVersion: "unknown", ...(c.rollbackOf ? { rollbackOf: c.rollbackOf } : {}) }, devices: {},
-    result: { status: "pending", action: "wait", reason: "Published; waiting for matching box and actual paired laptop readiness (offline stays pending)", box: "pending", laptop: "pending", binaryFallback: false },
+    target: { id: c.release.id, version: c.release.version, revision: c.release.revision, installedAt: 0, previousVersion: "unknown" }, devices: {},
+    result: { status: "pending", action: "wait", reason: "Published; waiting for matching box and actual paired laptop readiness (offline stays pending)", box: "pending", laptop: "pending" },
   };
-  if (c.rollbackOf) r.target.rollbackOf = c.rollbackOf;
   return r;
 }
 function evaluate(r: DeliveryRelease, now: number): void {
@@ -101,80 +88,30 @@ export async function reportLaptopHealth(repo: string, clientId: string, b: Lapt
       tauri: b.tauri, frontendMounted: b.frontendMounted, boxConnected: b.boxConnected, syncReady: b.syncReady, updaterReady: b.updaterReady,
       ...(b.error ? { error: "Actual laptop release readiness check failed" } : {}) };
     evaluate(r, now);
-    if (r.result?.status === "failed") selectAcceptedFailedRelease(j, r.target.id, r.target.revision);
   });
 }
-/** Persist before calling the core's idempotent, change-specific source revert. Crash recovery reuses the
- * same accepted range; the standalone script owns gates/promotion, not this display adapter. */
-export async function requestDeliveryRollback(repo: string, id: string, reason: string, automatic = false): Promise<ShipmentRollback> {
-  const old = await updateShippingJournal(repo, j => {
-    const c = j.changes.find(c => c.id === id && c.acceptedAt);
-    if (!c) throw new Error("Accepted change not found");
-    if (j.changes.some(other => other.acceptedAt && other.rollbackOf === id)) return state(j).rollbacks[id] = { status: "accepted" };
-    if (c.rollbackOf && automatic) {
-      return state(j).rollbacks[id] ??= { status: "failed", error: "A recovery release failed; needs attention, no automatic revert of a revert" };
-    }
-    return state(j).rollbacks[id] ??= { status: "requested" };
-  });
-  if (old.status === "accepted" || old.status === "failed") return old;
-  if (!adapters) return old;
-  let outcome: ShipmentRollback;
-  try { outcome = await adapters.requestSourceRollback(repo, id, reason); }
-  catch (e) { console.error("[delivery] source recovery failed", e); outcome = { status: "failed", error: publicError(e) }; }
-  if (outcome.error) outcome.error = outcome.status === "requested" ? "Source recovery host is unavailable; needs attention" : "Source recovery failed; needs attention";
-  return updateShippingJournal(repo, j => {
-    const current = state(j).rollbacks[id];
-    if (current?.status === "accepted" || current?.status === "failed") return current;
-    state(j).rollbacks[id] = outcome;
-    return outcome;
-  });
-}
-
 /** Called by master.ts inside BoxSync's existing cycle, no new scheduling loop. */
 export async function observeChangeDelivery(repo: string): Promise<void> {
   if (!adapters) return;
   const box = await adapters.boxHealth(), now = Date.now();
-  const requests = await updateShippingJournal(repo, j => {
-    const requests: { id: string; reason: string; automatic: boolean; releaseId?: string }[] = [];
-    const failedReleases = new Set<string>();
-    for (const c of j.changes.filter(c => c.acceptedAt)) {
-      if (c.release) {
-        const r = ensureRelease(j, c);
-        if (box.version === r.target.version && box.revision === r.target.revision) {
-          if (!r.target.installedAt) r.target.installedAt = box.observedAt;
-          r.box = box;
-        }
-        // Updater writes this in host-private state BEFORE binary fallback, never a client API.
-        const marker = join(adapters!.stateDir, "release-failures", `${safeId(c.release.version)}.json`);
-        if (existsSync(marker)) {
-          const f = JSON.parse(readFileSync(marker, "utf8"));
-          if (f.version === c.release.version && f.revision === c.release.revision && Number.isFinite(f.observedAt) && f.observedAt >= Date.parse(c.release.publishedAt) && f.observedAt <= now) {
-            r.result = { status: "failed", action: c.rollbackOf ? "needs-attention" : "revert-and-ship", reason: "Box updater recorded failed matching release readiness; retained binary recovery is not source rollback", box: "failed", laptop: "pending", binaryFallback: !c.rollbackOf };
-          }
-        }
-        evaluate(r, now);
-        if (r.result?.status === "failed" && !failedReleases.has(c.release.id)) {
-          failedReleases.add(c.release.id);
-          const selected = selectAcceptedFailedRelease(j, c.release.id, c.release.revision);
-          // Never partially recover a release containing a recovery: no automatic revert of reverts.
-          if (selected.some(change => change.rollbackOf)) {
-            for (const change of selected) state(j).rollbacks[change.id] ??= { status: "failed", error: "A recovery release failed; needs attention, no automatic revert of a revert" };
-          } else for (const change of selected) requests.push({ id: change.id, reason: r.result.reason, automatic: true, releaseId: c.release.id });
+  await updateShippingJournal(repo, j => {
+    for (const c of j.changes.filter(c => c.acceptedAt && c.release)) {
+      const r = ensureRelease(j, c);
+      if (box.version === r.target.version && box.revision === r.target.revision) {
+        if (!r.target.installedAt) r.target.installedAt = box.observedAt;
+        r.box = box;
+      }
+      // Private updater failure observations remain telemetry, never source-mutation requests.
+      const marker = join(adapters!.stateDir, "release-failures", `${safeId(c.release!.version)}.json`);
+      if (existsSync(marker)) {
+        const f = JSON.parse(readFileSync(marker, "utf8"));
+        if (f.version === c.release!.version && f.revision === c.release!.revision && Number.isFinite(f.observedAt) && f.observedAt >= Date.parse(c.release!.publishedAt) && f.observedAt <= now) {
+          r.result = { status: "failed", action: "needs-attention", reason: "Box updater recorded failed matching release readiness", box: "failed", laptop: "pending" };
         }
       }
-      const rb = state(j).rollbacks[c.id];
-      const automaticMember = Object.values(j.recoverySelections ?? {}).some(s => s.changeIds.includes(c.id));
-      if (!automaticMember && (rb?.status === "requested" || rb?.status === "running")) requests.push({ id: c.id, reason: "Resume durable source recovery request", automatic: false });
+      evaluate(r, now);
     }
-    return requests;
   });
-  const blocked = new Set<string>();
-  for (const request of requests) {
-    if (request.releaseId && blocked.has(request.releaseId)) continue;
-    const outcome = await requestDeliveryRollback(repo, request.id, request.reason, request.automatic);
-    // Dependencies are reversed newest-first, one accepted revert at a time. Failure is durable.
-    if (request.releaseId && outcome.status !== "accepted") blocked.add(request.releaseId);
-  }
   // Project may be associated with more than one vault. Publish only into its registered vault contexts.
   for (const v of adapters.vaults()) if (activeFolders(v.path).some(f => resolve(f.abs) === resolve(repo))) await shipmentCards(v.path, v.name);
 }
@@ -246,7 +183,7 @@ export async function shipmentCards(vaultPath: string, vaultName: string, projec
   const stat = lstatSync(path, { throwIfNoEntry: false });
   if (stat && (stat.isSymbolicLink() || !stat.isFile())) throw new Error("Unsafe shipment projection file");
   const previous = existsSync(path) ? readFileSync(path, "utf8") : "";
-  for (const card of out) { const line = JSON.stringify(card); if (!previous.split("\n").includes(line)) appendFileSync(path, `${line}\n`); }
+  for (const card of out.filter(c => c.health?.status !== "failed")) { const line = JSON.stringify(card); if (!previous.split("\n").includes(line)) appendFileSync(path, `${line}\n`); }
   return out.sort((a, b) => b.acceptedAt.localeCompare(a.acceptedAt));
 }
 /** Resolve only an already registered project in the authenticated vault; never an arbitrary repo path. */
@@ -257,15 +194,14 @@ export async function shipmentRepo(vaultPath: string, id: string): Promise<strin
 export function deliveryRepos(vaultPath: string): string[] { return activeFolders(vaultPath).filter(f => existsSync(join(f.abs, ".git"))).map(f => f.abs); }
 
 /** Read-only health detail for the updater. Offline laptop pending never turns box readiness into failure. */
-export async function currentDeliveryRecovery(version: string, revision: string): Promise<{ failed: boolean; binaryFallback: boolean }> {
-  if (!adapters) return { failed: false, binaryFallback: true };
-  let failed = false, binaryFallback = true;
+export async function currentDeliveryHealth(version: string, revision: string): Promise<{ failed: boolean }> {
+  if (!adapters) return { failed: false };
+  let failed = false;
   for (const v of adapters.vaults()) for (const repo of deliveryRepos(v.path)) {
     const matching = await updateShippingJournal(repo, j => Object.values(state(j).releases).filter(r => r.target.version === version && r.target.revision === revision));
     for (const r of matching) {
       if (r.result?.status === "failed") failed = true;
-      if (r.target.rollbackOf) binaryFallback = false;
     }
   }
-  return { failed, binaryFallback };
+  return { failed };
 }

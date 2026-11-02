@@ -348,7 +348,7 @@ export function jobStop(env: PiJobEnv, id: string, conv?: string): string {
     if (!rec || rec.state !== "running") return `Job ${id} already ended (${rec?.state ?? "gone"}); its next status/reap records that outcome.`;
     rec.state = "stopped"; rec.controller.abort();
     // Leave it running in the durable registry until reapJobs emits its one terminal wake/row update.
-    return `Stopped job ${id}. A completed acceptance cannot be cancelled; use its source rollback instead.`;
+    return `Stopped job ${id}. A completed acceptance cannot be cancelled; submit a proven branch to change source instead.`;
   }
   const r = exec(env)("systemctl", ["--user", "stop", unitOf(id)]);
   if (r.status !== 0) return `JobStop failed: ${(r.stderr || r.stdout).trim().slice(0, 300)}`;

@@ -13,7 +13,7 @@
 #   4. swap the `current` symlink to versions/<ver> and restart the server unit;
 #   5. /api/v1/health must report <ver> within 90 s — otherwise swap the symlink back,
 #      restart, mark <ver> failed (so it is not retried every 10 min) and
-#      POST /api/v1/alert so the phone hears about it;
+#      log the failure without alerts or source mutation;
 #   6. keep the two most recent old versions, delete older ones;
 #   7. refresh itself: the release's own copy of this script and the units
 #      (vault-chat-deploy.tar.gz, from server/deploy/) replace the installed ones when
@@ -30,6 +30,9 @@
 #
 # Never reads or touches secrets. Talks to the server over loopback only.
 set -euo pipefail
+
+# Transition guard for the already-installed updater; storage crash recovery only.
+ROLLOVER_RECOVERY_PROTOCOL=1
 
 REPO="${VC_UPDATE_REPO:-carlwilsn/vault-chat}"
 API="${VC_UPDATE_API:-https://api.github.com/repos/$REPO/releases/latest}"
@@ -100,15 +103,6 @@ current_version() {
 }
 
 health() { curl -fsS --max-time 5 "$SERVER_URL/api/v1/health" 2>/dev/null; }
-
-alert() {  # alert <title> <body> [fixed]; never fails the script. "fixed": nothing for Carl to do — the box logs it, the phone stays quiet (server/pushGate.ts).
-  local payload
-  payload="$(node -e 'process.stdout.write(JSON.stringify({title:process.argv[1],body:process.argv[2],tag:"vault-chat-update",needsYou:process.argv[3]!=="fixed"}))' "$1" "$2" "${3:-}")"
-  if ! curl -fsS --max-time 10 -H 'Content-Type: application/json' \
-       -d "$payload" "$SERVER_URL/api/v1/alert" >/dev/null 2>&1; then
-    log "could not deliver alert: $1 — $2"
-  fi
-}
 
 sha_ok() {  # sha_ok <file> <file.sha256>
   local want got
@@ -211,38 +205,21 @@ NODE
   : > "failed/$ver"
 }
 
-recover_failed_release() {
+fallback_failed_release() {
   record_failure
-  local observed
-  if observed="$(health)" && [ "$(printf '%s' "$observed" | json_field releaseReadiness.binaryFallback)" = false ]; then
-    log "$ver is a failed recovery release; no revert-of-revert or automatic binary bounce"
-    alert "Needs you: recovery release failed" "v$ver is a recovery release and failed actual readiness. Failure is durably recorded; automatic reversal is stopped."
-    return 1
-  fi
+  local outcome="no retained binary"
   if [ -n "$prev" ] && [ -d "$prev" ]; then
     local oldver oldrev
     oldver="$(strip_v "$(json_field version < "$prev/$META")")"
     oldrev="$(json_field rev < "$prev/$META")"
-    log "$ver failed actual release readiness — restoring retained v$oldver; source recovery remains pending"
     point_current "$prev"
     if wait_for_version "$oldver" "$HEALTH_WAIT_S" "$oldrev" legacy-fallback restart; then
-      # The acceptance script lives outside releases/sandboxes, so a broken candidate never owns
-      # its own recovery. Same script/gates as branch shipping; no failed-bundle CLI or receipt.
-      log "retained v$oldver is healthy; reverting the accepted range with the installed box script"
-      local shiproot="$HOME/.local/lib/vault-chat/simple-ship"
-      if env -i HOME="$HOME" PATH="$PATH" GIT_TERMINAL_PROMPT=0 \
-          flock -n "$shiproot/ship.lock" node "$shiproot/simple-ship.mjs" "$shiproot/config.json" --failed-release "$expected_rev"; then
-        alert "Recovery: source revert accepted" "v$ver failed readiness; retained v$oldver is running. The box script accepted the source revert; laptop sync, CI and actual device health still determine Shipped." fixed
-      else
-        alert "Needs you: source recovery failed" "v$ver failed readiness; retained v$oldver is running, but its source revert did not pass the box script. Check vault-chat-update logs; restoring a binary did not ship a revert."
-      fi
+      outcome="restored healthy retained v$oldver"
     else
-      alert "Needs you: the box server is down" "v$ver failed readiness and retained v$oldver is not healthy either. Check vault-chat-server."
+      outcome="retained v$oldver failed readiness"
     fi
-  else
-    log "$ver failed readiness and there is nothing to restore"
-    alert "Needs you: the box server is down" "v$ver failed actual release readiness (no retained version). Check vault-chat-server."
   fi
+  log "$ver failed actual release readiness; $outcome"
   return 1
 }
 
@@ -290,6 +267,10 @@ tag="$(json_field tag_name < "$tmp/release.json")"
 ver="$(strip_v "$tag")"
 case "$ver" in *[!0-9A-Za-z.+-]*|"") die "refusing odd version '$ver'";; esac
 
+if [ -e "failed/$ver" ]; then
+  log "skipping $ver: it failed its health check here before (rm $STATE/failed/$ver to retry)"
+  exit 0
+fi
 cur="$(strip_v "$(current_version)")"
 if [ "$ver" = "$cur" ]; then
   # The laptop can report a fresh negative AFTER the original box install succeeded. The ordinary
@@ -299,17 +280,14 @@ if [ "$ver" = "$cur" ]; then
     prev=""
     if [ -f "versions/$ver/previous.json" ]; then prev="$(json_field previous < "versions/$ver/previous.json")"; fi
     case "$prev" in versions/*) ;; *) prev="" ;; esac
-    recover_failed_release
+    fallback_failed_release
     exit 1
   fi
   log "up to date ($ver)"
   refresh_self "$(read_current)/deploy"
   exit 0
 fi
-if [ -e "failed/$ver" ]; then
-  log "skipping $ver: it failed its health check here before (rm $STATE/failed/$ver to retry)"
-  exit 0
-fi
+
 log "updating ${cur:-<none>} -> $ver"
 
 asset_url() {  # browser_download_url of the named asset, or ""
@@ -407,7 +385,7 @@ elif [ "$status" = 2 ]; then
   log "$ver matches source/version but actual readiness remains pending; not confirmed and not reverted"
   refresh_self "versions/$ver/deploy"
 else
-  recover_failed_release
+  fallback_failed_release
   exit 1
 fi
 

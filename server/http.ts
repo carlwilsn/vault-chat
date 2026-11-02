@@ -37,7 +37,7 @@ import { ackShow, feedOpened } from "./show";
 import { noteAttention, pushGate } from "./pushGate";
 import { boardLogPost, boxDiag } from "./diag";
 import { noteUserLine } from "./signal";
-import { deliveryChallenge, deliveryRepos, laptopTransportIdentity, reportLaptopHealth, requestDeliveryRollback, shipmentCards, shipmentRepo } from "./changeDelivery";
+import { deliveryChallenge, deliveryRepos, laptopTransportIdentity, reportLaptopHealth, shipmentCards } from "./changeDelivery";
 import { recordLaptopPerf, readLaptopPerf } from "./laptopPerf";
 import { ATTACH_BODY_LIMIT, ATTACH_MAX_BYTES, mb, saveAttachment } from "./attachments";
 
@@ -453,12 +453,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
   }
   const rollbackShipment = /^\/api\/v1\/shipments\/([^/]+)\/rollback$/.exec(path);
   if (rollbackShipment && method === "POST") {
-    try {
-      const id = decodeURIComponent(rollbackShipment[1]!), repo = await shipmentRepo(vault, id);
-      if (!repo) return json(res, 404, { error: "Accepted change not found in this vault" });
-      const rollback = await requestDeliveryRollback(repo, id, "Carl requested rollback");
-      return json(res, 200, { ok: true, rollback });
-    } catch (e) { console.error("[delivery] rollback", e); return json(res, 503, { error: "Source recovery unavailable; needs attention" }); }
+    return json(res, 410, { error: "Source rollback is disabled; fix forward with a proven branch" });
   }
   if ((path === "/api/v1/release-health/challenge" && method === "GET") || (path === "/api/v1/release-health/laptop" && method === "POST")) {
     const identity = laptopTransportIdentity(req);

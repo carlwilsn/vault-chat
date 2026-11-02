@@ -4,14 +4,13 @@ import { EventEmitter } from "node:events";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-const state = vi.hoisted(() => ({ spawn: vi.fn(), installed: true, accepted: [] as any[] }));
+const state = vi.hoisted(() => ({ spawn: vi.fn(), installed: true }));
 vi.mock("node:child_process", async original => ({ ...await original<typeof import("node:child_process")>(), spawn: (...args: any[]) => state.spawn(...args) }));
 vi.mock("node:fs", async original => { const real = await original<typeof import("node:fs")>(); return { ...real, existsSync: (p: string) => String(p).includes("/.local/lib/vault-chat/simple-ship/") ? state.installed : real.existsSync(p) }; });
 vi.mock("../projectFolders", () => ({ projectFolderOf: () => ({ abs: "/registered/project" }) }));
 vi.mock("../projectChanges", () => ({ isGatedProject: () => true }));
-vi.mock("../changeShipping", () => ({ acceptedChanges: async () => state.accepted }));
-import { requestRollback, runInstalledShip, SUBMIT_CHANGE_SCHEMA, submitChangeJob } from "../submitChange";
-import { readJobs, probeJob, writeJobs } from "../engine/pi/jobs";
+import { runInstalledShip, SUBMIT_CHANGE_SCHEMA, submitChangeJob } from "../submitChange";
+import { readJobs, probeJob } from "../engine/pi/jobs";
 const dirs: string[] = [];
 afterEach(() => { for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true }); vi.clearAllMocks(); state.installed = true; });
 function child() { const c = Object.assign(new EventEmitter(), { stdout: new EventEmitter(), stderr: new EventEmitter() }); state.spawn.mockReturnValue(c); return c; }
@@ -43,17 +42,8 @@ describe("pushed branch to one installed box script", () => {
     c.emit("close", 1); await turn();
     expect(readJobs(o.jobs)).toHaveLength(1); expect(probeJob(o.jobs, first.job!).exit).toBe(1);
   });
-  it("deduplicates an accepted card rollback without launching another host process", async () => {
-    const o = setup(); const accepted = { id: "source", acceptedAt: "now", review: { folder: "/registered/project" } } as any;
-    state.accepted = [accepted, { id: "revert", rollbackOf: "source" }];
-    expect((await requestRollback({ ...o, accepted, reason: "Card click" })).text).toContain("already accepted");
-    expect(state.spawn).not.toHaveBeenCalled();
-  });  it.each(["gone", "stopped", "timeout", "finished"] as const)("retains visible attention instead of resurrecting a previous rollback job: %s", async status => {
-    const o = setup(); const accepted = { id: "source", acceptedAt: "now", review: { folder: "/registered/project" } } as any;
-    state.accepted = [accepted];
-    writeJobs(o.jobs, [{ id: "previous-private-recovery", name: "source-rollback", command: "Source rollback source", conv: o.convId, startedAt: Date.now(), timeoutS: 60, kind: "service", state: status === "gone" ? "running" : status }]);
-    await expect(requestRollback({ ...o, accepted, reason: "negative health" })).rejects.toThrow("Needs attention, not automatic retries");
+  it.each(["--rollback", "--failed-release", "recover-published-release"])("rejects retired %s dispatch even from an untyped caller", mode => {
+    expect(() => runInstalledShip("/registered/project", mode as "--branch", "id", "Title", "app", "project-app", new AbortController().signal, () => {})).toThrow("Only proven branch");
     expect(state.spawn).not.toHaveBeenCalled();
   });
-
 });

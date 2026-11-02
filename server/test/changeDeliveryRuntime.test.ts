@@ -5,7 +5,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSyn
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { IncomingMessage } from "node:http";
-import { configureChangeDelivery, deliveryChallenge, laptopTransportIdentity, observeChangeDelivery, reportLaptopHealth, requestDeliveryRollback, shipmentCards, shipmentRepo } from "../changeDelivery";
+import { configureChangeDelivery, deliveryChallenge, laptopTransportIdentity, observeChangeDelivery, reportLaptopHealth, shipmentCards, shipmentRepo } from "../changeDelivery";
 import { acceptedChanges, followAcceptedRelease, prepareAcceptanceLocked, updateShippingJournal, type AcceptedChange } from "../changeShipping";
 import { withRepoLock } from "../git";
 import { registerFolder } from "../projectFolders";
@@ -31,7 +31,7 @@ async function fixture() {
   expect(registerFolder(vault, "app", repo)).toEqual({ abs: repo });
   const rollback = vi.fn(async () => ({ status: "accepted" as const, jobId: "recovery-job" }));
   const box = { version: release.version, revision: release.revision, observedAt: now, ready: true };
-  configureChangeDelivery({ boxHealth: async () => box, requestSourceRollback: rollback, vaults: () => [{ name: "school", path: vault }], stateDir: join(root, "state") });
+  configureChangeDelivery({ boxHealth: async () => box, vaults: () => [{ name: "school", path: vault }], stateDir: join(root, "state") });
   return { root, repo, vault, proof, c, release, rollback, box, g, now };
 }
 async function report(f: Awaited<ReturnType<typeof fixture>>, extra: Partial<LaptopHealthReport> = {}) {
@@ -68,19 +68,19 @@ describe("durable delivery observations, not synchronized card authority", () =>
     expect(r.result?.status).toBe("healthy");
     expect(f.rollback).not.toHaveBeenCalled();
   });
-  it("retains a fresh negative and requests ONE source-specific recovery, even after later positive reports", async () => {
+  it("retains a fresh negative without source recovery, even after later positive reports", async () => {
     const f = await fixture(); await observeChangeDelivery(f.repo); await report(f, { updaterReady: false });
     await observeChangeDelivery(f.repo); await report(f); await observeChangeDelivery(f.repo);
-    expect(f.rollback).toHaveBeenCalledTimes(1);
-    expect(f.rollback).toHaveBeenCalledWith(f.repo, f.c.id, expect.any(String));
-    expect((await shipmentCards(f.vault, "school"))[0]).toMatchObject({ status: "rolling-back", health: { status: "failed" }, rollback: { status: "accepted" } });
+    expect(f.rollback).not.toHaveBeenCalled();
+    expect((await shipmentCards(f.vault, "school"))[0]).toMatchObject({ status: "needs-attention", health: { status: "failed" } });
+    expect(readFileSync(join(f.vault, ".vault-chat/shipments/cards.jsonl"), "utf8")).not.toContain('"status":"needs-attention"');
   });
   it("a fresh native negative can fail the release before the offline box installs it", async () => {
     const f = await fixture(); f.box.version = "1.0.0"; f.box.revision = "f".repeat(40);
     await report(f, { updaterReady: false }); await observeChangeDelivery(f.repo);
-    expect(f.rollback).toHaveBeenCalledTimes(1);
+    expect(f.rollback).not.toHaveBeenCalled();
   });
-  it("selects all accepted changes newest-first for one failed published release", async () => {
+  it("does not select accepted ranges for a failed release", async () => {
     const f = await fixture();
     writeFileSync(join(f.repo, "second.txt"), "second accepted change"); f.g("add", "."); f.g("commit", "-qm", "second candidate");
     const head = f.g("rev-parse", "HEAD"), tree = f.g("rev-parse", "HEAD^{tree}");
@@ -91,9 +91,8 @@ describe("durable delivery observations, not synchronized card authority", () =>
     expect(await acceptedChanges(f.repo)).toHaveLength(2);
     f.release = release; f.box.revision = head;
     await observeChangeDelivery(f.repo); await report(f, { updaterReady: false }); await observeChangeDelivery(f.repo);
-    expect(f.rollback).toHaveBeenCalledTimes(2);
-    expect(f.rollback).toHaveBeenNthCalledWith(1, f.repo, "second-accepted", expect.any(String));
-    expect(f.rollback).toHaveBeenNthCalledWith(2, f.repo, f.c.id, expect.any(String));
+    expect(f.rollback).not.toHaveBeenCalled();
+    expect(await updateShippingJournal(f.repo, j => j)).not.toHaveProperty("recoverySelections");
   });
   it("keeps malformed historical evidence readable without reviving receipt authority", async () => {
     const f = await fixture();
@@ -198,11 +197,12 @@ describe("durable delivery observations, not synchronized card authority", () =>
     await expect(shipmentCards(vault,"school")).rejects.toThrow("Unsafe");
     expect(readFileSync(join(outside,"cards.jsonl"),"utf8")).toBe("PRIVATE_EMPTY_PROJECT_SENTINEL");
   });
-  it("recovers a persisted requested rollback after a pre-dispatch crash, but never starts a second accepted recovery", async () => {
+  it("leaves a historical requested rollback inert across repeated cycles", async () => {
     const f = await fixture();
     await updateShippingJournal(f.repo, j => { j.delivery = { releases: {}, rollbacks: { [f.c.id]: { status: "requested" } } }; });
-    await observeChangeDelivery(f.repo); await requestDeliveryRollback(f.repo, f.c.id, "duplicate click");
-    expect(f.rollback).toHaveBeenCalledTimes(1);
+    await observeChangeDelivery(f.repo); await observeChangeDelivery(f.repo);
+    expect(await updateShippingJournal(f.repo, j => j.delivery!.rollbacks[f.c.id])).toEqual({ status: "requested" });
+    expect(f.rollback).not.toHaveBeenCalled();
   });
   it("shows failed source recovery, and a revert release failure cannot autorevert its revert", async () => {
     const f = await fixture();
@@ -218,7 +218,6 @@ describe("durable delivery observations, not synchronized card authority", () =>
     const cards = await shipmentCards(f.vault, "school");
     expect(cards).toHaveLength(1); expect(cards[0].status).toBe("health-pending");
     expect(await shipmentRepo(f.vault, "forged")).toBeNull();
-    await expect(requestDeliveryRollback(f.repo, "forged", "tampered client")).rejects.toThrow("not found");
     expect(readFileSync(file, "utf8")).toContain('"forged"'); // union log retains it, server never trusts it
   });
   it("consumes updater-private failed source pins even after binary restoration", async () => {
@@ -229,7 +228,7 @@ describe("durable delivery observations, not synchronized card authority", () =>
     writeFileSync(marker, JSON.stringify({ version: f.release.version, revision: "f".repeat(40), observedAt: Date.now() }));
     await observeChangeDelivery(f.repo); expect(f.rollback).not.toHaveBeenCalled();
     writeFileSync(marker, JSON.stringify({ version: f.release.version, revision: f.release.revision, observedAt: Date.now() }));
-    await observeChangeDelivery(f.repo); await observeChangeDelivery(f.repo); expect(f.rollback).toHaveBeenCalledTimes(1);
+    await observeChangeDelivery(f.repo); await observeChangeDelivery(f.repo); expect(f.rollback).not.toHaveBeenCalled();
   });
 });
 

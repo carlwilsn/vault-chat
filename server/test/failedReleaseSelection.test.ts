@@ -4,8 +4,8 @@ import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { acceptedChanges, acceptedFailedRelease, prepareAcceptanceLocked, updateShippingJournal, type AcceptedChange } from "../changeShipping";
-import { configureChangeDelivery, observeChangeDelivery, requestDeliveryRollback } from "../changeDelivery";
+import { acceptedChanges, prepareAcceptanceLocked, updateShippingJournal, type AcceptedChange } from "../changeShipping";
+import { configureChangeDelivery, observeChangeDelivery } from "../changeDelivery";
 
 import { withRepoLock } from "../git";
 
@@ -27,63 +27,37 @@ async function fixture() {
   const first = await add("first"), second = await add("second");
   const stateDir = join(root, "state"), markers = join(stateDir, "release-failures"); mkdirSync(markers, { recursive: true });
   writeFileSync(join(markers, createHash("sha256").update(release.version).digest("hex") + ".json"), JSON.stringify({ version: release.version, revision: release.revision, observedAt: Date.now() }));
-  const rollback = vi.fn(async (_repo: string, _id: string, _reason: string): Promise<import("../../src/shippingProtocol").ShipmentRollback> => ({ status: "accepted" }));
-  configureChangeDelivery({ stateDir, vaults: () => [], boxHealth: async () => ({ version: "1.0.0", revision: "b".repeat(40), observedAt: Date.now(), ready: true }), requestSourceRollback: rollback });
+  const rollback = vi.fn(async (_repo: string, _id: string, _reason: string): Promise<{status:string}> => ({ status: "accepted" }));
+  // Simulate a stale JS caller; the retired adapter must be ignored, not registered.
+  configureChangeDelivery({ stateDir, vaults: () => [], boxHealth: async () => ({ version: "1.0.0", revision: "b".repeat(40), observedAt: Date.now(), ready: true }), requestSourceRollback: rollback } as Parameters<typeof configureChangeDelivery>[0]);
   return { root, repo, vault, g, release, add, first, second, rollback };
 }
-describe("one durable failed-release recovery selection", () => {
-  it("uses the same newest-first selection in live service and retained CLI helper, excluding later releases", async () => {
+describe("failed-release source selection is retired, historical state is inert", () => {
+  it.each(["requested", "running", "accepted", "failed"])("ignores frozen selections plus %s recovery across repeated cycles", async status => {
     const f = await fixture();
-    // Retained CLI freezes first. A later accepted release must survive either entry route.
-    expect((await acceptedFailedRelease(f.repo, f.release.id, f.release.revision)).map(c => c.id)).toEqual(["second", "first"]);
-    await f.add("later", { ...f.release, id: "newer-release", version: "1.0.2", revision: "c".repeat(40) });
+    const recoverySelections = { [f.release.id]: { revision: f.release.revision, changeIds: [f.second.id, f.first.id], selectedAt: new Date().toISOString() } };
+    const rollbacks = { [f.second.id]: { status, jobId: "old-job" }, [f.first.id]: { status: "requested" } };
+    await updateShippingJournal(f.repo, j => Object.assign(j, { recoverySelections, delivery: { releases: {}, rollbacks } }));
+    await f.add("later", { ...f.release, id: "later-release", version: "1.0.2", revision: "c".repeat(40) });
+    const refs = f.g("show-ref"), head = readFileSync(join(f.repo, ".git/HEAD"));
     await observeChangeDelivery(f.repo); await observeChangeDelivery(f.repo);
-    expect(f.rollback.mock.calls.map(c => c[1])).toEqual(["second", "first"]);
-    expect((await acceptedFailedRelease(f.repo, f.release.id, f.release.revision)).map(c => c.id)).toEqual(["second", "first"]);
-    const j = await updateShippingJournal(f.repo, j => j);
-    expect(j.recoverySelections?.[f.release.id].changeIds).toEqual(["second", "first"]);
-    expect(j.recoverySelections?.["newer-release"]).toBeUndefined();
+    expect(f.rollback).not.toHaveBeenCalled(); expect(f.g("show-ref")).toBe(refs);
+    expect(readFileSync(join(f.repo, ".git/HEAD"))).toEqual(head);
+    const j = await updateShippingJournal(f.repo, j => j) as unknown as {recoverySelections:unknown;delivery:{rollbacks:unknown}};
+    expect(j.recoverySelections).toEqual(recoverySelections); expect(j.delivery.rollbacks).toEqual(rollbacks);
+    expect(await acceptedChanges(f.repo)).toHaveLength(3);
+    expect(readFileSync(join(f.repo, "first.txt"), "utf8")).toBe("first");
+    expect(readFileSync(join(f.repo, "later.txt"), "utf8")).toBe("later");
   });
-  it.each(["missing", "wrong revision", "wrong version", "future", "stale", "nonfinite", "unknown", "unaccepted"])("automatic post-release controller refuses %s marker before selection or rollback", async kind => {
-    const f = await fixture(), now = Date.now();
+  it.each(["valid", "missing", "wrong revision"])("cannot dispatch from a %s old failure marker", async kind => {
+    const f = await fixture();
     const file = join(f.root, "state/release-failures", createHash("sha256").update(f.release.version).digest("hex") + ".json");
-    const marker = { version: f.release.version, revision: f.release.revision, observedAt: now - 1 };
-    if (kind === "wrong revision") marker.revision = "d".repeat(40);
-    if (kind === "wrong version") marker.version = "9.9.9";
-    if (kind === "future") marker.observedAt = now + 60_000;
-    if (kind === "stale") marker.observedAt = Date.parse(f.release.publishedAt) - 1;
-    if (kind === "nonfinite") marker.observedAt = NaN;
-    if (kind === "missing") rmSync(file); else writeFileSync(file, JSON.stringify(marker));
-    if (kind === "unknown") await updateShippingJournal(f.repo, j => { for (const c of j.changes) c.release = undefined; });
-    if (kind === "unaccepted") {
-      const tree = f.g("rev-parse", "HEAD^{tree}"), head = f.g("commit-tree", tree, "-p", f.g("rev-parse", "HEAD"), "-m", "unaccepted fixture branch");
-      await updateShippingJournal(f.repo, j => { for (const c of j.changes) { c.acceptedAt = undefined; c.source.head = head; c.source.tree = tree; } });
-    }
-    vi.spyOn(Date, "now").mockReturnValue(now);
-    try {
-      await observeChangeDelivery(f.repo);
-      expect(f.rollback).not.toHaveBeenCalled();
-      const j = await updateShippingJournal(f.repo, j => j);
-      expect(j.recoverySelections).toBeUndefined(); expect(Object.keys(j.delivery?.rollbacks ?? {})).toEqual([]);
-    } finally { vi.restoreAllMocks(); }
-  });
-  it("manual card recovery remains only that card, not the release batch", async () => {
-    const f = await fixture(); await requestDeliveryRollback(f.repo, f.first.id, "Carl selected this card");
-    expect(f.rollback.mock.calls.map(c => c[1])).toEqual(["first"]);
-    expect(await updateShippingJournal(f.repo, j => j.recoverySelections)).toBeUndefined();
-  });
-  it("does not start older dependent reverts while the newest is running, or retry a durable failure", async () => {
-    const f = await fixture();
-    f.rollback.mockImplementation(async () => ({ status: "running" }));
-    await observeChangeDelivery(f.repo); expect(f.rollback.mock.calls.map(c => c[1])).toEqual(["second"]);
-    await updateShippingJournal(f.repo, j => { j.delivery!.rollbacks.second = { status: "failed", error: "Needs attention" }; });
-    await observeChangeDelivery(f.repo); expect(f.rollback).toHaveBeenCalledTimes(1);
-    expect((await acceptedFailedRelease(f.repo, f.release.id, f.release.revision)).map(c => c.id)).toEqual(["second", "first"]);
-  });
-  it("recognizes accepted rollback identities after stale running state without double reversal", async () => {
-    const f = await fixture();
-    await updateShippingJournal(f.repo, j => { j.changes.push({ ...f.second, id: "already-reverted", rollbackOf: f.second.id, release: undefined }); });
-    await observeChangeDelivery(f.repo); expect(f.rollback.mock.calls.map(c => c[1])).toEqual(["first"]);
-    expect(await updateShippingJournal(f.repo, j => j.delivery!.rollbacks.second.status)).toBe("accepted");
+    if (kind === "missing") rmSync(file);
+    if (kind === "wrong revision") writeFileSync(file, JSON.stringify({version:f.release.version,revision:"f".repeat(40),observedAt:Date.now()}));
+    if (kind === "malformed") writeFileSync(file, "not-json");
+    const refs = f.g("show-ref"); await observeChangeDelivery(f.repo); await observeChangeDelivery(f.repo);
+    expect(f.g("show-ref")).toBe(refs); expect(f.rollback).not.toHaveBeenCalled();
+    const j = await updateShippingJournal(f.repo, j => j);
+    expect(j).not.toHaveProperty("recoverySelections"); expect(j.delivery?.rollbacks).toEqual({});
   });
 });

@@ -25,6 +25,7 @@ class Fixture:
     def __init__(self, mode="good"):
         self.mode = mode
         self.requests = []
+        self.posts = []
         self.sockets = []
         self.started = threading.Event()
         self.disconnected = threading.Event()
@@ -41,6 +42,7 @@ class Fixture:
                 pass
 
             def do_POST(self):
+                owner.posts.append(self.path)
                 self.rfile.read(int(self.headers.get("Content-Length", 0)))
                 self.send_response(200)
                 self.end_headers()
@@ -79,12 +81,14 @@ class Fixture:
                         owner.disconnected.set()
                         return
                     data = dict(GOOD)
-                    if mode == "rollback":
+                    if mode in ("rollback", "fallback-failed", "fallback-pending"):
                         data["busy"] = {"runs": 0, "inputs": 0}
                         if (owner.state / "current").readlink() == Path("versions/1.0.0"):
                             data.update(version="1.0.0", rev="b" * 40)
+                            if mode != "rollback":
+                                data["releaseReadiness"] = {"status": "pending" if mode == "fallback-pending" else "failed"}
                         else:
-                            data["releaseReadiness"] = {"status": "failed"}
+                            data["releaseReadiness"] = {"status": "failed", "binaryFallback": False}
                     if mode == "old":
                         data["rev"] = "b" * 40
                     if mode == "oldversion":
@@ -223,30 +227,76 @@ class Readiness(unittest.TestCase):
                         child.kill()
                     child.communicate()
 
-    def test_actual_entry_restores_retained_binary_then_uses_existing_source_recovery(self):
-        state = self.root / "retained-test"
-        old = state / "versions/1.0.0"
-        old.mkdir(parents=True)
-        (old / "server-version.json").write_text(json.dumps({"version": "1.0.0", "rev": "b" * 40}))
-        (state / "current").symlink_to("versions/1.0.0")
-        ship = self.root / ".local/lib/vault-chat/simple-ship"
-        ship.mkdir(parents=True)
-        # Existing source-recovery authority is replaced ONLY inside this owned HOME fixture.
-        (ship / "simple-ship.mjs").write_text(
-            "import fs from 'node:fs'; fs.writeFileSync(" + json.dumps(str(self.root / "recovery.json")) +
-            ", JSON.stringify(process.argv.slice(2)));\n")
-        with Fixture("rollback") as fixture:
-            fixture.state = state
+    def test_actual_entry_binary_fallback_never_invokes_source_recovery_and_suppresses_retry(self):
+        for mode in ("rollback", "fallback-failed", "fallback-pending"):
+            with self.subTest(mode=mode), Fixture(mode) as fixture:
+                state = self.root / mode
+                old = state / "versions/1.0.0"
+                old.mkdir(parents=True)
+                oldmeta = json.dumps({"version": "1.0.0", "rev": "b" * 40})
+                (old / "server-version.json").write_text(oldmeta)
+                (state / "current").symlink_to("versions/1.0.0")
+                # A poisoned obsolete recovery CLI is present: neither it nor a release bundle
+                # may be executed. No listening code exists in the fixture.
+                ship = self.root / ".local/lib/vault-chat/simple-ship"
+                ship.mkdir(parents=True, exist_ok=True)
+                recovery = self.root / "recovery.json"
+                (ship / "simple-ship.mjs").write_text("import fs from 'node:fs'; fs.writeFileSync(" + json.dumps(str(recovery)) + ", 'FORBIDDEN'); process.exit(99);\n")
+                repo = self.root / (mode + "-repo")
+                repo.mkdir()
+                def git(*args):
+                    return subprocess.check_output(["git", "-c", "user.name=test", "-c", "user.email=test@local", *args], cwd=repo, env=self.env)
+                git("init", "-qb", "main")
+                (repo / "app").write_text("accepted source remains")
+                git("add", "."); git("commit", "-qm", "accepted source")
+                refs, head = git("show-ref"), (repo / ".git/HEAD").read_bytes()
+                fixture.state = state
+                env = dict(self.env, VC_UPDATE_API=fixture.url + "/release", VC_SERVER_URL=fixture.url,
+                           VC_SERVER_STATE=str(state), VC_SERVER_UNIT="owned-fixture.service",
+                           VC_UPDATE_HEALTH_WAIT_S="0.24", VC_UPDATE_HEALTH_POLL_S="0.03")
+                before_calls = len(self.calls.read_text().splitlines()) if self.calls.exists() else 0
+                result = subprocess.run(["bash", str(SCRIPT)], env=env, capture_output=True, timeout=3)
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertEqual((state / "current").readlink(), Path("versions/1.0.0"))
+                self.assertEqual((old / "server-version.json").read_text(), oldmeta)
+                self.assertTrue((state / "failed/1.0.1").exists())
+                self.assertFalse(recovery.exists())
+                self.assertEqual(len(self.calls.read_text().splitlines()) - before_calls, 2)
+                self.assertEqual(git("show-ref"), refs); self.assertEqual((repo / ".git/HEAD").read_bytes(), head)
+                self.assertEqual(fixture.posts, [])
+                lines = [line for line in result.stdout.splitlines() if b"failed actual release readiness;" in line]
+                self.assertEqual(len(lines), 1, result.stdout)
+                self.assertIn(b"restored healthy retained" if mode == "rollback" else b"failed readiness", lines[0])
+                # The actual whole updater is retried. A failed candidate is never restarted,
+                # redownloaded, source-reverted or announced, regardless of fallback health.
+                calls = self.calls.read_bytes()
+                marker = (state / "failed/1.0.1").stat()
+                self.assertEqual(json.loads(next((state / "release-failures").glob("*.json")).read_text())["revision"], REV)
+                retry = subprocess.run(["bash", str(SCRIPT)], env=env, capture_output=True, timeout=3)
+                self.assertEqual(retry.returncode, 0, retry.stderr)
+                self.assertIn(b"skipping 1.0.1", retry.stdout)
+                self.assertEqual(self.calls.read_bytes(), calls)
+                self.assertEqual((state / "failed/1.0.1").stat().st_mtime_ns, marker.st_mtime_ns)
+                self.assertEqual(git("show-ref"), refs); self.assertEqual((repo / ".git/HEAD").read_bytes(), head)
+                self.assertFalse(recovery.exists()); self.assertEqual(fixture.posts, [])
+
+    def test_failed_candidate_without_fallback_is_suppressed_even_when_current(self):
+        with Fixture("failed") as fixture:
+            state = self.root / "no-fallback"
             env = dict(self.env, VC_UPDATE_API=fixture.url + "/release", VC_SERVER_URL=fixture.url,
                        VC_SERVER_STATE=str(state), VC_SERVER_UNIT="owned-fixture.service",
                        VC_UPDATE_HEALTH_WAIT_S="0.24", VC_UPDATE_HEALTH_POLL_S="0.03")
             result = subprocess.run(["bash", str(SCRIPT)], env=env, capture_output=True, timeout=3)
             self.assertEqual(result.returncode, 1, result.stderr)
-            self.assertEqual((state / "current").readlink(), Path("versions/1.0.0"))
-            self.assertTrue((state / "failed/1.0.1").exists())
-            self.assertEqual(json.loads((self.root / "recovery.json").read_text()),
-                             [str(ship / "config.json"), "--failed-release", REV])
-            self.assertEqual(len(self.calls.read_text().splitlines()), 2)
+            self.assertIn(b"failed actual release readiness; no retained binary", result.stdout)
+            self.assertEqual((state / "current").readlink(), Path("versions/1.0.1"))
+            self.assertEqual((state / "failed/1.0.1").read_bytes(), b"")
+            calls = self.calls.read_bytes()
+            retry = subprocess.run(["bash", str(SCRIPT)], env=env, capture_output=True, timeout=3)
+            self.assertEqual(retry.returncode, 0, retry.stderr)
+            self.assertIn(b"skipping 1.0.1", retry.stdout)
+            self.assertEqual(self.calls.read_bytes(), calls)
+            self.assertEqual(fixture.posts, [])
 
     def test_actual_updater_entry_uses_http_check_and_records_failure(self):
         # Full ordinary entry, real downloads/hashes, symlink and restart call. No helper override.
@@ -276,9 +326,8 @@ class Readiness(unittest.TestCase):
                 elif mode == "pending":
                     self.assertIn(b"not confirmed and not reverted", result.stdout)
                 else:
-                    records = list((state / "release-failures").glob("*.json"))
-                    self.assertEqual(len(records), 1)
-                    self.assertEqual(json.loads(records[0].read_text())["revision"], REV)
+                    self.assertEqual((state / "failed/1.0.1").read_bytes(), b"")
+                    self.assertEqual(json.loads(next((state / "release-failures").glob("*.json")).read_text())["revision"], REV)
                 for call in self.calls.read_text().splitlines():
                     self.assertEqual(json.loads(call), ["--user", "--no-block", "restart", "owned-fixture.service"])
 

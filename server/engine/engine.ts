@@ -72,7 +72,7 @@ import { READ_ONLY_TOOLS, type SideLog, type SideState } from "./pi/side";
 import { TurnRecorder, type TurnLine } from "./turnLog";
 import { SERVER_VERSION } from "../config";
 import { runVaultTool, vaultToolSpecsFor } from "../vaultTools";
-import { submitChangeJob, requestRollback, SUBMIT_CHANGE_SCHEMA } from "../submitChange";
+import { submitChangeJob, SUBMIT_CHANGE_SCHEMA } from "../submitChange";
 
 export type EngineDeps = {
   vault: string;
@@ -718,13 +718,6 @@ export class Engine {
         }),
       };
     });
-  }
-
-  /** Card click or actual negative release health: deterministic host recovery, no model turn. */
-  async requestRollback(accepted: import("../changeShipping").AcceptedChange, reason: string, byCarl = false) {
-    const result = await requestRollback({ vault: this.d.vault, accepted, reason, byCarl, jobs: this.d.jobEnv });
-    if (result.job) this.updateSubagent(accepted.review.convId, result.job.id, { kind: "job", title: result.job.name, task: result.job.command, status: "running", state: "running", startedAt: result.job.startedAt, background: true, activity: "checking source rollback" });
-    return result;
   }
 
   /** Main, and one thread per project (made once; never a write when they exist). */

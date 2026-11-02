@@ -119,10 +119,13 @@ const result = await build({
   // main's static app imports initialize storage/voice. Keep the whole application lazy here.
   stdin: {
     contents: `import { SERVER_VERSION, SERVER_REV } from "./server/config";
-if (process.argv[2] === "build-info") {
+if (process.argv.length === 3 && process.argv[2] === "build-info") {
   process.stdout.write(JSON.stringify({ version: SERVER_VERSION, rev: SERVER_REV }) + "\\n");
-} else {
+} else if (process.argv.length === 2) {
   await import("./server/main.ts");
+} else {
+  console.error("Unsupported server command; start without arguments or use build-info");
+  process.exitCode = 2;
 }`,
     resolveDir: root,
     sourcefile: "server-entry.ts",
