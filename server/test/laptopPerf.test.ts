@@ -10,11 +10,17 @@ const batch = (): PerfBatch => ({ schema: 1, version: "0.7.25", revision: "a".re
 
 describe("bounded content-free laptop performance storage", () => {
   it("rejects invalid, extra/content fields, impossible durations, versions and oversized lists atomically", () => {
-    for (const value of [null, {}, { ...batch(), input: "private" }, { ...batch(), version: "private words" }, { ...batch(), session: "../path" }, { ...batch(), samples: [] }, { ...batch(), samples: Array(33).fill(batch().samples[0]) }, ...[NaN, Infinity, -1, 600001, "24"].map(durationMs => ({ ...batch(), samples: [{ ...batch().samples[0], durationMs }] })), { ...batch(), samples: [{ ...batch().samples[0], key: "a" }] }, { ...batch(), samples: [{ ...batch().samples[0], startPoint: "native-entry" }] }]) {
+    for (const value of [null, {}, { ...batch(), input: "private" }, { ...batch(), window: "private" }, { ...batch(), samples: [{ ...batch().samples[0], visibility: "private" }] }, { ...batch(), version: "private words" }, { ...batch(), session: "../path" }, { ...batch(), samples: [] }, { ...batch(), samples: Array(33).fill(batch().samples[0]) }, ...[NaN, Infinity, -1, 600001, "24"].map(durationMs => ({ ...batch(), samples: [{ ...batch().samples[0], durationMs }] })), { ...batch(), samples: [{ ...batch().samples[0], key: "a" }] }, { ...batch(), samples: [{ ...batch().samples[0], startPoint: "native-entry" }] }]) {
       expect(validPerfBatch(value)).toBe(false);
       expect(recordLaptopPerf(root, value, true).status).toBe(400);
     }
     expect(readdirSync(root)).toEqual([]);
+  });
+  it("accepts window/visibility diagnostics without permitting content or mismatched methods", () => {
+    const b = { ...batch(), window: "popout", samples: [{ ...batch().samples[0], method: "raf-timeout-observation", visibility: "hidden" }] };
+    expect(validPerfBatch(b)).toBe(true);
+    expect(validPerfBatch({ ...b, samples: [{ ...b.samples[0], method: "long-task" }] })).toBe(false);
+    expect(validPerfBatch({ ...b, samples: [{ ...b.samples[0], metric: "main-thread-long-task", method: "long-task", startPoint: "task" }] })).toBe(true);
   });
   it("does not treat a browser or unpaired native report as the real laptop", () => {
     const native = { ...batch(), surface: "tauri-production" };

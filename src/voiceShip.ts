@@ -26,13 +26,17 @@ export class VoiceLogShipper {
 
   constructor(private readonly o: { device: string; v?: string; everyMs?: number; max?: number; source?: "voice" | "app"; only?: RegExp }) {}
 
-  add(tag: string, data?: unknown): void {
+  add(tag: string, data?: unknown, at = new Date().toISOString()): void {
     if (!(this.o.only ?? SHIPPED).test(tag)) return;
     const rest = data && typeof data === "object" && !Array.isArray(data) ? (data as Record<string, unknown>) : data === undefined ? {} : { data };
-    this.queue.push({ ...rest, at: new Date().toISOString(), ev: tag });
+    this.queue.push({ ...rest, at, ev: tag });
     const max = this.o.max ?? 300;
     if (this.queue.length > max) this.queue = this.queue.slice(-max);
-    if (!this.timer && this.o.everyMs !== 0) {
+    this.schedule();
+  }
+
+  private schedule(): void {
+    if (this.queue.length && !this.sending && !this.timer && this.o.everyMs !== 0) {
       this.timer = setTimeout(() => void this.flush(), this.o.everyMs ?? 15_000);
       (this.timer as { unref?: () => void }).unref?.();
     }
@@ -47,7 +51,8 @@ export class VoiceLogShipper {
   async flush(keepalive = false): Promise<void> {
     if (this.timer) clearTimeout(this.timer);
     this.timer = null;
-    if (!this.queue.length || this.sending || !this.post) return;
+    if (!this.queue.length || this.sending) return;
+    if (!this.post) { this.schedule(); return; }
     const events = this.queue;
     this.queue = [];
     this.sending = true;
@@ -57,6 +62,8 @@ export class VoiceLogShipper {
       this.queue = [...events, ...this.queue].slice(-(this.o.max ?? 300));
     } finally {
       this.sending = false;
+      // Failures, offline startup and samples arriving during a POST all need another turn.
+      this.schedule();
     }
   }
 

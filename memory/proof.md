@@ -180,3 +180,17 @@ timestamps and "verified" itself.
 - A React commit counter must exclude reused bailout fibers: their old `PerformedWork` flags
   survive and otherwise give false render counts. Run that whole-tree counter separately from
   latency measurements. Production-compiled browser evidence is not physical laptop/Tauri evidence.
+
+## Laptop timing delivery (2026-11-02)
+- Each webview needs the probe: main, fullscreen (same document), Ctrl+K and chat popout. Production
+  browser wiring against a captured box is NOT actual Windows/Tauri performance. The native baseline
+  observed on 0.7.31 was launch 6467 ms only; other metrics were NO DATA, never zero.
+- The shared log shipper must rearm after failure, missing startup transport AND data arriving while a POST
+  is in flight. Perf uses 2 s main / 3.5 s popout batches (different periods avoid global rate-limit lockstep),
+  32 queued samples, 5 s bounded/reused config lookup and the existing native 20 s whole-response POST timeout.
+- Date event/task samples at `performance.timeOrigin + startTime`, not after a CPU stall. Event Timing is
+  8 ms quantized and omits fast events; double-rAF is only a rendering-opportunity estimate. A
+  `raf-timeout-observation` includes an intentional 1 s fallback wait and is NOT input latency/paint.
+  Long-task observations are limited to one per second: absence never proves no blocking. No content,
+  key values, paths or conversation IDs are collected. Chromium UA parsing must prefer Chrome/Chromium
+  over the earlier AppleWebKit compatibility token.

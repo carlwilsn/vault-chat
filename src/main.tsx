@@ -60,6 +60,8 @@ applyHljsTheme(savedTheme === "light" ? "light" : "graphite");
 
 const view = new URLSearchParams(window.location.search).get("view");
 const isPopout = view === "chat";
+// Every native webview has its own document, listeners and delivery queue.
+installLaptopPerf({ popout: isPopout });
 
 if (isPopout) {
   installPopoutSync();
@@ -80,7 +82,6 @@ if (isPopout) {
   installClientEvents();
   // Its errors and box drops on the box too (<state>/logs/app.jsonl).
   installAppShip();
-  installLaptopPerf();
   installDiagShortcut();
   // Reconcile "run in background" (always-on tray daemon) with the Rust
   // close-to-tray gate and the OS login item. Main window only; popouts must
