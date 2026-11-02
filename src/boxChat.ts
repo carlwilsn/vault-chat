@@ -137,12 +137,12 @@ async function httpPost(link: Link, path: string, payload: Record<string, unknow
  *  Throws with the reason when there is no box or it does not answer. */
 export async function boxSide(
   req: Record<string, unknown>,
-  o: { onText?: (text: string) => void; signal?: AbortSignal } = {},
+  o: { onText?: (text: string) => void; signal?: AbortSignal; vaultPath?: string | null } = {},
 ): Promise<{ text: string; side: string }> {
   // Capture before the first await: changing the viewer or active project must
   // not move a running side thread (or its abort) to another conversation.
   const convId = typeof req.convId === "string" ? req.convId : null;
-  const link = await boxLinkFor(useStore.getState().vaultPath);
+  const link = await boxLinkFor(o.vaultPath !== undefined ? o.vaultPath : useStore.getState().vaultPath);
   if (!link) throw new Error(`${NO_BOX}.`);
   const context = convId ? `convId=${encodeURIComponent(convId)}` : "";
   const sidePath = (suffix = "") => `/api/v1/side/${encodeURIComponent(id)}${suffix}`;

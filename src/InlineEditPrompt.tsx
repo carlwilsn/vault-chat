@@ -372,7 +372,7 @@ export function InlineEditPrompt({
             extraImages: turnImages,
             northStar: northStarRef.current,
           },
-          { onText, signal: ac.signal },
+          { onText, signal: ac.signal, vaultPath },
         );
         if (ac.signal.aborted) return;
         sideRef.current = out.side;
@@ -394,7 +394,7 @@ export function InlineEditPrompt({
             extraImages: turnImages,
             northStar: northStarRef.current,
           },
-          { onText, signal: ac.signal },
+          { onText, signal: ac.signal, vaultPath },
         );
         if (ac.signal.aborted) return;
         sideRef.current = out.side;
