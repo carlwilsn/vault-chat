@@ -84,14 +84,9 @@ export function InlineEditPrompt({
   onAccept: (result: string) => void;
   onCancel: () => void;
 }) {
-  // The popover belongs to the file and conversation that opened it, not a
-  // later viewer/project selection. File context and conversation owner differ.
-  const [origin] = useState(() => {
-    const s = useStore.getState();
-    return { vaultPath: s.vaultPath, currentFile: s.currentFile, convId: s.activeConversationId };
-  });
-  const { vaultPath, currentFile } = origin;
+  const vaultPath = useStore((s) => s.vaultPath);
   const files = useStore((s) => s.files);
+  const currentFile = useStore((s) => s.currentFile);
   const openNoteComposer = useStore((s) => s.openNoteComposer);
   const [mode, setMode] = useState<InlineEditMode>(askOnly ? "ask" : initialMode);
   const northStarRef = useRef<string>("");
@@ -339,7 +334,7 @@ export function InlineEditPrompt({
     // The box forks the open conversation (its history, the agent's
     // instructions, what Carl did elsewhere): the same context as a chat turn.
     // A refinement continues this popover's side thread instead.
-    const convId = origin.convId;
+    const convId = useStore.getState().activeConversationId;
     // What Carl just did (a capture, a focus) reaches the box before it reads the stream.
     await flushActivity().catch(() => undefined);
     const sideId = nextPrior.length > 0 ? sideRef.current : null;
@@ -372,7 +367,7 @@ export function InlineEditPrompt({
             extraImages: turnImages,
             northStar: northStarRef.current,
           },
-          { onText, signal: ac.signal, vaultPath },
+          { onText, signal: ac.signal },
         );
         if (ac.signal.aborted) return;
         sideRef.current = out.side;
@@ -394,7 +389,7 @@ export function InlineEditPrompt({
             extraImages: turnImages,
             northStar: northStarRef.current,
           },
-          { onText, signal: ac.signal, vaultPath },
+          { onText, signal: ac.signal },
         );
         if (ac.signal.aborted) return;
         sideRef.current = out.side;

@@ -134,7 +134,6 @@ test("Ctrl+K: a side thread of the open conversation on the box; the replacement
   assert.ok(!req.body.text.includes("recent_activity"));
   const polls = boxReqs.filter((r) => r.method === "GET" && r.url.startsWith("/api/v1/side/side-1"));
   assert.deepEqual(polls.map((r) => /after=(\d+)/.exec(r.url)![1]), ["0", "1", "2"]);
-  assert.ok(polls.every((r) => new URL(r.url, "http://test").searchParams.get("convId") === "conv-7"));
 });
 
 test("Ctrl+L: the marquee's image goes with the first request; a follow-up continues the same side thread", async () => {
@@ -150,7 +149,7 @@ test("Ctrl+L: the marquee's image goes with the first request; a follow-up conti
   assert.deepEqual(req.body.images, [`data:image/png;base64,${PNG}`]);
   // The popover's next request: only what is new, in the same side thread.
   const refine = buildInlineAskRequest({ prompt: "shorter", selection: "x", before: "", after: "", side: answer.side, convId: "conv-7", imageDataUrl: `data:image/png;base64,${PNG}` });
-  assert.deepEqual(refine, { kind: "ask", side: answer.side, convId: "conv-7", text: "shorter" });
+  assert.deepEqual(refine, { kind: "ask", side: answer.side, text: "shorter" });
 });
 
 test("Esc: the side thread is stopped on the box", async () => {
@@ -158,19 +157,10 @@ test("Esc: the side thread is stopped on the box", async () => {
   stream = ["a", "ab", "abc", "abcd", "abcde"];
   const ac = new AbortController();
   const seen: string[] = [];
-  await runInlineAsk({ prompt: "explain", selection: "", before: "", after: "", convId: "conv-original" }, { signal: ac.signal, onText: (t) => {
-    seen.push(t);
-    // A project switch while streaming must not change poll/abort ownership.
-    useStore.setState({ activeConversationId: "conv-other", vaultPath: vault } as any);
-    if (seen.length === 2) ac.abort();
-  } });
+  await runInlineAsk({ prompt: "explain", selection: "", before: "", after: "" }, { signal: ac.signal, onText: (t) => (seen.push(t), seen.length === 2 && ac.abort()) });
   const stopped = () => boxReqs.some((r) => r.method === "POST" && /^\/api\/v1\/side\/side-\d+\/stop/.test(r.url));
   for (let i = 0; i < 50 && !stopped(); i++) await new Promise((r) => setTimeout(r, 20));
   assert.ok(stopped(), "stop sent");
-  const controls = boxReqs.filter(r => r.url.startsWith("/api/v1/side/"));
-  assert.ok(controls.every(r => new URL(r.url, "http://test").searchParams.get("convId") === "conv-original"));
-  assert.ok(controls.every(r => new URL(r.url, "http://test").searchParams.get("vault") === "physics"));
-  useStore.setState({ vaultPath: boxVault } as any);
   assert.deepEqual(seen, ["a", "ab"], "nothing shown after Esc");
 });
 

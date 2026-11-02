@@ -330,7 +330,7 @@ async function main(): Promise<void> {
           subagent: async (v, c, sid, op, b) => (await engineOf(v)).subagent(c, sid, op, b),
           intent: async (v, b, viewerRoot) => (await engineOf(v)).intent(b, viewerRoot),
           side: {
-            start: async (v, b, viewerRoot) => (await engineOf(v)).sideStart(b, viewerRoot),
+            start: async (v, b) => (await engineOf(v)).sideStart(b),
             poll: async (v, id, after, wait) => (await engineOf(v)).sidePoll(id, after, wait),
             stop: async (v, id) => (await engineOf(v)).sideStop(id),
           },

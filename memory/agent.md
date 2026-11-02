@@ -175,6 +175,3 @@ extensions (same problems, new place). Migrate one duplicated piece per bug; no 
 - A source commit does not alter the installed engine's capabilities. Editing the
   original cross-vault file waits for the legitimate engine update; never invent a
   replacement file or escape the sandbox while installation is pending.
-
-## Side requests and global conversation ownership (2026-11-02)
-- Ctrl+K's file workspace is not its conversation owner. Capture both when the popover opens; carry the conversation on start, refinement, poll and abort. Route through the existing canonical conversation resolver. Old ID-only clients locate the run in registered engines' existing SideRuns (including settled runs), never a second global side-ID registry. A trusted viewer binding is a native hidden vc-context message; body roots cannot grant file access or change project cwd. Answer/kill and worker controls already use their explicit parent conversation, not the viewer.

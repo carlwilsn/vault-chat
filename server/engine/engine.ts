@@ -1194,7 +1194,7 @@ export class Engine {
    * last saw it (the "you" layer, the same hook a turn of the agent runs). `side`: the popover's next request, in
    * the same side thread. One-shots ({kind: "once", system, text, images?, fast?}): no session, no tools.
    */
-  async sideStart(b: Record<string, any>, viewerRoot = this.d.vault): Promise<Record<string, unknown>> {
+  async sideStart(b: Record<string, any>): Promise<Record<string, unknown>> {
     const text = typeof b?.text === "string" ? b.text : "";
     if (!text.trim()) return { error: "missing text" };
     const kind = b.kind === "once" ? "once" : b.kind === "edit" ? "edit" : "ask";
@@ -1229,10 +1229,7 @@ export class Engine {
         // Voice's Asks also have Carl's own vault tools (his calendar …): voice reached them through the agent before.
         const hostLoadout: HostLoadout = voice ? (act ? "voiceAct" : "voiceRead") : "readOnly";
         const hostTools = await this.hostToolCatalog(hostLoadout);
-        const context = viewerRoot !== this.d.vault
-          ? `<file-context conversation=${JSON.stringify(conv?.id ?? null)}>Viewer/file-context vault root: ${viewerRoot}/. Conversation owner: ${this.d.vault}/. Resolve viewer-relative file references under that viewer root; relative tools still use the thread/project cwd. This is the captured side-request file context, not later viewer state.</file-context>`
-          : undefined;
-        s = await side.start({ kind, context, fork: src?.file ?? null, instr, cwd: src?.cwd || this.d.vault, model, tools, hostTools, hostLoadout, sessionDir: dir(conv?.id ?? "none"), text, images, you: { convId: conv?.id ?? null }, log: this.sideLog(conv?.id ?? null, String(b.kind ?? kind).slice(0, 40), tools) });
+        s = await side.start({ kind, fork: src?.file ?? null, instr, cwd: src?.cwd || this.d.vault, model, tools, hostTools, hostLoadout, sessionDir: dir(conv?.id ?? "none"), text, images, you: { convId: conv?.id ?? null }, log: this.sideLog(conv?.id ?? null, String(b.kind ?? kind).slice(0, 40), tools) });
       }
       this.log(`side ${kind} ${s.id}${conv ? ` (forked from ${conv.id})` : ""} on ${model}${s.file ? `: ${s.file}` : ""}`);
       return { ok: true, id: s.id, v: s.v };
