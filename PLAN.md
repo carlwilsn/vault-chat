@@ -1,15 +1,22 @@
 # Current sequential work
 
-ASKS: 0% — the whole requested installed outcome is not yet fulfilled.
+ASKS: 0% — whole asks count only after both box and laptop installation verify.
 
-(a) Remove automatic source recovery: implementation prepared on
-`agent/no-source-recovery-1102`, based on canonical `6436747f`.
-Focused development checks cover binary-only fallback, failed-version retention,
-no source mutation, early CLI rejection, native health and ordinary branch gates.
-The first full development run failed (including a genuine overly broad CLI guard
-breaking RecordUI, now fixed); raw interrupted/failed logs remain outside the vault.
-The new final pin needs all seven gates once. Production compiled chat on copied
-real data and exact original-item/native/canonical startup checks ran without sends;
-final-pin proof, the single ship request/result and actual installed box/laptop
-verification remain pending.
-No claim of Shipped. Installed host remains untouched. (b)/(c)/(d) not started.
+(a) Source-recovery removal `6e7de094` was accepted by the installed watcher
+(exit 0) and published to GitHub main. Actual CI/box/laptop installation remains
+unverified here; acceptance and publication are not Shipped.
+
+(b) Restore Ctrl+K conversation-owner routing forward from that canonical main,
+without undoing accepted cleanup, stable typing props or the performance probe.
+Capture file workspace separately from conversation owner for start, refinement,
+poll and abort; reuse canonical ownership and registered engines' existing side
+runs. Genuine Pi + HTTP development reproduction: baseline completed poll 404;
+restored candidate passes, including side abort while its parent waits in a real
+AskUser tool with unchanged native PID, cwd, pending tool and transcript prefix.
+Development coverage also checks abort during start and a subsequent vault switch.
+Final frozen-pin seven gates, fresh strict real-copy startup, production keyboard
+Ctrl+K select/type/accept/save/cancel proof, then one installed-watcher request and
+its result remain release requirements. Physical Windows latency is unmeasured;
+browser timings are not native measurements. No Shipped claim or ASKS increase.
+
+(c) Card cleanup and any later changes are not part of this branch.

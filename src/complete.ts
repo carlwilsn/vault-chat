@@ -34,7 +34,7 @@ export type SideRequest = {
 };
 
 export type SideResult = { text: string; side: string };
-export type SideOpts = { onText?: (text: string) => void; signal?: AbortSignal };
+export type SideOpts = { onText?: (text: string) => void; signal?: AbortSignal; /** Captured file workspace, independent of conversation owner. */ vaultPath?: string | null };
 
 let impl: Complete | null = null;
 

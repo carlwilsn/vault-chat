@@ -79,7 +79,7 @@ export type ServerHooks = {
     intent: (v: VaultScope, b: any, viewerRoot?: string) => Promise<Record<string, unknown>>;
     /** Side threads (server/engine/pi/side.ts): Ctrl+K / Ctrl+L, and the one-shots. */
     side?: {
-      start: (v: VaultScope, b: any) => Promise<Record<string, unknown>>;
+      start: (v: VaultScope, b: any, viewerRoot?: string) => Promise<Record<string, unknown>>;
       poll: (v: VaultScope, id: string, after: number, waitMs: number) => Promise<Record<string, unknown> | null>;
       stop: (v: VaultScope, id: string) => Promise<boolean>;
     };
@@ -269,7 +269,7 @@ const CONVERSATION_ROUTES = new Set([
 async function conversationOf(req: IncomingMessage, url: URL, path: string): Promise<string | null> {
   const sub = /^\/api\/v1\/conversations\/([^/]+)\/subagents\//.exec(path);
   if (sub) return decodeURIComponent(sub[1]!);
-  if (!CONVERSATION_ROUTES.has(path)) return null;
+  if (!CONVERSATION_ROUTES.has(path) && !/^\/api\/v1\/side\/[^/]+(?:\/stop)?$/.test(path)) return null;
   const q = url.searchParams.get("convId") || url.searchParams.get("conv") || (path === "/conversation" ? url.searchParams.get("id") : null);
   if (q) return q;
   if (req.method !== "POST" || path === "/tool") return null;
@@ -423,6 +423,8 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
     }
   }
 
+  const sideM = /^\/api\/v1\/side\/([^/]+)(\/stop)?$/.exec(path);
+
   // Everything below is one vault's: the one the request names, else the main one.
   const want = url.searchParams.get("vault") || String(req.headers["x-vc-vault"] ?? "") || null;
   let scope: VaultScope | null = hooks.vault ? hooks.vault(want) : !want || want === cfg.vaultName ? { name: cfg.vaultName, path: cfg.vault, bare: cfg.bareRepo, main: true } : null;
@@ -430,13 +432,22 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
   // The open vault (files, boards, the inbox, the feed's file signals) …
   const open = scope;
   // … and, for a route about a conversation, the vault whose log holds it (server/convlog/log.ts GlobalFeed).
-  if (hooks.vaultList && (CONVERSATION_ROUTES.has(path) || path.startsWith("/api/v1/conversations/"))) {
+  if (hooks.vaultList && (CONVERSATION_ROUTES.has(path) || sideM || path.startsWith("/api/v1/conversations/"))) {
     const all = hooks.vaultList();
     const main = all.find((v) => v.main) ?? scope;
     const id = await conversationOf(req, url, path);
     const at = id ? ownerVault(id, main.path) : null;
     const owner = at ? all.find((v) => v.path === at) : null;
     scope = owner ?? main;
+    // Older clients send only the side ID (including on refinement). Ask the
+    // registered engines' existing SideRuns, never the viewer or a second ID map.
+    // A completed run remains there for its final poll, just like a running one.
+    const sideId = sideM ? decodeURIComponent(sideM[1]!) : path === "/api/v1/side" && !id ? (await jsonBody(req)).side : null;
+    if (!id && typeof sideId === "string" && sideId && hooks.engine?.side) {
+      for (const candidate of all) {
+        if (await hooks.engine.side.poll(candidate, sideId, -1, 0)) { scope = candidate; break; }
+      }
+    }
   }
   const vault = scope.path;
   if (path === "/api/v1/laptop-perf") {
@@ -554,10 +565,9 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
   if (path === "/api/v1/side" && method === "POST") {
     const side = hooks.engine?.side;
     if (!side) return json(res, 503, { error: "engine not running" });
-    const out: Record<string, unknown> = await side.start(scope, await jsonBody(req)).catch((e) => ({ error: String((e as Error)?.message ?? e) }));
+    const out: Record<string, unknown> = await side.start(scope, await jsonBody(req), open.path).catch((e) => ({ error: String((e as Error)?.message ?? e) }));
     return json(res, out.error ? (out.error === "missing text" ? 400 : 502) : 200, out);
   }
-  const sideM = /^\/api\/v1\/side\/([^/]+)(\/stop)?$/.exec(path);
   if (sideM) {
     const side = hooks.engine?.side;
     if (!side) return json(res, 503, { error: "engine not running" });

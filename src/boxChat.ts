@@ -137,22 +137,28 @@ async function httpPost(link: Link, path: string, payload: Record<string, unknow
  *  Throws with the reason when there is no box or it does not answer. */
 export async function boxSide(
   req: Record<string, unknown>,
-  o: { onText?: (text: string) => void; signal?: AbortSignal } = {},
+  o: { onText?: (text: string) => void; signal?: AbortSignal; vaultPath?: string | null } = {},
 ): Promise<{ text: string; side: string }> {
-  const link = await boxLinkFor(useStore.getState().vaultPath);
+  // Capture before the first await: changing the viewer or active project must
+  // not move a running side thread (or its abort) to another conversation.
+  const convId = typeof req.convId === "string" ? req.convId : null;
+  const link = await boxLinkFor(o.vaultPath !== undefined ? o.vaultPath : useStore.getState().vaultPath);
   if (!link) throw new Error(`${NO_BOX}.`);
+  const context = convId ? `convId=${encodeURIComponent(convId)}` : "";
+  const sidePath = (suffix = "") => `/api/v1/side/${encodeURIComponent(id)}${suffix}`;
   const unreachable = (raw: string) => new Error(`${BOX_UNREACHABLE}: ${unreachableWhy(raw)}.`);
   const r = await httpPost(link, "/api/v1/side", req);
   if (!r.ok) throw r.network ? unreachable(r.error ?? "") : new Error(`The box could not answer: ${r.error}`);
   const id = String(r.data?.id ?? "");
   let v = Number(r.data?.v ?? 0);
-  const stop = () => void httpPost(link, `/api/v1/side/${encodeURIComponent(id)}/stop`, {});
+  const stop = () => void httpPost(link, `${sidePath("/stop")}${context ? `?${context}` : ""}`, {});
   o.signal?.addEventListener("abort", stop, { once: true });
+  if (o.signal?.aborted) stop();
   try {
     for (;;) {
       let s: { text?: string; v?: number; done?: boolean; error?: string | null };
       try {
-        s = await httpGet(link, `/api/v1/side/${encodeURIComponent(id)}?after=${v}&wait=20000`, 35_000);
+        s = await httpGet(link, `${sidePath()}?after=${v}&wait=20000${context ? `&${context}` : ""}`, 35_000);
       } catch (e) {
         const status = (e as { status?: number }).status;
         throw status ? new Error(`The box could not answer: ${(e as Error).message}`) : unreachable(String((e as Error)?.message ?? e));

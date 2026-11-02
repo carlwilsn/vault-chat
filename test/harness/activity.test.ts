@@ -20,6 +20,7 @@ const fake = installFakeTauri(vault);
 // so far), one per poll, the last one done. `stream` is what the next one says.
 const boxReqs: { method: string; url: string; body: any }[] = [];
 let boxUrl = "";
+let onStartReply: (() => void) | null = null;
 let stream = ["# Sh", "# Short", "# Short title"];
 const sides = new Map<string, { texts: string[]; stopped: boolean }>();
 const box = http.createServer((req, res) => {
@@ -50,7 +51,9 @@ const box = http.createServer((req, res) => {
 fake.setHandler("vault_box_config", ({ vault: v }) => (v === boxVault ? { box: boxUrl, vault: "physics" } : null));
 fake.setHandler("box_post_json", async ({ url, body }) => {
   const r = await fetch(url, { method: "POST", body, headers: { "content-type": "application/json" } });
-  return { status: r.status, body: await r.text() };
+  const reply = { status: r.status, body: await r.text() };
+  if (new URL(url).pathname === "/api/v1/side") onStartReply?.();
+  return reply;
 });
 fake.setHandler("box_get_json", async ({ url }) => {
   const r = await fetch(url);
@@ -134,6 +137,7 @@ test("Ctrl+K: a side thread of the open conversation on the box; the replacement
   assert.ok(!req.body.text.includes("recent_activity"));
   const polls = boxReqs.filter((r) => r.method === "GET" && r.url.startsWith("/api/v1/side/side-1"));
   assert.deepEqual(polls.map((r) => /after=(\d+)/.exec(r.url)![1]), ["0", "1", "2"]);
+  assert.ok(polls.every((r) => new URL(r.url, "http://test").searchParams.get("convId") === "conv-7"));
 });
 
 test("Ctrl+L: the marquee's image goes with the first request; a follow-up continues the same side thread", async () => {
@@ -149,7 +153,30 @@ test("Ctrl+L: the marquee's image goes with the first request; a follow-up conti
   assert.deepEqual(req.body.images, [`data:image/png;base64,${PNG}`]);
   // The popover's next request: only what is new, in the same side thread.
   const refine = buildInlineAskRequest({ prompt: "shorter", selection: "x", before: "", after: "", side: answer.side, convId: "conv-7", imageDataUrl: `data:image/png;base64,${PNG}` });
-  assert.deepEqual(refine, { kind: "ask", side: answer.side, text: "shorter" });
+  assert.deepEqual(refine, { kind: "ask", side: answer.side, convId: "conv-7", text: "shorter" });
+});
+
+test("Esc during start retains the captured conversation and file workspace after a vault switch", async () => {
+  boxReqs.length = 0;
+  stream = ["a", "ab", "abc"];
+  const ac = new AbortController();
+  const seen: string[] = [];
+  useStore.setState({ vaultPath: boxVault, activeConversationId: "original-owner" } as any);
+  onStartReply = () => {
+    useStore.setState({ vaultPath: vault, activeConversationId: "different-owner" } as any);
+    ac.abort();
+  };
+  try {
+    await runInlineAsk({ prompt: "explain", selection: "", before: "", after: "", convId: "original-owner" }, { vaultPath: boxVault, signal: ac.signal, onText: t => seen.push(t) });
+    const controls = boxReqs.filter(r => /^\/api\/v1\/side\//.test(r.url));
+    assert.ok(controls.some(r => r.method === "POST" && r.url.includes("/stop")));
+    assert.ok(controls.every(r => new URL(r.url, "http://test").searchParams.get("convId") === "original-owner"));
+    assert.ok(controls.every(r => new URL(r.url, "http://test").searchParams.get("vault") === "physics"));
+    assert.deepEqual(seen, [], "nothing displayed after abort during start");
+  } finally {
+    onStartReply = null;
+    useStore.setState({ vaultPath: boxVault } as any);
+  }
 });
 
 test("Esc: the side thread is stopped on the box", async () => {
@@ -157,10 +184,19 @@ test("Esc: the side thread is stopped on the box", async () => {
   stream = ["a", "ab", "abc", "abcd", "abcde"];
   const ac = new AbortController();
   const seen: string[] = [];
-  await runInlineAsk({ prompt: "explain", selection: "", before: "", after: "" }, { signal: ac.signal, onText: (t) => (seen.push(t), seen.length === 2 && ac.abort()) });
+  await runInlineAsk({ prompt: "explain", selection: "", before: "", after: "", convId: "conv-original" }, { signal: ac.signal, onText: (t) => {
+    seen.push(t);
+    // A project switch while streaming must not change poll/abort ownership.
+    useStore.setState({ activeConversationId: "conv-other", vaultPath: vault } as any);
+    if (seen.length === 2) ac.abort();
+  } });
   const stopped = () => boxReqs.some((r) => r.method === "POST" && /^\/api\/v1\/side\/side-\d+\/stop/.test(r.url));
   for (let i = 0; i < 50 && !stopped(); i++) await new Promise((r) => setTimeout(r, 20));
   assert.ok(stopped(), "stop sent");
+  const controls = boxReqs.filter(r => r.url.startsWith("/api/v1/side/"));
+  assert.ok(controls.every(r => new URL(r.url, "http://test").searchParams.get("convId") === "conv-original"));
+  assert.ok(controls.every(r => new URL(r.url, "http://test").searchParams.get("vault") === "physics"));
+  useStore.setState({ vaultPath: boxVault } as any);
   assert.deepEqual(seen, ["a", "ab"], "nothing shown after Esc");
 });
 
