@@ -171,3 +171,12 @@ timestamps and "verified" itself.
   already-running long poll wakes after teardown and the bounded log reader correctly throws ENOENT. Never hide
   that failure by swallowing file errors or unhandled rejections. ConvLog's close itself is synchronous (writer-lock
   release), not a background-reader shutdown API; restart must close the old writer too.
+
+## Typing versus memo boundaries (v0.7.26)
+- Stable callback AND array props matter: fresh per-message worker arrays (even `[]`) and
+  an inline navigation callback made all 2,000 historical memo bubbles render on each key.
+  A stable callback + memoized worker-link projection restored v22-like composer latency;
+  see `docs/typing-performance-0726.md`. Do not assume shipping polling caused a key-bound regression.
+- A React commit counter must exclude reused bailout fibers: their old `PerformedWork` flags
+  survive and otherwise give false render counts. Run that whole-tree counter separately from
+  latency measurements. Production-compiled browser evidence is not physical laptop/Tauri evidence.
