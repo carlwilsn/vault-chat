@@ -3,7 +3,7 @@ import { ShipmentCards } from "./ShipmentCards";
 import { shipmentsForThread } from "./shipmentView";
 import { projectOfThread } from "./threads";
 import { ShipmentProofViewer } from "./ShipmentProofViewer";
-import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef } from "react";
+import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef } from "react";
 import { Markdown, StreamingMarkdown } from "./Markdown";
 import { localPathFromUrl } from "./mdPipeline";
 import { planDone, planIndex } from "./planPlace";
@@ -332,6 +332,9 @@ async function buildMentionPreamble(
 }
 
 /** Settings, at its Box section. */
+/** How many messages a chat draws at first, and how many more each scroll to the top adds. */
+const CHAT_WINDOW = 60;
+
 function openBoxSettings() {
   useStore.getState().setShowSettings(true);
   // The pane renders on React's next commit: look for the section for a few frames.
@@ -536,6 +539,22 @@ export function ChatPane() {
   const pinnedToBottomRef = useRef(true);
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
 
+  // Only the newest messages are drawn; older ones join as you scroll up, as in
+  // Claude Code. Drawing a whole long thread (1,500 bubbles) made every keystroke
+  // and every remount (Ctrl+Shift+F, opening a file) take seconds.
+  const [chatWindow, setChatWindow] = useState({ conv: activeConversationId, count: CHAT_WINDOW });
+  const shownCount = chatWindow.conv === activeConversationId ? chatWindow.count : CHAT_WINDOW;
+  const windowStartRef = useRef(0);
+  const heightBeforeOlderRef = useRef<number | null>(null);
+  useLayoutEffect(() => {
+    // Older messages went in above: keep what was on screen where it was.
+    const el = scrollRef.current;
+    const before = heightBeforeOlderRef.current;
+    if (!el || before == null) return;
+    heightBeforeOlderRef.current = null;
+    el.scrollTop += el.scrollHeight - before;
+  });
+
   // Every turn runs on the box: no box, nothing to chat with; the box out of
   // reach, the composer is off (with the reason) and the feed retries.
   const boxChat = useStore((s) => s.boxChat);
@@ -595,6 +614,10 @@ export function ChatPane() {
     const atBottom = distanceFromBottom < 40;
     pinnedToBottomRef.current = atBottom;
     setShowJumpToLatest(!atBottom && (busy || streamingText.length > 0));
+    if (el.scrollTop < 400 && windowStartRef.current > 0 && heightBeforeOlderRef.current == null) {
+      heightBeforeOlderRef.current = el.scrollHeight;
+      setChatWindow({ conv: activeConversationId, count: shownCount + CHAT_WINDOW });
+    }
   };
 
   const jumpToLatest = () => {
@@ -667,6 +690,12 @@ export function ChatPane() {
   const totalCost = uiChoice("cost") === "total" ? formatCost(activeConv?.costUsd ?? messages.reduce((n, m) => n + (m.costUsd ?? m.usage?.costUsd ?? 0), 0)) : undefined;
   let lastVisible = -1;
   for (let i = messages.length - 1; i >= 0; i--) if (!messages[i]!.hidden && !messages[i]!.system) { lastVisible = i; break; }
+  let windowStart = 0;
+  for (let i = messages.length - 1, n = 0; i >= 0; i--) {
+    if (messages[i]!.hidden || messages[i]!.waiting) continue;
+    if (++n > shownCount) { windowStart = i + 1; break; }
+  }
+  windowStartRef.current = windowStart;
 
   // While the agent works the composer stays open, as in Claude Code: a message
   // goes to the running agent at once (it reads it at its next step) and shows
@@ -1086,26 +1115,20 @@ export function ChatPane() {
 
         {parentConv && <button type="button" data-el="worker-parent" className="text-xs text-muted-foreground hover:text-foreground" onClick={() => openSubagent(parentConv.id)}>Back to {parentConv.title || "parent chat"}</button>}
 
-        {messages.map((m, i) =>
-          m.hidden || m.waiting ? null : (
-            <Fragment key={i}>
-              <MessageBubble
-                message={m}
-                askLive={!!m.askOptions?.length && i === lastVisible && !busy}
-                askChosen={m.askOptions?.length ? chosenAnswer(messages, i) : undefined}
-                onAsk={answerAsk}
-                spawns={messageSubagents[i]}
-                onOpenSubagent={openSubagent}
-                openableThreadIds={openableThreadIds}
-                onSubagent={controlSubagent}
-                onRetry={retryTurn}
-                voiceCont={!!m.voice && i > 0 && !!messages[i - 1]?.voice && !messages[i - 1]?.hidden}
-              />
-              {/* The plan sits with the turn that last wrote it (planPlace.ts). */}
-              {planInline && i === planAt && <AgentTodoList todos={todos} />}
-            </Fragment>
-          ),
-        )}
+        <HistoryList
+          messages={messages}
+          windowStart={windowStart}
+          lastVisible={lastVisible}
+          busy={busy}
+          messageSubagents={messageSubagents}
+          openableThreadIds={openableThreadIds}
+          onAsk={answerAsk}
+          onOpenSubagent={openSubagent}
+          onSubagent={controlSubagent}
+          onRetry={retryTurn}
+          todos={planInline ? todos : null}
+          planAt={planAt}
+        />
 
 
         <ShipmentCards cards={threadShipments} artifactBase={artifactBase} onRollback={boxRollbackShipment} onOpenProof={async (url) => { setShipmentProof(url); }} />
@@ -1510,6 +1533,52 @@ export function ChatPane() {
   );
 }
 
+
+/** The thread's messages. Its own memoized component so a keystroke in the composer
+ * (ChatPane state) never re-walks the history: only a new message, the window or the
+ * run state redraws it. */
+const HistoryList = memo(function HistoryList({
+  messages, windowStart, lastVisible, busy, messageSubagents, openableThreadIds, onAsk, onOpenSubagent, onSubagent, onRetry, todos, planAt,
+}: {
+  messages: ChatMessage[];
+  windowStart: number;
+  lastVisible: number;
+  busy: boolean;
+  messageSubagents: SubagentRec[][];
+  openableThreadIds: string[];
+  onAsk: (answer: string) => void;
+  onOpenSubagent: (id: string) => void;
+  onSubagent: (sid: string, op: "steer" | "stop", text?: string) => Promise<string | null>;
+  onRetry: () => void;
+  todos: TodoItem[] | null;
+  planAt: number;
+}) {
+  return (
+    <>
+      {todos && planAt >= 0 && planAt < windowStart && <AgentTodoList todos={todos} />}
+      {messages.map((m, i) =>
+        i < windowStart || m.hidden || m.waiting ? null : (
+          <Fragment key={i}>
+            <MessageBubble
+              message={m}
+              askLive={!!m.askOptions?.length && i === lastVisible && !busy}
+              askChosen={m.askOptions?.length ? chosenAnswer(messages, i) : undefined}
+              onAsk={onAsk}
+              spawns={messageSubagents[i]}
+              onOpenSubagent={onOpenSubagent}
+              openableThreadIds={openableThreadIds}
+              onSubagent={onSubagent}
+              onRetry={onRetry}
+              voiceCont={!!m.voice && i > 0 && !!messages[i - 1]?.voice && !messages[i - 1]?.hidden}
+            />
+            {/* The plan sits with the turn that last wrote it (planPlace.ts). */}
+            {todos && i === planAt && <AgentTodoList todos={todos} />}
+          </Fragment>
+        ),
+      )}
+    </>
+  );
+});
 
 function PlusItem({ icon, label, hint, disabled, onClick }: { icon: React.ReactNode; label: string; hint?: string; disabled?: boolean; onClick: () => void }) {
   return (
