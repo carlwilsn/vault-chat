@@ -1865,13 +1865,14 @@ fn cycle(vault: &str, push: bool) -> BoxSyncReport {
         }
         r.changes_waiting = 0;
     } else {
-        {
-            let mut g = LAST_PUSH.lock().unwrap_or_else(|p| p.into_inner());
-            g.get_or_insert_with(HashMap::new).insert(vault.to_string(), Instant::now());
-        }
         let spec = format!("refs/heads/{0}:refs/heads/{0}", cfg.branch);
         match sg_net(vault, &["push", "--porcelain", BOX_REMOTE, &spec]) {
             Ok((_, _, 0)) => {
+                // Only a push that worked counts as verified: stamping before the push let a failed
+                // verify-push hide behind "box already has master" for the next five minutes.
+                let mut g = LAST_PUSH.lock().unwrap_or_else(|p| p.into_inner());
+                g.get_or_insert_with(HashMap::new).insert(vault.to_string(), Instant::now());
+                drop(g);
                 let _ = run_git(vault, &["update-ref", &format!("refs/remotes/box/{}", cfg.branch), &format!("refs/heads/{}", cfg.branch)]);
                 if r.error.is_none() {
                     r.ok = true;

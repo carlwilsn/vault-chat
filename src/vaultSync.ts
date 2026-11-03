@@ -1011,7 +1011,8 @@ function startBoxSyncLoop(vault: string, cfg: BoxConfig): void {
         githubFailingSince: r.github_warning ? prev?.githubFailingSince ?? now : null,
       });
       // Durable log: one line per distinct incident (full stderr), one on recovery.
-      const sig = r.error ? `error|${r.error}` : r.conflict ? `conflict|${r.conflict.files.join(",")}` : null;
+      // First line only: git's later lines can vary (counts, progress) and would log every cycle.
+      const sig = r.error ? `error|${firstLine(r.error)}` : r.conflict ? `conflict|${r.conflict.files.join(",")}` : null;
       if (sig !== lastFailSig) {
         if (sig) {
           appendSyncLog(vault, "error", r.error ? "box-sync" : "box-gate", r.error ?? r.message, {
