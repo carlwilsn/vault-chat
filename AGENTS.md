@@ -18,9 +18,11 @@ phone web app, iPad whiteboard and voice. It is not AgentOS.
 - Use an agent/<name> branch in your own clone. Push it to publish, then write
   ~/agent-work/vault-chat/ship-requests/<unique>.req with exactly two lines:
   the branch name and a plain one-line title. Read its .result and .log.
-  Only the installed ship script promotes main. Publish already accepted main
-  to GitHub from /home/carlwilsn/vc/projects/vault-chat; verify the remote SHA.
-- Shipped means the box and Carl’s laptop run the release. Update ASKS.md only then.
+  Only the installed ship script promotes main; its watcher publishes accepted
+  main to GitHub. Do not duplicate that push; verify the remote SHA.
+- Shipped means the box and Carl’s laptop run the release and autonomous checks on
+  the real app pass (Carl’s native laptop probe for speed). Update ASKS.md only
+  then; do not ask for a greenlight or wait for Carl’s confirmation.
 - No source recovery or rollback of accepted work; no new shipping machinery,
   systemd-run units, owners, continuations, handoffs, receipts or waiting chains.
   Do not edit the installed simple-ship copy.
