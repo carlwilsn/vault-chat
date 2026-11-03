@@ -128,8 +128,11 @@ export type StoredSubagentsRecord = {
   /** subagents:null is a disk placeholder preserving patch key order, never a public removal. */
   patch: Record<string, unknown>;
   updates: SubagentRec[];
-  /** Full identity order, including ended workers; permits exact replacement/removal too. */
-  order: string[];
+  /** Full identity order, including ended workers; permits exact replacement/removal too.
+   * A missing order means the previous record's order. Writing all ~600 ids on every worker
+   * update is 93% of each record and grows the log by hundreds of MB a day, so the writer will
+   * omit an unchanged order once this reader is the retained fallback. */
+  order?: string[];
 };
 export type StoredRecord = LogRecord | StoredSubagentsRecord;
 

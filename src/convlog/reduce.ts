@@ -398,6 +398,8 @@ export function compactSubagents(previous: Picture, rec: LogRecord): StoredRecor
   const compact: StoredSubagentsRecord = { seq: rec.seq, conv: rec.conv, at: rec.at, type: "subagents", base: previous.seq,
     patch: { ...rec.patch, subagents: null },
     updates: next.filter((row) => JSON.stringify(row) !== JSON.stringify(old.get(row.threadId))),
+    // Still always written: the retained fallback reader requires it. Once this release's reader
+    // (which accepts a missing order) is the fallback, write it only when it changes.
     order: next.map((row) => row.threadId) };
   // Small/initial snapshots need no new framing. Also keeps malformed legacy rows untouched.
   return JSON.stringify(compact).length < JSON.stringify(rec).length ? compact : rec;
@@ -409,7 +411,7 @@ export function expandSubagents(p: Picture, r: StoredSubagentsRecord): LogRecord
   const fail = (): never => { throw new Error("Invalid subagents disk delta"); };
   if (r.conv !== p.id || r.base !== p.seq || !Number.isSafeInteger(r.seq) || r.seq <= r.base ||
       !r.patch || typeof r.patch !== "object" || Array.isArray(r.patch) || r.patch.subagents !== null ||
-      !Array.isArray(r.updates) || !Array.isArray(r.order)) return fail();
+      !Array.isArray(r.updates) || (r.order !== undefined && !Array.isArray(r.order))) return fail();
   const rows = new Map<string, SubagentRec>();
   const valid = (row: SubagentRec) => row && typeof row === "object" && !Array.isArray(row) && typeof row.threadId === "string" && !!row.threadId;
   const previous = p.meta.subagents ?? [];
@@ -424,10 +426,11 @@ export function expandSubagents(p: Picture, r: StoredSubagentsRecord): LogRecord
     changed.add(row.threadId);
     rows.set(row.threadId, row);
   }
-  const ids = new Set(r.order);
-  if (ids.size !== r.order.length || r.order.some((id) => typeof id !== "string" || !id || !rows.has(id)) ||
+  const order = r.order ?? previous.map((row) => row.threadId);
+  const ids = new Set(order);
+  if (ids.size !== order.length || order.some((id) => typeof id !== "string" || !id || !rows.has(id)) ||
       [...changed].some((id) => !ids.has(id))) return fail();
-  return { seq: r.seq, conv: r.conv, at: r.at, type: "meta", patch: { ...r.patch, subagents: r.order.map((id) => rows.get(id)!) } };
+  return { seq: r.seq, conv: r.conv, at: r.at, type: "meta", patch: { ...r.patch, subagents: order.map((id) => rows.get(id)!) } };
 }
 
 function step(d: Draft, stored: StoredRecord): void {
