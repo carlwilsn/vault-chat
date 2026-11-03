@@ -1,3 +1,4 @@
+import { useShallow } from "zustand/react/shallow";
 import { ShipmentCards } from "./ShipmentCards";
 import { shipmentsForThread } from "./shipmentView";
 import { projectOfThread } from "./threads";
@@ -386,7 +387,7 @@ export function ChatPane() {
   const setShowChatsPanel = useStore((s) => s.setShowChatsPanel);
   const showChatsPanel = useStore((s) => s.showChatsPanel);
   const conversations = useStore((s) => s.conversations);
-  const openableThreadIds = useMemo(() => conversations.map((c) => c.id), [conversations]);
+  const openableThreadIds = useStore(useShallow((s) => s.conversations.map((c) => c.id)));
   const activeConversationId = useStore((s) => s.activeConversationId);
   // Indicator is for chats you *can't see* — alerts that a background
   // conversation is still running. Suppressed on the active chat since
@@ -434,9 +435,12 @@ export function ChatPane() {
   const subagents = activeConv?.subagents ?? NO_SUBAGENTS;
   const parentConv = conversations.find((c) => c.subagents?.some((s) => s.kind !== "job" && s.threadId === activeConversationId));
   const openSubagent = useCallback((id: string) => useStore.getState().selectConversation(id), []);
-  // A composer keystroke must not change every memoized bubble's props.
-  // Resolve worker links only when the transcript or its workers change.
-  const messageSubagents = useMemo(() => messages.map((m) => subagentsOfMessage(m, subagents)), [messages, subagents]);
+  // Worker progress must not invalidate historical bubbles with no worker links.
+  // Keep live worker rows current; share the existing empty-list sentinel elsewhere.
+  const messageSubagents = useMemo(() => messages.map((m) => {
+    const spawns = subagentsOfMessage(m, subagents);
+    return spawns.length ? spawns : NO_SUBAGENTS;
+  }), [messages, subagents]);
   const runningTasks = useMemo(() => subagents.filter((s) => taskState(s) === "running"), [subagents]);
   const answerAsk = useCallback((answer: string) => {
     const id = useStore.getState().activeConversationId;

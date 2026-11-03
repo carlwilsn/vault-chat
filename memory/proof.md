@@ -244,3 +244,15 @@ timestamps and "verified" itself.
   with fixed empty drafts, composer median improved but p95 worsened, while
   Ctrl+K median worsened. Do not promote it from a document-root trace. Total
   layout-object counts are not counts of objects actually recalculated.
+
+## Worker-progress invalidation (2026-11-03, prepared only)
+- Quiet composer fixtures missed the real workload: replaying original full worker snapshots
+  at 1 Hz through the genuine copied backend invalidated every historical bubble. A separate
+  production React Fiber probe identified changing `spawns` empty arrays and the derived
+  `openableThreadIds` array; no tree inspection was active during keyboard latency recording.
+- Preserve semantic ID identity with Zustand's existing `useShallow`, and reuse the existing
+  empty worker-list sentinel for bubbles without links. Do not ignore actual transcript,
+  worker, ask or navigation changes with a broad memo comparator.
+- `preview/workerProgressRenderProof.mjs` is a reusable render-only real-App assertion:
+  immutable bubbles without worker links must not render, while worker-bearing bubbles do.
+  Browser/native-IPC adapters over genuine copied history are not physical Windows proof.

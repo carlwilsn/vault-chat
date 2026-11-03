@@ -63,3 +63,30 @@ native endpoint still had five batches, latest v0.7.32, no native AFTER comparis
 
 Same-root native file-open latency and fullscreen/docked root remount remain
 explicitly unresolved. Popout transitions are not fixed by this viewer-root change.
+
+## 2026-11-03 worker-progress causal intervention (prepared, NOT shipped)
+
+On `agent/file-open-live-workload-1103`, stabilize ChatPane's available conversation IDs
+with existing Zustand `useShallow` and normalize empty per-message worker lists to the
+existing sentinel. This removes irrelevant derived-prop churn, not pi state; no cache,
+writer, protocol, composer sizing, worker-control or viewer-root change is bundled.
+
+Production React + genuine copied backend, original worker records replayed at 1 Hz:
+- Separate render-only BEFORE: open 20,187 historical renders / 9 pane renders;
+  closed 13,458 / 6. Changed props were empty `spawns` and `openableThreadIds`.
+- AFTER: open 340 / 9; closed 294 / 6. Worker-bearing bubbles still update;
+  unrelated-ID churn disappears. Reusable real-App assertion also passes separately
+  with both file-open and file-closed; no page errors/outbound/model requests.
+- Uninstrumented real keyboard, 81 keys per condition, double-RAF p95 ms BEFORE→AFTER:
+  replay file 57.9→55.7; Ctrl+K 106.9→54.5; editor-visible composer 45.6→50.8;
+  replay closed 104.1→40.7. Quiet closed 41.2→40.9; quiet file 56.0→43.2.
+  This is one matched replay pair, not a universal performance or native-device claim.
+- Evidence (videos/screenshots, payload/cadence and raw timing/render results):
+  `/tmp/file-open-live-workload-1103/{baseline-props,candidate-props,baseline-latency,candidate-latency,regression-probe}`.
+  Strict startup/prefix/native-instruction checks derive original pending worker identity
+  from capture metadata and its Delegate/session binding; no live history was changed.
+- Candidate desktop typecheck, production Vite build and 17 affected harness cases pass.
+  Seven full candidate gates, fresh release capture, installed-watcher request/publication,
+  actual native Windows AFTER and both-device release verification have NOT run.
+  No ship request was created. Full-list worker writer and durable-cache stringify waste
+  remain measured follow-up work, not fixed here.
