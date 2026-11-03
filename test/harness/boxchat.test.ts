@@ -328,3 +328,39 @@ test("a delete is an intent: gone from the list here and in the log", async () =
   assert.equal(box.picture("old1").meta.deleted, true);
   assert.deepEqual(writes, []);
 });
+
+
+test("cache waits for feed quiescence, keeps its exact old cursor, and cancels on stop", async () => {
+  const key = `box:${box.url}`;
+  await waitFor("first warm snapshot", () => bc.readBoxCache(key) !== null);
+  const first = bc.readBoxCache(key)!;
+  const original = localStorage.getItem("vault-chat:box-log:" + key);
+  // Longer than two old throttle intervals, with genuine records on the feed.
+  for (let n = 0; n < 5; n++) {
+    box.emit(c1, { type: "meta", patch: { title: `cache burst ${n}` } });
+    await waitFor("progress projected", () => S().conversations.some(c => c.id === c1 && c.title === `cache burst ${n}`));
+    await new Promise(r => setTimeout(r, 700));
+    assert.equal(localStorage.getItem("vault-chat:box-log:" + key), original, "no recurring full-history serialization/write during progress");
+  }
+  await waitFor("quiet snapshot", () => (bc.readBoxCache(key)?.cursor ?? 0) > first.cursor);
+  const quiet = bc.readBoxCache(key)!;
+  assert.equal(quiet.epoch, first.epoch);
+  assert.equal(quiet.rows.find(r => r.id === c1)?.title, "cache burst 4");
+  assert.deepEqual(quiet.pictures.find(p => p.id === c1), JSON.parse(JSON.stringify(box.picture(c1))), "whole picture, not a truncated prefix with a current cursor");
+  // Reopen the exact older snapshot while offline; reconnect must replay the
+  // tail from THAT cursor, not claim the new one without its records.
+  bc.stopBoxChat();
+  localStorage.setItem("vault-chat:box-log:" + key, original!);
+  box.down = true;
+  await bc.startBoxChat(vault);
+  assert.equal(bc._boxChatSession()!.picture(c1)?.seq, first.pictures.find(p => p.id === c1)?.seq);
+  assert.deepEqual(bc.readBoxCache(key), first);
+  box.down = false;
+  bc._boxChatSession()!.kick();
+  await waitFor("old cursor caught up", () => S().conversations.some(c => c.id === c1 && c.title === "cache burst 4"));
+  assert.deepEqual(JSON.parse(JSON.stringify(bc._boxChatSession()!.picture(c1))), JSON.parse(JSON.stringify(box.picture(c1))));
+  const beforeStop = localStorage.getItem("vault-chat:box-log:" + key);
+  bc.stopBoxChat();
+  await new Promise(r => setTimeout(r, 1700));
+  assert.equal(localStorage.getItem("vault-chat:box-log:" + key), beforeStop, "a stopped session cannot write a pending snapshot");
+});

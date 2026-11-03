@@ -190,3 +190,16 @@ in doubt, mark it agent.
 - c76 native proof passed, but its actual UI setup failed on this normal pair before
   descriptor creation. A native text-only Main fixture did not cover tools; actual
   native migration proof now requests a genuine tool in each original Main.
+
+
+## Chat warm-cache scheduling (2026-11-03)
+- BoxChatSession's localStorage snapshot is a best-effort replica, never history
+  authority. Debounce after quiet rather than throttle full-history JSON during
+  continuous worker progress. Keep old snapshots' exact cursors; missing pictures
+  fetch whole checkpoints. Stop cancels pending writes, as before. Continuous cold
+  clients may remain without a warm snapshot until quiescence; do not promise fresh
+  offline content. The existing size loop retains a single oversized picture and
+  can hit quota; do not truncate items while claiming its current cursor.
+- Current compactSubagents disk records already contain changed whole rows + order;
+  public reads expand full worker metadata. Field patches need reader-first rollout
+  including the retained fallback binary; never activate an unreadable disk format.

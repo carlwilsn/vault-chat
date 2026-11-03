@@ -789,7 +789,10 @@ class BoxChatSession {
   }
 
   private scheduleCache(): void {
-    if (this.cacheTimer) return;
+    // This is a best-effort warm-start replica, not the log. Wait for a quiet
+    // feed instead of serializing the entire history every 1.5s during a run.
+    // The previous snapshot keeps its own exact cursor until this one lands.
+    if (this.cacheTimer) clearTimeout(this.cacheTimer);
     this.cacheTimer = setTimeout(() => {
       this.cacheTimer = null;
       this.writeCache();
