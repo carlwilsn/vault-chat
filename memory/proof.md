@@ -197,3 +197,50 @@ timestamps and "verified" itself.
 - File-open correlation begins at the existing viewer `currentFile` store transition, AFTER the file read.
   `fileOpenAgeMs` is a signed event/task start offset from the most recent opening and is only retained
   for its first minute; negative means a long task overlaps the opening. It is not file-I/O duration.
+
+## Viewer root is not conversation component identity (2026-11-02)
+- A viewer-only `setVault` correctly preserved the store conversation, but App's
+  viewer-root `Allotment` key still destroyed ChatPane's local draft and reader.
+  Production compiled React + captured actual history reproduced this with one
+  checkpoint load before and after: unchanged HTTP history is not proof that the
+  reader did not remount. Test the actual composer element's identity and draft
+  across the real folder picker, not only the conversation ID. Do not re-key the
+  conversation subtree to reset file-tree widths. Allotment's `preferredSize`
+  updates its preference but does NOT resize an existing pane: the actual short →
+  long tree proof stayed at 160px before the repair. Use its existing handle's
+  `reset()` when fit width changes; verify short/long refit and real sash dragging
+  without remounting the reader/composer.
+- Fullscreen/docked root replacement is a separate remaining remount path. Removing
+  the viewer-root key alone is not evidence that fullscreen state or physical
+  native typing latency is fixed.
+- Keep same-root file opening separate from root switching: the bounded actual-history
+  production UI with actual halloween bytes/assets retained the composer at same-root
+  open on BOTH baseline and candidate. The different-root identity fix passed fresh
+  reader/draft/selection/scroll checks, but did not establish a typing-latency fix.
+  A nonexistent `data-el="chat-scroll"` selector returns null, not a retained reader;
+  bind and assert the actual visible ChatPane scroll element.
+- Diagnose render work separately from timing: targeted commit counts showed no
+  Markdown/historical bubble renders during the measured composer's separate key
+  probe. CPU samples instead included synchronous textarea autosize `scrollHeight`
+  reads. That is a bottleneck candidate, not proof of a file-triggered root cause;
+  do not ship speculative containment or history/log-writer rewrites on that basis.
+
+
+## Autosize CPU work is not the latency result (2026-11-03)
+- An actual production Main/halloween A/B of native `field-sizing: content`
+  removed two of three textarea layouts per key, but three alternating 27-key
+  repetitions did not improve Ctrl+K or p95 consistently. Composer read-file
+  median improved while its p95 worsened. The speculative effects/CSS were
+  removed, not shipped as a fix. Keep CPU-work reduction, double-rAF rendering
+  opportunity, and actual Windows Event Timing separate. Native feature support
+  in the test browser is not proof of unsupported-webview fallback correctness.
+- Trace layout roots matter: 4–18 dirty objects still caused #document layouts
+  reporting ~43,624 total layout objects in the real copied Main. No historical
+  React rerender is needed for document layout/paint cost. A containment hypothesis
+  needs its own repeated intervention, scroll/geometry proof and latency result;
+  it does not follow automatically from the node count.
+
+- Repeated reader-only strict containment did not rescue this result either:
+  with fixed empty drafts, composer median improved but p95 worsened, while
+  Ctrl+K median worsened. Do not promote it from a document-root trace. Total
+  layout-object counts are not counts of objects actually recalculated.

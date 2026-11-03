@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Allotment, LayoutPriority } from "allotment";
+import { Allotment, LayoutPriority, type AllotmentHandle } from "allotment";
 import { invoke } from "@tauri-apps/api/core";
 import { openTerminal } from "./terminal";
 import type { FileEntry } from "./store";
@@ -99,6 +99,12 @@ export default function App() {
   const vaultPath = useStore((s) => s.vaultPath);
   const fitWidth = useMemo(() => computeFitWidth(files), [files]);
   const leftMax = Math.max(fitWidth, 600);
+  const layoutRef = useRef<AllotmentHandle>(null);
+  useEffect(() => {
+    // preferredSize updates the library's preference, not its current width.
+    // Refit through its native API without replacing the conversation owner.
+    layoutRef.current?.reset();
+  }, [fitWidth]);
 
   // Fullscreen chat has no viewer, so "Capture a region" (the + menu, the voice
   // typed reply) shows the open file over the chat with the marquee on, and
@@ -132,20 +138,6 @@ export default function App() {
   useEffect(() => {
     if (!chatFullscreen) setCaptureOver(false);
   }, [chatFullscreen]);
-
-  const [layoutKey, setLayoutKey] = useState<string>("empty");
-  const lastVaultRef = useRef<string | null>(null);
-  useEffect(() => {
-    if (
-      vaultPath &&
-      vaultPath !== lastVaultRef.current &&
-      files.length > 0 &&
-      files[0].path.startsWith(vaultPath)
-    ) {
-      lastVaultRef.current = vaultPath;
-      setLayoutKey(vaultPath);
-    }
-  }, [vaultPath, files]);
 
   const lastThemeToggleRef = useRef(0);
   useEffect(() => {
@@ -496,7 +488,11 @@ export default function App() {
     <div className="h-full w-full bg-background flex flex-col">
       <Titlebar />
       <div className="flex-1 min-h-0">
-        <Allotment key={`${layoutKey}:${popoutOpen ? "pop" : "dock"}`} proportionalLayout={false}>
+        {/* Viewer navigation cannot replace the conversation's React owner.
+            Refit file-tree widths through Allotment, not a React remount. A vault
+            key here remounted ChatPane, discarded its draft and reader scroll,
+            and rebuilt the entire historical transcript for a file operation. */}
+        <Allotment ref={layoutRef} key={popoutOpen ? "pop" : "dock"} proportionalLayout={false}>
           <Allotment.Pane preferredSize={fitWidth} minSize={160} maxSize={leftMax} visible={!leftCollapsed} snap>
             <FileTree />
           </Allotment.Pane>
