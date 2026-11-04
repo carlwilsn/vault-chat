@@ -13,15 +13,20 @@
 // output is throttled and capped, and a message_end whose entry is already
 // pointed to is not repeated.
 //
-// Carl's messages come back from pi as user entries. The engine says what it
-// sent (`expect`); the match puts his client's id, the text he typed (pi's copy
-// carries the engine's prefixes) and how it came in on the pointer.
+// Carl's messages come back from pi as user entries with native request
+// provenance. Pi owns both the exact input and identity across restart; the
+// pointer is only a projection. `expect` still tracks native queue delivery
+// and legacy/internal inputs, never guesses an unrelated recovered identity.
 import type { EventBody, ItemImage, PiEntry } from "../../src/convlog/protocol";
 import { VC_NOTE, VC_VOICE } from "../../src/convlog/protocol";
 import { ASK_TOOLS } from "../../src/review";
 import { hostToolName } from "../../src/mcpNames";
 import { SessionTail, shownEntry } from "../convlog/piSession";
 import { replyTextOf } from "../../src/convlog/commentary";
+
+/** Display identity on the native user message, not solely on a fallible feed pointer.
+ * No user text is copied here; pi owns the content and chronology. */
+export type UserRequest = { v: 1; clientId: string; via: string; device?: string; images?: ItemImage[] };
 
 export type Expected = {
   /** prompt: the turn's own input (the first user message of the turn); silent: an engine input given mid-turn. */
@@ -160,8 +165,22 @@ export class PiFeed {
 
   /** A user message pi put into the context: the turn's input, an engine input, or Carl's steer / queued message. */
   private userEntry(e: PiEntry, text: string): void {
-    let i = this.expected[0]?.kind === "prompt" ? 0 : this.expected.findIndex((x) => x.text === text);
-    if (i < 0) i = this.expected.findIndex((x) => x.text.trim() === text.trim());
+    // The native entry survives a crash between pi's write and our pointer.
+    // Only host-supplied structured provenance is display metadata; never infer
+    // envelopes from the human's text (which may itself quote a device header).
+    const request = e.message?.vcRequest as UserRequest | undefined;
+    if (request?.v === 1 && typeof request.clientId === "string" && typeof request.via === "string") {
+      const i = this.expected.findIndex((x) => x.clientId === request.clientId);
+      const x = i < 0 ? undefined : this.expected.splice(i, 1)[0];
+      this.o.emit({ type: "entry", file: this.o.file, entry: e, clientId: request.clientId,
+        shown: text, via: request.via, ...(request.device ? { device: request.device } : {}),
+        ...(request.images?.length ? { images: request.images } : {}) });
+      if (x?.kind === "steer" || x?.kind === "queue") this.o.delivered?.(request.clientId);
+      return;
+    }
+    // Legacy/engine inputs still have explicit expected overrides. Never bind
+    // an unrelated recovered user to the next prompt just because it is first.
+    const i = this.expected.findIndex((x) => x.text === text);
     if (i < 0) {
       // Not something this server sent (pi's own): as it is.
       this.o.emit({ type: "entry", file: this.o.file, entry: e });

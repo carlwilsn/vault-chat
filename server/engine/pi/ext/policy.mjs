@@ -257,3 +257,17 @@ export function hostToolContent(r) {
     .map((im) => ({ type: "image", data: im.data, mimeType: String(im.mimeType || "image/png") }));
   return [{ type: "text", text: String(r?.text ?? "") }, ...images];
 }
+
+/** Host transport -> native user message. Never infer metadata from human
+ * headers/code/quotes. The per-host discriminator arrives on the private
+ * bootstrap; no pending list, text matching, replay or additional entry. */
+export function nativeUserRequest(message, tag) {
+  if (!tag || message?.role !== "user") return;
+  const blocks = typeof message.content === "string" ? [{ type: "text", text: message.content }] : message.content;
+  if (!Array.isArray(blocks) || blocks[0]?.type !== "text") return;
+  let input;
+  try { input = JSON.parse(blocks[0].text); } catch { return; }
+  if (input?.vcInput !== tag || typeof input.text !== "string" || input.request?.v !== 1 ||
+      typeof input.request.clientId !== "string" || typeof input.request.via !== "string") return;
+  return { message: { ...message, content: [{ type: "text", text: input.text }, ...blocks.slice(1)], vcRequest: input.request } };
+}

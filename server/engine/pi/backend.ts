@@ -1,3 +1,4 @@
+import type { UserRequest } from "../piFeed";
 // EngineBackend on pi 1.1.0 (RPC mode). A thread is a pi session (thread id =
 // pi's session id, ref = its session file); each thread with work in hand has
 // its own pi process (proc.ts: own process group, bubblewrap pid namespace,
@@ -5,6 +6,7 @@
 // (ext/vc.mjs) as blocking host calls on the extension-UI channel; the cost of
 // every model call is OpenRouter's own figure, which the extension writes into
 // the session as `vc-cost` entries (usageCalls reads them back).
+import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, relative } from "node:path";
@@ -240,6 +242,15 @@ type Thread = {
 
 /** Events: "event" (BackendEvent), "up" (ready; the engine resumes cut turns). */
 export class PiBackend extends EventEmitter {
+  // A transport discriminator, not a second queue or a transcript. Each native
+  // queue element carries its own identity until message_end persists it.
+  private readonly requestTag = randomUUID();
+
+  private input(o: { texts: string[]; request?: UserRequest }): string {
+    const text = o.texts.filter(Boolean).join("\n\n");
+    return o.request ? JSON.stringify({ vcInput: this.requestTag, request: o.request, text }) : text;
+  }
+
   readonly name = "pi";
   readonly version: string;
   private threads = new Map<string, Thread>();
@@ -511,7 +522,7 @@ export class PiBackend extends EventEmitter {
     ];
     const outer = outerWith(this.o.sandbox);
     const argv = outer ? [...outer, this.o.install.node, ...args] : [this.o.install.node, ...args];
-    const proc = new PiProc({ argv, cwd: o.cwd, env: this.piEnv(!!o.you), key: this.o.apiKey(), bootstrap: JSON.stringify({ ...scope.bootstrap, tools: specs.length > 0 }) });
+    const proc = new PiProc({ argv, cwd: o.cwd, env: this.piEnv(!!o.you), key: this.o.apiKey(), bootstrap: JSON.stringify({ ...scope.bootstrap, tools: specs.length > 0, requestTag: this.requestTag }) });
     proc.once("exit", () => { void scope.revoke(); });
     let st: any;
     try {
@@ -715,7 +726,7 @@ export class PiBackend extends EventEmitter {
     return !!r?.success;
   }
 
-  async startTurn(threadId: string, o: { texts: string[]; /** Host context stored by pi as a hidden custom message, not Carl's input. */ context?: string; images: string[]; model: string; turnId?: string; thinking?: string }): Promise<{ turnId: string | null }> {
+  async startTurn(threadId: string, o: { texts: string[]; /** Host context stored by pi as a hidden custom message, not Carl's input. */ context?: string; request?: UserRequest; images: string[]; model: string; turnId?: string; thinking?: string }): Promise<{ turnId: string | null }> {
     const t = this.live(threadId);
     t.lastUsed = Date.now();
     const prev = t.model;
@@ -741,7 +752,7 @@ export class PiBackend extends EventEmitter {
     // Its correlated response, not a transport silence deadline, decides whether
     // input started. Keep ownership until then; abort and process exit still
     // settle this same request. Readiness/inspection/abort retain their deadlines.
-    const r = await t.proc.request({ type: "prompt", message: o.texts.filter(Boolean).join("\n\n"), ...(imgs.length ? { images: imgs } : {}) }, 0).catch((e) => ({ success: false, error: (e as Error).message }));
+    const r = await t.proc.request({ type: "prompt", message: this.input(o), ...(imgs.length ? { images: imgs } : {}) }, 0).catch((e) => ({ success: false, error: (e as Error).message }));
     if (!r?.success) {
       t.turnId = null;
       throw new Error(String(r?.error ?? "prompt rejected"));
@@ -750,24 +761,24 @@ export class PiBackend extends EventEmitter {
     return { turnId };
   }
 
-  async steer(threadId: string, _turnId: string, o: { texts: string[]; context?: string; images: string[] }): Promise<void> {
+  async steer(threadId: string, _turnId: string, o: { texts: string[]; context?: string; request?: UserRequest; images: string[] }): Promise<void> {
     const t = this.live(threadId);
     const imgs = this.images(o.images);
     // The existing native custom-message path owns request metadata too.
     // It is an immutable captured binding, not a lookup of ambient device state.
     if (o.context?.trim() && !await this.note(threadId, { kind: "context", text: o.context })) throw new Error("pi could not accept request context");
-    const r = await t.proc.request({ type: "steer", message: o.texts.filter(Boolean).join("\n\n"), ...(imgs.length ? { images: imgs } : {}) }, 30_000);
+    const r = await t.proc.request({ type: "steer", message: this.input(o), ...(imgs.length ? { images: imgs } : {}) }, 30_000);
     if (!r?.success) throw new Error(String(r?.error ?? "steer rejected"));
   }
 
   /** Queue a message for when the turn's work is done (pi's follow_up). */
-  async followUp(threadId: string, o: { texts: string[]; context?: string; images?: string[] }): Promise<void> {
+  async followUp(threadId: string, o: { texts: string[]; context?: string; request?: UserRequest; images?: string[] }): Promise<void> {
     const t = this.live(threadId);
     const imgs = this.images(o.images ?? []);
     // The existing native custom-message path owns request metadata too.
     // It is an immutable captured binding, not a lookup of ambient device state.
     if (o.context?.trim() && !await this.note(threadId, { kind: "context", text: o.context })) throw new Error("pi could not accept request context");
-    const r = await t.proc.request({ type: "follow_up", message: o.texts.filter(Boolean).join("\n\n"), ...(imgs.length ? { images: imgs } : {}) }, 30_000);
+    const r = await t.proc.request({ type: "follow_up", message: this.input(o), ...(imgs.length ? { images: imgs } : {}) }, 30_000);
     if (!r?.success) throw new Error(String(r?.error ?? "follow_up rejected"));
   }
 

@@ -126,6 +126,8 @@ def main():
     p.add_argument('--check-pending-chat', action='store_true', help='Queue via native input on held real Pi turns; exercise existing interrupt-and-send and preserve original history')
     p.add_argument('--check-board-scribble', action='store_true', help='Current production board: trusted Chromium pen protocol on private Xvfb, every contact sample, undo/redo/autosave/reopen; NOT iPad/Pencil')
     p.add_argument('--copy-board', type=Path, help='Owned disposable board fixture directory (board.json and history.json); never a live board')
+    p.add_argument('--check-history-update', action='store_true', help='Real native user/stream/tool/reply identities across an owned crash and app reopen')
+    p.add_argument('--expect-history-baseline-bug', action='store_true', help='Retain the reproduced raw envelope/identity loss instead of claiming a pass')
     p.add_argument('--inside-nix', action='store_true', help=argparse.SUPPRESS)
     a = p.parse_args()
     if a.check_global_notes and not a.check_status_dot:
@@ -146,7 +148,7 @@ def main():
     if a.min_messages < 1:
         p.error('--min-messages must be positive')
     tools = ['Xvfb', 'xdotool', 'openbox', 'dbus-daemon', 'WebKitWebDriver', 'node', 'npm', 'flock']
-    if a.check_images or a.check_editor_sync or a.check_pending_chat:
+    if a.check_images or a.check_editor_sync or a.check_pending_chat or a.check_history_update:
         tools.append('xclip')
     if a.check_video:
         tools += ['pulseaudio', 'pactl', 'parec']
@@ -183,7 +185,7 @@ def main():
     events = source / '.vault-chat' / 'events'
     if not events.is_dir() or events.is_symlink():
         p.error('Selected copy has no regular .vault-chat/events directory')
-    real_pi = a.check_status_dot or a.check_pending_chat or a.check_device_sense or a.check_web_research
+    real_pi = a.check_status_dot or a.check_pending_chat or a.check_device_sense or a.check_web_research or a.check_history_update
     master = work / 'master'
     vault = master / 'vaults/vault-chat' if real_pi else work / 'vault-chat'
     dest = vault / '.vault-chat' / 'events'
@@ -345,6 +347,7 @@ def main():
             released.set()  # Let any original interrupted turn finish locally before measuring.
             provider_calls = []
             queue_provider_inputs = []
+            history_requests = []
             editor_reads = []
             device_results = {}
             research_results = []
@@ -369,6 +372,15 @@ def main():
                     if not self.path.endswith('/chat/completions') or not body.get('stream'):
                         self.send_response(503); self.end_headers(); return
                     provider_calls.append(True)  # Never record original thread text.
+                    # Hold response HEADERS, after pi persisted the trusted native
+                    # user but before assistant_start lets the feed catch up.
+                    messages = body.get('messages', [])
+                    def message_text(m):
+                        c = m.get('content', '')
+                        return c if isinstance(c, str) else '\n'.join(x.get('text', '') for x in c)
+                    history_user = next((message_text(m) for m in reversed(messages) if m.get('role') == 'user' and 'HISTORY-UPDATE-23-' in message_text(m)), '')
+                    if a.check_history_update and history_user:
+                        history_requests.append({'tag': 'FIRST' if 'HISTORY-UPDATE-23-FIRST' in history_user else 'SECOND', 'tool': bool(messages and messages[-1].get('role') == 'tool')})
                     if not released.wait(90):
                         self.send_response(503); self.end_headers(); return
                     self.send_response(200); self.send_header('Content-Type', 'text/event-stream'); self.end_headers()
@@ -408,6 +420,12 @@ def main():
                     elif device_marker and tool_result:
                         device_results[device_marker] = json.dumps(tool_result.get('content'))
                         deltas = [({'role': 'assistant', 'content': 'Owned device fixture complete.'}, None), ({}, 'stop')]
+                    elif a.check_history_update and history_user:
+                        tag = 'FIRST' if 'HISTORY-UPDATE-23-FIRST' in history_user else 'SECOND'
+                        if tag == 'SECOND' and not tool_result:
+                            deltas = [({'role': 'assistant', 'content': 'History tool commentary.', 'tool_calls': [{'index': 0, 'id': 'history-read-23', 'type': 'function', 'function': {'name': next((t['function']['name'] for t in body.get('tools', []) if t['function']['name'] in ('read', 'mcp__vault_chat__read')), 'read'), 'arguments': json.dumps({'path': str(note)})}}]}, None), ({}, 'tool_calls')]
+                        else:
+                            deltas = [({'role': 'assistant', 'content': 'History '}, None), ({'content': tag + ' reply 23.'}, None), ({}, 'stop')]
                     elif a.check_editor_sync and is_editor and not tool_result:
                         editor_reads.append({'beforeNativeReadSha256': hashlib.sha256(editor_box_file.read_bytes()).hexdigest(), 'freshBeforeNativeRead': editor_box_file.read_text() == editor_expected})
                         deltas = [({'role': 'assistant', 'tool_calls': [{'index': 0, 'id': 'editor-read-27', 'type': 'function', 'function': {'name': next((t['function']['name'] for t in body.get('tools', []) if t['function']['name'] in ('read', 'mcp__vault_chat__read')), 'read'), 'arguments': json.dumps({'path': str(editor_box_file)})}}]}, None), ({}, 'tool_calls')]
@@ -425,7 +443,7 @@ def main():
             threading.Thread(target=provider.serve_forever, daemon=True).start()
             provider_url = 'http://127.0.0.1:' + str(provider.server_port) + '/api/v1'
             network = work / 'local-network.mjs'
-            network.write_text("const f=globalThis.fetch;globalThis.fetch=(i,o)=>{const u=new URL(typeof i==='string'?i:i instanceof URL?i.href:i.url);if(u.href==='https://openrouter.ai/api/v1/models')return f(" + json.dumps(provider_url + '/models') + ",o);if(['127.0.0.1','localhost','[::1]'].includes(u.hostname))return f(i,o);throw Error('External fetch refused');};")
+            network.write_text("if(process.argv[1]?.endsWith('/dist/bundle/cli.js'))process.env.OPENROUTER_API_KEY='synthetic-local-only';const f=globalThis.fetch;globalThis.fetch=(i,o)=>{const u=new URL(typeof i==='string'?i:i instanceof URL?i.href:i.url);if(u.href==='https://openrouter.ai/api/v1/models')return f(" + json.dumps(provider_url + '/models') + ",o);if(['127.0.0.1','localhost','[::1]'].includes(u.hostname))return f(i,o);throw Error('External fetch refused');};")
             if a.check_web_research:
                 # HTTP library transport interception lives ONLY in this private
                 # test preload. Original/final URLs and production tool code stay real.
@@ -475,7 +493,16 @@ def main():
             server_env.update(VC_ENGINE='pi', VC_PI_DIR=str(a.pi_dir), VC_ENGINE_MODEL='test/fake-model',
                 VC_OPENROUTER_BASE=local_provider, VC_PI_UNSAFE='1', PI_SKIP_VERSION_CHECK='1',
                 VC_BWRAP=str(work / 'no-bwrap'), NODE_OPTIONS='--import ' + str(network))
-        spawn(['node', str(a.server_bundle)], 'server', server_env)
+        if a.check_history_update:
+            # Deterministic crash at the REAL native-write/feed-pointer boundary.
+            # No replacement IPC/backend, log editing, fake messages or recovery:
+            # stop this owned server immediately BEFORE its first fixture pointer
+            # append, with pi's real user entry already persisted. Restart once.
+            crash_marker = work / 'history-crash-window.json'
+            crash_hook = work / 'history-crash-window.mjs'
+            crash_hook.write_text("import fs from 'node:fs';import {syncBuiltinESMExports} from 'node:module';const append=fs.appendFileSync;fs.appendFileSync=function(file,data,...args){if(String(file)===" + json.dumps(str(dest / (a.conversation + '.jsonl'))) + "&&typeof data==='string'&&data.includes('HISTORY-UPDATE-23-FIRST')&&!fs.existsSync(" + json.dumps(str(crash_marker)) + ")){const r=JSON.parse(data);if(r.type==='entry'&&r.shown==='HISTORY-UPDATE-23-FIRST'){fs.writeFileSync(" + json.dumps(str(crash_marker)) + ",JSON.stringify({nativeEntryId:r.id,clientId:r.clientId}));process.kill(process.pid,'SIGSTOP');}}return append.call(this,file,data,...args)};syncBuiltinESMExports();")
+            server_env['NODE_OPTIONS'] += ' --import ' + str(crash_hook)
+        backend_process = spawn(['node', str(a.server_bundle)], 'server', server_env)
         base = 'http://127.0.0.1:' + str(server_port)
         wait_for(lambda: request(base + '/api/v1/health'), 'owned genuine box server')
         if a.check_speech_freshness:
@@ -575,11 +602,12 @@ def main():
                     and (intent := json.loads(data)).get('type') == 'send' and intent.get('convId') == a.conversation
                     and str(intent.get('text', '')).startswith('Owned speech freshness '))
                 queue_write = False
-                if a.check_pending_chat and path == '/api/v2/intent' and self.command == 'POST':
+                if (a.check_pending_chat or a.check_history_update) and path == '/api/v2/intent' and self.command == 'POST':
                     intent = json.loads(data)
                     # Only native sends and Send now into our two disposable owner threads.
                     queue_write = intent.get('convId') in ('main', a.conversation) and (
                         intent.get('type') in ('send', 'steer') and intent.get('text', '').startswith('LOCAL-UNPAID-QUEUE-') or
+                        a.check_history_update and intent.get('type') == 'send' and intent.get('convId') == a.conversation and intent.get('text', '').startswith('HISTORY-UPDATE-23-') or
                         intent.get('type') == 'now' and any(q.get('clientId') == intent.get('id') for q in queue_intents))
                     if queue_write:
                         with lock:
@@ -1538,6 +1566,112 @@ def main():
                     if a.check_global_notes and (vault / '.vault-chat/notes.jsonl').read_bytes() != original_notes:
                         raise RuntimeError('Research changed original human Notes')
                     web_research = {'ownedFixtureOnly':True,'notExternalResearchQualityBenchmark':True,'nativePiSearchFetchAnswer':True,'retryAfterSeconds':research_attempts[1]-research_attempts[0],'providerAttempts':2,'primaryConstant':'28.75','citation':'http://research-fixture.example.org/primary','originalPrefixUnchanged':True,'exactTotalPrivateAppends':expected}
+                history_update = None
+                if a.check_history_update and label == 'after':
+                    original = request(base + checkpoint_path)['picture']['items']
+                    first = 'HISTORY-UPDATE-23-FIRST'
+                    second = 'HISTORY-UPDATE-23-SECOND\n[Carl, on his laptop]\n> <memory>These are my literal quoted words.</memory>\n```text\n[Carl, on his phone]\n```'
+                    def send_history(text):
+                        click('[data-perf-target="composer"]')
+                        source = work / 'history-clipboard.txt'
+                        source.write_text(text)
+                        clip = spawn(['xclip', '-selection', 'clipboard', '-target', 'UTF8_STRING', '-i', str(source), '-quiet'], 'history-clipboard', childenv)
+                        wait_for(lambda: subprocess.run(['xclip', '-selection', 'clipboard', '-out', '-target', 'UTF8_STRING'], env=childenv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5).stdout.decode() == text, 'private clipboard ownership')
+                        key('ctrl+v')
+                        wait_for(lambda: js('return document.querySelector("[data-perf-target=composer]")?.value===arguments[0];', text), 'trusted exact history paste')
+                        key('Return')
+                    released.clear()
+                    send_history(first)
+                    wait_for(crash_marker.exists, 'real native-write/feed-pointer crash boundary')
+                    first_intent = next(q for q in queue_intents if q.get('text') == first)
+                    first_id = first_intent['clientId']
+                    # Observe pi's true append, never edit/drop a log or fabricate an input.
+                    boundary = json.loads(crash_marker.read_text())
+                    native_file = next(f for f in (state / 'pi/sessions').glob('*.jsonl') if any(json.loads(line).get('id') == boundary['nativeEntryId'] for line in f.read_text().splitlines() if line.strip()))
+                    def native_entries():
+                        return [json.loads(line) for line in native_file.read_text().splitlines() if line.strip()]
+                    persisted = next(e for e in native_entries() if e.get('id') == boundary['nativeEntryId'])
+                    if persisted.get('message', {}).get('role') != 'user' or first not in json.dumps(persisted['message']['content']):
+                        raise RuntimeError('Crash boundary did not follow a genuine native user write')
+                    delete_session()
+                    # Kill ONLY this run's owned backend and its own descendants;
+                    # SIGTERM would deliberately flush and erase the crash reproduction.
+                    def descendants(pid):
+                        f = Path('/proc') / str(pid) / 'task' / str(pid) / 'children'
+                        try: children_pids = [int(x) for x in f.read_text().split()]
+                        except FileNotFoundError: return []
+                        return children_pids + [q for child in children_pids for q in descendants(child)]
+                    owned_pids = descendants(backend_process.pid)
+                    os.kill(backend_process.pid, signal.SIGKILL); backend_process.wait()
+                    for pid in reversed(owned_pids):
+                        with contextlib.suppress(ProcessLookupError): os.kill(pid, signal.SIGKILL)
+                    released.set()
+                    restarted = spawn(['node', str(a.server_bundle)], 'history-restarted-server', server_env)
+                    wait_for(lambda: request(base + '/api/v1/health').get('engine', {}).get('pi', {}).get('state') == 'up', 'owned restart Pi ready')
+                    # Restart rewrites the local model config; restore this run's
+                    # zero-cost model, never SDK files or credentials.
+                    (agent / 'settings.json').write_text(json.dumps({'compaction': {'enabled': False}, 'retry': {'enabled': False}}))
+                    (agent / 'models.json').write_text(json.dumps({'providers': {'openrouter': {'baseUrl': provider_url, 'apiKey': 'synthetic-local-only', 'api': 'openai-completions', 'models': [{'id': 'test/fake-model', 'name': 'Local history fixture', 'reasoning': False, 'input': ['text'], 'cost': {'input': 0, 'output': 0, 'cacheRead': 0, 'cacheWrite': 0}, 'contextWindow': 400000, 'maxTokens': 1000}]}}}))
+                    session()
+                    wait_for(lambda: exists('[data-perf-target="composer"]'), 'private native reopen cached history')
+                    wait_for(lambda: not request(base + checkpoint_path)['picture']['meta'].get('running') and any(x.get('text') == 'History FIRST reply 23.' for x in request(base + checkpoint_path)['picture']['items']), 'genuine automatic native resume reply')
+                    if request(base + checkpoint_path)['picture']['meta']['threadPath'] != str(native_file):
+                        raise RuntimeError('Owned restart did not resume the SAME native session')
+                    # Continue the SAME resumed native session through real human input.
+                    send_history(second)
+                    second_intent = wait_for(lambda: next((q for q in queue_intents if q.get('text') == second), None), 'second trusted native intent')
+                    wait_for(lambda: not request(base + checkpoint_path)['picture']['meta'].get('running') and any(x.get('text') == 'History SECOND reply 23.' for x in request(base + checkpoint_path)['picture']['items']), 'resumed native tool and streamed final')
+                    final = request(base + checkpoint_path)['picture']
+                    if final['items'][:len(original)] != original:
+                        raise RuntimeError('History update changed original prefix')
+                    appended = final['items'][len(original):]
+                    users = [x for x in appended if x.get('kind') == 'user' and x.get('via') != 'resume']
+                    expected_ids = [first_id, second_intent['clientId']]
+                    expected_texts = [first, second]
+                    exact = [x['id'] for x in users] == expected_ids and [x['text'] for x in users] == expected_texts
+                    native_user_ids = [e['id'] for e in native_entries() if e.get('message', {}).get('role') == 'user' and 'HISTORY-UPDATE-23-' in json.dumps(e['message'].get('content'))]
+                    tool = next((x for x in appended if x.get('id') == 'history-read-23'), None)
+                    replies = [x for x in appended if x.get('kind') == 'assistant']
+                    if len(users) != 2 or len(native_user_ids) != 2 or not tool or tool.get('status') != 'done' or [x['text'] for x in replies] != ['History FIRST reply 23.', 'History SECOND reply 23.']:
+                        raise RuntimeError('Missing/duplicated native user, tool result or assistant final')
+                    order = [x['id'] for x in appended if x.get('kind') in ('user', 'tool', 'assistant') and x.get('via') != 'resume']
+                    if order != [users[0]['id'], replies[0]['id'], users[1]['id'], 'history-read-23', replies[1]['id']]:
+                        raise RuntimeError('Projection is not in native chronology')
+                    if not a.expect_history_baseline_bug and not exact:
+                        raise RuntimeError('Recovered native user lost exact identity or visible text')
+                    if a.expect_history_baseline_bug and exact:
+                        raise RuntimeError('Baseline failed to reproduce the reported envelope/identity bug')
+                    key('ctrl+shift+f')
+                    wait_for(lambda: exists('[data-el="chats-sidebar"]'), 'pre-reopen fullscreen chat')
+                    ids = [users[0]['id'], replies[0]['id'], users[1]['id'], replies[1]['id']]
+                    before_reopen = wait_for(lambda: js('return arguments[0].map(id=>({id,count:[...document.querySelectorAll("[data-message-id]")].filter(e=>e.dataset.messageId===id).length}));', ids), 'real rows before app reopen')
+                    if any(x['count'] != 1 for x in before_reopen):
+                        raise RuntimeError('Actual native rows missing/duplicated before app reopen')
+                    # Reopen again: actual app's own hydrated cache + network feed,
+                    # no cache deletion and no mutation of frontend state.
+                    delete_session(); time.sleep(1); session()
+                    wait_for(lambda: exists('[data-perf-target="composer"]'), 'second app reopen')
+                    key('ctrl+shift+f')
+                    wait_for(lambda: exists('[data-el="chats-sidebar"]'), 'reopened fullscreen chat')
+                    def visible_identity():
+                        return js('return arguments[0].map(id=>{const rows=[...document.querySelectorAll("[data-message-id]")].filter(e=>e.dataset.messageId===id);return {id,count:rows.length,text:rows[0]?.textContent};});', [users[0]['id'], replies[0]['id'], users[1]['id'], replies[1]['id']])
+                    visible = wait_for(lambda: (v if (v := visible_identity()) and all(x['count'] == 1 for x in v) else None), 'actual app exact-once restored rows')
+                    if second not in visible[2]['text']:
+                        # Markdown renders code/quotes, not literal delimiter bytes;
+                        # compare the actual plain user component's rendered content.
+                        if not all(t in visible[2]['text'] for t in ['HISTORY-UPDATE-23-SECOND', '[Carl, on his laptop]', 'These are my literal quoted words.', '[Carl, on his phone]']):
+                            raise RuntimeError('Genuine human header/code quote lost in native UI')
+                    again = request(base + checkpoint_path)['picture']
+                    if again['items'] != final['items']:
+                        raise RuntimeError('Reopen/reconnect changed logical messages')
+                    history_update = {'baselineBugReproduced': a.expect_history_baseline_bug, 'exactTextAndClientIds': exact,
+                        'originalPrefixUnchanged': True, 'originalMessages': 1329, 'originalItems': 3819,
+                        'nativeUserEntries': len(native_user_ids), 'appendedUsers': len(users), 'completedTools': 1,
+                        'completedAssistantReplies': len(replies), 'firstReply': 'Genuine automatic native resume completed after owned server restart',
+                        'nativeOrder': order, 'reopenSameItems': True, 'visibleBeforeReopen': before_reopen, 'visibleRowsExactlyOnce': [x['count'] for x in visible],
+                        'humanLookalikePreserved': True, 'privateAppendedItems': len(appended),
+                        'crashWindow': 'controlled SIGSTOP before first genuine fixture feed-pointer append, after native user persisted; then owned SIGKILL/restart', 'serverBundleSha256': hashlib.sha256(a.server_bundle.read_bytes()).hexdigest()}
+                    key('ctrl+shift+f')
                 statuses = set()
                 for b, status in batches:
                     if b.get('runtime') != 'webkitgtk' or b.get('surface') != 'tauri-production':
@@ -1559,6 +1693,7 @@ def main():
                     v = sorted(values)
                     return {'n': len(v), 'p50Ms': round(v[len(v)//2], 3), 'p95Ms': round(v[min(len(v)-1, int(len(v)*.95))], 3), 'maxMs': round(max(v), 3)}
                 return {'works': not interaction_failures, 'videoCheck': video_check, 'imageCheck': image_check, 'statusDot': status_dot, 'editorSync': editor_sync, 'pendingChat': pending_chat, 'deviceSense': device_sense, 'webResearch': web_research, 'globalNotes': global_notes, 'interactionFailures': interaction_failures, 'planLifecycle': plan_lifecycle, 'emptyChat': empty_chat, 'native': metadata, 'telemetryHttpStatuses': sorted(statuses),
+                return {'works': not interaction_failures, 'videoCheck': video_check, 'imageCheck': image_check, 'statusDot': status_dot, 'editorSync': editor_sync, 'pendingChat': pending_chat, 'deviceSense': device_sense, 'historyUpdate': history_update, 'globalNotes': global_notes, 'interactionFailures': interaction_failures, 'planLifecycle': plan_lifecycle, 'emptyChat': empty_chat, 'native': metadata, 'telemetryHttpStatuses': sorted(statuses),
                         'telemetryNote': 'Observed real Rust IPC batches; loopback is not authenticated Tailscale laptop telemetry',
                         'launchProcessToDomUpperBoundMs': round(launch_upper, 3),
                         'timings': [{'metric': m, 'method': method, **stats(values)} for (m, method), values in sorted(samples.items())]}

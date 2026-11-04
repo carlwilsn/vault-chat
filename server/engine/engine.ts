@@ -68,7 +68,7 @@ import { waitInputs } from "../../src/voiceWaitLine";
 import { lookupAll } from "./lookup";
 import { attachmentAt, attachmentsNote } from "../attachments";
 import { readEntries } from "../convlog/piSession";
-import { PiFeed, type Expected } from "./piFeed";
+import { PiFeed, type Expected, type UserRequest } from "./piFeed";
 import { READ_ONLY_TOOLS, type SideLog, type SideState } from "./pi/side";
 import { TurnRecorder, type TurnLine } from "./turnLog";
 import { SERVER_VERSION } from "../config";
@@ -1027,14 +1027,16 @@ export class Engine {
     if (body.source === "voice" && !body.continues && l?.started && !l.finished) {
       context = [context, "[This spoken turn interrupts the previous foreground step via Send now. It may have partially run; do not claim it finished. Background workers continue and report normally. Check unfinished work before resuming it.]"].filter(Boolean).join("\n");
     }
-    const sent = context ? `${context}\n\n${shown}` : shown;
+    const sent = shown;
     // Capture the trusted HTTP viewer scope at receipt, not when a queued ask
     // eventually runs. This is historical request metadata, never a mutable
     // "current viewer" and never another copy of the prompt. Pi stores it in
-    // its existing typed host context; the user-role envelope stays unchanged.
-    const hostContext = viewerRoot !== this.d.vault
+    // its existing typed host context, never Carl's user-role text.
+    const fileContext = viewerRoot !== this.d.vault
       ? `<file-context request=${JSON.stringify(clientId)} device=${JSON.stringify(origin ?? "unknown")} conversation=${JSON.stringify(id)}>Viewer/file-context vault root: ${viewerRoot}/. Conversation owner: ${this.d.vault}/. Resolve viewer-relative file references to absolute paths under that viewer root. Read and Bash relative paths still use the thread/project cwd; this binding does not change tool path resolution. This records the incoming request, not later viewer state.</file-context>`
       : undefined;
+    const hostContext = [context, fileContext].filter(Boolean).join("\n\n") || undefined;
+    const request: UserRequest = { v: 1, clientId, via: body.via ?? "chat", ...(origin ? { device: origin } : {}), ...(itemImages.length ? { images: itemImages.map(({ path }) => ({ path })) } : {}) };
     if (l && !l.finished) {
       // A running turn: steer it (pi delivers it after the current tool calls), or queue it as
       // pi's follow-up (delivered when the agent would otherwise stop). Either way it is pending
@@ -1057,8 +1059,8 @@ export class Engine {
         return this.sendNow(id, clientId);
       }
       try {
-        if (kind === "queue") await this.d.backend.followUp(l.threadId, { texts: [sent], context: hostContext, images: paths });
-        else await this.d.backend.steer(l.threadId, l.turnId, { texts: [sent], context: hostContext, images: paths });
+        if (kind === "queue") await this.d.backend.followUp(l.threadId, { texts: [sent], context: hostContext, request: { ...request, via: body.via ?? kind }, images: paths });
+        else await this.d.backend.steer(l.threadId, l.turnId, { texts: [sent], context: hostContext, request: { ...request, via: body.via ?? kind }, images: paths });
         return { ok: true, convId: id, ...(kind === "queue" ? { queued: true, qid: clientId } : { steered: true }) };
       } catch (e) {
         l.feed.forget(clientId);
@@ -1068,7 +1070,7 @@ export class Engine {
         return { ok: false, convId: id, error: `the running turn did not take it: ${(e as Error).message}` };
       }
     }
-    void this.run(id, shown, "user", { images: paths, context, hostContext, itemImages, clientId, origin, device: validDevice(device), ...(body.via ? { via: body.via } : {}) }).catch((e) => this.log(`turn failed: ${e}`));
+    void this.run(id, shown, "user", { images: paths, hostContext, itemImages, clientId, origin, device: validDevice(device), ...(body.via ? { via: body.via } : {}) }).catch((e) => this.log(`turn failed: ${e}`));
     return { ok: true, convId: id };
   }
 
@@ -1083,8 +1085,8 @@ export class Engine {
       try {
         await this.d.backend.clearQueue(l.threadId);
         for (const e of rest) {
-          if (e.kind === "queue") await this.d.backend.followUp(l.threadId, { texts: [e.text], context: e.hostContext, images: [] });
-          else await this.d.backend.steer(l.threadId, l.turnId, { texts: [e.text], context: e.hostContext, images: [] });
+          if (e.kind === "queue") await this.d.backend.followUp(l.threadId, { texts: [e.text], context: e.hostContext, request: e.clientId ? { v: 1, clientId: e.clientId, via: e.via, ...(e.device ? { device: e.device } : {}), ...(e.images?.length ? { images: e.images.map(({ path }) => ({ path })) } : {}) } : undefined, images: [] });
+          else await this.d.backend.steer(l.threadId, l.turnId, { texts: [e.text], context: e.hostContext, request: e.clientId ? { v: 1, clientId: e.clientId, via: e.via, ...(e.device ? { device: e.device } : {}), ...(e.images?.length ? { images: e.images.map(({ path }) => ({ path })) } : {}) } : undefined, images: [] });
         }
       } catch (err) {
         this.log(`take back on ${convId}: ${(err as Error).message}`);
@@ -1549,14 +1551,14 @@ export class Engine {
           if (kind === "user") {
             // Carl's message that raced the turn's start: a steer (pending until pi delivers it).
             const id = opts.clientId ?? newMessageId();
-            const sent = opts.context ? `${opts.context}\n\n${input}` : input;
+            const sent = input;
             this.setPending(convId, { id, kind: "steer", text: opts.shown ?? input, at: Date.now() });
-            existing.feed.expect({ kind: "steer", text: sent, clientId: id, shown: opts.shown ?? input, via: opts.via ?? "steer", images: opts.itemImages, ...(opts.device ?? validDevice(opts.origin) ? { device: opts.device ?? opts.origin } : {}) });
+            existing.feed.expect({ kind: "steer", text: sent, clientId: id, shown: opts.shown ?? input, via: opts.via ?? "steer", images: opts.itemImages, hostContext: [opts.context, opts.hostContext].filter(Boolean).join("\n\n"), ...(opts.device ?? validDevice(opts.origin) ? { device: opts.device ?? opts.origin } : {}) });
             existing.rec.q("steer", id);
             // pi delivers a steer after the running tool calls: a `subagent` call can wait minutes, so its children
             // move to the background and he is answered now (like Claude Code's background tasks).
             this.detachWaiting(convId, existing.threadId);
-            await b.steer(existing.threadId, existing.turnId, { texts: [sent], context: opts.hostContext, images: opts.images ?? [] }).catch(() => {
+            await b.steer(existing.threadId, existing.turnId, { texts: [sent], context: [opts.context, opts.hostContext].filter(Boolean).join("\n\n"), request: { v: 1, clientId: id, via: opts.via ?? "steer", ...(opts.origin ? { device: opts.origin } : {}), ...(opts.itemImages?.length ? { images: opts.itemImages.map(({ path }) => ({ path })) } : {}) }, images: opts.images ?? [] }).catch(() => {
               existing.feed.forget(id);
               this.setPending(convId, undefined, id);
             });
@@ -1625,7 +1627,7 @@ export class Engine {
         },
       });
       // Anything pi wrote that the feed missed (a crash between its write and the pointer) comes first.
-      feed.sync();
+      feed.sync(true);
       const live: Live = {
         convId,
         threadId,
@@ -1653,25 +1655,25 @@ export class Engine {
       registerRun(convId, live.controller);
       // History from before this thread (a legacy chat) goes with its first turn.
       let body = input;
+      const context: string[] = [opts.context, opts.hostContext].filter((s): s is string => !!s);
       const prior = this.handover.get(convId);
       if (prior) {
         this.handover.delete(convId);
-        body = `${prior}\n\n${input}`;
+        context.push(prior);
       }
       // What the thread already has (rules, memory, its project.md, the project list, its folder) is not sent
       // again: only a section that changed goes in front of the turn (the rules mechanism, for all of them).
       const rules = this.changedSections(threadId, conv);
-      if (opts.context) body = `${opts.context}\n\n${body}`;
       // Something Carl did that the agent must hear once (a project he deleted): in front of this turn, then gone.
       const tell = this.picture(convId)?.meta.tellAgent as string[] | undefined;
       if (tell?.length) {
-        body = `${tell.map((t) => `[${t}]`).join("\n")}\n\n${body}`;
+        context.push(tell.map((t) => `[${t}]`).join("\n"));
         this.emit(convId, { type: "meta", patch: { tellAgent: null } });
       }
       // A live voice call: its rules once per call, in front of its first turn (they stay in the session after).
       if (talker && !talker.sent) {
         talker.sent = true;
-        body = `${talker.rules}\n\n${body}`;
+        context.push(talker.rules);
       }
       // What Carl did elsewhere is not in the prompt: pi's extension adds it (the "you" layer, a vc-you custom message).
       // Host instructions/memory are pi custom context, never a forged user message.
@@ -1690,10 +1692,10 @@ export class Engine {
           this.setPending(convId, { id: e.clientId!, kind: e.kind === "queue" ? "queue" : "steer", text: e.shown, at: Date.now() });
           live.feed.expect(e);
           rec.q(e.kind === "queue" ? "queue" : "steer", e.clientId!);
-          const queued = { texts: [e.text], context: e.hostContext, images: (e.images ?? []).map(im => join(this.d.vault, im.path)) };
+          const queued = { texts: [e.text], context: e.hostContext, request: e.clientId ? { v: 1, clientId: e.clientId, via: e.via, ...(e.device ? { device: e.device } : {}), ...(e.images?.length ? { images: e.images.map(({ path }) => ({ path })) } : {}) } : undefined, images: (e.images ?? []).map(im => join(this.d.vault, im.path)) };
           await this.d.backend.followUp(threadId, queued);
         }
-        await this.d.backend.startTurn(threadId, { texts, context: [rules, opts.hostContext].filter(Boolean).join("\n\n"), images: opts.images ?? [], model, turnId, ...(talker?.thinking ? { thinking: talker.thinking } : {}) });
+        await this.d.backend.startTurn(threadId, { texts, context: [rules, ...context].filter(Boolean).join("\n\n"), ...(kind === "user" ? { request: { v: 1 as const, clientId, via: shownInput.via, ...(opts.device ?? validDevice(opts.origin) ? { device: opts.device ?? opts.origin } : {}), ...(opts.itemImages?.length ? { images: opts.itemImages.map(({ path }) => ({ path })) } : {}) } } : {}), images: opts.images ?? [], model, turnId, ...(talker?.thinking ? { thinking: talker.thinking } : {}) });
         live.started = true;
         // Stop may arrive before the prompt itself reached pi (model/context
         // setup). Honor it at native acceptance too, without a fresh prompt.

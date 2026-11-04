@@ -19,7 +19,7 @@
 //  - the host advertises its single subagent orchestration tool for parents.
 import { closeSync, readFileSync } from "node:fs";
 import { registerPdfParts } from "./pdf.mjs";
-import { CLEAR_TYPE, VOICE_TYPE, YOU_TYPE, addCacheMarkers, memoryCapNote, costFromStreamEvent, voiceLineContent, youSince } from "./policy.mjs";
+import { nativeUserRequest, CLEAR_TYPE, VOICE_TYPE, YOU_TYPE, addCacheMarkers, memoryCapNote, costFromStreamEvent, voiceLineContent, youSince } from "./policy.mjs";
 
 const E = process.env;
 
@@ -155,6 +155,12 @@ export default function vaultChat(pi) {
       return { message: { customType: YOU_TYPE, content: r.text, display: false, details: { until: Number(r.until), since } } };
     });
   }
+
+  // Public pi 1.1 message_end replacements run before native appendMessage.
+  // Unwrap only this host's transport container, exactly once. Identity and
+  // original content are persisted in the SAME user entry, so no crash window
+  // or parallel text-matching queue can separate them.
+  pi.on("message_end", (event) => nativeUserRequest(event.message, bootstrap.requestTag));
 
   // ---- vault-chat's own lines in the transcript (a notice, a line, a divider) ---------
   // pi's custom entries (not in the model's context), appended by pi itself so the
