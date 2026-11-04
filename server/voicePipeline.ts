@@ -1,8 +1,8 @@
 // The New voice's pipeline (voice-pipeline/bot.py) as a child of this server, so the box needs nothing installed by
 // hand: the server writes the pipeline's files from its own bundle into <state>/voice/, makes the Python environment
 // once with uv from the pinned requirements (again only when they change), and keeps the pipeline running on
-// loopback while the box's voice engine is "new" (server/voiceBrain.ts). It stops with the server and when the
-// engine goes back to Classic. Its log: <state>/logs/voice-pipeline.log.
+// loopback for the single voice brain (server/voiceBrain.ts). It stops with the server; VC_VOICE_PIPELINE=off
+// disables startup without selecting another transport. Its log: <state>/logs/voice-pipeline.log.
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";

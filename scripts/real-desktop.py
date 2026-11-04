@@ -538,6 +538,10 @@ def main():
                     voice_controls = js('''return {oneComposerVoiceButton:document.querySelectorAll('button[title="Voice (Ctrl+D)"]').length===1,
                         microphoneOff:!document.querySelector('[data-el=voice-waves-mute]')};''')
                 if a.voice_conflict or a.check_voice_only:
+                    # Settings lives in the ordinary app toolbar, not FullscreenChat.
+                    if exists('[data-perf-view="fullscreen"]'):
+                        key('ctrl+shift+f')
+                        wait_for(lambda: not exists('[data-perf-view="fullscreen"]'), 'ordinary toolbar for mic-OFF Health')
                     click('button[title="Settings"]')
                     # The health control lives in ordinary Voice settings, reachable without opening the mic.
                     wait_for(lambda: js('return !!document.querySelector("[data-el=voice-health-open]");'), 'voice settings status')
