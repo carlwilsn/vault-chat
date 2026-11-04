@@ -86,6 +86,12 @@ describe('compiled Notes APIs and native tools across viewers and owner threads'
   const r=await fetch(srv.base+'/api/v1/vault/file?'+new URLSearchParams({vault:'fixture-b',path:join(n.origin_vault!,'same.md')}));
   expect(r.status).toBe(200);expect(Buffer.from((await r.json()).base64,'base64').toString()).toBe('ORIGINAL SOURCE');
  });
+ it('startup and repeated global reads never backfill titles or compact original notes',async()=>{
+  const p=join(b,'.vault-chat/notes.jsonl'), before=readFileSync(p,'utf8');
+  await new Promise(r=>setTimeout(r,8500));
+  await list('fixture-a');await list('fixture-b');
+  expect(readFileSync(p,'utf8')).toBe(before);
+ });
  it('Create/Update/Resolve/Reopen/Delete from alternate scopes mutate the same original id once',async()=>{
   const created=await tool('fixture-b','main','CreateNote',{text:'Created globally'});
   const id=/Saved note (\S+) /.exec(created)![1];
