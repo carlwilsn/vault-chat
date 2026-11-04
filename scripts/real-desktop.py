@@ -244,7 +244,6 @@ def main():
               log.checkpointNow(id);log.close();"""
             build(['node', '--import', 'tsx', '--input-type=module', '-e', prepare_video,
                    str(vault), a.conversation, str(work / 'original-video-prefix.json')], 'private-video-append')
-        server_port = port()
         state = work / 'server-state'
         # Even OFF has an owned inert 503 voice endpoint; never falls back to 8857.
         class Inert(http.server.BaseHTTPRequestHandler):
@@ -255,6 +254,8 @@ def main():
                 pass
         voice = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Inert)
         servers.append(voice)
+        # Select the server port while the inert voice socket is already reserved.
+        server_port = port()
         threading.Thread(target=voice.serve_forever, daemon=True).start()
         server_env = dict(env, VC_HOST='127.0.0.1', VC_PORT=str(server_port), VC_VAULT=str(vault),
                           VC_VAULT_NAME='vault-chat', VC_STATE_DIR=str(state), VC_SYNC='0', VC_ENGINE='0',
@@ -391,7 +392,7 @@ def main():
                     with lock:
                         photo_intents.append(json.loads(data))
                 speech_send = (a.check_speech_freshness and path == '/api/v2/intent' and self.command == 'POST'
-                    and (intent := json.loads(data)).get('type') == 'send' and intent.get('convId') == 'main'
+                    and (intent := json.loads(data)).get('type') == 'send' and intent.get('convId') == a.conversation
                     and str(intent.get('text', '')).startswith('Owned speech freshness '))
                 # No models, side threads, sends, voice, git, or copied history writes (except owned fixture sends).
                 if path.startswith('/git/') or self.command != 'GET' and path != '/api/v1/laptop-perf' and not speech_send:
@@ -611,8 +612,7 @@ def main():
                       }));
                     },true);''', note_selector)
                 type_and_assert(note_selector)
-                time.sleep(.2)
-                note_samples = js('return window.__desktopNoteSamples;')
+                note_samples = wait_for(lambda: js('return window.__desktopNoteSamples;'), 'trusted native NOTE rendering sample', seconds=10)
                 result['nativeNoteInput'] = js('const e=document.querySelector(arguments[0]);return {events:window.__desktopNoteEvents,samples:window.__desktopNoteSamples.length,focused:document.activeElement===e,characters:e?.value.length};', note_selector)
                 result['nativeInteractionFailures'] = list(interaction_failures)
                 key('Escape')  # never saves/submits a model turn
@@ -839,17 +839,14 @@ def main():
                       'audioOutput':'private clocked Pulse null sink only; RMS from its virtual monitor in memory; no speakers/mic/recording',
                       'input':'native UA Play/timeline clicks and media context-menu Pause/Resume via XTest; no play/pause/currentTime injection'}
                 if a.check_speech_freshness:
-                    # Original project data stays untouched. Main receives ONLY owned appended fixture events.
+                    # The existing selected project receives ONLY owned appended fixture events.
+                    # Its original human-history prefix remains immutable; do not invent/register a project.
                     if a.conversation == 'main':
                         raise RuntimeError('Use the approved original project as the immutable control')
-                    main_path = '/api/v2/conversations/main/checkpoint'
-                    before_main = request(base + main_path)
+                    owner_path = checkpoint_path
+                    before_main = request(base + owner_path)
                     before_main = before_main.get('picture', before_main).get('items', [])
-                    if not exists('[data-el="thread-main"] button'):
-                        click('[data-el="chats-toggle"]')
-                    click('[data-el="thread-main"] button')
-                    wait_for(lambda: js('return localStorage.getItem("vault_chat_active_conv")==="main";'), 'native Main selection')
-                    call = request(base + '/api/v1/brain/call', {'convId': 'main', 'device': 'laptop'})
+                    call = request(base + '/api/v1/brain/call', {'convId': a.conversation, 'device': 'laptop'})
                     health = request(base + '/api/v1/health')
                     if health.get('engine', {}).get('version') != '1.1.0':
                         raise RuntimeError('Freshness fixture is not genuine Pi 1.1')
@@ -871,19 +868,18 @@ def main():
                     owned_send('first request')
                     wait_for(lambda: (collector / 'held').exists(), 'real New dispatch held by quiet gate')
                     def main_items():
-                        c = request(base + main_path)
+                        c = request(base + owner_path)
                         return c.get('picture', c).get('items', [])
                     wait_for(lambda: 'Owned speech freshness result 1.' in json.dumps(main_items()), 'first native response in normal human history')
                     owned_send('second request')
                     wait_for(lambda: 'Owned speech freshness result 2.' in json.dumps(main_items()), 'fresh native response in normal human history')
-                    # Merely viewing another conversation cannot follow/cancel the active Main owner.
-                    project_selector = '[data-el="thread-project"][data-thread="' + a.conversation + '"] button'
-                    if not exists(project_selector):
+                    # Merely viewing Main cannot follow/cancel the existing project call owner.
+                    if not exists('[data-el="thread-main"] button'):
                         click('[data-el="chats-toggle"]')
-                    click(project_selector)
-                    wait_for(lambda: js('return localStorage.getItem("vault_chat_active_conv")===arguments[0];', a.conversation), 'original viewer selection')
+                    click('[data-el="thread-main"] button')
+                    wait_for(lambda: js('return localStorage.getItem("vault_chat_active_conv")==="main";'), 'native Main viewer selection')
                     live = request(base + '/api/v1/brain/calls')['calls']
-                    if len(live) != 1 or live[0]['convId'] != 'main':
+                    if len(live) != 1 or live[0]['convId'] != a.conversation:
                         raise RuntimeError('Viewer selection changed the speech owner')
                     (collector / 'release').touch()
                     def dispatched():
@@ -898,12 +894,12 @@ def main():
                         raise RuntimeError('Stale or duplicate text crossed actual New speech dispatch')
                     after_main = main_items()
                     if after_main[:len(before_main)] != before_main:
-                        raise RuntimeError('Owned speech fixture changed historical Main items')
+                        raise RuntimeError('Owned speech fixture changed historical owner items')
                     if js('return !!document.querySelector("[data-el=voice-waves-mute]");'):
                         raise RuntimeError('Fixture opened device microphone')
                     result['speechFreshness'] = {'genuinePi': '1.1.0', 'nativeTypedControls': True,
                         'dispatch': dispatched(), 'staleAbsent': True, 'freshExactlyOnce': True,
-                        'viewerDoesNotFollowOwner': True, 'microphoneOff': True, 'originalMainPrefixUnchanged': True,
+                        'viewerDoesNotFollowOwner': True, 'microphoneOff': True, 'originalOwnerPrefixUnchanged': True,
                         'boundary': 'actual bot.py TTSSpeakFrame dispatch; inert collector only, no STT/TTS/audio'}
                 image_check = None
                 if a.check_images:
@@ -1140,7 +1136,7 @@ def main():
             again = request(base + checkpoint_path)
             again = again.get('picture', again)
             # Genuine engine startup may append a lost-worker notice to this disposable copy.
-            # No original item may change/disappear; owned Main sends append independently.
+            # No original item may change/disappear; owned sends only append to the selected project.
             if a.check_speech_freshness:
                 preserved = again.get('items', [])[:len(items)] == items
                 result['thread']['originalItemsPrefixUnchanged'] = preserved
