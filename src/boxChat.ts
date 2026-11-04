@@ -25,6 +25,7 @@
 // and `box.feed` for the poll itself (connect, drop, reset, resync, cursor).
 import { LAPTOP_IDLE_MS, startAttentionBeat, type AttentionBeat } from "./attentionBeat";
 import { invoke } from "@tauri-apps/api/core";
+import { voiceImageMime } from "./voiceImages";
 import { vlog } from "./debugLog";
 import { projectForSend } from "./projects";
 import { useStore, type ChatAttachment, type ChatMessage, type FileUpload, type LiveTool, type TodoItem } from "./store";
@@ -102,9 +103,11 @@ async function httpGet(link: Link, path: string, timeoutMs = 20_000): Promise<an
   return JSON.parse(r.body || "{}");
 }
 
-/** A vault file's current bytes on the box (GET /api/v1/vault/file), or null. */
-export async function fetchBoxFile(link: Link, rel: string): Promise<Uint8Array | null> {
-  const r = await httpGet(link, `/api/v1/vault/file?path=${encodeURIComponent(rel)}`, 10_000);
+/** Current bytes via the authenticated file route. Chat callers name their conversation;
+ * the backend resolves its existing log owner independently of the viewed vault. */
+export async function fetchBoxFile(link: Link, rel: string, convId?: string): Promise<Uint8Array | null> {
+  const chat = convId ? `&convId=${encodeURIComponent(convId)}` : "";
+  const r = await httpGet(link, `/api/v1/vault/file?path=${encodeURIComponent(rel)}${chat}`, 10_000);
   if (typeof r?.base64 !== "string") return null;
   const bin = atob(r.base64);
   const out = new Uint8Array(bin.length);
@@ -865,6 +868,26 @@ export function boxImages(atts: ChatAttachment[] | undefined): { name?: string; 
   return out.slice(0, 8);
 }
 
+/** A pending capture may have only its local disk pointer (e.g. after a
+ * popout handoff). Upload its actual bytes, not a client filename for pi. */
+export async function boxImageAttachments(atts: ChatAttachment[] | undefined, vault: string): Promise<ReturnType<typeof boxImages>> {
+  const ready: ChatAttachment[] = [];
+  for (const a of (atts ?? []).slice(0, 8)) {
+    if (a.imageDataUrl) { ready.push(a); continue; }
+    if (!a.capturedFilePath) throw new Error("The attached image has no pixels or saved capture.");
+    const p = a.capturedFilePath;
+    const path = /^([a-zA-Z]:[\\/]|[\\/])/.test(p) ? p : `${vault.replace(/[\\/]$/, "")}/${p}`;
+    const mime = voiceImageMime(path);
+    if (!mime) throw new Error("The saved capture is not a supported image.");
+    const bytes = await invoke<number[]>("read_binary_file", { path });
+    if (!bytes.length || bytes.length > 15 * 1024 * 1024) throw new Error("The saved capture is empty or too large.");
+    let binary = "";
+    for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.slice(i, i + 0x8000));
+    ready.push({ ...a, imageDataUrl: `data:${mime};base64,${btoa(binary)}` });
+  }
+  return boxImages(ready);
+}
+
 /** One intent to the box (POST /api/v2/intent), in the app log under the ids the box logs it with. */
 async function intent(sess: BoxChatSession, body: Record<string, unknown>, link: Link = sess.link) {
   const t0 = Date.now();
@@ -913,7 +936,14 @@ export async function boxSend(opts: { text: string; contextPreamble?: string; at
   const trimmed = opts.text.trim();
   // No conversation named: Main, the default everywhere.
   const convId = opts.convId ?? s.activeConversationId ?? MAIN_ID;
-  const images = boxImages(opts.attachments);
+  let images: ReturnType<typeof boxImages>;
+  try { images = await boxImageAttachments(opts.attachments, vault); }
+  catch (e) {
+    const id = newClientId();
+    sess.addOutgoing(convId, { id, text: trimmed || "(image)", attachments: opts.attachments });
+    sess.failOutgoing(convId, id, `⚠️ The image was NOT sent: ${String((e as Error).message ?? e)}`);
+    return true;
+  }
   const uploads = opts.uploads ?? [];
   const selected = await selectedLink;
   const requestLink = selected?.url === sess.link.url ? selected : { ...sess.link, vault: null };
@@ -937,6 +967,13 @@ export async function boxSend(opts: { text: string; contextPreamble?: string; at
   // Attached files go up first (never a path on this laptop in the prompt: the box cannot open it).
   const files: string[] = [];
   for (const u of uploads) {
+    // Imported image files (including a pasted path) use pi's image input,
+    // not only a text attachment note. PDFs/markdown keep the file path flow.
+    const mime = voiceImageMime(u.name);
+    if (mime && images.length < 8) {
+      images.push({ name: u.name, mime, dataBase64: u.dataBase64 });
+      continue;
+    }
     const up = await boxUploadFile(u.name, fromBase64(u.dataBase64), requestLink);
     if (!up.ok) {
       sess.failOutgoing(convId, clientId, `⚠️ ${u.name} did not reach the box: ${up.error} The message was NOT sent.`);

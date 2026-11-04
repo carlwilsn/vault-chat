@@ -1,6 +1,7 @@
 import { useShallow } from "zustand/react/shallow";
 import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef } from "react";
 import { Markdown, StreamingMarkdown } from "./Markdown";
+import { clipboardImageDataUrls, readChatImage } from "./chatImage";
 import { localPathFromUrl } from "./mdPipeline";
 import { planDone, planCards, currentPlan, type PlanCard } from "./planPlace";
 import { Plus, Square, ArrowUp, ChevronDown, ChevronUp, Wrench, X, MessageSquare, Mic, Paperclip, Scan, AtSign, AlertCircle, Info, Eraser, Loader2, FileText } from "lucide-react";
@@ -68,14 +69,18 @@ const ChatImage = memo(function ChatImage({
 }: ComponentPropsWithoutRef<"img">) {
   const vaultPath = useStore((s) => s.vaultPath);
   const files = useStore((s) => s.files);
-  const [url, setUrl] = useState<string | null>(null);
+  const convId = useStore((s) => s.activeConversationId);
+  const mediaKey = JSON.stringify([src, vaultPath, convId]);
+  const [media, setMedia] = useState<{ key: string; url: string } | null>(null);
+  const url = media?.key === mediaKey ? media.url : null;
   const [failedPath, setFailedPath] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!src) return;
+    setMedia(null);
     setFailedPath(null);
+    if (!src) return;
     if (/^(https?:|data:|blob:)/i.test(src)) {
-      setUrl(src);
+      setMedia({ key: mediaKey, url: src });
       return;
     }
     const cleaned = localPathFromUrl(src);
@@ -85,26 +90,6 @@ const ChatImage = memo(function ChatImage({
     const primary = isAbs
       ? cleaned
       : `${vaultPath}${sep}${cleaned.replace(/^\.\/+/, "")}`;
-
-    // Fallback candidates for relative paths whose direct resolution
-    // misses. The common shape: the agent ran a script in a subdir of
-    // the vault, then emitted `![alt](output.png)` — relative to its
-    // cwd, not the vault root. Search the vault file index by basename
-    // and try those locations too. Cheap (single linear scan of an
-    // already-cached list) and bounded (we take at most a few hits).
-    const candidates: string[] = [primary];
-    if (!isAbs) {
-      const basename = cleaned.replace(/^\.\/+/, "").split(/[\\/]/).pop() ?? "";
-      if (basename) {
-        const hits = files
-          .filter((f) => !f.is_dir && f.name === basename)
-          .slice(0, 5)
-          .map((f) => f.path);
-        for (const h of hits) {
-          if (!candidates.includes(h)) candidates.push(h);
-        }
-      }
-    }
 
     let cancelled = false;
     let objectUrl: string | null = null;
@@ -129,33 +114,22 @@ const ChatImage = memo(function ChatImage({
                       : `image/${ext || "png"}`);
       const blob = new Blob([new Uint8Array(bytes)], { type: mime });
       objectUrl = URL.createObjectURL(blob);
-      setUrl(objectUrl);
+      setMedia({ key: mediaKey, url: objectUrl });
     };
     (async () => {
-      for (const path of candidates) {
-        try {
-          const bytes = await invoke<number[]>("read_binary_file", { path });
-          if (cancelled) return;
-          show(path, bytes);
-          return;
-        } catch {
-          // try next candidate
-        }
-      }
-      // A picture the agent just made on the box (box mode): the vault sync may not have brought it yet — show
-      // the box's copy (GET /api/v1/vault/file, the same route Show uses), and the sync catches up behind it.
-      if (!/^[a-zA-Z]:[\/\\]/.test(cleaned)) {
-        try {
+      const image = await readChatImage(cleaned, vaultPath, files, {
+        local: (path) => invoke<number[]>("read_binary_file", { path }),
+        box: async () => {
           const link = await boxLinkFor(vaultPath);
-          const bytes = link ? await fetchBoxFile(link, cleaned.replace(/^\.\/+/, "")) : null;
-          if (cancelled) return;
-          if (bytes) {
-            show(cleaned, bytes);
-            return;
-          }
-        } catch {
-          // not on the box either
-        }
+          // No local or viewer-root fallback once this is a box conversation.
+          // The existing backend log is the authority for convId's asset root.
+          return link ? (path) => convId ? fetchBoxFile(link, path, convId) : Promise.resolve(null) : null;
+        },
+      });
+      if (cancelled) return;
+      if (image) {
+        show(image.path, image.bytes);
+        return;
       }
       if (!cancelled) {
         console.warn("[chat] image load failed:", primary);
@@ -166,7 +140,7 @@ const ChatImage = memo(function ChatImage({
       cancelled = true;
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
-  }, [src, vaultPath, files]);
+  }, [src, vaultPath, files, convId, mediaKey]);
 
   if (!url) {
     // Honest fallback: make it obvious this is a failed image load, not
@@ -803,8 +777,18 @@ export function ChatPane() {
       if (item.type.startsWith("image/")) blobs.push(file);
       else others.push(file);
     }
-    if (blobs.length === 0 && others.length === 0) return;
+    // Some native webviews expose copied browser images as HTML, not Files.
+    // Parse only to extract inline pixels; no clipboard markup/URLs are rendered.
+    const html = blobs.length || others.length ? "" : e.clipboardData.getData("text/html");
+    // A detached template stays inert (including remote img/iframe resources).
+    const clipboard = document.createElement("template");
+    if (html.length <= 20 * 1024 * 1024) clipboard.innerHTML = html;
+    const inline = clipboardImageDataUrls(Array.from(
+      clipboard.content.querySelectorAll("img"), img => img.getAttribute("src") ?? "",
+    ));
+    if (blobs.length === 0 && others.length === 0 && inline.length === 0) return;
     e.preventDefault();
+    if (inline.length) setPendingImages((prev) => [...prev, ...inline.map(imageDataUrl => ({ imageDataUrl }))]);
     // A file copied in Explorer and pasted here: attached like a dropped one.
     if (others.length) void Promise.all(others.map((f) => attachBlob(f.name, f))).then(addAttached);
     Promise.all(
@@ -1694,14 +1678,16 @@ export const MessageBubble = memo(function MessageBubble({
       {isUser ? (
         <>
         <div className={cn("max-w-[85%] rounded-2xl rounded-br-md bg-primary/90 text-primary-foreground px-3.5 py-2 text-[13px] leading-relaxed break-words overflow-hidden prose-user", message.waiting && "opacity-60")}>
+          {/* Persisted feed entries may carry only a capture path, not inline pixels.
+              Use the same scoped local/box loader as markdown images. */}
           {message.attachments && message.attachments.length > 0 && (
             <div className="flex flex-wrap gap-2 mb-1.5">
               {message.attachments.map((a, i) => {
                 const name = a.sourcePath?.split("/").pop();
                 return (
                   <div key={i} className="flex flex-col items-start gap-0.5">
-                    <img
-                      src={a.imageDataUrl}
+                    <ChatImage
+                      src={a.imageDataUrl || a.capturedFilePath}
                       alt={`captured ${i + 1}`}
                       className="max-h-[160px] rounded"
                     />
@@ -1743,7 +1729,7 @@ export const MessageBubble = memo(function MessageBubble({
           {message.attachments && message.attachments.length > 0 && (
             <div className="flex flex-wrap gap-2" data-el="shown-images">
               {message.attachments.map((a, i) => (
-                <img key={i} src={a.imageDataUrl} alt={a.sourcePath?.split("/").pop() ?? `image ${i + 1}`} className="max-h-[260px] max-w-full rounded-lg border border-border/60" />
+                <ChatImage key={i} src={a.imageDataUrl || a.capturedFilePath} alt={a.sourcePath?.split("/").pop() ?? `image ${i + 1}`} className="max-h-[260px] max-w-full rounded-lg border border-border/60" />
               ))}
             </div>
           )}

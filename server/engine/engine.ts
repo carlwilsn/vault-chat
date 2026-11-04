@@ -10,6 +10,7 @@ import { globalCutover } from '../convlog/globalCutover';
 // (`vc-note`), written by pi while it has the session. Every client folds the
 // feed with one reducer. vault-chat's tools reach pi through its extension as
 // host calls.
+import { voicePath } from "../voice";
 import { conversationRoot } from "../context/config";
 import { ownerVault } from "../convlog/log";
 import { appendFileSync, existsSync, readFileSync, statSync, mkdirSync, writeFileSync } from "node:fs";
@@ -1140,10 +1141,18 @@ export class Engine {
       itemImages.push({ path: rel, ...(buf.length < 400_000 ? { dataUrl: `data:${mime};base64,${b64}` } : {}) });
     });
     for (const p of (body.imagePaths ?? []).slice(0, 8)) {
-      const rel = String(p).replace(/^[\/]+/, "");
-      if (!rel || rel.includes("..")) continue;
-      paths.push(join(this.d.vault, rel));
-      itemImages.push({ path: rel });
+      // imagePaths are owner-vault relative, not arbitrary host/client paths.
+      const rel = String(p).replace(/\\/g, "/").replace(/^\.\//, "");
+      if (!rel || /^(?:[a-zA-Z]:|\/)/.test(rel) || rel.split("/").includes("..") ||
+          (rel.split("/").includes(".vault-chat") && !/^\.vault-chat\/(captures|attachments)\//.test(rel))) { empty++; continue; }
+      try {
+        const { abs } = voicePath(this.d.vault, rel, "read");
+        const st = statSync(abs);
+        if (!st.isFile() || !st.size || st.size > 15 * 1024 * 1024 || !/\.(png|jpe?g|gif|webp)$/i.test(rel)) { empty++; continue; }
+        paths.push(abs);
+        itemImages.push({ path: rel });
+      } catch { empty++; }
+
     }
     return { paths, itemImages, empty };
   }

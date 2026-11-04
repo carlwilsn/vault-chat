@@ -353,9 +353,26 @@ describe.skipIf(!PI_DIR)("pi engine (real pi 1.1.0, fake chat-completions OpenRo
     const r = await post("/message", { text: "IMG1 what is this", images: [{ name: "dot.png", mime: "image/png", dataBase64: PNG }] });
     const c = await assistantSays(r.convId, /hello from pi|IMG1/);
     const body = or.calls.find((b) => lastUser(b).includes("IMG1"));
-    expect(JSON.stringify(body.messages)).toContain("image_url");
+    const image = body.messages.flatMap((m: any) => Array.isArray(m.content) ? m.content : []).find((b: any) => b.type === "image_url");
+    expect(image.image_url.url).toBe(`data:image/png;base64,${PNG}`);
     const u = c.messages.find((m: any) => m.role === "user");
     expect(u.attachments?.[0]?.capturedFilePath).toMatch(/^\.vault-chat\/captures\//);
+  });
+
+  it("pointer-only captures and phone intents reach the genuine pi provider payload unchanged", async () => {
+    const rel = ".vault-chat/captures/pointer.png";
+    mkdirSync(join(vault, ".vault-chat/captures"), { recursive: true });
+    writeFileSync(join(vault, rel), Buffer.from(PNG, "base64"));
+    const r = await post("/api/v2/intent", { type: "send", text: "IMG1 pointer", imagePaths: [rel], client: "phone" });
+    expect(r.ok).toBe(true);
+    await sawCall("IMG1 pointer");
+    const body = or.calls.find(b => lastUser(b).includes("IMG1 pointer"));
+    const image = body.messages.flatMap((m: any) => Array.isArray(m.content) ? m.content : []).find((b: any) => b.type === "image_url");
+    expect(image.image_url.url).toBe(`data:image/png;base64,${PNG}`);
+    const q = new URLSearchParams({ path: rel, convId: r.convId });
+    const asset = await fetch(srv.base + "/file?" + q);
+    expect(asset.headers.get("content-type")).toBe("image/png");
+    expect(Buffer.from(await asset.arrayBuffer()).toString("base64")).toBe(PNG);
   });
 
   it.skipIf(!linux)("the keys are in the command's env by name; the key store, the passphrase and systemd stay out of reach", async () => {

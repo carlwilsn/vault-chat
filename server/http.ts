@@ -543,7 +543,21 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
   // the box now — the laptop shows it in the open pane before the sync lands.
   // A file in a project's folder (an absolute path on the box) is the vault's that owns the project, whatever vault is open.
   const folderVault = (p: unknown) => (typeof p === "string" && p.startsWith("/") ? ((hooks.vaultList?.() ?? [scope]).find((v) => inProjectFolder(v.path, p))?.path ?? vault) : vault);
-  if (path === "/api/v1/vault/file" && method === "GET") return vaultFileRoute(res, folderVault(url.searchParams.get("path")), url.searchParams.get("path"));
+  if ((path === "/api/v1/vault/file" || path === "/file") && method === "GET" && (path !== "/file" || url.searchParams.has("convId"))) {
+    const convId = url.searchParams.get("convId");
+    if (convId !== null) {
+      // Same provenance as conversation reads/intents: the actual log owner,
+      // never a project slug, viewer root, local basename hit or caller-supplied owner.
+      // Unlike new conversation intents, an unknown media origin must fail closed.
+      const all = hooks.vaultList?.() ?? [scope];
+      const at = convId ? ownerVault(convId, (all.find(v => v.main) ?? scope).path) : null;
+      const owner = at ? all.find(v => v.path === at) : null;
+      if (!owner) return json(res, 404, { error: "conversation not found" });
+      if (path === "/file") return serveVaultFile(req, res, owner.path, url);
+      return vaultFileRoute(res, owner.path, url.searchParams.get("path"));
+    }
+    return vaultFileRoute(res, folderVault(url.searchParams.get("path")), url.searchParams.get("path"));
+  }
   // A project's folder on the box (server/projectFolders.ts): the app's file tree lists it, opens its files
   // through the route above and writes Carl's edits back here. Only inside a folder he chose for a project.
   if (path === "/api/v1/vault/file" && method === "POST") {

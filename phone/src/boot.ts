@@ -91,7 +91,7 @@ export function boot(): void {
     clearTimeout(softReloadT);
     softReloadT = setTimeout(() => softReload(fn), wait + 60);
   }
-  const fileUrl = (p) => inVault("/file?path=" + encodeURIComponent(p) + "&token=" + encodeURIComponent(TOKEN));
+  const fileUrl = (p, origin?: string) => inVault("/file?path=" + encodeURIComponent(p) + "&token=" + encodeURIComponent(TOKEN) + (origin ? "&convId=" + encodeURIComponent(origin) : ""));
   // Pull a worker thread into the recent/Chats list so you can find it again
   // ("view history"). ONLY the thread-open entry points call this — opening a
   // thread from the recent list, and the 3s sheet polls, deliberately do NOT —
@@ -870,7 +870,7 @@ export function boot(): void {
       costUsd: m.costUsd,
       divider: m.compaction ? m.compaction.summary : m.rollover ? m.rollover.recap : undefined,
       spawns: (m.toolCalls || []).flatMap((t) => t.subagents || []),
-      images: (m.attachments || []).map((a) => a.imageDataUrl || (a.capturedFilePath ? fileUrl(a.capturedFilePath) : "")).filter(Boolean),
+      images: (m.attachments || []).map((a) => a.imageDataUrl || (a.capturedFilePath ? fileUrl(a.capturedFilePath, convId) : "")).filter(Boolean),
       queued: !!m.failed && !m.system,
       failLine: !!m.system && m.failed === true,
       retry: !!m.retry,

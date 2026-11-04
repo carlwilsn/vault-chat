@@ -87,6 +87,7 @@ def main():
     p.add_argument('--out', type=Path, required=True, help='Plain result JSON outside the vault')
     p.add_argument('--work', type=Path, help='New private work directory; retained for ordinary build logs')
     p.add_argument('--nixpkgs', help='Optional local nixpkgs source for dependency provisioning')
+    p.add_argument('--check-images', action='store_true', help='Paste owned PNG through the native clipboard; inspect outgoing bytes without inference')
     p.add_argument('--inside-nix', action='store_true', help=argparse.SUPPRESS)
     a = p.parse_args()
     os.umask(0o077)
@@ -97,6 +98,8 @@ def main():
     if a.min_messages < 1:
         p.error('--min-messages must be positive')
     tools = ['Xvfb', 'xdotool', 'openbox', 'dbus-daemon', 'WebKitWebDriver', 'node', 'npm', 'flock']
+    if a.check_images:
+        tools.append('xclip')
     if not a.app:
         tools += ['cargo', 'rustc', 'pkg-config', 'cc']
     import ctypes
@@ -109,7 +112,7 @@ def main():
         if a.inside_nix or not shutil.which('nix-shell'):
             p.error('Missing native dependencies: ' + ', '.join(t for t in tools if not shutil.which(t)) + ('' if indicator_ready else ' libayatana-appindicator3'))
         pkgs = a.nixpkgs or subprocess.check_output(['nix', 'eval', '--raw', 'nixpkgs#path'], text=True).strip()
-        expr = 'with import <nixpkgs> {}; mkShell { packages = [ nodejs_22 rustc cargo pkg-config gcc gtk3 webkitgtk_4_1 libsoup_3 alsa-lib openssl librsvg libayatana-appindicator xorg-server xdotool openbox dbus python3 util-linux ]; LD_LIBRARY_PATH = lib.makeLibraryPath [ libayatana-appindicator ]; }'
+        expr = 'with import <nixpkgs> {}; mkShell { packages = [ nodejs_22 rustc cargo pkg-config gcc gtk3 webkitgtk_4_1 libsoup_3 alsa-lib openssl librsvg libayatana-appindicator xorg-server xdotool xclip openbox dbus python3 util-linux ]; LD_LIBRARY_PATH = lib.makeLibraryPath [ libayatana-appindicator ]; }'
         # exec, not an unattended job: one command owns its children to completion.
         import shlex
         os.execvp('nix-shell', ['nix-shell', '-I', 'nixpkgs=' + pkgs, '-E', expr, '--run',
@@ -259,6 +262,7 @@ def main():
             raise RuntimeError('Wrong/short original thread: expected minimum message count not met')
         result['thread'] = {'messages': count, 'items': len(items), 'exactOriginalSelected': False}
         observed = []
+        photo_intents = []
         opened = []
         lock = threading.Lock()
 
@@ -270,6 +274,9 @@ def main():
             def forward(self):
                 path = urllib.parse.urlsplit(self.path).path
                 data = self.rfile.read(int(self.headers.get('Content-Length', '0')))
+                if a.check_images and path == '/api/v2/intent' and self.command == 'POST':
+                    with lock:
+                        photo_intents.append(json.loads(data))
                 # No models, side threads, sends, voice, git, or copied history writes.
                 if path.startswith('/git/') or self.command != 'GET' and path != '/api/v1/laptop-perf':
                     if a.check_plans and path == '/api/v2/intent':
@@ -496,6 +503,10 @@ def main():
                     time.sleep(1)
                     session()
                     wait_for(lambda: js("return !document.getElementById('vault-splash') && !!document.querySelector('[data-perf-target=\"composer\"]');"), 'native reopened after local Clear')
+                    windows = subprocess.check_output(['xdotool', 'search', '--onlyvisible', '--name', '^vault-chat$'], env=childenv, text=True).split()
+                    if len(windows) != 1:
+                        raise RuntimeError('Expected exactly one owned reopened native application window')
+                    run('xdotool', 'windowmove', windows[0], '0', '0', 'windowsize', windows[0], '1440', '1000', 'windowactivate', '--sync', windows[0], env=childenv, stdout=subprocess.DEVNULL)
                     time.sleep(1)
                     after_reopen = plans_on_screen()
                     plan_lifecycle = {'initial': initial_plans, 'afterOrdinaryInput': after_input,
@@ -524,6 +535,37 @@ def main():
                     result['voiceConflict']['nativeMicOffUI'] = health_ui
                     click('[data-el="voice-health-close"]')
                     click('button[title="Settings"]')
+                image_check = None
+                if a.check_images:
+                    if not exists('[data-perf-target="composer"]'):
+                        key('ctrl+shift+f')
+                        wait_for(lambda: exists('[data-perf-target="composer"]'), 'native image composer visible')
+                    # Owned nonsensitive PNG, not a fabricated conversation.
+                    # The native clipboard and paste shortcut use private XTest input.
+                    import base64, struct, zlib
+                    def chunk(t, d):
+                        return struct.pack('!I', len(d)) + t + d + struct.pack('!I', zlib.crc32(t + d))
+                    pixels = b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('!2I5B', 32, 32, 8, 2, 0, 0, 0)) + chunk(b'IDAT', zlib.compress((b'\0' + b'\x24\x70\xc0' * 32) * 32)) + chunk(b'IEND', b'')
+                    fixture = work / 'owned-photo.png'
+                    fixture.write_bytes(pixels)
+                    js('''window.__imagePaste=[];window.addEventListener('paste',e=>window.__imagePaste.push({trusted:e.isTrusted,target:e.target.tagName,htmlLength:e.clipboardData.getData('text/html').length,types:[...e.clipboardData.types],items:[...e.clipboardData.items].map(i=>({kind:i.kind,type:i.type,size:i.getAsFile()?.size}))}),true);''')
+                    clipboard = work / 'owned-photo-clipboard.html'
+                    clipboard.write_text('<img src="data:image/png;base64,' + base64.b64encode(pixels).decode() + '">')
+                    spawn(['xclip', '-selection', 'clipboard', '-target', 'text/html',
+                           '-i', str(clipboard), '-quiet'], 'image-clipboard', childenv)
+                    click('[data-perf-target="composer"]')
+                    key('ctrl+v')
+                    expected = 'data:image/png;base64,' + base64.b64encode(pixels).decode()
+                    wait_for(lambda: js('return [...document.images].some(i=>{const r=i.getBoundingClientRect();return i.src===arguments[0] && i.complete && i.naturalWidth===32 && i.naturalHeight===32 && r.width>0 && r.height>0 && r.top>=0 && r.bottom<=innerHeight && r.left>=0 && r.right<=innerWidth && document.elementFromPoint(r.x+r.width/2,r.y+r.height/2)===i;});', expected), 'native pasted image decodes with exact source bytes')
+                    time.sleep(1)  # let the decoded visible native thumbnail render before the existing screenshot
+                    shot = request(driver + '/session/' + sid + '/screenshot')['value']
+                    (work / (label + '-image.png')).write_bytes(base64.b64decode(shot))
+                    key('Return')
+                    wait_for(lambda: any(b.get('images') for b in photo_intents), 'native photo upload intent')
+                    image_check = {'nativePastedImageDecoded': True, 'clipboardFormat': 'text/html with inline PNG pixels (not bitmap clipboard)', 'outgoingBytesAndMime': any(i.get('mime') == 'image/png' and i.get('dataBase64') == expected.split(',', 1)[1] for b in photo_intents for i in b.get('images', [])),
+                                   'inference': 'relay blocks intent 503; genuine Pi/provider byte check is a separate unpaid server test'}
+                    if not image_check['outgoingBytesAndMime']:
+                        raise RuntimeError('Native preview appeared but outgoing image bytes were missing')
                 time.sleep(3)
                 with lock:
                     batches = observed[start_batch:]
@@ -550,13 +592,14 @@ def main():
                 def stats(values):
                     v = sorted(values)
                     return {'n': len(v), 'p50Ms': round(v[len(v)//2], 3), 'p95Ms': round(v[min(len(v)-1, int(len(v)*.95))], 3), 'maxMs': round(max(v), 3)}
-                return {'works': not interaction_failures, 'interactionFailures': interaction_failures, 'planLifecycle': plan_lifecycle, 'native': metadata, 'telemetryHttpStatuses': sorted(statuses),
+                return {'works': not interaction_failures, 'imageCheck': image_check, 'interactionFailures': interaction_failures, 'planLifecycle': plan_lifecycle, 'native': metadata, 'telemetryHttpStatuses': sorted(statuses),
                         'telemetryNote': 'Observed real Rust IPC batches; loopback is not authenticated Tailscale laptop telemetry',
                         'launchProcessToDomUpperBoundMs': round(launch_upper, 3),
                         'timings': [{'metric': m, 'method': method, **stats(values)} for (m, method), values in sorted(samples.items())]}
             except Exception:
                 with contextlib.suppress(Exception):
                     result['nativeFailureDom'] = js('''return {
+                      attachError:document.querySelector('[data-el="attach-error"]')?.textContent,paste:window.__imagePaste,active:document.activeElement?.tagName,images:[...document.images].map(i=>({w:i.naturalWidth,h:i.naturalHeight,scheme:i.src.split(':')[0],len:i.src.length})),
                       splash:!!document.getElementById('vault-splash'),
                       composer:!!document.querySelector('[data-perf-target="composer"]'),
                       composerDisabled:document.querySelector('[data-perf-target="composer"]')?.disabled,
@@ -576,7 +619,7 @@ def main():
         if a.before_app:
             result['runs']['before'] = exercise(a.before_app, 'before')
         result['runs']['after'] = exercise(a.app, 'after')
-        if a.check_plans:
+        if a.check_plans or a.check_images:
             again = request(base + checkpoint_path)
             again = again.get('picture', again)
             preserved = again.get('items', []) == items
