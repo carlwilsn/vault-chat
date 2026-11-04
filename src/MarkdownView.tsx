@@ -2,6 +2,7 @@ import { lazy, memo, startTransition, Suspense, useCallback, useEffect, useLayou
 import type { ComponentPropsWithoutRef, MouseEvent as ReactMouseEvent } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { isBoxPath, readTextAt, writeTextAt } from "./boxFiles";
+import { editorWrites } from "./saveBeforeSend";
 import { FileText, Eye, Pencil, X } from "lucide-react";
 import { useStore } from "./store";
 import { LiveEditor } from "./LiveEditor";
@@ -229,7 +230,6 @@ export function MarkdownView({ paneId }: Props) {
   const isActive = paneId ? paneId === activePaneId : true;
   const inSplit = panes.length > 0;
 
-  const saveTimer = useRef<number | null>(null);
   const lastSaved = useRef<string>(content);
   // The most recent value the *user* produced via onChange. Lets us tell
   // a user edit apart from an external buffer swap (agent reload after a
@@ -249,12 +249,6 @@ export function MarkdownView({ paneId }: Props) {
     // agent thinking you're still on the previous file.
     publishTextViewport(file, content, 0);
   }, [file]);
-
-  useEffect(() => {
-    return () => {
-      if (saveTimer.current) window.clearTimeout(saveTimer.current);
-    };
-  }, []);
 
   // Live refresh (liveReload.ts): typing not yet on disk keeps an agent's
   // change from replacing this buffer — the header offers Reload instead.
@@ -276,11 +270,7 @@ export function MarkdownView({ paneId }: Props) {
     if (content !== lastUserValue.current) {
       lastSaved.current = content;
       lastUserValue.current = content;
-      // A save still pending holds the old buffer: writing it would undo the new content.
-      if (saveTimer.current) {
-        window.clearTimeout(saveTimer.current);
-        saveTimer.current = null;
-      }
+      if (file) editorWrites.discard(file);
     }
   }, [content]);
 
@@ -320,45 +310,15 @@ export function MarkdownView({ paneId }: Props) {
     } else {
       reloadCurrent(file ?? "", value);
     }
-    if (saveTimer.current) window.clearTimeout(saveTimer.current);
-    saveTimer.current = window.setTimeout(async () => {
-      if (value === lastSaved.current || !file) return;
-      // Path-still-active guard. If the user has switched away from
-      // this file in the time it took the debounce to fire, the value
-      // we're holding belongs to a buffer that isn't on screen anymore
-      // — saving could land on the wrong path. (Closures capture the
-      // file at onChange time; this re-checks at write time.)
+    if (!file) return;
+    const vault = useStore.getState().vaultPath;
+    if (!vault) return;
+    editorWrites.queue({ vault, path: file, text: value }, lastSaved.current, () => {
       const live = useStore.getState();
-      const livePath = paneId
-        ? live.panes.find((p) => p.id === paneId)?.file
-        : live.currentFile;
-      if (livePath !== file) return;
-      // External-mutation guard. If something else (the agent, a sync
-      // merge, a script) rewrote the file since we last synced it, our
-      // buffer doesn't reflect the on-disk truth — overwriting would
-      // silently destroy that change, and reloading would destroy the
-      // typing. Neither: the header asks (Reload · Keep mine).
-      try {
-        const onDisk = await readTextAt(file);
-        if (onDisk !== lastSaved.current) {
-          setDiskChanged(file, true);
-          return;
-        }
-      } catch {
-        return;
-      }
-      try {
-        await writeTextAt(file, value);
-        lastSaved.current = value;
-        // Tell the commit-controller this file is dirty; once the
-        // user pauses for ~10 s, all the edits in the burst land as
-        // a single "edit foo.md" commit, so the vault's git history
-        // carries their own typing, not just the agent's writes.
-        if (!isBoxPath(file)) noteEditedFile(file);
-      } catch (e) {
-        console.error("autosave failed", e);
-      }
-    }, 300);
+      const livePath = paneId ? live.panes.find(p => p.id === paneId)?.file : live.currentFile;
+      if (livePath === file) lastSaved.current = value;
+      if (!isBoxPath(file)) noteEditedFile(file);
+    }, () => setDiskChanged(file, true));
   };
 
   const reloadFromDisk = async () => {
@@ -368,7 +328,7 @@ export function MarkdownView({ paneId }: Props) {
       const onDisk = pendingBoxText(file) ?? (await readTextAt(file));
       lastSaved.current = onDisk;
       lastUserValue.current = onDisk;
-      if (saveTimer.current) window.clearTimeout(saveTimer.current);
+      editorWrites.discard(file);
       applyDiskContent(file, onDisk);
     } catch (e) {
       console.error("reload failed", e);
@@ -378,6 +338,9 @@ export function MarkdownView({ paneId }: Props) {
     if (!file) return;
     try {
       await writeTextAt(file, content);
+      editorWrites.discard(file);
+      const vault = useStore.getState().vaultPath;
+      if (vault) editorWrites.queue({ vault, path: file, text: content }, content, () => {}, () => setDiskChanged(file, true));
       lastSaved.current = content;
       lastUserValue.current = content;
       setDiskChanged(file, false);

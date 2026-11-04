@@ -20,7 +20,8 @@ import { globalFeed, ownerVault, signal } from "./convlog/log";
 import { conversationsSummary, conversationDetail, notificationsFeed, notesFeed, withinVault, mimeFor } from "./phoneData";
 import { notificationAppend, pushSubsAdd, pushSubsRemove, vapidPublicKey } from "./commands/phone";
 import { isGitPath, handleGitHttp } from "./gitHttp";
-import { validVaultName } from "./sync";
+import { validVaultName, syncNow } from "./sync";
+import { syncReadBarrier } from "./syncReadBarrier";
 import { validKeyName } from "./keys";
 import { createProjectWithThread, folderRoute, projectsList, setProject } from "./projectRoutes";
 import { vaultPath } from "./vaultPath";
@@ -447,6 +448,12 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
     }
   }
   const vault = scope.path;
+  if (path === "/api/v1/sync/flush" && method === "POST") {
+    const b = await jsonBody(req);
+    const result = await syncReadBarrier(open.path, b.files, () => syncNow(open.name));
+    return json(res, result.status, result.body);
+  }
+
   if (path === "/api/v1/laptop-perf") {
     if (method === "GET") return json(res, 200, { batches: readLaptopPerf(cfg.stateDir) });
     if (method === "POST") {

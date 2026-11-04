@@ -25,6 +25,7 @@ import collections
 import contextlib
 import http.client
 import http.server
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -95,9 +96,12 @@ def main():
     p.add_argument('--check-images', action='store_true', help='Paste owned PNG through the native clipboard; inspect outgoing bytes without inference')
     p.add_argument('--check-status-dot', action='store_true', help='Observe native pi running rows with a gated local zero-cost provider, then switch only the viewer vault')
     p.add_argument('--check-video', type=Path, help='Owned synthetic VP8/Vorbis clip; append one private media-only test entry, never publish it')
+    p.add_argument('--check-editor-sync', action='store_true', help='Native immediate paste/send via existing Git transport and genuine Pi read on a different viewer vault')
     p.add_argument('--native-video-only', action='store_true', help='Run native video independently; retain earlier phone evidence separately, never relabel it')
     p.add_argument('--inside-nix', action='store_true', help=argparse.SUPPRESS)
     a = p.parse_args()
+    if a.check_editor_sync and not a.check_status_dot:
+        p.error('--check-editor-sync requires --check-status-dot local unpaid Pi fixture')
     os.umask(0o077)
     if sys.platform != 'linux':
         p.error('This measures Linux/WebKitGTK only')
@@ -108,7 +112,7 @@ def main():
     if a.min_messages < 1:
         p.error('--min-messages must be positive')
     tools = ['Xvfb', 'xdotool', 'openbox', 'dbus-daemon', 'WebKitWebDriver', 'node', 'npm', 'flock']
-    if a.check_images:
+    if a.check_images or a.check_editor_sync:
         tools.append('xclip')
     if a.check_video:
         tools += ['pulseaudio', 'pactl', 'parec']
@@ -267,6 +271,9 @@ def main():
             released = threading.Event()
             released.set()  # Let any original interrupted turn finish locally before measuring.
             provider_calls = []
+            editor_reads = []
+            editor_expected = 'PRIVATE-EDITOR-PASTE-27 fresh bytes\n'
+            editor_box_file = master / 'vaults/status-viewer/private-editor.md'
             class LocalProvider(http.server.BaseHTTPRequestHandler):
                 def do_GET(self):
                     body = json.dumps({'data': [{'id': 'test/fake-model', 'context_length': 400000, 'architecture': {'input_modalities': ['text']}, 'pricing': {}}]}).encode()
@@ -279,7 +286,17 @@ def main():
                     if not released.wait(90):
                         self.send_response(503); self.end_headers(); return
                     self.send_response(200); self.send_header('Content-Type', 'text/event-stream'); self.end_headers()
-                    for delta, reason in [({'role': 'assistant', 'content': 'Local status fixture complete.'}, None), ({}, 'stop')]:
+                    messages = body.get('messages', [])
+                    is_editor = any('READ_EDITOR_FIXTURE_27' in json.dumps(m.get('content', '')) for m in messages if m.get('role') == 'user')
+                    tool_result = messages[-1] if messages and messages[-1].get('role') == 'tool' else None
+                    if a.check_editor_sync and is_editor and not tool_result:
+                        editor_reads.append({'beforeNativeReadSha256': hashlib.sha256(editor_box_file.read_bytes()).hexdigest(), 'freshBeforeNativeRead': editor_box_file.read_text() == editor_expected})
+                        deltas = [({'role': 'assistant', 'tool_calls': [{'index': 0, 'id': 'editor-read-27', 'type': 'function', 'function': {'name': 'read', 'arguments': json.dumps({'path': str(editor_box_file)})}}]}, None), ({}, 'tool_calls')]
+                    else:
+                        if a.check_editor_sync and is_editor and tool_result and editor_reads:
+                            editor_reads[-1]['nativeReadReturnedFreshBytes'] = editor_expected.strip() in json.dumps(tool_result.get('content'))
+                        deltas = [({'role': 'assistant', 'content': 'Local status fixture complete.'}, None), ({}, 'stop')]
+                    for delta, reason in deltas:
                         chunk = {'id': 'local-status', 'object': 'chat.completion.chunk', 'created': int(time.time()), 'model': body['model'], 'choices': [{'index': 0, 'delta': delta, 'finish_reason': reason}]}
                         self.wfile.write(('data: ' + json.dumps(chunk) + '\n\n').encode())
                     self.wfile.write(b'data: [DONE]\n\n')
@@ -374,11 +391,27 @@ def main():
                 raise RuntimeError('Private media append changed the original history prefix')
             result['thread']['originalPrefix'] = {'messages': 1329, 'items': 3819, 'unchanged': True, 'privateAppendedItems': 1}
 
+        native_master, native_vault = master, vault
+        if a.check_editor_sync:
+            # Only generated scratch files enter this Git transport fixture.
+            editor_box_file.write_text('old private fixture\n')
+            request(base + '/api/v1/sync/flush?vault=status-viewer', {'files': [{'path': 'private-editor.md', 'sha256': hashlib.sha256(editor_box_file.read_bytes()).hexdigest()}]})
+            native_master = work / 'laptop-master'
+            native_vault = native_master / 'vaults/vault-chat'
+            native_vault.mkdir(parents=True)
+            (native_vault / 'desktop-timing-note.md').write_bytes(note.read_bytes())
+            laptop_viewer = native_master / 'vaults/status-viewer'
+            run('git', 'clone', '-q', str(master / '.hub/vaults/status-viewer.git'), str(laptop_viewer), env=env)
+            run('git', '-C', str(laptop_viewer), 'checkout', '-q', '-B', 'master', 'origin/box', env=env)
+            run('git', '-C', str(laptop_viewer), 'config', 'user.name', 'Private native fixture', env=env)
+            run('git', '-C', str(laptop_viewer), 'config', 'user.email', 'fixture@localhost', env=env)
+            viewer = laptop_viewer
         observed = []
         photo_intents = []
         opened = []
         video_fetches = []
         lock = threading.Lock()
+        editor_intent_enabled = False
 
         class Relay(http.server.BaseHTTPRequestHandler):
             def do_GET(self):
@@ -394,8 +427,11 @@ def main():
                 speech_send = (a.check_speech_freshness and path == '/api/v2/intent' and self.command == 'POST'
                     and (intent := json.loads(data)).get('type') == 'send' and intent.get('convId') == a.conversation
                     and str(intent.get('text', '')).startswith('Owned speech freshness '))
-                # No models, side threads, sends, voice, git, or copied history writes (except owned fixture sends).
-                if path.startswith('/git/') or self.command != 'GET' and path != '/api/v1/laptop-perf' and not speech_send:
+                # A narrowly scoped opt-in allows only our generated viewer Git
+                # and matching read barrier, never any copied-note upload.
+                editor_transport = a.check_editor_sync and (editor_intent_enabled and path == '/api/v2/intent' or path.startswith('/git/status-viewer.git/') or path == '/api/v1/sync/flush')
+                # All other non-read activity stays refused, including voice.
+                if (path.startswith('/git/') or self.command != 'GET' and path != '/api/v1/laptop-perf') and not (speech_send or editor_transport):
                     if a.check_plans and path == '/api/v2/intent':
                         # Observe the native pending-input UI before rejecting;
                         # never forward this turn to a provider or invent a reply.
@@ -403,7 +439,7 @@ def main():
                     self.send_response(503); self.end_headers(); return
                 conn = http.client.HTTPConnection('127.0.0.1', server_port, timeout=40)
                 try:
-                    headers = {'Content-Type': 'application/json'}
+                    headers = {'Content-Type': self.headers.get('Content-Type', 'application/json')}
                     if self.headers.get('Range'):
                         headers['Range'] = self.headers['Range']
                     conn.request(self.command, self.path, body=data, headers=headers)
@@ -447,7 +483,10 @@ def main():
         relay = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Relay)
         servers.append(relay)
         threading.Thread(target=relay.serve_forever, daemon=True).start()
-        (vault / '.vault-chat/sync.json').write_text(json.dumps({'box': 'http://127.0.0.1:' + str(relay.server_port), 'vault': 'vault-chat'}))
+        (native_vault / '.vault-chat').mkdir(exist_ok=True)
+        (native_vault / '.vault-chat/sync.json').write_text(json.dumps({'box': 'http://127.0.0.1:' + str(relay.server_port), 'vault': 'vault-chat'}))
+        if a.check_editor_sync:
+            (native_master / '.vault-chat-master.json').write_text(json.dumps({'box': 'http://127.0.0.1:' + str(relay.server_port)}))
         if a.check_status_dot:
             (viewer / '.vault-chat/sync.json').write_text(json.dumps({'box': 'http://127.0.0.1:' + str(relay.server_port), 'vault': 'status-viewer'}))
         # Only our new socket; never use DISPLAY from the caller or scan live displays.
@@ -540,9 +579,9 @@ def main():
                 # seeding preferences; otherwise startup can overwrite the thread
                 # selection between this write and the measured second launch.
                 wait_for(lambda: js('return document.readyState === "complete" && !document.getElementById("vault-splash");'), 'empty native profile initialized')
-                js('localStorage.setItem("vault_chat_last_vault",arguments[0]); localStorage.setItem("vault_chat_active_conv",arguments[1]);', str(vault), a.conversation)
+                js('localStorage.setItem("vault_chat_last_vault",arguments[0]); localStorage.setItem("vault_chat_active_conv",arguments[1]);', str(native_vault), a.conversation)
                 if a.check_status_dot:
-                    js('localStorage.setItem("vault_chat_master_path",arguments[0]);', str(master))
+                    js('localStorage.setItem("vault_chat_master_path",arguments[0]);', str(native_master))
                 # WebKit persists localStorage asynchronously; let the seeded clean
                 # profile reach disk before the driver tears its process down.
                 time.sleep(1)
@@ -1012,6 +1051,41 @@ def main():
                     if after_items[:len(items)] != items:
                         raise RuntimeError('Status fixture altered original history prefix')
                     status_dot = {'rows': dot_rows, 'localProviderCalls': len(provider_calls), 'originalHistoryPrefixUnchanged': True, 'runningToIdle': True}
+                editor_sync = None
+                if a.check_editor_sync and label == 'after':
+                    # Status-dot checks leave the project owner selected with
+                    # the unrelated viewer open; preserve that ownership.
+                    if exists('[data-perf-view="fullscreen"]'):
+                        key('ctrl+shift+f')
+                    wait_for(lambda: exists('[data-tree-path$="/private-editor.md"]'), 'private scratch editor file')
+                    click('[data-tree-path$="/private-editor.md"]')
+                    wait_for(lambda: exists('[data-look-pane][data-file$="/private-editor.md"]'), 'private editor viewer')
+                    key('ctrl+e')
+                    wait_for(lambda: exists('.cm-content[contenteditable="true"]'), 'scratch native editor')
+                    selector = '[data-perf-target="composer"]'
+                    click(selector)
+                    run('xdotool', 'type', '--clearmodifiers', '--delay', '0', 'READ_EDITOR_FIXTURE_27', env=childenv, stdout=subprocess.DEVNULL)
+                    clipboard = work / 'editor-clipboard.txt'
+                    clipboard.write_text(editor_expected)
+                    producer = spawn(['xclip', '-selection', 'clipboard', '-target', 'UTF8_STRING', '-i', str(clipboard), '-quiet'], 'editor-clipboard', childenv)
+                    wait_for(lambda: subprocess.check_output(['xclip', '-selection', 'clipboard', '-o'], env=childenv) == clipboard.read_bytes(), 'private text clipboard ready')
+                    click('.cm-content[contenteditable="true"]')
+                    xy = js('const r=document.querySelector(arguments[0]).getBoundingClientRect();return [(screenX+r.x+r.width/2)*devicePixelRatio,(screenY+r.y+r.height/2)*devicePixelRatio];', selector)
+                    js('window.__editorPasteAt=null;window.addEventListener("paste",e=>{if(e.isTrusted&&e.target.closest(".cm-content"))window.__editorPasteAt=performance.now();},true);')
+                    nonlocal editor_intent_enabled
+                    editor_intent_enabled = True
+                    reads_before = len(editor_reads)
+                    # One OS sequence: no wait for debounce, no WebDriver input.
+                    run('xdotool', 'key', '--clearmodifiers', 'ctrl+Home', 'ctrl+shift+End', 'ctrl+v', 'mousemove', str(round(xy[0])), str(round(xy[1])), 'click', '1', 'key', 'Return', env=childenv, stdout=subprocess.DEVNULL)
+                    wait_for(lambda: len(editor_reads) > reads_before and 'nativeReadReturnedFreshBytes' in editor_reads[-1], 'genuine Pi native scratch-file read', seconds=90)
+                    editor_sync = editor_reads[-1]
+                    if not all(editor_sync.get(k) for k in ('freshBeforeNativeRead', 'nativeReadReturnedFreshBytes')):
+                        raise RuntimeError('Native read saw stale editor bytes')
+                    editor_sync.update({'trustedNativePaste': js('return window.__editorPasteAt!==null;'), 'viewerDifferentFromOwner': True, 'transport': 'real Rust Git commit/push -> existing server flush -> Pi native read'})
+                    after_editor = request(base + checkpoint_path).get('picture', {}).get('items', [])
+                    if after_editor[:len(items)] != items:
+                        raise RuntimeError('Editor fixture changed original history prefix')
+                    editor_sync['privateAppendedItems'] = len(after_editor) - len(items)
                 statuses = set()
                 for b, status in batches:
                     if b.get('runtime') != 'webkitgtk' or b.get('surface') != 'tauri-production':
@@ -1032,7 +1106,7 @@ def main():
                 def stats(values):
                     v = sorted(values)
                     return {'n': len(v), 'p50Ms': round(v[len(v)//2], 3), 'p95Ms': round(v[min(len(v)-1, int(len(v)*.95))], 3), 'maxMs': round(max(v), 3)}
-                return {'works': not interaction_failures, 'videoCheck': video_check, 'imageCheck': image_check, 'statusDot': status_dot, 'interactionFailures': interaction_failures, 'planLifecycle': plan_lifecycle, 'emptyChat': empty_chat, 'native': metadata, 'telemetryHttpStatuses': sorted(statuses),
+                return {'works': not interaction_failures, 'videoCheck': video_check, 'imageCheck': image_check, 'statusDot': status_dot, 'editorSync': editor_sync, 'interactionFailures': interaction_failures, 'planLifecycle': plan_lifecycle, 'emptyChat': empty_chat, 'native': metadata, 'telemetryHttpStatuses': sorted(statuses),
                         'telemetryNote': 'Observed real Rust IPC batches; loopback is not authenticated Tailscale laptop telemetry',
                         'launchProcessToDomUpperBoundMs': round(launch_upper, 3),
                         'timings': [{'metric': m, 'method': method, **stats(values)} for (m, method), values in sorted(samples.items())]}

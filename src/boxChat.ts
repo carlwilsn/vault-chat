@@ -1,3 +1,4 @@
+import { saveBeforeSend } from "./saveBeforeSend";
 // Box-mode chat. When a vault's `.vault-chat/sync.json` names a box, every
 // agent turn runs on the box and the box's event log is the conversation
 // (src/convlog/protocol.ts). This client writes nothing: it sends intents
@@ -961,6 +962,11 @@ export async function boxSend(opts: { text: string; contextPreamble?: string; at
   sess.addOutgoing(convId, { id: clientId, text: shown, attachments: opts.attachments, ...(kind === "steer" ? { steer: true } : {}) });
   const refused = (r: { network?: boolean; error?: string }, what: string) =>
     r.network ? `⚠️ ${BOX_UNREACHABLE}: ${r.error}. The ${what} was NOT delivered.` : `⚠️ The box refused the ${what}: ${r.error}`;
+  try { await saveBeforeSend(vault); }
+  catch (e) {
+    sess.failOutgoing(convId, clientId, `⚠️ Edited files are not ready on the box: ${String((e as Error).message ?? e)}. The message was NOT sent.`);
+    return true;
+  }
   // Attached files go up first (never a path on this laptop in the prompt: the box cannot open it).
   const files: string[] = [];
   for (const u of uploads) {

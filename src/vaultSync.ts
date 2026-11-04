@@ -726,6 +726,13 @@ export async function boxSyncNow(vault: string, o: { pull?: boolean } = {}): Pro
   if (k) await k(o);
 }
 
+/** A send depends on this full cycle, not the scheduler's best-effort kick.
+ * Serialized with ordinary cycles; never resolves successfully on a conflict/offline report. */
+export async function pushEditorWrites(vault: string): Promise<void> {
+  const report = await oneCycleAtATime(vault, () => invoke<BoxSyncReport>("vault_box_sync", { vault }));
+  if (!report.ok || report.error || report.conflict) throw new Error(report.error || "File sync is not complete (resolve the sync conflict before sending)");
+}
+
 const vaultKey = (v: string) => v.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
 
 // One box cycle at a time per repo, whichever loop asks (a vault tracked under
