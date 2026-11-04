@@ -265,6 +265,18 @@ class Quiet(FrameProcessor):
         await task.queue_frame(TTSSpeakFrame(text))
 
 
+# Scribe's mark for room noise it half-heard: "Mm-hmm ..." (with the ellipsis) inside or before his words. Carl saying
+# "Mm-hmm." himself has no ellipsis and is kept (FreshWordsStartStrategy treats it as listening).
+NOISE_MARK = re.compile(r"(?:^|(?<=[\s\-–—]))(?:mm-?hmm|mhm|hmm)[,.]?\s*(?:\.\.\.|…)\s*", re.I)
+
+
+def clean_noise(text: str) -> str:
+    """His words without Scribe's noise marks ("Okay, so the reason- Mm-hmm ... if there's no negative cycle")."""
+    out = NOISE_MARK.sub(" ", text)
+    out = re.sub(r"\s{2,}", " ", out).strip()
+    return out
+
+
 class SttWatch:
     """A line he said that never came back as words: his voice for MIN_SPEECH_SECS (VAD), then no partial or final
     transcript within WAIT_SECS of its end. Said once: "Sorry, I didn't catch that." — instead of silence, a 'thinking'
@@ -457,7 +469,7 @@ async def speak_channel(call: dict, task: PipelineTask, quiet: Quiet):
                                 msg = json.loads(line[5:])
                                 if msg.get("interrupt") is True:
                                     # Cancel the held piece (including an in-flight freshness check) and the
-                                    # existing replay flow. Pipecat owns cancellation of already queued audio.
+                                    # transport continuity. Pipecat owns cancellation of already queued audio.
                                     consumer.cancel()
                                     await asyncio.gather(consumer, return_exceptions=True)
                                     flow.started(None, quiet.gate.user_turns)
