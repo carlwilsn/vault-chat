@@ -84,6 +84,9 @@ def main():
     p.add_argument('--check-plans', action='store_true', help='Exercise ordinary input and local Clear/reopen on the frozen original thread; inference stays blocked')
     p.add_argument('--check-empty-chat', action='store_true', help='Read the actual empty chat after local Clear/reopen; never generate an assistant answer')
     p.add_argument('--check-voice-only', action='store_true', help='Verify the one voice control and no Classic/engine selector in native settings; microphone stays off')
+    p.add_argument('--check-speech-freshness', action='store_true', help='Local fake provider + genuine Pi/New dispatch collector; native typed controls, no media')
+    p.add_argument('--voice-python', type=Path, help='Existing pinned Pipecat interpreter for the inert text collector')
+    p.add_argument('--pi-dir', type=Path, help='Read-only genuine pi 1.1 prefix for the unpaid voice fixture')
     p.add_argument('--voice-conflict', action='store_true', help='Hold an owned inert listener; prove real startup refusal and mic-OFF health UI')
     p.add_argument('--server-bundle', type=Path)
     p.add_argument('--out', type=Path, required=True, help='Plain result JSON outside the vault')
@@ -295,6 +298,34 @@ def main():
             state.mkdir(parents=True, exist_ok=True)
             (state / 'voice-engine.json').write_text('{"engine":"classic"}' if a.check_voice_only else '{"engine":"new"}')
             server_env.update(VC_VOICE_PIPELINE='on', VC_VOICE_BRAIN='pi')
+        if a.check_speech_freshness:
+            if not a.voice_python or not a.pi_dir:
+                raise RuntimeError('Freshness requires pinned local pi and Pipecat runtime')
+            # The mature fake provider is the ONLY inference transport; not a fake engine/backend/IPC.
+            provider_url = work / 'provider-url'
+            provider = """import {fakeChat} from './server/test/fakeChat.ts';
+              import {writeFileSync} from 'node:fs';
+              const p=await fakeChat();
+              p.respond=(_b,n)=>({text:'Owned speech freshness result '+n+'.',noCost:true});
+              writeFileSync(process.argv[1],p.url);"""
+            spawn(['node', '--import', 'tsx', '--input-type=module', '-e', provider, str(provider_url)], 'local-provider', cwd=ROOT)
+            wait_for(provider_url.exists, 'local-only provider')
+            local_provider = provider_url.read_text()
+            network = work / 'local-only.mjs'
+            network.write_text("const real=globalThis.fetch;globalThis.fetch=(i,o)=>{const u=new URL(typeof i==='string'?i:i instanceof URL?i.href:i.url);"
+                + "if(u.href==='https://openrouter.ai/api/v1/models')return real(" + json.dumps(local_provider + '/models') + ",o);"
+                + "if(!['localhost','127.0.0.1','[::1]'].includes(u.hostname))throw Error('Unpaid freshness fixture blocks external fetch');return real(i,o);};")
+            server_env.update(VC_ENGINE='pi', VC_PI_DIR=str(a.pi_dir), VC_ENGINE_MODEL='test/fake-model',
+                VC_OPENROUTER_BASE=local_provider, VC_PI_UNSAFE='1', PI_SKIP_VERSION_CHECK='1',
+                VC_BWRAP=str(work / 'no-bwrap'), NODE_OPTIONS='--import ' + str(network))
+            agent = state / 'pi' / 'agent'
+            agent.mkdir(parents=True, exist_ok=True)
+            (agent / 'settings.json').write_text(json.dumps({'compaction': {'enabled': False}, 'retry': {'enabled': False}}))
+            models = [{'id': mid, 'name': 'Local unpaid freshness', 'reasoning': False, 'input': ['text'],
+                'cost': {'input': 0, 'output': 0, 'cacheRead': 0, 'cacheWrite': 0}, 'contextWindow': 400000, 'maxTokens': 1000}
+                for mid in ['test/fake-model', 'anthropic/claude-haiku-5.5']]
+            (agent / 'models.json').write_text(json.dumps({'providers': {'openrouter': {'baseUrl': local_provider,
+                'apiKey': 'synthetic-local-only', 'api': 'openai-completions', 'models': models}}}))
         spawn(['node', str(a.server_bundle)], 'server', server_env)
         base = 'http://127.0.0.1:' + str(server_port)
         wait_for(lambda: request(base + '/api/v1/health'), 'owned genuine box server')
@@ -354,8 +385,11 @@ def main():
                 if a.check_images and path == '/api/v2/intent' and self.command == 'POST':
                     with lock:
                         photo_intents.append(json.loads(data))
-                # No models, side threads, sends, voice, git, or copied history writes.
-                if path.startswith('/git/') or self.command != 'GET' and path != '/api/v1/laptop-perf':
+                speech_send = (a.check_speech_freshness and path == '/api/v2/intent' and self.command == 'POST'
+                    and (intent := json.loads(data)).get('type') == 'send' and intent.get('convId') == 'main'
+                    and str(intent.get('text', '')).startswith('Owned speech freshness '))
+                # No models, side threads, sends, voice, git, or copied history writes (except owned fixture sends).
+                if path.startswith('/git/') or self.command != 'GET' and path != '/api/v1/laptop-perf' and not speech_send:
                     if a.check_plans and path == '/api/v2/intent':
                         # Observe the native pending-input UI before rejecting;
                         # never forward this turn to a provider or invent a reply.
@@ -799,6 +833,70 @@ def main():
                     video_check={'fetches':fetches,'transport':'Native Rust JSON/base64 fetch -> retained blob; backend binary /file 206 checked separately, not claimed as a browser range request','beforeInstrumentation':before,'initial':initial,'first':first,'playing':playing,'paused':paused,'seeked':seeked,'resumed':resumed,'unsupported':bad,
                       'audioOutput':'private clocked Pulse null sink only; RMS from its virtual monitor in memory; no speakers/mic/recording',
                       'input':'native UA Play/timeline clicks and media context-menu Pause/Resume via XTest; no play/pause/currentTime injection'}
+                if a.check_speech_freshness:
+                    # Original project data stays untouched. Main receives ONLY owned appended fixture events.
+                    if a.conversation == 'main':
+                        raise RuntimeError('Use the approved original project as the immutable control')
+                    main_path = '/api/v2/conversations/main/checkpoint'
+                    before_main = request(base + main_path)
+                    before_main = before_main.get('picture', before_main).get('items', [])
+                    if not exists('[data-el="thread-main"] button'):
+                        click('[data-el="chats-toggle"]')
+                    click('[data-el="thread-main"] button')
+                    wait_for(lambda: js('return localStorage.getItem("vault_chat_active_conv")==="main";'), 'native Main selection')
+                    call = request(base + '/api/v1/brain/call', {'convId': 'main', 'device': 'laptop'})
+                    health = request(base + '/api/v1/health')
+                    if health.get('engine', {}).get('version') != '1.1.0':
+                        raise RuntimeError('Freshness fixture is not genuine Pi 1.1')
+                    collector = work / 'speech-collector'
+                    collector.mkdir()
+                    collector_env = dict(env)
+                    collector_env['LD_LIBRARY_PATH'] = os.environ.get('LD_LIBRARY_PATH', '')
+                    # Send only this owned fake-call capability over stdin; never log a call token.
+                    child = spawn([str(a.voice_python), str(ROOT / 'voice-pipeline/test_native_speech.py'), '--collect-native'],
+                        'text-dispatch-collector', collector_env, stdin=subprocess.PIPE)
+                    child.stdin.write((json.dumps({'base': base, 'id': call['callId'], 'token': call['token'], 'work': str(collector)}) + '\n').encode())
+                    child.stdin.close()
+                    wait_for(lambda: (collector / 'ready').exists(), 'native New collector ready')
+                    def owned_send(suffix):
+                        click('[data-perf-target="composer"]')
+                        run('xdotool', 'type', '--clearmodifiers', '--delay', '40', 'Owned speech freshness ' + suffix,
+                            env=childenv, stdout=subprocess.DEVNULL)
+                        key('Return')
+                    owned_send('first request')
+                    wait_for(lambda: (collector / 'held').exists(), 'real New dispatch held by quiet gate')
+                    def main_items():
+                        c = request(base + main_path)
+                        return c.get('picture', c).get('items', [])
+                    wait_for(lambda: 'Owned speech freshness result 1.' in json.dumps(main_items()), 'first native response in normal human history')
+                    owned_send('second request')
+                    wait_for(lambda: 'Owned speech freshness result 2.' in json.dumps(main_items()), 'fresh native response in normal human history')
+                    # Merely viewing another conversation cannot follow/cancel the active Main owner.
+                    click('[data-el="thread-project"][data-thread="' + a.conversation + '"] button')
+                    wait_for(lambda: js('return localStorage.getItem("vault_chat_active_conv")===arguments[0];', a.conversation), 'original viewer selection')
+                    live = request(base + '/api/v1/brain/calls')['calls']
+                    if len(live) != 1 or live[0]['convId'] != 'main':
+                        raise RuntimeError('Viewer selection changed the speech owner')
+                    (collector / 'release').touch()
+                    def dispatched():
+                        f = collector / 'dispatch.json'
+                        return json.loads(f.read_text()) if f.exists() else []
+                    wait_for(lambda: len(dispatched()) == 1, 'fresh speech dispatched once without audio')
+                    request(base + '/api/v1/brain/call/' + call['callId'] + '/end', {}, 'POST')
+                    (collector / 'stop').touch()
+                    if child.wait(timeout=10) != 0:
+                        raise RuntimeError('Native dispatch collector failed')
+                    if dispatched() != ['Owned speech freshness result 2.']:
+                        raise RuntimeError('Stale or duplicate text crossed actual New speech dispatch')
+                    after_main = main_items()
+                    if after_main[:len(before_main)] != before_main:
+                        raise RuntimeError('Owned speech fixture changed historical Main items')
+                    if js('return !!document.querySelector("[data-el=voice-waves-mute]");'):
+                        raise RuntimeError('Fixture opened device microphone')
+                    result['speechFreshness'] = {'genuinePi': '1.1.0', 'nativeTypedControls': True,
+                        'dispatch': dispatched(), 'staleAbsent': True, 'freshExactlyOnce': True,
+                        'viewerDoesNotFollowOwner': True, 'microphoneOff': True, 'originalMainPrefixUnchanged': True,
+                        'boundary': 'actual bot.py TTSSpeakFrame dispatch; inert collector only, no STT/TTS/audio'}
                 image_check = None
                 if a.check_images:
                     if not exists('[data-perf-target="composer"]'):
@@ -1030,7 +1128,7 @@ def main():
         if a.before_app:
             result['runs']['before'] = exercise(a.before_app, 'before')
         result['runs']['after'] = exercise(a.app, 'after')
-        if a.check_plans or a.check_images or a.check_empty_chat or a.check_video:
+        if a.check_plans or a.check_images or a.check_empty_chat or a.check_video or a.check_speech_freshness:
             again = request(base + checkpoint_path)
             again = again.get('picture', again)
             preserved = again.get('items', []) == items

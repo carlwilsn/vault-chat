@@ -624,3 +624,66 @@ describe("voice with one brain", () => {
     expect(voiceCallRules("phone")).toMatch(/Delegate/);
   });
 });
+
+it("revokes speech at the authenticated dispatch boundary for turns, owners, cancellation and mic OFF", async () => {
+  const vb = await import("../voiceBrain");
+  let c = await call();
+  const able = async (utt: number, token = c.token, device = false) => {
+    const r = await fetch(`${base}/api/v1/brain/call/${c.id}/speakable/${utt}`, {
+      headers: { authorization: `Bearer ${token}`, ...(device ? { "x-device": "phone" } : {}) },
+    });
+    return { status: r.status, body: await r.json() };
+  };
+  const ac = new AbortController();
+  const r = await fetch(`${base}/api/v1/brain/call/${c.id}/speak`, { headers: { authorization: `Bearer ${c.token}` }, signal: ac.signal });
+  const reader = r.body!.getReader();
+  eng.emit({ type: "vc_turn_start", kind: "wake" });
+  eng.emit(delta("Owned worker result stays in human history. "));
+  eng.emit({ type: "message_end", message: { role: "assistant" } });
+  eng.emit({ type: "vc_turn_end", status: "completed" });
+  let got = "";
+  while (!got.includes("human history")) got += new TextDecoder().decode((await reader.read()).value);
+  const original = got.split("\n").filter(l => l.startsWith("data:")).map(l => JSON.parse(l.slice(5))).find(p => p.text).utt;
+  expect(await able(original)).toEqual({ status: 200, body: { speak: true } });
+  expect((await able(original, "not-the-call")).status).toBe(401);
+  expect((await able(original, c.token, true)).status).toBe(403);
+  // A reply on another surface is NOT the call's, and old worker text cannot be rebound to it.
+  eng.emit({ type: "vc_turn_start", kind: "user", origin: "phone" });
+  expect((await able(original)).body.speak).toBe(false);
+  expect((await able(original + 1)).body.speak).toBe(false);
+  eng.emit({ type: "vc_turn_start", kind: "user", origin: "board" });
+  expect((await able(original + 2)).body.speak).toBe(true);
+  eng.emit({ type: "vc_turn_end", status: "interrupted" });
+  expect((await able(original + 2)).body.speak).toBe(false);
+  eng.emit({ type: "vc_turn_start", kind: "wake" });
+  const current = original + 4;
+  expect((await able(current)).body.speak).toBe(true);
+  expect(vb.followCall("/v", "main")).toBe(true);
+  expect((await able(current)).body.speak).toBe(false);
+  // No-op follow / viewer reads must not move the owner or cancel a live turn.
+  expect(vb.followCall("/v", "main")).toBe(true);
+  expect((await able(current + 1)).body.speak).toBe(true);
+  await fetch(`${base}/api/v1/brain/calls`);
+  expect((await able(current + 1)).body.speak).toBe(true);
+  await fetch(`${base}/api/v1/brain/call/${c.id}/end`, { method: "POST" });
+  expect((await able(current + 1)).status).toBe(401);
+  ac.abort();
+  c = await call();
+  const old = c;
+  c = await call();
+  const replaced = await fetch(`${base}/api/v1/brain/call/${old.id}/speakable/0`, { headers: { authorization: `Bearer ${old.token}` } });
+  expect(replaced.status).toBe(401);
+  expect((await able(0)).body.speak).toBe(true);
+});
+
+it("a completed opener's detached hold never speaks into a replacement call", async () => {
+  const c = await call();
+  const response = fetch(`${base}/v1/chat/completions`, { method: "POST", headers: { authorization: `Bearer ${c.token}` }, body: JSON.stringify({ messages: [{ role: "user", content: "Yo." }] }) });
+  await until(() => eng.messages.length);
+  eng.emit({ type: "vc_turn_start", kind: "user", origin: "voice" });
+  eng.emit(delta("Detached old opener must not dispatch. "));
+  eng.emit({ type: "vc_turn_end", status: "completed" });
+  await call(); // The old sink is already detached from c.sink, but its last-dispatch guard still owns it.
+  const chunks = await response.then(sse);
+  expect(chunks.join("\n")).not.toContain("Detached old opener");
+});

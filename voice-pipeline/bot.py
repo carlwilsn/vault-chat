@@ -216,38 +216,19 @@ class Gate:
 
 
 class ResultFlow:
-    """One result, said whole: the Gate is waited on once, at its first piece; its later pieces (the same `utt`) go
-    straight on, back to back, never a 1.2 s gap after each sentence. If he starts a turn while it plays, that is a
-    barge-in: the rest of that result is not said — unless his turn began with it (his first word within COLLIDE_SECS of
-    its start: the gap closed as it opened, he never heard it and didn't mean to cut it; a word takes 1-2.5 s to be
-    transcribed): then the whole result is said again at the next gap, once (the roleplay: a finished study guide started 0.7 s after he began talking, his words cut it,
-    and the result was never heard). Pure (tested in test_gate.py)."""
-
-    COLLIDE_SECS = 3.0
+    """Transport continuity only: wait once per utterance, never replay an interrupted result."""
 
     def __init__(self):
         self.utt = None
         self.turns_at = 0
-        self.at = 0.0
-        self.pieces: list[str] = []
-        self.replaying = False
-        self.replayed: set = set()
 
     def next(self, utt, user_turns: int) -> str:
-        """'gate' (a new result: wait for a gap first), 'go' (its next piece: say it now), 'hold' (keep it for the replay)
-        or 'drop' (he talked over it)."""
         if utt is None or utt != self.utt:
             return "gate"
-        if self.replaying:
-            return "hold"
         return "go" if user_turns == self.turns_at else "drop"
 
-    def started(self, utt, user_turns: int, now: float = 0.0) -> None:
-        self.utt, self.turns_at, self.at, self.pieces = utt, user_turns, now, []
-
-    def collided(self, user_turns: int, turn_at: float) -> bool:
-        """He took a turn over this result as it began: say it again whole."""
-        return self.utt is not None and self.utt not in self.replayed and user_turns != self.turns_at and 0 <= turn_at - self.at <= self.COLLIDE_SECS
+    def started(self, utt, user_turns: int) -> None:
+        self.utt, self.turns_at = utt, user_turns
 
 
 class Quiet(FrameProcessor):
@@ -272,56 +253,16 @@ class Quiet(FrameProcessor):
         act = flow.next(utt, self.gate.user_turns)
         if act == "drop":
             return
-        if act == "hold":
-            flow.pieces.append(text)
-            return
         if act == "gate":
             await self.until_idle()
-            # The original call/utt may have been revoked while waiting. Never bind old text to the
-            # now-current user turn; the server's existing authenticated route is the authority.
-            if not await speakable(utt):
-                return
-            flow.started(utt, self.gate.user_turns, time.monotonic())
-            if utt is not None:
-                asyncio.create_task(self.watch_collision(flow, utt, task, speakable))
-        flow.pieces.append(text)
+        # LAST text dispatch, including continuation pieces: never rebind held text to a new turn.
+        # A local barge-in while HTTP was in flight also revokes the candidate.
+        user_turns = self.gate.user_turns
+        if not await speakable(utt) or self.gate.user_turns != user_turns:
+            return
+        if act == "gate":
+            flow.started(utt, user_turns)
         await task.queue_frame(TTSSpeakFrame(text))
-
-    async def watch_collision(self, flow: ResultFlow, utt, task, speakable) -> None:
-        """A result his voice ran into as it started (the gap closed as it opened): said again, whole, at the next gap."""
-        await asyncio.sleep(ResultFlow.COLLIDE_SECS + 0.2)
-        if flow.utt != utt or not flow.collided(self.gate.user_turns, self.gate.turn_at):
-            return
-        flow.replaying = True
-        jlog(ev="result.collide", utt=utt, turn_after=round(self.gate.turn_at - flow.at, 2))
-        await self.until_idle()
-        if flow.utt != utt:
-            return
-        current = await speakable(utt)
-        if flow.utt != utt:
-            return
-        if not current:
-            flow.replaying = False
-            return
-        pieces = list(flow.pieces)
-        flow.replayed.add(utt)
-        flow.started(utt, self.gate.user_turns, time.monotonic())
-        flow.replaying = False
-        for p in pieces:
-            flow.pieces.append(p)
-            await task.queue_frame(TTSSpeakFrame(p))
-
-
-# Scribe's mark for room noise it half-heard: "Mm-hmm ..." (with the ellipsis) inside or before his words. Carl saying
-# "Mm-hmm." himself has no ellipsis and is kept (FreshWordsStartStrategy treats it as listening).
-NOISE_MARK = re.compile(r"(?:^|(?<=[\s\-–—]))(?:mm-?hmm|mhm|hmm)[,.]?\s*(?:\.\.\.|…)\s*", re.I)
-
-
-def clean_noise(text: str) -> str:
-    """His words without Scribe's noise marks ("Okay, so the reason- Mm-hmm ... if there's no negative cycle")."""
-    out = NOISE_MARK.sub(" ", text)
-    out = re.sub(r"\s{2,}", " ", out).strip()
-    return out
 
 
 class SttWatch:
@@ -520,14 +461,17 @@ async def speak_channel(call: dict, task: PipelineTask, quiet: Quiet):
                                     consumer.cancel()
                                     await asyncio.gather(consumer, return_exceptions=True)
                                     flow.started(None, quiet.gate.user_turns)
-                                    flow.replaying = False
+                                    while not pending.empty():
+                                        pending.get_nowait()
+                                        pending.task_done()
                                     await task.queue_frame(InterruptionFrame())
                                     consumer = group.create_task(say_pending())
                                 elif msg.get("text"):
                                     await pending.put(msg)
-                            await pending.join()
                         finally:
                             consumer.cancel()
+                            flow.started(None, quiet.gate.user_turns)
+                            await task.queue_frame(InterruptionFrame())
         except asyncio.CancelledError:
             return
         except Exception as e:  # the server restarted: reconnect

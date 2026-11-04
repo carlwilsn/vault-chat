@@ -6,6 +6,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import socket
+import sys
+from pathlib import Path
 import time
 import unittest
 from contextlib import asynccontextmanager, suppress
@@ -13,6 +17,9 @@ from contextlib import asynccontextmanager, suppress
 from aiohttp import web
 from pipecat.frames.frames import InterruptionFrame, TTSSpeakFrame, UserStartedSpeakingFrame, UserStoppedSpeakingFrame
 
+_reserved = socket.socket()
+_reserved.bind(("127.0.0.1", 0))
+os.environ["VC_VOICE_PORT"] = str(_reserved.getsockname()[1])
 from bot import Gate, Quiet, speak_channel
 
 
@@ -147,17 +154,17 @@ class NativeSpeech(unittest.IsolatedAsyncioTestCase):
             await asyncio.wait_for(entered.wait(), 2)
             release()
             await eventually(lambda: len(frames.text) == 1)
-            # Later sentences must not wait for bot audio/another quiet gap or recheck ownership.
+            # Later sentences do not wait for bot audio, but MUST recheck ownership.
             quiet.gate.bot = True
             await messages.put({'text': 'Its second sentence.', 'utt': 51, 'at': 124})
             await eventually(lambda: len(frames.text) == 2)
-            self.assertEqual(len(requests), 1)
+            self.assertEqual(len(requests), 2)
             quiet.gate.bot = False
             quiet.gate.changed -= Gate.QUIET_SECS
             await messages.put({'text': 'The worker failed; no file was changed.', 'utt': 52, 'at': 125})
             await eventually(lambda: len(frames.text) == 3)
             self.assertEqual(frames.text, ['Original tool result.', 'Its second sentence.', 'The worker failed; no file was changed.'])
-            self.assertEqual(requests, ['/api/v1/brain/call/original-call/speakable/51', '/api/v1/brain/call/original-call/speakable/52'])
+            self.assertEqual(requests, ['/api/v1/brain/call/original-call/speakable/51', '/api/v1/brain/call/original-call/speakable/51', '/api/v1/brain/call/original-call/speakable/52'])
 
     async def test_native_interrupt_is_not_blocked_behind_quiet_wait(self):
         async with consumer(speak=False) as c:
@@ -190,35 +197,41 @@ class NativeSpeech(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(frames.text, ['Current reply.'])
             self.assertEqual([p.rsplit('/', 1)[1] for p in requests], ['65', '66'])
 
-    async def test_first_syllable_collision_replays_whole_once_only_if_still_current(self):
-        for still_current in (True, False):
-            with self.subTest(still_current=still_current):
-                async with consumer(speak=[True, still_current]) as c:
-                    quiet, frames, messages, entered, released, checked, requests, release = c
-                    await messages.put({'text': 'First sentence.', 'utt': 71, 'at': 123})
-                    await asyncio.wait_for(entered.wait(), 2)
-                    release()
-                    await eventually(lambda: len(frames.text) == 1)
-                    await messages.put({'text': 'Second sentence.', 'utt': 71, 'at': 124})
-                    await eventually(lambda: len(frames.text) == 2)
-                    # His first word collides with the first syllable. Keep the real 3.2s watcher;
-                    # do not replace its timer, flow, gate or replay invocation.
-                    quiet.gate.on_frame(UserStartedSpeakingFrame(), time.monotonic())
-                    async with asyncio.timeout(4):
-                        while quiet.fixture_waits != 2:
-                            await asyncio.sleep(0.005)
-                    # Later pieces join the existing ResultFlow replay, not a transport replay queue.
-                    await messages.put({'text': 'Last sentence.', 'utt': 71, 'at': 125})
-                    await eventually(lambda: (71, 'Last sentence.') in quiet.fixture_pieces)
-                    release()
-                    await eventually(lambda: len(requests) == 2)
-                    expected = ['First sentence.', 'Second sentence.']
-                    if still_current:
-                        expected += ['First sentence.', 'Second sentence.', 'Last sentence.']
-                    await eventually(lambda: len(frames.text) >= len(expected))
-                    self.assertEqual(frames.text, expected)
-                    self.assertTrue(all(p.endswith('/original-call/speakable/71') for p in requests))
-                    self.assertEqual(quiet.fixture_waits, 2)
+    async def test_continuation_rechecks_authority_and_never_replays(self):
+        async with consumer(speak=[True, False, True]) as c:
+            quiet, frames, messages, entered, released, checked, requests, release = c
+            await messages.put({'text': 'First sentence.', 'utt': 71})
+            await asyncio.wait_for(entered.wait(), 2)
+            release()
+            await eventually(lambda: len(frames.text) == 1)
+            await messages.put({'text': 'Stale continuation.', 'utt': 71})
+            await messages.put({'text': 'Current result.', 'utt': 72})
+            await eventually(lambda: len(frames.text) == 2)
+            self.assertEqual(frames.text, ['First sentence.', 'Current result.'])
+            self.assertEqual([p.rsplit('/', 1)[1] for p in requests], ['71', '71', '72'])
+
+    async def test_local_turn_during_authorization_revokes_dispatch(self):
+        hold = asyncio.Event()
+        async with consumer(http_hold=hold) as c:
+            quiet, frames, messages, entered, released, checked, requests, release = c
+            await messages.put({'text': 'Before local barge-in.', 'utt': 73})
+            await asyncio.wait_for(entered.wait(), 2)
+            release()
+            await asyncio.wait_for(checked.wait(), 2)
+            release(new_exchange=True)
+            hold.set()
+            await eventually(lambda: (73, 'Before local barge-in.') in quiet.fixture_pieces)
+            self.assertEqual(frames.text, [])
+
+    async def test_disconnect_revokes_held_candidate_without_new_call_adoption(self):
+        async with consumer() as c:
+            quiet, frames, messages, entered, released, checked, requests, release = c
+            await messages.put({'text': 'Disconnected result.', 'utt': 74})
+            await asyncio.wait_for(entered.wait(), 2)
+            await messages.put(None)
+            await eventually(lambda: any(isinstance(f, InterruptionFrame) for f in frames.frames))
+            release()
+            self.assertEqual(frames.text, [])
 
     async def test_interrupt_after_audio_start_cancels_flow_and_preserves_next_result(self):
         async with consumer(speak=[True, False, True]) as c:
@@ -248,5 +261,40 @@ class NativeSpeech(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(requests, ['/api/v1/brain/call/original-call/speakable/81'])
 
 
+async def collect_native():
+    """Fixture collector at the actual New text dispatch; never constructs media, STT or TTS."""
+    config = json.loads(sys.stdin.readline())
+    work = Path(config.pop('work'))
+    quiet = Quiet()
+    quiet.gate.on_frame(UserStartedSpeakingFrame(), time.monotonic())
+    frames = Frames()
+    original_idle = quiet.until_idle
+    async def held():
+        (work / 'held').touch()
+        await original_idle()
+    quiet.until_idle = held
+    original_queue = frames.queue_frame
+    async def capture(frame):
+        await original_queue(frame)
+        (work / 'dispatch.json').write_text(json.dumps(frames.text))
+    frames.queue_frame = capture
+    side = asyncio.create_task(speak_channel(config, frames, quiet))
+    (work / 'ready').touch()
+    try:
+        while not (work / 'release').exists():
+            await asyncio.sleep(.02)
+        quiet.gate.on_frame(UserStoppedSpeakingFrame(), time.monotonic())
+        quiet.gate.reply_done(time.monotonic())
+        quiet.gate.changed -= Gate.QUIET_SECS
+        while not (work / 'stop').exists():
+            await asyncio.sleep(.02)
+    finally:
+        side.cancel()
+        await asyncio.gather(side, return_exceptions=True)
+
+
 if __name__ == '__main__':
-    unittest.main(verbosity=2)
+    if '--collect-native' in sys.argv:
+        asyncio.run(collect_native())
+    else:
+        unittest.main(verbosity=2)

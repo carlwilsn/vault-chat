@@ -120,6 +120,8 @@ type Sink = {
   text: string;
   created: number;
   done: boolean;
+  utt: number;
+  current: () => boolean;
   /** An opener ("Yo.", "Okay, cool."): its reply waits until then in `queued`, so the rest of his line can still come. */
   holdUntil?: number;
   queued?: string[];
@@ -286,6 +288,7 @@ export async function startCall(d: BrainDeps, b: { convId?: unknown; device?: un
 export function endCall(d: { logDir: string | null }, id: string, why = "ended"): boolean {
   const c = calls.get(id);
   if (!c) return false;
+  revokeSpeech(c);
   calls.delete(id);
   if (callByConv.get(c.convId) === id) callByConv.delete(c.convId);
   c.untap();
@@ -323,6 +326,12 @@ export function followCall(vault: string, convId: string, from?: string): boolea
   if (c.convId === convId) return true;
   const other = callByConv.get(convId);
   if (other && other !== c.id) endCall(c.deps, other, "replaced");
+  revokeSpeech(c);
+  if (c.sink) endSink(c.sink);
+  c.sink = null;
+  c.dropping = false;
+  c.armed = true;
+  c.ownTurn = true;
   c.untap();
   c.engine.setTalker(c.convId, null);
   if (callByConv.get(c.convId) === c.id) callByConv.delete(c.convId);
@@ -334,14 +343,13 @@ export function followCall(vault: string, convId: string, from?: string): boolea
   return true;
 }
 
-let announced = 0;
 /** One short line for the live call(s) in `vault` that is no turn's (an inbox entry landed): said whole at the next real
  *  gap, like a result (bot.py Gate). */
 export function announce(vault: string, text: string): number {
   let n = 0;
   for (const c of calls.values()) {
     if (!sameVault(c.vault, vault)) continue;
-    const line = `data: ${JSON.stringify({ text, utt: `a${++announced}`, at: Date.now() })}
+    const line = `data: ${JSON.stringify({ text, utt: c.utt, at: Date.now() })}
 
 `;
     for (const ch of c.channels) ch.write(line);
@@ -371,10 +379,22 @@ function callOf(req: IncomingMessage, id?: string): Call | null {
 
 // ---------------------------------------------------------------- pi's events → speech
 
+/** Revoke transport work with the call's existing utterance identity; pi remains the only turn queue. */
+function revokeSpeech(c: Call): void {
+  c.utt++;
+  c.speak.flush();
+  c.msg = null;
+  if (c.held) clearTimeout(c.held.timer);
+  c.held = null;
+  for (const ch of c.channels) ch.write(`data: ${JSON.stringify({ interrupt: true, utt: c.utt })}\n\n`);
+}
+
 function onPi(d: BrainDeps, c: Call, ev: any): void {
   if (ev?.type === "vc_delivered" && c.steer?.clientId === ev.clientId) c.steer = null;
   if (ev?.type === "vc_delivered" || (ev?.type === "message_start" && ev.message?.role === "user")) {
     // pi delivered a message (his steer): what streams from here answers it.
+    revokeSpeech(c);
+    if (c.sink) c.sink.utt = c.utt;
     if (!c.armed) {
       c.speak.flush();
       if (c.msg) c.msg.pieces = [];
@@ -383,7 +403,8 @@ function onPi(d: BrainDeps, c: Call, ev: any): void {
     return;
   }
   if (ev?.type === "vc_turn_start") {
-    c.utt++;
+    revokeSpeech(c);
+    if (c.sink) c.sink.utt = c.utt;
     c.steer = null;
     if (!c.armed) {
       c.speak.flush();
@@ -428,6 +449,7 @@ function onPi(d: BrainDeps, c: Call, ev: any): void {
     // the pipeline's response ends here, so the voice is free; what the turn says later goes to the channel.
     if (c.sink && (c.sink.sent > 0 || c.sink.queued?.length)) finishSink(c, c.sink);
   } else if (ev?.type === "vc_turn_end") {
+    if (ev.status && ev.status !== "completed") revokeSpeech(c);
     const m = c.msg;
     c.msg = null;
     const rest = c.speak.flush();
@@ -467,10 +489,11 @@ function releaseHeld(c: Call): void {
   if (!h) return;
   clearTimeout(h.timer);
   c.held = null;
-  if (!c.dropping && c.ownTurn) for (const p of h.pieces) toChannel(c, p, h.utt);
+  if (h.utt === c.utt && c.armed && !c.dropping && c.ownTurn) for (const p of h.pieces) toChannel(c, p, h.utt);
 }
 
 function writeChunk(s: Sink, text: string): void {
+  if (s.done || !s.current()) return;
   if (s.holdUntil && Date.now() < s.holdUntil) {
     (s.queued ??= []).push(text);
     s.flushT ??= setTimeout(() => flushQueued(s), Math.max(0, s.holdUntil - Date.now()));
@@ -590,7 +613,8 @@ async function completions(d: BrainDeps, req: IncomingMessage, res: ServerRespon
   const text = lastUserText(body);
   res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive" });
   res.flushHeaders();
-  const s: Sink = { res, id: `chatcmpl-${rid(6)}`, sent: 0, t0, tFirst: null, tDelta: null, deltas: 0, text: "", created: Math.floor(t0 / 1000), done: false };
+  const s: Sink = { res, id: `chatcmpl-${rid(6)}`, sent: 0, t0, tFirst: null, tDelta: null, deltas: 0, text: "", created: Math.floor(t0 / 1000), done: false, utt: c.utt,
+    current: () => calls.get(c.id) === c && c.utt === s.utt && c.armed && !c.dropping && c.ownTurn };
   if (isOpener(text)) s.holdUntil = t0 + OPENER_MS;
   if (!text) {
     // Nothing new from Carl (an empty turn): nothing to say.
@@ -625,6 +649,7 @@ async function completions(d: BrainDeps, req: IncomingMessage, res: ServerRespon
       if (c.sink === s) c.sink = null;
       if (s.flushT) clearTimeout(s.flushT);
       if (s.sent > 0) {
+        revokeSpeech(c);
         c.dropping = true;
         c.stopping = c.engine.interrupt(c.convId, false).catch(() => false);
       } else if (!c.held) {
@@ -653,6 +678,8 @@ async function completions(d: BrainDeps, req: IncomingMessage, res: ServerRespon
     log(d, { ev: "turn.merge", call: c.id, req: s.id, dropped: c.held.pieces.length });
     c.held = null;
   }
+  revokeSpeech(c);
+  s.utt = c.utt;
   if (wentOn && c.engine.isRunning(c.convId)) c.armed = false;
   // The first half is still waiting to be delivered as a steer: take it back and send the whole line as he said it
   // (pi answered each half as its own message: "Make the component graph." / "Topologically sort it." / …).
@@ -750,6 +777,14 @@ export async function brainRoute(
   if (path === "/v1/chat/completions" && method === "POST") {
     if (!loopback) return json(res, 403, { error: { message: "loopback only" } }), true;
     await completions(d, req, res, await readJson());
+    return true;
+  }
+  const able = /^\/api\/v1\/brain\/call\/([^/]+)\/speakable\/(\d+)$/.exec(path);
+  if (able && method === "GET") {
+    if (!loopback) return json(res, 403, { error: "loopback only" }), true;
+    const c = callOf(req, decodeURIComponent(able[1]!));
+    if (!c) return json(res, 401, { error: "unknown call" }), true;
+    json(res, 200, { speak: Number(able[2]) === c.utt && c.armed && c.ownTurn && !c.dropping });
     return true;
   }
   const sp = /^\/api\/v1\/brain\/call\/([^/]+)\/speak$/.exec(path);
