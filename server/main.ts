@@ -374,6 +374,18 @@ async function main(): Promise<void> {
   });
   console.log(`[vault-chat-server] listening on http://${cfg.host}:${cfg.port}`);
 
+  // The agent building vault-chat hears its ship results and is told to continue when idle (server/keepGoing.ts).
+  const vcVault = vaultRefs().find((v) => v.name === "vault-chat");
+  if (vcVault && process.env.VC_KEEP_GOING !== "0") {
+    (await import("./keepGoing")).startKeepGoing({
+      selfUrl: `http://127.0.0.1:${cfg.port}`,
+      stateDir: cfg.stateDir,
+      workDir: join(process.env.HOME ?? "", "agent-work", "vault-chat"),
+      asksFile: join(vcVault.path, "ASKS.md"),
+      convId: "project-vault-chat",
+    });
+  }
+
   // Only the box fires schedules: each due one is a message to the engine.
   const { startSchedulerLoop } = await import("../src/schedulerLoop");
   void startSchedulerLoop(cfg.vault, async (convId, text) => {
