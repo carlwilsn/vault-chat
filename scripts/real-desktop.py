@@ -81,6 +81,7 @@ def main():
     p.add_argument('--min-messages', type=int, required=True, help='Refuse an empty/wrong/short control thread')
     p.add_argument('--app', type=Path)
     p.add_argument('--before-app', type=Path)
+    p.add_argument('--check-plans', action='store_true', help='Exercise ordinary input and local Clear/reopen on the frozen original thread; inference stays blocked')
     p.add_argument('--server-bundle', type=Path)
     p.add_argument('--out', type=Path, required=True, help='Plain result JSON outside the vault')
     p.add_argument('--work', type=Path, help='New private work directory; retained for ordinary build logs')
@@ -252,6 +253,10 @@ def main():
                 data = self.rfile.read(int(self.headers.get('Content-Length', '0')))
                 # No models, side threads, sends, voice, git, or copied history writes.
                 if path.startswith('/git/') or self.command != 'GET' and path != '/api/v1/laptop-perf':
+                    if a.check_plans and path == '/api/v2/intent':
+                        # Observe the native pending-input UI before rejecting;
+                        # never forward this turn to a provider or invent a reply.
+                        time.sleep(2)
                     self.send_response(503); self.end_headers(); return
                 conn = http.client.HTTPConnection('127.0.0.1', server_port, timeout=40)
                 try:
@@ -350,6 +355,10 @@ def main():
                 # First launch only seeds a clean native profile; no tokens, no fake IPC.
                 session()
                 wait_for(lambda: js('return !!window.__TAURI_INTERNALS__;'), 'real Tauri IPC')
+                # Let the empty profile finish its own initialization before
+                # seeding preferences; otherwise startup can overwrite the thread
+                # selection between this write and the measured second launch.
+                wait_for(lambda: js('return document.readyState === "complete" && !document.getElementById("vault-splash");'), 'empty native profile initialized')
                 js('localStorage.setItem("vault_chat_last_vault",arguments[0]); localStorage.setItem("vault_chat_active_conv",arguments[1]);', str(vault), a.conversation)
                 delete_session()
                 time.sleep(1)
@@ -437,6 +446,45 @@ def main():
                     wait_for(lambda: not exists('[data-perf-target="composer"]'), 'chat panel closes')
                     key('ctrl+shift+b')
                     wait_for(lambda: exists('[data-perf-target="composer"]'), 'chat panel opens')
+                plan_lifecycle = None
+                if a.check_plans:
+                    def plans_on_screen():
+                        return js('''const cards=[...document.querySelectorAll('[data-el="todos"],[data-el="todos-done"]')];
+                          return {mounted:cards.length, visible:cards.filter(e=>{const r=e.getBoundingClientRect();return r.width>0&&r.height>0&&r.bottom>0&&r.top<innerHeight;}).length,
+                            oldFourRowPlan:cards.filter(e=>e.textContent.includes('Fix conversation-owned Ctrl+K routing') && e.textContent.includes('Delete shipping UI and notifications')).length};''')
+                    initial_plans = plans_on_screen()
+                    # No fabricated assistant reply: an actual OS-entered question
+                    # is rejected by the read-safe relay before any provider call.
+                    click('[data-perf-target="composer"]')
+                    run('xdotool', 'type', '--clearmodifiers', '--delay', '80', 'where do asks stand', env=childenv, stdout=subprocess.DEVNULL)
+                    key('Return')
+                    wait_for(lambda: js("return document.querySelector('[data-perf-target=\"composer\"]')?.value === '';"), 'ordinary question submitted to blocked relay')
+                    time.sleep(.3)
+                    after_input = plans_on_screen()
+                    time.sleep(2)  # the deliberately blocked send settles before Clear
+                    result['runs'][label] = {'planLifecycle': {'initial': initial_plans, 'afterOrdinaryInput': after_input}}
+                    # The unreachable-reason footer can crowd a narrow split
+                    # after the deliberate 503. Open the real full chat first.
+                    key('ctrl+shift+f')
+                    wait_for(lambda: exists('[data-perf-view="fullscreen"]'), 'full chat for local Clear')
+                    clear_selector = '[data-el="clear-thread"],button[title^="Clear this view"]'
+                    wait_for(lambda: exists(clear_selector) and js('return !document.querySelector(arguments[0]).disabled;', clear_selector), 'local Clear control reachable', seconds=10)
+                    click(clear_selector)
+                    time.sleep(.5)
+                    after_clear = plans_on_screen()
+                    # A real native process reconnect, not injected app state.
+                    delete_session()
+                    time.sleep(1)
+                    session()
+                    wait_for(lambda: js("return !document.getElementById('vault-splash') && !!document.querySelector('[data-perf-target=\"composer\"]');"), 'native reopened after local Clear')
+                    time.sleep(1)
+                    after_reopen = plans_on_screen()
+                    plan_lifecycle = {'initial': initial_plans, 'afterOrdinaryInput': after_input,
+                                      'afterClear': after_clear, 'afterNativeReopen': after_reopen,
+                                      'inference': 'blocked 503 after 2s observing native pending input; no assistant reply or synthetic TodoWrite',
+                                      'history': 'original server conversation unchanged; Clear is local only'}
+                    if label != 'before' and (after_clear['mounted'] or after_reopen['mounted'] or after_input['oldFourRowPlan']):
+                        raise RuntimeError('Stale plan resurrected after ordinary input, local Clear or native reopen')
                 time.sleep(3)
                 with lock:
                     batches = observed[start_batch:]
@@ -463,11 +511,19 @@ def main():
                 def stats(values):
                     v = sorted(values)
                     return {'n': len(v), 'p50Ms': round(v[len(v)//2], 3), 'p95Ms': round(v[min(len(v)-1, int(len(v)*.95))], 3), 'maxMs': round(max(v), 3)}
-                return {'works': not interaction_failures, 'interactionFailures': interaction_failures, 'native': metadata, 'telemetryHttpStatuses': sorted(statuses),
+                return {'works': not interaction_failures, 'interactionFailures': interaction_failures, 'planLifecycle': plan_lifecycle, 'native': metadata, 'telemetryHttpStatuses': sorted(statuses),
                         'telemetryNote': 'Observed real Rust IPC batches; loopback is not authenticated Tailscale laptop telemetry',
                         'launchProcessToDomUpperBoundMs': round(launch_upper, 3),
                         'timings': [{'metric': m, 'method': method, **stats(values)} for (m, method), values in sorted(samples.items())]}
             except Exception:
+                with contextlib.suppress(Exception):
+                    result['nativeFailureDom'] = js('''return {
+                      splash:!!document.getElementById('vault-splash'),
+                      composer:!!document.querySelector('[data-perf-target="composer"]'),
+                      composerDisabled:document.querySelector('[data-perf-target="composer"]')?.disabled,
+                      exactThread:localStorage.getItem('vault_chat_active_conv')===arguments[0],
+                      clearButtons:[...document.querySelectorAll('button')].filter(e=>e.textContent.trim()==='Clear').map(e=>{
+                        const r=e.getBoundingClientRect();return {el:e.dataset.el,title:e.title,disabled:e.disabled,x:r.x,y:r.y,w:r.width,h:r.height};})};''', a.conversation)
                 # One failure-only native screenshot for debugging, never per-key profiling.
                 with contextlib.suppress(Exception):
                     import base64
@@ -481,6 +537,13 @@ def main():
         if a.before_app:
             result['runs']['before'] = exercise(a.before_app, 'before')
         result['runs']['after'] = exercise(a.app, 'after')
+        if a.check_plans:
+            again = request(base + checkpoint_path)
+            again = again.get('picture', again)
+            preserved = again.get('items', []) == items
+            result['thread']['originalItemsUnchangedAfterClear'] = preserved
+            if not preserved:
+                raise RuntimeError('Local Clear changed the original conversation items')
         result['works'] = all(r['works'] for r in result['runs'].values())
     except Exception as e:
         # No raw driver response/DOM/credentials/text/path identifiers in telemetry.

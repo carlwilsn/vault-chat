@@ -1,23 +1,46 @@
-// Where the plan (the agent's to-do list, TodoWrite) shows in the thread: with
-// the turn that last wrote it, in thread order — not pinned below everything
-// (a finished 3/3 plan sat under a later "hi" and its reply). While a turn
-// runs, the plan is that turn's live state: at the end, with the live reply.
-import type { ChatMessage } from "./store";
+// Presentation only, adapted from 3794b1f4: native writes own their cards.
+// Never borrow the conversation-wide cached todos or move a historical plan to
+// the live tail. Call on the existing afterClear messages; no history is edited.
+type TodoItem = { content: string; status: "pending" | "in_progress" | "completed"; activeForm?: string };
+type PlanMessage = {
+  role?: string; hidden?: boolean; system?: boolean; waiting?: boolean; mid?: string;
+  toolCalls?: { id?: string; name: string; input?: any }[];
+};
 
-const PLAN_TOOLS = new Set(["TodoWrite"]);
+export type PlanCard = { id: string; index: number; todos: TodoItem[] };
 
-/** The index of the message the plan follows, or -1 for the end of the thread. */
-export function planIndex(messages: ChatMessage[], busy: boolean): number {
-  if (busy) return -1;
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const m = messages[i]!;
-    if (m.hidden) continue;
-    if (m.toolCalls?.some((t) => PLAN_TOOLS.has(t.name))) return i;
-  }
-  return -1;
+export function planCards(messages: PlanMessage[]): PlanCard[] {
+  const cards: PlanCard[] = [];
+  let current: PlanCard | undefined;
+  messages.forEach((m, index) => {
+    if (m.hidden || m.waiting) return;
+    if (m.role === "user") { current = undefined; return; }
+    if (m.role !== "assistant" || m.system) return;
+    for (const call of m.toolCalls ?? []) {
+      if (call.name !== "TodoWrite" || !Array.isArray(call.input?.todos)) continue;
+      if (!current) {
+        current = { id: call.id ?? m.mid ?? `i${index}`, index, todos: call.input.todos };
+        cards.push(current);
+      } else current.todos = call.input.todos;
+    }
+  });
+  return cards.filter((card) => card.todos.length > 0);
 }
 
-/** A plan whose every step is done: shown as one quiet line. */
+/** Pinned UI is only the latest visible input's own write, not old work. */
+export function currentPlan(messages: Parameters<typeof planCards>[0]): TodoItem[] {
+  let start = 0;
+  messages.forEach((m, i) => { if (m.role === "user" && !m.hidden && !m.waiting) start = i; });
+  const cards = planCards(messages.slice(start));
+  return cards[cards.length - 1]?.todos ?? [];
+}
+
+/** Compatibility selector: no unowned/tail fallback, even while busy. */
+export function planIndex(messages: Parameters<typeof planCards>[0], _busy: boolean): number {
+  const cards = planCards(messages);
+  return cards[cards.length - 1]?.index ?? -1;
+}
+
 export function planDone(todos: { status: string }[]): boolean {
   return todos.length > 0 && todos.every((t) => t.status === "completed");
 }

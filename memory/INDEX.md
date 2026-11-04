@@ -10,3 +10,5 @@ Carl’s instructions live in AGENTS.md; ASKS.md is the only plan.
 - server/convlog/ persists the feed; pi session entries are referenced by the feed.
 - src/laptopPerf.ts sends bounded timing samples to /api/v1/laptop-perf.
 - The installed watcher handles ship requests, captures, gates and main promotion.
+
+- Plan cards use visible TodoWrite arguments (`src/planPlace.ts`), not cached conversation todos; Clear stays device-local.

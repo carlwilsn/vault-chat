@@ -1,3 +1,4 @@
+import { planCards, currentPlan } from "../../src/planPlace";
 import { createElement } from "react";
 import { createRoot } from "react-dom/client";
 // The phone app's behaviour: the former <script id="phone-ts"> body of
@@ -628,8 +629,7 @@ export function boot(): void {
     // A finished one leaves the screen (the agent's reply carries the result).
     const runningTasks = subs.filter((x) => (x.state || x.status || "running") === "running");
     if (!runningTasks.length) tasksOpen = false;
-    const tail = (X.choice("todos") === "inline" ? X.todosHtml(convId ? convMeta.todos || [] : []) : "")
-      + X.verdictHtml(convId ? convMeta.verdict : undefined, convMeta.state);
+    const tail = X.verdictHtml(convId ? convMeta.verdict : undefined, convMeta.state);
     if (tail && !msgsEl.querySelector(".hint")) {
       if (!tailEl) { tailEl = document.createElement("div"); tailEl.id = "xtail"; }
       tailEl.innerHTML = tail;
@@ -638,7 +638,7 @@ export function boot(): void {
     } else if (tailEl) { tailEl.remove(); }
     const pin = $("pinned");
     // The pinned plan: while it has work left.
-    const todos = convId ? convMeta.todos || [] : [];
+    const todos = convId ? currentPlan(afterClear(pic && picView ? picView(pic).messages : [], clearedAt[convId])) : [];
     const planOpen = running || todos.some((t) => t.status !== "completed");
     if (pin) pin.innerHTML = X.subagentsHtml(runningTasks, "strip", tasksOpen) + (X.choice("todos") === "pinned" && planOpen ? X.todosHtml(todos) : "");
   }
@@ -916,6 +916,7 @@ export function boot(): void {
       if (hint) hint.remove();
       const keep = new Set<string>();
       let prev: HTMLElement | null = null;
+      const plans = X.choice("todos") === "inline" ? planCards(msgs) : [];
       msgs.forEach((m, i) => {
         const key = String(m.mid ?? "i" + i);
         keep.add(key);
@@ -927,6 +928,14 @@ export function boot(): void {
           n = { el, msg: m, live: !!m.__mine };
           shownNodes.set(key, n);
         }
+        // Render only this native write's snapshot, never convMeta's old list.
+        const plan = plans.find((p) => p.index === i);
+        let host = n.el.querySelector<HTMLElement>("[data-plan-host]");
+        if (plan) {
+          if (!host) { host = document.createElement("div"); host.dataset.planHost = ""; n.el.appendChild(host); }
+          const html = X.todosHtml(plan.todos);
+          if (host.innerHTML !== html) host.innerHTML = html;
+        } else host?.remove();
         // In the log's order: right after the previous one.
         const want = prev ? prev.nextSibling : msgsEl.firstChild;
         if (want !== n.el) msgsEl.insertBefore(n.el, want);

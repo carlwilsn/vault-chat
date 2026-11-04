@@ -2,7 +2,7 @@ import { useShallow } from "zustand/react/shallow";
 import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef } from "react";
 import { Markdown, StreamingMarkdown } from "./Markdown";
 import { localPathFromUrl } from "./mdPipeline";
-import { planDone, planIndex } from "./planPlace";
+import { planDone, planCards, currentPlan, type PlanCard } from "./planPlace";
 import { Plus, Square, ArrowUp, ChevronDown, ChevronUp, Wrench, X, MessageSquare, Mic, Paperclip, Scan, AtSign, AlertCircle, Info, Eraser, Loader2, FileText } from "lucide-react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { attachBlob, attachPath, insideVault, pathMentions, sizeLabel } from "./attachFiles";
@@ -650,6 +650,9 @@ export function ChatPane() {
     archived ? (older ? OLDER_CHAT : ARCHIVED_THREAD) : boxDown ? `${BOX_UNREACHABLE} — ${downWhy}. Retrying…` : !ready ? (vaultPath ? "Connecting to the box…" : "Open a vault first") : "Ask anything, or / for commands…",
   );
 
+  const todos = useMemo(() => currentPlan(messages), [messages]);
+  const plans = useMemo(() => planCards(messages), [messages]);
+
   if (showSettings) return <SettingsPane />;
 
   if (noBox) {
@@ -668,9 +671,7 @@ export function ChatPane() {
     );
   }
 
-  const todos: TodoItem[] = activeConv?.todos ?? [];
-  const planInline = todos.length > 0 && uiChoice("todos") === "inline";
-  const planAt = planInline ? planIndex(messages, busy) : -1;
+  const planInline = uiChoice("todos") === "inline";
   const verdict = activeConv?.state === "done" ? activeConv.verdict : undefined;
   const totalCost = uiChoice("cost") === "total" ? formatCost(activeConv?.costUsd ?? messages.reduce((n, m) => n + (m.costUsd ?? m.usage?.costUsd ?? 0), 0)) : undefined;
   let lastVisible = -1;
@@ -1111,13 +1112,11 @@ export function ChatPane() {
           onOpenSubagent={openSubagent}
           onSubagent={controlSubagent}
           onRetry={retryTurn}
-          todos={planInline ? todos : null}
-          planAt={planAt}
+          plans={planInline ? plans : null}
         />
 
 
 
-        {planInline && planAt < 0 && <AgentTodoList todos={todos} />}
 
         {verdict && uiChoice("verdict") === "thread" && <VerdictLine verdict={verdict} />}
 
@@ -1521,7 +1520,7 @@ export function ChatPane() {
  * (ChatPane state) never re-walks the history: only a new message, the window or the
  * run state redraws it. */
 const HistoryList = memo(function HistoryList({
-  messages, windowStart, lastVisible, busy, messageSubagents, openableThreadIds, onAsk, onOpenSubagent, onSubagent, onRetry, todos, planAt,
+  messages, windowStart, lastVisible, busy, messageSubagents, openableThreadIds, onAsk, onOpenSubagent, onSubagent, onRetry, plans,
 }: {
   messages: ChatMessage[];
   windowStart: number;
@@ -1533,12 +1532,10 @@ const HistoryList = memo(function HistoryList({
   onOpenSubagent: (id: string) => void;
   onSubagent: (sid: string, op: "steer" | "stop", text?: string) => Promise<string | null>;
   onRetry: () => void;
-  todos: TodoItem[] | null;
-  planAt: number;
+  plans: PlanCard[] | null;
 }) {
   return (
     <>
-      {todos && planAt >= 0 && planAt < windowStart && <AgentTodoList todos={todos} />}
       {messages.map((m, i) =>
         i < windowStart || m.hidden || m.waiting ? null : (
           <Fragment key={i}>
@@ -1554,8 +1551,8 @@ const HistoryList = memo(function HistoryList({
               onRetry={onRetry}
               voiceCont={!!m.voice && i > 0 && !!messages[i - 1]?.voice && !messages[i - 1]?.hidden}
             />
-            {/* The plan sits with the turn that last wrote it (planPlace.ts). */}
-            {todos && i === planAt && <AgentTodoList todos={todos} />}
+            {/* Native writes own their snapshot; never lift old work into the live window. */}
+            {plans?.filter((p) => p.index === i).map((p) => <AgentTodoList key={p.id} todos={p.todos} />)}
           </Fragment>
         ),
       )}
