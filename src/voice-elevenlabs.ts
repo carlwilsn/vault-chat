@@ -314,7 +314,13 @@ export async function startElevenLabsSession(opts?: { recap?: string }): Promise
   {
     const { boxGet } = await import("./boxChat");
     const engine = await boxGet(box.link, "/api/v1/brain/engine", 4000).catch(() => null);
-    if (engine?.engine === "new") return startBrainSession(box.link, state.activeConversationId ?? MAIN_ID);
+    if (engine?.engine === "new") {
+      if (engine.error || !engine.pipeline) {
+        reportVoiceError(engine.error || "The box’s voice is not ready. Open Settings → Voice → Health.");
+        return; // Refuse BEFORE microphone access.
+      }
+      return startBrainSession(box.link, state.activeConversationId ?? MAIN_ID);
+    }
   }
 
   // "Connecting…" lights up the cockpit immediately so the user

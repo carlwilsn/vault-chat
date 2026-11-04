@@ -25,6 +25,17 @@ import json
 import os
 import re
 import time
+import sys
+
+# Bind before importing inference/audio dependencies. Retain the same socket through aiohttp.
+from listener import bind_listener
+LISTENER = None
+if __name__ == "__main__":
+    try:
+        LISTENER = bind_listener()
+    except OSError as error:
+        print(f"[voice bind] port={os.environ.get('VC_VOICE_PORT', '?')} errno={error.errno}", file=sys.stderr, flush=True)
+        sys.exit(98 if error.errno == 98 else 1)
 from typing import Any
 
 import aiohttp
@@ -70,7 +81,7 @@ from pipecat.transports.smallwebrtc.request_handler import (
 )
 from pipecat.transports.smallwebrtc.transport import SmallWebRTCTransport
 
-PORT = int(os.environ.get("VC_VOICE_PORT", "8857"))
+PORT = int(os.environ["VC_VOICE_PORT"])
 BRAIN = os.environ.get("VC_VOICE_BRAIN_MODE", "pi")  # pi | echo
 STT = os.environ.get("VC_STT", "elevenlabs")
 TTS = os.environ.get("VC_TTS", "elevenlabs")
@@ -668,7 +679,7 @@ def main():
     if os.environ.get("VC_VOICE_TEST") == "1":
         app.router.add_post("/test/drop-transcripts", test_drop)
     app.router.add_get("/health", lambda _r: web.json_response({"ok": True, "brain": BRAIN, "stt": STT, "tts": TTS}))
-    web.run_app(app, host="127.0.0.1", port=PORT, print=None)
+    web.run_app(app, sock=LISTENER, print=lambda _s: print("[voice ready]", flush=True))
 
 
 if __name__ == "__main__":

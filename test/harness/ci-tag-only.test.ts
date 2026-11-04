@@ -25,6 +25,7 @@ function fixture() {
   put(box, "src-tauri/tauri.conf.json", '{\n  "version": "0.7.22",\n  "productName": "Fixture"\n}\n');
   put(box, "src-tauri/Cargo.toml", '[package]\nname = "fixture"\nversion = "0.7.22"\n');
   put(box, "server/config.ts", read("server/config.ts"));
+  put(box, "server/voicePorts.ts", read("server/voicePorts.ts"));
   const base = commit(box, "old accepted source"); git(box, "tag", "v0.7.22");
   git(dir, "init", "--bare", "--initial-branch=main", remote);
   git(box, "remote", "add", "origin", remote); git(box, "push", "origin", "main", "--tags");

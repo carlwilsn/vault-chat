@@ -263,6 +263,7 @@ export async function startServer(e: ServerEnv & { bundle?: string }): Promise<R
   const bundle = e.bundle ?? BUNDLE;
   if (!existsSync(bundle)) throw new Error("bundle missing — run `npm run build:server`");
   const port = await freePort();
+  const voicePort = String(await freePort());
   const tokenFile = join(e.home, "phone-token");
   if (e.token) writeFileSync(tokenFile, e.token);
   const env: NodeJS.ProcessEnv = {
@@ -271,6 +272,9 @@ export async function startServer(e: ServerEnv & { bundle?: string }): Promise<R
     USERPROFILE: e.home,
     VC_HOST: "127.0.0.1",
     VC_PORT: String(port),
+    VC_VOICE_PORT: voicePort,
+    VC_VOICE_PIPELINE_PORT: voicePort,
+    VC_VOICE_PIPELINE: "off",
     VC_VAULT: e.vault,
     VC_BARE_REPO: e.bare ?? join(e.home, "none.git"),
     VC_SECRETS_DIR: e.secrets,

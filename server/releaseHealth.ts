@@ -75,7 +75,7 @@ export async function observeReleaseVoiceHealth(o: {
 }): Promise<ReleaseVoiceHealth> {
   const base = { required: o.required, owned: false, startupDeadline: o.startupDeadline };
   if (!o.required) return { ...base, state: "disabled" };
-  if (o.pipeline.error) return { ...base, state: "failed", error: "Required voice child reported a setup/process failure" };
+  if (o.pipeline.error) return { ...base, state: "failed", error: o.pipeline.error };
   const waiting = (): ReleaseVoiceHealth => ({ ...base, state: Date.now() < o.startupDeadline ? "starting" : "failed", error: Date.now() < o.startupDeadline ? undefined : "Required voice child/listener did not become available before setup deadline" });
   if (!o.pipeline.running || o.pipeline.settingUp) return waiting();
   if (process.platform !== "linux") return { ...base, state: "unverified" };

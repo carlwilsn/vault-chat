@@ -9,8 +9,6 @@ import { join } from "node:path";
 import { voiceEngine } from "./voiceBrain";
 import { pipelineState, stopPipeline, wantPipeline } from "./voicePipeline";
 
-/** Where the New voice's pipeline listens (loopback only). */
-const VOICE_PIPELINE_PORT = Number(process.env.VC_VOICE_PIPELINE_PORT) || 8857;
 import { configureChangeDelivery, currentDeliveryHealth } from "./changeDelivery";
 import { observeReleaseVoiceHealth, type BoxReleaseHealth } from "./releaseHealth";
 import { loadConfig, SERVER_VERSION, SERVER_REV } from "./config";
@@ -238,7 +236,7 @@ async function main(): Promise<void> {
     return { version: SERVER_VERSION, revision: SERVER_REV, observedAt: Date.now(), ready: !!engine.engine && !engine.error && pi.pi?.state === "up",
       ...(engine.error ? { error: "Box agent engine failed to initialize" } : {}),
       // Check the managed child, listener ownership and actual runtime HTTP schema; never process-running alone.
-      voice: await observeReleaseVoiceHealth({ required, pipeline, stateDir: cfg.stateDir, port: VOICE_PIPELINE_PORT, startupDeadline: bootedAt + 10 * 60_000 }) };
+      voice: await observeReleaseVoiceHealth({ required, pipeline, stateDir: cfg.stateDir, port: cfg.voicePort, startupDeadline: bootedAt + 10 * 60_000 }) };
   };
   configureChangeDelivery({ boxHealth: boxReleaseHealth,
     vaults: () => vaultRefs().map(v => ({ name: v.name, path: v.path })), stateDir: cfg.stateDir });
@@ -256,6 +254,7 @@ async function main(): Promise<void> {
         }
       })(),
       vaults: vaultRefs().map((v) => ({ name: v.name, path: v.path })),
+      voice: pipelineState(),
       hasKey: hasKey("api.openrouter"),
       keyNames: keyNames(),
       version: SERVER_VERSION,
@@ -341,8 +340,15 @@ async function main(): Promise<void> {
       engine: async () => engineOf(v),
       elKey: () => useStore.getState().serviceKeys.elevenlabs || null,
       voiceId: () => localStorage.getItem("vault_chat_elevenlabs_voice") || "nPczCjzI2devNBz1zQrb",
-      botUrl: `http://127.0.0.1:${VOICE_PIPELINE_PORT}`,
-      onEngine: (e) => wantPipeline({ stateDir: cfg.stateDir, port: VOICE_PIPELINE_PORT, log: (s) => console.log(s) }, e === "new" && process.env.VC_VOICE_PIPELINE !== "off"),
+      pipelineState,
+      pipelineReady: async () => {
+        const p = pipelineState();
+        if (!p.wanted || !p.running || process.env.VC_VOICE_PIPELINE === "off") return false;
+        const health = await observeReleaseVoiceHealth({ required: true, pipeline: p, stateDir: cfg.stateDir, port: cfg.voicePort, startupDeadline: bootedAt + 10 * 60_000 });
+        return health.owned && health.state === "ready";
+      },
+      botUrl: `http://127.0.0.1:${cfg.voicePort}`,
+      onEngine: (e) => wantPipeline({ stateDir: cfg.stateDir, serverPort: cfg.port, port: cfg.voicePort, log: (s) => console.log(s) }, e === "new" && process.env.VC_VOICE_PIPELINE !== "off"),
       selfUrl: `http://127.0.0.1:${cfg.port}`,
       logDir: join(cfg.stateDir, "logs"),
       stateDir: cfg.stateDir,
@@ -413,7 +419,7 @@ async function main(): Promise<void> {
   process.on("SIGTERM", () => shutdown("SIGTERM"));
   // The New voice's pipeline runs as this server's child while the box's engine is "new" (server/voicePipeline.ts).
   if (voiceEngine({ stateDir: cfg.stateDir }) === "new" && process.env.VC_VOICE_PIPELINE !== "off")
-    wantPipeline({ stateDir: cfg.stateDir, port: VOICE_PIPELINE_PORT, log: (s) => console.log(s) }, true);
+    void wantPipeline({ stateDir: cfg.stateDir, serverPort: cfg.port, port: cfg.voicePort, log: (s) => console.log(s) }, true).catch(() => {}); // failure is retained in health/UI
   process.on("exit", () => stopPipeline());
   process.on("SIGINT", () => shutdown("SIGINT"));
 }

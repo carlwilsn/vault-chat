@@ -82,6 +82,7 @@ def main():
     p.add_argument('--app', type=Path)
     p.add_argument('--before-app', type=Path)
     p.add_argument('--check-plans', action='store_true', help='Exercise ordinary input and local Clear/reopen on the frozen original thread; inference stays blocked')
+    p.add_argument('--voice-conflict', action='store_true', help='Hold an owned inert listener; prove real startup refusal and mic-OFF health UI')
     p.add_argument('--server-bundle', type=Path)
     p.add_argument('--out', type=Path, required=True, help='Plain result JSON outside the vault')
     p.add_argument('--work', type=Path, help='New private work directory; retained for ordinary build logs')
@@ -95,7 +96,7 @@ def main():
         p.error('Use an original main/project thread (older read-only chats cannot measure composer input)')
     if a.min_messages < 1:
         p.error('--min-messages must be positive')
-    tools = ['Xvfb', 'xdotool', 'openbox', 'dbus-daemon', 'WebKitWebDriver', 'node', 'npm']
+    tools = ['Xvfb', 'xdotool', 'openbox', 'dbus-daemon', 'WebKitWebDriver', 'node', 'npm', 'flock']
     if not a.app:
         tools += ['cargo', 'rustc', 'pkg-config', 'cc']
     import ctypes
@@ -108,7 +109,7 @@ def main():
         if a.inside_nix or not shutil.which('nix-shell'):
             p.error('Missing native dependencies: ' + ', '.join(t for t in tools if not shutil.which(t)) + ('' if indicator_ready else ' libayatana-appindicator3'))
         pkgs = a.nixpkgs or subprocess.check_output(['nix', 'eval', '--raw', 'nixpkgs#path'], text=True).strip()
-        expr = 'with import <nixpkgs> {}; mkShell { packages = [ nodejs_22 rustc cargo pkg-config gcc gtk3 webkitgtk_4_1 libsoup_3 alsa-lib openssl librsvg libayatana-appindicator xorg-server xdotool openbox dbus python3 ]; LD_LIBRARY_PATH = lib.makeLibraryPath [ libayatana-appindicator ]; }'
+        expr = 'with import <nixpkgs> {}; mkShell { packages = [ nodejs_22 rustc cargo pkg-config gcc gtk3 webkitgtk_4_1 libsoup_3 alsa-lib openssl librsvg libayatana-appindicator xorg-server xdotool openbox dbus python3 util-linux ]; LD_LIBRARY_PATH = lib.makeLibraryPath [ libayatana-appindicator ]; }'
         # exec, not an unattended job: one command owns its children to completion.
         import shlex
         os.execvp('nix-shell', ['nix-shell', '-I', 'nixpkgs=' + pkgs, '-E', expr, '--run',
@@ -227,10 +228,28 @@ def main():
                           VC_VAULT_NAME='vault-chat', VC_STATE_DIR=str(state), VC_SYNC='0', VC_ENGINE='0',
                           VC_SECRETS_DIR=str(home / 'empty-secrets'), VC_TOKEN_FILE=str(home / 'new-token'),
                           VC_LOCALSTORAGE=str(home / 'storage'), VC_PUSH_SUBS=str(home / 'push'),
-                          VC_VOICE_PIPELINE='off', VC_VOICE_PIPELINE_PORT=str(voice.server_port))
+                          VC_VOICE_PIPELINE='off', VC_VOICE_PORT=str(voice.server_port), VC_VOICE_PIPELINE_PORT=str(voice.server_port))
+        if a.voice_conflict:
+            state.mkdir(parents=True, exist_ok=True)
+            (state / 'voice-engine.json').write_text('{"engine":"new"}')
+            server_env.update(VC_VOICE_PIPELINE='on', VC_VOICE_BRAIN='pi')
         spawn(['node', str(a.server_bundle)], 'server', server_env)
         base = 'http://127.0.0.1:' + str(server_port)
         wait_for(lambda: request(base + '/api/v1/health'), 'owned genuine box server')
+        if a.voice_conflict:
+            conflict_status = wait_for(lambda: (s if (s := request(base + '/api/v1/brain/engine')).get('failure') else None), 'actual startup conflict')
+            if conflict_status['failure']['code'] != 'VOICE_PORT_CONFLICT' or conflict_status['failure']['port'] != voice.server_port or conflict_status['pipeline']:
+                raise RuntimeError('Compiled backend did not report owned socket conflict')
+            health = request(base + '/api/v1/health')
+            if health.get('voice', {}).get('failure') != conflict_status['failure']:
+                raise RuntimeError('Health lost the structured startup conflict')
+            # The original listener must still answer after refusal. It is intentionally not voice.
+            try:
+                request('http://127.0.0.1:' + str(voice.server_port) + '/health')
+            except urllib.error.HTTPError as e:
+                if e.code != 503:
+                    raise RuntimeError('Original inert listener was disturbed')
+            result['voiceConflict'] = {'socketRefused': True, 'originalListenerStillResponds503': True, 'healthCode': conflict_status['failure']['code']}
         checkpoint_path = '/api/v2/conversations/' + urllib.parse.quote(a.conversation, safe='') + '/checkpoint'
         checkpoint = request(base + checkpoint_path)
         picture = checkpoint.get('picture', checkpoint)
@@ -485,6 +504,26 @@ def main():
                                       'history': 'original server conversation unchanged; Clear is local only'}
                     if label != 'before' and (after_clear['mounted'] or after_reopen['mounted'] or after_input['oldFourRowPlan']):
                         raise RuntimeError('Stale plan resurrected after ordinary input, local Clear or native reopen')
+                if a.voice_conflict:
+                    click('button[title="Settings"]')
+                    # The health control lives in ordinary Voice settings, reachable without opening the mic.
+                    wait_for(lambda: js('return !!document.querySelector("[data-el=voice-health-open]");'), 'voice settings status')
+                    for _ in range(12):
+                        if exists('[data-el="voice-health-open"]'):
+                            break
+                        run('xdotool', 'mousemove', '1300', '700', 'click', '5', env=childenv, stdout=subprocess.DEVNULL)
+                        time.sleep(.15)
+                    click('[data-el="voice-health-open"]')
+                    health_ui = wait_for(lambda: js('''const d=document.querySelector('[role="dialog"][aria-label="Voice health"]');
+                        if(!d)return null;return {microphoneOff:d.textContent.includes('Microphone off'),
+                        codeVisible:d.textContent.includes('VOICE_PORT_CONFLICT'),
+                        exactServerError:d.querySelector('[data-el="voice-health-status"]')?.textContent===arguments[0],
+                        ordinaryVoiceError:document.querySelector('[data-el="voice-startup-error"]')?.textContent===arguments[0]};''', conflict_status['error']), 'native Health dialog')
+                    if not all(health_ui.values()):
+                        raise RuntimeError('Native mic-OFF health/normal Voice UI lost the genuine startup failure')
+                    result['voiceConflict']['nativeMicOffUI'] = health_ui
+                    click('[data-el="voice-health-close"]')
+                    click('button[title="Settings"]')
                 time.sleep(3)
                 with lock:
                     batches = observed[start_batch:]

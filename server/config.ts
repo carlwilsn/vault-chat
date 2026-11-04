@@ -1,5 +1,6 @@
 // Server configuration, read once from the environment. Every path the server
 // touches comes from here so tests can point the whole process at temp dirs.
+import { voicePort } from "./voicePorts";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -24,6 +25,7 @@ function secretDir(): string {
 export type ServerConfig = {
   host: string;
   port: number;
+  voicePort: number;
   /** The box working copy (`~/vaults/<vault>` on branch `box`). */
   vault: string;
   /** Vault name used in `/git/<name>.git` and sync paths. */
@@ -50,9 +52,12 @@ export function loadConfig(): ServerConfig {
   const vault = resolve(env("VC_VAULT") ?? join(HOME, "vaults", "school2"));
   const vaultName = env("VC_VAULT_NAME") ?? vault.replace(/[\\/]+$/, "").split(/[\\/]/).pop()!;
   const stateDir = resolve(env("VC_STATE_DIR") ?? join(HOME, ".local", "state", "vault-chat-server"));
+  const port = Number(env("VC_PORT") ?? 8848);
+  const voice = voicePort(port, process.env.VC_VOICE_PORT, process.env.VC_VOICE_PIPELINE_PORT);
   cached = {
     host: env("VC_HOST") ?? "127.0.0.1",
-    port: Number(env("VC_PORT") ?? 8848),
+    port,
+    voicePort: voice,
     vault,
     vaultName,
     // A vault in the vault-chat folder (VC_MASTER, server/master.ts) has its hub in <folder>/.hub/vaults/.

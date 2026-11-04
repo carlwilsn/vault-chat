@@ -61,7 +61,9 @@ export type BrainDeps = {
   /** Where the voice engine choice is kept (Settings → Voice engine: every device follows the box's). */
   stateDir?: string | null;
   /** The engine changed (the server starts or stops the pipeline: server/voicePipeline.ts). */
-  onEngine?: (e: VoiceEngine) => void;
+  onEngine?: (e: VoiceEngine) => void | Promise<void>;
+  pipelineReady?: () => Promise<boolean>;
+  pipelineState?: () => { wanted: boolean; running: boolean; settingUp: boolean; error: string | null; failure?: unknown };
 };
 
 /** The routes are on unless the box turns them off; which voice a device uses is the engine setting below. */
@@ -102,6 +104,9 @@ function setVoiceEngine(d: { stateDir?: string | null }, e: VoiceEngine): boolea
 }
 /** Is the pipeline up (its /health on loopback, 1.5 s)? */
 async function pipelineUp(d: BrainDeps): Promise<boolean> {
+  // Status is observation only: never spawn or probe a foreign/default voice listener.
+  if (d.pipelineState) return d.pipelineState().running && (d.pipelineReady ? await d.pipelineReady() : true);
+  if (process.env.VC_VOICE_PIPELINE === "off") return false;
   try {
     const r = await fetch(`${d.botUrl}/health`, { signal: AbortSignal.timeout(1500) });
     return r.ok;
@@ -669,6 +674,8 @@ function speakChannel(d: BrainDeps, req: IncomingMessage, res: ServerResponse, i
 async function offer(d: BrainDeps, b: any): Promise<{ status: number; body: Record<string, unknown> }> {
   const c = calls.get(String(b?.callId ?? ""));
   if (!c) return { status: 404, body: { error: "no such call" } };
+  const state = d.pipelineState?.();
+  if (state && !(await pipelineUp(d))) return { status: 503, body: { error: state.error ?? "This instance’s voice pipeline is not ready", failure: state.failure ?? null } };
   const key = d.elKey();
   if (!key) return { status: 503, body: { error: "no ElevenLabs key on the box" } };
   try {
@@ -734,7 +741,8 @@ export async function brainRoute(
   }
   // Settings → Voice engine (every device reads it when voice starts).
   if (path === "/api/v1/brain/engine" && method === "GET") {
-    json(res, 200, { engine: voiceEngine(d), pipeline: await pipelineUp(d), model: talkerModel() });
+    const state = d.pipelineState?.();
+    json(res, 200, { engine: voiceEngine(d), pipeline: await pipelineUp(d), model: talkerModel(), error: state?.error ?? null, failure: state?.failure ?? null, settingUp: state?.settingUp ?? false });
     return true;
   }
   if (path === "/api/v1/brain/engine" && method === "POST") {
@@ -742,10 +750,14 @@ export async function brainRoute(
     const e: VoiceEngine = b?.engine === "new" ? "new" : "classic";
     if (!setVoiceEngine(d, e)) return json(res, 503, { error: "no state dir" }), true;
     log(d, { ev: "engine", engine: e });
-    d.onEngine?.(e);
+    try { await d.onEngine?.(e); } catch {
+      const state = d.pipelineState?.();
+      return json(res, 409, { ok: false, engine: e, pipeline: false, error: state?.error ?? "Voice startup failed", failure: state?.failure ?? null }), true;
+    }
     // A first switch to New sets the pipeline up (minutes once): say so rather than "not running".
     if (e === "new") await new Promise((r) => setTimeout(r, 1500));
-    json(res, 200, { ok: true, engine: e, pipeline: await pipelineUp(d) });
+    const state = d.pipelineState?.();
+    json(res, 200, { ok: true, engine: e, pipeline: await pipelineUp(d), error: state?.error ?? null, failure: state?.failure ?? null });
     return true;
   }
   // The waiting line for a surface with no conversation feed of its own (the iPad board): its inputs, and the box's

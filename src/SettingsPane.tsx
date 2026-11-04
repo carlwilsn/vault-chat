@@ -637,7 +637,8 @@ function VoiceSection() {
  *  spoken by the box (server/voiceBrain.ts); Classic — ElevenLabs' agent handing requests to it. The rollback is one click. */
 function VoiceEngineRow() {
   const vault = useStore((s) => s.vaultPath);
-  const [st, setSt] = useState<{ engine: "classic" | "new"; pipeline: boolean } | null>(null);
+  const [st, setSt] = useState<{ engine: "classic" | "new"; pipeline: boolean; error?: string | null; failure?: { code: string } | null } | null>(null);
+  const [healthOpen, setHealthOpen] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   useEffect(() => {
     let alive = true;
@@ -646,7 +647,7 @@ function VoiceEngineRow() {
       const link = await boxLinkFor(vault).catch(() => null);
       if (!link) return;
       const r = await boxGet(link, "/api/v1/brain/engine", 5000).catch(() => null);
-      if (alive && r) setSt({ engine: r.engine === "new" ? "new" : "classic", pipeline: !!r.pipeline });
+      if (alive && r) setSt({ engine: r.engine === "new" ? "new" : "classic", pipeline: !!r.pipeline, error: r.error, failure: r.failure });
     })();
     return () => {
       alive = false;
@@ -659,8 +660,13 @@ function VoiceEngineRow() {
     const link = await boxLinkFor(vault).catch(() => null);
     if (!link) return;
     const r = await boxPost(link, "/api/v1/brain/engine", { engine });
-    if (!r.ok) return setErr(r.error ?? "the box did not take it");
-    setSt({ engine, pipeline: !!r.data?.pipeline });
+    if (!r.ok) {
+      setErr(r.error ?? "the box did not take it");
+      const current = await boxGet(link, "/api/v1/brain/engine", 5000).catch(() => null);
+      if (current) setSt(current);
+      return;
+    }
+    setSt({ engine, pipeline: !!r.data?.pipeline, error: typeof r.data?.error === "string" ? r.data.error : null, failure: r.data?.failure as { code: string } | null });
     if (useStore.getState().voiceMode) setErr("Takes effect with the next voice session.");
   };
   return (
@@ -673,6 +679,7 @@ function VoiceEngineRow() {
               {e === "new" ? "New" : "Classic"}
             </Button>
           ))}
+          <Button size="sm" variant="ghost" className="h-6 px-2 text-[11px]" data-el="voice-health-open" onClick={() => setHealthOpen(true)}>Health</Button>
         </div>
         <p className="text-[10.5px] text-muted-foreground px-0.5">
           {st.engine === "new"
@@ -681,7 +688,17 @@ function VoiceEngineRow() {
               : "The box's voice is setting up or not running; Classic still works."
             : "ElevenLabs hears and speaks, with the quick-replies model; the agent does the work."}
         </p>
-        {err && <p className="text-[10.5px] text-amber-500/90 px-0.5">{err}</p>}
+        {st.error && <p role="status" data-el="voice-startup-error" className="text-[10.5px] text-destructive px-0.5">{st.error}</p>}
+        {healthOpen && <div role="dialog" aria-modal="true" aria-label="Voice health" className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40" onClick={() => setHealthOpen(false)}>
+          <div className="w-[420px] max-w-[90vw] rounded-lg border border-border bg-card p-4 space-y-3" onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-sm font-semibold">Voice health</h3>
+            <p className="text-xs text-muted-foreground">Microphone {useStore.getState().voiceMode ? "on" : "off"} · {st.pipeline ? "Pipeline ready" : "Pipeline unavailable"}</p>
+            <p data-el="voice-health-status" className={`text-xs ${st.error ? "text-destructive" : "text-muted-foreground"}`}>{st.error || "No startup error reported."}</p>
+            {st.failure && <p className="text-[10px] text-muted-foreground">{st.failure.code}</p>}
+            <Button size="sm" variant="outline" data-el="voice-health-close" onClick={() => setHealthOpen(false)}>Close</Button>
+          </div>
+        </div>}
+        {err && <p className="text-[10.5px] text-destructive px-0.5">{err}</p>}
       </div>
     </div>
   );
