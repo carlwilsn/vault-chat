@@ -98,6 +98,7 @@ def main():
     p.add_argument('--check-video', type=Path, help='Owned synthetic VP8/Vorbis clip; append one private media-only test entry, never publish it')
     p.add_argument('--check-editor-sync', action='store_true', help='Native immediate paste/send via existing Git transport and genuine Pi read on a different viewer vault')
     p.add_argument('--native-video-only', action='store_true', help='Run native video independently; retain earlier phone evidence separately, never relabel it')
+    p.add_argument('--check-pending-chat', action='store_true', help='Queue via native input on held real Pi turns; exercise existing interrupt-and-send and preserve original history')
     p.add_argument('--inside-nix', action='store_true', help=argparse.SUPPRESS)
     a = p.parse_args()
     if a.check_editor_sync and not a.check_status_dot:
@@ -112,7 +113,7 @@ def main():
     if a.min_messages < 1:
         p.error('--min-messages must be positive')
     tools = ['Xvfb', 'xdotool', 'openbox', 'dbus-daemon', 'WebKitWebDriver', 'node', 'npm', 'flock']
-    if a.check_images or a.check_editor_sync:
+    if a.check_images or a.check_editor_sync or a.check_pending_chat:
         tools.append('xclip')
     if a.check_video:
         tools += ['pulseaudio', 'pactl', 'parec']
@@ -149,8 +150,9 @@ def main():
     events = source / '.vault-chat' / 'events'
     if not events.is_dir() or events.is_symlink():
         p.error('Selected copy has no regular .vault-chat/events directory')
+    real_pi = a.check_status_dot or a.check_pending_chat
     master = work / 'master'
-    vault = master / 'vaults/vault-chat' if a.check_status_dot else work / 'vault-chat'
+    vault = master / 'vaults/vault-chat' if real_pi else work / 'vault-chat'
     dest = vault / '.vault-chat' / 'events'
     dest.mkdir(parents=True)
     for f in events.iterdir():
@@ -266,7 +268,7 @@ def main():
                           VC_SECRETS_DIR=str(home / 'empty-secrets'), VC_TOKEN_FILE=str(home / 'new-token'),
                           VC_LOCALSTORAGE=str(home / 'storage'), VC_PUSH_SUBS=str(home / 'push'),
                           VC_VOICE_PIPELINE='off', VC_VOICE_PORT=str(voice.server_port), VC_VOICE_PIPELINE_PORT=str(voice.server_port))
-        if a.check_status_dot:
+        if real_pi:
             # Only a local unpaid provider; no credentials or external inference.
             released = threading.Event()
             released.set()  # Let any original interrupted turn finish locally before measuring.
@@ -356,7 +358,7 @@ def main():
                 for mid in ['test/fake-model', 'anthropic/claude-haiku-5.5']]
             (agent / 'models.json').write_text(json.dumps({'providers': {'openrouter': {'baseUrl': local_provider,
                 'apiKey': 'synthetic-local-only', 'api': 'openai-completions', 'models': models}}}))
-        if a.check_status_dot:
+        if real_pi:
             wait_for(lambda: request(base + '/api/v1/health').get('engine', {}).get('pi', {}).get('state') == 'up', 'real pinned pi boot')
             request(base + '/api/v1/vaults', {'name': 'status-viewer'})
             if not any(v['name'] == 'status-viewer' for v in request(base + '/api/v1/vaults')['vaults']):
@@ -412,6 +414,7 @@ def main():
             viewer = laptop_viewer
         observed = []
         photo_intents = []
+        queue_intents = []
         opened = []
         video_fetches = []
         lock = threading.Lock()
@@ -431,11 +434,21 @@ def main():
                 speech_send = (a.check_speech_freshness and path == '/api/v2/intent' and self.command == 'POST'
                     and (intent := json.loads(data)).get('type') == 'send' and intent.get('convId') == a.conversation
                     and str(intent.get('text', '')).startswith('Owned speech freshness '))
+                queue_write = False
+                if a.check_pending_chat and path == '/api/v2/intent' and self.command == 'POST':
+                    intent = json.loads(data)
+                    # Only native sends and Send now into our two disposable owner threads.
+                    queue_write = intent.get('convId') in ('main', a.conversation) and (
+                        intent.get('type') in ('send', 'steer') and intent.get('text', '').startswith('LOCAL-UNPAID-QUEUE-') or
+                        intent.get('type') == 'now' and any(q.get('clientId') == intent.get('id') for q in queue_intents))
+                    if queue_write:
+                        with lock:
+                            queue_intents.append(intent)
                 # A narrowly scoped opt-in allows only our generated viewer Git
                 # and matching read barrier, never any copied-note upload.
                 editor_transport = a.check_editor_sync and (editor_intent_enabled and path == '/api/v2/intent' or path.startswith('/git/status-viewer.git/') or path == '/api/v1/sync/flush')
                 # All other non-read activity stays refused, including voice.
-                if (path.startswith('/git/') or self.command != 'GET' and path != '/api/v1/laptop-perf') and not (speech_send or editor_transport):
+                if (path.startswith('/git/') or self.command != 'GET' and path != '/api/v1/laptop-perf') and not (speech_send or editor_transport or queue_write):
                     if a.check_plans and path == '/api/v2/intent':
                         # Observe the native pending-input UI before rejecting;
                         # never forward this turn to a provider or invent a reply.
@@ -491,7 +504,7 @@ def main():
         (native_vault / '.vault-chat/sync.json').write_text(json.dumps({'box': 'http://127.0.0.1:' + str(relay.server_port), 'vault': 'vault-chat'}))
         if a.check_editor_sync:
             (native_master / '.vault-chat-master.json').write_text(json.dumps({'box': 'http://127.0.0.1:' + str(relay.server_port)}))
-        if a.check_status_dot:
+        if real_pi:
             (viewer / '.vault-chat').mkdir(exist_ok=True)
             (viewer / '.vault-chat/sync.json').write_text(json.dumps({'box': 'http://127.0.0.1:' + str(relay.server_port), 'vault': 'status-viewer'}))
         # Only our new socket; never use DISPLAY from the caller or scan live displays.
@@ -585,7 +598,7 @@ def main():
                 # selection between this write and the measured second launch.
                 wait_for(lambda: js('return document.readyState === "complete" && !document.getElementById("vault-splash");'), 'empty native profile initialized')
                 js('localStorage.setItem("vault_chat_last_vault",arguments[0]); localStorage.setItem("vault_chat_active_conv",arguments[1]);', str(native_vault), a.conversation)
-                if a.check_status_dot:
+                if real_pi:
                     js('localStorage.setItem("vault_chat_master_path",arguments[0]);', str(native_master))
                 # WebKit persists localStorage asynchronously; let the seeded clean
                 # profile reach disk before the driver tears its process down.
@@ -1111,6 +1124,89 @@ def main():
                     if after_editor[:len(items)] != items:
                         raise RuntimeError('Editor fixture changed original history prefix')
                     editor_sync['privateAppendedItems'] = len(after_editor) - len(items)
+                pending_chat = None
+                if a.check_pending_chat and label == 'after':
+                    key('ctrl+shift+f')
+                    wait_for(lambda: exists('[data-el="chats-sidebar"]'), 'queue owner rows')
+                    queue_rows = []
+                    for thread in ['main', a.conversation]:
+                        click('[data-thread="' + thread + '"] > button')
+                        wait_for(lambda: js('return localStorage.getItem("vault_chat_active_conv")===arguments[0];', thread), 'queue owner selected')
+                        cp = '/api/v2/conversations/' + urllib.parse.quote(thread, safe='') + '/checkpoint'
+                        original = request(base + cp)['picture']['items']
+                        released.clear()
+                        def send_native(suffix):
+                            click('[data-perf-target="composer"]')
+                            run('xdotool', 'type', '--clearmodifiers', '--delay', '40', 'LOCAL-UNPAID-QUEUE-' + suffix, env=childenv, stdout=subprocess.DEVNULL)
+                            key('Return')
+                        try:
+                            calls = len(provider_calls)
+                            send_native('HOLD-' + thread)
+                            wait_for(lambda: len(provider_calls) > calls, 'held real Pi provider turn')
+                            send_native('FIRST-' + thread)
+                            send_native('SECOND-' + thread)
+                            wait_for(lambda: js('return document.querySelectorAll("[data-el=waiting-message]").length===2;'), 'two projected pending rows')
+                            pending = request(base + cp)['picture']['meta']['pending']
+                            ids = [q['id'] for q in pending]
+                            if len(ids) != 2:
+                                raise RuntimeError('Missing real server pending identities')
+                            layout = js('''const rows=[...document.querySelectorAll('[data-el="waiting-message"]')],composer=document.querySelector('[data-el="composer"]');
+                              return {ids:rows.map(e=>e.dataset.messageId),labels:rows.map(e=>e.querySelector('[data-el="waiting-mark"]').textContent.trim()),
+                                noStack:!document.querySelector('[data-el="waiting-messages"]'),inHistory:rows.every(e=>!composer.contains(e)&&e.parentElement===rows[0].parentElement),
+                                sendOpacity:rows.map(e=>getComputedStyle(e.querySelector('[data-el="waiting-actions"]')).opacity)};''')
+                            if layout['ids'] != ids or layout['labels'] != ['queued', 'queued'] or not layout['noStack'] or not layout['inHistory']:
+                                raise RuntimeError('Pending rows not in ordinary history order')
+                            # Change viewer vault without changing the global turn owner.
+                            key('ctrl+shift+f')
+                            click('[data-el="vault-picker"]')
+                            wait_for(lambda: exists('[data-el="vault-picker-item"][data-rel="vaults/status-viewer"] button'), 'queue viewer vault')
+                            click('[data-el="vault-picker-item"][data-rel="vaults/status-viewer"] button')
+                            wait_for(lambda: js('return localStorage.getItem("vault_chat_last_vault")===arguments[0];', str(viewer)), 'queue viewer switched')
+                            if js('return localStorage.getItem("vault_chat_active_conv");') != thread:
+                                raise RuntimeError('Viewer switch changed pending owner')
+                            key('ctrl+shift+f')
+                            wait_for(lambda: js('return document.querySelectorAll("[data-el=waiting-message]").length===2;'), 'owner pending survives viewer switch')
+                            selector = '[data-message-id="' + ids[1] + '"] [data-el="send-now"]'
+                            # Hover by genuine OS pointer, then keyboard-focus the same action.
+                            xy = js('const r=document.querySelector(arguments[0]).getBoundingClientRect();return [(screenX+r.x+r.width/2)*devicePixelRatio,(screenY+r.y+r.height/2)*devicePixelRatio];', selector)
+                            run('xdotool', 'mousemove', str(round(xy[0])), str(round(xy[1])), env=childenv, stdout=subprocess.DEVNULL)
+                            wait_for(lambda: js('return getComputedStyle(document.querySelector(arguments[0]).parentElement).opacity==="1";', selector), 'Send now on native hover')
+                            if thread == a.conversation:
+                                click('[data-perf-target="composer"]')
+                                for _ in range(60):
+                                    key('shift+Tab')
+                                    if js('return document.activeElement===document.querySelector(arguments[0]);', selector):
+                                        break
+                                else:
+                                    raise RuntimeError('Send now unreachable by native keyboard')
+                                wait_for(lambda: js('return getComputedStyle(document.querySelector(arguments[0]).parentElement).opacity==="1";', selector), 'Send now visible on keyboard focus')
+                                key('Return')
+                            else:
+                                click(selector)
+                            # Click may respond only after Pi aborts; keep the replacement provider local.
+                            wait_for(lambda: any(q.get('type') == 'now' and q.get('id') == ids[1] and q.get('convId') == thread for q in queue_intents), 'existing now intent from native click')
+                            released.set()
+                            wait_for(lambda: not request(base + cp)['picture']['meta'].get('running'), 'interrupt-and-send finishes')
+                            final = request(base + cp)['picture']
+                            final_items = final['items']
+                            if final_items[:len(original)] != original or final['meta'].get('pending'):
+                                raise RuntimeError('Original history changed or pending lost after Send now')
+                            consumed = [x['id'] for x in final_items if x.get('kind') == 'user' and x.get('id') in ids]
+                            if sorted(consumed) != sorted(ids):
+                                raise RuntimeError('Pending identities were duplicated or lost')
+                            wait_for(lambda: js("""return arguments[0].every(id=>{const rows=document.querySelectorAll('[data-message-id="'+id+'"]');return rows.length===1&&!rows[0].matches('[data-el="waiting-message"]');});""", ids), 'consumed user rows exactly once')
+                            queue_rows.append({'thread': thread, 'pendingRows': layout, 'existingNowIntent': True, 'consumedExactlyOnce': True, 'viewerIndependent': True, 'originalPrefixUnchanged': True, 'appendedItems': len(final_items)-len(original)})
+                        finally:
+                            released.set()
+                        key('ctrl+shift+f')
+                        click('[data-el="vault-picker"]')
+                        wait_for(lambda: exists('[data-el="vault-picker-item"][data-rel="vaults/vault-chat"] button'), 'restore queue viewer')
+                        click('[data-el="vault-picker-item"][data-rel="vaults/vault-chat"] button')
+                        key('ctrl+shift+f')
+                    final_items = request(base + checkpoint_path)['picture']['items']
+                    if final_items[:len(items)] != items:
+                        raise RuntimeError('Original 3819-item history prefix changed')
+                    pending_chat = {'rows': queue_rows, 'providerCalls': len(provider_calls), 'route': '/api/v2/intent type=now (existing Pi abort semantics)', 'originalHistoryPrefixUnchanged': True}
                 statuses = set()
                 for b, status in batches:
                     if b.get('runtime') != 'webkitgtk' or b.get('surface') != 'tauri-production':
@@ -1131,7 +1227,7 @@ def main():
                 def stats(values):
                     v = sorted(values)
                     return {'n': len(v), 'p50Ms': round(v[len(v)//2], 3), 'p95Ms': round(v[min(len(v)-1, int(len(v)*.95))], 3), 'maxMs': round(max(v), 3)}
-                return {'works': not interaction_failures, 'videoCheck': video_check, 'imageCheck': image_check, 'statusDot': status_dot, 'editorSync': editor_sync, 'interactionFailures': interaction_failures, 'planLifecycle': plan_lifecycle, 'emptyChat': empty_chat, 'native': metadata, 'telemetryHttpStatuses': sorted(statuses),
+                return {'works': not interaction_failures, 'videoCheck': video_check, 'imageCheck': image_check, 'statusDot': status_dot, 'editorSync': editor_sync, 'pendingChat': pending_chat, 'interactionFailures': interaction_failures, 'planLifecycle': plan_lifecycle, 'emptyChat': empty_chat, 'native': metadata, 'telemetryHttpStatuses': sorted(statuses),
                         'telemetryNote': 'Observed real Rust IPC batches; loopback is not authenticated Tailscale laptop telemetry',
                         'launchProcessToDomUpperBoundMs': round(launch_upper, 3),
                         'timings': [{'metric': m, 'method': method, **stats(values)} for (m, method), values in sorted(samples.items())]}

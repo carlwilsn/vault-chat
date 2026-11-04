@@ -1158,12 +1158,6 @@ export function ChatPane() {
           />
         )}
 
-        {/* Sent while the agent works, not read by it yet: below what it is doing now, as in Claude Code. */}
-        {messages.some((m) => m.waiting) && (
-          <div className="space-y-2" data-el="waiting-messages">
-            {messages.map((m, i) => (m.waiting && !m.hidden ? <MessageBubble key={m.mid ?? i} message={m} /> : null))}
-          </div>
-        )}
         </div>
       </div>
 
@@ -1526,8 +1520,8 @@ const HistoryList = memo(function HistoryList({
   return (
     <>
       {messages.map((m, i) =>
-        i < windowStart || m.hidden || m.waiting ? null : (
-          <Fragment key={i}>
+        i < windowStart || m.hidden ? null : (
+          <Fragment key={m.mid ?? i}>
             <MessageBubble
               message={m}
               askLive={!!m.askOptions?.length && i === lastVisible && !busy}
@@ -1604,7 +1598,7 @@ function WaitingActions({ message }: { message: ChatMessage }) {
   const id = message.mid;
   const btn = "h-5 px-1.5 rounded text-[10.5px] text-muted-foreground hover:text-foreground hover:bg-accent/60";
   return (
-    <div className="flex items-center gap-0.5 opacity-0 group-hover/msg:opacity-100 focus-within:opacity-100 transition-opacity" data-el="waiting-actions">
+    <div className="flex items-center gap-0.5 opacity-0 group-hover/msg:opacity-100 focus-within:opacity-100 [@media(hover:none)]:opacity-100 transition-opacity" data-el="waiting-actions">
       <button className={btn} onClick={() => dispatchChatAction({ kind: "sendNow", convId, id })} title="Interrupt the agent's current step and send this now" data-el="send-now">
         Send now
       </button>
@@ -1679,7 +1673,7 @@ export const MessageBubble = memo(function MessageBubble({
   const isUser = message.role === "user";
   const userText = isUser ? splitFilesLine(stripAttachedFooter(message.display ?? message.content)) : null;
   return (
-    <div className={cn("flex flex-col gap-1.5", isUser && "items-end group/msg")} {...(message.waiting ? { "data-el": "waiting-message" } : {})}>
+    <div className={cn("flex flex-col gap-1.5", isUser && "items-end group/msg")} data-message-id={message.mid} {...(message.waiting ? { "data-el": "waiting-message" } : {})}>
       {isUser ? (
         <>
         <div className={cn("max-w-[85%] rounded-2xl rounded-br-md bg-primary/90 text-primary-foreground px-3.5 py-2 text-[13px] leading-relaxed break-words overflow-hidden prose-user", message.waiting && "opacity-60")}>
@@ -1723,7 +1717,7 @@ export const MessageBubble = memo(function MessageBubble({
           <div className="flex items-center gap-1.5 -mt-0.5">
             <WaitingActions message={message} />
             <span className="text-[10.5px] text-muted-foreground" data-el="waiting-mark" title="Sent — the agent reads it at its next step">
-              pending
+              queued
             </span>
           </div>
         )}
