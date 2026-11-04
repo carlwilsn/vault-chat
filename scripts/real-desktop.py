@@ -586,18 +586,41 @@ def main():
                     js('''window.__imagePaste=[];window.addEventListener('paste',e=>window.__imagePaste.push({trusted:e.isTrusted,target:e.target.tagName,htmlLength:e.clipboardData.getData('text/html').length,types:[...e.clipboardData.types],items:[...e.clipboardData.items].map(i=>({kind:i.kind,type:i.type,size:i.getAsFile()?.size}))}),true);''')
                     clipboard = work / 'owned-photo-clipboard.html'
                     clipboard.write_text('<img src="data:image/png;base64,' + base64.b64encode(pixels).decode() + '">')
-                    spawn(['xclip', '-selection', 'clipboard', '-target', 'text/html',
-                           '-i', str(clipboard), '-quiet'], 'image-clipboard', childenv)
+                    producer = spawn(['xclip', '-selection', 'clipboard', '-target', 'text/html',
+                                      '-i', str(clipboard), '-quiet'], 'image-clipboard', childenv)
+                    # Popen only starts the producer: it does not establish X11 selection
+                    # ownership. Never paste until the private server advertises our
+                    # target AND serves our exact bytes, with the producer still alive.
+                    def owned_clipboard():
+                        if producer.poll() is not None:
+                            raise RuntimeError('Owned clipboard producer exited before paste')
+                        targets = subprocess.run(['xclip', '-selection', 'clipboard', '-out', '-target', 'TARGETS'],
+                                                 env=childenv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5)
+                        if targets.returncode or b'text/html' not in targets.stdout.splitlines():
+                            return False
+                        content = subprocess.run(['xclip', '-selection', 'clipboard', '-out', '-target', 'text/html'],
+                                                 env=childenv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5)
+                        return content.returncode == 0 and content.stdout == clipboard.read_bytes()
+                    wait_for(owned_clipboard, 'private clipboard target and exact owned HTML bytes', seconds=10)
+                    result['clipboardProducer'] = {'aliveBeforePaste': producer.poll() is None,
+                                                   'advertisedHtml': True, 'exactHtmlBytes': True}
                     click('[data-perf-target="composer"]')
                     key('ctrl+v')
                     expected = 'data:image/png;base64,' + base64.b64encode(pixels).decode()
                     wait_for(lambda: js('return [...document.images].some(i=>{const r=i.getBoundingClientRect();return i.src===arguments[0] && i.complete && i.naturalWidth===32 && i.naturalHeight===32 && r.width>0 && r.height>0 && r.top>=0 && r.bottom<=innerHeight && r.left>=0 && r.right<=innerWidth && document.elementFromPoint(r.x+r.width/2,r.y+r.height/2)===i;});', expected), 'native pasted image decodes with exact source bytes')
+                    native_paste = js('return window.__imagePaste;')
+                    if not any(e.get('trusted') and e.get('target') == 'TEXTAREA' and
+                               'text/html' in e.get('types', []) and e.get('htmlLength', 0) > 0
+                               for e in native_paste):
+                        raise RuntimeError('Image appeared without a trusted native HTML paste')
                     time.sleep(1)  # let the decoded visible native thumbnail render before the existing screenshot
                     shot = request(driver + '/session/' + sid + '/screenshot')['value']
                     (work / (label + '-image.png')).write_bytes(base64.b64decode(shot))
                     key('Return')
                     wait_for(lambda: any(b.get('images') for b in photo_intents), 'native photo upload intent')
-                    image_check = {'nativePastedImageDecoded': True, 'clipboardFormat': 'text/html with inline PNG pixels (not bitmap clipboard)', 'outgoingBytesAndMime': any(i.get('mime') == 'image/png' and i.get('dataBase64') == expected.split(',', 1)[1] for b in photo_intents for i in b.get('images', [])),
+                    image_check = {'nativePastedImageDecoded': True, 'trustedNativePaste': native_paste,
+                                   'producerAliveAfterPaste': producer.poll() is None,
+                                   'clipboardFormat': 'text/html with inline PNG pixels (not bitmap clipboard)', 'outgoingBytesAndMime': any(i.get('mime') == 'image/png' and i.get('dataBase64') == expected.split(',', 1)[1] for b in photo_intents for i in b.get('images', [])),
                                    'inference': 'relay blocks intent 503; genuine Pi/provider byte check is a separate unpaid server test'}
                     if not image_check['outgoingBytesAndMime']:
                         raise RuntimeError('Native preview appeared but outgoing image bytes were missing')
