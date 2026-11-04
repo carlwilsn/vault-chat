@@ -12,6 +12,8 @@ Carl’s instructions live in AGENTS.md; ASKS.md is the only plan.
 - The installed watcher handles ship requests, captures, gates and main promotion.
 
 - Plan cards use visible TodoWrite arguments (`src/planPlace.ts`), not cached conversation todos; Clear stays device-local.
+- Phone Clear lives in the composer bottom row (`phone/src/shell/Pages.tsx`); its existing
+  `boot.ts` action stores only this phone’s view cutoff, without confirmation or shared-history deletion.
 - Phone push defaults off in `server/pushGate.ts`, independently of device permission/subscriptions.
   `Notify(push:true)` is one requested event, bound to its originating turn (captured before a worker queues);
   the explicit `vc_push_legacy_automatic=true` server preference alone restores automatic delivery.

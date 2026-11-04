@@ -1,5 +1,5 @@
 // The three pages; `body.page-*` (set by setPage) picks the visible one.
-import { Plus, SendArrow } from "./icons";
+import { Eraser, Plus, SendArrow } from "./icons";
 
 export function Pages() {
   return (
@@ -21,6 +21,13 @@ export function Pages() {
             <textarea id="input" rows={1} placeholder="Message…" enterKeyHint="enter" autoComplete="off"></textarea>
             <button className="send" id="sendBtn" aria-label="send">
               <SendArrow />
+            </button>
+          </div>
+          {/* Local view only, exactly the existing Clear action; beside the composer as on desktop. */}
+          <div className="cbar">
+            <button className="icbtn clrbtn" id="clearBtn" data-el="clear-thread" aria-label="Clear this thread" hidden>
+              <Eraser />
+              <span className="clrlbl">Clear</span>
             </button>
           </div>
         </div>

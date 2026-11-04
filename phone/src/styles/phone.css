@@ -973,7 +973,11 @@ body.page-chat #pChat,body.page-activity #pAct,body.page-alerts #pAl,body.page-n
 /* The top bar: the side groups around a centred title (Header.tsx). */
 .hside{display:flex;align-items:center;gap:2px;min-width:0}
 .hside.r{justify-content:flex-end}
-/* Clear: one tap, the laptop's eraser; a 44 px target; its word while the bar has room. */
+/* The composer's bottom row; retain a 44px target, including with the keyboard up.
+   The existing viewport/following policy owns scroll position when its height changes. */
+.composer{flex-direction:column;align-items:stretch;gap:0}
+.composer .field{flex:none;width:100%}
+.cbar{display:flex;justify-content:flex-end;width:88%;margin:0 auto}
 .clrbtn{min-width:44px;min-height:44px;gap:6px;padding:0 8px}
 .clrlbl{font-size:14.5px;font-weight:500;letter-spacing:-.01em}
 .clrbtn[hidden]{display:none}

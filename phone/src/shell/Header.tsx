@@ -1,5 +1,5 @@
 // Top of the page: the header bar, the offline bar and the burger menu.
-import { Burger, Eraser, Gear } from "./icons";
+import { Burger, Gear } from "./icons";
 
 export function Header() {
   // Three columns: the side groups take equal room while there is room, so the title stays centred
@@ -22,12 +22,6 @@ export function Header() {
         <button className="vpill" id="vpill">
           <span className="d"></span> voice
           <span className="vpwait" id="vpwait"></span>
-        </button>
-        {/* Clear: the open thread's view on this phone goes blank, one tap (the laptop's Clear: same
-            icon, no confirm; the conversation and the agent keep everything). Shown with a thread open. */}
-        <button className="icbtn clrbtn" id="clearBtn" data-el="clear-thread" aria-label="Clear this thread" hidden>
-          <Eraser />
-          <span className="clrlbl">Clear</span>
         </button>
         <button className="icbtn" id="menuBtn" aria-label="menu">
           <Burger />

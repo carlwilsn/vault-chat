@@ -1,5 +1,5 @@
-// The phone's thread bar and its "+" (phone/src/shell, phone/src/attach.ts). Clear is one tap: a
-// button of the bar itself (not in a menu or a panel), with the laptop's icon (Lucide's Eraser) and
+// The phone's composer and its "+" (phone/src/shell, phone/src/attach.ts). Clear is one tap: a
+// button in the composer bottom row (not in the header, a menu or a panel), with the laptop's icon (Lucide's Eraser) and
 // a 44 px target; the drawer's "⋯" whose only job was Clear is gone. "+" is one picker for any file
 // (no accept, no capture: iOS offers Take Photo, Photo Library and Choose File), and a PDF from the
 // Files picker goes to the box's attachments route and comes back as the path the message carries.
@@ -23,15 +23,19 @@ const root = path.resolve(import.meta.dirname, "../..");
 const html = (c: () => unknown) => renderToStaticMarkup(createElement(c as any));
 const paths = (s: string) => [...s.matchAll(/ d="([^"]+)"/g)].map((m) => m[1]);
 
-test("Clear is one tap from the thread bar: a button of the bar, the laptop's eraser, no menu in between", () => {
-  const bar = html(Header);
-  // In the bar's own markup (the .hdr), next to the burger — not behind a menu or the drawer.
-  assert.match(bar, /^<div class="hdr">/);
-  const btn = /<button[^>]*id="clearBtn"[^>]*>([\s\S]*?)<\/button>/.exec(bar);
-  assert.ok(btn, "a Clear button in the bar");
+test("Clear is one tap from the composer bottom row: the existing button and eraser, no menu in between", () => {
+  const page = html(Pages);
+  const composer = /<div class="composer">([\s\S]*)<\/div><div id="kb">/.exec(page);
+  assert.ok(composer, "the actual composer component");
+  const row = /<div class="cbar">([\s\S]*?)<\/div>/.exec(composer[1]);
+  assert.ok(row, "Clear belongs to the composer's bottom row");
+  const btn = /<button[^>]*id="clearBtn"[^>]*>([\s\S]*?)<\/button>/.exec(row[1]);
+  assert.ok(btn, "one Clear button in the bottom row");
+  assert.equal((page.match(/id="clearBtn"/g) || []).length, 1);
+  assert.doesNotMatch(html(Header), /clearBtn|clear-thread/);
   assert.match(btn[0], /data-el="clear-thread"/);
   assert.match(btn[0], /aria-label="Clear this thread"/);
-  assert.match(btn[1], /Clear/);
+  assert.match(btn[1], />Clear</);
   // The laptop's Clear icon, path for path.
   assert.deepEqual(paths(btn[1]), paths(renderToStaticMarkup(createElement(LucideEraser))));
   // Its tap clears the view (boot.ts), once, with no confirm step: the laptop has none.
@@ -40,7 +44,7 @@ test("Clear is one tap from the thread bar: a button of the bar, the laptop's er
   assert.doesNotMatch(boot, /openThreadsMenu|"newBtn"/);
   // A 44 px target.
   const css = fs.readFileSync(path.join(root, "phone/src/styles/phone.css"), "utf8");
-  assert.match(css, /\.clrbtn\{min-width:44px;min-height:44px/);
+  assert.match(css, /\.clrbtn\{[^}]*min-width:44px;min-height:44px/);
   // The drawer's "⋯" (its one item was Clear) is gone.
   const drawer = html(ConvDrawer);
   assert.doesNotMatch(drawer, /newBtn|⋯|aria-label="More"/);
