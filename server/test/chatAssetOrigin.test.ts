@@ -3,7 +3,8 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Server } from "node:http";
+import { createServer, type Server } from "node:http";
+import { freePort } from "./helpers";
 import { convLog, setFeedVaults, _resetConvLogs } from "../convlog/log";
 import { startHttpServer, type VaultScope } from "../http";
 
@@ -20,7 +21,8 @@ describe("chat media follows its existing log owner, not the viewer or project n
   const A: VaultScope = { name: "backend-a", path: join(home, "a"), bare: "", main: true };
   const B: VaultScope = { name: "backend-b", path: join(home, "b"), bare: "", main: false };
   const rel = ".vault-chat/visuals/same.mp4";
-  let srv: Server;
+  let srv: Server | undefined;
+  let voice: Server | undefined;
   let base: string;
   beforeAll(async () => {
     for (const v of [A, B]) {
@@ -33,8 +35,14 @@ describe("chat media follows its existing log owner, not the viewer or project n
     setFeedVaults(A.path, () => [A.path, B.path]);
     convLog(A.path).emit("project-physics", { type: "meta", patch: { title: "Physics", createdAt: 1 } });
     convLog(B.path).emit("other-chat", { type: "meta", patch: { title: "Other", createdAt: 1 } });
+    voice = createServer((_req, res) => { res.writeHead(503); res.end(); });
+    await new Promise<void>(resolve => voice!.listen(0, "127.0.0.1", resolve));
+    const voicePort = String((voice.address() as { port: number }).port);
     vi.stubEnv("VC_HOST", "127.0.0.1");
-    vi.stubEnv("VC_PORT", "0");
+    vi.stubEnv("VC_PORT", String(await freePort()));
+    vi.stubEnv("VC_VOICE_PORT", voicePort);
+    vi.stubEnv("VC_VOICE_PIPELINE_PORT", voicePort);
+    vi.stubEnv("VC_VOICE_PIPELINE", "off");
     vi.stubEnv("VC_VAULT", A.path);
     vi.stubEnv("VC_TOKEN_FILE", join(home, "absent-fixture-token"));
     srv = await startHttpServer({
@@ -45,7 +53,8 @@ describe("chat media follows its existing log owner, not the viewer or project n
     base = `http://127.0.0.1:${(srv.address() as {port:number}).port}`;
   });
   afterAll(async () => {
-    await new Promise<void>(resolve => srv?.close(() => resolve()));
+    if (srv) await new Promise<void>(resolve => srv!.close(() => resolve()));
+    if (voice) await new Promise<void>(resolve => voice!.close(() => resolve()));
     setFeedVaults(A.path, () => [A.path]);
     _resetConvLogs();
     vi.unstubAllEnvs();
