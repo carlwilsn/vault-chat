@@ -1580,6 +1580,19 @@ def main():
                         key('ctrl+v')
                         wait_for(lambda: js('return document.querySelector("[data-perf-target=composer]")?.value===arguments[0];', text), 'trusted exact history paste')
                         key('Return')
+                    def reopen_history():
+                        session()
+                        wait_for(lambda: js('return document.readyState === "complete" && !document.getElementById("vault-splash");'), 'owned app restart initialized')
+                        owned_windows = subprocess.check_output(['xdotool', 'search', '--onlyvisible', '--name', '^vault-chat$'], env=childenv, text=True).split()
+                        if len(owned_windows) != 1:
+                            raise RuntimeError('Expected exactly one owned reopened app window')
+                        run('xdotool', 'windowmove', owned_windows[0], '0', '0', 'windowsize', owned_windows[0], '1440', '1000', 'windowactivate', '--sync', owned_windows[0], env=childenv, stdout=subprocess.DEVNULL)
+                        time.sleep(.3)
+                        # Panel-open is a local preference, not conversation data.
+                        # Reopen through the real shortcut, just as initial launch.
+                        if not exists('[data-perf-target="composer"]'):
+                            key('ctrl+shift+b')
+                        wait_for(lambda: exists('[data-perf-target="composer"]'), 'owned reopened native chat panel')
                     released.clear()
                     send_history(first)
                     wait_for(crash_marker.exists, 'real native-write/feed-pointer crash boundary')
@@ -1612,8 +1625,7 @@ def main():
                     # zero-cost model, never SDK files or credentials.
                     (agent / 'settings.json').write_text(json.dumps({'compaction': {'enabled': False}, 'retry': {'enabled': False}}))
                     (agent / 'models.json').write_text(json.dumps({'providers': {'openrouter': {'baseUrl': provider_url, 'apiKey': 'synthetic-local-only', 'api': 'openai-completions', 'models': [{'id': 'test/fake-model', 'name': 'Local history fixture', 'reasoning': False, 'input': ['text'], 'cost': {'input': 0, 'output': 0, 'cacheRead': 0, 'cacheWrite': 0}, 'contextWindow': 400000, 'maxTokens': 1000}]}}}))
-                    session()
-                    wait_for(lambda: exists('[data-perf-target="composer"]'), 'private native reopen cached history')
+                    reopen_history()
                     wait_for(lambda: not request(base + checkpoint_path)['picture']['meta'].get('running') and any(x.get('text') == 'History FIRST reply 23.' for x in request(base + checkpoint_path)['picture']['items']), 'genuine automatic native resume reply')
                     if request(base + checkpoint_path)['picture']['meta']['threadPath'] != str(native_file):
                         raise RuntimeError('Owned restart did not resume the SAME native session')
@@ -1649,8 +1661,7 @@ def main():
                         raise RuntimeError('Actual native rows missing/duplicated before app reopen')
                     # Reopen again: actual app's own hydrated cache + network feed,
                     # no cache deletion and no mutation of frontend state.
-                    delete_session(); time.sleep(1); session()
-                    wait_for(lambda: exists('[data-perf-target="composer"]'), 'second app reopen')
+                    delete_session(); time.sleep(1); reopen_history()
                     key('ctrl+shift+f')
                     wait_for(lambda: exists('[data-el="chats-sidebar"]'), 'reopened fullscreen chat')
                     def visible_identity():
