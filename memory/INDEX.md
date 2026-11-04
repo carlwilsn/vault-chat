@@ -16,3 +16,5 @@ Carl’s instructions live in AGENTS.md; ASKS.md is the only plan.
   `Notify(push:true)` is one requested event, bound to its originating turn (captured before a worker queues);
   the explicit `vc_push_legacy_automatic=true` server preference alone restores automatic delivery.
   The phone subscribes only on a user tap. In-app alerts and AskUser answers are not push-gated.
+  `/api/v1/alert` is a legacy automatic producer: its encrypted push/tag integration fixture must
+  explicitly enable `/push/preferences`, after proving a subscription alone leaves that route silent.

@@ -177,23 +177,38 @@ describe("boot + phone routes", () => {
   it("/api/v1/alert delivers a Web Push with the alert's tag", async () => {
     const push = await fakePushService();
     try {
+      expect(await (await get("/push/preferences")).json()).toEqual({ legacyAutomatic: false });
       const sub = await fetch(srv.base + "/push/subscribe", { method: "POST", headers: viaServe, body: JSON.stringify({ subscription: push.subscription }) });
       expect(sub.status).toBe(200);
       const vapid = await (await get("/push/vapid")).json();
       expect(vapid.key).toMatch(/^[A-Za-z0-9_-]{80,}$/);
-      const r = await fetch(srv.base + "/api/v1/alert", {
+      const alert = () => fetch(srv.base + "/api/v1/alert", {
         method: "POST",
         headers: viaServe,
         body: JSON.stringify({ title: "Sync conflict", body: "notes/a.md", tag: "vc-sync-conflict-vault" }),
       });
+      // An existing subscription (even with browser permission already granted)
+      // is delivery plumbing, not consent to automatic alerts through this route.
+      expect(await (await get("/push/preferences")).json()).toEqual({ legacyAutomatic: false });
+      const silent = await alert();
+      expect(silent.status).toBe(200);
+      expect(await silent.json()).toMatchObject({ ok: true, sent: 0 });
+      expect(push.received).toHaveLength(0);
+      // This route sends legacy automatic alerts, not per-work Notify(push:true).
+      // Explicitly opt in through the same authenticated preference API as the UI.
+      const consent = await post("/push/preferences", { legacyAutomatic: true });
+      expect(consent.status).toBe(200);
+      expect(await consent.json()).toEqual({ legacyAutomatic: true });
+      const r = await alert();
       expect(r.status).toBe(200);
       expect((await r.json()).sent).toBe(1);
       expect(push.received).toHaveLength(1);
       expect(push.received[0]!.payload).toMatchObject({ title: "Sync conflict", body: "notes/a.md", tag: "vc-sync-conflict-vault" });
       expect(String(push.received[0]!.headers.authorization)).toMatch(/^vapid t=.+, k=/);
-      // Unsubscribe again so later tests see no subscriptions.
-      await fetch(srv.base + "/push/unsubscribe", { method: "POST", headers: viaServe, body: JSON.stringify({ endpoint: push.subscription.endpoint }) });
     } finally {
+      // Restore default-off consent and remove test-owned subscriptions even on failure.
+      await post("/push/preferences", { legacyAutomatic: false });
+      await fetch(srv.base + "/push/unsubscribe", { method: "POST", headers: viaServe, body: JSON.stringify({ endpoint: push.subscription.endpoint }) });
       await push.close();
     }
   });
@@ -206,6 +221,8 @@ describe("boot + phone routes", () => {
     const alert = (b: Record<string, unknown>) => fetch(srv.base + "/api/v1/alert", { method: "POST", headers: viaServe, body: JSON.stringify(b) }).then((r) => r.json());
     const attention = (looking: boolean) => fetch(srv.base + "/api/v1/attention", { method: "POST", headers: viaServe, body: JSON.stringify({ device: "laptop", looking, convId: "main" }) });
     try {
+      // Exercise the legacy attention/recovery policy only after explicit consent.
+      expect(await (await post("/push/preferences", { legacyAutomatic: true })).json()).toEqual({ legacyAutomatic: true });
       for (const s of [push.subscription, dead.subscription]) await fetch(srv.base + "/push/subscribe", { method: "POST", headers: viaServe, body: JSON.stringify(s) });
       expect((await fetch(srv.base + "/api/v1/attention", { method: "POST", headers: viaServe, body: JSON.stringify({ device: "toaster", looking: true }) })).status).toBe(400);
       // At the laptop: held.
@@ -228,6 +245,7 @@ describe("boot + phone routes", () => {
       expect(srv.logs()).toMatch(/answered 400: \{"reason":"BadJwtToken"\}/);
       expect(srv.logs()).toMatch(/push service answered 400 — the subscription is dead, removed/);
     } finally {
+      await post("/push/preferences", { legacyAutomatic: false });
       await fetch(srv.base + "/push/unsubscribe", { method: "POST", headers: viaServe, body: JSON.stringify({ endpoint: push.subscription.endpoint }) });
       await fetch(srv.base + "/push/unsubscribe", { method: "POST", headers: viaServe, body: JSON.stringify({ endpoint: dead.subscription.endpoint }) });
       await push.close();
