@@ -152,7 +152,7 @@ export function NotesPanel({
       .filter((l) => l !== null && l !== undefined && l !== "")
       .join("\n");
     const primaryName = primary?.source_path.split("/").pop();
-    const assistantBubble = `Context loaded${primaryName ? ` from **${primaryName}**` : ""}. Ready when you are — what would you like to work through?`;
+    const assistantBubble = `Context loaded${primaryName ? ` from **${primaryName}**` : ""}.`;
 
     const store = useStore.getState();
     // Box mode: the box writes the chat; these lines go to it as they are.

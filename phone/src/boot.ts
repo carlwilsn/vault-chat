@@ -825,13 +825,9 @@ export function boot(): void {
     renderRunline(); scrollDown(stick);
   }
   function clearThreadUi() { running = false; stopping = false; streamText = ""; streamTool = ""; streamEl = null; runlineEl = null; msgsEl.innerHTML = ""; syncSendBtn(); }
-  // A rotating greeting, Claude-style (note 25b7b572) — the same small-bold
-  // slot as the old "What needs doing?", but JUST the greeting: the Ink empty
-  // chat stays quiet, no explainer boilerplate under it.
-  const GREETS = ["Welcome back!", "He returns!", "Ready to work?", "Welcome, sir.", "At your service."];
+  // Keep the existing empty marker for rendering, without an automatic greeting.
   function showHint() {
-    const g = GREETS[Math.floor(Math.random() * GREETS.length)];
-    msgsEl.innerHTML = '<div class="hint"><b>' + g + "</b></div>";
+    msgsEl.innerHTML = '<div class="hint" data-el="empty-thread"></div>';
   }
 
   // The phone opens on Main, always (Carl: "the phone should default to main chat ofc"): a cold

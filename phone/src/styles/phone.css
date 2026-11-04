@@ -816,7 +816,6 @@ a{text-decoration:underline;text-underline-offset:3px;text-decoration-color:rgba
 .send svg{width:19px;height:19px}
 .sheet-x{display:flex;align-items:center;justify-content:center}
 .sheet-x svg{width:20px;height:20px}
-/* the empty chat greets you (note 25b7b572) — the small-bold hint, back on */
 /* composer: a hairline ring on black */
 .composer .field{background:transparent;border:.5px solid var(--line-2);border-radius:22px}
 /* burger menu: compact, with a real entrance rooted at its trigger */

@@ -803,7 +803,6 @@
   .send svg{width:19px;height:19px}
   .sheet-x{display:flex;align-items:center;justify-content:center}
   .sheet-x svg{width:20px;height:20px}
-  /* the empty chat greets you (note 25b7b572) — the small-bold hint, back on */
   /* composer: a hairline ring on black */
   .composer .field{background:transparent;border:.5px solid var(--line-2);border-radius:22px}
   /* burger menu: compact, with a real entrance rooted at its trigger */
@@ -2212,13 +2211,9 @@ interface MockDB {
     renderRunline(); scrollDown(false);
   }
   function clearThreadUi() { running = false; stopping = false; streamText = ""; streamTool = ""; streamEl = null; runlineEl = null; msgsEl.innerHTML = ""; syncSendBtn(); }
-  // A rotating greeting, Claude-style (note 25b7b572) — the same small-bold
-  // slot as the old "What needs doing?", but JUST the greeting: the Ink empty
-  // chat stays quiet, no explainer boilerplate under it.
-  const GREETS = ["Welcome back!", "He returns!", "Ready to work?", "Welcome, sir.", "At your service."];
+  // Keep the existing empty marker for rendering, without an automatic greeting.
   function showHint() {
-    const g = GREETS[Math.floor(Math.random() * GREETS.length)];
-    msgsEl.innerHTML = '<div class="hint"><b>' + g + "</b></div>";
+    msgsEl.innerHTML = '<div class="hint" data-el="empty-thread"></div>';
   }
 
   // The open thread is sticky: reopening the app returns you to the chat you

@@ -113,6 +113,16 @@ async function sse(res: Response): Promise<string[]> {
 }
 
 describe("voice with one brain", () => {
+  it("call startup is silent on every device: no synthetic greeting or model turn", async () => {
+    const { startCall } = await import("../voiceBrain");
+    for (const device of ["laptop", "phone", "board"]) {
+      const r = await startCall({ vault: "/v", engine: async () => eng, elKey: () => "k", voiceId: () => "v", botUrl: "", selfUrl: "", logDir }, { convId: "conv-123456", device });
+      expect(r.status).toBe(200);
+      expect(eng.messages).toEqual([]);
+      expect(eng.talker.rules).not.toMatch(/At your service|Hello,? sir|Welcome, sir/i);
+    }
+  });
+
   it("what Carl said is a turn of the conversation, on the talker model, with the call's rules", async () => {
     const c = await call();
     expect(eng.talker.model).toBeTruthy();

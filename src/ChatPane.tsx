@@ -377,12 +377,6 @@ export function ChatPane() {
   const voiceMode = useStore((s) => s.voiceMode);
   const voiceError = useStore((s) => s.voiceError);
   const voiceNotice = useStore((s) => s.voiceNotice);
-  // The empty chat's greeting, like the phone's — one per conversation.
-  const greeting = useMemo(() => {
-    const g = ["Welcome back!", "He returns!", "Ready to work?", "Welcome, sir.", "At your service."];
-    return g[Math.floor(Math.random() * g.length)];
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeConversationId]);
   const voiceBar = false; // fullscreen voice lives in the bottom strip (VoiceStrip); the composer stays
   const [plusOpen, setPlusOpen] = useState(false);
   const toggleChatsPanel = () =>
@@ -1070,16 +1064,12 @@ export function ChatPane() {
         onScroll={onScroll}
       >
         <div className="max-w-[820px] mx-auto space-y-4">
-        {messages.length === 0 && !streamingText && (
-          <div className="absolute inset-0 flex items-center justify-center pointer-events-none" data-el="greeting">
-            {boxDown ? (
-              <div className="text-center space-y-1">
-                <p className="text-[15px] font-medium text-foreground/90">{BOX_UNREACHABLE}</p>
-                <p className="text-[12px] text-muted-foreground">{downWhy}. Retrying — files and notes work meanwhile.</p>
-              </div>
-            ) : (
-              <p className="text-[22px] font-semibold text-foreground/90">{greeting}</p>
-            )}
+        {messages.length === 0 && !streamingText && boxDown && (
+          <div className="absolute inset-0 flex items-center justify-center pointer-events-none" data-el="box-down-empty">
+            <div className="text-center space-y-1">
+              <p className="text-[15px] font-medium text-foreground/90">{BOX_UNREACHABLE}</p>
+              <p className="text-[12px] text-muted-foreground">{downWhy}. Retrying — files and notes work meanwhile.</p>
+            </div>
           </div>
         )}
 

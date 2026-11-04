@@ -82,6 +82,7 @@ def main():
     p.add_argument('--app', type=Path)
     p.add_argument('--before-app', type=Path)
     p.add_argument('--check-plans', action='store_true', help='Exercise ordinary input and local Clear/reopen on the frozen original thread; inference stays blocked')
+    p.add_argument('--check-empty-chat', action='store_true', help='Read the actual empty chat after local Clear/reopen; never generate an assistant answer')
     p.add_argument('--voice-conflict', action='store_true', help='Hold an owned inert listener; prove real startup refusal and mic-OFF health UI')
     p.add_argument('--server-bundle', type=Path)
     p.add_argument('--out', type=Path, required=True, help='Plain result JSON outside the vault')
@@ -473,22 +474,25 @@ def main():
                     key('ctrl+shift+b')
                     wait_for(lambda: exists('[data-perf-target="composer"]'), 'chat panel opens')
                 plan_lifecycle = None
-                if a.check_plans:
+                empty_chat = None
+                if a.check_plans or a.check_empty_chat:
                     def plans_on_screen():
                         return js('''const cards=[...document.querySelectorAll('[data-el="todos"],[data-el="todos-done"]')];
                           return {mounted:cards.length, visible:cards.filter(e=>{const r=e.getBoundingClientRect();return r.width>0&&r.height>0&&r.bottom>0&&r.top<innerHeight;}).length,
                             oldFourRowPlan:cards.filter(e=>e.textContent.includes('Fix conversation-owned Ctrl+K routing') && e.textContent.includes('Delete shipping UI and notifications')).length};''')
                     initial_plans = plans_on_screen()
-                    # No fabricated assistant reply: an actual OS-entered question
-                    # is rejected by the read-safe relay before any provider call.
-                    click('[data-perf-target="composer"]')
-                    run('xdotool', 'type', '--clearmodifiers', '--delay', '80', 'where do asks stand', env=childenv, stdout=subprocess.DEVNULL)
-                    key('Return')
-                    wait_for(lambda: js("return document.querySelector('[data-perf-target=\"composer\"]')?.value === '';"), 'ordinary question submitted to blocked relay')
-                    time.sleep(.3)
-                    after_input = plans_on_screen()
-                    time.sleep(2)  # the deliberately blocked send settles before Clear
-                    result['runs'][label] = {'planLifecycle': {'initial': initial_plans, 'afterOrdinaryInput': after_input}}
+                    after_input = initial_plans
+                    if a.check_plans:
+                        # No fabricated assistant reply: an actual OS-entered question
+                        # is rejected by the read-safe relay before any provider call.
+                        click('[data-perf-target="composer"]')
+                        run('xdotool', 'type', '--clearmodifiers', '--delay', '80', 'where do asks stand', env=childenv, stdout=subprocess.DEVNULL)
+                        key('Return')
+                        wait_for(lambda: js("return document.querySelector('[data-perf-target=\"composer\"]')?.value === '';"), 'ordinary question submitted to blocked relay')
+                        time.sleep(.3)
+                        after_input = plans_on_screen()
+                        time.sleep(2)  # the deliberately blocked send settles before Clear
+                        result['runs'][label] = {'planLifecycle': {'initial': initial_plans, 'afterOrdinaryInput': after_input}}
                     # The unreachable-reason footer can crowd a narrow split
                     # after the deliberate 503. Open the real full chat first.
                     key('ctrl+shift+f')
@@ -498,6 +502,11 @@ def main():
                     click(clear_selector)
                     time.sleep(.5)
                     after_clear = plans_on_screen()
+                    def empty_state():
+                        return js('''const e=document.querySelector('[data-el="greeting"]');
+                          return {automaticGreeting:e?.textContent?.trim()||'',
+                            composerReady:!!document.querySelector('[data-perf-target="composer"]:not(:disabled)')};''')
+                    cleared_empty = empty_state()
                     # A real native process reconnect, not injected app state.
                     delete_session()
                     time.sleep(1)
@@ -509,9 +518,13 @@ def main():
                     run('xdotool', 'windowmove', windows[0], '0', '0', 'windowsize', windows[0], '1440', '1000', 'windowactivate', '--sync', windows[0], env=childenv, stdout=subprocess.DEVNULL)
                     time.sleep(1)
                     after_reopen = plans_on_screen()
+                    if a.check_empty_chat:
+                        empty_chat = {'afterClear': cleared_empty, 'afterNativeReopen': empty_state()}
+                        if label != 'before' and any(x['automaticGreeting'] or not x['composerReady'] for x in empty_chat.values()):
+                            raise RuntimeError('Automatic greeting present or composer unavailable in empty native chat')
                     plan_lifecycle = {'initial': initial_plans, 'afterOrdinaryInput': after_input,
                                       'afterClear': after_clear, 'afterNativeReopen': after_reopen,
-                                      'inference': 'blocked 503 after 2s observing native pending input; no assistant reply or synthetic TodoWrite',
+                                      'inference': 'blocked 503 after 2s observing native pending input; no assistant reply or synthetic TodoWrite' if a.check_plans else 'no inference request',
                                       'history': 'original server conversation unchanged; Clear is local only'}
                     if label != 'before' and (after_clear['mounted'] or after_reopen['mounted'] or after_input['oldFourRowPlan']):
                         raise RuntimeError('Stale plan resurrected after ordinary input, local Clear or native reopen')
@@ -592,7 +605,7 @@ def main():
                 def stats(values):
                     v = sorted(values)
                     return {'n': len(v), 'p50Ms': round(v[len(v)//2], 3), 'p95Ms': round(v[min(len(v)-1, int(len(v)*.95))], 3), 'maxMs': round(max(v), 3)}
-                return {'works': not interaction_failures, 'imageCheck': image_check, 'interactionFailures': interaction_failures, 'planLifecycle': plan_lifecycle, 'native': metadata, 'telemetryHttpStatuses': sorted(statuses),
+                return {'works': not interaction_failures, 'imageCheck': image_check, 'interactionFailures': interaction_failures, 'planLifecycle': plan_lifecycle, 'emptyChat': empty_chat, 'native': metadata, 'telemetryHttpStatuses': sorted(statuses),
                         'telemetryNote': 'Observed real Rust IPC batches; loopback is not authenticated Tailscale laptop telemetry',
                         'launchProcessToDomUpperBoundMs': round(launch_upper, 3),
                         'timings': [{'metric': m, 'method': method, **stats(values)} for (m, method), values in sorted(samples.items())]}
@@ -619,7 +632,7 @@ def main():
         if a.before_app:
             result['runs']['before'] = exercise(a.before_app, 'before')
         result['runs']['after'] = exercise(a.app, 'after')
-        if a.check_plans or a.check_images:
+        if a.check_plans or a.check_images or a.check_empty_chat:
             again = request(base + checkpoint_path)
             again = again.get('picture', again)
             preserved = again.get('items', []) == items
