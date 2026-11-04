@@ -363,6 +363,7 @@ export function boot(): void {
     outgoing = outgoing.filter((o) => o.convId !== convId || !o.failed);
     for (const [, n] of shownNodes) n.el.remove();
     shownNodes.clear();
+    followBottom = true; // Clear leaves no old text to hold; follow new replies in the blank view.
     renderThread();
   }
   /** "/compact [focus]": the conversation's context compacted now (not a message to the agent). */
@@ -757,10 +758,44 @@ export function boot(): void {
     if (asst) typeset(div);
     return div;
   }
-  const atBottom = () => msgsEl.scrollHeight - msgsEl.scrollTop - msgsEl.clientHeight < 80;
-  // `force`: scroll to the end. A render measures "was he at the bottom" BEFORE it appends and
-  // passes that: measured after, a reply landing in one chunk taller than 80 px never followed.
-  const scrollDown = (force) => { if (force || atBottom()) msgsEl.scrollTop = msgsEl.scrollHeight; };
+  const atBottom = () => msgsEl.scrollHeight - msgsEl.scrollTop - msgsEl.clientHeight <= 4;
+  // Only the current viewport's reading position, not a per-thread history. Capture BEFORE
+  // a render; never re-test after removing/replacing nodes (that can look like the bottom).
+  let followBottom = true;
+  let lastScrollTop = msgsEl.scrollTop;
+  const scrollDown = (follow = followBottom) => {
+    if (follow) { msgsEl.scrollTop = msgsEl.scrollHeight; lastScrollTop = msgsEl.scrollTop; }
+  };
+  msgsEl.addEventListener("scroll", () => {
+    if (atBottom()) followBottom = true;
+    // A queued programmatic scroll can arrive AFTER an image expands the layout.
+    // Only an actual move up releases the latch, not the newly enlarged gap.
+    else if (msgsEl.scrollTop < lastScrollTop) followBottom = false;
+    lastScrollTop = msgsEl.scrollTop;
+  }, { passive: true });
+  // Cancel a pending resize pin immediately, before the browser delivers the scroll event.
+  msgsEl.addEventListener("wheel", (e) => { if (e.deltaY < 0) followBottom = false; }, { passive: true });
+  let touchY = 0;
+  msgsEl.addEventListener("touchstart", (e) => { touchY = e.touches[0]?.clientY ?? 0; }, { passive: true });
+  msgsEl.addEventListener("touchmove", (e) => {
+    const y = e.touches[0]?.clientY ?? touchY;
+    if (y > touchY) followBottom = false;
+    touchY = y;
+  }, { passive: true });
+  document.addEventListener("keydown", (e) => {
+    const target = e.target as HTMLElement;
+    if (page !== "chat" || target.closest("input,textarea,select,[contenteditable],button")) return;
+    if (e.key === "ArrowUp" || e.key === "PageUp" || e.key === "Home" || (e.key === " " && e.shiftKey)) followBottom = false;
+  });
+  // Browser scroll anchoring keeps a reader's existing nodes in place. ResizeObserver is
+  // only for following the bottom through late image/video/font layout and composer resizing.
+  const threadResize = new ResizeObserver(() => scrollDown());
+  threadResize.observe(msgsEl);
+  function watchThreadSize() {
+    threadResize.disconnect();
+    threadResize.observe(msgsEl);
+    for (const el of msgsEl.children) threadResize.observe(el);
+  }
 
   let streamEl = null, runlineEl = null, _shownTool = null;
   // Send (↑) flips to stop (■) while the open thread is running — the standard
@@ -817,14 +852,14 @@ export function boot(): void {
     }
   }
   function renderStream() {
-    const stick = atBottom();
     if (!streamText) { if (streamEl) { streamEl.remove(); streamEl = null; } renderRunline(); return; }
     if (!streamEl) { streamEl = document.createElement("div"); streamEl.className = "amsg stream"; msgsEl.appendChild(streamEl); }
-    streamEl.innerHTML = '<div class="md">' + md(streamText, true) + '</div>';
+    const html = '<div class="md">' + md(streamText, true) + '</div>';
+    if (streamEl.innerHTML !== html) streamEl.innerHTML = html;
     typeset(streamEl);
-    renderRunline(); scrollDown(stick);
+    renderRunline();
   }
-  function clearThreadUi() { running = false; stopping = false; streamText = ""; streamTool = ""; streamEl = null; runlineEl = null; msgsEl.innerHTML = ""; syncSendBtn(); }
+  function clearThreadUi() { followBottom = true; running = false; stopping = false; streamText = ""; streamTool = ""; streamEl = null; runlineEl = null; msgsEl.innerHTML = ""; syncSendBtn(); }
   // Keep the existing empty marker for rendering, without an automatic greeting.
   function showHint() {
     msgsEl.innerHTML = '<div class="hint" data-el="empty-thread"></div>';
@@ -892,7 +927,7 @@ export function boot(): void {
   /** The thread on screen = the fold: each message's node kept while its message is the same object, put in the log's order. */
   function renderThread() {
     if (!convId) return;
-    const stick = atBottom();
+    const stick = followBottom;
     // Clear pressed here: blank until the box's own `cleared` (this id) is in the fold, which is blank itself.
     const v = pic && picView ? picView(pic) : null;
     const have = new Set([...(pic ? shown(pic) : []).map((x) => x.id), ...(pic ? pendingOf(pic) : []).map((x) => x.id)]);
@@ -955,14 +990,15 @@ export function boot(): void {
       convSource = m.source || convSource;
       convMeta = { project: m.project, state: m.state, nextWakeAt: m.nextWakeAt, costUsd: m.costUsd, verdict: m.verdict, todos: v ? v.todos : undefined, subagents: m.subagents || [] };
     }
-    renderStream(); renderRunline(); renderExtras(); renderOngoing(); syncArchived(); setHeader(); scrollDown(stick);
+    renderStream(); renderRunline(); renderExtras(); renderOngoing(); syncArchived(); setHeader(); scrollDown(stick); watchThreadSize();
   }
   let renderQueued = false;
   function scheduleRender() {
     if (renderQueued) return;
     renderQueued = true;
-    requestAnimationFrame(() => { renderQueued = false; renderThread(); });
-    setTimeout(() => { if (renderQueued) { renderQueued = false; renderThread(); } }, 60);
+    const flush = () => { if (!renderQueued) return; renderQueued = false; renderThread(); };
+    requestAnimationFrame(flush);
+    setTimeout(flush, 60);
   }
 
   async function openThread(id: string, title?: string) {
@@ -1029,7 +1065,7 @@ export function boot(): void {
     const asking = !!pic?.meta.asking;
     const kind = asking ? "answer" : pic && pic.meta.running ? "steer" : "send";
     outgoing.push({ id, convId: target, text, images: imgs.map((x) => x.url), ...(kind === "steer" ? { kind: "steer" as const } : {}) });
-    scheduleRender(); scrollDown(true);
+    scheduleRender();
     try {
       const r = await api("/api/v2/intent", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ type: kind, convId: target, clientId: id, client: "phone", text: sentText, ...(files.length ? { files } : {}), ...(imgs.length ? { images: imgs.map((x) => ({ name: x.name, mime: x.mime, dataBase64: x.url.slice(x.url.indexOf(",") + 1) })) } : {}), ...(fresh && newChatProject ? { project: projects.find((x) => x.slug === newChatProject)?.name || newChatProject } : {}) }) });
       const d = await r.json();
@@ -2208,7 +2244,7 @@ export function boot(): void {
     else if (k === "layer0") kbSetLayer(0); else if (k === "layer1") kbSetLayer(1); else if (k === "layer2") kbSetLayer(2);
   }
   function kbKeyUp(elk) { elk.classList.remove("down"); }
-  function showKb() { if (!CUSTOM_KB || page !== "chat") return; if (!document.body.classList.contains("kbopen")) { document.body.classList.add("kbopen"); scrollDown(true); } if (document.activeElement !== input) { try { input.focus({ preventScroll: true }); } catch {} } kbApplyShift(); kbAutoShift(); }
+  function showKb() { if (!CUSTOM_KB || page !== "chat") return; if (!document.body.classList.contains("kbopen")) { document.body.classList.add("kbopen"); scrollDown(); } if (document.activeElement !== input) { try { input.focus({ preventScroll: true }); } catch {} } kbApplyShift(); kbAutoShift(); }
   function hideKb() { if (!document.body.classList.contains("kbopen")) return; document.body.classList.remove("kbopen"); kbStopRepeat(); }
   if (CUSTOM_KB) {
     input.setAttribute("inputmode", "none"); input.setAttribute("autocapitalize", "off"); input.setAttribute("autocorrect", "off"); input.setAttribute("autocomplete", "off"); input.setAttribute("spellcheck", "false");
@@ -2594,7 +2630,7 @@ export function boot(): void {
       // pinned composer rides above the keyboard (see sheetEditFocus). Nothing to
       // do here but keep --kb current, which the line above already did.
     };
-    const fit = () => { applyKb(); window.scrollTo(0, 0); scrollDown(false); };
+    const fit = () => { applyKb(); window.scrollTo(0, 0); scrollDown(); };
     vv.addEventListener("resize", fit);
     vv.addEventListener("scroll", () => { window.scrollTo(0, 0); applyKb(); });
     fit(); // reconcile the initial geometry so a short launch viewport can't strand a strip
