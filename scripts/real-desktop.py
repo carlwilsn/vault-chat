@@ -287,7 +287,8 @@ def main():
                         self.send_response(503); self.end_headers(); return
                     self.send_response(200); self.send_header('Content-Type', 'text/event-stream'); self.end_headers()
                     messages = body.get('messages', [])
-                    is_editor = any('READ_EDITOR_FIXTURE_27' in json.dumps(m.get('content', '')) for m in messages if m.get('role') == 'user')
+                    fixture_turns = [json.dumps(m.get('content', '')) for m in messages if m.get('role') == 'user' and any(tag in json.dumps(m.get('content', '')) for tag in ('READ_EDITOR_FIXTURE_27', 'LOCAL-UNPAID-STATUS-DOT'))]
+                    is_editor = bool(fixture_turns and 'READ_EDITOR_FIXTURE_27' in fixture_turns[-1])
                     tool_result = messages[-1] if messages and messages[-1].get('role') == 'tool' else None
                     if a.check_editor_sync and is_editor and not tool_result:
                         editor_reads.append({'beforeNativeReadSha256': hashlib.sha256(editor_box_file.read_bytes()).hexdigest(), 'freshBeforeNativeRead': editor_box_file.read_text() == editor_expected})
@@ -1052,11 +1053,17 @@ def main():
                         raise RuntimeError('Status fixture altered original history prefix')
                     status_dot = {'rows': dot_rows, 'localProviderCalls': len(provider_calls), 'originalHistoryPrefixUnchanged': True, 'runningToIdle': True}
                 editor_sync = None
-                if a.check_editor_sync and label == 'after':
+                if a.check_editor_sync:
+                    nonlocal editor_expected
+                    editor_expected = 'PRIVATE-EDITOR-PASTE-27 ' + label + ' fresh bytes\n'
                     # Status-dot checks leave the project owner selected with
                     # the unrelated viewer open; preserve that ownership.
                     if exists('[data-perf-view="fullscreen"]'):
                         key('ctrl+shift+f')
+                    if label == 'before':
+                        click('[data-el="vault-picker"]')
+                        wait_for(lambda: exists('[data-el="vault-picker-item"][data-rel="vaults/status-viewer"] button'), 'baseline viewer fixture')
+                        click('[data-el="vault-picker-item"][data-rel="vaults/status-viewer"] button')
                     wait_for(lambda: exists('[data-tree-path$="/private-editor.md"]'), 'private scratch editor file')
                     click('[data-tree-path$="/private-editor.md"]')
                     wait_for(lambda: exists('[data-look-pane][data-file$="/private-editor.md"]'), 'private editor viewer')
@@ -1071,7 +1078,7 @@ def main():
                     wait_for(lambda: subprocess.check_output(['xclip', '-selection', 'clipboard', '-o'], env=childenv) == clipboard.read_bytes(), 'private text clipboard ready')
                     click('.cm-content[contenteditable="true"]')
                     xy = js('const r=document.querySelector(arguments[0]).getBoundingClientRect();return [(screenX+r.x+r.width/2)*devicePixelRatio,(screenY+r.y+r.height/2)*devicePixelRatio];', selector)
-                    js('window.__editorPasteAt=null;window.addEventListener("paste",e=>{if(e.isTrusted&&e.target.closest(".cm-content"))window.__editorPasteAt=performance.now();},true);')
+                    js('window.__editorPasteAt=null;window.__editorSendAt=null;window.addEventListener("paste",e=>{if(e.isTrusted&&e.target.closest(".cm-content"))window.__editorPasteAt=performance.now();},true);window.addEventListener("keydown",e=>{if(e.isTrusted&&e.key==="Enter"&&e.target.matches("[data-perf-target=composer]"))window.__editorSendAt=performance.now();},true);')
                     nonlocal editor_intent_enabled
                     editor_intent_enabled = True
                     reads_before = len(editor_reads)
@@ -1079,9 +1086,11 @@ def main():
                     run('xdotool', 'key', '--clearmodifiers', 'ctrl+Home', 'ctrl+shift+End', 'ctrl+v', 'mousemove', str(round(xy[0])), str(round(xy[1])), 'click', '1', 'key', 'Return', env=childenv, stdout=subprocess.DEVNULL)
                     wait_for(lambda: len(editor_reads) > reads_before and 'nativeReadReturnedFreshBytes' in editor_reads[-1], 'genuine Pi native scratch-file read', seconds=90)
                     editor_sync = editor_reads[-1]
-                    if not all(editor_sync.get(k) for k in ('freshBeforeNativeRead', 'nativeReadReturnedFreshBytes')):
+                    if label == 'after' and not all(editor_sync.get(k) for k in ('freshBeforeNativeRead', 'nativeReadReturnedFreshBytes')):
                         raise RuntimeError('Native read saw stale editor bytes')
-                    editor_sync.update({'trustedNativePaste': js('return window.__editorPasteAt!==null;'), 'viewerDifferentFromOwner': True, 'transport': 'real Rust Git commit/push -> existing server flush -> Pi native read'})
+                    if label == 'before' and editor_sync.get('freshBeforeNativeRead'):
+                        raise RuntimeError('Baseline did not reproduce stale read; do not claim race proof')
+                    editor_sync.update({'trustedNativePaste': js('return window.__editorPasteAt!==null;'), 'pasteToSendKeyMs': js('return window.__editorSendAt-window.__editorPasteAt;'), 'viewerDifferentFromOwner': True, 'transport': 'real Rust Git commit/push -> existing server flush -> Pi native read'})
                     after_editor = request(base + checkpoint_path).get('picture', {}).get('items', [])
                     if after_editor[:len(items)] != items:
                         raise RuntimeError('Editor fixture changed original history prefix')
