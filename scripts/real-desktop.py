@@ -740,6 +740,16 @@ def main():
                         run('xdotool','mousemove',str(round(xy['x'])),str(round(xy['y'])),env=childenv,stdout=subprocess.DEVNULL)
                         time.sleep(.4)
                         run('xdotool','click','1',env=childenv,stdout=subprocess.DEVNULL)
+                    def media_menu_toggle():
+                        # WebKit's first native media context-menu item is
+                        # Play/Pause. This avoids guessing theme-dependent icon
+                        # hit boxes; the app deliberately retains this UA menu.
+                        xy=js('const v=document.querySelector(arguments[0]),r=v.getBoundingClientRect(),x=r.x+r.width/2,y=r.y+r.height/3;return document.elementFromPoint(x,y)===v?[(screenX+x)*devicePixelRatio,(screenY+y)*devicePixelRatio]:null;', selector)
+                        if not xy:
+                            raise RuntimeError('Native media menu target is occluded')
+                        run('xdotool','mousemove',str(round(xy[0])),str(round(xy[1])),'click','3',env=childenv,stdout=subprocess.DEVNULL)
+                        time.sleep(.2)
+                        key('Home');key('Return')
                     # Standard native UA controls, never a fabricated page button.
                     video_point(.06, 16)
                     wait_for(lambda: not video_state()['paused'] and video_state()['time']>.25, 'native Play gesture starts media')
@@ -747,9 +757,7 @@ def main():
                     result['nativeVideo'].update(first=first, playing=playing)
                     if playing['frames']<=first['frames'] or playing['hash']==first['hash'] or playing['rms']<.01:
                         raise RuntimeError('Native video frames or actual pre-output audio samples did not decode')
-                    # Adwaita's bar starts 6 px inside the video, then a 16 px
-                    # left margin. The old x=6% hit the background, not Pause.
-                    video_point(.11,21)
+                    media_menu_toggle()
                     wait_for(lambda: video_state()['paused'], 'native Pause gesture', seconds=3)
                     paused=video_state();result['nativeVideo']['paused']=paused;time.sleep(.25)
                     if paused['time'] > playing['time'] + 1.5:
@@ -758,10 +766,10 @@ def main():
                     video_point(.6,16)
                     wait_for(lambda: abs(video_state()['time']-paused['time'])>1, 'native timeline Seek gesture')
                     seeked=video_state();result['nativeVideo']['seeked']=seeked
-                    video_point(.11,21)
+                    media_menu_toggle()
                     wait_for(lambda: not video_state()['paused'] and video_state()['time']>seeked['time']+.2, 'native Resume gesture', seconds=3)
                     resumed=video_state()
-                    video_point(.11,21)
+                    media_menu_toggle()
                     wait_for(lambda: video_state()['paused'], 'native final Pause gesture', seconds=3)
                     bad=js('const v=document.querySelector(\'video[title="unsupported local fixture"]\');const a=v?.parentElement.querySelector(\'[data-el="video-fallback"]\');return {code:v?.error?.code||null,download:!!a?.hasAttribute("download"),link:!!a?.getAttribute("href")};')
                     if bad['code'] not in (3,4) or not bad['download'] or not bad['link']:
@@ -777,7 +785,7 @@ def main():
                         raise RuntimeError('Native media did not fetch the exact owned bytes through its conversation-authorized backend')
                     video_check={'fetches':fetches,'transport':'Native Rust full fetch -> retained blob; backend 206 checked separately, not claimed as a browser range request','beforeInstrumentation':before,'initial':initial,'first':first,'playing':playing,'paused':paused,'seeked':seeked,'resumed':resumed,'unsupported':bad,
                       'audioOutput':'private clocked Pulse null sink only; RMS from its virtual monitor in memory; no speakers/mic/recording',
-                      'input':'native Adwaita UA controls via XTest; no play/pause/currentTime injection'}
+                      'input':'native UA Play/timeline clicks and media context-menu Pause/Resume via XTest; no play/pause/currentTime injection'}
                 image_check = None
                 if a.check_images:
                     if not exists('[data-perf-target="composer"]'):

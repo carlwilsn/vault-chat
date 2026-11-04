@@ -395,6 +395,10 @@ export default function App() {
     };
     const onContext = (e: MouseEvent) => {
       if (e.defaultPrevented) return;
+      // Keep the browser's mature media menu (Play/Pause, Mute, etc.).
+      // Suppressing it removes a native control path, especially with codecs
+      // or platform media-control themes that cannot draw every button.
+      if (e.target instanceof Element && e.target.closest("video,audio")) return;
       e.preventDefault();
     };
     window.addEventListener("keydown", onKey, true);
