@@ -440,6 +440,9 @@ def main():
                 js('localStorage.setItem("vault_chat_last_vault",arguments[0]); localStorage.setItem("vault_chat_active_conv",arguments[1]);', str(vault), a.conversation)
                 if a.check_status_dot:
                     js('localStorage.setItem("vault_chat_master_path",arguments[0]);', str(master))
+                # WebKit persists localStorage asynchronously; let the seeded clean
+                # profile reach disk before the driver tears its process down.
+                time.sleep(1)
                 delete_session()
                 time.sleep(1)
                 with lock:
