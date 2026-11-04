@@ -414,6 +414,15 @@ def main():
                 # Open only our private note from the real file tree.
                 click('[data-tree-root] [data-tree-path$="/desktop-timing-note.md"]')
                 wait_for(lambda: exists('[data-look-pane][data-file$="/desktop-timing-note.md"]'), 'real private note viewer')
+                # Loopback telemetry is deliberately rejected, so its bounded retry
+                # queue can evict this single sample during the next typing burst.
+                # Observe its real IPC delivery before producing more samples.
+                def file_sample_delivered():
+                    with lock:
+                        return any(s.get('metric') == 'file-open'
+                                   for b, _ in observed[start_batch:]
+                                   for s in b.get('samples', []))
+                wait_for(file_sample_delivered, 'native file-open telemetry delivery')
                 key('ctrl+e')
                 wait_for(lambda: exists('.cm-content[contenteditable="true"]'), 'real private note editor')
                 click('.cm-content[contenteditable="true"]')
