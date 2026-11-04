@@ -1399,12 +1399,13 @@ def main():
         if a.before_app:
             result['runs']['before'] = exercise(a.before_app, 'before')
         result['runs']['after'] = exercise(a.app, 'after')
-        if a.check_plans or a.check_images or a.check_empty_chat or a.check_video or a.check_speech_freshness:
+        if a.check_plans or a.check_images or a.check_empty_chat or a.check_video or a.check_speech_freshness or a.check_status_dot:
             again = request(base + checkpoint_path)
             again = again.get('picture', again)
             # Genuine engine startup may append a lost-worker notice to this disposable copy.
-            # No original item may change/disappear; owned sends only append to the selected project.
-            if a.check_speech_freshness:
+            # Status-dot and speech fixtures deliberately send to the selected project.
+            # No original item may change/disappear; these owned sends only append.
+            if a.check_speech_freshness or a.check_status_dot:
                 preserved = again.get('items', [])[:len(items)] == items
                 result['thread']['originalItemsPrefixUnchanged'] = preserved
             else:
