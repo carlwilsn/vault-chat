@@ -303,10 +303,11 @@ def main():
                 raise RuntimeError('Freshness requires pinned local pi and Pipecat runtime')
             # The mature fake provider is the ONLY inference transport; not a fake engine/backend/IPC.
             provider_url = work / 'provider-url'
-            provider = """import {fakeChat} from './server/test/fakeChat.ts';
+            provider = """import {fakeChat,lastUser} from './server/test/fakeChat.ts';
               import {writeFileSync} from 'node:fs';
               const p=await fakeChat();
-              p.respond=(_b,n)=>({text:'Owned speech freshness result '+n+'.',noCost:true});
+              let owned=0; p.respond=(b)=>lastUser(b).includes('Owned speech freshness ')
+                ? {text:'Owned speech freshness result '+(++owned)+'.',noCost:true} : {status:503,body:'Unowned inference refused'};
               writeFileSync(process.argv[1],p.url);"""
             spawn(['node', '--import', 'tsx', '--input-type=module', '-e', provider, str(provider_url)], 'local-provider', cwd=ROOT)
             wait_for(provider_url.exists, 'local-only provider')
@@ -318,6 +319,13 @@ def main():
             server_env.update(VC_ENGINE='pi', VC_PI_DIR=str(a.pi_dir), VC_ENGINE_MODEL='test/fake-model',
                 VC_OPENROUTER_BASE=local_provider, VC_PI_UNSAFE='1', PI_SKIP_VERSION_CHECK='1',
                 VC_BWRAP=str(work / 'no-bwrap'), NODE_OPTIONS='--import ' + str(network))
+        spawn(['node', str(a.server_bundle)], 'server', server_env)
+        base = 'http://127.0.0.1:' + str(server_port)
+        wait_for(lambda: request(base + '/api/v1/health'), 'owned genuine box server')
+        if a.check_speech_freshness:
+            # Engine boot writes its native config; install the local model fixture AFTER that write,
+            # before creating the owned call. Never mutate pi's SDK or read an auth/key store.
+            wait_for(lambda: request(base + '/api/v1/health').get('engine', {}).get('version') == '1.1.0', 'genuine pi engine startup')
             agent = state / 'pi' / 'agent'
             agent.mkdir(parents=True, exist_ok=True)
             (agent / 'settings.json').write_text(json.dumps({'compaction': {'enabled': False}, 'retry': {'enabled': False}}))
@@ -326,9 +334,6 @@ def main():
                 for mid in ['test/fake-model', 'anthropic/claude-haiku-5.5']]
             (agent / 'models.json').write_text(json.dumps({'providers': {'openrouter': {'baseUrl': local_provider,
                 'apiKey': 'synthetic-local-only', 'api': 'openai-completions', 'models': models}}}))
-        spawn(['node', str(a.server_bundle)], 'server', server_env)
-        base = 'http://127.0.0.1:' + str(server_port)
-        wait_for(lambda: request(base + '/api/v1/health'), 'owned genuine box server')
         if a.check_status_dot:
             wait_for(lambda: request(base + '/api/v1/health').get('engine', {}).get('pi', {}).get('state') == 'up', 'real pinned pi boot')
             request(base + '/api/v1/vaults', {'name': 'status-viewer'})
