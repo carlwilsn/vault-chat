@@ -877,7 +877,10 @@ def main():
                     owned_send('second request')
                     wait_for(lambda: 'Owned speech freshness result 2.' in json.dumps(main_items()), 'fresh native response in normal human history')
                     # Merely viewing another conversation cannot follow/cancel the active Main owner.
-                    click('[data-el="thread-project"][data-thread="' + a.conversation + '"] button')
+                    project_selector = '[data-el="thread-project"][data-thread="' + a.conversation + '"] button'
+                    if not exists(project_selector):
+                        click('[data-el="chats-toggle"]')
+                    click(project_selector)
                     wait_for(lambda: js('return localStorage.getItem("vault_chat_active_conv")===arguments[0];', a.conversation), 'original viewer selection')
                     live = request(base + '/api/v1/brain/calls')['calls']
                     if len(live) != 1 or live[0]['convId'] != 'main':
@@ -1136,8 +1139,14 @@ def main():
         if a.check_plans or a.check_images or a.check_empty_chat or a.check_video or a.check_speech_freshness:
             again = request(base + checkpoint_path)
             again = again.get('picture', again)
-            preserved = again.get('items', []) == items
-            result['thread']['originalItemsUnchangedAfterClear'] = preserved
+            # Genuine engine startup may append a lost-worker notice to this disposable copy.
+            # No original item may change/disappear; owned Main sends append independently.
+            if a.check_speech_freshness:
+                preserved = again.get('items', [])[:len(items)] == items
+                result['thread']['originalItemsPrefixUnchanged'] = preserved
+            else:
+                preserved = again.get('items', []) == items
+                result['thread']['originalItemsUnchangedAfterClear'] = preserved
             if not preserved:
                 raise RuntimeError('Local Clear changed the original conversation items')
         result['works'] = all(r['works'] for r in result['runs'].values())
