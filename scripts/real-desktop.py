@@ -373,12 +373,19 @@ def main():
                         if self.command == 'GET' and path == checkpoint_path and r.status == 200:
                             opened.append(True)
                         query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
-                        if a.check_video and path == '/file' and query.get('path') == ['video-fixtures/synthetic.webm']:
+                        if a.check_video and path in ('/file', '/api/v1/vault/file') and query.get('path') == ['video-fixtures/synthetic.webm']:
                             expected = a.check_video.read_bytes()
-                            video_fetches.append({'status':r.status,'mime':r.getheader('Content-Type'),
+                            # Native fetchBoxFile uses the JSON/base64 route; the
+                            # phone's HTML video uses the binary /file route.
+                            # Compare decoded bytes, not the JSON envelope.
+                            payload = body
+                            if path == '/api/v1/vault/file' and r.status == 200:
+                                import base64
+                                payload = base64.b64decode(json.loads(body)['base64'], validate=True)
+                            video_fetches.append({'route':path,'status':r.status,'mime':r.getheader('Content-Type'),
                                 'authorizedConversation':query.get('convId') == [a.conversation],
-                                'exactFixtureBytes':body == expected if r.status == 200 else body == expected[100:200],
-                                'bytes':len(body),'range':r.getheader('Content-Range')})
+                                'exactFixtureBytes':payload == expected if r.status == 200 else payload == expected[100:200],
+                                'bytes':len(payload),'range':r.getheader('Content-Range')})
                         if path == '/api/v1/laptop-perf' and self.command == 'POST':
                             batch = json.loads(data)
                             # Original native metadata, never invented capability/identity headers.
@@ -523,16 +530,6 @@ def main():
                     raise RuntimeError('Native app did not load the specified original thread')
                 launch_upper = (time.monotonic() - began) * 1000
                 result['thread']['exactOriginalSelected'] = True
-                # Observe NOTE on trusted native keyboard events. No values/keys/paths retained.
-                js('''window.__desktopNoteSamples=[];
-                    window.addEventListener('keydown',e=>{
-                      if(!e.isTrusted || !(e.target instanceof HTMLTextAreaElement) ||
-                         !e.target.placeholder.startsWith('What are you stuck on?'))return;
-                      const t=e.timeStamp>=performance.timeOrigin?e.timeStamp-performance.timeOrigin:e.timeStamp;
-                      requestAnimationFrame(()=>requestAnimationFrame(()=>{
-                        window.__desktopNoteSamples.push(performance.now()-t);
-                      }));
-                    },true);''')
                 def sample_delivered(metric):
                     with lock:
                         return any(s.get('metric') == metric
@@ -562,9 +559,23 @@ def main():
                 key('ctrl+n')
                 note_selector = 'textarea[placeholder^="What are you stuck on?"]'
                 wait_for(lambda: exists(note_selector), 'new NOTE')
+                # Observe the actual mounted input directly; retain trusted
+                # event counts to diagnose missing timings without guessing at
+                # window-level target filtering. No input/state injection.
+                js('''window.__desktopNoteSamples=[];window.__desktopNoteEvents={trusted:0,untrusted:0};
+                    document.querySelector(arguments[0]).addEventListener('keydown',e=>{
+                      if(!e.isTrusted){window.__desktopNoteEvents.untrusted++;return;}
+                      window.__desktopNoteEvents.trusted++;
+                      const t=e.timeStamp>=performance.timeOrigin?e.timeStamp-performance.timeOrigin:e.timeStamp;
+                      requestAnimationFrame(()=>requestAnimationFrame(()=>{
+                        window.__desktopNoteSamples.push(performance.now()-t);
+                      }));
+                    },true);''', note_selector)
                 type_and_assert(note_selector)
                 time.sleep(.2)
                 note_samples = js('return window.__desktopNoteSamples;')
+                result['nativeNoteInput'] = js('const e=document.querySelector(arguments[0]);return {events:window.__desktopNoteEvents,samples:window.__desktopNoteSamples.length,focused:document.activeElement===e,characters:e?.value.length};', note_selector)
+                result['nativeInteractionFailures'] = list(interaction_failures)
                 key('Escape')  # never saves/submits a model turn
                 # Open only our private note from the real file tree.
                 click('[data-tree-root] [data-tree-path$="/desktop-timing-note.md"]')
@@ -768,10 +779,11 @@ def main():
                     seeked=video_state();result['nativeVideo']['seeked']=seeked
                     media_menu_toggle()
                     wait_for(lambda: not video_state()['paused'] and video_state()['time']>seeked['time']+.2, 'native Resume gesture', seconds=3)
-                    resumed=video_state()
+                    resumed=video_state();result['nativeVideo']['resumed']=resumed
                     media_menu_toggle()
                     wait_for(lambda: video_state()['paused'], 'native final Pause gesture', seconds=3)
                     bad=js('const v=document.querySelector(\'video[title="unsupported local fixture"]\');const a=v?.parentElement.querySelector(\'[data-el="video-fallback"]\');return {code:v?.error?.code||null,download:!!a?.hasAttribute("download"),link:!!a?.getAttribute("href")};')
+                    result['nativeVideo']['unsupported']=bad
                     if bad['code'] not in (3,4) or not bad['download'] or not bad['link']:
                         raise RuntimeError('Unsupported native format has no honest download fallback')
                     query = urllib.parse.urlencode({'path':'video-fixtures/synthetic.webm','convId':a.conversation})
@@ -781,9 +793,10 @@ def main():
                             raise RuntimeError('Native media backend range/MIME/bytes failed')
                     with lock:
                         fetches = list(video_fetches)
-                    if not any(f['status']==200 and f['exactFixtureBytes'] and f['authorizedConversation'] for f in fetches):
+                    result['nativeVideo']['fetches']=fetches
+                    if not any(f['route']=='/api/v1/vault/file' and f['status']==200 and f['exactFixtureBytes'] and f['authorizedConversation'] for f in fetches):
                         raise RuntimeError('Native media did not fetch the exact owned bytes through its conversation-authorized backend')
-                    video_check={'fetches':fetches,'transport':'Native Rust full fetch -> retained blob; backend 206 checked separately, not claimed as a browser range request','beforeInstrumentation':before,'initial':initial,'first':first,'playing':playing,'paused':paused,'seeked':seeked,'resumed':resumed,'unsupported':bad,
+                    video_check={'fetches':fetches,'transport':'Native Rust JSON/base64 fetch -> retained blob; backend binary /file 206 checked separately, not claimed as a browser range request','beforeInstrumentation':before,'initial':initial,'first':first,'playing':playing,'paused':paused,'seeked':seeked,'resumed':resumed,'unsupported':bad,
                       'audioOutput':'private clocked Pulse null sink only; RMS from its virtual monitor in memory; no speakers/mic/recording',
                       'input':'native UA Play/timeline clicks and media context-menu Pause/Resume via XTest; no play/pause/currentTime injection'}
                 image_check = None
