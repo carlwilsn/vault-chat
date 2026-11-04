@@ -385,6 +385,13 @@ def main():
                         window.__desktopNoteSamples.push(performance.now()-t);
                       }));
                     },true);''')
+                def sample_delivered(metric):
+                    with lock:
+                        return any(s.get('metric') == metric
+                                   for b, _ in observed[start_batch:]
+                                   for s in b.get('samples', []))
+                # Fast current UI can produce a full queue before the first flush.
+                wait_for(lambda: sample_delivered('launch-interactive'), 'native launch telemetry delivery')
                 text = 'desktop input timing'
                 interaction_failures = []
 
@@ -417,12 +424,7 @@ def main():
                 # Loopback telemetry is deliberately rejected, so its bounded retry
                 # queue can evict this single sample during the next typing burst.
                 # Observe its real IPC delivery before producing more samples.
-                def file_sample_delivered():
-                    with lock:
-                        return any(s.get('metric') == 'file-open'
-                                   for b, _ in observed[start_batch:]
-                                   for s in b.get('samples', []))
-                wait_for(file_sample_delivered, 'native file-open telemetry delivery')
+                wait_for(lambda: sample_delivered('file-open'), 'native file-open telemetry delivery')
                 key('ctrl+e')
                 wait_for(lambda: exists('.cm-content[contenteditable="true"]'), 'real private note editor')
                 click('.cm-content[contenteditable="true"]')
