@@ -1,7 +1,7 @@
 // The editor's existing 300 ms autosave, with an awaitable drain. Jobs retain
 // their captured path across pane switches; a failed save stays pending.
 export type EditorWrite = { vault: string; path: string; text: string };
-type Job = EditorWrite & { base: string; saved?: string; timer?: ReturnType<typeof setTimeout>; tail?: Promise<void>; onSaved: () => void; onConflict: () => void };
+type Job = EditorWrite & { base: string; saved?: string; cancelled?: boolean; timer?: ReturnType<typeof setTimeout>; tail?: Promise<void>; onSaved: () => void; onConflict: () => void };
 
 export class EditorWrites {
   private jobs = new Map<string, Job>();
@@ -21,7 +21,9 @@ export class EditorWrites {
     const previous = job.tail;
     const run = (async () => {
       await previous;
+      if (job.cancelled) return;
       const disk = await this.io.read(job.path);
+      if (job.cancelled) return;
       if (job.saved === job.text) {
         // Git/live reload may supersede a completed autosave. Its old hash is
         // not an unsaved buffer and must not lock every later chat forever.
@@ -59,9 +61,11 @@ export class EditorWrites {
     for (const write of writes) if (this.jobs.get(write.path) === write) this.jobs.delete(write.path);
   }
 
-  discard(path: string): void {
+  discard(path: string): Promise<void> {
     const job = this.jobs.get(path);
     if (job?.timer) clearTimeout(job.timer);
+    if (job) job.cancelled = true;
     this.jobs.delete(path);
+    return job?.tail ?? Promise.resolve();
   }
 }

@@ -287,12 +287,15 @@ def main():
                         self.send_response(503); self.end_headers(); return
                     self.send_response(200); self.send_header('Content-Type', 'text/event-stream'); self.end_headers()
                     messages = body.get('messages', [])
-                    fixture_turns = [json.dumps(m.get('content', '')) for m in messages if m.get('role') == 'user' and any(tag in json.dumps(m.get('content', '')) for tag in ('READ_EDITOR_FIXTURE_27', 'LOCAL-UNPAID-STATUS-DOT'))]
+                    def message_text(m):
+                        c = m.get('content', '')
+                        return c if isinstance(c, str) else '\n'.join(x.get('text', '') for x in c)
+                    fixture_turns = [message_text(m) for m in messages if m.get('role') == 'user' and message_text(m).startswith(('[Carl, on ', 'READ_EDITOR_FIXTURE_27', 'LOCAL-UNPAID-STATUS-DOT'))]
                     is_editor = bool(fixture_turns and 'READ_EDITOR_FIXTURE_27' in fixture_turns[-1])
                     tool_result = messages[-1] if messages and messages[-1].get('role') == 'tool' else None
                     if a.check_editor_sync and is_editor and not tool_result:
                         editor_reads.append({'beforeNativeReadSha256': hashlib.sha256(editor_box_file.read_bytes()).hexdigest(), 'freshBeforeNativeRead': editor_box_file.read_text() == editor_expected})
-                        deltas = [({'role': 'assistant', 'tool_calls': [{'index': 0, 'id': 'editor-read-27', 'type': 'function', 'function': {'name': 'read', 'arguments': json.dumps({'path': str(editor_box_file)})}}]}, None), ({}, 'tool_calls')]
+                        deltas = [({'role': 'assistant', 'tool_calls': [{'index': 0, 'id': 'editor-read-27', 'type': 'function', 'function': {'name': next((t['function']['name'] for t in body.get('tools', []) if t['function']['name'] in ('read', 'mcp__vault_chat__read')), 'read'), 'arguments': json.dumps({'path': str(editor_box_file)})}}]}, None), ({}, 'tool_calls')]
                     else:
                         if a.check_editor_sync and is_editor and tool_result and editor_reads:
                             editor_reads[-1]['nativeReadReturnedFreshBytes'] = editor_expected.strip() in json.dumps(tool_result.get('content'))
@@ -422,7 +425,7 @@ def main():
             def forward(self):
                 path = urllib.parse.urlsplit(self.path).path
                 data = self.rfile.read(int(self.headers.get('Content-Length', '0')))
-                if a.check_images and path == '/api/v2/intent' and self.command == 'POST':
+                if (a.check_images or a.check_editor_sync) and path == '/api/v2/intent' and self.command == 'POST':
                     with lock:
                         photo_intents.append(json.loads(data))
                 speech_send = (a.check_speech_freshness and path == '/api/v2/intent' and self.command == 'POST'
@@ -489,6 +492,7 @@ def main():
         if a.check_editor_sync:
             (native_master / '.vault-chat-master.json').write_text(json.dumps({'box': 'http://127.0.0.1:' + str(relay.server_port)}))
         if a.check_status_dot:
+            (viewer / '.vault-chat').mkdir(exist_ok=True)
             (viewer / '.vault-chat/sync.json').write_text(json.dumps({'box': 'http://127.0.0.1:' + str(relay.server_port), 'vault': 'status-viewer'}))
         # Only our new socket; never use DISPLAY from the caller or scan live displays.
         readfd, writefd = os.pipe()
@@ -1060,6 +1064,11 @@ def main():
                     # the unrelated viewer open; preserve that ownership.
                     if exists('[data-perf-view="fullscreen"]'):
                         key('ctrl+shift+f')
+                    if label == 'after':
+                        key('ctrl+shift+f')
+                        wait_for(lambda: exists('[data-thread="' + a.conversation + '"] > button'), 'editor owner thread row')
+                        click('[data-thread="' + a.conversation + '"] > button')
+                        key('ctrl+shift+f')
                     if label == 'before':
                         click('[data-el="vault-picker"]')
                         wait_for(lambda: exists('[data-el="vault-picker-item"][data-rel="vaults/status-viewer"] button'), 'baseline viewer fixture')
@@ -1067,23 +1076,30 @@ def main():
                     wait_for(lambda: exists('[data-tree-path$="/private-editor.md"]'), 'private scratch editor file')
                     click('[data-tree-path$="/private-editor.md"]')
                     wait_for(lambda: exists('[data-look-pane][data-file$="/private-editor.md"]'), 'private editor viewer')
-                    key('ctrl+e')
+                    if not exists('.cm-content[contenteditable="true"]'):
+                        key('ctrl+e')
                     wait_for(lambda: exists('.cm-content[contenteditable="true"]'), 'scratch native editor')
                     selector = '[data-perf-target="composer"]'
                     click(selector)
-                    run('xdotool', 'type', '--clearmodifiers', '--delay', '0', 'READ_EDITOR_FIXTURE_27', env=childenv, stdout=subprocess.DEVNULL)
+                    wait_for(lambda: js('return document.activeElement===document.querySelector(arguments[0]);', selector), 'scratch composer focused')
+                    run('xdotool', 'type', '--clearmodifiers', '--delay', '80', 'READ_EDITOR_FIXTURE_27', env=childenv, stdout=subprocess.DEVNULL)
+                    wait_for(lambda: js('return document.querySelector(arguments[0]).value==="READ_EDITOR_FIXTURE_27";', selector), 'scratch reader instruction typed')
                     clipboard = work / 'editor-clipboard.txt'
                     clipboard.write_text(editor_expected)
                     producer = spawn(['xclip', '-selection', 'clipboard', '-target', 'UTF8_STRING', '-i', str(clipboard), '-quiet'], 'editor-clipboard', childenv)
-                    wait_for(lambda: subprocess.check_output(['xclip', '-selection', 'clipboard', '-o'], env=childenv) == clipboard.read_bytes(), 'private text clipboard ready')
+                    wait_for(lambda: subprocess.check_output(['xclip', '-selection', 'clipboard', '-target', 'UTF8_STRING', '-o'], env=childenv) == clipboard.read_bytes(), 'private text clipboard ready')
                     click('.cm-content[contenteditable="true"]')
+                    wait_for(lambda: js('return document.activeElement?.isContentEditable;'), 'scratch editor focused')
+                    key('ctrl+Home'); key('ctrl+shift+End')
                     xy = js('const r=document.querySelector(arguments[0]).getBoundingClientRect();return [(screenX+r.x+r.width/2)*devicePixelRatio,(screenY+r.y+r.height/2)*devicePixelRatio];', selector)
                     js('window.__editorPasteAt=null;window.__editorSendAt=null;window.addEventListener("paste",e=>{if(e.isTrusted&&e.target.closest(".cm-content"))window.__editorPasteAt=performance.now();},true);window.addEventListener("keydown",e=>{if(e.isTrusted&&e.key==="Enter"&&e.target.matches("[data-perf-target=composer]"))window.__editorSendAt=performance.now();},true);')
                     nonlocal editor_intent_enabled
                     editor_intent_enabled = True
                     reads_before = len(editor_reads)
                     # One OS sequence: no wait for debounce, no WebDriver input.
-                    run('xdotool', 'key', '--clearmodifiers', 'ctrl+Home', 'ctrl+shift+End', 'ctrl+v', 'mousemove', str(round(xy[0])), str(round(xy[1])), 'click', '1', 'key', 'Return', env=childenv, stdout=subprocess.DEVNULL)
+                    key('ctrl+v')
+                    click(selector)
+                    key('Return')
                     wait_for(lambda: len(editor_reads) > reads_before and 'nativeReadReturnedFreshBytes' in editor_reads[-1], 'genuine Pi native scratch-file read', seconds=90)
                     editor_sync = editor_reads[-1]
                     if label == 'after' and not all(editor_sync.get(k) for k in ('freshBeforeNativeRead', 'nativeReadReturnedFreshBytes')):
@@ -1123,13 +1139,15 @@ def main():
                 with contextlib.suppress(Exception):
                     result['nativeFailureDom'] = js('''return {
                       attachError:document.querySelector('[data-el="attach-error"]')?.textContent,paste:window.__imagePaste,active:document.activeElement?.tagName,images:[...document.images].map(i=>({w:i.naturalWidth,h:i.naturalHeight,scheme:i.src.split(':')[0],len:i.src.length})),
-                      splash:!!document.getElementById('vault-splash'),
+                      editorPasteAt:window.__editorPasteAt,editorSendAt:window.__editorSendAt,composerChars:document.querySelector('[data-perf-target=composer]')?.value?.length,editorChars:document.querySelector('.cm-content')?.textContent?.length,splash:!!document.getElementById('vault-splash'),
                       videoGeometry:[...document.querySelectorAll('video')].map(v=>{const r=v.getBoundingClientRect();return {y:r.y,x:r.x,h:r.height,w:r.width,paused:v.paused,time:v.currentTime};}),
                       composer:!!document.querySelector('[data-perf-target="composer"]'),
                       composerDisabled:document.querySelector('[data-perf-target="composer"]')?.disabled,
                       exactThread:localStorage.getItem('vault_chat_active_conv')===arguments[0],
                       clearButtons:[...document.querySelectorAll('button')].filter(e=>e.textContent.trim()==='Clear').map(e=>{
                         const r=e.getBoundingClientRect();return {el:e.dataset.el,title:e.title,disabled:e.disabled,x:r.x,y:r.y,w:r.width,h:r.height};})};''', a.conversation)
+                if a.check_editor_sync:
+                    result['editorDiagnostics'] = {'intentCount': len(photo_intents), 'readCalls': editor_reads}
                 # One failure-only native screenshot for debugging, never per-key profiling.
                 with contextlib.suppress(Exception):
                     import base64

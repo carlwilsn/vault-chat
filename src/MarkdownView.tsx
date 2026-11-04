@@ -324,6 +324,7 @@ export function MarkdownView({ paneId }: Props) {
   const reloadFromDisk = async () => {
     if (!file) return;
     try {
+      await editorWrites.discard(file);
       // Box mode: the box's copy when it is ahead of this disk (a live edit not merged yet).
       const onDisk = pendingBoxText(file) ?? (await readTextAt(file));
       lastSaved.current = onDisk;
@@ -337,8 +338,8 @@ export function MarkdownView({ paneId }: Props) {
   const keepMine = async () => {
     if (!file) return;
     try {
+      await editorWrites.discard(file);
       await writeTextAt(file, content);
-      editorWrites.discard(file);
       const vault = useStore.getState().vaultPath;
       if (vault) editorWrites.queue({ vault, path: file, text: content }, content, () => {}, () => setDiskChanged(file, true));
       lastSaved.current = content;

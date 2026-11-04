@@ -89,3 +89,18 @@ test("Reload cancels debounce; Keep mine explicitly rebases then awaits the same
   const writes = await q.flush("/viewer"); assert.equal(writes[0].text, "kept mine");
   q.acknowledge(writes);
 });
+
+
+test("explicit resolution waits for a save already in flight, so Keep mine cannot be overwritten afterwards", async () => {
+  let disk = "old", release!: () => void, writing!: () => void;
+  const started = new Promise<void>(r => { writing = r; });
+  const gate = new Promise<void>(r => { release = r; });
+  const q = new EditorWrites({ read: async () => disk, write: async (_, text) => { writing(); await gate; disk = text; } });
+  q.queue({ vault: "/v", path: "/v/a.md", text: "in flight" }, "old", () => {}, () => {});
+  const flush = q.flush("/v"); await started;
+  let resolved = false;
+  const resolution = q.discard("/v/a.md").then(() => { disk = "explicit kept mine"; resolved = true; });
+  await Promise.resolve(); assert.equal(resolved, false);
+  release(); await flush; await resolution;
+  assert.equal(disk, "explicit kept mine"); assert.deepEqual(await q.flush("/v"), []);
+});
