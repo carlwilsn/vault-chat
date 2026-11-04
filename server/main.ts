@@ -184,7 +184,9 @@ async function main(): Promise<void> {
   const { configurePushGate, ACTIVITY_MS } = await import("./pushGate");
   const { voiceLiveIn } = await import("./voice");
   const { readActivity } = await import("./activity");
+  const { legacyPushEnabled } = await import("./pushPreferences");
   const gate = configurePushGate({
+    legacyEnabled: legacyPushEnabled,
     send: (title, body, url, tag) => sendPush(title, body, url, tag),
     attention: (vault, now) => {
       if (voiceLiveIn(vault, now)) return { looking: true, where: "a voice call" };

@@ -120,6 +120,9 @@ export type EngineNotice = {
   trigger?: string;
   /** Only the buzz: no feed card (a turn's own end: the chat already shows it). */
   pushOnly?: boolean;
+  /** Only Notify may set this, after validating a host-owned originating turn. */
+  explicitPush?: boolean;
+  workId?: string;
 };
 
 type TurnKind = "user" | "wake" | "resume";
@@ -157,7 +160,7 @@ type Live = {
 
 };
 
-type TurnOpts = { images?: string[]; context?: string; hostContext?: string; itemImages?: ItemImage[]; clientId?: string; /** What the chat shows (Carl's answer to a question asked before a restart). */ shown?: string; via?: string; /** Which client sent it (the turn log's `via`: laptop, phone, voice …). */ origin?: string; /** A wake, job or resume of something Carl started. */ byCarl?: boolean; /** An engine input that runs as its own turn once the running one ends, never folded into it (a background report: pi may settle the turn before a follow-up is taken, and a turn parked on a question takes none). */ ownTurn?: boolean };
+type TurnOpts = { /** Existing host-owned job/wake identity, never a push arm. */ pushWorkId?: string; images?: string[]; context?: string; hostContext?: string; itemImages?: ItemImage[]; clientId?: string; /** What the chat shows (Carl's answer to a question asked before a restart). */ shown?: string; via?: string; /** Which client sent it (the turn log's `via`: laptop, phone, voice …). */ origin?: string; /** A wake, job or resume of something Carl started. */ byCarl?: boolean; /** An engine input that runs as its own turn once the running one ends, never folded into it (a background report: pi may settle the turn before a follow-up is taken, and a turn parked on a question takes none). */ ownTurn?: boolean };
 
 const RESUME_TEXT =
   "The box restarted (or the engine stopped) while your last turn was running, so any command it was running was killed and may not have finished. Re-check reality (files, processes, logs), then continue from where you were.";
@@ -212,10 +215,10 @@ export const ENGINE_TOOL_SPECS = [
     type: "function",
     name: "Notify",
     description:
-      "Tell Carl that something he asked for finished, or that something needs him (a failure he must act on). It lands in his alerts; his phone buzzes only when he is away from every screen, and a finish only when he started the work. The title says plainly what finished or what is needed (\"Done: …\", \"Needs you: …\"). Not for progress, not for background work he did not ask about, not for questions (AskUser).",
+      "Tell Carl that something he asked for finished, or that something needs him (a failure he must act on). It always lands in his in-app alerts. Phone push is OFF by default. Set push:true ONLY when Carl explicitly asked to be pinged for THIS work (e.g. 'Ping me when it is done', 'notify me if it fails'), and only on that requested finish/failure, not progress or unrelated later work. One invocation requests one event push, not future alerts. A worker must use only the request passed into its original task, never a later parent request. Omit push otherwise. Push still respects away/seen/dedup rules; an optional user Settings preference restores legacy automatic pushes. The title says plainly what finished or what is needed (\"Done: …\", \"Needs you: …\"). Not for progress, not for background work he did not ask about, not for questions (AskUser).",
     inputSchema: {
       type: "object",
-      properties: { title: { type: "string" }, body: { type: "string" }, needsYou: { type: "boolean", description: "true when Carl must act (a failure, something blocked on him); false or absent for a finish." } },
+      properties: { title: { type: "string" }, body: { type: "string" }, push: { type: "boolean", description: "One event only: true exclusively for an explicit user request to push the finish/failure of this work. Missing/false means in-app only unless legacy automatic pushes are enabled." }, needsYou: { type: "boolean", description: "true when Carl must act (a failure, something blocked on him); false or absent for a finish." } },
       required: ["title"],
       additionalProperties: false,
     },
@@ -654,11 +657,18 @@ export class Engine {
     b.setHandlers({
       toolCatalog: (loadout) => this.scoped(() => this.hostToolCatalog(loadout)),
       fileWrite: async (threadId) => !this.talkers.has(this.byThread.get(threadId) ?? ""),
-      toolCall: (threadId, name, args, signal) =>
-        this.scoped(async () => {
-          const r: any = await this.onToolCall({ threadId, tool: name, arguments: args, signal });
+      notifyScope: (threadId) => {
+        const l = this.live.get(this.byThread.get(threadId) ?? "");
+        return l ? Object.freeze({ workId: l.turnOpts.pushWorkId ?? l.turnId, byCarl: l.byCarl }) : null;
+      },
+      toolCall: (threadId, name, args, signal, capturedScope) => {
+        const l = this.live.get(this.byThread.get(threadId) ?? "");
+        const notifyScope = capturedScope !== undefined ? capturedScope : l ? { workId: l.turnOpts.pushWorkId ?? l.turnId, byCarl: l.byCarl } : null;
+        return this.scoped(async () => {
+          const r: any = await this.onToolCall({ threadId, tool: name, arguments: args, signal, notifyScope });
           return toolAnswer(r);
-        }),
+        });
+      },
       userInput: (threadId, question, options) => this.scoped(() => this.waitForAnswer(threadId, question, options)),
       you: (q) => this.scoped(async () => this.you(q)),
       // A worker's write: the screens showing that file refresh at once (liveEdits), as for the agent's own writes.
@@ -2228,10 +2238,13 @@ export class Engine {
             return text("Not sent: this conversation already pinged Carl 4 times this hour. Only ping for a decision, a finish, or a real problem; batch the rest into your next reply.");
           }
           this.pings.set(convId, [...recent, Date.now()]);
-          // The phone buzzes by the push rule (server/pushGate.ts): a finish only if Carl started it, never while he looks.
+          // Intent comes from the normal structured tool decision, NOT text classification.
+          // Scope comes from the host's original turn/worker binding, NOT args or today's parent turn.
+          const scope = p.notifyScope;
+          const explicitPush = a.push === true && scope?.byCarl === true && !!scope.workId;
           const needsYou = a.needsYou === true;
-          await this.d.notify({ kind: "info", title: String(a.title ?? "vault-chat").slice(0, 90), body: String(a.body ?? "").slice(0, 2000), convId, why: needsYou ? "failed" : "finished", byCarl: !!this.live.get(convId)?.byCarl, trigger: "Notify" });
-          return text("In Carl's alerts. His phone buzzes only if he is away from every screen (and, for a finish, only if he started the work).");
+          await this.d.notify({ kind: "info", title: String(a.title ?? "vault-chat").slice(0, 90), body: String(a.body ?? "").slice(0, 2000), convId, why: needsYou ? "failed" : "finished", byCarl: scope ? scope.byCarl === true : !!this.live.get(convId)?.byCarl, trigger: "Notify", ...(explicitPush ? { explicitPush: true, workId: scope.workId } : {}) });
+          return text(explicitPush ? "In Carl's alerts. One event push requested for this work, subject to away/seen/dedup rules; no future alerts armed." : "In Carl's alerts. No explicit phone push requested (legacy automatic pushes apply only if Carl enabled them in Settings).");
         }
         case "BoardSend": {
           // A maker's sends were decided when BoardMake was (server/boardGuard.ts).
@@ -2558,7 +2571,7 @@ export class Engine {
     if (!conv) return;
     await patchMeta(this.d.vault, w.conv, { nextWakeAt: nextWakeFor(this.d.vault, w.conv) ?? undefined });
     this.log(`wake ${w.id} → ${w.conv}: ${w.reason}`);
-    await this.run(w.conv, `Wake: ${w.reason}`, "wake", { byCarl: !!w.byCarl }).catch((e) => this.log(`wake failed: ${e}`));
+    await this.run(w.conv, `Wake: ${w.reason}`, "wake", { byCarl: !!w.byCarl, pushWorkId: w.id }).catch((e) => this.log(`wake failed: ${e}`));
   }
 
   /** A job that ended wakes the conversation that started it. */
@@ -2582,7 +2595,7 @@ export class Engine {
       const how =
         j.state === "finished" ? `finished: exit ${j.exit}` : j.state === "timeout" ? "was stopped by its time limit" : j.state === "stopped" ? "was stopped" : "ended without an exit code (stopped, or killed: out of memory?)";
       const tail = j.tail.split("\n").slice(-30).join("\n").slice(-3000);
-      void this.run(j.conv, `Job ${j.id} ${how}.\n--- last output ---\n${tail || "(none)"}`, "wake", { byCarl: !!j.byCarl }).catch((e) => this.log(`job wake ${j.conv}: ${e}`));
+      void this.run(j.conv, `Job ${j.id} ${how}.\n--- last output ---\n${tail || "(none)"}`, "wake", { byCarl: !!j.byCarl, pushWorkId: j.id }).catch((e) => this.log(`job wake ${j.conv}: ${e}`));
     }
   }
 

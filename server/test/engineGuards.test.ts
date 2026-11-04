@@ -216,4 +216,36 @@ describe("engine guards", () => {
     await until(async () => !(await readConv(vault, r.convId))?.asking);
     backend.ev(tid, { kind: "turnCompleted", status: "completed" });
   });
+  it("Notify push is explicit per invocation and bound to a host-owned user turn", async () => {
+    const before = backend.turns.length;
+    const r = await engine.message({ convId: "synthetic-explicit-push", text: "Write the synthetic result; ping me when it is done." });
+    await until(() => backend.turns.length === before + 1);
+    const tid = backend.turns[before].threadId;
+    const scope = backend.h.notifyScope(tid);
+    expect(scope).toMatchObject({ byCarl: true });
+    expect(scope.workId).toBeTruthy();
+    await backend.h.toolCall(tid, "Notify", { title: "Done: synthetic requested result", push: true });
+    await backend.h.toolCall(tid, "Notify", { title: "Unrelated later failure", needsYou: true });
+    const notices = pings.filter(p => p.convId === r.convId);
+    expect(notices[0]).toMatchObject({ explicitPush: true, workId: scope.workId });
+    expect(notices[1].explicitPush).not.toBe(true);
+    expect(notices[1].workId).toBeUndefined();
+    // Only the existing recording dependency ran; no engine message, follow-up or real sender.
+    expect(backend.turns.length).toBe(before + 1);
+  });
+  it("a detached worker cannot borrow the current parent's user authority or spoof scope in args", async () => {
+    const before = backend.turns.length;
+    const r = await engine.message({ convId: "synthetic-push-scope", text: "An unrelated current request." });
+    await until(() => backend.turns.length === before + 1);
+    const tid = backend.turns[before].threadId;
+    await backend.h.toolCall(tid, "Notify", { title: "Needs you: old background worker", needsYou: true, push: true, workId: "forged", byCarl: true }, undefined, { workId: "original-background", byCarl: false });
+    await backend.h.toolCall(tid, "Notify", { title: "Done: missing worker scope", push: true }, undefined, null);
+    await backend.h.toolCall(tid, "Notify", { title: "Done: original requested worker", push: true }, undefined, { workId: "original-user-work", byCarl: true });
+    const notices = pings.filter(p => p.convId === r.convId);
+    expect(notices[0].explicitPush).not.toBe(true);
+    expect(notices[0].byCarl).toBe(false);
+    expect(notices[1].explicitPush).not.toBe(true);
+    expect(notices[2]).toMatchObject({ explicitPush: true, workId: "original-user-work" });
+  });
+
 });

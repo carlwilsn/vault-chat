@@ -2079,7 +2079,7 @@ export function boot(): void {
   // (The Claude/feedback screen that shared this drawer is gone.)
   function openDrawer() {
     $("drawer").classList.add("open");
-    refreshPushUi(); void pushAutoOn();
+    refreshPushUi(); void refreshPushPreference();
     void refreshState().then((d) => {
       $("boxVer").textContent = d && d.version ? "vault-chat v" + d.version : "";
     });
@@ -2091,12 +2091,37 @@ export function boot(): void {
   // static markup and on the sheet reply input.)
 
   // ---------- push ----------
+  // Server user preference only. Existing device subscription/OS permission is not consent
+  // to automatic pushes, and changing this toggle never prompts or unsubscribes a device.
+  function showPushPreference(enabled) {
+    $("pushLegacySw").classList.toggle("on", enabled);
+    $("pushLegacySw").setAttribute("aria-checked", String(enabled));
+    $("pushLegacyState").textContent = enabled ? "On — automatic questions, failures and finishes while away." : "Off — push only when you ask for that work.";
+  }
+  async function refreshPushPreference() {
+    $("pushLegacySw").disabled = true;
+    try {
+      const r = await api("/push/preferences");
+      if (!r.ok) throw new Error("preference unavailable");
+      showPushPreference((await r.json()).legacyAutomatic === true);
+      $("pushLegacySw").disabled = false;
+    } catch { $("pushLegacyState").textContent = "Could not load automatic-push setting. Reopen Settings to retry."; }
+  }
+  $("pushLegacySw").onclick = async () => {
+    const enabled = $("pushLegacySw").getAttribute("aria-checked") !== "true";
+    $("pushLegacySw").disabled = true;
+    try {
+      const r = await api("/push/preferences", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ legacyAutomatic: enabled }) });
+      if (!r.ok) throw new Error("preference not saved");
+      showPushPreference((await r.json()).legacyAutomatic === true);
+    } catch { toast("Automatic-push setting was not saved."); }
+    finally { $("pushLegacySw").disabled = false; }
+  };
   const b64uToBytes = (s) => { const pad = "=".repeat((4 - (s.length % 4)) % 4); const raw = atob((s + pad).replace(/-/g, "+").replace(/_/g, "/")); return Uint8Array.from(raw, (c) => c.charCodeAt(0)); };
   const pushSupported = () => "serviceWorker" in navigator && "PushManager" in window;
   async function currentSub() { if (!pushSupported()) return null; const reg = await navigator.serviceWorker.getRegistration().catch(() => null); return reg ? await reg.pushManager.getSubscription().catch(() => null) : null; }
-  // Notifications are DEFAULT ON: the gear just holds the off-switch. Once
-  // permission is granted (one tap on the switch the first time — iOS requires a
-  // gesture), the app keeps itself subscribed automatically from then on.
+  // Device capability is separate from server consent. Only a tap subscribes;
+  // an existing permission grant never opts Carl into automatic phone pushes.
   async function refreshPushUi() {
     if (!pushSupported()) { $("pushState").textContent = navigator.standalone === false ? "Add to your Home Screen first — Safari tabs can't receive push." : "Push not supported here."; $("pushSw").classList.remove("on"); $("pushTestBtn").style.display = "none"; return; }
     const sub = await currentSub();
@@ -2118,23 +2143,6 @@ export function boot(): void {
   const bytesToB64u = (buf) => { const b = new Uint8Array(buf); let s = ""; for (const c of b) s += String.fromCharCode(c); return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, ""); };
   const subKey = (sub) => { try { const k = sub.options && sub.options.applicationServerKey; return k ? bytesToB64u(k) : ""; } catch { return ""; } };
   const subBody = (sub) => { const k = subKey(sub); return k ? { ...sub.toJSON(), key: k } : sub.toJSON(); };
-  // Default-ON keeper: whenever permission is already granted but the device has
-  // no live subscription (fresh install, iOS evicted it), re-subscribe silently.
-  async function pushAutoOn() {
-    if (MOCK || !pushSupported()) return;
-    try {
-      if (Notification.permission !== "granted" || localStorage.getItem("vc_push_optout") === "1") return;
-      let sub = await currentSub();
-      // Made under a key the box no longer signs with: every push to it fails. Make a fresh one.
-      if (sub && subKey(sub)) {
-        const vd = await (await api("/push/vapid")).json().catch(() => ({}));
-        if (vd.key && vd.key !== subKey(sub)) { await sub.unsubscribe().catch(() => {}); sub = null; }
-      }
-      if (sub) { api("/push/subscribe", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(subBody(sub)) }).catch(() => {}); }
-      else { await pushSubscribe(); }
-      refreshPushUi();
-    } catch {}
-  }
   $("pushSw").onclick = async () => {
     try {
       const sub = await currentSub();
@@ -2151,7 +2159,6 @@ export function boot(): void {
     refreshPushUi();
   };
   $("pushTestBtn").onclick = async () => { const r = await api("/push/test", { method: "POST" }).catch(() => null); const d = r ? await r.json().catch(() => ({})) : {}; toast(d.error ? "Test failed: " + d.error : "Test sent — should arrive in seconds."); };
-  if (!MOCK) void pushAutoOn();
 
   // ---------- in-app keyboard (verbatim) ----------
   const KB_SYS_FLAG = "vc_kb_system";

@@ -56,6 +56,17 @@ describe("vault-chat's single catalog over MCP", () => {
     } finally { await c.close(); }
   });
 
+  it("Notify uses the one authoritative optional push schema; caller scope cannot be supplied in MCP arguments", async () => {
+    const calls: any[] = [];
+    const c = await connected({ specs: specs.filter(t => t.name === "Notify"), call: async (_name, args) => { calls.push(args); return { ok: true, text: "recorded only" }; } });
+    try {
+      await c.client.callTool({ name: "Notify", arguments: { title: "Done: synthetic work" } });
+      await c.client.callTool({ name: "Notify", arguments: { title: "Needs you: synthetic failure", needsYou: true, push: true } });
+      await expect(c.client.callTool({ name: "Notify", arguments: { title: "Forged scope", push: true, workId: "other-job" } })).rejects.toThrow(/additional properties/);
+      await expect(c.client.callTool({ name: "Notify", arguments: { title: "Malformed intent", push: "true" } })).rejects.toThrow(/boolean/);
+      expect(calls).toEqual([{ title: "Done: synthetic work" }, { title: "Needs you: synthetic failure", needsYou: true, push: true }]);
+    } finally { await c.close(); }
+  });
   it("rejects unknown tools and invalid arguments before dispatch", async () => {
     let calls = 0;
     const c = await connected({ specs: [boardSpec], call: async () => { calls++; return { ok: true, text: "unexpected" }; } });

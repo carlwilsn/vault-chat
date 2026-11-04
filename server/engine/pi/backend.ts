@@ -50,7 +50,8 @@ export class ThreadUnknownError extends Error {
 
 /** A host tool's answer: its text, and images it attaches (pi image blocks: base64 + mime). */
 export type ToolAnswer = { ok: boolean; text: string; images?: { data: string; mimeType: string }[]; resources?: { uri: string; mimeType: string; blob: string }[] };
-export type ToolCallHandler = (threadId: string, name: string, args: any, signal?: AbortSignal) => Promise<ToolAnswer>;
+export type NotifyScope = Readonly<{ workId: string; byCarl: boolean }>;
+export type ToolCallHandler = (threadId: string, name: string, args: any, signal?: AbortSignal, notifyScope?: NotifyScope | null) => Promise<ToolAnswer>;
 export type UserInputHandler = (threadId: string, question: string, options: string[]) => Promise<string>;
 /** The "you" layer for a session (the extension's before_agent_start asks before each prompt): what Carl
  * did since `since` (that session's last layer). A conversation's thread names itself by `threadId`; a
@@ -63,6 +64,8 @@ export type HostLoadout = "conversation" | "readOnly" | "voiceRead" | "voiceAct"
 export type Handlers = {
   toolCatalog: (loadout: HostLoadout) => Promise<ToolSpec[]>;
   toolCall: ToolCallHandler;
+  /** Host-only snapshot of the original ask at worker creation, never tool arguments. */
+  notifyScope?: (threadId: string) => NotifyScope | null;
   userInput: UserInputHandler;
   you?: YouHandler;
   sideTool?: SideToolHandler;

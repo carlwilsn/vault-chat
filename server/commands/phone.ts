@@ -7,6 +7,7 @@ import { dirname, join } from "node:path";
 import { respondTo } from "../bus";
 import { signal } from "../convlog/log";
 import { loadConfig } from "../config";
+import { legacyPushEnabled } from "../pushPreferences";
 import type { CommandFn } from "./registry";
 
 let vapidPub: string | null = null;
@@ -124,6 +125,9 @@ export const phoneCommands: Record<string, CommandFn> = {
     return null;
   },
   phone_push_result: ({ endpoint, ok }) => pushSubsResult(String(endpoint), ok === true),
+  // The old in-app helper has no explicit per-work intent. Consent is the same server
+  // preference as PushGate; never infer it from a subscription or caller-supplied args.
+  phone_push_legacy_enabled: () => legacyPushEnabled(),
   // lib.rs:6838
   notification_add: ({ vault, json }) => {
     notificationAppend(String(vault), String(json));

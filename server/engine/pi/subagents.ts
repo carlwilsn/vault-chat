@@ -12,7 +12,7 @@
 import { mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { hostToolName } from "../../../src/mcpNames";
-import type { PiBackend, ToolSpec } from "./backend";
+import type { NotifyScope, PiBackend, ToolSpec } from "./backend";
 import type { PiProc } from "./proc";
 
 export type SubagentOptions = {
@@ -180,6 +180,8 @@ export class Subagents {
    *  once with a line saying so; its report then comes through detach's `result`. */
   async run(parentId: string, a: any, signal?: AbortSignal, onStarted?: (id: string) => void): Promise<Record<string, unknown>> {
     signal?.throwIfAborted();
+    // Capture before waiting: a detached child cannot borrow a later parent request.
+    const notifyScope = this.b.handlers?.notifyScope?.(parentId) ?? null;
     await this.acquire();
     let held = true;
     const release = () => {
@@ -189,7 +191,7 @@ export class Subagents {
     };
     try {
       signal?.throwIfAborted();
-      const c = await this.startOne(parentId, a);
+      const c = await this.startOne(parentId, a, notifyScope);
       if (!isChild(c)) {
         release();
         return c;
@@ -251,7 +253,7 @@ export class Subagents {
     return [...this.children.values()].filter((c) => c.parent === parentId).map((c) => this.live(c.id)!);
   }
 
-  private async startOne(parentId: string, a: any): Promise<Child | Record<string, unknown>> {
+  private async startOne(parentId: string, a: any, notifyScope: NotifyScope | null): Promise<Child | Record<string, unknown>> {
     const agent = a?.agent ?? {};
     const task = String(a?.task ?? "").trim();
     if (!task) return { ok: false, state: "failed", text: "subagent needs a task." };
@@ -283,7 +285,7 @@ export class Subagents {
     const { proc, id, file } = await this.b.spawn({
       cwd, model, file: null, instr, tools, sessionDir,
       builtins: [...(builtins.length ? builtins : ["read"]), ...hostTools],
-      hostCall: async (name, args, context) => this.b.handlers ? this.b.handlers.toolCall(parentId, name, args, context.signal) : { ok: false, text: "Parent unavailable." },
+      hostCall: async (name, args, context) => this.b.handlers ? this.b.handlers.toolCall(parentId, name, args, context.signal, notifyScope) : { ok: false, text: "Parent unavailable." },
       services: {
         ...(builtins.includes("bash") ? { env: () => this.b.agentEnv() } : {}),
         fileWrite: async () => builtins.includes("write") || builtins.includes("edit"),

@@ -1,6 +1,8 @@
 // When the phone buzzes: one rule, in one place (Carl, 2026-10-23: "i get notifications on my
 // phone for seemingly random reasons, doesn't add up well").
 //
+// Default: no push without an explicit, host-scoped Notify request for this event.
+// The optional legacy preference restores the following old attention rule.
 //   A push goes out only when
 //     • something Carl started finished while he was not looking at any surface, or
 //     • something needs him (a question, a failure he must act on) — and he is not looking;
@@ -29,6 +31,12 @@ export type PushWhy =
   | "failed";
 
 export type PushOffer = {
+  /** Structured Notify intent, validated against host caller scope before reaching the gate. */
+  explicitPush?: boolean;
+  /** Immutable originating turn or existing job/wake id, not a model-provided id. */
+  workId?: string;
+  /** Existing notification event identity; no persistent work-arm registry. */
+  eventId?: string;
   vault: string;
   why: PushWhy;
   title: string;
@@ -133,6 +141,8 @@ export function resetAttention(): void {
 // ---------------------------------------------------------------- the gate
 
 export type GateDeps = {
+  /** Missing, malformed or absent preferences are OFF. Read again for held offers. */
+  legacyEnabled?: () => boolean;
   send: (title: string, body: string, url: string, tag: string) => Promise<number>;
   /** Besides the surfaces' beats: a live voice call, his activity in the context stream. */
   attention?: (vault: string, now: number) => Attention;
@@ -144,7 +154,7 @@ type Held = { o: PushOffer; at: number; key: string };
 
 export class PushGate {
   private held: Held[] = [];
-  private recent: { key: string; convId: string | null; at: number }[] = [];
+  private recent: { key: string; eventId?: string; convId: string | null; at: number }[] = [];
   private timer: ReturnType<typeof setInterval> | null = null;
 
   constructor(private d: GateDeps) {}
@@ -163,16 +173,20 @@ export class PushGate {
     return this.d.attention?.(vault, now) ?? { looking: false, where: null };
   }
 
+  private authorized(o: PushOffer): boolean {
+    return this.d.legacyEnabled?.() === true || (o.explicitPush === true && o.trigger === "Notify" && o.why !== "ask" && o.byCarl === true && !!o.workId && !!o.eventId);
+  }
+
   private keyOf(o: PushOffer): string {
     return `${vkey(o.vault)}|${o.why}|${o.convId ?? ""}|${o.title}|${o.body}`;
   }
 
   private duplicate(o: PushOffer, key: string, now: number, self?: Held): boolean {
     this.recent = this.recent.filter((r) => now - r.at < DUP_MS);
-    if (this.recent.some((r) => r.key === key)) return true;
-    if (this.held.some((h) => h !== self && h.key === key)) return true;
+    if (this.recent.some((r) => r.key === key || (!!o.eventId && r.eventId === o.eventId))) return true;
+    if (this.held.some((h) => h !== self && (h.key === key || (!!o.eventId && h.o.eventId === o.eventId)))) return true;
     // One "done" per conversation: the agent's own Notify and the turn's end say the same thing.
-    if (o.why === "finished" && o.convId && this.recent.some((r) => r.convId === o.convId && now - r.at < 5 * 60_000)) return true;
+    if (!o.explicitPush && o.why === "finished" && o.convId && this.recent.some((r) => r.convId === o.convId && now - r.at < 5 * 60_000)) return true;
     return false;
   }
 
@@ -182,6 +196,10 @@ export class PushGate {
 
   /** Offer a push: it goes out now, waits for Carl to leave, or is dropped. Resolves to what was done. */
   async offer(o: PushOffer): Promise<Decision & { sent?: number }> {
+    if (!this.authorized(o)) {
+      this.line("dropped", o, "phone push not requested; legacy automatic push is off");
+      return { act: "drop", reason: "phone push not requested" };
+    }
     const now = this.now();
     const key = this.keyOf(o);
     // On screen where he is looking: he is reading it (a question in the thread he has open is asked there).
@@ -201,7 +219,7 @@ export class PushGate {
   }
 
   private async deliver(o: PushOffer, key: string, now: number, reason: string): Promise<number> {
-    this.recent.push({ key, convId: o.convId ?? null, at: now });
+    this.recent.push({ key, eventId: o.eventId, convId: o.convId ?? null, at: now });
     const sent = await this.d.send(o.title, o.body, o.url, o.tag).catch(() => 0);
     this.line("sent", o, `${reason}; ${sent} phone${sent === 1 ? "" : "s"}`);
     return sent;
@@ -214,7 +232,9 @@ export class PushGate {
       const o = h.o;
       // He opened that conversation since it was held: he has seen it.
       const seen = !!o.convId && lastViewed(o.vault, o.convId) > h.at;
-      const dec = seen
+      const dec = !this.authorized(o)
+        ? { act: "drop" as const, reason: "legacy automatic push turned off" }
+        : seen
         ? { act: "drop" as const, reason: "Carl opened it" }
         : decide({ why: o.why, byCarl: o.byCarl, attention: this.attention(o.vault, now), duplicate: this.duplicate(o, h.key, now, h), stillNeeded: o.stillNeeded ? safe(o.stillNeeded) : true, heldMs: now - h.at });
       if (dec.act === "hold") continue;

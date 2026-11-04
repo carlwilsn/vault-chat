@@ -43,7 +43,7 @@ function isDuplicateNotif(key: string, now: number): boolean {
 
 // ---- the agent→you channel: record + push + live-update, one call ----
 // Every notification is (a) appended to <vault>/.vault-chat/notifications.jsonl
-// (the Alerts tab reads this), (b) delivered as Web Push, and (c) broadcast so
+// (the Alerts tab reads this), (b) pushed only under the server legacy opt-in, and (c) broadcast so
 // an open phone page updates its badge live.
 export type NotifyExtra = {
   intention?: string;
@@ -176,7 +176,12 @@ export async function notify(
   // wrong-conversation bug the PROXY spend-fork surfaced.
   // An ask is answered in its own conversation, so every push opens that.
   const pushUrl = convId ? `/phone?conv=${encodeURIComponent(convId)}` : "/phone";
-  await sendPush(rec.title as string, (rec.body as string).slice(0, 180), pushUrl).catch(() => {});
+  // This legacy producer (also used by UpdateBanner) has no one-work Notify intent.
+  // Read the SAME server preference, never device permission or a client settings copy.
+  // Preserve its old delivery only behind that explicit opt-in; unsupported old hosts fail closed.
+  if (await invoke<boolean>("phone_push_legacy_enabled").catch(() => false)) {
+    await sendPush(rec.title as string, (rec.body as string).slice(0, 180), pushUrl).catch(() => {});
+  }
 }
 
 // ---- Web Push: VAPID + RFC 8291 (aes128gcm), all WebCrypto ----

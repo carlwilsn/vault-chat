@@ -7,6 +7,7 @@ import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, sep } from "node:path";
 import { inProjectFolder } from "./projectFolders";
 import { loadConfig, SERVER_VERSION, SERVER_REV } from "./config";
+import { legacyPushEnabled, setLegacyPushEnabled } from "./pushPreferences";
 import { trackWrites } from "./drain";
 import { inputSurface, noteInput } from "./presence";
 import { authorize, isDirectLoopback, phoneToken } from "./auth";
@@ -811,6 +812,14 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
     case "POST /chats/clear":
       if (!scope.main) return mainOnly();
       return relayRoute(res, "phone:clearchats", {}, 15_000, "app not answering");
+    case "GET /push/preferences":
+      return json(res, 200, { legacyAutomatic: legacyPushEnabled() });
+    case "POST /push/preferences": {
+      const b = await jsonBody(req);
+      if (typeof b.legacyAutomatic !== "boolean") return json(res, 400, { error: "legacyAutomatic must be a boolean" });
+      setLegacyPushEnabled(b.legacyAutomatic);
+      return json(res, 200, { legacyAutomatic: legacyPushEnabled() });
+    }
     case "GET /push/vapid": {
       const k = vapidPublicKey();
       return k ? json(res, 200, { key: k }) : json(res, 503, { error: "push not initialized yet" });

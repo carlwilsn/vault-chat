@@ -14,7 +14,7 @@ export function ClaudeDrawer() {
         </div>
         <div className="cl-gear open" id="clGear">
           <div className="grow">
-            <span>Notifications</span>
+            <span>Phone push on this device</span>
             <button className="sw" id="pushSw" aria-label="notifications">
               <i></i>
             </button>
@@ -26,6 +26,17 @@ export function ClaudeDrawer() {
             <button id="pushTestBtn" style={{ fontSize: "11.5px", color: "var(--text-secondary)", textDecoration: "underline" }}>
               send test
             </button>
+          </div>
+          <div className="grow">
+            <span>Automatic pushes (legacy)</span>
+            <button className="sw" id="pushLegacySw" role="switch" aria-label="Automatic pushes (legacy)" aria-checked="false">
+              <i></i>
+            </button>
+          </div>
+          <div className="grow">
+            <span id="pushLegacyState" style={{ fontSize: "11.5px", color: "var(--dim)" }}>
+              Off — push only when you ask for that work.
+            </span>
           </div>
           <div className="grow">
             <span id="boxVer" style={{ fontSize: "11.5px", color: "var(--faint)" }}></span>

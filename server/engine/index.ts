@@ -29,6 +29,7 @@ import { signal } from "../convlog/log";
 import { agentKeyEnv } from "../keys";
 import { sweepJobEnvFiles } from "./pi/jobs";
 import { PushGate, pushGate } from "../pushGate";
+import { legacyPushEnabled } from "../pushPreferences";
 
 /** A vault on this box: its working copy and bare repo. The main one keeps the paths it always had. */
 export type VaultRef = { name: string; path: string; bare: string; main: boolean };
@@ -85,7 +86,7 @@ export function engineNotify(b: EngineBoot, v?: VaultRef) {
   const vault = v?.path ?? b.vault;
   const q = v && !v.main ? `&vault=${encodeURIComponent(v.name)}` : "";
   let own: PushGate | null = null;
-  const gateOf = () => pushGate() ?? (own ??= new PushGate({ send: b.sendPush }));
+  const gateOf = () => pushGate() ?? (own ??= new PushGate({ send: b.sendPush, legacyEnabled: legacyPushEnabled }));
   return async (n: EngineNotice): Promise<string | null> => {
     const id = Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
     if (!n.pushOnly) {
@@ -107,6 +108,9 @@ export function engineNotify(b: EngineBoot, v?: VaultRef) {
     const d = await gateOf()
       .offer({
         vault,
+        eventId: id,
+        explicitPush: n.explicitPush,
+        workId: n.workId,
         why: n.why ?? (n.kind === "ask" ? "ask" : "finished"),
         title: n.title.slice(0, 90),
         body: n.body.slice(0, 180),

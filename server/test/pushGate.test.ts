@@ -1,12 +1,13 @@
 // The push rule (server/pushGate.ts): the phone buzzes only when something Carl started finished
 // while he was not looking at any surface, or when something needs him — and then only once he
 // is away. Never for background work, voice turns in a call, a thing he saw, or a duplicate.
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BEAT_MS, HOLD_MAX_MS, PushGate, decide, noteAttention, resetAttention, type Attention, type PushOffer } from "../pushGate";
 import { engineNotify } from "../engine";
+import * as pushPreferences from "../pushPreferences";
 
 const away: Attention = { looking: false, where: null };
 const here: Attention = { looking: true, where: "laptop" };
@@ -41,6 +42,7 @@ describe("PushGate", () => {
   const vault = "/vaults/school2";
   const gate = () =>
     new PushGate({
+      legacyEnabled: () => true,
       send: async (title, body, url, tag) => {
         sent.push({ title, body, url, tag });
         return 1;
@@ -162,9 +164,10 @@ describe("engineNotify: the feed always, the buzz by the rule", () => {
     resetAttention();
     dir = mkdtempSync(join(tmpdir(), "vc-pushgate-"));
   });
-  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+  afterEach(() => { vi.restoreAllMocks(); rmSync(dir, { recursive: true, force: true }); });
 
   it("a question while Carl is at the laptop: in his alerts now, not on the phone", async () => {
+    vi.spyOn(pushPreferences, "legacyPushEnabled").mockReturnValue(true);
     const feed: string[] = [];
     const pushes: string[] = [];
     const notify = engineNotify({
