@@ -13,7 +13,8 @@ phone web app, iPad whiteboard and voice. It is not AgentOS.
   fixes his before and after probe numbers. Never invent missing measurements.
 - ASKS.md is the only plan. Do not create PLAN, CURRENT or HANDOFF files.
 - Sub-agents only to go faster on an ask, never for checking, auditing, owning or monitoring.
-- Work on one change at a time: fix → ship request → read result → next.
+- Work in up to three independent lanes when Carl asks for parallel work. Each lane:
+  fix → normal tests → ship request → read result; never duplicate another lane’s work.
 - Use an agent/<name> branch in your own clone. Push it to publish, then write
   ~/agent-work/vault-chat/ship-requests/<unique>.req with exactly two lines:
   the branch name and a plain one-line title. Read its .result and .log.

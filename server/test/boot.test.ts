@@ -61,6 +61,13 @@ describe("boot + phone routes", () => {
     expect(srv.logs()).not.toContain("sk-or-canary-not-real");
   });
 
+  it("shipment listing and card rollback routes are absent", async () => {
+    // Real bundled HTTP routes, not a source-text approximation. These requests
+    // cannot enumerate old artifacts or invoke source recovery from a card.
+    expect((await get("/api/v1/shipments")).status).toBe(404);
+    expect((await post("/api/v1/shipments/historical-release/rollback", {})).status).toBe(404);
+  });
+
   it("/status answers through the in-process relay", async () => {
     const r = await get("/status");
     expect(r.status).toBe(200);

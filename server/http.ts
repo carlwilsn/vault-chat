@@ -37,7 +37,7 @@ import { ackShow, feedOpened } from "./show";
 import { noteAttention, pushGate } from "./pushGate";
 import { boardLogPost, boxDiag } from "./diag";
 import { noteUserLine } from "./signal";
-import { deliveryChallenge, deliveryRepos, laptopTransportIdentity, reportLaptopHealth, shipmentCards } from "./changeDelivery";
+import { deliveryChallenge, deliveryRepos, laptopTransportIdentity, reportLaptopHealth } from "./changeDelivery";
 import { recordLaptopPerf, readLaptopPerf } from "./laptopPerf";
 import { ATTACH_BODY_LIMIT, ATTACH_MAX_BYTES, mb, saveAttachment } from "./attachments";
 
@@ -458,14 +458,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
     }
   }
 
-  if (path === "/api/v1/shipments" && method === "GET") {
-    try { return json(res, 200, { shipments: await shipmentCards(vault, scope.name, url.searchParams.get("project") || undefined) }); }
-    catch (e) { console.error("[delivery] cards", e); return json(res, 503, { error: "Shipment facts unavailable; needs attention" }); }
-  }
-  const rollbackShipment = /^\/api\/v1\/shipments\/([^/]+)\/rollback$/.exec(path);
-  if (rollbackShipment && method === "POST") {
-    return json(res, 410, { error: "Source rollback is disabled; fix forward with a proven branch" });
-  }
+
   if ((path === "/api/v1/release-health/challenge" && method === "GET") || (path === "/api/v1/release-health/laptop" && method === "POST")) {
     const identity = laptopTransportIdentity(req);
     if (!identity) return json(res, 403, { error: "Paired native laptop transport required" });

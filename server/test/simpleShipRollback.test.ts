@@ -6,7 +6,7 @@ import { dirname, join, resolve } from "node:path";
 import { homedir, tmpdir } from "node:os";
 import { ship, type ShipConfig } from "../simpleShipHost";
 import { acceptedChanges, updateShippingJournal } from "../changeShipping";
-import { configureChangeDelivery, deliveryChallenge, observeChangeDelivery, reportLaptopHealth, shipmentCards } from "../changeDelivery";
+import { configureChangeDelivery, deliveryChallenge, observeChangeDelivery, reportLaptopHealth } from "../changeDelivery";
 import { registerFolder } from "../projectFolders";
 
 it("normal branch shipping runs all seven gates; later native failure leaves accepted source and tests untouched", async () => {
@@ -58,7 +58,8 @@ it("normal branch shipping runs all seven gates; later native failure leaves acc
     expect(existsSync(join(repo, "server/test/regression.test.ts"))).toBe(true);
     expect(existsSync(join(repo, "test/harness/regression.test.ts"))).toBe(true);
     expect(await acceptedChanges(repo)).toHaveLength(1);
-    expect((await shipmentCards(vault, "fixture")).find(c => c.id === feature.id)?.health?.status).toBe("failed");
+    expect(await updateShippingJournal(repo, j => j.delivery!.releases[release.id].result?.status)).toBe("failed");
+    expect(existsSync(join(vault, ".vault-chat/shipments"))).toBe(false);
     expect(calls).toBe(0); // card retry dedupes against native acceptance
     const logs = readdirSync(config.workRoot).map(d => JSON.parse(readFileSync(join(config.workRoot, d, "gates.json"), "utf8")));
     expect(logs).toHaveLength(1);

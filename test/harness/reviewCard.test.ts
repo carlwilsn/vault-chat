@@ -1,7 +1,4 @@
-// "You keep it": a git project's hand-over (ReadyForReview) as the laptop and the phone show it — the same view
-// (src/convlog/view.ts) folds the call into a proof card with two actions, Keep and Send back; Carl's answer is
-// his own line after it (only the answer, never what the server did after); the laptop's card renders its
-// options as buttons.
+// Historical test identities retained; assertions now prove no Keep/proof UI and preserved answers.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createElement } from "react";
@@ -14,14 +11,8 @@ const { makeChatView } = await import("../../src/convlog/view.ts");
 const args = { title: "Bigger heading", branch: "agent/bigger-heading", what: "The h1 is 2em.", why: "Carl asked.", tests: "npm test: 12 passed", images: ["proof/after.png", "/tmp/run.mp4"] };
 
 test("the card: title and branch, what, why, the tests, the screenshots in the vault, Keep and Send back", () => {
-  const c = review.reviewCard("call_7", args);
-  assert.match(c.content, /^\*\*Ready to keep: Bigger heading\*\* · `agent\/bigger-heading`/);
-  assert.match(c.content, /\*\*What changed\.\*\* The h1 is 2em\./);
-  assert.match(c.content, /\*\*Tests\.\*\*\n\n```\nnpm test: 12 passed\n```/);
-  assert.match(c.content, /!\[proof 1\]\(\.vault-chat\/proof\/call_7\/1-after\.png\)/);
-  assert.match(c.content, /\[▶ 2-run\.mp4\]\(\.vault-chat\/proof\/call_7\/2-run\.mp4\)/);
-  assert.deepEqual(c.options.map((o) => o.answer), ["Keep", "Send back"]);
-  assert.equal(review.proofImagePath("call 7/x", 0, "C:\\shots\\a b.png"), ".vault-chat/proof/call_7_x/1-a_b.png");
+  assert.equal("reviewCard" in review, false, "no proof/Keep renderer remains");
+  assert.equal(review.ASK_TOOLS.has("ReadyForReview"), false);
 });
 
 test("Carl's answer is his line alone: what the server did after the separator is not his", () => {
@@ -41,20 +32,20 @@ test("the thread's view: the call folds into the card with its options; the answ
   ];
   const p = fold(records as any, "project-site");
   const msgs = makeChatView()(p).messages;
-  const card = msgs.find((m: any) => m.askOptions?.length) as any;
-  assert.ok(card, "a card");
-  assert.match(card.content, /Ready to keep: Bigger heading/);
-  assert.deepEqual(card.askOptions.map((o: any) => o.answer), ["Keep", "Send back"]);
-  const after = msgs.slice(msgs.indexOf(card) + 1);
-  assert.ok(after.some((m: any) => m.role === "user" && m.content === "Make it 3em"), JSON.stringify(after.map((m: any) => [m.role, m.content])));
-  assert.ok(!msgs.some((m: any) => m.role === "user" && /Sent back/.test(m.content)));
+  assert.ok(!msgs.some((m: any) => m.askOptions?.length));
+  assert.ok(msgs.some((m: any) => m.toolCalls?.some((t: any) => t.name === "ReadyForReview")), "original tool history remains a normal folded tool call");
+  assert.ok(msgs.some((m: any) => m.role === "user" && m.content === "Make the heading bigger."));
+  assert.ok(msgs.some((m: any) => m.role === "user" && m.content === "Make it 3em"));
+  assert.ok(!msgs.some((m: any) => /Ready to keep|Sent back/.test(m.content)));
+  assert.equal(records[2].entry.message.content[0].name, "ReadyForReview", "stored original untouched");
 });
 
 test("the laptop's card: Keep and Send back as its options", async () => {
   const { AskOptions } = await import("../../src/chatExtras.tsx");
-  const c = review.reviewCard("call_7", args);
-  const html = renderToStaticMarkup(createElement(AskOptions, { options: c.options, live: true, chosen: "", onPick: () => {} }));
-  assert.match(html, /Keep/);
-  assert.match(html, /Send back/);
-  assert.match(html, /data-live="1"/);
+  const options = makeChatView()(fold([{ type: "entry", conv: "old", seq: 1, at: 1,
+    entry: { id: "review", type: "custom", customType: "vc-note", data: { kind: "tool", name: "ReadyForReview", args, result: "Carl answered: Keep" } } }] as any, "old")).messages.flatMap(m => m.askOptions ?? []);
+  const html = renderToStaticMarkup(createElement(AskOptions, { options, live: true, chosen: "", onPick: () => {} }));
+  assert.doesNotMatch(html, /Keep/);
+  assert.doesNotMatch(html, /Send back/);
+  assert.doesNotMatch(html, /<button/);
 });

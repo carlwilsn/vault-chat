@@ -1,11 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { IncomingMessage } from "node:http";
-import { configureChangeDelivery, deliveryChallenge, laptopTransportIdentity, observeChangeDelivery, reportLaptopHealth, shipmentCards, shipmentRepo } from "../changeDelivery";
+import { configureChangeDelivery, deliveryChallenge, laptopTransportIdentity, observeChangeDelivery, reportLaptopHealth } from "../changeDelivery";
 import { acceptedChanges, followAcceptedRelease, prepareAcceptanceLocked, updateShippingJournal, type AcceptedChange } from "../changeShipping";
 import { withRepoLock } from "../git";
 import { registerFolder } from "../projectFolders";
@@ -45,10 +45,10 @@ async function report(f: Awaited<ReturnType<typeof fixture>>, extra: Partial<Lap
 describe("durable delivery observations, not synchronized card authority", () => {
   it("keeps an offline laptop pending across repeated cycles, without reverting or claiming Shipped", async () => {
     const f = await fixture(); await observeChangeDelivery(f.repo); await observeChangeDelivery(f.repo);
-    const cards = await shipmentCards(f.vault, "school");
-    expect(cards[0]).toMatchObject({ status: "health-pending", health: { laptop: "pending" } });
+    const health = await updateShippingJournal(f.repo, j => j.delivery!.releases[f.release.id].result);
+    expect(health).toMatchObject({ status: "pending", laptop: "pending" });
     expect(f.rollback).not.toHaveBeenCalled();
-    expect(JSON.stringify(cards)).not.toContain(f.root);
+    expect(existsSync(join(f.vault, ".vault-chat/shipments"))).toBe(false);
   });
   it("binds one-use challenges to device, published version and source; persists across fresh reads", async () => {
     const f = await fixture(), now = Date.now();
@@ -63,7 +63,7 @@ describe("durable delivery observations, not synchronized card authority", () =>
   });
   it("emits Shipped only after both matching devices; stale/offline does not undo observed success", async () => {
     const f = await fixture(); await observeChangeDelivery(f.repo); await report(f); await observeChangeDelivery(f.repo);
-    expect((await shipmentCards(f.vault, "school"))[0].status).toBe("shipped");
+    expect(existsSync(join(f.vault, ".vault-chat/shipments"))).toBe(false);
     const r = await updateShippingJournal(f.repo, j => j.delivery!.releases[f.release.id]);
     expect(r.result?.status).toBe("healthy");
     expect(f.rollback).not.toHaveBeenCalled();
@@ -72,8 +72,8 @@ describe("durable delivery observations, not synchronized card authority", () =>
     const f = await fixture(); await observeChangeDelivery(f.repo); await report(f, { updaterReady: false });
     await observeChangeDelivery(f.repo); await report(f); await observeChangeDelivery(f.repo);
     expect(f.rollback).not.toHaveBeenCalled();
-    expect((await shipmentCards(f.vault, "school"))[0]).toMatchObject({ status: "needs-attention", health: { status: "failed" } });
-    expect(readFileSync(join(f.vault, ".vault-chat/shipments/cards.jsonl"), "utf8")).not.toContain('"status":"needs-attention"');
+    expect(await updateShippingJournal(f.repo, j => j.delivery!.releases[f.release.id].result?.status)).toBe("failed");
+    expect(existsSync(join(f.vault, ".vault-chat/shipments"))).toBe(false);
   });
   it("a fresh native negative can fail the release before the offline box installs it", async () => {
     const f = await fixture(); f.box.version = "1.0.0"; f.box.revision = "f".repeat(40);
@@ -94,108 +94,80 @@ describe("durable delivery observations, not synchronized card authority", () =>
     expect(f.rollback).not.toHaveBeenCalled();
     expect(await updateShippingJournal(f.repo, j => j)).not.toHaveProperty("recoverySelections");
   });
+  // Retired copy/projection cases now prove that health cycles never touch historical public
+  // files, private proof inputs or redirected destinations. No new receipt/summary is made.
   it("keeps malformed historical evidence readable without reviving receipt authority", async () => {
-    const f = await fixture();
-    writeFileSync(join(f.proof, "receipt.json"), "INVALID obsolete receipt; not authority");
-    await observeChangeDelivery(f.repo); await observeChangeDelivery(f.repo);
-    const [card] = await shipmentCards(f.vault, "school");
-    expect(card.proof.mediaUrls).toHaveLength(0);
-    const summaryPath = new URL(card.proof.summaryUrl, "http://fixture").searchParams.get("path")!;
-    const summary = readFileSync(join(f.vault, summaryPath), "utf8");
-    expect(summary).toContain(f.c.source.head); expect(summary).toContain("original conversation card");
-    expect(summary).not.toContain(f.root); expect(summary).not.toContain("INVALID");
-    const target = join(f.vault, summaryPath), victim = join(f.root, "must-not-overwrite");
-    writeFileSync(victim, "safe"); rmSync(target); symlinkSync(victim, target);
-    await expect(shipmentCards(f.vault, "school")).rejects.toThrow("Unsafe");
-    expect(readFileSync(victim, "utf8")).toBe("safe");
+    const f = await fixture(), original = "INVALID obsolete receipt; not authority";
+    writeFileSync(join(f.proof, "receipt.json"), original);
+    await observeChangeDelivery(f.repo);
+    expect(readFileSync(join(f.proof, "receipt.json"), "utf8")).toBe(original);
+    expect(existsSync(join(f.vault, ".vault-chat/shipments"))).toBe(false);
   });
   it("keeps existing historical projected media and original evidence files readable without revalidation", async () => {
-    const f = await fixture(); const dest = join(f.vault, ".vault-chat/shipments/proof", createHash("sha256").update(f.c.id).digest("hex"));
+    const f = await fixture(), dest = join(f.vault, ".vault-chat/shipments/proof/old");
     mkdirSync(dest, { recursive: true }); writeFileSync(join(dest, "recording.mp4"), "retained projected fixture");
     writeFileSync(join(f.proof, "receipt.json"), "malformed historical receipt");
-    const [card] = await shipmentCards(f.vault, "school");
-    expect(card.proof.mediaUrls).toHaveLength(1);
+    await observeChangeDelivery(f.repo); await report(f); await observeChangeDelivery(f.repo);
     expect(readFileSync(join(dest, "recording.mp4"), "utf8")).toBe("retained projected fixture");
     expect(readFileSync(join(f.proof, "receipt.json"), "utf8")).toBe("malformed historical receipt");
+    expect(existsSync(join(f.vault, ".vault-chat/shipments/cards.jsonl"))).toBe(false);
   });
   it("excludes private request, environment and log sentinels from the historical summary and media listing", async () => {
-    const f = await fixture();
-    const sentinel = "OFFLINE_FIXTURE_PRIVATE_SENTINEL";
-    writeFileSync(join(f.proof, "receipt.json"), JSON.stringify({ request: sentinel, environment: { FIXTURE_SECRET: sentinel }, path: f.root }));
-    writeFileSync(join(f.proof, "gate.log"), sentinel);
-    writeFileSync(join(f.proof, "recording.mp4"), sentinel);
-    const [card] = await shipmentCards(f.vault, "school");
-    const path = new URL(card.proof.summaryUrl, "http://fixture").searchParams.get("path")!;
-    const projection = JSON.stringify(card) + readFileSync(join(f.vault, path), "utf8");
-    expect(projection).not.toContain(sentinel); expect(projection).not.toContain(f.root);
-    expect(card.proof.mediaUrls).toEqual([]); // Private/unprojected files are NOT silently made public.
-    expect(readFileSync(join(f.proof, "recording.mp4"), "utf8")).toBe(sentinel);
+    const f = await fixture(), sentinel = "OFFLINE_FIXTURE_PRIVATE_SENTINEL";
+    for (const name of ["receipt.json", "gate.log", "recording.mp4"]) writeFileSync(join(f.proof, name), sentinel);
+    await observeChangeDelivery(f.repo);
+    expect(existsSync(join(f.vault, ".vault-chat/shipments"))).toBe(false);
+    for (const name of ["receipt.json", "gate.log", "recording.mp4"]) expect(readFileSync(join(f.proof, name), "utf8")).toBe(sentinel);
   });
   it("reads the original historical receipt schema into a public numeric summary and real image, not private metadata", async () => {
-    const f = await fixture(), sentinel = "SYNTHETIC_PRIVATE_TOKEN_ENV_COMMAND_PATH";
-    const bytes = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=", "base64");
-    const artifact = join(f.proof, "recording.png"); writeFileSync(artifact, bytes);
-    const receipt = { id: f.c.id, source: f.c.source, ask: { requestText: sentinel }, environment: sentinel,
-      baseline: [], candidate: [{ gate: "test:server", command: [sentinel], logArtifact: sentinel, stdout: sentinel,
-        exitCode: 0, complete: true, tests: [{ file: sentinel, name: sentinel, status: "passed" }] }],
-      ui: { artifact, artifactHash: createHash("sha256").update(bytes).digest("hex"), assertions: 2, frames: 30, sourceVerified: true, command: sentinel }, privatePath: f.root };
+    const f = await fixture(), receipt = { id: f.c.id, source: f.c.source, baseline: [], candidate: [], ui: { artifact: join(f.proof, "recording.png"), assertions: 2 } };
     writeFileSync(join(f.proof, "receipt.json"), JSON.stringify(receipt));
-    const refs = f.g("show-ref"); const before = await acceptedChanges(f.repo);
-    const [card] = await shipmentCards(f.vault, "school");
-    const publicPath = (url: string) => join(f.vault, new URL(url, "http://fixture").searchParams.get("path")!);
-    const summary = readFileSync(publicPath(card.proof.summaryUrl), "utf8");
-    expect(summary).toContain("1 passed"); expect(summary).toContain("2 assertions");
-    expect(card.proof.mediaUrls).toHaveLength(1); expect(readFileSync(publicPath(card.proof.mediaUrls[0]))).toEqual(bytes);
-    expect(summary + JSON.stringify(card)).not.toContain(sentinel); expect(summary + JSON.stringify(card)).not.toContain(f.root);
-    expect(f.g("show-ref")).toBe(refs); expect(await acceptedChanges(f.repo)).toEqual(before);
+    writeFileSync(join(f.proof, "recording.png"), "original image bytes");
+    const refs = f.g("show-ref"); await observeChangeDelivery(f.repo);
+    expect(f.g("show-ref")).toBe(refs);
     expect(JSON.parse(readFileSync(join(f.proof, "receipt.json"), "utf8"))).toEqual(receipt);
-    // Actual old reader path: valid hash does not turn a link to private data into public media.
-    rmSync(artifact); const victim = join(f.root, "private.png"); writeFileSync(victim, bytes); symlinkSync(victim, artifact);
-    rmSync(publicPath(card.proof.mediaUrls[0]));
-    const [unsafe] = await shipmentCards(f.vault, "school"); expect(unsafe.proof.mediaUrls).toEqual([]);
-    expect(readFileSync(victim)).toEqual(bytes);
-    rmSync(victim); const [dangling] = await shipmentCards(f.vault, "school"); expect(dangling.proof.mediaUrls).toEqual([]);
+    expect(readFileSync(join(f.proof, "recording.png"), "utf8")).toBe("original image bytes");
+    expect(existsSync(join(f.vault, ".vault-chat/shipments"))).toBe(false);
   });
   it("projects original legacy public-media metadata without reviving its deleted bootstrap importer", async () => {
-    const f = await fixture(), bytes = Buffer.from("historical JPEG fixture bytes"), name = "1-actual-ui.jpg";
-    writeFileSync(join(f.proof,name),bytes);
-    await updateShippingJournal(f.repo,j => { Object.assign(j.changes[0], {basis:"legacy-bootstrap",bootstrap:{proofId:"old-display-only",toolCallId:"PRIVATE_TOKEN_COMMAND",media:[{name,hash:createHash("sha256").update(bytes).digest("hex"),environment:"PRIVATE_TOKEN_COMMAND"}]}}); });
-    const [card] = await shipmentCards(f.vault,"school"); expect(card.proof.mediaUrls).toHaveLength(1);
-    const path = new URL(card.proof.mediaUrls[0],"http://fixture").searchParams.get("path")!;
-    expect(readFileSync(join(f.vault,path))).toEqual(bytes); expect(JSON.stringify(card)).not.toContain("PRIVATE_TOKEN_COMMAND");
-    rmSync(join(f.vault,path)); rmSync(join(f.proof,name)); symlinkSync(join(f.root,"absent-private.jpg"),join(f.proof,name));
-    expect((await shipmentCards(f.vault,"school"))[0].proof.mediaUrls).toEqual([]);
+    const f = await fixture();
+    const metadata = { basis: "legacy-bootstrap", bootstrap: { proofId: "old-display-only", media: [{ name: "1-ui.jpg", hash: "old" }] } };
+    await updateShippingJournal(f.repo, j => { Object.assign(j.changes[0], metadata); });
+    const victim = join(f.root, "private.jpg"); writeFileSync(victim, "private bytes");
+    symlinkSync(victim, join(f.proof, "1-ui.jpg")); await observeChangeDelivery(f.repo);
+    expect(readFileSync(victim, "utf8")).toBe("private bytes");
+    expect((await acceptedChanges(f.repo))[0]).toMatchObject(metadata);
+    expect(existsSync(join(f.vault, ".vault-chat/shipments"))).toBe(false);
   });
   it.each(["summary.md", "recording.mp4", "recording.webm", "recording.png"])("refuses live and dangling historical projection links: %s", async name => {
-    const f = await fixture(), victim = join(f.root, "private-victim");
-    await shipmentCards(f.vault, "school");
-    const dest = join(f.vault, ".vault-chat/shipments/proof", createHash("sha256").update(f.c.id).digest("hex"));
+    const f = await fixture(), victim = join(f.root, "private-victim"), dest = join(f.vault, ".vault-chat/shipments/proof/old");
+    mkdirSync(dest, { recursive: true }); symlinkSync(victim, join(dest, name));
     for (const live of [true, false]) {
       if (live) writeFileSync(victim, "FIXTURE_PRIVATE_DO_NOT_COPY"); else rmSync(victim);
-      rmSync(join(dest, name), { force: true }); symlinkSync(victim, join(dest, name));
-      await expect(shipmentCards(f.vault, "school")).rejects.toThrow("Unsafe");
+      await observeChangeDelivery(f.repo);
       if (live) expect(readFileSync(victim, "utf8")).toBe("FIXTURE_PRIVATE_DO_NOT_COPY");
+      else expect(existsSync(victim)).toBe(false);
     }
   });
   it.each([".vault-chat/shipments", ".vault-chat/shipments/proof"])("refuses historical projection directory redirects: %s", async relative => {
     const f = await fixture(), outside = join(f.root, "outside"); mkdirSync(outside);
     const path = join(f.vault, relative); mkdirSync(join(path, ".."), { recursive: true }); symlinkSync(outside, path);
-    await expect(shipmentCards(f.vault, "school")).rejects.toThrow("Unsafe");
-    expect(readFileSync(join(f.proof, "../repo/app.txt"), "utf8")).toBe("after");
+    writeFileSync(join(outside, "summary.md"), "original");
+    await observeChangeDelivery(f.repo);
+    expect(readFileSync(join(outside, "summary.md"), "utf8")).toBe("original");
+    expect(existsSync(join(outside, "cards.jsonl"))).toBe(false);
   });
   it("refuses a dangling card-history append redirect without creating its outside target", async () => {
-    const f=await fixture();await shipmentCards(f.vault,"school");
-    const path=join(f.vault,".vault-chat/shipments/cards.jsonl"), victim=join(f.root,"absent-private-target");
-    rmSync(path);symlinkSync(victim,path);
-    await expect(shipmentCards(f.vault,"school")).rejects.toThrow("Unsafe");
-    expect(() => readFileSync(victim,"utf8")).toThrow();
+    const f = await fixture(), dest = join(f.vault, ".vault-chat/shipments"), victim = join(f.root, "absent-private-target");
+    mkdirSync(dest, { recursive: true }); symlinkSync(victim, join(dest, "cards.jsonl"));
+    await observeChangeDelivery(f.repo); expect(existsSync(victim)).toBe(false);
   });
   it("refuses history parent redirects even when no accepted project produces a proof projection", async () => {
-    const root=mkdtempSync(join(tmpdir(),"vc-empty-history-"));roots.push(root);
-    const vault=join(root,"vault"), outside=join(root,"outside");mkdirSync(join(vault,".vault-chat"),{recursive:true});mkdirSync(outside);
-    writeFileSync(join(outside,"cards.jsonl"),"PRIVATE_EMPTY_PROJECT_SENTINEL");symlinkSync(outside,join(vault,".vault-chat/shipments"));
-    await expect(shipmentCards(vault,"school")).rejects.toThrow("Unsafe");
-    expect(readFileSync(join(outside,"cards.jsonl"),"utf8")).toBe("PRIVATE_EMPTY_PROJECT_SENTINEL");
+    const f = await fixture(), outside = join(f.root, "outside"); mkdirSync(outside);
+    writeFileSync(join(outside, "cards.jsonl"), "PRIVATE_EMPTY_PROJECT_SENTINEL");
+    symlinkSync(outside, join(f.vault, ".vault-chat/shipments"));
+    await observeChangeDelivery(f.repo);
+    expect(readFileSync(join(outside, "cards.jsonl"), "utf8")).toBe("PRIVATE_EMPTY_PROJECT_SENTINEL");
   });
   it("leaves a historical requested rollback inert across repeated cycles", async () => {
     const f = await fixture();
@@ -209,15 +181,15 @@ describe("durable delivery observations, not synchronized card authority", () =>
     await updateShippingJournal(f.repo, j => { j.changes[0].rollbackOf = "original-change"; });
     await observeChangeDelivery(f.repo); await report(f, { updaterReady: false }); await observeChangeDelivery(f.repo);
     expect(f.rollback).not.toHaveBeenCalled();
-    expect((await shipmentCards(f.vault, "school"))[0].status).toBe("needs-attention");
+    expect(await updateShippingJournal(f.repo, j => j.delivery!.releases[f.release.id].result?.status)).toBe("failed");
   });
   it("ignores forged synced Shipped and rollback cards; only private accepted identities resolve", async () => {
     const f = await fixture(); await observeChangeDelivery(f.repo);
     const file = join(f.vault, ".vault-chat", "shipments", "cards.jsonl");
+    mkdirSync(join(file, ".."), { recursive: true });
     writeFileSync(file, JSON.stringify({ id: "forged", status: "shipped", rollback: { status: "accepted" } }) + "\n");
-    const cards = await shipmentCards(f.vault, "school");
-    expect(cards).toHaveLength(1); expect(cards[0].status).toBe("health-pending");
-    expect(await shipmentRepo(f.vault, "forged")).toBeNull();
+    await observeChangeDelivery(f.repo);
+    expect(await updateShippingJournal(f.repo, j => j.delivery!.releases[f.release.id].result?.status)).toBe("pending");
     expect(readFileSync(file, "utf8")).toContain('"forged"'); // union log retains it, server never trusts it
   });
   it("consumes updater-private failed source pins even after binary restoration", async () => {

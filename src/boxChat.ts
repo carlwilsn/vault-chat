@@ -36,7 +36,6 @@ import type { LogRecord, PollAnswer } from "./convlog/protocol";
 import { emptyPicture, emptyRow, foldInto, pendingOf, reduceRow, type Picture, type RowState } from "./convlog/reduce";
 import { RETRY_TEXT, afterClear, makeChatView, type ChatView } from "./convlog/view";
 import { MAIN_ID } from "./threads";
-import type { ShipmentCard } from "./shippingProtocol";
 import { probeLaptopReleaseHealth } from "./laptopReleaseHealth";
 
 export const BOX_UNREACHABLE = "Box unreachable";
@@ -249,8 +248,6 @@ class BoxChatSession {
   private cacheTimer: ReturnType<typeof setTimeout> | null = null;
   /** The poll is down since (ms), false when up, null before the first answer. */
   private down: number | false | null = null;
-  private shipmentsAt = 0;
-  private shipmentsLoading = false;
   /** The ids this client sent (a delivered steer or queued message drops its chip). */
   private sent = new Set<string>();
   /** Clear on this surface (src/viewClear.ts): each conversation shows only what came after this device's own Clear. */
@@ -275,8 +272,6 @@ class BoxChatSession {
   start(): void {
     this.clearedAt = { ...readCleared(this.vault), ...readCleared(this.cacheHome) };
     this.applyCache();
-    useStore.setState({ shipments: [] });
-    void this.refreshShipments();
     let lastActive = useStore.getState().activeConversationId;
     this.unsub = useStore.subscribe((s) => {
       if (s.activeConversationId !== lastActive) {
@@ -335,20 +330,6 @@ class BoxChatSession {
     this.wake?.();
   }
 
-  /** Read the persisted delivery journal alongside the existing feed; no client shipping state machine. */
-  async refreshShipments(force = false): Promise<void> {
-    if (this.shipmentsLoading || !force && Date.now() - this.shipmentsAt < 5000) return;
-    this.shipmentsLoading = true;
-    this.shipmentsAt = Date.now();
-    try {
-      const data = await httpGet(this.link, "/api/v1/shipments") as { shipments: ShipmentCard[] };
-      if (this.live() && Array.isArray(data.shipments) && JSON.stringify(data.shipments) !== JSON.stringify(useStore.getState().shipments)) {
-        useStore.setState({ shipments: data.shipments });
-      }
-    } catch { /* Old box or offline: preserve the last server projection, never invent an outcome. */ }
-    finally { this.shipmentsLoading = false; }
-  }
-
   private async loop(): Promise<void> {
     let backoff = 1000;
     while (this.live()) {
@@ -362,7 +343,6 @@ class BoxChatSession {
         if (this.down !== false) vlog("box.feed", { state: "connected", cursor: this.cursor, epoch: this.epoch, ...(this.down ? { downMs: Date.now() - this.down } : {}) });
         this.down = false;
         this.setReach(true);
-        void this.refreshShipments();
         void probeLaptopReleaseHealth(this.vault, this.link);
         backoff = 1000;
         if (r.reset || (r.epoch && this.epoch && r.epoch !== this.epoch)) {
@@ -833,7 +813,6 @@ export function startBoxChat(vault: string): Promise<boolean> {
     if (!link) {
       if (session && !session.stopped) return true; // file-only workspace cannot take away the global conversation
       useStore.getState().setBoxChat(NO_BOX_STATE);
-      useStore.setState({ shipments: [] });
       return false;
     }
     if (session && !session.stopped && session.link.url === link.url && session.link.token === link.token) {
@@ -859,7 +838,6 @@ export function stopBoxChat(): void {
   session?.stop();
   session = null;
   useStore.getState().setBoxChat(NO_BOX_STATE);
-  useStore.setState({ shipments: [] });
 }
 
 const NO_BOX_STATE: BoxChatState = { on: false, reachable: null, reason: "" };
@@ -868,17 +846,6 @@ const NO_BOX_STATE: BoxChatState = { on: false, reachable: null, reason: "" };
 export function boxChatOn(): boolean {
   const s = useStore.getState();
   return !!session && !session.stopped && !!s.boxChat?.on;
-}
-
-/** One server-owned idempotent source revert request (also works in a popout). */
-export async function boxRollbackShipment(id: string): Promise<void> {
-  const link = await boxLinkFor(useStore.getState().vaultPath);
-  if (!link) throw new Error("Box is not connected");
-  const result = await boxPost(link, `/api/v1/shipments/${encodeURIComponent(id)}/rollback`, {});
-  if (!result.ok) throw new Error(result.error || "Roll back was not accepted");
-  const rollback = result.data?.rollback as ShipmentCard["rollback"];
-  if (rollback?.status === "failed") throw new Error(rollback.error || "Source revert failed");
-  if (session) await session.refreshShipments(true);
 }
 
 /** For tests: the live session. */

@@ -1,5 +1,5 @@
 // Agents publish branches; the separately installed box script alone promotes main.
-// Legacy review functions remain for historical cards.
+// Legacy review answer decoding does not create presentation or proof artifacts.
 import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { runGit } from "./git";
@@ -8,9 +8,9 @@ import { wallsOf } from "./projectFolders";
 import { writeAtomic } from "./atomic";
 import { syncedWithoutRemote } from "./master";
 
-// The card's names and its images' place in the vault: one definition for the box, the laptop and the phone.
-import { KEEP, OUTCOME_SEP, REVIEW_TOOL, SEND_BACK, proofImagePath } from "../src/review";
-export { KEEP, OUTCOME_SEP, REVIEW_TOOL, SEND_BACK, proofImagePath };
+// Historical answer compatibility shared with the conversation reducer.
+import { KEEP, OUTCOME_SEP, REVIEW_TOOL, SEND_BACK } from "../src/review";
+export { KEEP, OUTCOME_SEP, REVIEW_TOOL, SEND_BACK };
 
 const AGENT_NAME = "vault-chat agent";
 const AGENT_EMAIL = "agent@vault-chat.local";

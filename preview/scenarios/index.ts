@@ -1,4 +1,3 @@
-import { nativeShipmentAppScenario } from "./nativeShipmentApp";
 // Every scenario the harness can boot. Each builds on the same synthetic world
 // (world.ts) and differs in what the fake backend and fake model answer, and
 // which screen the open-steps drive the real app to.
@@ -15,7 +14,7 @@ import { markdownScenarios } from "./markdown";
 import { visualScenarios } from "./visual";
 import { liveEditScenarios } from "./liveEdit";
 import { backgroundScenarios } from "./background";
-import { projectFolderScenarios, projectReviewScenarios } from "./projectFolders";
+import { projectFolderScenarios } from "./projectFolders";
 import { masterScenarios } from "./master";
 import type { Script } from "../runtime/llm";
 
@@ -333,7 +332,6 @@ function voiceLibraryScenario(): Scenario {
 const syncTimers = { 15000: 1500, 30000: 1500 };
 
 export const scenarios: Scenario[] = [
-  nativeShipmentAppScenario,
   // ===== Basics =====
   {
     id: "home",
@@ -850,6 +848,5 @@ export const scenarios: Scenario[] = [
   ...liveEditScenarios,
   ...backgroundScenarios,
   ...projectFolderScenarios,
-  ...projectReviewScenarios,
   ...masterScenarios,
 ];

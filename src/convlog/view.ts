@@ -7,7 +7,7 @@
 // "N tool calls" fold). So the screen shows exactly the log's order.
 import type { PendingInput, Todo } from "./protocol";
 import { isOpen, pendingOf, planOf, shown, type Item, type Picture } from "./reduce";
-import { ASK_TOOLS, REVIEW_TOOL, reviewCard } from "../review";
+import { ASK_TOOLS } from "../review";
 import { hostToolName } from "../mcpNames";
 
 export const DIVIDER_TEXT = "Earlier conversation summarized";
@@ -181,14 +181,9 @@ function voiceAskMessage(it: Item): ViewMessage {
   };
 }
 
-/** AskUser: the question (its options as cards); Carl's answer is his own line after it (the reducer's).
- *  ReadyForReview (src/review.ts): the proof card, with Keep and Send back. */
+/** Ordinary AskUser questions; historical answers are separate user items. */
 function askMessages(it: Item): ViewMessage[] {
   const a = argsOf(it);
-  if (it.name === REVIEW_TOOL) {
-    const card = reviewCard(it.id, a);
-    return [{ role: "assistant", content: card.content, mid: it.id, askOptions: card.options }];
-  }
   const options: string[] = Array.isArray(a?.options) ? a.options.map(String) : [];
   const q: ViewMessage = {
     role: "assistant",

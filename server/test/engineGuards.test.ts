@@ -138,11 +138,14 @@ describe("engine guards", () => {
     const tid = backend.turns[before].threadId;
     const out: string[] = [];
     for (let i = 0; i < 6; i++) {
-      const res = await backend.h.toolCall(tid, "Notify", { title: `ping ${i}`, body: "still training normally" });
+      const res = await backend.h.toolCall(tid, "Notify", { title: `ping ${i}: shipping notes`, body: "Ordinary task, not release automation", needsYou: i === 1 });
       out.push(JSON.stringify(res));
     }
     const sent = pings.filter((p) => p.convId === r.convId && /^ping /.test(p.title));
     expect(sent).toHaveLength(4);
+    // Real Notify tool dispatch reaches its notification producer; this is not OS push proof.
+    expect(sent[0]).toMatchObject({ title: "ping 0: shipping notes", body: "Ordinary task, not release automation", trigger: "Notify", why: "finished", byCarl: true });
+    expect(sent[1]).toMatchObject({ title: "ping 1: shipping notes", trigger: "Notify", why: "failed", byCarl: true });
     expect(out[4]).toMatch(/Not sent/);
     expect(out[5]).toMatch(/Not sent/);
   });

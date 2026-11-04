@@ -1,68 +1,113 @@
-// Component/projection tests only — these do NOT attest an installed physical Tauri app or a real release.
+// Absence/safety regressions. Real production UI on copied history is a separate release check.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createElement } from "react";
-import { renderToStaticMarkup } from "react-dom/server";
-import type { ShipmentCard } from "../../src/shippingProtocol.ts";
-import { ShipmentCards } from "../../src/ShipmentCards.tsx";
-import { rollbackPending, shipmentArtifactUrl, shipmentLabel, shipmentsForThread } from "../../src/shipmentView.ts";
+import { existsSync, readFileSync } from "node:fs";
+import { fold } from "../../src/convlog/reduce.ts";
+import { messagesOf } from "../../src/convlog/view.ts";
 
-const card: ShipmentCard = {
-  id: "accepted-1", project: "vault-chat", convId: "project-vault-chat", title: "A real change <not HTML>",
-  acceptedAt: "2026-10-24T01:00:00Z", sourceRevision: "a".repeat(40), status: "accepted",
-  proof: { summaryUrl: "/file?vault=school2&path=.vault-chat%2Fshipments%2Fproof%2Faccepted-1%2Fsummary.md", mediaUrls: ["/file?vault=school2&path=recording.webm"] },
-};
+const source = (p: string) => readFileSync(new URL(`../../${p}`, import.meta.url), "utf8");
+const history = (data: any, seq = 1) => ({ type: "entry", conv: "old", seq, at: seq, entry: { id: `e${seq}`, type: "custom", customType: "vc-note", data } });
 
-test("shipment journal projections are scoped to BOTH conversation and project, ordered and deduped by accepted id", () => {
-  const later = { ...card, id: "accepted-2", acceptedAt: "2026-10-24T02:00:00Z" };
-  const unrelated = { ...card, id: "other", project: "other-project" };
-  const otherThread = { ...card, id: "main", convId: "main" };
-  const updated = { ...card, status: "shipped" as const };
-  assert.deepEqual(shipmentsForThread([later, card, unrelated, otherThread, updated], card.convId, card.project), [updated, later]);
-  assert.deepEqual(shipmentsForThread([card], "main", card.project), []);
-  assert.deepEqual(shipmentsForThread([card], card.convId, null), []);
-});
-
-test("Shipped is used only for the server's shipped status; published and pending never imply completion", () => {
-  for (const status of ["accepted", "published", "health-pending", "rolling-back", "rolled-back", "needs-attention"] as const) {
-    assert.doesNotMatch(shipmentLabel({ ...card, status }), /^Shipped/);
+test("shipment presentation, polling, stores and components are deleted", () => {
+  for (const p of ["src/ChatPane.tsx", "src/boxChat.ts", "src/store.ts", "src/sync.ts", "phone/src/boot.ts"]) {
+    assert.doesNotMatch(source(p), /ShipmentCards|ShipmentProofViewer|refreshShipments|shipmentsForThread|\/api\/v1\/shipments|\bshipments\s*[:?]/, p);
   }
-  assert.equal(shipmentLabel({ ...card, status: "shipped" }), "Shipped");
-  assert.equal(rollbackPending({ ...card, rollback: { status: "running" } }), true);
-  assert.equal(rollbackPending({ ...card, rollback: { status: "accepted" } }), true);
-  assert.equal(rollbackPending({ ...card, rollback: { status: "failed" } }), false);
+  for (const p of ["src/ShipmentCards.tsx", "src/ShipmentProofViewer.tsx", "src/shipmentView.ts", "src/shipmentCards.css"]) assert.equal(existsSync(new URL(`../../${p}`, import.meta.url)), false);
 });
 
-test("proof URLs reject cross-origin, credentials, scripts, local files and malformed input", () => {
-  const base = "https://box.example/";
-  assert.equal(shipmentArtifactUrl("/file?path=proof.md", base), "https://box.example/file?path=proof.md");
-  for (const raw of ["javascript:alert(1)", "file:///private/proof", "data:text/html,hello", "https://other.example/proof", "//other.example/proof", "https://user:pass@box.example/file", "/file\n?path=x", "\\\\other.example\\proof", ""]) {
-    assert.equal(shipmentArtifactUrl(raw, base), null, raw);
+test("human shipping prose and arbitrary structured text remain untouched", () => {
+  const human = "The shipping failed; please keep my shipping notes.";
+  const arbitrary = JSON.stringify({ type: "unknown-custom-event", status: "shipped", text: human });
+  const records = [history({ kind: "line", role: "user", text: human }), history({ kind: "notice", text: arbitrary }, 2)];
+  const before = JSON.stringify(records);
+  const messages = messagesOf(fold(records as any, "old"));
+  assert.ok(messages.some(m => m.role === "user" && m.content === human));
+  assert.ok(messages.some(m => m.content === arbitrary), "unknown structured JSON is not a shipping discriminator");
+  assert.equal(JSON.stringify(records), before);
+});
+
+test("no dedicated shipment proof deep-link routing remains", () => {
+  // No dedicated deep-link recognition, rejection banner or replacement dashboard remains.
+  for (const p of ["src/ChatPane.tsx", "phone/src/boot.ts"]) assert.doesNotMatch(source(p), /Invalid shipment proof|invalid-shipment-proof|shipmentProof|shipmentArtifactUrl/);
+  const link = "Historical file: [summary](.vault-chat/shipments/proof/old/summary.md)";
+  assert.equal(messagesOf(fold([history({ kind: "line", role: "user", text: link })] as any, "old"))[0].content, link);
+});
+
+test("historical review tools retire without hiding original asks and answers", () => {
+  for (const name of ["ReadyForReview", "mcp__vault_chat__ReadyForReview"]) {
+    const records = [history({ kind: "line", role: "user", text: "Original ask about shipping" }), history({ kind: "tool", name, args: { title: "Old change", images: ["after.png"] }, result: "Carl answered: Keep\n\n---\nOld machine outcome" }, 2), history({ kind: "line", role: "user", text: "Keep" }, 3)];
+    const msgs = messagesOf(fold(records as any, "old"));
+    assert.ok(msgs.some(m => m.content === "Original ask about shipping"));
+    assert.ok(msgs.some(m => m.role === "user" && m.content === "Keep"));
+    assert.ok(!msgs.some(m => m.askOptions?.length));
+    assert.ok(msgs.some(m => m.toolCalls?.some(t => t.name === "ReadyForReview")), "keep original tools as ordinary folded history");
+    assert.ok(!msgs.some(m => /Ready to keep|Old machine outcome/.test(m.content)));
   }
 });
 
-test("shared laptop/phone card escapes titles, shows actual artifact links and source-revert action, not Keep", () => {
-  const html = renderToStaticMarkup(createElement(ShipmentCards, { cards: [card], artifactBase: "https://box.example", onRollback: async () => {} }));
-  assert.match(html, /Accepted · waiting for release/);
-  assert.match(html, /A real change &lt;not HTML&gt;/);
-  assert.match(html, /href="https:\/\/box.example\/file\?/);
-  assert.match(html, /Roll back/);
-  assert.match(html, /Revert this source change/);
-  assert.doesNotMatch(html, /Keep|Send back|Shipped:/);
+test("removed shipment HTTP and projection surfaces leave native health intact", () => {
+  const http = source("server/http.ts"), delivery = source("server/changeDelivery.ts");
+  assert.doesNotMatch(http, /shipmentCards|shipmentRepo|rollbackShipment|\/api\/v1\/shipments/);
+  assert.doesNotMatch(delivery, /proofProjection|shipmentCards|shipmentRepo|appendFileSync|writeFileSync|cards\.jsonl/);
+  assert.match(http, /laptopTransportIdentity\(req\)/);
+  assert.match(http, /reportLaptopHealth\(repo, identity, b\)/);
+  assert.doesNotMatch(delivery, /requestDeliveryRollback|dispatchSourceRollback/);
 });
 
-test("durable running rollback disables action and a negative health reason stays visible", () => {
-  const c: ShipmentCard = { ...card, status: "rolling-back", rollback: { status: "running" }, health: { status: "failed", reason: "Updater API unavailable", box: "healthy", laptop: "failed" } };
-  const html = renderToStaticMarkup(createElement(ShipmentCards, { cards: [c], artifactBase: "https://box.example", onRollback: async () => {} }));
-  assert.match(html, /disabled=""/);
-  assert.match(html, /Roll back requested/);
-  assert.match(html, /Updater API unavailable/);
-  assert.doesNotMatch(html, /Shipped:/);
+test("native health and binary install controls survive without updater notifications", () => {
+  const wire = source("src/shippingProtocol.ts");
+  assert.doesNotMatch(wire, /ShipmentCard|ShipmentRelease|ShipmentRollback/);
+  assert.match(wire, /ReleaseHealthChallenge/); assert.match(wire, /LaptopHealthReport/);
+  assert.match(source("src/laptopReleaseHealth.tsx"), /release-health\/laptop/);
+  assert.doesNotMatch(source("server/deploy/vault-chat-update.sh"), /alert\(\)|\balert\s+"|\/api\/v1\/alert/);
+  assert.match(source("server/deploy/vault-chat-update.sh"), /^ROLLOVER_RECOVERY_PROTOCOL=1$/m);
+  assert.doesNotMatch(source("src/UpdateBanner.tsx"), /notifyUpdated|import\(".\/phoneApp"\)|await notify\(/);
 });
 
-test("native proof callback uses an actual button so the global capture-phase link handler cannot bypass authenticated transport", () => {
-  const html = renderToStaticMarkup(createElement(ShipmentCards, { cards: [card], artifactBase: "https://box.example", onRollback: async () => {}, onOpenProof: async () => {} }));
-  assert.doesNotMatch(html, /<a /);
-  assert.match(html, />Proof<\/button>/);
-  assert.match(html, />Recording 1<\/button>/);
+test("other tools, user-authored JSON and ordinary questions are never hidden by shipping vocabulary", () => {
+  const json = JSON.stringify({ type: "shipment", text: "Human-authored JSON, not a registered machine event" });
+  const records = [history({ kind: "line", role: "user", text: json }), history({ kind: "tool", name: "mcp__other__ReadyForReview", args: {}, result: "unrelated MCP tool" }, 2), history({ kind: "tool", name: "AskUser", args: { question: "Which shipping notes?", options: ["A", "B"] }, result: "Carl answered: A" }, 3), history({ kind: "line", role: "user", text: "A", via: "answer" }, 4)];
+  const msgs = messagesOf(fold(records as any, "old"));
+  assert.ok(msgs.some(m => m.role === "user" && m.content === json));
+  assert.ok(msgs.some(m => m.toolCalls?.some(t => t.name === "mcp__other__ReadyForReview")));
+  assert.ok(msgs.some(m => m.askOptions?.length === 2));
+  assert.ok(msgs.some(m => m.role === "user" && m.content === "A"));
+});
+
+// Removing the specialized renderer never removes original tool records.
+test("retired review presentation disappears across updates without mutating answers, unrelated tools or notices", () => {
+  for (const name of ["ReadyForReview", "mcp__vault_chat__ReadyForReview"]) {
+    const originalAnswer = "Send it back: shipping notes must remain exactly as I wrote them.";
+    const records = [
+      history({ kind: "tool", name, id: "retired", args: { title: "old <script> card" }, result: "Carl answered: " + originalAnswer + "\n\n---\nKept by the old service" }),
+      history({ kind: "line", role: "user", text: originalAnswer, via: "answer" }, 2),
+      history({ kind: "tool", name: "Notify", args: { title: "Done: shipping notes", body: "Ordinary task completion" }, result: "sent" }, 3),
+      history({ kind: "tool", name: "AskUser", args: { question: "Keep these notes?", options: ["Keep", "Send back"] } }, 4),
+      history({ kind: "notice", text: "A user-visible source recovery note, not a typed machine event" }, 5),
+    ];
+    const untouched = JSON.stringify(records);
+    const picture = fold(records as any, "old"), canonical = JSON.stringify(picture);
+    const messages = messagesOf(picture);
+    assert.equal(messages.filter(m => m.role === "user" && m.content === originalAnswer).length, 1);
+    assert.ok(messages.some(m => m.toolCalls?.some(t => t.name === "Notify")));
+    assert.ok(messages.some(m => m.askOptions?.length === 2));
+    assert.ok(messages.some(m => m.content === "A user-visible source recovery note, not a typed machine event"));
+    assert.ok(messages.some(m => m.toolCalls?.some(t => t.name === "ReadyForReview")));
+    assert.equal(JSON.stringify(picture), canonical, "projection never rewrites canonical items");
+    assert.equal(JSON.stringify(records), untouched, "original persisted history is not scrubbed");
+  }
+});
+
+test("a completed native review result preserves a multiline human answer without its machine outcome", () => {
+  const answer = "Not yet.\nThe tests must finish; don't hide this shipping sentence.";
+  const records = [
+    { type: "entry", conv: "old", seq: 1, at: 1, entry: { id: "call", type: "message", message: { role: "assistant", content: [{ type: "toolCall", id: "native-review", name: "mcp__vault_chat__ReadyForReview", arguments: { title: "Old review" } }] } } },
+    { type: "entry", conv: "old", seq: 2, at: 2, entry: { id: "result", type: "message", message: { role: "toolResult", toolCallId: "native-review", toolName: "mcp__vault_chat__ReadyForReview", content: [{ type: "text", text: "Carl answered: " + answer + "\n\n---\nMachine accepted the old range" }] } } },
+  ];
+  const before = JSON.stringify(records);
+  const messages = messagesOf(fold(records as any, "old"));
+  assert.deepEqual(messages.filter(m => m.role === "user").map(m => m.content), [answer]);
+  assert.ok(!messages.some(m => m.askOptions?.length));
+  assert.ok(messages.some(m => m.toolCalls?.length), "raw tool history remains readable");
+  assert.equal(JSON.stringify(records), before);
 });
