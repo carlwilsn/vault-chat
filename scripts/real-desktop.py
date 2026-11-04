@@ -91,6 +91,7 @@ def main():
     p.add_argument('--nixpkgs', help='Optional local nixpkgs source for dependency provisioning')
     p.add_argument('--check-images', action='store_true', help='Paste owned PNG through the native clipboard; inspect outgoing bytes without inference')
     p.add_argument('--check-status-dot', action='store_true', help='Observe native pi running rows with a gated local zero-cost provider, then switch only the viewer vault')
+    p.add_argument('--check-video', type=Path, help='Owned synthetic VP8/Vorbis clip; append two private media-only test entries, never publish them')
     p.add_argument('--inside-nix', action='store_true', help=argparse.SUPPRESS)
     a = p.parse_args()
     os.umask(0o077)
@@ -221,6 +222,22 @@ def main():
           }'''
         build(['node', '--import', 'tsx', '--input-type=module', '-e', rebind,
                str(ROOT / 'server/convlog/reader.ts'), str(dest)], 'copy-inode-rebind')
+        if a.check_video:
+            fixture_dir = vault / 'video-fixtures'
+            fixture_dir.mkdir()
+            shutil.copyfile(a.check_video.resolve(strict=True), fixture_dir / 'synthetic.webm')
+            (fixture_dir / 'unsupported.webm').write_bytes(b'Not a supported media container')
+            prepare_video = r"""import {ConvLog} from './server/convlog/log.ts';
+              import {newSessionFile,appendEntries} from './server/convlog/piSession.ts';
+              import {writeFileSync} from 'node:fs';import {join} from 'node:path';
+              const v=process.argv[1],id=process.argv[2],log=new ConvLog(v),before=log.picture(id);
+              if(before.items.length!==3819 || before.items.filter(i=>['user','assistant'].includes(i.kind)).length!==1329)throw Error('Wrong approved history');
+              writeFileSync(process.argv[3],JSON.stringify(before.items));
+              const file=newSessionFile(join(v,'.vault-chat/events/sessions/video-fixture.jsonl'),v);
+              for(const entry of appendEntries(file,[{type:'message',message:{role:'assistant',content:[{type:'text',text:'![local video fixture](video-fixtures/synthetic.webm)\n\n![unsupported local fixture](video-fixtures/unsupported.webm)'}],timestamp:Date.now()}}]))log.emit(id,{type:'entry',file,entry});
+              log.checkpointNow(id);log.close();"""
+            build(['node', '--import', 'tsx', '--input-type=module', '-e', prepare_video,
+                   str(vault), a.conversation, str(work / 'original-video-prefix.json')], 'private-video-append')
         server_port = port()
         state = work / 'server-state'
         # Even OFF has an owned inert 503 voice endpoint; never falls back to 8857.
@@ -311,6 +328,12 @@ def main():
         if picture.get('id') != a.conversation or count < a.min_messages:
             raise RuntimeError('Wrong/short original thread: expected minimum message count not met')
         result['thread'] = {'messages': count, 'items': len(items), 'exactOriginalSelected': False}
+        if a.check_video:
+            prefix = json.loads((work / 'original-video-prefix.json').read_text())
+            if items[:len(prefix)] != prefix or len(items) != len(prefix) + 1:
+                raise RuntimeError('Private media append changed the original history prefix')
+            result['thread']['originalPrefix'] = {'messages': 1329, 'items': 3819, 'unchanged': True, 'privateAppendedItems': 1}
+
         observed = []
         photo_intents = []
         opened = []
@@ -623,6 +646,59 @@ def main():
                     result['voiceConflict']['nativeMicOffUI'] = health_ui
                     click('[data-el="voice-health-close"]')
                     click('button[title="Settings"]')
+                video_check = None
+                if a.check_video:
+                    if not exists('[data-perf-view="fullscreen"]'):
+                        key('ctrl+shift+f')
+                        wait_for(lambda: exists('[data-perf-view="fullscreen"]'), 'full chat for native media controls')
+                    selector = 'video[title="local video fixture"]'
+                    wait_for(lambda: js('const v=document.querySelector(arguments[0]);return v?.readyState>=2 && v.videoWidth===320;', selector), 'actual native video metadata and decoded initial frame')
+                    # Instrument decoded audio before a ZERO gain output. No DOM play,
+                    # pause, seek, focus or source mutation: all control input is XTest.
+                    js(r"""const v=document.querySelector(arguments[0]);
+                      window.__videoRms=0;window.__videoFrames=0;
+                      document.addEventListener('pointerdown',function start(e){
+                        if(!e.isTrusted)return;
+                        const c=new AudioContext(),source=c.createMediaElementSource(v),a=c.createAnalyser(),g=c.createGain();
+                        g.gain.value=0;source.connect(a);a.connect(g);g.connect(c.destination);c.resume();
+                        window.__videoAudio=c;const b=new Float32Array(a.fftSize);
+                        setInterval(()=>{a.getFloatTimeDomainData(b);window.__videoRms=Math.max(window.__videoRms,Math.sqrt(b.reduce((s,x)=>s+x*x,0)/b.length));},30);
+                      },{once:true,capture:true});
+                      if(v.requestVideoFrameCallback){const f=()=>{window.__videoFrames++;v.requestVideoFrameCallback(f);};v.requestVideoFrameCallback(f);}
+                      return true;""", selector)
+                    def video_state():
+                        return js(r"""const v=document.querySelector(arguments[0]),c=document.createElement('canvas');c.width=16;c.height=9;
+                          const x=c.getContext('2d');x.drawImage(v,0,0,16,9);const d=x.getImageData(0,0,16,9).data;
+                          return {time:v.currentTime,duration:v.duration,paused:v.paused,muted:v.muted,autoplay:v.autoplay,
+                            width:v.videoWidth,height:v.videoHeight,error:v.error?.code||null,
+                            frames:v.getVideoPlaybackQuality?.().totalVideoFrames||v.webkitDecodedFrameCount||window.__videoFrames,
+                            hash:d.reduce((s,x,i)=>(s+x*(i+1))%1000000007,0),rms:window.__videoRms,
+                            audioState:window.__videoAudio?.state||null};""", selector)
+                    initial = video_state()
+                    if initial['muted'] or initial['autoplay'] or not initial['paused']:
+                        raise RuntimeError('Native video is force-muted or autoplaying before user input')
+                    def video_point(fraction, bottom):
+                        xy=js('const r=document.querySelector(arguments[0]).getBoundingClientRect();return [(screenX+r.x+r.width*arguments[1])*devicePixelRatio,(screenY+r.bottom-arguments[2])*devicePixelRatio];', selector, fraction, bottom)
+                        run('xdotool','mousemove',str(round(xy[0])),str(round(xy[1])),'click','1',env=childenv,stdout=subprocess.DEVNULL)
+                    # Standard native UA controls, never a fabricated page button.
+                    video_point(.06, 16)
+                    wait_for(lambda: not video_state()['paused'] and video_state()['time']>.25, 'native Play gesture starts media')
+                    first=video_state();time.sleep(1);playing=video_state()
+                    if playing['frames']<=first['frames'] or playing['hash']==first['hash'] or playing['rms']<.01:
+                        raise RuntimeError('Native video frames or actual pre-output audio samples did not decode')
+                    video_point(.06,16)
+                    wait_for(lambda: video_state()['paused'], 'native Pause gesture')
+                    paused=video_state();time.sleep(.25)
+                    if abs(video_state()['time']-paused['time'])>.1: raise RuntimeError('Native Pause did not hold')
+                    video_point(.6,38)
+                    wait_for(lambda: abs(video_state()['time']-paused['time'])>1, 'native timeline Seek gesture')
+                    seeked=video_state()
+                    bad=js('const v=document.querySelector(\'video[title="unsupported local fixture"]\');const a=v?.parentElement.querySelector(\'[data-el="video-fallback"]\');return {code:v?.error?.code||null,download:!!a?.hasAttribute("download"),link:!!a?.getAttribute("href")};')
+                    if bad['code'] not in (3,4) or not bad['download'] or not bad['link']:
+                        raise RuntimeError('Unsupported native format has no honest download fallback')
+                    video_check={'initial':initial,'playing':playing,'paused':paused,'seeked':seeked,'unsupported':bad,
+                      'audioOutput':'AudioContext analyser -> gain=0; ALSA null/Pulse nonexistent; no speakers',
+                      'input':'native UA controls via XTest; no play/pause/currentTime injection'}
                 image_check = None
                 if a.check_images:
                     if not exists('[data-perf-target="composer"]'):
@@ -754,7 +830,7 @@ def main():
                 def stats(values):
                     v = sorted(values)
                     return {'n': len(v), 'p50Ms': round(v[len(v)//2], 3), 'p95Ms': round(v[min(len(v)-1, int(len(v)*.95))], 3), 'maxMs': round(max(v), 3)}
-                return {'works': not interaction_failures, 'imageCheck': image_check, 'statusDot': status_dot, 'interactionFailures': interaction_failures, 'planLifecycle': plan_lifecycle, 'emptyChat': empty_chat, 'native': metadata, 'telemetryHttpStatuses': sorted(statuses),
+                return {'works': not interaction_failures, 'videoCheck': video_check, 'imageCheck': image_check, 'statusDot': status_dot, 'interactionFailures': interaction_failures, 'planLifecycle': plan_lifecycle, 'emptyChat': empty_chat, 'native': metadata, 'telemetryHttpStatuses': sorted(statuses),
                         'telemetryNote': 'Observed real Rust IPC batches; loopback is not authenticated Tailscale laptop telemetry',
                         'launchProcessToDomUpperBoundMs': round(launch_upper, 3),
                         'timings': [{'metric': m, 'method': method, **stats(values)} for (m, method), values in sorted(samples.items())]}
@@ -781,14 +857,88 @@ def main():
         if a.before_app:
             result['runs']['before'] = exercise(a.before_app, 'before')
         result['runs']['after'] = exercise(a.app, 'after')
-        if a.check_plans or a.check_images or a.check_empty_chat:
+        if a.check_plans or a.check_images or a.check_empty_chat or a.check_video:
             again = request(base + checkpoint_path)
             again = again.get('picture', again)
             preserved = again.get('items', []) == items
             result['thread']['originalItemsUnchangedAfterClear'] = preserved
             if not preserved:
                 raise RuntimeError('Local Clear changed the original conversation items')
+        if a.check_video:
+            # Same compiled backend and same original 3819-item prefix as native.
+            phone_script = r"""
+              import assert from 'node:assert/strict';import {writeFileSync} from 'node:fs';
+              const {chromium}=await import(process.argv[1]);const base=process.argv[2],conv=process.argv[3];
+              const b=await chromium.launch({executablePath:'/run/current-system/sw/bin/chromium',headless:true,args:['--mute-audio','--no-sandbox','--disable-background-networking','--disable-component-update','--disable-sync']});
+              const results={surface:'production compiled phone',osAudio:'Chromium --mute-audio AND analyser -> gain=0',ranges:[],permissions:0,mic:0,subscribe:0};
+              try {
+                const c=await b.newContext({viewport:{width:390,height:844},hasTouch:true,isMobile:true,permissions:[]});
+                await c.addInitScript(()=>{
+                  window.__calls={permissions:0,mic:0,subscribe:0};
+                  Notification.requestPermission=()=>{__calls.permissions++;throw Error('OS permissions forbidden');};
+                  PushManager.prototype.subscribe=()=>{__calls.subscribe++;throw Error('Push forbidden');};
+                  navigator.mediaDevices.getUserMedia=()=>{__calls.mic++;throw Error('Mic forbidden');};
+                });
+                const p=await c.newPage();
+                await p.route('**/*',r=>{const u=new URL(r.request().url());return u.origin===base && (r.request().method()==='GET'||u.pathname==='/api/v1/attention')?r.continue():r.abort();});
+                p.on('response',async r=>{if(new URL(r.url()).pathname==='/file' && r.request().headers().range && new URL(r.url()).searchParams.get('path')==='video-fixtures/synthetic.webm')results.ranges.push({status:r.status(),range:r.headers()['content-range']||null,mime:r.headers()['content-type']});});
+                const begin=Date.now();await p.goto(base+'/phone?conv='+encodeURIComponent(conv));
+                const v=p.locator('video[title="local video fixture"]');await v.waitFor();
+                await p.waitForFunction(()=>document.querySelector('video[title="local video fixture"]')?.readyState>=2);
+                results.readyMs=Date.now()-begin;
+                await v.evaluate(v=>{
+                  window.__rms=0;window.__frames=0;
+                  document.addEventListener('pointerdown',function(e){if(!e.isTrusted)return;
+                    const c=new AudioContext(),s=c.createMediaElementSource(v),a=c.createAnalyser(),g=c.createGain();g.gain.value=0;
+                    s.connect(a);a.connect(g);g.connect(c.destination);c.resume();window.__audio=c;
+                    const b=new Float32Array(a.fftSize);setInterval(()=>{a.getFloatTimeDomainData(b);window.__rms=Math.max(__rms,Math.sqrt(b.reduce((s,x)=>s+x*x,0)/b.length));},30);
+                  },{once:true,capture:true});
+                  if(v.requestVideoFrameCallback){const f=()=>{__frames++;v.requestVideoFrameCallback(f);};v.requestVideoFrameCallback(f);}
+                });
+                const state=()=>v.evaluate(v=>{const c=document.createElement('canvas');c.width=16;c.height=9;const x=c.getContext('2d');x.drawImage(v,0,0,16,9);const d=x.getImageData(0,0,16,9).data;return {time:v.currentTime,duration:v.duration,paused:v.paused,muted:v.muted,autoplay:v.autoplay,width:v.videoWidth,height:v.videoHeight,error:v.error?.code||null,frames:v.getVideoPlaybackQuality().totalVideoFrames,hash:d.reduce((s,x,i)=>(s+x*(i+1))%1000000007,0),rms:__rms,audioState:__audio?.state||null};});
+                results.initial=await state();assert(results.initial.paused&&!results.initial.muted&&!results.initial.autoplay);
+                // Read native UA shadow geometry; all input is actual mouse/touch.
+                const cdp=await c.newCDPSession(p);await cdp.send('DOM.enable');
+                async function control(pseudo,f=.5){
+                  const doc=await cdp.send('DOM.getDocument',{depth:-1,pierce:true});const nodes=[];
+                  function walk(n){if(n.attributes?.includes(pseudo))nodes.push(n);for(const x of [...(n.children||[]),...(n.shadowRoots||[])])walk(x);}walk(doc.root);
+                  const box=await v.boundingBox();
+                  for(const n of nodes){try{const {model}=await cdp.send('DOM.getBoxModel',{backendNodeId:n.backendNodeId});const q=model.content,x=q[0]+(q[2]-q[0])*f,y=(q[1]+q[5])/2;
+                    if(x>=box.x&&x<=box.x+box.width&&y>=box.y&&y<=box.y+box.height&&y>0&&y<844){await p.mouse.click(x,y);return;}
+                  }catch{}}
+                  throw Error('Native UA control not visible: '+pseudo);
+                }
+                // Scroll with real wheel input if a control is below the viewport.
+                let box=await v.boundingBox();if(box.y+box.height>740){await p.mouse.move(190,450);await p.mouse.wheel(0,box.y+box.height-700);await p.waitForTimeout(200);}
+                await control('-webkit-media-controls-play-button');
+                await p.waitForFunction(()=>{const v=document.querySelector('video[title="local video fixture"]');return !v.paused&&v.currentTime>.25;});
+                const first=await state();await p.waitForTimeout(1000);results.playing=await state();
+                assert(results.playing.frames>first.frames&&results.playing.hash!==first.hash&&results.playing.rms>.01,'Phone must actually decode advancing picture AND audio samples');
+                await control('-webkit-media-controls-play-button');await p.waitForFunction(()=>document.querySelector('video[title="local video fixture"]').paused);
+                results.paused=await state();await p.waitForTimeout(250);assert(Math.abs((await state()).time-results.paused.time)<.1);
+                await control('-webkit-media-controls-timeline',.6);await p.waitForFunction(t=>Math.abs(document.querySelector('video[title="local video fixture"]').currentTime-t)>1,results.paused.time);
+                results.seeked=await state();await control('-webkit-media-controls-play-button');await p.waitForTimeout(300);results.resumed=await state();assert(!results.resumed.paused&&results.resumed.time>results.seeked.time);
+                results.unsupported=await p.locator('video[title="unsupported local fixture"]').evaluate(v=>({code:v.error?.code||null,download:!!v.parentElement.querySelector('[data-el="video-fallback"][download]')}));
+                assert([3,4].includes(results.unsupported.code)&&results.unsupported.download);
+                Object.assign(results,await p.evaluate(()=>__calls));assert(!results.permissions&&!results.mic&&!results.subscribe);
+                assert(results.ranges.some(r=>r.status===206&&r.mime==='video/webm'));
+                const q=new URLSearchParams({path:'video-fixtures/synthetic.webm',convId:conv});const r=await fetch(base+'/file?'+q,{headers:{range:'bytes=100-199'}});assert.equal(r.status,206);assert.equal((await r.arrayBuffer()).byteLength,100);
+                results.works=true;
+              } catch(e){results.works=false;results.error=String(e);} finally {await b.close();writeFileSync(process.argv[4],JSON.stringify(results,null,2));}
+              if(!results.works)process.exitCode=1;
+            """
+            phone_file = work / 'phone-video.json'
+            # Playwright is existing test tooling, never a fake UI/backend or a new dependency.
+            pw = os.environ.get('VC_PLAYWRIGHT', '/tmp/global-workspace-ui-09ed10ad-r1/source/preview/node_modules/playwright-core/index.mjs')
+            child = spawn(['node', '--input-type=module', '-e', phone_script, pw, base, a.conversation, str(phone_file)], 'phone-video')
+            child.wait(timeout=120)
+            if phone_file.exists():
+                result['phoneVideo'] = json.loads(phone_file.read_text())
+            if child.returncode:
+                raise RuntimeError('Production phone video check failed; see retained scalar metrics')
         result['works'] = all(r['works'] for r in result['runs'].values())
+        if a.check_video:
+            result['works'] = result['works'] and result.get('phoneVideo', {}).get('works', False)
     except Exception as e:
         # No raw driver response/DOM/credentials/text/path identifiers in telemetry.
         result['error'] = str(e) if isinstance(e, RuntimeError) else type(e).__name__

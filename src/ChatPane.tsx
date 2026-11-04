@@ -76,9 +76,19 @@ const ChatImage = memo(function ChatImage({
   const url = media?.key === mediaKey ? media.url : null;
   const [failedPath, setFailedPath] = useState<string | null>(null);
 
+  // Reuse the retained video-playback-1030 fix: a mount, not a file-index
+  // snapshot, owns this URL. Still re-read bytes so replacements are visible.
+  const loaded = useRef<{ path: string; bytes: Uint8Array; url: string } | null>(null);
   useEffect(() => {
     setMedia(null);
     setFailedPath(null);
+    return () => {
+      if (loaded.current) URL.revokeObjectURL(loaded.current.url);
+      loaded.current = null;
+    };
+  }, [mediaKey]);
+
+  useEffect(() => {
     if (!src) return;
     if (/^(https?:|data:|blob:)/i.test(src)) {
       setMedia({ key: mediaKey, url: src });
@@ -93,8 +103,10 @@ const ChatImage = memo(function ChatImage({
       : `${vaultPath}${sep}${cleaned.replace(/^\.\/+/, "")}`;
 
     let cancelled = false;
-    let objectUrl: string | null = null;
     const show = (path: string, bytes: ArrayLike<number>) => {
+      const data = new Uint8Array(bytes);
+      const prev = loaded.current;
+      if (prev?.path === path && prev.bytes.length === data.length && prev.bytes.every((b, i) => b === data[i])) return;
       const dot = path.lastIndexOf(".");
       const ext = dot > 0 ? path.slice(dot + 1).toLowerCase() : "";
       const mime = videoMime(path) ??
@@ -113,9 +125,12 @@ const ChatImage = memo(function ChatImage({
                     : ext === "ico"
                       ? "image/x-icon"
                       : `image/${ext || "png"}`);
-      const blob = new Blob([new Uint8Array(bytes)], { type: mime });
-      objectUrl = URL.createObjectURL(blob);
-      setMedia({ key: mediaKey, url: objectUrl });
+      const blob = new Blob([data], { type: mime });
+      const url = URL.createObjectURL(blob);
+      loaded.current = { path, bytes: data, url };
+      setFailedPath(null);
+      setMedia({ key: mediaKey, url });
+      if (prev) URL.revokeObjectURL(prev.url);
     };
     (async () => {
       const image = await readChatImage(cleaned, vaultPath, files, {
@@ -134,12 +149,14 @@ const ChatImage = memo(function ChatImage({
       }
       if (!cancelled) {
         console.warn("[chat] image load failed:", primary);
+        if (loaded.current) URL.revokeObjectURL(loaded.current.url);
+        loaded.current = null;
+        setMedia(null);
         setFailedPath(primary);
       }
     })();
     return () => {
       cancelled = true;
-      if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
   }, [src, vaultPath, files, convId, mediaKey]);
 
@@ -155,9 +172,12 @@ const ChatImage = memo(function ChatImage({
       </span>
     );
   }
-  // A video (RecordUI's proof, any .webm / .mp4): played inline, muted, with controls.
-  // muted as a property, set on the element: React does not always reflect the prop, and a video must start muted.
-  if (isVideoSrc(src)) return <video src={url} ref={muteVideo} controls muted playsInline preload="metadata" title={alt} data-el="chat-video" className="max-w-full rounded-md border border-border/60" />;
+  // No autoplay: the user's native Play gesture starts video AND audio.
+  // Keep an ordinary download link available if this platform lacks the codec.
+  if (isVideoSrc(src)) return <span>
+    <video src={url} controls playsInline preload="metadata" title={alt} data-el="chat-video" className="max-w-full rounded-md border border-border/60" />
+    <a href={url} download={src?.split(/[\\/]/).pop()?.split(/[?#]/)[0]} className="text-xs text-muted-foreground underline" data-el="video-fallback">Download video</a>
+  </span>;
   return <img src={url} alt={alt} {...rest} />;
 });
 
@@ -167,12 +187,6 @@ function videoMime(src: string | undefined): string | null {
   return m ? (VIDEO_EXT[m[1]!.toLowerCase()] ?? null) : null;
 }
 const isVideoSrc = (src: string | undefined) => !!videoMime(src);
-const muteVideo = (el: HTMLVideoElement | null) => {
-  if (el) {
-    el.defaultMuted = true;
-    el.muted = true;
-  }
-};
 
 const chatComponents = { img: ChatImage } as const;
 

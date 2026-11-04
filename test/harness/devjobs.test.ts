@@ -1,6 +1,6 @@
 // A dev server the agent started (StartJob) and the video it recorded, on the laptop and the phone: a job is a row of
 // the background-tasks chip with Stop and no Steer (there is no one to steer); it is not work the voice waits on; a
-// `.webm` / `.mp4` in a reply plays inline (muted, with controls) where an image would show.
+// `.webm` / `.mp4` in a reply plays inline (gesture-started, with controls) where an image would show.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createElement } from "react";
@@ -55,10 +55,23 @@ test("phone: a video in a reply plays inline from the box's file route; an image
   const html = md("Here it is working:\n\n![the counter going up](.vault-chat/visuals/counter.webm)\n\n![chart](.vault-chat/visuals/c.png)");
   assert.match(html, /<video [^>]*src="\/file\?path=\.vault-chat%2Fvisuals%2Fcounter\.webm"/);
   assert.match(html, /<video [^>]*controls=""/);
-  // Muted as an attribute in the HTML the page sets (React keeps `muted` as a property only), exactly once.
-  assert.match(html, /<video [^>]*muted=""/);
-  assert.equal((html.match(/muted=/g) ?? []).length, 1);
+  assert.doesNotMatch(html, /\bmuted=|\bauto[Pp]lay=/);
+  assert.match(html, /data-el="video-fallback"[^>]*>Download video/);
   assert.match(html, /<video [^>]*playsInline=""|<video [^>]*playsinline=""/i);
   assert.match(html, /<img [^>]*src="\/file\?path=\.vault-chat%2Fvisuals%2Fc\.png"/);
   assert.match(md("![demo](https://example.com/clip.mp4)"), /<video [^>]*src="https:\/\/example\.com\/clip\.mp4"/);
+});
+
+
+test("phone: markdown media and cached links stay bound to the conversation owner", () => {
+  const md = createPhoneMarkdown({ toHtml: renderToStaticMarkup,
+    fileUrl: (p, owner) => "/file?path=" + encodeURIComponent(p) + "&convId=" + owner });
+  const source = "![clip](clips/demo.mp4)\n\n[original](clips/demo.mp4)";
+  const first = md(source, false, "project-owner");
+  assert.match(first, /convId=project-owner/);
+  assert.doesNotMatch(first, /muted=|autoplay=/i);
+  const second = md(source, false, "main");
+  assert.match(second, /convId=main/);
+  assert.doesNotMatch(second, /convId=project-owner/);
+  assert.equal(md(source, false, "project-owner"), first);
 });

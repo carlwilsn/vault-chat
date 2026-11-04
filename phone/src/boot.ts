@@ -103,7 +103,8 @@ export function boot(): void {
   // scanner, tables, nested lists, code, footnotes and sanitised HTML as the
   // viewer and the chat, rendered to HTML with KaTeX already applied.
   const esc = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-  const md = createPhoneMarkdown({ toHtml: domToHtml(), fileUrl });
+  const renderMarkdown = createPhoneMarkdown({ toHtml: domToHtml(), fileUrl });
+  const md = (text, streaming = false) => renderMarkdown(text, streaming, convId ?? undefined);
   // Nothing to typeset: KaTeX ran in the pipeline. (A DOM pass would turn an
   // escaped dollar pair back into math.) Kept so the call sites read as before.
   function typeset(_elm) {}

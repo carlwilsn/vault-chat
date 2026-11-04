@@ -76,7 +76,14 @@ describe("chat media follows its existing log owner, not the viewer or project n
     const q = new URLSearchParams({ path: rel, vault: B.name, convId: "project-physics" });
     const r = await fetch(`${base}/file?${q}`);
     expect(r.status).toBe(200);
+    expect(r.headers.get("content-type")).toBe("video/mp4");
+    expect(r.headers.get("accept-ranges")).toBe("bytes");
     expect(await r.text()).toBe("OWNER-A");
+    const part = await fetch(`${base}/file?${q}`, { headers: { range: "bytes=1-3" } });
+    expect(part.status).toBe(206);
+    expect(part.headers.get("content-range")).toBe("bytes 1-3/7");
+    expect(await part.text()).toBe("WNE");
+    expect((await fetch(`${base}/file?${q}`, { headers: { range: "bytes=20-" } })).status).toBe(416);
     expect((await fetch(`${base}/file?${q}`, { headers: { "x-forwarded-for": "100.64.0.1" } })).status).toBe(401);
     q.set("convId", "missing");
     expect((await fetch(`${base}/file?${q}`)).status).toBe(404);
