@@ -91,7 +91,8 @@ def main():
     p.add_argument('--nixpkgs', help='Optional local nixpkgs source for dependency provisioning')
     p.add_argument('--check-images', action='store_true', help='Paste owned PNG through the native clipboard; inspect outgoing bytes without inference')
     p.add_argument('--check-status-dot', action='store_true', help='Observe native pi running rows with a gated local zero-cost provider, then switch only the viewer vault')
-    p.add_argument('--check-video', type=Path, help='Owned synthetic VP8/Vorbis clip; append two private media-only test entries, never publish them')
+    p.add_argument('--check-video', type=Path, help='Owned synthetic VP8/Vorbis clip; append one private media-only test entry, never publish it')
+    p.add_argument('--native-video-only', action='store_true', help='Run native video independently; retain earlier phone evidence separately, never relabel it')
     p.add_argument('--inside-nix', action='store_true', help=argparse.SUPPRESS)
     a = p.parse_args()
     os.umask(0o077)
@@ -106,6 +107,8 @@ def main():
     tools = ['Xvfb', 'xdotool', 'openbox', 'dbus-daemon', 'WebKitWebDriver', 'node', 'npm', 'flock']
     if a.check_images:
         tools.append('xclip')
+    if a.check_video:
+        tools += ['pulseaudio', 'pactl', 'parec']
     if not a.app:
         tools += ['cargo', 'rustc', 'pkg-config', 'cc']
     import ctypes
@@ -118,7 +121,7 @@ def main():
         if a.inside_nix or not shutil.which('nix-shell'):
             p.error('Missing native dependencies: ' + ', '.join(t for t in tools if not shutil.which(t)) + ('' if indicator_ready else ' libayatana-appindicator3'))
         pkgs = a.nixpkgs or subprocess.check_output(['nix', 'eval', '--raw', 'nixpkgs#path'], text=True).strip()
-        expr = 'with import <nixpkgs> {}; mkShell { packages = [ nodejs_22 rustc cargo pkg-config gcc gtk3 webkitgtk_4_1 libsoup_3 alsa-lib openssl librsvg libayatana-appindicator xorg-server xdotool xclip openbox dbus python3 util-linux ]; LD_LIBRARY_PATH = lib.makeLibraryPath [ libayatana-appindicator ]; }'
+        expr = 'with import <nixpkgs> {}; mkShell { packages = [ nodejs_22 rustc cargo pkg-config gcc gtk3 webkitgtk_4_1 libsoup_3 alsa-lib openssl librsvg libayatana-appindicator xorg-server xdotool xclip openbox dbus python3 util-linux pulseaudio ]; LD_LIBRARY_PATH = lib.makeLibraryPath [ libayatana-appindicator ]; }'
         # exec, not an unattended job: one command owns its children to completion.
         import shlex
         os.execvp('nix-shell', ['nix-shell', '-I', 'nixpkgs=' + pkgs, '-E', expr, '--run',
@@ -153,7 +156,7 @@ def main():
     # Explicit tiny home, no inherited credentials, live display, D-Bus, or service env.
     keep = ('PATH', 'LD_LIBRARY_PATH', 'LIBRARY_PATH', 'PKG_CONFIG_PATH', 'PKG_CONFIG_LIBDIR',
             'NIX_LDFLAGS', 'NIX_CFLAGS_COMPILE', 'NIX_CC', 'NIX_BINTOOLS', 'SSL_CERT_FILE',
-            'FONTCONFIG_FILE', 'FONTCONFIG_PATH', 'XDG_DATA_DIRS')
+            'FONTCONFIG_FILE', 'FONTCONFIG_PATH', 'XDG_DATA_DIRS', 'GST_PLUGIN_SYSTEM_PATH_1_0', 'GST_PLUGIN_SCANNER_1_0', 'GST_DEBUG')
     env = {k: os.environ[k] for k in keep if k in os.environ}
     home = work / 'server-home'
     home.mkdir()
@@ -337,6 +340,7 @@ def main():
         observed = []
         photo_intents = []
         opened = []
+        video_fetches = []
         lock = threading.Lock()
 
         class Relay(http.server.BaseHTTPRequestHandler):
@@ -359,12 +363,22 @@ def main():
                     self.send_response(503); self.end_headers(); return
                 conn = http.client.HTTPConnection('127.0.0.1', server_port, timeout=40)
                 try:
-                    conn.request(self.command, self.path, body=data, headers={'Content-Type': 'application/json'})
+                    headers = {'Content-Type': 'application/json'}
+                    if self.headers.get('Range'):
+                        headers['Range'] = self.headers['Range']
+                    conn.request(self.command, self.path, body=data, headers=headers)
                     r = conn.getresponse()
                     body = r.read()
                     with lock:
                         if self.command == 'GET' and path == checkpoint_path and r.status == 200:
                             opened.append(True)
+                        query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+                        if a.check_video and path == '/file' and query.get('path') == ['video-fixtures/synthetic.webm']:
+                            expected = a.check_video.read_bytes()
+                            video_fetches.append({'status':r.status,'mime':r.getheader('Content-Type'),
+                                'authorizedConversation':query.get('convId') == [a.conversation],
+                                'exactFixtureBytes':body == expected if r.status == 200 else body == expected[100:200],
+                                'bytes':len(body),'range':r.getheader('Content-Range')})
                         if path == '/api/v1/laptop-perf' and self.command == 'POST':
                             batch = json.loads(data)
                             # Original native metadata, never invented capability/identity headers.
@@ -372,6 +386,9 @@ def main():
                     self.send_response(r.status)
                     self.send_header('Content-Type', r.getheader('Content-Type', 'application/json'))
                     self.send_header('Content-Length', str(len(body)))
+                    for header in ('Content-Range','Accept-Ranges'):
+                        if r.getheader(header):
+                            self.send_header(header, r.getheader(header))
                     self.end_headers(); self.wfile.write(body)
                 except (OSError, ValueError):
                     with contextlib.suppress(OSError):
@@ -407,6 +424,22 @@ def main():
         alsa = work / 'alsa.conf'
         alsa.write_text('pcm.!default { type null }\nctl.!default { type null }\n')
         env['ALSA_CONFIG_PATH'] = str(alsa)
+        if a.check_video:
+            # ALSA's null PCM has no real-time clock and can drain a 16 s clip
+            # instantly. A private Pulse null sink supplies timing, not sound.
+            # -n loads NO default device modules: no speakers or microphone.
+            runtime = work / 'audio-runtime'
+            runtime.mkdir(mode=0o700)
+            pulse_socket = runtime / 'pulse-native'
+            env.update(XDG_RUNTIME_DIR=str(runtime), PULSE_SERVER='unix:' + str(pulse_socket), PULSE_SINK='vc_inaudible')
+            spawn(['pulseaudio','-n','--daemonize=no','--use-pid-file=no','--exit-idle-time=-1',
+                   '--load=module-native-protocol-unix socket=' + str(pulse_socket) + ' auth-anonymous=1',
+                   '--load=module-null-sink sink_name=vc_inaudible'], 'private-null-audio')
+            wait_for(lambda: pulse_socket.exists(), 'private null audio socket')
+            sinks = json.loads(subprocess.check_output(['pactl','-f','json','list','sinks'], env=env, text=True))
+            if len(sinks) != 1 or sinks[0].get('name') != 'vc_inaudible' or sinks[0].get('driver') != 'module-null-sink.c':
+                raise RuntimeError('Native test audio is not exclusively the private null sink')
+            result['nativeAudioIsolation'] = {'sinks':1,'driver':'module-null-sink.c','defaultDeviceModules':False,'hardwareDevices':0}
         spawn(['openbox'], 'window-manager')
 
         def exercise(app, label):
@@ -429,8 +462,8 @@ def main():
 
             def js(code, *args):
                 r = request(driver + '/session/' + sid + '/execute/sync', {'script': code, 'args': list(args)})
-                if isinstance(r.get('value'), dict) and 'error' in r['value']:
-                    raise RuntimeError('Native DOM observation failed')
+                if isinstance(r.get('value'), dict) and isinstance(r['value'].get('error'), str):
+                    raise RuntimeError('Native DOM observation failed (' + r['value']['error'] + ')')
                 return r['value']
 
             def delete_session():
@@ -653,52 +686,98 @@ def main():
                         wait_for(lambda: exists('[data-perf-view="fullscreen"]'), 'full chat for native media controls')
                     selector = 'video[title="local video fixture"]'
                     wait_for(lambda: js('const v=document.querySelector(arguments[0]);return v?.readyState>=2 && v.videoWidth===320;', selector), 'actual native video metadata and decoded initial frame')
-                    # Instrument decoded audio before a ZERO gain output. No DOM play,
-                    # pause, seek, focus or source mutation: all control input is XTest.
-                    js(r"""const v=document.querySelector(arguments[0]);
-                      window.__videoRms=0;window.__videoFrames=0;
-                      document.addEventListener('pointerdown',function start(e){
-                        if(!e.isTrusted)return;
-                        const c=new AudioContext(),source=c.createMediaElementSource(v),a=c.createAnalyser(),g=c.createGain();
-                        g.gain.value=0;source.connect(a);a.connect(g);g.connect(c.destination);c.resume();
-                        window.__videoAudio=c;const b=new Float32Array(a.fftSize);
-                        setInterval(()=>{a.getFloatTimeDomainData(b);window.__videoRms=Math.max(window.__videoRms,Math.sqrt(b.reduce((s,x)=>s+x*x,0)/b.length));},30);
-                      },{once:true,capture:true});
+                    # Fullscreen can leave delayed media below the composer.
+                    # Bring the actual video into view using private-display wheel input.
+                    for _ in range(12):
+                        geo = js('const r=document.querySelector(arguments[0]).getBoundingClientRect(),c=document.querySelector(\'[data-perf-target="composer"]\').getBoundingClientRect();return {top:r.top,bottom:r.bottom,limit:c.top-40,x:(screenX+r.x+r.width/2)*devicePixelRatio,y:(screenY+Math.max(120,Math.min(r.top+40,c.top-80)))*devicePixelRatio};', selector)
+                        if geo['top'] >= 80 and geo['bottom'] < geo['limit']:
+                            break
+                        run('xdotool','mousemove',str(round(geo['x'])),str(round(geo['y'])),'click','--repeat','2','--delay','80','5' if geo['bottom']>=geo['limit'] else '4',env=childenv,stdout=subprocess.DEVNULL)
+                        time.sleep(.25)
+                    else:
+                        raise RuntimeError('Native video could not be reached with OS scrolling')
+                    result['nativeVideo'] = {'beforeInstrumentation': js('const v=document.querySelector(arguments[0]);return {muted:v.muted,defaultMuted:v.defaultMuted,mutedAttribute:v.hasAttribute("muted"),paused:v.paused,volume:v.volume};', selector)}
+                    # Capture only our virtual sink's monitor, not a microphone.
+                    # Samples are reduced in memory; no recording is written.
+                    import array
+                    audio = {'rms': 0, 'samples': 0}
+                    monitor = subprocess.Popen(['parec','--device=vc_inaudible.monitor','--format=float32le',
+                        '--rate=48000','--channels=1','--latency-msec=20','--raw'],
+                        env=childenv, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, start_new_session=True)
+                    children.append(monitor)
+                    def monitor_samples():
+                        while chunk := monitor.stdout.read(1920 * 4):
+                            data = array.array('f'); data.frombytes(chunk[:len(chunk)//4*4])
+                            if data:
+                                audio['rms'] = max(audio['rms'], (sum(x*x for x in data)/len(data))**.5)
+                                audio['samples'] += len(data)
+                    threading.Thread(target=monitor_samples, daemon=True).start()
+                    js(r"""const v=document.querySelector(arguments[0]);window.__videoFrames=0;
                       if(v.requestVideoFrameCallback){const f=()=>{window.__videoFrames++;v.requestVideoFrameCallback(f);};v.requestVideoFrameCallback(f);}
                       return true;""", selector)
                     def video_state():
-                        return js(r"""const v=document.querySelector(arguments[0]),c=document.createElement('canvas');c.width=16;c.height=9;
+                        state = js(r"""const v=document.querySelector(arguments[0]),c=document.createElement('canvas');c.width=16;c.height=9;
                           const x=c.getContext('2d');x.drawImage(v,0,0,16,9);const d=x.getImageData(0,0,16,9).data;
                           return {time:v.currentTime,duration:v.duration,paused:v.paused,muted:v.muted,autoplay:v.autoplay,
                             width:v.videoWidth,height:v.videoHeight,error:v.error?.code||null,
                             frames:v.getVideoPlaybackQuality?.().totalVideoFrames||v.webkitDecodedFrameCount||window.__videoFrames,
-                            hash:d.reduce((s,x,i)=>(s+x*(i+1))%1000000007,0),rms:window.__videoRms,
-                            audioState:window.__videoAudio?.state||null};""", selector)
+                            hash:d.reduce((s,x,i)=>(s+x*(i+1))%1000000007,0),defaultMuted:v.defaultMuted,mutedAttribute:v.hasAttribute('muted'),volume:v.volume,
+                            audioBytes:v.webkitAudioDecodedByteCount??null,audioTracks:v.audioTracks?.length??null};""", selector)
+                        return dict(state, rms=audio['rms'], audioSamples=audio['samples'])
                     initial = video_state()
-                    if initial['muted'] or initial['autoplay'] or not initial['paused']:
+                    result['nativeVideo']['initial'] = initial
+                    before = result['nativeVideo']['beforeInstrumentation']
+                    if before['muted'] or before['defaultMuted'] or before['mutedAttribute'] or initial['autoplay'] or not initial['paused']:
                         raise RuntimeError('Native video is force-muted or autoplaying before user input')
                     def video_point(fraction, bottom):
-                        xy=js('const r=document.querySelector(arguments[0]).getBoundingClientRect();return [(screenX+r.x+r.width*arguments[1])*devicePixelRatio,(screenY+r.bottom-arguments[2])*devicePixelRatio];', selector, fraction, bottom)
-                        run('xdotool','mousemove',str(round(xy[0])),str(round(xy[1])),'click','1',env=childenv,stdout=subprocess.DEVNULL)
+                        xy=js('const v=document.querySelector(arguments[0]),r=v.getBoundingClientRect(),x=r.x+r.width*arguments[1],y=r.bottom-arguments[2];return {x:(screenX+x)*devicePixelRatio,y:(screenY+y)*devicePixelRatio,visible:y>0&&y<innerHeight&&document.elementFromPoint(x,y)===v,rect:{x:r.x,y:r.y,w:r.width,h:r.height},viewport:innerHeight};', selector, fraction, bottom)
+                        result['nativeVideo']['lastControlGeometry'] = xy
+                        if not xy['visible']:
+                            raise RuntimeError('Native media control is offscreen or occluded')
+                        # Reveal auto-hidden UA controls before clicking. A click
+                        # while they are hidden only reveals them in WebKit.
+                        run('xdotool','mousemove',str(round(xy['x']+8)),str(round(xy['y']-45)),env=childenv,stdout=subprocess.DEVNULL)
+                        run('xdotool','mousemove',str(round(xy['x'])),str(round(xy['y'])),env=childenv,stdout=subprocess.DEVNULL)
+                        time.sleep(.4)
+                        run('xdotool','click','1',env=childenv,stdout=subprocess.DEVNULL)
                     # Standard native UA controls, never a fabricated page button.
                     video_point(.06, 16)
                     wait_for(lambda: not video_state()['paused'] and video_state()['time']>.25, 'native Play gesture starts media')
                     first=video_state();time.sleep(1);playing=video_state()
+                    result['nativeVideo'].update(first=first, playing=playing)
                     if playing['frames']<=first['frames'] or playing['hash']==first['hash'] or playing['rms']<.01:
                         raise RuntimeError('Native video frames or actual pre-output audio samples did not decode')
-                    video_point(.06,16)
-                    wait_for(lambda: video_state()['paused'], 'native Pause gesture')
-                    paused=video_state();time.sleep(.25)
+                    # Adwaita's bar starts 6 px inside the video, then a 16 px
+                    # left margin. The old x=6% hit the background, not Pause.
+                    video_point(.11,21)
+                    wait_for(lambda: video_state()['paused'], 'native Pause gesture', seconds=3)
+                    paused=video_state();result['nativeVideo']['paused']=paused;time.sleep(.25)
+                    if paused['time'] > playing['time'] + 1.5:
+                        raise RuntimeError('Native Pause did not respond promptly to actual input')
                     if abs(video_state()['time']-paused['time'])>.1: raise RuntimeError('Native Pause did not hold')
-                    video_point(.6,38)
+                    video_point(.6,16)
                     wait_for(lambda: abs(video_state()['time']-paused['time'])>1, 'native timeline Seek gesture')
-                    seeked=video_state()
+                    seeked=video_state();result['nativeVideo']['seeked']=seeked
+                    video_point(.11,21)
+                    wait_for(lambda: not video_state()['paused'] and video_state()['time']>seeked['time']+.2, 'native Resume gesture', seconds=3)
+                    resumed=video_state()
+                    video_point(.11,21)
+                    wait_for(lambda: video_state()['paused'], 'native final Pause gesture', seconds=3)
                     bad=js('const v=document.querySelector(\'video[title="unsupported local fixture"]\');const a=v?.parentElement.querySelector(\'[data-el="video-fallback"]\');return {code:v?.error?.code||null,download:!!a?.hasAttribute("download"),link:!!a?.getAttribute("href")};')
                     if bad['code'] not in (3,4) or not bad['download'] or not bad['link']:
                         raise RuntimeError('Unsupported native format has no honest download fallback')
-                    video_check={'initial':initial,'playing':playing,'paused':paused,'seeked':seeked,'unsupported':bad,
-                      'audioOutput':'AudioContext analyser -> gain=0; ALSA null/Pulse nonexistent; no speakers',
-                      'input':'native UA controls via XTest; no play/pause/currentTime injection'}
+                    query = urllib.parse.urlencode({'path':'video-fixtures/synthetic.webm','convId':a.conversation})
+                    req = urllib.request.Request('http://127.0.0.1:' + str(relay.server_port) + '/file?' + query, headers={'Range':'bytes=100-199'})
+                    with urllib.request.urlopen(req) as ranged:
+                        if ranged.status != 206 or ranged.headers.get('Content-Type') != 'video/webm' or ranged.read() != a.check_video.read_bytes()[100:200]:
+                            raise RuntimeError('Native media backend range/MIME/bytes failed')
+                    with lock:
+                        fetches = list(video_fetches)
+                    if not any(f['status']==200 and f['exactFixtureBytes'] and f['authorizedConversation'] for f in fetches):
+                        raise RuntimeError('Native media did not fetch the exact owned bytes through its conversation-authorized backend')
+                    video_check={'fetches':fetches,'transport':'Native Rust full fetch -> retained blob; backend 206 checked separately, not claimed as a browser range request','beforeInstrumentation':before,'initial':initial,'first':first,'playing':playing,'paused':paused,'seeked':seeked,'resumed':resumed,'unsupported':bad,
+                      'audioOutput':'private clocked Pulse null sink only; RMS from its virtual monitor in memory; no speakers/mic/recording',
+                      'input':'native Adwaita UA controls via XTest; no play/pause/currentTime injection'}
                 image_check = None
                 if a.check_images:
                     if not exists('[data-perf-target="composer"]'):
@@ -839,6 +918,7 @@ def main():
                     result['nativeFailureDom'] = js('''return {
                       attachError:document.querySelector('[data-el="attach-error"]')?.textContent,paste:window.__imagePaste,active:document.activeElement?.tagName,images:[...document.images].map(i=>({w:i.naturalWidth,h:i.naturalHeight,scheme:i.src.split(':')[0],len:i.src.length})),
                       splash:!!document.getElementById('vault-splash'),
+                      videoGeometry:[...document.querySelectorAll('video')].map(v=>{const r=v.getBoundingClientRect();return {y:r.y,x:r.x,h:r.height,w:r.width,paused:v.paused,time:v.currentTime};}),
                       composer:!!document.querySelector('[data-perf-target="composer"]'),
                       composerDisabled:document.querySelector('[data-perf-target="composer"]')?.disabled,
                       exactThread:localStorage.getItem('vault_chat_active_conv')===arguments[0],
@@ -854,17 +934,7 @@ def main():
                 with contextlib.suppress(Exception):
                     delete_session()
 
-        if a.before_app:
-            result['runs']['before'] = exercise(a.before_app, 'before')
-        result['runs']['after'] = exercise(a.app, 'after')
-        if a.check_plans or a.check_images or a.check_empty_chat or a.check_video:
-            again = request(base + checkpoint_path)
-            again = again.get('picture', again)
-            preserved = again.get('items', []) == items
-            result['thread']['originalItemsUnchangedAfterClear'] = preserved
-            if not preserved:
-                raise RuntimeError('Local Clear changed the original conversation items')
-        if a.check_video:
+        if a.check_video and not a.native_video_only:
             # Same compiled backend and same original 3819-item prefix as native.
             phone_script = r"""
               import assert from 'node:assert/strict';import {writeFileSync} from 'node:fs';
@@ -888,14 +958,14 @@ def main():
                 results.readyMs=Date.now()-begin;
                 await v.evaluate(v=>{
                   window.__rms=0;window.__frames=0;
-                  document.addEventListener('pointerdown',function(e){if(!e.isTrusted)return;
-                    const c=new AudioContext(),s=c.createMediaElementSource(v),a=c.createAnalyser(),g=c.createGain();g.gain.value=0;
-                    s.connect(a);a.connect(g);g.connect(c.destination);c.resume();window.__audio=c;
-                    const b=new Float32Array(a.fftSize);setInterval(()=>{a.getFloatTimeDomainData(b);window.__rms=Math.max(__rms,Math.sqrt(b.reduce((s,x)=>s+x*x,0)/b.length));},30);
-                  },{once:true,capture:true});
+                  const c=new AudioContext(),s=c.createMediaElementSource(v),a=c.createAnalyser(),g=c.createGain();g.gain.value=0;
+                  s.connect(a);a.connect(g);g.connect(c.destination);window.__audio=c;
+                  const b=new Float32Array(a.fftSize);setInterval(()=>{a.getFloatTimeDomainData(b);window.__rms=Math.max(__rms,Math.sqrt(b.reduce((s,x)=>s+x*x,0)/b.length));},30);
+                  document.addEventListener('pointerdown',e=>{if(e.isTrusted)c.resume();},{once:true,capture:true});
                   if(v.requestVideoFrameCallback){const f=()=>{__frames++;v.requestVideoFrameCallback(f);};v.requestVideoFrameCallback(f);}
                 });
-                const state=()=>v.evaluate(v=>{const c=document.createElement('canvas');c.width=16;c.height=9;const x=c.getContext('2d');x.drawImage(v,0,0,16,9);const d=x.getImageData(0,0,16,9).data;return {time:v.currentTime,duration:v.duration,paused:v.paused,muted:v.muted,autoplay:v.autoplay,width:v.videoWidth,height:v.videoHeight,error:v.error?.code||null,frames:v.getVideoPlaybackQuality().totalVideoFrames,hash:d.reduce((s,x,i)=>(s+x*(i+1))%1000000007,0),rms:__rms,audioState:__audio?.state||null};});
+                const state=()=>v.evaluate(v=>{const c=document.createElement('canvas');c.width=16;c.height=9;const x=c.getContext('2d');x.drawImage(v,0,0,16,9);const d=x.getImageData(0,0,16,9).data;return {time:v.currentTime,duration:v.duration,paused:v.paused,muted:v.muted,autoplay:v.autoplay,width:v.videoWidth,height:v.videoHeight,error:v.error?.code||null,frames:v.getVideoPlaybackQuality().totalVideoFrames,hash:d.reduce((s,x,i)=>(s+x*(i+1))%1000000007,0),rms:__rms,audioState:window.__audio?.state||null};});
+                await p.locator('#input').click();
                 results.initial=await state();assert(results.initial.paused&&!results.initial.muted&&!results.initial.autoplay);
                 // Read native UA shadow geometry; all input is actual mouse/touch.
                 const cdp=await c.newCDPSession(p);await cdp.send('DOM.enable');
@@ -912,7 +982,7 @@ def main():
                 let box=await v.boundingBox();if(box.y+box.height>740){await p.mouse.move(190,450);await p.mouse.wheel(0,box.y+box.height-700);await p.waitForTimeout(200);}
                 await control('-webkit-media-controls-play-button');
                 await p.waitForFunction(()=>{const v=document.querySelector('video[title="local video fixture"]');return !v.paused&&v.currentTime>.25;});
-                const first=await state();await p.waitForTimeout(1000);results.playing=await state();
+                const first=await state();results.first=first;await p.waitForTimeout(1000);results.playing=await state();
                 assert(results.playing.frames>first.frames&&results.playing.hash!==first.hash&&results.playing.rms>.01,'Phone must actually decode advancing picture AND audio samples');
                 await control('-webkit-media-controls-play-button');await p.waitForFunction(()=>document.querySelector('video[title="local video fixture"]').paused);
                 results.paused=await state();await p.waitForTimeout(250);assert(Math.abs((await state()).time-results.paused.time)<.1);
@@ -936,8 +1006,18 @@ def main():
                 result['phoneVideo'] = json.loads(phone_file.read_text())
             if child.returncode:
                 raise RuntimeError('Production phone video check failed; see retained scalar metrics')
+        if a.before_app:
+            result['runs']['before'] = exercise(a.before_app, 'before')
+        result['runs']['after'] = exercise(a.app, 'after')
+        if a.check_plans or a.check_images or a.check_empty_chat or a.check_video:
+            again = request(base + checkpoint_path)
+            again = again.get('picture', again)
+            preserved = again.get('items', []) == items
+            result['thread']['originalItemsUnchangedAfterClear'] = preserved
+            if not preserved:
+                raise RuntimeError('Local Clear changed the original conversation items')
         result['works'] = all(r['works'] for r in result['runs'].values())
-        if a.check_video:
+        if a.check_video and not a.native_video_only:
             result['works'] = result['works'] and result.get('phoneVideo', {}).get('works', False)
     except Exception as e:
         # No raw driver response/DOM/credentials/text/path identifiers in telemetry.
