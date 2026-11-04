@@ -25,7 +25,7 @@
 // and `box.feed` for the poll itself (connect, drop, reset, resync, cursor).
 import { LAPTOP_IDLE_MS, startAttentionBeat, type AttentionBeat } from "./attentionBeat";
 import { invoke } from "@tauri-apps/api/core";
-import { voiceImageMime } from "./voiceImages";
+import { imageMime } from "./imageMime";
 import { vlog } from "./debugLog";
 import { projectForSend } from "./projects";
 import { useStore, type ChatAttachment, type ChatMessage, type FileUpload, type LiveTool, type TodoItem } from "./store";
@@ -874,7 +874,7 @@ export async function boxImageAttachments(atts: ChatAttachment[] | undefined, va
     if (!a.capturedFilePath) throw new Error("The attached image has no pixels or saved capture.");
     const p = a.capturedFilePath;
     const path = /^([a-zA-Z]:[\\/]|[\\/])/.test(p) ? p : `${vault.replace(/[\\/]$/, "")}/${p}`;
-    const mime = voiceImageMime(path);
+    const mime = imageMime(path);
     if (!mime) throw new Error("The saved capture is not a supported image.");
     const bytes = await invoke<number[]>("read_binary_file", { path });
     if (!bytes.length || bytes.length > 15 * 1024 * 1024) throw new Error("The saved capture is empty or too large.");
@@ -966,7 +966,7 @@ export async function boxSend(opts: { text: string; contextPreamble?: string; at
   for (const u of uploads) {
     // Imported image files (including a pasted path) use pi's image input,
     // not only a text attachment note. PDFs/markdown keep the file path flow.
-    const mime = voiceImageMime(u.name);
+    const mime = imageMime(u.name);
     if (mime && images.length < 8) {
       images.push({ name: u.name, mime, dataBase64: u.dataBase64 });
       continue;

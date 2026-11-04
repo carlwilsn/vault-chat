@@ -10,7 +10,7 @@ import { globalCutover } from '../convlog/globalCutover';
 // (`vc-note`), written by pi while it has the session. Every client folds the
 // feed with one reducer. vault-chat's tools reach pi through its extension as
 // host calls.
-import { voicePath } from "../voice";
+import { vaultPath } from "../vaultPath";
 import { conversationRoot } from "../context/config";
 import { ownerVault } from "../convlog/log";
 import { appendFileSync, existsSync, readFileSync, statSync, mkdirSync, writeFileSync } from "node:fs";
@@ -1146,7 +1146,7 @@ export class Engine {
       if (!rel || /^(?:[a-zA-Z]:|\/)/.test(rel) || rel.split("/").includes("..") ||
           (rel.split("/").includes(".vault-chat") && !/^\.vault-chat\/(captures|attachments)\//.test(rel))) { empty++; continue; }
       try {
-        const { abs } = voicePath(this.d.vault, rel, "read");
+        const { abs } = vaultPath(this.d.vault, rel, "read");
         const st = statSync(abs);
         if (!st.isFile() || !st.size || st.size > 15 * 1024 * 1024 || !/\.(png|jpe?g|gif|webp)$/i.test(rel)) { empty++; continue; }
         paths.push(abs);
