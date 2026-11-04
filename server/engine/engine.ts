@@ -1019,6 +1019,9 @@ export class Engine {
     // Which surface he is on (one conversation, several surfaces at once): the agent answers and shows things there.
     const surface = body.source === "voice" ? `a voice call${body.client ? ` (${String(body.client).slice(0, 20)})` : ""}` : typeof body.client === "string" && body.client ? `his ${body.client.slice(0, 20)}` : null;
     if (surface) context = [`[Carl, on ${surface}]`, context].filter(Boolean).join("\n");
+    if (body.source === "voice" && !body.continues && l?.started && !l.finished) {
+      context = [context, "[This spoken turn interrupts the previous foreground step via Send now. It may have partially run; do not claim it finished. Background workers continue and report normally. Check unfinished work before resuming it.]"].filter(Boolean).join("\n");
+    }
     const sent = context ? `${context}\n\n${shown}` : shown;
     // Capture the trusted HTTP viewer scope at receipt, not when a queued ask
     // eventually runs. This is historical request metadata, never a mutable
@@ -1040,6 +1043,14 @@ export class Engine {
       // A turn waiting on a `subagent` call would take him up only when its children end (minutes): they move to
       // the background, the call answers at once, and his message is taken up now; each report comes as its own turn.
       this.detachWaiting(id, l.threadId);
+      // A new spoken turn is Send now, not a cross-surface follow-up or a
+      // steer stuck behind a foreground tool. Reuse that native interrupt path:
+      // the SAME pi session keeps its history and pending inputs; detached and
+      // Delegate workers keep running and report through their existing path.
+      // A continuation of a split utterance still refines the current turn.
+      if (body.source === "voice" && !body.continues && l.started) {
+        return this.sendNow(id, clientId);
+      }
       try {
         if (kind === "queue") await this.d.backend.followUp(l.threadId, { texts: [sent], context: hostContext, images: paths });
         else await this.d.backend.steer(l.threadId, l.turnId, { texts: [sent], context: hostContext, images: paths });

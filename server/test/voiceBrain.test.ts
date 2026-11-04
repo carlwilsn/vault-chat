@@ -214,13 +214,14 @@ describe("voice with one brain", () => {
     expect(logged.at(-1)).toMatchObject({ tool: "read", spokeFirst: false });
   });
 
-  it("talking over an inline read never stops the work: his words join the running turn, whether or not it spoke first", async () => {
+  it("the adapter does not cancel work on a silent pipeline cut (engine delivery arms the current reply)", async () => {
     const c = await call();
     const req = (t: string, signal?: AbortSignal) => fetch(`${base}/v1/chat/completions`, { method: "POST", headers: { authorization: `Bearer ${c.token}` }, body: JSON.stringify({ messages: [{ role: "user", content: t }] }), signal });
     eng.running = true;
     // It said its line, then reached for a read: the response is over, the read runs.
     const p1 = req("read me the first theorem");
     await until(() => eng.messages.length === 1);
+    eng.emit({ type: "vc_turn_start", kind: "user", origin: "voice" });
     eng.emit(delta("Let me look at the workbook. "));
     eng.emit({ type: "message_end", message: { role: "assistant" } });
     eng.emit({ type: "tool_execution_start", toolName: "read" });
@@ -302,6 +303,7 @@ describe("voice with one brain", () => {
     await until(() => eng.messages.length === 3);
     expect(eng.messages[1].unqueue).toBe(eng.messages[0].clientMsgId);
     expect(eng.messages[2].text).toBe("Make the component graph. Topologically sort it.");
+    eng.emit({ type: "vc_delivered", clientId: eng.messages[2].clientMsgId });
     eng.emit({ type: "vc_turn_end", status: "completed" });
     await p2.then((r) => sse(r)).catch(() => null);
   });
@@ -479,6 +481,7 @@ describe("voice with one brain", () => {
     const res = await fetch(`${base}/v1/chat/completions`, { method: "POST", headers: { authorization: `Bearer ${c.token}` }, body: JSON.stringify({ messages: [{ role: "user", content: "explain entropy" }] }), signal: ac.signal });
     const reader = res.body!.getReader();
     await until(() => eng.messages.length);
+    eng.emit({ type: "vc_turn_start", kind: "user", origin: "voice" });
     eng.emit(delta("Entropy measures how many ways a system can be arranged. "));
     eng.emit(delta("It grows when heat flows in."));
     // A message is said once it ended without a tool call (only the reply is spoken, never commentary).
@@ -686,4 +689,29 @@ it("a completed opener's detached hold never speaks into a replacement call", as
   await call(); // The old sink is already detached from c.sink, but its last-dispatch guard still owns it.
   const chunks = await response.then(sse);
   expect(chunks.join("\n")).not.toContain("Detached old opener");
+});
+
+// The end of the busy turn is NOT the end of the new request. In particular,
+// abort-generated text and its vc_turn_end must not answer/close a current sink.
+it("Send now suppresses the old turn's end until pi starts the current voice input", async () => {
+  const c = await call();
+  eng.running = true;
+  eng.message = async (b) => {
+    eng.messages.push(b);
+    eng.emit(delta("Old interrupted reply. "));
+    eng.emit({ type: "message_end", message: { role: "assistant" } });
+    eng.emit({ type: "vc_turn_end", status: "interrupted" });
+    return { ok: true, now: b.clientMsgId };
+  };
+  const res = await fetch(`${base}/v1/chat/completions`, { method: "POST", headers: { authorization: `Bearer ${c.token}` }, body: JSON.stringify({ messages: [{ role: "user", content: "What is the current answer?" }] }) });
+  await until(() => eng.messages.length === 1);
+  expect(eng.messages[0].source).toBe("voice");
+  eng.emit({ type: "vc_turn_start", kind: "user", origin: "voice" });
+  eng.emit(delta("Current answer. "));
+  eng.emit({ type: "message_end", message: { role: "assistant" } });
+  eng.emit({ type: "vc_turn_end", status: "completed" });
+  const raw = (await sse(res)).join("\n");
+  expect(raw).toContain("Current answer.");
+  expect(raw).not.toContain("Old interrupted reply");
+  expect(raw.split("[DONE]")).toHaveLength(2);
 });

@@ -86,6 +86,7 @@ def main():
     p.add_argument('--check-empty-chat', action='store_true', help='Read the actual empty chat after local Clear/reopen; never generate an assistant answer')
     p.add_argument('--check-voice-only', action='store_true', help='Verify the one voice control and no Classic/engine selector in native settings; microphone stays off')
     p.add_argument('--check-speech-freshness', action='store_true', help='Local fake provider + genuine Pi/New dispatch collector; native typed controls, no media')
+    p.add_argument('--check-voice-busy', action='store_true', help='With speech freshness, hold a real foreground tool, send a New voice question and preserve its Delegate worker; no microphone/audio')
     p.add_argument('--voice-python', type=Path, help='Existing pinned Pipecat interpreter for the inert text collector')
     p.add_argument('--pi-dir', type=Path, help='Read-only genuine pi 1.1 prefix for the unpaid voice fixture')
     p.add_argument('--voice-conflict', action='store_true', help='Hold an owned inert listener; prove real startup refusal and mic-OFF health UI')
@@ -113,6 +114,8 @@ def main():
         p.error('Use an original main/project thread (older read-only chats cannot measure composer input)')
     if a.check_voice_only and not a.voice_conflict:
         p.error('--check-voice-only requires --voice-conflict for genuine startup Health')
+    if a.check_voice_busy and not a.check_speech_freshness:
+        p.error('--check-voice-busy requires --check-speech-freshness')
     if a.min_messages < 1:
         p.error('--min-messages must be positive')
     tools = ['Xvfb', 'xdotool', 'openbox', 'dbus-daemon', 'WebKitWebDriver', 'node', 'npm', 'flock']
@@ -345,13 +348,27 @@ def main():
                 raise RuntimeError('Freshness requires pinned local pi and Pipecat runtime')
             # The mature fake provider is the ONLY inference transport; not a fake engine/backend/IPC.
             provider_url = work / 'provider-url'
-            provider = """import {fakeChat,lastUser} from './server/test/fakeChat.ts';
+            provider = """import {fakeChat,lastUser,lastToolResult} from './server/test/fakeChat.ts';
               import {writeFileSync} from 'node:fs';
-              const p=await fakeChat();
-              let owned=0; p.respond=(b)=>lastUser(b).includes('Owned speech freshness ')
-                ? {text:'Owned speech freshness result '+(++owned)+'.',noCost:true} : {status:503,body:'Unowned inference refused'};
+              const p=await fakeChat(); let owned=0;
+              p.respond=(b)=>{
+                const u=lastUser(b), first=b.messages.find(m=>m.role==='user');
+                const task=typeof first?.content==='string'?first.content:(first?.content??[]).map(c=>c.text??'').join(' ');
+                if(task.startsWith('Task:')&&task.includes('OWNED-NATIVE-BUSY'))return lastToolResult(b)===null
+                  ? {call:{name:'bash',args:{command:'sleep 8; echo preserved > '+process.argv[2]+'/busy-child-result'}},noCost:true}
+                  : {text:'Owned native busy work finished.',noCost:true};
+                if(u.includes('Owned native busy question?'))return {text:'Owned busy current answer.',noCost:true};
+                if(u.startsWith('Delegated work ')&&u.includes('Owned native busy'))return {text:'Owned busy work report received.',noCost:true};
+                if(u.includes('Owned speech freshness busy foreground')){
+                  const n=b.messages.filter(m=>m.role==='tool').length;
+                  if(!n)return {call:{name:'Delegate',args:{title:'Owned native busy work',task:'OWNED-NATIVE-BUSY preserve local work'}},noCost:true};
+                  if(n===1)return {call:{name:'bash',args:{command:'echo started > '+process.argv[2]+'/busy-foreground; sleep 8; echo done'}},noCost:true};
+                  return {text:'Old busy foreground reply.',noCost:true};
+                }
+                return u.includes('Owned speech freshness ')?{text:'Owned speech freshness result '+(++owned)+'.',noCost:true}:{status:503,body:'Unowned inference refused'};
+              };
               writeFileSync(process.argv[1],p.url);"""
-            spawn(['node', '--import', 'tsx', '--input-type=module', '-e', provider, str(provider_url)], 'local-provider', cwd=ROOT)
+            spawn(['node', '--import', 'tsx', '--input-type=module', '-e', provider, str(provider_url), str(work)], 'local-provider', cwd=ROOT)
             wait_for(provider_url.exists, 'local-only provider')
             local_provider = provider_url.read_text()
             network = work / 'local-only.mjs'
@@ -919,6 +936,44 @@ def main():
                     video_check={'fetches':fetches,'transport':'Native Rust JSON/base64 fetch -> retained blob; backend binary /file 206 checked separately, not claimed as a browser range request','beforeInstrumentation':before,'initial':initial,'first':first,'playing':playing,'paused':paused,'seeked':seeked,'resumed':resumed,'unsupported':bad,
                       'audioOutput':'private clocked Pulse null sink only; RMS from its virtual monitor in memory; no speakers/mic/recording',
                       'input':'native UA Play/timeline clicks and media context-menu Pause/Resume via XTest; no play/pause/currentTime injection'}
+                if a.check_voice_busy:
+                    # Real native typed input holds the actual owning pi in a bash
+                    # tool, with an existing Delegate worker running independently.
+                    click('[data-perf-target="composer"]')
+                    run('xdotool', 'type', '--clearmodifiers', '--delay', '40', 'Owned speech freshness busy foreground', env=childenv, stdout=subprocess.DEVNULL)
+                    key('Return')
+                    wait_for(lambda: (work / 'busy-foreground').exists(), 'actual pi foreground tool busy')
+                    busy_before = request(base + checkpoint_path)['picture']
+                    busy_call = request(base + '/api/v1/brain/call', {'convId': a.conversation, 'device': 'phone'})
+                    began_busy = time.monotonic()
+                    completion = urllib.request.Request(base + '/v1/chat/completions',
+                        data=json.dumps({'stream': True, 'messages': [{'role': 'user', 'content': 'Owned native busy question?'}]}).encode(),
+                        headers={'Content-Type':'application/json', 'Authorization':'Bearer ' + busy_call['token']})
+                    busy_text = ''; first_busy = None; done_busy = 0
+                    with urllib.request.urlopen(completion, timeout=5) as response:
+                        for line in response:
+                            line = line.decode().strip()
+                            if line == 'data: [DONE]': done_busy += 1
+                            elif line.startswith('data: '):
+                                piece = json.loads(line[6:]).get('choices', [{}])[0].get('delta', {}).get('content', '')
+                                if piece:
+                                    if first_busy is None: first_busy = (time.monotonic() - began_busy) * 1000
+                                    busy_text += piece
+                    if busy_text != 'Owned busy current answer.' or done_busy != 1 or first_busy is None or first_busy >= 1500:
+                        raise RuntimeError('Busy voice did not answer promptly/exactly once: ' + repr((busy_text, first_busy, done_busy)))
+                    if (work / 'busy-child-result').exists():
+                        raise RuntimeError('Voice waited until background work finished')
+                    wait_for(lambda: (work / 'busy-child-result').exists(), 'Delegate work safely preserved')
+                    wait_for(lambda: 'Owned busy work report received.' in json.dumps(request(base + checkpoint_path)), 'preserved work report on owner')
+                    busy_after = request(base + checkpoint_path)['picture']
+                    if busy_before['meta']['threadPath'] != busy_after['meta']['threadPath']:
+                        raise RuntimeError('Busy voice replaced the conversation session')
+                    request(base + '/api/v1/brain/call/' + busy_call['callId'] + '/end', {}, 'POST')
+                    result['voiceBusy'] = {'firstResponseMs': round(first_busy, 3), 'currentText': busy_text,
+                        'doneCount': done_busy, 'currentDrops': 0, 'staleReplies': 0, 'sameNativeSession': True,
+                        'preservedWork': (work / 'busy-child-result').read_text().strip(),
+                        'foregroundPolicy': 'existing Send now abort; interrupted tool is not claimed complete',
+                        'boundary': 'real New completion SSE; speech-channel final dispatch checked separately below; no TTS/audio/mic'}
                 if a.check_speech_freshness:
                     # The existing selected project receives ONLY owned appended fixture events.
                     # Its original human-history prefix remains immutable; do not invent/register a project.

@@ -449,6 +449,13 @@ function onPi(d: BrainDeps, c: Call, ev: any): void {
     // the pipeline's response ends here, so the voice is free; what the turn says later goes to the channel.
     if (c.sink && (c.sink.sent > 0 || c.sink.queued?.length)) finishSink(c, c.sink);
   } else if (ev?.type === "vc_turn_end") {
+    // Send now ends the OLD turn before pi starts/delivers the new voice
+    // input. That end must neither close its completion nor mark it answered.
+    if (!c.armed) {
+      c.msg = null;
+      c.speak.flush();
+      return;
+    }
     if (ev.status && ev.status !== "completed") revokeSpeech(c);
     const m = c.msg;
     c.msg = null;
@@ -680,7 +687,7 @@ async function completions(d: BrainDeps, req: IncomingMessage, res: ServerRespon
   }
   revokeSpeech(c);
   s.utt = c.utt;
-  if (wentOn && c.engine.isRunning(c.convId)) c.armed = false;
+  if (c.engine.isRunning(c.convId)) c.armed = false;
   // The first half is still waiting to be delivered as a steer: take it back and send the whole line as he said it
   // (pi answered each half as its own message: "Make the component graph." / "Topologically sort it." / …).
   let said = text;
@@ -706,8 +713,11 @@ async function completions(d: BrainDeps, req: IncomingMessage, res: ServerRespon
   else if (SPOIL_OK_RE.test(text)) c.noSpoil = false;
   if (c.noSpoil) notes.push(NO_SPOIL_NOTE);
   if (isThinkingAloud(said)) notes.push(THINKING_ALOUD_NOTE);
-  const out = await c.engine.message({ convId: c.convId, text: said, ...(notes.length ? { context: notes.join("\n") } : {}), via: "voice", client: c.device, clientMsgId: `v-${s.id}`, ...(wentOn ? { continues: true } : {}) }).catch((e): Record<string, unknown> => ({ error: (e as Error).message }));
-  if (!out?.steered) c.armed = true;
+  const out = await c.engine.message({ convId: c.convId, text: said, source: "voice", ...(notes.length ? { context: notes.join("\n") } : {}), via: "voice", client: c.device, clientMsgId: `v-${s.id}`, ...(wentOn ? { continues: true } : {}) }).catch((e): Record<string, unknown> => ({ error: (e as Error).message }));
+  // A newer completion/call may have overtaken native interrupt/acceptance.
+  // The old input remains in pi's history, but cannot mutate the new transport.
+  if (calls.get(c.id) !== c || c.sink !== s || s.done) return;
+  if (!out?.steered && !out?.now) c.armed = true;
   c.steer = out?.steered ? { clientId: `v-${s.id}`, text: said } : null;
   log(d, { ev: "turn.start", call: c.id, req: s.id, chars: text.length, steered: !!out?.steered, msgMs: Date.now() - t0, ...(out?.error ? { error: String(out.error).slice(0, 200) } : {}) });
   if (!out || out.error) {

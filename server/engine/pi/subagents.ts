@@ -196,7 +196,9 @@ export class Subagents {
         release();
         return c;
       }
-      const cancel = () => { void this.stop(c, "stopped"); };
+      // Once detached, this is background work, not the parent's foreground
+      // tool anymore. Native abort of that parent must not cancel the child.
+      const cancel = () => { if (!c.background) void this.stop(c, "stopped"); };
       signal?.addEventListener("abort", cancel, { once: true });
       if (signal?.aborted) cancel();
       onStarted?.(c.id);
