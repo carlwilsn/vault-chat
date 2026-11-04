@@ -36,6 +36,7 @@ for (const type of ["main", "project"] as const) {
         const hasMenu = type === "project" && (actions === "menu" || actions === "both");
         assert.equal(html.includes('data-el="project-notes"'), hasNotes);
         assert.equal(html.includes('data-el="project-menu"'), hasMenu);
+        assert.equal((html.match(/min-h-\[28px\] min-w-\[28px\]/g) ?? []).length, Number(hasNotes) + Number(hasMenu));
         assert.equal((html.match(/group-focus-within:opacity-100/g) ?? []).length, Number(hasNotes) + Number(hasMenu));
       });
     }

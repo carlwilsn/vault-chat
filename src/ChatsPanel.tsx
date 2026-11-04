@@ -320,7 +320,7 @@ export function ThreadRow({
         <button
           onClick={onNotes}
           data-el="project-notes"
-          className="opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity h-7 w-7 mr-2 flex items-center justify-center rounded text-muted-foreground hover:bg-accent/60 hover:text-foreground shrink-0"
+          className="opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity h-7 w-7 min-h-[28px] min-w-[28px] mr-2 flex items-center justify-center rounded text-muted-foreground hover:bg-accent/60 hover:text-foreground shrink-0"
           title="Project notes"
         >
           <FileText className="h-3 w-3" />
@@ -332,7 +332,7 @@ export function ThreadRow({
             onClick={() => setMenu((m) => !m)}
             data-el="project-menu"
             className={cn(
-              "transition-opacity h-7 w-7 flex items-center justify-center rounded text-muted-foreground hover:bg-accent/60 hover:text-foreground",
+              "transition-opacity h-7 w-7 min-h-[28px] min-w-[28px] flex items-center justify-center rounded text-muted-foreground hover:bg-accent/60 hover:text-foreground",
               menu ? "opacity-100 bg-accent/60" : "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100",
             )}
             title="More"

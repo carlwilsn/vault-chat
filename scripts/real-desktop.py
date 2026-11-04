@@ -90,6 +90,7 @@ def main():
     p.add_argument('--work', type=Path, help='New private work directory; retained for ordinary build logs')
     p.add_argument('--nixpkgs', help='Optional local nixpkgs source for dependency provisioning')
     p.add_argument('--check-images', action='store_true', help='Paste owned PNG through the native clipboard; inspect outgoing bytes without inference')
+    p.add_argument('--check-status-dot', action='store_true', help='Observe native pi running rows with a gated local zero-cost provider, then switch only the viewer vault')
     p.add_argument('--inside-nix', action='store_true', help=argparse.SUPPRESS)
     a = p.parse_args()
     os.umask(0o077)
@@ -137,7 +138,8 @@ def main():
     events = source / '.vault-chat' / 'events'
     if not events.is_dir() or events.is_symlink():
         p.error('Selected copy has no regular .vault-chat/events directory')
-    vault = work / 'vault-chat'
+    master = work / 'master'
+    vault = master / 'vaults/vault-chat' if a.check_status_dot else work / 'vault-chat'
     dest = vault / '.vault-chat' / 'events'
     dest.mkdir(parents=True)
     for f in events.iterdir():
@@ -236,6 +238,39 @@ def main():
                           VC_SECRETS_DIR=str(home / 'empty-secrets'), VC_TOKEN_FILE=str(home / 'new-token'),
                           VC_LOCALSTORAGE=str(home / 'storage'), VC_PUSH_SUBS=str(home / 'push'),
                           VC_VOICE_PIPELINE='off', VC_VOICE_PORT=str(voice.server_port), VC_VOICE_PIPELINE_PORT=str(voice.server_port))
+        if a.check_status_dot:
+            # Only a local unpaid provider; no credentials or external inference.
+            released = threading.Event()
+            released.set()  # Let any original interrupted turn finish locally before measuring.
+            provider_calls = []
+            class LocalProvider(http.server.BaseHTTPRequestHandler):
+                def do_GET(self):
+                    body = json.dumps({'data': [{'id': 'test/fake-model', 'context_length': 400000, 'architecture': {'input_modalities': ['text']}, 'pricing': {}}]}).encode()
+                    self.send_response(200); self.end_headers(); self.wfile.write(body)
+                def do_POST(self):
+                    body = json.loads(self.rfile.read(int(self.headers.get('Content-Length', '0'))))
+                    if not self.path.endswith('/chat/completions') or not body.get('stream'):
+                        self.send_response(503); self.end_headers(); return
+                    provider_calls.append(True)  # Never record original thread text.
+                    if not released.wait(90):
+                        self.send_response(503); self.end_headers(); return
+                    self.send_response(200); self.send_header('Content-Type', 'text/event-stream'); self.end_headers()
+                    for delta, reason in [({'role': 'assistant', 'content': 'Local status fixture complete.'}, None), ({}, 'stop')]:
+                        chunk = {'id': 'local-status', 'object': 'chat.completion.chunk', 'created': int(time.time()), 'model': body['model'], 'choices': [{'index': 0, 'delta': delta, 'finish_reason': reason}]}
+                        self.wfile.write(('data: ' + json.dumps(chunk) + '\n\n').encode())
+                    self.wfile.write(b'data: [DONE]\n\n')
+                def log_message(self, *_): pass
+            provider = http.server.ThreadingHTTPServer(('127.0.0.1', 0), LocalProvider)
+            servers.append(provider)
+            threading.Thread(target=provider.serve_forever, daemon=True).start()
+            provider_url = 'http://127.0.0.1:' + str(provider.server_port) + '/api/v1'
+            network = work / 'local-network.mjs'
+            network.write_text("const f=globalThis.fetch;globalThis.fetch=(i,o)=>{const u=new URL(typeof i==='string'?i:i instanceof URL?i.href:i.url);if(u.href==='https://openrouter.ai/api/v1/models')return f(" + json.dumps(provider_url + '/models') + ",o);if(['127.0.0.1','localhost','[::1]'].includes(u.hostname))return f(i,o);throw Error('External fetch refused');};")
+            server_env.update(VC_ENGINE='pi', VC_PI_DIR=os.environ['VC_TEST_PI_DIR'], VC_ENGINE_MODEL='test/fake-model',
+                              VC_PI_UNSAFE='1', VC_BWRAP=str(work / 'absent-bwrap'), VC_MASTER=str(master),
+                              VC_OPENROUTER_BASE=provider_url, NODE_OPTIONS='--import ' + str(network), PI_OFFLINE='1', PI_SKIP_VERSION_CHECK='1')
+            viewer = master / 'vaults/status-viewer'
+            (viewer / '.vault-chat').mkdir(parents=True)
         if a.voice_conflict:
             state.mkdir(parents=True, exist_ok=True)
             (state / 'voice-engine.json').write_text('{"engine":"classic"}' if a.check_voice_only else '{"engine":"new"}')
@@ -243,6 +278,17 @@ def main():
         spawn(['node', str(a.server_bundle)], 'server', server_env)
         base = 'http://127.0.0.1:' + str(server_port)
         wait_for(lambda: request(base + '/api/v1/health'), 'owned genuine box server')
+        if a.check_status_dot:
+            wait_for(lambda: request(base + '/api/v1/health').get('engine', {}).get('pi', {}).get('state') == 'up', 'real pinned pi boot')
+            request(base + '/api/v1/vaults', {'name': 'status-viewer'})
+            if not any(v['name'] == 'status-viewer' for v in request(base + '/api/v1/vaults')['vaults']):
+                raise RuntimeError('Viewer fixture is not registered with the genuine server')
+            agent = state / 'pi/agent'
+            (agent / 'settings.json').write_text(json.dumps({'compaction': {'enabled': False}, 'retry': {'enabled': False}}))
+            (agent / 'models.json').write_text(json.dumps({'providers': {'openrouter': {'baseUrl': provider_url, 'apiKey': 'synthetic-local-only', 'api': 'openai-completions', 'models': [{'id': 'test/fake-model', 'name': 'Local unpaid status fixture', 'reasoning': False, 'input': ['text'], 'cost': {'input': 0, 'output': 0, 'cacheRead': 0, 'cacheWrite': 0}, 'contextWindow': 400000, 'maxTokens': 1000}]}}}))
+            registered = request(base + '/projects', {'folder': str(vault)})
+            if registered.get('convId') != a.conversation:
+                raise RuntimeError('Original project slug not preserved in disposable registration')
         if a.voice_conflict:
             conflict_status = wait_for(lambda: (s if (s := request(base + '/api/v1/brain/engine')).get('failure') else None), 'actual startup conflict')
             if conflict_status['failure']['code'] != 'VOICE_PORT_CONFLICT' or conflict_status['failure']['port'] != voice.server_port or conflict_status['pipeline']:
@@ -315,6 +361,8 @@ def main():
         servers.append(relay)
         threading.Thread(target=relay.serve_forever, daemon=True).start()
         (vault / '.vault-chat/sync.json').write_text(json.dumps({'box': 'http://127.0.0.1:' + str(relay.server_port), 'vault': 'vault-chat'}))
+        if a.check_status_dot:
+            (viewer / '.vault-chat/sync.json').write_text(json.dumps({'box': 'http://127.0.0.1:' + str(relay.server_port), 'vault': 'status-viewer'}))
         # Only our new socket; never use DISPLAY from the caller or scan live displays.
         readfd, writefd = os.pipe()
         xvfb = spawn(['Xvfb', '-displayfd', str(writefd), '-screen', '0', '1440x1000x24',
@@ -390,6 +438,8 @@ def main():
                 # selection between this write and the measured second launch.
                 wait_for(lambda: js('return document.readyState === "complete" && !document.getElementById("vault-splash");'), 'empty native profile initialized')
                 js('localStorage.setItem("vault_chat_last_vault",arguments[0]); localStorage.setItem("vault_chat_active_conv",arguments[1]);', str(vault), a.conversation)
+                if a.check_status_dot:
+                    js('localStorage.setItem("vault_chat_master_path",arguments[0]);', str(master))
                 delete_session()
                 time.sleep(1)
                 with lock:
@@ -630,6 +680,57 @@ def main():
                 samples = collections.defaultdict(list)
                 seen = set()
                 metadata = None
+                status_dot = None
+                if a.check_status_dot and label == 'after':
+                    key('ctrl+shift+f')
+                    wait_for(lambda: exists('[data-el="chats-sidebar"]'), 'real Main/project rows')
+                    project_row = '[data-thread="' + a.conversation + '"]'
+                    def geometry(thread):
+                        return js('''const row=document.querySelector('[data-thread="'+arguments[0]+'"]'),dot=row?.querySelector('[title="Working…"]');if(!row||!dot)return null;
+                          const r=row.getBoundingClientRect(),d=dot.getBoundingClientRect(),name=row.querySelector('button > span').getBoundingClientRect();
+                          const actions=[...row.querySelectorAll('[data-el="project-notes"],[data-el="project-menu"]')].map(e=>{const b=e.getBoundingClientRect();return {left:b.left,right:b.right,width:b.width,height:b.height};});
+                          return {rem:parseFloat(getComputedStyle(document.documentElement).fontSize),rightGap:r.right-d.right,centerError:Math.abs((d.top+d.bottom-r.top-r.bottom)/2),dotLeft:d.left,dotRight:d.right,dotWidth:d.width,nameRight:name.right,white:getComputedStyle(dot.lastElementChild).backgroundColor,actions};''', thread)
+                    dot_rows = []
+                    for thread in ['main', a.conversation]:
+                        released.clear()
+                        request(base + '/api/v2/intent', {'type': 'send', 'convId': thread, 'client': 'laptop', 'clientId': 'local-status-' + thread, 'text': 'LOCAL-UNPAID-STATUS-DOT'})
+                        try:
+                            g = wait_for(lambda: geometry(thread), 'event-derived running dot')
+                            if abs(g['rightGap'] - g['rem']) > 1 or g['centerError'] > 1 or g['nameRight'] >= g['dotLeft'] or any(b['right'] >= g['dotLeft'] or b['width'] < 28 or b['height'] < 28 for b in g['actions']):
+                                raise RuntimeError('Running dot overlaps text/actions or misses fixed trailing gutter')
+                            # Switch the focused conversation, not the turn owner.
+                            other = a.conversation if thread == 'main' else 'main'
+                            click('[data-thread="' + other + '"] > button')
+                            wait_for(lambda: js('return localStorage.getItem("vault_chat_active_conv")===arguments[0];', other), 'different focused thread')
+                            wait_for(lambda: geometry(thread), 'unfocused owner remains running')
+                            key('ctrl+shift+f')
+                            wait_for(lambda: exists('[data-el="vault-picker"]'), 'ordinary vault picker')
+                            click('[data-el="vault-picker"]')
+                            wait_for(lambda: exists('[data-el="vault-picker-item"][data-rel="vaults/status-viewer"] button'), 'viewer vault listed')
+                            picker_rows = js('return [...document.querySelectorAll("[data-el=vault-picker-item]")].map(e=>e.dataset.rel);')
+                            if sorted(picker_rows) != ['vaults/status-viewer', 'vaults/vault-chat']:
+                                raise RuntimeError('Picker contains project ownership/non-vault rows')
+                            click('[data-el="vault-picker-item"][data-rel="vaults/status-viewer"] button')
+                            wait_for(lambda: js('return localStorage.getItem("vault_chat_last_vault")===arguments[0];', str(viewer)), 'real viewer vault switch')
+                            if js('return localStorage.getItem("vault_chat_active_conv");') != other:
+                                raise RuntimeError('Vault switch changed focused conversation')
+                            key('ctrl+shift+f')
+                            wait_for(lambda: geometry(thread), 'owner dot survives vault switch')
+                            dot_rows.append({'thread': thread, 'geometry': g, 'unfocusedAndViewerIndependent': True})
+                        finally:
+                            released.set()
+                        wait_for(lambda: not geometry(thread), 'native pi running to idle')
+                        if thread == 'main':
+                            key('ctrl+shift+f')
+                            click('[data-el="vault-picker"]')
+                            wait_for(lambda: exists('[data-el="vault-picker-item"][data-rel="vaults/vault-chat"] button'), 'original viewer vault')
+                            click('[data-el="vault-picker-item"][data-rel="vaults/vault-chat"] button')
+                            key('ctrl+shift+f')
+                            wait_for(lambda: exists(project_row), 'project rows after restoring viewer')
+                    after_items = request(base + checkpoint_path).get('picture', {}).get('items', [])
+                    if after_items[:len(items)] != items:
+                        raise RuntimeError('Status fixture altered original history prefix')
+                    status_dot = {'rows': dot_rows, 'localProviderCalls': len(provider_calls), 'originalHistoryPrefixUnchanged': True, 'runningToIdle': True}
                 statuses = set()
                 for b, status in batches:
                     if b.get('runtime') != 'webkitgtk' or b.get('surface') != 'tauri-production':
@@ -650,7 +751,7 @@ def main():
                 def stats(values):
                     v = sorted(values)
                     return {'n': len(v), 'p50Ms': round(v[len(v)//2], 3), 'p95Ms': round(v[min(len(v)-1, int(len(v)*.95))], 3), 'maxMs': round(max(v), 3)}
-                return {'works': not interaction_failures, 'imageCheck': image_check, 'interactionFailures': interaction_failures, 'planLifecycle': plan_lifecycle, 'emptyChat': empty_chat, 'native': metadata, 'telemetryHttpStatuses': sorted(statuses),
+                return {'works': not interaction_failures, 'imageCheck': image_check, 'statusDot': status_dot, 'interactionFailures': interaction_failures, 'planLifecycle': plan_lifecycle, 'emptyChat': empty_chat, 'native': metadata, 'telemetryHttpStatuses': sorted(statuses),
                         'telemetryNote': 'Observed real Rust IPC batches; loopback is not authenticated Tailscale laptop telemetry',
                         'launchProcessToDomUpperBoundMs': round(launch_upper, 3),
                         'timings': [{'metric': m, 'method': method, **stats(values)} for (m, method), values in sorted(samples.items())]}
