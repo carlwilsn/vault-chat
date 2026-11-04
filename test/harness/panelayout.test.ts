@@ -19,7 +19,7 @@ W("notes/lecture6_typed.md", "# Lecture 6 (typed)\n");
 
 const { useStore } = await import("../../src/store.ts");
 const { placeInPane, clearSavedLayouts, LAYOUT_STORAGE } = await import("../../src/paneLayout.ts");
-const { buildViewportContextText } = await import("../../src/voice-elevenlabs.ts");
+const { buildViewportContextText } = await import("../../src/viewportContext.ts");
 const S = () => useStore.getState();
 
 const abs = (rel: string) => `${vault}/${rel}`;

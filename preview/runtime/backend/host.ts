@@ -99,10 +99,6 @@ export type BoxChatScript = {
    *  the box like the engine does: the turn appended, its poll events queued.
    *  The reply itself stays the script's (boxNext). */
   live?: boolean;
-  /** Voice on the box (server/voice.ts): POST /api/v1/voice/tool answers
-   *  `results[name]` (else "(ran <name> on the box)"); AskAgent starts a box
-   *  chat (running, the task as its first message) and AgentStatus reads it. */
-  voice?: { results?: Record<string, string>; /** GET /api/v1/voice/session answers this error (the box couldn't start voice). */ sessionError?: { status: number; body: string } };
   /** Projects that work in a folder on the box (server/projectFolders.ts): slug → the folder. */
   projectFolders?: Record<string, string>;
   /** The box's vault-chat folder (server/master.ts, GET /api/v1/master; VC_MASTER, set at install). */
@@ -305,53 +301,6 @@ function fakeBox(u: URL): FakeBox {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-/** A voice session's line saved on the box (server/voice.ts voiceTranscript):
- *  a voice conversation of its own, tagged with the project it came from. */
-function boxVoiceLine(b: any): { ok: true; convId: string } {
-  let id = String(b.convId ?? "");
-  const cur = box.picture(id);
-  if (!cur || cur.meta.source !== "voice") {
-    const from = box.picture(String(b.fromConvId ?? ""));
-    id = `v-voice-${box.rows().filter((r) => r.id.startsWith("v-voice-")).length + 1}`;
-    const first = String(b.text ?? "");
-    box.create(id, { title: b.role === "user" ? (first.length > 48 ? first.slice(0, 47) + "…" : first) : "Voice", source: "voice", ...(from?.meta.project ? { project: from.meta.project } : {}) });
-  }
-  // Under the client's id (a repeat is the same line), written by the box.
-  const lid = String(b.clientId ?? "") || `vl-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-  if (!box.picture(id)!.items.some((x) => x.id === lid)) {
-    // A tool call voice made: a tool row, as server/voice.ts writes it.
-    if (b.tool?.name) box.note(id, lid, { kind: "tool", name: String(b.tool.name), args: b.tool.args ?? {}, result: String(b.tool.result ?? ""), via: "voice" });
-    else if (b.system) box.note(id, lid, { kind: "notice", text: String(b.text ?? "") });
-    else box.note(id, lid, { kind: "line", role: b.role === "user" ? "user" : "assistant", text: String(b.text ?? ""), via: "voice" });
-  }
-  return { ok: true, convId: id };
-}
-
-/** The fake box's voice tools (the real ones: server/voice.ts). */
-function boxVoiceTool(name: string, args: any): string {
-  if (name === "AskAgent") {
-    const task = String(args.task ?? "").trim();
-    let id = String(args.conversationId ?? "");
-    const started = !id || !box.picture(id);
-    if (started) {
-      // Deterministic, so a scenario's box steps can name it: v-agent-1, v-agent-2 …
-      id = `v-agent-${box.rows().filter((r) => r.id.startsWith("v-agent-")).length + 1}`;
-      const title = task.length > 48 ? task.slice(0, 47) + "…" : task;
-      box.create(id, { title, source: "phone", ...(args.project ? { project: String(args.project) } : {}) });
-    }
-    box.intent({ type: "send", convId: id, clientId: `va-${Date.now()}`, text: task });
-    return JSON.stringify({ conversationId: id, started });
-  }
-  if (name === "AgentStatus") {
-    const id = String(args.conversationId ?? "");
-    const p = box.picture(id);
-    if (!p) return `No conversation ${id}.`;
-    const last = [...p.items].reverse().find((x) => x.kind === "assistant");
-    return JSON.stringify({ conversationId: id, title: p.meta.title, state: p.meta.running ? "working" : String(p.meta.state ?? "idle"), ...(last ? { lastReply: String(last.text).slice(0, 800) } : {}) });
-  }
-  return cfg.sync?.boxChat?.voice?.results?.[name] ?? `(ran ${name} on the box)`;
-}
-
 export const hostCommands: Record<string, (a: Record<string, any>) => unknown> = {
   // ---- sync ----
   vault_box_config: ({ vault }) => {
@@ -453,12 +402,6 @@ export const hostCommands: Record<string, (a: Record<string, any>) => unknown> =
           vaultPath: `/home/carl/vaults/${u.searchParams.get("vault") || (b.vaults ?? [])[0] || "summer-demo"}`,
         }),
       };
-    }
-    if (u.pathname.endsWith("/api/v1/voice/session")) {
-      const err = cfg.sync?.boxChat?.voice?.sessionError;
-      if (err) return { status: err.status, body: err.body };
-      // The box's session (server/voice.ts): no ElevenLabs in the preview, so a URL nothing dials.
-      return { status: 200, body: JSON.stringify({ signedUrl: "wss://preview.invalid/voice", systemPrompt: "(the box's voice prompt)", toolNames: [], vaultRoot: "/home/carl/vaults/summer-demo", onBox: true }) };
     }
     if (u.pathname === "/api/v1/vaults") {
       const b = fakeBox(u);
@@ -579,8 +522,6 @@ export const hostCommands: Record<string, (a: Record<string, any>) => unknown> =
       boxDisk.set(at, b.text);
       return { status: 200, body: JSON.stringify({ ok: true, path: at, size: b.text.length }) };
     }
-    if (path === "/api/v1/voice/tool") return { status: 200, body: JSON.stringify({ result: boxVoiceTool(String(b.name ?? ""), b.args ?? {}) }) };
-    if (path === "/api/v1/voice/transcript") return { status: 200, body: JSON.stringify(boxVoiceLine(b)) };
     // A side thread (Ctrl+K / Ctrl+L, a note's title): the scenario's scripted model answers; GET /api/v1/side/:id reads it.
     // The scripts match the first request's rules (a one-shot's system prompt, Ctrl+K / Ctrl+L's own text).
     if (path === "/api/v1/side") {

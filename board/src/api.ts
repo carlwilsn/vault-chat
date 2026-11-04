@@ -216,28 +216,12 @@ export function watch(fn: (ev: any) => void, resync: () => void = () => {}): voi
 export const ackShow = (id: string, ack: { ok: boolean; landed?: string; error?: string }) =>
   call<{ ok: true; waiting: boolean }>(`/api/v1/show/${enc(id)}/ack`, { method: "POST", body: JSON.stringify(ack) });
 
-// ---- voice (server/voice.ts): the box's own voice path, the one the phone uses
+// ---- voice (server/voiceBrain.ts): the call's routes, as on the phone and the laptop
 /** Carl's conversations, most recently active first (the phone's list: GET /conversations). */
 /** `kind`: main | project | separate, "" for an older chat (src/threads.ts). */
 export type ChatRow = { id: string; title: string; lastActivityAt: number; source: string; kind?: string };
 export const listChats = () => call<{ conversations: ChatRow[] }>("/conversations").then((r) => r.conversations ?? []);
-/** A signed ElevenLabs session for the box's board voice agent, its prompt built from `convId`'s pi session (server/voice.ts). */
-export type VoiceConfig = { signedUrl: string | null; conversationToken?: string | null; voiceId?: string; systemPrompt?: string; dynamicVariables?: Record<string, string>; toolNames?: string[]; convId?: string | null; cursor?: string | null; images?: { mime: string; dataBase64: string }[]; sessionId?: string | null; handoff?: { from: string; convId: string | null } | null };
-export const voiceSession = (convId: string | null) => call<VoiceConfig>(`/api/v1/voice/session?device=board${convId ? `&convId=${enc(convId)}` : ""}`);
-/** Voice's one tool that acts (Ask: a request to the conversation's agent), run on the box. */
-export const voiceTool = (body: { name: string; args: unknown; convId: string | null; device: "board" }) =>
-  call<{ result?: string; error?: string; convId?: string | null }>("/api/v1/voice/tool", { method: "POST", body: JSON.stringify(body) });
-/** One line of the call, saved on the box into its conversation (the first makes a new one when there is none). */
-export const voiceTranscript = (body: { convId: string | null; role: string; text: string; system?: boolean; ended?: boolean; device: "board" }) =>
-  call<{ convId?: string | null }>("/api/v1/voice/transcript", { method: "POST", body: JSON.stringify(body) });
-/** The box's voice engine (Settings → Voice engine on the laptop): "new" = the voice is the conversation's agent. */
-export const brainEngine = () => call<{ engine: "classic" | "new"; pipeline: boolean }>("/api/v1/brain/engine");
-/** The New voice's calls (src/voiceBrainClient.ts): start, offer, end. */
 /** What the voice waits on (the waiting line under the pill's waves): server/voiceBrain.ts GET /api/v1/brain/wait. */
 export const brainWait = (convId: string) => call<{ works: any[]; plan: any; calib: any; now: number; running?: boolean }>(`/api/v1/brain/wait/${enc(convId)}`);
+/** The call's routes (src/voiceBrainClient.ts): start, offer, end. */
 export const brainPost = (path: string, body: Record<string, unknown>) => call<any>(path, { method: "POST", body: JSON.stringify(body) });
-/** One long poll of the live call's updates: the agent's answers, what Carl did elsewhere. */
-export const voiceUpdates = (convId: string, cursor: string | null, session?: string | null) =>
-  call<{ updates: { id: string; kind: string; text: string; speak: boolean }[]; cursor: string; moved?: { to: string; line: string } | null }>(
-    `/api/v1/voice/updates?convId=${enc(convId)}&wait=20000${cursor ? `&cursor=${enc(cursor)}` : ""}${session ? `&session=${enc(session)}` : ""}`,
-  );

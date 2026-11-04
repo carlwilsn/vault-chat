@@ -454,6 +454,3 @@ export class BrainConversation {
   }
 }
 
-/** The box's voice engine (Settings → Voice engine, kept on the box so every device follows it). */
-export type VoiceEngine = "classic" | "new";
-export const voiceEngineOf = (x: unknown): VoiceEngine => (x === "new" ? "new" : "classic");

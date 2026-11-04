@@ -7,7 +7,6 @@ import { phase3Scenarios } from "./phase3";
 import { phase2Scenarios } from "./phase2";
 import { convFullScenarios } from "./convFull";
 import { voiceScenarios } from "./voice";
-import { voiceOneAgentScenarios } from "./voiceOneAgent";
 import { steerScenarios } from "./steer";
 import { retryScenarios } from "./retry";
 import { markdownScenarios } from "./markdown";
@@ -840,7 +839,6 @@ export const scenarios: Scenario[] = [
   ...phase2Scenarios,
   ...convFullScenarios,
   ...voiceScenarios,
-  ...voiceOneAgentScenarios,
   ...steerScenarios,
   ...retryScenarios,
   ...markdownScenarios,

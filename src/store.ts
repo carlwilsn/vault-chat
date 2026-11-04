@@ -122,7 +122,7 @@ export type ChatMessage = {
   // so it has propagated everywhere before a later release dedupes/merges by id.
   mid?: string;
   // Voice lines: what the bubble shows instead of `content` — the same words
-  // with the spoken math as LaTeX (voiceMath.ts). `content` stays as spoken.
+  // with the spoken math as LaTeX. `content` stays as spoken.
   display?: string;
   // A line said on a voice call (Carl's or the voice's): shown as a compact voice turn, not a bubble.
   voice?: boolean;

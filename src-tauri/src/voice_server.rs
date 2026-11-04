@@ -1,27 +1,4 @@
-//! Embedded HTTP server for the **phone surfaces**: voice mode and the chat PWA.
-//!
-//! The box runs vault-chat 24/7. This tiny server lets a phone — over the user's
-//! private Tailscale mesh — (a) drive a *live* ElevenLabs voice session whose
-//! brain (vault context + tools) stays on the box, and (b) use the full chat
-//! agent through a streaming PWA (`/phone`): send messages, watch runs stream,
-//! open vault files, kill runs, and receive Web Push notifications.
-//!
-//! Design: **no fragile relay for connect.** The desktop app pushes the current
-//! voice *context* into this server via `set_context` (and answers fresh-context
-//! requests on demand). Chat traffic uses the same proven relay pattern: an HTTP
-//! request emits an event to the webview, the frontend answers by `reqId` over
-//! an mpsc channel. Run streaming flows the other way — the frontend broadcasts
-//! store diffs into a seq-numbered event ring the phone long-polls (`/poll`).
-//!
-//! Security (user-chosen, stated honestly): **Tailscale is the perimeter, the
-//! shared token is defense-in-depth.** Every route except `/health`, the icon,
-//! the service worker, and the manifest requires the token (`X-Vault-Token`
-//! header or `?token=` — the query form exists because EventSource and
-//! home-screen launch URLs can't set headers). Since the tool-parity commit the
-//! relay executes with FULL desktop parity (including Bash via voice tools and
-//! agent runs via `/message`) — anyone holding the token on the tailnet drives
-//! the agent. That is the explicit model: the user owns the agent. The local
-//! fallback dispatch (relay down) stays read-only.
+//! Embedded phone chat host. Voice runs only on the box’s Pipecat pipeline and pi.
 
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -32,7 +9,6 @@ use std::time::{Duration, Instant};
 use tauri::{Emitter, Manager};
 use tiny_http::{Header, Method, Request, Response, Server};
 
-const VOICE_PAGE: &str = include_str!("../assets/voice.html");
 const PHONE_PAGE: &str = include_str!("../assets/phone.html");
 const PHONE_SW: &str = include_str!("../assets/phone-sw.js");
 
@@ -69,19 +45,6 @@ const ICON_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" width="512" h
 /// black. Same C+V geometry as `ICON_SVG`, rasterized at 512² (iOS downscales).
 const ICON_PNG: &[u8] = include_bytes!("../assets/icon-apple-touch.png");
 
-/// The live voice context the desktop app pushes in. Everything the server needs
-/// to mint a session + answer "about the vault" tool calls.
-#[derive(Clone)]
-struct Ctx {
-    el_key: String,
-    agent_id: String,
-    voice_id: String,
-    system_prompt: String,
-    dynamic_vars: Value,
-    tool_names: Vec<String>,
-    vault: String,
-}
-
 struct Running {
     server: Arc<Server>,
     token: String,
@@ -89,38 +52,10 @@ struct Running {
 }
 
 static SERVER: OnceLock<Mutex<Option<Running>>> = OnceLock::new();
-static CTX: OnceLock<Mutex<Option<Ctx>>> = OnceLock::new();
 
 fn server_slot() -> &'static Mutex<Option<Running>> {
     SERVER.get_or_init(|| Mutex::new(None))
 }
-fn ctx_slot() -> &'static Mutex<Option<Ctx>> {
-    CTX.get_or_init(|| Mutex::new(None))
-}
-
-/// Update the live voice context. Called by the desktop app on startup and on a
-/// short heartbeat so the phone always gets fresh credentials + vault context.
-#[allow(clippy::too_many_arguments)]
-pub fn set_context(
-    el_key: String,
-    agent_id: String,
-    voice_id: String,
-    system_prompt: String,
-    dynamic_vars: Value,
-    tool_names: Vec<String>,
-    vault: String,
-) {
-    *ctx_slot().lock().unwrap_or_else(|e| e.into_inner()) = Some(Ctx {
-        el_key,
-        agent_id,
-        voice_id,
-        system_prompt,
-        dynamic_vars,
-        tool_names,
-        vault,
-    });
-}
-
 /// Start the server on `port`, guarded by `token`. Idempotent for the same
 /// port+token. Binds `0.0.0.0` (the token is the gate; Tailscale is the
 /// perimeter). Returns the bound port.
@@ -387,8 +322,8 @@ fn handle(mut req: Request, token: &str) {
     }
 
     match (method, path.as_str()) {
-        (Method::Get, "/voice") => {
-            let _ = req.respond(resp_text(200, "text/html; charset=utf-8", VOICE_PAGE.to_string()));
+        (Method::Get, "/voice") | (Method::Post, "/session") | (Method::Post, "/tool") | (Method::Post, "/voice-transcript") => {
+            let _ = req.respond(resp_text(410, "application/json", "{\"error\":\"Voice runs on the box; open the phone app\"}".into()));
         }
         (Method::Get, "/phone") => {
             let _ = req.respond(resp_text(200, "text/html; charset=utf-8", PHONE_PAGE.to_string()));
@@ -719,109 +654,11 @@ fn handle(mut req: Request, token: &str) {
             };
             let _ = req.respond(body);
         }
-        (Method::Post, "/session") => {
-            // Fresh-first: pull the context from the app right now (no push-
-            // timing window, current document state). Cached push is the
-            // fallback so a momentarily-busy frontend doesn't break connect.
-            let mut raw = String::new();
-            let _ = req.as_reader().read_to_string(&mut raw);
-            let payload: Value = serde_json::from_str(&raw).unwrap_or(json!({}));
-            let conv_id = payload.get("convId").and_then(|v| v.as_str()).map(|s| s.to_string());
-            let ctx = request_fresh_context(conv_id)
-                .or_else(|| ctx_slot().lock().unwrap_or_else(|e| e.into_inner()).clone());
-            let body = match ctx {
-                Some(ctx) => {
-                    // Retry a transient ElevenLabs failure (slow / 5xx get_signed_url)
-                    // before surfacing 502 — the phone only auto-retried once, so a
-                    // single hiccup here killed the start. Two extra shots, short backoff.
-                    let mut minted = mint_session(&ctx);
-                    let mut tries = 0;
-                    while minted.is_err() && tries < 2 {
-                        std::thread::sleep(Duration::from_millis(600));
-                        minted = mint_session(&ctx);
-                        tries += 1;
-                    }
-                    match minted {
-                        Ok(j) => resp_text(200, "application/json", j),
-                        Err(e) => resp_text(
-                            502,
-                            "application/json",
-                            json!({ "error": e }).to_string(),
-                        ),
-                    }
-                }
-                None => resp_text(
-                    503,
-                    "application/json",
-                    json!({ "error": "voice host not ready — the vault-chat app hosting this link needs a vault open and an ElevenLabs key set (it pushes context every ~20s)" }).to_string(),
-                ),
-            };
-            let _ = req.respond(body);
-        }
-        (Method::Post, "/voice-transcript") => {
-            // Phone voice talks to ElevenLabs directly; relay each completed turn
-            // to the app so it persists into the session's voice thread.
-            let mut raw = String::new();
-            let _ = req.as_reader().read_to_string(&mut raw);
-            let v: Value = serde_json::from_str(&raw).unwrap_or(Value::Null);
-            let role = v.get("role").and_then(|x| x.as_str()).unwrap_or("assistant");
-            let text = v.get("text").and_then(|x| x.as_str()).unwrap_or("");
-            if !text.trim().is_empty() {
-                if let Some(app) = app_slot().lock().unwrap_or_else(|e| e.into_inner()).clone() {
-                    let _ = app.emit("voice:transcript", json!({ "role": role, "text": text }));
-                }
-            }
-            let _ = req.respond(resp_text(200, "application/json", "{\"ok\":true}".into()));
-        }
-        (Method::Post, "/tool") => {
-            let mut raw = String::new();
-            let _ = req.as_reader().read_to_string(&mut raw);
-            let result = run_tool(&raw);
-            // EL feeds the body straight back to the model as the tool result, so
-            // we return plain text (the answer, or a refusal/error message).
-            let _ = req.respond(resp_text(200, "text/plain; charset=utf-8", result));
-        }
         _ => {
             let _ = req.respond(resp_text(404, "application/json", "{\"error\":\"not found\"}".into()));
         }
     }
 }
-
-fn mint_session(ctx: &Ctx) -> Result<String, String> {
-    let client = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(20))
-        .build()
-        .map_err(|e| e.to_string())?;
-    let url = format!(
-        "https://api.elevenlabs.io/v1/convai/conversation/get_signed_url?agent_id={}",
-        ctx.agent_id
-    );
-    let resp = client
-        .get(url)
-        .header("xi-api-key", &ctx.el_key)
-        .send()
-        .map_err(|e| e.to_string())?;
-    let status = resp.status();
-    let text = resp.text().unwrap_or_default();
-    if !status.is_success() {
-        return Err(format!("ElevenLabs {}: {}", status.as_u16(), text));
-    }
-    let j: Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
-    let signed = j
-        .get("signed_url")
-        .and_then(|v| v.as_str())
-        .ok_or("no signed_url in ElevenLabs response")?;
-    Ok(json!({
-        "signedUrl": signed,
-        "systemPrompt": ctx.system_prompt,
-        "voiceId": ctx.voice_id,
-        "dynamicVariables": ctx.dynamic_vars,
-        "toolNames": ctx.tool_names,
-    })
-    .to_string())
-}
-
-// ---- safe, read-only tool dispatch ----
 
 /// Resolve a vault-relative or absolute path and confirm it stays inside the
 /// vault. Returns None on escape — the read tools refuse anything outside.
@@ -962,8 +799,7 @@ pub fn push_subs_remove(endpoint: &str) {
     let _ = std::fs::write(&p, serde_json::to_string_pretty(&list).unwrap_or_else(|_| "[]".into()));
 }
 
-/// Generic request→webview relay (same machinery as `run_tool` /
-/// `request_fresh_context`): emit `event` with a reqId merged into `payload`,
+/// Generic phone request→webview relay: emit `event` with a reqId merged into `payload`,
 /// wait for the frontend to answer via `voice_tool_respond`. None on no app,
 /// emit failure, or timeout.
 fn relay_request(event: &str, mut payload: Value, timeout: Duration) -> Option<String> {
@@ -981,175 +817,6 @@ fn relay_request(event: &str, mut payload: Value, timeout: Duration) -> Option<S
     let out = rx.recv_timeout(timeout);
     pending().lock().unwrap_or_else(|e| e.into_inner()).remove(&id);
     out.ok()
-}
-
-/// Ask the running app for FRESH voice context (same relay pattern as tools):
-/// emit `voice:context`, the frontend builds the context with the exact desktop
-/// builders and answers by req id. This is what kills the 503 window at its
-/// root — /session no longer depends on a heartbeat push having landed first —
-/// and it means the phone connects with the *current* context (open document,
-/// live dynamic vars), not an up-to-20s-stale snapshot. Caches the result so
-/// the pushed-context path stays a warm fallback.
-fn request_fresh_context(conv_id: Option<String>) -> Option<Ctx> {
-    let app = app_slot().lock().unwrap_or_else(|e| e.into_inner()).clone()?;
-    let id = REQ.fetch_add(1, Ordering::Relaxed).to_string();
-    let (tx, rx) = mpsc::channel::<String>();
-    pending().lock().unwrap_or_else(|e| e.into_inner()).insert(id.clone(), tx);
-    if app.emit("voice:context", json!({ "reqId": id, "convId": conv_id })).is_err() {
-        pending().lock().unwrap_or_else(|e| e.into_inner()).remove(&id);
-        return None;
-    }
-    // 12s (not 8): building the voice context on the app side is an ElevenLabs
-    // agent check plus a fan-out of vault file reads, and a busy webview or a
-    // git-sync touching files can push it past a tighter budget — which showed
-    // up as flaky "voice host not ready". The phone's retry loop tolerates it.
-    let out = rx.recv_timeout(Duration::from_secs(12));
-    pending().lock().unwrap_or_else(|e| e.into_inner()).remove(&id);
-    let s = out.ok()?;
-    let v: Value = serde_json::from_str(&s).ok()?;
-    let get = |k: &str| v.get(k).and_then(|x| x.as_str()).map(|x| x.to_string());
-    let ctx = Ctx {
-        el_key: get("elKey")?,
-        agent_id: get("agentId")?,
-        voice_id: get("voiceId").unwrap_or_default(),
-        system_prompt: get("systemPrompt").unwrap_or_default(),
-        dynamic_vars: v.get("dynamicVariables").cloned().unwrap_or_else(|| json!({})),
-        tool_names: v
-            .get("toolNames")
-            .and_then(|x| x.as_array())
-            .map(|a| a.iter().filter_map(|t| t.as_str().map(String::from)).collect())
-            .unwrap_or_default(),
-        vault: get("vault")?,
-    };
-    *ctx_slot().lock().unwrap_or_else(|e| e.into_inner()) = Some(ctx.clone());
-    Some(ctx)
-}
-
-/// Run a tool with FULL desktop parity: relay it to the running app, which
-/// executes the exact same handler the desktop voice agent uses, against the
-/// vault. Falls back to the local read-only dispatch only if the app can't be
-/// reached (no handle, emit failed, or it didn't answer in time) — so a read
-/// still works even if the relay is momentarily down.
-fn run_tool(raw: &str) -> String {
-    let app = app_slot().lock().unwrap_or_else(|e| e.into_inner()).clone();
-    let Some(app) = app else {
-        return dispatch_tool(raw);
-    };
-    let v: Value = match serde_json::from_str(raw) {
-        Ok(v) => v,
-        Err(_) => return "error: malformed tool request".into(),
-    };
-    let id = REQ.fetch_add(1, Ordering::Relaxed).to_string();
-    let (tx, rx) = mpsc::channel::<String>();
-    pending().lock().unwrap_or_else(|e| e.into_inner()).insert(id.clone(), tx);
-    let payload = json!({
-        "reqId": id,
-        "name": v.get("name").cloned().unwrap_or(Value::Null),
-        "arguments": v.get("arguments").or_else(|| v.get("parameters")).cloned().unwrap_or(json!({})),
-    });
-    if app.emit("voice:tool", payload).is_err() {
-        pending().lock().unwrap_or_else(|e| e.into_inner()).remove(&id);
-        return dispatch_tool(raw);
-    }
-    let out = rx.recv_timeout(Duration::from_secs(25));
-    pending().lock().unwrap_or_else(|e| e.into_inner()).remove(&id);
-    match out {
-        Ok(s) => s,
-        Err(_) => dispatch_tool(raw),
-    }
-}
-
-fn dispatch_tool(raw: &str) -> String {
-    let v: Value = match serde_json::from_str(raw) {
-        Ok(v) => v,
-        Err(_) => return "error: malformed tool request".into(),
-    };
-    let name = v.get("name").and_then(|x| x.as_str()).unwrap_or("");
-    // EL may nest args under "arguments" or "parameters", or pass them flat.
-    let args = v
-        .get("arguments")
-        .or_else(|| v.get("parameters"))
-        .cloned()
-        .unwrap_or_else(|| v.clone());
-    let ctx = match ctx_slot().lock().unwrap_or_else(|e| e.into_inner()).clone() {
-        Some(c) => c,
-        None => return "error: voice host not ready".into(),
-    };
-    let vault = &ctx.vault;
-    let s = |k: &str| args.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string();
-
-    match name {
-        "Read" => {
-            let path = s("path");
-            match within_vault(vault, &path) {
-                Some(p) => match std::fs::read_to_string(&p) {
-                    Ok(text) => truncate(&text, 12_000),
-                    Err(e) => format!("error reading {}: {}", path, e),
-                },
-                None => format!("error: {} is outside the vault", path),
-            }
-        }
-        "Glob" => {
-            let pattern = s("pattern");
-            let full = format!("{}/{}", vault, pattern.trim_start_matches('/'));
-            match glob::glob(&full) {
-                Ok(paths) => {
-                    let mut out: Vec<String> = paths
-                        .flatten()
-                        .filter_map(|p| {
-                            p.strip_prefix(vault)
-                                .ok()
-                                .map(|r| r.to_string_lossy().replace('\\', "/"))
-                        })
-                        .collect();
-                    out.sort();
-                    out.truncate(200);
-                    if out.is_empty() {
-                        "(no matches)".into()
-                    } else {
-                        out.join("\n")
-                    }
-                }
-                Err(e) => format!("error: bad pattern: {}", e),
-            }
-        }
-        "GitLog" => {
-            let subdir = s("subdir");
-            let rel = subdir.trim();
-            let dir = if rel.is_empty() || rel == "." {
-                vault.clone()
-            } else {
-                format!("{}/{}", vault, rel)
-            };
-            let n = format!(
-                "-n{}",
-                args.get("max_count").and_then(|x| x.as_u64()).unwrap_or(30).min(200)
-            );
-            let mut a: Vec<String> = vec!["log".into(), "--oneline".into(), "--no-color".into(), n];
-            let since = s("since");
-            if !since.trim().is_empty() {
-                a.push(format!("--since={}", since.trim()));
-            }
-            let author = s("author");
-            if !author.trim().is_empty() {
-                a.push(format!("--author={}", author.trim()));
-            }
-            let refs: Vec<&str> = a.iter().map(|x| x.as_str()).collect();
-            match crate::run_git(&dir, &refs) {
-                Ok((out, _, 0)) if !out.trim().is_empty() => truncate(out.trim(), 6_000),
-                Ok(_) => "(no commits match)".into(),
-                Err(e) => format!("error: {}", e),
-            }
-        }
-        "ListConversations" => list_conversations(vault),
-        "ReadConversation" => read_conversation(vault, &s("conversation_id"), args.get("last_n").and_then(|x| x.as_u64()).unwrap_or(12) as usize),
-        // Everything else — writes, Bash, edits, deletes, worker control — is
-        // deliberately unavailable over the phone channel.
-        other => format!(
-            "\"{}\" isn't available over phone voice — this channel is read-only (read files, search, git history, conversations). Ask me to look things up or talk it through instead.",
-            other
-        ),
-    }
 }
 
 fn conversations(vault: &str) -> Vec<Value> {
@@ -1179,48 +846,6 @@ fn conversations(vault: &str) -> Vec<Value> {
     out
 }
 
-fn list_conversations(vault: &str) -> String {
-    let mut convs = conversations(vault);
-    convs.sort_by_key(|c| std::cmp::Reverse(c.get("lastActivityAt").and_then(|x| x.as_i64()).unwrap_or(0)));
-    let lines: Vec<String> = convs
-        .iter()
-        .take(25)
-        .map(|c| {
-            let id = c.get("id").and_then(|x| x.as_str()).unwrap_or("?");
-            let title = c.get("title").and_then(|x| x.as_str()).unwrap_or("(untitled)");
-            let n = c.get("messages").and_then(|x| x.as_array()).map(|a| a.len()).unwrap_or(0);
-            format!("{} — {} ({} msgs)", id, title, n)
-        })
-        .collect();
-    if lines.is_empty() {
-        "(no conversations)".into()
-    } else {
-        lines.join("\n")
-    }
-}
-
-fn read_conversation(vault: &str, id: &str, last_n: usize) -> String {
-    let n = last_n.clamp(1, 50);
-    let convs = conversations(vault);
-    let Some(c) = convs.iter().find(|c| c.get("id").and_then(|x| x.as_str()) == Some(id)) else {
-        return format!("conversation {} not found", id);
-    };
-    let title = c.get("title").and_then(|x| x.as_str()).unwrap_or("(untitled)");
-    let msgs = c.get("messages").and_then(|x| x.as_array()).cloned().unwrap_or_default();
-    let tail: Vec<String> = msgs
-        .iter()
-        .rev()
-        .take(n)
-        .rev()
-        .map(|m| {
-            let role = m.get("role").and_then(|x| x.as_str()).unwrap_or("?");
-            let content = m.get("content").and_then(|x| x.as_str()).unwrap_or("");
-            format!("[{}] {}", role, truncate(content, 600))
-        })
-        .collect();
-    format!("{}\n\n{}", title, tail.join("\n\n"))
-}
-
 fn truncate(s: &str, max: usize) -> String {
     if s.len() <= max {
         s.to_string()
@@ -1232,14 +857,8 @@ fn truncate(s: &str, max: usize) -> String {
 
 // ---- phone chat: helpers ----
 
-/// The vault the phone surfaces talk to: the cached voice context's vault when
-/// present, else a lightweight vault-only relay. The chat surface must NOT
-/// depend on an ElevenLabs key — the full context (and its fresh-context path)
-/// does, but `phone:vault` only needs a vault to be open.
+/// Ask the app for its open vault, independently of voice or credentials.
 fn current_vault() -> Option<String> {
-    if let Some(c) = ctx_slot().lock().unwrap_or_else(|e| e.into_inner()).clone() {
-        return Some(c.vault);
-    }
     let v = relay_request("phone:vault", json!({}), Duration::from_secs(3))?;
     let v = v.trim().to_string();
     if v.is_empty() {

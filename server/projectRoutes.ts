@@ -17,7 +17,7 @@ import { allProjects, ensureProject, folderName, makeProject } from "./context/p
 import { slugify } from "./context/files";
 import { ensureProjectThread, patchMeta } from "./engine/convs";
 import { MAIN_ID, MAIN_TITLE, projectThreadId } from "../src/threads";
-import { followVoice } from "./voice";
+import { followCall } from "./voiceBrain";
 import { masterDir, newMasterProject } from "./master";
 import { checkFolder, deletedFolders, registeredFolder, registeredFolders } from "./projectFolders";
 import { ownerVault } from "./convlog/log";
@@ -257,7 +257,7 @@ export async function openProject(vault: string, args: Record<string, unknown>, 
   }
   // The surfaces follow: the laptop and the phone open the thread; a live call's lines, tools and updates go there.
   d.emit?.({ type: "follow", convId, title, ...(slug ? { project: slug } : {}), ...(created ? { created: true } : {}) });
-  const call = followVoice(vault, convId);
+  const call = followCall(vault, convId);
   let handed = "";
   const send = route ?? d.message;
   if (request && send) {

@@ -8,9 +8,8 @@ import {
   setVoiceOutputMuted,
   sendVoiceUserText,
   sendVoiceUserMultimodal,
-  sendVoiceTypingHint,
-  endElevenLabsSession,
-} from "./voice-elevenlabs";
+  endVoiceCall,
+} from "./voiceCall";
 
 // Plug-replacement for talking back to the voice agent: a floating
 // popup with an auto-grow textarea + the same marquee/camera button
@@ -80,25 +79,11 @@ export function VoiceTextPanel() {
     // Carl's own mute stays as he left it: the panel unmutes only what it muted.
     const wasMuted = useStore.getState().voiceMicMuted;
     setVoiceMicMuted(true);
-    sendVoiceTypingHint("opened");
     return () => {
       if (!wasMuted) setVoiceMicMuted(false);
       setVoiceOutputMuted(false);
     };
   }, [open]);
-
-  // Re-send the hint if the user's drafting drags on. Fires at 25s so
-  // it lands BEFORE the platform's turn_timeout (capped at 30s) would
-  // prompt the agent for another turn — the hint sits as the most
-  // recent system message when the agent is re-engaged, so "user is
-  // still typing, stay quiet" is fresh in context. Resets on every
-  // keystroke so it only fires during a genuine long pause.
-  useEffect(() => {
-    if (!open) return;
-    if (!isVoiceSessionActive()) return;
-    const id = setTimeout(() => sendVoiceTypingHint("still-typing"), 25_000);
-    return () => clearTimeout(id);
-  }, [open, text]);
 
   // Barge-in via typing: once the draft crosses 2 characters, the
   // user is clearly intending to take the turn — cut the agent's TTS
@@ -275,7 +260,7 @@ export function VoiceTextPanel() {
           onMouseDown={(e) => e.stopPropagation()}
           onClick={() => {
             setOpen(false);
-            void endElevenLabsSession("text panel");
+            void endVoiceCall("text panel");
           }}
           className="h-5 w-5 flex items-center justify-center rounded hover:bg-accent/60 hover:text-foreground"
           title="End voice mode"

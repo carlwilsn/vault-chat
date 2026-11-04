@@ -6,10 +6,8 @@
 // image in the reply) — never a silent block, and never a send to a device
 // across the room. `asked: true` is the agent's way to say Carl did ask (an
 // earlier message, or words this check does not know).
-import { resolve } from "node:path";
 import { currentDevice, type Device } from "./show";
-import { liveVoiceSession } from "./voice";
-import { liveCalls } from "./voiceBrain";
+import { voiceLiveIn } from "./voiceBrain";
 
 const DEVICE_NAME: Record<Device, string> = { laptop: "laptop", board: "iPad", phone: "phone" };
 
@@ -46,16 +44,10 @@ export function requestWords(request: string | null | undefined): string {
   return out.join("\n");
 }
 
-/** A voice call live on the board right now (either voice). */
+/** A voice call live on the board right now. */
 function boardCallLive(vault: string): boolean {
   try {
-    const v = liveVoiceSession();
-    if (v && v.device === "board" && resolve(v.vault).toLowerCase() === resolve(vault).toLowerCase()) return true;
-  } catch {
-    /* */
-  }
-  try {
-    return liveCalls().some((c) => c.device === "board");
+    return voiceLiveIn(vault, Date.now(), "board");
   } catch {
     return false;
   }

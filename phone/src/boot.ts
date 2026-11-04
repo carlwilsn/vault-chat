@@ -8,15 +8,8 @@ import { createRoot } from "react-dom/client";
 import { installMock } from "./mock";
 import * as X from "./extras";
 import { createPhoneMarkdown, domToHtml } from "./markdown";
-import { stripAudioTags } from "../../src/voiceTags";
-import { isControlLine, isFillerLine } from "../../src/voicePrompt";
-import { QuietGate } from "../../src/voiceQuiet";
-import { SPEECH_LEVEL } from "../../src/voiceHealth";
-import { AUDIO_WARN_LINE, MicPin, audioBlocked, canPickOutput, deviceLists, listAudioDevices } from "../../src/voiceMic";
-import { PlaybackMonitor, roomAudioStats } from "../../src/voiceStats";
+import { MicPin, canPickOutput, deviceLists, listAudioDevices } from "../../src/voiceMic";
 import { VoiceLogShipper } from "../../src/voiceShip";
-import { VoiceImagePusher } from "../../src/voiceImages";
-import { VoiceUpdates, pushStartImages } from "../../src/voiceFront";
 import { BrainConversation } from "../../src/voiceBrainClient";
 import { WaitTracker, calibFrom, renderWaitLine, waitInputs, type WaitCalib } from "../../src/voiceWaitLine";
 import type { LogRecord } from "../../src/convlog/protocol";
@@ -30,8 +23,6 @@ import { startAttentionBeat, type AttentionBeat } from "../../src/attentionBeat"
 export function boot(): void {
   const qs = new URLSearchParams(location.search);
   const MOCK = qs.get("mock") === "1";
-
-  const sdkPromise = MOCK ? Promise.resolve(null) : import("@elevenlabs/client").catch(() => null);
 
   let TOKEN = qs.get("token") || "";
   try {
@@ -1271,7 +1262,6 @@ export function boot(): void {
           void loadProjects();
           // A project Carl deleted (here or elsewhere): this phone, and a call in it, go on in Main.
           if (s.deleted && s.convId) {
-            if (vVoiceConv === s.convId) vVoiceConv = MAIN_ID;
             if (s.convId === convId) void openThread(MAIN_ID, MAIN_TITLE);
           }
           listChanged = true;
@@ -2263,7 +2253,9 @@ export function boot(): void {
     msgsEl.addEventListener("touchstart", hideKb, { passive: true }); msgsEl.addEventListener("mousedown", hideKb);
   }
 
-  // ---------- voice (verbatim iOS-hardened connect) ----------
+  // ---------- voice ----------
+  // The voice is the conversation's own agent: the box hears (its pipeline), pi answers in the open thread (Main when
+  // none is), the box speaks (server/voiceBrain.ts). The phone is the mic and the speaker (src/voiceBrainClient.ts).
   const NUM_BARS = 12, DECAY = 0.85;
   // The waiting line under the bars (and along the pill's foot): what the voice waits on, until it speaks.
   let vWaitAt = 0, vBoxCalib: WaitCalib = {}, vCalibAsked = false;
@@ -2285,292 +2277,96 @@ export function boot(): void {
   }
   const vizEl = $("viz"), verrEl = $("verr"); const vBars = [];
   for (let i = 0; i < NUM_BARS; i++) { const b = document.createElement("div"); b.className = "vbar"; vizEl.appendChild(b); vBars.push(b); }
-  let vConv = null, vConnecting = false, vRafId = 0, vLive = false, vAutoRetried = false, vMuted = false;
+  let vConv: BrainConversation | null = null, vConnecting = false, vRafId = 0, vLive = false, vAutoRetried = false, vMuted = false, vAgentSpeaking = false;
+  let vMicCtx = null;
   const vSmoothed = new Array(NUM_BARS).fill(0);
-  // Agent speaking window + level, mirrored from voice.html: `vAgentSpeaking`
-  // follows the SDK's mode (onModeChange, worklet-playback-driven — flips false
-  // only when the output buffer DRAINS), and the level replays a per-50ms RMS
-  // envelope of the real chunks at wall-clock rate. Chunk ARRIVAL must never
-  // drive the bars — the SDK bursts a whole turn into the buffer seconds ahead
-  // of the audio the user hears, which is what desynced the wave (note 852e435b).
-  let vMicCtx = null, vMicAnalyser = null, vMicBuf = null, vAgentSpeaking = false;
-  const V_SLICE_MS = 50, V_SLICE_BYTES = (16000 * 2 * V_SLICE_MS) / 1000; // 16kHz mono PCM16
-  const vAgentEnv = []; let vAgentEnvPos = 0, vAgentEnvClock = 0;
-  function vAgentEnvReset() { vAgentEnv.length = 0; vAgentEnvPos = 0; vAgentEnvClock = 0; }
-  function vAgentEnvPush(b64) {
-    const s = atob(b64);
-    for (let off = 0; off + 1 < s.length; off += V_SLICE_BYTES) {
-      const end = Math.min(s.length, off + V_SLICE_BYTES);
-      let sum = 0, count = 0;
-      for (let i = off; i + 1 < end; i += 4) { let v = s.charCodeAt(i) | (s.charCodeAt(i + 1) << 8); if (v >= 32768) v -= 65536; sum += v * v; count++; }
-      const rms = count ? Math.sqrt(sum / count) / 32768 : 0;
-      vAgentEnv.push(Math.min(1, rms * 4));
-    }
-    const consumed = Math.floor(vAgentEnvPos);
-    if (consumed > 400) { vAgentEnv.splice(0, consumed); vAgentEnvPos -= consumed; }
-  }
-  function vAgentEnvLevel() {
-    const now = performance.now();
-    const dt = vAgentEnvClock ? Math.min(now - vAgentEnvClock, 200) : 0;
-    vAgentEnvClock = now;
-    vAgentEnvPos += dt / V_SLICE_MS;
-    if (!vAgentEnv.length) return 0;
-    return vAgentEnv[Math.min(vAgentEnv.length - 1, Math.floor(vAgentEnvPos))];
-  }
   const setVErr = (e) => { verrEl.textContent = e || ""; };
   const micAvailable = () => !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
-  function vTeardownAudio() { try { if (vMicCtx) vMicCtx.close(); } catch {} vMicCtx = null; vMicAnalyser = null; vMicBuf = null; }
   function vBin(data, n) { const out = new Array(n).fill(0); if (!data || !data.length) return out; const per = Math.max(1, Math.floor(data.length / n)); for (let i = 0; i < n; i++) { let s = 0; for (let j = 0; j < per; j++) s += data[i * per + j] || 0; out[i] = s / per / 255; } return out; }
   function vMeter() {
     if (!vLive) return;
     const speaking = vAgentSpeaking; let raw;
-    try { if (speaking) { const lvl = vTransport === "webrtc" ? Math.min(1, ((vConv && vConv.getOutputVolume && vConv.getOutputVolume()) || 0) * 2.5) : vAgentEnvLevel(); raw = []; for (let i = 0; i < NUM_BARS; i++) { const shape = 0.55 + 0.45 * Math.sin((i / (NUM_BARS - 1)) * Math.PI); raw.push(lvl * shape); } } else if (vMicAnalyser) { vMicAnalyser.getByteFrequencyData(vMicBuf); raw = vBin(vMicBuf, NUM_BARS); } else { raw = vBin(vConv && vConv.getInputByteFrequencyData && vConv.getInputByteFrequencyData(), NUM_BARS); } } catch { raw = new Array(NUM_BARS).fill(0); }
-    // [truth] Muted + not the agent's turn → flat bars (the SDK's meter reads zero
-    // muted too; this keeps the UI from ever saying "you're being heard" when you aren't).
+    try { if (speaking) { const lvl = Math.min(1, ((vConv && vConv.getOutputVolume()) || 0) * 2.5); raw = []; for (let i = 0; i < NUM_BARS; i++) { const shape = 0.55 + 0.45 * Math.sin((i / (NUM_BARS - 1)) * Math.PI); raw.push(lvl * shape); } } else { raw = vBin(vConv && vConv.getInputByteFrequencyData(), NUM_BARS); } } catch { raw = new Array(NUM_BARS).fill(0); }
+    // [truth] Muted + not the voice's turn → flat bars: the UI never says "you're being heard" when you aren't.
     if (vMuted && !speaking) raw = new Array(NUM_BARS).fill(0);
-    // Nothing audible can play, or the inbound audio stalled mid-reply: flat (the hint says why) — never waves over silence.
-    if (vAudioWarn || (vPlayback && vPlayback.stalled)) raw = new Array(NUM_BARS).fill(0);
     for (let i = 0; i < NUM_BARS; i++) { const decayed = vSmoothed[i] * DECAY; vSmoothed[i] = raw[i] > decayed ? raw[i] : decayed; const h = 0.16 + Math.min(1, vSmoothed[i]) * 0.84; vBars[i].style.transform = `scaleY(${h.toFixed(3)})`; }
     vWaitLine(performance.now());
     vRafId = requestAnimationFrame(vMeter);
   }
-  // Voice is the front of house of the open chat (D3, server/voice.ts): its one tool that acts, Ask, is a request
-  // to that chat's agent, sent after the lines before it (so the agent reads Carl's words first). The phone has no
-  // screen tools (the box's prompt says so).
-  function vClientTools(toolNames) { const tools = {}; for (const name of toolNames || []) { tools[name] = async (params) => { try { await vLines; const r = await api("/api/v1/voice/tool", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, args: params || {}, convId: vVoiceConv, device: "phone", ...(vSessionId ? { sessionId: vSessionId } : {}) }) }); const j = await r.json(); if (j && typeof j.convId === "string" && j.convId) vVoiceConv = j.convId; return typeof j.result === "string" ? j.result : "Error: " + (j.error || r.status) + ". Nothing was done."; } catch (e) { return "Error: the box did not take it (" + String(e) + "). Nothing was done."; } }; } return tools; }
-  // The call's lines go into the open chat on the box (POST /api/v1/voice/transcript), in order, one at a time;
-  // with no chat open, the first line makes one and the rest go on there.
-  let vVoiceConv: string | null = null, vLines: Promise<unknown> = Promise.resolve();
-  // This call's id on the box (one voice at a time: its lines, tools and polls carry it; the box says when another device took over).
-  let vSessionId: string | null = null;
-  function vSaveLine(role: string, text: string, end = false) {
-    vLines = vLines.then(async () => {
-      try {
-        // `end`: the session is over — the box stops counting it as busy (its updater waits for that); no line is saved when nothing was said.
-        const r = await api("/api/v1/voice/transcript", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ convId: vVoiceConv, role, text, device: "phone", ...(vSessionId ? { sessionId: vSessionId } : {}), ...(end ? { system: true, ended: true } : {}) }) });
-        const j = await r.json();
-        if (j && typeof j.convId === "string" && j.convId && !end) vVoiceConv = j.convId;
-      } catch {}
-    });
-  }
-  // The agent's answers and what Carl did elsewhere, into the live call, held while the voice speaks.
-  const vGate = new QuietGate(() => vAgentSpeaking);
-  const vPusher = new VoiceImagePusher();
-  let vUpdates: VoiceUpdates | null = null;
-  function vStartUpdates(conv, cursor) {
-    if (vUpdates) vUpdates.stop();
-    vUpdates = new VoiceUpdates({
-      cursor,
-      gate: vGate,
-      conv: () => (vConv === conv ? conv : null),
-      // An answer he is waiting for waits until he isn't mid-sentence.
-      userSpeaking: () => { try { return !vMuted && (conv.getInputVolume?.() ?? 0) >= SPEECH_LEVEL; } catch { return false; } },
-      fetch: async (cur) => {
-        await vLines;
-        if (!vVoiceConv) { await new Promise((res) => setTimeout(res, 1000)); return { updates: [], cursor: cur || "" }; }
-        const r = await api("/api/v1/voice/updates?convId=" + encodeURIComponent(vVoiceConv) + "&wait=20000" + (cur ? "&cursor=" + encodeURIComponent(cur) : "") + (vSessionId ? "&session=" + encodeURIComponent(vSessionId) : ""));
-        if (!r.ok) throw new Error("updates " + r.status);
-        return r.json();
-      },
-      // Voice moved to another device (one voice at a time): this call ends now and says where it went.
-      onMoved: (m) => { if (vConv === conv) vMovedAway(m.line); },
-    }).start();
-  }
-  function vMovedAway(line: string) {
-    // No end line: the box already said it in the thread ("Voice moved from the phone to the laptop.").
-    vLive = false;
-    const c = vConv;
-    try { if (c) c.endSession(); } catch {}
-    vTeardown();
-    toast(line);
-  }
-  let vTransport: "webrtc" | "websocket" = "webrtc";
-  // The call's mic and output, pinned to the physical devices behind a virtual "default" (Android Chrome lists
-  // them; iOS Safari lists none, so there nothing is pinned): the system flipping its default mid-call no longer
-  // moves or ends the call; unplugged, the best remaining one (src/voiceMic.ts). Every devicechange is logged with
-  // both lists, the contexts and what the waves draw; the inbound audio's stats per reply and every dropout too
-  // (src/voiceStats.ts), so "the voice is gone, then glitches back" is network or local in the log.
-  // Every voice line to the box too (src/voiceShip.ts → <state>/logs/voice.jsonl), batched, on call end and page hide.
+  // Every voice line to the box (src/voiceShip.ts → <state>/logs/voice.jsonl), batched, on call end and page hide.
   const vShip = new VoiceLogShipper({ device: "phone" });
   vShip.post = async (body, keepalive) => { const r = await api("/api/v1/board/log", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), keepalive }); if (!r.ok) throw new Error("log " + r.status); };
   vShip.installPageHide();
   const vLog = (ev, d) => { logEvent(ev.replace(/ /g, "_"), d); vShip.add(ev, d); };
+  // The call's mic and output, pinned to the physical devices behind a virtual "default" (Android Chrome lists them;
+  // iOS Safari lists none, so there nothing is pinned): the system flipping its default mid-call no longer moves or
+  // ends the call; unplugged, the best remaining one (src/voiceMic.ts).
   const vMicPin = new MicPin({ list: listAudioDevices, log: vLog });
   const vOutPin = new MicPin({ list: listAudioDevices, log: vLog, kind: "audiooutput" });
-  let vOutputLost = false, vAudioWarn = "", vPlayback = null, vUnwatch = [];
-  function vParts(c) {
-    const room = (c && c.connection && c.connection.getRoom && c.connection.getRoom()) || null;
-    const contexts = [c && c.input && c.input.context, c && c.output && c.output.context, vMicCtx].filter((x) => x && typeof x.state === "string");
-    return { room, contexts: [...new Set(contexts)] };
-  }
-  function vLocal(c) { return { contexts: vParts(c).contexts.map((x) => x.state), outputDevice: (vOutPin.pinned && vOutPin.pinned.label) || "system default", outputLost: vOutputLost }; }
-  function vCheckAudio(c) {
-    if (vConv !== c) return;
-    const { room, contexts } = vParts(c);
-    const why = audioBlocked({ speaking: vAgentSpeaking, contexts: contexts.map((x) => x.state), canPlay: room ? room.canPlaybackAudio : null, outputLost: vOutputLost }) || "";
-    if (why === vAudioWarn) return;
-    vLog(why ? "voice audio blocked" : "voice audio unblocked", { why: why || null, ...vLocal(c) });
-    vAudioWarn = why;
-    document.body.classList.toggle("vaudiowarn", !!why);
-    const vh = $("vhint"); if (vh) vh.textContent = why ? AUDIO_WARN_LINE : vMuted ? "Muted — tap the mic to talk" : "";
-  }
-  async function vReconnectAudio() {
-    const c = vConv; if (!c) return;
-    const { room, contexts } = vParts(c);
-    vLog("voice audio reconnect", vLocal(c));
-    if (room && room.startAudio) await room.startAudio().catch(() => {});
-    for (const x of contexts) if (x.state !== "running" && x.state !== "closed") await x.resume().catch(() => {});
-    if (c.changeOutputDevice && (vOutPin.pinned || vOutputLost)) { try { await c.changeOutputDevice({ outputDeviceId: await vOutPin.target() }); vOutputLost = false; } catch {} }
-    vCheckAudio(c);
-  }
-  { const vh = $("vhint"); if (vh) vh.addEventListener("click", () => { if (vAudioWarn) void vReconnectAudio(); }); }
-  function vUnwatchAll() { for (const f of vUnwatch.splice(0)) { try { f(); } catch {} } if (vPlayback) { vPlayback.stop(); vPlayback = null; } }
-  function vWatchDevices(c) {
+  let vUnwatch: (() => void)[] = [];
+  function vUnwatchAll() { for (const f of vUnwatch.splice(0)) { try { f(); } catch {} } }
+  function vWatchDevices(c: BrainConversation) {
     vUnwatchAll();
     const md = navigator.mediaDevices;
-    if (md && md.addEventListener) {
-      const on = async () => {
-        if (vConv !== c) return;
-        const listed = await vMicPin.devices(); const devs = listed || [];
-        let lv = {}; try { lv = { inputLevel: +(c.getInputVolume() || 0).toFixed(3), outputLevel: +(c.getOutputVolume() || 0).toFixed(3) }; } catch {}
-        vLog("voice devices changed", { ...deviceLists(devs), mic: (vMicPin.pinned && vMicPin.pinned.label) || null, micStillThere: vMicPin.pinned ? vMicPin.present(devs) : null, outputDevice: (vOutPin.pinned && vOutPin.pinned.label) || null, outputStillThere: vOutPin.pinned ? vOutPin.present(devs) : null, contexts: vLocal(c).contexts, waves: vAgentSpeaking ? "output" : "input", ...lv });
-        if (!listed || vConv !== c) return;
-        if (c.changeOutputDevice) { const o = await vOutPin.devicesChanged(devs, (id) => c.changeOutputDevice({ outputDeviceId: id })); vOutputLost = o === "lost" || o === "failed"; }
-        if (c.changeInputDevice && vConv === c) await vMicPin.devicesChanged(devs, (id) => c.changeInputDevice({ inputDeviceId: id }));
-      };
-      const h = () => void on();
-      md.addEventListener("devicechange", h);
-      vUnwatch.push(() => md.removeEventListener("devicechange", h));
-    }
-    for (const ctx of vParts(c).contexts) { const on = () => vLog("voice audio context", { state: ctx.state, speaking: vAgentSpeaking }); ctx.addEventListener("statechange", on); vUnwatch.push(() => ctx.removeEventListener("statechange", on)); }
-    const sess = (navigator as any).audioSession;
-    if (sess) { vLog("voice audio session", { type: sess.type || null, state: sess.state || null }); const on = () => vLog("voice audio session", { type: sess.type || null, state: sess.state || null, speaking: vAgentSpeaking }); if (sess.addEventListener) { sess.addEventListener("statechange", on); vUnwatch.push(() => sess.removeEventListener("statechange", on)); } }
-    // A suspended context comes back on the next touch (iOS resumes audio only in a gesture).
-    const touch = () => { if (vConv !== c) return; const stuck = vParts(c).contexts.filter((x) => x.state === "suspended" || x.state === "interrupted"); if (!stuck.length) return; vLog("voice audio resume", { on: "touch", contexts: stuck.map((x) => x.state) }); for (const x of stuck) x.resume().catch(() => {}); const r = vParts(c).room; if (r && r.startAudio) r.startAudio().catch(() => {}); };
-    document.addEventListener("pointerdown", touch, true);
-    vUnwatch.push(() => document.removeEventListener("pointerdown", touch, true));
-    vPlayback = new PlaybackMonitor({ stats: () => roomAudioStats(vParts(c).room), speaking: () => vConv === c && vAgentSpeaking, local: () => vLocal(c), log: vLog }).start();
-    const chk = setInterval(() => vCheckAudio(c), 250);
-    vUnwatch.push(() => clearInterval(chk));
+    if (!md || !md.addEventListener) return;
+    const on = async () => {
+      if (vConv !== c) return;
+      const listed = await vMicPin.devices(); const devs = listed || [];
+      vLog("voice devices changed", { ...deviceLists(devs), mic: (vMicPin.pinned && vMicPin.pinned.label) || null, outputDevice: (vOutPin.pinned && vOutPin.pinned.label) || null });
+      if (!listed || vConv !== c) return;
+      await vOutPin.devicesChanged(devs, (id) => c.changeOutputDevice({ outputDeviceId: id }));
+      if (vConv === c) await vMicPin.devicesChanged(devs, (id) => c.changeInputDevice({ inputDeviceId: id }));
+    };
+    const h = () => void on();
+    md.addEventListener("devicechange", h);
+    vUnwatch.push(() => md.removeEventListener("devicechange", h));
   }
   async function vStart() {
     if (vConnecting || vConv) return;
     if (!micAvailable()) { setVErr("This page isn't HTTPS, so the browser blocks the mic. Open the https://…ts.net link from Settings → Phone."); return; }
     vConnecting = true; setVErr(""); document.body.classList.add("vconnecting");
-    vVoiceConv = convId || null;
     try {
-      // The mic permission, asked on the tap; then let go: the SDK opens the ONE
-      // stream the call sends, and the waves read its meter (a second stream of
-      // ours could leave iOS capturing one and muting the other).
+      // The mic permission, asked on the tap; then let go (the call opens its own stream on the pinned device).
       const micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
       for (const t of micStream.getTracks()) t.stop();
-      // Settings → Voice engine "New": the voice IS the conversation's agent (the box hears and speaks; pi answers).
-      {
-        const er = await api("/api/v1/brain/engine").catch(() => null);
-        const eng = er && er.ok ? await er.json().catch(() => null) : null;
-        if (eng && eng.engine === "new") { await vStartBrain(); return; }
-      }
-      let cfg = null;
-      let sessErr = "";
-      for (let a = 0; a < 6; a++) {
-        try { const r = await api("/api/v1/voice/session?device=phone" + (vVoiceConv ? "&convId=" + encodeURIComponent(vVoiceConv) : "")); if (r.ok) { cfg = await r.json(); break; } sessErr = `session ${r.status}: ${(await r.text()).slice(0, 200)}`; }
-        catch (e) { sessErr = String((e && e.message) || e); }
-        // Retry ANY failure (502 transient mint, network blip, 503 not-ready), not
-        // just 503 — a single stray error used to kill the whole start. Backoff.
-        if (a < 5) { await new Promise((res) => setTimeout(res, 700 * (a + 1))); continue; }
-        throw new Error(sessErr || "session not ready");
-      }
-      if (!cfg) throw new Error("session not ready");
-      vSessionId = cfg.sessionId || null;
-      if (cfg.convId) vVoiceConv = cfg.convId;
-      // @ts-ignore — URL import; the browser resolves it at runtime
-      const sdk = (await sdkPromise) || (await import("@elevenlabs/client")); const { Conversation } = sdk;
-      let timedOut = false, watchdog = 0;
-      // The mic was allowed in this tap: device ids are readable, the call opens on the pinned one.
+      const post = async (path: string, body: Record<string, unknown>) => {
+        const r = await api(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(j.error || "HTTP " + r.status);
+        return j;
+      };
       const vListed = await vMicPin.devices();
-      let vMicId = await vMicPin.atStart(vListed);
-      let vOutId = canPickOutput() ? await vOutPin.atStart(vListed) : (vOutPin.reset(), undefined);
-      // WebRTC (ElevenLabs' recommended transport: echo cancellation, jitter buffer) with
-      // the box's conversation token; WebSocket with the signed URL when there's no token
-      // or WebRTC can't connect.
-      vTransport = cfg.conversationToken ? "webrtc" : "websocket";
-      const openOnce = () => Conversation.startSession({
-        ...(vTransport === "webrtc" ? { conversationToken: cfg.conversationToken, connectionType: "webrtc" } : { signedUrl: cfg.signedUrl, connectionType: "websocket" }),
+      const vMicId = await vMicPin.atStart(vListed);
+      const vOutId = canPickOutput() ? await vOutPin.atStart(vListed) : (vOutPin.reset(), undefined);
+      const c = await BrainConversation.start({
+        post,
+        convId: convId || MAIN_ID, // no chat open: the one main conversation
+        device: "phone",
         ...(vMicId ? { inputDeviceId: vMicId } : {}),
         ...(vOutId ? { outputDeviceId: vOutId } : {}),
-        overrides: { agent: { prompt: { prompt: cfg.systemPrompt || "" }, language: "en", firstMessage: "" }, tts: { voiceId: cfg.voiceId } },
-        dynamicVariables: cfg.dynamicVariables || {}, clientTools: vClientTools(cfg.toolNames),
-        onConnect: () => { if (timedOut) return; vConnecting = false; vAutoRetried = false; vLive = true; document.body.classList.remove("vconnecting"); vMeter(); },
-        onDisconnect: (d) => { vLog("voice closed", { transport: vTransport, reason: d && d.reason, message: d && d.message, closeCode: d && (d.closeCode ?? (d.context && d.context.code)), closeReason: d && (d.closeReason ?? (d.context && d.context.reason)) }); if (d && d.reason !== "user") console.warn("[voice] closed", vTransport, JSON.stringify({ reason: d.reason, message: d.message, code: d.closeCode ?? (d.context && d.context.code), why: d.closeReason ?? (d.context && d.context.reason) })); if (!timedOut) vTeardown(); },
-        onError: (m) => setVErr(typeof m === "string" ? m : (m && m.message) || "voice error"),
-        onAudio: (b64) => { if (vTransport === "websocket") try { vAgentEnvPush(b64); } catch {} },
-        onMessage: ({ message, role }) => { const raw = (message || "").trim(); if (role === "user" && isControlLine(raw)) return; /* the box's own [vc:result] updates: not Carl's */ const text = role === "user" ? raw : stripAudioTags(raw); if (role !== "user" && isFillerLine(text)) return; /* spoken, never written */ if (text) vSaveLine(role === "user" ? "user" : "assistant", text); },
-        // Mode leaving "speaking" = the playback buffer drained (or barge-in) —
-        // everything that arrived was heard, so drop the queued envelope tail.
-        onModeChange: ({ mode }) => { vAgentSpeaking = mode === "speaking"; if (!vAgentSpeaking) vAgentEnvReset(); vGate.modeChanged(); },
+        log: (ev, d) => vLog(ev, d),
+        onConnect: () => { vConnecting = false; vAutoRetried = false; vLive = true; document.body.classList.remove("vconnecting"); vMeter(); },
+        onMode: (m) => { vAgentSpeaking = m === "speaking"; },
+        onDisconnect: (d) => { vLog("voice closed", { transport: "brain", reason: d.reason, message: d.message }); vTeardown(); },
       });
-      // The pinned device refused (gone since the listing): the system default.
-      const open = () => openOnce().catch((e) => {
-        if (!vMicId || timedOut || !/NotFound|NotReadable|Overconstrained/i.test(String(e && e.name) + " " + String(e && e.message))) throw e;
-        logEvent("voice_mic_pin_failed", { error: String((e && e.message) || e).slice(0, 300) });
-        vMicPin.reset(); vOutPin.reset(); vMicId = undefined; vOutId = undefined;
-        return openOnce();
-      });
-      const sessionPromise = open().catch((e) => {
-        if (vTransport !== "webrtc" || !cfg.signedUrl || timedOut || /NotAllowed|NotFound|NotReadable|Permission/i.test(String(e && e.name) + String(e && e.message))) throw e;
-        console.warn("[voice] WebRTC failed, retrying over WebSocket:", String((e && e.message) || e));
-        vTransport = "websocket";
-        return open();
-      });
-      sessionPromise.then((c) => { clearTimeout(watchdog); if (timedOut && c) { try { c.endSession(); } catch {} } }).catch(() => clearTimeout(watchdog));
-      vConv = await Promise.race([sessionPromise, new Promise((_, rej) => { watchdog = setTimeout(() => { timedOut = true; rej(new Error("connect timed out after 15s")); }, 15000); })]);
-      clearTimeout(watchdog);
-      if (cfg.convId) vVoiceConv = cfg.convId;
-      vWatchDevices(vConv);
-      // The chat's newest images (the box sends them with the session): this call has never seen them.
-      { const c = vConv; vPusher.reset(); void pushStartImages(c, vPusher, cfg.images, () => vConv === c).catch(() => {}); vStartUpdates(c, cfg.cursor || null); }
+      vConv = c;
+      vWatchDevices(c);
     } catch (e) {
-      vConnecting = false; vTeardownAudio(); document.body.classList.remove("vconnecting");
+      vConnecting = false; document.body.classList.remove("vconnecting");
       if (!vAutoRetried) { vAutoRetried = true; setTimeout(() => { try { if (vMicCtx && vMicCtx.state === "suspended") vMicCtx.resume().catch(() => {}); } catch {} vStart(); }, 800); return; }
       setVErr(String((e && e.message) || e));
     }
   }
-  /** The New voice's call: the phone is the mic and the speaker; its lines are the conversation's turns on the box. */
-  async function vStartBrain() {
-    const cid = vVoiceConv || MAIN_ID; // no chat open: the one main conversation
-    vVoiceConv = cid;
-    vSessionId = null;
-    const post = async (path: string, body: Record<string, unknown>) => {
-      const r = await api(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-      const j = await r.json().catch(() => ({}));
-      if (!r.ok) throw new Error(j.error || "HTTP " + r.status);
-      return j;
-    };
-    const vListed = await vMicPin.devices();
-    const vMicId = await vMicPin.atStart(vListed);
-    const vOutId = canPickOutput() ? await vOutPin.atStart(vListed) : (vOutPin.reset(), undefined);
-    vTransport = "webrtc";
-    vConv = await BrainConversation.start({
-      post,
-      convId: cid,
-      device: "phone",
-      ...(vMicId ? { inputDeviceId: vMicId } : {}),
-      ...(vOutId ? { outputDeviceId: vOutId } : {}),
-      log: (ev, d) => vLog(ev, d),
-      onConnect: () => { vConnecting = false; vAutoRetried = false; vLive = true; document.body.classList.remove("vconnecting"); vMeter(); },
-      onMode: (m) => { vAgentSpeaking = m === "speaking"; },
-      onDisconnect: (d) => { vLog("voice closed", { transport: "brain", reason: d.reason, message: d.message }); vTeardown(); },
-    });
-  }
-  function vTeardown() { vUnwatchAll(); void vShip.flush(); vMicPin.reset(); vOutPin.reset(); vOutputLost = false; vAudioWarn = ""; document.body.classList.remove("vaudiowarn"); if (vLive && !(vConv instanceof BrainConversation)) vSaveLine("assistant", "Voice session ended.", true); if (vUpdates) { vUpdates.stop(); vUpdates = null; } vGate.reset(); vLive = false; cancelAnimationFrame(vRafId); vRafId = 0; vTeardownAudio(); vAutoRetried = false; vAgentSpeaking = false; vAgentEnvReset(); vSmoothed.fill(0); for (const b of vBars) b.style.transform = "scaleY(.16)"; document.body.classList.remove("voice", "voicemin", "vconnecting", "vmicmuted"); vMuted = false; { const vh = $("vhint"); if (vh) vh.textContent = ""; } vConv = null; vConnecting = false; }
+  function vTeardown() { vUnwatchAll(); void vShip.flush(); vMicPin.reset(); vOutPin.reset(); vLive = false; cancelAnimationFrame(vRafId); vRafId = 0; vAutoRetried = false; vAgentSpeaking = false; vSmoothed.fill(0); for (const b of vBars) b.style.transform = "scaleY(.16)"; document.body.classList.remove("voice", "voicemin", "vconnecting", "vmicmuted"); vMuted = false; { const vh = $("vhint"); if (vh) vh.textContent = ""; } vConv = null; vConnecting = false; }
   async function vStop() { try { if (vConv) await vConv.endSession(); } catch {} vTeardown(); }
   $("voiceRow").onclick = () => {
     closeMenu();
     if (vLive || vConnecting) { document.body.classList.add("voice"); document.body.classList.remove("voicemin"); return; }
+    // iOS unlocks audio only inside the tap: a silent buffer played now lets the reply play later.
     try { vMicCtx = vMicCtx || new (window.AudioContext || window.webkitAudioContext!)(); if (vMicCtx.state === "suspended") vMicCtx.resume().catch(() => {}); const b = vMicCtx.createBuffer(1, 1, 22050); const s = vMicCtx.createBufferSource(); s.buffer = b; s.connect(vMicCtx.destination); s.start(0); } catch {}
     hideKb(); document.body.classList.add("voice"); document.body.classList.remove("voicemin"); vStart();
   };
-  // Mute is the SDK's own (no audio leaves the phone; the voice can still speak a result), and plain to see.
+  // Mute: no audio leaves the phone; the voice can still speak a result. Plain to see.
   function vSetMute(m) { vMuted = m; document.body.classList.toggle("vmicmuted", m); const vh = $("vhint"); if (vh) vh.textContent = m ? "Muted — tap the mic to talk" : ""; const mb = $("vMuteBtn"); if (mb) { mb.setAttribute("aria-pressed", String(m)); mb.setAttribute("aria-label", m ? "unmute mic" : "mute mic"); } if (vConv) try { vConv.setMicMuted(m); } catch {} }
   $("vMuteBtn").onclick = () => vSetMute(!vMuted);
   $("vEndBtn").onclick = vStop;

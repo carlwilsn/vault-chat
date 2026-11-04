@@ -3,8 +3,6 @@
 import { readFileSync, realpathSync, statSync } from "node:fs";
 import { isAbsolute, join, basename } from "node:path";
 import { conversationObjects as readConversationObjects, conversationObject } from "./engine/convs";
-import { globFiles } from "./commands/glob";
-import { runGit } from "./git";
 
 /** voice_server.rs:613 norm_ms. */
 export function normMs(ts: number): number {
@@ -355,68 +353,4 @@ export function fileSize(p: string): number {
   return statSync(p).size;
 }
 
-/** voice_server.rs:1569 dispatch_tool — the read-only voice tool fallback
- * (there is no voice host headless, so this is the only path). */
-export async function dispatchVoiceTool(vault: string, raw: string): Promise<string> {
-  let v: any;
-  try {
-    v = JSON.parse(raw);
-  } catch {
-    return "error: malformed tool request";
-  }
-  const name = str(v?.name);
-  const args = v?.arguments ?? v?.parameters ?? v;
-  const s = (k: string) => str(args?.[k]);
-  switch (name) {
-    case "Read": {
-      const path = s("path");
-      const p = withinVault(vault, path);
-      if (!p) return `error: ${path} is outside the vault`;
-      try {
-        return truncateChars(readFileSync(p, "utf8"), 12_000);
-      } catch (e) {
-        return `error reading ${path}: ${(e as Error).message}`;
-      }
-    }
-    case "Glob": {
-      const full = `${vault.replace(/\\/g, "/")}/${s("pattern").replace(/^\/+/, "")}`;
-      const root = vault.replace(/\\/g, "/").replace(/\/+$/, "") + "/";
-      const out = globFiles(full)
-        .map((p) => p.replace(/\\/g, "/"))
-        .filter((p) => p.startsWith(root))
-        .map((p) => p.slice(root.length))
-        .sort()
-        .slice(0, 200);
-      return out.length ? out.join("\n") : "(no matches)";
-    }
-    case "GitLog": {
-      const rel = s("subdir").trim();
-      const dir = rel === "" || rel === "." ? vault : join(vault, rel);
-      const a = ["log", "--oneline", "--no-color", `-n${Math.min(int(args?.max_count) ?? 30, 200)}`];
-      if (s("since").trim()) a.push(`--since=${s("since").trim()}`);
-      if (s("author").trim()) a.push(`--author=${s("author").trim()}`);
-      try {
-        const r = await runGit(dir, a);
-        return r.code === 0 && r.stdout.trim() ? truncateChars(r.stdout.trim(), 6000) : "(no commits match)";
-      } catch (e) {
-        return `error: ${e}`;
-      }
-    }
-    case "ListConversations": {
-      const convs = readConversationObjects(vault).sort((a, b) => (int(b.lastActivityAt) ?? 0) - (int(a.lastActivityAt) ?? 0));
-      const lines = convs.slice(0, 25).map((c) => `${str(c.id, "?")} — ${str(c.title, "(untitled)")} (${Array.isArray(c.messages) ? c.messages.length : 0} msgs)`);
-      return lines.length ? lines.join("\n") : "(no conversations)";
-    }
-    case "ReadConversation": {
-      const id = s("conversation_id");
-      const n = Math.min(Math.max(int(args?.last_n) ?? 12, 1), 50);
-      const c = readConversationObjects(vault).find((x) => x.id === id);
-      if (!c) return `conversation ${id} not found`;
-      const tail = (Array.isArray(c.messages) ? c.messages : []).slice(-n).map((m: any) => `[${str(m.role, "?")}] ${truncateChars(str(m.content), 600)}`);
-      return `${str(c.title, "(untitled)")}\n\n${tail.join("\n\n")}`;
-    }
-    default:
-      return `"${name}" isn't available over phone voice — this channel is read-only (read files, search, git history, conversations). Ask me to look things up or talk it through instead.`;
-  }
-}
 

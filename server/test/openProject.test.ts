@@ -1,5 +1,5 @@
 // Projects by Carl's ask (reports: "No way to start or enter a project by voice"), through the real engine on a fake
-// pi and the box's real voice routes (ElevenLabs faked):
+// pi and the box's New voice call (no provider):
 //   - the rule: Carl makes projects in the app OR by asking in so many words; never the agent on its own;
 //   - OpenProject (the existing createProjectWithThread, as a tool): "start a project for HW4" makes it and its
 //     thread; "let's work on X" opens an existing one only; "back to Main" returns home;
@@ -12,11 +12,9 @@ import { cleanup } from "./helpers";
 import { makeRig, until, type Rig } from "./longRig";
 
 let rig: Rig;
-let voice: typeof import("../voice");
 const signals: Record<string, unknown>[] = [];
 beforeAll(async () => {
   rig = await makeRig({ deps: { broadcast: (ev: Record<string, unknown>) => signals.push(ev) } });
-  voice = await import("../voice");
 });
 afterAll(async () => {
   rig?.engine?.stop();
@@ -85,76 +83,22 @@ describe("OpenProject", () => {
   });
 });
 
-describe("a live call follows him to the thread", () => {
-  const fakeEl = () => {
-    const real = globalThis.fetch;
-    globalThis.fetch = (async (input: any, init?: any) => {
-      const url = String(typeof input === "string" ? input : input.url);
-      if (!url.startsWith("https://api.elevenlabs.io/")) return real(input, init);
-      if (url.includes("/convai/agents/create")) return new Response(JSON.stringify({ agent_id: "agent_follow" }), { status: 200 });
-      if (url.includes("/get_signed_url")) return new Response(JSON.stringify({ signed_url: "wss://fake.elevenlabs/x" }), { status: 200 });
-      if (url.includes("/conversation/token")) return new Response(JSON.stringify({ token: "fake-webrtc" }), { status: 200 });
-      return new Response("{}", { status: 404 });
-    }) as typeof fetch;
-    return () => (globalThis.fetch = real);
-  };
-
-  it('spoken "start a project for Coconut": the Ask makes it, then the call\'s lines, Asks and updates are that thread\'s', async () => {
-    const restore = fakeEl();
-    try {
-      voice.resetVoiceSessionsForTests();
-      (await import("../../src/store")).useStore.setState({ serviceKeys: { elevenlabs: "el-canary-key" } });
-      const asked: any[] = [];
-      let during: ((b: any) => Promise<void>) | null = null;
-      const deps = {
-        vault: rig.vault,
-        name: "main",
-        main: true,
-        message: (b: any) => rig.engine.message(b),
-        side: {
-          start: async (b: any) => (asked.push(b), { id: `vs${asked.length}` }),
-          wait: async (id: string) => {
-            const b = asked[Number(id.slice(2)) - 1]!;
-            if (during) await during(b);
-            return { text: "Started project Coconut; we're in it now.", error: null };
-          },
-        },
-      } as any;
-      const ses = await voice.voiceSession("main", deps, { device: "laptop" });
-      expect(ses.status).toBe(200);
-      expect(ses.body.convId).toBe("main");
-      const sid = String(ses.body.sessionId);
-      // His words go to the agent (Ask, a side thread of Main), which calls OpenProject: his explicit ask.
-      let opened: any = null;
-      during = async (b) => {
-        opened = await rig.backend.h.sideTool(b.convId, "OpenProject", { project: "Coconut", create: true });
-      };
-      const n = signals.length;
-      await voice.voiceTool(deps, { name: "Ask", args: { request: "Start a project for Coconut.", act: true }, convId: "main", device: "laptop", sessionId: sid });
-      await voice.voiceAsksSettled();
-      expect(asked.at(-1)!.convId).toBe("main");
-      expect(String(opened?.text)).toMatch(/^Started project Coconut .* His screens and the live call are there now/);
-      expect(signals.slice(n)).toContainEqual({ type: "follow", convId: "project-coconut", title: "Coconut", project: "coconut", created: true });
-      expect(voice.liveVoiceSession()?.convId).toBe("project-coconut");
-      // The client still names Main; the box writes the call into the project's thread.
-      const line = await voice.voiceTranscript(deps, { convId: "main", role: "user", text: "Make me three practice problems.", device: "laptop", sessionId: sid });
-      expect(line.body.convId).toBe("project-coconut");
-      expect(await said("project-coconut")).toContain("Make me three practice problems.");
-      expect(await said("main")).not.toContain("Make me three practice problems.");
-      // His next request is worked in that thread.
-      during = null;
-      const t = await voice.voiceTool(deps, { name: "Ask", args: { request: "Make them about tree height.", act: true }, convId: "main", device: "laptop", sessionId: sid });
-      await voice.voiceAsksSettled();
-      expect(t.convId).toBe("project-coconut");
-      expect(asked.at(-1)!.convId).toBe("project-coconut");
-      // Its updates are the thread's: a result there reaches the call.
-      const cur = (await voice.voiceUpdates(deps, { convId: "main", session: sid })).cursor;
-      const done = voice.voiceUpdates(deps, { convId: "main", cursor: cur, waitMs: 8000, session: sid });
-      await voice.voiceTool(deps, { name: "Ask", args: { request: "How many are there?" }, convId: "main", device: "laptop", sessionId: sid });
-      const got = await done;
-      expect(got.updates.some((u) => u.kind === "result")).toBe(true);
-    } finally {
-      restore();
-    }
-  });
+it("OpenProject moves the New call's pi tap and its next spoken turn, without a Classic session", async () => {
+  const voice = await import("../voiceBrain");
+  try {
+    const c = await voice.startCall({ vault: rig.vault, engine: async () => rig.engine,
+      elKey: () => "fake", voiceId: () => "fake", botUrl: "", selfUrl: "", logDir: null },
+      { convId: "main", device: "laptop" });
+    expect(c.status).toBe(200);
+    const n = signals.length;
+    const opened = await rig.backend.h.sideTool("main", "OpenProject", { project: "Coconut", create: true });
+    expect(out(opened)).toMatch(/^Started project Coconut .*His screens and the live call are there now/);
+    expect(signals.slice(n)).toContainEqual({ type: "follow", convId: "project-coconut", title: "Coconut", project: "coconut", created: true });
+    expect(voice.liveCalls()).toContainEqual(expect.objectContaining({ id: c.body.callId, convId: "project-coconut" }));
+    const home = await rig.backend.h.sideTool("project-coconut", "OpenProject", { project: "main" });
+    expect(out(home)).toContain("Back in Main");
+    expect(voice.liveCalls()).toContainEqual(expect.objectContaining({ id: c.body.callId, convId: "main" }));
+  } finally {
+    voice.resetBrainForTests();
+  }
 });

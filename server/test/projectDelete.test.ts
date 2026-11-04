@@ -107,13 +107,6 @@ describe("Delete a project", () => {
     expect(again.text).not.toContain("deleted the project");
   });
 
-  it("a voice call in it goes on in Main", async () => {
-    const voice = await import("../voice");
-    const out = await voice.voiceTranscript({ vault: rig.vault } as any, { text: "Keep going by voice.", role: "user", convId: "project-coconut", device: "phone" });
-    expect(out.body.convId).toBe("main");
-    expect(convs.pictureOf(rig.vault, "main")!.items.some((x: any) => JSON.stringify(x).includes("Keep going by voice."))).toBe(true);
-  });
-
   it("deleting it again is refused; nothing else moves", async () => {
     const r = await rig.engine.intent({ type: "deleteProject", slug: "coconut" });
     expect(r.ok).toBe(false);

@@ -97,7 +97,7 @@ export function vlog(tag: string, data?: unknown): void {
 }
 
 const taps = new Set<(tag: string, data: unknown) => void>();
-/** Every logged line, made safe, as it is logged (the shippers to the box: src/appShip.ts, src/voice-elevenlabs.ts). Returns the off switch. */
+/** Every logged line, made safe, as it is logged (the shippers to the box: src/appShip.ts, src/voiceCall.ts). Returns the off switch. */
 export function onVlog(fn: (tag: string, data: unknown) => void): () => void {
   taps.add(fn);
   return () => taps.delete(fn);

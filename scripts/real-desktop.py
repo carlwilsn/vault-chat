@@ -83,6 +83,7 @@ def main():
     p.add_argument('--before-app', type=Path)
     p.add_argument('--check-plans', action='store_true', help='Exercise ordinary input and local Clear/reopen on the frozen original thread; inference stays blocked')
     p.add_argument('--check-empty-chat', action='store_true', help='Read the actual empty chat after local Clear/reopen; never generate an assistant answer')
+    p.add_argument('--check-voice-only', action='store_true', help='Verify the one voice control and no Classic/engine selector in native settings; microphone stays off')
     p.add_argument('--voice-conflict', action='store_true', help='Hold an owned inert listener; prove real startup refusal and mic-OFF health UI')
     p.add_argument('--server-bundle', type=Path)
     p.add_argument('--out', type=Path, required=True, help='Plain result JSON outside the vault')
@@ -96,6 +97,8 @@ def main():
         p.error('This measures Linux/WebKitGTK only')
     if a.conversation != 'main' and not a.conversation.startswith('project-'):
         p.error('Use an original main/project thread (older read-only chats cannot measure composer input)')
+    if a.check_voice_only and not a.voice_conflict:
+        p.error('--check-voice-only requires --voice-conflict for genuine startup Health')
     if a.min_messages < 1:
         p.error('--min-messages must be positive')
     tools = ['Xvfb', 'xdotool', 'openbox', 'dbus-daemon', 'WebKitWebDriver', 'node', 'npm', 'flock']
@@ -235,7 +238,7 @@ def main():
                           VC_VOICE_PIPELINE='off', VC_VOICE_PORT=str(voice.server_port), VC_VOICE_PIPELINE_PORT=str(voice.server_port))
         if a.voice_conflict:
             state.mkdir(parents=True, exist_ok=True)
-            (state / 'voice-engine.json').write_text('{"engine":"new"}')
+            (state / 'voice-engine.json').write_text('{"engine":"classic"}' if a.check_voice_only else '{"engine":"new"}')
             server_env.update(VC_VOICE_PIPELINE='on', VC_VOICE_BRAIN='pi')
         spawn(['node', str(a.server_bundle)], 'server', server_env)
         base = 'http://127.0.0.1:' + str(server_port)
@@ -528,7 +531,13 @@ def main():
                                       'history': 'original server conversation unchanged; Clear is local only'}
                     if label != 'before' and (after_clear['mounted'] or after_reopen['mounted'] or after_input['oldFourRowPlan']):
                         raise RuntimeError('Stale plan resurrected after ordinary input, local Clear or native reopen')
-                if a.voice_conflict:
+                if a.check_voice_only:
+                    if not exists('[data-perf-view="fullscreen"]'):
+                        key('ctrl+shift+f')
+                        wait_for(lambda: exists('[data-perf-view="fullscreen"]'), 'full chat single voice control')
+                    voice_controls = js('''return {oneComposerVoiceButton:document.querySelectorAll('button[title="Voice (Ctrl+D)"]').length===1,
+                        microphoneOff:!document.querySelector('[data-el=voice-waves-mute]')};''')
+                if a.voice_conflict or a.check_voice_only:
                     click('button[title="Settings"]')
                     # The health control lives in ordinary Voice settings, reachable without opening the mic.
                     wait_for(lambda: js('return !!document.querySelector("[data-el=voice-health-open]");'), 'voice settings status')
@@ -537,6 +546,15 @@ def main():
                             break
                         run('xdotool', 'mousemove', '1300', '700', 'click', '5', env=childenv, stdout=subprocess.DEVNULL)
                         time.sleep(.15)
+                    if a.check_voice_only:
+                        voice_only = js('''return {noClassic:!document.body.innerText.includes('Classic'),
+                            noEngineSelector:!document.querySelector('[data-el=voice-engine]'),
+                            healthAvailable:!!document.querySelector('[data-el=voice-health-open]')};''')
+                        voice_only.update(voice_controls)
+                        voice_only['legacyChoiceUntouched'] = (state / 'voice-engine.json').read_text() == '{"engine":"classic"}'
+                        if not all(voice_only.values()):
+                            raise RuntimeError('Native settings still offer Classic or lost mic-OFF Health')
+                        result['voiceOnly'] = voice_only
                     click('[data-el="voice-health-open"]')
                     health_ui = wait_for(lambda: js('''const d=document.querySelector('[role="dialog"][aria-label="Voice health"]');
                         if(!d)return null;return {microphoneOff:d.textContent.includes('Microphone off'),

@@ -10,7 +10,6 @@ import { findBoard, lookBoard } from "../boards";
 import { sideToolSpecs, toolAnswer, voiceSideToolSpecs } from "../engine/engine";
 import { hostToolContent } from "../engine/pi/ext/policy.mjs";
 import { ENGINE_ROLE_PROMPT } from "../engine/prompt";
-import { buildVoicePrompt } from "../../src/voicePrompt";
 
 // Two different 1×1 PNGs (the view and the overview).
 const PNG_A = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==", "base64");
@@ -88,8 +87,4 @@ describe("BoardLook", () => {
     expect(ENGINE_ROLE_PROMPT).toMatch(/BoardLook \{board\?\} shows a board as last saved/);
   });
 
-  it("the voice off the board (laptop, phone) hands 'look at my whiteboard' to the agent instead of reading its own screen", () => {
-    for (const device of ["laptop", "phone"] as const) expect(buildVoicePrompt({ device })).toMatch(/Ask the agent to look at that board .* Never answer from this screen instead/);
-    expect(buildVoicePrompt({ device: "board" })).not.toMatch(/His iPad whiteboard is not on this screen/);
-  });
 });

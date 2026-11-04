@@ -20,7 +20,6 @@ import { landMarkdown, reportScroll } from "./scrollTarget";
 import { decodeTarget } from "./viewTarget";
 import { findVaultFileByTail, tryOpenLink } from "./linkNav";
 import { noteEditedFile } from "./commit-controller";
-import { pushViewportContextDebounced } from "./voice-elevenlabs";
 import { applyDiskContent, pendingBoxText, registerDirty, setDiskChanged, useLiveFiles } from "./liveReload";
 
 import { Markdown } from "./Markdown";
@@ -203,10 +202,6 @@ function publishTextViewport(
     scrollRatio: ratio,
     visibleText: visible,
   });
-  // Live scroll → push a contextual update to the active voice
-  // session so the agent always knows what the user is reading.
-  // No-op when no session is active.
-  pushViewportContextDebounced();
 }
 
 type Props = { paneId?: string };

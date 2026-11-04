@@ -10,7 +10,6 @@ const vault = makeTempVault("vc-voicelibrary-");
 installFakeTauri(vault);
 
 const L = await import("../../src/voiceLibraryBrowse.ts");
-const { boxVoiceSession } = await import("../../src/voiceBox.ts");
 
 type Call = { url: string; method: string; headers: Record<string, string>; body?: string };
 let calls: Call[] = [];
@@ -74,7 +73,7 @@ test("recommended: the featured ones, topped up from trending to eight", async (
   assert.deepEqual([q.get("featured"), q.get("page_size"), q.get("language"), q.get("use_cases"), q.get("sort")], ["true", "8", "en", "conversational", "trending"]);
 });
 
-test("picking a library voice adds it to the account, then selects it — and the box's session gets it", async () => {
+test("picking a library voice adds it to the account, then selects it", async () => {
   const f = respond(() => json({ voice_id: "lib-new-1" }));
   const r = await L.pickLibraryVoice("el-test", v("lib-new-1", "Juniper"), new Set(["nPczCjzI2devNBz1zQrb"]), f);
   assert.deepEqual(r, { voiceId: "lib-new-1", added: true });
@@ -84,13 +83,6 @@ test("picking a library voice adds it to the account, then selects it — and th
   assert.equal(calls[0].url, "https://api.elevenlabs.io/v1/voices/add/owner-lib-new-1/lib-new-1");
   assert.deepEqual(JSON.parse(calls[0].body!), { new_name: "Juniper" });
   assert.equal(localStorage.getItem("vault_chat_elevenlabs_voice"), "lib-new-1", "selected like any voice");
-  // The box voice path reads the same key: its session is asked for this voice.
-  const paths: string[] = [];
-  await boxVoiceSession({ link: {} } as any, null, async (_l, path) => {
-    paths.push(path);
-    return { signedUrl: "wss://fake", systemPrompt: "p", toolNames: [] };
-  });
-  assert.match(paths[0], /[?&]voice=lib-new-1(&|$)/);
 });
 
 test("the plan's voice limit: one plain line, nothing selected", async () => {

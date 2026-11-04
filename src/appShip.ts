@@ -22,7 +22,7 @@ export function installAppShip(): void {
     if (!r.ok) throw new Error(r.error ?? "not sent");
   };
   onVlog((tag, data) => {
-    // The voice's own console lines go with the voice's (voice.jsonl, src/voice-elevenlabs.ts).
+    // The voice's own console lines go with the voice's (voice.jsonl, src/voiceCall.ts).
     if (typeof data === "string" && data.startsWith("[voice-eleven]")) return;
     ship.add(tag, data);
   });

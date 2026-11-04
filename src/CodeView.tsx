@@ -4,7 +4,6 @@ import rehypeHighlight from "rehype-highlight";
 import { useStore } from "./store";
 import { reportScroll } from "./scrollTarget";
 import { decodeTarget, landLines } from "./viewTarget";
-import { pushViewportContextDebounced } from "./voice-elevenlabs";
 
 const EXT_TO_LANG: Record<string, string> = {
   py: "python",
@@ -161,5 +160,4 @@ function publishCodeViewport(path: string, content: string, ratio: number): void
     scrollRatio: ratio,
     visibleText: visible,
   });
-  pushViewportContextDebounced();
 }

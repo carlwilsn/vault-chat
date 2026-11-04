@@ -42,7 +42,7 @@ async function refreshStoreNotes(vault: string): Promise<void> {
   }
 }
 
-/** Specs for the engine's tool list (the voice agent's are in src/voice-elevenlabs.ts, same names and arguments). */
+/** Specs for the engine's tool list. */
 export const noteToolSpecs = [
   {
     type: "function" as const,

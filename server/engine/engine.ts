@@ -1298,6 +1298,8 @@ export class Engine {
     const tell = [...((this.picture(main.id)?.meta.tellAgent as string[] | undefined) ?? []), `Carl deleted the project "${moved.name}" (its thread is gone from his screens${o.folder ? ", and its folder" : "; its folder stays, a plain folder"}). Don't bring it up or treat it as a project any more unless he does. If he wants it back, RestoreProject brings it back whole; never move its files yourself.`];
     this.emit(main.id, { type: "meta", patch: { tellAgent: tell } });
     this.d.broadcast?.({ type: "project", slug, deleted: true, convId: id, to: MAIN_ID });
+    // A call in it goes on in Main (server/voiceBrain.ts).
+    void import("../voiceBrain").then((v) => v.followCall(this.d.vault, MAIN_ID, id)).catch(() => {});
     this.log(`project ${slug} deleted (kept as ${moved.movedTo}${folderGone ? `; its folder too: ${String(folderGone.how)} ${String(folderGone.where)}` : "; its folder stays"})`);
     return { ok: true, slug, name: moved.name, movedTo: moved.movedTo, convId: id, to: MAIN_ID, ...(folderGone ? { folderGone } : {}) };
   }
@@ -2459,9 +2461,12 @@ export class Engine {
     }
   }
 
-  /** An inbox change on /poll (the iPad's badge); a landed entry carries a short line for a live voice session to say at its next pause (src/voice-elevenlabs.ts). */
+  /** An inbox change on /poll (the iPad's badge); a landed entry (or a make that failed) is one short line a live call
+   *  says at its next real gap (server/voiceBrain.ts announce). */
   private inboxEvent(ev: InboxEvent): void {
-    this.d.broadcast?.({ ...ev, ...(ev.landed ? { say: `"${ev.title}" is in your board inbox.` } : ev.failed ? { say: `I couldn't make "${ev.title}": ${ev.failed}.` } : {}) });
+    const say = ev.landed ? `"${ev.title}" is in your board inbox.` : ev.failed ? `I couldn't make "${ev.title}": ${ev.failed}.` : "";
+    this.d.broadcast?.({ ...ev, ...(say ? { say } : {}) });
+    if (say) void import("../voiceBrain").then((v) => v.announce(this.d.vault, say)).catch(() => {});
   }
 
 

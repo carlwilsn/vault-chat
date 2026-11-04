@@ -12,7 +12,7 @@ node dist-server/vault-chat-server.mjs
 ```
 
 The bundle is self-contained: node 22 and `git` on `PATH` are all it needs at run time. The phone assets
-(`phone.html`, `phone-sw.js`, `voice.html`, the icon) and the default agent prompts are inlined.
+(`phone.html`, `phone-sw.js`, the icon) and the default agent prompts are inlined.
 
 ## Environment
 

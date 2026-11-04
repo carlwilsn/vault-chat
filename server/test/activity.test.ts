@@ -79,12 +79,8 @@ class FakeBackend extends EventEmitter {
 
 let act: typeof import("../activity");
 let core: typeof import("../../src/activityCore");
-let voice: typeof import("../voice");
 let engine: any, engine2: any;
 let backend: FakeBackend, backend2: FakeBackend;
-let deps: import("../voice").VoiceDeps;
-/** Voice's Asks (pi side threads, faked): what each was given. */
-const sideAsks: { kind: string; convId: string; text: string; tools?: string }[] = [];
 
 const until = async (fn: () => Promise<boolean> | boolean, ms = 10_000) => {
   const t0 = Date.now();
@@ -140,8 +136,6 @@ beforeAll(async () => {
   engine2 = makeEngine(Engine, vault2, backend2);
   act = await import("../activity");
   core = await import("../../src/activityCore");
-  voice = await import("../voice");
-  deps = { vault, name: "main", main: true, message: (b) => engine.message(b), side: { start: async (b) => (sideAsks.push(b), { id: `s${sideAsks.length}` }), wait: async () => ({ text: "Summarised.", error: null }) } };
 });
 
 afterAll(() => {
@@ -370,22 +364,6 @@ describe("every surface sees the same stream (engine on a fake pi)", () => {
     expect(other.texts).not.toContain(`(id ${other.convId})`);
   });
 
-  it("what Carl said by voice reaches a later Ctrl+L layer and a later chat turn, pointing at its chat; voice's reply stays there", async () => {
-    const t = await voice.voiceTranscript(deps, { role: "user", text: "shorten the heading, please" });
-    expect(t.status).toBe(200);
-    await voice.voiceTranscript(deps, { role: "assistant", text: "Done — the title is now Transformers.", convId: t.body.convId });
-    // What a Ctrl+L side thread with no conversation gets (the same layer, through the same function).
-    const sum = { activity: act.youLayer(vault).text };
-    expect(sum.activity).toContain(`Voice (in chat ${t.body.convId}): Carl said: "shorten the heading, please"`);
-    // Voice's reply is that conversation's content: it stays there.
-    expect(sum.activity).not.toContain("Done — the title is now Transformers.");
-    // The chat it was said in has it in its own thread (its pi session): not again in its layer.
-    expect(act.youLayer(vault, { convId: String(t.body.convId) }).text).not.toContain("shorten the heading, please");
-    // Another chat.
-    const chat = await chatTurn(engine, backend, { text: "what did I just say by voice?" });
-    expect(chat.texts).toContain('Carl said: "shorten the heading, please"');
-  });
-
   it("an image capture is stored under .vault-chat/local/captures and the chat's you layer references it", async () => {
     const r = act.activityPost(vault, {
       entry: { kind: "capture", modality: "capture", text: "captured a region for the chat", path: "paper.pdf", where: "page 2", image: "notes/a.md" },
@@ -400,32 +378,6 @@ describe("every surface sees the same stream (engine on a fake pi)", () => {
     expect(logOf(vault)).not.toContain(PNG.slice(0, 40));
     const chat = await chatTurn(engine, backend, { text: "what's in the thing I just circled?" });
     expect(chat.texts).toContain(`capture of paper.pdf (page 2) — captured a region for the chat: ${rel}`);
-  });
-
-  it("Ask from a fresh call: its side request carries the call's lines before it (no session to fork yet), and starts no turn", async () => {
-    const line = await voice.voiceTranscript(deps, { role: "user", text: "can you have the agent summarise the transformers note" });
-    const before = backend.turns.length;
-    const r = await voice.voiceTool(deps, { name: "Ask", args: { request: "Summarise notes/a.md into notes/summary.md", act: true }, convId: line.body.convId });
-    expect(r.convId).toBe(line.body.convId);
-    await voice.voiceAsksSettled();
-    const s = sideAsks.at(-1)!;
-    expect(s).toMatchObject({ kind: "voice-act", convId: line.body.convId, tools: "act" });
-    expect(s.text).toContain("can you have the agent summarise the transformers note");
-    expect(s.text).toContain("Summarise notes/a.md into notes/summary.md");
-    expect(backend.turns.length).toBe(before);
-  });
-
-  it("a voice session on a chat has that chat's turns and the recent stream (its you layer)", async () => {
-    const { appendMessage, createConv } = await import("../engine/convs");
-    const c = await createConv(vault, {}, "Planning the survey");
-    await appendMessage(vault, c.id, { role: "user", content: "Draft section 4 on KV caches" });
-    await appendMessage(vault, c.id, { role: "assistant", content: "Section 4 drafted in survey.md." });
-    const prompt = await voice.voicePrompt(deps, c.id, "phone");
-    expect(prompt).toContain('This conversation — "Planning the survey"');
-    expect(prompt).toContain("Carl: Draft section 4 on KV caches");
-    expect(prompt).toContain("Agent: Section 4 drafted in survey.md.");
-    expect(prompt).toContain("<you>");
-    expect(prompt).toContain('Carl said: "shorten the heading, please"');
   });
 
   it("two vaults: the second never sees the first's entries, and its own stay its own", async () => {
@@ -445,7 +397,6 @@ describe("every surface sees the same stream (engine on a fake pi)", () => {
   it("with VC_ACTIVITY=0 nothing is written by any surface", async () => {
     const size = logOf(vault).length;
     process.env.VC_ACTIVITY = "0";
-    await voice.voiceTranscript(deps, { role: "user", text: "silent" });
     act.activityPost(vault, { entry: { kind: "edit", text: "off" } });
     await chatTurn(engine, backend, { text: "off" });
     expect(logOf(vault).length).toBe(size);

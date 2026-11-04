@@ -2,8 +2,8 @@
 // Voice: English voices for conversation, the most used lately first, and a
 // short "Recommended" list on top. Picking one adds it to the account
 // (POST /v1/voices/add/{public_owner_id}/{voice_id}) and selects it like any
-// voice: the id lands in vault_chat_elevenlabs_voice, which the local agent's
-// session override and the box's voice session (voiceBox.ts `voice` param) read.
+// voice: the id lands in vault_chat_elevenlabs_voice and goes to the box, whose calls speak with it
+// (Settings → Voice, POST /api/v1/brain/voice).
 
 const API = "https://api.elevenlabs.io";
 export const VOICE_STORAGE = "vault_chat_elevenlabs_voice";
@@ -216,7 +216,7 @@ export function voiceHints<T extends Labeled>(voices: readonly T[]): Map<string,
 // made for Eleven v3 runs only there. A voice verified only in other languages
 // is not the English agent's. Fields from GET /v1/voices and /v1/voices/{id}.
 
-/** The agent's TTS model (src/voice-elevenlabs buildAgentCreateBody). */
+/** The TTS model a voice must work with (the box's pipeline speaks with Flash: voice-pipeline/bot.py). */
 export const AGENT_TTS_MODEL = "eleven_flash_v2";
 /** The ids ElevenLabs uses for the models an English agent may run. */
 const AGENT_MODELS = new Set(["eleven_flash_v2", "eleven_v2_flash", "eleven_turbo_v2", "eleven_v2_turbo"]);

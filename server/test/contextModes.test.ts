@@ -68,10 +68,8 @@ class FakeBackend extends EventEmitter {
 
 let act: typeof import("../activity");
 let core: typeof import("../../src/activityCore");
-let voice: typeof import("../voice");
 let engine: any;
 let backend: FakeBackend;
-let deps: import("../voice").VoiceDeps;
 
 const until = async (fn: () => Promise<boolean> | boolean, ms = 10_000) => {
   const t0 = Date.now();
@@ -133,8 +131,6 @@ beforeAll(async () => {
   engine.start();
   act = await import("../activity");
   core = await import("../../src/activityCore");
-  voice = await import("../voice");
-  deps = { vault, name: "main", main: true, message: (b) => engine.message(b) };
 });
 
 afterAll(() => {
@@ -243,16 +239,13 @@ describe("pure parts", () => {
 // ---------------------------------------------------------------- in process
 
 describe("mode A, then mode B sees it", () => {
-  it("chat → Ctrl+L and voice: Carl's message as a pointer, never the agent's reply", async () => {
+  it("chat → Ctrl+L: Carl's message as a pointer, never the agent's reply", async () => {
     const reply = "A KV cache keeps the attention keys and values of earlier tokens so each new token only computes its own.";
     const c = await chatTurn({ text: "explain KV caching in one paragraph" }, reply);
-    // Ctrl+L / Ctrl+K side threads and voice read the same layer.
+    // Ctrl+L / Ctrl+K side threads read the same layer.
     const sum = act.youLayer(vault).text;
     expect(sum).toContain("Carl: explain KV caching in one paragraph");
     expect(sum).not.toContain("A KV cache keeps");
-    const block = await voice.voicePrompt(deps, null, "phone");
-    expect(block).toContain("Carl: explain KV caching in one paragraph");
-    expect(block).not.toContain("A KV cache keeps");
     // A second message is a second pointer; the reply is still that chat's.
     await chatTurn({ text: "and in MLA?", convId: c.convId }, "MLA compresses the KV cache into a latent.");
     const sum2 = act.youLayer(vault).text;
@@ -263,21 +256,15 @@ describe("mode A, then mode B sees it", () => {
     expect(own.texts).not.toContain("Carl: and in MLA?");
   });
 
-  it("Ctrl+L, Ctrl+K and voice → the next chat turn's you layer", async () => {
+  it("Ctrl+L and Ctrl+K → the next chat turn's you layer", async () => {
     act.activityPost(vault, { entry: { kind: "focus", modality: "editor", text: "reading", path: "paper.pdf", where: "page 4 of 9" } });
     act.activityPost(vault, { entry: { kind: "ask", modality: "ctrl-l", text: 'asked "what is eq. 3"', detail: "answer: the softmax over scaled scores", path: "paper.pdf", where: "page 4" } });
     act.activityPost(vault, { entry: { kind: "edit", modality: "ctrl-k", text: '"fix the typo"', detail: 'replaced 1 line(s) with 1: "teh" → "the"', outcome: "accepted", path: "notes/kv.md" } });
-    await voice.voiceTranscript(deps, { role: "user", text: "what page am I on" });
-    const t = await voice.voiceTranscript(deps, { role: "assistant", text: "You are on page four." });
-    expect(t.status).toBe(200);
     const c = await chatTurn({ text: "where was I?" });
     const you = c.texts.slice(c.texts.indexOf("<you>"), c.texts.indexOf("</you>"));
     expect(you).toContain("Focus: paper.pdf (page 4 of 9)");
     expect(you).toContain('Ctrl+L ask · paper.pdf (page 4): asked "what is eq. 3" — answer: the softmax over scaled scores');
     expect(you).toContain('Ctrl+K edit · notes/kv.md: "fix the typo" (accepted)');
-    expect(you).toContain('Carl said: "what page am I on"');
-    // Voice's reply is the voice conversation's: not here.
-    expect(you).not.toContain("You are on page four.");
     // The chat from the test before: Carl's message, as a pointer.
     expect(you).toContain("Carl: thanks");
   });

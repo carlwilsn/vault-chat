@@ -29,7 +29,8 @@ export function recentInput(now = Date.now()): Record<string, number> {
 export function inputSurface(method: string, path: string, client?: string | null): string | null {
   if (method !== "POST") return null;
   if (/^\/api\/v1\/boards(\/|$)/.test(path)) return "board";
-  if (path.startsWith("/api/v1/voice/")) return "voice";
+  // A call started, and each spoken turn the pipeline brings (server/voiceBrain.ts).
+  if (path === "/v1/chat/completions" || path === "/api/v1/brain/call") return "voice";
   if (path === "/api/v2/intent" || path === "/message" || path === "/answer" || path === "/kill" || path === "/api/v1/side" || /^\/api\/v1\/conversations\/[^/]+\/subagents\//.test(path)) {
     return client && /^[a-z-]{1,20}$/.test(client) ? client : "typed";
   }

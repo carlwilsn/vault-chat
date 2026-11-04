@@ -459,8 +459,7 @@ class BoxChatSession {
         if (typeof e.path === "string") boxFileChanged({ vault: this.vault, rel: e.path, fetch: (rel) => fetchBoxFile(this.link, rel) });
         return;
       case "inbox":
-        // Something landed in the board inbox: a live voice session mentions it at its next pause.
-        if (typeof e.say === "string" && e.say) void import("./voice-elevenlabs").then((v) => v.announceAtNextPause(e.say as string)).catch(() => {});
+        // Something landed in the board inbox: a live call says it at its next gap (the box does: server/voiceBrain.ts).
         return;
       case "show": {
         // pi's Show: open it here (the file tree's way, scrolled to its target) and tell the box what happened.
@@ -479,7 +478,6 @@ class BoxChatSession {
         const to = e.convId;
         const title = typeof e.title === "string" && e.title ? e.title : undefined;
         if (typeof window !== "undefined" && typeof window.dispatchEvent === "function") window.dispatchEvent(new CustomEvent("vc-projects-changed"));
-        if (useStore.getState().voiceMode) void import("./voice-elevenlabs").then((v) => v.voiceFollow(to)).catch(() => {});
         if (useStore.getState().activeConversationId !== to) void import("./projects").then((m) => m.openThread(to, title)).catch((err) => console.warn("[box-chat] follow failed:", err));
         return;
       }
@@ -615,7 +613,6 @@ class BoxChatSession {
   private leaveDeleted(id: string): void {
     const still = () => useStore.getState().activeConversationId === id;
     if (!still()) return;
-    if (useStore.getState().voiceMode) void import("./voice-elevenlabs").then((v) => v.voiceFollow(MAIN_ID)).catch(() => {});
     // Checked again once the module is in: the signal and the row both call this, and he may have opened
     // another thread meanwhile — a late move to Main must never take him from it.
     void import("./projects")

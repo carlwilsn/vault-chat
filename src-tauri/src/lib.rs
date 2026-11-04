@@ -5470,31 +5470,9 @@ fn voice_server_status() -> bool {
     voice_server::is_running()
 }
 
-#[allow(clippy::too_many_arguments)]
-#[tauri::command]
-fn voice_set_context(
-    el_key: String,
-    agent_id: String,
-    voice_id: String,
-    system_prompt: String,
-    dynamic_vars: serde_json::Value,
-    tool_names: Vec<String>,
-    vault: String,
-) {
-    voice_server::set_context(
-        el_key,
-        agent_id,
-        voice_id,
-        system_prompt,
-        dynamic_vars,
-        tool_names,
-        vault,
-    );
-}
-
 /// Best-effort phone link base for the Settings note. Prefers the secure
 /// Tailscale **HTTPS** URL (the one a phone's mic will accept); falls back to the
-/// http IP (localhost-only). The frontend appends `/voice?token=…`.
+/// http IP (localhost-only). The frontend appends `/phone?token=…`.
 ///
 /// Two or three `tailscale` CLI runs (`serve --bg`, `status`, maybe `ip`), each
 /// 0.7-6 s here, on every launch: on the main thread they were the "Not
@@ -6337,7 +6315,6 @@ pub fn run() {
             push_post,
             voice_server_stop,
             voice_server_status,
-            voice_set_context,
             voice_server_url,
             voice_tool_respond,
             set_run_in_background,

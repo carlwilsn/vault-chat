@@ -311,16 +311,6 @@ describe("what each mode sends", () => {
     expect(r.instructions).toContain("# Recap: this conversation continues from an earlier session");
   });
 
-  it("voice session (the box's prompt for a call on the laptop, attached to the chat)", async () => {
-    const voice = await import("../voice");
-    // As voiceSession builds it (D3): the front-of-house rules, the device's truth, Carl's rules, the chat's own
-    // record (pi's session) and the you layer.
-    const prompt = await voice.voicePrompt({ vault, name: "main", main: true }, convId, "laptop");
-    const rep = await audit("voice-session", [{ label: "voice system prompt", text: prompt }]);
-    expect(rep.leftovers).toEqual([]);
-    expect(rep.duplicates).toEqual([]);
-  });
-
   it("Ctrl+K and Ctrl+L requests (side threads of the chat)", async () => {
     const inline = await import("../../src/inlineEdit");
     // As the box takes them (POST /api/v1/side): the engine forks the chat's thread with the agent's read-only tools.

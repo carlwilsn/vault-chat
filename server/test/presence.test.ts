@@ -5,7 +5,8 @@ import { INPUT_BUSY_MS, inputSurface, noteInput, recentInput } from "../presence
 describe("presence", () => {
   it("names the surface of a request that is Carl's input, and nothing else", () => {
     expect(inputSurface("POST", "/api/v1/boards/board-oct-21")).toBe("board");
-    expect(inputSurface("POST", "/api/v1/voice/transcript")).toBe("voice");
+    expect(inputSurface("POST", "/api/v1/brain/call")).toBe("voice");
+    expect(inputSurface("POST", "/v1/chat/completions")).toBe("voice");
     expect(inputSurface("POST", "/api/v2/intent")).toBe("typed");
     expect(inputSurface("POST", "/api/v2/intent", "phone")).toBe("phone");
     expect(inputSurface("POST", "/answer", "phone")).toBe("phone");

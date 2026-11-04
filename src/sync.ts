@@ -5,7 +5,7 @@ import { sendMessage, stopAgent, clearThread, interruptAndSend, sendNow, takeBac
 import type { Conversation } from "./conversations";
 import { newConversationId } from "./conversations";
 import { listProjects, openProjectNotes, openThread, routeProjectChangesTo, routeProjectNotesTo, setConversationProject } from "./projects";
-import { toggleVoice, voiceBarLevels } from "./voice-elevenlabs";
+import { toggleVoice, voiceBarLevels } from "./voiceCall";
 import { isPopout } from "./windowKind";
 
 const POPOUT_LABEL = "chat-popout";

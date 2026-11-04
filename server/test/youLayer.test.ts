@@ -230,25 +230,7 @@ describe.skipIf(!PI_DIR)("the you layer with the real pi 1.1.0 and ext/vc.mjs", 
     expect(layers((await rmeta(conv)).threadPath).length).toBe(2);
   }, 240_000);
 
-  it("a voice call's lines go into the conversation's pi session through pi (vc-voice custom messages), and the model gets them on the next turn", async () => {
-    const conv = await rsend("REAL-V1 a chat voice will join");
-    // While pi has the session open: the box's /vc-note with `voice` → pi.sendMessage (no turn of its own).
-    const n = chat.calls.length;
-    for (const [role, text] of [["user", "REAL-VOICE what is lemma 2 again?"], ["assistant", "REAL-VOICE-REPLY the contraction lemma."]] as const) {
-      const r = await rpost("/api/v1/voice/transcript", { convId: conv, role, text, device: "phone" });
-      expect(r.convId).toBe(conv);
-    }
-    await new Promise((r) => setTimeout(r, 500));
-    expect(chat.calls.length).toBe(n);
-    const file = (await rmeta(conv)).threadPath;
-    const said = entries(file).filter((e) => e.type === "custom_message" && e.customType === "vc-voice");
-    expect(said.map((e) => e.content)).toEqual(["[voice call] Carl said: REAL-VOICE what is lemma 2 again?", "[voice call] You said to Carl (spoken by your voice): REAL-VOICE-REPLY the contraction lemma."]);
-    // The next typed turn: the model gets both lines from pi's own context.
-    await rsend("REAL-V2 and what did I just ask by voice?", conv);
-    const sent = JSON.stringify(chat.calls.at(-1));
-    expect(sent).toContain("[voice call] Carl said: REAL-VOICE what is lemma 2 again?");
-    expect(sent).toContain("REAL-VOICE-REPLY the contraction lemma.");
-  }, 240_000);
+
 });
 
 // ---------------------------------------------------------------- the builder

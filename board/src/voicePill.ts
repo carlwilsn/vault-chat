@@ -2,20 +2,19 @@
 // call; while one is on, the button steps aside and one compact pill under the controls is the call:
 // live waves, the chat it continues (small; tap: the recent chats, to switch), mute, and the one end
 // button. Mute is the big, plain toggle (Carl lets voice sit muted while he works and unmutes to ask):
-// muted, it is red with a slashed mic and says "Muted"; the SDK's own mute, so no audio leaves the iPad
+// muted, it is red with a slashed mic and says "Muted"; no audio leaves the iPad
 // while the voice can still speak a result. Held down while muted, it talks while held (push to talk).
-// Voice taken over by another device says where it went ("Voice moved to laptop."), not in red. A start that fails shows the mic red and the pill one plain line, like the laptop's red bars. The pill lives on the page, not in a board, so a call goes on
+// A start that fails shows the mic red and the pill one plain line, like the laptop's red bars. The pill lives on the page, not in a board, so a call goes on
 // while Carl changes boards.
 //
 // Its buttons follow the chrome's rule (chrome.ts): the Pencil, a finger or the mouse presses a
 // button once, on pointerup, and the click iOS may add after it is dropped.
 //
-// `?voice=fake` swaps the ElevenLabs SDK and the box's session for voiceFake.ts (the preview).
+// `?voice=fake` swaps the call for voiceFake.ts (the preview).
 import * as api from "./api";
 import { ChromeTaps, buttonName, isField, redrawnSame, routeChrome } from "./chrome";
 import { icon, toolIcon } from "./icons";
-import { onInboxEvent } from "./inbox";
-import { AUDIO_WARN_LINE, VoiceController, type VoiceApi, type VoiceSdk, type VoiceState } from "./voice";
+import { VoiceController, type VoiceApi, type VoiceState } from "./voice";
 import { blog, setStatSource, tapLine } from "./log";
 import { WaitTracker, renderWaitLine, type WaitCalib, type WaitPlan, type WaitWork } from "../../src/voiceWaitLine";
 import { MAIN_ID } from "../../src/threads";
@@ -38,7 +37,7 @@ function unlockAudio(): void {
   s.start(0);
 }
 
-const realApi: VoiceApi = { listChats: api.listChats, voiceSession: api.voiceSession, voiceTool: api.voiceTool, voiceTranscript: api.voiceTranscript, voiceUpdates: api.voiceUpdates, brainEngine: api.brainEngine, brainPost: api.brainPost };
+const realApi: VoiceApi = { listChats: api.listChats, brainPost: api.brainPost };
 
 /** The board's one voice conversation, remembered on this iPad for THREAD_MS (a new day starts from the latest chat). */
 const THREAD_KEY = "vc_board_voice_thread";
@@ -65,8 +64,8 @@ function threadStore(): { get(): string | null; set(id: string | null): void } {
 }
 
 export const voice = new VoiceController({
-  api: FAKE ? { ...realApi, voiceSession: async () => ({ signedUrl: "fake://board-preview", conversationToken: null, systemPrompt: "", toolNames: [] }) } : realApi,
-  sdk: () => (FAKE ? import("./voiceFake").then((m) => m.fakeSdk()) : (import("@elevenlabs/client") as unknown as Promise<VoiceSdk>)),
+  api: realApi,
+  ...(FAKE ? { startCall: (o: import("../../src/voiceBrainClient").BrainOptions) => import("./voiceFake").then((m) => m.fakeCall()(o)) } : {}),
   // The preview's mic: an empty stream (a WebKit without media capture has no MediaStream: a stand-in with no tracks).
   mic: FAKE ? async () => (typeof MediaStream === "function" ? new MediaStream() : ({ getTracks: () => [] } as unknown as MediaStream)) : navigator.mediaDevices?.getUserMedia ? () => navigator.mediaDevices.getUserMedia({ audio: true }) : null,
   unlock: unlockAudio,
@@ -75,7 +74,6 @@ export const voice = new VoiceController({
   onClose: (c) => blog("voice.close", { ...c }),
   // The call's mic: pinned, switched when unplugged, and every device change (src/voiceMic.ts).
   ...(FAKE ? { devices: null } : {}),
-  audioContexts: () => [actx],
   // "voice turn" keeps the laptop's name (one query finds every device's turns); the rest are the board's own.
   log: (ev, data) => blog(ev === "voice turn" ? ev : ev.replace(/^voice /, "voice.").replace(/ /g, "-"), data),
 });
@@ -122,8 +120,6 @@ export function voiceButton(btn: HTMLElement): () => void {
 const IB = "grid h-8 w-8 shrink-0 place-items-center rounded-full transition active:scale-95";
 /** How long the mute button is held (while muted) before it talks: shorter is a tap (unmute). */
 const HOLD_MS = 300;
-/** Another device took the call over: said plainly, not as a failure. */
-const isMoved = (s: VoiceState) => s.phase === "error" && /^Voice moved to /.test(s.error);
 
 let mounted = false;
 /** The pill, once per page. */
@@ -133,10 +129,6 @@ export function mountVoicePill(): void {
   const root = document.createElement("div");
   root.className = "voice-pill pointer-events-none fixed right-[max(12px,env(safe-area-inset-right))] top-[calc(max(12px,env(safe-area-inset-top))+62px)] z-30 flex flex-col items-end gap-2";
   document.body.appendChild(root);
-  // A landed inbox entry (or a make that failed): one short line at the next pause, as on the laptop.
-  onInboxEvent((ev) => {
-    if (typeof ev.say === "string" && ev.say) voice.announce(ev.say);
-  });
 
   let built = "";
   let chatsOpen = false;
@@ -156,9 +148,9 @@ export function mountVoicePill(): void {
     // The waves, and under them the waiting line (src/voiceWaitLine.ts): the same element as on the laptop and phone.
     const waves = `<div class="flex shrink-0 flex-col items-stretch text-sys-label/70"><div class="waves flex h-4 shrink-0 items-center gap-[2.5px] px-0.5" aria-hidden="true">${'<i class="block h-full w-[3px] origin-center rounded-full"></i>'.repeat(BARS)}</div><div class="v-waitline"></div></div>`;
     if (s.phase === "error") {
-      root.innerHTML = `<div class="pointer-events-auto material hairline shadow-float flex min-h-10 max-w-[460px] items-center gap-2 rounded-[20px] py-1 pl-3 pr-1 animate-pop-in" role="${isMoved(s) ? "status" : "alert"}" data-voice="${isMoved(s) ? "moved" : "error"}">
+      root.innerHTML = `<div class="pointer-events-auto material hairline shadow-float flex min-h-10 max-w-[460px] items-center gap-2 rounded-[20px] py-1 pl-3 pr-1 animate-pop-in" role="alert" data-voice="error">
         ${waves}
-        <span class="v-reason min-w-0 text-footnote font-medium leading-[17px] ${isMoved(s) ? "text-sys-label/80" : "text-[rgb(var(--sys-red))]"}"></span>
+        <span class="v-reason min-w-0 text-footnote font-medium leading-[17px] text-[rgb(var(--sys-red))]"></span>
         <button class="${IB} text-sys-label/60 active:bg-sys-fill/20" data-v="dismiss" aria-label="Close">${icon("x", 16)}</button>
       </div>`;
     } else {
@@ -184,14 +176,7 @@ export function mountVoicePill(): void {
     const reason = root.querySelector(".v-reason");
     if (reason) reason.textContent = s.error;
     const title = root.querySelector(".v-title");
-    if (title) title.textContent = s.phase === "connecting" ? (s.chat ? `Connecting · ${s.chat.title}` : "Connecting…") : s.audio ? AUDIO_WARN_LINE : (s.chat?.title ?? "New chat");
-    // No sound can play: the title is the warning (amber), and a tap on it reconnects the audio.
-    const chatsBtn = root.querySelector<HTMLElement>('[data-v="chats"]');
-    if (chatsBtn) {
-      chatsBtn.dataset.audio = s.audio ? "warn" : "";
-      chatsBtn.classList.toggle("text-[#ff9500]", !!s.audio);
-      chatsBtn.classList.toggle("font-semibold", !!s.audio);
-    }
+    if (title) title.textContent = s.phase === "connecting" ? (s.chat ? `Connecting · ${s.chat.title}` : "Connecting…") : (s.chat?.title ?? "Main");
     const mute = root.querySelector<HTMLElement>(".v-mute");
     if (mute) {
       mute.setAttribute("aria-pressed", String(s.muted));
@@ -204,7 +189,7 @@ export function mountVoicePill(): void {
       mute.classList.toggle("text-sys-label/85", !s.muted);
       mute.innerHTML = s.muted ? `${icon("microphone-slash", 18, "fill")}<span>Muted</span>` : `${icon("microphone", 18)}<span>Mute</span>`;
     }
-    const tone = s.phase === "error" ? (isMoved(s) ? "bg-sys-label/25" : "bg-[rgb(var(--sys-red))]") : s.audio ? "bg-[#ff9500]" : s.speaking ? "bg-sys-blue" : s.muted ? "bg-sys-label/25" : "bg-sys-label/70";
+    const tone = s.phase === "error" ? "bg-[rgb(var(--sys-red))]" : s.speaking ? "bg-sys-blue" : s.muted ? "bg-sys-label/25" : "bg-sys-label/70";
     for (const b of bars) b.className = `block h-full w-[3px] origin-center rounded-full ${tone}${s.phase === "connecting" ? " v-wait" : ""}`;
     const list = root.querySelector(".v-chats");
     if (list) {
@@ -363,7 +348,6 @@ export function mountVoicePill(): void {
       else voice.setMuted(!voice.state.muted);
     }
     else if (v === "dismiss") voice.dismiss();
-    else if (v === "chats" && voice.state.audio) void voice.reconnectAudio();
     else if (v === "chats") {
       chatsOpen = !chatsOpen;
       build(voice.state);

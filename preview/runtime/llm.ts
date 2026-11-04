@@ -459,30 +459,12 @@ export async function answerModelRequest(url: URL, init: RequestInit | undefined
     const add = /^\/v1\/voices\/add\/([^/]+)\/([^/]+)$/.exec(path);
     if (add && method === "POST") return addLibraryVoice(decodeURIComponent(add[1]), decodeURIComponent(add[2]), bodyText);
     if (path.startsWith("/v1/text-to-speech/")) return new Response(chime(), { headers: { "content-type": "audio/wav" } });
-    if (path === "/v1/convai/agents/create") return json({ agent_id: "preview-agent" });
-    // A picked voice becomes the agent's own (src/voice-elevenlabs setAgentVoice).
-    if (/^\/v1\/convai\/agents\/[^/]+$/.test(path) && method === "PATCH") return json({});
     // One voice's record (Settings checks a pick fits the agent's model).
     const one = /^\/v1\/voices\/([^/]+)$/.exec(path);
     if (one && method === "GET") {
       const v = EL_VOICES.find((x) => x.voice_id === decodeURIComponent(one[1]));
       return v ? json(v) : json({ detail: { status: "voice_not_found" } }, 404);
     }
-    // The voice models ElevenLabs runs and what each takes (src/voiceLlms.ts reads it). Faked.
-    if (path === "/v1/convai/llm/list")
-      return json({
-        llms: [
-          { llm: "gpt-6-luna", supports_image_input: true, supports_document_input: false, available_reasoning_efforts: ["none", "low", "medium", "high"] },
-          { llm: "gpt-6.1-sol", supports_image_input: true, supports_document_input: true, available_reasoning_efforts: ["low", "medium", "high"] },
-          { llm: "claude-sonnet-5-5", supports_image_input: true, supports_document_input: true, available_reasoning_efforts: [] },
-          { llm: "claude-sonnet-4-6", supports_image_input: true, supports_document_input: true, available_reasoning_efforts: [] },
-          { llm: "claude-haiku-5-5", supports_image_input: true, supports_document_input: true, available_reasoning_efforts: [] },
-          { llm: "claude-haiku-4-5", supports_image_input: true, supports_document_input: true, available_reasoning_efforts: [] },
-          { llm: "gemini-3.8-flash", supports_image_input: true, supports_document_input: true, available_reasoning_efforts: ["none", "low", "high"] },
-          { llm: "gemini-3.5-flash", supports_image_input: true, supports_document_input: true, available_reasoning_efforts: ["none", "low", "high"] },
-          { llm: "glm-52", supports_image_input: false, supports_document_input: false, available_reasoning_efforts: ["none", "high"] },
-        ],
-      });
     return null;
   }
   if (host === "api.anthropic.com") {

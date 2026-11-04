@@ -1,4 +1,4 @@
-// Voice with one brain (VC_VOICE_BRAIN=pi). The call's ears and mouth are a
+// Voice with one brain. The call's ears and mouth are a
 // box-hosted Pipecat pipeline (voice-pipeline/bot.py: WebRTC from the device
 // over the tailnet, Silero VAD + Smart Turn v3, ElevenLabs STT and TTS called
 // outbound); its brain is the conversation's own pi agent. Nothing is public:
@@ -26,8 +26,8 @@
 //   POST /v1/chat/completions          OpenAI-compatible, SSE   (loopback + the call's token only)
 //   GET  /api/v1/brain/call/<id>/speak SSE {text, turn}        (loopback + the call's token only)
 import { randomBytes, timingSafeEqual } from "node:crypto";
-import { appendFileSync, closeSync, mkdirSync, openSync, readFileSync, readSync, statSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { appendFileSync, closeSync, mkdirSync, openSync, readSync, statSync } from "node:fs";
+import { join, resolve } from "node:path";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { Speakable } from "./speakable";
 import { isCommentary } from "../src/convlog/commentary";
@@ -52,21 +52,20 @@ export type BrainDeps = {
   /** The box's ElevenLabs key (the key store); never logged. */
   elKey: () => string | null;
   voiceId: () => string;
+  /** The voice Carl picked (Settings → Voice): every device's calls speak with it. */
+  setVoiceId?: (id: string) => void;
   /** Where the pipeline listens (loopback). */
   botUrl: string;
   /** This server, as the pipeline reaches it (loopback). */
   selfUrl: string;
   /** Where brain.jsonl goes (one line per spoken turn: the latency figures). */
   logDir: string | null;
-  /** Where the voice engine choice is kept (Settings → Voice engine: every device follows the box's). */
+  /** The box's state folder (legacy engine preferences are ignored: there is one voice). */
   stateDir?: string | null;
-  /** The engine changed (the server starts or stops the pipeline: server/voicePipeline.ts). */
-  onEngine?: (e: VoiceEngine) => void | Promise<void>;
   pipelineReady?: () => Promise<boolean>;
   pipelineState?: () => { wanted: boolean; running: boolean; settingUp: boolean; error: string | null; failure?: unknown };
 };
 
-/** The routes are on unless the box turns them off; which voice a device uses is the engine setting below. */
 /** A whole utterance that means "stop what you're doing" (never a sentence that merely contains "stop"). */
 // "Stop" / "never mind" as he says it: the line opens with it (after a filler: "actually, never mind that", "nah forget it",
 // "no, wait, stop") and it is the clause, ending there or before a pause or a new clause ("never mind, I found it",
@@ -81,28 +80,6 @@ export const STOP_RE = new RegExp(String.raw`^\s*` + STOP_FILLER + STOP_PHRASE +
  * re-asking, never a second turn. A new line with the same words is Carl asking again (he didn't catch it): answered. */
 export const REASK_MS = 10_000;
 
-export const brainEnabled = (): boolean => process.env.VC_VOICE_BRAIN !== "off";
-
-export type VoiceEngine = "classic" | "new";
-const engineFile = (d: { stateDir?: string | null }) => (d.stateDir ? join(d.stateDir, "voice-engine.json") : null);
-/** The box's voice engine: "new" (one brain, the box's pipeline) or "classic" (ElevenLabs' agent). Classic until chosen. */
-export function voiceEngine(d: { stateDir?: string | null }): VoiceEngine {
-  const f = engineFile(d);
-  if (!f) return "classic";
-  try {
-    return JSON.parse(readFileSync(f, "utf8"))?.engine === "new" ? "new" : "classic";
-  } catch {
-    return "classic";
-  }
-}
-function setVoiceEngine(d: { stateDir?: string | null }, e: VoiceEngine): boolean {
-  const f = engineFile(d);
-  if (!f) return false;
-  mkdirSync(d.stateDir!, { recursive: true });
-  writeFileSync(f, JSON.stringify({ engine: e, at: new Date().toISOString() }));
-  return true;
-}
-/** Is the pipeline up (its /health on loopback, 1.5 s)? */
 async function pipelineUp(d: BrainDeps): Promise<boolean> {
   // Status is observation only: never spawn or probe a foreign/default voice listener.
   if (d.pipelineState) return d.pipelineState().running && (d.pipelineReady ? await d.pipelineReady() : true);
@@ -117,7 +94,7 @@ async function pipelineUp(d: BrainDeps): Promise<boolean> {
 /** The talker: a fast model for turns while a call is live (the conversation's own model does the delegated work). */
 export const talkerModel = (): string => process.env.VC_VOICE_TALKER_MODEL || "anthropic/claude-haiku-5.5";
 /** The talker's thinking (pi's levels: off, minimal, low, medium, high): a spoken reply wants little. */
-export const talkerThinking = (): string => process.env.VC_VOICE_TALKER_THINKING || "off";
+export const talkerThinking = (): string => "off";
 
 type Device = "laptop" | "board" | "phone";
 const DEVICES: Device[] = ["laptop", "board", "phone"];
@@ -155,6 +132,10 @@ type Call = {
   id: string;
   token: Buffer;
   vault: string;
+  /** The server it runs in (a call that follows Carl to another thread re-taps with these). */
+  deps: BrainDeps;
+  /** The talker's thinking level (kept for a follow). */
+  thinking: string;
   convId: string;
   device: Device;
   model: string;
@@ -264,14 +245,17 @@ export async function startCall(d: BrainDeps, b: { convId?: unknown; device?: un
   const engine = await d.engine();
   await speechReady();
   const token = randomBytes(32);
+  const thinking = talkerThinking();
   const call: Call = {
     id: `bc-${Date.now().toString(36)}-${rid(4)}`,
     token,
     vault: d.vault,
+    deps: d,
+    thinking,
     convId,
     device,
-    // A call may name its talker (measurements, Settings); else the box's.
-    model: typeof b.model === "string" && /^[\w.~:/-]{3,80}$/.test(b.model) ? b.model : talkerModel(),
+    // Devices cannot introduce another voice model or enable thinking.
+    model: talkerModel(),
     startedAt: Date.now(),
     sink: null,
     dropping: false,
@@ -290,7 +274,6 @@ export async function startCall(d: BrainDeps, b: { convId?: unknown; device?: un
     lastActive: Date.now(),
     stopping: null,
   };
-  const thinking = typeof b.thinking === "string" && /^(off|minimal|low|medium|high)$/.test(b.thinking) ? b.thinking : talkerThinking();
   engine.setTalker(convId, { model: call.model, rules: voiceCallRules(device), thinking });
   call.untap = engine.tap(convId, (ev) => onPi(d, call, ev));
   calls.set(call.id, call);
@@ -312,6 +295,59 @@ export function endCall(d: { logDir: string | null }, id: string, why = "ended")
   for (const ch of c.channels) ch.end();
   log(d, { ev: "call.end", call: id, why, turns: c.turns, ms: Date.now() - c.startedAt });
   return true;
+}
+
+/** A call left with no request or speak-channel activity this long is not live (a device that died without ending it). */
+const LIVE_IDLE_MS = 10 * 60_000;
+const sameVault = (a: string, b: string) => resolve(a).toLowerCase() === resolve(b).toLowerCase();
+
+/** A voice call is live in this vault (Carl is in it: the phone stays quiet, server/pushGate.ts). */
+export function voiceLiveIn(vault: string, now = Date.now(), device?: Device): boolean {
+  for (const c of calls.values()) if (sameVault(c.vault, vault) && (!device || c.device === device) && now - c.lastActive < LIVE_IDLE_MS) return true;
+  return false;
+}
+
+/** Live calls on this box: the health's busy counts them, so the updater never restarts the server under him talking. */
+export function activeVoiceSessions(now = Date.now()): number {
+  let n = 0;
+  for (const c of calls.values()) if (now - c.lastActive < LIVE_IDLE_MS) n++;
+  return n;
+}
+
+/** Carl asked to work in another thread (OpenProject, server/projectRoutes.ts): the live call in `vault` follows him —
+ *  its turns, its lines and its results are that thread's from now on (the call's rules go in front of its first turn
+ *  there). `from`: only a call on that thread (a deleted project's call goes on in Main). False: no such live call. */
+export function followCall(vault: string, convId: string, from?: string): boolean {
+  const c = [...calls.values()].filter((x) => sameVault(x.vault, vault) && (!from || x.convId === from)).sort((x, y) => y.lastActive - x.lastActive)[0];
+  if (!c) return false;
+  if (c.convId === convId) return true;
+  const other = callByConv.get(convId);
+  if (other && other !== c.id) endCall(c.deps, other, "replaced");
+  c.untap();
+  c.engine.setTalker(c.convId, null);
+  if (callByConv.get(c.convId) === c.id) callByConv.delete(c.convId);
+  log(c.deps, { ev: "call.follow", call: c.id, from: c.convId, to: convId });
+  c.convId = convId;
+  c.engine.setTalker(convId, { model: c.model, rules: voiceCallRules(c.device), thinking: c.thinking });
+  c.untap = c.engine.tap(convId, (ev) => onPi(c.deps, c, ev));
+  callByConv.set(convId, c.id);
+  return true;
+}
+
+let announced = 0;
+/** One short line for the live call(s) in `vault` that is no turn's (an inbox entry landed): said whole at the next real
+ *  gap, like a result (bot.py Gate). */
+export function announce(vault: string, text: string): number {
+  let n = 0;
+  for (const c of calls.values()) {
+    if (!sameVault(c.vault, vault)) continue;
+    const line = `data: ${JSON.stringify({ text, utt: `a${++announced}`, at: Date.now() })}
+
+`;
+    for (const ch of c.channels) ch.write(line);
+    n++;
+  }
+  return n;
 }
 
 export function liveCalls(): Record<string, unknown>[] {
@@ -739,25 +775,29 @@ export async function brainRoute(
     json(res, r.status, r.body);
     return true;
   }
-  // Settings → Voice engine (every device reads it when voice starts).
-  if (path === "/api/v1/brain/engine" && method === "GET") {
-    const state = d.pipelineState?.();
-    json(res, 200, { engine: voiceEngine(d), pipeline: await pipelineUp(d), model: talkerModel(), error: state?.error ?? null, failure: state?.failure ?? null, settingUp: state?.settingUp ?? false });
+  // Settings → Voice: the voice every call speaks with (an ElevenLabs voice id).
+  if (path === "/api/v1/brain/voice" && method === "POST") {
+    const id = String((await readJson())?.voiceId ?? "");
+    if (!/^[A-Za-z0-9]{8,40}$/.test(id) || !d.setVoiceId) return json(res, 400, { error: "voiceId required" }), true;
+    d.setVoiceId(id);
+    log(d, { ev: "voice", voiceId: id });
+    json(res, 200, { ok: true, voiceId: id });
     return true;
   }
-  if (path === "/api/v1/brain/engine" && method === "POST") {
-    const b = await readJson();
-    const e: VoiceEngine = b?.engine === "new" ? "new" : "classic";
-    if (!setVoiceEngine(d, e)) return json(res, 503, { error: "no state dir" }), true;
-    log(d, { ev: "engine", engine: e });
-    try { await d.onEngine?.(e); } catch {
-      const state = d.pipelineState?.();
-      return json(res, 409, { ok: false, engine: e, pipeline: false, error: state?.error ?? "Voice startup failed", failure: state?.failure ?? null }), true;
+  // Older clients can discover the only supported voice, never select another engine. Old on-disk
+  // choices (including "classic") are inert: no preference/history file needs rewriting or deletion.
+  if (path === "/api/v1/brain/engine" && (method === "GET" || method === "POST")) {
+    if (method === "POST" && (await readJson())?.engine !== "new") {
+      json(res, 410, { error: "Only the box’s voice is supported", engine: "new" });
+      return true;
     }
-    // A first switch to New sets the pipeline up (minutes once): say so rather than "not running".
-    if (e === "new") await new Promise((r) => setTimeout(r, 1500));
     const state = d.pipelineState?.();
-    json(res, 200, { ok: true, engine: e, pipeline: await pipelineUp(d), error: state?.error ?? null, failure: state?.failure ?? null });
+    const pipeline = await pipelineUp(d);
+    const error = state?.error ?? null;
+    json(res, method === "POST" && (!pipeline || error) ? 409 : 200, {
+      ...(method === "POST" ? { ok: pipeline && !error } : {}), engine: "new", pipeline,
+      model: talkerModel(), error, failure: state?.failure ?? null, settingUp: state?.settingUp ?? false,
+    });
     return true;
   }
   // The waiting line for a surface with no conversation feed of its own (the iPad board): its inputs, and the box's

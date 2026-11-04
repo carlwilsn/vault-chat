@@ -1,9 +1,6 @@
 // One agent across surfaces — the laptop's half (server/test/crossSurface.test.ts has the box's).
-//   g. Opening a different file on the laptop mid-voice: the laptop's voice session gets the new
-//      focus as a viewport contextual update (one stable context id, the newer replaces the older),
-//      and the editor's watch posts a `focus` entry to the box's stream (what a pi turn, a Ctrl+L
-//      and the next voice session read), tagged with the open chat's project.
-import { test, after } from "node:test";
+// The editor watch posts focus to the shared activity stream, read by typed and New voice turns.
+import { test } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import { installFakeTauri, makeTempVault } from "./fakes.ts";
@@ -19,7 +16,6 @@ fake.setHandler("box_post_json", async ({ url, body }) => {
 });
 
 const { useStore } = await import("../../src/store.ts");
-const voice = await import("../../src/voice-elevenlabs.ts");
 const activity = await import("../../src/activity.ts");
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -29,36 +25,11 @@ fs.mkdirSync(`${vault}/notes`, { recursive: true });
 fs.writeFileSync(A, "# Banach\n\nContractions have unique fixed points.\n");
 fs.writeFileSync(B, "# Measure theory\n\nA sigma-algebra is closed under complements.\n");
 
-after(() => {
-  voice.adoptVoiceSessionForPreview(null);
-});
-
-test("g. laptop voice: opening another file mid-session is pushed as the viewport update", async () => {
-  useStore.setState({ vaultPath: vault, currentFile: A, followAlong: true } as any);
-  const updates: { text: string; id?: string }[] = [];
-  const conv = {
-    sendContextualUpdate: (text: string, o?: { contextId?: string }) => updates.push({ text, id: o?.contextId }),
-    uploadFile: async () => ({ fileId: "f" }),
-    sendMultimodalMessage: () => {},
-    sendUserMessage: () => {},
-    setMicMuted: () => {},
-    setVolume: () => {},
-    endSession: async () => {},
-  };
-  voice.adoptVoiceSessionForPreview(conv);
-  useStore.setState({ currentFile: B } as any);
-  await wait(1500);
-  const vp = updates.filter((u) => u.id === "viewport");
-  assert.ok(vp.length >= 1, "a viewport update was sent");
-  assert.match(vp.at(-1)!.text, /measure-theory\.md/);
-  voice.adoptVoiceSessionForPreview(null);
-});
-
 test("g. the editor's watch posts the new focus to the box's stream, with the open chat's project", async () => {
   const id = useStore.getState().newConversation();
   useStore.getState().selectConversation(id);
   useStore.setState((s: any) => ({ conversations: s.conversations.map((c: any) => (c.id === id ? { ...c, project: "analysis" } : c)) }) as any);
-  useStore.setState({ currentFile: A } as any);
+  useStore.setState({ vaultPath: vault, currentFile: A } as any);
   const stop = activity.startActivityWatch();
   posts.length = 0;
   useStore.setState({ currentFile: B } as any);

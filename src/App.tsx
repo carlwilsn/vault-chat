@@ -22,7 +22,7 @@ import type { NoteAnchor } from "./notes";
 import { useStore } from "./store";
 import { gitInitIfNeeded } from "./git";
 import { useGlobalAnchorClickHandler } from "./linkNav";
-import { toggleVoice, toggleVoiceMute } from "./voice-elevenlabs";
+import { toggleVoice, toggleVoiceMute } from "./voiceCall";
 import { applyHljsTheme } from "./hljsTheme";
 import {
   ensureVaultSyncLoop,

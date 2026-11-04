@@ -8,7 +8,6 @@ import { useStore } from "./store";
 import { readShownBytes } from "./liveReload";
 import { reportScroll } from "./scrollTarget";
 import { decodeTarget, landPdf } from "./viewTarget";
-import { pushViewportContextDebounced } from "./voice-elevenlabs";
 
 pdfjs.GlobalWorkerOptions.workerSrc = workerSrc;
 
@@ -387,7 +386,6 @@ export function PdfView({
                 totalPages: total,
                 pageText: trunc,
               });
-              pushViewportContextDebounced();
             }
           }
         })();
@@ -889,7 +887,6 @@ export function PdfView({
         totalPages: total,
         pageText: trunc,
       });
-      pushViewportContextDebounced();
     });
   };
 

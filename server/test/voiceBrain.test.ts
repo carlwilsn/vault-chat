@@ -112,6 +112,39 @@ async function sse(res: Response): Promise<string[]> {
   return out;
 }
 
+it("old Classic preferences normalize to the only voice without rewriting history, mic preferences, or calling a provider", async () => {
+  const stateDir = mkdtempSync(join(tmpdir(), "vc-new-only-"));
+  const files = {
+    "voice-engine.json": '{"engine":"classic","at":"old","other":"keep"}',
+    "preferences.json": '{"microphone":false,"theme":"dark"}',
+    "history.jsonl": '{"id":"original","role":"user","text":"keep this"}\n',
+  };
+  for (const [name, bytes] of Object.entries(files)) writeFileSync(join(stateDir, name), bytes);
+  const never = () => { throw new Error("readiness must not access an engine or provider"); };
+  const d: BrainDeps = { vault: "/v", engine: never, elKey: never, voiceId: never,
+    botUrl: "http://127.0.0.1:1", selfUrl: "", logDir: null, stateDir,
+    pipelineState: () => ({ wanted: true, running: false, settingUp: false,
+      error: "Voice port is occupied", failure: { code: "VOICE_PORT_CONFLICT" } }) };
+  for (const [method, choice, expected] of [["GET", null, 200], ["POST", "classic", 410], ["POST", "new", 409]] as const) {
+    let status = 0;
+    let body: any;
+    const res = { writeHead(n: number) { status = n; }, end(s: string) { body = JSON.parse(s); } };
+    expect(await brainRoute(d, {} as any, res as any, "/api/v1/brain/engine", method, true, async () => ({ engine: choice }))).toBe(true);
+    expect(status).toBe(expected);
+    expect(body.engine).toBe("new");
+    if (choice !== "classic") expect(body).toMatchObject({ pipeline: false, error: "Voice port is occupied", failure: { code: "VOICE_PORT_CONFLICT" } });
+  }
+  for (const [name, bytes] of Object.entries(files)) expect(readFileSync(join(stateDir, name), "utf8")).toBe(bytes);
+});
+
+it("devices cannot select a different talker or enable thinking", async () => {
+  const { startCall, talkerModel } = await import("../voiceBrain");
+  const r = await startCall({ vault: "/v", engine: async () => eng, elKey: () => "fake", voiceId: () => "fake", botUrl: "", selfUrl: "", logDir: null },
+    { convId: "main", device: "phone", model: "other/model", thinking: "high" });
+  expect(r.status).toBe(200);
+  expect(eng.talker).toMatchObject({ model: talkerModel(), thinking: "off" });
+});
+
 describe("voice with one brain", () => {
   it("call startup is silent on every device: no synthetic greeting or model turn", async () => {
     const { startCall } = await import("../voiceBrain");
@@ -387,6 +420,43 @@ describe("voice with one brain", () => {
     expect(new Set(first.map((p) => p.utt)).size).toBe(1);
     const second = pieces.find((p) => /checkpoint/.test(p.text));
     expect(second.utt).toBe(first[0].utt + 1);
+  });
+
+  it("a live call is the vault's voice: it counts as live and busy, and it follows him to another thread (OpenProject)", async () => {
+    const vb = await import("../voiceBrain");
+    expect(vb.voiceLiveIn("/v")).toBe(false);
+    const c = await call();
+    expect(vb.voiceLiveIn("/v")).toBe(true);
+    expect(vb.voiceLiveIn("/v", Date.now(), "board")).toBe(true);
+    expect(vb.voiceLiveIn("/elsewhere", Date.now(), "board")).toBe(false);
+    expect(vb.voiceLiveIn("/v", Date.now(), "phone")).toBe(false);
+    expect(vb.activeVoiceSessions()).toBe(1);
+    expect(vb.followCall("/elsewhere", "project-coconut")).toBe(false);
+    expect(vb.followCall("/v", "project-coconut")).toBe(true);
+    expect(vb.liveCalls()[0]).toMatchObject({ id: c.id, convId: "project-coconut" });
+    // A call on another thread than the one asked for does not move (a deleted project's call goes on in Main only).
+    expect(vb.followCall("/v", "main", "project-other")).toBe(false);
+    const p = fetch(`${base}/v1/chat/completions`, { method: "POST", headers: { authorization: `Bearer ${c.token}` }, body: JSON.stringify({ messages: [{ role: "user", content: "make me three practice problems" }] }) });
+    await until(() => eng.messages.length);
+    expect(eng.messages[0]).toMatchObject({ convId: "project-coconut", text: "make me three practice problems" });
+    eng.emit({ type: "vc_turn_end", status: "completed" });
+    await p.then((r) => sse(r)).catch(() => null);
+  });
+
+  it("an inbox announcement reaches only the vault's New call without creating a pi turn", async () => {
+    const c = await call();
+    const { announce } = await import("../voiceBrain");
+    const ac = new AbortController();
+    const res = await fetch(`${base}/api/v1/brain/call/${c.id}/speak`, { headers: { authorization: `Bearer ${c.token}` }, signal: ac.signal });
+    const reader = res.body!.getReader();
+    expect(announce("/elsewhere", "not yours")).toBe(0);
+    expect(announce("/v", '"Lecture 7" is in your board inbox.')).toBe(1);
+    let got = "";
+    for (let i = 0; i < 4 && !got.includes("Lecture 7"); i++) got += new TextDecoder().decode((await reader.read()).value);
+    ac.abort();
+    expect(got).toContain("Lecture 7");
+    expect(got).not.toContain("not yours");
+    expect(eng.messages).toEqual([]);
   });
 
   it("what the conversation says outside a request (a typed turn, a result) goes to the speak channel", async () => {

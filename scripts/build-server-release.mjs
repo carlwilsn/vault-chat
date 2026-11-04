@@ -1,7 +1,7 @@
 // Package the headless server for a GitHub release (ship.yml, job build_server).
 //
 // Input:  dist-server/vault-chat-server.mjs  (from `npm run build:server`)
-//         src-tauri/assets/{phone.html, phone-sw.js, icon-apple-touch.png, voice.html}
+//         src-tauri/assets/{phone.html, phone-sw.js, icon-apple-touch.png}
 // Env:    VERSION (e.g. 0.6.33), REV (git sha). Optional OUT_DIR (default release-server).
 // Output in OUT_DIR — exactly what server/deploy/vault-chat-update.sh downloads:
 //   vault-chat-server.mjs                     the bundle
@@ -24,7 +24,7 @@ const rev = process.env.REV || "";
 const out = process.env.OUT_DIR || "release-server";
 const bundle = "dist-server/vault-chat-server.mjs";
 const assetDir = "src-tauri/assets";
-const assets = ["phone.html", "phone-sw.js", "icon-apple-touch.png", "voice.html"];
+const assets = ["phone.html", "phone-sw.js", "icon-apple-touch.png"];
 
 const fail = (msg) => {
   console.error(`build-server-release: ${msg}`);

@@ -57,9 +57,8 @@ import {
 } from "../src/inboxFormat";
 import { mathDocument, widgetDocument } from "../src/widgetHost";
 import { boardDir, ensureBoardsHidden, type Out } from "./boards";
-// voice.ts (the vault path guard) is loaded on first use, not with this module: the engine imports this
-// one, and voice.ts brings the app's command modules with it.
-const voicePath = async (vault: string, p: unknown, mode: "read" | "write") => (await import("./voice")).voicePath(vault, p, mode);
+import { vaultPath } from "./vaultPath";
+const voicePath = async (vault: string, p: unknown, mode: "read" | "write") => vaultPath(vault, p, mode);
 import { writeAtomic, renameRetry } from "./atomic";
 import { findBrowser, headless, warmUp } from "./headless";
 import { katexCss } from "./katexCss";

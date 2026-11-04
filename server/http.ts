@@ -14,19 +14,18 @@ import { authorize, isDirectLoopback, phoneToken } from "./auth";
 import { createExternalMcpHandler, type ExternalContext } from "./mcp/external";
 import { externalMcpHosts } from "./mcp/hosts";
 import type { BoundTools } from "./mcp/tools";
-import { brainEnabled, brainRoute, type BrainDeps } from "./voiceBrain";
-import { relay, emitLocal } from "./bus";
+import { brainRoute, type BrainDeps } from "./voiceBrain";
+import { relay } from "./bus";
 import { globalFeed, ownerVault, signal } from "./convlog/log";
-import { conversationsSummary, conversationDetail, notificationsFeed, notesFeed, withinVault, mimeFor, dispatchVoiceTool } from "./phoneData";
+import { conversationsSummary, conversationDetail, notificationsFeed, notesFeed, withinVault, mimeFor } from "./phoneData";
 import { notificationAppend, pushSubsAdd, pushSubsRemove, vapidPublicKey } from "./commands/phone";
 import { isGitPath, handleGitHttp } from "./gitHttp";
 import { validVaultName } from "./sync";
 import { validKeyName } from "./keys";
 import { createProjectWithThread, folderRoute, projectsList, setProject } from "./projectRoutes";
-import { voiceTool, voiceSession, voiceTranscript, voiceUpdates, voicePath, type VoiceDeps } from "./voice";
+import { vaultPath } from "./vaultPath";
 import { activityImageRoute, activityPost } from "./activity";
 import PHONE_PAGE_INLINE from "../src-tauri/assets/phone.html";
-import VOICE_PAGE_INLINE from "../src-tauri/assets/voice.html";
 import PHONE_SW_INLINE from "../src-tauri/assets/phone-sw.js?raw";
 import ICON_PNG_INLINE from "../src-tauri/assets/icon-apple-touch.png";
 import PHONE_APP from "vc:phone-app";
@@ -85,10 +84,7 @@ export type ServerHooks = {
       stop: (v: VaultScope, id: string) => Promise<boolean>;
     };
   };
-  /** Voice (server/voice.ts) for the request's vault: its working copy, its
-   * engine and sandbox — or why not. */
-  voice?: (v: VaultScope) => Promise<VoiceDeps | { error: string }>;
-  /** Voice with one brain (server/voiceBrain.ts, VC_VOICE_BRAIN=pi): the box's voice pipeline and pi. */
+  /** The voice (server/voiceBrain.ts): the box's voice pipeline and pi. */
   brain?: (v: VaultScope) => BrainDeps;
 };
 
@@ -483,8 +479,8 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
   // The old app (the relay) knows only the main vault.
   const mainOnly = () => json(res, 409, { error: `only on the box's main vault (${cfg.vaultName})` });
 
-  // Voice with one brain (behind VC_VOICE_BRAIN=pi): the call's pipeline and pi (server/voiceBrain.ts).
-  if (hooks.brain && brainEnabled() && (path === "/v1/chat/completions" || path.startsWith("/api/v1/brain/"))) {
+  // The voice: the call's pipeline and pi (server/voiceBrain.ts).
+  if (hooks.brain && (path === "/v1/chat/completions" || path.startsWith("/api/v1/brain/"))) {
     if (await brainRoute(hooks.brain(scope), req, res, path, method, isDirectLoopback(req), () => jsonBody(req))) return;
   }
 
@@ -505,39 +501,6 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
     return json(res, out.ok ? 200 : 409, out);
   }
 
-
-  // Voice (server/voice.ts): the front of house of one conversation, on the laptop, the phone and the board —
-  // the session (minted with the box's key, its prompt from the conversation's pi session), its one tool that
-  // acts (Ask: a request to the conversation's agent), its lines (into that session) and the updates a live call gets.
-  if (path === "/api/v1/voice/tool" && method === "POST") {
-    const b = await jsonBody(req);
-    const d = (await hooks.voice?.(scope)) ?? { error: "voice tools not available" };
-    if ("error" in d) return json(res, 503, d);
-    return json(res, 200, await voiceTool(d, b));
-  }
-  if (path === "/api/v1/voice/session" && method === "GET") {
-    const d = (await hooks.voice?.(scope)) ?? { error: "voice not available" };
-    if ("error" in d) return json(res, 503, d);
-    const out = await voiceSession(url.searchParams.get("convId"), d, { llm: url.searchParams.get("llm"), voice: url.searchParams.get("voice"), device: url.searchParams.get("device") });
-    return json(res, out.status, out.body);
-  }
-  if (path === "/api/v1/voice/updates" && method === "GET") {
-    const d = (await hooks.voice?.(scope)) ?? { error: "voice not available" };
-    if ("error" in d) return json(res, 503, d);
-    const signal = { closed: false };
-    res.on("close", () => (signal.closed = true));
-    return json(res, 200, await voiceUpdates(d, { convId: url.searchParams.get("convId"), cursor: url.searchParams.get("cursor"), waitMs: Number(url.searchParams.get("wait")) || 0, signal, session: url.searchParams.get("session") }));
-  }
-  if (path === "/api/v1/voice/transcript" && method === "POST") {
-    const b = await jsonBody(req);
-    const d = (await hooks.voice?.(scope)) ?? { error: "voice not available" };
-    if ("error" in d) return json(res, 503, d);
-    const out = await voiceTranscript(d, b);
-    // Carl's spoken line: a frustration signal in the turn log when it looks like one (server/signal.ts).
-    if (out.status === 200 && b?.role === "user" && b?.system !== true && !out.body.skipped && !out.body.duplicate)
-      noteUserLine({ stateDir: cfg.stateDir, vault: scope.name, conv: typeof out.body.convId === "string" ? out.body.convId : null, via: "voice", text: String(b.text ?? "") });
-    return json(res, out.status, out.body);
-  }
 
   // Live edits (server/liveEdits.ts): a file the agent just wrote, as it is on
   // the box now — the laptop shows it in the open pane before the sync lands.
@@ -716,8 +679,6 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
   }
 
   switch (`${method} ${path}`) {
-    case "GET /voice":
-      return send(res, 200, "text/html; charset=utf-8", asset("voice.html", VOICE_PAGE_INLINE));
     case "GET /phone":
       return send(res, 200, "text/html; charset=utf-8", phonePage());
     case "GET /conversations": {
@@ -852,41 +813,6 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
     }
     case "POST /push/test":
       return relayRoute(res, "phone:pushtest", {}, 15_000, "app not answering");
-    case "POST /session": {
-      // The old phone page's session call: the same as GET /api/v1/voice/session.
-      const vd = await hooks.voice?.(scope);
-      if (!vd || "error" in vd) return json(res, 503, vd ?? { error: "voice not available" });
-      const out = await voiceSession(String((await jsonBody(req)).convId ?? "") || null, vd);
-      return json(res, out.status, out.body);
-    }
-    case "POST /voice-transcript": {
-      const b = await jsonBody(req);
-      if (String(b.text ?? "").trim()) emitLocal("voice:transcript", { role: b.role ?? "assistant", text: b.text });
-      // The old voice page's lines are saved too: one voice conversation per
-      // session (a new one after 30 quiet minutes), unless it names one.
-      const vd = await hooks.voice?.(scope);
-      if (vd && !("error" in vd) && String(b.text ?? "").trim()) {
-        const last = legacyVoice.get(scope.name) ?? { id: null, at: 0 };
-        const fresh = Date.now() - last.at > 30 * 60_000;
-        const out = await voiceTranscript(vd, { ...b, convId: b.convId ?? (fresh ? null : last.id) });
-        if (typeof out.body.convId === "string") legacyVoice.set(scope.name, { id: out.body.convId, at: Date.now() });
-        return json(res, out.status, out.body);
-      }
-      return json(res, 200, { ok: true });
-    }
-    case "POST /tool": {
-      // The old phone page's tool call: the full box set when voice is wired, else read-only.
-      const raw = await readBody(req);
-      const vd = await hooks.voice?.(scope);
-      if (!vd || "error" in vd) return send(res, 200, "text/plain; charset=utf-8", await dispatchVoiceTool(vault, raw));
-      let b: any = {};
-      try {
-        b = JSON.parse(raw);
-      } catch {
-        /* empty */
-      }
-      return send(res, 200, "text/plain; charset=utf-8", (await voiceTool(vd, b)).result);
-    }
     // Projects: the chat chip and "New chat in project" (desktop box mode, phone).
     // Every vault's projects, whatever vault is open (a project is a folder with its own conversation).
     case "GET /projects":
@@ -937,9 +863,6 @@ function logIntent(stateDir: string, vault: string, req: IncomingMessage, b: any
     noteUserLine({ stateDir, vault, conv: (typeof b?.convId === "string" && b.convId) || (typeof out?.convId === "string" ? out.convId : null), via: client ?? "typed", text: b.text });
 }
 
-/** The old voice page's current voice conversation, per vault. */
-const legacyVoice = new Map<string, { id: string | null; at: number }>();
-
 /** GET /poll?after=N[&epoch=E] — exactly the vault log's records after N, long-polled up to 25 s.
  * `after=latest` (or none) → the head, no records. A cursor from another log (its epoch) or from
  * beyond the head → `reset`: start over from 0. */
@@ -980,7 +903,7 @@ function vaultFileRoute(res: ServerResponse, vault: string, p: string | null): v
   let abs: string;
   let rel: string;
   try {
-    ({ abs, rel } = voicePath(vault, p, "read"));
+    ({ abs, rel } = vaultPath(vault, p, "read"));
   } catch (e) {
     // A file in a project's folder on the box (an absolute path): its path is its name.
     const hit = inProjectFolder(vault, p);

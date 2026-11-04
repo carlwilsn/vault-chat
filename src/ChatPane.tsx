@@ -8,14 +8,15 @@ import { Plus, Square, ArrowUp, ChevronDown, ChevronUp, Wrench, X, MessageSquare
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { attachBlob, attachPath, insideVault, pathMentions, sizeLabel } from "./attachFiles";
 import { isExternalFileDrop } from "./dnd";
-import { voiceImageMime } from "./voiceImages";
+import { imageMime } from "./imageMime";
 import { fileKind } from "./fileKind";
 import { filesLine, splitFilesLine } from "./filesLine";
 import { invoke } from "@tauri-apps/api/core";
 import { dispatchChatAction, isPopout } from "./sync";
 import { COMPACTION_DIVIDER_TEXT, isCompactionDivider, dividerSummary } from "./chatContext";
 import { useStore, type ChatMessage, type FileEntry, type FileUpload, type LiveTool, type TodoItem } from "./store";
-import { buildViewportContextText, toggleVoice } from "./voice-elevenlabs";
+import { buildViewportContextText } from "./viewportContext";
+import { toggleVoice } from "./voiceCall";
 import { InlineVoiceWaves, VoiceMuteButton } from "./VoiceCockpit";
 import { loadSkills } from "./skills";
 import { isUnreadableAsText } from "./fileKind";
@@ -984,7 +985,7 @@ export function ChatPane() {
     const outside: string[] = [];
     for (const path of paths) {
       const name = path.split("/").pop() ?? path;
-      const mime = voiceImageMime(path);
+      const mime = imageMime(path);
       if (mime) {
         try {
           const bytes = await invoke<number[]>("read_binary_file", { path });

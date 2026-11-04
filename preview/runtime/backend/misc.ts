@@ -114,7 +114,6 @@ export const miscCommands: Record<string, (a: Record<string, any>) => unknown> =
   voice_server_stop: () => null,
   voice_server_status: () => false,
   voice_server_url: ({ port }) => `http://100.64.0.7:${port ?? 8848}`,
-  voice_set_context: () => null,
   voice_tool_respond: () => null,
   phone_broadcast: () => null,
   phone_set_vapid: () => null,

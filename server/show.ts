@@ -267,11 +267,11 @@ function spotTakes(kind: FileKind): string {
   return m[kind] ?? "no place (it just opens)";
 }
 
-/** A path (vault-relative or absolute) to an existing file inside the vault, by the same rule as every vault tool (server/voice.ts voicePath: never .git), or why not. */
+/** A path (vault-relative or absolute) to an existing file inside the vault, by the same rule as every vault tool (server/vaultPath.ts: never .git), or why not. */
 async function vaultFile(vault: string, p: string): Promise<{ abs: string; rel: string } | string> {
   let r: { abs: string; rel: string };
   try {
-    r = (await import("./voice")).voicePath(vault, p, "read");
+    r = (await import("./vaultPath")).vaultPath(vault, p, "read");
   } catch (e) {
     return String(e).replace(/^Refused: /, "");
   }

@@ -1,7 +1,7 @@
 // Real OS sockets and compiled backend, no providers, microphone or inference.
 import { createServer } from 'node:http';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, expect, it } from 'vitest';
 import { checkVoicePort, pipelineState, stopPipeline, wantPipeline } from '../voicePipeline';
@@ -50,7 +50,7 @@ it('compiled backend startup failure reaches ordinary health and voice status wh
   let srv: Awaited<ReturnType<typeof startServer>> | undefined;
   try {
     const vault = makeVault(join(home, 'vault'));
-    mkdirSync(join(home, 'state')); writeFileSync(join(home, 'state/voice-engine.json'), '{"engine":"new"}');
+    mkdirSync(join(home, 'state')); writeFileSync(join(home, 'state/voice-engine.json'), '{"engine":"classic","keep":true}');
     srv = await startServer({ home, vault, secrets: join(home, 'empty-credentials'), extra: { VC_ENGINE: '0', VC_VOICE_BRAIN: 'pi', VC_VOICE_PIPELINE: 'on', VC_VOICE_PORT: String(port), VC_VOICE_PIPELINE_PORT: String(port) } });
     const status = await (await fetch(srv.base + '/api/v1/brain/engine')).json();
     expect(status).toMatchObject({ engine: 'new', pipeline: false, failure: { code: 'VOICE_PORT_CONFLICT', port } });
@@ -58,6 +58,10 @@ it('compiled backend startup failure reaches ordinary health and voice status wh
     const health = await (await fetch(srv.base + '/api/v1/health')).json();
     expect(health.voice.failure).toEqual(status.failure);
     expect(health.voice.running).toBe(false);
+    expect(readFileSync(join(home, 'state/voice-engine.json'), 'utf8')).toBe('{"engine":"classic","keep":true}');
+    for (const route of ['/api/v1/voice/session', '/voice']) expect((await fetch(srv.base + route)).status).toBe(404);
+    const old = await fetch(srv.base + '/api/v1/brain/engine', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{"engine":"classic"}' });
+    expect(old.status).toBe(410);
     const refused = await fetch(srv.base + '/api/v1/brain/engine', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{"engine":"new"}' });
     expect(refused.status).toBe(409);
     expect(await refused.json()).toMatchObject({ ok: false, error: status.error, failure: status.failure });

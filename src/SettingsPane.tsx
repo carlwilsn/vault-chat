@@ -2,7 +2,6 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { ArrowLeft, Check, X, Plus, ChevronDown, Play, Square } from "lucide-react";
 import { useStore } from "./store";
 import { Button, Input, MenuSelect } from "./ui";
-import { VOICE_LLMS, normalizeVoiceLlm } from "./voiceLlms";
 import { listUserKeys, setUserKey, deleteUserKey } from "./keychain";
 import {
   readBoxConfig,
@@ -21,7 +20,6 @@ import {
 } from "./vaultSync";
 import { boxGet, boxPost } from "./boxChat";
 import { pushKeysToBox, keysChanged, subscribeKeyPush } from "./boxKeys";
-import { checkVoiceModel, NEED_LABEL, type Check as ModelCheck } from "./modelCaps";
 import { BoxModelChecks } from "./BoxModelChecks";
 import { MasterSection } from "./MasterSection";
 import { modelLabel, setAgentModel, useAgentModel } from "./agentModel";
@@ -98,8 +96,6 @@ export function SettingsPane() {
 }
 
 // ---- Models ------------------------------------------------------------------
-
-const VOICE_OPTIONS: PickOption[] = VOICE_LLMS.map((m) => ({ value: m.id, label: m.label }));
 
 /** `disabled`: shown, not pickable (its hint says why). */
 type PickOption = { value: string; label: string; hint?: string; disabled?: boolean };
@@ -221,59 +217,11 @@ function Picker({
   );
 }
 
-/** One quiet line under a role's picker: the model passed, or what it can't do. */
-function CheckLine({ check }: { check: ModelCheck | null }) {
-  if (!check) return null;
-  if (check.state === "checking") return <p className="text-[10.5px] text-muted-foreground/60 px-0.5">Checking…</p>;
-  if (check.state === "passed")
-    return (
-      <p className="text-[10.5px] text-muted-foreground/70 px-0.5 flex items-center gap-1">
-        <Check className="h-3 w-3" /> Passed
-      </p>
-    );
-  if (check.state === "missing")
-    return (
-      <p className="text-[10.5px] text-amber-500/90 px-0.5">
-        Can't {check.missing.map((n) => NEED_LABEL[n]).join(" or ")}. Pick another.
-      </p>
-    );
-  return <p className="text-[10.5px] text-muted-foreground/60 px-0.5">Not checked: {check.why}</p>;
-}
-
-/** Re-check whenever the picked model changes. */
-function useCheck(run: () => Promise<ModelCheck> | ModelCheck, dep: string): ModelCheck | null {
-  const [check, setCheck] = useState<ModelCheck | null>(null);
-  useEffect(() => {
-    let alive = true;
-    const r = run();
-    if (r instanceof Promise) {
-      setCheck({ state: "checking" });
-      void r.then((c) => alive && setCheck(c));
-    } else setCheck(r);
-    return () => {
-      alive = false;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dep]);
-  return check;
-}
-
 // Models: the agent's one model (pi on the box, for everything, typed and spoken; the same setting as the
-// composer's picker, src/agentModel.ts), and the fast model a voice call speaks its quick replies with
-// (the call hands any real work to the agent).
+// composer's picker, src/agentModel.ts).
 function ModelsSection() {
   const agent = useAgentModel();
   const agentOptions: PickOption[] = agent.options.map((id) => ({ value: id, label: modelLabel(id), hint: id }));
-  const [voiceLlm, setVoiceLlm] = useState(() => {
-    // An old id shows as its nearest current one; nothing chosen is the default.
-    return normalizeVoiceLlm(localStorage.getItem("vault_chat_elevenlabs_llm"));
-  });
-  const saveVoiceLlm = (v: string) => {
-    localStorage.setItem("vault_chat_elevenlabs_llm", v);
-    setVoiceLlm(v);
-  };
-  const elKey = useStore((s) => s.serviceKeys.elevenlabs);
-  const voiceCheck = useCheck(() => checkVoiceModel(voiceLlm, elKey), `${voiceLlm}|${!!elKey}`);
 
   return (
     <section className="space-y-2">
@@ -289,15 +237,7 @@ function ModelsSection() {
           {agent.error && <p className="text-[10.5px] text-amber-500/90 px-0.5">Not changed: {agent.error}</p>}
         </div>
       </div>
-      <div className="flex items-start justify-between gap-3" data-el="quick-replies-model">
-        <span className="text-[12px] text-foreground/70 shrink-0 pt-1">Quick replies</span>
-        <div className="min-w-0 flex-1 max-w-[62%] space-y-0.5">
-          <Picker value={voiceLlm} options={VOICE_OPTIONS} placeholder="Search models…" onChange={saveVoiceLlm} />
-          <p className="text-[10.5px] text-muted-foreground px-0.5">A fast model for short spoken replies on a call; anything that needs work goes to the agent.</p>
-          <CheckLine check={voiceCheck} />
-        </div>
-      </div>
-      <VoiceEngineRow />
+      <VoiceHealthRow />
       <BoxModelChecks />
     </section>
   );
@@ -496,6 +436,13 @@ const DEFAULT_VOICE = "nPczCjzI2devNBz1zQrb";
 
 const TEST_LINE = "Hi Carl. This is how I'll sound when we talk in vault-chat.";
 
+/** The voice a call speaks with is the box's (every device follows it): a pick goes there. */
+async function voiceToBox(voiceId: string): Promise<void> {
+  const { boxLinkFor, boxPost } = await import("./boxChat");
+  const link = await boxLinkFor(useStore.getState().vaultPath).catch(() => null);
+  if (link) await boxPost(link, "/api/v1/brain/voice", { voiceId }).catch(() => null);
+}
+
 function VoiceSection() {
   const key = useStore((s) => s.serviceKeys.elevenlabs);
   const [voiceId, setVoiceId] = useState(
@@ -537,6 +484,7 @@ function VoiceSection() {
       return;
     }
     selectVoice(id);
+    void voiceToBox(id);
     setVoiceId(id);
     if (useStore.getState().voiceMode) setError("The new voice starts with the next voice session.");
   };
@@ -548,6 +496,7 @@ function VoiceSection() {
   // A library voice was picked (added to the account, or already in it): it
   // joins the account's list here at once.
   const pickedFromLibrary = (id: string, v: SharedVoice) => {
+    void voiceToBox(id);
     setVoiceId(id);
     setBrowsing(false);
     setHidden(readHidden());
@@ -633,13 +582,11 @@ function VoiceSection() {
   );
 }
 
-/** Voice engine, kept on the box (every device follows it): New — the voice is the conversation's own agent, heard and
- *  spoken by the box (server/voiceBrain.ts); Classic — ElevenLabs' agent handing requests to it. The rollback is one click. */
-function VoiceEngineRow() {
+/** Voice readiness is visible even with the microphone off; there is no engine selector. */
+function VoiceHealthRow() {
   const vault = useStore((s) => s.vaultPath);
-  const [st, setSt] = useState<{ engine: "classic" | "new"; pipeline: boolean; error?: string | null; failure?: { code: string } | null } | null>(null);
+  const [st, setSt] = useState<{ pipeline: boolean; error?: string | null; failure?: { code: string } | null } | null>(null);
   const [healthOpen, setHealthOpen] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
   useEffect(() => {
     let alive = true;
     void (async () => {
@@ -647,46 +594,22 @@ function VoiceEngineRow() {
       const link = await boxLinkFor(vault).catch(() => null);
       if (!link) return;
       const r = await boxGet(link, "/api/v1/brain/engine", 5000).catch(() => null);
-      if (alive && r) setSt({ engine: r.engine === "new" ? "new" : "classic", pipeline: !!r.pipeline, error: r.error, failure: r.failure });
+      if (alive && r) setSt({ pipeline: !!r.pipeline, error: r.error, failure: r.failure });
     })();
     return () => {
       alive = false;
     };
   }, [vault]);
   if (!st) return null;
-  const pick = async (engine: "classic" | "new") => {
-    setErr(null);
-    const { boxLinkFor, boxPost } = await import("./boxChat");
-    const link = await boxLinkFor(vault).catch(() => null);
-    if (!link) return;
-    const r = await boxPost(link, "/api/v1/brain/engine", { engine });
-    if (!r.ok) {
-      setErr(r.error ?? "the box did not take it");
-      const current = await boxGet(link, "/api/v1/brain/engine", 5000).catch(() => null);
-      if (current) setSt(current);
-      return;
-    }
-    setSt({ engine, pipeline: !!r.data?.pipeline, error: typeof r.data?.error === "string" ? r.data.error : null, failure: r.data?.failure as { code: string } | null });
-    if (useStore.getState().voiceMode) setErr("Takes effect with the next voice session.");
-  };
   return (
-    <div className="flex items-start justify-between gap-3" data-el="voice-engine">
+    <div className="flex items-start justify-between gap-3" data-el="voice-health">
       <span className="text-[12px] text-foreground/70 shrink-0 pt-1">Voice</span>
       <div className="min-w-0 flex-1 max-w-[62%] space-y-0.5">
         <div className="flex gap-1">
-          {(["new", "classic"] as const).map((e) => (
-            <Button key={e} size="sm" variant={st.engine === e ? "default" : "outline"} className="h-6 px-2 text-[11px]" onClick={() => void pick(e)}>
-              {e === "new" ? "New" : "Classic"}
-            </Button>
-          ))}
           <Button size="sm" variant="ghost" className="h-6 px-2 text-[11px]" data-el="voice-health-open" onClick={() => setHealthOpen(true)}>Health</Button>
         </div>
         <p className="text-[10.5px] text-muted-foreground px-0.5">
-          {st.engine === "new"
-            ? st.pipeline
-              ? "The agent hears and speaks on the call itself (the box's voice)."
-              : "The box's voice is setting up or not running; Classic still works."
-            : "ElevenLabs hears and speaks, with the quick-replies model; the agent does the work."}
+          {st.pipeline ? "The agent hears and speaks on the call itself." : "The box’s voice is setting up or unavailable."}
         </p>
         {st.error && <p role="status" data-el="voice-startup-error" className="text-[10.5px] text-destructive px-0.5">{st.error}</p>}
         {healthOpen && <div role="dialog" aria-modal="true" aria-label="Voice health" className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40" onClick={() => setHealthOpen(false)}>
@@ -698,7 +621,6 @@ function VoiceEngineRow() {
             <Button size="sm" variant="outline" data-el="voice-health-close" onClick={() => setHealthOpen(false)}>Close</Button>
           </div>
         </div>}
-        {err && <p className="text-[10.5px] text-destructive px-0.5">{err}</p>}
       </div>
     </div>
   );

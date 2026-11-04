@@ -222,15 +222,3 @@ export async function listAudioDevices(): Promise<MicDevice[]> {
 export function canPickOutput(): boolean {
   return typeof HTMLMediaElement !== "undefined" && "setSinkId" in HTMLMediaElement.prototype;
 }
-
-export const AUDIO_WARN_LINE = "No sound? Tap to reconnect audio";
-
-/** The agent's audio should be audible but can't be: it is speaking (or its audio arriving) while a playback
- *  context is suspended, the page may not play audio, or the pinned output is gone with nothing to move to. */
-export function audioBlocked(s: { speaking: boolean; contexts: string[]; canPlay?: boolean | null; outputLost?: boolean }): string | null {
-  if (s.outputLost) return "output-gone";
-  if (!s.speaking) return null;
-  if (s.contexts.some((c) => c === "suspended" || c === "interrupted")) return "context-suspended";
-  if (s.canPlay === false) return "playback-blocked";
-  return null;
-}
