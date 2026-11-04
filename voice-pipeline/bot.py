@@ -20,13 +20,11 @@ call's secrets, from its tailnet route). Keys arrive in that request, never on a
 
 from __future__ import annotations
 
-import asyncio
-import json
 import os
-import re
-import time
 import sys
 
+# Bind before ALL unrelated startup imports (even asyncio can be cold/blocked).
+# Ownership refusal must not wait for the rest of Python or provider startup.
 # Bind before importing inference/audio dependencies. Retain the same socket through aiohttp.
 from listener import bind_listener
 LISTENER = None
@@ -36,6 +34,10 @@ if __name__ == "__main__":
     except OSError as error:
         print(f"[voice bind] port={os.environ.get('VC_VOICE_PORT', '?')} errno={error.errno}", file=sys.stderr, flush=True)
         sys.exit(98 if error.errno == 98 else 1)
+import asyncio
+import json
+import re
+import time
 from typing import Any
 
 import aiohttp

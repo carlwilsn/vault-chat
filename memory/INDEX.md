@@ -23,3 +23,4 @@ Carl’s instructions live in AGENTS.md; ASKS.md is the only plan.
   explicitly enable `/push/preferences`, after proving a subscription alone leaves that route silent.
 
 - Voice exclusive bind permits retired TCP TIME_WAIT via SO_REUSEADDR, never SO_REUSEPORT; live port owners still refuse startup.
+- The Python voice entrypoint binds before unrelated standard-library imports as well as audio/provider imports. Ownership tests run both ordinary startup and a blocked asyncio import against the same live owned HTTP fixture; exit 98 and untouched original listener are required within the unchanged deadline.

@@ -1,7 +1,7 @@
 // Real OS sockets and compiled backend, no providers, microphone or inference.
 import { createServer } from 'node:http';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, expect, it } from 'vitest';
 import { checkVoicePort, pipelineState, stopPipeline, wantPipeline } from '../voicePipeline';
@@ -30,10 +30,19 @@ it('OS bind refuses an owned fixture, throws structured failure and leaves its o
     expect(requests).toBe(0); // refusal never HTTP-probes the other listener
     stopPipeline();
     expect(await (await fetch(`http://127.0.0.1:${port}`)).text()).toBe('original-owner');
-    const child = spawnSync('python3', ['bot.py'], { cwd: join(ROOT, 'voice-pipeline'), env: { PATH: process.env.PATH, VC_VOICE_PORT: String(port), VC_VOICE_HTTP_PORT: String(opts.serverPort) }, encoding: 'utf8', timeout: 3000 });
-    expect(child.status).toBe(98); // actual bot binds BEFORE any paid/audio dependency imports
-    expect(child.stderr).toMatch(/\[voice bind\].*errno=98/);
-    expect(await (await fetch(`http://127.0.0.1:${port}`)).text()).toBe('original-owner');
+    // A cold/blocked asyncio import must never delay an already-known bind conflict.
+    // The former import order reproduced the installed gate's null exit/3s timeout.
+    const imports = join(state, 'imports'); mkdirSync(imports);
+    const imported = join(state, 'asyncio-imported');
+    writeFileSync(join(imports, 'asyncio.py'), `from pathlib import Path\nimport time\nPath(${JSON.stringify(imported)}).touch()\ntime.sleep(10)\nraise RuntimeError('dependency startup reached before ownership refusal')\n`);
+    for (const pythonpath of [undefined, imports]) {
+      const child = spawnSync('python3', ['bot.py'], { cwd: join(ROOT, 'voice-pipeline'), env: { PATH: process.env.PATH, ...(pythonpath ? { PYTHONPATH: pythonpath } : {}), VC_VOICE_PORT: String(port), VC_VOICE_HTTP_PORT: String(opts.serverPort) }, encoding: 'utf8', timeout: 3000 });
+      expect(child.error).toBeUndefined(); // a timeout is a failure, not an ownership refusal
+      expect(child.status).toBe(98); // actual bot binds BEFORE any paid/audio dependency imports
+      expect(child.stderr).toMatch(/\[voice bind\].*errno=98/);
+      expect(existsSync(imported)).toBe(false); // no unrelated startup work before the OS bind
+      expect(await (await fetch(`http://127.0.0.1:${port}`)).text()).toBe('original-owner');
+    }
   } finally { await new Promise<void>(r => fixture.close(() => r())); cleanup(state); }
 });
 it('free explicit port accepts controller preflight and the reused Python exclusive listener', async () => {
