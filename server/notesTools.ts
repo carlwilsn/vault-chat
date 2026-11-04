@@ -6,7 +6,7 @@
 // UpdateNote edits a note in place (Carl, summer: "NO! The LIST THE LIST YOU
 // MADE", when a fix came as a second note). DeleteNote clears a note, as the
 // Notes panel's clear does: it leaves every view, and git history keeps it.
-import { resolve } from "node:path";
+
 
 export const NOTES_FILE = ".vault-chat/notes.jsonl";
 export const NOTE_TOOL_NAMES = ["ListNotes", "CreateNote", "UpdateNote", "ResolveNote", "ReopenNote", "DeleteNote"] as const;
@@ -36,7 +36,7 @@ export function noteText(n: any): string {
 async function refreshStoreNotes(vault: string): Promise<void> {
   try {
     const st = (await import("../src/store")).useStore.getState() as any;
-    if (st.vaultPath && resolve(st.vaultPath) === resolve(vault) && st.notesLoaded) await st.loadNotes?.();
+    if (st.vaultPath && st.notesLoaded) await st.loadNotes?.();
   } catch {
     /* no store */
   }
@@ -93,7 +93,7 @@ export const noteToolSpecs = [
 ];
 
 /** Run a notes tool on `vault`. Never throws: a failure is the result. `where` names the vault in a result ("the "main" vault's notes"). */
-export async function noteTool(vault: string, name: NoteToolName, a: Record<string, unknown>, where = "the vault's notes"): Promise<NoteResult> {
+export async function noteTool(vault: string, name: NoteToolName, a: Record<string, unknown>, where = "your global notes"): Promise<NoteResult> {
   const notes = await import("../src/notes");
   const fail = (text: string): NoteResult => ({ ok: false, text: `Error: ${text}`, wrote: false });
   const done = async (text: string): Promise<NoteResult> => {
@@ -129,7 +129,7 @@ export async function noteTool(vault: string, name: NoteToolName, a: Record<stri
         }
         const saved = (await notes.readNotes(vault).catch(() => [])).some((n: any) => n.id === note.id);
         if (!saved) return fail(`the note was written but is not in ${NOTES_FILE} when read back; it was not saved.`);
-        return done(`Saved note ${note.id} in ${where} (${NOTES_FILE} on the box): the phone's Notes show it now; the laptop gets it with its next sync with the box (within about a minute).`);
+        return done(`Saved note ${note.id} in ${where} (${NOTES_FILE} on the box): every vault's Notes reads this same note.`);
       }
       case "UpdateNote": {
         const id = s(a.id).trim();

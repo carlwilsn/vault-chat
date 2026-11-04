@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { readTextAt, boxPathOf } from "./boxFiles";
+import { writeAllNotes } from "./notes";
 import {
   StickyNote,
   CheckCircle2,
@@ -175,19 +176,20 @@ export function NotesPanel({
     onClose();
   };
 
-  const openAnchorAt = async (anchor: NoteAnchorLike) => {
+  const openAnchorAt = async (anchor: NoteAnchorLike, origin?: string) => {
     if (!anchor || !anchor.source_path) return;
     try {
-      if (isUnreadableAsText(anchor.source_path)) {
-        setCurrentFile(anchor.source_path, "");
+      const path = origin ? boxPathOf(anchor.source_path.startsWith("/") ? anchor.source_path : `${origin}/${anchor.source_path}`) : anchor.source_path;
+      if (isUnreadableAsText(path)) {
+        setCurrentFile(path, "");
       } else {
-        const content = await invoke<string>("read_text_file", { path: anchor.source_path });
-        setCurrentFile(anchor.source_path, content);
+        const content = await readTextAt(path);
+        setCurrentFile(path, content);
       }
       if (anchor.source_anchor) {
         useStore
           .getState()
-          .requestScrollAnchor(anchor.source_path, anchor.source_anchor);
+          .requestScrollAnchor(path, anchor.source_anchor);
       }
     } catch (e) {
       console.error("[notes] open anchor failed:", e);
@@ -195,7 +197,7 @@ export function NotesPanel({
   };
   const openAnchor = (note: Note) => {
     const primary = note.anchors.find((a) => a.primary) ?? note.anchors[0];
-    if (primary) openAnchorAt(primary);
+    if (primary) openAnchorAt(primary, note.origin_vault);
   };
 
   return (
@@ -281,7 +283,7 @@ export function NotesPanel({
                 }
                 onReformat={() => reformatNote(n.id)}
                 onOpen={() => openAnchor(n)}
-                onOpenSpecific={(a) => openAnchorAt(a)}
+                onOpenSpecific={(a) => openAnchorAt(a, n.origin_vault)}
                 onToggleStatus={() =>
                   setNoteStatus(n.id, n.status === "open" ? "resolved" : "open")
                 }
@@ -332,6 +334,18 @@ function NoteCard({
   onDelete: () => void;
   onChat: () => void;
 }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  const [error, setError] = useState("");
+  const saveEdit = async () => {
+    const s = useStore.getState();
+    if (!s.vaultPath || !draft.trim()) return;
+    try {
+      await writeAllNotes(s.vaultPath, s.notes.map(n => n.id === note.id ? { ...n, user_draft: draft.trim(), turns: [], formatted: null, title: null, last_updated: new Date().toISOString() } : n));
+      await s.loadNotes();
+      setEditing(false);
+    } catch (e) { setError(String(e)); }
+  };
   const primary = note.anchors.find((a) => a.primary) ?? note.anchors[0];
   const secondaries = note.anchors.filter((a) => a !== primary);
   const bodyPreview =
@@ -348,7 +362,7 @@ function NoteCard({
   const summarizable = noteIsSummarizable(note);
 
   return (
-    <div className="border-b border-border/40">
+    <div data-note-id={note.id} className="border-b border-border/40">
       <div
         className={cn(
           "px-3 py-2.5 hover:bg-accent/20 group cursor-pointer",
@@ -442,6 +456,12 @@ function NoteCard({
 
       {expanded && (
         <div className="px-3 pb-3 pl-[34px] space-y-3 bg-accent/5">
+          {editing ? <div className="space-y-2">
+            <textarea aria-label="Edit note" className="w-full bg-background border border-border rounded p-2 text-[12.5px]" value={draft} onChange={e => setDraft(e.target.value)} />
+            <button onClick={() => void saveEdit()} className="text-xs mr-3">Save</button>
+            <button onClick={() => setEditing(false)} className="text-xs">Cancel</button>
+            {error && <div role="alert">{error}</div>}
+          </div> : <button className="text-xs text-muted-foreground" onClick={() => { setDraft(note.user_draft ?? note.turns.map(t => t.content).join("\n")); setError(""); setEditing(true); }}>Edit</button>}
           {/* AI-formatted summary — only for notes with non-trivial
               context (has turns / image / selection / multi-anchor).
               Pure text dumps are shown verbatim instead. */}

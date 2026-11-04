@@ -271,8 +271,8 @@ describe("vault-scoped routes (the real server)", () => {
     expect((await fetch(srv.base + "/conversation?id=cphys&vault=physics")).status).toBe(200);
     expect((await fetch(srv.base + "/conversation?id=nope")).status).toBe(404);
     expect((await fetch(srv.base + "/conversations?vault=nope")).status).toBe(404);
-    // The old app's routes are the main vault's only.
-    expect((await post("/notes?vault=physics", { text: "x" })).status).toBe(409);
+    // Notes are global too, including writes from a secondary workspace.
+    expect((await post("/notes?vault=physics", { text: "x" })).status).toBe(200);
   });
 
   it("projects and /poll are the box's (one feed, one sequence); notifications are per vault", async () => {

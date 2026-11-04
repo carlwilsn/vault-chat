@@ -1195,7 +1195,8 @@ export const useStore = create<State>((set) => ({
   deleteNote: async (id) => {
     const vault = useStore.getState().vaultPath;
     if (!vault) return;
-    const next = useStore.getState().notes.filter((n) => n.id !== id);
+    const next = useStore.getState().notes.map((n) => n.id === id
+      ? { ...n, status: "cleared" as const, last_updated: new Date().toISOString() } : n);
     set({ notes: next });
     try {
       await writeAllNotes(vault, next);

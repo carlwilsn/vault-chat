@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 
-// Ephemeral-capture "slop" notes scoped to the current vault. Stored as
+// Notes are global on the connected box; their original files retain ownership. Stored as
 // JSONL at <vault>/.vault-chat/notes.jsonl so they travel with the
 // vault (and the git history) but stay hidden from the file tree.
 
@@ -31,6 +31,8 @@ export function anchorImages(a: NoteAnchor): string[] {
 export type NoteTurn = { role: "user" | "assistant"; content: string };
 
 export type Note = {
+  /** Read-only routing provenance, never persisted in notes.jsonl. */
+  origin_vault?: string;
   id: string;
   timestamp: string; // ISO
   last_updated: string; // ISO
@@ -165,6 +167,9 @@ export function dedupeNotes(list: Note[]): Note[] {
 /** Read every note for the vault, deduped. Silently skips malformed lines so
  *  one corrupt entry doesn't nuke the list. */
 export async function readNotes(vault: string): Promise<Note[]> {
+  const { boxLinkFor, boxGet } = await import("./boxChat");
+  const link = await boxLinkFor(vault);
+  if (link) return (await boxGet(link, "/notes?full=1")).notes;
   const lines = await invoke<string[]>("notes_read", { vault });
   return dedupeNotes(parseNoteLines(lines));
 }
@@ -177,6 +182,8 @@ export async function readNotes(vault: string): Promise<Note[]> {
  *  the number of lines collapsed. */
 export async function compactNotes(vault: string): Promise<number> {
   if (!vault) return 0;
+  const { boxLinkFor } = await import("./boxChat");
+  if (await boxLinkFor(vault)) return 0;
   const lines = await invoke<string[]>("notes_read", { vault });
   const parsed = parseNoteLines(lines);
   const deduped = dedupeNotes(parsed);
@@ -186,10 +193,24 @@ export async function compactNotes(vault: string): Promise<number> {
 }
 
 export async function appendNote(vault: string, note: Note): Promise<void> {
+  const { boxLinkFor, boxPost } = await import("./boxChat");
+  const link = await boxLinkFor(vault);
+  if (link) {
+    const r = await boxPost(link, "/notes", { note });
+    if (!r.ok) throw new Error(r.error);
+    return;
+  }
   await invoke("notes_append", { vault, line: JSON.stringify(note) });
 }
 
 export async function writeAllNotes(vault: string, notes: Note[]): Promise<void> {
+  const { boxLinkFor, boxPost } = await import("./boxChat");
+  const link = await boxLinkFor(vault);
+  if (link) {
+    const r = await boxPost(link, "/notes/write", { notes });
+    if (!r.ok) throw new Error(r.error);
+    return;
+  }
   const lines = notes.map((n) => JSON.stringify(n));
   await invoke("notes_write_all", { vault, lines });
 }

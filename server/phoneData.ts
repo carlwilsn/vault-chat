@@ -1,3 +1,4 @@
+import { globalNotes } from "./notesStorage";
 // Disk readers behind the phone GET routes, ported from voice_server.rs so
 // the phone sees exactly the JSON shapes it saw from the desktop app.
 import { readFileSync, realpathSync, statSync } from "node:fs";
@@ -261,7 +262,7 @@ function notePrefers(a: any, b: any): boolean {
 /** voice_server.rs:1842 notes_json + 1880 slim_note. */
 export function notesFeed(vault: string): unknown {
   const byId = new Map<string, any>();
-  for (const v of jsonlLines(join(vault, ".vault-chat", "notes.jsonl"))) {
+  for (const v of globalNotes(vault)) {
     if (typeof v.id !== "string") continue;
     const prev = byId.get(v.id);
     if (!prev || notePrefers(v, prev)) byId.set(v.id, v);
@@ -269,6 +270,7 @@ export function notesFeed(vault: string): unknown {
   const list = [...byId.values()]
     .filter((v) => v.status !== "cleared")
     .map((v) => ({
+      origin_vault: v.origin_vault ?? null,
       id: v.id ?? null,
       timestamp: v.timestamp ?? null,
       last_updated: v.last_updated ?? null,

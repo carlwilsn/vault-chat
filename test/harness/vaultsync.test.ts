@@ -168,7 +168,11 @@ test("a box merge that brings in notes reloads the Notes panel (and only for not
   };
   let onDisk: string[] = [];
   let reads = 0;
-  fake.setHandler("notes_read", () => (reads++, onDisk));
+  fake.setHandler("box_get_json", ({ url }) => {
+    assert.ok(url.includes("/notes?full=1&vault=notes"), "reload reads global box notes, not a second local store");
+    reads++;
+    return { status: 200, body: JSON.stringify({ notes: onDisk.map(line => JSON.parse(line)) }) };
+  });
   let report: any = { ...okReport, committed: false };
   fake.setHandler("vault_box_sync", ({ vault }) => (vault === offline ? unreachable : vault === notesVault ? report : okReport));
   useStore.setState({ vaultPath: notesVault, notes: [], notesLoaded: true });

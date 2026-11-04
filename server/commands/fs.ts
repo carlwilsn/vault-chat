@@ -12,6 +12,7 @@ import {
   type Dirent,
 } from "node:fs";
 import { dirname, join, relative } from "node:path";
+import { globalNotes, appendGlobalNote, writeGlobalNotes } from "../notesStorage";
 import { emitLocal } from "../bus";
 import { globFiles, globMatchName } from "./glob";
 import type { CommandFn } from "./registry";
@@ -343,28 +344,9 @@ export const fsCommands: Record<string, CommandFn> = {
   },
 
   // lib.rs:846
-  notes_read: ({ vault }) => {
-    const p = join(vault, NOTES_DIR, "notes.jsonl");
-    if (!existsSync(p)) return [];
-    return readFileSync(p, "utf8")
-      .split("\n")
-      .map((l) => l.replace(/\r$/, ""))
-      .filter((l) => l.trim());
-  },
-  // lib.rs:864
-  notes_append: ({ vault, line }) => {
-    appendLine(join(vault, NOTES_DIR, "notes.jsonl"), String(line));
-    return null;
-  },
-  // lib.rs:917
-  notes_write_all: ({ vault, lines }) => {
-    const dir = join(vault, NOTES_DIR);
-    mkdirSync(dir, { recursive: true });
-    let body = (lines as string[]).join("\n");
-    if (body && !body.endsWith("\n")) body += "\n";
-    writeFileSync(join(dir, "notes.jsonl"), body);
-    return null;
-  },
+  notes_read: ({ vault }) => globalNotes(vault).map(n => JSON.stringify(n)),
+  notes_append: ({ vault, line }) => { appendGlobalNote(vault, JSON.parse(line)); return null; },
+  notes_write_all: ({ vault, lines }) => { writeGlobalNotes(vault, lines.map((l: string) => JSON.parse(l))); return null; },
 };
 
 function cmpLower(a: string, b: string): number {

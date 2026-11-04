@@ -97,6 +97,7 @@ async function main(): Promise<void> {
   // Every vault on the box; the main one keeps its own paths (config).
   const vaultRefs = () =>
     listVaults().map((v) => (v.main ? { name: v.name, path: cfg.vault, bare: cfg.bareRepo, main: true } : { name: v.name, path: vaultPaths(v.name).vault, bare: vaultPaths(v.name).bare, main: false }));
+  (await import("./context/config")).configureContext({ vault: cfg.vault, conversationRoot: cfg.vault, vaults: () => vaultRefs().map(v => v.path) });
   // The clients' feed: every vault's conversations, whatever vault is open; Main is the main vault's.
   setFeedVaults(cfg.vault, () => vaultRefs().map((v) => v.path));
   for (const v of vaultRefs()) convLog(v.path);

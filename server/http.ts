@@ -1,3 +1,5 @@
+import { globalNotes, appendGlobalNote, writeGlobalNotes, noteSourceOwner } from "./notesStorage";
+import { noteTool } from "./notesTools";
 // The box's HTTP surface: the phone routes ported from voice_server.rs (same
 // paths, methods, JSON shapes), git smart HTTP, and /api/v1/*. Mutations are
 // relayed in-process to phoneApp's `phone:*` handlers (bus.relay), exactly
@@ -512,7 +514,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
   // Live edits (server/liveEdits.ts): a file the agent just wrote, as it is on
   // the box now — the laptop shows it in the open pane before the sync lands.
   // A file in a project's folder (an absolute path on the box) is the vault's that owns the project, whatever vault is open.
-  const folderVault = (p: unknown) => (typeof p === "string" && p.startsWith("/") ? ((hooks.vaultList?.() ?? [scope]).find((v) => inProjectFolder(v.path, p))?.path ?? vault) : vault);
+  const folderVault = (p: unknown) => (typeof p === "string" && p.startsWith("/") ? ((hooks.vaultList?.() ?? [scope]).find((v) => inProjectFolder(v.path, p))?.path ?? noteSourceOwner(vault, p) ?? vault) : vault);
   if ((path === "/api/v1/vault/file" || path === "/file") && method === "GET" && (path !== "/file" || url.searchParams.has("convId"))) {
     const convId = url.searchParams.get("convId");
     if (convId !== null) {
@@ -713,22 +715,39 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
     case "GET /notifications":
       return json(res, 200, notificationsFeed(vault));
     case "GET /notes":
-      return json(res, 200, notesFeed(vault));
-    case "POST /notes":
-      if (!scope.main) return mainOnly();
-      return relayRoute(res, "phone:note", await jsonBody(req), 10_000, "app not answering");
+      return json(res, 200, q("full") === "1" ? { notes: globalNotes(vault).sort((a,b) => a.timestamp < b.timestamp ? 1 : -1) } : notesFeed(vault));
+    case "POST /notes": {
+      const b = await jsonBody(req);
+      if (b.note) {
+        appendGlobalNote(vault, b.note);
+        return json(res, 200, { ok: true, id: b.note.id });
+      }
+      const r = await noteTool(vault, "CreateNote", b);
+      return json(res, r.ok ? 200 : 400, { ...r, error: r.ok ? undefined : r.text });
+    }
+    case "POST /notes/write": {
+      const b = await jsonBody(req);
+      if (!Array.isArray(b.notes)) return json(res, 400, { error: "missing notes" });
+      writeGlobalNotes(vault, b.notes);
+      return json(res, 200, { ok: true });
+    }
     case "POST /client-event":
       if (scope.main) await relay("phone:client-event", await jsonBody(req), 5000);
       return json(res, 200, { ok: true });
     case "POST /notes/status":
-      if (!scope.main) return mainOnly();
-      return relayRoute(res, "phone:note-status", await jsonBody(req), 10_000, "app not answering");
-    case "POST /notes/edit":
-      if (!scope.main) return mainOnly();
-      return relayRoute(res, "phone:note-edit", await jsonBody(req), 10_000, "app not answering");
-    case "POST /notes/clear-resolved":
-      if (!scope.main) return mainOnly();
-      return relayRoute(res, "phone:notes-clear-resolved", await jsonBody(req), 10_000, "app not answering");
+    case "POST /notes/edit": {
+      const b = await jsonBody(req);
+      if (path.endsWith("/status") && b.status !== "open" && b.status !== "resolved") return json(res, 400, { error: "invalid status" });
+      const r = await noteTool(vault, path.endsWith("/edit") ? "UpdateNote" : b.status === "open" ? "ReopenNote" : "ResolveNote", b);
+      return json(res, r.ok ? 200 : 400, { ...r, error: r.ok ? undefined : r.text });
+    }
+    case "POST /notes/clear-resolved": {
+      const notes = globalNotes(vault);
+      const resolved = notes.filter(n => n.status === "resolved");
+      const now = new Date().toISOString();
+      writeGlobalNotes(vault, resolved.map(n => ({ ...n, status: "cleared", last_updated: now })));
+      return json(res, 200, { ok: true, cleared: resolved.length });
+    }
     case "POST /notifications/read":
     case "POST /notifications/hide": {
       const b = await jsonBody(req);

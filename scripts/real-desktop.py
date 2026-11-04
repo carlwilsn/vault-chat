@@ -96,11 +96,14 @@ def main():
     p.add_argument('--check-images', action='store_true', help='Paste owned PNG through the native clipboard; inspect outgoing bytes without inference')
     p.add_argument('--check-status-dot', action='store_true', help='Observe native pi running rows with a gated local zero-cost provider, then switch only the viewer vault')
     p.add_argument('--check-video', type=Path, help='Owned synthetic VP8/Vorbis clip; append one private media-only test entry, never publish it')
+    p.add_argument('--check-global-notes', action='store_true', help='Existing cross-vault fixture note identity/source and native edit; copied human notes stay untouched')
     p.add_argument('--check-editor-sync', action='store_true', help='Native immediate paste/send via existing Git transport and genuine Pi read on a different viewer vault')
     p.add_argument('--native-video-only', action='store_true', help='Run native video independently; retain earlier phone evidence separately, never relabel it')
     p.add_argument('--check-pending-chat', action='store_true', help='Queue via native input on held real Pi turns; exercise existing interrupt-and-send and preserve original history')
     p.add_argument('--inside-nix', action='store_true', help=argparse.SUPPRESS)
     a = p.parse_args()
+    if a.check_global_notes and not a.check_status_dot:
+        p.error('--check-global-notes requires the existing --check-status-dot private workspace fixture')
     if a.check_editor_sync and not a.check_status_dot:
         p.error('--check-editor-sync requires --check-status-dot local unpaid Pi fixture')
     os.umask(0o077)
@@ -160,6 +163,21 @@ def main():
             p.error('Refusing symlink in selected events')
         if f.is_file() and (f.suffix in ('.jsonl', '.json') or f.name in ('_seq', '_epoch')):
             shutil.copyfile(f, dest / f.name)
+    original_notes = None
+    if a.check_global_notes:
+        copied_notes = source / '.vault-chat/notes.jsonl'
+        if copied_notes.is_symlink() or not copied_notes.is_file():
+            p.error('global Notes proof requires the owned safe original notes copy')
+        original_notes = copied_notes.read_bytes()
+        (vault / '.vault-chat/notes.jsonl').write_bytes(original_notes)
+        notes_origin = master / 'vaults/notes-origin'
+        (notes_origin / '.vault-chat').mkdir(parents=True)
+        fixture_note = {'id': 'owned-global-note', 'timestamp': '2099-01-01T00:00:00Z',
+            'last_updated': '2026-01-01T00:00:00Z', 'status': 'open',
+            'user_draft': 'Owned global note original', 'turns': [],
+            'anchors': [{'source_path': 'same.md', 'source_kind': 'markdown', 'source_anchor': None, 'primary': True}]}
+        (notes_origin / '.vault-chat/notes.jsonl').write_text(json.dumps(fixture_note) + '\n')
+        (notes_origin / 'same.md').write_text('# Owned original note source\n')
     note = vault / 'desktop-timing-note.md'
     note.write_text('# Private desktop timing note\n\nSelect this text for Ctrl+K.\n')
     # Explicit tiny home, no inherited credentials, live display, D-Bus, or service env.
@@ -361,6 +379,9 @@ def main():
         if real_pi:
             wait_for(lambda: request(base + '/api/v1/health').get('engine', {}).get('pi', {}).get('state') == 'up', 'real pinned pi boot')
             request(base + '/api/v1/vaults', {'name': 'status-viewer'})
+            if a.check_global_notes:
+                request(base + '/api/v1/vaults', {'name': 'notes-origin'})
+                (viewer / 'same.md').write_text('# Wrong same-name viewer source\n')
             if not any(v['name'] == 'status-viewer' for v in request(base + '/api/v1/vaults')['vaults']):
                 raise RuntimeError('Viewer fixture is not registered with the genuine server')
             agent = state / 'pi/agent'
@@ -446,9 +467,12 @@ def main():
                             queue_intents.append(intent)
                 # A narrowly scoped opt-in allows only our generated viewer Git
                 # and matching read barrier, never any copied-note upload.
+                note_transport = a.check_global_notes and path == '/notes/write' and self.command == 'POST' and all(
+                    n.get('id') != 'owned-global-note' or n.get('user_draft') == 'Owned global note edited'
+                    for n in json.loads(data).get('notes', []))
                 editor_transport = a.check_editor_sync and (editor_intent_enabled and path == '/api/v2/intent' or path.startswith('/git/status-viewer.git/') or path == '/api/v1/sync/flush')
                 # All other non-read activity stays refused, including voice.
-                if (path.startswith('/git/') or self.command != 'GET' and path != '/api/v1/laptop-perf') and not (speech_send or editor_transport or queue_write):
+                if (path.startswith('/git/') or self.command != 'GET' and path != '/api/v1/laptop-perf') and not (speech_send or editor_transport or queue_write or note_transport):
                     if a.check_plans and path == '/api/v2/intent':
                         # Observe the native pending-input UI before rejecting;
                         # never forward this turn to a provider or invent a reply.
@@ -1018,6 +1042,52 @@ def main():
                 samples = collections.defaultdict(list)
                 seen = set()
                 metadata = None
+                global_notes = None
+                if a.check_global_notes:
+                    panel = 'button[title="Notes (Ctrl+N to create)"]'
+                    row = '[data-note-id="owned-global-note"]'
+                    click(panel)
+                    if label == 'before':
+                        time.sleep(1)
+                        # Baseline really reads only the open vault's local notes.
+                        visible = js('return document.body.textContent.includes("Owned global note original");')
+                        global_notes = {'existingOtherVaultNoteVisible': visible, 'baselineHidden': not visible}
+                        if visible: raise RuntimeError('Baseline did not reproduce hidden cross-vault note')
+                        key('Escape')
+                    else:
+                        wait_for(lambda: exists(row), 'existing other-vault note in original viewer')
+                        key('Escape')
+                        click('[data-el="vault-picker"]')
+                        wait_for(lambda: exists('[data-el="vault-picker-item"][data-rel="vaults/status-viewer"] button'), 'Notes viewer vault choice')
+                        click('[data-el="vault-picker-item"][data-rel="vaults/status-viewer"] button')
+                        wait_for(lambda: js('return localStorage.getItem("vault_chat_last_vault")===arguments[0];', str(viewer)), 'Notes viewer switch')
+                        click(panel)
+                        wait_for(lambda: exists(row), 'same existing note after viewer switch')
+                        if not js('return document.querySelector(arguments[0]).textContent.includes("Owned global note original");', row):
+                            raise RuntimeError('Note identity/text changed with viewer scope')
+                        click(row + ' > div')
+                        edit = wait_for(lambda: js('return [...document.querySelector(arguments[0]).querySelectorAll("button")].find(b=>b.textContent.trim()==="Edit")?.getBoundingClientRect().toJSON();', row), 'existing note Edit button')
+                        run('xdotool','mousemove',str(int(edit['x']+edit['width']/2)),str(int(edit['y']+edit['height']/2)),'click','1',env=childenv,stdout=subprocess.DEVNULL)
+                        wait_for(lambda: exists('textarea[aria-label="Edit note"]'), 'native note edit textarea')
+                        click('textarea[aria-label="Edit note"]'); key('ctrl+a')
+                        run('xdotool','type','--clearmodifiers','--delay','30','Owned global note edited',env=childenv,stdout=subprocess.DEVNULL)
+                        save = js('return [...document.querySelector(arguments[0]).querySelectorAll("button")].find(b=>b.textContent.trim()==="Save").getBoundingClientRect().toJSON();', row)
+                        run('xdotool','mousemove',str(int(save['x']+save['width']/2)),str(int(save['y']+save['height']/2)),'click','1',env=childenv,stdout=subprocess.DEVNULL)
+                        wait_for(lambda: not exists('textarea[aria-label="Edit note"]'), 'native note save acknowledged')
+                        for name in ['vault-chat','status-viewer']:
+                            found = [n for n in request(base+'/notes?full=1&vault='+name)['notes'] if n['id']=='owned-global-note']
+                            if len(found)!=1 or found[0]['user_draft']!='Owned global note edited' or found[0]['status']!='open':
+                                raise RuntimeError('Native save did not route once to the same original note')
+                        click(row + ' button[title="same.md"]')
+                        wait_for(lambda: exists('[data-look-pane][data-file="box:' + str(notes_origin / 'same.md') + '"]'), 'original-vault source opened, not viewer same.md')
+                        key('Escape')
+                        click('[data-el="vault-picker"]')
+                        click('[data-el="vault-picker-item"][data-rel="vaults/vault-chat"] button')
+                        wait_for(lambda: js('return localStorage.getItem("vault_chat_last_vault")===arguments[0];', str(native_vault)), 'restore original viewer after Notes')
+                        if (vault / '.vault-chat/notes.jsonl').read_bytes()!=original_notes:
+                            raise RuntimeError('Untouched copied human notes changed')
+                        global_notes = {'sameIdTextStatusAcrossViewers': True, 'nativeEditSavedToOriginalOnce': True,
+                            'originalSourceOpened': True, 'copiedHumanNotesByteIdentical': True}
                 status_dot = None
                 if a.check_status_dot and label == 'after':
                     key('ctrl+shift+f')
@@ -1046,7 +1116,7 @@ def main():
                             click('[data-el="vault-picker"]')
                             wait_for(lambda: exists('[data-el="vault-picker-item"][data-rel="vaults/status-viewer"] button'), 'viewer vault listed')
                             picker_rows = js('return [...document.querySelectorAll("[data-el=vault-picker-item]")].map(e=>e.dataset.rel);')
-                            if sorted(picker_rows) != ['vaults/status-viewer', 'vaults/vault-chat']:
+                            if sorted(picker_rows) != sorted(['vaults/status-viewer', 'vaults/vault-chat'] + (['vaults/notes-origin'] if a.check_global_notes else [])):
                                 raise RuntimeError('Picker contains project ownership/non-vault rows')
                             click('[data-el="vault-picker-item"][data-rel="vaults/status-viewer"] button')
                             wait_for(lambda: js('return localStorage.getItem("vault_chat_last_vault")===arguments[0];', str(viewer)), 'real viewer vault switch')
@@ -1227,7 +1297,7 @@ def main():
                 def stats(values):
                     v = sorted(values)
                     return {'n': len(v), 'p50Ms': round(v[len(v)//2], 3), 'p95Ms': round(v[min(len(v)-1, int(len(v)*.95))], 3), 'maxMs': round(max(v), 3)}
-                return {'works': not interaction_failures, 'videoCheck': video_check, 'imageCheck': image_check, 'statusDot': status_dot, 'editorSync': editor_sync, 'pendingChat': pending_chat, 'interactionFailures': interaction_failures, 'planLifecycle': plan_lifecycle, 'emptyChat': empty_chat, 'native': metadata, 'telemetryHttpStatuses': sorted(statuses),
+                return {'works': not interaction_failures, 'videoCheck': video_check, 'imageCheck': image_check, 'statusDot': status_dot, 'editorSync': editor_sync, 'pendingChat': pending_chat, 'globalNotes': global_notes, 'interactionFailures': interaction_failures, 'planLifecycle': plan_lifecycle, 'emptyChat': empty_chat, 'native': metadata, 'telemetryHttpStatuses': sorted(statuses),
                         'telemetryNote': 'Observed real Rust IPC batches; loopback is not authenticated Tailscale laptop telemetry',
                         'launchProcessToDomUpperBoundMs': round(launch_upper, 3),
                         'timings': [{'metric': m, 'method': method, **stats(values)} for (m, method), values in sorted(samples.items())]}
