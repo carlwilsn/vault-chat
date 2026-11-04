@@ -80,6 +80,25 @@ describe("native history request identity", () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
+  it("keeps identical queued texts distinct in Pi's own queue, and clear_queue never leaves a separate request binding", async () => {
+    const f = await fixture(), b = f.make();
+    const s = await b.startThread({ cwd: f.root, model, instructions: "Fixture", tools: [], subagents: false });
+    f.provider.respond = () => ({ text: "native queue reply", delayMs: 150 });
+    const running = turn(b, s.threadId, "active", "active-client");
+    await waitFor(() => f.provider.calls.length ? true : null);
+    await b.followUp(s.threadId, { texts: ["same text"], request: request("cancelled-client"), images: [] });
+    await b.clearQueue(s.threadId);
+    await b.followUp(s.threadId, { texts: ["same text"], request: request("queue-A"), images: [] });
+    await b.followUp(s.threadId, { texts: ["same text"], request: request("queue-B"), images: [] });
+    await running;
+    const entries = readFileSync(s.ref!, "utf8").trim().split("\n").map(x => JSON.parse(x));
+    const users = entries.filter(x => x.message?.role === "user");
+    expect(users.map(x => x.message.vcRequest.clientId)).toEqual(["active-client", "queue-A", "queue-B"]);
+    expect(users.map(x => x.message.content[0].text)).toEqual(["active", "same text", "same text"]);
+    expect(JSON.stringify(entries)).not.toContain("cancelled-client");
+    expect(chatText(f.provider.calls.at(-1))).not.toContain('"vcInput"');
+  });
+
   it("genuine Pi replacement is persisted before provider request; SIGKILL + new backend restores exact IDs/text/order without a feed-pointer copy", async () => {
     const f = await fixture(), b = f.make();
     const s = await b.startThread({ cwd: f.root, model, instructions: "Fixture", tools: [], subagents: false });

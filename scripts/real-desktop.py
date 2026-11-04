@@ -721,7 +721,10 @@ def main():
             result['nativeAudioIsolation'] = {'sinks':1,'driver':'module-null-sink.c','defaultDeviceModules':False,'hardwareDevices':0}
         spawn(['openbox'], 'window-manager')
 
+        history_final_items = None
+
         def exercise(app, label):
+            nonlocal history_final_items
             profile = work / (label + '-home')
             profile.mkdir()
             childenv = dict(env, HOME=str(profile), XDG_CONFIG_HOME=str(profile / 'config'),
@@ -1675,6 +1678,7 @@ def main():
                     again = request(base + checkpoint_path)['picture']
                     if again['items'] != final['items']:
                         raise RuntimeError('Reopen/reconnect changed logical messages')
+                    history_final_items = again['items']
                     history_update = {'baselineBugReproduced': a.expect_history_baseline_bug, 'exactTextAndClientIds': exact,
                         'originalPrefixUnchanged': True, 'originalMessages': 1329, 'originalItems': 3819,
                         'nativeUserEntries': len(native_user_ids), 'appendedUsers': len(users), 'completedTools': 1,
@@ -1963,9 +1967,15 @@ def main():
             again = request(base + checkpoint_path)
             again = again.get('picture', again)
             # Genuine engine startup may append a lost-worker notice to this disposable copy.
-            # Status-dot and speech fixtures deliberately send to the selected project.
-            # No original item may change/disappear; these owned sends only append.
-            if a.check_speech_freshness or a.check_status_dot:
+            # No original item may change/disappear; owned sends only append to the selected project.
+            if a.check_history_update:
+                # This fixture intentionally appends native turns. Preserve ALL
+                # original AND new items across local Clear, not merely a prefix.
+                preserved = history_final_items is not None and again.get('items', []) == history_final_items and history_final_items[:len(items)] == items
+                result['thread']['originalItemsPrefixUnchanged'] = preserved
+                result['thread']['privateAppendedItems'] = len(again.get('items', [])) - len(items)
+                result['thread']['allItemsUnchangedAfterHistoryReopen'] = preserved
+            elif a.check_speech_freshness or a.check_status_dot:
                 preserved = again.get('items', [])[:len(items)] == items
                 result['thread']['originalItemsPrefixUnchanged'] = preserved
             else:
