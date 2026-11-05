@@ -12,6 +12,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 
 import { join } from "node:path";
 import { cleanup, git, seedProject } from "./helpers";
 import { makeRig, until, type Rig } from "./longRig";
+import { readEntries } from "../convlog/piSession";
 
 let rig: Rig;
 let convs: typeof import("../engine/convs");
@@ -23,7 +24,7 @@ const put = (rel: string, s: string) => {
   writeFileSync(p, s);
 };
 const turnsOf = (tid: string) => rig.backend.turns.filter((t) => t.threadId === tid);
-async function turn(text: string, convId?: string): Promise<{ convId: string; tid: string; text: string }> {
+async function turn(text: string, convId?: string): Promise<{ convId: string; tid: string; text: string; context: string }> {
   const before = rig.backend.turns.length;
   const r = await rig.engine.message({ text, ...(convId ? { convId } : {}) });
   if (!r?.ok) throw new Error(JSON.stringify(r));
@@ -31,7 +32,7 @@ async function turn(text: string, convId?: string): Promise<{ convId: string; ti
   const t = rig.backend.turns[before];
   rig.backend.end(t.threadId);
   await until(async () => (await rig.readConv(String(r.convId)))?.state !== "running");
-  return { convId: String(r.convId), tid: t.threadId, text: (t.texts ?? []).join("\n\n") };
+  return { convId: String(r.convId), tid: t.threadId, text: (t.texts ?? []).join("\n\n"), context: t.context ?? "" };
 }
 
 beforeAll(async () => {
@@ -94,17 +95,32 @@ describe("Delete a project", () => {
   });
 
   it("a surface still on it lands on Main: a message aimed at it goes to Main", async () => {
-    const r = await rig.engine.message({ text: "Still there?", convId: "project-coconut" });
+    const deleted = structuredClone(convs.pictureOf(rig.vault, "project-coconut"));
+    const deletedFile = (await rig.readConv("project-coconut"))?.threadPath;
+    expect(typeof deletedFile).toBe("string");
+    const deletedBytes = readFileSync(deletedFile, "utf8");
+    const r = await rig.engine.message({ text: "Still there?", convId: "project-coconut", clientMsgId: "stale-project", client: "phone" });
     expect(r.convId).toBe("main");
     await until(() => rig.backend.turns.some((t) => (t.texts ?? []).join(" ").includes("Still there?")));
     const t = rig.backend.turns.at(-1)!;
-    // Main's next turn tells the agent once.
-    expect((t.texts ?? []).join("\n")).toContain('Carl deleted the project "Coconut"');
+    // The notice goes to the model, never into Carl's literal native user body.
+    expect(t.texts).toEqual(["Still there?"]);
+    expect(t.context).toContain('Carl deleted the project "Coconut"');
+    expect(t.request).toEqual({ v: 1, clientId: "stale-project", via: "chat", device: "phone" });
     rig.backend.end(t.threadId);
     await until(async () => (await rig.readConv("main"))?.state !== "running");
     expect(convs.pictureOf(rig.vault, "main")?.meta.tellAgent).toBeUndefined();
+    const main = await rig.readConv("main");
+    const entries = readEntries(main.threadPath);
+    expect(entries.filter(e => e.message?.role === "user").at(-1)?.message).toMatchObject({
+      content: [{ type: "text", text: "Still there?" }], vcRequest: t.request,
+    });
+    expect(entries.filter(e => e.customType === "vc-context").some(e => e.display === false && String(e.content).includes('Carl deleted the project "Coconut"'))).toBe(true);
+    expect(convs.pictureOf(rig.vault, "project-coconut")).toEqual(deleted);
+    expect(readFileSync(deletedFile, "utf8")).toBe(deletedBytes);
     const again = await turn("And now?");
-    expect(again.text).not.toContain("deleted the project");
+    expect(again.text).toBe("And now?");
+    expect(again.context).not.toContain("deleted the project");
   });
 
   it("deleting it again is refused; nothing else moves", async () => {

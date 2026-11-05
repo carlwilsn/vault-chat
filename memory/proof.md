@@ -71,3 +71,14 @@
   in their own protocol session, hiding real WM blur; a public-CDP unmanaged target
   on the same private display plus XTest focus/keys avoids that override without
   mutating SDKs, calling application handlers or changing the board store as input.
+
+- Project deletion routing fixtures must distinguish model context from literal
+  human bodies: the one-time deletion notice belongs to hidden `vc-context`,
+  never `texts`/the native user message. Baseline fbfd4ff9 passed the old mixed
+  assertion because it forged that notice and device header into human text;
+  candidate a096 correctly returned only “Still there?”. Paired pinned-Pi and
+  RPC-fixture tests now exercise stale project IDs through the real HTTP owner
+  route, existing Main prefix/cwd, exact literal header/JSON, native vcRequest,
+  ordinary queued chronology, hidden notice once, and unchanged deleted history.
+  A failed obsolete notice assertion can leave Main running and cause a later
+  RestoreProject timeout; keep both failures recorded, not a “flaky” waiver.
