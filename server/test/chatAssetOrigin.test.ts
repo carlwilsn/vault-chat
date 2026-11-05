@@ -88,6 +88,49 @@ describe("chat media follows its existing log owner, not the viewer or project n
     q.set("convId", "missing");
     expect((await fetch(`${base}/file?${q}`)).status).toBe(404);
   });
+  it("video reload and resumed ranges read fresh owner bytes, never the viewer's replacement", async () => {
+    const path = ".vault-chat/visuals/reloaded.webm";
+    const original = Buffer.from("OWNER-ORIGINAL-VIDEO");
+    const replacement = Buffer.from("OWNER-REPLACED-VIDEO-WITH-AUDIO");
+    writeFileSync(join(A.path, path), original);
+    writeFileSync(join(B.path, path), "VIEWER-WRONG-VIDEO");
+    const q = new URLSearchParams({ path, vault: B.name, convId: "project-physics" });
+    const url = `${base}/file?${q}`;
+    const first = await fetch(url);
+    expect(first.headers.get("content-type")).toBe("video/webm");
+    expect(Buffer.from(await first.arrayBuffer())).toEqual(original);
+    expect(await bytes(await get(path))).toBe(original.toString());
+
+    // Same URLs after an owner-side edit/reload: neither transport may reuse
+    // stale bytes or resolve the identically named file in the viewing vault.
+    writeFileSync(join(A.path, path), replacement);
+    const reloaded = await fetch(url);
+    expect(reloaded.status).toBe(200);
+    expect(reloaded.headers.get("content-type")).toBe("video/webm");
+    expect(Number(reloaded.headers.get("content-length"))).toBe(replacement.length);
+    expect(Buffer.from(await reloaded.arrayBuffer())).toEqual(replacement);
+    expect(await bytes(await get(path))).toBe(replacement.toString());
+    for (const [range, start, end] of [
+      ["bytes=6-12", 6, 12],
+      ["bytes=13-", 13, replacement.length - 1],
+      ["bytes=-5", replacement.length - 5, replacement.length - 1],
+    ] as const) {
+      const resumed = await fetch(url, { headers: { range } });
+      expect(resumed.status).toBe(206);
+      expect(resumed.headers.get("content-type")).toBe("video/webm");
+      expect(resumed.headers.get("content-range")).toBe(`bytes ${start}-${end}/${replacement.length}`);
+      expect(Number(resumed.headers.get("content-length"))).toBe(end - start + 1);
+      expect(Buffer.from(await resumed.arrayBuffer())).toEqual(replacement.subarray(start, end + 1));
+    }
+    // A successful initial load grants no later unauthenticated range access.
+    expect((await fetch(url, { headers: { range: "bytes=6-", "x-forwarded-for": "100.64.0.1" } })).status).toBe(401);
+    rmSync(join(A.path, path));
+    // The raw route's existing realpath boundary rejects a missing target as
+    // 403; JSON reports 404. Both must fail closed, not serve VIEWER's copy.
+    expect((await fetch(url)).status).toBe(403);
+    expect((await fetch(url, { headers: { range: "bytes=6-" } })).status).toBe(403);
+    expect((await get(path)).status).toBe(404);
+  });
   it("does not fallback to a viewer's copy when the owner's file is absent", async () => {
     writeFileSync(join(B.path, ".vault-chat/visuals/viewer-only.mp4"), "WRONG");
     expect((await get(".vault-chat/visuals/viewer-only.mp4")).status).toBe(404);
