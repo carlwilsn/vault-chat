@@ -498,6 +498,7 @@ def main():
         observed = []
         photo_intents = []
         queue_intents = []
+        queue_now_completed = set()
         opened = []
         video_fetches = []
         lock = threading.Lock()
@@ -549,6 +550,10 @@ def main():
                     r = conn.getresponse()
                     body = r.read()
                     with lock:
+                        if queue_write and intent.get('type') == 'now' and r.status == 200:
+                            accepted = json.loads(body)
+                            if accepted.get('ok') and accepted.get('now') == intent.get('id'):
+                                queue_now_completed.add((intent['convId'], intent['id']))
                         if self.command == 'GET' and path == checkpoint_path and r.status == 200:
                             opened.append(True)
                         query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
@@ -1374,8 +1379,10 @@ def main():
                                 key('Return')
                             else:
                                 click(selector)
-                            # Click may respond only after Pi aborts; keep the replacement provider local.
-                            wait_for(lambda: any(q.get('type') == 'now' and q.get('id') == ids[1] and q.get('convId') == thread for q in queue_intents), 'existing now intent from native click')
+                            # Intent receipt is NOT Pi abort completion: releasing here
+                            # lets the old foreground drain FIRST before native clear/abort.
+                            # Wait for the SAME real HTTP now acknowledgement, not a sleep.
+                            wait_for(lambda: (thread, ids[1]) in queue_now_completed, 'existing now native abort acknowledged')
                             released.set()
                             def all_delivered_and_finished():
                                 picture = request(base + cp)['picture']

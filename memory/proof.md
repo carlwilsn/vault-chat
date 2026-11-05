@@ -28,3 +28,9 @@
   and clear each only when its actual native entry arrives (including the selected
   prompt). A bounded public Pi input hook reproduces it on baseline 6c7078a2 too;
   SDK files remain read-only. Wakes cannot acquire human device/board permission.
+- Recheck that SAME original feed after native clear/abort: a user entry may land
+  while interruption is in flight. Never replay a pre-abort snapshot already
+  delivered by Pi; if the selected input landed, continue as nonhuman resume.
+  Native A's local held provider must release on the real HTTP `now` success
+  AFTER Pi abort, not merely relay intent receipt (which races the old step).
+  Keep exact original prefix/private-appends and native provider-input guards.

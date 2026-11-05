@@ -290,6 +290,41 @@ describe("steer and queue", () => {
     expect((await engine.intent({ type: "now", convId: r.convId, id: "c-now" })).ok).toBe(false);
   });
 
+  it.each(["first", "second"])("never replays %s if Pi delivers it while native abort is in flight", async delivered => {
+    const before = backend.turns.length;
+    const convId = `sep-abort-delivery-${delivered}`;
+    await engine.message({ convId, text: "Hold this step", clientMsgId: "hold" });
+    await until(() => backend.turns.length === before + 1);
+    const tid = backend.turns[before].threadId;
+    await engine.message({ convId, text: "FIRST arrival", queue: true, clientMsgId: "first" });
+    await engine.message({ convId, text: "SECOND selection", queue: true, clientMsgId: "second" });
+    const interrupted = backend.interrupts.length;
+    const followUps = backend.followUps.length;
+    const now = engine.intent({ type: "now", convId, id: "second" });
+    await until(() => backend.interrupts.length === interrupted + 1);
+    // The queued user really lands before the stop finishes. Its original
+    // PiFeed is authoritative even though Send now already took a snapshot.
+    backend.pi(tid, userMsg(delivered === "first" ? "FIRST arrival" : "SECOND selection"));
+    backend.ev(tid, { kind: "turnCompleted", status: "interrupted" });
+    expect(await now).toMatchObject({ ok: true });
+    await until(() => backend.turns.length === before + 2);
+    if (delivered === "first") {
+      expect(backend.followUps.slice(followUps)).toEqual([]);
+      expect(backend.turns[before + 1].texts.join("\n")).toBe("SECOND selection");
+      backend.pi(tid, assistant([{ text: "Selected answer." }]));
+    } else {
+      expect(backend.turns[before + 1].texts.join("\n")).toContain("latest delivered message");
+      expect(backend.followUps.slice(followUps).map(x => x.texts.join())).toEqual(["FIRST arrival"]);
+      backend.pi(tid, [...assistant([{ text: "Continue selected answer." }]), ...userMsg("FIRST arrival"), ...assistant([{ text: "First answer." }])]);
+    }
+    backend.ev(tid, { kind: "turnCompleted", status: "completed" });
+    await until(async () => (await readConv(vault, convId))?.state === "idle");
+    const c = await readConv(vault, convId);
+    expect(c.messages.filter((m: any) => m.role === "user" && !m.system).map((m: any) => m.mid))
+      .toEqual(delivered === "first" ? ["hold", "first", "second"] : ["hold", "second", "first"]);
+    expect(pendingOf(engine.picture(convId))).toEqual([]);
+  });
+
   it("queue with nothing running is an ordinary message", async () => {
     const before = backend.turns.length;
     const r = await engine.message({ text: "Hello" });

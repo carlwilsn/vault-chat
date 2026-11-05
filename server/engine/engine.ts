@@ -1108,7 +1108,6 @@ export class Engine {
     const waiting = l.feed.undelivered();
     const first = waiting.find((e) => e.clientId === id);
     if (!first) return { ok: false, error: "already delivered" };
-    const rest = waiting.filter((e) => e !== first && e.clientId);
     l.sendNow = true;
     const ended = this.turnEnd(convId);
     try {
@@ -1118,6 +1117,10 @@ export class Engine {
       this.log(`send now on ${convId}: ${(e as Error).message}`);
     }
     await Promise.race([ended, new Promise((r) => setTimeout(r, 60_000))]);
+    // Input can land while clear_queue/abort is in flight. The FINAL original
+    // feed, not the pre-interrupt snapshot, decides what Pi has not delivered.
+    const undelivered = l.feed.undelivered();
+    const rest = undelivered.filter(e => e !== first && e.clientId);
     const vault = this.d.vault;
     const again = (e: (typeof waiting)[number]) =>
       this.run(convId, e.text, "user", {
@@ -1130,7 +1133,8 @@ export class Engine {
         ...(e.device ? { origin: e.via === "voice" ? "voice" : e.device, device: validDevice(e.device) } : {}),
         ...(e.via && e.via !== "steer" && e.via !== "queue" ? { via: e.via } : {}),
       }).catch((err) => this.log(`send now on ${convId}: ${err}`));
-    void again(first);
+    if (undelivered.includes(first)) void again(first);
+    else void this.run(convId, "Continue from Carl's latest delivered message after Send now interrupted the foreground step. Check unfinished work; do not repeat already delivered inputs.", "resume", { byCarl: l.byCarl, replay: rest }).catch(err => this.log(`send now continuation on ${convId}: ${err}`));
     return { ok: true, convId, now: id };
   }
 
