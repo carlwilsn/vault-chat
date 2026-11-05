@@ -68,7 +68,7 @@ import { waitInputs } from "../../src/voiceWaitLine";
 import { lookupAll } from "./lookup";
 import { attachmentAt, attachmentsNote } from "../attachments";
 import { readEntries } from "../convlog/piSession";
-import { PiFeed } from "./piFeed";
+import { PiFeed, type Expected } from "./piFeed";
 import { READ_ONLY_TOOLS, type SideLog, type SideState } from "./pi/side";
 import { TurnRecorder, type TurnLine } from "./turnLog";
 import { SERVER_VERSION } from "../config";
@@ -161,7 +161,7 @@ type Live = {
 
 };
 
-type TurnOpts = { /** Existing host-owned job/wake identity, never a push arm. */ pushWorkId?: string; images?: string[]; context?: string; hostContext?: string; itemImages?: ItemImage[]; clientId?: string; /** What the chat shows (Carl's answer to a question asked before a restart). */ shown?: string; device?: "laptop" | "phone" | "board" | null; via?: string; /** Which client sent it (the turn log's `via`: laptop, phone, voice …). */ origin?: string; /** A wake, job or resume of something Carl started. */ byCarl?: boolean; /** An engine input that runs as its own turn once the running one ends, never folded into it (a background report: pi may settle the turn before a follow-up is taken, and a turn parked on a question takes none). */ ownTurn?: boolean };
+type TurnOpts = { /** Send now replays the existing feed directly into Pi before its replacement prompt can settle. */ replay?: Expected[]; /** Existing host-owned job/wake identity, never a push arm. */ pushWorkId?: string; images?: string[]; context?: string; hostContext?: string; itemImages?: ItemImage[]; clientId?: string; /** What the chat shows (Carl's answer to a question asked before a restart). */ shown?: string; device?: "laptop" | "phone" | "board" | null; via?: string; /** Which client sent it (the turn log's `via`: laptop, phone, voice …). */ origin?: string; /** A wake, job or resume of something Carl started. */ byCarl?: boolean; /** An engine input that runs as its own turn once the running one ends, never folded into it (a background report: pi may settle the turn before a follow-up is taken, and a turn parked on a question takes none). */ ownTurn?: boolean };
 
 const RESUME_TEXT =
   "The box restarted (or the engine stopped) while your last turn was running, so any command it was running was killed and may not have finished. Re-check reality (files, processes, logs), then continue from where you were.";
@@ -1121,6 +1121,7 @@ export class Engine {
     const vault = this.d.vault;
     const again = (e: (typeof waiting)[number]) =>
       this.run(convId, e.text, "user", {
+        replay: rest,
         shown: e.shown,
         hostContext: e.hostContext,
         clientId: e.clientId,
@@ -1130,7 +1131,6 @@ export class Engine {
         ...(e.via && e.via !== "steer" && e.via !== "queue" ? { via: e.via } : {}),
       }).catch((err) => this.log(`send now on ${convId}: ${err}`));
     void again(first);
-    for (const e of rest) void again(e);
     return { ok: true, convId, now: id };
   }
 
@@ -1611,8 +1611,10 @@ export class Engine {
         emit: (b) => this.emit(convId, b),
         pointed: this.skipSet(convId, file, after),
         delivered: (id, origin) => {
-          this.setPending(convId, undefined, id);
-          rec.q("delivered", id);
+          if (pendingOf(this.picture(convId)!).some(p => p.id === id)) {
+            this.setPending(convId, undefined, id);
+            rec.q("delivered", id);
+          }
           // A call's voice speaks what answers his newest words from here on (server/voiceBrain.ts).
           if (this.taps.has(convId)) this.tapEmit(convId, { type: "vc_delivered", clientId: id, origin });
         },
@@ -1673,6 +1675,18 @@ export class Engine {
       // A live call learns where this turn came from (a call speaks only its own surface's exchange).
       if (this.taps.has(convId)) this.tapEmit(convId, { type: "vc_turn_start", kind, origin: opts.origin ?? null });
       try {
+        // Pi owns the waiting messages. Reinsert the existing undelivered feed
+        // BEFORE starting the replacement prompt: a fast response can settle
+        // while an asynchronous steer is still entering Pi, stranding it idle.
+        // Preserve native kind/order, client identity and original viewer/device.
+        for (const e of opts.replay ?? []) {
+          this.setPending(convId, { id: e.clientId!, kind: e.kind === "queue" ? "queue" : "steer", text: e.shown, at: Date.now() });
+          live.feed.expect(e);
+          rec.q(e.kind === "queue" ? "queue" : "steer", e.clientId!);
+          const queued = { texts: [e.text], context: e.hostContext, images: (e.images ?? []).map(im => join(this.d.vault, im.path)) };
+          if (e.kind === "queue") await this.d.backend.followUp(threadId, queued);
+          else await this.d.backend.steer(threadId, turnId, queued);
+        }
         await this.d.backend.startTurn(threadId, { texts, context: [rules, opts.hostContext].filter(Boolean).join("\n\n"), images: opts.images ?? [], model, turnId, ...(talker?.thinking ? { thinking: talker.thinking } : {}) });
         live.started = true;
         // Stop may arrive before the prompt itself reached pi (model/context
@@ -1948,8 +1962,9 @@ export class Engine {
     const wakeAt = nextWakeFor(vault, l.convId);
     // The final state, decided once.
     const state: EngineConv["state"] = conv0?.pendingAsk ? "waiting_user" : wakeAt ? "sleeping" : "idle";
-    // The turn is over: messages pi never took (a stop clears its queue; a failure drops it) are no longer pending.
-    this.emit(l.convId, { type: "meta", patch: { running: null, pending: null, state, nextWakeAt: wakeAt ?? null } });
+    // Stop/failure drops undelivered input. Send now transfers the existing
+    // native inputs: keep them pending until their exact entries are delivered.
+    this.emit(l.convId, { type: "meta", patch: { running: null, ...(l.sendNow ? {} : { pending: null }), state, nextWakeAt: wakeAt ?? null } });
     // What ended it, said once in the transcript (after what was in flight, which the end closed).
     if (l.cut) await this.notice(l.convId, INTERRUPTED_TEXT, "error");
     // (A failure pi's own message carries is shown from that message: not said twice.)
@@ -2209,7 +2224,7 @@ export class Engine {
     live?.feed.sync();
     const item = this.picture(convId)?.items.slice().reverse().find(x => x.kind === "user" && !["wake", "job", "delegate", "resume", "nudge"].includes(x.via ?? ""));
     if (item) return Object.freeze({ request: item.text ?? "", device: validDevice(item.device) });
-    return Object.freeze({ request: live?.turnOpts.shown ?? live?.input ?? "", device: live?.turnOpts.device ?? validDevice(live?.turnOpts.origin) });
+    return Object.freeze({ request: "", device: null });
   }
 
   // ---------------------------------------------------------------- tools

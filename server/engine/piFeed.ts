@@ -44,7 +44,7 @@ export type FeedOpts = {
   emit: (b: EventBody) => void;
   /** Entries of `file` the feed already points to (skipped; updated as pointers are written). */
   pointed: Set<string>;
-  /** A pi user message matched one of Carl's steers or queued messages. */
+  /** Pi actually delivered a matched human input (including a Send now replacement prompt). */
   delivered?: (clientId: string, device?: string) => void;
   /** Coalescing window for deltas (ms); 0: every delta its own record (tests). */
   flushMs?: number;
@@ -178,7 +178,7 @@ export class PiFeed {
       ...(x!.images?.length ? { images: x!.images } : {}),
       ...(x!.device ? { device: x!.device } : {}),
     });
-    if (x!.clientId && (x!.kind === "steer" || x!.kind === "queue")) this.o.delivered?.(x!.clientId, x!.device);
+    if (x!.clientId) this.o.delivered?.(x!.clientId, x!.device);
   }
 
   // ---------------------------------------------------------------- pi's live events

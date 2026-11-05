@@ -320,6 +320,7 @@ def main():
             released = threading.Event()
             released.set()  # Let any original interrupted turn finish locally before measuring.
             provider_calls = []
+            queue_provider_inputs = []
             editor_reads = []
             device_results = {}
             editor_expected = 'PRIVATE-EDITOR-PASTE-27 fresh bytes\n'
@@ -341,6 +342,10 @@ def main():
                         c = m.get('content', '')
                         return c if isinstance(c, str) else '\n'.join(x.get('text', '') for x in c)
                     fixture_turns = [message_text(m) for m in messages if m.get('role') == 'user' and message_text(m).startswith(('[Carl, on ', 'READ_EDITOR_FIXTURE_27', 'LOCAL-UNPAID-STATUS-DOT'))]
+                    # Keep only our generated queue markers, never copied human history.
+                    queue_input = [t.split('LOCAL-UNPAID-QUEUE-', 1)[1] for t in fixture_turns if 'LOCAL-UNPAID-QUEUE-' in t]
+                    if queue_input:
+                        queue_provider_inputs.append(queue_input)
                     is_editor = bool(fixture_turns and 'READ_EDITOR_FIXTURE_27' in fixture_turns[-1])
                     tool_result = messages[-1] if messages and messages[-1].get('role') == 'tool' else None
                     device_marker = next((m for m in ['LAPTOP', 'PHONE', 'BOARD', 'EXPLICIT', 'REFUSED'] if fixture_turns and 'DEVICE-SENSE-25-' + m in fixture_turns[-1]), None) if a.check_device_sense else None
@@ -1386,8 +1391,11 @@ def main():
                             consumed = [x['id'] for x in final_items if x.get('kind') == 'user' and x.get('id') in ids]
                             if sorted(consumed) != sorted(ids):
                                 raise RuntimeError('Pending identities were duplicated or lost')
+                            native_input = next((q for q in reversed(queue_provider_inputs) if 'SECOND-' + thread in q), [])
+                            if native_input != ['HOLD-' + thread, 'SECOND-' + thread, 'FIRST-' + thread]:
+                                raise RuntimeError('Native provider did not receive each queue identity exactly once: ' + repr(native_input))
                             wait_for(lambda: js("""return arguments[0].every(id=>{const rows=document.querySelectorAll('[data-message-id="'+id+'"]');return rows.length===1&&!rows[0].matches('[data-el="waiting-message"]');});""", ids), 'consumed user rows exactly once')
-                            queue_rows.append({'thread': thread, 'pendingRows': layout, 'existingNowIntent': True, 'consumedExactlyOnce': True, 'viewerIndependent': True, 'originalPrefixUnchanged': True, 'appendedItems': len(final_items)-len(original)})
+                            queue_rows.append({'thread': thread, 'pendingRows': layout, 'existingNowIntent': True, 'consumedExactlyOnce': True, 'nativeProviderInput': native_input, 'viewerIndependent': True, 'originalPrefixUnchanged': True, 'appendedItems': len(final_items)-len(original)})
                         finally:
                             released.set()
                         key('ctrl+shift+f')

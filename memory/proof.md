@@ -17,3 +17,13 @@
   interaction, not a later request's explicit iPad permission or ambient focus.
   Existing maker entry IDs are not destination permission: recheck their sends
   too. Native wake/job/delegate/resume inputs are not new human interactions.
+
+- Send now's existing replay adapter had an enqueue-after-settle race: Pi RPC
+  steer/follow_up accepts an idle queue without starting a run. A fast replacement
+  prompt could settle before the remaining input's asynchronous native input hook
+  finished. This is a patch to the duplicated replay boundary, not a second queue:
+  preload the original PiFeed's undelivered records into Pi before the replacement
+  prompt, preserving kind/identity/context/device. Keep pending through interruption
+  and clear each only when its actual native entry arrives (including the selected
+  prompt). A bounded public Pi input hook reproduces it on baseline 6c7078a2 too;
+  SDK files remain read-only. Wakes cannot acquire human device/board permission.
