@@ -1326,6 +1326,9 @@ def main():
                     wait_for(lambda: exists('[data-el="chats-sidebar"]'), 'queue owner rows')
                     queue_rows = []
                     for thread in ['main', a.conversation]:
+                        # Restoring the real viewer vault reloads project rows;
+                        # sidebar presence alone is not the owner-row readiness.
+                        wait_for(lambda: exists('[data-thread="' + thread + '"] > button'), 'queue owner control after viewer restore')
                         click('[data-thread="' + thread + '"] > button')
                         wait_for(lambda: js('return localStorage.getItem("vault_chat_active_conv")===arguments[0];', thread), 'queue owner selected')
                         cp = '/api/v2/conversations/' + urllib.parse.quote(thread, safe='') + '/checkpoint'
