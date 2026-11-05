@@ -59,3 +59,15 @@
   `asked:true`: the host's existing worker scope carries acceptance for its own
   make entry, never model text/args or a later wake/viewer. Unsolicited phone and
   laptop makes must still refuse without spawning any child.
+
+## Scribble pen-up lifecycle
+- Reuse prepared 23a677fb's existing recognition/geometry and Arbiter owner retirement:
+  recognition/deletion happens only on actual non-touch pen-tool up, never on moves,
+  cancel, lost capture or blur. Original tile ink must stay fully opaque and persisted
+  throughout contact; one erasure is one existing undo/autosave transaction.
+- Existing A's production-board assertion reads actual base-canvas pixels, model,
+  history and disk after every trusted browser pen sample. Linux CDP pen input is
+  not physical Apple Pencil/Safari evidence. Playwright-managed pages force focus
+  in their own protocol session, hiding real WM blur; a public-CDP unmanaged target
+  on the same private display plus XTest focus/keys avoids that override without
+  mutating SDKs, calling application handlers or changing the board store as input.

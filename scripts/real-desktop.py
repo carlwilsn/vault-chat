@@ -1665,6 +1665,7 @@ def main():
               import assert from 'node:assert/strict';
               import {readFileSync,writeFileSync} from 'node:fs';
               import {scribbleTraces} from './board/src/scribbleTraces.ts';
+              import {execFileSync} from 'node:child_process';
               const {chromium}=await import(process.argv[1]);
               const [base,folder,out]=process.argv.slice(2);
               const original=JSON.parse(readFileSync(folder+'/board.json'));
@@ -1673,22 +1674,48 @@ def main():
               const browser=await chromium.launch({executablePath:'/run/current-system/sw/bin/chromium',headless:false,args:['--mute-audio','--no-sandbox','--disable-background-networking','--disable-component-update','--disable-sync']});
               const result={works:false,runtime:'Linux Chromium '+browser.version(),input:'CDP Input.dispatchMouseEvent pointerType=pen; private Xvfb. Not iPadOS/Safari/Apple Pencil',samples:0,fixture:'owned synthetic board in safe owner VC copy; not Carl handwriting'};
               try {
-                const c=await browser.newContext({viewport:{width:1200,height:900},hasTouch:true});
-                const p=await c.newPage();
-                await p.route('**/*',r=>{
-                  const u=new URL(r.request().url());
-                  const allowed=u.origin===base&&(r.request().method()==='GET'||u.pathname.startsWith('/api/v1/boards/scribble-penup-fixture')||['/api/v1/attention','/api/v1/board/log'].includes(u.pathname));
-                  return allowed?r.continue():r.abort();
+                // Public CDP transport in existing A. Use an unmanaged native target:
+                // Playwright-managed pages force permanent focus in their OWN session,
+                // so another session cannot turn that emulation off to prove WM blur.
+                const transport=await browser.newBrowserCDPSession();
+                const {browserContextId}=await transport.send('Target.createBrowserContext');
+                const {targetId}=await transport.send('Target.createTarget',{url:'about:blank',browserContextId});
+                const {sessionId}=await transport.send('Target.attachToTarget',{targetId,flatten:false});
+                let next=0,loaded=null;const pending=new Map();
+                transport.on('Target.receivedMessageFromTarget',({sessionId:s,message})=>{
+                  if(s!==sessionId)return;const m=JSON.parse(message);
+                  if(m.id){const q=pending.get(m.id);pending.delete(m.id);m.error?q?.reject(new Error(JSON.stringify(m.error))):q?.resolve(m.result);}
+                  else if(m.method==='Page.loadEventFired')loaded?.();
+                  else if(m.method==='Fetch.requestPaused'){
+                    const {requestId,request}=m.params,u=new URL(request.url);
+                    const allowed=u.origin===base&&(request.method==='GET'||u.pathname.startsWith('/api/v1/boards/scribble-penup-fixture')||['/api/v1/attention','/api/v1/board/log'].includes(u.pathname));
+                    void cdp.send(allowed?'Fetch.continueRequest':'Fetch.failRequest',allowed?{requestId}:{requestId,errorReason:'BlockedByClient'});
+                  }
                 });
-                await p.addInitScript(()=>{
-                  window.__penEvents=[];
-                  for(const type of ['pointerdown','pointermove','pointerup','pointercancel','lostpointercapture'])document.addEventListener(type,e=>window.__penEvents.push({type:e.type,trusted:e.isTrusted,kind:e.pointerType}),true);
-                });
-                const url=base+'/board/#/b/scribble-penup-fixture';
-                const open=async()=>{await p.goto(url);await p.waitForFunction(()=>window.__board?.board?.strokes?.length>0);await p.waitForTimeout(400);};
-                await open();
-                assert((await p.content()).includes('/board/assets/'),'must load production built board module');
-                const cdp=await c.newCDPSession(p);
+                const cdp={send:(method,params={})=>new Promise((resolve,reject)=>{
+                  const id=++next;pending.set(id,{resolve,reject});
+                  transport.send('Target.sendMessageToTarget',{sessionId,message:JSON.stringify({id,method,params})}).catch(reject);
+                })};
+                await cdp.send('Page.enable');await cdp.send('Runtime.enable');await cdp.send('Fetch.enable',{patterns:[{urlPattern:'*'}]});
+                await cdp.send('Emulation.setDeviceMetricsOverride',{width:1200,height:900,deviceScaleFactor:1,mobile:false});
+                await cdp.send('Emulation.setTouchEmulationEnabled',{enabled:true});
+                await cdp.send('Page.addScriptToEvaluateOnNewDocument',{source:`window.__penEvents=[];
+                  for(const type of ['pointerdown','pointermove','pointerup','pointercancel','lostpointercapture'])document.addEventListener(type,e=>window.__penEvents.push({type:e.type,trusted:e.isTrusted,kind:e.pointerType}),true);`});
+                const evaluate=async(fn,arg)=>{const r=await cdp.send('Runtime.evaluate',{expression:'('+fn.toString()+')('+JSON.stringify(arg??null)+')',returnByValue:true,awaitPromise:true});assert(!r.exceptionDetails,JSON.stringify(r.exceptionDetails));return r.result.value;};
+                const waitForFunction=async(fn)=>{const end=Date.now()+30000;while(!await evaluate(fn)){assert(Date.now()<end,'native DOM assertion deadline: '+fn);await new Promise(r=>setTimeout(r,50));}};
+                const navigate=async(method,params)=>{await new Promise((resolve,reject)=>{const t=setTimeout(()=>reject(new Error('native page load deadline')),30000);loaded=()=>{clearTimeout(t);loaded=null;resolve();};void cdp.send(method,params).catch(reject);});};
+                const p={evaluate,waitForFunction,waitForTimeout:ms=>new Promise(r=>setTimeout(r,ms)),reload:()=>navigate('Page.reload',{}),keyboard:{press:async key=>execFileSync('xdotool',['key','--clearmodifiers',key==='Control+z'?'ctrl+z':'ctrl+shift+z'])}};
+                await navigate('Page.navigate',{url:base+'/board/#/b/scribble-penup-fixture'});
+                await p.waitForFunction(()=>window.__board?.board?.strokes?.length>0);await p.waitForTimeout(400);
+                const windows=execFileSync('xdotool',['search','--onlyvisible','--name','Owned VC pen-up fixture'],{encoding:'utf8'}).trim().split(/\s+/);
+                assert.equal(windows.length,1,'exactly one private owned board browser window');
+                execFileSync('xdotool',['windowactivate','--sync',windows[0]]);
+                await cdp.send('Page.bringToFront');
+                // XTest focuses the real page through a harmless existing toolbar button.
+                const focusButton=await p.evaluate(()=>{const r=document.querySelector('[data-mode="pen"]').getBoundingClientRect();return {x:screenX+(outerWidth-innerWidth)/2+r.x+r.width/2,y:screenY+outerHeight-innerHeight+r.y+r.height/2};});
+                execFileSync('xdotool',['mousemove',String(Math.round(focusButton.x)),String(Math.round(focusButton.y)),'click','1']);
+                await p.waitForFunction(()=>document.hasFocus());
+                assert(await p.evaluate(()=>!!document.querySelector('script[src^="/board/assets/"]')),'must load production built board module');
                 const model=()=>p.evaluate(()=>({board:window.__board.board,undo:window.__board.undoStack.length,redo:window.__board.redoStack.length,gesture:!!window.__board.g}));
                 const boardEqual=(a,b)=>{assert.deepEqual(a.strokes,b.strokes);assert.deepEqual(a.items,b.items);};
                 boardEqual((await model()).board,original);
@@ -1740,14 +1767,23 @@ def main():
                 await p.keyboard.press('Control+Shift+z');assert.deepEqual((await model()).board.strokes,remaining);
                 await p.keyboard.press('Control+z');boardEqual((await model()).board,original);
                 // Trusted native window focus loss, not a synthetic cancel or handler call.
-                const beforeCancel=await contact();const other=await c.newPage();await other.goto('about:blank');await other.bringToFront();await p.waitForTimeout(100);
-                await p.bringToFront();await pen('mouseReleased',screen.at(-1));
+                const beforeCancel=await contact();
+                // A distinct native window, not another tab: change actual X focus
+                // during pointer capture through XTest, without focus emulation.
+                const {targetId:otherTarget}=await transport.send('Target.createTarget',{url:'about:blank',browserContextId,newWindow:true});
+                const otherWindows=execFileSync('xdotool',['search','--onlyvisible','--class','chromium'],{encoding:'utf8'}).trim().split(/\s+/).filter(id=>id!==windows[0]);
+                assert.equal(otherWindows.length,1,'exactly one second owned native focus target');
+                execFileSync('xdotool',['windowactivate','--sync',otherWindows[0]]);
+                try {await p.waitForFunction(()=>!document.hasFocus()&&!window.__board.g);}
+                catch(e){console.error('native blur state',await p.evaluate(()=>({focus:document.hasFocus(),visibility:document.visibilityState,gesture:window.__board.g?.k,events:window.__penEvents.slice(-4)})));throw e;}
+                execFileSync('xdotool',['windowactivate','--sync',windows[0]]);
+                await p.waitForFunction(()=>document.hasFocus());await pen('mouseReleased',screen.at(-1));
                 const canceled=await model();
                 assert.deepEqual(canceled.board.strokes.slice(0,original.strokes.length),original.strokes);
                 assert.deepEqual(canceled.board.items,original.items);
                 assert.equal(canceled.undo,beforeCancel.undo+1); // interrupted ink only, never erasure
                 await p.keyboard.press('Control+z');boardEqual((await model()).board,original);
-                await other.close();
+                await transport.send('Target.closeTarget',{targetId:otherTarget});
                 // Browser-native touch cancel, touch pan and palm contacts cannot erase.
                 const m0=await model();
                 const touch=async(type,points)=>cdp.send('Input.dispatchTouchEvent',{type,touchPoints:points});
