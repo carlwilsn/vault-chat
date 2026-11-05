@@ -143,7 +143,7 @@ function run(file, args, limit) {
   if (restart === "restart") {
     // Do not wait outside the health window for systemd's stop/start job. The queued job
     // still uses the unit's ordinary StartLimit/Restart/TimeoutStartSec policy.
-    await run("systemctl", ["--user", "--no-block", "restart", unit], budget);
+    if (await run("systemctl", ["--user", "--no-block", "restart", unit], budget) === null) return 1;
   }
   let pending = false;
   while (remaining() >= 1) {
@@ -273,17 +273,23 @@ if [ -e "failed/$ver" ]; then
 fi
 cur="$(strip_v "$(current_version)")"
 if [ "$ver" = "$cur" ]; then
-  # The laptop can report a fresh negative AFTER the original box install succeeded. The ordinary
-  # updater timer observes this durable server result too; no second watchdog or version ping-pong.
-  if h="$(health)" && [ "$(printf '%s' "$h" | json_field releaseReadiness.status)" = failed ]; then
-    expected_rev="$(json_field rev < "$(read_current)/$META")"
+  # A current symlink proves only selection, not startup or continuing readiness.
+  # Reuse the exact bounded HTTP/version/revision check used after installation.
+  expected_rev="$(json_field rev < "$(read_current)/$META")"
+  [[ "$expected_rev" =~ ^[a-f0-9]{40}$ ]] || die "current metadata has no pinned source revision"
+  status=0
+  wait_for_version "$ver" "$HEALTH_WAIT_S" "$expected_rev" || status=$?
+  if [ "$status" = 1 ]; then
     prev=""
     if [ -f "versions/$ver/previous.json" ]; then prev="$(json_field previous < "versions/$ver/previous.json")"; fi
     case "$prev" in versions/*) ;; *) prev="" ;; esac
     fallback_failed_release
     exit 1
+  elif [ "$status" != 0 ]; then
+    log "$ver matches source/version but actual readiness remains pending; not confirmed and not reverted"
+    exit 0
   fi
-  log "up to date ($ver)"
+  log "up to date ($ver) with actual box readiness; physical laptop verification is separate"
   refresh_self "$(read_current)/deploy"
   exit 0
 fi

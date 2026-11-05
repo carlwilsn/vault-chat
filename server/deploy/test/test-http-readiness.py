@@ -98,8 +98,8 @@ class Fixture:
                     if mode in ("pending", "failed"):
                         data["releaseReadiness"] = {"status": mode}
                     body = b"not-json" if mode == "invalid" else json.dumps(data).encode()
-                    if mode == "500":
-                        self.send_response(500)
+                    if mode in ("500", "503", "502", "401"):
+                        self.send_response(int(mode))
                         self.end_headers()
                         self.wfile.write(body)
                         return
@@ -149,7 +149,8 @@ class Readiness(unittest.TestCase):
         fake.write_text("#!" + os.sys.executable + "\nimport json,os,sys,time\n"
                         "with open(os.environ['TEST_CALLS'],'a') as f: f.write(json.dumps(sys.argv[1:])+'\\n')\n"
                         "with open(os.environ['TEST_STARTED'],'w') as f: f.write(str(time.monotonic()))\n"
-                        "time.sleep(float(os.environ.get('TEST_START_DELAY','0')))\n")
+                        "time.sleep(float(os.environ.get('TEST_START_DELAY','0')))\n"
+                        "sys.exit(int(os.environ.get('TEST_START_STATUS','0')))\n")
         fake.chmod(0o755)
         self.env = {"PATH": str(self.bin) + os.pathsep + os.environ["PATH"],
                     "HOME": str(self.root), "TEST_CALLS": str(self.calls), "TEST_STARTED": str(self.started),
@@ -204,6 +205,39 @@ class Readiness(unittest.TestCase):
             self.assertEqual(json.loads(self.calls.read_text()),
                              ["--user", "--no-block", "restart", "owned-fixture.service"])
             self.assertEqual(fixture.requests, [])
+
+    def test_failed_restart_cannot_accept_a_stale_healthy_daemon(self):
+        self.env["TEST_START_STATUS"] = "1"
+        with Fixture() as fixture:
+            self.assertEqual(self.helper(fixture.url), 1)
+            self.assertEqual(fixture.requests, [], "failed startup must not verify an old daemon")
+
+    def test_current_symlink_is_not_actual_http_readiness(self):
+        # Already-current path after a pending install (or a later health failure).
+        # Inert systemctl and disposable state only, never the installed service.
+        for mode in ("good", "old", "oldversion", "wrongbody", "401", "502", "503", "pending", "failed"):
+            with self.subTest(mode=mode), Fixture(mode) as fixture:
+                state = self.root / ("current-" + mode)
+                current = state / "versions/1.0.1"
+                current.mkdir(parents=True)
+                (current / "server-version.json").write_bytes(fixture.meta)
+                (state / "current").symlink_to("versions/1.0.1")
+                env = dict(self.env, VC_UPDATE_API=fixture.url + "/release", VC_SERVER_URL=fixture.url,
+                           VC_SERVER_STATE=str(state), VC_SERVER_UNIT="owned-fixture.service",
+                           VC_UPDATE_HEALTH_WAIT_S="0.24", VC_UPDATE_HEALTH_POLL_S="0.03")
+                result = subprocess.run(["bash", str(SCRIPT)], env=env, capture_output=True, timeout=3)
+                self.assertEqual(result.returncode, 0 if mode in ("good", "pending") else 1, result.stderr)
+                self.assertTrue(fixture.requests)
+                self.assertEqual((state / "current").readlink(), Path("versions/1.0.1"))
+                self.assertEqual((state / "failed/1.0.1").exists(), mode not in ("good", "pending"))
+                if mode == "good":
+                    self.assertIn(b"actual box readiness", result.stdout)
+                else:
+                    self.assertNotIn(b"up to date", result.stdout)
+                if mode == "pending":
+                    self.assertIn(b"not confirmed", result.stdout)
+                self.assertFalse(self.calls.exists(), "checking current does not restart it")
+                self.assertEqual(fixture.posts, [])
 
     def test_long_poll_cannot_extend_window(self):
         self.env["HEALTH_POLL_S"] = "10"

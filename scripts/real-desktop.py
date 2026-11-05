@@ -75,6 +75,27 @@ def wait_for(fn, what, seconds=90):
     raise RuntimeError('Timed out: ' + what)
 
 
+class ClipboardOwnerExited(Exception):
+    """A dead fixture owner is not transient clipboard readiness."""
+
+
+def owned_clipboard_ready(producer, childenv, target, expected):
+    # xclip falls back from UTF8_STRING to STRING on failed conversions, including
+    # before the owner has acquired CLIPBOARD. Its error is not proof that the
+    # requested UTF-8 target is unsupported. Check TARGETS first, then exact bytes.
+    if producer.poll() is not None:
+        raise ClipboardOwnerExited('Owned clipboard producer exited before paste')
+    targets = subprocess.run(['xclip', '-selection', 'clipboard', '-out', '-target', 'TARGETS'],
+                             env=childenv, capture_output=True, timeout=5)
+    if targets.returncode or target.encode() not in targets.stdout.splitlines():
+        return False
+    content = subprocess.run(['xclip', '-selection', 'clipboard', '-out', '-target', target],
+                             env=childenv, capture_output=True, timeout=5)
+    if producer.poll() is not None:
+        raise ClipboardOwnerExited('Owned clipboard producer exited during readiness')
+    return content.returncode == 0 and content.stdout == expected
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument('--copy-vault', type=Path, required=True)
@@ -1058,17 +1079,8 @@ def main():
                     # Popen only starts the producer: it does not establish X11 selection
                     # ownership. Never paste until the private server advertises our
                     # target AND serves our exact bytes, with the producer still alive.
-                    def owned_clipboard():
-                        if producer.poll() is not None:
-                            raise RuntimeError('Owned clipboard producer exited before paste')
-                        targets = subprocess.run(['xclip', '-selection', 'clipboard', '-out', '-target', 'TARGETS'],
-                                                 env=childenv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5)
-                        if targets.returncode or b'text/html' not in targets.stdout.splitlines():
-                            return False
-                        content = subprocess.run(['xclip', '-selection', 'clipboard', '-out', '-target', 'text/html'],
-                                                 env=childenv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5)
-                        return content.returncode == 0 and content.stdout == clipboard.read_bytes()
-                    wait_for(owned_clipboard, 'private clipboard target and exact owned HTML bytes', seconds=10)
+                    wait_for(lambda: owned_clipboard_ready(producer, childenv, 'text/html', clipboard.read_bytes()),
+                             'private clipboard target and exact owned HTML bytes', seconds=10)
                     result['clipboardProducer'] = {'aliveBeforePaste': producer.poll() is None,
                                                    'advertisedHtml': True, 'exactHtmlBytes': True}
                     click('[data-perf-target="composer"]')
@@ -1225,7 +1237,8 @@ def main():
                     clipboard = work / 'editor-clipboard.txt'
                     clipboard.write_text(editor_expected)
                     producer = spawn(['xclip', '-selection', 'clipboard', '-target', 'UTF8_STRING', '-i', str(clipboard), '-quiet'], 'editor-clipboard', childenv)
-                    wait_for(lambda: subprocess.check_output(['xclip', '-selection', 'clipboard', '-target', 'UTF8_STRING', '-o'], env=childenv) == clipboard.read_bytes(), 'private text clipboard ready')
+                    wait_for(lambda: owned_clipboard_ready(producer, childenv, 'UTF8_STRING', clipboard.read_bytes()),
+                             'private UTF-8 clipboard target and exact owned bytes', seconds=10)
                     click('.cm-content[contenteditable="true"]')
                     wait_for(lambda: js('return document.activeElement?.isContentEditable;'), 'scratch editor focused')
                     key('ctrl+Home'); key('ctrl+shift+End')
