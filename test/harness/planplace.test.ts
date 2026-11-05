@@ -135,3 +135,19 @@ test("Clear during a native turn leaves later TodoWrite inline, never pinned wit
   box.endTurn("a");
   assert.deepEqual(currentPlan(afterClear(project(box.picture("a")!).messages, mark)), completed);
 });
+
+
+test("hidden context and queued humans cannot adopt an unowned late plan", () => {
+  const late: any = { role: "assistant", toolCalls: [todo("late")] };
+  for (const owner of [{ role: "user", hidden: true }, { role: "user", waiting: true }]) {
+    const messages = [owner, late];
+    const original = JSON.stringify(messages);
+    assert.deepEqual(currentPlan(messages), []);
+    assert.deepEqual(planCards(messages).map(p => p.id), ["late"], "inline chronology stays intact");
+    assert.equal(JSON.stringify(messages), original);
+  }
+  const visible = [{ role: "user" }, late];
+  assert.deepEqual(currentPlan(visible), late.toolCalls[0].input.todos, "a delivered visible human still owns its plan");
+  assert.equal(planDone(currentPlan(visible)), false);
+  assert.equal(planDone(completed), true, "all-completed retains the existing collapse semantic");
+});
