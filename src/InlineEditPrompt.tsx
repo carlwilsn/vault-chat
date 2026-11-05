@@ -91,6 +91,12 @@ export function InlineEditPrompt({
     return { vaultPath: s.vaultPath, currentFile: s.currentFile, convId: s.activeConversationId };
   });
   const { vaultPath, currentFile } = origin;
+  useEffect(() => {
+    // The containing editor must survive a viewer-vault switch until this
+    // popover closes; unmount cleanup would otherwise stop its native side.
+    useStore.setState((s) => ({ inlinePromptCount: s.inlinePromptCount + 1 }));
+    return () => { useStore.setState((s) => ({ inlinePromptCount: s.inlinePromptCount - 1 })); };
+  }, []);
   const files = useStore((s) => s.files);
   const openNoteComposer = useStore((s) => s.openNoteComposer);
   const [mode, setMode] = useState<InlineEditMode>(askOnly ? "ask" : initialMode);

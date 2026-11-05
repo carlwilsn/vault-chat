@@ -223,6 +223,10 @@ export function MarkdownView({ paneId }: Props) {
   const pane = paneId ? panes.find((p) => p.id === paneId) : null;
   const file = pane ? pane.file : currentFile;
   const content = pane ? pane.content : currentContent;
+  // A live inline popover can pin this absolute-path file while the tree
+  // navigates to another vault. Its autosave/read barrier still owns the file's root.
+  const fileWorkspace = useRef({ file, vault: useStore.getState().vaultPath });
+  if (fileWorkspace.current.file !== file) fileWorkspace.current = { file, vault: useStore.getState().vaultPath };
   // Each pane carries its own view/edit mode so split panes can show
   // one rendered + one editor at the same time.
   const mode = pane ? pane.mode : globalMode;
@@ -311,7 +315,7 @@ export function MarkdownView({ paneId }: Props) {
       reloadCurrent(file ?? "", value);
     }
     if (!file) return;
-    const vault = useStore.getState().vaultPath;
+    const vault = fileWorkspace.current.vault;
     if (!vault) return;
     editorWrites.queue({ vault, path: file, text: value }, lastSaved.current, () => {
       const live = useStore.getState();
@@ -340,7 +344,7 @@ export function MarkdownView({ paneId }: Props) {
     try {
       await editorWrites.discard(file);
       await writeTextAt(file, content);
-      const vault = useStore.getState().vaultPath;
+      const vault = fileWorkspace.current.vault;
       if (vault) editorWrites.queue({ vault, path: file, text: content }, content, () => {}, () => setDiskChanged(file, true));
       lastSaved.current = content;
       lastUserValue.current = content;

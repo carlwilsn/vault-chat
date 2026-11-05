@@ -361,6 +361,8 @@ type State = {
   files: FileEntry[];
   currentFile: string | null;
   currentContent: string;
+  /** Mounted file popovers pin their absolute-path editor during workspace navigation. */
+  inlinePromptCount: number;
   panes: Pane[];
   splitDirection: SplitDirection;
   activePaneId: string | null;
@@ -659,6 +661,7 @@ export const useStore = create<State>((set) => ({
   files: [],
   currentFile: null,
   currentContent: "",
+  inlinePromptCount: 0,
   panes: [],
   splitDirection: null,
   activePaneId: null,
@@ -722,18 +725,20 @@ export const useStore = create<State>((set) => ({
       if (s.vaultPath === p) {
         return { vaultPath: p };
       }
-      // Open files / panes are tied to the prior vault. Leaving them
-      // up after the switch would point at paths that don't exist in
-      // the new vault, breaking save and reload.
+      // Normally reset the file workspace. A mounted Ctrl+K/L popover
+      // still owns its absolute-path editor and captured conversation: keep
+      // it mounted so navigation cannot implicitly abort its native side run.
       return {
         vaultPath: p,
         notes: [],
         notesLoaded: false,
-        currentFile: null,
-        currentContent: "",
-        panes: [],
-        splitDirection: null,
-        activePaneId: null,
+        ...(s.inlinePromptCount ? {} : {
+          currentFile: null,
+          currentContent: "",
+          panes: [],
+          splitDirection: null,
+          activePaneId: null,
+        }),
       };
     }),
   setFiles: (f) => set({ files: f }),

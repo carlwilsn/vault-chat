@@ -122,6 +122,7 @@ def main():
     p.add_argument('--check-status-dot', action='store_true', help='Observe native pi running rows, compare the real picker to registered vault identities, then switch only the viewer without changing native owners')
     p.add_argument('--check-video', type=Path, help='Owned synthetic VP8/Vorbis clip; append one private media-only test entry, never publish it')
     p.add_argument('--check-global-notes', action='store_true', help='Existing cross-vault fixture note identity/source and native edit; copied human notes stay untouched')
+    p.add_argument('--check-ctrl-k-owner', action='store_true', help='With status-dot: trusted native selection/Submit/refinement/Stop and AskUser answer for Main/project in every registered viewer; genuine unpaid Pi')
     p.add_argument('--check-editor-sync', action='store_true', help='Native immediate paste/send via existing Git transport and genuine Pi read on a different viewer vault')
     p.add_argument('--native-video-only', action='store_true', help='Run native video independently; retain earlier phone evidence separately, never relabel it')
     p.add_argument('--check-parallel-work', action='store_true', help='Genuine Delegate workers on two owned code worktrees; native task stop/result, no shipping')
@@ -147,6 +148,8 @@ def main():
             a.check_video, a.check_speech_freshness, a.check_global_notes, a.check_editor_sync, a.check_board_scribble,
             a.check_voice_only, a.voice_conflict)):
         p.error('Composer delivery has its own exact private-append fixture; run other opt-ins separately')
+    if a.check_ctrl_k_owner and (not a.check_status_dot or a.before_app or any((a.check_global_notes, a.check_editor_sync, a.check_pending_chat, a.check_history_update))):
+        p.error('--check-ctrl-k-owner requires one status-dot run with its own exact private-appends contract')
     if a.check_global_notes and not a.check_status_dot:
         p.error('--check-global-notes requires the existing --check-status-dot private workspace fixture')
     if a.check_editor_sync and not a.check_status_dot:
@@ -412,6 +415,8 @@ def main():
             composer_provider_context = {}
             composer_provider_times = {}
             queue_provider_inputs = []
+            side_release = threading.Event()
+            side_provider_inputs = []
             history_requests = []
             editor_reads = []
             device_results = {}
@@ -448,6 +453,11 @@ def main():
                     history_user = next((message_text(m) for m in reversed(messages) if m.get('role') == 'user' and 'HISTORY-UPDATE-23-' in message_text(m)), '')
                     if a.check_history_update and history_user:
                         history_requests.append({'tag': 'FIRST' if 'HISTORY-UPDATE-23-FIRST' in history_user else 'SECOND', 'tool': bool(messages and messages[-1].get('role') == 'tool')})
+                    side_turn = next((message_text(m) for m in reversed(messages) if m.get('role') == 'user' and 'CTRL-K-OWNER-K-SIDE-' in message_text(m)), '') if a.check_ctrl_k_owner else ''
+                    if side_turn:
+                        side_provider_inputs.append(side_turn)
+                        if not side_release.wait(90):
+                            self.send_response(503); self.end_headers(); return
                     if not released.wait(90):
                         self.send_response(503); self.end_headers(); return
                     self.send_response(200); self.send_header('Content-Type', 'text/event-stream'); self.end_headers()
@@ -481,7 +491,17 @@ def main():
                     plan_user = next((message_text(m) for m in reversed(messages) if m.get('role') == 'user' and 'PLAN-OWNER-8-' in message_text(m)), '') if a.check_plan_owner else ''
                     child_task = next((message_text(m) for m in messages if m.get('role') == 'user'), '')
                     parallel_tag = next((t for t in ('A', 'B') if 'PARALLEL-WORK-16-' + t in latest_user), None) if a.check_parallel_work else None
-                    if composer_user:
+                    busy_turn = next((message_text(m) for m in reversed(messages) if m.get('role') == 'user' and message_text(m).startswith('CTRL-K-OWNER-K-BUSY-')), '') if a.check_ctrl_k_owner else ''
+                    if side_turn:
+                        deltas = [({'role':'assistant','content':'# Owned Ctrl K replacement K'},None),({},'stop')]
+                    elif busy_turn:
+                        if not tool_result:
+                            tool = next(t['function']['name'] for t in body.get('tools', []) if t['function']['name'] in ('AskUser', 'mcp__vault_chat__AskUser'))
+                            args = {'question':'Owned K parent remains alive?', 'options':['K continue', 'K wait']}
+                            deltas = [({'role':'assistant','tool_calls':[{'index':0,'id':'owned-k-ask','type':'function','function':{'name':tool,'arguments':json.dumps(args)}}]},None),({},'tool_calls')]
+                        else:
+                            deltas = [({'role':'assistant','content':'Owned K parent answered.'},None),({},'stop')]
+                    elif composer_user:
                         deltas = [({'role':'assistant','content':'Owned composer receipt 10.'},None),({},'stop')]
                     elif plan_user:
                         if not tool_result:
@@ -565,6 +585,8 @@ def main():
                               VC_OPENROUTER_BASE=provider_url, NODE_OPTIONS='--import ' + str(network), PI_OFFLINE='1', PI_SKIP_VERSION_CHECK='1')
             viewer = master / 'vaults/status-viewer'
             (viewer / '.vault-chat').mkdir(parents=True)
+            if a.check_ctrl_k_owner:
+                (viewer / 'desktop-timing-note.md').write_bytes(note.read_bytes())
         if a.voice_conflict:
             state.mkdir(parents=True, exist_ok=True)
             (state / 'voice-engine.json').write_text('{"engine":"classic"}' if a.check_voice_only else '{"engine":"new"}')
@@ -674,6 +696,11 @@ def main():
                     raise RuntimeError('Original inert listener was disturbed')
             result['voiceConflict'] = {'socketRefused': True, 'originalListenerStillResponds503': True, 'healthCode': conflict_status['failure']['code']}
         checkpoint_path = '/api/v2/conversations/' + urllib.parse.quote(a.conversation, safe='') + '/checkpoint'
+        if a.check_ctrl_k_owner:
+            # This approved original contains one interrupted Delegate. Await
+            # its exact two-item local startup report BEFORE freezing the prefix,
+            # not an arbitrary later allowance that could hide human history.
+            wait_for(lambda: (p if len((p := request(base + checkpoint_path)['picture'])['items']) == 3821 and p['meta'].get('state') == 'idle' else None), 'K exact owned startup report before snapshot')
         checkpoint = request(base + checkpoint_path)
         picture = checkpoint.get('picture', checkpoint)
         items = picture.get('items', [])
@@ -703,6 +730,8 @@ def main():
                     raise RuntimeError('Unexpected device fixture startup append identities')
             if a.check_history_update:
                 items = original_items
+        if a.check_ctrl_k_owner and (len(items) != 3821 or items[-2].get('via') != 'delegate' or items[-2].get('text') != 'Delegated work failed (killed): "Build the real Linux desktop input runner"\n\nThe server restarted while this worker ran, so it stopped before it reported. Start it again if it is still wanted.' or items[-1].get('text') != 'Local status fixture complete.'):
+            raise RuntimeError('K exact approved startup notice/receipt mismatch')
         count = sum(i.get('kind') in ('user', 'assistant') for i in items)
         if a.check_speech_freshness and (count != 1329 or len(items) != 3819):
             raise RuntimeError('Speech fixture requires exact approved 1329-message / 3819-item original prefix')
@@ -747,6 +776,10 @@ def main():
         video_fetches = []
         lock = threading.Lock()
         editor_intent_enabled = False
+        k_http = []
+        k_intents = []
+        k_sides = {}
+        k_answers = []
 
         class Relay(http.server.BaseHTTPRequestHandler):
             def do_GET(self):
@@ -768,6 +801,19 @@ def main():
                 if composer_send:
                     with lock:
                         composer_intents.append(intent)
+                k_write = False
+                if a.check_ctrl_k_owner and self.command == 'POST':
+                    payload = json.loads(data)
+                    if path == '/api/v2/intent' and payload.get('type') == 'send' and payload.get('convId') in ('main', a.conversation) and payload.get('text') == 'CTRL-K-OWNER-K-BUSY-' + payload['convId']:
+                        k_write = True
+                        k_intents.append(payload)
+                    elif path == '/api/v1/side' and payload.get('kind') == 'edit' and payload.get('convId') in ('main', a.conversation) and 'CTRL-K-OWNER-K-SIDE-' in payload.get('text', '') and (not payload.get('side') or payload['side'] in k_sides):
+                        k_write = True
+                    elif path.startswith('/api/v1/side/') and path.endswith('/stop') and path.split('/')[-2] in k_sides:
+                        k_write = True
+                    elif path == '/api/v2/intent' and payload.get('type') == 'answer' and payload.get('convId') in ('main', a.conversation) and payload.get('text') == 'K continue':
+                        k_write = True
+                        k_answers.append(payload)
                 queue_write = False
                 if (a.check_pending_chat or a.check_history_update) and path == '/api/v2/intent' and self.command == 'POST':
                     intent = json.loads(data)
@@ -786,7 +832,7 @@ def main():
                     for n in json.loads(data).get('notes', []))
                 editor_transport = a.check_editor_sync and (editor_intent_enabled and path == '/api/v2/intent' or path.startswith('/git/status-viewer.git/') or path == '/api/v1/sync/flush')
                 # All other non-read activity stays refused, including voice.
-                if (path.startswith('/git/') or self.command != 'GET' and path != '/api/v1/laptop-perf') and not ((a.check_plan_owner and path == "/api/v2/intent" and self.command == "POST" and json.loads(data).get("type") == "send" and json.loads(data).get("convId") == a.conversation and str(json.loads(data).get("text", "")).startswith("PLAN-OWNER-8-")) or composer_send or speech_send or editor_transport or queue_write or note_transport or (a.check_parallel_work and (path == '/api/v2/intent' and str(json.loads(data).get('text', '')).startswith('PARALLEL-WORK-16-') or path.startswith('/api/v1/conversations/' + a.conversation + '/subagents/') and path.endswith('/stop'))) or (a.check_web_research and path == '/api/v2/intent' and str(json.loads(data).get('text', '')).startswith('OWNED-RESEARCH-28')) or (a.check_device_sense and (path.startswith('/api/v1/show/show-') and path.endswith('/ack') or path == '/api/v2/intent' and str(json.loads(data).get('text', '')).startswith('DEVICE-SENSE-25-')))):
+                if (path.startswith('/git/') or self.command != 'GET' and path != '/api/v1/laptop-perf') and not ((a.check_plan_owner and path == "/api/v2/intent" and self.command == "POST" and json.loads(data).get("type") == "send" and json.loads(data).get("convId") == a.conversation and str(json.loads(data).get("text", "")).startswith("PLAN-OWNER-8-")) or composer_send or speech_send or k_write or editor_transport or queue_write or note_transport or (a.check_parallel_work and (path == '/api/v2/intent' and str(json.loads(data).get('text', '')).startswith('PARALLEL-WORK-16-') or path.startswith('/api/v1/conversations/' + a.conversation + '/subagents/') and path.endswith('/stop'))) or (a.check_web_research and path == '/api/v2/intent' and str(json.loads(data).get('text', '')).startswith('OWNED-RESEARCH-28')) or (a.check_device_sense and (path.startswith('/api/v1/show/show-') and path.endswith('/ack') or path == '/api/v2/intent' and str(json.loads(data).get('text', '')).startswith('DEVICE-SENSE-25-')))):
                     if a.check_plans and path == '/api/v2/intent':
                         # Observe the native pending-input UI before rejecting;
                         # never forward this turn to a provider or invent a reply.
@@ -801,6 +847,11 @@ def main():
                     r = conn.getresponse()
                     body = r.read()
                     with lock:
+                        if a.check_ctrl_k_owner and (path.startswith('/api/v1/side') or path == '/api/v2/intent' and k_write):
+                            parsed = json.loads(body)
+                            k_http.append({'method':self.command,'path':self.path,'status':r.status,'body':parsed,'request':json.loads(data) if data else None})
+                            if path == '/api/v1/side' and r.status == 200 and parsed.get('id'):
+                                k_sides[parsed['id']] = parsed
                         if queue_write and intent.get('type') == 'now' and r.status == 200:
                             accepted = json.loads(body)
                             if accepted.get('ok') and accepted.get('now') == intent.get('id'):
@@ -892,6 +943,7 @@ def main():
         plan_owner_start_items = None
         composer_start_items = None
         composer_final_items = None
+        ctrl_k_final_items = None
 
         def exercise(app, label):
             nonlocal history_final_items, plan_owner_start_items, composer_start_items, composer_final_items
@@ -1705,6 +1757,160 @@ def main():
                     if (vault / '.vault-chat/notes.jsonl').read_bytes() != original_notes:
                         raise RuntimeError('Picker fixture changed original Notes bytes')
                     status_dot = {'rows': dot_rows, 'localProviderCalls': len(provider_calls), 'originalHistoryPrefixUnchanged': True, 'runningToIdle': True}
+                nonlocal ctrl_k_final_items
+                ctrl_k_owner = None
+                if a.check_ctrl_k_owner:
+                    # No new engine/IPC/store inputs: only the existing UI, XTest
+                    # and read-only HTTP/native session observations.
+                    roots = sorted(v['name'] for v in request(base + '/api/v1/vaults')['vaults'])
+                    if roots != ['status-viewer', 'vault-chat']:
+                        raise RuntimeError('K requires the exact two owned registered roots')
+                    expected_final = {}
+                    cases = []
+                    def checkpoint_for(conv):
+                        return request(base + '/api/v2/conversations/' + conv + '/checkpoint')['picture']['items']
+                    def conversation_for(conv):
+                        return request(base + '/conversation?id=' + conv + '&full=1')
+                    def fullscreen(enabled):
+                        if exists('[data-perf-view="fullscreen"]') != enabled:
+                            key('ctrl+shift+f')
+                        wait_for(lambda: exists('[data-perf-view="fullscreen"]') == enabled, 'K native fullscreen state')
+                    def select_viewer(name):
+                        fullscreen(False)
+                        click('[data-el="vault-picker"]')
+                        selector = '[data-el="vault-picker-item"][data-rel="vaults/' + name + '"] button'
+                        wait_for(lambda: exists(selector), 'K registered viewer item')
+                        click(selector)
+                        wait_for(lambda: js('return localStorage.getItem("vault_chat_last_vault")===arguments[0];', str(master / 'vaults' / name)), 'K actual viewer switch')
+                    for thread in ('main', a.conversation):
+                        fullscreen(True)
+                        click('[data-thread="' + thread + '"] > button')
+                        wait_for(lambda: js('return localStorage.getItem("vault_chat_active_conv")===arguments[0];', thread), 'K selected conversation owner')
+                        prefix = checkpoint_for(thread)
+                        click('[data-perf-target="composer"]')
+                        busy_body = 'CTRL-K-OWNER-K-BUSY-' + thread
+                        run('xdotool', 'type', '--clearmodifiers', '--delay', '20', busy_body, env=childenv, stdout=subprocess.DEVNULL)
+                        key('Return')
+                        parent = wait_for(lambda: (c if (c := conversation_for(thread)).get('meta', {}).get('pendingAsk') else None), 'K genuine parent AskUser remains busy')
+                        parent_file = Path(parent['meta']['threadPath'])
+                        if not parent_file.resolve().is_relative_to(state.resolve()):
+                            raise RuntimeError('K parent session escaped private state')
+                        parent_bytes = parent_file.read_bytes()
+                        parent_items = checkpoint_for(thread)
+                        parent_proc = next(p for p in request(base + '/api/v1/health')['engine']['pi']['procs'] if p.get('threadId') == parent['meta']['threadId'])
+                        parent_cwd = str((Path('/proc') / str(parent_proc['pid']) / 'cwd').resolve(strict=True))
+                        if not Path(parent_cwd).is_relative_to(work):
+                            raise RuntimeError('K native parent cwd escaped private fixture')
+                        if not parent_proc.get('busy') or parent_items[:len(prefix)] != prefix:
+                            raise RuntimeError('K busy parent lost its exact prefix or process')
+                        peer = 'main' if thread != 'main' else a.conversation
+                        peer_before = owner_snapshot(peer)
+                        for name in roots:
+                            select_viewer(name)
+                            if js('return localStorage.getItem("vault_chat_active_conv");') != thread:
+                                raise RuntimeError('K viewer changed conversation owner')
+                            click('[data-tree-root] [data-tree-path$="/desktop-timing-note.md"]')
+                            wait_for(lambda: exists('[data-look-pane][data-file$="/desktop-timing-note.md"]'), 'K private viewer note')
+                            if not exists('.cm-content[contenteditable="true"]'):
+                                key('ctrl+e')
+                            wait_for(lambda: exists('.cm-content[contenteditable="true"]'), 'K private note editor')
+                            click('.cm-content[contenteditable="true"]')
+                            key('ctrl+Home'); key('ctrl+shift+End'); key('ctrl+k')
+                            wait_for(lambda: exists('[data-perf-target="ctrl-k"]'), 'K actual selected Ctrl+K prompt')
+                            marker = 'CTRL-K-OWNER-K-SIDE-' + thread + '-' + name
+                            side_release.clear()
+                            run('xdotool', 'type', '--clearmodifiers', '--delay', '20', marker, env=childenv, stdout=subprocess.DEVNULL)
+                            click('button[title="Submit (Enter)"]')
+                            wait_for(lambda: any(marker in t for t in side_provider_inputs), 'K genuine Pi side provider request')
+                            started = wait_for(lambda: next((h for h in k_http if h['method'] == 'POST' and h['path'].split('?')[0] == '/api/v1/side' and marker in h['request'].get('text', '') and not h['request'].get('side')), None), 'K native Submit start response')
+                            side_id = started['body']['id']
+                            # Keep this very popover active while changing viewer;
+                            # subsequent UI polls/refinement/stop must retain owner.
+                            other_root = next(r for r in roots if r != name)
+                            select_viewer(other_root)
+                            if not exists('button[title="Stop (Esc)"]'):
+                                raise RuntimeError('K viewer switch lost active native side popover')
+                            side_release.set()
+                            wait_for(lambda: exists('button[title="Accept (Enter)"]'), 'K real native Pi replacement result')
+                            done = wait_for(lambda: next((h['body'] for h in reversed(k_http) if h['method'] == 'GET' and h['path'].split('?')[0] == '/api/v1/side/' + side_id and h['body'].get('done')), None), 'K UI completed poll')
+                            if done.get('error') is not None or done.get('text') != '# Owned Ctrl K replacement K':
+                                raise RuntimeError('K native side answer wrong or error')
+                            side_file = Path(done['file'])
+                            if not side_file.resolve().is_relative_to(state.resolve()):
+                                raise RuntimeError('K side session escaped private state')
+                            header = json.loads(side_file.read_text().splitlines()[0])
+                            # A restored original session header precedes the
+                            # accepted project worktree rebind. Compare the LIVE
+                            # owned native process cwd, not that historical header.
+                            if header.get('parentSession') != str(parent_file) or header.get('cwd') != parent_cwd or '/sessions/side/' + thread + '/' not in str(side_file):
+                                raise RuntimeError('K native parentSession/cwd/side owner mismatched')
+                            native = [json.loads(l) for l in side_file.read_text().splitlines()]
+                            human = [e['message'] for e in native if e.get('type') == 'message' and e.get('message', {}).get('role') == 'user']
+                            literal = started['request']['text']
+                            if sum(m.get('content') == [{'type':'text','text':literal}] for m in human) != 1 or note.read_text().strip() not in literal:
+                                raise RuntimeError('K selected text/native exact side request not preserved')
+                            # Refine the SAME native side, then stop with its actual
+                            # UI button while its unpaid provider is held.
+                            refine = marker + '-REFINE'
+                            side_release.clear()
+                            click('[data-perf-target="ctrl-k"]')
+                            run('xdotool', 'type', '--clearmodifiers', '--delay', '20', refine, env=childenv, stdout=subprocess.DEVNULL)
+                            click('button[title="Send refinement (Enter)"]')
+                            wait_for(lambda: refine in side_provider_inputs, 'K same side genuine refinement held')
+                            click('button[title="Stop (Esc)"]')
+                            wait_for(lambda: any(h['method'] == 'POST' and h['path'].split('?')[0] == '/api/v1/side/' + side_id + '/stop' and h['status'] == 200 and h['body'].get('ok') for h in k_http), 'K actual native stop success')
+                            stopped = request(base + '/api/v1/side/' + side_id + '?vault=' + other_root + '&convId=' + thread + '&wait=0')
+                            if not stopped.get('done') or stopped.get('error') != 'stopped':
+                                raise RuntimeError('K stopped side did not resolve on conversation owner')
+                            side_release.set()
+                            after_parent = conversation_for(thread)
+                            live = next(p for p in request(base + '/api/v1/health')['engine']['pi']['procs'] if p.get('threadId') == parent['meta']['threadId'])
+                            if live['pid'] != parent_proc['pid'] or not live['busy'] or parent_file.read_bytes() != parent_bytes or checkpoint_for(thread) != parent_items or after_parent['meta']['pendingAsk'] != parent['meta']['pendingAsk'] or owner_snapshot(peer) != peer_before:
+                                raise RuntimeError('K side stop disturbed parent/unrelated turn or peer history/session')
+                            if exists('button[title="Close (Esc)"]'):
+                                click('button[title="Close (Esc)"]')
+                            elif exists('[data-perf-target="ctrl-k"]'):
+                                key('Escape')
+                            cases.append({'owner':thread,'startViewer':name,'activeViewer':other_root,'nativeSubmitPollAnswerRefineStop':True,'sideId':side_id,'parentSessionAndCwdAndSideOwner':True,'parentBusySamePidAndBytes':True,'peerUnchanged':True})
+                        fullscreen(True)
+                        wait_for(lambda: exists('[data-el="ask-options"][data-live="1"] button'), 'K live parent answer UI after viewer switch')
+                        click('[data-el="ask-options"][data-live="1"] button')
+                        wait_for(lambda: not conversation_for(thread).get('meta', {}).get('pendingAsk') and conversation_for(thread).get('status') != 'running', 'K actual UI answer resolves owner')
+                        final = checkpoint_for(thread)
+                        appended = final[len(prefix):]
+                        sent = [q for q in k_intents if q['convId'] == thread]
+                        answers = [q for q in k_answers if q['convId'] == thread]
+                        if len(sent) != 1 or len(answers) != 1 or final[:len(prefix)] != prefix or [x['kind'] for x in appended] != ['user','tool','user','assistant']:
+                            raise RuntimeError('K exact four parent appends/requests violated: ' + repr([x.get('kind') for x in appended]))
+                        row, tool, answered, answer = appended
+                        if answered.get('id') != answers[0]['clientId'] or answered.get('text') != 'K continue' or answered.get('via') != 'answer' or tool.get('id') != 'owned-k-ask' or tool.get('result') != 'Carl answered: K continue' or row.get('text') != busy_body or row.get('id') != sent[0]['clientId'] or tool.get('name') not in ('AskUser','mcp__vault_chat__AskUser') or tool.get('args') != {'question':'Owned K parent remains alive?', 'options':['K continue','K wait']} or answer.get('text') != 'Owned K parent answered.':
+                            raise RuntimeError('K exact parent identity/body/tool/answer mismatch')
+                        native_parent = [json.loads(l) for l in parent_file.read_text().splitlines()]
+                        inputs = [e['message'] for e in native_parent if e.get('type') == 'message' and e.get('message', {}).get('vcRequest', {}).get('clientId') == sent[0]['clientId']]
+                        if len(inputs) != 1 or inputs[0].get('content') != [{'type':'text','text':busy_body}]:
+                            raise RuntimeError('K parent native vcRequest identity/literal body mismatch')
+                        expected_final[thread] = final
+                    # No arbitrary append allowance: status-dot's exact two project
+                    # items + these exact four; side sessions never enter history.
+                    final_original = checkpoint_for(a.conversation)
+                    if final_original[:len(items)] != items or final_original != expected_final[a.conversation] or len(final_original) != len(items) + 6:
+                        raise RuntimeError('K original/startup/status + exact private suffix changed')
+                    for conv, expected in expected_final.items():
+                        if checkpoint_for(conv) != expected:
+                            raise RuntimeError('K later side/answer changed another owner history')
+                    for filename, body in original_event_bytes.items():
+                        if not (dest / filename).read_bytes().startswith(body):
+                            raise RuntimeError('K changed original event byte prefix')
+                    if (vault / '.vault-chat/notes.jsonl').read_bytes() != original_notes:
+                        raise RuntimeError('K changed original Notes bytes')
+                    if any(h['status'] != 200 or 'no such side thread' in json.dumps(h['body']).lower() for h in k_http):
+                        raise RuntimeError('K UI side/answer request failed or 404')
+                    for c in cases:
+                        posts = [h for h in k_http if h['method'] == 'POST' and h['path'].split('?')[0] == '/api/v1/side' and h['request'].get('side') == c['sideId']]
+                        if len(posts) != 1 or posts[0]['body'].get('id') != c['sideId']:
+                            raise RuntimeError('K refinement did not retain the exact original native side ID')
+                    ctrl_k_final_items = final_original
+                    ctrl_k_owner = {'cases':cases,'allRegisteredViewerRoots':roots,'no404':True,'nativeUiAnswerBothOwners':True,'expectedAppends':{'projectStatus':['user','assistant'],'perOwnerK':['user','tool','user','assistant']},'exactRequestIdsAndOriginalPrefixAndNotes':True,'httpStatuses':sorted(set(h['status'] for h in k_http))}
                 editor_sync = None
                 if a.check_editor_sync:
                     nonlocal editor_expected
@@ -2197,7 +2403,7 @@ def main():
                 def stats(values):
                     v = sorted(values)
                     return {'n': len(v), 'p50Ms': round(v[len(v)//2], 3), 'p95Ms': round(v[min(len(v)-1, int(len(v)*.95))], 3), 'maxMs': round(max(v), 3)}
-                return {'works': not interaction_failures, 'videoCheck': video_check, 'imageCheck': image_check, 'statusDot': status_dot, 'editorSync': editor_sync, 'pendingChat': pending_chat, 'deviceSense': device_sense, 'webResearch': web_research, 'parallelWork': parallel_work, 'historyUpdate': history_update, 'globalNotes': global_notes, 'interactionFailures': interaction_failures, 'planLifecycle': plan_lifecycle, 'planOwner': plan_owner, 'emptyChat': empty_chat, 'composerDelivery': composer_delivery, 'native': metadata, 'telemetryHttpStatuses': sorted(statuses),
+                return {'works': not interaction_failures, 'videoCheck': video_check, 'imageCheck': image_check, 'statusDot': status_dot, 'ctrlKOwner': ctrl_k_owner, 'editorSync': editor_sync, 'pendingChat': pending_chat, 'deviceSense': device_sense, 'webResearch': web_research, 'parallelWork': parallel_work, 'historyUpdate': history_update, 'globalNotes': global_notes, 'interactionFailures': interaction_failures, 'planLifecycle': plan_lifecycle, 'planOwner': plan_owner, 'emptyChat': empty_chat, 'composerDelivery': composer_delivery, 'native': metadata, 'telemetryHttpStatuses': sorted(statuses),
                         'telemetryNote': 'Observed real Rust IPC batches; loopback is not authenticated Tailscale laptop telemetry',
                         'launchProcessToDomUpperBoundMs': round(launch_upper, 3),
                         'timings': [{'metric': m, 'method': method, **stats(values)} for (m, method), values in sorted(samples.items())]}
@@ -2212,6 +2418,8 @@ def main():
                       exactThread:localStorage.getItem('vault_chat_active_conv')===arguments[0],
                       clearButtons:[...document.querySelectorAll('button')].filter(e=>e.textContent.trim()==='Clear').map(e=>{
                         const r=e.getBoundingClientRect();return {el:e.dataset.el,title:e.title,disabled:e.disabled,x:r.x,y:r.y,w:r.width,h:r.height};})};''', a.conversation)
+                if a.check_ctrl_k_owner:
+                    result['ctrlKDiagnostics'] = {'http':k_http,'providerSideInputs':side_provider_inputs,'intents':k_intents,'answers':k_answers}
                 if a.check_editor_sync:
                     result['editorDiagnostics'] = {'intentCount': len(photo_intents), 'readCalls': editor_reads}
                 # One failure-only native screenshot for debugging, never per-key profiling.
@@ -2613,6 +2821,10 @@ def main():
                 preserved = plan_owner_start_items is not None and again.get("items", [])[:len(plan_owner_start_items)] == plan_owner_start_items and len(again.get("items", [])) == len(plan_owner_start_items) + 3 * (2 if a.before_app else 1)
                 result["thread"]["originalItemsPrefixUnchanged"] = preserved
                 result["thread"]["exactPrivateAppendedItems"] = 3 * (2 if a.before_app else 1)
+            elif a.check_ctrl_k_owner:
+                preserved = again.get('items', []) == ctrl_k_final_items
+                result['thread']['originalItemsPrefixUnchanged'] = preserved
+                result['thread']['exactPrivateAppendedItems'] = 6
             elif a.check_speech_freshness or a.check_status_dot:
                 preserved = again.get('items', [])[:len(items)] == items
                 result['thread']['originalItemsPrefixUnchanged'] = preserved

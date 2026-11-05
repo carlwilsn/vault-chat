@@ -47,3 +47,19 @@ test('workspace switch preserves global project messages, running state and sess
  assert.equal(useStore.getState().activeConversationId,conv);
  } finally { bc.stopBoxChat(); await box.close(); }
 });
+
+test('a mounted inline popover pins only its absolute file workspace across a vault switch',async()=>{
+ const file=school+'/private-side.md';
+ useStore.setState({vaultPath:school,currentFile:file,currentContent:'private selection',inlinePromptCount:1});
+ try {
+  await openVaultAt(code);
+  assert.equal(useStore.getState().vaultPath,code);
+  assert.equal(useStore.getState().currentFile,file);
+  assert.equal(useStore.getState().currentContent,'private selection');
+  assert.equal(useStore.getState().files[0].path,code+'/README.md');
+  useStore.setState({inlinePromptCount:0});
+  await openVaultAt(school);
+  assert.equal(useStore.getState().currentFile,null);
+  assert.equal(useStore.getState().currentContent,'');
+ } finally {useStore.setState({inlinePromptCount:0});}
+});
