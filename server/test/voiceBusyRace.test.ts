@@ -1,15 +1,18 @@
 // Genuine pinned Pi + production HTTP/native queue + bot.py's real ResultFlow.
-// Owned unpaid provider and inert TTSSpeakFrame collector only; never opens media.
+// Owned unpaid provider and inert frame-envelope collector only; never opens media.
 import { expect, it } from "vitest";
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fakeChat, lastUser } from "./fakeChat";
-import { makeVault, ROOT, startServer, tmp, waitFor, type Running } from "./helpers";
+import { makeVault, MATURE_PI_DIR, ROOT, startServer, tmp, waitFor, type Running } from "./helpers";
 
-const pi = process.env.VC_TEST_PI_DIR;
-const python = process.env.VC_TEST_VOICE_PYTHON ?? (pi ? join(pi, "../../voice/venv/bin/python") : "");
-it.skipIf(!pi || !existsSync(python))("busy voice beats native follow-ups; overtaken and ended completions cannot close or speak into the next answer", async () => {
+// Same required mature Pi discovery as nativePiQueue.test.ts. The frozen
+// gate binds this SDK read-only, but intentionally does not mount voice/venv.
+const pi = MATURE_PI_DIR;
+const python = process.env.VC_TEST_VOICE_PYTHON ?? "python3";
+it("busy voice beats native follow-ups; overtaken and ended completions cannot close or speak into the next answer", async () => {
+  expect.assertions(40);
   const root = tmp("vc-voice-race-"), vault = makeVault(join(root, "vault")), state = join(root, "state");
   const provider = await fakeChat();
   const held = new Map<string, () => void>();
@@ -36,7 +39,7 @@ it.skipIf(!pi || !existsSync(python))("busy voice beats native follow-ups; overt
   const collect = join(root, "collector"); mkdirSync(collect);
   try {
     srv = await startServer({ bundle: process.env.VC_VOICE_BUSY_BUNDLE, home: root, vault, secrets: join(root, "empty-credentials"), openrouter: provider.url,
-      extra: { VC_PI_DIR: pi!, VC_ENGINE_MODEL: "test/fake-model", VC_STATE_DIR: state,
+      extra: { VC_PI_DIR: pi, VC_ENGINE_MODEL: "test/fake-model", VC_STATE_DIR: state,
         NODE_OPTIONS: `--import ${guard}`, PI_OFFLINE: "1", PI_SKIP_VERSION_CHECK: "1" } });
     const post = async (path: string, body: unknown) => {
       const r = await fetch(srv!.base + path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
@@ -54,11 +57,15 @@ it.skipIf(!pi || !existsSync(python))("busy voice beats native follow-ups; overt
     await post("/message", { convId: owner, text: "OWNED-RACE-QUEUED", client: "laptop", clientMsgId: "owned-queued" });
     expect((await checkpoint()).meta.pending.map((p: any) => p.id)).toEqual(["owned-queued"]);
     const call = await post("/api/v1/brain/call", { convId: owner, device: "laptop" });
-    collector = spawn(python!, [join(ROOT, "voice-pipeline/test_native_speech.py"), "--collect-native"], { stdio: ["pipe", "ignore", "pipe"] });
+    collector = spawn(python, [join(ROOT, "voice-pipeline/test_native_speech.py"), "--collect-native", "--stdlib-boundary"], { stdio: ["pipe", "ignore", "pipe"] });
     collector.stderr!.on("data", b => { collectorLog += b; });
     collector.stdin!.end(JSON.stringify({ base: srv.base, id: call.callId, token: call.token, work: collect }) + "\n");
     const collectorExit = new Promise<number | null>(resolve => collector!.once("exit", resolve));
-    await waitFor(() => existsSync(join(collect, "ready")), 30000, 20);
+    const collectorFailed = new Promise<never>((_, reject) => {
+      collector!.once("error", reject);
+      collector!.once("exit", code => reject(new Error(`Native frame collector exited ${code}: ${collectorLog}`)));
+    });
+    await Promise.race([waitFor(() => existsSync(join(collect, "ready")), 30000, 20), collectorFailed]);
     const messages: { role: string; content: string }[] = [];
     const begin = async (text: string, capability = call) => {
       messages.push({ role: "user", content: text });

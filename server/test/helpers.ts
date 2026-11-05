@@ -11,6 +11,9 @@ import { pathToFileURL } from "node:url";
 
 export const ROOT = resolve(__dirname, "..", "..");
 export const BUNDLE = join(ROOT, "dist-server", "vault-chat-server.mjs");
+// Required pinned runtime: the installed frozen gate supplies its read-only
+// prefix; local runs use the same mature tool-factory installation.
+export const MATURE_PI_DIR = process.env.VC_TEST_PI_DIR ?? join(homedir(), ".local/state/vault-chat-server/pi/1.1.0");
 
 /** An npm prefix holding the fake pi (server/test/fakePiCli.mjs) as @earendil-works/pi-coding-agent@1.1.0 (VC_PI_DIR). */
 export function fakePiDir(home: string): string {
@@ -26,7 +29,7 @@ export function fakePiDir(home: string): string {
   writeFileSync(join(pkg, "dist", "bundle", "cli.js"), source);
   // Filesystem tools are the real pinned pi factories, even when the model
   // loop is scripted. Never maintain a fake second filesystem implementation.
-  const tools = join(process.env.VC_TEST_PI_DIR ?? join(homedir(), ".local/state/vault-chat-server/pi/1.1.0"), "node_modules/@earendil-works/pi-coding-agent/dist/core/tools/index.js");
+  const tools = join(MATURE_PI_DIR, "node_modules/@earendil-works/pi-coding-agent/dist/core/tools/index.js");
   if (!existsSync(tools)) throw new Error("Tests require installed pi 1.1.0 tool factories (VC_TEST_PI_DIR)");
   mkdirSync(join(pkg, "dist", "core", "tools"), { recursive: true });
   writeFileSync(join(pkg, "dist", "core", "tools", "index.js"), `export * from ${JSON.stringify(pathToFileURL(tools).href)};`);

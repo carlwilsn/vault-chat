@@ -14,13 +14,23 @@ import time
 import unittest
 from contextlib import asynccontextmanager, suppress
 
-from aiohttp import web
-from pipecat.frames.frames import InterruptionFrame, TTSSpeakFrame, UserStartedSpeakingFrame, UserStoppedSpeakingFrame
+if '--stdlib-boundary' in sys.argv:
+    # Same collector and unmodified production flow, without importing media or
+    # relying on a venv intentionally absent from the installed frozen gate.
+    assert '--collect-native' in sys.argv
+    from native_flow_fixture import load_native_flow
+    native = load_native_flow()
+    Gate, Quiet, speak_channel = native.Gate, native.Quiet, native.speak_channel
+    InterruptionFrame, TTSSpeakFrame = native.InterruptionFrame, native.TTSSpeakFrame
+    UserStartedSpeakingFrame, UserStoppedSpeakingFrame = native.UserStartedSpeakingFrame, native.UserStoppedSpeakingFrame
+else:
+    from aiohttp import web
+    from pipecat.frames.frames import InterruptionFrame, TTSSpeakFrame, UserStartedSpeakingFrame, UserStoppedSpeakingFrame
 
-_reserved = socket.socket()
-_reserved.bind(("127.0.0.1", 0))
-os.environ["VC_VOICE_PORT"] = str(_reserved.getsockname()[1])
-from bot import Gate, Quiet, speak_channel
+    _reserved = socket.socket()
+    _reserved.bind(("127.0.0.1", 0))
+    os.environ["VC_VOICE_PORT"] = str(_reserved.getsockname()[1])
+    from bot import Gate, Quiet, speak_channel
 
 
 class Frames:
@@ -295,6 +305,10 @@ async def collect_native():
         (work / 'dispatch.json').write_text(json.dumps(frames.text))
     frames.queue_frame = capture
     side = asyncio.create_task(speak_channel(config, frames, quiet))
+    if '--stdlib-boundary' in sys.argv:
+        # Spawn is not SSE readiness: do not lose the queued positive/stale
+        # candidate before the producer has installed this real subscription.
+        await asyncio.wait_for(native.stream_ready.wait(), 10)
     (work / 'ready').touch()
     try:
         while not (work / 'release').exists():
