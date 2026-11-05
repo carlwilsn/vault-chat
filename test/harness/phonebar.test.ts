@@ -1,15 +1,10 @@
-// The phone's composer and its "+" (phone/src/shell, phone/src/attach.ts). Clear is one tap: a
-// button in the composer bottom row (not in the header, a menu or a panel), with the laptop's icon (Lucide's Eraser) and
-// a 44 px target; the drawer's "⋯" whose only job was Clear is gone. "+" is one picker for any file
-// (no accept, no capture: iOS offers Take Photo, Photo Library and Choose File), and a PDF from the
-// Files picker goes to the box's attachments route and comes back as the path the message carries.
+// Phone attachment picker and sidebar thread-menu placement.
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import React, { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { Eraser as LucideEraser } from "lucide-react";
 import { Header } from "../../phone/src/shell/Header.tsx";
 import { ConvDrawer } from "../../phone/src/shell/ConvDrawer.tsx";
 import { Pages } from "../../phone/src/shell/Pages.tsx";
@@ -23,31 +18,23 @@ const root = path.resolve(import.meta.dirname, "../..");
 const html = (c: () => unknown) => renderToStaticMarkup(createElement(c as any));
 const paths = (s: string) => [...s.matchAll(/ d="([^"]+)"/g)].map((m) => m[1]);
 
-test("Clear is one tap from the composer bottom row: the existing button and eraser, no menu in between", () => {
-  const page = html(Pages);
-  const composer = /<div class="composer">([\s\S]*)<\/div><div id="kb">/.exec(page);
-  assert.ok(composer, "the actual composer component");
-  const row = /<div class="cbar">([\s\S]*?)<\/div>/.exec(composer[1]);
-  assert.ok(row, "Clear belongs to the composer's bottom row");
-  const btn = /<button[^>]*id="clearBtn"[^>]*>([\s\S]*?)<\/button>/.exec(row[1]);
-  assert.ok(btn, "one Clear button in the bottom row");
-  assert.equal((page.match(/id="clearBtn"/g) || []).length, 1);
+test("Clear belongs to each sidebar row's existing options sheet, not the composer or header", () => {
+  assert.doesNotMatch(html(Pages), /clearBtn|clear-thread|cbar|>Clear</);
   assert.doesNotMatch(html(Header), /clearBtn|clear-thread/);
-  assert.match(btn[0], /data-el="clear-thread"/);
-  assert.match(btn[0], /aria-label="Clear this thread"/);
-  assert.match(btn[1], />Clear</);
-  // The laptop's Clear icon, path for path.
-  assert.deepEqual(paths(btn[1]), paths(renderToStaticMarkup(createElement(LucideEraser))));
-  // Its tap clears the view (boot.ts), once, with no confirm step: the laptop has none.
+  assert.match(html(ConvDrawer), /id="clist"/);
   const boot = fs.readFileSync(path.join(root, "phone/src/boot.ts"), "utf8");
-  assert.match(boot, /wireTap\(\$\("clearBtn"\), \(\) => clearThread\(\)\);/);
-  assert.doesNotMatch(boot, /openThreadsMenu|"newBtn"/);
-  // A 44 px target.
+  assert.match(boot, /addThreadMenu\(r, e.id, "Main"\)/);
+  assert.match(boot, /addThreadMenu\(r, e.id, projectName\(e.slug\) \|\| e.title, e.slug\)/);
+  assert.match(boot, /role="button" tabindex="0" aria-label=/);
+  assert.match(boot, /ev.key === "Enter" \|\| ev.key === " "/);
+  assert.match(boot, /ev.stopPropagation\(\); open\(\);/);
+  assert.match(boot, /openProjectMenu\(slug, name, targetId\)/);
+  assert.match(boot, /row\("clear", "Clear"\) \+ \(slug \? row\("rename", "Rename"\) \+ row\("delete", "Delete", " danger"\) : ""\)/);
+  assert.match(boot, /await clearThread\(targetId\);\s+closeSheet\(\);\s+\$\("convBtn"\).focus/);
+  assert.match(boot, /data-el="clear-thread" aria-label="Clear this thread"/);
   const css = fs.readFileSync(path.join(root, "phone/src/styles/phone.css"), "utf8");
-  assert.match(css, /\.clrbtn\{[^}]*min-width:44px;min-height:44px/);
-  // The drawer's "⋯" (its one item was Clear) is gone.
-  const drawer = html(ConvDrawer);
-  assert.doesNotMatch(drawer, /newBtn|⋯|aria-label="More"/);
+  assert.match(css, /\.crow2 \.cmore\{[^}]*min-width:44px;min-height:44px/);
+  assert.match(css, /\.thread-action\{min-height:44px\}/);
 });
 
 test('"+" is one picker for any file: no accept, no capture, several at once', () => {

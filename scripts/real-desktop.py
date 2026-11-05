@@ -362,9 +362,17 @@ def main():
               for(const entry of appendEntries(file,messages.map(message=>({type:'message',message}))))log.emit(id,{type:'entry',file,entry});
               const after=log.picture(id);assert.deepEqual(after.items.slice(0,3819),before.items);assert.equal(after.items.length,3851);
               assert.deepEqual(after.items.slice(3819).map(i=>i.kind),['user',...Array(30).fill('tool'),'assistant']);
-              writeFileSync(process.argv[3],JSON.stringify(after.items));log.checkpointNow(id);log.close();"""
+              writeFileSync(process.argv[3],JSON.stringify(after.items));log.checkpointNow(id);
+              // Owned Main fixture: lets real menu input clear a background project
+              // while a different nonempty thread and unsent composer stay untouched.
+              assert.equal(log.picture('main').items.length,0);
+              log.emit('main',{type:'meta',patch:{kind:'main',title:'Main',source:'manual'}});
+              const mainFile=newSessionFile(join(v,'.vault-chat/events/sessions/phone-main-fixture.jsonl'),v);
+              for(const entry of appendEntries(mainFile,[{type:'message',message:{role:'user',content:'Owned Main phone Clear fixture.',timestamp:at+40}},{type:'message',message:{role:'assistant',content:[{type:'text',text:'Owned Main history must stay until its own Clear.'}],timestamp:at+41}}]))log.emit('main',{type:'entry',file:mainFile,entry});
+              assert.equal(log.picture('main').items.length,2);
+              writeFileSync(process.argv[4],JSON.stringify(log.picture('main').items));log.checkpointNow('main');log.close();"""
             build(['node', '--import', 'tsx', '--input-type=module', '-e', prepare_phone,
-                   str(vault), a.conversation, str(work / 'phone-scroll-exact-items.json')], 'private-phone-scroll-append')
+                   str(vault), a.conversation, str(work / 'phone-scroll-exact-items.json'), str(work / 'phone-main-exact-items.json')], 'private-phone-scroll-append')
         state = work / 'server-state'
         # Even OFF has an owned inert 503 voice endpoint; never falls back to 8857.
         class Inert(http.server.BaseHTTPRequestHandler):
@@ -2232,6 +2240,19 @@ def main():
                 const metrics=()=>p.evaluate(()=>{const e=document.querySelector('#msgs'),s=[...e.querySelectorAll('.steps-h')].at(-1),r=s.getBoundingClientRect();return {top:e.scrollTop,gap:e.scrollHeight-e.scrollTop-e.clientHeight,client:e.clientHeight,foldY:r.y,foldHeight:r.height,open:s.closest('.steps').classList.contains('open'),viewport:{width:visualViewport.width,height:visualViewport.height,offsetTop:visualViewport.offsetTop},focus:document.activeElement?.id};});
                 const bottom=async()=>{const b=await p.locator('#msgs').boundingBox();await p.mouse.move(b.x+b.width/2,b.y+b.height/2);await p.mouse.wheel(0,10000000);await p.waitForTimeout(250);assert((await metrics()).gap<=4);};
                 const record=(name,before,after,ok)=>{result.cases.push({name,before,after,ok});assert(ok,name+' '+JSON.stringify({before,after}));};
+                const openOptions=async(kind,keyboard=false)=>{
+                  await p.getByRole('button',{name:'conversations',exact:true}).tap();
+                  const row=p.locator('[data-el="thread-'+kind+'"]');await row.waitFor({state:'visible'});
+                  const more=row.getByRole('button',{name:kind==='main'?'Thread options':'Project options',exact:true});
+                  const rect=await more.boundingBox();assert(rect.width>=44&&rect.height>=44,'row menu 44px minimum');
+                  if(keyboard){await more.focus();await p.keyboard.press('Enter');}else await more.tap();
+                  const clear=p.getByRole('button',{name:'Clear this thread',exact:true});await clear.waitFor({state:'visible'});
+                  assert.deepEqual(await p.locator('#sheetBody .arch-t').allTextContents(),kind==='main'?['Clear']:['Clear','Rename','Delete']);
+                  const action=await clear.boundingBox();assert(action.width>=44&&action.height>=44,'Clear 44px minimum');
+                  assert(await clear.evaluate(e=>{const r=e.getBoundingClientRect();return document.elementFromPoint(r.x+r.width/2,r.y+r.height/2)?.closest('button')===e;}));
+                  assert.equal(await p.locator('.composer [data-el="clear-thread"],.hdr [data-el="clear-thread"],.composer .cbar').count(),0);
+                  return clear;
+                };
                 const sizes=[{width:320,height:568},{width:844,height:390},{width:390,height:480}];
                 for(const [index,size] of sizes.entries()){
                   await p.setViewportSize(size);const start=Date.now();await p.goto(base+'/phone?conv='+encodeURIComponent(conv));
@@ -2261,12 +2282,49 @@ def main():
                   await p.setViewportSize({...size,height:size.height-70});await p.waitForTimeout(250);const resized=await metrics();
                   record('visualViewport shrink preserves reader '+size.width+'x'+size.height,drafted,resized,Math.abs(resized.top-drafted.top)<=2&&resized.viewport.height<drafted.viewport.height);
                   result.cases.push({name:'browser open-to-settled elapsed '+size.width+'x'+size.height,ms:readyMs});
+                  await openOptions('project',index===1);await p.locator('#sheetX').tap();
+                  await openOptions('main');await p.locator('#sheetX').tap();
+                  result.cases.push({name:'sidebar Main/project menu placement and 44px targets '+size.width+'x'+size.height,ok:true});
                 }
                 result.inputDoubleRafMs=await p.evaluate(()=>__inputFrames);result.permissions=await p.evaluate(()=>__calls);
                 assert.deepEqual(result.permissions,{permission:0,subscribe:0,mic:0,register:0});
-                // Device-local Clear must not become shared history or a second queue/cutoff.
-                await p.getByRole('button',{name:'Clear this thread',exact:true}).tap();await p.waitForTimeout(250);
-                assert.equal(await p.locator('#msgs > .m, #msgs > .amsg').count(),0);result.localClearBlank=true;
+                // Switch using real sidebar input; a nonempty Main owns this draft.
+                await p.getByRole('button',{name:'conversations',exact:true}).tap();await p.locator('[data-el="thread-main"] .nm').tap();
+                await p.waitForFunction(()=>document.querySelector('#msgs')?.textContent.includes('Owned Main history must stay'));
+                const draft=await p.locator('#input').inputValue();assert(draft.includes('Owned reading draft'));
+                const mainBefore=await p.locator('#msgs').textContent(),titleBefore=await p.locator('#titleTx').textContent();
+                const checkpoint=async id=>(await (await fetch(base+'/api/v2/conversations/'+encodeURIComponent(id)+'/checkpoint')).json()).picture.items;
+                const targetHistory=await checkpoint(conv),mainHistory=await checkpoint('main');
+                const clear=await openOptions('project');await clear.tap();
+                await p.waitForFunction(()=>!document.querySelector('#sheet').classList.contains('on'));
+                assert.equal(await p.locator('#msgs').textContent(),mainBefore,'background project Clear leaves active Main history');
+                assert.equal(await p.locator('#titleTx').textContent(),titleBefore,'background Clear never selects its row');
+                assert.equal(await p.locator('#input').inputValue(),draft,'owner draft unchanged');
+                assert.equal(await p.evaluate(()=>document.activeElement.id),'convBtn','focus returns to visible sidebar trigger, not hidden action');
+                assert.deepEqual(await checkpoint(conv),targetHistory);assert.deepEqual(await checkpoint('main'),mainHistory);
+                result.backgroundProjectClearPreservesOwnerDraftHistory=true;
+                await p.getByRole('button',{name:'conversations',exact:true}).tap();await p.locator('[data-el="thread-project"] .nm').tap();
+                await p.waitForTimeout(400);assert.equal(await p.locator('#msgs > .m, #msgs > .amsg').count(),0);result.localClearBlank=true;
+                await p.goto(base+'/phone?conv='+encodeURIComponent(conv));await p.waitForTimeout(500);
+                assert.equal(await p.locator('#msgs > .m, #msgs > .amsg').count(),0,'per-thread cutoff survives reload');
+                // Same history, independent device storage: no shared deletion or Clear=Delete.
+                const fresh=await browser.newContext({viewport:{width:390,height:844},hasTouch:true,isMobile:true,permissions:[]});
+                const other=await fresh.newPage();await other.route('**/*',r=>{const u=new URL(r.request().url());return u.origin===base&&(r.request().method()==='GET'||u.pathname==='/api/v1/attention')?r.continue():r.abort();});
+                await other.goto(base+'/phone?conv='+encodeURIComponent(conv));await other.waitForFunction(()=>document.querySelector('#msgs')?.textContent.includes('Owned phone scroll reply.'));await fresh.close();
+                // Background Main uses exactly the same target-aware action while project is selected.
+                await p.locator('#input').tap();await p.locator('#input').pressSequentially('Owned cleared project draft',{delay:10});
+                const mainClear=await openOptions('main',true);await mainClear.focus();await p.keyboard.press('Enter');
+                await p.waitForFunction(()=>!document.querySelector('#sheet').classList.contains('on'));
+                assert.equal(await p.locator('#input').inputValue(),'Owned cleared project draft');
+                assert.equal(await p.locator('#msgs > .m, #msgs > .amsg').count(),0);
+                await p.getByRole('button',{name:'conversations',exact:true}).tap();await p.locator('[data-el="thread-main"] .nm').tap();
+                await p.waitForTimeout(400);assert.equal(await p.locator('#msgs > .m, #msgs > .amsg').count(),0,'Main gets its own cutoff');
+                // Empty active Clear remains harmless and the composer still accepts input.
+                await (await openOptions('main')).tap();await p.waitForFunction(()=>!document.querySelector('#sheet').classList.contains('on'));
+                await p.locator('#input').tap();await p.locator('#input').pressSequentially(' still editable',{delay:10});
+                assert((await p.locator('#input').inputValue()).endsWith(' still editable'));
+                assert.deepEqual(await checkpoint(conv),targetHistory);assert.deepEqual(await checkpoint('main'),mainHistory);
+                result.mainClearAndKeyboardAndReopen=true;result.deviceLocalAcrossIndependentContext=true;
                 result.works=true;
               } catch(e){result.error=String(e);} finally {await browser.close();writeFileSync(out,JSON.stringify(result,null,2));}
               if(!result.works)process.exitCode=1;
@@ -2517,6 +2575,8 @@ def main():
                     raise RuntimeError('Phone changed original event byte prefix')
             if (vault / '.vault-chat/notes.jsonl').read_bytes() != original_notes:
                 raise RuntimeError('Phone changed human Notes bytes')
+            if request(base + '/api/v2/conversations/main/checkpoint')['picture']['items'] != json.loads((work / 'phone-main-exact-items.json').read_text()):
+                raise RuntimeError('Phone Clear changed exact two-item owned Main history')
             result['phoneScroll']['exactOriginalAndPrivateItemsUnchanged'] = True
             result['phoneScroll']['eventPrefixesAndNotesByteIdentical'] = True
         if a.check_plan_owner or a.check_plans or a.check_images or a.check_empty_chat or a.check_video or a.check_speech_freshness or a.check_status_dot or a.check_history_update:

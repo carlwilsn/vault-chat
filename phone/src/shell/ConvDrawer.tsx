@@ -1,5 +1,5 @@
 // The left panel (left header button) and its scrim: Main, the projects, "+ New project"
-// (src/threads.ts panelModel). Clear is in the thread's own bar (Header.tsx), one tap.
+// (src/threads.ts panelModel). Each row's ⋯ includes device-local Clear.
 
 export function ConvDrawer() {
   return (

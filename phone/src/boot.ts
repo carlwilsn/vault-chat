@@ -262,10 +262,6 @@ export function boot(): void {
     } else { tx.textContent = page === "notes" ? "Notes" : "Alerts"; sub.textContent = ""; }
     const mAl = $("mAl"); mAl.textContent = unreadN; mAl.classList.toggle("zero", unreadN === 0);
     $("menudot").classList.toggle("on", unreadN > 0 && page !== "alerts");
-    // Clear: with a thread open on the chat page (a read-only one too: it is a view, not the thread).
-    const clr = $("clearBtn") as HTMLButtonElement;
-    clr.hidden = page !== "chat" || !convId;
-    clr.disabled = !msgsEl || !msgsEl.querySelector(".m, .amsg, .tdecision");
   }
   function setOffline(off) { document.body.classList.toggle("offline", off); setHeader(); }
 
@@ -338,24 +334,31 @@ export function boot(): void {
     document.addEventListener("touchend", onEnd, { passive: true });
     document.addEventListener("touchcancel", onEnd, { passive: true });
   })();
-  // Clear: one tap in the thread's bar (the laptop's Clear, src/ChatPane.tsx: no confirm — nothing is
-  // deleted; the conversation and the agent keep everything, and other surfaces keep their view).
-  wireTap($("clearBtn"), () => clearThread());
   /** Clear on this phone only (the laptop's view, the conversation and its context are untouched): what is
    *  shown now leaves this view, kept across reloads (src/boxChat.ts afterClear, the laptop's own). */
   const CLEARED_KEY = "vc_phone_cleared";
   let clearedAt: Record<string, string> = (() => { try { return JSON.parse(localStorage.getItem(CLEARED_KEY) || "{}") || {}; } catch { return {}; } })();
-  function clearThread() {
-    if (!convId || !pic || !picView) return;
-    const msgs = picView(pic).messages;
-    const last = msgs[msgs.length - 1]?.mid;
+  async function clearThread(targetId: string) {
+    if (!targetId) return;
+    // Reuse the live fold for the selected thread. A different row needs only its
+    // checkpoint: never openThread (which would change the owner/composer/view).
+    let view: ChatView;
+    if (targetId === convId && pic && picView) view = picView(pic);
+    else {
+      const r = await api("/api/v2/conversations/" + encodeURIComponent(targetId) + "/checkpoint");
+      const d = await r.json();
+      if (!r.ok || d.error) throw new Error(d.error || r.status);
+      view = makeChatView()(d.picture as Picture);
+    }
+    const last = view.messages[view.messages.length - 1]?.mid;
     if (!last) return;
-    clearedAt = { ...clearedAt, [convId]: last };
+    clearedAt = { ...clearedAt, [targetId]: last };
     try { localStorage.setItem(CLEARED_KEY, JSON.stringify(clearedAt)); } catch {}
-    outgoing = outgoing.filter((o) => o.convId !== convId || !o.failed);
+    outgoing = outgoing.filter((o) => o.convId !== targetId || !o.failed);
+    if (targetId !== convId) return;
     for (const [, n] of shownNodes) n.el.remove();
     shownNodes.clear();
-    followBottom = true; // Clear leaves no old text to hold; follow new replies in the blank view.
+    followBottom = true; // Follow new replies in this phone's blank view.
     renderThread();
   }
   /** "/compact [focus]": the conversation's context compacted now (not a message to the agent). */
@@ -429,6 +432,7 @@ export function boot(): void {
           // Main = your conversation: a chat bubble (Lucide's, the laptop's set), not a house.
           r.querySelector(".nm")!.insertAdjacentHTML("beforebegin", MAIN_ICON_SVG);
           if (e.active) r.classList.add("on");
+          addThreadMenu(r, e.id, "Main");
           box.appendChild(r);
           box.appendChild(sectionLabel("Projects"));
           continue;
@@ -442,11 +446,7 @@ export function boot(): void {
         const r = convRow({ id: e.id, title: projectName(e.slug) || e.title, lastActivityAt: (chats.find((c) => c.id === e.id) || {}).lastActivityAt, preview: (chats.find((c) => c.id === e.id) || {}).preview || "" }, e.running);
         r.dataset.el = "thread-project";
         if (e.active) r.classList.add("on");
-        // ⋯: Rename / Delete (Main has none). A span, not a button: the row itself is one.
-        const more = el('<span class="cmore" role="button" aria-label="Project options" data-el="project-menu">⋯</span>');
-        const slug = e.slug, pname = projectName(e.slug) || e.title;
-        more.onclick = (ev) => { ev.stopPropagation(); closeConvs(); openProjectMenu(slug, pname); };
-        r.querySelector(".t").appendChild(more);
+        addThreadMenu(r, e.id, projectName(e.slug) || e.title, e.slug);
         box.appendChild(r);
       }
     } catch (e) {
@@ -474,25 +474,47 @@ export function boot(): void {
     });
     setTimeout(() => ($("sheetFoot").querySelector(".rinp") as HTMLTextAreaElement | null)?.focus(), 250);
   }
-  /** A project's ⋯: Rename (its name; its thread and folder stay) or Delete (asked once: its chat and notes go,
-   *  kept in agent-projects/.deleted/ on the box; the folder it names stays). Main has no such sheet. */
+  // Keep the existing row's ⋯ / action sheet, including Main's Clear-only menu.
+  function addThreadMenu(row: HTMLElement, targetId: string, name: string, slug?: string) {
+    const more = el('<span class="cmore" role="button" tabindex="0" aria-label="' + (slug ? 'Project' : 'Thread') + ' options" data-el="project-menu">⋯</span>');
+    const open = () => { closeConvs(); openProjectMenu(slug, name, targetId); };
+    more.onclick = (ev) => { ev.stopPropagation(); open(); };
+    more.onkeydown = (ev) => {
+      if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); ev.stopPropagation(); open(); }
+    };
+    row.querySelector(".t")!.appendChild(more);
+  }
   async function projectIntent(body: Record<string, unknown>) {
     const r = await api("/api/v2/intent", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...body, client: "phone" }) });
     const d = await r.json().catch(() => ({}));
     if (!r.ok || d.error || d.ok === false) throw new Error(d.error || r.status);
     return d;
   }
-  function openProjectMenu(slug: string, name: string) {
-    const row = (k: string, label: string, cls = "") => '<button class="arch-row' + cls + '" data-k="' + k + '"><span class="arch-t">' + esc(label) + "</span></button>";
+  function openProjectMenu(slug: string | undefined, name: string, targetId = slug ? projectThreadId(slug) : MAIN_ID) {
+    const row = (k: string, label: string, cls = "") => '<button class="arch-row thread-action' + cls + '" data-k="' + k + '"' + (k === "clear" ? ' data-el="clear-thread" aria-label="Clear this thread"' : '') + '><span class="arch-t">' + esc(label) + "</span></button>";
     openSheet({
-      intent: "Project", title: name, ico: "◎",
-      bodyHtml: row("rename", "Rename") + row("delete", "Delete", " danger"),
-      wire: (body) => {
-        body.querySelectorAll(".arch-row[data-k]").forEach((b) => {
-          b.onclick = () => (b.dataset.k === "rename" ? openRenameProjectSheet(slug, name) : openDeleteProjectSheet(slug, name));
+      intent: slug ? "Project" : "Thread", title: name, ico: slug ? "◎" : "•",
+      bodyHtml: row("clear", "Clear") + (slug ? row("rename", "Rename") + row("delete", "Delete", " danger") : ""),
+      wire: (body: HTMLElement) => {
+        body.querySelectorAll<HTMLButtonElement>(".arch-row[data-k]").forEach((b) => {
+          b.onclick = async () => {
+            if (b.dataset.k === "clear") {
+              b.disabled = true;
+              try {
+                await clearThread(targetId);
+                closeSheet();
+                $("convBtn").focus({ preventScroll: true });
+              } catch (e: any) { toast("Couldn't clear: " + (e.message || e)); b.disabled = false; }
+            } else if (slug) {
+              if (b.dataset.k === "rename") openRenameProjectSheet(slug, name);
+              else openDeleteProjectSheet(slug, name);
+            }
+          };
         });
       },
     });
+    // Move focus out of the dismissed drawer/composer without reopening a keyboard.
+    $("sheetBody").querySelector('[data-k="clear"]')?.focus({ preventScroll: true });
   }
   function openRenameProjectSheet(slug: string, name: string) {
     openSheet({
