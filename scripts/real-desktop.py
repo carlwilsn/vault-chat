@@ -105,6 +105,7 @@ def main():
     p.add_argument('--before-app', type=Path)
     p.add_argument('--check-plan-owner', action='store_true', help='Genuine late TodoWrite after native Clear: inline provenance retained, no unowned pinned plan')
     p.add_argument('--check-plans', action='store_true', help='Exercise ordinary input and local Clear/reopen on the frozen original thread; inference stays blocked')
+    p.add_argument('--check-composer-delivery', action='store_true', help='With empty-chat: exact 20 trusted composer keystrokes through genuine unpaid Pi; preserve literal quoted greetings')
     p.add_argument('--check-empty-chat', action='store_true', help='Read the actual empty chat after local Clear/reopen; never generate an assistant answer')
     p.add_argument('--check-voice-only', action='store_true', help='Verify the one voice control and no Classic/engine selector in native settings; microphone stays off')
     p.add_argument('--check-speech-freshness', action='store_true', help='Local fake provider + genuine Pi/New dispatch collector; native typed controls, no media')
@@ -132,6 +133,13 @@ def main():
     p.add_argument('--expect-history-baseline-bug', action='store_true', help='Retain the reproduced raw envelope/identity loss instead of claiming a pass')
     p.add_argument('--inside-nix', action='store_true', help=argparse.SUPPRESS)
     a = p.parse_args()
+    if a.check_composer_delivery and not a.check_empty_chat:
+        p.error('--check-composer-delivery requires --check-empty-chat')
+    if a.check_composer_delivery and any((a.check_plan_owner, a.check_plans, a.check_status_dot, a.check_pending_chat,
+            a.check_history_update, a.check_parallel_work, a.check_device_sense, a.check_web_research, a.check_images,
+            a.check_video, a.check_speech_freshness, a.check_global_notes, a.check_editor_sync, a.check_board_scribble,
+            a.check_voice_only, a.voice_conflict)):
+        p.error('Composer delivery has its own exact four-append fixture; run other opt-ins separately')
     if a.check_global_notes and not a.check_status_dot:
         p.error('--check-global-notes requires the existing --check-status-dot private workspace fixture')
     if a.check_editor_sync and not a.check_status_dot:
@@ -187,7 +195,7 @@ def main():
     events = source / '.vault-chat' / 'events'
     if not events.is_dir() or events.is_symlink():
         p.error('Selected copy has no regular .vault-chat/events directory')
-    real_pi = a.check_plan_owner or a.check_status_dot or a.check_pending_chat or a.check_device_sense or a.check_web_research or a.check_history_update or a.check_parallel_work
+    real_pi = a.check_composer_delivery or a.check_plan_owner or a.check_status_dot or a.check_pending_chat or a.check_device_sense or a.check_web_research or a.check_history_update or a.check_parallel_work
     master = work / 'master'
     vault = master / 'vaults/vault-chat' if real_pi else work / 'vault-chat'
     dest = vault / '.vault-chat' / 'events'
@@ -216,9 +224,9 @@ def main():
         control = vault / 'boards/scribble-control-fixture'
         shutil.copytree(target, control)
         board_control_bytes = {str(f.relative_to(control)): f.read_bytes() for f in control.rglob('*') if f.is_file()}
-    original_event_bytes = {f.name: f.read_bytes() for f in events.iterdir() if f.suffix == ".jsonl"} if a.check_plan_owner else {}
+    original_event_bytes = {f.name: f.read_bytes() for f in events.iterdir() if f.suffix == ".jsonl"} if a.check_plan_owner or a.check_composer_delivery else {}
     original_notes = None
-    if a.check_plan_owner or a.check_global_notes or a.check_speech_freshness or a.check_parallel_work:
+    if a.check_composer_delivery or a.check_plan_owner or a.check_global_notes or a.check_speech_freshness or a.check_parallel_work:
         copied_notes = source / '.vault-chat/notes.jsonl'
         if copied_notes.is_symlink() or not copied_notes.is_file():
             p.error('global Notes proof requires the owned safe original notes copy')
@@ -349,6 +357,8 @@ def main():
             released = threading.Event()
             released.set()  # Let any original interrupted turn finish locally before measuring.
             provider_calls = []
+            composer_bodies = ('desktop input timing', 'Literal quotes: "At your service" and "Hello sir".')
+            composer_provider_inputs = []
             queue_provider_inputs = []
             history_requests = []
             editor_reads = []
@@ -403,10 +413,18 @@ def main():
                     device_marker = next((m for m in ['LAPTOP', 'PHONE', 'BOARD', 'EXPLICIT', 'REFUSED'] if fixture_turns and 'DEVICE-SENSE-25-' + m in fixture_turns[-1]), None) if a.check_device_sense else None
                     research = a.check_web_research and fixture_turns and 'OWNED-RESEARCH-28' in fixture_turns[-1]
                     latest_user = next((message_text(m) for m in reversed(messages) if m.get('role') == 'user'), '')
+                    # Pi's hidden vc-context may follow the literal human at the
+                    # provider boundary. Select our exact human body, never infer it
+                    # from the last context message or strip a synthetic prefix.
+                    composer_user = next((message_text(m) for m in reversed(messages) if m.get('role') == 'user' and message_text(m) in composer_bodies), '') if a.check_composer_delivery else ''
+                    if composer_user:
+                        composer_provider_inputs.append((composer_user, sum(m.get('role') == 'user' and message_text(m) == composer_user for m in messages)))
                     plan_user = next((message_text(m) for m in reversed(messages) if m.get('role') == 'user' and 'PLAN-OWNER-8-' in message_text(m)), '') if a.check_plan_owner else ''
                     child_task = next((message_text(m) for m in messages if m.get('role') == 'user'), '')
                     parallel_tag = next((t for t in ('A', 'B') if 'PARALLEL-WORK-16-' + t in latest_user), None) if a.check_parallel_work else None
-                    if plan_user:
+                    if composer_user:
+                        deltas = [({'role':'assistant','content':'Owned composer receipt 10.'},None),({},'stop')]
+                    elif plan_user:
                         if not tool_result:
                             tool = next((t['function']['name'] for t in body.get('tools', []) if t['function']['name'] in ('TodoWrite', 'mcp__vault_chat__TodoWrite')), None)
                             if not tool: raise RuntimeError('Native TodoWrite is unavailable')
@@ -593,7 +611,7 @@ def main():
         checkpoint = request(base + checkpoint_path)
         picture = checkpoint.get('picture', checkpoint)
         items = picture.get('items', [])
-        if a.check_plan_owner or a.check_history_update or a.check_device_sense or a.check_web_research or a.check_parallel_work:
+        if a.check_composer_delivery or a.check_plan_owner or a.check_history_update or a.check_device_sense or a.check_web_research or a.check_parallel_work:
             # The original copy is immutable. Engine startup may already have
             # appended its two real lost-worker/resume items before this HTTP
             # snapshot; those are private appends, never part of the original.
@@ -613,7 +631,7 @@ def main():
                 items = picture.get('items', [])
             if items[:3819] != original_items or len(items) not in (3819, 3821):
                 raise RuntimeError('History startup changed original prefix or unexpected private startup appends')
-            if (a.check_plan_owner or a.check_device_sense or a.check_web_research or a.check_parallel_work) and items[3819:]:
+            if (a.check_composer_delivery or a.check_plan_owner or a.check_device_sense or a.check_web_research or a.check_parallel_work) and items[3819:]:
                 startup = items[3819:]
                 if [x.get('kind') for x in startup] != ['user', 'assistant'] or startup[0].get('via') != 'delegate':
                     raise RuntimeError('Unexpected device fixture startup append identities')
@@ -651,6 +669,7 @@ def main():
         observed = []
         photo_intents = []
         queue_intents = []
+        composer_intents = []
         queue_now_completed = set()
         opened = []
         video_fetches = []
@@ -671,6 +690,12 @@ def main():
                 speech_send = (a.check_speech_freshness and path == '/api/v2/intent' and self.command == 'POST'
                     and (intent := json.loads(data)).get('type') == 'send' and intent.get('convId') == a.conversation
                     and str(intent.get('text', '')).startswith('Owned speech freshness '))
+                composer_send = (a.check_composer_delivery and path == '/api/v2/intent' and self.command == 'POST'
+                    and (intent := json.loads(data)).get('type') == 'send' and intent.get('convId') == a.conversation
+                    and intent.get('text') in composer_bodies)
+                if composer_send:
+                    with lock:
+                        composer_intents.append(intent)
                 queue_write = False
                 if (a.check_pending_chat or a.check_history_update) and path == '/api/v2/intent' and self.command == 'POST':
                     intent = json.loads(data)
@@ -689,7 +714,7 @@ def main():
                     for n in json.loads(data).get('notes', []))
                 editor_transport = a.check_editor_sync and (editor_intent_enabled and path == '/api/v2/intent' or path.startswith('/git/status-viewer.git/') or path == '/api/v1/sync/flush')
                 # All other non-read activity stays refused, including voice.
-                if (path.startswith('/git/') or self.command != 'GET' and path != '/api/v1/laptop-perf') and not ((a.check_plan_owner and path == "/api/v2/intent" and self.command == "POST" and json.loads(data).get("type") == "send" and json.loads(data).get("convId") == a.conversation and str(json.loads(data).get("text", "")).startswith("PLAN-OWNER-8-")) or speech_send or editor_transport or queue_write or note_transport or (a.check_parallel_work and (path == '/api/v2/intent' and str(json.loads(data).get('text', '')).startswith('PARALLEL-WORK-16-') or path.startswith('/api/v1/conversations/' + a.conversation + '/subagents/') and path.endswith('/stop'))) or (a.check_web_research and path == '/api/v2/intent' and str(json.loads(data).get('text', '')).startswith('OWNED-RESEARCH-28')) or (a.check_device_sense and (path.startswith('/api/v1/show/show-') and path.endswith('/ack') or path == '/api/v2/intent' and str(json.loads(data).get('text', '')).startswith('DEVICE-SENSE-25-')))):
+                if (path.startswith('/git/') or self.command != 'GET' and path != '/api/v1/laptop-perf') and not ((a.check_plan_owner and path == "/api/v2/intent" and self.command == "POST" and json.loads(data).get("type") == "send" and json.loads(data).get("convId") == a.conversation and str(json.loads(data).get("text", "")).startswith("PLAN-OWNER-8-")) or composer_send or speech_send or editor_transport or queue_write or note_transport or (a.check_parallel_work and (path == '/api/v2/intent' and str(json.loads(data).get('text', '')).startswith('PARALLEL-WORK-16-') or path.startswith('/api/v1/conversations/' + a.conversation + '/subagents/') and path.endswith('/stop'))) or (a.check_web_research and path == '/api/v2/intent' and str(json.loads(data).get('text', '')).startswith('OWNED-RESEARCH-28')) or (a.check_device_sense and (path.startswith('/api/v1/show/show-') and path.endswith('/ack') or path == '/api/v2/intent' and str(json.loads(data).get('text', '')).startswith('DEVICE-SENSE-25-')))):
                     if a.check_plans and path == '/api/v2/intent':
                         # Observe the native pending-input UI before rejecting;
                         # never forward this turn to a provider or invent a reply.
@@ -793,9 +818,11 @@ def main():
 
         history_final_items = None
         plan_owner_start_items = None
+        composer_start_items = None
+        composer_final_items = None
 
         def exercise(app, label):
-            nonlocal history_final_items, plan_owner_start_items
+            nonlocal history_final_items, plan_owner_start_items, composer_start_items, composer_final_items
             profile = work / (label + '-home')
             profile.mkdir()
             childenv = dict(env, HOME=str(profile), XDG_CONFIG_HOME=str(profile / 'config'),
@@ -839,6 +866,7 @@ def main():
                 return js('const e=document.querySelector(arguments[0]);if(!e)return false;const r=e.getBoundingClientRect();return r.width>0&&r.height>0&&[.15,.5,.85].some(f=>{const hit=document.elementFromPoint(r.x+r.width*f,r.y+r.height/2);return hit===e||e.contains(hit);});', selector)
 
             try:
+                composer_calls_at_start = len(provider_calls) if a.check_composer_delivery else None
                 # First launch only seeds a clean native profile; no tokens, no fake IPC.
                 session()
                 wait_for(lambda: js('return !!window.__TAURI_INTERNALS__;'), 'real Tauri IPC')
@@ -885,6 +913,8 @@ def main():
                                    for s in b.get('samples', []))
                 # Fast current UI can produce a full queue before the first flush.
                 wait_for(lambda: sample_delivered('launch-interactive'), 'native launch telemetry delivery')
+                if a.check_composer_delivery and len(provider_calls) != composer_calls_at_start:
+                    raise RuntimeError('Unsolicited provider turn during native startup/reconnect')
                 text = 'desktop input timing'
                 interaction_failures = []
 
@@ -945,6 +975,7 @@ def main():
                     wait_for(lambda: exists('[data-perf-target="composer"]'), 'chat panel opens')
                 plan_lifecycle = None
                 empty_chat = None
+                composer_delivery = None
                 if a.check_plans or a.check_empty_chat:
                     def plans_on_screen():
                         return js('''const cards=[...document.querySelectorAll('[data-el="todos"],[data-el="todos-done"]')];
@@ -998,6 +1029,82 @@ def main():
                                       'history': 'original server conversation unchanged; Clear is local only'}
                     if label != 'before' and (after_clear['mounted'] or after_reopen['mounted'] or after_input['oldFourRowPlan']):
                         raise RuntimeError('Stale plan resurrected after ordinary input, local Clear or native reopen')
+                if a.check_composer_delivery:
+                    # Empty-chat already used actual Clear and a native process reconnect.
+                    # No handler calls, programmatic value assignment, or API-originated humans.
+                    if len(provider_calls) != composer_calls_at_start:
+                        raise RuntimeError('Unsolicited provider turn after native Clear/reopen')
+                    start_items = request(base + checkpoint_path)['picture']['items']
+                    if composer_start_items is None:
+                        startup = start_items[3819:]
+                        if (start_items[:3819] != original_items or len(startup) not in (0, 2)
+                            or startup and ([x.get('kind') for x in startup] != ['user','assistant'] or startup[0].get('via') != 'delegate')):
+                            raise RuntimeError('Composer changed exact original/startup prefix')
+                        composer_start_items = start_items
+                        result['thread'].update(messages=1329, items=3819, startupPrivateItems=len(startup))
+                    elif start_items != composer_final_items:
+                        raise RuntimeError('Composer startup/reopen changed exact original/private prefix')
+                    # Reconnect restores the ordinary split (the private editor can
+                    # crowd it). Open actual full chat through its native shortcut.
+                    if not js("return !!document.querySelector('[data-perf-view=fullscreen]');"):
+                        key('ctrl+shift+f')
+                    wait_for(lambda: exists('[data-perf-target="composer"]'), 'visible native composer after reconnect')
+                    deliveries = []
+                    for body in composer_bodies:
+                        click('[data-perf-target="composer"]')
+                        js('''{const counts=window.__composerKeys={trusted:0,untrusted:0};
+                          document.querySelector('[data-perf-target="composer"]').addEventListener('keydown',e=>{
+                            if(e.key.length===1 && !e.ctrlKey && !e.altKey && !e.metaKey)
+                              counts[e.isTrusted?'trusted':'untrusted']++;
+                          },true);}''')
+                        calls = len(provider_calls)
+                        run('xdotool', 'type', '--clearmodifiers', '--delay', '80', body, env=childenv, stdout=subprocess.DEVNULL)
+                        wait_for(lambda: js('return document.querySelector("[data-perf-target=composer]")?.value===arguments[0];', body), 'exact trusted composer text', seconds=5)
+                        keys = js('return window.__composerKeys;')
+                        if keys != {'trusted': len(body), 'untrusted': 0}:
+                            raise RuntimeError('Composer did not receive every exact trusted character')
+                        key('Return')
+                        def delivered_composer():
+                            p = request(base + checkpoint_path)['picture']
+                            return p if p['meta'].get('state') == 'idle' and len(p['items']) == len(start_items) + 2 * (len(deliveries) + 1) else None
+                        final_picture = wait_for(delivered_composer, 'exact genuine Pi composer receipt')
+                        native_user, answer = final_picture['items'][-2:]
+                        intent = composer_intents[-1] if composer_intents else {}
+                        if (len(provider_calls) != calls + 1 or composer_provider_inputs[-1:] != [(body, 1)]
+                            or native_user.get('kind') != 'user' or native_user.get('text') != body
+                            or native_user.get('id') != intent.get('clientId') or intent.get('text') != body
+                            or answer.get('kind') != 'assistant' or answer.get('text') != 'Owned composer receipt 10.'):
+                            raise RuntimeError('Composer human body/identity or provider delivery not exact once')
+                        entries = [json.loads(line) for line in Path(final_picture['meta']['threadPath']).read_text().splitlines() if line.strip()]
+                        native_humans = [e for e in entries if e.get('message', {}).get('role') == 'user' and e['message'].get('vcRequest', {}).get('clientId') == intent.get('clientId')]
+                        if any(e['message'].get('content') != [{'type':'text','text':body}] for e in native_humans):
+                            raise RuntimeError('Synthetic context or rewritten text in native human body')
+                        if len(native_humans) != 1:
+                            raise RuntimeError('Genuine Pi native user contains missing/duplicated text or synthetic context')
+                        wait_for(lambda: js('return document.body.textContent.includes(arguments[0]);', body), 'literal human greeting quotes remain visible')
+                        deliveries.append({'characters':len(body), 'trustedCharacters':keys['trusted'], 'untrustedCharacters':0,
+                                           'exactComposerIntentNativePiAndProviderBody':True, 'once':True})
+                    final = final_picture['items']
+                    if final[:len(start_items)] != start_items or [x['kind'] for x in final[len(start_items):]] != ['user','assistant','user','assistant']:
+                        raise RuntimeError('Composer changed exact prefix or four private append identities')
+                    composer_final_items = final
+                    calls = len(provider_calls)
+                    # One more native reconnect retains BOTH literal human strings,
+                    # without asking any model to infer or generate a greeting.
+                    delete_session(); time.sleep(1); session()
+                    wait_for(lambda: js('return !document.getElementById("vault-splash") && document.body.textContent.includes(arguments[0]);', composer_bodies[1]), 'literal human quotes survive native reopen')
+                    time.sleep(1)
+                    if len(provider_calls) != calls or request(base + checkpoint_path)['picture']['items'] != final:
+                        raise RuntimeError('Native composer reopen generated unsolicited input/answer')
+                    if (vault / '.vault-chat/notes.jsonl').read_bytes() != original_notes:
+                        raise RuntimeError('Composer changed original Notes bytes')
+                    for name, original_bytes in original_event_bytes.items():
+                        if not (dest / name).read_bytes().startswith(original_bytes):
+                            raise RuntimeError('Composer changed an original event byte prefix')
+                    composer_delivery = {'deliveries':deliveries, 'startupClearReopenUnsolicitedProviderCalls':0,
+                                         'exactFourPrivateAppends':True, 'literalGreetingQuotesPreservedAfterReopen':True,
+                                         'originalEventPrefixesAndNotesBytesUnchanged':True}
+                    result['runs'][label] = {'emptyChat':empty_chat, 'composerDelivery':composer_delivery}
                 if a.check_voice_only:
                     if not exists('[data-perf-view="fullscreen"]'):
                         key('ctrl+shift+f')
@@ -1916,14 +2023,14 @@ def main():
                 def stats(values):
                     v = sorted(values)
                     return {'n': len(v), 'p50Ms': round(v[len(v)//2], 3), 'p95Ms': round(v[min(len(v)-1, int(len(v)*.95))], 3), 'maxMs': round(max(v), 3)}
-                return {'works': not interaction_failures, 'videoCheck': video_check, 'imageCheck': image_check, 'statusDot': status_dot, 'editorSync': editor_sync, 'pendingChat': pending_chat, 'deviceSense': device_sense, 'webResearch': web_research, 'parallelWork': parallel_work, 'historyUpdate': history_update, 'globalNotes': global_notes, 'interactionFailures': interaction_failures, 'planLifecycle': plan_lifecycle, 'planOwner': plan_owner, 'emptyChat': empty_chat, 'native': metadata, 'telemetryHttpStatuses': sorted(statuses),
+                return {'works': not interaction_failures, 'videoCheck': video_check, 'imageCheck': image_check, 'statusDot': status_dot, 'editorSync': editor_sync, 'pendingChat': pending_chat, 'deviceSense': device_sense, 'webResearch': web_research, 'parallelWork': parallel_work, 'historyUpdate': history_update, 'globalNotes': global_notes, 'interactionFailures': interaction_failures, 'planLifecycle': plan_lifecycle, 'planOwner': plan_owner, 'emptyChat': empty_chat, 'composerDelivery': composer_delivery, 'native': metadata, 'telemetryHttpStatuses': sorted(statuses),
                         'telemetryNote': 'Observed real Rust IPC batches; loopback is not authenticated Tailscale laptop telemetry',
                         'launchProcessToDomUpperBoundMs': round(launch_upper, 3),
                         'timings': [{'metric': m, 'method': method, **stats(values)} for (m, method), values in sorted(samples.items())]}
             except Exception:
                 with contextlib.suppress(Exception):
                     result['nativeFailureDom'] = js('''return {
-                      attachError:document.querySelector('[data-el="attach-error"]')?.textContent,paste:window.__imagePaste,active:document.activeElement?.tagName,images:[...document.images].map(i=>({w:i.naturalWidth,h:i.naturalHeight,scheme:i.src.split(':')[0],len:i.src.length})),
+                      attachError:document.querySelector('[data-el="attach-error"]')?.textContent,nativeViewport:{width:innerWidth,height:innerHeight,x:screenX,y:screenY,ratio:devicePixelRatio,focused:document.hasFocus(),fullscreen:!!document.querySelector('[data-perf-view=fullscreen]'),composerRect:(()=>{const r=document.querySelector('[data-perf-target=composer]')?.getBoundingClientRect();return r?{x:r.x,y:r.y,w:r.width,h:r.height}:null;})()},paste:window.__imagePaste,active:document.activeElement?.tagName,images:[...document.images].map(i=>({w:i.naturalWidth,h:i.naturalHeight,scheme:i.src.split(':')[0],len:i.src.length})),
                       editorPasteAt:window.__editorPasteAt,editorSendAt:window.__editorSendAt,composerChars:document.querySelector('[data-perf-target=composer]')?.value?.length,editorChars:document.querySelector('.cm-content')?.textContent?.length,splash:!!document.getElementById('vault-splash'),
                       videoGeometry:[...document.querySelectorAll('video')].map(v=>{const r=v.getBoundingClientRect();return {y:r.y,x:r.x,h:r.height,w:r.width,paused:v.paused,time:v.currentTime};}),
                       composer:!!document.querySelector('[data-perf-target="composer"]'),
@@ -2183,6 +2290,12 @@ def main():
                 result['thread']['originalItemsPrefixUnchanged'] = preserved
                 result['thread']['privateAppendedItems'] = len(again.get('items', [])) - len(items)
                 result['thread']['allItemsUnchangedAfterHistoryReopen'] = preserved
+            elif a.check_composer_delivery:
+                preserved = (composer_final_items is not None and again.get('items', []) == composer_final_items
+                             and composer_start_items is not None and composer_final_items[:len(composer_start_items)] == composer_start_items
+                             and len(composer_final_items) == len(composer_start_items) + 4 * (2 if a.before_app else 1))
+                result['thread']['originalItemsPrefixUnchanged'] = preserved
+                result['thread']['exactPrivateAppendedItems'] = 4 * (2 if a.before_app else 1)
             elif a.check_plan_owner:
                 preserved = plan_owner_start_items is not None and again.get("items", [])[:len(plan_owner_start_items)] == plan_owner_start_items and len(again.get("items", [])) == len(plan_owner_start_items) + 3 * (2 if a.before_app else 1)
                 result["thread"]["originalItemsPrefixUnchanged"] = preserved
