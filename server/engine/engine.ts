@@ -1037,7 +1037,7 @@ export class Engine {
       ? `<file-context request=${JSON.stringify(clientId)} device=${JSON.stringify(origin ?? "unknown")} conversation=${JSON.stringify(id)}>Viewer/file-context vault root: ${viewerRoot}/. Conversation owner: ${this.d.vault}/. Resolve viewer-relative file references to absolute paths under that viewer root. Read and Bash relative paths still use the thread/project cwd; this binding does not change tool path resolution. This records the incoming request, not later viewer state.</file-context>`
       : undefined;
     const hostContext = [context, fileContext].filter(Boolean).join("\n\n") || undefined;
-    const request: UserRequest = { v: 1, clientId, via: body.via ?? "chat", ...(origin ? { device: origin } : {}), ...(itemImages.length ? { images: itemImages.map(({ path }) => ({ path })) } : {}) };
+    const request: UserRequest = { v: 1, clientId, via: body.via ?? "chat", ...(validDevice(device) ? { device: validDevice(device)! } : {}), ...(itemImages.length ? { images: itemImages.map(({ path }) => ({ path })) } : {}) };
     if (l && !l.finished) {
       // Ordinary input on EVERY surface waits for its own native follow-up
       // boundary, even when that surface also started the active turn. The old
@@ -1551,16 +1551,15 @@ export class Engine {
         if (existing.started && !existing.ask) {
           const b = this.d.backend;
           if (kind === "user") {
-            // Carl's message that raced the turn's start: a steer (pending until pi delivers it).
+            // Ordinary input racing startup still waits for its own native follow-up.
             const id = opts.clientId ?? newMessageId();
             const sent = input;
-            this.setPending(convId, { id, kind: "steer", text: opts.shown ?? input, at: Date.now() });
-            existing.feed.expect({ kind: "steer", text: sent, clientId: id, shown: opts.shown ?? input, via: opts.via ?? "steer", images: opts.itemImages, hostContext: [opts.context, opts.hostContext].filter(Boolean).join("\n\n"), ...(opts.device ?? validDevice(opts.origin) ? { device: opts.device ?? opts.origin } : {}) });
-            existing.rec.q("steer", id);
-            // pi delivers a steer after the running tool calls: a `subagent` call can wait minutes, so its children
-            // move to the background and he is answered now (like Claude Code's background tasks).
+            this.setPending(convId, { id, kind: "queue", text: opts.shown ?? input, at: Date.now() });
+            existing.feed.expect({ kind: "queue", text: sent, clientId: id, shown: opts.shown ?? input, via: opts.via ?? "queue", images: opts.itemImages, hostContext: [opts.context, opts.hostContext].filter(Boolean).join("\n\n"), ...(opts.device ?? validDevice(opts.origin) ? { device: opts.device ?? opts.origin } : {}) });
+            existing.rec.q("queue", id);
+            // Detached workers keep their existing completion/report path.
             this.detachWaiting(convId, existing.threadId);
-            await b.steer(existing.threadId, existing.turnId, { texts: [sent], context: [opts.context, opts.hostContext].filter(Boolean).join("\n\n"), request: { v: 1, clientId: id, via: opts.via ?? "steer", ...(opts.origin ? { device: opts.origin } : {}), ...(opts.itemImages?.length ? { images: opts.itemImages.map(({ path }) => ({ path })) } : {}) }, images: opts.images ?? [] }).catch(() => {
+            await b.followUp(existing.threadId, { texts: [sent], context: [opts.context, opts.hostContext].filter(Boolean).join("\n\n"), request: { v: 1, clientId: id, via: opts.via ?? "queue", ...(opts.device ?? validDevice(opts.origin) ? { device: opts.device ?? opts.origin } : {}), ...(opts.itemImages?.length ? { images: opts.itemImages.map(({ path }) => ({ path })) } : {}) }, images: opts.images ?? [] }).catch(() => {
               existing.feed.forget(id);
               this.setPending(convId, undefined, id);
             });
@@ -1694,7 +1693,7 @@ export class Engine {
           this.setPending(convId, { id: e.clientId!, kind: e.kind === "queue" ? "queue" : "steer", text: e.shown, at: Date.now() });
           live.feed.expect(e);
           rec.q(e.kind === "queue" ? "queue" : "steer", e.clientId!);
-          const queued = { texts: [e.text], context: e.hostContext, request: e.clientId ? { v: 1, clientId: e.clientId, via: e.via, ...(e.device ? { device: e.device } : {}), ...(e.images?.length ? { images: e.images.map(({ path }) => ({ path })) } : {}) } : undefined, images: (e.images ?? []).map(im => join(this.d.vault, im.path)) };
+          const queued = { texts: [e.text], context: e.hostContext, request: e.clientId ? { v: 1 as const, clientId: e.clientId, via: e.via, ...(e.device ? { device: e.device } : {}), ...(e.images?.length ? { images: e.images.map(({ path }) => ({ path })) } : {}) } : undefined, images: (e.images ?? []).map(im => join(this.d.vault, im.path)) };
           await this.d.backend.followUp(threadId, queued);
         }
         await this.d.backend.startTurn(threadId, { texts, context: [rules, ...context].filter(Boolean).join("\n\n"), ...(kind === "user" ? { request: { v: 1 as const, clientId, via: shownInput.via, ...(opts.device ?? validDevice(opts.origin) ? { device: opts.device ?? opts.origin } : {}), ...(opts.itemImages?.length ? { images: opts.itemImages.map(({ path }) => ({ path })) } : {}) } } : {}), images: opts.images ?? [], model, turnId, ...(talker?.thinking ? { thinking: talker.thinking } : {}) });

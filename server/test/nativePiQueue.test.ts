@@ -8,14 +8,14 @@ import { describe, it, expect } from "vitest";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { makeVault, startServer, tmp, waitFor, type Running } from "./helpers";
+import { makeVault, startServer, tmp, waitFor, fakePiDir, type Running } from "./helpers";
 import { fakeChat, lastUser } from "./fakeChat";
 import { addWake } from "../engine/wakes";
 import { readEntries } from "../convlog/piSession";
 import { voiceCallRules } from "../voiceBrain";
 
 describe("native Pi interrupt-and-send queue contract", () => {
-  it("delivers SECOND then FIRST exactly once through native Pi, including the phone binding", async () => {
+  it.each(["genuine", "protocol fixture"])("%s: delivers SECOND then FIRST exactly once, including the original voice actor and phone binding", async runtime => {
     const home = tmp("vc-native-queue-"), vault = makeVault(join(home, "vault"));
     const state = join(home, "state"), canary = "COMBINED_NATIVE_CONTEXT_CANARY";
     mkdirSync(join(vault, ".vault-chat"), { recursive: true });
@@ -40,7 +40,7 @@ globalThis.fetch=(input,init)=>{
     const streams: AbortController[] = [];
     try {
       srv = await startServer({ home, vault, secrets: join(home, "empty-no-credentials"), openrouter: provider.url,
-        extra: { VC_PI_DIR: process.env.VC_TEST_PI_DIR ?? join(homedir(), ".local/state/vault-chat-server/pi/1.1.0"),
+        extra: { VC_PI_DIR: runtime === "genuine" ? process.env.VC_TEST_PI_DIR ?? join(homedir(), ".local/state/vault-chat-server/pi/1.1.0") : fakePiDir(home),
           VC_STATE_DIR: state, VC_ENGINE_MODEL: "test/fake-model", VC_PI_UNSAFE: "1", VC_VOICE_PIPELINE: "off", NODE_OPTIONS: "--import " + network } });
       expect(srv.proc.exitCode).toBeNull();
       expect(srv.port).toBeGreaterThan(0);
@@ -101,7 +101,18 @@ globalThis.fetch=(input,init)=>{
           return !p.meta.running && !p.meta.pending && c.messages.some((m: any) => m.mid === "first") ? c : null;
         }, 10000, 10);
         const firstSurface = arrival.source === "voice" ? "a voice call (phone)" : `his ${arrival.client}`;
-        const expected = ["[Carl, on his laptop]\n\nQUEUE-HOLD", `${voiceCallRules("phone")}\n\n[Carl, on his laptop]\n\nQUEUE-SECOND`, `[Carl, on ${firstSurface}]\n\nQUEUE-FIRST`];
+        const expected = ["QUEUE-HOLD", "QUEUE-SECOND", "QUEUE-FIRST"];
+        const entries = readEntries(c.meta.threadPath);
+        const users = entries.filter(e => e.message?.role === "user");
+        expect(users.map(e => e.message!.vcRequest)).toEqual([
+          { v: 1, clientId: "hold", via: "chat", device: "laptop" },
+          { v: 1, clientId: "second", via: "chat", device: "laptop" },
+          { v: 1, clientId: "first", via: arrival.via ?? "queue", device: arrival.client },
+        ]);
+        const nativeContext = entries.filter(e => e.type === "custom_message" && e.customType === "vc-context").map(e => e.content);
+        expect(nativeContext).toContain("[Carl, on his laptop]");
+        expect(nativeContext).toContain(`[Carl, on ${firstSurface}]`);
+        expect(nativeContext.some(t => typeof t === "string" && t.includes(voiceCallRules("phone")))).toBe(true);
         expect(readEntries(c.meta.threadPath).filter(e => e.message?.role === "user").map(e => e.message!.content))
           .toEqual(expected.map(text => [{ type: "text", text }]));
         expect(c.messages.filter((m: any) => m.role === "user").map((m: any) => m.mid)).toEqual(["hold", "second", "first"]);

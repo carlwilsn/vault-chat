@@ -102,6 +102,21 @@ describe("native history request identity", () => {
     } finally { feed.dispose(); rmSync(root, { recursive: true, force: true }); }
   });
 
+  it("native voice delivery retains the original voice actor separately from its phone, exactly once", () => {
+    const root = mkdtempSync(join(tmpdir(), "vc-voice-delivery-")), file = join(root, "native.jsonl");
+    writeFileSync(file, JSON.stringify({ type: "message", id: "voice-user", message: { role: "user", content: "human voice", timestamp: 1,
+      vcRequest: { ...request("voice-client"), via: "voice", device: "phone" } } }) + "\n");
+    const emitted: any[] = [], origins: any[] = [];
+    const feed = new PiFeed({ file, pointed: new Set(), flushMs: 0, emit: e => emitted.push(e), delivered: (clientId, origin) => origins.push([clientId, origin]) });
+    try {
+      feed.expect({ kind: "queue", text: "human voice", shown: "human voice", clientId: "voice-client", via: "voice", device: "phone" });
+      feed.sync(true); feed.sync(true);
+      expect(emitted).toHaveLength(1);
+      expect(emitted[0]).toMatchObject({ clientId: "voice-client", device: "phone", via: "voice", shown: "human voice" });
+      expect(origins).toEqual([["voice-client", "voice"]]);
+    } finally { feed.dispose(); rmSync(root, { recursive: true, force: true }); }
+  });
+
   it.each(["genuine", "protocol fixture"])("%s Pi keeps identical queued texts distinct in its own queue, and clear_queue never leaves a separate request binding", async runtime => {
     const f = await fixture(runtime), b = f.make();
     const s = await b.startThread({ cwd: f.root, model, instructions: "Fixture", tools: [], subagents: false });

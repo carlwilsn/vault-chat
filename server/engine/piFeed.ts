@@ -175,7 +175,7 @@ export class PiFeed {
       this.o.emit({ type: "entry", file: this.o.file, entry: e, clientId: request.clientId,
         shown: text, via: request.via, ...(request.device ? { device: request.device } : {}),
         ...(request.images?.length ? { images: request.images } : {}) });
-      if (x?.kind === "steer" || x?.kind === "queue") this.o.delivered?.(request.clientId, request.device);
+      if (x?.clientId) this.o.delivered?.(request.clientId, request.via === "voice" ? "voice" : request.device);
       return;
     }
     // Legacy/engine inputs still have explicit expected overrides. Never bind

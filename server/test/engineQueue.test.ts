@@ -258,6 +258,7 @@ describe("steer and queue", () => {
     expect((await engine.message({ convId: r.convId, text: "And keep it short.", clientMsgId: "c-after" })).queued).toBe(true);
     const waiting = () => pendingOf(engine.picture(r.convId)).map((q: any) => q.id);
     expect(waiting()).toEqual(["c-now", "c-after"]);
+    const followUpsBefore = backend.followUps.length;
     // Send now on the first: pi's stop (its queue is cleared), then the turn ends as interrupted…
     const p = engine.intent({ type: "now", convId: r.convId, id: "c-now" });
     await until(() => backend.interrupts.includes(tid));
@@ -270,9 +271,11 @@ describe("steer and queue", () => {
     expect(next.threadId).toBe(tid);
     expect(next.texts.join("\n")).toContain("Only chapter two.");
     // The other waiting message follows its answer (Pi's native follow-up), still pending until Pi takes it.
-    await until(() => backend.followUps.filter((x) => x.texts.join() === "And keep it short.").length === 1);
+    await until(() => backend.followUps.length === followUpsBefore + 1);
+    expect(backend.followUps.at(-1).texts).toEqual(["And keep it short."]);
+    // withPiSessions already persisted the replacement prompt, as genuine Pi does.
     await until(() => waiting().join() === "c-after");
-    backend.pi(tid, [...userMsg("Only chapter two."), ...assistant([{ text: "Chapter two, then." }]), ...userMsg("And keep it short."), ...assistant([{ text: "Short." }])]);
+    backend.pi(tid, [...assistant([{ text: "Chapter two, then." }]), ...userMsg("And keep it short."), ...assistant([{ text: "Short." }])]);
     backend.ev(tid, { kind: "turnCompleted", turnId: `pt-${turnsBefore + 1}`, status: "completed" });
     await until(async () => (await readConv(vault, r.convId))?.state === "idle");
     const c = await readConv(vault, r.convId);

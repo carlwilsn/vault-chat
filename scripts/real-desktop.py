@@ -388,7 +388,7 @@ def main():
                     def message_text(m):
                         c = m.get('content', '')
                         return c if isinstance(c, str) else '\n'.join(x.get('text', '') for x in c)
-                    fixture_turns = [message_text(m) for m in messages if m.get('role') == 'user' and message_text(m).startswith(('[Carl, on ', 'READ_EDITOR_FIXTURE_27', 'LOCAL-UNPAID-STATUS-DOT'))]
+                    fixture_turns = [message_text(m) for m in messages if m.get('role') == 'user' and message_text(m).startswith(('[Carl, on ', 'READ_EDITOR_FIXTURE_27', 'LOCAL-UNPAID-STATUS-DOT', 'LOCAL-UNPAID-QUEUE-', 'DEVICE-SENSE-25-'))]
                     # Keep only our generated queue markers, never copied human history.
                     queue_input = [t.split('LOCAL-UNPAID-QUEUE-', 1)[1] for t in fixture_turns if 'LOCAL-UNPAID-QUEUE-' in t]
                     if queue_input:
