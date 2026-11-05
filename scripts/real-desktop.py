@@ -346,6 +346,13 @@ def main():
             build(['node', '--import', 'tsx', '--input-type=module', '-e', prepare_video,
                    str(vault), a.conversation, str(work / 'original-video-prefix.json')], 'private-video-append')
         if a.check_phone_scroll:
+            # An owned registered folder makes the original project row available
+            # through the production sidebar; no live project metadata is copied.
+            project_folder = vault / 'owned-phone-project'
+            (project_folder / '.vault-chat').mkdir(parents=True)
+            registry = vault / '.vault-chat/local/project-folders.json'
+            registry.parent.mkdir(parents=True, exist_ok=True)
+            registry.write_text(json.dumps({'folders': {a.conversation.removeprefix('project-'): {'path': str(project_folder), 'at': '2026-01-01T00:00:00Z'}}, 'deleted': {}}))
             # Append only owned native Pi session entries to A's disposable original copy.
             # One completed tool group taller than each viewport, followed by a short reply.
             prepare_phone = r"""import assert from 'node:assert/strict';
@@ -2244,12 +2251,12 @@ def main():
                   await p.getByRole('button',{name:'conversations',exact:true}).tap();
                   const row=p.locator('[data-el="thread-'+kind+'"]');await row.waitFor({state:'visible'});
                   const more=row.getByRole('button',{name:kind==='main'?'Thread options':'Project options',exact:true});
-                  const rect=await more.boundingBox();assert(rect.width>=44&&rect.height>=44,'row menu 44px minimum');
+                  const rect=await more.boundingBox();assert(Math.round(rect.width*1000)>=44000&&Math.round(rect.height*1000)>=44000,'row menu 44px minimum '+JSON.stringify(rect));
                   if(keyboard){await more.focus();await p.keyboard.press('Enter');}else await more.tap();
                   const clear=p.getByRole('button',{name:'Clear this thread',exact:true});await clear.waitFor({state:'visible'});
                   assert.deepEqual(await p.locator('#sheetBody .arch-t').allTextContents(),kind==='main'?['Clear']:['Clear','Rename','Delete']);
-                  const action=await clear.boundingBox();assert(action.width>=44&&action.height>=44,'Clear 44px minimum');
-                  assert(await clear.evaluate(e=>{const r=e.getBoundingClientRect();return document.elementFromPoint(r.x+r.width/2,r.y+r.height/2)?.closest('button')===e;}));
+                  const action=await clear.boundingBox();assert(Math.round(action.width*1000)>=44000&&Math.round(action.height*1000)>=44000,'Clear 44px minimum '+JSON.stringify(action));
+                  await p.waitForFunction(()=>{const e=document.querySelector('[data-el="clear-thread"]'),r=e?.getBoundingClientRect();return r&&document.elementFromPoint(r.x+r.width/2,r.y+r.height/2)?.closest('button')===e;});
                   assert.equal(await p.locator('.composer [data-el="clear-thread"],.hdr [data-el="clear-thread"],.composer .cbar').count(),0);
                   return clear;
                 };
@@ -2291,7 +2298,7 @@ def main():
                 // Switch using real sidebar input; a nonempty Main owns this draft.
                 await p.getByRole('button',{name:'conversations',exact:true}).tap();await p.locator('[data-el="thread-main"] .nm').tap();
                 await p.waitForFunction(()=>document.querySelector('#msgs')?.textContent.includes('Owned Main history must stay'));
-                const draft=await p.locator('#input').inputValue();assert(draft.includes('Owned reading draft'));
+                const draft=await p.locator('#input').inputValue();assert(draft.includes('Owned reading draft'),'expected retained reading draft, got '+JSON.stringify(draft));
                 const mainBefore=await p.locator('#msgs').textContent(),titleBefore=await p.locator('#titleTx').textContent();
                 const checkpoint=async id=>(await (await fetch(base+'/api/v2/conversations/'+encodeURIComponent(id)+'/checkpoint')).json()).picture.items;
                 const targetHistory=await checkpoint(conv),mainHistory=await checkpoint('main');
@@ -2310,7 +2317,12 @@ def main():
                 // Same history, independent device storage: no shared deletion or Clear=Delete.
                 const fresh=await browser.newContext({viewport:{width:390,height:844},hasTouch:true,isMobile:true,permissions:[]});
                 const other=await fresh.newPage();await other.route('**/*',r=>{const u=new URL(r.request().url());return u.origin===base&&(r.request().method()==='GET'||u.pathname==='/api/v1/attention')?r.continue():r.abort();});
-                await other.goto(base+'/phone?conv='+encodeURIComponent(conv));await other.waitForFunction(()=>document.querySelector('#msgs')?.textContent.includes('Owned phone scroll reply.'));await fresh.close();
+                await other.goto(base+'/phone?conv='+encodeURIComponent(conv));await other.waitForFunction(()=>document.querySelector('#msgs')?.textContent.includes('Owned phone scroll reply.'));
+                await other.locator('#input').tap();await other.locator('#input').pressSequentially('Owned active target draft',{delay:10});
+                await other.getByRole('button',{name:'conversations',exact:true}).tap();await other.locator('[data-el="thread-project"]').getByRole('button',{name:'Project options',exact:true}).tap();
+                await other.getByRole('button',{name:'Clear this thread',exact:true}).tap();await other.waitForFunction(()=>!document.querySelector('#sheet').classList.contains('on'));
+                assert.equal(await other.locator('#msgs > .m, #msgs > .amsg').count(),0,'active target Clear blanks only its own local view');
+                assert.equal(await other.locator('#input').inputValue(),'Owned active target draft');await fresh.close();
                 // Background Main uses exactly the same target-aware action while project is selected.
                 await p.locator('#input').tap();await p.locator('#input').pressSequentially('Owned cleared project draft',{delay:10});
                 const mainClear=await openOptions('main',true);await mainClear.focus();await p.keyboard.press('Enter');
@@ -2321,12 +2333,12 @@ def main():
                 await p.waitForTimeout(400);assert.equal(await p.locator('#msgs > .m, #msgs > .amsg').count(),0,'Main gets its own cutoff');
                 // Empty active Clear remains harmless and the composer still accepts input.
                 await (await openOptions('main')).tap();await p.waitForFunction(()=>!document.querySelector('#sheet').classList.contains('on'));
-                await p.locator('#input').tap();await p.locator('#input').pressSequentially(' still editable',{delay:10});
+                await p.locator('#input').tap();await p.locator('#input').press('Control+End');await p.locator('#input').pressSequentially(' still editable',{delay:10});
                 assert((await p.locator('#input').inputValue()).endsWith(' still editable'));
                 assert.deepEqual(await checkpoint(conv),targetHistory);assert.deepEqual(await checkpoint('main'),mainHistory);
                 result.mainClearAndKeyboardAndReopen=true;result.deviceLocalAcrossIndependentContext=true;
                 result.works=true;
-              } catch(e){result.error=String(e);} finally {await browser.close();writeFileSync(out,JSON.stringify(result,null,2));}
+              } catch(e){result.error=e.stack||String(e);} finally {await browser.close();writeFileSync(out,JSON.stringify(result,null,2));}
               if(!result.works)process.exitCode=1;
             """
             phone_file = work / 'phone-scroll.json'
