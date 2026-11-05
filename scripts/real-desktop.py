@@ -124,12 +124,16 @@ def main():
     p.add_argument('--check-web-research', action='store_true', help='Owned HTTP source + 429 recovery through genuine Pi and native transcript; no external research/spend')
     p.add_argument('--check-device-sense', action='store_true', help='Actual native Show + isolated phone/board tools; no physical devices or audio')
     p.add_argument('--check-pending-chat', action='store_true', help='Queue via native input on held real Pi turns; exercise existing interrupt-and-send and preserve original history')
+    p.add_argument('--check-board-scribble', action='store_true', help='Current production board: trusted Chromium pen protocol on private Xvfb, every contact sample, undo/redo/autosave/reopen; NOT iPad/Pencil')
+    p.add_argument('--copy-board', type=Path, help='Owned disposable board fixture directory (board.json and history.json); never a live board')
     p.add_argument('--inside-nix', action='store_true', help=argparse.SUPPRESS)
     a = p.parse_args()
     if a.check_global_notes and not a.check_status_dot:
         p.error('--check-global-notes requires the existing --check-status-dot private workspace fixture')
     if a.check_editor_sync and not a.check_status_dot:
         p.error('--check-editor-sync requires --check-status-dot local unpaid Pi fixture')
+    if a.check_board_scribble and not a.copy_board:
+        p.error('--check-board-scribble requires --copy-board owned fixture')
     os.umask(0o077)
     if sys.platform != 'linux':
         p.error('This measures Linux/WebKitGTK only')
@@ -189,6 +193,25 @@ def main():
             p.error('Refusing symlink in selected events')
         if f.is_file() and (f.suffix in ('.jsonl', '.json') or f.name in ('_seq', '_epoch')):
             shutil.copyfile(f, dest / f.name)
+    if a.check_board_scribble:
+        fixture = a.copy_board.resolve(strict=True)
+        if fixture.is_relative_to(Path('/home/carlwilsn/vc')) or fixture.is_symlink():
+            p.error('--copy-board must be an owned disposable fixture, not live data')
+        target = vault / 'boards/scribble-penup-fixture'
+        target.mkdir(parents=True)
+        for name in ('board.json', 'history.json'):
+            f = fixture / name
+            if f.is_symlink() or not f.is_file():
+                p.error('Missing regular owned board fixture ' + name)
+            shutil.copyfile(f, target / name)
+        if (fixture / 'assets').is_dir():
+            for f in (fixture / 'assets').iterdir():
+                if f.is_symlink() or not f.is_file():
+                    p.error('Refusing nonregular board asset')
+            shutil.copytree(fixture / 'assets', target / 'assets')
+        control = vault / 'boards/scribble-control-fixture'
+        shutil.copytree(target, control)
+        board_control_bytes = {str(f.relative_to(control)): f.read_bytes() for f in control.rglob('*') if f.is_file()}
     original_notes = None
     if a.check_global_notes or a.check_speech_freshness:
         copied_notes = source / '.vault-chat/notes.jsonl'
@@ -1634,6 +1657,123 @@ def main():
                 result['phoneVideo'] = json.loads(phone_file.read_text())
             if child.returncode:
                 raise RuntimeError('Production phone video check failed; see retained scalar metrics')
+        if a.check_board_scribble:
+            # Existing A pipeline, same compiled backend / owner vault copy / private display.
+            # Playwright 1.54 CDP is trusted native browser pen input, NOT DOM dispatch or physical Pencil.
+            # Only production board runtime is loaded. Evaluation below is read-only except event observers.
+            board_script = r"""
+              import assert from 'node:assert/strict';
+              import {readFileSync,writeFileSync} from 'node:fs';
+              import {scribbleTraces} from './board/src/scribbleTraces.ts';
+              const {chromium}=await import(process.argv[1]);
+              const [base,folder,out]=process.argv.slice(2);
+              const original=JSON.parse(readFileSync(folder+'/board.json'));
+              const initialHistory=JSON.parse(readFileSync(folder+'/history.json'));
+              const disk=()=>JSON.parse(readFileSync(folder+'/board.json'));
+              const browser=await chromium.launch({executablePath:'/run/current-system/sw/bin/chromium',headless:false,args:['--mute-audio','--no-sandbox','--disable-background-networking','--disable-component-update','--disable-sync']});
+              const result={works:false,runtime:'Linux Chromium '+browser.version(),input:'CDP Input.dispatchMouseEvent pointerType=pen; private Xvfb. Not iPadOS/Safari/Apple Pencil',samples:0,fixture:'owned synthetic board in safe owner VC copy; not Carl handwriting'};
+              try {
+                const c=await browser.newContext({viewport:{width:1200,height:900},hasTouch:true});
+                const p=await c.newPage();
+                await p.route('**/*',r=>{
+                  const u=new URL(r.request().url());
+                  const allowed=u.origin===base&&(r.request().method()==='GET'||u.pathname.startsWith('/api/v1/boards/scribble-penup-fixture')||['/api/v1/attention','/api/v1/board/log'].includes(u.pathname));
+                  return allowed?r.continue():r.abort();
+                });
+                await p.addInitScript(()=>{
+                  window.__penEvents=[];
+                  for(const type of ['pointerdown','pointermove','pointerup','pointercancel','lostpointercapture'])document.addEventListener(type,e=>window.__penEvents.push({type:e.type,trusted:e.isTrusted,kind:e.pointerType}),true);
+                });
+                const url=base+'/board/#/b/scribble-penup-fixture';
+                const open=async()=>{await p.goto(url);await p.waitForFunction(()=>window.__board?.board?.strokes?.length>0);await p.waitForTimeout(400);};
+                await open();
+                assert((await p.content()).includes('/board/assets/'),'must load production built board module');
+                const cdp=await c.newCDPSession(p);
+                const model=()=>p.evaluate(()=>({board:window.__board.board,undo:window.__board.undoStack.length,redo:window.__board.redoStack.length,gesture:!!window.__board.g}));
+                const boardEqual=(a,b)=>{assert.deepEqual(a.strokes,b.strokes);assert.deepEqual(a.items,b.items);};
+                boardEqual((await model()).board,original);
+                const pixel=()=>p.evaluate(()=>{
+                  const v=window.__board,c=v.base,r=v.stage.getBoundingClientRect(),d=c.width/r.width;
+                  const x=Math.round((280-v.cam.x)*v.cam.z*d),y=Math.round((294-v.cam.y)*v.cam.z*d);
+                  const w=Math.max(2,Math.round(22*v.cam.z*d)),h=Math.max(2,Math.round(9*v.cam.z*d));
+                  const a=c.getContext('2d').getImageData(x,y,w,h).data;
+                  let hash=0,dark=0;for(let i=0;i<a.length;i++){hash=(hash+a[i]*(i+1))%1000000007;if(i%4===0&&a[i]<80&&a[i+1]<80&&a[i+2]<80&&a[i+3]>180)dark++;}
+                  let visible=true;for(let e=c;e;e=e.parentElement){const s=getComputedStyle(e);visible&&=s.visibility!=='hidden'&&s.display!=='none'&&Number(s.opacity)>0.99;}
+                  return {hash,dark,visible};
+                });
+                const raw=scribbleTraces(3).find(t=>t.name.startsWith('horizontal scribble')).pts;
+                const screen=await p.evaluate(raw=>{const v=window.__board,r=v.stage.getBoundingClientRect();return raw.map(q=>({x:r.left+(q.x-v.cam.x)*v.cam.z,y:r.top+(q.y-v.cam.y)*v.cam.z,t:q.t}));},raw);
+                let epoch=Date.now()/1000;
+                const pen=async(type,q)=>cdp.send('Input.dispatchMouseEvent',{type,x:q.x,y:q.y,button:type==='mouseMoved'?'none':'left',buttons:type==='mouseReleased'?0:1,pointerType:'pen',force:type==='mouseReleased'?0:.5,timestamp:epoch+q.t/1000});
+                const contact=async()=>{
+                  const before=await model(),beforeDisk=disk(),pixels=await pixel();assert(pixels.dark>0&&pixels.visible,'original ink must really be on visible base canvas');
+                  epoch=Date.now()/1000;
+                  for(let i=0;i<screen.length;i++){
+                    await pen(i?'mouseMoved':'mousePressed',screen[i]);
+                    const at=await model();boardEqual(at.board,before.board);assert.equal(at.undo,before.undo);assert.equal(at.redo,before.redo);
+                    boardEqual(disk(),beforeDisk);assert.deepEqual(await pixel(),pixels,'base ink changed before actual pen-up at sample '+i);
+                    result.samples++;
+                  }
+                  await p.waitForTimeout(100);boardEqual((await model()).board,before.board);boardEqual(disk(),beforeDisk);assert.deepEqual(await pixel(),pixels);
+                  assert((await model()).gesture,'real pen owns active stroke');
+                  return before;
+                };
+                const initial=await contact();
+                await pen('mouseReleased',screen.at(-1));
+                await p.waitForTimeout(350);
+                const after=await model();
+                const removed=original.strokes.filter(s=>['target','highlight'].includes(s.id));assert.equal(removed.length,2);
+                const remaining=original.strokes.filter(s=>!['target','highlight'].includes(s.id));
+                assert.deepEqual(after.board.strokes,remaining);assert.deepEqual(after.board.items,original.items);assert.equal(after.undo,initial.undo+1);
+                await p.waitForFunction(()=>!window.__board.dirty&&!window.__board.saving);
+                assert.deepEqual(disk().strokes,remaining);
+                // Browser automatically releases capture after up. It must not commit a second gesture.
+                const ev=await p.evaluate(()=>window.__penEvents);assert(ev.some(e=>e.type==='lostpointercapture'));
+                assert(ev.every(e=>e.trusted),'all pointer lifecycle input must be browser trusted');assert(ev.some(e=>e.type==='pointerdown'&&e.kind==='pen'));
+                await p.keyboard.press('Control+z');boardEqual((await model()).board,original);
+                await p.keyboard.press('Control+Shift+z');assert.deepEqual((await model()).board.strokes,remaining);
+                await p.waitForFunction(()=>!window.__board.dirty&&!window.__board.saving);
+                await p.reload();await p.waitForFunction(()=>!!window.__board);assert.deepEqual((await model()).board.strokes,remaining);
+                await p.keyboard.press('Control+z');boardEqual((await model()).board,original);
+                await p.waitForFunction(()=>!window.__board.dirty&&!window.__board.saving);
+                await p.reload();await p.waitForFunction(()=>!!window.__board);boardEqual((await model()).board,original);
+                await p.keyboard.press('Control+Shift+z');assert.deepEqual((await model()).board.strokes,remaining);
+                await p.keyboard.press('Control+z');boardEqual((await model()).board,original);
+                // Trusted native window focus loss, not a synthetic cancel or handler call.
+                const beforeCancel=await contact();const other=await c.newPage();await other.goto('about:blank');await other.bringToFront();await p.waitForTimeout(100);
+                await p.bringToFront();await pen('mouseReleased',screen.at(-1));
+                const canceled=await model();
+                assert.deepEqual(canceled.board.strokes.slice(0,original.strokes.length),original.strokes);
+                assert.deepEqual(canceled.board.items,original.items);
+                assert.equal(canceled.undo,beforeCancel.undo+1); // interrupted ink only, never erasure
+                await p.keyboard.press('Control+z');boardEqual((await model()).board,original);
+                await other.close();
+                // Browser-native touch cancel, touch pan and palm contacts cannot erase.
+                const m0=await model();
+                const touch=async(type,points)=>cdp.send('Input.dispatchTouchEvent',{type,touchPoints:points});
+                const a=screen[0];await touch('touchStart',[{x:a.x,y:a.y,id:1,radiusX:55,radiusY:55}]);
+                await touch('touchMove',[{x:a.x+50,y:a.y,id:1,radiusX:55,radiusY:55}]);
+                await touch('touchCancel',[]);boardEqual((await model()).board,m0.board);
+                result.trustedEvents=ev.length;result.originalVisibleEverySample=true;result.exactModelAndDiskEverySample=true;
+                result.penUpOneTransaction=true;result.undoRedoExactAttributes=true;result.autosaveAndReopenHistory=true;
+                result.blurNeverErases=true;result.nativeTouchCancelAndPalmNoErase=true;
+                result.originalHistoryPrefix=initialHistory.undo.length;
+                result.works=true;
+              } finally {await browser.close();writeFileSync(out,JSON.stringify(result,null,2)+'\n');}
+            """
+            board_file = work / 'board-scribble.json'
+            pw = os.environ.get('VC_PLAYWRIGHT', '/tmp/global-workspace-ui-09ed10ad-r1/source/preview/node_modules/playwright-core/index.mjs')
+            child = spawn(['node', '--import', 'tsx', '--input-type=module', '-e', board_script, pw, base,
+                           str(vault / 'boards/scribble-penup-fixture'), str(board_file)], 'board-scribble', cwd=ROOT)
+            if child.wait() != 0:
+                raise RuntimeError('Production board trusted-pen check failed; see board-scribble.log')
+            result['boardScribble'] = json.loads(board_file.read_text())
+            if not result['boardScribble']['works']:
+                raise RuntimeError('Production board trusted-pen assertions incomplete')
+            control = vault / 'boards/scribble-control-fixture'
+            if board_control_bytes != {str(f.relative_to(control)): f.read_bytes() for f in control.rglob('*') if f.is_file()}:
+                raise RuntimeError('Unrelated control board changed')
+            result['boardScribble']['otherBoardBytesUnchanged'] = True
         if a.before_app:
             result['runs']['before'] = exercise(a.before_app, 'before')
         result['runs']['after'] = exercise(a.app, 'after')
