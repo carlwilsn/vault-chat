@@ -19,7 +19,7 @@ import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { appendEntries, newSessionFile, readEntries } from "../convlog/piSession";
 // @ts-ignore a plain .mjs (the pi extension's helpers)
-import { YOU_TYPE, youSince } from "../engine/pi/ext/policy.mjs";
+import { YOU_TYPE, youSince, nativeUserRequest } from "../engine/pi/ext/policy.mjs";
 
 let clock = Date.now();
 const stamp = () => (clock = Math.max(Date.now(), clock + 1));
@@ -70,7 +70,8 @@ export function withPiSessions<T extends EventEmitter>(b: T, dir: string): T {
     if (s) {
       // pi sends the prompt's user message as the turn starts.
       const text = (o?.texts ?? []).filter(Boolean).join("\n\n");
-      const message = { role: "user", content: [{ type: "text", text }], timestamp: stamp() };
+      const raw = { role: "user", content: [{ type: "text", text: o.request ? JSON.stringify({ vcInput: "fixture", request: o.request, text }) : text }], timestamp: stamp() };
+      const message = nativeUserRequest(raw, "fixture")?.message ?? raw;
       queueMicrotask(() => {
         for (const ev of [{ type: "message_start", message }, { type: "message_end", message }]) b.emit("event", { threadId, kind: "pi", ev });
         s.sentPrompt = text;

@@ -1,6 +1,6 @@
-// Messages sent while a turn runs are pi's own: a plain /message is pi's steer
-// (delivered after the current tool calls), /message {queue: true} is pi's
-// follow_up (delivered when the agent would stop); until pi delivers one it is
+// Messages sent while a turn runs are pi's own: ordinary /message uses
+// native follow_up; only a split voice continuation uses native steer
+// (delivered after the current tool calls). Native follow_up is (delivered when the agent would stop); until pi delivers one it is
 // pending in the log, and it enters the transcript where pi puts it (its user
 // message_start), under the client's id. {unqueue: id} takes one back: pi's
 // clear_queue, then the others go back in, in order.
@@ -134,13 +134,13 @@ const until = async (fn: () => Promise<boolean> | boolean, ms = 10_000) => {
 const userTexts = async (id: string) => ((await readConv(vault, id))?.messages ?? []).filter((m: any) => m.role === "user" && !m.system).map((m: any) => m.content);
 
 describe("steer and queue", () => {
-  it("steers a running turn; queued messages are pi's follow-ups, pending until pi delivers them, in order; one can be taken back", async () => {
+  it("a split voice continuation steers a running turn; queued messages are pi's follow-ups, pending until pi delivers them, in order; one can be taken back", async () => {
     const r = await engine.message({ text: "Write the section.", convId: "sep-queue1" });
     await until(() => backend.turns.length === 1);
     const tid = backend.turns[0].threadId;
 
-    // Enter while it runs: pi's steer. Pending (a chip), not in the transcript yet.
-    const s1 = await engine.message({ convId: r.convId, text: "Keep it under a page.", clientMsgId: "c-steer" });
+    // A split voice continuation intentionally refines the active thought. Pending until native delivery.
+    const s1 = await engine.message({ convId: r.convId, text: "Keep it under a page.", source: "voice", continues: true, clientMsgId: "c-steer" });
     expect(s1.steered).toBe(true);
     expect(backend.steers.map((x) => x.texts.join())).toEqual(["Keep it under a page."]);
 
@@ -203,7 +203,7 @@ describe("steer and queue", () => {
     expect(JSON.stringify(line)).not.toMatch(/Write the section|Keep it under|Drafting/);
   });
 
-  it("a steer lands where pi delivers it: after the tool calls in flight, in the log's order", async () => {
+  it("a split voice continuation lands where pi delivers it: after the tool calls in flight, in the log's order", async () => {
     const r = await engine.message({ text: "Go through the three chapters." });
     await until(() => backend.turns.some((t) => t.texts?.join(" ").includes("three chapters")));
     const turn = backend.turns.length;
@@ -215,7 +215,7 @@ describe("steer and queue", () => {
       toolEnd("c1", "read", "text"),
     ]);
     await new Promise((res) => setTimeout(res, 50));
-    const s1 = await engine.message({ convId: r.convId, text: "still working?", clientMsgId: "c-still" });
+    const s1 = await engine.message({ convId: r.convId, text: "still working?", source: "voice", continues: true, clientMsgId: "c-still" });
     expect(s1.steered).toBe(true);
     // Native MCP's request id is not pi's model tool-call id (c2).
     backend.ev(tid, { kind: "subagents", itemId: "mcp-request-42", children: ["sa1"], op: "spawnAgent", done: true, ok: true });
@@ -254,8 +254,8 @@ describe("steer and queue", () => {
     const turnsBefore = backend.turns.length;
     const tid = backend.turns[turnsBefore - 1].threadId;
     backend.pi(tid, [...assistant([{ text: "Reading chapter one." }])]);
-    expect((await engine.message({ convId: r.convId, text: "Only chapter two.", clientMsgId: "c-now" })).steered).toBe(true);
-    expect((await engine.message({ convId: r.convId, text: "And keep it short.", clientMsgId: "c-after" })).steered).toBe(true);
+    expect((await engine.message({ convId: r.convId, text: "Only chapter two.", clientMsgId: "c-now" })).queued).toBe(true);
+    expect((await engine.message({ convId: r.convId, text: "And keep it short.", clientMsgId: "c-after" })).queued).toBe(true);
     const waiting = () => pendingOf(engine.picture(r.convId)).map((q: any) => q.id);
     expect(waiting()).toEqual(["c-now", "c-after"]);
     // Send now on the first: pi's stop (its queue is cleared), then the turn ends as interrupted…

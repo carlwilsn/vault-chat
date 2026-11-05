@@ -918,8 +918,9 @@ export class Engine {
    * imagePaths: [vault-relative path]. context: a preamble the agent sees before
    * the text (not shown as the message). project: tags a new conversation — Carl's choice in the app (the
    * phone's "New chat in project"); no agent tool sends it.
-   * While a turn runs the message steers it (pi's steer), or with `queue` waits
-   * for its end (pi's follow-up); `unqueue: <id>` takes a queued one back.
+   * While a turn runs ordinary messages wait in pi's native follow-up queue.
+   * Only a split voice continuation refines the current turn; Send now interrupts
+   * intentionally. `unqueue: <id>` takes a pending one back.
    * `clientMsgId` is the id Carl's client shows it under (the item's id): a repeat
    * of the same id is a no-op. Returns null for a legacy mission thread.
    */
@@ -1038,12 +1039,13 @@ export class Engine {
     const hostContext = [context, fileContext].filter(Boolean).join("\n\n") || undefined;
     const request: UserRequest = { v: 1, clientId, via: body.via ?? "chat", ...(origin ? { device: origin } : {}), ...(itemImages.length ? { images: itemImages.map(({ path }) => ({ path })) } : {}) };
     if (l && !l.finished) {
-      // A running turn: steer it (pi delivers it after the current tool calls), or queue it as
-      // pi's follow-up (delivered when the agent would otherwise stop). Either way it is pending
-      // until pi takes it, and enters the transcript where pi puts it. A message from another surface
-      // than the running turn's (two conversations at once in one thread) waits its turn instead of steering it.
+      // Ordinary input on EVERY surface waits for its own native follow-up
+      // boundary, even when that surface also started the active turn. The old
+      // client "steer" intent is ordinary Send, not consent to interrupt. Only
+      // a split spoken continuation refines the active thought; Send now below
+      // remains the explicit interrupt path. Pi owns delivery and ordering.
       const elsewhere = !!origin && !!l.turnOpts.origin && origin !== l.turnOpts.origin;
-      const kind = body.queue || elsewhere ? "queue" : "steer";
+      const kind = body.source === "voice" && body.continues && !body.queue && !elsewhere ? "steer" : "queue";
       this.setPending(id, { id: clientId, kind, text: shown, at: Date.now() });
       l.feed.expect({ kind, text: sent, clientId, shown, hostContext, via: body.via ?? kind, images: itemImages, ...(device ? { device } : {}) });
       l.rec.q(kind, clientId);

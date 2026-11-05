@@ -134,23 +134,23 @@ describe("the feed over HTTP", () => {
     expect(row).toEqual(JSON.parse(JSON.stringify(rowFromPicture(fold(own.events, conv)))));
   });
 
-  it("steer and queue are pi's: pending, then Carl's message where pi delivers it, in every client's order", async () => {
+  it("ordinary legacy steer intent and queue both wait for native follow-ups, in every client's order", async () => {
     const h0 = await head();
     const r = await intent({ type: "send", convId: conv, clientId: "c-slow-1", text: "[slow] Walk me through it." });
     expect(r.ok).toBe(true);
     await waitFor(() => streaming(conv, h0), 15_000);
     const s = await intent({ type: "steer", convId: conv, clientId: "c-steer-1", text: "Shorter, please." });
-    expect(s.steered).toBe(true);
+    expect(s.queued).toBe(true);
     const q = await intent({ type: "queue", convId: conv, clientId: "c-queue-1", text: "Then give an example." });
     expect(q.queued).toBe(true);
     // Pending in the feed until pi delivers them.
     const mid = fold(await recsOf(conv), conv);
-    expect(pendingOf(mid).map((x) => [x.id, x.kind])).toEqual([["c-steer-1", "steer"], ["c-queue-1", "queue"]]);
+    expect(pendingOf(mid).map((x) => [x.id, x.kind])).toEqual([["c-steer-1", "queue"], ["c-queue-1", "queue"]]);
     await waitFor(() => ended(conv, 2), 60_000);
     const p = fold(await recsOf(conv), conv);
     expect(pendingOf(p)).toEqual([]);
     const users = p.items.filter((x) => x.kind === "user").map((x) => [x.id, x.via]);
-    expect(users.slice(-3)).toEqual([["c-slow-1", "chat"], ["c-steer-1", "steer"], ["c-queue-1", "queue"]]);
+    expect(users.slice(-3)).toEqual([["c-slow-1", "chat"], ["c-steer-1", "queue"], ["c-queue-1", "queue"]]);
     // Each of Carl's messages comes after a reply to the one before it (pi's order).
     const order = p.items.filter((x) => x.kind === "user" || x.kind === "assistant").map((x) => x.kind).slice(-6);
     expect(order).toEqual(["user", "assistant", "user", "assistant", "user", "assistant"]);

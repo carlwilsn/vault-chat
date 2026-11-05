@@ -308,20 +308,36 @@ describe("one context, several surfaces: Clear is per surface, /compact compacts
     const before = rig.backend.turns.length;
     await rig.engine.message({ text: "Laptop: start the long refactor.", client: "laptop" });
     await until(() => rig.backend.turns.length > before);
-    expect(rig.backend.turns.at(-1)!.texts.join("\n")).toContain("[Carl, on his laptop]");
+    const active = rig.backend.turns.at(-1)!;
+    expect(active.texts).toEqual(["Laptop: start the long refactor."]);
+    expect(active.context).toContain("[Carl, on his laptop]");
+    expect(active.request.device).toBe("laptop");
     const fu0 = rig.backend.followUps.length;
-    const out = await rig.engine.message({ text: "Phone: what's on today?", client: "phone" });
-    expect(out).toMatchObject({ ok: true, queued: true });
-    expect(rig.backend.followUps.length).toBe(fu0 + 1);
-    expect(rig.backend.followUps.at(-1).texts.join("\n")).toContain("[Carl, on his phone]");
-    // The same surface still steers its own turn.
-    const steered = await rig.engine.message({ text: "Laptop: only the parser.", client: "laptop" });
-    expect(steered).toMatchObject({ ok: true, steered: true });
+    const inputs = [
+      { text: "Phone: what's on today?", client: "phone", clientMsgId: "surface-phone" },
+      { text: "Laptop: only the parser.", client: "laptop", clientMsgId: "surface-laptop" },
+    ];
+    for (const input of inputs) {
+      expect(await rig.engine.message(input)).toMatchObject({ ok: true, queued: true, qid: input.clientMsgId });
+    }
+    const queued = rig.backend.followUps.slice(fu0);
+    expect(queued.map(x => x.texts)).toEqual(inputs.map(x => [x.text]));
+    expect(queued.map(x => x.request)).toEqual(inputs.map(x => ({ v: 1, clientId: x.clientMsgId, via: "queue", device: x.client })));
+    for (const [i, q] of queued.entries()) expect(q.context).toContain(`[Carl, on his ${inputs[i].client}]`);
+    // A faithful backend delivers only at its native follow-up boundary. Each
+    // user already has the public message_end replacement, not transport JSON.
+    const { assistant } = await import("./fakePi");
+    for (const [i, q] of queued.entries()) {
+      for (const ev of assistant([{ text: `Reply ${i}` }])) rig.backend.emit("event", { threadId: tid, kind: "pi", ev });
+      const message = { role: "user", content: [{ type: "text", text: q.texts.join("\n\n") }], vcRequest: q.request, timestamp: Date.now() + i };
+      for (const type of ["message_start", "message_end"]) rig.backend.emit("event", { threadId: tid, kind: "pi", ev: { type, message } });
+    }
     rig.backend.end(tid);
     await until(async () => (await rig.readConv("main"))?.state !== "running");
-    // Each of Carl's messages carries its surface in the feed (a call can tell his laptop's turns from its own).
     const users = reduce.shown(convs.pictureOf(rig.vault, "main")!).filter((x) => x.kind === "user");
+    for (const input of inputs) expect(users.filter(x => x.id === input.clientMsgId)).toMatchObject([{ text: input.text, device: input.client }]);
     expect(users.find((x) => x.text === "Laptop: start the long refactor.")?.device).toBe("laptop");
+    expect(rig.backend.turns.length).toBe(before + 1); // never a host-side second queue
   });
 
   it("SearchHistory finds what was said before a compaction, in pi's own file, with its time", async () => {

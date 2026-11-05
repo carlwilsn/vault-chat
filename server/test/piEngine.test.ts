@@ -301,11 +301,11 @@ describe.skipIf(!PI_DIR)("pi engine (real pi 1.1.0, fake chat-completions OpenRo
     expect(c2.costUsd).toBeCloseTo(CHAT_COST * 2, 6);
   });
 
-  it("steer mid-turn: a second /message joins the running turn", async () => {
+  it("split voice continuation: intentionally joins the running turn", async () => {
     const r = await post("/message", { text: "STEER1 run the slow step" });
     await sawCall("STEER1");
     await new Promise((res) => setTimeout(res, 1500));
-    const s = await post("/message", { convId: r.convId, text: "kiwi steer: also mention kiwi" });
+    const s = await post("/message", { convId: r.convId, text: "kiwi steer: also mention kiwi", source: "voice", continues: true });
     expect(s.steered).toBe(true);
     const c = await assistantSays(r.convId, /saw the kiwi steer/, 60_000);
     expect(c.messages.filter((m: any) => m.role === "user").map((m: any) => m.content)).toEqual(["STEER1 run the slow step", "kiwi steer: also mention kiwi"]);

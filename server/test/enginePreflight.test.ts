@@ -26,14 +26,14 @@ async function heldPreflight() {
   const original = originalStart;
   r.backend.startTurn = async (id, o) => { entered = true; await gate; return original(id, o); };
   const steers: any[] = [];
-  r.backend.steer = async (...args: any[]) => { steers.push(args); };
+  r.backend.followUp = async (...args: any[]) => { steers.push(args); };
   const first = await r.engine.message({ convId: `sep-preflight-${++n}`, text: "Original input", clientMsgId: "original" });
   await until(() => entered);
   return { r, first, release, steers };
 }
 
 describe("foreground during native preflight", () => {
-  it("queues through pi during >60s compaction, then steers after late acceptance without a fresh prompt or duplicate", async () => {
+  it("queues through pi during >60s compaction, then queues after late acceptance without a fresh prompt or duplicate", async () => {
     const f = await heldPreflight();
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     await vi.advanceTimersByTimeAsync(61000);
@@ -42,14 +42,14 @@ describe("foreground during native preflight", () => {
     await vi.advanceTimersByTimeAsync(1000);
     await until(() => f.steers.length === 1);
     await sending;
-    expect(during.steered).toBe(true);
+    expect(during.queued).toBe(true);
     expect(f.r.backend.turns.filter(t => t.texts.includes("Original input"))).toHaveLength(0);
     expect((await f.r.engine.message({ convId: f.first.convId, text: "During compaction", clientMsgId: "during" })).duplicate).toBe(true);
     f.release();
     await until(() => f.r.backend.turns.length === 1);
     await until(() => f.r.engine.live.get(f.first.convId)?.started);
     const after = await f.r.engine.message({ convId: f.first.convId, text: "After late acceptance", clientMsgId: "after" });
-    expect(after.steered).toBe(true);
+    expect(after.queued).toBe(true);
     expect(f.steers).toHaveLength(2);
     expect(f.steers[0][0]).toBe(f.steers[1][0]);
     const tid = f.r.backend.turns[0].threadId;
