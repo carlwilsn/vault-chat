@@ -185,8 +185,15 @@ describe.skipIf(!PI_DIR)("pi subagents (real pi children, fake OpenRouter)", () 
     await says(id, /Both workers keep/);
     await post("/message", { text: "PARALLELWORK16 SECOND", convId: id, otherRoot: join(home, "other-viewer") });
     const b = await waitFor(async () => (await conv(id)).subagents?.find((x: any) => x.threadId !== a.threadId && x.state === "running"));
-    const sessionCwd = (file: string) => JSON.parse(readFileSync(file, "utf8").split("\n")[0]).cwd;
-    const acwd = sessionCwd(a.sessionFile), bcwd = sessionCwd(b.sessionFile);
+    // A running row acknowledges spawn, not Pi's first session write. In the
+    // actual shipping failure B's row arrived before its JSONL existed. Observe
+    // each real Pi session header before reading cwd; keep all isolation/stop
+    // assertions below unchanged (and use the same contract for explicit cwd).
+    const sessionCwd = (file: string) => waitFor(() => {
+      const header = JSON.parse(readFileSync(file, "utf8").split("\n")[0]);
+      return header.type === "session" && typeof header.cwd === "string" && header.cwd ? header.cwd : null;
+    });
+    const [acwd, bcwd] = await Promise.all([sessionCwd(a.sessionFile), sessionCwd(b.sessionFile)]);
     expect(acwd).not.toBe(bcwd); expect(acwd).not.toBe(parentCwd);
     await waitFor(() => existsSync(join(acwd, "only-A.txt")) && existsSync(join(bcwd, "only-B.txt")));
     expect(readFileSync(join(acwd, "same.txt"), "utf8")).toBe("A");
@@ -211,8 +218,7 @@ describe.skipIf(!PI_DIR)("pi subagents (real pi children, fake OpenRouter)", () 
     await waitFor(async () => !(await conv(id)).running);
     await post("/message", { text: "PARALLELWORK16 EXPLICIT", convId: id });
     const explicit = await waitFor(async () => (await conv(id)).subagents?.find((x: any) => x.title === "Isolated explicit"));
-    await waitFor(() => existsSync(explicit.sessionFile));
-    expect(sessionCwd(explicit.sessionFile)).toBe(explicitCwd);
+    expect(await sessionCwd(explicit.sessionFile)).toBe(explicitCwd);
     await waitFor(async () => (await conv(id)).subagents?.find((x: any) => x.threadId === explicit.threadId)?.state === "completed");
     expect(readFileSync(join(explicitCwd, "same.txt"), "utf8")).toBe("B");
     expect(git(explicitCwd, "branch", "--show-current")).toBe("agent/explicit");
