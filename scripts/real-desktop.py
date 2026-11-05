@@ -551,7 +551,7 @@ def main():
         checkpoint = request(base + checkpoint_path)
         picture = checkpoint.get('picture', checkpoint)
         items = picture.get('items', [])
-        if a.check_history_update or a.check_device_sense:
+        if a.check_history_update or a.check_device_sense or a.check_web_research:
             # The original copy is immutable. Engine startup may already have
             # appended its two real lost-worker/resume items before this HTTP
             # snapshot; those are private appends, never part of the original.
@@ -561,7 +561,7 @@ def main():
                 raise RuntimeError('History fixture requires exact original 1329 messages / 3819 items')
             if items[:3819] != original_items or len(items) not in (3819, 3821):
                 raise RuntimeError('History startup changed original prefix or unexpected private startup appends')
-            if a.check_device_sense and items[3819:]:
+            if (a.check_device_sense or a.check_web_research) and items[3819:]:
                 startup = items[3819:]
                 if [x.get('kind') for x in startup] != ['user', 'assistant'] or startup[0].get('via') != 'delegate':
                     raise RuntimeError('Unexpected device fixture startup append identities')
@@ -1586,7 +1586,7 @@ def main():
                         raise RuntimeError('Research did not recover Retry-After/read real primary bytes')
                     final = request(base + checkpoint_path)['picture']['items']
                     expected = {'user':11,'assistant':10,'tool':8} if a.check_device_sense else {'user':1,'assistant':1,'tool':2}
-                    if final[:3819] != items or len(final) != 3819 + sum(expected.values()) or collections.Counter(x['kind'] for x in final[3819:]) != expected:
+                    if final[:3819] != original_items or final[:len(items)] != items or len(final) != len(items) + sum(expected.values()) or collections.Counter(x['kind'] for x in final[len(items):]) != expected:
                         raise RuntimeError('Research changed exact original prefix/private append count')
                     if a.check_global_notes and (vault / '.vault-chat/notes.jsonl').read_bytes() != original_notes:
                         raise RuntimeError('Research changed original human Notes')
@@ -1729,8 +1729,7 @@ def main():
                 def stats(values):
                     v = sorted(values)
                     return {'n': len(v), 'p50Ms': round(v[len(v)//2], 3), 'p95Ms': round(v[min(len(v)-1, int(len(v)*.95))], 3), 'maxMs': round(max(v), 3)}
-                return {'works': not interaction_failures, 'videoCheck': video_check, 'imageCheck': image_check, 'statusDot': status_dot, 'editorSync': editor_sync, 'pendingChat': pending_chat, 'deviceSense': device_sense, 'webResearch': web_research, 'globalNotes': global_notes, 'interactionFailures': interaction_failures, 'planLifecycle': plan_lifecycle, 'emptyChat': empty_chat, 'native': metadata, 'telemetryHttpStatuses': sorted(statuses),
-                return {'works': not interaction_failures, 'videoCheck': video_check, 'imageCheck': image_check, 'statusDot': status_dot, 'editorSync': editor_sync, 'pendingChat': pending_chat, 'deviceSense': device_sense, 'historyUpdate': history_update, 'globalNotes': global_notes, 'interactionFailures': interaction_failures, 'planLifecycle': plan_lifecycle, 'emptyChat': empty_chat, 'native': metadata, 'telemetryHttpStatuses': sorted(statuses),
+                return {'works': not interaction_failures, 'videoCheck': video_check, 'imageCheck': image_check, 'statusDot': status_dot, 'editorSync': editor_sync, 'pendingChat': pending_chat, 'deviceSense': device_sense, 'webResearch': web_research, 'historyUpdate': history_update, 'globalNotes': global_notes, 'interactionFailures': interaction_failures, 'planLifecycle': plan_lifecycle, 'emptyChat': empty_chat, 'native': metadata, 'telemetryHttpStatuses': sorted(statuses),
                         'telemetryNote': 'Observed real Rust IPC batches; loopback is not authenticated Tailscale laptop telemetry',
                         'launchProcessToDomUpperBoundMs': round(launch_upper, 3),
                         'timings': [{'metric': m, 'method': method, **stats(values)} for (m, method), values in sorted(samples.items())]}
