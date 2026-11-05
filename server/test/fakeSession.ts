@@ -105,8 +105,9 @@ export function withPiSessions<T extends EventEmitter>(b: T, dir: string): T {
       const s = sess(e.threadId);
       if (s) {
         const ev = e.ev;
-        // A test playing pi's user message for the prompt pi already sent: once is enough.
-        if ((ev.type === "message_start" || ev.type === "message_end") && ev.message?.role === "user" && s.sentPrompt !== null && textOf(ev.message) === s.sentPrompt) {
+        // A test replaying the raw prompt pi already sent: once is enough.
+        // A fresh native request is never that replay, even with identical text.
+        if ((ev.type === "message_start" || ev.type === "message_end") && ev.message?.role === "user" && !ev.message.vcRequest && s.sentPrompt !== null && textOf(ev.message) === s.sentPrompt) {
           if (ev.type === "message_end") s.sentPrompt = null;
           return true;
         }
