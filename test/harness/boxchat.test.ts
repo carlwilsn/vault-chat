@@ -364,3 +364,29 @@ test("cache waits for feed quiescence, keeps its exact old cursor, and cancels o
   await new Promise(r => setTimeout(r, 1700));
   assert.equal(localStorage.getItem("vault-chat:box-log:" + key), beforeStop, "a stopped session cannot write a pending snapshot");
 });
+
+test("cache quota failure is attempted once per connection, never changes the live history or old offline cursor", async () => {
+  const key = "vault-chat:box-log:box:" + box.url;
+  const old = localStorage.getItem(key);
+  const setItem = localStorage.setItem;
+  let attempts = 0;
+  localStorage.setItem = (k, v) => {
+    if (k === key) { attempts++; throw new DOMException("owned quota fixture", "QuotaExceededError"); }
+    setItem(k, v);
+  };
+  try {
+    await bc.startBoxChat(vault);
+    await waitFor("first failed cache write", () => attempts === 1);
+    for (let n = 0; n < 2; n++) {
+      box.emit(c1, { type: "meta", patch: { title: `after quota ${n}` } });
+      await waitFor("live progress after quota", () => S().conversations.some(c => c.id === c1 && c.title === `after quota ${n}`));
+      await new Promise(r => setTimeout(r, 1700));
+    }
+    assert.equal(attempts, 1, "no repeated serialization/storage after quota failure");
+    assert.equal(localStorage.getItem(key), old, "previous offline snapshot and exact cursor survive");
+    assert.deepEqual(JSON.parse(JSON.stringify(bc._boxChatSession()!.picture(c1))), JSON.parse(JSON.stringify(box.picture(c1))));
+  } finally {
+    localStorage.setItem = setItem;
+    bc.stopBoxChat();
+  }
+});

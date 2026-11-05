@@ -1,3 +1,4 @@
+import { encodeBoxCache, type CacheFile } from "./boxCache";
 import { saveBeforeSend } from "./saveBeforeSend";
 // Box-mode chat. When a vault's `.vault-chat/sync.json` names a box, every
 // agent turn runs on the box and the box's event log is the conversation
@@ -70,7 +71,6 @@ type HttpResult = { status: number; body: string };
 const POLL_TIMEOUT_MS = 35_000;
 const CACHE_PREFIX = "vault-chat:box-log:";
 const CACHE_MAX_PICTURES = 12;
-const CACHE_MAX_BYTES = 3_000_000;
 
 function headless(): boolean {
   return !!(globalThis as { __VC_HEADLESS__?: unknown }).__VC_HEADLESS__;
@@ -214,8 +214,6 @@ type Notice = { id: string; text: string; after: string | null };
 
 // ---------- the cache ----------
 
-type CacheFile = { epoch: string; cursor: number; rows: RowState[]; pictures: Picture[] };
-
 function cacheKey(vault: string): string {
   return CACHE_PREFIX + vault;
 }
@@ -249,6 +247,7 @@ class BoxChatSession {
   private notices = new Map<string, Notice[]>();
   private unsub: (() => void) | null = null;
   private wake: (() => void) | null = null;
+  private cacheUnavailable = false;
   private cacheTimer: ReturnType<typeof setTimeout> | null = null;
   /** The poll is down since (ms), false when up, null before the first answer. */
   private down: number | false | null = null;
@@ -773,6 +772,7 @@ class BoxChatSession {
     // This is a best-effort warm-start replica, not the log. Wait for a quiet
     // feed instead of serializing the entire history every 1.5s during a run.
     // The previous snapshot keeps its own exact cursor until this one lands.
+    if (this.cacheUnavailable) return;
     if (this.cacheTimer) clearTimeout(this.cacheTimer);
     this.cacheTimer = setTimeout(() => {
       this.cacheTimer = null;
@@ -789,14 +789,17 @@ class BoxChatSession {
         .sort((a, b) => Number(b.id === active) - Number(a.id === active) || (this.rows.get(b.id)?.lastActivityAt ?? 0) - (this.rows.get(a.id)?.lastActivityAt ?? 0))
         .slice(0, CACHE_MAX_PICTURES);
       const file: CacheFile = { epoch: this.epoch, cursor: this.cursor, rows: [...this.rows.values()], pictures: pics };
-      let body = JSON.stringify(file);
-      while (body.length > CACHE_MAX_BYTES && file.pictures.length > 1) {
-        file.pictures.pop();
-        body = JSON.stringify(file);
+      const body = encodeBoxCache(file);
+      if (body === null) return; // Keep the last complete offline picture and its exact cursor.
+      try {
+        localStorage.setItem(cacheKey(this.cacheHome), body);
+      } catch {
+        // Storage is optional. A full/denied origin must not repeatedly encode
+        // history after every quiet feed. A new connection can try again.
+        this.cacheUnavailable = true;
       }
-      localStorage.setItem(cacheKey(this.cacheHome), body);
     } catch {
-      /* best effort: quota or no storage */
+      /* best effort: never affect the live fold or its UI */
     }
   }
 }
