@@ -97,7 +97,7 @@ server/engine/
   ledger.ts         dollars per OpenRouter generation id: the cost OpenRouter streamed, else GET /generation
   capabilities.ts   per-model tools/subagents/images/pdf/caching: catalog + learned from use ($VC_STATE_DIR/capabilities.json)
   catalog.ts        OpenRouter /models (cached, refreshed daily): context windows, capabilities
-  extraTools.ts     PdfRead, WebSearch
+  extraTools.ts     PdfRead, PdfPages; webTools.ts WebSearch/WebFetch
   context.ts        the seam to server/context (CONTEXT, Order C)
   prompt.ts         vault-chat's role prompt
   pi/backend.ts     PiBackend: thread = pi session (id; ref = its session file), one pi process per thread with work
@@ -311,3 +311,34 @@ stubs, the legacy (node) build, and its worker bundled and run on the main threa
 (`PdfExtract`) works.** Page rendering (`PdfPageSnapshot`) needs a canvas and fails with an error message
 headless. pdf.js prints one warning at start ("Cannot load @napi-rs/canvas") and may warn about
 `standardFontDataUrl`; both are harmless for text extraction.
+
+### Public web research
+
+Pi is the research agent: discover with WebSearch, read primary pages with WebFetch,
+follow source links, compare and cite the URLs actually read. Long work uses existing
+Delegate workers (same tools); no separate research session/job service. Search still
+uses the configured `VC_WEBSEARCH_MODEL` and OpenRouter web plugin, max_results=5,
+max_tokens=1200; no automatic provider/model switch, new paid account or unlimited
+quota promise. Provider-generated summaries are discovery leads, not primary evidence.
+Structured provider citation URLs/title/excerpts are preserved separately.
+
+`got` retries only received 429/502/503/504 responses, at most twice, respecting
+Retry-After up to 5s (longer waits return an honest failure), with bounded backoff.
+Network/timeout errors are not retried: a possibly processed paid POST must not be
+blindly repeated. One process-wide `p-queue` search slot, at most one new search/sec,
+is held through retries across foreground/voice/workers. Twenty-second cancellation
+deadline includes queue, retries and response body; 12s per HTTP attempt. Auth/credit
+errors stop without fallback purchase; 429 remaining after retries is reported plainly.
+This fixes the former single unbounded fetch's raw `WebSearch failed: HTTP 429` path,
+not external account quotas. No historical provider response metadata was retained by
+that implementation, so a particular past 429 cannot be attributed to quota vs burst
+vs upstream routing from its status alone.
+
+WebFetch uses `got`, Mozilla Readability and LinkeDOM, not a browser/crawler. No JS,
+subresources, cookies, private vault access or network credentials. HTTP(S) standard
+ports only; literal IPs, actual socket DNS answers and each redirect are checked
+against ipaddr.js public unicast ranges. Five redirects, 2MiB decompressed bytes,
+four simultaneous reads, 20k-character slices and 80 links maximum. Only supported
+text/HTML/JSON is accepted; extracted HTML is never rendered. Source material is
+explicitly untrusted data. JS-only, paywalled, giant or non-text pages may fail; do
+not invent a citation or treat a search summary as having read the page.

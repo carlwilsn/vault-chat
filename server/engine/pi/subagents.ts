@@ -95,6 +95,8 @@ export function activityOf(tool: string, args: any): string {
     case "find":
     case "ls":
       return "looking through files";
+    case "WebFetch":
+      return args?.url ? `reading web source ${one(args.url, 60)}` : "reading a web source";
     case "WebSearch":
       return args?.query ? `searching the web for ${one(args.query, 40)}` : "searching the web";
     case "BoardSend":
@@ -121,7 +123,7 @@ function firstWords(task: string): string {
 
 const PI_BUILTINS = ["read", "bash", "edit", "write", "grep", "find", "ls"];
 /** Host tools a child may have; AskUser, subagent, ScheduleWake, StartJob… never. */
-const CHILD_HOST_TOOLS = ["Notify", "PdfRead", "WebSearch", "BoardSend"];
+const CHILD_HOST_TOOLS = ["Notify", "PdfRead", "WebSearch", "WebFetch", "BoardSend"];
 const DEFAULT_TOOLS = ["read", "bash", "edit", "write", "Notify"];
 
 const PREAMBLE = `You are a subagent: a helper that vault-chat's agent started for one task, in a context of your own.

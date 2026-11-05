@@ -39,7 +39,7 @@ import { MAIN_ID, projectOfThread, projectThreadId, threadKindOf } from "../../s
 import { searchHistory } from "./history";
 import { addWake, readWakes, removeWakes, nextWakeFor, parseDelay, type Wake } from "./wakes";
 import { Ledger } from "./ledger";
-import { pdfPagesAnswer, pdfPagesSpec, pdfRead, webSearch } from "./extraTools";
+import { pdfPagesAnswer, pdfPagesSpec, pdfRead, webSearch, webFetch, webFetchSpec } from "./extraTools";
 import { failMake, inboxLog, listEntries, readEntry, sendEntry, startMake, type InboxEvent } from "../inbox";
 import { BOARD_MAKER_PROMPT, boardMakeTask, makerStats } from "./boardTools";
 import { lookBoard } from "../boards";
@@ -240,9 +240,10 @@ export const ENGINE_TOOL_SPECS = [
     type: "function",
     name: "WebSearch",
     readOnly: true,
-    description: "Search the web; returns a short answer with source URLs.",
+    description: "Discover web sources with the configured OpenRouter web plugin. Returns provider summary and structured citation URLs/excerpts, not verified primary-page evidence. Read sources with WebFetch, iterate and cite only verified URLs. Temporary rate limits are retried within a bounded deadline; quota/auth failures remain honest.",
     inputSchema: { type: "object", properties: { query: { type: "string" } }, required: ["query"], additionalProperties: false },
   },
+  webFetchSpec,
   {
     type: "function",
     name: "StartJob",
@@ -2340,7 +2341,7 @@ export class Engine {
           let workerStarted!: (id: string) => void;
           const workerId = new Promise<string>((resolve) => { workerStarted = resolve; });
           const started = this.d.backend.background(p.threadId, {
-            agent: { name: "worker", systemPrompt: DELEGATE_WORKER_PROMPT, tools: ["read", "bash", "edit", "write", "grep", "find", "ls", "Notify", "PdfRead", "WebSearch", "BoardSend"] },
+            agent: { name: "worker", systemPrompt: DELEGATE_WORKER_PROMPT, tools: ["read", "bash", "edit", "write", "grep", "find", "ls", "Notify", "PdfRead", "WebSearch", "WebFetch", "BoardSend"] },
             task,
             // The conversation's own model, not a live call's talker: the work wants the strong one.
             model: this.d.model(),
@@ -2424,7 +2425,9 @@ export class Engine {
           return { ...text(answer.text), resources: answer.resources };
         }
         case "WebSearch":
-          return text(await webSearch(String(a.query ?? ""), this.d.apiKey(), this.d.webSearchModel));
+          return text(await webSearch(String(a.query ?? ""), this.d.apiKey(), this.d.webSearchModel, p.signal));
+        case "WebFetch":
+          return text(await webFetch(a, p.signal));
         case "StartJob": {
           // In the thread's working folder (a project's own folder, else the vault), as its shell commands run.
           const r = startJobWith(this.d.jobEnv, this.cwdOf(conv), a, convId, !!this.live.get(convId)?.byCarl);

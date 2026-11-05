@@ -120,33 +120,5 @@ export async function pdfPagesAnswer(vault: string, a: { path?: string; pages?: 
   return { ok: true, text, resources };
 }
 
-// ---- WebSearch ----
-export async function webSearch(query: string, apiKey: string | null, model: string): Promise<string> {
-  const q = String(query ?? "").trim();
-  if (!q) return "WebSearch needs a query.";
-  if (!apiKey) return "WebSearch unavailable: no OpenRouter key.";
-  try {
-    const r = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-      method: "POST",
-      headers: { "content-type": "application/json", authorization: `Bearer ${apiKey}` },
-      body: JSON.stringify({
-        model,
-        plugins: [{ id: "web", max_results: 5 }],
-        messages: [
-          { role: "system", content: "Answer the query from the web results. Be concise and factual. End with a Sources list of the URLs you used." },
-          { role: "user", content: q },
-        ],
-        max_tokens: 1200,
-      }),
-    });
-    if (!r.ok) return `WebSearch failed: HTTP ${r.status}`;
-    const j: any = await r.json();
-    const text = String(j?.choices?.[0]?.message?.content ?? "").trim();
-    const ann: any[] = j?.choices?.[0]?.message?.annotations ?? [];
-    const urls = ann.map((x) => x?.url_citation?.url).filter((u: unknown) => typeof u === "string");
-    const extra = urls.length && !urls.every((u: string) => text.includes(u)) ? `\n\nSources:\n${[...new Set(urls)].map((u) => `- ${u}`).join("\n")}` : "";
-    return (text || "(no answer)") + extra;
-  } catch (e) {
-    return `WebSearch failed: ${(e as Error).message}`;
-  }
-}
+// Network tools share one bounded transport across voice and workers.
+export { webSearch, webFetch, webFetchSpec } from "./webTools";
