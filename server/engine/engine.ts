@@ -2207,7 +2207,7 @@ export class Engine {
   private interaction(convId: string): Interaction {
     const live = this.live.get(convId);
     live?.feed.sync();
-    const item = this.picture(convId)?.items.slice().reverse().find(x => x.kind === "user");
+    const item = this.picture(convId)?.items.slice().reverse().find(x => x.kind === "user" && !["wake", "job", "delegate", "resume", "nudge"].includes(x.via ?? ""));
     if (item) return Object.freeze({ request: item.text ?? "", device: validDevice(item.device) });
     return Object.freeze({ request: live?.turnOpts.shown ?? live?.input ?? "", device: live?.turnOpts.device ?? validDevice(live?.turnOpts.origin) });
   }
@@ -2284,8 +2284,9 @@ export class Engine {
           return text(explicitPush ? "In Carl's alerts. One event push requested for this work, subject to away/seen/dedup rules; no future alerts armed." : "In Carl's alerts. No explicit phone push requested (legacy automatic pushes apply only if Carl enabled them in Settings).");
         }
         case "BoardSend": {
-          // A maker's sends were decided when BoardMake was (server/boardGuard.ts).
-          const no = a.make ? null : boardGuard({ vault, request: interaction.request, device: interaction.device, asked: a.asked === true, tool: "BoardSend" });
+          // `make` identifies an existing inbox entry, not permission to send
+          // there after Carl moved. Deferred makers use the same current target.
+          const no = boardGuard({ vault, request: interaction.request, device: interaction.device, asked: a.asked === true, tool: "BoardSend" });
           if (no) return { success: false, contentItems: [{ type: "inputText", text: no }] };
           delete a.asked;
           const r = await sendEntry(vault, a, { conversation: convId, emit: (ev) => this.inboxEvent(ev) });
@@ -2338,7 +2339,7 @@ export class Engine {
           const t0 = Date.now();
           const started = this.d.backend.background(p.threadId, {
             agent: { name: "board-maker", systemPrompt: BOARD_MAKER_PROMPT, tools: ["read", "bash", "edit", "write", "BoardSend"] },
-            task: boardMakeTask(entry.id, title, request),
+            task: boardMakeTask(entry.id, title, request) + (a.asked === true ? '\nCarl explicitly requested the iPad for this work; include asked: true in its BoardSend calls.' : ''),
           });
           inboxLog({}, "make.spawn", { id: entry.id, ms: Date.now() - t0 });
           void started

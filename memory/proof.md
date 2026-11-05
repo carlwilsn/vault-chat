@@ -15,3 +15,5 @@
   `via: voice` separate from its actual phone/board/laptop origin. Deferred workers
   retain the original request's permission but default to the current delivered
   interaction, not a later request's explicit iPad permission or ambient focus.
+  Existing maker entry IDs are not destination permission: recheck their sends
+  too. Native wake/job/delegate/resume inputs are not new human interactions.

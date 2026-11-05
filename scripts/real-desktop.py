@@ -208,6 +208,7 @@ def main():
     note.write_text('# Private desktop timing note\n\nSelect this text for Ctrl+K.\n')
     if a.check_device_sense:
         (vault / 'private-device-25.svg').write_text('<svg xmlns="http://www.w3.org/2000/svg" width="300" height="100"><text x="10" y="50">Owned device visual 25</text></svg>')
+        (vault / 'private-device-25-right.svg').write_text('<svg xmlns="http://www.w3.org/2000/svg" width="300" height="100"><text x="10" y="50">Owned explicit right visual 25</text></svg>')
     # Explicit tiny home, no inherited credentials, live display, D-Bus, or service env.
     keep = ('PATH', 'LD_LIBRARY_PATH', 'LIBRARY_PATH', 'PKG_CONFIG_PATH', 'PKG_CONFIG_LIBDIR',
             'NIX_LDFLAGS', 'NIX_CFLAGS_COMPILE', 'NIX_CC', 'NIX_BINTOOLS', 'SSL_CERT_FILE',
@@ -346,7 +347,9 @@ def main():
                     if device_marker and not tool_result:
                         tool = 'BoardSend' if device_marker == 'REFUSED' else 'Show'
                         args = {'title': 'Not requested', 'parts': [{'kind': 'math', 'markdown': '$x^2$'}]} if tool == 'BoardSend' else {'path': str(vault / 'private-device-25.svg')}
-                        if device_marker == 'EXPLICIT': args.update(where='laptop', pane='right')
+                        # A split needs two DIFFERENT files; moving the already sole
+                        # visible file to right correctly leaves it alone, not split.
+                        if device_marker == 'EXPLICIT': args.update(path=str(vault / 'private-device-25-right.svg'), where='laptop', pane='right')
                         deltas = [({'role': 'assistant', 'tool_calls': [{'index': 0, 'id': 'device-25-' + device_marker.lower(), 'type': 'function', 'function': {'name': next((t['function']['name'] for t in body.get('tools', []) if t['function']['name'] in (tool, 'mcp__vault_chat__' + tool)), tool), 'arguments': json.dumps(args)}}]}, None), ({}, 'tool_calls')]
                     elif device_marker and tool_result:
                         device_results[device_marker] = json.dumps(tool_result.get('content'))
@@ -1432,8 +1435,8 @@ def main():
                             raise RuntimeError('Isolated phone delivery failed')
                         if 'board inbox' not in device_results['BOARD'] or 'Not sent to the board' not in device_results['REFUSED']:
                             raise RuntimeError('Board inbox routing/refusal failed')
-                        if 'Shown on the laptop' not in device_results['EXPLICIT'] or 'right' not in device_results['EXPLICIT']:
-                            raise RuntimeError('Explicit targeted native laptop split did not confirm')
+                        if 'Shown on the laptop' not in device_results['EXPLICIT'] or 'in the right pane' not in device_results['EXPLICIT']:
+                            raise RuntimeError('Explicit targeted native laptop split did not confirm: ' + device_results['EXPLICIT'])
                         inbox_after = request(base + '/api/v1/inbox')['entries']
                         if len(inbox_after) != len(inbox_before) + 1:
                             raise RuntimeError('Unwanted iPad work or missing board entry')

@@ -1,7 +1,7 @@
 // Where a visual goes: the answer appears where Carl is talking. The iPad
 // board inbox is for when he asks for it ("send it to my iPad", "put it on the
-// board") or is at the board now (his newest activity is on the board, or a
-// voice call is live there). Otherwise BoardSend / BoardMake / Show "board" get
+// board") or this delivered human interaction is on the board (typed or
+// spoken there). Otherwise BoardSend / BoardMake / Show "board" get
 // a refusal that says why and what to do instead (Show it here, or put the
 // image in the reply) — never a silent block, and never a send to a device
 // across the room. `asked: true` is the agent's way to say Carl did ask (an
