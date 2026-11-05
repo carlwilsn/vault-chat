@@ -94,8 +94,11 @@ VAD_STOP_SECS = float(os.environ.get("VC_VAD_STOP_SECS", "0.2"))
 VAD_START_SECS = float(os.environ.get("VC_VAD_START_SECS", "0.2"))
 # No audio from the device for this long while "speaking" counts as silence (see run_call).
 AUDIO_IDLE_SECS = float(os.environ.get("VC_AUDIO_IDLE_SECS", "0.25"))
-# The longest a turn the turn model called unfinished waits in silence before it ends anyway (see run_call).
-TURN_STOP_TIMEOUT_SECS = float(os.environ.get("VC_TURN_STOP_TIMEOUT_SECS", "1.5"))
+# Incomplete-turn watchdog, not the VAD silence window or the transport DTX timeout.
+# Keep Pipecat's grace (5 s in 1.12.0); completed turns bypass this watchdog.
+TURN_STOP_TIMEOUT_SECS = float(os.environ.get(
+    "VC_TURN_STOP_TIMEOUT_SECS", str(LLMUserAggregatorParams().user_turn_stop_timeout),
+))
 
 
 def jlog(**o: Any) -> None:
@@ -540,6 +543,35 @@ class FreshWordsStartStrategy(MinWordsUserTurnStartStrategy):
         return await super().process_frame(frame)
 
 
+def user_aggregator_params(vad_analyzer) -> LLMUserAggregatorParams:
+    """One native endpointing policy, shared by the call and provider-free frame tests."""
+    return LLMUserAggregatorParams(
+        vad_analyzer=vad_analyzer,
+        # A turn (and an interruption of a reply) starts on a WORD, never on sound alone: keyboard clacks, a
+        # cough or a chair are not Carl talking (the ground-truths audit). The reply goes silent at once on his
+        # device anyway (src/voiceBrainClient.ts barge-in); this is the box's stop and the turn. A late transcript
+        # that would repeat his last words is caught by the server's re-ask guard, and a late partial of the line that just
+        # ended never starts a turn (FreshWordsStartStrategy). Stop: Smart Turn v3.
+        user_turn_strategies=UserTurnStrategies(start=[FreshWordsStartStrategy(min_words=1, use_interim=True)]),
+        # A browser that stops sending in silence (a muted or digitally silent track, Opus DTX) leaves the VAD
+        # "speaking" until this idle timeout forces a stop: Pipecat's default 1.0 s added a second to every
+        # such turn (measured: speech end → the box's VAD stop 1.0–1.1 s late from Edge). Treat 0.25 s of no
+        # audio as silence.
+        audio_idle_timeout=AUDIO_IDLE_SECS,
+        # A 1.5 s override forced unfinished thoughts into separate requests during ordinary
+        # thinking pauses. Restore the native watchdog: Smart Turn COMPLETE still dispatches
+        # immediately once its transcript is ready; INCOMPLETE can continue as one turn.
+        # Tradeoff: misclassified complete questions (previously 5/24) can wait longer again.
+        # Smart Turn also bounds continuously received silence at its native 3 s; the 5 s
+        # controller watchdog covers DTX/no further audio, resetting on resumed speech/text.
+        user_turn_stop_timeout=TURN_STOP_TIMEOUT_SECS,
+        # A turn that ends with no words (a noise that only interrupted) is never answered: Pipecat's default
+        # re-asks the LLM with the context unchanged, which here would send his previous line to pi a second
+        # time (a double answer). The interrupted reply's words still come, on the speak channel.
+        empty_user_turn=None,
+    )
+
+
 async def run_call(connection, call: dict):
     transport = SmallWebRTCTransport(
         webrtc_connection=connection,
@@ -548,28 +580,9 @@ async def run_call(connection, call: dict):
     context = LLMContext()
     pair = LLMContextAggregatorPair(
         context,
-        user_params=LLMUserAggregatorParams(
-            vad_analyzer=SileroVADAnalyzer(params=VADParams(start_secs=VAD_START_SECS, stop_secs=VAD_STOP_SECS)),
-            # A turn (and an interruption of a reply) starts on a WORD, never on sound alone: keyboard clacks, a
-            # cough or a chair are not Carl talking (the ground-truths audit). The reply goes silent at once on his
-            # device anyway (src/voiceBrainClient.ts barge-in); this is the box's stop and the turn. A late transcript
-            # that would repeat his last words is caught by the server's re-ask guard, and a late partial of the line that just
-            # ended never starts a turn (FreshWordsStartStrategy). Stop: Smart Turn v3.
-            user_turn_strategies=UserTurnStrategies(start=[FreshWordsStartStrategy(min_words=1, use_interim=True)]),
-            # A browser that stops sending in silence (a muted or digitally silent track, Opus DTX) leaves the VAD
-            # "speaking" until this idle timeout forces a stop: Pipecat's default 1.0 s added a second to every
-            # such turn (measured: speech end → the box's VAD stop 1.0–1.1 s late from Edge). Treat 0.25 s of no
-            # audio as silence.
-            audio_idle_timeout=AUDIO_IDLE_SECS,
-            # When Smart Turn calls a turn incomplete and nothing more comes, the turn still ends after this much
-            # silence. Pipecat's default 5 s was the whole tail: 5 of 24 turns waited exactly 5.0 s (questions with
-            # a trailing "?" the model read as unfinished). 1.5 s keeps room for a pause mid-thought.
-            user_turn_stop_timeout=TURN_STOP_TIMEOUT_SECS,
-            # A turn that ends with no words (a noise that only interrupted) is never answered: Pipecat's default
-            # re-asks the LLM with the context unchanged, which here would send his previous line to pi a second
-            # time (a double answer). The interrupted reply's words still come, on the speak channel.
-            empty_user_turn=None,
-        ),
+        user_params=user_aggregator_params(SileroVADAnalyzer(
+            params=VADParams(start_secs=VAD_START_SECS, stop_secs=VAD_STOP_SECS),
+        )),
     )
     quiet = Quiet()
     after_stt = AfterStt(quiet)
