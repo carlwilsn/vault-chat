@@ -1043,9 +1043,13 @@ def main():
                     owned_send('second request')
                     wait_for(lambda: 'Owned speech freshness result 3.' in json.dumps(main_items()), 'fresh native response in normal human history')
                     # Merely viewing Main cannot follow/cancel the existing project call owner.
-                    if not exists('[data-el="thread-main"] button'):
-                        click('[data-el="chats-toggle"]')
-                    click('[data-el="thread-main"] button')
+                    if not js('return !!document.querySelector("[data-perf-view=fullscreen]");'):
+                        key('ctrl+shift+f')
+                        wait_for(lambda: js('return !!document.querySelector("[data-perf-view=fullscreen]");'), 'full chat navigation')
+                    if not exists('[data-el="chats-sidebar"]'):
+                        key('ctrl+b')
+                    wait_for(lambda: exists('[data-thread="main"] > button'), 'ordinary Main thread row')
+                    click('[data-thread="main"] > button')
                     wait_for(lambda: js('return localStorage.getItem("vault_chat_active_conv")==="main";'), 'native Main viewer selection')
                     live = request(base + '/api/v1/brain/calls')['calls']
                     if len(live) != 1 or live[0]['convId'] != a.conversation:
