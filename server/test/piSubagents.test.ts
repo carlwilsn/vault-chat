@@ -247,7 +247,9 @@ describe.skipIf(!PI_DIR)("pi subagents (real pi children, fake OpenRouter)", () 
     await fetch(srv.base + "/poll?after=latest&client=laptop");
     await fetch(srv.base + "/poll?after=latest&client=board");
     writeFileSync(join(dir, id, "release"), "release owned fixture maker");
-    await waitFor(() => (!entry().making || entry().failed) ? entry() : null, 60_000);
+    // Entry persistence precedes the child's next native provider request.
+    // Observe both, inside the same existing deadline (never assume same-tick receipt).
+    await waitFor(() => entry().failed || (!entry().making && or.calls.some(b => isChild(b) && firstUser(b).includes(id) && lastToolResult(b)?.includes("whiteboard inbox"))) ? entry() : null, 60_000);
     expect(entry().failed).toBeUndefined();
     expect(entry().parts).toEqual([expect.objectContaining({ kind: "math", label: "Problem 1" })]);
     expect(entry().status).toBe("unread");
