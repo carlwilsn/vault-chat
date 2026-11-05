@@ -53,7 +53,11 @@ export type ToolAnswer = { ok: boolean; text: string; images?: { data: string; m
 export type Interaction = Readonly<{ request: string; device: "laptop" | "phone" | "board" | null }>;
 // The existing host-owned worker scope captures its originating interaction too.
 // No second queue/presence registry: the source is the delivered native feed entry.
-export type NotifyScope = Readonly<{ workId: string; byCarl: boolean; interaction?: Interaction }>;
+export type NotifyScope = Readonly<{
+  workId: string; byCarl: boolean; interaction?: Interaction;
+  /** Only the host's accepted BoardMake, bound to its own entry (never model args/text). */
+  boardMake?: Readonly<{ id: string; interaction: Interaction; asked: boolean }>;
+}>;
 export type ToolCallHandler = (threadId: string, name: string, args: any, signal?: AbortSignal, notifyScope?: NotifyScope | null) => Promise<ToolAnswer>;
 export type UserInputHandler = (threadId: string, question: string, options: string[]) => Promise<string>;
 /** The "you" layer for a session (the extension's before_agent_start asks before each prompt): what Carl
@@ -829,8 +833,8 @@ export class PiBackend extends EventEmitter {
   /** Steer or stop one running subagent (POST /api/v1/conversations/:id/subagents/:sid/{steer,stop}). */
   /** A child that outlives its parent's turn (BoardMake): started now, resolves with its report when it ends. It
    *  is not stopped with the parent's turn, only with the parent's process; it may call BoardSend. */
-  background(parentThreadId: string, a: Record<string, unknown>, onStarted?: (id: string) => void): Promise<Record<string, unknown>> {
-    return this.subs.run(parentThreadId, { ...a, background: true }, undefined, onStarted);
+  background(parentThreadId: string, a: Record<string, unknown>, onStarted?: (id: string) => void, boardMake?: NotifyScope["boardMake"]): Promise<Record<string, unknown>> {
+    return this.subs.run(parentThreadId, { ...a, background: true }, undefined, onStarted, boardMake);
   }
 
   subagentControl(childId: string, op: "steer" | "stop", text?: string): Promise<{ ok: boolean; error?: string }> {

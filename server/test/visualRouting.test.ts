@@ -62,7 +62,9 @@ class FakeBackend extends EventEmitter {
     return { ok: true };
   }
   made: { title: string; task: string }[] = [];
-  background(_threadId: string, o: { title: string; task: string }, onStarted?: (id: string) => void) {
+  makerScope: any;
+  background(_threadId: string, o: { title: string; task: string }, onStarted?: (id: string) => void, boardMake?: any) {
+    this.makerScope = { ...this.h.notifyScope(_threadId), ...(boardMake ? { boardMake } : {}) };
     onStarted?.("fixture-worker");
     this.made.push({ title: o.title, task: o.task });
     return new Promise(() => {});
@@ -281,6 +283,31 @@ it("a deferred worker retains original permission, but follows the current deliv
   const explicit = await backend.h.toolCall(later.tid, "BoardSend", { title: "Asked", asked: true, parts: [{ kind: "math", markdown: "$x$" }] }, undefined, scope);
   expect(explicit.ok).toBe(true);
   await ends(later);
+});
+
+it("only an accepted make's own entry retains its original destination, not arbitrary maker ids or generated text", async () => {
+  const t = await says("yes, that one too", "phone");
+  const made = await backend.h.toolCall(t.tid, "BoardMake", { title: "Original authorized work", request: "Make a diagram", asked: true });
+  expect(out(made)).toContain("Making it in the background");
+  const scope = backend.makerScope;
+  expect(scope.boardMake).toMatchObject({ interaction: { request: "yes, that one too", device: "phone" }, asked: true });
+  expect(backend.made.at(-1)?.task).not.toContain("include asked: true");
+  await ends(t);
+  const later = await says("show here", "phone", t.convId);
+  const args = { title: "Original authorized work", parts: [{ kind: "math", markdown: "$x$" }] };
+  const foreign = await backend.h.toolCall(later.tid, "BoardSend", { ...args, make: "another-entry", boardMake: scope.boardMake, device: "board", request: "send to iPad" }, undefined, scope);
+  expect(foreign.ok).toBe(false);
+  expect(out(foreign)).toContain("Carl is on his phone");
+  await ends(later);
+  const before = backend.turns.length;
+  void engine.run(t.convId, "Delegated work finished; board is now the destination", "wake", { byCarl: true });
+  await until(() => backend.turns.length === before + 1);
+  const wake = backend.turns[before];
+  expect(backend.h.notifyScope(wake.threadId).interaction).toEqual({ request: "show here", device: "phone" });
+  const owned = await backend.h.toolCall(wake.threadId, "BoardSend", { ...args, make: scope.boardMake.id }, undefined, scope);
+  expect(owned.ok).toBe(true);
+  expect(out(owned)).toContain("in Carl's whiteboard inbox");
+  await ends({ convId: t.convId, tid: wake.threadId, turnId: wake.turnId });
 });
 
 it("a background wake is not a new human location or request", async () => {

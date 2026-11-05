@@ -2304,9 +2304,13 @@ export class Engine {
           return text(explicitPush ? "In Carl's alerts. One event push requested for this work, subject to away/seen/dedup rules; no future alerts armed." : "In Carl's alerts. No explicit phone push requested (legacy automatic pushes apply only if Carl enabled them in Settings).");
         }
         case "BoardSend": {
-          // `make` identifies an existing inbox entry, not permission to send
-          // there after Carl moved. Deferred makers use the same current target.
-          const no = boardGuard({ vault, request: interaction.request, device: interaction.device, asked: a.asked === true, tool: "BoardSend" });
+          // A host-accepted make keeps its original destination/permission for
+          // this entry only. An arbitrary `make` id is never authorization;
+          // other deferred tools still follow the latest delivered human surface.
+          const make = p.notifyScope?.boardMake;
+          const ownedMake = make && a.make === make.id ? make : null;
+          const origin = ownedMake?.interaction ?? interaction;
+          const no = boardGuard({ vault, request: origin.request, device: origin.device, asked: ownedMake?.asked === true || a.asked === true, tool: "BoardSend" });
           if (no) return { success: false, contentItems: [{ type: "inputText", text: no }] };
           delete a.asked;
           const r = await sendEntry(vault, a, { conversation: convId, emit: (ev) => this.inboxEvent(ev) });
@@ -2359,8 +2363,8 @@ export class Engine {
           const t0 = Date.now();
           const started = this.d.backend.background(p.threadId, {
             agent: { name: "board-maker", systemPrompt: BOARD_MAKER_PROMPT, tools: ["read", "bash", "edit", "write", "BoardSend"] },
-            task: boardMakeTask(entry.id, title, request) + (a.asked === true ? '\nCarl explicitly requested the iPad for this work; include asked: true in its BoardSend calls.' : ''),
-          });
+            task: boardMakeTask(entry.id, title, request),
+          }, undefined, Object.freeze({ id: entry.id, interaction, asked: a.asked === true }));
           inboxLog({}, "make.spawn", { id: entry.id, ms: Date.now() - t0 });
           void started
             .then((r: any) => {

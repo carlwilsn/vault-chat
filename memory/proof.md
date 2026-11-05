@@ -15,8 +15,9 @@
   `via: voice` separate from its actual phone/board/laptop origin. Deferred workers
   retain the original request's permission but default to the current delivered
   interaction, not a later request's explicit iPad permission or ambient focus.
-  Existing maker entry IDs are not destination permission: recheck their sends
-  too. Native wake/job/delegate/resume inputs are not new human interactions.
+  Existing maker entry IDs alone are not destination permission. Only the
+  host-accepted BoardMake scope retains its original destination/asked permission
+  for that exact entry; unrelated deferred sends still recheck the current surface. Native wake/job/delegate/resume inputs are not new human interactions.
 
 - Send now's existing replay adapter had an enqueue-after-settle race: Pi RPC
   steer/follow_up accepts an idle queue without starting a run. A fast replacement
@@ -47,3 +48,14 @@
   and wake refusal. The call's exact one-time rules prefix belongs on SECOND;
   its local provider must advertise the accepted Haiku model too. Neither fixture
   adjustment changes the native exact-input or pending-before-delivery guards.
+
+- piSubagents' old `BOARDMAKE a problem set` fixture had no physical device or
+  explicit board request. Baseline passed only because unknown ambient presence
+  used to authorize the board; delivered-human routing correctly refuses it.
+  Keep the named end-to-end test faithful: explicit phone request, genuine Pi
+  child held until the parent's reply/pending entry are observed, then later
+  phone input plus ambient polls before release. Also test original asked:true
+  and original current-board permission without asking the child to regenerate
+  `asked:true`: the host's existing worker scope carries acceptance for its own
+  make entry, never model text/args or a later wake/viewer. Unsolicited phone and
+  laptop makes must still refuse without spawning any child.

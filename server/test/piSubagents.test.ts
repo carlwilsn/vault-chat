@@ -3,7 +3,7 @@
 // the ones whose first user message starts with "Task:"; parents and children
 // are keyed by marker words.
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { existsSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmp, cleanup, makeVault, makeKeyStore, startServer, waitFor, type Running } from "./helpers";
 import { fakeChat, lastUser, lastToolResult, CHAT_COST, type FakeChat, type ChatStep } from "./fakeChat";
@@ -58,7 +58,8 @@ describe.skipIf(!PI_DIR)("pi subagents (real pi children, fake OpenRouter)", () 
     }
     if (has("CHILDBOARD")) {
       const make = /make: "([^"]+)"/.exec(task)?.[1];
-      return out === null ? { call: { name: "BoardSend", args: { make, title: "Cauchy set", note: "two", parts: [{ kind: "math", label: "Problem 1", markdown: "Show $\\frac{1}{n} \\to 0$." }] } } } : { text: `board sent: ${out}` };
+      if (out === null) return { call: { name: "bash", args: { command: `while [ ! -f boards/.inbox/${make}/release ]; do sleep .05; done; echo MAKER_RELEASED` } } };
+      return out.trim() === "MAKER_RELEASED" ? { call: { name: "BoardSend", args: { make, title: "Cauchy set", note: "two", parts: [{ kind: "math", label: "Problem 1", markdown: "Show $\\frac{1}{n} \\to 0$." }] } } } : { text: `board sent: ${out}` };
     }
     if (has("CHILDASK")) return out === null ? { call: { name: "AskUser", args: { question: "may I?" } } } : { text: `asked: ${out}` };
     return { text: "child default" };
@@ -90,9 +91,10 @@ describe.skipIf(!PI_DIR)("pi subagents (real pi children, fake OpenRouter)", () 
       if (user.startsWith("Delegated work ")) return { text: "DELEGATELINK report received" };
       return lastToolResult(body) === null ? { call: { name: "Delegate", args: { title: "Native linked worker", task: "CHILDA say hello" } } } : { text: "DELEGATELINK started" };
     }
+    if (user.includes("moved to phone")) return { text: "phone request received" };
     if (all.includes("BOARDMAKE")) {
       const out0 = lastToolResult(body);
-      return out0 === null ? { call: { name: "BoardMake", args: { title: "Cauchy set", request: "CHILDBOARD write two problems" } } } : { text: `BOARDMAKE done: ${out0.slice(0, 300)}` };
+      return out0 === null ? { call: { name: "BoardMake", args: { title: "Cauchy set", request: "CHILDBOARD write two problems", ...(user.includes("EARLIER") ? { asked: true } : {}) } } } : { text: `BOARDMAKE done: ${out0.slice(0, 300)}` };
     }
     if (!key) return { text: "hello from the parent" };
     const out = lastToolResult(body);
@@ -226,20 +228,56 @@ describe.skipIf(!PI_DIR)("pi subagents (real pi children, fake OpenRouter)", () 
     expect(c.messages.filter((m: any) => m.role === "assistant").pop().content).toMatch(/AskUser|not found|Tool|tool/);
   });
 
-  it("BoardMake returns at once; its background maker sends through BoardSend and the entry lands (being made → unread)", async () => {
-    const r = await post("/message", { text: "BOARDMAKE a problem set" });
-    await says(r.convId, /BOARDMAKE done: Making it in the background/);
+  const makeAndLand = async (text: string, client: string) => {
+    const r = await post("/message", { text, client, convId: `board-${client}-${Date.now()}` });
+    // Assert the actual tool result, including a refusal, rather than hiding it behind a timeout.
+    const c = await says(r.convId, /BOARDMAKE done:/);
+    expect(c.messages.filter((m: any) => m.role === "assistant").at(-1).content).toContain("Making it in the background");
     const dir = join(vault, "boards", ".inbox");
-    const entry = await waitFor(() => {
-      for (const id of existsSync(dir) ? readdirSync(dir) : []) {
-        const e = JSON.parse(readFileSync(join(dir, id, "entry.json"), "utf8"));
-        if (e.title === "Cauchy set" && !e.making) return e;
-      }
-      return null;
-    }, 60_000);
-    expect(entry.parts).toEqual([expect.objectContaining({ kind: "math", label: "Problem 1" })]);
-    expect(entry.status).toBe("unread");
-    expect(entry.failed).toBeUndefined();
+    const ids = readdirSync(dir).filter(id => JSON.parse(readFileSync(join(dir, id, "entry.json"), "utf8")).from?.conversation === r.convId);
+    expect(ids).toHaveLength(1);
+    const id = ids[0];
+    const entryPath = join(dir, id, "entry.json");
+    const entry = () => JSON.parse(readFileSync(entryPath, "utf8"));
+    // Parent has returned while the genuine Pi maker is held, with no parts yet sent.
+    expect(entry()).toMatchObject({ making: { request: "CHILDBOARD write two problems" }, parts: [], status: "unread", from: { conversation: r.convId } });
+    const later = await post("/message", { text: "moved to phone; visualize here", client: "phone", convId: r.convId });
+    await says(later.convId, /phone request received/);
+    await post("/api/v1/activity", { kind: "focus", modality: "editor", text: "unrelated laptop viewer", device: "laptop" });
+    await fetch(srv.base + "/poll?after=latest&client=laptop");
+    await fetch(srv.base + "/poll?after=latest&client=board");
+    writeFileSync(join(dir, id, "release"), "release owned fixture maker");
+    await waitFor(() => (!entry().making || entry().failed) ? entry() : null, 60_000);
+    expect(entry().failed).toBeUndefined();
+    expect(entry().parts).toEqual([expect.objectContaining({ kind: "math", label: "Problem 1" })]);
+    expect(entry().status).toBe("unread");
+    expect(entry().from).toEqual({ conversation: r.convId });
+    expect(readdirSync(dir).filter(x => JSON.parse(readFileSync(join(dir, x, "entry.json"), "utf8")).from?.conversation === r.convId)).toEqual([id]);
+    const child = or.calls.find(b => isChild(b) && firstUser(b).includes(id) && lastToolResult(b)?.includes("whiteboard inbox"));
+    expect(child).toBeDefined();
+    expect(firstUser(child)).toContain(`make: "${id}"`);
+  };
+
+  it("BoardMake returns at once; its background maker sends through BoardSend and the entry lands (being made → unread)", async () => {
+    await makeAndLand("BOARDMAKE a problem set; send it to my iPad", "phone");
+  });
+
+  it.each([
+    ["BOARDMAKE EARLIER yes, that one too", "phone"],
+    ["BOARDMAKE a problem set here", "board"],
+  ])("BoardMake retains its authorized original request across later phone input and ambient viewers: %s", async (text, client) => {
+    await makeAndLand(text, client);
+  });
+
+  it.each(["phone", "laptop", undefined])("unsolicited BoardMake on %s refuses even when generated maker text names the board", async client => {
+    const childrenBefore = or.calls.filter(isChild).length;
+    const r = await post("/message", { text: "BOARDMAKE a problem set", client, convId: `no-board-${client}` });
+    const c = await says(r.convId, /BOARDMAKE done:/);
+    const reply = c.messages.filter((m: any) => m.role === "assistant").at(-1).content;
+    expect(reply).toContain(`Not sent to the board: Carl is on his ${client ?? "unknown device"}`);
+    const dir = join(vault, "boards", ".inbox");
+    expect((existsSync(dir) ? readdirSync(dir) : []).filter(id => JSON.parse(readFileSync(join(dir, id, "entry.json"), "utf8")).from?.conversation === r.convId)).toEqual([]);
+    expect(or.calls.filter(isChild)).toHaveLength(childrenBefore);
   });
 
   it("too many tasks in one call is refused (8 per call)", async () => {

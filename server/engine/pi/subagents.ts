@@ -178,10 +178,11 @@ export class Subagents {
 
   /** One child, start to report. Never throws. A child moved to the background while it runs (detach) answers at
    *  once with a line saying so; its report then comes through detach's `result`. */
-  async run(parentId: string, a: any, signal?: AbortSignal, onStarted?: (id: string) => void): Promise<Record<string, unknown>> {
+  async run(parentId: string, a: any, signal?: AbortSignal, onStarted?: (id: string) => void, boardMake?: NotifyScope["boardMake"]): Promise<Record<string, unknown>> {
     signal?.throwIfAborted();
     // Capture before waiting: a detached child cannot borrow a later parent request.
-    const notifyScope = this.b.handlers?.notifyScope?.(parentId) ?? null;
+    const original = this.b.handlers?.notifyScope?.(parentId) ?? null;
+    const notifyScope = original && boardMake ? Object.freeze({ ...original, boardMake }) : original;
     await this.acquire();
     let held = true;
     const release = () => {
