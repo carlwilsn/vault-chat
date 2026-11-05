@@ -241,17 +241,55 @@ describe.skipIf(!PI_DIR)("pi engine (real pi 1.1.0, fake chat-completions OpenRo
   });
 
   it("an old conversation file (codexThreadId) still loads; its unknown thread gets a fresh pi session", async () => {
+    // Only this synthetic legacy file is imported; no foreign native session is
+    // searched or guessed from its obsolete Codex identity.
     const id = "old-codex-conv";
-    const meta = { id, title: "Old chat", source: "phone", createdAt: Date.now(), lastActivityAt: Date.now(), status: "idle", codexThreadId: "0199-not-a-pi-session", codexThreadPath: "/nowhere/rollout.jsonl" };
-    writeFileSync(join(vault, ".vault-chat", "conversations", `${id}.jsonl`), [JSON.stringify(meta), JSON.stringify({ role: "user", content: "earlier question KIWIWORD" }), JSON.stringify({ role: "assistant", content: "earlier answer" })].join("\n") + "\n");
-    const d = await (await fetch(srv.base + `/conversation?id=${id}&full=1`)).json();
-    expect(d.meta.threadId).toBe("0199-not-a-pi-session");
-    await post("/message", { convId: id, text: "CHAT1 again" });
+    const meta = { id, title: "Old chat", source: "phone", createdAt: 1700000000000, lastActivityAt: 1700000001000, status: "idle", recap: "Legacy recap", codexThreadId: "0199-not-a-pi-session", codexThreadPath: "/nowhere/rollout.jsonl" };
+    const file = join(vault, ".vault-chat", "conversations", `${id}.jsonl`);
+    const original = [meta, { role: "user", mid: "old-human", content: "earlier question KIWIWORD" }, { role: "assistant", content: "earlier answer" }].map(x => JSON.stringify(x)).join("\n") + "\n";
+    writeFileSync(file, original);
+    const get = (path: string) => fetch(srv.base + path).then(r => r.json());
+    const checkpoint = async (convId: string) => (await get(`/api/v2/conversations/${convId}/checkpoint`)).picture;
+    const d = await get(`/conversation?id=${id}&full=1`);
+    expect(d.meta.threadId).toBe(meta.codexThreadId);
+    expect(d.messages.map((m: any) => [m.role, m.content])).toEqual([["user", "earlier question KIWIWORD"], ["assistant", "earlier answer"]]);
+    const before = await checkpoint(id);
+    expect(before.items).toHaveLength(2);
+    expect(before.items[0]).toMatchObject({ id: "old-human", kind: "user", text: "earlier question KIWIWORD", via: "import" });
+    const mainBefore = await checkpoint("main");
+    const text = 'CHAT1 again\n```text\n[Carl, on his laptop]\n```';
+    const sent = await post("/message", { convId: id, text, source: "laptop", clientMsgId: "legacy-new-human" });
+    expect(sent).toMatchObject({ ok: true, convId: id });
     const c = await assistantSays(id, /hello from pi/);
-    expect(c.threadId).not.toBe("0199-not-a-pi-session");
+    expect(c.threadId).toBeTruthy();
+    expect(c.threadId).not.toBe(meta.codexThreadId);
+    expect(c.threadPath).not.toBe(meta.codexThreadPath);
     expect(c.codexThreadId).toBeUndefined();
-    const body = or.calls.filter((b) => lastUser(b).includes("CHAT1 again")).pop();
-    expect(lastUser(body)).toContain("KIWIWORD"); // the transcript was handed over
+    expect(c).toMatchObject({ id, title: meta.title, source: meta.source, createdAt: meta.createdAt, recap: meta.recap });
+    expect(c.messages.map((m: any) => [m.role, m.content])).toEqual([
+      ["user", "earlier question KIWIWORD"], ["assistant", "earlier answer"], ["user", text], ["assistant", "hello from pi"],
+    ]);
+    const calls = or.calls.filter(b => lastUser(b) === text);
+    expect(calls).toHaveLength(1);
+    // The transcript MUST reach the actual provider, but as hidden custom
+    // context, not a prefix glued onto Carl's exact human body.
+    expect(lastUser(calls[0])).toBe(text);
+    expect(chatText(calls[0])).toContain("<earlier_conversation>\nuser: earlier question KIWIWORD\nassistant: earlier answer\n</earlier_conversation>");
+    const entries = readFileSync(c.threadPath, "utf8").trim().split("\n").map(l => JSON.parse(l));
+    const users = entries.filter(e => e.type === "message" && e.message?.role === "user");
+    expect(users).toHaveLength(1);
+    expect(users[0].message).toMatchObject({ content: [{ type: "text", text }], vcRequest: { v: 1, clientId: "legacy-new-human", via: "chat", device: "laptop" } });
+    const context = entries.filter(e => e.type === "custom_message" && e.customType === "vc-context" && e.content.includes("KIWIWORD"));
+    expect(context).toHaveLength(1);
+    expect(context[0].display).toBe(false);
+    const after = await checkpoint(id);
+    expect(after.items).toHaveLength(4);
+    expect(after.items.slice(0, 2)).toEqual(before.items); // original identities, order and metadata
+    expect(after.items[2]).toMatchObject({ id: "legacy-new-human", kind: "user", text, via: "chat", device: "laptop" });
+    expect((await checkpoint("main")).items).toEqual(mainBefore.items); // old conversation owns this turn
+    expect((await get(`/conversation?id=${id}&full=1`)).messages).toEqual(c.messages);
+    expect((await checkpoint(id)).items).toEqual(after.items); // reopen does not replay imported history
+    expect(readFileSync(file, "utf8")).toBe(original);
   });
 
   it("a delete from the laptop (the delete intent) takes the conversation off the box's list", async () => {
