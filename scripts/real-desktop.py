@@ -119,7 +119,7 @@ def main():
     p.add_argument('--work', type=Path, help='New private work directory; retained for ordinary build logs')
     p.add_argument('--nixpkgs', help='Optional local nixpkgs source for dependency provisioning')
     p.add_argument('--check-images', action='store_true', help='Paste owned PNG through the native clipboard; inspect outgoing bytes without inference')
-    p.add_argument('--check-status-dot', action='store_true', help='Observe native pi running rows with a gated local zero-cost provider, then switch only the viewer vault')
+    p.add_argument('--check-status-dot', action='store_true', help='Observe native pi running rows, compare the real picker to registered vault identities, then switch only the viewer without changing native owners')
     p.add_argument('--check-video', type=Path, help='Owned synthetic VP8/Vorbis clip; append one private media-only test entry, never publish it')
     p.add_argument('--check-global-notes', action='store_true', help='Existing cross-vault fixture note identity/source and native edit; copied human notes stay untouched')
     p.add_argument('--check-editor-sync', action='store_true', help='Native immediate paste/send via existing Git transport and genuine Pi read on a different viewer vault')
@@ -233,9 +233,9 @@ def main():
         control = vault / 'boards/scribble-control-fixture'
         shutil.copytree(target, control)
         board_control_bytes = {str(f.relative_to(control)): f.read_bytes() for f in control.rglob('*') if f.is_file()}
-    original_event_bytes = {f.name: f.read_bytes() for f in events.iterdir() if f.suffix == ".jsonl"} if a.check_plan_owner or a.check_composer_delivery or a.check_phone_scroll else {}
+    original_event_bytes = {f.name: f.read_bytes() for f in events.iterdir() if f.suffix == ".jsonl"} if a.check_plan_owner or a.check_composer_delivery or a.check_status_dot or a.check_phone_scroll else {}
     original_notes = None
-    if a.check_composer_delivery or a.check_plan_owner or a.check_global_notes or a.check_speech_freshness or a.check_parallel_work or a.check_phone_scroll:
+    if a.check_composer_delivery or a.check_plan_owner or a.check_status_dot or a.check_global_notes or a.check_speech_freshness or a.check_parallel_work or a.check_phone_scroll:
         copied_notes = source / '.vault-chat/notes.jsonl'
         if copied_notes.is_symlink() or not copied_notes.is_file():
             p.error('global Notes proof requires the owned safe original notes copy')
@@ -637,6 +637,13 @@ def main():
             registered = request(base + '/projects', {'folder': str(code_source if a.check_parallel_work else vault)})
             if registered.get('convId') != a.conversation:
                 raise RuntimeError('Original project slug not preserved in disposable registration')
+            if a.check_status_dot:
+                # A project-only folder must NOT become a picker item. The original
+                # vault-chat project deliberately shares a registered vault's name:
+                # test identities/semantics, never globally ban Main/project text.
+                project_only = master / 'projects/picker-project-only'
+                project_only.mkdir(parents=True)
+                request(base + '/projects', {'folder': str(project_only)})
         if a.voice_conflict:
             conflict_status = wait_for(lambda: (s if (s := request(base + '/api/v1/brain/engine')).get('failure') else None), 'actual startup conflict')
             if conflict_status['failure']['code'] != 'VOICE_PORT_CONFLICT' or conflict_status['failure']['port'] != voice.server_port or conflict_status['pipeline']:
@@ -655,7 +662,7 @@ def main():
         checkpoint = request(base + checkpoint_path)
         picture = checkpoint.get('picture', checkpoint)
         items = picture.get('items', [])
-        if a.check_composer_delivery or a.check_plan_owner or a.check_history_update or a.check_device_sense or a.check_web_research or a.check_parallel_work:
+        if a.check_composer_delivery or a.check_plan_owner or a.check_status_dot or a.check_history_update or a.check_device_sense or a.check_web_research or a.check_parallel_work:
             # The original copy is immutable. Engine startup may already have
             # appended its two real lost-worker/resume items before this HTTP
             # snapshot; those are private appends, never part of the original.
@@ -675,7 +682,7 @@ def main():
                 items = picture.get('items', [])
             if items[:3819] != original_items or len(items) not in (3819, 3821):
                 raise RuntimeError('History startup changed original prefix or unexpected private startup appends')
-            if (a.check_composer_delivery or a.check_plan_owner or a.check_device_sense or a.check_web_research or a.check_parallel_work) and items[3819:]:
+            if (a.check_composer_delivery or a.check_plan_owner or a.check_status_dot or a.check_device_sense or a.check_web_research or a.check_parallel_work) and items[3819:]:
                 startup = items[3819:]
                 if [x.get('kind') for x in startup] != ['user', 'assistant'] or startup[0].get('via') != 'delegate':
                     raise RuntimeError('Unexpected device fixture startup append identities')
@@ -1578,14 +1585,61 @@ def main():
                           const r=row.getBoundingClientRect(),d=dot.getBoundingClientRect(),name=row.querySelector('button > span').getBoundingClientRect();
                           const actions=[...row.querySelectorAll('[data-el="project-notes"],[data-el="project-menu"]')].map(e=>{const b=e.getBoundingClientRect();return {left:b.left,right:b.right,width:b.width,height:b.height};});
                           return {rem:parseFloat(getComputedStyle(document.documentElement).fontSize),rightGap:r.right-d.right,centerError:Math.abs((d.top+d.bottom-r.top-r.bottom)/2),dotLeft:d.left,dotRight:d.right,dotWidth:d.width,nameRight:name.right,white:getComputedStyle(dot.lastElementChild).backgroundColor,actions};''', thread)
+                    def chat_rows():
+                        projects = request(base + '/projects')['projects']
+                        expected = ['main'] + ['project-' + p['slug'] for p in projects]
+                        # Viewer changes reload the ordinary async project list.
+                        # Require the final exact DOM set, never sample its transient
+                        # empty loading state as an application failure.
+                        wait_for(lambda: sorted(js('return [...document.querySelectorAll("[data-el=chats-sidebar] [data-thread]")].map(e=>e.dataset.thread);')) == sorted(expected), 'Main and all registered global projects in chat pane')
+                        return expected
+                    chat_rows()
+
+                    def picker_items():
+                        registered = request(base + '/api/v1/vaults')['vaults']
+                        # Existing data-rel/data-path identify actual selection rows;
+                        # inspect their primary button, NOT action/new-vault controls.
+                        actual = js('''const menu=document.querySelector('[data-el="vault-picker-menu"]');
+                          return [...menu.querySelectorAll('[data-el="vault-picker-item"]')].map(e=>({
+                            rel:e.dataset.rel,path:e.dataset.path,
+                            name:e.querySelector(':scope > button:not([data-el])')?.textContent.trim(),
+                            primaryButtons:e.querySelectorAll(':scope > button:not([data-el])').length,
+                            labels:[...e.querySelectorAll('span')].map(x=>x.textContent.trim()).filter(Boolean)}));''')
+                        expected = sorted(('vaults/' + v['name'], str(master / 'vaults' / v['name']), v['name']) for v in registered)
+                        identities = sorted((r['rel'], r['path'], r['name']) for r in actual)
+                        if identities != expected or any(r['primaryButtons'] != 1 or r['labels'] != [r['name']] for r in actual):
+                            raise RuntimeError('Actual picker semantic items differ from registered vault identities/names or contain ownership labels')
+                        if len({r['rel'] for r in actual}) != len(registered):
+                            raise RuntimeError('Duplicate registered-vault selection rows')
+                        return len(actual)
+
+                    def owner_snapshot(conv):
+                        picture = request(base + '/api/v2/conversations/' + urllib.parse.quote(conv, safe='') + '/checkpoint')['picture']
+                        meta = request(base + '/conversation?id=' + urllib.parse.quote(conv, safe='') + '&full=1')['meta']
+                        fields = ('project', 'threadId', 'threadPath', 'state', 'running', 'working', 'pending')
+                        native = None
+                        if meta.get('threadPath'):
+                            file = Path(meta['threadPath']).resolve()
+                            if not file.is_relative_to(state.resolve()):
+                                raise RuntimeError('Native owner session escaped this owned fixture')
+                            native = file.read_bytes()
+                        return {'id': picture['id'], 'items': picture['items'],
+                            'checkpointOwner': {k: picture['meta'].get(k) for k in fields},
+                            'piOwner': {k: meta.get(k) for k in fields}, 'nativeSessionBytes': native}
+
                     dot_rows = []
                     for thread in ['main', a.conversation]:
+                        calls_before = len(provider_calls)
                         released.clear()
                         request(base + '/api/v2/intent', {'type': 'send', 'convId': thread, 'client': 'laptop', 'clientId': 'local-status-' + thread, 'text': 'LOCAL-UNPAID-STATUS-DOT'})
                         try:
                             g = wait_for(lambda: geometry(thread), 'event-derived running dot')
                             if abs(g['rightGap'] - g['rem']) > 1 or g['centerError'] > 1 or g['nameRight'] >= g['dotLeft'] or any(b['right'] >= g['dotLeft'] or b['width'] < 28 or b['height'] < 28 for b in g['actions']):
                                 raise RuntimeError('Running dot overlaps text/actions or misses fixed trailing gutter')
+                            # The running event can precede native session binding.
+                            # Observe the actual held provider request before freezing
+                            # owner/session bytes, not just the early busy dot.
+                            wait_for(lambda: len(provider_calls) > calls_before, 'genuine Pi request held at unpaid provider')
                             # Switch the focused conversation, not the turn owner.
                             other = a.conversation if thread == 'main' else 'main'
                             click('[data-thread="' + other + '"] > button')
@@ -1593,18 +1647,30 @@ def main():
                             wait_for(lambda: geometry(thread), 'unfocused owner remains running')
                             key('ctrl+shift+f')
                             wait_for(lambda: exists('[data-el="vault-picker"]'), 'ordinary vault picker')
+                            focused = js('return localStorage.getItem("vault_chat_active_conv");')
+                            owners_before = {conv: owner_snapshot(conv) for conv in (thread, other)}
+                            if not owners_before[thread]['checkpointOwner']['running'] or not owners_before[thread]['nativeSessionBytes']:
+                                raise RuntimeError('Picker ownership assertion requires an actual running Pi owner/session')
                             click('[data-el="vault-picker"]')
                             wait_for(lambda: exists('[data-el="vault-picker-item"][data-rel="vaults/status-viewer"] button'), 'viewer vault listed')
-                            picker_rows = js('return [...document.querySelectorAll("[data-el=vault-picker-item]")].map(e=>e.dataset.rel);')
-                            if sorted(picker_rows) != sorted(['vaults/status-viewer', 'vaults/vault-chat'] + (['vaults/notes-origin'] if a.check_global_notes else [])):
-                                raise RuntimeError('Picker contains project ownership/non-vault rows')
+                            registered_count = picker_items()
+                            key('Escape')
+                            wait_for(lambda: js('return !document.querySelector("[data-el=vault-picker-menu]") && document.querySelector("[data-el=vault-picker]").getAttribute("aria-expanded")==="false";'), 'native keyboard closes picker')
+                            if not js('return document.activeElement===document.querySelector("[data-el=vault-picker]");'):
+                                raise RuntimeError('Picker Escape lost keyboard focus')
+                            key('Return')
+                            wait_for(lambda: exists('[data-el="vault-picker-item"][data-rel="vaults/status-viewer"] button'), 'native keyboard reopens picker')
+                            picker_items()
                             click('[data-el="vault-picker-item"][data-rel="vaults/status-viewer"] button')
                             wait_for(lambda: js('return localStorage.getItem("vault_chat_last_vault")===arguments[0];', str(viewer)), 'real viewer vault switch')
                             if js('return localStorage.getItem("vault_chat_active_conv");') != other:
                                 raise RuntimeError('Vault switch changed focused conversation')
                             key('ctrl+shift+f')
                             wait_for(lambda: geometry(thread), 'owner dot survives vault switch')
-                            dot_rows.append({'thread': thread, 'geometry': g, 'unfocusedAndViewerIndependent': True})
+                            chat_rows()
+                            if focused != js('return localStorage.getItem("vault_chat_active_conv");') or owners_before != {conv: owner_snapshot(conv) for conv in (thread, other)}:
+                                raise RuntimeError('Viewer switch changed active conversation, Pi owner/project/session/running turn or history')
+                            dot_rows.append({'thread': thread, 'geometry': g, 'unfocusedAndViewerIndependent': True, 'registeredVaultItems': registered_count, 'exactSemanticPickerSet': True, 'nativeKeyboardCloseReopen': True, 'mainAndGlobalProjectsInChatPane': True, 'activeConversationAndPiOwnersSessionsRunningHistoryUnchanged': True})
                         finally:
                             released.set()
                         wait_for(lambda: not geometry(thread), 'native pi running to idle')
@@ -1616,8 +1682,13 @@ def main():
                             key('ctrl+shift+f')
                             wait_for(lambda: exists(project_row), 'project rows after restoring viewer')
                     after_items = request(base + checkpoint_path).get('picture', {}).get('items', [])
-                    if after_items[:len(items)] != items:
-                        raise RuntimeError('Status fixture altered original history prefix')
+                    if after_items[:len(items)] != items or len(after_items) != len(items) + 2 or [x.get('kind') for x in after_items[len(items):]] != ['user', 'assistant']:
+                        raise RuntimeError('Status fixture altered exact original/startup prefix or two private appends')
+                    for name, body in original_event_bytes.items():
+                        if not (dest / name).read_bytes().startswith(body):
+                            raise RuntimeError('Picker fixture changed original event byte prefix')
+                    if (vault / '.vault-chat/notes.jsonl').read_bytes() != original_notes:
+                        raise RuntimeError('Picker fixture changed original Notes bytes')
                     status_dot = {'rows': dot_rows, 'localProviderCalls': len(provider_calls), 'originalHistoryPrefixUnchanged': True, 'runningToIdle': True}
                 editor_sync = None
                 if a.check_editor_sync:
