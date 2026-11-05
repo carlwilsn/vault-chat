@@ -8,6 +8,7 @@ import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 
 import { join } from "node:path";
 import { tmp, cleanup, makeVault, makeKeyStore, startServer, waitFor, tinyPdf, type Running } from "./helpers";
 import { fakeChat, chatText, lastUser, CHAT_COST, type FakeChat, type ChatStep } from "./fakeChat";
+import { readEntries } from "../convlog/piSession";
 
 const PI_DIR = process.env.VC_TEST_PI_DIR;
 const CANARY = "sk-or-canary-PIENGINE-not-real";
@@ -340,17 +341,62 @@ describe.skipIf(!PI_DIR)("pi engine (real pi 1.1.0, fake chat-completions OpenRo
   });
 
   it("split voice continuation: intentionally joins the running turn", async () => {
-    const r = await post("/message", { text: "STEER1 run the slow step" });
-    await sawCall("STEER1");
-    await new Promise((res) => setTimeout(res, 1500));
-    const s = await post("/message", { convId: r.convId, text: "kiwi steer: also mention kiwi", source: "voice", continues: true });
-    expect(s.steered).toBe(true);
-    const c = await assistantSays(r.convId, /saw the kiwi steer/, 60_000);
-    expect(c.messages.filter((m: any) => m.role === "user").map((m: any) => m.content)).toEqual(["STEER1 run the slow step", "kiwi steer: also mention kiwi"]);
-    // pi's own transcript: the steer is a user message where pi delivered it (after the running tool call), and
-    // the turn's one reply comes after it.
-    expect(c.messages.filter((m: any) => !m.system).map((m: any) => m.role)).toEqual(["user", "assistant", "user", "assistant"]);
-    expect(c.messages.filter((m: any) => m.role === "assistant").at(-1).content).toMatch(/saw the kiwi steer/);
+    // Main may already contain completed turns (including when this case runs
+    // alone). A continuation must preserve them, not pretend Main is new.
+    const prior = await post("/message", { text: "NOCOST1 earlier completed thought", clientMsgId: "continuation-prior" });
+    const before = await waitFor(async () => {
+      const c = await conv(prior.convId);
+      const at = c.messages.findIndex((m: any) => m.mid === "continuation-prior");
+      return at >= 0 && c.messages[at + 1]?.role === "assistant" && c.state !== "running" ? c : null;
+    });
+    const prefix = readFileSync(before.threadPath);
+    const entriesBefore = readEntries(before.threadPath);
+    const cursor = (await (await fetch(srv.base + "/poll?after=latest")).json()).next;
+    const callsBefore = or.calls.length;
+    const first = "STEER1 run the slow step";
+    const continuation = "kiwi steer: also mention kiwi\n```text\n[Carl, on his laptop]\n```";
+    const r = await post("/message", { convId: prior.convId, text: first, source: "voice", client: "phone", via: "voice", clientMsgId: "continuation-first" });
+    // Native assistant/tool-call persistence establishes the in-flight boundary;
+    // no fixed sleep, private queue inspection, or second request ledger.
+    await waitFor(() => readEntries(before.threadPath).slice(entriesBefore.length).some(e =>
+      e.message?.role === "assistant" && e.message.content.some((c: any) => c.type === "toolCall" && /(?:^|__)bash$/.test(c.name))) || null);
+    const s = await post("/message", { convId: r.convId, text: continuation, source: "voice", client: "phone", via: "voice", continues: true, clientMsgId: "continuation-rest" });
+    expect(s).toMatchObject({ ok: true, steered: true });
+    expect(s.queued).toBeUndefined();
+    const c = await waitFor(async () => {
+      const c = await conv(r.convId);
+      return c.state !== "running" && c.messages.at(-1)?.content === "saw the kiwi steer" ? c : null;
+    }, 60_000);
+    expect(c.threadId).toBe(before.threadId);
+    expect(c.threadPath).toBe(before.threadPath);
+    expect(c.messages.slice(0, before.messages.length)).toEqual(before.messages);
+    const added = c.messages.slice(before.messages.length);
+    expect(added.filter((m: any) => m.role === "user").map((m: any) => [m.mid, m.content])).toEqual([
+      ["continuation-first", first], ["continuation-rest", continuation],
+    ]);
+    // One tool-bearing assistant step, then the refinement and the SAME turn's
+    // one final reply. A follow-up would produce an extra old STEER1 answer.
+    expect(added.filter((m: any) => !m.system).map((m: any) => m.role)).toEqual(["user", "assistant", "user", "assistant"]);
+    expect(added.filter((m: any) => m.role === "assistant").map((m: any) => m.content)).toEqual(["", "saw the kiwi steer"]);
+    expect(c.queued ?? []).toEqual([]);
+    const bytes = readFileSync(c.threadPath);
+    expect(bytes.subarray(0, prefix.length)).toEqual(prefix);
+    const entries = readEntries(c.threadPath).slice(entriesBefore.length);
+    const native = entries.filter(e => e.type === "message");
+    expect(native.map(e => e.message!.role)).toEqual(["user", "assistant", "toolResult", "user", "assistant"]);
+    expect(native[2].message!.content).toEqual([{ type: "text", text: "step1\n" }]);
+    const users = native.filter(e => e.message!.role === "user");
+    expect(users.map(e => e.message!.content)).toEqual([first, continuation].map(text => [{ type: "text", text }]));
+    expect(users.map(e => e.message!.vcRequest)).toEqual(["continuation-first", "continuation-rest"].map(clientId => ({ v: 1, clientId, via: "voice", device: "phone" })));
+    expect(entries.some(e => e.type === "custom_message" && e.customType === "vc-context" && typeof e.content === "string" && e.content.includes("[Carl, on a voice call (phone)]"))).toBe(true);
+    const calls = or.calls.slice(callsBefore);
+    expect(calls).toHaveLength(2);
+    expect(calls.map(lastUser)).toEqual([first, continuation]);
+    expect(toolOutputsSince(calls[1], "STEER1")).toEqual(["step1\n"]);
+    const poll = await (await fetch(srv.base + `/poll?after=${cursor}`)).json();
+    const starts = poll.events.filter((e: any) => e.conv === r.convId && e.type === "meta" && e.patch?.running?.turn);
+    expect(new Set(starts.map((e: any) => e.patch.running.turn)).size).toBe(1);
+    expect((await conv(r.convId)).messages).toEqual(c.messages); // reopen does not replay either half
   });
 
   it("interrupt: /kill aborts the running command at once", async () => {
