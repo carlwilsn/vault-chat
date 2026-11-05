@@ -74,8 +74,6 @@ const PICTURES_IDLE_MS = 2000;
 const FADE_MS = 280;
 /** How long Show's outline stays on the item it centred. */
 const SHOWN_MS = 1800;
-/** A stroke a scribble being written would erase, dimmed to this (the preview). */
-const DIM_ALPHA = 0.28;
 
 /** The quick colour slots in the toolbar (GoodNotes-style), five per ink tool; their defaults. */
 const PENS = ["#1f1f24", "#1f5bd6", "#d23a2c", "#1e8a4c", "#8a4bd6"];
@@ -194,7 +192,7 @@ type Xf = { s: number; ox: number; oy: number };
 const ID: Xf = { s: 1, ox: 0, oy: 0 };
 
 type ToolG =
-  | { k: "draw"; id: number; touch: boolean; tool: Tool; color: string; w: number; style?: LineStyle; xy: number[]; minStep: number; pred: XY | null; raw: TP[]; scribAt: number }
+  | { k: "draw"; id: number; touch: boolean; tool: Tool; color: string; w: number; style?: LineStyle; xy: number[]; minStep: number; pred: XY | null; raw: TP[] }
   | { k: "erase"; id: number; touch: boolean; precise: boolean; last: XY; at: XY }
   | { k: "lasso"; id: number; touch: boolean; poly: XY[]; sx: number; sy: number; far: number; held?: boolean }
   | { k: "xf"; id: number; touch: boolean; mode: "move" | "scale"; x0: number; y0: number; anchor: XY; c0: XY; xf: Xf };
@@ -363,9 +361,6 @@ export class BoardView {
   private drawS = 1;
   /** Strokes fading out after a scribble erased them (and the scribble itself). */
   private fades: { strokes: Stroke[]; t0: number; from: number }[] = [];
-  /** The strokes a scribble being written would erase: off the tiles, drawn dimmed on the live canvas (a preview). */
-  private dimmed = new Set<Stroke>();
-  private scribT = 0;
   private gesturing = false;
   private settleT = 0;
   private baseQueued = false;
@@ -380,6 +375,9 @@ export class BoardView {
   private saveAgain = false;
   private conflict = false;
   private disposed = false;
+  private closing = false;
+  /** Input and late editing callbacks stop before the final save; pictures keep their resources until disposal. */
+  private get inactive(): boolean { return this.closing || this.disposed; }
   /** Pen-latency numbers for the log (inkPerf.ts: `ink.perf`). */
   private perf = new InkPerf();
   /** Work that came due while the pen was down, run as it lifts: the save, the device's copy. */
@@ -427,6 +425,7 @@ export class BoardView {
     /** Opened from the device's copy the box does not have yet (main.ts): that page's writer and gen carry on. */
     recovered?: { writer: string; gen: number } | null,
   ) {
+    this.onKey = this.onKey.bind(this);
     this.rev = board.rev;
     this.lkey = localKey(api.vaultKey(), slug);
     if (recovered) {
@@ -501,7 +500,7 @@ export class BoardView {
       input.value = "";
       if (f) void this.insertImage(f);
     });
-    for (const t of ["pointerdown", "pointermove", "pointerup", "pointercancel", "pointerleave"]) this.el.addEventListener(t, (e) => this.onPointer(e as PointerEvent));
+    for (const t of ["pointerdown", "pointermove", "pointerup", "pointercancel", "lostpointercapture", "pointerleave"]) this.el.addEventListener(t, (e) => this.onPointer(e as PointerEvent));
     this.stage.addEventListener("wheel", (e) => this.wheel(e), { passive: false });
     // No iOS selection, callout, magnifier, double-tap zoom or rubber-band anywhere on the board.
     for (const t of ["touchstart", "dblclick", "contextmenu", "selectstart"]) this.stage.addEventListener(t, (e) => e.preventDefault(), { passive: false });
@@ -511,6 +510,7 @@ export class BoardView {
     window.addEventListener("keydown", this.onKey);
     document.addEventListener("visibilitychange", this.onHide);
     window.addEventListener("pagehide", this.onHide);
+    window.addEventListener("blur", this.onBlur);
     // Back from the background (iPadOS may have dropped the canvases' pixels meanwhile): everything visible, redrawn.
     document.addEventListener("visibilitychange", this.onShow);
     window.addEventListener("pageshow", this.onShow);
@@ -584,43 +584,50 @@ export class BoardView {
   }
 
   async close(): Promise<void> {
-    await this.flush();
-    this.saveCam();
-    this.disposed = true;
-    this.offVoice();
-    this.offBadge();
-    onShow(null);
-    voice.setBoard(null);
-    setTapSource(null);
-    setStatSource("gestures", "gestures", null);
-    setStatSource("ink.perf", "ink.perf", null);
-    this.perf.dispose();
-    clearTimeout(this.picsT);
-    penState.down = false;
-    blog("board.close", { slug: this.slug, rev: this.rev, items: this.board.items.length, strokes: this.board.strokes.length });
-    void flushBoardLog();
-    window.removeEventListener("resize", this.onResize);
-    this.chromeRO.disconnect();
-    this.stageRO.disconnect();
-    window.removeEventListener("keydown", this.onKey);
-    window.removeEventListener("click", this.onClickCapture, true);
-    document.removeEventListener("visibilitychange", this.onHide);
-    window.removeEventListener("pagehide", this.onHide);
-    document.removeEventListener("visibilitychange", this.onShow);
-    window.removeEventListener("pageshow", this.onShow);
-    clearTimeout(this.refreshT);
-    cancelAnimationFrame(this.momentum);
-    // Every canvas this board drew with, given back (iPadOS caps canvas memory and collects them lazily).
-    for (const t of this.tiles.values()) release(t.c);
-    this.tiles.clear();
-    for (const c of this.pool) release(c);
-    this.pool = [];
-    release(this.base);
-    release(this.live);
-    for (const p of this.boardPics.values()) release(p.c);
-    this.boardPics.clear();
-    this.items.dispose();
-    this.inboxClose?.();
+    if (this.inactive) return;
+    this.interruptTool();
+    this.closing = true;
+    try {
+      await this.flush();
+    } finally {
+      this.disposed = true;
+      this.saveCam();
+      this.offVoice();
+      this.offBadge();
+      onShow(null);
+      voice.setBoard(null);
+      setTapSource(null);
+      setStatSource("gestures", "gestures", null);
+      setStatSource("ink.perf", "ink.perf", null);
+      this.perf.dispose();
+      clearTimeout(this.picsT);
+      penState.down = false;
+      blog("board.close", { slug: this.slug, rev: this.rev, items: this.board.items.length, strokes: this.board.strokes.length });
+      void flushBoardLog();
+      window.removeEventListener("resize", this.onResize);
+      this.chromeRO.disconnect();
+      this.stageRO.disconnect();
+      window.removeEventListener("keydown", this.onKey);
+      window.removeEventListener("click", this.onClickCapture, true);
+      document.removeEventListener("visibilitychange", this.onHide);
+      window.removeEventListener("pagehide", this.onHide);
+      window.removeEventListener("blur", this.onBlur);
+      document.removeEventListener("visibilitychange", this.onShow);
+      window.removeEventListener("pageshow", this.onShow);
+      clearTimeout(this.refreshT);
+      cancelAnimationFrame(this.momentum);
+      // Every canvas this board drew with, given back (iPadOS caps canvas memory and collects them lazily).
+      for (const t of this.tiles.values()) release(t.c);
+      this.tiles.clear();
+      for (const c of this.pool) release(c);
+      this.pool = [];
+      release(this.base);
+      release(this.live);
+      for (const p of this.boardPics.values()) release(p.c);
+      this.boardPics.clear();
+      this.items.dispose();
+      this.inboxClose?.();
+    }
   }
 
   // ------------------------------------------------------------ layout & camera
@@ -694,7 +701,7 @@ export class BoardView {
 
   private onResize = () => this.onResizeFrom("resize");
   private onResizeFrom(via: string): void {
-    if (this.disposed) return;
+    if (this.inactive) return;
     this.layoutChrome();
     const cx = this.cam.x + this.W / this.cam.z / 2, cy = this.cam.y + this.H / this.cam.z / 2;
     this.measure(via);
@@ -760,7 +767,7 @@ export class BoardView {
     ctx.setTransform(S, 0, 0, S, -box.x0 * S, -box.y0 * S);
     const lifted = this.lifted ? this.sel : null;
     for (const it of this.board.items) if (!lifted?.items.has(it) && boxesMeet(itemBox(it), box)) this.paintItem(ctx, it, "tile");
-    const ink = this.board.strokes.filter((st) => !(lifted && (lifted.strokes.has(st) || this.carry.has(st))) && !this.dimmed.has(st) && boxesMeet(strokeInfo(st).box, box));
+    const ink = this.board.strokes.filter((st) => !(lifted && (lifted.strokes.has(st) || this.carry.has(st))) && boxesMeet(strokeInfo(st).box, box));
     for (const st of paintOrder(ink)) drawStroke(ctx, st);
     return true;
   }
@@ -843,7 +850,7 @@ export class BoardView {
     this.refreshT = window.setTimeout(() => this.refreshVisible(), ms);
   }
   private refreshVisible(): void {
-    if (this.disposed || document.visibilityState === "hidden") return;
+    if (this.inactive || document.visibilityState === "hidden") return;
     if (this.gesturing || this.g || this.view) return this.refreshSoon();
     const view: Box = { x0: this.cam.x, y0: this.cam.y, x1: this.cam.x + this.W / this.cam.z, y1: this.cam.y + this.H / this.cam.z };
     try {
@@ -858,7 +865,7 @@ export class BoardView {
 
   /** Back in front: the canvases re-made at the screen's size and everything visible drawn again, at once. */
   private onShow = (e: Event): void => {
-    if (this.disposed || (e.type === "visibilitychange" && document.visibilityState !== "visible")) return;
+    if (this.inactive || (e.type === "visibilitychange" && document.visibilityState !== "visible")) return;
     if (window.scrollX || window.scrollY) window.scrollTo(0, 0);
     // Re-made at the screen's size, the view's centre kept (the size may have changed while in the background).
     this.onResizeFrom(`show:${e.type}`);
@@ -1077,7 +1084,7 @@ export class BoardView {
     // canvas the last frame drew and this one draws is cleared: the stroke's own box, not the whole screen.
     const liveXY = g?.k === "draw" ? (g.pred ? g.xy.concat(g.pred.x, g.pred.y) : g.xy) : null;
     let inkBox: { x0: number; y0: number; x1: number; y1: number; cam: string } | null = null;
-    if (g?.k === "draw" && liveXY && !this.shown && !this.dimmed.size && !this.fades.length && !this.sel && !DEBUG_TOUCH) {
+    if (g?.k === "draw" && liveXY && !this.shown && !this.fades.length && !this.sel && !DEBUG_TOUCH) {
       const b = xyBox(liveXY, g.w / 2 + 2), d = this.dpr, s = z * d;
       inkBox = {
         x0: Math.max(0, Math.floor((b.x0 - this.cam.x) * s) - 2),
@@ -1115,14 +1122,6 @@ export class BoardView {
         this.queueLive();
       }
     }
-    // A scribble's preview: the strokes it would erase, dimmed (taken off the tiles while it lasts).
-    if (this.dimmed.size) {
-      this.worldTransform(ctx);
-      ctx.save();
-      ctx.globalAlpha = DIM_ALPHA;
-      for (const st of paintOrder(this.dimmed)) drawStroke(ctx, st);
-      ctx.restore();
-    }
     if (g?.k === "draw" && liveXY) {
       // The same function of the same samples as the finished stroke (ink.ts): nothing moves when the pen lifts.
       const xy = liveXY;
@@ -1137,7 +1136,7 @@ export class BoardView {
         const b = xyBox(xy, g.w / 2 + 2);
         ctx.save();
         ctx.globalCompositeOperation = "destination-out";
-        for (const st of this.board.strokes) if (st.tool === "pen" && !this.dimmed.has(st) && boxesMeet(strokeInfo(st).box, b)) drawStroke(ctx, { ...st, color: "#000" }, 0, strokeInfo(st).ink);
+        for (const st of this.board.strokes) if (st.tool === "pen" && boxesMeet(strokeInfo(st).box, b)) drawStroke(ctx, { ...st, color: "#000" }, 0, strokeInfo(st).ink);
         ctx.restore();
       }
     }
@@ -1320,7 +1319,7 @@ export class BoardView {
       const png = await canvasPng(c);
       c.width = c.height = 0;
       const { src } = await api.addAsset(this.slug, png);
-      if (this.disposed) return;
+      if (this.inactive) return;
       let n = 0;
       for (const x of this.board.items) if (x.kind === "pdf" && x.src === it.src && (x.page ?? 1) === (it.page ?? 1) && typeof x.snap !== "string") (x.snap = src), n++;
       if (!n) return;
@@ -1350,7 +1349,7 @@ export class BoardView {
     const img = new Image();
     img.decoding = "async";
     const ready = () => {
-      if (this.disposed) return;
+      if (this.inactive) return;
       this.images.set(src, img);
       // The picture's own aspect as WebKit shows it (EXIF applied; an SVG's viewBox): the item's box keeps it.
       if (img.naturalWidth && img.naturalHeight) this.natural.set(src, { w: img.naturalWidth, h: img.naturalHeight });
@@ -1411,7 +1410,7 @@ export class BoardView {
     this.measuring.add(src);
     try {
       const sz = await mathSize(api.assetUrl(this.slug, src), MATH_LAYOUT_W);
-      if (this.disposed) return;
+      if (this.inactive) return;
       this.natural.set(src, sz);
       this.fitItems();
     } catch {
@@ -1465,14 +1464,14 @@ export class BoardView {
   // ------------------------------------------------------------ input
 
   private onPointer(e: PointerEvent): void {
-    if (this.disposed) return;
+    if (this.inactive) return;
     // The stage's rect is read at a pointer down (and after a resize); a move uses it as it was, so a Pencil's 120
     // moves a second never force a style and layout pass (the voice pill's waves change styles every frame).
     let r = e.type === "pointerdown" || !this.stageRect ? (this.stageRect = this.stage.getBoundingClientRect()) : this.stageRect;
     if (e.type === "pointerdown" && this.stage.contains(e.target as Node) && this.checkGeometry(r)) r = this.stageRect = this.stage.getBoundingClientRect();
     const kind = e.pointerType === "pen" ? "pen" : e.pointerType === "touch" ? "touch" : "mouse";
     if (kind === "pen") penState.at = performance.now();
-    const type = e.type === "pointerdown" ? "down" : e.type === "pointermove" ? "move" : e.type === "pointerup" ? "up" : e.type === "pointercancel" ? "cancel" : "leave";
+    const type = e.type === "pointerdown" ? "down" : e.type === "pointermove" ? "move" : e.type === "pointerup" ? "up" : (e.type === "pointercancel" || e.type === "lostpointercapture") ? "cancel" : "leave";
     if (type === "leave" && (kind !== "pen" || e.target !== this.el)) return;
     const pe: PEvent = { type, id: e.pointerId, kind, x: e.clientX - r.left, y: e.clientY - r.top, w: e.width, h: e.height, t: e.timeStamp, button: e.button, buttons: e.buttons };
     // The chrome (toolbar, popovers, menu, inbox, selection pill) takes its own pointers, whatever they are:
@@ -1510,7 +1509,7 @@ export class BoardView {
         y: e.y,
         t: window.setTimeout(() => {
           this.hold = null;
-          if (!this.chrome.has(id)) return;
+          if (this.inactive || !this.chrome.has(id)) return;
           this.chrome.cancel(id);
           this.heldAt = performance.now();
           this.openPalette(Number(btn.dataset.slot), btn);
@@ -1526,6 +1525,7 @@ export class BoardView {
   }
 
   private act(a: Action): void {
+    if (this.inactive) return;
     switch (a.a) {
       case "pen-seen":
         penSeen = true;
@@ -1541,10 +1541,10 @@ export class BoardView {
       case "tool-move":
         return this.moveTool(a.ev);
       case "tool-end":
-        return this.endTool(a.ev.id, false);
+        return this.endTool(a.id, a.ev, "up");
       case "tool-cancel":
         // A finger's stroke that turned into a gesture (or a palm) is dropped; a pen's cancel keeps what it wrote.
-        return this.endTool(a.ev.id, a.ev.kind === "touch");
+        return this.endTool(a.id, a.ev, "cancel");
       case "view-start":
         cancelAnimationFrame(this.momentum);
         this.view = { cam0: { ...this.cam }, anchor: this.toWorld(a.x, a.y) };
@@ -1627,7 +1627,7 @@ export class BoardView {
       // The pen's own samples are the stroke (ink.ts: stabilised, then stroked as one path); repeats and samples
       // closer than INK.minStep css px to the last are left out.
       const style = !hl && this.prefs.penStyle !== "solid" ? this.prefs.penStyle : undefined;
-      this.g = { k: "draw", id: ev.id, touch, tool: m, color: hl ? this.prefs.hlColor : this.prefs.penColor, w: hl ? this.prefs.hl : this.prefs.pen, ...(style ? { style } : {}), xy: [r2(p.x), r2(p.y)], minStep: INK.minStep / this.cam.z, pred: null, raw: [{ ...p, t: ev.t }], scribAt: 0 };
+      this.g = { k: "draw", id: ev.id, touch, tool: m, color: hl ? this.prefs.hlColor : this.prefs.penColor, w: hl ? this.prefs.hl : this.prefs.pen, ...(style ? { style } : {}), xy: [r2(p.x), r2(p.y)], minStep: INK.minStep / this.cam.z, pred: null, raw: [{ ...p, t: ev.t }] };
       this.perf.penDown(voice.state.phase === "live");
       this.perf.input([ev.t], performance.now());
       penState.down = true;
@@ -1650,7 +1650,7 @@ export class BoardView {
         // Held still: on an object it selects it; on empty canvas, Paste.
         clearTimeout(this.lassoHoldT);
         this.lassoHoldT = window.setTimeout(() => {
-          if (this.g !== g || g.far >= HOLD_SLOP || this.disposed) return;
+          if (this.g !== g || g.far >= HOLD_SLOP || this.inactive) return;
           g.held = true;
           this.held(p, { x: g.sx, y: g.sy });
         }, HOLD_MS);
@@ -1672,21 +1672,6 @@ export class BoardView {
       }
       this.perf.input(ts, performance.now());
       g.pred = this.predicted(g.xy);
-      // The scribble preview: classified at most every 60 ms, and once more 60 ms after the last move (the pen
-      // resting before it lifts sees where it got to).
-      if (g.tool === "pen" && this.prefs.scribble) {
-        clearTimeout(this.scribT);
-        if (performance.now() - g.scribAt > 60) {
-          g.scribAt = performance.now();
-          this.scribblePreview(g.raw, g.w);
-        }
-        this.scribT = window.setTimeout(() => {
-          if (this.g !== g || this.disposed) return;
-          g.scribAt = performance.now();
-          this.scribblePreview(g.raw, g.w);
-          this.queueLive();
-        }, 60);
-      }
     } else if (g.k === "erase") {
       for (const q of this.samples(ev)) this.eraseTo(q);
     } else if (g.k === "lasso") {
@@ -1705,10 +1690,27 @@ export class BoardView {
     this.queueLive();
   }
 
-  /** The tool's pointer lifted, or its stroke is dropped (a finger stroke that became a gesture). */
-  private endTool(id: number, drop: boolean): void {
+  /** End through the Arbiter's existing owner, never turn an interruption into a normal lift. */
+  private interruptTool(): void {
+    for (const a of this.arb.cancelTool()) this.act(a);
+  }
+
+  private onBlur = (): void => { if (!this.inactive) this.interruptTool(); };
+
+  /** Cancellation keeps interrupted pen/mouse ink, but drops a finger stroke that became a gesture. */
+  private endTool(id: number, ev: PEvent, reason: "up" | "cancel"): void {
     const g = this.g;
+    // A second finger can trigger cancellation: action.id is the owner, ev.id is that second finger.
     if (!g || g.id !== id) return;
+    const drop = reason === "cancel" && ev.kind === "touch";
+    if (g.k === "draw" && reason === "up") {
+      // Coalesced/predicted events belong to moves. Use just the real up endpoint in the same stage/camera basis.
+      const p = this.toWorld(ev.x, ev.y), last = g.raw[g.raw.length - 1]!;
+      if (p.x !== last.x || p.y !== last.y) {
+        g.raw.push({ ...p, t: ev.t });
+        addSample(g.xy, p.x, p.y, g.minStep);
+      }
+    }
     this.g = null;
     if (g.k === "draw") {
       this.perf.penUp();
@@ -1724,19 +1726,15 @@ export class BoardView {
       const save = this.saveDue, local = this.localDue;
       this.saveDue = this.localDue = false;
       setTimeout(() => {
-        if (this.disposed) return;
+        if (this.inactive) return;
         if (local) void this.persistLocal();
         if (save) this.saveFromTimer();
       }, 0);
     }
     if (g.k === "draw") {
-      if (drop) {
-        this.undim();
-        return this.queueLive();
-      }
+      if (drop) return this.queueLive();
       const stroke: Stroke = { id: rid(), tool: g.tool, color: g.color, w: g.w, xy: g.xy, ...(g.style ? { style: g.style } : {}) };
-      if (g.tool === "pen" && this.prefs.scribble && this.scribbleErase(g.raw, stroke)) return;
-      this.undim();
+      if (reason === "up" && !g.touch && g.tool === "pen" && this.prefs.scribble && this.scribbleErase(g.raw, stroke)) return;
       this.begin();
       this.board.strokes.push(stroke);
       this.commit(false);
@@ -1809,13 +1807,7 @@ export class BoardView {
     }
   }
 
-  /**
-   * Scribble to erase (scribble.ts), as GoodNotes does it: while a pen stroke is written it is classified now and
-   * then; once it is clearly a scribble over ink, the strokes it would erase dim (a preview). Only when the Pencil
-   * lifts, and only if the whole stroke is a confident scribble that mostly covers them, are they erased (one undo
-   * step; they fade out from their dimmed look) and the scribble leaves no ink. Anything less stays ink, and the
-   * dimmed strokes come back.
-   */
+  /** Scribble is decided only on a matching normal tool-up; contact renders ordinary ink, never target previews. */
   private scribbleHits(raw: TP[], w: number): { v: ScribbleVerdict; hit: Stroke[] } {
     const z = this.cam.z;
     const v = classifyScribble(raw.map((p) => ({ x: p.x * z, y: p.y * z, t: p.t })));
@@ -1824,28 +1816,6 @@ export class BoardView {
     const step = Math.max(0.5, 1 / z);
     return { v, hit: this.board.strokes.filter((s) => boxesMeet(strokeInfo(s).box, region.box) && coveredShare(s.xy, region, step) >= SCRIBBLE_COVER) };
   }
-  private scribblePreview(raw: TP[], w: number): void {
-    const { hit } = this.scribbleHits(raw, w);
-    const next = new Set(hit);
-    if (next.size === this.dimmed.size && hit.every((s) => this.dimmed.has(s))) return;
-    let box: Box | null = null;
-    for (const s of this.dimmed) if (!next.has(s)) box = unionBox(box, strokeInfo(s).box);
-    for (const s of next) if (!this.dimmed.has(s)) box = unionBox(box, strokeInfo(s).box);
-    this.dimmed = next;
-    if (box) {
-      this.repaint(box);
-      this.renderBase();
-    }
-  }
-  /** The scribble preview is over: the dimmed strokes back on the tiles. */
-  private undim(): void {
-    if (!this.dimmed.size) return;
-    let box: Box | null = null;
-    for (const s of this.dimmed) box = unionBox(box, strokeInfo(s).box);
-    this.dimmed = new Set();
-    this.repaint(box!);
-    this.renderBase();
-  }
   private scribbleErase(raw: TP[], scrib: Stroke): boolean {
     const { v, hit } = this.scribbleHits(raw, scrib.w);
     if (v.ok) blog("scribble", { erased: hit.length, reversals: v.reversals, turn: Math.round(v.medianTurn), legMs: Math.round(v.legMs) });
@@ -1853,19 +1823,13 @@ export class BoardView {
     const gone = new Set(hit);
     let box: Box | null = null;
     for (const s of hit) box = unionBox(box, strokeInfo(s).box);
-    for (const s of this.dimmed) box = unionBox(box, strokeInfo(s).box);
-    const wasDim = new Set(this.dimmed);
-    this.dimmed = new Set();
     this.begin();
     this.board.strokes = this.board.strokes.filter((s) => !gone.has(s));
     if (this.sel) this.setSel(null);
     this.commit(false);
     this.repaint(box!);
-    // They fade out from how they look now (dimmed by the preview, or whole).
-    const dim = hit.filter((s) => wasDim.has(s)), whole = hit.filter((s) => !wasDim.has(s));
-    const t0 = performance.now();
-    if (dim.length) this.fades.push({ strokes: dim, t0, from: DIM_ALPHA });
-    this.fades.push({ strokes: [...whole, scrib], t0, from: 0.85 });
+    // Post-lift only: erased ink and the completed gesture fade together.
+    this.fades.push({ strokes: [...hit, scrib], t0: performance.now(), from: 0.85 });
     this.renderBase();
     this.queueLive();
     return true;
@@ -1920,6 +1884,7 @@ export class BoardView {
   private coast(vx: number, vy: number): void {
     let last = performance.now();
     const step = (now: number) => {
+      if (this.inactive) return;
       const dt = Math.min(48, now - last);
       last = now;
       this.cam.x -= (vx * dt) / this.cam.z;
@@ -1928,12 +1893,13 @@ export class BoardView {
       vx *= k;
       vy *= k;
       this.camMoved();
-      if (Math.hypot(vx, vy) > 0.02 && !this.disposed) this.momentum = requestAnimationFrame(step);
+      if (Math.hypot(vx, vy) > 0.02 && !this.inactive) this.momentum = requestAnimationFrame(step);
     };
     this.momentum = requestAnimationFrame(step);
   }
 
   private wheel(e: WheelEvent): void {
+    if (this.inactive) return;
     e.preventDefault();
     const r = this.stage.getBoundingClientRect();
     const sx = e.clientX - r.left, sy = e.clientY - r.top;
@@ -1949,7 +1915,8 @@ export class BoardView {
     this.camMoved();
   }
 
-  private onKey = (e: KeyboardEvent) => {
+  private onKey(e: KeyboardEvent): void {
+    if (this.inactive) return;
     // Typing in a field (a name, a widget's text box): Backspace and ⌘Z are the field's, never the board's.
     if (isTextField(e.target) || isTextField(document.activeElement)) return;
     if ((e.key === "Delete" || e.key === "Backspace") && this.sel) return this.deleteSel();
@@ -1961,7 +1928,7 @@ export class BoardView {
     e.preventDefault();
     if (e.shiftKey) this.redo();
     else this.undo();
-  };
+  }
 
   // ------------------------------------------------------------ erasers (ink only: items are never touched)
 
@@ -2120,7 +2087,7 @@ export class BoardView {
         y: e.y,
         t: window.setTimeout(() => {
           this.touchHold = null;
-          if (this.disposed || this.g || this.prefs.mode !== "lasso" || !this.arb.hold(id, performance.now())) return;
+          if (this.inactive || this.g || this.prefs.mode !== "lasso" || !this.arb.hold(id, performance.now())) return;
           this.held(this.toWorld(e.x, e.y), { x: e.x, y: e.y });
         }, HOLD_MS),
       };
@@ -2134,6 +2101,7 @@ export class BoardView {
 
   /** Paste: the clipboard centred where Paste was asked for, selected; its files copied first from another board. One undo step. */
   private async paste(): Promise<void> {
+    if (this.inactive) return;
     const at = this.pasteAt, c = loadClip();
     this.hidePaste();
     if (!at || !c) return;
@@ -2146,7 +2114,7 @@ export class BoardView {
         blog("board.paste", { ok: false, from: c.from, error: String((err as Error)?.message ?? err).slice(0, 120) });
         return;
       }
-      if (this.disposed) return;
+      if (this.inactive) return;
     }
     const { strokes, items } = placeClip(c, at, rid);
     this.begin();
@@ -2264,10 +2232,13 @@ export class BoardView {
   // ------------------------------------------------------------ inserting an image
 
   private async insertImage(file: File): Promise<void> {
+    if (this.inactive) return;
     this.setStatus("saving", "Adding image…");
     try {
       const { data, w, h } = await encodeImage(file);
+      if (this.inactive) return;
       const r = await api.addAsset(this.slug, data);
+      if (this.inactive) return;
       // Lands at the centre of the view, 60% of its width (and within its height).
       const vw = this.W / this.cam.z, vh = (this.H - TOP) / this.cam.z;
       let iw = vw * 0.6, ih = (iw * h) / w;
@@ -2307,6 +2278,7 @@ export class BoardView {
 
   /** "Add to board": the part (or every part) lands at the centre of the view, selected, ready to move and scale. */
   async addFromInbox(id: string, part?: number): Promise<string[]> {
+    if (this.inactive) return [];
     let tpl: Awaited<ReturnType<typeof api.fromInbox>>["items"];
     try {
       ({ items: tpl } = await api.fromInbox(this.slug, id, part));
@@ -2314,6 +2286,7 @@ export class BoardView {
       blog("inbox.fail", { slug: this.slug, entry: id, part: part ?? null, error: String((e as Error)?.message ?? e).slice(0, 200) });
       throw e;
     }
+    if (this.inactive) return [];
     // Each part's true size before it is placed: typeset math as this iPad lays it out (its fonts loaded; wider
     // than the layout width when an equation will not wrap), a picture as WebKit shows it (EXIF applied).
     await Promise.all(
@@ -2337,6 +2310,7 @@ export class BoardView {
     const c = this.toWorld(this.W / 2, TOP + (this.H - TOP) / 2);
     // Clear of what is on the board already (its items and ink), nearest the centre of the view.
     const avoid = [...this.board.items.map(itemBox), ...this.board.strokes.map((st) => strokeInfo(st).box)];
+    if (this.inactive) return [];
     const boxes = placeParts(tpl, { cx: c.x, cy: c.y, w: vw, h: vh }, avoid);
     const made: Item[] = tpl.map((t, i) => {
       const { width: _w, ...rest } = t;
@@ -2375,7 +2349,10 @@ export class BoardView {
   // ------------------------------------------------------------ toolbar & popovers
 
   private setMode(m: Mode): void {
-    if (this.prefs.mode !== m) blog("tool", { tool: m });
+    if (this.prefs.mode !== m) {
+      this.interruptTool();
+      blog("tool", { tool: m });
+    }
     this.prefs.mode = m;
     if (m !== "lasso") {
       this.setSel(null);
@@ -2394,6 +2371,7 @@ export class BoardView {
   }
 
   private onClickCapture = (e: MouseEvent): void => {
+    if (this.inactive) return;
     if (this.synthClick || !e.isTrusted || isField(e.target)) return;
     if (!this.chrome.click(performance.now())) {
       e.stopImmediatePropagation();
@@ -2408,6 +2386,7 @@ export class BoardView {
   }
 
   private onClick(e: MouseEvent): void {
+    if (this.inactive) return;
     const t = (e.target as HTMLElement).closest("button");
     if (!t || !this.el.contains(t)) return;
     const d = t.dataset;
@@ -2422,7 +2401,7 @@ export class BoardView {
       this.closePop();
     } else if (d.eraser) {
       this.prefs.eraser = d.eraser === "cut" ? "cut" : "erase";
-      this.prefs.mode = this.prefs.eraser;
+      this.setMode(this.prefs.eraser);
       this.savePrefs();
       this.renderPop();
     } else if (d.pop) this.togglePop(d.pop === "size" && isEraser(this.prefs.mode) ? "eraser" : d.pop, d.pop === "size" && isEraser(this.prefs.mode) ? (this.el.querySelector('[data-mode="eraser"]') as HTMLElement) : t);
@@ -2476,6 +2455,7 @@ export class BoardView {
   }
 
   private onInput(e: Event): void {
+    if (this.inactive) return;
     const t = e.target as HTMLInputElement;
     if (t.dataset.custom !== undefined) {
       if (HEX.test(t.value)) this.setSlotColor(t.value.toLowerCase());
@@ -2670,7 +2650,9 @@ export class BoardView {
 
   /** Leaving the app (Home, app switcher, closing): onto the device at once, and save now. */
   private onHide = (e: Event) => {
+    if (this.inactive) return;
     if (e.type === "pagehide" || document.visibilityState === "hidden") {
+      this.interruptTool();
       this.saveCam();
       void this.persistLocal();
       void this.flush().catch(() => {}); // a save cut off by the page going away: the device's copy goes up on the next open
@@ -2714,7 +2696,7 @@ export class BoardView {
 
   /** The save's timer: a save that comes due while the pen is down goes as it lifts (endTool). */
   private saveFromTimer(): void {
-    if (this.disposed) return;
+    if (this.inactive) return;
     if (this.g && performance.now() - this.gAt < 10_000) {
       this.saveDue = true;
       return;
@@ -2727,7 +2709,7 @@ export class BoardView {
   penIdle(): Promise<void> {
     return new Promise((res) => {
       const check = () => {
-        if (this.disposed) return res();
+        if (this.inactive) return res();
         const left = PICTURES_IDLE_MS - (performance.now() - penState.at);
         if (this.g || this.view || left > 0) return void setTimeout(check, Math.max(100, left));
         res();
@@ -2762,7 +2744,7 @@ export class BoardView {
       } catch (e) {
         if (e instanceof api.HttpError && e.status === 409) return; // the board moved on: its next save brings them
         blog("pictures.fail", { slug: this.slug, error: String((e as Error)?.message ?? e).slice(0, 200) });
-        if (this.picsRev === rev && !this.disposed) {
+        if (this.picsRev === rev && !this.inactive) {
           clearTimeout(this.picsT);
           this.picsT = window.setTimeout(() => this.picturesSoon(rev), 5000);
         }
@@ -2805,7 +2787,7 @@ export class BoardView {
     const left = Math.max(0, this.unsavedSince + STALL_MS - Date.now());
     this.stallT = window.setTimeout(() => {
       this.stallT = 0;
-      if (this.disposed || !this.unsavedSince) return;
+      if (this.inactive || !this.unsavedSince) return;
       if (Date.now() - this.unsavedSince < STALL_MS) return this.armStall();
       this.stalled = true;
       blog("save.stall", { slug: this.slug, rev: this.rev, ms: Date.now() - this.unsavedSince, status: this.el.dataset.save, saving: this.saving ? Date.now() - this.saveStarted : null, local: this.localGen >= this.gen, pen: !!this.g });
@@ -2994,7 +2976,7 @@ export class BoardView {
       this.dirty = true;
       this.setStatus("offline");
       clearTimeout(this.saveT);
-      this.saveT = window.setTimeout(() => this.saveFromTimer(), 5000);
+      if (!this.inactive) this.saveT = window.setTimeout(() => this.saveFromTimer(), 5000);
     }
   }
 
@@ -3003,7 +2985,7 @@ export class BoardView {
     return {
       cam: { ...this.cam },
       strokes: this.board.strokes.length,
-      dimmed: this.dimmed.size,
+      dimmed: 0, // No pre-lift target preview; retained for existing preview diagnostics.
       items: this.board.items.length,
       grid: this.board.grid,
       tileScale: this.drawS,

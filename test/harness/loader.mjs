@@ -4,7 +4,8 @@
 // - `*.css` imports resolve to an empty module;
 // - `pdfjs-dist` (needs DOMMatrix/canvas at import time) resolves to a stub —
 //   the harness tests never render PDFs.
-const stub = (src) => ({ url: "data:text/javascript," + encodeURIComponent(src), shortCircuit: true });
+// tsx may append an asset's ?url suffix to a resolved data URL. A trailing comment keeps it out of JS.
+const stub = (src) => ({ url: "data:text/javascript," + encodeURIComponent(src + "\n//"), shortCircuit: true });
 
 export async function resolve(specifier, context, next) {
   if (specifier.endsWith("?url")) return stub("export default 'stub-url';");

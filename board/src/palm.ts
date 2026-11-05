@@ -171,6 +171,15 @@ export class Arbiter {
     return this.touch(e);
   }
 
+  /** Lifecycle interruption (tool switch, page hide, teardown). Retire the existing tool owner once. */
+  cancelTool(): Action[] {
+    const tool = this.tool;
+    if (!tool) return [];
+    this.tool = null;
+    const ev: PEvent = { type: "cancel", id: tool.id, kind: tool.kind, x: 0, y: 0, t: 0 };
+    return [{ a: "tool-cancel", id: tool.id, ev }];
+  }
+
   // ------------------------------------------------------------ pen
 
   private pen(e: PEvent): Action[] {
@@ -199,7 +208,7 @@ export class Arbiter {
       out.push({ a: "tool-start", id: e.id, ev: e });
       return out;
     }
-    if (this.tool?.id !== e.id) return out;
+    if (this.tool?.id !== e.id || this.tool.kind !== "pen") return out;
     this.lastPenContact = e.t;
     if (e.type === "move") out.push({ a: "tool-move", id: e.id, ev: e });
     else {
