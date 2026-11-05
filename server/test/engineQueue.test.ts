@@ -269,8 +269,8 @@ describe("steer and queue", () => {
     const next = backend.turns[turnsBefore];
     expect(next.threadId).toBe(tid);
     expect(next.texts.join("\n")).toContain("Only chapter two.");
-    // The other waiting message follows it (pi's steer into the new turn), still pending until pi takes it.
-    await until(() => backend.steers.filter((x) => x.texts.join() === "And keep it short.").length === 2);
+    // The other waiting message follows its answer (Pi's native follow-up), still pending until Pi takes it.
+    await until(() => backend.followUps.filter((x) => x.texts.join() === "And keep it short.").length === 1);
     await until(() => waiting().join() === "c-after");
     backend.pi(tid, [...userMsg("Only chapter two."), ...assistant([{ text: "Chapter two, then." }]), ...userMsg("And keep it short."), ...assistant([{ text: "Short." }])]);
     backend.ev(tid, { kind: "turnCompleted", turnId: `pt-${turnsBefore + 1}`, status: "completed" });

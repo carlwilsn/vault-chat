@@ -23,7 +23,8 @@
   prompt could settle before the remaining input's asynchronous native input hook
   finished. This is a patch to the duplicated replay boundary, not a second queue:
   preload the original PiFeed's undelivered records into Pi before the replacement
-  prompt, preserving kind/identity/context/device. Keep pending through interruption
+  prompt as native follow-ups, preserving identity/context/device and answering
+  the selected input first. Keep pending through interruption
   and clear each only when its actual native entry arrives (including the selected
   prompt). A bounded public Pi input hook reproduces it on baseline 6c7078a2 too;
   SDK files remain read-only. Wakes cannot acquire human device/board permission.

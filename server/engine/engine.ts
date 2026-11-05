@@ -1678,14 +1678,15 @@ export class Engine {
         // Pi owns the waiting messages. Reinsert the existing undelivered feed
         // BEFORE starting the replacement prompt: a fast response can settle
         // while an asynchronous steer is still entering Pi, stranding it idle.
-        // Preserve native kind/order, client identity and original viewer/device.
+        // The selected message is answered next; other waiting inputs follow
+        // via Pi's native follow_up, in order, without steering ahead of it.
+        // Preserve client identity and original viewer/device/context.
         for (const e of opts.replay ?? []) {
           this.setPending(convId, { id: e.clientId!, kind: e.kind === "queue" ? "queue" : "steer", text: e.shown, at: Date.now() });
           live.feed.expect(e);
           rec.q(e.kind === "queue" ? "queue" : "steer", e.clientId!);
           const queued = { texts: [e.text], context: e.hostContext, images: (e.images ?? []).map(im => join(this.d.vault, im.path)) };
-          if (e.kind === "queue") await this.d.backend.followUp(threadId, queued);
-          else await this.d.backend.steer(threadId, turnId, queued);
+          await this.d.backend.followUp(threadId, queued);
         }
         await this.d.backend.startTurn(threadId, { texts, context: [rules, opts.hostContext].filter(Boolean).join("\n\n"), images: opts.images ?? [], model, turnId, ...(talker?.thinking ? { thinking: talker.thinking } : {}) });
         live.started = true;

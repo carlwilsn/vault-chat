@@ -92,6 +92,14 @@ globalThis.fetch=(input,init)=>{
         expect(readEntries(c.meta.threadPath).filter(e => e.message?.role === "user").map(e => e.message!.content))
           .toEqual(expected.map(text => [{ type: "text", text }]));
         expect(c.messages.filter((m: any) => m.role === "user").map((m: any) => m.mid)).toEqual(["hold", "second", "first"]);
+        const ownCalls = provider.calls.slice(callsBefore);
+        // Selected SECOND gets its answer before FIRST follows: no native steer
+        // may leap ahead and merge FIRST into that selected provider response.
+        const selectedCall = ownCalls.find(b => lastUser(b).includes("QUEUE-SECOND"));
+        expect(selectedCall).toBeDefined();
+        const selectedHumans = selectedCall.messages.filter((m: any) => m.role === "user");
+        expect(JSON.stringify(selectedHumans.filter((m: any) => !JSON.stringify(m.content).includes("<you>"))))
+          .not.toContain("QUEUE-FIRST");
         const lastInput = provider.calls.slice(callsBefore).at(-1).messages.filter((m: any) => m.role === "user")
           .flatMap((m: any) => typeof m.content === "string" ? [m.content] : m.content.map((x: any) => x.text));
         for (const text of expected) expect(lastInput.filter((x: string) => x === text)).toHaveLength(1);
