@@ -4,7 +4,8 @@
 // are keyed by marker words.
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { execFileSync } from "node:child_process";
 import { tmp, cleanup, makeVault, makeKeyStore, startServer, waitFor, type Running } from "./helpers";
 import { fakeChat, lastUser, lastToolResult, CHAT_COST, type FakeChat, type ChatStep } from "./fakeChat";
 
@@ -25,6 +26,7 @@ describe.skipIf(!PI_DIR)("pi subagents (real pi children, fake OpenRouter)", () 
   let home: string, vault: string, secrets: string, state: string;
   let or: FakeChat;
   let srv: Running;
+  let explicitCwd: string | undefined;
 
   const respondChild = (body: any): ChatStep => {
     const task = firstUser(body);
@@ -32,6 +34,10 @@ describe.skipIf(!PI_DIR)("pi subagents (real pi children, fake OpenRouter)", () 
     const user = lastUser(body);
     // Whole-word markers (CHILDC must not match CHILDCRASH).
     const has = (w: string) => task.split(/[^A-Z]+/).includes(w);
+    if (has("WORKTREEA") || has("WORKTREEB")) {
+      const tag = has("WORKTREEA") ? "A" : "B";
+      return out === null ? { call: { name: "bash", args: { command: `printf '${tag}' > same.txt; printf '${tag}' > only-${tag}.txt; pwd; git branch --show-current; sleep ${tag === "A" ? 8 : 3}; echo FINISHED-${tag}` } } } : { text: `WORKTREE-${tag} ${out}` };
+    }
     if (has("CHILDA")) return { text: "child A reporting", delayMs: 1500 };
     if (has("CHILDB")) return { text: "child B reporting", delayMs: 1500 };
     if (has("CHILDC")) return { text: `C got: ${task.replace(/^Task: /, "")}` };
@@ -80,6 +86,10 @@ describe.skipIf(!PI_DIR)("pi subagents (real pi children, fake OpenRouter)", () 
 
   const respondParent = (body: any): ChatStep => {
     const user = lastUser(body);
+    if (user.includes("PARALLELWORK16")) return lastToolResult(body) === null
+      ? { call: { name: "Delegate", args: { title: user.includes("EXPLICIT") ? "Isolated explicit" : user.includes("SECOND") ? "Isolated B" : "Isolated A", ...(user.includes("EXPLICIT") ? { cwd: explicitCwd } : {}), task: user.includes("SECOND") || user.includes("EXPLICIT") ? "WORKTREEB implement" : "WORKTREEA implement" } } }
+      : { text: "Both workers keep their native task rows." };
+    if (user.includes("Delegated work finished:") && /Isolated [AB]/.test(user)) return { text: "Native worker result received." };
     if (user.includes("box restarted")) return { text: "resumed after the crash" };
     // This conversation's own messages: pi's "you" layer (a user message starting <you>) points at other chats' words.
     const all = (body.messages ?? [])
@@ -155,6 +165,58 @@ describe.skipIf(!PI_DIR)("pi subagents (real pi children, fake OpenRouter)", () 
     await srv?.stop();
     await or?.close();
     cleanup(home);
+  });
+
+  it("registered-source Delegate children isolate same filenames, survive a viewer change and stop independently", async () => {
+    const source = join(home, "parallel-code"); mkdirSync(source);
+    const git = (cwd: string, ...args: string[]) => execFileSync("git", ["-c", "core.hooksPath=/dev/null", "-C", cwd, ...args], { encoding: "utf8" }).trim();
+    git(source, "init", "-q", "-b", "main");
+    writeFileSync(join(source, "same.txt"), "ORIGINAL");
+    git(source, "add", "same.txt"); git(source, "-c", "user.name=Fixture", "-c", "user.email=fixture@localhost", "commit", "-qm", "fixture");
+    writeFileSync(join(source, "untouched.txt"), "uncommitted source");
+    const registered = await post("/projects", { folder: source });
+    expect(registered.convId).toBe("project-parallel-code");
+    const id = registered.convId;
+    await post("/message", { text: "PARALLELWORK16 FIRST", convId: id });
+    const a = await runningChild(id);
+    const parentCwd = JSON.parse(readFileSync((await conv(id)).threadPath, "utf8").split("\n")[0]).cwd;
+    writeFileSync(join(parentCwd, "peer-dirty.txt"), "PEER");
+    const parentHead = git(parentCwd, "rev-parse", "HEAD");
+    await says(id, /Both workers keep/);
+    await post("/message", { text: "PARALLELWORK16 SECOND", convId: id, otherRoot: join(home, "other-viewer") });
+    const b = await waitFor(async () => (await conv(id)).subagents?.find((x: any) => x.threadId !== a.threadId && x.state === "running"));
+    const sessionCwd = (file: string) => JSON.parse(readFileSync(file, "utf8").split("\n")[0]).cwd;
+    const acwd = sessionCwd(a.sessionFile), bcwd = sessionCwd(b.sessionFile);
+    expect(acwd).not.toBe(bcwd); expect(acwd).not.toBe(parentCwd);
+    await waitFor(() => existsSync(join(acwd, "only-A.txt")) && existsSync(join(bcwd, "only-B.txt")));
+    expect(readFileSync(join(acwd, "same.txt"), "utf8")).toBe("A");
+    expect(readFileSync(join(bcwd, "same.txt"), "utf8")).toBe("B");
+    expect(git(acwd, "branch", "--show-current")).toMatch(/^agent\/worker-/);
+    expect(git(acwd, "branch", "--show-current")).not.toBe(git(bcwd, "branch", "--show-current"));
+    expect(existsSync(join(acwd, "only-B.txt"))).toBe(false);
+    expect(b.startedAt).toBeLessThan(a.endedAt ?? Date.now());
+    await post(`/api/v1/conversations/${id}/subagents/${a.threadId}/stop`, {});
+    const done = await waitFor(async () => { const c = await conv(id); return c.subagents?.find((x: any) => x.threadId === b.threadId)?.state === "completed" ? c : null; });
+    expect(done.subagents.find((x: any) => x.threadId === a.threadId).state).toBe("stopped");
+    expect(done.subagents.find((x: any) => x.threadId === b.threadId).steps).toBeGreaterThan(0);
+    expect(git(parentCwd, "rev-parse", "HEAD")).toBe(parentHead);
+    expect(readFileSync(join(parentCwd, "peer-dirty.txt"), "utf8")).toBe("PEER");
+    expect(readFileSync(join(source, "same.txt"), "utf8")).toBe("ORIGINAL");
+    expect(readFileSync(join(source, "untouched.txt"), "utf8")).toBe("uncommitted source");
+    expect(git(source, "branch", "--show-current")).toBe("main");
+    expect(existsSync(join(parentCwd, "only-A.txt"))).toBe(false);
+    // Exact valid cwd traverses Delegate -> native subagent -> real Pi unchanged.
+    explicitCwd = join(dirname(acwd), "explicit-checkout");
+    git(acwd, "worktree", "add", "-qb", "agent/explicit", explicitCwd, "HEAD");
+    await waitFor(async () => !(await conv(id)).running);
+    await post("/message", { text: "PARALLELWORK16 EXPLICIT", convId: id });
+    const explicit = await waitFor(async () => (await conv(id)).subagents?.find((x: any) => x.title === "Isolated explicit"));
+    await waitFor(() => existsSync(explicit.sessionFile));
+    expect(sessionCwd(explicit.sessionFile)).toBe(explicitCwd);
+    await waitFor(async () => (await conv(id)).subagents?.find((x: any) => x.threadId === explicit.threadId)?.state === "completed");
+    expect(readFileSync(join(explicitCwd, "same.txt"), "utf8")).toBe("B");
+    expect(git(explicitCwd, "branch", "--show-current")).toBe("agent/explicit");
+    expect(readFileSync(join(parentCwd, "peer-dirty.txt"), "utf8")).toBe("PEER");
   });
 
   it("Delegate binds the exact native pi call to its finished child conversation, without borrowing another request", async () => {

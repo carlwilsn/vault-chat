@@ -121,6 +121,7 @@ def main():
     p.add_argument('--check-global-notes', action='store_true', help='Existing cross-vault fixture note identity/source and native edit; copied human notes stay untouched')
     p.add_argument('--check-editor-sync', action='store_true', help='Native immediate paste/send via existing Git transport and genuine Pi read on a different viewer vault')
     p.add_argument('--native-video-only', action='store_true', help='Run native video independently; retain earlier phone evidence separately, never relabel it')
+    p.add_argument('--check-parallel-work', action='store_true', help='Genuine Delegate workers on two owned code worktrees; native task stop/result, no shipping')
     p.add_argument('--check-web-research', action='store_true', help='Owned HTTP source + 429 recovery through genuine Pi and native transcript; no external research/spend')
     p.add_argument('--check-device-sense', action='store_true', help='Actual native Show + isolated phone/board tools; no physical devices or audio')
     p.add_argument('--check-pending-chat', action='store_true', help='Queue via native input on held real Pi turns; exercise existing interrupt-and-send and preserve original history')
@@ -185,7 +186,7 @@ def main():
     events = source / '.vault-chat' / 'events'
     if not events.is_dir() or events.is_symlink():
         p.error('Selected copy has no regular .vault-chat/events directory')
-    real_pi = a.check_status_dot or a.check_pending_chat or a.check_device_sense or a.check_web_research or a.check_history_update
+    real_pi = a.check_status_dot or a.check_pending_chat or a.check_device_sense or a.check_web_research or a.check_history_update or a.check_parallel_work
     master = work / 'master'
     vault = master / 'vaults/vault-chat' if real_pi else work / 'vault-chat'
     dest = vault / '.vault-chat' / 'events'
@@ -215,7 +216,7 @@ def main():
         shutil.copytree(target, control)
         board_control_bytes = {str(f.relative_to(control)): f.read_bytes() for f in control.rglob('*') if f.is_file()}
     original_notes = None
-    if a.check_global_notes or a.check_speech_freshness:
+    if a.check_global_notes or a.check_speech_freshness or a.check_parallel_work:
         copied_notes = source / '.vault-chat/notes.jsonl'
         if copied_notes.is_symlink() or not copied_notes.is_file():
             p.error('global Notes proof requires the owned safe original notes copy')
@@ -352,6 +353,8 @@ def main():
             device_results = {}
             research_results = []
             research_attempts = []
+            parallel_release = threading.Event()
+            parallel_tools = {}
             editor_expected = 'PRIVATE-EDITOR-PASTE-27 fresh bytes\n'
             editor_box_file = master / 'vaults/status-viewer/private-editor.md'
             class LocalProvider(http.server.BaseHTTPRequestHandler):
@@ -397,7 +400,27 @@ def main():
                     tool_result = messages[-1] if messages and messages[-1].get('role') == 'tool' else None
                     device_marker = next((m for m in ['LAPTOP', 'PHONE', 'BOARD', 'EXPLICIT', 'REFUSED'] if fixture_turns and 'DEVICE-SENSE-25-' + m in fixture_turns[-1]), None) if a.check_device_sense else None
                     research = a.check_web_research and fixture_turns and 'OWNED-RESEARCH-28' in fixture_turns[-1]
-                    if research:
+                    latest_user = next((message_text(m) for m in reversed(messages) if m.get('role') == 'user'), '')
+                    child_task = next((message_text(m) for m in messages if m.get('role') == 'user'), '')
+                    parallel_tag = next((t for t in ('A', 'B') if 'PARALLEL-WORK-16-' + t in latest_user), None) if a.check_parallel_work else None
+                    if a.check_parallel_work and child_task.startswith('Task: WORKTREE16'):
+                        tag = 'A' if 'WORKTREE16A' in child_task else 'B'
+                        if tool_result:
+                            parallel_tools[tag] = message_text(tool_result)
+                            answer = 'Isolated worker ' + tag + ' finished on its own branch.'
+                            deltas = [({'role':'assistant','content':answer},None),({},'stop')]
+                        else:
+                            command = "printf '" + tag + "' > same.txt; printf '" + tag + "' > only-" + tag + ".txt; pwd; git branch --show-current; while [ ! -f " + str(work / 'release-parallel') + " ]; do sleep .1; done; echo FINISHED-" + tag
+                            deltas = [({'role':'assistant','tool_calls':[{'index':0,'id':'parallel-child-'+tag,'type':'function','function':{'name':next((t['function']['name'] for t in body.get('tools',[]) if t['function']['name'] in ('bash','mcp__vault_chat__bash')),'bash'),'arguments':json.dumps({'command':command})}}]},None),({},'tool_calls')]
+                    elif parallel_tag:
+                        if tool_result:
+                            deltas = [({'role':'assistant','content':'Native isolated worker ' + parallel_tag + ' is running.'},None),({},'stop')]
+                        else:
+                            args = {'title':'Isolated code ' + parallel_tag, 'task':'WORKTREE16' + parallel_tag + ' edit same.txt and your own file; report results. No push or shipping.'}
+                            deltas = [({'role':'assistant','tool_calls':[{'index':0,'id':'parallel-delegate-'+parallel_tag,'type':'function','function':{'name':next((t['function']['name'] for t in body.get('tools',[]) if t['function']['name'] in ('Delegate','mcp__vault_chat__Delegate')),'Delegate'),'arguments':json.dumps(args)}}]},None),({},'tool_calls')]
+                    elif a.check_parallel_work and 'Delegated work finished:' in latest_user and 'Isolated code' in latest_user:
+                        deltas = [({'role':'assistant','content':'Native isolated code result received.'},None),({},'stop')]
+                    elif research:
                         if tool_result: research_results.append(message_text(tool_result))
                         if not tool_result:
                             tool, args = 'WebSearch', {'query':'Owned local calibration primary source'}
@@ -530,7 +553,15 @@ def main():
             agent = state / 'pi/agent'
             (agent / 'settings.json').write_text(json.dumps({'compaction': {'enabled': False}, 'retry': {'enabled': False}}))
             (agent / 'models.json').write_text(json.dumps({'providers': {'openrouter': {'baseUrl': provider_url, 'apiKey': 'synthetic-local-only', 'api': 'openai-completions', 'models': [{'id': 'test/fake-model', 'name': 'Local unpaid status fixture', 'reasoning': False, 'input': ['text'], 'cost': {'input': 0, 'output': 0, 'cacheRead': 0, 'cacheWrite': 0}, 'contextWindow': 400000, 'maxTokens': 1000}]}}}))
-            registered = request(base + '/projects', {'folder': str(vault)})
+            code_source = home / 'projects/vault-chat'
+            if a.check_parallel_work:
+                code_source.mkdir(parents=True)
+                (code_source / 'same.txt').write_text('ORIGINAL')
+                run('git', '-C', str(code_source), 'init', '-q', '-b', 'main', env=env)
+                run('git', '-C', str(code_source), 'add', 'same.txt', env=env)
+                run('git', '-C', str(code_source), '-c', 'user.name=Fixture', '-c', 'user.email=fixture@localhost', 'commit', '-qm', 'Owned code fixture', env=env)
+                (code_source / 'source-dirty.txt').write_text('SOURCE-UNCOMMITTED')
+            registered = request(base + '/projects', {'folder': str(code_source if a.check_parallel_work else vault)})
             if registered.get('convId') != a.conversation:
                 raise RuntimeError('Original project slug not preserved in disposable registration')
         if a.voice_conflict:
@@ -551,7 +582,7 @@ def main():
         checkpoint = request(base + checkpoint_path)
         picture = checkpoint.get('picture', checkpoint)
         items = picture.get('items', [])
-        if a.check_history_update or a.check_device_sense or a.check_web_research:
+        if a.check_history_update or a.check_device_sense or a.check_web_research or a.check_parallel_work:
             # The original copy is immutable. Engine startup may already have
             # appended its two real lost-worker/resume items before this HTTP
             # snapshot; those are private appends, never part of the original.
@@ -561,7 +592,7 @@ def main():
                 raise RuntimeError('History fixture requires exact original 1329 messages / 3819 items')
             if items[:3819] != original_items or len(items) not in (3819, 3821):
                 raise RuntimeError('History startup changed original prefix or unexpected private startup appends')
-            if (a.check_device_sense or a.check_web_research) and items[3819:]:
+            if (a.check_device_sense or a.check_web_research or a.check_parallel_work) and items[3819:]:
                 startup = items[3819:]
                 if [x.get('kind') for x in startup] != ['user', 'assistant'] or startup[0].get('via') != 'delegate':
                     raise RuntimeError('Unexpected device fixture startup append identities')
@@ -637,7 +668,7 @@ def main():
                     for n in json.loads(data).get('notes', []))
                 editor_transport = a.check_editor_sync and (editor_intent_enabled and path == '/api/v2/intent' or path.startswith('/git/status-viewer.git/') or path == '/api/v1/sync/flush')
                 # All other non-read activity stays refused, including voice.
-                if (path.startswith('/git/') or self.command != 'GET' and path != '/api/v1/laptop-perf') and not (speech_send or editor_transport or queue_write or note_transport or (a.check_web_research and path == '/api/v2/intent' and str(json.loads(data).get('text', '')).startswith('OWNED-RESEARCH-28')) or (a.check_device_sense and (path.startswith('/api/v1/show/show-') and path.endswith('/ack') or path == '/api/v2/intent' and str(json.loads(data).get('text', '')).startswith('DEVICE-SENSE-25-')))):
+                if (path.startswith('/git/') or self.command != 'GET' and path != '/api/v1/laptop-perf') and not (speech_send or editor_transport or queue_write or note_transport or (a.check_parallel_work and (path == '/api/v2/intent' and str(json.loads(data).get('text', '')).startswith('PARALLEL-WORK-16-') or path.startswith('/api/v1/conversations/' + a.conversation + '/subagents/') and path.endswith('/stop'))) or (a.check_web_research and path == '/api/v2/intent' and str(json.loads(data).get('text', '')).startswith('OWNED-RESEARCH-28')) or (a.check_device_sense and (path.startswith('/api/v1/show/show-') and path.endswith('/ack') or path == '/api/v2/intent' and str(json.loads(data).get('text', '')).startswith('DEVICE-SENSE-25-')))):
                     if a.check_plans and path == '/api/v2/intent':
                         # Observe the native pending-input UI before rejecting;
                         # never forward this turn to a provider or invent a reply.
@@ -1591,6 +1622,83 @@ def main():
                     if a.check_global_notes and (vault / '.vault-chat/notes.jsonl').read_bytes() != original_notes:
                         raise RuntimeError('Research changed original human Notes')
                     web_research = {'ownedFixtureOnly':True,'notExternalResearchQualityBenchmark':True,'nativePiSearchFetchAnswer':True,'retryAfterSeconds':research_attempts[1]-research_attempts[0],'providerAttempts':2,'primaryConstant':'28.75','citation':'http://research-fixture.example.org/primary','originalPrefixUnchanged':True,'exactTotalPrivateAppends':expected}
+                parallel_work = None
+                if a.check_parallel_work and label == 'after':
+                    # The status fixture intentionally visits Main last. Select the
+                    # actual source-owner thread using ordinary native UI input.
+                    if not exists('[data-perf-view="fullscreen"]'):
+                        key('ctrl+shift+f')
+                    wait_for(lambda: exists('[data-thread="' + a.conversation + '"] > button'), 'parallel owner thread row')
+                    click('[data-thread="' + a.conversation + '"] > button')
+                    key('ctrl+shift+f')
+                    wait_for(lambda: js('return localStorage.getItem("vault_chat_active_conv");') == a.conversation, 'parallel exact source-owner thread')
+                    start_items = request(base + checkpoint_path)['picture']['items']
+                    startup_and_status = start_items[3819:]
+                    if start_items[:3819] != original_items or len(startup_and_status) != 4 or [x.get('kind') for x in startup_and_status] != ['user', 'assistant', 'user', 'assistant'] or startup_and_status[0].get('via') != 'delegate' or startup_and_status[2].get('via') != 'chat':
+                        raise RuntimeError('Unexpected exact startup/status appends before parallel fixture')
+                    def detail():
+                        return request(base + '/conversation?id=' + urllib.parse.quote(a.conversation) + '&full=1&n=200')
+                    def workers():
+                        return [x for x in detail()['meta'].get('subagents', []) if x.get('title', '').startswith('Isolated code ')]
+                    def send_code(tag):
+                        click('[data-perf-target="composer"]')
+                        run('xdotool', 'type', '--clearmodifiers', '--delay', '35', 'PARALLEL-WORK-16-' + tag + ' owned dummy code only', env=childenv, stdout=subprocess.DEVNULL)
+                        key('Return')
+                    # Existing status-dot fixture leaves viewer != source owner.
+                    if js('return localStorage.getItem("vault_chat_last_vault");') != str(viewer):
+                        raise RuntimeError('Parallel fixture requires the unrelated viewer')
+                    send_code('A')
+                    wa = wait_for(lambda: next((x for x in workers() if x['title'] == 'Isolated code A'), None), 'genuine native child A')
+                    parent_file = Path(detail()['meta']['threadPath'])
+                    parent_cwd = Path(json.loads(parent_file.read_text().splitlines()[0])['cwd'])
+                    (parent_cwd / 'peer-dirty.txt').write_text('PEER-UNCOMMITTED')
+                    parent_head = subprocess.check_output(['git', '-C', str(parent_cwd), 'rev-parse', 'HEAD'], env=env)
+                    wait_for(lambda: not detail()['meta'].get('running'), 'first Delegate returns without waiting')
+                    send_code('B')
+                    wb = wait_for(lambda: next((x for x in workers() if x['title'] == 'Isolated code B'), None), 'genuine native child B')
+                    def child_cwd(w):
+                        return Path(json.loads(Path(w['sessionFile']).read_text().splitlines()[0])['cwd'])
+                    ca, cb = child_cwd(wa), child_cwd(wb)
+                    wait_for(lambda: (ca / 'only-A.txt').exists() and (cb / 'only-B.txt').exists(), 'both native children editing concurrently')
+                    if ca == cb or ca == parent_cwd or cb == parent_cwd or (ca / 'same.txt').read_text() != 'A' or (cb / 'same.txt').read_text() != 'B':
+                        raise RuntimeError('Parallel workers shared cwd or lost same-filename writes')
+                    branches = [subprocess.check_output(['git', '-C', str(c), 'branch', '--show-current'], env=env, text=True).strip() for c in (ca, cb)]
+                    if len(set(branches)) != 2 or not all(b.startswith('agent/worker-') for b in branches):
+                        raise RuntimeError('Parallel native cwd/branches incorrect')
+                    wait_for(lambda: not detail()['meta'].get('running'), 'second Delegate returns')
+                    # Task rows are the ordinary existing UI, not shipping cards.
+                    if not exists('[data-variant="strip"] [data-el="task-stop"]'):
+                        click('[data-variant="strip"] [data-el="tasks-chip"]')
+                    stop_selector = '[data-variant="strip"] [data-el="task"][data-sid="' + wa['threadId'] + '"] [data-el="task-stop"]'
+                    wait_for(lambda: exists(stop_selector), 'existing native task Stop')
+                    click(stop_selector)
+                    wait_for(lambda: next((x for x in workers() if x['threadId'] == wa['threadId'] and x.get('state') == 'stopped'), None), 'native stopped A')
+                    if next(x for x in workers() if x['threadId'] == wb['threadId']).get('state') != 'running':
+                        raise RuntimeError('Stopping one worker stopped the other')
+                    (work / 'release-parallel').write_text('release only B')
+                    wait_for(lambda: next((x for x in workers() if x['threadId'] == wb['threadId'] and x.get('state') == 'completed'), None), 'B completes independently')
+                    wait_for(lambda: 'B' in parallel_tools and not detail()['meta'].get('running'), 'native result delivery')
+                    wait_for(lambda: js("return document.body.innerText.includes('Native isolated code result received.');"), 'ordinary native child result rendered')
+                    if js('return localStorage.getItem("vault_chat_active_conv");') != a.conversation or js('return localStorage.getItem("vault_chat_last_vault");') != str(viewer):
+                        raise RuntimeError('Worker finish changed current thread/viewer')
+                    if subprocess.check_output(['git', '-C', str(parent_cwd), 'rev-parse', 'HEAD'], env=env) != parent_head or (parent_cwd / 'peer-dirty.txt').read_text() != 'PEER-UNCOMMITTED' or (code_source / 'same.txt').read_text() != 'ORIGINAL' or (code_source / 'source-dirty.txt').read_text() != 'SOURCE-UNCOMMITTED' or (parent_cwd / 'only-A.txt').exists() or (ca / 'only-B.txt').exists():
+                        raise RuntimeError('Parent, canonical source or peer uncommitted changes touched')
+                    final = request(base + checkpoint_path)['picture']['items']
+                    if final[:len(start_items)] != start_items or final[:3819] != original_items:
+                        raise RuntimeError('Parallel native work reordered/lost history')
+                    if (vault / '.vault-chat/notes.jsonl').read_bytes() != original_notes:
+                        raise RuntimeError('Parallel work changed human Notes')
+                    appended = final[len(start_items):]
+                    # Both Delegate calls + their reports must remain in pi chronology.
+                    kinds = collections.Counter(x['kind'] for x in appended)
+                    if len(appended) != 10 or kinds != {'user':4, 'assistant':4, 'tool':2} or len(final) != 3833:
+                        raise RuntimeError('Unexpected exact parallel private append counts: ' + repr((len(appended), kinds)))
+                    if (ca / 'same.txt').read_text() != 'A' or (cb / 'same.txt').read_text() != 'B' or (cb / 'only-A.txt').exists():
+                        raise RuntimeError('Lost/foreign writes after independent stop/finish')
+                    completed_b = next(x for x in workers() if x['threadId'] == wb['threadId'])
+                    if completed_b.get('steps', 0) < 1 or not completed_b.get('activity') or wb['startedAt'] >= next(x for x in workers() if x['threadId'] == wa['threadId'])['endedAt']:
+                        raise RuntimeError('Missing native worker progress or concurrent overlap')
+                    parallel_work = {'genuinePiDelegate':True,'twoConcurrentOwnedBranches':branches,'sameFilenameDistinctBytes':True,'nativeStopACompletesB':True,'parentAndSourceAndPeerUntouched':True,'viewerDifferentFromOwnerStable':True,'ordinaryNativeTaskResult':True,'original1329Messages3819ItemsAndNotesUnchanged':True,'privateAppendedItems':len(appended),'privateAppendKinds':dict(kinds),'unpaidOwnedDummyCodeOnly':True}
                 history_update = None
                 if a.check_history_update and label == 'after':
                     original = request(base + checkpoint_path)['picture']['items']
@@ -1729,7 +1837,7 @@ def main():
                 def stats(values):
                     v = sorted(values)
                     return {'n': len(v), 'p50Ms': round(v[len(v)//2], 3), 'p95Ms': round(v[min(len(v)-1, int(len(v)*.95))], 3), 'maxMs': round(max(v), 3)}
-                return {'works': not interaction_failures, 'videoCheck': video_check, 'imageCheck': image_check, 'statusDot': status_dot, 'editorSync': editor_sync, 'pendingChat': pending_chat, 'deviceSense': device_sense, 'webResearch': web_research, 'historyUpdate': history_update, 'globalNotes': global_notes, 'interactionFailures': interaction_failures, 'planLifecycle': plan_lifecycle, 'emptyChat': empty_chat, 'native': metadata, 'telemetryHttpStatuses': sorted(statuses),
+                return {'works': not interaction_failures, 'videoCheck': video_check, 'imageCheck': image_check, 'statusDot': status_dot, 'editorSync': editor_sync, 'pendingChat': pending_chat, 'deviceSense': device_sense, 'webResearch': web_research, 'parallelWork': parallel_work, 'historyUpdate': history_update, 'globalNotes': global_notes, 'interactionFailures': interaction_failures, 'planLifecycle': plan_lifecycle, 'emptyChat': empty_chat, 'native': metadata, 'telemetryHttpStatuses': sorted(statuses),
                         'telemetryNote': 'Observed real Rust IPC batches; loopback is not authenticated Tailscale laptop telemetry',
                         'launchProcessToDomUpperBoundMs': round(launch_upper, 3),
                         'timings': [{'metric': m, 'method': method, **stats(values)} for (m, method), values in sorted(samples.items())]}

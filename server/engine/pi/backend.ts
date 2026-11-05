@@ -75,6 +75,8 @@ export type Handlers = {
   toolCall: ToolCallHandler;
   /** Host-only snapshot of the original ask at worker creation, never tool arguments. */
   notifyScope?: (threadId: string) => NotifyScope | null;
+  /** Source-owner workspace allocation, before a native child is spawned. */
+  workerCwd?: (threadId: string, cwd?: string) => Promise<string>;
   userInput: UserInputHandler;
   you?: YouHandler;
   sideTool?: SideToolHandler;

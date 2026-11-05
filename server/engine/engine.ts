@@ -35,6 +35,7 @@ import {
   type EngineConv,
 } from "./context";
 import { patchMeta, readConv, allConvs, createConv, newMessageId, emitTo, pictureOf, logOf, writeNotes, appendNotes, setNoteWriter, ensureMain, ensureProjectThread, type NoteData } from "./convs";
+import { workerWorktree } from "../workerWorktree";
 import { MAIN_ID, projectOfThread, projectThreadId, threadKindOf } from "../../src/threads";
 import { searchHistory } from "./history";
 import { addWake, readWakes, removeWakes, nextWakeFor, parseDelay, type Wake } from "./wakes";
@@ -448,11 +449,12 @@ export const ENGINE_TOOL_SPECS = [
     type: "function",
     name: "Delegate",
     description:
-      "Hand slow work to a background worker (a pi subagent in this vault with file, shell, PDF and web tools) and keep talking: edits across files, research, builds, anything over a few seconds. Returns at once. When the worker finishes, its report comes back to you as a new turn (\"Delegated work finished: ...\"): then tell Carl the result. Several can run at once. Never wait for one, and never say it is done before its report arrives.",
+      "Hand slow work to a background worker (a pi subagent in this vault with file, shell, PDF and web tools) and keep talking: edits across files, research, builds, anything over a few seconds. Returns at once. When the worker finishes, its report comes back to you as a new turn (\"Delegated work finished: ...\"): then tell Carl the result. Several can run at once; git-project workers each get an independent branch/worktree from committed source, never the shared coordinator checkout. Never wait for one, and never say it is done before its report arrives.",
     inputSchema: {
       type: "object",
       properties: {
         title: { type: "string", description: "What it is doing, in a few words, for Carl's waiting-on line (\"Pulling the lecture notes\")." },
+        cwd: { type: "string", description: "Optional exact working directory. For code projects use a separate existing agent checkout in the owning work area; omit to get a fresh branch/worktree automatically." },
         task: { type: "string", description: "The whole task with everything the worker needs: it does not see this conversation. Say what to report back." },
         expect: { type: "string", enum: ["short", "long"], description: "How long you expect it to take: short (seconds) or long (a minute or more). Sets the pace of Carl's waiting line." },
       },
@@ -658,6 +660,15 @@ export class Engine {
     setNoteWriter(this.d.vault, (convId, notes) => this.scoped(() => this.noteViaPi(convId, notes)));
     b.setHandlers({
       toolCatalog: (loadout) => this.scoped(() => this.hostToolCatalog(loadout)),
+      workerCwd: (threadId, cwd) => this.scoped(async () => {
+        const conv = await readConv(this.d.vault, this.byThread.get(threadId) ?? "");
+        if (!conv) throw new Error("Worker has no owning conversation");
+        const parentCwd = this.cwdOf(conv);
+        const folder = this.folderOf(conv);
+        return folder && "git" in folder && folder.git
+          ? workerWorktree({ vault: this.d.vault, slug: projectOfThread(conv.id)!, source: folder.git.folder, parentCwd, cwd })
+          : cwd !== undefined ? resolve(parentCwd, cwd) : parentCwd;
+      }),
       fileWrite: async (threadId) => !this.talkers.has(this.byThread.get(threadId) ?? ""),
       notifyScope: (threadId) => {
         const l = this.live.get(this.byThread.get(threadId) ?? "");
@@ -2346,6 +2357,7 @@ export class Engine {
           const started = this.d.backend.background(p.threadId, {
             agent: { name: "worker", systemPrompt: DELEGATE_WORKER_PROMPT, tools: ["read", "bash", "edit", "write", "grep", "find", "ls", "Notify", "PdfRead", "WebSearch", "WebFetch", "BoardSend"] },
             task,
+            ...(typeof a.cwd === "string" ? { cwd: a.cwd } : {}),
             // The conversation's own model, not a live call's talker: the work wants the strong one.
             model: this.d.model(),
             title,

@@ -283,7 +283,14 @@ export class Subagents {
     } catch {
       /* default */
     }
-    const cwd = a?.cwd ? resolve(parentCwd, String(a.cwd)) : parentCwd;
+    const requested = typeof a?.cwd === "string" ? a.cwd : undefined;
+    if (requested !== undefined) {
+      const why = await this.b.nativePath(parentCwd, requested);
+      if (why) throw new Error(why);
+    }
+    const cwd = this.b.handlers?.workerCwd
+      ? await this.b.handlers.workerCwd(parentId, requested)
+      : requested !== undefined ? resolve(parentCwd, requested) : parentCwd;
     const sessionDir = join(this.b.paths.sessionsDir, "sub", parentId, `${Date.now().toString(36)}-${n}`);
     mkdirSync(sessionDir, { recursive: true });
 
