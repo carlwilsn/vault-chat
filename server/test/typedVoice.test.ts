@@ -44,6 +44,7 @@ it.skipIf(!process.env.VC_TEST_PI_DIR)("typed replies use their actual native an
       return waitFor(async () => { const p = await checkpoint(conv); return !p.meta.running && p.items.some((i: any) => i.id === clientId) && p.items.at(-1)?.kind === "assistant" ? p : null; }, 20000, 20);
     };
     const off = await send("OFF");
+    const nativePrefix = readFileSync(off.meta.threadPath);
     expect((await get("/api/v1/brain/calls")).calls).toEqual([]);
     const call = await post("/api/v1/brain/call?vault=viewer", { convId: id, device: "laptop" });
     const channel = async () => {
@@ -82,6 +83,7 @@ it.skipIf(!process.env.VC_TEST_PI_DIR)("typed replies use their actual native an
     expect(provider.calls).toHaveLength(sends); // never a second speech inference
     expect(readFileSync(join(owner, ".vault-chat/notes.jsonl")).equals(notes)).toBe(true);
     expect((await checkpoint()).meta.threadPath).toBe(off.meta.threadPath);
+    expect(readFileSync(off.meta.threadPath).subarray(0, nativePrefix.length).equals(nativePrefix)).toBe(true);
   } finally {
     for (const ac of aborts) ac.abort();
     writeFileSync(join(root, "server.log"), srv?.logs() ?? "no server");
