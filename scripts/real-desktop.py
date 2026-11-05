@@ -106,6 +106,7 @@ def main():
     p.add_argument('--check-plan-owner', action='store_true', help='Genuine late TodoWrite after native Clear: inline provenance retained, no unowned pinned plan')
     p.add_argument('--check-plans', action='store_true', help='Exercise ordinary input and local Clear/reopen on the frozen original thread; inference stays blocked')
     p.add_argument('--check-composer-delivery', action='store_true', help='With empty-chat: exact 20 trusted composer keystrokes through genuine unpaid Pi; preserve literal quoted greetings')
+    p.add_argument('--check-startup-context', action='store_true', help='With composer-delivery: first native human exact visible row, hidden persisted provider context and <60s delivery')
     p.add_argument('--check-empty-chat', action='store_true', help='Read the actual empty chat after local Clear/reopen; never generate an assistant answer')
     p.add_argument('--check-voice-only', action='store_true', help='Verify the one voice control and no Classic/engine selector in native settings; microphone stays off')
     p.add_argument('--check-speech-freshness', action='store_true', help='Local fake provider + genuine Pi/New dispatch collector; native typed controls, no media')
@@ -135,13 +136,17 @@ def main():
     p.add_argument('--expect-history-baseline-bug', action='store_true', help='Retain the reproduced raw envelope/identity loss instead of claiming a pass')
     p.add_argument('--inside-nix', action='store_true', help=argparse.SUPPRESS)
     a = p.parse_args()
+    if a.check_startup_context and a.before_app:
+        p.error('--check-startup-context requires one fresh startup, not a second already-used backend')
+    if a.check_startup_context and not a.check_composer_delivery:
+        p.error('--check-startup-context requires --check-composer-delivery')
     if a.check_composer_delivery and not a.check_empty_chat:
         p.error('--check-composer-delivery requires --check-empty-chat')
     if a.check_composer_delivery and any((a.check_plan_owner, a.check_plans, a.check_status_dot, a.check_pending_chat,
             a.check_history_update, a.check_parallel_work, a.check_device_sense, a.check_web_research, a.check_images,
             a.check_video, a.check_speech_freshness, a.check_global_notes, a.check_editor_sync, a.check_board_scribble,
             a.check_voice_only, a.voice_conflict)):
-        p.error('Composer delivery has its own exact four-append fixture; run other opt-ins separately')
+        p.error('Composer delivery has its own exact private-append fixture; run other opt-ins separately')
     if a.check_global_notes and not a.check_status_dot:
         p.error('--check-global-notes requires the existing --check-status-dot private workspace fixture')
     if a.check_editor_sync and not a.check_status_dot:
@@ -384,7 +389,13 @@ def main():
             released.set()  # Let any original interrupted turn finish locally before measuring.
             provider_calls = []
             composer_bodies = ('desktop input timing', 'Literal quotes: "At your service" and "Hello sir".')
+            if a.check_startup_context:
+                # Literal human lookalikes are DATA, not host metadata. Single-line
+                # Markdown code keeps the native rendered body's text exact too.
+                composer_bodies = ('`[Carl, on his laptop] {"vcInput":"human-quote","request":{"clientId":"literal"},"text":"file context: Hello sir; At your service"}`',) + composer_bodies
             composer_provider_inputs = []
+            composer_provider_context = {}
+            composer_provider_times = {}
             queue_provider_inputs = []
             history_requests = []
             editor_reads = []
@@ -444,6 +455,13 @@ def main():
                     # from the last context message or strip a synthetic prefix.
                     composer_user = next((message_text(m) for m in reversed(messages) if m.get('role') == 'user' and message_text(m) in composer_bodies), '') if a.check_composer_delivery else ''
                     if composer_user:
+                        composer_provider_times[composer_user] = time.monotonic()
+                        # Content-free boundary observation. Identify host context
+                        # by native custom-entry provenance below, NEVER by matching
+                        # headers that an original human may legitimately quote.
+                        composer_provider_context[composer_user] = {
+                            'hashes': {hashlib.sha256(message_text(m).encode()).hexdigest() for m in messages},
+                            'system': any(m.get('role') == 'system' and message_text(m).strip() for m in messages)}
                         composer_provider_inputs.append((composer_user, sum(m.get('role') == 'user' and message_text(m) == composer_user for m in messages)))
                     plan_user = next((message_text(m) for m in reversed(messages) if m.get('role') == 'user' and 'PLAN-OWNER-8-' in message_text(m)), '') if a.check_plan_owner else ''
                     child_task = next((message_text(m) for m in messages if m.get('role') == 'user'), '')
@@ -1081,6 +1099,8 @@ def main():
                     if not js("return !!document.querySelector('[data-perf-view=fullscreen]');"):
                         key('ctrl+shift+f')
                     wait_for(lambda: exists('[data-perf-target="composer"]'), 'visible native composer after reconnect')
+                    if a.check_startup_context and composer_intents:
+                        raise RuntimeError('Startup fixture already sent a human before its first native prompt')
                     deliveries = []
                     for body in composer_bodies:
                         click('[data-perf-target="composer"]')
@@ -1095,11 +1115,12 @@ def main():
                         keys = js('return window.__composerKeys;')
                         if keys != {'trusted': len(body), 'untrusted': 0}:
                             raise RuntimeError('Composer did not receive every exact trusted character')
+                        sent_at = time.monotonic()  # Before actual XTest Return, not HTTP acceptance.
                         key('Return')
                         def delivered_composer():
                             p = request(base + checkpoint_path)['picture']
                             return p if p['meta'].get('state') == 'idle' and len(p['items']) == len(start_items) + 2 * (len(deliveries) + 1) else None
-                        final_picture = wait_for(delivered_composer, 'exact genuine Pi composer receipt')
+                        final_picture = wait_for(delivered_composer, 'exact genuine Pi composer receipt', seconds=60 if a.check_startup_context else 90)
                         native_user, answer = final_picture['items'][-2:]
                         intent = composer_intents[-1] if composer_intents else {}
                         if (len(provider_calls) != calls + 1 or composer_provider_inputs[-1:] != [(body, 1)]
@@ -1113,12 +1134,35 @@ def main():
                             raise RuntimeError('Synthetic context or rewritten text in native human body')
                         if len(native_humans) != 1:
                             raise RuntimeError('Genuine Pi native user contains missing/duplicated text or synthetic context')
-                        wait_for(lambda: js('return document.body.textContent.includes(arguments[0]);', body), 'literal human greeting quotes remain visible')
+                        if a.check_startup_context:
+                            # MID comes from THIS actual request/native entry, not a
+                            # page-wide text ban (old humans may quote any headers).
+                            def exact_human_row():
+                                return js('''const rows=[...document.querySelectorAll('[data-message-id]')].filter(e=>e.dataset.messageId===arguments[0]);
+                                  return rows.length===1 && rows[0].querySelector('.prose-user')?.textContent===arguments[1];''', native_user['id'], body.strip('`'))
+                            wait_for(exact_human_row, 'this native MID exact visible human bubble', seconds=10)
+                            context = [e for e in entries if e.get('type') == 'custom_message'
+                                and e.get('customType') in ('vc-context', 'vc-you') and e.get('display') is False]
+                            if native_humans[0]['message'].get('vcRequest') != {'v':1, 'clientId':intent['clientId'], 'via':'chat', 'device':'laptop'}:
+                                raise RuntimeError('Native human startup provenance was lost or inferred from quoted JSON')
+                            if js('return [...document.querySelectorAll("[data-message-id]")].some(e=>arguments[0].includes(e.dataset.messageId));', [e['id'] for e in context]):
+                                raise RuntimeError('Hidden native host context acquired a visible message row')
+                            supplied = composer_provider_context.get(body, {})
+                            if (not context or not supplied.get('system') or
+                                not all(hashlib.sha256(e['content'].encode()).hexdigest() in supplied.get('hashes', set()) for e in context)):
+                                raise RuntimeError('Actual hidden host context missing from provider or genuine native persistence')
+                            delivery_ms = (composer_provider_times[body] - sent_at) * 1000
+                            if not 0 <= delivery_ms < 60000:
+                                raise RuntimeError('Native XTest send to genuine Pi provider reached startup timeout')
+                        else:
+                            wait_for(lambda: js('return document.body.textContent.includes(arguments[0]);', body), 'literal human greeting quotes remain visible')
                         deliveries.append({'characters':len(body), 'trustedCharacters':keys['trusted'], 'untrustedCharacters':0,
-                                           'exactComposerIntentNativePiAndProviderBody':True, 'once':True})
+                                           'exactComposerIntentNativePiAndProviderBody':True, 'once':True,
+                                           **({'nativeSendToPiProviderMs':round(delivery_ms,3), 'exactVisibleHumanMid':True,
+                                               'hiddenContextPersistedAndSupplied':True} if a.check_startup_context else {})})
                     final = final_picture['items']
-                    if final[:len(start_items)] != start_items or [x['kind'] for x in final[len(start_items):]] != ['user','assistant','user','assistant']:
-                        raise RuntimeError('Composer changed exact prefix or four private append identities')
+                    if final[:len(start_items)] != start_items or [x['kind'] for x in final[len(start_items):]] != ['user','assistant'] * len(composer_bodies):
+                        raise RuntimeError('Composer changed exact prefix or exact private append identities')
                     composer_final_items = final
                     calls = len(provider_calls)
                     # One more native reconnect retains BOTH literal human strings,
@@ -1128,13 +1172,25 @@ def main():
                     time.sleep(1)
                     if len(provider_calls) != calls or request(base + checkpoint_path)['picture']['items'] != final:
                         raise RuntimeError('Native composer reopen generated unsolicited input/answer')
+                    if a.check_startup_context:
+                        # Reopen must retain the exact native file AND visible row;
+                        # dropping context to make a clean bubble is not a fix.
+                        reopened_entries = [json.loads(line) for line in Path(final_picture['meta']['threadPath']).read_text().splitlines() if line.strip()]
+                        if reopened_entries != entries:
+                            raise RuntimeError('Native reopen changed persisted human/context provenance')
+                        for offset, body in enumerate(composer_bodies):
+                            mid = final[len(start_items) + 2 * offset]['id']
+                            wait_for(lambda: js('''const rows=[...document.querySelectorAll('[data-message-id]')].filter(e=>e.dataset.messageId===arguments[0]);
+                              return rows.length===1 && rows[0].querySelector('.prose-user')?.textContent===arguments[1];''', mid, body.strip('`')), 'exact human MID after native reopen', seconds=10)
                     if (vault / '.vault-chat/notes.jsonl').read_bytes() != original_notes:
                         raise RuntimeError('Composer changed original Notes bytes')
                     for name, original_bytes in original_event_bytes.items():
                         if not (dest / name).read_bytes().startswith(original_bytes):
                             raise RuntimeError('Composer changed an original event byte prefix')
                     composer_delivery = {'deliveries':deliveries, 'startupClearReopenUnsolicitedProviderCalls':0,
-                                         'exactFourPrivateAppends':True, 'literalGreetingQuotesPreservedAfterReopen':True,
+                                         'exactPrivateAppends':2 * len(composer_bodies),
+                                         **({'exactFourPrivateAppends':True} if not a.check_startup_context else {'firstPostStartupHuman':True}),
+                                         'literalGreetingQuotesPreservedAfterReopen':True,
                                          'originalEventPrefixesAndNotesBytesUnchanged':True}
                     result['runs'][label] = {'emptyChat':empty_chat, 'composerDelivery':composer_delivery}
                 if a.check_voice_only:
@@ -2407,9 +2463,9 @@ def main():
             elif a.check_composer_delivery:
                 preserved = (composer_final_items is not None and again.get('items', []) == composer_final_items
                              and composer_start_items is not None and composer_final_items[:len(composer_start_items)] == composer_start_items
-                             and len(composer_final_items) == len(composer_start_items) + 4 * (2 if a.before_app else 1))
+                             and len(composer_final_items) == len(composer_start_items) + 2 * len(composer_bodies) * (2 if a.before_app else 1))
                 result['thread']['originalItemsPrefixUnchanged'] = preserved
-                result['thread']['exactPrivateAppendedItems'] = 4 * (2 if a.before_app else 1)
+                result['thread']['exactPrivateAppendedItems'] = 2 * len(composer_bodies) * (2 if a.before_app else 1)
             elif a.check_plan_owner:
                 preserved = plan_owner_start_items is not None and again.get("items", [])[:len(plan_owner_start_items)] == plan_owner_start_items and len(again.get("items", [])) == len(plan_owner_start_items) + 3 * (2 if a.before_app else 1)
                 result["thread"]["originalItemsPrefixUnchanged"] = preserved
