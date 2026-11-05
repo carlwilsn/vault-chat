@@ -1369,7 +1369,13 @@ def main():
                             # Click may respond only after Pi aborts; keep the replacement provider local.
                             wait_for(lambda: any(q.get('type') == 'now' and q.get('id') == ids[1] and q.get('convId') == thread for q in queue_intents), 'existing now intent from native click')
                             released.set()
-                            wait_for(lambda: not request(base + cp)['picture']['meta'].get('running'), 'interrupt-and-send finishes')
+                            def all_delivered_and_finished():
+                                picture = request(base + cp)['picture']
+                                consumed = [x['id'] for x in picture['items'] if x.get('kind') == 'user' and x.get('id') in ids]
+                                return not picture['meta'].get('running') and not picture['meta'].get('pending') and sorted(consumed) == sorted(ids)
+                            # A transient idle boundary is not proof all native queued input landed.
+                            # Wait for the SAME exact identities; keep the final guards below unchanged.
+                            wait_for(all_delivered_and_finished, 'interrupt-and-send exact identities finish')
                             final = request(base + cp)['picture']
                             final_items = final['items']
                             if final_items[:len(original)] != original or final['meta'].get('pending'):

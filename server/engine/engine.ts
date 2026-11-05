@@ -1546,7 +1546,7 @@ export class Engine {
             const id = opts.clientId ?? newMessageId();
             const sent = opts.context ? `${opts.context}\n\n${input}` : input;
             this.setPending(convId, { id, kind: "steer", text: opts.shown ?? input, at: Date.now() });
-            existing.feed.expect({ kind: "steer", text: sent, clientId: id, shown: opts.shown ?? input, via: opts.via ?? "steer", images: opts.itemImages });
+            existing.feed.expect({ kind: "steer", text: sent, clientId: id, shown: opts.shown ?? input, via: opts.via ?? "steer", images: opts.itemImages, ...(opts.device ?? validDevice(opts.origin) ? { device: opts.device ?? opts.origin } : {}) });
             existing.rec.q("steer", id);
             // pi delivers a steer after the running tool calls: a `subagent` call can wait minutes, so its children
             // move to the background and he is answered now (like Claude Code's background tasks).
