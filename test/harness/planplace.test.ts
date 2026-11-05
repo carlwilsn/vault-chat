@@ -110,3 +110,28 @@ test("empty, partial, hidden and unowned writes cannot resurrect a cached plan o
   assert.deepEqual(planCards(messages), [], "an explicit empty list clears that input's card");
   assert.deepEqual(planCards([]), [], "Clear/load without provenance has no fallback");
 });
+
+test("Clear during a native turn leaves later TodoWrite inline, never pinned without its human owner", () => {
+  const box = new MemoryBox(); box.create("a");
+  box.startTurn("a"); box.userLine("a", "cleared-input", "Original work");
+  const project = makeChatView();
+  const before = project(box.picture("a")!);
+  const mark = before.messages.at(-1)!.mid;
+  assert.equal(mark, "cleared-input"); // clearHere uses this last visible native id.
+  assert.deepEqual(afterClear(before.messages, mark), []);
+  box.tool("a", "late-plan", "TodoWrite", { todos: unfinished }, "updated");
+  box.say("a", "Work continued after Clear"); box.endTurn("a");
+  const original = JSON.stringify(box.recs);
+  for (const picture of [box.picture("a")!, fold(JSON.parse(original), "a")]) {
+    const visible = afterClear(project(picture).messages, mark);
+    assert.equal(visible.some(m => m.role === "user"), false);
+    assert.deepEqual(planCards(visible).map(p => p.id), ["late-plan"], "a new native write stays in its own inline location");
+    assert.deepEqual(currentPlan(visible), [], "no visible human means no current pinned plan");
+    assert.deepEqual(currentPlan(visible.slice(0, 1)), [], "same ownership rule for a truncated visible history");
+  }
+  assert.equal(JSON.stringify(box.recs), original, "presentation leaves native history unchanged");
+  box.startTurn("a"); box.userLine("a", "fresh-input", "Fresh actual work");
+  box.tool("a", "fresh-plan", "TodoWrite", { todos: completed }, "updated");
+  box.endTurn("a");
+  assert.deepEqual(currentPlan(afterClear(project(box.picture("a")!).messages, mark)), completed);
+});

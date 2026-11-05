@@ -29,8 +29,9 @@ export function planCards(messages: PlanMessage[]): PlanCard[] {
 
 /** Pinned UI is only the latest visible input's own write, not old work. */
 export function currentPlan(messages: Parameters<typeof planCards>[0]): TodoItem[] {
-  let start = 0;
+  let start = -1;
   messages.forEach((m, i) => { if (m.role === "user" && !m.hidden && !m.waiting) start = i; });
+  if (start < 0) return []; // Clear/truncation may leave writes without their visible input.
   const cards = planCards(messages.slice(start));
   return cards[cards.length - 1]?.todos ?? [];
 }

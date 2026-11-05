@@ -103,6 +103,7 @@ def main():
     p.add_argument('--min-messages', type=int, required=True, help='Refuse an empty/wrong/short control thread')
     p.add_argument('--app', type=Path)
     p.add_argument('--before-app', type=Path)
+    p.add_argument('--check-plan-owner', action='store_true', help='Genuine late TodoWrite after native Clear: inline provenance retained, no unowned pinned plan')
     p.add_argument('--check-plans', action='store_true', help='Exercise ordinary input and local Clear/reopen on the frozen original thread; inference stays blocked')
     p.add_argument('--check-empty-chat', action='store_true', help='Read the actual empty chat after local Clear/reopen; never generate an assistant answer')
     p.add_argument('--check-voice-only', action='store_true', help='Verify the one voice control and no Classic/engine selector in native settings; microphone stays off')
@@ -186,7 +187,7 @@ def main():
     events = source / '.vault-chat' / 'events'
     if not events.is_dir() or events.is_symlink():
         p.error('Selected copy has no regular .vault-chat/events directory')
-    real_pi = a.check_status_dot or a.check_pending_chat or a.check_device_sense or a.check_web_research or a.check_history_update or a.check_parallel_work
+    real_pi = a.check_plan_owner or a.check_status_dot or a.check_pending_chat or a.check_device_sense or a.check_web_research or a.check_history_update or a.check_parallel_work
     master = work / 'master'
     vault = master / 'vaults/vault-chat' if real_pi else work / 'vault-chat'
     dest = vault / '.vault-chat' / 'events'
@@ -215,8 +216,9 @@ def main():
         control = vault / 'boards/scribble-control-fixture'
         shutil.copytree(target, control)
         board_control_bytes = {str(f.relative_to(control)): f.read_bytes() for f in control.rglob('*') if f.is_file()}
+    original_event_bytes = {f.name: f.read_bytes() for f in events.iterdir() if f.suffix == ".jsonl"} if a.check_plan_owner else {}
     original_notes = None
-    if a.check_global_notes or a.check_speech_freshness or a.check_parallel_work:
+    if a.check_plan_owner or a.check_global_notes or a.check_speech_freshness or a.check_parallel_work:
         copied_notes = source / '.vault-chat/notes.jsonl'
         if copied_notes.is_symlink() or not copied_notes.is_file():
             p.error('global Notes proof requires the owned safe original notes copy')
@@ -401,9 +403,18 @@ def main():
                     device_marker = next((m for m in ['LAPTOP', 'PHONE', 'BOARD', 'EXPLICIT', 'REFUSED'] if fixture_turns and 'DEVICE-SENSE-25-' + m in fixture_turns[-1]), None) if a.check_device_sense else None
                     research = a.check_web_research and fixture_turns and 'OWNED-RESEARCH-28' in fixture_turns[-1]
                     latest_user = next((message_text(m) for m in reversed(messages) if m.get('role') == 'user'), '')
+                    plan_user = next((message_text(m) for m in reversed(messages) if m.get('role') == 'user' and 'PLAN-OWNER-8-' in message_text(m)), '') if a.check_plan_owner else ''
                     child_task = next((message_text(m) for m in messages if m.get('role') == 'user'), '')
                     parallel_tag = next((t for t in ('A', 'B') if 'PARALLEL-WORK-16-' + t in latest_user), None) if a.check_parallel_work else None
-                    if a.check_parallel_work and child_task.startswith('Task: WORKTREE16'):
+                    if plan_user:
+                        if not tool_result:
+                            tool = next((t['function']['name'] for t in body.get('tools', []) if t['function']['name'] in ('TodoWrite', 'mcp__vault_chat__TodoWrite')), None)
+                            if not tool: raise RuntimeError('Native TodoWrite is unavailable')
+                            args = {'todos': [{'content': 'Owned late plan step 8', 'status': 'in_progress', 'activeForm': 'Doing owned step 8'}]}
+                            deltas = [({'role':'assistant','tool_calls':[{'index':0,'id':'plan-owner-8-'+('before-' if 'PLAN-OWNER-8-before-' in plan_user else 'after-')+'LATE','type':'function','function':{'name':tool,'arguments':json.dumps(args)}}]},None),({},'tool_calls')]
+                        else:
+                            deltas = [({'role':'assistant','content':'Owned plan fixture complete 8.'},None),({},'stop')]
+                    elif a.check_parallel_work and child_task.startswith('Task: WORKTREE16'):
                         tag = 'A' if 'WORKTREE16A' in child_task else 'B'
                         if tool_result:
                             parallel_tools[tag] = message_text(tool_result)
@@ -582,7 +593,7 @@ def main():
         checkpoint = request(base + checkpoint_path)
         picture = checkpoint.get('picture', checkpoint)
         items = picture.get('items', [])
-        if a.check_history_update or a.check_device_sense or a.check_web_research or a.check_parallel_work:
+        if a.check_plan_owner or a.check_history_update or a.check_device_sense or a.check_web_research or a.check_parallel_work:
             # The original copy is immutable. Engine startup may already have
             # appended its two real lost-worker/resume items before this HTTP
             # snapshot; those are private appends, never part of the original.
@@ -602,7 +613,7 @@ def main():
                 items = picture.get('items', [])
             if items[:3819] != original_items or len(items) not in (3819, 3821):
                 raise RuntimeError('History startup changed original prefix or unexpected private startup appends')
-            if (a.check_device_sense or a.check_web_research or a.check_parallel_work) and items[3819:]:
+            if (a.check_plan_owner or a.check_device_sense or a.check_web_research or a.check_parallel_work) and items[3819:]:
                 startup = items[3819:]
                 if [x.get('kind') for x in startup] != ['user', 'assistant'] or startup[0].get('via') != 'delegate':
                     raise RuntimeError('Unexpected device fixture startup append identities')
@@ -678,7 +689,7 @@ def main():
                     for n in json.loads(data).get('notes', []))
                 editor_transport = a.check_editor_sync and (editor_intent_enabled and path == '/api/v2/intent' or path.startswith('/git/status-viewer.git/') or path == '/api/v1/sync/flush')
                 # All other non-read activity stays refused, including voice.
-                if (path.startswith('/git/') or self.command != 'GET' and path != '/api/v1/laptop-perf') and not (speech_send or editor_transport or queue_write or note_transport or (a.check_parallel_work and (path == '/api/v2/intent' and str(json.loads(data).get('text', '')).startswith('PARALLEL-WORK-16-') or path.startswith('/api/v1/conversations/' + a.conversation + '/subagents/') and path.endswith('/stop'))) or (a.check_web_research and path == '/api/v2/intent' and str(json.loads(data).get('text', '')).startswith('OWNED-RESEARCH-28')) or (a.check_device_sense and (path.startswith('/api/v1/show/show-') and path.endswith('/ack') or path == '/api/v2/intent' and str(json.loads(data).get('text', '')).startswith('DEVICE-SENSE-25-')))):
+                if (path.startswith('/git/') or self.command != 'GET' and path != '/api/v1/laptop-perf') and not ((a.check_plan_owner and path == "/api/v2/intent" and self.command == "POST" and json.loads(data).get("type") == "send" and json.loads(data).get("convId") == a.conversation and str(json.loads(data).get("text", "")).startswith("PLAN-OWNER-8-")) or speech_send or editor_transport or queue_write or note_transport or (a.check_parallel_work and (path == '/api/v2/intent' and str(json.loads(data).get('text', '')).startswith('PARALLEL-WORK-16-') or path.startswith('/api/v1/conversations/' + a.conversation + '/subagents/') and path.endswith('/stop'))) or (a.check_web_research and path == '/api/v2/intent' and str(json.loads(data).get('text', '')).startswith('OWNED-RESEARCH-28')) or (a.check_device_sense and (path.startswith('/api/v1/show/show-') and path.endswith('/ack') or path == '/api/v2/intent' and str(json.loads(data).get('text', '')).startswith('DEVICE-SENSE-25-')))):
                     if a.check_plans and path == '/api/v2/intent':
                         # Observe the native pending-input UI before rejecting;
                         # never forward this turn to a provider or invent a reply.
@@ -781,9 +792,10 @@ def main():
         spawn(['openbox'], 'window-manager')
 
         history_final_items = None
+        plan_owner_start_items = None
 
         def exercise(app, label):
-            nonlocal history_final_items
+            nonlocal history_final_items, plan_owner_start_items
             profile = work / (label + '-home')
             profile.mkdir()
             childenv = dict(env, HOME=str(profile), XDG_CONFIG_HOME=str(profile / 'config'),
@@ -835,6 +847,8 @@ def main():
                 # selection between this write and the measured second launch.
                 wait_for(lambda: js('return document.readyState === "complete" && !document.getElementById("vault-splash");'), 'empty native profile initialized')
                 js('localStorage.setItem("vault_chat_last_vault",arguments[0]); localStorage.setItem("vault_chat_active_conv",arguments[1]);', str(native_vault), a.conversation)
+                if a.check_plan_owner:
+                    js('localStorage.setItem("vc_ui_todos","pinned");')
                 if real_pi:
                     js('localStorage.setItem("vault_chat_master_path",arguments[0]);', str(native_master))
                 # WebKit persists localStorage asynchronously; let the seeded clean
@@ -1827,6 +1841,61 @@ def main():
                         'humanLookalikePreserved': True, 'privateAppendedItems': len(appended),
                         'crashWindow': 'controlled SIGSTOP before first genuine fixture feed-pointer append, after native user persisted; then owned SIGKILL/restart', 'serverBundleSha256': hashlib.sha256(a.server_bundle.read_bytes()).hexdigest()}
                     key('ctrl+shift+f')
+                plan_owner = None
+                if a.check_plan_owner:
+                    if not exists('[data-perf-view="fullscreen"]'):
+                        key('ctrl+shift+f')
+                    wait_for(lambda: exists('[data-perf-view="fullscreen"]'), 'full chat late-plan Clear')
+                    start_items = request(base + checkpoint_path)['picture']['items']
+                    if plan_owner_start_items is None:
+                        startup = start_items[3819:]
+                        if start_items[:3819] != original_items or len(startup) not in (0, 2) or startup and ([x['kind'] for x in startup] != ['user', 'assistant'] or startup[0].get('via') != 'delegate'):
+                            raise RuntimeError('Late-plan unexpected exact original/startup prefix')
+                        plan_owner_start_items = start_items
+                        result['thread'].update(messages=1329, items=3819, startupPrivateItems=len(startup))
+                    elif start_items[:len(plan_owner_start_items)] != plan_owner_start_items or len(start_items) != len(plan_owner_start_items) + 3:
+                        raise RuntimeError('Late-plan baseline private append prefix changed')
+                    def send_plan(tag):
+                        click('[data-perf-target="composer"]')
+                        run('xdotool', 'type', '--clearmodifiers', '--delay', '40', 'PLAN-OWNER-8-' + label + '-' + tag, env=childenv, stdout=subprocess.DEVNULL)
+                        key('Return')
+                    calls = len(provider_calls)
+                    released.clear()
+                    try:
+                        send_plan('LATE')
+                        wait_for(lambda: len(provider_calls) > calls, 'native human persisted before held plan')
+                        wait_for(lambda: js('return document.body.textContent.includes(arguments[0]);', 'PLAN-OWNER-8-' + label + '-LATE'), 'human visible before Clear')
+                        clear_selector = '[data-el="clear-thread"],button[title^="Clear this view"]'
+                        click(clear_selector)
+                        time.sleep(.5)
+                    finally:
+                        released.set()
+                    def settled_plan():
+                        p = request(base + checkpoint_path)['picture']
+                        return p if p['meta'].get('state') == 'idle' and len(p['items']) == len(start_items) + 3 else None
+                    wait_for(settled_plan, 'genuine TodoWrite and final answer after Clear')
+                    wait_for(lambda: js('return document.body.textContent.includes("Owned plan fixture complete 8.");'), 'native late reply rendered')
+                    time.sleep(.5)
+                    late_pinned = js('return document.querySelectorAll("[data-el=todos-pinned]").length;')
+                    delete_session(); time.sleep(1); session()
+                    wait_for(lambda: js('return !document.getElementById("vault-splash") && document.body.textContent.includes("Owned plan fixture complete 8.");'), 'native reopen late plan')
+                    reopened_pinned = js('return document.querySelectorAll("[data-el=todos-pinned]").length;')
+                    final = request(base + checkpoint_path)['picture']['items']
+                    appended = final[len(start_items):]
+                    if final[:len(start_items)] != start_items or [x['kind'] for x in appended] != ['user','tool','assistant']:
+                        raise RuntimeError('Late-plan changed exact original/startup prefix or three private appends')
+                    row, tool, answer = appended
+                    if row.get('text') != 'PLAN-OWNER-8-' + label + '-LATE' or tool.get('name') not in ('TodoWrite','mcp__vault_chat__TodoWrite') or tool.get('args') != {'todos': [{'content': 'Owned late plan step 8', 'status': 'in_progress', 'activeForm': 'Doing owned step 8'}]} or answer.get('text') != 'Owned plan fixture complete 8.':
+                        raise RuntimeError('Late-plan native append identity/arguments mismatch')
+                    if (vault / '.vault-chat/notes.jsonl').read_bytes() != original_notes:
+                        raise RuntimeError('Late-plan changed original Notes bytes')
+                    for name, body in original_event_bytes.items():
+                        if not (dest / name).read_bytes().startswith(body):
+                            raise RuntimeError('Late-plan changed an original event byte prefix')
+                    plan_owner = {'latePinned':late_pinned, 'reopenedPinned':reopened_pinned, 'nativeTodoWrite':True, 'exactThreePrivateAppends':True, 'original1329Messages3819ItemsAndNotesBytesUnchanged':True}
+                    result['runs'][label] = {'planOwner':plan_owner}
+                    if label != 'before' and (late_pinned or reopened_pinned):
+                        raise RuntimeError('Unowned late TodoWrite pinned after native Clear/reopen')
                 statuses = set()
                 for b, status in batches:
                     if b.get('runtime') != 'webkitgtk' or b.get('surface') != 'tauri-production':
@@ -1847,7 +1916,7 @@ def main():
                 def stats(values):
                     v = sorted(values)
                     return {'n': len(v), 'p50Ms': round(v[len(v)//2], 3), 'p95Ms': round(v[min(len(v)-1, int(len(v)*.95))], 3), 'maxMs': round(max(v), 3)}
-                return {'works': not interaction_failures, 'videoCheck': video_check, 'imageCheck': image_check, 'statusDot': status_dot, 'editorSync': editor_sync, 'pendingChat': pending_chat, 'deviceSense': device_sense, 'webResearch': web_research, 'parallelWork': parallel_work, 'historyUpdate': history_update, 'globalNotes': global_notes, 'interactionFailures': interaction_failures, 'planLifecycle': plan_lifecycle, 'emptyChat': empty_chat, 'native': metadata, 'telemetryHttpStatuses': sorted(statuses),
+                return {'works': not interaction_failures, 'videoCheck': video_check, 'imageCheck': image_check, 'statusDot': status_dot, 'editorSync': editor_sync, 'pendingChat': pending_chat, 'deviceSense': device_sense, 'webResearch': web_research, 'parallelWork': parallel_work, 'historyUpdate': history_update, 'globalNotes': global_notes, 'interactionFailures': interaction_failures, 'planLifecycle': plan_lifecycle, 'planOwner': plan_owner, 'emptyChat': empty_chat, 'native': metadata, 'telemetryHttpStatuses': sorted(statuses),
                         'telemetryNote': 'Observed real Rust IPC batches; loopback is not authenticated Tailscale laptop telemetry',
                         'launchProcessToDomUpperBoundMs': round(launch_upper, 3),
                         'timings': [{'metric': m, 'method': method, **stats(values)} for (m, method), values in sorted(samples.items())]}
@@ -2102,7 +2171,7 @@ def main():
         if a.before_app:
             result['runs']['before'] = exercise(a.before_app, 'before')
         result['runs']['after'] = exercise(a.app, 'after')
-        if a.check_plans or a.check_images or a.check_empty_chat or a.check_video or a.check_speech_freshness or a.check_status_dot or a.check_history_update:
+        if a.check_plan_owner or a.check_plans or a.check_images or a.check_empty_chat or a.check_video or a.check_speech_freshness or a.check_status_dot or a.check_history_update:
             again = request(base + checkpoint_path)
             again = again.get('picture', again)
             # Genuine engine startup may append a lost-worker notice to this disposable copy.
@@ -2114,6 +2183,10 @@ def main():
                 result['thread']['originalItemsPrefixUnchanged'] = preserved
                 result['thread']['privateAppendedItems'] = len(again.get('items', [])) - len(items)
                 result['thread']['allItemsUnchangedAfterHistoryReopen'] = preserved
+            elif a.check_plan_owner:
+                preserved = plan_owner_start_items is not None and again.get("items", [])[:len(plan_owner_start_items)] == plan_owner_start_items and len(again.get("items", [])) == len(plan_owner_start_items) + 3 * (2 if a.before_app else 1)
+                result["thread"]["originalItemsPrefixUnchanged"] = preserved
+                result["thread"]["exactPrivateAppendedItems"] = 3 * (2 if a.before_app else 1)
             elif a.check_speech_freshness or a.check_status_dot:
                 preserved = again.get('items', [])[:len(items)] == items
                 result['thread']['originalItemsPrefixUnchanged'] = preserved
