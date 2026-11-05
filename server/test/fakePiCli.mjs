@@ -49,7 +49,7 @@ const arg = (k) => {
 };
 // The extension's own helpers, from where pi is told to load it (`-e <dir>/vc.mjs`, policy.mjs beside it).
 const extension = argv.filter((value, i) => argv[i - 1] === "-e" && !value.startsWith("builtin:")).at(-1);
-const { YOU_TYPE, youSince } = extension
+const { YOU_TYPE, youSince, nativeUserRequest } = extension
   ? await import(pathToFileURL(join(dirname(extension), "policy.mjs")).href)
   : { YOU_TYPE: "vc-you", youSince: () => null };
 // pi's before_provider_request as the extension hooks it (pdf.mjs: PdfPages' slices as native PDF parts).
@@ -315,8 +315,10 @@ async function callModelRetrying() {
 
 function deliver(list) {
   for (const m of list.splice(0)) {
-    const msg = { role: "user", content: [{ type: "text", text: m.message }], timestamp: stamp() };
+    let msg = { role: "user", content: [{ type: "text", text: m.message }], timestamp: stamp() };
     out({ type: "message_start", message: msg });
+    // Same public message_end replacement as genuine pi, before persistence.
+    msg = nativeUserRequest?.(msg, bootstrap.requestTag)?.message ?? msg;
     out({ type: "message_end", message: msg });
     record(msg);
   }
@@ -329,9 +331,10 @@ async function run(first) {
   out({ type: "agent_start" });
   const slow = /\[slow\]/.test(first);
   const you = await youLayer();
-  const u = { role: "user", content: [{ type: "text", text: first }], timestamp: stamp() };
+  let u = { role: "user", content: [{ type: "text", text: first }], timestamp: stamp() };
   out({ type: "turn_start" });
   out({ type: "message_start", message: u });
+  u = nativeUserRequest?.(u, bootstrap.requestTag)?.message ?? u;
   out({ type: "message_end", message: u });
   record(u);
   if (you) {

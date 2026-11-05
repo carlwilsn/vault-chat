@@ -9,21 +9,23 @@ import type { PiProc } from "../engine/pi/proc";
 import { PiFeed } from "../engine/piFeed";
 import { ConvLog } from "../convlog/log";
 import { fakeChat, lastUser, chatText } from "./fakeChat";
-import { waitFor } from "./helpers";
+import { fakePiDir, waitFor } from "./helpers";
 // @ts-ignore extension's shared plain JS helper
 import { nativeUserRequest } from "../engine/pi/ext/policy.mjs";
 
 const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => { for (const close of cleanups.splice(0).reverse()) await close(); });
 const model = "test/fake-model";
-async function fixture() {
+async function fixture(runtime = "genuine", compact = false) {
   const root = mkdtempSync(join(tmpdir(), "vc-history-")), paths = piPaths(root);
   for (const dir of [paths.agentDir, paths.extDir, paths.instrDir, paths.sessionsDir]) mkdirSync(dir, { recursive: true });
   for (const file of ["vc.mjs", "policy.mjs", "filesystem.mjs", "pdf.mjs"]) copyFileSync(resolve("server/engine/pi/ext", file), join(paths.extDir, file));
   const provider = await fakeChat();
-  writeFileSync(join(paths.agentDir, "settings.json"), JSON.stringify({ compaction: { enabled: false }, retry: { enabled: false } }));
+  // Only the explicit compaction fixture uses a zero recent-token budget so
+  // genuine pi can compact this tiny synthetic conversation; never auto-compact.
+  writeFileSync(join(paths.agentDir, "settings.json"), JSON.stringify({ compaction: { enabled: false, ...(compact ? { keepRecentTokens: 0 } : {}) }, retry: { enabled: false } }));
   writeFileSync(join(paths.agentDir, "models.json"), JSON.stringify({ providers: { openrouter: { baseUrl: provider.url + "/v1", apiKey: "fixture-local-only", api: "openai-completions", models: [{ id: model, name: "fixture", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 400000, maxTokens: 1000 }] } } }));
-  const prefix = process.env.VC_TEST_PI_DIR;
+  const prefix = runtime === "genuine" ? process.env.VC_TEST_PI_DIR : fakePiDir(root);
   if (!prefix) throw new Error("VC_TEST_PI_DIR must name the genuine pinned Pi 1.1 installation");
   const procs: PiProc[] = [], backends: PiBackend[] = [];
   const make = () => {
@@ -80,16 +82,22 @@ describe("native history request identity", () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
-  it("keeps identical queued texts distinct in Pi's own queue, and clear_queue never leaves a separate request binding", async () => {
-    const f = await fixture(), b = f.make();
+  it.each(["genuine", "protocol fixture"])("%s Pi keeps identical queued texts distinct in its own queue, and clear_queue never leaves a separate request binding", async runtime => {
+    const f = await fixture(runtime), b = f.make();
     const s = await b.startThread({ cwd: f.root, model, instructions: "Fixture", tools: [], subagents: false });
-    f.provider.respond = () => ({ text: "native queue reply", delayMs: 150 });
+    // Hold the first provider response until every queue operation is ACKed;
+    // neither implementation may win a scheduler race against a fixed sleep.
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    f.provider.respond = async () => { await gate; return { text: "native queue reply" }; };
     const running = turn(b, s.threadId, "active", "active-client");
-    await waitFor(() => f.provider.calls.length ? true : null);
-    await b.followUp(s.threadId, { texts: ["same text"], request: request("cancelled-client"), images: [] });
-    await b.clearQueue(s.threadId);
-    await b.followUp(s.threadId, { texts: ["same text"], request: request("queue-A"), images: [] });
-    await b.followUp(s.threadId, { texts: ["same text"], request: request("queue-B"), images: [] });
+    try {
+      await waitFor(() => f.provider.calls.length ? true : null);
+      await b.followUp(s.threadId, { texts: ["same text"], request: request("cancelled-client"), images: [] });
+      await b.clearQueue(s.threadId);
+      await b.followUp(s.threadId, { texts: ["same text"], request: request("queue-A"), images: [] });
+      await b.followUp(s.threadId, { texts: ["same text"], request: request("queue-B"), images: [] });
+    } finally { release(); }
     await running;
     const entries = readFileSync(s.ref!, "utf8").trim().split("\n").map(x => JSON.parse(x));
     const users = entries.filter(x => x.message?.role === "user");
@@ -97,6 +105,49 @@ describe("native history request identity", () => {
     expect(users.map(x => x.message.content[0].text)).toEqual(["active", "same text", "same text"]);
     expect(JSON.stringify(entries)).not.toContain("cancelled-client");
     expect(chatText(f.provider.calls.at(-1))).not.toContain('"vcInput"');
+  });
+
+  it.each(["genuine", "protocol fixture"])("%s Pi: compact/restart/new turn delivers fresh memory to the provider with exact human history", async runtime => {
+    const f = await fixture(runtime, true), b = f.make();
+    const s = await b.startThread({ cwd: f.root, model, instructions: "Fixture", tools: [], subagents: false });
+    const first = "We settled it: due Friday, MARKER-ONE.";
+    await turn(b, s.threadId, first, "before-compact", "<memory>Old fixture memory</memory>");
+    const events = join(f.root, "events"); mkdirSync(events);
+    const log = new ConvLog(f.root, null, events);
+    cleanups.push(async () => log.close());
+    const before = new PiFeed({ file: s.ref!, pointed: log.pointedIn("thread", s.ref!), emit: e => log.emit("thread", e) });
+    before.sync(true); before.dispose();
+    const original = structuredClone(log.picture("thread")!.items), prefix = readFileSync(s.ref!, "utf8");
+    expect(original.filter(x => x.kind === "user").map(x => ({ id: x.id, text: x.text }))).toEqual([{ id: "before-compact", text: first }]);
+    expect(chatText(f.provider.calls.at(-1))).toContain("Old fixture memory");
+    expect(chatText(f.provider.calls.at(-1))).not.toContain('"vcInput"');
+    f.provider.respond = () => ({ text: "Fixture summary: due Friday." });
+    await b.compact(s.threadId, "Preserve the deadline");
+    expect(readFileSync(s.ref!, "utf8")).toContain('"type":"compaction"');
+    expect(readFileSync(s.ref!, "utf8").startsWith(prefix)).toBe(true);
+    await f.procs.at(-1)!.close();
+    const replacement = f.make();
+    await replacement.resumeThread(s.threadId, { model, subagents: false });
+    expect(replacement.threadSource(s.threadId)!.file).toBe(s.ref);
+    const restored = new PiFeed({ file: s.ref!, pointed: log.pointedIn("thread", s.ref!), emit: e => log.emit("thread", e), flushMs: 0 });
+    restored.sync(true);
+    replacement.on("event", (e: any) => { if (e.kind === "pi") restored.onPi(e.ev); });
+    const next = "What was I saying?", memory = "<memory>NEW-MEMORY: Carl likes one worked example</memory>\n[Carl, on his phone]";
+    const calls0 = f.provider.calls.length;
+    f.provider.respond = body => ({ text: chatText(body).includes(memory) && lastUser(body) === next ? "Fresh memory reached the model" : "WRONG INPUT" });
+    await turn(replacement, s.threadId, next, "after-compact", memory);
+    restored.dispose();
+    expect(f.provider.calls.length).toBe(calls0 + 1);
+    expect(chatText(f.provider.calls.at(-1))).toContain(memory);
+    expect(lastUser(f.provider.calls.at(-1))).toBe(next);
+    expect(chatText(f.provider.calls.at(-1))).not.toContain('"vcInput"');
+    const picture = log.picture("thread")!;
+    expect(picture.items.slice(0, original.length)).toEqual(original);
+    expect(picture.items.filter(x => x.kind === "user").map(x => ({ id: x.id, text: x.text }))).toEqual([{ id: "before-compact", text: first }, { id: "after-compact", text: next }]);
+    expect(picture.items.some(x => x.kind === "compaction")).toBe(true);
+    expect(picture.items.at(-1)!.text).toBe("Fresh memory reached the model");
+    expect(JSON.stringify(picture)).not.toContain("NEW-MEMORY");
+    expect(readFileSync(s.ref!, "utf8").startsWith(prefix)).toBe(true);
   });
 
   it("genuine Pi replacement is persisted before provider request; SIGKILL + new backend restores exact IDs/text/order without a feed-pointer copy", async () => {

@@ -87,7 +87,7 @@ describe("Main over HTTP", () => {
     expect(sent).toContain("[Carl, on his phone]");
     const texts = shown(await picture("main")).map((x) => x.text ?? "");
     expect(texts.some((t) => t.includes("MARKER-ONE"))).toBe(true);
-    expect(texts).toContain("What was I saying?");
+    expect(texts, JSON.stringify(texts)).toContain("What was I saying?");
   });
 
   it("the agent's model is one setting the laptop changes (Settings and the composer): the next turn runs on it", async () => {

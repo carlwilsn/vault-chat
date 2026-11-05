@@ -20,7 +20,7 @@ export type FakeChat = {
   costs: Map<string, number>;
   /** Ids looked up through /generation (after the first 404). */
   lookups: string[];
-  respond: (body: any, n: number) => ChatStep;
+  respond: (body: any, n: number) => ChatStep | Promise<ChatStep>;
   close: () => Promise<void>;
 };
 
@@ -113,7 +113,7 @@ export async function fakeChat(): Promise<FakeChat> {
       }
       n++;
       state.calls.push(body);
-      const step = state.respond(body, n);
+      const step = await state.respond(body, n);
       if ("status" in step) {
         res.writeHead(step.status, { "content-type": "application/json" });
         res.end(step.body ?? JSON.stringify({ error: { message: "fake error" } }));
