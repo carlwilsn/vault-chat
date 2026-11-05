@@ -551,7 +551,7 @@ def main():
         checkpoint = request(base + checkpoint_path)
         picture = checkpoint.get('picture', checkpoint)
         items = picture.get('items', [])
-        if a.check_history_update:
+        if a.check_history_update or a.check_device_sense:
             # The original copy is immutable. Engine startup may already have
             # appended its two real lost-worker/resume items before this HTTP
             # snapshot; those are private appends, never part of the original.
@@ -561,13 +561,20 @@ def main():
                 raise RuntimeError('History fixture requires exact original 1329 messages / 3819 items')
             if items[:3819] != original_items or len(items) not in (3819, 3821):
                 raise RuntimeError('History startup changed original prefix or unexpected private startup appends')
-            items = original_items
+            if a.check_device_sense and items[3819:]:
+                startup = items[3819:]
+                if [x.get('kind') for x in startup] != ['user', 'assistant'] or startup[0].get('via') != 'delegate':
+                    raise RuntimeError('Unexpected device fixture startup append identities')
+            if a.check_history_update:
+                items = original_items
         count = sum(i.get('kind') in ('user', 'assistant') for i in items)
         if a.check_speech_freshness and (count != 1329 or len(items) != 3819):
             raise RuntimeError('Speech fixture requires exact approved 1329-message / 3819-item original prefix')
         if picture.get('id') != a.conversation or count < a.min_messages:
             raise RuntimeError('Wrong/short original thread: expected minimum message count not met')
         result['thread'] = {'messages': count, 'items': len(items), 'exactOriginalSelected': False}
+        if a.check_device_sense:
+            result['thread'].update(messages=1329, items=3819, startupPrivateItems=len(items) - 3819)
         if a.check_video:
             prefix = json.loads((work / 'original-video-prefix.json').read_text())
             if items[:len(prefix)] != prefix or len(items) != len(prefix) + 1:
@@ -1557,11 +1564,15 @@ def main():
                         if len(inbox_after) != len(inbox_before) + 1:
                             raise RuntimeError('Unwanted iPad work or missing board entry')
                         final = request(base + checkpoint_path)['picture']['items']
-                        if final[:3819] != items or len(final) != 3844 or collections.Counter(x['kind'] for x in final[3819:]) != {'user':10, 'assistant':9, 'tool':6}:
+                        # Preserve the exact immutable 3819-item original AND
+                        # every observed startup append, then exactly 25 owned
+                        # fixture items. Startup's real delegate/reply pair is
+                        # never relabeled original history or silently dropped.
+                        if final[:3819] != original_items or final[:len(items)] != items or len(final) != len(items) + 25 or collections.Counter(x['kind'] for x in final[len(items):]) != {'user':10, 'assistant':9, 'tool':6}:
                             raise RuntimeError('Wrong original prefix or exact private appends: ' + repr((len(final), collections.Counter(x['kind'] for x in final[3819:]))))
                         if a.check_global_notes and (vault / '.vault-chat/notes.jsonl').read_bytes() != original_notes:
                             raise RuntimeError('Copied human notes changed')
-                        device_sense = {'nativeLaptopAck': True, 'explicitRightPaneAck': True, 'isolatedPhoneEvents': phone_events, 'boardInboxAdded': 1, 'unwantedBoardRefused': True, 'original1329Messages3819ItemsUnchanged': True, 'exactPrivateAppends': {'user':10, 'assistant':9, 'tool':6}, 'finalItems':3844, 'humanNotesByteIdentical': True}
+                        device_sense = {'nativeLaptopAck': True, 'explicitRightPaneAck': True, 'isolatedPhoneEvents': phone_events, 'boardInboxAdded': 1, 'unwantedBoardRefused': True, 'original1329Messages3819ItemsUnchanged': True, 'exactPrivateAppends': {'user':10, 'assistant':9, 'tool':6}, 'startupPrivateItems': len(items) - 3819, 'finalItems':len(items) + 25, 'humanNotesByteIdentical': True}
                     finally:
                         stopped_phone.set()
                 web_research = None
