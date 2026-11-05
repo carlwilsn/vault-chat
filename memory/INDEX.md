@@ -24,3 +24,4 @@ Carl’s instructions live in AGENTS.md; ASKS.md is the only plan.
 
 - Voice exclusive bind permits retired TCP TIME_WAIT via SO_REUSEADDR, never SO_REUSEPORT; live port owners still refuse startup.
 - The Python voice entrypoint binds before unrelated standard-library imports as well as audio/provider imports. Ownership tests run both ordinary startup and a blocked asyncio import against the same live owned HTTP fixture; exit 98 and untouched original listener are required within the unchanged deadline.
+- Native Pi user `vcRequest` is the persisted request identity/device authority, including queue delivery. Pass that same device into the existing delivered callback before assistant output; omitting it breaks typed-speech ownership even when the visible history is correct. Never replace it with the feed's expected-device hint or inferred human text.

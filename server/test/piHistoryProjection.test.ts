@@ -82,6 +82,26 @@ describe("native history request identity", () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
+  it("delivers persisted queued request identity and native device before its answer, never stale expected provenance", () => {
+    const root = mkdtempSync(join(tmpdir(), "vc-native-delivery-")), file = join(root, "native.jsonl");
+    const user = { type: "message", id: "native-queued", message: { role: "user", content: "same text", timestamp: 1,
+      vcRequest: { ...request("queued-client"), via: "queue", device: "phone" } } };
+    writeFileSync(file, JSON.stringify(user) + "\n");
+    const observed: any[] = [];
+    const feed = new PiFeed({ file, pointed: new Set(), flushMs: 0,
+      emit: e => observed.push(e), delivered: (clientId, device) => observed.push({ delivered: clientId, device }) });
+    try {
+      feed.expect({ kind: "queue", text: "same text", shown: "same text", clientId: "queued-client", via: "queue", device: "laptop" });
+      feed.sync(true);
+      feed.onPi({ type: "message_start", message: { role: "assistant", timestamp: 2 } });
+      expect(observed[0]).toMatchObject({ type: "entry", clientId: "queued-client", device: "phone", shown: "same text" });
+      expect(observed[1]).toEqual({ delivered: "queued-client", device: "phone" });
+      expect(observed[2]).toMatchObject({ type: "live", ev: { type: "message_start" } });
+      feed.sync(true);
+      expect(observed.filter(e => e.delivered)).toHaveLength(1);
+    } finally { feed.dispose(); rmSync(root, { recursive: true, force: true }); }
+  });
+
   it.each(["genuine", "protocol fixture"])("%s Pi keeps identical queued texts distinct in its own queue, and clear_queue never leaves a separate request binding", async runtime => {
     const f = await fixture(runtime), b = f.make();
     const s = await b.startThread({ cwd: f.root, model, instructions: "Fixture", tools: [], subagents: false });
@@ -104,6 +124,14 @@ describe("native history request identity", () => {
     expect(users.map(x => x.message.vcRequest.clientId)).toEqual(["active-client", "queue-A", "queue-B"]);
     expect(users.map(x => x.message.content[0].text)).toEqual(["active", "same text", "same text"]);
     expect(JSON.stringify(entries)).not.toContain("cancelled-client");
+    const delivered: unknown[] = [], feed = new PiFeed({ file: s.ref!, pointed: new Set(), emit: () => {},
+      delivered: (clientId, device) => delivered.push({ clientId, device }) });
+    try {
+      for (const clientId of ["queue-A", "queue-B"]) feed.expect({ kind: "queue", text: "same text", shown: "same text", clientId, via: "queue", device: "phone" });
+      feed.sync(true);
+      expect(delivered).toEqual(["queue-A", "queue-B"].map(clientId => ({ clientId, device: "laptop" })));
+      feed.sync(true); expect(delivered).toHaveLength(2);
+    } finally { feed.dispose(); }
     expect(chatText(f.provider.calls.at(-1))).not.toContain('"vcInput"');
   });
 
