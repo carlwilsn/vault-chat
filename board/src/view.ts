@@ -426,6 +426,7 @@ export class BoardView {
     recovered?: { writer: string; gen: number } | null,
   ) {
     this.onKey = this.onKey.bind(this);
+    this.onBlur = this.onBlur.bind(this);
     this.rev = board.rev;
     this.lkey = localKey(api.vaultKey(), slug);
     if (recovered) {
@@ -1695,7 +1696,7 @@ export class BoardView {
     for (const a of this.arb.cancelTool()) this.act(a);
   }
 
-  private onBlur = (): void => { if (!this.inactive) this.interruptTool(); };
+  private onBlur(): void { if (!this.inactive) this.interruptTool(); }
 
   /** Cancellation keeps interrupted pen/mouse ink, but drops a finger stroke that became a gesture. */
   private endTool(id: number, ev: PEvent, reason: "up" | "cancel"): void {
