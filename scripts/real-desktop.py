@@ -269,6 +269,8 @@ def main():
               'graphics': 'software rendering on private Xvfb',
               'timingNote': 'Double-rAF estimates straddle a rendering opportunity, not physical paint; absent Event Timing is unsupported, not zero',
               'laptopComparison': None, 'runs': {}}
+    if a.phone_scroll_only:
+        result.update(platform='linux-chromium', input='Trusted browser touch/mouse/keyboard on the owned production phone page; not XTest/native laptop timings')
 
     def spawn(args, name, childenv=env, **kw):
         log = open(work / (name + '.log'), 'wb')
@@ -2107,7 +2109,7 @@ def main():
                 for(const [index,size] of sizes.entries()){
                   await p.setViewportSize(size);const start=Date.now();await p.goto(base+'/phone?conv='+encodeURIComponent(conv));
                   await p.waitForFunction(()=>document.querySelector('#msgs')?.textContent.includes('Owned phone scroll reply.'));await p.waitForTimeout(350);
-                  const initial=await metrics();record('open bottom '+size.width+'x'+size.height,null,initial,initial.gap<=4);
+                  const initial=await metrics(),readyMs=Date.now()-start;record('open bottom '+size.width+'x'+size.height,null,initial,initial.gap<=4);
                   const fold=p.locator('#msgs .steps-h').last();assert.equal(await fold.innerText(),'30 steps');
                   // Genuine user activation while the follow latch was true. The first selected
                   // result must remain visible, not be scrolled to the last of thirty results.
@@ -2131,7 +2133,7 @@ def main():
                   // Real visualViewport dimensions from browser resize, not physical Safari keyboard.
                   await p.setViewportSize({...size,height:size.height-70});await p.waitForTimeout(250);const resized=await metrics();
                   record('visualViewport shrink preserves reader '+size.width+'x'+size.height,drafted,resized,Math.abs(resized.top-drafted.top)<=2&&resized.viewport.height<drafted.viewport.height);
-                  result.cases.push({name:'open browser elapsed '+size.width+'x'+size.height,ms:Date.now()-start});
+                  result.cases.push({name:'browser open-to-settled elapsed '+size.width+'x'+size.height,ms:readyMs});
                 }
                 result.inputDoubleRafMs=await p.evaluate(()=>__inputFrames);result.permissions=await p.evaluate(()=>__calls);
                 assert.deepEqual(result.permissions,{permission:0,subscribe:0,mic:0,register:0});

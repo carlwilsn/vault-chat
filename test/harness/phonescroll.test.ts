@@ -11,7 +11,9 @@ function scrolling() {
   const el = { scrollTop: 600, scrollHeight: 1000, clientHeight: 400, children: [], addEventListener: (n: string, fn: any) => { listeners[n] = fn; } };
   let resize!: () => void;
   const code = boot.slice(boot.indexOf("  const atBottom ="), boot.indexOf("\n  let streamEl ="));
-  const api = runInNewContext(transformSync(code, { loader: "ts" }).code + "\n({ scrollDown, atBottom })", { msgsEl: el, page: "chat", document: { addEventListener: (n: string, fn: any) => { listeners[n] = fn; } }, ResizeObserver: class { constructor(fn: () => void) { resize = fn; } observe() {} disconnect() {} } });
+  const start = boot.indexOf('    const sh = e.target.closest(".steps-h");');
+  const clickSteps = boot.slice(start, boot.indexOf("\n  });", start));
+  const api = runInNewContext(transformSync(code + "\nconst clickSteps = (e) => {" + clickSteps + "\n};", { loader: "ts" }).code + "\n({ scrollDown, atBottom, clickSteps })", { msgsEl: el, page: "chat", document: { addEventListener: (n: string, fn: any) => { listeners[n] = fn; } }, ResizeObserver: class { constructor(fn: () => void) { resize = fn; } observe() {} disconnect() {} } });
   return { el, listeners, resize: () => resize(), ...api };
 }
 test("phone: a pre-update false never rechecks a shortened DOM and jumps", () => {
@@ -68,4 +70,17 @@ test("phone: a queued programmatic scroll after image growth does not release th
   const s = scrolling();
   s.el.scrollHeight += 500; // pixels decode before the queued scroll event arrives
   s.listeners.scroll(); s.resize(); assert.equal(s.el.scrollTop, 1500);
+});
+
+test("phone: explicitly opening tool steps releases follow before layout, collapse does not repin a reader", () => {
+  const s = scrolling();
+  let open = false;
+  const steps = { classList: { contains: () => open, toggle: () => { open = !open; } } };
+  const e = { target: { closest: () => ({ closest: () => steps }) } };
+  s.clickSteps(e); assert.equal(open, true);
+  s.el.scrollHeight += 810; s.resize(); assert.equal(s.el.scrollTop, 600, "keep the chosen header, not the last step");
+  s.clickSteps(e); assert.equal(open, false);
+  s.el.scrollHeight -= 400; s.resize(); assert.equal(s.el.scrollTop, 600, "collapse does not override reading intent");
+  s.el.scrollTop = s.el.scrollHeight - s.el.clientHeight; s.listeners.scroll();
+  s.el.scrollHeight += 100; s.resize(); assert.equal(s.el.scrollTop, s.el.scrollHeight, "actual return to bottom resumes late-layout follow");
 });
