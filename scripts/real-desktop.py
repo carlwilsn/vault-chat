@@ -590,6 +590,16 @@ def main():
             original_items = frozen['items']
             if frozen.get('id') != a.conversation or len(original_items) != 3819 or sum(i.get('kind') in ('user', 'assistant') for i in original_items) != 1329:
                 raise RuntimeError('History fixture requires exact original 1329 messages / 3819 items')
+            if len(items) == 3820 and items[:3819] == original_items:
+                # The genuine lost-worker report is asynchronous: its user row
+                # can be observed before its assistant reply. Await completion,
+                # then apply the SAME exact original/startup guards below.
+                def settled_startup():
+                    c = request(base + checkpoint_path)
+                    p = c.get('picture', c)
+                    return p if p.get('meta', {}).get('state') == 'idle' else None
+                picture = wait_for(settled_startup, 'owned startup report completion')
+                items = picture.get('items', [])
             if items[:3819] != original_items or len(items) not in (3819, 3821):
                 raise RuntimeError('History startup changed original prefix or unexpected private startup appends')
             if (a.check_device_sense or a.check_web_research or a.check_parallel_work) and items[3819:]:
