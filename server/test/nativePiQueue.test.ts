@@ -12,6 +12,7 @@ import { makeVault, startServer, tmp, waitFor, type Running } from "./helpers";
 import { fakeChat, lastUser } from "./fakeChat";
 import { addWake } from "../engine/wakes";
 import { readEntries } from "../convlog/piSession";
+import { voiceCallRules } from "../voiceBrain";
 
 describe("native Pi interrupt-and-send queue contract", () => {
   it("delivers SECOND then FIRST exactly once through native Pi, including the phone binding", async () => {
@@ -36,6 +37,7 @@ globalThis.fetch=(input,init)=>{
  throw Error('Native API fixture refuses external fetch');
 };`);
     let srv: Running | undefined;
+    const streams: AbortController[] = [];
     try {
       srv = await startServer({ home, vault, secrets: join(home, "empty-no-credentials"), openrouter: provider.url,
         extra: { VC_PI_DIR: process.env.VC_TEST_PI_DIR ?? join(homedir(), ".local/state/vault-chat-server/pi/1.1.0"),
@@ -49,8 +51,8 @@ globalThis.fetch=(input,init)=>{
       const agent = join(state, "pi/agent");
       writeFileSync(join(agent, "settings.json"), JSON.stringify({ compaction: { enabled: false }, retry: { enabled: false } }));
       writeFileSync(join(agent, "models.json"), JSON.stringify({ providers: { openrouter: { baseUrl: provider.url,
-        apiKey: "synthetic-local-only", api: "openai-completions", models: [{ id: "test/fake-model", name: "Local contract",
-          reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 32000, maxTokens: 1000 }] } } }));
+        apiKey: "synthetic-local-only", api: "openai-completions", models: ["test/fake-model", "anthropic/claude-haiku-5.5"].map(id => ({ id, name: "Local contract",
+          reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 32000, maxTokens: 1000 })) } } }));
       // Public input hook on our OWN generated extension, never SDK mutation.
       const extension=join(state,"pi/ext/vc.mjs");
       writeFileSync(extension,readFileSync(extension,"utf8").replace("export default function vaultChat(pi) {",`export default function vaultChat(pi) {
@@ -75,10 +77,21 @@ globalThis.fetch=(input,init)=>{
             if (body.messages.at(-1)?.role === "tool") return { text: "wake refusal checked" };
             return { call: { name: "BoardSend", args: { title: "Not human permission", parts: [{ kind: "math", markdown: "$x$" }] } } };
           }
-          return { text: "local queue response", ...(last.includes("QUEUE-HOLD") ? { delayMs: 3000 } : {}) };
+          return { text: last.includes("QUEUE-FIRST") ? "FIRST native reply." : "SECOND native reply.", ...(last.includes("QUEUE-HOLD") ? { delayMs: 3000 } : {}) };
         };
         expect(await post({ type: "send", client: "laptop", clientId: "hold", text: "QUEUE-HOLD" })).toMatchObject({ ok: true });
         await waitFor(() => provider.calls.length > callsBefore ? true : null, 10000, 10);
+        // The call is owned by this exact native conversation. Queuing FIRST
+        // cannot borrow it; only FIRST's real delivery can change speech owner.
+        const call = await (await fetch(base + "/api/v1/brain/call", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ convId: id, device: "phone" }) })).json();
+        const ac = new AbortController(); streams.push(ac);
+        const response = await fetch(base + `/api/v1/brain/call/${call.callId}/speak`, { headers: { authorization: `Bearer ${call.token}` }, signal: ac.signal });
+        expect(response.status).toBe(200);
+        const speech: any[] = [];
+        const reading = (async () => {
+          const reader = response.body!.getReader(); let pending = "";
+          try { for (;;) { const r = await reader.read(); if (r.done) break; pending += new TextDecoder().decode(r.value); const lines = pending.split("\n"); pending = lines.pop()!; for (const line of lines) if (line.startsWith("data: ")) speech.push(JSON.parse(line.slice(6))); } } catch { /* private stream cleanup */ }
+        })();
         expect(await post({ ...arrival, clientId: "first", text: "QUEUE-FIRST" })).toMatchObject({ ok: true });
         expect(await post({ type: "send", client: "laptop", clientId: "second", text: "QUEUE-SECOND" })).toMatchObject({ ok: true });
         expect((await picture()).meta.pending.map((p: any) => p.id)).toEqual(["first", "second"]);
@@ -88,7 +101,7 @@ globalThis.fetch=(input,init)=>{
           return !p.meta.running && !p.meta.pending && c.messages.some((m: any) => m.mid === "first") ? c : null;
         }, 10000, 10);
         const firstSurface = arrival.source === "voice" ? "a voice call (phone)" : `his ${arrival.client}`;
-        const expected = ["[Carl, on his laptop]\n\nQUEUE-HOLD", "[Carl, on his laptop]\n\nQUEUE-SECOND", `[Carl, on ${firstSurface}]\n\nQUEUE-FIRST`];
+        const expected = ["[Carl, on his laptop]\n\nQUEUE-HOLD", `${voiceCallRules("phone")}\n\n[Carl, on his laptop]\n\nQUEUE-SECOND`, `[Carl, on ${firstSurface}]\n\nQUEUE-FIRST`];
         expect(readEntries(c.meta.threadPath).filter(e => e.message?.role === "user").map(e => e.message!.content))
           .toEqual(expected.map(text => [{ type: "text", text }]));
         expect(c.messages.filter((m: any) => m.role === "user").map((m: any) => m.mid)).toEqual(["hold", "second", "first"]);
@@ -119,6 +132,10 @@ globalThis.fetch=(input,init)=>{
         }
         const humanEntries = events.filter((e: any) => e.type === "entry" && ["first", "second"].includes(e.clientId));
         expect(humanEntries.map((e: any) => [e.clientId, e.device])).toEqual([["second", "laptop"], ["first", arrival.client]]);
+        if (arrival.client === "phone") await waitFor(() => speech.some(m => m.text === "FIRST native reply.") ? true : null, 5000, 10);
+        await fetch(base + `/api/v1/brain/call/${call.callId}/end`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+        await reading;
+        expect(speech.filter(m => m.text).map(m => m.text)).toEqual(arrival.client === "phone" ? ["FIRST native reply."] : []);
         // Exercise the production durable wake path on this private fixture.
         // Its iPad words are NOT a delivered human request or a new device.
         addWake(vault, { conv: id, at: Date.now(), reason: "send to iPad", byCarl: true });
@@ -133,6 +150,7 @@ globalThis.fetch=(input,init)=>{
       }
       expect(readFileSync(outbound, "utf8")).toBe("");
     } finally {
+      for (const ac of streams) ac.abort();
       if (srv) { writeFileSync(join(home, "server.log"), srv.logs()); await srv.stop(); }
       writeFileSync(join(home, "provider-calls.json"), JSON.stringify(provider.calls, null, 2));
       await provider.close(); // Synthetic evidence retained even on failure.

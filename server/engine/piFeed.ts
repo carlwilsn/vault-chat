@@ -44,8 +44,8 @@ export type FeedOpts = {
   emit: (b: EventBody) => void;
   /** Entries of `file` the feed already points to (skipped; updated as pointers are written). */
   pointed: Set<string>;
-  /** Pi actually delivered a matched human input (including a Send now replacement prompt). */
-  delivered?: (clientId: string, device?: string) => void;
+  /** Native human delivery: voice actor stays separate from the physical device on its entry. */
+  delivered?: (clientId: string, origin?: string) => void;
   /** Coalescing window for deltas (ms); 0: every delta its own record (tests). */
   flushMs?: number;
   now?: () => number;
@@ -178,7 +178,7 @@ export class PiFeed {
       ...(x!.images?.length ? { images: x!.images } : {}),
       ...(x!.device ? { device: x!.device } : {}),
     });
-    if (x!.clientId) this.o.delivered?.(x!.clientId, x!.device);
+    if (x!.clientId) this.o.delivered?.(x!.clientId, x!.via === "voice" ? "voice" : x!.device);
   }
 
   // ---------------------------------------------------------------- pi's live events

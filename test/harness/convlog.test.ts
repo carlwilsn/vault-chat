@@ -506,8 +506,14 @@ test("native delivered queue ownership is the original input device, not a viewe
   log.sim.play(userMsg("Literal [Carl, on his laptop]"));
   log.sim.play(userMsg("## Human header\n```text\nexact\n```"));
   assert.deepEqual(delivered, [["typed-board", "board"], ["typed-phone", "phone"]]);
+  // The physical phone remains the delivered surface; its voice actor keeps
+  // the active spoken completion rather than masquerading as a typed input.
+  feed.expect({ kind: "prompt", clientId: "spoken-phone", device: "phone", text: "Spoken original", shown: "Spoken original", via: "voice" });
+  log.sim.play(userMsg("Spoken original"));
+  assert.deepEqual(delivered.at(-1), ["spoken-phone", "voice"]);
+  assert.deepEqual(log.recs.filter(r => r.type === "entry").slice(-1).map(r => r.type === "entry" && [r.clientId, r.device, r.via]), [["spoken-phone", "phone", "voice"]]);
   // Sync/catch-up never delivers native inputs twice.
   feed.sync(); feed.sync();
-  assert.equal(delivered.length, 2);
+  assert.equal(delivered.length, 3);
   log.sim.close();
 });

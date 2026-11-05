@@ -34,3 +34,16 @@
   Native A's local held provider must release on the real HTTP `now` success
   AFTER Pi abort, not merely relay intent receipt (which races the old step).
   Keep exact original prefix/private-appends and native provider-input guards.
+
+- Integrating device sense with accepted typed speech must preserve TWO native
+  bindings: the entry's physical `device` (phone/board/laptop) for visual routing,
+  and its original `via: voice` actor for the voice delivery callback. Passing a
+  phone device as that callback's origin accidentally treats spoken input as typed
+  and closes its active completion. Derive voice origin from the matched native
+  Expected record, never the current viewer; keep Send now prompt callbacks as
+  well as steer/queue callbacks, and clear pending only after actual entry delivery.
+  The native unpaid queue test now opens its owned phone call AFTER held input,
+  then checks SECOND/FIRST exact native inputs, per-device speech exactly once,
+  and wake refusal. The call's exact one-time rules prefix belongs on SECOND;
+  its local provider must advertise the accepted Haiku model too. Neither fixture
+  adjustment changes the native exact-input or pending-before-delivery guards.
