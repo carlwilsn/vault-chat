@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { deflateSync } from "node:zlib";
 import { tmp, cleanup, makeVault, makeKeyStore, startServer, type Running } from "./helpers";
 import { makePdf, textPage } from "./pdfgen";
-import { show, ackShow, feedOpened, feedLive, resetPresence, currentDevice, mdParts, type ShowDeps } from "../show";
+import { show, ackShow, feedOpened, feedLive, resetPresence, mdParts, type ShowDeps } from "../show";
 import { sendEntry, readEntry } from "../inbox";
 import { appendActivity } from "../activity";
 
@@ -276,18 +276,16 @@ describe("Show on the board: an inbox entry, through the validated send", () => 
   });
 });
 
-describe('"here": the device he is on, from the "you" layer', () => {
-  it("follows the newest activity's device: the board, then the laptop", async () => {
+describe('"here": the authoritative request surface', () => {
+  it("follows request context, not newer activity: the board, then the laptop", async () => {
     appendActivity(vault, { kind: "voice", modality: "voice", text: "Carl: show me problem 3", device: "board" });
-    expect(currentDevice(vault)?.device).toBe("board");
-    const r = await show(deps(), { path: "hw/hw4.md", heading: "Problem 3" });
+    const r = await show(deps({ device: "board" }), { path: "hw/hw4.md", heading: "Problem 3" });
     expect(r).toMatchObject({ ok: true, where: "board" });
     await new Promise((res) => setTimeout(res, 5));
     appendActivity(vault, { kind: "focus", modality: "editor", text: "opened hw4.md", path: "hw/hw4.md" });
-    expect(currentDevice(vault)?.device).toBe("laptop");
     const leave = feedOpened(vault, "laptop");
     const stop = client("laptop", () => ({ ok: true, landed: "opened hw4.md" }));
-    const l = await show(deps(), { path: "hw/hw4.md" });
+    const l = await show(deps({ device: "laptop" }), { path: "hw/hw4.md" });
     stop();
     leave();
     expect(l).toMatchObject({ ok: true, where: "laptop", text: "Shown on the laptop (he is on his laptop): opened hw4.md." });
@@ -300,7 +298,7 @@ describe('"here": the device he is on, from the "you" layer', () => {
       expect(ev.target).toBeUndefined();
       return { ok: true, landed: "showing hw4.md on the phone" };
     });
-    const r = await show(deps(), { path: "hw/hw4.md", heading: "Problem 2" });
+    const r = await show(deps({ device: "phone" }), { path: "hw/hw4.md", heading: "Problem 2" });
     stop();
     leave();
     expect(r.ok).toBe(true);

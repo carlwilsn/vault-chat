@@ -50,7 +50,10 @@ export class ThreadUnknownError extends Error {
 
 /** A host tool's answer: its text, and images it attaches (pi image blocks: base64 + mime). */
 export type ToolAnswer = { ok: boolean; text: string; images?: { data: string; mimeType: string }[]; resources?: { uri: string; mimeType: string; blob: string }[] };
-export type NotifyScope = Readonly<{ workId: string; byCarl: boolean }>;
+export type Interaction = Readonly<{ request: string; device: "laptop" | "phone" | "board" | null }>;
+// The existing host-owned worker scope captures its originating interaction too.
+// No second queue/presence registry: the source is the delivered native feed entry.
+export type NotifyScope = Readonly<{ workId: string; byCarl: boolean; interaction?: Interaction }>;
 export type ToolCallHandler = (threadId: string, name: string, args: any, signal?: AbortSignal, notifyScope?: NotifyScope | null) => Promise<ToolAnswer>;
 export type UserInputHandler = (threadId: string, question: string, options: string[]) => Promise<string>;
 /** The "you" layer for a session (the extension's before_agent_start asks before each prompt): what Carl

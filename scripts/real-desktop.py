@@ -121,6 +121,7 @@ def main():
     p.add_argument('--check-global-notes', action='store_true', help='Existing cross-vault fixture note identity/source and native edit; copied human notes stay untouched')
     p.add_argument('--check-editor-sync', action='store_true', help='Native immediate paste/send via existing Git transport and genuine Pi read on a different viewer vault')
     p.add_argument('--native-video-only', action='store_true', help='Run native video independently; retain earlier phone evidence separately, never relabel it')
+    p.add_argument('--check-device-sense', action='store_true', help='Actual native Show + isolated phone/board tools; no physical devices or audio')
     p.add_argument('--check-pending-chat', action='store_true', help='Queue via native input on held real Pi turns; exercise existing interrupt-and-send and preserve original history')
     p.add_argument('--inside-nix', action='store_true', help=argparse.SUPPRESS)
     a = p.parse_args()
@@ -177,7 +178,7 @@ def main():
     events = source / '.vault-chat' / 'events'
     if not events.is_dir() or events.is_symlink():
         p.error('Selected copy has no regular .vault-chat/events directory')
-    real_pi = a.check_status_dot or a.check_pending_chat
+    real_pi = a.check_status_dot or a.check_pending_chat or a.check_device_sense
     master = work / 'master'
     vault = master / 'vaults/vault-chat' if real_pi else work / 'vault-chat'
     dest = vault / '.vault-chat' / 'events'
@@ -205,6 +206,8 @@ def main():
         (notes_origin / 'same.md').write_text('# Owned original note source\n')
     note = vault / 'desktop-timing-note.md'
     note.write_text('# Private desktop timing note\n\nSelect this text for Ctrl+K.\n')
+    if a.check_device_sense:
+        (vault / 'private-device-25.svg').write_text('<svg xmlns="http://www.w3.org/2000/svg" width="300" height="100"><text x="10" y="50">Owned device visual 25</text></svg>')
     # Explicit tiny home, no inherited credentials, live display, D-Bus, or service env.
     keep = ('PATH', 'LD_LIBRARY_PATH', 'LIBRARY_PATH', 'PKG_CONFIG_PATH', 'PKG_CONFIG_LIBDIR',
             'NIX_LDFLAGS', 'NIX_CFLAGS_COMPILE', 'NIX_CC', 'NIX_BINTOOLS', 'SSL_CERT_FILE',
@@ -317,6 +320,7 @@ def main():
             released.set()  # Let any original interrupted turn finish locally before measuring.
             provider_calls = []
             editor_reads = []
+            device_results = {}
             editor_expected = 'PRIVATE-EDITOR-PASTE-27 fresh bytes\n'
             editor_box_file = master / 'vaults/status-viewer/private-editor.md'
             class LocalProvider(http.server.BaseHTTPRequestHandler):
@@ -338,7 +342,16 @@ def main():
                     fixture_turns = [message_text(m) for m in messages if m.get('role') == 'user' and message_text(m).startswith(('[Carl, on ', 'READ_EDITOR_FIXTURE_27', 'LOCAL-UNPAID-STATUS-DOT'))]
                     is_editor = bool(fixture_turns and 'READ_EDITOR_FIXTURE_27' in fixture_turns[-1])
                     tool_result = messages[-1] if messages and messages[-1].get('role') == 'tool' else None
-                    if a.check_editor_sync and is_editor and not tool_result:
+                    device_marker = next((m for m in ['LAPTOP', 'PHONE', 'BOARD', 'EXPLICIT', 'REFUSED'] if fixture_turns and 'DEVICE-SENSE-25-' + m in fixture_turns[-1]), None) if a.check_device_sense else None
+                    if device_marker and not tool_result:
+                        tool = 'BoardSend' if device_marker == 'REFUSED' else 'Show'
+                        args = {'title': 'Not requested', 'parts': [{'kind': 'math', 'markdown': '$x^2$'}]} if tool == 'BoardSend' else {'path': str(vault / 'private-device-25.svg')}
+                        if device_marker == 'EXPLICIT': args.update(where='laptop', pane='right')
+                        deltas = [({'role': 'assistant', 'tool_calls': [{'index': 0, 'id': 'device-25-' + device_marker.lower(), 'type': 'function', 'function': {'name': next((t['function']['name'] for t in body.get('tools', []) if t['function']['name'] in (tool, 'mcp__vault_chat__' + tool)), tool), 'arguments': json.dumps(args)}}]}, None), ({}, 'tool_calls')]
+                    elif device_marker and tool_result:
+                        device_results[device_marker] = json.dumps(tool_result.get('content'))
+                        deltas = [({'role': 'assistant', 'content': 'Owned device fixture complete.'}, None), ({}, 'stop')]
+                    elif a.check_editor_sync and is_editor and not tool_result:
                         editor_reads.append({'beforeNativeReadSha256': hashlib.sha256(editor_box_file.read_bytes()).hexdigest(), 'freshBeforeNativeRead': editor_box_file.read_text() == editor_expected})
                         deltas = [({'role': 'assistant', 'tool_calls': [{'index': 0, 'id': 'editor-read-27', 'type': 'function', 'function': {'name': next((t['function']['name'] for t in body.get('tools', []) if t['function']['name'] in ('read', 'mcp__vault_chat__read')), 'read'), 'arguments': json.dumps({'path': str(editor_box_file)})}}]}, None), ({}, 'tool_calls')]
                     else:
@@ -513,7 +526,7 @@ def main():
                     for n in json.loads(data).get('notes', []))
                 editor_transport = a.check_editor_sync and (editor_intent_enabled and path == '/api/v2/intent' or path.startswith('/git/status-viewer.git/') or path == '/api/v1/sync/flush')
                 # All other non-read activity stays refused, including voice.
-                if (path.startswith('/git/') or self.command != 'GET' and path != '/api/v1/laptop-perf') and not (speech_send or editor_transport or queue_write or note_transport):
+                if (path.startswith('/git/') or self.command != 'GET' and path != '/api/v1/laptop-perf') and not (speech_send or editor_transport or queue_write or note_transport or (a.check_device_sense and (path.startswith('/api/v1/show/show-') and path.endswith('/ack') or path == '/api/v2/intent' and str(json.loads(data).get('text', '')).startswith('DEVICE-SENSE-25-')))):
                     if a.check_plans and path == '/api/v2/intent':
                         # Observe the native pending-input UI before rejecting;
                         # never forward this turn to a provider or invent a reply.
@@ -1377,6 +1390,55 @@ def main():
                     if final_items[:len(items)] != items:
                         raise RuntimeError('Original 3819-item history prefix changed')
                     pending_chat = {'rows': queue_rows, 'providerCalls': len(provider_calls), 'route': '/api/v2/intent type=now (existing Pi abort semantics)', 'originalHistoryPrefixUnchanged': True}
+                device_sense = None
+                if a.check_device_sense and label == 'after':
+                    # One genuine Show opened by the production native frontend.
+                    # Remaining transport clients are ours; Carl's screens never participate.
+                    click('[data-perf-target="composer"]')
+                    run('xdotool', 'type', '--clearmodifiers', '--delay', '30', 'DEVICE-SENSE-25-LAPTOP', env=childenv, stdout=subprocess.DEVNULL)
+                    key('Return')
+                    wait_for(lambda: 'LAPTOP' in device_results and not request(base + checkpoint_path)['picture']['meta'].get('running'), 'native Pi Show and real Rust/frontend ack')
+                    if 'Shown on the laptop' not in device_results['LAPTOP']:
+                        raise RuntimeError('Native Show did not open: ' + device_results['LAPTOP'])
+                    # An owned phone feed, not a mocked tool or a physical phone.
+                    phone_events = []; phone_errors = []; stopped_phone = threading.Event()
+                    cursor = request(base + '/poll?after=latest&client=phone')['next']
+                    def phone_client():
+                        nonlocal cursor
+                        try:
+                            while not stopped_phone.is_set():
+                                feed = request(base + '/poll?after=' + str(cursor) + '&client=phone', timeout=30)
+                                cursor = feed['next']
+                                for event in feed.get('events', []):
+                                    ev = event.get('signal', {})
+                                    if ev.get('type') == 'show' and ev.get('to') == 'phone':
+                                        phone_events.append({'to': ev['to'], 'path': ev.get('path')})
+                                        request(base + '/api/v1/show/' + ev['id'] + '/ack', {'ok': True, 'landed': 'owned isolated phone file'}, 'POST')
+                        except Exception as e:
+                            phone_errors.append(type(e).__name__)
+                    phone_thread = threading.Thread(target=phone_client, daemon=True); phone_thread.start()
+                    inbox_before = request(base + '/api/v1/inbox')['entries']
+                    try:
+                        for marker, surface in [('PHONE', 'phone'), ('BOARD', 'board'), ('EXPLICIT', 'phone'), ('REFUSED', 'laptop')]:
+                            request(base + '/api/v2/intent', {'type': 'send', 'convId': a.conversation, 'client': surface, 'clientId': 'owned-device-25-' + marker.lower(), 'text': 'DEVICE-SENSE-25-' + marker})
+                            wait_for(lambda: marker in device_results and not request(base + checkpoint_path)['picture']['meta'].get('running'), 'genuine native tool result ' + marker)
+                        if phone_errors or len(phone_events) != 1 or 'Shown on the phone' not in device_results['PHONE']:
+                            raise RuntimeError('Isolated phone delivery failed')
+                        if 'board inbox' not in device_results['BOARD'] or 'Not sent to the board' not in device_results['REFUSED']:
+                            raise RuntimeError('Board inbox routing/refusal failed')
+                        if 'Shown on the laptop' not in device_results['EXPLICIT'] or 'right' not in device_results['EXPLICIT']:
+                            raise RuntimeError('Explicit targeted native laptop split did not confirm')
+                        inbox_after = request(base + '/api/v1/inbox')['entries']
+                        if len(inbox_after) != len(inbox_before) + 1:
+                            raise RuntimeError('Unwanted iPad work or missing board entry')
+                        final = request(base + checkpoint_path)['picture']['items']
+                        if final[:3819] != items or len(final) != 3844 or collections.Counter(x['kind'] for x in final[3819:]) != {'user':10, 'assistant':9, 'tool':6}:
+                            raise RuntimeError('Wrong original prefix or exact private appends: ' + repr((len(final), collections.Counter(x['kind'] for x in final[3819:]))))
+                        if a.check_global_notes and (vault / '.vault-chat/notes.jsonl').read_bytes() != original_notes:
+                            raise RuntimeError('Copied human notes changed')
+                        device_sense = {'nativeLaptopAck': True, 'explicitRightPaneAck': True, 'isolatedPhoneEvents': phone_events, 'boardInboxAdded': 1, 'unwantedBoardRefused': True, 'original1329Messages3819ItemsUnchanged': True, 'exactPrivateAppends': {'user':10, 'assistant':9, 'tool':6}, 'finalItems':3844, 'humanNotesByteIdentical': True}
+                    finally:
+                        stopped_phone.set()
                 statuses = set()
                 for b, status in batches:
                     if b.get('runtime') != 'webkitgtk' or b.get('surface') != 'tauri-production':
@@ -1397,7 +1459,7 @@ def main():
                 def stats(values):
                     v = sorted(values)
                     return {'n': len(v), 'p50Ms': round(v[len(v)//2], 3), 'p95Ms': round(v[min(len(v)-1, int(len(v)*.95))], 3), 'maxMs': round(max(v), 3)}
-                return {'works': not interaction_failures, 'videoCheck': video_check, 'imageCheck': image_check, 'statusDot': status_dot, 'editorSync': editor_sync, 'pendingChat': pending_chat, 'globalNotes': global_notes, 'interactionFailures': interaction_failures, 'planLifecycle': plan_lifecycle, 'emptyChat': empty_chat, 'native': metadata, 'telemetryHttpStatuses': sorted(statuses),
+                return {'works': not interaction_failures, 'videoCheck': video_check, 'imageCheck': image_check, 'statusDot': status_dot, 'editorSync': editor_sync, 'pendingChat': pending_chat, 'deviceSense': device_sense, 'globalNotes': global_notes, 'interactionFailures': interaction_failures, 'planLifecycle': plan_lifecycle, 'emptyChat': empty_chat, 'native': metadata, 'telemetryHttpStatuses': sorted(statuses),
                         'telemetryNote': 'Observed real Rust IPC batches; loopback is not authenticated Tailscale laptop telemetry',
                         'launchProcessToDomUpperBoundMs': round(launch_upper, 3),
                         'timings': [{'metric': m, 'method': method, **stats(values)} for (m, method), values in sorted(samples.items())]}

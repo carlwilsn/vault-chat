@@ -20,7 +20,7 @@
 //           A `label` alone centres that item on the board (the board app acks).
 //   phone   the same signal to the phone app (its sheet shows markdown and
 //           images, and opens PDFs and pages in the phone's own viewer); acked.
-//   here    the device of Carl's latest activity (the "you" layer's Device).
+//   here    the device of the originating human interaction.
 //
 // Targets are src/viewTarget.ts's, per file type (the laptop's viewers land
 // them; a target that does not fit the type is refused here, before anything
@@ -33,7 +33,6 @@ import { fileKind, type FileKind } from "../src/fileKind";
 import { hasTarget, spotLabel, targetError, targetOf, type ViewTarget } from "../src/viewTarget";
 import { matchSection, notFound, type Section } from "../src/scrollTarget";
 import { parsePages, MAX_PARTS } from "../src/inboxFormat";
-import { readActivity } from "./activity";
 import { loopbackUrl } from "./devProxy";
 import type { SendResult } from "./inbox";
 
@@ -105,22 +104,12 @@ function waitAck(id: string, ms: number): Promise<Ack | null> {
   });
 }
 
-// ---------------------------------------------------------------- where Carl is
-
-/** The device of his newest activity that says (the "you" layer's Device line), or null. */
-export function currentDevice(vault: string, now = Date.now()): { device: Device; ts: number } | null {
-  const all = readActivity(vault, now, 7 * 24 * 3_600_000);
-  for (let i = all.length - 1; i >= 0; i--) {
-    const d = all[i]!.device;
-    if (d && DEVICES.includes(d as Device)) return { device: d as Device, ts: all[i]!.ts };
-  }
-  return null;
-}
-
 // ---------------------------------------------------------------- the tool
 
 export type ShowDeps = {
   vault: string;
+  /** Actual talking surface from this request, never inferred from network presence. */
+  device?: Device | null;
   /** A vault-level signal on the feed (/poll). */
   emit: (ev: Record<string, unknown>) => void;
   /** The validated inbox send (server/inbox.ts sendEntry, with this conversation and the inbox events). */
@@ -202,9 +191,8 @@ async function run(d: ShowDeps, a: Record<string, unknown>): Promise<ShowResult>
   let where: Device;
   let because = "";
   if (asked === "here" || asked === "") {
-    const cur = currentDevice(d.vault);
-    if (!cur) return fail('Error: I can\'t tell which device Carl is on (nothing recent says). Pass where: "laptop", "board" or "phone".');
-    where = cur.device;
+    if (!d.device) return fail('Error: I can\'t tell which device Carl is on (nothing recent says). Pass where: "laptop", "board" or "phone".');
+    where = d.device;
     because = ` (he is on his ${DEVICE_NAME[where]})`;
   } else if (DEVICES.includes(asked as Device)) where = asked as Device;
   else if (asked === "ipad") where = "board";

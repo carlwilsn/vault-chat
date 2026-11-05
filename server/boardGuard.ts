@@ -6,51 +6,14 @@
 // image in the reply) — never a silent block, and never a send to a device
 // across the room. `asked: true` is the agent's way to say Carl did ask (an
 // earlier message, or words this check does not know).
-import { currentDevice, type Device } from "./show";
-import { voiceLiveIn } from "./voiceBrain";
+import type { Device } from "./show";
 
 const DEVICE_NAME: Record<Device, string> = { laptop: "laptop", board: "iPad", phone: "phone" };
 
-/** Words in his request that name the board / iPad (or say he is away from the laptop). */
-const NAMES_BOARD = /\b(?:i\s?pad|board|whiteboard|inbox|tablet)\b|\b(?:not|away from)\s+(?:near\s+)?(?:at\s+)?my\s+(?:laptop|computer)\b/i;
-
-/** Does his request ask for the board? Only his own words: the context lines the surfaces prepend (a PDF page's
- *  text, the "[Carl, on …]" line, attachments) are not his request. */
+/** Only the actual human request is passed here, never page/context text. */
+const NAMES_BOARD = /\b(?:i\s?pad|board|whiteboard|inbox|tablet)\b/i;
 export function asksForBoard(request: string | null | undefined): boolean {
-  return NAMES_BOARD.test(requestWords(request));
-}
-
-/** His words in a user message: the surface's context lines out. */
-export function requestWords(request: string | null | undefined): string {
-  const t = String(request ?? "");
-  // The laptop's context block: everything up to the page text it quotes ends where his words start, on the
-  // last paragraph after the context markers. Keep only lines that are not the surface's.
-  const lines = t.split("\n");
-  const out: string[] = [];
-  let inCtx = false;
-  for (const l of lines) {
-    if (/^\[Carl, on [^\]]*\]$/.test(l.trim())) continue;
-    if (/^(?:>>> USER IS|FILE ATTACHMENTS|Page \d+ text content:|Any ambiguous reference|@.* — absolute path:|The user attached)/.test(l.trim())) {
-      inCtx = true;
-      continue;
-    }
-    if (inCtx && l.trim() === "") {
-      inCtx = false;
-      continue;
-    }
-    if (inCtx) continue;
-    out.push(l);
-  }
-  return out.join("\n");
-}
-
-/** A voice call live on the board right now. */
-function boardCallLive(vault: string): boolean {
-  try {
-    return voiceLiveIn(vault, Date.now(), "board");
-  } catch {
-    return false;
-  }
+  return NAMES_BOARD.test(String(request ?? ""));
 }
 
 export type BoardGuardInput = {
@@ -61,22 +24,19 @@ export type BoardGuardInput = {
   asked?: boolean;
   /** Which tool (for the message). */
   tool: "BoardSend" | "BoardMake" | "Show";
-  now?: number;
-  /** Tests: the board call check. */
-  callLive?: (vault: string) => boolean;
+  /** Authoritative originating interaction, not a viewer/poll or another live call. */
+  device?: Device | null;
 };
 
 /**
- * Null: the board is fine (he asked, he is at the board, or nothing says where he is).
+ * Null: the board is fine (he asked or this interaction is at the board).
  * A string: why not, and what to do instead — the tool's result, nothing sent.
  */
 export function boardGuard(o: BoardGuardInput): string | null {
   if (o.asked === true) return null;
   if (asksForBoard(o.request)) return null;
-  if ((o.callLive ?? boardCallLive)(o.vault)) return null;
-  const cur = currentDevice(o.vault, o.now);
-  if (!cur || cur.device === "board") return null;
-  const dev = DEVICE_NAME[cur.device];
+  if (o.device === "board") return null;
+  const dev = o.device ? DEVICE_NAME[o.device] : "unknown device";
   const what = o.tool === "BoardMake" ? "Nothing was made or sent" : "Nothing was sent";
   return (
     `Not sent to the board: Carl is on his ${dev}, not at the iPad, and his request didn't ask for the board. ${what}. ` +

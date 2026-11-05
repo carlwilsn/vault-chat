@@ -107,7 +107,7 @@ beforeAll(async () => {
     // The laptop app: it follows the feed and acks a Show as src/showOnLaptop.ts does.
     broadcast: (ev: any) => {
       broadcasts.push(ev);
-      if (ev?.type === "show" && ev.to === "laptop") setTimeout(() => show.ackShow(String(ev.id), { ok: true, landed: `opened ${ev.path}` }), 5);
+      if (ev?.type === "show" && ["laptop", "phone"].includes(ev.to)) setTimeout(() => show.ackShow(String(ev.id), { ok: true, landed: `opened ${ev.path}` }), 5);
     },
     log: () => {},
   });
@@ -223,35 +223,76 @@ describe("visuals go where Carl is talking", () => {
   });
 });
 
-describe("the guard itself (server/boardGuard.ts)", () => {
-  it("his words only: a PDF page's text that says 'board' in the laptop's context is not a request for the board", () => {
-    const sent = [
-      "[Carl, on his laptop]",
-      ">>> USER IS CURRENTLY ON PAGE 1 of 3 of CS 336/Lectures/midterm_review.pdf <<<",
-      'Any ambiguous reference ("this", "that") refers to PAGE 1, not other pages.',
-      "Page 1 text content:",
-      "Write your answer on the board. Bring a tablet.",
-      "",
-      "can you visualize for me?",
-    ].join("\n");
-    expect(guard.requestWords(sent).trim()).toBe("can you visualize for me?");
-    expect(guard.asksForBoard(sent)).toBe(false);
-    for (const yes of ["send it to my iPad", "put it on the board", "Put it in my inbox", "I'm not near my laptop, send it", "send to the whiteboard"]) expect(guard.asksForBoard(yes), yes).toBe(true);
-    for (const no of ["can you visualize for me?", "draw the BFS tree", "show me a diagram", "onboarding"]) expect(guard.asksForBoard(no), no).toBe(false);
+describe("the guard uses only originating interaction", () => {
+  it("does not infer a location from absent metadata or a different live call", () => {
+    expect(guard.boardGuard({ vault, request: "draw it", tool: "BoardSend" })).toContain("Not sent");
+    expect(guard.boardGuard({ vault, request: "draw it", tool: "BoardSend", device: "board" })).toBeNull();
+    expect(guard.boardGuard({ vault, request: "draw it", tool: "BoardSend", device: "phone" })).toContain("Carl is on his phone");
+    expect(guard.asksForBoard("I'm not near my laptop, send it")).toBe(false);
+    expect(guard.asksForBoard("send it to my iPad")).toBe(true);
   });
+});
 
-  it("a call live on the board, or nothing that says where he is: the board is fine", () => {
-    expect(guard.boardGuard({ vault, request: "draw it", tool: "BoardSend", callLive: () => true })).toBeNull();
-    const empty = join(root, "empty-vault");
-    mkdirSync(empty, { recursive: true });
-    expect(guard.boardGuard({ vault: empty, request: "draw it", tool: "BoardSend", callLive: () => false })).toBeNull();
-  });
+for (const surface of ["phone", "board", "laptop"] as const) {
+  for (const source of ["typed", "voice"]) {
+    it(`${source} from ${surface} survives laptop reconnect/polls and unrelated vault activity`, async () => {
+      show.resetPresence();
+      const before = backend.turns.length;
+      const r = await engine.message({ text: "visualize here", client: surface, ...(source === "voice" ? { source: "voice", via: "voice" } : {}) });
+      await until(() => backend.turns.length === before + 1);
+      const turn = backend.turns[before];
+      const { appendActivity } = await import("../activity");
+      appendActivity(vault, { kind: "focus", modality: "editor", text: "laptop reconnected", device: "laptop", path: "other.md" });
+      const laptop = show.feedOpened(vault, "laptop");
+      const phone = show.feedOpened(vault, "phone");
+      const stop = show.feedOpened(join(root, "reader-other-vault"), "laptop");
+      const prev = broadcasts.length;
+      const result = await backend.h.toolCall(turn.threadId, "Show", { path: VISUAL });
+      expect(result.ok).toBe(true);
+      if (surface === "board") {
+        expect(out(result)).toContain("board inbox");
+        expect(broadcasts.slice(prev).some(e => e.type === "show" && e.to === "laptop")).toBe(false);
+      } else {
+        expect(broadcasts.slice(prev).find(e => e.type === "show")).toMatchObject({ to: surface, path: VISUAL });
+        const refused = await backend.h.toolCall(turn.threadId, "BoardMake", { title: "No iPad", request: "Make visual" });
+        expect(refused.ok).toBe(false);
+        expect(out(refused)).toContain(`Carl is on his ${surface}`);
+      }
+      stop(); phone(); laptop();
+      await ends({ convId: r.convId, tid: turn.threadId, turnId: turn.turnId });
+    });
+  }
+}
 
-  it("on the phone, not asked: refused, naming the phone", async () => {
-    const { appendActivity } = await import("../activity");
-    appendActivity(vault, { kind: "chat", modality: "chat", text: "draw it", device: "phone" });
-    const why = guard.boardGuard({ vault, request: "draw it", tool: "BoardMake", callLive: () => false });
-    expect(why).toContain("Carl is on his phone, not at the iPad");
-    expect(why).toContain('(where "here": his phone)');
-  });
+it("a deferred worker retains original permission, but follows the current delivered interaction", async () => {
+  const t = await says("visualize here", "board");
+  const scope = backend.h.notifyScope(t.tid);
+  expect(scope.interaction).toEqual({ device: "board", request: "visualize here" });
+  await ends(t);
+  const later = await says("draw it here", "phone", t.convId);
+  const r = await backend.h.toolCall(later.tid, "BoardSend", { title: "Unwanted", parts: [{ kind: "math", markdown: "$x$" }] }, undefined, scope);
+  expect(r.ok).toBe(false);
+  expect(out(r)).toContain("Carl is on his phone");
+  const explicit = await backend.h.toolCall(later.tid, "BoardSend", { title: "Asked", asked: true, parts: [{ kind: "math", markdown: "$x$" }] }, undefined, scope);
+  expect(explicit.ok).toBe(true);
+  await ends(later);
+});
+
+it("an explicit offline target remains failure, never redirects to another connected device", async () => {
+  show.resetPresence();
+  const phone = show.feedOpened(vault, "phone");
+  const t = await says("show me here", "phone");
+  const n = broadcasts.length;
+  const r = await backend.h.toolCall(t.tid, "Show", { path: VISUAL, where: "laptop", pane: "right" });
+  expect(r.ok).toBe(false);
+  expect(out(r)).toContain("isn't online");
+  expect(broadcasts.slice(n).some(e => e.type === "show")).toBe(false);
+  phone(); await ends(t);
+});
+
+it("non-near-laptop wording never silently opens the laptop or authorizes an iPad send", async () => {
+  const t = await says("I'm not near my laptop, show it", "laptop");
+  expect((await backend.h.toolCall(t.tid, "Show", { path: VISUAL })).ok).toBe(false);
+  expect((await backend.h.toolCall(t.tid, "BoardSend", { title: "Not asked", parts: [{ kind: "math", markdown: "$x$" }] })).ok).toBe(false);
+  await ends(t);
 });

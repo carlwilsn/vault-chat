@@ -15,7 +15,7 @@ import { conversationRoot } from "../context/config";
 import { ownerVault } from "../convlog/log";
 import { appendFileSync, existsSync, readFileSync, statSync, mkdirSync, writeFileSync } from "node:fs";
 import { holdRun, registerRun, unregisterRun } from "../../src/runRegistry";
-import type { BackendEvent, PiBackend, ToolSpec, HostLoadout } from "./pi/backend";
+import type { BackendEvent, PiBackend, ToolSpec, HostLoadout, Interaction } from "./pi/backend";
 import {
   withVault,
   contextToolSpecs,
@@ -161,7 +161,7 @@ type Live = {
 
 };
 
-type TurnOpts = { /** Existing host-owned job/wake identity, never a push arm. */ pushWorkId?: string; images?: string[]; context?: string; hostContext?: string; itemImages?: ItemImage[]; clientId?: string; /** What the chat shows (Carl's answer to a question asked before a restart). */ shown?: string; via?: string; /** Which client sent it (the turn log's `via`: laptop, phone, voice …). */ origin?: string; /** A wake, job or resume of something Carl started. */ byCarl?: boolean; /** An engine input that runs as its own turn once the running one ends, never folded into it (a background report: pi may settle the turn before a follow-up is taken, and a turn parked on a question takes none). */ ownTurn?: boolean };
+type TurnOpts = { /** Existing host-owned job/wake identity, never a push arm. */ pushWorkId?: string; images?: string[]; context?: string; hostContext?: string; itemImages?: ItemImage[]; clientId?: string; /** What the chat shows (Carl's answer to a question asked before a restart). */ shown?: string; device?: "laptop" | "phone" | "board" | null; via?: string; /** Which client sent it (the turn log's `via`: laptop, phone, voice …). */ origin?: string; /** A wake, job or resume of something Carl started. */ byCarl?: boolean; /** An engine input that runs as its own turn once the running one ends, never folded into it (a background report: pi may settle the turn before a follow-up is taken, and a turn parked on a question takes none). */ ownTurn?: boolean };
 
 const RESUME_TEXT =
   "The box restarted (or the engine stopped) while your last turn was running, so any command it was running was killed and may not have finished. Re-check reality (files, processes, logs), then continue from where you were.";
@@ -660,13 +660,17 @@ export class Engine {
       fileWrite: async (threadId) => !this.talkers.has(this.byThread.get(threadId) ?? ""),
       notifyScope: (threadId) => {
         const l = this.live.get(this.byThread.get(threadId) ?? "");
-        return l ? Object.freeze({ workId: l.turnOpts.pushWorkId ?? l.turnId, byCarl: l.byCarl }) : null;
+        return l ? Object.freeze({ workId: l.turnOpts.pushWorkId ?? l.turnId, byCarl: l.byCarl, interaction: this.interaction(l.convId) }) : null;
       },
       toolCall: (threadId, name, args, signal, capturedScope) => {
         const l = this.live.get(this.byThread.get(threadId) ?? "");
-        const notifyScope = capturedScope !== undefined ? capturedScope : l ? { workId: l.turnOpts.pushWorkId ?? l.turnId, byCarl: l.byCarl } : null;
+        const notifyScope = capturedScope !== undefined ? capturedScope : l ? { workId: l.turnOpts.pushWorkId ?? l.turnId, byCarl: l.byCarl, interaction: this.interaction(l.convId) } : null;
         return this.scoped(async () => {
-          const r: any = await this.onToolCall({ threadId, tool: name, arguments: args, signal, notifyScope });
+          // A deferred worker retains what Carl asked, but "here" follows the
+          // latest delivered human interaction in its owning conversation.
+          // It cannot borrow a later request's explicit destination permission.
+          const interaction = capturedScope?.interaction ? { request: capturedScope.interaction.request, device: this.interaction(this.byThread.get(threadId) ?? "").device } : undefined;
+          const r: any = await this.onToolCall({ threadId, tool: name, arguments: args, signal, notifyScope, interaction });
           return toolAnswer(r);
         });
       },
@@ -725,7 +729,7 @@ export class Engine {
           const toBoard = name === "BoardSend" || (name === "Show" && /^(board|ipad)$/i.test(String(a.where)));
           if (toBoard && context.device !== "board" && a.asked !== true) return { ok: false, text: "Board sending requires an explicit request (asked: true) from this external client, not ambient screen presence." };
           if (toBoard && context.device === "board") a.asked = true; // explicit bound board, not global presence
-          return toolAnswer(await this.onToolCall({ side: { convId: context.conversation }, tool: name, arguments: a, signal: contextOfCall.signal }));
+          return toolAnswer(await this.onToolCall({ side: { convId: context.conversation }, tool: name, arguments: a, signal: contextOfCall.signal, interaction: { device: context.device, request: "" } }));
         }),
       };
     });
@@ -1002,7 +1006,7 @@ export class Engine {
     const now = (await readConv(this.d.vault, id).catch(() => null)) ?? conv;
     const proj = now.project;
     const title = String(now.title ?? "").trim() || shown;
-    const device = body.source === "voice" ? null : body.client ?? null;
+    const device = body.client ?? null;
     appendActivity(this.d.vault, chatPointerEntry({ convId: id, title, user: shown, project: typeof proj === "string" ? proj : null, device }));
     for (const im of itemImages.filter((x) => x.path.startsWith(".vault-chat/captures/")))
       appendActivity(this.d.vault, { kind: "capture", modality: "chat", text: `pasted into "${title}"`, path: im.path, convId: id, ...(device ? { device } : {}) });
@@ -1038,7 +1042,7 @@ export class Engine {
       const elsewhere = !!origin && !!l.turnOpts.origin && origin !== l.turnOpts.origin;
       const kind = body.queue || elsewhere ? "queue" : "steer";
       this.setPending(id, { id: clientId, kind, text: shown, at: Date.now() });
-      l.feed.expect({ kind, text: sent, clientId, shown, hostContext, via: body.via ?? kind, images: itemImages, ...(origin ? { device: origin } : {}) });
+      l.feed.expect({ kind, text: sent, clientId, shown, hostContext, via: body.via ?? kind, images: itemImages, ...(device ? { device } : {}) });
       l.rec.q(kind, clientId);
       // A turn waiting on a `subagent` call would take him up only when its children end (minutes): they move to
       // the background, the call answers at once, and his message is taken up now; each report comes as its own turn.
@@ -1063,7 +1067,7 @@ export class Engine {
         return { ok: false, convId: id, error: `the running turn did not take it: ${(e as Error).message}` };
       }
     }
-    void this.run(id, shown, "user", { images: paths, context, hostContext, itemImages, clientId, origin, ...(body.via ? { via: body.via } : {}) }).catch((e) => this.log(`turn failed: ${e}`));
+    void this.run(id, shown, "user", { images: paths, context, hostContext, itemImages, clientId, origin, device: validDevice(device), ...(body.via ? { via: body.via } : {}) }).catch((e) => this.log(`turn failed: ${e}`));
     return { ok: true, convId: id };
   }
 
@@ -1122,7 +1126,7 @@ export class Engine {
         clientId: e.clientId,
         itemImages: e.images,
         images: (e.images ?? []).map((im) => join(vault, im.path)),
-        ...(e.device ? { origin: e.device } : {}),
+        ...(e.device ? { origin: e.via === "voice" ? "voice" : e.device, device: validDevice(e.device) } : {}),
         ...(e.via && e.via !== "steer" && e.via !== "queue" ? { via: e.via } : {}),
       }).catch((err) => this.log(`send now on ${convId}: ${err}`));
     void again(first);
@@ -1665,7 +1669,7 @@ export class Engine {
       // What Carl did elsewhere is not in the prompt: pi's extension adds it (the "you" layer, a vc-you custom message).
       // Host instructions/memory are pi custom context, never a forged user message.
       const texts = [kind === "wake" ? input : body].filter(Boolean);
-      live.feed.expect({ kind: "prompt", text: texts.join("\n\n"), clientId: kind === "user" ? clientId : undefined, ...shownInput, ...(opts.itemImages?.length ? { images: opts.itemImages } : {}), ...(kind === "user" && opts.origin ? { device: opts.origin } : {}) });
+      live.feed.expect({ kind: "prompt", text: texts.join("\n\n"), clientId: kind === "user" ? clientId : undefined, ...shownInput, ...(opts.itemImages?.length ? { images: opts.itemImages } : {}), ...(kind === "user" && (opts.device ?? validDevice(opts.origin)) ? { device: opts.device ?? opts.origin } : {}) });
       // A live call learns where this turn came from (a call speaks only its own surface's exchange).
       if (this.taps.has(convId)) this.tapEmit(convId, { type: "vc_turn_start", kind, origin: opts.origin ?? null });
       try {
@@ -2198,6 +2202,16 @@ export class Engine {
   }
 
 
+  /** Read the last input pi actually delivered in THIS conversation, not ambient activity.
+   * Worker scope snapshots this at creation; a queued input cannot take over early. */
+  private interaction(convId: string): Interaction {
+    const live = this.live.get(convId);
+    live?.feed.sync();
+    const item = this.picture(convId)?.items.slice().reverse().find(x => x.kind === "user");
+    if (item) return Object.freeze({ request: item.text ?? "", device: validDevice(item.device) });
+    return Object.freeze({ request: live?.turnOpts.shown ?? live?.input ?? "", device: live?.turnOpts.device ?? validDevice(live?.turnOpts.origin) });
+  }
+
   // ---------------------------------------------------------------- tools
 
   private async onToolCall(p: any): Promise<unknown> {
@@ -2212,7 +2226,8 @@ export class Engine {
     const found = convId ? await readConv(vault, convId) : null;
     if (!side && (!convId || !found)) return { success: false, contentItems: [{ type: "inputText", text: "No conversation for this thread." }] };
     const conv = found ?? ({ id: "", title: "", messages: [] } as unknown as NonNullable<typeof found>);
-    const a = p?.arguments ?? {};
+    const a = { ...(p?.arguments ?? {}) };
+    const interaction: Interaction = p.interaction ?? p.notifyScope?.interaction ?? this.interaction(convId);
     try {
       p.signal?.throwIfAborted();
       // ListProjects only reads. A project is made only by Carl: in the app, or by asking for it (OpenProject below).
@@ -2270,7 +2285,7 @@ export class Engine {
         }
         case "BoardSend": {
           // A maker's sends were decided when BoardMake was (server/boardGuard.ts).
-          const no = a.make ? null : boardGuard({ vault, request: lastRequest(conv, this.live.get(convId)?.input), asked: a.asked === true, tool: "BoardSend" });
+          const no = a.make ? null : boardGuard({ vault, request: interaction.request, device: interaction.device, asked: a.asked === true, tool: "BoardSend" });
           if (no) return { success: false, contentItems: [{ type: "inputText", text: no }] };
           delete a.asked;
           const r = await sendEntry(vault, a, { conversation: convId, emit: (ev) => this.inboxEvent(ev) });
@@ -2317,7 +2332,7 @@ export class Engine {
           const request = String(a.request ?? "").trim();
           const title = String(a.title ?? "").trim();
           if (!request || !title) return text("BoardMake needs a request and a title.");
-          const no = boardGuard({ vault, request: lastRequest(conv, this.live.get(convId)?.input), asked: a.asked === true, tool: "BoardMake" });
+          const no = boardGuard({ vault, request: interaction.request, device: interaction.device, asked: a.asked === true, tool: "BoardMake" });
           if (no) return { success: false, contentItems: [{ type: "inputText", text: no }] };
           const entry = startMake(vault, { title, request }, { conversation: convId, emit: (ev) => this.inboxEvent(ev) });
           const t0 = Date.now();
@@ -2346,11 +2361,15 @@ export class Engine {
         case "Show": {
           // On the device he names (or is on): a signal the laptop / phone acks, or the inbox's validated send.
           // The board named by the agent, not by Carl, while he is elsewhere: refused with why (server/boardGuard.ts).
-          const toBoard = typeof a.where === "string" && /^(board|ipad)$/i.test(a.where.trim());
-          const no = toBoard ? boardGuard({ vault, request: lastRequest(conv, this.live.get(convId)?.input), asked: a.asked === true, tool: "Show" }) : null;
+          const destination = !a.where || a.where === "here" ? interaction.device : String(a.where).trim();
+          const toBoard = /^(board|ipad)$/i.test(destination ?? "");
+          const no = toBoard ? boardGuard({ vault, request: interaction.request, device: interaction.device, asked: a.asked === true, tool: "Show" }) : null;
           if (no) return { success: false, contentItems: [{ type: "inputText", text: no }] };
+          if ((!a.where || a.where === "here") && interaction.device === "laptop" && /\b(?:not|away from)\s+(?:near\s+)?(?:at\s+)?my\s+(?:laptop|computer)\b/i.test(interaction.request)) {
+            return { success: false, contentItems: [{ type: "inputText", text: "Nothing opened: Carl said he is away from his laptop. Keep the visual in the reply or use the destination he explicitly requested." }] };
+          }
           delete a.asked;
-          const r = await show({ vault, emit: (ev) => this.d.broadcast?.(ev), sendBoard: (b) => sendEntry(vault, b, { conversation: convId, emit: (ev) => this.inboxEvent(ev) }), dev: (port) => this.devUrl(port) }, a);
+          const r = await show({ vault, device: interaction.device, emit: (ev) => this.d.broadcast?.(ev), sendBoard: (b) => sendEntry(vault, b, { conversation: convId, emit: (ev) => this.inboxEvent(ev) }), dev: (port) => this.devUrl(port) }, a);
           return { success: r.ok, contentItems: [{ type: "inputText", text: r.text }] };
         }
         case "RestoreProject": {
@@ -2633,11 +2652,8 @@ function errText(e: any): string {
 }
 
 
-/** Carl's latest message in the conversation (his words, as the chat shows them), else what started the turn. */
-function lastRequest(conv: { messages?: { role: string; content?: unknown }[] }, input?: string | null): string {
-  const ms = conv.messages ?? [];
-  for (let i = ms.length - 1; i >= 0; i--) if (ms[i]!.role === "user" && !(ms[i] as { system?: boolean }).system) return String(ms[i]!.content ?? "");
-  return String(input ?? "");
+function validDevice(device: unknown): Interaction["device"] {
+  return device === "laptop" || device === "phone" || device === "board" ? device : null;
 }
 
 /** BoardInbox's answer: entries, their status, and whether added items are still on their boards. */
