@@ -6,9 +6,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ConvLog, lastSeq } from "../../server/convlog/log.ts";
 import { emptyPicture, fold, foldInto, reduce, rowFromPicture } from "../../src/convlog/reduce.ts";
-import { frozenConvLog, PREPARED_READER } from "./frozenConvLog.ts";
+import { frozenConvLog, PREPARED_READER as ENGINE_PREPARED_READER } from "./frozenConvLog.ts";
 import type { LogRecord, StoredRecord, StoredSubagentsRecord, SubagentRec } from "../../src/convlog/protocol.ts";
 
+// Accepted step-1 reader, NOT the built reference or a moving main/tip.
+const PREPARED_READER = "528732986301508b7101b820fcf1f0fa10eaae5a";
 const C = "workers";
 function fixture(run: (dir: string, log: ConvLog, file: string) => void) {
   const dir = mkdtempSync(join(tmpdir(), "vc-worker-disk-"));
@@ -29,6 +31,7 @@ function page(log: ConvLog, cursor = 0): LogRecord[] {
 }
 
 test("compact writes survive frozen prepared SERVER; mixed legacy and delta replay exactly", async () => {
+  assert.equal(ENGINE_PREPARED_READER, PREPARED_READER, "engine and writer fixtures pin the same accepted reader");
   const OldConvLog = await frozenConvLog(PREPARED_READER);
   fixture((dir, log, file) => {
     const wire: LogRecord[] = [];
@@ -53,7 +56,7 @@ test("compact writes survive frozen prepared SERVER; mixed legacy and delta repl
     const legacy = wire.map((r) => JSON.stringify(r) + "\n").join("");
     const stored = disk(file);
     assert.ok(stored.some((r) => r.type === "subagents"), "writer stores explicit changed rows");
-    assert.ok(Buffer.byteLength(raw) < Buffer.byteLength(legacy) / 10, "bounded changed-row storage");
+    assert.ok(Buffer.byteLength(raw) < Buffer.byteLength(legacy) / 10, "changed-row savings, not a total log size cap");
     const old = new OldConvLog(dir);
     assert.deepEqual(old.picture(C), log.picture(C), `frozen old SERVER ${PREPARED_READER} picture`);
     assert.deepEqual(old.rows(), log.rows());
@@ -78,11 +81,15 @@ test("compact writes survive frozen prepared SERVER; mixed legacy and delta repl
         updates: i === 1 ? r.patch.subagents : [r.patch.subagents[79]!],
         order: r.patch.subagents.map((row: SubagentRec) => row.threadId) };
     });
+    // This isolated fixture replaces bytes: its old checkpoint offset is no longer valid.
+    rmSync(checkpointFile);
     writeFileSync(file, compact.map((r) => JSON.stringify(r) + "\n").join(""));
     assert.deepEqual(fold(compact, C), fold(wire, C));
     log = new ConvLog(dir);
     const expected = fold(wire, C);
     assert.deepEqual(log.picture(C), expected);
+    assert.deepEqual(new OldConvLog(dir).picture(C), expected, "accepted reader also restores legacy full-order deltas");
+    log.checkpointNow(C);
     assert.equal(JSON.stringify(log.eventsOf(C)), JSON.stringify(wire));
     assert.equal(JSON.stringify(page(log)), JSON.stringify(wire));
     const restarted = new ConvLog(dir);
@@ -260,4 +267,90 @@ test("writer requires prepared reader: legacy server without checkpoint cannot r
     assert.equal(disk(file)[1]!.type, "subagents");
     assert.notDeepEqual(new Old(dir).picture(C), log.picture(C), "must not install writer while old reader/fallback remains");
   });
+});
+
+test("step-2 writer: 300 progress records omit only redundant order; accepted reader restores exact native rows after restart", async (t) => {
+  const Prepared = await frozenConvLog(PREPARED_READER);
+  fixture((dir, log, file) => fixture((baselineRoot) => {
+    const baselineDir = join(baselineRoot, "prepared");
+    const baselineFile = join(baselineDir, ".vault-chat/events", `${C}.jsonl`);
+    const baseline = new Prepared(baselineDir);
+    const wire: LogRecord[] = [];
+    log.onRecord(r => wire.push(r));
+    let workers: SubagentRec[] = Array.from({ length: 600 }, (_, i) => ({
+      threadId: `native-worker-${String(i).padStart(3, "0")}-${"i".repeat(24)}`,
+      state: "completed", task: `original task ${i}: ` + "t".repeat(600),
+      summary: `original report ${i}`, sessionFile: `/synthetic/pi/${i}.jsonl`,
+      toolCallId: `delegate-${i}`, source: { owner: `owner-${i}`, untouched: true },
+    }));
+    const emit = (patch: Record<string, unknown>, at: number) => {
+      const event = log.emit(C, { type: "meta", patch }, at);
+      const control = baseline.emit(C, { type: "meta", patch }, at);
+      assert.deepEqual(event, control, "only disk framing changes; public chronology stays native");
+    };
+    emit({ title: "Native workers", threadId: "native-session", source: "manual", subagents: workers }, 1);
+    const original = JSON.stringify(log.picture(C));
+    const initialBytes = Buffer.byteLength(readFileSync(file));
+    for (let i = 0; i < 300; i++) {
+      workers = workers.map((row, j) => j === 599 ? { ...row, state: i === 299 ? "completed" : "running", said: `progress-${i}` } : row);
+      emit({ subagents: workers, costUsd: i / 1000 }, 2 + i);
+      if (i === 149) log.checkpointNow(C);
+    }
+    const stored = disk(file);
+    const fullOrder = disk(baselineFile);
+    let saved = 0;
+    for (let i = 1; i <= 300; i++) {
+      assert.equal(stored[i].type, "subagents");
+      assert.equal(Object.hasOwn(stored[i], "order"), false);
+      assert.deepEqual(stored[i].updates, [{ ...workers[599], state: i === 300 ? "completed" : "running", said: `progress-${i - 1}` }]);
+      const { order, ...rest } = fullOrder[i];
+      assert.deepEqual(rest, stored[i], "exact prepared-writer record minus redundant order");
+      assert.deepEqual(order, workers.map(row => row.threadId));
+      const bytes = Buffer.byteLength(JSON.stringify(stored[i]) + "\n");
+      assert.ok(bytes < 1500, "one changed row, independent of the 600 unchanged IDs");
+      saved += Buffer.byteLength(JSON.stringify(fullOrder[i]) + "\n") - bytes;
+    }
+    const progressBytes = Buffer.byteLength(readFileSync(file)) - initialBytes;
+    assert.equal(Buffer.byteLength(readFileSync(baselineFile)) - Buffer.byteLength(readFileSync(file)), saved);
+    assert.ok(progressBytes > 300 * 600, "real changes still grow the log: no total cap claimed");
+    assert.ok(saved > 300 * 20_000);
+    t.diagnostic(JSON.stringify({ records: 300, workers: 600, initialBytes, progressBytes, fullOrderProgressBytes: progressBytes + saved, redundantOrderBytesSaved: saved }));
+    assert.notEqual(JSON.stringify(log.picture(C)), original);
+    assert.deepEqual(new Prepared(dir).eventsOf(C), wire);
+    assert.deepEqual(new Prepared(dir).picture(C), log.picture(C));
+
+    // Native authoritative replacement includes same-ID reorder, addition, deletion,
+    // whole-row field removal, empty, empty again, and repopulation after restart.
+    const check = (next: SubagentRec[], at: number) => {
+      const before = workers;
+      emit({ subagents: next }, at);
+      workers = next;
+      const last = disk(file).at(-1)!;
+      const ids = next.map(row => row.threadId);
+      if (last.type === "subagents") {
+        const changed = JSON.stringify(ids) !== JSON.stringify(before.map(row => row.threadId));
+        assert.equal(Object.hasOwn(last, "order"), changed);
+        if (changed) assert.deepEqual(last.order, ids);
+      } else assert.deepEqual(last.patch.subagents, next, "small/empty snapshots retain existing full form");
+      assert.deepEqual(new Prepared(dir).picture(C), log.picture(C));
+      assert.deepEqual(new Prepared(dir).eventsOf(C), wire);
+    };
+    check([...workers.slice(1), workers[0]!], 400);
+    check([...workers, { threadId: "added-native", state: "running", task: "new native task" }], 401);
+    check(workers.filter(row => row.threadId !== "added-native"), 402);
+    const { said: _said, ...withoutProgress } = workers.at(-1)!;
+    check([...workers.slice(0, -1), withoutProgress], 403);
+    check([], 404);
+    check([], 405);
+    check([{ threadId: "after-empty", state: "completed", task: "retained native task" }], 406);
+    const prefix = readFileSync(file, "utf8");
+    appendFileSync(file, '{"seq":9999,"type":"subagents","updates":');
+    const crashed = new Prepared(dir);
+    assert.equal(readFileSync(file, "utf8"), prefix + '{"seq":9999,"type":"subagents","updates":', "reader never repairs/writes history on startup");
+    assert.deepEqual(crashed.picture(C), log.picture(C));
+    rmSync(file.replace(/\.jsonl$/, ".ckpt.json"));
+    assert.deepEqual(new Prepared(dir).picture(C), log.picture(C), "accepted reader full replay after crash without checkpoint");
+    assert.deepEqual(page(new Prepared(dir)), wire, "exact live chronology, not just final picture");
+    assert.deepEqual(new ConvLog(dir).picture(C), log.picture(C));
+  }));
 });

@@ -397,10 +397,9 @@ export function compactSubagents(previous: Picture, rec: LogRecord): StoredRecor
   const old = new Map(before.map((row) => [row.threadId, row]));
   const compact: StoredSubagentsRecord = { seq: rec.seq, conv: rec.conv, at: rec.at, type: "subagents", base: previous.seq,
     patch: { ...rec.patch, subagents: null },
-    updates: next.filter((row) => JSON.stringify(row) !== JSON.stringify(old.get(row.threadId))),
-    // Still always written: the retained fallback reader requires it. Once this release's reader
-    // (which accepts a missing order) is the fallback, write it only when it changes.
-    order: next.map((row) => row.threadId) };
+    updates: next.filter((row) => JSON.stringify(row) !== JSON.stringify(old.get(row.threadId))) };
+  const order = next.map((row) => row.threadId);
+  if (order.length !== before.length || order.some((id, i) => id !== before[i]!.threadId)) compact.order = order;
   // Small/initial snapshots need no new framing. Also keeps malformed legacy rows untouched.
   return JSON.stringify(compact).length < JSON.stringify(rec).length ? compact : rec;
 }

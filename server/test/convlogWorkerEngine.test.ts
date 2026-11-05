@@ -31,7 +31,7 @@ it("engine writes changed rows readable by frozen prepared SERVER, retaining rep
     const workerRecords = stored.filter((r) => r.type === "subagents" || (r.type === "meta" && Array.isArray(r.patch.subagents)));
     expect(workerRecords).toHaveLength(103);
     expect(workerRecords.slice(-100).every((r) => r.type === "subagents" && r.updates.length === 1 &&
-      r.updates[0].threadId === "active" && r.order.length === 2)).toBe(true);
+      r.updates[0].threadId === "active" && !Object.hasOwn(r, "order"))).toBe(true);
     log.checkpointNow(convId);
     const cold = new ConvLog(rig.vault);
     expect(cold.picture(convId)).toEqual(before);

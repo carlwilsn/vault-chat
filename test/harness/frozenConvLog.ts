@@ -11,7 +11,8 @@ import type { ConvLog } from "../../server/convlog/log.ts";
 
 export const OLD_SERVER = "46bb33304233b64739df23fb5b0d520706d8e050";
 const root = fileURLToPath(new URL("../../", import.meta.url));
-export const PREPARED_READER = "28f3ef9997b0cdc9bb3d5be19a8da268be2e74aa";
+// Accepted missing-order-compatible reader; the retained fallback prerequisite is verified separately.
+export const PREPARED_READER = "528732986301508b7101b820fcf1f0fa10eaae5a";
 const frozen = new Map<string, Promise<typeof ConvLog>>();
 export function frozenConvLog(ref = OLD_SERVER): Promise<typeof ConvLog> {
   let resultPromise = frozen.get(ref);
