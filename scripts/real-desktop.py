@@ -129,6 +129,8 @@ def main():
     p.add_argument('--check-pending-chat', action='store_true', help='Queue via native input on held real Pi turns; exercise existing interrupt-and-send and preserve original history')
     p.add_argument('--check-board-scribble', action='store_true', help='Current production board: trusted Chromium pen protocol on private Xvfb, every contact sample, undo/redo/autosave/reopen; NOT iPad/Pencil')
     p.add_argument('--copy-board', type=Path, help='Owned disposable board fixture directory (board.json and history.json); never a live board')
+    p.add_argument('--check-phone-scroll', action='store_true', help='Production phone fold expansion, composer/viewport resize and trusted reading input on the exact original history; NOT physical Safari')
+    p.add_argument('--phone-scroll-only', action='store_true', help='Run only the existing A production phone extension, without unrelated native timings')
     p.add_argument('--check-history-update', action='store_true', help='Real native user/stream/tool/reply identities across an owned crash and app reopen')
     p.add_argument('--expect-history-baseline-bug', action='store_true', help='Retain the reproduced raw envelope/identity loss instead of claiming a pass')
     p.add_argument('--inside-nix', action='store_true', help=argparse.SUPPRESS)
@@ -146,6 +148,8 @@ def main():
         p.error('--check-editor-sync requires --check-status-dot local unpaid Pi fixture')
     if a.check_board_scribble and not a.copy_board:
         p.error('--check-board-scribble requires --copy-board owned fixture')
+    if a.phone_scroll_only and not a.check_phone_scroll:
+        p.error('--phone-scroll-only requires --check-phone-scroll')
     os.umask(0o077)
     if sys.platform != 'linux':
         p.error('This measures Linux/WebKitGTK only')
@@ -224,9 +228,9 @@ def main():
         control = vault / 'boards/scribble-control-fixture'
         shutil.copytree(target, control)
         board_control_bytes = {str(f.relative_to(control)): f.read_bytes() for f in control.rglob('*') if f.is_file()}
-    original_event_bytes = {f.name: f.read_bytes() for f in events.iterdir() if f.suffix == ".jsonl"} if a.check_plan_owner or a.check_composer_delivery else {}
+    original_event_bytes = {f.name: f.read_bytes() for f in events.iterdir() if f.suffix == ".jsonl"} if a.check_plan_owner or a.check_composer_delivery or a.check_phone_scroll else {}
     original_notes = None
-    if a.check_composer_delivery or a.check_plan_owner or a.check_global_notes or a.check_speech_freshness or a.check_parallel_work:
+    if a.check_composer_delivery or a.check_plan_owner or a.check_global_notes or a.check_speech_freshness or a.check_parallel_work or a.check_phone_scroll:
         copied_notes = source / '.vault-chat/notes.jsonl'
         if copied_notes.is_symlink() or not copied_notes.is_file():
             p.error('global Notes proof requires the owned safe original notes copy')
@@ -334,6 +338,26 @@ def main():
               log.checkpointNow(id);log.close();"""
             build(['node', '--import', 'tsx', '--input-type=module', '-e', prepare_video,
                    str(vault), a.conversation, str(work / 'original-video-prefix.json')], 'private-video-append')
+        if a.check_phone_scroll:
+            # Append only owned native Pi session entries to A's disposable original copy.
+            # One completed tool group taller than each viewport, followed by a short reply.
+            prepare_phone = r"""import assert from 'node:assert/strict';
+              import {ConvLog} from './server/convlog/log.ts';
+              import {newSessionFile,appendEntries} from './server/convlog/piSession.ts';
+              import {writeFileSync} from 'node:fs';import {join} from 'node:path';
+              const v=process.argv[1],id=process.argv[2],log=new ConvLog(v),before=log.picture(id);
+              assert.equal(before.items.length,3819);assert.equal(before.items.filter(i=>['user','assistant'].includes(i.kind)).length,1329);
+              const file=newSessionFile(join(v,'.vault-chat/events/sessions/phone-scroll-fixture.jsonl'),v),at=Date.now();
+              const calls=Array.from({length:30},(_,i)=>({type:'toolCall',id:'phone-scroll-'+i,name:'Read',arguments:{path:'owned-fixture.md'}}));
+              const messages=[{role:'user',content:[{type:'text',text:'Owned phone fold expansion fixture.'}],timestamp:at-1},{role:'assistant',content:calls,timestamp:at},
+                ...calls.map((c,i)=>({role:'toolResult',toolCallId:c.id,toolName:'Read',content:[{type:'text',text:'Owned result '+i}],timestamp:at+i+1})),
+                {role:'assistant',content:[{type:'text',text:'Owned phone scroll reply.'}],timestamp:at+32}];
+              for(const entry of appendEntries(file,messages.map(message=>({type:'message',message}))))log.emit(id,{type:'entry',file,entry});
+              const after=log.picture(id);assert.deepEqual(after.items.slice(0,3819),before.items);assert.equal(after.items.length,3851);
+              assert.deepEqual(after.items.slice(3819).map(i=>i.kind),['user',...Array(30).fill('tool'),'assistant']);
+              writeFileSync(process.argv[3],JSON.stringify(after.items));log.checkpointNow(id);log.close();"""
+            build(['node', '--import', 'tsx', '--input-type=module', '-e', prepare_phone,
+                   str(vault), a.conversation, str(work / 'phone-scroll-exact-items.json')], 'private-phone-scroll-append')
         state = work / 'server-state'
         # Even OFF has an owned inert 503 voice endpoint; never falls back to 8857.
         class Inert(http.server.BaseHTTPRequestHandler):
@@ -650,6 +674,12 @@ def main():
             if items[:len(prefix)] != prefix or len(items) != len(prefix) + 1:
                 raise RuntimeError('Private media append changed the original history prefix')
             result['thread']['originalPrefix'] = {'messages': 1329, 'items': 3819, 'unchanged': True, 'privateAppendedItems': 1}
+
+        if a.check_phone_scroll:
+            exact_phone_items = json.loads((work / 'phone-scroll-exact-items.json').read_text())
+            if items != exact_phone_items or len(items) != 3851:
+                raise RuntimeError('Phone scroll startup changed exact original or 32 private fixture items')
+            result['thread'].update(messages=1329, items=3819, privatePhoneItems=32, exactOriginalSelected=True)
 
         native_master, native_vault = master, vault
         if a.check_editor_sync:
@@ -2050,6 +2080,76 @@ def main():
                 with contextlib.suppress(Exception):
                     delete_session()
 
+        if a.check_phone_scroll:
+            # Same production phone page, compiled backend, exact original/private feed.
+            # No DOM input, handler calls, substitute UI, OS permission, media or live writes.
+            phone_scroll_script = r"""
+              import assert from 'node:assert/strict';import {writeFileSync} from 'node:fs';
+              const {chromium}=await import(process.argv[1]);const [base,conv,out]=process.argv.slice(2);
+              const browser=await chromium.launch({executablePath:'/run/current-system/sw/bin/chromium',headless:true,args:['--mute-audio','--no-sandbox','--disable-background-networking','--disable-component-update','--disable-sync']});
+              const result={works:false,surface:'production compiled phone',platform:'Linux Chromium; simulated mobile/visualViewport, NOT physical Safari or keyboard',cases:[]};
+              try {
+                const c=await browser.newContext({viewport:{width:320,height:568},hasTouch:true,isMobile:true,permissions:[]});
+                await c.addInitScript(()=>{
+                  window.__calls={permission:0,subscribe:0,mic:0,register:0};window.__inputFrames=[];
+                  Notification.requestPermission=()=>{__calls.permission++;throw Error('No OS permission');};
+                  PushManager.prototype.subscribe=()=>{__calls.subscribe++;throw Error('No push');};
+                  navigator.serviceWorker.register=()=>{__calls.register++;throw Error('No service worker');};
+                  navigator.mediaDevices.getUserMedia=()=>{__calls.mic++;throw Error('No mic');};
+                  document.addEventListener('input',e=>{if(e.target.id==='input'){const t=performance.now();requestAnimationFrame(()=>requestAnimationFrame(()=>__inputFrames.push(performance.now()-t)));}});
+                });
+                const p=await c.newPage();p.setDefaultTimeout(15000);
+                await p.route('**/*',r=>{const u=new URL(r.request().url());return u.origin===base&&(r.request().method()==='GET'||u.pathname==='/api/v1/attention')?r.continue():r.abort();});
+                const metrics=()=>p.evaluate(()=>{const e=document.querySelector('#msgs'),s=[...e.querySelectorAll('.steps-h')].at(-1),r=s.getBoundingClientRect();return {top:e.scrollTop,gap:e.scrollHeight-e.scrollTop-e.clientHeight,client:e.clientHeight,foldY:r.y,foldHeight:r.height,open:s.closest('.steps').classList.contains('open'),viewport:{width:visualViewport.width,height:visualViewport.height,offsetTop:visualViewport.offsetTop},focus:document.activeElement?.id};});
+                const bottom=async()=>{const b=await p.locator('#msgs').boundingBox();await p.mouse.move(b.x+b.width/2,b.y+b.height/2);await p.mouse.wheel(0,10000000);await p.waitForTimeout(250);assert((await metrics()).gap<=4);};
+                const record=(name,before,after,ok)=>{result.cases.push({name,before,after,ok});assert(ok,name+' '+JSON.stringify({before,after}));};
+                const sizes=[{width:320,height:568},{width:844,height:390},{width:390,height:480}];
+                for(const [index,size] of sizes.entries()){
+                  await p.setViewportSize(size);const start=Date.now();await p.goto(base+'/phone?conv='+encodeURIComponent(conv));
+                  await p.waitForFunction(()=>document.querySelector('#msgs')?.textContent.includes('Owned phone scroll reply.'));await p.waitForTimeout(350);
+                  const initial=await metrics();record('open bottom '+size.width+'x'+size.height,null,initial,initial.gap<=4);
+                  const fold=p.locator('#msgs .steps-h').last();assert.equal(await fold.innerText(),'30 steps');
+                  // Genuine user activation while the follow latch was true. The first selected
+                  // result must remain visible, not be scrolled to the last of thirty results.
+                  if(index===1){await fold.click();await p.keyboard.press('Enter');await p.keyboard.press('Enter');}else await fold.tap();
+                  await p.waitForTimeout(350);const expanded=await metrics();
+                  record('explicit fold expansion preserves chosen header '+size.width+'x'+size.height,initial,expanded,expanded.open&&Math.abs(expanded.foldY-initial.foldY)<=2&&expanded.gap>400);
+                  // The list's first result is immediately below its chosen header. Read-only hit geometry.
+                  assert(await p.locator('#msgs .steps.open').last().evaluate(e=>{const h=e.querySelector('.steps-h').getBoundingClientRect(),f=e.querySelector('.step').getBoundingClientRect();return f.y>=h.bottom&&f.y<visualViewport.height;}));
+                  await fold.tap();await p.waitForTimeout(250);const collapsed=await metrics();
+                  record('collapse returns bounded bottom '+size.width+'x'+size.height,expanded,collapsed,!collapsed.open&&collapsed.gap<=4);
+                  await bottom();
+                  // Composer grows via real typing only; no synthetic resize or scroll assignment.
+                  await p.locator('#input').tap();await p.locator('#input').pressSequentially('Owned composer line one\nline two\nline three\nline four',{delay:10});await p.waitForTimeout(250);
+                  const composer=await metrics();record('composer growth follows bottom '+size.width+'x'+size.height,collapsed,composer,composer.gap<=4&&composer.client<collapsed.client);
+                  await p.locator('#input').press('Control+a');await p.locator('#input').press('Backspace');await p.waitForTimeout(200);
+                  await bottom();await fold.tap();await p.waitForTimeout(200);
+                  // Actual upward wheel leaves reading intent independent of composer changes.
+                  const b=await p.locator('#msgs').boundingBox();await p.mouse.move(b.x+20,b.y+60);await p.mouse.wheel(0,-120);await p.waitForTimeout(250);
+                  const reading=await metrics();await p.locator('#input').tap();await p.locator('#input').pressSequentially('Owned reading draft\nsecond line\nthird line',{delay:10});await p.waitForTimeout(250);const drafted=await metrics();
+                  record('composer growth preserves reader '+size.width+'x'+size.height,reading,drafted,Math.abs(drafted.top-reading.top)<=2&&drafted.gap>400);
+                  // Real visualViewport dimensions from browser resize, not physical Safari keyboard.
+                  await p.setViewportSize({...size,height:size.height-70});await p.waitForTimeout(250);const resized=await metrics();
+                  record('visualViewport shrink preserves reader '+size.width+'x'+size.height,drafted,resized,Math.abs(resized.top-drafted.top)<=2&&resized.viewport.height<drafted.viewport.height);
+                  result.cases.push({name:'open browser elapsed '+size.width+'x'+size.height,ms:Date.now()-start});
+                }
+                result.inputDoubleRafMs=await p.evaluate(()=>__inputFrames);result.permissions=await p.evaluate(()=>__calls);
+                assert.deepEqual(result.permissions,{permission:0,subscribe:0,mic:0,register:0});
+                // Device-local Clear must not become shared history or a second queue/cutoff.
+                await p.getByRole('button',{name:'Clear this thread',exact:true}).tap();await p.waitForTimeout(250);
+                assert.equal(await p.locator('#msgs > .m, #msgs > .amsg').count(),0);result.localClearBlank=true;
+                result.works=true;
+              } catch(e){result.error=String(e);} finally {await browser.close();writeFileSync(out,JSON.stringify(result,null,2));}
+              if(!result.works)process.exitCode=1;
+            """
+            phone_file = work / 'phone-scroll.json'
+            pw = os.environ.get('VC_PLAYWRIGHT', '/tmp/global-workspace-ui-09ed10ad-r1/source/preview/node_modules/playwright-core/index.mjs')
+            child = spawn(['node', '--input-type=module', '-e', phone_scroll_script, pw, base, a.conversation, str(phone_file)], 'phone-scroll')
+            code = child.wait()
+            if phone_file.exists():
+                result['phoneScroll'] = json.loads(phone_file.read_text())
+            if code:
+                raise RuntimeError('Production phone scroll check failed; see retained scalar metrics')
         if a.check_video and not a.native_video_only:
             # Same compiled backend and same original 3819-item prefix as native.
             phone_script = r"""
@@ -2275,9 +2375,21 @@ def main():
             if board_control_bytes != {str(f.relative_to(control)): f.read_bytes() for f in control.rglob('*') if f.is_file()}:
                 raise RuntimeError('Unrelated control board changed')
             result['boardScribble']['otherBoardBytesUnchanged'] = True
-        if a.before_app:
-            result['runs']['before'] = exercise(a.before_app, 'before')
-        result['runs']['after'] = exercise(a.app, 'after')
+        if not a.phone_scroll_only:
+            if a.before_app:
+                result['runs']['before'] = exercise(a.before_app, 'before')
+            result['runs']['after'] = exercise(a.app, 'after')
+        if a.check_phone_scroll:
+            final_phone = request(base + checkpoint_path)['picture']['items']
+            if final_phone != exact_phone_items:
+                raise RuntimeError('Phone input/Clear changed exact original + 32 private items')
+            for name, body in original_event_bytes.items():
+                if not (dest / name).read_bytes().startswith(body):
+                    raise RuntimeError('Phone changed original event byte prefix')
+            if (vault / '.vault-chat/notes.jsonl').read_bytes() != original_notes:
+                raise RuntimeError('Phone changed human Notes bytes')
+            result['phoneScroll']['exactOriginalAndPrivateItemsUnchanged'] = True
+            result['phoneScroll']['eventPrefixesAndNotesByteIdentical'] = True
         if a.check_plan_owner or a.check_plans or a.check_images or a.check_empty_chat or a.check_video or a.check_speech_freshness or a.check_status_dot or a.check_history_update:
             again = request(base + checkpoint_path)
             again = again.get('picture', again)
@@ -2309,6 +2421,8 @@ def main():
             if not preserved:
                 raise RuntimeError('Local Clear changed the original conversation items')
         result['works'] = all(r['works'] for r in result['runs'].values())
+        if a.check_phone_scroll:
+            result['works'] = result['works'] and result.get('phoneScroll', {}).get('works', False)
         if a.check_video and not a.native_video_only:
             result['works'] = result['works'] and result.get('phoneVideo', {}).get('works', False)
     except Exception as e:

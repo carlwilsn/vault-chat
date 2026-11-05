@@ -1218,7 +1218,13 @@ export function boot(): void {
       return;
     }
     const sh = e.target.closest(".steps-h");
-    if (sh) { sh.closest(".steps").classList.toggle("open"); }
+    if (sh) {
+      const steps = sh.closest(".steps");
+      // Opening a chosen part of the transcript is reading, not incoming layout.
+      // Release before ResizeObserver sees the taller list and pins its last step.
+      if (!steps.classList.contains("open")) followBottom = false;
+      steps.classList.toggle("open");
+    }
   });
 
   // ---------- live events: the box's log ----------
