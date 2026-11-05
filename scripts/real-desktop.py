@@ -1963,7 +1963,7 @@ def main():
         if a.before_app:
             result['runs']['before'] = exercise(a.before_app, 'before')
         result['runs']['after'] = exercise(a.app, 'after')
-        if a.check_plans or a.check_images or a.check_empty_chat or a.check_video or a.check_speech_freshness or a.check_status_dot:
+        if a.check_plans or a.check_images or a.check_empty_chat or a.check_video or a.check_speech_freshness or a.check_status_dot or a.check_history_update:
             again = request(base + checkpoint_path)
             again = again.get('picture', again)
             # Genuine engine startup may append a lost-worker notice to this disposable copy.
@@ -1971,7 +1971,7 @@ def main():
             if a.check_history_update:
                 # This fixture intentionally appends native turns. Preserve ALL
                 # original AND new items across local Clear, not merely a prefix.
-                preserved = history_final_items is not None and again.get('items', []) == history_final_items and history_final_items[:len(items)] == items
+                preserved = history_final_items is not None and len(history_final_items) == len(items) + 10 and again.get('items', []) == history_final_items and history_final_items[:len(items)] == items
                 result['thread']['originalItemsPrefixUnchanged'] = preserved
                 result['thread']['privateAppendedItems'] = len(again.get('items', [])) - len(items)
                 result['thread']['allItemsUnchangedAfterHistoryReopen'] = preserved
