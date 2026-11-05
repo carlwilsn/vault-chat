@@ -551,6 +551,17 @@ def main():
         checkpoint = request(base + checkpoint_path)
         picture = checkpoint.get('picture', checkpoint)
         items = picture.get('items', [])
+        if a.check_history_update:
+            # The original copy is immutable. Engine startup may already have
+            # appended its two real lost-worker/resume items before this HTTP
+            # snapshot; those are private appends, never part of the original.
+            frozen = json.loads((events / (a.conversation + '.ckpt.json')).read_text())['picture']
+            original_items = frozen['items']
+            if frozen.get('id') != a.conversation or len(original_items) != 3819 or sum(i.get('kind') in ('user', 'assistant') for i in original_items) != 1329:
+                raise RuntimeError('History fixture requires exact original 1329 messages / 3819 items')
+            if items[:3819] != original_items or len(items) not in (3819, 3821):
+                raise RuntimeError('History startup changed original prefix or unexpected private startup appends')
+            items = original_items
         count = sum(i.get('kind') in ('user', 'assistant') for i in items)
         if a.check_speech_freshness and (count != 1329 or len(items) != 3819):
             raise RuntimeError('Speech fixture requires exact approved 1329-message / 3819-item original prefix')
