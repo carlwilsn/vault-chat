@@ -29,7 +29,7 @@ import { randomBytes, timingSafeEqual } from "node:crypto";
 import { appendFileSync, closeSync, mkdirSync, openSync, readSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { Speakable } from "./speakable";
+import { Speakable, toSpeech } from "./speakable";
 import { isCommentary } from "../src/convlog/commentary";
 import { speechReady } from "./speakMath";
 import { calibFrom } from "../src/voiceWaitLine";
@@ -223,6 +223,7 @@ function reapLater(d: { logDir: string | null }): void {
   reaper.unref?.();
 }
 const callByConv = new Map<string, string>();
+const callOwner = (vault: string, convId: string): string => JSON.stringify([resolve(vault), convId]);
 
 const rid = (n = 9) => randomBytes(n).toString("base64url");
 
@@ -242,7 +243,7 @@ export async function startCall(d: BrainDeps, b: { convId?: unknown; device?: un
   if (!/^[A-Za-z0-9_-]{1,80}$/.test(convId)) return { status: 400, body: { error: "convId required" } };
   const device: Device = DEVICES.includes(b.device as Device) ? (b.device as Device) : "phone";
   // One voice at a time on a conversation: a new call replaces the old one.
-  const old = callByConv.get(convId);
+  const old = callByConv.get(callOwner(d.vault, convId));
   if (old) endCall(d, old, "replaced");
   const engine = await d.engine();
   await speechReady();
@@ -269,7 +270,8 @@ export async function startCall(d: BrainDeps, b: { convId?: unknown; device?: un
     turns: 0,
     utt: 0,
     held: null,
-    armed: true,
+    // A subscription is live-only: a turn already running before this call is not an invitation to read it.
+    armed: false,
     steer: null,
     noSpoil: false,
     lastText: null,
@@ -280,7 +282,7 @@ export async function startCall(d: BrainDeps, b: { convId?: unknown; device?: un
   call.untap = engine.tap(convId, (ev) => onPi(d, call, ev));
   calls.set(call.id, call);
   reapLater(d);
-  callByConv.set(convId, call.id);
+  callByConv.set(callOwner(d.vault, convId), call.id);
   log(d, { ev: "call.start", call: call.id, convId, device, model: call.model });
   return { status: 200, body: { ok: true, callId: call.id, model: call.model, token: token.toString("base64url") } };
 }
@@ -290,7 +292,7 @@ export function endCall(d: { logDir: string | null }, id: string, why = "ended")
   if (!c) return false;
   revokeSpeech(c);
   calls.delete(id);
-  if (callByConv.get(c.convId) === id) callByConv.delete(c.convId);
+  if (callByConv.get(callOwner(c.vault, c.convId)) === id) callByConv.delete(callOwner(c.vault, c.convId));
   c.untap();
   if (c.held) clearTimeout(c.held.timer);
   c.engine.setTalker(c.convId, null);
@@ -324,22 +326,22 @@ export function followCall(vault: string, convId: string, from?: string): boolea
   const c = [...calls.values()].filter((x) => sameVault(x.vault, vault) && (!from || x.convId === from)).sort((x, y) => y.lastActive - x.lastActive)[0];
   if (!c) return false;
   if (c.convId === convId) return true;
-  const other = callByConv.get(convId);
+  const other = callByConv.get(callOwner(c.vault, convId));
   if (other && other !== c.id) endCall(c.deps, other, "replaced");
   revokeSpeech(c);
   if (c.sink) endSink(c.sink);
   c.sink = null;
   c.dropping = false;
-  c.armed = true;
+  c.armed = false;
   c.ownTurn = true;
   c.untap();
   c.engine.setTalker(c.convId, null);
-  if (callByConv.get(c.convId) === c.id) callByConv.delete(c.convId);
+  if (callByConv.get(callOwner(c.vault, c.convId)) === c.id) callByConv.delete(callOwner(c.vault, c.convId));
   log(c.deps, { ev: "call.follow", call: c.id, from: c.convId, to: convId });
   c.convId = convId;
   c.engine.setTalker(convId, { model: c.model, rules: voiceCallRules(c.device), thinking: c.thinking });
   c.untap = c.engine.tap(convId, (ev) => onPi(c.deps, c, ev));
-  callByConv.set(convId, c.id);
+  callByConv.set(callOwner(c.vault, convId), c.id);
   return true;
 }
 
@@ -394,6 +396,13 @@ function onPi(d: BrainDeps, c: Call, ev: any): void {
   if (ev?.type === "vc_delivered" || (ev?.type === "message_start" && ev.message?.role === "user")) {
     // pi delivered a message (his steer): what streams from here answers it.
     revokeSpeech(c);
+    // PiFeed supplies the original native queue entry's device, not today's viewer.
+    // Only after pi actually delivers a typed input does its reply leave the open
+    // spoken completion and take the existing quiet-gap channel instead.
+    if (ev.type === "vc_delivered" && ev.origin) {
+      c.ownTurn = ev.origin === "voice" || ev.origin === c.device;
+      if (ev.origin !== "voice" && c.sink) finishSink(c, c.sink);
+    }
     if (c.sink) c.sink.utt = c.utt;
     if (!c.armed) {
       c.speak.flush();
@@ -412,6 +421,7 @@ function onPi(d: BrainDeps, c: Call, ev: any): void {
     }
     c.armed = true;
     const origin = typeof ev.origin === "string" ? ev.origin : null;
+    if (ev.kind === "user" && origin && origin !== "voice" && c.sink) finishSink(c, c.sink);
     c.ownTurn = ev.kind !== "user" || !origin || origin === "voice" || origin === c.device;
     if (!c.ownTurn) log(d, { ev: "turn.other-surface", call: c.id, origin });
     return;
@@ -435,10 +445,17 @@ function onPi(d: BrainDeps, c: Call, ev: any): void {
     c.speak.flush();
   } else if (ev?.type === "message_end" && ev.message?.role === "assistant") {
     // An assistant message ended: its reply (if it is one) is said now, the rest of it a sentence too.
-    const m = c.msg ?? { pieces: [], commentary: false };
+    const m = c.msg;
     c.msg = null;
     const rest = c.speak.flush();
-    if (!m.commentary && !isCommentary(ev.message)) say(c, [...m.pieces, ...rest]);
+    // Native message_end is the authoritative answer, including providers that
+    // omit some/all text deltas. Never append final text to its partial rendering.
+    // A repeated end has no open native message and cannot speak twice.
+    if (m && !m.commentary && !isCommentary(ev.message)) {
+      const content = ev.message.content;
+      const text = Array.isArray(content) ? content.filter((b: any) => b.type === "text").map((b: any) => b.text).join("\n") : content;
+      say(c, typeof text === "string" ? [toSpeech(text)] : [...m.pieces, ...rest]);
+    }
   } else if (ev?.type === "tool_execution_start") {
     // Whether the reply said anything before reaching for a tool (nothing is said for it; the waiting line covers the wait):
     // counted from this log.

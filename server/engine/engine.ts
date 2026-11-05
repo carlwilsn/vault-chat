@@ -1606,11 +1606,11 @@ export class Engine {
         file,
         emit: (b) => this.emit(convId, b),
         pointed: this.skipSet(convId, file, after),
-        delivered: (id) => {
+        delivered: (id, origin) => {
           this.setPending(convId, undefined, id);
           rec.q("delivered", id);
           // A call's voice speaks what answers his newest words from here on (server/voiceBrain.ts).
-          if (this.taps.has(convId)) this.tapEmit(convId, { type: "vc_delivered", clientId: id });
+          if (this.taps.has(convId)) this.tapEmit(convId, { type: "vc_delivered", clientId: id, origin });
         },
       });
       // Anything pi wrote that the feed missed (a crash between its write and the pointer) comes first.

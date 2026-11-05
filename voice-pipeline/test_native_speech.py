@@ -147,6 +147,22 @@ class NativeSpeech(unittest.IsolatedAsyncioTestCase):
                     self.assertTrue(any(p.endswith('/42') for p in requests))
                     self.assertEqual(frames.text, [])
 
+    async def test_new_local_human_turn_during_gap_wait_cancels_typed_reply_even_before_http_words(self):
+        async with consumer(speak=True) as c:
+            quiet, frames, messages, entered, released, checked, requests, release = c
+            await messages.put({'text': 'Typed reply before the newer human thought.', 'utt': 45})
+            await asyncio.wait_for(entered.wait(), 2)
+            # A two-second VAD pause is NOT an endpoint/send; the real user turn stays open.
+            from pipecat.frames.frames import VADUserStartedSpeakingFrame, VADUserStoppedSpeakingFrame
+            quiet.gate.on_frame(VADUserStartedSpeakingFrame(), time.monotonic())
+            quiet.gate.on_frame(VADUserStoppedSpeakingFrame(), time.monotonic() - 2)
+            self.assertFalse(quiet.gate.idle(time.monotonic()))
+            self.assertEqual(frames.text, [])
+            release(new_exchange=True)
+            await eventually(lambda: bool(quiet.fixture_pieces))
+            self.assertEqual(frames.text, [])
+            self.assertEqual(len(requests), 1)
+
     async def test_current_result_and_truthful_source_failure_each_whole_once(self):
         async with consumer() as c:
             quiet, frames, messages, entered, released, checked, requests, release = c

@@ -188,12 +188,13 @@ def main():
         if f.is_file() and (f.suffix in ('.jsonl', '.json') or f.name in ('_seq', '_epoch')):
             shutil.copyfile(f, dest / f.name)
     original_notes = None
-    if a.check_global_notes:
+    if a.check_global_notes or a.check_speech_freshness:
         copied_notes = source / '.vault-chat/notes.jsonl'
         if copied_notes.is_symlink() or not copied_notes.is_file():
             p.error('global Notes proof requires the owned safe original notes copy')
         original_notes = copied_notes.read_bytes()
         (vault / '.vault-chat/notes.jsonl').write_bytes(original_notes)
+    if a.check_global_notes:
         notes_origin = master / 'vaults/notes-origin'
         (notes_origin / '.vault-chat').mkdir(parents=True)
         fixture_note = {'id': 'owned-global-note', 'timestamp': '2099-01-01T00:00:00Z',
@@ -447,6 +448,8 @@ def main():
         picture = checkpoint.get('picture', checkpoint)
         items = picture.get('items', [])
         count = sum(i.get('kind') in ('user', 'assistant') for i in items)
+        if a.check_speech_freshness and (count != 1329 or len(items) != 3819):
+            raise RuntimeError('Speech fixture requires exact approved 1329-message / 3819-item original prefix')
         if picture.get('id') != a.conversation or count < a.min_messages:
             raise RuntimeError('Wrong/short original thread: expected minimum message count not met')
         result['thread'] = {'messages': count, 'items': len(items), 'exactOriginalSelected': False}
@@ -1002,7 +1005,24 @@ def main():
                         raise RuntimeError('Use the approved original project as the immutable control')
                     owner_path = checkpoint_path
                     before_main = request(base + owner_path)
-                    before_main = before_main.get('picture', before_main).get('items', [])
+                    before_picture = before_main.get('picture', before_main)
+                    before_main = before_picture.get('items', [])
+                    def main_items():
+                        c = request(base + owner_path)
+                        return c.get('picture', c).get('items', [])
+                    def owned_send(suffix):
+                        click('[data-perf-target="composer"]')
+                        run('xdotool', 'type', '--clearmodifiers', '--delay', '40', 'Owned speech freshness ' + suffix,
+                            env=childenv, stdout=subprocess.DEVNULL)
+                        key('Return')
+                    # Voice OFF is an ordinary native send, with no speech prompt/call/permission.
+                    if request(base + '/api/v1/brain/calls')['calls']:
+                        raise RuntimeError('Voice OFF fixture has an unexpected call')
+                    owned_send('voice OFF request')
+                    wait_for(lambda: 'Owned speech freshness result 1.' in json.dumps(main_items()), 'ordinary reply while voice OFF')
+                    if request(base + '/api/v1/brain/calls')['calls']:
+                        raise RuntimeError('Typed input started voice')
+                    off_picture = request(base + owner_path)['picture']
                     call = request(base + '/api/v1/brain/call', {'convId': a.conversation, 'device': 'laptop'})
                     health = request(base + '/api/v1/health')
                     if health.get('engine', {}).get('version') != '1.1.0':
@@ -1017,19 +1037,11 @@ def main():
                     child.stdin.write((json.dumps({'base': base, 'id': call['callId'], 'token': call['token'], 'work': str(collector)}) + '\n').encode())
                     child.stdin.close()
                     wait_for(lambda: (collector / 'ready').exists(), 'native New collector ready')
-                    def owned_send(suffix):
-                        click('[data-perf-target="composer"]')
-                        run('xdotool', 'type', '--clearmodifiers', '--delay', '40', 'Owned speech freshness ' + suffix,
-                            env=childenv, stdout=subprocess.DEVNULL)
-                        key('Return')
                     owned_send('first request')
                     wait_for(lambda: (collector / 'held').exists(), 'real New dispatch held by quiet gate')
-                    def main_items():
-                        c = request(base + owner_path)
-                        return c.get('picture', c).get('items', [])
-                    wait_for(lambda: 'Owned speech freshness result 1.' in json.dumps(main_items()), 'first native response in normal human history')
+                    wait_for(lambda: 'Owned speech freshness result 2.' in json.dumps(main_items()), 'first native response in normal human history')
                     owned_send('second request')
-                    wait_for(lambda: 'Owned speech freshness result 2.' in json.dumps(main_items()), 'fresh native response in normal human history')
+                    wait_for(lambda: 'Owned speech freshness result 3.' in json.dumps(main_items()), 'fresh native response in normal human history')
                     # Merely viewing Main cannot follow/cancel the existing project call owner.
                     if not exists('[data-el="thread-main"] button'):
                         click('[data-el="chats-toggle"]')
@@ -1047,9 +1059,23 @@ def main():
                     (collector / 'stop').touch()
                     if child.wait(timeout=10) != 0:
                         raise RuntimeError('Native dispatch collector failed')
-                    if dispatched() != ['Owned speech freshness result 2.']:
+                    if dispatched() != ['Owned speech freshness result 3.']:
                         raise RuntimeError('Stale or duplicate text crossed actual New speech dispatch')
-                    after_main = main_items()
+                    after_picture = request(base + owner_path)['picture']
+                    after_main = after_picture['items']
+                    appended = after_main[len(before_main):]
+                    expected_turns = [
+                        ('user', 'Owned speech freshness voice OFF request'), ('assistant', 'Owned speech freshness result 1.'),
+                        ('user', 'Owned speech freshness first request'), ('assistant', 'Owned speech freshness result 2.'),
+                        ('user', 'Owned speech freshness second request'), ('assistant', 'Owned speech freshness result 3.')]
+                    if [(i['kind'], i.get('text')) for i in appended] != expected_turns:
+                        raise RuntimeError('Typed speech must append exactly its six real native user/reply items')
+                    if dispatched() != [appended[-1]['text']]:
+                        raise RuntimeError('TTS did not receive THE SAME authoritative assistant item exactly once')
+                    if off_picture['meta'].get('threadPath') != after_picture['meta'].get('threadPath') or not after_picture['meta'].get('threadPath'):
+                        raise RuntimeError('Typed speech replaced its authoritative native Pi session')
+                    if (vault / '.vault-chat/notes.jsonl').read_bytes() != original_notes:
+                        raise RuntimeError('Typed speech changed unrelated human Notes bytes')
                     if after_main[:len(before_main)] != before_main:
                         raise RuntimeError('Owned speech fixture changed historical owner items')
                     if js('return !!document.querySelector("[data-el=voice-waves-mute]");'):
@@ -1057,6 +1083,8 @@ def main():
                     result['speechFreshness'] = {'genuinePi': '1.1.0', 'nativeTypedControls': True,
                         'dispatch': dispatched(), 'staleAbsent': True, 'freshExactlyOnce': True,
                         'viewerDoesNotFollowOwner': True, 'microphoneOff': True, 'originalOwnerPrefixUnchanged': True,
+                        'voiceOffNoCall': True, 'sameAuthoritativeAssistantTextExactlyOnce': True, 'exactNativeAppends': 6,
+                        'sameNativePiSession': True, 'humanNotesByteIdentical': True,
                         'boundary': 'actual bot.py TTSSpeakFrame dispatch; inert collector only, no STT/TTS/audio'}
                 image_check = None
                 if a.check_images:

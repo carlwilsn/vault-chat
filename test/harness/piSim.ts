@@ -31,7 +31,7 @@ export class PiSim {
   }
 
   /** A turn's feed (one per turn, as the engine makes it). */
-  open(o: { flushMs?: number; delivered?: (id: string) => void; expect?: Expected[] } = {}): PiFeed {
+  open(o: { flushMs?: number; delivered?: (id: string, device?: string) => void; expect?: Expected[] } = {}): PiFeed {
     this.feed = new PiFeed({ file: this.file, emit: this.emit, pointed: this.pointed, flushMs: o.flushMs ?? 0, delivered: o.delivered, now: () => (clock += 2_000) });
     for (const e of o.expect ?? []) this.feed.expect(e);
     return this.feed;

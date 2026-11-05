@@ -495,3 +495,19 @@ test("a real pi 1.1.0 recording (3 turns on the box: thinking, 9 shell/read call
   assert.equal(new Set(pointers.map((r) => r.type === "entry" && r.entry.id)).size, pointers.length);
   for (let k = 0; k <= log.recs.length; k += 3) assert.deepEqual(foldInto(fold(log.recs.slice(0, k), C), log.recs.slice(k)), p);
 });
+
+
+test("native delivered queue ownership is the original input device, not a viewer or turn's first surface", () => {
+  const log = new Log();
+  const delivered: unknown[] = [];
+  const feed = log.sim.open({ delivered: (id, device) => delivered.push([id, device]) });
+  feed.expect({ kind: "steer", clientId: "typed-board", device: "board", text: "Literal [Carl, on his laptop]", shown: "Literal [Carl, on his laptop]", via: "chat" });
+  feed.expect({ kind: "queue", clientId: "typed-phone", device: "phone", text: "## Human header\n```text\nexact\n```", shown: "## Human header\n```text\nexact\n```", via: "chat" });
+  log.sim.play(userMsg("Literal [Carl, on his laptop]"));
+  log.sim.play(userMsg("## Human header\n```text\nexact\n```"));
+  assert.deepEqual(delivered, [["typed-board", "board"], ["typed-phone", "phone"]]);
+  // Sync/catch-up never delivers native inputs twice.
+  feed.sync(); feed.sync();
+  assert.equal(delivered.length, 2);
+  log.sim.close();
+});

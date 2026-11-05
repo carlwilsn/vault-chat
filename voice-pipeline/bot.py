@@ -258,11 +258,11 @@ class Quiet(FrameProcessor):
         act = flow.next(utt, self.gate.user_turns)
         if act == "drop":
             return
+        user_turns = self.gate.user_turns
         if act == "gate":
             await self.until_idle()
         # LAST text dispatch, including continuation pieces: never rebind held text to a new turn.
-        # A local barge-in while HTTP was in flight also revokes the candidate.
-        user_turns = self.gate.user_turns
+        # A newer local human turn during the gap wait OR HTTP check also revokes the candidate.
         if not await speakable(utt) or self.gate.user_turns != user_turns:
             return
         if act == "gate":

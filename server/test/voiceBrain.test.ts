@@ -8,6 +8,7 @@ import { join } from "node:path";
 const logDir = mkdtempSync(join(tmpdir(), "vc-brain-test-"));
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { speechReady } from "../speakMath";
+import { toSpeech } from "../speakable";
 import { HOLD_MS, NO_SPOIL_NOTE, OPENER_MS, STOP_RE, isThinkingAloud, workCalibration, brainRoute, lastUserText, resetBrainForTests, voiceCallRules, type BrainDeps, type BrainEngine } from "../voiceBrain";
 
 type Fake = BrainEngine & { emit(ev: any): void; messages: any[]; talker: any; interrupted: number; running: boolean; stopped: number };
@@ -466,6 +467,7 @@ describe("voice with one brain", () => {
     const ac = new AbortController();
     const res = await fetch(`${base}/api/v1/brain/call/${c.id}/speak`, { headers: { authorization: `Bearer ${c.token}` }, signal: ac.signal });
     const reader = res.body!.getReader();
+    eng.emit({ type: "vc_turn_start", kind: "wake" });
     eng.emit(delta("The summary is ready: three main ideas. "));
     eng.emit({ type: "vc_turn_end", status: "completed" });
     let got = "";
@@ -665,9 +667,9 @@ it("revokes speech at the authenticated dispatch boundary for turns, owners, can
   expect((await able(current)).body.speak).toBe(false);
   // No-op follow / viewer reads must not move the owner or cancel a live turn.
   expect(vb.followCall("/v", "main")).toBe(true);
-  expect((await able(current + 1)).body.speak).toBe(true);
+  expect((await able(current + 1)).body.speak).toBe(false);
   await fetch(`${base}/api/v1/brain/calls`);
-  expect((await able(current + 1)).body.speak).toBe(true);
+  expect((await able(current + 1)).body.speak).toBe(false);
   await fetch(`${base}/api/v1/brain/call/${c.id}/end`, { method: "POST" });
   expect((await able(current + 1)).status).toBe(401);
   ac.abort();
@@ -676,7 +678,7 @@ it("revokes speech at the authenticated dispatch boundary for turns, owners, can
   c = await call();
   const replaced = await fetch(`${base}/api/v1/brain/call/${old.id}/speakable/0`, { headers: { authorization: `Bearer ${old.token}` } });
   expect(replaced.status).toBe(401);
-  expect((await able(0)).body.speak).toBe(true);
+  expect((await able(0)).body.speak).toBe(false);
 });
 
 it("a completed opener's detached hold never speaks into a replacement call", async () => {
@@ -714,4 +716,79 @@ it("Send now suppresses the old turn's end until pi starts the current voice inp
   expect(raw).toContain("Current answer.");
   expect(raw).not.toContain("Old interrupted reply");
   expect(raw.split("[DONE]")).toHaveLength(2);
+});
+
+
+it("native final is the same answer once: partial/final, final-only, no history catch-up or hidden payload", async () => {
+  const c = await call();
+  const ac = new AbortController();
+  const res = await fetch(`${base}/api/v1/brain/call/${c.id}/speak`, { headers: { authorization: `Bearer ${c.token}` }, signal: ac.signal });
+  const reader = res.body!.getReader();
+  let got = "";
+  const reading = (async () => { try { for (;;) { const r = await reader.read(); if (r.done) return; got += new TextDecoder().decode(r.value); } } catch {} })();
+  const end = (text: string) => ({ type: "message_end", message: { role: "assistant", content: [{ type: "thinking", thinking: "HIDDEN" }, { type: "text", text }], stopReason: "stop" } });
+  // Call connected in the middle of some old output. It cannot acquire that turn.
+  eng.emit({ type: "message_start", message: { role: "assistant" } });
+  eng.emit(delta("Old background output. "));
+  eng.emit(end("Old background output."));
+  eng.emit({ type: "vc_turn_end", status: "completed" });
+  const answer = "## Literal answer\nThe human text is [Carl, on his laptop].\n\n```text\nDo not strip my user header\n```\n**The actual answer** is 42.";
+  eng.emit({ type: "vc_turn_start", kind: "user", origin: "board" });
+  eng.emit({ type: "message_start", message: { role: "assistant" } });
+  eng.emit(delta("Partial text that final supersedes. "));
+  eng.emit(end(answer)); eng.emit(end(answer));
+  eng.emit({ type: "vc_turn_end", status: "completed" });
+  eng.emit({ type: "vc_turn_start", kind: "user", origin: "board" });
+  eng.emit({ type: "message_start", message: { role: "assistant" } });
+  eng.emit(end("Final-only answer.")); eng.emit(end("Final-only answer."));
+  eng.emit({ type: "vc_turn_end", status: "completed" });
+  await until(() => got.includes("Final-only answer."));
+  ac.abort(); await reading;
+  const texts = got.split("\n").filter(l => l.startsWith("data:")).map(l => JSON.parse(l.slice(5))).filter(m => m.text).map(m => m.text);
+  expect(texts).toEqual([toSpeech(answer), "Final-only answer."]);
+  expect(eng.messages).toEqual([]); // no inference/re-answer in the speech bridge
+  // Opening a new transport does not replay any native item or render a checkpoint.
+  const next = new AbortController();
+  const r = await fetch(`${base}/api/v1/brain/call/${c.id}/speak`, { headers: { authorization: `Bearer ${c.token}` }, signal: next.signal });
+  const fresh = r.body!.getReader();
+  eng.emit({ type: "vc_turn_start", kind: "user", origin: "board" });
+  eng.emit(delta("Only fresh output. ")); eng.emit({ type: "vc_turn_end", status: "completed" });
+  let raw = "";
+  while (!raw.includes("Only fresh output")) raw += new TextDecoder().decode((await fresh.read()).value);
+  next.abort();
+  expect(raw).not.toContain("Literal answer"); expect(raw).not.toContain("Final-only");
+});
+
+it("a native delivered typed input uses the gap channel, not the previous spoken completion; other devices stay silent", async () => {
+  const c = await call();
+  const response = fetch(`${base}/v1/chat/completions`, { method: "POST", headers: { authorization: `Bearer ${c.token}` }, body: JSON.stringify({ messages: [{ role: "user", content: "First spoken question?" }] }) });
+  await until(() => eng.messages.length === 1);
+  eng.emit({ type: "vc_turn_start", kind: "user", origin: "voice" });
+  const ac = new AbortController();
+  const res = await fetch(`${base}/api/v1/brain/call/${c.id}/speak`, { headers: { authorization: `Bearer ${c.token}` }, signal: ac.signal });
+  const reader = res.body!.getReader();
+  eng.emit({ type: "vc_delivered", clientId: "typed", origin: "board" });
+  eng.emit(delta("Typed same-session answer. ")); eng.emit({ type: "message_end", message: { role: "assistant" } });
+  eng.emit({ type: "vc_delivered", clientId: "other-device", origin: "laptop" });
+  eng.emit(delta("Other device private reply. ")); eng.emit({ type: "vc_turn_end", status: "completed" });
+  eng.emit({ type: "vc_turn_start", kind: "wake" }); eng.emit(delta("Barrier. ")); eng.emit({ type: "vc_turn_end", status: "completed" });
+  let raw = "";
+  while (!raw.includes("Barrier.")) raw += new TextDecoder().decode((await reader.read()).value);
+  const completion = await (await response).text();
+  ac.abort();
+  expect(completion).not.toContain("Typed same-session");
+  expect(raw).toContain("Typed same-session answer."); expect(raw).not.toContain("Other device private");
+  expect(eng.interrupted).toBe(0); expect(eng.stopped).toBe(0);
+});
+
+it("same thread IDs in different owner roots neither replace nor follow one another's calls", async () => {
+  const vb = await import("../voiceBrain");
+  const first = await call();
+  const peer = fakeEngine();
+  const second = await vb.startCall({ vault: "/peer", engine: async () => peer, elKey: () => "k", voiceId: () => "v", botUrl: "", selfUrl: "", logDir: null }, { convId: "conv-123456", device: "board" });
+  expect(vb.liveCalls().map(c => c.id)).toEqual([first.id, second.body.callId]);
+  expect(vb.followCall("/peer", "main")).toBe(true);
+  expect(vb.liveCalls().map(c => c.convId)).toEqual(["conv-123456", "main"]);
+  vb.endCall({ logDir: null }, String(second.body.callId));
+  expect(vb.liveCalls().map(c => c.id)).toEqual([first.id]);
 });
