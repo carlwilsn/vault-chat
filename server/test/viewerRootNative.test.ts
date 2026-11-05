@@ -78,8 +78,12 @@ describe("captured viewer roots in native typed context", () => {
       expect(existsSync(join(viewer,"captured-write.txt"))).toBe(false);
       const entries = readEntries(c.meta.threadPath);
       expect(entries.filter(e => e.message?.role === "user").map(e => e.message!.content)).toEqual([
-        [{ type: "text", text: `[Carl, on his laptop]\n\n${first}` }],
-        [{ type: "text", text: `[Carl, on his phone]\n\n${queued}` }],
+        [{ type: "text", text: first }],
+        [{ type: "text", text: queued }],
+      ]);
+      expect(entries.filter(e => e.message?.role === "user").map(e => e.message!.vcRequest)).toEqual([
+        { v: 1, clientId: "viewer-first", via: "chat", device: "laptop" },
+        { v: 1, clientId: "viewer-queued", via: "queue", device: "phone" },
       ]);
       const bindings = entries.filter(e => e.customType === "vc-context").map(e => String(e.content));
       expect(bindings.filter(t => t.includes('request="viewer-first"'))).toHaveLength(1);

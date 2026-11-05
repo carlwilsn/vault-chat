@@ -23,8 +23,8 @@ it("project Ctrl+K keeps its native owner/cwd with another vault open, including
   }
   const provider = await fakeChat();
   // Custom vc-context/history messages also have role=user. Match the actual
-  // tagged turn, not the last custom user message appended by the extension.
-  const turn = (body: any) => (body.messages ?? []).filter((m: any) => m.role === "user").map((m: any) => typeof m.content === "string" ? m.content : (m.content ?? []).map((c: any) => c.text ?? "").join("\n")).filter((t: string) => /^(?:\[Carl, on |# Ctrl\+K:|SIDE-(?:STOP|REFINE))/m.test(t)).at(-1) ?? "";
+  // literal turn, not the last custom user message appended by the extension.
+  const turn = (body: any) => (body.messages ?? []).filter((m: any) => m.role === "user").map((m: any) => typeof m.content === "string" ? m.content : (m.content ?? []).map((c: any) => c.text ?? "").join("\n")).filter((t: string) => /^(?:SIDE-PARENT-|OWNER-(?:BUSY|QUESTION|KILL)|# Ctrl\+K:|SIDE-(?:STOP|REFINE))/m.test(t)).at(-1) ?? "";
   provider.respond = body => {
     if (turn(body).includes("OWNER-BUSY") && lastToolResult(body) === null) return { call: { name: "AskUser", args: { question: "Busy parent tool stays open?", options: ["Continue", "Wait"] } } };
     if (turn(body).includes("OWNER-QUESTION") && lastToolResult(body) === null) return { call: { name: "AskUser", args: { question: "Which local label?", options: ["Alpha", "Beta"] } } };

@@ -67,8 +67,12 @@ globalThis.fetch=(input,init)=>{
         expect(JSON.stringify(c.messages)).not.toContain(canary);
       }
       const entries = readEntries(path!);
-      expect(entries.filter(e => e.customType === "vc-context")).toMatchObject([{ type: "custom_message", display: false }]);
-      expect(entries.filter(e => e.message?.role === "user").map(e => e.message!.content)).toEqual(genuine.map((text, i) => [{ type: "text", text: `[Carl, on his ${surfaces[i]}]\n\n${text}` }]));
+      const contexts = entries.filter(e => e.customType === "vc-context");
+      expect(contexts.length).toBeGreaterThan(0);
+      for (const context of contexts) expect(context).toMatchObject({ type: "custom_message", display: false });
+      expect(entries.filter(e => e.message?.role === "user").map(e => e.message!.content)).toEqual(genuine.map(text => [{ type: "text", text }]));
+      expect(entries.filter(e => e.message?.role === "user").map(e => e.message!.vcRequest)).toEqual(
+        surfaces.map((device, i) => ({ v: 1, clientId: `native-api-${i}`, via: "chat", device })));
       expect(provider.calls).toHaveLength(2);
       for (const call of provider.calls) {
         expect(chatText(call).split(canary).length - 1).toBe(1);
