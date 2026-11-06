@@ -7,6 +7,7 @@ import { createServer, type Server } from "node:http";
 import { freePort } from "./helpers";
 import { convLog, setFeedVaults, _resetConvLogs } from "../convlog/log";
 import { startHttpServer, type VaultScope } from "../http";
+import { ENGINE_ROLE_PROMPT } from "../engine/prompt";
 
 // Unused bundled shell assets only: no route, ownership, filesystem or auth mocks.
 vi.mock("../../src-tauri/assets/phone.html", () => ({ default: "" }));
@@ -130,6 +131,35 @@ describe("chat media follows its existing log owner, not the viewer or project n
     expect((await fetch(url)).status).toBe(403);
     expect((await fetch(url, { headers: { range: "bytes=6-" } })).status).toBe(403);
     expect((await get(path)).status).toBe(404);
+  });
+  it("project-cwd image is missing until written under the absolute conversation owner", async () => {
+    const path = ".vault-chat/visuals/owned-plot.png";
+    const checkout = join(home, "code-checkout");
+    const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64");
+    mkdirSync(join(checkout, ".vault-chat/visuals"), { recursive: true });
+    // Reproduce the old relative write when Pi's cwd is a code checkout.
+    writeFileSync(join(checkout, path), png);
+    writeFileSync(join(B.path, path), "WRONG-VIEWER-BYTES");
+    expect((await get(path)).status).toBe(404);
+    expect((await get(join(checkout, path))).status).toBe(403);
+    // Same owner-relative Markdown, now with the absolute owner destination.
+    writeFileSync(join(A.path, path), png);
+    for (const viewer of [B.name, A.name, B.name]) {
+      const json = await get(path, "project-physics", viewer);
+      expect(json.status).toBe(200);
+      expect(Buffer.from((await json.json()).base64, "base64")).toEqual(png);
+      const q = new URLSearchParams({ path, vault: viewer, convId: "project-physics" });
+      const raw = await fetch(`${base}/file?${q}`);
+      expect(raw.status).toBe(200);
+      expect(raw.headers.get("content-type")).toBe("image/png");
+      expect(Buffer.from(await raw.arrayBuffer())).toEqual(png);
+    }
+  });
+  it("visual instructions distinguish the absolute owner destination from cwd and relative Markdown", () => {
+    expect(ENGINE_ROLE_PROMPT).not.toContain("Your working directory is his vault");
+    expect(ENGINE_ROLE_PROMPT).toContain("absolute path under the conversation owner's vault");
+    expect(ENGINE_ROLE_PROMPT).toContain("not the viewer vault or the project/thread cwd");
+    expect(ENGINE_ROLE_PROMPT).toContain("![what it shows](.vault-chat/visuals/<short-name>.svg)");
   });
   it("does not fallback to a viewer's copy when the owner's file is absent", async () => {
     writeFileSync(join(B.path, ".vault-chat/visuals/viewer-only.mp4"), "WRONG");

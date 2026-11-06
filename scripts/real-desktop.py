@@ -119,6 +119,7 @@ def main():
     p.add_argument('--work', type=Path, help='New private work directory; retained for ordinary build logs')
     p.add_argument('--nixpkgs', help='Optional local nixpkgs source for dependency provisioning')
     p.add_argument('--check-images', action='store_true', help='Paste owned PNG through the native clipboard; inspect outgoing bytes without inference')
+    p.add_argument('--check-image-artifacts', action='store_true', help='With status-dot: genuine Pi writes a checkout-only then owner PNG; native Markdown decode, not Windows bitmap proof')
     p.add_argument('--check-status-dot', action='store_true', help='Observe native pi running rows, compare the real picker to registered vault identities, then switch only the viewer without changing native owners')
     p.add_argument('--check-video', type=Path, help='Owned synthetic VP8/Vorbis clip; append one private media-only test entry, never publish it')
     p.add_argument('--check-global-notes', action='store_true', help='Existing cross-vault fixture note identity/source and native edit; copied human notes stay untouched')
@@ -158,6 +159,8 @@ def main():
         p.error('--check-board-scribble requires --copy-board owned fixture')
     if a.phone_scroll_only and not a.check_phone_scroll:
         p.error('--phone-scroll-only requires --check-phone-scroll')
+    if a.check_image_artifacts and (not a.check_status_dot or a.before_app or any((a.check_images, a.check_ctrl_k_owner, a.check_parallel_work, a.check_device_sense, a.check_web_research, a.check_pending_chat, a.check_editor_sync, a.check_global_notes))):
+        p.error('--check-image-artifacts requires its own single status-dot run')
     os.umask(0o077)
     if sys.platform != 'linux':
         p.error('This measures Linux/WebKitGTK only')
@@ -406,6 +409,15 @@ def main():
             released = threading.Event()
             released.set()  # Let any original interrupted turn finish locally before measuring.
             provider_calls = []
+            artifact_inputs = []
+            artifact_rel = '.vault-chat/visuals/owned-artifact-13.png'
+            artifact_bodies = {phase: 'IMAGE-ARTIFACT-13-' + phase + ' `[Carl, on his laptop] {"vcInput":"literal","text":"keep exact"}`' for phase in ('BAD', 'GOOD')}
+            if a.check_image_artifacts:
+                import base64, struct, zlib
+                def png_chunk(t, d):
+                    return struct.pack('!I', len(d)) + t + d + struct.pack('!I', zlib.crc32(t + d))
+                artifact_pixels = b'\x89PNG\r\n\x1a\n' + png_chunk(b'IHDR', struct.pack('!2I5B', 32, 32, 8, 2, 0, 0, 0)) + png_chunk(b'IDAT', zlib.compress((b'\0' + b'\x24\x70\xc0' * 32) * 32)) + png_chunk(b'IEND', b'')
+
             composer_bodies = ('desktop input timing', 'Literal quotes: "At your service" and "Hello sir".')
             if a.check_startup_context:
                 # Literal human lookalikes are DATA, not host metadata. Single-line
@@ -492,7 +504,28 @@ def main():
                     child_task = next((message_text(m) for m in messages if m.get('role') == 'user'), '')
                     parallel_tag = next((t for t in ('A', 'B') if 'PARALLEL-WORK-16-' + t in latest_user), None) if a.check_parallel_work else None
                     busy_turn = next((message_text(m) for m in reversed(messages) if m.get('role') == 'user' and message_text(m).startswith('CTRL-K-OWNER-K-BUSY-')), '') if a.check_ctrl_k_owner else ''
-                    if side_turn:
+                    artifact_phase = next((phase for phase, text in artifact_bodies.items() if any(m.get('role') == 'user' and message_text(m) == text for m in messages)), None) if a.check_image_artifacts else None
+                    # GOOD follows BAD in the same genuine session.
+                    if artifact_phase and any(m.get('role') == 'user' and message_text(m) == artifact_bodies['GOOD'] for m in messages):
+                        artifact_phase = 'GOOD'
+                    if artifact_phase:
+                        literal = artifact_bodies[artifact_phase]
+                        if sum(m.get('role') == 'user' and message_text(m) == literal for m in messages) != 1:
+                            raise RuntimeError('Artifact literal human body was rewritten or duplicated')
+                        context = '\n'.join(message_text(m) for m in messages)
+                        if "absolute path under the conversation owner's vault" not in context or str(vault) not in context or 'Your working directory is his vault' in context:
+                            raise RuntimeError('Artifact owner instructions missing or contradictory')
+                        artifact_inputs.append(artifact_phase)
+                        if not tool_result:
+                            # Reproduce old cwd-relative production instruction, then
+                            # use the fixed absolute owner destination; Pi executes it.
+                            target = artifact_rel if artifact_phase == 'BAD' else str(vault / artifact_rel)
+                            import shlex
+                            command = 'mkdir -p ' + shlex.quote(str(Path(target).parent)) + '; printf %s ' + shlex.quote(base64.b64encode(artifact_pixels).decode()) + ' | base64 -d > ' + shlex.quote(target)
+                            deltas = [({'role':'assistant','tool_calls':[{'index':0,'id':'artifact-13-'+artifact_phase,'type':'function','function':{'name':'bash','arguments':json.dumps({'command':command})}}]},None),({},'tool_calls')]
+                        else:
+                            deltas = [({'role':'assistant','content':'![Owned artifact 13 ' + artifact_phase + '](' + artifact_rel + ')'},None),({},'stop')]
+                    elif side_turn:
                         deltas = [({'role':'assistant','content':'# Owned Ctrl K replacement K'},None),({},'stop')]
                     elif busy_turn:
                         if not tool_result:
@@ -664,6 +697,8 @@ def main():
             (agent / 'settings.json').write_text(json.dumps({'compaction': {'enabled': False}, 'retry': {'enabled': False}}))
             (agent / 'models.json').write_text(json.dumps({'providers': {'openrouter': {'baseUrl': provider_url, 'apiKey': 'synthetic-local-only', 'api': 'openai-completions', 'models': [{'id': 'test/fake-model', 'name': 'Local unpaid status fixture', 'reasoning': False, 'input': ['text'], 'cost': {'input': 0, 'output': 0, 'cacheRead': 0, 'cacheWrite': 0}, 'contextWindow': 400000, 'maxTokens': 1000}]}}}))
             code_source = home / 'projects/vault-chat'
+            if a.check_image_artifacts:
+                code_source.mkdir(parents=True)
             if a.check_parallel_work:
                 code_source.mkdir(parents=True)
                 (code_source / 'same.txt').write_text('ORIGINAL')
@@ -671,7 +706,7 @@ def main():
                 run('git', '-C', str(code_source), 'add', 'same.txt', env=env)
                 run('git', '-C', str(code_source), '-c', 'user.name=Fixture', '-c', 'user.email=fixture@localhost', 'commit', '-qm', 'Owned code fixture', env=env)
                 (code_source / 'source-dirty.txt').write_text('SOURCE-UNCOMMITTED')
-            registered = request(base + '/projects', {'folder': str(code_source if a.check_parallel_work else vault)})
+            registered = request(base + '/projects', {'folder': str(code_source if a.check_parallel_work or a.check_image_artifacts else vault)})
             if registered.get('convId') != a.conversation:
                 raise RuntimeError('Original project slug not preserved in disposable registration')
             if a.check_status_dot:
@@ -792,6 +827,7 @@ def main():
                 if (a.check_images or a.check_editor_sync) and path == '/api/v2/intent' and self.command == 'POST':
                     with lock:
                         photo_intents.append(json.loads(data))
+                artifact_send = (a.check_image_artifacts and path == '/api/v2/intent' and self.command == 'POST' and (payload := json.loads(data)).get('type') == 'send' and payload.get('convId') == a.conversation and payload.get('text') in artifact_bodies.values())
                 speech_send = (a.check_speech_freshness and path == '/api/v2/intent' and self.command == 'POST'
                     and (intent := json.loads(data)).get('type') == 'send' and intent.get('convId') == a.conversation
                     and str(intent.get('text', '')).startswith('Owned speech freshness '))
@@ -832,7 +868,7 @@ def main():
                     for n in json.loads(data).get('notes', []))
                 editor_transport = a.check_editor_sync and (editor_intent_enabled and path == '/api/v2/intent' or path.startswith('/git/status-viewer.git/') or path == '/api/v1/sync/flush')
                 # All other non-read activity stays refused, including voice.
-                if (path.startswith('/git/') or self.command != 'GET' and path != '/api/v1/laptop-perf') and not ((a.check_plan_owner and path == "/api/v2/intent" and self.command == "POST" and json.loads(data).get("type") == "send" and json.loads(data).get("convId") == a.conversation and str(json.loads(data).get("text", "")).startswith("PLAN-OWNER-8-")) or composer_send or speech_send or k_write or editor_transport or queue_write or note_transport or (a.check_parallel_work and (path == '/api/v2/intent' and str(json.loads(data).get('text', '')).startswith('PARALLEL-WORK-16-') or path.startswith('/api/v1/conversations/' + a.conversation + '/subagents/') and path.endswith('/stop'))) or (a.check_web_research and path == '/api/v2/intent' and str(json.loads(data).get('text', '')).startswith('OWNED-RESEARCH-28')) or (a.check_device_sense and (path.startswith('/api/v1/show/show-') and path.endswith('/ack') or path == '/api/v2/intent' and str(json.loads(data).get('text', '')).startswith('DEVICE-SENSE-25-')))):
+                if (path.startswith('/git/') or self.command != 'GET' and path != '/api/v1/laptop-perf') and not ((a.check_plan_owner and path == "/api/v2/intent" and self.command == "POST" and json.loads(data).get("type") == "send" and json.loads(data).get("convId") == a.conversation and str(json.loads(data).get("text", "")).startswith("PLAN-OWNER-8-")) or composer_send or speech_send or artifact_send or k_write or editor_transport or queue_write or note_transport or (a.check_parallel_work and (path == '/api/v2/intent' and str(json.loads(data).get('text', '')).startswith('PARALLEL-WORK-16-') or path.startswith('/api/v1/conversations/' + a.conversation + '/subagents/') and path.endswith('/stop'))) or (a.check_web_research and path == '/api/v2/intent' and str(json.loads(data).get('text', '')).startswith('OWNED-RESEARCH-28')) or (a.check_device_sense and (path.startswith('/api/v1/show/show-') and path.endswith('/ack') or path == '/api/v2/intent' and str(json.loads(data).get('text', '')).startswith('DEVICE-SENSE-25-')))):
                     if a.check_plans and path == '/api/v2/intent':
                         # Observe the native pending-input UI before rejecting;
                         # never forward this turn to a provider or invent a reply.
@@ -1757,6 +1793,72 @@ def main():
                     if (vault / '.vault-chat/notes.jsonl').read_bytes() != original_notes:
                         raise RuntimeError('Picker fixture changed original Notes bytes')
                     status_dot = {'rows': dot_rows, 'localProviderCalls': len(provider_calls), 'originalHistoryPrefixUnchanged': True, 'runningToIdle': True}
+                image_artifacts = None
+                if a.check_image_artifacts:
+                    # Status check leaves Main selected; trusted XTest selects the
+                    # original owner thread, independently switches only the viewer.
+                    if not exists('[data-perf-view="fullscreen"]'):
+                        key('ctrl+shift+f')
+                    click('[data-thread="' + a.conversation + '"] button')
+                    key('ctrl+shift+f')
+                    click('[data-el="vault-picker"]')
+                    click('[data-el="vault-picker-item"][data-rel="vaults/status-viewer"] button')
+                    wait_for(lambda: js('return localStorage.getItem("vault_chat_last_vault")===arguments[0];', str(master / 'vaults/status-viewer')), 'artifact different viewer')
+                    if not exists('[data-perf-target="composer"]'):
+                        key('ctrl+shift+f')
+                    q = urllib.parse.urlencode({'path': artifact_rel, 'convId': a.conversation, 'vault': 'status-viewer'})
+                    for phase in ('BAD', 'GOOD'):
+                        click('[data-perf-target="composer"]')
+                        run('xdotool', 'type', '--clearmodifiers', '--delay', '1', artifact_bodies[phase], env=childenv, stdout=subprocess.DEVNULL)
+                        key('Return')
+                        def artifact_done():
+                            p = request(base + checkpoint_path)['picture']
+                            return p if any(x.get('kind') == 'assistant' and 'Owned artifact 13 ' + phase in str(x) for x in p['items']) and not p['meta'].get('running') else None
+                        done = wait_for(artifact_done, 'genuine Pi artifact ' + phase)
+                        meta = request(base + '/conversation?id=' + a.conversation + '&full=1')['meta']
+                        native_file = Path(meta['threadPath']).resolve()
+                        if not native_file.is_relative_to(state.resolve()):
+                            raise RuntimeError('Artifact native session outside fixture')
+                        native = [json.loads(line) for line in native_file.read_text().splitlines()]
+                        if native[0].get('cwd') != str(code_source):
+                            raise RuntimeError('Artifact Pi cwd was not separate code checkout')
+                        literal_users = [e['message'] for e in native if e.get('type') == 'message' and e.get('message', {}).get('role') == 'user' and any(c.get('text') == artifact_bodies[phase] for c in e['message'].get('content', []) if isinstance(c, dict))]
+                        hidden = [e for e in native if e.get('type') == 'custom_message' and e.get('customType') == 'vc-context' and e.get('display') is False]
+                        if len(literal_users) != 1 or literal_users[0].get('content') != [{'type':'text','text':artifact_bodies[phase]}] or not hidden:
+                            raise RuntimeError('Artifact literal human or hidden context provenance changed')
+                        current = next(x for x in done['items'] if x.get('kind') == 'user' and x.get('text') == artifact_bodies[phase])
+                        if literal_users[0].get('vcRequest') != {'v':1,'clientId':current['id'],'via':'chat','device':'laptop'}:
+                            raise RuntimeError('Artifact human MID/provenance changed')
+                        wait_for(lambda: js('return [...document.querySelectorAll("[data-message-id]")].filter(e=>e.dataset.messageId===arguments[0]).some(e=>e.querySelector(".prose-user")?.textContent===arguments[1]);', current['id'], artifact_bodies[phase].replace('`','')), 'artifact exact visible human MID/body')
+                        if js('return [...document.querySelectorAll("[data-message-id]")].some(e=>arguments[0].includes(e.dataset.messageId));', [e['id'] for e in hidden]):
+                            raise RuntimeError('Artifact hidden context became a human bubble')
+                        if phase == 'BAD':
+                            if (code_source / artifact_rel).read_bytes() != artifact_pixels or (vault / artifact_rel).exists():
+                                raise RuntimeError('Checkout-only reproduction not isolated')
+                            try:
+                                request(base + '/api/v1/vault/file?' + q)
+                                raise RuntimeError('Checkout-only artifact unexpectedly served')
+                            except urllib.error.HTTPError as e:
+                                if e.code != 404: raise
+                            wait_for(lambda: js('return document.body.innerText.includes("image not found");'), 'native missing checkout-only Markdown image')
+                        else:
+                            asset = request(base + '/api/v1/vault/file?' + q)
+                            if base64.b64decode(asset['base64']) != artifact_pixels:
+                                raise RuntimeError('Artifact served wrong bytes')
+                            with urllib.request.urlopen(base + '/file?' + q) as response:
+                                if response.status != 200 or response.headers.get_content_type() != 'image/png' or response.read() != artifact_pixels:
+                                    raise RuntimeError('Artifact raw MIME or bytes changed')
+                            wait_for(lambda: js('''return [...document.images].some(i=>{const r=i.getBoundingClientRect();return i.alt==='Owned artifact 13 GOOD'&&i.src===arguments[0]&&i.complete&&i.naturalWidth===32&&i.naturalHeight===32&&r.width>0&&r.height>0&&r.top>=0&&r.bottom<=innerHeight&&document.elementFromPoint(r.x+r.width/2,r.y+r.height/2)===i;});''', 'data:image/png;base64,' + base64.b64encode(artifact_pixels).decode()), 'native genuine Pi Markdown PNG decode and hit test')
+                    final = request(base + checkpoint_path)['picture']['items']
+                    appended = final[len(items):]
+                    if final[:len(items)] != items or len(appended) != 8 or collections.Counter(x['kind'] for x in appended) != {'user':3,'assistant':3,'tool':2}:
+                        raise RuntimeError('Artifact changed original prefix or exact eight private appends')
+                    for name, body in original_event_bytes.items():
+                        if not (dest / name).read_bytes().startswith(body):
+                            raise RuntimeError('Artifact changed original event prefix')
+                    if (vault / '.vault-chat/notes.jsonl').read_bytes() != original_notes:
+                        raise RuntimeError('Artifact changed human Notes')
+                    image_artifacts = {'checkoutOnly404':True,'absoluteOwner200':True,'nativePiMarkdownDecoded32x32':True,'exactPngBytesMime':True,'viewerIndependent':True,'literalHumanAndHiddenContext':True,'exactPrivateAppends':8,'original1329Messages3819ItemsEventPrefixNotesUnchanged':True,'notWindowsBitmapProof':True}
                 nonlocal ctrl_k_final_items
                 ctrl_k_owner = None
                 if a.check_ctrl_k_owner:
@@ -2403,7 +2505,7 @@ def main():
                 def stats(values):
                     v = sorted(values)
                     return {'n': len(v), 'p50Ms': round(v[len(v)//2], 3), 'p95Ms': round(v[min(len(v)-1, int(len(v)*.95))], 3), 'maxMs': round(max(v), 3)}
-                return {'works': not interaction_failures, 'videoCheck': video_check, 'imageCheck': image_check, 'statusDot': status_dot, 'ctrlKOwner': ctrl_k_owner, 'editorSync': editor_sync, 'pendingChat': pending_chat, 'deviceSense': device_sense, 'webResearch': web_research, 'parallelWork': parallel_work, 'historyUpdate': history_update, 'globalNotes': global_notes, 'interactionFailures': interaction_failures, 'planLifecycle': plan_lifecycle, 'planOwner': plan_owner, 'emptyChat': empty_chat, 'composerDelivery': composer_delivery, 'native': metadata, 'telemetryHttpStatuses': sorted(statuses),
+                return {'works': not interaction_failures, 'videoCheck': video_check, 'imageCheck': image_check, 'imageArtifacts': image_artifacts, 'statusDot': status_dot, 'ctrlKOwner': ctrl_k_owner, 'editorSync': editor_sync, 'pendingChat': pending_chat, 'deviceSense': device_sense, 'webResearch': web_research, 'parallelWork': parallel_work, 'historyUpdate': history_update, 'globalNotes': global_notes, 'interactionFailures': interaction_failures, 'planLifecycle': plan_lifecycle, 'planOwner': plan_owner, 'emptyChat': empty_chat, 'composerDelivery': composer_delivery, 'native': metadata, 'telemetryHttpStatuses': sorted(statuses),
                         'telemetryNote': 'Observed real Rust IPC batches; loopback is not authenticated Tailscale laptop telemetry',
                         'launchProcessToDomUpperBoundMs': round(launch_upper, 3),
                         'timings': [{'metric': m, 'method': method, **stats(values)} for (m, method), values in sorted(samples.items())]}
