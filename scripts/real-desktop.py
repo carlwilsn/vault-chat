@@ -512,7 +512,7 @@ def main():
                         literal = artifact_bodies[artifact_phase]
                         if sum(m.get('role') == 'user' and message_text(m) == literal for m in messages) != 1:
                             raise RuntimeError('Artifact literal human body was rewritten or duplicated')
-                        context = '\n'.join(message_text(m) for m in messages)
+                        context = '\n'.join(message_text(m) for m in messages if m.get('content') is not None)
                         if "absolute path under the conversation owner's vault" not in context or str(vault) not in context or 'Your working directory is his vault' in context:
                             raise RuntimeError('Artifact owner instructions missing or contradictory')
                         artifact_inputs.append(artifact_phase)
@@ -522,7 +522,7 @@ def main():
                             target = artifact_rel if artifact_phase == 'BAD' else str(vault / artifact_rel)
                             import shlex
                             command = 'mkdir -p ' + shlex.quote(str(Path(target).parent)) + '; printf %s ' + shlex.quote(base64.b64encode(artifact_pixels).decode()) + ' | base64 -d > ' + shlex.quote(target)
-                            deltas = [({'role':'assistant','tool_calls':[{'index':0,'id':'artifact-13-'+artifact_phase,'type':'function','function':{'name':'bash','arguments':json.dumps({'command':command})}}]},None),({},'tool_calls')]
+                            deltas = [({'role':'assistant','tool_calls':[{'index':0,'id':'artifact-13-'+artifact_phase,'type':'function','function':{'name':next(t['function']['name'] for t in body.get('tools',[]) if t['function']['name'] in ('bash','Bash','mcp__vault_chat__bash','mcp__vault_chat__Bash')),'arguments':json.dumps({'command':command})}}]},None),({},'tool_calls')]
                         else:
                             deltas = [({'role':'assistant','content':'![Owned artifact 13 ' + artifact_phase + '](' + artifact_rel + ')'},None),({},'stop')]
                     elif side_turn:
@@ -731,11 +731,11 @@ def main():
                     raise RuntimeError('Original inert listener was disturbed')
             result['voiceConflict'] = {'socketRefused': True, 'originalListenerStillResponds503': True, 'healthCode': conflict_status['failure']['code']}
         checkpoint_path = '/api/v2/conversations/' + urllib.parse.quote(a.conversation, safe='') + '/checkpoint'
-        if a.check_ctrl_k_owner:
+        if a.check_ctrl_k_owner or a.check_image_artifacts:
             # This approved original contains one interrupted Delegate. Await
             # its exact two-item local startup report BEFORE freezing the prefix,
             # not an arbitrary later allowance that could hide human history.
-            wait_for(lambda: (p if len((p := request(base + checkpoint_path)['picture'])['items']) == 3821 and p['meta'].get('state') == 'idle' else None), 'K exact owned startup report before snapshot')
+            wait_for(lambda: (p if len((p := request(base + checkpoint_path)['picture'])['items']) == 3821 and p['meta'].get('state') == 'idle' else None), 'exact owned startup report before snapshot')
         checkpoint = request(base + checkpoint_path)
         picture = checkpoint.get('picture', checkpoint)
         items = picture.get('items', [])
@@ -1795,17 +1795,23 @@ def main():
                     status_dot = {'rows': dot_rows, 'localProviderCalls': len(provider_calls), 'originalHistoryPrefixUnchanged': True, 'runningToIdle': True}
                 image_artifacts = None
                 if a.check_image_artifacts:
+                    import base64
                     # Status check leaves Main selected; trusted XTest selects the
                     # original owner thread, independently switches only the viewer.
                     if not exists('[data-perf-view="fullscreen"]'):
                         key('ctrl+shift+f')
-                    click('[data-thread="' + a.conversation + '"] button')
-                    key('ctrl+shift+f')
+                    click('[data-thread="' + a.conversation + '"] > button')
+                    wait_for(lambda: js('return localStorage.getItem("vault_chat_active_conv")===arguments[0];', a.conversation), 'artifact selected conversation owner')
+                    if exists('[data-perf-view="fullscreen"]'):
+                        key('ctrl+shift+f')
+                    wait_for(lambda: exists('[data-el="vault-picker"]'), 'artifact ordinary viewer picker')
                     click('[data-el="vault-picker"]')
+                    wait_for(lambda: exists('[data-el="vault-picker-item"][data-rel="vaults/status-viewer"] button'), 'artifact registered viewer item')
                     click('[data-el="vault-picker-item"][data-rel="vaults/status-viewer"] button')
                     wait_for(lambda: js('return localStorage.getItem("vault_chat_last_vault")===arguments[0];', str(master / 'vaults/status-viewer')), 'artifact different viewer')
-                    if not exists('[data-perf-target="composer"]'):
+                    if not exists('[data-perf-view="fullscreen"]'):
                         key('ctrl+shift+f')
+                    wait_for(lambda: exists('[data-perf-target="composer"]'), 'artifact visible composer')
                     q = urllib.parse.urlencode({'path': artifact_rel, 'convId': a.conversation, 'vault': 'status-viewer'})
                     for phase in ('BAD', 'GOOD'):
                         click('[data-perf-target="composer"]')
@@ -1820,8 +1826,9 @@ def main():
                         if not native_file.is_relative_to(state.resolve()):
                             raise RuntimeError('Artifact native session outside fixture')
                         native = [json.loads(line) for line in native_file.read_text().splitlines()]
-                        if native[0].get('cwd') != str(code_source):
-                            raise RuntimeError('Artifact Pi cwd was not separate code checkout')
+                        proc = next(p for p in request(base + '/api/v1/health')['engine']['pi']['procs'] if p.get('threadId') == meta['threadId'])
+                        if (Path('/proc') / str(proc['pid']) / 'cwd').resolve(strict=True) != code_source:
+                            raise RuntimeError('Artifact live Pi cwd was not separate code checkout')
                         literal_users = [e['message'] for e in native if e.get('type') == 'message' and e.get('message', {}).get('role') == 'user' and any(c.get('text') == artifact_bodies[phase] for c in e['message'].get('content', []) if isinstance(c, dict))]
                         hidden = [e for e in native if e.get('type') == 'custom_message' and e.get('customType') == 'vc-context' and e.get('display') is False]
                         if len(literal_users) != 1 or literal_users[0].get('content') != [{'type':'text','text':artifact_bodies[phase]}] or not hidden:
@@ -1848,7 +1855,10 @@ def main():
                             with urllib.request.urlopen(base + '/file?' + q) as response:
                                 if response.status != 200 or response.headers.get_content_type() != 'image/png' or response.read() != artifact_pixels:
                                     raise RuntimeError('Artifact raw MIME or bytes changed')
-                            wait_for(lambda: js('''return [...document.images].some(i=>{const r=i.getBoundingClientRect();return i.alt==='Owned artifact 13 GOOD'&&i.src===arguments[0]&&i.complete&&i.naturalWidth===32&&i.naturalHeight===32&&r.width>0&&r.height>0&&r.top>=0&&r.bottom<=innerHeight&&document.elementFromPoint(r.x+r.width/2,r.y+r.height/2)===i;});''', 'data:image/png;base64,' + base64.b64encode(artifact_pixels).decode()), 'native genuine Pi Markdown PNG decode and hit test')
+                            wait_for(lambda: js('''return [...document.images].some(i=>{const r=i.getBoundingClientRect();return i.alt==='Owned artifact 13 GOOD'&&i.src.startsWith('blob:')&&i.complete&&i.naturalWidth===32&&i.naturalHeight===32&&r.width>0&&r.height>0&&r.top>=0&&r.bottom<=innerHeight&&document.elementFromPoint(r.x+r.width/2,r.y+r.height/2)===i;});'''), 'native genuine Pi Markdown PNG decode and hit test')
+                            decoded = request(driver + '/session/' + sid + '/execute/async', {'script':"const done=arguments[arguments.length-1],i=[...document.images].find(i=>i.alt==='Owned artifact 13 GOOD');fetch(i.src).then(r=>r.arrayBuffer()).then(b=>{const c=document.createElement('canvas');c.width=32;c.height=32;const x=c.getContext('2d');x.drawImage(i,0,0);done({bytes:btoa(String.fromCharCode(...new Uint8Array(b))),pixel:[...x.getImageData(16,16,1,1).data]});},()=>done(null));",'args':[]})['value']
+                            if decoded != {'bytes':base64.b64encode(artifact_pixels).decode(),'pixel':[36,112,192,255]}:
+                                raise RuntimeError('Native artifact blob bytes or decoded pixels changed')
                     final = request(base + checkpoint_path)['picture']['items']
                     appended = final[len(items):]
                     if final[:len(items)] != items or len(appended) != 8 or collections.Counter(x['kind'] for x in appended) != {'user':3,'assistant':3,'tool':2}:
