@@ -2,7 +2,8 @@
  * Install this bundle once through Claude; it is never loaded from the submitted branch. */
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync, lstatSync, symlinkSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, writeFileSync, lstatSync, symlinkSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { CHANGE_GATES, compareChangeGates, type GateReceipt, type ChangeGate } from "./shipGates";
@@ -198,6 +199,33 @@ export async function promote(repo: string, base: string, head: string, change: 
   });
 }
 
+/** A commit's gate results depend only on its tree and this host's installed toolchain, so a commit
+ * gated once (as one ship's candidate) is not gated again as the next ship's baseline: that re-run was
+ * half of every ship. Only complete, untimed-out runs are kept, in the host's private work directory
+ * (outside every agent sandbox), for 14 days; the comparison against the candidate is unchanged. */
+const GATE_CACHE_DAYS = 14;
+function gateCacheFile(o: ShipConfig, revision: string): string {
+  const key = createHash("sha256").update(JSON.stringify([revision, o.dependencies, o.pi, o.node, o.npm, o.bash, o.bwrap, o.path, CHANGE_GATES])).digest("hex").slice(0, 40);
+  // Beside the run directories, never among them (each entry of workRoot is one ship run).
+  return join(`${o.workRoot}.gate-cache`, `${key}.json`);
+}
+export function cachedGates(o: ShipConfig, revision: string, now = Date.now()): GateReceipt[] | null {
+  try {
+    const r = JSON.parse(readFileSync(gateCacheFile(o, revision), "utf8"));
+    if (r?.revision !== revision || typeof r.at !== "number" || now - r.at > GATE_CACHE_DAYS * 86_400_000) return null;
+    const gates = r.gates as GateReceipt[];
+    if (!Array.isArray(gates) || gates.length !== CHANGE_GATES.length || CHANGE_GATES.some((g) => !gates.find((x) => x.gate === g && x.complete && !x.timedOut))) return null;
+    return gates;
+  } catch { return null; }
+}
+export function rememberGates(o: ShipConfig, revision: string, gates: readonly GateReceipt[], now = Date.now()): void {
+  if (gates.length !== CHANGE_GATES.length || gates.some((g) => !g.complete || g.timedOut)) return;
+  const file = gateCacheFile(o, revision);
+  mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
+  writeFileSync(`${file}.tmp`, JSON.stringify({ revision, at: now, gates }), { mode: 0o600 });
+  renameSync(`${file}.tmp`, file);
+}
+
 /** Same runner used for first-install verification without touching a project ref. */
 export function createRunRoot(o: ShipConfig): string {
   mkdirSync(o.workRoot, { recursive: true, mode: 0o700 });
@@ -234,7 +262,12 @@ export async function ship(o: ShipConfig, input: { branch: string; title: string
   });
   if (base === head) throw new Error("Branch has no change");
   await git(o.repo, ["merge-base", "--is-ancestor", base, head]);
-  const baseline = await runShipGates(o, o.repo, base, root, signal), candidate = await runShipGates(o, o.repo, head, root, signal);
+  const cached = cachedGates(o, base);
+  if (cached) console.log(`Baseline ${base.slice(0, 12)}: gate results reused (already gated)`);
+  const baseline = cached ?? await runShipGates(o, o.repo, base, root, signal);
+  if (!cached) rememberGates(o, base, baseline);
+  const candidate = await runShipGates(o, o.repo, head, root, signal);
+  rememberGates(o, head, candidate);
   writeFileSync(join(root, "gates.json"), JSON.stringify({ base, head, baseline, candidate }, null, 2));
   compareChangeGates(baseline, candidate);
   const tree = (await git(o.repo, ["rev-parse", `${head}^{tree}`])).trim(), now = new Date().toISOString();

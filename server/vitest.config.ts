@@ -2,6 +2,9 @@ import { defineConfig } from "vitest/config";
 import { fileURLToPath } from "node:url";
 import { inlinedKatexCss } from "./katexCssGen.mjs";
 
+/** Timing-sensitive files: they pass alone and race under parallel load. */
+const SERIAL = ["server/test/voiceBusyRace.test.ts", "server/test/updaterHttpDeadline.test.ts"];
+
 const shim = (f: string) => fileURLToPath(new URL(`./shims/${f}`, import.meta.url));
 
 export default defineConfig({
@@ -40,10 +43,15 @@ export default defineConfig({
     },
   },
   test: {
-    include: ["server/test/**/*.test.ts"],
     testTimeout: 120_000,
     hookTimeout: 120_000,
-    // Each file boots its own server processes on their own ports.
-    fileParallelism: false,
+    // Each file runs in its own process and boots its own servers on free ports, so files run in
+    // parallel (about 2 minutes instead of 13 on the box). The few whose assertions race the clock
+    // run afterwards, one at a time, on a quiet machine.
+    maxWorkers: 6,
+    projects: [
+      { extends: true, test: { name: "parallel", include: ["server/test/**/*.test.ts"], exclude: [...SERIAL, "**/node_modules/**"], sequence: { groupOrder: 0 } } },
+      { extends: true, test: { name: "serial", include: SERIAL, poolOptions: { forks: { singleFork: true } }, sequence: { groupOrder: 1 } } },
+    ],
   },
 });
