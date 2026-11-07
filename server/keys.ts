@@ -13,6 +13,9 @@ import { writeAtomic } from "./atomic";
 import type { CommandFn } from "./commands/registry";
 import { keyEnv } from "../src/keyEnv";
 
+/** The keychain name Claude Code's sign-in is stored under. */
+export const CLAUDE_CODE_KEY = "service.claude-code";
+
 let secrets: Map<string, string> = new Map();
 let loadError: string | null = null;
 
@@ -105,6 +108,11 @@ export function agentKeyEnvNames(): string[] {
 
 export function hasKey(name: string): boolean {
   return !!secrets.get(name);
+}
+
+/** Claude Code's sign-in token (`claude setup-token`), or null. */
+export function claudeCodeToken(): string | null {
+  return secrets.get(CLAUDE_CODE_KEY)?.trim() || null;
 }
 
 export function keyStoreError(): string | null {

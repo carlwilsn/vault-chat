@@ -232,6 +232,14 @@ export type EngineBackend = {
   liveChildren(parentThreadId: string): LiveChild[];
   endedChild?(childId: string): { state: string; endedAt: number } | null;
 
+  /**
+   * The engine is out of headroom on Carl's subscription until this moment, so
+   * work the host would start on its own — a wake, a schedule — waits rather
+   * than burning a rejected call. Null when there is headroom. A turn Carl asked
+   * for is never held back here: he can see the answer and decide.
+   */
+  usageLimit?(): { resetsAt: number | null; kind: string | null } | null;
+
   // -- a bounded continuation the agent opted into, where the runtime has one
   /** Stop a thread's continuation without a turn to interrupt (Carl pressed stop while it was idle). */
   cancelContinuation?(threadId: string): Promise<boolean>;

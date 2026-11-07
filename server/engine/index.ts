@@ -16,7 +16,7 @@ import { Ledger } from "./ledger";
 import { excludeLocalDir } from "./wakes";
 import { boxLogs } from "../boxLogs";
 import { turnSummary } from "./turnLog";
-import { initCapabilities } from "./capabilities";
+import { initCapabilities, offerClaudeModels } from "./capabilities";
 import { ensurePi, findBwrap, type PiInstall } from "./pi/install";
 import { agentWorkDir } from "../workArea";
 import { HOME_CREDENTIALS, activeFolders, setFolderWalls, under as underDir } from "../projectFolders";
@@ -25,13 +25,14 @@ import { masterDir, masterLayout } from "../master";
 import { listPiModels, modelWindow, piPaths, vaultPiPaths, writePiConfig, type PiPaths } from "./pi/config";
 import { PiBackend, outerWith, type PiSandbox } from "./pi/backend";
 import { ClaudeCodeBackend } from "./claude/backend";
+import { isClaudeModel, validModel } from "./claude/models";
 import { McpRuntime } from "../mcp/runtime";
 import { claudePaths, type ClaudePaths } from "./claude/paths";
 import { findClaude, type ClaudeInstall } from "./claude/install";
 import { BackendRouter, type EngineName } from "./router";
 import { logOf } from "./convs";
 import { signal } from "../convlog/log";
-import { agentKeyEnv } from "../keys";
+import { agentKeyEnv, claudeCodeToken } from "../keys";
 import { sweepJobEnvFiles } from "./pi/jobs";
 import { PushGate, pushGate } from "../pushGate";
 import { legacyPushEnabled } from "../pushPreferences";
@@ -276,6 +277,8 @@ export async function startEngine(b: EngineBoot): Promise<EngineHandle> {
   if ("install" in claudeFound) {
     claudeInstall = claudeFound.install;
     console.log(`[engine:claude] Claude Code ${claudeInstall.version} at ${claudeInstall.cli} (${claudeInstall.source})`);
+    // Its models join the picker (Settings → Models, the composer's).
+    offerClaudeModels(true);
   } else {
     console.log(`[engine:claude] not available: ${claudeFound.error} — ${claudeFound.tried.join("; ")}`);
   }
@@ -390,6 +393,11 @@ export async function startEngine(b: EngineBoot): Promise<EngineHandle> {
             PATH: process.env.PATH ?? "/run/current-system/sw/bin",
             HOME: st.claude.configDir,
             CLAUDE_CONFIG_DIR: st.claude.configDir,
+            // Carl's Claude subscription. Read at each session start, so signing
+            // in again takes effect without a restart, and set for the CLI only:
+            // it is deliberately absent from agentKeyEnv (src/keyEnv.ts), so no
+            // command the agent runs ever sees it.
+            ...(claudeCodeToken() ? { CLAUDE_CODE_OAUTH_TOKEN: claudeCodeToken()! } : {}),
             CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
             // An MCP call that waits on Carl (AskUser) is not idle; the
             // per-server timeout above is the only cap that should apply.
@@ -482,16 +490,17 @@ export async function startEngine(b: EngineBoot): Promise<EngineHandle> {
     roles: () => ({ chat: engineModel(), vision: visionModel, subagent: process.env.VC_PI_SUBAGENT_MODEL || engineModel() }),
     setModel: (id: string) => {
       const m = String(id ?? "").trim();
-      if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.:-]+$/.test(m)) return { ok: false as const, error: `"${m.slice(0, 80)}" is not a model id` };
+      if (!validModel(m)) return { ok: false as const, error: `"${m.slice(0, 80)}" is not a model id` };
       try {
         localStorage.setItem("vault_chat_engine_model", m);
       } catch (e) {
         return { ok: false as const, error: (e as Error).message };
       }
       // pi's settings for it (compaction at the same cap); every thread's next turn runs on it (backend.startTurn).
-      writePiConfig({ paths: base, install, catalog: piCat, models: [m, visionModel, ctxConfig().recapModel], baseUrl });
+      // A Claude alias is not pi's to run, so pi's config is left as it was.
+      writePiConfig({ paths: base, install, catalog: piCat, models: [...(isClaudeModel(m) ? [] : [m]), visionModel, ctxConfig().recapModel], baseUrl });
       configureContext({ agentModel: m });
-      console.log(`[engine:pi] model ${m} (Carl's choice)`);
+      console.log(`[engine:${isClaudeModel(m) ? "claude" : "pi"}] model ${m} (Carl's choice)`);
       return { ok: true as const, model: m };
     },
     open,

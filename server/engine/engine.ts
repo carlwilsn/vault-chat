@@ -504,6 +504,8 @@ export class Engine {
   private byThread = new Map<string, string>(); // threadId → convId
   /** Threads whose backend-started turn is being opened (adopt()). */
   private adopting = new Set<string>();
+  /** When the usage limit was last logged, so waiting is said once, not every tick. */
+  private saidLimitAt = 0;
   private chains = new Map<string, Promise<unknown>>();
   /** Notify calls per conversation in the last hour (the agent's pings are capped). */
   private pings = new Map<string, number[]>();
@@ -2731,6 +2733,17 @@ export class Engine {
 
   private async tickWakes(): Promise<void> {
     if (shuttingDown) return;
+    // Out of headroom on Carl's subscription: a wake is work the host starts by
+    // itself, so it waits for the reset rather than burning a rejected call. The
+    // wake is left where it is, so it fires once there is room again.
+    const limit = this.d.backend.usageLimit?.();
+    if (limit) {
+      if (Date.now() - this.saidLimitAt > 10 * 60_000) {
+        this.saidLimitAt = Date.now();
+        this.log(`usage limit reached${limit.kind ? ` (${limit.kind})` : ""}: wakes wait${limit.resetsAt ? ` until ${new Date(limit.resetsAt).toISOString()}` : ""}`);
+      }
+      return;
+    }
     const now = Date.now();
     const due = readWakes(this.d.vault).filter((w) => w.at <= now && !this.firing.has(w.id));
     for (const w of due) {

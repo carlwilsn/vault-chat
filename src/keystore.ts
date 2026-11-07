@@ -43,6 +43,7 @@ function globalKeyNames(): string[] {
     KEY.openrouter,
     KEY.tavily,
     KEY.elevenlabs,
+    KEY.claudeCode,
     ...listUserKeys().map(userKeyName),
   ];
 }

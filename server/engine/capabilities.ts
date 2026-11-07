@@ -10,6 +10,7 @@
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { allModels, modelMeta } from "./catalog";
+import { CLAUDE_MODEL_ALIASES, isClaudeModel } from "./claude/models";
 
 export type Capabilities = { tools: boolean; subagents: boolean; images: boolean; pdf: boolean; caching: boolean; context: number };
 export type LearnedEntry = {
@@ -47,6 +48,12 @@ function save(): void {
 const fresh = (e: LearnedEntry | undefined) => (e && e.version === version ? e : undefined);
 
 export function capabilitiesOf(model: string): Capabilities & { source: "catalog" | "learned" | "untested"; status: "untested" | "tested" | "stale"; checkedAt: number | null } {
+  // A Claude Code model is not in the OpenRouter catalog, and without this it
+  // would read as a model that cannot see — so every turn carrying a picture
+  // would be quietly handed to the OpenRouter vision model instead.
+  if (isClaudeModel(model)) {
+    return { tools: true, subagents: true, images: true, pdf: true, caching: true, context: 0, source: "catalog", status: "tested", checkedAt: null };
+  }
   const m = modelMeta(model);
   const raw = learned[model];
   const l = fresh(raw);
@@ -77,8 +84,16 @@ export function learn(model: string, key: keyof LearnedEntry["results"], ok: boo
 }
 
 /** /api/v1/models: every catalog model plus anything learned. */
+/** Whether Claude Code's models belong in the picker (the box says so at boot). */
+let claudeAvailable = false;
+export function offerClaudeModels(on: boolean): void {
+  claudeAvailable = on;
+}
+
 export function modelsList(): { id: string; capabilities: Capabilities; source: string; status: string; checkedAt: number | null }[] {
-  const ids = new Set<string>([...allModels().map((m) => m.id), ...Object.keys(learned)]);
+  // Claude Code names its models by what they are for and resolves them itself,
+  // so they are offered as themselves rather than through the OpenRouter catalog.
+  const ids = new Set<string>([...(claudeAvailable ? CLAUDE_MODEL_ALIASES : []), ...allModels().map((m) => m.id), ...Object.keys(learned)]);
   return [...ids].sort().map((id) => {
     const { source, status, checkedAt, ...capabilities } = capabilitiesOf(id);
     return { id, capabilities, source, status, checkedAt };

@@ -227,6 +227,15 @@ export class BackendRouter extends EventEmitter implements EngineBackend {
     return this.of(parentThreadId).liveChildren(parentThreadId);
   }
 
+  /** Headroom is per account, not per thread: any engine that is out holds back the host's own work. */
+  usageLimit(): { resetsAt: number | null; kind: string | null } | null {
+    for (const b of this.all()) {
+      const l = b.usageLimit?.();
+      if (l) return l;
+    }
+    return null;
+  }
+
   cancelContinuation(threadId: string): Promise<boolean> {
     return this.of(threadId).cancelContinuation?.(threadId) ?? Promise.resolve(false);
   }

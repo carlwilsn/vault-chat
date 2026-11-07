@@ -38,6 +38,10 @@ export const KEY = {
   openrouter: "api.openrouter",
   tavily: "service.tavily",
   elevenlabs: "service.elevenlabs",
+  // Claude Code's sign-in (`claude setup-token`): the box runs the engine with
+  // it, and it is deliberately not given to anything the agent runs
+  // (src/keyEnv.ts NOT_FOR_COMMANDS).
+  claudeCode: "service.claude-code",
 } as const;
 
 // ----- user-managed custom keys -----

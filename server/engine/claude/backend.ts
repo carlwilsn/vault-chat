@@ -190,9 +190,17 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
     return this.started;
   }
 
+  /** Carl's Claude subscription is in reach (the value itself is never read out). */
+  signedIn(): boolean {
+    const env = this.o.env();
+    return !!(env.CLAUDE_CODE_OAUTH_TOKEN || env.ANTHROPIC_API_KEY);
+  }
+
   health(): Record<string, unknown> {
     return {
       state: this.started ? "up" : "down",
+      // What Settings → Agent shows: "signed in", or "sign in again".
+      signedIn: this.signedIn(),
       version: this.version,
       cli: this.o.install.cli,
       source: this.o.install.source,
@@ -205,6 +213,18 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
   /** The last rate limit Claude Code reported, for the host's back-off. */
   rateLimit(): { status: string; resetsAt: number | null; kindOfLimit: string | null } | null {
     return this.limit;
+  }
+
+  /**
+   * Out of headroom until the reset Claude Code named. Only a REJECTED limit
+   * holds work back: a warning means there is still room, and a reset that has
+   * passed is not a limit any more.
+   */
+  usageLimit(): { resetsAt: number | null; kind: string | null } | null {
+    const l = this.limit;
+    if (!l || l.status !== "rejected") return null;
+    if (l.resetsAt && l.resetsAt <= Date.now()) return null;
+    return { resetsAt: l.resetsAt, kind: l.kindOfLimit };
   }
 
   stop(): void {

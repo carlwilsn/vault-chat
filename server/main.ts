@@ -13,7 +13,7 @@ import { configureChangeDelivery, currentDeliveryHealth } from "./changeDelivery
 import { observeReleaseVoiceHealth, type BoxReleaseHealth } from "./releaseHealth";
 import { loadConfig, SERVER_VERSION, SERVER_REV } from "./config";
 import { registerCommands } from "./commands";
-import { loadKeyStore, hasKey, keychainCommands, saveKeys, keyNames } from "./keys";
+import { loadKeyStore, hasKey, keychainCommands, saveKeys, keyNames, CLAUDE_CODE_KEY } from "./keys";
 import { hostname, userInfo } from "node:os";
 import { setLegacySource, signal, convLog, setSharedClock, setFeedVaults } from "./convlog/log";
 import { legacySource } from "./convlog/importer";
@@ -57,16 +57,17 @@ async function main(): Promise<void> {
   // Every vault's log takes its seqs from one clock: the clients read one feed over all of them (GlobalFeed).
   setSharedClock(join(cfg.stateDir, "convlog-clock"));
 
-  // Keys: in-process from the box's encrypted store. No OpenRouter key, no
-  // missions — refuse to start rather than run turns with zero keys.
+  // Keys: in-process from the box's encrypted store. The server still starts
+  // with none (health says so) so the laptop's Settings can send them (POST
+  // /api/v1/keys); turns fail until one way of running them is there.
   const ks = await loadKeyStore(cfg.secretsDir);
   if (ks.error) console.error(`[vault-chat-server] ${ks.error}`);
-  // No OpenRouter key: the server still starts (health says hasKey: false) so
-  // the laptop's Settings can send one (POST /api/v1/keys); turns fail until then.
-  if (!hasKey("api.openrouter")) {
+  // There are two ways now: pi on an OpenRouter key, or Claude Code on Carl's
+  // subscription. Only having neither stops a turn.
+  if (!hasKey("api.openrouter") && !hasKey(CLAUDE_CODE_KEY)) {
     console.error(
-      `[vault-chat-server] no "api.openrouter" key in the key store (${cfg.secretsDir}/secrets.age). ` +
-        `Turns cannot run until one is added (laptop: Settings → Box → Box's OpenRouter key).`,
+      `[vault-chat-server] the key store (${cfg.secretsDir}/secrets.age) has neither "api.openrouter" nor "${CLAUDE_CODE_KEY}". ` +
+        `Turns cannot run until one is added (laptop: Settings → Box for the OpenRouter key, Settings → Agent to sign Claude Code in).`,
     );
   }
   if (cfg.openrouterBase) installOpenRouterRewrite(cfg.openrouterBase);
@@ -269,7 +270,7 @@ async function main(): Promise<void> {
       })(),
       vault: cfg.vaultName,
       git: gitState,
-      keys: { openrouter: hasKey("api.openrouter"), elevenlabs: hasKey("service.elevenlabs") },
+      keys: { openrouter: hasKey("api.openrouter"), elevenlabs: hasKey("service.elevenlabs"), claudeCode: hasKey(CLAUDE_CODE_KEY) },
       // A live voice session counts as a run: the updater waits for busy.runs == 0
       // (server/deploy/vault-chat-update.sh), so it never restarts under someone talking.
       // It also waits for busy.inputs == 0: no surface Carl used in the last 10 minutes

@@ -18,6 +18,9 @@ export async function laptopKeys(): Promise<Record<string, string>> {
   }
   if (s.serviceKeys.tavily) out[KEY.tavily] = s.serviceKeys.tavily;
   if (s.serviceKeys.elevenlabs) out[KEY.elevenlabs] = s.serviceKeys.elevenlabs;
+  // The box makes its store exactly what is pushed, so a key left out here is a
+  // key removed from the box — Claude Code's sign-in included.
+  if (s.serviceKeys.claudeCode) out[KEY.claudeCode] = s.serviceKeys.claudeCode;
   for (const n of listUserKeys()) {
     const v = await getUserKey(n).catch(() => null);
     if (v) out[userKeyName(n)] = v;

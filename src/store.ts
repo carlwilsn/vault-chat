@@ -232,7 +232,7 @@ const newPaneId = () =>
     : `p_${Math.random().toString(36).slice(2)}`);
 
 type ApiKeys = Partial<Record<ProviderId, string>>;
-export type ServiceKeys = { tavily?: string; elevenlabs?: string };
+export type ServiceKeys = { tavily?: string; elevenlabs?: string; claudeCode?: string };
 
 const THEME_STORAGE = "vault_chat_theme";
 const CHAT_SIDEBAR_STORAGE = "vc_chat_sidebar";
@@ -288,13 +288,14 @@ async function fetchAllFromKeychain(): Promise<{
   apiKeys: ApiKeys;
   serviceKeys: ServiceKeys;
 }> {
-  const [anthropic, openai, google, openrouter, tavily, elevenlabs] = await Promise.all([
+  const [anthropic, openai, google, openrouter, tavily, elevenlabs, claudeCode] = await Promise.all([
     keychainGet(KEY.anthropic),
     keychainGet(KEY.openai),
     keychainGet(KEY.google),
     keychainGet(KEY.openrouter),
     keychainGet(KEY.tavily),
     keychainGet(KEY.elevenlabs),
+    keychainGet(KEY.claudeCode),
   ]);
   const apiKeys: ApiKeys = {};
   if (anthropic) apiKeys.anthropic = anthropic;
@@ -304,6 +305,7 @@ async function fetchAllFromKeychain(): Promise<{
   const serviceKeys: ServiceKeys = {};
   if (tavily) serviceKeys.tavily = tavily;
   if (elevenlabs) serviceKeys.elevenlabs = elevenlabs;
+  if (claudeCode) serviceKeys.claudeCode = claudeCode;
   return { apiKeys, serviceKeys };
 }
 
@@ -1093,12 +1095,7 @@ export const useStore = create<State>((set) => ({
   },
   setServiceKey: (name, k) => {
     set((s) => ({ serviceKeys: { ...s.serviceKeys, [name]: k } }));
-    const keyName =
-      name === "tavily"
-        ? KEY.tavily
-        : name === "elevenlabs"
-          ? KEY.elevenlabs
-          : null;
+    const keyName = name === "tavily" ? KEY.tavily : name === "elevenlabs" ? KEY.elevenlabs : name === "claudeCode" ? KEY.claudeCode : null;
     if (keyName) {
       keychainSet(keyName, k).catch((e) =>
         console.error(`[keys] keychain set ${name} failed:`, e),
@@ -1111,12 +1108,7 @@ export const useStore = create<State>((set) => ({
       delete next[name];
       return { serviceKeys: next };
     });
-    const keyName =
-      name === "tavily"
-        ? KEY.tavily
-        : name === "elevenlabs"
-          ? KEY.elevenlabs
-          : null;
+    const keyName = name === "tavily" ? KEY.tavily : name === "elevenlabs" ? KEY.elevenlabs : name === "claudeCode" ? KEY.claudeCode : null;
     if (keyName) {
       keychainDelete(keyName).catch((e) =>
         console.error(`[keys] keychain delete ${name} failed:`, e),

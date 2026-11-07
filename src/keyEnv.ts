@@ -3,6 +3,14 @@
 // Names map to the conventional variables; a user key keeps its own name.
 // Only names are ever shown to a model — never the values.
 
+/**
+ * Keys that are NOT the agent's to use, however they are named. Claude Code's
+ * sign-in is the box's own credential for running the engine, not a service the
+ * agent calls: it goes to the Claude Code process and nowhere else, so leaving
+ * it out here is what keeps it out of every command's environment.
+ */
+export const NOT_FOR_COMMANDS = new Set(["service.claude-code"]);
+
 const FIXED: Record<string, string> = {
   "api.openrouter": "OPENROUTER_API_KEY",
   "api.anthropic": "ANTHROPIC_API_KEY",
@@ -14,6 +22,7 @@ const FIXED: Record<string, string> = {
 
 /** The environment variable for keychain entry `name`, or null (internal entries like keystore.passphrase). */
 export function envNameForKey(name: string): string | null {
+  if (NOT_FOR_COMMANDS.has(name)) return null;
   if (FIXED[name]) return FIXED[name]!;
   const m = /^(api|service|user)\.([A-Za-z0-9_.-]{1,64})$/.exec(name);
   if (!m) return null;

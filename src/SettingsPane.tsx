@@ -21,6 +21,7 @@ import {
 import { boxGet, boxPost } from "./boxChat";
 import { pushKeysToBox, keysChanged, subscribeKeyPush } from "./boxKeys";
 import { BoxModelChecks } from "./BoxModelChecks";
+import { ClaudeCodeSignIn } from "./ClaudeCodeSignIn";
 import { MasterSection } from "./MasterSection";
 import { modelLabel, setAgentModel, useAgentModel } from "./agentModel";
 import { openShortcutSheet } from "./ShortcutSheet";
@@ -237,6 +238,7 @@ function ModelsSection() {
           {agent.error && <p className="text-[10.5px] text-amber-500/90 px-0.5">Not changed: {agent.error}</p>}
         </div>
       </div>
+      <ClaudeCodeSignIn />
       <VoiceHealthRow />
       <BoxModelChecks />
     </section>
