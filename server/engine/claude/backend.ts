@@ -45,6 +45,7 @@ import { appendEntries, newSessionFile } from "../../convlog/piSession";
 import { McpRuntime, type ProcessServices } from "../../mcp/runtime";
 import { ClaudeSession, type SessionSend } from "./session";
 import { ClaudeSideRuns } from "./side";
+import { memoryUpdate, writeClaudeMd, type MemoryMark } from "./memory";
 import { ClaudeTranslator, type Emit } from "./translate";
 import { sandboxedCli, type ClaudeInstall } from "./install";
 import type { ClaudePaths } from "./paths";
@@ -57,6 +58,8 @@ export type ClaudeBackendOptions = {
   paths: ClaudePaths;
   /** The feed's own sessions folder for this vault: where a thread's transcript goes. */
   feedSessionsDir: string;
+  /** The vault whose memory a session carries natively (see claude/memory.ts). */
+  vault: string;
   /** Environment for the CLI only (phase 6 puts the sign-in token here). */
   env: () => NodeJS.ProcessEnv;
   policy: PathPolicy;
@@ -121,6 +124,8 @@ type Live = {
   pending: Map<string, Pushed>;
   /** Withdraws this session's MCP tools when it ends. */
   revoke: (() => Promise<void>) | null;
+  /** What the memory file looked like when this session last carried it. */
+  memory: MemoryMark;
 };
 
 /** Thread ids this backend owns. The router needs no state to tell them apart. */
@@ -134,6 +139,7 @@ export const isClaudeThread = (threadId: string): boolean => threadId.startsWith
 
 export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
   readonly name = "claude";
+
   readonly version: string;
   private threads: Record<string, ThreadState> = {};
   private live = new Map<string, Live>();
@@ -188,6 +194,11 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
 
   async ready(_ms?: number): Promise<boolean> {
     return this.started;
+  }
+
+  /** Its sessions import the vault's memory themselves, so a turn must not repeat it. */
+  carriesMemory(): boolean {
+    return true;
   }
 
   /** Carl's Claude subscription is in reach (the value itself is never read out). */
@@ -496,6 +507,8 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
     if (existing) this.live.delete(threadId);
     this.makeRoom();
     const tools = await this.bindTools(threadId, t);
+    // Rewritten at each session start, so a near-cap reminder and the import are current.
+    const memory = writeClaudeMd(this.o.paths.configDir, this.o.vault);
     const translator = new ClaudeTranslator();
     const session = new ClaudeSession({
       // The same outer sandbox pi runs in, with Claude Code's own config dir
@@ -513,14 +526,27 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
       instructions: t.instructions,
       ...(t.sessionId ? { resume: t.sessionId } : {}),
       configDir: this.o.paths.configDir,
+      // Its CLAUDE.md is the vault's memory, imported: Claude Code loads it
+      // itself, so memory is in the cached part of the context and not in front
+      // of every turn. 'user' here means OUR config dir, which holds only what
+      // vault-chat wrote (nothing of Carl's own Claude Code setup).
+      settingSources: ["user"],
       env: this.o.env(),
       ...(tools ? { mcpServers: tools.servers as never, allowedTools: tools.allowed } : {}),
       ...(this.h?.afterCompact ? { onCompacted: () => this.h!.afterCompact!(threadId) } : {}),
+      onPrompt: async () => {
+        const live = this.live.get(threadId);
+        if (!live) return "";
+        const update = memoryUpdate(this.o.vault, live.memory);
+        if (!update) return "";
+        live.memory = update.mark;
+        return update.text;
+      },
       onMessage: (m) => this.onMessage(threadId, m),
       onClosed: (error) => this.onClosed(threadId, error),
       log: (s) => this.log(s),
     });
-    const live: Live = { id: threadId, session, translator, turnId: null, lastUsed: Date.now(), pending: new Map(), revoke: tools?.revoke ?? null };
+    const live: Live = { id: threadId, session, translator, turnId: null, lastUsed: Date.now(), pending: new Map(), revoke: tools?.revoke ?? null, memory };
     this.live.set(threadId, live);
     session.start();
     return live;

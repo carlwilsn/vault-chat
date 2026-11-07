@@ -387,6 +387,7 @@ export async function startEngine(b: EngineBoot): Promise<EngineHandle> {
       ? new ClaudeCodeBackend({
           install: claudeInstall,
           paths: st.claude,
+          vault: v.path,
           feedSessionsDir: join(v.path, ".vault-chat", "events", "sessions"),
           // Only the CLI gets this (phase 6 adds the sign-in token here).
           env: () => ({

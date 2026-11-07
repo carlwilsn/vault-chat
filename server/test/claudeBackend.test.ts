@@ -5,7 +5,7 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import { EventEmitter } from "node:events";
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmp, cleanup } from "./helpers";
 import { readEntries } from "../convlog/piSession";
@@ -166,6 +166,7 @@ beforeAll(async () => {
   claudeOpts = () => ({
     install: (found as { install: ClaudeInstall }).install,
     paths,
+    vault,
     feedSessionsDir: join(vault, ".vault-chat", "events", "sessions"),
     env: () => ({
       PATH: process.env.PATH ?? "",
@@ -181,6 +182,9 @@ beforeAll(async () => {
     mcp: new McpRuntime(),
     fileTools: [],
     mcpServers: () => ({ test_tools: testTools() }),
+    // The tests run many conversations; without room for them all the session
+    // cap would evict one mid-test and a later turn would mean something else.
+    maxSessions: 16,
   });
   claude = new ClaudeCodeBackend({ ...claudeOpts(), log: () => {} });
   router = new BackendRouter({ pi: new StubPi(), claude, engineOf: () => choice, log: () => {} });
@@ -210,6 +214,20 @@ afterAll(async () => {
   await api?.close();
   cleanup(root);
 });
+
+/**
+ * Everything the model was sent on a request, as plain text. Stringifying the
+ * request instead would escape every quote, so a check for text carrying one
+ * (`changed="true"`) would pass whatever happened.
+ */
+const sentText = (n = 1): string => {
+  const r = api.requests[api.requests.length - n];
+  const sys = Array.isArray(r?.system) ? r.system.map((b: any) => String(b?.text ?? "")).join("\n") : String(r?.system ?? "");
+  const msgs = (r?.messages ?? []).map((m: any) =>
+    typeof m.content === "string" ? m.content : (m.content ?? []).map((b: any) => String(b?.text ?? "")).join("\n"),
+  );
+  return [sys, ...msgs].join("\n");
+};
 
 const until = async (fn: () => Promise<boolean> | boolean, ms = 120_000) => {
   const t0 = Date.now();
@@ -388,6 +406,43 @@ describe("a conversation on Claude Code", () => {
     expect(asked[0]).toBeNull();
     expect(asked[1]).toBe(5_001);
     claude.setHandlers(engineHandlers);
+  }, 180_000);
+
+  it("the vault's memory reaches a session natively, and a change reaches it after", async () => {
+    // Memory is Carl's own file; Claude Code is given it by importing it in the
+    // session's CLAUDE.md, so it is NOT repeated in front of every turn.
+    const memFile = join(vault, ".vault-chat", "MEMORY.md");
+    writeFileSync(memFile, "# Memory\n\n- MEM-CANARY-FIRST-8811\n");
+
+    const r = await engine.message({ text: "first with memory", convId: "cc-conv-mem" });
+    await answered(r.convId, "first with memory");
+
+    // The import is in the config dir Claude Code reads, and names the real file.
+    const claudeMd = readFileSync(join(claudePaths(join(root, "state")).configDir, "CLAUDE.md"), "utf8");
+    expect(claudeMd).toContain(`@${memFile}`);
+    // The model was given the memory (through the import), and NOT a <memory> section.
+    const first = sentText();
+    expect(first).toContain("MEM-CANARY-FIRST-8811");
+    expect(first).not.toContain('<memory file=".vault-chat/MEMORY.md">');
+
+    // Carl edits it while the session is up: its CLAUDE.md was read at the start,
+    // so the change arrives through the prompt hook instead. (If the session had
+    // been evicted the new import would carry it, which is why liveness is
+    // asserted rather than assumed — the two paths are not the same claim.)
+    expect(claude.holds((await readConv(vault, r.convId)).threadId)).toBe(true);
+    writeFileSync(memFile, "# Memory\n\n- MEM-CANARY-SECOND-9922\n");
+    await engine.message({ text: "second after the edit", convId: r.convId });
+    await answered(r.convId, "second after the edit");
+    const second = sentText();
+    expect(second).toContain("MEM-CANARY-SECOND-9922");
+    const said = (t: string) => t.split('changed="true"').length - 1;
+    expect(said(second)).toBe(1);
+
+    // Unchanged since: it is not said AGAIN. The session replays its history, so
+    // what counts is that no new one is added, not that the old one is gone.
+    await engine.message({ text: "third with no edit", convId: r.convId });
+    await answered(r.convId, "third with no edit");
+    expect(said(sentText())).toBe(1);
   }, 180_000);
 
   it("a restart resumes the thread from box state: same session, same transcript file", async () => {

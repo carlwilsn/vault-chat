@@ -42,6 +42,12 @@ export type SessionOptions = {
   allowedTools?: string[];
   /** Claude Code's built-ins we replace with vault-chat's policy-enforcing ones. */
   disallowedTools?: string[];
+  /**
+   * Context for the next prompt that the session does not have yet — memory
+   * Carl changed after it started reading its CLAUDE.md. Returning "" adds
+   * nothing.
+   */
+  onPrompt?: () => Promise<string>;
   settingSources?: Options["settingSources"];
   /**
    * Claude Code summarised the session: what the host wants put back into it.
@@ -99,32 +105,46 @@ export class ClaudeSession {
       settingSources: this.o.settingSources ?? [],
       // Its own memory is off: vault-chat's memory files are the only memory.
       settings: JSON.stringify({ autoMemoryEnabled: false }),
-      // A summary may not have kept what the host had told the thread. This puts
-      // it back into the compacted session, so the turn in flight keeps its
-      // footing rather than waiting for the next prompt to say it again.
-      ...(this.o.onCompacted
-        ? {
-            hooks: {
-              SessionStart: [
-                {
-                  hooks: [
-                    async (input) => {
-                      // A session starts for several reasons; only a summary loses context.
-                      if ((input as { source?: string }).source !== "compact") return {};
-                      const additionalContext = (await this.o.onCompacted!().catch(() => "")) || "";
-                      return additionalContext
-                        ? { hookSpecificOutput: { hookEventName: "SessionStart" as const, additionalContext } }
-                        : {};
-                    },
-                  ],
-                },
-              ],
-            },
-          }
-        : {}),
+      // Two hooks, both for context the session would otherwise miss: what a
+      // summary dropped, and memory that changed after the session read it.
+      ...(this.o.onCompacted || this.o.onPrompt ? { hooks: this.hooks() } : {}),
     };
     const q = (this.q = query({ prompt: this.input(), options }));
     this.pump = this.read(q);
+  }
+
+  /** What the session asks the host for, and when. */
+  private hooks(): NonNullable<Options["hooks"]> {
+    const out: NonNullable<Options["hooks"]> = {};
+    if (this.o.onCompacted) {
+      out.SessionStart = [
+        {
+          hooks: [
+            async (input) => {
+              // A session starts for several reasons; only a summary loses context.
+              if ((input as { source?: string }).source !== "compact") return {};
+              const additionalContext = (await this.o.onCompacted!().catch(() => "")) || "";
+              return additionalContext ? { hookSpecificOutput: { hookEventName: "SessionStart" as const, additionalContext } } : {};
+            },
+          ],
+        },
+      ];
+    }
+    if (this.o.onPrompt) {
+      // Its CLAUDE.md was read when the session started, so an edit Carl makes
+      // while it is up arrives here instead.
+      out.UserPromptSubmit = [
+        {
+          hooks: [
+            async () => {
+              const additionalContext = (await this.o.onPrompt!().catch(() => "")) || "";
+              return additionalContext ? { hookSpecificOutput: { hookEventName: "UserPromptSubmit" as const, additionalContext } } : {};
+            },
+          ],
+        },
+      ];
+    }
+    return out;
   }
 
   /** The streaming input the CLI reads: everything send() pushes, in order. */

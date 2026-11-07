@@ -1852,7 +1852,11 @@ export class Engine {
     // Names/paths only, not other conversations, rules or memories. This section
     // uses the existing changed-section cache, so it is not repeated every turn.
     const files = { key: "vault-files", text: `<vault-files>Registered synced vault content (use absolute paths; the project/thread stays here):\n${roots.map(p => `- ${p}/`).join("\n")}\nFile-context paths without a request-specific viewer binding refer to the conversation owner's vault: ${this.d.vault}/. Use absolute paths for vault files. Read and Bash relative paths use the thread/project cwd, not the viewer root.\nOther vaults' .vault-chat and .git are private; service-owned project sources remain read-only.</vault-files>` };
+    // A runtime that is given the vault's memory by its own means (Claude Code
+    // imports it in the session) must not be told it again in front of the turn.
+    const ownMemory = !!this.d.backend.carriesMemory?.(threadId);
     for (const x of [...turnSections(conv as any, { folder: this.folderOf(conv) }), files]) {
+      if (ownMemory && x.key === "memory") continue;
       if (sent.get(x.key) === x.text) continue;
       sent.set(x.key, x.text);
       out.push(x.text);

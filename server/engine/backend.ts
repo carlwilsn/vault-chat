@@ -160,6 +160,13 @@ export type LiveChild = { id: string; parent: string; title: string; activity: s
 export type EngineBackend = {
   /** Which runtime this is ("pi", "claude"): health, logs and the engine's own error text. */
   readonly name: string;
+  /**
+   * This thread's runtime is given the vault's memory by its own means (Claude
+   * Code imports it in the session's CLAUDE.md and asks for changes through a
+   * hook), so the turn's context must NOT repeat it. Absent, or false: memory
+   * rides in front of the turn, as pi's does.
+   */
+  carriesMemory?(threadId: string): boolean;
 
   // -- lifecycle
   /** Every BackendEvent for every thread. */

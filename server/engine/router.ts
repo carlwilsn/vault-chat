@@ -67,6 +67,11 @@ export class BackendRouter extends EventEmitter implements EngineBackend {
     return this.head.name;
   }
 
+  /** The thread's own engine answers: pi's turns carry memory, Claude Code's do not. */
+  carriesMemory(threadId: string): boolean {
+    return !!this.of(threadId).carriesMemory?.(threadId);
+  }
+
   // -- lifecycle: both engines, every time
   setHandlers(h: Handlers): void {
     for (const b of this.all()) b.setHandlers(h);
