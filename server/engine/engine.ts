@@ -1716,25 +1716,32 @@ export class Engine {
       registerRun(convId, live.controller);
       // History from before this thread (a legacy chat) goes with its first turn.
       let body = input;
-      const context: string[] = [opts.context, opts.hostContext].filter((s): s is string => !!s);
-      const prior = this.handover.get(convId);
-      if (prior) {
-        this.handover.delete(convId);
-        context.push(prior);
-      }
-      // What the thread already has (rules, memory, its project.md, the project list, its folder) is not sent
-      // again: only a section that changed goes in front of the turn (the rules mechanism, for all of them).
-      const rules = this.changedSections(threadId, conv);
-      // Something Carl did that the agent must hear once (a project he deleted): in front of this turn, then gone.
-      const tell = this.picture(convId)?.meta.tellAgent as string[] | undefined;
-      if (tell?.length) {
-        context.push(tell.map((t) => `[${t}]`).join("\n"));
-        this.emit(convId, { type: "meta", patch: { tellAgent: null } });
-      }
-      // A live voice call: its rules once per call, in front of its first turn (they stay in the session after).
-      if (talker && !talker.sent) {
-        talker.sent = true;
-        context.push(talker.rules);
+      const context: string[] = [];
+      let rules = "";
+      // An adopted turn sends no prompt, so it must consume nothing: the
+      // handover, the sections the thread has not had, the one-off line for the
+      // agent and a call's rules all still belong to the next real prompt.
+      if (!opts.adopt) {
+        context.push(...[opts.context, opts.hostContext].filter((s): s is string => !!s));
+        const prior = this.handover.get(convId);
+        if (prior) {
+          this.handover.delete(convId);
+          context.push(prior);
+        }
+        // What the thread already has (rules, memory, its project.md, the project list, its folder) is not sent
+        // again: only a section that changed goes in front of the turn (the rules mechanism, for all of them).
+        rules = this.changedSections(threadId, conv);
+        // Something Carl did that the agent must hear once (a project he deleted): in front of this turn, then gone.
+        const tell = this.picture(convId)?.meta.tellAgent as string[] | undefined;
+        if (tell?.length) {
+          context.push(tell.map((t) => `[${t}]`).join("\n"));
+          this.emit(convId, { type: "meta", patch: { tellAgent: null } });
+        }
+        // A live voice call: its rules once per call, in front of its first turn (they stay in the session after).
+        if (talker && !talker.sent) {
+          talker.sent = true;
+          context.push(talker.rules);
+        }
       }
       // What Carl did elsewhere is not in the prompt: pi's extension adds it (the "you" layer, a vc-you custom message).
       // Host instructions/memory are pi custom context, never a forged user message.

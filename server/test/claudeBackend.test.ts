@@ -110,6 +110,7 @@ let claude: ClaudeCodeBackend;
 let claudeOpts: () => Omit<ConstructorParameters<typeof ClaudeCodeBackend>[0], "log">;
 let router: BackendRouter;
 let readConv: (v: string, id: string) => Promise<any>;
+let patchMeta: (v: string, id: string, patch: Record<string, unknown>) => Promise<unknown>;
 let choice: EngineName = "claude";
 const turnLines: any[] = [];
 
@@ -153,6 +154,7 @@ beforeAll(async () => {
   const store = (await import("../../src/store")).useStore;
   store.setState({ vaultPath: vault, conversationsLoaded: true });
   readConv = (await import("../engine/convs")).readConv;
+  patchMeta = (await import("../engine/convs")).patchMeta;
   const { configureContext } = await import("../context");
   configureContext({ vault, agentModel: "haiku" });
 
@@ -302,6 +304,29 @@ describe("a conversation on Claude Code", () => {
     const conv = await readConv(vault, r.convId);
     expect(conv.messages.some((m: any) => m.content === "NEVER-SENT-KIWI")).toBe(false);
     expect(JSON.stringify(api.requests)).not.toContain("NEVER-SENT-KIWI");
+  }, 180_000);
+
+  it("a turn the engine adopted says nothing, so it consumes none of the turn's context", async () => {
+    // Something Carl did that the agent must hear once. An adopted turn sends no
+    // prompt, so it must not swallow it: the next real turn still carries it.
+    release = null;
+    const r = await engine.message({ text: 'CALL mcp__vault_chat__slow {}', convId: "cc-conv-adopt" });
+    await inSlowTool();
+    await patchMeta(vault, r.convId, { tellAgent: ["Carl deleted the physics project."] });
+    const q = await engine.message({ convId: r.convId, text: "the queued one", queue: true, clientMsgId: "c-a1" });
+    expect(q.queued).toBe(true);
+    release!();
+    await answered(r.convId, "the queued one");
+
+    // The queued message ran as its own turn, which the engine adopted: still unsaid.
+    expect(engine.picture(r.convId)?.meta.tellAgent).toEqual(["Carl deleted the physics project."]);
+
+    // A real turn takes it, once.
+    release = null;
+    await engine.message({ text: "now say something", convId: r.convId });
+    await answered(r.convId, "now say something");
+    expect(engine.picture(r.convId)?.meta.tellAgent ?? null).toBeNull();
+    expect(JSON.stringify(api.requests[api.requests.length - 1].messages)).toContain("deleted the physics project");
   }, 180_000);
 
   it("a restart resumes the thread from box state: same session, same transcript file", async () => {
