@@ -51,6 +51,12 @@ tiny_http = "0.12"
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Graphics_Dwm"] }
 
+# "Sign in with Claude" drives `claude setup-token`, which is an Ink program and
+# prints nothing on a pipe — it needs a pty (src/claude_login.rs). The POSIX pty
+# calls only, so no new crates come with it: libc is already in the tree.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 # Linux voice mode: reach into the WebKitGTK webview to grant the microphone
 # (getUserMedia) permission, which wry leaves denied by default. Pinned to the
 # same version + feature wry uses so the WebView type unifies.

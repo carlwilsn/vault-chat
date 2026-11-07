@@ -1,3 +1,4 @@
+mod claude_login;
 mod voice_server;
 mod boot_watch;
 mod agent_projects;
@@ -4788,28 +4789,33 @@ async fn keychain_get(key: String) -> Result<Option<String>, String> {
     .map_err(|e| e.to_string())?
 }
 
+/// Write one secret, blocking. Separate from the command so secrets minted
+/// inside this process (claude_login's `setup-token` capture) can be stored
+/// without a round trip through the webview.
+pub(crate) fn keychain_store(key: &str, value: &str) -> Result<(), String> {
+    if keyring_usable() {
+        if keyring::Entry::new(KEYCHAIN_SERVICE, key)
+            .and_then(|e| e.set_password(value))
+            .is_ok()
+        {
+            // Keyring is the source of truth when it works — drop any stale
+            // fallback copy so the two can't diverge.
+            let _ = fallback_secret_remove(key);
+            return Ok(());
+        }
+    }
+    // Keyring unavailable (the headless-box case): persist to the encrypted
+    // file fallback instead of throwing or hanging — that's the bug where the
+    // Settings "save" silently failed and keys vanished on reload.
+    fallback_secret_set(key, value)
+        .map_err(|fe| format!("secret storage unavailable; file fallback also failed: {fe}"))
+}
+
 #[tauri::command]
 async fn keychain_set(key: String, value: String) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        if keyring_usable() {
-            if keyring::Entry::new(KEYCHAIN_SERVICE, &key)
-                .and_then(|e| e.set_password(&value))
-                .is_ok()
-            {
-                // Keyring is the source of truth when it works — drop any stale
-                // fallback copy so the two can't diverge.
-                let _ = fallback_secret_remove(&key);
-                return Ok(());
-            }
-        }
-        // Keyring unavailable (the headless-box case): persist to the encrypted
-        // file fallback instead of throwing or hanging — that's the bug where the
-        // Settings "save" silently failed and keys vanished on reload.
-        fallback_secret_set(&key, &value)
-            .map_err(|fe| format!("secret storage unavailable; file fallback also failed: {fe}"))
-    })
-    .await
-    .map_err(|e| e.to_string())?
+    tauri::async_runtime::spawn_blocking(move || keychain_store(&key, &value))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -6273,6 +6279,10 @@ pub fn run() {
             schedules_write_all,
             open_terminal,
             open_box_terminal,
+            claude_login::claude_setup_token_cli,
+            claude_login::claude_setup_token_start,
+            claude_login::claude_setup_token_finish,
+            claude_login::claude_setup_token_cancel,
             git_init_if_needed,
             git_commit_all,
             git_repo_root_for_file,
