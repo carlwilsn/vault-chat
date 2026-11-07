@@ -11,6 +11,15 @@
 // written here from the translator's entries — so the feed, the three clients,
 // SearchHistory and the turn log are untouched.
 //
+// So a conversation has two records of itself, each authoritative for its own
+// reader, and that is deliberate: Claude Code's session is what the model is
+// given back on resume, and the pi-format file is what Carl's screens read.
+// They are not copies of each other. The prompt the model gets carries the
+// host's context above Carl's words, while the entry carries only his words,
+// which is what the chat should show; and when Claude Code compacts its session
+// the file still holds the whole conversation, so nothing Carl can scroll back
+// to is lost.
+//
 // Not this phase: vault-chat's tools (phase 4 binds them as MCP per run, which
 // is why `startTurn`'s tool list is not used here yet), side threads (phase 5)
 // and the sign-in token (phase 6). Path policy is vault-chat's one policy,
