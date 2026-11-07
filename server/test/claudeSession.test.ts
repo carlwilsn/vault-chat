@@ -4,7 +4,7 @@
 // so the replies are fixed and nothing leaves the box; everything about what
 // the CLI does is genuine.
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
+import { BUILTIN_TOOL_NAMES, createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { mkdirSync } from "node:fs";
@@ -52,7 +52,7 @@ afterAll(async () => {
 
 type Run = { session: ClaudeSession; messages: any[]; results: any[]; waitForResult: (n: number) => Promise<void>; waitForReply: (text: string) => Promise<void> };
 
-function open(o: { cwd: string; configDir: string; resume?: string; mcp?: boolean; onCompacted?: () => Promise<string> }): Run {
+function open(o: { cwd: string; configDir: string; resume?: string; mcp?: boolean; onCompacted?: () => Promise<string>; onToolUse?: (tool: string, input: Record<string, unknown>) => Promise<string | null>; builtins?: string[] }): Run {
   const messages: any[] = [];
   const results: any[] = [];
   const session = new ClaudeSession({
@@ -63,6 +63,8 @@ function open(o: { cwd: string; configDir: string; resume?: string; mcp?: boolea
     ...(o.resume ? { resume: o.resume } : {}),
     ...(o.mcp ? { mcpServers: { vault_chat: blocker() }, allowedTools: ["mcp__vault_chat__block", "mcp__vault_chat__slow"] } : {}),
     ...(o.onCompacted ? { onCompacted: o.onCompacted } : {}),
+    ...(o.onToolUse ? { onToolUse: o.onToolUse } : {}),
+    ...(o.builtins ? { disallowedTools: BUILTIN_TOOL_NAMES.filter((t) => !o.builtins!.includes(t)) } : {}),
     env: {
       PATH: process.env.PATH ?? "",
       HOME: o.configDir,
@@ -256,5 +258,38 @@ describe("the slash commands the host uses", () => {
     expect(JSON.stringify(api.requests[api.requests.length - 1].messages)).toContain("KEEP-THIS-KIWI-4242");
     run.session.close();
     await run.session.finished();
+  }, 180_000);
+
+  it("vault-chat rules on a tool call before it runs, in its own words", async () => {
+    // Why this exists: vault-chat has ONE path policy — realpath and deny rules,
+    // other vaults' walls, the voice write gate. Keeping it while Claude Code
+    // uses its OWN file tools means ruling on a call before it happens, rather
+    // than replacing the tools. Driven here through the real CLI.
+    const cwd = tmp("hook-cwd");
+    const configDir = join(cwd, "cfg");
+    mkdirSync(configDir, { recursive: true });
+    const asked: { tool: string; input: Record<string, unknown> }[] = [];
+    const run = open({
+      cwd,
+      configDir,
+      builtins: ["Read"],
+      onToolUse: async (tool, input) => {
+        asked.push({ tool, input });
+        return "vault-chat policy: that path is outside the bound vault.";
+      },
+    });
+    try {
+      run.session.send({ text: 'CALL Read {"file_path":"/etc/hostname"}' });
+      await run.waitForResult(1);
+      // The host was asked about the real call, with the path it would have read.
+      expect(asked.map((a) => a.tool)).toContain("Read");
+      expect(JSON.stringify(asked)).toContain("/etc/hostname");
+      // And the refusal reached the model as vault-chat's own sentence.
+      const said = JSON.stringify(run.messages);
+      expect(said).toContain("outside the bound vault");
+    } finally {
+      run.session.close();
+      cleanup(cwd);
+    }
   }, 180_000);
 });

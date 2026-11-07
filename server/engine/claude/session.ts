@@ -48,6 +48,15 @@ export type SessionOptions = {
    * nothing.
    */
   onPrompt?: () => Promise<string>;
+  /**
+   * The host's ruling on a tool call before it runs: a reason to refuse it, or
+   * null to let it through. This is how vault-chat's one path policy can hold
+   * over Claude Code's OWN file tools — its realpath and deny rules, the other
+   * vaults' walls, the voice write gate — instead of replacing those tools.
+   * Measured against the CLI before it was relied on: the hook sees the resolved
+   * input and a refusal really does stop the call.
+   */
+  onToolUse?: (tool: string, input: Record<string, unknown>) => Promise<string | null>;
   settingSources?: Options["settingSources"];
   /**
    * Claude Code summarised the session: what the host wants put back into it.
@@ -107,7 +116,7 @@ export class ClaudeSession {
       settings: JSON.stringify({ autoMemoryEnabled: false }),
       // Two hooks, both for context the session would otherwise miss: what a
       // summary dropped, and memory that changed after the session read it.
-      ...(this.o.onCompacted || this.o.onPrompt ? { hooks: this.hooks() } : {}),
+      ...(this.o.onCompacted || this.o.onPrompt || this.o.onToolUse ? { hooks: this.hooks() } : {}),
     };
     const q = (this.q = query({ prompt: this.input(), options }));
     this.pump = this.read(q);
@@ -139,6 +148,28 @@ export class ClaudeSession {
             async () => {
               const additionalContext = (await this.o.onPrompt!().catch(() => "")) || "";
               return additionalContext ? { hookSpecificOutput: { hookEventName: "UserPromptSubmit" as const, additionalContext } } : {};
+            },
+          ],
+        },
+      ];
+    }
+    if (this.o.onToolUse) {
+      // vault-chat decides, in its own words, what a tool call may touch. A host
+      // that throws or hangs must not quietly become "allow": the call is
+      // refused, because a policy that fails open is not a policy.
+      out.PreToolUse = [
+        {
+          hooks: [
+            async (input) => {
+              const { tool_name: tool, tool_input: args } = input as { tool_name?: string; tool_input?: Record<string, unknown> };
+              let why: string | null;
+              try {
+                why = await this.o.onToolUse!(String(tool ?? ""), args ?? {});
+              } catch (e) {
+                why = `vault-chat could not check that call: ${(e as Error).message}`;
+              }
+              if (!why) return {};
+              return { hookSpecificOutput: { hookEventName: "PreToolUse" as const, permissionDecision: "deny" as const, permissionDecisionReason: why } };
             },
           ],
         },
