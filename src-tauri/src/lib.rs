@@ -1,4 +1,5 @@
 mod claude_login;
+mod local_server;
 mod voice_server;
 mod boot_watch;
 mod agent_projects;
@@ -4404,6 +4405,26 @@ async fn vault_box_config(vault: String) -> Option<BoxConfigOut> {
     .flatten()
 }
 
+/// Run the server ourselves for a vault with no box, and say where it is
+/// (local_server.rs). The clients then treat it exactly as a box.
+#[tauri::command]
+async fn local_server_start(app: tauri::AppHandle, vault: String) -> Result<local_server::LocalServer, String> {
+    use tauri::Manager;
+    let state_dir = app
+        .path()
+        .app_local_data_dir()
+        .map_err(|e| format!("no app data directory: {e}"))?;
+    let resources = app.path().resource_dir().ok();
+    tauri::async_runtime::spawn_blocking(move || {
+        // A packaged app carries its own node; a development run uses the one on
+        // PATH, which is how the server is run there anyway.
+        let node = std::env::var("VC_LOCAL_SERVER_NODE").unwrap_or_else(|_| "node".to_string());
+        local_server::ensure(&vault, &state_dir, resources.as_deref(), &node)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// A repo in the vault-chat folder (master.rs): made here, synced with the box's hub at `remote_url`.
 #[tauri::command]
 async fn master_repo_init(dest: String, remote_url: String, branch: String, origin_url: Option<String>) -> Result<String, String> {
@@ -6300,6 +6321,7 @@ pub fn run() {
             vault_sync_role,
             vault_box_sync,
             vault_box_config,
+            local_server_start,
             master_repo_init,
             box_discover,
             tailscale_check,
@@ -6331,8 +6353,15 @@ pub fn run() {
             boot_timing,
             app_ready
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while running tauri application")
+        .run(|_app, event| {
+            // A server this app started is this app's to stop: leaving one behind
+            // would hold the vault after the window is gone (local_server.rs).
+            if matches!(event, tauri::RunEvent::Exit) {
+                local_server::stop_all();
+            }
+        });
 }
 
 #[cfg(test)]

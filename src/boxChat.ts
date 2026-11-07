@@ -81,11 +81,33 @@ export function newClientId(): string {
 }
 
 /** The box this vault's chat runs on, or null (not box mode / headless). */
+/** The server this app is running itself, per vault (no box): asked for once. */
+const localServers = new Map<string, Promise<Link | null>>();
+
+/**
+ * Where this vault's server is. A box when one is configured; otherwise the app
+ * runs the same server itself on loopback and the chat works the same way
+ * (src-tauri/src/local_server.rs). Loopback needs no token — the server
+ * authorises a direct 127.0.0.1 caller by that alone.
+ */
 export async function boxLinkFor(vault: string | null): Promise<Link | null> {
   if (!vault || headless()) return null;
   const cfg = await readBoxConfig(vault);
-  if (!cfg?.box) return null;
-  return { url: cfg.box.replace(/\/+$/, ""), token: useStore.getState().boxToken || null, vault: cfg.vault || null };
+  if (cfg?.box) return { url: cfg.box.replace(/\/+$/, ""), token: useStore.getState().boxToken || null, vault: cfg.vault || null };
+  // No box. Start one here, once per vault: a second caller joins the first's
+  // attempt instead of racing it into two servers.
+  let pending = localServers.get(vault);
+  if (!pending) {
+    pending = invoke<{ url: string }>("local_server_start", { vault })
+      .then((r) => (r?.url ? { url: r.url.replace(/\/+$/, ""), token: null, vault: null } : null))
+      .catch(() => null);
+    localServers.set(vault, pending);
+  }
+  const local = await pending;
+  // A failed attempt is not cached: a later try (node installed, a vault chosen)
+  // should be able to succeed.
+  if (!local) localServers.delete(vault);
+  return local;
 }
 
 /** `path` scoped to the link's vault (`?vault=`). A box from before vaults ignores it. */
