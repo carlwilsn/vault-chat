@@ -81,21 +81,29 @@ export function newClientId(): string {
 }
 
 /** The box this vault's chat runs on, or null (not box mode / headless). */
-/** The server this app is running itself, per vault (no box): asked for once. */
+/**
+ * The server this app is running itself for a vault with no box. Started only by
+ * ensureLocalServer, never by boxLinkFor: boxLinkFor is asked constantly, by
+ * every caller that wants to reach the box, and starting a process from there
+ * would spawn one as a side effect of an incidental question.
+ */
 const localServers = new Map<string, Promise<Link | null>>();
+const localLinks = new Map<string, Link>();
 
 /**
- * Where this vault's server is. A box when one is configured; otherwise the app
- * runs the same server itself on loopback and the chat works the same way
- * (src-tauri/src/local_server.rs). Loopback needs no token — the server
- * authorises a direct 127.0.0.1 caller by that alone.
+ * Run the server here for a vault that has no box, and remember where it is so
+ * boxLinkFor can hand it out (src-tauri/src/local_server.rs). Called where the
+ * app settles on a vault; asking twice joins the first attempt rather than
+ * racing it into two servers. Loopback needs no token — the server authorises a
+ * direct 127.0.0.1 caller by that alone.
  */
-export async function boxLinkFor(vault: string | null): Promise<Link | null> {
+export async function ensureLocalServer(vault: string | null): Promise<Link | null> {
   if (!vault || headless()) return null;
+  const have = localLinks.get(vault);
+  if (have) return have;
+  // A box of his own wins: nothing is started for a vault that has one.
   const cfg = await readBoxConfig(vault);
-  if (cfg?.box) return { url: cfg.box.replace(/\/+$/, ""), token: useStore.getState().boxToken || null, vault: cfg.vault || null };
-  // No box. Start one here, once per vault: a second caller joins the first's
-  // attempt instead of racing it into two servers.
+  if (cfg?.box) return null;
   let pending = localServers.get(vault);
   if (!pending) {
     pending = invoke<{ url: string }>("local_server_start", { vault })
@@ -104,10 +112,22 @@ export async function boxLinkFor(vault: string | null): Promise<Link | null> {
     localServers.set(vault, pending);
   }
   const local = await pending;
-  // A failed attempt is not cached: a later try (node installed, a vault chosen)
-  // should be able to succeed.
-  if (!local) localServers.delete(vault);
+  // A failed attempt is not remembered: a later try (a vault chosen, a build
+  // that carries the server) should still be able to succeed.
+  localServers.delete(vault);
+  if (local) localLinks.set(vault, local);
   return local;
+}
+
+/**
+ * Where this vault's server is: his box when one is configured, else the one
+ * this app started for it (ensureLocalServer). Asks nothing and starts nothing.
+ */
+export async function boxLinkFor(vault: string | null): Promise<Link | null> {
+  if (!vault || headless()) return null;
+  const cfg = await readBoxConfig(vault);
+  if (cfg?.box) return { url: cfg.box.replace(/\/+$/, ""), token: useStore.getState().boxToken || null, vault: cfg.vault || null };
+  return localLinks.get(vault) ?? null;
 }
 
 /** `path` scoped to the link's vault (`?vault=`). A box from before vaults ignores it. */
@@ -834,7 +854,9 @@ export function startBoxChat(vault: string): Promise<boolean> {
   if (session && !session.stopped && session.vault === vault) return Promise.resolve(true);
   if (starting && starting.vault === vault) return starting.p;
   const p = (async () => {
-    const link = await boxLinkFor(vault);
+    // His box if he has one; otherwise this is the moment to run one here, which
+    // is what makes a machine with no box able to chat at all.
+    const link = (await boxLinkFor(vault)) ?? (await ensureLocalServer(vault));
     if (useStore.getState().vaultPath !== vault) return false;
     if (!link) {
       if (session && !session.stopped) return true; // file-only workspace cannot take away the global conversation
