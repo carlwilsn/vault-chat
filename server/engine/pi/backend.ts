@@ -12,7 +12,6 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statS
 import { isAbsolute, join, relative } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { CallRecord } from "../ledger";
-import type { ThreadTokenUsage } from "../context";
 import { healSessionCwd } from "../../sessionPaths";
 import { PiProc } from "./proc";
 import { McpRuntime, type ProcessServices } from "../../mcp/runtime";
@@ -23,70 +22,34 @@ import { Subagents, type Detached, type LiveChild, type SubagentOptions } from "
 import { SideRuns } from "./side";
 import { modelWindow, type PiCatalogRow, type PiPaths } from "./config";
 import type { PiInstall } from "./install";
+import {
+  ThreadUnknownError,
+  type BackendEvent,
+  type EngineBackend,
+  type Handlers,
+  type HostLoadout,
+  type NativeCompletion,
+  type NotifyScope,
+  type ToolSpec,
+} from "../backend";
 
-// ---- what the engine (../engine.ts) sees: neutral events and the two handlers it answers
-/** `readOnly`: the tool changes nothing (Ctrl+K / Ctrl+L side threads get every such tool: pi/side.ts). */
-export type ToolSpec = { type: "function"; name: string; description: string; inputSchema: Record<string, unknown>; readOnly?: boolean };
-
-/** What the runtime reports, in neutral terms. Every event names the thread it
- * belongs to; subagent threads report under their own ids (the engine maps
- * them to the parent conversation from the `subagents` event). */
-export type BackendEvent =
-  | { kind: "turnStarted"; threadId: string; turnId: string }
-  /** One of pi's own RPC session events, as pi sent it (the engine maps it into the log, 1:1: ../piMap.ts). */
-  | { kind: "pi"; threadId: string; ev: any }
-  /** The context size of the last model call, and the model's window. */
-  | { kind: "usage"; threadId: string; usage: ThreadTokenUsage }
-  /** The parent spawned/messaged subagents. */
-  | { kind: "subagents"; threadId: string; itemId: string; children: string[]; op: string; prompt?: string; model?: string | null; done: boolean; ok: boolean }
-  | { kind: "subagentStatus"; threadId: string; child: string; status: string; path?: string; patch?: Record<string, unknown> }
-  | { kind: "turnCompleted"; threadId: string; turnId: string | null; status: "completed" | "interrupted" | "failed" | string; error: string | null }
-  /** One thread's runtime died mid-turn while the rest of the runtime is fine (pi: one process per thread).
-   * The engine marks that turn cut and resumes it, as it does for all turns on "down". */
-  | { kind: "threadLost"; threadId: string };
-
-/** resumeThread throws this when the thread belongs to another runtime (or is gone): the engine starts a fresh one. */
-export class ThreadUnknownError extends Error {
-  readonly threadUnknown = true;
-}
-
-/** A host tool's answer: its text, and images it attaches (pi image blocks: base64 + mime). */
-export type ToolAnswer = { ok: boolean; text: string; images?: { data: string; mimeType: string }[]; resources?: { uri: string; mimeType: string; blob: string }[] };
-export type NativeCompletion = { kind: "job" | "delegate" | "wake"; id: string };
-export type Interaction = Readonly<{ request: string; device: "laptop" | "phone" | "board" | null }>;
-// The existing host-owned worker scope captures its originating interaction too.
-// No second queue/presence registry: the source is the delivered native feed entry.
-export type NotifyScope = Readonly<{
-  workId: string; byCarl: boolean; interaction?: Interaction;
-  /** Only the host's accepted BoardMake, bound to its own entry (never model args/text). */
-  boardMake?: Readonly<{ id: string; interaction: Interaction; asked: boolean }>;
-}>;
-export type ToolCallHandler = (threadId: string, name: string, args: any, signal?: AbortSignal, notifyScope?: NotifyScope | null) => Promise<ToolAnswer>;
-export type UserInputHandler = (threadId: string, question: string, options: string[]) => Promise<string>;
-/** The "you" layer for a session (the extension's before_agent_start asks before each prompt): what Carl
- * did since `since` (that session's last layer). A conversation's thread names itself by `threadId`; a
- * Ctrl+K / Ctrl+L side thread by the conversation it was forked from (`convId`, or none). */
-export type YouHandler = (q: { threadId?: string; convId?: string | null; since: number | null }) => Promise<{ text: string; until: number }>;
-/** A read-only vault-chat tool called from a Ctrl+K / Ctrl+L side thread, as of the conversation it was opened from (or none). */
-export type SideToolHandler = (convId: string | null, name: string, args: any, signal?: AbortSignal) => Promise<ToolAnswer>;
-/** Host policy identifiers, not persisted schema snapshots. */
-export type HostLoadout = "conversation" | "readOnly" | "voiceRead" | "voiceAct";
-export type Handlers = {
-  toolCatalog: (loadout: HostLoadout) => Promise<ToolSpec[]>;
-  toolCall: ToolCallHandler;
-  /** Host-only snapshot of the original ask at worker creation, never tool arguments. */
-  notifyScope?: (threadId: string) => NotifyScope | null;
-  /** Source-owner workspace allocation, before a native child is spawned. */
-  workerCwd?: (threadId: string, cwd?: string) => Promise<string>;
-  userInput: UserInputHandler;
-  you?: YouHandler;
-  continuationWait?: (threadId: string, event: NativeCompletion) => Promise<boolean>;
-  sideTool?: SideToolHandler;
-  /** Enforced private service, never an agent-callable MCP tool. */
-  fileWrite?: (threadId: string) => Promise<boolean>;
-  /** A worker (a parent thread's child) wrote a file: its write/edit input (the screens showing it refresh). */
-  childWrote?: (parentThreadId: string, input: Record<string, unknown>) => void;
-};
+// ---- what the engine sees lives in ../backend.ts (the EngineBackend contract);
+// re-exported here so the existing `from "./pi/backend"` imports keep working.
+export type {
+  ToolSpec,
+  NativeCompletion,
+  BackendEvent,
+  ToolAnswer,
+  Interaction,
+  NotifyScope,
+  ToolCallHandler,
+  UserInputHandler,
+  YouHandler,
+  SideToolHandler,
+  HostLoadout,
+  Handlers,
+} from "../backend";
+export { ThreadUnknownError } from "../backend";
 
 export type PiSandbox = {
   /** Own vault root (separate from the project cwd). */
@@ -245,7 +208,7 @@ type Thread = {
 };
 
 /** Events: "event" (BackendEvent), "up" (ready; the engine resumes cut turns). */
-export class PiBackend extends EventEmitter {
+export class PiBackend extends EventEmitter implements EngineBackend {
   // A transport discriminator, not a second queue or a transcript. Each native
   // queue element carries its own identity until message_end persists it.
   private readonly requestTag = randomUUID();

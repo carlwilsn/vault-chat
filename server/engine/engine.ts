@@ -1,5 +1,6 @@
 import { globalCutover } from '../convlog/globalCutover';
-// The engine: every agent turn on the box runs in pi (pi/backend.ts). A
+// The engine: every agent turn on the box runs in a backend behind the
+// EngineBackend contract (backend.ts); today that is pi (pi/backend.ts). A
 // conversation maps to one pi session ("thread"; a new one after a roll-over).
 // The transcript is pi's own session file; the vault's feed (server/convlog,
 // src/convlog/protocol.ts) points into it as pi writes it and carries pi's live
@@ -15,7 +16,7 @@ import { conversationRoot } from "../context/config";
 import { ownerVault } from "../convlog/log";
 import { appendFileSync, existsSync, readFileSync, statSync, mkdirSync, writeFileSync } from "node:fs";
 import { holdRun, registerRun, unregisterRun } from "../../src/runRegistry";
-import type { BackendEvent, PiBackend, ToolSpec, HostLoadout, Interaction } from "./pi/backend";
+import type { BackendEvent, EngineBackend, ToolSpec, HostLoadout, Interaction } from "./backend";
 import {
   withVault,
   contextToolSpecs,
@@ -70,7 +71,8 @@ import { lookupAll } from "./lookup";
 import { attachmentAt, attachmentsNote } from "../attachments";
 import { readEntries } from "../convlog/piSession";
 import { PiFeed, type Expected, type UserRequest } from "./piFeed";
-import { READ_ONLY_TOOLS, type SideLog, type SideState } from "./pi/side";
+import { READ_ONLY_TOOLS } from "./pi/side";
+import type { SideLog, SideState } from "./backend";
 import { TurnRecorder, type TurnLine } from "./turnLog";
 import { SERVER_VERSION } from "../config";
 import { runVaultTool, vaultToolSpecsFor } from "../vaultTools";
@@ -78,7 +80,7 @@ import { submitChangeJob, SUBMIT_CHANGE_SCHEMA } from "../submitChange";
 
 export type EngineDeps = {
   vault: string;
-  backend: PiBackend;
+  backend: EngineBackend;
   ledger: Ledger;
   jobEnv: PiJobEnv;
   model: () => string;
@@ -484,7 +486,7 @@ export function voiceSideToolSpecs(act: boolean): ToolSpec[] {
 const text = (t: string) => ({ success: true, contentItems: [{ type: "inputText", text: t }] });
 
 /** A tool's answer for pi: its text, and the images it attaches (BoardLook's board pictures) as pi's image blocks. */
-export function toolAnswer(r: any): import("./pi/backend").ToolAnswer {
+export function toolAnswer(r: any): import("./backend").ToolAnswer {
   const items: any[] = Array.isArray(r?.contentItems) ? r.contentItems : [];
   const images = items.filter((c) => c?.type === "inputImage" && typeof c.data === "string" && c.data).map((c) => ({ data: String(c.data), mimeType: String(c.mimeType || "image/png") }));
   return { ok: r?.success !== false, text: items.filter((c) => c?.type !== "inputImage").map((c) => c?.text ?? "").join("\n"), ...(images.length ? { images } : {}), ...(r?.resources ? { resources: r.resources } : {}) };

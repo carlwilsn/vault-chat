@@ -12,8 +12,12 @@
 import { mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { hostToolName } from "../../../src/mcpNames";
-import type { NotifyScope, PiBackend, ToolSpec } from "./backend";
+import type { PiBackend } from "./backend";
 import type { PiProc } from "./proc";
+import type { Detached, LiveChild, NotifyScope, ToolSpec } from "../backend";
+
+// The two shapes the engine reads back live in ../backend.ts; re-exported for the existing imports.
+export type { Detached, LiveChild } from "../backend";
 
 export type SubagentOptions = {
   /** Agent definitions: built-ins first, then the vault's (.vault-chat/agents) override by name. */
@@ -65,12 +69,6 @@ type Child = {
   /** Its report, once it ends. */
   result: Promise<Record<string, unknown>> | null;
 };
-
-/** A child moved to the background: its id, title and the report it will give. */
-export type Detached = { id: string; title: string; result: Promise<Record<string, unknown>> };
-
-/** A running child as the agent's JobList / JobStatus read it. */
-export type LiveChild = { id: string; parent: string; title: string; activity: string; steps: number; said: string; startedAt: number; background: boolean };
 
 /** A child's latest tool call in a few words ("writing physics.html", "running npm test"), from pi's tool_execution_start. */
 export function activityOf(tool: string, args: any): string {

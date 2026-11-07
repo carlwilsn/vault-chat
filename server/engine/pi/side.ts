@@ -22,52 +22,17 @@
 // get_last_assistant_text. Nothing here writes a session file.
 import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { type PiBackend, type ToolSpec, type HostLoadout } from "./backend";
+import type { PiBackend } from "./backend";
 import type { PiProc } from "./proc";
-import { TurnRecorder, type TurnLine } from "../turnLog";
+import { TurnRecorder } from "../turnLog";
+import type { HostLoadout, SideRunner, SideLog, SideStart, SideState, ToolSpec } from "../backend";
 
 /** pi's read-only built-ins (Ctrl+K and Ctrl+L have these, plus the engine's read-only tools: SideStart.hostTools). */
 export const READ_ONLY_TOOLS = ["read", "grep", "find", "ls"];
 
-export type SideStart = {
-  /** What it is (the log line). */
-  kind: string;
-  /** Continue this side thread (a popover's next request). */
-  side?: string | null;
-  /** Fork this session file (the conversation's). */
-  fork?: string | null;
-  /** The agent's instructions file (--append-system-prompt); ignored with `system`. */
-  instr?: string;
-  /** A system prompt of its own (--system-prompt), for a one-shot. */
-  system?: string;
-  cwd: string;
-  model: string;
-  /** pi's built-ins allowed; [] (and no hostTools) = --no-tools. */
-  tools: string[];
-  /** vault-chat tools (the extension registers them; the engine answers): Ctrl+K / Ctrl+L get the read-only ones. */
-  hostTools?: ToolSpec[];
-  /** Host-selected policy; refinements cannot change an existing session's authority. */
-  hostLoadout?: Exclude<HostLoadout, "conversation">;
-  /** --no-session (one-shots). */
-  ephemeral?: boolean;
-  thinking?: string;
-  /** Where the session goes (persisted side threads). */
-  sessionDir: string;
-  /** Ctrl+K / Ctrl+L: the "you" layer before each request, as of this conversation (null: none open). One-shots: off. */
-  you?: { convId: string | null } | null;
-  /** Host-captured viewer binding, recorded once in the native side session. */
-  context?: string;
-  text: string;
-  /** data: URLs. */
-  images?: string[];
-  /** The box's turn log (turnLog.ts): one line per request of this side thread, mode "side". Kept for its next requests. */
-  log?: SideLog;
-};
-
-/** `act`: the side thread has pi's write tools (bash, edit, write); `allowed`: pi's tools it was given (its line shows both). */
-export type SideLog = { vault: string; conv: string | null; via: string; version: string; act?: boolean; allowed?: string[]; write: (line: TurnLine) => void };
-
-export type SideState = { id: string; text: string; v: number; done: boolean; error: string | null; file: string | null };
+// The shapes /api/v1/side speaks live in ../backend.ts (every backend answers them);
+// re-exported here for the existing `from "./pi/side"` imports.
+export type { SideStart, SideLog, SideState } from "../backend";
 
 type Run = {
   id: string;
@@ -99,7 +64,7 @@ export function piImages(urls: string[] | undefined): { type: "image"; data: str
   return out;
 }
 
-export class SideRuns {
+export class SideRuns implements SideRunner {
   private runs = new Map<string, Run>();
   private timer: NodeJS.Timeout;
 
