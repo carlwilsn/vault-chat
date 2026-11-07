@@ -39,7 +39,7 @@
 // wrong, so it is allowed to sit there instead of being warned about.
 #![cfg_attr(not(unix), allow(dead_code))]
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 /// Keychain entry for Claude Code's sign-in. Must stay `KEY.claudeCode` from
 /// src/keychain.ts — the box push and the command-env exclusion both key off it.
@@ -184,25 +184,32 @@ pub(crate) fn failure_message(cleaned: &str) -> Option<String> {
 /// side finds the same pinned binary a box install dropped, and only falls back
 /// to whatever is on PATH. Any version mints the same account token, so an
 /// older `claude` on PATH is still fine here.
+/// This user's home, by whichever name the platform uses for it. Windows has no
+/// HOME: taking only HOME there found nothing, which is half of why the button
+/// did nothing on Carl's laptop.
+fn home_dir() -> Option<std::path::PathBuf> {
+    std::env::var_os("HOME")
+        .filter(|h| !h.is_empty())
+        .or_else(|| std::env::var_os("USERPROFILE").filter(|h| !h.is_empty()))
+        .map(std::path::PathBuf::from)
+}
+
 fn candidates() -> Vec<String> {
+    let home = home_dir();
     let state = std::env::var("VC_STATE_DIR")
         .ok()
         .filter(|s| !s.trim().is_empty())
         .map(std::path::PathBuf::from)
         .or_else(|| {
-            std::env::var_os("HOME").map(|h| {
-                std::path::PathBuf::from(h)
-                    .join(".local")
-                    .join("state")
-                    .join("vault-chat-server")
-            })
+            home.as_ref().map(|h| h.join(".local").join("state").join("vault-chat-server"))
         });
-    candidates_in(std::env::var("VC_CLAUDE_BIN").ok().as_deref(), state.as_deref())
+    candidates_in(std::env::var("VC_CLAUDE_BIN").ok().as_deref(), state.as_deref(), home.as_deref())
 }
 
 /// The order itself, given the two things it depends on, so a test can lay out
 /// a state dir and check what wins without touching the process environment.
-fn candidates_in(want: Option<&str>, state: Option<&std::path::Path>) -> Vec<String> {
+fn candidates_in(want: Option<&str>, state: Option<&std::path::Path>, home: Option<&std::path::Path>) -> Vec<String> {
+    let exe = if cfg!(windows) { "claude.exe" } else { "claude" };
     let mut out = Vec::new();
     if let Some(want) = want.map(str::trim).filter(|s| !s.is_empty()) {
         out.push(want.to_string());
@@ -210,14 +217,22 @@ fn candidates_in(want: Option<&str>, state: Option<&std::path::Path>) -> Vec<Str
     if let Some(state) = state {
         // The loader wrapper first: where one exists the raw binary is the one
         // that could not run on its own (NixOS).
-        for rel in [["claude", "bin", "claude"], ["claude", "cli", "claude"]] {
-            let p = state.join(rel[0]).join(rel[1]).join(rel[2]);
+        for rel in [["claude", "bin"], ["claude", "cli"]] {
+            let p = state.join(rel[0]).join(rel[1]).join(exe);
             if p.exists() {
                 out.push(p.to_string_lossy().to_string());
             }
         }
     }
-    out.push("claude".to_string());
+    if let Some(home) = home {
+        // Where Claude Code's own installer puts it. On Carl's Windows laptop
+        // this is the one that exists, and nothing was looking for it.
+        let p = home.join(".local").join("bin").join(exe);
+        if p.exists() {
+            out.push(p.to_string_lossy().to_string());
+        }
+    }
+    out.push(exe.to_string());
     out
 }
 
@@ -250,13 +265,17 @@ pub struct ClaudeCli {
 
 // ----- the session -----
 
+
+// The pty itself, per platform: a Session that can be read, typed into and
+// ended. Everything ABOVE this line and the whole sign-in sequence BELOW it are
+// shared, so Windows and Unix run the same logic and only the pty differs.
 #[cfg(unix)]
-mod pty {
+mod pty_session {
     use super::*;
     use std::io::{Read, Write};
     use std::os::unix::io::FromRawFd;
     use std::os::unix::process::CommandExt;
-    use std::sync::Mutex;
+
 
     pub(super) struct Session {
         child: std::process::Child,
@@ -272,7 +291,7 @@ mod pty {
     impl Session {
         /// Kill the CLI and take its config directory with it. Called on every
         /// exit path, including the ones that worked.
-        fn end(mut self) {
+        pub(super) fn end(mut self) {
             let _ = self.child.kill();
             let _ = self.child.wait();
             let _ = std::fs::remove_dir_all(&self.config_dir);
@@ -283,7 +302,7 @@ mod pty {
 
         /// Read whatever is there, appended to `seen`. Ok(false) once the CLI's
         /// end of the pty is gone.
-        fn pump(&mut self) -> std::io::Result<bool> {
+        pub(super) fn pump(&mut self) -> std::io::Result<bool> {
             let mut buf = [0u8; 16 * 1024];
             loop {
                 match self.master.read(&mut buf) {
@@ -300,10 +319,10 @@ mod pty {
         /// Type a line at the CLI. The master is non-blocking, so a full pty
         /// input buffer answers WouldBlock rather than waiting — which
         /// `write_all` would turn into a failed sign-in.
-        fn type_in(&mut self, line: &str) -> std::io::Result<()> {
+        pub(super) fn type_in(&mut self, line: &str) -> std::io::Result<()> {
             let bytes = format!("{line}\r").into_bytes();
             let mut sent = 0;
-            let deadline = Instant::now() + Duration::from_secs(10);
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
             while sent < bytes.len() {
                 match self.master.write(&bytes[sent..]) {
                     Ok(0) => return Err(std::io::ErrorKind::WriteZero.into()),
@@ -314,7 +333,7 @@ mod pty {
                             std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
                         ) =>
                     {
-                        if Instant::now() >= deadline {
+                        if std::time::Instant::now() >= deadline {
                             return Err(e);
                         }
                         std::thread::sleep(Duration::from_millis(20));
@@ -328,20 +347,20 @@ mod pty {
         /// Where the transcript has got to, so a later wait can be told to look
         /// only at what the CLI prints from here on. Without that, a wait for a
         /// refusal would match one the CLI had already printed and answered.
-        fn mark(&self) -> usize {
+        pub(super) fn mark(&self) -> usize {
             self.seen.len()
         }
 
         /// Pump until `found` answers, or the deadline passes. Only the
         /// transcript from `mark` on is considered, and it is returned either
         /// way so the caller can say what went wrong.
-        fn wait_for<T>(
+        pub(super) fn wait_for<T>(
             &mut self,
             mark: usize,
             limit: Duration,
             found: impl Fn(&str) -> Option<T>,
         ) -> (Option<T>, String) {
-            let deadline = Instant::now() + limit;
+            let deadline = std::time::Instant::now() + limit;
             loop {
                 let alive = self.pump().unwrap_or(false);
                 let cleaned = clean_terminal_output(&self.seen[mark.min(self.seen.len())..]);
@@ -349,7 +368,7 @@ mod pty {
                     return (Some(hit), cleaned);
                 }
                 // One last look was taken above, so a dead child can stop now.
-                if !alive || Instant::now() >= deadline {
+                if !alive || std::time::Instant::now() >= deadline {
                     return (None, cleaned);
                 }
                 std::thread::sleep(Duration::from_millis(100));
@@ -357,9 +376,6 @@ mod pty {
         }
     }
 
-    /// One sign-in at a time. Pressing the button again replaces the one in
-    /// flight, which is also what makes a stale half-finished attempt go away.
-    static LIVE: Mutex<Option<Session>> = Mutex::new(None);
 
     fn errno() -> String {
         std::io::Error::last_os_error().to_string()
@@ -410,29 +426,10 @@ mod pty {
     }
 
     /// The CLI's environment, built rather than inherited. What matters:
-    /// - no ANTHROPIC_API_KEY / CLAUDE_CODE_OAUTH_TOKEN, so an existing
-    ///   credential in this process's environment cannot change the flow;
-    /// - CLAUDE_CONFIG_DIR somewhere throwaway, so nothing about this login is
-    ///   left in the user's own ~/.claude;
-    /// - a real TERM, because Ink draws nothing useful without one;
-    /// - BROWSER=true, a no-op on PATH everywhere, so the CLI does not open the
-    ///   page itself. The webview opens it through the app's own opener, which
-    ///   is the path that works in a packaged build.
-    fn child_env(config_dir: &std::path::Path) -> Vec<(String, String)> {
-        let mut env = vec![
-            ("TERM".to_string(), "xterm-256color".to_string()),
-            ("BROWSER".to_string(), "true".to_string()),
-            ("CLAUDE_CONFIG_DIR".to_string(), config_dir.to_string_lossy().to_string()),
-        ];
-        for pass in ["HOME", "PATH", "USER", "LOGNAME", "LANG", "TMPDIR", "SHELL"] {
-            if let Some(v) = std::env::var_os(pass) {
-                env.push((pass.to_string(), v.to_string_lossy().to_string()));
-            }
-        }
-        env
-    }
-
-    fn spawn(cli: &str, config_dir: &std::path::Path) -> Result<Session, String> {
+    /// Start `claude setup-token` on a pty that is also its controlling
+    /// terminal. `env` is built by the shared code, so both platforms give the
+    /// CLI the same environment.
+    pub(super) fn spawn(cli: &str, config_dir: &std::path::Path, env: Vec<(String, String)>) -> Result<Session, String> {
         let (master, slave) = open_pty()?;
         let one = || slave.try_clone().map_err(|e| format!("could not dup the pty: {e}"));
         let mut cmd = std::process::Command::new(cli);
@@ -441,7 +438,7 @@ mod pty {
             .stdout(std::process::Stdio::from(one()?))
             .stderr(std::process::Stdio::from(one()?))
             .env_clear()
-            .envs(child_env(config_dir));
+            .envs(env);
         // SAFETY: both calls are async-signal-safe and touch only this
         // about-to-exec child. Without them the pty is not the child's
         // controlling terminal and Ink cannot take the terminal over.
@@ -462,7 +459,174 @@ mod pty {
         Ok(Session { child, master, config_dir: config_dir.to_path_buf(), seen: Vec::new() })
     }
 
-    /// A throwaway CLAUDE_CONFIG_DIR, named so a leftover is recognisable.
+}
+
+
+
+/// The same Session on Windows, over ConPTY. `claude setup-token` is an Ink
+/// program there too: it draws nothing on pipes, so the pty is not optional —
+/// which is why the button did nothing at all on Carl's laptop before this.
+///
+/// portable-pty owns the ConPTY plumbing (it is what wezterm uses). Its reads
+/// block, so a thread drains the pty into a buffer the waits poll, which gives
+/// the same "read whatever is there, against the whole transcript" behaviour
+/// the Unix side gets from a non-blocking master.
+#[cfg(windows)]
+mod pty_session {
+    use super::*;
+    use std::io::Write;
+    use std::sync::{Arc, Mutex};
+
+    pub(super) struct Session {
+        child: Box<dyn portable_pty::Child + Send + Sync>,
+        writer: Box<dyn Write + Send>,
+        /// Filled by the reader thread; drained by the waits.
+        seen: Arc<Mutex<Vec<u8>>>,
+        /// Throwaway CLAUDE_CONFIG_DIR, removed when the session ends.
+        config_dir: std::path::PathBuf,
+    }
+
+    impl Session {
+        /// Kill the CLI and take its config directory with it.
+        pub(super) fn end(mut self) {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+            let _ = std::fs::remove_dir_all(&self.config_dir);
+            // The transcript held the token the CLI printed: overwrite it rather
+            // than just drop it.
+            if let Ok(mut seen) = self.seen.lock() {
+                seen.iter_mut().for_each(|b| *b = 0);
+            }
+        }
+
+        /// How much has been read so far, so a later wait can ignore everything
+        /// the CLI printed for an earlier attempt.
+        pub(super) fn mark(&self) -> usize {
+            self.seen.lock().map(|s| s.len()).unwrap_or(0)
+        }
+
+        /// Type a line at the CLI.
+        pub(super) fn type_in(&mut self, line: &str) -> Result<(), String> {
+            self.writer
+                .write_all(format!("{line}\r").as_bytes())
+                .and_then(|_| self.writer.flush())
+                .map_err(|e| e.to_string())
+        }
+
+        /// Watch the transcript from `mark` until `f` finds what it wants or the
+        /// time runs out, answering with that and the text as it last stood.
+        pub(super) fn wait_for<T, F: Fn(&str) -> Option<T>>(
+            &mut self,
+            mark: usize,
+            limit: std::time::Duration,
+            f: F,
+        ) -> (Option<T>, String) {
+            let deadline = std::time::Instant::now() + limit;
+            loop {
+                let raw = match self.seen.lock() {
+                    Ok(seen) => seen[mark.min(seen.len())..].to_vec(),
+                    Err(_) => Vec::new(),
+                };
+                let cleaned = clean_terminal_output(&raw);
+                if let Some(found) = f(&cleaned) {
+                    return (Some(found), cleaned);
+                }
+                // The CLI leaving is not the end of the transcript: what it
+                // printed on the way out is still the answer.
+                if matches!(self.child.try_wait(), Ok(Some(_))) {
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                    let raw = match self.seen.lock() {
+                        Ok(seen) => seen[mark.min(seen.len())..].to_vec(),
+                        Err(_) => Vec::new(),
+                    };
+                    let last = clean_terminal_output(&raw);
+                    return (f(&last), last);
+                }
+                if std::time::Instant::now() >= deadline {
+                    return (None, cleaned);
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+        }
+    }
+
+    pub(super) fn spawn(cli: &str, config_dir: &std::path::Path, env: Vec<(String, String)>) -> Result<Session, String> {
+        use portable_pty::{native_pty_system, CommandBuilder, PtySize};
+        let pair = native_pty_system()
+            .openpty(PtySize { rows: PTY_ROWS, cols: PTY_COLS, pixel_width: 0, pixel_height: 0 })
+            .map_err(|e| format!("could not open a console for the sign-in: {e}"))?;
+        let mut cmd = CommandBuilder::new(cli);
+        cmd.arg("setup-token");
+        cmd.env_clear();
+        for (k, v) in env {
+            cmd.env(k, v);
+        }
+        let child = pair
+            .slave
+            .spawn_command(cmd)
+            .map_err(|e| format!("{cli} would not start: {e}"))?;
+        // The parent's copy has to go, or the reader never sees the CLI leave.
+        drop(pair.slave);
+        let writer = pair
+            .master
+            .take_writer()
+            .map_err(|e| format!("could not write to the sign-in console: {e}"))?;
+        let mut reader = pair
+            .master
+            .try_clone_reader()
+            .map_err(|e| format!("could not read the sign-in console: {e}"))?;
+        let seen: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
+        let into = Arc::clone(&seen);
+        // Reads block on Windows, so they live on their own thread. It ends when
+        // the pty does, and the master is dropped with the session.
+        std::thread::spawn(move || {
+            use std::io::Read;
+            let mut buf = [0u8; 16 * 1024];
+            loop {
+                match reader.read(&mut buf) {
+                    Ok(0) | Err(_) => return,
+                    Ok(n) => {
+                        if let Ok(mut s) = into.lock() {
+                            s.extend_from_slice(&buf[..n]);
+                        }
+                    }
+                }
+            }
+        });
+        Ok(Session { child, writer, seen, config_dir: config_dir.to_path_buf() })
+    }
+}
+
+mod pty {
+    use super::*;
+    use std::sync::Mutex;
+    use super::pty_session::{spawn, Session};
+
+    /// One sign-in at a time. Pressing the button again replaces the one in
+    /// flight, which is also what makes a stale half-finished attempt go away.
+    static LIVE: Mutex<Option<Session>> = Mutex::new(None);
+    /// - no ANTHROPIC_API_KEY / CLAUDE_CODE_OAUTH_TOKEN, so an existing
+    ///   credential in this process's environment cannot change the flow;
+    /// - CLAUDE_CONFIG_DIR somewhere throwaway, so nothing about this login is
+    ///   left in the user's own ~/.claude;
+    /// - a real TERM, because Ink draws nothing useful without one;
+    /// - BROWSER=true, a no-op on PATH everywhere, so the CLI does not open the
+    ///   page itself. The webview opens it through the app's own opener, which
+    ///   is the path that works in a packaged build.
+    pub(super) fn child_env(config_dir: &std::path::Path) -> Vec<(String, String)> {
+        let mut env = vec![
+            ("TERM".to_string(), "xterm-256color".to_string()),
+            ("BROWSER".to_string(), "true".to_string()),
+            ("CLAUDE_CONFIG_DIR".to_string(), config_dir.to_string_lossy().to_string()),
+        ];
+        for pass in ["HOME", "PATH", "USER", "LOGNAME", "LANG", "TMPDIR", "SHELL"] {
+            if let Some(v) = std::env::var_os(pass) {
+                env.push((pass.to_string(), v.to_string_lossy().to_string()));
+            }
+        }
+        env
+    }
+
     fn scratch_config_dir() -> Result<std::path::PathBuf, String> {
         let stamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -509,7 +673,7 @@ mod pty {
             .find(|c| probe(c).is_some())
             .ok_or("no Claude Code on this machine could run `setup-token`")?;
         let config_dir = scratch_config_dir()?;
-        let mut session = match spawn(&cli, &config_dir) {
+        let mut session = match spawn(&cli, &config_dir, child_env(&config_dir)) {
             Ok(s) => s,
             Err(e) => {
                 let _ = std::fs::remove_dir_all(&config_dir);
@@ -591,23 +755,6 @@ mod pty {
         }
     }
 }
-
-#[cfg(not(unix))]
-mod pty {
-    use super::ClaudeCli;
-    const WHY: &str = "signing in from the app needs a pty, which this platform does not have here";
-    pub(super) fn cli() -> Option<ClaudeCli> {
-        None
-    }
-    pub(super) fn start() -> Result<String, String> {
-        Err(WHY.to_string())
-    }
-    pub(super) fn finish(_code: &str) -> Result<(), String> {
-        Err(WHY.to_string())
-    }
-    pub(super) fn cancel() {}
-}
-
 // ----- commands -----
 
 /// The `claude` the button would drive, or null — in which case Settings offers
@@ -745,15 +892,18 @@ expired, already used, or from an earlier sign-in attempt. Sign in again to get 
     #[test]
     fn the_override_wins_then_the_pinned_binary_then_whatever_is_on_path() {
         let dir = std::env::temp_dir().join(format!("vc-cand-{}", std::process::id()));
-        let cli = dir.join("claude").join("cli").join("claude");
-        let wrapper = dir.join("claude").join("bin").join("claude");
+        // The name the platform's own installer uses, which is what discovery
+        // looks for: claude.exe on Windows.
+        let exe = if cfg!(windows) { "claude.exe" } else { "claude" };
+        let cli = dir.join("claude").join("cli").join(exe);
+        let wrapper = dir.join("claude").join("bin").join(exe);
         std::fs::create_dir_all(cli.parent().unwrap()).unwrap();
         std::fs::write(&cli, b"").unwrap();
 
         // Nothing laid out but the raw binary: it comes before bare `claude`.
         assert_eq!(
-            candidates_in(None, Some(&dir)),
-            vec![cli.to_string_lossy().to_string(), "claude".to_string()],
+            candidates_in(None, Some(&dir), None),
+            vec![cli.to_string_lossy().to_string(), exe.to_string()],
         );
 
         // A loader wrapper exists, so the raw binary is the one that could not
@@ -761,20 +911,29 @@ expired, already used, or from an earlier sign-in attempt. Sign in again to get 
         std::fs::create_dir_all(wrapper.parent().unwrap()).unwrap();
         std::fs::write(&wrapper, b"").unwrap();
         assert_eq!(
-            candidates_in(None, Some(&dir)),
+            candidates_in(None, Some(&dir), None),
             vec![
                 wrapper.to_string_lossy().to_string(),
                 cli.to_string_lossy().to_string(),
-                "claude".to_string(),
+                exe.to_string(),
             ],
         );
 
         // VC_CLAUDE_BIN beats everything, and is trimmed; a blank one is not a
         // candidate at all.
-        assert_eq!(candidates_in(Some("  /opt/claude  "), Some(&dir))[0], "/opt/claude");
-        assert_eq!(candidates_in(Some("   "), None), vec!["claude".to_string()]);
+        assert_eq!(candidates_in(Some("  /opt/claude  "), Some(&dir), None)[0], "/opt/claude");
+        assert_eq!(candidates_in(Some("   "), None, None), vec![exe.to_string()]);
         // No state dir to look in still leaves the last resort.
-        assert_eq!(candidates_in(None, None), vec!["claude".to_string()]);
+        assert_eq!(candidates_in(None, None, None), vec![exe.to_string()]);
+
+        // Where Claude Code's own installer puts it, which on Carl's Windows
+        // laptop is the only copy there is.
+        let home = dir.join("home");
+        let installed = home.join(".local").join("bin").join(exe);
+        std::fs::create_dir_all(installed.parent().unwrap()).unwrap();
+        std::fs::write(&installed, b"").unwrap();
+        let with_home = candidates_in(None, None, Some(&home));
+        assert_eq!(with_home, vec![installed.to_string_lossy().to_string(), exe.to_string()]);
 
         std::fs::remove_dir_all(&dir).ok();
     }

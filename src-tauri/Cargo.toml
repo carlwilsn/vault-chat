@@ -50,6 +50,11 @@ tiny_http = "0.12"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Graphics_Dwm"] }
+# Windows has no pty of its own to borrow, and `claude setup-token` draws
+# nothing on pipes — so signing in from the app needs ConPTY. portable-pty owns
+# that plumbing (it is what wezterm uses). The Unix side keeps its own small
+# driver, already proven against the real CLI.
+portable-pty = "0.9"
 
 # "Sign in with Claude" drives `claude setup-token`, which is an Ink program and
 # prints nothing on a pipe — it needs a pty (src/claude_login.rs). The POSIX pty
@@ -66,4 +71,3 @@ webkit2gtk = { version = "=2.0.2", features = ["v2_40"] }
 # played natively instead (see agent_audio in lib.rs). default-features off:
 # we feed raw PCM, no format decoders needed.
 rodio = { version = "0.19", default-features = false }
-
