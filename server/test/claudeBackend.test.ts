@@ -494,8 +494,10 @@ describe("a conversation on Claude Code", () => {
     const r = await engine.message({ text: 'CALL mcp__vault_chat__PostToConversation {"conversation_id":"cc-conv-target","text":"Finish the physics set"}', convId: "cc-conv-from" });
     await answered(r.convId, 'CALL mcp__vault_chat__PostToConversation {"conversation_id":"cc-conv-target","text":"Finish the physics set"}');
 
-    // The target took its own turn on the handed-over words.
-    await until(async () => ((await readConv(vault, "cc-conv-target"))?.messages ?? []).some((m: any) => m.content === "Finish the physics set"));
+    // The target took its own turn on the handed-over words. Wait on the feed's
+    // own item, not on readConv's messages: those are already rendered, and a
+    // handoff renders as the quiet system line asserted below, never the bare words.
+    await until(async () => engine.picture("cc-conv-target").items.some((i: any) => i.text === "Finish the physics set" && i.via === "handoff"));
     await until(async () => (await readConv(vault, "cc-conv-target"))?.state === "idle");
 
     // It is NOT shown as something Carl typed there: the clients' own view turns
@@ -503,7 +505,7 @@ describe("a conversation on Claude Code", () => {
     const p = engine.picture("cc-conv-target");
     const row = p.items.find((i: any) => i.text === "Finish the physics set");
     expect(row).toMatchObject({ kind: "user", via: "handoff" });
-    const view = makeChatView(p);
+    const view = makeChatView()(p);
     const line = view.messages.find((m: any) => String(m.content ?? "").includes("Finish the physics set"));
     expect(line).toMatchObject({ role: "user", system: true });
     expect(line.direct).toBeUndefined();
