@@ -128,6 +128,9 @@ function messagesOfItem(it: Item, retry = false): ViewMessage[] {
       }
       // Try again on a failed turn: a quiet line, not Carl's words (the agent gets RETRY_TEXT).
       if (it.via === "retry") return [{ role: "user", system: true, content: "↻ Trying again", mid: it.id }];
+      // Work another chat (or Carl's laptop) handed to this one: a quiet line, so
+      // it never reads as something Carl typed here.
+      if (it.via === "handoff") return [{ role: "user", system: true, content: `↗ ${it.text ?? ""}`.trim(), mid: it.id }];
       if (ENGINE_VIA.has(it.via ?? "")) return [{ role: "user", system: true, content: `${it.via === "wake" || it.via === "job" || it.via === "delegate" ? "⏰" : "↻"} ${it.text ?? ""}`.trim(), mid: it.id }];
       return [
         {

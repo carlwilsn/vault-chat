@@ -14,6 +14,7 @@ import { findClaude, type ClaudeInstall } from "../engine/claude/install";
 import { claudePaths } from "../engine/claude/paths";
 import { ClaudeCodeBackend, isClaudeThread } from "../engine/claude/backend";
 import { McpRuntime } from "../mcp/runtime";
+import { makeChatView } from "../../src/convlog/view";
 import { BackendRouter, type EngineName } from "../engine/router";
 import type { BoundTools } from "../mcp/tools";
 import type { Detached, EngineBackend, Handlers, SideRunner, ToolSpec } from "../engine/backend";
@@ -484,6 +485,44 @@ describe("a conversation on Claude Code", () => {
   it("a thread this engine never started is not its to resume", async () => {
     await expect(claude.resumeThread("cc-not-a-thread", { model: "haiku", subagents: false })).rejects.toMatchObject({ threadUnknown: true });
   });
+
+  it("one chat can hand work to another, and it shows there as a handoff, not as Carl", async () => {
+    // The chat that will be handed the work has to exist first.
+    const to = await engine.message({ text: "I own the physics work", convId: "cc-conv-target" });
+    await answered(to.convId, "I own the physics work");
+
+    const r = await engine.message({ text: 'CALL mcp__vault_chat__PostToConversation {"conversation_id":"cc-conv-target","text":"Finish the physics set"}', convId: "cc-conv-from" });
+    await answered(r.convId, 'CALL mcp__vault_chat__PostToConversation {"conversation_id":"cc-conv-target","text":"Finish the physics set"}');
+
+    // The target took its own turn on the handed-over words.
+    await until(async () => ((await readConv(vault, "cc-conv-target"))?.messages ?? []).some((m: any) => m.content === "Finish the physics set"));
+    await until(async () => (await readConv(vault, "cc-conv-target"))?.state === "idle");
+
+    // It is NOT shown as something Carl typed there: the clients' own view turns
+    // a handoff into a quiet system line.
+    const p = engine.picture("cc-conv-target");
+    const row = p.items.find((i: any) => i.text === "Finish the physics set");
+    expect(row).toMatchObject({ kind: "user", via: "handoff" });
+    const view = makeChatView(p);
+    const line = view.messages.find((m: any) => String(m.content ?? "").includes("Finish the physics set"));
+    expect(line).toMatchObject({ role: "user", system: true });
+    expect(line.direct).toBeUndefined();
+
+    // The chat that posted was told it does not wait, and its own turn ended.
+    const tools = engine.picture(r.convId).items.filter((i: any) => i.kind === "tool");
+    expect(tools.map((t: any) => t.name)).toEqual(["PostToConversation"]);
+    expect(String(tools[0].result ?? "")).toContain("taking its own turn");
+  }, 240_000);
+
+  it("a handoff refuses this chat itself and a chat that is not there", async () => {
+    const r = await engine.message({ text: 'CALL mcp__vault_chat__PostToConversation {"conversation_id":"cc-conv-self","text":"loop"}', convId: "cc-conv-self" });
+    await answered(r.convId, 'CALL mcp__vault_chat__PostToConversation {"conversation_id":"cc-conv-self","text":"loop"}');
+    expect(String(engine.picture(r.convId).items.filter((i: any) => i.kind === "tool")[0]?.result ?? "")).toContain("posting to yourself");
+
+    const r2 = await engine.message({ text: 'CALL mcp__vault_chat__PostToConversation {"conversation_id":"no-such-chat","text":"hello"}', convId: "cc-conv-missing" });
+    await answered(r2.convId, 'CALL mcp__vault_chat__PostToConversation {"conversation_id":"no-such-chat","text":"hello"}');
+    expect(String(engine.picture(r2.convId).items.filter((i: any) => i.kind === "tool")[0]?.result ?? "")).toContain("No chat with id");
+  }, 240_000);
 
   it("a conversation set to pi does not get a Claude Code thread", async () => {
     choice = "pi";

@@ -185,7 +185,7 @@ function onEntry(d: Draft, r: Extract<LogRecord, { type: "entry" }>): void {
       const images = r.images ? r.images.map((im, i) => (im.dataUrl || !fromContent[i] ? im : { ...im, dataUrl: fromContent[i]!.dataUrl })) : fromContent;
       place(d, [{ id: r.clientId ?? e.id, kind: "user", status: "done", text, via: r.via ?? "chat", ...(r.device ? { device: r.device } : {}), ...(images.length ? { images } : {}), at: r.at }]);
       touch(d, r.at);
-      if (d.meta.title === NEW_CHAT && text.trim() && !["wake", "nudge", "resume", "job"].includes(r.via ?? "")) d.meta = { ...d.meta, title: titleFrom(text) };
+      if (d.meta.title === NEW_CHAT && text.trim() && !["wake", "nudge", "resume", "job", "handoff"].includes(r.via ?? "")) d.meta = { ...d.meta, title: titleFrom(text) };
       return;
     }
     if (m.role === "assistant") {

@@ -217,6 +217,21 @@ export const ENGINE_TOOL_SPECS = [
   },
   {
     type: "function",
+    name: "PostToConversation",
+    description:
+      "Hand work to one of Carl's other chats: post a message into it, which starts its own turn there. It does not wait for the answer — the chat you posted to does the work and tells Carl itself. Use it to pass something to the chat that already owns that work (ListConversations, ReadConversation name them); never to post into this chat, and never for something Carl should simply be told (that is Notify). It is shown in that chat as a message from outside it, not as Carl's words.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        conversation_id: { type: "string", description: "The chat to post into (from ListConversations)." },
+        text: { type: "string", description: "What that chat should do, in full: it has none of this chat's context." },
+      },
+      required: ["conversation_id", "text"],
+      additionalProperties: false,
+    },
+  },
+  {
+    type: "function",
     name: "Notify",
     description:
       "Tell Carl that something he asked for finished, or that something needs him (a failure he must act on). It always lands in his in-app alerts. Phone push is OFF by default. Set push:true ONLY when Carl explicitly asked to be pinged for THIS work (e.g. 'Ping me when it is done', 'notify me if it fails'), and only on that requested finish/failure, not progress or unrelated later work. One invocation requests one event push, not future alerts. A worker must use only the request passed into its original task, never a later parent request. Omit push otherwise. Push still respects away/seen/dedup rules; an optional user Settings preference restores legacy automatic pushes. The title says plainly what finished or what is needed (\"Done: …\", \"Needs you: …\"). Not for progress, not for background work he did not ask about, not for questions (AskUser).",
@@ -2394,6 +2409,20 @@ export class Engine {
           const wake = addWake(vault, { conv: convId, at, reason, ...(this.live.get(convId)?.byCarl ? { byCarl: true } : {}) });
           await patchMeta(vault, convId, { nextWakeAt: nextWakeFor(vault, convId) });
           return text(`Wake set for ${new Date(at).toISOString()} ("${reason}"). Wake id: ${wake.id}. If a bounded continuation is active, record ContinueWork wait for this wake id, then stop; otherwise stop now. Do not schedule another wake.`);
+        }
+        case "PostToConversation": {
+          const target = String(a.conversation_id ?? "").trim();
+          const body = String(a.text ?? "").trim();
+          if (!target || !body) return text("Give conversation_id and text.");
+          if (target === convId) return text("That is this chat. Answer here instead of posting to yourself.");
+          const to = await readConv(vault, target);
+          if (!to) return text(`No chat with id "${target}". ListConversations lists them.`);
+          if (LEGACY_SOURCES.has(to.source)) return text(`"${to.title}" is an archived mission thread: it is readable, never run.`);
+          // It starts a turn there the way any message does, so that chat's own
+          // engine, tools and rules apply — this chat lends it nothing.
+          const r = await this.message({ convId: target, text: body, via: "handoff" });
+          if (r?.error) return text(`Not posted: ${String(r.error)}`);
+          return text(`Posted to "${to.title}" (${target}); it is taking its own turn. It will tell Carl itself, so do not wait or report for it.`);
         }
         case "Notify": {
           // At most 4 pings an hour per conversation; past that they go to the
