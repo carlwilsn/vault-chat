@@ -8,6 +8,8 @@ import { VoiceLogShipper } from "./voiceShip";
 import { MicPin, canPickOutput, listAudioDevices } from "./voiceMic";
 import { BrainConversation, type BrainPost } from "./voiceBrainClient";
 import { MAIN_ID } from "./threads";
+import { claudeSignedIn } from "./claudeAuth";
+import { askVoiceSignIn, claudeSignedInNow, readClaudeHealth } from "./claudeAuthLive";
 
 /** The voice's diagnostics: the local trail, and the box (voiceShip.ts: <state>/logs/voice.jsonl). */
 const ship = new VoiceLogShipper({ device: "laptop" });
@@ -61,6 +63,16 @@ export async function startVoiceCall(): Promise<void> {
   const link = await boxLinkFor(state.vaultPath);
   if (!link) {
     reportVoiceError("Connect your box to talk — voice runs on the box (Settings → Box).");
+    return;
+  }
+  // The voice IS the agent, so it needs the Claude sign-in like a typed turn
+  // does. Not a red error: the mic has no room for a prompt, so the cockpit
+  // draws the sentence and the button where the waves would have been
+  // (src/claudeAuthLive.ts askVoiceSignIn, src/VoiceCockpit.tsx).
+  if (!claudeSignedIn(state.serviceKeys.claudeCode, await readClaudeHealth())) {
+    useStore.setState({ voiceMode: false, voiceError: null });
+    useStore.getState().setVoiceConnecting(false);
+    askVoiceSignIn(true);
     return;
   }
   const readiness = await boxGet(link, "/api/v1/brain/engine", 4000).catch(() => null);
@@ -169,6 +181,14 @@ export function toggleVoice(by: string = "toggle"): void {
     return;
   }
   if (!useStore.getState().voiceMode) {
+    // Known to be signed out: the prompt, with nothing started. Not known yet
+    // (no box answer and no token here), startVoiceCall asks properly.
+    if (claudeSignedInNow() === false) {
+      vlog("voice start refused", { why: "not signed in to Claude", by: who });
+      askVoiceSignIn(true);
+      return;
+    }
+    askVoiceSignIn(false);
     vlog("voice start", { by: who });
     useStore.setState({ voiceMode: true, voiceError: null });
     void startVoiceCall();

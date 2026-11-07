@@ -21,9 +21,10 @@ import {
 import { boxGet, boxPost } from "./boxChat";
 import { pushKeysToBox, keysChanged, subscribeKeyPush } from "./boxKeys";
 import { BoxModelChecks } from "./BoxModelChecks";
-import { ClaudeCodeSignIn } from "./ClaudeCodeSignIn";
+import { ClaudeAccountLine } from "./ClaudeCodeSignIn";
 import { MasterSection } from "./MasterSection";
-import { modelLabel, setAgentModel, useAgentModel } from "./agentModel";
+import { setAgentModel, useAgentModel } from "./agentModel";
+import { claudeModelLabel } from "./claudeModels";
 import { openShortcutSheet } from "./ShortcutSheet";
 import { chordText } from "./shortcuts";
 import {
@@ -43,7 +44,14 @@ import {
   type VoiceDetail,
 } from "./voiceLibraryBrowse";
 
-// Six sections: Models, Keys, Voice, vault-chat folder, Box, Appearance; then Keyboard shortcuts (the Ctrl+/ sheet).
+// The Claude sign-in on one line at the top, then six sections: Models, Keys, Voice, vault-chat folder, Box,
+// Appearance; then Keyboard shortcuts (the Ctrl+/ sheet).
+//
+// The sign-in is at the TOP and is one line, because it is the first thing to
+// settle on a fresh install and the only thing the AI features wait on. It used
+// to be a tiny underlined link inside Models that opened a panel with three
+// ways in at once; Carl, on that release: "when I click the sign in button its
+// not a clean obvious and nice thing."
 
 const mask = (k?: string) => (k ? `${k.slice(0, 6)}…${k.slice(-4)}` : "not set");
 
@@ -72,6 +80,8 @@ export function SettingsPane() {
         <span className="text-[13px] font-semibold">Settings</span>
       </div>
       <div className="flex-1 overflow-auto p-5 space-y-6">
+        <ClaudeAccountLine />
+        <Divider />
         <ModelsSection />
         <Divider />
         <KeysSection />
@@ -218,27 +228,38 @@ function Picker({
   );
 }
 
-// Models: the agent's one model (pi on the box, for everything, typed and spoken; the same setting as the
-// composer's picker, src/agentModel.ts).
+// Models: the agent's one Claude model (the same setting as the composer's
+// picker, src/agentModel.ts, which already filters the box's list down to
+// Claude's — src/claudeModels.ts). Signing in is the line at the top of
+// Settings, not a link in here.
 function ModelsSection() {
   const agent = useAgentModel();
-  const agentOptions: PickOption[] = agent.options.map((id) => ({ value: id, label: modelLabel(id), hint: id }));
+  const agentOptions: PickOption[] = agent.options.map((id) => ({ value: id, label: claudeModelLabel(id) ?? id }));
+  // The box may still be set to something that is not a Claude model (a vault
+  // that has not had a turn since). Its id is never shown — the picker says
+  // what it wants instead.
+  const current = claudeModelLabel(agent.current);
 
   return (
     <section className="space-y-2">
-      <SectionHead title="Models" hint="The agent runs on one model, for what you type and what you say." />
+      <SectionHead title="Models" hint="The agent runs on one Claude model, for what you type and what you say." />
       <div className="flex items-start justify-between gap-3" data-el="agent-model">
         <span className="text-[12px] text-foreground/90 shrink-0 pt-1">Agent</span>
         <div className="min-w-0 flex-1 max-w-[62%] space-y-0.5">
-          {agent.current ? (
-            <Picker value={agent.current} label={modelLabel(agent.current)} options={agentOptions} placeholder="Search models…" onChange={(v) => void setAgentModel(v)} />
+          {agentOptions.length > 0 ? (
+            <Picker
+              value={agent.current ?? ""}
+              label={current ?? "Pick a model"}
+              options={agentOptions}
+              placeholder="Search models…"
+              onChange={(v) => void setAgentModel(v)}
+            />
           ) : (
             <p className="text-[11px] text-muted-foreground px-0.5 pt-1">Set on the box once it is connected.</p>
           )}
           {agent.error && <p className="text-[10.5px] text-amber-500/90 px-0.5">Not changed: {agent.error}</p>}
         </div>
       </div>
-      <ClaudeCodeSignIn />
       <VoiceHealthRow />
       <BoxModelChecks />
     </section>
@@ -307,10 +328,10 @@ function KeyRow({
 }
 
 function KeysSection() {
+  // `apiKeys` is only watched, not edited here: a provider key still travels to
+  // the box (src/boxKeys.ts), but nothing in this UI asks Carl for one.
   const apiKeys = useStore((s) => s.apiKeys);
   const serviceKeys = useStore((s) => s.serviceKeys);
-  const setApiKey = useStore((s) => s.setApiKey);
-  const clearApiKey = useStore((s) => s.clearApiKey);
   const setServiceKey = useStore((s) => s.setServiceKey);
   const clearServiceKey = useStore((s) => s.clearServiceKey);
 
@@ -352,14 +373,10 @@ function KeysSection() {
 
   return (
     <section className="space-y-2.5">
+      {/* No model-provider key row: the agent is Claude Code, and its sign-in is
+          the line at the top of Settings, not a key to paste. What is left here
+          is the services the vault's own tools need. */}
       <SectionHead title="Keys" hint="Kept in this machine's keychain, and sent to the box." />
-      <KeyRow
-        label="OpenRouter"
-        value={apiKeys.openrouter}
-        placeholder="sk-or-…"
-        onSave={(v) => setApiKey("openrouter", v)}
-        onClear={() => clearApiKey("openrouter")}
-      />
       <KeyRow
         label="ElevenLabs"
         value={serviceKeys.elevenlabs}
@@ -899,7 +916,6 @@ function BoxConnect({ vault, onConnected }: { vault: string; onConnected: () => 
   const [address, setAddress] = useState("");
   const [picked, setPicked] = useState<string | null>(null);
   const [health, setHealth] = useState<BoxHealth | null>(null);
-  const laptopKey = useStore((s) => s.apiKeys.openrouter);
   const [busy, setBusy] = useState<null | "checking" | "sync">(null);
   const [error, setError] = useState<string | null>(null);
   const link = (url: string) => ({ url, token: useStore.getState().boxToken || null });
@@ -1002,8 +1018,10 @@ function BoxConnect({ vault, onConnected }: { vault: string; onConnected: () => 
               change
             </button>
           </div>
-          {!laptopKey && <p className="text-[11px] text-muted-foreground/80">Add your OpenRouter key under Keys first.</p>}
-          <Button size="sm" onClick={() => void sync()} disabled={!laptopKey || busy === "sync"}>
+          {/* Nothing to paste first: syncing needs the box, not a key. The
+              Claude sign-in is the one thing the agent waits on, and it has its
+              own line at the top of Settings. */}
+          <Button size="sm" onClick={() => void sync()} disabled={busy === "sync"}>
             {busy === "sync" ? "Syncing…" : `Sync this vault with ${health.name}`}
           </Button>
         </>

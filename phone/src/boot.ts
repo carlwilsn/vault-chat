@@ -19,6 +19,7 @@ import { filesLine, splitFilesLine } from "../../src/filesLine";
 import { ATTACH_MAX_BYTES, isPhoto, pendingFile, sizeLabel, tooBig, type PendingFile } from "./attach";
 import { MAIN_ID, MAIN_TITLE, isOlderChat, panelModel, projectThreadId, projectOfThread } from "../../src/threads";
 import { startAttentionBeat, type AttentionBeat } from "../../src/attentionBeat";
+import { SIGN_IN_ELSEWHERE, SIGN_IN_LINE, claudeSignedInOnBox } from "../../src/claudeAuth";
 
 export function boot(): void {
   const qs = new URLSearchParams(location.search);
@@ -204,6 +205,9 @@ export function boot(): void {
   }
   let vaultName = "", boxModel = "", boxVersion = "";
   let unreadN = 0, offlineStreak = 0;
+  // The box's Claude sign-in (refreshClaude below). Null until it has answered:
+  // only an outright `false` blocks anything.
+  let claudeSignedIn: boolean | null = null;
   const msgsEl = $("msgs"), input = $("input"), sendBtn = $("sendBtn");
   // One-tap send with the keyboard up (note 85933e24). A plain onclick needed
   // TWO taps on iOS: the first tap blurred the textarea → the keyboard
@@ -1050,6 +1054,7 @@ export function boot(): void {
   // — that's how a tapped inline option card becomes your message.
   async function send(forced?) {
     if (sending) return;
+    if (claudeSignedIn === false) { toast(SIGN_IN_LINE.phone); return; }
     const typed = (forced !== undefined ? String(forced) : input.value).trim();
     // Photos and files ride with a typed send (not with a tapped option).
     const imgs = forced === undefined ? pendingImgs.slice() : [];
@@ -1355,6 +1360,31 @@ export function boot(): void {
 
   async function refreshState() { try { const d = await (await api("/status")).json(); if (d.error) throw 0; vaultName = d.vault || vaultName; boxModel = d.model || ""; boxVersion = d.version || boxVersion; for (const r of d.runs || []) { if (r.convId && r.source) convSourceById.set(r.convId, r.source); } applyRunningSet((d.runs || []).map((r) => r.convId)); setHeader(); return d; } catch { return null; } }
   async function refreshBadge() { try { const d = await (await api("/notifications")).json(); if (typeof d.unread === "number") { unreadN = d.unread; setHeader(); } } catch {} }
+
+  // ---------- the Claude sign-in ----------
+  // Only the AI is blocked by it: signed out, the thread, the notes and the
+  // alerts all still read, and only the composer and voice go. The box answers
+  // for itself (/api/v1/health → engine.engines.claude.signedIn, read through
+  // the same helper every client uses). An unread or failed health is NOT taken
+  // for signed out — the phone would block itself over a dropped request.
+  function paintSignIn() {
+    document.body.classList.toggle("signedout", claudeSignedIn === false);
+    const line = $("signinLine"), where = $("signinWhere");
+    if (line) line.textContent = SIGN_IN_LINE.phone;
+    // The token and the pty are the laptop's (src-tauri/src/claude_login.rs), so
+    // a button here could not finish the job: say where instead.
+    if (where) where.textContent = SIGN_IN_ELSEWHERE;
+  }
+  async function refreshClaude() {
+    let h;
+    try {
+      h = await (await api("/api/v1/health")).json();
+    } catch {
+      return; // a dropped request is not an answer: leave the last one standing
+    }
+    claudeSignedIn = claudeSignedInOnBox(h);
+    paintSignIn();
+  }
 
   // ---------- activity ----------
   function el(html: string): any { const t = document.createElement("template"); t.innerHTML = html.trim(); return t.content.firstChild; }
@@ -2391,6 +2421,8 @@ export function boot(): void {
   $("voiceRow").onclick = () => {
     closeMenu();
     if (vLive || vConnecting) { document.body.classList.add("voice"); document.body.classList.remove("voicemin"); return; }
+    // Voice IS the agent, so it waits on the same sign-in as a typed turn.
+    if (claudeSignedIn === false) { toast(SIGN_IN_LINE.voice + " — " + SIGN_IN_ELSEWHERE); return; }
     // iOS unlocks audio only inside the tap: a silent buffer played now lets the reply play later.
     try { vMicCtx = vMicCtx || new (window.AudioContext || window.webkitAudioContext!)(); if (vMicCtx.state === "suspended") vMicCtx.resume().catch(() => {}); const b = vMicCtx.createBuffer(1, 1, 22050); const s = vMicCtx.createBufferSource(); s.buffer = b; s.connect(vMicCtx.destination); s.start(0); } catch {}
     hideKb(); document.body.classList.add("voice"); document.body.classList.remove("voicemin"); vStart();
@@ -2419,7 +2451,7 @@ export function boot(): void {
     if (document.visibilityState === "hidden") { hiddenAt = Date.now(); return; }
     if (hiddenAt && Date.now() - hiddenAt >= VISIT_GAP_MS) setTimeout(backToMain, 400);
     hiddenAt = 0;
-    void pollLoop(); void refreshState(); void refreshBadge(); void refreshConvMeta(); if (page === "alerts") softReload(loadAlerts);
+    void pollLoop(); void refreshState(); void refreshBadge(); void refreshClaude(); void refreshConvMeta(); if (page === "alerts") softReload(loadAlerts);
   });
   // Whether Carl is looking at the phone (the app on screen): the box keeps the phone quiet meanwhile (server/pushGate.ts).
   attention = startAttentionBeat({ device: "phone", convId: () => convId, post: (b) => (MOCK ? undefined : api("/api/v1/attention", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(b), keepalive: true })) });
@@ -2535,6 +2567,7 @@ export function boot(): void {
   if (bootConv || bootAsk) { try { const u = new URL(location.href); u.searchParams.delete("conv"); u.searchParams.delete("ask"); history.replaceState(history.state, "", u.pathname + u.search + u.hash); } catch {} }
   void refreshState();
   void refreshBadge();
+  void refreshClaude();
   void pollLoop();
-  setInterval(() => { void refreshState(); }, 45000);
+  setInterval(() => { void refreshState(); void refreshClaude(); }, 45000);
 }

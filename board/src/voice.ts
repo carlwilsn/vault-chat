@@ -44,7 +44,8 @@ export type BoardSource = {
   idle?(): Promise<void>;
 };
 
-export type Phase = "idle" | "connecting" | "live" | "error";
+/** `signin`: nothing was started because Claude is not signed in (the pill says so). */
+export type Phase = "idle" | "connecting" | "live" | "error" | "signin";
 export type VoiceState = {
   phase: Phase;
   error: string;
@@ -92,6 +93,12 @@ export type VoiceDeps = {
   startCall?: (o: BrainOptions) => Promise<VoiceConv>;
   /** [tests] The call's browser parts (mic, peer connection, audio). */
   brainDeps?: BrainOptions["deps"];
+  /**
+   * Whether Claude is signed in on the box: voice IS the agent, so it waits on
+   * the same sign-in a typed turn does. Null (or left out) means not known, and
+   * not known never blocks — a dropped health request must not take the mic away.
+   */
+  signedIn?: () => Promise<boolean | null>;
 };
 
 export class VoiceController {
@@ -166,6 +173,7 @@ export class VoiceController {
   /** The mic button. */
   toggle(): void {
     if (this.state.phase === "live" || this.state.phase === "connecting") void this.end("mic");
+    else if (this.state.phase === "signin") this.dismiss();
     else void this.start();
   }
 
@@ -178,6 +186,14 @@ export class VoiceController {
       /* no audio to unlock */
     }
     this.set({ phase: "connecting", error: "", muted: false, speaking: false });
+    // Before the microphone: a signed-out tap must not make iOS ask for mic
+    // access for a call that cannot happen.
+    if ((await this.d.signedIn?.().catch(() => null)) === false) {
+      if (gen !== this.gen) return;
+      this.set({ phase: "signin", error: "" });
+      return;
+    }
+    if (gen !== this.gen) return;
     if (!this.d.mic) return this.fail(gen, "This page isn't on HTTPS, so Safari won't open the microphone. Open the board from its https://…ts.net address.");
     // The mic first, while the tap is still the gesture that asked for it; then let go (the call opens its own).
     try {
@@ -306,9 +322,9 @@ export class VoiceController {
     this.set({ chats: recentChats(rows) });
   }
 
-  /** The red state's close: back to idle. */
+  /** The red state's and the sign-in's close: back to idle. */
   dismiss(): void {
-    if (this.state.phase === "error") this.set({ phase: "idle", error: "" });
+    if (this.state.phase === "error" || this.state.phase === "signin") this.set({ phase: "idle", error: "" });
   }
 
   /** The board on screen (null: none). The agent looks at it itself (BoardLook) when it needs to: nothing to push. */

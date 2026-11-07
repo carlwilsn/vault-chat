@@ -44,6 +44,7 @@ import { OngoingLine } from "./OngoingLine";
 import { isArchivedThread, ARCHIVED_THREAD, OLDER_CHAT } from "./conversations";
 import { isOlderChat } from "./threads";
 import { AgentModelPicker } from "./AgentModelPicker";
+import { ClaudeSignInPrompt, useAiBlocked } from "./ClaudeCodeSignIn";
 import { useFittedPlaceholder } from "./fitPlaceholder";
 
 type MentionHit = { path: string; name: string; rel: string };
@@ -526,6 +527,10 @@ export function ChatPane() {
   // Every turn runs on the box: no box, nothing to chat with; the box out of
   // reach, the composer is off (with the reason) and the feed retries.
   const boxChat = useStore((s) => s.boxChat);
+  // Signed out of Claude: the composer is replaced by the sign-in prompt (the
+  // thread stays readable). False until the answer is actually known, so a
+  // signed-in Carl never sees "sign in" flash (src/claudeAuthLive.ts).
+  const aiBlocked = useAiBlocked();
   const noBox = !!vaultPath && boxChat?.on === false;
   const boxDown = !!boxChat?.on && boxChat.reachable === false;
   // An older chat (from before one main conversation) or an old mission thread: readable, not continued.
@@ -670,7 +675,7 @@ export function ChatPane() {
   // goes to the running agent at once (it reads it at its next step) and shows
   // in the thread as sent; Esc, or the button with nothing typed, stops.
   const send = async () => {
-    if (!ready) return;
+    if (!ready || aiBlocked) return;
     let text = input.trim();
     if (!text && pendingImages.length === 0 && pendingFiles.length === 0) return;
     // "@C:\path\to\file.pdf" typed or pasted: a file on this laptop. Outside the vault it is read and goes up
@@ -1109,9 +1114,8 @@ export function ChatPane() {
 
         {verdict && uiChoice("verdict") === "thread" && <VerdictLine verdict={verdict} />}
 
-        {/* Running, nothing streamed yet: the model is thinking without showing it
-            (OpenAI-family reasoning via OpenRouter streams none). Gone at the first
-            text, thinking or tool line. */}
+        {/* Running, nothing streamed yet: the model is thinking without showing
+            it. Gone at the first text, thinking or tool line. */}
 
         {(streamingText || streamingReasoning || liveTools.length > 0) && (
           <div className="space-y-2">
@@ -1189,7 +1193,14 @@ export function ChatPane() {
               verdict={uiChoice("verdict") === "ongoing"}
             />
           )}
-          {(
+          {/* Signed out of Claude, the composer is the one thing the chat pane
+              blocks: the thread above it stays readable, and everything outside
+              this pane (vaults, the tree, the editor, the viewer) is untouched.
+              Carl: "the app should work without claude, only the AI features
+              should be blocked by sign in." */}
+          {aiBlocked ? (
+          <ClaudeSignInPrompt surface="chat" />
+          ) : (
           <div
             className={cn("relative flex flex-col rounded-2xl border border-border bg-background focus-within:border-ring/40 focus-within:ring-[0.5px] focus-within:ring-ring/20 transition-colors", dropOver && "border-ring/60 ring-1 ring-ring/30")}
             data-el="composer"
@@ -1425,7 +1436,7 @@ export function ChatPane() {
           <div className="flex items-center justify-between px-1 pt-1.5 text-[11px] text-muted-foreground">
             <div className="flex items-center gap-3 min-w-0">
               {/* The agent's model (the same setting as Settings → Models). */}
-              {!archived && <AgentModelPicker />}
+              {!archived && !aiBlocked && <AgentModelPicker />}
               {boxDown && (
                 <span className="truncate text-amber-500/90" data-el="box-unreachable" title={boxChat?.reason || undefined}>
                   {BOX_UNREACHABLE}: {downWhy}

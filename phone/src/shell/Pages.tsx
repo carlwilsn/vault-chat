@@ -9,6 +9,15 @@ export function Pages() {
         <div id="pinned"></div>
         <div className="ongoing" id="ongoing"></div>
         <div id="pendImgs"></div>
+        {/* Signed out of Claude: this replaces the composer, in its place, with
+            the same one sentence the laptop shows (src/claudeAuth.ts
+            SIGN_IN_LINE.phone). Signing in itself is the laptop's — the token
+            and the keychain are there — so this says where, rather than
+            offering a button that could not finish the job here. */}
+        <div className="signin" id="signin">
+          <div className="signin-line" id="signinLine"></div>
+          <div className="signin-where" id="signinWhere"></div>
+        </div>
         <div className="composer">
           <div className="field">
             {/* "+": one picker for anything — iOS offers Take Photo, Photo Library and Choose File itself

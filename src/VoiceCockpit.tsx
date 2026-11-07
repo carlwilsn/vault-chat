@@ -5,6 +5,8 @@ import { toggleVoice, toggleVoiceMute, voiceBarLevels } from "./voiceCall";
 import { isPopout } from "./windowKind";
 import { relayedVoiceLevels } from "./sync";
 import { WaitTracker, calibFrom, renderWaitLine, waitInputs, type WaitCalib } from "./voiceWaitLine";
+import { askVoiceSignIn, useVoiceSignInAsked } from "./claudeAuthLive";
+import { ClaudeSignInPrompt, useAiBlocked } from "./ClaudeCodeSignIn";
 
 const NUM_BARS = 12;
 const LEVEL_DECAY = 0.85;
@@ -23,7 +25,24 @@ export function VoiceCockpit() {
   // Chat open (docked, fullscreen or popped out): its rows say what is running and the composer has Mute; closed,
   // the waves are the voice's one control (a click mutes) with a tiny line beside them for work still running.
   const chatOpen = useStore((s) => !s.rightCollapsed || s.chatFullscreen || s.popoutOpen);
+  // The mic was pressed while signed out of Claude (src/voiceCall.ts): no call
+  // was started, and the prompt goes exactly where the waves would have been.
+  // Dismissed by pressing the mic again, which clears the flag.
+  const askSignIn = useVoiceSignInAsked();
+  const blocked = useAiBlocked();
+  // A sign-in that landed — here, or on the box, or from Settings — puts the
+  // prompt away by itself, so the mic is a mic again on the next press.
+  useEffect(() => {
+    if (askSignIn && !blocked) askVoiceSignIn(false);
+  }, [askSignIn, blocked]);
 
+  if (askSignIn && blocked && !voiceMode) {
+    return (
+      <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 z-20 w-[280px] pointer-events-auto shadow-lg" data-el="voice-signin">
+        <ClaudeSignInPrompt surface="voice" />
+      </div>
+    );
+  }
   if (!voiceMode) return null;
 
   // Only Connecting gets a label — the listening↔speaking gap is
@@ -108,6 +127,7 @@ function WaitLine() {
 // two are one control.
 export function VoiceMicGroup() {
   const voiceMode = useStore((s) => s.voiceMode);
+  const voiceSignIn = useVoiceSignInAsked();
   const vaultPath = useStore((s) => s.vaultPath);
   const voiceTextPanelOpen = useStore((s) => s.voiceTextPanelOpen);
   const setVoiceTextPanelOpen = useStore((s) => s.setVoiceTextPanelOpen);
@@ -132,7 +152,11 @@ export function VoiceMicGroup() {
       }}
     >
       <button
-        onClick={() => toggleVoice("titlebar mic")}
+        onClick={() => {
+          // A second press with the prompt up puts it away rather than asking again.
+          if (voiceSignIn) return askVoiceSignIn(false);
+          toggleVoice("titlebar mic");
+        }}
         disabled={!vaultPath}
         data-el="voice-mic"
         className={`h-7 w-7 flex items-center justify-center rounded hover:bg-accent/60 relative z-10 bg-card disabled:opacity-40 ${

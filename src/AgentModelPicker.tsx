@@ -1,9 +1,11 @@
-// The composer's model menu (where it always was, under the composer on the left): the agent's model on
-// the box, the same one setting as Settings → Models (src/agentModel.ts). Type to search, Enter picks the first.
+// The composer's model menu (where it always was, under the composer on the left): the agent's Claude
+// model on the box, the same one setting as Settings → Models (src/agentModel.ts, which has already cut
+// the box's list down to Claude's). Type to search, Enter picks the first.
 import { useEffect, useRef, useState } from "react";
 import { ChevronUp } from "lucide-react";
 import { cn } from "./lib/utils";
 import { modelLabel, setAgentModel, useAgentModel } from "./agentModel";
+import { claudeModelLabel } from "./claudeModels";
 
 export function AgentModelPicker() {
   const { current, options, error } = useAgentModel();
@@ -27,7 +29,8 @@ export function AgentModelPicker() {
     return () => document.removeEventListener("mousedown", onClick);
   }, [open]);
 
-  if (!current) return null;
+  if (!options.length) return null;
+  const label = claudeModelLabel(current);
   const pick = (id: string) => {
     setOpen(false);
     if (id !== current) void setAgentModel(id);
@@ -38,9 +41,9 @@ export function AgentModelPicker() {
         onClick={() => setOpen(!open)}
         data-el="model-picker"
         className={cn("flex items-center gap-1 text-[11px] hover:text-foreground transition-colors", error ? "text-amber-500/90" : "text-muted-foreground")}
-        title={error ? `Not changed: ${error}` : `The agent's model: ${current} (typed and spoken; also in Settings → Models)`}
+        title={error ? `Not changed: ${error}` : label ? `The agent's model: ${label} (typed and spoken; also in Settings → Models)` : "Pick the Claude model the agent runs on (also in Settings → Models)"}
       >
-        <span>{modelLabel(current)}</span>
+        <span>{label ?? "Pick a model"}</span>
         <ChevronUp className="h-3 w-3" />
       </button>
       {open && (

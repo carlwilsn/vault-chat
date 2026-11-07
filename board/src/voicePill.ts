@@ -12,6 +12,7 @@
 //
 // `?voice=fake` swaps the call for voiceFake.ts (the preview).
 import * as api from "./api";
+import { SIGN_IN_ELSEWHERE, SIGN_IN_LINE, claudeSignedInOnBox } from "../../src/claudeAuth";
 import { ChromeTaps, buttonName, isField, redrawnSame, routeChrome } from "./chrome";
 import { icon, toolIcon } from "./icons";
 import { VoiceController, type VoiceApi, type VoiceState } from "./voice";
@@ -39,6 +40,19 @@ function unlockAudio(): void {
 
 const realApi: VoiceApi = { listChats: api.listChats, brainPost: api.brainPost };
 
+/**
+ * Whether Claude is signed in, as the box reports it (src/claudeAuth.ts). Only
+ * an outright `false` blocks the mic: a health request that never came back is
+ * not an answer, and taking the mic away over one would be a lie.
+ */
+const boxSignedIn = async (): Promise<boolean | null> => {
+  try {
+    return claudeSignedInOnBox(await api.getHealth());
+  } catch {
+    return null;
+  }
+};
+
 /** The board's one voice conversation, remembered on this iPad for THREAD_MS (a new day starts from the latest chat). */
 const THREAD_KEY = "vc_board_voice_thread";
 const THREAD_MS = 12 * 3600_000;
@@ -65,6 +79,8 @@ function threadStore(): { get(): string | null; set(id: string | null): void } {
 
 export const voice = new VoiceController({
   api: realApi,
+  // The preview has no box to ask, and a fake call needs no sign-in.
+  ...(FAKE ? {} : { signedIn: boxSignedIn }),
   ...(FAKE ? { startCall: (o: import("../../src/voiceBrainClient").BrainOptions) => import("./voiceFake").then((m) => m.fakeCall()(o)) } : {}),
   // The preview's mic: an empty stream (a WebKit without media capture has no MediaStream: a stand-in with no tracks).
   mic: FAKE ? async () => (typeof MediaStream === "function" ? new MediaStream() : ({ getTracks: () => [] } as unknown as MediaStream)) : navigator.mediaDevices?.getUserMedia ? () => navigator.mediaDevices.getUserMedia({ audio: true }) : null,
@@ -147,6 +163,17 @@ export function mountVoicePill(): void {
     }
     // The waves, and under them the waiting line (src/voiceWaitLine.ts): the same element as on the laptop and phone.
     const waves = `<div class="flex shrink-0 flex-col items-stretch text-sys-label/70"><div class="waves flex h-4 shrink-0 items-center gap-[2.5px] px-0.5" aria-hidden="true">${'<i class="block h-full w-[3px] origin-center rounded-full"></i>'.repeat(BARS)}</div><div class="v-waitline"></div></div>`;
+    if (s.phase === "signin") {
+      root.innerHTML = `<div class="pointer-events-auto material hairline shadow-float flex min-h-10 max-w-[360px] items-start gap-2 rounded-[20px] py-2 pl-3.5 pr-1 animate-pop-in" data-voice="signin" data-el="claude-signin-prompt">
+        <div class="min-w-0 flex-1 pt-0.5">
+          <div class="text-footnote font-medium leading-[17px] text-sys-label">${esc(SIGN_IN_LINE.board)}</div>
+          <div class="mt-0.5 text-caption leading-[15px] text-sys-secondary/70">${esc(SIGN_IN_ELSEWHERE)}</div>
+        </div>
+        <button class="${IB} shrink-0 text-sys-label/60 active:bg-sys-fill/20" data-v="dismiss" aria-label="Close">${icon("x", 16)}</button>
+      </div>`;
+      bars = [];
+      return;
+    }
     if (s.phase === "error") {
       root.innerHTML = `<div class="pointer-events-auto material hairline shadow-float flex min-h-10 max-w-[460px] items-center gap-2 rounded-[20px] py-1 pl-3 pr-1 animate-pop-in" role="alert" data-voice="error">
         ${waves}

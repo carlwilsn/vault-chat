@@ -225,3 +225,6 @@ export const listChats = () => call<{ conversations: ChatRow[] }>("/conversation
 export const brainWait = (convId: string) => call<{ works: any[]; plan: any; calib: any; now: number; running?: boolean }>(`/api/v1/brain/wait/${enc(convId)}`);
 /** The call's routes (src/voiceBrainClient.ts): start, offer, end. */
 export const brainPost = (path: string, body: Record<string, unknown>) => call<any>(path, { method: "POST", body: JSON.stringify(body) });
+
+/** The box's health, for the one thing the board reads out of it: the Claude sign-in. */
+export const getHealth = () => call<any>("/api/v1/health");

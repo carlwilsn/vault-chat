@@ -265,6 +265,14 @@ body.page-notes #pNotes{display:flex}
 .plancard.approved .pc-btns{display:none}
 
 .composer{flex:0 0 auto;display:flex;align-items:flex-end;gap:9px;padding:6px 12px calc(env(safe-area-inset-bottom) + 8px)}
+/* Signed out of Claude (body.signedout, set from /api/v1/health): the sign-in
+   sits exactly where the composer was, and the composer is gone. Nothing else
+   on the page changes — the thread, the notes and the alerts all still read. */
+.signin{display:none}
+body.signedout .signin{flex:0 0 auto;display:block;margin:0 12px calc(env(safe-area-inset-bottom) + 8px);background:var(--surface);border:1px solid var(--line);border-radius:18px;padding:13px 15px}
+body.signedout .composer{display:none}
+.signin-line{font-size:14.5px;color:var(--text)}
+.signin-where{margin-top:4px;font-size:12.5px;color:var(--dim)}
 .mic{width:42px;height:42px;border-radius:50%;background:var(--surface);border:1px solid var(--line);color:var(--text);flex:none;display:flex;align-items:center;justify-content:center}
 .mic:active{background:var(--raised)}
 .mic svg{width:20px;height:20px}

@@ -1,9 +1,12 @@
-// The agent's model: the one model pi runs on the box, for everything (typed and spoken). One setting,
+// The agent's model: the one Claude model the box runs, for everything (typed and spoken). One setting,
 // changed from Settings → Models or the composer's picker (both use this), kept on the box
-// (POST /api/v1/models/agent); the list is the box's (GET /api/v1/models).
+// (POST /api/v1/models/agent); the list is the box's (GET /api/v1/models), filtered to Claude's own
+// models before anything draws it — the box still answers with the whole catalog while another lane
+// takes pi out, and Carl must not see those ids (src/claudeModels.ts).
 import { useEffect, useState } from "react";
 import { useStore } from "./store";
 import { boxGet, boxLinkFor, boxPost } from "./boxChat";
+import { claudeModelLabel, claudeModelsOnly } from "./claudeModels";
 
 export type AgentModelState = { current: string | null; options: string[]; error: string | null };
 
@@ -20,7 +23,7 @@ export async function refreshAgentModel(): Promise<void> {
   if (!link) return set({ current: null, options: [] });
   const r = await boxGet(link, "/api/v1/models", 15_000).catch(() => null);
   if (!r) return;
-  const options = (Array.isArray(r.models) ? r.models : []).map((m: { id?: unknown }) => String(m?.id ?? "")).filter(Boolean);
+  const options = claudeModelsOnly((Array.isArray(r.models) ? r.models : []).map((m: { id?: unknown }) => String(m?.id ?? "")).filter(Boolean));
   const current = typeof r.box?.chat?.id === "string" ? r.box.chat.id : state.current;
   set({ current, options, error: null });
 }
@@ -39,8 +42,8 @@ export async function setAgentModel(id: string): Promise<boolean> {
   return true;
 }
 
-/** A model id as a short name ("openai/gpt-6.1-sol" → "gpt-6.1-sol"). */
-export const modelLabel = (id: string | null): string => (id ? (id.split("/").pop() ?? id) : "Model");
+/** A Claude model id as Carl reads it ("opus" → "Opus"). Anything else has no name to show. */
+export const modelLabel = (id: string | null): string => claudeModelLabel(id) ?? "Model";
 
 export function useAgentModel(): AgentModelState {
   const vault = useStore((s) => s.vaultPath);
