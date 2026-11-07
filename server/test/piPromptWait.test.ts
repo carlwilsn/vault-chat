@@ -4,8 +4,8 @@ import { EventEmitter } from "node:events";
 import { PiBackend } from "../engine/pi/backend";
 import { PiProc } from "../engine/pi/proc";
 
-function fixture() {
-  const p = new PiProc({ argv: [], cwd: "/tmp", env: {}, key: null });
+function fixture(continuation = false) {
+  const p = new PiProc({ argv: [], cwd: "/tmp", env: {}, key: null, continuation });
   const sent: any[] = [];
   (p as any).child = { stdin: { write: (s: string) => sent.push(JSON.parse(s)) } };
   const event = (e: any) => (p as any).onData(JSON.stringify(e) + "\n");
@@ -67,6 +67,37 @@ describe("native prompt preflight ownership", () => {
     expect((await wait).message).toBe("native preflight aborted");
     expect(f.t.turnId).toBeNull();
     expect(f.sent.map(x => x.type)).toEqual(["prompt", "get_state", "clear_queue", "abort"]);
+    expect((f.p as any).pending.size).toBe(0);
+  });
+
+  it("continuation-enabled preflight persists cancellation before clear/abort without settling the owned prompt", async () => {
+    vi.useFakeTimers();
+    const f = fixture(true);
+    let settled = false;
+    const wait = f.b.startTurn(f.t.id, { texts: ["actual"], images: [], model: "fixture", turnId: "caller-turn" }).catch(e => e).finally(() => settled = true);
+    f.event({ type: "compaction_start" });
+    const state = f.p.request({ type: "get_state" }, 60000).catch(e => e);
+    await vi.advanceTimersByTimeAsync(61000);
+    expect((await state).message).toContain("did not answer get_state");
+    const abort = f.b.interrupt(f.t.id, "caller-turn");
+    expect(f.sent[2]).toMatchObject({ type: "prompt", message: '/vc-note {"kind":"continuation-cancel"}' });
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(f.sent).toHaveLength(3); // no abort before cancellation acknowledgement
+    expect(settled).toBe(false);
+    f.answer(2);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(f.sent[3].type).toBe("clear_queue");
+    f.answer(3);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(f.sent[4].type).toBe("abort");
+    f.event({ type: "compaction_end", aborted: true });
+    f.answer(0, { success: false, error: "native preflight aborted" });
+    f.answer(4);
+    await abort;
+    expect((await wait).message).toBe("native preflight aborted");
+    expect(f.t.turnId).toBeNull();
+    expect(f.sent.map(x => x.type)).toEqual(["prompt", "get_state", "prompt", "clear_queue", "abort"]);
+    expect(new Set(f.sent.map(x => x.id)).size).toBe(5);
     expect((f.p as any).pending.size).toBe(0);
   });
 

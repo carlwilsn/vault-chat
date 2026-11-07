@@ -524,7 +524,8 @@ export class PiBackend extends EventEmitter {
     ];
     const outer = outerWith(this.o.sandbox);
     const argv = outer ? [...outer, this.o.install.node, ...args] : [this.o.install.node, ...args];
-    const proc = new PiProc({ argv, cwd: o.cwd, env: this.piEnv(!!o.you), key: this.o.apiKey(), bootstrap: JSON.stringify({ ...scope.bootstrap, tools: specs.length > 0, continuation: !o.sessionDir && !o.ephemeral, requestTag: this.requestTag }) });
+    const continuation = !o.sessionDir && !o.ephemeral;
+    const proc = new PiProc({ argv, cwd: o.cwd, env: this.piEnv(!!o.you), key: this.o.apiKey(), continuation, bootstrap: JSON.stringify({ ...scope.bootstrap, tools: specs.length > 0, continuation, requestTag: this.requestTag }) });
     proc.once("exit", () => { void scope.revoke(); });
     let st: any;
     try {
@@ -797,7 +798,9 @@ export class PiBackend extends EventEmitter {
     const t = this.threads.get(threadId);
     if (!t?.proc.isAlive()) return;
     try {
-      if (!await this.note(threadId, { kind: "continuation-cancel" })) throw new Error("Continuation cancellation was not persisted");
+      // Raw Pi transports/side processes do not register /vc-note cancellation.
+      // Only the process that actually loaded continuation must acknowledge it.
+      if (t.proc.continuation && !await this.note(threadId, { kind: "continuation-cancel" })) throw new Error("Continuation cancellation was not persisted");
       await t.proc.request({ type: "clear_queue" }, 10_000);
       await t.proc.request({ type: "abort" }, 30_000);
     } catch (e) {

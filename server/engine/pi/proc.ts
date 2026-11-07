@@ -16,6 +16,8 @@ export type PiProcOptions = {
   key: string | null;
   /** Private extension bootstrap, written once on fd 4; never inherited by bash. */
   bootstrap?: string;
+  /** This process was bootstrapped with the native continuation extension. */
+  continuation?: boolean;
   log?: (s: string) => void;
 };
 
@@ -35,6 +37,10 @@ export class PiProc extends EventEmitter {
   constructor(private o: PiProcOptions) {
     super();
     this.setMaxListeners(100);
+  }
+
+  get continuation(): boolean {
+    return this.o.continuation === true;
   }
 
   get pid(): number | null {
