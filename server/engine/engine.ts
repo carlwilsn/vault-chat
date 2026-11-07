@@ -2710,7 +2710,9 @@ export class Engine {
       const how =
         j.state === "finished" ? `finished: exit ${j.exit}` : j.state === "timeout" ? "was stopped by its time limit" : j.state === "stopped" ? "was stopped" : "ended without an exit code (stopped, or killed: out of memory?)";
       const tail = j.tail.split("\n").slice(-30).join("\n").slice(-3000);
-      void this.run(j.conv, `Job ${j.id} ${how}.\n--- last output ---\n${tail || "(none)"}`, "wake", { byCarl: !!j.byCarl, pushWorkId: j.id, ownTurn: true, completion: { kind: "job", id: j.id } }).catch((e) => this.log(`job wake ${j.conv}: ${e}`));
+      // Concurrent job ends belong in the running turn's native follow-up queue,
+      // not a second turn. Keep the trusted identity on that delivery as well.
+      void this.run(j.conv, `Job ${j.id} ${how}.\n--- last output ---\n${tail || "(none)"}`, "wake", { byCarl: !!j.byCarl, pushWorkId: j.id, completion: { kind: "job", id: j.id } }).catch((e) => this.log(`job wake ${j.conv}: ${e}`));
     }
   }
 
