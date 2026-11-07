@@ -3,10 +3,10 @@
 // they are the install story, not a mock of it.
 import { describe, it, expect } from "vitest";
 import { existsSync, readFileSync, writeFileSync, chmodSync, mkdirSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { tmp, cleanup } from "./helpers";
 import { spawnSync } from "node:child_process";
-import { bundledCli, elfInterpreter, findClaude, loaderWrapper, probe, sandboxedCli, wrapper } from "../engine/claude/install";
+import { bundledCli, claudeExeName, elfInterpreter, findClaude, installerCli, loaderWrapper, probe, sandboxedCli, wrapper } from "../engine/claude/install";
 import { findBwrap } from "../engine/pi/install";
 
 describe("the Claude Code the box runs", () => {
@@ -143,4 +143,40 @@ describe("a session's executable is the CLI inside the box's sandbox", () => {
     expect(spawnSync(w, [], { encoding: "utf8" }).stdout).toBe("");
     cleanup(root);
   }, 60_000);
+});
+
+describe("where it looks on Windows", () => {
+  it("calls it claude.exe there, and claude everywhere else", () => {
+    expect(claudeExeName("win32")).toBe("claude.exe");
+    expect(claudeExeName("linux")).toBe("claude");
+    expect(claudeExeName("darwin")).toBe("claude");
+  });
+
+  it("finds where Claude Code's own installer put it, by HOME or USERPROFILE", () => {
+    // Windows was broken twice over: the name is claude.exe, and Windows does
+    // not set HOME — so a search keyed on HOME and on a file called "claude"
+    // found nothing on Carl's laptop, where ~/.local/bin/claude.exe is the only
+    // copy there is.
+    const root = tmp("winlook");
+    try {
+      for (const platform of ["win32", "linux"] as const) {
+        const p = join(root, platform, ".local", "bin", claudeExeName(platform));
+        mkdirSync(dirname(p), { recursive: true });
+        writeFileSync(p, "");
+        const home = join(root, platform);
+        // Either name for the home directory answers.
+        expect(installerCli({ HOME: home }, platform)).toBe(p);
+        expect(installerCli({ USERPROFILE: home }, platform)).toBe(p);
+        // HOME wins when both are set, as the platform that sets both intends.
+        expect(installerCli({ HOME: home, USERPROFILE: join(root, "elsewhere") }, platform)).toBe(p);
+      }
+      // Nothing there, nothing claimed.
+      expect(installerCli({ HOME: join(root, "empty") }, "win32")).toBeNull();
+      expect(installerCli({}, "win32")).toBeNull();
+      // A blank home is not a home.
+      expect(installerCli({ HOME: "   " }, "linux")).toBeNull();
+    } finally {
+      cleanup(root);
+    }
+  });
 });

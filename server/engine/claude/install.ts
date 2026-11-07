@@ -69,6 +69,23 @@ export function elfInterpreter(file: string): string | null {
   }
 }
 
+/** The executable's name here: Windows calls it claude.exe. */
+export function claudeExeName(platform: string = process.platform): string {
+  return platform === "win32" ? "claude.exe" : "claude";
+}
+
+/**
+ * Where Claude Code's own installer puts it, if it is there. On Windows that is
+ * the only copy a fresh machine has — and HOME is not set there, which is why
+ * looking only at HOME found nothing on Carl's laptop.
+ */
+export function installerCli(env: NodeJS.ProcessEnv = process.env, platform: string = process.platform): string | null {
+  const home = env.HOME?.trim() || env.USERPROFILE?.trim();
+  if (!home) return null;
+  const p = join(home, ".local", "bin", claudeExeName(platform));
+  return existsSync(p) ? p : null;
+}
+
 /** The CLI the installed SDK brought with it, or null (no platform package for this box). */
 export function bundledCli(): string | null {
   const pkg = `@anthropic-ai/claude-agent-sdk-${process.platform}-${process.arch}`;
@@ -127,8 +144,11 @@ export function findClaude(o: { stateDir: string; env?: NodeJS.ProcessEnv }): { 
     if (v) return { install: { cli: want, version: v, source: "env" } };
     tried.push(`VC_CLAUDE_BIN=${want}: did not answer --version`);
   }
+  // Windows names it claude.exe, and a server the desktop runs itself (no box)
+  // runs on Windows too — so the name and the places to look are the platform's.
+  const exe = claudeExeName();
   // The pinned binary a box install dropped beside the state dir.
-  const installed = join(o.stateDir, "claude", "cli", "claude");
+  const installed = join(o.stateDir, "claude", "cli", exe);
   if (existsSync(installed)) {
     const direct = probe(installed);
     if (direct) return { install: { cli: installed, version: direct, source: "installed" } };
@@ -157,8 +177,14 @@ export function findClaude(o: { stateDir: string; env?: NodeJS.ProcessEnv }): { 
   } else {
     tried.push(`@anthropic-ai/claude-agent-sdk-${process.platform}-${process.arch} is not installed`);
   }
-  const v = probe("claude");
-  if (v) return { install: { cli: "claude", version: v, source: "path" } };
-  tried.push("claude on PATH: not found, or it did not answer --version");
+  const own = installerCli(env);
+  if (own) {
+    const v = probe(own);
+    if (v) return { install: { cli: own, version: v, source: "installed" } };
+    tried.push(`${own}: did not answer --version`);
+  }
+  const v = probe(exe);
+  if (v) return { install: { cli: exe, version: v, source: "path" } };
+  tried.push(`${exe} on PATH: not found, or it did not answer --version`);
   return { error: "no Claude Code executable this box can run", tried };
 }
