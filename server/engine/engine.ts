@@ -1526,6 +1526,22 @@ export class Engine {
     return { ok: true, result: hit ? "Stopped — interrupting now (an in-flight command is killed)." : "Nothing running on that thread." };
   }
 
+  /**
+   * POST /api/v1/conversations/<id>/engine {engine}: which engine this
+   * conversation's NEXT thread runs on ("pi" or "claude"). The thread in hand
+   * keeps its own engine — a transcript is not moved between runtimes — so the
+   * change takes effect at the next roll-over, or at once for a conversation
+   * that has no thread yet.
+   */
+  async setEngine(convId: string, engine: string): Promise<Record<string, unknown>> {
+    const want = String(engine ?? "").trim();
+    if (want !== "pi" && want !== "claude") return { ok: false, error: 'engine: "pi" or "claude"' };
+    const conv = await readConv(this.d.vault, convId);
+    if (!conv) return { ok: false, error: "no such conversation" };
+    await patchMeta(this.d.vault, convId, { engine: want });
+    return { ok: true, engine: want, appliesTo: conv.threadId ? "the next thread" : "the next turn" };
+  }
+
   async interrupt(convId: string, byUser: boolean): Promise<boolean> {
     if (byUser) {
       removeWakes(this.d.vault, (w) => w.conv === convId);
@@ -1857,6 +1873,7 @@ export class Engine {
       instructions,
       tools: await this.hostToolCatalog("conversation"),
       subagents,
+      conv: conv.id,
     });
     this.byThread.set(threadId, conv.id);
     // The instructions carry the rules in full; the rest of the sections go with the first turn.

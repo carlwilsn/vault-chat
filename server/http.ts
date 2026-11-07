@@ -78,6 +78,8 @@ export type ServerHooks = {
     answer: (v: VaultScope, b: any) => Promise<Record<string, unknown> | null>;
     kill: (v: VaultScope, b: any) => Promise<Record<string, unknown> | null>;
     subagent: (v: VaultScope, convId: string, sid: string, op: "steer" | "stop", b: any) => Promise<Record<string, unknown>>;
+    /** POST /api/v1/conversations/<id>/engine {engine}: run this conversation on pi or on Claude Code. */
+    setEngine?: (v: VaultScope, convId: string, engine: string) => Promise<Record<string, unknown>>;
     /** POST /api/v2/intent: every client intent (src/convlog/protocol.ts Intent). */
     intent: (v: VaultScope, b: any, viewerRoot?: string) => Promise<Record<string, unknown>>;
     /** Side threads (server/engine/pi/side.ts): Ctrl+K / Ctrl+L, and the one-shots. */
@@ -500,6 +502,13 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
   if (path === "/api/v1/models/agent" && method === "POST") {
     if (!hooks.engine?.setModel) return json(res, 503, { error: "engine not running" });
     const out = hooks.engine.setModel(String((await jsonBody(req))?.model ?? ""));
+    return json(res, out.ok ? 200 : 400, out);
+  }
+  // Which engine a conversation runs on (server/engine/router.ts): its next thread is pi's or Claude Code's.
+  const engM = /^\/api\/v1\/conversations\/([^/]+)\/engine$/.exec(path);
+  if (engM && method === "POST") {
+    if (!hooks.engine?.setEngine) return json(res, 503, { error: "engine not running" });
+    const out = await hooks.engine.setEngine(scope, decodeURIComponent(engM[1]!), String((await jsonBody(req))?.engine ?? ""));
     return json(res, out.ok ? 200 : 400, out);
   }
   // Steer or stop one running subagent of a conversation.

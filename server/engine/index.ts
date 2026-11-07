@@ -24,6 +24,10 @@ import { isGatedProject } from "../projectChanges";
 import { masterDir, masterLayout } from "../master";
 import { listPiModels, modelWindow, piPaths, vaultPiPaths, writePiConfig, type PiPaths } from "./pi/config";
 import { PiBackend, outerWith, type PiSandbox } from "./pi/backend";
+import { ClaudeCodeBackend } from "./claude/backend";
+import { claudePaths, type ClaudePaths } from "./claude/paths";
+import { findClaude, type ClaudeInstall } from "./claude/install";
+import { BackendRouter, type EngineName } from "./router";
 import { logOf } from "./convs";
 import { signal } from "../convlog/log";
 import { agentKeyEnv } from "../keys";
@@ -264,6 +268,17 @@ export async function startEngine(b: EngineBoot): Promise<EngineHandle> {
   const win = modelWindow(model, piCat);
   configureContext({ vault: b.vault, conversationRoot: b.vault, agentModel: model, vaults: () => (b.vaults?.() ?? []).map((v) => v.path) });
 
+  // Claude Code, if the box can run one. Absent is not a failure: every
+  // conversation then runs on pi, exactly as before.
+  const claudeFound = findClaude({ stateDir: b.stateDir });
+  let claudeInstall: ClaudeInstall | null = null;
+  if ("install" in claudeFound) {
+    claudeInstall = claudeFound.install;
+    console.log(`[engine:claude] Claude Code ${claudeInstall.version} at ${claudeInstall.cli} (${claudeInstall.source})`);
+  } else {
+    console.log(`[engine:claude] not available: ${claudeFound.error} — ${claudeFound.tried.join("; ")}`);
+  }
+
   const base = piPaths(b.stateDir);
   const baseUrl = b.openrouterBase ? b.openrouterBase.replace(/\/+$/, "") : undefined;
   // The fast model: the one-shots (a note's title, spoken math) run on it in pi too (pi/side.ts).
@@ -362,9 +377,41 @@ export async function startEngine(b: EngineBoot): Promise<EngineHandle> {
         return { PATH: process.env.PATH ?? "/run/current-system/sw/bin", HOME: home, ...agentKeyEnv() };
       },
     };
+    // Claude Code's own sessions for this vault: its transcripts go into the
+    // feed's own sessions folder, so the clients read them unchanged.
+    const claude = claudeInstall
+      ? new ClaudeCodeBackend({
+          install: claudeInstall,
+          paths: st.claude,
+          feedSessionsDir: join(v.path, ".vault-chat", "events", "sessions"),
+          // Only the CLI gets this (phase 6 adds the sign-in token here).
+          env: () => ({
+            PATH: process.env.PATH ?? "/run/current-system/sw/bin",
+            HOME: st.claude.configDir,
+            CLAUDE_CONFIG_DIR: st.claude.configDir,
+            CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
+            ...(process.env.ANTHROPIC_BASE_URL ? { ANTHROPIC_BASE_URL: process.env.ANTHROPIC_BASE_URL } : {}),
+          }),
+          // vault-chat has one path policy, and pi's extension owns it today (phase 4 moves it behind MCP).
+          policy: backend,
+          idleMs: Number(process.env.VC_CLAUDE_IDLE_MS) || 10 * 60_000,
+          maxSessions: Number(process.env.VC_CLAUDE_MAX_SESSIONS) || 4,
+          ...(v.main ? {} : { log: (m: string) => console.log(`[claude:${v.name}] ${m}`) }),
+        })
+      : null;
+    const routed = new BackendRouter({
+      pi: backend,
+      claude,
+      // The conversation's own choice (set by POST /api/v1/conversations/<id>/engine), else the box's.
+      engineOf: (convId) => {
+        const own = convId ? logOf(v.path).picture(convId)?.meta.engine : undefined;
+        return own === "claude" || own === "pi" ? own : boxEngine();
+      },
+      ...(v.main ? {} : { log: (m: string) => console.log(`[engines:${v.name}] ${m}`) }),
+    });
     const engine = new Engine({
       vault: v.path,
-      backend,
+      backend: routed,
       ledger: new Ledger(st.ledger, b.apiKey, baseUrl ?? "https://openrouter.ai/api/v1"),
       jobEnv,
       model: engineModel,
@@ -386,7 +433,7 @@ export async function startEngine(b: EngineBoot): Promise<EngineHandle> {
       },
     });
     engine.start();
-    backend.start();
+    routed.start();
     return engine;
   };
 
@@ -441,10 +488,18 @@ export async function startEngine(b: EngineBoot): Promise<EngineHandle> {
 /** Where a vault's engine state lives: the main vault's where it always was (no
  * data moves); another vault's pi sessions and jobs under <state>/vaults/<name>/,
  * its ledger beside its wakes. `walls`: what the other vaults' agents may not see. */
-export function vaultState(stateDir: string, base: PiPaths, v: VaultRef): { pi: PiPaths; jobs: string; ledger: string; walls: string[] } {
-  if (v.main) return { pi: base, jobs: join(stateDir, "jobs"), ledger: join(stateDir, "ledger.json"), walls: [base.sessionsDir, base.instrDir, join(stateDir, "jobs")] };
+export function vaultState(stateDir: string, base: PiPaths, v: VaultRef): { pi: PiPaths; claude: ClaudePaths; jobs: string; ledger: string; walls: string[] } {
+  if (v.main) {
+    const claude = claudePaths(stateDir);
+    return { pi: base, claude, jobs: join(stateDir, "jobs"), ledger: join(stateDir, "ledger.json"), walls: [base.sessionsDir, base.instrDir, claude.root, join(stateDir, "jobs")] };
+  }
   const root = join(stateDir, "vaults", v.name);
-  return { pi: vaultPiPaths(base, join(root, "pi")), jobs: join(root, "jobs"), ledger: join(v.path, ".vault-chat", "local", "ledger.json"), walls: [root] };
+  return { pi: vaultPiPaths(base, join(root, "pi")), claude: claudePaths(root), jobs: join(root, "jobs"), ledger: join(v.path, ".vault-chat", "local", "ledger.json"), walls: [root] };
+}
+
+/** Which engine a conversation's next thread runs on: its own choice, else the box's default. */
+export function boxEngine(): EngineName {
+  return process.env.VC_ENGINE === "claude" ? "claude" : "pi";
 }
 
 /** Legacy full-isolation projection, retained for old policy callers/tests. Runtime

@@ -167,8 +167,10 @@ export type EngineBackend = {
   health(): Record<string, unknown>;
 
   // -- threads
-  /** Open a session for a conversation and return the engine's handle on it (`ref`: where its transcript lives). */
-  startThread(o: { cwd: string; model: string; instructions: string; tools: ToolSpec[]; subagents: boolean }): Promise<{ threadId: string; ref?: string }>;
+  /** Open a session for a conversation and return the engine's handle on it (`ref`: where its transcript lives).
+   * `conv` is the conversation it is for: the one call that names no thread yet, so a router of
+   * several engines can read the conversation's own choice here (server/engine/router.ts). */
+  startThread(o: { cwd: string; model: string; instructions: string; tools: ToolSpec[]; subagents: boolean; conv?: string }): Promise<{ threadId: string; ref?: string }>;
   /** Take a known thread back in hand. Throws ThreadUnknownError when it is gone or belongs elsewhere. */
   resumeThread(threadId: string, o: { model: string; subagents: boolean; cwd?: string }): Promise<void>;
   /** This runtime holds that thread right now (it can be noted into, forgotten, interrupted). */
