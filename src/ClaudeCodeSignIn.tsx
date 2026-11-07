@@ -11,6 +11,7 @@ import { Button, Input } from "./ui";
 import { useStore } from "./store";
 import { boxGet, boxLinkFor } from "./boxChat";
 import { pushKeysToBox } from "./boxKeys";
+import { claudeOf } from "./engineHealth";
 
 type Agent = { signedIn: boolean; version: string | null } | null;
 
@@ -31,12 +32,11 @@ export function ClaudeCodeSignIn() {
     if (!link) return;
     const h = await boxGet(link, "/api/v1/health", 8_000).catch(() => null);
     if (!h) return;
-    // health.engine.engines names each engine the same way whichever one leads;
-    // the merged fields beside it move when the default changes.
-    const claude = h.engine?.engines?.claude ?? null;
-    // The box only reports Claude Code once it has one it can run.
+    // The box only reports Claude Code once it has one it can run. Both health
+    // shapes are read (src/engineHealth.ts), so an older box still answers.
+    const claude = claudeOf(h);
     if (!claude) return setAgent(null);
-    setAgent({ signedIn: !!claude.signedIn, version: typeof claude.version === "string" ? claude.version : null });
+    setAgent(claude);
   };
   useEffect(() => {
     void read();

@@ -838,8 +838,15 @@ export class Engine {
   }
 
   health(): Record<string, unknown> {
+    const own = this.d.backend.health();
+    // A router names every engine it runs in `engines` (server/engine/router.ts),
+    // but that record sat only under whichever engine leads — and which one leads
+    // moves. It is hoisted to engine.engines so a client can read it without
+    // knowing who leads; the nested copy stays, for a client built against it.
+    const engines = (own as { engines?: unknown }).engines;
     return {
-      [this.d.backend.name]: this.d.backend.health(),
+      [this.d.backend.name]: own,
+      ...(engines && typeof engines === "object" ? { engines } : {}),
       backend: this.d.backend.name,
       liveTurns: [...this.live.values()].map((l) => ({ convId: l.convId, kind: l.kind, waitingUser: !!l.ask, sinceMs: Date.now() - l.startedAt })),
       wakes: readWakes(this.d.vault).length,

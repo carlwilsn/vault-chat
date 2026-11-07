@@ -15,6 +15,7 @@ import { claudePaths } from "../engine/claude/paths";
 import { ClaudeCodeBackend, isClaudeThread } from "../engine/claude/backend";
 import { McpRuntime } from "../mcp/runtime";
 import { makeChatView } from "../../src/convlog/view";
+import { claudeOf, defaultEngineOf } from "../../src/engineHealth";
 import { BackendRouter, type EngineName } from "../engine/router";
 import type { BoundTools } from "../mcp/tools";
 import type { Detached, EngineBackend, Handlers, SideRunner, ToolSpec } from "../engine/backend";
@@ -555,5 +556,26 @@ describe("a conversation on Claude Code", () => {
     // And `engines` names each one the same way whichever leads, which is what a
     // client reads (Settings → Models asks whether Claude Code is signed in).
     expect(h.engines).toMatchObject({ default: "claude", claude: { state: "up", signedIn: expect.any(Boolean) }, pi: { state: "up" } });
+  });
+
+  it("the health the clients actually read has `engines` at engine.engines", () => {
+    // The bug this pins: a client reads health.engine.engines, but Engine.health()
+    // nests the backend's health under the backend's NAME — so `engines` only ever
+    // existed at engine.<whoever leads>.engines and Settings → Models found
+    // nothing, which is why Carl could not sign in. Read off the REAL
+    // Engine.health(), never a hand-made object, so the shape cannot drift again.
+    const h = engine.health();
+    expect(h.engines).toMatchObject({ default: expect.any(String), claude: { signedIn: expect.any(Boolean) }, pi: { state: "up" } });
+    // Hoisted, and still nested under the engine in charge for a client built
+    // against the older shape.
+    const led = h[String(h.backend)] as { engines?: unknown };
+    expect(led.engines).toMatchObject({ claude: { signedIn: expect.any(Boolean) } });
+    // The one reader every client goes through takes either shape.
+    expect(claudeOf({ engine: h })).toMatchObject({ signedIn: expect.any(Boolean) });
+    expect(claudeOf({ engine: { [String(h.backend)]: led } })).toMatchObject({ signedIn: expect.any(Boolean) });
+    expect(defaultEngineOf({ engine: h })).toBe((h.engines as { default: string }).default);
+    // A box with no Claude Code at all: nothing to offer, and no crash.
+    expect(claudeOf({ engine: { pi: { state: "up" } } })).toBeNull();
+    expect(claudeOf(null)).toBeNull();
   });
 });
