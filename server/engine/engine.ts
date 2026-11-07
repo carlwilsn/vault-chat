@@ -718,16 +718,27 @@ export class Engine {
     return this.scoped(async () => {
       if (context.conversation && !(await readConv(this.d.vault, context.conversation))) return null;
       const builtin = agentToolSpecs().map((t) => t.name === "RecordUI" ? { ...t, description: `${t.description} External clients: browser-only http(s) pages; run steps and local-file navigation are refused. Omit out: a fresh vault visuals directory is allocated.` } : t);
-      const own = await vaultToolSpecsFor(this.d.vault, [...builtin.map((t) => t.name), ...PI_BUILTIN_TOOLS]);
+      // Carl's vault tools (.vault-chat/tools) are not offered here: each runs his own code in the
+      // command sandbox with every command key (vaultTools.ts), the shell authority this endpoint
+      // withholds. For the same reason an external write never lands in that folder.
       const fs = await this.d.backend.filesystem(this.d.vault, PI_BUILTIN_TOOLS.filter((n) => n !== "bash"), { fileWrite: async () => true }, this.d.vault);
+      const specs = [...builtin, ...fs.specs] as ToolSpec[];
+      const listed = new Set(specs.map((t) => t.name));
+      const toolsDir = resolve(this.d.vault, ".vault-chat", "tools");
       return {
-        specs: [...builtin, ...own, ...fs.specs] as ToolSpec[],
+        specs,
         resources: [{ uri: "vault-chat://context/you", name: "Authorized device and file context", mimeType: "text/plain" }],
         readResource: async (uri: string) => {
           if (uri !== "vault-chat://context/you") throw new Error("Resource unavailable in this scope");
           return `Bound device: ${context.device}; conversation: ${context.conversation ?? "none"}.\n${(await this.scoped(() => this.you({ convId: context.conversation, since: null }))).text}`;
         },
         call: async (name: string, args: Record<string, unknown>, contextOfCall: { signal: AbortSignal }) => this.scoped(async () => {
+          if (!listed.has(name)) return { ok: false, text: `${name} is not available to external MCP clients.` };
+          if ((name === "write" || name === "edit") && typeof args.path === "string") {
+            const target = resolve(this.d.vault, args.path);
+            const rel = relative(toolsDir, target);
+            if (rel === "" || (!rel.startsWith("..") && !isAbsolute(rel))) return { ok: false, text: "External MCP clients cannot write vault tools (.vault-chat/tools)." };
+          }
           if (PI_BUILTIN_TOOLS.includes(name)) return fs.call(name, args, { ...contextOfCall, requestId: "external" });
           if (TURN_ONLY_TOOLS.has(name) || name === "Compact") return { ok: false, text: `${name} needs an owning vault-chat turn; an external MCP client cannot borrow a chat's live turn.` };
           if (name === "RecordUI") return externalRecordUI(this.d.shell?.(), this.d.vault, args,

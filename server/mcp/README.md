@@ -146,7 +146,7 @@ installed deny-read/deny-write policy and outer sandbox. `PdfRead`/`PdfPages`
 also validate external source paths against the bound root and deny policy.
 External filesystem access fails closed without the installed sandbox, even
 when unsafe native test mode is enabled. No command keys are provided to this
-loadout. External bash is intentionally unavailable: the existing native shell
+loadout. Carl's vault tools (`.vault-chat/tools`) are not listed or callable externally, and external write/edit refuse that folder: a vault tool runs Carl's code with every command key. Any name outside the bound list is refused. External bash is intentionally unavailable: the existing native shell
 sandbox allows more than one vault and is not a vault-only external shell
 policy. `StartJob` remains turn-owned. `RecordUI` instead has a narrow external
 browser-only binding: explicit http(s) pages, real browser input, no `run`
