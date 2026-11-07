@@ -75,9 +75,20 @@ export class BackendRouter extends EventEmitter implements EngineBackend {
     for (const b of this.all()) b.start();
   }
 
-  async ready(ms?: number): Promise<boolean> {
-    // The engine in charge has to be up; the other one only matters for its own threads.
-    return this.head.ready(ms);
+  /**
+   * The engine asks this before it knows which engine the turn will run on, so
+   * the answer is "can a turn run at all": one engine being down does not stop
+   * a conversation whose own engine is up (it fails later, by name, if it is
+   * that engine that is down).
+   */
+  ready(ms?: number): Promise<boolean> {
+    const checks = this.all().map((b) => b.ready(ms).catch(() => false));
+    // The first engine to say yes answers, so a conversation on a healthy engine
+    // never waits out another engine's timeout.
+    return new Promise<boolean>((resolve) => {
+      let left = checks.length;
+      for (const c of checks) void c.then((ok) => (ok ? resolve(true) : --left === 0 && resolve(false)));
+    });
   }
 
   /** The engine in charge, with the other one beside it. */
