@@ -2,10 +2,12 @@
 // bundled binary cannot do by itself. These checks run the real executable:
 // they are the install story, not a mock of it.
 import { describe, it, expect } from "vitest";
-import { existsSync, writeFileSync, chmodSync, mkdirSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, chmodSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmp, cleanup } from "./helpers";
-import { bundledCli, elfInterpreter, findClaude, loaderWrapper, probe } from "../engine/claude/install";
+import { spawnSync } from "node:child_process";
+import { bundledCli, elfInterpreter, findClaude, loaderWrapper, probe, sandboxedCli, wrapper } from "../engine/claude/install";
+import { findBwrap } from "../engine/pi/install";
 
 describe("the Claude Code the box runs", () => {
   it("names the dynamic loader of an ELF executable, and nothing for a script", () => {
@@ -93,4 +95,52 @@ describe("the Claude Code the box runs", () => {
     else expect(["bundled", "loader"]).toContain(r.install.source);
     cleanup(root);
   });
+});
+
+describe("a session's executable is the CLI inside the box's sandbox", () => {
+  it("wraps the CLI in the outer sandbox, carves out what it must write, and still runs", () => {
+    // On Linux the box is expected to have bubblewrap: pi refuses to run without
+    // it, so a missing one is a real finding and not a reason to pass quietly.
+    const bwrap = findBwrap();
+    if (process.platform === "linux") expect(bwrap, "bubblewrap was not found on a Linux box").toBeTruthy();
+    if (!bwrap) return;
+    const root = tmp("vccs-");
+    const found = findClaude({ stateDir: root, env: {} });
+    if ("error" in found) throw new Error(found.error);
+    const configDir = join(root, "config");
+    mkdirSync(configDir, { recursive: true });
+
+    // The shape the backend builds: the box's outer layer, then the carve-outs.
+    const outer = [bwrap, "--dev-bind", "/", "/", "--proc", "/proc", "--unshare-pid", "--die-with-parent", "--ro-bind", root, root, "--"];
+    const cli = sandboxedCli({ install: found.install, dir: join(root, "bin"), name: "claude-test", sandbox: outer, writable: [configDir] });
+    expect(cli).toBe(join(root, "bin", "claude-test"));
+    const script = readFileSync(cli, "utf8");
+    expect(script).toContain(bwrap);
+    // The carve-out goes after the layer that made the state dir read-only.
+    expect(script.indexOf(JSON.stringify(configDir))).toBeGreaterThan(script.indexOf(JSON.stringify(root)));
+    expect(script).toContain(JSON.stringify(found.install.cli));
+
+    // The real CLI still starts in there.
+    expect(probe(cli)).toBe(found.install.version);
+    cleanup(root);
+  }, 120_000);
+
+  it("the sandbox it is wrapped in really hides what the box hides", () => {
+    const bwrap = findBwrap();
+    if (process.platform === "linux") expect(bwrap, "bubblewrap was not found on a Linux box").toBeTruthy();
+    if (!bwrap) return;
+    const root = tmp("vccs2-");
+    mkdirSync(root, { recursive: true });
+    const secret = join(root, "secret");
+    writeFileSync(secret, "not for the agent");
+    const sh = "/bin/sh";
+    expect(existsSync(sh), "/bin/sh is needed to look inside the sandbox").toBe(true);
+
+    // Outside: readable. Inside the same layer the sessions run in: gone.
+    expect(spawnSync(sh, ["-c", `cat ${JSON.stringify(secret)}`], { encoding: "utf8" }).stdout).toContain("not for the agent");
+    const outer = [bwrap, "--dev-bind", "/", "/", "--proc", "/proc", "--unshare-pid", "--die-with-parent", "--ro-bind", "/dev/null", secret, "--"];
+    const w = wrapper(join(root, "bin"), "peek", [...outer, sh, "-c", `cat ${JSON.stringify(secret)}`]);
+    expect(spawnSync(w, [], { encoding: "utf8" }).stdout).toBe("");
+    cleanup(root);
+  }, 60_000);
 });

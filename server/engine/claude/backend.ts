@@ -45,7 +45,7 @@ import { appendEntries, newSessionFile } from "../../convlog/piSession";
 import { McpRuntime, type ProcessServices } from "../../mcp/runtime";
 import { ClaudeSession, type SessionSend } from "./session";
 import { ClaudeTranslator, type Emit } from "./translate";
-import type { ClaudeInstall } from "./install";
+import { sandboxedCli, type ClaudeInstall } from "./install";
 import type { ClaudePaths } from "./paths";
 
 /** vault-chat's one path policy (pi's extension owns it today; phase 4 moves it behind MCP). */
@@ -69,6 +69,12 @@ export type ClaudeBackendOptions = {
   fileTools?: string[];
   /** A tool call's wall-clock cap. AskUser and StartJob wait on Carl, so it is generous. */
   toolTimeoutMs?: number;
+  /**
+   * The outer sandbox a session runs in (bubblewrap argv ending with "--"), read
+   * at each session start so a newly registered folder is never missed; null on
+   * a box with no sandbox. Claude Code's own config dir is carved out writable.
+   */
+  sandbox?: () => string[] | null;
   /** MCP servers to add to vault-chat's own (tests). */
   mcpServers?: (threadId: string) => Record<string, unknown> | undefined;
   /** Close a session that has been idle this long (the id is kept; the next turn resumes it). */
@@ -460,7 +466,16 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
     const tools = await this.bindTools(threadId, t);
     const translator = new ClaudeTranslator();
     const session = new ClaudeSession({
-      cli: this.o.install.cli,
+      // The same outer sandbox pi runs in, with Claude Code's own config dir
+      // carved back out: the state dir is read-only in there, and the CLI has to
+      // be able to write its own config and (phase 6) keep its sign-in.
+      cli: sandboxedCli({
+        install: this.o.install,
+        dir: this.o.paths.binDir,
+        name: `claude-${threadId}`,
+        sandbox: this.o.sandbox?.() ?? null,
+        writable: [this.o.paths.configDir, t.cwd],
+      }),
       cwd: t.cwd,
       model: t.model,
       instructions: t.instructions,

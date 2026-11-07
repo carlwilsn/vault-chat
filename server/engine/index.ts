@@ -403,6 +403,8 @@ export async function startEngine(b: EngineBoot): Promise<EngineHandle> {
           // server: the bearer travels only in the session's HTTP headers.
           mcp: new McpRuntime(),
           toolTimeoutMs: Number(process.env.VC_CLAUDE_TOOL_TIMEOUT_MS) || 6 * 3_600_000,
+          // The same outer layer pi gets, read at each session start.
+          sandbox: () => outerWith(sandbox),
           idleMs: Number(process.env.VC_CLAUDE_IDLE_MS) || 10 * 60_000,
           maxSessions: Number(process.env.VC_CLAUDE_MAX_SESSIONS) || 4,
           ...(v.main ? {} : { log: (m: string) => console.log(`[claude:${v.name}] ${m}`) }),

@@ -83,13 +83,35 @@ export function bundledCli(): string | null {
 
 /** A one-line wrapper that runs `bin` through `loader`, written once under the state dir. */
 export function loaderWrapper(dir: string, bin: string, loader: string): string {
+  return wrapper(dir, "claude", [...(loader ? [loader] : []), bin]);
+}
+
+/**
+ * A wrapper script that runs `argv`, written where the SDK can be pointed at it
+ * (`pathToClaudeCodeExecutable` takes a path, not an argv, so anything that has
+ * to run in front of the CLI — the glibc loader, the sandbox — goes here).
+ */
+export function wrapper(dir: string, name: string, argv: string[]): string {
   mkdirSync(dir, { recursive: true });
-  const path = join(dir, "claude");
+  const path = join(dir, name);
   // `exec` so signals and the exit code are the CLI's own, and the host's job
   // control still sees one process where it expects one.
-  writeFileSync(path, `#!/bin/sh\nexec ${JSON.stringify(loader)} ${JSON.stringify(bin)} "$@"\n`, { mode: 0o755 });
+  writeFileSync(path, `#!/bin/sh\nexec ${argv.map((a) => JSON.stringify(a)).join(" ")} "$@"\n`, { mode: 0o755 });
   chmodSync(path, 0o755);
   return path;
+}
+
+/** How a Claude Code session is actually started: the sandbox, the loader, the CLI. */
+export function sandboxedCli(o: { install: ClaudeInstall; dir: string; name: string; sandbox: string[] | null; writable?: string[] }): string {
+  if (!o.sandbox?.length) return o.install.cli;
+  // The install may itself be a wrapper (NixOS): run that, so the loader stays.
+  const carveOuts = (o.writable ?? []).flatMap((p) => ["--bind", p, p]);
+  // What Claude Code must be able to write goes after the layers that made the
+  // state dir read-only, and before the "--" that ends the sandbox's own argv
+  // (dropped only if it really is there, so a sandbox built another way keeps
+  // every argument it was given).
+  const head = o.sandbox[o.sandbox.length - 1] === "--" ? o.sandbox.slice(0, -1) : o.sandbox;
+  return wrapper(o.dir, o.name, [...head, ...carveOuts, "--", o.install.cli]);
 }
 
 /**
