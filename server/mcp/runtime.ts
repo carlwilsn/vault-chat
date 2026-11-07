@@ -7,6 +7,8 @@ import { createServer, type Server } from "node:http";
 import { createMcpHttpHandler, type HttpBinding } from "./http";
 
 export type ProcessServices = {
+  /** Native parent extension only; validates an existing conversation-owned wait target. */
+  continuationWait?: (event: { kind: "job" | "delegate" | "wake"; id: string }) => Promise<boolean>;
   you?: (since: number | null) => Promise<{ text: string; until: number }>;
   /** Host-only filesystem policy callbacks, never HTTP services. */
   env?: () => Record<string, string>;
@@ -47,6 +49,10 @@ export class McpRuntime {
           const n = body?.since;
           result = await scope.services.you(typeof n === "number" && Number.isFinite(n) ? n : null);
         }
+        else if (req.url === "/context/continuation-wait" && scope.services.continuationWait) {
+          result = { ok: ["job", "delegate", "wake"].includes(body?.kind) && typeof body?.id === "string" && body.id.length <= 200
+            ? await scope.services.continuationWait({ kind: body.kind, id: body.id }) : false };
+        }
         else { res.writeHead(404).end(); return; }
         res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(result));
       })().catch(() => { if (!res.headersSent) res.writeHead(503).end(); else res.end(); }); });
@@ -69,7 +75,7 @@ export class McpRuntime {
     await this.start();
     const authorization = `Bearer ${randomBytes(32).toString("base64url")}`;
     const scopeId = randomUUID();
-    this.scopes.set(authorization, { binding: { ...binding, scopeId }, services: { you: services.you } });
+    this.scopes.set(authorization, { binding: { ...binding, scopeId }, services: { you: services.you, continuationWait: services.continuationWait } });
     return {
       bootstrap: { url: `${this.origin}/mcp`, authorization },
       revoke: async () => { this.scopes.delete(authorization); await this.handler?.revoke(scopeId); },

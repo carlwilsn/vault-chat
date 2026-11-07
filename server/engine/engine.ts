@@ -162,7 +162,7 @@ type Live = {
 
 };
 
-type TurnOpts = { /** Send now replays the existing feed directly into Pi before its replacement prompt can settle. */ replay?: Expected[]; /** Existing host-owned job/wake identity, never a push arm. */ pushWorkId?: string; images?: string[]; context?: string; hostContext?: string; itemImages?: ItemImage[]; clientId?: string; /** What the chat shows (Carl's answer to a question asked before a restart). */ shown?: string; device?: "laptop" | "phone" | "board" | null; via?: string; /** Which client sent it (the turn log's `via`: laptop, phone, voice …). */ origin?: string; /** A wake, job or resume of something Carl started. */ byCarl?: boolean; /** An engine input that runs as its own turn once the running one ends, never folded into it (a background report: pi may settle the turn before a follow-up is taken, and a turn parked on a question takes none). */ ownTurn?: boolean };
+type TurnOpts = { completion?: import("./pi/backend").NativeCompletion; /** Send now replays the existing feed directly into Pi before its replacement prompt can settle. */ replay?: Expected[]; /** Existing host-owned job/wake identity, never a push arm. */ pushWorkId?: string; images?: string[]; context?: string; hostContext?: string; itemImages?: ItemImage[]; clientId?: string; /** What the chat shows (Carl's answer to a question asked before a restart). */ shown?: string; device?: "laptop" | "phone" | "board" | null; via?: string; /** Which client sent it (the turn log's `via`: laptop, phone, voice …). */ origin?: string; /** A wake, job or resume of something Carl started. */ byCarl?: boolean; /** An engine input that runs as its own turn once the running one ends, never folded into it (a background report: pi may settle the turn before a follow-up is taken, and a turn parked on a question takes none). */ ownTurn?: boolean };
 
 const RESUME_TEXT =
   "The box restarted (or the engine stopped) while your last turn was running, so any command it was running was killed and may not have finished. Re-check reality (files, processes, logs), then continue from where you were.";
@@ -687,6 +687,13 @@ export class Engine {
         });
       },
       userInput: (threadId, question, options) => this.scoped(() => this.waitForAnswer(threadId, question, options)),
+      continuationWait: (threadId, event) => this.scoped(async () => {
+        const convId = this.byThread.get(threadId);
+        if (!convId || this.live.get(convId)?.threadId !== threadId) return false;
+        if (event.kind === "job") return readJobs(this.d.jobEnv).some(j => j.id === event.id && j.conv === convId && j.state === "running");
+        if (event.kind === "wake") return readWakes(this.d.vault).some(w => w.id === event.id && w.conv === convId);
+        return !!this.d.backend.liveChildren(threadId).find(w => w.id === event.id);
+      }),
       you: (q) => this.scoped(async () => this.you(q)),
       // A worker's write: the screens showing that file refresh at once (liveEdits), as for the agent's own writes.
       childWrote: (_parent, input) => {
@@ -1523,7 +1530,16 @@ export class Engine {
       await patchMeta(this.d.vault, convId, { nextWakeAt: undefined });
     }
     const l = this.live.get(convId);
-    if (!l) return false;
+    if (!l) {
+      if (!byUser) return false;
+      // A native wait has no foreground Live turn. Serialize with delivery so
+      // Stop still cancels its branch state before a late callback can resume.
+      return this.serial(convId, async () => {
+        if (this.live.has(convId)) return this.interrupt(convId, byUser);
+        const conv = await readConv(this.d.vault, convId);
+        return !!conv?.threadId && !!(await this.d.backend.cancelContinuation?.(conv.threadId));
+      });
+    }
     if (l.ask) {
       // Parked on a question: release the call so the turn can close.
       l.stopped = true;
@@ -1589,7 +1605,7 @@ export class Engine {
           }
           // An engine input while a turn runs: shown where pi delivers it.
           existing.feed.expect({ kind: "silent", text: input, ...this.engineInput(input, kind) });
-          await b.followUp(existing.threadId, { texts: [input], images: [] }).catch(() => undefined);
+          await b.followUp(existing.threadId, { texts: [input], completion: opts.completion, images: [] }).catch(() => undefined);
         }
         return;
       }
@@ -1718,7 +1734,7 @@ export class Engine {
           const queued = { texts: [e.text], context: e.hostContext, request: e.clientId ? { v: 1 as const, clientId: e.clientId, via: e.via, ...(e.device ? { device: e.device } : {}), ...(e.images?.length ? { images: e.images.map(({ path }) => ({ path })) } : {}) } : undefined, images: (e.images ?? []).map(im => join(this.d.vault, im.path)) };
           await this.d.backend.followUp(threadId, queued);
         }
-        await this.d.backend.startTurn(threadId, { texts, context: [rules, ...context].filter(Boolean).join("\n\n"), ...(kind === "user" ? { request: { v: 1 as const, clientId, via: shownInput.via, ...(opts.device ?? validDevice(opts.origin) ? { device: opts.device ?? opts.origin } : {}), ...(opts.itemImages?.length ? { images: opts.itemImages.map(({ path }) => ({ path })) } : {}) } } : {}), images: opts.images ?? [], model, turnId, ...(talker?.thinking ? { thinking: talker.thinking } : {}) });
+        await this.d.backend.startTurn(threadId, { texts, completion: kind === "user" ? undefined : opts.completion, context: [rules, ...context].filter(Boolean).join("\n\n"), ...(kind === "user" ? { request: { v: 1 as const, clientId, via: shownInput.via, ...(opts.device ?? validDevice(opts.origin) ? { device: opts.device ?? opts.origin } : {}), ...(opts.itemImages?.length ? { images: opts.itemImages.map(({ path }) => ({ path })) } : {}) } } : {}), images: opts.images ?? [], model, turnId, ...(talker?.thinking ? { thinking: talker.thinking } : {}) });
         live.started = true;
         // Stop may arrive before the prompt itself reached pi (model/context
         // setup). Honor it at native acceptance too, without a fresh prompt.
@@ -2042,19 +2058,20 @@ export class Engine {
   /** A background worker's report (Delegate's, or a `subagent` call moved to the background) comes back to its
    *  conversation as one new turn, "Delegated work finished: …" — exactly once. If that turn cannot start, the
    *  report is still written into the conversation as a line, never dropped. */
-  private reportWhenDone(convId: string, title: string, result: Promise<Record<string, unknown>>): void {
+  private reportWhenDone(convId: string, title: string, result: Promise<Record<string, unknown>>, workerId?: Promise<string>): void {
     void result
       .then(
         (r: any) => `Delegated work ${r?.ok ? "finished" : `failed (${r?.state ?? "error"})`}: "${title}"\n\n${String(r?.text ?? "").slice(0, 12_000) || "(no report)"}`,
         (err: Error) => `Delegated work failed: "${title}"\n\n${err?.message ?? err}`,
       )
-      .then((input) => {
+      .then(async (input) => {
+        const id = await workerId;
         // He stopped it himself ("never mind"), and the agent already said so: its "stopped" report is a line in the
         // chat, not a turn — the voice said it was stopped twice (the roleplay's second round).
         const key = `${convId}\n${title}`;
         if (this.stoppedOnHisWord.delete(key) && !input.startsWith("Delegated work finished")) return this.notice(convId, `Stopped as he asked: "${title}".`);
         return this.scoped(() =>
-          this.run(convId, input, "wake", { ownTurn: true }).catch((err: Error) => {
+          this.run(convId, input, "wake", { ownTurn: true, ...(id ? { completion: { kind: "delegate", id } } : {}) }).catch((err: Error) => {
             this.log(`delegate result on ${convId}: ${err.message}`);
             return this.notice(convId, `${input.split("\n")[0]} — the agent could not take it up (${err.message}).\n\n${input.split("\n").slice(2).join("\n").slice(0, 4000)}`, "warn");
           }),
@@ -2134,7 +2151,7 @@ export class Engine {
   /** Carl wrote while the turn waits on a `subagent` call: its children move to the background, the call answers
    *  at once (so his message is taken up now), and each report comes back as its own turn. */
   private detachWaiting(convId: string, threadId: string): void {
-    for (const d of this.d.backend.detach?.(threadId) ?? []) this.reportWhenDone(convId, d.title, d.result);
+    for (const d of this.d.backend.detach?.(threadId) ?? []) this.reportWhenDone(convId, d.title, d.result, Promise.resolve(d.id));
   }
 
   /** A job's row in the chip ended (its own end, JobStop, or Stop in the chip). */
@@ -2306,10 +2323,10 @@ export class Engine {
           // Never the same wake twice (summer: 36 duplicate reminders): one already set for this reason, or within a
           // minute of this time, stands.
           const same = readWakes(vault).find((w) => w.conv === convId && (w.reason.trim().toLowerCase() === reason.toLowerCase() || Math.abs(w.at - at) < 60_000));
-          if (same) return text(`A wake is already set for ${new Date(same.at).toISOString()} ("${same.reason}"); no second one was added. Stop now: do not call any more tools this turn.`);
-          addWake(vault, { conv: convId, at, reason, ...(this.live.get(convId)?.byCarl ? { byCarl: true } : {}) });
+          if (same) return text(`A wake is already set for ${new Date(same.at).toISOString()} ("${same.reason}"); no second one was added. Wake id: ${same.id}. If a bounded continuation is active, record ContinueWork wait for this wake id, then stop; otherwise stop now. Do not schedule another wake.`);
+          const wake = addWake(vault, { conv: convId, at, reason, ...(this.live.get(convId)?.byCarl ? { byCarl: true } : {}) });
           await patchMeta(vault, convId, { nextWakeAt: nextWakeFor(vault, convId) });
-          return text(`Wake set for ${new Date(at).toISOString()} ("${reason}"). Stop now: do not call any more tools this turn.`);
+          return text(`Wake set for ${new Date(at).toISOString()} ("${reason}"). Wake id: ${wake.id}. If a bounded continuation is active, record ContinueWork wait for this wake id, then stop; otherwise stop now. Do not schedule another wake.`);
         }
         case "Notify": {
           // At most 4 pings an hour per conversation; past that they go to the
@@ -2374,7 +2391,7 @@ export class Engine {
             title,
             ...(a.expect === "short" || a.expect === "long" ? { expect: a.expect } : {}),
           }, workerStarted);
-          this.reportWhenDone(convId, title, started);
+          this.reportWhenDone(convId, title, started, Promise.race([workerId, started.then(() => "")]));
           // The native child id travels in this exact tool result, not an MCP request id
           // or a guess based on the latest open call/title. Wait for spawn, never completion.
           const id = await Promise.race([workerId, started.then(() => "")]);
@@ -2669,7 +2686,7 @@ export class Engine {
     if (!conv) return;
     await patchMeta(this.d.vault, w.conv, { nextWakeAt: nextWakeFor(this.d.vault, w.conv) ?? undefined });
     this.log(`wake ${w.id} → ${w.conv}: ${w.reason}`);
-    await this.run(w.conv, `Wake: ${w.reason}`, "wake", { byCarl: !!w.byCarl, pushWorkId: w.id }).catch((e) => this.log(`wake failed: ${e}`));
+    await this.run(w.conv, `Wake: ${w.reason}`, "wake", { byCarl: !!w.byCarl, pushWorkId: w.id, ownTurn: true, completion: { kind: "wake", id: w.id } }).catch((e) => this.log(`wake failed: ${e}`));
   }
 
   /** A job that ended wakes the conversation that started it. */
@@ -2693,7 +2710,7 @@ export class Engine {
       const how =
         j.state === "finished" ? `finished: exit ${j.exit}` : j.state === "timeout" ? "was stopped by its time limit" : j.state === "stopped" ? "was stopped" : "ended without an exit code (stopped, or killed: out of memory?)";
       const tail = j.tail.split("\n").slice(-30).join("\n").slice(-3000);
-      void this.run(j.conv, `Job ${j.id} ${how}.\n--- last output ---\n${tail || "(none)"}`, "wake", { byCarl: !!j.byCarl, pushWorkId: j.id }).catch((e) => this.log(`job wake ${j.conv}: ${e}`));
+      void this.run(j.conv, `Job ${j.id} ${how}.\n--- last output ---\n${tail || "(none)"}`, "wake", { byCarl: !!j.byCarl, pushWorkId: j.id, ownTurn: true, completion: { kind: "job", id: j.id } }).catch((e) => this.log(`job wake ${j.conv}: ${e}`));
     }
   }
 

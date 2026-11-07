@@ -123,6 +123,21 @@ describe("direct action, sized to the ask, read back", () => {
   });
 });
 
+it("validates existing wait targets against the owning native conversation, never arbitrary ids", async () => {
+  const { writeJobs } = await import("../engine/pi/jobs");
+  const { addWake } = await import("../engine/wakes");
+  const s = await rig.start("Keep working on owned native wait fixture");
+  const t = await rig.start("Different conversation");
+  writeJobs({ logDir: join(rig.root, "jobs"), wrap: null, env: {} }, [{ id: "known-job", conv: s.convId, name: "owned", command: "inert", startedAt: Date.now(), timeoutS: 60, state: "running" }]);
+  const wake = addWake(rig.vault, { conv: s.convId, at: Date.now() + 60000, reason: "User-requested reminder" });
+  expect(await rig.backend.h.continuationWait(s.tid, { kind: "job", id: "known-job" })).toBe(true);
+  expect(await rig.backend.h.continuationWait(t.tid, { kind: "job", id: "known-job" })).toBe(false);
+  expect(await rig.backend.h.continuationWait(s.tid, { kind: "job", id: "forged" })).toBe(false);
+  expect(await rig.backend.h.continuationWait(s.tid, { kind: "wake", id: wake.id })).toBe(true);
+  expect(await rig.backend.h.continuationWait(t.tid, { kind: "wake", id: wake.id })).toBe(false);
+  await settle(s); await settle(t);
+});
+
 describe("notes: one thing, editable in place, on pi and on voice", () => {
   const file = () => join(rig.vault, ".vault-chat", "notes.jsonl");
   const notes = async () => (await import("../../src/notes")).readNotes(rig.vault);
@@ -168,4 +183,19 @@ describe("notes: one thing, editable in place, on pi and on voice", () => {
     await settle(s);
   });
 
+});
+
+it("a native timer completion waits for foreground settlement, never steering or interrupting it", async () => {
+  const s = await rig.start("Foreground work owns this turn");
+  const before = rig.backend.turns.length, queued = rig.backend.followUps.length;
+  await rig.engine.fireWake({ conv: s.convId, id: "owned-wake-priority", at: Date.now(), reason: "Owned completion" });
+  expect(rig.backend.turns).toHaveLength(before);
+  expect(rig.backend.followUps).toHaveLength(queued);
+  expect(rig.backend.interrupts).not.toContain(s.tid);
+  // There need not be an observable idle gap: the existing turn-end waiter
+  // starts the queued callback immediately after foreground settlement.
+  rig.backend.end(s.tid);
+  await until(() => rig.backend.turns.length === before + 1);
+  expect(rig.backend.turns.at(-1).completion).toEqual({ kind: "wake", id: "owned-wake-priority" });
+  await settle(s);
 });

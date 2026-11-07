@@ -162,7 +162,7 @@ export default function vaultChat(pi) {
   // original content are persisted in the SAME user entry, so no crash window
   // or parallel text-matching queue can separate them.
   pi.on("message_end", (event) => nativeUserRequest(event.message, bootstrap.requestTag));
-  const continuation = bootstrap.continuation ? registerContinuation(pi) : null;
+  const continuation = bootstrap.continuation ? registerContinuation(pi, event => service("continuation-wait", event).then(r => r.ok === true), prompt => nativeUserRequest({ role: "user", content: prompt }, bootstrap.requestTag)?.message.vcCompletion) : null;
 
   // ---- vault-chat's own lines in the transcript (a notice, a line, a divider) ---------
   // pi's custom entries (not in the model's context), appended by pi itself so the

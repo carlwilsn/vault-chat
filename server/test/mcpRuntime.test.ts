@@ -51,6 +51,7 @@ describe("revocable process scopes and stateful HTTP", () => {
     const response = await fetch(restricted.bootstrap.url, { headers: { Authorization: restricted.bootstrap.authorization, "Mcp-Session-Id": transport.sessionId!, Accept: "text/event-stream" } });
     expect(response.status).toBe(404);
     expect((await fetch(new URL("/context/env", restricted.bootstrap.url), { method: "POST", headers: { Authorization: restricted.bootstrap.authorization }, body: "{}" })).status).toBe(404);
+    expect((await fetch(new URL("/context/continuation-wait", restricted.bootstrap.url), { method: "POST", headers: { Authorization: restricted.bootstrap.authorization }, body: JSON.stringify({ kind: "job", id: "forged" }) })).status).toBe(404);
     expect((await fetch(full.bootstrap.url)).status).toBe(401);
     await full.revoke();
     expect((await fetch(full.bootstrap.url, { headers: { Authorization: full.bootstrap.authorization } })).status).toBe(401);

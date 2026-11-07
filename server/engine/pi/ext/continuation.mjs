@@ -13,11 +13,11 @@ function human(ctx) {
 }
 const draft = data => ({ type: "custom", customType: STATE, data });
 
-export function registerContinuation(pi) {
+export function registerContinuation(pi, validateWait = async () => false, completionFromPrompt = () => null) {
   const save = data => pi.appendEntry(STATE, data);
   const close = (ctx, status, reason) => {
     const s = continuationState(ctx);
-    if (s?.status === "active") save({ ...s, status, reason, next: null });
+    if (["active", "waiting"].includes(s?.status)) save({ ...s, status, reason, next: null });
   };
   // Existing Stop sends this command BEFORE native abort. Even a late successful
   // tool result cannot overwrite it: execute re-reads the native branch.
@@ -32,7 +32,32 @@ export function registerContinuation(pi) {
   pi.on("message_end", (event, ctx) => {
     const request = event.message?.vcRequest;
     const s = continuationState(ctx);
-    if (s?.status === "active" && event.message?.role === "user" && request?.clientId !== s.request) close(ctx, "paused", "New human input or native event takes priority; no stale checkpoint replay");
+    if (event.message?.role !== "user") return;
+    const completion = event.message.vcCompletion;
+    if (s?.status === "waiting" && completion?.kind === s.wait.kind && completion?.id === s.wait.id) {
+      // The host bound this callback to the existing job's conversation, then
+      // transported it inside the private native input envelope (not its text).
+      // Consume the wait once, retaining the SAME authorization and budgets.
+      const limited = Date.now() >= s.deadline || s.iterations >= s.maxIterations || s.steps >= s.maxSteps;
+      save({ ...s, status: limited ? "limit" : "active", wait: null, next: null,
+        iterations: limited ? s.iterations : s.iterations + 1,
+        reason: limited ? "Continuation limit reached while waiting" : "Matching native completion delivered" });
+    } else if (["active", "waiting"].includes(s?.status) && request && request.clientId !== s.request) {
+      close(ctx, "paused", "New human input takes priority; no stale checkpoint replay");
+    } else if (s?.status === "active" && !request) {
+      close(ctx, "paused", "Unrelated native input takes priority; no stale checkpoint replay");
+    }
+  });
+  pi.on("before_agent_start", (event, ctx) => {
+    const s = continuationState(ctx);
+    const completion = completionFromPrompt(event.prompt);
+    // This hook precedes native message delivery. Supply context only; the
+    // message_end acknowledgment above owns activation and budget consumption.
+    if (s?.status !== "waiting" || completion?.kind !== s.wait.kind || completion?.id !== s.wait.id ||
+        Date.now() >= s.deadline || s.iterations >= s.maxIterations || s.steps >= s.maxSteps) return;
+    return { message: { customType: "vc-continuation-context", display: false,
+      content: `Matching native work finished. Resume the SAME bounded assignment: ${s.objective}\nVerified progress: ${s.progress}\nOriginal budgets remain: ${s.iterations}/${s.maxIterations} continuations, ${s.steps}/${s.maxSteps} model turns, deadline ${new Date(s.deadline).toISOString()}. Do actionable work, then complete, checkpoint NEW progress, or wait on a known job/delegate/user-requested wake. Never poll or restart the budget.`,
+      details: { request: s.request, iteration: s.iterations } } };
   });
   // Enforce a model-TURN bound, not a monetary cap. Retries/compaction and an
   // in-flight request/tool may still cost time/money. No hidden timer privilege.
@@ -54,10 +79,12 @@ export function registerContinuation(pi) {
     // Waiting is an outcome, not a request for more periodic checks. Notify is
     // deliberately not intercepted: it may report one completed subtask while
     // other actionable work remains. AskUser already owns its native tool wait.
-    if (s?.status === "active" && /(?:^|__)(AskUser|ScheduleWake)$/.test(event.toolName)) close(ctx, "blocked", "Waiting on the existing question or requested wake; do not repeat checks");
+    if (s?.status === "active" && /(?:^|__)(AskUser)$/.test(event.toolName)) close(ctx, "blocked", "Waiting on the existing human question; do not repeat checks");
   });
   pi.on("agent_before_settle", (event, ctx) => {
     const s = continuationState(ctx);
+    if (s?.status === "waiting" && event.outcome !== "completed") return { entries: [draft({ ...s,
+      status: event.outcome === "aborted" ? "cancelled" : "paused", next: null, reason: "Wait interrupted before settlement" })] };
     if (s?.status !== "active") return;
     let reason;
     if (event.outcome !== "completed") reason = event.outcome === "aborted" ? "Interrupted" : "Run failed";
@@ -68,16 +95,17 @@ export function registerContinuation(pi) {
     const next = { ...s, iterations: s.iterations + 1, next: null };
     return {
       entries: [draft(next), { type: "custom_message", customType: "vc-continuation-context", display: false,
-        content: `Bounded continuation ${next.iterations}/${s.maxIterations}. Objective: ${s.objective}\nVerified progress: ${s.progress}\nNext actionable work: ${s.next}\nDo that work now. Use ContinueWork checkpoint with NEW verified progress and a concrete next action only if more work is available. Complete when verified; blocked when waiting. Never poll an unchanged blocker, repeat a status update, or elevate permissions. Real job/delegate results use their existing delivery; ScheduleWake remains only for a reminder/later check Carl requested.`,
+        content: `Bounded continuation ${next.iterations}/${s.maxIterations}. Objective: ${s.objective}\nVerified progress: ${s.progress}\nNext actionable work: ${s.next}\nDo that work now. Use ContinueWork checkpoint with NEW verified progress and a concrete next action only if more work is available. Complete when verified; wait on a known job/delegate/user-requested wake; blocked for a genuine human blocker. Never poll an unchanged blocker, repeat a status update, or elevate permissions. Real job/delegate results use their existing delivery; ScheduleWake remains only for a reminder/later check Carl requested.`,
         details: { request: s.request, iteration: next.iterations } }],
       continue: true,
     };
   });
   pi.registerTool({
     name: "ContinueWork", label: "Continue work", exposure: "model-only",
-    description: "Opt-in bounded continuation for a clear human long-running assignment in ANY project; never activate for ordinary questions or background events. One native session, no task files/timers. start records the human-authorized objective; checkpoint arms ONE next continuation after NEW verified progress with concrete actionable work. complete/blocked/cancel end automatic continuation; report a blocker once and wait on the existing question/job/delegate/requested timer. A new human request is needed after pause/cancel/limit; late callbacks must not rearm it. Limits are model turns/continuation iterations checked at boundaries, NOT a hard spending or in-flight wall-clock cap. Existing money/irreversible/taste permissions are unchanged.",
+    description: "Opt-in bounded continuation for a clear human long-running assignment in ANY project; never activate for ordinary questions or background events. One native session, no task files/timers. start records the human-authorized objective; checkpoint arms ONE next continuation after NEW verified progress with concrete actionable work. wait creates NO jobs or timers and grants NO scheduling permission; it suspends for exactly one known native job/delegate/user-requested wake id; the host validates ownership before recording it. ONLY its trusted completion resumes the SAME run with original budgets. complete/blocked/cancel end automatic continuation; report a blocker once and wait on the existing question/job/delegate/requested timer. A new human request is needed after pause/cancel/limit; late callbacks must not rearm it. Limits are model turns/continuation iterations checked at boundaries, NOT a hard spending or in-flight wall-clock cap. Existing money/irreversible/taste permissions are unchanged.",
     parameters: Type.Object({
-      action: Type.Union(["start", "checkpoint", "complete", "blocked", "cancel", "status"].map(v => Type.Literal(v))),
+      action: Type.Union(["start", "checkpoint", "wait", "complete", "blocked", "cancel", "status"].map(v => Type.Literal(v))),
+      waitFor: Type.Optional(Type.Object({ kind: Type.Union(["job", "delegate", "wake"].map(v => Type.Literal(v))), id: Type.String({ minLength: 1, maxLength: 200 }) })),
       objective: Type.Optional(Type.String({ maxLength: 4000 })),
       progress: Type.Optional(Type.String({ maxLength: 4000 })),
       next: Type.Optional(Type.String({ maxLength: 2000 })),
@@ -101,6 +129,17 @@ export function registerContinuation(pi) {
           iterations: 0, steps: 0, maxIterations: args.maxIterations ?? 10, maxSteps: args.maxSteps ?? 50, deadline: Date.now() + (args.minutes ?? 30) * 60_000 };
       } else {
         if (!s || s.status !== "active") return result("No active continuation; late/duplicate callbacks cannot reactivate it");
+        if (args.action === "wait") {
+          if (!args.waitFor) return result("wait requires an existing native job/delegate/user-requested wake id");
+          const branch = ctx.sessionManager.getLeafId();
+          let allowed = false;
+          try { allowed = await validateWait(args.waitFor); } catch { /* no authority on failed validation */ }
+          // Stop, human input, fork or another tool can win during the service call.
+          if (!allowed || signal?.aborted || ctx.sessionManager.getLeafId() !== branch || continuationState(ctx)?.status !== "active") return result("Wait not armed: unknown/unowned target or session changed");
+          s = { ...s, status: "waiting", wait: { ...args.waitFor }, next: null, reason: "Waiting for matching native completion" };
+          save(s);
+          return { ...result("Continuation waiting. No polling; only the matching trusted native event can resume, within the original limits."), terminate: true };
+        }
         if (args.action === "checkpoint") {
           if (!args.progress?.trim() || !args.next?.trim() || args.progress.trim() === s.progress) {
             s = { ...s, status: "paused", next: null, reason: "No new verified progress or next action" };

@@ -200,8 +200,10 @@ recovery patches that existing duplicated UI projection, rather than removing
 every projection layer. Standard progress is requested per call, bounded and
 backpressured, and becomes pi tool-update events; final results are unchanged.
 
-Private services are not agent tools. At final HEAD only `/context/you` remains
-as a private HTTP service. Command-key environment and guarded-write callbacks
+Private services are not agent tools. `/context/you` supplies incremental context;
+native conversation parents additionally bind `/context/continuation-wait` for
+read-only validation of an existing owned wait target. External MCP clients and
+side/worker scopes cannot use that service. Command-key environment and guarded-write callbacks
 remain host policy, **not** MCP tools and **not** mounted `/context/env` or
 `/context/file-write` HTTP endpoints. Earlier transcript descriptions of all
 three HTTP services refer to an older README snapshot. Internal authority is

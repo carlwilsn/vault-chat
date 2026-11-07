@@ -69,9 +69,13 @@ that exact namespace is shortened for vault-chat display/reducer logic. Other
 MCP server names remain intact. `-ne -e builtin:mcp` excludes unrelated MCP
 configuration; the one-shots with no host tools use `--no-mcp`.
 
-The extension retains only the private incremental-context service:
-`POST /context/you`, when the host explicitly enables it. It is **not a
-discoverable agent tool**. Command-key env and write-authorization callbacks now
+The extension retains the private incremental-context service
+`POST /context/you`, when the host explicitly enables it. Native conversation
+parents also bind `POST /context/continuation-wait`: it validates an existing
+job/delegate/user-requested wake against its owning conversation before the
+parent records a bounded wait in its native session branch. It creates no work,
+timers or delivery state. Neither endpoint is a discoverable agent tool; external
+MCP and side/worker scopes do not receive the continuation service. Command-key env and write-authorization callbacks now
 stay in the host-owned shared filesystem binding, not private HTTP endpoints.
 `/context/env` and `/context/file-write` are no longer mounted.
 

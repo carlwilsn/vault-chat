@@ -267,7 +267,10 @@ export function nativeUserRequest(message, tag) {
   if (!Array.isArray(blocks) || blocks[0]?.type !== "text") return;
   let input;
   try { input = JSON.parse(blocks[0].text); } catch { return; }
-  if (input?.vcInput !== tag || typeof input.text !== "string" || input.request?.v !== 1 ||
-      typeof input.request.clientId !== "string" || typeof input.request.via !== "string") return;
-  return { message: { ...message, content: [{ type: "text", text: input.text }, ...blocks.slice(1)], vcRequest: input.request } };
+  if (input?.vcInput !== tag || typeof input.text !== "string") return;
+  const request = input.request?.v === 1 && typeof input.request.clientId === "string" && typeof input.request.via === "string" ? input.request : null;
+  const completion = ["job", "delegate", "wake"].includes(input.completion?.kind) && typeof input.completion.id === "string" ? input.completion : null;
+  if (!request && !completion) return;
+  return { message: { ...message, content: [{ type: "text", text: input.text }, ...blocks.slice(1)],
+    ...(request ? { vcRequest: request } : { vcCompletion: completion }) } };
 }

@@ -52,6 +52,7 @@ export class ThreadUnknownError extends Error {
 
 /** A host tool's answer: its text, and images it attaches (pi image blocks: base64 + mime). */
 export type ToolAnswer = { ok: boolean; text: string; images?: { data: string; mimeType: string }[]; resources?: { uri: string; mimeType: string; blob: string }[] };
+export type NativeCompletion = { kind: "job" | "delegate" | "wake"; id: string };
 export type Interaction = Readonly<{ request: string; device: "laptop" | "phone" | "board" | null }>;
 // The existing host-owned worker scope captures its originating interaction too.
 // No second queue/presence registry: the source is the delivered native feed entry.
@@ -79,6 +80,7 @@ export type Handlers = {
   workerCwd?: (threadId: string, cwd?: string) => Promise<string>;
   userInput: UserInputHandler;
   you?: YouHandler;
+  continuationWait?: (threadId: string, event: NativeCompletion) => Promise<boolean>;
   sideTool?: SideToolHandler;
   /** Enforced private service, never an agent-callable MCP tool. */
   fileWrite?: (threadId: string) => Promise<boolean>;
@@ -248,9 +250,9 @@ export class PiBackend extends EventEmitter {
   // queue element carries its own identity until message_end persists it.
   private readonly requestTag = randomUUID();
 
-  private input(o: { texts: string[]; request?: UserRequest }): string {
+  private input(o: { texts: string[]; request?: UserRequest; completion?: NativeCompletion }): string {
     const text = o.texts.filter(Boolean).join("\n\n");
-    return o.request ? JSON.stringify({ vcInput: this.requestTag, request: o.request, text }) : text;
+    return o.request || o.completion ? JSON.stringify({ vcInput: this.requestTag, request: o.request, completion: o.completion, text }) : text;
   }
 
   readonly name = "pi";
@@ -494,6 +496,7 @@ export class PiBackend extends EventEmitter {
     const services = o.services ?? {
       env: () => this.agentEnv(),
       ...(o.you ? { you: (since: number | null) => this.you({ threadId, since }) } : {}),
+      ...(!o.sessionDir && !o.ephemeral ? { continuationWait: async (event: NativeCompletion) => !!threadId && !!(await this.h?.continuationWait?.(threadId, event)) } : {}),
       fileWrite: async () => !!threadId && !!(await this.h?.fileWrite?.(threadId)),
     };
     const fs = await this.filesystem(o.cwd, o.builtins ?? ["read", "bash", "edit", "write"], services);
@@ -729,7 +732,7 @@ export class PiBackend extends EventEmitter {
     return !!r?.success;
   }
 
-  async startTurn(threadId: string, o: { texts: string[]; /** Host context stored by pi as a hidden custom message, not Carl's input. */ context?: string; request?: UserRequest; images: string[]; model: string; turnId?: string; thinking?: string }): Promise<{ turnId: string | null }> {
+  async startTurn(threadId: string, o: { texts: string[]; /** Host context stored by pi as a hidden custom message, not Carl's input. */ context?: string; request?: UserRequest; completion?: NativeCompletion; images: string[]; model: string; turnId?: string; thinking?: string }): Promise<{ turnId: string | null }> {
     const t = this.live(threadId);
     t.lastUsed = Date.now();
     const prev = t.model;
@@ -764,7 +767,7 @@ export class PiBackend extends EventEmitter {
     return { turnId };
   }
 
-  async steer(threadId: string, _turnId: string, o: { texts: string[]; context?: string; request?: UserRequest; images: string[] }): Promise<void> {
+  async steer(threadId: string, _turnId: string, o: { texts: string[]; context?: string; request?: UserRequest; completion?: NativeCompletion; images: string[] }): Promise<void> {
     const t = this.live(threadId);
     const imgs = this.images(o.images);
     // The existing native custom-message path owns request metadata too.
@@ -775,7 +778,7 @@ export class PiBackend extends EventEmitter {
   }
 
   /** Queue a message for when the turn's work is done (pi's follow_up). */
-  async followUp(threadId: string, o: { texts: string[]; context?: string; request?: UserRequest; images?: string[] }): Promise<void> {
+  async followUp(threadId: string, o: { texts: string[]; context?: string; request?: UserRequest; completion?: NativeCompletion; images?: string[] }): Promise<void> {
     const t = this.live(threadId);
     const imgs = this.images(o.images ?? []);
     // The existing native custom-message path owns request metadata too.
@@ -791,6 +794,16 @@ export class PiBackend extends EventEmitter {
     const r = await t.proc.request({ type: "clear_queue" }, 10_000);
     if (!r?.success) throw new Error(String(r?.error ?? "clear_queue rejected"));
     return { steering: r.data?.steering ?? [], followUp: r.data?.followUp ?? [] };
+  }
+
+  /** Stop can arrive after ContinueWork wait settled the foreground turn. Only
+   * the process that loaded the native extension accepts this private command.
+   * An absent/closed process will conservatively pause on session restoration. */
+  async cancelContinuation(threadId: string): Promise<boolean> {
+    const t = this.threads.get(threadId);
+    if (!t?.proc.isAlive() || !t.proc.continuation) return false;
+    if (!await this.note(threadId, { kind: "continuation-cancel" })) t.proc.killGroup("SIGKILL");
+    return true;
   }
 
   async interrupt(threadId: string, _turnId: string): Promise<void> {
