@@ -139,15 +139,17 @@ describe("a Claude Code turn said in pi's words", () => {
     rmSync(root, { recursive: true, force: true });
   });
 
-  it("reports the context size of the last model call, and the window the result named", () => {
+  it("reports the context size of each model call, and the window as soon as it is known", () => {
     const { emits } = replay(messages);
     const usage = emits.filter((e): e is Extract<Emit, { kind: "usage" }> => e.kind === "usage");
     expect(usage.map((u) => u.usage.last)).toEqual([
       { totalTokens: 3283, inputTokens: 1234, cachedInputTokens: 2000, cacheWriteInputTokens: 7, outputTokens: 42 },
       { totalTokens: 3250, inputTokens: 1234, cachedInputTokens: 2000, cacheWriteInputTokens: 7, outputTokens: 9 },
+      // Only the result names the window, so the last figure is said again with it:
+      // the clients' context bar is right from the first turn, not the second.
+      { totalTokens: 3250, inputTokens: 1234, cachedInputTokens: 2000, cacheWriteInputTokens: 7, outputTokens: 9 },
     ]);
-    // The window is only known from a result message, so the first turn reports none.
-    expect(usage.map((u) => u.usage.modelContextWindow)).toEqual([null, null]);
+    expect(usage.map((u) => u.usage.modelContextWindow)).toEqual([null, null, 1_000_000]);
   });
 
   it("a 30 s heartbeat on a long tool call shows as that call's progress, not a row of its own", () => {

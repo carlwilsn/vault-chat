@@ -126,6 +126,8 @@ export class ClaudeTranslator {
   private toolNames = new Map<string, string>();
   /** The last window the model reported (the result message says it; message_start does not). */
   private window: number | null = null;
+  /** The last context size reported, so the window can be sent with it once known. */
+  private lastUsage: ThreadTokenUsage["last"] | null = null;
   /** Results that arrived while their own message was still open: emitted once it closes. */
   private held: Emit[] = [];
 
@@ -321,6 +323,7 @@ export class ClaudeTranslator {
     const context = o.usage.input + o.usage.cacheRead + o.usage.cacheWrite;
     if (context > 0) {
       const last = { totalTokens: context + o.usage.output, inputTokens: o.usage.input, cachedInputTokens: o.usage.cacheRead, cacheWriteInputTokens: o.usage.cacheWrite, outputTokens: o.usage.output };
+      this.lastUsage = last;
       out.push({ kind: "usage", usage: { last, modelContextWindow: this.window } });
     }
     // The tools this message called start now — unless the turn was cut before they ran.
@@ -387,8 +390,13 @@ export class ClaudeTranslator {
     const out: Emit[] = [];
     // A message the stream never closed (an interrupt mid-block) is closed here.
     if (this.open) out.push(...this.messageStop(false));
+    // Only the result names the window, so the first turn's usage went out
+    // without one: say it again here, and the context bar is right from turn one.
     const window = Object.values(m.modelUsage ?? {}).map((u: any) => Number(u?.contextWindow)).find((n) => n > 0);
-    if (window) this.window = window;
+    if (window && window !== this.window) {
+      this.window = window;
+      if (this.lastUsage) out.push({ kind: "usage", usage: { last: this.lastUsage, modelContextWindow: window } });
+    }
     const subtype = String(m.subtype ?? (m.is_error ? "error" : "success"));
     const terminal = String(m.terminal_reason ?? "");
     const status = terminal === "cancelled" || terminal === "interrupted" || subtype === "interrupted" ? "interrupted" : m.is_error || subtype.startsWith("error") ? "failed" : "completed";
