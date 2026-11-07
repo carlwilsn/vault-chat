@@ -843,8 +843,15 @@ export class Engine {
     // but that record sat only under whichever engine leads — and which one leads
     // moves. It is hoisted to engine.engines so a client can read it without
     // knowing who leads; the nested copy stays, for a client built against it.
-    const engines = (own as { engines?: unknown }).engines;
+    const engines = (own as { engines?: Record<string, unknown> }).engines;
+    // Every engine is also readable at engine.<its name>, whichever one leads.
+    // Without that, the leader's name is the ONLY key: a box that puts Claude
+    // Code in charge has no engine.pi at all, and a reader asking after pi — the
+    // release preflight does, by name — sees undefined and calls the box down.
+    const byName = engines ? Object.fromEntries(Object.entries(engines).filter(([k]) => k !== "default")) : {};
     return {
+      ...byName,
+      // The engine in charge keeps the merged shape it has always had.
       [this.d.backend.name]: own,
       ...(engines && typeof engines === "object" ? { engines } : {}),
       backend: this.d.backend.name,

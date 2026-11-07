@@ -623,6 +623,12 @@ describe("a conversation on Claude Code", () => {
     expect(claudeOf({ engine: h })).toMatchObject({ signedIn: expect.any(Boolean) });
     expect(claudeOf({ engine: { [String(h.backend)]: led } })).toMatchObject({ signedIn: expect.any(Boolean) });
     expect(defaultEngineOf({ engine: h })).toBe((h.engines as { default: string }).default);
+    // Every engine is readable by its own name, whichever one leads. The release
+    // preflight asks for engine.pi.state by name and calls the box down without
+    // it, so a Claude-led box that hid pi here looked like a dead box.
+    expect(h.pi).toMatchObject({ state: "up" });
+    expect(h.claude).toMatchObject({ signedIn: expect.any(Boolean) });
+    expect(h.backend).toBe("claude");
     // A box with no Claude Code at all: nothing to offer, and no crash.
     expect(claudeOf({ engine: { pi: { state: "up" } } })).toBeNull();
     expect(claudeOf(null)).toBeNull();
