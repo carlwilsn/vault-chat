@@ -204,9 +204,19 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
   }
 
   /** Carl's Claude subscription is in reach (the value itself is never read out). */
+  /**
+   * Whether a turn can run at all: Carl's token from the app (the product path),
+   * or a Claude Code login already sitting in the config dir this session uses —
+   * `claude setup-token`/`claude auth login` leave their credentials there, and a
+   * box signed in that way runs turns perfectly well, so reporting "not signed
+   * in" for it would be a lie the UI acts on. Only the file's EXISTENCE is
+   * checked; nothing reads a credential.
+   */
   signedIn(): boolean {
     const env = this.o.env();
-    return !!(env.CLAUDE_CODE_OAUTH_TOKEN || env.ANTHROPIC_API_KEY);
+    if (env.CLAUDE_CODE_OAUTH_TOKEN || env.ANTHROPIC_API_KEY) return true;
+    const dir = env.CLAUDE_CONFIG_DIR || this.o.paths.configDir;
+    return existsSync(join(dir, ".credentials.json"));
   }
 
   health(): Record<string, unknown> {

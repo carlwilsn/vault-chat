@@ -74,7 +74,10 @@ export type EngineHandle = {
   open?: (v: VaultRef) => Promise<Engine>;
 };
 
-export function engineModel(): string {
+/** The Claude model a box runs unless Carl picks another alias. */
+const CLAUDE_DEFAULT_MODEL = "sonnet";
+
+export function engineModel(claudeAvailable = false): string {
   let ls: string | null = null;
   try {
     ls = localStorage.getItem("vault_chat_engine_model");
@@ -82,7 +85,14 @@ export function engineModel(): string {
     ls = null;
   }
   // Carl's choice (set from the laptop) over the deployment's default.
-  return ls || process.env.VC_ENGINE_MODEL || "openai/gpt-6.1-sol";
+  const chosen = ls || process.env.VC_ENGINE_MODEL || null;
+  // Claude Code runs Claude's own models and nothing else. A model id left over
+  // from the OpenRouter days — the old default is openai/gpt-6.1-sol — is not one
+  // it can run, and handing it one fails EVERY turn with "issue with the selected
+  // model". So on a box with Claude Code, a non-Claude choice gives way to the
+  // Claude default instead of breaking the chat.
+  if (claudeAvailable) return chosen && isClaudeModel(chosen) ? chosen : process.env.VC_CLAUDE_MODEL || CLAUDE_DEFAULT_MODEL;
+  return chosen || "openai/gpt-6.1-sol";
 }
 
 /** Web Push + notifications.jsonl + the /poll "notif" event, . A vault other
@@ -393,7 +403,12 @@ export async function startEngine(b: EngineBoot): Promise<EngineHandle> {
           env: () => ({
             PATH: process.env.PATH ?? "/run/current-system/sw/bin",
             HOME: st.claude.configDir,
-            CLAUDE_CONFIG_DIR: st.claude.configDir,
+            // Claude Code's config and credentials. vault-chat keeps its own, so
+            // a session never sees Carl's plugins, skills or agents; VC_CLAUDE_CONFIG_DIR
+            // points it at an existing Claude Code login instead (the app's own
+            // dir when the desktop runs the server itself, or a box that is
+            // already logged in).
+            CLAUDE_CONFIG_DIR: process.env.VC_CLAUDE_CONFIG_DIR || st.claude.configDir,
             // Carl's Claude subscription. Read at each session start, so signing
             // in again takes effect without a restart, and set for the CLI only:
             // it is deliberately absent from agentKeyEnv (src/keyEnv.ts), so no
@@ -427,7 +442,7 @@ export async function startEngine(b: EngineBoot): Promise<EngineHandle> {
       // The conversation's own choice (set by POST /api/v1/conversations/<id>/engine), else the box's.
       engineOf: (convId) => {
         const own = convId ? logOf(v.path).picture(convId)?.meta.engine : undefined;
-        return own === "claude" || own === "pi" ? own : boxEngine();
+        return own === "claude" || own === "pi" ? own : boxEngine(!!claude);
       },
       ...(v.main ? {} : { log: (m: string) => console.log(`[engines:${v.name}] ${m}`) }),
     });
@@ -436,7 +451,7 @@ export async function startEngine(b: EngineBoot): Promise<EngineHandle> {
       backend: routed,
       ledger: new Ledger(st.ledger, b.apiKey, baseUrl ?? "https://openrouter.ai/api/v1"),
       jobEnv,
-      model: engineModel,
+      model: () => engineModel(!!claude),
       webSearchModel: process.env.VC_WEBSEARCH_MODEL || "google/gemini-2.5-flash-lite",
       apiKey: b.apiKey,
       broadcast: (ev) => signal(v.path, ev),
@@ -520,9 +535,17 @@ export function vaultState(stateDir: string, base: PiPaths, v: VaultRef): { pi: 
   return { pi: vaultPiPaths(base, join(root, "pi")), claude: claudePaths(root), jobs: join(root, "jobs"), ledger: join(v.path, ".vault-chat", "local", "ledger.json"), walls: [root] };
 }
 
-/** Which engine a conversation's next thread runs on: its own choice, else the box's default. */
-export function boxEngine(): EngineName {
-  return process.env.VC_ENGINE === "claude" ? "claude" : "pi";
+/**
+ * Which engine a conversation's next thread runs on when it has made no choice
+ * of its own. Claude Code is the engine vault-chat runs on now, so it is the
+ * default wherever the box has one it can run; a box with no Claude Code keeps
+ * working exactly as it did until pi is removed. VC_ENGINE pins a box either
+ * way (and pins every test), so a deployment can still hold one engine.
+ */
+export function boxEngine(claudeAvailable = false): EngineName {
+  if (process.env.VC_ENGINE === "claude") return "claude";
+  if (process.env.VC_ENGINE === "pi") return "pi";
+  return claudeAvailable ? "claude" : "pi";
 }
 
 /** Legacy full-isolation projection, retained for old policy callers/tests. Runtime
