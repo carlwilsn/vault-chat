@@ -547,6 +547,55 @@ describe("a conversation on Claude Code", () => {
     expect(await engine.setEngine("cc-conv-1", "claude")).toMatchObject({ ok: true, engine: "claude" });
   });
 
+  it("an old conversation whose thread is not Claude Code's continues on it, with what was said handed over", async () => {
+    // The world Carl asked for: Claude Code is the only engine, so there is no
+    // router and no pi. His conversations from the pi days still carry a thread
+    // id that is not Claude Code's, and he must be able to open one and keep
+    // talking — nothing he had disappears.
+    //
+    // Nothing new is needed for that: Claude Code refuses a thread it never
+    // started (threadUnknown), and the engine answers that by starting a fresh
+    // thread and handing the earlier conversation over. This pins that pairing,
+    // against the engine wired STRAIGHT to Claude Code, the way it will be.
+    const convId = "cc-old-pi";
+    await engine.message({ text: "earlier question KIWIWORD", convId });
+    await answered(convId, "earlier question KIWIWORD");
+    // As the pi days left it: a thread of pi's, which Claude Code knows nothing of.
+    await patchMeta(vault, convId, { threadId: "t-oldpi-mw6r-zzzzz", threadPath: undefined });
+
+    const { Engine } = await import("../engine/engine");
+    const solo = new Engine({
+      vault,
+      backend: claude,
+      ledger: { settle: async () => ({ calls: 0, usd: 0, missing: 0, byId: {} }), has: () => false } as any,
+      jobEnv: { logDir: join(root, "jobs"), wrap: null, env: {} } as any,
+      model: () => "haiku",
+      webSearchModel: "x",
+      apiKey: () => null,
+      notify: async () => "sent",
+      broadcast: () => {},
+      log: () => {},
+      vaultName: "vault-chat",
+      turnLog: () => {},
+    });
+    solo.start();
+    try {
+      await solo.message({ text: "and now?", convId });
+      await answered(convId, "and now?");
+      // What the model was actually sent carries the earlier conversation.
+      const sent = sentText();
+      expect(sent).toContain("<earlier_conversation>");
+      expect(sent).toContain("KIWIWORD");
+      // And it is a Claude Code thread now, not the pi id it had.
+      const after = (await readConv(vault, convId)).threadId as string;
+      expect(isClaudeThread(after)).toBe(true);
+      // The transcript Carl can read still holds both halves.
+      expect(await shown(convId)).toEqual(expect.arrayContaining([["user", "earlier question KIWIWORD"], ["user", "and now?"]]));
+    } finally {
+      solo.stop();
+    }
+  }, 240_000);
+
   it("health names the engine in charge, with the other one beside it", () => {
     // The test's conversations run on Claude Code, so it is the engine in charge
     // and health reads as its own, with pi beside it.
