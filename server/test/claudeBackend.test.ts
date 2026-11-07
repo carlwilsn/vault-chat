@@ -111,15 +111,27 @@ let readConv: (v: string, id: string) => Promise<any>;
 let choice: EngineName = "claude";
 const turnLines: any[] = [];
 
+/** Set while the `slow` tool is waiting; calling it lets that tool return. */
+let release: (() => void) | null = null;
+/** Wait until the turn is sitting inside `slow`. */
+const inSlowTool = async () => {
+  const t0 = Date.now();
+  while (!release) {
+    if (Date.now() - t0 > 120_000) throw new Error("the held tool was never reached");
+    await new Promise((r) => setTimeout(r, 25));
+  }
+};
+
 const echo = () =>
   createSdkMcpServer({
     name: "vault_chat",
     version: "1.0.0",
     tools: [
       tool("echo", "Echo back a word", {}, async () => ({ content: [{ type: "text" as const, text: "echo: ok" }] })),
-      // A call long enough to queue a message into the turn that is running.
-      tool("slow", "Take a few seconds", {}, async () => {
-        await new Promise((r) => setTimeout(r, 4_000));
+      // Held until the test lets go, so the window to queue into is as long as
+      // the test needs and never closes early on a loaded box.
+      tool("slow", "Wait until the host releases it", {}, async () => {
+        await new Promise<void>((r) => (release = r));
         return { content: [{ type: "text" as const, text: "slow: done" }] };
       }),
     ],
@@ -256,8 +268,9 @@ describe("a conversation on Claude Code", () => {
 
   it("a queued message is pending in the chat until its own turn takes it", async () => {
     // A turn that sits in a tool call, so there is a window to queue into.
+    release = null;
     const r = await engine.message({ text: 'CALL mcp__vault_chat__slow {}', convId: "cc-conv-queue" });
-    await until(async () => ((await readConv(vault, r.convId))?.messages ?? []).some((m: any) => m.content?.includes("slow")));
+    await inSlowTool();
 
     const q = await engine.message({ convId: r.convId, text: "the queued one", queue: true, clientMsgId: "c-q1" });
     expect(q.queued).toBe(true);
@@ -267,6 +280,7 @@ describe("a conversation on Claude Code", () => {
     expect(conv.messages.some((m: any) => m.content === "the queued one")).toBe(false);
 
     // Its own turn takes it: now it is in the transcript, under the client's id.
+    release!();
     await answered(r.convId, "the queued one");
     conv = await readConv(vault, r.convId);
     expect(conv.queued ?? []).toEqual([]);
@@ -276,10 +290,12 @@ describe("a conversation on Claude Code", () => {
   }, 180_000);
 
   it("a queued message taken back before delivery never reaches the model", async () => {
+    release = null;
     const r = await engine.message({ text: 'CALL mcp__vault_chat__slow {}', convId: "cc-conv-unqueue" });
-    await until(async () => ((await readConv(vault, r.convId))?.messages ?? []).some((m: any) => m.content?.includes("slow")));
+    await inSlowTool();
     const q = await engine.message({ convId: r.convId, text: "NEVER-SENT-KIWI", queue: true, clientMsgId: "c-u1" });
     expect((await engine.message({ convId: r.convId, unqueue: q.qid })).ok).toBe(true);
+    release!();
     await until(async () => (await readConv(vault, r.convId))?.state === "idle");
     const conv = await readConv(vault, r.convId);
     expect(conv.messages.some((m: any) => m.content === "NEVER-SENT-KIWI")).toBe(false);

@@ -28,9 +28,10 @@ describe("the Claude Code the box runs", () => {
     if ("error" in found) throw new Error(`${found.error}: ${found.tried.join("; ")}`);
     expect(found.install.version).toMatch(/^\d+\.\d+\.\d+$/);
     expect(probe(found.install.cli)).toBe(found.install.version);
-    // The SDK brought its own matching CLI, so that is the one chosen — directly
-    // where the box can run it, else through this Node's own glibc loader.
-    expect(["bundled", "loader"]).toContain(found.install.source);
+    // When the SDK brought its own matching CLI, that is the one chosen —
+    // directly where the box can run it, else through this Node's own glibc
+    // loader. With no platform package, a `claude` on PATH is the fallback.
+    expect(bundledCli() ? ["bundled", "loader"] : ["bundled", "loader", "path"]).toContain(found.install.source);
     if (found.install.source === "loader") {
       // NixOS: a one-line wrapper under the state dir, not a patched 325 MB copy.
       expect(found.install.cli).toBe(join(root, "claude", "bin", "claude"));
@@ -70,7 +71,7 @@ describe("the Claude Code the box runs", () => {
   it("says what it tried when nothing runs", () => {
     const root = tmp("vcci5-");
     const r = findClaude({ stateDir: root, env: { VC_CLAUDE_BIN: join(root, "nope"), PATH: join(root, "empty") } });
-    // Only an empty PATH can make this fail here, since the bundled CLI is installed.
+    // With a bundled CLI present this cannot fail; without one, an empty PATH leaves nothing.
     if ("error" in r) expect(r.tried.join("\n")).toContain("VC_CLAUDE_BIN");
     else expect(["bundled", "loader"]).toContain(r.install.source);
     cleanup(root);
