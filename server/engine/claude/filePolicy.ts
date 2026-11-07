@@ -36,6 +36,14 @@ export function wallsOf(sandbox: {
   };
 }
 
+/**
+ * The calls the voice gate covers. On a live call the agent does not change
+ * files itself — it delegates — and that includes a shell line, which could
+ * write around the rule. Claude Code's own tools are gated by the same rule as
+ * vault-chat's were (server/mcp/filesystem.ts), in the same words.
+ */
+export const WRITING_TOOLS: readonly string[] = ["Write", "Edit", "NotebookEdit", "Bash"];
+
 /** What a tool call wants to do to a path. */
 export type Touch = { path: string; write: boolean };
 

@@ -6,7 +6,7 @@
 import { describe, it, expect, afterAll } from "vitest";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { ruleOnToolUse, touchesOf, wallsOf } from "../engine/claude/filePolicy";
+import { ruleOnToolUse, touchesOf, wallsOf, WRITING_TOOLS } from "../engine/claude/filePolicy";
 import { tmp, cleanup } from "./helpers";
 
 const root = tmp("filepolicy");
@@ -75,5 +75,18 @@ describe("the deny lists both engines read", () => {
 
   it("asks nothing of a sandbox that names no extras", () => {
     expect(wallsOf({ denyRead: ["/a"], denyWrite: ["/b"] })).toEqual({ denyRead: ["/a"], denyWrite: ["/b"] });
+  });
+});
+
+describe("the voice gate's reach", () => {
+  it("covers a shell line as well as a write, because that is the way around it", () => {
+    // Not a path rule — a rule about what the agent does at all while Carl is on
+    // a call. Bash is in the list for the same reason vault-chat's own tools put
+    // it there: without it, `bash -c 'echo … > file'` writes around Delegate.
+    expect(WRITING_TOOLS).toContain("Bash");
+    expect(WRITING_TOOLS).toEqual(expect.arrayContaining(["Write", "Edit", "NotebookEdit"]));
+    // Reading is not gated: the agent may still look things up mid-call.
+    expect(WRITING_TOOLS).not.toContain("Read");
+    expect(WRITING_TOOLS).not.toContain("Grep");
   });
 });

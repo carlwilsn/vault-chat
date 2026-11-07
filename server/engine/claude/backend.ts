@@ -43,8 +43,9 @@ import type { CallRecord } from "../ledger";
 import type { UserRequest } from "../piFeed";
 import { appendEntries, newSessionFile } from "../../convlog/piSession";
 import { McpRuntime, type ProcessServices } from "../../mcp/runtime";
+import { CALL_WRITE_REASON } from "../../mcp/filesystem";
 import { CLAUDE_BUILTINS_OFF, ClaudeSession, type SessionSend } from "./session";
-import { ruleOnToolUse } from "./filePolicy";
+import { ruleOnToolUse, WRITING_TOOLS } from "./filePolicy";
 import { ClaudeSideRuns } from "./side";
 import { memoryUpdate, writeClaudeMd, type MemoryMark } from "./memory";
 import { ClaudeTranslator, type Emit } from "./translate";
@@ -567,13 +568,27 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
       // vault-chat wrote (nothing of Carl's own Claude Code setup).
       settingSources: ["user"],
       env: this.o.env(),
-      ...(tools ? { mcpServers: tools.servers as never, allowedTools: tools.allowed } : {}),
+      // Claude Code asks permission for a write it was not pre-approved for, and
+      // a session with nobody to ask treats that as a refusal — so the tools the
+      // policy rules on are pre-approved here. Reads never needed it, which is
+      // why only writes failed. The ruling is the hook's, not this list's.
+      ...(tools || this.ownFileTools()
+        ? {
+            ...(tools ? { mcpServers: tools.servers as never } : {}),
+            allowedTools: [...(tools?.allowed ?? []), ...(this.ownFileTools() ? OWN_FILE_TOOLS : [])],
+          }
+        : {}),
       ...(this.ownFileTools()
         ? {
             // Claude Code's own file tools, under vault-chat's policy: the hook
             // rules on every call before it runs (session.ts onToolUse).
             disallowedTools: CLAUDE_BUILTINS_OFF.filter((n) => !OWN_FILE_TOOLS.includes(n)),
             onToolUse: async (tool: string, input: Record<string, unknown>) => {
+              // The voice gate first, and it covers Bash too: on a live call the
+              // agent delegates a change instead of making it, so a shell line
+              // must not be the way around that. Same answer as vault-chat's own
+              // tools give, in the same words.
+              if (WRITING_TOOLS.includes(tool) && !(await this.h?.fileWrite?.(threadId))) return CALL_WRITE_REASON;
               const w = this.o.walls?.() ?? { denyRead: [], denyWrite: [] };
               return ruleOnToolUse(tool, input, { cwd: t.cwd, home: process.env.HOME ?? "/", ...w });
             },
