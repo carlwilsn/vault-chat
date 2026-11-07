@@ -451,9 +451,13 @@ describe("a conversation on Claude Code", () => {
   });
 
   it("health names the engine in charge, with the other one beside it", () => {
-    // The test's conversations run on Claude Code, so it is the engine in charge.
+    // The test's conversations run on Claude Code, so it is the engine in charge
+    // and health reads as its own, with pi beside it.
     const h = router.health();
     expect(h).toMatchObject({ state: "up", source: expect.any(String), pi: { state: "up" } });
     expect(router.name).toBe("claude");
+    // And `engines` names each one the same way whichever leads, which is what a
+    // client reads (Settings → Models asks whether Claude Code is signed in).
+    expect(h.engines).toMatchObject({ default: "claude", claude: { state: "up", signedIn: expect.any(Boolean) }, pi: { state: "up" } });
   });
 });

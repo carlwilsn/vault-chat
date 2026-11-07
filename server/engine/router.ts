@@ -92,10 +92,16 @@ export class BackendRouter extends EventEmitter implements EngineBackend {
     });
   }
 
-  /** The engine in charge, with the other one beside it. */
+  /**
+   * The engine in charge, with the other one beside it — so health reads the way
+   * it always did on a pi box. `engines` says the same thing by name whichever
+   * engine leads, which is what a client should read: the merged shape moves
+   * fields around when the default changes, and that is not a client's problem.
+   */
   health(): Record<string, unknown> {
     const other = this.all().find((b) => b !== this.head);
-    return { ...this.head.health(), ...(other ? { [other.name]: other.health() } : {}) };
+    const engines = Object.fromEntries(this.all().map((b) => [b.name, b.health()]));
+    return { ...this.head.health(), ...(other ? { [other.name]: other.health() } : {}), engines: { default: this.head.name, ...engines } };
   }
 
   // -- threads

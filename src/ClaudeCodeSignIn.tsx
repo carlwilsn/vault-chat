@@ -31,7 +31,9 @@ export function ClaudeCodeSignIn() {
     if (!link) return;
     const h = await boxGet(link, "/api/v1/health", 8_000).catch(() => null);
     if (!h) return;
-    const claude = h.engine?.claude ?? (h.engine?.backend === "claude" ? h.engine?.claude : null);
+    // health.engine.engines names each engine the same way whichever one leads;
+    // the merged fields beside it move when the default changes.
+    const claude = h.engine?.engines?.claude ?? null;
     // The box only reports Claude Code once it has one it can run.
     if (!claude) return setAgent(null);
     setAgent({ signedIn: !!claude.signedIn, version: typeof claude.version === "string" ? claude.version : null });
