@@ -2,7 +2,7 @@
 // service the agent calls. It is kept with the box's other keys, but it must
 // never reach anything the agent runs — that exclusion is the whole point, so
 // it is checked here rather than assumed.
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeAll } from "vitest";
 import { KEY } from "../../src/keychain";
 import { NOT_FOR_COMMANDS, envNameForKey, keyEnv } from "../../src/keyEnv";
 
@@ -35,5 +35,52 @@ describe("Claude Code's sign-in", () => {
     // the agent to use is not silently withheld from it.
     expect(envNameForKey("service.claude-code-notes")).toBe("CLAUDE_CODE_NOTES_API_KEY");
     expect(envNameForKey("user.claude_code")).toBe("CLAUDE_CODE");
+  });
+}
+
+  it("the push to the box carries it, because a key left out of that push is DELETED there", async () => {
+    // saveKeys makes the box's store EXACTLY what was pushed (server/keys.ts), so
+    // laptopKeys() omitting a name is not a no-op — it removes it from the box.
+    // That is the whole hazard, so it is pinned here.
+    await import("../shims/globals");
+    const { useStore } = await import("../../src/store");
+    const { laptopKeys } = await import("../../src/boxKeys");
+    useStore.setState({
+      apiKeys: { openrouter: "sk-or-real" },
+      serviceKeys: { elevenlabs: "sk_eleven", claudeCode: TOKEN },
+    } as never);
+    const pushed = await laptopKeys();
+    expect(pushed[KEY.claudeCode]).toBe(TOKEN);
+    expect(pushed[KEY.openrouter]).toBe("sk-or-real");
+    expect(pushed[KEY.elevenlabs]).toBe("sk_eleven");
+
+    // And with no sign-in there is simply no entry, rather than an empty one that
+    // would overwrite a token the box already has.
+    useStore.setState({ serviceKeys: { elevenlabs: "sk_eleven" } } as never);
+    expect(KEY.claudeCode in (await laptopKeys())).toBe(false);
+  });
+});
+
+describe("the models Claude Code runs", () => {
+  it("accepts its aliases as well as an OpenRouter path, and nothing else", async () => {
+    const { isClaudeModel, validModel } = await import("../engine/claude/models");
+    for (const m of ["opus", "sonnet", "haiku", "claude-opus-5", "claude-haiku-5-5"]) {
+      expect(isClaudeModel(m), m).toBe(true);
+      expect(validModel(m), m).toBe(true);
+    }
+    expect(validModel("openai/gpt-6.1-sol")).toBe(true);
+    expect(isClaudeModel("openai/gpt-6.1-sol")).toBe(false);
+    for (const m of ["", "not a model", "opus/extra", "sonnet!"]) expect(validModel(m), m).toBe(false);
+  });
+
+  it("knows one of its models can see, so a picture is never sent to the OpenRouter vision model instead", async () => {
+    const { capabilitiesOf } = await import("../engine/capabilities");
+    // A Claude model is not in the OpenRouter catalog, and reading it as a model
+    // that cannot see is what would quietly reroute every turn carrying an image.
+    for (const m of ["opus", "sonnet", "haiku"]) {
+      expect(capabilitiesOf(m), m).toMatchObject({ images: true, tools: true, subagents: true, pdf: true });
+    }
+    // An unknown non-Claude model still reads as it did.
+    expect(capabilitiesOf("nobody/nothing").images).toBe(false);
   });
 });
