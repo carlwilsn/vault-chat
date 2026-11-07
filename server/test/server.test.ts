@@ -197,11 +197,14 @@ describe("missing key", () => {
     const srv = await startServer({ home, vault, secrets });
     try {
       expect(srv.proc.exitCode).toBeNull();
-      expect(srv.logs()).toContain('no "api.openrouter" key');
+      // It still says it cannot run turns, and now names BOTH ways to fix it:
+      // an OpenRouter key for pi, or a Claude Code sign-in.
+      expect(srv.logs()).toContain('neither "api.openrouter" nor "service.claude-code"');
+      expect(srv.logs()).toContain("Settings → Agent");
       expect(srv.logs()).not.toContain("sk-ant-canary");
       const h = await (await fetch(`${srv.base}/api/v1/health`)).json();
       expect(h.hasKey).toBe(false);
-      expect(h.keys).toEqual({ openrouter: false, elevenlabs: false });
+      expect(h.keys).toEqual({ openrouter: false, elevenlabs: false, claudeCode: false });
       expect(h.keyNames).toEqual(["api.anthropic"]);
       // Nothing running: not busy (a live call counts: server/voiceBrain.ts activeVoiceSessions, tested there).
       expect(h.busy).toEqual({ runs: 0, agent: 0, voice: 0, inputs: 0, input: {} });
@@ -218,7 +221,7 @@ describe("missing key", () => {
     try {
       expect(srv.proc.exitCode).toBeNull();
       expect(srv.logs()).toContain("key store not readable");
-      expect(srv.logs()).toContain('no "api.openrouter" key');
+      expect(srv.logs()).toContain('neither "api.openrouter" nor "service.claude-code"');
     } finally {
       await srv.stop();
       cleanup(home);
