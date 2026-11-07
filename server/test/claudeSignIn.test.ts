@@ -2,7 +2,7 @@
 // service the agent calls. It is kept with the box's other keys, but it must
 // never reach anything the agent runs — that exclusion is the whole point, so
 // it is checked here rather than assumed.
-import { describe, it, expect, beforeAll } from "vitest";
+import { describe, it, expect } from "vitest";
 import { KEY } from "../../src/keychain";
 import { NOT_FOR_COMMANDS, envNameForKey, keyEnv } from "../../src/keyEnv";
 
@@ -36,7 +36,6 @@ describe("Claude Code's sign-in", () => {
     expect(envNameForKey("service.claude-code-notes")).toBe("CLAUDE_CODE_NOTES_API_KEY");
     expect(envNameForKey("user.claude_code")).toBe("CLAUDE_CODE");
   });
-}
 
   it("the push to the box carries it, because a key left out of that push is DELETED there", async () => {
     // saveKeys makes the box's store EXACTLY what was pushed (server/keys.ts), so
@@ -70,7 +69,11 @@ describe("the models Claude Code runs", () => {
     }
     expect(validModel("openai/gpt-6.1-sol")).toBe(true);
     expect(isClaudeModel("openai/gpt-6.1-sol")).toBe(false);
-    for (const m of ["", "not a model", "opus/extra", "sonnet!"]) expect(validModel(m), m).toBe(false);
+    for (const m of ["", "not a model", "sonnet!", "/leading", "trailing/"]) expect(validModel(m), m).toBe(false);
+    // Anything provider/model-shaped is taken as an OpenRouter path, by design —
+    // vault-chat does not keep a list of providers to check it against.
+    expect(validModel("opus/extra")).toBe(true);
+    expect(isClaudeModel("opus/extra")).toBe(false);
   });
 
   it("knows one of its models can see, so a picture is never sent to the OpenRouter vision model instead", async () => {
