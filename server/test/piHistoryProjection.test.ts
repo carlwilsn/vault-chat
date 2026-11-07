@@ -19,7 +19,7 @@ const model = "test/fake-model";
 async function fixture(runtime = "genuine", compact = false) {
   const root = mkdtempSync(join(tmpdir(), "vc-history-")), paths = piPaths(root);
   for (const dir of [paths.agentDir, paths.extDir, paths.instrDir, paths.sessionsDir]) mkdirSync(dir, { recursive: true });
-  for (const file of ["vc.mjs", "policy.mjs", "filesystem.mjs", "pdf.mjs"]) copyFileSync(resolve("server/engine/pi/ext", file), join(paths.extDir, file));
+  for (const file of ["vc.mjs", "policy.mjs", "filesystem.mjs", "pdf.mjs", "continuation.mjs"]) copyFileSync(resolve("server/engine/pi/ext", file), join(paths.extDir, file));
   const provider = await fakeChat();
   // Only the explicit compaction fixture uses a zero recent-token budget so
   // genuine pi can compact this tiny synthetic conversation; never auto-compact.

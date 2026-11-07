@@ -16,7 +16,7 @@ it('one native Pi searches, recovers 429, reads primary source, follows method a
   const root = mkdtempSync(join(tmpdir(), 'vc-pi-research-'));
   const paths = piPaths(root);
   for (const dir of [paths.agentDir, paths.extDir, paths.instrDir, paths.sessionsDir]) mkdirSync(dir, { recursive: true });
-  for (const file of ['vc.mjs', 'policy.mjs', 'filesystem.mjs', 'pdf.mjs']) copyFileSync(resolve('server/engine/pi/ext', file), join(paths.extDir, file));
+  for (const file of ['vc.mjs', 'policy.mjs', 'filesystem.mjs', 'pdf.mjs', 'continuation.mjs']) copyFileSync(resolve('server/engine/pi/ext', file), join(paths.extDir, file));
   writeFileSync(join(paths.agentDir, 'models.json'), JSON.stringify({ providers: { openrouter: { baseUrl: provider.url + '/v1', apiKey: 'fixture-not-a-key', api: 'openai-completions', models: [{ id: 'test/fake-model', name: 'fixture', reasoning: false, input: ['text'], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 32000, maxTokens: 1000 }] } } }));
   const prefix = process.env.VC_TEST_PI_DIR ?? join(homedir(), '.local/state/vault-chat-server/pi/1.1.0');
   const b = new PiBackend({ paths, install: { cli: join(prefix, 'node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js'), node: process.execPath, version: '1.1.0', dir: prefix, installed: false }, catalog: new Map(), sandbox: { outer: null, shell: null, denyRead: [], denyWrite: [] }, apiKey: () => null, thinking: 'off', idleMs: 60000, maxProcs: 4, subagents: { agentsDirs: [], concurrency: 2, maxTasks: 4, hostMax: 4, timeoutMs: 30000, graceMs: 1000, defaultModel: null }, log: () => {} });

@@ -17,7 +17,7 @@ async function fixture(compaction = false) {
   const root = mkdtempSync(join(tmpdir(), "vc-pi-context-"));
   const paths = piPaths(root);
   for (const dir of [paths.agentDir, paths.extDir, paths.instrDir, paths.sessionsDir]) mkdirSync(dir, { recursive: true });
-  for (const file of ["vc.mjs", "policy.mjs", "filesystem.mjs", "pdf.mjs"]) copyFileSync(resolve("server/engine/pi/ext", file), join(paths.extDir, file));
+  for (const file of ["vc.mjs", "policy.mjs", "filesystem.mjs", "pdf.mjs", "continuation.mjs"]) copyFileSync(resolve("server/engine/pi/ext", file), join(paths.extDir, file));
   if (compaction) writeFileSync(join(paths.agentDir, "settings.json"), JSON.stringify({ compaction: { enabled: false, reserveTokens: 31500, keepRecentTokens: 1 } }));
   const provider = await fakeChat();
   writeFileSync(join(paths.agentDir, "models.json"), JSON.stringify({ providers: { openrouter: { baseUrl: provider.url + "/v1", apiKey: "synthetic-local-only", api: "openai-completions", models: [{ id: "test/fake-model", name: "fixture", reasoning: false, input: ["text", "image"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 32000, maxTokens: 1000 }] } } }));

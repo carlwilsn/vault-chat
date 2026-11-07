@@ -519,12 +519,12 @@ export class PiBackend extends EventEmitter {
       "-ne", ...(specs.length ? ["-e", "builtin:mcp"] : ["--no-mcp"]), "-ns", "-np", "--no-themes", "-na", "--offline",
       "-e", this.o.paths.ext,
       ...(o.system ? ["--system-prompt", o.system] : ["--append-system-prompt", o.instr]),
-      ...(specs.length ? ["--tools", specs.map((s) => `mcp__vault_chat__${s.name}`).join(",")] : ["--no-tools"]),
+      ...(specs.length ? ["--tools", [...specs.map((s) => `mcp__vault_chat__${s.name}`), ...(!o.sessionDir && !o.ephemeral ? ["ContinueWork"] : [])].join(",")] : ["--no-tools"]),
       ...session,
     ];
     const outer = outerWith(this.o.sandbox);
     const argv = outer ? [...outer, this.o.install.node, ...args] : [this.o.install.node, ...args];
-    const proc = new PiProc({ argv, cwd: o.cwd, env: this.piEnv(!!o.you), key: this.o.apiKey(), bootstrap: JSON.stringify({ ...scope.bootstrap, tools: specs.length > 0, requestTag: this.requestTag }) });
+    const proc = new PiProc({ argv, cwd: o.cwd, env: this.piEnv(!!o.you), key: this.o.apiKey(), bootstrap: JSON.stringify({ ...scope.bootstrap, tools: specs.length > 0, continuation: !o.sessionDir && !o.ephemeral, requestTag: this.requestTag }) });
     proc.once("exit", () => { void scope.revoke(); });
     let st: any;
     try {
@@ -797,6 +797,7 @@ export class PiBackend extends EventEmitter {
     const t = this.threads.get(threadId);
     if (!t?.proc.isAlive()) return;
     try {
+      if (!await this.note(threadId, { kind: "continuation-cancel" })) throw new Error("Continuation cancellation was not persisted");
       await t.proc.request({ type: "clear_queue" }, 10_000);
       await t.proc.request({ type: "abort" }, 30_000);
     } catch (e) {

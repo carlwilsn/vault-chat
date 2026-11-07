@@ -19,6 +19,7 @@
 //  - the host advertises its single subagent orchestration tool for parents.
 import { closeSync, readFileSync } from "node:fs";
 import { registerPdfParts } from "./pdf.mjs";
+import { registerContinuation } from "./continuation.mjs";
 import { nativeUserRequest, CLEAR_TYPE, VOICE_TYPE, YOU_TYPE, addCacheMarkers, memoryCapNote, costFromStreamEvent, voiceLineContent, youSince } from "./policy.mjs";
 
 const E = process.env;
@@ -161,6 +162,7 @@ export default function vaultChat(pi) {
   // original content are persisted in the SAME user entry, so no crash window
   // or parallel text-matching queue can separate them.
   pi.on("message_end", (event) => nativeUserRequest(event.message, bootstrap.requestTag));
+  const continuation = bootstrap.continuation ? registerContinuation(pi) : null;
 
   // ---- vault-chat's own lines in the transcript (a notice, a line, a divider) ---------
   // pi's custom entries (not in the model's context), appended by pi itself so the
@@ -170,9 +172,10 @@ export default function vaultChat(pi) {
   // never a turn of its own, and held to the end of a running turn by pi itself).
   pi.registerCommand("vc-note", {
     description: "vault-chat: append a vc-note entry (or a voice line) to this session",
-    handler: async (args) => {
+    handler: async (args, ctx) => {
       const d = json(String(args ?? "").trim(), null);
       if (!d || typeof d !== "object" || typeof d.kind !== "string") return;
+      if (d.kind === "continuation-cancel") { continuation?.cancel(ctx); return; }
       // Clear: the agent is told (in its context, never shown); no turn of its own.
       if (d.kind === "clear") pi.sendMessage({ customType: CLEAR_TYPE, content: String(d.text ?? ""), display: false, details: { at: d.at } }, { triggerTurn: false });
       // Turn sections (rules, memory, project instructions): model context,
