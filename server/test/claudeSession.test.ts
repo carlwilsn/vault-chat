@@ -206,3 +206,27 @@ describe("one warm Claude Code session per conversation", () => {
     await run.session.finished();
   }, 180_000);
 });
+
+describe("the slash commands the host uses", () => {
+  it("/compact reaches Claude Code as a command, not as text for the model", async () => {
+    const cwd = join(root, "compact");
+    const cfg = join(root, "compact-cfg");
+    mkdirSync(cwd, { recursive: true });
+    mkdirSync(cfg, { recursive: true });
+    const run = open({ cwd, configDir: cfg });
+    run.session.send({ text: "something to summarise" });
+    await run.waitForResult(1);
+    const before = api.requests.length;
+
+    run.session.send({ text: "/compact" });
+    await run.waitForResult(2);
+    // It summarised: the boundary is what the backend turns into the divider the
+    // clients already draw (server/engine/claude/translate.ts). Were it only
+    // text, there would be no boundary and the model would have been left to
+    // make sense of a bare "/compact".
+    expect(run.messages.some((m: any) => m.type === "system" && m.subtype === "compact_boundary")).toBe(true);
+    expect(api.requests.length).toBeGreaterThan(before);
+    run.session.close();
+    await run.session.finished();
+  }, 180_000);
+});
