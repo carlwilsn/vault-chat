@@ -20,6 +20,7 @@ import {
   type ToolSpec,
 } from "./backend";
 import { isClaudeThread } from "./claude/backend";
+import { isClaudeSide } from "./claude/side";
 import type { UserRequest } from "./piFeed";
 
 export type EngineName = "pi" | "claude";
@@ -172,9 +173,33 @@ export class BackendRouter extends EventEmitter implements EngineBackend {
     return this.o.pi.filesystem(...a);
   }
 
-  // -- side threads: pi's until phase 5
-  get side(): SideRunner {
-    return this.o.pi.side;
+  /**
+   * Side threads (Ctrl+K / Ctrl+L) and the box's one-shots. A run's id says
+   * whose it is; a NEW one belongs to the engine that holds the conversation it
+   * was opened from, which the engine names by its transcript file. A one-shot
+   * (no conversation to fork) runs on the engine in charge.
+   */
+  readonly side: SideRunner = {
+    start: (o) => this.sideOf(o.side ?? null, o.fork ?? null).start(o),
+    poll: (id, after, waitMs) => this.sideOf(id, null).poll(id, after, waitMs),
+    wait: (id) => this.sideOf(id, null).wait(id),
+    stop: (id) => this.sideOf(id, null).stop(id),
+    forget: (id) => this.sideOf(id, null).forget(id),
+    health: () => {
+      const other = this.all().find((b) => b !== this.head);
+      return { ...this.head.side.health(), ...(other ? { [other.name]: other.side.health() } : {}) };
+    },
+  };
+
+  private sideOf(id: string | null, fork: string | null): SideRunner {
+    const claude = this.o.claude;
+    if (!claude) return this.o.pi.side;
+    if (id) return isClaudeSide(id) ? claude.side : this.o.pi.side;
+    // A fork names the conversation's transcript: whoever wrote it answers.
+    if (fork && typeof (claude as { ownsFile?: (f: string) => boolean }).ownsFile === "function") {
+      return (claude as unknown as { ownsFile: (f: string) => boolean }).ownsFile(fork) ? claude.side : this.o.pi.side;
+    }
+    return this.chosen(undefined).side;
   }
 
   get paths(): { sessionsDir: string; instrDir: string } {

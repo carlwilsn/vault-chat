@@ -405,6 +405,8 @@ export async function startEngine(b: EngineBoot): Promise<EngineHandle> {
           toolTimeoutMs: Number(process.env.VC_CLAUDE_TOOL_TIMEOUT_MS) || 6 * 3_600_000,
           // The same outer layer pi gets, read at each session start.
           sandbox: () => outerWith(sandbox),
+          // The box's one-shots (a note's title, spoken maths) run on the fast model.
+          fastModel: process.env.VC_CLAUDE_FAST_MODEL || "haiku",
           idleMs: Number(process.env.VC_CLAUDE_IDLE_MS) || 10 * 60_000,
           maxSessions: Number(process.env.VC_CLAUDE_MAX_SESSIONS) || 4,
           ...(v.main ? {} : { log: (m: string) => console.log(`[claude:${v.name}] ${m}`) }),

@@ -44,6 +44,7 @@ import type { UserRequest } from "../piFeed";
 import { appendEntries, newSessionFile } from "../../convlog/piSession";
 import { McpRuntime, type ProcessServices } from "../../mcp/runtime";
 import { ClaudeSession, type SessionSend } from "./session";
+import { ClaudeSideRuns } from "./side";
 import { ClaudeTranslator, type Emit } from "./translate";
 import { sandboxedCli, type ClaudeInstall } from "./install";
 import type { ClaudePaths } from "./paths";
@@ -77,6 +78,8 @@ export type ClaudeBackendOptions = {
   sandbox?: () => string[] | null;
   /** MCP servers to add to vault-chat's own (tests). */
   mcpServers?: (threadId: string) => Record<string, unknown> | undefined;
+  /** The model the box's one-shots run on (a note's title, spoken maths). */
+  fastModel?: string;
   /** Close a session that has been idle this long (the id is kept; the next turn resumes it). */
   idleMs?: number;
   /** Sessions alive at once on the box (a subscription has usage limits). */
@@ -144,6 +147,18 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
     super();
     this.version = o.install.version;
     this.threads = readJson(o.paths.threadsFile);
+    this.side = new ClaudeSideRuns({
+      // A side run gets the same sandbox and loader wrapper a conversation does.
+      cli: (cwd) => sandboxedCli({ install: o.install, dir: o.paths.binDir, name: "claude-side", sandbox: o.sandbox?.() ?? null, writable: [o.paths.configDir, cwd] }),
+      env: () => o.env(),
+      ...(o.mcp ? { mcp: o.mcp } : {}),
+      handlers: () => this.h,
+      // Ctrl+K forks the conversation's own Claude Code session, which the
+      // engine names by the transcript file it knows.
+      sessionOf: (file) => Object.values(this.threads).find((t) => t.file === file)?.sessionId ?? null,
+      ...(o.fastModel ? { fastModel: o.fastModel } : {}),
+      log: (m) => this.log(m),
+    });
   }
 
   private log(s: string): void {
@@ -339,20 +354,14 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
     return this.o.policy.filesystem(...a);
   }
 
-  // ------------------------------------------------------------------ side threads: phase 5
+  // ------------------------------------------------------------------ side threads (Ctrl+K / Ctrl+L) and one-shots
 
-  readonly side: SideRunner = {
-    start: async () => {
-      throw new Error("side threads do not run on Claude Code yet");
-    },
-    poll: async () => null,
-    wait: async () => {
-      throw new Error("side threads do not run on Claude Code yet");
-    },
-    stop: async () => false,
-    forget: () => {},
-    health: () => ({ state: "not implemented" }),
-  };
+  readonly side: SideRunner;
+
+  /** This engine holds the conversation whose transcript is `file` (the router asks). */
+  ownsFile(file: string): boolean {
+    return Object.values(this.threads).some((t) => t.file === file);
+  }
 
   get paths(): { sessionsDir: string; instrDir: string } {
     return { sessionsDir: this.o.paths.sessionsDir, instrDir: this.o.paths.instrDir };
