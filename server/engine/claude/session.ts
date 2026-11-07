@@ -12,7 +12,7 @@
 //   queue      push with priority:"later" — its own next turn;
 //   take back  cancelAsyncMessage(uuid) — withdrawn if not delivered yet;
 //   stop       interrupt() — returns in ~5 ms, and the session still takes input.
-import { query, type Options, type Query, type SDKMessage, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
+import { BUILTIN_TOOL_NAMES, query, type Options, type Query, type SDKMessage, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { randomUUID } from "node:crypto";
 
 export type SessionSend = {
@@ -50,8 +50,17 @@ export type SessionOptions = {
   log?: (s: string) => void;
 };
 
-/** The box's own built-ins to turn off: vault-chat's MCP filesystem tools enforce its path policy. */
-export const CLAUDE_BUILTINS_OFF = ["Read", "Write", "Edit", "NotebookEdit", "Bash", "BashOutput", "KillShell"];
+/**
+ * Every Claude Code built-in is off by default, and vault-chat's own tools come
+ * in as MCP (phase 4). Not only the obvious ones: Glob, Grep and WebFetch read
+ * the box too, and vault-chat has one path policy — realpath and deny rules,
+ * the voice write gate, live edits — which only its own tools enforce. Agent,
+ * Skill, Cron*, Worktree* and the rest would put state outside the host's
+ * reach as well. Phase 4 decides which of these come back once the tool
+ * surface is bound (Carl's decision: Claude Code's subagents replace
+ * vault-chat's workers).
+ */
+export const CLAUDE_BUILTINS_OFF: readonly string[] = BUILTIN_TOOL_NAMES;
 
 export class ClaudeSession {
   /** Claude Code's session id, known from the first message; `resume` uses it next time. */
@@ -81,7 +90,7 @@ export class ClaudeSession {
       ...(this.o.resume ? { resume: this.o.resume } : {}),
       ...(this.o.mcpServers ? { mcpServers: this.o.mcpServers } : {}),
       ...(this.o.allowedTools ? { allowedTools: this.o.allowedTools } : {}),
-      disallowedTools: this.o.disallowedTools ?? CLAUDE_BUILTINS_OFF,
+      disallowedTools: [...(this.o.disallowedTools ?? CLAUDE_BUILTINS_OFF)],
       settingSources: this.o.settingSources ?? [],
       // Its own memory is off: vault-chat's memory files are the only memory.
       settings: JSON.stringify({ autoMemoryEnabled: false }),

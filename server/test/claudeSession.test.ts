@@ -187,7 +187,7 @@ describe("one warm Claude Code session per conversation", () => {
     await run.session.finished();
   }, 240_000);
 
-  it("Claude Code's own file and shell tools are off, and vault-chat's MCP tools are there instead", async () => {
+  it("no Claude Code built-in is on: only vault-chat's own tools are there", async () => {
     const cwd = join(root, "tools");
     const cfg = join(root, "tools-cfg");
     mkdirSync(cwd, { recursive: true });
@@ -196,10 +196,9 @@ describe("one warm Claude Code session per conversation", () => {
     run.session.send({ text: "what can you do" });
     await run.waitForResult(1);
     const init = run.messages.find((m) => m.type === "system" && m.subtype === "init");
-    expect(init.tools).not.toContain("Read");
-    expect(init.tools).not.toContain("Write");
-    expect(init.tools).not.toContain("Edit");
-    expect(init.tools).not.toContain("Bash");
+    // Not just Read/Write/Edit/Bash: Glob, Grep and WebFetch read the box too,
+    // and vault-chat has one path policy, enforced only by its own tools.
+    expect(init.tools.filter((t: string) => !t.startsWith("mcp__vault_chat__"))).toEqual([]);
     expect(init.tools).toContain("mcp__vault_chat__block");
     // Carl's own plugins and skills are not in vault-chat's sessions.
     expect(init.mcp_servers.map((s: any) => s.name)).toEqual(["vault_chat"]);
