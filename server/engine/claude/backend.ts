@@ -404,7 +404,13 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
   private push(live: Live, s: SessionSend, entry: Pushed): void {
     const uuid = randomUUID();
     live.pending.set(uuid, { ...entry, ...(s.priority ? { priority: s.priority } : {}) });
-    live.session.send({ ...s, uuid });
+    try {
+      live.session.send({ ...s, uuid });
+    } catch (e) {
+      // It was never sent, so it is not waiting for delivery either.
+      live.pending.delete(uuid);
+      throw e;
+    }
     live.lastUsed = Date.now();
   }
 

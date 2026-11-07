@@ -129,8 +129,13 @@ export class ClaudeSession {
     }
   }
 
-  /** Push a message. It is folded into the running turn, or queued as its own, by `priority`. */
+  /**
+   * Push a message. It is folded into the running turn, or queued as its own,
+   * by `priority`. Throws on a session that has ended, rather than swallowing
+   * the message: a caller that is waiting to show it as delivered has to know.
+   */
   send(s: SessionSend): string {
+    if (this.closed || this.ending) throw new Error("this Claude Code session has ended");
     const uuid = s.uuid ?? randomUUID();
     const content: SDKUserMessage["message"]["content"] = s.images?.length
       ? [{ type: "text", text: s.text }, ...s.images.map(imageBlock).filter(Boolean) as any[]]
