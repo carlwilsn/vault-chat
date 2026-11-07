@@ -234,7 +234,13 @@ export class ClaudeSideRuns implements SideRunner {
   private async bind(run: Run): Promise<{ servers: Record<string, unknown>; allowed: string[]; revoke: () => Promise<void> } | null> {
     const h = this.o.handlers();
     const specs = run.meta.hostTools;
-    if (!this.o.mcp || !h?.sideTool || !specs.length) return null;
+    if (!specs.length) return null;
+    // Asked for tools and unable to bind them: say so rather than answering the
+    // question with no hands and letting it look like the model's choice.
+    if (!this.o.mcp || !h?.sideTool) {
+      this.o.log?.(`side run ${run.id}: ${specs.length} tool(s) were asked for but ${!this.o.mcp ? "there is no MCP runtime" : "the engine answers no side tools"}; running without them`);
+      return null;
+    }
     const services: ProcessServices = { env: () => ({}) };
     const convId = run.meta.convId;
     const scope = await this.o.mcp.bind(

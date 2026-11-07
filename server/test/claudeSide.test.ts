@@ -9,6 +9,7 @@ import { fakeAnthropic, type FakeApi } from "./claudeFakeApi";
 import { findClaude } from "../engine/claude/install";
 import { ClaudeSideRuns, isClaudeSide } from "../engine/claude/side";
 import type { Handlers, SideStart, ToolSpec } from "../engine/backend";
+import { McpRuntime } from "../mcp/runtime";
 
 const root = tmp("vccsd-");
 let api: FakeApi;
@@ -47,6 +48,8 @@ beforeAll(async () => {
       CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
     }),
     handlers: () => handlers,
+    // Its read-only tools reach the run over the host's own loopback MCP server.
+    mcp: new McpRuntime(),
     sessionOf: () => null,
     fastModel: "haiku",
     log: () => {},
