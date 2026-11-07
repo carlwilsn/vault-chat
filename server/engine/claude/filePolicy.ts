@@ -11,8 +11,30 @@
 // a PreToolUse hook). policy.mjs holds the real decision and is shared with pi's
 // extension — it is vault-chat's own code, imported here in-process rather than
 // written out to pi's state dir.
+import { join } from "node:path";
 // @ts-ignore a plain .mjs (the same helpers pi's extension loads): one policy, one copy
 import { guardToolCall, resolveList } from "../pi/ext/policy.mjs";
+
+/**
+ * The deny lists, from the sandbox alone. Both engines read them from here so
+ * there is one answer to "what may a turn not touch": the private metadata of
+ * other vaults, the engine's own state, and — inside a project folder that is
+ * Carl's own git repo — that project's .vault-chat, which is his, not the
+ * agent's. pi's own readWalls/writeWalls call this, so the two cannot drift.
+ */
+export function wallsOf(sandbox: {
+  denyRead: string[];
+  denyWrite: string[];
+  others?: () => string[];
+  readOnly?: () => string[];
+}): { denyRead: string[]; denyWrite: string[] } {
+  const projectPrivate = (sandbox.readOnly?.() ?? []).flatMap((p) =>
+    ["conversations", "events", "local"].map((d) => join(p, ".vault-chat", d)));
+  return {
+    denyRead: [...sandbox.denyRead, ...(sandbox.others?.() ?? []), ...projectPrivate],
+    denyWrite: [...sandbox.denyWrite, ...projectPrivate],
+  };
+}
 
 /** What a tool call wants to do to a path. */
 export type Touch = { path: string; write: boolean };

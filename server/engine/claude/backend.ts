@@ -43,7 +43,8 @@ import type { CallRecord } from "../ledger";
 import type { UserRequest } from "../piFeed";
 import { appendEntries, newSessionFile } from "../../convlog/piSession";
 import { McpRuntime, type ProcessServices } from "../../mcp/runtime";
-import { ClaudeSession, type SessionSend } from "./session";
+import { CLAUDE_BUILTINS_OFF, ClaudeSession, type SessionSend } from "./session";
+import { ruleOnToolUse } from "./filePolicy";
 import { ClaudeSideRuns } from "./side";
 import { memoryUpdate, writeClaudeMd, type MemoryMark } from "./memory";
 import { ClaudeTranslator, type Emit } from "./translate";
@@ -52,6 +53,9 @@ import type { ClaudePaths } from "./paths";
 
 /** vault-chat's one path policy (pi's extension owns it today; phase 4 moves it behind MCP). */
 export type PathPolicy = Pick<EngineBackend, "externalPath" | "filesystem"> & Partial<Pick<EngineBackend, "nativePath">>;
+
+/** Claude Code's own file tools, the ones vault-chat's policy can rule on. */
+export const OWN_FILE_TOOLS: readonly string[] = ["Read", "Write", "Edit", "Glob", "Grep"];
 
 export type ClaudeBackendOptions = {
   install: ClaudeInstall;
@@ -63,6 +67,19 @@ export type ClaudeBackendOptions = {
   /** Environment for the CLI only (phase 6 puts the sign-in token here). */
   env: () => NodeJS.ProcessEnv;
   policy: PathPolicy;
+  /**
+   * What a turn may not touch, from the sandbox (filePolicy.wallsOf). Given, so
+   * Claude Code's OWN file tools can run under vault-chat's one policy instead
+   * of pi's tools enforcing it — which is what lets pi go.
+   */
+  walls?: () => { denyRead: string[]; denyWrite: string[] };
+  /**
+   * Let Claude Code use its own Read/Write/Edit/Glob/Grep, ruled on by that
+   * policy before each call. Off by default while it is proved on a real box:
+   * with it off nothing changes, and vault-chat's MCP file tools stay the only
+   * way a session touches a file.
+   */
+  ownFileTools?: boolean;
   /**
    * vault-chat's tools, bound per session over the host's loopback MCP server
    * (server/mcp/runtime.ts). The bearer it issues goes in the session's
@@ -551,6 +568,17 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
       settingSources: ["user"],
       env: this.o.env(),
       ...(tools ? { mcpServers: tools.servers as never, allowedTools: tools.allowed } : {}),
+      ...(this.ownFileTools()
+        ? {
+            // Claude Code's own file tools, under vault-chat's policy: the hook
+            // rules on every call before it runs (session.ts onToolUse).
+            disallowedTools: CLAUDE_BUILTINS_OFF.filter((n) => !OWN_FILE_TOOLS.includes(n)),
+            onToolUse: async (tool: string, input: Record<string, unknown>) => {
+              const w = this.o.walls?.() ?? { denyRead: [], denyWrite: [] };
+              return ruleOnToolUse(tool, input, { cwd: t.cwd, home: process.env.HOME ?? "/", ...w });
+            },
+          }
+        : {}),
       ...(this.h?.afterCompact ? { onCompacted: () => this.h!.afterCompact!(threadId) } : {}),
       onPrompt: async () => {
         const live = this.live.get(threadId);
@@ -568,6 +596,11 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
     this.live.set(threadId, live);
     session.start();
     return live;
+  }
+
+  /** Whether this box lets Claude Code use its own file tools (see the option). */
+  private ownFileTools(): boolean {
+    return this.o.ownFileTools === true;
   }
 
   private push(live: Live, s: SessionSend, entry: Pushed): void {

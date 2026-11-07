@@ -25,6 +25,7 @@ import { masterDir, masterLayout } from "../master";
 import { listPiModels, modelWindow, piPaths, vaultPiPaths, writePiConfig, type PiPaths } from "./pi/config";
 import { PiBackend, outerWith, type PiSandbox } from "./pi/backend";
 import { ClaudeCodeBackend } from "./claude/backend";
+import { wallsOf } from "./claude/filePolicy";
 import { isClaudeModel, validModel } from "./claude/models";
 import { McpRuntime } from "../mcp/runtime";
 import { claudePaths, type ClaudePaths } from "./claude/paths";
@@ -423,6 +424,12 @@ export async function startEngine(b: EngineBoot): Promise<EngineHandle> {
           // vault-chat has one path policy, and pi's extension owns it today; the
           // Claude Code session reaches it through vault-chat's own file tools.
           policy: backend,
+          // The same deny lists pi uses, from the sandbox alone (filePolicy.wallsOf):
+          // what Claude Code's own file tools are ruled against when they are on.
+          walls: () => wallsOf(sandbox),
+          // Off until it is proved on a real box: with it off, a session touches
+          // files only through vault-chat's MCP tools, exactly as before.
+          ownFileTools: process.env.VC_CLAUDE_OWN_FILE_TOOLS === "1",
           // vault-chat's tools, bound per session over its own loopback MCP
           // server: the bearer travels only in the session's HTTP headers.
           mcp: new McpRuntime(),

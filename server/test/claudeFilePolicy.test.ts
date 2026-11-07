@@ -6,7 +6,7 @@
 import { describe, it, expect, afterAll } from "vitest";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { ruleOnToolUse, touchesOf } from "../engine/claude/filePolicy";
+import { ruleOnToolUse, touchesOf, wallsOf } from "../engine/claude/filePolicy";
 import { tmp, cleanup } from "./helpers";
 
 const root = tmp("filepolicy");
@@ -54,5 +54,26 @@ describe("what vault-chat refuses", () => {
 
   it("refuses the whole call when one of its paths is refused", () => {
     expect(ruleOnToolUse("NotebookEdit", { notebook_path: join(secret, "keys.json") }, walls)).toBeTruthy();
+  });
+});
+
+describe("the deny lists both engines read", () => {
+  it("are the sandbox's, plus the private metadata of Carl's own project repos", () => {
+    const project = join(root, "project");
+    const w = wallsOf({
+      denyRead: ["/secrets"],
+      denyWrite: ["/secrets"],
+      others: () => ["/other-vault/.vault-chat"],
+      readOnly: () => [project],
+    });
+    // A project folder that is Carl's own git repo: the agent works in its clone,
+    // so that project's own .vault-chat is his, not the agent's.
+    expect(w.denyRead).toEqual(["/secrets", "/other-vault/.vault-chat", join(project, ".vault-chat", "conversations"), join(project, ".vault-chat", "events"), join(project, ".vault-chat", "local")]);
+    // Other vaults are hidden from reads; writes are denied the same private paths.
+    expect(w.denyWrite).toEqual(["/secrets", join(project, ".vault-chat", "conversations"), join(project, ".vault-chat", "events"), join(project, ".vault-chat", "local")]);
+  });
+
+  it("asks nothing of a sandbox that names no extras", () => {
+    expect(wallsOf({ denyRead: ["/a"], denyWrite: ["/b"] })).toEqual({ denyRead: ["/a"], denyWrite: ["/b"] });
   });
 });

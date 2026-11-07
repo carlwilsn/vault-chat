@@ -11,6 +11,7 @@ import { EventEmitter } from "node:events";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, relative } from "node:path";
 import { pathToFileURL } from "node:url";
+import { wallsOf } from "../claude/filePolicy";
 import type { CallRecord } from "../ledger";
 import { healSessionCwd } from "../../sessionPaths";
 import { PiProc } from "./proc";
@@ -350,17 +351,14 @@ export class PiBackend extends EventEmitter implements EngineBackend {
     }
   }
 
-  private projectPrivate(): string[] {
-    return (this.o.sandbox.readOnly?.() ?? []).flatMap(p =>
-      ["conversations", "events", "local"].map(d => join(p, ".vault-chat", d)));
-  }
-
+  // One answer for both engines (server/engine/claude/filePolicy.ts), so pi's
+  // walls and Claude Code's cannot drift apart.
   private readWalls(): string[] {
-    return [...this.o.sandbox.denyRead, ...(this.o.sandbox.others?.() ?? []), ...this.projectPrivate()];
+    return wallsOf(this.o.sandbox).denyRead;
   }
 
   private writeWalls(): string[] {
-    return [...this.o.sandbox.denyWrite, ...this.projectPrivate()];
+    return wallsOf(this.o.sandbox).denyWrite;
   }
 
   /** The existing native process capability snapshot; not persisted authority. */
