@@ -90,12 +90,46 @@ try {
 const deploySha = sha256(deployTar);
 writeFileSync(`${deployTar}.sha256`, `${deploySha}  vault-chat-deploy.tar.gz\n`);
 
+// The Claude Code CLI the Agent SDK pins, so a box gets the matching one from the
+// release it installs. A box unpacks a bundle and assets, never node_modules, so
+// this file is the only way a fresh box has a Claude Code to run at all
+// (the updater hands it to `install-claude-cli`; server/engine/claude/cliInstall.ts).
+// Built where the platform package is installed — the CI runner and a dev box —
+// and left out, loudly but not fatally, where it is not: a release without it
+// still installs, and such a box falls back to a `claude` on PATH.
+const cliPkg = `node_modules/@anthropic-ai/claude-agent-sdk-${process.platform}-${process.arch}`;
+const cliBin = join(cliPkg, "claude");
+let claudeCli = null;
+if (existsSync(cliBin)) {
+  const cliTar = join(out, "vault-chat-claude-cli.tar.gz");
+  try {
+    execFileSync("tar", [...gnuFlags, "-czf", cliTar, "-C", cliPkg, "claude"], { stdio: "inherit" });
+  } catch {
+    execFileSync("tar", ["-czf", cliTar, "-C", cliPkg, "claude"], { stdio: "inherit" });
+  }
+  const cliSha = sha256(cliTar);
+  writeFileSync(`${cliTar}.sha256`, `${cliSha}  vault-chat-claude-cli.tar.gz\n`);
+  // The version the CLI itself reports, not the package's: it is what the box runs.
+  let cliVersion = "";
+  try {
+    cliVersion = String(execFileSync(cliBin, ["--version"], { encoding: "utf8", timeout: 30_000 })).trim();
+  } catch {
+    // A generic Linux binary that this machine cannot run directly (NixOS) still
+    // ships: the box runs it through its own loader (findClaude).
+    cliVersion = "";
+  }
+  claudeCli = { sha: cliSha, version: cliVersion.split(/\s+/)[0] || null };
+} else {
+  console.warn(`build-server-release: ${cliPkg} is not installed — the release will carry no Claude Code CLI`);
+}
+
 const meta = {
   version,
   rev,
   sha256: bundleSha,
   assetsSha256: assetsSha,
   deploySha256: deploySha,
+  ...(claudeCli ? { claudeCliSha256: claudeCli.sha, ...(claudeCli.version ? { claudeCliVersion: claudeCli.version } : {}) } : {}),
   builtAt: new Date().toISOString(),
 };
 writeFileSync(join(out, "server-version.json"), JSON.stringify(meta, null, 2) + "\n");

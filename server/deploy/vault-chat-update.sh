@@ -51,6 +51,9 @@ FAKE_LINKS="${VC_UPDATE_FAKE_SYMLINKS:-0}"
 BUNDLE=vault-chat-server.mjs
 ASSETS=vault-chat-server-assets.tar.gz
 DEPLOY=vault-chat-deploy.tar.gz
+# The Claude Code CLI the Agent SDK pins. A box installs a bundle, never
+# node_modules, so without this a fresh box has no Claude Code at all.
+CLI=vault-chat-claude-cli.tar.gz
 META=server-version.json
 # Where install.sh put the updater and the units (overridable for the tests only).
 BIN_DIR="${VC_UPDATE_BIN_DIR:-$STATE/bin}"
@@ -348,9 +351,34 @@ if fetch "$DEPLOY" optional; then
   rm -f "$stage/$DEPLOY" "$stage/$DEPLOY.sha256"
 fi
 
+# The pinned Claude Code CLI (optional: a release built before this has none).
+if fetch "$CLI" optional; then
+  fetch "$CLI.sha256"
+  sha_ok "$stage/$CLI" "$stage/$CLI.sha256" \
+    || die "sha256 mismatch for $CLI in $tag — refusing to install it"
+  [ "$(sha256sum "$stage/$CLI" | awk '{print $1}')" = "$(json_field claudeCliSha256 < "$stage/$META")" ] || die "the Claude Code CLI does not match release metadata"
+  mkdir -p "$stage/claude-cli"
+  tar -xzf "$stage/$CLI" -C "$stage/claude-cli"
+  rm -f "$stage/$CLI" "$stage/$CLI.sha256"
+fi
+
 rm -rf "versions/$ver"
 mv "$stage" "versions/$ver"
 touch "versions/$ver"
+
+# Put the CLI where the server reads it from. The server itself does the work,
+# because it alone knows whether this box can run that binary directly or has to
+# go through its own loader. A box that cannot install it still updates: it keeps
+# whatever CLI it had, and the engine reports what it found.
+if [ -f "versions/$ver/claude-cli/claude" ]; then
+  # Its own status, not a pipeline's: piping through anything here would test
+  # the last command and never fail.
+  if cli_out="$(node "versions/$ver/$BUNDLE" install-claude-cli "versions/$ver/claude-cli/claude" "$STATE" 2>&1)"; then
+    log "$cli_out"
+  else
+    log "WARNING: could not install the Claude Code CLI from $tag ($cli_out) — keeping the one already there"
+  fi
+fi
 
 # ── 3. wait for the server to be idle ───────────────────────────────────────
 if [ -n "$cur" ]; then
