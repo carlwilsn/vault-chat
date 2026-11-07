@@ -486,6 +486,7 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
       configDir: this.o.paths.configDir,
       env: this.o.env(),
       ...(tools ? { mcpServers: tools.servers as never, allowedTools: tools.allowed } : {}),
+      ...(this.h?.afterCompact ? { onCompacted: () => this.h!.afterCompact!(threadId) } : {}),
       onMessage: (m) => this.onMessage(threadId, m),
       onClosed: (error) => this.onClosed(threadId, error),
       log: (s) => this.log(s),

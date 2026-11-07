@@ -43,6 +43,11 @@ export type SessionOptions = {
   /** Claude Code's built-ins we replace with vault-chat's policy-enforcing ones. */
   disallowedTools?: string[];
   settingSources?: Options["settingSources"];
+  /**
+   * Claude Code summarised the session: what the host wants put back into it.
+   * Returning "" or nothing adds nothing.
+   */
+  onCompacted?: () => Promise<string>;
   /** Every SDK message, in order. */
   onMessage: (m: SDKMessage) => void;
   /** The session ended (it threw, or the CLI exited). */
@@ -94,6 +99,29 @@ export class ClaudeSession {
       settingSources: this.o.settingSources ?? [],
       // Its own memory is off: vault-chat's memory files are the only memory.
       settings: JSON.stringify({ autoMemoryEnabled: false }),
+      // A summary may not have kept what the host had told the thread. This puts
+      // it back into the compacted session, so the turn in flight keeps its
+      // footing rather than waiting for the next prompt to say it again.
+      ...(this.o.onCompacted
+        ? {
+            hooks: {
+              SessionStart: [
+                {
+                  hooks: [
+                    async (input) => {
+                      // A session starts for several reasons; only a summary loses context.
+                      if ((input as { source?: string }).source !== "compact") return {};
+                      const additionalContext = (await this.o.onCompacted!().catch(() => "")) || "";
+                      return additionalContext
+                        ? { hookSpecificOutput: { hookEventName: "SessionStart" as const, additionalContext } }
+                        : {};
+                    },
+                  ],
+                },
+              ],
+            },
+          }
+        : {}),
     };
     const q = (this.q = query({ prompt: this.input(), options }));
     this.pump = this.read(q);

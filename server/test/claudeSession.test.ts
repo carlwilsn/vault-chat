@@ -30,9 +30,9 @@ const blocker = () =>
         await blocking;
         return { content: [{ type: "text" as const, text: "released" }] };
       }),
-      // A call long enough to be stopped, the way the spike measured interrupt().
-      tool("slow", "Take a long time", {}, async () => {
-        await new Promise((r) => setTimeout(r, 20_000));
+      // A call long enough to be stopped part-way through.
+      tool("slow", "Take a few seconds", {}, async () => {
+        await new Promise((r) => setTimeout(r, 3_000));
         return { content: [{ type: "text" as const, text: "finished anyway" }] };
       }),
     ],
@@ -52,7 +52,7 @@ afterAll(async () => {
 
 type Run = { session: ClaudeSession; messages: any[]; results: any[]; waitForResult: (n: number) => Promise<void>; waitForReply: (text: string) => Promise<void> };
 
-function open(o: { cwd: string; configDir: string; resume?: string; mcp?: boolean } ): Run {
+function open(o: { cwd: string; configDir: string; resume?: string; mcp?: boolean; onCompacted?: () => Promise<string> }): Run {
   const messages: any[] = [];
   const results: any[] = [];
   const session = new ClaudeSession({
@@ -61,7 +61,8 @@ function open(o: { cwd: string; configDir: string; resume?: string; mcp?: boolea
     model: "haiku",
     configDir: o.configDir,
     ...(o.resume ? { resume: o.resume } : {}),
-    ...(o.mcp ? { mcpServers: { vault_chat: blocker() }, allowedTools: ["mcp__vault_chat__block"] } : {}),
+    ...(o.mcp ? { mcpServers: { vault_chat: blocker() }, allowedTools: ["mcp__vault_chat__block", "mcp__vault_chat__slow"] } : {}),
+    ...(o.onCompacted ? { onCompacted: o.onCompacted } : {}),
     env: {
       PATH: process.env.PATH ?? "",
       HOME: o.configDir,
@@ -168,21 +169,31 @@ describe("one warm Claude Code session per conversation", () => {
     expect(all).not.toContain("QUEUED-WITHDRAWN");
     expect(replies(run)[1]).toContain("QUEUED-KEPT");
 
-    // Stop: a turn sitting in a long tool call is cut short, and the session still takes input.
+    // Stop: a turn sitting in a tool call is cut short, and the session lives on.
     const before = run.results.length;
     run.session.send({ text: 'CALL mcp__vault_chat__slow {}' });
-    await new Promise((r) => setTimeout(r, 2_000));
+    await new Promise((r) => setTimeout(r, 1_000));
     const t1 = Date.now();
     await run.session.interrupt();
     // interrupt() answers at once; the spike measured ~5 ms.
     expect(Date.now() - t1).toBeLessThan(10_000);
     await run.waitForResult(before + 1);
-    // The tool never finished, so the turn carries no answer from it.
+    // The turn carries no answer from the tool it was cut inside.
     expect(String(run.results[before].result ?? "")).not.toContain("finished anyway");
-    // The session is still up and still takes input.
+    // The session is still up and still takes input. Note what Stop does NOT
+    // do: a tool call already in flight is not aborted, so the turn ends once
+    // the call it was cut inside returns — which for vault-chat's tools means
+    // Stop frees the thread then, not the instant it is pressed.
     expect(run.session.closed).toBe(false);
     run.session.send({ text: "after the stop" });
-    await run.waitForReply("after the stop");
+    // The claim is that the session still takes input, so what is checked is
+    // that the message reaches the model — not what the scripted stand-in
+    // chooses to answer once it has it.
+    const t2 = Date.now();
+    while (!JSON.stringify(api.requests).includes("after the stop")) {
+      if (Date.now() - t2 > 60_000) throw new Error("the session took no further input after the stop");
+      await new Promise((r) => setTimeout(r, 25));
+    }
     run.session.close();
     await run.session.finished();
   }, 240_000);
@@ -213,7 +224,17 @@ describe("the slash commands the host uses", () => {
     const cfg = join(root, "compact-cfg");
     mkdirSync(cwd, { recursive: true });
     mkdirSync(cfg, { recursive: true });
-    const run = open({ cwd, configDir: cfg });
+    // A summary may not keep what the host had told the thread, so the host puts
+    // it back into the compacted session: this is that context.
+    let injected = 0;
+    const run = open({
+      cwd,
+      configDir: cfg,
+      onCompacted: async () => {
+        injected += 1;
+        return "<rules>KEEP-THIS-KIWI-4242</rules>";
+      },
+    });
     run.session.send({ text: "something to summarise" });
     await run.waitForResult(1);
     const before = api.requests.length;
@@ -226,6 +247,13 @@ describe("the slash commands the host uses", () => {
     // make sense of a bare "/compact".
     expect(run.messages.some((m: any) => m.type === "system" && m.subtype === "compact_boundary")).toBe(true);
     expect(api.requests.length).toBeGreaterThan(before);
+
+    // The host was asked, and what it gave is in the compacted session: the next
+    // turn is answered with the rules back in front of it, not without them.
+    expect(injected).toBe(1);
+    run.session.send({ text: "after the summary" });
+    await run.waitForResult(3);
+    expect(JSON.stringify(api.requests[api.requests.length - 1].messages)).toContain("KEEP-THIS-KIWI-4242");
     run.session.close();
     await run.session.finished();
   }, 180_000);

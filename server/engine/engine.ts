@@ -664,6 +664,15 @@ export class Engine {
     setNoteWriter(this.d.vault, (convId, notes) => this.scoped(() => this.noteViaPi(convId, notes)));
     b.setHandlers({
       toolCatalog: (loadout) => this.scoped(() => this.hostToolCatalog(loadout)),
+      // Its session was summarised: everything the thread had been told, again,
+      // for a runtime that can put it back into the compacted session.
+      afterCompact: (threadId) => this.scoped(async () => {
+        const convId = this.byThread.get(threadId);
+        const conv = convId ? await readConv(this.d.vault, convId) : null;
+        if (!conv) return "";
+        this.sectionsSent.delete(threadId);
+        return this.changedSections(threadId, conv);
+      }),
       workerCwd: (threadId, cwd) => this.scoped(async () => {
         const conv = await readConv(this.d.vault, this.byThread.get(threadId) ?? "");
         if (!conv) throw new Error("Worker has no owning conversation");

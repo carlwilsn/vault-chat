@@ -82,6 +82,14 @@ export type Handlers = {
   fileWrite?: (threadId: string) => Promise<boolean>;
   /** A worker (a parent thread's child) wrote a file: its write/edit input (the screens showing it refresh). */
   childWrote?: (parentThreadId: string, input: Record<string, unknown>) => void;
+  /**
+   * The host context a thread should be given again because its session was
+   * just summarised and the summary may not have kept it (the rules, memory,
+   * the project's own notes). A backend whose runtime can inject context into
+   * the compacted session asks for it there and then, so the turn in flight
+   * keeps its footing instead of waiting for the next prompt.
+   */
+  afterCompact?: (threadId: string) => Promise<string>;
 };
 
 // ---- side threads (Ctrl+K / Ctrl+L) and one-shots: /api/v1/side, answered off the conversation
