@@ -1,0 +1,411 @@
+// Claude Code's stream, said in pi's words.
+//
+// This is what keeps the three clients, SearchHistory and the turn log out of
+// the refactor: vault-chat's feed speaks pi's live events and pi's session
+// entries (src/convlog/protocol.ts, reduce.ts), so a Claude Code turn is
+// translated into exactly those rather than given a shape of its own. Nothing
+// here touches the SDK — it takes the messages the SDK yields as plain objects,
+// so the whole mapping is testable against recorded streams
+// (server/test/fixtures/claude-*.jsonl).
+//
+// What the mapping has to get right:
+//
+//   Block ids. Every client names a block `<message timestamp>:<content index>`
+//   (reduce.ts blockId), so one assistant message gets ONE timestamp, chosen
+//   when its message_start arrives and used again on its session entry. The
+//   deltas a client already drew and the entry that supersedes them then carry
+//   the same ids, and nothing jumps.
+//
+//   Block ends. The SDK sends a complete `assistant` message per block, with
+//   that block's final content (and a tool call's input already parsed), just
+//   before the block's content_block_stop. We buffer it and emit pi's
+//   `*_end` at the stop, where the index is authoritative — falling back to the
+//   deltas we accumulated if a producer sends no such message.
+//
+//   Tool calls, in pi's order. Every client assumes an assistant message's
+//   entry is in the transcript BEFORE the tools it called run: that is what
+//   moves the tool row out of the message in flight and lets its result stick
+//   (reduce.ts place(), which only protects a tool's run state for a row
+//   already placed). The SDK has no "tool started" event and does not promise
+//   that order — a fast tool's result can arrive while the stream's tail is
+//   still being delivered — so we hold a result until the message that called
+//   it is closed, then emit pi's sequence: the entry, message_end,
+//   tool_execution_start for each call, then each result. tool_execution_update
+//   comes from the CLI's 30 s tool_progress heartbeats.
+import type { PiBlock, PiEntry, PiMessage } from "../../../src/convlog/protocol";
+import type { ThreadTokenUsage } from "../context";
+
+/** A session entry as piSession.appendEntries takes it (it assigns id, parentId and timestamp). */
+export type NewEntry = Omit<PiEntry, "id" | "parentId" | "timestamp">;
+
+/** What one SDK message means, in order. The caller writes entries and emits live events as they come. */
+export type Emit =
+  /** One live event in pi's shape: the engine sends it on as {kind:"pi"}. */
+  | { kind: "live"; ev: Record<string, unknown> }
+  /** One pi-format entry for the thread's session file, appended before any later live event. */
+  | { kind: "entry"; entry: NewEntry }
+  /** The context size of the last model call, and the model's window. */
+  | { kind: "usage"; usage: ThreadTokenUsage }
+  /** The session id this stream belongs to (resume uses it; it can change on a fork). */
+  | { kind: "session"; id: string }
+  /** The turn ended. */
+  | { kind: "done"; status: "completed" | "interrupted" | "failed"; error: string | null }
+  /** Claude Code's own rate limit: the host backs wakes and schedules off until `resetsAt`. */
+  | { kind: "rateLimit"; status: string; resetsAt: number | null; kindOfLimit: string | null };
+
+type OpenBlock = {
+  index: number;
+  /** pi's name for it. */
+  kind: "text" | "thinking" | "toolcall";
+  /** The deltas so far (a tool call's are its input JSON). */
+  acc: string;
+  /** The complete block the SDK sent for it, if it did. */
+  final?: PiBlock;
+  /** A tool call's identity, known from content_block_start. */
+  id?: string;
+  name?: string;
+  /** Its `*_end` has been emitted. */
+  closed?: boolean;
+};
+
+type OpenMessage = {
+  /** The one timestamp every id of this message is built from. */
+  ts: number;
+  blocks: Map<number, OpenBlock>;
+  /** In index order, as the blocks closed: the entry's content. */
+  content: PiBlock[];
+  stopReason: string | null;
+  errorMessage: string | null;
+  usage: { input: number; output: number; cacheRead: number; cacheWrite: number };
+};
+
+/** pi's stopReason for the API's. */
+function stopOf(reason: unknown, errored: boolean): string {
+  if (errored) return "error";
+  switch (String(reason ?? "")) {
+    case "tool_use":
+      return "toolUse";
+    case "end_turn":
+    case "stop_sequence":
+      return "stop";
+    case "max_tokens":
+      return "maxTokens";
+    case "refusal":
+      return "refusal";
+    case "":
+      return "stop";
+    default:
+      return String(reason);
+  }
+}
+
+const textOf = (content: unknown): string => {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content.map((b: any) => (typeof b?.text === "string" ? b.text : "")).join("");
+};
+
+/** The tool results of a `user` message, and nothing else (the SDK puts them in message.content). */
+function toolResults(m: any): { id: string; isError: boolean; content: { type: "text"; text: string }[] }[] {
+  const content = Array.isArray(m?.message?.content) ? m.message.content : [];
+  return content
+    .filter((b: any) => b?.type === "tool_result" && b.tool_use_id)
+    .map((b: any) => ({ id: String(b.tool_use_id), isError: !!b.is_error, content: [{ type: "text" as const, text: textOf(b.content) }] }));
+}
+
+/**
+ * One conversation's stream. Feed it every SDK message in order; it gives back
+ * what the feed needs. It is stateful only within one assistant message and
+ * the tool calls that message made.
+ */
+export class ClaudeTranslator {
+  /** Monotonic, so two messages in the same millisecond still get distinct block ids. */
+  private clock = 0;
+  private open: OpenMessage | null = null;
+  /** Tool calls of the message in flight, by their id: their names, for the result's entry. */
+  private toolNames = new Map<string, string>();
+  /** The last window the model reported (the result message says it; message_start does not). */
+  private window: number | null = null;
+  /** Results that arrived while their own message was still open: emitted once it closes. */
+  private held: Emit[] = [];
+
+  constructor(private readonly now: () => number = () => Date.now()) {}
+
+  private stamp(): number {
+    return (this.clock = Math.max(this.now(), this.clock + 1));
+  }
+
+  /** What this SDK message means for the feed. */
+  step(m: any): Emit[] {
+    if (!m || typeof m !== "object") return [];
+    switch (m.type) {
+      case "stream_event":
+        // A subagent's own stream is reported under the subagent, never as the parent's reply.
+        return m.parent_tool_use_id ? [] : this.streamEvent(m.event ?? {});
+      case "assistant":
+        return m.parent_tool_use_id ? [] : this.assistant(m);
+      case "user":
+        return m.parent_tool_use_id ? [] : this.toolResult(m);
+      case "system":
+        return this.system(m);
+      case "tool_progress":
+        return this.toolProgress(m);
+      case "result":
+        return this.result(m);
+      case "rate_limit_event":
+        return [{
+          kind: "rateLimit",
+          status: String(m.rate_limit?.status ?? m.status ?? "allowed"),
+          resetsAt: Number(m.rate_limit?.resetsAt ?? m.resetsAt) || null,
+          kindOfLimit: m.rate_limit?.rateLimitType ?? m.rateLimitType ?? null,
+        }];
+      case "api_retry":
+        return [{ kind: "live", ev: { type: "auto_retry_start", attempt: Number(m.attempt ?? 1), maxAttempts: Number(m.maxAttempts ?? 0), errorMessage: String(m.error ?? m.message ?? "").slice(0, 500) } }];
+      default:
+        return [];
+    }
+  }
+
+  // ------------------------------------------------------------ the model's own stream
+
+  private streamEvent(e: any): Emit[] {
+    switch (e.type) {
+      case "message_start":
+        return this.messageStart(e);
+      case "content_block_start":
+        return this.blockStart(e);
+      case "content_block_delta":
+        return this.blockDelta(e);
+      case "content_block_stop":
+        return this.blockStop(e);
+      case "message_delta": {
+        const o = this.open;
+        if (!o) return [];
+        if (e.delta?.stop_reason) o.stopReason = String(e.delta.stop_reason);
+        o.usage.output = Number(e.usage?.output_tokens ?? o.usage.output) || o.usage.output;
+        return [];
+      }
+      case "message_stop":
+        return this.messageStop();
+      default:
+        return [];
+    }
+  }
+
+  private messageStart(e: any): Emit[] {
+    // A message that never stopped (a cut turn) is closed first, so its blocks are not orphaned.
+    const out = this.open ? this.messageStop() : [];
+    const u = e.message?.usage ?? {};
+    const ts = this.stamp();
+    this.open = {
+      ts,
+      blocks: new Map(),
+      content: [],
+      stopReason: null,
+      errorMessage: null,
+      usage: {
+        input: Number(u.input_tokens ?? 0),
+        output: Number(u.output_tokens ?? 0),
+        cacheRead: Number(u.cache_read_input_tokens ?? 0),
+        cacheWrite: Number(u.cache_creation_input_tokens ?? 0),
+      },
+    };
+    out.push({ kind: "live", ev: { type: "message_start", message: { role: "assistant", timestamp: ts } } });
+    return out;
+  }
+
+  private blockStart(e: any): Emit[] {
+    const o = this.open;
+    if (!o) return [];
+    const index = Number(e.index ?? 0);
+    const b = e.content_block ?? {};
+    if (b.type === "text") {
+      o.blocks.set(index, { index, kind: "text", acc: "" });
+      return [{ kind: "live", ev: { type: "message_update", assistantMessageEvent: { type: "text_start", contentIndex: index } } }];
+    }
+    if (b.type === "thinking" || b.type === "redacted_thinking") {
+      o.blocks.set(index, { index, kind: "thinking", acc: "" });
+      return [{ kind: "live", ev: { type: "message_update", assistantMessageEvent: { type: "thinking_start", contentIndex: index } } }];
+    }
+    if (b.type === "tool_use" || b.type === "server_tool_use" || b.type === "mcp_tool_use") {
+      const id = String(b.id ?? `${o.ts}:${index}`);
+      const name = String(b.name ?? "tool");
+      o.blocks.set(index, { index, kind: "toolcall", acc: "", id, name });
+      this.toolNames.set(id, name);
+      return [{ kind: "live", ev: { type: "message_update", assistantMessageEvent: { type: "toolcall_start", contentIndex: index, id, toolName: name } } }];
+    }
+    return [];
+  }
+
+  private blockDelta(e: any): Emit[] {
+    const o = this.open;
+    const blk = o?.blocks.get(Number(e.index ?? 0));
+    if (!o || !blk) return [];
+    const d = e.delta ?? {};
+    const piType = d.type === "text_delta" ? "text_delta" : d.type === "thinking_delta" ? "thinking_delta" : d.type === "input_json_delta" ? "toolcall_delta" : null;
+    if (!piType) return []; // signature_delta and citations: nothing a client draws
+    const delta = String(d.text ?? d.thinking ?? d.partial_json ?? "");
+    blk.acc += delta;
+    return [{ kind: "live", ev: { type: "message_update", assistantMessageEvent: { type: piType, contentIndex: blk.index, delta } } }];
+  }
+
+  /** The SDK's complete message for the block that is closing: its final content, a tool call's input parsed. */
+  private assistant(m: any): Emit[] {
+    const o = this.open;
+    const blocks: PiBlock[] = Array.isArray(m?.message?.content) ? m.message.content : [];
+    if (m?.error) {
+      const text = String(m.message?.content?.find?.((b: any) => b?.type === "text")?.text ?? m.error);
+      if (o) {
+        o.errorMessage = text;
+        o.stopReason = "error";
+      }
+      return [];
+    }
+    if (!o || !blocks.length) return [];
+    // It names no index: it belongs to the one block still open (they close in order).
+    const openBlk = [...o.blocks.values()].find((b) => b.final === undefined);
+    if (openBlk) openBlk.final = blocks[0];
+    return [];
+  }
+
+  private blockStop(e: any): Emit[] {
+    const o = this.open;
+    const blk = o?.blocks.get(Number(e.index ?? 0));
+    if (!o || !blk) return [];
+    return this.closeBlock(o, blk);
+  }
+
+  /** One block's pi `*_end`, from the complete block the SDK sent for it or from its deltas. */
+  private closeBlock(o: OpenMessage, blk: OpenBlock): Emit[] {
+    const ci = blk.index;
+    if (o.content[ci]) return [];
+    blk.closed = true;
+    if (blk.kind === "text") {
+      const content = typeof blk.final?.text === "string" ? blk.final.text : blk.acc;
+      o.content[ci] = { type: "text", text: content };
+      return [{ kind: "live", ev: { type: "message_update", assistantMessageEvent: { type: "text_end", contentIndex: ci, content } } }];
+    }
+    if (blk.kind === "thinking") {
+      const content = typeof blk.final?.thinking === "string" ? blk.final.thinking : blk.acc;
+      o.content[ci] = { type: "thinking", thinking: content, ...(blk.final?.signature ? { signature: blk.final.signature } : {}) };
+      return [{ kind: "live", ev: { type: "message_update", assistantMessageEvent: { type: "thinking_end", contentIndex: ci, content } } }];
+    }
+    const args = blk.final?.input !== undefined ? blk.final.input : parseArgs(blk.acc);
+    const toolCall = { type: "toolCall", id: blk.id!, name: blk.name!, arguments: args };
+    o.content[ci] = toolCall as PiBlock;
+    return [{ kind: "live", ev: { type: "message_update", assistantMessageEvent: { type: "toolcall_end", contentIndex: ci, toolCall } } }];
+  }
+
+  /**
+   * The message is complete: its entry goes into the session file FIRST, so the
+   * feed sees the entry that supersedes the deltas before the message_end that
+   * announces it (pi's own order), and only then the tool calls it made start.
+   */
+  private messageStop(dispatchTools = true): Emit[] {
+    const o = this.open;
+    if (!o) return [];
+    const out: Emit[] = [];
+    // A block the stream never closed (an interrupt, or a result that overtook the tail).
+    for (const blk of o.blocks.values()) if (!blk.closed) out.push(...this.closeBlock(o, blk));
+    this.open = null;
+    const content = [...o.content].filter(Boolean);
+    const message: PiMessage = {
+      role: "assistant",
+      timestamp: o.ts,
+      content,
+      stopReason: stopOf(o.stopReason ?? (content.some((b) => b.type === "toolCall") ? "tool_use" : null), !!o.errorMessage),
+      ...(o.errorMessage ? { errorMessage: o.errorMessage } : {}),
+      usage: { input: o.usage.input, output: o.usage.output, cacheRead: o.usage.cacheRead, cacheWrite: o.usage.cacheWrite },
+    };
+    out.push({ kind: "entry", entry: { type: "message", message } }, { kind: "live", ev: { type: "message_end", message } });
+    const context = o.usage.input + o.usage.cacheRead + o.usage.cacheWrite;
+    if (context > 0) {
+      const last = { totalTokens: context + o.usage.output, inputTokens: o.usage.input, cachedInputTokens: o.usage.cacheRead, cacheWriteInputTokens: o.usage.cacheWrite, outputTokens: o.usage.output };
+      out.push({ kind: "usage", usage: { last, modelContextWindow: this.window } });
+    }
+    // The tools this message called start now — unless the turn was cut before they ran.
+    if (dispatchTools) {
+      for (const b of content) {
+        if (b.type === "toolCall" && b.id) out.push({ kind: "live", ev: { type: "tool_execution_start", toolCallId: b.id, toolName: b.name, args: b.arguments ?? {} } });
+      }
+    }
+    out.push(...this.held.splice(0));
+    return out;
+  }
+
+  // ------------------------------------------------------------ tools, the session, the turn's end
+
+  private toolResult(m: any): Emit[] {
+    const out: Emit[] = [];
+    for (const r of toolResults(m)) {
+      const toolName = this.toolNames.get(r.id) ?? "tool";
+      const message: PiMessage = { role: "toolResult", toolCallId: r.id, toolName, isError: r.isError, content: r.content };
+      out.push({ kind: "entry", entry: { type: "message", message } });
+      out.push({ kind: "live", ev: { type: "tool_execution_end", toolCallId: r.id, toolName, isError: r.isError, result: { content: r.content } } });
+      this.toolNames.delete(r.id);
+    }
+    // pi's order: the calling message's entry first. The stream's tail is imminent.
+    if (this.open && out.length) {
+      this.held.push(...out);
+      return [];
+    }
+    return out;
+  }
+
+  /**
+   * The CLI's 30 s heartbeat on a long tool call. Its own `tool_use_id` is
+   * per-heartbeat (`<call>-heartbeat-0`, `-1`, …) and the call it is about is
+   * `parent_tool_use_id`, so the row is found by trying both against the calls
+   * this message actually made.
+   */
+  private toolProgress(m: any): Emit[] {
+    const raw = String(m.tool_use_id ?? "");
+    const candidates = [String(m.parent_tool_use_id ?? ""), raw.replace(/-heartbeat-\d+$/, ""), raw];
+    const id = candidates.find((c) => c && this.toolNames.has(c)) ?? candidates.find(Boolean) ?? "";
+    const secs = Number(m.elapsed_time_seconds);
+    if (!id || !(secs > 0)) return [];
+    return [{ kind: "live", ev: { type: "tool_execution_update", toolCallId: id, partialResult: { content: [{ type: "text", text: `still running (${secs}s)` }] } } }];
+  }
+
+  private system(m: any): Emit[] {
+    if (m.subtype === "init") return m.session_id ? [{ kind: "session", id: String(m.session_id) }] : [];
+    if (m.subtype === "compact_boundary") {
+      // Claude Code reports the boundary, not the summary it wrote, so the
+      // transcript's divider says what happened in vault-chat's own words.
+      const meta = m.compact_metadata ?? {};
+      const before = Number(meta.pre_tokens) || 0;
+      const summary = `Summarized the earlier conversation${meta.trigger === "manual" ? "" : " automatically"}${before ? ` at ${before.toLocaleString("en-US")} tokens` : ""}.`;
+      return [
+        { kind: "entry", entry: { type: "compaction", summary } },
+        { kind: "live", ev: { type: "compaction_end", aborted: false, result: { ok: true } } },
+      ];
+    }
+    return [];
+  }
+
+  private result(m: any): Emit[] {
+    const out: Emit[] = [];
+    // A message the stream never closed (an interrupt mid-block) is closed here.
+    if (this.open) out.push(...this.messageStop(false));
+    const window = Object.values(m.modelUsage ?? {}).map((u: any) => Number(u?.contextWindow)).find((n) => n > 0);
+    if (window) this.window = window;
+    const subtype = String(m.subtype ?? (m.is_error ? "error" : "success"));
+    const terminal = String(m.terminal_reason ?? "");
+    const status = terminal === "cancelled" || terminal === "interrupted" || subtype === "interrupted" ? "interrupted" : m.is_error || subtype.startsWith("error") ? "failed" : "completed";
+    const error = status === "failed" ? String(m.result ?? m.error ?? subtype).slice(0, 500) : null;
+    out.push(...this.held.splice(0));
+    out.push({ kind: "done", status, error });
+    return out;
+  }
+}
+
+/** A tool call's input from its streamed JSON; `{}` if the stream was cut mid-object. */
+function parseArgs(json: string): Record<string, unknown> {
+  if (!json.trim()) return {};
+  try {
+    const v = JSON.parse(json);
+    return v && typeof v === "object" ? v : {};
+  } catch {
+    return {};
+  }
+}
