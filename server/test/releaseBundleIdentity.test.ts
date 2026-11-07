@@ -35,7 +35,9 @@ describe("executed server release identity", () => {
   });
   it("packages precisely the executable identity and bytes it verified", () => {
     const out = join(work, "release");
-    execFileSync(process.execPath, ["scripts/build-server-release.mjs"], { cwd: root, env: { ...env(), VERSION: version, REV: rev, OUT_DIR: out }, timeout: 20_000 });
+    // A release now also packages the pinned Claude Code CLI, which is a 340 MB
+    // binary to compress: this step legitimately takes far longer than it used to.
+    execFileSync(process.execPath, ["scripts/build-server-release.mjs"], { cwd: root, env: { ...env(), VERSION: version, REV: rev, OUT_DIR: out }, timeout: 180_000 });
     const meta = JSON.parse(readFileSync(join(out, "server-version.json"), "utf8"));
     const info = JSON.parse(execFileSync(process.execPath, [join(out, "vault-chat-server.mjs"), "build-info"], { env: env(), encoding: "utf8", timeout: 10_000 }));
     expect(info).toEqual({ version: meta.version, rev: meta.rev });

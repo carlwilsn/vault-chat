@@ -102,10 +102,14 @@ const cliBin = join(cliPkg, "claude");
 let claudeCli = null;
 if (existsSync(cliBin)) {
   const cliTar = join(out, "vault-chat-claude-cli.tar.gz");
+  // The quick setting, deliberately: this one asset is a 340 MB binary, and the
+  // slow setting spends minutes to save ~8% of an already huge download — long
+  // enough that it timed out the release test it runs inside.
+  const fast = ["-I", "gzip -1"];
   try {
-    execFileSync("tar", [...gnuFlags, "-czf", cliTar, "-C", cliPkg, "claude"], { stdio: "inherit" });
+    execFileSync("tar", [...gnuFlags, ...fast, "-cf", cliTar, "-C", cliPkg, "claude"], { stdio: "inherit" });
   } catch {
-    execFileSync("tar", ["-czf", cliTar, "-C", cliPkg, "claude"], { stdio: "inherit" });
+    execFileSync("tar", [...fast, "-cf", cliTar, "-C", cliPkg, "claude"], { stdio: "inherit" });
   }
   const cliSha = sha256(cliTar);
   writeFileSync(`${cliTar}.sha256`, `${cliSha}  vault-chat-claude-cli.tar.gz\n`);
