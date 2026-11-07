@@ -451,7 +451,10 @@ export async function startEngine(b: EngineBoot): Promise<EngineHandle> {
       backend: routed,
       ledger: new Ledger(st.ledger, b.apiKey, baseUrl ?? "https://openrouter.ai/api/v1"),
       jobEnv,
-      model: () => engineModel(!!claude),
+      // The box's model follows the engine the box actually runs, not merely
+      // whether Claude Code is installed: a box pinned to pi (VC_ENGINE=pi, and
+      // every test) must keep pi's model even with a Claude Code beside it.
+      model: () => engineModel(boxEngine(!!claude) === "claude"),
       webSearchModel: process.env.VC_WEBSEARCH_MODEL || "google/gemini-2.5-flash-lite",
       apiKey: b.apiKey,
       broadcast: (ev) => signal(v.path, ev),

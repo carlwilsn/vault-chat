@@ -123,10 +123,10 @@ if (process.argv.length === 3 && process.argv[2] === "build-info") {
   process.stdout.write(JSON.stringify({ version: SERVER_VERSION, rev: SERVER_REV }) + "\\n");
 } else if (process.argv.length === 2 ||
     (process.argv.length === 3 && process.argv[2] === "record-ui") ||
-    ["master", "projects"].includes(process.argv[2])) {
+    ["master", "projects", "install-claude-cli"].includes(process.argv[2])) {
   await import("./server/main.ts");
 } else {
-  console.error("Unsupported server command; use no arguments, build-info, record-ui, master or projects");
+  console.error("Unsupported server command; use no arguments, build-info, record-ui, install-claude-cli, master or projects");
   process.exitCode = 2;
 }`,
     resolveDir: root,

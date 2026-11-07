@@ -410,4 +410,9 @@ process.on("unhandledRejection", (e) => {
 if (process.argv[2] === "record-ui") void import("./recordUI").then((m) => m.recordCli());
 else if (process.argv[2] === "master") void import("./masterCli").then(async (m) => process.exit(await m.runMasterCli(process.argv.slice(3))));
 else if (process.argv[2] === "projects") void import("./projectsCli").then(async (m) => process.exit(await m.runProjectsCli(process.argv.slice(3))));
+// `vault-chat-server.mjs install-claude-cli <path> [stateDir]`: put the pinned
+// Claude Code CLI where this box reads it from (server/engine/claude/cliInstall.ts).
+// The box updater calls it with the CLI a release carries, so a fresh install has
+// a Claude Code without anyone copying one in by hand.
+else if (process.argv[2] === "install-claude-cli") void import("./engine/claude/cliInstall").then((m) => process.exit(m.installClaudeCli(process.argv.slice(3), loadConfig().stateDir)));
 else main().catch((e) => fatal(`boot failed: ${e instanceof Error ? (e.stack ?? e.message) : String(e)}`, 1));

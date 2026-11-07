@@ -38,7 +38,7 @@ it("actual server bundle rejects recovery/unknown commands before ANY listener, 
   for(const args of [["recover-published-release","id"],["--failed-release","id"],["--rollback","id"],["--unknown"],["build-info","extra"],["record-ui","extra"]]) {
     const result=spawnSync(process.execPath,["--require",preload,bundle,...args],{cwd:root,env:{HOME:root,PATH:"",VC_HOST:"127.0.0.1"},encoding:"utf8",timeout:3000});
     expect(result.error).toBeUndefined(); expect(result.status,result.stderr).toBe(2); expect(result.stdout).toBe("");
-    expect(result.stderr).toBe("Unsupported server command; use no arguments, build-info, record-ui, master or projects\n");
+    expect(result.stderr).toBe("Unsupported server command; use no arguments, build-info, record-ui, install-claude-cli, master or projects\n");
   }
   const info=spawnSync(process.execPath,["--require",preload,bundle,"build-info"],{cwd:root,env:{HOME:root,PATH:""},encoding:"utf8",timeout:3000});
   expect(info.status,info.stderr).toBe(0); expect(JSON.parse(info.stdout)).toMatchObject({version:expect.any(String),rev:expect.any(String)});
