@@ -356,6 +356,40 @@ describe("a conversation on Claude Code", () => {
     expect(JSON.stringify(api.requests[api.requests.length - 1].messages)).toContain("deleted the physics project");
   }, 180_000);
 
+  it('what Carl did elsewhere reaches the model once, and only what is new', async () => {
+    // The engine answers the "you" layer; pi's extension asks for it before each
+    // prompt, and here the host does. It must advance: the same thing is not
+    // told twice.
+    const asked: (number | null)[] = [];
+    let layer = "<you>Carl renamed the physics note.</you>";
+    const engineHandlers = claude.handlers!;
+    claude.setHandlers({
+      ...engineHandlers,
+      you: async (q) => {
+        asked.push(q.since ?? null);
+        return { text: layer, until: 5_000 + asked.length };
+      },
+    });
+
+    const r = await engine.message({ text: "first with a layer", convId: "cc-conv-you" });
+    await answered(r.convId, "first with a layer");
+    expect(JSON.stringify(api.requests[api.requests.length - 1].messages)).toContain("renamed the physics note");
+    // Carl's own row shows his words, not the layer.
+    expect(await shown(r.convId)).toEqual([
+      ["user", "first with a layer"],
+      ["assistant", "REPLY to: first with a layer"],
+    ]);
+
+    layer = "";
+    await engine.message({ text: "second with none", convId: r.convId });
+    await answered(r.convId, "second with none");
+    // The second ask carried the point the first one reached.
+    expect(asked.length).toBe(2);
+    expect(asked[0]).toBeNull();
+    expect(asked[1]).toBe(5_001);
+    claude.setHandlers(engineHandlers);
+  }, 180_000);
+
   it("a restart resumes the thread from box state: same session, same transcript file", async () => {
     const convId = "cc-conv-1";
     const before = await readConv(vault, convId);

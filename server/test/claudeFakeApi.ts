@@ -17,6 +17,21 @@ export type FakeApi = {
 };
 
 const textOf = (c: any): string => (typeof c === "string" ? c : (c ?? []).filter((b: any) => b?.type === "text").map((b: any) => b.text).join("\n"));
+/**
+ * The host wraps its own context around Carl's words — the sections it sends,
+ * and the "you" layer, which quotes what he did elsewhere and can therefore
+ * quote an earlier test's directive. A directive is Carl's, so only his part of
+ * the message is read: the host's wrappers are stripped first, and a directive
+ * must start its own line.
+ */
+const asked = (c: any): string =>
+  textOf(c)
+    .replace(/<(you|vault-files|rules|memory|project|earlier_conversation)>[\s\S]*?<\/\1>/g, " ")
+    .split("\n")
+    .filter((l) => !/^\s*</.test(l))
+    .join("\n");
+const DIRECTIVE = /^[ \t]*CALL (\S+) (\{.*\})[ \t]*$/m;
+const DIRECTIVES = /^[ \t]*CALL \S+ \{.*\}[ \t]*$/gm;
 const isToolResult = (m: any) => m?.role === "user" && Array.isArray(m.content) && m.content.some((b: any) => b?.type === "tool_result");
 
 /** The reply this request should get: a tool call the prompt asked for, or text. */
@@ -28,24 +43,23 @@ function decide(body: any): { tool?: { name: string; input: any }; text?: string
   for (let i = msgs.length - 1; i >= 0; i--) {
     const m = msgs[i];
     if (m.role !== "user" || isToolResult(m)) continue;
-    if (/CALL \S+ \{/.test(textOf(m.content))) {
+    if (DIRECTIVE.test(asked(m.content))) {
       di = i;
       break;
     }
-    if (textOf(m.content).trim()) break;
+    if (asked(m.content).trim()) break;
   }
   if (hasTools && di >= 0) {
-    const steps = textOf(msgs[di].content).match(/CALL \S+ \{.*?\}/gms) ?? [];
+    const steps = asked(msgs[di].content).match(DIRECTIVES) ?? [];
     const done = msgs.slice(di + 1).filter((m) => m.role === "assistant" && (m.content ?? []).some?.((b: any) => b.type === "tool_use")).length;
     if (done < steps.length) {
-      const m = /CALL (\S+) (\{.*\})/s.exec(steps[done]!)!;
+      const m = DIRECTIVE.exec(steps[done]!)!;
       return { tool: { name: m[1]!, input: JSON.parse(m[2]!) } };
     }
   }
   const lastUser = [...msgs].reverse().find((m) => m.role === "user" && !isToolResult(m));
-  // The host puts its context above the message; the last non-empty line is what was asked.
-  const asked = textOf(lastUser?.content).split("\n").map((l) => l.trim()).filter(Boolean).pop() ?? "";
-  return { text: `REPLY to: ${asked.slice(-120)}` };
+  const words = asked(lastUser?.content).split("\n").map((l) => l.trim()).filter(Boolean).pop() ?? "";
+  return { text: `REPLY to: ${words.slice(-120)}` };
 }
 
 export async function fakeAnthropic(o: { delayMs?: number } = {}): Promise<FakeApi> {

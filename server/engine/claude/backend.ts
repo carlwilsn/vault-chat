@@ -93,6 +93,8 @@ type ThreadState = {
   instructions: string;
   /** Its pi-format transcript. */
   file: string;
+  /** How far the "you" layer has been told to this thread (see youLayer). */
+  youUntil?: number;
 };
 
 /** One message pushed into a session's input, and the user entry it will become. */
@@ -264,6 +266,7 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
     const t = this.threads[threadId];
     if (!t) throw new ThreadUnknownError(`no Claude Code thread ${threadId}`);
     const live = (await this.open(threadId))!;
+    const you = await this.youLayer(threadId, t);
     if (o.model && o.model !== t.model) {
       t.model = o.model;
       this.save();
@@ -271,7 +274,7 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
     }
     const turnId = o.turnId ?? randomUUID();
     live.turnId = turnId;
-    this.push(live, { text: promptOf(o.texts, o.context), images: o.images }, { text: o.texts.join("\n\n"), request: o.request, images: o.images });
+    this.push(live, { text: promptOf(o.texts, o.context, you), images: o.images }, { text: o.texts.join("\n\n"), request: o.request, images: o.images });
     this.ev({ kind: "turnStarted", threadId, turnId });
     return { turnId };
   }
@@ -521,6 +524,29 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
     }
   }
 
+  /**
+   * What Carl did elsewhere since this thread last heard (server/activity.ts).
+   * pi's extension asks the host for this before every prompt; Claude Code has
+   * no extension, so the host asks and puts it in the prompt itself — which
+   * also means it stays in Claude Code's own session from then on, as pi's
+   * `vc-you` entry does.
+   */
+  private async youLayer(threadId: string, t: ThreadState): Promise<string> {
+    if (!this.h?.you) return "";
+    try {
+      const r = await this.h.you({ threadId, since: t.youUntil ?? null });
+      if (Number(r?.until) > 0) {
+        t.youUntil = Number(r.until);
+        this.save();
+      }
+      return String(r?.text ?? "").trim();
+    } catch (e) {
+      // Never lose a turn over it: the layer is context, not the message.
+      this.log(`the "you" layer for ${threadId} failed: ${(e as Error).message}`);
+      return "";
+    }
+  }
+
   /** Carl's message, as the feed's user entry (the client's identity rides on it). */
   private writeUserEntry(t: ThreadState, text: string, request: UserRequest | undefined, images: string[]): void {
     const content: Record<string, unknown>[] = [{ type: "text", text }];
@@ -629,10 +655,12 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
   }
 }
 
-/** The prompt: Carl's text, with the host's context above it where there is any. */
-function promptOf(texts: string[], context?: string): string {
-  const body = texts.filter(Boolean).join("\n\n");
-  return context?.trim() ? `${context.trim()}\n\n${body}` : body;
+/**
+ * The prompt: the host's context above Carl's words, and the "you" layer below
+ * them — the order pi's own extension uses, so the model reads the same shape.
+ */
+function promptOf(texts: string[], context?: string, you?: string): string {
+  return [context?.trim(), texts.filter(Boolean).join("\n\n"), you?.trim()].filter(Boolean).join("\n\n");
 }
 
 function readJson(file: string): Record<string, ThreadState> {
