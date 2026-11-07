@@ -13,6 +13,7 @@ import { fakeAnthropic, type FakeApi } from "./claudeFakeApi";
 import { findClaude, type ClaudeInstall } from "../engine/claude/install";
 import { claudePaths } from "../engine/claude/paths";
 import { ClaudeCodeBackend, isClaudeThread } from "../engine/claude/backend";
+import { McpRuntime } from "../mcp/runtime";
 import { BackendRouter, type EngineName } from "../engine/router";
 import type { BoundTools } from "../mcp/tools";
 import type { Detached, EngineBackend, Handlers, SideRunner, ToolSpec } from "../engine/backend";
@@ -77,8 +78,9 @@ class StubPi extends EventEmitter implements EngineBackend {
   async nativePath(): Promise<string | null> {
     return null;
   }
+  /** No file tools in this test; the point here is the host catalog over MCP. */
   async filesystem(): Promise<BoundTools> {
-    throw new Error("no file tools in this test");
+    return { specs: [], call: async () => ({ ok: false, text: "no file tools in this test" }) };
   }
   readonly side: SideRunner = {
     start: async () => {
@@ -120,15 +122,17 @@ let release: (() => void) | null = null;
 const inSlowTool = async () => {
   const t0 = Date.now();
   while (!release) {
-    if (Date.now() - t0 > 120_000) throw new Error("the held tool was never reached");
+    if (Date.now() - t0 > 60_000) throw new Error("the held tool was never reached");
     await new Promise((r) => setTimeout(r, 25));
   }
 };
 
-const echo = () =>
+const testTools = () =>
   createSdkMcpServer({
-    name: "vault_chat",
+    name: "test_tools",
     version: "1.0.0",
+    // As vault-chat's own server is: tool search is off, so nothing may be deferred.
+    alwaysLoad: true,
     tools: [
       tool("echo", "Echo back a word", {}, async () => ({ content: [{ type: "text" as const, text: "echo: ok" }] })),
       // Held until the test lets go, so the window to queue into is as long as
@@ -172,8 +176,11 @@ beforeAll(async () => {
       CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
     }),
     policy: new StubPi(),
-    mcpServers: () => ({ vault_chat: echo() }),
-    allowedTools: () => ["mcp__vault_chat__echo", "mcp__vault_chat__slow"],
+    // vault-chat's own tools come from the engine, bound over the host's MCP
+    // runtime; this one is only the test's way to hold a turn open.
+    mcp: new McpRuntime(),
+    fileTools: [],
+    mcpServers: () => ({ test_tools: testTools() }),
   });
   claude = new ClaudeCodeBackend({ ...claudeOpts(), log: () => {} });
   router = new BackendRouter({ pi: new StubPi(), claude, engineOf: () => choice, log: () => {} });
@@ -260,20 +267,40 @@ describe("a conversation on Claude Code", () => {
     expect(JSON.stringify(last.messages)).toContain("say something");
   }, 180_000);
 
-  it("a tool call shows as a tool row with its result, through vault-chat's own MCP server", async () => {
-    const r = await engine.message({ text: 'CALL mcp__vault_chat__echo {}', convId: "cc-conv-2" });
-    await answered(r.convId, 'CALL mcp__vault_chat__echo {}');
+  it("vault-chat's own tools are there, and one the agent calls is answered by the engine", async () => {
+    // The session's tools are the engine's host catalog, bound over vault-chat's
+    // loopback MCP server with a bearer that lives only in the session's headers.
+    const r = await engine.message({ text: 'CALL mcp__vault_chat__JobList {}', convId: "cc-conv-2" });
+    await answered(r.convId, 'CALL mcp__vault_chat__JobList {}');
+
+    // What the MODEL was given, which is the thing that matters: vault-chat's
+    // tools, not deferred behind tool search.
+    const offered: string[] = (api.requests[api.requests.length - 1].tools ?? []).map((x: any) => x.name);
+    for (const want of ["AskUser", "Notify", "StartJob", "JobList", "SearchHistory"]) {
+      expect(offered).toContain(`mcp__vault_chat__${want}`);
+    }
+    // Nothing of Claude Code's own. The one non-MCP entry is Claude Code's
+    // inert tool-search stub ("Reserved placeholder that keeps deferred tool
+    // loading active; never call this tool"), which is why every server
+    // vault-chat gives a session is always-loaded: ToolSearch itself is one of
+    // the built-ins this host turns off, so a deferred tool would reach the
+    // model as a placeholder it could never open.
+    expect(offered.filter((n) => !n.startsWith("mcp__") && n !== "DeferredToolPlaceholder")).toEqual([]);
+    expect(offered).toContain("DeferredToolPlaceholder");
+
+    // The row says the tool's own name: the clients strip vault-chat's prefix.
     const p = engine.picture(r.convId);
     const tools = p.items.filter((i: any) => i.kind === "tool");
-    expect(tools.map((t: any) => [t.name, t.status, t.result])).toEqual([["echo", "done", "echo: ok"]]);
-    // The reply is still the reply, and the commentary is not in it.
+    expect(tools.map((t: any) => [t.name, t.status])).toEqual([["JobList", "done"]]);
+    // It really ran: the engine answered it, so the row carries its result.
+    expect(String(tools[0].result ?? "")).not.toBe("");
     expect(p.items.filter((i: any) => i.kind === "assistant").length).toBeGreaterThan(0);
   }, 180_000);
 
   it("a queued message is pending in the chat until its own turn takes it", async () => {
     // A turn that sits in a tool call, so there is a window to queue into.
     release = null;
-    const r = await engine.message({ text: 'CALL mcp__vault_chat__slow {}', convId: "cc-conv-queue" });
+    const r = await engine.message({ text: 'CALL mcp__test_tools__slow {}', convId: "cc-conv-queue" });
     await inSlowTool();
 
     const q = await engine.message({ convId: r.convId, text: "the queued one", queue: true, clientMsgId: "c-q1" });
@@ -295,7 +322,7 @@ describe("a conversation on Claude Code", () => {
 
   it("a queued message taken back before delivery never reaches the model", async () => {
     release = null;
-    const r = await engine.message({ text: 'CALL mcp__vault_chat__slow {}', convId: "cc-conv-unqueue" });
+    const r = await engine.message({ text: 'CALL mcp__test_tools__slow {}', convId: "cc-conv-unqueue" });
     await inSlowTool();
     const q = await engine.message({ convId: r.convId, text: "NEVER-SENT-KIWI", queue: true, clientMsgId: "c-u1" });
     expect((await engine.message({ convId: r.convId, unqueue: q.qid })).ok).toBe(true);
@@ -310,7 +337,7 @@ describe("a conversation on Claude Code", () => {
     // Something Carl did that the agent must hear once. An adopted turn sends no
     // prompt, so it must not swallow it: the next real turn still carries it.
     release = null;
-    const r = await engine.message({ text: 'CALL mcp__vault_chat__slow {}', convId: "cc-conv-adopt" });
+    const r = await engine.message({ text: 'CALL mcp__test_tools__slow {}', convId: "cc-conv-adopt" });
     await inSlowTool();
     await patchMeta(vault, r.convId, { tellAgent: ["Carl deleted the physics project."] });
     const q = await engine.message({ convId: r.convId, text: "the queued one", queue: true, clientMsgId: "c-a1" });

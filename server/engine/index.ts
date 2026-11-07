@@ -25,6 +25,7 @@ import { masterDir, masterLayout } from "../master";
 import { listPiModels, modelWindow, piPaths, vaultPiPaths, writePiConfig, type PiPaths } from "./pi/config";
 import { PiBackend, outerWith, type PiSandbox } from "./pi/backend";
 import { ClaudeCodeBackend } from "./claude/backend";
+import { McpRuntime } from "../mcp/runtime";
 import { claudePaths, type ClaudePaths } from "./claude/paths";
 import { findClaude, type ClaudeInstall } from "./claude/install";
 import { BackendRouter, type EngineName } from "./router";
@@ -390,10 +391,18 @@ export async function startEngine(b: EngineBoot): Promise<EngineHandle> {
             HOME: st.claude.configDir,
             CLAUDE_CONFIG_DIR: st.claude.configDir,
             CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
+            // An MCP call that waits on Carl (AskUser) is not idle; the
+            // per-server timeout above is the only cap that should apply.
+            CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT: "0",
             ...(process.env.ANTHROPIC_BASE_URL ? { ANTHROPIC_BASE_URL: process.env.ANTHROPIC_BASE_URL } : {}),
           }),
-          // vault-chat has one path policy, and pi's extension owns it today (phase 4 moves it behind MCP).
+          // vault-chat has one path policy, and pi's extension owns it today; the
+          // Claude Code session reaches it through vault-chat's own file tools.
           policy: backend,
+          // vault-chat's tools, bound per session over its own loopback MCP
+          // server: the bearer travels only in the session's HTTP headers.
+          mcp: new McpRuntime(),
+          toolTimeoutMs: Number(process.env.VC_CLAUDE_TOOL_TIMEOUT_MS) || 6 * 3_600_000,
           idleMs: Number(process.env.VC_CLAUDE_IDLE_MS) || 10 * 60_000,
           maxSessions: Number(process.env.VC_CLAUDE_MAX_SESSIONS) || 4,
           ...(v.main ? {} : { log: (m: string) => console.log(`[claude:${v.name}] ${m}`) }),
