@@ -8,8 +8,9 @@ import { EventEmitter } from "node:events";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmp, cleanup } from "./helpers";
+import { readEntries } from "../convlog/piSession";
 import { fakeAnthropic, type FakeApi } from "./claudeFakeApi";
-import { findClaude } from "../engine/claude/install";
+import { findClaude, type ClaudeInstall } from "../engine/claude/install";
 import { claudePaths } from "../engine/claude/paths";
 import { ClaudeCodeBackend, isClaudeThread } from "../engine/claude/backend";
 import { BackendRouter, type EngineName } from "../engine/router";
@@ -106,6 +107,7 @@ class StubPi extends EventEmitter implements EngineBackend {
 let api: FakeApi;
 let engine: any;
 let claude: ClaudeCodeBackend;
+let claudeOpts: () => Omit<ConstructorParameters<typeof ClaudeCodeBackend>[0], "log">;
 let router: BackendRouter;
 let readConv: (v: string, id: string) => Promise<any>;
 let choice: EngineName = "claude";
@@ -155,8 +157,8 @@ beforeAll(async () => {
   configureContext({ vault, agentModel: "haiku" });
 
   const paths = claudePaths(join(root, "state"));
-  claude = new ClaudeCodeBackend({
-    install: found.install,
+  claudeOpts = () => ({
+    install: (found as { install: ClaudeInstall }).install,
     paths,
     feedSessionsDir: join(vault, ".vault-chat", "events", "sessions"),
     env: () => ({
@@ -170,8 +172,8 @@ beforeAll(async () => {
     policy: new StubPi(),
     mcpServers: () => ({ vault_chat: echo() }),
     allowedTools: () => ["mcp__vault_chat__echo", "mcp__vault_chat__slow"],
-    log: () => {},
   });
+  claude = new ClaudeCodeBackend({ ...claudeOpts(), log: () => {} });
   router = new BackendRouter({ pi: new StubPi(), claude, engineOf: () => choice, log: () => {} });
 
   const { Engine } = await import("../engine/engine");
@@ -301,6 +303,46 @@ describe("a conversation on Claude Code", () => {
     expect(conv.messages.some((m: any) => m.content === "NEVER-SENT-KIWI")).toBe(false);
     expect(JSON.stringify(api.requests)).not.toContain("NEVER-SENT-KIWI");
   }, 180_000);
+
+  it("a restart resumes the thread from box state: same session, same transcript file", async () => {
+    const convId = "cc-conv-1";
+    const before = await readConv(vault, convId);
+    const threadId = before.threadId as string;
+    const file = before.threadPath as string;
+    const sessionBefore = JSON.parse(readFileSync(claudePaths(join(root, "state")).threadsFile, "utf8"))[threadId].sessionId;
+    const entriesBefore = readEntries(file).length;
+
+    // A fresh backend over the same state dir is what the next boot has.
+    const restarted = new ClaudeCodeBackend({ ...claudeOpts(), log: () => {} });
+    restarted.start();
+    try {
+      // It knows the thread, and takes it back without starting a new one.
+      await restarted.resumeThread(threadId, { model: "haiku", subagents: false });
+      expect(restarted.holds(threadId)).toBe(true);
+      expect(restarted.threadSource(threadId)).toMatchObject({ file, cwd: vault });
+
+      const done = new Promise<void>((r) => restarted.once("event", function wait(e: any) {
+        if (e.kind === "turnCompleted") r();
+        else restarted.once("event", wait);
+      }));
+      await restarted.startTurn(threadId, { texts: ["after the restart"], images: [], model: "haiku" });
+      await done;
+
+      // Same Claude Code session, and the transcript went on in the same file.
+      expect(JSON.parse(readFileSync(claudePaths(join(root, "state")).threadsFile, "utf8"))[threadId].sessionId).toBe(sessionBefore);
+      const entries = readEntries(file);
+      expect(entries.length).toBeGreaterThan(entriesBefore);
+      expect(entries.some((x) => x.message?.role === "user" && JSON.stringify(x.message.content).includes("after the restart"))).toBe(true);
+      // The model was given the earlier conversation, not a blank session.
+      expect(JSON.stringify(api.requests[api.requests.length - 1].messages)).toContain("say something");
+    } finally {
+      restarted.stop();
+    }
+  }, 180_000);
+
+  it("a thread this engine never started is not its to resume", async () => {
+    await expect(claude.resumeThread("cc-not-a-thread", { model: "haiku", subagents: false })).rejects.toMatchObject({ threadUnknown: true });
+  });
 
   it("a conversation set to pi does not get a Claude Code thread", async () => {
     choice = "pi";
