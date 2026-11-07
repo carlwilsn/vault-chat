@@ -82,6 +82,19 @@ export function newClientId(): string {
 
 /** The box this vault's chat runs on, or null (not box mode / headless). */
 /**
+ * Hand the laptop's keys to a server we just connected to. Set by boxKeys at
+ * import time rather than imported here: boxKeys already imports this module,
+ * and a cycle between the two is not worth the convenience.
+ */
+let pushKeys: ((url: string) => Promise<string | null>) | null = null;
+export function onKeysPushable(fn: (url: string) => Promise<string | null>): void {
+  pushKeys = fn;
+}
+function pushVaultKeys(url: string): Promise<string | null> {
+  return pushKeys ? pushKeys(url) : Promise.resolve(null);
+}
+
+/**
  * The server this app is running itself for a vault with no box. Started only by
  * ensureLocalServer, never by boxLinkFor: boxLinkFor is asked constantly, by
  * every caller that wants to reach the box, and starting a process from there
@@ -873,6 +886,13 @@ export function startBoxChat(vault: string): Promise<boolean> {
     const cur = useStore.getState().boxChat;
     if (!cur?.on) useStore.getState().setBoxChat({ on: true, reachable: null, reason: "" });
     session.start();
+    // Carl signs in ONCE, on his laptop. Every connect hands the server the keys
+    // again, so a box added after he signed in — or one rebuilt, restarted or
+    // updated since — has his Claude sign-in without him doing anything, and a
+    // server the app just started for a vault with no box gets it too (that one
+    // begins with an empty key store). It is the existing push, so the token
+    // still travels only that way and is never logged.
+    void pushVaultKeys(link.url);
     return true;
   })();
   starting = { vault, p };

@@ -5,8 +5,7 @@
 // The box keeps them in its own key store, never in the vault or git.
 import { useStore } from "./store";
 import { KEY, listUserKeys, getUserKey, userKeyName } from "./keychain";
-import { boxPost } from "./boxChat";
-import { readBoxConfig } from "./vaultSync";
+import { boxLinkFor, boxPost, onKeysPushable } from "./boxChat";
 
 /** Every key this laptop has, by keychain name (api.*, service.*, user.*). */
 export async function laptopKeys(): Promise<Record<string, string>> {
@@ -49,9 +48,19 @@ export async function pushKeysToBox(url: string): Promise<string | null> {
   return err;
 }
 
-/** Settings → Keys changed something: push to the open vault's box, if any. */
+/**
+ * A key changed: give it to whatever server serves the open vault — his box, or
+ * the one the app runs itself when there is no box (boxChat.boxLinkFor).
+ *
+ * The local one matters as much as a box: it starts with an empty key store, so
+ * without this a sign-in on a machine with no box would leave the AI still
+ * asking to sign in.
+ */
 export async function keysChanged(): Promise<void> {
-  const vault = useStore.getState().vaultPath;
-  const cfg = vault ? await readBoxConfig(vault) : null;
-  if (cfg) await pushKeysToBox(cfg.box);
+  const link = await boxLinkFor(useStore.getState().vaultPath);
+  if (link) await pushKeysToBox(link.url);
 }
+
+// boxChat hands a newly connected server its keys through this, so a sign-in
+// made before a box existed reaches that box the moment it connects.
+onKeysPushable(pushKeysToBox);
