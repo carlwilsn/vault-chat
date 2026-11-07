@@ -9,7 +9,11 @@
 // under the state dir. That needs nothing installed (the spike's patchelf copy
 // needed patchelf and 325 MB of duplicate binary).
 //
-// Last resort: a `claude` already on PATH, whatever version the box has.
+// The deployed box installs a bundle and assets, not node_modules, so the SDK's
+// platform package is only present where the repo is (development, the gates).
+// On the box the pinned binary can be dropped at <stateDir>/claude/cli/claude
+// and is preferred over whatever `claude` is on PATH — which is the last
+// resort, and whose version may not match the SDK's.
 import { chmodSync, existsSync, mkdirSync, openSync, readSync, closeSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { dirname, join } from "node:path";
@@ -20,7 +24,7 @@ export type ClaudeInstall = {
   cli: string;
   version: string;
   /** How it was found, for health and the boot line. */
-  source: "env" | "bundled" | "loader" | "path";
+  source: "env" | "bundled" | "loader" | "installed" | "installedLoader" | "path";
 };
 
 /** `claude --version` → its version, or null (it did not run). */
@@ -100,6 +104,19 @@ export function findClaude(o: { stateDir: string; env?: NodeJS.ProcessEnv }): { 
     const v = probe(want);
     if (v) return { install: { cli: want, version: v, source: "env" } };
     tried.push(`VC_CLAUDE_BIN=${want}: did not answer --version`);
+  }
+  // The pinned binary a box install dropped beside the state dir.
+  const installed = join(o.stateDir, "claude", "cli", "claude");
+  if (existsSync(installed)) {
+    const direct = probe(installed);
+    if (direct) return { install: { cli: installed, version: direct, source: "installed" } };
+    tried.push(`${installed}: did not run directly`);
+    const loader = elfInterpreter(process.execPath);
+    if (loader && existsSync(loader)) {
+      const viaLoader = probe(loader, [installed]);
+      if (viaLoader) return { install: { cli: loaderWrapper(join(o.stateDir, "claude", "bin"), installed, loader), version: viaLoader, source: "installedLoader" } };
+      tried.push(`${loader} ${installed}: did not answer --version either`);
+    }
   }
   const bundled = bundledCli();
   if (bundled) {

@@ -40,6 +40,23 @@ describe("the Claude Code the box runs", () => {
     cleanup(root);
   });
 
+  it("a pinned binary a box install dropped under the state dir beats whatever is on PATH", () => {
+    const root = tmp("vcci6-");
+    const found = findClaude({ stateDir: root, env: {} });
+    if ("error" in found) throw new Error(found.error);
+    // The deployed box has no node_modules, so this is how it gets the CLI whose
+    // version matches the SDK's rather than the one that happens to be on PATH.
+    const cliDir = join(root, "claude", "cli");
+    mkdirSync(cliDir, { recursive: true });
+    const pinned = join(cliDir, "claude");
+    writeFileSync(pinned, `#!/bin/sh\nexec ${JSON.stringify(found.install.cli)} "$@"\n`);
+    chmodSync(pinned, 0o755);
+    const picked = findClaude({ stateDir: root, env: {} });
+    if ("error" in picked) throw new Error(picked.error);
+    expect(picked.install).toMatchObject({ cli: pinned, source: "installed", version: found.install.version });
+    cleanup(root);
+  }, 120_000);
+
   it("VC_CLAUDE_BIN wins when it works, and is reported as the reason when it does not", () => {
     const root = tmp("vcci3-");
     const good = findClaude({ stateDir: root, env: {} });
