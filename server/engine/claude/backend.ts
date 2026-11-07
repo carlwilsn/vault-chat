@@ -26,6 +26,7 @@ import {
   type Detached,
   type EngineBackend,
   type Handlers,
+  type LiveChild,
   type SideRunner,
   type ToolSpec,
 } from "../backend";
@@ -70,6 +71,15 @@ type ThreadState = {
   file: string;
 };
 
+/** One message pushed into a session's input, and the user entry it will become. */
+type Pushed = {
+  /** What the feed shows (Carl's words, without the host's context). */
+  text: string;
+  request?: UserRequest;
+  images: string[];
+  priority?: "later" | "now";
+};
+
 type Live = {
   id: string;
   session: ClaudeSession;
@@ -77,8 +87,9 @@ type Live = {
   /** The turn in flight, and whether the engine asked for it. */
   turnId: string | null;
   lastUsed: number;
-  /** Messages pushed and not seen in a result yet: what clearQueue can take back. */
-  pending: Map<string, { text: string; priority?: "later" | "now" }>;
+  /** Pushed and not delivered yet: what clearQueue can take back, and the feed
+   *  entry each one becomes once Claude Code actually consumes it. */
+  pending: Map<string, Pushed>;
 };
 
 /** Thread ids this backend owns. The router needs no state to tell them apart. */
@@ -229,8 +240,7 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
     }
     const turnId = o.turnId ?? randomUUID();
     live.turnId = turnId;
-    this.writeUserEntry(t, o.texts.join("\n\n"), o.request, o.images);
-    this.push(live, { text: promptOf(o.texts, o.context), images: o.images });
+    this.push(live, { text: promptOf(o.texts, o.context), images: o.images }, { text: o.texts.join("\n\n"), request: o.request, images: o.images });
     this.ev({ kind: "turnStarted", threadId, turnId });
     return { turnId };
   }
@@ -239,18 +249,16 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
     const t = this.threads[threadId];
     const live = this.open(threadId);
     if (!t || !live) throw new ThreadUnknownError(`no Claude Code thread ${threadId}`);
-    this.writeUserEntry(t, o.texts.join("\n\n"), o.request, o.images);
     // No priority: Claude Code folds it into the running turn after the current tool result.
-    this.push(live, { text: promptOf(o.texts, o.context), images: o.images });
+    this.push(live, { text: promptOf(o.texts, o.context), images: o.images }, { text: o.texts.join("\n\n"), request: o.request, images: o.images });
   }
 
   async followUp(threadId: string, o: { texts: string[]; context?: string; request?: UserRequest; images?: string[] }): Promise<void> {
     const t = this.threads[threadId];
     const live = this.open(threadId);
     if (!t || !live) throw new ThreadUnknownError(`no Claude Code thread ${threadId}`);
-    this.writeUserEntry(t, o.texts.join("\n\n"), o.request, o.images ?? []);
     // Its own next turn.
-    this.push(live, { text: promptOf(o.texts, o.context), images: o.images ?? [], priority: "later" });
+    this.push(live, { text: promptOf(o.texts, o.context), images: o.images ?? [], priority: "later" }, { text: o.texts.join("\n\n"), request: o.request, images: o.images ?? [] });
   }
 
   async clearQueue(threadId: string): Promise<{ steering: string[]; followUp: string[] }> {
@@ -259,9 +267,12 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
     const steering: string[] = [];
     const followUp: string[] = [];
     for (const [uuid, m] of [...live.pending]) {
-      if (!(await live.session.withdraw(uuid))) continue; // already delivered: not ours to take back
+      const taken = await live.session.withdraw(uuid);
+      // Either way it stops being ours to deliver: `pending` holds only messages
+      // Claude Code has not consumed, so one it refuses to give back is one it
+      // has just taken, and its entry is already written.
       live.pending.delete(uuid);
-      (m.priority === "later" ? followUp : steering).push(m.text);
+      if (taken) (m.priority === "later" ? followUp : steering).push(m.text);
     }
     return { steering, followUp };
   }
@@ -342,6 +353,11 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
     return [];
   }
 
+  /** Claude Code's subagents are its own; vault-chat keeps no children here. */
+  liveChildren(): LiveChild[] {
+    return [];
+  }
+
   // ------------------------------------------------------------------ the session, and its stream
 
   /** The thread's live session, started (or resumed) if it is not up. */
@@ -376,11 +392,26 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
     return live;
   }
 
-  private push(live: Live, s: SessionSend): void {
+  private push(live: Live, s: SessionSend, entry: Pushed): void {
     const uuid = randomUUID();
-    live.pending.set(uuid, { text: s.text, ...(s.priority ? { priority: s.priority } : {}) });
+    live.pending.set(uuid, { ...entry, ...(s.priority ? { priority: s.priority } : {}) });
     live.session.send({ ...s, uuid });
     live.lastUsed = Date.now();
+  }
+
+  /**
+   * Claude Code has consumed these pushed messages, so each becomes the feed's
+   * user entry now — not when it was pushed. That is what makes a queued
+   * message pending in the chat until its turn takes it, exactly as with pi:
+   * the entry (and the pointer the feed writes for it) is the delivery.
+   */
+  private deliver(live: Live, t: ThreadState, uuids: unknown): void {
+    for (const u of Array.isArray(uuids) ? uuids : [uuids]) {
+      const p = typeof u === "string" ? live.pending.get(u) : undefined;
+      if (!p) continue;
+      live.pending.delete(u as string);
+      this.writeUserEntry(t, p.text, p.request, p.images);
+    }
   }
 
   /** Carl's message, as the feed's user entry (the client's identity rides on it). */
@@ -398,6 +429,9 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
     const t = this.threads[threadId];
     if (!live || !t) return;
     live.lastUsed = Date.now();
+    // Which of our pushed messages this turn has taken, in the order it took them.
+    const stamped = (m as any).user_message_uuids ?? (m as any).user_message_uuid;
+    if (stamped !== undefined) this.deliver(live, t, stamped);
     // An unprompted turn (a background task finished while idle) is a turn too.
     if (!live.turnId && m.type === "stream_event" && (m as any).event?.type === "message_start") {
       live.turnId = randomUUID();
@@ -428,8 +462,9 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
         this.emit("rateLimit", this.limit);
         return;
       case "done": {
-        // Everything pushed has been consumed by the turn that just ended.
-        live.pending.clear();
+        // What is still pending was never consumed by this turn (it is queued
+        // for the next one, or was taken back), so nothing is delivered here.
+        // Only Claude Code's own uuid stamp says a message has been taken.
         const turnId = live.turnId;
         live.turnId = null;
         this.ev({ kind: "turnCompleted", threadId, turnId, status: e.status, error: e.error });

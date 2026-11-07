@@ -187,6 +187,14 @@ export class BackendRouter extends EventEmitter implements EngineBackend {
     return this.of(parentThreadId).detach(parentThreadId);
   }
 
+  liveChildren(parentThreadId: string): LiveChild[] {
+    return this.of(parentThreadId).liveChildren(parentThreadId);
+  }
+
+  cancelContinuation(threadId: string): Promise<boolean> {
+    return this.of(threadId).cancelContinuation?.(threadId) ?? Promise.resolve(false);
+  }
+
   liveChild(childId: string): LiveChild | null {
     for (const b of this.all()) {
       const hit = b.liveChild?.(childId);

@@ -164,7 +164,7 @@ type Live = {
 
 };
 
-type TurnOpts = { completion?: import("./pi/backend").NativeCompletion; /** Send now replays the existing feed directly into Pi before its replacement prompt can settle. */ replay?: Expected[]; /** Existing host-owned job/wake identity, never a push arm. */ pushWorkId?: string; images?: string[]; context?: string; hostContext?: string; itemImages?: ItemImage[]; clientId?: string; /** What the chat shows (Carl's answer to a question asked before a restart). */ shown?: string; device?: "laptop" | "phone" | "board" | null; via?: string; /** Which client sent it (the turn log's `via`: laptop, phone, voice …). */ origin?: string; /** A wake, job or resume of something Carl started. */ byCarl?: boolean; /** An engine input that runs as its own turn once the running one ends, never folded into it (a background report: pi may settle the turn before a follow-up is taken, and a turn parked on a question takes none). */ ownTurn?: boolean };
+type TurnOpts = { completion?: import("./backend").NativeCompletion; /** Send now replays the existing feed directly into Pi before its replacement prompt can settle. */ replay?: Expected[]; /** Existing host-owned job/wake identity, never a push arm. */ pushWorkId?: string; images?: string[]; context?: string; hostContext?: string; itemImages?: ItemImage[]; clientId?: string; /** What the chat shows (Carl's answer to a question asked before a restart). */ shown?: string; device?: "laptop" | "phone" | "board" | null; via?: string; /** Which client sent it (the turn log's `via`: laptop, phone, voice …). */ origin?: string; /** A wake, job or resume of something Carl started. */ byCarl?: boolean; /** An engine input that runs as its own turn once the running one ends, never folded into it (a background report: pi may settle the turn before a follow-up is taken, and a turn parked on a question takes none). */ ownTurn?: boolean; /** The backend already started this turn by itself (a queued message it took, a background task that finished): open the turn around it instead of sending a prompt. */ adopt?: boolean };
 
 const RESUME_TEXT =
   "The box restarted (or the engine stopped) while your last turn was running, so any command it was running was killed and may not have finished. Re-check reality (files, processes, logs), then continue from where you were.";
@@ -502,6 +502,8 @@ const PI_BUILTIN_TOOLS = ["read", "write", "edit", "bash", "grep", "find", "ls",
 export class Engine {
   private live = new Map<string, Live>(); // convId → live turn
   private byThread = new Map<string, string>(); // threadId → convId
+  /** Threads whose backend-started turn is being opened (adopt()). */
+  private adopting = new Set<string>();
   private chains = new Map<string, Promise<unknown>>();
   /** Notify calls per conversation in the last hour (the agent's pings are capped). */
   private pings = new Map<string, number[]>();
@@ -1599,6 +1601,8 @@ export class Engine {
     const release = holdRun(convId);
     return this.serial(convId, async () => {
       const existing = this.live.get(convId);
+      // A turn the backend started is already covered by the one that is open.
+      if (opts.adopt && existing && !existing.finished) return;
       if (existing && !existing.finished) {
         if (opts.ownTurn && kind !== "user") {
           void this.turnEnd(convId).then(() => this.run(convId, input, kind, opts)).catch((e) => this.log(`after-turn input on ${convId}: ${e}`));
@@ -1735,7 +1739,7 @@ export class Engine {
       // What Carl did elsewhere is not in the prompt: pi's extension adds it (the "you" layer, a vc-you custom message).
       // Host instructions/memory are pi custom context, never a forged user message.
       const texts = [kind === "wake" ? input : body].filter(Boolean);
-      live.feed.expect({ kind: "prompt", text: texts.join("\n\n"), clientId: kind === "user" ? clientId : undefined, ...shownInput, ...(opts.itemImages?.length ? { images: opts.itemImages } : {}), ...(kind === "user" && (opts.device ?? validDevice(opts.origin)) ? { device: opts.device ?? opts.origin } : {}) });
+      if (!opts.adopt) live.feed.expect({ kind: "prompt", text: texts.join("\n\n"), clientId: kind === "user" ? clientId : undefined, ...shownInput, ...(opts.itemImages?.length ? { images: opts.itemImages } : {}), ...(kind === "user" && (opts.device ?? validDevice(opts.origin)) ? { device: opts.device ?? opts.origin } : {}) });
       // A live call learns where this turn came from (a call speaks only its own surface's exchange).
       if (this.taps.has(convId)) this.tapEmit(convId, { type: "vc_turn_start", kind, origin: opts.origin ?? null });
       try {
@@ -1752,7 +1756,10 @@ export class Engine {
           const queued = { texts: [e.text], context: e.hostContext, request: e.clientId ? { v: 1 as const, clientId: e.clientId, via: e.via, ...(e.device ? { device: e.device } : {}), ...(e.images?.length ? { images: e.images.map(({ path }) => ({ path })) } : {}) } : undefined, images: (e.images ?? []).map(im => join(this.d.vault, im.path)) };
           await this.d.backend.followUp(threadId, queued);
         }
-        await this.d.backend.startTurn(threadId, { texts, completion: kind === "user" ? undefined : opts.completion, context: [rules, ...context].filter(Boolean).join("\n\n"), ...(kind === "user" ? { request: { v: 1 as const, clientId, via: shownInput.via, ...(opts.device ?? validDevice(opts.origin) ? { device: opts.device ?? opts.origin } : {}), ...(opts.itemImages?.length ? { images: opts.itemImages.map(({ path }) => ({ path })) } : {}) } } : {}), images: opts.images ?? [], model, turnId, ...(talker?.thinking ? { thinking: talker.thinking } : {}) });
+        // An adopted turn is already running in the backend: it gets no prompt,
+        // and what it was started for (a queued message it took, a background
+        // task that finished) is already in the transcript.
+        if (!opts.adopt) await this.d.backend.startTurn(threadId, { texts, completion: kind === "user" ? undefined : opts.completion, context: [rules, ...context].filter(Boolean).join("\n\n"), ...(kind === "user" ? { request: { v: 1 as const, clientId, via: shownInput.via, ...(opts.device ?? validDevice(opts.origin) ? { device: opts.device ?? opts.origin } : {}), ...(opts.itemImages?.length ? { images: opts.itemImages.map(({ path }) => ({ path })) } : {}) } } : {}), images: opts.images ?? [], model, turnId, ...(talker?.thinking ? { thinking: talker.thinking } : {}) });
         live.started = true;
         // Stop may arrive before the prompt itself reached pi (model/context
         // setup). Honor it at native acceptance too, without a fresh prompt.
@@ -1917,7 +1924,14 @@ export class Engine {
       return;
     }
     const l = this.liveByThread(e.threadId);
-    if (!l) return;
+    if (!l) {
+      // A turn the backend started by itself: a queued message it has taken, or
+      // a background task of its own that finished while nothing was running.
+      // The host takes it as an ordinary turn, so the feed and the clients show
+      // it like any other (it is how the chat stays whole).
+      if (e.kind === "turnStarted" && !shuttingDown) this.adopt(e.threadId);
+      return;
+    }
     switch (e.kind) {
       case "pi":
         this.onPi(l, e.ev);
@@ -1997,6 +2011,18 @@ export class Engine {
     }
     l.feed.onPi(ev);
     if (this.taps.has(l.convId)) this.tapEmit(l.convId, ev);
+  }
+
+  /** Open a turn around one the backend started by itself (see onEvent). */
+  private adopt(threadId: string): void {
+    const convId = this.byThread.get(threadId);
+    // One adoption at a time: the backend can report several events before the
+    // turn is open, and a second run() would push an empty message into it.
+    if (!convId || this.live.get(convId) || this.adopting.has(threadId)) return;
+    this.adopting.add(threadId);
+    void this.run(convId, "", "resume", { adopt: true })
+      .catch((e) => this.log(`adopting a turn on ${convId}: ${(e as Error).message}`))
+      .finally(() => this.adopting.delete(threadId));
   }
 
   private onThreadLost(l: Live): void {

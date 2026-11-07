@@ -115,7 +115,14 @@ const echo = () =>
   createSdkMcpServer({
     name: "vault_chat",
     version: "1.0.0",
-    tools: [tool("echo", "Echo back a word", {}, async () => ({ content: [{ type: "text" as const, text: "echo: ok" }] }))],
+    tools: [
+      tool("echo", "Echo back a word", {}, async () => ({ content: [{ type: "text" as const, text: "echo: ok" }] })),
+      // A call long enough to queue a message into the turn that is running.
+      tool("slow", "Take a few seconds", {}, async () => {
+        await new Promise((r) => setTimeout(r, 4_000));
+        return { content: [{ type: "text" as const, text: "slow: done" }] };
+      }),
+    ],
   });
 
 beforeAll(async () => {
@@ -150,7 +157,7 @@ beforeAll(async () => {
     }),
     policy: new StubPi(),
     mcpServers: () => ({ vault_chat: echo() }),
-    allowedTools: () => ["mcp__vault_chat__echo"],
+    allowedTools: () => ["mcp__vault_chat__echo", "mcp__vault_chat__slow"],
     log: () => {},
   });
   router = new BackendRouter({ pi: new StubPi(), claude, engineOf: () => choice, log: () => {} });
@@ -245,6 +252,38 @@ describe("a conversation on Claude Code", () => {
     expect(tools.map((t: any) => [t.name, t.status, t.result])).toEqual([["echo", "done", "echo: ok"]]);
     // The reply is still the reply, and the commentary is not in it.
     expect(p.items.filter((i: any) => i.kind === "assistant").length).toBeGreaterThan(0);
+  }, 180_000);
+
+  it("a queued message is pending in the chat until its own turn takes it", async () => {
+    // A turn that sits in a tool call, so there is a window to queue into.
+    const r = await engine.message({ text: 'CALL mcp__vault_chat__slow {}', convId: "cc-conv-queue" });
+    await until(async () => ((await readConv(vault, r.convId))?.messages ?? []).some((m: any) => m.content?.includes("slow")));
+
+    const q = await engine.message({ convId: r.convId, text: "the queued one", queue: true, clientMsgId: "c-q1" });
+    expect(q.queued).toBe(true);
+    // Shown as waiting, and NOT in the transcript: the entry is the delivery.
+    let conv = await readConv(vault, r.convId);
+    expect(conv.queued.map((x: any) => x.text)).toEqual(["the queued one"]);
+    expect(conv.messages.some((m: any) => m.content === "the queued one")).toBe(false);
+
+    // Its own turn takes it: now it is in the transcript, under the client's id.
+    await answered(r.convId, "the queued one");
+    conv = await readConv(vault, r.convId);
+    expect(conv.queued ?? []).toEqual([]);
+    const row = conv.messages.find((m: any) => m.content === "the queued one");
+    expect(row.mid).toBe("c-q1");
+    expect(conv.messages.filter((m: any) => m.content === "the queued one")).toHaveLength(1);
+  }, 180_000);
+
+  it("a queued message taken back before delivery never reaches the model", async () => {
+    const r = await engine.message({ text: 'CALL mcp__vault_chat__slow {}', convId: "cc-conv-unqueue" });
+    await until(async () => ((await readConv(vault, r.convId))?.messages ?? []).some((m: any) => m.content?.includes("slow")));
+    const q = await engine.message({ convId: r.convId, text: "NEVER-SENT-KIWI", queue: true, clientMsgId: "c-u1" });
+    expect((await engine.message({ convId: r.convId, unqueue: q.qid })).ok).toBe(true);
+    await until(async () => (await readConv(vault, r.convId))?.state === "idle");
+    const conv = await readConv(vault, r.convId);
+    expect(conv.messages.some((m: any) => m.content === "NEVER-SENT-KIWI")).toBe(false);
+    expect(JSON.stringify(api.requests)).not.toContain("NEVER-SENT-KIWI");
   }, 180_000);
 
   it("a conversation set to pi does not get a Claude Code thread", async () => {
