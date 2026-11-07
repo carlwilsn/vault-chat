@@ -2422,7 +2422,12 @@ export class Engine {
           // engine, tools and rules apply — this chat lends it nothing.
           const r = await this.message({ convId: target, text: body, via: "handoff" });
           if (r?.error) return text(`Not posted: ${String(r.error)}`);
-          return text(`Posted to "${to.title}" (${target}); it is taking its own turn. It will tell Carl itself, so do not wait or report for it.`);
+          // A chat that is mid-turn takes it when that turn ends, as any message does.
+          const waiting = r?.queued === true || r?.steered === true;
+          return text(
+            `Posted to "${to.title}" (${target}); it ${waiting ? "has it waiting and will take it when its current turn ends" : "is taking its own turn"}. ` +
+              `It will tell Carl itself, so do not wait or report for it.`,
+          );
         }
         case "Notify": {
           // At most 4 pings an hour per conversation; past that they go to the

@@ -511,7 +511,7 @@ describe("a conversation on Claude Code", () => {
     // The chat that posted was told it does not wait, and its own turn ended.
     const tools = engine.picture(r.convId).items.filter((i: any) => i.kind === "tool");
     expect(tools.map((t: any) => t.name)).toEqual(["PostToConversation"]);
-    expect(String(tools[0].result ?? "")).toContain("taking its own turn");
+    expect(String(tools[0].result ?? "")).toMatch(/taking its own turn|take it when its current turn ends/);
   }, 240_000);
 
   it("a handoff refuses this chat itself and a chat that is not there", async () => {
