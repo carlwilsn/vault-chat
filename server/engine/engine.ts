@@ -1561,6 +1561,14 @@ export class Engine {
    * change takes effect at the next roll-over, or at once for a conversation
    * that has no thread yet.
    */
+  /** Which engine this conversation's turns run on: its thread's, else what its next thread would be. */
+  async engineOf(convId: string): Promise<string> {
+    const conv = await readConv(this.d.vault, convId);
+    if (conv?.threadId) return this.d.backend.engineOf?.(conv.threadId) ?? this.d.backend.name;
+    const own = this.picture(convId)?.meta.engine;
+    return own === "claude" || own === "pi" ? own : this.d.backend.name;
+  }
+
   async setEngine(convId: string, engine: string): Promise<Record<string, unknown>> {
     const want = String(engine ?? "").trim();
     if (want !== "pi" && want !== "claude") return { ok: false, error: 'engine: "pi" or "claude"' };

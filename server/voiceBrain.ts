@@ -37,6 +37,8 @@ import { calibFrom } from "../src/voiceWaitLine";
 export type BrainEngine = {
   message(b: { convId?: string | null; text?: string; context?: string; source?: string; via?: string; client?: string; clientMsgId?: string; continues?: boolean; unqueue?: string }): Promise<Record<string, unknown> | null>;
   setTalker(convId: string, t: { model: string; rules: string; thinking?: string } | null): void;
+  /** Which engine this conversation's turns run on ("pi", "claude"): the talker model follows it. */
+  engineOf?(convId: string): Promise<string>;
   tap(convId: string, fn: (ev: any) => void): () => void;
   isRunning(convId: string): boolean;
   interrupt(convId: string, byUser: boolean): Promise<boolean>;
@@ -91,8 +93,16 @@ async function pipelineUp(d: BrainDeps): Promise<boolean> {
     return false;
   }
 }
-/** The talker: a fast model for turns while a call is live (the conversation's own model does the delegated work). */
-export const talkerModel = (): string => process.env.VC_VOICE_TALKER_MODEL || "anthropic/claude-haiku-5.5";
+/**
+ * The talker: a fast model for turns while a call is live (the conversation's own
+ * model does the delegated work). Which one depends on the engine the
+ * conversation runs on — Claude Code names its models itself and cannot run an
+ * OpenRouter path, and pi cannot run a Claude alias.
+ */
+export const talkerModel = (engine = "pi"): string =>
+  engine === "claude"
+    ? process.env.VC_CLAUDE_VOICE_TALKER_MODEL || "haiku"
+    : process.env.VC_VOICE_TALKER_MODEL || "anthropic/claude-haiku-5.5";
 /** The talker's thinking (pi's levels: off, minimal, low, medium, high): a spoken reply wants little. */
 export const talkerThinking = (): string => "off";
 
@@ -249,6 +259,9 @@ export async function startCall(d: BrainDeps, b: { convId?: unknown; device?: un
   await speechReady();
   const token = randomBytes(32);
   const thinking = talkerThinking();
+  // Its turns run on whichever engine the conversation runs on, so the talker
+  // must be a model that engine can actually run.
+  const model = talkerModel(await engine.engineOf?.(convId).catch(() => "pi") ?? "pi");
   const call: Call = {
     id: `bc-${Date.now().toString(36)}-${rid(4)}`,
     token,
@@ -258,7 +271,7 @@ export async function startCall(d: BrainDeps, b: { convId?: unknown; device?: un
     convId,
     device,
     // Devices cannot introduce another voice model or enable thinking.
-    model: talkerModel(),
+    model,
     startedAt: Date.now(),
     sink: null,
     dropping: false,

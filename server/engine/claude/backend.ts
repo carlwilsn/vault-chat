@@ -126,6 +126,8 @@ type Live = {
   revoke: (() => Promise<void>) | null;
   /** What the memory file looked like when this session last carried it. */
   memory: MemoryMark;
+  /** The thinking level this session was last set to (the voice turns it off). */
+  thinking?: string;
 };
 
 /** Thread ids this backend owns. The router needs no state to tell them apart. */
@@ -317,6 +319,12 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
       t.model = o.model;
       this.save();
       await live.session.setModel(o.model);
+    }
+    // A call's turns ask for no thinking: a pause before the first word is a
+    // silence Carl hears. Only a change is sent.
+    if (o.thinking && o.thinking !== live.thinking) {
+      live.thinking = o.thinking;
+      await live.session.setThinking(o.thinking);
     }
     const turnId = o.turnId ?? randomUUID();
     live.turnId = turnId;

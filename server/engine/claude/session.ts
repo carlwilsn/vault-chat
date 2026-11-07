@@ -232,6 +232,17 @@ export class ClaudeSession {
     await this.q?.setModel(model).catch(() => undefined);
   }
 
+  /**
+   * How much the session may think. pi's levels come in as words; only "off"
+   * matters here, and it matters for the voice: a spoken reply that thinks
+   * first is a silence Carl hears.
+   */
+  async setThinking(level: string): Promise<void> {
+    const q = this.q as unknown as { setMaxThinkingTokens?: (n: number | null) => Promise<void> } | null;
+    if (!q?.setMaxThinkingTokens) return;
+    await q.setMaxThinkingTokens(level === "off" ? 0 : null).catch(() => undefined);
+  }
+
   /** Replace the MCP servers this session can reach, without restarting it. */
   async setMcpServers(servers: Record<string, unknown>): Promise<void> {
     const set = (this.q as unknown as { setMcpServers?: (s: Record<string, unknown>) => Promise<unknown> } | null)?.setMcpServers;

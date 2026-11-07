@@ -192,6 +192,9 @@ export type EngineBackend = {
   holds(threadId: string): boolean;
   /** Drop the thread from this runtime without ending the conversation (the next turn takes it again). */
   forget(threadId: string): void;
+  /** Which engine owns this thread, by name. A single backend is always itself;
+   *  a router of several answers for the one that holds it. */
+  engineOf?(threadId: string): string;
   /** Where a thread's transcript, instructions and working folder are, or null (not this runtime's). */
   threadSource(threadId: string): { file: string; instr: string; cwd: string } | null;
   /** Write one of vault-chat's own lines (a notice) into the thread's transcript. False: it could not. */

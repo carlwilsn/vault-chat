@@ -67,6 +67,11 @@ export class BackendRouter extends EventEmitter implements EngineBackend {
     return this.head.name;
   }
 
+  /** Which engine holds this thread (the voice's talker model follows it). */
+  engineOf(threadId: string): string {
+    return this.of(threadId).name;
+  }
+
   /** The thread's own engine answers: pi's turns carry memory, Claude Code's do not. */
   carriesMemory(threadId: string): boolean {
     return !!this.of(threadId).carriesMemory?.(threadId);
