@@ -1,7 +1,7 @@
 import { beforeAll, afterAll, describe, expect, it } from "vitest";
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -35,12 +35,26 @@ describe("executed server release identity", () => {
   });
   it("packages precisely the executable identity and bytes it verified", () => {
     const out = join(work, "release");
-    // A release now also packages the pinned Claude Code CLI, which is a 340 MB
-    // binary to compress: this step legitimately takes far longer than it used to.
-    execFileSync(process.execPath, ["scripts/build-server-release.mjs"], { cwd: root, env: { ...env(), VERSION: version, REV: rev, OUT_DIR: out }, timeout: 180_000 });
+    // A release also packages the pinned Claude Code CLI. The real one is a
+    // 340 MB binary, and compressing it here would make this suite slow enough
+    // to starve a neighbouring test whose deadline is a fraction of a second —
+    // so the builder is pointed at a stand-in. What is asserted is the same:
+    // that the asset is there and its sha256 is the one the metadata names.
+    const stubCli = join(work, "claude-stub");
+    writeFileSync(stubCli, "#!/bin/sh\necho '9.9.9 (Claude Code)'\n");
+    execFileSync(process.execPath, ["scripts/build-server-release.mjs"], { cwd: root, env: { ...env(), VERSION: version, REV: rev, OUT_DIR: out, VC_RELEASE_CLAUDE_CLI: stubCli }, timeout: 60_000 });
     const meta = JSON.parse(readFileSync(join(out, "server-version.json"), "utf8"));
     const info = JSON.parse(execFileSync(process.execPath, [join(out, "vault-chat-server.mjs"), "build-info"], { env: env(), encoding: "utf8", timeout: 10_000 }));
     expect(info).toEqual({ version: meta.version, rev: meta.rev });
     expect(meta.sha256).toBe(createHash("sha256").update(readFileSync(join(out, "vault-chat-server.mjs"))).digest("hex"));
+    // The CLI a box will install, named in the metadata by the same rule as the
+    // bundle: without this a release looks complete and leaves a box with no
+    // Claude Code at all.
+    const cliTar = join(out, "vault-chat-claude-cli.tar.gz");
+    expect(meta.claudeCliSha256).toBe(createHash("sha256").update(readFileSync(cliTar)).digest("hex"));
+    expect(readFileSync(`${cliTar}.sha256`, "utf8")).toBe(`${meta.claudeCliSha256}  vault-chat-claude-cli.tar.gz\n`);
+    // And it unpacks under the one name the updater looks for.
+    execFileSync("tar", ["-xzf", cliTar, "-C", work], { timeout: 30_000 });
+    expect(existsSync(join(work, "claude"))).toBe(true);
   });
 });

@@ -98,19 +98,29 @@ writeFileSync(`${deployTar}.sha256`, `${deploySha}  vault-chat-deploy.tar.gz\n`)
 // and left out, loudly but not fatally, where it is not: a release without it
 // still installs, and such a box falls back to a `claude` on PATH.
 const cliPkg = `node_modules/@anthropic-ai/claude-agent-sdk-${process.platform}-${process.arch}`;
-const cliBin = join(cliPkg, "claude");
+// VC_RELEASE_CLAUDE_CLI names the executable to ship instead of the installed
+// platform package's. A release uses the pinned one; the tests point it at a
+// small stand-in, because compressing the real 340 MB binary inside the test
+// suite starved a neighbouring test whose deadline is a fraction of a second.
+const cliBin = process.env.VC_RELEASE_CLAUDE_CLI || join(cliPkg, "claude");
 let claudeCli = null;
 if (existsSync(cliBin)) {
   const cliTar = join(out, "vault-chat-claude-cli.tar.gz");
-  // The quick setting, deliberately: this one asset is a 340 MB binary, and the
-  // slow setting spends minutes to save ~8% of an already huge download — long
-  // enough that it timed out the release test it runs inside.
+  // Always packed as "claude", whatever the source file is called: the updater
+  // looks for that name. Staged rather than renamed in the tar, because
+  // --transform is GNU-only and a release must not depend on which tar ran.
+  const cliStage = join(out, "cli-staging");
+  mkdirSync(cliStage, { recursive: true });
+  copyFileSync(cliBin, join(cliStage, "claude"));
+  // The quick setting, deliberately: the real asset is a 340 MB binary, and the
+  // slow setting spends minutes to save ~8% of an already huge download.
   const fast = ["-I", "gzip -1"];
   try {
-    execFileSync("tar", [...gnuFlags, ...fast, "-cf", cliTar, "-C", cliPkg, "claude"], { stdio: "inherit" });
+    execFileSync("tar", [...gnuFlags, ...fast, "-cf", cliTar, "-C", cliStage, "claude"], { stdio: "inherit" });
   } catch {
-    execFileSync("tar", [...fast, "-cf", cliTar, "-C", cliPkg, "claude"], { stdio: "inherit" });
+    execFileSync("tar", [...fast, "-cf", cliTar, "-C", cliStage, "claude"], { stdio: "inherit" });
   }
+  rmSync(cliStage, { recursive: true, force: true });
   const cliSha = sha256(cliTar);
   writeFileSync(`${cliTar}.sha256`, `${cliSha}  vault-chat-claude-cli.tar.gz\n`);
   // The version the CLI itself reports, not the package's: it is what the box runs.
