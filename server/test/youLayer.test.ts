@@ -38,13 +38,16 @@ const entries = (file: string): any[] =>
     .split("\n")
     .filter(Boolean)
     .map((l) => JSON.parse(l));
-/** The "you" layer of one model call: the host puts it in the prompt itself. */
-const layerOf = (call: any): string => (/<you>[\s\S]*?<\/you>/.exec(callText(call)) ?? [""])[0];
+/** The "you" layer this turn was sent: the host puts it in the prompt itself, and
+ *  a request carries the whole conversation, so the turn's own layer is the last. */
+const layerOf = (call: any): string => (callText(call).match(/<you>[\s\S]*?<\/you>/g) ?? [""]).at(-1)!;
 /** Every message's text of one model call. */
 const callText = (c: any) => (c?.messages ?? []).map((m: any) => (typeof m.content === "string" ? m.content : JSON.stringify(m.content))).join("\n");
 /** The model call of the turn whose prompt starts with this marker (a pointer to it elsewhere says "Carl: <marker>"). */
 const msgText = (m: any) => (typeof m.content === "string" ? m.content : (m.content ?? []).map((c: any) => c?.text ?? "").join(""));
-const callWith = (marker: string) => [...or.calls].reverse().find((c) => (c?.messages ?? []).some((m: any) => m.role === "user" && new RegExp(`(^|\\n)${marker}`).test(msgText(m))));
+/** The call of the turn this marker was sent in: the FIRST one carrying it (a
+ *  later request repeats the whole conversation, so the newest is not its turn). */
+const callWith = (marker: string) => or.calls.find((c) => (c?.messages ?? []).some((m: any) => m.role === "user" && new RegExp(`(^|\\n)${marker}`).test(msgText(m))));
 
 /** One message in a conversation (a new separate chat without `conv`), the model answering `reply`; the turn waited out. */
 async function send(text: string, reply: string, conv?: string, client = "laptop"): Promise<string> {

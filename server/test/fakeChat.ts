@@ -36,12 +36,15 @@ export function chatText(body: any): string {
   return out.join("\n");
 }
 
-/** The newest user message's text (Carl's: the "you" layer pi sends after it, as a user message, is skipped). */
+/** Does this message carry a tool's result? (Anthropic puts them in a user message.) */
+const isToolResult = (m: any) => Array.isArray(m?.content) && m.content.some((b: any) => b?.type === "tool_result");
+
+/** The newest user message's text (Carl's: a layer sent after it, or a tool's result, is skipped). */
 export function lastUser(body: any): string {
   const ms: any[] = body?.messages ?? [];
   for (let i = ms.length - 1; i >= 0; i--) {
     const m = ms[i];
-    if (m?.role !== "user") continue;
+    if (m?.role !== "user" || isToolResult(m)) continue;
     const t = typeof m.content === "string" ? m.content : (m.content ?? []).map((c: any) => (typeof c?.text === "string" ? c.text : "")).join("\n");
     if (t.startsWith("<you>")) continue;
     return t;
@@ -49,13 +52,18 @@ export function lastUser(body: any): string {
   return "";
 }
 
-/** The last message, when it is a tool result: its text. */
+/** The last message, when it is a tool result: its text. Both shapes — a `tool`
+ *  role, and Anthropic's user message of tool_result blocks. */
 export function lastToolResult(body: any): string | null {
   const ms: any[] = body?.messages ?? [];
   const m = ms[ms.length - 1];
-  if (m?.role !== "tool") return null;
-  if (typeof m.content === "string") return m.content;
-  return (m.content ?? []).map((c: any) => c?.text ?? "").join("\n");
+  if (!m) return null;
+  if (m.role === "tool") return typeof m.content === "string" ? m.content : (m.content ?? []).map((c: any) => c?.text ?? "").join("\n");
+  if (!isToolResult(m)) return null;
+  return m.content
+    .filter((b: any) => b?.type === "tool_result")
+    .map((b: any) => (typeof b.content === "string" ? b.content : (b.content ?? []).map((c: any) => c?.text ?? "").join("\n")))
+    .join("\n");
 }
 
 export async function fakeChat(): Promise<FakeChat> {

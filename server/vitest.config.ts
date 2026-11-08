@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url";
 import { inlinedKatexCss } from "./katexCssGen.mjs";
 
 /** Timing-sensitive files: they pass alone and race under parallel load. */
-const SERIAL = ["server/test/voiceBusyRace.test.ts", "server/test/updaterHttpDeadline.test.ts"];
+const SERIAL = ["server/test/updaterHttpDeadline.test.ts"];
 
 const shim = (f: string) => fileURLToPath(new URL(`./shims/${f}`, import.meta.url));
 

@@ -43,6 +43,7 @@ class FakeBackend extends EventEmitter {
   readonly name = "pi";
   threads: { threadId: string; instructions: string }[] = [];
   turns: { threadId: string; texts: string[]; images: string[]; turnId: string }[] = [];
+  start() {}
   setHandlers() {}
   async ready() {
     return true;

@@ -3,7 +3,6 @@
 // Not browser, installed-service, compaction-timing, or delivery proof.
 import { describe, it, expect } from "vitest";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { makeVault, startServer, tmp, waitFor, type Running } from "./helpers";
 import { fakeAnthropic, type FakeApi } from "./claudeFakeApi";
@@ -35,8 +34,7 @@ globalThis.fetch=(input,init)=>{
     let srv: Running | undefined;
     try {
       srv = await startServer({ home, vault, secrets: join(home, "empty-no-credentials"), anthropic: provider.url,
-        extra: {  ".local/state/vault-chat-server/pi/1.1.0"),
-          VC_STATE_DIR: state, VC_VOICE_PIPELINE: "off", NODE_OPTIONS: "--import " + network } });
+        extra: { VC_STATE_DIR: state, VC_VOICE_PIPELINE: "off", NODE_OPTIONS: "--import " + network } });
       expect(srv.proc.exitCode).toBeNull();
       expect(srv.port).toBeGreaterThan(0);
       expect([8848, 8857]).not.toContain(srv.port);
