@@ -183,7 +183,9 @@ export type EngineBackend = {
   /** The engine answers tool calls, questions and the "you" layer through these. Called once, before start(). */
   setHandlers(h: Handlers): void;
   /** Begin running (after setHandlers). */
-  start(): void;
+  /** Bring the runtime up, once its handlers are wired. A backend with nothing
+   *  to start (a test's stand-in) may leave it out. */
+  start?(): void;
   /** Resolve true once the runtime can take a turn, false if it could not within `ms`. */
   ready(ms?: number): Promise<boolean>;
   /**
@@ -208,8 +210,6 @@ export type EngineBackend = {
   /** Drop the thread from this runtime without ending the conversation (the next turn takes it again). */
   forget(threadId: string): void;
   /** Which engine owns this thread, by name. A single backend is always itself;
-   *  a router of several answers for the one that holds it. */
-  engineOf?(threadId: string): string;
   /** Where a thread's transcript, instructions and working folder are, or null (not this runtime's). */
   threadSource(threadId: string): { file: string; instr: string; cwd: string } | null;
   /** Write one of vault-chat's own lines (a notice) into the thread's transcript. False: it could not. */

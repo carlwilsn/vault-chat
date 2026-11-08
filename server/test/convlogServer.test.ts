@@ -148,11 +148,15 @@ describe("the feed over HTTP", () => {
     expect(s.queued).toBe(true);
     const q = await intent({ type: "queue", convId: conv, clientId: "c-queue-1", text: "Then give an example." });
     expect(q.queued).toBe(true);
-    // Pending in the feed until pi delivers them.
+    // Pending in the feed until the runtime delivers them.
     const mid = fold(await recsOf(conv), conv);
     expect(pendingOf(mid).map((x) => [x.id, x.kind])).toEqual([["c-steer-1", "queue"], ["c-queue-1", "queue"]]);
-    await waitFor(() => ended(conv, 2), 60_000);
-    const p = fold(await recsOf(conv), conv);
+    // Both delivered and answered: nothing pending, and the turn they waited for
+    // plus the one that took them have both ended.
+    const p = await waitFor(async () => {
+      const fresh = fold(await recsOf(conv), conv);
+      return !pendingOf(fresh).length && (await endedSince(conv, h0, 2)) ? fresh : null;
+    }, 60_000);
     expect(pendingOf(p)).toEqual([]);
     // All three are there, in the order his clients sent them — whether the
     // runtime took the two he queued as two messages or as one.

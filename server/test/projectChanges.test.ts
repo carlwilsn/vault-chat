@@ -80,7 +80,8 @@ describe("a git project: service proof owns main; legacy cards remain readable",
     expect(sent).toContain("SITE-AGENTS: keep the font at 16px.");
     expect(sent).toContain("then call SubmitChange");
     expect(sent).not.toContain("only his Keep merges your branch into it");
-    const m = /You work in your own clone of it, ([^ ]+?)\/: relative/.exec(JSON.parse(sent).messages.map((x: any) => x.content).join("\n"));
+    const said = (m: any) => (typeof m.content === "string" ? m.content : (m.content ?? []).map((b: any) => b?.text ?? "").join("\n"));
+    const m = /You work in your own clone of it, ([^ ]+?)\/: relative/.exec((JSON.parse(sent).messages ?? []).map(said).join("\n"));
     expect(m).toBeTruthy();
     work = m![1]!;
     expect(existsSync(join(work, ".git"))).toBe(true);

@@ -1,5 +1,5 @@
 // Bounded HTTP/native contract for the combined reset + startup source.
-// Actual bundle/Engine/PiBackend/pi 1.1.0; only the provider is local fakeChat.
+// The actual bundle, Engine and runtime; only the model is a local stand-in.
 // Not browser, installed-service, compaction-timing, or delivery proof.
 import { describe, it, expect } from "vitest";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -40,9 +40,7 @@ globalThis.fetch=(input,init)=>{
       expect([8848, 8857]).not.toContain(srv.port);
       const health = await (await fetch(srv.base + "/api/v1/health")).json();
       expect(health.engine.claude.state).toBe("up");
-      expect(health.engine.version).toBe("1.1.0");
-        apiKey: "synthetic-local-only", api: "openai-completions", models: [{ id: "test/fake-model", name: "Local contract",
-          reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 32000, maxTokens: 1000 }] } } }));
+      expect(health.engine.version).toBeTruthy();
       const base = srv.base;
       const conversation = async () => (await fetch(base + "/conversation?id=main&full=1&n=200")).json();
       const genuine = ["<memory>Literal user words, not injected context.</memory>", "Phone follows the same conversation."];
@@ -55,30 +53,36 @@ globalThis.fetch=(input,init)=>{
         expect(await r.json()).toMatchObject({ ok: true, convId: "main" });
         const c = await waitFor(async () => {
           const c = await conversation();
-          return c.messages?.filter((m: any) => m.role === "assistant" && m.content === "Local native contract response.").length === i + 1 && c.state !== "running" ? c : null;
-        }, 10_000, 20);
+          // Idle on the box too, not just in the feed: a send that lands while
+          // anything is still running is a queued message, not a chat one.
+          const h = await (await fetch(base + "/api/v1/health")).json();
+          return c.messages?.filter((m: any) => m.role === "assistant" && m.content === "Local native contract response.").length === i + 1 && c.state !== "running" && h.engine.liveTurns.length === 0 ? c : null;
+        }, 15_000, 20);
         sid ??= c.meta.threadId; path ??= c.meta.threadPath;
         expect(c.meta.threadId).toBe(sid); expect(c.meta.threadPath).toBe(path);
         expect(c.messages.filter((m: any) => m.role === "user").map((m: any) => m.content)).toEqual(genuine.slice(0, i + 1));
         expect(JSON.stringify(c.messages)).not.toContain(canary);
       }
       const entries = readEntries(path!);
-      const contexts = entries.filter(e => e.customType === "vc-context");
-      expect(contexts.length).toBeGreaterThan(0);
-      for (const context of contexts) expect(context).toMatchObject({ type: "custom_message", display: false });
+      // The host's context goes to the model with the turn, never into the
+      // transcript: what is written there is his words and the replies.
+      expect(entries.some(e => e.customType === "vc-context")).toBe(false);
+      expect(provider.calls.some(c => chatText(c).includes("Registered synced vault content"))).toBe(true);
       expect(entries.filter(e => e.message?.role === "user").map(e => e.message!.content)).toEqual(genuine.map(text => [{ type: "text", text }]));
       expect(entries.filter(e => e.message?.role === "user").map(e => e.message!.vcRequest)).toEqual(
         surfaces.map((device, i) => ({ v: 1, clientId: `native-api-${i}`, via: "chat", device })));
       expect(provider.calls).toHaveLength(2);
       for (const call of provider.calls) {
         expect(chatText(call).split(canary).length - 1).toBe(1);
-        const submit = call.tools.find((t: any) => t.function.name === "mcp__vault_chat__SubmitChange");
-        expect(Object.keys(submit.function.parameters.properties).sort()).toEqual(["branch", "title"]);
+        const submit = call.tools.find((t: any) => t.name === "mcp__vault_chat__SubmitChange");
+        expect(Object.keys(submit.input_schema.properties).sort()).toEqual(["branch", "title"]);
       }
       const feed = await (await fetch(base + "/poll?after=0")).json();
       expect(JSON.stringify(feed.events)).not.toContain(canary);
       for (let i = 0; i < 2; i++) expect(feed.events.some((e: any) => e.type === "entry" && e.clientId === `native-api-${i}` && e.entry.message?.role === "user")).toBe(true);
-      expect(JSON.parse(readFileSync(path!, "utf8").split("\n")[0]!).id).toBe(sid);
+      // The transcript's header names the runtime's own session; the host's
+      // thread id is its own (they were the same thing under pi).
+      expect(JSON.parse(readFileSync(path!, "utf8").split("\n")[0]!).id).toBeTruthy();
       expect(readFileSync(outbound, "utf8")).toBe("");
     } finally {
       if (srv) { writeFileSync(join(home, "server.log"), srv.logs()); await srv.stop(); }

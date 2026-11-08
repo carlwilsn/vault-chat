@@ -80,7 +80,14 @@ export type SessionOptions = {
  * surface is bound (Carl's decision: Claude Code's subagents replace
  * vault-chat's workers).
  */
-export const CLAUDE_BUILTINS_OFF: readonly string[] = BUILTIN_TOOL_NAMES;
+/**
+ * Claude Code's own tools, every one of them off unless the host turns it back
+ * on. BUILTIN_TOOL_NAMES is the SDK's own list — but the CLI can offer a tool
+ * the SDK does not name yet: 2.1.319 offers `DesignSync`, which is not in the
+ * list, and so reached the model unruled. Anything measured that way is named
+ * here, and claudeBackend.test.ts fails the day another appears.
+ */
+export const CLAUDE_BUILTINS_OFF: readonly string[] = [...BUILTIN_TOOL_NAMES, "DesignSync"];
 
 export class ClaudeSession {
   /** Claude Code's session id, known from the first message; `resume` uses it next time. */

@@ -328,7 +328,6 @@ async function main(): Promise<void> {
           answer: async (v, b) => (await engineOf(v)).answerRoute(b),
           kill: async (v, b) => (await engineOf(v)).kill(b),
           subagent: async (v, c, sid, op, b) => (await engineOf(v)).subagent(c, sid, op, b),
-          setEngine: async (v, c, e) => (await engineOf(v)).setEngine(c, e),
           intent: async (v, b, viewerRoot) => (await engineOf(v)).intent(b, viewerRoot),
           side: {
             start: async (v, b, viewerRoot) => (await engineOf(v)).sideStart(b, viewerRoot),

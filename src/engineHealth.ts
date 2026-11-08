@@ -1,9 +1,11 @@
-// What the box says about the engines it can run, read out of /api/v1/health.
+// What the box says about the engine it runs, read out of /api/v1/health.
 //
-// The shape moved once: the router's `engines` record used to sit only under
-// whichever engine led (engine.pi.engines), and Engine.health now also hoists it
-// to engine.engines. A client must not care which box version it is talking to,
-// so every reader goes through here and accepts both.
+// The shape has moved twice, and a client must not care which box version it is
+// talking to, so every reader goes through here and accepts all three: the
+// router's `engines` record nested under whichever engine led
+// (engine.pi.engines), the same record hoisted to engine.engines, and — the box
+// vault-chat ships now — no record at all, because there is one engine: it is
+// named in engine.backend and reported under that name.
 export type EngineInfo = { signedIn: boolean; version: string | null };
 
 type Bag = Record<string, unknown>;
@@ -20,7 +22,10 @@ export function enginesOf(health: unknown): Bag | null {
     const nested = bag(bag(v)?.engines);
     if (nested) return nested;
   }
-  return null;
+  // One engine, so nothing to record: read it off the name it answers to.
+  const name = typeof eng.backend === "string" ? eng.backend : null;
+  const only = name ? bag(eng[name]) : null;
+  return name && only ? { default: name, [name]: only } : null;
 }
 
 /** The engine a conversation that has made no choice of its own runs on. */

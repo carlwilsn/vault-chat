@@ -16,7 +16,6 @@ import { ClaudeCodeBackend, isClaudeThread } from "../engine/claude/backend";
 import { McpRuntime } from "../mcp/runtime";
 import { makeChatView } from "../../src/convlog/view";
 import { claudeOf, defaultEngineOf } from "../../src/engineHealth";
-import { BackendRouter, type EngineName } from "../engine/router";
 import type { BoundTools } from "../mcp/tools";
 import type { Detached, EngineBackend, Handlers, SideRunner, ToolSpec } from "../engine/backend";
 
@@ -31,9 +30,10 @@ process.env.VC_PUSH_SUBS = join(root, "subs.json");
 process.env.VC_TOKEN_FILE = join(root, "token");
 process.env.VC_SECRETS_DIR = join(root, "secrets");
 
-/** Enough of pi for the router to lean on for path policy and side threads. */
-class StubPi extends EventEmitter implements EngineBackend {
-  readonly name = "pi";
+/** A policy host for the backend's optional `policy` hook (the host's own file
+ *  tools were pi's; this is the test's stand-in for one). */
+class StubPolicy extends EventEmitter implements EngineBackend {
+  readonly name = "stub";
   setHandlers(_h: Handlers): void {}
   start(): void {}
   async ready(): Promise<boolean> {
@@ -112,10 +112,8 @@ let api: FakeApi;
 let engine: any;
 let claude: ClaudeCodeBackend;
 let claudeOpts: () => Omit<ConstructorParameters<typeof ClaudeCodeBackend>[0], "log">;
-let router: BackendRouter;
 let readConv: (v: string, id: string) => Promise<any>;
 let patchMeta: (v: string, id: string, patch: Record<string, unknown>) => Promise<unknown>;
-let choice: EngineName = "claude";
 const turnLines: any[] = [];
 
 /** Set while the `slow` tool is waiting; calling it lets that tool return. */
@@ -178,7 +176,7 @@ beforeAll(async () => {
       ANTHROPIC_API_KEY: "sk-ant-not-a-real-key",
       CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
     }),
-    policy: new StubPi(),
+    policy: new StubPolicy(),
     // vault-chat's own tools come from the engine, bound over the host's MCP
     // runtime; this one is only the test's way to hold a turn open.
     mcp: new McpRuntime(),
@@ -189,12 +187,11 @@ beforeAll(async () => {
     maxSessions: 16,
   });
   claude = new ClaudeCodeBackend({ ...claudeOpts(), log: () => {} });
-  router = new BackendRouter({ pi: new StubPi(), claude, engineOf: () => choice, log: () => {} });
 
   const { Engine } = await import("../engine/engine");
   engine = new Engine({
     vault,
-    backend: router,
+    backend: claude,
     ledger: { settle: async () => ({ calls: 0, usd: 0, missing: 0, byId: {} }), has: () => false } as any,
     jobEnv: { logDir: join(root, "jobs"), wrap: null, env: {} } as any,
     model: () => "haiku",
@@ -207,7 +204,6 @@ beforeAll(async () => {
     turnLog: (l: any) => turnLines.push(l),
   });
   engine.start();
-  router.start();
 });
 
 afterAll(async () => {
@@ -299,13 +295,20 @@ describe("a conversation on Claude Code", () => {
     for (const want of ["AskUser", "Notify", "StartJob", "JobList", "SearchHistory"]) {
       expect(offered).toContain(`mcp__vault_chat__${want}`);
     }
-    // Nothing of Claude Code's own. The one non-MCP entry is Claude Code's
-    // inert tool-search stub ("Reserved placeholder that keeps deferred tool
-    // loading active; never call this tool"), which is why every server
-    // vault-chat gives a session is always-loaded: ToolSearch itself is one of
-    // the built-ins this host turns off, so a deferred tool would reach the
+    // Of Claude Code's own, ONLY its file tools — which vault-chat's policy rules
+    // before every call (the PreToolUse hook), and which is what let pi's tools
+    // go. Anything else of its own reaching the model is a tool vault-chat has
+    // never ruled on, so this list is exact: it failed the day the CLI started
+    // offering DesignSync, a name the SDK's own BUILTIN_TOOL_NAMES does not have.
+    //
+    // The one remaining non-MCP entry is Claude Code's inert tool-search stub
+    // ("Reserved placeholder that keeps deferred tool loading active; never call
+    // this tool"), which is why every server vault-chat gives a session is
+    // always-loaded: ToolSearch itself is off, so a deferred tool would reach the
     // model as a placeholder it could never open.
-    expect(offered.filter((n) => !n.startsWith("mcp__") && n !== "DeferredToolPlaceholder")).toEqual([]);
+    const own = ["Read", "Write", "Edit", "Glob", "Grep"];
+    for (const t of own) expect(offered).toContain(t);
+    expect(offered.filter((n) => !n.startsWith("mcp__") && n !== "DeferredToolPlaceholder" && !own.includes(n))).toEqual([]);
     expect(offered).toContain("DeferredToolPlaceholder");
 
     // The row says the tool's own name: the clients strip vault-chat's prefix.
@@ -527,26 +530,6 @@ describe("a conversation on Claude Code", () => {
     expect(String(engine.picture(r2.convId).items.filter((i: any) => i.kind === "tool")[0]?.result ?? "")).toContain("No chat with id");
   }, 240_000);
 
-  it("a conversation set to pi does not get a Claude Code thread", async () => {
-    choice = "pi";
-    try {
-      const conv = await engine.setEngine("cc-conv-3", "pi");
-      expect(conv.ok).toBe(false); // no such conversation yet
-      const r = await engine.message({ text: "on pi", convId: "cc-conv-3" });
-      await until(async () => !!(await readConv(vault, r.convId))?.threadId);
-      expect(isClaudeThread((await readConv(vault, r.convId)).threadId)).toBe(false);
-    } finally {
-      choice = "claude";
-    }
-  }, 120_000);
-
-  it("the setting names the engine a conversation's next thread runs on", async () => {
-    expect(await engine.setEngine("cc-conv-1", "pi")).toMatchObject({ ok: true, engine: "pi", appliesTo: "the next thread" });
-    expect(await engine.setEngine("cc-conv-1", "elsewhere")).toMatchObject({ ok: false });
-    // Put it back, so nothing is left pointing at an engine the test did not set up.
-    expect(await engine.setEngine("cc-conv-1", "claude")).toMatchObject({ ok: true, engine: "claude" });
-  });
-
   it("an old conversation whose thread is not Claude Code's continues on it, with what was said handed over", async () => {
     // The world Carl asked for: Claude Code is the only engine, so there is no
     // router and no pi. His conversations from the pi days still carry a thread
@@ -596,41 +579,30 @@ describe("a conversation on Claude Code", () => {
     }
   }, 240_000);
 
-  it("health names the engine in charge, with the other one beside it", () => {
-    // The test's conversations run on Claude Code, so it is the engine in charge
-    // and health reads as its own, with pi beside it.
-    const h = router.health();
-    expect(h).toMatchObject({ state: "up", source: expect.any(String), pi: { state: "up" } });
-    expect(router.name).toBe("claude");
-    // And `engines` names each one the same way whichever leads, which is what a
-    // client reads (Settings → Models asks whether Claude Code is signed in).
-    expect(h.engines).toMatchObject({ default: "claude", claude: { state: "up", signedIn: expect.any(Boolean) }, pi: { state: "up" } });
+  it("health names the engine, and the backend says which one it is", () => {
+    const h = claude.health();
+    expect(h).toMatchObject({ state: "up", source: expect.any(String), signedIn: expect.any(Boolean) });
+    expect(claude.name).toBe("claude");
   });
 
-  it("the health the clients actually read has `engines` at engine.engines", () => {
-    // The bug this pins: a client reads health.engine.engines, but Engine.health()
-    // nests the backend's health under the backend's NAME — so `engines` only ever
-    // existed at engine.<whoever leads>.engines and Settings → Models found
-    // nothing, which is why Carl could not sign in. Read off the REAL
-    // Engine.health(), never a hand-made object, so the shape cannot drift again.
+  it("the health the clients actually read says Claude Code is there and signed in", () => {
+    // The bug this pins, in the shape it has now: a client asks whether Claude
+    // Code is signed in (Settings → Agent, and the one inline chat state). It
+    // used to read that out of the router's `engines` record; with one engine
+    // there is no record, and the reader must find it under the engine's own
+    // name instead — or Carl is told to sign in while he is signed in. Read off
+    // the REAL Engine.health(), never a hand-made object.
     const h = engine.health();
-    expect(h.engines).toMatchObject({ default: expect.any(String), claude: { signedIn: expect.any(Boolean) }, pi: { state: "up" } });
-    // Hoisted, and still nested under the engine in charge for a client built
-    // against the older shape.
-    const led = h[String(h.backend)] as { engines?: unknown };
-    expect(led.engines).toMatchObject({ claude: { signedIn: expect.any(Boolean) } });
-    // The one reader every client goes through takes either shape.
-    expect(claudeOf({ engine: h })).toMatchObject({ signedIn: expect.any(Boolean) });
-    expect(claudeOf({ engine: { [String(h.backend)]: led } })).toMatchObject({ signedIn: expect.any(Boolean) });
-    expect(defaultEngineOf({ engine: h })).toBe((h.engines as { default: string }).default);
-    // Every engine is readable by its own name, whichever one leads. The release
-    // preflight asks for engine.pi.state by name and calls the box down without
-    // it, so a Claude-led box that hid pi here looked like a dead box.
-    expect(h.pi).toMatchObject({ state: "up" });
-    expect(h.claude).toMatchObject({ signedIn: expect.any(Boolean) });
     expect(h.backend).toBe("claude");
+    expect(h.claude).toMatchObject({ state: "up", signedIn: expect.any(Boolean) });
+    // The one reader every client goes through takes this shape and the two the
+    // router used to produce, so a client works against any box version.
+    expect(claudeOf({ engine: h })).toMatchObject({ signedIn: expect.any(Boolean) });
+    expect(defaultEngineOf({ engine: h })).toBe("claude");
+    expect(claudeOf({ engine: { engines: { default: "claude", claude: { signedIn: true } } } })).toMatchObject({ signedIn: true });
+    expect(claudeOf({ engine: { pi: { engines: { default: "claude", claude: { signedIn: true } } } } })).toMatchObject({ signedIn: true });
     // A box with no Claude Code at all: nothing to offer, and no crash.
-    expect(claudeOf({ engine: { pi: { state: "up" } } })).toBeNull();
+    expect(claudeOf({ engine: { backend: "pi", pi: { state: "up" } } })).toBeNull();
     expect(claudeOf(null)).toBeNull();
   });
 });
