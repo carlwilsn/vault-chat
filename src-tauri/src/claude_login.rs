@@ -941,7 +941,12 @@ expired, already used, or from an earlier sign-in attempt. Sign in again to get 
     /// The one piece of the flow that must drive the real CLI: that a pty gets
     /// an authorize URL out of it at all. Needs the pinned binary and the
     /// network, so it is not part of the ordinary run — `--ignored` runs it.
-    #[cfg(unix)]
+    ///
+    /// On both platforms, deliberately. It was Unix-only while the button was
+    /// broken on Carl's Windows laptop for three releases, which is exactly the
+    /// machine it had to run on; .github/workflows/windows-signin.yml runs it on
+    /// windows-latest against the real claude.exe and fails if it finds no live
+    /// test to run.
     #[test]
     #[ignore = "drives the real `claude setup-token` (needs the CLI and network)"]
     fn a_real_setup_token_hands_over_a_sign_in_url() {

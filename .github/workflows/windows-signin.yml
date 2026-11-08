@@ -1,0 +1,104 @@
+# Proof that "Sign in with Claude" works on Windows — on a real Windows
+# machine, against the real claude.exe.
+#
+# Why this exists: the button worked on Linux and failed on Carl's Windows 11
+# laptop three releases running ("Opening browser…", then `claude setup-token`
+# never printed a sign-in link, and a claude.exe application-error dialog). The
+# driver is a pty around the real CLI, so nothing short of running it on Windows
+# can say whether it works — and every fix so far was argued from Linux.
+#
+# So this job installs Claude Code the way Carl's laptop has it (the official
+# installer, ~/.local/bin/claude.exe), drives the real sign-in through the real
+# driver, and asserts a whole authorize URL came back. No login is completed:
+# the URL is where a human takes over, and the code the test then sends is
+# deliberately bogus, so nothing here can mint or hold a token.
+#
+# It runs on its own, not inside ship.yml: ship builds installers and must not
+# wait on the network reaching Anthropic, and this needs to be re-runnable on
+# its own whenever the driver is touched.
+name: windows sign-in
+
+on:
+  push:
+    paths:
+      - "src-tauri/src/claude_login.rs"
+      - ".github/workflows/windows-signin.yml"
+  workflow_dispatch:
+
+# One at a time: each run drives a real CLI against Anthropic's OAuth endpoint.
+concurrency:
+  group: windows-signin
+  cancel-in-progress: true
+
+jobs:
+  sign_in:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 20
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      # tauri_build reads the bundle's resources and the frontend dist as it
+      # runs, and both are produced by a full app build this job has no use for.
+      # The sidecar is the real download (it is what a release ships); the
+      # frontend is a stub, because no window is ever opened here.
+      - name: What tauri_build insists on
+        shell: pwsh
+        run: |
+          node scripts/download-tectonic.mjs
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Set-Content -Path dist/index.html -Value '<!doctype html><title>stub</title>'
+
+      # Claude Code as Carl has it: the official Windows installer, which puts
+      # claude.exe in ~/.local/bin — the one path the old lookup never tried.
+      - name: Install Claude Code the way a laptop has it
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          irm https://claude.ai/install.ps1 | iex
+          $cli = Join-Path $env:USERPROFILE '.local\bin\claude.exe'
+          if (-not (Test-Path $cli)) { throw "the installer left no claude.exe at $cli" }
+          & $cli --version
+          if ($LASTEXITCODE -ne 0) { throw "claude.exe would not report its version" }
+          "VC_CLAUDE_BIN=$cli" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      # The driver itself, through its live test. --ignored is how that test is
+      # asked for; a test that is not there, or is compiled out on Windows,
+      # passes nothing, so the run is checked for the test having happened at
+      # all before its result is believed.
+      - name: Drive the real sign-in
+        shell: pwsh
+        working-directory: src-tauri
+        run: |
+          $ErrorActionPreference = 'Continue'
+          cargo test --lib claude_login -- --ignored --nocapture --test-threads=1 2>&1 | Tee-Object -FilePath $env:RUNNER_TEMP\signin.log
+          $code = $LASTEXITCODE
+          $log = Get-Content $env:RUNNER_TEMP\signin.log -Raw
+          if ($log -match 'sk-ant') { throw "a token reached the log" }
+          if ($code -ne 0) { throw "the sign-in driver failed on Windows (exit $code)" }
+          if ($log -notmatch 'a_real_setup_token_hands_over_a_sign_in_url') {
+            throw "the live sign-in test never ran — it is compiled out on Windows, or it was renamed. This job proves nothing without it."
+          }
+          if ($log -notmatch 'test result: ok\. [1-9]') {
+            throw "no live test passed; the run was vacuous"
+          }
+          Write-Host "the real claude.exe handed over a sign-in URL through the real driver"
+
+      # The log is the evidence, and it has been checked for a token above. The
+      # URL in it is a PKCE authorize link for a login nobody completed.
+      - name: Keep the transcript
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-signin-log
+          path: ${{ runner.temp }}/signin.log
+          if-no-files-found: warn
