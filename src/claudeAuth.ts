@@ -34,6 +34,23 @@ export function claudeSignedIn(laptopKey: string | null | undefined, health: unk
 }
 
 /**
+ * The whole answer a surface needs, including whether anything is being asked.
+ *
+ * `vault` is the open vault: with none there is no box and no server of this
+ * app's own, so nothing but this machine's own token could say "signed in" —
+ * and that is an answer, not a wait. (A fresh install sat on "Checking your
+ * Claude sign-in…" for ever, which was the first line in Settings and the one
+ * place the button belongs.) With a vault open and no health yet, it IS a wait:
+ * showing "sign in" to someone who is signed in is worse than a moment's delay.
+ */
+export function claudeAuthOf(laptopKey: string | null | undefined, vault: string | null, health: unknown): ClaudeAuth {
+  if (typeof laptopKey === "string" && laptopKey.trim() !== "") return { signedIn: true, known: true };
+  if (!vault) return { signedIn: false, known: true };
+  if (health == null) return { signedIn: false, known: false };
+  return { signedIn: claudeSignedIn(laptopKey, health), known: true };
+}
+
+/**
  * What a client with no keychain of its own (the phone, the board) makes of a
  * health body: true / false as the box reports, and null while it has not been
  * read. A box that reports no Claude Code at all blocks nothing — it may be an

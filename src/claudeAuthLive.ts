@@ -65,6 +65,10 @@ export function useClaudeSignedIn(): ClaudeAuth {
     };
   }, [on, vault]);
   if (typeof laptopKey === "string" && laptopKey.trim() !== "") return { signedIn: true, known: true };
+  // Deliberately NOT claudeAuthOf's "nothing to ask is an answer": an AI
+  // surface must draw nothing until something has spoken, or a signed-in Carl
+  // sees "sign in" flash. Settings' own account line is the one place that
+  // must not wait for ever, and it asks for that answer itself.
   if (!health) return { signedIn: false, known: false };
   return { signedIn: claudeSignedIn(laptopKey, health.body), known: true };
 }

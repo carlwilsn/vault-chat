@@ -20,7 +20,7 @@ import { useStore } from "./store";
 import { boxLinkFor } from "./boxChat";
 import { pushKeysToBox } from "./boxKeys";
 import { keychainDelete, keychainGet, KEY } from "./keychain";
-import { SIGN_IN_BUTTON, SIGN_IN_LINE, type SignInSurface } from "./claudeAuth";
+import { claudeAuthOf, SIGN_IN_BUTTON, SIGN_IN_LINE, type SignInSurface } from "./claudeAuth";
 import { forgetClaudeHealth, useClaudeSignedIn } from "./claudeAuthLive";
 
 /**
@@ -180,11 +180,17 @@ export function ClaudeAccountLine() {
   const vault = useStore((s) => s.vaultPath);
   const setServiceKey = useStore((s) => s.setServiceKey);
   const clearServiceKey = useStore((s) => s.clearServiceKey);
-  const { signedIn, known } = useClaudeSignedIn();
+  const live = useClaudeSignedIn();
+  // Settings is the one surface that must not wait for ever: with no vault open
+  // there is no box and no server of this app's own, so nothing could answer
+  // and "Checking your Claude sign-in…" was all a fresh install ever showed.
+  // claudeAuthOf turns that into an answer; a vault whose server has not
+  // answered yet is still a wait, which is what the live hook says.
+  const { signedIn, known } = live.known ? live : claudeAuthOf(useStore.getState().serviceKeys.claudeCode, vault, null);
   const [error, setError] = useState<string | null>(null);
 
-  // Not known yet (the box has not answered and this machine holds no token):
-  // one quiet line, never a button that may be wrong a moment later.
+  // Not known yet (something is being asked and has not answered): one quiet
+  // line, never a button that may be wrong a moment later.
   if (!known) {
     return (
       <div className="text-[12px] text-muted-foreground" data-el="claude-account">

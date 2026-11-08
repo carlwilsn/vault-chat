@@ -237,6 +237,7 @@ function Picker({
 // Claude's — src/claudeModels.ts). Signing in is the line at the top of
 // Settings, not a link in here.
 function ModelsSection() {
+  const vaultPath = useStore((s) => s.vaultPath);
   const agent = useAgentModel();
   const agentOptions: PickOption[] = agent.options.map((id) => ({ value: id, label: claudeModelLabel(id) ?? id }));
   // The box may still be set to something that is not a Claude model (a vault
@@ -259,7 +260,12 @@ function ModelsSection() {
               onChange={(v) => void setAgentModel(v)}
             />
           ) : (
-            <p className="text-[11px] text-muted-foreground px-0.5 pt-1">Set on the box once it is connected.</p>
+            // A box is no longer what a model list waits on: with none, the
+            // app runs the server itself for the open vault. So the only true
+            // thing to say is that there is nothing open to ask yet.
+            <p className="text-[11px] text-muted-foreground px-0.5 pt-1">
+              {vaultPath ? "The models appear once the vault's server has answered." : "Open a vault to choose the model."}
+            </p>
           )}
           {agent.error && <p className="text-[10.5px] text-amber-500/90 px-0.5">Not changed: {agent.error}</p>}
         </div>
@@ -380,7 +386,7 @@ function KeysSection() {
       {/* No model-provider key row: the agent is Claude Code, and its sign-in is
           the line at the top of Settings, not a key to paste. What is left here
           is the services the vault's own tools need. */}
-      <SectionHead title="Keys" hint="Kept in this machine's keychain, and sent to the box." />
+      <SectionHead title="Keys" hint="Kept in this machine's keychain, and given to whatever runs your vault." />
       <KeyRow
         label="ElevenLabs"
         value={serviceKeys.elevenlabs}
