@@ -151,11 +151,15 @@ describe("the feed over HTTP", () => {
     // Pending in the feed until the runtime delivers them.
     const mid = fold(await recsOf(conv), conv);
     expect(pendingOf(mid).map((x) => [x.id, x.kind])).toEqual([["c-steer-1", "queue"], ["c-queue-1", "queue"]]);
-    // Both delivered and answered: nothing pending, and the turn they waited for
-    // plus the one that took them have both ended.
+    // Both delivered AND answered: nothing pending, both turns ended, and the
+    // last thing in the chat is a reply — the entry for a message the runtime
+    // has just taken lands before the reply to it, so a fold in between shows
+    // his words last and says nothing about whether they were answered.
     const p = await waitFor(async () => {
       const fresh = fold(await recsOf(conv), conv);
-      return !pendingOf(fresh).length && (await endedSince(conv, h0, 2)) ? fresh : null;
+      if (pendingOf(fresh).length || !(await endedSince(conv, h0, 2))) return null;
+      const kinds = fresh.items.filter((x) => x.kind === "user" || x.kind === "assistant");
+      return kinds.at(-1)?.kind === "assistant" ? fresh : null;
     }, 60_000);
     expect(pendingOf(p)).toEqual([]);
     // All three are there, in the order his clients sent them — whether the

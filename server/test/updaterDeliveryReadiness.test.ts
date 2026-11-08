@@ -17,7 +17,11 @@ async function readiness(h: Record<string, unknown>, revision = "a".repeat(40), 
   if (!address || typeof address === "string") throw new Error("No fixture port");
   try {
     return await new Promise<{ status: number | null; stderr: string }>((resolve, reject) => {
-      const child = spawn("bash", ["-c", 'PATH="$TEST_PATH";\n' + helpers + '\nHEALTH_POLL_S=0.03; UNIT=test-only; wait_for_version 1.0.1 0.15 "$TEST_REV" "$TEST_LEGACY"'], { env: { PATH: process.env.PATH, TEST_PATH: `${dirname(process.execPath)}:${process.env.PATH ?? ""}`, SERVER_URL: `http://127.0.0.1:${address.port}`, TEST_REV: revision, TEST_LEGACY: legacy } });
+      // 1.5s, not 0.15: what is asserted is the CONTRACT (version AND revision
+      // AND readiness), and a deadline that tight fails on a loaded box for
+      // reasons that have nothing to do with it. A case that must fail still
+      // fails — the condition never becomes true, it just takes longer to say so.
+      const child = spawn("bash", ["-c", 'PATH="$TEST_PATH";\n' + helpers + '\nHEALTH_POLL_S=0.03; UNIT=test-only; wait_for_version 1.0.1 1.5 "$TEST_REV" "$TEST_LEGACY"'], { env: { PATH: process.env.PATH, TEST_PATH: `${dirname(process.execPath)}:${process.env.PATH ?? ""}`, SERVER_URL: `http://127.0.0.1:${address.port}`, TEST_REV: revision, TEST_LEGACY: legacy } });
       let stderr = "";
       child.stderr.on("data", d => { stderr += d; });
       child.once("error", reject);
