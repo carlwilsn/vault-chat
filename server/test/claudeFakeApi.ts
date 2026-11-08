@@ -101,11 +101,21 @@ function toolName(body: any, name: string): string {
   return declared.find((d) => d === `mcp__vault_chat__${name}` || d.endsWith(`__${name}`)) ?? name;
 }
 
-/** Carl asked for a slow turn ([slow] in the message this request is answering). */
+/**
+ * Carl asked for a slow turn ([slow] in the message this request is answering).
+ * The newest user message that says anything of his: Claude Code appends its own
+ * system-reminder as a message of its own, and `asked` leaves nothing of one, so
+ * a reminder arriving last must not hide what he wrote.
+ */
 function slowAsked(body: any): boolean {
   const msgs: any[] = body.messages ?? [];
-  const lastUser = [...msgs].reverse().find((m) => m.role === "user" && !isToolResult(m));
-  return /\[slow\]/.test(asked(lastUser?.content));
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    const m = msgs[i];
+    if (m.role !== "user" || isToolResult(m)) continue;
+    const text = asked(m.content).trim();
+    if (text) return /\[slow\]/.test(text);
+  }
+  return false;
 }
 
 /** The reply this request should get: a tool call the prompt asked for, or text. */
