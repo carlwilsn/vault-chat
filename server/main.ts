@@ -115,7 +115,7 @@ async function main(): Promise<void> {
   // which can take minutes): the server answers at once, health says
   // "starting", and agent routes say so until it is up.
   type Handle = Awaited<ReturnType<typeof startEngine>>;
-  let engine: Handle = { engine: null, error: null, health: () => ({ backend: "pi", pi: { state: "starting" } }) };
+  let engine: Handle = { engine: null, error: null, health: () => ({ backend: "claude", claude: { state: "starting" } }) };
   const engineBoot: Promise<Handle> = process.env.VC_ENGINE === "0"
     ? Promise.resolve({ engine: null, error: "disabled (VC_ENGINE=0): turns run on the old in-process loop", health: () => ({}) })
     : startEngine({
@@ -129,7 +129,6 @@ async function main(): Promise<void> {
     tokenPath: cfg.tokenPath,
     localStoragePath: cfg.localStoragePath,
     pushSubsPath: cfg.pushSubsPath,
-    openrouterBase: cfg.openrouterBase,
     serverVersion: SERVER_VERSION,
     apiKey: () => {
       const v = keychainCommands.keychain_get({ key: "api.openrouter" });
@@ -232,10 +231,10 @@ async function main(): Promise<void> {
   const { recentInput } = await import("./presence");
   const bootedAt = Date.now();
   const boxReleaseHealth = async (): Promise<BoxReleaseHealth> => {
-    const pi = engine.health() as { pi?: { state?: string } };
+    const health = engine.health() as { claude?: { state?: string } };
     const pipeline = pipelineState();
     const required = process.env.VC_VOICE_PIPELINE !== "off";
-    return { version: SERVER_VERSION, revision: SERVER_REV, observedAt: Date.now(), ready: !!engine.engine && !engine.error && pi.pi?.state === "up",
+    return { version: SERVER_VERSION, revision: SERVER_REV, observedAt: Date.now(), ready: !!engine.engine && !engine.error && health.claude?.state === "up",
       ...(engine.error ? { error: "Box agent engine failed to initialize" } : {}),
       // Check the managed child, listener ownership and actual runtime HTTP schema; never process-running alone.
       voice: await observeReleaseVoiceHealth({ required, pipeline, stateDir: cfg.stateDir, port: cfg.voicePort, startupDeadline: bootedAt + 10 * 60_000 }) };

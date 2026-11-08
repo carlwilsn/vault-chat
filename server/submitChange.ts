@@ -6,7 +6,7 @@ import { existsSync } from "node:fs";
 import { isGatedProject } from "./projectChanges";
 import { projectFolderOf } from "./projectFolders";
 import { projectOfThread } from "../src/threads";
-import { startServiceJob, readJobs, probeJob, type PiJobEnv } from "./engine/pi/jobs";
+import { startServiceJob, readJobs, probeJob, type JobEnv } from "./engine/jobs";
 import { killTree } from "./commands/proc";
 
 export type SubmitChangeArgs = { title: string; branch: string };
@@ -42,10 +42,10 @@ export function runInstalledShip(repo: string, mode: "--branch", value: string, 
     child.on("close", code => { cleanup(); if (signal.aborted) reject(new Error("Shipping cancelled")); else if (code !== 0) reject(new Error(`Host shipping failed (${code}); inspect the job log. ${output.slice(-1200)}`)); else resolve(output.trim()); });
   });
 }
-function running(o: { jobs: PiJobEnv; convId: string }): void {
+function running(o: { jobs: JobEnv; convId: string }): void {
   if (readJobs(o.jobs).some(j => j.conv === o.convId && j.kind === "service" && probeJob(o.jobs, j).state === "running")) throw new Error("A shipping job is already running in this conversation");
 }
-export async function submitChangeJob(o: { vault: string; convId: string; byCarl: boolean; jobs: PiJobEnv }, args: SubmitChangeArgs) {
+export async function submitChangeJob(o: { vault: string; convId: string; byCarl: boolean; jobs: JobEnv }, args: SubmitChangeArgs) {
   const slug = projectOfThread(o.convId), chosen = slug ? projectFolderOf(o.vault, slug) : null;
   if (!slug || !chosen || "error" in chosen || !isGatedProject(chosen.abs)) throw new Error("SubmitChange requires the current git project's conversation");
   if (!args.title?.trim() || !/^agent\/[a-z0-9][a-z0-9._/-]{0,100}$/.test(args.branch ?? "")) throw new Error("Provide a title and pushed agent branch");

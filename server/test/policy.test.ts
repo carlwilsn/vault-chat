@@ -1,12 +1,13 @@
-// The pi extension's pure helpers (server/engine/pi/ext/policy.mjs): no pi, no server.
+// vault-chat's path policy, pure (server/engine/policy.mjs): the guard that rules
+// every file call the agent makes, now that Claude Code uses its own tools.
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmp, cleanup } from "./helpers";
 // @ts-ignore — plain JS module shared with the extension
-import { scrubEnv, guardToolCall, resolveList, addCacheMarkers, toTypebox, costFromStreamEvent, shq } from "../engine/pi/ext/policy.mjs";
+import { scrubEnv, guardToolCall, resolveList, addCacheMarkers, toTypebox, costFromStreamEvent, shq } from "../engine/policy.mjs";
 
-describe("pi extension policy", () => {
+describe("the path policy", () => {
   let home: string;
   beforeAll(() => {
     home = tmp("vcpol-");

@@ -43,6 +43,13 @@ export class ThreadUnknownError extends Error {
 }
 
 /** A host tool's answer: its text, and images it attaches (pi image blocks: base64 + mime). */
+/**
+ * The tools a side thread may use and still be "read only": a Ctrl+K lookup
+ * answers from the vault without changing it. (pi's, originally; the names are
+ * the contract both engines' side runners speak.)
+ */
+export const READ_ONLY_TOOLS = ["read", "grep", "find", "ls"];
+
 export type ToolAnswer = { ok: boolean; text: string; images?: { data: string; mimeType: string }[]; resources?: { uri: string; mimeType: string; blob: string }[] };
 /** A piece of work the host started that has now finished, named so a bounded
  *  continuation can tell its own completion from any other event. */

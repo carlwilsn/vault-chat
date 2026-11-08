@@ -3,7 +3,7 @@
 import { spawn } from "node:child_process";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
-import type { ToolSpec } from "../engine/pi/backend";
+import type { ToolSpec } from "../engine/backend";
 import type { BoundTools } from "./tools";
 
 export const FILE_TOOLS = ["read", "write", "edit", "bash", "grep", "find", "ls"];

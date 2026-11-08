@@ -4,7 +4,7 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { AjvJsonSchemaValidator } from "@modelcontextprotocol/sdk/validation/ajv";
 import { CallToolRequestSchema, ErrorCode, ListToolsRequestSchema, ListResourcesRequestSchema, ReadResourceRequestSchema, McpError, type CallToolResult, type Tool } from "@modelcontextprotocol/sdk/types.js";
-import type { ToolAnswer, ToolSpec } from "../engine/pi/backend";
+import type { ToolAnswer, ToolSpec } from "../engine/backend";
 
 export type McpCallContext = {
   signal: AbortSignal;

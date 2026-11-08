@@ -1,11 +1,11 @@
 // Tool bodies that are not about the conversation itself: PdfRead (page
 // ranges, never the whole document by default), PdfPages (the pages themselves,
 // to the model as a PDF) and WebSearch (OpenRouter's web plugin on a cheap
-// model). Detached jobs are in pi/jobs.ts.
+// model). Detached jobs are in engine/jobs.ts.
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, realpathSync, lstatSync, renameSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
-import type { ToolSpec, ToolAnswer } from "./pi/backend";
+import type { ToolSpec, ToolAnswer } from "./backend";
 
 // ---- PdfRead ----
 const PDF_DEFAULT_PAGES = "1-3";

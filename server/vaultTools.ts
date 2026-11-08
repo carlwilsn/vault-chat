@@ -11,7 +11,7 @@ import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { killTree } from "./commands/proc";
 import { agentKeyEnv, keychainCommands } from "./keys";
-import type { ToolSpec } from "./engine/pi/backend";
+import type { ToolSpec } from "./engine/backend";
 
 const READ_CAP = 24_000;
 const OUT_CAP = 8_000;

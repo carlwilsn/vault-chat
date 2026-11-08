@@ -12,8 +12,8 @@
 // extension — it is vault-chat's own code, imported here in-process rather than
 // written out to pi's state dir.
 import { join } from "node:path";
-// @ts-ignore a plain .mjs (the same helpers pi's extension loads): one policy, one copy
-import { guardToolCall, resolveList } from "../pi/ext/policy.mjs";
+// @ts-ignore a plain .mjs — vault-chat's own policy, kept when pi went
+import { guardToolCall, isUnder, realish, resolveList } from "../policy.mjs";
 
 /**
  * The deny lists, from the sandbox alone. Both engines read them from here so
@@ -83,6 +83,26 @@ export function touchesOf(tool: string, input: Record<string, unknown>): Touch[]
     default:
       return [];
   }
+}
+
+/**
+ * Why a path handed in from outside a tool call is refused, or null.
+ *
+ * The host's own readers (a PDF the viewer opens, an attachment) resolve a path
+ * against the thread's folder and must not reach round the walls by symlink or
+ * `..`; this is the same decision as a tool call's, on the resolved path.
+ */
+export function externalPath(root: string, path: unknown, write: boolean, walls: { denyRead: string[]; denyWrite: string[] }): string | null {
+  const home = process.env.HOME ?? "/";
+  if (typeof path !== "string" || !path.trim()) return "An explicit vault file path is required.";
+  const resolved = realish(path, root, home);
+  if (!isUnder(resolved, realish(root, root, home))) return "Path is outside the explicitly bound vault.";
+  return guardToolCall(write ? "write" : "ls", { path }, {
+    cwd: root,
+    home,
+    denyRead: resolveList(walls.denyRead, home),
+    denyWrite: resolveList(walls.denyWrite, home),
+  });
 }
 
 /**

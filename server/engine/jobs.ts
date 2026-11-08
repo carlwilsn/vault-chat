@@ -12,10 +12,10 @@ import { randomUUID } from "node:crypto";
 import { appendFileSync, chmodSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { writeAtomic } from "../../atomic";
-import { asksAllInterfaces, DEV_HOST_ENV } from "../../devProxy";
+import { writeAtomic } from "../atomic";
+import { asksAllInterfaces, DEV_HOST_ENV } from "../devProxy";
 
-export type PiJobEnv = {
+export type JobEnv = {
   logDir: string;
   /** bubblewrap argv ending in "--" (the agent's shell sandbox, minus the pid namespace), or null. */
   wrap: string[] | null;
@@ -53,12 +53,12 @@ export type JobRec = {
 };
 
 const serviceJobs = new Map<string, { controller: AbortController; state: "running" | "finished" | "stopped" | "timeout"; exit?: number }>();
-const serviceKey = (env: PiJobEnv, id: string) => `${env.logDir}/${id}`;
+const serviceKey = (env: JobEnv, id: string) => `${env.logDir}/${id}`;
 
 /** A trusted installed-host task, not agent shell/prose. It can outlive the turn but NOT this process.
  * Reuse StartJob's durable registry, cap, status, stop, reaper, conversation wake and background rows.
  * Restart requires rerunning proof: no receipt JSON is an acceptance permit. */
-export function startServiceJob(env: PiJobEnv, a: { name: string; command: string; timeout?: unknown; conv: string; byCarl: boolean }, run: (signal: AbortSignal, log: (text: string) => void) => Promise<string>): { text: string; job?: JobRec } {
+export function startServiceJob(env: JobEnv, a: { name: string; command: string; timeout?: unknown; conv: string; byCarl: boolean }, run: (signal: AbortSignal, log: (text: string) => void) => Promise<string>): { text: string; job?: JobRec } {
   const max = env.max ?? (Number(process.env.VC_JOB_MAX) || 4);
   if (runningJobs(env).filter(j => j.kind !== "service" || probeJob(env, j).state === "running").length >= max) return { text: `Not started: this vault already has ${max} running jobs.` };
   const name = a.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, 24) || "service";
@@ -92,14 +92,14 @@ const unitOf = (id: string) => `vc-job-${id}`;
 export const JOB_DEFAULT_TIMEOUT_S = 24 * 3600;
 export const JOB_MAX_TIMEOUT_S = 7 * 24 * 3600;
 
-const exec = (env: PiJobEnv) =>
+const exec = (env: JobEnv) =>
   env.exec ??
   ((cmd: string, args: string[]) => {
     const r = spawnSync(cmd, args, { encoding: "utf8", timeout: 30_000 });
     return { status: r.status, stdout: r.stdout ?? "", stderr: (r.stderr || r.error?.message) ?? "" };
   });
 
-export function readJobs(env: PiJobEnv): JobRec[] {
+export function readJobs(env: JobEnv): JobRec[] {
   try {
     const v = JSON.parse(readFileSync(join(env.logDir, "jobs.json"), "utf8"));
     return Array.isArray(v) ? v : [];
@@ -108,7 +108,7 @@ export function readJobs(env: PiJobEnv): JobRec[] {
   }
 }
 
-export function writeJobs(env: PiJobEnv, list: JobRec[]): void {
+export function writeJobs(env: JobEnv, list: JobRec[]): void {
   mkdirSync(env.logDir, { recursive: true });
   // Ended jobs older than a week drop out of the registry (their logs stay).
   const week = Date.now() - 7 * 86_400_000;
@@ -116,7 +116,7 @@ export function writeJobs(env: PiJobEnv, list: JobRec[]): void {
   writeAtomic(join(env.logDir, "jobs.json"), JSON.stringify(keep, null, 1), join(env.logDir, `jobs.json.${process.pid}.tmp`));
 }
 
-function patchJob(env: PiJobEnv, id: string, patch: Partial<JobRec>): JobRec | null {
+function patchJob(env: JobEnv, id: string, patch: Partial<JobRec>): JobRec | null {
   const list = readJobs(env);
   const i = list.findIndex((j) => j.id === id);
   if (i < 0) return null;
@@ -149,7 +149,7 @@ export function jobEnvDir(): string {
   return join(tmpdir(), `vault-chat-${uid}`, "jobs");
 }
 
-const envDirOf = (env: PiJobEnv) => env.envDir ?? jobEnvDir();
+const envDirOf = (env: JobEnv) => env.envDir ?? jobEnvDir();
 
 /** One value in systemd's EnvironmentFile syntax: single quotes are literal; else double quotes with \ escapes. */
 function envFileValue(v: string): string {
@@ -202,7 +202,7 @@ export function sweepJobEnvFiles(dir: string = jobEnvDir(), olderMs = 60_000): n
  * values). Type=exec: systemd-run returns only once the job's process has been
  * exec'd, i.e. after systemd read the file, so the caller can delete it then.
  */
-export function jobArgv(env: PiJobEnv, cwd: string, id: string, shell: string, timeoutS: number, envFile: string): string[] {
+export function jobArgv(env: JobEnv, cwd: string, id: string, shell: string, timeoutS: number, envFile: string): string[] {
   // The log dir must be writable inside the sandbox even though the state dir is read-only there.
   const wrap = [...env.wrap!.slice(0, -1), "--bind", env.logDir, env.logDir, "--"];
   const memory = env.memoryMax ?? process.env.VC_JOB_MEMORY_MAX ?? "75%";
@@ -225,16 +225,16 @@ export function jobArgv(env: PiJobEnv, cwd: string, id: string, shell: string, t
   ];
 }
 
-export function runningJobs(env: PiJobEnv): JobRec[] {
+export function runningJobs(env: JobEnv): JobRec[] {
   return readJobs(env).filter((j) => j.state === "running");
 }
 
-export function startJob(env: PiJobEnv, cwd: string, a: { command?: string; name?: string; timeout?: unknown }, conv?: string, byCarl = false): string {
+export function startJob(env: JobEnv, cwd: string, a: { command?: string; name?: string; timeout?: unknown }, conv?: string, byCarl = false): string {
   return startJobWith(env, cwd, a, conv, byCarl).text;
 }
 
 /** StartJob, with the record of the job it started (none when it did not start). */
-export function startJobWith(env: PiJobEnv, cwd: string, a: { command?: string; name?: string; timeout?: unknown }, conv?: string, byCarl = false): { text: string; job?: JobRec } {
+export function startJobWith(env: JobEnv, cwd: string, a: { command?: string; name?: string; timeout?: unknown }, conv?: string, byCarl = false): { text: string; job?: JobRec } {
   const no = (text: string) => ({ text });
   const cmd = String(a?.command ?? "").trim();
   if (!cmd) return no("StartJob needs a command.");
@@ -275,7 +275,7 @@ export function startJobWith(env: PiJobEnv, cwd: string, a: { command?: string; 
 }
 
 /** A job's state now: from its log's "[exit N]" line, else systemd's view of its unit. */
-export function probeJob(env: PiJobEnv, j: JobRec): { state: JobRec["state"]; exit?: number; tail: string } {
+export function probeJob(env: JobEnv, j: JobRec): { state: JobRec["state"]; exit?: number; tail: string } {
   let lines: string[] = [];
   try {
     lines = readFileSync(join(env.logDir, `${j.id}.log`), "utf8").replace(/\s+$/, "").split("\n");
@@ -306,7 +306,7 @@ function describe(state: JobRec["state"], exit: number | undefined, timeoutS: nu
   return "running";
 }
 
-export function jobStatus(env: PiJobEnv, a: { id?: string; tail?: number }): string {
+export function jobStatus(env: JobEnv, a: { id?: string; tail?: number }): string {
   const id = String(a?.id ?? "").trim();
   if (!/^[a-z0-9-]+$/.test(id)) return "JobStatus needs the job id StartJob returned.";
   const rec: JobRec = readJobs(env).find((j) => j.id === id) ?? { id, name: id, command: "", startedAt: 0, timeoutS: JOB_MAX_TIMEOUT_S, state: "running" };
@@ -322,7 +322,7 @@ export function jobStatus(env: PiJobEnv, a: { id?: string; tail?: number }): str
 }
 
 /** JobList: this conversation's jobs (or every job in the vault), newest first. */
-export function jobList(env: PiJobEnv, conv: string | undefined, all = false): string {
+export function jobList(env: JobEnv, conv: string | undefined, all = false): string {
   const list = readJobs(env)
     .filter((j) => all || !conv || j.conv === conv)
     .sort((a, b) => b.startedAt - a.startedAt);
@@ -338,7 +338,7 @@ export function jobList(env: PiJobEnv, conv: string | undefined, all = false): s
 }
 
 /** JobStop: stop the unit (its whole process tree); the registry says stopped. */
-export function jobStop(env: PiJobEnv, id: string, conv?: string): string {
+export function jobStop(env: JobEnv, id: string, conv?: string): string {
   const j = readJobs(env).find((x) => x.id === id);
   if (!j) return `No job ${id}.`;
   if (conv && j.conv && j.conv !== conv) return `Job ${id} belongs to another conversation; only it (or Carl) stops it.`;
@@ -357,7 +357,7 @@ export function jobStop(env: PiJobEnv, id: string, conv?: string): string {
 }
 
 /** Jobs that ended since the last look: marked in the registry and returned (each once). */
-export function reapJobs(env: PiJobEnv): (JobRec & { tail: string })[] {
+export function reapJobs(env: JobEnv): (JobRec & { tail: string })[] {
   const out: (JobRec & { tail: string })[] = [];
   for (const j of runningJobs(env)) {
     const p = probeJob(env, j);

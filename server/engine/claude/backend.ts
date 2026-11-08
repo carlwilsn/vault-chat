@@ -45,7 +45,7 @@ import { appendEntries, newSessionFile } from "../../convlog/piSession";
 import { McpRuntime, type ProcessServices } from "../../mcp/runtime";
 import { CALL_WRITE_REASON } from "../../mcp/filesystem";
 import { CLAUDE_BUILTINS_OFF, ClaudeSession, type SessionSend } from "./session";
-import { ruleOnToolUse, WRITING_TOOLS } from "./filePolicy";
+import { ruleOnToolUse, WRITING_TOOLS, externalPath as rulePath} from "./filePolicy";
 import { ClaudeSideRuns } from "./side";
 import { memoryUpdate, writeClaudeMd, type MemoryMark } from "./memory";
 import { ClaudeTranslator, type Emit } from "./translate";
@@ -67,7 +67,13 @@ export type ClaudeBackendOptions = {
   vault: string;
   /** Environment for the CLI only (phase 6 puts the sign-in token here). */
   env: () => NodeJS.ProcessEnv;
-  policy: PathPolicy;
+  /**
+   * The host that owns vault-chat's file tools, when there is one. There is
+   * not any more: pi owned them, and Claude Code now uses its own under
+   * vault-chat's policy (filePolicy.ruleOnToolUse, through the PreToolUse
+   * hook). Left optional so a host can still supply them.
+   */
+  policy?: PathPolicy;
   /**
    * What a turn may not touch, from the sandbox (filePolicy.wallsOf). Given, so
    * Claude Code's OWN file tools can run under vault-chat's one policy instead
@@ -410,15 +416,19 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
   // ------------------------------------------------------------------ files: vault-chat's one policy
 
   externalPath(root: string, path: unknown, write = false): Promise<string | null> {
-    return this.o.policy.externalPath(root, path, write);
+    if (this.o.policy) return this.o.policy.externalPath(root, path, write);
+    return Promise.resolve(rulePath(root, path, write, this.o.walls?.() ?? { denyRead: [], denyWrite: [] }));
   }
 
   nativePath(cwd: string, path: unknown): Promise<string | null> {
-    return this.o.policy.nativePath?.(cwd, path) ?? Promise.resolve(null);
+    return this.o.policy?.nativePath?.(cwd, path) ?? Promise.resolve(null);
   }
 
   filesystem(...a: Parameters<EngineBackend["filesystem"]>): ReturnType<EngineBackend["filesystem"]> {
-    return this.o.policy.filesystem(...a);
+    if (this.o.policy) return this.o.policy.filesystem(...a);
+    // No host file tools: the session uses Claude Code's own, ruled by the
+    // same policy before each call (onToolUse below).
+    return Promise.resolve({ specs: [], call: async () => ({ ok: false, text: "no host file tools on this box" }), close: async () => {} } as Awaited<ReturnType<EngineBackend["filesystem"]>>);
   }
 
   // ------------------------------------------------------------------ side threads (Ctrl+K / Ctrl+L) and one-shots
@@ -486,7 +496,7 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
     };
     // vault-chat's file tools, not Claude Code's: these are what enforce
     // realpath and the deny rules, the voice write gate and live edits.
-    const files = await this.o.policy.filesystem(t.cwd, this.o.fileTools ?? FILE_TOOLS_DEFAULT, services);
+    const files = await this.filesystem(t.cwd, this.o.fileTools ?? FILE_TOOLS_DEFAULT, services);
     const all = [...specs, ...files.specs];
     const scope = await this.o.mcp.bind(
       {
@@ -615,7 +625,10 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
 
   /** Whether this box lets Claude Code use its own file tools (see the option). */
   private ownFileTools(): boolean {
-    return this.o.ownFileTools === true;
+    // The default now: pi owned the host's file tools and pi is gone, so a
+    // session uses Claude Code's own — ruled by vault-chat's policy before
+    // every call (ruleOnToolUse, through the PreToolUse hook).
+    return this.o.ownFileTools !== false;
   }
 
   private push(live: Live, s: SessionSend, entry: Pushed): void {

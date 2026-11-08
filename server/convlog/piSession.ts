@@ -15,7 +15,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import type { PiEntry } from "../../src/convlog/protocol";
 import { VC_NOTE, VC_VOICE } from "../../src/convlog/protocol";
 // @ts-ignore a plain .mjs (the pi extension's helpers): the same words pi's extension writes
-import { voiceLineContent } from "../engine/pi/ext/policy.mjs";
+import { voiceLineContent } from "../engine/policy.mjs";
 
 /** The entry types the transcript shows (or vault-chat's own); the rest (the session header, model and thinking-level changes, labels, names, usage) are pi's bookkeeping. */
 export function shownEntry(e: PiEntry): boolean {

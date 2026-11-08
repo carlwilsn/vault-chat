@@ -4,7 +4,7 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import matter from "gray-matter";
-import type { ToolAnswer, ToolSpec } from "../engine/pi/backend";
+import type { ToolAnswer, ToolSpec } from "../engine/backend";
 
 type Agent = { name: string; description: string; tools: string[] | null; model: string | null; systemPrompt: string };
 function discover(dirs: string[]): Agent[] {
