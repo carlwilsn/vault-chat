@@ -1647,6 +1647,16 @@ export class Engine {
     // the conversation's earlier input, the runtime and the thread is part of the turn.
     const release = holdRun(convId);
     return this.serial(convId, async () => {
+      // Nothing to run it on: not signed in, or no Claude Code on this box.
+      // A wake waits quietly — it fires on a schedule, and filing the same
+      // failure every time is what buried Carl's chat. Something he typed says
+      // so once, where he typed it.
+      const cannot = this.d.backend.cannotRun?.();
+      if (cannot) {
+        if (kind === "user") await this.sayCannotRun(convId, cannot);
+        else this.log(`${convId}: ${kind} held — ${cannot}`);
+        return;
+      }
       const existing = this.live.get(convId);
       // A turn the backend started is already covered by the one that is open.
       if (opts.adopt && existing && !existing.finished) return;
@@ -1826,6 +1836,21 @@ export class Engine {
         await fail(`⚠️ The engine could not start this turn: ${(e as Error).message}`, rec);
       }
     }).finally(release);
+  }
+
+  /**
+   * "Sign in with Claude to chat", in the conversation, once.
+   *
+   * The clients already draw this inline where the composer is, from the box's
+   * health — so this is only for a turn that reached the box anyway (a phone
+   * that had not re-read health yet). Repeating it would be the thing it is
+   * there to replace, so a conversation whose last word is already this one
+   * stays as it is.
+   */
+  private async sayCannotRun(convId: string, why: string): Promise<void> {
+    const last = this.picture(convId)?.items.slice(-1)[0];
+    if (last && last.kind === "notice" && (last as { text?: string }).text === why) return;
+    await this.notice(convId, why);
   }
 
   /**

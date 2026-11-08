@@ -186,6 +186,14 @@ export type EngineBackend = {
   start(): void;
   /** Resolve true once the runtime can take a turn, false if it could not within `ms`. */
   ready(ms?: number): Promise<boolean>;
+  /**
+   * Why no turn can start at all, or null when one can.
+   *
+   * Unlike `ready`, this is not about warming up: nothing will change until a
+   * person does something (signs in). The engine asks before it starts a turn,
+   * so a scheduled wake waits quietly instead of failing every time it fires.
+   */
+  cannotRun?(): string | null;
   health(): Record<string, unknown>;
 
   // -- threads

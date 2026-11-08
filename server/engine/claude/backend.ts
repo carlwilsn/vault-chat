@@ -243,6 +243,11 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
     return existsSync(join(dir, ".credentials.json"));
   }
 
+  /** No sign-in, no turn: there is nothing else to run it on. */
+  cannotRun(): string | null {
+    return this.signedIn() ? null : "Sign in with Claude to chat";
+  }
+
   health(): Record<string, unknown> {
     return {
       state: this.started ? "up" : "down",
