@@ -5,8 +5,7 @@ import { it, expect } from "vitest";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { makeVault, startServer, tmp, waitFor, fakePiDir, type Running } from "./helpers";
-import { fakeAnthropic, type FakeApi } from "./claudeFakeApi";
-import { chatText } from "./fakeChat";
+import { chatText, fakeAnthropic, type FakeApi } from "./claudeFakeApi";
 import { readEntries } from "../convlog/piSession";
 
 it.each(["genuine", "protocol fixture"].flatMap(runtime => [false, true].map(reverse => ({ runtime, reverse }))))(

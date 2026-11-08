@@ -4,11 +4,10 @@ import { beforeAll, afterAll, describe, it, expect } from 'vitest';
 import { join } from 'node:path';
 import { mkdirSync, readFileSync, writeFileSync, existsSync, symlinkSync } from 'node:fs';
 import { tmp, cleanup, makeVault, startServer, waitFor, type Running } from './helpers';
-import { chatText, lastToolResult } from './fakeChat';
 import { configureContext, resetContextConfig } from '../context/config';
 import { globalNotes, appendGlobalNote, writeGlobalNotes } from '../notesStorage';
 import type { Note } from '../../src/notes';
-import { fakeAnthropic, type FakeApi } from "./claudeFakeApi";
+import { chatText, fakeAnthropic, lastToolResult, type FakeApi } from "./claudeFakeApi";
 const seed: Note = { id:'existing-fixture',timestamp:'2026-01-01T00:00:00Z',last_updated:'2026-01-01T00:00:00Z',status:'open',user_draft:'Existing original reminder',turns:[],anchors:[{source_path:'same.md',source_kind:'markdown',source_anchor:null,primary:true}] };
 
 describe('global notes read-through safety (no migration)', () => {

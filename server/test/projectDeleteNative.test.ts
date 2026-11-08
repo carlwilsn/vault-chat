@@ -5,8 +5,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { makeVault, startServer, tmp, waitFor, fakePiDir, type Running } from "./helpers";
-import { fakeAnthropic, type FakeApi } from "./claudeFakeApi";
-import { chatText } from "./fakeChat";
+import { chatText, fakeAnthropic, type FakeApi } from "./claudeFakeApi";
 import { readEntries } from "../convlog/piSession";
 
 it.each(["genuine", "protocol fixture"])("%s: deleted-project stale inputs use the existing global Main owner, literal bodies and native human provenance", async runtime => {

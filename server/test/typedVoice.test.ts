@@ -5,8 +5,7 @@ import { expect, it } from "vitest";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { makeVault, startServer, tmp, waitFor, type Running } from "./helpers";
-import { fakeAnthropic, type FakeApi } from "./claudeFakeApi";
-import { chatText } from "./fakeChat";
+import { chatText, fakeAnthropic, type FakeApi } from "./claudeFakeApi";
 import { speechReady } from "../speakMath";
 import { toSpeech } from "../speakable";
 

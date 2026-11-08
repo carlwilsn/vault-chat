@@ -5,8 +5,7 @@ import { describe, it, expect } from "vitest";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { makeVault, startServer, tmp, waitFor, type Running } from "./helpers";
-import { fakeAnthropic, type FakeApi } from "./claudeFakeApi";
-import { chatText } from "./fakeChat";
+import { chatText, fakeAnthropic, type FakeApi } from "./claudeFakeApi";
 import { readEntries } from "../convlog/piSession";
 
 describe("cross-surface native API startup contract", () => {

@@ -11,14 +11,14 @@ import type { AddressInfo } from "node:net";
 
 /**
  * One scripted answer: a tool call to make, the text to say, or the connection
- * dropped mid-request. Deliberately the same shape the OpenRouter fake took
- * (server/test/helpers.ts), because that is how every engine test in this
- * suite already writes a turn.
+ * dropped mid-request. The shape pi's own fake provider took, kept when that
+ * went: it is how every engine test in this suite already writes a turn, and
+ * a test reading `{ call: ... }` or `{ text: ... }` did not have to change.
  */
 export type ScriptStep = {
   text?: string;
   toolCall?: { name: string; args?: any; arguments?: any };
-  /** The same thing under the name the fake provider's steps used. */
+  /** The same thing under the name pi's fake provider used for a step. */
   call?: { name: string; args?: any };
   drop?: boolean;
   /** Answer with this HTTP status instead (a provider error). */
@@ -44,7 +44,7 @@ export type FakeApi = {
    * Answers to give, one per request, before the prompt's own CALL directives
    * are read. A test that wants to say "then it calls this tool, then it says
    * this" pushes them here, which is how the engine tests have always written
-   * a turn (it was the OpenRouter fake's `script`).
+   * a turn (it was the fake provider's `script`).
    */
   script: ScriptStep[];
   /**
@@ -91,9 +91,45 @@ const DIRECTIVES = /^[ \t]*CALL \S+ \{.*\}[ \t]*$/gm;
 const isToolResult = (m: any) => m?.role === "user" && Array.isArray(m.content) && m.content.some((b: any) => b?.type === "tool_result");
 
 /**
+ * ALL the text of one request, every message in it joined: what a test's guard
+ * and a test's assertion both read a prompt with.
+ *
+ * It is one helper on purpose. A guard that keys on ONE spot — the last user
+ * message, a marker it expects in a particular place — is wrong here, because
+ * Claude Code adds messages of its own: its `<system-reminder>` arrives as a
+ * separate user message, so on a fresh session Carl's words are not last. Four
+ * ships were rejected for that, each one test, and the box answered a guard
+ * that refused every request by asking again 1,262 times in one turn. Read the
+ * whole prompt and a reminder cannot hide anything.
+ */
+export function chatText(body: any): string {
+  const out: string[] = [];
+  for (const m of body?.messages ?? []) {
+    if (typeof m?.content === "string") out.push(m.content);
+    else if (Array.isArray(m?.content)) for (const c of m.content) if (typeof c?.text === "string") out.push(c.text);
+  }
+  return out.join("\n");
+}
+
+/**
+ * The last message, when it carries a tool's result: its text. Anthropic sends
+ * one as a user message of `tool_result` blocks, so a test that wants to see
+ * what a tool answered cannot just read the newest user message as Carl's.
+ */
+export function lastToolResult(body: any): string | null {
+  const ms: any[] = body?.messages ?? [];
+  const m = ms[ms.length - 1];
+  if (!m || !isToolResult(m)) return null;
+  return m.content
+    .filter((b: any) => b?.type === "tool_result")
+    .map((b: any) => (typeof b.content === "string" ? b.content : (b.content ?? []).map((c: any) => c?.text ?? "").join("\n")))
+    .join("\n");
+}
+
+/**
  * A script names a logical tool ("Show"); what the model must answer with is the
  * name actually declared in this request, which for a vault-chat tool is its
- * MCP name. The OpenRouter fake did the same translation.
+ * MCP name. The fake provider pi drove did the same translation.
  */
 function toolName(body: any, name: string): string {
   const declared = (body.tools ?? []).map((t: any) => t?.name).filter(Boolean) as string[];
