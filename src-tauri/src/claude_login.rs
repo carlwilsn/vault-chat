@@ -244,11 +244,16 @@ fn candidates_in(want: Option<&str>, state: Option<&std::path::Path>, home: Opti
 /// passes where the run fails shows an error next to it, and a probe that fails
 /// where the run would have worked only hides the button.
 fn probe(cli: &str) -> Option<String> {
-    let out = std::process::Command::new(cli)
-        .arg("--version")
-        .stdin(std::process::Stdio::null())
-        .output()
-        .ok()?;
+    let mut cmd = std::process::Command::new(cli);
+    cmd.arg("--version").stdin(std::process::Stdio::null());
+    // A GUI app starting a console program gets a terminal window flashed up
+    // for it — the "terminal popup" Carl saw when he pressed the button.
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
+    let out = cmd.output().ok()?;
     if !out.status.success() {
         return None;
     }

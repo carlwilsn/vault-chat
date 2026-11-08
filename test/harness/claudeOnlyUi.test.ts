@@ -9,8 +9,7 @@
 //    yet" means — the one state that must NOT draw a prompt);
 //  - the model list: Claude's models, never an OpenRouter id, pinned against
 //    the box's own alias list so the two cannot drift;
-//  - the prompt's markup: one sentence, one button, and the setup-token paste
-//    closed behind a disclosure;
+//  - the prompt's markup: one sentence and one button — no other way in;
 //  - that the prompt is only ever drawn by an AI surface — the guard against a
 //    full-window sign-in gate coming back;
 //  - that no OpenRouter wording is left in any file that draws UI.
@@ -134,15 +133,15 @@ async function render(el: Parameters<typeof renderToStaticMarkup>[0], opts: { ke
   return renderToStaticMarkup(el);
 }
 
-test("signed out, an AI surface draws one sentence and one button — and the paste field is not on screen", async () => {
+test("signed out, an AI surface draws one sentence and one button, and no other way in", async () => {
   const html = await render(createElement(ClaudeSignInPrompt, { surface: "chat" }), { box: false });
   assert.match(html, /Sign in with Claude to chat/, "the sentence for this surface");
   assert.match(html, new RegExp(SIGN_IN_BUTTON), "the one button");
   assert.match(html, /data-el="claude-signin-prompt"/);
-  assert.ok(!html.includes("setup-token"), `the raw token paste must start closed: ${html}`);
-  assert.match(html, /Other ways to sign in/, "but it is still reachable, in one click");
-  // One button, not three ways in at once.
-  assert.equal((html.match(/<button/g) ?? []).length, 2, `one primary button plus the disclosure: ${html}`);
+  assert.ok(!html.includes("setup-token"), `no raw token paste: ${html}`);
+  // Carl: "I don't want the other sign on options." One button, nothing else.
+  assert.ok(!/Other ways to sign in/.test(html), `no other way in: ${html}`);
+  assert.equal((html.match(/<button/g) ?? []).length, 1, `exactly one button: ${html}`);
 });
 
 test("each surface says what is blocked there, in its own words", async () => {

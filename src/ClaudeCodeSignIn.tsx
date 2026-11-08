@@ -6,12 +6,9 @@
 // a browser prints a long-lived one. The button drives that command here (see
 // src-tauri/src/claude_login.rs — it needs a pty, and the token it prints goes
 // straight into this machine's keychain without ever coming back across the
-// IPC boundary). Running the command yourself and pasting what it prints still
-// works, but it is now behind "Other ways to sign in", closed: Carl, on the
-// release that showed the button, the code field and the paste field all at
-// once, "when I click the sign in button its not a clean obvious and nice
-// thing." One button is the way in; the rest is for the machines that have no
-// `claude` to drive.
+// IPC boundary). That button is the only way in — Carl: "I don't want the
+// other sign on options" — with Cancel while it starts and Start over while it
+// waits for the code, so a stuck attempt is never a dead end.
 //
 // Either way the token is kept in this machine's keychain like every other key
 // and travels to the box the same way (src/keystore.ts), where only the Claude
@@ -158,23 +155,22 @@ function liveIo(vault: string | null, remember: (token: string) => void, forget:
 }
 
 /**
- * The flow itself: one button, then the code field the browser's page feeds,
- * and — only if asked for — the raw `claude setup-token` paste. `onDone` fires
+ * The flow itself: one button, then the code field the browser's page feeds.
+ * `onDone` fires
  * once the token is on this machine.
  */
 function SignInFlow({ onDone }: { onDone?: () => void }) {
   const vault = useStore((s) => s.vaultPath);
-  const saved = useStore((s) => s.serviceKeys.claudeCode);
   const setServiceKey = useStore((s) => s.setServiceKey);
   const clearServiceKey = useStore((s) => s.clearServiceKey);
   const [busy, setBusy] = useState(false);
+  // Bumped by Cancel: an attempt still starting when it was cancelled is
+  // ignored (and its CLI stopped) when it finally answers.
+  const attempt = useRef(0);
   const [error, setError] = useState<string | null>(null);
   // The page the running command is waiting on, and the code coming back.
   const [awaiting, setAwaiting] = useState<string | null>(null);
   const [code, setCode] = useState("");
-  // The disclosure, and the token typed into it. Closed until asked for.
-  const [other, setOther] = useState(false);
-  const [draft, setDraft] = useState("");
 
   const io = liveIo(
     vault,
@@ -200,27 +196,39 @@ function SignInFlow({ onDone }: { onDone?: () => void }) {
   const done = () => {
     setAwaiting(null);
     setCode("");
-    setDraft("");
-    setOther(false);
     // The box's answer about Claude is now stale (src/claudeAuth.ts).
     forgetClaudeHealth();
     onDone?.();
   };
 
   const signIn = async () => {
+    const mine = ++attempt.current;
     setBusy(true);
     setError(null);
     const r = await beginSignIn(io);
+    if (mine !== attempt.current) {
+      // Cancelled while it was starting: stop the CLI it left waiting.
+      if (!("fallback" in r)) void io.cancel().catch(() => {});
+      return;
+    }
     setBusy(false);
     if ("fallback" in r) {
-      // Nothing was started. Open the disclosure so the way in is on screen
-      // instead of just an error. The button stays — a CLI that was slow to
-      // start this once may well answer the next try.
+      // The button stays — a CLI that was slow to start this once may well
+      // answer the next try.
       setError(`Could not start the sign-in: ${r.fallback}`);
-      setOther(true);
       return;
     }
     setAwaiting(r.url);
+  };
+
+  /** Stop whatever is in flight and go back to the one button. */
+  const cancel = () => {
+    attempt.current++;
+    void io.cancel().catch(() => {});
+    setBusy(false);
+    setAwaiting(null);
+    setCode("");
+    setError(null);
   };
 
   const submitCode = async () => {
@@ -232,22 +240,20 @@ function SignInFlow({ onDone }: { onDone?: () => void }) {
     done();
   };
 
-  const save = async () => {
-    setBusy(true);
-    setError(null);
-    const err = await saveTypedToken(io, draft);
-    setBusy(false);
-    if (err) return setError(err);
-    done();
-  };
-
   return (
     <div className="space-y-1.5" data-el="claude-signin-flow">
       {/* The one way in: a solid primary button, not an underlined link. */}
       {!awaiting && (
-        <Button size="sm" onClick={() => void signIn()} disabled={busy} data-el="claude-signin-start">
-          {busy ? "Opening browser…" : SIGN_IN_BUTTON}
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button size="sm" onClick={() => void signIn()} disabled={busy} data-el="claude-signin-start">
+            {busy ? "Opening browser…" : error ? "Try again" : SIGN_IN_BUTTON}
+          </Button>
+          {busy && (
+            <button onClick={cancel} className="text-[10.5px] text-muted-foreground hover:text-foreground underline" data-el="claude-signin-cancel">
+              Cancel
+            </button>
+          )}
+        </div>
       )}
       {awaiting && (
         <div className="space-y-1" data-el="claude-code-awaiting-code">
@@ -255,6 +261,9 @@ function SignInFlow({ onDone }: { onDone?: () => void }) {
             Sign in in the browser, then paste the code it shows.{" "}
             <button onClick={() => void io.openUrl(awaiting).catch(() => {})} className="underline hover:text-foreground">
               Open the page again
+            </button>{" "}
+            <button onClick={cancel} className="underline hover:text-foreground" data-el="claude-signin-cancel">
+              Start over
             </button>
           </p>
           <div className="flex gap-2">
@@ -273,30 +282,6 @@ function SignInFlow({ onDone }: { onDone?: () => void }) {
         </div>
       )}
       {error && <p className="text-[10.5px] text-amber-500/90 break-words">{error}</p>}
-      {!other ? (
-        <button onClick={() => setOther(true)} className="text-[10.5px] text-muted-foreground/70 hover:text-foreground underline" data-el="claude-signin-other">
-          Other ways to sign in
-        </button>
-      ) : (
-        <div className="space-y-1" data-el="claude-signin-other-open">
-          <p className="text-[10.5px] text-muted-foreground/80">
-            Run <code className="font-mono">claude setup-token</code> on this machine and paste what it prints.
-          </p>
-          <div className="flex gap-2">
-            <Input
-              type="password"
-              value={draft}
-              onChange={(e: React.ChangeEvent<HTMLInputElement>) => setDraft(e.target.value)}
-              onKeyDown={(e: React.KeyboardEvent<HTMLInputElement>) => e.key === "Enter" && void save()}
-              placeholder={saved ? "••••••••" : "sk-ant-oat…"}
-              className="font-mono text-[11.5px]"
-            />
-            <Button size="sm" variant="outline" onClick={() => void save()} disabled={!draft.trim() || busy}>
-              {busy ? "Sending…" : "Save"}
-            </Button>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

@@ -94,15 +94,27 @@ pub fn node_bin(resource_dir: Option<&Path>) -> String {
     "node".to_string()
 }
 
+/// No console window for a console program started from this GUI app (Windows
+/// flashes one up otherwise: the server, and curl every health check).
+fn no_window(cmd: &mut Command) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
+    #[cfg(not(windows))]
+    let _ = cmd;
+}
+
 fn health_ok(url: &str) -> bool {
     // A plain blocking GET: this runs on a blocking task, and the only thing
     // being asked is whether the server answers yet.
-    match std::process::Command::new("curl")
-        .args(["-fsS", "--max-time", "3", &format!("{url}/api/v1/health")])
+    let mut cmd = std::process::Command::new("curl");
+    cmd.args(["-fsS", "--max-time", "3", &format!("{url}/api/v1/health")])
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-    {
+        .stderr(Stdio::null());
+    no_window(&mut cmd);
+    match cmd.status() {
         Ok(s) => s.success(),
         Err(_) => false,
     }
@@ -135,7 +147,9 @@ pub fn ensure(vault: &str, state_dir: &Path, resource_dir: Option<&Path>, node: 
     let own = state_dir.join("local-server");
     std::fs::create_dir_all(&own).map_err(|e| format!("could not make {}: {e}", own.display()))?;
 
-    let child = Command::new(node)
+    let mut cmd = Command::new(node);
+    no_window(&mut cmd);
+    let child = cmd
         .arg(&bundle)
         .env("VC_PORT", port.to_string())
         .env("VC_VOICE_PORT", voice_port.to_string())
