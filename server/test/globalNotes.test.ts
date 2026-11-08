@@ -4,7 +4,7 @@ import { beforeAll, afterAll, describe, it, expect } from 'vitest';
 import { join } from 'node:path';
 import { mkdirSync, readFileSync, writeFileSync, existsSync, symlinkSync } from 'node:fs';
 import { tmp, cleanup, makeVault, startServer, waitFor, type Running } from './helpers';
-import { lastUser, lastToolResult } from './fakeChat';
+import { chatText, lastToolResult } from './fakeChat';
 import { configureContext, resetContextConfig } from '../context/config';
 import { globalNotes, appendGlobalNote, writeGlobalNotes } from '../notesStorage';
 import type { Note } from '../../src/notes';
@@ -55,7 +55,11 @@ describe('compiled Notes APIs and native tools across viewers and owner threads'
   provider=await fakeAnthropic();
   provider.respond=body=>{
    // 400, not 503: a refusal the runtime would retry for ever is a hang.
-   const user=lastUser(body); if(!user.includes('OWNED-NOTES-')) return {status:400,body:'{"type":"error","error":{"type":"invalid_request_error","message":"Unowned inference refused"}}'};
+   // The WHOLE prompt, not its last user message: Claude Code appends its own
+   // system-reminder as a message of its own, so on a fresh session Carl's words
+   // are not last — and a guard that missed them refused every request, which
+   // the runtime answered by asking again, and again (1,262 times in one turn).
+   if(!chatText(body).includes('OWNED-NOTES-')) return {status:400,body:'{"type":"error","error":{"type":"invalid_request_error","message":"Unowned inference refused"}}'};
    const result=lastToolResult(body);
    if(result!==null){ output=result; return {text:'Owned note step complete',noCost:true}; }
    return step?{call:step,noCost:true}:{text:'Owned note idle',noCost:true};
@@ -67,7 +71,17 @@ describe('compiled Notes APIs and native tools across viewers and owner threads'
  const tool=async(viewer:string,convId:string,name:string,args:Record<string,unknown>={})=>{
   step={name,args}; output=''; const id='OWNED-NOTES-'+(++serial);
   await post('/api/v2/intent?vault='+viewer,{type:'send',convId,client:'laptop',clientId:id,text:id});
-  await waitFor(()=>output||null,60000);
+  // On a box where this has hung (the ship host's sandbox), say what the model
+  // was actually asked and what the box said about it: a turn that never calls
+  // the tool is otherwise just a timeout with nothing to read.
+  try {
+    await waitFor(()=>output||null,60000);
+  } catch (e) {
+    const asked = provider.calls.map(c=>chatText(c).length);
+    console.log(`NOTES-DEBUG ${id}: requests=${provider.requests.length} turns=${provider.calls.length} asked=${JSON.stringify(asked)}`);
+    console.log(`NOTES-DEBUG server log tail:\n${srv.logs().slice(-2500)}`);
+    throw e;
+  }
   await waitFor(async()=>{const d=await(await fetch(srv.base+'/conversation?id='+convId+'&vault='+viewer+'&full=1')).json();return d.meta?.state!=='running'&&d.messages?.some((m:any)=>m.role==='assistant'&&m.content==='Owned note step complete')?true:null;},60000);
   return output;
  };
