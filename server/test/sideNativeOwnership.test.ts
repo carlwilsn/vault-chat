@@ -5,7 +5,8 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 import { execFileSync } from "node:child_process";
 import { makeVault, startServer, tmp, waitFor, type Running } from "./helpers";
-import { fakeChat, chatText, lastToolResult } from "./claudeFakeApi";
+import { fakeAnthropic, type FakeApi } from "./claudeFakeApi";
+import { chatText, lastToolResult } from "./fakeChat";
 
 it("project Ctrl+K keeps its native owner/cwd with another vault open, including completed polls, refinements and stop", async () => {
   const root = tmp("vc-side-native-owner-"), master = join(root, "master");
@@ -36,10 +37,7 @@ it("project Ctrl+K keeps its native owner/cwd with another vault open, including
   let srv: Running | undefined;
   try {
     srv = await startServer({ home: processHome, vault: owner, secrets: join(processHome, "empty-credentials"), openrouter: provider.url, extra: { VC_MASTER: master,  ".local/state/vault-chat-server/pi/1.1.0"), VC_VOICE_PIPELINE: "off", NODE_OPTIONS: "--import " + network } });
-    const agent = join(processHome, "state/pi/agent");
     mkdirSync(agent, { recursive: true });
-    writeFileSync(join(agent, "settings.json"), JSON.stringify({ compaction: { enabled: false }, retry: { enabled: false } }));
-    writeFileSync(join(agent, "models.json"), JSON.stringify({ providers: { openrouter: { baseUrl: provider.url, apiKey: "synthetic-local-only", api: "openai-completions", models: [{ id: "test/fake-model", name: "local", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 32000, maxTokens: 1000 }] } } }));
     const get = async (path: string) => { const r = await fetch(srv!.base + path); return { status: r.status, body: await r.json() }; };
     const post = async (path: string, b: any) => { const r = await fetch(srv!.base + path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(b) }); expect(r.status).toBe(200); return r.json(); };
     const made = await post("/projects?vault=school2", { folder: project });

@@ -5,11 +5,12 @@ import { expect, it } from "vitest";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { makeVault, startServer, tmp, waitFor, type Running } from "./helpers";
-import { fakeChat, lastUser } from "./claudeFakeApi";
+import { fakeAnthropic, type FakeApi } from "./claudeFakeApi";
+import { lastUser } from "./fakeChat";
 import { speechReady } from "../speakMath";
 import { toSpeech } from "../speakable";
 
-it.skipIf(!process.env.VC_TEST_PI_DIR)("typed replies use their actual native answer once, independent of file viewer; OFF/end never start speech", async () => {
+it("typed replies use their actual native answer once, independent of file viewer; OFF/end never start speech", async () => {
   const root = tmp("vc-typed-voice-"), master = join(root, "master");
   const owner = makeVault(join(master, "vaults/owner")), state = join(root, "state");
   const notes = Buffer.from('{"id":"human-note","status":"open","user_draft":"unchanged 🧩"}\n');
@@ -30,10 +31,7 @@ it.skipIf(!process.env.VC_TEST_PI_DIR)("typed replies use their actual native an
       expect(r.ok).toBe(true); return r.json();
     };
     const get = async (p: string) => (await fetch(srv!.base + p)).json();
-    const agent = join(state, "pi/agent"); mkdirSync(agent, { recursive: true });
-    writeFileSync(join(agent, "settings.json"), JSON.stringify({ compaction: { enabled: false }, retry: { enabled: false } }));
     const models = ["test/fake-model", "anthropic/claude-haiku-5.5"].map(id => ({ id, name: "Local unpaid", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 400000, maxTokens: 1000 }));
-    writeFileSync(join(agent, "models.json"), JSON.stringify({ providers: { openrouter: { baseUrl: provider.url, apiKey: "synthetic-local-only", api: "openai-completions", models } } }));
     await post("/api/v1/vaults", { name: "viewer" });
     const id = "sep-owned-typed";
     const checkpoint = async (conv = id) => (await get(`/api/v2/conversations/${conv}/checkpoint?vault=viewer`)).picture;

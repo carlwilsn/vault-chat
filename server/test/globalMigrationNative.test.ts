@@ -24,15 +24,11 @@ it('cold cohort exposes both old Mains in GET Main and one continuing native own
  };
  const network=join(root,'local-only.mjs');
  writeFileSync(network,`const actual=globalThis.fetch;globalThis.fetch=(input,init)=>{const u=new URL(typeof input==='string'?input:input instanceof URL?input.href:input.url);if(u.href==='https://openrouter.ai/api/v1/models')return actual(${JSON.stringify(provider.url+'/models')},init);if(['127.0.0.1','localhost','[::1]'].includes(u.hostname))return actual(input,init);throw Error('External fetch refused');};`);
- const native=process.env.VC_TEST_PI_DIR??join(homedir(),'.local/state/vault-chat-server/pi/1.1.0');
  const homeState=join(root,'owner-process'),peerState=join(root,'peer-process');
  let srv:Running|undefined;
  const boot=async(vault:string,processHome:string)=>{
   mkdirSync(processHome,{recursive:true});
   const running=await startServer({home:processHome,vault,secrets:join(processHome,'empty-no-credentials'),openrouter:provider.url,extra:{VC_MASTER:master,VC_VOICE_PIPELINE:'off',NODE_OPTIONS:'--import '+network}});
-  const agent=join(processHome,'state/pi/agent');mkdirSync(agent,{recursive:true});
-  writeFileSync(join(agent,'settings.json'),JSON.stringify({compaction:{enabled:false},retry:{enabled:false}}));
-  writeFileSync(join(agent,'models.json'),JSON.stringify({providers:{openrouter:{baseUrl:provider.url,apiKey:'synthetic-local-only',api:'openai-completions',models:[{id:'test/fake-model',name:'local',reasoning:false,input:['text'],cost:{input:0,output:0,cacheRead:0,cacheWrite:0},contextWindow:32000,maxTokens:1000}]}}}));
   return running;
  };
  const ask=async(id:string,text:string)=>{

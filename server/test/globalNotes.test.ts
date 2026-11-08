@@ -48,7 +48,6 @@ describe('compiled Notes APIs and native tools across viewers and owner threads'
  };
  const list=async(viewer:string)=> (await (await fetch(srv.base+'/notes?full=1&vault='+viewer)).json()).notes as Note[];
  beforeAll(async()=>{
-  if(!process.env.VC_TEST_PI_DIR) throw Error('VC_TEST_PI_DIR must name read-only genuine pi 1.1');
   home=tmp('global-note-native-'); a=makeVault(join(home,'vaults/home')); b=makeVault(join(home,'vaults/fixture-a')); c=makeVault(join(home,'vaults/fixture-b'));
   for(const v of [a,b,c]) { mkdirSync(join(v,'.vault-chat'),{recursive:true}); writeFileSync(join(v,'same.md'),v===b?'ORIGINAL SOURCE':'WRONG VIEWER SOURCE'); }
   writeFileSync(join(b,'.vault-chat/notes.jsonl'),JSON.stringify(seed)+'\n');
@@ -61,9 +60,6 @@ describe('compiled Notes APIs and native tools across viewers and owner threads'
   };
   srv=await startServer({home,vault:a,secrets:join(home,'absent-secrets'),openrouter:provider.url,extra:{VC_VAULT_NAME:'home',VC_MASTER:home}});
   await post('/api/v1/vaults',{name:'fixture-a'}); await post('/api/v1/vaults',{name:'fixture-b'});
-  const agent=join(home,'state/pi/agent'); mkdirSync(agent,{recursive:true});
-  writeFileSync(join(agent,'models.json'),JSON.stringify({providers:{openrouter:{baseUrl:provider.url,apiKey:'synthetic-local-only',api:'openai-completions',models:[{id:'test/fake-model',name:'Unpaid fixture',reasoning:false,input:['text'],cost:{input:0,output:0,cacheRead:0,cacheWrite:0},contextWindow:400000,maxTokens:1000}]}}}));
-  writeFileSync(join(agent,'settings.json'),JSON.stringify({compaction:{enabled:false},retry:{enabled:false}}));
  });
  afterAll(async()=>{await srv?.stop();await provider?.close();if(home)cleanup(home);});
  const tool=async(viewer:string,convId:string,name:string,args:Record<string,unknown>={})=>{

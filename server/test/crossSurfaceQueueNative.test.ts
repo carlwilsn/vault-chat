@@ -4,7 +4,8 @@ import { it, expect } from "vitest";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { makeVault, startServer, tmp, waitFor, fakePiDir, type Running } from "./helpers";
-import { fakeChat, chatText } from "./claudeFakeApi";
+import { fakeAnthropic, type FakeApi } from "./claudeFakeApi";
+import { chatText } from "./fakeChat";
 import { readEntries } from "../convlog/piSession";
 
 it.each(["genuine", "protocol fixture"].flatMap(runtime => [false, true].map(reverse => ({ runtime, reverse }))))(
@@ -22,9 +23,6 @@ it.each(["genuine", "protocol fixture"].flatMap(runtime => [false, true].map(rev
         extra: {  VC_STATE_DIR: state,
           VC_VOICE_PIPELINE: "off", NODE_OPTIONS: "--import " + network } });
       expect([8848, 8857]).not.toContain(srv.port);
-      const agent = join(state, "pi/agent"); mkdirSync(agent, { recursive: true });
-      writeFileSync(join(agent, "settings.json"), JSON.stringify({ compaction: { enabled: false }, retry: { enabled: false } }));
-      writeFileSync(join(agent, "models.json"), JSON.stringify({ providers: { openrouter: { baseUrl: provider.url + "/v1", apiKey: "synthetic-local-only", api: "openai-completions", models: [{ id: "test/fake-model", name: "Fixture", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 400000, maxTokens: 1000 }] } } }));
       const base = srv.base;
       const get = async () => (await fetch(base + "/conversation?id=main&full=1&n=200")).json();
       const send = async (input: any) => (await fetch(base + "/api/v2/intent", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ type: "send", convId: "main", ...input }) })).json();

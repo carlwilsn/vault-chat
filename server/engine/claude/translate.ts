@@ -132,6 +132,8 @@ export class ClaudeTranslator {
   private held: Emit[] = [];
   /** A retry Claude Code reported and the clients are showing as "Retrying…". */
   private retrying = false;
+  /** The host asked for this turn to end (see expectInterrupt). */
+  private stopping = false;
 
   constructor(private readonly now: () => number = () => Date.now()) {}
 
@@ -199,6 +201,11 @@ export class ClaudeTranslator {
       default:
         return [];
     }
+  }
+
+  /** The host is aborting this turn: its end is a stop, not a failure. */
+  expectInterrupt(): void {
+    this.stopping = true;
   }
 
   /** Close a retry the clients are showing, if one is open. */
@@ -406,6 +413,7 @@ export class ClaudeTranslator {
   private result(m: any): Emit[] {
     const out: Emit[] = [];
     // A message the stream never closed (an interrupt mid-block) is closed here.
+    const wasOpen = !!this.open;
     if (this.open) out.push(...this.messageStop(false));
     // Only the result names the window, so the first turn's usage went out
     // without one: say it again here, and the context bar is right from turn one.
@@ -416,11 +424,24 @@ export class ClaudeTranslator {
     }
     const subtype = String(m.subtype ?? (m.is_error ? "error" : "success"));
     const terminal = String(m.terminal_reason ?? "");
-    const status = terminal === "cancelled" || terminal === "interrupted" || subtype === "interrupted" ? "interrupted" : m.is_error || subtype.startsWith("error") ? "failed" : "completed";
+    const asked = this.stopping;
+    this.stopping = false;
+    const reported = terminal === "cancelled" || terminal === "interrupted" || subtype === "interrupted" ? "interrupted" : m.is_error || subtype.startsWith("error") ? "failed" : "completed";
+    // Claude Code reports a turn the host aborted as a failure of its own; the
+    // host knows better, because the host asked. Without this the chat shows a
+    // red "the turn failed" where Carl pressed stop.
+    const status = asked && reported !== "completed" ? "interrupted" : reported;
     const error = status === "failed" ? String(m.result ?? m.error ?? subtype).slice(0, 500) : null;
     // Every retry failed (or the turn ended while one was in flight): the end
     // event says so, and the red line is the one the engine writes.
     out.push(...this.retryEnded(status === "completed"));
+    // A request that failed before the model said anything: the failure is the
+    // reply, written the way one the model's own message carried is written, so
+    // the chat shows ONE red line — with Try again — and not a bare error.
+    if (status === "failed" && !wasOpen && error) {
+      const message: PiMessage = { role: "assistant", timestamp: this.stamp(), content: [], stopReason: "error", errorMessage: error, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
+      out.push({ kind: "entry", entry: { type: "message", message } }, { kind: "live", ev: { type: "message_end", message } });
+    }
     out.push(...this.held.splice(0));
     out.push({ kind: "done", status, error });
     return out;

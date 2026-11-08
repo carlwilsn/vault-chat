@@ -6,7 +6,8 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { makeVault, startServer, tmp, waitFor, type Running } from "./helpers";
-import { fakeChat, chatText } from "./claudeFakeApi";
+import { fakeAnthropic, type FakeApi } from "./claudeFakeApi";
+import { chatText } from "./fakeChat";
 import { readEntries } from "../convlog/piSession";
 
 describe("cross-surface native API startup contract", () => {
@@ -42,9 +43,6 @@ globalThis.fetch=(input,init)=>{
       const health = await (await fetch(srv.base + "/api/v1/health")).json();
       expect(health.engine.claude.state).toBe("up");
       expect(health.engine.version).toBe("1.1.0");
-      const agent = join(state, "pi/agent");
-      writeFileSync(join(agent, "settings.json"), JSON.stringify({ compaction: { enabled: false }, retry: { enabled: false } }));
-      writeFileSync(join(agent, "models.json"), JSON.stringify({ providers: { openrouter: { baseUrl: provider.url,
         apiKey: "synthetic-local-only", api: "openai-completions", models: [{ id: "test/fake-model", name: "Local contract",
           reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 32000, maxTokens: 1000 }] } } }));
       const base = srv.base;

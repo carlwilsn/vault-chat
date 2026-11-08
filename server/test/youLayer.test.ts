@@ -4,21 +4,20 @@
 // into another (other chats are pointers to Carl's own words, read on request);
 // a new conversation is a clean slate except for the layer.
 //
-// End to end on the real bundle: the engine on the fake pi (fakePiCli.mjs runs
-// the extension's before_agent_start as pi does: the host call `__you` with the
-// session's own `since`, the answer stored as a `vc-you` custom_message after
-// the user message and sent to the model), a fake OpenRouter. Then the pure
-// builder (src/activityCore.ts buildYouLayer): pointer format, budget, dedupe.
+// End to end on the real bundle: the host asks for the layer and puts it in the
+// prompt itself (Claude Code has no extension to store it in), so what the model
+// is sent is where it is read from here — the transcript Carl reads never has it.
+// Then the pure builder (src/activityCore.ts buildYouLayer): pointer format,
+// budget, dedupe.
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { tmp, cleanup, makeVault, makeKeyStore, fakeOpenRouter, startServer, waitFor, type Running, type FakeOpenRouter } from "./helpers";
+import { tmp, cleanup, makeVault, makeKeyStore, startServer, waitFor, type Running } from "./helpers";
+import { fakeAnthropic, type FakeApi } from "./claudeFakeApi";
 import * as core from "../../src/activityCore";
-// @ts-ignore a plain .mjs (the pi extension's helpers)
-import { YOU_TYPE, youSince } from "../engine/policy.mjs";
 
 let home: string, vault: string, secrets: string;
-let or: FakeOpenRouter;
+let or: FakeApi;
 let srv: Running;
 
 const get = async (p: string) => {
@@ -39,7 +38,8 @@ const entries = (file: string): any[] =>
     .split("\n")
     .filter(Boolean)
     .map((l) => JSON.parse(l));
-const layers = (file: string) => entries(file).filter((e) => e.type === "custom_message" && e.customType === YOU_TYPE);
+/** The "you" layer of one model call: the host puts it in the prompt itself. */
+const layerOf = (call: any): string => (/<you>[\s\S]*?<\/you>/.exec(callText(call)) ?? [""])[0];
 /** Every message's text of one model call. */
 const callText = (c: any) => (c?.messages ?? []).map((m: any) => (typeof m.content === "string" ? m.content : JSON.stringify(m.content))).join("\n");
 /** The model call of the turn whose prompt starts with this marker (a pointer to it elsewhere says "Carl: <marker>"). */
@@ -60,8 +60,8 @@ beforeAll(async () => {
   home = tmp("vcyou-");
   vault = makeVault(join(home, "vault"));
   secrets = await makeKeyStore(join(home, "secrets"), { "api.openrouter": "sk-or-canary-not-real" });
-  or = await fakeOpenRouter("ok");
-  srv = await startServer({ home, vault, secrets, openrouter: or.url });
+  or = await fakeAnthropic("ok");
+  srv = await startServer({ home, vault, secrets, anthropic: or.url });
 }, 120_000);
 
 afterAll(async () => {
@@ -71,33 +71,24 @@ afterAll(async () => {
   cleanup(home);
 });
 
-describe("the you layer, through pi's extension (before_agent_start → a vc-you custom message)", () => {
+describe("the you layer, in the prompt the host sends", () => {
   let a = "";
   let b = "";
 
-  it("lands in the conversation's pi session as a custom entry after the user message, and the model gets it", async () => {
+  it("reaches the model with the turn, and is never in the transcript Carl reads", async () => {
     await focus("papers/spectral.pdf", "page 4 of 12");
     a = await send("MARK-A1 what does lemma 3 say?", "ALPHA-REPLY-1 lemma 3 bounds the radius.");
-    const file = (await meta(a)).threadPath;
-    const es = entries(file).filter((e) => e.type !== "session");
-    const i = es.findIndex((e) => e.type === "custom_message" && e.customType === YOU_TYPE);
-    expect(i).toBeGreaterThan(0);
-    const you = es[i];
-    // pi's order: the user message, then before_agent_start's message; not shown in the transcript (display false).
-    expect(es[i - 1].type).toBe("message");
-    expect(es[i - 1].message.role).toBe("user");
-    expect(you.display).toBe(false);
-    expect(you.content).toContain("<you>");
-    expect(you.content).toContain("Focus: papers/spectral.pdf (page 4 of 12)");
-    expect(you.content).toContain(`file vault: ${vault}/ (not the project cwd)`);
-    expect(you.content).toContain("Device: laptop");
-    expect(Number.isFinite(you.details.until)).toBe(true);
-    // Sent to the model with the turn (pi: a custom message is a user message to the provider).
-    expect(callText(callWith("MARK-A1"))).toContain("Focus: papers/spectral.pdf");
-    // The prompt itself carries no layer (one path: the extension's).
-    const user = es[i - 1].message.content.map((c: any) => c.text).join("");
-    expect(user).not.toContain("<you>");
-    // The transcript Carl sees does not show it.
+    const you = layerOf(callWith("MARK-A1"));
+    expect(you).toContain("Focus: papers/spectral.pdf (page 4 of 12)");
+    expect(you).toContain(`file vault: ${vault}/ (not the project cwd)`);
+    expect(you).toContain("Device: laptop");
+    // His own message is his words alone: the layer is the host's context around
+    // it, not something he said.
+    const es = entries((await meta(a)).threadPath).filter((e) => e.type !== "session");
+    const user = es.find((e) => e.type === "message" && e.message.role === "user")!;
+    expect(user.message.content.map((c: any) => c.text ?? "").join("")).not.toContain("<you>");
+    // Nor is it in the transcript, or anywhere a client would draw it.
+    expect(JSON.stringify(es)).not.toContain("<you>");
     const items = (await get(`/api/v2/conversations/${a}/checkpoint`)).body.picture.items ?? [];
     expect(JSON.stringify(items)).not.toContain("<you>");
   });
@@ -121,13 +112,11 @@ describe("the you layer, through pi's extension (before_agent_start → a vc-you
     // A pointer to the other's message, by title and id (read on request), with Carl's words only.
     expect(a2).toMatch(/\[MARK-B1 unrelated: define a sigma-algebra chat, (just now|\d+ min ago)\] Carl: MARK-B1 unrelated: define a sigma-algebra \(id [^)]+\)/);
     // Deduped against what this session saw: A's second layer has the new focus, not the first one again.
-    const aLayers = layers((await meta(a)).threadPath);
-    expect(aLayers.length).toBe(2);
-    expect(aLayers[1].content).not.toContain("papers/spectral.pdf");
-    expect(aLayers[1].details.since).toBe(aLayers[0].details.until);
-    expect(youSince(entries((await meta(a)).threadPath))).toBe(aLayers[1].details.until);
+    expect(layerOf(callWith("MARK-A1"))).toContain("papers/spectral.pdf");
+    expect(layerOf(callWith("MARK-A2"))).not.toContain("papers/spectral.pdf");
     // The device moved: B's layer says the phone (its own message), A's says the laptop.
-    expect(layers((await meta(b)).threadPath)[0].content).toContain("Device: phone");
+    expect(layerOf(callWith("MARK-B1"))).toContain("Device: phone");
+    expect(layerOf(callWith("MARK-A1"))).toContain("Device: laptop");
   });
 
   it("a new conversation gets the layer but no other conversation's content", async () => {
@@ -139,98 +128,22 @@ describe("the you layer, through pi's extension (before_agent_start → a vc-you
     expect(t).toContain("Carl: MARK-B2 example please");
     expect(t).not.toMatch(/ALPHA-REPLY|BRAVO-REPLY/);
     expect(t).not.toContain("it is the converse");
-    // Its session starts clean: its only messages are its own, and one layer.
+    // Its session starts clean: its only message is its own.
     const es = entries((await meta(c)).threadPath);
     expect(es.filter((e) => e.type === "message" && e.message.role === "user").length).toBe(1);
-    expect(layers((await meta(c)).threadPath).length).toBe(1);
   });
 
-  it("a Ctrl+L side thread gets the same layer through the same hook, deduped against its conversation", async () => {
+  it("a Ctrl+L side thread gets the same layer, deduped against its conversation", async () => {
     await focus("notes/ideas.md", "L1-L3");
     or.script.push({ text: "SIDE-ANSWER" });
     const r = await post("/api/v1/side", { kind: "ask", convId: a, text: "MARK-SIDE what is this?" });
     expect(r.status).toBe(200);
     await waitFor(async () => ((await get(`/api/v1/side/${r.body.id}?after=0&wait=2000`)).body.done ? true : null), 30_000);
-    const dir = join(home, "state", "pi", "sessions", "side", a);
-    const file = readdirSync(dir).map((n) => join(dir, n)).find((f) => f.endsWith(`_${r.body.id}.jsonl`))!;
-    expect(existsSync(file)).toBe(true);
-    const ls = layers(file);
-    // The fork carries A's two layers; the side request adds one with only what is new since A's last.
-    expect(ls.length).toBe(3);
-    expect(ls[2].content).toContain("Focus: notes/ideas.md (L1-L3)");
-    expect(ls[2].content).not.toContain("MARK-A1");
-    expect(callText(callWith("MARK-SIDE"))).toContain("Focus: notes/ideas.md");
-    // A's own session is untouched by the side thread.
-    expect(layers((await meta(a)).threadPath).length).toBe(2);
+    // Its own layer: what is new since its conversation's last one, and no more.
+    const you = layerOf(callWith("MARK-SIDE"));
+    expect(you).toContain("Focus: notes/ideas.md (L1-L3)");
+    expect(you).not.toContain("MARK-A1");
   });
-});
-
-// ---------------------------------------------------------------- the real pi and the real extension
-
-const PI_DIR = process.env.VC_TEST_PI_DIR;
-
-describe.skipIf(!PI_DIR)("the you layer with the real pi 1.1.0 and ext/vc.mjs", () => {
-  let rhome = "";
-  let rsrv: Running;
-  let chat: import("./fakeChat").FakeChat;
-  const rget = async (p: string) => (await (await fetch(rsrv.base + p)).json()) as any;
-  const rpost = async (p: string, b: Record<string, unknown>) =>
-    (await (await fetch(rsrv.base + p, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(b) })).json()) as any;
-  const rmeta = async (conv: string) => (await rget(`/api/v2/conversations/${conv}/checkpoint`))?.picture?.meta ?? {};
-  const rsend = async (text: string, conv?: string) => {
-    const r = await rpost("/api/v2/intent", { type: "send", clientId: `r-${Math.random().toString(36).slice(2, 9)}`, text, client: "laptop", convId: conv ?? `sep-${Math.random().toString(36).slice(2, 10)}` });
-    expect(r.ok).toBe(true);
-    await waitFor(async () => {
-      const m = await rmeta(r.convId);
-      return m.threadPath && !m.running ? m : null;
-    }, 90_000);
-    return String(r.convId);
-  };
-
-  beforeAll(async () => {
-    const { fakeChat } = await import("./fakeChat");
-    rhome = tmp("vcyoureal-");
-    const rvault = makeVault(join(rhome, "vault"));
-    const rsecrets = await makeKeyStore(join(rhome, "secrets"), { "api.openrouter": "sk-or-canary-not-real" });
-    chat = await fakeChat();
-    chat.respond = () => ({ text: "ok from the real pi" });
-    rsrv = await startServer({ home: rhome, vault: rvault, secrets: rsecrets, openrouter: chat.url, extra: { VC_ENGINE: "pi", VC_PI_DIR: PI_DIR!, VC_ENGINE_MODEL: "test/fake-model", VC_STATE_DIR: join(rhome, "state"), VC_PI_UNSAFE: "1" } });
-    await waitFor(async () => ((await rget("/api/v1/health")).engine?.pi?.state === "up" ? true : null), 60_000);
-  }, 120_000);
-  afterAll(async () => {
-    if (process.env.VC_TEST_LOGS) console.log(rsrv?.logs());
-    await rsrv?.stop();
-    await chat?.close();
-    cleanup(rhome);
-  });
-
-  it("pi stores the layer (custom_message vc-you, after the user message), sends it, and the next turn gets only what is new", async () => {
-    await rpost("/api/v1/activity", { entry: { kind: "focus", modality: "editor", text: "opened the file", path: "papers/real.pdf", where: "page 2" } });
-    const conv = await rsend("REAL-1 hello");
-    let file = (await rmeta(conv)).threadPath;
-    let ls = layers(file);
-    expect(ls.length).toBe(1);
-    expect(ls[0].content).toContain("Focus: papers/real.pdf (page 2)");
-    expect(ls[0].display).toBe(false);
-    const es = entries(file);
-    const at = es.findIndex((e) => e.type === "custom_message" && e.customType === YOU_TYPE);
-    expect(es[at - 1]?.message?.role).toBe("user");
-    expect(JSON.stringify(chat.calls.at(-1))).toContain("Focus: papers/real.pdf");
-    // The next turn: a new focus only, `since` from pi's own branch (youSince over getBranch()).
-    await rpost("/api/v1/activity", { entry: { kind: "focus", modality: "editor", text: "opened the file", path: "notes/real-2.md" } });
-    await rsend("REAL-2 again", conv);
-    file = (await rmeta(conv)).threadPath;
-    ls = layers(file);
-    expect(ls.length).toBe(2);
-    expect(ls[1].details.since).toBe(ls[0].details.until);
-    expect(ls[1].content).toContain("Focus: notes/real-2.md");
-    expect(ls[1].content).not.toContain("papers/real.pdf");
-    // Nothing new: no layer at all.
-    await rsend("REAL-3 and again", conv);
-    expect(layers((await rmeta(conv)).threadPath).length).toBe(2);
-  }, 240_000);
-
-
 });
 
 // ---------------------------------------------------------------- the builder

@@ -192,8 +192,6 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
   private reaper: NodeJS.Timeout | null = null;
   /** Compacting a thread, waiting for the boundary Claude Code reports. */
   private compactWaits = new Map<string, () => void>();
-  /** Threads whose turn the host itself aborted (so its end is a stop, not a failure). */
-  private interrupting = new Set<string>();
   /** The last rate limit Claude Code reported (the host backs wakes off until it resets). */
   private limit: { status: string; resetsAt: number | null; kindOfLimit: string | null } | null = null;
 
@@ -446,10 +444,8 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
     // moment the turn ends, and a message Carl's stop should have held is
     // answered anyway.
     await this.clearQueue(threadId);
-    // The runtime reports an aborted turn as a failure of its own; the host knows
-    // better, because the host asked. Without this the chat shows a red "the turn
-    // failed" line where Carl asked it to stop.
-    this.interrupting.add(threadId);
+    // Its end is a stop, not a failure (translate.ts expectInterrupt).
+    live.translator.expectInterrupt();
     await live.session.interrupt();
   }
 
@@ -788,9 +784,7 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
         // Only Claude Code's own uuid stamp says a message has been taken.
         const turnId = live.turnId;
         live.turnId = null;
-        // The host asked for this end: it is a stop ("Stopped."), not a failure.
-        const stopped = this.interrupting.delete(threadId) && e.status !== "completed";
-        this.ev({ kind: "turnCompleted", threadId, turnId, status: stopped ? "interrupted" : e.status, error: stopped ? null : e.error });
+        this.ev({ kind: "turnCompleted", threadId, turnId, status: e.status, error: e.error });
         return;
       }
     }
