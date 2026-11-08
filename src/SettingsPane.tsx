@@ -17,7 +17,11 @@ import {
   connectBox,
   disconnectBox,
   type FoundBox,
+  tailscaleCheck,
+  openTailscale,
 } from "./vaultSync";
+import { connectTrouble, tailscaleHelp, GET_TAILSCALE_URL, type TailscaleHelp } from "./tailscaleHelp";
+import { openUrl } from "./opener";
 import { boxGet, boxPost } from "./boxChat";
 import { pushKeysToBox, keysChanged, subscribeKeyPush } from "./boxKeys";
 import { BoxModelChecks } from "./BoxModelChecks";
@@ -908,6 +912,34 @@ function BoxSection() {
 
 type BoxHealth = { name: string; version: string | null };
 
+/** One line about this laptop's Tailscale, with the one thing to do about it.
+ *  Nothing is drawn when Tailscale is fine or hasn't been asked. vault-chat
+ *  never asks for a Tailscale login itself — that happens in Tailscale. */
+export function TailscaleNote({ help }: { help: TailscaleHelp | null }) {
+  const [err, setErr] = useState<string | null>(null);
+  if (!help) return null;
+  const act = async () => {
+    setErr(null);
+    try {
+      if (help.action?.kind === "open") await openTailscale();
+      else await openUrl(GET_TAILSCALE_URL);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    }
+  };
+  return (
+    <p className="text-[11px] text-amber-500/90 break-words" data-testid="tailscale-note">
+      {help.line}
+      {help.action && (
+        <button onClick={() => void act()} className="ml-1.5 underline hover:text-foreground" data-testid="tailscale-action">
+          {help.action.label}
+        </button>
+      )}
+      {err && <span className="ml-1.5 text-muted-foreground">({err})</span>}
+    </p>
+  );
+}
+
 /** Not connected: find a box on the tailnet (or type its address), then sync
  *  this vault with it — which also gives it this laptop's keys (boxKeys.ts). */
 function BoxConnect({ vault, onConnected }: { vault: string; onConnected: () => void }) {
@@ -918,17 +950,24 @@ function BoxConnect({ vault, onConnected }: { vault: string; onConnected: () => 
   const [health, setHealth] = useState<BoxHealth | null>(null);
   const [busy, setBusy] = useState<null | "checking" | "sync">(null);
   const [error, setError] = useState<string | null>(null);
+  // Why nothing answered, in one line. Asked only after a failure (Tailscale is
+  // never polled), and it carries its own button, so no second error line.
+  const [trouble, setTrouble] = useState<TailscaleHelp | null>(null);
   const link = (url: string) => ({ url, token: useStore.getState().boxToken || null });
 
   const start = async () => {
     setOpen(true);
     setFound(null);
     setError(null);
+    setTrouble(null);
     try {
-      setFound(await discoverBoxes());
+      const boxes = await discoverBoxes();
+      setFound(boxes);
+      // Nothing on the tailnet is usually not a missing box: it is Tailscale.
+      if (boxes.length === 0) setTrouble(tailscaleHelp(await tailscaleCheck()));
     } catch (e) {
       setFound([]);
-      setError(`Couldn't list the tailnet: ${e instanceof Error ? e.message : String(e)}`);
+      setTrouble(connectTrouble("the tailnet", e instanceof Error ? e.message : String(e), await tailscaleCheck()));
     }
   };
   const check = async (raw: string) => {
@@ -939,6 +978,7 @@ function BoxConnect({ vault, onConnected }: { vault: string; onConnected: () => 
     setPicked(url);
     setHealth(null);
     setError(null);
+    setTrouble(null);
     setBusy("checking");
     try {
       const h = await boxGet(link(url), "/api/v1/health", 6000);
@@ -946,7 +986,7 @@ function BoxConnect({ vault, onConnected }: { vault: string; onConnected: () => 
       if (!isServer) throw new Error("it doesn't answer as a vault-chat server");
       setHealth({ name: h.name || fallback, version: h.version ?? null });
     } catch (e) {
-      setError(`${fallback} didn't answer: ${e instanceof Error ? e.message : String(e)}`);
+      setTrouble(connectTrouble(fallback, e instanceof Error ? e.message : String(e), await tailscaleCheck()));
     } finally {
       setBusy(null);
     }
@@ -1006,6 +1046,7 @@ function BoxConnect({ vault, onConnected }: { vault: string; onConnected: () => 
             </Button>
           </div>
           {busy === "checking" && <p className="text-[10.5px] text-muted-foreground/70">Checking…</p>}
+          <TailscaleNote help={trouble} />
         </>
       ) : (
         <>
@@ -1042,6 +1083,7 @@ function BoxConnect({ vault, onConnected }: { vault: string; onConnected: () => 
           setHealth(null);
           setPicked(null);
           setError(null);
+          setTrouble(null);
         }}
         className="block text-[10.5px] text-muted-foreground hover:text-foreground underline"
       >
