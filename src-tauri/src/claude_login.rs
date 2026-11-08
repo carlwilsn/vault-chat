@@ -126,6 +126,27 @@ pub(crate) fn flattened(text: &str) -> String {
 }
 
 /// The OAuth authorize URL the CLI printed, or None (it hasn't got there yet).
+/// The code the sign-in page hands over is `<code>#<state>`. What gets pasted
+/// can carry more: on Carl's laptop it came with "Pastecodehereifprompted"
+/// stuck to the end, and the CLI refused it. The code is the run of URL-safe
+/// characters up to `#`; the state is the one this session's own page asked
+/// for, when known, and otherwise the URL-safe run after `#`.
+pub(crate) fn clean_code(raw: &str, state: Option<&str>) -> String {
+    let raw = raw.trim();
+    let url_safe = |c: char| c.is_ascii_alphanumeric() || c == '-' || c == '_';
+    let Some((code, rest)) = raw.split_once('#') else {
+        return raw.chars().take_while(|c| url_safe(*c)).collect();
+    };
+    let code: String = code.trim().chars().filter(|c| url_safe(*c)).collect();
+    let rest = rest.trim();
+    let state = match state.filter(|s| !s.is_empty()) {
+        Some(s) if rest.starts_with(s) => s.to_string(),
+        Some(s) if rest.is_empty() => s.to_string(),
+        _ => rest.chars().take_while(|c| url_safe(*c)).collect(),
+    };
+    format!("{code}#{state}")
+}
+
 pub(crate) fn authorize_url(cleaned: &str) -> Option<String> {
     let re = regex::Regex::new(r#"https://claude\.(?:com|ai)/[^\s"'<>]*oauth/authorize\?[^\s"'<>]+"#)
         .expect("static regex");
@@ -536,8 +557,17 @@ mod pty_session {
 
         /// Type a line at the CLI.
         pub(super) fn type_in(&mut self, line: &str) -> Result<(), String> {
+            // The text, then Enter on its own a moment later. Written in one go,
+            // a long code arrives as a single paste and the CLI takes the \r as
+            // part of it: on Carl's laptop the code sat there masked and was
+            // never submitted.
             self.writer
-                .write_all(format!("{line}\r").as_bytes())
+                .write_all(line.as_bytes())
+                .and_then(|_| self.writer.flush())
+                .map_err(|e| e.to_string())?;
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            self.writer
+                .write_all(b"\r")
                 .and_then(|_| self.writer.flush())
                 .map_err(|e| e.to_string())
         }
@@ -643,6 +673,9 @@ mod pty {
     /// One sign-in at a time. Pressing the button again replaces the one in
     /// flight, which is also what makes a stale half-finished attempt go away.
     static LIVE: Mutex<Option<Session>> = Mutex::new(None);
+    /// The `state` of the page the live session is waiting on, so a pasted code
+    /// can be put right (see `clean_code`).
+    static STATE: Mutex<Option<String>> = Mutex::new(None);
     /// - no ANTHROPIC_API_KEY / CLAUDE_CODE_OAUTH_TOKEN, so an existing
     ///   credential in this process's environment cannot change the flow;
     /// - CLAUDE_CONFIG_DIR somewhere throwaway, so nothing about this login is
@@ -735,6 +768,9 @@ mod pty {
         let (url, cleaned) = session.wait_for(0, URL_WAIT, authorize_url);
         match url {
             Some(url) => {
+                if let Ok(mut st) = STATE.lock() {
+                    *st = url.split("state=").nth(1).map(|v| v.split('&').next().unwrap_or("").to_string());
+                }
                 park(session)?;
                 Ok(url)
             }
@@ -763,7 +799,8 @@ mod pty {
         // Everything from here on is the answer to this code, so a refusal the
         // CLI printed for an earlier attempt cannot be read as this one's.
         let mark = session.mark();
-        if let Err(e) = session.type_in(code.trim()) {
+        let state = STATE.lock().ok().and_then(|s| s.clone());
+        if let Err(e) = session.type_in(&super::clean_code(code, state.as_deref())) {
             session.end();
             return Err(format!("could not hand the code to `claude setup-token`: {e}"));
         }
@@ -999,6 +1036,19 @@ expired, already used, or from an earlier sign-in attempt. Sign in again to get 
     /// machine it had to run on; .github/workflows/windows-signin.yml runs it on
     /// windows-latest against the real claude.exe and fails if it finds no live
     /// test to run.
+    #[test]
+    fn a_pasted_code_is_put_right_before_the_cli_sees_it() {
+        let st = "h0mTkF51_kawZouvipiPxQFd5MbtsPSrYVlG2SRayfA";
+        // What Carl pasted: the right code and state, with the prompt text glued on.
+        assert_eq!(clean_code(&format!("  Aw0NA5i3#{st}Pastecodehereifprompted 
+"), Some(st)), format!("Aw0NA5i3#{st}"));
+        // No state known: stop at the first character that cannot be in one.
+        assert_eq!(clean_code("abc-_1#xyz_9 Paste code", None), "abc-_1#xyz_9");
+        // A code pasted without its state gets the session's.
+        assert_eq!(clean_code("abc#", Some(st)), format!("abc#{st}"));
+        assert_eq!(clean_code("  abc  ", None), "abc");
+    }
+
     #[test]
     fn windows_sign_in_keeps_what_windows_needs_and_drops_credentials() {
         for keep in ["SystemRoot", "windir", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "TEMP", "TMP", "PATHEXT", "ComSpec", "Path"] {
