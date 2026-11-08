@@ -3,13 +3,10 @@
 // itself.
 //
 // Signing in is a token, not a password: `claude setup-token` on a machine with
-// a browser prints a long-lived one. The button drives that command here (see
-// src-tauri/src/claude_login.rs — it needs a pty, and the token it prints goes
-// straight into this machine's keychain without ever coming back across the
-// IPC boundary). That button is the only way in — Carl: "I don't want the
-// other sign on options" — with Start over while it
-// waits for the code; a start that fails says so and the button reads "Try
-// again" (no Cancel — Carl: "no need for a cancel button").
+// a browser prints a long-lived one. Carl runs that command himself, in a real
+// terminal, and pastes what it prints — the app drove it for him once, through
+// a pty, and it broke four different ways on his Windows laptop before he said
+// to stop. There is no other way in ("I don't want the other sign on options").
 //
 // Either way the token is kept in this machine's keychain like every other key
 // and travels to the box the same way (src/keystore.ts), where only the Claude
@@ -18,13 +15,11 @@
 // store, and the key push that follows removes it from the box too (the box
 // makes its store exactly what is pushed: src/boxKeys.ts).
 import { useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
 import { Button, Input } from "./ui";
 import { useStore } from "./store";
 import { boxLinkFor } from "./boxChat";
 import { pushKeysToBox } from "./boxKeys";
 import { keychainDelete, keychainGet, KEY } from "./keychain";
-import { openUrl } from "./opener";
 import { SIGN_IN_BUTTON, SIGN_IN_LINE, type SignInSurface } from "./claudeAuth";
 import { forgetClaudeHealth, useClaudeSignedIn } from "./claudeAuthLive";
 
@@ -33,14 +28,7 @@ import { forgetClaudeHealth, useClaudeSignedIn } from "./claudeAuthLive";
  * be driven in a test without Tauri, a browser or a box.
  */
 export type SignInIo = {
-  /** Start `claude setup-token`; resolves with the page to sign in on. */
-  start: () => Promise<string>;
-  /** Hand over the code from that page. The token never comes back here — it
-   *  goes from the command's output straight into the keychain. */
-  finish: (code: string) => Promise<void>;
-  cancel: () => Promise<void>;
-  openUrl: (url: string) => Promise<void>;
-  /** The keychain's copy, which is the only place the captured token exists. */
+  /** The keychain's copy, which is the only place the token exists on this machine. */
   storedToken: () => Promise<string | null>;
   /** Mirror it into the store, which is what the box push reads. */
   remember: (token: string) => void;
@@ -51,39 +39,6 @@ export type SignInIo = {
 };
 
 const why = (e: unknown): string => (e instanceof Error ? e.message : String(e));
-
-/**
- * Start the flow. On success the caller shows the code field; a `fallback` means
- * nothing was started and the paste field is the way in on this machine.
- */
-export async function beginSignIn(io: SignInIo): Promise<{ url: string } | { fallback: string }> {
-  let url: string;
-  try {
-    url = await io.start();
-  } catch (e) {
-    return { fallback: why(e) };
-  }
-  // A browser that would not open is not a dead end: the command is running and
-  // waiting, and the page is shown as a link the user can take themselves.
-  await io.openUrl(url).catch(() => {});
-  return { url };
-}
-
-/**
- * Hand the code over and get the token to the box. Null when it worked, else
- * what to tell the user — which never includes the token, because the token is
- * never in this function's hands in the first place.
- */
-export async function finishSignIn(io: SignInIo, code: string): Promise<string | null> {
-  const trimmed = code.trim();
-  if (!trimmed) return "paste the code from the sign-in page first";
-  try {
-    await io.finish(trimmed);
-  } catch (e) {
-    return why(e);
-  }
-  return afterStored(io, "signed in");
-}
 
 /** The paste field's path: a token the user minted themselves. */
 export async function saveTypedToken(io: SignInIo, token: string): Promise<string | null> {
@@ -115,25 +70,6 @@ export async function signOut(io: SignInIo): Promise<string | null> {
   return err ? `signed out here, but the box kept its copy: ${err}` : null;
 }
 
-/**
- * Shared tail of both paths: read the keychain's copy, mirror it into the store
- * (what src/boxKeys.ts laptopKeys reads) and push the set to the box. A push
- * that fails is NOT a failed sign-in — the token is stored, and the next
- * connect pushes the whole set again — so it must not read as one.
- */
-async function afterStored(io: SignInIo, did: string): Promise<string | null> {
-  let token: string | null;
-  try {
-    token = await io.storedToken();
-  } catch (e) {
-    return `${did}, but the keychain could not be read back: ${why(e)}`;
-  }
-  if (!token) return `${did}, but nothing was found in the keychain afterwards`;
-  io.remember(token);
-  const err = await io.push().catch(why);
-  return err ? `${did}, but the box did not take the token: ${err}` : null;
-}
-
 /** The sign-in driven over Tauri, for the real app. */
 function liveIo(vault: string | null, remember: (token: string) => void, forget: () => void): SignInIo {
   const push = async () => {
@@ -144,10 +80,6 @@ function liveIo(vault: string | null, remember: (token: string) => void, forget:
     return pushKeysToBox(link.url);
   };
   return {
-    start: () => invoke<string>("claude_setup_token_start"),
-    finish: (code) => invoke<void>("claude_setup_token_finish", { code }),
-    cancel: () => invoke<void>("claude_setup_token_cancel"),
-    openUrl,
     storedToken: () => keychainGet(KEY.claudeCode),
     remember,
     push,

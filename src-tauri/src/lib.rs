@@ -4811,7 +4811,7 @@ async fn keychain_get(key: String) -> Result<Option<String>, String> {
 }
 
 /// Write one secret, blocking. Separate from the command so secrets minted
-/// inside this process (claude_login's `setup-token` capture) can be stored
+/// in this process can be stored
 /// without a round trip through the webview.
 pub(crate) fn keychain_store(key: &str, value: &str) -> Result<(), String> {
     if keyring_usable() {
@@ -6301,9 +6301,6 @@ pub fn run() {
             open_terminal,
             open_box_terminal,
             claude_login::claude_setup_token_cli,
-            claude_login::claude_setup_token_start,
-            claude_login::claude_setup_token_finish,
-            claude_login::claude_setup_token_cancel,
             git_init_if_needed,
             git_commit_all,
             git_repo_root_for_file,
