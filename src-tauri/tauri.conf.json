@@ -47,7 +47,10 @@
       "icons/icon.ico"
     ],
     "resources": [
-      "binaries/tectonic.exe"
+      "binaries/tectonic.exe",
+      "binaries/node",
+      "binaries/node.exe",
+      "binaries/vault-chat-server.mjs"
     ]
   },
   "plugins": {

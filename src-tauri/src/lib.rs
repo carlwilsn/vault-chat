@@ -4416,9 +4416,9 @@ async fn local_server_start(app: tauri::AppHandle, vault: String) -> Result<loca
         .map_err(|e| format!("no app data directory: {e}"))?;
     let resources = app.path().resource_dir().ok();
     tauri::async_runtime::spawn_blocking(move || {
-        // A packaged app carries its own node; a development run uses the one on
-        // PATH, which is how the server is run there anyway.
-        let node = std::env::var("VC_LOCAL_SERVER_NODE").unwrap_or_else(|_| "node".to_string());
+        // The node the app carries, else one named in the environment, else
+        // PATH (local_server::node_bin).
+        let node = local_server::node_bin(resources.as_deref());
         local_server::ensure(&vault, &state_dir, resources.as_deref(), &node)
     })
     .await

@@ -54,9 +54,14 @@ fn bundle(resource_dir: Option<&Path>) -> Option<PathBuf> {
         }
     }
     if let Some(dir) = resource_dir {
-        let p = dir.join("vault-chat-server.mjs");
-        if p.is_file() {
-            return Some(p);
+        // binaries/ is where the build puts it (scripts/pack-server-into-app.mjs,
+        // tauri.conf.json resources); the bare name is kept for a resource dir
+        // laid out by hand.
+        for rel in ["binaries/vault-chat-server.mjs", "vault-chat-server.mjs"] {
+            let p = dir.join(rel);
+            if p.is_file() {
+                return Some(p);
+            }
         }
     }
     let dev = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -64,6 +69,29 @@ fn bundle(resource_dir: Option<&Path>) -> Option<PathBuf> {
         .join("dist-server")
         .join("vault-chat-server.mjs");
     dev.is_file().then_some(dev)
+}
+
+/// The Node to run the bundle with.
+///
+/// A packaged app carries its own (scripts/download-node.mjs puts it in
+/// src-tauri/binaries/, tauri.conf.json ships it), because a fresh Windows or
+/// Linux machine has none — and without one the app could only say "connect a
+/// box instead". VC_LOCAL_SERVER_NODE still wins, so a development run can
+/// point at another; failing both, whatever is on PATH, which is how the server
+/// is run from source anyway.
+pub fn node_bin(resource_dir: Option<&Path>) -> String {
+    if let Ok(p) = std::env::var("VC_LOCAL_SERVER_NODE") {
+        if !p.trim().is_empty() {
+            return p;
+        }
+    }
+    if let Some(dir) = resource_dir {
+        let carried = dir.join("binaries").join(if cfg!(windows) { "node.exe" } else { "node" });
+        if carried.is_file() {
+            return carried.to_string_lossy().to_string();
+        }
+    }
+    "node".to_string()
 }
 
 fn health_ok(url: &str) -> bool {
@@ -211,6 +239,30 @@ mod tests {
     }
 
     #[test]
+    fn the_app_runs_the_node_it_carries_unless_told_otherwise() {
+        let dir = std::env::temp_dir().join(format!("vc-node-{}", std::process::id()));
+        let bins = dir.join("binaries");
+        std::fs::create_dir_all(&bins).unwrap();
+        let name = if cfg!(windows) { "node.exe" } else { "node" };
+        // Nothing carried: whatever is on PATH, as a development run does.
+        std::env::remove_var("VC_LOCAL_SERVER_NODE");
+        assert_eq!(node_bin(Some(&dir)), "node");
+        assert_eq!(node_bin(None), "node");
+
+        // Carried: that one, by its full path — the whole point on a machine
+        // that has no Node at all.
+        let carried = bins.join(name);
+        std::fs::write(&carried, "#!/bin/sh\n").unwrap();
+        assert_eq!(node_bin(Some(&dir)), carried.to_string_lossy());
+
+        // Asked for explicitly: that one, over the carried one.
+        std::env::set_var("VC_LOCAL_SERVER_NODE", "/usr/bin/node");
+        assert_eq!(node_bin(Some(&dir)), "/usr/bin/node");
+        std::env::remove_var("VC_LOCAL_SERVER_NODE");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn an_explicit_bundle_path_wins_and_a_missing_one_is_ignored() {
         let dir = std::env::temp_dir().join(format!("vc-bundle-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -225,6 +277,15 @@ mod tests {
         let fallback = bundle(Some(&dir));
         assert_eq!(fallback.as_deref(), Some(real.as_path()));
         std::env::remove_var("VC_LOCAL_SERVER_BUNDLE");
+
+        // And with nothing named in the environment: binaries/, which is where
+        // the build puts it (scripts/pack-server-into-app.mjs) and where a
+        // packaged app therefore carries it.
+        let bins = dir.join("binaries");
+        std::fs::create_dir_all(&bins).unwrap();
+        let packed = bins.join("vault-chat-server.mjs");
+        std::fs::write(&packed, "// the packed server\n").unwrap();
+        assert_eq!(bundle(Some(&dir)).as_deref(), Some(packed.as_path()));
         std::fs::remove_dir_all(&dir).ok();
     }
 }

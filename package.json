@@ -20,7 +20,7 @@
     "build:board": "vite build --config board/vite.config.ts",
     "typecheck:board": "tsc --noEmit -p board",
     "tauri": "tauri",
-    "predev:tauri": "node scripts/download-tectonic.mjs",
+    "predev:tauri": "node scripts/download-tectonic.mjs && node scripts/download-node.mjs && node scripts/pack-server-into-app.mjs",
     "build:server": "npm run build:phone && npm run build:board && node server/build.mjs --phone-app --board-app",
     "test:server": "node server/build.mjs && vitest run --config server/vitest.config.ts",
     "typecheck:server": "tsc -p server/tsconfig.json",
