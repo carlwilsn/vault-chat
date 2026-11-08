@@ -31,6 +31,87 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # What the CLI does on Windows when nobody is holding a terminal open for it.
+  #
+  # The driver drives `claude setup-token` through a pty, and on Windows that
+  # pty is the thing that fails: under ConPTY every child dies at once with
+  # 0xC0000142 (STATUS_DLL_INIT_FAILED) and prints nothing — Carl's laptop and
+  # a plain `cmd /c echo hi` both. So before any more driver is written, this
+  # asks a real Windows machine what the CLI will give a plain child process
+  # with pipes: that is the only thing left to build on.
+  #
+  # Each answer comes back as an annotation, because annotations are the part
+  # of a run that can be read back without admin rights on the repository.
+  # Nothing here completes a login: the browser is stubbed out and the config
+  # dir is a throwaway.
+  probe:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Claude Code the way a laptop has it
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          irm https://claude.ai/install.ps1 | iex
+          $cli = Join-Path $env:USERPROFILE '.local\bin\claude.exe'
+          if (-not (Test-Path $cli)) { throw "the installer left no claude.exe at $cli" }
+          "VC_CLAUDE_BIN=$cli" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Ask the CLI what it does with pipes
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $cli = $env:VC_CLAUDE_BIN
+          function note($title, $text) {
+            $t = ($text -replace 'sk-ant[^\s"]*', 'REDACTED') -replace '[\r\n]+', ' | '
+            if ($t.Length -gt 900) { $t = $t.Substring(0, 900) }
+            Write-Host "::notice title=$title::$t"
+          }
+          function probe($name, [string[]]$argv, $seconds) {
+            $psi = New-Object System.Diagnostics.ProcessStartInfo
+            $psi.FileName = $cli
+            foreach ($a in $argv) { $psi.ArgumentList.Add($a) }
+            $psi.RedirectStandardOutput = $true
+            $psi.RedirectStandardError = $true
+            $psi.RedirectStandardInput = $true
+            $psi.UseShellExecute = $false
+            # No console window, and a config dir of its own: nothing of this
+            # run's doing is left on the machine or in anybody's account.
+            $psi.CreateNoWindow = $true
+            $psi.EnvironmentVariables["CLAUDE_CONFIG_DIR"] = (Join-Path $env:RUNNER_TEMP "cfg-$name")
+            # A browser that only writes the URL down, so "it opened a browser"
+            # is visible without one being opened.
+            $psi.EnvironmentVariables["BROWSER"] = "cmd /c echo"
+            $p = [System.Diagnostics.Process]::Start($psi)
+            $p.StandardInput.Close()
+            $out = $p.StandardOutput.ReadToEndAsync()
+            $err = $p.StandardError.ReadToEndAsync()
+            $ended = $p.WaitForExit($seconds * 1000)
+            if (-not $ended) { try { $p.Kill($true) } catch {} }
+            Start-Sleep -Milliseconds 500
+            $text = ($out.Result + " ERR: " + $err.Result).Trim()
+            $code = if ($ended) { $p.ExitCode } else { "timed out after ${seconds}s" }
+            $url = if ($text -match 'https://\S*oauth\S*') { "URL PRINTED" } else { "no url" }
+            note "$name ($code, $url)" $text
+            return $text
+          }
+
+          # Does a plain child work at all here? (Under ConPTY, nothing did.)
+          probe "version" @("--version") 30 | Out-Null
+          # What the commands are, on the version a laptop installs today.
+          probe "help" @("--help") 30 | Out-Null
+          probe "setup-token-help" @("setup-token", "--help") 30 | Out-Null
+          # The real question: with pipes and no terminal, does setup-token
+          # print its sign-in link, or refuse for want of a tty?
+          $t = probe "setup-token" @("setup-token") 100
+          if ($t -match 'https://\S*oauth\S*') {
+            Write-Host "::notice title=verdict::setup-token prints the link to a plain pipe — no pty needed on Windows"
+          } else {
+            Write-Host "::warning title=verdict::setup-token printed no link to a plain pipe; see the probes above for what it said instead"
+          }
+
   sign_in:
     runs-on: windows-latest
     timeout-minutes: 30
@@ -80,15 +161,31 @@ jobs:
         working-directory: src-tauri
         run: |
           $ErrorActionPreference = 'Continue'
+          # Annotations are the only part of a run this repo's token can read
+          # back, so every outcome is reported through one — redacted, on one
+          # line, and short enough that GitHub keeps it.
+          function summary($text) {
+            $t = ($text -replace 'sk-ant[^\s"]*', 'REDACTED') -replace '[\r\n]+', ' | '
+            if ($t.Length -gt 900) { $t = $t.Substring($t.Length - 900) }
+            return $t
+          }
           cargo test --lib claude_login -- --ignored --nocapture --test-threads=1 2>&1 | Tee-Object -FilePath $env:RUNNER_TEMP\signin.log
           $code = $LASTEXITCODE
           $log = Get-Content $env:RUNNER_TEMP\signin.log -Raw
           if ($log -match 'sk-ant') { throw "a token reached the log" }
-          if ($code -ne 0) { throw "the sign-in driver failed on Windows (exit $code)" }
+          # Say the outcome where it can be read without access to the run log:
+          # an annotation shows on the run's own page and through the API.
+          Write-Host ("::notice title=driver::" + (summary $log))
+          if ($code -ne 0) {
+            Write-Host ("::error title=driver failed::exit " + $code + " — " + (summary $log))
+            throw "the sign-in driver failed on Windows (exit $code)"
+          }
           if ($log -notmatch 'a_real_setup_token_hands_over_a_sign_in_url') {
-            throw "the live sign-in test never ran — it is compiled out on Windows, or it was renamed. This job proves nothing without it."
+            Write-Host "::error title=vacuous::the live sign-in test never ran — compiled out on Windows, or renamed"
+            throw "the live sign-in test never ran. This job proves nothing without it."
           }
           if ($log -notmatch 'test result: ok\. [1-9]') {
+            Write-Host "::error title=vacuous::no live test passed"
             throw "no live test passed; the run was vacuous"
           }
           Write-Host "the real claude.exe handed over a sign-in URL through the real driver"

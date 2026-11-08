@@ -66,6 +66,24 @@ test("the live test is not compiled out on the platform it exists for", () => {
   assert.match(attrs, /#\[ignore/, "it still stays out of the ordinary test run");
 });
 
+test("what Windows said comes back as annotations, which are the readable part of a run", () => {
+  // This repository's runs cannot be read back here: the log needs admin rights
+  // (HTTP 403) and the artifact needs a token this machine has not got (401).
+  // Annotations are public, so every outcome — the probe's answers and each way
+  // the driver can fail — is written as one. Without this the job can only say
+  // "exit code 1", which is how three releases were argued from nothing.
+  const probe = wf.jobs.probe;
+  assert.ok(probe, "the probe job asks a real Windows machine what the CLI does with pipes");
+  assert.equal(probe["runs-on"], "windows-latest");
+  const probeRuns = (probe.steps as { run?: string }[]).map((s) => s.run ?? "").join("\n");
+  assert.match(probeRuns, /::notice title=/, "the probe's answers are annotations");
+  assert.match(probeRuns, /setup-token/, "including what setup-token does with no terminal");
+  assert.match(probeRuns, /REDACTED/, "and a token is scrubbed before any of it is printed");
+  // Each failure path of the driver job says why, not just that it failed.
+  assert.match(runs, /::error title=driver failed::/);
+  assert.match(runs, /::error title=vacuous::/);
+});
+
 test("the transcript is kept, and a token can never be in it", () => {
   const upload = steps.find((s) => s.uses?.startsWith("actions/upload-artifact"));
   assert.ok(upload, "the log is the evidence; it is uploaded");
