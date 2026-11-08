@@ -64,3 +64,14 @@ test("the Rust side looks for both where the build puts them", () => {
   const lib = read("src-tauri/src/lib.rs");
   assert.match(lib, /local_server::node_bin\(/, "the command asks for the carried one");
 });
+
+test("and asks the server it started whether it is up without borrowing a program", () => {
+  // The carried Node and bundle are the whole point: this machine has nothing.
+  // The readiness probe used to run `curl`, which is one more thing the machine
+  // may not have — and on the release's own test container it did not: the
+  // server came up, every probe failed on the missing program, and 90 s later
+  // the app told its owner to connect a box while its own server answered.
+  const rs = read("src-tauri/src/local_server.rs");
+  assert.doesNotMatch(rs, /Command::new\("curl"\)/, "the probe shelled out to curl again");
+  assert.match(rs, /reqwest::blocking/, "it asks in-process");
+});

@@ -95,7 +95,7 @@ pub fn node_bin(resource_dir: Option<&Path>) -> String {
 }
 
 /// No console window for a console program started from this GUI app (Windows
-/// flashes one up otherwise: the server, and curl every health check).
+/// flashes one up otherwise).
 fn no_window(cmd: &mut Command) {
     #[cfg(windows)]
     {
@@ -109,15 +109,19 @@ fn no_window(cmd: &mut Command) {
 fn health_ok(url: &str) -> bool {
     // A plain blocking GET: this runs on a blocking task, and the only thing
     // being asked is whether the server answers yet.
-    let mut cmd = std::process::Command::new("curl");
-    cmd.args(["-fsS", "--max-time", "3", &format!("{url}/api/v1/health")])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    no_window(&mut cmd);
-    match cmd.status() {
-        Ok(s) => s.success(),
-        Err(_) => false,
-    }
+    //
+    // Asked in-process, not by running `curl`. This is the machine with no box
+    // — a fresh laptop, whatever it happens to have — and the one that found it
+    // had no curl: the server booted, every probe failed because the program
+    // was missing, and after 90 s the app told its owner to connect a box while
+    // its own server sat there answering. Nothing about "is it up yet" needs a
+    // second program.
+    reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(3))
+        .build()
+        .ok()
+        .and_then(|c| c.get(format!("{url}/api/v1/health")).send().ok())
+        .is_some_and(|r| r.status().is_success())
 }
 
 /// Start a server for `vault` if one is not already answering, and say where it
