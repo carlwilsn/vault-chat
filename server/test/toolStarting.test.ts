@@ -34,22 +34,6 @@ function piWriteStream(id: string): any[] {
   return out;
 }
 
-describe("pi backend: pi's events pass through", () => {
-  it("every session event reaches the engine as pi sent it; agent_settled ends the turn; usage from message_end", async () => {
-    const { PiBackend } = await import("../engine/pi/backend");
-    const out: any[] = [];
-    const self: any = { ev: (e: any) => out.push(e), log: () => {}, o: { catalog: new Map() }, setModel: async () => true };
-    const t: any = { id: "th1", turnId: "pt-1", model: "m" };
-    const evs = piWriteStream("call_dog");
-    for (const e of evs) (PiBackend.prototype as any).onPiEvent.call(self, t, e);
-    expect(out.map((e) => e.ev)).toEqual(evs);
-    (PiBackend.prototype as any).onPiEvent.call(self, t, { type: "message_end", message: { role: "assistant", content: [], usage: { input: 10, cacheRead: 5, output: 2 } } });
-    expect(out.at(-1)).toMatchObject({ kind: "usage", usage: { last: { inputTokens: 15 } } });
-    (PiBackend.prototype as any).onPiEvent.call(self, t, { type: "agent_settled", aborted: false });
-    expect(out.at(-1)).toMatchObject({ kind: "turnCompleted", turnId: "pt-1", status: "completed" });
-    expect(out.some((e) => e.kind === "pi" && e.ev.type === "agent_settled")).toBe(false);
-  });
-});
 
 class FakeBackend extends EventEmitter {
   readonly name = "pi";

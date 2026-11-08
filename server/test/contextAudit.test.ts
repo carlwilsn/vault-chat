@@ -330,7 +330,7 @@ describe("what each mode sends", () => {
     const { readConv } = await import("../engine/convs");
     const { readEntries } = await import("../convlog/piSession");
     // @ts-ignore a plain .mjs (the pi extension's helpers)
-    const { youSince } = await import("../engine/pi/ext/policy.mjs");
+    const { youSince } = await import("../engine/policy.mjs");
     const layerFor = async () => {
       const c: any = await readConv(vault, convId);
       return act.youLayer(vault, { convId, since: youSince(readEntries(c.threadPath)) }).text;

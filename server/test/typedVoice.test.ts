@@ -5,7 +5,7 @@ import { expect, it } from "vitest";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { makeVault, startServer, tmp, waitFor, type Running } from "./helpers";
-import { fakeChat, lastUser } from "./fakeChat";
+import { fakeChat, lastUser } from "./claudeFakeApi";
 import { speechReady } from "../speakMath";
 import { toSpeech } from "../speakable";
 
@@ -15,7 +15,7 @@ it.skipIf(!process.env.VC_TEST_PI_DIR)("typed replies use their actual native an
   const notes = Buffer.from('{"id":"human-note","status":"open","user_draft":"unchanged 🧩"}\n');
   mkdirSync(join(owner, ".vault-chat"), { recursive: true });
   writeFileSync(join(owner, ".vault-chat/notes.jsonl"), notes);
-  const provider = await fakeChat();
+  const provider = await fakeAnthropic();
   const answer = "## Actual answer\nLiteral [Carl, on his laptop] is human text.\n\n```text\n# This header stays in the native answer\n```\n**Forty-two**, not another answer.";
   provider.respond = b => lastUser(b).includes("OWNED-TYPED-") ? { text: answer, noCost: true } : { status: 503, body: "Unowned inference refused" };
   const guard = join(root, "local-only.mjs");
@@ -24,7 +24,7 @@ it.skipIf(!process.env.VC_TEST_PI_DIR)("typed replies use their actual native an
   const aborts: AbortController[] = [];
   try {
     srv = await startServer({ home: root, vault: owner, secrets: join(root, "empty-no-credentials"), openrouter: provider.url,
-      extra: { VC_MASTER: master, VC_STATE_DIR: state, VC_PI_DIR: process.env.VC_TEST_PI_DIR!, VC_ENGINE_MODEL: "test/fake-model", VC_PI_UNSAFE: "1", VC_BWRAP: join(root, "absent-bwrap"), NODE_OPTIONS: `--import ${guard}`, PI_SKIP_VERSION_CHECK: "1" } });
+      extra: { VC_MASTER: master, VC_STATE_DIR: state,  VC_BWRAP: join(root, "absent-bwrap"), NODE_OPTIONS: `--import ${guard}`, PI_SKIP_VERSION_CHECK: "1" } });
     const post = async (p: string, body: unknown) => {
       const r = await fetch(srv!.base + p, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
       expect(r.ok).toBe(true); return r.json();

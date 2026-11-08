@@ -15,7 +15,7 @@ import { join } from "node:path";
 import { tmp, cleanup, makeVault, makeKeyStore, fakeOpenRouter, startServer, waitFor, type Running, type FakeOpenRouter } from "./helpers";
 import * as core from "../../src/activityCore";
 // @ts-ignore a plain .mjs (the pi extension's helpers)
-import { YOU_TYPE, youSince } from "../engine/pi/ext/policy.mjs";
+import { YOU_TYPE, youSince } from "../engine/policy.mjs";
 
 let home: string, vault: string, secrets: string;
 let or: FakeOpenRouter;

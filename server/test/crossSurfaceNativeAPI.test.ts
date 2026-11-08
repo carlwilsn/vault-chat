@@ -6,7 +6,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { makeVault, startServer, tmp, waitFor, type Running } from "./helpers";
-import { fakeChat, chatText } from "./fakeChat";
+import { fakeChat, chatText } from "./claudeFakeApi";
 import { readEntries } from "../convlog/piSession";
 
 describe("cross-surface native API startup contract", () => {
@@ -15,7 +15,7 @@ describe("cross-surface native API startup contract", () => {
     const state = join(home, "state"), canary = "COMBINED_NATIVE_CONTEXT_CANARY";
     mkdirSync(join(vault, ".vault-chat"), { recursive: true });
     writeFileSync(join(vault, ".vault-chat/MEMORY.md"), `# Memory\n\n- ${canary}\n`);
-    const provider = await fakeChat();
+    const provider = await fakeAnthropic();
     provider.respond = () => ({ text: "Local native contract response." });
     const network = join(home, "local-only.mjs"), outbound = join(home, "outbound.jsonl");
     writeFileSync(outbound, "");
@@ -34,13 +34,13 @@ globalThis.fetch=(input,init)=>{
     let srv: Running | undefined;
     try {
       srv = await startServer({ home, vault, secrets: join(home, "empty-no-credentials"), openrouter: provider.url,
-        extra: { VC_PI_DIR: process.env.VC_TEST_PI_DIR ?? join(homedir(), ".local/state/vault-chat-server/pi/1.1.0"),
-          VC_STATE_DIR: state, VC_ENGINE_MODEL: "test/fake-model", VC_PI_UNSAFE: "1", VC_VOICE_PIPELINE: "off", NODE_OPTIONS: "--import " + network } });
+        extra: {  ".local/state/vault-chat-server/pi/1.1.0"),
+          VC_STATE_DIR: state, VC_VOICE_PIPELINE: "off", NODE_OPTIONS: "--import " + network } });
       expect(srv.proc.exitCode).toBeNull();
       expect(srv.port).toBeGreaterThan(0);
       expect([8848, 8857]).not.toContain(srv.port);
       const health = await (await fetch(srv.base + "/api/v1/health")).json();
-      expect(health.engine.pi.state).toBe("up");
+      expect(health.engine.claude.state).toBe("up");
       expect(health.engine.version).toBe("1.1.0");
       const agent = join(state, "pi/agent");
       writeFileSync(join(agent, "settings.json"), JSON.stringify({ compaction: { enabled: false }, retry: { enabled: false } }));

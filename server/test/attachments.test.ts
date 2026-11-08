@@ -10,10 +10,11 @@ import { join } from "node:path";
 import { makePdf, textPage } from "./pdfgen";
 import { uploadAttachment } from "../../phone/src/attach";
 import { filesLine } from "../../src/filesLine";
-import { tmp, cleanup, makeVault, makeKeyStore, fakeOpenRouter, startServer, waitFor, type Running, type FakeOpenRouter } from "./helpers";
+import { tmp, cleanup, makeVault, makeKeyStore, startServer, waitFor, type Running } from "./helpers";
+import { fakeAnthropic, type FakeApi } from "./claudeFakeApi";
 
 let home: string, vault: string, secrets: string;
-let or: FakeOpenRouter;
+let or: FakeApi;
 let srv: Running;
 
 const postRaw = (p: string, b: Record<string, unknown>) => fetch(srv.base + p, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(b) });
@@ -23,8 +24,8 @@ beforeAll(async () => {
   home = tmp("vcattach-");
   vault = makeVault(join(home, "vault"));
   secrets = await makeKeyStore(join(home, "secrets"), { "api.openrouter": "sk-or-canary-not-real" });
-  or = await fakeOpenRouter("Here is the answer.");
-  srv = await startServer({ home, vault, secrets, openrouter: or.url });
+  or = await fakeAnthropic("Here is the answer.");
+  srv = await startServer({ home, vault, secrets, anthropic: or.url });
 }, 120_000);
 
 afterAll(async () => {

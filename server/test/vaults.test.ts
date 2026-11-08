@@ -160,27 +160,27 @@ describe("two vaults on one box (engines on fake backends)", () => {
     expect(logOf(second).ids().sort()).toEqual(["main", convB].sort());
   });
 
-  it("each agent's path guard refuses the other vault (the env pi gets, read as the extension reads it)", async () => {
-    const { PiBackend } = await import("../engine/pi/backend");
+  it("each agent's path guard refuses the other vault (the walls its turns are ruled against)", async () => {
     const { buildSandbox, otherVaultPaths, vaultState } = await import("../engine/index");
-    const { piPaths } = await import("../engine/pi/config");
+    const { wallsOf } = await import("../engine/claude/filePolicy");
     // @ts-expect-error plain JS module
-    const { guardToolCall, resolveList } = await import("../engine/pi/ext/policy.mjs");
-    const base = piPaths(state);
+    const { guardToolCall, resolveList } = await import("../engine/policy.mjs");
     const refs = [
       { name: "school2", path: mainVault, bare: join(root, "vaults", "school2.git"), main: true },
       { name: "physics", path: second, bare: join(root, "vaults", "physics.git"), main: false },
     ];
+    // The walls a turn is ruled against are the sandbox's, read the way the
+    // policy reads them (server/engine/claude/filePolicy.ts wallsOf) — the same
+    // answer pi's extension used to be handed in its environment.
     const guardOf = (v: (typeof refs)[number]) => {
-      const st = vaultState(state, base, v);
+      const st = vaultState(state, v);
       const sandbox = {
-        ...buildSandbox({ bwrap: null, home: root, stateDir: state, secretsDir: join(root, "secrets"), hideFiles: [], sessionsDir: st.pi.sessionsDir, agentDir: st.pi.agentDir, vault: v.path, uid: -1 }),
-        others: () => otherVaultPaths(v, refs, (w) => vaultState(state, base, w).walls),
+        ...buildSandbox({ bwrap: null, home: root, stateDir: state, secretsDir: join(root, "secrets"), hideFiles: [], sessionsDir: st.claude.root, agentDir: st.claude.configDir, vault: v.path, uid: -1 }),
+        others: () => otherVaultPaths(v, refs, (w) => vaultState(state, w).walls),
       };
-      const be = new PiBackend({ install: { version: "t", cli: "", node: "" } as any, paths: st.pi, catalog: new Map(), sandbox, apiKey: () => null, thinking: "low", idleMs: 1, maxProcs: 1, subagents: {} as any });
-      const env = be.piEnv("tools.json");
-      const denyRead = resolveList(JSON.parse(env.VC_PI_DENY_READ!), root);
-      const denyWrite = resolveList(JSON.parse(env.VC_PI_DENY_WRITE!), root);
+      const walls = wallsOf(sandbox);
+      const denyRead = resolveList(walls.denyRead, root);
+      const denyWrite = resolveList(walls.denyWrite, root);
       return (tool: string, path: string) => guardToolCall(tool, { path }, { cwd: v.path, home: root, denyRead, denyWrite });
     };
     const gMain = guardOf(refs[0]!);
@@ -191,11 +191,11 @@ describe("two vaults on one box (engines on fake backends)", () => {
     expect(gMain("read", join(second, "notes.md"))).toMatch(/protected/);
     expect(gMain("write", "../physics/planted.md")).toMatch(/protected/);
     expect(gMain("read", join(root, "vaults", "physics.git", "HEAD"))).toMatch(/protected/);
-    expect(gMain("read", join(state, "vaults", "physics", "pi", "sessions", "s.jsonl"))).toMatch(/protected/);
+    expect(gMain("read", join(state, "vaults", "physics", "claude", "sessions", "s.jsonl"))).toMatch(/protected/);
     expect(gPhys("read", "notes.md")).toBeNull();
     expect(gPhys("read", join(mainVault, "README.md"))).toMatch(/protected/);
     expect(gPhys("edit", "../school2/README.md")).toMatch(/protected/);
-    expect(gPhys("read", join(state, "pi", "sessions", "s.jsonl"))).toMatch(/protected/);
+    expect(gPhys("read", join(state, "claude", "sessions", "s.jsonl"))).toMatch(/protected/);
     // The conversation files and the log stay the server's in each vault.
     expect(gPhys("write", join(second, ".vault-chat", "conversations", "x.jsonl"))).toMatch(/read-only/);
     expect(gPhys("write", join(second, ".vault-chat", "events", "x.jsonl"))).toMatch(/read-only/);

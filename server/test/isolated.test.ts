@@ -7,7 +7,8 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, parse } from "node:path";
-import { BUNDLE, cleanup, makeVault, makeKeyStore, fakeOpenRouter, startServer, sh, git, tinyPdf, waitFor, type Running, type FakeOpenRouter } from "./helpers";
+import { BUNDLE, cleanup, makeVault, makeKeyStore, startServer, sh, git, tinyPdf, waitFor, type Running } from "./helpers";
+import { fakeAnthropic, type FakeApi } from "./claudeFakeApi";
 
 function ancestorsWithNodeModules(dir: string): string[] {
   const hits: string[] = [];
@@ -34,7 +35,7 @@ function isolatedDir(): string {
 describe("bundle alone (no node_modules)", () => {
   let home: string;
   let bundle: string;
-  let or: FakeOpenRouter;
+  let or: FakeApi;
   let srv: Running;
   let vault: string;
 
@@ -57,8 +58,8 @@ describe("bundle alone (no node_modules)", () => {
         vault_chat_worker_model: "openai/gpt-5.6-sol",
       }),
     );
-    or = await fakeOpenRouter("ok");
-    srv = await startServer({ home, vault, bare, secrets, openrouter: or.url, bundle, extra: { NODE_PATH: "" } }); // the engine on the fake pi: PdfRead is a host call, run by the bundle alone
+    or = await fakeAnthropic("ok");
+    srv = await startServer({ home, vault, bare, secrets, anthropic: or.url, bundle, extra: { NODE_PATH: "" } }); // the engine on the fake pi: PdfRead is a host call, run by the bundle alone
   });
 
   afterAll(async () => {

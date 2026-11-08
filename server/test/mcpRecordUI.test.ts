@@ -50,7 +50,7 @@ describe("external recorder authority before browser launch", () => {
     const vault = join(root, "vault"); mkdirSync(vault); mkdirSync(join(vault, ".vault-chat"));
     const outside = join(root, "outside"); mkdirSync(outside);
     symlinkSync(outside, join(vault, ".vault-chat", "visuals"));
-    const policy = await import("../engine/pi/ext/policy.mjs");
+    const policy = await import("../engine/policy.mjs");
     const check = async (path: string, write?: boolean) => {
       expect(write).toBe(true);
       const real = policy.realish(path, vault, root);

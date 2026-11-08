@@ -1,14 +1,15 @@
-// Main and /compact end to end: the real bundle, the engine on the fake pi (fakePiCli.mjs: pi's RPC,
-// its `compact` command and its session file in pi's format), a fake OpenRouter. What the model
-// is sent is what the fake OpenRouter records; what a client shows is the fold of /poll.
+// Main and /compact end to end: the real bundle running the real Claude Code,
+// its model answered by the scripted stand-in API. What the model is sent is
+// what that stand-in records; what a client shows is the fold of /poll.
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { join } from "node:path";
 import { readFileSync, readdirSync, writeFileSync, mkdirSync } from "node:fs";
-import { tmp, cleanup, makeVault, makeKeyStore, fakeOpenRouter, startServer, waitFor, seedProject, type Running, type FakeOpenRouter } from "./helpers";
+import { tmp, cleanup, makeVault, makeKeyStore, startServer, waitFor, seedProject, type Running } from "./helpers";
+import { fakeAnthropic, type FakeApi } from "./claudeFakeApi";
 import { fold, shown } from "../../src/convlog/reduce";
 
 let home: string, vault: string, secrets: string, coconut: string;
-let or: FakeOpenRouter;
+let or: FakeApi;
 let srv: Running;
 
 const get = async (p: string) => (await fetch(srv.base + p)).json();
@@ -36,8 +37,8 @@ beforeAll(async () => {
   mkdirSync(join(vault, ".vault-chat"), { recursive: true });
   writeFileSync(join(vault, ".vault-chat", "MEMORY.md"), "# Memory\n\n- 2026-10-01: Carl likes one worked example\n");
   secrets = await makeKeyStore(join(home, "secrets"), { "api.openrouter": "sk-or-canary-not-real" });
-  or = await fakeOpenRouter("NO_REPLY");
-  srv = await startServer({ home, vault, secrets, openrouter: or.url });
+  or = await fakeAnthropic("NO_REPLY");
+  srv = await startServer({ home, vault, secrets, anthropic: or.url });
 }, 120_000);
 
 afterAll(async () => {
@@ -64,14 +65,21 @@ describe("Main over HTTP", () => {
     expect(sent).not.toContain("overlap 128");
   });
 
-  it("/compact: pi compacts Main's context now (a compaction entry in pi's file, the raw history kept); the thread shows the summary divider", async () => {
+  it("/compact: the engine compacts Main's context now (a compaction entry in the session file, the raw history kept); the thread shows the summary divider", async () => {
     const r = await post("/api/v2/intent", { type: "compact", convId: "main", focus: "the Friday deadline" });
     expect(r).toMatchObject({ ok: true, compacted: true });
-    const dir = join(home, "state", "pi", "sessions");
-    const file = readdirSync(dir).map((n) => join(dir, n)).find((f) => f.endsWith(".jsonl") && readFileSync(f, "utf8").includes("MARKER-ONE"))!;
-    const entries = readFileSync(file, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l));
-    expect(entries.some((e) => e.type === "compaction")).toBe(true);
-    expect(readFileSync(file, "utf8")).toContain("MARKER-ONE");
+    const dir = join(vault, ".vault-chat", "events", "sessions");
+    // The runtime summarises on its own command, so the boundary lands after the
+    // intent returns — in the same transcript, which still holds the raw history.
+    const body = await waitFor(
+      () =>
+        readdirSync(dir)
+          .filter((n) => n.endsWith(".jsonl"))
+          .map((n) => readFileSync(join(dir, n), "utf8"))
+          .find((t) => t.includes("MARKER-ONE") && t.includes('"type":"compaction"')),
+      30_000,
+    );
+    expect(body.split("\n").filter(Boolean).map((l) => JSON.parse(l)).some((e) => e.type === "compaction")).toBe(true);
     await waitFor(async () => shown(await picture("main")).some((x) => x.kind === "compaction"), 10_000);
     // Clear is not the box's: there is no such intent.
     expect((await post("/api/v2/intent", { type: "clear", convId: "main" })).error).toMatch(/unknown intent/);
@@ -94,12 +102,13 @@ describe("Main over HTTP", () => {
     const before = await get("/api/v1/models");
     expect(typeof before.box?.chat?.id).toBe("string");
     expect(await post("/api/v1/models/agent", { model: "not a model" })).toMatchObject({ ok: false });
-    expect(await post("/api/v1/models/agent", { model: "anthropic/claude-test-model" })).toMatchObject({ ok: true, model: "anthropic/claude-test-model" });
-    expect((await get("/api/v1/models")).box.chat.id).toBe("anthropic/claude-test-model");
+    // A model is one of Claude's own aliases now; nothing else is offered.
+    expect(await post("/api/v1/models/agent", { model: "opus" })).toMatchObject({ ok: true, model: "opus" });
+    expect((await get("/api/v1/models")).box.chat.id).toBe("opus");
     const calls0 = or.calls.length;
     await post("/api/v2/intent", { type: "send", clientId: "c-model", text: "Which model are you?" });
     await waitFor(() => idle("main"), 30_000);
-    expect(or.calls.slice(calls0).some((c: any) => /claude-test-model/.test(String(c.model)))).toBe(true);
+    expect(or.calls.slice(calls0).some((c: any) => /opus/.test(String(c.model)))).toBe(true);
     await post("/api/v1/models/agent", { model: before.box.chat.id });
   });
 

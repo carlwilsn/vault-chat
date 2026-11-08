@@ -85,7 +85,7 @@ describe("projects: only Carl decides what is a project", () => {
     expect(th.instructions).toContain('This is the thread of Carl\'s project "Coconut"');
     expect(th.instructions).toContain("A project is context, not a wall: from any thread you may read and write anywhere the sandbox lets you");
     // pi's own write/edit tools: the path guard lets a project-X chat write project Y's files.
-    const { guardToolCall } = await import("../engine/pi/ext/policy.mjs" as any);
+    const { guardToolCall } = await import("../engine/policy.mjs" as any);
     const opts = { cwd: rig.vault, home: rig.root, denyRead: [join(rig.root, "secrets")], denyWrite: [join(rig.vault, ".vault-chat", "conversations")] };
     expect(guardToolCall("edit", { path: "agent-projects/psych-221/reading-list.md" }, opts)).toBeNull();
     expect(guardToolCall("write", { path: join(rig.vault, "agent-projects", "psych-221", "project.md") }, opts)).toBeNull();
@@ -124,7 +124,7 @@ describe("direct action, sized to the ask, read back", () => {
 });
 
 it("validates existing wait targets against the owning native conversation, never arbitrary ids", async () => {
-  const { writeJobs } = await import("../engine/pi/jobs");
+  const { writeJobs } = await import("../engine/jobs");
   const { addWake } = await import("../engine/wakes");
   const s = await rig.start("Keep working on owned native wait fixture");
   const t = await rig.start("Different conversation");

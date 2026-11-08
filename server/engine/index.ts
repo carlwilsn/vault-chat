@@ -74,7 +74,7 @@ export type EngineHandle = {
 /** The Claude model a box runs unless Carl picks another alias. */
 const CLAUDE_DEFAULT_MODEL = "sonnet";
 
-export function engineModel(claudeAvailable = false): string {
+export function engineModel(): string {
   let ls: string | null = null;
   try {
     ls = localStorage.getItem("vault_chat_engine_model");
@@ -84,12 +84,11 @@ export function engineModel(claudeAvailable = false): string {
   // Carl's choice (set from the laptop) over the deployment's default.
   const chosen = ls || process.env.VC_ENGINE_MODEL || null;
   // Claude Code runs Claude's own models and nothing else. A model id left over
-  // from the OpenRouter days — the old default is openai/gpt-6.1-sol — is not one
-  // it can run, and handing it one fails EVERY turn with "issue with the selected
-  // model". So on a box with Claude Code, a non-Claude choice gives way to the
-  // Claude default instead of breaking the chat.
-  if (claudeAvailable) return chosen && isClaudeModel(chosen) ? chosen : process.env.VC_CLAUDE_MODEL || CLAUDE_DEFAULT_MODEL;
-  return chosen || "openai/gpt-6.1-sol";
+  // from the OpenRouter days — the old default was openai/gpt-6.1-sol — is not
+  // one it can run, and handing it one fails EVERY turn with "issue with the
+  // selected model". So a non-Claude choice gives way to the Claude default
+  // instead of breaking the chat.
+  return chosen && isClaudeModel(chosen) ? chosen : process.env.VC_CLAUDE_MODEL || CLAUDE_DEFAULT_MODEL;
 }
 
 /** Web Push + notifications.jsonl + the /poll "notif" event, . A vault other
@@ -264,7 +263,10 @@ export async function startEngine(b: EngineBoot): Promise<EngineHandle> {
   offerClaudeModels(true);
 
   const bwrap = findBwrap();
-  if (!bwrap && process.platform === "linux" && process.env.VC_SANDBOX_UNSAFE !== "1") {
+  // VC_PI_UNSAFE is the name every test and the ship host already use for
+  // this, so it keeps working; VC_SANDBOX_UNSAFE is what it is called now.
+  const unsafe = process.env.VC_SANDBOX_UNSAFE === "1" || process.env.VC_PI_UNSAFE === "1";
+  if (!bwrap && process.platform === "linux" && !unsafe) {
     return fail("bubblewrap (bwrap) was not found: the agent will not run without its sandbox on Linux (set VC_BWRAP, or VC_SANDBOX_UNSAFE=1 to run without it)");
   }
 
@@ -372,7 +374,10 @@ export async function startEngine(b: EngineBoot): Promise<EngineHandle> {
             // An MCP call that waits on Carl (AskUser) is not idle; the
             // per-server timeout above is the only cap that should apply.
             CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT: "0",
+            // A deployment that points the CLI at another endpoint (a proxy, a
+            // test's stand-in) names it and its key together; neither is read.
             ...(process.env.ANTHROPIC_BASE_URL ? { ANTHROPIC_BASE_URL: process.env.ANTHROPIC_BASE_URL } : {}),
+            ...(process.env.ANTHROPIC_API_KEY ? { ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY } : {}),
           }),
           // The same deny lists pi uses, from the sandbox alone (filePolicy.wallsOf):
           // what Claude Code's own file tools are ruled against when they are on.
@@ -481,11 +486,9 @@ export function vaultState(stateDir: string, v: VaultRef): { claude: ClaudePaths
 }
 
 /**
- * Which engine a conversation's next thread runs on when it has made no choice
- * of its own. Claude Code is the engine vault-chat runs on now, so it is the
- * default wherever the box has one it can run; a box with no Claude Code keeps
- * working exactly as it did until pi is removed. VC_ENGINE pins a box either
- * way (and pins every test), so a deployment can still hold one engine.
+ * Which engine a conversation's next thread runs on. Claude Code is the only
+ * one there is, so this is a constant — kept as a function because the feed,
+ * the clients and the old conversations still ask.
  */
 export function boxEngine(): "claude" {
   return "claude";

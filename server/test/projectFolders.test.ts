@@ -11,7 +11,8 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { tmp, cleanup, makeVault, makeKeyStore, fakeOpenRouter, startServer, waitFor, type Running, type FakeOpenRouter } from "./helpers";
+import { tmp, cleanup, makeVault, makeKeyStore, startServer, waitFor, type Running } from "./helpers";
+import { fakeAnthropic, type FakeApi } from "./claudeFakeApi";
 
 const fwd = (p: string) => p.split("\\").join("/");
 
@@ -82,8 +83,8 @@ describe("the sandbox: exactly the registered folders, read-write; nothing else 
   const secrets = join(home, ".config", "vault-chat");
   const proj = join(home, "github", "vault-chat");
   const planted = join(proj, ".ssh-copy");
-  let sb: import("../engine/pi/backend").PiSandbox;
-  let backend: typeof import("../engine/pi/backend");
+  let sb: import("../engine/sandbox").Sandbox;
+  let backend: typeof import("../engine/sandbox");
   const at = (argv: string[], ...m: string[]) => {
     for (let i = 0; i + m.length <= argv.length; i++) if (m.every((x, j) => argv[i + j] === x)) return i;
     return -1;
@@ -93,7 +94,7 @@ describe("the sandbox: exactly the registered folders, read-write; nothing else 
       mkdirSync(d, { recursive: true });
     await import("../shims/globals");
     const { buildSandbox } = await import("../engine/index");
-    backend = await import("../engine/pi/backend");
+    backend = await import("../engine/sandbox");
     const base = buildSandbox({ bwrap: "/usr/bin/bwrap", home, stateDir: state, secretsDir: secrets, hideFiles: [], sessionsDir: join(state, "pi", "sessions"), agentDir: join(state, "pi", "agent"), vault, uid: -1, envFile: join(home, "none.env") });
     // A path the sandbox hides that lies inside a project folder (as if a credential dir were there).
     sb = { ...base, hidden: [...(base.hidden ?? []), planted], projects: () => [proj] };
@@ -140,9 +141,9 @@ describe("the sandbox: exactly the registered folders, read-write; nothing else 
   });
 });
 
-describe("end to end: a project working in a folder outside the vault (real engine, fake pi)", () => {
+describe("end to end: a project working in a folder outside the vault (the real engine and the real CLI)", () => {
   let home: string, vault: string, secrets: string, folder: string;
-  let or: FakeOpenRouter;
+  let or: FakeApi;
   let srv: Running;
   const get = async (p: string) => {
     const r = await fetch(srv.base + p);
@@ -152,7 +153,8 @@ describe("end to end: a project working in a folder outside the vault (real engi
     const r = await fetch(srv.base + p, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(b) });
     return { status: r.status, body: await r.json() };
   };
-  const sessionsDir = () => join(home, "state", "pi", "sessions");
+  const sessionsDir = () => join(vault, ".vault-chat", "events", "sessions");
+  /** Where the thread whose transcript holds this marker ran: its session header's cwd. */
   const sessionCwd = (marker: string) => {
     for (const n of readdirSync(sessionsDir()).filter((f) => f.endsWith(".jsonl"))) {
       const text = readFileSync(join(sessionsDir(), n), "utf8");
@@ -171,8 +173,8 @@ describe("end to end: a project working in a folder outside the vault (real engi
     writeFileSync(join(folder, "src", "main.ts"), "export {};\n");
     mkdirSync(join(folder, ".git"), { recursive: true });
     secrets = await makeKeyStore(join(home, "secrets"), { "api.openrouter": "sk-or-canary-not-real" });
-    or = await fakeOpenRouter("Done.");
-    srv = await startServer({ home, vault, secrets, openrouter: or.url });
+    or = await fakeAnthropic("Done.");
+    srv = await startServer({ home, vault, secrets, anthropic: or.url });
   }, 120_000);
   afterAll(async () => {
     if (process.env.VC_TEST_LOGS) console.log(srv?.logs());
@@ -196,7 +198,7 @@ describe("end to end: a project working in a folder outside the vault (real engi
     expect(existsSync(join(vault, "agent-projects", "bad"))).toBe(false);
   });
 
-  it("Make this a project on a folder on the box: its thread runs pi in that folder, which loads its AGENTS.md", async () => {
+  it("Make this a project on a folder on the box: its thread runs the agent in that folder, which loads its AGENTS.md", async () => {
     const r = await post("/projects", { folder: fwd(folder) });
     // The project is named after its folder.
     expect(r.body).toMatchObject({ ok: true, slug: "vault-chat", name: "vault-chat", convId: "project-vault-chat", created: true, folder: fwd(folder), vault: "school2" });
@@ -216,7 +218,8 @@ describe("end to end: a project working in a folder outside the vault (real engi
   });
 
   it("its writes land in the folder (relative to it); none of it reaches the vault", async () => {
-    or.script.push({ toolCall: { name: "write", args: { path: "NOTES.md", content: "written by the agent\n" } } });
+    // The agent's own file tools are Claude Code's now, ruled by vault-chat's policy.
+    or.script.push({ toolCall: { name: "Write", args: { file_path: join(folder, "NOTES.md"), content: "written by the agent\n" } } });
     const s = await post("/api/v2/intent", { type: "send", clientId: "c-pf-2", convId: "project-vault-chat", text: "Write NOTES.md, WRITE-MARKER." });
     expect(s.body.ok).toBe(true);
     await waitFor(() => existsSync(join(folder, "NOTES.md")), 30_000);
@@ -224,7 +227,7 @@ describe("end to end: a project working in a folder outside the vault (real engi
     expect(existsSync(join(vault, "NOTES.md"))).toBe(false);
   });
 
-  it("Main is still the vault's: its pi runs in the vault, the folder named in its list of projects", async () => {
+  it("Main is still the vault's: its thread runs in the vault, the folder named in its list of projects", async () => {
     const s = await post("/api/v2/intent", { type: "send", clientId: "c-pf-3", text: "Main here, MAIN-MARKER." });
     expect(s.body).toMatchObject({ ok: true, convId: "main" });
     await waitFor(() => or.calls.some((c) => JSON.stringify(c).includes("MAIN-MARKER")), 30_000);

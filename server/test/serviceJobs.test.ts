@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { jobList, jobStatus, jobStop, probeJob, readJobs, reapJobs, startServiceJob, writeJobs, type PiJobEnv } from "../engine/pi/jobs";
+import { jobList, jobStatus, jobStop, probeJob, readJobs, reapJobs, startServiceJob, writeJobs, type PiJobEnv } from "../engine/jobs";
 const dirs: string[] = [];
 const env = (): PiJobEnv => { const logDir = mkdtempSync(join(tmpdir(), "vc-service-job-")); dirs.push(logDir); return { logDir, wrap: null, env: {}, exec: () => { throw new Error("Host tasks must not invoke systemd or an agent shell"); } }; };
 const args = { name: "submit-change", command: "Prove committed candidate", conv: "project-repo", byCarl: true };

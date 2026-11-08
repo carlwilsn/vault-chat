@@ -24,7 +24,7 @@ const token = join(home, ".local", "share", "com.vault-chat.app", "phone-token")
 
 let buildSandbox: typeof import("../engine/index").buildSandbox;
 let agentWorkDir: typeof import("../engine/index").agentWorkDir;
-let outerWith: typeof import("../engine/pi/backend").outerWith;
+let outerWith: typeof import("../engine/sandbox").outerWith;
 
 beforeAll(async () => {
   for (const d of [
@@ -50,7 +50,7 @@ beforeAll(async () => {
   for (const f of [envFile, join(home, ".git-credentials"), join(home, ".npmrc"), token, join(agentDir, "settings.json")]) writeFileSync(f, "x");
   await import("../shims/globals");
   ({ buildSandbox, agentWorkDir } = await import("../engine/index"));
-  ({ outerWith } = await import("../engine/pi/backend"));
+  ({ outerWith } = await import("../engine/sandbox"));
 });
 afterAll(() => cleanup(home));
 
@@ -104,7 +104,7 @@ describe("the agent sandbox (bubblewrap argv)", () => {
     expect(at(o, "--bind", join(home, "machine"), join(home, "machine"))).toBe(-1);
   });
 
-  it("writable: pi's sessions and agent dir, the jobs dir, the work area — after the read-only state", () => {
+  it("writable: the engine's sessions and agent dir, the jobs dir, the work area — after the read-only state", () => {
     const o = buildSandbox(base()).outer!;
     const roState = at(o, "--ro-bind", state, state);
     expect(roState).toBeGreaterThan(at(o, "--ro-bind", home, home));
@@ -144,7 +144,7 @@ describe("the agent sandbox (bubblewrap argv)", () => {
     expect(sb.denyRead).toEqual(expect.arrayContaining([secrets, envFile, token, join(home, ".ssh"), join(home, ".local", "state", "thinkbox"), join(home, ".git-credentials")]));
   });
 
-  it("the per-command shell layer gets the same mounts as pi's (voice Bash, vault tools, jobs ride the outer one)", () => {
+  it("the per-command shell layer gets the same mounts as the engine's (voice Bash, vault tools, jobs ride the outer one)", () => {
     const sb = buildSandbox(base());
     expect(sb.shell).toEqual(sb.outer);
     // The outer layer with the other vaults' state walled off, as voice/jobs/subagent children get it.

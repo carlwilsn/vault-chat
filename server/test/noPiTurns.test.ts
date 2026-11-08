@@ -122,17 +122,20 @@ describe("a turn with nothing to run on", () => {
   });
 
   it("something typed says so once, however many times it arrives", async () => {
+    // The conversation exists first (as it does in the app: Carl types into one
+    // that is open), then the sign-in goes.
+    backend.blocked = null;
+    const r = await engine.message({ text: "before" });
+    await until(() => backend.turns.length >= 1);
+    const turnsBefore = backend.turns.length;
+
     backend.blocked = "Sign in with Claude to chat";
-    const r = await engine.message({ text: "are you there" });
-    await until(async () => (await readConv(vault, r.convId))!.messages.some((m: any) => /Sign in with Claude to chat/.test(m.content ?? "")));
+    await engine.run(r.convId, "are you there", "user");
+    await engine.run(r.convId, "still there?", "user");
     const said = (await readConv(vault, r.convId))!.messages.filter((m: any) => /Sign in with Claude to chat/.test(m.content ?? "")).length;
     expect(said).toBe(1);
-
-    await engine.run(r.convId, "still there?", "user");
-    const again = (await readConv(vault, r.convId))!.messages.filter((m: any) => /Sign in with Claude to chat/.test(m.content ?? "")).length;
-    expect(again).toBe(1);
-    // And no turn was started for either.
-    expect(backend.turns.length).toBe(0);
+    // And neither one started a turn.
+    expect(backend.turns.length).toBe(turnsBefore);
   });
 
   it("once there is something to run on, turns run", async () => {

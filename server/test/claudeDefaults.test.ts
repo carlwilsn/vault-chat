@@ -30,20 +30,12 @@ function withEnv(patch: Record<string, string | undefined>, fn: () => void) {
 }
 
 describe("what a box runs by default", () => {
-  it("is Claude Code wherever the box has one, and pi only where it has none", () => {
-    withEnv({ VC_ENGINE: undefined }, () => {
-      expect(boxEngine(true)).toBe("claude");
-      expect(boxEngine(false)).toBe("pi");
-      // The old signature had no argument and always answered pi; a caller that
-      // forgets to say must not silently put a Claude box back on pi forever,
-      // but it must also not claim an engine the box does not have.
-      expect(boxEngine()).toBe("pi");
-    });
-  });
-
-  it("VC_ENGINE still pins a box, in both directions", () => {
-    withEnv({ VC_ENGINE: "pi" }, () => expect(boxEngine(true)).toBe("pi"));
-    withEnv({ VC_ENGINE: "claude" }, () => expect(boxEngine(false)).toBe("claude"));
+  it("is Claude Code, whatever is asked and whatever is set", () => {
+    // There is no engine to choose any more, so neither a caller's argument nor
+    // VC_ENGINE can put a box back on something else: pi does not exist.
+    withEnv({ VC_ENGINE: undefined }, () => expect(boxEngine()).toBe("claude"));
+    withEnv({ VC_ENGINE: "pi" }, () => expect(boxEngine()).toBe("claude"));
+    withEnv({ VC_ENGINE: "claude" }, () => expect(boxEngine()).toBe("claude"));
   });
 
   // The model a box has been told to run arrives either from Carl's stored choice
@@ -51,22 +43,17 @@ describe("what a box runs by default", () => {
   // only the env one is readable here (the localStorage shim is the running
   // server's, not a test's — asserting through it would pass for any value).
   it("the model on a Claude box is a Claude alias, whatever the OpenRouter days left behind", () => {
-    withEnv({ VC_ENGINE_MODEL: undefined, VC_CLAUDE_MODEL: undefined }, () => expect(engineModel(true)).toBe("sonnet"));
+    withEnv({ VC_ENGINE_MODEL: undefined, VC_CLAUDE_MODEL: undefined }, () => expect(engineModel()).toBe("sonnet"));
     // THE BUG: the box's model was an OpenRouter id, so every Claude turn failed
     // on "an issue with the selected model". It gives way to a model Claude runs.
-    withEnv({ VC_ENGINE_MODEL: "openai/gpt-6.1-sol", VC_CLAUDE_MODEL: undefined }, () => expect(engineModel(true)).toBe("sonnet"));
+    withEnv({ VC_ENGINE_MODEL: "openai/gpt-6.1-sol", VC_CLAUDE_MODEL: undefined }, () => expect(engineModel()).toBe("sonnet"));
     // Carl's own Claude alias is still his choice.
-    withEnv({ VC_ENGINE_MODEL: "opus", VC_CLAUDE_MODEL: undefined }, () => expect(engineModel(true)).toBe("opus"));
-  });
-
-  it("a box with no Claude Code keeps the model it always had", () => {
-    withEnv({ VC_ENGINE_MODEL: undefined }, () => expect(engineModel(false)).toBe("openai/gpt-6.1-sol"));
-    withEnv({ VC_ENGINE_MODEL: "openai/gpt-6.1-sol" }, () => expect(engineModel(false)).toBe("openai/gpt-6.1-sol"));
+    withEnv({ VC_ENGINE_MODEL: "opus", VC_CLAUDE_MODEL: undefined }, () => expect(engineModel()).toBe("opus"));
   });
 
   it("a deployment can name the Claude model it wants", () => {
     withEnv({ VC_ENGINE_MODEL: undefined, VC_CLAUDE_MODEL: "haiku" }, () => {
-      expect(engineModel(true)).toBe("haiku");
+      expect(engineModel()).toBe("haiku");
     });
   });
 });

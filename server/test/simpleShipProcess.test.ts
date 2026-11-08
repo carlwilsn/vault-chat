@@ -9,7 +9,7 @@ const state = vi.hoisted(() => ({ home: "" }));
 // Redirect only the installed-location lookup to a private fixture; no spawn, git, flock or kill mocks.
 vi.mock("node:os", async original => ({ ...await original<typeof import("node:os")>(), homedir: () => state.home }));
 import { runInstalledShip } from "../submitChange";
-import { jobStop, reapJobs, startServiceJob } from "../engine/pi/jobs";
+import { jobStop, reapJobs, startServiceJob } from "../engine/jobs";
 const roots: string[] = [], pids: { pid: number; start: string }[] = [];
 const identity = (pid: number) => readFileSync(`/proc/${pid}/stat`, "utf8").split(") ")[1]!.split(" ")[19]!;
 const remember = (pid: number) => pids.push({pid, start: identity(pid)});

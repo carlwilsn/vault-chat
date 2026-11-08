@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { makeVault, startServer, tmp, waitFor, fakePiDir, type Running } from "./helpers";
-import { fakeChat, chatText } from "./fakeChat";
+import { fakeChat, chatText } from "./claudeFakeApi";
 import { readEntries } from "../convlog/piSession";
 
 it.each(["genuine", "protocol fixture"])("%s: deleted-project stale inputs use the existing global Main owner, literal bodies and native human provenance", async runtime => {
@@ -13,7 +13,7 @@ it.each(["genuine", "protocol fixture"])("%s: deleted-project stale inputs use t
   const vault = makeVault(join(master, "vaults/owner")), viewer = makeVault(join(master, "vaults/viewer"));
   const bare = join(master, ".hub/vaults/viewer.git");
   mkdirSync(bare, { recursive: true }); execFileSync("git", ["init", "--bare", "-q", bare]);
-  const state = join(home, "state"), provider = await fakeChat();
+  const state = join(home, "state"), provider = await fakeAnthropic();
   let release!: () => void;
   const gate = new Promise<void>(r => { release = r; });
   provider.respond = async (_body, n) => { if (n === 3) await gate; return { text: `Final reply ${n}` }; };
@@ -22,8 +22,8 @@ it.each(["genuine", "protocol fixture"])("%s: deleted-project stale inputs use t
   let srv: Running | undefined;
   try {
     srv = await startServer({ home, vault, secrets: join(home, "empty-no-credentials"), openrouter: provider.url,
-      extra: { VC_MASTER: master, VC_PI_DIR: runtime === "genuine" ? process.env.VC_TEST_PI_DIR! : fakePiDir(home), VC_STATE_DIR: state,
-        VC_ENGINE_MODEL: "test/fake-model", VC_PI_UNSAFE: "1", VC_VOICE_PIPELINE: "off", NODE_OPTIONS: "--import " + network } });
+      extra: { VC_MASTER: master,  VC_STATE_DIR: state,
+        VC_VOICE_PIPELINE: "off", NODE_OPTIONS: "--import " + network } });
     expect(srv.proc.exitCode).toBeNull(); expect([8848, 8857]).not.toContain(srv.port);
     const agent = join(state, "pi/agent"); mkdirSync(agent, { recursive: true });
     writeFileSync(join(agent, "settings.json"), JSON.stringify({ compaction: { enabled: false }, retry: { enabled: false } }));

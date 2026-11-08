@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { tmp, cleanup, makeVault } from "./helpers";
 import { findBoard, lookBoard } from "../boards";
 import { sideToolSpecs, toolAnswer, voiceSideToolSpecs } from "../engine/engine";
-import { hostToolContent } from "../engine/pi/ext/policy.mjs";
+import { hostToolContent } from "../engine/policy.mjs";
 import { ENGINE_ROLE_PROMPT } from "../engine/prompt";
 
 // Two different 1×1 PNGs (the view and the overview).

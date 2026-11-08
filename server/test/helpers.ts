@@ -1,6 +1,8 @@
 // Test rig: temp vaults and git repos, a fake key store (canary values only),
-// a scripted fake OpenRouter, and the built server bundle as a real child
-// process.
+// the built server bundle as a real child process running the real Claude Code
+// CLI against a scripted stand-in for the Anthropic API (./claudeFakeApi.ts),
+// and a scripted fake OpenRouter for what still goes through it (voice, web
+// search, vision).
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readFileSync, realpathSync } from "node:fs";
 import { createServer, type Server } from "node:http";
@@ -8,32 +10,24 @@ import { tmpdir, homedir } from "node:os";
 import { join, resolve, dirname, isAbsolute } from "node:path";
 import { Encrypter } from "age-encryption";
 import { pathToFileURL } from "node:url";
+import { fakeAnthropic, type FakeApi } from "./claudeFakeApi";
+import { findClaude } from "../engine/claude/install";
 
 export const ROOT = resolve(__dirname, "..", "..");
 export const BUNDLE = join(ROOT, "dist-server", "vault-chat-server.mjs");
-// Required pinned runtime: the installed frozen gate supplies its read-only
-// prefix; local runs use the same mature tool-factory installation.
-export const MATURE_PI_DIR = process.env.VC_TEST_PI_DIR ?? join(homedir(), ".local/state/vault-chat-server/pi/1.1.0");
-
-/** An npm prefix holding the fake pi (server/test/fakePiCli.mjs) as @earendil-works/pi-coding-agent@1.1.0 (VC_PI_DIR). */
-export function fakePiDir(home: string): string {
-  const dir = join(home, "fakepi");
-  const pkg = join(dir, "node_modules", "@earendil-works", "pi-coding-agent");
-  mkdirSync(join(pkg, "dist", "bundle"), { recursive: true });
-  writeFileSync(join(pkg, "package.json"), JSON.stringify({ name: "@earendil-works/pi-coding-agent", version: "1.1.0", type: "module" }));
-  // Resolve the official SDK from this checkout even though the fixture CLI
-  // lives in a throwaway npm prefix (also works without symlink privileges).
-  const source = readFileSync(join(ROOT, "server", "test", "fakePiCli.mjs"), "utf8")
-    .replace('"@modelcontextprotocol/sdk/client/index.js"', JSON.stringify(pathToFileURL(join(ROOT, "node_modules/@modelcontextprotocol/sdk/dist/esm/client/index.js")).href))
-    .replace('"@modelcontextprotocol/sdk/client/streamableHttp.js"', JSON.stringify(pathToFileURL(join(ROOT, "node_modules/@modelcontextprotocol/sdk/dist/esm/client/streamableHttp.js")).href));
-  writeFileSync(join(pkg, "dist", "bundle", "cli.js"), source);
-  // Filesystem tools are the real pinned pi factories, even when the model
-  // loop is scripted. Never maintain a fake second filesystem implementation.
-  const tools = join(MATURE_PI_DIR, "node_modules/@earendil-works/pi-coding-agent/dist/core/tools/index.js");
-  if (!existsSync(tools)) throw new Error("Tests require installed pi 1.1.0 tool factories (VC_TEST_PI_DIR)");
-  mkdirSync(join(pkg, "dist", "core", "tools"), { recursive: true });
-  writeFileSync(join(pkg, "dist", "core", "tools", "index.js"), `export * from ${JSON.stringify(pathToFileURL(tools).href)};`);
-  return dir;
+/**
+ * The Claude Code the tests run: the pinned CLI the Agent SDK ships, exactly
+ * the binary a box runs. Found once (resolving it probes `--version`), and
+ * handed to the server as VC_CLAUDE_BIN.
+ */
+let foundCli: string | null = null;
+export function claudeCli(): string {
+  if (foundCli) return foundCli;
+  const dir = join(tmpdir(), "vc-test-claude");
+  mkdirSync(dir, { recursive: true });
+  const found = findClaude({ stateDir: dir, env: { PATH: process.env.PATH ?? "" } });
+  if (!("install" in found)) throw new Error(`tests need Claude Code: ${found.error} — ${found.tried.join("; ")}`);
+  return (foundCli = found.install.cli);
 }
 
 export function tmp(prefix = "vcs-"): string {
@@ -256,6 +250,10 @@ export type ServerEnv = {
   vault: string;
   bare?: string;
   secrets: string;
+  /** Where the engine's Claude Code sends its API calls (./claudeFakeApi.ts).
+   * Left out, the server still gets one of its own, so no turn ever reaches the
+   * real API and none hangs waiting for a key. */
+  anthropic?: string;
   openrouter?: string;
   token?: string;
   extra?: Record<string, string>;
@@ -269,6 +267,9 @@ export async function startServer(e: ServerEnv & { bundle?: string }): Promise<R
   const voicePort = String(await freePort());
   const tokenFile = join(e.home, "phone-token");
   if (e.token) writeFileSync(tokenFile, e.token);
+  // A test that scripts its turns passes its own; the rest get a silent one, so
+  // the CLI is always pointed somewhere local and always counts as signed in.
+  const ownApi: FakeApi | null = e.anthropic || e.extra?.ANTHROPIC_BASE_URL ? null : await fakeAnthropic();
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     HOME: e.home,
@@ -286,11 +287,15 @@ export async function startServer(e: ServerEnv & { bundle?: string }): Promise<R
     VC_TOKEN_FILE: tokenFile,
     VC_STATE_DIR: join(e.home, "state"),
     VC_SYNC: e.bare ? "1" : "0",
-    // The engine on the fake pi (server/test/fakePiCli.mjs) unless a test names another (piEngine.test.ts: the real pi).
-    VC_ENGINE: "pi",
-    VC_PI_DIR: fakePiDir(e.home),
-    VC_ENGINE_MODEL: "openai/gpt-5.6-sol",
-    VC_PI_UNSAFE: "1",
+    // The engine is the real Claude Code CLI, the pinned one a box runs, with
+    // the model's answers scripted by the stand-in API below.
+    VC_CLAUDE_BIN: claudeCli(),
+    VC_ENGINE_MODEL: "haiku",
+    ANTHROPIC_BASE_URL: e.anthropic ?? ownApi?.url ?? "",
+    // Not a key: the stand-in never looks, and it is what makes the CLI (and so
+    // the backend's signedIn) treat this box as signed in without a login.
+    ANTHROPIC_API_KEY: "sk-ant-not-a-real-key",
+    VC_SANDBOX_UNSAFE: "1",
     VC_BWRAP: join(e.home, "no-bwrap"),
     ...(e.openrouter ? { VC_OPENROUTER_BASE: e.openrouter } : {}),
     ...(e.extra ?? {}),
@@ -324,9 +329,14 @@ export async function startServer(e: ServerEnv & { bundle?: string }): Promise<R
     logs: () => out,
     exited,
     stop: async () => {
-      if (proc.exitCode !== null) return proc.exitCode;
+      if (proc.exitCode !== null) {
+        await ownApi?.close();
+        return proc.exitCode;
+      }
       proc.kill();
-      return exited;
+      const code = await exited;
+      await ownApi?.close();
+      return code;
     },
   };
 }

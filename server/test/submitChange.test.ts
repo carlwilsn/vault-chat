@@ -10,7 +10,7 @@ vi.mock("node:fs", async original => { const real = await original<typeof import
 vi.mock("../projectFolders", () => ({ projectFolderOf: () => ({ abs: "/registered/project" }) }));
 vi.mock("../projectChanges", () => ({ isGatedProject: () => true }));
 import { runInstalledShip, SUBMIT_CHANGE_SCHEMA, submitChangeJob } from "../submitChange";
-import { readJobs, probeJob } from "../engine/pi/jobs";
+import { readJobs, probeJob } from "../engine/jobs";
 const dirs: string[] = [];
 afterEach(() => { for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true }); vi.clearAllMocks(); state.installed = true; });
 function child() { const c = Object.assign(new EventEmitter(), { stdout: new EventEmitter(), stderr: new EventEmitter() }); state.spawn.mockReturnValue(c); return c; }

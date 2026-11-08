@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { hostToolName } from "../../src/mcpNames";
 import { answerOf, ASK_TOOLS } from "../../src/review";
 import { toolName } from "../../src/convlog/view";
-import { activityOf } from "../engine/pi/subagents";
+import { activityOf } from "../mcp/subagent";
 
 describe("native MCP names and explicit proof identity", () => {
   it("shortens only vault-chat's native namespace, never another server's tools", () => {

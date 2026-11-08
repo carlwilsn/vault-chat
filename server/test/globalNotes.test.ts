@@ -4,7 +4,7 @@ import { beforeAll, afterAll, describe, it, expect } from 'vitest';
 import { join } from 'node:path';
 import { mkdirSync, readFileSync, writeFileSync, existsSync, symlinkSync } from 'node:fs';
 import { tmp, cleanup, makeVault, startServer, waitFor, type Running } from './helpers';
-import { fakeChat, lastUser, lastToolResult, type FakeChat } from './fakeChat';
+import { fakeChat, lastUser, lastToolResult, type FakeApi } from './fakeChat';
 import { configureContext, resetContextConfig } from '../context/config';
 import { globalNotes, appendGlobalNote, writeGlobalNotes } from '../notesStorage';
 import type { Note } from '../../src/notes';
@@ -39,7 +39,7 @@ describe('global notes read-through safety (no migration)', () => {
 });
 
 describe('compiled Notes APIs and native tools across viewers and owner threads', () => {
- let home:string,a:string,b:string,c:string,srv:Running,provider:FakeChat;
+ let home:string,a:string,b:string,c:string,srv:Running,provider:FakeApi;
  let step:{name:string,args:Record<string,unknown>}|null=null;
  let output=''; let serial=0;
  const post=async(path:string,body:unknown)=>{
@@ -52,14 +52,14 @@ describe('compiled Notes APIs and native tools across viewers and owner threads'
   home=tmp('global-note-native-'); a=makeVault(join(home,'vaults/home')); b=makeVault(join(home,'vaults/fixture-a')); c=makeVault(join(home,'vaults/fixture-b'));
   for(const v of [a,b,c]) { mkdirSync(join(v,'.vault-chat'),{recursive:true}); writeFileSync(join(v,'same.md'),v===b?'ORIGINAL SOURCE':'WRONG VIEWER SOURCE'); }
   writeFileSync(join(b,'.vault-chat/notes.jsonl'),JSON.stringify(seed)+'\n');
-  provider=await fakeChat();
+  provider=await fakeAnthropic();
   provider.respond=body=>{
    const user=lastUser(body); if(!user.includes('OWNED-NOTES-')) return {status:503};
    const result=lastToolResult(body);
    if(result!==null){ output=result; return {text:'Owned note step complete',noCost:true}; }
    return step?{call:step,noCost:true}:{text:'Owned note idle',noCost:true};
   };
-  srv=await startServer({home,vault:a,secrets:join(home,'absent-secrets'),openrouter:provider.url,extra:{VC_VAULT_NAME:'home',VC_ENGINE:'pi',VC_PI_DIR:process.env.VC_TEST_PI_DIR,VC_ENGINE_MODEL:'test/fake-model',VC_MASTER:home}});
+  srv=await startServer({home,vault:a,secrets:join(home,'absent-secrets'),openrouter:provider.url,extra:{VC_VAULT_NAME:'home',VC_MASTER:home}});
   await post('/api/v1/vaults',{name:'fixture-a'}); await post('/api/v1/vaults',{name:'fixture-b'});
   const agent=join(home,'state/pi/agent'); mkdirSync(agent,{recursive:true});
   writeFileSync(join(agent,'models.json'),JSON.stringify({providers:{openrouter:{baseUrl:provider.url,apiKey:'synthetic-local-only',api:'openai-completions',models:[{id:'test/fake-model',name:'Unpaid fixture',reasoning:false,input:['text'],cost:{input:0,output:0,cacheRead:0,cacheWrite:0},contextWindow:400000,maxTokens:1000}]}}}));

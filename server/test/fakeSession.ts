@@ -19,7 +19,7 @@ import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { appendEntries, newSessionFile, readEntries } from "../convlog/piSession";
 // @ts-ignore a plain .mjs (the pi extension's helpers)
-import { YOU_TYPE, youSince, nativeUserRequest } from "../engine/pi/ext/policy.mjs";
+import { YOU_TYPE, youSince, nativeUserRequest } from "../engine/policy.mjs";
 
 let clock = Date.now();
 const stamp = () => (clock = Math.max(Date.now(), clock + 1));

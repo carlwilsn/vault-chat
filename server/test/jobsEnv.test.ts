@@ -5,7 +5,7 @@ import { existsSync, mkdtempSync, readFileSync, readdirSync, statSync, utimesSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { cleanup } from "./helpers";
-import { startJob, sweepJobEnvFiles, writeJobEnvFile, jobArgv } from "../engine/pi/jobs";
+import { startJob, sweepJobEnvFiles, writeJobEnvFile, jobArgv } from "../engine/jobs";
 
 const root = mkdtempSync(join(tmpdir(), "vc-jobenv-"));
 afterAll(() => cleanup(root));

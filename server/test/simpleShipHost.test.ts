@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { startServiceJob, jobStop, probeJob } from "../engine/pi/jobs";
+import { startServiceJob, jobStop, probeJob } from "../engine/jobs";
 import { checkBranch, ship, promote, type ShipConfig } from "../simpleShipHost";
 import { acceptedChanges, type AcceptedChange } from "../changeShipping";
 const roots: string[] = [];

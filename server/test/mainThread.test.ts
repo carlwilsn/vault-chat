@@ -135,13 +135,6 @@ describe("Main: one conversation, every surface's default", () => {
     expect(rows.find((c: any) => c.id === "project-coconut")).toMatchObject({ kind: "project", project: "coconut" });
   });
 
-  it("compaction runs at about 150k tokens (was 375k)", async () => {
-    const { compactAt, COMPACT_CAP } = await import("../engine/pi/config");
-    expect(COMPACT_CAP).toBe(150_000);
-    expect(compactAt(1_000_000)).toBe(150_000);
-    expect(compactAt(400_000)).toBe(150_000);
-    expect(compactAt(128_000)).toBe(96_000);
-  });
 });
 
 describe("memory: the project-memory report's probes (the box's side of each)", () => {
@@ -240,7 +233,7 @@ describe("memory: the project-memory report's probes (the box's side of each)", 
     const p = await turn("Anything?", "project-psych-221");
     expect(p.text).toContain("its memory is at 55 of 60 lines");
     // pi's tool_result hook (ext/vc.mjs): the write that pushed a file near its cap is told at once.
-    const { memoryCapNote } = await import("../engine/pi/ext/policy.mjs" as any);
+    const { memoryCapNote } = await import("../engine/policy.mjs" as any);
     const read = (p: string) => readFileSync(p, "utf8");
     expect(memoryCapNote("edit", { path: ".vault-chat/MEMORY.md" }, rig.vault, read)).toMatch(/MEMORY\.md is at 262 of 200 lines: merge related lines and drop stale ones now \(past the cap/);
     expect(memoryCapNote("write", { path: join(psych, ".vault-chat", "project-memory.md") }, "/elsewhere", read)).toMatch(/memory is at 55 of 60 lines/);

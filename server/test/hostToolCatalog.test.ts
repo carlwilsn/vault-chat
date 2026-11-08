@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { makeRig, type Rig } from "./longRig";
 import { cleanup } from "./helpers";
 import { agentToolSpecs, sideToolSpecs, voiceSideToolSpecs } from "../engine/engine";
-import type { HostLoadout, ToolSpec } from "../engine/pi/backend";
+import type { HostLoadout, ToolSpec } from "../engine/backend";
 
 let rig: Rig;
 function own(folder: string, name: string) {

@@ -4,13 +4,13 @@ import { it, expect } from "vitest";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { makeVault, startServer, tmp, waitFor, fakePiDir, type Running } from "./helpers";
-import { fakeChat, chatText } from "./fakeChat";
+import { fakeChat, chatText } from "./claudeFakeApi";
 import { readEntries } from "../convlog/piSession";
 
 it.each(["genuine", "protocol fixture"].flatMap(runtime => [false, true].map(reverse => ({ runtime, reverse }))))(
   "$runtime: ordinary busy inputs take native queued turns in original surface order (reverse=$reverse)", async ({ runtime, reverse }) => {
     const home = tmp("vc-surface-queue-"), vault = makeVault(join(home, "vault")), state = join(home, "state");
-    const provider = await fakeChat();
+    const provider = await fakeAnthropic();
     let release!: () => void;
     const gate = new Promise<void>(resolve => { release = resolve; });
     provider.respond = async (_body, n) => { if (n === 1) await gate; return { text: `Reply ${n}` }; };
@@ -19,8 +19,8 @@ it.each(["genuine", "protocol fixture"].flatMap(runtime => [false, true].map(rev
     let srv: Running | undefined;
     try {
       srv = await startServer({ home, vault, secrets: join(home, "empty-no-credentials"), openrouter: provider.url,
-        extra: { VC_PI_DIR: runtime === "genuine" ? process.env.VC_TEST_PI_DIR! : fakePiDir(home), VC_STATE_DIR: state,
-          VC_ENGINE_MODEL: "test/fake-model", VC_PI_UNSAFE: "1", VC_VOICE_PIPELINE: "off", NODE_OPTIONS: "--import " + network } });
+        extra: {  VC_STATE_DIR: state,
+          VC_VOICE_PIPELINE: "off", NODE_OPTIONS: "--import " + network } });
       expect([8848, 8857]).not.toContain(srv.port);
       const agent = join(state, "pi/agent"); mkdirSync(agent, { recursive: true });
       writeFileSync(join(agent, "settings.json"), JSON.stringify({ compaction: { enabled: false }, retry: { enabled: false } }));

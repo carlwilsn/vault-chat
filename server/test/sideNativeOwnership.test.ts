@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 import { execFileSync } from "node:child_process";
 import { makeVault, startServer, tmp, waitFor, type Running } from "./helpers";
-import { fakeChat, chatText, lastToolResult } from "./fakeChat";
+import { fakeChat, chatText, lastToolResult } from "./claudeFakeApi";
 
 it("project Ctrl+K keeps its native owner/cwd with another vault open, including completed polls, refinements and stop", async () => {
   const root = tmp("vc-side-native-owner-"), master = join(root, "master");
@@ -21,7 +21,7 @@ it("project Ctrl+K keeps its native owner/cwd with another vault open, including
     mkdirSync(bare, { recursive: true });
     execFileSync("git", ["init", "--bare", "-q", bare]);
   }
-  const provider = await fakeChat();
+  const provider = await fakeAnthropic();
   // Custom vc-context/history messages also have role=user. Match the actual
   // literal turn, not the last custom user message appended by the extension.
   const turn = (body: any) => (body.messages ?? []).filter((m: any) => m.role === "user").map((m: any) => typeof m.content === "string" ? m.content : (m.content ?? []).map((c: any) => c.text ?? "").join("\n")).filter((t: string) => /^(?:SIDE-PARENT-|OWNER-(?:BUSY|QUESTION|KILL)|# Ctrl\+K:|SIDE-(?:STOP|REFINE))/m.test(t)).at(-1) ?? "";
@@ -35,7 +35,7 @@ it("project Ctrl+K keeps its native owner/cwd with another vault open, including
   writeFileSync(network, `const actual=globalThis.fetch;globalThis.fetch=(input,init)=>{const u=new URL(typeof input==='string'?input:input instanceof URL?input.href:input.url);if(u.href==='https://openrouter.ai/api/v1/models')return actual(${JSON.stringify(provider.url + "/models")},init);if(['127.0.0.1','localhost','[::1]'].includes(u.hostname))return actual(input,init);throw Error('External fetch refused');};`);
   let srv: Running | undefined;
   try {
-    srv = await startServer({ home: processHome, vault: owner, secrets: join(processHome, "empty-credentials"), openrouter: provider.url, extra: { VC_MASTER: master, VC_PI_DIR: process.env.VC_TEST_PI_DIR ?? join(homedir(), ".local/state/vault-chat-server/pi/1.1.0"), VC_ENGINE_MODEL: "test/fake-model", VC_PI_UNSAFE: "1", VC_VOICE_PIPELINE: "off", NODE_OPTIONS: "--import " + network } });
+    srv = await startServer({ home: processHome, vault: owner, secrets: join(processHome, "empty-credentials"), openrouter: provider.url, extra: { VC_MASTER: master,  ".local/state/vault-chat-server/pi/1.1.0"), VC_VOICE_PIPELINE: "off", NODE_OPTIONS: "--import " + network } });
     const agent = join(processHome, "state/pi/agent");
     mkdirSync(agent, { recursive: true });
     writeFileSync(join(agent, "settings.json"), JSON.stringify({ compaction: { enabled: false }, retry: { enabled: false } }));
@@ -49,7 +49,7 @@ it("project Ctrl+K keeps its native owner/cwd with another vault open, including
     const parent = await waitFor(async () => { const c = (await get(`/conversation?vault=school2&id=${convId}&full=1`)).body; return c.meta?.threadPath && c.status !== "running" && provider.calls.length ? c : null; }, 30000);
     const parentBytes = readFileSync(parent.meta.threadPath);
     const health = (await get("/api/v1/health")).body;
-    const parentProc = health.engine.pi.procs.find((p: any) => p.threadId === parent.meta.threadId);
+    const parentProc = health.engine.claude.sessions.find((p: any) => p.threadId === parent.meta.threadId);
     expect(parentProc?.busy).toBe(false);
     expect(parentProc.pid).toBeGreaterThan(0);
     const started = await post("/api/v1/side?vault=school2", { kind: "edit", convId, text: `# Ctrl+K: an inline edit\nINSTRUCTION: SIDE-EDIT shorten\nFILE: ${file}\nSELECTION: ${originalFile}`, root: "/untrusted/body/root" });
@@ -84,7 +84,7 @@ it("project Ctrl+K keeps its native owner/cwd with another vault open, including
     expect(await post(`/api/v1/side/${stopping.id}/stop?vault=school2`, {})).toEqual({ ok: true });
     const stopped = await waitFor(async () => { const r = await get(`/api/v1/side/${stopping.id}?vault=school2&convId=${convId}&wait=100`); expect(r.status).toBe(200); return r.body.done ? r.body : null; }, 30000);
     expect(stopped.error).toBe("stopped");
-    const after = (await get("/api/v1/health")).body.engine.pi.procs.find((p: any) => p.threadId === parent.meta.threadId);
+    const after = (await get("/api/v1/health")).body.engine.claude.sessions.find((p: any) => p.threadId === parent.meta.threadId);
     expect(after).toMatchObject({ pid: parentProc.pid, busy: true });
     expect(readFileSync(parent.meta.threadPath).equals(busyBytes)).toBe(true);
     expect(JSON.parse(readFileSync(parent.meta.threadPath, "utf8").split("\n")[0]!).cwd).toBe(project);

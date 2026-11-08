@@ -7,8 +7,9 @@ import { existsSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSyn
 import { createServer, request, type Server } from "node:http";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { cleanup, fakeOpenRouter, makeVault, startServer, tmp, type FakeOpenRouter, type Running } from "./helpers";
-import { findBwrap } from "../engine/pi/install";
+import { cleanup, makeVault, startServer, tmp, type Running } from "./helpers";
+import { fakeAnthropic, type FakeApi } from "./claudeFakeApi";
+import { findBwrap } from "../engine/sandbox-build";
 
 const HOST = "thinkbox.tailbb647d.ts.net";
 const TOKEN = "isolated-mcp-deployment-test-only";
@@ -19,7 +20,7 @@ describe("built server MCP on its default private route", () => {
   let vault: string;
   let srv: Running;
   let proxy: Server;
-  let router: FakeOpenRouter;
+  let router: FakeApi;
   let url: string;
   beforeAll(async () => {
     vi.stubEnv("VC_MCP_HOSTS", undefined);
@@ -29,8 +30,8 @@ describe("built server MCP on its default private route", () => {
     writeFileSync(cli, `#!${process.execPath}\nif (process.argv.slice(2).join(' ') !== 'status --json') process.exit(1);\nconsole.log(JSON.stringify({Self:{DNSName:'${HOST}.'}}));\n`, { mode: 0o700 });
     const bwrap = findBwrap();
     if (!bwrap) throw new Error("Default private-route proof requires installed bubblewrap");
-    router = await fakeOpenRouter();
-    srv = await startServer({ home, vault, secrets: join(home, "no-key-store"), token: TOKEN, openrouter: router.url,
+    router = await fakeAnthropic();
+    srv = await startServer({ home, vault, secrets: join(home, "no-key-store"), token: TOKEN, anthropic: router.url,
       extra: { VC_TAILSCALE: cli, VC_VAULT_NAME: "notes", VC_PI_UNSAFE: "0", VC_BWRAP: bwrap } });
     // A real loopback reverse-proxy hop preserves the private Host as Serve
     // does. fetch/undici may discard a caller-supplied Host header, so do not
@@ -69,7 +70,10 @@ describe("built server MCP on its default private route", () => {
       await client.connect(new StreamableHTTPClientTransport(new URL(url), { requestInit: { headers } }));
       const tools = (await client.listTools()).tools.map((tool) => tool.name);
       expect(tools).toContain("BoardLook");
-      expect(tools).toContain("read");
+      // vault-chat's own tools only: the file tools were pi's, and a turn's file
+      // tools are Claude Code's own now — an external client gets neither.
+      expect(tools).not.toContain("read");
+      expect(tools).not.toContain("write");
       expect(tools).not.toContain("bash");
       const result = await client.callTool({ name: "BoardLook", arguments: {} });
       expect(result.isError).not.toBe(true);

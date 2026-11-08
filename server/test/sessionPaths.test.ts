@@ -1,3 +1,9 @@
+// The stored session folder of an OLD pi session. pi itself is gone, and with
+// it the resume that used to heal one — but the rewrite still matters: a vault
+// that moves must not leave Carl's old transcripts pointing at a path that no
+// longer exists, and they are still read (server/convlog/piSession.ts).
+//
+// (The engine-resume case went with pi: there is no pi backend to resume.)
 // pi's stored session folder (the live bug after the master switch, 2026-10-28: "Stored session working directory
 // does not exist: /home/carlwilsn/vaults/school2"). pi keeps the folder a session ran in, in the session file's first
 // line, and refuses to resume one whose folder is gone. server/sessionPaths.ts: master switch/back rewrite it (both
@@ -39,32 +45,4 @@ describe("pi's stored session folder", () => {
     expect(cwdOf(h)).toBe(other);
   });
 
-  it("the engine's resume: a thread whose session stored a vanished folder resumes in the thread's folder instead of failing", async () => {
-    await import("../shims/globals");
-    const { PiBackend } = await import("../engine/pi/backend");
-    const { piPaths } = await import("../engine/pi/config");
-    const paths = piPaths(join(root, "state"));
-    for (const d of [paths.sessionsDir, paths.instrDir]) mkdirSync(d, { recursive: true });
-    const vault = join(root, "vc", "vaults", "school2");
-    mkdirSync(vault, { recursive: true });
-    const tid = "019a-main-thread";
-    const file = newSessionFile(join(paths.sessionsDir, `2026-10-28T00-00-00_${tid}.jsonl`), "/home/nobody-here/vaults/school2");
-    writeFileSync(join(paths.instrDir, `${tid}.json`), JSON.stringify({ instr: join(paths.instrDir, "x.md"), tools: "t.json", cwd: "/home/nobody-here/vaults/school2", subagents: false }));
-    const be = new PiBackend({ install: { version: "t", cli: "pi.js", node: "node" } as any, paths, catalog: new Map(), sandbox: { outer: null, shell: null, denyRead: [], denyWrite: [], roots: [] }, apiKey: () => null, thinking: "low", idleMs: 60_000, maxProcs: 4, subagents: {} as any, log: () => {} } as any);
-    (be as any).currentTools = async () => [];
-    const spawned: any[] = [];
-    (be as any).spawn = async (o: any) => {
-      spawned.push(o);
-      const proc: any = new EventEmitter();
-      proc.pid = 1;
-      proc.isAlive = () => true;
-      return { proc, id: tid, file };
-    };
-    await be.resumeThread(tid, { model: "m", subagents: false, cwd: vault });
-    expect(spawned).toHaveLength(1);
-    expect(spawned[0].cwd).toBe(vault);
-    expect(spawned[0].file).toBe(file);
-    expect(cwdOf(file)).toBe(vault);
-    expect(JSON.parse(readFileSync(join(paths.instrDir, `${tid}.json`), "utf8")).cwd).toBe(vault);
-  });
 });

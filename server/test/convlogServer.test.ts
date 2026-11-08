@@ -1,6 +1,6 @@
-// The feed end to end: the real bundle, the engine on the fake pi
-// (fakePiCli.mjs: pi's RPC protocol, and its session file in pi's format), a
-// fake OpenRouter. The transcript is pi's session file; what a client sees is
+// The feed end to end: the real bundle running the real Claude Code, its model
+// answered by the scripted stand-in API. The transcript is the runtime's session
+// file in pi's format (the clients read it unchanged); what a client sees is
 // the feed: /poll?after=N answers exactly the records after N at every N, a
 // conversation's own records and its checkpoint are the same fold, a client's
 // id comes back on its message, steer / queue / stop / answer are server
@@ -10,12 +10,13 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { join } from "node:path";
 import { readFileSync } from "node:fs";
-import { tmp, cleanup, makeVault, makeKeyStore, fakeOpenRouter, startServer, waitFor, type Running, type FakeOpenRouter } from "./helpers";
+import { tmp, cleanup, makeVault, makeKeyStore, startServer, waitFor, type Running } from "./helpers";
+import { fakeAnthropic, type FakeApi } from "./claudeFakeApi";
 import { fold, pendingOf, rowFromPicture, shown, isOpen } from "../../src/convlog/reduce";
 import { RETRY_TEXT, messagesOf } from "../../src/convlog/view";
 
 let home: string, vault: string, secrets: string;
-let or: FakeOpenRouter;
+let or: FakeApi;
 let srv: Running;
 
 const get = async (p: string) => (await fetch(srv.base + p)).json();
@@ -37,6 +38,9 @@ async function all(after = 0): Promise<any[]> {
 const recsOf = async (conv: string) => (await all()).filter((r) => r.conv === conv);
 const isEnd = (r: any) => r.type === "meta" && "running" in r.patch && r.patch.running === null;
 const ended = async (conv: string, n = 1) => (await recsOf(conv)).filter(isEnd).length >= n;
+/** Turn ends after a cursor: the runtime may answer two queued messages with one
+ * reply, so how many turns a conversation has had is not a clock a test can read. */
+const endedSince = async (conv: string, since: number, n = 1) => (await recsOf(conv)).filter((x) => x.seq > since && isEnd(x)).length >= n;
 const head = async () => (await get("/poll?after=latest")).next as number;
 /** The reply of a turn started after `since` is streaming (pi's deltas in the feed). */
 const streaming = async (conv: string, since: number, n = 1) => (await recsOf(conv)).filter((x) => x.seq > since && x.type === "live" && x.ev.assistantMessageEvent?.type === "text_delta").length >= n;
@@ -45,8 +49,8 @@ beforeAll(async () => {
   home = tmp("vclog-");
   vault = makeVault(join(home, "vault"));
   secrets = await makeKeyStore(join(home, "secrets"), { "api.openrouter": "sk-or-canary-not-real" });
-  or = await fakeOpenRouter("Here is the answer.");
-  srv = await startServer({ home, vault, secrets, openrouter: or.url });
+  or = await fakeAnthropic("Here is the answer.");
+  srv = await startServer({ home, vault, secrets, anthropic: or.url });
 });
 
 afterAll(async () => {
@@ -59,7 +63,7 @@ afterAll(async () => {
 describe("the feed over HTTP", () => {
   let conv = "";
 
-  it("a send: the client's id on Carl's message (pi's own entry), the reply streamed, then pi's entry", async () => {
+  it("a send: the client's id on Carl's message (the runtime's own entry), the reply streamed, then its entry", async () => {
     const r = await intent({ type: "send", clientId: "c-first-1", text: "What is a KV cache?" });
     expect(r.ok).toBe(true);
     conv = r.convId;
@@ -78,25 +82,26 @@ describe("the feed over HTTP", () => {
       ["user", "What is a KV cache?"],
       ["assistant", "Here is the answer."],
     ]);
-    // The transcript is pi's session file: the pointers name it, the entries are pi's.
+    // The transcript is the session file: the pointers name it, its entries are the runtime's own.
     const file = userEntry.file as string;
     expect(readFileSync(file, "utf8")).toContain('"type":"session"');
-    // Fixture fidelity: hidden turn context must follow native pi's typed
-    // custom-message path, not become a shown vc-note or Carl's user entry.
+    // The host's own turn context is not a message of Carl's and is never shown:
+    // it goes to the model with the turn, and the transcript holds his words.
     const entries = readFileSync(file, "utf8").trim().split("\n").map((l) => JSON.parse(l));
-    const context = entries.find((e) => e.type === "custom_message" && e.customType === "vc-context");
-    expect(context).toMatchObject({ display: false });
-    expect(context.content).toContain('<memory file=".vault-chat/MEMORY.md">');
     expect(entries.some((e) => e.type === "custom" && e.data?.kind === "context")).toBe(false);
     expect(entries.filter((e) => e.message?.role === "user").map((e) => e.message.content)).toEqual([
       [{ type: "text", text: "What is a KV cache?" }],
     ]);
-    expect(JSON.stringify(or.calls.at(-1))).toContain('<memory file=\\".vault-chat/MEMORY.md\\">');
+    // The vault's memory reaches the session (Claude Code loads it from the
+    // CLAUDE.md the host writes, so it is in the cached part of the context).
+    expect(JSON.stringify(or.calls.at(-1))).toContain(".vault-chat/MEMORY.md");
     const feedOnDisk = readFileSync(join(vault, ".vault-chat", "events", `${conv}.jsonl`), "utf8");
     // (pi's live events for the message in flight are kept; the message itself is pi's entry, pointed to.)
     const pointers = feedOnDisk.trim().split("\n").map((l) => JSON.parse(l)).filter((x) => x.type === "entry");
     expect(pointers.length).toBeGreaterThan(1);
-    expect(pointers.every((x) => !("entry" in x) && x.file === file)).toBe(true);
+    // (The feed stores the path it will resolve — relative, for a transcript inside the vault.)
+    const base = file.split(/[\\/]/).pop()!;
+    expect(pointers.every((x) => !("entry" in x) && String(x.file).endsWith(base))).toBe(true);
     // The same send again (a retry): nothing new.
     const again = await intent({ type: "send", convId: conv, clientId: "c-first-1", text: "What is a KV cache?" });
     expect(again.duplicate).toBe(true);
@@ -151,12 +156,17 @@ describe("the feed over HTTP", () => {
     expect(pendingOf(p)).toEqual([]);
     const users = p.items.filter((x) => x.kind === "user").map((x) => [x.id, x.via]);
     expect(users.slice(-3)).toEqual([["c-slow-1", "chat"], ["c-steer-1", "queue"], ["c-queue-1", "queue"]]);
-    // Each of Carl's messages comes after a reply to the one before it (pi's order).
-    const order = p.items.filter((x) => x.kind === "user" || x.kind === "assistant").map((x) => x.kind).slice(-6);
-    expect(order).toEqual(["user", "assistant", "user", "assistant", "user", "assistant"]);
+    // Nothing of Carl's is dropped or re-ordered, and the turn he interrupted
+    // still answered before his next words were taken: the runtime may take the
+    // two he queued together and answer them with one reply, which is its own
+    // business — what must hold is that each of his messages is there, in order,
+    // and that a reply follows the last of them.
+    const order = p.items.filter((x) => x.kind === "user" || x.kind === "assistant").map((x) => x.kind);
+    expect(order.at(-1)).toBe("assistant");
+    expect(order.lastIndexOf("user")).toBeLessThan(order.length - 1);
   });
 
-  it("stop: the turn ends, said once; a queued message pi never took is no longer pending and never shown", async () => {
+  it("stop: the turn ends, said once; a queued message the runtime never took is no longer pending and never shown", async () => {
     const h0 = await head();
     await intent({ type: "send", convId: conv, clientId: "c-slow-2", text: "[slow] A long one." });
     await waitFor(() => streaming(conv, h0), 15_000);
@@ -167,7 +177,7 @@ describe("the feed over HTTP", () => {
     // The engine ends the turn (running: null) and only then writes the line that says why (after what the end
     // closed): under load a fold right after the end can come before "Stopped.". Wait for both.
     const stopped = (p: ReturnType<typeof fold>) => p.items.filter((x) => x.kind === "notice" && x.text === "Stopped.");
-    await waitFor(async () => (await ended(conv, 3)) && stopped(fold(await recsOf(conv), conv)).length > 0, 30_000);
+    await waitFor(async () => (await endedSince(conv, h0)) && stopped(fold(await recsOf(conv), conv)).length > 0, 30_000);
     const p = fold(await recsOf(conv), conv);
     expect(pendingOf(p)).toEqual([]);
     expect(stopped(p)).toHaveLength(1);
@@ -176,6 +186,7 @@ describe("the feed over HTTP", () => {
   });
 
   it("AskUser: the question waits; the answer is Carl's line under his client's id; the turn goes on", async () => {
+    const h0 = await head();
     or.script.push({ toolCall: { name: "AskUser", args: { question: "Apple or pear?", options: ["apple", "pear"] } } }, { text: "Pear it is." });
     await intent({ type: "send", convId: conv, clientId: "c-ask-1", text: "Pick a fruit with me." });
     await waitFor(async () => !!fold(await recsOf(conv), conv).meta.asking, 30_000);
@@ -183,7 +194,7 @@ describe("the feed over HTTP", () => {
     expect(asking).toMatchObject({ question: "Apple or pear?", options: ["apple", "pear"] });
     const a = await intent({ type: "answer", convId: conv, clientId: "c-ans-1", text: "pear" });
     expect(a.answered).toBe(true);
-    await waitFor(() => ended(conv, 4), 30_000);
+    await waitFor(() => endedSince(conv, h0), 30_000);
     const p = fold(await recsOf(conv), conv);
     expect(p.meta.asking).toBeUndefined();
     const ask = p.items.find((x) => x.kind === "tool" && x.name === "AskUser")!;
@@ -193,24 +204,17 @@ describe("the feed over HTTP", () => {
     expect(p.items.filter((x) => x.kind === "assistant").at(-1)?.text).toBe("Pear it is.");
   });
 
-  it("a dropped connection pi's retry recovers: a quiet 'Retrying…' while it retries, no red line, then nothing of it", async () => {
+  it("a dropped connection the runtime recovers from: the reply arrives and nothing of the failure is shown", async () => {
     const since = await head();
-    // OpenRouter's edge closes the connection once (the box's "Connection error."), then answers.
+    // The endpoint closes the connection once (the box used to report this as
+    // "Connection error."), then answers. Claude Code retries it itself.
     or.script.push({ drop: true }, { text: "Recovered answer." });
     await intent({ type: "send", convId: conv, clientId: "c-drop-1", text: "Explain attention briefly." });
-    await waitFor(async () => (await recsOf(conv)).filter((x) => x.seq > since && isEnd(x)).length >= 1, 30_000);
+    await waitFor(() => endedSince(conv, since), 60_000);
     const recs = await recsOf(conv);
-    const turn = recs.filter((x) => x.seq > since);
-    // pi did retry (its own events are in the feed) and wrote the failed attempt.
-    const retryAt = turn.findIndex((x) => x.type === "live" && x.ev.type === "auto_retry_start");
-    expect(retryAt).toBeGreaterThan(-1);
-    expect(turn.some((x) => x.type === "live" && x.ev.type === "auto_retry_end" && x.ev.success)).toBe(true);
-    // While it retried, every client showed one quiet line and no failure.
-    const during = messagesOf(fold(recs.filter((x) => x.seq <= turn[retryAt].seq), conv));
-    expect(during.filter((m) => m.failed)).toEqual([]);
-    expect(during.filter((m) => m.system && /Retrying/.test(m.content))).toEqual([expect.objectContaining({ content: "Retrying…" })]);
-    expect(during.some((m) => /Connection error/.test(m.content))).toBe(false);
-    // Recovered: the reply, and nothing about the retry (no red line, no "Retrying").
+    // Recovered: the reply, and nothing about the failure — no red line, and no
+    // line saying it is retrying, because by the time Carl could read one it is
+    // over. A blip must never put a failure in front of him.
     const after = messagesOf(fold(recs, conv));
     const mine = after.slice(after.findIndex((m) => m.mid === "c-drop-1"));
     expect(mine.map((m) => [m.role, m.content, !!m.failed])).toEqual([
@@ -218,25 +222,30 @@ describe("the feed over HTTP", () => {
       ["assistant", "Recovered answer.", false],
     ]);
     expect(after.some((m) => /Connection error|Retrying/.test(m.content))).toBe(false);
-  });
+    expect(after.filter((m) => m.failed)).toEqual([]);
+  }, 90_000);
 
-  it("every retry fails: one red line, said once, with Try again; Try again runs a turn that continues", async () => {
+  it("a request that fails for good: one red line, said once, with Try again; Try again runs a turn that continues", async () => {
     const since = await head();
-    or.script.push({ drop: true }, { drop: true }, { drop: true }, { drop: true }, { drop: true });
+    // A failure the runtime does not retry (it retries a dropped connection for
+    // as long as it takes, which is why that is not what this asks).
+    or.respond = () => ({ status: 400, body: JSON.stringify({ type: "error", error: { type: "invalid_request_error", message: "Connection error." } }) });
     await intent({ type: "send", convId: conv, clientId: "c-drop-2", text: "And multi-head attention?" });
-    await waitFor(async () => (await recsOf(conv)).filter((x) => x.seq > since && isEnd(x)).length >= 1, 30_000);
+    await waitFor(() => endedSince(conv, since), 60_000);
     let msgs = messagesOf(fold(await recsOf(conv), conv));
     const failed = msgs.filter((m) => m.failed);
     expect(failed).toHaveLength(1);
-    expect(failed[0]).toMatchObject({ system: true, retry: true, content: "Couldn't get a reply (tried 5 times): Connection error." });
+    expect(failed[0]).toMatchObject({ system: true, retry: true });
+    expect(failed[0]!.content).toMatch(/^Couldn't get a reply/);
     expect(msgs.at(-1)).toBe(failed[0]);
     expect(msgs.some((m) => /Retrying/.test(m.content))).toBe(false);
     // Try again (what the laptop's and the phone's button send).
     const since2 = await head();
+    or.respond = null;
     or.script.push({ text: "Multi-head attention runs several attentions in parallel." });
     const r = await intent({ type: "send", convId: conv, clientId: "c-retry-1", text: RETRY_TEXT, via: "retry" });
     expect(r.ok).toBe(true);
-    await waitFor(async () => (await recsOf(conv)).filter((x) => x.seq > since2 && isEnd(x)).length >= 1, 30_000);
+    await waitFor(() => endedSince(conv, since2), 60_000);
     msgs = messagesOf(fold(await recsOf(conv), conv));
     const at = msgs.findIndex((m) => m.failed);
     expect(msgs[at]!.retry).toBeUndefined();
@@ -244,7 +253,7 @@ describe("the feed over HTTP", () => {
       ["user", "↻ Trying again", true],
       ["assistant", "Multi-head attention runs several attentions in parallel.", false],
     ]);
-  });
+  }, 120_000);
 
   it("a restart in the middle of a turn: the feed is intact, a client resumes from its cursor with no gap", async () => {
     const h0 = await head();
@@ -258,7 +267,7 @@ describe("the feed over HTTP", () => {
     // Killed mid-turn (no clean shutdown), then back.
     srv.proc.kill("SIGKILL");
     await srv.exited;
-    srv = await startServer({ home, vault, secrets, openrouter: or.url });
+    srv = await startServer({ home, vault, secrets, anthropic: or.url });
     // Everything a client saw is still there, unchanged, in order.
     const again = await all(0);
     expect(again.slice(0, before.length)).toEqual(before);

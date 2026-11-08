@@ -1,9 +1,10 @@
-// Boot the real bundle on a temp vault with a fake OpenRouter, then drive the
-// phone routes the way the phone does.
+// Boot the real bundle on a temp vault, its Claude Code answered by the
+// scripted stand-in API, then drive the phone routes the way the phone does.
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { tmp, cleanup, makeVault, makeKeyStore, fakeOpenRouter, fakePushService, startServer, waitFor, type Running, type FakeOpenRouter } from "./helpers";
+import { tmp, cleanup, makeVault, makeKeyStore, fakePushService, startServer, waitFor, type Running } from "./helpers";
+import { fakeAnthropic, type FakeApi } from "./claudeFakeApi";
 
 const TOKEN = "canary-phone-token-0000";
 
@@ -11,14 +12,14 @@ describe("boot + phone routes", () => {
   let home: string;
   let vault: string;
   let secrets: string;
-  let or: FakeOpenRouter;
+  let or: FakeApi;
   let srv: Running;
 
   const env = () => ({
     home,
     vault,
     secrets,
-    openrouter: or.url,
+    anthropic: or.url,
     token: TOKEN,
   });
 
@@ -35,7 +36,7 @@ describe("boot + phone routes", () => {
         vault_chat_model: "openai/gpt-5.6-sol",
       }),
     );
-    or = await fakeOpenRouter("Acknowledged. I have the brief and I am starting.");
+    or = await fakeAnthropic("Acknowledged. I have the brief and I am starting.");
     srv = await startServer(env());
     expect(srv.logs()).toContain("listening on");
   });

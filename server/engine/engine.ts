@@ -735,6 +735,9 @@ export class Engine {
           return toolAnswer(r);
         }),
     });
+    // The runtime comes up once its handlers are wired — the router used to do
+    // this for whichever engine it led, and with pi gone there is no one else to.
+    b.start();
     // Main and every project's thread exist from the start (src/threads.ts): every surface opens one.
     void this.scoped(() => this.ensureThreads()).catch((e) => this.log(`threads: ${(e as Error).message}`));
     this.timers.push(setInterval(() => this.scoped(() => void this.tickWakes()), 2_000));
@@ -1473,7 +1476,7 @@ export class Engine {
       this.log(`compacted ${convId}${focus ? ` (focus: ${focus.slice(0, 80)})` : ""}${r.tokensBefore ? ` from ${r.tokensBefore} tokens` : ""}`);
       return { ok: true, convId, compacted: true, ...(r.tokensBefore ? { tokensBefore: r.tokensBefore } : {}) };
     } catch (e) {
-      return { ok: false, convId, error: `pi did not compact: ${(e as Error).message}` };
+      return { ok: false, convId, error: `the engine did not compact: ${(e as Error).message}` };
     } finally {
       // The summary may have dropped the turn sections (memory, project.md): the next turn sends them again.
       this.sectionsSent.delete(threadId);

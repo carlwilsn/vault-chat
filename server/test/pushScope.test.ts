@@ -3,8 +3,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { Subagents } from "../engine/pi/subagents";
-import type { NotifyScope } from "../engine/pi/backend";
+import { Subagents } from "../mcp/subagent";
+import type { NotifyScope } from "../engine/backend";
 
 // Real Subagents lifecycle + hostCall closure; no model, OS job, key, sender or network.
 describe("Notify worker scope", () => {

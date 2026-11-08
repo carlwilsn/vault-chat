@@ -11,7 +11,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { ProgressNotificationSchema } from "@modelcontextprotocol/sdk/types.js";
 import { createToolServer, type BoundTools } from "../mcp/tools";
 import { createMcpHttpHandler } from "../mcp/http";
-import type { ToolSpec } from "../engine/pi/backend";
+import type { ToolSpec } from "../engine/backend";
 import { createBoard, lookBoard } from "../boards";
 
 const root = mkdtempSync(join(tmpdir(), "vc-mcp-"));

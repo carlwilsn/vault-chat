@@ -21,7 +21,7 @@ const out = (r: any) => String(r?.text ?? "");
 
 describe("Job control", () => {
   it("argv: a time limit (24 h default, 7 d max), a memory ceiling, a low CPU and IO share", async () => {
-    const { jobArgv, jobTimeoutS } = await import("../engine/pi/jobs");
+    const { jobArgv, jobTimeoutS } = await import("../engine/jobs");
     const env = { logDir: "/state/jobs", wrap: ["bwrap", "--ro-bind", "/", "/", "--"], env: { PATH: "/bin", HOME: "/home/c" } };
     const argv = jobArgv(env, "/vault", "train-abc", "(python train.py) > log", jobTimeoutS(undefined), "/run/user/1000/vault-chat/jobs/train-abc.env");
     expect(argv).toContain("--property=EnvironmentFile=/run/user/1000/vault-chat/jobs/train-abc.env");

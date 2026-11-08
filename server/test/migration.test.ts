@@ -9,12 +9,13 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { createHash } from "node:crypto";
 import { cpSync, existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { tmp, cleanup, makeVault, makeKeyStore, fakeOpenRouter, startServer, waitFor, type Running, type FakeOpenRouter } from "./helpers";
+import { tmp, cleanup, makeVault, makeKeyStore, startServer, waitFor, type Running } from "./helpers";
+import { fakeAnthropic, type FakeApi } from "./claudeFakeApi";
 import { fold, shown } from "../../src/convlog/reduce";
 
 const SRC = process.env.VC_MIGRATION_SOURCE ?? "";
 let home = "", vault = "";
-let or: FakeOpenRouter;
+let or: FakeApi;
 let srv: Running;
 const hashes = new Map<string, string>();
 
@@ -65,8 +66,8 @@ describe.skipIf(!SRC)("one main conversation on a copy of a real vault's convers
     legacyIds = readdirSync(join(vault, ".vault-chat", "conversations")).filter((n) => n.endsWith(".jsonl")).map((n) => n.replace(/\.jsonl$/, ""));
     projects = existsSync(join(vault, "agent-projects")) ? readdirSync(join(vault, "agent-projects")).filter((n) => existsSync(join(vault, "agent-projects", n, "project.md"))) : [];
     const secrets = await makeKeyStore(join(home, "secrets"), { "api.openrouter": "sk-or-canary-not-real" });
-    or = await fakeOpenRouter("OK.");
-    srv = await startServer({ home, vault, secrets, openrouter: or.url });
+    or = await fakeAnthropic("OK.");
+    srv = await startServer({ home, vault, secrets, anthropic: or.url });
   }, 180_000);
   afterAll(async () => {
     await srv?.stop();

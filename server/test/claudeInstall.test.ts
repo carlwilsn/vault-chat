@@ -7,7 +7,7 @@ import { dirname, join } from "node:path";
 import { tmp, cleanup } from "./helpers";
 import { spawnSync } from "node:child_process";
 import { bundledCli, claudeExeName, elfInterpreter, findClaude, installerCli, loaderWrapper, probe, sandboxedCli, wrapper } from "../engine/claude/install";
-import { findBwrap } from "../engine/pi/install";
+import { findBwrap } from "../engine/sandbox-build";
 
 describe("the Claude Code the box runs", () => {
   it("names the dynamic loader of an ELF executable, and nothing for a script", () => {

@@ -5,12 +5,13 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { tmp, cleanup, makeKeyStore, fakeOpenRouter, startServer, sh, git, waitFor, type Running, type FakeOpenRouter } from "./helpers";
+import { tmp, cleanup, makeKeyStore, startServer, sh, git, waitFor, type Running } from "./helpers";
+import { fakeAnthropic, type FakeApi } from "./claudeFakeApi";
 
 const fwd = (p: string) => p.split("\\").join("/");
 const readT = (p: string) => readFileSync(p, "utf8").split(String.fromCharCode(13)).join("");
 
-let home: string, master: string, srv: Running, or: FakeOpenRouter;
+let home: string, master: string, srv: Running, or: FakeApi;
 // A fresh connection each time: a kept-alive one the server closed during a long git step reads ECONNRESET.
 const post = async (p: string, b: Record<string, unknown>) => {
   const r = await fetch(srv.base + p, { method: "POST", headers: { "content-type": "application/json", connection: "close" }, body: JSON.stringify(b) });
@@ -71,8 +72,8 @@ beforeAll(async () => {
   sh(home, "git", ["clone", "-q", gh, join(master, "projects", "site")]);
   git(join(master, "projects", "site"), "config", "core.autocrlf", "false");
   const secrets = await makeKeyStore(join(home, "secrets"), { "api.openrouter": "sk-or-canary-not-real" });
-  or = await fakeOpenRouter("Done.");
-  srv = await startServer({ home, vault: school2, bare: hub, secrets, openrouter: or.url, extra: { VC_MASTER: master, VC_SYNC_INTERVAL_MS: "3000" } });
+  or = await fakeAnthropic("Done.");
+  srv = await startServer({ home, vault: school2, bare: hub, secrets, anthropic: or.url, extra: { VC_MASTER: master, VC_SYNC_INTERVAL_MS: "3000" } });
   await waitFor(() => ref(hub, "refs/heads/box"), 30_000);
 }, 120_000);
 

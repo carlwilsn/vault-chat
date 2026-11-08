@@ -4,7 +4,8 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { tmp, cleanup, makeVault, makeKeyStore, fakeOpenRouter, startServer, waitFor, type Running, type FakeOpenRouter } from "./helpers";
+import { tmp, cleanup, makeVault, makeKeyStore, startServer, waitFor, type Running } from "./helpers";
+import { fakeAnthropic, type FakeApi } from "./claudeFakeApi";
 import { fold } from "../../src/convlog/reduce";
 import { answerReview } from "../projectChanges";
 import { setFolderWalls } from "../projectFolders";
@@ -14,7 +15,7 @@ const fwd = (p: string) => p.split("\\").join("/");
 const git = (cwd: string, ...args: string[]) => execFileSync("git", ["-c", "user.name=Carl", "-c", "user.email=carl@example.com", ...args], { cwd, encoding: "utf8" }).trim();
 
 let home: string, vault: string, secrets: string, repo: string, bare: string;
-let or: FakeOpenRouter;
+let or: FakeApi;
 let srv: Running;
 const post = async (p: string, b: Record<string, unknown>) => {
   const r = await fetch(srv.base + p, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(b) });
@@ -53,8 +54,8 @@ beforeAll(async () => {
   git(repo, "push", "-q", "origin", "main");
   git(repo, "branch", "--set-upstream-to=origin/main", "main");
   secrets = await makeKeyStore(join(home, "secrets"), { "api.openrouter": "sk-or-canary-not-real" });
-  or = await fakeOpenRouter("Done.");
-  srv = await startServer({ home, vault, secrets, openrouter: or.url });
+  or = await fakeAnthropic("Done.");
+  srv = await startServer({ home, vault, secrets, anthropic: or.url });
 }, 120_000);
 afterAll(async () => {
   if (process.env.VC_TEST_LOGS) console.log(srv?.logs());
@@ -124,7 +125,7 @@ describe("the sandbox for a git project: its folder read-only, the clone writabl
       const r = join(h, "github", "site");
       mkdirSync(join(r, ".git"), { recursive: true });
       await import("../shims/globals");
-      const { outerWith } = await import("../engine/pi/backend");
+      const { outerWith } = await import("../engine/sandbox");
       const sb = { outer: ["bwrap", "--ro-bind", h, h, "--"], shell: ["bwrap", "--"], denyRead: [], denyWrite: [], readOnly: () => [r], projects: () => [] };
       const o = outerWith(sb)!;
       expect(o).toContain("--ro-bind");

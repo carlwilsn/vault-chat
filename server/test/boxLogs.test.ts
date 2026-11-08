@@ -12,7 +12,8 @@ import { boardLogPost, boxDiag, jsonlSince } from "../diag";
 import { assistant, toolStart, toolEnd } from "./fakePi";
 import { frustration, noteUserLine } from "../signal";
 import { EventEmitter } from "node:events";
-import { SideRuns, type SideLog } from "../engine/pi/side";
+import { ClaudeSideRuns as SideRuns } from "../engine/claude/side";
+import type { SideLog } from "../engine/backend";
 
 describe("a side request pi retried", () => {
   it("answers (no failure, no red row) when pi's auto-retry got through after a dropped connection; fails only when the last try failed", async () => {

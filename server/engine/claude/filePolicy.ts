@@ -1,8 +1,8 @@
 // vault-chat's one path policy, over Claude Code's own file tools.
 //
-// Today those tools are pi's: server/mcp/filesystem.ts loads pi's core tools for
-// read/write/edit, so no pi install means no file tools. Letting Claude Code use
-// its own instead is what frees vault-chat of pi — but only if the policy
+// The file tools used to be pi's (its core read/write/edit, loaded from its
+// install), so no pi install meant no file tools at all. Claude Code using its
+// own instead is what freed vault-chat of pi — but only because the policy
 // survives, because the policy is the thing that keeps a turn inside the vault:
 // realpath rather than a lexical prefix, the deny lists, and the other vaults'
 // walls.
@@ -12,8 +12,13 @@
 // extension — it is vault-chat's own code, imported here in-process rather than
 // written out to pi's state dir.
 import { join } from "node:path";
+
 // @ts-ignore a plain .mjs — vault-chat's own policy, kept when pi went
 import { guardToolCall, isUnder, realish, resolveList } from "../policy.mjs";
+
+/** Why a write is refused while a voice call is live: the talker delegates it. */
+export const CALL_WRITE_REASON =
+  "Not on a live call: you don't edit files yourself while a voice call is live. Call Delegate {title, task, expect} now with this change — the worker makes it and checks it.";
 
 /**
  * The deny lists, from the sandbox alone. Both engines read them from here so
@@ -40,7 +45,7 @@ export function wallsOf(sandbox: {
  * The calls the voice gate covers. On a live call the agent does not change
  * files itself — it delegates — and that includes a shell line, which could
  * write around the rule. Claude Code's own tools are gated by the same rule as
- * vault-chat's were (server/mcp/filesystem.ts), in the same words.
+ * vault-chat's own file tools did, in the same words.
  */
 export const WRITING_TOOLS: readonly string[] = ["Write", "Edit", "NotebookEdit", "Bash"];
 

@@ -130,6 +130,8 @@ export class ClaudeTranslator {
   private lastUsage: ThreadTokenUsage["last"] | null = null;
   /** Results that arrived while their own message was still open: emitted once it closes. */
   private held: Emit[] = [];
+  /** A retry Claude Code reported and the clients are showing as "Retrying…". */
+  private retrying = false;
 
   constructor(private readonly now: () => number = () => Date.now()) {}
 
@@ -161,8 +163,13 @@ export class ClaudeTranslator {
           resetsAt: Number(m.rate_limit?.resetsAt ?? m.resetsAt) || null,
           kindOfLimit: m.rate_limit?.rateLimitType ?? m.rateLimitType ?? null,
         }];
-      case "api_retry":
-        return [{ kind: "live", ev: { type: "auto_retry_start", attempt: Number(m.attempt ?? 1), maxAttempts: Number(m.maxAttempts ?? 0), errorMessage: String(m.error ?? m.message ?? "").slice(0, 500) } }];
+      case "api_retry": {
+        // The SDK's own names and its error OBJECT (not a string: stringifying it
+        // put "[object Object]" in front of Carl).
+        const why = typeof m.error === "string" ? m.error : String(m.error?.message ?? m.error?.type ?? m.message ?? "the request failed");
+        this.retrying = true;
+        return [{ kind: "live", ev: { type: "auto_retry_start", attempt: Number(m.attempt ?? 1), maxAttempts: Number(m.max_retries ?? m.maxAttempts ?? 0), errorMessage: why.slice(0, 500) } }];
+      }
       default:
         return [];
     }
@@ -194,9 +201,19 @@ export class ClaudeTranslator {
     }
   }
 
+  /** Close a retry the clients are showing, if one is open. */
+  private retryEnded(success: boolean): Emit[] {
+    if (!this.retrying) return [];
+    this.retrying = false;
+    return [{ kind: "live", ev: { type: "auto_retry_end", success } }];
+  }
+
   private messageStart(e: any): Emit[] {
     // A message that never stopped (a cut turn) is closed first, so its blocks are not orphaned.
     const out = this.open ? this.messageStop() : [];
+    // The retry worked: the quiet "Retrying…" line goes away with its end event,
+    // and nothing of the failed attempt is left in front of Carl.
+    out.push(...this.retryEnded(true));
     const u = e.message?.usage ?? {};
     const ts = this.stamp();
     this.open = {
@@ -401,6 +418,9 @@ export class ClaudeTranslator {
     const terminal = String(m.terminal_reason ?? "");
     const status = terminal === "cancelled" || terminal === "interrupted" || subtype === "interrupted" ? "interrupted" : m.is_error || subtype.startsWith("error") ? "failed" : "completed";
     const error = status === "failed" ? String(m.result ?? m.error ?? subtype).slice(0, 500) : null;
+    // Every retry failed (or the turn ended while one was in flight): the end
+    // event says so, and the red line is the one the engine writes.
+    out.push(...this.retryEnded(status === "completed"));
     out.push(...this.held.splice(0));
     out.push({ kind: "done", status, error });
     return out;

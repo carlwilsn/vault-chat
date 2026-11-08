@@ -14,7 +14,7 @@ it('cold cohort exposes both old Mains in GET Main and one continuing native own
  const home=makeVault(join(master,'vaults/owner')),peer=makeVault(join(master,'vaults/peer')),project=join(root,'external-project');
  mkdirSync(project);writeFileSync(join(project,'AGENTS.md'),'GLOBAL-MIGRATION-ORIGINAL-PROJECT-CWD');
  for(const name of ['owner','peer']){const bare=join(master,'.hub/vaults',name+'.git');mkdirSync(bare,{recursive:true});execFileSync('git',['init','--bare','-q',bare]);}
- const provider=await fakeChat(),requestedTools=new Set<string>();
+ const provider=await fakeAnthropic(),requestedTools=new Set<string>();
  provider.respond=(body)=>{
   const original=['PEER-ORIGINAL-MAIN','HOME-ORIGINAL-MAIN'].find(marker=>lastUser(body).includes(marker));
   if(original&&!requestedTools.has(original)) {
@@ -29,7 +29,7 @@ it('cold cohort exposes both old Mains in GET Main and one continuing native own
  let srv:Running|undefined;
  const boot=async(vault:string,processHome:string)=>{
   mkdirSync(processHome,{recursive:true});
-  const running=await startServer({home:processHome,vault,secrets:join(processHome,'empty-no-credentials'),openrouter:provider.url,extra:{VC_MASTER:master,VC_PI_DIR:native,VC_ENGINE_MODEL:'test/fake-model',VC_PI_UNSAFE:'1',VC_VOICE_PIPELINE:'off',NODE_OPTIONS:'--import '+network}});
+  const running=await startServer({home:processHome,vault,secrets:join(processHome,'empty-no-credentials'),openrouter:provider.url,extra:{VC_MASTER:master,VC_VOICE_PIPELINE:'off',NODE_OPTIONS:'--import '+network}});
   const agent=join(processHome,'state/pi/agent');mkdirSync(agent,{recursive:true});
   writeFileSync(join(agent,'settings.json'),JSON.stringify({compaction:{enabled:false},retry:{enabled:false}}));
   writeFileSync(join(agent,'models.json'),JSON.stringify({providers:{openrouter:{baseUrl:provider.url,apiKey:'synthetic-local-only',api:'openai-completions',models:[{id:'test/fake-model',name:'local',reasoning:false,input:['text'],cost:{input:0,output:0,cacheRead:0,cacheWrite:0},contextWindow:32000,maxTokens:1000}]}}}));
@@ -37,7 +37,7 @@ it('cold cohort exposes both old Mains in GET Main and one continuing native own
  };
  const ask=async(id:string,text:string)=>{
   const r=await fetch(srv!.base+'/api/v2/intent',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({type:'send',convId:id,client:'laptop',clientId:text,text})});expect(r.ok).toBe(true);
-  return waitFor(async()=>{const c=await(await fetch(srv!.base+`/conversation?id=${id}&full=1&n=200`)).json();const h=await(await fetch(srv!.base+'/api/v1/health')).json();return c.messages?.some((m:any)=>m.role==='user'&&m.content===text)&&h.engine.liveTurns.length===0&&h.engine.pi.procs.every((p:any)=>!p.busy)?c:null;},20_000,20);
+  return waitFor(async()=>{const c=await(await fetch(srv!.base+`/conversation?id=${id}&full=1&n=200`)).json();const h=await(await fetch(srv!.base+'/api/v1/health')).json();return c.messages?.some((m:any)=>m.role==='user'&&m.content===text)&&h.engine.liveTurns.length===0&&h.engine.claude.sessions.every((p:any)=>!p.busy)?c:null;},20_000,20);
  };
  try{
   const peerText='PEER-ORIGINAL-MAIN 🧪 '+ '𐐀café'.repeat(20000);

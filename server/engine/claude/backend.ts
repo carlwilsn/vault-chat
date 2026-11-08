@@ -43,9 +43,8 @@ import type { CallRecord } from "../ledger";
 import type { UserRequest } from "../piFeed";
 import { appendEntries, newSessionFile } from "../../convlog/piSession";
 import { McpRuntime, type ProcessServices } from "../../mcp/runtime";
-import { CALL_WRITE_REASON } from "../../mcp/filesystem";
 import { CLAUDE_BUILTINS_OFF, ClaudeSession, type SessionSend } from "./session";
-import { ruleOnToolUse, WRITING_TOOLS, externalPath as rulePath} from "./filePolicy";
+import { ruleOnToolUse, WRITING_TOOLS, CALL_WRITE_REASON, externalPath as rulePath } from "./filePolicy";
 import { ClaudeSideRuns } from "./side";
 import { memoryUpdate, writeClaudeMd, type MemoryMark } from "./memory";
 import { ClaudeTranslator, type Emit } from "./translate";
@@ -57,6 +56,25 @@ export type PathPolicy = Pick<EngineBackend, "externalPath" | "filesystem"> & Pa
 
 /** Claude Code's own file tools, the ones vault-chat's policy can rule on. */
 export const OWN_FILE_TOOLS: readonly string[] = ["Read", "Write", "Edit", "Glob", "Grep"];
+
+/**
+ * A folder's own rules for an agent working in it. pi loaded the cwd's AGENTS.md
+ * itself, and the prompt promises it is loaded; Claude Code's project memory is
+ * deliberately off (a project folder must not be able to put settings or hooks
+ * into a session), so the host reads the file and appends it to the thread's
+ * instructions instead — at each session start, so an edit lands on the next one.
+ */
+export function folderRules(cwd: string): string {
+  for (const name of ["AGENTS.md", "CLAUDE.md"]) {
+    try {
+      const text = readFileSync(join(cwd, name), "utf8").trim();
+      if (text) return `<folder-rules file="${name}">\n${text.slice(0, 20_000)}\n</folder-rules>`;
+    } catch {
+      /* not there */
+    }
+  }
+  return "";
+}
 
 export type ClaudeBackendOptions = {
   install: ClaudeInstall;
@@ -172,6 +190,10 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
   private h: Handlers | null = null;
   private started = false;
   private reaper: NodeJS.Timeout | null = null;
+  /** Compacting a thread, waiting for the boundary Claude Code reports. */
+  private compactWaits = new Map<string, () => void>();
+  /** Threads whose turn the host itself aborted (so its end is a stop, not a failure). */
+  private interrupting = new Set<string>();
   /** The last rate limit Claude Code reported (the host backs wakes off until it resets). */
   private limit: { status: string; resetsAt: number | null; kindOfLimit: string | null } | null = null;
 
@@ -339,8 +361,20 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
     const live = await this.open(threadId);
     if (!live) throw new ThreadUnknownError(`no Claude Code thread ${threadId}`);
     // Claude Code summarises on its own command; the boundary it reports becomes
-    // the divider the clients already draw (translate.ts).
+    // the divider the clients already draw (translate.ts). Its summary is a turn
+    // of its own, so this waits for that boundary — the host draws the divider
+    // from the transcript the moment compacting returns, and would otherwise
+    // look before there was anything to see.
+    const landed = new Promise<void>((r) => this.compactWaits.set(threadId, r));
     live.session.send({ text: customInstructions?.trim() ? `/compact ${customInstructions.trim()}` : "/compact" });
+    try {
+      await Promise.race([landed, new Promise<void>((r) => {
+        const t = setTimeout(r, 120_000);
+        t.unref?.();
+      })]);
+    } finally {
+      this.compactWaits.delete(threadId);
+    }
     return {};
   }
 
@@ -405,7 +439,18 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
   }
 
   async interrupt(threadId: string, _turnId: string): Promise<void> {
-    await this.live.get(threadId)?.session.interrupt();
+    const live = this.live.get(threadId);
+    if (!live) return;
+    // A stop means stop: what Claude Code has not taken yet is taken back BEFORE
+    // the turn is aborted — otherwise it takes the queued message itself the
+    // moment the turn ends, and a message Carl's stop should have held is
+    // answered anyway.
+    await this.clearQueue(threadId);
+    // The runtime reports an aborted turn as a failure of its own; the host knows
+    // better, because the host asked. Without this the chat shows a red "the turn
+    // failed" line where Carl asked it to stop.
+    this.interrupting.add(threadId);
+    await live.session.interrupt();
   }
 
   // ------------------------------------------------------------------ cost: Claude Code reports usage, not price
@@ -574,7 +619,8 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
       }),
       cwd: t.cwd,
       model: t.model,
-      instructions: t.instructions,
+      // The thread's own instructions, and the rules of the folder it works in.
+      instructions: [t.instructions, folderRules(t.cwd)].filter(Boolean).join("\n\n"),
       ...(t.sessionId ? { resume: t.sessionId } : {}),
       configDir: this.o.paths.configDir,
       // Its CLAUDE.md is the vault's memory, imported: Claude Code loads it
@@ -717,6 +763,8 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
     switch (e.kind) {
       case "entry":
         appendEntries(t.file, [e.entry]);
+        // Compacting waits for its own boundary (see compact()).
+        if ((e.entry as { type?: string }).type === "compaction") this.compactWaits.get(threadId)?.();
         return;
       case "live":
         this.ev({ kind: "pi", threadId, ev: e.ev });
@@ -740,7 +788,9 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
         // Only Claude Code's own uuid stamp says a message has been taken.
         const turnId = live.turnId;
         live.turnId = null;
-        this.ev({ kind: "turnCompleted", threadId, turnId, status: e.status, error: e.error });
+        // The host asked for this end: it is a stop ("Stopped."), not a failure.
+        const stopped = this.interrupting.delete(threadId) && e.status !== "completed";
+        this.ev({ kind: "turnCompleted", threadId, turnId, status: stopped ? "interrupted" : e.status, error: stopped ? null : e.error });
         return;
       }
     }
