@@ -47,6 +47,7 @@ import type { UserRequest } from "../piFeed";
 import { appendEntries, newSessionFile } from "../../convlog/piSession";
 import { McpRuntime, type ProcessServices } from "../../mcp/runtime";
 import { CLAUDE_BUILTINS_OFF, ClaudeSession, type SessionSend } from "./session";
+import { authRefused, SIGN_IN_AGAIN } from "./auth";
 import { ruleOnToolUse, WRITING_TOOLS, CALL_WRITE_REASON, externalPath as rulePath } from "./filePolicy";
 import { ClaudeSideRuns } from "./side";
 import { memoryUpdate, writeClaudeMd, type MemoryMark } from "./memory";
@@ -201,6 +202,12 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
   private compactWaits = new Map<string, () => void>();
   /** The last rate limit Claude Code reported (the host backs wakes off until it resets). */
   private limit: { status: string; resetsAt: number | null; kindOfLimit: string | null } | null = null;
+  /**
+   * What the API said about this box's sign-in, last time it said anything: null
+   * until a turn (or a check) has been answered at all. `ok: false` is a REFUSAL,
+   * never a blip — see claude/auth.ts.
+   */
+  private auth: { ok: boolean; error: string | null } | null = null;
 
   constructor(private readonly o: ClaudeBackendOptions) {
     super();
@@ -271,9 +278,58 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
     return existsSync(join(dir, ".credentials.json"));
   }
 
-  /** No sign-in, no turn: there is nothing else to run it on. */
+  /**
+   * No sign-in, no turn: there is nothing else to run it on. A token the API has
+   * REFUSED counts as no sign-in — every turn on it would fail the same way, so
+   * Carl is asked to sign in again instead of watching 401s pile up, and a wake
+   * waits quietly as it does when he was never signed in.
+   */
   cannotRun(): string | null {
-    return this.signedIn() ? null : "Sign in with Claude to chat";
+    if (!this.signedIn()) return "Sign in with Claude to chat";
+    return this.auth?.ok === false ? SIGN_IN_AGAIN : null;
+  }
+
+  /**
+   * A new token arrived from the app: whatever the API said about the old one
+   * says nothing about this one.
+   */
+  tokenChanged(): void {
+    this.auth = null;
+  }
+
+  /**
+   * One tiny real call, to find out whether the token actually works — asked for
+   * after a sign-in, because a token can be well-formed, stored and pushed and
+   * still be refused (Carl's was: captured mid-chunk). The cheapest turn this
+   * box can take: the fast model, no tools, one word, nothing kept.
+   *
+   * Best effort by design. A box with no network gets `null` and blocks nothing;
+   * only the API saying no sets `ok: false`.
+   */
+  async checkToken(): Promise<{ ok: boolean | null; error: string | null }> {
+    if (!this.signedIn()) return { ok: null, error: null };
+    try {
+      const run = await this.side.start({
+        kind: "token-check",
+        cwd: this.o.vault,
+        model: this.o.fastModel || "haiku",
+        tools: [],
+        system: "Answer with the single word OK.",
+        ephemeral: true,
+        thinking: "off",
+        sessionDir: "",
+        text: "OK",
+      });
+      const out = await this.side.wait(run.id);
+      this.side.forget(run.id);
+      if (out.error && authRefused(out.error)) this.auth = { ok: false, error: out.error.slice(0, 300) };
+      else if (!out.error) this.auth = { ok: true, error: null };
+      return this.auth ?? { ok: null, error: out.error ?? null };
+    } catch (e) {
+      const why = (e as Error).message;
+      if (authRefused(why)) this.auth = { ok: false, error: why.slice(0, 300) };
+      return this.auth ?? { ok: null, error: why };
+    }
   }
 
   health(): Record<string, unknown> {
@@ -281,6 +337,9 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
       state: this.started ? "up" : "down",
       // What Settings → Agent shows: "signed in", or "sign in again".
       signedIn: this.signedIn(),
+      // What the API said about it. Absent: nothing has asked yet, which blocks
+      // nothing — only a definite no does (src/claudeAuth.ts reads it the same way).
+      ...(this.auth ? { tokenOk: this.auth.ok, ...(this.auth.error ? { tokenError: this.auth.error } : {}) } : {}),
       version: this.version,
       cli: this.o.install.cli,
       source: this.o.install.source,
@@ -826,11 +885,21 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
           this.save();
         }
         return;
+      case "authRefused":
+        // Known now, not when the turn ends: the runtime would keep retrying it.
+        this.auth = { ok: false, error: e.error };
+        this.ev({ kind: "signInRefused", threadId, error: e.error });
+        return;
       case "rateLimit":
         this.limit = { status: e.status, resetsAt: e.resetsAt, kindOfLimit: e.kindOfLimit };
         this.emit("rateLimit", this.limit);
         return;
       case "done": {
+        // Every turn is a check of the sign-in: one the API refused says so (the
+        // translator judges that, where the whole request is in view), and one
+        // that finished says the token is good.
+        if (e.refused) this.auth = { ok: false, error: String(e.error ?? "").slice(0, 300) || null };
+        else if (e.status === "completed") this.auth = { ok: true, error: null };
         // What is still pending was never consumed by this turn (it is queued
         // for the next one, or was taken back), so nothing is delivered here.
         // Only Claude Code's own uuid stamp says a message has been taken.

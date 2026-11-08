@@ -23,7 +23,7 @@ import { boxLinkFor } from "./boxChat";
 import { pushKeysToBox } from "./boxKeys";
 import { keychainDelete, keychainGet, KEY } from "./keychain";
 import { claudeAuthOf, SIGN_IN_BUTTON, SIGN_IN_LINE, type SignInSurface } from "./claudeAuth";
-import { forgetClaudeHealth, useClaudeSignedIn } from "./claudeAuthLive";
+import { claudeTokenRefused, forgetClaudeHealth, useClaudeSignedIn } from "./claudeAuthLive";
 
 /**
  * Everything the sign-in needs from outside itself. Named so the flow below can
@@ -293,8 +293,17 @@ export function ClaudeAccountLine() {
     );
   }
 
+  // Refused, not merely absent: Carl asked to be told plainly rather than left
+  // to read 401s in his chat. The reason is the API's own words, in a tooltip;
+  // the line itself says what to do about it.
+  const refused = claudeTokenRefused();
   return (
     <div className="space-y-1" data-el="claude-account">
+      {refused && (
+        <p className="text-[11px] text-amber-500/90" title={refused} data-el="claude-token-refused">
+          Claude would not take the sign-in this box has. Sign in again.
+        </p>
+      )}
       <SignInFlow />
     </div>
   );

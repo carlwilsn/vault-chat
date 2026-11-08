@@ -33,6 +33,10 @@
 //   tool_execution_start for each call, then each result. tool_execution_update
 //   comes from the CLI's 30 s tool_progress heartbeats.
 import type { PiBlock, PiEntry, PiMessage } from "../../../src/convlog/protocol";
+import { authRefused, SIGN_IN_AGAIN } from "./auth";
+
+/** Read once: this is checked for every message of every stream. */
+const TRACE = process.env.VC_CLAUDE_TRACE === "1";
 import type { ThreadTokenUsage } from "../context";
 
 /** A session entry as piSession.appendEntries takes it (it assigns id, parentId and timestamp). */
@@ -49,9 +53,19 @@ export type Emit =
   /** The session id this stream belongs to (resume uses it; it can change on a fork). */
   | { kind: "session"; id: string }
   /** The turn ended. */
-  | { kind: "done"; status: "completed" | "interrupted" | "failed"; error: string | null }
+  /**
+   * The turn ended. `refused`: it failed because the API would not take this
+   * box's sign-in — judged here, where the whole request is in view, and only
+   * when the request was refused BEFORE any content (a 401 never arrives
+   * half-way through an answer). A tool's output that happens to say "401"
+   * therefore cannot sign Carl out.
+   */
+  | { kind: "done"; status: "completed" | "interrupted" | "failed"; error: string | null; refused?: boolean }
   /** Claude Code's own rate limit: the host backs wakes and schedules off until `resetsAt`. */
-  | { kind: "rateLimit"; status: string; resetsAt: number | null; kindOfLimit: string | null };
+  | { kind: "rateLimit"; status: string; resetsAt: number | null; kindOfLimit: string | null }
+  /** The API refused the sign-in (claude/auth.ts). The host stops the turn: the
+   *  runtime itself retries this, for ever, on a credential that cannot work. */
+  | { kind: "authRefused"; error: string | null };
 
 type OpenBlock = {
   index: number;
@@ -144,6 +158,10 @@ export class ClaudeTranslator {
   /** What this SDK message means for the feed. */
   step(m: any): Emit[] {
     if (!m || typeof m !== "object") return [];
+    // VC_CLAUDE_TRACE=1 prints every message the runtime sends, which is how the
+    // retry below was found: `api_retry` was being read as a top-level type and
+    // never arrived, so a refused sign-in retried ten times in silence.
+    if (TRACE) console.log(`[trace] ${m.type}/${m.subtype ?? ""} ${JSON.stringify(m).slice(0, 400)}`);
     switch (m.type) {
       case "stream_event":
         // A subagent's own stream is reported under the subagent, never as the parent's reply.
@@ -158,19 +176,17 @@ export class ClaudeTranslator {
         return this.toolProgress(m);
       case "result":
         return this.result(m);
-      case "rate_limit_event":
+      case "rate_limit_event": {
+        // `rate_limit_info` is what the SDK sends (SDKRateLimitEvent). It was
+        // read as `rate_limit` here, so every event looked like "allowed" and
+        // the box never backed off a subscription that had said no.
+        const info = m.rate_limit_info ?? m.rate_limit ?? m;
         return [{
           kind: "rateLimit",
-          status: String(m.rate_limit?.status ?? m.status ?? "allowed"),
-          resetsAt: Number(m.rate_limit?.resetsAt ?? m.resetsAt) || null,
-          kindOfLimit: m.rate_limit?.rateLimitType ?? m.rateLimitType ?? null,
+          status: String(info.status ?? "allowed"),
+          resetsAt: Number(info.resetsAt) || null,
+          kindOfLimit: info.rateLimitType ?? null,
         }];
-      case "api_retry": {
-        // The SDK's own names and its error OBJECT (not a string: stringifying it
-        // put "[object Object]" in front of Carl).
-        const why = typeof m.error === "string" ? m.error : String(m.error?.message ?? m.error?.type ?? m.message ?? "the request failed");
-        this.retrying = true;
-        return [{ kind: "live", ev: { type: "auto_retry_start", attempt: Number(m.attempt ?? 1), maxAttempts: Number(m.max_retries ?? m.maxAttempts ?? 0), errorMessage: why.slice(0, 500) } }];
       }
       default:
         return [];
@@ -396,6 +412,7 @@ export class ClaudeTranslator {
 
   private system(m: any): Emit[] {
     if (m.subtype === "init") return m.session_id ? [{ kind: "session", id: String(m.session_id) }] : [];
+    if (m.subtype === "api_retry") return this.apiRetry(m);
     if (m.subtype === "compact_boundary") {
       // Claude Code reports the boundary, not the summary it wrote, so the
       // transcript's divider says what happened in vault-chat's own words.
@@ -408,6 +425,28 @@ export class ClaudeTranslator {
       ];
     }
     return [];
+  }
+
+  /**
+   * A request the runtime is retrying by itself (SDKAPIRetryMessage: type
+   * "system", subtype "api_retry" — it was read as a top-level type here, so
+   * none of this ever ran and no retry was ever shown).
+   *
+   * A REFUSED SIGN-IN is retried like anything else, and will be refused every
+   * time: measured against a 401, the runtime made 8 attempts in 90 seconds of
+   * a budget of 10, backing off to 40 seconds apiece. So that one is not a
+   * retry to show — it is told to the host at once, which stops the turn.
+   */
+  private apiRetry(m: any): Emit[] {
+    // The SDK's own names, and its error which may be a string or an object
+    // (stringifying the object put "[object Object]" in front of Carl).
+    const why = typeof m.error === "string" ? m.error : String(m.error?.message ?? m.error?.type ?? m.message ?? "the request failed");
+    const status = Number(m.error_status ?? 0);
+    if (status === 401 || status === 403 || authRefused(why) || authRefused(m.error)) {
+      return [{ kind: "authRefused", error: `${status || ""} ${why}`.trim().slice(0, 300) }];
+    }
+    this.retrying = true;
+    return [{ kind: "live", ev: { type: "auto_retry_start", attempt: Number(m.attempt ?? 1), maxAttempts: Number(m.max_retries ?? m.maxAttempts ?? 0), errorMessage: why.slice(0, 500) } }];
   }
 
   private result(m: any): Emit[] {
@@ -432,6 +471,12 @@ export class ClaudeTranslator {
     // red "the turn failed" where Carl pressed stop.
     const status = asked && reported !== "completed" ? "interrupted" : reported;
     const error = status === "failed" ? String(m.result ?? m.error ?? subtype).slice(0, 500) : null;
+    // A sign-in the API refused is not an error to show Carl: it is the one
+    // state the app already has for it. The raw text still goes to the host (it
+    // is what health reports and what the log keeps); what the CHAT gets is the
+    // sentence that tells him what to do (claude/auth.ts).
+    const refused = !!error && !wasOpen && authRefused(error);
+    const shown = refused ? SIGN_IN_AGAIN : error;
     // Every retry failed (or the turn ended while one was in flight): the end
     // event says so, and the red line is the one the engine writes.
     out.push(...this.retryEnded(status === "completed"));
@@ -439,11 +484,11 @@ export class ClaudeTranslator {
     // reply, written the way one the model's own message carried is written, so
     // the chat shows ONE red line — with Try again — and not a bare error.
     if (status === "failed" && !wasOpen && error) {
-      const message: PiMessage = { role: "assistant", timestamp: this.stamp(), content: [], stopReason: "error", errorMessage: error, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
+      const message: PiMessage = { role: "assistant", timestamp: this.stamp(), content: [], stopReason: "error", errorMessage: shown ?? error, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
       out.push({ kind: "entry", entry: { type: "message", message } }, { kind: "live", ev: { type: "message_end", message } });
     }
     out.push(...this.held.splice(0));
-    out.push({ kind: "done", status, error });
+    out.push({ kind: "done", status, error, ...(refused ? { refused: true } : {}) });
     return out;
   }
 }

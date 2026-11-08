@@ -314,6 +314,10 @@ async function main(): Promise<void> {
       if (changed) {
         await store.hydrateKeychain();
         console.log(`[vault-chat-server] keys from the laptop: ${Object.keys(keys).sort().join(", ") || "none"}`);
+        // A sign-in among them: the engine forgets whatever the API said about
+        // the last token and spends one tiny call on this one. The value itself
+        // is never read here — only whether the push carried that key at all.
+        if ("claudeCode" in keys) engine.tokenChanged?.();
       }
       return changed;
     },

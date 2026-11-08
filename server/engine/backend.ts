@@ -44,7 +44,15 @@ export type BackendEvent =
   | { kind: "turnCompleted"; threadId: string; turnId: string | null; status: "completed" | "interrupted" | "failed" | string; error: string | null }
   /** One thread's runtime died mid-turn while the rest of the runtime is fine (pi: one process per thread).
    * The engine marks that turn cut and resumes it, as it does for all turns on "down". */
-  | { kind: "threadLost"; threadId: string };
+  | { kind: "threadLost"; threadId: string }
+  /**
+   * The API refused this box's sign-in. Raised the moment it is known — which is
+   * on the runtime's first RETRY, because a runtime retries a 401 (measured: 8
+   * requests in 90 seconds, and it would have gone on). The engine says so once
+   * and stops the turn; nothing is retried on a credential that is being
+   * refused.
+   */
+  | { kind: "signInRefused"; threadId: string; error: string | null };
 
 /** resumeThread throws this when the thread belongs to another runtime (or is gone): the engine starts a fresh one. */
 export class ThreadUnknownError extends Error {
@@ -205,6 +213,10 @@ export type EngineBackend = {
    * so a scheduled wake waits quietly instead of failing every time it fires.
    */
   cannotRun?(): string | null;
+  /** A new sign-in arrived: forget what the API said about the last one. */
+  tokenChanged?(): void;
+  /** One tiny real call to find out whether the sign-in actually works. */
+  checkToken?(): Promise<{ ok: boolean | null; error: string | null }>;
   health(): Record<string, unknown>;
 
   // -- threads

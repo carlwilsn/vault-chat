@@ -6,7 +6,18 @@
 // (engine.pi.engines), the same record hoisted to engine.engines, and — the box
 // vault-chat ships now — no record at all, because there is one engine: it is
 // named in engine.backend and reported under that name.
-export type EngineInfo = { signedIn: boolean; version: string | null };
+export type EngineInfo = {
+  signedIn: boolean;
+  version: string | null;
+  /**
+   * What the API said about the sign-in last time it said anything: false means
+   * REFUSED (a 401 on a real turn, or the check after a sign-in), true means a
+   * turn has actually been answered on it, null means nothing has asked. Only
+   * false is acted on — a box that never reports it blocks nothing.
+   */
+  tokenOk: boolean | null;
+  tokenError: string | null;
+};
 
 type Bag = Record<string, unknown>;
 const bag = (v: unknown): Bag | null => (v && typeof v === "object" && !Array.isArray(v) ? (v as Bag) : null);
@@ -38,5 +49,10 @@ export function defaultEngineOf(health: unknown): "pi" | "claude" | null {
 export function claudeOf(health: unknown): EngineInfo | null {
   const c = bag(enginesOf(health)?.claude);
   if (!c) return null;
-  return { signedIn: c.signedIn === true, version: typeof c.version === "string" ? c.version : null };
+  return {
+    signedIn: c.signedIn === true,
+    version: typeof c.version === "string" ? c.version : null,
+    tokenOk: typeof c.tokenOk === "boolean" ? c.tokenOk : null,
+    tokenError: typeof c.tokenError === "string" ? c.tokenError : null,
+  };
 }

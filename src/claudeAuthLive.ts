@@ -14,10 +14,23 @@ const HEALTH_FRESH_MS = 30_000;
 
 /** The cached answer for code that cannot await (voiceCall's toggle). Null: not known yet. */
 export function claudeSignedInNow(): boolean | null {
+  // The same order as claudeSignedIn: a token the API has refused is not a
+  // sign-in, whatever this machine is holding.
+  if (claudeOf(lastHealth?.body)?.tokenOk === false) return false;
   const key = useStore.getState().serviceKeys.claudeCode;
   if (typeof key === "string" && key.trim() !== "") return true;
   if (!lastHealth) return null;
   return claudeOf(lastHealth.body)?.signedIn === true;
+}
+
+/**
+ * Why the sign-in is not working, when the box has been told by the API itself:
+ * Carl asked to be told plainly rather than left to read 401s in his chat. Null
+ * when nothing has refused anything.
+ */
+export function claudeTokenRefused(): string | null {
+  const c = claudeOf(lastHealth?.body);
+  return c?.tokenOk === false ? (c.tokenError ?? "Claude would not say why") : null;
 }
 
 /** Read the box's health (through the same box link as everything else) and keep it. */

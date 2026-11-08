@@ -64,6 +64,23 @@ test("signed in means this laptop has the token OR the box says so", () => {
   assert.equal(claudeSignedIn("   ", hoisted(false)), false, "nor is whitespace");
 });
 
+test("a token the API has REFUSED is not a sign-in, even with the token in this laptop's keychain", () => {
+  // Carl's 401: the keychain held a token (captured mid-chunk), so every surface
+  // said "signed in" while every turn on the box came back "OAuth access token
+  // is invalid". The box now reports what the API said, and that beats holding a
+  // copy of the refused token.
+  const refused = { engine: { engines: { default: "claude", claude: { signedIn: true, version: "2.1.0", tokenOk: false, tokenError: "401 OAuth access token is invalid" } } } };
+  assert.equal(claudeSignedIn("sk-ant-oat01-x", refused), false, "holding the refused token is not being signed in");
+  assert.equal(claudeSignedIn(null, refused), false);
+  assert.equal(claudeSignedInOnBox(refused), false);
+  // A token a turn has actually been answered on, and one nothing has asked
+  // about yet: only a definite no blocks anything.
+  const ok = { engine: { engines: { default: "claude", claude: { signedIn: true, tokenOk: true } } } };
+  assert.equal(claudeSignedIn(null, ok), true);
+  assert.equal(claudeSignedIn(null, hoisted(true)), true, "a box that reports nothing about the token blocks nothing");
+  assert.equal(claudeSignedInOnBox(hoisted(true)), true);
+});
+
 test("both health shapes are read, so the answer does not depend on the box's version", () => {
   assert.equal(claudeSignedIn(null, nested(true)), true);
   assert.equal(claudeSignedIn(null, nested(false)), false);

@@ -77,6 +77,7 @@ import { SERVER_VERSION } from "../config";
 import { runVaultTool, vaultToolSpecsFor } from "../vaultTools";
 import { submitChangeJob, SUBMIT_CHANGE_SCHEMA } from "../submitChange";
 import { isClaudeModel, isEffort, type Effort } from "./claude/models";
+import { SIGN_IN_AGAIN } from "./claude/auth";
 
 export type EngineDeps = {
   vault: string;
@@ -155,6 +156,8 @@ type Live = {
   stopped: boolean;
   /** Ended by "Send now": Carl's waiting message starts the next turn (no "Stopped." line). */
   sendNow?: boolean;
+  /** Stopped because the API refused the sign-in: its one line is already written. */
+  refused?: boolean;
   controller: AbortController;
   /** pi accepted the prompt. */
   started: boolean;
@@ -843,6 +846,16 @@ export class Engine {
     // A client's optimistic new chat (Carl asked for a separate one): the id it chose becomes the conversation's.
     if (/^[A-Za-z0-9_-]{6,80}$/.test(convId) && !logOf(this.d.vault).has(convId)) return createConv(this.d.vault, { ...init, kind: "separate" } as Partial<EngineConv>, first, convId);
     return null;
+  }
+
+  /** A new sign-in from the app (server/main.ts setKeys). */
+  tokenChanged(): void {
+    this.d.backend.tokenChanged?.();
+  }
+
+  /** One tiny real call: does this box's sign-in work? */
+  async checkToken(): Promise<{ ok: boolean | null; error: string | null }> {
+    return (await this.d.backend.checkToken?.()) ?? { ok: null, error: null };
   }
 
   health(): Record<string, unknown> {
@@ -2099,6 +2112,13 @@ export class Engine {
         if (shuttingDown) return;
         void this.finishTurn(l, e.status, e.error ?? l.feed.lastError);
         return;
+      case "signInRefused":
+        // The API is refusing this box's sign-in, and the runtime retries that
+        // for ever. Say it once, where Carl is, and stop the turn: there is
+        // nothing to retry on a credential that is being refused.
+        l.refused = true;
+        void this.notice(l.convId, SIGN_IN_AGAIN, "error").then(() => this.interrupt(l.convId, false));
+        return;
       case "threadLost":
         if (shuttingDown) return;
         // Only this thread's runtime died: cut its turn and resume it now (no "up" will follow).
@@ -2193,7 +2213,10 @@ export class Engine {
     // native inputs: keep them pending until their exact entries are delivered.
     this.emit(l.convId, { type: "meta", patch: { running: null, ...(l.sendNow ? {} : { pending: null }), state, nextWakeAt: wakeAt ?? null } });
     // What ended it, said once in the transcript (after what was in flight, which the end closed).
-    if (l.cut) await this.notice(l.convId, INTERRUPTED_TEXT, "error");
+    // A turn stopped because the sign-in was refused has already said so.
+    if (l.refused) {
+      /* its line is written */
+    } else if (l.cut) await this.notice(l.convId, INTERRUPTED_TEXT, "error");
     // (A failure pi's own message carries is shown from that message: not said twice.)
     else if (status === "failed" && errStr !== l.feed.lastError) await this.notice(l.convId, `⚠️ The turn failed: ${errStr}`, "error");
     else if (status === "interrupted" && !l.sendNow) await this.notice(l.convId, "Stopped.", "info");

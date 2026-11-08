@@ -29,6 +29,11 @@ export type ClaudeAuth = { signedIn: boolean; known: boolean };
  * /api/v1/health body, or null when it has not been read (or could not be).
  */
 export function claudeSignedIn(laptopKey: string | null | undefined, health: unknown): boolean {
+  // A token the API has REFUSED is not a sign-in, even though this laptop is
+  // holding it — it is holding the refused one. This is Carl's 401: the keychain
+  // had a token (captured mid-chunk), so every surface said "signed in" while
+  // every turn on the box came back "OAuth access token is invalid".
+  if (claudeOf(health)?.tokenOk === false) return false;
   if (typeof laptopKey === "string" && laptopKey.trim() !== "") return true;
   return claudeOf(health)?.signedIn === true;
 }
@@ -59,7 +64,8 @@ export function claudeAuthOf(laptopKey: string | null | undefined, vault: string
 export function claudeSignedInOnBox(health: unknown): boolean | null {
   if (health == null) return null;
   const c = claudeOf(health);
-  return c ? c.signedIn : true;
+  if (!c) return true;
+  return c.tokenOk === false ? false : c.signedIn;
 }
 
 // ---- the prompt every blocked surface shows ---------------------------------

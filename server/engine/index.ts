@@ -74,6 +74,8 @@ export type EngineHandle = {
   setModel?: (model: string) => { ok: true; model: string } | { ok: false; error: string };
   /** What a chat can run on, by name (GET /api/v1/models). */
   models?: () => ModelChoice[];
+  /** A new sign-in arrived: forget the old verdict, then check the new token. */
+  tokenChanged?: () => void;
   /** The engine of a vault, started on first use (the main one is `engine`). */
   open?: (v: VaultRef) => Promise<Engine>;
 };
@@ -507,6 +509,19 @@ export async function startEngine(b: EngineBoot): Promise<EngineHandle> {
       configureContext({ agentModel: m });
       console.log(`[engine:claude] model ${m} (Carl's choice)`);
       return { ok: true as const, model: m };
+    },
+    /**
+     * A new sign-in reached the box (server/main.ts setKeys): every vault's
+     * engine forgets what the API said about the old token, and the main one
+     * spends one tiny call finding out whether the new one works. Carl asked for
+     * that check because a token can be stored, pushed and still refused.
+     */
+    tokenChanged: () => {
+      for (const e of engines.values()) e.tokenChanged();
+      void engine.checkToken().then((r) => {
+        if (r.ok === false) console.log(`[engine:claude] the API refused this box's sign-in: ${r.error ?? "no reason given"}`);
+        else if (r.ok) console.log("[engine:claude] sign-in checked: it works");
+      });
     },
     open,
   };
