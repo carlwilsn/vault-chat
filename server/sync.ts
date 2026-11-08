@@ -265,6 +265,13 @@ exit 0
           // pushed master, box starts from it.
           const f = await runGit(vault, ["fetch", "-q", bare, `+refs/heads/${this.HUB}:${this.HUB_REF}`]);
           if (f.code !== 0) {
+            // Only a hub with no branch yet means "nothing to start from"; a real failure (corrupt repo, I/O,
+            // timeout) must fail the cycle and be retried/alerted, not be reported as healthy.
+            if (!/couldn't find remote ref|could not find remote ref/i.test(f.stderr)) {
+              const err = new Error(`git fetch ${this.HUB} (exit ${f.code}): ${f.stderr.trim()}`);
+              s.steps.fetch = { ok: false, at: Date.now(), error: errText(err) };
+              throw err;
+            }
             s.steps.push = { ok: true, at: Date.now(), detail: "no commits yet" };
             return;
           }
