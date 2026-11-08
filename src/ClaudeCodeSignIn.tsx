@@ -7,8 +7,9 @@
 // src-tauri/src/claude_login.rs — it needs a pty, and the token it prints goes
 // straight into this machine's keychain without ever coming back across the
 // IPC boundary). That button is the only way in — Carl: "I don't want the
-// other sign on options" — with Cancel while it starts and Start over while it
-// waits for the code, so a stuck attempt is never a dead end.
+// other sign on options" — with Start over while it
+// waits for the code; a start that fails says so and the button reads "Try
+// again" (no Cancel — Carl: "no need for a cancel button").
 //
 // Either way the token is kept in this machine's keychain like every other key
 // and travels to the box the same way (src/keystore.ts), where only the Claude
@@ -244,16 +245,9 @@ function SignInFlow({ onDone }: { onDone?: () => void }) {
     <div className="space-y-1.5" data-el="claude-signin-flow">
       {/* The one way in: a solid primary button, not an underlined link. */}
       {!awaiting && (
-        <div className="flex items-center gap-2">
-          <Button size="sm" onClick={() => void signIn()} disabled={busy} data-el="claude-signin-start">
-            {busy ? "Opening browser…" : error ? "Try again" : SIGN_IN_BUTTON}
-          </Button>
-          {busy && (
-            <button onClick={cancel} className="text-[10.5px] text-muted-foreground hover:text-foreground underline" data-el="claude-signin-cancel">
-              Cancel
-            </button>
-          )}
-        </div>
+        <Button size="sm" onClick={() => void signIn()} disabled={busy} data-el="claude-signin-start">
+          {busy ? "Opening browser…" : error ? "Try again" : SIGN_IN_BUTTON}
+        </Button>
       )}
       {awaiting && (
         <div className="space-y-1" data-el="claude-code-awaiting-code">
