@@ -480,6 +480,13 @@ mod pty_session {
     pub(super) struct Session {
         child: Box<dyn portable_pty::Child + Send + Sync>,
         writer: Box<dyn Write + Send>,
+        /// Owns the pseudoconsole. The writer and reader are bare pipes that do
+        /// not keep it open; with master and slave both dropped, ConPTY closed
+        /// while claude.exe was still starting and it died in DLL init
+        /// (0xC0000142) — the "Application Error" on Carl's laptop.
+        master: Option<Box<dyn portable_pty::MasterPty + Send>>,
+        /// How many cursor-position queries have been answered (see `answer_dsr`).
+        answered: usize,
         /// Filled by the reader thread; drained by the waits.
         seen: Arc<Mutex<Vec<u8>>>,
         /// Throwaway CLAUDE_CONFIG_DIR, removed when the session ends.
@@ -491,6 +498,8 @@ mod pty_session {
         pub(super) fn end(mut self) {
             let _ = self.child.kill();
             let _ = self.child.wait();
+            // Only now that the CLI is gone does the console go with it.
+            drop(self.master.take());
             let _ = std::fs::remove_dir_all(&self.config_dir);
             // The transcript held the token the CLI printed: overwrite it rather
             // than just drop it.
@@ -503,6 +512,21 @@ mod pty_session {
         /// the CLI printed for an earlier attempt.
         pub(super) fn mark(&self) -> usize {
             self.seen.lock().map(|s| s.len()).unwrap_or(0)
+        }
+
+        /// ConPTY opens (with INHERIT_CURSOR, which portable-pty sets) by asking
+        /// the terminal where the cursor is — ESC[6n — and shows nothing at all
+        /// until it is told. There is no terminal here, so this answers for one:
+        /// top left, once per query.
+        fn answer_dsr(&mut self) {
+            let asked = match self.seen.lock() {
+                Ok(seen) => seen.windows(4).filter(|w| *w == b"[6n").count(),
+                Err(_) => return,
+            };
+            while self.answered < asked {
+                let _ = self.writer.write_all(b"[1;1R").and_then(|_| self.writer.flush());
+                self.answered += 1;
+            }
         }
 
         /// Type a line at the CLI.
@@ -523,6 +547,7 @@ mod pty_session {
         ) -> (Option<T>, String) {
             let deadline = std::time::Instant::now() + limit;
             loop {
+                self.answer_dsr();
                 let raw = match self.seen.lock() {
                     Ok(seen) => seen[mark.min(seen.len())..].to_vec(),
                     Err(_) => Vec::new(),
@@ -557,7 +582,15 @@ mod pty_session {
             .map_err(|e| format!("could not open a console for the sign-in: {e}"))?;
         let mut cmd = CommandBuilder::new(cli);
         cmd.arg("setup-token");
-        cmd.env_clear();
+        // Not env_clear(): Windows programs need SystemRoot, windir, APPDATA and
+        // the rest just to start. CommandBuilder begins from this process's own
+        // environment; only what could carry a credential is taken out.
+        let names: Vec<String> = std::env::vars_os().map(|(k, _)| k.to_string_lossy().to_string()).collect();
+        for k in names {
+            if !super::pty::windows_passes(&k) {
+                cmd.env_remove(k);
+            }
+        }
         for (k, v) in env {
             cmd.env(k, v);
         }
@@ -593,7 +626,7 @@ mod pty_session {
                 }
             }
         });
-        Ok(Session { child, writer, seen, config_dir: config_dir.to_path_buf() })
+        Ok(Session { child, writer, master: Some(pair.master), answered: 0, seen, config_dir: config_dir.to_path_buf() })
     }
 }
 
@@ -613,6 +646,20 @@ mod pty {
     /// - BROWSER=true, a no-op on PATH everywhere, so the CLI does not open the
     ///   page itself. The webview opens it through the app's own opener, which
     ///   is the path that works in a packaged build.
+    /// Whether a variable of this app's own environment reaches the Windows
+    /// sign-in. Names compare case-insensitively, as Windows does.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    pub(super) fn windows_passes(name: &str) -> bool {
+        let up = name.to_ascii_uppercase();
+        !(up.starts_with("ANTHROPIC_")
+            || up.starts_with("CLAUDE_")
+            || up.starts_with("VC_")
+            || up.contains("TOKEN")
+            || up.contains("SECRET")
+            || up.contains("API_KEY")
+            || matches!(up.as_str(), "TERM" | "BROWSER"))
+    }
+
     pub(super) fn child_env(config_dir: &std::path::Path) -> Vec<(String, String)> {
         let mut env = vec![
             ("TERM".to_string(), "xterm-256color".to_string()),
@@ -947,6 +994,16 @@ expired, already used, or from an earlier sign-in attempt. Sign in again to get 
     /// machine it had to run on; .github/workflows/windows-signin.yml runs it on
     /// windows-latest against the real claude.exe and fails if it finds no live
     /// test to run.
+    #[test]
+    fn windows_sign_in_keeps_what_windows_needs_and_drops_credentials() {
+        for keep in ["SystemRoot", "windir", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "TEMP", "TMP", "PATHEXT", "ComSpec", "Path"] {
+            assert!(pty::windows_passes(keep), "{keep} must reach claude.exe");
+        }
+        for drop in ["ANTHROPIC_API_KEY", "anthropic_base_url", "CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CONFIG_DIR", "GITHUB_TOKEN", "OPENROUTER_API_KEY", "MY_SECRET", "TERM", "BROWSER", "VC_CLAUDE_BIN"] {
+            assert!(!pty::windows_passes(drop), "{drop} must not reach claude.exe");
+        }
+    }
+
     #[test]
     #[ignore = "drives the real `claude setup-token` (needs the CLI and network)"]
     fn a_real_setup_token_hands_over_a_sign_in_url() {
