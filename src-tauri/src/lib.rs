@@ -5100,7 +5100,7 @@ mod keystore_tests {
     #[test]
     fn roundtrip_preserves_payload() {
         let pass = "correct horse battery staple";
-        let secret = r#"{"api.openrouter":"sk-abc123","user.lambda_api_key":"lam-xyz"}"#;
+        let secret = r#"{"service.claude-code":"sk-ant-oat01-not-real","user.lambda_api_key":"lam-xyz"}"#;
         let blob = keystore_encrypt_bytes(pass, secret.as_bytes()).expect("encrypt");
         let out = keystore_decrypt_bytes(pass, &blob).expect("decrypt");
         assert_eq!(out, secret.as_bytes());

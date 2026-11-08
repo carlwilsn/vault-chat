@@ -48,7 +48,7 @@ describe("bundle alone (no node_modules)", () => {
     vault = makeVault(join(home, "school2"));
     const bare = join(home, "school2.git");
     sh(home, "git", ["init", "--bare", "-q", "-b", "master", bare]);
-    const secrets = await makeKeyStore(join(home, "secrets"), { "api.openrouter": "sk-or-canary" });
+    const secrets = await makeKeyStore(join(home, "secrets"), { "service.claude-code": "sk-ant-oat01-canary" });
     writeFileSync(
       join(home, "mission-engine.localstorage"),
       JSON.stringify({

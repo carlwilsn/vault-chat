@@ -332,7 +332,7 @@ describe("what each mode sends", () => {
       expect(o.fork).toMatch(/\.jsonl$/);
       expect(o.tools).toEqual(["read", "grep", "find", "ls"]);
       // …and the agent's read-only vault-chat tools (PdfRead for a PDF), never one that writes.
-      expect(o.hostTools.map((t: any) => t.name)).toEqual(expect.arrayContaining(["PdfRead", "WebSearch", "ListNotes"]));
+      expect(o.hostTools.map((t: any) => t.name)).toEqual(expect.arrayContaining(["PdfRead", "WebFetch", "ListNotes"]));
       expect(o.hostTools.every((t: any) => t.readOnly === true)).toBe(true);
       return o.text as string;
     };

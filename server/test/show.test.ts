@@ -312,7 +312,7 @@ describe("the box's routes", () => {
   beforeAll(async () => {
     h = tmp("vcshowsrv-");
     const v = makeVault(join(h, "vault"));
-    const secrets = await makeKeyStore(join(h, "secrets"), { "api.openrouter": "canary-value" });
+    const secrets = await makeKeyStore(join(h, "secrets"), { "service.claude-code": "canary-value" });
     srv = await startServer({ home: h, vault: v, secrets, token: "canary-show-token" });
   });
   afterAll(async () => {

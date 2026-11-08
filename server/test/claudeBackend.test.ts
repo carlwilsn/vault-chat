@@ -306,8 +306,14 @@ describe("a conversation on Claude Code", () => {
     // this tool"), which is why every server vault-chat gives a session is
     // always-loaded: ToolSearch itself is off, so a deferred tool would reach the
     // model as a placeholder it could never open.
-    const own = ["Read", "Write", "Edit", "Glob", "Grep"];
+    // Its own file tools, under vault-chat's path policy, and its own WebSearch,
+    // which replaced vault-chat's (that one searched through OpenRouter's web
+    // plugin and went with the key it needed).
+    const own = ["Read", "Write", "Edit", "Glob", "Grep", "WebSearch"];
     for (const t of own) expect(offered).toContain(t);
+    // And NOT its WebFetch: vault-chat's own guards against private addresses.
+    expect(offered).not.toContain("WebFetch");
+    expect(offered).toContain("mcp__vault_chat__WebFetch");
     expect(offered.filter((n) => !n.startsWith("mcp__") && n !== "DeferredToolPlaceholder" && !own.includes(n))).toEqual([]);
     expect(offered).toContain("DeferredToolPlaceholder");
 

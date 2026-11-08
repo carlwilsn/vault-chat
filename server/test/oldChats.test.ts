@@ -43,7 +43,7 @@ describe("a chat pi left behind", () => {
     const home = tmp("vcold-");
     homes.push(home);
     const vault = makeVault(join(home, "vault"));
-    const secrets = await makeKeyStore(join(home, "secrets"), { "api.openrouter": "sk-or-canary-not-real" });
+    const secrets = await makeKeyStore(join(home, "secrets"), { "service.claude-code": "sk-ant-oat01-canary-not-real" });
     const api: FakeApi = await fakeAnthropic("The 9th it is.");
     const old = oldChat(home, vault);
     let srv: Running | undefined;

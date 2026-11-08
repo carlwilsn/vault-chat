@@ -71,7 +71,7 @@ beforeAll(async () => {
   git(seed, "push", "-q", "origin", "HEAD:main");
   sh(home, "git", ["clone", "-q", gh, join(master, "projects", "site")]);
   git(join(master, "projects", "site"), "config", "core.autocrlf", "false");
-  const secrets = await makeKeyStore(join(home, "secrets"), { "api.openrouter": "sk-or-canary-not-real" });
+  const secrets = await makeKeyStore(join(home, "secrets"), { "service.claude-code": "sk-ant-oat01-canary-not-real" });
   or = await fakeAnthropic("Done.");
   srv = await startServer({ home, vault: school2, bare: hub, secrets, anthropic: or.url, extra: { VC_MASTER: master, VC_SYNC_INTERVAL_MS: "3000" } });
   await waitFor(() => ref(hub, "refs/heads/box"), 30_000);

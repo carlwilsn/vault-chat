@@ -109,14 +109,13 @@ export type Conversation = {
   // [harness v2] Explicit mission lifecycle state (see MissionState). Only set on
   // source "mission" threads.
   missionState?: MissionState;
-  // Model spend on THIS thread so far, in USD: the sum of OpenRouter's
-  // server-reported `usage.cost` over every model call its turns made
-  // (including mid-run compaction and sub-agents). Each assistant message also
-  // carries its own turn's `costUsd`. A mission's total = this + its workers'
-  // + its ask threads' (see computeMissionCost).
+  // Model spend on THIS thread so far, in USD. Carl runs on his Claude
+  // subscription and does not track spend, so nothing writes this any more; a
+  // conversation that already carries it still reads (and the per-turn
+  // `costUsd` on an assistant message likewise).
   costUsd?: number;
-  // Model calls whose response carried no cost (direct-provider keys, or an
-  // OpenRouter response without usage) — so a total is never silently partial.
+  // Model calls whose response carried no cost, so a total already recorded is
+  // never read as complete when it was not.
   costMissingCalls?: number;
   // [completion gate] The evidence auditor's verdicts. ADVISORY: recorded for
   // the user to see, never blocking — MarkDoneWhen checks a criterion off and

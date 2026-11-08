@@ -174,7 +174,7 @@ describe("end to end: a project working in a folder outside the vault (the real 
     writeFileSync(join(folder, "README.md"), "# vault-chat\n");
     writeFileSync(join(folder, "src", "main.ts"), "export {};\n");
     mkdirSync(join(folder, ".git"), { recursive: true });
-    secrets = await makeKeyStore(join(home, "secrets"), { "api.openrouter": "sk-or-canary-not-real" });
+    secrets = await makeKeyStore(join(home, "secrets"), { "service.claude-code": "sk-ant-oat01-canary-not-real" });
     or = await fakeAnthropic("Done.");
     srv = await startServer({ home, vault, secrets, anthropic: or.url });
   }, 120_000);

@@ -3,7 +3,7 @@
 // whose plaintext is a JSON {name: value} map; the passphrase is the content
 // of the adjacent `fallback.key` (lib.rs:6002, 6025, 6101). Written only by
 // saveKeys (POST /api/v1/keys: the connected laptop pushes its whole keychain
-// — OpenRouter, ElevenLabs, Tavily, named service keys). Values are never
+// — Claude Code's sign-in, ElevenLabs, Tavily, named service keys). Values are never
 // logged.
 import { readFileSync, writeFileSync, existsSync, mkdirSync, chmodSync } from "node:fs";
 import { randomBytes } from "node:crypto";

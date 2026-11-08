@@ -5,7 +5,7 @@
 // through again on the way out.
 //
 // Two layers:
-//   redactText: a secret-looking run inside any string (an OpenRouter or
+//   redactText: a secret-looking run inside any string (an Anthropic or
 //     ElevenLabs key, a bearer token, `token=…` in a URL, a JWT, a long base64
 //     or hex blob, a data: URL) becomes a marker;
 //   safeData:   a value deep-copied for a log — a field named like a secret is

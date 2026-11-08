@@ -12,7 +12,6 @@
 export const NOT_FOR_COMMANDS = new Set(["service.claude-code"]);
 
 const FIXED: Record<string, string> = {
-  "api.openrouter": "OPENROUTER_API_KEY",
   "api.anthropic": "ANTHROPIC_API_KEY",
   "api.openai": "OPENAI_API_KEY",
   "api.google": "GOOGLE_API_KEY",
@@ -34,7 +33,7 @@ export function envNameForKey(name: string): string | null {
 }
 
 /** {ENV_NAME: value} for every usable key (empty values skipped). A later
- *  entry never overrides a fixed name's (api.openrouter wins OPENROUTER_API_KEY). */
+ *  entry never overrides a fixed name's (api.anthropic wins ANTHROPIC_API_KEY). */
 export function keyEnv(entries: Iterable<[string, string]>): Record<string, string> {
   const out: Record<string, string> = {};
   const fixedSet = new Set<string>();

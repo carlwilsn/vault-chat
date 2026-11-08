@@ -26,7 +26,7 @@ export async function keychainDelete(key: string): Promise<void> {
 }
 
 /** The model providers whose keys this machine keeps (and sends to the box). */
-export type ProviderId = "anthropic" | "openai" | "google" | "openrouter";
+export type ProviderId = "anthropic" | "openai" | "google";
 
 // Canonical key names. Keep flat (all under service com.vault-chat.app)
 // to keep the surface simple — collisions impossible since providers
@@ -35,7 +35,6 @@ export const KEY = {
   anthropic: "api.anthropic",
   openai: "api.openai",
   google: "api.google",
-  openrouter: "api.openrouter",
   tavily: "service.tavily",
   elevenlabs: "service.elevenlabs",
   // Claude Code's sign-in (`claude setup-token`): the box runs the engine with

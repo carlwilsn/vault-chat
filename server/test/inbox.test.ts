@@ -57,7 +57,7 @@ describe("board inbox", () => {
     writeFileSync(join(vault, "w", "nomount.ts"), "export const x = 1;\n");
     writeFileSync(join(vault, "w", "tex.ts"), 'export function mount(el: HTMLElement): void { el.textContent = "discount $\\\\gamma$ = 0.9"; }\n');
     writeFileSync(join(vault, "w", "imports.ts"), "import * as d3 from 'd3';\nexport function mount(el: HTMLElement) { el.textContent = String(d3); }\n");
-    const secrets = await makeKeyStore(join(home, "secrets"), { "api.openrouter": "sk-or-canary" });
+    const secrets = await makeKeyStore(join(home, "secrets"), { "service.claude-code": "sk-ant-oat01-canary" });
     srv = await startServer({ home, vault, secrets, token: "canary-inbox-token" });
   });
   afterAll(async () => {

@@ -167,16 +167,6 @@ export function toTypebox(Type, s) {
   }
 }
 
-/** The cost and generation id OpenRouter reports, from one parsed stream event (any API pi uses). */
-export function costFromStreamEvent(data) {
-  if (!data || typeof data !== "object") return null;
-  const u = data.usage ?? data.message?.usage ?? data.delta?.usage ?? null;
-  if (!u || typeof u !== "object") return null;
-  const c = Number(u.cost);
-  if (!Number.isFinite(c)) return null;
-  return { cost: c, id: typeof data.id === "string" ? data.id : null };
-}
-
 /** The custom message type of the "you" layer in a pi session (vc.mjs before_agent_start). */
 export const YOU_TYPE = "vc-you";
 

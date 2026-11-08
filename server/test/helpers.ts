@@ -1,8 +1,7 @@
 // Test rig: temp vaults and git repos, a fake key store (canary values only),
-// the built server bundle as a real child process running the real Claude Code
-// CLI against a scripted stand-in for the Anthropic API (./claudeFakeApi.ts),
-// and a scripted fake OpenRouter for what still goes through it (voice, web
-// search, vision).
+// and the built server bundle as a real child process running the real Claude
+// Code CLI against a scripted stand-in for the Anthropic API
+// (./claudeFakeApi.ts) — which is every model call the box makes now.
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readFileSync, realpathSync } from "node:fs";
 import { createServer, type Server } from "node:http";
@@ -90,104 +89,6 @@ export async function makeKeyStore(dir: string, map: Record<string, string>): Pr
   return dir;
 }
 
-export type ScriptStep = { text?: string; toolCall?: { name: string; args: unknown }; drop?: boolean };
-
-export type FakeOpenRouter = {
-  url: string;
-  calls: any[];
-  close: () => Promise<void>;
-  /** Text the next completions reply with. */
-  reply: string;
-  /** Consumed one per completion before falling back to `reply`. */
-  script: ScriptStep[];
-};
-
-/** Scripted OpenRouter: every chat completion answers `reply`, streamed or
- * not, with a usage block. /models returns a tiny catalog. */
-export async function fakeOpenRouter(reply = "Acknowledged. Mission started."): Promise<FakeOpenRouter> {
-  const state: FakeOpenRouter = { url: "", calls: [], close: async () => {}, reply, script: [] };
-  const server: Server = createServer((req, res) => {
-    let body = "";
-    req.on("data", (d) => (body += d));
-    req.on("end", () => {
-      const path = (req.url ?? "").replace(/\?.*$/, "");
-      if (req.method === "GET" && path.endsWith("/models")) {
-        res.writeHead(200, { "content-type": "application/json" });
-        res.end(JSON.stringify({ data: [{ id: "openai/gpt-5.6-sol", name: "GPT-5.6 Sol" }] }));
-        return;
-      }
-      if (!path.endsWith("/chat/completions")) {
-        res.writeHead(404);
-        res.end("{}");
-        return;
-      }
-      let parsed: any = {};
-      try {
-        parsed = JSON.parse(body);
-      } catch {
-        /* keep {} */
-      }
-      state.calls.push(parsed);
-      const id = `gen-${state.calls.length}`;
-      const model = parsed.model ?? "openai/gpt-5.6-sol";
-      const usage = { prompt_tokens: 100, completion_tokens: 10, total_tokens: 110, cost: 0.001 };
-      const step = state.script.shift();
-      // OpenRouter's edge closing the connection after the whole request arrived, no answer (the box's
-      // "Connection error.": undici's "other side closed").
-      if (step?.drop) {
-        req.socket.destroy();
-        return;
-      }
-      if (step?.toolCall && parsed.stream) {
-        res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache" });
-        // Scripts name logical tools; the provider must return the exact name
-        // actually declared by pi (native MCP names are not display aliases).
-        const native = `mcp__vault_chat__${step.toolCall.name}`;
-        const name = parsed.tools?.some((t: any) => t.function?.name === native) ? native : step.toolCall.name;
-        const tc = { index: 0, id: `call_${state.calls.length}`, type: "function", function: { name, arguments: JSON.stringify(step.toolCall.args) } };
-        const ch = (delta: any, finish: string | null, extra: any = {}) =>
-          `data: ${JSON.stringify({ id, object: "chat.completion.chunk", created: 1, model, choices: [{ index: 0, delta, finish_reason: finish }], ...extra })}
-
-`;
-        res.write(ch({ role: "assistant", content: null, tool_calls: [tc] }, null));
-        res.write(ch({}, "tool_calls", { usage }));
-        res.write("data: [DONE]\n\n");
-        res.end();
-        return;
-      }
-      if (step?.text !== undefined) state.reply = step.text;
-      if (parsed.stream) {
-        res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache" });
-        const chunk = (delta: any, finish: string | null, extra: any = {}) =>
-          `data: ${JSON.stringify({ id, object: "chat.completion.chunk", created: 1, model, choices: [{ index: 0, delta, finish_reason: finish }], ...extra })}\n\n`;
-        res.write(chunk({ role: "assistant", content: "" }, null));
-        res.write(chunk({ content: state.reply }, null));
-        res.write(chunk({}, "stop", { usage }));
-        res.write("data: [DONE]\n\n");
-        res.end();
-      } else {
-        res.writeHead(200, { "content-type": "application/json" });
-        res.end(
-          JSON.stringify({
-            id,
-            object: "chat.completion",
-            created: 1,
-            model,
-            choices: [{ index: 0, message: { role: "assistant", content: state.reply }, finish_reason: "stop" }],
-            usage,
-          }),
-        );
-      }
-    });
-  });
-  await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
-  const port = (server.address() as any).port;
-  state.url = `http://127.0.0.1:${port}/api/v1`;
-  state.close = () => new Promise((r) => server.close(() => r()));
-  return state;
-}
-
-/** A one-page PDF whose only text is `text` (ASCII), with a correct xref. */
 export function tinyPdf(text: string): Buffer {
   const objs = [
     "<< /Type /Catalog /Pages 2 0 R >>",
@@ -254,7 +155,6 @@ export type ServerEnv = {
    * Left out, the server still gets one of its own, so no turn ever reaches the
    * real API and none hangs waiting for a key. */
   anthropic?: string;
-  openrouter?: string;
   token?: string;
   extra?: Record<string, string>;
 };
@@ -297,7 +197,6 @@ export async function startServer(e: ServerEnv & { bundle?: string }): Promise<R
     ANTHROPIC_API_KEY: "sk-ant-not-a-real-key",
     VC_SANDBOX_UNSAFE: "1",
     VC_BWRAP: join(e.home, "no-bwrap"),
-    ...(e.openrouter ? { VC_OPENROUTER_BASE: e.openrouter } : {}),
     ...(e.extra ?? {}),
   };
   const proc = spawn(process.execPath, [bundle], { cwd: dirname(bundle), env, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });

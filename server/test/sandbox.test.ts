@@ -244,7 +244,6 @@ describe("the machine section of the developer instructions", () => {
 
   it("maps the keychain's names to environment variables", async () => {
     const { envNameForKey, keyEnv } = await import("../../src/keyEnv");
-    expect(envNameForKey("api.openrouter")).toBe("OPENROUTER_API_KEY");
     expect(envNameForKey("api.anthropic")).toBe("ANTHROPIC_API_KEY");
     expect(envNameForKey("api.openai")).toBe("OPENAI_API_KEY");
     expect(envNameForKey("api.google")).toBe("GOOGLE_API_KEY");
@@ -254,7 +253,11 @@ describe("the machine section of the developer instructions", () => {
     expect(envNameForKey("user.hf-token")).toBe("HF_TOKEN");
     expect(envNameForKey("api.groq")).toBe("GROQ_API_KEY");
     expect(envNameForKey("keystore.passphrase")).toBeNull();
-    expect(keyEnv([["api.openrouter", "a"], ["keystore.passphrase", "p"], ["user.x", ""], ["user.OPENROUTER_API_KEY", "b"]])).toEqual({ OPENROUTER_API_KEY: "a" });
+    // vault-chat no longer offers an OpenRouter key, so nothing can store one;
+    // the general api.<name> rule still names a variable for anything Carl adds
+    // himself, which is how he would put a provider back.
+    expect(envNameForKey("api.openrouter")).toBe("OPENROUTER_API_KEY");
+    expect(keyEnv([["api.anthropic", "a"], ["keystore.passphrase", "p"], ["user.x", ""], ["user.OPENROUTER_API_KEY", "b"]])).toEqual({ ANTHROPIC_API_KEY: "a", OPENROUTER_API_KEY: "b" });
   });
 });
 

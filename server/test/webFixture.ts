@@ -5,26 +5,10 @@ import got from 'got';
 const cleanup: (() => Promise<void>)[] = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
 export async function webFixture() {
-  let attempts = 0, active = 0, peak = 0;
-  const times: number[] = [];
   const paths: string[] = [];
-  const fixture = { mode: 'retry', attempts: () => attempts, peak: () => peak, times, paths, base: '', client: got, server: null as unknown as Server };
+  const fixture = { paths, base: '', client: got, server: null as unknown as Server };
   fixture.server = createServer((req, res) => {
     paths.push(req.url!);
-    if (req.url === '/search') {
-      attempts++; active++; peak = Math.max(peak, active); times.push(Date.now());
-      res.on('close', () => active--);
-      let raw = ''; req.on('data', d => raw += d); req.on('end', () => {
-        if (fixture.mode === 'hang') { res.writeHead(200, { 'content-type': 'application/json' }); res.write('{'); return; }
-        if (fixture.mode === 'quota') { res.writeHead(402); res.end('secret-provider-body-never-echo'); return; }
-        if (fixture.mode === 'long429' || fixture.mode === 'rate' || fixture.mode === 'date429' && attempts === 1 || fixture.mode === 'retry' && attempts === 1) {
-          res.writeHead(429, { 'retry-after': fixture.mode === 'long429' ? '60' : fixture.mode === 'date429' ? new Date(Date.now() + 2000).toUTCString() : '1' }); res.end('slow down'); return;
-        }
-        if (fixture.mode === '503' && attempts === 1) { res.writeHead(503); res.end('transient'); return; }
-        res.writeHead(200, { 'content-type': 'application/json' });
-        res.end(JSON.stringify({ choices: [{ message: { content: 'Discovery lead, not primary evidence.', annotations: [{ url_citation: { url: 'http://research-fixture.example.org/primary', title: 'Owned local primary fixture', content: 'Read the source to verify.' } }] } }] }));
-      }); return;
-    }
     if (req.url === '/redirect-private') { res.writeHead(302, { location: 'http://127.0.0.1/private' }); res.end(); return; }
     if (req.url === '/redirect') { res.writeHead(302, { location: '/primary' }); res.end(); return; }
     if (req.url === '/loop') { res.writeHead(302, { location: '/loop' }); res.end(); return; }

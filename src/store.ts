@@ -84,7 +84,8 @@ export type ChatMessage = {
   // The model's thinking for this turn (box: pi's thinking blocks; laptop: the
   // reasoning stream), kept with the reply.
   thinking?: string;
-  // What this turn cost (USD, OpenRouter's own figure), when known.
+  // What this turn cost (USD), when known. Carl does not track spend; a
+  // conversation that already has the field keeps reading.
   costUsd?: number;
   // Images attached to this turn via the chat pane's Capture button.
   // Render as thumbnails under the bubble; sent to the agent as
@@ -288,11 +289,10 @@ async function fetchAllFromKeychain(): Promise<{
   apiKeys: ApiKeys;
   serviceKeys: ServiceKeys;
 }> {
-  const [anthropic, openai, google, openrouter, tavily, elevenlabs, claudeCode] = await Promise.all([
+  const [anthropic, openai, google, tavily, elevenlabs, claudeCode] = await Promise.all([
     keychainGet(KEY.anthropic),
     keychainGet(KEY.openai),
     keychainGet(KEY.google),
-    keychainGet(KEY.openrouter),
     keychainGet(KEY.tavily),
     keychainGet(KEY.elevenlabs),
     keychainGet(KEY.claudeCode),
@@ -301,7 +301,6 @@ async function fetchAllFromKeychain(): Promise<{
   if (anthropic) apiKeys.anthropic = anthropic;
   if (openai) apiKeys.openai = openai;
   if (google) apiKeys.google = google;
-  if (openrouter) apiKeys.openrouter = openrouter;
   const serviceKeys: ServiceKeys = {};
   if (tavily) serviceKeys.tavily = tavily;
   if (elevenlabs) serviceKeys.elevenlabs = elevenlabs;
@@ -322,7 +321,6 @@ async function migrateLocalStorageKeys(): Promise<void> {
       if (parsed.anthropic) await keychainSet(KEY.anthropic, parsed.anthropic);
       if (parsed.openai) await keychainSet(KEY.openai, parsed.openai);
       if (parsed.google) await keychainSet(KEY.google, parsed.google);
-      if (parsed.openrouter) await keychainSet(KEY.openrouter, parsed.openrouter);
       localStorage.removeItem(OLD_API);
     }
   } catch (e) {

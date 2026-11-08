@@ -16,7 +16,7 @@ describe("boards", () => {
   beforeAll(async () => {
     home = tmp();
     vault = makeVault(join(home, "vault"));
-    const secrets = await makeKeyStore(join(home, "secrets"), { "api.openrouter": "sk-or-canary" });
+    const secrets = await makeKeyStore(join(home, "secrets"), { "service.claude-code": "sk-ant-oat01-canary" });
     srv = await startServer({ home, vault, secrets, token: "canary-board-token" });
   });
   afterAll(async () => {

@@ -42,7 +42,6 @@ import {
   type ToolSpec,
 } from "../backend";
 import { EFFORTS, FALLBACK_MODELS, isEffort, pickerModels } from "./models";
-import type { CallRecord } from "../ledger";
 import type { UserRequest } from "../piFeed";
 import { appendEntries, newSessionFile } from "../../convlog/piSession";
 import { McpRuntime, type ProcessServices } from "../../mcp/runtime";
@@ -60,6 +59,15 @@ export type PathPolicy = Pick<EngineBackend, "externalPath" | "filesystem"> & Pa
 
 /** Claude Code's own file tools, the ones vault-chat's policy can rule on. */
 export const OWN_FILE_TOOLS: readonly string[] = ["Read", "Write", "Edit", "Glob", "Grep"];
+
+/**
+ * Claude Code's own tools that are on besides those, with no policy of
+ * vault-chat's to apply: searching the web. vault-chat had its own WebSearch
+ * and it went with the OpenRouter key it needed — the runtime's own does the
+ * same job on Carl's subscription. WebFetch stays vault-chat's, because its
+ * guard against private addresses is a policy and not a convenience.
+ */
+export const OWN_WEB_TOOLS: readonly string[] = ["WebSearch"];
 
 /**
  * A folder's own rules for an agent working in it. pi loaded the cwd's AGENTS.md
@@ -526,15 +534,6 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
     await live.session.interrupt();
   }
 
-  // ------------------------------------------------------------------ cost: Claude Code reports usage, not price
-
-  usageCalls(_ref: string | undefined, _turnId?: string | null): CallRecord[] {
-    return [];
-  }
-
-  childUsageCalls(_threadId: string): CallRecord[] {
-    return [];
-  }
 
   // ------------------------------------------------------------------ files: vault-chat's one policy
 
@@ -710,14 +709,17 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
       ...(tools || this.ownFileTools()
         ? {
             ...(tools ? { mcpServers: tools.servers as never } : {}),
-            allowedTools: [...(tools?.allowed ?? []), ...(this.ownFileTools() ? OWN_FILE_TOOLS : [])],
+            allowedTools: [...(tools?.allowed ?? []), ...(this.ownFileTools() ? OWN_FILE_TOOLS : []), ...OWN_WEB_TOOLS],
           }
         : {}),
+      // Every built-in off but the ones named here: the file tools (when they
+      // are the host's choice) always under vault-chat's policy hook, and the
+      // web search, which has no path to rule on.
+      disallowedTools: CLAUDE_BUILTINS_OFF.filter((n) => !OWN_WEB_TOOLS.includes(n) && !(this.ownFileTools() && OWN_FILE_TOOLS.includes(n))),
       ...(this.ownFileTools()
         ? {
             // Claude Code's own file tools, under vault-chat's policy: the hook
             // rules on every call before it runs (session.ts onToolUse).
-            disallowedTools: CLAUDE_BUILTINS_OFF.filter((n) => !OWN_FILE_TOOLS.includes(n)),
             onToolUse: async (tool: string, input: Record<string, unknown>) => {
               // The voice gate first, and it covers Bash too: on a live call the
               // agent delegates a change instead of making it, so a shell line

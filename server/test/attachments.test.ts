@@ -23,7 +23,7 @@ const post = async (p: string, b: Record<string, unknown>) => (await (await post
 beforeAll(async () => {
   home = tmp("vcattach-");
   vault = makeVault(join(home, "vault"));
-  secrets = await makeKeyStore(join(home, "secrets"), { "api.openrouter": "sk-or-canary-not-real" });
+  secrets = await makeKeyStore(join(home, "secrets"), { "service.claude-code": "sk-ant-oat01-canary-not-real" });
   or = await fakeAnthropic("Here is the answer.");
   srv = await startServer({ home, vault, secrets, anthropic: or.url });
 }, 120_000);

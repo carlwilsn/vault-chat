@@ -53,7 +53,7 @@ beforeAll(async () => {
   git(repo, "remote", "add", "origin", bare);
   git(repo, "push", "-q", "origin", "main");
   git(repo, "branch", "--set-upstream-to=origin/main", "main");
-  secrets = await makeKeyStore(join(home, "secrets"), { "api.openrouter": "sk-or-canary-not-real" });
+  secrets = await makeKeyStore(join(home, "secrets"), { "service.claude-code": "sk-ant-oat01-canary-not-real" });
   or = await fakeAnthropic("Done.");
   srv = await startServer({ home, vault, secrets, anthropic: or.url });
 }, 120_000);

@@ -18,7 +18,7 @@ describe("git smart HTTP", () => {
     vault = makeVault(join(home, "school2"));
     bare = join(home, "school2.git");
     sh(home, "git", ["init", "--bare", "-q", "-b", "master", bare]);
-    const secrets = await makeKeyStore(join(home, "secrets"), { "api.openrouter": "sk-or-canary" });
+    const secrets = await makeKeyStore(join(home, "secrets"), { "service.claude-code": "sk-ant-oat01-canary" });
     srv = await startServer({ home, vault, bare, secrets, extra: { VC_SYNC_INTERVAL_MS: "600000" } });
     url = `${srv.base}/git/school2.git`;
     // The first sync cycle publishes box.

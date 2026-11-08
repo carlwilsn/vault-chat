@@ -5,7 +5,7 @@ import { mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmp, cleanup } from "./helpers";
 // @ts-ignore — plain JS module shared with the extension
-import { scrubEnv, guardToolCall, resolveList, addCacheMarkers, toTypebox, costFromStreamEvent, shq } from "../engine/policy.mjs";
+import { scrubEnv, guardToolCall, resolveList, addCacheMarkers, toTypebox, shq } from "../engine/policy.mjs";
 
 describe("the path policy", () => {
   let home: string;
@@ -49,12 +49,6 @@ describe("the path policy", () => {
     expect(out.messages[1].content).toBe("a");
     expect(p.messages[0].content).toBe("sys"); // not mutated
     expect(addCacheMarkers({ model: "anthropic/claude-sonnet-5.5", messages: [] })).toBeUndefined();
-  });
-
-  it("reads OpenRouter's cost from either API's stream events", () => {
-    expect(costFromStreamEvent({ id: "gen-1", choices: [], usage: { cost: 0.002 } })).toEqual({ cost: 0.002, id: "gen-1" });
-    expect(costFromStreamEvent({ type: "message_delta", usage: { output_tokens: 3, cost: 0.01 } })).toEqual({ cost: 0.01, id: null });
-    expect(costFromStreamEvent({ choices: [{ delta: { content: "x" } }] })).toBeNull();
   });
 
   it("turns the JSON-schema tool specs into TypeBox", () => {

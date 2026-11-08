@@ -17,12 +17,12 @@ describe("Claude Code's sign-in", () => {
   it("has no environment variable, so no command the agent runs can see it", () => {
     expect(envNameForKey(KEY.claudeCode)).toBeNull();
     const env = keyEnv([
-      ["api.openrouter", "sk-or-real"],
+      ["api.anthropic", "sk-ant-api-real"],
       [KEY.claudeCode, TOKEN],
       ["service.elevenlabs", "sk_eleven"],
     ]);
     // The keys that ARE the agent's are there…
-    expect(env.OPENROUTER_API_KEY).toBe("sk-or-real");
+    expect(env.ANTHROPIC_API_KEY).toBe("sk-ant-api-real");
     expect(env.ELEVENLABS_API_KEY).toBe("sk_eleven");
     // …and the sign-in is nowhere in it, under any name.
     expect(Object.keys(env)).not.toContain("CLAUDE_CODE_API_KEY");
@@ -45,12 +45,12 @@ describe("Claude Code's sign-in", () => {
     const { useStore } = await import("../../src/store");
     const { laptopKeys } = await import("../../src/boxKeys");
     useStore.setState({
-      apiKeys: { openrouter: "sk-or-real" },
+      apiKeys: { anthropic: "sk-ant-api-real" },
       serviceKeys: { elevenlabs: "sk_eleven", claudeCode: TOKEN },
     } as never);
     const pushed = await laptopKeys();
     expect(pushed[KEY.claudeCode]).toBe(TOKEN);
-    expect(pushed[KEY.openrouter]).toBe("sk-or-real");
+    expect(pushed[KEY.anthropic]).toBe("sk-ant-api-real");
     expect(pushed[KEY.elevenlabs]).toBe("sk_eleven");
 
     // And with no sign-in there is simply no entry, rather than an empty one that
@@ -84,14 +84,16 @@ describe("the models Claude Code runs", () => {
     for (const e of ["xhigh", "", "HIGH", "none", null, undefined, 3]) expect(isEffort(e), String(e)).toBe(false);
   });
 
-  it("knows one of its models can see, so a picture is never sent to the OpenRouter vision model instead", async () => {
-    const { capabilitiesOf } = await import("../engine/capabilities");
-    // A Claude model is not in the OpenRouter catalog, and reading it as a model
-    // that cannot see is what would quietly reroute every turn carrying an image.
-    for (const m of ["opus", "sonnet", "haiku"]) {
+  it("every model this engine runs can do the work, so nothing reroutes a turn", async () => {
+    const { capabilitiesOf, capabilityNote } = await import("../engine/capabilities");
+    // There is one engine and its models take tools, run subagents, see images
+    // and read PDFs. This used to be a question — pi ran whatever OpenRouter
+    // offered, a model that could not see had to be found out from a catalog,
+    // and a turn carrying a picture went to a different model when it was wrong.
+    for (const m of ["opus", "sonnet", "haiku", "claude-fable-5-1"]) {
       expect(capabilitiesOf(m), m).toMatchObject({ images: true, tools: true, subagents: true, pdf: true });
     }
-    // Something that is not a Claude model at all still reads as it did.
-    expect(capabilitiesOf("nobody/nothing").images).toBe(false);
+    // And nothing is warned about in the prompt any more.
+    expect(capabilityNote("opus")).toBe("");
   });
 });

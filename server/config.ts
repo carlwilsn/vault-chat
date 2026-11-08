@@ -58,8 +58,6 @@ export type ServerConfig = {
   syncEnabled: boolean;
   syncIntervalMs: number;
   init: boolean;
-  /** Test hook: rewrite https://openrouter.ai/api/v1 to this base. */
-  openrouterBase?: string;
 };
 
 let cached: ServerConfig | null = null;
@@ -98,7 +96,6 @@ export function loadConfig(): ServerConfig {
     syncEnabled: env("VC_SYNC") !== "0",
     syncIntervalMs: Number(env("VC_SYNC_INTERVAL_MS") ?? 15_000),
     init: env("VC_INIT") === "1",
-    openrouterBase: env("VC_OPENROUTER_BASE"),
   };
   return cached;
 }

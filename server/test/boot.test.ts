@@ -26,8 +26,8 @@ describe("boot + phone routes", () => {
   beforeAll(async () => {
     home = tmp();
     vault = makeVault(join(home, "vault"));
-    secrets = await makeKeyStore(join(home, "secrets"), { "api.openrouter": "sk-or-canary-not-real" });
-    // Missions/workers on an OpenRouter model (the seed defaults are Anthropic).
+    secrets = await makeKeyStore(join(home, "secrets"), { "service.claude-code": "sk-ant-oat01-canary-not-real" });
+    // Missions/workers on the seed's own model.
     writeFileSync(
       join(home, "mission-engine.localstorage"),
       JSON.stringify({
@@ -57,9 +57,9 @@ describe("boot + phone routes", () => {
     expect(h.ok).toBe(true);
     expect(h.version).toMatch(/^\d+\.\d+\.\d+$/);
     expect(h.git).toBe("ok");
-    expect(h.keys).toEqual({ openrouter: true, elevenlabs: false, claudeCode: false });
+    expect(h.keys).toEqual({ elevenlabs: false, claudeCode: true });
     expect(typeof h.busy.runs).toBe("number");
-    expect(srv.logs()).not.toContain("sk-or-canary-not-real");
+    expect(srv.logs()).not.toContain("sk-ant-oat01-canary-not-real");
   });
 
   it("shipment listing and card rollback routes are absent", async () => {

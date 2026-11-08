@@ -13,7 +13,7 @@ import { configureChangeDelivery, currentDeliveryHealth } from "./changeDelivery
 import { observeReleaseVoiceHealth, type BoxReleaseHealth } from "./releaseHealth";
 import { loadConfig, SERVER_VERSION, SERVER_REV } from "./config";
 import { registerCommands } from "./commands";
-import { loadKeyStore, hasKey, keychainCommands, saveKeys, keyNames, CLAUDE_CODE_KEY } from "./keys";
+import { loadKeyStore, hasKey, saveKeys, keyNames, CLAUDE_CODE_KEY } from "./keys";
 import { hostname, userInfo } from "node:os";
 import { setLegacySource, signal, convLog, setSharedClock, setFeedVaults } from "./convlog/log";
 import { legacySource } from "./convlog/importer";
@@ -23,20 +23,6 @@ function fatal(msg: string, code = 2): never {
   process.exit(code);
 }
 
-/** Test hook: point OpenRouter at a scripted fake (never set in prod). */
-function installOpenRouterRewrite(base: string): void {
-  const real = globalThis.fetch;
-  const from = "https://openrouter.ai/api/v1";
-  const to = base.replace(/\/+$/, "");
-  globalThis.fetch = ((input: any, init?: any) => {
-    if (typeof input === "string" && input.startsWith(from)) input = to + input.slice(from.length);
-    else if (input instanceof URL && input.href.startsWith(from)) input = to + input.href.slice(from.length);
-    else if (input && typeof input === "object" && typeof input.url === "string" && input.url.startsWith(from)) {
-      input = new Request(to + input.url.slice(from.length), input);
-    }
-    return real(input, init);
-  }) as typeof fetch;
-}
 
 let gitState: "ok" | "missing" = "missing";
 function checkGit(): void {
@@ -62,15 +48,15 @@ async function main(): Promise<void> {
   // /api/v1/keys); turns fail until one way of running them is there.
   const ks = await loadKeyStore(cfg.secretsDir);
   if (ks.error) console.error(`[vault-chat-server] ${ks.error}`);
-  // There are two ways now: pi on an OpenRouter key, or Claude Code on Carl's
-  // subscription. Only having neither stops a turn.
-  if (!hasKey("api.openrouter") && !hasKey(CLAUDE_CODE_KEY)) {
+  // One way to run a turn: Carl's Claude sign-in. (A box can also be signed in
+  // directly with `claude setup-token`, which leaves its credentials in the
+  // engine's own config dir — the engine reports that as signed in.)
+  if (!hasKey(CLAUDE_CODE_KEY)) {
     console.error(
-      `[vault-chat-server] the key store (${cfg.secretsDir}/secrets.age) has neither "api.openrouter" nor "${CLAUDE_CODE_KEY}". ` +
-        `Turns cannot run until one is added (laptop: Settings → Box for the OpenRouter key, Settings → Agent to sign Claude Code in).`,
+      `[vault-chat-server] the key store (${cfg.secretsDir}/secrets.age) has no "${CLAUDE_CODE_KEY}". ` +
+        `Turns cannot run until Carl signs in (laptop: Settings → Sign in with Claude).`,
     );
   }
-  if (cfg.openrouterBase) installOpenRouterRewrite(cfg.openrouterBase);
 
   checkGit();
   setInterval(checkGit, 60_000).unref();
@@ -130,10 +116,6 @@ async function main(): Promise<void> {
     localStoragePath: cfg.localStoragePath,
     pushSubsPath: cfg.pushSubsPath,
     serverVersion: SERVER_VERSION,
-    apiKey: () => {
-      const v = keychainCommands.keychain_get({ key: "api.openrouter" });
-      return typeof v === "string" && v ? v : null;
-    },
     sendPush: (title, body, url, tag) => sendPush(title, body, url, tag),
     notificationAppend,
   });
@@ -256,7 +238,12 @@ async function main(): Promise<void> {
       })(),
       vaults: vaultRefs().map((v) => ({ name: v.name, path: v.path })),
       voice: pipelineState(),
-      hasKey: hasKey("api.openrouter"),
+      // Whether this box can run a turn at all. It used to mean "it has an
+      // OpenRouter key"; it means the Claude sign-in now, which is the only
+      // thing a turn needs. Kept under its old name because the ship host's own
+      // preflight reads it (host/real-copy-startup.mjs) to check that a fresh
+      // box says no — and because a reader that asks is asking the right thing.
+      hasKey: hasKey(CLAUDE_CODE_KEY),
       keyNames: keyNames(),
       version: SERVER_VERSION,
       rev: SERVER_REV,
@@ -269,7 +256,7 @@ async function main(): Promise<void> {
       })(),
       vault: cfg.vaultName,
       git: gitState,
-      keys: { openrouter: hasKey("api.openrouter"), elevenlabs: hasKey("service.elevenlabs"), claudeCode: hasKey(CLAUDE_CODE_KEY) },
+      keys: { elevenlabs: hasKey("service.elevenlabs"), claudeCode: hasKey(CLAUDE_CODE_KEY) },
       // A live voice session counts as a run: the updater waits for busy.runs == 0
       // (server/deploy/vault-chat-update.sh), so it never restarts under someone talking.
       // It also waits for busy.inputs == 0: no surface Carl used in the last 10 minutes

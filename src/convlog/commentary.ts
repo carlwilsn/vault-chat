@@ -2,7 +2,7 @@
 //
 // GPT-family models (GPT-6.1 Sol and its kin) write a running commentary as plain text in the same message as
 // their tool calls ("I'll check the file first…", "Reconnaissance: …"). OpenAI's own API marks it
-// `phase: "commentary"`, but vault-chat reaches every model through OpenRouter's chat completions, where that mark
+// `phase: "commentary"`, but vault-chat reached every model through a chat-completions API, where that mark
 // is gone: it arrives as ordinary text, and every surface showed it as the reply and the voice read it aloud.
 // Other models do the same in their own words. The rule that holds for every model: text written beside a tool
 // call is commentary on work in progress, never the answer. The answer is the text of a message that ends the

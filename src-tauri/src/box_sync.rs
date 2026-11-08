@@ -292,8 +292,6 @@ pub struct FoundBox {
     pub url: String,
     pub version: Option<String>,
     pub online: bool,
-    #[serde(rename = "hasKey")]
-    pub has_key: bool,
 }
 
 /// Online peers in `tailscale status --json`: (host name, `https://<DNSName>`).
@@ -334,11 +332,6 @@ pub fn parse_health(host: &str, url: &str, body: &str) -> Option<FoundBox> {
         url: url.to_string(),
         version: v.get("version").and_then(|x| x.as_str()).map(String::from),
         online: true,
-        has_key: v
-            .get("hasKey")
-            .and_then(|x| x.as_bool())
-            .or_else(|| v.pointer("/keys/openrouter").and_then(|x| x.as_bool()))
-            .unwrap_or(false),
     })
 }
 

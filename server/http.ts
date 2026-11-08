@@ -52,7 +52,7 @@ export type ServerHooks = {
   syncStatus: () => unknown;
   alert: (title: string, body: string, tag?: string, needsYou?: boolean) => Promise<number>;
   onGitPushed: (vault: string) => void;
-  /** Settings → Box on the laptop: this box's vaults, and its own OpenRouter key. */
+  /** Settings → Box on the laptop: the vaults this box holds, and adding one. */
   vaults?: { list: () => unknown; add: (name: string) => Promise<Record<string, unknown>> };
   setKeys?: (keys: Record<string, string>) => Promise<boolean>;
   /** The vault-chat folder (server/master.ts): its layout, vaults and projects; Settings sets it. */

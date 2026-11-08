@@ -36,7 +36,7 @@ beforeAll(async () => {
   coconut = seedProject(vault, "coconut", { folder: "Coconut", memory: "# Coconut: memory\n\n- 2026-10-20: overlap 128\n" });
   mkdirSync(join(vault, ".vault-chat"), { recursive: true });
   writeFileSync(join(vault, ".vault-chat", "MEMORY.md"), "# Memory\n\n- 2026-10-01: Carl likes one worked example\n");
-  secrets = await makeKeyStore(join(home, "secrets"), { "api.openrouter": "sk-or-canary-not-real" });
+  secrets = await makeKeyStore(join(home, "secrets"), { "service.claude-code": "sk-ant-oat01-canary-not-real" });
   or = await fakeAnthropic("NO_REPLY");
   srv = await startServer({ home, vault, secrets, anthropic: or.url });
 }, 120_000);

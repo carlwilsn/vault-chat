@@ -62,7 +62,7 @@ const focus = (path: string, where?: string) => post("/api/v1/activity", { entry
 beforeAll(async () => {
   home = tmp("vcyou-");
   vault = makeVault(join(home, "vault"));
-  secrets = await makeKeyStore(join(home, "secrets"), { "api.openrouter": "sk-or-canary-not-real" });
+  secrets = await makeKeyStore(join(home, "secrets"), { "service.claude-code": "sk-ant-oat01-canary-not-real" });
   or = await fakeAnthropic("ok");
   srv = await startServer({ home, vault, secrets, anthropic: or.url });
 }, 120_000);

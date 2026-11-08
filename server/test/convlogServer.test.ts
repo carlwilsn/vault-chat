@@ -48,7 +48,7 @@ const streaming = async (conv: string, since: number, n = 1) => (await recsOf(co
 beforeAll(async () => {
   home = tmp("vclog-");
   vault = makeVault(join(home, "vault"));
-  secrets = await makeKeyStore(join(home, "secrets"), { "api.openrouter": "sk-or-canary-not-real" });
+  secrets = await makeKeyStore(join(home, "secrets"), { "service.claude-code": "sk-ant-oat01-canary-not-real" });
   or = await fakeAnthropic("Here is the answer.");
   srv = await startServer({ home, vault, secrets, anthropic: or.url });
 });

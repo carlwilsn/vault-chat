@@ -40,8 +40,7 @@ import { workerWorktree } from "../workerWorktree";
 import { MAIN_ID, projectOfThread, projectThreadId, threadKindOf } from "../../src/threads";
 import { searchHistory } from "./history";
 import { addWake, readWakes, removeWakes, nextWakeFor, parseDelay, type Wake } from "./wakes";
-import { Ledger } from "./ledger";
-import { pdfPagesAnswer, pdfPagesSpec, pdfRead, webSearch, webFetch, webFetchSpec } from "./extraTools";
+import { pdfPagesAnswer, pdfPagesSpec, pdfRead, webFetch, webFetchSpec } from "./extraTools";
 import { failMake, inboxLog, listEntries, readEntry, sendEntry, startMake, type InboxEvent } from "../inbox";
 import { BOARD_MAKER_PROMPT, boardMakeTask, makerStats } from "./boardTools";
 import { lookBoard } from "../boards";
@@ -55,7 +54,7 @@ import { externalRecordUI } from "../mcp/recordUI";
 import { loadConfig } from "../config";
 import { ENGINE_ROLE_PROMPT } from "./prompt";
 import { isNoteTool, noteTool, noteToolSpecs } from "../notesTools";
-import { capabilitiesOf, capabilityNote, learn } from "./capabilities";
+import { capabilitiesOf, capabilityNote } from "./capabilities";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { projectFolderOf, reviveFolder } from "../projectFolders";
 import { deleteFolder, folderOpsWalls } from "../folderOps";
@@ -82,7 +81,6 @@ import { SIGN_IN_AGAIN } from "./claude/auth";
 export type EngineDeps = {
   vault: string;
   backend: EngineBackend;
-  ledger: Ledger;
   jobEnv: JobEnv;
   model: () => string;
   /** The effort a chat Carl has not chosen for runs at (his last choice). */
@@ -90,8 +88,6 @@ export type EngineDeps = {
   /** Keep his newest pick as what a NEW chat starts from. */
   rememberModel?: (model: string) => void;
   rememberEffort?: (effort: string | null) => void;
-  webSearchModel: string;
-  apiKey: () => string | null;
   /** Web Push + notifications.jsonl + the /poll "notif" signal. */
   notify: (n: EngineNotice) => Promise<string | null>;
   /** One-line log. */
@@ -261,13 +257,6 @@ export const ENGINE_TOOL_SPECS = [
       required: ["path"],
       additionalProperties: false,
     },
-  },
-  {
-    type: "function",
-    name: "WebSearch",
-    readOnly: true,
-    description: "Discover web sources with the configured OpenRouter web plugin. Returns provider summary and structured citation URLs/excerpts, not verified primary-page evidence. Read sources with WebFetch, iterate and cite only verified URLs. Temporary rate limits are retried within a bounded deadline; quota/auth failures remain honest.",
-    inputSchema: { type: "object", properties: { query: { type: "string" } }, required: ["query"], additionalProperties: false },
   },
   webFetchSpec,
   {
@@ -673,13 +662,6 @@ export class Engine {
     this.emit(convId, { type: "meta", patch: { pending: next.length ? next : null } });
   }
 
-  private addCost(convId: string, usd: number, missing?: number): void {
-    const m = this.picture(convId)?.meta;
-    if (!m) return;
-    const total = Math.round(((Number(m.costUsd) || 0) + usd) * 1e7) / 1e7;
-    this.emit(convId, { type: "meta", patch: { costUsd: total, ...(missing ? { costMissingCalls: (Number(m.costMissingCalls) || 0) + missing } : {}) } });
-  }
-
   // ---------------------------------------------------------------- lifecycle
 
   start(): void {
@@ -886,7 +868,6 @@ export class Engine {
   private async onUp(): Promise<void> {
     if (this.firstUp) {
       this.firstUp = false;
-      void this.reconcileCosts().catch((e) => this.log(`cost reconcile failed: ${e}`));
       // A turn a crash or a restart of the whole server cut: still open in the log.
       // It ends here as cut (with a line saying so), then it is resumed — unless it
       // was waiting on Carl, whose answer starts the next turn.
@@ -2099,7 +2080,6 @@ export class Engine {
         // Workers own independent task rows; MCP request ids and pi model call
         // ids are unrelated. Never guess ownership from the newest open call.
         if (e.done && e.ok && e.op === "spawnAgent" && e.children.length) {
-          if (learn(this.d.model(), "subagents", true, `spawned ${e.children.length} subagent(s) in a real turn`)) this.log(`learned: ${this.d.model()} subagents on`);
         }
         return;
       }
@@ -2203,7 +2183,6 @@ export class Engine {
     const vault = this.d.vault;
     const errStr = status === "failed" ? errText(error) : "";
     if (errStr && /tool/i.test(errStr) && /(not support|unsupported|No endpoints found)/i.test(errStr)) {
-      learn(this.d.model(), "tools", false, `request rejected: ${errStr}`);
     }
     const conv0 = await readConv(vault, l.convId);
     const wakeAt = nextWakeFor(vault, l.convId);
@@ -2228,9 +2207,6 @@ export class Engine {
     this.d.onTurnEnded?.(l.convId);
     for (const w of this.turnWaiters.get(l.convId)?.splice(0) ?? []) w();
     if (this.taps.has(l.convId)) this.tapEmit(l.convId, { type: "vc_turn_end", status, kind: l.kind });
-
-    // Cost, from the session's own figures (async; lands a few seconds later).
-    void this.settleCost(l.convId, conv?.threadPath ?? conv0?.threadPath, l.turnId);
   }
 
   /** A turn Carl started ended: offered to the push gate (server/pushGate.ts), which buzzes only if he is away from every screen. */
@@ -2439,35 +2415,6 @@ export class Engine {
 
   }
 
-  private async settleCost(convId: string, threadPath: string | undefined, turnId: string): Promise<void> {
-    if (!threadPath) return;
-    await new Promise((r) => setTimeout(r, 1500));
-    // The turn's own calls, plus every call of this conversation's subagents
-    // (their sessions are separate; the ledger skips ids already counted).
-    const childCalls = [...this.childOf.entries()].filter(([, c]) => c === convId).flatMap(([t]) => this.d.backend.childUsageCalls(t));
-    const res = await this.d.ledger.settle([...this.d.backend.usageCalls(threadPath, turnId), ...childCalls]);
-    if (!res.calls) return;
-    this.scoped(() => this.addCost(convId, res.usd, res.missing));
-  }
-
-  /** At boot: cost any model call a restart cut off before its lookup finished
-   * (the ledger skips ids already counted), onto its conversation. */
-  private async reconcileCosts(): Promise<void> {
-    const log = logOf(this.d.vault);
-    for (const id of log.ids()) {
-      const p = this.picture(id);
-      const path = p?.meta.threadPath;
-      if (!p || !path) continue;
-      const calls = this.d.backend.usageCalls(path).filter((x) => !this.d.ledger.has(x.responseId));
-      if (!calls.length) continue;
-      const res = await this.d.ledger.settle(calls);
-      if (!res.calls) continue;
-      this.addCost(id, res.usd, res.missing);
-      this.log(`reconciled ${res.calls} uncounted call(s) on ${id}: $${res.usd}`);
-    }
-  }
-
-
   /** Read the last input pi actually delivered in THIS conversation, not ambient activity.
    * Worker scope snapshots this at creation; a queued input cannot take over early. */
   private interaction(convId: string): Interaction {
@@ -2605,7 +2552,7 @@ export class Engine {
           let workerStarted!: (id: string) => void;
           const workerId = new Promise<string>((resolve) => { workerStarted = resolve; });
           const started = this.d.backend.background(p.threadId, {
-            agent: { name: "worker", systemPrompt: DELEGATE_WORKER_PROMPT, tools: ["read", "bash", "edit", "write", "grep", "find", "ls", "Notify", "PdfRead", "WebSearch", "WebFetch", "BoardSend"] },
+            agent: { name: "worker", systemPrompt: DELEGATE_WORKER_PROMPT, tools: ["read", "bash", "edit", "write", "grep", "find", "ls", "Notify", "PdfRead", "WebFetch", "BoardSend"] },
             task,
             ...(typeof a.cwd === "string" ? { cwd: a.cwd } : {}),
             // The conversation's own model, not a live call's talker: the work wants the strong one.
@@ -2689,8 +2636,6 @@ export class Engine {
           const answer = await pdfPagesAnswer(vault, a);
           return { ...text(answer.text), resources: answer.resources };
         }
-        case "WebSearch":
-          return text(await webSearch(String(a.query ?? ""), this.d.apiKey(), this.d.webSearchModel, p.signal));
         case "WebFetch":
           return text(await webFetch(a, p.signal));
         case "StartJob": {

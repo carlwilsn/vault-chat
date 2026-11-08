@@ -24,10 +24,6 @@ Reading PDFs: use PdfRead with page ranges; never pull a whole long document int
 
 Never read, print or copy keys, tokens or the key store; never write to .vault-chat/conversations by hand.
 
-<capabilities model="openai/gpt-6.1-sol">
-This model cannot see images.
-</capabilities>
-
 ---
 
 # Carl's rules (binding)

@@ -7,7 +7,6 @@
 // The names are the ones the engine already used, so an implementation is free
 // to mean something else by a "thread" (a pi session; a Claude Code session) as
 // long as it answers for the ids it hands out.
-import type { CallRecord } from "./ledger";
 import type { ThreadTokenUsage } from "./context";
 import type { UserRequest } from "./piFeed";
 import type { TurnLine } from "./turnLog";
@@ -251,10 +250,6 @@ export type EngineBackend = {
   clearQueue(threadId: string): Promise<{ steering: string[]; followUp: string[] }>;
   /** Stop the running turn (it ends "interrupted"). */
   interrupt(threadId: string, turnId: string): Promise<void>;
-
-  // -- what a turn cost (the ledger settles these; Claude Code reports usage, not price)
-  usageCalls(ref: string | undefined, turnId?: string | null): CallRecord[];
-  childUsageCalls(threadId: string): CallRecord[];
 
   // -- files: the runtime's own path policy (realpath, deny rules, the voice write gate)
   /** Why `path` is refused for a tool reaching outside a thread's folder, or null (allowed). */

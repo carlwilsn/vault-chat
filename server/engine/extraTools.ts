@@ -1,7 +1,9 @@
 // Tool bodies that are not about the conversation itself: PdfRead (page
 // ranges, never the whole document by default), PdfPages (the pages themselves,
-// to the model as a PDF) and WebSearch (OpenRouter's web plugin on a cheap
-// model). Detached jobs are in engine/jobs.ts.
+// to the model as a PDF) and WebFetch (one page, read through vault-chat's own
+// guard against private addresses). Searching is Claude Code's own WebSearch
+// now; the one here went with the OpenRouter key it needed. Detached jobs are
+// in engine/jobs.ts.
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, realpathSync, lstatSync, renameSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
@@ -121,4 +123,4 @@ export async function pdfPagesAnswer(vault: string, a: { path?: string; pages?: 
 }
 
 // Network tools share one bounded transport across voice and workers.
-export { webSearch, webFetch, webFetchSpec } from "./webTools";
+export { webFetch, webFetchSpec } from "./webTools";

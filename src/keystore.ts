@@ -40,7 +40,6 @@ function globalKeyNames(): string[] {
     KEY.anthropic,
     KEY.openai,
     KEY.google,
-    KEY.openrouter,
     KEY.tavily,
     KEY.elevenlabs,
     KEY.claudeCode,

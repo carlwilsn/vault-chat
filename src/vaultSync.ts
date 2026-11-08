@@ -661,7 +661,7 @@ export async function readBoxConfig(vault: string): Promise<BoxConfig | null> {
 }
 
 /** A machine on the tailnet that answers as a vault-chat server. */
-export type FoundBox = { name: string; url: string; version: string | null; online: boolean; hasKey: boolean };
+export type FoundBox = { name: string; url: string; version: string | null; online: boolean };
 
 const KNOWN_BOXES_KEY = "vault-chat:known-boxes";
 

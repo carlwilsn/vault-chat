@@ -1,7 +1,7 @@
 // Settings → Box on the laptop, against the real server: health names the
 // box, POST /api/v1/vaults creates a vault's own repos (strict names,
 // idempotent) and serves them over /git, POST /api/v1/keys stores the box's
-// own OpenRouter key in its key store. Every mutation is auth-gated.
+// own copy of Carl's keys in its key store. Every mutation is auth-gated.
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -37,7 +37,9 @@ describe("box setup routes", () => {
     expect(h.app).toBe("vault-chat-server");
     expect(typeof h.name).toBe("string");
     expect(h.name.length).toBeGreaterThan(0);
+    // `hasKey` means the Claude sign-in now — the only thing a turn needs.
     expect(h.hasKey).toBe(false);
+    expect(h.keys.claudeCode).toBe(false);
   });
 
   it("the phone needs no token through tailscale serve: its Tailscale login is enough", async () => {
@@ -57,7 +59,7 @@ describe("box setup routes", () => {
 
   it("mutations need auth", async () => {
     expect((await post("/api/v1/vaults", { name: "physics" }, stranger)).status).toBe(401);
-    expect((await post("/api/v1/keys", { keys: { "api.openrouter": "sk-or-x" } }, stranger)).status).toBe(401);
+    expect((await post("/api/v1/keys", { keys: { "api.anthropic": "sk-ant-x" } }, stranger)).status).toBe(401);
     expect(existsSync(join(home, "physics.git"))).toBe(false);
   });
 
@@ -103,10 +105,10 @@ describe("box setup routes", () => {
   };
 
   it("takes the laptop's whole keychain as the box's keys, never echoing a value", async () => {
-    for (const bad of [{}, { keys: [] }, { keys: { "../x": "v" } }, { keys: { "api.openrouter": "" } }, { keys: { nope: "v" } }]) {
+    for (const bad of [{}, { keys: [] }, { keys: { "../x": "v" } }, { keys: { "api.anthropic": "" } }, { keys: { nope: "v" } }]) {
       expect((await post("/api/v1/keys", bad)).status, JSON.stringify(bad)).toBe(400);
     }
-    const keys = { "api.openrouter": "sk-or-canary-from-laptop", "service.elevenlabs": "el-canary", "service.tavily": "tvly-canary", "user.lambda_api_key": "lambda-canary" };
+    const keys = { "service.claude-code": "sk-ant-oat01-from-laptop", "service.elevenlabs": "el-canary", "service.tavily": "tvly-canary", "user.lambda_api_key": "lambda-canary" };
     const r = await post("/api/v1/keys", { keys });
     const body = await r.text();
     expect(r.status).toBe(200);
@@ -116,6 +118,7 @@ describe("box setup routes", () => {
       expect(srv.logs()).not.toContain(v);
     }
     const h = await (await fetch(`${srv.base}/api/v1/health`)).json();
+    expect(h.keys.claudeCode).toBe(true);
     expect(h.hasKey).toBe(true);
     expect(h.keyNames).toEqual(Object.keys(keys).sort());
     expect(JSON.stringify(h)).not.toContain("canary");
@@ -126,10 +129,10 @@ describe("box setup routes", () => {
   });
 
   it("a key removed on the laptop is removed on the box", async () => {
-    const keys = { "api.openrouter": "sk-or-canary-from-laptop", "service.elevenlabs": "el-canary" };
+    const keys = { "service.claude-code": "sk-ant-oat01-from-laptop", "service.elevenlabs": "el-canary" };
     expect(await (await post("/api/v1/keys", { keys })).json()).toMatchObject({ changed: true });
     expect(await storeOnDisk()).toEqual(keys);
-    expect((await (await fetch(`${srv.base}/api/v1/health`)).json()).keyNames).toEqual(["api.openrouter", "service.elevenlabs"]);
+    expect((await (await fetch(`${srv.base}/api/v1/health`)).json()).keyNames).toEqual(["service.claude-code", "service.elevenlabs"]);
   });
 });
 
@@ -143,11 +146,11 @@ describe("box setup with no key store", () => {
       const r = await fetch(`${srv.base}/api/v1/keys`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ keys: { "api.openrouter": "sk-or-canary-2" } }),
+        body: JSON.stringify({ keys: { "service.claude-code": "sk-ant-oat01-canary-2" } }),
       });
       expect(r.status).toBe(200);
       expect(existsSync(join(secrets, "secrets.age"))).toBe(true);
-      expect((await (await fetch(`${srv.base}/api/v1/health`)).json()).hasKey).toBe(true);
+      expect((await (await fetch(`${srv.base}/api/v1/health`)).json()).keys.claudeCode).toBe(true);
     } finally {
       await srv.stop();
       cleanup(home);

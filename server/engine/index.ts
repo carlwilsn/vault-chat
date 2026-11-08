@@ -11,7 +11,6 @@ import { configureContext } from "./context";
 import { Engine, type EngineNotice } from "./engine";
 import { registeredVaultContent } from "./vaultContent";
 export { engineShuttingDown } from "./engine";
-import { Ledger } from "./ledger";
 import { excludeLocalDir } from "./wakes";
 import { boxLogs } from "../boxLogs";
 import { turnSummary } from "./turnLog";
@@ -55,7 +54,6 @@ export type EngineBoot = {
   localStoragePath: string;
   pushSubsPath: string;
   serverVersion: string;
-  apiKey: () => string | null;
   sendPush: (title: string, body: string, url: string, tag: string) => Promise<number>;
   notificationAppend: (vault: string, line: string) => void;
 };
@@ -438,14 +436,11 @@ export async function startEngine(b: EngineBoot): Promise<EngineHandle> {
     const engine = new Engine({
       vault: v.path,
       backend: claude,
-      ledger: new Ledger(st.ledger, b.apiKey, "https://api.anthropic.com"),
       jobEnv,
       model: () => engineModel(),
       effort: () => engineEffort(),
       rememberModel: (m) => void setStored("vault_chat_engine_model", m),
       rememberEffort: (e) => void setStored("vault_chat_engine_effort", e),
-      webSearchModel: process.env.VC_WEBSEARCH_MODEL || "google/gemini-2.5-flash-lite",
-      apiKey: b.apiKey,
       broadcast: (ev) => signal(v.path, ev),
       onTurnEnded: () => b.onTurnEnded?.(v.name),
       visionModel,

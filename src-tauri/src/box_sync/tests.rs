@@ -510,11 +510,13 @@ fn discovery_parses_tailscale_status_and_health() {
               "k3":{"HostName":"phone","DNSName":"","Online":true}}}"#;
     assert_eq!(online_peers(status), vec![("thinkbox".to_string(), "https://thinkbox.t.ts.net".to_string())]);
     assert!(online_peers("garbage").is_empty());
-    let b = parse_health("thinkbox", "https://thinkbox.t.ts.net", r#"{"ok":true,"app":"vault-chat-server","name":"thinkbox","version":"1.2.0","hasKey":false}"#).unwrap();
-    assert_eq!((b.name.as_str(), b.version.as_deref(), b.online, b.has_key), ("thinkbox", Some("1.2.0"), true, false));
-    // An older server (no app field) still counts; its key comes from keys.openrouter.
-    let old = parse_health("tb", "https://tb", r#"{"ok":true,"version":"1.0.0","keys":{"openrouter":true}}"#).unwrap();
-    assert!(old.has_key && old.name == "tb");
+    let b = parse_health("thinkbox", "https://thinkbox.t.ts.net", r#"{"ok":true,"app":"vault-chat-server","name":"thinkbox","version":"1.2.0"}"#).unwrap();
+    assert_eq!((b.name.as_str(), b.version.as_deref(), b.online), ("thinkbox", Some("1.2.0"), true));
+    // An older server (no app field) still counts. Whether it holds a key is not
+    // asked any more: the sign-in is Carl's and travels to whatever runs his
+    // vault, so a box is never "the one with the key".
+    let old = parse_health("tb", "https://tb", r#"{"ok":true,"version":"1.0.0"}"#).unwrap();
+    assert!(old.name == "tb");
     assert!(parse_health("x", "https://x", r#"{"status":"ok"}"#).is_none());
     assert!(parse_health("x", "https://x", "<html>").is_none());
 }
