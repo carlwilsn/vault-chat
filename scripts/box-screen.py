@@ -397,6 +397,9 @@ def throwaway_home(out: Path) -> tuple[dict, Path]:
 
 # ---- the click-through -----------------------------------------------------
 
+# Words that must not be anywhere in Settings any more: the providers and model
+# ids of the two-engine world, and the engine itself. (A model is named by what
+# it is for — "Opus" — beside Send, never by an id.)
 FORBIDDEN = ["openrouter", "open router", "anthropic/claude", "openai/", "gpt-", "grok"]
 
 
@@ -471,11 +474,12 @@ def main() -> int:
         check("Settings opens from the titlebar", any(w in text for w in ("keys", "box", "agent", "vault")))
         folder_set = False
         # The section is found by its heading, which is the one string on the
-        # pane that is only ever this section. Its button says "Set", but so
-        # does the Agent row above it ("Set on the box once it is connected."),
-        # and OCR has no idea which is a button — so the row is taken by
-        # position instead: the box and its button are one line under the
-        # heading and its sentence (src/MasterSection.tsx).
+        # pane that is only ever this section. Its button says "Set", and OCR has
+        # no idea which word is a button — so the row is taken by position
+        # instead: the box and its button are one line under the heading and its
+        # sentence (src/MasterSection.tsx). (There was a second "Set" above it,
+        # in the Models row; that row is gone — a chat's model is chosen beside
+        # Send now.)
         heading = screen.find(ws, "VAULT-CHAT FOLDER")
         if heading:
             row_y = round(heading["y"]) + FOLDER_ROW_BELOW_HEADING
@@ -529,23 +533,32 @@ def main() -> int:
         check("the chat asks for the Claude sign-in when signed out", "sign in" in text)
         check("and the app is still usable around it (the vault is on screen)", "orchard" in text or "welcome" in text)
 
-        # 6. The sign-in opens a browser URL. Nothing is completed: the URL is
-        #    where a person takes over.
-        opened_file = out / "opened-urls"
-        if screen.click_text("Sign in with Claude", "sign-in"):
-            deadline = time.time() + 90
-            urls = ""
-            while time.time() < deadline and "http" not in urls:
-                urls = opened_file.read_text()
+        # 6. What the sign-in actually is now: Carl runs `claude setup-token` in
+        #    a real terminal and pastes what it prints. The app drove that
+        #    command itself once, through a pty, and it broke four different
+        #    ways on his Windows laptop before he said to stop — so what is
+        #    checked here is the command he is given, the field he pastes into,
+        #    and the one button. Nothing is completed: minting a token is his.
+        screen.shot("sign-in-state")
+        said = []
+        if "setup-token" in text:
+            said.append("the command")
+        if "sign in with claude" in text:
+            said.append("the button")
+        check("the sign-in shows the command to run and the button to save what it prints",
+              "setup-token" in text and "sign in with claude" in text,
+              ", ".join(said) if said else "neither on screen")
+        # And the paste field takes a token: typed into, the button is what acts
+        # on it. A bad token is refused on the spot, which is the one thing that
+        # can be checked without minting a real one.
+        if screen.click_text("sk-ant-oat01", "token-field") or screen.click_text("setup-token", "token-field-fallback"):
+            screen.type_text("not-a-real-token")
+            if screen.click_text("Sign in with Claude", "token-submitted"):
                 time.sleep(2)
-            screen.shot("after-sign-in")
-            url = next((u for u in urls.splitlines() if u.startswith("http")), "")
-            check("the sign-in button opens a sign-in URL in the browser",
-                  "oauth/authorize" in url or "claude.ai" in url or "claude.com" in url,
-                  url.split("?")[0] if url else "nothing was opened")
-        else:
-            check("the sign-in button opens a sign-in URL in the browser", False,
-                  "no sign-in button on screen" if box_claude() else "no Claude Code on this machine to lend the app")
+                after, _ = screen.read("token-refused")
+                check("a token that is not one is refused on the spot, with no raw error",
+                      "doesn't look like" in after or "does not look like" in after or "sk-ant-oat" in after,
+                      "the field said something about the token")
 
         # 7. Settings again, with a vault open: no OpenRouter, no pi, nothing
         #    of the old two-engine world.
