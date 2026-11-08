@@ -98,18 +98,37 @@ describe("Main over HTTP", () => {
     expect(texts, JSON.stringify(texts)).toContain("What was I saying?");
   });
 
-  it("the agent's model is one setting the laptop changes (Settings and the composer): the next turn runs on it", async () => {
-    const before = await get("/api/v1/models");
-    expect(typeof before.box?.chat?.id).toBe("string");
-    expect(await post("/api/v1/models/agent", { model: "not a model" })).toMatchObject({ ok: false });
-    // A model is one of Claude's own aliases now; nothing else is offered.
-    expect(await post("/api/v1/models/agent", { model: "opus" })).toMatchObject({ ok: true, model: "opus" });
-    expect((await get("/api/v1/models")).box.chat.id).toBe("opus");
+  it("the model is the chat's OWN (the composer's picker): this chat's next turn runs on it, and a new chat starts from the last choice", async () => {
+    // The list the picker draws: real names, never a raw id or a provider.
+    const answer = await get("/api/v1/models");
+    const list = answer.models as { id: string; name: string; efforts: string[] }[];
+    expect(list.length).toBeGreaterThan(0);
+    expect(list.every((m) => m.name && !m.name.includes("/")), JSON.stringify(list)).toBe(true);
+    // And what a chat that has chosen nothing is running on, so the picker can
+    // name it instead of showing the first row and being wrong.
+    expect(typeof answer.default).toBe("string");
+    expect(answer.default).toBeTruthy();
+
+    expect(await post("/api/v1/conversations/main/model", { model: "not a model" })).toMatchObject({ ok: false });
+    expect(await post("/api/v1/conversations/main/model", { model: "openai/gpt-6.1-sol" })).toMatchObject({ ok: false });
+    expect(await post("/api/v1/conversations/main/model", { model: "opus", effort: "high" })).toMatchObject({ ok: true, model: "opus", effort: "high" });
+    // It is the conversation's own field, so every client reads it off the feed.
+    expect((await picture("main")).meta).toMatchObject({ model: "opus", effort: "high" });
+
     const calls0 = or.calls.length;
     await post("/api/v2/intent", { type: "send", clientId: "c-model", text: "Which model are you?" });
     await waitFor(() => idle("main"), 30_000);
-    expect(or.calls.slice(calls0).some((c: any) => /opus/.test(String(c.model)))).toBe(true);
-    await post("/api/v1/models/agent", { model: before.box.chat.id });
+    expect(or.calls.slice(calls0).some((c: any) => /opus/.test(String(c.model))), JSON.stringify(or.calls.slice(calls0).map((c: any) => c.model))).toBe(true);
+
+    // A NEW chat starts from what he picked last, without picking again.
+    const calls1 = or.calls.length;
+    await post("/api/v2/intent", { type: "send", clientId: "c-new-chat", convId: "chat-after-the-pick", text: "And you?" });
+    await waitFor(() => idle("chat-after-the-pick"), 30_000);
+    expect(or.calls.slice(calls1).some((c: any) => /opus/.test(String(c.model))), JSON.stringify(or.calls.slice(calls1).map((c: any) => c.model))).toBe(true);
+
+    // And one chat's choice is not every chat's: this one goes back on its own.
+    expect(await post("/api/v1/conversations/main/model", { model: "haiku", effort: null })).toMatchObject({ ok: true, model: "haiku" });
+    expect((await picture("main")).meta.effort ?? null).toBe(null);
   });
 
   it("+ New project makes the project and its thread; a send to a project carries its memory", async () => {

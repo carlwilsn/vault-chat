@@ -43,12 +43,14 @@ describe("what a box runs by default", () => {
   // only the env one is readable here (the localStorage shim is the running
   // server's, not a test's — asserting through it would pass for any value).
   it("the model on a Claude box is a Claude alias, whatever the OpenRouter days left behind", () => {
-    withEnv({ VC_ENGINE_MODEL: undefined, VC_CLAUDE_MODEL: undefined }, () => expect(engineModel()).toBe("sonnet"));
+    // Opus is the default Carl asked for ("Opus 5.5 (default)", UPDATE 22:35):
+    // the box falls back to it, and the picker beside Send is where it changes.
+    withEnv({ VC_ENGINE_MODEL: undefined, VC_CLAUDE_MODEL: undefined }, () => expect(engineModel()).toBe("opus"));
     // THE BUG: the box's model was an OpenRouter id, so every Claude turn failed
     // on "an issue with the selected model". It gives way to a model Claude runs.
-    withEnv({ VC_ENGINE_MODEL: "openai/gpt-6.1-sol", VC_CLAUDE_MODEL: undefined }, () => expect(engineModel()).toBe("sonnet"));
+    withEnv({ VC_ENGINE_MODEL: "openai/gpt-6.1-sol", VC_CLAUDE_MODEL: undefined }, () => expect(engineModel()).toBe("opus"));
     // Carl's own Claude alias is still his choice.
-    withEnv({ VC_ENGINE_MODEL: "opus", VC_CLAUDE_MODEL: undefined }, () => expect(engineModel()).toBe("opus"));
+    withEnv({ VC_ENGINE_MODEL: "haiku", VC_CLAUDE_MODEL: undefined }, () => expect(engineModel()).toBe("haiku"));
   });
 
   it("a deployment can name the Claude model it wants", () => {

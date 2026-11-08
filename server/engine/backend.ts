@@ -16,6 +16,15 @@ import type { BoundTools } from "../mcp/tools";
 
 // ---- what the engine (./engine.ts) sees: neutral events and the two handlers it answers
 /** `readOnly`: the tool changes nothing (Ctrl+K / Ctrl+L side threads get every such tool: pi/side.ts). */
+/**
+ * How hard a chat thinks. A runtime that has no such control ignores it; Claude
+ * Code takes it as a start option (claude/session.ts).
+ */
+export type Effort = "low" | "medium" | "high" | "max";
+
+/** One model a chat can run on, as a client shows it: a real name, never an id. */
+export type ModelChoice = { id: string; name: string; efforts: Effort[] };
+
 export type ToolSpec = { type: "function"; name: string; description: string; inputSchema: Record<string, unknown>; readOnly?: boolean };
 
 /** What the runtime reports, in neutral terms. Every event names the thread it
@@ -202,9 +211,11 @@ export type EngineBackend = {
   /** Open a session for a conversation and return the engine's handle on it (`ref`: where its transcript lives).
    * `conv` is the conversation it is for: the one call that names no thread yet, so a router of
    * several engines can read the conversation's own choice here (server/engine/router.ts). */
-  startThread(o: { cwd: string; model: string; instructions: string; tools: ToolSpec[]; subagents: boolean; conv?: string }): Promise<{ threadId: string; ref?: string }>;
+  startThread(o: { cwd: string; model: string; effort?: Effort; instructions: string; tools: ToolSpec[]; subagents: boolean; conv?: string }): Promise<{ threadId: string; ref?: string }>;
   /** Take a known thread back in hand. Throws ThreadUnknownError when it is gone or belongs elsewhere. */
-  resumeThread(threadId: string, o: { model: string; subagents: boolean; cwd?: string }): Promise<void>;
+  resumeThread(threadId: string, o: { model: string; effort?: Effort; subagents: boolean; cwd?: string }): Promise<void>;
+  /** The models it offers a chat, by their real names (the composer's picker). */
+  models?(): ModelChoice[];
   /** This runtime holds that thread right now (it can be noted into, forgotten, interrupted). */
   holds(threadId: string): boolean;
   /** Drop the thread from this runtime without ending the conversation (the next turn takes it again). */

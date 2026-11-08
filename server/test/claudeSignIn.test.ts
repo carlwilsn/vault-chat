@@ -61,19 +61,27 @@ describe("Claude Code's sign-in", () => {
 });
 
 describe("the models Claude Code runs", () => {
-  it("accepts its aliases as well as an OpenRouter path, and nothing else", async () => {
+  it("accepts its aliases and its own pinned ids, and nothing else", async () => {
     const { isClaudeModel, validModel } = await import("../engine/claude/models");
-    for (const m of ["opus", "sonnet", "haiku", "claude-opus-5", "claude-haiku-5-5"]) {
+    for (const m of ["opus", "sonnet", "haiku", "claude-opus-5", "claude-haiku-5-5", "claude-fable-5-1"]) {
       expect(isClaudeModel(m), m).toBe(true);
       expect(validModel(m), m).toBe(true);
     }
-    expect(validModel("openai/gpt-6.1-sol")).toBe(true);
-    expect(isClaudeModel("openai/gpt-6.1-sol")).toBe(false);
-    for (const m of ["", "not a model", "sonnet!", "/leading", "trailing/"]) expect(validModel(m), m).toBe(false);
-    // Anything provider/model-shaped is taken as an OpenRouter path, by design —
-    // vault-chat does not keep a list of providers to check it against.
-    expect(validModel("opus/extra")).toBe(true);
-    expect(isClaudeModel("opus/extra")).toBe(false);
+    // A provider path was pi's shape and pi is gone: handing one to Claude Code
+    // fails every turn with "issue with the selected model", so it is refused
+    // here instead, where Carl gets told.
+    for (const m of ["openai/gpt-6.1-sol", "anthropic/claude-sonnet-4.5", "opus/extra", "", "not a model", "sonnet!", "/leading", "trailing/"]) {
+      expect(validModel(m), m).toBe(false);
+      expect(isClaudeModel(m), m).toBe(false);
+    }
+  });
+
+  it("the effort levels are the four the composer offers, and nothing is taken for one", async () => {
+    const { EFFORTS, isEffort } = await import("../engine/claude/models");
+    expect([...EFFORTS]).toEqual(["low", "medium", "high", "max"]);
+    for (const e of EFFORTS) expect(isEffort(e), e).toBe(true);
+    // xhigh is a real SDK level, deliberately not offered (Carl asked for four).
+    for (const e of ["xhigh", "", "HIGH", "none", null, undefined, 3]) expect(isEffort(e), String(e)).toBe(false);
   });
 
   it("knows one of its models can see, so a picture is never sent to the OpenRouter vision model instead", async () => {
@@ -83,7 +91,7 @@ describe("the models Claude Code runs", () => {
     for (const m of ["opus", "sonnet", "haiku"]) {
       expect(capabilitiesOf(m), m).toMatchObject({ images: true, tools: true, subagents: true, pdf: true });
     }
-    // An unknown non-Claude model still reads as it did.
+    // Something that is not a Claude model at all still reads as it did.
     expect(capabilitiesOf("nobody/nothing").images).toBe(false);
   });
 });

@@ -9,8 +9,8 @@
 // re-learned.
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import { allModels, modelMeta } from "./catalog";
-import { CLAUDE_MODEL_ALIASES, isClaudeModel } from "./claude/models";
+import { modelMeta } from "./catalog";
+import { isClaudeModel } from "./claude/models";
 
 export type Capabilities = { tools: boolean; subagents: boolean; images: boolean; pdf: boolean; caching: boolean; context: number };
 export type LearnedEntry = {
@@ -83,23 +83,6 @@ export function learn(model: string, key: keyof LearnedEntry["results"], ok: boo
   return changed;
 }
 
-/** /api/v1/models: every catalog model plus anything learned. */
-/** Whether Claude Code's models belong in the picker (the box says so at boot). */
-let claudeAvailable = false;
-export function offerClaudeModels(on: boolean): void {
-  claudeAvailable = on;
-}
-
-export function modelsList(): { id: string; capabilities: Capabilities; source: string; status: string; checkedAt: number | null }[] {
-  // Claude Code names its models by what they are for and resolves them itself,
-  // so they are offered as themselves rather than through the OpenRouter catalog.
-  const ids = new Set<string>([...(claudeAvailable ? CLAUDE_MODEL_ALIASES : []), ...allModels().map((m) => m.id), ...Object.keys(learned)]);
-  return [...ids].sort().map((id) => {
-    const { source, status, checkedAt, ...capabilities } = capabilitiesOf(id);
-    return { id, capabilities, source, status, checkedAt };
-  });
-}
-
 /** The developer-instruction note so the agent never promises what it can't do. */
 export function capabilityNote(model: string): string {
   const c = capabilitiesOf(model);
@@ -107,36 +90,4 @@ export function capabilityNote(model: string): string {
   if (!c.subagents) lines.push("Subagents (helpers that work in parallel) are not available with this model: do the work yourself, one step at a time, and never promise fan-out.");
   if (!c.images) lines.push("This model cannot see images.");
   return lines.length ? `<capabilities model="${model}">\n${lines.join("\n")}\n</capabilities>` : "";
-}
-
-/** What each model the box itself runs needs (the box's side of Settings →
- *  Models): the chat agent (tools; images go to the vision model), the vision
- *  fallback for turns that carry images (a full turn: tools and images), and
- *  the subagent child model. Free: the catalog plus what real use taught. */
-const CONTEXT_FLOOR = 64_000;
-type BoxNeed = "tools" | "toolChoice" | "images" | "context";
-const BOX_NEEDS: Record<"chat" | "vision" | "subagent", BoxNeed[]> = {
-  chat: ["tools", "toolChoice", "context"],
-  vision: ["tools", "toolChoice", "images", "context"],
-  subagent: ["tools", "context"],
-};
-
-export type BoxModelCheck = { id: string; state: "passed" | "missing" | "unknown"; missing?: BoxNeed[]; context?: number };
-
-export function boxModelChecks(ids: { chat: string; vision: string; subagent: string }): Record<"chat" | "vision" | "subagent", BoxModelCheck> {
-  const one = (role: "chat" | "vision" | "subagent"): BoxModelCheck => {
-    const id = ids[role];
-    const m = modelMeta(id);
-    const c = capabilitiesOf(id);
-    if (!m && c.source === "untested") return { id, state: "unknown" };
-    const have: Record<BoxNeed, boolean | undefined> = {
-      tools: c.tools,
-      toolChoice: m?.supportedParameters ? m.supportedParameters.includes("tool_choice") : undefined,
-      images: c.images,
-      context: c.context > 0 ? c.context >= CONTEXT_FLOOR : undefined,
-    };
-    const missing = BOX_NEEDS[role].filter((n) => have[n] === false);
-    return { id, state: missing.length ? "missing" : "passed", ...(missing.length ? { missing } : {}), ...(c.context ? { context: c.context } : {}) };
-  };
-  return { chat: one("chat"), vision: one("vision"), subagent: one("subagent") };
 }

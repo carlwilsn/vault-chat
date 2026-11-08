@@ -110,7 +110,7 @@ async function main(): Promise<void> {
       if (v) signal(v, ev);
     },
   });
-  const { modelsList, boxModelChecks } = await import("./engine/capabilities");
+
   // The engine starts in the background (a first start installs pi with npm,
   // which can take minutes): the server answers at once, health says
   // "starting", and agent routes say so until it is up.
@@ -321,9 +321,9 @@ async function main(): Promise<void> {
     engine: process.env.VC_ENGINE === "0"
       ? undefined
       : {
-          models: () => (engine.engine ? modelsList() : []),
-          boxModels: () => (engine.engine && engine.roles ? boxModelChecks(engine.roles()) : undefined),
-          setModel: (m) => (engine.engine && engine.setModel ? engine.setModel(m) : { ok: false, error: "engine not running" }),
+          models: () => (engine.engine && engine.models ? engine.models() : []),
+          defaultModel: () => engineModel(),
+          chatModel: async (v, convId, body) => (await engineOf(v)).setChatModel(convId, body),
           message: async (v, b, viewerRoot) => (await engineOf(v)).message(b, viewerRoot),
           answer: async (v, b) => (await engineOf(v)).answerRoute(b),
           kill: async (v, b) => (await engineOf(v)).kill(b),

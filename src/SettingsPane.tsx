@@ -24,11 +24,8 @@ import { connectTrouble, tailscaleHelp, GET_TAILSCALE_URL, type TailscaleHelp } 
 import { openUrl } from "./opener";
 import { boxGet, boxPost } from "./boxChat";
 import { pushKeysToBox, keysChanged, subscribeKeyPush } from "./boxKeys";
-import { BoxModelChecks } from "./BoxModelChecks";
 import { ClaudeAccountLine } from "./ClaudeCodeSignIn";
 import { MasterSection } from "./MasterSection";
-import { setAgentModel, useAgentModel } from "./agentModel";
-import { claudeModelLabel } from "./claudeModels";
 import { openShortcutSheet } from "./ShortcutSheet";
 import { chordText } from "./shortcuts";
 import {
@@ -85,8 +82,6 @@ export function SettingsPane() {
       </div>
       <div className="flex-1 overflow-auto p-5 space-y-6">
         <ClaudeAccountLine />
-        <Divider />
-        <ModelsSection />
         <Divider />
         <KeysSection />
         <Divider />
@@ -229,50 +224,6 @@ function Picker({
         </div>
       )}
     </div>
-  );
-}
-
-// Models: the agent's one Claude model (the same setting as the composer's
-// picker, src/agentModel.ts, which already filters the box's list down to
-// Claude's — src/claudeModels.ts). Signing in is the line at the top of
-// Settings, not a link in here.
-function ModelsSection() {
-  const vaultPath = useStore((s) => s.vaultPath);
-  const agent = useAgentModel();
-  const agentOptions: PickOption[] = agent.options.map((id) => ({ value: id, label: claudeModelLabel(id) ?? id }));
-  // The box may still be set to something that is not a Claude model (a vault
-  // that has not had a turn since). Its id is never shown — the picker says
-  // what it wants instead.
-  const current = claudeModelLabel(agent.current);
-
-  return (
-    <section className="space-y-2">
-      <SectionHead title="Models" hint="The agent runs on one Claude model, for what you type and what you say." />
-      <div className="flex items-start justify-between gap-3" data-el="agent-model">
-        <span className="text-[12px] text-foreground/90 shrink-0 pt-1">Agent</span>
-        <div className="min-w-0 flex-1 max-w-[62%] space-y-0.5">
-          {agentOptions.length > 0 ? (
-            <Picker
-              value={agent.current ?? ""}
-              label={current ?? "Pick a model"}
-              options={agentOptions}
-              placeholder="Search models…"
-              onChange={(v) => void setAgentModel(v)}
-            />
-          ) : (
-            // A box is no longer what a model list waits on: with none, the
-            // app runs the server itself for the open vault. So the only true
-            // thing to say is that there is nothing open to ask yet.
-            <p className="text-[11px] text-muted-foreground px-0.5 pt-1">
-              {vaultPath ? "The models appear once the vault's server has answered." : "Open a vault to choose the model."}
-            </p>
-          )}
-          {agent.error && <p className="text-[10.5px] text-amber-500/90 px-0.5">Not changed: {agent.error}</p>}
-        </div>
-      </div>
-      <VoiceHealthRow />
-      <BoxModelChecks />
-    </section>
   );
 }
 
@@ -580,6 +531,7 @@ function VoiceSection() {
   return (
     <section className="space-y-2">
       <SectionHead title="Voice" hint={key ? "The voice ElevenLabs speaks with." : "Needs an ElevenLabs key (Keys)."} />
+      <VoiceHealthRow />
       {key && (
         <div className="flex gap-2">
           <div className="flex-1 min-w-0">

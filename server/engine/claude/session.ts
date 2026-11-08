@@ -12,8 +12,9 @@
 //   queue      push with priority:"later" — its own next turn;
 //   take back  cancelAsyncMessage(uuid) — withdrawn if not delivered yet;
 //   stop       interrupt() — returns in ~5 ms, and the session still takes input.
-import { BUILTIN_TOOL_NAMES, query, type Options, type Query, type SDKMessage, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
+import { BUILTIN_TOOL_NAMES, query, type ModelInfo, type Options, type Query, type SDKMessage, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { randomUUID } from "node:crypto";
+import type { Effort } from "../backend";
 
 export type SessionSend = {
   text: string;
@@ -30,6 +31,8 @@ export type SessionOptions = {
   cli: string;
   cwd: string;
   model: string;
+  /** How hard it thinks (Carl's control beside the model). Absent: the model's own default. */
+  effort?: Effort;
   /** Appended to Claude Code's own system prompt. */
   instructions?: string;
   /** Resume this Claude Code session; absent starts a new one. */
@@ -110,6 +113,7 @@ export class ClaudeSession {
       pathToClaudeCodeExecutable: this.o.cli,
       cwd: this.o.cwd,
       model: this.o.model,
+      ...(this.o.effort ? { effort: this.o.effort } : {}),
       includePartialMessages: true,
       env: this.o.env,
       // Claude Code's own prompt, then vault-chat's layer on top of it.
@@ -264,6 +268,17 @@ export class ClaudeSession {
   /** Stop the running turn. The session keeps taking input. */
   async interrupt(): Promise<void> {
     await this.q?.interrupt().catch(() => undefined);
+  }
+
+  /**
+   * The models this session can run on, as the runtime names them. Null when it
+   * cannot say (an old CLI, a session that has already ended): the caller keeps
+   * whatever it knew.
+   */
+  async models(): Promise<ModelInfo[] | null> {
+    const q = this.q as unknown as { supportedModels?: () => Promise<ModelInfo[]> } | null;
+    if (!q?.supportedModels) return null;
+    return q.supportedModels().catch(() => null);
   }
 
   async setModel(model: string): Promise<void> {

@@ -44,7 +44,7 @@ import { OngoingLine } from "./OngoingLine";
 import { isArchivedThread, ARCHIVED_THREAD, OLDER_CHAT } from "./conversations";
 import { isOlderChat } from "./threads";
 import { newChatHere } from "./chat-controller";
-import { AgentModelPicker } from "./AgentModelPicker";
+import { ChatModelPicker } from "./ChatModelPicker";
 import { ClaudeSignInPrompt, useAiBlocked } from "./ClaudeCodeSignIn";
 import { useFittedPlaceholder } from "./fitPlaceholder";
 
@@ -1436,8 +1436,8 @@ export function ChatPane() {
           {!voiceBar && (
           <div className="flex items-center justify-between px-1 pt-1.5 text-[11px] text-muted-foreground">
             <div className="flex items-center gap-3 min-w-0">
-              {/* The agent's model (the same setting as Settings → Models). */}
-              {!archived && !aiBlocked && <AgentModelPicker />}
+              {/* What this chat runs on, and how hard it thinks (src/chatModels.ts). */}
+              {!archived && !aiBlocked && <ChatModelPicker convId={activeConversationId} model={activeConv?.model} effort={activeConv?.effort} />}
               {boxDown && (
                 <span className="truncate text-amber-500/90" data-el="box-unreachable" title={boxChat?.reason || undefined}>
                   {BOX_UNREACHABLE}: {downWhy}

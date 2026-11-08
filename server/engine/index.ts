@@ -15,7 +15,7 @@ import { Ledger } from "./ledger";
 import { excludeLocalDir } from "./wakes";
 import { boxLogs } from "../boxLogs";
 import { turnSummary } from "./turnLog";
-import { initCapabilities, offerClaudeModels } from "./capabilities";
+import { initCapabilities } from "./capabilities";
 import { findBwrap } from "./sandbox-build";
 import { agentWorkDir } from "../workArea";
 import { HOME_CREDENTIALS, activeFolders, setFolderWalls, under as underDir } from "../projectFolders";
@@ -24,7 +24,8 @@ import { masterDir, masterLayout } from "../master";
 import { outerWith, type Sandbox } from "./sandbox";
 import { ClaudeCodeBackend } from "./claude/backend";
 import { wallsOf } from "./claude/filePolicy";
-import { isClaudeModel, validModel } from "./claude/models";
+import { isClaudeModel, isEffort, validModel, type Effort } from "./claude/models";
+import type { ModelChoice } from "./backend";
 import { McpRuntime } from "../mcp/runtime";
 import { claudePaths, type ClaudePaths } from "./claude/paths";
 import { findClaude, type ClaudeInstall } from "./claude/install";
@@ -65,22 +66,56 @@ export type EngineHandle = {
   health: () => Record<string, unknown>;
   /** The models the box runs: the chat agent, the vision fallback, the subagent child's default. */
   roles?: () => { chat: string; vision: string; subagent: string };
-  /** Carl's choice of the agent's model (Settings → Models, the composer's picker): the one model pi runs, typed and spoken. */
+  /**
+   * The box's last choice of model, which is what a NEW chat starts on. A chat
+   * of its own is set per conversation (Engine.setChatModel) — this is only the
+   * default behind it, and nothing in the UI sets it directly any more.
+   */
   setModel?: (model: string) => { ok: true; model: string } | { ok: false; error: string };
+  /** What a chat can run on, by name (GET /api/v1/models). */
+  models?: () => ModelChoice[];
   /** The engine of a vault, started on first use (the main one is `engine`). */
   open?: (v: VaultRef) => Promise<Engine>;
 };
 
-/** The Claude model a box runs unless Carl picks another alias. */
-const CLAUDE_DEFAULT_MODEL = "sonnet";
+/**
+ * The Claude model a chat runs on when nothing else has been chosen. Carl's
+ * answer when he was asked: Opus, and the picker beside Send is where he changes
+ * it (UPDATE 22:35 — "Opus 5.5 (default)").
+ */
+const CLAUDE_DEFAULT_MODEL = "opus";
+
+/** One of the box's remembered choices (the last model, the last effort). */
+function stored(key: string): string | null {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+/** Remember one, best effort: a choice that cannot be written still applies to the chat that made it. */
+function setStored(key: string, value: string | null): void {
+  try {
+    if (value === null) localStorage.removeItem(key);
+    else localStorage.setItem(key, value);
+  } catch {
+    /* the chat's own field is the record that matters */
+  }
+}
+
+/**
+ * The effort a chat runs at when Carl has not set one for it: his last choice,
+ * or the deployment's. None at all means the model decides for itself, which is
+ * what every chat did before the control existed.
+ */
+export function engineEffort(): Effort | undefined {
+  const e = stored("vault_chat_engine_effort") ?? process.env.VC_ENGINE_EFFORT ?? null;
+  return isEffort(e) ? e : undefined;
+}
 
 export function engineModel(): string {
-  let ls: string | null = null;
-  try {
-    ls = localStorage.getItem("vault_chat_engine_model");
-  } catch {
-    ls = null;
-  }
+  const ls = stored("vault_chat_engine_model");
   // Carl's choice (set from the laptop) over the deployment's default.
   const chosen = ls || process.env.VC_ENGINE_MODEL || null;
   // Claude Code runs Claude's own models and nothing else. A model id left over
@@ -260,7 +295,6 @@ export async function startEngine(b: EngineBoot): Promise<EngineHandle> {
   }
   const claudeInstall: ClaudeInstall = claudeFound.install;
   console.log(`[engine:claude] Claude Code ${claudeInstall.version} at ${claudeInstall.cli} (${claudeInstall.source})`);
-  offerClaudeModels(true);
 
   const bwrap = findBwrap();
   // VC_PI_UNSAFE is the name every test and the ship host already use for
@@ -405,6 +439,9 @@ export async function startEngine(b: EngineBoot): Promise<EngineHandle> {
       ledger: new Ledger(st.ledger, b.apiKey, "https://api.anthropic.com"),
       jobEnv,
       model: () => engineModel(),
+      effort: () => engineEffort(),
+      rememberModel: (m) => void setStored("vault_chat_engine_model", m),
+      rememberEffort: (e) => void setStored("vault_chat_engine_effort", e),
       webSearchModel: process.env.VC_WEBSEARCH_MODEL || "google/gemini-2.5-flash-lite",
       apiKey: b.apiKey,
       broadcast: (ev) => signal(v.path, ev),
@@ -456,6 +493,8 @@ export async function startEngine(b: EngineBoot): Promise<EngineHandle> {
     }),
     // A child runs on the same model as its parent unless it was given one.
     roles: () => ({ chat: engineModel(), vision: visionModel, subagent: process.env.VC_SUBAGENT_MODEL || engineModel() }),
+    /** What a chat can run on, by name: the runtime's own list (GET /api/v1/models). */
+    models: () => engine.models(),
     setModel: (id: string) => {
       const m = String(id ?? "").trim();
       if (!validModel(m)) return { ok: false as const, error: `"${m.slice(0, 80)}" is not a model id` };

@@ -6,7 +6,9 @@
 // Underneath it, Models said "Set on the box once it is connected", which stopped
 // being true when the app started running a server itself.
 //
-// So this pins the two lines that a fresh install actually shows.
+// So this pins the line a fresh install actually shows — and that the Models
+// row underneath it is gone for good (Carl: "no model picker in Settings at
+// all"; a chat's model is chosen beside Send).
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -60,9 +62,12 @@ test("nothing in Settings still assumes a box is the only thing that runs a vaul
   assert.match(src, /given to whatever runs your vault/);
 });
 
-test("Models no longer sends anyone to a box for a model list", () => {
+test("Settings has no model picker at all: the model is the chat's, beside Send", () => {
+  // Carl: "No model picker in Settings at all." The line that used to wait on a
+  // box for a model list is gone with the section itself (src/ChatModelPicker.tsx
+  // is where a model is chosen now, per chat).
   const src = readFileSync(join(root, "src", "SettingsPane.tsx"), "utf8");
-  assert.ok(!src.includes("Set on the box once it is connected"), "a box is not what a model list waits on");
-  assert.match(src, /Open a vault to choose the model\./);
-  assert.match(src, /The models appear once the vault's server has answered\./);
+  for (const gone of ["Set on the box once it is connected", "Open a vault to choose the model.", "The models appear once the vault's server has answered.", "ModelsSection", "useAgentModel"]) {
+    assert.ok(!src.includes(gone), `Settings still has a model picker: ${gone}`);
+  }
 });

@@ -71,11 +71,12 @@ import { lookupAll } from "./lookup";
 import { attachmentAt, attachmentsNote } from "../attachments";
 import { readEntries } from "../convlog/piSession";
 import { PiFeed, type Expected, type UserRequest } from "./piFeed";
-import { READ_ONLY_TOOLS, type SideLog, type SideState } from "./backend";
+import { READ_ONLY_TOOLS, type ModelChoice, type SideLog, type SideState } from "./backend";
 import { TurnRecorder, type TurnLine } from "./turnLog";
 import { SERVER_VERSION } from "../config";
 import { runVaultTool, vaultToolSpecsFor } from "../vaultTools";
 import { submitChangeJob, SUBMIT_CHANGE_SCHEMA } from "../submitChange";
+import { isClaudeModel, isEffort, type Effort } from "./claude/models";
 
 export type EngineDeps = {
   vault: string;
@@ -83,6 +84,11 @@ export type EngineDeps = {
   ledger: Ledger;
   jobEnv: JobEnv;
   model: () => string;
+  /** The effort a chat Carl has not chosen for runs at (his last choice). */
+  effort?: () => Effort | undefined;
+  /** Keep his newest pick as what a NEW chat starts from. */
+  rememberModel?: (model: string) => void;
+  rememberEffort?: (effort: string | null) => void;
   webSearchModel: string;
   apiKey: () => string | null;
   /** Web Push + notifications.jsonl + the /poll "notif" signal. */
@@ -1273,6 +1279,54 @@ export class Engine {
     return { ok: true, convId: id, answered: true };
   }
 
+  /** GET /api/v1/models: what a chat can run on, by name (the runtime's list). */
+  models(): ModelChoice[] {
+    return this.d.backend.models?.() ?? [];
+  }
+
+  /**
+   * POST /api/v1/conversations/:id/model — the composer's picker, for THIS chat.
+   *
+   * The choice is the conversation's own field, so every client sees it (the
+   * laptop, the phone and the board read the same feed) and it survives a
+   * restart. It is also kept as the box's last choice, which is where a NEW chat
+   * starts from: Carl picks once and the next chat is already on it.
+   *
+   * A model change reaches a running session live (setModel); effort is a start
+   * option the runtime has no control request for, so the session ends and the
+   * next turn resumes it — see ClaudeCodeBackend.resumeThread.
+   */
+  async setChatModel(convId: string, body: { model?: unknown; effort?: unknown }): Promise<Record<string, unknown>> {
+    const conv = await readConv(this.d.vault, convId);
+    if (!conv) return { ok: false, error: `conversation ${convId} not found` };
+    const patch: Record<string, unknown> = {};
+    if (body.model !== undefined) {
+      const m = String(body.model ?? "").trim();
+      if (!isClaudeModel(m)) return { ok: false, error: `"${m.slice(0, 80)}" is not a model this engine runs` };
+      patch.model = m;
+    }
+    if (body.effort !== undefined) {
+      // null clears it: the chat goes back to the model's own default.
+      if (body.effort === null || body.effort === "") patch.effort = null;
+      else if (!isEffort(body.effort)) return { ok: false, error: `"${String(body.effort).slice(0, 40)}" is not an effort level` };
+      else patch.effort = body.effort;
+    }
+    if (!Object.keys(patch).length) return { ok: false, error: "nothing to set" };
+    await patchMeta(this.d.vault, convId, patch);
+    if (patch.model) this.d.rememberModel?.(String(patch.model));
+    if (patch.effort !== undefined) this.d.rememberEffort?.(patch.effort === null ? null : String(patch.effort));
+    // A thread already running this chat takes the change now, so his next turn
+    // (or the turn running) is on what he just picked.
+    if (conv.threadId) {
+      const next = { ...conv, ...patch } as EngineConv;
+      const { model, effort } = this.chatModel(next);
+      await this.d.backend
+        .resumeThread(conv.threadId, { model, effort, subagents: capabilitiesOf(model).subagents, cwd: this.cwdOf(conv) })
+        .catch((e) => this.log(`model change on ${convId}: ${(e as Error).message}`));
+    }
+    return { ok: true, convId, ...(patch.model ? { model: patch.model } : {}), ...(patch.effort !== undefined ? { effort: patch.effort } : {}) };
+  }
+
   /** POST /api/v1/conversations/:id/subagents/:sid/{steer,stop}. */
   async subagent(convId: string, sid: string, op: "steer" | "stop", body: { text?: string }): Promise<Record<string, unknown>> {
     const conv = await readConv(this.d.vault, convId);
@@ -1467,7 +1521,8 @@ export class Engine {
     const file = String(conv?.threadPath ?? "");
     if (!conv || !threadId) return { ok: true, convId, compacted: false, note: "nothing to compact yet" };
     try {
-      await this.d.backend.resumeThread(threadId, { model: this.d.model(), subagents: capabilitiesOf(this.d.model()).subagents, cwd: this.cwdOf(conv) });
+      const { model: cModel, effort: cEffort } = this.chatModel(conv);
+      await this.d.backend.resumeThread(threadId, { model: cModel, effort: cEffort, subagents: capabilitiesOf(cModel).subagents, cwd: this.cwdOf(conv) });
       const r = await this.d.backend.compact(threadId, focus?.trim() ? `Carl asked to compact now. Keep in particular: ${focus.trim().slice(0, 500)}` : undefined);
       this.log(`compacted ${convId}${focus ? ` (focus: ${focus.slice(0, 80)})` : ""}${r.tokensBefore ? ` from ${r.tokensBefore} tokens` : ""}`);
       return { ok: true, convId, compacted: true, ...(r.tokensBefore ? { tokensBefore: r.tokensBefore } : {}) };
@@ -1909,8 +1964,20 @@ export class Engine {
     return [...selected, ...own] as ToolSpec[];
   }
 
+  /**
+   * The model and effort THIS chat runs on: Carl's choice for it (the composer's
+   * picker, kept in the conversation's own fields), or the box's last choice,
+   * which is what a chat he has not chosen for starts from.
+   */
+  private chatModel(conv: EngineConv): { model: string; effort?: Effort } {
+    const own = typeof (conv as { model?: unknown }).model === "string" ? String((conv as { model?: unknown }).model) : "";
+    const effort = (conv as { effort?: unknown }).effort;
+    const ownEffort = isEffort(effort) ? effort : effort === null ? undefined : this.d.effort?.();
+    return { model: own && isClaudeModel(own) ? own : this.d.model(), ...(ownEffort ? { effort: ownEffort } : {}) };
+  }
+
   private async ensureThread(conv: EngineConv, current: string | null = null): Promise<{ threadId: string; fresh: boolean }> {
-    const model = this.d.model();
+    const { model, effort } = this.chatModel(conv);
     // Subagents only for models where they work (learned from use; see capabilities.ts).
     const subagents = capabilitiesOf(model).subagents;
     // A project's thread runs in its main folder (pi loads that folder's AGENTS.md itself); a change of folder restarts its pi.
@@ -1918,7 +1985,7 @@ export class Engine {
     const cwd = this.cwdOf(conv);
     if (conv.threadId) {
       try {
-        await this.d.backend.resumeThread(conv.threadId, { model, subagents, cwd });
+        await this.d.backend.resumeThread(conv.threadId, { model, effort, subagents, cwd });
         this.byThread.set(conv.threadId, conv.id);
         return { threadId: conv.threadId, fresh: false };
       } catch (e) {
@@ -1935,6 +2002,7 @@ export class Engine {
     const { threadId, ref } = await this.d.backend.startThread({
       cwd,
       model,
+      effort,
       instructions,
       tools: await this.hostToolCatalog("conversation"),
       subagents,
@@ -1952,7 +2020,16 @@ export class Engine {
       const t = old.slice(-30).map((m) => `${m.role}: ${(m.content ?? "").slice(0, 1500)}`).join("\n");
       this.handover.set(conv.id, `<earlier_conversation>\n${t.slice(-12_000)}\n</earlier_conversation>`);
     }
-    await patchMeta(this.d.vault, conv.id, { threadId, threadPath: ref });
+    // A new chat takes the last choice as its OWN, here, once: after this it is
+    // this chat's model and effort, and a later pick in another chat leaves it
+    // alone (nothing restarts a session Carl is not looking at).
+    const own = (conv as { model?: unknown }).model;
+    await patchMeta(this.d.vault, conv.id, {
+      threadId,
+      threadPath: ref,
+      ...(typeof own === "string" && own ? {} : { model }),
+      ...(effort && (conv as { effort?: unknown }).effort === undefined ? { effort } : {}),
+    });
     return { threadId, fresh: true };
   }
 

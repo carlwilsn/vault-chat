@@ -164,6 +164,12 @@ export type Conversation = {
   contextWindow?: number;
   // One main conversation (src/threads.ts): "main" | "project" | "separate"; none: an older chat (archived, read-only).
   kind?: string;
+  // The model THIS chat runs on and how hard it thinks, as Carl set them in the
+  // composer beside Send. Unset: the box's last choice (server/engine/index.ts).
+  // Always a Claude model id; what Carl reads is its real name, never this
+  // (src/chatModels.ts).
+  model?: string;
+  effort?: "low" | "medium" | "high" | "max";
   // Carl cleared this thread's view and the box is still saving and compacting behind it.
   clearing?: boolean;
 };

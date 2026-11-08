@@ -20,7 +20,7 @@ import { join, relative } from "node:path";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { installFakeTauri, makeTempVault } from "./fakes.ts";
-import { CLAUDE_MODEL_ALIASES } from "../../server/engine/claude/models.ts";
+import { EFFORTS, FALLBACK_MODELS, MODEL_FAMILIES, pickerModels } from "../../server/engine/claude/models.ts";
 
 const root = join(import.meta.dirname, "..", "..");
 
@@ -42,7 +42,7 @@ fake.setHandler("box_get_json", () => ({
 fake.setHandler("box_post_json", () => ({ status: 200, body: '{"ok":true}' }));
 
 const { claudeSignedIn, claudeSignedInOnBox, SIGN_IN_BUTTON, SIGN_IN_LINE } = await import("../../src/claudeAuth.ts");
-const { CLAUDE_MODELS, claudeModelLabel, claudeModelsOnly, isClaudeModelId } = await import("../../src/claudeModels.ts");
+const { labelFor, nameOf, readableId } = await import("../../src/chatModels.ts");
 const { useStore } = await import("../../src/store.ts");
 const live = await import("../../src/claudeAuthLive.ts");
 const { ClaudeAccountLine, ClaudeSignInPrompt } = await import("../../src/ClaudeCodeSignIn.tsx");
@@ -81,43 +81,62 @@ test("a box that reports no Claude Code at all blocks nothing", () => {
 
 // ---- the model list --------------------------------------------------------
 
-test("the picker's models are the box's own Claude aliases, and nothing drifts", () => {
-  assert.deepEqual([...CLAUDE_MODELS].sort(), [...CLAUDE_MODEL_ALIASES].sort(), "src/claudeModels.ts and server/engine/claude/models.ts must offer the same models");
-});
-
-test("the box's catalog is cut down to Claude's models, in order, with no OpenRouter id left", () => {
-  // What GET /api/v1/models really answers with while pi is still on the box.
-  const catalog = [
-    "anthropic/claude-sonnet-4.5",
-    "google/gemini-3-pro",
-    "haiku",
-    "openai/gpt-6.1-sol",
-    "opus",
-    "sonnet",
-    "x-ai/grok-5",
+test("the picker offers the newest of each family, in order, and nothing it does not know", () => {
+  // What the runtime really answers with: several generations of a family alive
+  // at once, newest first within each, plus models a picker has no row for.
+  const rows = [
+    // Last generation listed FIRST, to pin that the alias row wins rather than
+    // whatever order the runtime happened to answer in.
+    { id: "claude-opus-4-6", name: "Opus 4.6", efforts: [...EFFORTS] },
+    { id: "opus", name: "Opus 5.5", efforts: [...EFFORTS] },
+    { id: "sonnet", name: "Sonnet 5.5", efforts: [...EFFORTS] },
+    { id: "haiku", name: "Haiku 5.5", efforts: [] },
+    { id: "claude-fable-5-1", name: "Fable 5.1", efforts: [...EFFORTS] },
+    { id: "claude-something-else", name: "Something Else", efforts: [] },
   ];
-  const out = claudeModelsOnly(catalog);
-  assert.deepEqual(out, ["opus", "sonnet", "haiku"], "the three aliases, most capable first");
-  assert.ok(
-    !out.some((id) => id.includes("/")),
-    `a provider/model id reached the picker: ${out}`,
+  const out = pickerModels(rows);
+  assert.deepEqual(
+    out.map((m) => m.name),
+    ["Opus 5.5", "Sonnet 5.5", "Haiku 5.5", "Fable 5.1"],
+    "one row per family, most capable first — the four Carl asked for",
   );
-  assert.deepEqual(claudeModelsOnly(["openai/gpt-6.1-sol"]), [], "a box with no Claude models offers none, rather than falling back to the catalog");
-  // A pinned Claude release is still Claude, and still belongs.
-  assert.deepEqual(claudeModelsOnly(["claude-opus-5", "opus", "x-ai/grok-5"]), ["opus", "claude-opus-5"]);
+  assert.deepEqual(MODEL_FAMILIES.length, 4);
+  assert.ok(
+    !out.some((m) => m.id.includes("/")),
+    `a provider/model id reached the picker: ${out.map((m) => m.id)}`,
+  );
 });
 
-test("a Claude id reads as a name; anything else has no name to show", () => {
-  assert.equal(claudeModelLabel("opus"), "Opus");
-  assert.equal(claudeModelLabel("sonnet"), "Sonnet");
-  assert.equal(claudeModelLabel("haiku"), "Haiku");
-  assert.equal(claudeModelLabel("claude-opus-5"), "claude-opus-5", "a pinned Claude id is readable as itself");
-  // The one that matters: the box still set to pi must not put its id on screen.
-  assert.equal(claudeModelLabel("openai/gpt-6.1-sol"), null);
-  assert.equal(claudeModelLabel("x-ai/grok-5"), null);
-  assert.equal(claudeModelLabel(null), null);
-  assert.equal(isClaudeModelId("opus"), true);
-  assert.equal(isClaudeModelId("anthropic/claude-sonnet-4.5"), false, "a provider-prefixed id is an OpenRouter id, whatever its name says");
+test("what Carl reads is the runtime's name, never the id behind it", () => {
+  const list = [
+    { id: "opus", name: "Opus 5.5", efforts: [...EFFORTS] },
+    { id: "claude-fable-5-1", name: "Fable 5.1", efforts: [...EFFORTS] },
+  ];
+  assert.equal(nameOf(list, "opus"), "Opus 5.5");
+  assert.equal(nameOf(list, "claude-fable-5-1"), "Fable 5.1", "a pinned id reads as its name, not as itself");
+  assert.equal(nameOf(list, "openai/gpt-6.1-sol"), null, "a model the box does not offer has no name to show");
+  assert.equal(nameOf(list, undefined), null);
+
+  // The one case the box's list cannot cover: a chat still on last generation's
+  // model. It is named as what it is, not as the row that replaced it.
+  assert.equal(labelFor(list, "claude-opus-4-6"), "Opus 4.6");
+  assert.equal(readableId("claude-haiku-4-5"), "Haiku 4.5");
+  assert.equal(readableId("sonnet"), "Sonnet");
+  assert.equal(labelFor(list, "opus"), "Opus 5.5", "a model the box does offer keeps the box's name");
+  assert.equal(labelFor(list, undefined), null);
+});
+
+test("before the runtime has answered, the names shown are ones that cannot be wrong", () => {
+  // The fallback never guesses a version number and never offers a model the
+  // runtime might not have: three aliases Claude Code resolves itself.
+  assert.deepEqual(
+    FALLBACK_MODELS.map((m) => m.name),
+    ["Opus", "Sonnet", "Haiku"],
+  );
+  assert.ok(
+    FALLBACK_MODELS.every((m) => !/\d/.test(m.name)),
+    "a pinned name with a version in it goes stale the next time a model ships",
+  );
 });
 
 // ---- what is on screen -----------------------------------------------------

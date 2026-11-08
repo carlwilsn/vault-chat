@@ -69,16 +69,16 @@ export type ServerHooks = {
   /** The engine takes these routes; a handler returning null hands the
    * request to the legacy relay (old mission threads). */
   engine?: {
+    /** GET /api/v1/models: what a chat can run on, by name (never a raw id). */
     models: () => unknown;
-    /** The box's own models (chat, vision fallback, subagent child) and their checks. */
-    boxModels?: () => unknown;
-    /** POST /api/v1/models/agent {model}: the agent's model, from the laptop (one setting: Settings and the composer). */
-    setModel?: (model: string) => Record<string, unknown>;
+    /** The model a chat that has made no choice of its own runs on. */
+    defaultModel?: () => string;
+    /** POST /api/v1/conversations/<id>/model {model, effort}: the composer's picker, for one chat. */
+    chatModel?: (v: VaultScope, convId: string, b: { model?: unknown; effort?: unknown }) => Promise<Record<string, unknown>>;
     message: (v: VaultScope, b: any, viewerRoot?: string) => Promise<Record<string, unknown> | null>;
     answer: (v: VaultScope, b: any) => Promise<Record<string, unknown> | null>;
     kill: (v: VaultScope, b: any) => Promise<Record<string, unknown> | null>;
     subagent: (v: VaultScope, convId: string, sid: string, op: "steer" | "stop", b: any) => Promise<Record<string, unknown>>;
-    /** POST /api/v1/conversations/<id>/engine {engine}: run this conversation on pi or on Claude Code. */
     /** POST /api/v2/intent: every client intent (src/convlog/protocol.ts Intent). */
     intent: (v: VaultScope, b: any, viewerRoot?: string) => Promise<Record<string, unknown>>;
     /** Side threads (server/engine/pi/side.ts): Ctrl+K / Ctrl+L, and the one-shots. */
@@ -268,8 +268,11 @@ const CONVERSATION_ROUTES = new Set([
 
 /** The conversation a request is about (its query, else its JSON body), or null. */
 async function conversationOf(req: IncomingMessage, url: URL, path: string): Promise<string | null> {
-  const sub = /^\/api\/v1\/conversations\/([^/]+)\/subagents\//.exec(path);
-  if (sub) return decodeURIComponent(sub[1]!);
+  // A route that names its conversation in the path: its subagents, and its
+  // model. Without this the request would be answered by the MAIN vault's
+  // engine, which does not hold a conversation another vault owns.
+  const named = /^\/api\/v1\/conversations\/([^/]+)\/(?:subagents\/|model$)/.exec(path);
+  if (named) return decodeURIComponent(named[1]!);
   if (!CONVERSATION_ROUTES.has(path) && !/^\/api\/v1\/side\/[^/]+(?:\/stop)?$/.test(path)) return null;
   const q = url.searchParams.get("convId") || url.searchParams.get("conv") || (path === "/conversation" ? url.searchParams.get("id") : null);
   if (q) return q;
@@ -494,13 +497,18 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
     if (await brainRoute(hooks.brain(scope), req, res, path, method, isDirectLoopback(req), () => jsonBody(req))) return;
   }
 
-  // Model capabilities for Settings → Models.
+  // What the composer's picker offers: the models a chat can run on, by name,
+  // and the one a chat that has not chosen runs on (the box's last choice).
   if (path === "/api/v1/models" && method === "GET") {
-    return hooks.engine ? json(res, 200, { models: hooks.engine.models(), ...(hooks.engine.boxModels ? { box: hooks.engine.boxModels() } : {}) }) : json(res, 503, { error: "engine not running" });
+    return hooks.engine ? json(res, 200, { models: hooks.engine.models(), ...(hooks.engine.defaultModel ? { default: hooks.engine.defaultModel() } : {}) }) : json(res, 503, { error: "engine not running" });
   }
-  if (path === "/api/v1/models/agent" && method === "POST") {
-    if (!hooks.engine?.setModel) return json(res, 503, { error: "engine not running" });
-    const out = hooks.engine.setModel(String((await jsonBody(req))?.model ?? ""));
+  // One chat's model and effort (the picker beside Send). Per conversation, so
+  // the phone and the laptop see the same choice and it outlives a restart.
+  const modelM = /^\/api\/v1\/conversations\/([^/]+)\/model$/.exec(path);
+  if (modelM && method === "POST") {
+    if (!hooks.engine?.chatModel) return json(res, 503, { error: "engine not running" });
+    const b = (await jsonBody(req)) ?? {};
+    const out = await hooks.engine.chatModel(scope, decodeURIComponent(modelM[1]!), b);
     return json(res, out.ok ? 200 : 400, out);
   }
   // Steer or stop one running subagent of a conversation.

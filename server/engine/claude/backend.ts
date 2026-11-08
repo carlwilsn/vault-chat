@@ -33,12 +33,15 @@ import {
   ThreadUnknownError,
   type BackendEvent,
   type Detached,
+  type Effort,
   type EngineBackend,
   type Handlers,
   type LiveChild,
+  type ModelChoice,
   type SideRunner,
   type ToolSpec,
 } from "../backend";
+import { EFFORTS, FALLBACK_MODELS, isEffort, pickerModels } from "./models";
 import type { CallRecord } from "../ledger";
 import type { UserRequest } from "../piFeed";
 import { appendEntries, newSessionFile } from "../../convlog/piSession";
@@ -138,6 +141,8 @@ type ThreadState = {
   sessionId: string | null;
   cwd: string;
   model: string;
+  /** How hard it thinks, as Carl set it for THIS chat. Absent: the model decides. */
+  effort?: Effort;
   instructions: string;
   /** Its pi-format transcript. */
   file: string;
@@ -186,6 +191,8 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
 
   readonly version: string;
   private threads: Record<string, ThreadState> = {};
+  /** The runtime's own model list, learned from the first session (models()). */
+  private modelRows: ModelChoice[] = [];
   private live = new Map<string, Live>();
   private h: Handlers | null = null;
   private started = false;
@@ -199,6 +206,7 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
     super();
     this.version = o.install.version;
     this.threads = readJson(o.paths.threadsFile);
+    this.modelRows = readModels(modelsFile(o.paths.threadsFile));
     this.side = new ClaudeSideRuns({
       // A side run gets the same sandbox and loader wrapper a conversation does.
       cli: (cwd) => sandboxedCli({ install: o.install, dir: o.paths.binDir, name: "claude-side", sandbox: o.sandbox?.() ?? null, writable: [o.paths.configDir, cwd] }),
@@ -307,16 +315,16 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
 
   // ------------------------------------------------------------------ threads
 
-  async startThread(o: { cwd: string; model: string; instructions: string; tools: ToolSpec[]; subagents: boolean }): Promise<{ threadId: string; ref?: string }> {
+  async startThread(o: { cwd: string; model: string; effort?: Effort; instructions: string; tools: ToolSpec[]; subagents: boolean }): Promise<{ threadId: string; ref?: string }> {
     const threadId = `${CLAUDE_THREAD_PREFIX}${randomUUID()}`;
     mkdirSync(this.o.feedSessionsDir, { recursive: true });
     const file = newSessionFile(join(this.o.feedSessionsDir, `${threadId}.jsonl`), o.cwd);
-    this.threads[threadId] = { sessionId: null, cwd: o.cwd, model: o.model, instructions: o.instructions, file };
+    this.threads[threadId] = { sessionId: null, cwd: o.cwd, model: o.model, ...(o.effort ? { effort: o.effort } : {}), instructions: o.instructions, file };
     this.save();
     return { threadId, ref: file };
   }
 
-  async resumeThread(threadId: string, o: { model: string; subagents: boolean; cwd?: string }): Promise<void> {
+  async resumeThread(threadId: string, o: { model: string; effort?: Effort; subagents: boolean; cwd?: string }): Promise<void> {
     const t = this.threads[threadId];
     if (!t) throw new ThreadUnknownError(`no Claude Code thread ${threadId}`);
     if (o.cwd && o.cwd !== t.cwd) {
@@ -328,6 +336,16 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
       t.model = o.model;
       const live = this.live.get(threadId);
       if (live) await live.session.setModel(o.model);
+    }
+    // Effort is a start option, not a control request: there is no way to tell a
+    // running session to think harder. So the session ends and the next turn
+    // resumes the same Claude Code session with the new effort — Carl's chat is
+    // where it was, and his choice takes hold on what he asks next. A turn in
+    // flight is never cut off for it: the choice is saved and the session is
+    // left to finish, and the next one it starts has it.
+    if (o.effort !== t.effort) {
+      t.effort = o.effort;
+      if (!this.live.get(threadId)?.turnId) this.closeLive(threadId);
     }
     this.save();
     await this.open(threadId);
@@ -615,6 +633,7 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
       }),
       cwd: t.cwd,
       model: t.model,
+      ...(t.effort ? { effort: t.effort } : {}),
       // The thread's own instructions, and the rules of the folder it works in.
       instructions: [t.instructions, folderRules(t.cwd)].filter(Boolean).join("\n\n"),
       ...(t.sessionId ? { resume: t.sessionId } : {}),
@@ -667,7 +686,40 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
     const live: Live = { id: threadId, session, translator, turnId: null, lastUsed: Date.now(), pending: new Map(), revoke: tools?.revoke ?? null, memory };
     this.live.set(threadId, live);
     session.start();
+    // What the runtime calls its models, asked once per box: the picker shows
+    // those names, so vault-chat never keeps a version number of its own.
+    if (!this.modelRows.length) void this.learnModels(session);
     return live;
+  }
+
+  /**
+   * The models a chat can run on. The runtime's own list, newest of each family
+   * (claude/models.ts pickerModels) — until a session has answered, the three
+   * aliases under names that cannot be wrong.
+   */
+  models(): ModelChoice[] {
+    return this.modelRows.length ? this.modelRows : FALLBACK_MODELS;
+  }
+
+  private async learnModels(session: ClaudeSession): Promise<void> {
+    const rows = await session.models().catch(() => null);
+    if (!rows?.length) return;
+    const all = rows.map((r) => ({
+      id: String(r.value ?? ""),
+      name: String(r.displayName ?? r.value ?? ""),
+      efforts: (r.supportsEffort === false ? [] : (r.supportedEffortLevels ?? EFFORTS)).filter(isEffort),
+    }));
+    const picked = pickerModels(all.filter((m) => m.id && m.name));
+    if (!picked.length) return;
+    this.modelRows = picked;
+    this.log(`models: ${picked.map((m) => m.name).join(", ")}`);
+    // Kept, so a box that has run a turn once shows the real names from boot
+    // rather than the fallback until the first session of the day.
+    try {
+      writeFileSync(modelsFile(this.o.paths.threadsFile), JSON.stringify(picked, null, 1));
+    } catch (e) {
+      this.log(`could not save the model list: ${(e as Error).message}`);
+    }
   }
 
   /** Whether this box lets Claude Code use its own file tools (see the option). */
@@ -845,6 +897,18 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
  */
 function promptOf(texts: string[], context?: string, you?: string): string {
   return [context?.trim(), texts.filter(Boolean).join("\n\n"), you?.trim()].filter(Boolean).join("\n\n");
+}
+
+/** Beside the thread ids: the runtime's model list, as last learned. */
+const modelsFile = (threadsFile: string) => join(dirname(threadsFile), "models.json");
+
+function readModels(file: string): ModelChoice[] {
+  try {
+    const rows = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : [];
+    return Array.isArray(rows) ? rows.filter((m) => m && typeof m.id === "string" && typeof m.name === "string").map((m) => ({ id: m.id, name: m.name, efforts: (Array.isArray(m.efforts) ? m.efforts : []).filter(isEffort) })) : [];
+  } catch {
+    return [];
+  }
 }
 
 function readJson(file: string): Record<string, ThreadState> {

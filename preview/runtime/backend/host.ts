@@ -491,12 +491,11 @@ export const hostCommands: Record<string, (a: Record<string, any>) => unknown> =
       b = {};
     }
     boxPosts.push({ path, body: b, vault: u.searchParams.get("vault") });
-    // The agent's model (src/agentModel.ts): the box keeps Carl's choice.
-    if (path === "/api/v1/models/agent") {
-      const m = String(b.model ?? "");
-      const models = cfg.sync?.boxChat?.models as any;
-      if (models?.box?.chat) models.box.chat = { ...models.box.chat, id: m };
-      return { status: 200, body: JSON.stringify({ ok: true, model: m }) };
+    // One chat's model and effort (src/chatModels.ts): the box keeps the choice
+    // on the conversation, so the preview just answers that it took it.
+    const modelOf = /^\/api\/v1\/conversations\/([^/]+)\/model$/.exec(path);
+    if (modelOf) {
+      return { status: 200, body: JSON.stringify({ ok: true, convId: decodeURIComponent(modelOf[1]!), ...(b.model !== undefined ? { model: b.model } : {}), ...(b.effort !== undefined ? { effort: b.effort } : {}) }) };
     }
     if (path === "/projects") {
       const name = String(b.name ?? "").trim();

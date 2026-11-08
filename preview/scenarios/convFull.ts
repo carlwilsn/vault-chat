@@ -430,20 +430,18 @@ function beatsA(o: Opts): Beat[][] {
 /** A's stages; each ends where the check asserts. */
 const driveA: Step[][] = beatsA({}).map((stage) => stage.flatMap((b) => b.steps));
 
-/** The box's own model checks (Settings → Models, box mode). */
+/**
+ * GET /api/v1/models as the box answers it: what the composer's picker offers,
+ * by name. The runtime's own names (claude/models.ts), so there are no ids and
+ * no providers on screen.
+ */
 const BOX_MODELS = {
-  // The box's list (the composer's and Settings' agent model picker).
-  models: [{ id: "openai/gpt-6.1-sol" }, { id: "anthropic/claude-opus-5.5" }, { id: "google/gemini-3.8-pro" }],
-  box: {
-    chat: { id: "openai/gpt-6.1-sol", state: "passed", context: 1_050_000 },
-    vision: { id: "openai/gpt-6.1-sol", state: "passed", context: 1_050_000 },
-    subagent: { id: "anthropic/claude-haiku-5.5", state: "passed", context: 200_000 },
-  },
-};
-/** settings-box-models only: a subagent model under the 64k floor, to show the line. */
-const BOX_MODELS_FAILING = {
-  ...BOX_MODELS,
-  box: { ...BOX_MODELS.box, subagent: { id: "qwen/qwen3-32b:nitro", state: "missing", missing: ["context"], context: 40_960 } },
+  models: [
+    { id: "opus", name: "Opus 5.5", efforts: ["low", "medium", "high", "max"] },
+    { id: "sonnet", name: "Sonnet 5.5", efforts: ["low", "medium", "high", "max"] },
+    { id: "haiku", name: "Haiku 5.5", efforts: ["low", "medium", "high", "max"] },
+    { id: "claude-fable-5-1", name: "Fable 5.1", efforts: ["low", "medium", "high", "max"] },
+  ],
 };
 
 function buildA(ctx: BuildCtx): void {
@@ -689,19 +687,6 @@ export const convFullScenarios: Scenario[] = [
       ),
     ),
   ),
-  {
-    id: "settings-box-models",
-    title: "Settings — the box's own models checked",
-    group: "Settings",
-    notes:
-      "Box mode: Settings → Models also checks the models the box runs (its chat agent, the vision model it falls back to for images, the subagent child model), from /api/v1/models → box. Here the subagent model's context is under the 64k floor: one quiet line under the pickers says so. Nothing shows while they all pass. The pickers' own lines now also cover tool_choice, context, parallel tool calls and usage (one remembered request per model; faked here — Qwen3 Coder answers one tool at a time).",
-    clock: "2026-10-13T10:00:00",
-    build: buildA,
-    host: (now: number) => hostA(now, BOX_MODELS_FAILING),
-    localStorage: { vault_chat_background_model: "qwen/qwen3-coder" },
-    open: [{ click: "[title='Settings']" }, { sleep: 1500 }],
-    surfaces: ["desktop"],
-  },
   ...[
     ["conv-c", "first", DEFAULTS],
     ["conv-c-alt", "second", ALTS],
