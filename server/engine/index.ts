@@ -472,7 +472,7 @@ export async function startEngine(b: EngineBoot): Promise<EngineHandle> {
       const n = logOf(v.path).rows().length;
       const e = make(v);
       engines.set(v.name, e);
-      console.log(`[engine:pi] vault ${v.name}: engine started (${n} conversation(s))`);
+      console.log(`[engine] vault ${v.name}: engine started (${n} conversation(s))`);
       return e;
     })();
     opening.set(v.name, p);
