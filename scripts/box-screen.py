@@ -53,6 +53,8 @@ SETTINGS_FROM_RIGHT = 123
 TITLEBAR_Y = 13
 # How far under the "VAULT-CHAT FOLDER" heading its path box and Set button sit.
 FOLDER_ROW_BELOW_HEADING = 48
+# The paste field is the row under the command chip in the sign-in card.
+TOKEN_FIELD_BELOW_COMMAND = 30
 # The chat panel's own toggle, further left along the same row of icons.
 CHAT_PANEL_FROM_RIGHT = 200
 REPO = "carlwilsn/vault-chat"
@@ -599,14 +601,38 @@ def main() -> int:
         # And the paste field takes a token: typed into, the button is what acts
         # on it. A bad token is refused on the spot, which is the one thing that
         # can be checked without minting a real one.
-        if screen.click_text("sk-ant-oat01", "token-field") or screen.click_text("setup-token", "token-field-fallback"):
+        #
+        # The field is found from the command above it, not from its own
+        # placeholder: OCR reads "claude setup-token" (a monospace chip) every
+        # time and reads "sk-ant-oat01-…" as "sk-ant-oat0l-." or not at all. A
+        # run that clicked the placeholder it could not see fell back to
+        # clicking the command, typed a token into nothing, pressed the button
+        # on an empty field and reported the app as broken.
+        # What was typed is never read back: the field masks a token, the way a
+        # password field does, so the screen shows dots and OCR can say nothing
+        # about them. The click is what had to be made reliable; whether it
+        # worked is answered by what the app does with the button.
+        _, ws = screen.read("sign-in-card")
+        field = screen.find(ws, "setup-token")
+        if field:
+            screen.click_at(round(field["x"]), round(field["y"]) + TOKEN_FIELD_BELOW_COMMAND, "token-field")
             screen.type_text("not-a-real-token")
-            if screen.click_text("Sign in with Claude", "token-submitted"):
-                time.sleep(2)
-                after, _ = screen.read("token-refused")
-                check("a token that is not one is refused on the spot, with no raw error",
-                      "doesn't look like" in after or "does not look like" in after or "sk-ant-oat" in after,
-                      "the field said something about the token")
+            # Entered, not clicked. The button cannot be found on screen: its
+            # label is white on a light fill and OCR reads that row as "sor",
+            # "[", "vincinv" once the field holds its dots, and the words "Sign
+            # in with Claude" that ARE readable belong to the card's heading
+            # above it — clicking those does nothing, which one run reported as
+            # the app swallowing a bad token. The field takes Enter
+            # (src/ClaudeCodeSignIn.tsx), which is what a person does anyway.
+            screen.key("Return")
+            time.sleep(2)
+            after, _ = screen.read("token-refused")
+            said = next((p for p in ("doesn't look like", "does not look like", "sk-ant-oat") if p in after), None)
+            check("a token that is not one is refused on the spot, with no raw error", bool(said),
+                  f'the card said "{said}"' if said else "nothing on screen says the token was refused")
+        else:
+            check("a token that is not one is refused on the spot, with no raw error", False,
+                  "the sign-in card was not on screen")
 
         # 7. Settings again, with a vault open: no OpenRouter, no pi, nothing
         #    of the old two-engine world.
