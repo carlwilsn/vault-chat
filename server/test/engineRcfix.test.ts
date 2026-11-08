@@ -50,12 +50,20 @@ class FakeBackend extends EventEmitter {
     return { turnId: `pt-${this.prefix}-${this.turns.length}` };
   }
   async steer() {}
-  async followUp() {}
+  /** What was handed to a turn already running (a report must never be one). */
+  followUps: any[] = [];
+  async followUp(threadId: string, o: any) {
+    this.followUps.push({ threadId, ...o });
+  }
   async clearQueue() {
     return { steering: [], followUp: [] };
   }
   async interrupt(threadId: string) {
     this.interrupts.push(threadId);
+  }
+  /** No children of its own: a delegate's completion is never one it knows. */
+  liveChildren() {
+    return [];
   }
   usageCalls() {
     return [];
@@ -218,6 +226,51 @@ describe("E: the voice agent's conversations", () => {
     await until(() => backend.turns.length === before + 2);
     expect((await readConv(vault, v.convId)).source).toBe("voice");
     expect((await readConv(vault, p.convId)).source).toBe("phone");
+  });
+});
+
+describe("H: a turn's boundary (what the voice pair covered on pi)", () => {
+  it("a report that arrives while a turn is running never folds into it: it runs as its own turn after", async () => {
+    // What this protects: Carl on a live voice call, mid-answer, when a job or a
+    // delegated piece finishes. Its report must not join the answer he is
+    // listening to — it waits and takes its own turn. (The voice's own pair of
+    // tests drove this through pi; the invariant is the engine's, so it is
+    // pinned here, where it can be driven without a call.)
+    const { convId, tid } = await startTurn(engine, backend, "Say something long.");
+    // A live voice call on this conversation, as voiceBrain sets it.
+    engine.setTalker(convId, { model: "haiku", rules: "[a call is live]", thinking: "off" });
+    const turns = backend.turns.length;
+    const handed = backend.followUps.length;
+    void engine.run(convId, "Delegated work finished: the report.", "wake", { ownTurn: true });
+    await sleep(600);
+    // Nothing was handed to the open turn, and no second turn started yet.
+    expect(backend.turns.length, JSON.stringify(backend.turns.slice(turns))).toBe(turns);
+    expect(backend.followUps.length, JSON.stringify(backend.followUps.slice(handed))).toBe(handed);
+
+    // The answer ends; now the report takes its own turn.
+    backend.ev(tid, { kind: "turnCompleted", turnId: null, status: "completed", error: null });
+    await until(() => backend.turns.length === turns + 1, 10_000);
+    expect(JSON.stringify(backend.turns.at(-1))).toContain("Delegated work finished");
+    engine.setTalker(convId, null);
+  });
+
+  it("a completion whose turn is over, or whose work is gone, cannot close or speak into the next answer", async () => {
+    const { convId, tid } = await startTurn(engine, backend, "Wait on the job.");
+    // A wake that really is this conversation's, while its turn is the live one.
+    expect((await backend.h.toolCall(tid, "ScheduleWake", { in: "1h", reason: "check the run" })).ok).toBe(true);
+    const wake = readWakes(vault).find((w) => w.conv === convId)!;
+    expect(wake).toBeTruthy();
+    expect(await backend.h.continuationWait(tid, { kind: "wake", id: wake.id })).toBe(true);
+    // Work that is not there at all is never waited for.
+    expect(await backend.h.continuationWait(tid, { kind: "wake", id: "wake-that-never-existed" })).toBe(false);
+    expect(await backend.h.continuationWait(tid, { kind: "job", id: "job-that-never-existed" })).toBe(false);
+    expect(await backend.h.continuationWait(tid, { kind: "delegate", id: "child-that-never-existed" })).toBe(false);
+
+    // And once the turn is over, the same wait is refused: a completion that was
+    // overtaken must not reach into whatever the conversation is answering now.
+    backend.ev(tid, { kind: "turnCompleted", turnId: null, status: "completed", error: null });
+    await until(async () => (await readConv(vault, convId)).state !== "running", 10_000);
+    expect(await backend.h.continuationWait(tid, { kind: "wake", id: wake.id })).toBe(false);
   });
 });
 
