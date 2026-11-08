@@ -133,25 +133,36 @@ after(async () => {
   await box.close();
 });
 
-test("Clear with finished tasks and a plan: a truly blank view (no tasks, no plan); the box keeps them", async () => {
+test("a new chat starts empty, and the one he left keeps its tasks and its plan", async () => {
+  // There is no clearing a view any more (Carl), so what must be true is that a
+  // NEW chat is empty and the chat he left is untouched — tasks, plan and all.
   assert.equal(S().activeConversationId, "main");
-  chat.clearThread();
-  await waitFor("blank", () => S().messages.length === 0, 1000);
-  await waitFor("no tasks, no plan", () => (main().subagents ?? []).length === 0 && (main().todos ?? []).length === 0, 2000);
+  const id = chat.newChatHere();
+  await waitFor("the new chat is open and empty", () => S().activeConversationId === id && S().messages.length === 0, 1000);
+  const fresh = () => S().conversations.find((c) => c.id === id)!;
+  assert.equal((fresh().subagents ?? []).length, 0);
+  assert.equal((fresh().todos ?? []).length, 0);
+  // Main is as it was, on this device and on the box.
+  assert.equal((main().subagents ?? []).length, 4);
+  assert.equal((main().todos ?? []).length, 4);
   assert.equal(box.picture("main").meta.subagents?.length, 4, "the box still has them");
+  await import("../../src/projects").then((p) => p.openThread("main", "Main"));
+  await waitFor("back in Main", () => S().activeConversationId === "main", 2000);
 });
 
-test("Clear with a task still running: it stays reachable (the chip), the finished ones stay gone; it ends and the next plan shows", async () => {
+test("a task still running stays reachable, and its end leaves the thread; the next plan shows", async () => {
   box.emit("main", { type: "meta", patch: { subagents: [...(box.picture("main").meta.subagents as any[]), { threadId: "r1", title: "still going", state: "running", startedAt: Date.now(), activity: "writing a.html", toolCallId: "d1" }] } });
-  await waitFor("the running one", () => (main().subagents ?? []).map((s) => s.threadId).join() === "r1");
+  await waitFor("the running one", () => (main().subagents ?? []).some((s) => s.threadId === "r1"));
   // Its live step reaches the laptop as it changes.
   box.emit("main", { type: "meta", patch: { subagents: (box.picture("main").meta.subagents as any[]).map((s) => (s.threadId === "r1" ? { ...s, activity: "running a check", steps: 2 } : s)) } });
-  await waitFor("moved", () => (main().subagents?.[0] as any)?.activity === "running a check");
+  await waitFor("moved", () => (main().subagents ?? []).some((s: any) => s.activity === "running a check"));
   assert.equal(bt.runningTaskCount(S().conversations), 1);
-  // It ends: gone from this cleared view (it began before the Clear); its result is the agent's message.
+  // It ends: nothing is running any more, and its result is the agent's message
+  // (the thread shows no row for a task that finished — see the bubble test).
   box.emit("main", { type: "meta", patch: { subagents: (box.picture("main").meta.subagents as any[]).map((s) => (s.threadId === "r1" ? { ...s, state: "completed", endedAt: Date.now() } : s)) } });
-  await waitFor("gone", () => (main().subagents ?? []).length === 0);
-  // A new plan after the Clear shows.
+  await waitFor("finished", () => (main().subagents ?? []).some((s: any) => s.threadId === "r1" && s.state === "completed"));
+  assert.equal(bt.runningTaskCount(S().conversations), 0);
+  // A new plan shows.
   box.startTurn("main");
   box.user("main", "u2", "next");
   box.tool("main", "plan2", "TodoWrite", { todos: [{ content: "new step", status: "in_progress" }] });

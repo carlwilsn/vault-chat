@@ -61,12 +61,14 @@ after(async () => {
   await box.close();
 });
 
-test("the panel: Main at the top, then the projects (each its one thread), then + New project; no list of chats", () => {
+test("the panel: each place holds its chats, newest first; older chats stay in the menu", () => {
   const { entries, others } = threads.panelModel(
     [
       { id: "main", kind: "main", lastActivityAt: 5 },
       { id: "project-psych-221", kind: "project", lastActivityAt: 9, running: true },
       { id: "sep-1", kind: "separate", title: "a one-off", lastActivityAt: 7 },
+      { id: "sep-2", kind: "separate", project: "psych-221", title: "problem set 4", lastActivityAt: 11 },
+      { id: "sep-3", kind: "separate", project: "psych-221", lastActivityAt: 2 },
       { id: "old1", title: "older", lastActivityAt: 3 },
       { id: "old2", title: "gone", lastActivityAt: 8, deleted: true },
     ],
@@ -85,12 +87,36 @@ test("the panel: Main at the top, then the projects (each its one thread), then 
       ["new-project"],
     ],
   );
-  // Separate and older chats are only in the menu's "Older chats", newest first.
-  assert.deepEqual(others.map((o) => o.id), ["sep-1", "old1"]);
+  // Each place holds its own chats, newest first, and the place's own
+  // conversation is one of them — nothing Carl had disappears from the list.
+  const chatsOf = (id: string) => {
+    const e = entries.find((x) => x.type !== "new-project" && x.id === id)!;
+    return e.type === "new-project" ? [] : e.chats.map((c) => [c.id, c.title, c.active]);
+  };
+  assert.deepEqual(chatsOf("main"), [
+    ["sep-1", "a one-off", false],
+    ["main", "Main", false],
+  ]);
+  assert.deepEqual(chatsOf("project-psych-221"), [
+    ["sep-2", "problem set 4", false],
+    ["project-psych-221", "This project", true],
+    ["sep-3", "New chat", false],
+  ]);
+  assert.deepEqual(chatsOf("project-coconut"), []);
+  // A place is "active" when the chat Carl is in is one of its own.
+  assert.equal(entries.find((e) => e.type === "project" && e.id === "project-psych-221")!.active, true);
+  // Only the chats from before this model are in the menu, newest first.
+  assert.deepEqual(others.map((o) => o.id), ["old1"]);
   assert.equal(threads.threadKindOf({ id: "old1" }), "older");
   assert.equal(threads.isOlderChat({ id: "x", kind: "separate" }), false);
   assert.equal(threads.projectOfThread("project-psych-221"), "psych-221");
   assert.equal(threads.projectOfThread("project-../x"), null);
+  // Where a new chat belongs, and where a conversation already belongs.
+  assert.equal(threads.placeThreadId({ slug: "psych-221" }), "project-psych-221");
+  assert.equal(threads.placeThreadId(null), "main");
+  assert.equal(threads.placeOf({ id: "sep-2", project: "psych-221" }), "psych-221");
+  assert.equal(threads.placeOf({ id: "project-coconut" }), "coconut");
+  assert.equal(threads.placeOf({ id: "sep-1" }), null);
 });
 
 test("the app opens on Main; a message with nothing chosen goes to Main", async () => {
@@ -110,30 +136,29 @@ test("the app opens on Main; a message with nothing chosen goes to Main", async 
   assert.equal(S().conversations.find((c) => c.id === "old1")?.kind, undefined);
 });
 
-test("Clear is this surface's: blank on the next frame, nothing sent to the box, the box (and every other surface) keeps it all; it lasts across a restart", async () => {
+test("New chat: a fresh conversation in this place, and the one he was in is still there", async () => {
   const intents0 = box.intents.length;
-  const frames: string[][] = [];
-  const unsub = useStore.subscribe((s) => frames.push(s.messages.map((m) => m.content)));
-  chat.clearThread();
-  await waitFor("blank", () => S().messages.length === 0, 300);
-  unsub();
-  assert.ok(frames.some((f) => f.length === 0));
-  await new Promise((r) => setTimeout(r, 300));
+  // Nothing is wiped and nothing is sent: the chat he was in keeps every word,
+  // and the new one is simply the one he is in now.
+  const was = S().activeConversationId;
+  const id = chat.newChatHere();
+  await waitFor("the new chat is open", () => S().activeConversationId === id && S().messages.length === 0, 300);
+  assert.notEqual(id, was);
+  await new Promise((r) => setTimeout(r, 200));
   assert.equal(box.intents.length, intents0, "nothing went to the box");
-  assert.ok(threads && box.picture("main").items.some((x: any) => String(x.text ?? "").includes("CLEARED-TEXT")), "the conversation still has it");
-  // A new message shows as usual, and only it.
+  assert.ok(box.picture("main").items.some((x: any) => String(x.text ?? "").includes("CLEARED-TEXT")), "the conversation he left still has it");
+  assert.equal(S().conversations.find((c) => c.id === id)?.kind, "separate");
+  // His first message in it starts it, and only it is shown.
   await chat.sendMessage("a fresh start");
   await waitFor("fresh", () => S().messages.some((m) => m.content === "a fresh start" && !m.boxPending));
-  box.stream("main", "assistant", "ok");
-  box.endTurn("main");
+  assert.equal(box.intents.at(-1)!.convId, id);
+  box.stream(id, "assistant", "ok");
+  box.endTurn(id);
   await waitFor("reply", () => S().messages.some((m) => m.content === "ok"));
   assert.deepEqual(S().messages.map((m) => m.content), ["a fresh start", "ok"]);
-  // A restart of this client: still cleared here (kept on this device).
-  bc.stopBoxChat();
-  useStore.setState({ conversations: [], messages: [] } as any);
-  await bc.startBoxChat(vault);
-  await waitFor("reloaded", () => S().messages.some((m) => m.content === "ok"), 8000);
-  assert.ok(!S().messages.some((m) => /CLEARED-TEXT|hello Main/.test(m.content)));
+  // And the one he left opens again, whole.
+  await import("../../src/projects").then((p) => p.openThread("main", "Main"));
+  await waitFor("back in Main", () => S().messages.some((m) => m.content.includes("CLEARED-TEXT")), 8000);
 });
 
 test("/compact is a command to the box, not a message", async () => {

@@ -63,7 +63,7 @@ test("a project's row has the ⋯ menu; Main's has none (it can't be renamed or 
   const row = (type: "main" | "project", id: string, more: Record<string, unknown> = {}) =>
     renderToStaticMarkup(
       createElement(panel.ThreadRow, {
-        entry: { type, id, title: id, active: false, running: false, unread: false, ...(type === "project" ? { slug: id.replace(/^project-/, "") } : {}) } as any,
+        entry: { type, id, title: id, active: false, running: false, unread: false, chats: [], ...(type === "project" ? { slug: id.replace(/^project-/, "") } : {}) } as any,
         name: id,
         onSelect: () => {},
         ...more,

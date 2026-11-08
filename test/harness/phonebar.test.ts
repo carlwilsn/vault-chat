@@ -18,23 +18,29 @@ const root = path.resolve(import.meta.dirname, "../..");
 const html = (c: () => unknown) => renderToStaticMarkup(createElement(c as any));
 const paths = (s: string) => [...s.matchAll(/ d="([^"]+)"/g)].map((m) => m[1]);
 
-test("Clear belongs to each sidebar row's existing options sheet, not the composer or header", () => {
+test("no Clear anywhere: a place's sheet starts a new chat, and its chats are listed under it", () => {
+  // Carl: there is no clearing a chat. The phone has no Clear on the composer,
+  // the header, or a row's sheet — a place's sheet starts a NEW chat instead,
+  // and nothing he had is ever wiped.
   assert.doesNotMatch(html(Pages), /clearBtn|clear-thread|cbar|>Clear</);
   assert.doesNotMatch(html(Header), /clearBtn|clear-thread/);
   assert.match(html(ConvDrawer), /id="clist"/);
   const boot = fs.readFileSync(path.join(root, "phone/src/boot.ts"), "utf8");
-  assert.match(boot, /addThreadMenu\(r, e.id, "Main"\)/);
-  assert.match(boot, /addThreadMenu\(r, e.id, projectName\(e.slug\) \|\| e.title, e.slug\)/);
+  assert.doesNotMatch(boot, /clear-thread|clearThread|CLEARED_KEY|clearedAt/);
+  assert.match(boot, /addThreadMenu\(r, "Main"\)/);
+  assert.match(boot, /addThreadMenu\(r, name, e.slug\)/);
   assert.match(boot, /role="button" tabindex="0" aria-label=/);
   assert.match(boot, /ev.key === "Enter" \|\| ev.key === " "/);
   assert.match(boot, /ev.stopPropagation\(\); open\(\);/);
-  assert.match(boot, /openProjectMenu\(slug, name, targetId\)/);
-  assert.match(boot, /row\("clear", "Clear"\) \+ \(slug \? row\("rename", "Rename"\) \+ row\("delete", "Delete", " danger"\) : ""\)/);
-  assert.match(boot, /await clearThread\(targetId\);\s+closeSheet\(\);\s+\$\("convBtn"\).focus/);
-  assert.match(boot, /data-el="clear-thread" aria-label="Clear this thread"/);
+  assert.match(boot, /openProjectMenu\(slug, name\)/);
+  assert.match(boot, /row\("new", "New chat"\) \+ \(slug \? row\("rename", "Rename"\) \+ row\("delete", "Delete", " danger"\) : ""\)/);
+  // Each place's own chats, under it, and + New chat with them.
+  assert.match(boot, /dataset\.el = "place-chat"/);
+  assert.match(boot, /data-el="place-new-chat"/);
   const css = fs.readFileSync(path.join(root, "phone/src/styles/phone.css"), "utf8");
   assert.match(css, /\.crow2 \.cmore\{[^}]*min-width:44px;min-height:44px/);
   assert.match(css, /\.thread-action\{min-height:44px\}/);
+  assert.match(css, /\.crow2\.sub\{/);
 });
 
 test('"+" is one picker for any file: no accept, no capture, several at once', () => {

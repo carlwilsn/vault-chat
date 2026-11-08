@@ -306,7 +306,6 @@ export function installMock() {
       return reply({ ok: true, convId: body.convId, answered: true });
     }
     if (u === "/kill") { if (body.convId) { DB.runs = DB.runs.filter((r) => r.convId !== body.convId); box.intent({ type: "stop", convId: body.convId }); } return reply({ ok: true, result: "Kill sent." }); }
-    if (u === "/chats/clear") return reply({ ok: true, cleared: 0 });
     if (u === "/schedule") { if (body.action === "toggle") { const s = DB.schedules.find((x) => x.id === body.id); if (s) s.enabled = body.enabled; } else if (body.action === "delete") { DB.schedules = DB.schedules.filter((x) => x.id !== body.id); } return reply({ ok: true }); }
     if (u === "/surface") return reply({ ok: true });
     if (u === "/push/vapid") return reply({ key: "" });

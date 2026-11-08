@@ -9,7 +9,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { useStore } from "./store";
-import { isArchivedThread } from "./conversations";
 
 
 function respond(reqId: string, result: unknown): void {
@@ -796,32 +795,6 @@ export async function startPhoneAppHost(): Promise<void> {
   // /file) — works even when no ElevenLabs key exists for the voice context.
   await listen<{ reqId: string }>("phone:vault", (event) => {
     respond(event.payload.reqId, useStore.getState().vaultPath ?? "");
-  });
-
-  // Purge the chats list: tombstone-delete every idle assistant chat. Archived
-  // mission threads are untouched (they are history), as is anything mid-run.
-  await listen<{ reqId: string }>("phone:clearchats", async (event) => {
-    try {
-      const s = useStore.getState();
-      if (!s.vaultPath) {
-        respond(event.payload.reqId, { error: "no vault open" });
-        return;
-      }
-      const victims = s.conversations.filter(
-        (c) =>
-          !isArchivedThread(c) &&
-          c.status !== "running" &&
-          !(s.busy && s.activeConversationId === c.id),
-      );
-      // Await the tombstone writes before acking: the phone refreshes its chats
-      // list as soon as this responds, and a fire-and-forget delete let that
-      // refresh re-read the still-on-disk chats before their tombstones flushed.
-      const del = useStore.getState().deleteConversation;
-      await Promise.all(victims.map((v) => del(v.id)));
-      respond(event.payload.reqId, { ok: true, cleared: victims.length });
-    } catch (e) {
-      respond(event.payload.reqId, { error: String(e) });
-    }
   });
 
   await listen<{ reqId: string }>("phone:pushtest", async (event) => {

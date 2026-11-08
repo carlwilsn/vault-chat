@@ -1,8 +1,10 @@
-// The chat's intents. Every agent turn runs on the box (pi): this client sends
+// The chat's intents. Every agent turn runs on the box: this client sends
 // the message (into the running turn, if one runs), "send now", the take-back or the stop to the box
 // (boxChat.ts) and shows the box's conversation feed. With no box connected,
 // or the box unreachable, nothing runs here: the chat pane says so.
 import { isArchivedThread } from "./conversations";
+import { newChatInProject } from "./projects";
+import { placeOf } from "./threads";
 import { useStore, type ChatAttachment, type FileUpload } from "./store";
 
 /** The open vault's box chat, started if it is not yet. Null: no box for this vault. */
@@ -65,9 +67,16 @@ export async function interruptAndSend(text: string, contextPreamble?: string, a
 }
 
 /** Clear: this surface's view of the open thread goes blank (the conversation and other surfaces keep it all). */
-export function clearThread(): void {
-  const id = useStore.getState().activeConversationId;
-  if (id) void import("./boxChat").then((bc) => bc.boxClear(id));
+/**
+ * "New chat": a fresh conversation in the place Carl is in — the open project,
+ * or the vault's main. Nothing is wiped (there is no Clear any more): the chat
+ * he was in stays where it is, under the same place, and he can open it again.
+ */
+export function newChatHere(): string {
+  const s = useStore.getState();
+  const conv = s.conversations.find((c) => c.id === s.activeConversationId);
+  const slug = placeOf({ id: conv?.id ?? "", project: conv?.project ?? null });
+  return slug ? newChatInProject(slug) : s.newConversation();
 }
 
 /** "Delete": the active conversation goes. */

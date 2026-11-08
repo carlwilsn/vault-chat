@@ -14,7 +14,7 @@ import { BrainConversation } from "../../src/voiceBrainClient";
 import { WaitTracker, calibFrom, renderWaitLine, waitInputs, type WaitCalib } from "../../src/voiceWaitLine";
 import type { LogRecord } from "../../src/convlog/protocol";
 import { emptyPicture, emptyRow, foldInto, pendingOf, reduceRow, shown, type Picture, type RowState } from "../../src/convlog/reduce";
-import { RETRY_TEXT, afterClear, makeChatView, type ChatView } from "../../src/convlog/view";
+import { RETRY_TEXT, makeChatView, type ChatView } from "../../src/convlog/view";
 import { filesLine, splitFilesLine } from "../../src/filesLine";
 import { ATTACH_MAX_BYTES, isPhoto, pendingFile, sizeLabel, tooBig, type PendingFile } from "./attach";
 import { MAIN_ID, MAIN_TITLE, isOlderChat, panelModel, projectThreadId, projectOfThread } from "../../src/threads";
@@ -338,33 +338,6 @@ export function boot(): void {
     document.addEventListener("touchend", onEnd, { passive: true });
     document.addEventListener("touchcancel", onEnd, { passive: true });
   })();
-  /** Clear on this phone only (the laptop's view, the conversation and its context are untouched): what is
-   *  shown now leaves this view, kept across reloads (src/boxChat.ts afterClear, the laptop's own). */
-  const CLEARED_KEY = "vc_phone_cleared";
-  let clearedAt: Record<string, string> = (() => { try { return JSON.parse(localStorage.getItem(CLEARED_KEY) || "{}") || {}; } catch { return {}; } })();
-  async function clearThread(targetId: string) {
-    if (!targetId) return;
-    // Reuse the live fold for the selected thread. A different row needs only its
-    // checkpoint: never openThread (which would change the owner/composer/view).
-    let view: ChatView;
-    if (targetId === convId && pic && picView) view = picView(pic);
-    else {
-      const r = await api("/api/v2/conversations/" + encodeURIComponent(targetId) + "/checkpoint");
-      const d = await r.json();
-      if (!r.ok || d.error) throw new Error(d.error || r.status);
-      view = makeChatView()(d.picture as Picture);
-    }
-    const last = view.messages[view.messages.length - 1]?.mid;
-    if (!last) return;
-    clearedAt = { ...clearedAt, [targetId]: last };
-    try { localStorage.setItem(CLEARED_KEY, JSON.stringify(clearedAt)); } catch {}
-    outgoing = outgoing.filter((o) => o.convId !== targetId || !o.failed);
-    if (targetId !== convId) return;
-    for (const [, n] of shownNodes) n.el.remove();
-    shownNodes.clear();
-    followBottom = true; // Follow new replies in this phone's blank view.
-    renderThread();
-  }
   /** "/compact [focus]": the conversation's context compacted now (not a message to the agent). */
   async function compactCommand(text: string): Promise<boolean> {
     const m = /^\/compact(?:\s+([\s\S]*))?$/i.exec(text.trim());
@@ -423,21 +396,40 @@ export function boot(): void {
       if (cdraw.classList.contains("on")) { for (const c of chats) { if (!runIds.has(c.id)) convUnseen.delete(c.id); } }
       updateConvDot();
       box.innerHTML = "";
-      // The left panel, as on the laptop (src/threads.ts): Main on its own, then "Projects" (each its one thread) and
-      // + New project, then a separate chat while one exists. No list of older chats (their files stay on the box).
+      // The left panel, as on the laptop (src/threads.ts): the vault's main on its own, then
+      // "Projects" and + New project. Each is a place, and its own chats are listed under it,
+      // newest first, with + New chat. No list of older chats (their files stay on the box).
       await loadProjects();
       const { entries } = panelModel(chats.map((c) => ({ ...c, running: runIds.has(c.id) || convRunning.has(c.id), unread: convUnseen.has(c.id) })), projects, convId);
       const sectionLabel = (t: string) => { const h = document.createElement("div"); h.className = "csec"; h.textContent = t; return h; };
+      const meta = (id: string) => chats.find((c) => c.id === id) || ({} as (typeof chats)[number]);
+      /** A place's chats, under it: his own conversation there and every chat he started in it. */
+      const addChats = (e: Extract<typeof entries[number], { type: "main" | "project" }>) => {
+        for (const c of e.chats) {
+          const r = convRow({ id: c.id, title: c.title, lastActivityAt: meta(c.id).lastActivityAt, preview: meta(c.id).preview || "" }, c.running);
+          r.dataset.el = "place-chat";
+          r.dataset.chat = c.id;
+          r.classList.add("sub");
+          if (c.active) r.classList.add("on");
+          box.appendChild(r);
+        }
+        const slug = e.type === "project" ? e.slug : "";
+        const nw = el('<button class="csec proj pnew sub" data-el="place-new-chat"><span class="pn">+ New chat</span></button>');
+        nw.dataset.place = e.id;
+        nw.onclick = () => { closeConvs(); newChat(slug); };
+        box.appendChild(nw);
+      };
       for (const e of entries) {
         if (e.type === "main") {
-          const r = convRow({ id: e.id, title: "Main", lastActivityAt: (chats.find((c) => c.id === e.id) || {}).lastActivityAt, preview: "" }, e.running);
+          const r = convRow({ id: e.chats[0]?.id ?? e.id, title: "Main", lastActivityAt: meta(e.id).lastActivityAt, preview: "" }, e.running);
           r.dataset.el = "thread-main";
           r.classList.add("main");
           // Main = your conversation: a chat bubble (Lucide's, the laptop's set), not a house.
           r.querySelector(".nm")!.insertAdjacentHTML("beforebegin", MAIN_ICON_SVG);
           if (e.active) r.classList.add("on");
-          addThreadMenu(r, e.id, "Main");
+          addThreadMenu(r, "Main");
           box.appendChild(r);
+          addChats(e);
           box.appendChild(sectionLabel("Projects"));
           continue;
         }
@@ -447,11 +439,13 @@ export function boot(): void {
           box.appendChild(np);
           continue;
         }
-        const r = convRow({ id: e.id, title: projectName(e.slug) || e.title, lastActivityAt: (chats.find((c) => c.id === e.id) || {}).lastActivityAt, preview: (chats.find((c) => c.id === e.id) || {}).preview || "" }, e.running);
+        const name = projectName(e.slug) || e.title;
+        const r = convRow({ id: e.chats[0]?.id ?? e.id, title: name, lastActivityAt: meta(e.id).lastActivityAt, preview: meta(e.id).preview || "" }, e.running);
         r.dataset.el = "thread-project";
         if (e.active) r.classList.add("on");
-        addThreadMenu(r, e.id, projectName(e.slug) || e.title, e.slug);
+        addThreadMenu(r, name, e.slug);
         box.appendChild(r);
+        addChats(e);
       }
     } catch (e) {
       box.innerHTML = '<div class="empty">Couldn’t load: ' + esc(String(e.message || e)) + "</div>";
@@ -479,9 +473,9 @@ export function boot(): void {
     setTimeout(() => ($("sheetFoot").querySelector(".rinp") as HTMLTextAreaElement | null)?.focus(), 250);
   }
   // Keep the existing row's ⋯ / action sheet, including Main's Clear-only menu.
-  function addThreadMenu(row: HTMLElement, targetId: string, name: string, slug?: string) {
+  function addThreadMenu(row: HTMLElement, name: string, slug?: string) {
     const more = el('<span class="cmore" role="button" tabindex="0" aria-label="' + (slug ? 'Project' : 'Thread') + ' options" data-el="project-menu">⋯</span>');
-    const open = () => { closeConvs(); openProjectMenu(slug, name, targetId); };
+    const open = () => { closeConvs(); openProjectMenu(slug, name); };
     more.onclick = (ev) => { ev.stopPropagation(); open(); };
     more.onkeydown = (ev) => {
       if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); ev.stopPropagation(); open(); }
@@ -494,21 +488,18 @@ export function boot(): void {
     if (!r.ok || d.error || d.ok === false) throw new Error(d.error || r.status);
     return d;
   }
-  function openProjectMenu(slug: string | undefined, name: string, targetId = slug ? projectThreadId(slug) : MAIN_ID) {
-    const row = (k: string, label: string, cls = "") => '<button class="arch-row thread-action' + cls + '" data-k="' + k + '"' + (k === "clear" ? ' data-el="clear-thread" aria-label="Clear this thread"' : '') + '><span class="arch-t">' + esc(label) + "</span></button>";
+  function openProjectMenu(slug: string | undefined, name: string) {
+    const row = (k: string, label: string, cls = "") => '<button class="arch-row thread-action' + cls + '" data-k="' + k + '"><span class="arch-t">' + esc(label) + "</span></button>";
     openSheet({
       intent: slug ? "Project" : "Thread", title: name, ico: slug ? "◎" : "•",
-      bodyHtml: row("clear", "Clear") + (slug ? row("rename", "Rename") + row("delete", "Delete", " danger") : ""),
+      // A new chat is how a place is started fresh; nothing is ever wiped.
+      bodyHtml: row("new", "New chat") + (slug ? row("rename", "Rename") + row("delete", "Delete", " danger") : ""),
       wire: (body: HTMLElement) => {
         body.querySelectorAll<HTMLButtonElement>(".arch-row[data-k]").forEach((b) => {
           b.onclick = async () => {
-            if (b.dataset.k === "clear") {
-              b.disabled = true;
-              try {
-                await clearThread(targetId);
-                closeSheet();
-                $("convBtn").focus({ preventScroll: true });
-              } catch (e: any) { toast("Couldn't clear: " + (e.message || e)); b.disabled = false; }
+            if (b.dataset.k === "new") {
+              closeSheet();
+              newChat(slug || "");
             } else if (slug) {
               if (b.dataset.k === "rename") openRenameProjectSheet(slug, name);
               else openDeleteProjectSheet(slug, name);
@@ -517,8 +508,9 @@ export function boot(): void {
         });
       },
     });
-    // Move focus out of the dismissed drawer/composer without reopening a keyboard.
-    $("sheetBody").querySelector('[data-k="clear"]')?.focus({ preventScroll: true });
+    // Move focus out of the dismissed drawer/composer without reopening a
+    // keyboard: the sheet's first row, whatever it is now (it was Clear's).
+    ($("sheetBody").querySelector("[data-k]") as HTMLButtonElement | null)?.focus({ preventScroll: true });
   }
   function openRenameProjectSheet(slug: string, name: string) {
     openSheet({
@@ -657,7 +649,7 @@ export function boot(): void {
     } else if (tailEl) { tailEl.remove(); }
     const pin = $("pinned");
     // The pinned plan: while it has work left.
-    const todos = convId ? currentPlan(afterClear(pic && picView ? picView(pic).messages : [], clearedAt[convId])) : [];
+    const todos = convId ? currentPlan(pic && picView ? picView(pic).messages : []) : [];
     const planOpen = running || todos.some((t) => t.status !== "completed");
     if (pin) pin.innerHTML = X.subagentsHtml(runningTasks, "strip", tasksOpen) + (X.choice("todos") === "pinned" && planOpen ? X.todosHtml(todos) : "");
   }
@@ -877,7 +869,7 @@ export function boot(): void {
     typeset(streamEl);
     renderRunline();
   }
-  function clearThreadUi() { followBottom = true; running = false; stopping = false; streamText = ""; streamTool = ""; streamEl = null; runlineEl = null; msgsEl.innerHTML = ""; syncSendBtn(); }
+  function blankThreadUi() { followBottom = true; running = false; stopping = false; streamText = ""; streamTool = ""; streamEl = null; runlineEl = null; msgsEl.innerHTML = ""; syncSendBtn(); }
   // Keep the existing empty marker for rendering, without an automatic greeting.
   function showHint() {
     msgsEl.innerHTML = '<div class="hint" data-el="empty-thread"></div>';
@@ -888,7 +880,7 @@ export function boot(): void {
   // within the visit he opened it in. Nothing remembers the last thread across visits; the key the
   // phone used to keep it under is gone.
   try { localStorage.removeItem("vc_phone_conv"); } catch {}
-  function newChat(project?: string) { convId = null; convTitle = "New chat"; convSource = null; convMeta = {}; newChatProject = project || ""; clearThreadUi(); showHint(); setPage("chat"); setHeader(); renderOngoing(); syncArchived(); }
+  function newChat(project?: string) { convId = null; convTitle = "New chat"; convSource = null; convMeta = {}; newChatProject = project || ""; blankThreadUi(); showHint(); setPage("chat"); setHeader(); renderOngoing(); syncArchived(); }
   // An archived mission thread is history: the composer says so and won't send.
   function syncArchived() {
     // An old mission thread, or an older chat from before one main conversation (src/threads.ts): read only.
@@ -946,12 +938,11 @@ export function boot(): void {
   function renderThread() {
     if (!convId) return;
     const stick = followBottom;
-    // Clear pressed here: blank until the box's own `cleared` (this id) is in the fold, which is blank itself.
     const v = pic && picView ? picView(pic) : null;
     const have = new Set([...(pic ? shown(pic) : []).map((x) => x.id), ...(pic ? pendingOf(pic) : []).map((x) => x.id)]);
     const mine = outgoing.filter((o) => o.convId === convId && !have.has(o.id));
     outgoing = outgoing.filter((o) => o.convId !== convId || !(pic ? shown(pic) : []).some((x) => x.id === o.id));
-    const msgs: any[] = [...afterClear(v ? v.messages : [], clearedAt[convId]).filter((m) => !m.hidden && !(m.job && !m.job.failed && m.job.status !== "stopped"))];
+    const msgs: any[] = [...(v ? v.messages : []).filter((m) => !m.hidden && !(m.job && !m.job.failed && m.job.status !== "stopped"))];
     // What pi has not delivered yet (a steer, a queued message): after the thread, labelled.
     for (const p of v ? v.pending : []) msgs.push({ role: "user", content: p.text, mid: p.id, __pending: p.kind });
     for (const o of mine) {
@@ -1021,7 +1012,7 @@ export function boot(): void {
 
   async function openThread(id: string, title?: string) {
     if (convId !== id) setTimeout(() => attention?.poke(), 0);
-    convId = id; convTitle = title || "New chat"; convSource = null; convMeta = {}; newChatProject = ""; clearThreadUi(); markSeen(id); renderOngoing();
+    convId = id; convTitle = title || "New chat"; convSource = null; convMeta = {}; newChatProject = ""; blankThreadUi(); markSeen(id); renderOngoing();
     for (const [, n] of shownNodes) n.el.remove();
     shownNodes.clear();
     pic = null; picView = makeChatView(); loadingRecs = [];
@@ -1034,7 +1025,7 @@ export function boot(): void {
       // The box's fold, then what arrived meanwhile (the reducer skips what it already holds).
       pic = foldInto(d.picture as Picture, loadingRecs || []);
       loadingRecs = null;
-      clearThreadUi();
+      blankThreadUi();
       renderThread(); scrollDown(true);
     } catch (e) {
       loadingRecs = null;

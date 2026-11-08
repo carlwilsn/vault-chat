@@ -4,7 +4,7 @@ import { Markdown, StreamingMarkdown } from "./Markdown";
 import { clipboardImageDataUrls, readChatImage } from "./chatImage";
 import { localPathFromUrl } from "./mdPipeline";
 import { planDone, planCards, currentPlan, type PlanCard } from "./planPlace";
-import { Plus, Square, ArrowUp, ChevronDown, ChevronUp, Wrench, X, MessageSquare, Mic, Paperclip, Scan, AtSign, AlertCircle, Info, Eraser, Loader2, FileText } from "lucide-react";
+import { Plus, Square, ArrowUp, ChevronDown, ChevronUp, Wrench, X, MessageSquare, Mic, Paperclip, Scan, AtSign, AlertCircle, Info, Loader2, FileText } from "lucide-react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { attachBlob, attachPath, insideVault, pathMentions, sizeLabel } from "./attachFiles";
 import { isExternalFileDrop } from "./dnd";
@@ -43,6 +43,7 @@ import { formatCost } from "./ongoingWork";
 import { OngoingLine } from "./OngoingLine";
 import { isArchivedThread, ARCHIVED_THREAD, OLDER_CHAT } from "./conversations";
 import { isOlderChat } from "./threads";
+import { newChatHere } from "./chat-controller";
 import { AgentModelPicker } from "./AgentModelPicker";
 import { ClaudeSignInPrompt, useAiBlocked } from "./ClaudeCodeSignIn";
 import { useFittedPlaceholder } from "./fitPlaceholder";
@@ -1454,16 +1455,19 @@ export function ChatPane() {
                   <span>{formatTokens(lastContext)}</span>
                 </div>
               )}
-              {!archived && !!activeConv && (
+              {!archived && (
                 <button
-                  onClick={() => dispatchChatAction({ kind: "clear" })}
+                  onClick={() => {
+                    newChatHere();
+                    window.dispatchEvent(new CustomEvent("vc-focus-composer"));
+                  }}
                   disabled={!ready}
-                  data-el="clear-thread"
+                  data-el="new-chat"
                   className="flex items-center gap-1 hover:text-foreground transition-colors disabled:opacity-40"
-                  title="Clear this view — on this device only; the conversation and the agent keep everything (/compact makes the context smaller)"
+                  title="New chat — a fresh conversation in this project (or the vault's main). Nothing is wiped: this one stays in the list."
                 >
-                  <Eraser className="h-3 w-3" />
-                  <span>Clear</span>
+                  <Plus className="h-3 w-3" />
+                  <span>New chat</span>
                 </button>
               )}
               {!isPopout && !chatFullscreen && (

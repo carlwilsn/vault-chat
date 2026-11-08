@@ -5,7 +5,6 @@
 // agent's next message, never shown raw here. With the chat closed, the titlebar says "1 running".
 // (Structural types only: the phone imports this too, without the laptop's store.)
 export type TaskRec = { threadId: string; title?: string; task?: string; prompt?: string; state?: string; status?: string; startedAt?: number; endedAt?: number; toolCallId?: string; activity?: string; steps?: number; said?: string; activityAt?: number; background?: boolean };
-type WithCalls = { toolCalls?: { id?: string; name: string; subagents?: string[] }[] };
 export type TaskState = "running" | "done" | "failed" | "stopped";
 
 export function taskState(s: TaskRec): TaskState {
@@ -57,20 +56,6 @@ export function taskActivity(s: TaskRec): string {
   return [s.activity || "starting", stepWord].filter(Boolean).join(" · ");
 }
 
-/** The tasks a surface shows after its Clear: those still running (reachable in the chip), and those started by a
- *  message after the Clear. Finished ones from before it are gone from this view (the box keeps them). */
-export function tasksAfterClear<T extends TaskRec>(list: T[], after: WithCalls[]): T[] {
-  const calls = after.flatMap((m) => m.toolCalls ?? []);
-  const ids = new Set(calls.flatMap((t) => t.subagents ?? []));
-  const callIds = new Set(calls.map((t) => t.id).filter(Boolean));
-  return list.filter((s) => taskState(s) === "running" || ids.has(s.threadId) || (!!s.toolCallId && callIds.has(s.toolCallId)));
-}
-
-/** The plan a surface shows after its Clear: only one written after it (a TodoWrite in a message after the Clear). */
-export function planAfterClear<T>(todos: T[] | undefined, after: WithCalls[]): T[] | undefined {
-  if (!todos?.length) return todos;
-  return after.some((m) => (m.toolCalls ?? []).some((t) => t.name === "TodoWrite")) ? todos : [];
-}
 
 /** Background tasks running across the conversations (the titlebar's "1 running"). */
 export function runningTaskCount(convs: { subagents?: TaskRec[] }[]): number {

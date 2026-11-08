@@ -30,14 +30,13 @@ import { invoke } from "@tauri-apps/api/core";
 import { imageMime } from "./imageMime";
 import { vlog } from "./debugLog";
 import { projectForSend } from "./projects";
-import { useStore, type ChatAttachment, type ChatMessage, type FileUpload, type LiveTool, type TodoItem } from "./store";
-import { planAfterClear, tasksAfterClear } from "./backgroundTasks";
+import { useStore, type ChatAttachment, type ChatMessage, type FileUpload, type LiveTool } from "./store";
 import { readBoxConfig, boxSyncNow } from "./vaultSync";
 import { boxFileChanged } from "./liveReload";
 import type { Conversation } from "./conversations";
 import type { LogRecord, PollAnswer } from "./convlog/protocol";
 import { emptyPicture, emptyRow, foldInto, pendingOf, reduceRow, type Picture, type RowState } from "./convlog/reduce";
-import { RETRY_TEXT, afterClear, makeChatView, type ChatView } from "./convlog/view";
+import { RETRY_TEXT, makeChatView, type ChatView } from "./convlog/view";
 import { MAIN_ID } from "./threads";
 import { probeLaptopReleaseHealth } from "./laptopReleaseHealth";
 
@@ -309,7 +308,6 @@ class BoxChatSession {
   /** The ids this client sent (a delivered steer or queued message drops its chip). */
   private sent = new Set<string>();
   /** Clear on this surface (src/viewClear.ts): each conversation shows only what came after this device's own Clear. */
-  private clearedAt: Record<string, string> = {};
   /** Says to the box whether Carl is looking at the laptop (server/pushGate.ts: the phone stays quiet while he is). */
   private beat: AttentionBeat | null = null;
 
@@ -328,7 +326,6 @@ class BoxChatSession {
   }
 
   start(): void {
-    this.clearedAt = { ...readCleared(this.vault), ...readCleared(this.cacheHome) };
     this.applyCache();
     let lastActive = useStore.getState().activeConversationId;
     this.unsub = useStore.subscribe((s) => {
@@ -601,7 +598,7 @@ class BoxChatSession {
         const p = this.pics.get(id);
         const view = p ? this.viewOf(id)(p) : null;
         // What this surface cleared is not shown here (the conversation, and every other surface, still has it).
-        const base = afterClear((view?.messages ?? prev?.messages.filter((m) => !m.boxPending && !m.boxLocal) ?? []) as ChatMessage[], this.clearedAt[id]);
+        const base = (view?.messages ?? prev?.messages.filter((m) => !m.boxPending && !m.boxLocal) ?? []) as ChatMessage[];
         const messages = this.overlay(id, base, view?.pending ?? (p ? pendingOf(p) : []), !!(view ? view.running : row.running));
         // Sending: running as far as this client knows, until the log says so.
         const sending = (this.outgoing.get(id) ?? []).some((o) => !o.failed && (o.role ?? "user") === "user" && !o.line && (!o.steer || !!o.now));
@@ -627,7 +624,7 @@ class BoxChatSession {
           queued: (view?.pending ?? []).map((x) => ({ id: x.id, text: x.text, kind: x.kind })),
           pendingAsk: ask ? { question: ask.question ?? "", options: ask.options ?? [], at: ask.at } : undefined,
           ...(p
-            ? { ...this.afterClearFields(id, view?.todos ?? undefined, (p.meta.subagents ?? []) as Conversation["subagents"], base), contextWindow: view?.window ?? prev?.contextWindow, threadId: p.meta.threadId }
+            ? { todos: view?.todos ?? undefined, subagents: (p.meta.subagents ?? []) as Conversation["subagents"], contextWindow: view?.window ?? prev?.contextWindow, threadId: p.meta.threadId }
             : {}),
         } as Conversation;
         if (prev && s.activeConversationId !== id && next.lastActivityAt > prev.lastActivityAt && messages.length > prev.messages.length) next.unread = true;
@@ -769,24 +766,6 @@ class BoxChatSession {
   failOutgoing(convId: string, id: string, why: string): void {
     const after = this.lastLogged(convId);
     this.outgoing.set(convId, (this.outgoing.get(convId) ?? []).map((o) => (o.id === id ? { ...o, failed: why, after } : o)));
-    this.project(new Set([convId]));
-  }
-
-  /** The plan and the background tasks this surface shows: after its Clear, a plan written since and the tasks
-   *  started since or still running (backgroundTasks.ts); everything when it never cleared. */
-  private afterClearFields(id: string, todos: TodoItem[] | undefined, subagents: Conversation["subagents"], after: ChatMessage[]): Pick<Conversation, "todos" | "subagents"> {
-    if (!this.clearedAt[id]) return { todos, subagents };
-    return { todos: planAfterClear(todos, after), subagents: tasksAfterClear(subagents ?? [], after) };
-  }
-
-  /** Clear on this surface: everything shown so far goes from this device's view (nothing changes on the box). */
-  clearHere(convId: string): void {
-    const shown = useStore.getState().conversations.find((c) => c.id === convId)?.messages.filter((m) => !m.boxPending && !m.boxLocal) ?? [];
-    const last = shown[shown.length - 1]?.mid;
-    this.notices.delete(convId);
-    if (!last) return;
-    this.clearedAt = { ...this.clearedAt, [convId]: last };
-    saveCleared(this.cacheHome, this.clearedAt);
     this.project(new Set([convId]));
   }
 
@@ -1190,19 +1169,7 @@ export async function boxLines(lines: { role: "user" | "assistant"; text: string
   return true;
 }
 
-/**
- * Clear (Carl, 2026-10-23: "the visual clearing should be surface by surface so a phone clear doesn't affect a
- * laptop"): this device's view of the thread goes blank, with no divider and nothing to scroll back into; the
- * conversation itself, its context and every other surface are untouched (auto-compaction and /compact keep the
- * context small). Kept on this device across restarts. False = not box mode.
- */
-export function boxClear(convId: string): boolean {
-  if (!boxChatOn() || !session) return false;
-  session.clearHere(convId);
-  return true;
-}
-
-/** /compact [focus]: pi compacts the conversation's context now (server/engine/engine.ts compact). A refusal is said in the thread. */
+/** /compact [focus]: the engine compacts the conversation's context now (server/engine/engine.ts compact). A refusal is said in the thread. */
 export async function boxCompact(convId: string, focus: string): Promise<boolean> {
   if (!boxChatOn() || !session) return false;
   const sess = session;
@@ -1214,22 +1181,6 @@ export async function boxCompact(convId: string, focus: string): Promise<boolean
   return true;
 }
 
-const CLEARED_PREFIX = "vault-chat:cleared:";
-function readCleared(vault: string): Record<string, string> {
-  try {
-    const v = JSON.parse(localStorage.getItem(CLEARED_PREFIX + vault) ?? "{}");
-    return v && typeof v === "object" ? v : {};
-  } catch {
-    return {};
-  }
-}
-function saveCleared(vault: string, v: Record<string, string>): void {
-  try {
-    localStorage.setItem(CLEARED_PREFIX + vault, JSON.stringify(v));
-  } catch {
-    /* no storage: this session only */
-  }
-}
 
 
 /** Delete a conversation on the box (a record in its log; every client drops it). False = not box mode. */

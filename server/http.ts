@@ -811,9 +811,6 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
     }
     case "POST /kill":
       return engineRoute(res, scope, hooks.engine?.kill, await jsonBody(req), "phone:kill", 10_000, "app not answering");
-    case "POST /chats/clear":
-      if (!scope.main) return mainOnly();
-      return relayRoute(res, "phone:clearchats", {}, 15_000, "app not answering");
     case "GET /push/preferences":
       return json(res, 200, { legacyAutomatic: legacyPushEnabled() });
     case "POST /push/preferences": {

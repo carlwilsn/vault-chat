@@ -1,7 +1,7 @@
 import { emit, emitTo, listen } from "@tauri-apps/api/event";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { useStore, type ChatMessage, type FileEntry, type LiveTool, type Theme } from "./store";
-import { sendMessage, stopAgent, clearThread, interruptAndSend, sendNow, takeBack } from "./chat-controller";
+import { sendMessage, stopAgent, interruptAndSend, sendNow, takeBack } from "./chat-controller";
 import type { Conversation } from "./conversations";
 import { newConversationId } from "./conversations";
 import { listProjects, openProjectNotes, openThread, routeProjectChangesTo, routeProjectNotesTo, setConversationProject } from "./projects";
@@ -84,7 +84,6 @@ export type ChatAction =
   | { kind: "sendNow"; convId: string; id: string }
   | { kind: "unqueue"; convId: string; id: string }
   | { kind: "stop" }
-  | { kind: "clear" }
   | { kind: "startCapture" }
   // The fullscreen chat's sidebar, mic and Ctrl+T, from the popout: main owns
   // the chats list (it runs the agent and writes the list to disk).
@@ -138,7 +137,6 @@ function applyActionLocal(a: ChatAction) {
   else if (a.kind === "unqueue") void takeBack(a.convId, a.id);
   else if (a.kind === "stop") stopAgent();
   // Clear: the open thread's view goes blank; the box saves what lasts and compacts (chat-controller.ts).
-  else if (a.kind === "clear") clearThread();
   else if (a.kind === "startCapture") {
     // Triggered by popout's Camera button. Main sets the pending
     // flag and fires marquee-toggle on main's window — the user

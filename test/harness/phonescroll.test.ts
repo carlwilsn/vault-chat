@@ -61,9 +61,14 @@ test("phone: keyboard upward navigation cancels a pending resize pin, not typing
   s.listeners.keydown({ key: "ArrowUp", target: { closest: () => ({}) } });
   s.el.scrollHeight += 500; s.resize(); assert.equal(s.el.scrollTop, 1500);
 });
-test("phone: Clear and thread switches reset only the viewport latch; send does not force it", () => {
-  assert.match(boot, /function clearThreadUi\(\) \{ followBottom = true;/);
-  assert.match(boot, /shownNodes.clear\(\);\n    followBottom = true;[^\n]*\n    renderThread\(\);/);
+test("phone: opening a thread resets only the viewport latch; send does not force it", () => {
+  // Blanking the thread's view is the one place the latch goes back to the
+  // bottom (it was Clear's job too, before Clear went). Nothing else repins a
+  // reader: a send does not scroll him down.
+  assert.match(boot, /function blankThreadUi\(\) \{ followBottom = true;/);
+  const open = boot.slice(boot.indexOf("  async function openThread("), boot.indexOf("  async function send("));
+  assert.match(open, /blankThreadUi\(\)/, "a thread switch blanks the view");
+  assert.match(open, /shownNodes\.clear\(\)/, "and drops the nodes it had shown");
   assert.doesNotMatch(boot.slice(boot.indexOf("  async function send("), boot.indexOf("  // The real text's height")), /scrollDown\(true\)/);
 });
 test("phone: a queued programmatic scroll after image growth does not release the bottom latch", () => {

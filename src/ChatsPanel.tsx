@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { MessageSquare, Plus, X as XIcon, Folder, PanelLeftClose, FileText, Home, MoreHorizontal } from "lucide-react";
+import { MessageSquare, Plus, X as XIcon, Folder, PanelLeftClose, FileText, Home, MoreHorizontal, ChevronRight } from "lucide-react";
 import { useStore } from "./store";
 import { useProjects } from "./ProjectChip";
-import { createProjectThread, deleteProject, openProjectNotes, openThread, projectName, renameProject } from "./projects";
+import { createProjectThread, deleteProject, newChatInProject, openProjectNotes, openThread, projectName, renameProject } from "./projects";
 import { panelModel, type PanelEntry } from "./threads";
 import { cn } from "./lib/utils";
 import { NewProjectForm } from "./NewProjectForm";
@@ -96,10 +96,12 @@ export function ChatsSidebar({ onFocusComposer }: { onFocusComposer?: () => void
 }
 
 /**
- * The left panel (src/threads.ts panelModel): Main on its own at the top, then the projects under a
- * small "Projects" label (each opens its one thread) and "+ New project". Nothing else: no older chats
- * (their files stay on disk; the agent reads them with its tools), no separate chats, no memory viewer
- * (memory works behind the scenes; Carl: "if there is a failure, i will tell you to fix it").
+ * The left panel (src/threads.ts panelModel): the vault's main on its own at the top, then the
+ * projects under a small "Projects" label and "+ New project". Each is a place that opens into its
+ * chats, newest first, with "New chat" under them — the place Carl is in is open, the rest are shut
+ * until he asks. Nothing else: no older chats (their files stay on disk; the agent reads them with
+ * its tools), no memory viewer (memory works behind the scenes; Carl: "if there is a failure, i will
+ * tell you to fix it").
  */
 function ThreadsList({
   onPicked,
@@ -118,7 +120,9 @@ function ThreadsList({
   const { entries } = useMemo(
     () =>
       panelModel(
-        conversations.map((c) => ({ id: c.id, title: c.title, kind: c.kind, lastActivityAt: c.lastActivityAt, running: c.status === "running", unread: c.unread })),
+        // `project` matters now: it is what puts a chat under the place it was
+        // started in rather than under the vault's main.
+        conversations.map((c) => ({ id: c.id, title: c.title, kind: c.kind, project: c.project, lastActivityAt: c.lastActivityAt, running: c.status === "running", unread: c.unread })),
         projects,
         activeId,
       ),
@@ -165,7 +169,16 @@ function ThreadsList({
       <div className="flex-1 overflow-auto" data-el="threads">
         {/* Main: the one conversation, on its own. */}
         <div className="py-1.5">
-          <ThreadRow entry={main} name="Main" onSelect={() => open(main.id, main.title)} />
+          <ThreadRow
+            entry={main}
+            name="Main"
+            onSelect={() => open(main.chats[0]?.id ?? main.id, main.chats[0]?.title ?? main.title)}
+            onOpenChat={(id, title) => open(id, title)}
+            onNewChat={() => {
+              useStore.getState().newConversation();
+              focusChat();
+            }}
+          />
         </div>
         <div className="border-t border-border/60" />
         <div className={label} data-el="projects-label">
@@ -191,7 +204,12 @@ function ThreadsList({
               key={e.id}
               entry={e}
               name={projectName(e.slug, projects) || e.title}
-              onSelect={() => open(e.id, e.title)}
+              onSelect={() => open(e.chats[0]?.id ?? e.id, e.chats[0]?.title ?? e.title)}
+              onOpenChat={(id, title) => open(id, title)}
+              onNewChat={() => {
+                newChatInProject(e.slug);
+                focusChat();
+              }}
               onNotes={() => void openProjectNotes(e.slug, e.title).then(() => onPicked?.())}
               onRename={async (to) => {
                 const r = await renameProject(e.slug, to);
@@ -219,6 +237,8 @@ export function ThreadRow({
   entry,
   name,
   onSelect,
+  onOpenChat,
+  onNewChat,
   onNotes,
   onRename,
   onDelete,
@@ -226,6 +246,10 @@ export function ThreadRow({
   entry: Extract<PanelEntry, { type: "main" | "project" }>;
   name: string;
   onSelect: () => void;
+  /** Open one of the place's chats. */
+  onOpenChat?: (id: string, title: string) => void;
+  /** Start a fresh chat in this place. */
+  onNewChat?: () => void;
   onNotes?: () => void;
   onRename?: (name: string) => Promise<void>;
   /** `folder`: Carl's second choice — the folder goes too. */
@@ -233,6 +257,11 @@ export function ThreadRow({
 }) {
   const { active, running, unread } = entry;
   const isMain = entry.type === "main";
+  const chats = entry.chats;
+  // Open where Carl is: a place he is in shows its chats; the others stay shut
+  // until he asks. His own click wins over that for as long as the panel is up.
+  const [opened, setOpened] = useState<boolean | null>(null);
+  const shown = opened ?? active;
   const [menu, setMenu] = useState(false);
   const [mode, setMode] = useState<null | "rename" | "confirm">(null);
   const [draft, setDraft] = useState(name);
@@ -297,7 +326,31 @@ export function ThreadRow({
       // Keep a fixed trailing status gutter; hover actions must not push the dot into the name column.
       className={cn("relative flex items-center gap-1 pr-7 group", active ? "bg-accent" : "hover:bg-accent/40")}
     >
-      <button onClick={onSelect} className={cn("flex-1 text-left px-4 flex items-center min-w-0", isMain ? "py-2 gap-2.5" : "py-1.5 gap-2")}>
+      <button
+        onClick={(ev) => {
+          // The chevron is the place's own control: it shows the chats without
+          // leaving the one Carl is reading.
+          if ((ev.target as HTMLElement).closest("[data-el=place-chats]")) return;
+          setOpened(true);
+          onSelect();
+        }}
+        className={cn("flex-1 text-left px-4 flex items-center min-w-0", isMain ? "py-2 gap-2.5" : "py-1.5 gap-2")}
+      >
+        {chats.length > 0 && (
+          <span
+            data-el="place-chats"
+            role="button"
+            aria-label={shown ? `Hide ${name}'s chats` : `Show ${name}'s chats`}
+            aria-expanded={shown}
+            onClick={(ev) => {
+              ev.stopPropagation();
+              setOpened(!shown);
+            }}
+            className="shrink-0 -ml-2 mr-0.5 h-4 w-4 flex items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-accent/60"
+          >
+            <ChevronRight className={cn("h-3 w-3 transition-transform", shown && "rotate-90")} />
+          </span>
+        )}
         {isMain ? <Home className="h-3.5 w-3.5 text-foreground/80 shrink-0" /> : <Folder className="h-3 w-3 text-muted-foreground shrink-0" />}
         <span
           className={cn(
@@ -367,6 +420,43 @@ export function ThreadRow({
         </div>
       )}
     </div>
+    {shown && (
+      <div data-el="place-chat-list" data-place={entry.id}>
+        {chats.map((c) => (
+          <button
+            key={c.id}
+            data-el="place-chat"
+            data-chat={c.id}
+            onClick={() => onOpenChat?.(c.id, c.title)}
+            className={cn(
+              "relative w-full text-left pl-11 pr-7 py-1 flex items-center gap-2 text-[12px] min-w-0",
+              c.active ? "bg-accent text-foreground font-medium" : "hover:bg-accent/40 text-foreground/75",
+            )}
+          >
+            <span className="truncate flex-1">{c.title}</span>
+            {c.running ? (
+              <span className="absolute right-4 top-1/2 -translate-y-1/2 inline-flex h-1.5 w-1.5" title="Working…" role="img" aria-label="Working…">
+                <span className="absolute inset-0 rounded-full bg-foreground opacity-60 animate-ping" />
+                <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-foreground" />
+              </span>
+            ) : c.unread ? (
+              <span className="absolute right-4 top-1/2 -translate-y-1/2 h-1.5 w-1.5 rounded-full bg-primary" title="Done — unseen" role="img" aria-label="Done — unseen" />
+            ) : null}
+          </button>
+        ))}
+        {onNewChat && (
+          <button
+            data-el="place-new-chat"
+            data-place={entry.id}
+            onClick={onNewChat}
+            className="w-full text-left pl-11 pr-4 py-1 flex items-center gap-1.5 text-[11.5px] text-muted-foreground/80 hover:text-foreground hover:bg-accent/40"
+          >
+            <Plus className="h-3 w-3" />
+            New chat
+          </button>
+        )}
+      </div>
+    )}
     {mode === "confirm" && (
       <DeleteProjectConfirm
         name={name}

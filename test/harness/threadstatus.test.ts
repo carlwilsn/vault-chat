@@ -16,6 +16,7 @@ for (const type of ["main", "project"] as const) {
           entry: {
             type, id: type, title: type, slug: "fixture", active: true,
             running: state === "running", unread: state === "unread",
+            chats: [{ id: type, title: type, active: true, running: state === "running", unread: state === "unread", at: 1 }],
           },
           name: "A long project name that must still ellipsize",
           onSelect: () => {},
