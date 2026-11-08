@@ -1,13 +1,14 @@
-// Genuine compiled server + native pi 1.1 MCP, unpaid loopback provider.
+// The genuine compiled server and its real runtime, on a local stand-in model.
 // Only generated fixtures, no private workspace inspection or live note writes.
 import { beforeAll, afterAll, describe, it, expect } from 'vitest';
 import { join } from 'node:path';
 import { mkdirSync, readFileSync, writeFileSync, existsSync, symlinkSync } from 'node:fs';
 import { tmp, cleanup, makeVault, startServer, waitFor, type Running } from './helpers';
-import { fakeChat, lastUser, lastToolResult, type FakeApi } from './fakeChat';
+import { lastUser, lastToolResult } from './fakeChat';
 import { configureContext, resetContextConfig } from '../context/config';
 import { globalNotes, appendGlobalNote, writeGlobalNotes } from '../notesStorage';
 import type { Note } from '../../src/notes';
+import { fakeAnthropic, type FakeApi } from "./claudeFakeApi";
 const seed: Note = { id:'existing-fixture',timestamp:'2026-01-01T00:00:00Z',last_updated:'2026-01-01T00:00:00Z',status:'open',user_draft:'Existing original reminder',turns:[],anchors:[{source_path:'same.md',source_kind:'markdown',source_anchor:null,primary:true}] };
 
 describe('global notes read-through safety (no migration)', () => {
@@ -58,7 +59,7 @@ describe('compiled Notes APIs and native tools across viewers and owner threads'
    if(result!==null){ output=result; return {text:'Owned note step complete',noCost:true}; }
    return step?{call:step,noCost:true}:{text:'Owned note idle',noCost:true};
   };
-  srv=await startServer({home,vault:a,secrets:join(home,'absent-secrets'),openrouter:provider.url,extra:{VC_VAULT_NAME:'home',VC_MASTER:home}});
+  srv=await startServer({home,vault:a,secrets:join(home,'absent-secrets'),anthropic: provider.url,extra:{VC_VAULT_NAME:'home',VC_MASTER:home}});
   await post('/api/v1/vaults',{name:'fixture-a'}); await post('/api/v1/vaults',{name:'fixture-b'});
  });
  afterAll(async()=>{await srv?.stop();await provider?.close();if(home)cleanup(home);});

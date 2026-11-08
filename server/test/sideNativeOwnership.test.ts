@@ -36,7 +36,7 @@ it("project Ctrl+K keeps its native owner/cwd with another vault open, including
   writeFileSync(network, `const actual=globalThis.fetch;globalThis.fetch=(input,init)=>{const u=new URL(typeof input==='string'?input:input instanceof URL?input.href:input.url);if(u.href==='https://openrouter.ai/api/v1/models')return actual(${JSON.stringify(provider.url + "/models")},init);if(['127.0.0.1','localhost','[::1]'].includes(u.hostname))return actual(input,init);throw Error('External fetch refused');};`);
   let srv: Running | undefined;
   try {
-    srv = await startServer({ home: processHome, vault: owner, secrets: join(processHome, "empty-credentials"), openrouter: provider.url, extra: { VC_MASTER: master,  ".local/state/vault-chat-server/pi/1.1.0"), VC_VOICE_PIPELINE: "off", NODE_OPTIONS: "--import " + network } });
+    srv = await startServer({ home: processHome, vault: owner, secrets: join(processHome, "empty-credentials"), anthropic: provider.url, extra: { VC_MASTER: master,  ".local/state/vault-chat-server/pi/1.1.0"), VC_VOICE_PIPELINE: "off", NODE_OPTIONS: "--import " + network } });
     mkdirSync(agent, { recursive: true });
     const get = async (path: string) => { const r = await fetch(srv!.base + path); return { status: r.status, body: await r.json() }; };
     const post = async (path: string, b: any) => { const r = await fetch(srv!.base + path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(b) }); expect(r.status).toBe(200); return r.json(); };

@@ -26,6 +26,7 @@ const fsCalls: { name: string; args: any }[] = [];
 class FakeBackend extends EventEmitter {
   readonly name = "pi";
   setHandlers() {}
+  start() {}
   async ready() { return true; }
   health() { return {}; }
   usageCalls() { return []; }

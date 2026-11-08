@@ -7,8 +7,9 @@ import {join} from 'node:path';
 import {homedir} from 'node:os';
 import {execFileSync} from 'node:child_process';
 import {makeVault,startServer,tmp,waitFor,type Running} from './helpers';
-import {fakeChat,chatText,lastUser} from './fakeChat';
+import {chatText,lastUser} from './fakeChat';
 import {previewGlobalConversations,applyGlobalConversations} from '../../scripts/global-conversations-offline';
+import { fakeAnthropic } from "./claudeFakeApi";
 it('cold cohort exposes both old Mains in GET Main and one continuing native owner with full peer context; project identity survives',async()=>{
  const root=tmp('vc-global-migration-native-'),master=join(root,'master');
  const home=makeVault(join(master,'vaults/owner')),peer=makeVault(join(master,'vaults/peer')),project=join(root,'external-project');
@@ -28,7 +29,7 @@ it('cold cohort exposes both old Mains in GET Main and one continuing native own
  let srv:Running|undefined;
  const boot=async(vault:string,processHome:string)=>{
   mkdirSync(processHome,{recursive:true});
-  const running=await startServer({home:processHome,vault,secrets:join(processHome,'empty-no-credentials'),openrouter:provider.url,extra:{VC_MASTER:master,VC_VOICE_PIPELINE:'off',NODE_OPTIONS:'--import '+network}});
+  const running=await startServer({home:processHome,vault,secrets:join(processHome,'empty-no-credentials'),anthropic: provider.url,extra:{VC_MASTER:master,VC_VOICE_PIPELINE:'off',NODE_OPTIONS:'--import '+network}});
   return running;
  };
  const ask=async(id:string,text:string)=>{

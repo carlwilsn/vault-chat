@@ -1,4 +1,4 @@
-// In-process rig for the long-run tests: a fake pi backend (threads, turns and
+// In-process rig for the long-run tests: a fake backend (threads, turns and
 // tool calls driven by the test) and the engine on a temp vault.
 import { piOf } from "./fakePi";
 import { EventEmitter } from "node:events";
@@ -17,6 +17,7 @@ export class FakeBackend extends EventEmitter {
   setHandlers(h: any) {
     this.h = h;
   }
+  start() {}
   async ready() {
     return true;
   }

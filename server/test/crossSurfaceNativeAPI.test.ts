@@ -34,7 +34,7 @@ globalThis.fetch=(input,init)=>{
 };`);
     let srv: Running | undefined;
     try {
-      srv = await startServer({ home, vault, secrets: join(home, "empty-no-credentials"), openrouter: provider.url,
+      srv = await startServer({ home, vault, secrets: join(home, "empty-no-credentials"), anthropic: provider.url,
         extra: {  ".local/state/vault-chat-server/pi/1.1.0"),
           VC_STATE_DIR: state, VC_VOICE_PIPELINE: "off", NODE_OPTIONS: "--import " + network } });
       expect(srv.proc.exitCode).toBeNull();

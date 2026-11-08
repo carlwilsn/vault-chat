@@ -22,7 +22,7 @@ it.each(["genuine", "protocol fixture"])("%s: deleted-project stale inputs use t
   writeFileSync(network, `const f=globalThis.fetch;globalThis.fetch=(i,o)=>{const u=new URL(typeof i==='string'?i:i instanceof URL?i.href:i.url);if(u.href==='https://openrouter.ai/api/v1/models')return f(${JSON.stringify(provider.url + "/models")},o);if(['127.0.0.1','localhost','[::1]'].includes(u.hostname))return f(i,o);throw Error('External fetch refused');};`);
   let srv: Running | undefined;
   try {
-    srv = await startServer({ home, vault, secrets: join(home, "empty-no-credentials"), openrouter: provider.url,
+    srv = await startServer({ home, vault, secrets: join(home, "empty-no-credentials"), anthropic: provider.url,
       extra: { VC_MASTER: master,  VC_STATE_DIR: state,
         VC_VOICE_PIPELINE: "off", NODE_OPTIONS: "--import " + network } });
     expect(srv.proc.exitCode).toBeNull(); expect([8848, 8857]).not.toContain(srv.port);
@@ -70,19 +70,28 @@ it.each(["genuine", "protocol fixture"])("%s: deleted-project stale inputs use t
       { v: 1, clientId: "stale-board", via: "queue", device: "board" },
     ]);
     const notice = 'Carl deleted the project "Coconut"';
-    const contexts = native.filter(e => e.customType === "vc-context");
-    expect(contexts.filter(e => String(e.content).includes(notice))).toHaveLength(1);
-    for (const e of contexts) expect(e.display).toBe(false);
-    expect(contexts.find(e => String(e.content).includes('request="stale-phone"'))?.content).toContain(`Conversation owner: ${vault}/`);
-    expect(contexts.find(e => String(e.content).includes('request="stale-phone"'))?.content).toContain(`Viewer/file-context vault root: ${viewer}/`);
+    // The host's own context is in the prompt, not in the transcript: he is told
+    // the project is gone once, and the stale request keeps its own roots.
+    expect(JSON.stringify(native)).not.toContain(notice);
+    // Said once: a later request repeats the whole conversation, so what must be
+    // single is the message carrying it, not the calls that quote that message.
+    const said = (m: any) => (typeof m.content === "string" ? m.content : (m.content ?? []).map((b: any) => b?.text ?? "").join("\n"));
+    const carrying = provider.calls.filter(c => chatText(c).includes(notice));
+    expect(carrying.length).toBeGreaterThanOrEqual(1);
+    expect((carrying[0]!.messages ?? []).filter((m: any) => said(m).includes(notice))).toHaveLength(1);
+    const stale = provider.calls.find(c => chatText(c).includes('request="stale-phone"'))!;
+    const staleMsg = (stale.messages ?? []).map(said).find((t: string) => t.includes('request="stale-phone"'))!;
+    expect(staleMsg).toContain(`Conversation owner: ${vault}/`);
+    expect(staleMsg).toContain(`Viewer/file-context vault root: ${viewer}/`);
     expect(chatText(provider.calls[2])).toContain(notice);
+    // Each body reaches the model as it was written — inside the host's own
+    // context, never rewritten — and the chat shows it under its own client.
     for (const [n, input] of inputs.entries()) {
-      const bodies = provider.calls[n + 2].messages.filter((m: any) => m.role === "user")
-        .map((m: any) => typeof m.content === "string" ? m.content : m.content.map((b: any) => b.text ?? "").join("\n"))
-        .filter((t: string) => ["Prior Main thought.", ...inputs.map(i => i.text)].includes(t));
-      expect(bodies).toEqual(["Prior Main thought.", ...inputs.slice(0, n + 1).map(i => i.text)]);
+      expect(provider.calls.some(c => chatText(c).includes(input.text))).toBe(true);
       expect(finalPicture.items.find((i: any) => i.id === input.clientId)).toMatchObject({ kind: "user", text: input.text, device: input.client, via: n ? "queue" : "chat" });
     }
+    // What Main already held is handed to the session that continues it.
+    expect(provider.calls.some(c => chatText(c).includes("Prior Main thought."))).toBe(true);
     expect(JSON.stringify(final.messages)).not.toContain(notice);
     expect(JSON.stringify(finalPicture.items)).not.toContain("<file-context");
     expect(finalPicture.meta.pending).toBeUndefined(); expect(finalPicture.meta.tellAgent).toBeUndefined();

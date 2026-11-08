@@ -154,8 +154,13 @@ describe("the feed over HTTP", () => {
     await waitFor(() => ended(conv, 2), 60_000);
     const p = fold(await recsOf(conv), conv);
     expect(pendingOf(p)).toEqual([]);
-    const users = p.items.filter((x) => x.kind === "user").map((x) => [x.id, x.via]);
-    expect(users.slice(-3)).toEqual([["c-slow-1", "chat"], ["c-steer-1", "queue"], ["c-queue-1", "queue"]]);
+    // All three are there, in the order his clients sent them — whether the
+    // runtime took the two he queued as two messages or as one.
+    const said = p.items.filter((x) => x.kind === "user").map((x) => x.text ?? "").join("\n");
+    expect(said.indexOf("Walk me through it")).toBeGreaterThanOrEqual(0);
+    expect(said.indexOf("Walk me through it")).toBeLessThan(said.indexOf("Shorter, please."));
+    expect(said.indexOf("Shorter, please.")).toBeLessThan(said.indexOf("Then give an example."));
+    expect(p.items.filter((x) => x.kind === "user" && x.id === "c-slow-1")).toHaveLength(1);
     // Nothing of Carl's is dropped or re-ordered, and the turn he interrupted
     // still answered before his next words were taken: the runtime may take the
     // two he queued together and answer them with one reply, which is its own
@@ -171,6 +176,8 @@ describe("the feed over HTTP", () => {
     await intent({ type: "send", convId: conv, clientId: "c-slow-2", text: "[slow] A long one." });
     await waitFor(() => streaming(conv, h0), 15_000);
     await intent({ type: "queue", convId: conv, clientId: "c-queue-2", text: "Never delivered." });
+    // Pending until the runtime takes it (claudeSession.test.ts pins that on the
+    // session itself); here what matters is what the stop does with it.
     expect(pendingOf(fold(await recsOf(conv), conv)).map((x) => x.id)).toEqual(["c-queue-2"]);
     const r = await intent({ type: "stop", convId: conv });
     expect(r.ok).toBe(true);

@@ -116,9 +116,10 @@ describe("bundle alone (no node_modules)", () => {
     });
     expect((await r.json()).ok).toBe(true);
     // The second completion carries the tool result back to the model.
-    if (process.env.VC_TEST_LOGS) setTimeout(() => console.log("CALLS", JSON.stringify(or.calls.slice(before).map((c) => ({ model: c.model, tools: (c.tools ?? []).map((t: any) => t.function?.name), last: c.messages?.slice(-2) })), null, 1).slice(0, 4000)), 15_000);
-    const followUp = await waitFor(() => or.calls.slice(before).find((c) => JSON.stringify(c.messages ?? []).includes('"role":"tool"')), 60_000);
-    const toolMsg = JSON.stringify(followUp.messages.filter((m: any) => m.role === "tool"));
+    if (process.env.VC_TEST_LOGS) setTimeout(() => console.log("CALLS", JSON.stringify(or.calls.slice(before).map((c) => ({ model: c.model, tools: (c.tools ?? []).map((t: any) => t.name), last: c.messages?.slice(-2) })), null, 1).slice(0, 4000)), 15_000);
+    const isResult = (m: any) => Array.isArray(m.content) && m.content.some((b: any) => b?.type === "tool_result");
+    const followUp = await waitFor(() => or.calls.slice(before).find((c) => (c.messages ?? []).some(isResult)), 60_000);
+    const toolMsg = JSON.stringify(followUp.messages.filter(isResult));
     expect(toolMsg).toContain("Hello from the PDF");
     expect(toolMsg).not.toContain("PDF extraction failed");
   });

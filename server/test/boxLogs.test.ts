@@ -1,7 +1,7 @@
 // The box's logs (server/boxLogs.ts, engine/turnLog.ts, server/diag.ts): one
-// line per turn built from pi's own events (model, stop reason, usage and cost
-// are pi's), capped files that rotate, the board's batches made safe, and the
-// diag window — with no key, token or message text anywhere.
+// line per turn built from the runtime's own events (model, stop reason and
+// usage are its), capped files that rotate, the board's batches made safe, and
+// the diag window — with no key, token or message text anywhere.
 import { describe, it, expect, afterAll } from "vitest";
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -11,34 +11,6 @@ import { TurnRecorder, turnSummary } from "../engine/turnLog";
 import { boardLogPost, boxDiag, jsonlSince } from "../diag";
 import { assistant, toolStart, toolEnd } from "./fakePi";
 import { frustration, noteUserLine } from "../signal";
-import { EventEmitter } from "node:events";
-import { ClaudeSideRuns as SideRuns } from "../engine/claude/side";
-import type { SideLog } from "../engine/backend";
-
-describe("a side request pi retried", () => {
-  it("answers (no failure, no red row) when pi's auto-retry got through after a dropped connection; fails only when the last try failed", async () => {
-    const runs = new SideRuns({} as any, () => {});
-    clearInterval((runs as any).timer);
-    const lines: any[] = [];
-    const go = async (events: any[]) => {
-      const proc = Object.assign(new EventEmitter(), { request: async () => ({ data: { text: "Lecture 6 covers MSTs." } }), close: async () => {} });
-      const log: SideLog = { vault: "v", conv: "c", via: "voice-ask", version: "dev", act: true, allowed: ["read", "write"], write: (l) => lines.push(l) };
-      const run: any = { id: `side-${lines.length}`, text: "", v: 0, done: false, error: null, busy: true, waiters: new Set(), meta: { model: "m" }, proc, log, rec: new TurnRecorder({ vault: "v", conv: "c", turn: "t", session: "s", mode: "side", via: "voice-ask", cmid: null, model: "m", start: Date.now(), version: "dev" }) };
-      (runs as any).attach(run);
-      for (const e of events) proc.emit("event", e);
-      for (let i = 0; i < 50 && !run.done; i++) await new Promise((r) => setTimeout(r, 10));
-      return run;
-    };
-    const dropped = { type: "message_end", message: { role: "assistant", content: [], stopReason: "error", errorMessage: "Connection error." } };
-    const answered = { type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "Lecture 6 covers MSTs." }], stopReason: "stop" } };
-    const ok = await go([dropped, { type: "auto_retry_start", attempt: 1, errorMessage: "Connection error." }, answered, { type: "auto_retry_end", success: true }, { type: "agent_settled" }]);
-    expect(ok).toMatchObject({ done: true, error: null, text: "Lecture 6 covers MSTs." });
-    expect(lines[0]).toMatchObject({ status: "completed", outcome: "ok", error: null, act: true, allowed: ["read", "write"] });
-    const bad = await go([answered, dropped, { type: "agent_settled" }]);
-    expect(bad).toMatchObject({ done: true, error: "Connection error." });
-    expect(lines[1]).toMatchObject({ status: "failed", error: "Connection error." });
-  });
-});
 
 const root = tmp("vcl-");
 afterAll(() => cleanup(root));

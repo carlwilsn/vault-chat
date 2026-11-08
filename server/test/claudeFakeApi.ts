@@ -59,6 +59,12 @@ export type FakeApi = {
    */
   respond: ((body: any, n: number) => ScriptStep | null | Promise<ScriptStep | null>) | null;
   /**
+   * While true every turn's reply streams a letter at a time, so a test can
+   * catch a turn in flight (steer it, stop it, queue behind it, or kill the box
+   * while it talks) without holding it open with a tool call.
+   */
+  slow: boolean;
+  /**
    * While true every turn's request has its connection dropped before any
    * answer — the endpoint going away, which the runtime retries on its own.
    * (A single `{ drop: true }` script step drops one request.)
@@ -135,7 +141,7 @@ export async function fakeAnthropic(opts: string | { delayMs?: number; reply?: s
   const requests: any[] = [];
   const calls: any[] = [];
   const script: ScriptStep[] = [];
-  const state: { reply: string | null; drop: boolean; respond: FakeApi["respond"] } = { reply: o.reply ?? null, drop: false, respond: null };
+  const state: { reply: string | null; drop: boolean; slow: boolean; respond: FakeApi["respond"] } = { reply: o.reply ?? null, drop: false, slow: false, respond: null };
   let n = 0;
   const srv: Server = createServer((req, res) => {
     let raw = "";
@@ -194,7 +200,7 @@ export async function fakeAnthropic(opts: string | { delayMs?: number; reply?: s
         // A turn a test needs to catch in flight (to steer it, stop it, or kill
         // the box while it talks) says [slow]: the same reply, a letter at a
         // time, which is how the fake runtime did it.
-        if (isTurn && slowAsked(body)) {
+        if (isTurn && (state.slow || slowAsked(body))) {
           for (const ch of String(d.text ?? "")) {
             if (res.writableEnded || res.destroyed) return;
             ev("content_block_delta", { index: 0, delta: { type: "text_delta", text: ch } });
@@ -228,6 +234,12 @@ export async function fakeAnthropic(opts: string | { delayMs?: number; reply?: s
     },
     set respond(v: FakeApi["respond"]) {
       state.respond = v;
+    },
+    get slow() {
+      return state.slow;
+    },
+    set slow(v: boolean) {
+      state.slow = v;
     },
     get drop() {
       return state.drop;

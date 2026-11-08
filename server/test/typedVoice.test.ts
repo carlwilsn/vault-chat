@@ -24,7 +24,7 @@ it("typed replies use their actual native answer once, independent of file viewe
   let srv: Running | undefined;
   const aborts: AbortController[] = [];
   try {
-    srv = await startServer({ home: root, vault: owner, secrets: join(root, "empty-no-credentials"), openrouter: provider.url,
+    srv = await startServer({ home: root, vault: owner, secrets: join(root, "empty-no-credentials"), anthropic: provider.url,
       extra: { VC_MASTER: master, VC_STATE_DIR: state,  VC_BWRAP: join(root, "absent-bwrap"), NODE_OPTIONS: `--import ${guard}`, PI_SKIP_VERSION_CHECK: "1" } });
     const post = async (p: string, body: unknown) => {
       const r = await fetch(srv!.base + p, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
