@@ -1337,13 +1337,22 @@ export const useStore = create<State>((set) => ({
     const vault = useStore.getState().vaultPath;
     if (!vault) return;
     // The conversations are the box's event log, never files on this disk
-    // (src/boxChat.ts fills the list from the box, or from its cache). No box:
-    // no chat, and the pane says so.
+    // (src/boxChat.ts fills the list from the box, or from its cache).
     const bc = await import("./boxChat");
     if (!(await bc.boxLinkFor(vault).catch(() => null))) {
+      // No box of his own — which is not the end of it any more: this machine
+      // runs the server itself (boxChat.ensureLocalServer). boxLinkFor starts
+      // nothing by design, so asking it and giving up here was the whole
+      // reason a laptop with no box opened a vault and was told to connect a
+      // box, with the server it carries never started at all.
       if (useStore.getState().vaultPath !== vault) return;
-      useStore.setState({ boxChat: { on: false, reachable: null, reason: "" }, conversations: [], activeConversationId: null, conversationsLoaded: true, messages: [], streamingText: "", streamingReasoning: "", liveTools: [] });
-      return;
+      useStore.setState({ boxChat: bc.STARTING_STATE, conversations: [], activeConversationId: null, messages: [], streamingText: "", streamingReasoning: "", liveTools: [] });
+      const started = await bc.ensureLocalServer(vault).catch(() => null);
+      if (useStore.getState().vaultPath !== vault) return;
+      if (!started) {
+        useStore.setState({ boxChat: { on: false, reachable: null, reason: "" }, conversations: [], activeConversationId: null, conversationsLoaded: true, messages: [], streamingText: "", streamingReasoning: "", liveTools: [] });
+        return;
+      }
     }
     // Its feed is already live (a second load): the list is the feed's, keep it.
     if (bc.boxChatOn()) {

@@ -23,7 +23,7 @@ import { isUnreadableAsText } from "./fileKind";
 import { SettingsPane } from "./SettingsPane";
 import { Button, Textarea } from "./ui";
 import { cn } from "./lib/utils";
-import { ATTACH_MAX_BYTES, BOX_UNREACHABLE, NO_BOX, boxAnswer, boxChatOn, boxLinkFor, boxRetry, boxSubagent, fetchBoxFile, unreachableWhy } from "./boxChat";
+import { ATTACH_MAX_BYTES, BOX_UNREACHABLE, NO_BOX, STARTING, boxAnswer, boxChatOn, boxLinkFor, boxRetry, boxSubagent, fetchBoxFile, unreachableWhy } from "./boxChat";
 import { tailscaleCheck, type TailscaleState } from "./vaultSync";
 import {
   AskOptions,
@@ -532,7 +532,10 @@ export function ChatPane() {
   // thread stays readable). False until the answer is actually known, so a
   // signed-in Carl never sees "sign in" flash (src/claudeAuthLive.ts).
   const aiBlocked = useAiBlocked();
-  const noBox = !!vaultPath && boxChat?.on === false;
+  // Starting the server this machine runs itself: not on yet, and not a reason
+  // to tell him to connect a box.
+  const starting = !!vaultPath && boxChat?.starting === true;
+  const noBox = !!vaultPath && boxChat?.on === false && !starting;
   const boxDown = !!boxChat?.on && boxChat.reachable === false;
   // An older chat (from before one main conversation) or an old mission thread: readable, not continued.
   const older = !!activeConv && !isArchivedThread(activeConv) && isOlderChat(activeConv);
@@ -643,6 +646,19 @@ export function ChatPane() {
   const plans = useMemo(() => planCards(messages), [messages]);
 
   if (showSettings) return <SettingsPane />;
+
+  if (starting) {
+    return (
+      <div className="h-full flex flex-col bg-card border-l border-border" data-el="box-starting">
+        <div className="flex-1 flex items-center justify-center px-8">
+          <div className="max-w-[260px] text-center space-y-3">
+            <p className="text-[13px] text-foreground/90">{STARTING}…</p>
+            <p className="text-[11.5px] text-muted-foreground leading-relaxed">No box needed: this app runs it. The first start takes a moment.</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   if (noBox) {
     return (

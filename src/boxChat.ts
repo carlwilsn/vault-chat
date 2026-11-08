@@ -43,8 +43,11 @@ import { probeLaptopReleaseHealth } from "./laptopReleaseHealth";
 export const BOX_UNREACHABLE = "Box unreachable";
 /** How long a waiting message may be missing from both the log's pending and its transcript before it is called dropped. */
 const DROP_GRACE_MS = 3000;
-/** No box for this vault: the chat has nothing to run on. */
+/** No box for this vault, and none could be run here: the chat has nothing to run on. */
 export const NO_BOX = "Connect your box to chat";
+/** No box, but the app is starting the server for this vault itself. */
+export const STARTING = "Starting this vault's server";
+export const STARTING_STATE: BoxChatState = { on: false, reachable: null, reason: "", starting: true };
 
 /** Why the box did not answer, in words (the raw error from the request). */
 export function unreachableWhy(raw: string, tailscale?: { installed: boolean; connected: boolean } | null): string {
@@ -61,6 +64,13 @@ export type BoxChatState = {
   /** null = not known yet (first contact pending). */
   reachable: boolean | null;
   reason: string;
+  /**
+   * This machine has no box and the app is starting the server for this vault
+   * itself. Not yet on, but "connect a box" is the wrong thing to say: it is
+   * doing the thing that makes a box unnecessary, and a cold server takes a
+   * moment (src-tauri/src/local_server.rs).
+   */
+  starting?: boolean;
 };
 
 /** `vault`: this vault's name on the box (sync.json); every request carries it, so the box runs it in that vault's own engine. */
@@ -848,7 +858,11 @@ export function startBoxChat(vault: string): Promise<boolean> {
   const p = (async () => {
     // His box if he has one; otherwise this is the moment to run one here, which
     // is what makes a machine with no box able to chat at all.
-    const link = (await boxLinkFor(vault)) ?? (await ensureLocalServer(vault));
+    const own = await boxLinkFor(vault);
+    // Starting one takes a moment. Say that, rather than leaving the pane on
+    // "connect a box" while the app makes one unnecessary.
+    if (!own && !(session && !session.stopped)) useStore.getState().setBoxChat(STARTING_STATE);
+    const link = own ?? (await ensureLocalServer(vault));
     if (useStore.getState().vaultPath !== vault) return false;
     if (!link) {
       if (session && !session.stopped) return true; // file-only workspace cannot take away the global conversation
