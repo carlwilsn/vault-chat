@@ -126,6 +126,8 @@ describe("the sandbox: exactly the registered folders, read-write; nothing else 
     const r = spawnSync("sh", ["-c", "command -v bwrap"], { encoding: "utf8" });
     return r.status === 0 && r.stdout.trim() ? r.stdout.trim() : null;
   })();
+  // Same as sandbox.test.ts: a real bubblewrap, so it runs on Carl's box and is
+  // skipped inside the ship host's own sandbox, which cannot nest another.
   it.skipIf(!bwrap)("under real bubblewrap: writes in the project folder land; elsewhere in the home they are refused; hidden stays hidden", () => {
     writeFileSync(join(planted, "id_ed25519"), "SECRET");
     const real = { ...sb, outer: sb.outer!.map((x) => (x === "/usr/bin/bwrap" ? bwrap! : x)) };

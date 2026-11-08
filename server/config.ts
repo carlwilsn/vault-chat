@@ -1,7 +1,7 @@
 // Server configuration, read once from the environment. Every path the server
 // touches comes from here so tests can point the whole process at temp dirs.
 import { voicePort } from "./voicePorts";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 function env(name: string): string | undefined {
@@ -9,7 +9,24 @@ function env(name: string): string | undefined {
   return v === undefined || v === "" ? undefined : v;
 }
 
-const HOME = env("HOME") ?? env("USERPROFILE") ?? homedir();
+/**
+ * The home this process reads and writes under. `homedir()` is the last resort
+ * and it THROWS where there is no passwd entry for the uid (uv_os_homedir
+ * ENOENT) — a sandbox, a container, the ship host's own gate — and it threw at
+ * import time, so the bundle could not even print its build-info there. A home
+ * is not something to crash over: tmpdir is somewhere to be.
+ */
+function homeDir(): string {
+  const named = env("HOME") ?? env("USERPROFILE");
+  if (named) return named;
+  try {
+    return homedir();
+  } catch {
+    return tmpdir();
+  }
+}
+
+const HOME = homeDir();
 const APP_DATA = join(HOME, ".local", "share", "com.vault-chat.app");
 const APP_CONFIG = join(HOME, ".config", "com.vault-chat.app");
 

@@ -249,8 +249,18 @@ describe("vault-scoped routes (the real server)", () => {
 
   it("health names the box's user and each vault's working copy (the laptop's terminal opens ssh there)", async () => {
     const { userInfo } = await import("node:os");
+    // The same answer the server gives: userInfo() THROWS where there is no
+    // passwd entry for the uid (a sandbox, a container — the ship host's own
+    // gate), and the box falls back to $USER there rather than failing health.
+    const user = (() => {
+      try {
+        return userInfo().username;
+      } catch {
+        return process.env.USER || null;
+      }
+    })();
     const h = await (await fetch(srv.base + "/api/v1/health")).json();
-    expect(h.user).toBe(userInfo().username);
+    expect(h.user).toBe(user);
     expect(h.vaultPath).toBe(main);
     expect(h.vaults).toEqual(expect.arrayContaining([{ name: "school2", path: main }, { name: "physics", path: join(home, "physics") }]));
     expect((await (await fetch(srv.base + "/api/v1/health?vault=physics")).json()).vaultPath).toBe(join(home, "physics"));

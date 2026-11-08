@@ -174,6 +174,8 @@ describe("the agent sandbox (bubblewrap argv)", () => {
     expect(jobWrap(null)).toBeNull();
   });
 
+  // A real bubblewrap, so it needs a box that has one: it runs on Carl's box and
+  // is skipped inside the ship host's own sandbox, which cannot nest another.
   it.skipIf(process.platform !== "linux" || !bwrapPath())("in a real job sandbox, ps sees only the job's own tree", () => {
     const r = spawnSync(bwrapPath()!, ["--dev-bind", "/", "/", "--proc", "/proc", "--unshare-pid", "--", "sh", "-c", "ls /proc | grep -c '^[0-9]'"], { encoding: "utf8" });
     expect(r.status).toBe(0);

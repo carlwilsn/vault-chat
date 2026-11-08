@@ -841,19 +841,15 @@ export class Engine {
 
   health(): Record<string, unknown> {
     const own = this.d.backend.health();
-    // A router names every engine it runs in `engines` (server/engine/router.ts),
-    // but that record sat only under whichever engine leads — and which one leads
-    // moves. It is hoisted to engine.engines so a client can read it without
-    // knowing who leads; the nested copy stays, for a client built against it.
+    // The engine is readable under its own name (`engine.claude`), which is what
+    // every client asks for — "is Claude Code signed in" among them
+    // (src/engineHealth.ts). There was a router once, which published an
+    // `engines` record of everything it ran; a backend that still answers with
+    // one is passed through for a client built against that shape.
     const engines = (own as { engines?: Record<string, unknown> }).engines;
-    // Every engine is also readable at engine.<its name>, whichever one leads.
-    // Without that, the leader's name is the ONLY key: a box that puts Claude
-    // Code in charge has no engine.pi at all, and a reader asking after pi — the
-    // release preflight does, by name — sees undefined and calls the box down.
     const byName = engines ? Object.fromEntries(Object.entries(engines).filter(([k]) => k !== "default")) : {};
     return {
       ...byName,
-      // The engine in charge keeps the merged shape it has always had.
       [this.d.backend.name]: own,
       ...(engines && typeof engines === "object" ? { engines } : {}),
       backend: this.d.backend.name,
