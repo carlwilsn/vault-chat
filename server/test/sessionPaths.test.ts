@@ -1,13 +1,16 @@
-// The stored session folder of an OLD pi session. pi itself is gone, and with
-// it the resume that used to heal one — but the rewrite still matters: a vault
-// that moves must not leave Carl's old transcripts pointing at a path that no
-// longer exists, and they are still read (server/convlog/piSession.ts).
+// The folder a session ran in, and a vault that moves under it.
 //
-// (The engine-resume case went with pi: there is no pi backend to resume.)
-// pi's stored session folder (the live bug after the master switch, 2026-10-28: "Stored session working directory
-// does not exist: /home/carlwilsn/vaults/school2"). pi keeps the folder a session ran in, in the session file's first
-// line, and refuses to resume one whose folder is gone. server/sessionPaths.ts: master switch/back rewrite it (both
-// ways, server/test/master.test.ts), and a resume heals one that is gone or hidden by the sandbox.
+// Two things store one, and `master switch` (or `back`) moves the vault out from
+// under both: Carl's older pi transcripts, which keep it in the session file's
+// first line and are still read (server/convlog/piSession.ts), and the live
+// engine's own record of every Claude Code thread (<state>/claude/threads.json).
+// The live bug this came from, 2026-10-28: "Stored session working directory
+// does not exist: /home/carlwilsn/vaults/school2".
+//
+// (The engine-resume case went with pi: there is no pi backend to resume. A
+// Claude thread heals itself at the next turn, because the engine hands the
+// thread's folder back on every resume — this is for the thread whose next turn
+// has not come, and for transcripts nobody is resuming at all.)
 import { describe, it, expect, afterAll } from "vitest";
 import { EventEmitter } from "node:events";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -18,7 +21,7 @@ import { appendEntries, newSessionFile } from "../convlog/piSession";
 const userEntry = (text: string) => ({ type: "message", message: { role: "user", content: [{ type: "text", text }], timestamp: Date.now() } }) as any;
 const cwdOf = (f: string) => JSON.parse(readFileSync(f, "utf8").split("\n")[0]!).cwd;
 
-describe("pi's stored session folder", () => {
+describe("the folder a session ran in, when the vault moves under it", () => {
   const root = tmp("vcsp-");
   afterAll(() => cleanup(root));
 
@@ -45,4 +48,48 @@ describe("pi's stored session folder", () => {
     expect(cwdOf(h)).toBe(other);
   });
 
+  it("a vault that moves: the live engine's record of every thread's folder is rewritten, however deep it sits", async () => {
+    const { rewriteSessionPaths, stateSessionDirs, movePaths } = await import("../sessionPaths");
+    const state = join(root, "state2");
+    const from = join(root, "vc", "vaults", "school2");
+    const to = join(root, "elsewhere", "school2");
+    // Claude Code's record: a map of threads, each holding the folder its
+    // session runs in. pi's was flat, so only the top level used to be read.
+    const threads = join(state, "claude", "threads.json");
+    mkdirSync(join(state, "claude"), { recursive: true });
+    writeFileSync(
+      threads,
+      JSON.stringify({
+        "cc-1": { sessionId: "s1", cwd: from, file: join(from, ".vault-chat", "events", "sessions", "cc-1.jsonl"), instructions: "x" },
+        "cc-2": { sessionId: null, cwd: join(root, "github", "other"), file: join(root, "github", "other", "t.jsonl"), instructions: "y" },
+      }),
+    );
+    // And a side thread's own session file, where pi's used to be.
+    const side = join(state, "claude", "sessions");
+    mkdirSync(side, { recursive: true });
+    const sf = newSessionFile(join(side, "side.jsonl"), from);
+
+    const dirs = stateSessionDirs(state);
+    expect(dirs.instr, JSON.stringify(dirs)).toContain(join(state, "claude"));
+    expect(dirs.sessions).toContain(side);
+    const r = rewriteSessionPaths({ ...dirs, from, to });
+    expect(r.records).toBe(1);
+    expect(r.sessions).toBe(1);
+
+    const after = JSON.parse(readFileSync(threads, "utf8"));
+    expect(after["cc-1"].cwd).toBe(to);
+    expect(after["cc-1"].file).toBe(join(to, ".vault-chat", "events", "sessions", "cc-1.jsonl"));
+    expect(after["cc-1"].sessionId).toBe("s1");
+    // A thread in a folder that did not move is left exactly as it was.
+    expect(after["cc-2"].cwd).toBe(join(root, "github", "other"));
+    expect(cwdOf(sf)).toBe(to);
+
+    // Idempotent: running it again finds nothing to do.
+    expect(rewriteSessionPaths({ ...dirs, from, to }).records).toBe(0);
+    // And the helper itself leaves everything that is not under `from` alone.
+    const { value, changed } = movePaths({ a: "no", b: { c: ["also no", from] } }, from, to);
+    expect(changed).toBe(true);
+    expect(value).toEqual({ a: "no", b: { c: ["also no", to] } });
+    expect(movePaths({ a: 1, b: null, c: "x" }, from, to).changed).toBe(false);
+  });
 });

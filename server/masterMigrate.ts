@@ -15,11 +15,10 @@ import { dirname, join, resolve } from "node:path";
 import { masterLayout, repoPaths, validRepoName } from "./master";
 import { rewriteSessionPaths, type Rewritten } from "./sessionPaths";
 
-/** The engine's pi sessions and thread records to rewrite when a vault's path changes (server/sessionPaths.ts). */
+/** The engine's session files and thread records to rewrite when a vault's path changes (server/sessionPaths.ts). */
 export type SessionDirs = { sessions: string[]; instr: string[] };
 
-/** Every moved repo's old path → its new one, in the sessions and thread records (pi refuses a session whose stored
- *  folder is gone). `back`: the other way. */
+/** Every moved repo's old path → its new one, in the session files and the thread records. `back`: the other way. */
 function rewriteMoves(rec: Rec, dirs: SessionDirs | undefined, back: boolean, only?: string): Rewritten {
   const total: Rewritten = { sessions: 0, records: 0, files: [] };
   if (!dirs) return total;
@@ -27,7 +26,16 @@ function rewriteMoves(rec: Rec, dirs: SessionDirs | undefined, back: boolean, on
   for (const [name, v] of Object.entries(rec.vaults)) if (!only || name === only) moves.push([v.from, v.to]);
   for (const p of Object.values(rec.projects)) moves.push([p.from, p.to]);
   for (const [from, to] of moves) {
-    const r = rewriteSessionPaths({ ...dirs, from: back ? to : from, to: back ? from : to });
+    const at = back ? from : to;
+    const r = rewriteSessionPaths({
+      ...dirs,
+      // A vault's own transcripts travel inside it (the feed's sessions), so
+      // after the move they are at the new path with the OLD one in their
+      // headers. Where they are now is where they have to be rewritten.
+      sessions: [...dirs.sessions, join(at, ".vault-chat", "events", "sessions")],
+      from: back ? to : from,
+      to: at,
+    });
     total.sessions += r.sessions;
     total.records += r.records;
     total.files.push(...r.files);

@@ -1,9 +1,17 @@
-// pi remembers where a session ran: the first line of every session file is its header, {"type":"session", "cwd": …},
-// and pi refuses to resume one whose stored cwd does not exist ("Stored session working directory does not exist").
-// The engine's own record of a thread (<pi>/instr/<threadId>.json) holds the same cwd. So when a vault or a project
-// moves (server/masterMigrate.ts switch/back), both are rewritten, old prefix → new prefix,
-// in both directions; and the engine's resume falls back to the thread's current folder when the stored one is gone
-// or hidden by the sandbox (server/engine/pi/backend.ts resumeThread), so a missed rewrite never fails a turn.
+// Where a session ran, when the vault moves under it.
+//
+// Two different things store a folder, and a `master switch` (or `back`) moves
+// the vault out from under both:
+//  - Carl's older transcripts: pi wrote the folder into the session file's first
+//    line, and those files are still read (server/convlog/piSession.ts), so a
+//    header pointing at a path that no longer exists is a transcript that reads
+//    wrong. The engine that refused to resume one is gone with pi.
+//  - the live engine's own record: Claude Code's threads keep the cwd each
+//    session runs in (<state>/claude/threads.json), and the engine hands the
+//    thread's folder back on every resume, so a missed rewrite heals itself at
+//    the next turn — this is for the thread whose next turn has not come.
+// Both are rewritten old prefix -> new prefix, in both directions, and nothing
+// here fails a turn: a rewrite that finds nothing is not an error.
 import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { renameRetry } from "./atomic";
@@ -69,6 +77,26 @@ export function setSessionCwd(file: string, cwd: string): boolean {
   return true;
 }
 
+/** `value` with every string under `from` moved to `to`, at any depth. */
+export function movePaths<T>(value: T, from: string, to: string): { value: T; changed: boolean } {
+  let changed = false;
+  const walk = (v: unknown): unknown => {
+    if (typeof v === "string") {
+      const next = movePrefix(v, from, to);
+      if (next && next !== v) {
+        changed = true;
+        return next;
+      }
+      return v;
+    }
+    if (Array.isArray(v)) return v.map(walk);
+    if (v && typeof v === "object") return Object.fromEntries(Object.entries(v as Record<string, unknown>).map(([k, x]) => [k, walk(x)]));
+    return v;
+  };
+  const out = walk(value) as T;
+  return { value: out, changed };
+}
+
 export type Rewritten = { sessions: number; records: number; files: string[] };
 
 /**
@@ -108,15 +136,12 @@ export function rewriteSessionPaths(o: { sessions: string[]; instr: string[]; fr
         continue;
       }
       if (!j || typeof j !== "object") continue;
-      let changed = false;
-      for (const k of Object.keys(j)) {
-        const next = typeof j[k] === "string" ? movePrefix(j[k], o.from, o.to) : null;
-        if (next && next !== j[k]) {
-          j[k] = next;
-          changed = true;
-        }
-      }
+      // Every string anywhere in the record, not only its top level: pi's thread
+      // records were flat, and Claude Code's are a map of threads each holding
+      // its own cwd and file.
+      const { value, changed } = movePaths(j, o.from, o.to);
       if (!changed) continue;
+      j = value;
       writeAtomic(f, JSON.stringify(j));
       out.records++;
       out.files.push(f);
@@ -128,13 +153,20 @@ export function rewriteSessionPaths(o: { sessions: string[]; instr: string[]; fr
 /** The engine's sessions and thread-record folders under a server state folder: the main vault's and every other
  *  vault's (<state>/vaults/<name>/pi). */
 export function stateSessionDirs(stateDir: string): { sessions: string[]; instr: string[] } {
-  const sessions = [join(stateDir, "pi", "sessions")];
-  const instr = [join(stateDir, "pi", "instr")];
+  // Per engine state root: the live engine's (claude) and pi's, which a box that
+  // has been running a while still has Carl's old sessions in. A folder that is
+  // not there is dropped at the end, so a box with only one of them is fine.
+  const sessions: string[] = [];
+  const instr: string[] = [];
+  const add = (root: string) => {
+    sessions.push(join(root, "claude", "sessions"), join(root, "pi", "sessions"));
+    // `<root>/claude` itself, because the engine's record of every thread's
+    // folder is the threads.json file sitting in it.
+    instr.push(join(root, "claude"), join(root, "claude", "instr"), join(root, "pi", "instr"));
+  };
+  add(stateDir);
   try {
-    for (const n of readdirSync(join(stateDir, "vaults"))) {
-      sessions.push(join(stateDir, "vaults", n, "pi", "sessions"));
-      instr.push(join(stateDir, "vaults", n, "pi", "instr"));
-    }
+    for (const n of readdirSync(join(stateDir, "vaults"))) add(join(stateDir, "vaults", n));
   } catch {
     /* one vault */
   }
