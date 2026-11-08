@@ -9,7 +9,7 @@
 //    yet" means — the one state that must NOT draw a prompt);
 //  - the model list: Claude's models, never an OpenRouter id, pinned against
 //    the box's own alias list so the two cannot drift;
-//  - the prompt's markup: one sentence and one button — no other way in;
+//  - the prompt's markup: one sentence, the setup-token command, the field, the button;
 //  - that the prompt is only ever drawn by an AI surface — the guard against a
 //    full-window sign-in gate coming back;
 //  - that no OpenRouter wording is left in any file that draws UI.
@@ -133,15 +133,18 @@ async function render(el: Parameters<typeof renderToStaticMarkup>[0], opts: { ke
   return renderToStaticMarkup(el);
 }
 
-test("signed out, an AI surface draws one sentence and one button, and no other way in", async () => {
+test("signed out, an AI surface draws one sentence, the command, the token field and the button", async () => {
   const html = await render(createElement(ClaudeSignInPrompt, { surface: "chat" }), { box: false });
   assert.match(html, /Sign in with Claude to chat/, "the sentence for this surface");
   assert.match(html, new RegExp(SIGN_IN_BUTTON), "the one button");
   assert.match(html, /data-el="claude-signin-prompt"/);
-  assert.ok(!html.includes("setup-token"), `no raw token paste: ${html}`);
-  // Carl: "I don't want the other sign on options." One button, nothing else.
+  // The one way in: the command to run, a field for what it prints, and the
+  // button. Carl chose the terminal over a button that drove it in a hidden
+  // console: "if it is flaky at all I don't want it".
+  assert.match(html, /claude setup-token/, `the command to run: ${html}`);
+  assert.match(html, /data-el="claude-signin-token"/, "the field for the token");
   assert.ok(!/Other ways to sign in/.test(html), `no other way in: ${html}`);
-  assert.equal((html.match(/<button/g) ?? []).length, 1, `exactly one button: ${html}`);
+  assert.equal((html.match(/<button/g) ?? []).length, 2, `the button and Copy, nothing else: ${html}`);
 });
 
 test("each surface says what is blocked there, in its own words", async () => {
@@ -188,7 +191,7 @@ test("Settings' top line: signed in, with Sign out; signed out, the button", asy
   const outHtml = await render(createElement(ClaudeAccountLine), { box: false });
   assert.match(outHtml, new RegExp(SIGN_IN_BUTTON));
   assert.ok(!outHtml.includes("Sign out"), "signed out, there is nothing to sign out of");
-  assert.ok(!outHtml.includes("setup-token"), "the paste field starts closed here too");
+  assert.match(outHtml, /claude setup-token/, "signed out, the command to run");
 });
 
 // ---- the two things that must stay gone ------------------------------------

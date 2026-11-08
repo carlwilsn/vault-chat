@@ -17,7 +17,7 @@
 // NOT_FOR_COMMANDS). Signing out removes it from the keychain and from the
 // store, and the key push that follows removes it from the box too (the box
 // makes its store exactly what is pushed: src/boxKeys.ts).
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Button, Input } from "./ui";
 import { useStore } from "./store";
@@ -87,8 +87,13 @@ export async function finishSignIn(io: SignInIo, code: string): Promise<string |
 
 /** The paste field's path: a token the user minted themselves. */
 export async function saveTypedToken(io: SignInIo, token: string): Promise<string | null> {
-  const trimmed = token.trim();
-  if (!trimmed) return "paste the token first";
+  // Whatever came along with it (spaces, a line break, the prompt text) is not
+  // part of it: the token is the one run that starts sk-ant-oat.
+  const trimmed = token.match(/sk-ant-oat[A-Za-z0-9_-]+/)?.[0] ?? token.trim();
+  if (!trimmed) return "Paste the token first";
+  if (!/^sk-ant-oat[A-Za-z0-9_-]{80,}$/.test(trimmed)) {
+    return "That doesn't look like the whole token. Copy the full line that starts with sk-ant-oat01-.";
+  }
   io.remember(trimmed);
   const err = await io.push().catch(why);
   return err ? `saved on this machine, but the box did not take it: ${err}` : null;
@@ -155,23 +160,25 @@ function liveIo(vault: string | null, remember: (token: string) => void, forget:
   };
 }
 
+/** The command that mints the token, shown with a copy button. */
+export const SETUP_COMMAND = "claude setup-token";
+
 /**
- * The flow itself: one button, then the code field the browser's page feeds.
- * `onDone` fires
- * once the token is on this machine.
+ * The flow itself. Carl, after a day of the button driving `claude setup-token`
+ * in a hidden Windows console and breaking four different ways: run the command
+ * in a real terminal and paste what it prints. Claude does its own sign-in
+ * there, so nothing here can break it. The token lasts about a year and is kept
+ * in this machine's keychain and pushed to the box like every key. `onDone`
+ * fires once it is saved.
  */
 function SignInFlow({ onDone }: { onDone?: () => void }) {
   const vault = useStore((s) => s.vaultPath);
   const setServiceKey = useStore((s) => s.setServiceKey);
   const clearServiceKey = useStore((s) => s.clearServiceKey);
   const [busy, setBusy] = useState(false);
-  // Bumped by Cancel: an attempt still starting when it was cancelled is
-  // ignored (and its CLI stopped) when it finally answers.
-  const attempt = useRef(0);
   const [error, setError] = useState<string | null>(null);
-  // The page the running command is waiting on, and the code coming back.
-  const [awaiting, setAwaiting] = useState<string | null>(null);
-  const [code, setCode] = useState("");
+  const [token, setToken] = useState("");
+  const [copied, setCopied] = useState(false);
 
   const io = liveIo(
     vault,
@@ -179,102 +186,55 @@ function SignInFlow({ onDone }: { onDone?: () => void }) {
     () => clearServiceKey("claudeCode"),
   );
 
-  // A command left waiting for a code is a pty sitting open. Stop it when this
-  // prompt goes away without finishing — Settings closed, or the composer went
-  // live because the box was signed in from somewhere else. A finished flow has
-  // already cleared `awaiting`, so a success never kills anything.
-  const pending = useRef<string | null>(null);
-  pending.current = awaiting;
-  const cancelRef = useRef(io.cancel);
-  cancelRef.current = io.cancel;
-  useEffect(
-    () => () => {
-      if (pending.current) void cancelRef.current().catch(() => {});
-    },
-    [],
-  );
+  const copy = () => {
+    void navigator.clipboard?.writeText(SETUP_COMMAND).then(
+      () => setCopied(true),
+      () => {},
+    );
+  };
 
-  const done = () => {
-    setAwaiting(null);
-    setCode("");
+  const save = async () => {
+    setBusy(true);
+    setError(null);
+    const err = await saveTypedToken(io, token);
+    setBusy(false);
+    if (err) return setError(err);
+    setToken("");
     // The box's answer about Claude is now stale (src/claudeAuth.ts).
     forgetClaudeHealth();
     onDone?.();
   };
 
-  const signIn = async () => {
-    const mine = ++attempt.current;
-    setBusy(true);
-    setError(null);
-    const r = await beginSignIn(io);
-    if (mine !== attempt.current) {
-      // Cancelled while it was starting: stop the CLI it left waiting.
-      if (!("fallback" in r)) void io.cancel().catch(() => {});
-      return;
-    }
-    setBusy(false);
-    if ("fallback" in r) {
-      // The button stays — a CLI that was slow to start this once may well
-      // answer the next try.
-      setError(`Could not start the sign-in: ${r.fallback}`);
-      return;
-    }
-    setAwaiting(r.url);
-  };
-
-  /** Stop whatever is in flight and go back to the one button. */
-  const cancel = () => {
-    attempt.current++;
-    void io.cancel().catch(() => {});
-    setBusy(false);
-    setAwaiting(null);
-    setCode("");
-    setError(null);
-  };
-
-  const submitCode = async () => {
-    setBusy(true);
-    setError(null);
-    const err = await finishSignIn(io, code);
-    setBusy(false);
-    if (err) return setError(err);
-    done();
-  };
-
   return (
     <div className="space-y-1.5" data-el="claude-signin-flow">
-      {/* The one way in: a solid primary button, not an underlined link. */}
-      {!awaiting && (
-        <Button size="sm" onClick={() => void signIn()} disabled={busy} data-el="claude-signin-start">
-          {busy ? "Opening browser…" : error ? "Try again" : SIGN_IN_BUTTON}
+      <p className="text-[11px] text-muted-foreground">
+        Run this in a terminal, sign in in the browser it opens, then paste the token it prints.
+      </p>
+      <div className="flex items-center gap-2">
+        <code className="font-mono text-[11.5px] px-2 py-1 rounded border border-border/60 select-all" data-el="claude-signin-command">
+          {SETUP_COMMAND}
+        </code>
+        <button onClick={copy} className="text-[10.5px] text-muted-foreground hover:text-foreground underline" data-el="claude-signin-copy">
+          {copied ? "Copied" : "Copy"}
+        </button>
+      </div>
+      <div className="flex gap-2">
+        <Input
+          type="password"
+          value={token}
+          onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
+            setToken(e.target.value);
+            setError(null);
+          }}
+          onKeyDown={(e: React.KeyboardEvent<HTMLInputElement>) => e.key === "Enter" && void save()}
+          placeholder="sk-ant-oat01-…"
+          className="font-mono text-[11.5px]"
+          data-el="claude-signin-token"
+        />
+        <Button size="sm" onClick={() => void save()} disabled={busy} data-el="claude-signin-save">
+          {busy ? "Saving…" : SIGN_IN_BUTTON}
         </Button>
-      )}
-      {awaiting && (
-        <div className="space-y-1" data-el="claude-code-awaiting-code">
-          <p className="text-[10.5px] text-muted-foreground/80">
-            Sign in in the browser, then paste the code it shows.{" "}
-            <button onClick={() => void io.openUrl(awaiting).catch(() => {})} className="underline hover:text-foreground">
-              Open the page again
-            </button>{" "}
-            <button onClick={cancel} className="underline hover:text-foreground" data-el="claude-signin-cancel">
-              Start over
-            </button>
-          </p>
-          <div className="flex gap-2">
-            <Input
-              value={code}
-              onChange={(e: React.ChangeEvent<HTMLInputElement>) => setCode(e.target.value)}
-              onKeyDown={(e: React.KeyboardEvent<HTMLInputElement>) => e.key === "Enter" && void submitCode()}
-              placeholder="code from the browser"
-              className="font-mono text-[11.5px]"
-              autoFocus
-            />
-            <Button size="sm" variant="outline" onClick={() => void submitCode()} disabled={!code.trim() || busy}>
-              {busy ? "Signing in…" : "Continue"}
-            </Button>
-          </div>
-        </div>
-      )}
+      </div>
       {error && <p className="text-[10.5px] text-amber-500/90 break-words">{error}</p>}
     </div>
   );

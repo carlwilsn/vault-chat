@@ -20,7 +20,7 @@ const { beginSignIn, finishSignIn, saveTypedToken, signOut } = await import("../
 type SignInIo = import("../../src/ClaudeCodeSignIn.tsx").SignInIo;
 
 const URL = "https://claude.com/cai/oauth/authorize?code=true&client_id=x&state=y";
-const TOKEN = "sk-ant-oat01-NeverSaidOutLoud-0123456789";
+const TOKEN = "sk-ant-oat01-NeverSaidOutLoud-0123456789" + "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789_-AbCdEfGhIjKlMnOpQr";
 
 type Rig = { io: SignInIo; calls: string[]; stored: { token: string | null }; remembered: string[] };
 /** An override gets the call log so a replaced method still records its turn. */
@@ -146,7 +146,7 @@ test("the paste field still stores and pushes a hand-minted token", async () => 
 
 test("the paste field refuses an empty token and reports a failed push honestly", async () => {
   const { io, calls } = rig();
-  assert.match(String(await saveTypedToken(io, "  ")), /paste the token/);
+  assert.match(String(await saveTypedToken(io, "  ")), /paste the token/i);
   assert.deepEqual(calls, []);
 
   const bad = rig(() => ({ push: async () => "the box refused the keys" }));
