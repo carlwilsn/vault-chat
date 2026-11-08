@@ -115,6 +115,10 @@ export class ClaudeSession {
       model: this.o.model,
       ...(this.o.effort ? { effort: this.o.effort } : {}),
       includePartialMessages: true,
+      // Carl: no bounds on the agent, dangerously-bypass-permissions style.
+      // Nothing asks; the only refusals left are the host's own hook (secrets).
+      permissionMode: "bypassPermissions",
+      allowDangerouslySkipPermissions: true,
       env: this.o.env,
       // Claude Code's own prompt, then vault-chat's layer on top of it.
       ...(this.o.instructions ? { systemPrompt: { type: "preset" as const, preset: "claude_code" as const, append: this.o.instructions } } : {}),

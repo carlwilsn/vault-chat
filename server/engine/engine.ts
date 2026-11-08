@@ -480,7 +480,7 @@ export const ENGINE_TOOL_SPECS = [
     type: "function",
     name: "Delegate",
     description:
-      "Hand slow work to a background worker (a pi subagent in this vault with file, shell, PDF and web tools) and keep talking: edits across files, research, builds, anything over a few seconds. Returns at once. When the worker finishes, its report comes back to you as a new turn (\"Delegated work finished: ...\"): then tell Carl the result. Several can run at once; git-project workers each get an independent branch/worktree from committed source, never the shared coordinator checkout. Never wait for one, and never say it is done before its report arrives.",
+      "Hand slow work to a background worker (its own Claude Code session in this vault, with file, shell, PDF and web tools) and keep talking: edits across files, research, builds, anything over a few seconds. Returns at once. When the worker finishes, its report comes back to you as a new turn (\"Delegated work finished: ...\"): then tell Carl the result. Several can run at once; git-project workers each get an independent branch/worktree from committed source, never the shared coordinator checkout. Never wait for one, and never say it is done before its report arrives.",
     inputSchema: {
       type: "object",
       properties: {

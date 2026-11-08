@@ -38,6 +38,7 @@ import {
   type Handlers,
   type LiveChild,
   type ModelChoice,
+  type NotifyScope,
   type SideRunner,
   type ToolSpec,
 } from "../backend";
@@ -68,6 +69,45 @@ export const OWN_FILE_TOOLS: readonly string[] = ["Read", "Write", "Edit", "Glob
  * guard against private addresses is a policy and not a convenience.
  */
 export const OWN_WEB_TOOLS: readonly string[] = ["WebSearch"];
+
+/**
+ * Carl: "there should be no bounds on the agent, dangerously-bypass-permissions
+ * style". So every Claude Code tool is on, and nothing asks permission
+ * (session.ts runs bypassPermissions). Off are only the tools that cannot work
+ * in a headless session — they wait for a person in Anthropic's own apps, or
+ * act on an app surface vault-chat does not have — and the few vault-chat
+ * replaces with its own, so the agent never has two of one thing (vault-chat's
+ * TodoWrite draws the chat's plan; its ScheduleWake survives a restart, a
+ * session's own cron does not).
+ */
+export const APP_ONLY_TOOLS: readonly string[] = [
+  "AskUserQuestion", "EnterPlanMode", "ExitPlanMode", "EndConversation", "OfferChromeSetup", "ShowOnboardingRolePicker",
+  "ShareOnboardingGuide", "SendUserMessage", "SendUserFile", "PushNotification", "SendFeedback", "ReportFindings",
+  "ClaudeDesign", "Artifact", "DesignSync", "Projects", "propose_skills", "ProposeGoal", "RemoteTrigger",
+  "ReadNotifications", "SubagentHandback",
+  "TodoWrite", "ScheduleWakeup", "CronCreate", "CronDelete", "CronList",
+];
+
+/** Every built-in a conversation (and a Delegate worker) has. */
+export const OWN_TOOLS: readonly string[] = CLAUDE_BUILTINS_OFF.filter((n) => !APP_ONLY_TOOLS.includes(n));
+
+/** Conversation tools a worker never gets: they belong to the turn that started it. */
+const NOT_FOR_WORKERS = new Set(["AskUser", "SubmitChange", "TodoWrite", "BoardMake", "Delegate", "ScheduleWake"]);
+
+/** A Delegate/BoardMake worker: its own Claude Code session, run to one result. */
+type Worker = {
+  id: string;
+  parent: string;
+  title: string;
+  startedAt: number;
+  steps: number;
+  said: string;
+  activity: string;
+  session: ClaudeSession;
+  stopped: boolean;
+  endedAt: number;
+  state: string;
+};
 
 /**
  * A folder's own rules for an agent working in it. pi loaded the cwd's AGENTS.md
@@ -576,14 +616,110 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
 
   // ------------------------------------------------------------------ background work: Claude Code's own subagents
 
-  async background(): Promise<Record<string, unknown>> {
-    // Carl's decision: vault-chat's own workers go; the agent uses Claude Code's
-    // subagents (its Agent tool, run_in_background), and a background task that
-    // finishes while idle starts its own turn, which the engine takes as a turn.
-    throw new Error("this engine has no workers of its own: use a background subagent");
+  private workers = new Map<string, Worker>();
+
+  /**
+   * Delegate and BoardMake: a worker is its own Claude Code session in the
+   * same sandbox, with the same tools a conversation has (shell included) and
+   * the worker's prompt, run until it answers once. Its report is the result;
+   * the engine turns that into the conversation's next turn.
+   */
+  async background(parentThreadId: string, a: Record<string, unknown>, onStarted?: (id: string) => void, boardMake?: NotifyScope["boardMake"]): Promise<Record<string, unknown>> {
+    const parent = this.threads[parentThreadId];
+    const agent = (a.agent ?? {}) as { name?: string; systemPrompt?: string };
+    const cwd = typeof a.cwd === "string" && a.cwd.trim() ? a.cwd.trim() : (parent?.cwd ?? this.o.vault);
+    const model = typeof a.model === "string" && a.model ? a.model : (parent?.model ?? "opus");
+    const title = String(a.title ?? agent.name ?? "background work").slice(0, 120);
+    const task = String(a.task ?? "").trim();
+    if (!task) throw new Error("a worker needs a task");
+    const id = `cc-worker-${randomUUID()}`;
+    const tools = await this.bindTools(parentThreadId, { ...(parent ?? ({} as ThreadState)), cwd }, { workers: true, ...(boardMake ? { boardMake } : {}) });
+    const model0 = model;
+    return await new Promise<Record<string, unknown>>((resolve) => {
+      let text = "";
+      let failed: string | null = null;
+      const done = (error: string | null) => {
+        const w = this.workers.get(id);
+        if (!w || w.endedAt) return;
+        w.endedAt = Date.now();
+        w.state = w.stopped ? "stopped" : error ? "failed" : "done";
+        void tools?.revoke().catch(() => undefined);
+        w.session.close();
+        resolve({ ok: !error && !w.stopped, state: w.state, text: text || error || "(no report)", model: model0 });
+      };
+      const session = new ClaudeSession({
+        cli: sandboxedCli({ install: this.o.install, dir: this.o.paths.binDir, name: "claude-worker", sandbox: this.o.sandbox?.() ?? null, writable: [this.o.paths.configDir, cwd] }),
+        cwd,
+        model,
+        instructions: [agent.systemPrompt, folderRules(cwd)].filter(Boolean).join("\n\n"),
+        configDir: this.o.paths.configDir,
+        settingSources: ["user"],
+        env: this.o.env(),
+        ...(tools ? { mcpServers: tools.servers as never } : {}),
+        allowedTools: [...(tools?.allowed ?? []), ...OWN_TOOLS],
+        disallowedTools: CLAUDE_BUILTINS_OFF.filter((n) => !OWN_TOOLS.includes(n)),
+        // The path policy holds for a worker as for its conversation. No voice
+        // gate: a worker IS how a live call gets a change made.
+        onToolUse: async (tool: string, input: Record<string, unknown>) => {
+          const w = this.o.walls?.() ?? { denyRead: [], denyWrite: [] };
+          return ruleOnToolUse(tool, input, { cwd, home: process.env.HOME ?? "/", ...w });
+        },
+        onMessage: (m) => {
+          const w = this.workers.get(id);
+          if (!w) return;
+          if (m.type === "assistant") {
+            for (const b of ((m as any).message?.content ?? []) as any[]) {
+              if (b?.type === "tool_use") {
+                w.steps += 1;
+                w.activity = String(b.name ?? "");
+              } else if (b?.type === "text" && String(b.text ?? "").trim()) w.said = String(b.text).slice(-400);
+            }
+          }
+          if (m.type === "result") {
+            text = String((m as { result?: unknown }).result ?? "");
+            if ((m as { is_error?: boolean }).is_error) failed = text.slice(0, 500) || "the worker failed";
+            done(failed);
+          }
+        },
+        onClosed: (error) => done(error ? error.message : failed),
+        log: (s) => this.log(`worker ${id}: ${s}`),
+      });
+      this.workers.set(id, { id, parent: parentThreadId, title, startedAt: Date.now(), steps: 0, said: "", activity: "starting", session, stopped: false, endedAt: 0, state: "running" });
+      session.start();
+      session.send({ text: task });
+      this.log(`worker ${id} started for ${parentThreadId}: ${title}`);
+      onStarted?.(id);
+    });
   }
 
-  async subagentControl(childId: string, op: "steer" | "stop", _text?: string): Promise<{ ok: boolean; error?: string }> {
+  liveChild(childId: string): LiveChild | null {
+    const w = this.workers.get(childId);
+    return w && !w.endedAt ? this.childOf(w) : null;
+  }
+
+  endedChild(childId: string): { state: string; endedAt: number } | null {
+    const w = this.workers.get(childId);
+    return w?.endedAt ? { state: w.state, endedAt: w.endedAt } : null;
+  }
+
+  private childOf(w: Worker): LiveChild {
+    return { id: w.id, parent: w.parent, title: w.title, activity: w.activity, steps: w.steps, said: w.said, startedAt: w.startedAt, background: true };
+  }
+
+  async subagentControl(childId: string, op: "steer" | "stop", text?: string): Promise<{ ok: boolean; error?: string }> {
+    const w = this.workers.get(childId);
+    if (w) {
+      if (w.endedAt) return { ok: false, error: "that worker has already finished" };
+      if (op === "steer") {
+        if (!text?.trim()) return { ok: false, error: "nothing to tell it" };
+        w.session.send({ text, priority: "now" });
+        return { ok: true };
+      }
+      w.stopped = true;
+      await w.session.interrupt().catch(() => undefined);
+      w.session.close();
+      return { ok: true };
+    }
     if (op !== "stop") return { ok: false, error: "a Claude Code subagent cannot be steered" };
     for (const live of this.live.values()) {
       const stop = (live.session as unknown as { stopTask?: (id: string) => Promise<void> }).stopTask;
@@ -603,9 +739,9 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
     return [];
   }
 
-  /** Claude Code's subagents are its own; vault-chat keeps no children here. */
-  liveChildren(): LiveChild[] {
-    return [];
+  /** A conversation's running Delegate/BoardMake workers (Claude Code's own subagents are its own). */
+  liveChildren(parentThreadId: string): LiveChild[] {
+    return [...this.workers.values()].filter((w) => w.parent === parentThreadId && !w.endedAt).map((w) => this.childOf(w));
   }
 
   // ------------------------------------------------------------------ the session, and its stream
@@ -616,9 +752,14 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
    * bearer it issues is handed to Claude Code only in the session's HTTP
    * headers, so it is never in argv, the environment or a file.
    */
-  private async bindTools(threadId: string, t: ThreadState): Promise<{ servers: Record<string, unknown>; allowed: string[]; revoke: () => Promise<void> } | null> {
+  private async bindTools(threadId: string, t: ThreadState, w?: { workers: true; boardMake?: NotifyScope["boardMake"] }): Promise<{ servers: Record<string, unknown>; allowed: string[]; revoke: () => Promise<void> } | null> {
     if (!this.o.mcp || !this.h) return null;
-    const specs = await this.h.toolCatalog("conversation");
+    const specs = (await this.h.toolCatalog("conversation")).filter((s) => !w || !NOT_FOR_WORKERS.has(s.name));
+    // A worker acts for the conversation that started it; a board maker for its own inbox entry.
+    const notify = (): NotifyScope | null => {
+      const base = this.h?.notifyScope?.(threadId) ?? null;
+      return w?.boardMake && base ? { ...base, boardMake: w.boardMake } : base;
+    };
     const services: ProcessServices = {
       ...(this.h.you ? { you: (since: number | null) => this.h!.you!({ threadId, since }) } : {}),
       env: () => ({}),
@@ -635,7 +776,7 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
           files.specs.some((f) => f.name === name)
             ? files.call(name, args, context)
             : this.h
-              ? this.h.toolCall(threadId, name, args, context.signal, this.h.notifyScope?.(threadId) ?? null)
+              ? this.h.toolCall(threadId, name, args, context.signal, notify())
               : Promise.resolve({ ok: false, text: "Engine not ready." }),
       },
       services,
@@ -717,13 +858,13 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
       ...(tools || this.ownFileTools()
         ? {
             ...(tools ? { mcpServers: tools.servers as never } : {}),
-            allowedTools: [...(tools?.allowed ?? []), ...(this.ownFileTools() ? OWN_FILE_TOOLS : []), ...OWN_WEB_TOOLS],
+            allowedTools: [...(tools?.allowed ?? []), ...OWN_TOOLS.filter((n) => this.ownFileTools() || !OWN_FILE_TOOLS.includes(n))],
           }
         : {}),
       // Every built-in off but the ones named here: the file tools (when they
       // are the host's choice) always under vault-chat's policy hook, and the
       // web search, which has no path to rule on.
-      disallowedTools: CLAUDE_BUILTINS_OFF.filter((n) => !OWN_WEB_TOOLS.includes(n) && !(this.ownFileTools() && OWN_FILE_TOOLS.includes(n))),
+      disallowedTools: CLAUDE_BUILTINS_OFF.filter((n) => !OWN_TOOLS.includes(n) || (!this.ownFileTools() && OWN_FILE_TOOLS.includes(n))),
       ...(this.ownFileTools()
         ? {
             // Claude Code's own file tools, under vault-chat's policy: the hook

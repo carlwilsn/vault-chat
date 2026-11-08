@@ -12,7 +12,7 @@ import { readEntries } from "../convlog/piSession";
 import { fakeAnthropic, type FakeApi } from "./claudeFakeApi";
 import { findClaude, type ClaudeInstall } from "../engine/claude/install";
 import { claudePaths } from "../engine/claude/paths";
-import { ClaudeCodeBackend, isClaudeThread } from "../engine/claude/backend";
+import { APP_ONLY_TOOLS, ClaudeCodeBackend, isClaudeThread } from "../engine/claude/backend";
 import { McpRuntime } from "../mcp/runtime";
 import { makeChatView } from "../../src/convlog/view";
 import { claudeOf, defaultEngineOf } from "../../src/engineHealth";
@@ -296,26 +296,12 @@ describe("a conversation on Claude Code", () => {
     for (const want of ["AskUser", "Notify", "StartJob", "JobList", "SearchHistory"]) {
       expect(offered).toContain(`mcp__vault_chat__${want}`);
     }
-    // Of Claude Code's own, ONLY its file tools — which vault-chat's policy rules
-    // before every call (the PreToolUse hook), and which is what let pi's tools
-    // go. Anything else of its own reaching the model is a tool vault-chat has
-    // never ruled on, so this list is exact: it failed the day the CLI started
-    // offering DesignSync, a name the SDK's own BUILTIN_TOOL_NAMES does not have.
-    //
-    // The one remaining non-MCP entry is Claude Code's inert tool-search stub
-    // ("Reserved placeholder that keeps deferred tool loading active; never call
-    // this tool"), which is why every server vault-chat gives a session is
-    // always-loaded: ToolSearch itself is off, so a deferred tool would reach the
-    // model as a placeholder it could never open.
-    // Its own file tools, under vault-chat's path policy, and its own WebSearch,
-    // which replaced vault-chat's (that one searched through OpenRouter's web
-    // plugin and went with the key it needed).
-    const own = ["Read", "Write", "Edit", "Glob", "Grep", "WebSearch"];
-    for (const t of own) expect(offered).toContain(t);
-    // And NOT its WebFetch: vault-chat's own guards against private addresses.
-    expect(offered).not.toContain("WebFetch");
+    // Of Claude Code's own: everything (Carl: "no bounds on the agent") but the
+    // tools that only work inside Anthropic's own apps and the few vault-chat
+    // has its own of (APP_ONLY_TOOLS). The shell and subagents above all.
+    for (const t of ["Read", "Write", "Edit", "Glob", "Grep", "Bash", "Agent", "ToolSearch"]) expect(offered).toContain(t);
+    for (const t of APP_ONLY_TOOLS) expect(offered).not.toContain(t);
     expect(offered).toContain("mcp__vault_chat__WebFetch");
-    expect(offered.filter((n) => !n.startsWith("mcp__") && n !== "DeferredToolPlaceholder" && !own.includes(n))).toEqual([]);
     expect(offered).toContain("DeferredToolPlaceholder");
 
     // The row says the tool's own name: the clients strip vault-chat's prefix.
@@ -585,6 +571,29 @@ describe("a conversation on Claude Code", () => {
       solo.stop();
     }
   }, 240_000);
+
+  it("Delegate runs a real worker: its own Claude Code session, whose report comes back", async () => {
+    // Carl's agent said "this engine has no workers of its own" and could not
+    // delete a file. A worker is its own session in the same sandbox, with the
+    // shell; it runs to one answer, and that answer is the report.
+    let seen: string | null = null;
+    const ended = claude.background("cc-no-such-parent", {
+      agent: { name: "worker", systemPrompt: "You are a background worker. Do the task, then report." },
+      task: "WORKER-TASK-7 please report back",
+      title: "A test worker",
+      model: "haiku",
+    }, (id) => (seen = id));
+    const r = (await ended) as { ok: boolean; state: string; text: string };
+    expect(seen).toMatch(/^cc-worker-/);
+    expect(r).toMatchObject({ ok: true, state: "done" });
+    expect(r.text).toContain("WORKER-TASK-7");
+    // Ended, so no longer a live child; its end is on record.
+    expect(claude.liveChild(seen!)).toBeNull();
+    expect(claude.endedChild(seen!)).toMatchObject({ state: "done" });
+    // It was offered the shell, like its conversation.
+    const tools: string[] = (api.requests.find((q: any) => JSON.stringify(q.messages).includes("WORKER-TASK-7"))?.tools ?? []).map((x: any) => x.name);
+    expect(tools).toContain("Bash");
+  }, 180_000);
 
   it("health names the engine, and the backend says which one it is", () => {
     const h = claude.health();
