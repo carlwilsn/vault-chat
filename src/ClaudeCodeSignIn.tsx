@@ -14,7 +14,9 @@
 // NOT_FOR_COMMANDS). Signing out removes it from the keychain and from the
 // store, and the key push that follows removes it from the box too (the box
 // makes its store exactly what is pushed: src/boxKeys.ts).
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { Button, Input } from "./ui";
 import { useStore } from "./store";
 import { boxLinkFor } from "./boxChat";
@@ -28,6 +30,10 @@ import { forgetClaudeHealth, useClaudeSignedIn } from "./claudeAuthLive";
  * be driven in a test without Tauri, a browser or a box.
  */
 export type SignInIo = {
+  /** Make sure this machine has Claude Code at all, fetching the pinned one if
+   *  it has none: the command Carl runs has to exist, and so does the server the
+   *  app starts for a vault with no box. Immediate where one is installed. */
+  ensureCli: () => Promise<{ cli: string; version: string }>;
   /** The keychain's copy, which is the only place the token exists on this machine. */
   storedToken: () => Promise<string | null>;
   /** Mirror it into the store, which is what the box push reads. */
@@ -80,6 +86,7 @@ function liveIo(vault: string | null, remember: (token: string) => void, forget:
     return pushKeysToBox(link.url);
   };
   return {
+    ensureCli: () => invoke<{ cli: string; version: string }>("claude_cli_ensure"),
     storedToken: () => keychainGet(KEY.claudeCode),
     remember,
     push,
@@ -94,6 +101,13 @@ function liveIo(vault: string | null, remember: (token: string) => void, forget:
 
 /** The command that mints the token, shown with a copy button. */
 export const SETUP_COMMAND = "claude setup-token";
+
+/**
+ * The same command for a machine where `claude` is not on the PATH — the one the
+ * app fetched itself. A path with a space in it is quoted, because Carl pastes
+ * this into a real shell.
+ */
+export const setupCommandFor = (cli: string | null): string => (cli ? `${/\s/.test(cli) ? `"${cli}"` : cli} setup-token` : SETUP_COMMAND);
 
 /**
  * The flow itself. Carl, after a day of the button driving `claude setup-token`
@@ -111,6 +125,9 @@ function SignInFlow({ onDone }: { onDone?: () => void }) {
   const [error, setError] = useState<string | null>(null);
   const [token, setToken] = useState("");
   const [copied, setCopied] = useState(false);
+  // Whether there is a `claude` on this machine to run the command with, and
+  // the one the app fetched if it had to get one.
+  const [cli, setCli] = useState<{ have: boolean | null; path: string | null; getting: boolean; pct: number; error: string | null }>({ have: null, path: null, getting: false, pct: 0, error: null });
 
   const io = liveIo(
     vault,
@@ -118,11 +135,43 @@ function SignInFlow({ onDone }: { onDone?: () => void }) {
     () => clearServiceKey("claudeCode"),
   );
 
+  // Is there one at all? Asked once, and never fetching by itself: 350 MB is
+  // Carl's decision, not a side effect of opening Settings.
+  useEffect(() => {
+    let alive = true;
+    void invoke<{ version: string } | null>("claude_setup_token_cli")
+      .then((r) => alive && setCli((c) => ({ ...c, have: !!r })))
+      .catch(() => alive && setCli((c) => ({ ...c, have: null })));
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const command = setupCommandFor(cli.path);
+
   const copy = () => {
-    void navigator.clipboard?.writeText(SETUP_COMMAND).then(
+    void navigator.clipboard?.writeText(command).then(
       () => setCopied(true),
       () => {},
     );
+  };
+
+  /** Get the pinned Claude Code for this machine, so the command above exists. */
+  const getCli = async () => {
+    setCli((c) => ({ ...c, getting: true, pct: 0, error: null }));
+    const off = await listen<[number, number]>("claude-cli-progress", (e) => {
+      const [done, total] = e.payload;
+      setCli((c) => ({ ...c, pct: total > 0 ? Math.round((done / total) * 100) : c.pct }));
+    }).catch(() => null);
+    try {
+      const r = await io.ensureCli();
+      setCli({ have: true, path: r.cli, getting: false, pct: 100, error: null });
+      setCopied(false);
+    } catch (e) {
+      setCli((c) => ({ ...c, getting: false, error: why(e) }));
+    } finally {
+      off?.();
+    }
   };
 
   const save = async () => {
@@ -143,8 +192,8 @@ function SignInFlow({ onDone }: { onDone?: () => void }) {
         Run this in a terminal, sign in in the browser it opens, then paste the token it prints.
       </p>
       <div className="flex items-center gap-2">
-        <code className="font-mono text-[11.5px] px-2 py-1 rounded border border-border/60 select-all" data-el="claude-signin-command">
-          {SETUP_COMMAND}
+        <code className="font-mono text-[11.5px] px-2 py-1 rounded border border-border/60 select-all break-all" data-el="claude-signin-command">
+          {command}
         </code>
         <button onClick={copy} className="text-[10.5px] text-muted-foreground hover:text-foreground underline" data-el="claude-signin-copy">
           {copied ? "Copied" : "Copy"}
@@ -167,6 +216,24 @@ function SignInFlow({ onDone }: { onDone?: () => void }) {
           {busy ? "Saving…" : SIGN_IN_BUTTON}
         </Button>
       </div>
+      {/* Setup is install vault-chat, sign in, pick a vault: a machine with no
+          Claude Code is given one here rather than sent away to install it. */}
+      {cli.have === false && !cli.path && (
+        <p className="text-[10.5px] text-muted-foreground" data-el="claude-cli-missing">
+          {cli.getting ? (
+            `Getting Claude Code… ${cli.pct}%`
+          ) : (
+            <>
+              There is no <code className="font-mono">claude</code> on this machine to run it with.{" "}
+              <button onClick={() => void getCli()} className="underline hover:text-foreground" data-el="claude-cli-get">
+                Get it
+              </button>{" "}
+              (about 350 MB, once).
+            </>
+          )}
+        </p>
+      )}
+      {cli.error && <p className="text-[10.5px] text-amber-500/90 break-words">{cli.error}</p>}
       {error && <p className="text-[10.5px] text-amber-500/90 break-words">{error}</p>}
     </div>
   );

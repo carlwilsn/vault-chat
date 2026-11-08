@@ -15,7 +15,7 @@ import { installFakeTauri, makeTempVault } from "./fakes.ts";
 // panelayout.test.ts. Nothing below reaches Tauri: every flow is driven through
 // its injected io.
 installFakeTauri(makeTempVault("vc-claude-signin-"));
-const { saveTypedToken, signOut } = await import("../../src/ClaudeCodeSignIn.tsx");
+const { saveTypedToken, setupCommandFor, signOut } = await import("../../src/ClaudeCodeSignIn.tsx");
 type SignInIo = import("../../src/ClaudeCodeSignIn.tsx").SignInIo;
 
 const TOKEN = "sk-ant-oat01-NeverSaidOutLoud-0123456789" + "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789_-AbCdEfGhIjKlMnOpQr";
@@ -29,6 +29,9 @@ function rig(over: Over = () => ({}), stored: string | null = TOKEN): Rig {
   const box = { token: stored };
   const remembered: string[] = [];
   const io: SignInIo = {
+    // Claude Code is already on this machine, which is the ordinary case and
+    // the one that must cost nothing.
+    ensureCli: async () => (calls.push("cli"), { cli: "/already/here/claude", version: "2.1.319" }),
     storedToken: async () => (calls.push("read"), box.token),
     remember: (t) => {
       calls.push("remember");
@@ -122,4 +125,13 @@ test("signing out never reads the token, so no sign-out message can hold one", a
     assert.ok(!String(err ?? "").includes(TOKEN), `a sign-out message leaked a token: ${err}`);
     assert.ok(!String(err ?? "").includes("sk-ant"), `a sign-out message leaked a token: ${err}`);
   }
+});
+
+test("the command Carl copies names the claude that will run it", () => {
+  // A machine that has one on its PATH keeps the plain command; a CLI the app
+  // fetched itself is not on his PATH, so the command has to name it — quoted,
+  // because he pastes this into a real shell and Windows paths have spaces.
+  assert.equal(setupCommandFor(null), "claude setup-token");
+  assert.equal(setupCommandFor("/home/carl/.local/share/vault-chat/claude"), "/home/carl/.local/share/vault-chat/claude setup-token");
+  assert.equal(setupCommandFor("C:\\Users\\Carl Wilson\\AppData\\claude.exe"), '"C:\\Users\\Carl Wilson\\AppData\\claude.exe" setup-token');
 });

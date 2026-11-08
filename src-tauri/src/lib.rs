@@ -1,3 +1,4 @@
+mod claude_cli;
 mod claude_login;
 mod local_server;
 mod voice_server;
@@ -4425,6 +4426,43 @@ async fn local_server_start(app: tauri::AppHandle, vault: String) -> Result<loca
     .map_err(|e| e.to_string())?
 }
 
+/// Claude Code on this machine, fetching the pinned one if it is not here yet.
+///
+/// Setup is meant to be: install vault-chat, sign in, pick a vault — so the app
+/// gets Claude Code itself rather than sending Carl off to install it first.
+/// A machine that already has one keeps it; a machine that has none downloads
+/// ~350 MB once and says how far along it is through `claude-cli-progress`.
+#[tauri::command]
+async fn claude_cli_ensure(app: tauri::AppHandle) -> Result<ClaudeCliReady, String> {
+    use tauri::{Emitter, Manager};
+    let state_dir = app
+        .path()
+        .app_local_data_dir()
+        .map_err(|e| format!("no app data directory: {e}"))?;
+    let handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        claude_cli::fetch(&state_dir, |done, total| {
+            let _ = handle.emit("claude-cli-progress", (done, total));
+        })
+        .map(|(cli, version)| {
+            // Every lookup in this process, and in any server it starts, now
+            // finds this one.
+            std::env::set_var("VC_CLAUDE_BIN", &cli);
+            ClaudeCliReady { cli: cli.to_string_lossy().to_string(), version }
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Where Claude Code is, and which one it is.
+#[derive(serde::Serialize)]
+struct ClaudeCliReady {
+    /// Not shown to Carl; the UI only needs to know there is one.
+    cli: String,
+    version: String,
+}
+
 /// A repo in the vault-chat folder (master.rs): made here, synced with the box's hub at `remote_url`.
 #[tauri::command]
 async fn master_repo_init(dest: String, remote_url: String, branch: String, origin_url: Option<String>) -> Result<String, String> {
@@ -6138,6 +6176,14 @@ pub fn run() {
         .setup(|app| {
             use tauri::Manager;
 
+            // A Claude Code this app fetched before is the one it uses: the
+            // sign-in driver and any server it starts both read VC_CLAUDE_BIN.
+            if let Ok(dir) = app.path().app_local_data_dir() {
+                if let Some(cli) = claude_cli::adopt(&dir) {
+                    println!("[claude] using the CLI this app fetched: {}", cli.display());
+                }
+            }
+
             // Time every main-thread stall in the first minutes (app-log.txt's
             // boot summary) — a blocked main thread is what Windows calls
             // "Not responding".
@@ -6301,6 +6347,7 @@ pub fn run() {
             open_terminal,
             open_box_terminal,
             claude_login::claude_setup_token_cli,
+            claude_cli_ensure,
             git_init_if_needed,
             git_commit_all,
             git_repo_root_for_file,

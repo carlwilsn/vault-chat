@@ -42,6 +42,9 @@ keyring = { version = "3", features = ["apple-native", "windows-native", "sync-s
 # Passphrase-based encryption for the cross-machine key sync (keys.enc).
 age = "0.10"
 base64 = "0.22"
+# Checking the Claude Code download against the hash npm publishes for it
+# (src/claude_cli.rs).
+sha2 = "0.10"
 # Random key for the encrypted headless-Linux secret fallback (keychain_*).
 getrandom = "0.2"
 # Tiny embedded HTTP server for phone voice mode (box serves a Tailscale-reachable
