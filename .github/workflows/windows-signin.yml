@@ -138,6 +138,19 @@ jobs:
           node scripts/download-tectonic.mjs
           New-Item -ItemType Directory -Force -Path dist | Out-Null
           Set-Content -Path dist/index.html -Value '<!doctype html><title>stub</title>'
+          # The bundle's resources are read while the crate is built, so every
+          # one of them has to exist before `cargo test` — the job died at
+          # "resource path `binaries\node.exe` doesn't exist" the moment they
+          # became platform-specific. A test of the sign-in has no use for
+          # what is inside them, so anything still missing is made as an empty
+          # file: no 125 MB Node download, no frontend build this never opens.
+          # The list is read from the config, so it cannot drift from it.
+          $conf = Get-Content src-tauri/tauri.windows.conf.json -Raw | ConvertFrom-Json
+          foreach ($r in $conf.bundle.resources) {
+            $p = "src-tauri/$r"
+            New-Item -ItemType Directory -Force -Path (Split-Path $p) | Out-Null
+            if (-not (Test-Path $p)) { New-Item -ItemType File -Path $p | Out-Null }
+          }
 
       # Claude Code as Carl has it: the official Windows installer, which puts
       # claude.exe in ~/.local/bin — the one path the old lookup never tried.

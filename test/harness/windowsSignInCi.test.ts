@@ -84,6 +84,21 @@ test("what Windows said comes back as annotations, which are the readable part o
   assert.match(runs, /::error title=vacuous::/);
 });
 
+test("the job makes what the crate build reads, before it reads it", () => {
+  // The bundle's resources are read while the crate is built, so the job died
+  // before the test with "resource path `binaries\\node.exe` doesn't exist"
+  // the moment those resources became platform-specific. A test of the sign-in
+  // has no use for what is inside them, so they are empty files rather than a
+  // 125 MB download and a frontend build this job never opens.
+  // It reads the list from the config rather than repeating it, so a resource
+  // added there can never be one the job forgets to make.
+  assert.match(runs, /tauri\.windows\.conf\.json/, "the job reads the bundle's own resource list");
+  assert.match(runs, /bundle\.resources/);
+  assert.match(runs, /New-Item -ItemType File/, "and makes an empty one for anything missing");
+  const win: string[] = JSON.parse(read("src-tauri/tauri.windows.conf.json")).bundle.resources;
+  assert.ok(win.length > 0 && win.every((r) => r.startsWith("binaries/")), `${win}`);
+});
+
 test("the transcript is kept, and a token can never be in it", () => {
   const upload = steps.find((s) => s.uses?.startsWith("actions/upload-artifact"));
   assert.ok(upload, "the log is the evidence; it is uploaded");
