@@ -172,8 +172,14 @@ pub(crate) fn wants_code(cleaned: &str) -> bool {
 /// is what keeps the "export CLAUDE_CODE_OAUTH_TOKEN=<token>" hint and an
 /// `sk-ant-api…` key from being mistaken for one.
 pub(crate) fn captured_token(cleaned: &str) -> Option<String> {
-    let re = regex::Regex::new(r"sk-ant-oat[A-Za-z0-9_-]{20,}").expect("static regex");
-    re.find(cleaned).map(|m| m.as_str().to_string())
+    // Only a token that has been printed in full: a real one is ~108
+    // characters, and it counts only once something that cannot be part of it
+    // follows. The waits poll every 50 ms, and output arrives in chunks — the
+    // old `{20,}` took whatever half had arrived, which is how Carl's laptop
+    // stored a cut-off token and the box answered "401 OAuth access token is
+    // invalid".
+    let re = regex::Regex::new(r"(sk-ant-oat[A-Za-z0-9_-]{80,})[^A-Za-z0-9_-]").expect("static regex");
+    re.captures(cleaned).map(|c| c[1].to_string())
 }
 
 /// What went wrong, in the CLI's own words, or None. Used only when no token
@@ -932,12 +938,12 @@ https://claude.com/cai/oauth/authorize?code=true&client_id=9d1c250a&response_typ
     fn the_token_is_captured_and_the_placeholder_is_not_mistaken_for_one() {
         let frame = b"\x1b[32m\xe2\x9c\x93 Long-lived authentication token created successfully!\x1b[39m\r\n\
 Your OAuth token (valid for 1 year):\r\n\
-\x1b[33msk-ant-oat01-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789_-abcdef\x1b[39m\r\n\
+\x1b[33msk-ant-oat01-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789_-abcdefQ1w2E3r4T5y6U7i8O9p0A1s2D3f4G5h6J7k8L9z0X1c2V3b4N5m6\x1b[39m\r\n\
 Store this token securely. You won't be able to see it again.\r\n\
 Use this token by setting: export CLAUDE_CODE_OAUTH_TOKEN=<token>";
         let cleaned = clean_terminal_output(frame);
         let token = captured_token(&cleaned).expect("a token");
-        assert_eq!(token, "sk-ant-oat01-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789_-abcdef");
+        assert_eq!(token, "sk-ant-oat01-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789_-abcdefQ1w2E3r4T5y6U7i8O9p0A1s2D3f4G5h6J7k8L9z0X1c2V3b4N5m6");
         // Nothing before the token is waiting to be read as one.
         assert_eq!(captured_token("Your OAuth token (valid for 1 year):"), None);
         assert_eq!(captured_token("export CLAUDE_CODE_OAUTH_TOKEN=<token>"), None);
@@ -947,8 +953,9 @@ Use this token by setting: export CLAUDE_CODE_OAUTH_TOKEN=<token>";
         assert_eq!(captured_token("tokens start with sk-ant-oat"), None);
         // A future shape the CLI would still accept is still captured.
         assert_eq!(
-            captured_token("sk-ant-oat99_AbCdEfGhIjKlMnOpQrStUvWxYz").as_deref(),
-            Some("sk-ant-oat99_AbCdEfGhIjKlMnOpQrStUvWxYz"),
+            captured_token("sk-ant-oat99_AbCdEfGhIjKlMnOpQrStUvWxYzQ1w2E3r4T5y6U7i8O9p0A1s2D3f4G5h6J7k8L9z0X1c2V3b4N5m6
+").as_deref(),
+            Some("sk-ant-oat99_AbCdEfGhIjKlMnOpQrStUvWxYzQ1w2E3r4T5y6U7i8O9p0A1s2D3f4G5h6J7k8L9z0X1c2V3b4N5m6"),
         );
     }
 
@@ -972,7 +979,7 @@ expired, already used, or from an earlier sign-in attempt. Sign in again to get 
     #[test]
     fn a_transcript_with_a_token_takes_the_token_branch_not_the_error_branch() {
         let cleaned = clean_terminal_output(
-            b"OAuth error: something earlier failed.\r\nsk-ant-oat01-ZZZZZZZZZZZZZZZZZZZZZZZZZZZZ\r\n",
+            b"OAuth error: something earlier failed.\r\nsk-ant-oat01-ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ\r\n",
         );
         assert!(captured_token(&cleaned).is_some());
         assert!(!failure_message(&cleaned).unwrap_or_default().contains("sk-ant"));
@@ -1047,6 +1054,18 @@ expired, already used, or from an earlier sign-in attempt. Sign in again to get 
         // A code pasted without its state gets the session's.
         assert_eq!(clean_code("abc#", Some(st)), format!("abc#{st}"));
         assert_eq!(clean_code("  abc  ", None), "abc");
+    }
+
+    #[test]
+    fn a_token_counts_only_once_it_has_arrived_in_full() {
+        let full = format!("sk-ant-oat01-{}", "AbCdEfGhIj_kLmNoPqRsT-uVwXyZ0123456789".repeat(3));
+        // Half of it so far: not a token yet, however long that half is.
+        assert_eq!(captured_token(&format!("Your token: {}", &full[..60])), None);
+        assert_eq!(captured_token(&format!("Your token: {}", &full[..120])), None);
+        // The whole line, ended: the whole token.
+        assert_eq!(captured_token(&format!("Your token: {full}
+Store it")).as_deref(), Some(full.as_str()));
+        assert_eq!(captured_token(&format!("Your token: {full} ")).as_deref(), Some(full.as_str()));
     }
 
     #[test]
