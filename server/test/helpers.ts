@@ -240,8 +240,28 @@ export async function startServer(e: ServerEnv & { bundle?: string }): Promise<R
   };
 }
 
+/**
+ * How much longer than a call site asks for a wait may take here.
+ *
+ * Every budget in this suite was chosen on a machine running it alone. The ship
+ * host runs it nice'd, on a box that is also serving Carl, and a turn there can
+ * take several times what it takes locally: read out of the gate's own baseline
+ * log for main 7f2f775c, 14 turn-driven tests failed on "timed out waiting"
+ * while passing here. Fewer workers (server/vitest.config.ts) is the first half
+ * of that fix; this is the rest of it.
+ *
+ * Waiting longer costs nothing when the thing happens — waitFor returns as soon
+ * as its condition holds. It only makes a test that was already going to fail
+ * slower to say so. Capped so a scaled budget still fits inside the per-test
+ * timeout, which would otherwise cut the wait off before it could name what it
+ * was waiting for.
+ */
+const PATIENCE = 2;
+const PATIENCE_CAP_MS = 100_000;
+export const patient = (ms: number): number => Math.min(ms * PATIENCE, Math.max(ms, PATIENCE_CAP_MS));
+
 export async function waitFor<T>(fn: () => Promise<T | undefined | null | false> | T | undefined | null | false, ms = 30_000, step = 200): Promise<T> {
-  const end = Date.now() + ms;
+  const end = Date.now() + patient(ms);
   let last: unknown;
   while (Date.now() < end) {
     try {

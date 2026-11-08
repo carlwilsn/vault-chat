@@ -7,7 +7,7 @@ import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import { EventEmitter } from "node:events";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { tmp, cleanup } from "./helpers";
+import { tmp, cleanup, patient } from "./helpers";
 import { readEntries } from "../convlog/piSession";
 import { fakeAnthropic, type FakeApi } from "./claudeFakeApi";
 import { findClaude, type ClaudeInstall } from "../engine/claude/install";
@@ -227,7 +227,8 @@ const sentText = (n = 1): string => {
   return [sys, ...msgs].join("\n");
 };
 
-const until = async (fn: () => Promise<boolean> | boolean, ms = 120_000) => {
+/** Its own wait, scaled like the shared one (helpers.ts patient). */
+const until = async (fn: () => Promise<boolean> | boolean, ms = patient(60_000)) => {
   const t0 = Date.now();
   while (!(await fn())) {
     if (Date.now() - t0 > ms) throw new Error("timed out");
