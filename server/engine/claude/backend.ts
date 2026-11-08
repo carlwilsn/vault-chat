@@ -527,8 +527,16 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
     // A stop means stop: what Claude Code has not taken yet is taken back BEFORE
     // the turn is aborted — otherwise it takes the queued message itself the
     // moment the turn ends, and a message Carl's stop should have held is
-    // answered anyway.
-    await this.clearQueue(threadId);
+    // answered anyway. But taking it back is a round-trip to the runtime, which
+    // may be the very reason he pressed stop, so it never holds the abort up for
+    // more than a moment.
+    await Promise.race([
+      this.clearQueue(threadId).catch(() => undefined),
+      new Promise<void>((r) => {
+        const t = setTimeout(r, 2_000);
+        t.unref?.();
+      }),
+    ]);
     // Its end is a stop, not a failure (translate.ts expectInterrupt).
     live.translator.expectInterrupt();
     await live.session.interrupt();

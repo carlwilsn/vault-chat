@@ -176,6 +176,23 @@ const LEGACY_SOURCES = new Set(["mission", "worker", "ask"]);
 const ARCHIVED = "This is an archived mission thread (the old missions system): readable, never run. Start a new chat.";
 const INTERRUPTED_TEXT = "⚠️ Interrupted by a restart — the command it was running was killed and may not have finished.";
 
+/**
+ * How many times in a row a lost thread is resumed before the engine stops and
+ * says so, and the window that counts as "in a row".
+ *
+ * A session that dies mid-turn is resumed, which is right: a runtime that fell
+ * over should not cost Carl the turn. But a session that dies on EVERY request —
+ * a rejected token, a model the subscription cannot run, a 400 the runtime
+ * treats as fatal — dies again the moment it is resumed, and nothing here
+ * counted. That is how one turn made 1,262 requests during the pi deletion,
+ * against a local fake; against the real API it is Carl's own subscription being
+ * spent on a loop that cannot succeed. Three tries, then the chat is told.
+ */
+const MAX_RESUMES = 3;
+const RESUME_WINDOW_MS = 5 * 60_000;
+const RESUME_GAVE_UP =
+  "⚠️ The engine could not keep this turn going: its session ended three times in a row without getting anywhere. Nothing more was sent. Send again when you want it to try, or check the Claude sign-in in Settings.";
+
 
 // The server is going down (SIGTERM/SIGINT): pi's processes die with it, and
 // that is not a crash. A turn cut by the shutdown stays open in the log for the
@@ -541,6 +558,8 @@ export class Engine {
   /** A voice call is live on these conversations (server/voiceBrain.ts): every turn, typed or spoken, runs on the
    *  talker's model with the call's rules (once per call), and its pi events reach the call (tap). */
   private talkers = new Map<string, { model: string; rules: string; sent: boolean; thinking?: string }>();
+  /** Lost-thread resumes in a row, per conversation (MAX_RESUMES). Cleared by a turn that gets somewhere. */
+  private resumes = new Map<string, { n: number; at: number }>();
   private taps = new Map<string, Set<(ev: any) => void>>();
 
   constructor(private d: EngineDeps) {
@@ -1670,6 +1689,9 @@ export class Engine {
     // Busy from here (health's busy.runs), not only once the turn has started: the wait for
     // the conversation's earlier input, the runtime and the thread is part of the turn.
     const release = holdRun(convId);
+    // Something Carl sent is always tried: whatever was failing before, he gets
+    // his three (MAX_RESUMES) again rather than meeting a chat that refuses.
+    if (kind === "user") this.resumes.delete(convId);
     return this.serial(convId, async () => {
       // Nothing to run it on: not signed in, or no Claude Code on this box.
       // A wake waits quietly — it fires on a schedule, and filing the same
@@ -2171,12 +2193,26 @@ export class Engine {
       return;
     }
     l.cut = true;
+    // A session that dies on every request would otherwise be resumed for ever.
+    const prev = this.resumes.get(l.convId);
+    const n = prev && Date.now() - prev.at < RESUME_WINDOW_MS ? prev.n + 1 : 1;
+    this.resumes.set(l.convId, { n, at: Date.now() });
+    if (n > MAX_RESUMES) {
+      this.log(`thread lost ${n} times in a row on ${l.convId}: not resuming again`);
+      void this.finishTurn(l, "interrupted", null)
+        .then(() => this.notice(l.convId, RESUME_GAVE_UP, "error"))
+        .catch((err) => this.log(`give up on ${l.convId}: ${err}`));
+      return;
+    }
     void this.finishTurn(l, "interrupted", null).then(() => this.run(l.convId, RESUME_TEXT, "resume", { byCarl: l.byCarl })).catch((err) => this.log(`resume ${l.convId} failed: ${err}`));
   }
 
   private async finishTurn(l: Live, status: string, error: any): Promise<void> {
     if (l.finished) return;
     l.finished = true;
+    // A turn that ended on its own terms means the session is not in the loop
+    // onThreadLost counts (a stop is Carl's, not a failure to make progress).
+    if (status !== "interrupted") this.resumes.delete(l.convId);
     if (this.live.get(l.convId) === l) this.live.delete(l.convId);
     unregisterRun(l.convId, l.controller);
     l.feed.dispose();

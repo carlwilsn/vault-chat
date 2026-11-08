@@ -37,7 +37,9 @@ describe("box setup routes", () => {
     expect(h.app).toBe("vault-chat-server");
     expect(typeof h.name).toBe("string");
     expect(h.name.length).toBeGreaterThan(0);
-    // `hasKey` means the Claude sign-in now — the only thing a turn needs.
+    // No API key is held or needed any more; what a turn needs is the sign-in,
+    // and that is keys.claudeCode. (`hasKey` stays false for the ship host's
+    // own preflight, which reads it.)
     expect(h.hasKey).toBe(false);
     expect(h.keys.claudeCode).toBe(false);
   });
@@ -119,7 +121,7 @@ describe("box setup routes", () => {
     }
     const h = await (await fetch(`${srv.base}/api/v1/health`)).json();
     expect(h.keys.claudeCode).toBe(true);
-    expect(h.hasKey).toBe(true);
+    expect(h.hasKey, "no API key is held or needed, whatever the box has been pushed").toBe(false);
     expect(h.keyNames).toEqual(Object.keys(keys).sort());
     expect(JSON.stringify(h)).not.toContain("canary");
     // The laptop is the source: the box's own earlier key is gone.

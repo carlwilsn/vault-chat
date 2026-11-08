@@ -231,6 +231,31 @@ describe("C: one restart, one resume", () => {
     expect(c.messages.filter((m: any) => /Interrupted by a restart/.test(m.content ?? ""))).toHaveLength(1);
   });
 
+  it("a session that dies every time is resumed three times, then the chat is told and nothing more is sent", async () => {
+    // The loop this bounds: a runtime that falls over on every request is resumed
+    // the moment it dies, so it dies again — 1,262 requests in one turn, against
+    // the real API on Carl's own subscription.
+    const { convId, tid } = await startTurn(engine, backend, "Whatever kills the session.");
+    const turns0 = backend.turns.length;
+    for (let i = 1; i <= 3; i++) {
+      backend.ev(tid, { kind: "threadLost" });
+      await until(() => backend.turns.length === turns0 + i, 8_000);
+    }
+    // The fourth death is not resumed: the turn is closed and the chat says so.
+    backend.ev(tid, { kind: "threadLost" });
+    await until(async () => (await readConv(vault, convId)).messages.some((m: any) => /could not keep this turn going/.test(m.content ?? "")), 8_000);
+    await sleep(2500);
+    expect(backend.turns.length, JSON.stringify(backend.turns.slice(turns0).map((t: any) => t.texts))).toBe(turns0 + 3);
+    const c = await readConv(vault, convId);
+    expect(c.state).toBe("idle");
+
+    // And something he sends himself is tried again, from zero.
+    await engine.message({ text: "Try again.", convId });
+    await until(() => backend.turns.length === turns0 + 4, 8_000);
+    backend.ev(tid, { kind: "threadLost" });
+    await until(() => backend.turns.length === turns0 + 5, 8_000);
+  });
+
   it("pi dying with the server's shutdown does nothing; the next boot marks it once and resumes once", async () => {
     const { convId, tid } = await startTurn(engine, backend, "Run the build.");
     const turns = backend.turns.length;

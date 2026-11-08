@@ -238,12 +238,11 @@ async function main(): Promise<void> {
       })(),
       vaults: vaultRefs().map((v) => ({ name: v.name, path: v.path })),
       voice: pipelineState(),
-      // Whether this box can run a turn at all. It used to mean "it has an
-      // OpenRouter key"; it means the Claude sign-in now, which is the only
-      // thing a turn needs. Kept under its old name because the ship host's own
-      // preflight reads it (host/real-copy-startup.mjs) to check that a fresh
-      // box says no — and because a reader that asks is asking the right thing.
-      hasKey: hasKey(CLAUDE_CODE_KEY),
+      // No API key is held or needed: the engine runs on Carl's Claude sign-in,
+      // which health reports as keys.claudeCode. The field stays because the
+      // installed ship host's preflight reads it (host/real-copy-startup.mjs,
+      // which is not in the repo), and Carl asked for it to stay false.
+      hasKey: false,
       keyNames: keyNames(),
       version: SERVER_VERSION,
       rev: SERVER_REV,
