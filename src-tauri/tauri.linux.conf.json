@@ -1,1 +1,9 @@
-{"bundle":{"resources":["binaries/tectonic"]}}
+{
+  "bundle": {
+    "resources": [
+      "binaries/tectonic",
+      "binaries/node",
+      "binaries/vault-chat-server.mjs"
+    ]
+  }
+}

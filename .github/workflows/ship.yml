@@ -193,6 +193,16 @@ jobs:
       - name: Download Tectonic LaTeX engine
         run: node scripts/download-tectonic.mjs
 
+      # What a machine with no box runs the vault-chat server with. The Tauri
+      # prebuild hook fetches these too, but the bundle's resources are read
+      # while the crate is built — so they are fetched here, beside tectonic,
+      # where they are certain to exist before anything asks for them.
+      - name: Download the Node runtime the app carries
+        run: node scripts/download-node.mjs
+
+      - name: Pack the server the app carries
+        run: node scripts/pack-server-into-app.mjs
+
       - name: Build, sign, upload to the draft release
         uses: tauri-apps/tauri-action@v0
         env:
@@ -288,6 +298,16 @@ jobs:
 
       - name: Download Tectonic LaTeX engine
         run: node scripts/download-tectonic.mjs
+
+      # What a machine with no box runs the vault-chat server with. The Tauri
+      # prebuild hook fetches these too, but the bundle's resources are read
+      # while the crate is built — so they are fetched here, beside tectonic,
+      # where they are certain to exist before anything asks for them.
+      - name: Download the Node runtime the app carries
+        run: node scripts/download-node.mjs
+
+      - name: Pack the server the app carries
+        run: node scripts/pack-server-into-app.mjs
 
       - name: Build, sign, upload to the draft release
         uses: tauri-apps/tauri-action@v0

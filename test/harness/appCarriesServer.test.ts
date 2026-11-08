@@ -29,12 +29,19 @@ test("the prebuild fetches the Node runtime and packs the server", () => {
 });
 
 test("the bundle ships them, beside the LaTeX engine it already shipped", () => {
+  // The server bundle is the same file everywhere, so it sits in the shared
+  // config; the runtime is not, so it sits in each platform's own. (Naming
+  // both `binaries/node` and `binaries/node.exe` in the shared config was what
+  // stopped v0.7.91 building at all — see releaseResources.test.ts, which pins
+  // the shape of this, and the assertion below that it has not come back.)
   const res: string[] = conf.bundle.resources;
   assert.ok(res.includes("binaries/vault-chat-server.mjs"), `the server bundle is not shipped: ${res}`);
-  // Both names: the build that runs produces one of them, and a resource that
-  // matches nothing is simply not copied.
-  assert.ok(res.includes("binaries/node"), "Linux has no .exe");
-  assert.ok(res.includes("binaries/node.exe"), "Windows has nothing else");
+  assert.ok(!res.some((r) => /binaries\/node/.test(r)), `the runtime belongs in a platform config: ${res}`);
+  const win: string[] = JSON.parse(read("src-tauri/tauri.windows.conf.json")).bundle.resources;
+  const linux: string[] = JSON.parse(read("src-tauri/tauri.linux.conf.json")).bundle.resources;
+  assert.ok(win.includes("binaries/node.exe"), "Windows carries node.exe");
+  assert.ok(linux.includes("binaries/node"), "Linux carries node");
+  for (const list of [win, linux]) assert.ok(list.includes("binaries/vault-chat-server.mjs"), "and the server with it");
 });
 
 test("the pinned Node is a real published version, named in one place", () => {
