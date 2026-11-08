@@ -18,7 +18,7 @@ it("typed replies use their actual native answer once, independent of file viewe
   writeFileSync(join(owner, ".vault-chat/notes.jsonl"), notes);
   const provider = await fakeAnthropic();
   const answer = "## Actual answer\nLiteral [Carl, on his laptop] is human text.\n\n```text\n# This header stays in the native answer\n```\n**Forty-two**, not another answer.";
-  provider.respond = b => lastUser(b).includes("OWNED-TYPED-") ? { text: answer, noCost: true } : { status: 503, body: "Unowned inference refused" };
+  provider.respond = b => lastUser(b).includes("OWNED-TYPED-") ? { text: answer, noCost: true } : { status: 400, body: '{"type":"error","error":{"type":"invalid_request_error","message":"Unowned inference refused"}}' };
   const guard = join(root, "local-only.mjs");
   writeFileSync(guard, `const real=globalThis.fetch;globalThis.fetch=(i,o)=>{const u=new URL(typeof i==='string'?i:i instanceof URL?i.href:i.url);if(u.href==='https://openrouter.ai/api/v1/models')return real(${JSON.stringify(provider.url + "/models")},o);if(!['127.0.0.1','localhost','[::1]'].includes(u.hostname))throw Error('External requests refused');return real(i,o);};`);
   let srv: Running | undefined;

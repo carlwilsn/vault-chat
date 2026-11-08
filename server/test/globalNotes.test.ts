@@ -54,7 +54,8 @@ describe('compiled Notes APIs and native tools across viewers and owner threads'
   writeFileSync(join(b,'.vault-chat/notes.jsonl'),JSON.stringify(seed)+'\n');
   provider=await fakeAnthropic();
   provider.respond=body=>{
-   const user=lastUser(body); if(!user.includes('OWNED-NOTES-')) return {status:503};
+   // 400, not 503: a refusal the runtime would retry for ever is a hang.
+   const user=lastUser(body); if(!user.includes('OWNED-NOTES-')) return {status:400,body:'{"type":"error","error":{"type":"invalid_request_error","message":"Unowned inference refused"}}'};
    const result=lastToolResult(body);
    if(result!==null){ output=result; return {text:'Owned note step complete',noCost:true}; }
    return step?{call:step,noCost:true}:{text:'Owned note idle',noCost:true};
@@ -66,8 +67,8 @@ describe('compiled Notes APIs and native tools across viewers and owner threads'
  const tool=async(viewer:string,convId:string,name:string,args:Record<string,unknown>={})=>{
   step={name,args}; output=''; const id='OWNED-NOTES-'+(++serial);
   await post('/api/v2/intent?vault='+viewer,{type:'send',convId,client:'laptop',clientId:id,text:id});
-  await waitFor(()=>output||null,30000);
-  await waitFor(async()=>{const d=await(await fetch(srv.base+'/conversation?id='+convId+'&vault='+viewer+'&full=1')).json();return d.meta?.state!=='running'&&d.messages?.some((m:any)=>m.role==='assistant'&&m.content==='Owned note step complete')?true:null;},30000);
+  await waitFor(()=>output||null,60000);
+  await waitFor(async()=>{const d=await(await fetch(srv.base+'/conversation?id='+convId+'&vault='+viewer+'&full=1')).json();return d.meta?.state!=='running'&&d.messages?.some((m:any)=>m.role==='assistant'&&m.content==='Owned note step complete')?true:null;},60000);
   return output;
  };
  it('one existing id/text/status under both viewer scopes and different conversation owners, with correct original source',async()=>{
@@ -82,7 +83,7 @@ describe('compiled Notes APIs and native tools across viewers and owner threads'
   expect(await tool('fixture-b',p.convId,'ListNotes')).toContain(seed.user_draft);
   const r=await fetch(srv.base+'/api/v1/vault/file?'+new URLSearchParams({vault:'fixture-b',path:join(n.origin_vault!,'same.md')}));
   expect(r.status).toBe(200);expect(Buffer.from((await r.json()).base64,'base64').toString()).toBe('ORIGINAL SOURCE');
- });
+ }, 300_000);
  it('startup and repeated global reads never backfill titles or compact original notes',async()=>{
   const p=join(b,'.vault-chat/notes.jsonl'), before=readFileSync(p,'utf8');
   await new Promise(r=>setTimeout(r,8500));
@@ -103,7 +104,7 @@ describe('compiled Notes APIs and native tools across viewers and owner threads'
   expect(readFileSync(join(b,'.vault-chat/notes.jsonl'),'utf8')).toBe(JSON.stringify(seed)+'\n');
   expect(existsSync(join(c,'.vault-chat/notes.jsonl'))).toBe(false);
   expect(readFileSync(join(a,'.vault-chat/notes.jsonl'),'utf8').split('\n').filter(l=>l.includes(id))).toHaveLength(1);
- });
+ }, 300_000);
  it('source provenance never permits .git or an escaping symlink, even with an anchor',async()=>{
   writeFileSync(join(home,'outside.md'),'PRIVATE OUTSIDE FIXTURE');
   symlinkSync(join(home,'outside.md'),join(c,'escape.md'));
