@@ -154,10 +154,11 @@ class Screen:
         subprocess.run(["import", "-window", "root", str(p)], check=True, env=self.env)
         return p
 
-    def words(self, png: Path) -> list[dict]:
-        """Every word OCR found, with where it is — upscaled first, because UI text is small."""
-        big = png.with_suffix(".2x.png")
-        subprocess.run(["convert", str(png), "-resize", "200%", str(big)], check=True, env=self.env)
+    def pass_(self, png: Path, suffix: str, recipe: list[str], scale: int) -> list[dict]:
+        """One OCR pass over the shot, prepared one way. Scale is how much the
+        recipe grew it, so the words come back in screen pixels."""
+        big = png.with_suffix(f".{suffix}.png")
+        subprocess.run(["convert", str(png), *recipe, str(big)], check=True, env=self.env)
         tsv = subprocess.run(["tesseract", str(big), "stdout", "--psm", "11", "tsv"],
                              capture_output=True, text=True, env=self.env).stdout
         out = []
@@ -165,15 +166,46 @@ class Screen:
             f = line.split("\t")
             if len(f) < 12 or not f[11].strip():
                 continue
-            left, top, w, h = (int(f[6]) / 2, int(f[7]) / 2, int(f[8]) / 2, int(f[9]) / 2)
-            out.append({"text": f[11], "x": left + w / 2, "y": top + h / 2, "conf": float(f[10])})
+            left, top, w, h = (int(f[6]) / scale, int(f[7]) / scale, int(f[8]) / scale, int(f[9]) / scale)
+            out.append({"text": f[11], "x": left + w / 2, "y": top + h / 2,
+                        "conf": float(f[10]), "pass": suffix})
+        # Reading order within the pass: down the screen in rows, left to right
+        # inside a row. find() walks this list to match a phrase.
+        out.sort(key=lambda w: (round(w["y"] / 6), w["x"]))
         return out
+
+    def words(self, png: Path) -> list[dict]:
+        """Every word OCR found, with where it is — two passes, one after the other.
+
+        One pass cannot read this UI. Plain upscaling reads the bright text —
+        headings, paragraphs, the editor — and goes blind on the small dim
+        grey-on-near-black of the titlebar and the file tree: the run that found
+        this had "Open folder" on screen the whole time and never saw the words,
+        so the vault was never picked and four checks failed for a reason that
+        was never in the app. Inverting and pushing the contrast reads that
+        text, and loses some of the bright text in return.
+
+        The two stay apart rather than interleaved, because a phrase is matched
+        by words standing next to each other: merging the passes drops one
+        pass's half-read word ("VAULT-", "ILDER") between the other's whole ones
+        and the phrase no longer reads. find() tries each pass in turn instead.
+        """
+        return (self.pass_(png, "2x", ["-resize", "200%"], 2)
+                + self.pass_(png, "dim", ["-colorspace", "gray", "-negate", "-resize", "400%",
+                                          "-sigmoidal-contrast", "5x30%"], 4))
 
     def read(self, name: str) -> tuple[str, list[dict]]:
         """What is on screen as text, plus the words' places. The text is one line, lowercased."""
         png = self.shot(name)
         ws = self.words(png)
-        return (" ".join(w["text"] for w in ws).lower(), ws)
+        said: list[str] = []
+        for i, w in enumerate(ws):
+            # A word both passes read in the same place is one word on screen.
+            if any(o["pass"] != w["pass"] and norm(o["text"]) == norm(w["text"])
+                   and abs(o["x"] - w["x"]) < 12 and abs(o["y"] - w["y"]) < 8 for o in ws[:i]):
+                continue
+            said.append(w["text"])
+        return (" ".join(said).lower(), ws)
 
     def find(self, ws: list[dict], want: str, below: float = 0) -> dict | None:
         """Where `want` is on screen — a word, or a phrase whose words sit side
@@ -182,6 +214,14 @@ class Screen:
         # Both sides the same way: OCR reads "VAULT-CHAT" as one word, and a
         # wanted word with a hyphen in it would otherwise never match.
         parts = [norm(x) for x in want.split()]
+        for which in dict.fromkeys(w["pass"] for w in ws):
+            got = self.find_in([w for w in ws if w["pass"] == which], parts, below)
+            if got:
+                return got
+        return None
+
+    @staticmethod
+    def find_in(ws: list[dict], parts: list[str], below: float) -> dict | None:
         for i, w in enumerate(ws):
             if w["y"] < below:
                 continue
@@ -524,12 +564,20 @@ def main() -> int:
         screen.key("ctrl+shift+b")
         time.sleep(2)
         text, ws = screen.read("chat")
-        if "sign in" not in text:
+        if "sign in" not in text and "connect your box" not in text:
             # Then its icon, in case the shortcut was swallowed: it is the
             # left-most of the titlebar's right-hand controls.
             screen.click_at(SCREEN[0] - CHAT_PANEL_FROM_RIGHT, TITLEBAR_Y, "chat-opened")
             time.sleep(2)
             text, ws = screen.read("chat-2")
+        # A machine with no box runs the server itself, and that takes a while
+        # to boot — a fixed wait here would read whatever the chat happened to
+        # be showing mid-start and call it the answer. So wait for the chat to
+        # settle on what it means, up to the app's own 90 s giving-up point.
+        deadline = time.time() + 120
+        while "sign in" not in text and time.time() < deadline:
+            time.sleep(5)
+            text, ws = screen.read("chat-waiting")
         check("the chat asks for the Claude sign-in when signed out", "sign in" in text)
         check("and the app is still usable around it (the vault is on screen)", "orchard" in text or "welcome" in text)
 
