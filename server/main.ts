@@ -318,7 +318,33 @@ async function main(): Promise<void> {
           answer: async (v, b) => (await engineOf(v)).answerRoute(b),
           kill: async (v, b) => (await engineOf(v)).kill(b),
           subagent: async (v, c, sid, op, b) => (await engineOf(v)).subagent(c, sid, op, b),
-          intent: async (v, b, viewerRoot) => (await engineOf(v)).intent(b, viewerRoot),
+          // A chat is in the log of the vault that holds it, which is not always the open one (the list is the whole
+          // box's): an intent about chats goes to each owner's engine, or the open vault's engine says "no such chat".
+          intent: async (v, b, viewerRoot) => {
+            const { ownerVault } = await import("./convlog/log");
+            const engineAt = async (id: string) => {
+              const at = ownerVault(id, v.path);
+              const o = at && at !== v.path ? vaultRefs().find((x) => x.path === at) : null;
+              return o ? engineOf(o) : engineOf(v);
+            };
+            if ((b?.type === "delete" || b?.type === "restoreConversation") && (Array.isArray(b.convIds) || b.convId)) {
+              const ids: string[] = (Array.isArray(b.convIds) ? b.convIds : [b.convId]).map(String);
+              const groups = new Map<Awaited<ReturnType<typeof engineOf>>, string[]>();
+              for (const id of ids) {
+                const e = await engineAt(id);
+                groups.set(e, [...(groups.get(e) ?? []), id]);
+              }
+              if (groups.size > 1) {
+                const outs = await Promise.all([...groups].map(([e, g]) => e.intent(Array.isArray(b.convIds) ? { ...b, convIds: g } : { ...b, convId: g[0] }, viewerRoot)));
+                const deleted = outs.flatMap((o) => (Array.isArray(o.deleted) ? (o.deleted as string[]) : []));
+                const refused = outs.flatMap((o) => (Array.isArray(o.refused) ? (o.refused as unknown[]) : []));
+                return { ok: deleted.length > 0 || !ids.length, deleted, refused };
+              }
+              return [...groups.keys()][0]!.intent(b, viewerRoot);
+            }
+            const id = typeof b?.convId === "string" ? b.convId : "";
+            return (id ? await engineAt(id) : await engineOf(v)).intent(b, viewerRoot);
+          },
           side: {
             start: async (v, b, viewerRoot) => (await engineOf(v)).sideStart(b, viewerRoot),
             poll: async (v, id, after, wait) => (await engineOf(v)).sidePoll(id, after, wait),
