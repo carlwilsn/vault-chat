@@ -39,7 +39,7 @@ const connected = { installed: true, connected: true, state: "Running", canOpen:
 // ---- what connecting needs -------------------------------------------------
 
 test("connecting a box works with no key at all: the empty set is pushed, not refused", async () => {
-  useStore.setState({ vaultPath: vault, apiKeys: {} as never, serviceKeys: {} as never, boxToken: null });
+  useStore.setState({ vaultPath: vault, apiKeys: {} as never, serviceKeys: {} as never, boxToken: null, keysLoaded: true } as never);
   posted.length = 0;
   const err = await pushKeysToBox("http://box.example:8848");
   assert.equal(err, null, "a signed-out laptop must still be able to connect a box");
@@ -54,6 +54,30 @@ test("the Claude sign-in is the only key that travels, and it travels on connect
   assert.deepEqual(Object.keys(keys), [KEY.claudeCode], "one key: the sign-in, under the name the box stores it as");
   assert.equal(keys[KEY.claudeCode], "sk-ant-oat01-test");
   useStore.setState({ serviceKeys: {} as never });
+});
+
+test("a push waits until this machine's keys have loaded, so it can never wipe the box's sign-in", async () => {
+  // Carl's sign-in vanished from the box: the app restarted for an update and
+  // pushed on connect while its keychain read was still in flight. The set it
+  // sent was empty of everything but his own user keys, and the box makes its
+  // store exactly what is pushed.
+  useStore.setState({ keysLoaded: false, serviceKeys: {} as never } as never);
+  posted.length = 0;
+  const pending = pushKeysToBox("http://box.example:8848");
+  await new Promise((r) => setTimeout(r, 50));
+  assert.equal(posted.length, 0, "nothing is sent while the keys are still loading");
+  useStore.setState({ keysLoaded: true, serviceKeys: { claudeCode: "sk-ant-oat01-loaded" } } as never);
+  assert.equal(await pending, null);
+  const keys = (posted[0]?.body as { keys: Record<string, string> }).keys;
+  assert.equal(keys[KEY.claudeCode], "sk-ant-oat01-loaded", "the push carries the sign-in once it has loaded");
+  useStore.setState({ serviceKeys: {} as never });
+});
+
+test("keys that never load are never pushed: an empty set would remove them from the box", async () => {
+  const { keysLoaded } = await import("../../src/boxKeys.ts");
+  useStore.setState({ keysLoaded: false } as never);
+  assert.equal(await keysLoaded(30), false);
+  useStore.setState({ keysLoaded: true } as never);
 });
 
 test("no OpenRouter key is asked for anywhere in the box section", () => {

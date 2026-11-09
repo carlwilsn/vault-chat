@@ -36,7 +36,8 @@ fake.setHandler("box_post_json", (args: any) => {
 });
 
 const store = (await import("../../src/store.ts")).useStore;
-store.setState({ vaultPath: vault });
+// The app has read its keychain (main.tsx hydrateKeychain): a push waits for that.
+store.setState({ vaultPath: vault, keysLoaded: true } as never);
 const boxChat = await import("../../src/boxChat.ts");
 const { ensureLocalServer } = boxChat;
 const { keysChanged } = await import("../../src/boxKeys.ts");

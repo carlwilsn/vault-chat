@@ -344,7 +344,7 @@ async function migrateLocalStorageKeys(): Promise<void> {
 export async function hydrateKeychain(): Promise<void> {
   await migrateLocalStorageKeys();
   const { apiKeys, serviceKeys } = await fetchAllFromKeychain();
-  useStore.setState({ apiKeys, serviceKeys });
+  useStore.setState({ apiKeys, serviceKeys, keysLoaded: true });
 }
 
 export type Viewport = {
@@ -370,6 +370,9 @@ type State = {
   apiKeys: ApiKeys;
   serviceKeys: ServiceKeys;
   theme: Theme;
+  /** The keychain has been read into apiKeys/serviceKeys (hydrateKeychain). Until then they are empty, and
+   *  a key push would remove every key from the box: src/boxKeys.ts waits for this. */
+  keysLoaded: boolean;
   // The box's X-Vault-Token (same contract as the phone). Empty = none.
   boxToken: string;
   skills: Skill[];
@@ -668,6 +671,7 @@ export const useStore = create<State>((set) => ({
   messages: [],
   apiKeys: {}, // populated async via hydrateKeychain
   serviceKeys: {}, // populated async via hydrateKeychain
+  keysLoaded: false,
   theme: loadTheme(),
   boxToken: localStorage.getItem(BOX_TOKEN_STORAGE) ?? "",
   skills: [],

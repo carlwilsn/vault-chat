@@ -40,8 +40,36 @@ export function subscribeKeyPush(fn: (f: string | null) => void): () => void {
   return () => listeners.delete(fn);
 }
 
+/**
+ * Whether the keychain has been read into the store. Before that the store's
+ * keys are empty, and the box makes its store exactly what is pushed, so a push
+ * then removes every key from the box. Carl's Claude sign-in was wiped exactly
+ * so: the app restarted for an update and pushed on connect before its keys had
+ * loaded. Waits for the load; false if it never comes (nothing is sent then).
+ */
+export function keysLoaded(ms = 20_000): Promise<boolean> {
+  if (useStore.getState().keysLoaded) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      stop();
+      resolve(false);
+    }, ms);
+    const stop = useStore.subscribe((s) => {
+      if (!s.keysLoaded) return;
+      clearTimeout(timer);
+      stop();
+      resolve(true);
+    });
+  });
+}
+
 /** Push the whole set to the box at `url`. Null on success, else the error. */
 export async function pushKeysToBox(url: string): Promise<string | null> {
+  if (!(await keysLoaded())) {
+    const err = "this machine's keys have not loaded, so nothing was sent to the box";
+    setFailure(err);
+    return err;
+  }
   const r = await boxPost({ url, token: useStore.getState().boxToken || null }, "/api/v1/keys", { keys: await laptopKeys() });
   const err = r.ok ? null : r.error || "the box refused the keys";
   setFailure(err);
