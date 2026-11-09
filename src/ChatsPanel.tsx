@@ -373,6 +373,7 @@ export function ThreadRow({
   const menuRef = useRef<HTMLDivElement>(null);
   const canEdit = !isMain && !!(onRename || onDelete);
   const hasMenu = !!onNotes || canEdit;
+  const press = useLongPress(() => setMenu(true), hasMenu);
   useEffect(() => {
     if (!menu) return;
     const away = (ev: MouseEvent) => {
@@ -420,6 +421,7 @@ export function ThreadRow({
     <div
       data-el={isMain ? "thread-main" : "thread-project"}
       data-thread={entry.id}
+      {...press}
       onContextMenu={
         hasMenu
           ? (ev) => {
@@ -557,6 +559,49 @@ export type ChatSelect = {
  * Delete…, Select) asks once, right under the row, before it goes. In multi-select a click picks the row.
  * Main and a project's own thread have no Delete (src/chatDelete.ts canDeleteChat).
  */
+/**
+ * Long-press (touch) opens the same menu as right-click, which a touch screen never sends. A moved finger or an early
+ * lift is a scroll or a tap; after a press that opened the menu the lift does not also click the row.
+ */
+function useLongPress(open: (at: { x: number; y: number }) => void, enabled: boolean) {
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const fired = useRef(false);
+  const start = useRef<{ x: number; y: number } | null>(null);
+  const stop = () => {
+    if (timer.current) clearTimeout(timer.current);
+    timer.current = null;
+  };
+  if (!enabled) return {};
+  return {
+    onTouchStart: (ev: React.TouchEvent<HTMLElement>) => {
+      const t = ev.touches[0];
+      if (!t || ev.touches.length > 1) return stop();
+      fired.current = false;
+      start.current = { x: t.clientX, y: t.clientY };
+      const box = ev.currentTarget.getBoundingClientRect();
+      const at = { x: t.clientX - box.left, y: t.clientY - box.top };
+      stop();
+      timer.current = setTimeout(() => {
+        timer.current = null;
+        fired.current = true;
+        open(at);
+      }, 500);
+    },
+    onTouchMove: (ev: React.TouchEvent<HTMLElement>) => {
+      const t = ev.touches[0];
+      if (t && start.current && Math.hypot(t.clientX - start.current.x, t.clientY - start.current.y) > 10) stop();
+    },
+    onTouchEnd: (ev: React.TouchEvent<HTMLElement>) => {
+      stop();
+      if (fired.current) {
+        fired.current = false;
+        if (ev.cancelable) ev.preventDefault();
+      }
+    },
+    onTouchCancel: stop,
+  };
+}
+
 /** A small spinner: a place or chat at work (Carl's option B). */
 function Spinner({ className }: { className?: string }) {
   return (
@@ -600,6 +645,7 @@ function ChatItem({ chat: c, onOpen, select }: { chat: PanelChat; onOpen: () => 
   const hasMenu = canDeleteChat(c.id);
   const picking = !!select?.on;
   const picked = !!select?.picked.has(c.id);
+  const press = useLongPress((at) => setMenu(at), hasMenu && !picking);
   useEffect(() => {
     if (!menu) return;
     const away = (ev: MouseEvent) => !menuRef.current?.contains(ev.target as Node) && setMenu(null);
@@ -653,6 +699,7 @@ function ChatItem({ chat: c, onOpen, select }: { chat: PanelChat; onOpen: () => 
     <>
       <div
         className="relative group/chat"
+        {...press}
         onContextMenu={
           hasMenu && !picking
             ? (ev) => {
