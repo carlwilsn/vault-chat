@@ -2145,21 +2145,61 @@ fn cycle(vault: &str, push: bool) -> BoxSyncReport {
     r
 }
 
+/// One HTTP client for every call to the box: pooled keep-alive connections (no TCP+TLS handshake per call
+/// through tailscale while the box is busy) and a bounded connect time. Per-request timeouts are set per call.
+fn box_client() -> Result<&'static reqwest::blocking::Client, String> {
+    static CLIENT: std::sync::OnceLock<Result<reqwest::blocking::Client, String>> = std::sync::OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            reqwest::blocking::Client::builder()
+                .user_agent("vault-chat/box-sync")
+                .connect_timeout(Duration::from_secs(10))
+                .pool_idle_timeout(Duration::from_secs(30))
+                .tcp_keepalive(Duration::from_secs(20))
+                .build()
+                .map_err(|e| e.to_string())
+        })
+        .as_ref()
+        .map_err(|e| e.clone())
+}
+
+/// A request timeout that grows with the body: a 400 KB mic recording over a slow link needs more than a ping.
+pub fn post_timeout(body_len: usize) -> Duration {
+    Duration::from_secs(30 + (body_len as u64) / 20_000)
+}
+
+/// Send, retrying failures where the request never reached the box (connect errors, a pooled connection the
+/// other side had closed) with a short backoff; the caller's own retry covers the rest.
+fn send_retrying(mut build: impl FnMut() -> reqwest::blocking::RequestBuilder) -> Result<reqwest::blocking::Response, String> {
+    let mut last = String::new();
+    for (i, wait) in [0u64, 250, 750].iter().enumerate() {
+        if i > 0 {
+            std::thread::sleep(Duration::from_millis(*wait));
+        }
+        match build().send() {
+            Ok(r) => return Ok(r),
+            Err(e) if e.is_connect() => last = e.to_string(),
+            Err(e) => return Err(e.to_string()),
+        }
+    }
+    Err(last)
+}
+
 /// POST a JSON body to `url` (the box's routes). Reqwest, so no CORS.
 pub fn post_json(url: &str, body: &str, token: Option<&str>) -> Result<(u16, String), String> {
-    let client = reqwest::blocking::Client::builder()
-        .user_agent("vault-chat/box-sync")
-        .timeout(Duration::from_secs(20))
-        .build()
-        .map_err(|e| e.to_string())?;
-    let mut req = client
-        .post(url)
-        .header("Content-Type", "application/json")
-        .body(body.to_string());
-    if let Some(t) = token.filter(|t| !t.is_empty()) {
-        req = req.header("X-Vault-Token", t);
-    }
-    let resp = req.send().map_err(|e| e.to_string())?;
+    let client = box_client()?;
+    let timeout = post_timeout(body.len());
+    let resp = send_retrying(|| {
+        let mut req = client
+            .post(url)
+            .timeout(timeout)
+            .header("Content-Type", "application/json")
+            .body(body.to_string());
+        if let Some(t) = token.filter(|t| !t.is_empty()) {
+            req = req.header("X-Vault-Token", t);
+        }
+        req
+    })?;
     let status = resp.status().as_u16();
     let text = resp.text().unwrap_or_default();
     Ok((status, text))
@@ -2167,16 +2207,15 @@ pub fn post_json(url: &str, body: &str, token: Option<&str>) -> Result<(u16, Str
 
 /// GET from the box with a bounded timeout (the chat's long-poll needs ~30 s).
 pub fn get_json(url: &str, token: Option<&str>, timeout_ms: u64) -> Result<(u16, String), String> {
-    let client = reqwest::blocking::Client::builder()
-        .user_agent("vault-chat/box-chat")
-        .timeout(Duration::from_millis(timeout_ms.clamp(1_000, 120_000)))
-        .build()
-        .map_err(|e| e.to_string())?;
-    let mut req = client.get(url).header("Accept", "application/json");
-    if let Some(t) = token.filter(|t| !t.is_empty()) {
-        req = req.header("X-Vault-Token", t);
-    }
-    let resp = req.send().map_err(|e| e.to_string())?;
+    let client = box_client()?;
+    let timeout = Duration::from_millis(timeout_ms.clamp(1_000, 120_000));
+    let resp = send_retrying(|| {
+        let mut req = client.get(url).timeout(timeout).header("Accept", "application/json");
+        if let Some(t) = token.filter(|t| !t.is_empty()) {
+            req = req.header("X-Vault-Token", t);
+        }
+        req
+    })?;
     let status = resp.status().as_u16();
     let text = resp.text().unwrap_or_default();
     Ok((status, text))

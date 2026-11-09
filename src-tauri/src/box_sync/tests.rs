@@ -1123,3 +1123,9 @@ fn e2e_master_against_a_box() {
         println!("school2 has the box's write: {}", read(&sv, "e2e/from-box.md").trim());
     }
 }
+
+#[test]
+fn post_timeout_grows_with_body() {
+    assert_eq!(post_timeout(100), Duration::from_secs(30));
+    assert!(post_timeout(399_000) >= Duration::from_secs(49));
+}

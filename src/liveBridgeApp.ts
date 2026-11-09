@@ -3,12 +3,14 @@ import { installLiveBridge, type LiveHost } from "./liveBridge";
 import { invoke } from "@tauri-apps/api/core";
 import { boxLinkFor, vaultPath } from "./boxChat";
 import { useStore } from "./store";
+import { ONE_RETRY_MS, withRetry } from "./boxRetry";
 
 export const appLiveHost: LiveHost = {
   async post(path, body) {
     const link = await boxLinkFor(useStore.getState().vaultPath);
     if (!link) throw new Error("Live pages need the box: it is not connected.");
-    const r = await invoke<{ status: number; body: string }>("box_post_json", { url: `${link.url}${vaultPath(link, path)}`, body: JSON.stringify(body), token: link.token });
+    const text = JSON.stringify(body);
+    const r = await withRetry(() => invoke<{ status: number; body: string }>("box_post_json", { url: `${link.url}${vaultPath(link, path)}`, body: text, token: link.token }), ONE_RETRY_MS);
     let json: any = {};
     try {
       json = JSON.parse(r.body || "{}");
