@@ -102,7 +102,7 @@ export const visualScenarios: Scenario[] = [
     title: "Inline HTML — a live, interactive page in the reply (a composer mockup in the app's own styles)",
     group: "Chat",
     notes:
-      "The agent links a vault .html in image syntax: the chat shows it live in a sandboxed frame (no network, no same-origin), sized to its content, with Open full. This page links /app-styles.css, so it renders in the app's real CSS and theme; type in it, press +.",
+      "The agent links a vault .html in image syntax: the chat shows it live in a sandboxed frame (no network, no same-origin), sized to its content, with Open in viewer. This page links /app-styles.css, so it renders in the app's real CSS and theme; type in it, press +.",
     build: (ctx: BuildCtx) => {
       ctx.write(HTML_PATH, SAMPLE_HTML);
       ctx.conversations([{

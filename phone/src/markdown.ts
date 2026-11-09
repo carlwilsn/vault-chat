@@ -72,7 +72,7 @@ export function createPhoneMarkdown(opts: PhoneMarkdownOptions) {
         const name = alt || vaultPath(src).split("/").pop() || src;
         const bar = createElement("span", { className: "mhtml-bar" },
           createElement("span", { className: "mhtml-t" }, name),
-          createElement("a", { href: page, target: "_blank", rel: "noopener", "data-el": "chat-html-full" }, "Open full"));
+          createElement("a", { href: page, target: "_blank", rel: "noopener", "data-el": "chat-html-viewer" }, "Open page"));
         // A reply still arriving re-renders its bubble per flush: the frame waits for the finished reply.
         if (streamingNow) return createElement("span", { className: "mhtml", "data-el": "chat-html-wrap" }, bar,
           createElement("span", { className: "mhtml-wait" }, "Shows when the reply finishes"));

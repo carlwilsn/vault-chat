@@ -1,12 +1,11 @@
 // A vault .html linked in a chat message, live and interactive in the bubble
 // (src/inlineHtml.ts): a sandboxed srcdoc iframe (scripts, no same-origin, CSP:
 // nothing from the network), sized to its content by its own reports, with an
-// "Open full" overlay. The page's bytes come the way ChatImage's do (box
+// "Open in viewer" control (the page opens in the file viewer like any file). The page's bytes come the way ChatImage's do (box
 // conversation: the box's file route; local: the vault on disk).
 import { memo, useEffect, useMemo, useRef, useState } from "react";
-import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
-import { Maximize2, X } from "lucide-react";
+import { PanelRight } from "lucide-react";
 import { useStore } from "./store";
 import { readChatImage } from "./chatImage";
 import { localPathFromUrl } from "./mdPipeline";
@@ -63,7 +62,7 @@ function useFittedHeight(frame: React.RefObject<HTMLIFrameElement | null>): numb
   return h;
 }
 
-function Frame({ doc, title, full }: { doc: string; title: string; full?: boolean }) {
+function Frame({ doc, title }: { doc: string; title: string }) {
   const ref = useRef<HTMLIFrameElement | null>(null);
   const h = useFittedHeight(ref);
   return (
@@ -74,10 +73,21 @@ function Frame({ doc, title, full }: { doc: string; title: string; full?: boolea
       sandbox="allow-scripts"
       referrerPolicy="no-referrer"
       data-el="chat-html"
-      className={full ? "w-full h-full border-0 bg-background" : "w-full block border-0 bg-background"}
-      style={full ? undefined : { height: h }}
+      className="w-full block border-0 bg-background"
+      style={{ height: h }}
     />
   );
+}
+
+/** The page opens in the file viewer like a file clicked in the tree (HtmlView renders it live); fullscreen chat leaves
+ *  fullscreen, which has no viewer. `html`: the bytes the chat already read (box or disk). */
+function openInViewer(src: string, html: string, vault: string | null): void {
+  const cleaned = localPathFromUrl(src).replace(/^\.\/+/, "");
+  const absolute = /^([a-zA-Z]:[\/\\]|[\/\\])/.test(cleaned);
+  const path = absolute || !vault ? cleaned : `${vault}${vault.includes("\\") ? "\\" : "/"}${cleaned}`;
+  const st = useStore.getState();
+  if (st.chatFullscreen) st.toggleChatFullscreen();
+  st.setCurrentFile(path, html);
 }
 
 export const InlineHtmlFrame = memo(function InlineHtmlFrame({ src, alt }: { src: string; alt?: string }) {
@@ -85,7 +95,6 @@ export const InlineHtmlFrame = memo(function InlineHtmlFrame({ src, alt }: { src
   const files = useStore((s) => s.files);
   const convId = useStore((s) => s.activeConversationId);
   const [state, setState] = useState<{ key: string; html: string | null; css: string } | null>(null);
-  const [full, setFull] = useState(false);
   const key = JSON.stringify([src, vaultPath, convId]);
 
   useEffect(() => {
@@ -110,13 +119,6 @@ export const InlineHtmlFrame = memo(function InlineHtmlFrame({ src, alt }: { src
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key]);
 
-  useEffect(() => {
-    if (!full) return;
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") { e.stopPropagation(); setFull(false); } };
-    window.addEventListener("keydown", onKey, true);
-    return () => window.removeEventListener("keydown", onKey, true);
-  }, [full]);
-
   const live = state?.key === key ? state : null;
   const doc = useMemo(() => (live?.html != null ? inlineHtmlDocument(live.html, { css: live.css, theme: themeNow() }) : null), [live]);
   const name = src.split(/[\\/]/).pop()?.split(/[?#]/)[0] ?? src;
@@ -134,23 +136,11 @@ export const InlineHtmlFrame = memo(function InlineHtmlFrame({ src, alt }: { src
     <span className="block my-2 rounded-md border border-border/60 overflow-hidden" data-el="chat-html-wrap">
       <span className="flex items-center gap-2 px-2 py-1 border-b border-border/60 bg-muted/40 text-[11px] text-muted-foreground">
         <span className="truncate flex-1" title={src}>{title}</span>
-        <button type="button" onClick={() => setFull(true)} className="inline-flex items-center gap-1 hover:text-foreground" data-el="chat-html-full" title="Open full">
-          <Maximize2 className="h-3 w-3" /> Open full
+        <button type="button" onClick={() => openInViewer(src, live.html ?? "", vaultPath)} className="inline-flex items-center gap-1 hover:text-foreground" data-el="chat-html-viewer" title="Open in the viewer">
+          <PanelRight className="h-3 w-3" /> Open in viewer
         </button>
       </span>
       <Frame doc={doc} title={title} />
-      {full && createPortal(
-        <div className="fixed inset-0 z-[1000] flex flex-col bg-background" data-el="chat-html-overlay">
-          <div className="flex items-center gap-2 px-3 py-1.5 border-b border-border text-xs text-muted-foreground">
-            <span className="truncate flex-1">{title}</span>
-            <button type="button" onClick={() => setFull(false)} className="inline-flex items-center gap-1 hover:text-foreground" data-el="chat-html-close" title="Close (Esc)">
-              <X className="h-3.5 w-3.5" /> Close
-            </button>
-          </div>
-          <div className="flex-1 min-h-0"><Frame doc={doc} title={title} full /></div>
-        </div>,
-        document.body,
-      )}
     </span>
   );
 });

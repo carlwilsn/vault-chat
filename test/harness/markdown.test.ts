@@ -472,7 +472,7 @@ test("inline HTML: a vault .html in image syntax is a sandboxed frame on the pho
   assert.doesNotMatch(html, /allow-same-origin/);
   assert.match(html, /src="\/file\?path=\.vault-chat%2Fvisuals%2Fmock\.html&amp;convId=c1&amp;inline=1"/);
   assert.doesNotMatch(html, /SECRET/);
-  assert.match(html, /data-el="chat-html-full"/);
+  assert.match(html, /data-el="chat-html-viewer"/);
   const streaming = md("Here:\n\n![Composer](.vault-chat/visuals/mock.html)\n\nmore", true);
   assert.doesNotMatch(streaming, /<iframe/);
   assert.match(streaming, /Shows when the reply finishes/);
