@@ -1255,6 +1255,14 @@ export async function boxDeleteMany(convIds: string[]): Promise<{ ok: boolean; e
   return r.ok ? { ok: true, localOnly } : { ok: false, error: r.error, localOnly };
 }
 
+/** Carl's Rename on a chat: his title on the box (every surface's list follows the row). */
+export async function boxRename(convId: string, title: string): Promise<{ ok: boolean; error?: string; local?: boolean }> {
+  if (!boxChatOn() || !session) return { ok: false, error: "the box isn't connected" };
+  if (!session.isKnown(convId)) return { ok: true, local: true };
+  const r = await intent(session, { type: "renameConversation", convId, title });
+  return r.ok ? { ok: true } : { ok: false, error: r.error };
+}
+
 /** Steer or stop one running subagent of a box conversation. Returns an error
  *  line, or null on success (also null when this isn't box mode: nothing to do). */
 export async function boxSubagent(convId: string, sid: string, op: "steer" | "stop", text?: string): Promise<string | null> {

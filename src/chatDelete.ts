@@ -11,6 +11,26 @@ export function canDeleteChat(id: string): boolean {
   return id !== MAIN_ID && !projectOfThread(id);
 }
 
+/** Rename a chat (its row's right-click menu). Null when done, else why not. */
+export async function renameChat(id: string, title: string): Promise<string | null> {
+  const want = title.trim().replace(/\s+/g, " ");
+  if (!want) return "a chat needs a name";
+  if (id === MAIN_ID) return "Main keeps its name";
+  const local = () =>
+    useStore.setState((st) => ({ conversations: st.conversations.map((c) => (c.id === id ? { ...c, title: want } : c)) }));
+  const s = useStore.getState();
+  if (!s.boxChat?.on) {
+    local();
+    return null;
+  }
+  const bc = await import("./boxChat");
+  const r = await bc.boxRename(id, want);
+  if (!r.ok) return r.error ?? "the box refused";
+  // A chat the box has not heard of yet (started, nothing sent): only here; the box's row says the rest.
+  local();
+  return null;
+}
+
 /** Delete these chats. Null when done, else why not. */
 export async function deleteChats(ids: string[]): Promise<string | null> {
   const want = [...new Set(ids)].filter(canDeleteChat);

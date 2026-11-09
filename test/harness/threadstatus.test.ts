@@ -1,5 +1,6 @@
-// The status belongs to the row's trailing gutter, not before invisible Notes/More controls; the gutter is
-// there only while a status dot is (an idle row has no empty strip at its right end).
+// A place's bar (Carl's option B): chevron, icon, name and "+" only, no hover icons. While it works a spinner
+// takes the icon's spot (no trailing gutter); finished unseen, the dot sits in a trailing gutter that is there
+// only then.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createElement } from "react";
@@ -12,7 +13,7 @@ const { ThreadRow } = await import("../../src/ChatsPanel.tsx");
 for (const type of ["main", "project"] as const) {
   for (const state of ["running", "unread", "idle"] as const) {
     for (const actions of ["none", "notes", "menu", "both"] as const) {
-      test(`${type}: ${state}, ${actions} — status gutter while a dot shows, accessible controls`, () => {
+      test(`${type}: ${state}, ${actions} — spinner in the icon's spot, dot only when unseen, no hover icons`, () => {
         const html = renderToStaticMarkup(createElement(ThreadRow, {
           entry: {
             type, id: type, title: type, slug: "fixture", active: true,
@@ -24,22 +25,14 @@ for (const type of ["main", "project"] as const) {
           ...(actions === "notes" || actions === "both" ? { onNotes: () => {} } : {}),
           ...(actions === "menu" || actions === "both" ? { onRename: async () => {}, onDelete: async () => {} } : {}),
         }));
-        assert.match(html, state === "idle" ? /relative flex items-center gap-1 group pr-1\.5/ : /relative flex items-center gap-1 group pr-7/);
+        assert.match(html, state === "unread" ? /relative flex items-center gap-1 group pr-7/ : /relative flex items-center gap-1 group pr-1\.5/);
         assert.match(html, /truncate flex-1/);
-        if (state === "idle") {
-          assert.doesNotMatch(html, /role="img"/);
-        } else {
-          const label = state === "running" ? "Working…" : "Done — unseen";
-          assert.ok(html.includes(`title="${label}" role="img" aria-label="${label}"`));
-          assert.match(html, /absolute right-4 top-1\/2 -translate-y-1\/2/);
-          assert.equal(html.includes("animate-ping"), state === "running");
-        }
-        const hasNotes = actions === "notes" || actions === "both";
-        const hasMenu = type === "project" && (actions === "menu" || actions === "both");
-        assert.equal(html.includes('data-el="project-notes"'), hasNotes);
-        assert.equal(html.includes('data-el="project-menu"'), hasMenu);
-        assert.equal((html.match(/min-h-\[28px\] min-w-\[28px\]/g) ?? []).length, Number(hasNotes) + Number(hasMenu));
-        assert.equal((html.match(/group-focus-within:opacity-100/g) ?? []).length, Number(hasNotes) + Number(hasMenu));
+        assert.equal(html.includes('data-el="working"'), state === "running");
+        assert.equal(html.includes('title="Done — unseen" role="img"'), state === "unread");
+        assert.equal(html.includes("animate-ping"), false);
+        assert.ok(!html.includes('data-el="project-notes"'));
+        assert.ok(!html.includes('data-el="project-menu"'));
+        assert.equal((html.match(/group-focus-within:opacity-100/g) ?? []).length, 0);
       });
     }
   }

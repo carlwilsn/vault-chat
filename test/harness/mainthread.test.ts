@@ -87,8 +87,7 @@ test("the panel: each place holds its chats, newest first; older chats stay in t
       ["new-project"],
     ],
   );
-  // Each place holds its own chats, newest first, and the place's own
-  // conversation is one of them — nothing Carl had disappears from the list.
+  // Each place holds its own chats, newest first.
   const chatsOf = (id: string) => {
     const e = entries.find((x) => x.type !== "new-project" && x.id === id)!;
     return e.type === "new-project" ? [] : e.chats.map((c) => [c.id, c.title, c.active]);
@@ -97,9 +96,9 @@ test("the panel: each place holds its chats, newest first; older chats stay in t
     ["sep-1", "a one-off", false],
     ["main", "Main", false],
   ]);
+  // A project's own thread is not listed among its chats (it still opens, and its running/active show on the bar).
   assert.deepEqual(chatsOf("project-psych-221"), [
     ["sep-2", "problem set 4", false],
-    ["project-psych-221", "This project", true],
     ["sep-3", "New chat", false],
   ]);
   assert.deepEqual(chatsOf("project-coconut"), []);

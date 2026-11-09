@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { MessageSquare, Plus, X as XIcon, Folder, PanelLeftClose, FileText, Home, MoreHorizontal, ChevronRight, Trash2, Check, ListChecks } from "lucide-react";
+import { MessageSquare, Plus, X as XIcon, Folder, PanelLeftClose, Home, ChevronRight, Check, ListChecks } from "lucide-react";
 import { useStore } from "./store";
 import { useProjects } from "./ProjectChip";
-import { createProjectThread, deleteProject, newChatInProject, openProjectNotes, openThread, projectName, renameProject } from "./projects";
+import { createProjectThread, deleteProject, MEMORY_SLUG, newChatInProject, openProjectNotes, openThread, projectName, renameProject } from "./projects";
 import { panelModel, type PanelChat, type PanelEntry } from "./threads";
-import { canDeleteChat, deleteChats } from "./chatDelete";
+import { canDeleteChat, deleteChats, renameChat } from "./chatDelete";
 import { cn } from "./lib/utils";
 import { NewProjectForm } from "./NewProjectForm";
 import { placeOpen, usePlaceOpen, usePlaceOpenVersion } from "./placeOpen";
@@ -233,6 +233,7 @@ function ThreadsList({
               useStore.getState().newConversation();
               focusChat();
             }}
+            onNotes={() => void openProjectNotes(MEMORY_SLUG, "Memory").then(() => onPicked?.())}
           />
         </div>
         <div className="border-t border-border/60" />
@@ -324,9 +325,11 @@ function ThreadsList({
 }
 
 /**
- * Main (a home, a stronger name) or a project's thread (a folder): a dot while it works (pulsing) or when it
- * finished unseen. A project's row has a ⋯ menu (also on right-click): Rename (the row becomes its name, Enter
- * keeps it) and Delete (asked once, right under the row). Main has none: it can't be renamed or deleted.
+ * Main (a home, a stronger name) or a project (a folder). At rest and on hover the bar shows only its chevron,
+ * icon, name and "+" (Carl's option B, 2026-11-08: no hover icons): while the place works a small spinner takes
+ * the icon's spot; finished unseen, a dot at the end. Right-click opens its menu: Memory, then for a project
+ * Rename (the row becomes its name, Enter keeps it) and "Delete project…" (asked once, right under the row).
+ * Main's menu is Memory only.
  *
  * The header bar only shows or hides the place's chats (Carl: clicking it does nothing else — it neither opens
  * the project nor switches chat); a chat is opened from its own row. "+" at the header's right end starts a new
@@ -368,7 +371,8 @@ export function ThreadRow({
   const [draft, setDraft] = useState(name);
   const [busy, setBusy] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
-  const hasMenu = !isMain && !!(onRename || onDelete);
+  const canEdit = !isMain && !!(onRename || onDelete);
+  const hasMenu = !!onNotes || canEdit;
   useEffect(() => {
     if (!menu) return;
     const away = (ev: MouseEvent) => {
@@ -424,9 +428,9 @@ export function ThreadRow({
             }
           : undefined
       }
-      // The trailing status gutter only while there is a dot to hold (Carl: too much space on the right): the
-      // dot stays at the row's end, never in front of the hover actions, and an idle row ends at its last button.
-      className={cn("relative flex items-center gap-1 group", running || unread ? "pr-7" : "pr-1.5", active ? "bg-accent" : "hover:bg-accent/40")}
+      // The trailing gutter only while the unseen dot is there (Carl: too much space on the right); a working
+      // place shows its spinner where its icon was, so an idle or working bar ends at its "+".
+      className={cn("relative flex items-center gap-1 group", !running && unread ? "pr-7" : "pr-1.5", active ? "bg-accent" : "hover:bg-accent/40")}
     >
       <button
         data-el="place-toggle"
@@ -439,7 +443,13 @@ export function ThreadRow({
         <span data-el="place-chats" className="shrink-0 -ml-2 mr-0.5 h-4 w-4 flex items-center justify-center rounded text-muted-foreground">
           <ChevronRight className={cn("h-3 w-3 transition-transform", shown && "rotate-90")} />
         </span>
-        {isMain ? <Home className="h-3.5 w-3.5 text-foreground/80 shrink-0" /> : <Folder className="h-3 w-3 text-muted-foreground shrink-0" />}
+        {running ? (
+          <Spinner className={isMain ? "h-3.5 w-3.5" : "h-3 w-3"} />
+        ) : isMain ? (
+          <Home className="h-3.5 w-3.5 text-foreground/80 shrink-0" />
+        ) : (
+          <Folder className="h-3 w-3 text-muted-foreground shrink-0" />
+        )}
         <span
           className={cn(
             "truncate flex-1",
@@ -448,43 +458,27 @@ export function ThreadRow({
         >
           {name}
         </span>
-        {running ? (
-          <span className="absolute right-4 top-1/2 -translate-y-1/2 inline-flex h-1.5 w-1.5" title="Working…" role="img" aria-label="Working…">
-            <span className="absolute inset-0 rounded-full bg-foreground opacity-60 animate-ping" />
-            <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-foreground" />
-          </span>
-        ) : unread ? (
+        {!running && unread ? (
           <span className="absolute right-4 top-1/2 -translate-y-1/2 h-1.5 w-1.5 rounded-full bg-primary" title="Done — unseen" role="img" aria-label="Done — unseen" />
         ) : null}
       </button>
-      {onNotes && (
-        <button
-          onClick={onNotes}
-          data-el="project-notes"
-          className="opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity h-7 w-7 min-h-[28px] min-w-[28px] flex items-center justify-center rounded text-muted-foreground hover:bg-accent/60 hover:text-foreground shrink-0"
-          title="Project notes"
-        >
-          <FileText className="h-3 w-3" />
-        </button>
-      )}
-      {hasMenu && (
-        <div ref={menuRef} className="relative shrink-0">
-          <button
-            onClick={() => setMenu((m) => !m)}
-            data-el="project-menu"
-            className={cn(
-              "transition-opacity h-7 w-7 min-h-[28px] min-w-[28px] flex items-center justify-center rounded text-muted-foreground hover:bg-accent/60 hover:text-foreground",
-              menu ? "opacity-100 bg-accent/60" : "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100",
-            )}
-            title="More"
-          >
-            <MoreHorizontal className="h-3.5 w-3.5" />
-          </button>
-          {menu && (
-            <div data-el="project-menu-list" className="absolute right-0 top-8 z-30 min-w-[128px] py-1 rounded-md border border-border bg-popover shadow-md text-[12.5px]">
-              <button
-                data-el="project-rename-item"
-                className="w-full text-left px-3 py-1.5 hover:bg-accent"
+      {hasMenu && menu && (
+        <div ref={menuRef} data-el="project-menu-list" className="absolute right-2 top-full -mt-1 z-30 min-w-[150px] p-1 rounded-lg border border-border bg-popover shadow-lg text-[12px]">
+          {onNotes && (
+            <MenuItem
+              el="project-memory-item"
+              onClick={() => {
+                setMenu(false);
+                onNotes();
+              }}
+            >
+              Memory
+            </MenuItem>
+          )}
+          {canEdit && (
+            <>
+              <MenuItem
+                el="project-rename-item"
                 onClick={() => {
                   setMenu(false);
                   setDraft(name);
@@ -492,18 +486,19 @@ export function ThreadRow({
                 }}
               >
                 Rename
-              </button>
-              <button
-                data-el="project-delete-item"
-                className="w-full text-left px-3 py-1.5 text-destructive hover:bg-destructive/10"
+              </MenuItem>
+              <div className="my-1 mx-0.5 h-px bg-border" />
+              <MenuItem
+                el="project-delete-item"
+                danger
                 onClick={() => {
                   setMenu(false);
                   setMode("confirm");
                 }}
               >
-                Delete
-              </button>
-            </div>
+                Delete project…
+              </MenuItem>
+            </>
           )}
         </div>
       )}
@@ -525,7 +520,7 @@ export function ThreadRow({
         {chats.map((c) => (
           <ChatItem key={c.id} chat={c} onOpen={() => onOpenChat?.(c.id, c.title)} select={select} />
         ))}
-        {chats.length === 0 && <div className="pl-11 pr-4 py-1 text-[11.5px] text-muted-foreground/60">No chats yet</div>}
+        {chats.length === 0 && <div className="pl-11 pr-4 py-1 text-[11.5px] text-muted-foreground/60">No chats</div>}
       </div>
     )}
     {mode === "confirm" && (
@@ -562,13 +557,47 @@ export type ChatSelect = {
  * Delete…, Select) asks once, right under the row, before it goes. In multi-select a click picks the row.
  * Main and a project's own thread have no Delete (src/chatDelete.ts canDeleteChat).
  */
+/** A small spinner: a place or chat at work (Carl's option B). */
+function Spinner({ className }: { className?: string }) {
+  return (
+    <span
+      data-el="working"
+      title="Working…"
+      role="img"
+      aria-label="Working…"
+      className={cn("inline-block shrink-0 rounded-full border-[1.5px] border-muted-foreground/30 border-t-foreground/85 animate-spin", className)}
+    />
+  );
+}
+
+/** One line of a row's right-click menu. */
+function MenuItem({ el, danger, onClick, children }: { el: string; danger?: boolean; onClick: () => void; children: React.ReactNode }) {
+  return (
+    <button
+      data-el={el}
+      onClick={onClick}
+      className={cn("w-full text-left px-2 py-1.5 rounded-md", danger ? "text-destructive hover:bg-destructive/10" : "text-foreground/85 hover:bg-accent hover:text-foreground")}
+    >
+      {children}
+    </button>
+  );
+}
+
+/**
+ * One chat under its place. Nothing on hover (Carl's option B): a spinner at the right end while it works, the
+ * dot when it finished unseen. Right-click: Rename (the row becomes its name) and Delete chat (asked once).
+ */
 function ChatItem({ chat: c, onOpen, select }: { chat: PanelChat; onOpen: () => void; select?: ChatSelect }) {
   const [confirm, setConfirm] = useState(false);
+  const [renaming, setRenaming] = useState(false);
+  const [draft, setDraft] = useState(c.title);
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const deletable = !!select && canDeleteChat(c.id);
+  // Main keeps its name and stays: no menu on its row.
+  const hasMenu = canDeleteChat(c.id);
   const picking = !!select?.on;
   const picked = !!select?.picked.has(c.id);
   useEffect(() => {
@@ -582,6 +611,15 @@ function ChatItem({ chat: c, onOpen, select }: { chat: PanelChat; onOpen: () => 
       document.removeEventListener("keydown", esc);
     };
   }, [menu]);
+  const rename = async () => {
+    const to = draft.trim();
+    if (!to || to === c.title) return setRenaming(false);
+    setBusy(true);
+    const why = await renameChat(c.id, to);
+    setBusy(false);
+    setErr(why);
+    setRenaming(false);
+  };
   const yes = async () => {
     if (!select) return;
     setBusy(true);
@@ -590,12 +628,33 @@ function ChatItem({ chat: c, onOpen, select }: { chat: PanelChat; onOpen: () => 
     setErr(why);
     if (!why) setConfirm(false);
   };
+  if (renaming)
+    return (
+      <div className="pl-9 pr-3 py-0.5" data-el="chat-rename" data-chat={c.id}>
+        <input
+          autoFocus
+          value={draft}
+          disabled={busy}
+          onFocus={(ev) => ev.currentTarget.select()}
+          onChange={(ev) => setDraft(ev.target.value)}
+          onKeyDown={(ev) => {
+            if (ev.key === "Enter") void rename();
+            if (ev.key === "Escape") {
+              ev.stopPropagation();
+              setRenaming(false);
+            }
+          }}
+          onBlur={() => void rename()}
+          className="w-full h-6 px-2 rounded bg-background border border-border text-[12px] focus:outline-none focus:border-ring/40"
+        />
+      </div>
+    );
   return (
     <>
       <div
         className="relative group/chat"
         onContextMenu={
-          deletable && !picking
+          hasMenu && !picking
             ? (ev) => {
                 ev.preventDefault();
                 setMenu({ x: ev.nativeEvent.offsetX, y: ev.nativeEvent.offsetY });
@@ -610,8 +669,8 @@ function ChatItem({ chat: c, onOpen, select }: { chat: PanelChat; onOpen: () => 
           onClick={() => (picking ? deletable && select!.toggle(c.id) : onOpen())}
           className={cn(
             "relative w-full text-left pl-11 py-1 flex items-center gap-2 text-[12px] min-w-0",
-            // Room at the right only for what is there: the dot while it works or is unseen, the trash on hover.
-            c.running || c.unread ? "pr-7" : deletable && !picking ? "pr-3 group-hover/chat:pr-7" : "pr-3",
+            // Room at the right only for what is there: the spinner while it works, the dot when unseen.
+            c.running || c.unread ? "pr-7" : "pr-3",
             picking && picked ? "bg-primary/15 text-foreground" : c.active ? "bg-accent text-foreground font-medium" : "hover:bg-accent/40 text-foreground/75",
             picking && !deletable && "opacity-50",
           )}
@@ -630,55 +689,49 @@ function ChatItem({ chat: c, onOpen, select }: { chat: PanelChat; onOpen: () => 
           )}
           <span className="truncate flex-1">{c.title}</span>
           {c.running ? (
-            <span className={cn("absolute right-4 top-1/2 -translate-y-1/2 inline-flex h-1.5 w-1.5", deletable && !picking && "group-hover/chat:opacity-0")} title="Working…" role="img" aria-label="Working…">
-              <span className="absolute inset-0 rounded-full bg-foreground opacity-60 animate-ping" />
-              <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-foreground" />
+            <span className="absolute right-3.5 top-1/2 -translate-y-1/2 inline-flex">
+              <Spinner className="h-2.5 w-2.5" />
             </span>
           ) : c.unread ? (
-            <span className={cn("absolute right-4 top-1/2 -translate-y-1/2 h-1.5 w-1.5 rounded-full bg-primary", deletable && !picking && "group-hover/chat:opacity-0")} title="Done — unseen" role="img" aria-label="Done — unseen" />
+            <span className="absolute right-4 top-1/2 -translate-y-1/2 h-1.5 w-1.5 rounded-full bg-primary" title="Done — unseen" role="img" aria-label="Done — unseen" />
           ) : null}
         </button>
-        {deletable && !picking && (
-          <button
-            data-el="chat-delete"
-            data-chat={c.id}
-            onClick={() => setConfirm(true)}
-            title="Delete chat"
-            aria-label={`Delete ${c.title}`}
-            className="absolute right-1.5 top-1/2 -translate-y-1/2 h-5 w-5 flex items-center justify-center rounded text-muted-foreground hover:text-destructive hover:bg-accent/60 opacity-0 group-hover/chat:opacity-100 focus:opacity-100 transition-opacity"
-          >
-            <Trash2 className="h-3 w-3" />
-          </button>
-        )}
         {menu && (
           <div
             ref={menuRef}
             data-el="chat-menu"
             style={{ left: Math.max(24, menu.x), top: menu.y + 4 }}
-            className="absolute z-30 min-w-[120px] py-1 rounded-md border border-border bg-popover shadow-md text-[12.5px]"
+            className="absolute z-30 min-w-[150px] p-1 rounded-lg border border-border bg-popover shadow-lg text-[12px]"
           >
-            <button
-              data-el="chat-menu-delete"
-              className="w-full text-left px-3 py-1.5 text-destructive hover:bg-destructive/10"
+            <MenuItem
+              el="chat-menu-rename"
               onClick={() => {
                 setMenu(null);
-                setConfirm(true);
+                setDraft(c.title);
+                setErr(null);
+                setRenaming(true);
               }}
             >
-              Delete…
-            </button>
-            <button
-              data-el="chat-menu-select"
-              className="w-full text-left px-3 py-1.5 hover:bg-accent"
-              onClick={() => {
-                setMenu(null);
-                select!.start(c.id);
-              }}
-            >
-              Select
-            </button>
+              Rename
+            </MenuItem>
+            {deletable && (
+              <>
+                <div className="my-1 mx-0.5 h-px bg-border" />
+                <MenuItem
+                  el="chat-menu-delete"
+                  danger
+                  onClick={() => {
+                    setMenu(null);
+                    setConfirm(true);
+                  }}
+                >
+                  Delete chat
+                </MenuItem>
+              </>
+            )}
           </div>
         )}
+        {err && !confirm && <div className="pl-11 pr-3 pb-1 text-[11px] text-destructive">Not renamed: {err}</div>}
       </div>
       {confirm && (
         <div data-el="chat-delete-confirm" data-chat={c.id} className="ml-9 mr-3 my-1 px-3 py-2 rounded-md border border-border bg-muted/40 text-[12px]">

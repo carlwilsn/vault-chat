@@ -75,7 +75,10 @@ export function panelModel(convs: PanelConv[], projects: PanelProject[], activeI
   const byId = new Map(live.map((c) => [c.id, c]));
   const chatsOf = (slug: string | null): PanelChat[] =>
     live
-      .filter((c) => threadKindOf(c) !== "older" && placeOf(c) === slug)
+      // A project's own thread is not one of its chats in the list (Carl, 2026-11-08): it stays, and opens
+      // when something takes him there (OpenProject, a call moving to the project), but the bar lists only the
+      // chats he started in it.
+      .filter((c) => threadKindOf(c) !== "older" && !projectOfThread(c.id) && placeOf(c) === slug)
       .sort((a, b) => (b.lastActivityAt ?? 0) - (a.lastActivityAt ?? 0))
       .map((c) => ({
         id: c.id,
@@ -104,13 +107,15 @@ export function panelModel(convs: PanelConv[], projects: PanelProject[], activeI
     seen.add(p.slug);
     const id = projectThreadId(p.slug);
     const chats = chatsOf(p.slug);
+    // Its own thread, hidden from the chats, still says when the project works or is where he is.
+    const thread = byId.get(id);
     entries.push({
       type: "project",
       id,
       slug: p.slug,
       title: p.name,
-      active: chats.some((c) => c.active),
-      running: chats.some((c) => c.running),
+      active: activeId === id || chats.some((c) => c.active),
+      running: !!thread?.running || chats.some((c) => c.running),
       unread: chats.some((c) => c.unread),
       chats,
     });

@@ -321,6 +321,16 @@ test("every request names the vault", () => {
   assert.ok(box.seen.every((x) => x.vault === "v"), JSON.stringify(box.seen.filter((x) => x.vault !== "v").slice(0, 3)));
 });
 
+test("a rename is an intent: the new title in the list here and in the log, marked as Carl's", async () => {
+  const { renameChat } = await import("../../src/chatDelete.ts");
+  assert.equal(await renameChat("old1", "  Renamed   by Carl "), null);
+  assert.equal(box.intents.at(-1)!.type, "renameConversation");
+  await waitFor("renamed", () => S().conversations.some((c) => c.id === "old1" && c.title === "Renamed by Carl"));
+  assert.equal(box.picture("old1").meta.titleBy, "carl");
+  assert.equal(await renameChat("main", "x"), "Main keeps its name");
+  assert.deepEqual(writes, []);
+});
+
 test("a delete is an intent: gone from the list here and in the log", async () => {
   await S().deleteConversation("old1");
   assert.equal(box.intents.at(-1)!.type, "delete");

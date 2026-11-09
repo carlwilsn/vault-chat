@@ -1,5 +1,5 @@
 // Delete and Rename on a project, on the laptop (Carl, 2026-10-25: "where is the delete button for
-// projects"): a project's row has a ⋯ menu (Main's has none), Delete is asked once under the row in so many
+// projects"): a project's bar has a right-click menu (Main's holds only Memory), Delete is asked once under the row in so many
 // words, and the screen on a deleted project lands on Main — when this laptop deleted it, and when another
 // surface did (the box's signal, or only the row going away).
 import { test, before, after } from "node:test";
@@ -59,7 +59,7 @@ after(async () => {
   await box.close();
 });
 
-test("a project's row has the ⋯ menu; Main's has none (it can't be renamed or deleted)", () => {
+test("a place's bar shows no hover icons (Carl's option B): its menu is on right-click only", () => {
   const row = (type: "main" | "project", id: string, more: Record<string, unknown> = {}) =>
     renderToStaticMarkup(
       createElement(panel.ThreadRow, {
@@ -69,12 +69,15 @@ test("a project's row has the ⋯ menu; Main's has none (it can't be renamed or 
         ...more,
       }),
     );
-  const main = row("main", "main");
+  const main = row("main", "main", { onNotes: () => {}, onNewChat: () => {} });
   assert.ok(main.includes('data-el="thread-main"'));
-  assert.ok(!main.includes('data-el="project-menu"'));
-  const proj = row("project", "project-coconut", { onRename: async () => {}, onDelete: async () => {} });
-  assert.ok(proj.includes('data-el="project-menu"'));
-  assert.ok(proj.includes('title="More"'));
+  const proj = row("project", "project-coconut", { onNotes: () => {}, onRename: async () => {}, onDelete: async () => {}, onNewChat: () => {} });
+  for (const html of [main, proj]) {
+    assert.ok(!html.includes('data-el="project-menu"'), "no ⋯ button");
+    assert.ok(!html.includes('data-el="project-notes"'), "no notes button");
+    assert.ok(!html.includes('data-el="project-menu-list"'), "the menu is shut until a right-click");
+    assert.ok(html.includes('data-el="place-new-chat"'), "its + stays");
+  }
 });
 
 test("Delete asks once, in so many words: the conversation only (the folder stays), or everything", () => {

@@ -338,6 +338,11 @@ export class FakeBox {
       case "delete":
         this.meta(conv, { deleted: true });
         return { ok: true };
+      case "renameConversation":
+        // Engine.renameConversation: Carl's title, marked his (the summary title never replaces it).
+        if (!exists || conv === "main" || conv.startsWith("project-") || !String(b.title ?? "").trim()) return { ok: false, error: "not renamed" };
+        this.meta(conv, { title: String(b.title).trim(), titleBy: "carl" });
+        return { ok: true, convId: conv, title: String(b.title).trim() };
       case "deleteProject": {
         // Engine.deleteProject: the thread gone (every surface on it lands on Main), the clients told.
         const id = `project-${String(b.slug ?? "")}`;
