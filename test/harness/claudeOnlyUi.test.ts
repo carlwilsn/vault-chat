@@ -20,7 +20,7 @@ import { join, relative } from "node:path";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { installFakeTauri, makeTempVault } from "./fakes.ts";
-import { EFFORTS, FALLBACK_MODELS, MODEL_FAMILIES, pickerModels } from "../../server/engine/claude/models.ts";
+import { EFFORTS, FALLBACK_MODELS, MODEL_FAMILIES, modelName, pickerModels } from "../../server/engine/claude/models.ts";
 
 const root = join(import.meta.dirname, "..", "..");
 
@@ -122,6 +122,27 @@ test("the picker offers the newest of each family, in order, and nothing it does
     !out.some((m) => m.id.includes("/")),
     `a provider/model id reached the picker: ${out.map((m) => m.id)}`,
   );
+});
+
+test("a family the code has never heard of appears, after the known ones, and the newest row of it is kept", () => {
+  const rows = [
+    { id: "claude-zephyr-6-0", name: "Zephyr 6", efforts: [...EFFORTS] },
+    { id: "claude-zephyr-5-9", name: "Zephyr 5.9", efforts: [...EFFORTS] },
+    { id: "claude-zephyr-6-1", name: "Zephyr 6.1", efforts: [...EFFORTS] },
+    { id: "claude-fable-5-1", name: "Fable 5.1", efforts: [...EFFORTS] },
+    { id: "haiku", name: "Haiku 5.5", efforts: [] },
+    { id: "sonnet", name: "Sonnet 5.5", efforts: [...EFFORTS] },
+    { id: "opus", name: "Opus 5.5", efforts: [...EFFORTS] },
+    { id: "claude-something-else", name: "Something Else", efforts: [] },
+  ];
+  const out = pickerModels(rows);
+  assert.deepEqual(
+    out.map((m) => m.id),
+    ["opus", "sonnet", "haiku", "claude-fable-5-1", "claude-zephyr-6-1"],
+    "known order kept, then the new family at its newest version",
+  );
+  assert.deepEqual(pickerModels(rows.slice(0, 1)).map((m) => m.id), ["claude-zephyr-6-0"]);
+  assert.equal(modelName({ value: "zephyr", resolvedModel: "claude-zephyr-6-1", displayName: "Zephyr" }), "Zephyr 6.1");
 });
 
 test("what Carl reads is the runtime's name, never the id behind it", () => {

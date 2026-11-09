@@ -259,7 +259,8 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
   readonly version: string;
   private threads: Record<string, ThreadState> = {};
   /** Whether this process has asked a session for the runtime's list yet. */
-  private modelsLearned = false;
+  /** When the model list was last asked of the runtime (0: not yet this process). */
+  private modelsAskedAt = 0;
   /** The runtime's own model list, learned from the first session (models()). */
   private modelRows: ModelChoice[] = [];
   private live = new Map<string, Live>();
@@ -921,10 +922,11 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
     session.start();
     // What the runtime calls its models, asked once per box: the picker shows
     // those names, so vault-chat never keeps a version number of its own.
-    // Once per process even with a saved list, so a box whose saved names predate
-    // versioned names ("Opus" → "Opus 5.5") or a new release picks them up.
-    if (!this.modelsLearned) {
-      this.modelsLearned = true;
+    // Asked again on a new session once the answer is over an hour old, so a
+    // model Anthropic ships (once the bundled runtime knows it) shows up on a
+    // box that never restarts.
+    if (Date.now() - this.modelsAskedAt > MODELS_REFRESH_MS) {
+      this.modelsAskedAt = Date.now();
       void this.learnModels(session);
     }
     return live;
@@ -941,7 +943,10 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
 
   private async learnModels(session: ClaudeSession): Promise<void> {
     const rows = await session.models().catch(() => null);
-    if (!rows?.length) return;
+    if (!rows?.length) {
+      this.modelsAskedAt = 0; // not answered: the next session asks again
+      return;
+    }
     const all = rows.map((r) => ({
       id: String(r.value ?? ""),
       name: modelName(r),
@@ -949,8 +954,9 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
     }));
     const picked = pickerModels(all.filter((m) => m.id && m.name));
     if (!picked.length) return;
+    if (JSON.stringify(picked) === JSON.stringify(this.modelRows)) return;
     this.modelRows = picked;
-    this.log(`models: ${picked.map((m) => m.name).join(", ")}`);
+    this.log(`models changed: ${picked.map((m) => m.name).join(", ")}`);
     // Kept, so a box that has run a turn once shows the real names from boot
     // rather than the fallback until the first session of the day.
     try {
@@ -1146,6 +1152,9 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
 function promptOf(texts: string[], context?: string, you?: string): string {
   return [context?.trim(), texts.filter(Boolean).join("\n\n"), you?.trim()].filter(Boolean).join("\n\n");
 }
+
+/** How long a learned model list is trusted before a new session asks again. */
+const MODELS_REFRESH_MS = 60 * 60 * 1000;
 
 /** Beside the thread ids: the runtime's model list, as last learned. */
 const modelsFile = (threadsFile: string) => join(dirname(threadsFile), "models.json");

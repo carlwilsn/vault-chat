@@ -9,9 +9,14 @@
 import type { Effort, ModelChoice } from "../backend";
 export type { Effort, ModelChoice };
 
-/** The families the picker offers, most capable first. */
+/**
+ * The families the picker lists FIRST, most capable first. Not a filter: a
+ * family Anthropic ships tomorrow (claude-zephyr-6-0) is read from the
+ * runtime's own rows and appended after these, so the picker needs no code
+ * change for a new model.
+ */
 export const MODEL_FAMILIES = ["opus", "sonnet", "haiku", "fable"] as const;
-export type ModelFamily = (typeof MODEL_FAMILIES)[number];
+export type ModelFamily = string;
 
 /**
  * The levels the control offers. The SDK's own (`EffortLevel`) are low, medium,
@@ -21,22 +26,55 @@ export type ModelFamily = (typeof MODEL_FAMILIES)[number];
 export const EFFORTS = ["low", "medium", "high", "max"] as const;
 export const isEffort = (e: unknown): e is Effort => typeof e === "string" && (EFFORTS as readonly string[]).includes(e);
 
-/** Which family a model belongs to, read from its id and its name. */
+/**
+ * Which family a model belongs to, read from its id and its name: a bare alias
+ * ("opus"), claude-<family>-<version> ("claude-zephyr-6-0"), a known family
+ * named anywhere in the id/name (older "claude-3-5-sonnet"), or a display name
+ * that starts with a word and a version ("Zephyr 6"). Null when none fits —
+ * "claude-something-else" has no version, so it is not a model family.
+ */
 export function familyOf(m: { id: string; name?: string }): ModelFamily | null {
-  const hay = `${m.id} ${m.name ?? ""}`.toLowerCase();
-  return MODEL_FAMILIES.find((f) => hay.includes(f)) ?? null;
+  const id = m.id.replace(/\[.*?\]/g, "").toLowerCase().trim();
+  if (/^[a-z]+$/.test(id) && id !== "claude" && id !== "default") return id;
+  const fromId = id.match(/^claude-([a-z]+)-\d/);
+  if (fromId) return fromId[1]!;
+  const hay = `${id} ${m.name ?? ""}`.toLowerCase();
+  const known = MODEL_FAMILIES.find((f) => hay.includes(f));
+  if (known) return known;
+  const fromName = (m.name ?? "").trim().toLowerCase().match(/^([a-z]+)\s+\d/);
+  return fromName ? fromName[1]! : null;
+}
+
+/** The version numbers in an id or name ("claude-opus-4-6" → [4,6]); dates ignored. */
+function versionOf(m: { id: string; name?: string }): number[] {
+  const fromId = m.id.replace(/\[.*?\]/g, "").split("-").slice(2);
+  const nums: number[] = [];
+  for (const p of fromId) {
+    if (!/^\d{1,2}$/.test(p)) break;
+    nums.push(Number(p));
+  }
+  if (nums.length) return nums;
+  const n = (m.name ?? "").match(/\d+(?:\.\d+)*/);
+  return n ? n[0].split(".").map(Number) : [];
+}
+
+function newer(a: number[], b: number[]): boolean {
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    const d = (a[i] ?? 0) - (b[i] ?? 0);
+    if (d) return d > 0;
+  }
+  return false;
 }
 
 /**
- * The runtime's model list as the picker shows it: one row per family, in
- * MODEL_FAMILIES order, and nothing else.
+ * The runtime's model list as the picker shows it: one row per family. Known
+ * families come first in MODEL_FAMILIES order, then any family the runtime
+ * lists that this file has never heard of, in the order the runtime gave them.
  *
- * The runtime answers with every model the subscription can reach, which on a
- * good day is more rows than a picker should hold (one family can have three
- * generations alive at once). A chat picks what a model is FOR, so within a
- * family the row to keep is the one whose id is the bare ALIAS — `opus` is
- * whatever Opus is now, and stays right when the next one ships. Failing that
- * (a family with no alias, like Fable), the first row the runtime listed.
+ * Within a family the row to keep is the one whose id is the bare ALIAS —
+ * `opus` is whatever Opus is now, and stays right when the next one ships.
+ * Failing that (a family with no alias, like Fable), the newest by version;
+ * on a tie, the first row the runtime listed.
  */
 export function pickerModels(rows: readonly ModelChoice[]): ModelChoice[] {
   const out = new Map<ModelFamily, ModelChoice>();
@@ -44,9 +82,12 @@ export function pickerModels(rows: readonly ModelChoice[]): ModelChoice[] {
     const f = familyOf(row);
     if (!f) continue;
     const have = out.get(f);
-    if (!have || (row.id === f && have.id !== f)) out.set(f, row);
+    if (!have) out.set(f, row);
+    else if (have.id !== f && (row.id === f || newer(versionOf(row), versionOf(have)))) out.set(f, row);
   }
-  return MODEL_FAMILIES.map((f) => out.get(f)).filter((m): m is ModelChoice => !!m);
+  const known = MODEL_FAMILIES.filter((f) => out.has(f));
+  const extra = [...out.keys()].filter((f) => !(MODEL_FAMILIES as readonly string[]).includes(f));
+  return [...known, ...extra].map((f) => out.get(f)!);
 }
 
 /** "claude-opus-5-5" → "Opus 5.5"; null when the id carries no version. */
@@ -77,7 +118,7 @@ export function modelName(r: { value?: string; resolvedModel?: string; displayNa
   if (/(^|\s)\d+(\.\d+)?(?![\w.])/.test(shown)) return shown; // "Sonnet 5.5", not "Opus (1M context)"
   const fam = familyOf({ id: String(r.value ?? ""), name: shown });
   const fits = (n: string | null) => (n && (!fam || n.toLowerCase().startsWith(fam)) ? n : null);
-  const fromDesc = String(r.description ?? "").match(/\b(Opus|Sonnet|Haiku|Fable)\s+(\d+(?:\.\d+)?)\b/i);
+  const fromDesc = fam ? String(r.description ?? "").match(new RegExp(`\\b(${fam})\\s+(\\d+(?:\\.\\d+)?)\\b`, "i")) : null;
   return (
     fits(versionedName(String(r.resolvedModel ?? ""))) ??
     fits(versionedName(String(r.value ?? ""))) ??

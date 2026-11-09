@@ -24,7 +24,7 @@ use sha2::{Digest, Sha512};
 /// The CLI the SDK pins. Kept in step with package.json's
 /// @anthropic-ai/claude-agent-sdk by a test, so the app, the box and this
 /// fetch all run the same Claude Code.
-pub const CLI_VERSION: &str = "0.3.319";
+pub const CLI_VERSION: &str = "0.3.321";
 
 const REGISTRY: &str = "https://registry.npmjs.org";
 
