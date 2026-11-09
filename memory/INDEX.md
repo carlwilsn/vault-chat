@@ -1,7 +1,7 @@
 # vault-chat source facts
 
 These notes are rebuilt from vault-chat’s code, not AgentOS notes.
-Carl’s instructions live in AGENTS.md; ASKS.md is the only plan.
+Carl’s instructions live in AGENTS.md.
 
 - pi integration is in server/engine/; server/http.ts serves the box API.
 - src/ is the React/Tauri laptop client; phone/ and board/ are separate clients.

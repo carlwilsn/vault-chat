@@ -23,4 +23,4 @@ artifacts are not rewritten or deleted.
 Normal notifications and AskUser questions remain. Native authenticated laptop health,
 box readiness, ordinary project sync, CI publication and retained-binary fallback remain.
 Acceptance and publication are not Shipped: the actual box and Carl's laptop must run
-the release. ASKS.md is the only plan. See AGENTS.md for current working rules.
+the release. See AGENTS.md for current working rules.

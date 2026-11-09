@@ -5,13 +5,13 @@ phone web app, iPad whiteboard and voice. It is not AgentOS.
 
 ## Carl’s vault-chat instructions
 
-- Done means Carl’s ask works for Carl, judged by his laptop probe numbers and ASKS.md.
+- Done means Carl’s ask works for Carl, judged on the real app (and his laptop probe numbers for speed).
 - Run the normal typecheck and tests before a ship request; nothing else is required.
   No proof cards, recordings, shipment proofs, real-data captures beyond what the
   ship script does itself, plans or progress reports.
-- Talk to Carl only when an ask ships: one line, the ASKS.md percent, and for speed
-  fixes his before and after probe numbers. Never invent missing measurements.
-- ASKS.md is the only plan. Do not create PLAN, CURRENT or HANDOFF files.
+- Talk to Carl only when an ask ships: one line, and for speed fixes his before and
+  after probe numbers. Never invent missing measurements.
+- No tracking files: no ASKS, PLAN, CURRENT or HANDOFF files. Carl's asks live in the chat.
 - Sub-agents only to go faster on an ask, never for checking, auditing, owning or monitoring.
 - Work in up to three independent lanes when Carl asks for parallel work. Each lane:
   fix → normal tests → ship request → read result; never duplicate another lane’s work.
@@ -21,8 +21,8 @@ phone web app, iPad whiteboard and voice. It is not AgentOS.
   Only the installed ship script promotes main; its watcher publishes accepted
   main to GitHub. Do not duplicate that push; verify the remote SHA.
 - Shipped means the box and Carl’s laptop run the release and autonomous checks on
-  the real app pass (Carl’s native laptop probe for speed). Update ASKS.md only
-  then; do not ask for a greenlight or wait for Carl’s confirmation.
+  the real app pass (Carl’s native laptop probe for speed). Do not ask for a
+  greenlight or wait for Carl’s confirmation.
 - No source recovery or rollback of accepted work; no new shipping machinery,
   systemd-run units, owners, continuations, handoffs, receipts or waiting chains.
   Do not edit the installed simple-ship copy.
