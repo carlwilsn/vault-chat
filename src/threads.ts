@@ -91,10 +91,10 @@ export function panelModel(convs: PanelConv[], projects: PanelProject[], activeI
   const byId = new Map(live.map((c) => [c.id, c]));
   const chatsOf = (slug: string | null): PanelChat[] =>
     live
-      // A project's own thread is not one of its chats in the list (Carl, 2026-11-08): it stays, and opens
-      // when something takes him there (OpenProject, a call moving to the project), but the bar lists only the
-      // chats he started in it.
-      .filter((c) => threadKindOf(c) !== "older" && !projectOfThread(c.id) && placeOf(c) === slug)
+      // A place's own thread (Main's, a project's) is not one of its chats in the list (Carl, 2026-11-08/09): it
+      // stays, and opens when something takes him there (the app's start, OpenProject, a call moving to the
+      // project), but the list shows only the chats he started there — no row he cannot delete.
+      .filter((c) => threadKindOf(c) !== "older" && c.id !== MAIN_ID && !projectOfThread(c.id) && placeOf(c) === slug)
       .sort((a, b) => (b.lastActivityAt ?? 0) - (a.lastActivityAt ?? 0))
       .map((c) => ({
         id: c.id,
@@ -111,7 +111,8 @@ export function panelModel(convs: PanelConv[], projects: PanelProject[], activeI
       type: "main",
       id: MAIN_ID,
       title: MAIN_TITLE,
-      active: mainChats.some((c) => c.active),
+      // Main's own thread, hidden from the chats, still says when Main works or is where he is.
+      active: activeId === MAIN_ID || mainChats.some((c) => c.active),
       running: !!main?.running || mainChats.some((c) => c.running),
       unread: mainChats.some((c) => c.unread),
       chats: mainChats,

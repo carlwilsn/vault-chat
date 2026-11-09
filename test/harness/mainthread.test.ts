@@ -94,8 +94,11 @@ test("the panel: each place holds its chats, newest first; older chats stay in t
   };
   assert.deepEqual(chatsOf("main"), [
     ["sep-1", "a one-off", false],
-    ["main", "Main", false],
   ]);
+  // Main's own thread is not listed (it cannot be deleted); the place still shows when Main is where he is / works.
+  const onMain = threads.panelModel([{ id: "main", kind: "main", running: true }], [], "main").entries[0];
+  assert.deepEqual([onMain.type === "main" && onMain.chats.length, onMain.type !== "new-project" && onMain.active, onMain.type !== "new-project" && onMain.running], [0, true, true]);
+  for (const e of entries) if (e.type !== "new-project") assert.ok(e.chats.every((c) => !(c.id === "main" || c.id.startsWith("project-"))), "no undeletable thread row in " + e.id);
   // A project's own thread is not listed among its chats (it still opens, and its running/active show on the bar).
   assert.deepEqual(chatsOf("project-psych-221"), [
     ["sep-2", "problem set 4", false],
