@@ -100,6 +100,8 @@ export type EngineDeps = {
   onFilesWritten?: (paths: string[]) => void;
   /** A turn ended (the sync brings its results to the laptop). */
   onTurnEnded?: (convId: string) => void;
+  /** A chat's summary title from its transcript (tests); default: a one-shot on TITLE_MODEL. */
+  titleWith?: (instructions: string, text: string) => Promise<string>;
   /** The vault's name on this box (the turn log's `vault`); the folder's name when absent. */
   vaultName?: string;
   /** One structured line per turn (turnLog.ts): the box's turn log and the journal. */
@@ -545,6 +547,14 @@ const DELEGATE_WORKER_PROMPT = `You do one piece of work for vault-chat's agent,
 /** pi's own tools (and the subagent tool): a vault tool of the same name is not registered over them. */
 const PI_BUILTIN_TOOLS = ["read", "write", "edit", "bash", "grep", "find", "ls", "subagent"];
 
+
+/** The cheap model a chat's summary title is written on (Carl: Haiku 5.5). */
+const TITLE_MODEL = process.env.VC_TITLE_MODEL || "claude-haiku-5-5";
+/** After this many of Carl's messages the title is written again, once, from the longer conversation. */
+const TITLE_REFRESH_TURNS = 4;
+const TITLE_INSTRUCTIONS =
+  "You name chats. Read the conversation and answer with only a short title (2 to 6 words) that says what it is about, " +
+  "like a heading: no quotes, no trailing punctuation, no \"Title:\". Not a question, and not a copy of the first message.";
 
 export class Engine {
   private live = new Map<string, Live>(); // convId → live turn
@@ -1013,6 +1023,10 @@ export class Engine {
         if (!Array.isArray(b.convIds)) return r.deleted.length ? { ok: true, convId: r.deleted[0] } : { ok: false, error: r.refused[0]?.why ?? "not deleted" };
         return { ok: r.deleted.length > 0 || !ids.length, deleted: r.deleted, refused: r.refused };
       }
+      case "renameConversation": {
+        const r = this.renameConversation(String(b.convId ?? ""), String(b.title ?? ""));
+        return r.ok ? { ok: true, convId: b.convId } : { ok: false, error: r.error };
+      }
       case "restoreConversation": {
         const r = this.restoreConversation(String(b.convId ?? ""));
         return r.ok ? { ok: true, convId: r.id } : { ok: false, error: r.error };
@@ -1388,12 +1402,12 @@ export class Engine {
    * last saw it (the "you" layer, the same hook a turn of the agent runs). `side`: the popover's next request, in
    * the same side thread. One-shots ({kind: "once", system, text, images?, fast?}): no session, no tools.
    */
-  async sideStart(b: Record<string, any>, viewerRoot = this.d.vault): Promise<Record<string, unknown>> {
+  async sideStart(b: Record<string, any>, viewerRoot = this.d.vault, onceModel?: string): Promise<Record<string, unknown>> {
     const text = typeof b?.text === "string" ? b.text : "";
     if (!text.trim()) return { error: "missing text" };
     const kind = b.kind === "once" ? "once" : b.kind === "edit" ? "edit" : "ask";
     const images: string[] = (Array.isArray(b.images) ? b.images : []).filter((u: unknown) => typeof u === "string" && u.startsWith("data:image/"));
-    let model = kind === "once" && b.fast ? ctxConfig().recapModel : this.d.model();
+    let model = kind === "once" && onceModel ? onceModel : kind === "once" && b.fast ? ctxConfig().recapModel : this.d.model();
     if (images.length && !capabilitiesOf(model).images) model = this.d.visionModel ?? model;
     const dir = (parent: string) => join(this.d.backend.paths.sessionsDir, "side", parent);
     const side = this.d.backend.side;
@@ -1684,9 +1698,60 @@ export class Engine {
     }
   }
 
+  /**
+   * A chat's title, as a short summary of what it is about (Carl: not his first message): a cheap one-shot after
+   * its first exchange, refreshed once after TITLE_REFRESH_TURNS of his messages. Main and a project's thread keep
+   * their names; a title Carl gave it by hand (meta.titleBy "carl") is never touched.
+   */
+  private titling = new Set<string>();
+  private async autoTitle(convId: string): Promise<void> {
+    if (threadKindOf({ id: convId }) === "main" || threadKindOf({ id: convId }) === "project" || this.titling.has(convId)) return;
+    const p = this.picture(convId);
+    if (!p || p.meta.deleted || p.meta.titleBy === "carl") return;
+    const asks = p.items.filter((i) => i.kind === "user" && (i.text ?? "").trim() && !["wake", "nudge", "resume", "job", "handoff"].includes(i.via ?? ""));
+    if (!asks.length || !p.items.some((i) => i.kind === "assistant" && (i.text ?? "").trim())) return;
+    const done = Number((p.meta.autoTitle as { turns?: number } | undefined)?.turns ?? 0);
+    if (done && (done >= TITLE_REFRESH_TURNS || asks.length < TITLE_REFRESH_TURNS)) return;
+    this.titling.add(convId);
+    try {
+      const said = p.items
+        .filter((i) => (i.kind === "user" || i.kind === "assistant") && (i.text ?? "").trim())
+        .slice(-16)
+        .map((i) => `${i.kind === "user" ? "Carl" : "Assistant"}: ${String(i.text).trim().slice(0, 600)}`)
+        .join("\n\n")
+        .slice(-6000);
+      const raw = await (this.d.titleWith ?? ((ins: string, text: string) => this.once({ instructions: ins, text, model: TITLE_MODEL })))(TITLE_INSTRUCTIONS, said);
+      const title = [...String(raw ?? "").split("\n").map((x) => x.trim()).find(Boolean) ?? ""]
+        .join("")
+        .replace(/^(title:\s*)/i, "")
+        .replace(/^["'“”‘’*#\s]+|["'“”‘’*.\s]+$/g, "")
+        .slice(0, 60)
+        .trim();
+      // He may have renamed it (or deleted it) while it was being written.
+      const now = this.picture(convId);
+      if (!title || !now || now.meta.deleted || now.meta.titleBy === "carl") return;
+      this.emit(convId, { type: "meta", patch: { title, titleBy: "auto", autoTitle: { turns: asks.length, at: Date.now() } } });
+    } catch (e) {
+      this.log(`title for ${convId} not made: ${String((e as Error)?.message ?? e).slice(0, 160)}`);
+    } finally {
+      this.titling.delete(convId);
+    }
+  }
+
+  /** Carl names a chat himself: kept, and never replaced by a summary title. */
+  renameConversation(id: string, title: string): { ok: true } | { ok: false; error: string } {
+    const name = title.trim().slice(0, 120);
+    const p = id ? this.picture(id) : null;
+    if (!p || p.meta.deleted) return { ok: false, error: `no chat ${id}` };
+    if (!name) return { ok: false, error: "a name is needed" };
+    if (threadKindOf({ id }) === "main" || threadKindOf({ id }) === "project") return { ok: false, error: "Main and a project's thread are named by their place" };
+    this.emit(id, { type: "meta", patch: { title: name, titleBy: "carl" } });
+    return { ok: true };
+  }
+
   /** A one-shot on the box itself (a note's title): pi, no session, no tools; the final text. */
-  async once(req: { instructions: string; text: string; images?: string[]; fast?: boolean }): Promise<string> {
-    const r = await this.sideStart({ kind: "once", system: req.instructions, text: req.text, images: req.images, fast: req.fast });
+  async once(req: { instructions: string; text: string; images?: string[]; fast?: boolean; model?: string }): Promise<string> {
+    const r = await this.sideStart({ kind: "once", system: req.instructions, text: req.text, images: req.images, fast: req.fast }, this.d.vault, req.model);
     if (r.error) throw new Error(String(r.error));
     const s = await this.d.backend.side.wait(String(r.id));
     this.d.backend.side.forget(s.id);
@@ -2315,6 +2380,7 @@ export class Engine {
     this.turnLine(l.rec, { status, outcome, state, error: errStr || null });
     this.offerTurnPush(l, outcome, state, errStr, conv?.title ?? conv0?.title ?? "");
     this.d.onTurnEnded?.(l.convId);
+    if (status === "completed") void this.autoTitle(l.convId);
     for (const w of this.turnWaiters.get(l.convId)?.splice(0) ?? []) w();
     if (this.taps.has(l.convId)) this.tapEmit(l.convId, { type: "vc_turn_end", status, kind: l.kind });
   }
