@@ -172,7 +172,6 @@ function ThreadsList({
           <ThreadRow
             entry={main}
             name="Main"
-            onSelect={() => open(main.chats[0]?.id ?? main.id, main.chats[0]?.title ?? main.title)}
             onOpenChat={(id, title) => open(id, title)}
             onNewChat={() => {
               useStore.getState().newConversation();
@@ -204,7 +203,6 @@ function ThreadsList({
               key={e.id}
               entry={e}
               name={projectName(e.slug, projects) || e.title}
-              onSelect={() => open(e.chats[0]?.id ?? e.id, e.chats[0]?.title ?? e.title)}
               onOpenChat={(id, title) => open(id, title)}
               onNewChat={() => {
                 newChatInProject(e.slug);
@@ -232,11 +230,14 @@ function ThreadsList({
  * Main (a home, a stronger name) or a project's thread (a folder): a dot while it works (pulsing) or when it
  * finished unseen. A project's row has a ⋯ menu (also on right-click): Rename (the row becomes its name, Enter
  * keeps it) and Delete (asked once, right under the row). Main has none: it can't be renamed or deleted.
+ *
+ * The header bar only shows or hides the place's chats (Carl: clicking it does nothing else — it neither opens
+ * the project nor switches chat); a chat is opened from its own row. "+" at the header's right end starts a new
+ * chat there.
  */
 export function ThreadRow({
   entry,
   name,
-  onSelect,
   onOpenChat,
   onNewChat,
   onNotes,
@@ -245,7 +246,6 @@ export function ThreadRow({
 }: {
   entry: Extract<PanelEntry, { type: "main" | "project" }>;
   name: string;
-  onSelect: () => void;
   /** Open one of the place's chats. */
   onOpenChat?: (id: string, title: string) => void;
   /** Start a fresh chat in this place. */
@@ -327,30 +327,16 @@ export function ThreadRow({
       className={cn("relative flex items-center gap-1 pr-7 group", active ? "bg-accent" : "hover:bg-accent/40")}
     >
       <button
-        onClick={(ev) => {
-          // The chevron is the place's own control: it shows the chats without
-          // leaving the one Carl is reading.
-          if ((ev.target as HTMLElement).closest("[data-el=place-chats]")) return;
-          setOpened(true);
-          onSelect();
-        }}
+        data-el="place-toggle"
+        // Only shows or hides the chats: never opens the place or switches chat.
+        onClick={() => setOpened(!shown)}
+        aria-label={shown ? `Hide ${name}'s chats` : `Show ${name}'s chats`}
+        aria-expanded={shown}
         className={cn("flex-1 text-left px-4 flex items-center min-w-0", isMain ? "py-2 gap-2.5" : "py-1.5 gap-2")}
       >
-        {chats.length > 0 && (
-          <span
-            data-el="place-chats"
-            role="button"
-            aria-label={shown ? `Hide ${name}'s chats` : `Show ${name}'s chats`}
-            aria-expanded={shown}
-            onClick={(ev) => {
-              ev.stopPropagation();
-              setOpened(!shown);
-            }}
-            className="shrink-0 -ml-2 mr-0.5 h-4 w-4 flex items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-accent/60"
-          >
-            <ChevronRight className={cn("h-3 w-3 transition-transform", shown && "rotate-90")} />
-          </span>
-        )}
+        <span data-el="place-chats" className="shrink-0 -ml-2 mr-0.5 h-4 w-4 flex items-center justify-center rounded text-muted-foreground">
+          <ChevronRight className={cn("h-3 w-3 transition-transform", shown && "rotate-90")} />
+        </span>
         {isMain ? <Home className="h-3.5 w-3.5 text-foreground/80 shrink-0" /> : <Folder className="h-3 w-3 text-muted-foreground shrink-0" />}
         <span
           className={cn(
@@ -373,14 +359,14 @@ export function ThreadRow({
         <button
           onClick={onNotes}
           data-el="project-notes"
-          className="opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity h-7 w-7 min-h-[28px] min-w-[28px] mr-2 flex items-center justify-center rounded text-muted-foreground hover:bg-accent/60 hover:text-foreground shrink-0"
+          className="opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity h-7 w-7 min-h-[28px] min-w-[28px] flex items-center justify-center rounded text-muted-foreground hover:bg-accent/60 hover:text-foreground shrink-0"
           title="Project notes"
         >
           <FileText className="h-3 w-3" />
         </button>
       )}
       {hasMenu && (
-        <div ref={menuRef} className="relative shrink-0 mr-2">
+        <div ref={menuRef} className="relative shrink-0">
           <button
             onClick={() => setMenu((m) => !m)}
             data-el="project-menu"
@@ -419,6 +405,18 @@ export function ThreadRow({
           )}
         </div>
       )}
+      {onNewChat && (
+        <button
+          onClick={onNewChat}
+          data-el="place-new-chat"
+          data-place={entry.id}
+          aria-label={`New chat in ${name}`}
+          className="h-7 w-7 min-h-[28px] min-w-[28px] flex items-center justify-center rounded text-muted-foreground hover:bg-accent/60 hover:text-foreground shrink-0"
+          title={`New chat in ${name}`}
+        >
+          <Plus className="h-3.5 w-3.5" />
+        </button>
+      )}
     </div>
     {shown && (
       <div data-el="place-chat-list" data-place={entry.id}>
@@ -444,17 +442,7 @@ export function ThreadRow({
             ) : null}
           </button>
         ))}
-        {onNewChat && (
-          <button
-            data-el="place-new-chat"
-            data-place={entry.id}
-            onClick={onNewChat}
-            className="w-full text-left pl-11 pr-4 py-1 flex items-center gap-1.5 text-[11.5px] text-muted-foreground/80 hover:text-foreground hover:bg-accent/40"
-          >
-            <Plus className="h-3 w-3" />
-            New chat
-          </button>
-        )}
+        {chats.length === 0 && <div className="pl-11 pr-4 py-1 text-[11.5px] text-muted-foreground/60">No chats yet</div>}
       </div>
     )}
     {mode === "confirm" && (
