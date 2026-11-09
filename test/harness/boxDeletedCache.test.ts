@@ -97,3 +97,20 @@ test("a cached chat the box neither lists nor names (its tombstone is behind the
   assert.ok(has("keep1"));
   assert.ok(has("main") || S().conversations.length > 0);
 });
+
+test("Delete on a chat the box lists but answers \"no such chat\" for drops it from the list and the cache, without an error", async () => {
+  const key = `box:${box.url}`;
+  box.create("ph1", "ph1", Date.now() - 30_000);
+  box.startTurn("ph1");
+  box.user("ph1", "u-ph1", "question");
+  box.endTurn("ph1");
+  await waitFor("ph1 shown", () => has("ph1") && (bc.readBoxCache(key)?.rows ?? []).some((r) => r.id === "ph1"));
+  const real = (box as any).intent.bind(box);
+  (box as any).intent = (b: any) => (b.type === "delete" ? { ok: false, deleted: [], refused: (b.convIds ?? [b.convId]).map((id: string) => ({ id, why: "no such chat" })) } : real(b));
+  const { deleteChats } = await import("../../src/chatDelete.ts");
+  const why = await deleteChats(["ph1"]);
+  (box as any).intent = real;
+  assert.equal(why, null);
+  assert.ok(!has("ph1"), "the phantom row is gone from the list");
+  await waitFor("cache rewritten", () => !(bc.readBoxCache(key)?.rows ?? []).some((r) => r.id === "ph1"));
+});

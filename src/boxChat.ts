@@ -372,6 +372,12 @@ class BoxChatSession {
     return !this.stopped;
   }
 
+  /** Chats the box says it does not have: dropped from the screen and the cache. */
+  forget(ids: string[]): void {
+    for (const id of ids) { this.deletedIds.add(id); this.rows.delete(id); this.pics.delete(id); }
+    this.project(new Set(ids));
+  }
+
   isKnown(id: string): boolean {
     return this.rows.has(id);
   }
@@ -1259,7 +1265,14 @@ export async function boxDeleteMany(convIds: string[]): Promise<{ ok: boolean; e
   const localOnly = convIds.filter((id) => !known.includes(id));
   if (!known.length) return { ok: true, localOnly };
   const r = await intent(session, { type: "delete", convIds: known });
-  return r.ok ? { ok: true, localOnly } : { ok: false, error: r.error, localOnly };
+  // A chat the box answers "no such chat" for is gone already: dropped from the list and the cache, not an error.
+  const refused = Array.isArray(r.data?.refused) ? (r.data!.refused as { id?: unknown; why?: unknown }[]) : [];
+  const gone = refused.filter((x) => typeof x.id === "string" && (x.why === "no such chat" || x.why === "already deleted")).map((x) => x.id as string);
+  if (gone.length) session.forget(gone);
+  if (r.ok) return { ok: true, localOnly };
+  const other = refused.filter((x) => !gone.includes(x.id as string));
+  if (refused.length && !other.length) return { ok: true, localOnly };
+  return { ok: false, error: other.length ? other.map((x) => String(x.why)).join("; ") : r.error, localOnly };
 }
 
 /** Carl's Rename on a chat: his title on the box (every surface's list follows the row). */
