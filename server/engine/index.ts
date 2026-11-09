@@ -27,6 +27,7 @@ import { isClaudeModel, isEffort, validModel, type Effort } from "./claude/model
 import type { ModelChoice } from "./backend";
 import { McpRuntime } from "../mcp/runtime";
 import { claudePaths, type ClaudePaths } from "./claude/paths";
+import { claudeCliEnv } from "./claude/cliEnv";
 import { findClaude, type ClaudeInstall } from "./claude/install";
 import { logOf } from "./convs";
 import { signal } from "../convlog/log";
@@ -390,29 +391,9 @@ export async function startEngine(b: EngineBoot): Promise<EngineHandle> {
           vault: v.path,
           feedSessionsDir: join(v.path, ".vault-chat", "events", "sessions"),
           // Only the CLI gets this (phase 6 adds the sign-in token here).
-          env: () => ({
-            PATH: process.env.PATH ?? "/run/current-system/sw/bin",
-            HOME: st.claude.configDir,
-            // Claude Code's config and credentials. vault-chat keeps its own, so
-            // a session never sees Carl's plugins, skills or agents; VC_CLAUDE_CONFIG_DIR
-            // points it at an existing Claude Code login instead (the app's own
-            // dir when the desktop runs the server itself, or a box that is
-            // already logged in).
-            CLAUDE_CONFIG_DIR: process.env.VC_CLAUDE_CONFIG_DIR || st.claude.configDir,
-            // Carl's Claude subscription. Read at each session start, so signing
-            // in again takes effect without a restart, and set for the CLI only:
-            // it is deliberately absent from agentKeyEnv (src/keyEnv.ts), so no
-            // command the agent runs ever sees it.
-            ...(claudeCodeToken() ? { CLAUDE_CODE_OAUTH_TOKEN: claudeCodeToken()! } : {}),
-            CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
-            // An MCP call that waits on Carl (AskUser) is not idle; the
-            // per-server timeout above is the only cap that should apply.
-            CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT: "0",
-            // A deployment that points the CLI at another endpoint (a proxy, a
-            // test's stand-in) names it and its key together; neither is read.
-            ...(process.env.ANTHROPIC_BASE_URL ? { ANTHROPIC_BASE_URL: process.env.ANTHROPIC_BASE_URL } : {}),
-            ...(process.env.ANTHROPIC_API_KEY ? { ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY } : {}),
-          }),
+          // Read at each session start: the saved keys as they are now reach every
+          // shell, worker and subagent of the session (claude/cliEnv.ts).
+          env: () => claudeCliEnv({ processEnv: process.env, configDir: st.claude.configDir, token: claudeCodeToken(), keys: agentKeyEnv() }),
           // The same deny lists pi uses, from the sandbox alone (filePolicy.wallsOf):
           // what Claude Code's own file tools are ruled against when they are on.
           walls: () => wallsOf(sandbox),
