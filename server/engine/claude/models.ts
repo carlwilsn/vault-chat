@@ -49,6 +49,43 @@ export function pickerModels(rows: readonly ModelChoice[]): ModelChoice[] {
   return MODEL_FAMILIES.map((f) => out.get(f)).filter((m): m is ModelChoice => !!m);
 }
 
+/** "claude-opus-5-5" → "Opus 5.5"; null when the id carries no version. */
+export function versionedName(id: string): string | null {
+  // Strip "[1m]"-style tags; a version is the short numbers after the family,
+  // stopping at a release date ("claude-haiku-4-5-20251001" → "4.5").
+  const parts = id.replace(/\[.*?\]/g, "").replace(/^claude-/, "").split("-").filter(Boolean);
+  const family = parts.shift();
+  if (!family || !/^[a-z]+$/i.test(family)) return null;
+  const nums: string[] = [];
+  for (const p of parts) {
+    if (!/^\d{1,2}$/.test(p)) break;
+    nums.push(p);
+  }
+  const version = nums.join(".");
+  return version ? `${family[0]!.toUpperCase()}${family.slice(1)} ${version}` : null;
+}
+
+/**
+ * A model's name as Carl reads it, with its version: "Opus 5.5", never a bare
+ * "Opus". The runtime's displayName for an alias row is the bare family, so the
+ * version is read from what the alias resolves to (`resolvedModel`), then from
+ * the row's own id, then from its description ("Opus 5.5 · …"), and only then
+ * is the displayName kept as it is.
+ */
+export function modelName(r: { value?: string; resolvedModel?: string; displayName?: string; description?: string }): string {
+  const shown = String(r.displayName ?? r.value ?? "").trim();
+  if (/(^|\s)\d+(\.\d+)?(?![\w.])/.test(shown)) return shown; // "Sonnet 5.5", not "Opus (1M context)"
+  const fam = familyOf({ id: String(r.value ?? ""), name: shown });
+  const fits = (n: string | null) => (n && (!fam || n.toLowerCase().startsWith(fam)) ? n : null);
+  const fromDesc = String(r.description ?? "").match(/\b(Opus|Sonnet|Haiku|Fable)\s+(\d+(?:\.\d+)?)\b/i);
+  return (
+    fits(versionedName(String(r.resolvedModel ?? ""))) ??
+    fits(versionedName(String(r.value ?? ""))) ??
+    fits(fromDesc ? `${fromDesc[1]![0]!.toUpperCase()}${fromDesc[1]!.slice(1).toLowerCase()} ${fromDesc[2]}` : null) ??
+    shown
+  );
+}
+
 /**
  * What the picker shows before the runtime has told us its models: the three
  * aliases Claude Code resolves itself, under the only names that cannot be

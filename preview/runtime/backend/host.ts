@@ -293,7 +293,14 @@ function fakeBox(u: URL): FakeBox {
     /* not a URL */
   }
   if (!boxes[u.origin] && confOrigin === u.origin)
-    boxes[u.origin] = { name: u.hostname.split(".")[0], version: "0.6.33", online: true, keys: {}, vaults: [] } as FakeBox;
+    boxes[u.origin] = {
+      name: u.hostname.split(".")[0],
+      version: "0.6.33",
+      online: true,
+      keys: {},
+      // It runs the vault the scenario connects (requests name it: ?vault=).
+      vaults: [(conf as { vault?: string } | undefined)?.vault].filter((v): v is string => !!v),
+    } as FakeBox;
   const b = boxes[u.origin];
   if (!b || b.online === false) throw `error sending request for url (${u.href}): operation timed out`;
   return b;
@@ -396,6 +403,8 @@ export const hostCommands: Record<string, (a: Record<string, any>) => unknown> =
           hasKey: has("api.openrouter"),
           keyNames: names,
           keys: { openrouter: has("api.openrouter"), elevenlabs: has("service.elevenlabs") },
+          // The box runs Claude Code and is signed in (src/engineHealth.ts claudeOf).
+          engine: { engines: { claude: { signedIn: true, version: "2.1.319", tokenOk: true } } },
           // The box's account and the requested vault's working copy (the terminal button's ssh target).
           user: "carl",
           vaults: (b.vaults ?? []).map((name) => ({ name, path: `/home/carl/vaults/${name}` })),

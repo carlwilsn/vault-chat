@@ -1195,7 +1195,7 @@ export function ChatPane() {
           </button>
         )}
 
-        <div className="p-3 max-w-[820px] mx-auto w-full">
+        <div className="group/composer p-3 max-w-[820px] mx-auto w-full">
           {runningTasks.length > 0 && <Subagents list={runningTasks} variant="strip" onControl={controlSubagent} />}
           {todos.length > 0 && uiChoice("todos") === "pinned" && (busy || todos.some((t) => t.status !== "completed")) && (
             <div className="mb-1.5 max-h-40 overflow-auto" data-el="todos-pinned">

@@ -42,7 +42,7 @@ import {
   type SideRunner,
   type ToolSpec,
 } from "../backend";
-import { EFFORTS, FALLBACK_MODELS, isEffort, pickerModels } from "./models";
+import { EFFORTS, FALLBACK_MODELS, isEffort, modelName, pickerModels } from "./models";
 import type { UserRequest } from "../piFeed";
 import { appendEntries, newSessionFile } from "../../convlog/piSession";
 import { McpRuntime, type ProcessServices } from "../../mcp/runtime";
@@ -240,6 +240,8 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
 
   readonly version: string;
   private threads: Record<string, ThreadState> = {};
+  /** Whether this process has asked a session for the runtime's list yet. */
+  private modelsLearned = false;
   /** The runtime's own model list, learned from the first session (models()). */
   private modelRows: ModelChoice[] = [];
   private live = new Map<string, Live>();
@@ -898,7 +900,12 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
     session.start();
     // What the runtime calls its models, asked once per box: the picker shows
     // those names, so vault-chat never keeps a version number of its own.
-    if (!this.modelRows.length) void this.learnModels(session);
+    // Once per process even with a saved list, so a box whose saved names predate
+    // versioned names ("Opus" → "Opus 5.5") or a new release picks them up.
+    if (!this.modelsLearned) {
+      this.modelsLearned = true;
+      void this.learnModels(session);
+    }
     return live;
   }
 
@@ -916,7 +923,7 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
     if (!rows?.length) return;
     const all = rows.map((r) => ({
       id: String(r.value ?? ""),
-      name: String(r.displayName ?? r.value ?? ""),
+      name: modelName(r),
       efforts: (r.supportsEffort === false ? [] : (r.supportedEffortLevels ?? EFFORTS)).filter(isEffort),
     }));
     const picked = pickerModels(all.filter((m) => m.id && m.name));

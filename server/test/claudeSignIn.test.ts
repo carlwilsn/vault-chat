@@ -76,6 +76,19 @@ describe("the models Claude Code runs", () => {
     }
   });
 
+  it("a model is named with its version, read from what its alias resolves to", async () => {
+    const { modelName } = await import("../engine/claude/models");
+    expect(modelName({ value: "opus", displayName: "Opus", resolvedModel: "claude-opus-5-5" })).toBe("Opus 5.5");
+    expect(modelName({ value: "claude-fable-5-1", displayName: "Fable" })).toBe("Fable 5.1");
+    expect(modelName({ value: "haiku", displayName: "Haiku", description: "Haiku 5.5 · Fastest for quick answers" })).toBe("Haiku 5.5");
+    expect(modelName({ value: "sonnet", displayName: "Sonnet 5.5" })).toBe("Sonnet 5.5");
+    // A release date or a context tag is not part of the version.
+    expect(modelName({ value: "haiku", displayName: "Haiku", resolvedModel: "claude-haiku-4-5-20251001" })).toBe("Haiku 4.5");
+    expect(modelName({ value: "opus[1m]", displayName: "Opus (1M context)", resolvedModel: "claude-opus-5[1m]" })).toBe("Opus 5");
+    // A resolved id of another family is not taken for this one; nothing known: the name as given.
+    expect(modelName({ value: "sonnet", displayName: "Sonnet", resolvedModel: "claude-opus-5-5" })).toBe("Sonnet");
+  });
+
   it("the effort levels are the four the composer offers, and nothing is taken for one", async () => {
     const { EFFORTS, isEffort } = await import("../engine/claude/models");
     expect([...EFFORTS]).toEqual(["low", "medium", "high", "max"]);

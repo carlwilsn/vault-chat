@@ -110,6 +110,7 @@ export function previewPlugin(opts) {
   const pathShim = posix(join(HERE, "runtime", "shims", "path.ts"));
   const busShim = posix(join(HERE, "runtime", "shims", "bus.ts"));
   const atomicShim = posix(join(HERE, "runtime", "shims", "atomic.ts"));
+  const asyncHooksShim = posix(join(HERE, "runtime", "shims", "async_hooks.ts"));
   const serverDir = posix(join(HARNESS, "server")) + "/";
   const boot = posix(join(HERE, "runtime", "boot.ts"));
   const scenariosEntry = join(HERE, "scenarios", "index.ts");
@@ -226,6 +227,7 @@ export function previewPlugin(opts) {
       if (imp.startsWith(serverDir) || imp.includes("/preview/runtime/shims/")) {
         if (id === "node:fs" || id === "fs") return memfs;
         if (id === "node:path" || id === "path") return pathShim;
+        if (id === "node:async_hooks" || id === "async_hooks") return asyncHooksShim;
         if (id === "../bus" && imp.startsWith(serverDir + "commands/")) return busShim;
         if (id === "../atomic" && imp.startsWith(serverDir + "commands/")) return atomicShim;
       }
