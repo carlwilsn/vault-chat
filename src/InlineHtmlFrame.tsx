@@ -81,21 +81,35 @@ function Frame({ doc, title, live }: { doc: string; title: string; live?: string
   );
 }
 
+/** The vault path the viewer knows this page by. */
+function viewerPath(src: string, vault: string | null): string {
+  const cleaned = localPathFromUrl(src).replace(/^\.\/+/, "");
+  const absolute = /^([a-zA-Z]:[\/\\]|[\/\\])/.test(cleaned);
+  return absolute || !vault ? cleaned : `${vault}${vault.includes("\\") ? "\\" : "/"}${cleaned}`;
+}
+
+const samePath = (a: string | null | undefined, b: string) => !!a && a.replace(/\\/g, "/") === b.replace(/\\/g, "/");
+
 /** The page opens in the file viewer like a file clicked in the tree (HtmlView renders it live); fullscreen chat leaves
  *  fullscreen, which has no viewer. `html`: the bytes the chat already read (box or disk). */
 function openInViewer(src: string, html: string, vault: string | null): void {
-  const cleaned = localPathFromUrl(src).replace(/^\.\/+/, "");
-  const absolute = /^([a-zA-Z]:[\/\\]|[\/\\])/.test(cleaned);
-  const path = absolute || !vault ? cleaned : `${vault}${vault.includes("\\") ? "\\" : "/"}${cleaned}`;
+  const path = viewerPath(src, vault);
   const st = useStore.getState();
   if (st.chatFullscreen) st.toggleChatFullscreen();
-  st.setCurrentFile(path, html);
+  // Already open in a pane: bring that pane forward instead of loading the page a second time.
+  const pane = st.panes.find((p) => samePath(p.file, path));
+  if (pane) st.setActivePane(pane.id);
+  else st.setCurrentFile(path, html);
 }
 
 export const InlineHtmlFrame = memo(function InlineHtmlFrame({ src, alt }: { src: string; alt?: string }) {
   const vaultPath = useStore((s) => s.vaultPath);
   const files = useStore((s) => s.files);
   const convId = useStore((s) => s.activeConversationId);
+  const inViewer = useStore((s) => {
+    const path = viewerPath(src, s.vaultPath);
+    return samePath(s.currentFile, path) || s.panes.some((p) => samePath(p.file, path));
+  });
   const [state, setState] = useState<{ key: string; html: string | null; css: string } | null>(null);
   const key = JSON.stringify([src, vaultPath, convId]);
 
@@ -134,6 +148,14 @@ export const InlineHtmlFrame = memo(function InlineHtmlFrame({ src, alt }: { src
       <span className="text-muted-foreground italic text-[11.5px] border border-dashed border-border/60 rounded px-1.5 py-0.5 inline-block">
         ⚠ page not found: {src}{alt ? ` (${alt})` : ""}
       </span>
+    );
+  }
+  // Open in the viewer: one live copy, not two. Closing the file there brings the inline page back.
+  if (inViewer) {
+    return (
+      <button type="button" onClick={() => openInViewer(src, live.html ?? "", vaultPath)} className="flex items-center gap-1.5 my-2 px-2 py-1 rounded-md border border-border/60 bg-muted/40 text-[11.5px] text-muted-foreground hover:text-foreground max-w-full" data-el="chat-html-in-viewer" title="Bring it to the front in the viewer">
+        <PanelRight className="h-3 w-3 shrink-0" /> <span className="truncate">Open in viewer: {name}</span>
+      </button>
     );
   }
   return (
