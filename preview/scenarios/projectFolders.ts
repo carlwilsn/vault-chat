@@ -34,6 +34,22 @@ const host = () => ({
   },
 });
 
+// psych-221 with 14 chats: the panel shows 5 and a quiet "Show more", then 10 and "Show all", then all.
+const manyChats = () => {
+  const convs: Record<string, unknown> = {
+    main: { title: "Main", source: "main", meta: { kind: "main" }, messages: [{ role: "user", content: "morning" }, { role: "assistant", content: "Morning!" }] },
+    "project-psych-221": { title: "Psych 221", source: "project", meta: { kind: "project", project: "psych-221" }, messages: [] },
+  };
+  for (let i = 1; i <= 14; i++)
+    convs[`psych-chat-${i}`] = {
+      title: `Psych question ${i}`,
+      source: "manual",
+      meta: { kind: "separate", project: "psych-221", lastActivityAt: Date.parse("2026-10-27T09:00:00") - i * 3_600_000 },
+      messages: [{ role: "user", content: `Question ${i}` }, { role: "assistant", content: `Answer ${i}` }],
+    };
+  return { sync: { box: BOX, boxChat: { convs, live: true } } };
+};
+
 const openPanel: Step = { click: "[title^='Chats —']" };
 
 export const projectFolderScenarios: Scenario[] = [
@@ -57,6 +73,17 @@ export const projectFolderScenarios: Scenario[] = [
       "Box mode. Open the left panel and click + New project: name it, then choose where it works — the vault (as before), a new ~/projects/<name>, or A folder on the box…, which browses the box's folders from the home (Use this folder is off where a folder can't be a project's: the home itself). Create makes the project and opens its thread.",
     build: P3.build,
     host,
+    open: [openPanel, { sleep: 500 }],
+  },
+  {
+    id: "chats-many",
+    title: "Chat list — a project with 14 chats: Show more, then Show all",
+    group: "Projects",
+    clock: "2026-10-27T10:00:00",
+    notes:
+      "Box mode. Psych 221 holds 14 chats. Its list shows the 5 newest and a quiet “Show more”; that reveals 5 more (10), then the row says “Show all” and reveals the rest. 5 or fewer chats: no row; 10 or fewer: one step. The open chat and any chat working or unseen always stay visible. Resets on reload.",
+    build: P3.build,
+    host: manyChats,
     open: [openPanel, { sleep: 500 }],
   },
 ];

@@ -3,7 +3,7 @@ import { MessageSquare, Plus, X as XIcon, Folder, PanelLeftClose, Home, ChevronR
 import { useStore } from "./store";
 import { useProjects } from "./ProjectChip";
 import { createProjectThread, deleteProject, MEMORY_SLUG, newChatInProject, openProjectNotes, openThread, projectName, renameProject } from "./projects";
-import { panelModel, type PanelChat, type PanelEntry } from "./threads";
+import { panelModel, visibleChats, nextChatLevel, type PanelChat, type PanelEntry } from "./threads";
 import { canDeleteChat, deleteChats, renameChat } from "./chatDelete";
 import { cn } from "./lib/utils";
 import { NewProjectForm } from "./NewProjectForm";
@@ -96,6 +96,9 @@ export function ChatsSidebar({ onFocusComposer }: { onFocusComposer?: () => void
     </aside>
   );
 }
+
+// How far each place's list is opened ("Show more" / "Show all"): session state, not saved.
+const chatLevels = new Map<string, number>();
 
 /**
  * The left panel (src/threads.ts panelModel): the vault's main on its own at the top, then the
@@ -275,6 +278,9 @@ export function ThreadRow({
   const shown = opened ?? active;
   // A project's spinner shows only while it is collapsed: open, its own chats show theirs (Carl, 2026-11-10).
   const spinning = running && (isMain || !shown);
+  const [, bump] = useState(0);
+  const level = chatLevels.get(entry.id) ?? 0;
+  const vis = visibleChats(chats, level);
   const [menu, setMenu] = useState(false);
   const [mode, setMode] = useState<null | "rename" | "confirm">(null);
   const [draft, setDraft] = useState(name);
@@ -428,9 +434,22 @@ export function ThreadRow({
     </div>
     {shown && (
       <div data-el="place-chat-list" data-place={entry.id}>
-        {chats.map((c) => (
+        {vis.shown.map((c) => (
           <ChatItem key={c.id} chat={c} onOpen={() => onOpenChat?.(c.id, c.title)} deleteOne={deleteOne} />
         ))}
+        {vis.next && (
+          <button
+            data-el="place-show-more"
+            data-place={entry.id}
+            onClick={() => {
+              chatLevels.set(entry.id, nextChatLevel(chats.length, level));
+              bump((n) => n + 1);
+            }}
+            className="w-full text-left pl-11 py-1 text-[12px] text-muted-foreground/70 hover:text-foreground hover:bg-accent/40"
+          >
+            {vis.next === "more" ? "Show more" : "Show all"}
+          </button>
+        )}
         {chats.length === 0 && <div className="pl-11 pr-4 py-1 text-[11.5px] text-muted-foreground/60">No chats</div>}
       </div>
     )}

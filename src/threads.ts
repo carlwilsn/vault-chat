@@ -48,6 +48,22 @@ export type PanelConv = { id: string; title?: string; kind?: unknown; project?: 
 /** One chat inside a group (Carl's place: the vault's main, or a project). */
 export type PanelChat = { id: string; title: string; active: boolean; running: boolean; unread: boolean; at: number };
 
+/** Chats shown per step in a long list (src/ChatsPanel.tsx "Show more" / "Show all"). */
+export const CHAT_PAGE = 5;
+
+/**
+ * The chats a place shows at an expansion level (0 = first 5, 1 = 10, 2 = all). The open chat and any chat
+ * that is working or unseen stay visible even past the limit. `hidden`: how many are still hidden, `next`:
+ * what the row says ("Show more" first, then "Show all"), null = no row. A place of 10 or fewer has one step.
+ */
+export function visibleChats(chats: PanelChat[], level: number): { shown: PanelChat[]; hidden: number; next: "more" | "all" | null } {
+  const limit = level >= 2 || chats.length <= CHAT_PAGE ? chats.length : CHAT_PAGE * (level + 1);
+  const shown = chats.filter((c, i) => i < limit || c.active || c.running || c.unread);
+  const hidden = chats.length - shown.length;
+  const next = hidden <= 0 ? null : level === 0 ? "more" : "all";
+  return { shown, hidden, next };
+}
+
 /** One row of the left panel. A place holds its chats, newest first. */
 export type PanelEntry =
   | { type: "main"; id: string; title: string; active: boolean; running: boolean; unread: boolean; chats: PanelChat[] }
@@ -132,4 +148,9 @@ export function chatTitle(c: PanelConv): string {
   const t = (c.title ?? "").trim();
   if (t) return t;
   return projectOfThread(c.id) ? "This project" : "New chat";
+}
+
+/** The level a click on the row moves to: 5 more (10 in all), or everything when that is all there is. */
+export function nextChatLevel(total: number, level: number): number {
+  return level === 0 && total > CHAT_PAGE * 2 ? 1 : 2;
 }
