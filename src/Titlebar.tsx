@@ -270,7 +270,7 @@ export function Titlebar() {
 // Box sync chip: shown ONLY when something needs attention (a conflict that
 // closed the merge gate, Tailscale on this laptop not connected (at once, with
 // Open Tailscale), the box unreachable for over a minute, a file kept
-// out of git for being over 50 MB, a GitHub backup failing for 10 min).
+// out of git for being over 50 MB that the box lacks, a GitHub backup failing for 10 min).
 // Amber, red after 10 minutes. Click for the details.
 function SyncChip() {
   const [st, setSt] = useState<BoxSyncState | null>(null);

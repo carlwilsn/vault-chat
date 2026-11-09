@@ -1121,8 +1121,8 @@ function BoxSyncPanel({ vault, box, onDisconnected }: { vault: string; box: BoxC
       {r && r.big_files.length > 0 &&
         row(
           "Kept out of git",
-          r.big_files.map((b) => `${b.path} (${fmtSize(b.size)})`).join(", "),
-          "warn",
+          r.big_files.map((b) => `${b.path} (${fmtSize(b.size)}${b.on_box ? ", on the box" : ""})`).join(", "),
+          r.big_files.some((b) => !b.on_box) ? "warn" : undefined,
         )}
       {r &&
         row(

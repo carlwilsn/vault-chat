@@ -286,7 +286,7 @@ export const CONV_LOG_DIR = ".vault-chat/events";
 /** Never committed by the box: the log, and the conversation files from before it. */
 export const NEVER_STAGED = [CONV_LOG_DIR, ".vault-chat/conversations"];
 
-function excludeLocally(repo: string, rel: string, dir = false): void {
+export function excludeLocally(repo: string, rel: string, dir = false): void {
   if (dir) {
     const p = join(repo, ".git", "info", "exclude");
     let cur = "";

@@ -20,7 +20,10 @@
 //!   only inside the zone resolves to the box's side.
 //! - No file over 50 MB is ever committed: an untracked one goes to
 //!   `.git/info/exclude`, a tracked one that grew is left unstaged. Both are
-//!   reported.
+//!   reported. An untracked one's bytes go to the box beside git
+//!   (`PUT <box>/bigfile/<vault>?path=`, server/bigFiles.ts), in the
+//!   background, once it has been still for a minute: the box has it, GitHub
+//!   does not.
 //! - No nested-repo / submodule automation.
 //! - Errors carry git's full stderr.
 //! - GitHub backup: when the vault has a remote named `github`, a successful
@@ -457,6 +460,10 @@ pub fn discover_boxes() -> Result<Vec<FoundBox>, String> {
 pub struct BigFile {
     pub path: String,
     pub size: u64,
+    /// Tracked in git (it grew past the limit): git's copy stays on the box; never uploaded.
+    pub tracked: bool,
+    /// The box has this exact file (uploaded beside git, same size and mtime).
+    pub on_box: bool,
 }
 
 #[derive(Serialize, Clone, Debug, PartialEq, serde::Deserialize)]
@@ -491,6 +498,10 @@ pub struct BoxSyncReport {
     pub changes_waiting: u32,
     /// Files kept out of git for being over 50 MB.
     pub big_files: Vec<BigFile>,
+    /// Sending those files' bytes to the box (beside git) now.
+    pub big_uploading: bool,
+    /// The last such upload failed (retried on its own): what went wrong.
+    pub big_upload_error: Option<String>,
     /// GitHub backup failed (a warning, never a gate). Full stderr.
     pub github_warning: Option<String>,
     /// ms since the epoch of the last successful GitHub backup (this session).
@@ -1132,7 +1143,7 @@ fn stage_from_status(vault: &str, st: &WorkStatus, name: &str, email: &str) -> R
     write_exclude_block(vault, &excluded);
     let mut big: Vec<BigFile> = excluded
         .iter()
-        .map(|p| BigFile { path: p.clone(), size: file_size(vault, p).unwrap_or(0) })
+        .map(|p| BigFile { path: p.clone(), size: file_size(vault, p).unwrap_or(0), tracked: false, on_box: false })
         .collect();
     // Tracked files that grew past 50 MB: staged by `add -A`, unstaged again.
     let mut unstage: Vec<String> = Vec::new();
@@ -1140,7 +1151,7 @@ fn stage_from_status(vault: &str, st: &WorkStatus, name: &str, email: &str) -> R
         if let Some(sz) = file_size(vault, &e.path).filter(|s| *s > BOX_MAX_FILE_BYTES) {
             unstage.push(e.path.clone());
             if !big.iter().any(|b| b.path == e.path) {
-                big.push(BigFile { path: e.path.clone(), size: sz });
+                big.push(BigFile { path: e.path.clone(), size: sz, tracked: true, on_box: false });
             }
         }
     }
@@ -1752,6 +1763,7 @@ fn cycle(vault: &str, push: bool) -> BoxSyncReport {
         r.big_files = big;
         Ok(false)
     });
+    note_big_on_box(vault, &cfg, &mut r);
     let hand_merge = match local {
         Ok(h) => h,
         Err(e) => {
@@ -1883,9 +1895,11 @@ fn cycle(vault: &str, push: bool) -> BoxSyncReport {
         }
     }
 
-    // 5. GitHub backup, after a good cycle only, in the background.
+    // 5. GitHub backup, after a good cycle only, in the background. Files over
+    // 50 MB go to the box beside git, also in the background.
     if r.ok {
         github_backup(vault, &rc, &mut r);
+        start_big_upload(vault, &cfg, &mut r);
     }
     // 6. A project with its own remote: the box has no credentials, so after this laptop pulls a change from the
     // box (a kept change, a box edit) it pushes the branch to `origin` itself. Owed until it succeeds.
@@ -1919,6 +1933,187 @@ fn cycle(vault: &str, push: bool) -> BoxSyncReport {
         _ => "synced".into(),
     };
     r
+}
+
+// ---------- files over 50 MB, to the box beside git ----------
+
+/// A file is sent only once it has been still this long (a recording being written grows every second).
+const BIG_QUIET: Duration = Duration::from_secs(60);
+/// After a failed upload, the next try waits this long.
+const BIG_RETRY: Duration = Duration::from_secs(600);
+const BIG_RECORD: &str = "vault-chat-bigfiles.json";
+
+#[derive(Default)]
+struct BigUploadState {
+    running: bool,
+    error: Option<String>,
+    failed_at: Option<Instant>,
+}
+
+static BIG_UPLOADS: Mutex<Option<HashMap<String, BigUploadState>>> = Mutex::new(None);
+
+/// What this laptop sent the box: `{"target": "<url>", "files": {"<path>": [size, mtime_ms]}}` in .git.
+#[derive(serde::Serialize, serde::Deserialize, Default, Clone, Debug, PartialEq)]
+struct BigRecord {
+    target: String,
+    files: HashMap<String, (u64, u64)>,
+}
+
+/// Where a repo's big files go on the box: beside its git endpoint.
+pub fn big_target(cfg: &BoxConfig) -> Option<String> {
+    if !(cfg.box_url.starts_with("http://") || cfg.box_url.starts_with("https://")) {
+        return None;
+    }
+    Some(if cfg.project {
+        format!("{}/bigfile/projects/{}", cfg.box_url, cfg.vault)
+    } else {
+        format!("{}/bigfile/{}", cfg.box_url, cfg.vault)
+    })
+}
+
+fn load_big_record(vault: &str, target: &str) -> BigRecord {
+    std::fs::read_to_string(git_dir(vault).join(BIG_RECORD))
+        .ok()
+        .and_then(|t| serde_json::from_str::<BigRecord>(&t).ok())
+        .filter(|r| r.target == target)
+        .unwrap_or_else(|| BigRecord { target: target.to_string(), files: HashMap::new() })
+}
+
+fn save_big_record(vault: &str, rec: &BigRecord) {
+    if let Ok(t) = serde_json::to_string(rec) {
+        let _ = std::fs::write(git_dir(vault).join(BIG_RECORD), t);
+    }
+}
+
+/// (size, mtime in ms) of a file, now.
+fn size_mtime(vault: &str, rel: &str) -> Option<(u64, u64)> {
+    let m = std::fs::metadata(PathBuf::from(vault).join(rel)).ok().filter(|m| m.is_file())?;
+    let mt = m
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    Some((m.len(), mt))
+}
+
+/// The big files the box lacks: untracked, still for `quiet`, and not sent as they are now.
+fn big_to_send(vault: &str, rec: &BigRecord, big: &[BigFile], now: u64, quiet: Duration) -> Vec<(String, u64, u64)> {
+    big.iter()
+        .filter(|b| !b.tracked)
+        .filter_map(|b| size_mtime(vault, &b.path).map(|(sz, mt)| (b.path.clone(), sz, mt)))
+        .filter(|(p, sz, mt)| rec.files.get(p) != Some(&(*sz, *mt)) && now.saturating_sub(*mt) >= quiet.as_millis() as u64)
+        .collect()
+}
+
+/// Mark the big files the box already has, and report the uploads' state.
+fn note_big_on_box(vault: &str, cfg: &BoxConfig, r: &mut BoxSyncReport) {
+    let Some(target) = big_target(cfg) else { return };
+    if r.big_files.is_empty() {
+        return;
+    }
+    let rec = load_big_record(vault, &target);
+    for b in r.big_files.iter_mut().filter(|b| !b.tracked) {
+        b.on_box = size_mtime(vault, &b.path).is_some_and(|sm| rec.files.get(&b.path) == Some(&sm));
+    }
+    let g = BIG_UPLOADS.lock().unwrap_or_else(|p| p.into_inner());
+    if let Some(st) = g.as_ref().and_then(|m| m.get(vault)) {
+        r.big_uploading = st.running;
+        r.big_upload_error = st.error.clone();
+    }
+}
+
+/// Start sending the big files the box lacks, one at a time on their own thread (never on the sync's path).
+fn start_big_upload(vault: &str, cfg: &BoxConfig, r: &mut BoxSyncReport) {
+    let Some(target) = big_target(cfg) else { return };
+    let rec = load_big_record(vault, &target);
+    // Forget files that are no longer big here (deleted, shrunk into git).
+    if rec.files.keys().any(|p| !r.big_files.iter().any(|b| &b.path == p)) {
+        let mut pruned = rec.clone();
+        pruned.files.retain(|p, _| r.big_files.iter().any(|b| &b.path == p));
+        save_big_record(vault, &pruned);
+    }
+    let todo = big_to_send(vault, &rec, &r.big_files, now_ms(), BIG_QUIET);
+    if todo.is_empty() {
+        return;
+    }
+    {
+        let mut g = BIG_UPLOADS.lock().unwrap_or_else(|p| p.into_inner());
+        let st = g.get_or_insert_with(HashMap::new).entry(vault.to_string()).or_default();
+        if st.running || st.failed_at.is_some_and(|t| t.elapsed() < BIG_RETRY) {
+            return;
+        }
+        st.running = true;
+    }
+    r.big_uploading = true;
+    let v = vault.to_string();
+    std::thread::spawn(move || {
+        let mut err = None;
+        for (path, size, mtime) in todo {
+            match upload_big_file(&target, &v, &path, mtime) {
+                Ok(()) => {
+                    // Recorded only if it did not change while it went up.
+                    if size_mtime(&v, &path) == Some((size, mtime)) {
+                        let mut rec = load_big_record(&v, &target);
+                        rec.files.insert(path, (size, mtime));
+                        save_big_record(&v, &rec);
+                    }
+                }
+                Err(e) => {
+                    err = Some(format!("{}: {}", path, e));
+                    break;
+                }
+            }
+        }
+        let mut g = BIG_UPLOADS.lock().unwrap_or_else(|p| p.into_inner());
+        let st = g.get_or_insert_with(HashMap::new).entry(v).or_default();
+        st.running = false;
+        st.failed_at = err.as_ref().map(|_| Instant::now());
+        st.error = err;
+    });
+}
+
+/// PUT one file's bytes to `<target>?path=<rel>&mtime=<ms>`, streamed from disk.
+pub fn upload_big_file(target: &str, vault: &str, rel: &str, mtime: u64) -> Result<(), String> {
+    let file = std::fs::File::open(PathBuf::from(vault).join(rel)).map_err(|e| e.to_string())?;
+    let len = file.metadata().map_err(|e| e.to_string())?.len();
+    let url = reqwest::Url::parse_with_params(target, &[("path", rel), ("mtime", mtime.to_string().as_str())])
+        .map_err(|e| e.to_string())?;
+    let client = reqwest::blocking::Client::builder()
+        .user_agent("vault-chat/box-sync")
+        .connect_timeout(Duration::from_secs(15))
+        // At least ~1 MB/s, and never under 2 min.
+        .timeout(Duration::from_secs(120 + len / (1024 * 1024)))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let resp = client
+        .put(url)
+        .header("Content-Type", "application/octet-stream")
+        .body(reqwest::blocking::Body::sized(file, len))
+        .send()
+        .map_err(|e| e.to_string())?;
+    let status = resp.status().as_u16();
+    if status == 200 {
+        return Ok(());
+    }
+    let text = resp.text().unwrap_or_default();
+    Err(format!("the box answered {}: {}", status, text.chars().take(300).collect::<String>()))
+}
+
+/// Tests: wait until no big-file upload is running for `vault`.
+#[cfg(test)]
+pub(crate) fn wait_big_upload(vault: &str) {
+    let end = Instant::now() + Duration::from_secs(120);
+    while Instant::now() < end {
+        let running = {
+            let g = BIG_UPLOADS.lock().unwrap_or_else(|p| p.into_inner());
+            g.as_ref().and_then(|m| m.get(vault)).map(|s| s.running).unwrap_or(false)
+        };
+        if !running {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
 }
 
 /// POST a JSON body to `url` (the box's routes). Reqwest, so no CORS.

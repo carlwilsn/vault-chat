@@ -508,7 +508,13 @@ export type BoxSyncReport = {
   error: string | null;
   error_kind: "unreachable" | "git" | null;
   changes_waiting: number;
-  big_files: { path: string; size: number }[];
+  /** Files kept out of git (over 50 MB). `on_box`: the box has it anyway (sent beside git, src-tauri box_sync.rs
+   * start_big_upload); `tracked`: a tracked file that grew, whose git copy stays. */
+  big_files: { path: string; size: number; on_box?: boolean; tracked?: boolean }[];
+  /** Sending big files to the box now. */
+  big_uploading?: boolean;
+  /** The last big-file upload failed (retried on its own). */
+  big_upload_error?: string | null;
   github_warning: string | null;
   github_pushed_at: number | null;
   /** What went wrong with the GitHub backup (src-tauri box_sync.rs github_problem). */
@@ -821,16 +827,29 @@ export function boxAttentionOf(st: BoxSyncState, now = Date.now()): BoxAttention
       since: st.failingSince,
     };
   }
-  if (r.big_files.length && st.bigSince !== null) {
-    const b = r.big_files[0];
-    const more = r.big_files.length > 1 ? ` +${r.big_files.length - 1}` : "";
+  const missing = boxLacks(r);
+  if (missing.length && st.bigSince !== null) {
+    const b = missing[0]!;
+    const more = missing.length > 1 ? ` +${missing.length - 1}` : "";
+    const sending = missing.filter((x) => !x.tracked);
+    const grown = missing.filter((x) => x.tracked);
     return {
       kind: "big",
       level: level(st.bigSince),
       text: `File too large: ${b.path.split("/").pop()}${more}`,
-      detail:
-        "Kept out of git (over 50 MB), so the box and GitHub don't have:\n" +
-        r.big_files.map((x) => `  ${x.path} (${fmtSize(x.size)})`).join("\n"),
+      detail: [
+        sending.length
+          ? (r.big_uploading ? "Over 50 MB, so kept out of git; sending to the box now:\n" : "Over 50 MB, so kept out of git; the box doesn't have it yet:\n") +
+            sending.map((x) => `  ${x.path} (${fmtSize(x.size)})`).join("\n") +
+            (r.big_upload_error ? `\n\nThe last try failed (it is retried on its own): ${r.big_upload_error}` : "")
+          : "",
+        grown.length
+          ? "Grew past 50 MB, so the change stays out of git; the box and GitHub keep the old version:\n" +
+            grown.map((x) => `  ${x.path} (${fmtSize(x.size)})`).join("\n")
+          : "",
+      ]
+        .filter(Boolean)
+        .join("\n\n"),
       since: st.bigSince,
     };
   }
@@ -845,6 +864,11 @@ export function boxAttentionOf(st: BoxSyncState, now = Date.now()): BoxAttention
     };
   }
   return null;
+}
+
+/** The files over 50 MB the box does not have: a big file sent to the box beside git needs nothing from Carl. */
+export function boxLacks(r: Pick<BoxSyncReport, "big_files">): BoxSyncReport["big_files"] {
+  return r.big_files.filter((b) => !b.on_box);
 }
 
 // One alert per incident, remembered across restarts (best-effort).
@@ -1014,7 +1038,7 @@ function startBoxSyncLoop(vault: string, cfg: BoxConfig): void {
         lastCycleAt: now,
         lastOkAt: r.ok ? now : prev?.lastOkAt ?? null,
         failingSince: r.error ? prev?.failingSince ?? now : null,
-        bigSince: r.big_files.length ? prev?.bigSince ?? now : null,
+        bigSince: boxLacks(r).length ? prev?.bigSince ?? now : null,
         githubFailingSince: r.github_warning ? prev?.githubFailingSince ?? now : null,
       });
       // Durable log: one line per distinct incident (full stderr), one on recovery.

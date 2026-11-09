@@ -24,6 +24,7 @@ import { globalFeed, ownerVault, signal } from "./convlog/log";
 import { conversationsSummary, conversationDetail, notificationsFeed, notesFeed, withinVault, mimeFor } from "./phoneData";
 import { notificationAppend, pushSubsAdd, pushSubsRemove, vapidPublicKey } from "./commands/phone";
 import { isGitPath, handleGitHttp } from "./gitHttp";
+import { isBigFilePath, handleBigFile } from "./bigFiles";
 import { validVaultName, syncNow } from "./sync";
 import { syncReadBarrier } from "./syncReadBarrier";
 import { validKeyName } from "./keys";
@@ -366,6 +367,8 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
   const surface = inputSurface(method, path, /iPhone|Android/.test(String(req.headers["user-agent"] ?? "")) ? "phone" : null);
   if (surface) noteInput(surface);
 
+  // A file over 50 MB, sent from the laptop's sync beside git (server/bigFiles.ts).
+  if (isBigFilePath(path)) return handleBigFile(req, res, url);
   if (isGitPath(path)) {
     const user = String(req.headers["tailscale-user-login"] ?? auth.via ?? "local");
     return handleGitHttp(req, res, url, user, hooks.onGitPushed);

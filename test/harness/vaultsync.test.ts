@@ -259,3 +259,31 @@ test("a failing GitHub backup leaves git's own words in sync-log.jsonl, once, an
   assert.equal(b.sig, null);
   assert.equal(vs.githubLogLine(b.sig, { ok: true, github_warning: null, github_pushed_at: 3 } as any).line, null);
 });
+
+test("a file over 50 MB: the chip shows only while the box lacks it (sent beside git, it needs nothing)", () => {
+  const now = Date.now();
+  const st = (big_files: any[], extra: any = {}) => ({
+    vault: "/v",
+    box: BOX,
+    running: false,
+    lastCycleAt: now,
+    lastOkAt: now,
+    report: { ...okReport, big_files, ...extra } as any,
+    failingSince: null,
+    bigSince: now - 1_000,
+    githubFailingSince: null,
+    tailscale: null,
+    attention: null,
+  });
+  const rec = { path: "Recordings/screen.mp4", size: 67 * 1024 * 1024, tracked: false };
+  const a = vs.boxAttentionOf(st([{ ...rec, on_box: false }], { big_uploading: true }), now)!;
+  assert.equal(a.kind, "big");
+  assert.equal(a.text, "File too large: screen.mp4");
+  assert.match(a.detail, /sending to the box now:\n  Recordings\/screen\.mp4 \(67/);
+  assert.doesNotMatch(a.detail, /GitHub don't have/);
+  assert.match(vs.boxAttentionOf(st([{ ...rec, on_box: false }], { big_upload_error: "the box answered 500" }), now)!.detail, /retried on its own\): the box answered 500/);
+  assert.equal(vs.boxAttentionOf(st([{ ...rec, on_box: true }]), now), null);
+  const grown = vs.boxAttentionOf(st([{ path: "data.bin", size: 60 * 1024 * 1024, tracked: true, on_box: false }]), now)!;
+  assert.match(grown.detail, /keep the old version/);
+  assert.deepEqual(vs.boxLacks({ big_files: [{ ...rec, on_box: true }, { path: "x", size: 1 }] } as any).map((b) => b.path), ["x"]);
+});

@@ -1034,3 +1034,67 @@ fn e2e_master_against_a_box() {
         println!("school2 has the box's write: {}", read(&sv, "e2e/from-box.md").trim());
     }
 }
+
+#[test]
+fn big_files_go_to_the_box_beside_git() {
+    let base = std::env::temp_dir().join(format!("vc_bigup_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(base.join("Recordings")).unwrap();
+    git(&base, &["init", "-q", "-b", "master"]);
+    let v = s(&base);
+    let body: Vec<u8> = (0..300_000u32).map(|i| (i % 251) as u8).collect();
+    std::fs::write(base.join("Recordings/screen 1.mp4"), &body).unwrap();
+
+    // Only an http(s) box gets files; the target sits beside the git endpoint.
+    let mut cfg = BoxConfig { box_url: "https://box.ts.net".into(), vault: "school2".into(), name: None, branch: "master".into(), project: false };
+    assert_eq!(big_target(&cfg).as_deref(), Some("https://box.ts.net/bigfile/school2"));
+    cfg.project = true;
+    assert_eq!(big_target(&cfg).as_deref(), Some("https://box.ts.net/bigfile/projects/school2"));
+    cfg.box_url = "C:/tmp/boxhost".into();
+    assert_eq!(big_target(&cfg), None);
+
+    // What goes: untracked, still long enough, not already sent as it is now.
+    let (sz, mt) = size_mtime(&v, "Recordings/screen 1.mp4").unwrap();
+    let big = vec![
+        BigFile { path: "Recordings/screen 1.mp4".into(), size: sz, tracked: false, on_box: false },
+        BigFile { path: "grown.bin".into(), size: 1, tracked: true, on_box: false },
+    ];
+    let mut rec = BigRecord { target: "t".into(), files: HashMap::new() };
+    assert!(big_to_send(&v, &rec, &big, mt + 1_000, BIG_QUIET).is_empty(), "still being written");
+    assert_eq!(big_to_send(&v, &rec, &big, mt + 61_000, BIG_QUIET).len(), 1);
+    rec.files.insert("Recordings/screen 1.mp4".into(), (sz, mt));
+    assert!(big_to_send(&v, &rec, &big, mt + 61_000, BIG_QUIET).is_empty(), "already on the box");
+    save_big_record(&v, &rec);
+    assert_eq!(load_big_record(&v, "t"), rec);
+    assert!(load_big_record(&v, "another box").files.is_empty());
+
+    // The upload: a raw PUT with the path and mtime, streamed whole.
+    let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+    let port = server.server_addr().to_ip().unwrap().port();
+    let got = std::thread::spawn(move || {
+        let mut req = server.recv().unwrap();
+        let mut buf = Vec::new();
+        std::io::Read::read_to_end(req.as_reader(), &mut buf).unwrap();
+        let out = (req.method().to_string(), req.url().to_string(), buf);
+        req.respond(tiny_http::Response::from_string("{\"ok\":true}")).unwrap();
+        out
+    });
+    let target = format!("http://127.0.0.1:{}/bigfile/school2", port);
+    upload_big_file(&target, &v, "Recordings/screen 1.mp4", mt).unwrap();
+    let (method, url, bytes) = got.join().unwrap();
+    assert_eq!(method, "PUT");
+    assert_eq!(url, format!("/bigfile/school2?path=Recordings%2Fscreen+1.mp4&mtime={}", mt));
+    assert_eq!(bytes, body);
+
+    // A refusal is an error with the box's words.
+    let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+    let port = server.server_addr().to_ip().unwrap().port();
+    let h = std::thread::spawn(move || {
+        let req = server.recv().unwrap();
+        req.respond(tiny_http::Response::from_string("{\"error\":\"tracked\"}").with_status_code(409)).unwrap();
+    });
+    let e = upload_big_file(&format!("http://127.0.0.1:{}/bigfile/school2", port), &v, "Recordings/screen 1.mp4", mt).unwrap_err();
+    h.join().unwrap();
+    assert!(e.contains("409") && e.contains("tracked"), "{}", e);
+    let _ = std::fs::remove_dir_all(&base);
+}
