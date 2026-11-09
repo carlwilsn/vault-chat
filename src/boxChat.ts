@@ -1258,7 +1258,7 @@ export async function boxDelete(convId: string): Promise<boolean> {
   return r.ok;
 }
 
-/** Delete several chats on the box at once (Carl's multi-select): recoverable, a mark in each one's log. */
+/** Delete several chats on the box at once: recoverable, a mark in each one's log. */
 export async function boxDeleteMany(convIds: string[]): Promise<{ ok: boolean; error?: string; localOnly: string[] }> {
   if (!boxChatOn() || !session) return { ok: false, error: "the box isn't connected", localOnly: [] };
   const known = convIds.filter((id) => session!.isKnown(id));

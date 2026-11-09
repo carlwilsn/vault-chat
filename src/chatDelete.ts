@@ -1,4 +1,4 @@
-// Carl's Delete on chats in the chats list (one row, or his multi-select): the
+// Carl's Delete on chats in the chats list (one row at a time, from its right-click or long-press menu): the
 // same in the chat pane's list and the fullscreen sidebar (src/ChatsPanel.tsx).
 // On the box a delete is recoverable: a mark in each chat's log, its history
 // kept (server/engine/engine.ts deleteConversations; the agent's
