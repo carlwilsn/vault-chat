@@ -258,6 +258,11 @@ jobs:
       # build + bundle dependencies. Runs before checkout so git exists.
       - name: Install system build dependencies
         run: |
+          # archive.ubuntu.com goes unreachable from GitHub's runners at times
+          # (Nov 2026: every Linux build failed on it). Azure's mirror is the one
+          # GitHub's own images use.
+          sed -i 's#http://archive.ubuntu.com#http://azure.archive.ubuntu.com#g' /etc/apt/sources.list.d/*.sources /etc/apt/sources.list 2>/dev/null || true
+          echo 'Acquire::Retries "5";' > /etc/apt/apt.conf.d/80retries
           apt-get update
           apt-get install -y --no-install-recommends \
             ca-certificates curl wget file git xz-utils \
