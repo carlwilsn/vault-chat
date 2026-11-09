@@ -8,6 +8,7 @@
 // its content height so the frame fits it.
 
 import { liveScript, parseLiveManifest } from "./liveBridge";
+import { modeOf, pageThemeFor, pageThemeHead, type PageTheme } from "./pageTheme";
 
 /** Optional: the stylesheet a page links to get the app's real CSS (Tailwind build, theme variables, fonts). */
 export const APP_STYLES_HREF = "/app-styles.css";
@@ -38,13 +39,13 @@ function sizeScript(theme: string | null): string {
 }
 
 /** The page's HTML, made safe and fitted to the chat. `css`: the app's stylesheet (fonts inlined). */
-export function inlineHtmlDocument(html: string, opts: { css: string; theme?: string | null; /** A page inside the vault: with a vc-capabilities manifest it gets window.vc (src/liveBridge.ts). */ live?: boolean }): string {
+export function inlineHtmlDocument(html: string, opts: { css: string; theme?: string | null; /** The app's colours for the page (src/pageTheme.ts); without, the table for `theme`. */ pageTheme?: PageTheme; /** A page inside the vault: with a vc-capabilities manifest it gets window.vc (src/liveBridge.ts). */ live?: boolean }): string {
   const safeCss = opts.css.replace(/<\/style/gi, "<\\/style");
   // The app's root rule makes html/body full-height and overflow hidden; an inline page sizes to its content.
   const styles = `<style data-vc-app-styles>${safeCss}</style><style>html,body{height:auto;overflow:visible}</style>`;
   const body = html.replace(LINK_RE, () => styles);
   const head =
-    `<meta http-equiv="Content-Security-Policy" content="${HTML_CSP}">` + (opts.live && parseLiveManifest(html).length ? liveScript() : "") + sizeScript(opts.theme ?? null);
+    `<meta http-equiv="Content-Security-Policy" content="${HTML_CSP}">` + pageThemeHead(opts.pageTheme ?? pageThemeFor(modeOf(opts.theme === "graphite" ? "dark" : opts.theme))) + (opts.live && parseLiveManifest(html).length ? liveScript() : "") + sizeScript(opts.theme ?? null);
   // The CSP first in <head>, after any doctype (a tag before the doctype would put the page in quirks mode).
   const insertAfter = (m: RegExpExecArray, s: string) => body.slice(0, m.index + m[0].length) + s + body.slice(m.index + m[0].length);
   const headTag = /<head\b[^>]*>/i.exec(body);

@@ -9,6 +9,7 @@ import type * as W from "./world";
 import REAL_SVG from "./visual-real-model.svg?raw";
 // The sample mockup: the app's composer with its real classes, linking the app's stylesheet (src/inlineHtml.ts).
 import SAMPLE_HTML from "./inline-html-sample.html?raw";
+import THEME_HTML from "./page-theme.html?raw";
 import LIVE_HTML from "./live-chat-demo.html?raw";
 // A copy of the vault page .vault-chat/visuals/voice-lab.html (tool:voice-lab.*, mic): its calls reach the real lab service.
 import LAB_HTML from "./voice-lab.html?raw";
@@ -119,6 +120,70 @@ export const visualScenarios: Scenario[] = [
     },
     activeConversation: HTML_CONV,
     open: [{ chat: true }, { conversation: HTML_CONV }, { sleep: 1200 }],
+    surfaces: ["desktop"],
+  },
+  {
+    id: "page-theme",
+    title: "Page theme — a vault .html follows the app's theme live (--vc-* variables); the newest embed of a file is the live one",
+    group: "Chat",
+    notes: "theme-demo.html uses --vc-bg/--vc-fg/--vc-muted/--vc-border/--vc-accent. It is embedded twice: the older embed folds to a static row. Switch the theme in Settings and the page follows without a reload.",
+    build: (ctx: BuildCtx) => {
+      ctx.write(".vault-chat/visuals/theme-demo.html", THEME_HTML);
+      ctx.conversations([{
+        id: "c-page-theme", title: "Page theme", source: "manual", status: "idle", unread: false,
+        createdAt: ctx.now - 5 * MIN, lastActivityAt: ctx.now - MIN,
+        messages: [
+          { role: "user", content: "show me the theme demo" },
+          { role: "assistant", content: "First try:\n\n![Theme demo](.vault-chat/visuals/theme-demo.html)" },
+          { role: "user", content: "again" },
+          { role: "assistant", content: "Again:\n\n![Theme demo](.vault-chat/visuals/theme-demo.html)" },
+        ],
+      }]);
+    },
+    activeConversation: "c-page-theme",
+    open: [{ chat: true }, { conversation: "c-page-theme" }, { sleep: 1200 }],
+    surfaces: ["desktop"],
+  },
+  {
+    id: "page-live-edit",
+    title: "Page live edit — the inline copy of a page reloads when its file changes",
+    group: "Chat",
+    notes: "At 4 s the file is rewritten on disk (Version 2): the inline copy reloads by itself. theme-demo.html uses --vc-bg/--vc-fg/--vc-muted/--vc-border/--vc-accent. It is embedded twice: the older embed folds to a static row. Switch the theme in Settings and the page follows without a reload.",
+    build: (ctx: BuildCtx) => {
+      ctx.write(".vault-chat/visuals/theme-demo.html", THEME_HTML);
+      ctx.conversations([{
+        id: "c-page-edit", title: "Page theme", source: "manual", status: "idle", unread: false,
+        createdAt: ctx.now - 5 * MIN, lastActivityAt: ctx.now - MIN,
+        messages: [
+          { role: "user", content: "show me the theme demo" },
+          { role: "assistant", content: "First try:\n\n![Theme demo](.vault-chat/visuals/theme-demo.html)" },
+        ],
+      }]);
+    },
+    activeConversation: "c-page-edit",
+    open: [{ chat: true }, { conversation: "c-page-edit" }, { sleep: 4000 }, { run: async (api) => { const { invoke } = await import("@tauri-apps/api/core"); const { refreshOpenFiles } = await import("../../src/liveReload"); const rel = ".vault-chat/visuals/theme-demo.html"; const cur = await invoke<string>("read_text_file", { path: `${api.vault}/${rel}` }); await invoke("write_text_file", { path: `${api.vault}/${rel}`, contents: cur.replace("Version 1", "Version 2 (edited)").replace("<p class=\"muted\">", "<p>Edited on disk: the chat copy reloaded.</p><p class=\"muted\">") }); await refreshOpenFiles({ paths: [rel] }); } }, { sleep: 3000 }],
+    surfaces: ["desktop"],
+  },
+  {
+    id: "page-theme-viewer",
+    title: "Page theme in the viewer — a vault .html follows the app's theme live (--vc-* variables); the newest embed of a file is the live one",
+    group: "Chat",
+    notes: "theme-demo.html uses --vc-bg/--vc-fg/--vc-muted/--vc-border/--vc-accent. It is embedded twice: the older embed folds to a static row. Switch the theme in Settings and the page follows without a reload.",
+    build: (ctx: BuildCtx) => {
+      ctx.write(".vault-chat/visuals/theme-demo.html", THEME_HTML);
+      ctx.conversations([{
+        id: "c-page-theme", title: "Page theme", source: "manual", status: "idle", unread: false,
+        createdAt: ctx.now - 5 * MIN, lastActivityAt: ctx.now - MIN,
+        messages: [
+          { role: "user", content: "show me the theme demo" },
+          { role: "assistant", content: "First try:\n\n![Theme demo](.vault-chat/visuals/theme-demo.html)" },
+          { role: "user", content: "again" },
+          { role: "assistant", content: "Again:\n\n![Theme demo](.vault-chat/visuals/theme-demo.html)" },
+        ],
+      }]);
+    },
+    activeConversation: "c-page-theme",
+    open: [{ chat: true }, { file: ".vault-chat/visuals/theme-demo.html" }, { sleep: 1500 }],
     surfaces: ["desktop"],
   },
   {

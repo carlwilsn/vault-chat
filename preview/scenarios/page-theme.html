@@ -1,0 +1,10 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Theme demo</title>
+<style>
+  body { margin: 0; padding: 16px; font: 13px/1.5 var(--vc-font); background: var(--vc-bg); color: var(--vc-fg); }
+  .card { border: 1px solid var(--vc-border); border-radius: 10px; padding: 12px; background: var(--vc-surface); }
+  .muted { color: var(--vc-muted); } b { color: var(--vc-accent); }
+</style></head>
+<body><div class="card"><h3 id="t">Version 1</h3><p>This page uses the app's <b>--vc-*</b> variables.</p><p class="muted">Muted line · follows the theme live.</p></div>
+<script>addEventListener("vc-theme", function(e){ document.getElementById("t").textContent = "Version 1 · " + e.detail.mode; });</script>
+</body></html>

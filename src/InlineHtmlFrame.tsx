@@ -3,7 +3,7 @@
 // nothing from the network), sized to its content by its own reports, with an
 // "Open in viewer" control (the page opens in the file viewer like any file). The page's bytes come the way ChatImage's do (box
 // conversation: the box's file route; local: the vault on disk).
-import { memo, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { PanelRight } from "lucide-react";
 import { useStore } from "./store";
@@ -11,6 +11,9 @@ import { readChatImage } from "./chatImage";
 import { localPathFromUrl } from "./mdPipeline";
 import { boxLinkFor, fetchBoxFile } from "./boxChat";
 import { insideVault } from "./liveBridge";
+import { isNewestEmbed, newestEmbed, registerEmbed, subscribeEmbeds } from "./inlineEmbeds";
+import { changedRev, useChangedFiles } from "./liveReload";
+import { appPageTheme, PAGE_FRAME_ATTR } from "./pageTheme";
 import { HTML_DEFAULT_H, inlineHtmlDocument, inlineHtmlHeight } from "./inlineHtml";
 
 let appStyles: Promise<string> | null = null;
@@ -74,6 +77,7 @@ function Frame({ doc, title, live }: { doc: string; title: string; live?: string
       sandbox="allow-scripts"
       referrerPolicy="no-referrer"
       data-el="chat-html"
+      {...{ [PAGE_FRAME_ATTR]: "" }}
       {...(live ? { "data-vc-live": live } : {})}
       className="w-full block border-0 bg-background"
       style={{ height: h }}
@@ -102,7 +106,7 @@ function openInViewer(src: string, html: string, vault: string | null): void {
   else st.setCurrentFile(path, html);
 }
 
-export const InlineHtmlFrame = memo(function InlineHtmlFrame({ src, alt }: { src: string; alt?: string }) {
+function LiveInlineHtml({ src, alt }: { src: string; alt?: string }) {
   const vaultPath = useStore((s) => s.vaultPath);
   const files = useStore((s) => s.files);
   const convId = useStore((s) => s.activeConversationId);
@@ -112,10 +116,25 @@ export const InlineHtmlFrame = memo(function InlineHtmlFrame({ src, alt }: { src
   });
   const [state, setState] = useState<{ key: string; html: string | null; css: string } | null>(null);
   const key = JSON.stringify([src, vaultPath, convId]);
+  // The page changed under us (an edit saved in the viewer, the agent's write, a box sync): re-read it, once the
+  // writes settle. The previous page stays on screen meanwhile and the frame keeps its height, so it is one quiet reload.
+  const rev = useChangedFiles((s) => changedRev(s, viewerPath(src, vaultPath)));
+  // The viewer's own copy of this page (an unsaved or just-saved edit there), the freshest there is.
+  const shown = useStore((s) => {
+    const path = viewerPath(src, s.vaultPath);
+    const pane = s.panes.find((p) => samePath(p.file, path));
+    return pane ? pane.content : samePath(s.currentFile, path) ? s.currentContent : null;
+  });
+  useEffect(() => {
+    if (shown === null) return;
+    const t = setTimeout(() => setState((st) => (st && st.html !== shown ? { ...st, html: shown } : st)), 400);
+    return () => clearTimeout(t);
+  }, [shown]);
 
   useEffect(() => {
     let cancelled = false;
-    (async () => {
+    const wait = rev ? 300 : 0;
+    const timer = setTimeout(() => void (async () => {
       const cleaned = localPathFromUrl(src);
       const [page, css] = await Promise.all([
         readChatImage(cleaned, vaultPath, files, {
@@ -128,17 +147,19 @@ export const InlineHtmlFrame = memo(function InlineHtmlFrame({ src, alt }: { src
         appStylesText().catch(() => ""),
       ]);
       if (cancelled) return;
-      setState({ key, html: page ? new TextDecoder().decode(new Uint8Array(page.bytes)) : null, css });
-    })();
-    return () => { cancelled = true; };
+      const html = page ? new TextDecoder().decode(new Uint8Array(page.bytes)) : null;
+      // A failed re-read keeps the page that is showing; an identical one changes nothing.
+      setState((st) => (st && st.key === key && (html === null || st.html === html) ? st : { key, html, css }));
+    })(), wait);
+    return () => { cancelled = true; clearTimeout(timer); };
     // `files` only helps a local chat find a moved file; a new index is not a new page.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key]);
+  }, [key, rev]);
 
   // A page in the vault (a relative path, no ..) may be a live page (src/liveBridge.ts): it needs a manifest too.
   const pagePath = (() => { const p = localPathFromUrl(src); return insideVault(p, vaultPath) ? p : null; })();
   const live = state?.key === key ? state : null;
-  const doc = useMemo(() => (live?.html != null ? inlineHtmlDocument(live.html, { css: live.css, theme: themeNow(), live: pagePath !== null }) : null), [live, pagePath]);
+  const doc = useMemo(() => (live?.html != null ? inlineHtmlDocument(live.html, { css: live.css, theme: themeNow(), pageTheme: appPageTheme(), live: pagePath !== null }) : null), [live, pagePath]);
   const name = src.split(/[\\/]/).pop()?.split(/[?#]/)[0] ?? src;
   const title = alt || name;
 
@@ -167,6 +188,28 @@ export const InlineHtmlFrame = memo(function InlineHtmlFrame({ src, alt }: { src
         </button>
       </span>
       <Frame doc={doc} title={title} live={pagePath ?? undefined} />
+    </span>
+  );
+}
+
+/** One live copy of a file in the feed: the newest embed is live (follows edits and the theme); older embeds of the same
+ *  file are a static row that jumps to the live one. */
+export const InlineHtmlFrame = memo(function InlineHtmlFrame({ src, alt }: { src: string; alt?: string }) {
+  const vaultPath = useStore((s) => s.vaultPath);
+  const file = viewerPath(src, vaultPath);
+  const ref = useRef<HTMLSpanElement | null>(null);
+  useLayoutEffect(() => (ref.current ? registerEmbed(file, ref.current) : undefined), [file]);
+  const newest = useSyncExternalStore(subscribeEmbeds, () => isNewestEmbed(file, ref.current));
+  const name = src.split(/[\\/]/).pop()?.split(/[?#]/)[0] ?? src;
+  return (
+    <span ref={ref} className="block" data-el="chat-html-embed">
+      {newest ? (
+        <LiveInlineHtml src={src} alt={alt} />
+      ) : (
+        <button type="button" onClick={() => newestEmbed(file)?.scrollIntoView({ block: "center", behavior: "smooth" })} className="flex items-center gap-1.5 my-2 px-2 py-1 rounded-md border border-border/60 bg-muted/40 text-[11.5px] text-muted-foreground hover:text-foreground max-w-full" data-el="chat-html-older" title="A newer copy of this page is further down: that one is live">
+          <PanelRight className="h-3 w-3 shrink-0" /> <span className="truncate">{alt || name} · older version, go to the latest</span>
+        </button>
+      )}
     </span>
   );
 });
