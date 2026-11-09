@@ -396,6 +396,24 @@ export const ENGINE_TOOL_SPECS = [
   },
   {
     type: "function",
+    name: "DeleteConversation",
+    description:
+      "Delete Carl's chats by id (from ListConversations), only when he asks for them gone. Recoverable: each leaves every list but its whole history is kept, and RestoreConversation brings it back. Main, a project's thread and this chat itself can't be deleted. Returns what was deleted and what wasn't, with why.",
+    inputSchema: {
+      type: "object",
+      properties: { ids: { type: "array", items: { type: "string" }, description: "The chats' ids." } },
+      required: ["ids"],
+      additionalProperties: false,
+    },
+  },
+  {
+    type: "function",
+    name: "RestoreConversation",
+    description: "Bring back a chat Carl deleted, only when he asks for it back. Without id: lists the deleted chats (id, title, when). With id: it is back in his lists as it was.",
+    inputSchema: { type: "object", properties: { id: { type: "string" } }, additionalProperties: false },
+  },
+  {
+    type: "function",
     name: "TodoWrite",
     description:
       "Keep a short to-do list Carl sees in the chat while you work on a task with 3+ steps: lay out the plan at the start, then call again after each step with the updated statuses. Each item: content (imperative), status (pending | in_progress | completed), optional activeForm (\"Reading the file\") shown while in progress. At most one in progress.",
@@ -989,13 +1007,15 @@ export class Engine {
         }
       }
       case "delete": {
-        const id = String(b.convId ?? "");
-        if (!this.picture(id)) return { ok: false, error: `conversation ${id} not found` };
-        // Main and a project's thread are never deleted (Clear gives a fresh view; the history stays in pi's file).
-        if (threadKindOf({ id }) === "main" || threadKindOf({ id }) === "project") return { ok: false, error: "Main and a project's thread can't be deleted; Clear gives a fresh view" };
-        if (this.live.has(id)) await this.interrupt(id, true);
-        this.emit(id, { type: "meta", patch: { deleted: true } });
-        return { ok: true, convId: id };
+        // One chat (convId) or many (convIds: the app's multi-select).
+        const ids = Array.isArray(b.convIds) ? b.convIds.map(String) : [String(b.convId ?? "")];
+        const r = await this.deleteConversations(ids, String(b.client ?? "app"));
+        if (!Array.isArray(b.convIds)) return r.deleted.length ? { ok: true, convId: r.deleted[0] } : { ok: false, error: r.refused[0]?.why ?? "not deleted" };
+        return { ok: r.deleted.length > 0 || !ids.length, deleted: r.deleted, refused: r.refused };
+      }
+      case "restoreConversation": {
+        const r = this.restoreConversation(String(b.convId ?? ""));
+        return r.ok ? { ok: true, convId: r.id } : { ok: false, error: r.error };
       }
       default:
         return { error: `unknown intent ${String(b?.type).slice(0, 40)}` };
@@ -1423,6 +1443,60 @@ export class Engine {
   /** POST /api/v1/side/:id/stop. */
   sideStop(id: string): Promise<boolean> {
     return this.d.backend.side.stop(id);
+  }
+
+  /**
+   * Carl's Delete on chats (a row's Delete, his multi-select, or the agent's DeleteConversation): each is
+   * tombstoned in its log (meta.deleted), so it leaves every list on every surface while its records and its
+   * transcript stay on disk; restoreConversation clears the mark and it is back as it was. Nothing is ever
+   * removed from .vault-chat. Main and a project's thread are refused (Clear gives a fresh view); `except`
+   * is a chat that must not delete itself (the agent's own).
+   */
+  async deleteConversations(ids: string[], by: string, except?: string): Promise<{ deleted: string[]; refused: { id: string; why: string }[] }> {
+    const deleted: string[] = [];
+    const refused: { id: string; why: string }[] = [];
+    for (const id of [...new Set(ids.map((x) => x.trim()).filter(Boolean))]) {
+      const p = this.picture(id);
+      if (!p || p.meta.deleted) {
+        refused.push({ id, why: p ? "already deleted" : "no such chat" });
+        continue;
+      }
+      if (threadKindOf({ id }) === "main" || threadKindOf({ id }) === "project") {
+        refused.push({ id, why: "Main and a project's thread can't be deleted; Clear gives a fresh view" });
+        continue;
+      }
+      if (id === except) {
+        refused.push({ id, why: "this is the chat you are in" });
+        continue;
+      }
+      if (this.live.has(id)) await this.interrupt(id, true);
+      this.emit(id, { type: "meta", patch: { deleted: true, deletedAt: Date.now(), deletedBy: by } });
+      deleted.push(id);
+    }
+    if (deleted.length) this.log(`deleted ${deleted.length} chat(s) by ${by} (recoverable): ${deleted.join(", ")}`);
+    return { deleted, refused };
+  }
+
+  /** The chats Carl deleted, newest first: what RestoreConversation can bring back. */
+  deletedConversations(): { id: string; title: string; at: number }[] {
+    const out: { id: string; title: string; at: number }[] = [];
+    for (const id of logOf(this.d.vault).ids()) {
+      const p = this.picture(id);
+      if (p?.meta.deleted !== true || p.meta.deletedProject) continue;
+      out.push({ id, title: String(p.meta.title ?? "").trim() || "(untitled)", at: Number(p.meta.deletedAt) || 0 });
+    }
+    return out.sort((a, b) => b.at - a.at);
+  }
+
+  /** The inverse of deleteConversations: the mark cleared, the chat back in every list. */
+  restoreConversation(id: string): { ok: true; id: string } | { ok: false; error: string } {
+    const p = id ? this.picture(id) : null;
+    if (!p) return { ok: false, error: `no chat ${id}` };
+    if (p.meta.deleted !== true) return { ok: false, error: "it is not deleted" };
+    if (p.meta.deletedProject) return { ok: false, error: "it is a deleted project's thread: RestoreProject brings it back" };
+    this.emit(id, { type: "meta", patch: { deleted: null, deletedAt: null, deletedBy: null } });
+    this.log(`chat ${id} restored`);
+    return { ok: true, id };
   }
 
   /**
@@ -2645,6 +2719,26 @@ export class Engine {
           delete a.asked;
           const r = await show({ vault, device: interaction.device, emit: (ev) => this.d.broadcast?.(ev), sendBoard: (b) => sendEntry(vault, b, { conversation: convId, emit: (ev) => this.inboxEvent(ev) }), dev: (port) => this.devUrl(port) }, a);
           return { success: r.ok, contentItems: [{ type: "inputText", text: r.text }] };
+        }
+        case "DeleteConversation": {
+          const ids = Array.isArray(a.ids) ? a.ids.map(String) : typeof a.ids === "string" ? [a.ids] : [];
+          if (!ids.length) return text("DeleteConversation needs ids (from ListConversations).");
+          const r = await this.deleteConversations(ids, "agent", convId);
+          const lines = [
+            r.deleted.length ? `Deleted ${r.deleted.length} (recoverable with RestoreConversation): ${r.deleted.join(", ")}` : "Nothing deleted.",
+            ...r.refused.map((x) => `- ${x.id}: not deleted (${x.why})`),
+          ];
+          return { success: r.deleted.length > 0, contentItems: [{ type: "inputText", text: lines.join("\n") }] };
+        }
+        case "RestoreConversation": {
+          const want = typeof a.id === "string" ? a.id.trim() : "";
+          if (!want) {
+            const all = this.deletedConversations();
+            const when = (t: number) => (t ? new Date(t).toISOString().slice(0, 16).replace("T", " ") + " UTC" : "earlier");
+            return text(all.length ? `Deleted chats (newest first):\n${all.slice(0, 200).map((d) => `- ${d.title} (id ${d.id}, deleted ${when(d.at)})`).join("\n")}` : "No chat is deleted.");
+          }
+          const r = this.restoreConversation(want);
+          return { success: r.ok, contentItems: [{ type: "inputText", text: r.ok ? `Restored chat ${want}: it is back in Carl's lists.` : `Not restored: ${r.error}.` }] };
         }
         case "RestoreProject": {
           const want = typeof a.project === "string" ? a.project.trim() : "";
