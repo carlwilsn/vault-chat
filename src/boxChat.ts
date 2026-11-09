@@ -672,7 +672,7 @@ class BoxChatSession {
           queued: (view?.pending ?? []).map((x) => ({ id: x.id, text: x.text, kind: x.kind })),
           pendingAsk: ask ? { question: ask.question ?? "", options: ask.options ?? [], at: ask.at } : undefined,
           ...(p
-            ? { todos: view?.todos ?? undefined, subagents: (p.meta.subagents ?? []) as Conversation["subagents"], contextWindow: view?.window ?? prev?.contextWindow, threadId: p.meta.threadId }
+            ? { todos: view?.todos ?? undefined, subagents: (p.meta.subagents ?? []) as Conversation["subagents"], contextWindow: view?.window ?? prev?.contextWindow, threadId: p.meta.threadId, model: p.meta.model as Conversation["model"], effort: p.meta.effort as Conversation["effort"] }
             : {}),
         } as Conversation;
         if (prev && s.activeConversationId !== id && next.lastActivityAt > prev.lastActivityAt && messages.length > prev.messages.length) next.unread = true;

@@ -100,7 +100,7 @@ export const FALLBACK_MODELS: ModelChoice[] = [
 ];
 
 /** The aliases Claude Code resolves itself, which are what a box falls back to. */
-export const CLAUDE_MODEL_ALIASES = ["opus", "sonnet", "haiku"] as const;
+export const CLAUDE_MODEL_ALIASES = ["opus", "sonnet", "haiku", "fable"] as const;
 
 /** A Claude Code model: one of its aliases, or a pinned id like claude-opus-5. */
 export function isClaudeModel(m: string): boolean {
