@@ -399,7 +399,10 @@ class BoxChatSession {
     let backoff = 1000;
     while (this.live()) {
       try {
-        if (this.cursor === null) await this.resync();
+        // A cache gave the screen its first picture; the box's own list is read once before the feed is followed
+        // from the cache's cursor, so a chat the cache holds that the box deleted (or no longer lists) goes now,
+        // whatever the feed after that cursor says.
+        if (this.cursor === null || this.reconcile) await this.resync();
         if (!this.live()) return;
         const pollLink = this.link;
         const r = (await httpGet(pollLink, `/poll?after=${this.cursor}${this.epoch ? `&epoch=${encodeURIComponent(this.epoch)}` : ""}&client=laptop`, POLL_TIMEOUT_MS)) as PollAnswer & { epoch?: string };
@@ -444,6 +447,8 @@ class BoxChatSession {
   private deletedIds = new Set<string>();
   /** Chats this client knew only from its local cache, until the box's list has been read. */
   private cachedIds = new Set<string>();
+  /** The screen was filled from the cache: the box's list is still to be read (resync clears it). */
+  private reconcile = false;
 
   private async resync(): Promise<void> {
     const r = await httpGet(this.link, "/api/v2/conversations", 20_000);
@@ -457,6 +462,7 @@ class BoxChatSession {
     for (const id of this.cachedIds) if (!this.rows.has(id) && !this.outgoing.has(id) && !this.notices.has(id)) this.deletedIds.add(id);
     this.cachedIds.clear();
     for (const id of this.deletedIds) { this.pics.delete(id); this.rows.delete(id); }
+    this.reconcile = false;
     this.cursor = Number(r.seq) || 0;
     vlog("box.feed", { state: "resync", cursor: this.cursor, epoch: this.epoch, rows: this.rows.size });
     // Pictures from another log (or an older cursor) are not this one's: fetched again.
@@ -847,6 +853,7 @@ class BoxChatSession {
     this.cursor = c.cursor;
     this.rows = new Map(c.rows.filter((r) => !(r as Deletable).deleted).map((r) => [r.id, r]));
     this.cachedIds = new Set(this.rows.keys());
+    this.reconcile = this.cachedIds.size > 0;
     for (const p of c.pictures) if (this.rows.has(p.id)) this.pics.set(p.id, p);
     this.projectAll();
   }

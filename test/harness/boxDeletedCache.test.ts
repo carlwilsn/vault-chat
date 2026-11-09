@@ -75,3 +75,25 @@ test("a cached chat the box deleted while the app was closed is dropped on the n
   await waitFor("cache rewritten", () => !(bc.readBoxCache(key)?.rows ?? []).some((r) => r.id === "gone1"));
   assert.ok(!(bc.readBoxCache(key)?.pictures ?? []).some((p) => p.id === "gone1"));
 });
+
+test("a cached chat the box neither lists nor names (its tombstone is behind the cache's cursor) is dropped at start", async () => {
+  const key = `box:${box.url}`;
+  await waitFor("keep cached", () => (bc.readBoxCache(key)?.rows ?? []).some((r) => r.id === "keep1"));
+  bc.stopBoxChat();
+  const cache = bc.readBoxCache(key)!;
+  const keep = cache.rows.find((r) => r.id === "keep1")!;
+  // The cache holds a chat as live, and its cursor is already at the box's latest record: the feed will never
+  // deliver anything about that chat; only the box's list can say it is gone.
+  const latest = (await (await fetch(box.url + "/api/v2/conversations")).json()).seq;
+  const withGhost = { ...cache, cursor: latest, rows: [...cache.rows, { ...keep, id: "ghost1", title: "ghost1" }] };
+  localStorage.setItem("vault-chat:box-log:" + key, JSON.stringify(withGhost));
+  useStore.setState({ conversations: [], activeConversationId: null, messages: [] });
+  await S().loadConversations();
+  await waitFor("online", () => S().boxChat?.on === true && S().boxChat?.reachable === true && has("keep1"));
+  await waitFor("ghost gone", () => !has("ghost1"));
+  S().selectConversation("ghost1");
+  await new Promise((r) => setTimeout(r, 100));
+  assert.ok(!has("ghost1"), "a chat only the cache knew does not open");
+  assert.ok(has("keep1"));
+  assert.ok(has("main") || S().conversations.length > 0);
+});
