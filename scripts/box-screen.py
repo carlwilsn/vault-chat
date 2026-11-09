@@ -53,6 +53,8 @@ SETTINGS_FROM_RIGHT = 123
 TITLEBAR_Y = 13
 # How far under the "VAULT-CHAT FOLDER" heading its path box and Set button sit.
 FOLDER_ROW_BELOW_HEADING = 48
+# The chats panel's toggle, the icon just right of the "New chat" words.
+CHATS_TOGGLE_RIGHT_OF_NEW_CHAT = 40
 # The paste field is the row under the command chip in the sign-in card.
 TOKEN_FIELD_BELOW_COMMAND = 30
 # The chat panel's own toggle, further left along the same row of icons.
@@ -282,6 +284,24 @@ class Screen:
         return False
 
 
+def dismiss_update(screen: "Screen") -> bool:
+    """Put away the update offer if one is on screen, and say whether there was.
+
+    It is a toast in the bottom-right corner, over the chat pane — the release
+    the box is clicking through is the one it was given, not whatever shipped
+    since. One arrived mid-run (the app polls, and a release had just been
+    published) and covered "New chat": two checks failed on a control that was
+    there all along, behind it.
+    """
+    _, ws = screen.read("maybe-update")
+    later = screen.find(ws, "Later")
+    if not later:
+        return False
+    screen.click_at(round(later["x"]), round(later["y"]), "update-dismissed")
+    time.sleep(1)
+    return True
+
+
 def norm(s: str) -> str:
     return re.sub(r"[^a-z0-9]", "", s.lower())
 
@@ -501,10 +521,7 @@ def main() -> int:
 
         # 2. An update offer, if one is waiting: it sits over the corner of the
         #    screen, and this run is about the version it was given.
-        _, ws = screen.read("maybe-update")
-        later = screen.find(ws, "Later")
-        if later:
-            screen.click_at(round(later["x"]), round(later["y"]), "update-dismissed")
+        dismiss_update(screen)
 
         # 3. Settings, and the vault-chat folder — Carl's setup, in his order.
         #    The gear is an icon, so there is no word for OCR to find: it is the
@@ -582,14 +599,40 @@ def main() -> int:
             text, ws = screen.read("chat-waiting")
         check("the chat asks for the Claude sign-in when signed out", "sign in" in text)
         check("and the app is still usable around it (the vault is on screen)", "orchard" in text or "welcome" in text)
+        # An update can be offered at any moment, not only at startup: the app
+        # polls, and one arrived in the middle of a run and sat over the corner
+        # of the chat pane. Put it away before reading the pane, or a control it
+        # covers is reported missing.
+        if dismiss_update(screen):
+            text, ws = screen.read("chat-after-update")
         # Clearing a conversation is gone: a new chat is a new chat, and the old
-        # one stays in the list under its place (src/ChatsPanel.tsx). The control
-        # is there signed out, so this is the one part of that Carl can see here
-        # without a real sign-in — the list itself, and the model picker beside
-        # Send, need one.
+        # one stays in the list under its place (src/ChatsPanel.tsx).
         check("a new chat can be started, and nothing offers to clear one",
               "new chat" in text and "clear" not in text,
               "found the word clear" if "clear" in text else "")
+        # And the list those chats live in. Signed out the pane still draws its
+        # own chrome — the sign-in card only replaces the composer — so the
+        # panel's toggle, the icon just right of "New chat", opens the places:
+        # the vault's main on its own, then projects. (The model and effort
+        # pickers sit in the composer, so they are the one part of all this the
+        # box cannot see without a sign-in of its own.)
+        listed = ""
+        at = screen.find(ws, "New chat")
+        if at:
+            toggle = (round(at["x"]) + CHATS_TOGGLE_RIGHT_OF_NEW_CHAT, round(at["y"]))
+            screen.click_at(*toggle, "chats-panel")
+            time.sleep(2)
+            listed, _ = screen.read("chats-list")
+            # Shut again: the panel sits over the pane, and what comes next is
+            # the sign-in card underneath it. Escape, not the toggle — once the
+            # panel is open it covers the toggle, so clicking there again hits
+            # the panel and the card stays hidden.
+            screen.key("Escape")
+            time.sleep(1)
+            screen.shot("chats-panel-shut")
+        check("the chats are a list of places, with the vault's main in it",
+              "main" in listed and "project" in listed,
+              "the panel did not open" if not listed else f"{len(listed)} characters read")
 
         # 6. What the sign-in actually is now: Carl runs `claude setup-token` in
         #    a real terminal and pastes what it prints. The app drove that
