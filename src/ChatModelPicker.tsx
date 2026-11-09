@@ -40,8 +40,8 @@ function Menu({ label, title, children, el }: { label: string; title: string; ch
         data-el={el}
         title={title}
         className={cn(
-          "rounded-md px-1.5 py-0.5 -mx-0.5 text-[11px] text-muted-foreground hover:bg-foreground/10 hover:text-foreground transition-colors",
-          open && "bg-foreground/10 text-foreground",
+          "rounded-md px-1.5 py-0.5 text-[11px] text-muted-foreground hover:bg-accent/60 hover:text-foreground transition-colors",
+          open && "bg-accent/60 text-foreground",
         )}
       >
         {label}
@@ -77,7 +77,7 @@ export function ChatModelPicker({ convId, model, effort }: { convId: string | nu
     void setChatModel(vault ?? "", convId, patch).then((e) => setError(e));
 
   return (
-    <div data-el="chat-model-picker" className="flex items-center gap-1">
+    <div data-el="chat-model-picker" className="flex items-center gap-1.5">
       <Menu
         el="chat-model"
         label={current.name}
