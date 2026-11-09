@@ -44,8 +44,34 @@ export async function readClaudeHealth(force = false): Promise<unknown> {
   if (!link) return lastHealth?.body ?? null;
   const body = await boxGet(link, "/api/v1/health", 8_000).catch(() => null);
   // A failed read must not look like "signed out": keep the last answer.
-  if (body) lastHealth = { at: Date.now(), body };
+  if (body) {
+    lastHealth = { at: Date.now(), body };
+    healBoxSignIn(body);
+  }
   return lastHealth?.body ?? null;
+}
+
+let lastHeal = 0;
+
+/**
+ * This machine holds the sign-in and the box says it has none: the box lost it
+ * (once, a key push sent before the keychain had loaded wiped it), so it is
+ * given back. Carl signs in once; it stays on every server without his doing
+ * anything, and never needs a second paste. Not when the API has refused the
+ * token: pushing a refused token again fixes nothing.
+ */
+function healBoxSignIn(body: unknown): void {
+  const s = useStore.getState();
+  const key = s.serviceKeys.claudeCode;
+  if (!s.keysLoaded || typeof key !== "string" || !key.trim()) return;
+  const c = claudeOf(body);
+  if (!c || c.signedIn !== false || c.tokenOk === false) return;
+  if (Date.now() - lastHeal < 60_000) return;
+  lastHeal = Date.now();
+  void import("./boxKeys")
+    .then((m) => m.keysChanged())
+    .then(() => forgetClaudeHealth())
+    .catch(() => {});
 }
 
 /** Forget the cached health, so the next read asks the box again (after a sign-in or sign-out). */

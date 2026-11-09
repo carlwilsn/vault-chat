@@ -88,6 +88,26 @@ test("a box gets the sign-in, and wins over a server the app was running", async
   store.setState({ vaultPath: vault });
 });
 
+test("a box that lost the sign-in gets it back by itself", async () => {
+  // Carl: Settings said "Signed in to Claude" while every chat waited for a
+  // sign-in — the box had lost the token. The laptop holds it, so it pushes it
+  // again the moment the box says it has none.
+  const lost = makeTempVault("vc-one-signin-lost-");
+  boxConfig = { box: BOX };
+  fake.setHandler("box_get_json", (args: any) =>
+    String(args?.url ?? "").includes("/api/v1/health")
+      ? { status: 200, body: JSON.stringify({ ok: true, engine: { backend: "claude", claude: { state: "up", signedIn: false } } }) }
+      : { status: 200, body: "{}" },
+  );
+  store.setState({ vaultPath: lost, serviceKeys: { claudeCode: "sk-ant-oat01-held" } } as never);
+  pushedTo.length = 0;
+  const { readClaudeHealth } = await import("../../src/claudeAuthLive.ts");
+  await readClaudeHealth(true);
+  for (let i = 0; i < 50 && !pushedTo.length; i++) await new Promise((r) => setTimeout(r, 10));
+  assert.deepEqual(pushedTo, [`${BOX}/api/v1/keys`], "the sign-in went back to the box");
+  store.setState({ vaultPath: vault, serviceKeys: {} } as never);
+});
+
 test("nothing is pushed for a vault the app is not holding", async () => {
   boxConfig = null;
   pushedTo.length = 0;
