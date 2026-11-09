@@ -582,6 +582,14 @@ def main() -> int:
             text, ws = screen.read("chat-waiting")
         check("the chat asks for the Claude sign-in when signed out", "sign in" in text)
         check("and the app is still usable around it (the vault is on screen)", "orchard" in text or "welcome" in text)
+        # Clearing a conversation is gone: a new chat is a new chat, and the old
+        # one stays in the list under its place (src/ChatsPanel.tsx). The control
+        # is there signed out, so this is the one part of that Carl can see here
+        # without a real sign-in — the list itself, and the model picker beside
+        # Send, need one.
+        check("a new chat can be started, and nothing offers to clear one",
+              "new chat" in text and "clear" not in text,
+              "found the word clear" if "clear" in text else "")
 
         # 6. What the sign-in actually is now: Carl runs `claude setup-token` in
         #    a real terminal and pastes what it prints. The app drove that
