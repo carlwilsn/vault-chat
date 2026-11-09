@@ -49,6 +49,11 @@ const subscribe = (f: () => void) => {
   };
 };
 
+/** Re-render when any place is opened or shut (a list that reads placeOpen for several). */
+export function usePlaceOpenVersion(): unknown {
+  return useSyncExternalStore(subscribe, read, read);
+}
+
 /** [Carl's choice or null, set it] for one place in the current vault. */
 export function usePlaceOpen(place: string): [boolean | null, (open: boolean) => void] {
   const vault = useStore((s) => s.vaultPath);

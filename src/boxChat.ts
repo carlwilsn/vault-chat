@@ -1224,6 +1224,16 @@ export async function boxDelete(convId: string): Promise<boolean> {
   return r.ok;
 }
 
+/** Delete several chats on the box at once (Carl's multi-select): recoverable, a mark in each one's log. */
+export async function boxDeleteMany(convIds: string[]): Promise<{ ok: boolean; error?: string; localOnly: string[] }> {
+  if (!boxChatOn() || !session) return { ok: false, error: "the box isn't connected", localOnly: [] };
+  const known = convIds.filter((id) => session!.isKnown(id));
+  const localOnly = convIds.filter((id) => !known.includes(id));
+  if (!known.length) return { ok: true, localOnly };
+  const r = await intent(session, { type: "delete", convIds: known });
+  return r.ok ? { ok: true, localOnly } : { ok: false, error: r.error, localOnly };
+}
+
 /** Steer or stop one running subagent of a box conversation. Returns an error
  *  line, or null on success (also null when this isn't box mode: nothing to do). */
 export async function boxSubagent(convId: string, sid: string, op: "steer" | "stop", text?: string): Promise<string | null> {

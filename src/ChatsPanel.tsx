@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { MessageSquare, Plus, X as XIcon, Folder, PanelLeftClose, FileText, Home, MoreHorizontal, ChevronRight } from "lucide-react";
+import { MessageSquare, Plus, X as XIcon, Folder, PanelLeftClose, FileText, Home, MoreHorizontal, ChevronRight, Trash2, Check, ListChecks } from "lucide-react";
 import { useStore } from "./store";
 import { useProjects } from "./ProjectChip";
 import { createProjectThread, deleteProject, newChatInProject, openProjectNotes, openThread, projectName, renameProject } from "./projects";
-import { panelModel, type PanelEntry } from "./threads";
+import { panelModel, type PanelChat, type PanelEntry } from "./threads";
+import { canDeleteChat, deleteChats } from "./chatDelete";
 import { cn } from "./lib/utils";
 import { NewProjectForm } from "./NewProjectForm";
-import { usePlaceOpen } from "./placeOpen";
+import { placeOpen, usePlaceOpen, usePlaceOpenVersion } from "./placeOpen";
 
 type Props = {
   open: boolean;
@@ -131,6 +132,49 @@ function ThreadsList({
   );
   const [naming, setNaming] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  // Multi-select (Carl clears out old chats in bulk): a click picks a row; the bar at the bottom deletes them.
+  const [picking, setPicking] = useState(false);
+  const [picked, setPicked] = useState<Set<string>>(() => new Set());
+  const [bulkConfirm, setBulkConfirm] = useState(false);
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const stopPicking = () => {
+    setPicking(false);
+    setPicked(new Set());
+    setBulkConfirm(false);
+  };
+  const select: ChatSelect = {
+    on: picking,
+    picked,
+    toggle: (id) =>
+      setPicked((p) => {
+        const n = new Set(p);
+        if (n.has(id)) n.delete(id);
+        else n.add(id);
+        return n;
+      }),
+    start: (id) => {
+      setPicking(true);
+      setPicked(new Set([id]));
+    },
+    deleteOne: (id) => deleteChats([id]),
+  };
+  // "Select all": every chat that can go in the places that are open on screen (a shut place's chats are
+  // never picked unseen).
+  const vault = useStore((s) => s.vaultPath);
+  usePlaceOpenVersion();
+  const allDeletable = entries
+    .flatMap((e) => (e.type === "new-project" || !(placeOpen(vault, e.id) ?? e.active) ? [] : e.chats.map((c) => c.id)))
+    .filter(canDeleteChat);
+  const deletePicked = async () => {
+    setBulkBusy(true);
+    const why = await deleteChats([...picked]);
+    setBulkBusy(false);
+    if (why) setErr(`Not deleted: ${why}`);
+    else {
+      setErr(null);
+      stopPicking();
+    }
+  };
 
   const focusChat = () => {
     onPicked?.();
@@ -163,6 +207,16 @@ function ThreadsList({
           <span className="text-[13px] font-semibold">Chats</span>
         </div>
         <div className="flex items-center gap-1 relative">
+          <button
+            onClick={() => (picking ? stopPicking() : setPicking(true))}
+            data-el="chats-select"
+            aria-pressed={picking}
+            className={cn("h-7 px-1.5 flex items-center gap-1 rounded text-[11.5px] hover:bg-accent/60", picking ? "text-foreground bg-accent/60" : "text-muted-foreground hover:text-foreground")}
+            title={picking ? "Done selecting" : "Select chats to delete"}
+          >
+            <ListChecks className="h-3.5 w-3.5" />
+            {picking && <span>Done</span>}
+          </button>
           {trailing}
         </div>
       </div>
@@ -173,6 +227,7 @@ function ThreadsList({
           <ThreadRow
             entry={main}
             name="Main"
+            select={select}
             onOpenChat={(id, title) => open(id, title)}
             onNewChat={() => {
               useStore.getState().newConversation();
@@ -204,6 +259,7 @@ function ThreadsList({
               key={e.id}
               entry={e}
               name={projectName(e.slug, projects) || e.title}
+              select={select}
               onOpenChat={(id, title) => open(id, title)}
               onNewChat={() => {
                 newChatInProject(e.slug);
@@ -223,6 +279,46 @@ function ThreadsList({
         )}
         {err && <div className="px-4 py-1 text-[11px] text-destructive">{err}</div>}
       </div>
+      {picking && (
+        <div data-el="chats-select-bar" className="shrink-0 border-t border-border/60 px-3 py-2 text-[12px] bg-card">
+          {bulkConfirm ? (
+            <div data-el="chats-bulk-confirm">
+              <div className="text-foreground/90 leading-snug">
+                Delete {picked.size} chat{picked.size === 1 ? "" : "s"}? The agent can bring them back if you ask.
+              </div>
+              <div className="mt-2 flex justify-end gap-1">
+                <button data-el="chats-bulk-cancel" disabled={bulkBusy} onClick={() => setBulkConfirm(false)} className="h-6 px-2.5 rounded text-[11.5px] text-muted-foreground hover:bg-accent hover:text-foreground">
+                  Cancel
+                </button>
+                <button data-el="chats-bulk-yes" disabled={bulkBusy} autoFocus onClick={() => void deletePicked()} className="h-6 px-2.5 rounded text-[11.5px] text-destructive hover:bg-destructive/10 disabled:opacity-60">
+                  {bulkBusy ? "Deleting…" : `Delete ${picked.size}`}
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="flex items-center gap-1">
+              <span className="text-muted-foreground flex-1" data-el="chats-picked-count">
+                {picked.size} selected
+              </span>
+              <button
+                data-el="chats-select-all"
+                onClick={() => setPicked(picked.size === allDeletable.length ? new Set() : new Set(allDeletable))}
+                className="h-6 px-2 rounded text-[11.5px] text-muted-foreground hover:bg-accent hover:text-foreground"
+              >
+                {picked.size === allDeletable.length && picked.size > 0 ? "Select none" : "Select all"}
+              </button>
+              <button
+                data-el="chats-bulk-delete"
+                disabled={!picked.size}
+                onClick={() => setBulkConfirm(true)}
+                className="h-6 px-2 rounded text-[11.5px] text-destructive hover:bg-destructive/10 disabled:opacity-40 disabled:hover:bg-transparent"
+              >
+                Delete
+              </button>
+            </div>
+          )}
+        </div>
+      )}
     </>
   );
 }
@@ -244,6 +340,7 @@ export function ThreadRow({
   onNotes,
   onRename,
   onDelete,
+  select,
 }: {
   entry: Extract<PanelEntry, { type: "main" | "project" }>;
   name: string;
@@ -255,6 +352,8 @@ export function ThreadRow({
   onRename?: (name: string) => Promise<void>;
   /** `folder`: Carl's second choice — the folder goes too. */
   onDelete?: (folder: boolean) => Promise<void>;
+  /** Delete and multi-select on the chats (src/chatDelete.ts); none: the rows are plain. */
+  select?: ChatSelect;
 }) {
   const { active, running, unread } = entry;
   const isMain = entry.type === "main";
@@ -423,26 +522,7 @@ export function ThreadRow({
     {shown && (
       <div data-el="place-chat-list" data-place={entry.id}>
         {chats.map((c) => (
-          <button
-            key={c.id}
-            data-el="place-chat"
-            data-chat={c.id}
-            onClick={() => onOpenChat?.(c.id, c.title)}
-            className={cn(
-              "relative w-full text-left pl-11 pr-7 py-1 flex items-center gap-2 text-[12px] min-w-0",
-              c.active ? "bg-accent text-foreground font-medium" : "hover:bg-accent/40 text-foreground/75",
-            )}
-          >
-            <span className="truncate flex-1">{c.title}</span>
-            {c.running ? (
-              <span className="absolute right-4 top-1/2 -translate-y-1/2 inline-flex h-1.5 w-1.5" title="Working…" role="img" aria-label="Working…">
-                <span className="absolute inset-0 rounded-full bg-foreground opacity-60 animate-ping" />
-                <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-foreground" />
-              </span>
-            ) : c.unread ? (
-              <span className="absolute right-4 top-1/2 -translate-y-1/2 h-1.5 w-1.5 rounded-full bg-primary" title="Done — unseen" role="img" aria-label="Done — unseen" />
-            ) : null}
-          </button>
+          <ChatItem key={c.id} chat={c} onOpen={() => onOpenChat?.(c.id, c.title)} select={select} />
         ))}
         {chats.length === 0 && <div className="pl-11 pr-4 py-1 text-[11.5px] text-muted-foreground/60">No chats yet</div>}
       </div>
@@ -460,6 +540,159 @@ export function ThreadRow({
         }}
       />
     )}
+    </>
+  );
+}
+
+/** What the chats list shares with each chat row for Delete and multi-select. */
+export type ChatSelect = {
+  /** Multi-select is on: a click picks the row instead of opening it. */
+  on: boolean;
+  picked: ReadonlySet<string>;
+  toggle: (id: string) => void;
+  /** Turn multi-select on with this chat picked (a row's menu: Select). */
+  start: (id: string) => void;
+  /** Delete one chat (after its confirm). Null when done, else why not. */
+  deleteOne: (id: string) => Promise<string | null>;
+};
+
+/**
+ * One chat in a place's list: opens it on click. On hover a trash button (and on right-click a small menu:
+ * Delete…, Select) asks once, right under the row, before it goes. In multi-select a click picks the row.
+ * Main and a project's own thread have no Delete (src/chatDelete.ts canDeleteChat).
+ */
+function ChatItem({ chat: c, onOpen, select }: { chat: PanelChat; onOpen: () => void; select?: ChatSelect }) {
+  const [confirm, setConfirm] = useState(false);
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const deletable = !!select && canDeleteChat(c.id);
+  const picking = !!select?.on;
+  const picked = !!select?.picked.has(c.id);
+  useEffect(() => {
+    if (!menu) return;
+    const away = (ev: MouseEvent) => !menuRef.current?.contains(ev.target as Node) && setMenu(null);
+    const esc = (ev: KeyboardEvent) => ev.key === "Escape" && setMenu(null);
+    document.addEventListener("mousedown", away);
+    document.addEventListener("keydown", esc);
+    return () => {
+      document.removeEventListener("mousedown", away);
+      document.removeEventListener("keydown", esc);
+    };
+  }, [menu]);
+  const yes = async () => {
+    if (!select) return;
+    setBusy(true);
+    const why = await select.deleteOne(c.id);
+    setBusy(false);
+    setErr(why);
+    if (!why) setConfirm(false);
+  };
+  return (
+    <>
+      <div
+        className="relative group/chat"
+        onContextMenu={
+          deletable && !picking
+            ? (ev) => {
+                ev.preventDefault();
+                setMenu({ x: ev.nativeEvent.offsetX, y: ev.nativeEvent.offsetY });
+              }
+            : undefined
+        }
+      >
+        <button
+          data-el="place-chat"
+          data-chat={c.id}
+          aria-pressed={picking && deletable ? picked : undefined}
+          onClick={() => (picking ? deletable && select!.toggle(c.id) : onOpen())}
+          className={cn(
+            "relative w-full text-left pl-11 pr-7 py-1 flex items-center gap-2 text-[12px] min-w-0",
+            picking && picked ? "bg-primary/15 text-foreground" : c.active ? "bg-accent text-foreground font-medium" : "hover:bg-accent/40 text-foreground/75",
+            picking && !deletable && "opacity-50",
+          )}
+        >
+          {picking && (
+            <span
+              data-el="chat-pick"
+              className={cn(
+                "absolute left-5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 rounded-[3px] border flex items-center justify-center",
+                picked ? "bg-primary border-primary text-primary-foreground" : "border-muted-foreground/50",
+                !deletable && "invisible",
+              )}
+            >
+              {picked && <Check className="h-2.5 w-2.5" />}
+            </span>
+          )}
+          <span className="truncate flex-1">{c.title}</span>
+          {c.running ? (
+            <span className={cn("absolute right-4 top-1/2 -translate-y-1/2 inline-flex h-1.5 w-1.5", deletable && !picking && "group-hover/chat:opacity-0")} title="Working…" role="img" aria-label="Working…">
+              <span className="absolute inset-0 rounded-full bg-foreground opacity-60 animate-ping" />
+              <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-foreground" />
+            </span>
+          ) : c.unread ? (
+            <span className={cn("absolute right-4 top-1/2 -translate-y-1/2 h-1.5 w-1.5 rounded-full bg-primary", deletable && !picking && "group-hover/chat:opacity-0")} title="Done — unseen" role="img" aria-label="Done — unseen" />
+          ) : null}
+        </button>
+        {deletable && !picking && (
+          <button
+            data-el="chat-delete"
+            data-chat={c.id}
+            onClick={() => setConfirm(true)}
+            title="Delete chat"
+            aria-label={`Delete ${c.title}`}
+            className="absolute right-1.5 top-1/2 -translate-y-1/2 h-5 w-5 flex items-center justify-center rounded text-muted-foreground hover:text-destructive hover:bg-accent/60 opacity-0 group-hover/chat:opacity-100 focus:opacity-100 transition-opacity"
+          >
+            <Trash2 className="h-3 w-3" />
+          </button>
+        )}
+        {menu && (
+          <div
+            ref={menuRef}
+            data-el="chat-menu"
+            style={{ left: Math.max(24, menu.x), top: menu.y + 4 }}
+            className="absolute z-30 min-w-[120px] py-1 rounded-md border border-border bg-popover shadow-md text-[12.5px]"
+          >
+            <button
+              data-el="chat-menu-delete"
+              className="w-full text-left px-3 py-1.5 text-destructive hover:bg-destructive/10"
+              onClick={() => {
+                setMenu(null);
+                setConfirm(true);
+              }}
+            >
+              Delete…
+            </button>
+            <button
+              data-el="chat-menu-select"
+              className="w-full text-left px-3 py-1.5 hover:bg-accent"
+              onClick={() => {
+                setMenu(null);
+                select!.start(c.id);
+              }}
+            >
+              Select
+            </button>
+          </div>
+        )}
+      </div>
+      {confirm && (
+        <div data-el="chat-delete-confirm" data-chat={c.id} className="ml-9 mr-3 my-1 px-3 py-2 rounded-md border border-border bg-muted/40 text-[12px]">
+          <div className="text-foreground/90 leading-snug">
+            Delete <span className="font-medium">{c.title}</span>? The agent can bring it back if you ask.
+          </div>
+          {err && <div className="mt-1 text-destructive text-[11.5px]">Not deleted: {err}</div>}
+          <div className="mt-2 flex justify-end gap-1">
+            <button data-el="chat-delete-cancel" disabled={busy} onClick={() => setConfirm(false)} className="h-6 px-2.5 rounded text-[11.5px] text-muted-foreground hover:bg-accent hover:text-foreground">
+              Cancel
+            </button>
+            <button data-el="chat-delete-yes" disabled={busy} autoFocus onClick={() => void yes()} className="h-6 px-2.5 rounded text-[11.5px] text-destructive hover:bg-destructive/10 disabled:opacity-60">
+              {busy ? "Deleting…" : "Delete"}
+            </button>
+          </div>
+        </div>
+      )}
     </>
   );
 }

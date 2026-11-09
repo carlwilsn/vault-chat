@@ -431,9 +431,13 @@ export class MemoryBox {
           if (!l.hidden) this.note(conv, `${b.clientId}:${i}`, { kind: "line", role: l.role === "assistant" ? "assistant" : "user", text: l.text });
         });
         return { ok: true, convId: conv };
-      case "delete":
-        this.meta(conv, { deleted: true });
-        return { ok: true };
+      case "delete": {
+        // Engine.deleteConversations: one (convId) or many (convIds); Main and a project's thread refused.
+        const ids: string[] = Array.isArray(b.convIds) ? b.convIds.map(String) : [conv];
+        const deleted = ids.filter((id) => id !== "main" && !id.startsWith("project-") && this.picture(id) && !this.picture(id)!.meta.deleted);
+        for (const id of deleted) this.meta(id, { deleted: true });
+        return Array.isArray(b.convIds) ? { ok: deleted.length > 0, deleted } : deleted.length ? { ok: true } : { ok: false, error: `not deleted: ${conv}` };
+      }
       case "deleteProject": {
         // Engine.deleteProject: the thread gone (every surface on it lands on Main), the clients told; Main can't be.
         const id = `project-${String(b.slug ?? "")}`;
