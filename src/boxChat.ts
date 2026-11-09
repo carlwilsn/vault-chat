@@ -1,5 +1,6 @@
 import { encodeBoxCache, type CacheFile } from "./boxCache";
 import { saveBeforeSend } from "./saveBeforeSend";
+import { INTENT_BACKOFF_MS, ONE_RETRY_MS, withRetry } from "./boxRetry";
 // Box-mode chat. When a vault's `.vault-chat/sync.json` names a box, every
 // agent turn runs on the box and the box's event log is the conversation
 // (src/convlog/protocol.ts). This client writes nothing: it sends intents
@@ -180,10 +181,11 @@ export async function fetchBoxFile(link: Link, rel: string, convId?: string): Pr
   return out;
 }
 
-async function httpPost(link: Link, path: string, payload: Record<string, unknown>): Promise<{ ok: boolean; error?: string; data?: Record<string, unknown>; network?: boolean }> {
+async function httpPost(link: Link, path: string, payload: Record<string, unknown>, retry: readonly number[] = ONE_RETRY_MS): Promise<{ ok: boolean; error?: string; data?: Record<string, unknown>; network?: boolean }> {
   let r: HttpResult;
   try {
-    r = await invoke<HttpResult>("box_post_json", { url: `${link.url}${vaultPath(link, path)}`, body: JSON.stringify(payload), token: link.token });
+    const body = JSON.stringify(payload);
+    r = await withRetry(() => invoke<HttpResult>("box_post_json", { url: `${link.url}${vaultPath(link, path)}`, body, token: link.token }), retry);
   } catch (e) {
     return { ok: false, network: true, error: String((e as Error)?.message ?? e) };
   }
@@ -1002,7 +1004,8 @@ export async function boxImageAttachments(atts: ChatAttachment[] | undefined, va
 /** One intent to the box (POST /api/v2/intent), in the app log under the ids the box logs it with. */
 async function intent(sess: BoxChatSession, body: Record<string, unknown>, link: Link = sess.link) {
   const t0 = Date.now();
-  const r = await httpPost(link, "/api/v2/intent", { ...body, client: "laptop" });
+  // `rid` keys this request on the box: a retry after a dropped connection never applies it twice.
+  const r = await httpPost(link, "/api/v2/intent", { ...body, client: "laptop", rid: newClientId() }, INTENT_BACKOFF_MS);
   const d = r.data ?? {};
   vlog("box.intent", {
     type: body.type,

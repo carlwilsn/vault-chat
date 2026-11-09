@@ -1,5 +1,6 @@
 import { globalNotes, appendGlobalNote, writeGlobalNotes, noteSourceOwner } from "./notesStorage";
 import { noteTool } from "./notesTools";
+import { dedupeIntent } from "./intentDedupe";
 // The box's HTTP surface: the phone routes ported from voice_server.rs (same
 // paths, methods, JSON shapes), git smart HTTP, and /api/v1/*. Mutations are
 // relayed in-process to phoneApp's `phone:*` handlers (bus.relay), exactly
@@ -718,7 +719,9 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
     if (!hooks.engine) return json(res, 503, { error: "engine not running" });
     const b = await jsonBody(req);
     const t0 = Date.now();
-    const out = await hooks.engine.intent(scope, b, open.path).catch((e) => ({ error: String((e as Error)?.message ?? e) }));
+    // `rid`: the client's retry key. A retry after a dropped connection shares the first attempt's result (in flight or done).
+    const run = () => hooks.engine!.intent(scope, b, open.path).catch((e) => ({ error: String((e as Error)?.message ?? e) }));
+    const out = await dedupeIntent(`${scope.name}:${typeof b.rid === "string" ? b.rid.slice(0, 80) : ""}`, run);
     logIntent(cfg.stateDir, scope.name, req, b, out, Date.now() - t0);
     return json(res, (out as any).error ? 409 : 200, out);
   }
