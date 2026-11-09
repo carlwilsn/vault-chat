@@ -442,6 +442,11 @@ export async function startEngine(b: EngineBoot): Promise<EngineHandle> {
       rememberModel: (m) => void setStored("vault_chat_engine_model", m),
       rememberEffort: (e) => void setStored("vault_chat_engine_effort", e),
       broadcast: (ev) => signal(v.path, ev),
+      // A chat lives in the log of the vault that holds it: the agent's Delete/Restore reach that vault's engine.
+      engineAt: async (path) => {
+        const ref = vaults().find((x) => x.path === path);
+        return ref ? open(ref) : null;
+      },
       onTurnEnded: () => b.onTurnEnded?.(v.name),
       visionModel,
       notify: engineNotify(b, v.main ? undefined : v),

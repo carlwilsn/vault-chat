@@ -93,6 +93,8 @@ export type EngineDeps = {
   notify: (n: EngineNotice) => Promise<string | null>;
   /** One-line log. */
   log?: (s: string) => void;
+  /** The engine of the vault at this path (the owner of a chat this vault's log does not hold). */
+  engineAt?: (path: string) => Promise<Engine | null>;
   /** A vault-level signal on /poll (the inbox, notifications). */
   broadcast?: (ev: Record<string, unknown>) => void;
   /** Model for a turn that carries images when the default can't see. */
@@ -1507,6 +1509,33 @@ export class Engine {
     return { deleted, refused };
   }
 
+  /** The engine whose log holds chat `id` (this one when it is ours or nobody's). */
+  private async ownerOf(id: string): Promise<Engine> {
+    const at = ownerVault(id, this.d.vault);
+    if (!at || at === this.d.vault || !this.d.engineAt) return this;
+    return (await this.d.engineAt(at)) ?? this;
+  }
+
+  /** The agent's delete: each id goes to the engine of the vault that holds it. */
+  async deleteAcrossVaults(ids: string[], except?: string): Promise<{ deleted: string[]; refused: { id: string; why: string }[] }> {
+    const groups = new Map<Engine, string[]>();
+    for (const id of new Set(ids.map((x) => x.trim()).filter(Boolean))) {
+      const e = await this.ownerOf(id);
+      groups.set(e, [...(groups.get(e) ?? []), id]);
+    }
+    const out = { deleted: [] as string[], refused: [] as { id: string; why: string }[] };
+    for (const [e, g] of groups) {
+      const r = await e.deleteConversations(g, "agent", except);
+      out.deleted.push(...r.deleted);
+      out.refused.push(...r.refused);
+    }
+    return out;
+  }
+
+  async restoreAcrossVaults(id: string): Promise<{ ok: true; id: string } | { ok: false; error: string }> {
+    return (await this.ownerOf(id)).restoreConversation(id);
+  }
+
   /** The chats Carl deleted, newest first: what RestoreConversation can bring back. */
   deletedConversations(): { id: string; title: string; at: number }[] {
     const out: { id: string; title: string; at: number }[] = [];
@@ -2806,7 +2835,7 @@ export class Engine {
         case "DeleteConversation": {
           const ids = Array.isArray(a.ids) ? a.ids.map(String) : typeof a.ids === "string" ? [a.ids] : [];
           if (!ids.length) return text("DeleteConversation needs ids (from ListConversations).");
-          const r = await this.deleteConversations(ids, "agent", convId);
+          const r = await this.deleteAcrossVaults(ids, convId);
           const lines = [
             r.deleted.length ? `Deleted ${r.deleted.length} (recoverable with RestoreConversation): ${r.deleted.join(", ")}` : "Nothing deleted.",
             ...r.refused.map((x) => `- ${x.id}: not deleted (${x.why})`),
@@ -2820,7 +2849,7 @@ export class Engine {
             const when = (t: number) => (t ? new Date(t).toISOString().slice(0, 16).replace("T", " ") + " UTC" : "earlier");
             return text(all.length ? `Deleted chats (newest first):\n${all.slice(0, 200).map((d) => `- ${d.title} (id ${d.id}, deleted ${when(d.at)})`).join("\n")}` : "No chat is deleted.");
           }
-          const r = this.restoreConversation(want);
+          const r = await this.restoreAcrossVaults(want);
           return { success: r.ok, contentItems: [{ type: "inputText", text: r.ok ? `Restored chat ${want}: it is back in Carl's lists.` : `Not restored: ${r.error}.` }] };
         }
         case "RestoreProject": {
