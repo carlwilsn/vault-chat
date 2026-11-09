@@ -235,6 +235,24 @@ export const MCP_SERVER = "vault_chat";
 const FILE_TOOLS_DEFAULT = ["read", "bash", "edit", "write"];
 export const isClaudeThread = (threadId: string): boolean => threadId.startsWith(CLAUDE_THREAD_PREFIX);
 
+const IMAGE_MIME: Record<string, string> = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp" };
+
+/**
+ * The engine hands a turn its images as file paths (the copies saved under .vault-chat/captures/); the
+ * Claude API wants base64 blocks. Paths are read here into data: URLs; data: URLs pass through. An
+ * unreadable or non-image file is skipped, never sent as junk (and never silently the whole message).
+ */
+export function imageUrls(images: string[] | undefined): string[] {
+  const out: string[] = [];
+  for (const im of images ?? []) {
+    if (im.startsWith("data:")) { out.push(im); continue; }
+    const mime = IMAGE_MIME[im.split(".").pop()?.toLowerCase() ?? ""];
+    if (!mime) continue;
+    try { out.push(`data:${mime};base64,${readFileSync(im).toString("base64")}`); } catch { /* gone: skipped */ }
+  }
+  return out;
+}
+
 export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
   readonly name = "claude";
 
@@ -526,7 +544,8 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
     }
     const turnId = o.turnId ?? randomUUID();
     live.turnId = turnId;
-    this.push(live, { text: promptOf(o.texts, o.context, you), images: o.images }, { text: o.texts.join("\n\n"), request: o.request, images: o.images });
+    const images = imageUrls(o.images);
+    this.push(live, { text: promptOf(o.texts, o.context, you), images }, { text: o.texts.join("\n\n"), request: o.request, images });
     this.ev({ kind: "turnStarted", threadId, turnId });
     return { turnId };
   }
@@ -536,7 +555,8 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
     const live = await this.open(threadId);
     if (!t || !live) throw new ThreadUnknownError(`no Claude Code thread ${threadId}`);
     // No priority: Claude Code folds it into the running turn after the current tool result.
-    this.push(live, { text: promptOf(o.texts, o.context), images: o.images }, { text: o.texts.join("\n\n"), request: o.request, images: o.images });
+    const images = imageUrls(o.images);
+    this.push(live, { text: promptOf(o.texts, o.context), images }, { text: o.texts.join("\n\n"), request: o.request, images });
   }
 
   async followUp(threadId: string, o: { texts: string[]; context?: string; request?: UserRequest; images?: string[] }): Promise<void> {
@@ -544,7 +564,8 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
     const live = await this.open(threadId);
     if (!t || !live) throw new ThreadUnknownError(`no Claude Code thread ${threadId}`);
     // Its own next turn.
-    this.push(live, { text: promptOf(o.texts, o.context), images: o.images ?? [], priority: "later" }, { text: o.texts.join("\n\n"), request: o.request, images: o.images ?? [] });
+    const images = imageUrls(o.images ?? []);
+    this.push(live, { text: promptOf(o.texts, o.context), images, priority: "later" }, { text: o.texts.join("\n\n"), request: o.request, images });
   }
 
   async clearQueue(threadId: string): Promise<{ steering: string[]; followUp: string[] }> {
