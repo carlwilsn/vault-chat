@@ -15,6 +15,7 @@ import { vaultPath } from "../vaultPath";
 import { conversationRoot } from "../context/config";
 import { ownerVault } from "../convlog/log";
 import { appendFileSync, existsSync, readFileSync, statSync, mkdirSync, writeFileSync } from "node:fs";
+import { LIVE_LIMITS, allowRate, liveAskText } from "../../src/liveBridge";
 import { holdRun, registerRun, unregisterRun } from "../../src/runRegistry";
 import type { BackendEvent, EngineBackend, ToolSpec, HostLoadout, Interaction } from "./backend";
 import {
@@ -633,6 +634,9 @@ export class Engine {
       version: SERVER_VERSION,
     });
   }
+
+  /** Live pages' recent asks by page path (src/liveBridge.ts allowRate). */
+  private readonly pageAsks = new Map<string, number[]>();
 
   /** A side thread's turn-log identity: each of its requests (voice's Asks, Ctrl+K / Ctrl+L, one-shots) is a line, mode "side". */
   private sideLog(conv: string | null, via: string, tools?: string[]): SideLog {
@@ -1403,6 +1407,18 @@ export class Engine {
    * the same side thread. One-shots ({kind: "once", system, text, images?, fast?}): no session, no tools.
    */
   async sideStart(b: Record<string, any>, viewerRoot = this.d.vault, onceModel?: string): Promise<Record<string, unknown>> {
+    // A live page's vc.ask (src/liveBridge.ts): always a fresh read-only ask, tagged with the page; nothing else of the
+    // request is used (no conversation to fork or write to, no images, no tools, no continued thread), and rate-limited here too.
+    const page = typeof b?.page === "string" && b.page.trim() ? b.page.trim().slice(0, 200) : null;
+    if (page) {
+      const times = this.pageAsks.get(page) ?? [];
+      this.pageAsks.set(page, times);
+      if (!allowRate(times, LIVE_LIMITS.asksPerMinute)) return { error: `a page may ask at most ${LIVE_LIMITS.asksPerMinute} times a minute` };
+      const prompt = typeof b.text === "string" ? b.text : "";
+      const system = typeof b.system === "string" ? b.system : "";
+      if (prompt.length > LIVE_LIMITS.promptChars || system.length > LIVE_LIMITS.systemChars) return { error: "ask too large" };
+      b = { kind: "ask", text: liveAskText(page, system, prompt) };
+    }
     const text = typeof b?.text === "string" ? b.text : "";
     if (!text.trim()) return { error: "missing text" };
     const kind = b.kind === "once" ? "once" : b.kind === "edit" ? "edit" : "ask";
@@ -1440,7 +1456,7 @@ export class Engine {
         const context = viewerRoot !== this.d.vault
           ? `<file-context conversation=${JSON.stringify(conv?.id ?? null)}>Viewer/file-context vault root: ${viewerRoot}/. Conversation owner: ${this.d.vault}/. Resolve viewer-relative file references under that viewer root; relative tools still use the thread/project cwd. This is the captured side-request file context, not later viewer state.</file-context>`
           : undefined;
-        s = await side.start({ kind, context, fork: src?.file ?? null, instr, cwd: src?.cwd || this.d.vault, model, tools, hostTools, hostLoadout, sessionDir: dir(conv?.id ?? "none"), text, images, you: { convId: conv?.id ?? null }, log: this.sideLog(conv?.id ?? null, String(b.kind ?? kind).slice(0, 40), tools) });
+        s = await side.start({ kind, context, fork: src?.file ?? null, instr, cwd: src?.cwd || this.d.vault, model, tools, hostTools, hostLoadout, sessionDir: dir(conv?.id ?? "none"), text, images, you: { convId: conv?.id ?? null }, log: this.sideLog(conv?.id ?? null, page ? `page:${page}` : String(b.kind ?? kind).slice(0, 40), tools) });
       }
       this.log(`side ${kind} ${s.id}${conv ? ` (forked from ${conv.id})` : ""} on ${model}${s.file ? `: ${s.file}` : ""}`);
       return { ok: true, id: s.id, v: s.v };

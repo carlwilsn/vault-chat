@@ -5,6 +5,7 @@ import { isUnreadableAsText } from "./fileKind";
 import { openUrl, isExternalHref } from "./opener";
 import { InlineEditPrompt, type InlineEditRequest } from "./InlineEditPrompt";
 import { useStore } from "./store";
+import { insideVault, liveScript, parseLiveManifest, vaultRelative } from "./liveBridge";
 import { reportScroll, scrollHtmlWith } from "./scrollTarget";
 import { decodeTarget } from "./viewTarget";
 const LINK_INTERCEPT = `<script>(function(){
@@ -300,8 +301,8 @@ function usePageBase(path: string | null | undefined): string | null | undefined
   return i == null ? null : pageBaseUrl(i, vault, path);
 }
 
-function injectHeadScripts(html: string, scrollY = 0): string {
-  const payload = SCROLLBAR_INJECT + LINK_INTERCEPT + MARQUEE_BRIDGE + SCROLL_BRIDGE + scrollKeeper(scrollY);
+function injectHeadScripts(html: string, scrollY = 0, live = false): string {
+  const payload = (live ? liveScript() : "") + SCROLLBAR_INJECT + LINK_INTERCEPT + MARQUEE_BRIDGE + SCROLL_BRIDGE + scrollKeeper(scrollY);
   if (/<head[^>]*>/i.test(html)) {
     return html.replace(/<head[^>]*>/i, (m) => m + payload);
   }
@@ -354,11 +355,14 @@ export function HtmlView({ content, path }: { content: string; path?: string | n
   // (relative URLs in markup, CSS and script alike); the markup rewrite only
   // for absolute paths, or for a page with no base.
   const base = usePageBase(path);
+  // A page inside the vault is a live page: window.vc (src/liveBridge.ts), answered by the app.
+  const vaultRoot = useStore((s) => s.vaultPath);
+  const live = insideVault(path, vaultRoot) && parseLiveManifest(content).length > 0;
   const srcDoc = useMemo(() => {
     if (base === undefined) return null;
     const html = path ? rewriteAssetUrls(content, path, !base) : content;
-    return injectHeadScripts(base ? withBase(html, base) : html, scrollRef.current.y);
-  }, [content, path, base]);
+    return injectHeadScripts(base ? withBase(html, base) : html, scrollRef.current.y, live);
+  }, [content, path, base, live]);
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const hostRef = useRef<HTMLDivElement | null>(null);
   const [marqueeOn, setMarqueeOn] = useState(false);
@@ -605,6 +609,7 @@ export function HtmlView({ content, path }: { content: string; path?: string | n
         {srcDoc !== null && <iframe
           ref={iframeRef}
           data-look-frame
+          {...(live && path ? { "data-vc-live": vaultRelative(path, vaultRoot) } : {})}
           sandbox="allow-scripts"
           srcDoc={srcDoc}
           // Pages render as authored for a normal (light) browser: the app's dark

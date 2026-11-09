@@ -26,6 +26,7 @@ import { afterVaultReady, bootMark, installBootTiming } from "./bootTiming";
 import { installAutosaveNet } from "./autosave";
 import { initBackgroundMode } from "./background";
 import { installClientEvents } from "./clientEvents";
+import { installAppLiveBridge } from "./liveBridgeApp";
 import { installAppShip } from "./appShip";
 import { installDiagShortcut } from "./diag";
 import { installLaptopPerf } from "./laptopPerf";
@@ -80,6 +81,7 @@ if (isPopout) {
   // What the screen did (client-events.jsonl) and the "something just went wrong" bundle
   // (Ctrl+Shift+D → .vault-chat/diag/). Main window only.
   installClientEvents();
+  installAppLiveBridge();
   // Its errors and box drops on the box too (<state>/logs/app.jsonl).
   installAppShip();
   installDiagShortcut();

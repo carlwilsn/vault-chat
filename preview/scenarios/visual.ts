@@ -9,6 +9,7 @@ import type * as W from "./world";
 import REAL_SVG from "./visual-real-model.svg?raw";
 // The sample mockup: the app's composer with its real classes, linking the app's stylesheet (src/inlineHtml.ts).
 import SAMPLE_HTML from "./inline-html-sample.html?raw";
+import LIVE_HTML from "./live-chat-demo.html?raw";
 
 const CONV = "c-visual-bfs";
 const PATH = ".vault-chat/visuals/bfs-closest-pair.svg";
@@ -116,6 +117,86 @@ export const visualScenarios: Scenario[] = [
     },
     activeConversation: HTML_CONV,
     open: [{ chat: true }, { conversation: HTML_CONV }, { sleep: 1200 }],
+    surfaces: ["desktop"],
+  },
+  {
+    id: "live-page",
+    title: "Live page — a vault .html that declares `ask` gets a one-time grant, then streams AI replies (vc.ask)",
+    group: "Chat",
+    notes:
+      "The page's <meta name=\"vc-capabilities\" content=\"ask\"> makes it a live page: the app asks once (Allow), the box mints a scoped token, and the page's nested chat streams scripted replies through vc.ask (an ephemeral read-only side session, no chat created).",
+    build: (ctx: BuildCtx) => {
+      ctx.write(".vault-chat/visuals/live-chat-demo.html", LIVE_HTML);
+      ctx.conversations([{
+        id: "c-live-page", title: "Live chat demo", source: "manual", status: "idle", unread: false,
+        createdAt: ctx.now - 5 * MIN, lastActivityAt: ctx.now - MIN,
+        messages: [
+          { role: "user", content: "make me a tiny chat app that talks to the AI" },
+          { role: "assistant", content: "Here it is, live:\n\n![Live chat](.vault-chat/visuals/live-chat-demo.html)" },
+        ],
+      }]);
+    },
+    host: (now: number) => ({
+      sync: {
+        box: { box: "https://thinkbox.tail0a1b2.ts.net", vault: "summer-demo" },
+        boxChat: {
+          convs: {
+            "c-live-page": {
+              title: "Live chat demo", source: "manual", status: "idle",
+              meta: { unread: false, createdAt: now - 5 * MIN, lastActivityAt: now - MIN },
+              messages: [
+                { role: "user", content: "make me a tiny chat app that talks to the AI" },
+                { role: "assistant", content: "Here it is, live:\n\n![Live chat](.vault-chat/visuals/live-chat-demo.html)" },
+              ],
+            },
+          } as any,
+          steps: [],
+        },
+      },
+    }),
+    llm: { scripts: [{ id: "live-ask", match: /./, steps: [{ text: "Hi! I'm answering through vc.ask: an ephemeral, read-only side session on the box, streamed into this page. Nothing here touched your vault or your chat list." }] }] },
+    activeConversation: "c-live-page",
+    open: [{ chat: true }, { conversation: "c-live-page" }, { sleep: 1200 }],
+    surfaces: ["desktop"],
+  },
+  {
+    id: "live-page-viewer",
+    title: "Live page in the viewer — a vault .html that declares `ask` gets a one-time grant, then streams AI replies (vc.ask)",
+    group: "Chat",
+    notes:
+      "The page's <meta name=\"vc-capabilities\" content=\"ask\"> makes it a live page: the app asks once (Allow), the box mints a scoped token, and the page's nested chat streams scripted replies through vc.ask (an ephemeral read-only side session, no chat created).",
+    build: (ctx: BuildCtx) => {
+      ctx.write(".vault-chat/visuals/live-chat-demo.html", LIVE_HTML);
+      ctx.conversations([{
+        id: "c-live-page", title: "Live chat demo", source: "manual", status: "idle", unread: false,
+        createdAt: ctx.now - 5 * MIN, lastActivityAt: ctx.now - MIN,
+        messages: [
+          { role: "user", content: "make me a tiny chat app that talks to the AI" },
+          { role: "assistant", content: "Here it is, live:\n\n![Live chat](.vault-chat/visuals/live-chat-demo.html)" },
+        ],
+      }]);
+    },
+    host: (now: number) => ({
+      sync: {
+        box: { box: "https://thinkbox.tail0a1b2.ts.net", vault: "summer-demo" },
+        boxChat: {
+          convs: {
+            "c-live-page": {
+              title: "Live chat demo", source: "manual", status: "idle",
+              meta: { unread: false, createdAt: now - 5 * MIN, lastActivityAt: now - MIN },
+              messages: [
+                { role: "user", content: "make me a tiny chat app that talks to the AI" },
+                { role: "assistant", content: "Here it is, live:\n\n![Live chat](.vault-chat/visuals/live-chat-demo.html)" },
+              ],
+            },
+          } as any,
+          steps: [],
+        },
+      },
+    }),
+    llm: { scripts: [{ id: "live-ask", match: /./, steps: [{ text: "Hi! I'm answering through vc.ask: an ephemeral, read-only side session on the box, streamed into this page. Nothing here touched your vault or your chat list." }] }] },
+    activeConversation: "c-live-page",
+    open: [{ file: ".vault-chat/visuals/live-chat-demo.html" }, { sleep: 1500 }],
     surfaces: ["desktop"],
   },
   {

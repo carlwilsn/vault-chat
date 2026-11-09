@@ -42,3 +42,6 @@ phone web app, iPad whiteboard and voice. It is not AgentOS.
   widgets, explainers, mockups. For the app's look, link `<link rel="stylesheet" href="/app-styles.css">` and use
   the app's own classes (only classes src/ uses exist; anything else inline `style`); for exact fidelity, the real
   components in the preview harness (preview/, `npm run preview`, `?scenario=`) shot with RecordUI.
+- Live pages (src/liveBridge.ts): a vault .html that declares `<meta name="vc-capabilities" content="ask, mic">` gets `window.vc` after Carl's one-time Allow
+  (per path + content hash): `vc.ask(prompt,{system})` streams an ephemeral read-only AI reply (`for await`, `.text()`), `vc.fetch(path, init)` reaches only what the
+  granted capabilities cover (box-checked token), `vc.mic()`/`vc.play()`, `vc.theme`/`vc.size`; no `<form>` (sandboxed), buttons + keydown. Example: .vault-chat/visuals/live-chat-demo.html.

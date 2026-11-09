@@ -10,6 +10,7 @@ import { useStore } from "./store";
 import { readChatImage } from "./chatImage";
 import { localPathFromUrl } from "./mdPipeline";
 import { boxLinkFor, fetchBoxFile } from "./boxChat";
+import { insideVault } from "./liveBridge";
 import { HTML_DEFAULT_H, inlineHtmlDocument, inlineHtmlHeight } from "./inlineHtml";
 
 let appStyles: Promise<string> | null = null;
@@ -62,7 +63,7 @@ function useFittedHeight(frame: React.RefObject<HTMLIFrameElement | null>): numb
   return h;
 }
 
-function Frame({ doc, title }: { doc: string; title: string }) {
+function Frame({ doc, title, live }: { doc: string; title: string; live?: string }) {
   const ref = useRef<HTMLIFrameElement | null>(null);
   const h = useFittedHeight(ref);
   return (
@@ -73,6 +74,7 @@ function Frame({ doc, title }: { doc: string; title: string }) {
       sandbox="allow-scripts"
       referrerPolicy="no-referrer"
       data-el="chat-html"
+      {...(live ? { "data-vc-live": live } : {})}
       className="w-full block border-0 bg-background"
       style={{ height: h }}
     />
@@ -119,8 +121,10 @@ export const InlineHtmlFrame = memo(function InlineHtmlFrame({ src, alt }: { src
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key]);
 
+  // A page in the vault (a relative path, no ..) may be a live page (src/liveBridge.ts): it needs a manifest too.
+  const pagePath = (() => { const p = localPathFromUrl(src); return insideVault(p, vaultPath) ? p : null; })();
   const live = state?.key === key ? state : null;
-  const doc = useMemo(() => (live?.html != null ? inlineHtmlDocument(live.html, { css: live.css, theme: themeNow() }) : null), [live]);
+  const doc = useMemo(() => (live?.html != null ? inlineHtmlDocument(live.html, { css: live.css, theme: themeNow(), live: pagePath !== null }) : null), [live, pagePath]);
   const name = src.split(/[\\/]/).pop()?.split(/[?#]/)[0] ?? src;
   const title = alt || name;
 
@@ -140,7 +144,7 @@ export const InlineHtmlFrame = memo(function InlineHtmlFrame({ src, alt }: { src
           <PanelRight className="h-3 w-3" /> Open in viewer
         </button>
       </span>
-      <Frame doc={doc} title={title} />
+      <Frame doc={doc} title={title} live={pagePath ?? undefined} />
     </span>
   );
 });

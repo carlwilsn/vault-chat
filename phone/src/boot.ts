@@ -1,3 +1,4 @@
+import { installPhoneLiveBridge } from "./live";
 import { planCards, currentPlan } from "../../src/planPlace";
 import { createElement } from "react";
 import { createRoot } from "react-dom/client";
@@ -56,6 +57,8 @@ export function boot(): void {
   if (MOCK) installMock();
 
   const api = (path: string, opts: RequestInit = {}) => fetch(inVault(path), { ...opts, headers: { "X-Vault-Token": TOKEN, ...(opts.headers || {}) } });
+  // A vault .html page in a chat is a live page: its vc.ask / vc.api are answered here (src/liveBridge.ts).
+  installPhoneLiveBridge(api);
   // [experience-log] Fire-and-forget: stream what the user SEES and TAPS to a
   // synced client-events.jsonl, so a bug report becomes a replay of the real
   // session instead of a description ("I need Claude to see what I saw"). Never

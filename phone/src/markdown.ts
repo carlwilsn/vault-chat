@@ -77,7 +77,7 @@ export function createPhoneMarkdown(opts: PhoneMarkdownOptions) {
         if (streamingNow) return createElement("span", { className: "mhtml", "data-el": "chat-html-wrap" }, bar,
           createElement("span", { className: "mhtml-wait" }, "Shows when the reply finishes"));
         return createElement("span", { className: "mhtml", "data-el": "chat-html-wrap" }, bar,
-          createElement("iframe", { src: page, title: name, sandbox: "allow-scripts", referrerPolicy: "no-referrer", loading: "lazy", "data-el": "chat-html", style: { height: (htmlHeights.get(page) ?? HTML_DEFAULT_H) + "px" } }));
+          createElement("iframe", { src: page, title: name, sandbox: "allow-scripts", referrerPolicy: "no-referrer", loading: "lazy", "data-el": "chat-html", "data-vc-live": vaultPath(src), style: { height: (htmlHeights.get(page) ?? HTML_DEFAULT_H) + "px" } }));
       }
       // Native Play is the gesture for both picture and sound; never autoplay.
       if (typeof src === "string" && /\.(webm|mp4|m4v|mov)(?:[?#].*)?$/i.test(src))

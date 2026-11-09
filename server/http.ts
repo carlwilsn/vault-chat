@@ -14,6 +14,7 @@ import { trackWrites } from "./drain";
 import { inputSurface, noteInput } from "./presence";
 import { authorize, isDirectLoopback, phoneToken } from "./auth";
 import { appCss } from "./appCss";
+import { liveGateway, liveManifest, liveRevoke, liveToken } from "./liveProxy";
 import { APP_STYLES_HREF, HTML_CSP, inlineHtmlDocument, isHtmlSrc } from "../src/inlineHtml";
 import { createExternalMcpHandler, type ExternalContext } from "./mcp/external";
 import { externalMcpHosts } from "./mcp/hosts";
@@ -703,6 +704,16 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
     const out = saveAttachment(vault, b);
     return out.ok ? json(res, 200, out) : json(res, out.status, { error: out.error });
   }
+  // Live pages (src/liveBridge.ts; server/liveProxy.ts): a page's manifest, Carl's grant minted into a scoped token, and its calls.
+  if (path.startsWith("/api/v2/live/") && method === "POST") {
+    const b = await jsonBody(req, 12 * 1024 * 1024);
+    if (path === "/api/v2/live/manifest") {
+      const m = liveManifest(vault, b.path);
+      return m ? json(res, 200, m) : json(res, 404, { error: "not a live page" });
+    }
+    const out = path === "/api/v2/live/token" ? liveToken(vault, b) : path === "/api/v2/live/revoke" ? liveRevoke(b) : path === "/api/v2/live/fetch" ? await liveGateway(vault, url.searchParams.get("vault"), b) : { status: 404, body: { error: "no such route" } };
+    return json(res, out.status, out.body);
+  }
   if (path === "/api/v2/intent" && method === "POST") {
     if (!hooks.engine) return json(res, 503, { error: "engine not running" });
     const b = await jsonBody(req);
@@ -1014,7 +1025,7 @@ function serveVaultFile(req: IncomingMessage, res: ServerResponse, vault: string
     // Inline in a chat message (phone; src/inlineHtml.ts): the app's styles, the theme, the size reports, nothing from the network.
     try {
       const theme = url.searchParams.get("theme");
-      const doc = inlineHtmlDocument(readFileSync(full, "utf8"), { css: appCss(), theme: theme === "light" ? "light" : theme === "dark" ? "graphite" : null });
+      const doc = inlineHtmlDocument(readFileSync(full, "utf8"), { css: appCss(), theme: theme === "light" ? "light" : theme === "dark" ? "graphite" : null, live: true });
       return send(res, 200, "text/html; charset=utf-8", doc, { "Content-Security-Policy": `sandbox allow-scripts; ${HTML_CSP}`, "X-Content-Type-Options": "nosniff" });
     } catch (e) {
       return json(res, 500, { error: (e as Error).message });
