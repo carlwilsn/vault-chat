@@ -225,3 +225,24 @@ test("a PDF or image named as changed re-renders (its revision bumps); one not n
   await live.refreshOpenFiles({ vault, paths: ["out/report.pdf"] });
   assert.equal(live.fileRev(pdf), 1);
 });
+
+test("an open HTML page whose held box copy never matched the disk still follows the disk (the stale-pane bug)", async () => {
+  const PAGE = `${vault}/.vault-chat/visuals/lab.html`;
+  fs.mkdirSync(path.dirname(PAGE), { recursive: true });
+  const v1 = "<html><body>v1</body></html>";
+  const v2 = "<html><body>v2</body></html>";
+  const v3 = "<html><body>v3</body></html>";
+  fs.writeFileSync(PAGE, v1);
+  S().setCurrentFile(PAGE, v1);
+  // Show opened the box's copy (ahead of the disk), and no merge ever named the page.
+  const held = live.holdBoxCopy(PAGE, new TextEncoder().encode(v2));
+  assert.equal(held, v2);
+  live.applyDiskContent(PAGE, v2);
+  await live.refreshOpenFiles({ vault }); // disk still v1: the box's copy stays on screen
+  assert.equal(S().currentContent, v2);
+  // The box rewrites the page again; the merge lands v3 on the disk without naming it.
+  fs.writeFileSync(PAGE, v3);
+  await live.refreshOpenFiles({ vault });
+  assert.equal(S().currentContent, v3, "the pane follows the disk, not the stale held copy");
+  assert.equal(live.pendingBoxText(PAGE), null);
+});

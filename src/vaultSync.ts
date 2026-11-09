@@ -1058,6 +1058,8 @@ function startBoxSyncLoop(vault: string, cfg: BoxConfig): void {
       } else if (r.committed) {
         void forceRefreshFileTree(vault);
       }
+      // Whatever the cycle did, an open page that differs from its file on disk catches up (never over unsaved typing).
+      if (!r.merged && r.ok) void refreshOpenFiles({ vault });
       const st = boxStates.get(vault);
       if (st) await maybeAlert(st);
     } finally {

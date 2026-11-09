@@ -62,6 +62,21 @@ function isDirty(path: string): boolean {
 const boxBytes = new Map<string, Uint8Array>();
 /** Text the box has that the disk doesn't yet (a pane's Reload takes it). */
 const boxText = new Map<string, string>();
+/** When each boxText entry was held, and the disk text first seen under it (to tell "disk moved on"). */
+const boxTextAt = new Map<string, number>();
+const boxTextDisk = new Map<string, string>();
+/** A held box copy that no merge has matched for this long is dropped: the disk is the truth again. */
+const BOX_TEXT_TTL_MS = 3 * 60_000;
+function holdText(k: string, text: string): void {
+  boxText.set(k, text);
+  boxTextAt.set(k, Date.now());
+  boxTextDisk.delete(k);
+}
+function dropText(k: string): void {
+  boxText.delete(k);
+  boxTextAt.delete(k);
+  boxTextDisk.delete(k);
+}
 const boxTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
 /** The bytes a binary view shows: the box's copy while it is ahead of the disk, else the file. */
@@ -84,7 +99,7 @@ export function holdBoxCopy(path: string, bytes: Uint8Array): string | null {
     return null;
   }
   const text = new TextDecoder().decode(bytes);
-  boxText.set(k, text);
+  holdText(k, text);
   return text;
 }
 
@@ -145,7 +160,7 @@ async function showBoxFile(vaultPath: string, k: string, rel: string, fetch: Box
   const text = new TextDecoder().decode(bytes);
   const shown = shownContent(file);
   if (!shown.length || shown.every((c) => c === text)) return;
-  boxText.set(k, text);
+  holdText(k, text);
   if (isDirty(file)) setDiskChanged(file, true);
   else applyDiskContent(file, text);
 }
@@ -223,8 +238,14 @@ export async function refreshOpenFiles(o: { vault?: string | null; paths?: strin
       // The disk caught up (or moved on): the box's text is no longer ahead of it.
       const ahead = boxText.get(k);
       if (ahead !== undefined) {
-        if (named || ahead === text) boxText.delete(k);
-        else return; // the box's copy is still ahead of this disk: its merge brings it
+        const seen = boxTextDisk.get(k);
+        if (named || ahead === text) dropText(k);
+        else if (seen !== undefined && seen !== text) dropText(k); // the disk moved on under the held copy (a merge landed something else)
+        else if (Date.now() - (boxTextAt.get(k) ?? 0) > BOX_TEXT_TTL_MS) dropText(k); // never matched: stop hiding the disk
+        else {
+          boxTextDisk.set(k, text);
+          return; // the box's copy is still ahead of this disk: its merge brings it
+        }
       }
       const shown = shownContent(file);
       if (!shown.length || shown.every((c) => c === text)) return;
