@@ -104,3 +104,16 @@ test("explicit resolution waits for a save already in flight, so Keep mine canno
   release(); await flush; await resolution;
   assert.equal(disk, "explicit kept mine"); assert.deepEqual(await q.flush("/v"), []);
 });
+
+test("an edit to a file deleted meanwhile is dropped, so it never blocks a chat message or brings the file back", async () => {
+  const disk = new Map<string, string>([["/v/dog.md", "old"]]);
+  const q = new EditorWrites({
+    read: async p => { if (!disk.has(p)) throw new Error("The system cannot find the file specified. (os error 2)"); return disk.get(p)!; },
+    write: async (p, t) => { disk.set(p, t); },
+  });
+  q.queue({ vault: "/v", path: "/v/dog.md", text: "typed" }, "old", () => {}, () => {});
+  disk.delete("/v/dog.md");
+  assert.deepEqual(await q.flush("/v"), []);
+  assert.equal(disk.has("/v/dog.md"), false);
+  assert.deepEqual(await q.flush("/v"), []);
+});

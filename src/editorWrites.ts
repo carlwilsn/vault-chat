@@ -22,7 +22,16 @@ export class EditorWrites {
     const run = (async () => {
       await previous;
       if (job.cancelled) return;
-      const disk = await this.io.read(job.path);
+      let disk: string;
+      try { disk = await this.io.read(job.path); }
+      catch (e) {
+        // The file was deleted (by the agent, or by hand) while the editor still
+        // held an edit for it. Saving would bring it back, and failing would
+        // block every later chat message: drop the edit.
+        if (!isMissing(e)) throw e;
+        if (this.jobs.get(job.path) === job) this.jobs.delete(job.path);
+        return;
+      }
       if (job.cancelled) return;
       if (job.saved === job.text) {
         // Git/live reload may supersede a completed autosave. Its old hash is
@@ -68,4 +77,9 @@ export class EditorWrites {
     this.jobs.delete(path);
     return job?.tail ?? Promise.resolve();
   }
+}
+
+/** A read that failed because the file is not there (Windows os error 2, ENOENT, a 404 from the box). */
+function isMissing(e: unknown): boolean {
+  return /os error 2\b|cannot find the (file|path)|ENOENT|no such file|not found|404/i.test(String((e as Error)?.message ?? e));
 }
