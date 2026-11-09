@@ -24,6 +24,13 @@ type LiveFiles = {
 };
 export const useLiveFiles = create<LiveFiles>(() => ({ diskChanged: {}, revs: {} }));
 
+/** Text files (any, open or not) that were just seen changing, normalized path → count. An inline chat page re-reads on a bump. */
+export const useChangedFiles = create<{ revs: Record<string, number> }>(() => ({ revs: {} }));
+export const changedRev = (s: { revs: Record<string, number> }, path: string): number => s.revs[norm(path)] ?? 0;
+function noteChanged(k: string): void {
+  useChangedFiles.setState((s) => ({ revs: { ...s.revs, [k]: (s.revs[k] ?? 0) + 1 } }));
+}
+
 export function fileRev(path: string | null | undefined): number {
   return path ? useLiveFiles.getState().revs[norm(path)] ?? 0 : 0;
 }
@@ -125,6 +132,7 @@ export function boxFileChanged(o: { vault: string; rel: string; fetch: BoxFileFe
   const rel = o.rel.replace(/\\/g, "/").replace(/^\/+/, "");
   if (!rel || rel.split("/").includes("..")) return;
   const k = norm(`${vaultPath}/${rel}`);
+  noteChanged(k);
   if (!openFiles().some((f) => norm(f) === k)) return;
   const t = boxTimers.get(k);
   if (t) clearTimeout(t);
@@ -168,6 +176,7 @@ async function showBoxFile(vaultPath: string, k: string, rel: string, fetch: Box
 /** Every pane (or the single view) showing `path` gets `content`. */
 export function applyDiskContent(path: string, content: string): void {
   const k = norm(path);
+  noteChanged(k);
   useStore.setState((s) => {
     const patch: Record<string, unknown> = {};
     if (s.panes.length) {
@@ -207,6 +216,7 @@ export async function refreshOpenFiles(o: { vault?: string | null; paths?: strin
   const named = o.paths?.length
     ? new Set(o.paths.map((p) => norm(/^([a-zA-Z]:[\\/]|[\\/])/.test(p) ? p : `${vaultPath}/${p}`)))
     : null;
+  if (named) for (const k of named) noteChanged(k);
   await Promise.all(
     openFiles().map(async (file) => {
       const k = norm(file);

@@ -4,81 +4,134 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Voice lab</title>
 <style>
-  :root { color-scheme: dark; }
+  /* Colours come from vault-chat (--vc-* variables, live on a theme switch); the fallbacks keep it readable anywhere. */
+  :root { color-scheme: light dark;
+    --bg:var(--vc-bg, light-dark(#ffffff,#1b1b1b)); --fg:var(--vc-fg, light-dark(#1d1d1f,#ececec)); --muted:var(--vc-muted, light-dark(#6b6b70,#8e8e93));
+    --border:var(--vc-border, light-dark(#e4e4e7,#2d2d30)); --surface:var(--vc-surface, light-dark(#f5f5f6,#242426));
+    --accent:var(--vc-accent, light-dark(#2f6fd6,#6aa2ff)); --accent2:light-dark(#8a4fd6,#b48cf2);
+    --ok:light-dark(#1f7a3f,#7fd49a); --warn:light-dark(#8a6a10,#e6c06a); --bad:light-dark(#c03030,#f08a8a); --star:light-dark(#d89a00,#f2c14e);
+    --hover:color-mix(in srgb, var(--fg) 6%, transparent); --font:var(--vc-font, Inter, "Segoe UI", system-ui, sans-serif); --mono:var(--vc-mono, ui-monospace, Menlo, Consolas, monospace); }
   * { box-sizing:border-box; }
-  body { margin:0; background:#1b1b1b; color:#e8e8e8; font:13px Inter, "Segoe UI", system-ui, sans-serif; padding:14px; line-height:1.4; }
-  h1 { font-size:16px; margin:0 0 2px; } h2 { font-size:13px; margin:0; }
-  .sub { color:#8a8a8a; font-size:11.5px; margin-bottom:12px; }
-  .card { border:1px solid #2c2c2c; border-radius:10px; margin-bottom:14px; background:#1b1b1b; }
-  .head { padding:8px 12px; border-bottom:1px solid #2c2c2c; display:flex; align-items:center; gap:10px; }
-  .head small { color:#8a8a8a; font-size:11px; }
-  .body { padding:10px 12px; }
-  table { width:100%; border-collapse:collapse; font-size:12px; }
-  th { text-align:left; color:#8a8a8a; font-weight:500; font-size:11px; padding:4px 8px; border-bottom:1px solid #2c2c2c; }
-  td { padding:5px 8px; border-bottom:1px solid #242424; vertical-align:top; }
-  tr:hover td { background:#222; }
-  .pill { display:inline-block; padding:1px 7px; border-radius:99px; font-size:10.5px; border:1px solid #353535; color:#cfcfcf; }
-  .pill.ready { color:#7fd49a; border-color:#2f5a3e; } .pill.slow { color:#e6c06a; border-color:#5a4a2a; } .pill.no { color:#8a8a8a; }
-  .pill.base { color:#6aa2ff; border-color:#2b4a7a; }
-  textarea, select, input[type=text] { background:#232323; color:#e8e8e8; border:1px solid #353535; border-radius:7px; padding:6px 8px; font:inherit; }
-  textarea { width:100%; min-height:70px; resize:vertical; }
-  select { max-width:100%; }
-  button { background:#2a2a2a; color:#e8e8e8; border:1px solid #3a3a3a; border-radius:7px; padding:5px 11px; font:inherit; cursor:pointer; }
-  button:hover { background:#333; } button:disabled { opacity:.45; cursor:default; }
-  button.primary { background:#2b4a7a; border-color:#3a5f9a; } button.primary:hover { background:#34598f; }
-  button.rec { background:#5a2323; border-color:#8a3a3a; }
-  .chip { display:inline-block; padding:3px 9px; margin:0 5px 5px 0; border:1px solid #353535; border-radius:6px; font-size:11.5px; color:#cfcfcf; cursor:pointer; }
-  .chip:hover { background:#2e2e2e; }
-  .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin:8px 0; }
+  html { background:var(--bg); }
+  body { margin:0; background:var(--bg); color:var(--fg); font:13px/1.45 var(--font); }
+  .wrap { max-width:980px; margin:0 auto; padding:18px 18px 40px; }
+  header { display:flex; align-items:flex-end; gap:16px; flex-wrap:wrap; margin-bottom:4px; }
+  h1 { font-size:20px; font-weight:650; letter-spacing:-.01em; margin:0; }
+  .lede { color:var(--muted); max-width:62ch; margin:4px 0 14px; font-size:12.5px; }
+  .tabs { display:flex; gap:2px; border-bottom:1px solid var(--border); margin:0 0 18px; position:sticky; top:0; background:var(--bg); z-index:2; padding-top:6px; }
+  .tab { background:none; border:0; border-bottom:2px solid transparent; border-radius:0; color:var(--muted); padding:9px 14px; font:inherit; font-weight:550; cursor:pointer; margin-bottom:-1px; }
+  .tab:hover { color:var(--fg); } .tab.on { color:var(--fg); border-bottom-color:var(--accent); }
+  .tab .n { margin-left:6px; font-size:10.5px; color:var(--muted); background:var(--surface); border-radius:99px; padding:1px 7px; }
+  section[data-tab] { display:none; } section[data-tab].on { display:block; }
+  h2 { font-size:13px; font-weight:650; margin:0 0 8px; }
+  .panel { border:1px solid var(--border); border-radius:12px; padding:16px; margin-bottom:16px; background:var(--bg); }
+  .panel > .ph { display:flex; align-items:baseline; gap:10px; margin-bottom:12px; } .panel > .ph small { color:var(--muted); font-size:11.5px; }
+  .lbl { color:var(--muted); font-size:11.5px; font-weight:550; text-transform:uppercase; letter-spacing:.04em; margin-bottom:6px; }
+  label { color:var(--fg); font-size:12.5px; cursor:pointer; }
+  textarea, select, input[type=text] { background:var(--surface); color:var(--fg); border:1px solid var(--border); border-radius:8px; padding:8px 10px; font:inherit; outline:none; }
+  textarea:focus, select:focus, input[type=text]:focus { border-color:var(--accent); }
+  textarea { width:100%; min-height:84px; resize:vertical; line-height:1.5; font-size:14px; }
+  select { max-width:100%; min-width:0; }
+  button { background:var(--surface); color:var(--fg); border:1px solid var(--border); border-radius:8px; padding:7px 13px; font:inherit; font-weight:500; cursor:pointer; transition:background .12s, border-color .12s; }
+  button:hover { background:color-mix(in srgb, var(--surface) 70%, var(--fg) 8%); } button:disabled { opacity:.45; cursor:default; }
+  button.primary { background:var(--accent); border-color:var(--accent); color:#fff; } button.primary:hover { filter:brightness(1.08); }
+  button.rec { background:color-mix(in srgb, var(--bad) 20%, var(--bg)); border-color:var(--bad); color:var(--bad); }
+  .chips { display:flex; flex-wrap:wrap; gap:6px; margin:0 0 10px; }
+  .chip { padding:4px 11px; border:1px solid var(--border); border-radius:99px; font-size:12px; cursor:pointer; color:var(--muted); background:none; }
+  .chip:hover { color:var(--fg); background:var(--hover); }
+  .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin:10px 0; }
+  .grow { flex:1; }
   .cols { display:grid; grid-template-columns:repeat(auto-fit, minmax(300px, 1fr)); gap:12px; }
-  .out { border:1px solid #2c2c2c; border-radius:8px; padding:8px 10px; min-height:60px; background:#202020; }
-  .out h3 { margin:0 0 6px; font-size:12px; font-weight:600; }
-  .met { color:#9a9a9a; font-size:11.5px; } .met b { color:#e8e8e8; font-weight:600; }
-  .stars button { padding:2px 7px; } .stars button.on { background:#2b4a7a; border-color:#3a5f9a; }
-  .keep { font-size:16px; padding:1px 7px; } .keep.on { color:#f2c14e; border-color:#7a6224; }
-  audio { width:100%; margin-top:6px; height:32px; }
-  .err { color:#f08a8a; } .muted { color:#6a6a6a; }
-  .txt { white-space:pre-wrap; margin:4px 0 6px; }
-  label { color:#9a9a9a; font-size:12px; } .lbl { color:#9a9a9a; font-size:11.5px; }
-  #export { width:100%; min-height:90px; font:11px ui-monospace, Menlo, monospace; }
-  .banner { padding:7px 10px; border-radius:8px; background:#3a2323; color:#ffb0b0; margin-bottom:12px; display:none; }
+  .slot { border:1px solid var(--border); border-radius:10px; padding:10px 12px; border-top:3px solid var(--accent); background:var(--surface); }
+  .slot.b { border-top-color:var(--accent2); }
+  .slot .row { margin:6px 0 0; }
+  .slot select { flex:1; }
+  .out { border:1px dashed var(--border); border-radius:10px; padding:12px; min-height:92px; }
+  .out.a { border-left:3px solid var(--accent); border-style:solid; } .out.b { border-left:3px solid var(--accent2); border-style:solid; }
+  .out h3 { margin:0 0 6px; font-size:13px; font-weight:650; } .out h3 span { font-weight:400; }
+  .met { display:flex; flex-wrap:wrap; gap:6px; margin:6px 0 4px; }
+  .m { background:var(--surface); border:1px solid var(--border); border-radius:6px; padding:2px 8px; font-size:11.5px; color:var(--muted); } .m b { color:var(--fg); font-weight:600; }
+  audio { width:100%; height:36px; margin:6px 0 0; }
+  .txt { white-space:pre-wrap; margin:6px 0 8px; font-size:14px; line-height:1.5; }
+  .muted { color:var(--muted); } .err { color:var(--bad); }
+  .rate { display:flex; align-items:center; gap:6px; margin-top:8px; }
+  .stars { display:inline-flex; gap:1px; } .stars button { background:none; border:0; padding:0 1px; font-size:20px; line-height:1; color:var(--border); cursor:pointer; } .stars button:hover { background:none; color:var(--star); } .stars button.on { color:var(--star); }
+  .keep { background:none; border:1px solid var(--border); border-radius:99px; padding:3px 11px; font-size:12px; color:var(--muted); } .keep.on { color:var(--star); border-color:var(--star); background:color-mix(in srgb, var(--star) 12%, transparent); }
+  .banner { display:none; padding:10px 12px; border-radius:10px; background:color-mix(in srgb, var(--bad) 14%, var(--bg)); border:1px solid color-mix(in srgb, var(--bad) 40%, transparent); color:var(--bad); margin-bottom:14px; }
+  /* engines */
+  .egrid { display:grid; grid-template-columns:repeat(auto-fill, minmax(280px, 1fr)); gap:12px; }
+  .eng { border:1px solid var(--border); border-radius:12px; padding:14px; display:flex; flex-direction:column; gap:8px; }
+  .eng.off { opacity:.55; }
+  .eng .top { display:flex; align-items:center; gap:8px; } .eng .name { font-weight:650; font-size:13.5px; flex:1; }
+  .kind { font-size:10px; font-weight:700; letter-spacing:.06em; padding:2px 7px; border-radius:5px; background:var(--surface); color:var(--muted); } .kind.tts { color:var(--accent); } .kind.stt { color:var(--accent2); }
+  .pill { font-size:10.5px; padding:2px 8px; border-radius:99px; border:1px solid var(--border); color:var(--muted); } .pill.ready { color:var(--ok); border-color:color-mix(in srgb, var(--ok) 45%, transparent); } .pill.slow { color:var(--warn); border-color:color-mix(in srgb, var(--warn) 45%, transparent); } .pill.base { color:var(--accent); }
+  .eng .notes { color:var(--muted); font-size:12px; min-height:2.9em; }
+  .speed { height:6px; border-radius:99px; background:var(--surface); overflow:hidden; } .speed i { display:block; height:100%; background:var(--accent); border-radius:99px; }
+  .eng.stt .speed i { background:var(--accent2); }
+  .eng .foot { display:flex; justify-content:space-between; color:var(--muted); font-size:11.5px; gap:8px; } .eng .foot b { color:var(--fg); font-weight:600; }
+  /* picks */
+  .leader { display:grid; grid-template-columns:repeat(auto-fill, minmax(220px,1fr)); gap:10px; margin-bottom:14px; }
+  .lcard { border:1px solid var(--border); border-radius:10px; padding:10px 12px; } .lcard.kept { border-color:var(--star); background:color-mix(in srgb, var(--star) 8%, transparent); }
+  .lcard .t { font-weight:650; } .lcard .s { color:var(--muted); font-size:11.5px; margin-top:2px; }
+  table { width:100%; border-collapse:collapse; font-size:12px; }
+  th { text-align:left; color:var(--muted); font-weight:550; font-size:11px; padding:6px 8px; border-bottom:1px solid var(--border); }
+  td { padding:7px 8px; border-bottom:1px solid color-mix(in srgb, var(--border) 60%, transparent); vertical-align:top; } tr:hover td { background:var(--hover); }
+  #export { width:100%; min-height:110px; font:11.5px/1.5 var(--mono); margin-top:12px; }
+  .empty { color:var(--muted); text-align:center; padding:26px 0; }
+  @media (max-width:560px) { .wrap { padding:12px 12px 30px; } .tab { padding:9px 10px; } }
 </style></head>
-<body>
-<h1>Voice lab</h1>
-<div class="sub">Open-source TTS / STT on the box CPU vs. the ElevenLabs baseline. Try engines, rate them 1–5, star the ones to keep, then “Export my picks”. The first run of an engine that was not pre-loaded also pays its model load time, so run it twice before judging speed.</div>
+<body><div class="wrap">
+<header><h1>Voice lab</h1><span class="grow"></span><button id="reload">Reload engines</button></header>
+<p class="lede">Try open-source speech engines running on the box next to each other, rate what you hear, star the ones to keep, then export your picks. A first run of an engine that wasn't pre-loaded includes its model load, so run it twice before judging speed.</p>
 <div id="banner" class="banner"></div>
+<nav class="tabs" id="tabs">
+  <button class="tab on" data-t="speak">Speak</button><button class="tab" data-t="listen">Listen</button><button class="tab" data-t="engines">Engines <span class="n" id="enginesNote">…</span></button><button class="tab" data-t="picks">Picks <span class="n" id="picksNote">0</span></button>
+</nav>
 
-<div class="card"><div class="head"><h2>Engines</h2><small id="enginesNote">loading…</small><span style="flex:1"></span><button id="reload">Reload</button></div>
-  <div class="body" style="padding:0"><table id="engTable"><thead><tr><th>Engine</th><th>Kind</th><th>Status</th><th>Speed (measured, CPU)</th><th>License</th><th>Size</th></tr></thead><tbody></tbody></table></div></div>
-
-<div class="card"><div class="head"><h2>Text to speech</h2><small>time to first audio, real-time factor (RTF &lt; 1 = faster than speaking)</small></div><div class="body">
-  <div class="lbl">Preset sentences</div>
-  <div id="presets"></div>
-  <textarea id="ttsText">Sure, I can do that. Give me a second.</textarea>
-  <div class="row">
-    <label><input type="checkbox" id="cmp"> A/B compare</label>
+<section data-tab="speak" class="on">
+  <div class="panel">
+    <div class="ph"><h2>Text to speech</h2><small>Type something or pick a sample, then press play.</small></div>
+    <div class="chips" id="presets"></div>
+    <textarea id="ttsText">Sure, I can do that. Give me a second.</textarea>
+    <div class="row"><label><input type="checkbox" id="cmp"> Compare two engines side by side</label></div>
+    <div class="cols" id="ttsCols">
+      <div class="slot"><div class="lbl">Engine A</div><div class="row"><select id="engA"></select><select id="voiceA"></select></div></div>
+      <div class="slot b" id="colB" style="display:none"><div class="lbl">Engine B</div><div class="row"><select id="engB"></select><select id="voiceB"></select></div></div>
+    </div>
+    <div class="row"><button class="primary" id="play">▶ Play</button><span class="muted" id="ttsStatus"></span></div>
+    <div class="cols"><div class="out a" id="outA"><span class="muted">Engine A's result appears here.</span></div><div class="out b" id="outB" style="display:none"><span class="muted">Engine B's result appears here.</span></div></div>
   </div>
-  <div class="cols" id="ttsCols">
-    <div><div class="lbl">Engine A</div><div class="row"><select id="engA"></select><select id="voiceA"></select></div></div>
-    <div id="colB" style="display:none"><div class="lbl">Engine B</div><div class="row"><select id="engB"></select><select id="voiceB"></select></div></div>
+  <div class="panel" id="cloneRow">
+    <div class="ph"><h2>Clone a voice</h2><small>Chatterbox and Qwen3-TTS can copy a voice from a short clean clip.</small></div>
+    <div class="row"><input type="text" id="cloneName" placeholder="Voice name" style="width:150px"><input type="file" id="cloneFile" accept="audio/*"><button id="cloneBtn">Upload reference clip</button><span class="muted" id="cloneMsg"></span></div>
   </div>
-  <div class="row"><button class="primary" id="play">▶ Play</button><span class="muted" id="ttsStatus"></span></div>
-  <div class="cols"><div class="out" id="outA"><span class="muted">Engine A result appears here.</span></div><div class="out" id="outB" style="display:none"><span class="muted">Engine B result appears here.</span></div></div>
-  <div class="row" id="cloneRow"><span class="lbl">Voice cloning (Chatterbox, Qwen3-TTS):</span><input type="text" id="cloneName" placeholder="voice name" style="width:130px"><input type="file" id="cloneFile" accept="audio/*"><button id="cloneBtn">Upload reference clip</button><span class="muted" id="cloneMsg"></span></div>
-</div></div>
+</section>
 
-<div class="card"><div class="head"><h2>Speech to text</h2><small>record or upload, then run it through 1–3 engines</small></div><div class="body">
-  <div class="row"><button id="recBtn">● Record</button><span class="muted" id="recStatus">not recording</span><span class="lbl">or</span><input type="file" id="sttFile" accept="audio/*"><button id="useTts">Use last TTS audio</button></div>
-  <audio id="sttAudio" controls style="display:none"></audio>
-  <div class="lbl" style="margin-top:8px">Engines to compare (pick up to 3)</div>
-  <div class="row" id="sttPicks"></div>
-  <div class="row"><button class="primary" id="sttRun" disabled>Transcribe</button><span class="muted" id="sttStatus"></span></div>
-  <div class="cols" id="sttOut"></div>
-</div></div>
+<section data-tab="listen">
+  <div class="panel">
+    <div class="ph"><h2>Speech to text</h2><small>Record, upload, or reuse the last audio you generated, then run it through up to three engines.</small></div>
+    <div class="row"><button id="recBtn">● Record</button><span class="muted" id="recStatus">not recording</span><span class="grow"></span><input type="file" id="sttFile" accept="audio/*"><button id="useTts">Use last spoken audio</button></div>
+    <audio id="sttAudio" controls style="display:none"></audio>
+    <div class="lbl" style="margin-top:14px">Engines to compare (up to 3)</div>
+    <div class="chips" id="sttPicks"></div>
+    <div class="row"><button class="primary" id="sttRun" disabled>Transcribe</button><span class="muted" id="sttStatus"></span></div>
+    <div class="cols" id="sttOut"></div>
+  </div>
+</section>
 
-<div class="card"><div class="head"><h2>Results &amp; picks</h2><small id="picksNote">nothing yet</small><span style="flex:1"></span><button id="exportBtn" class="primary">Export my picks</button></div>
-  <div class="body" style="padding:0"><table id="resTable"><thead><tr><th>#</th><th>Kind</th><th>Engine</th><th>Voice</th><th>Input</th><th>Latency</th><th>RTF</th><th>Rating</th><th>Keep</th></tr></thead><tbody></tbody></table></div>
-  <div class="body"><textarea id="export" readonly placeholder="Export appears here (also copied to the clipboard when allowed)."></textarea></div></div>
+<section data-tab="engines">
+  <div class="egrid" id="engGrid"></div>
+</section>
+
+<section data-tab="picks">
+  <div class="panel">
+    <div class="ph"><h2>Your picks</h2><small id="picksSub">Rate results with the stars and mark favourites with “Keep”.</small><span class="grow"></span><button id="exportBtn" class="primary">Export my picks</button></div>
+    <div class="leader" id="leader"></div>
+    <table id="resTable"><thead><tr><th>#</th><th>Kind</th><th>Engine</th><th>Voice</th><th>Input</th><th>Latency</th><th>RTF</th><th>Rating</th><th>Keep</th></tr></thead><tbody></tbody></table>
+    <div class="empty" id="resEmpty">Nothing yet. Run something on the Speak or Listen tab.</div>
+    <textarea id="export" readonly placeholder="The export appears here (and is copied to your clipboard when allowed)."></textarea>
+  </div>
+</section>
 
 <script>
 // ---- adapter: the ONLY place that knows how to reach the lab service ----
@@ -130,18 +183,30 @@ function statusPill(e) {
 }
 function usable(e) { return e.status !== 'not-installed'; }
 
+function engCard(e) {
+  const b = e.bench || {}, x = b.rtf ? 1 / b.rtf : null, pct = x ? Math.max(3, Math.min(100, Math.log10(x * 10) / 3 * 100)) : 0;
+  const sp = x ? (x >= 10 ? Math.round(x) : x.toFixed(1)) + '× real time' : 'not measured';
+  const extra = e.kind === 'tts' && b.ttfa_short_ms != null ? `first sound <b>${b.ttfa_short_ms} ms</b>` : (b.ms_long ? `<b>${b.ms_long} ms</b> for ${b.audio_long_s} s` : '');
+  return `<div class="eng ${e.kind}${usable(e) ? '' : ' off'}"><div class="top"><span class="name">${esc(e.name)}</span><span class="kind ${e.kind}">${e.kind.toUpperCase()}</span></div>
+    <div>${statusPill(e)}</div><div class="notes">${esc(e.notes)}${e.reason ? ' · ' + esc(e.reason) : ''}</div>
+    <div><div class="speed" title="${sp}"><i style="width:${pct}%"></i></div></div>
+    <div class="foot"><span><b>${sp}</b>${extra ? ' · ' + extra : ''}</span><span>${esc(e.license)} · ${esc(e.size)}</span></div></div>`;
+}
+document.getElementById('tabs').onclick = ev => { const t = ev.target.closest('.tab'); if (!t) return; showTab(t.dataset.t); };
+function showTab(n) { document.querySelectorAll('.tab').forEach(b => b.classList.toggle('on', b.dataset.t === n)); document.querySelectorAll('section[data-tab]').forEach(s => s.classList.toggle('on', s.dataset.tab === n)); }
+
 async function loadEngines() {
-  $('enginesNote').textContent = 'loading…'; $('banner').style.display = 'none';
+  $('enginesNote').textContent = '…'; $('banner').style.display = 'none';
   try {
     const r = await labFetch('/engines'); if (!r.ok) throw new Error('HTTP ' + r.status);
     S.engines = await r.json();
   } catch (err) {
     $('banner').style.display = 'block';
-    $('banner').textContent = 'Voice lab service is not reachable (' + err.message + '). ' + (window.vc ? 'The box may not be running it.' : 'No bridge: add ?base=http://127.0.0.1:8871 for dev.');
-    $('enginesNote').textContent = 'offline'; return;
+    $('banner').textContent = 'The voice lab service is not reachable (' + err.message + '). ' + (window.vc ? 'The box may not be running it.' : 'Open this page inside vault-chat, or add ?base=http://127.0.0.1:8871 for dev.');
+    $('enginesNote').textContent = 'off'; $('engGrid').innerHTML = '<div class="empty">No engines to show.</div>'; return;
   }
-  $('enginesNote').textContent = S.engines.filter(usable).length + ' of ' + S.engines.length + ' usable';
-  $('engTable').tBodies[0].innerHTML = S.engines.map(e => `<tr><td><b>${esc(e.name)}</b><div class="muted">${esc(e.notes)}</div></td><td>${e.kind.toUpperCase()}</td><td>${statusPill(e)}${e.reason ? '<div class="muted">' + esc(e.reason) + '</div>' : ''}</td><td>${speedText(e)}</td><td>${esc(e.license)}</td><td>${esc(e.size)}</td></tr>`).join('');
+  $('enginesNote').textContent = S.engines.filter(usable).length + '/' + S.engines.length;
+  $('engGrid').innerHTML = S.engines.map(engCard).join('');
   fillPickers();
 }
 
@@ -154,7 +219,7 @@ function fillPickers() {
     fillVoices(k);
   }
   const stt = S.engines.filter(e => e.kind === 'stt');
-  $('sttPicks').innerHTML = stt.map(e => `<label style="${usable(e) ? '' : 'opacity:.4'}"><input type="checkbox" class="sttPick" value="${e.id}" ${usable(e) ? '' : 'disabled'}> ${esc(e.name)}${e.status === 'too-slow-on-cpu' ? ' (slow)' : ''}</label>`).join('');
+  $('sttPicks').innerHTML = stt.map(e => `<label class="chip" style="${usable(e) ? '' : 'opacity:.4'}"><input type="checkbox" class="sttPick" value="${e.id}" ${usable(e) ? '' : 'disabled'}> ${esc(e.name)}${e.status === 'too-slow-on-cpu' ? ' (slow)' : ''}</label>`).join('');
   document.querySelectorAll('.sttPick').forEach(c => c.onchange = () => {
     const on = [...document.querySelectorAll('.sttPick:checked')];
     if (on.length > 3) c.checked = false; updSttBtn();
@@ -179,10 +244,10 @@ $('presets').onclick = ev => { const i = ev.target.dataset.i; if (i != null) $('
 // ---- results ----
 function addResult(r) { r.id = ++S.rid; r.rating = 0; S.results.push(r); renderResults(); return r; }
 function setRating(id, n) { const r = S.results.find(x => x.id === id); if (!r) return; r.rating = n; S.ratings[r.kind + ':' + r.engine] = S.ratings[r.kind + ':' + r.engine] || []; S.ratings[r.kind + ':' + r.engine] = S.results.filter(x => x.kind === r.kind && x.engine === r.engine && x.rating).map(x => x.rating); renderResults(); refreshRatingButtons(id); }
-function toggleKeep(kind, engine) { const k = kind + ':' + engine; S.keep[k] = !S.keep[k]; renderResults(); document.querySelectorAll(`.keepbtn[data-k="${k}"]`).forEach(b => b.classList.toggle('on', !!S.keep[k])); }
-function refreshRatingButtons(id) { document.querySelectorAll(`.stars[data-r="${id}"] button`).forEach(b => b.classList.toggle('on', +b.dataset.n === (S.results.find(x => x.id === id) || {}).rating)); }
+function toggleKeep(kind, engine) { const k = kind + ':' + engine; S.keep[k] = !S.keep[k]; renderResults(); document.querySelectorAll(`.keepbtn[data-k="${k}"]`).forEach(b => { b.classList.toggle('on', !!S.keep[k]); b.textContent = S.keep[k] ? '★ Kept' : '☆ Keep'; }); }
+function refreshRatingButtons(id) { document.querySelectorAll(`.stars[data-r="${id}"] button`).forEach(b => b.classList.toggle('on', +b.dataset.n <= ((S.results.find(x => x.id === id) || {}).rating || 0))); }
 function starsHtml(r) {
-  return `<span class="stars" data-r="${r.id}">` + [1, 2, 3, 4, 5].map(n => `<button data-n="${n}" class="${r.rating === n ? 'on' : ''}">${n}</button>`).join('') + `</span> <button class="keep keepbtn ${S.keep[r.kind + ':' + r.engine] ? 'on' : ''}" data-k="${r.kind}:${r.engine}" title="keep this one">★</button>`;
+  return `<span class="stars" data-r="${r.id}">` + [1, 2, 3, 4, 5].map(n => `<button data-n="${n}" title="${n} of 5" class="${r.rating >= n ? 'on' : ''}">★</button>`).join('') + `</span> <button class="keep keepbtn ${S.keep[r.kind + ':' + r.engine] ? 'on' : ''}" data-k="${r.kind}:${r.engine}" title="Keep this engine">${S.keep[r.kind + ':' + r.engine] ? '★ Kept' : '☆ Keep'}</button>`;
 }
 document.addEventListener('click', ev => {
   const b = ev.target.closest('.stars button'); if (b) { setRating(+b.parentElement.dataset.r, +b.dataset.n); return; }
@@ -190,9 +255,13 @@ document.addEventListener('click', ev => {
 });
 const avg = a => a.length ? (a.reduce((x, y) => x + y, 0) / a.length).toFixed(1) : '–';
 function renderResults() {
-  $('resTable').tBodies[0].innerHTML = S.results.slice().reverse().map(r => `<tr><td>${r.id}</td><td>${r.kind.toUpperCase()}</td><td>${esc(r.engineName)}</td><td>${esc(r.voice || '')}</td><td class="muted">${esc((r.input || '').slice(0, 50))}</td><td>${r.firstMs != null ? r.firstMs + ' ms first · ' : ''}${r.totalMs} ms</td><td>${r.rtf != null ? r.rtf : ''}</td><td>${r.rating ? '★'.repeat(0) + r.rating + '/5' : '–'}</td><td>${S.keep[r.kind + ':' + r.engine] ? '<span style="color:#f2c14e">★</span>' : ''}</td></tr>`).join('');
+  $('resTable').tBodies[0].innerHTML = S.results.slice().reverse().map(r => `<tr><td>${r.id}</td><td>${r.kind.toUpperCase()}</td><td>${esc(r.engineName)}</td><td>${esc(r.voice || '')}</td><td class="muted">${esc((r.input || '').slice(0, 50))}</td><td>${r.firstMs != null ? r.firstMs + ' ms first · ' : ''}${r.totalMs} ms</td><td>${r.rtf != null ? r.rtf : ''}</td><td>${r.rating ? '★'.repeat(0) + r.rating + '/5' : '–'}</td><td>${S.keep[r.kind + ':' + r.engine] ? '<span style="color:var(--star)">★</span>' : ''}</td></tr>`).join('');
   const kept = Object.keys(S.keep).filter(k => S.keep[k]);
-  $('picksNote').textContent = S.results.length ? `${S.results.length} runs · ${kept.length} kept` : 'nothing yet';
+  $('picksNote').textContent = S.results.length;
+  $('resEmpty').style.display = S.results.length ? 'none' : ''; $('resTable').style.display = S.results.length ? '' : 'none';
+  const groups = {}; S.results.forEach(r => { const k = r.kind + ':' + r.engine; (groups[k] = groups[k] || { kind: r.kind, name: r.engineName, ratings: [], runs: 0 }); groups[k].runs++; if (r.rating) groups[k].ratings.push(r.rating); });
+  Object.keys(S.keep).filter(k => S.keep[k] && !groups[k]).forEach(k => { groups[k] = { kind: k.split(':')[0], name: k.split(':').slice(1).join(':'), ratings: [], runs: 0 }; });
+  $('leader').innerHTML = Object.keys(groups).sort((a, b) => (S.keep[b] ? 1 : 0) - (S.keep[a] ? 1 : 0) || (+avg(groups[b].ratings) || 0) - (+avg(groups[a].ratings) || 0)).map(k => { const g = groups[k]; return `<div class="lcard ${S.keep[k] ? 'kept' : ''}"><div class="t">${S.keep[k] ? '★ ' : ''}${esc(g.name)}</div><div class="s">${g.kind.toUpperCase()} · ${g.runs} run${g.runs === 1 ? '' : 's'} · avg ${avg(g.ratings)}${g.ratings.length ? ' / 5' : ''}</div></div>`; }).join('');
 }
 $('exportBtn').onclick = async () => {
   const by = {}; S.results.forEach(r => { const k = r.kind + ':' + r.engine; (by[k] = by[k] || { kind: r.kind, engine: r.engine, runs: 0, ratings: [], ms: [], rtf: [] }); const o = by[k]; o.runs++; if (r.rating) o.ratings.push(r.rating); o.ms.push(r.firstMs != null ? r.firstMs : r.totalMs); if (r.rtf != null) o.rtf.push(r.rtf); });
@@ -200,11 +269,11 @@ $('exportBtn').onclick = async () => {
   Object.keys(S.keep).filter(k => S.keep[k] && !by[k]).forEach(k => picks.push({ kind: k.split(':')[0], engine: k.split(':').slice(1).join(':'), kept: true, runs: 0 }));
   const json = JSON.stringify({ exportedAt: new Date().toISOString(), keep: Object.keys(S.keep).filter(k => S.keep[k]), picks, results: S.results.map(({ id, kind, engine, voice, input, firstMs, totalMs, rtf, rating, text }) => ({ id, kind, engine, voice, input, firstMs, totalMs, rtf, rating, text })) }, null, 2);
   $('export').value = json;
-  try { await navigator.clipboard.writeText(json); $('picksNote').textContent = 'copied to clipboard'; } catch (_) { $('export').select(); try { document.execCommand('copy'); $('picksNote').textContent = 'copied'; } catch (__) { $('picksNote').textContent = 'select the text below and copy it'; } }
+  try { await navigator.clipboard.writeText(json); $('picksSub').textContent = 'Copied to your clipboard.'; } catch (_) { $('export').select(); try { document.execCommand('copy'); $('picksSub').textContent = 'Copied.'; } catch (__) { $('picksSub').textContent = 'Select the text below and copy it.'; } }
 };
 
 // ---- TTS ----
-function ratingCell(r) { return `<div class="row" style="margin-bottom:0">${starsHtml(r)}</div>`; }
+function ratingCell(r) { return `<div class="rate">${starsHtml(r)}</div>`; }
 async function runTts(k) {
   const eng = engById($('eng' + k).value), voice = $('voice' + k).value, text = $('ttsText').value.trim(), out = $('out' + k);
   if (!eng || !text) return;
@@ -219,8 +288,8 @@ async function runTts(k) {
     const url = URL.createObjectURL(blob); S.lastTts = blob;
     const res = addResult({ kind: 'tts', engine: eng.id, engineName: eng.name, voice, input: text, text, firstMs: first != null ? +first : null, totalMs: total != null ? +total : wall, rtf: rtf != null ? +rtf : null });
     out.innerHTML = `<h3>${esc(eng.name)} <span class="muted">· ${esc(voice)}</span></h3>
-      <div class="met">first audio <b>${first != null ? first + ' ms' : '–'}</b> · total <b>${total != null ? total : wall} ms</b> · audio <b>${secs || '?'} s</b> · RTF <b>${rtf || '–'}</b> · round trip <b>${wall} ms</b></div>
-      <audio controls src="${url}"></audio><div style="margin-top:6px">${ratingCell(res)}</div>`;
+      <div class="met"><span class="m">first sound <b>${first != null ? first + ' ms' : '–'}</b></span><span class="m">total <b>${total != null ? total : wall} ms</b></span><span class="m">audio <b>${secs || '?'} s</b></span><span class="m">RTF <b>${rtf || '–'}</b></span></div>
+      <audio controls src="${url}"></audio>${ratingCell(res)}`;
     out.querySelector('audio').play().catch(() => {});
     return out.querySelector('audio');
   } catch (err) { out.innerHTML = `<h3>${esc(eng.name)}</h3><span class="err">${esc(err.message)}</span>`; }
@@ -265,7 +334,7 @@ $('sttRun').onclick = async () => {
       const r = await labFetch('/stt?engine=' + encodeURIComponent(id), { method: 'POST', headers: { 'content-type': S.sttBlob.type || 'application/octet-stream' }, body: S.sttBlob });
       const j = await r.json(); if (!r.ok) throw new Error(j.detail || j.error || "HTTP " + r.status);
       const res = addResult({ kind: 'stt', engine: id, engineName: e.name, voice: '', input: j.audio_seconds + ' s of audio', text: j.text, firstMs: null, totalMs: j.ms, rtf: j.rtf });
-      box.innerHTML = `<h3>${esc(e.name)}</h3><div class="txt">${esc(j.text) || '<span class="muted">(empty)</span>'}</div><div class="met"><b>${j.ms} ms</b> · RTF <b>${j.rtf}</b> · round trip <b>${Math.round(performance.now() - t0)} ms</b></div><div style="margin-top:6px">${ratingCell(res)}</div>`;
+      box.innerHTML = `<h3>${esc(e.name)}</h3><div class="txt">${esc(j.text) || '<span class="muted">(empty)</span>'}</div><div class="met"><span class="m"><b>${j.ms} ms</b></span><span class="m">RTF <b>${j.rtf}</b></span><span class="m">round trip <b>${Math.round(performance.now() - t0)} ms</b></span></div>${ratingCell(res)}`;
     } catch (err) { box.innerHTML = `<h3>${esc(e.name)}</h3><span class="err">${esc(err.message)}</span>`; }
   }
   $('sttStatus').textContent = ''; updSttBtn();
@@ -274,4 +343,4 @@ $('sttRun').onclick = async () => {
 $('reload').onclick = loadEngines;
 loadEngines(); renderResults();
 </script>
-</body></html>
+</div></body></html>

@@ -4,6 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { boxLinkFor, vaultPath } from "./boxChat";
 import { useStore } from "./store";
 import { ONE_RETRY_MS, withRetry } from "./boxRetry";
+import { installPageTheme } from "./pageTheme";
 
 export const appLiveHost: LiveHost = {
   async post(path, body) {
@@ -27,4 +28,5 @@ export function installAppLiveBridge(): void {
   if (installed) return;
   installed = true;
   installLiveBridge(appLiveHost);
+  installPageTheme();
 }

@@ -8,6 +8,8 @@ import { useStore } from "./store";
 import { insideVault, liveScript, parseLiveManifest, vaultRelative } from "./liveBridge";
 import { reportScroll, scrollHtmlWith } from "./scrollTarget";
 import { decodeTarget } from "./viewTarget";
+import { appPageTheme, pageThemeHead, PAGE_FRAME_ATTR } from "./pageTheme";
+import { useAppMode } from "./useAppMode";
 const LINK_INTERCEPT = `<script>(function(){
   function isExternal(href){ return /^(https?:|mailto:)/i.test(href); }
   function handle(e){
@@ -244,6 +246,8 @@ const SCROLLBAR_INJECT = `<style id="__vc_scrollbar_base">
     document.head.appendChild(s);
   }
   function run(){ apply(); setTimeout(apply, 100); setTimeout(apply, 500); }
+  // The app's theme changed (src/pageTheme.ts): the page's own colours moved with it.
+  addEventListener('vc-theme', function(){ apply(); });
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', run);
   else run();
 })();</script>`;
@@ -302,7 +306,7 @@ function usePageBase(path: string | null | undefined): string | null | undefined
 }
 
 function injectHeadScripts(html: string, scrollY = 0, live = false): string {
-  const payload = (live ? liveScript() : "") + SCROLLBAR_INJECT + LINK_INTERCEPT + MARQUEE_BRIDGE + SCROLL_BRIDGE + scrollKeeper(scrollY);
+  const payload = pageThemeHead(appPageTheme()) + (live ? liveScript() : "") + SCROLLBAR_INJECT + LINK_INTERCEPT + MARQUEE_BRIDGE + SCROLL_BRIDGE + scrollKeeper(scrollY);
   if (/<head[^>]*>/i.test(html)) {
     return html.replace(/<head[^>]*>/i, (m) => m + payload);
   }
@@ -363,6 +367,7 @@ export function HtmlView({ content, path }: { content: string; path?: string | n
     const html = path ? rewriteAssetUrls(content, path, !base) : content;
     return injectHeadScripts(base ? withBase(html, base) : html, scrollRef.current.y, live);
   }, [content, path, base, live]);
+  const mode = useAppMode();
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const hostRef = useRef<HTMLDivElement | null>(null);
   const [marqueeOn, setMarqueeOn] = useState(false);
@@ -612,11 +617,11 @@ export function HtmlView({ content, path }: { content: string; path?: string | n
           {...(live && path ? { "data-vc-live": vaultRelative(path, vaultRoot) } : {})}
           sandbox="allow-scripts"
           srcDoc={srcDoc}
-          // Pages render as authored for a normal (light) browser: the app's dark
-          // theme must not flip a page's own `prefers-color-scheme: dark` styles,
-          // and a page with no background shows white, not the app's colour.
-          style={{ colorScheme: "light" }}
-          className="absolute inset-0 w-full h-full bg-white"
+          {...{ [PAGE_FRAME_ATTR]: "" }}
+          // The page follows the app's theme (src/pageTheme.ts): --vc-* variables, its own color-scheme, and a
+          // default background; the frame's color-scheme matches so no white or dark backdrop shows around it.
+          style={{ colorScheme: mode }}
+          className="absolute inset-0 w-full h-full bg-background"
           title="HTML preview"
         />}
         {marqueeOn && (
