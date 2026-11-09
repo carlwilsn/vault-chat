@@ -424,8 +424,9 @@ export function ThreadRow({
             }
           : undefined
       }
-      // Keep a fixed trailing status gutter; hover actions must not push the dot into the name column.
-      className={cn("relative flex items-center gap-1 pr-7 group", active ? "bg-accent" : "hover:bg-accent/40")}
+      // The trailing status gutter only while there is a dot to hold (Carl: too much space on the right): the
+      // dot stays at the row's end, never in front of the hover actions, and an idle row ends at its last button.
+      className={cn("relative flex items-center gap-1 group", running || unread ? "pr-7" : "pr-1.5", active ? "bg-accent" : "hover:bg-accent/40")}
     >
       <button
         data-el="place-toggle"
@@ -608,7 +609,9 @@ function ChatItem({ chat: c, onOpen, select }: { chat: PanelChat; onOpen: () => 
           aria-pressed={picking && deletable ? picked : undefined}
           onClick={() => (picking ? deletable && select!.toggle(c.id) : onOpen())}
           className={cn(
-            "relative w-full text-left pl-11 pr-7 py-1 flex items-center gap-2 text-[12px] min-w-0",
+            "relative w-full text-left pl-11 py-1 flex items-center gap-2 text-[12px] min-w-0",
+            // Room at the right only for what is there: the dot while it works or is unseen, the trash on hover.
+            c.running || c.unread ? "pr-7" : deletable && !picking ? "pr-3 group-hover/chat:pr-7" : "pr-3",
             picking && picked ? "bg-primary/15 text-foreground" : c.active ? "bg-accent text-foreground font-medium" : "hover:bg-accent/40 text-foreground/75",
             picking && !deletable && "opacity-50",
           )}
