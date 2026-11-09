@@ -179,6 +179,7 @@ export async function startServer(e: ServerEnv & { bundle?: string }): Promise<R
     VC_VOICE_PORT: voicePort,
     VC_VOICE_PIPELINE_PORT: voicePort,
     VC_VOICE_PIPELINE: "off",
+    VC_AUTO_TITLE: "off", // the summary-title one-shot would take scripted replies and show in the recorded model calls
     VC_VAULT: e.vault,
     VC_BARE_REPO: e.bare ?? join(e.home, "none.git"),
     VC_SECRETS_DIR: e.secrets,
