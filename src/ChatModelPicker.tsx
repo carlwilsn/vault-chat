@@ -6,22 +6,17 @@
 // Real names only, no search box, no prices and no providers: four models and
 // four levels is a list you read, not one you query.
 //
-// Out of the way until wanted (Carl: not sitting there all the time, no arrows):
-// hidden, and shown as two translucent pills while the pointer is over the
-// composer (the `group/composer` around it in ChatPane), while one is focused, or
-// while a menu is open.
+// Always shown as plain labels ("Opus 5.5", "High"), no arrows; a label gets a
+// subtle translucent rounded-rectangle highlight on hover, like a toolbar button,
+// and a click opens its menu (Carl, 2026-11-08: not hidden until hover, not a pill).
 import { useEffect, useRef, useState } from "react";
 import { cn } from "./lib/utils";
 import { useStore } from "./store";
 import { defaultModel, EFFORTS, EFFORT_LABEL, labelFor, setChatModel, useChatModels, type Effort } from "./chatModels";
 
 /** A menu that opens upwards over the composer, closing on a click outside. */
-function Menu({ label, title, children, el, onOpen }: { label: string; title: string; children: (close: () => void) => React.ReactNode; el: string; onOpen: (open: boolean) => void }) {
-  const [open, setOpenState] = useState(false);
-  const setOpen = (o: boolean) => {
-    setOpenState(o);
-    onOpen(o);
-  };
+function Menu({ label, title, children, el }: { label: string; title: string; children: (close: () => void) => React.ReactNode; el: string }) {
+  const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!open) return;
@@ -45,8 +40,8 @@ function Menu({ label, title, children, el, onOpen }: { label: string; title: st
         data-el={el}
         title={title}
         className={cn(
-          "rounded-full border border-border/50 bg-muted/40 backdrop-blur-sm px-2.5 py-0.5 text-[11px] text-muted-foreground hover:bg-muted/70 hover:text-foreground transition-colors",
-          open && "bg-muted/70 text-foreground",
+          "rounded-md px-1.5 py-0.5 -mx-0.5 text-[11px] text-muted-foreground hover:bg-foreground/10 hover:text-foreground transition-colors",
+          open && "bg-foreground/10 text-foreground",
         )}
       >
         {label}
@@ -71,8 +66,6 @@ export function ChatModelPicker({ convId, model, effort }: { convId: string | nu
   const vault = useStore((s) => s.vaultPath);
   const models = useChatModels();
   const [error, setError] = useState<string | null>(null);
-  const [openMenus, setOpenMenus] = useState(0);
-  const onOpen = (o: boolean) => setOpenMenus((n) => Math.max(0, n + (o ? 1 : -1)));
   if (!models.length || !convId) return null;
   // What it is on, which is not always a row: a chat that has chosen nothing runs
   // on the box's last choice, and one left on last generation's model keeps
@@ -84,16 +77,9 @@ export function ChatModelPicker({ convId, model, effort }: { convId: string | nu
     void setChatModel(vault ?? "", convId, patch).then((e) => setError(e));
 
   return (
-    <div
-      data-el="chat-model-picker"
-      className={cn(
-        "flex items-center gap-1.5 transition-opacity duration-150 focus-within:opacity-100 group-hover/composer:opacity-100",
-        openMenus > 0 ? "opacity-100" : "opacity-0",
-      )}
-    >
+    <div data-el="chat-model-picker" className="flex items-center gap-1">
       <Menu
         el="chat-model"
-        onOpen={onOpen}
         label={current.name}
         title={error ? `Not changed: ${error}` : `This chat runs on ${current.name}. A new chat starts on what you pick last.`}
       >
@@ -113,7 +99,7 @@ export function ChatModelPicker({ convId, model, effort }: { convId: string | nu
         }
       </Menu>
       {efforts.length > 0 && (
-        <Menu el="chat-effort" onOpen={onOpen} label={effort ? EFFORT_LABEL[effort] : "Effort"} title={`How hard ${current.name} thinks in this chat`}>
+        <Menu el="chat-effort" label={effort ? EFFORT_LABEL[effort] : "Effort"} title={`How hard ${current.name} thinks in this chat`}>
           {(close) =>
             efforts.map((e) => (
               <Row
