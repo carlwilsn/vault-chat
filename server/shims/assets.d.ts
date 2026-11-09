@@ -31,3 +31,9 @@ declare module "vc:katex-css" {
   const css: string;
   export default css;
 }
+
+/** The app's Tailwind stylesheet with its fonts inlined (server/appCssGen.mjs): inline HTML pages' /app-styles.css. */
+declare module "vc:app-css" {
+  const css: string;
+  export default css;
+}

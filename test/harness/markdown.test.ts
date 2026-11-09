@@ -464,3 +464,18 @@ test("raw HTML can't clobber document methods by name; <a name> anchors become i
     assert.match(html, /id="old-anchor"/, s);
   }
 });
+
+test("inline HTML: a vault .html in image syntax is a sandboxed frame on the phone, without the token, and waits while streaming", () => {
+  const md = createPhoneMarkdown({ toHtml: renderToStaticMarkup, fileUrl: (p) => "/file?path=" + encodeURIComponent(p) + "&token=SECRET&convId=c1" });
+  const html = md("Here:\n\n![Composer](.vault-chat/visuals/mock.html)\n");
+  assert.match(html, /<iframe[^>]*sandbox="allow-scripts"/);
+  assert.doesNotMatch(html, /allow-same-origin/);
+  assert.match(html, /src="\/file\?path=\.vault-chat%2Fvisuals%2Fmock\.html&amp;convId=c1&amp;inline=1"/);
+  assert.doesNotMatch(html, /SECRET/);
+  assert.match(html, /data-el="chat-html-full"/);
+  const streaming = md("Here:\n\n![Composer](.vault-chat/visuals/mock.html)\n\nmore", true);
+  assert.doesNotMatch(streaming, /<iframe/);
+  assert.match(streaming, /Shows when the reply finishes/);
+  // An image is still an image.
+  assert.match(md("![x](a.png)"), /<img[^>]*src="\/file\?path=a\.png/);
+});

@@ -1,0 +1,63 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Composer mockup</title>
+<!-- The app's real stylesheet: Tailwind build, theme variables, Inter. The chat inlines it. -->
+<link rel="stylesheet" href="/app-styles.css">
+</head>
+<body class="p-4">
+  <!-- The chat composer, with the same classes as src/ChatPane.tsx. Type to enable Send; + opens the menu. -->
+  <div class="max-w-md mx-auto">
+    <div class="relative flex flex-col rounded-2xl border border-border bg-background focus-within:border-ring/40 focus-within:ring-[0.5px] focus-within:ring-ring/20 transition-colors" data-el="composer">
+      <div class="relative flex items-end">
+        <div class="absolute left-2 bottom-2 z-10">
+          <button id="plus" class="h-7 w-7 flex items-center justify-center rounded-lg text-muted-foreground hover:bg-accent/60 hover:text-foreground" title="Add files, capture a region, or mention a vault file">
+            <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg>
+          </button>
+          <div id="menu" class="hidden absolute bottom-full left-0 mb-1.5 z-20 w-60 rounded-lg border border-border bg-popover p-1 shadow-lg text-[12.5px]">
+            <button class="w-full flex items-center gap-2 rounded-md px-2 py-1.5 text-left hover:bg-accent/60">
+              <svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m16 6-8.414 8.586a2 2 0 0 0 2.829 2.829l8.414-8.586a4 4 0 1 0-5.657-5.657l-8.379 8.551a6 6 0 1 0 8.485 8.485l8.379-8.551"/></svg>
+              Add photos &amp; files
+            </button>
+            <button class="w-full flex items-center gap-2 rounded-md px-2 py-1.5 text-left hover:bg-accent/60">
+              <svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7V5a2 2 0 0 1 2-2h2"/><path d="M17 3h2a2 2 0 0 1 2 2v2"/><path d="M21 17v2a2 2 0 0 1-2 2h-2"/><path d="M7 21H5a2 2 0 0 1-2-2v-2"/></svg>
+              Capture a region
+            </button>
+            <button class="w-full flex items-center gap-2 rounded-md px-2 py-1.5 text-left hover:bg-accent/60">
+              <svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-4 8"/></svg>
+              Mention a vault file
+            </button>
+          </div>
+        </div>
+        <textarea id="input" rows="1" placeholder="Ask anything, @ to mention a file"
+          class="flex w-full rounded-md text-[13px] leading-relaxed transition-colors placeholder:text-muted-foreground focus-visible:outline-none resize-none composer-input border-0 bg-transparent min-h-0 max-h-[200px] overflow-y-hidden focus-visible:ring-0 shadow-none !py-2 !pr-20 !pl-11"></textarea>
+        <div class="absolute right-3 bottom-2 flex items-center gap-1">
+          <button id="send" disabled class="inline-flex items-center justify-center gap-1.5 font-medium transition-colors disabled:opacity-50 disabled:pointer-events-none whitespace-nowrap bg-primary text-primary-foreground hover:bg-primary/90 h-7 w-7 rounded-lg" title="Send">
+            <svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 7-7 7 7"/><path d="M12 19V5"/></svg>
+          </button>
+        </div>
+      </div>
+    </div>
+    <div class="flex items-center justify-between px-1 pt-1.5 text-[11px] text-muted-foreground">
+      <span>Opus 5.5 · high</span>
+      <span id="sent"></span>
+    </div>
+  </div>
+  <script>
+    const input = document.getElementById("input"), send = document.getElementById("send");
+    const menu = document.getElementById("menu"), sent = document.getElementById("sent");
+    input.addEventListener("input", () => {
+      send.disabled = !input.value.trim();
+      input.style.height = "auto";
+      input.style.height = Math.min(200, input.scrollHeight) + "px";
+    });
+    // The menu opens upward, as in the app: make room above the composer while it is open.
+    document.getElementById("plus").addEventListener("click", () => {
+      menu.classList.toggle("hidden");
+      document.body.style.paddingTop = menu.classList.contains("hidden") ? "" : (menu.offsetHeight + 24) + "px";
+    });
+    send.addEventListener("click", () => { sent.textContent = "Sent: " + input.value.trim(); input.value = ""; send.disabled = true; });
+  </script>
+</body>
+</html>

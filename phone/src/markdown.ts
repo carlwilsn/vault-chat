@@ -11,6 +11,25 @@ import { createElement, type ReactElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import ReactMarkdown, { type Components } from "react-markdown";
 import { markdownUrlTransform, pluginsFor, prepareMarkdown, splitStreaming, type MdProfile } from "../../src/mdPipeline";
+import { HTML_DEFAULT_H, inlineHtmlHeight, isHtmlSrc } from "../../src/inlineHtml";
+
+/** Inline .html pages' last reported heights, by frame URL: a re-rendered bubble starts at the fitted size. */
+const htmlHeights = new Map<string, number>();
+let htmlListener = false;
+/** A frame's size report (src/inlineHtml.ts) fits it: only from a frame in the page, matched by its window. */
+function listenHtmlHeights(): void {
+  if (htmlListener || typeof window === "undefined") return;
+  htmlListener = true;
+  window.addEventListener("message", (e) => {
+    const h = inlineHtmlHeight(e.data);
+    if (h === null || !e.source) return;
+    for (const f of Array.from(document.querySelectorAll<HTMLIFrameElement>('iframe[data-el="chat-html"]'))) {
+      if (f.contentWindow !== e.source) continue;
+      f.style.height = h + "px";
+      htmlHeights.set(f.getAttribute("src") ?? "", h);
+    }
+  });
+}
 
 export type ToHtml = (el: ReactElement) => string;
 
@@ -34,6 +53,8 @@ function vaultPath(u: string): string {
 
 export function createPhoneMarkdown(opts: PhoneMarkdownOptions) {
   let origin: string | undefined;
+  let streamingNow = false;
+  listenHtmlHeights();
   const components: Components = {
     // Links open outside the app; vault paths go through the box's file route.
     a: ({ node: _n, href, children, ...rest }) => {
@@ -43,6 +64,21 @@ export function createPhoneMarkdown(opts: PhoneMarkdownOptions) {
     },
     img: ({ node: _n, src, alt, ...rest }) => {
       const url = typeof src === "string" && isVaultPath(src) ? opts.fileUrl(vaultPath(src), origin) : src;
+      // A vault .html: live and interactive, sandboxed by the box (`inline=1`: CSP, app styles, size reports).
+      if (typeof src === "string" && typeof url === "string" && isVaultPath(src) && isHtmlSrc(src)) {
+        // Never the token in a page's own URL (its scripts can read location): the phone's cookie signs the request.
+        const bare = url.replace(/([?&])token=[^&#]*&?/, "$1").replace(/[?&]$/, "");
+        const page = bare + (bare.includes("?") ? "&" : "?") + "inline=1";
+        const name = alt || vaultPath(src).split("/").pop() || src;
+        const bar = createElement("span", { className: "mhtml-bar" },
+          createElement("span", { className: "mhtml-t" }, name),
+          createElement("a", { href: page, target: "_blank", rel: "noopener", "data-el": "chat-html-full" }, "Open full"));
+        // A reply still arriving re-renders its bubble per flush: the frame waits for the finished reply.
+        if (streamingNow) return createElement("span", { className: "mhtml", "data-el": "chat-html-wrap" }, bar,
+          createElement("span", { className: "mhtml-wait" }, "Shows when the reply finishes"));
+        return createElement("span", { className: "mhtml", "data-el": "chat-html-wrap" }, bar,
+          createElement("iframe", { src: page, title: name, sandbox: "allow-scripts", referrerPolicy: "no-referrer", loading: "lazy", "data-el": "chat-html", style: { height: (htmlHeights.get(page) ?? HTML_DEFAULT_H) + "px" } }));
+      }
       // Native Play is the gesture for both picture and sound; never autoplay.
       if (typeof src === "string" && /\.(webm|mp4|m4v|mov)(?:[?#].*)?$/i.test(src))
         return createElement("span", null,
@@ -56,7 +92,7 @@ export function createPhoneMarkdown(opts: PhoneMarkdownOptions) {
   const MAX = 400;
 
   function renderBlock(src: string, profile: MdProfile): string {
-    const key = (origin ?? "") + "\u0000" + profile + "\u0000" + src;
+    const key = (origin ?? "") + "\u0000" + profile + (streamingNow ? "~" : "") + "\u0000" + src;
     const hit = cache.get(key);
     if (hit !== undefined) {
       cache.delete(key);
@@ -83,6 +119,7 @@ export function createPhoneMarkdown(opts: PhoneMarkdownOptions) {
    *  blocks are rendered once and cached, the open tail per call). */
   return function markdownHtml(src: string | null | undefined, streaming = false, owner?: string): string {
     origin = owner;
+    streamingNow = streaming;
     const s = String(src ?? "");
     if (!s.trim()) return "";
     if (!streaming) return renderBlock(s, "phone");

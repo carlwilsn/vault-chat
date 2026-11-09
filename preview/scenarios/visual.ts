@@ -7,6 +7,8 @@ import type { BuildCtx, Scenario } from "./types";
 import type * as W from "./world";
 // What the real model (GPT-6.1 Sol, the box's throwaway instance, 2026-10-26) wrote and replied for this ask.
 import REAL_SVG from "./visual-real-model.svg?raw";
+// The sample mockup: the app's composer with its real classes, linking the app's stylesheet (src/inlineHtml.ts).
+import SAMPLE_HTML from "./inline-html-sample.html?raw";
 
 const CONV = "c-visual-bfs";
 const PATH = ".vault-chat/visuals/bfs-closest-pair.svg";
@@ -91,7 +93,31 @@ function conv(now: number, reply = REPLY, id = CONV): W.Conv {
   };
 }
 
+const HTML_CONV = "c-inline-html";
+const HTML_PATH = ".vault-chat/visuals/sample-mockup.html";
+
 export const visualScenarios: Scenario[] = [
+  {
+    id: "inline-html",
+    title: "Inline HTML — a live, interactive page in the reply (a composer mockup in the app's own styles)",
+    group: "Chat",
+    notes:
+      "The agent links a vault .html in image syntax: the chat shows it live in a sandboxed frame (no network, no same-origin), sized to its content, with Open full. This page links /app-styles.css, so it renders in the app's real CSS and theme; type in it, press +.",
+    build: (ctx: BuildCtx) => {
+      ctx.write(HTML_PATH, SAMPLE_HTML);
+      ctx.conversations([{
+        id: HTML_CONV, title: "Composer mockup", source: "manual", status: "idle", unread: false,
+        createdAt: ctx.now - 5 * MIN, lastActivityAt: ctx.now - MIN,
+        messages: [
+          { role: "user", content: "show me the composer with the plus menu, as a real mockup" },
+          { role: "assistant", content: `Here it is, live — type to enable Send, press + for the menu:\n\n![Composer mockup](${HTML_PATH})\n\nSame classes as the real composer.` },
+        ],
+      }]);
+    },
+    activeConversation: HTML_CONV,
+    open: [{ chat: true }, { conversation: HTML_CONV }, { sleep: 1200 }],
+    surfaces: ["desktop"],
+  },
   {
     id: "visual-inline",
     title: "Visuals — \"can you visualize for me?\" answered inline, on the laptop",

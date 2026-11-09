@@ -230,6 +230,11 @@ body.page-notes #pNotes{display:flex}
 .md a{color:var(--link);text-decoration:none;word-break:break-all}
 .md img{max-width:100%;border-radius:8px;margin:.3em 0}
 .md video{display:block;max-width:100%;border-radius:8px;margin:.3em 0;background:#000}
+.md .mhtml{display:block;margin:.4em 0;border:1px solid var(--line, rgba(255,255,255,.12));border-radius:8px;overflow:hidden}
+.md .mhtml-bar{display:flex;gap:8px;align-items:center;padding:4px 8px;font-size:12px;opacity:.85;border-bottom:1px solid var(--line, rgba(255,255,255,.12))}
+.md .mhtml-t{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.md .mhtml iframe{display:block;width:100%;border:0;background:hsl(0 0% 10%)}
+.md .mhtml-wait{display:block;padding:14px 8px;font-size:12px;opacity:.6}
 /* Tables live inside their OWN horizontal scroller (.tablewrap). #msgs sets
    overflow-wrap:anywhere, which was inheriting into cells and shattering words
    mid-character ("progres|s") as a display:block table squished to fit the

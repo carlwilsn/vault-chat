@@ -37,3 +37,8 @@ phone web app, iPad whiteboard and voice. It is not AgentOS.
 - server/: box HTTP server and pi integration; src/: React/Tauri laptop client.
 - phone/, board/, voice-pipeline/: phone, whiteboard, and voice transport.
 - package.json: normal typecheck/test commands. memory/: short source facts only.
+- Inline HTML (src/inlineHtml.ts): `![label](.vault-chat/visuals/x.html)` in a reply shows that vault page live and
+  interactive in the chat (laptop pane, fullscreen, phone): sandboxed, no network, so inline its scripts/data. Charts,
+  widgets, explainers, mockups. For the app's look, link `<link rel="stylesheet" href="/app-styles.css">` and use
+  the app's own classes (only classes src/ uses exist; anything else inline `style`); for exact fidelity, the real
+  components in the preview harness (preview/, `npm run preview`, `?scenario=`) shot with RecordUI.

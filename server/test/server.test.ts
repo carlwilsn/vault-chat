@@ -14,6 +14,7 @@ describe("auth", () => {
     const vault = makeVault(join(home, "vault"));
     mkdirSync(join(vault, "clips"));
     writeFileSync(join(vault, "clips", "proof.webm"), Buffer.from(Array.from({ length: 1000 }, (_, i) => i % 256)));
+    writeFileSync(join(vault, "clips", "page.html"), '<!doctype html><html><head><link rel="stylesheet" href="/app-styles.css"></head><body><div class="rounded-xl bg-card">hi</div></body></html>');
     const secrets = await makeKeyStore(join(home, "secrets"), { "service.claude-code": "sk-ant-oat01-canary" });
     srv = await startServer({ home, vault, secrets, token: TOKEN });
   });
@@ -115,6 +116,29 @@ describe("auth", () => {
     expect(open.headers.get("content-range")).toBe("bytes 995-999/1000");
     expect((await get({ range: "bytes=2000-" })).status).toBe(416);
     expect((await fetch(`${srv.base}/file?path=clips/proof.webm`, { headers: viaServe })).status).toBe(401);
+  });
+  it("/file: a vault .html never runs as the box; inline=1 gets the app's styles, a strict CSP and size reports", async () => {
+    const plain = await fetch(`${srv.base}/file?path=clips/page.html`);
+    expect(plain.headers.get("content-security-policy")).toBe("sandbox allow-scripts");
+    const inline = await fetch(`${srv.base}/file?path=clips/page.html&inline=1&theme=light`);
+    expect(inline.status).toBe(200);
+    const csp = inline.headers.get("content-security-policy") ?? "";
+    expect(csp).toMatch(/^sandbox allow-scripts; default-src 'none'/);
+    expect(csp).not.toMatch(/allow-same-origin/);
+    const doc = await inline.text();
+    expect(doc).not.toContain('href="/app-styles.css"');
+    expect(doc).toMatch(/<style data-vc-app-styles>[\s\S]*\.rounded-xl/);
+    expect(doc).toContain('[data-theme="light"]');
+    expect(doc).toContain("vc-inline-html-size");
+    expect(doc).toContain('"light"');
+    expect((await fetch(`${srv.base}/file?path=clips/page.html&inline=1`, { headers: viaServe })).status).toBe(401);
+    // The stylesheet itself: public (it is the app's CSS), fonts inlined.
+    const css = await fetch(`${srv.base}/app-styles.css`, { headers: viaServe });
+    expect(css.status).toBe(200);
+    expect(css.headers.get("content-type")).toMatch(/^text\/css/);
+    const text = await css.text();
+    expect(text).toMatch(/font-family:'Inter'[^}]*data:font\/woff2/);
+    expect(text).toContain("--background");
   });
   it("laptop perf: authenticated read/write, no native claim from a phone token, invalid/oversized samples rejected", async () => {
     const path = "/api/v1/laptop-perf";

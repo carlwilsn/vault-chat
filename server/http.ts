@@ -13,6 +13,8 @@ import { legacyPushEnabled, setLegacyPushEnabled } from "./pushPreferences";
 import { trackWrites } from "./drain";
 import { inputSurface, noteInput } from "./presence";
 import { authorize, isDirectLoopback, phoneToken } from "./auth";
+import { appCss } from "./appCss";
+import { APP_STYLES_HREF, HTML_CSP, inlineHtmlDocument, isHtmlSrc } from "../src/inlineHtml";
 import { createExternalMcpHandler, type ExternalContext } from "./mcp/external";
 import { externalMcpHosts } from "./mcp/hosts";
 import type { BoundTools } from "./mcp/tools";
@@ -339,6 +341,8 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
   }
   if (path === "/phone-sw.js") return send(res, 200, "application/javascript; charset=utf-8", asset("phone-sw.js", PHONE_SW_INLINE));
   if (path === "/manifest.webmanifest") return send(res, 200, "application/manifest+json", PHONE_MANIFEST);
+  // The app's real stylesheet, for the .html pages the chat shows inline (src/inlineHtml.ts). Public: it is the app's CSS.
+  if (path === APP_STYLES_HREF && method === "GET") return send(res, 200, "text/css; charset=utf-8", appCss());
   if (path === "/phone" && method === "GET") {
     // voice_server.rs:276 resp_phone_shell — provisions the token cookie.
     return send(res, 200, "text/html; charset=utf-8", phonePage(), tokenCookie());
@@ -991,6 +995,19 @@ function serveVaultFile(req: IncomingMessage, res: ServerResponse, vault: string
     return json(res, 404, { error: (e as Error).message });
   }
   if (size > 50 * 1024 * 1024) return json(res, 413, { error: "file too large (50MB cap)" });
+  const html = isHtmlSrc(full);
+  // A vault page never runs as the box: always sandboxed (scripts, no same-origin, so no token or API).
+  const sandbox = html ? { "Content-Security-Policy": "sandbox allow-scripts" } : {};
+  if (html && url.searchParams.get("inline") === "1") {
+    // Inline in a chat message (phone; src/inlineHtml.ts): the app's styles, the theme, the size reports, nothing from the network.
+    try {
+      const theme = url.searchParams.get("theme");
+      const doc = inlineHtmlDocument(readFileSync(full, "utf8"), { css: appCss(), theme: theme === "light" ? "light" : theme === "dark" ? "graphite" : null });
+      return send(res, 200, "text/html; charset=utf-8", doc, { "Content-Security-Policy": `sandbox allow-scripts; ${HTML_CSP}`, "X-Content-Type-Options": "nosniff" });
+    } catch (e) {
+      return json(res, 500, { error: (e as Error).message });
+    }
+  }
   try {
     const bytes = readFileSync(full);
     // Byte ranges: Safari plays a video only from a server that answers them (RecordUI's videos in the chat).
@@ -1002,10 +1019,10 @@ function serveVaultFile(req: IncomingMessage, res: ServerResponse, vault: string
         res.writeHead(416, { "Content-Range": `bytes */${size}` });
         return void res.end();
       }
-      res.writeHead(206, { "Content-Type": mimeFor(full), "Accept-Ranges": "bytes", "Content-Range": `bytes ${start}-${end}/${size}`, "Content-Length": String(end - start + 1) });
+      res.writeHead(206, { ...sandbox, "Content-Type": mimeFor(full), "Accept-Ranges": "bytes", "Content-Range": `bytes ${start}-${end}/${size}`, "Content-Length": String(end - start + 1) });
       return void res.end(bytes.subarray(start, end + 1));
     }
-    res.writeHead(200, { "Content-Type": mimeFor(full), "Accept-Ranges": "bytes", "Content-Length": String(size) });
+    res.writeHead(200, { ...sandbox, "Content-Type": mimeFor(full), "Accept-Ranges": "bytes", "Content-Length": String(size) });
     res.end(bytes);
   } catch (e) {
     json(res, 500, { error: (e as Error).message });

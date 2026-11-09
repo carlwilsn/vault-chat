@@ -2,6 +2,8 @@ import { useShallow } from "zustand/react/shallow";
 import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef } from "react";
 import { Markdown, StreamingMarkdown } from "./Markdown";
 import { clipboardImageDataUrls, readChatImage } from "./chatImage";
+import { InlineHtmlFrame } from "./InlineHtmlFrame";
+import { isHtmlSrc } from "./inlineHtml";
 import { localPathFromUrl } from "./mdPipeline";
 import { planDone, planCards, currentPlan, type PlanCard } from "./planPlace";
 import { Plus, Square, ArrowUp, ChevronDown, ChevronUp, Wrench, X, MessageSquare, Mic, Paperclip, Scan, AtSign, AlertCircle, Info, Loader2, FileText } from "lucide-react";
@@ -190,7 +192,15 @@ function videoMime(src: string | undefined): string | null {
 }
 const isVideoSrc = (src: string | undefined) => !!videoMime(src);
 
-const chatComponents = { img: ChatImage } as const;
+/** A vault .html in image syntax renders live in the bubble (InlineHtmlFrame); everything else is ChatImage. */
+function ChatMedia(props: ComponentPropsWithoutRef<"img">) {
+  const { src } = props;
+  if (typeof src === "string" && isHtmlSrc(src) && !/^(https?|data|blob):/i.test(src))
+    return <InlineHtmlFrame src={src} alt={props.alt} />;
+  return <ChatImage {...props} />;
+}
+
+const chatComponents = { img: ChatMedia } as const;
 
 // Persist a chat-pane capture's PNG bytes to disk so the agent can
 // reference it from tools like `Write` (e.g. building a markdown file
