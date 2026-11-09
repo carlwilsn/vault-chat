@@ -250,7 +250,7 @@ export class FakeBox {
               await this.log.wait(100);
             }
           }
-          if (route === "GET /api/v2/conversations") return send(200, { rows: this.log.rows(), seq: this.log.latest(), epoch: this.log.epoch });
+          if (route === "GET /api/v2/conversations") return send(200, { rows: this.log.rows().filter((r: any) => !r.deleted), deleted: this.log.rows().filter((r: any) => r.deleted).map((r: any) => r.id), seq: this.log.latest(), epoch: this.log.epoch });
           const m = /^\/api\/v2\/conversations\/([^/]+)\/checkpoint$/.exec(u.pathname);
           if (m && req.method === "GET") {
             const p = this.log.picture(decodeURIComponent(m[1]!));

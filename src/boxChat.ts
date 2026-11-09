@@ -442,6 +442,8 @@ class BoxChatSession {
   /** The list from the box (rows folded up to `seq`); the open conversations again from their checkpoints. */
   /** Chats the box says are deleted (the list's `deleted` ids): dropped from the screen and the cache. */
   private deletedIds = new Set<string>();
+  /** Chats this client knew only from its local cache, until the box's list has been read. */
+  private cachedIds = new Set<string>();
 
   private async resync(): Promise<void> {
     const r = await httpGet(this.link, "/api/v2/conversations", 20_000);
@@ -450,6 +452,11 @@ class BoxChatSession {
     this.epoch = String(r.epoch ?? "");
     this.rows = new Map((Array.isArray(r.rows) ? r.rows : []).map((x: RowState) => [x.id, x]));
     this.deletedIds = new Set((Array.isArray(r.deleted) ? r.deleted : []).filter((x: unknown): x is string => typeof x === "string"));
+    // The box's list is the whole truth: a chat this client only knew from its cache, that the list neither has nor
+    // names, is gone too (never a chat this client is sending or just made: those have outgoing lines or notices).
+    for (const id of this.cachedIds) if (!this.rows.has(id) && !this.outgoing.has(id) && !this.notices.has(id)) this.deletedIds.add(id);
+    this.cachedIds.clear();
+    for (const id of this.deletedIds) { this.pics.delete(id); this.rows.delete(id); }
     this.cursor = Number(r.seq) || 0;
     vlog("box.feed", { state: "resync", cursor: this.cursor, epoch: this.epoch, rows: this.rows.size });
     // Pictures from another log (or an older cursor) are not this one's: fetched again.
@@ -481,6 +488,12 @@ class BoxChatSession {
 
   /** Open a conversation: its picture from the box (a checkpoint), unless it is here already. */
   open(id: string): void {
+    if (this.deletedIds.has(id) || (this.rows.get(id) as Deletable | undefined)?.deleted) {
+      // Never opened from a cache: it is gone on the box.
+      this.project(new Set([id]));
+      if (useStore.getState().activeConversationId === id) this.leaveDeleted(id);
+      return;
+    }
     if (this.pics.has(id) || this.loading.has(id) || !this.rows.has(id) || this.cursor === null) {
       this.project(new Set([id]));
       return;
@@ -609,6 +622,8 @@ class BoxChatSession {
         } else conversations[i] = c;
       };
       const patch: Record<string, unknown> = {};
+      // A chat the box deleted that the screen still holds (from its cache): the list is rebuilt without it.
+      if (this.deletedIds.size && s.conversations.some((c) => this.deletedIds.has(c.id))) conversations ??= s.conversations.slice();
       let runtime: Record<string, NonNullable<(typeof s.convRuntime)[string]>> | null = null;
       for (const id of ids) {
         const row = this.rows.get(id) as Deletable | undefined;
@@ -830,8 +845,9 @@ class BoxChatSession {
     if (!c) return;
     this.epoch = c.epoch;
     this.cursor = c.cursor;
-    this.rows = new Map(c.rows.map((r) => [r.id, r]));
-    for (const p of c.pictures) this.pics.set(p.id, p);
+    this.rows = new Map(c.rows.filter((r) => !(r as Deletable).deleted).map((r) => [r.id, r]));
+    this.cachedIds = new Set(this.rows.keys());
+    for (const p of c.pictures) if (this.rows.has(p.id)) this.pics.set(p.id, p);
     this.projectAll();
   }
 
@@ -853,9 +869,10 @@ class BoxChatSession {
       if (!this.epoch || this.cursor === null || this.loading.size) return;
       const active = useStore.getState().activeConversationId;
       const pics = [...this.pics.values()]
+        .filter((p) => !this.deletedIds.has(p.id) && !(this.rows.get(p.id) as Deletable | undefined)?.deleted)
         .sort((a, b) => Number(b.id === active) - Number(a.id === active) || (this.rows.get(b.id)?.lastActivityAt ?? 0) - (this.rows.get(a.id)?.lastActivityAt ?? 0))
         .slice(0, CACHE_MAX_PICTURES);
-      const file: CacheFile = { epoch: this.epoch, cursor: this.cursor, rows: [...this.rows.values()], pictures: pics };
+      const file: CacheFile = { epoch: this.epoch, cursor: this.cursor, rows: [...this.rows.values()].filter((r) => !(r as Deletable).deleted && !this.deletedIds.has(r.id)), pictures: pics };
       const body = encodeBoxCache(file);
       if (body === null) return; // Keep the last complete offline picture and its exact cursor.
       try {
