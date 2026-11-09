@@ -37,7 +37,7 @@ import type { Conversation } from "./conversations";
 import type { LogRecord, PollAnswer } from "./convlog/protocol";
 import { emptyPicture, emptyRow, foldInto, pendingOf, reduceRow, type Picture, type RowState } from "./convlog/reduce";
 import { RETRY_TEXT, makeChatView, type ChatView } from "./convlog/view";
-import { MAIN_ID } from "./threads";
+import { MAIN_ID, threadKindOf } from "./threads";
 import { probeLaptopReleaseHealth } from "./laptopReleaseHealth";
 
 export const BOX_UNREACHABLE = "Box unreachable";
@@ -452,8 +452,27 @@ class BoxChatSession {
     const reload = [...this.pics.keys()];
     this.pics.clear();
     this.projectAll();
+    this.restoreOrStartFresh();
     const active = useStore.getState().activeConversationId;
     await Promise.all([...new Set([...reload, ...(active ? [active] : [])])].filter((id) => this.rows.has(id)).map((id) => this.load(id)));
+  }
+
+  private checkedRestore = false;
+  /**
+   * The app reopened on the chat Carl was last in (src/store.ts savedActiveConvId). Once the box's list
+   * is here: if that chat is gone (deleted, never sent, or an older chat that is not continued), a new
+   * chat under Main instead. Main itself always stands.
+   */
+  private restoreOrStartFresh(): void {
+    if (this.checkedRestore) return;
+    this.checkedRestore = true;
+    const id = useStore.getState().activeConversationId;
+    if (!id || id === MAIN_ID) return;
+    const row = this.rows.get(id) as Deletable | undefined;
+    const gone = !row || row.deleted || threadKindOf({ id, kind: (row as { kind?: unknown }).kind }) === "older";
+    if (!gone) return;
+    vlog("box.feed", { state: "restore-gone", convId: id });
+    useStore.getState().newConversation();
   }
 
   /** Open a conversation: its picture from the box (a checkpoint), unless it is here already. */

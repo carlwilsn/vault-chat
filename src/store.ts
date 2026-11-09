@@ -11,7 +11,7 @@ import {
   emptyConversation,
   newMessageId,
 } from "./conversations";
-import { MAIN_ID, MAIN_TITLE, projectOfThread } from "./threads";
+import { MAIN_ID, MAIN_TITLE } from "./threads";
 
 /** Main, before the box has said anything about it (it shows as Main at once; the box's row replaces it). */
 function mainPlaceholder(): Conversation {
@@ -261,8 +261,9 @@ function savedActiveConvId(vault: string | null): string | null {
   if (!vault) return null;
   try {
     const id = localStorage.getItem(activeConvKey(vault)) ?? localStorage.getItem(`${ACTIVE_CONV_STORAGE}:${vault}`);
-    // One main conversation: the app opens on Main, or on the project thread it was last on; never an older chat.
-    return id === MAIN_ID || projectOfThread(id) ? id : null;
+    // The chat he was last in, whatever it is; once the box's list is here, one that is gone gives way
+    // to a new chat under Main (src/boxChat.ts restoreOrStartFresh).
+    return id || null;
   } catch {
     return null;
   }

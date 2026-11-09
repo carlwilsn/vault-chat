@@ -6,6 +6,7 @@ import { createProjectThread, deleteProject, newChatInProject, openProjectNotes,
 import { panelModel, type PanelEntry } from "./threads";
 import { cn } from "./lib/utils";
 import { NewProjectForm } from "./NewProjectForm";
+import { usePlaceOpen } from "./placeOpen";
 
 type Props = {
   open: boolean;
@@ -259,8 +260,9 @@ export function ThreadRow({
   const isMain = entry.type === "main";
   const chats = entry.chats;
   // Open where Carl is: a place he is in shows its chats; the others stay shut
-  // until he asks. His own click wins over that for as long as the panel is up.
-  const [opened, setOpened] = useState<boolean | null>(null);
+  // until he asks. His own click wins over that, and is kept (src/placeOpen.ts):
+  // closing the panel, the other list surface and a restart all keep it.
+  const [opened, setOpened] = usePlaceOpen(entry.id);
   const shown = opened ?? active;
   const [menu, setMenu] = useState(false);
   const [mode, setMode] = useState<null | "rename" | "confirm">(null);
