@@ -808,14 +808,14 @@ export const scenarios: Scenario[] = [
   },
   {
     id: "sync-bigfile",
-    title: "Sync — a file too large for git",
+    title: "Sync — a big file not on the box yet",
     group: "Sync",
-    notes: "A 212 MB checkpoint and a 61 MB scan kept out of git (over 50 MB).",
+    notes: "A 212 MB checkpoint and a 61 MB scan (over 50 MB, Git LFS) whose upload to the box failed.",
     build: (c) => world(c),
     host: {
       sync: {
         box: BOX,
-        reports: [{ big_files: [{ path: "{vault}/projects/bitnet-160m/results/seed43.ckpt", size: 212 * 1024 * 1024 }, { path: "{vault}/papers/scan-2026-10-01.pdf", size: 61 * 1024 * 1024 }] }],
+        reports: [{ big_upload_error: "batch request: the box answered 503", big_files: [{ path: "{vault}/projects/bitnet-160m/results/seed43.ckpt", size: 212 * 1024 * 1024 }, { path: "{vault}/papers/scan-2026-10-01.pdf", size: 61 * 1024 * 1024 }] }],
       },
     },
     fastTimers: syncTimers,

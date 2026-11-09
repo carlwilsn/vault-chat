@@ -6,10 +6,12 @@ import { spawn } from "node:child_process";
 import { realpathSync, statSync, rmSync, readFileSync, appendFileSync, mkdirSync, existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { killTree } from "./commands/proc";
+import { LFS_MIN_BYTES, lfsFilterConfig, releaseExcludedBig, syncLfsAttributes, writeLfsFilterScript } from "./lfsAttrs";
 
 export const GIT_TIMEOUT_MS = 90_000; // lib.rs:2464
 const STALE_LOCK_MS = 10_000; // lib.rs:2465
-export const MAX_FILE_BYTES = 50 * 1024 * 1024;
+/** A file over this goes through git as a Git LFS pointer, its bytes on the box (server/lfsAttrs.ts). */
+export const MAX_FILE_BYTES = LFS_MIN_BYTES;
 export const AGENT_GIT_NAME = "vault-chat-agent"; // lib.rs:2480
 export const AGENT_GIT_EMAIL = "agent@vault-chat.local"; // lib.rs:2481
 
@@ -157,8 +159,8 @@ export const ARCHIVE_RE = /\.(zip|tar|tgz|tbz2?|txz|gz|bz2|xz|zst|7z|rar)$/i;
 const BOARD_PATH_RE = /^boards\/([^./][^/]*)\//;
 
 export type StageResult = {
-  /** Over 50 MB: never staged (an untracked one is excluded for good). */
-  tooLarge: string[];
+  /** Over 50 MB: staged as Git LFS pointers (their bytes stay in the box's LFS store). */
+  lfs: string[];
   /** New archives: never staged (excluded for good); they belong in the work area. */
   archives: string[];
   /** Board folders (`boards/<slug>`) being drawn on: held out of this commit. */
@@ -180,7 +182,8 @@ export type StageOpts = {
 const boardPendingSince = new Map<string, number>();
 
 /** Stage what the box commits, by these rules (caller holds the repo lock):
- * - a file over 50 MB is never staged (an untracked one goes to .git/info/exclude);
+ * - a file over 50 MB is staged as a Git LFS pointer (its own line in .gitattributes' managed block; a deleted,
+ *   renamed or shrunk one loses it), its bytes in the box's LFS store;
  * - a new archive (.zip, .tar.gz, …) is never staged and is excluded for good: backups and exports go in the
  *   work area outside the vault;
  * - with `holdBoards`, a board folder whose files changed in the last 2 min is held back, at most 10 min from
@@ -193,11 +196,13 @@ export async function stageForCommit(repo: string, gitArgs: string[] = [], opts:
   const quietMs = opts.quietMs ?? BOARD_QUIET_MS;
   const maxHoldMs = opts.maxHoldMs ?? BOARD_MAX_HOLD_MS;
   const budget = opts.commitMaxBytes ?? COMMIT_MAX_BYTES;
-  const res: StageResult = { tooLarge: [], archives: [], heldBoards: [], deferred: [] };
+  const res: StageResult = { lfs: [], archives: [], heldBoards: [], deferred: [] };
   const excludes: string[] = [];
   // The conversations are the server's event log, never synced by git: the log stays out of it
   // for good, and the older conversation files (tracked from before) are never staged (nor deleted).
   excludeLocally(repo, CONV_LOG_DIR + "/", true);
+  await ensureLfsFilter(repo);
+  releaseExcludedBig(repo, (p) => ARCHIVE_RE.test(p));
   const changes = await changedPaths(repo);
   const sizes = new Map<string, { size: number; mtime: number }>();
   for (const c of changes) {
@@ -213,19 +218,19 @@ export async function stageForCommit(repo: string, gitArgs: string[] = [], opts:
   for (const c of changes) {
     const st = sizes.get(c.path);
     if (!st) continue;
-    if (st.size > MAX_FILE_BYTES) {
-      res.tooLarge.push(c.path);
-      // Untracked: ignore it for good (then `add -A` skips it). Tracked and
-      // grown past the cap: leave the change unstaged via a pathspec.
-      if (c.untracked) excludeLocally(repo, c.path);
-      else excludes.push(c.path);
-      out.add(c.path);
-    } else if (c.untracked && ARCHIVE_RE.test(c.path)) {
+    if (c.untracked && ARCHIVE_RE.test(c.path)) {
       res.archives.push(c.path);
       excludeLocally(repo, c.path);
       out.add(c.path);
+    } else if (st.size > MAX_FILE_BYTES) {
+      res.lfs.push(c.path);
+      // Its commit carries a pointer, not the bytes.
+      st.size = 0;
     }
   }
+  // Every file over 50 MB has its line before `add` runs the filter; the lines of deleted, renamed or shrunk
+  // ones go (a change to .gitattributes `add -A` stages with the rest). File reads only.
+  syncLfsAttributes(repo, res.lfs);
   // Boards being drawn on.
   const boards = new Map<string, { last: number; live: boolean }>();
   for (const c of changes) {
@@ -281,6 +286,27 @@ export async function stageForCommit(repo: string, gitArgs: string[] = [], opts:
   return res;
 }
 
+const lfsConfigured = new Map<string, string>();
+
+/** The box's own Git LFS filter for `repo` (server/lfsAttrs.ts): the script in .git and the repo's filter.lfs
+ * config, written only when they differ (the config checked once per process). */
+export async function ensureLfsFilter(repo: string): Promise<void> {
+  try {
+    if (!statSync(join(repo, ".git")).isDirectory()) return;
+  } catch {
+    return;
+  }
+  const gitDir = writeLfsFilterScript(repo);
+  const want = lfsFilterConfig(gitDir);
+  const key = JSON.stringify(want);
+  if (lfsConfigured.get(lockKey(repo)) === key) return;
+  for (const [k, v] of Object.entries(want)) {
+    const r = await runGit(repo, ["config", "--local", "--get", k]);
+    if (r.stdout.replace(/\r?\n$/, "") !== v) await git(repo, ["config", "--local", k, v]);
+  }
+  lfsConfigured.set(lockKey(repo), key);
+}
+
 /** The conversation event log (server/convlog). */
 export const CONV_LOG_DIR = ".vault-chat/events";
 /** Never committed by the box: the log, and the conversation files from before it. */
@@ -322,7 +348,7 @@ export function onStageResult(fn: StageListener): void {
   stageListeners.push(fn);
 }
 export function reportStageResult(repo: string, r: StageResult): void {
-  if (!r.tooLarge.length && !r.archives.length) return;
+  if (!r.archives.length) return;
   for (const fn of stageListeners) {
     try {
       fn(repo, r);

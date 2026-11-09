@@ -18,12 +18,14 @@
 //!   mission/worker/ask conversations) is authored only by the box. The laptop
 //!   resets it to `box/box` before every commit, and a merge conflict that sits
 //!   only inside the zone resolves to the box's side.
-//! - No file over 50 MB is ever committed: an untracked one goes to
-//!   `.git/info/exclude`, a tracked one that grew is left unstaged. Both are
-//!   reported. An untracked one's bytes go to the box beside git
-//!   (`PUT <box>/bigfile/<vault>?path=`, server/bigFiles.ts), in the
-//!   background, once it has been still for a minute: the box has it, GitHub
-//!   does not.
+//! - A file over 50 MB goes through git as a Git LFS pointer, its bytes on the
+//!   box: the box is the LFS server (`<box>/git/<vault>.git/info/lfs`,
+//!   server/lfs.ts; `lfs.url` names it, so GitHub only ever gets pointers).
+//!   Chosen by size, not pattern: each such file has its own line in a managed
+//!   block of `.gitattributes` (the box keeps the same block, server/lfsAttrs.ts);
+//!   a deleted, renamed or shrunk one loses it. The bytes go up (`git lfs push`)
+//!   only in a cycle that staged one, before the push of the commit pointing at
+//!   them; they come down through git-lfs's smudge when a merge checks one out.
 //! - No nested-repo / submodule automation.
 //! - Errors carry git's full stderr.
 //! - GitHub backup: when the vault has a remote named `github`, a successful
@@ -38,8 +40,9 @@
 //! Speed (every git process costs ~0.15–0.2 s on Windows): the cycle reads the
 //! repo's config once, the working tree once (`status --porcelain=v2`), the
 //! refs once after the fetch, and pushes only when the box is behind. The
-//! vault's hooks are skipped when they are only Git LFS's and LFS holds no
-//! objects (its pre-push alone ran ~18 git processes, ~5 s, on every push).
+//! vault's hooks are skipped when they are only Git LFS's (its pre-push alone
+//! ran ~18 git processes, ~5 s, on every push): the sync runs `git lfs push`
+//! itself, only when it staged a file over 50 MB.
 
 use serde::Serialize;
 use std::collections::HashMap;
@@ -460,10 +463,6 @@ pub fn discover_boxes() -> Result<Vec<FoundBox>, String> {
 pub struct BigFile {
     pub path: String,
     pub size: u64,
-    /// Tracked in git (it grew past the limit): git's copy stays on the box; never uploaded.
-    pub tracked: bool,
-    /// The box has this exact file (uploaded beside git, same size and mtime).
-    pub on_box: bool,
 }
 
 #[derive(Serialize, Clone, Debug, PartialEq, serde::Deserialize)]
@@ -496,11 +495,10 @@ pub struct BoxSyncReport {
     pub error_kind: Option<String>,
     /// Local commits the box does not have yet.
     pub changes_waiting: u32,
-    /// Files kept out of git for being over 50 MB.
+    /// Files over 50 MB (Git LFS) whose bytes the box does not have yet: their upload failed, so the
+    /// commits pointing at them wait. Retried every cycle.
     pub big_files: Vec<BigFile>,
-    /// Sending those files' bytes to the box (beside git) now.
-    pub big_uploading: bool,
-    /// The last such upload failed (retried on its own): what went wrong.
+    /// What that upload said (git-lfs's words).
     pub big_upload_error: Option<String>,
     /// GitHub backup failed (a warning, never a gate). Full stderr.
     pub github_warning: Option<String>,
@@ -622,7 +620,7 @@ fn parse_config_z(out: &str) -> RepoConfig {
 }
 
 fn read_repo_config(vault: &str) -> RepoConfig {
-    let re = r"^(remote\.(box|github|origin)\.(url|fetch)|fetch\.recursesubmodules|submodule\.recurse|user\.(name|email)|core\.hookspath)$";
+    let re = r"^(remote\.(box|github|origin)\.(url|fetch)|fetch\.recursesubmodules|submodule\.recurse|user\.(name|email)|core\.hookspath|lfs\.(url|locksverify)|filter\.lfs\.(clean|smudge|process|required))$";
     match run_git(vault, &["config", "-z", "--get-regexp", re]) {
         Ok((o, _, 0)) => parse_config_z(&o),
         _ => RepoConfig::default(),
@@ -646,19 +644,11 @@ fn is_lfs_hook(body: &str) -> bool {
         .all(|l| l.starts_with("command -v git-lfs") || l.starts_with("git lfs ") || l.starts_with("git-lfs "))
 }
 
-/// Git LFS holds objects in this repo (then its pre-push must run: it uploads them).
-fn lfs_has_objects(git_dir: &std::path::Path) -> bool {
-    std::fs::read_dir(git_dir.join("lfs").join("objects"))
-        .map(|mut d| d.next().is_some())
-        .unwrap_or(false)
-}
-
 /// The vault's hooks may be skipped for the sync's own git: there is no
-/// `core.hooksPath` anywhere, every hook in `.git/hooks` is Git LFS's, and LFS
-/// stores no objects (so its pre-push has nothing to upload and its
-/// post-commit/merge/checkout lock bookkeeping has no locked files). Checked
-/// afresh for every call (a few file reads): a `git add` that turns a file into
-/// an LFS pointer brings the hooks back before the push that needs them.
+/// `core.hooksPath` anywhere and every hook in `.git/hooks` is Git LFS's. Its
+/// pre-push upload is the sync's own `git lfs push`, run only when a file over
+/// 50 MB was staged (lfs_push_owed); its post-commit/merge/checkout lock
+/// bookkeeping has nothing to do (the box has no locks). A few file reads.
 pub(crate) fn sync_hooks_skippable(vault: &str) -> bool {
     let known = {
         let g = HOOKS_PATH_SET.lock().unwrap_or_else(|p| p.into_inner());
@@ -668,9 +658,6 @@ pub(crate) fn sync_hooks_skippable(vault: &str) -> bool {
         return false;
     }
     let gd = git_dir(vault);
-    if lfs_has_objects(&gd) {
-        return false;
-    }
     let Ok(rd) = std::fs::read_dir(gd.join("hooks")) else {
         return false;
     };
@@ -848,6 +835,10 @@ struct PersistedState {
     /// A project pulled a change from the box that its `origin` does not have yet.
     #[serde(default)]
     origin_owed: bool,
+    /// Files over 50 MB staged as LFS pointers whose bytes the box may not have yet: `git lfs push` runs before
+    /// the next push to the box, and only then.
+    #[serde(default)]
+    lfs_owed: Vec<String>,
 }
 
 fn state_path(vault: &str) -> PathBuf {
@@ -1119,73 +1110,252 @@ fn never_staged(path: &str) -> bool {
     NEVER_STAGED.iter().any(|n| path == *n || path.starts_with(&format!("{}/", n)))
 }
 
+// ---------- files over 50 MB: Git LFS, the box as its server ----------
+
+const LFS_ATTRS: &str = "filter=lfs diff=lfs merge=lfs -text";
+/// The managed block of `.gitattributes`; the same lines as server/lfsAttrs.ts writes on the box.
+const LFS_BLOCK_BEGIN: &str = "# >>> vault-chat: files over 50 MB, stored with Git LFS on the box";
+const LFS_BLOCK_END: &str = "# <<< vault-chat: files over 50 MB";
+/// Both sides add lines at once: the block merges by union (a stale line goes at the next staging).
+const LFS_SELF_UNION: &str = "/.gitattributes merge=union";
+/// A merge that checks out files over 50 MB downloads them (git-lfs smudge): far longer than local git.
+const LFS_MERGE_TIMEOUT_SECS: u64 = 1800;
+
+/// The `.gitattributes` line that sends exactly `path` through LFS.
+pub fn lfs_attr_line(path: &str) -> String {
+    let mut p = String::from("/");
+    for ch in path.chars() {
+        if matches!(ch, '\\' | '*' | '?' | '[') {
+            p.push('\\');
+        }
+        p.push(ch);
+    }
+    if p.chars().any(|c| c.is_whitespace() || c == '"') {
+        let mut q = String::from("\"");
+        for ch in p.chars() {
+            match ch {
+                '\\' => q.push_str("\\\\"),
+                '"' => q.push_str("\\\""),
+                '\t' => q.push_str("\\t"),
+                c => q.push(c),
+            }
+        }
+        q.push('"');
+        p = q;
+    }
+    format!("{} {}", p, LFS_ATTRS)
+}
+
+/// The path an `lfs_attr_line` names.
+pub fn parse_lfs_attr_line(line: &str) -> Option<String> {
+    let pat = line.strip_suffix(&format!(" {}", LFS_ATTRS))?.trim();
+    let unq: String = if pat.len() >= 2 && pat.starts_with('"') && pat.ends_with('"') {
+        let mut o = String::new();
+        let mut it = pat[1..pat.len() - 1].chars();
+        while let Some(c) = it.next() {
+            if c != '\\' {
+                o.push(c);
+                continue;
+            }
+            match it.next() {
+                Some('t') => o.push('\t'),
+                Some('n') => o.push('\n'),
+                Some(n) => o.push(n),
+                None => o.push('\\'),
+            }
+        }
+        o
+    } else {
+        pat.to_string()
+    };
+    let rest = unq.strip_prefix('/')?;
+    let mut out = String::new();
+    let mut it = rest.chars();
+    while let Some(c) = it.next() {
+        if c == '\\' {
+            out.push(it.next().unwrap_or('\\'));
+        } else {
+            out.push(c);
+        }
+    }
+    (!out.is_empty()).then_some(out)
+}
+
+/// The worktree's `.gitattributes` has the managed block (a file read).
+fn lfs_in_use(vault: &str) -> bool {
+    std::fs::read_to_string(PathBuf::from(vault).join(".gitattributes"))
+        .map(|t| t.contains(LFS_BLOCK_BEGIN))
+        .unwrap_or(false)
+}
+
+/// Rewrite the managed block of `.gitattributes`: the files it named that are still over 50 MB (in their
+/// order), then `big`. Untouched when that list is what it already says. Returns whether it changed.
+pub fn sync_lfs_attributes(vault: &str, big: &[String]) -> bool {
+    let file = PathBuf::from(vault).join(".gitattributes");
+    let cur = std::fs::read_to_string(&file).unwrap_or_default();
+    let mut kept: Vec<&str> = Vec::new();
+    let mut named: Vec<String> = Vec::new();
+    let mut has_block = false;
+    let mut inside = false;
+    for raw in cur.split('\n') {
+        let l = raw.strip_suffix('\r').unwrap_or(raw);
+        if l == LFS_BLOCK_BEGIN {
+            inside = true;
+            has_block = true;
+            continue;
+        }
+        if l == LFS_BLOCK_END {
+            inside = false;
+            continue;
+        }
+        if inside {
+            if let Some(p) = parse_lfs_attr_line(l) {
+                named.push(p);
+            }
+            continue;
+        }
+        kept.push(raw);
+    }
+    let mut want: Vec<String> = Vec::new();
+    for p in named.iter().filter(|p| is_big(vault, p)).chain(big.iter()) {
+        if !p.contains('\n') && !p.contains('\r') && !want.contains(p) {
+            want.push(p.clone());
+        }
+    }
+    if want == named && (has_block || want.is_empty()) {
+        return false;
+    }
+    let mut next = kept.join("\n").trim_end_matches('\n').to_string();
+    if !next.is_empty() {
+        next.push('\n');
+    }
+    if !want.is_empty() {
+        next.push_str(LFS_BLOCK_BEGIN);
+        next.push('\n');
+        next.push_str(LFS_SELF_UNION);
+        next.push('\n');
+        for p in &want {
+            next.push_str(&lfs_attr_line(p));
+            next.push('\n');
+        }
+        next.push_str(LFS_BLOCK_END);
+        next.push('\n');
+    }
+    next != cur && std::fs::write(&file, next).is_ok()
+}
+
+/// git-lfs as the repo's `lfs` filter (Git for Windows ships it; set here too in case its system config is
+/// not read), its endpoint the box (never GitHub's), no lock checks. A write only for a value that differs.
+fn ensure_lfs_config(vault: &str, cfg: &BoxConfig, rc: &RepoConfig) {
+    let mut want: Vec<(&str, String)> = vec![
+        ("filter.lfs.clean", "git-lfs clean -- %f".into()),
+        ("filter.lfs.smudge", "git-lfs smudge -- %f".into()),
+        ("filter.lfs.process", "git-lfs filter-process".into()),
+        ("filter.lfs.required", "true".into()),
+        ("lfs.locksverify", "false".into()),
+    ];
+    if cfg.box_url.starts_with("http://") || cfg.box_url.starts_with("https://") {
+        want.push(("lfs.url", format!("{}/info/lfs", cfg.remote_url())));
+    }
+    for (k, v) in want {
+        if rc.get(&k.to_ascii_lowercase()).map(str::trim) != Some(v.as_str()) {
+            let _ = run_git_mut(vault, &["config", k, &v]);
+        }
+    }
+}
+
+/// Before `add` turns a file into a pointer: some `lfs` filter must exist (else git would store the bytes).
+fn ensure_lfs_filter(vault: &str) -> Result<(), String> {
+    let (o, _, _) = run_git(vault, &["config", "--get", "filter.lfs.clean"])?;
+    if o.trim().is_empty() {
+        for (k, v) in [
+            ("filter.lfs.clean", "git-lfs clean -- %f"),
+            ("filter.lfs.smudge", "git-lfs smudge -- %f"),
+            ("filter.lfs.process", "git-lfs filter-process"),
+            ("filter.lfs.required", "true"),
+        ] {
+            let _ = run_git_mut(vault, &["config", k, v]);
+        }
+    }
+    Ok(())
+}
+
+/// Local git as `name`, bounded by `secs` (an `add` or merge moving files over 50 MB).
+fn sg_as_long(vault: &str, name: &str, email: &str, args: &[&str], secs: u64) -> Result<(String, String, i32), String> {
+    let n = format!("user.name={}", name);
+    let e = format!("user.email={}", email);
+    let mut all: Vec<&str> = vec!["-c", &n, "-c", &e];
+    all.extend_from_slice(args);
+    run_git_timeout(vault, &as_strs(&sync_args(vault, &all)), secs)
+}
+
+/// Seconds for moving `bytes` (at least ~1 MB/s, never under the network leash).
+fn lfs_secs(bytes: u64) -> u64 {
+    NET_TIMEOUT_SECS + bytes / (1024 * 1024)
+}
+
 /// Stage everything a box-mode commit may carry, from one `git status`:
-/// mission zone reset to the box, untracked files over 50 MB kept out via
-/// `.git/info/exclude` (entries whose file is gone or shrank are dropped
-/// again), a tracked file that grew past 50 MB left unstaged, the
-/// conversations never staged. Caller holds the repo lock. Returns the big
-/// files and whether anything was staged.
-fn stage_from_status(vault: &str, st: &WorkStatus, name: &str, email: &str) -> Result<(Vec<BigFile>, bool), String> {
+/// mission zone reset to the box, files over 50 MB as LFS pointers (each with
+/// its `.gitattributes` line first; the old exclude block's files freed into
+/// LFS too), the conversations never staged. Caller holds the repo lock.
+/// Returns the files over 50 MB it staged and whether anything was staged.
+fn stage_from_status(vault: &str, st: &WorkStatus, name: &str, email: &str) -> Result<(Vec<String>, bool), String> {
     // The mission zone and the conversation log are a vault's; a project has neither.
     let project = is_master_project(vault);
     let zone_reset = if project { Vec::new() } else { sanitize_zone_to(vault, BOX_REF) };
     if !project {
         ensure_exclude_line(vault, "/.vault-chat/events/");
     }
-    // Untracked files over 50 MB → the managed exclude block.
-    let mut excluded: Vec<String> = read_exclude_block(vault).into_iter().filter(|p| is_big(vault, p)).collect();
-    for e in st.entries.iter().filter(|e| e.untracked) {
-        if is_big(vault, &e.path) && !excluded.iter().any(|b| b == &e.path) {
-            excluded.push(e.path.clone());
+    // Files the old rule kept out of git go through LFS now.
+    let freed = read_exclude_block(vault);
+    if !freed.is_empty() {
+        write_exclude_block(vault, &[]);
+    }
+    let mut big: Vec<String> = freed.into_iter().filter(|p| is_big(vault, p)).collect();
+    for e in st.entries.iter().filter(|e| !never_staged(&e.path)) {
+        if is_big(vault, &e.path) && !big.contains(&e.path) {
+            big.push(e.path.clone());
         }
     }
-    excluded.sort();
-    write_exclude_block(vault, &excluded);
-    let mut big: Vec<BigFile> = excluded
-        .iter()
-        .map(|p| BigFile { path: p.clone(), size: file_size(vault, p).unwrap_or(0), tracked: false, on_box: false })
-        .collect();
-    // Tracked files that grew past 50 MB: staged by `add -A`, unstaged again.
-    let mut unstage: Vec<String> = Vec::new();
-    for e in st.entries.iter().filter(|e| !e.untracked) {
-        if let Some(sz) = file_size(vault, &e.path).filter(|s| *s > BOX_MAX_FILE_BYTES) {
-            unstage.push(e.path.clone());
-            if !big.iter().any(|b| b.path == e.path) {
-                big.push(BigFile { path: e.path.clone(), size: sz, tracked: true, on_box: false });
-            }
-        }
+    let attrs_changed = sync_lfs_attributes(vault, &big);
+    if !big.is_empty() {
+        ensure_lfs_filter(vault)?;
     }
-    let stageable = st
-        .entries
-        .iter()
-        .any(|e| !never_staged(&e.path) && !excluded.contains(&e.path) && !unstage.contains(&e.path));
+    let stageable = attrs_changed || !big.is_empty() || st.entries.iter().any(|e| !never_staged(&e.path));
     if stageable {
-        let (o, e, c) = sg_as(vault, name, email, &["add", "-A"])?;
+        let bytes: u64 = big.iter().filter_map(|p| file_size(vault, p)).sum();
+        let (o, e, c) = sg_as_long(vault, name, email, &["add", "-A"], if big.is_empty() { 90 } else { lfs_secs(bytes) })?;
         if c != 0 {
             return Err(full_err(&o, &e, c, "git add -A"));
         }
     }
     // The conversations never go through git in box mode: whatever `add -A`
-    // (or anyone before it) staged there is unstaged again, with the big
-    // files, in one reset — run only when there is something to undo.
-    let mut reset: Vec<&str> = vec!["reset", "-q", "--"];
+    // (or anyone before it) staged there is unstaged again — run only when
+    // there is something to undo.
     if st
         .entries
         .iter()
         .any(|e| never_staged(&e.path) && (stageable || (!e.untracked && e.x != '.')))
     {
+        let mut reset: Vec<&str> = vec!["reset", "-q", "--"];
         reset.extend(NEVER_STAGED.iter().copied());
-    }
-    reset.extend(unstage.iter().map(String::as_str));
-    if reset.len() > 3 {
         let _ = sg_mut(vault, &reset);
+    }
+    if !big.is_empty() {
+        let mut ps = load_state(vault);
+        for p in &big {
+            if !ps.lfs_owed.contains(p) {
+                ps.lfs_owed.push(p.clone());
+            }
+        }
+        save_state(vault, &ps);
     }
     Ok((big, stageable || !zone_reset.is_empty()))
 }
 
 /// Stage everything a box-mode commit may carry: mission zone reset to the
-/// box, nothing over 50 MB. Caller holds the repo lock. Returns the big files.
-pub fn box_stage_all(vault: &str, name: &str, email: &str) -> Result<Vec<BigFile>, String> {
+/// box, files over 50 MB as LFS pointers. Caller holds the repo lock. Returns those files.
+pub fn box_stage_all(vault: &str, name: &str, email: &str) -> Result<Vec<String>, String> {
     let st = read_status(vault)?;
     stage_from_status(vault, &st, name, email).map(|(big, _)| big)
 }
@@ -1211,7 +1381,7 @@ fn nothing_to_commit(out: &str, err: &str) -> bool {
 /// Commit local edits on master (no nested repos). Caller holds the lock.
 /// Steady state: nothing changed and no big file to re-check → done after one
 /// `git status` (every spawn costs ~0.15–0.2 s on Windows).
-fn commit_local(vault: &str, rc: &RepoConfig) -> Result<(bool, Vec<BigFile>), String> {
+fn commit_local(vault: &str, rc: &RepoConfig) -> Result<(bool, Vec<String>), String> {
     let st = read_status(vault)?;
     if st.entries.is_empty() && read_exclude_block(vault).is_empty() {
         return Ok((false, vec![]));
@@ -1292,12 +1462,20 @@ fn merge_gate(vault: &str, rc: &RepoConfig, refs: &Refs) -> Result<Gate, String>
         commit_local(vault, rc)?;
     }
     let (hn, he) = rc.identity();
-    let (o, e, c) = sg_as(
-        vault,
-        &hn,
-        &he,
-        &["merge", "--no-edit", "--no-verify", "-m", "vault-chat: merge box", BOX_REF],
-    )?;
+    let merge_args = ["merge", "--no-edit", "--no-verify", "-m", "vault-chat: merge box", BOX_REF];
+    // Files over 50 MB come down through git-lfs's smudge during the merge: a far longer leash then.
+    let (mut o, mut e, mut c) = if lfs_in_use(vault) {
+        sg_as_long(vault, &hn, &he, &merge_args, LFS_MERGE_TIMEOUT_SECS)?
+    } else {
+        sg_as(vault, &hn, &he, &merge_args)?
+    };
+    if c != 0 && !lfs_in_use(vault) && box_uses_lfs(vault) {
+        // The box's first file over 50 MB: its download may have outrun the short leash. Once more, long.
+        if merge_in_progress(vault) {
+            let _ = sg_mut(vault, &["merge", "--abort"]);
+        }
+        (o, e, c) = sg_as_long(vault, &hn, &he, &merge_args, LFS_MERGE_TIMEOUT_SECS)?;
+    }
     if c == 0 {
         return Ok(Gate::Merged);
     }
@@ -1338,6 +1516,11 @@ fn merge_gate(vault: &str, rc: &RepoConfig, refs: &Refs) -> Result<Gate, String>
         let _ = sg_mut(vault, &["merge", "--abort"]);
     }
     Err(full_err(&o, &e, c, "git merge box/box"))
+}
+
+/// box/box has files over 50 MB (asked only after a merge failed).
+fn box_uses_lfs(vault: &str) -> bool {
+    matches!(run_git(vault, &["cat-file", "-p", &format!("{}:.gitattributes", BOX_REF)]), Ok((o, _, 0)) if o.contains(LFS_BLOCK_BEGIN))
 }
 
 /// What the merge just made changed: `git merge` left the pre-merge HEAD in ORIG_HEAD.
@@ -1746,13 +1929,14 @@ fn cycle(vault: &str, push: bool) -> BoxSyncReport {
         rc = read_repo_config(vault);
         remember_hooks_path(vault, &rc);
         ensure_box_remote(vault, &cfg, &rc)?;
+        ensure_lfs_config(vault, &cfg, &rc);
         if merge_in_progress(vault) {
             // Someone is resolving by hand: never abort their merge, never
             // commit over it.
             return Ok(true);
         }
         prepare_box_repo(vault, &rc);
-        let (committed, big) = commit_local(vault, &rc)?;
+        let (committed, _) = commit_local(vault, &rc)?;
         if committed {
             // Our own `add -A` never stages an ignored file: the sweep that
             // just ran still holds for the index this commit wrote.
@@ -1760,10 +1944,8 @@ fn cycle(vault: &str, push: bool) -> BoxSyncReport {
             g.get_or_insert_with(HashMap::new).insert(vault.to_string(), untrack_key(vault));
         }
         r.committed = committed;
-        r.big_files = big;
         Ok(false)
     });
-    note_big_on_box(vault, &cfg, &mut r);
     let hand_merge = match local {
         Ok(h) => h,
         Err(e) => {
@@ -1864,7 +2046,35 @@ fn cycle(vault: &str, push: bool) -> BoxSyncReport {
             .map(|t| t.elapsed() >= PUSH_VERIFY_EVERY)
             .unwrap_or(true)
     };
-    if box_has_master && !verify_due {
+    // 4a. Files over 50 MB staged since the last upload: their bytes go to the box's LFS store first, and the
+    // commits pointing at them wait until they have (never a pointer on the box without its bytes).
+    let owed = load_state(vault).lfs_owed;
+    let mut lfs_blocked = false;
+    if !owed.is_empty() {
+        let bytes: u64 = owed.iter().filter_map(|p| file_size(vault, p)).sum();
+        let args = sync_args(vault, &["lfs", "push", BOX_REMOTE, &cfg.branch]);
+        match run_git_timeout(vault, &as_strs(&args), lfs_secs(bytes)) {
+            Ok((_, _, 0)) => {
+                let mut ps = load_state(vault);
+                ps.lfs_owed.retain(|p| !owed.contains(p));
+                save_state(vault, &ps);
+            }
+            res => {
+                lfs_blocked = true;
+                r.big_upload_error = Some(match res {
+                    Ok((o, e, c)) => full_err(&o, &e, c, &format!("git lfs push box {}", cfg.branch)),
+                    Err(e) => e,
+                });
+                r.big_files = owed
+                    .iter()
+                    .map(|p| BigFile { path: p.clone(), size: file_size(vault, p).unwrap_or(0) })
+                    .collect();
+            }
+        }
+    }
+    if lfs_blocked {
+        r.changes_waiting = changes_waiting(vault);
+    } else if box_has_master && !verify_due {
         if r.error.is_none() {
             r.ok = true;
         }
@@ -1895,11 +2105,10 @@ fn cycle(vault: &str, push: bool) -> BoxSyncReport {
         }
     }
 
-    // 5. GitHub backup, after a good cycle only, in the background. Files over
-    // 50 MB go to the box beside git, also in the background.
+    // 5. GitHub backup, after a good cycle only, in the background (pointers only: the hooks are off and
+    // lfs.url names the box).
     if r.ok {
         github_backup(vault, &rc, &mut r);
-        start_big_upload(vault, &cfg, &mut r);
     }
     // 6. A project with its own remote: the box has no credentials, so after this laptop pulls a change from the
     // box (a kept change, a box edit) it pushes the branch to `origin` itself. Owed until it succeeds.
@@ -1927,193 +2136,13 @@ fn cycle(vault: &str, push: bool) -> BoxSyncReport {
     }
     r.message = match (&r.error, &r.conflict, r.merged) {
         (Some(_), _, _) => "sync failed".into(),
+        (None, _, _) if lfs_blocked => "a file over 50 MB could not be sent to the box; retrying".into(),
         (None, Some(c), _) => format!("merge gate closed: conflict in {}", c.files.join(", ")),
         (None, None, true) => "merged box into master; pushed".into(),
         (None, None, false) if hand_merge => r.message.clone(),
         _ => "synced".into(),
     };
     r
-}
-
-// ---------- files over 50 MB, to the box beside git ----------
-
-/// A file is sent only once it has been still this long (a recording being written grows every second).
-const BIG_QUIET: Duration = Duration::from_secs(60);
-/// After a failed upload, the next try waits this long.
-const BIG_RETRY: Duration = Duration::from_secs(600);
-const BIG_RECORD: &str = "vault-chat-bigfiles.json";
-
-#[derive(Default)]
-struct BigUploadState {
-    running: bool,
-    error: Option<String>,
-    failed_at: Option<Instant>,
-}
-
-static BIG_UPLOADS: Mutex<Option<HashMap<String, BigUploadState>>> = Mutex::new(None);
-
-/// What this laptop sent the box: `{"target": "<url>", "files": {"<path>": [size, mtime_ms]}}` in .git.
-#[derive(serde::Serialize, serde::Deserialize, Default, Clone, Debug, PartialEq)]
-struct BigRecord {
-    target: String,
-    files: HashMap<String, (u64, u64)>,
-}
-
-/// Where a repo's big files go on the box: beside its git endpoint.
-pub fn big_target(cfg: &BoxConfig) -> Option<String> {
-    if !(cfg.box_url.starts_with("http://") || cfg.box_url.starts_with("https://")) {
-        return None;
-    }
-    Some(if cfg.project {
-        format!("{}/bigfile/projects/{}", cfg.box_url, cfg.vault)
-    } else {
-        format!("{}/bigfile/{}", cfg.box_url, cfg.vault)
-    })
-}
-
-fn load_big_record(vault: &str, target: &str) -> BigRecord {
-    std::fs::read_to_string(git_dir(vault).join(BIG_RECORD))
-        .ok()
-        .and_then(|t| serde_json::from_str::<BigRecord>(&t).ok())
-        .filter(|r| r.target == target)
-        .unwrap_or_else(|| BigRecord { target: target.to_string(), files: HashMap::new() })
-}
-
-fn save_big_record(vault: &str, rec: &BigRecord) {
-    if let Ok(t) = serde_json::to_string(rec) {
-        let _ = std::fs::write(git_dir(vault).join(BIG_RECORD), t);
-    }
-}
-
-/// (size, mtime in ms) of a file, now.
-fn size_mtime(vault: &str, rel: &str) -> Option<(u64, u64)> {
-    let m = std::fs::metadata(PathBuf::from(vault).join(rel)).ok().filter(|m| m.is_file())?;
-    let mt = m
-        .modified()
-        .ok()
-        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0);
-    Some((m.len(), mt))
-}
-
-/// The big files the box lacks: untracked, still for `quiet`, and not sent as they are now.
-fn big_to_send(vault: &str, rec: &BigRecord, big: &[BigFile], now: u64, quiet: Duration) -> Vec<(String, u64, u64)> {
-    big.iter()
-        .filter(|b| !b.tracked)
-        .filter_map(|b| size_mtime(vault, &b.path).map(|(sz, mt)| (b.path.clone(), sz, mt)))
-        .filter(|(p, sz, mt)| rec.files.get(p) != Some(&(*sz, *mt)) && now.saturating_sub(*mt) >= quiet.as_millis() as u64)
-        .collect()
-}
-
-/// Mark the big files the box already has, and report the uploads' state.
-fn note_big_on_box(vault: &str, cfg: &BoxConfig, r: &mut BoxSyncReport) {
-    let Some(target) = big_target(cfg) else { return };
-    if r.big_files.is_empty() {
-        return;
-    }
-    let rec = load_big_record(vault, &target);
-    for b in r.big_files.iter_mut().filter(|b| !b.tracked) {
-        b.on_box = size_mtime(vault, &b.path).is_some_and(|sm| rec.files.get(&b.path) == Some(&sm));
-    }
-    let g = BIG_UPLOADS.lock().unwrap_or_else(|p| p.into_inner());
-    if let Some(st) = g.as_ref().and_then(|m| m.get(vault)) {
-        r.big_uploading = st.running;
-        r.big_upload_error = st.error.clone();
-    }
-}
-
-/// Start sending the big files the box lacks, one at a time on their own thread (never on the sync's path).
-fn start_big_upload(vault: &str, cfg: &BoxConfig, r: &mut BoxSyncReport) {
-    let Some(target) = big_target(cfg) else { return };
-    let rec = load_big_record(vault, &target);
-    // Forget files that are no longer big here (deleted, shrunk into git).
-    if rec.files.keys().any(|p| !r.big_files.iter().any(|b| &b.path == p)) {
-        let mut pruned = rec.clone();
-        pruned.files.retain(|p, _| r.big_files.iter().any(|b| &b.path == p));
-        save_big_record(vault, &pruned);
-    }
-    let todo = big_to_send(vault, &rec, &r.big_files, now_ms(), BIG_QUIET);
-    if todo.is_empty() {
-        return;
-    }
-    {
-        let mut g = BIG_UPLOADS.lock().unwrap_or_else(|p| p.into_inner());
-        let st = g.get_or_insert_with(HashMap::new).entry(vault.to_string()).or_default();
-        if st.running || st.failed_at.is_some_and(|t| t.elapsed() < BIG_RETRY) {
-            return;
-        }
-        st.running = true;
-    }
-    r.big_uploading = true;
-    let v = vault.to_string();
-    std::thread::spawn(move || {
-        let mut err = None;
-        for (path, size, mtime) in todo {
-            match upload_big_file(&target, &v, &path, mtime) {
-                Ok(()) => {
-                    // Recorded only if it did not change while it went up.
-                    if size_mtime(&v, &path) == Some((size, mtime)) {
-                        let mut rec = load_big_record(&v, &target);
-                        rec.files.insert(path, (size, mtime));
-                        save_big_record(&v, &rec);
-                    }
-                }
-                Err(e) => {
-                    err = Some(format!("{}: {}", path, e));
-                    break;
-                }
-            }
-        }
-        let mut g = BIG_UPLOADS.lock().unwrap_or_else(|p| p.into_inner());
-        let st = g.get_or_insert_with(HashMap::new).entry(v).or_default();
-        st.running = false;
-        st.failed_at = err.as_ref().map(|_| Instant::now());
-        st.error = err;
-    });
-}
-
-/// PUT one file's bytes to `<target>?path=<rel>&mtime=<ms>`, streamed from disk.
-pub fn upload_big_file(target: &str, vault: &str, rel: &str, mtime: u64) -> Result<(), String> {
-    let file = std::fs::File::open(PathBuf::from(vault).join(rel)).map_err(|e| e.to_string())?;
-    let len = file.metadata().map_err(|e| e.to_string())?.len();
-    let url = reqwest::Url::parse_with_params(target, &[("path", rel), ("mtime", mtime.to_string().as_str())])
-        .map_err(|e| e.to_string())?;
-    let client = reqwest::blocking::Client::builder()
-        .user_agent("vault-chat/box-sync")
-        .connect_timeout(Duration::from_secs(15))
-        // At least ~1 MB/s, and never under 2 min.
-        .timeout(Duration::from_secs(120 + len / (1024 * 1024)))
-        .build()
-        .map_err(|e| e.to_string())?;
-    let resp = client
-        .put(url)
-        .header("Content-Type", "application/octet-stream")
-        .body(reqwest::blocking::Body::sized(file, len))
-        .send()
-        .map_err(|e| e.to_string())?;
-    let status = resp.status().as_u16();
-    if status == 200 {
-        return Ok(());
-    }
-    let text = resp.text().unwrap_or_default();
-    Err(format!("the box answered {}: {}", status, text.chars().take(300).collect::<String>()))
-}
-
-/// Tests: wait until no big-file upload is running for `vault`.
-#[cfg(test)]
-pub(crate) fn wait_big_upload(vault: &str) {
-    let end = Instant::now() + Duration::from_secs(120);
-    while Instant::now() < end {
-        let running = {
-            let g = BIG_UPLOADS.lock().unwrap_or_else(|p| p.into_inner());
-            g.as_ref().and_then(|m| m.get(vault)).map(|s| s.running).unwrap_or(false)
-        };
-        if !running {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
 }
 
 /// POST a JSON body to `url` (the box's routes). Reqwest, so no CORS.

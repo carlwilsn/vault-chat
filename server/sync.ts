@@ -3,7 +3,8 @@
 //   • every cycle (15 s, plus after each mission turn):
 //       1. commit the working copy as the agent ("[agent] …"), under the
 //          shared repo lock, by the staging rules (git.ts stageForCommit):
-//          never a file over 50 MB nor a new archive; a board being drawn
+//          a file over 50 MB as a Git LFS pointer (its bytes in the box's
+//          LFS store, server/lfs.ts), never a new archive; a board being drawn
 //          on waits until it is still (2 min, at most 10); at most 100 MB
 //          of new content a commit;
 //       2. push `box` to the bare repo (a local path);
@@ -15,8 +16,9 @@
 import { existsSync, mkdirSync, writeFileSync, chmodSync, readFileSync, readdirSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { loadConfig } from "./config";
+import { releaseExcludedBig } from "./lfsAttrs";
 import { masterDir, masterRepoNames, repoPaths, startMasterProjects, triggerProject, flushProject } from "./master";
-import { runGit, git, withRepoLock, abortStuckMergeOrRebase, stageForCommit, onStageResult, sameRepo, AGENT_IDENTITY_ARGS, type StageResult } from "./git";
+import { runGit, git, withRepoLock, abortStuckMergeOrRebase, stageForCommit, onStageResult, sameRepo, ensureLfsFilter, ARCHIVE_RE, AGENT_IDENTITY_ARGS, type StageResult } from "./git";
 
 /** The box's branch in the hub, written only by the box. */
 const BOX_BRANCH = "box";
@@ -47,7 +49,6 @@ export type SyncStatus = {
   /** box commits not in master / master commits not in box. */
   ahead: number | null;
   behind: number | null;
-  largeFilesSkipped: string[];
   /** New archives the box never commits (they belong in ~/agent-work/<vault>/). */
   archivesSkipped: string[];
   /** Boards being drawn on, not committed yet (they go once still). */
@@ -92,7 +93,6 @@ export class BoxSync {
       master: null,
       ahead: null,
       behind: null,
-      largeFilesSkipped: [],
       archivesSkipped: [],
       heldBoards: [],
       mirror: "off — the box does not mirror to GitHub; the laptop pushes master and box to its github remote",
@@ -250,6 +250,8 @@ exit 0
         const head = (await runGit(vault, ["symbolic-ref", "--short", "HEAD"])).stdout.trim();
         if (head !== this.BRANCH) throw new Error(`working copy is on "${head || "(detached)"}", not "${this.BRANCH}"`);
         await abortStuckMergeOrRebase(vault);
+        // Files over 50 MB: the working copy gets their real bytes on checkout (the fast-forward below).
+        await ensureLfsFilter(vault);
 
         // 1. Commit.
         try {
@@ -343,8 +345,10 @@ exit 0
   /** Commit the working copy as the agent (caller holds the repo lock). `hold`: boards being drawn on wait. */
   private async commitWorkingCopy(hold: boolean): Promise<string> {
     const vault = this.vault;
+    // A file the old rule kept out of git (over 50 MB, in .git/info/exclude) goes through LFS now.
+    const freed = releaseExcludedBig(vault, (p) => ARCHIVE_RE.test(p));
     const st = await git(vault, ["status", "--porcelain", "--ignore-submodules=dirty"]);
-    if (!st.trim()) {
+    if (!st.trim() && !freed.length) {
       this.status.heldBoards = [];
       return "clean";
     }
@@ -356,7 +360,7 @@ exit 0
       r.heldBoards.length ? `held while drawn on: ${r.heldBoards.join(", ")}` : "",
       r.deferred.length ? `${r.deferred.length} file(s) left for the next commit (100 MB a commit)` : "",
       r.archives.length ? `${r.archives.length} archive(s) kept out` : "",
-      r.tooLarge.length ? `${r.tooLarge.length} file(s) over 50 MB kept out` : "",
+      r.lfs.length ? `${r.lfs.length} file(s) over 50 MB as Git LFS pointers` : "",
     ].filter(Boolean);
     const tail = notes.length ? `; ${notes.join("; ")}` : "";
     if (staged.code === 0) return `nothing to commit${tail}`;
@@ -409,7 +413,7 @@ exit 0
 
   /** What a commit left out for good: in the status, and one alert per new path. */
   private noteStaged(r: StageResult): void {
-    const fresh = (paths: string[], into: "largeFilesSkipped" | "archivesSkipped") => {
+    const fresh = (paths: string[], into: "archivesSkipped") => {
       if (!paths.length) return [];
       const set = new Set(this.status[into]);
       for (const p of paths) set.add(p);
@@ -419,10 +423,6 @@ exit 0
       return out;
     };
     const list = (ps: string[]) => `${ps.slice(0, 5).join(", ")}${ps.length > 5 ? ` and ${ps.length - 5} more` : ""}`;
-    const large = fresh(r.tooLarge, "largeFilesSkipped");
-    if (large.length) {
-      void this.alert("Needs you: a file is too large to sync", `Not committed (over 50 MB): ${list(large)}. It stays on the box only.`, "vault-chat-sync").catch(() => {});
-    }
     const arch = fresh(r.archives, "archivesSkipped");
     if (arch.length) {
       const dirs = [...new Set(arch.map((p) => (p.includes("/") ? p.slice(0, p.lastIndexOf("/") + 1) : "the vault's top folder")))];
@@ -568,5 +568,5 @@ export function syncStatus(): unknown {
 export function syncSummary(): Record<string, unknown> {
   if (!instance) return { enabled: false, ok: false, error: setupError };
   const s = instance.status;
-  return { enabled: true, ok: s.ok, lastOkAt: s.lastOkAt, failingSince: s.failingSince, lastError: s.lastError, ahead: s.ahead, behind: s.behind, largeFilesSkipped: s.largeFilesSkipped.length, archivesSkipped: s.archivesSkipped.length, heldBoards: s.heldBoards };
+  return { enabled: true, ok: s.ok, lastOkAt: s.lastOkAt, failingSince: s.failingSince, lastError: s.lastError, ahead: s.ahead, behind: s.behind, archivesSkipped: s.archivesSkipped.length, heldBoards: s.heldBoards };
 }

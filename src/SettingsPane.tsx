@@ -1118,11 +1118,11 @@ function BoxSyncPanel({ vault, box, onDisconnected }: { vault: string; box: BoxC
           "warn",
         )}
       {r && !r.conflict && row("Merge gate", "open")}
-      {r && r.big_files.length > 0 &&
+      {r && r.big_upload_error && r.big_files.length > 0 &&
         row(
-          "Kept out of git",
-          r.big_files.map((b) => `${b.path} (${fmtSize(b.size)}${b.on_box ? ", on the box" : ""})`).join(", "),
-          r.big_files.some((b) => !b.on_box) ? "warn" : undefined,
+          "Not on the box yet",
+          r.big_files.map((b) => `${b.path} (${fmtSize(b.size)})`).join(", ") + " — over 50 MB; sending failed, retried every sync",
+          "warn",
         )}
       {r &&
         row(

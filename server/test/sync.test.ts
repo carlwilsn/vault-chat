@@ -112,7 +112,7 @@ describe("box sync loop", () => {
     expect(git(box, "log", "--merges", "--format=%an", "HEAD").trim().split("\n").filter(Boolean)).not.toContain("vault-chat-agent");
   });
 
-  it("refuses a file over 50 MB: not committed, excluded, reported, alerted once", async () => {
+  it("commits a file over 50 MB as a Git LFS pointer: the bytes stay in the working copy and the LFS store, no alert", async () => {
     const big = join(box, "data", "huge.bin");
     mkdirSync(join(box, "data"), { recursive: true });
     const fd = openSync(big, "w");
@@ -123,12 +123,13 @@ describe("box sync loop", () => {
     expect(sync.status.ok).toBe(true);
     const tracked = git(box, "ls-files").split("\n");
     expect(tracked).toContain("small.md");
-    expect(tracked).not.toContain("data/huge.bin");
-    expect(readFileSync(join(box, ".git", "info", "exclude"), "utf8")).toContain("/data/huge.bin");
-    expect(sync.status.largeFilesSkipped).toEqual(["data/huge.bin"]);
-    expect(alerts.filter((a) => a.title === "Needs you: a file is too large to sync")).toHaveLength(1);
+    expect(tracked).toContain("data/huge.bin");
+    const pointer = sh(bare, "git", ["show", "box:data/huge.bin"]);
+    expect(pointer).toMatch(/^version https:\/\/git-lfs\.github\.com\/spec\/v1\noid sha256:[0-9a-f]{64}\nsize 52428801\n$/);
+    expect(sh(bare, "git", ["show", "box:.gitattributes"])).toContain("/data/huge.bin filter=lfs diff=lfs merge=lfs -text");
+    expect(readFileSync(big).length).toBe(50 * 1024 * 1024 + 1);
+    expect(alerts).toEqual([]);
     await sync.runOnce();
-    expect(alerts.filter((a) => a.title === "Needs you: a file is too large to sync")).toHaveLength(1);
     expect(git(box, "status", "--porcelain").trim()).toBe("");
   });
 

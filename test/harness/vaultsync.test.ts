@@ -260,7 +260,7 @@ test("a failing GitHub backup leaves git's own words in sync-log.jsonl, once, an
   assert.equal(vs.githubLogLine(b.sig, { ok: true, github_warning: null, github_pushed_at: 3 } as any).line, null);
 });
 
-test("a file over 50 MB: the chip shows only while the box lacks it (sent beside git, it needs nothing)", () => {
+test("a file over 50 MB: no chip while its bytes reach the box (Git LFS); one only when sending them fails", () => {
   const now = Date.now();
   const st = (big_files: any[], extra: any = {}) => ({
     vault: "/v",
@@ -275,15 +275,14 @@ test("a file over 50 MB: the chip shows only while the box lacks it (sent beside
     tailscale: null,
     attention: null,
   });
-  const rec = { path: "Recordings/screen.mp4", size: 67 * 1024 * 1024, tracked: false };
-  const a = vs.boxAttentionOf(st([{ ...rec, on_box: false }], { big_uploading: true }), now)!;
+  const rec = { path: "Recordings/screen.mp4", size: 67 * 1024 * 1024 };
+  assert.equal(vs.boxAttentionOf(st([]), now), null);
+  assert.equal(vs.boxAttentionOf(st([rec]), now), null, "no failure, no chip");
+  const a = vs.boxAttentionOf(st([rec], { big_upload_error: "batch: the box answered 500" }), now)!;
   assert.equal(a.kind, "big");
-  assert.equal(a.text, "File too large: screen.mp4");
-  assert.match(a.detail, /sending to the box now:\n  Recordings\/screen\.mp4 \(67/);
-  assert.doesNotMatch(a.detail, /GitHub don't have/);
-  assert.match(vs.boxAttentionOf(st([{ ...rec, on_box: false }], { big_upload_error: "the box answered 500" }), now)!.detail, /retried on its own\): the box answered 500/);
-  assert.equal(vs.boxAttentionOf(st([{ ...rec, on_box: true }]), now), null);
-  const grown = vs.boxAttentionOf(st([{ path: "data.bin", size: 60 * 1024 * 1024, tracked: true, on_box: false }]), now)!;
-  assert.match(grown.detail, /keep the old version/);
-  assert.deepEqual(vs.boxLacks({ big_files: [{ ...rec, on_box: true }, { path: "x", size: 1 }] } as any).map((b) => b.path), ["x"]);
+  assert.equal(a.text, "Not on the box yet: screen.mp4");
+  assert.match(a.detail, /retried every sync:\n  Recordings\/screen\.mp4 \(67/);
+  assert.match(a.detail, /What git-lfs said:\nbatch: the box answered 500/);
+  assert.doesNotMatch(a.detail, /too large|kept out of git/);
+  assert.deepEqual(vs.boxLacks({ big_files: [rec], big_upload_error: null } as any), []);
 });

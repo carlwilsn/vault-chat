@@ -35,6 +35,7 @@ export type BoxReport = {
   error_kind: "unreachable" | "git" | null;
   changes_waiting: number;
   big_files: { path: string; size: number }[];
+  big_upload_error?: string | null;
   github_warning: string | null;
   github_pushed_at: number | null;
 };

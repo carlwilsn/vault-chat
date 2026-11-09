@@ -269,8 +269,8 @@ export function Titlebar() {
 
 // Box sync chip: shown ONLY when something needs attention (a conflict that
 // closed the merge gate, Tailscale on this laptop not connected (at once, with
-// Open Tailscale), the box unreachable for over a minute, a file kept
-// out of git for being over 50 MB that the box lacks, a GitHub backup failing for 10 min).
+// Open Tailscale), the box unreachable for over a minute, a file over 50 MB
+// whose bytes failed to reach the box's LFS store, a GitHub backup failing for 10 min).
 // Amber, red after 10 minutes. Click for the details.
 function SyncChip() {
   const [st, setSt] = useState<BoxSyncState | null>(null);
@@ -321,7 +321,7 @@ function SyncChip() {
         : kind === "offline"
         ? "Edits are committed here and go up when the box is back."
         : kind === "big"
-          ? "These stay on this machine only. Move them out of the vault, or keep them here knowingly."
+          ? "They are safe on this machine; sync sends them as soon as the box takes them."
           : kind === "github"
             ? "The box still has everything; only the GitHub copy is behind."
             : "Ask the agent to look at this sync error.";

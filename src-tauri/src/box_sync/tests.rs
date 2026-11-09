@@ -281,39 +281,129 @@ fn mission_zone_is_never_written_by_the_laptop() {
     r.done();
 }
 
+fn big_body(seed: u8, n: u64) -> Vec<u8> {
+    (0..n).map(|i| if i % 4096 == 0 { ((i / 4096) as u8).wrapping_add(seed) } else { seed }).collect()
+}
+
+fn lfs_object(dir: &Path, pointer: &str) -> PathBuf {
+    let oid = pointer.lines().find_map(|l| l.strip_prefix("oid sha256:")).expect("an LFS pointer").to_string();
+    dir.join("lfs").join("objects").join(&oid[0..2]).join(&oid[2..4]).join(&oid)
+}
+
+/// Files over 50 MB go through git as LFS pointers, their bytes to the box's LFS store (here the bare repo's
+/// own, git-lfs's local transfer): laptop → box, box → laptop, and a delete and a rename both ways.
 #[test]
-fn files_over_50mb_stay_out_of_git() {
+fn files_over_50mb_go_through_lfs_both_ways() {
     let r = rig("big");
-    let f = std::fs::File::create(r.laptop.join("data.bin")).unwrap();
-    f.set_len(BOX_MAX_FILE_BYTES + 1).unwrap();
-    drop(f);
+    let size = BOX_MAX_FILE_BYTES + 1;
+    let body = big_body(7, size);
+    write(&r.laptop, "Rec/.keep", "");
+    std::fs::write(r.laptop.join("Rec/screen 1.mp4"), &body).unwrap();
     write(&r.laptop, "small.md", "small\n");
     let rep = r.cycle();
-    assert!(rep.ok, "{:?}", rep.error);
-    assert_eq!(rep.big_files.iter().map(|b| b.path.as_str()).collect::<Vec<_>>(), vec!["data.bin"]);
-    assert_ne!(git_code(&r.laptop, &["cat-file", "-e", "HEAD:data.bin"]), 0, "big file not committed");
-    assert_eq!(git_code(&r.laptop, &["cat-file", "-e", "HEAD:small.md"]), 0);
-    assert!(read(&r.laptop, ".git/info/exclude").contains("/data.bin"));
-    // A tracked file that grows past the limit is left unstaged, not committed.
-    r.laptop_commit(&[("grows.bin", "tiny")], "tiny");
-    let f = std::fs::OpenOptions::new().write(true).open(r.laptop.join("grows.bin")).unwrap();
-    f.set_len(BOX_MAX_FILE_BYTES + 10).unwrap();
-    drop(f);
+    assert!(rep.ok && rep.committed, "{:?}", rep);
+    assert!(rep.big_files.is_empty() && rep.big_upload_error.is_none(), "{:?}", rep);
+    let ptr = git(&r.bare, &["show", "master:Rec/screen 1.mp4"]);
+    assert!(ptr.starts_with("version https://git-lfs.github.com/spec/v1\noid sha256:"), "{}", ptr);
+    assert!(ptr.ends_with(&format!("size {}", size)), "{}", ptr);
+    assert!(git(&r.bare, &["show", "master:.gitattributes"]).contains(&lfs_attr_line("Rec/screen 1.mp4")));
+    assert_eq!(std::fs::metadata(lfs_object(&r.bare, &ptr)).unwrap().len(), size, "the bytes went up before the commit");
+    assert_eq!(std::fs::read(r.laptop.join("Rec/screen 1.mp4")).unwrap(), body, "the laptop keeps the real file");
+    assert!(load_state(&s(&r.laptop)).lfs_owed.is_empty());
+    assert!(git(&r.laptop, &["status", "--porcelain"]).is_empty());
+
+    // The box's working copy gets the real bytes.
+    git(&r.boxwc, &["fetch", "-q", "origin"]);
+    git(&r.boxwc, &["merge", "-q", "--no-edit", "origin/master"]);
+    assert_eq!(std::fs::read(r.boxwc.join("Rec/screen 1.mp4")).unwrap(), body);
+
+    // A big file made on the box (what server/lfsAttrs.ts does there) reaches the laptop whole.
+    let body2 = big_body(9, size + 5);
+    std::fs::write(r.boxwc.join("made-on-box.bin"), &body2).unwrap();
+    assert!(sync_lfs_attributes(&s(&r.boxwc), &["made-on-box.bin".to_string()]));
+    git(&r.boxwc, &["add", "-A"]);
+    git(&r.boxwc, &["commit", "-q", "-m", "box recording"]);
+    git(&r.boxwc, &["lfs", "push", "origin", "box"]);
+    git(&r.boxwc, &["push", "-q", "origin", "box"]);
     let rep = r.cycle();
-    assert!(rep.big_files.iter().any(|b| b.path == "grows.bin"), "{:?}", rep.big_files);
-    assert_eq!(git(&r.laptop, &["show", "HEAD:grows.bin"]), "tiny");
-    // The agent's commit path obeys the same rule.
-    let committed = tauri::async_runtime::block_on(crate::git_commit_all(s(&r.laptop), "agent turn".into(), Some(true), None, None, None)).unwrap();
-    assert!(committed.is_none(), "nothing committable: {:?}", committed);
-    assert_eq!(git(&r.laptop, &["show", "HEAD:grows.bin"]), "tiny");
-    // Once it shrinks again, the exclude entry goes away and it syncs.
-    std::fs::write(r.laptop.join("data.bin"), "now small\n").unwrap();
-    std::fs::write(r.laptop.join("grows.bin"), "small again").unwrap();
+    assert!(rep.ok && rep.merged, "{:?}", rep);
+    assert_eq!(std::fs::read(r.laptop.join("made-on-box.bin")).unwrap(), body2);
+    assert!(git(&r.laptop, &["status", "--porcelain"]).is_empty());
+
+    // A delete and a rename on the laptop: the pointer and its line go, the new path gets one.
+    std::fs::remove_file(r.laptop.join("Rec/screen 1.mp4")).unwrap();
+    std::fs::create_dir_all(r.laptop.join("moved")).unwrap();
+    std::fs::rename(r.laptop.join("made-on-box.bin"), r.laptop.join("moved/renamed.bin")).unwrap();
     let rep = r.cycle();
-    assert!(rep.big_files.is_empty(), "{:?}", rep.big_files);
-    assert!(!read(&r.laptop, ".git/info/exclude").contains("data.bin"));
-    assert_eq!(git(&r.bare, &["show", "master:data.bin"]), "now small");
+    assert!(rep.ok && rep.committed, "{:?}", rep);
+    assert_ne!(git_code(&r.bare, &["cat-file", "-e", "master:Rec/screen 1.mp4"]), 0);
+    assert_ne!(git_code(&r.bare, &["cat-file", "-e", "master:made-on-box.bin"]), 0);
+    let attrs = git(&r.bare, &["show", "master:.gitattributes"]);
+    assert!(!attrs.contains("screen 1.mp4") && !attrs.contains("made-on-box.bin"), "{}", attrs);
+    assert!(attrs.contains(&lfs_attr_line("moved/renamed.bin")), "{}", attrs);
+    assert!(git(&r.bare, &["show", "master:moved/renamed.bin"]).starts_with("version https://git-lfs"));
+    git(&r.boxwc, &["fetch", "-q", "origin"]);
+    git(&r.boxwc, &["merge", "-q", "--no-edit", "origin/master"]);
+    assert!(!r.boxwc.join("Rec/screen 1.mp4").exists() && !r.boxwc.join("made-on-box.bin").exists());
+    assert_eq!(std::fs::read(r.boxwc.join("moved/renamed.bin")).unwrap(), body2);
+
+    // Shrunk under 50 MB: back to a normal git file. And a cycle with no big file never runs git-lfs.
+    std::fs::write(r.laptop.join("moved/renamed.bin"), "small now\n").unwrap();
+    let rep = r.cycle();
+    assert!(rep.ok, "{:?}", rep);
+    assert_eq!(git(&r.bare, &["show", "master:moved/renamed.bin"]), "small now");
+    assert!(!read(&r.laptop, ".gitattributes").contains("renamed.bin"));
+    assert!(load_state(&s(&r.laptop)).lfs_owed.is_empty());
     r.done();
+}
+
+/// The old rule's exclude block: its files are freed into LFS.
+#[test]
+fn files_the_old_rule_kept_out_go_through_lfs() {
+    let r = rig("bigmigrate");
+    let size = BOX_MAX_FILE_BYTES + 3;
+    std::fs::write(r.laptop.join("old rec.mp4"), big_body(3, size)).unwrap();
+    write(
+        &r.laptop,
+        ".git/info/exclude",
+        "# >>> vault-chat: files over 50 MB, kept out of git\n/old\\ rec.mp4\n# <<< vault-chat\n",
+    );
+    assert!(git(&r.laptop, &["status", "--porcelain"]).is_empty());
+    let rep = r.cycle();
+    assert!(rep.ok && rep.committed, "{:?}", rep);
+    assert!(!read(&r.laptop, ".git/info/exclude").contains("old"));
+    let ptr = git(&r.bare, &["show", "master:old rec.mp4"]);
+    assert_eq!(std::fs::metadata(lfs_object(&r.bare, &ptr)).unwrap().len(), size);
+    r.done();
+}
+
+#[test]
+fn lfs_attr_lines_round_trip_and_keep_their_order() {
+    for p in ["Recordings/screen 1.mp4", "a*b?[c].bin", "quote\"d.mov", "back\\slash.bin", "plain/x.ckpt", "tab\there.bin"] {
+        assert_eq!(parse_lfs_attr_line(&lfs_attr_line(p)).as_deref(), Some(p), "{}", lfs_attr_line(p));
+    }
+    // The box writes the same lines (server/lfsAttrs.ts).
+    assert_eq!(lfs_attr_line("Recordings/screen 1.mp4"), "\"/Recordings/screen 1.mp4\" filter=lfs diff=lfs merge=lfs -text");
+    assert_eq!(lfs_attr_line("x.bin"), "/x.bin filter=lfs diff=lfs merge=lfs -text");
+    let base = std::env::temp_dir().join(format!("vc_lfsattr_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).unwrap();
+    let v = s(&base);
+    write(&base, ".gitattributes", "* text=auto eol=lf\n");
+    for n in ["b.bin", "a.bin"] {
+        let f = std::fs::File::create(base.join(n)).unwrap();
+        f.set_len(BOX_MAX_FILE_BYTES + 1).unwrap();
+    }
+    assert!(sync_lfs_attributes(&v, &["b.bin".into()]));
+    assert!(sync_lfs_attributes(&v, &["a.bin".into()]));
+    let t = read(&base, ".gitattributes");
+    assert!(t.find("/b.bin").unwrap() < t.find("/a.bin").unwrap(), "kept in their order, new last: {}", t);
+    assert!(!sync_lfs_attributes(&v, &["a.bin".into(), "b.bin".into()]), "same set: untouched");
+    std::fs::remove_file(base.join("b.bin")).unwrap();
+    std::fs::remove_file(base.join("a.bin")).unwrap();
+    assert!(sync_lfs_attributes(&v, &[]));
+    assert_eq!(read(&base, ".gitattributes"), "* text=auto eol=lf\n");
+    let _ = std::fs::remove_dir_all(&base);
 }
 
 #[test]
@@ -585,9 +675,9 @@ u UU N... 100644 100644 100644 100644 a b c both.md\0\
 }
 
 /// Git LFS installs hooks that run ~10 git processes per commit and per push.
-/// The sync skips them only while they are LFS's alone and LFS holds nothing.
+/// The sync skips them while they are LFS's alone (it runs `git lfs push` itself, only when needed).
 #[test]
-fn lfs_hooks_are_skipped_only_while_lfs_is_unused() {
+fn lfs_hooks_are_skipped_while_they_are_lfs_alone() {
     let r = rig("lfshooks");
     let v = s(&r.laptop);
     let hooks = r.laptop.join(".git").join("hooks");
@@ -599,11 +689,10 @@ fn lfs_hooks_are_skipped_only_while_lfs_is_unused() {
     std::fs::write(hooks.join("post-commit"), &lfs_hook).unwrap();
     assert!(is_lfs_hook(&lfs_hook));
     r.cycle();
-    assert!(sync_hooks_skippable(&v), "only LFS hooks, no LFS objects");
-    // LFS objects appear: the hooks run again (the pre-push must upload them).
+    assert!(sync_hooks_skippable(&v), "only LFS hooks");
+    // LFS objects too: still skipped (the sync uploads them itself).
     std::fs::create_dir_all(r.laptop.join(".git/lfs/objects/ab")).unwrap();
-    assert!(!sync_hooks_skippable(&v));
-    std::fs::remove_dir_all(r.laptop.join(".git/lfs")).unwrap();
+    assert!(sync_hooks_skippable(&v));
     // A hook of the user's own: never skipped.
     std::fs::write(
         hooks.join("post-merge"),
@@ -1033,68 +1122,4 @@ fn e2e_master_against_a_box() {
         assert!(read(&sv, "e2e/from-box.md").contains(&stamp), "the box's write never arrived");
         println!("school2 has the box's write: {}", read(&sv, "e2e/from-box.md").trim());
     }
-}
-
-#[test]
-fn big_files_go_to_the_box_beside_git() {
-    let base = std::env::temp_dir().join(format!("vc_bigup_{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&base);
-    std::fs::create_dir_all(base.join("Recordings")).unwrap();
-    git(&base, &["init", "-q", "-b", "master"]);
-    let v = s(&base);
-    let body: Vec<u8> = (0..300_000u32).map(|i| (i % 251) as u8).collect();
-    std::fs::write(base.join("Recordings/screen 1.mp4"), &body).unwrap();
-
-    // Only an http(s) box gets files; the target sits beside the git endpoint.
-    let mut cfg = BoxConfig { box_url: "https://box.ts.net".into(), vault: "school2".into(), name: None, branch: "master".into(), project: false };
-    assert_eq!(big_target(&cfg).as_deref(), Some("https://box.ts.net/bigfile/school2"));
-    cfg.project = true;
-    assert_eq!(big_target(&cfg).as_deref(), Some("https://box.ts.net/bigfile/projects/school2"));
-    cfg.box_url = "C:/tmp/boxhost".into();
-    assert_eq!(big_target(&cfg), None);
-
-    // What goes: untracked, still long enough, not already sent as it is now.
-    let (sz, mt) = size_mtime(&v, "Recordings/screen 1.mp4").unwrap();
-    let big = vec![
-        BigFile { path: "Recordings/screen 1.mp4".into(), size: sz, tracked: false, on_box: false },
-        BigFile { path: "grown.bin".into(), size: 1, tracked: true, on_box: false },
-    ];
-    let mut rec = BigRecord { target: "t".into(), files: HashMap::new() };
-    assert!(big_to_send(&v, &rec, &big, mt + 1_000, BIG_QUIET).is_empty(), "still being written");
-    assert_eq!(big_to_send(&v, &rec, &big, mt + 61_000, BIG_QUIET).len(), 1);
-    rec.files.insert("Recordings/screen 1.mp4".into(), (sz, mt));
-    assert!(big_to_send(&v, &rec, &big, mt + 61_000, BIG_QUIET).is_empty(), "already on the box");
-    save_big_record(&v, &rec);
-    assert_eq!(load_big_record(&v, "t"), rec);
-    assert!(load_big_record(&v, "another box").files.is_empty());
-
-    // The upload: a raw PUT with the path and mtime, streamed whole.
-    let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
-    let port = server.server_addr().to_ip().unwrap().port();
-    let got = std::thread::spawn(move || {
-        let mut req = server.recv().unwrap();
-        let mut buf = Vec::new();
-        std::io::Read::read_to_end(req.as_reader(), &mut buf).unwrap();
-        let out = (req.method().to_string(), req.url().to_string(), buf);
-        req.respond(tiny_http::Response::from_string("{\"ok\":true}")).unwrap();
-        out
-    });
-    let target = format!("http://127.0.0.1:{}/bigfile/school2", port);
-    upload_big_file(&target, &v, "Recordings/screen 1.mp4", mt).unwrap();
-    let (method, url, bytes) = got.join().unwrap();
-    assert_eq!(method, "PUT");
-    assert_eq!(url, format!("/bigfile/school2?path=Recordings%2Fscreen+1.mp4&mtime={}", mt));
-    assert_eq!(bytes, body);
-
-    // A refusal is an error with the box's words.
-    let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
-    let port = server.server_addr().to_ip().unwrap().port();
-    let h = std::thread::spawn(move || {
-        let req = server.recv().unwrap();
-        req.respond(tiny_http::Response::from_string("{\"error\":\"tracked\"}").with_status_code(409)).unwrap();
-    });
-    let e = upload_big_file(&format!("http://127.0.0.1:{}/bigfile/school2", port), &v, "Recordings/screen 1.mp4", mt).unwrap_err();
-    h.join().unwrap();
-    assert!(e.contains("409") && e.contains("tracked"), "{}", e);
-    let _ = std::fs::remove_dir_all(&base);
 }
