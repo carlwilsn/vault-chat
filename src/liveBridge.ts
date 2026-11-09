@@ -8,6 +8,8 @@
 //          vc.ask(prompt, {system?}) → { [Symbol.asyncIterator] (text deltas), text(), cancel() }
 //                                   sugar over vc.fetch + the box's /api/v1/side protocol: an EPHEMERAL read-only
 //                                   side session (like Ctrl+L): no chat, no conversation, no writes
+//          vc.tool(name, {query?, json?, body?, headers?}) → Promise<Response>   (cap: tool:<name or glob>) a registered box tool,
+//                                   e.g. vc.tool("voice-lab.tts", {json:{engine,text}}) → audio; voice-lab.{engines,tts,stt,voices}
 //          vc.mic({mimeType?})    → Promise<{ stop(): Promise<Blob>, cancel(), ondata, mimeType }>   (cap: mic)
 //          vc.play(blobOrUrl), vc.caps (granted), vc.theme {mode, vars}, vc.size {w,h}, vc.ready, vc.path
 //   host:  installLiveBridge(host) once; an iframe takes part by `data-vc-live="<vault path>"`. The host asks the box for
@@ -71,6 +73,7 @@ export function describeCap(cap: string): string {
   if (cap === "ask") return "Ask the AI questions (read-only; nothing in your vault or chats changes)";
   if (cap === "mic") return "Use your microphone while you press its record button";
   if (cap === "persist") return "Start real conversations in your chat list";
+  if (cap.startsWith("tool:voice-lab")) return "Use the box's voice lab: text-to-speech and speech-to-text engines running on the box (sends it the text or audio you give the page)";
   return `Use the tool ${cap.slice(5)}`;
 }
 
@@ -152,6 +155,13 @@ vc.fetch=async function(path,init){
       else{var nb=m.status===204||m.status===205||m.status===304;res(new Response(nb?null:m.body,{status:m.status,headers:m.headers}));}
     });
   });
+};
+vc.tool=function(name,o){
+  o=o||{};var m=/^voice-lab\.([a-z]{1,12})$/.exec(String(name));
+  if(!m)return Promise.reject(new Error("vc.tool: unknown tool "+name));
+  var q=o.query?new URLSearchParams(o.query).toString():"",h=o.headers||{},body=o.body;
+  if(o.json!==undefined){body=JSON.stringify(o.json);h=Object.assign({"content-type":"application/json"},h);}
+  return vc.fetch("/api/v2/lab/"+m[1]+(q?"?"+q:""),{method:o.method||(body!=null?"POST":"GET"),headers:h,body:body});
 };
 vc.ask=function(prompt,o){
   o=o||{};var cancelled=false,sid=null,full="";

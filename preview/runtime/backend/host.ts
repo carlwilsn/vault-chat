@@ -548,6 +548,11 @@ export const hostCommands: Record<string, (a: Record<string, any>) => unknown> =
     }
     if (path === "/api/v2/live/fetch") {
       if (b.token !== "preview-token") return { status: 401, body: JSON.stringify({ error: "bad token" }) };
+      if (String(b.path).startsWith("/api/v2/lab/")) {
+        // The voice lab: the dev server runs the real lab proxy against the real local service.
+        const r = await fetch(`${import.meta.env.BASE_URL}__preview/lab`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ method: b.method, path: b.path, headers: b.headers, bodyBase64: b.bodyBase64 }) });
+        return { status: r.status, body: await r.text() };
+      }
       const inner = JSON.parse(atob(String(b.bodyBase64 || "")) || "{}");
       const sideM = /^\/api\/v1\/side(?:\/([^/?]+))?/.exec(String(b.path));
       let res: { status: number; body: string } | null = null;

@@ -8,16 +8,18 @@
 //   POST /api/v2/live/revoke {path}                   → {ok}           (that page's tokens stop working at once)
 //   POST /api/v2/live/fetch {token, path, method, headers?, bodyBase64?} → {ok, status, headers, bodyBase64}
 //
+// What `tool:voice-lab.*` covers: /api/v2/lab/{engines,tts,stt,voices} (server/labProxy.ts), nothing else.
 // What `ask` covers: POST /api/v1/side (always an ephemeral read-only side session tagged with the page: no
 // conversation, no chat-list entry, no writes; `persist` is refused), and reading/stopping the sessions that token
 // started. Nothing else is reachable with it.
 import { createHmac, createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { readFileSync, statSync } from "node:fs";
 import { request as httpRequest } from "node:http";
-import { LIVE_LIMITS, LIVE_REQUEST_HEADERS, parseLiveManifest, toolAllowed } from "../src/liveBridge";
+import { LIVE_LIMITS, LIVE_REQUEST_HEADERS, parseLiveManifest } from "../src/liveBridge";
 import { loadConfig } from "./config";
 import { phoneToken } from "./auth";
 import { withinVault } from "./phoneData";
+import { labCall } from "./labProxy";
 
 export type LiveOut = { status: number; body: unknown };
 type Claims = { p: string; h: string; c: string[]; e: number; j: string };
@@ -186,17 +188,11 @@ export async function liveGateway(vault: string, vaultParam: string | null, b: R
         }
       }
     }
-    // Step 2: registered tools (`tool:<name>`). Until a tool route exists no capability opens anything else.
-    if (c.c.some((x) => x.startsWith("tool:")) && path === "/api/v2/live/tool" && method === "POST") {
-      let req: Record<string, unknown> = {};
-      try {
-        req = JSON.parse(body?.toString("utf8") || "{}");
-      } catch {
-        return { status: 400, body: { error: "bad JSON" } };
-      }
-      const name = typeof req.name === "string" ? req.name : "";
-      if (!toolAllowed(c.c, name)) return { status: 403, body: { error: `this page was not allowed to use the tool ${name || "(none)"}` } };
-      return { status: 501, body: { error: "tool calls are not available yet" } };
+    // Step 2: registered tools. `tool:voice-lab.*` opens /api/v2/lab/<op> (server/labProxy.ts: one fixed local service,
+    // a fixed set of operations); no other tool exists, and no capability opens any other host or path.
+    if (c.c.some((x) => x.startsWith("tool:")) && path.startsWith("/api/v2/lab/")) {
+      const out = await labCall(c.c, method, path, headers, body);
+      if (out) return reply(out);
     }
   } catch (e) {
     return { status: 502, body: { error: String((e as Error)?.message ?? e) } };

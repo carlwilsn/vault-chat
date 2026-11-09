@@ -146,6 +146,23 @@ export function previewPlugin(opts) {
             return void res.end(JSON.stringify({ error: `realbox: ${e?.message ?? e}` }));
           }
         }
+        // /__preview/lab → the REAL lab proxy (server/labProxy.ts) and the real local voice-lab service (VC_LAB_PORT, default 8871).
+        // The fake box's gateway sends a page's /api/v2/lab/* calls here; the token check itself is unit-tested (liveBridge.test.ts).
+        if (url.pathname === "/__preview/lab" && req.method === "POST") {
+          const chunks = [];
+          for await (const c of req) chunks.push(c);
+          try {
+            const b = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+            const mod = await s.ssrLoadModule(resolve(HARNESS, "server", "labProxy.ts"));
+            if (process.env.VC_LAB_PORT) mod.labTarget.port = Number(process.env.VC_LAB_PORT);
+            const out = await mod.labCall(["tool:voice-lab.*"], b.method, b.path, b.headers ?? {}, b.bodyBase64 ? Buffer.from(b.bodyBase64, "base64") : null);
+            res.setHeader("content-type", "application/json");
+            return void res.end(JSON.stringify({ ok: true, status: out.status, headers: out.headers, bodyBase64: out.body.toString("base64") }));
+          } catch (e) {
+            res.statusCode = 502;
+            return void res.end(JSON.stringify({ error: String(e?.message ?? e) }));
+          }
+        }
         if (url.pathname.startsWith("/__preview/fixture/")) {
           const [, , , base, ...rest] = url.pathname.split("/");
           const p = fixtureFile(decodeURIComponent(base), rest.map(decodeURIComponent).join("/"));

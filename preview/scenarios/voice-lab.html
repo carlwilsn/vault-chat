@@ -1,0 +1,277 @@
+<!doctype html>
+<html><head><meta charset="utf-8">
+<meta name="vc-capabilities" content="mic, tool:voice-lab.*">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Voice lab</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:#1b1b1b; color:#e8e8e8; font:13px Inter, "Segoe UI", system-ui, sans-serif; padding:14px; line-height:1.4; }
+  h1 { font-size:16px; margin:0 0 2px; } h2 { font-size:13px; margin:0; }
+  .sub { color:#8a8a8a; font-size:11.5px; margin-bottom:12px; }
+  .card { border:1px solid #2c2c2c; border-radius:10px; margin-bottom:14px; background:#1b1b1b; }
+  .head { padding:8px 12px; border-bottom:1px solid #2c2c2c; display:flex; align-items:center; gap:10px; }
+  .head small { color:#8a8a8a; font-size:11px; }
+  .body { padding:10px 12px; }
+  table { width:100%; border-collapse:collapse; font-size:12px; }
+  th { text-align:left; color:#8a8a8a; font-weight:500; font-size:11px; padding:4px 8px; border-bottom:1px solid #2c2c2c; }
+  td { padding:5px 8px; border-bottom:1px solid #242424; vertical-align:top; }
+  tr:hover td { background:#222; }
+  .pill { display:inline-block; padding:1px 7px; border-radius:99px; font-size:10.5px; border:1px solid #353535; color:#cfcfcf; }
+  .pill.ready { color:#7fd49a; border-color:#2f5a3e; } .pill.slow { color:#e6c06a; border-color:#5a4a2a; } .pill.no { color:#8a8a8a; }
+  .pill.base { color:#6aa2ff; border-color:#2b4a7a; }
+  textarea, select, input[type=text] { background:#232323; color:#e8e8e8; border:1px solid #353535; border-radius:7px; padding:6px 8px; font:inherit; }
+  textarea { width:100%; min-height:70px; resize:vertical; }
+  select { max-width:100%; }
+  button { background:#2a2a2a; color:#e8e8e8; border:1px solid #3a3a3a; border-radius:7px; padding:5px 11px; font:inherit; cursor:pointer; }
+  button:hover { background:#333; } button:disabled { opacity:.45; cursor:default; }
+  button.primary { background:#2b4a7a; border-color:#3a5f9a; } button.primary:hover { background:#34598f; }
+  button.rec { background:#5a2323; border-color:#8a3a3a; }
+  .chip { display:inline-block; padding:3px 9px; margin:0 5px 5px 0; border:1px solid #353535; border-radius:6px; font-size:11.5px; color:#cfcfcf; cursor:pointer; }
+  .chip:hover { background:#2e2e2e; }
+  .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin:8px 0; }
+  .cols { display:grid; grid-template-columns:repeat(auto-fit, minmax(300px, 1fr)); gap:12px; }
+  .out { border:1px solid #2c2c2c; border-radius:8px; padding:8px 10px; min-height:60px; background:#202020; }
+  .out h3 { margin:0 0 6px; font-size:12px; font-weight:600; }
+  .met { color:#9a9a9a; font-size:11.5px; } .met b { color:#e8e8e8; font-weight:600; }
+  .stars button { padding:2px 7px; } .stars button.on { background:#2b4a7a; border-color:#3a5f9a; }
+  .keep { font-size:16px; padding:1px 7px; } .keep.on { color:#f2c14e; border-color:#7a6224; }
+  audio { width:100%; margin-top:6px; height:32px; }
+  .err { color:#f08a8a; } .muted { color:#6a6a6a; }
+  .txt { white-space:pre-wrap; margin:4px 0 6px; }
+  label { color:#9a9a9a; font-size:12px; } .lbl { color:#9a9a9a; font-size:11.5px; }
+  #export { width:100%; min-height:90px; font:11px ui-monospace, Menlo, monospace; }
+  .banner { padding:7px 10px; border-radius:8px; background:#3a2323; color:#ffb0b0; margin-bottom:12px; display:none; }
+</style></head>
+<body>
+<h1>Voice lab</h1>
+<div class="sub">Open-source TTS / STT on the box CPU vs. the ElevenLabs baseline. Try engines, rate them 1–5, star the ones to keep, then “Export my picks”. The first run of an engine that was not pre-loaded also pays its model load time, so run it twice before judging speed.</div>
+<div id="banner" class="banner"></div>
+
+<div class="card"><div class="head"><h2>Engines</h2><small id="enginesNote">loading…</small><span style="flex:1"></span><button id="reload">Reload</button></div>
+  <div class="body" style="padding:0"><table id="engTable"><thead><tr><th>Engine</th><th>Kind</th><th>Status</th><th>Speed (measured, CPU)</th><th>License</th><th>Size</th></tr></thead><tbody></tbody></table></div></div>
+
+<div class="card"><div class="head"><h2>Text to speech</h2><small>time to first audio, real-time factor (RTF &lt; 1 = faster than speaking)</small></div><div class="body">
+  <div class="lbl">Preset sentences</div>
+  <div id="presets"></div>
+  <textarea id="ttsText">Sure, I can do that. Give me a second.</textarea>
+  <div class="row">
+    <label><input type="checkbox" id="cmp"> A/B compare</label>
+  </div>
+  <div class="cols" id="ttsCols">
+    <div><div class="lbl">Engine A</div><div class="row"><select id="engA"></select><select id="voiceA"></select></div></div>
+    <div id="colB" style="display:none"><div class="lbl">Engine B</div><div class="row"><select id="engB"></select><select id="voiceB"></select></div></div>
+  </div>
+  <div class="row"><button class="primary" id="play">▶ Play</button><span class="muted" id="ttsStatus"></span></div>
+  <div class="cols"><div class="out" id="outA"><span class="muted">Engine A result appears here.</span></div><div class="out" id="outB" style="display:none"><span class="muted">Engine B result appears here.</span></div></div>
+  <div class="row" id="cloneRow"><span class="lbl">Voice cloning (Chatterbox, Qwen3-TTS):</span><input type="text" id="cloneName" placeholder="voice name" style="width:130px"><input type="file" id="cloneFile" accept="audio/*"><button id="cloneBtn">Upload reference clip</button><span class="muted" id="cloneMsg"></span></div>
+</div></div>
+
+<div class="card"><div class="head"><h2>Speech to text</h2><small>record or upload, then run it through 1–3 engines</small></div><div class="body">
+  <div class="row"><button id="recBtn">● Record</button><span class="muted" id="recStatus">not recording</span><span class="lbl">or</span><input type="file" id="sttFile" accept="audio/*"><button id="useTts">Use last TTS audio</button></div>
+  <audio id="sttAudio" controls style="display:none"></audio>
+  <div class="lbl" style="margin-top:8px">Engines to compare (pick up to 3)</div>
+  <div class="row" id="sttPicks"></div>
+  <div class="row"><button class="primary" id="sttRun" disabled>Transcribe</button><span class="muted" id="sttStatus"></span></div>
+  <div class="cols" id="sttOut"></div>
+</div></div>
+
+<div class="card"><div class="head"><h2>Results &amp; picks</h2><small id="picksNote">nothing yet</small><span style="flex:1"></span><button id="exportBtn" class="primary">Export my picks</button></div>
+  <div class="body" style="padding:0"><table id="resTable"><thead><tr><th>#</th><th>Kind</th><th>Engine</th><th>Voice</th><th>Input</th><th>Latency</th><th>RTF</th><th>Rating</th><th>Keep</th></tr></thead><tbody></tbody></table></div>
+  <div class="body"><textarea id="export" readonly placeholder="Export appears here (also copied to the clipboard when allowed)."></textarea></div></div>
+
+<script>
+// ---- adapter: the ONLY place that knows how to reach the lab service ----
+const BASE = new URLSearchParams(location.search).get('base') || '';   // dev-only fallback target
+// Inside the app: window.vc tool calls (voice-lab.engines|tts|stt|voices) and vc.mic. Opened elsewhere with ?base=: plain fetch.
+async function labFetch(path, init) {
+  init = init || {};
+  if (window.vc && window.vc.tool) {
+    const [op, qs] = path.replace(/^\//, '').split('?');
+    let body = init.body, headers = Object.assign({}, init.headers || {});
+    if (body instanceof FormData) {                       // the bridge carries bytes: serialise the multipart form here
+      const rq = new Request('http://x/', { method: 'POST', body });
+      headers['content-type'] = rq.headers.get('content-type'); body = await rq.blob();
+    }
+    return window.vc.tool('voice-lab.' + op, { method: init.method || 'GET', query: qs ? Object.fromEntries(new URLSearchParams(qs)) : undefined, headers, body });
+  }
+  return fetch(BASE + path, init);                                      // dev fallback (no bridge)
+}
+function labMic() {
+  if (window.vc && window.vc.mic) { let m; return { async start() { m = await window.vc.mic(); }, stop() { return m.stop(); } }; }
+  let rec, chunks, stream;                                              // dev fallback recorder
+  return { async start() { stream = await navigator.mediaDevices.getUserMedia({ audio: true }); chunks = []; rec = new MediaRecorder(stream);
+             rec.ondataavailable = e => chunks.push(e.data); rec.start(); },
+           stop() { return new Promise(res => { rec.onstop = () => { stream.getTracks().forEach(t => t.stop()); res(new Blob(chunks, { type: rec.mimeType })); }; rec.stop(); }); } };
+}
+
+// ---- state (memory only) ----
+const S = { engines: [], results: [], keep: {}, ratings: {}, lastTts: null, sttBlob: null, rid: 0 };
+const $ = id => document.getElementById(id);
+const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const PRESETS = [
+  ['Quick reply', 'Sure, I can do that. Give me a second.'],
+  ['Short answer', "Yes, that's right. The deadline is Friday at five."],
+  ['Numbers', 'The meeting is on March 14th at 3:45 PM, room 2B, and it should take about 90 minutes.'],
+  ['Explainer', 'The central limit theorem says that the sum of many independent random variables, suitably normalized, tends toward a normal distribution regardless of the original distribution.'],
+  ['Long paragraph', "Let's walk through the proof. First, we assume the sequence is bounded and monotone. Then, by completeness of the real numbers, the supremum exists. Next, for any epsilon greater than zero, there must be a term within epsilon of that supremum, and because the sequence is increasing, every later term stays in that interval. That is exactly the definition of convergence, so we're done. If any step felt too quick, tell me which one and I'll slow down and do it carefully, with an example."],
+];
+
+function engById(id) { return S.engines.find(e => e.id === id); }
+function speedText(e) {
+  const b = e.bench || {};
+  if (e.kind === 'tts') return b.rtf != null ? `first audio <b>${b.ttfa_short_ms} ms</b> · RTF <b>${b.rtf}</b> · ${b.peak_rss_mb} MB` : '<span class="muted">not measured</span>';
+  return b.rtf != null ? `RTF <b>${b.rtf}</b> (${b.ms_long} ms for ${b.audio_long_s}s) · ${b.peak_rss_mb} MB` : '<span class="muted">not measured</span>';
+}
+function statusPill(e) {
+  const cls = e.status === 'ready' ? 'ready' : e.status === 'too-slow-on-cpu' ? 'slow' : 'no';
+  const label = e.status === 'too-slow-on-cpu' ? 'slow on CPU' : e.status;
+  return `<span class="pill ${cls}" title="${esc(e.reason)}">${label}</span>` + (e.baseline ? ' <span class="pill base">baseline (paid)</span>' : '') + (e.clone ? ' <span class="pill">clone</span>' : '');
+}
+function usable(e) { return e.status !== 'not-installed'; }
+
+async function loadEngines() {
+  $('enginesNote').textContent = 'loading…'; $('banner').style.display = 'none';
+  try {
+    const r = await labFetch('/engines'); if (!r.ok) throw new Error('HTTP ' + r.status);
+    S.engines = await r.json();
+  } catch (err) {
+    $('banner').style.display = 'block';
+    $('banner').textContent = 'Voice lab service is not reachable (' + err.message + '). ' + (window.vc ? 'The box may not be running it.' : 'No bridge: add ?base=http://127.0.0.1:8871 for dev.');
+    $('enginesNote').textContent = 'offline'; return;
+  }
+  $('enginesNote').textContent = S.engines.filter(usable).length + ' of ' + S.engines.length + ' usable';
+  $('engTable').tBodies[0].innerHTML = S.engines.map(e => `<tr><td><b>${esc(e.name)}</b><div class="muted">${esc(e.notes)}</div></td><td>${e.kind.toUpperCase()}</td><td>${statusPill(e)}${e.reason ? '<div class="muted">' + esc(e.reason) + '</div>' : ''}</td><td>${speedText(e)}</td><td>${esc(e.license)}</td><td>${esc(e.size)}</td></tr>`).join('');
+  fillPickers();
+}
+
+function fillPickers() {
+  const tts = S.engines.filter(e => e.kind === 'tts' && usable(e));
+  for (const k of ['A', 'B']) {
+    const sel = $('eng' + k), prev = sel.value;
+    sel.innerHTML = tts.map(e => `<option value="${e.id}">${esc(e.name)}${e.status === 'too-slow-on-cpu' ? ' (slow)' : ''}</option>`).join('');
+    if (prev && tts.some(e => e.id === prev)) sel.value = prev; else if (k === 'B' && tts.length > 1) sel.value = tts[1].id;
+    fillVoices(k);
+  }
+  const stt = S.engines.filter(e => e.kind === 'stt');
+  $('sttPicks').innerHTML = stt.map(e => `<label style="${usable(e) ? '' : 'opacity:.4'}"><input type="checkbox" class="sttPick" value="${e.id}" ${usable(e) ? '' : 'disabled'}> ${esc(e.name)}${e.status === 'too-slow-on-cpu' ? ' (slow)' : ''}</label>`).join('');
+  document.querySelectorAll('.sttPick').forEach(c => c.onchange = () => {
+    const on = [...document.querySelectorAll('.sttPick:checked')];
+    if (on.length > 3) c.checked = false; updSttBtn();
+  });
+  // sensible defaults
+  for (const id of ['parakeet-v3', 'whisper-base', 'moonshine-base']) { const c = document.querySelector(`.sttPick[value="${id}"]`); if (c && !c.disabled) c.checked = true; }
+  updSttBtn();
+}
+async function fillVoices(k) {
+  const e = engById($('eng' + k).value); const sel = $('voice' + k); if (!e) { sel.innerHTML = ''; return; }
+  let v = e.voices.slice();
+  if (e.clone) { try { const r = await labFetch('/voices'); (await r.json()).forEach(x => v.push('clone:' + x.name)); } catch (_) {} }
+  sel.innerHTML = v.map(x => `<option>${esc(x)}</option>`).join('');
+  if (e.id === 'kokoro' && v.includes('af_heart')) sel.value = 'af_heart';
+  if (e.id === 'piper' && v.includes('en_US-lessac-medium')) sel.value = 'en_US-lessac-medium';
+}
+$('engA').onchange = () => fillVoices('A'); $('engB').onchange = () => fillVoices('B');
+$('cmp').onchange = () => { const on = $('cmp').checked; $('colB').style.display = on ? '' : 'none'; $('outB').style.display = on ? '' : 'none'; };
+$('presets').innerHTML = PRESETS.map((p, i) => `<span class="chip" data-i="${i}">${esc(p[0])}</span>`).join('');
+$('presets').onclick = ev => { const i = ev.target.dataset.i; if (i != null) $('ttsText').value = PRESETS[i][1]; };
+
+// ---- results ----
+function addResult(r) { r.id = ++S.rid; r.rating = 0; S.results.push(r); renderResults(); return r; }
+function setRating(id, n) { const r = S.results.find(x => x.id === id); if (!r) return; r.rating = n; S.ratings[r.kind + ':' + r.engine] = S.ratings[r.kind + ':' + r.engine] || []; S.ratings[r.kind + ':' + r.engine] = S.results.filter(x => x.kind === r.kind && x.engine === r.engine && x.rating).map(x => x.rating); renderResults(); refreshRatingButtons(id); }
+function toggleKeep(kind, engine) { const k = kind + ':' + engine; S.keep[k] = !S.keep[k]; renderResults(); document.querySelectorAll(`.keepbtn[data-k="${k}"]`).forEach(b => b.classList.toggle('on', !!S.keep[k])); }
+function refreshRatingButtons(id) { document.querySelectorAll(`.stars[data-r="${id}"] button`).forEach(b => b.classList.toggle('on', +b.dataset.n === (S.results.find(x => x.id === id) || {}).rating)); }
+function starsHtml(r) {
+  return `<span class="stars" data-r="${r.id}">` + [1, 2, 3, 4, 5].map(n => `<button data-n="${n}" class="${r.rating === n ? 'on' : ''}">${n}</button>`).join('') + `</span> <button class="keep keepbtn ${S.keep[r.kind + ':' + r.engine] ? 'on' : ''}" data-k="${r.kind}:${r.engine}" title="keep this one">★</button>`;
+}
+document.addEventListener('click', ev => {
+  const b = ev.target.closest('.stars button'); if (b) { setRating(+b.parentElement.dataset.r, +b.dataset.n); return; }
+  const k = ev.target.closest('.keepbtn'); if (k) { const [kind, ...rest] = k.dataset.k.split(':'); toggleKeep(kind, rest.join(':')); }
+});
+const avg = a => a.length ? (a.reduce((x, y) => x + y, 0) / a.length).toFixed(1) : '–';
+function renderResults() {
+  $('resTable').tBodies[0].innerHTML = S.results.slice().reverse().map(r => `<tr><td>${r.id}</td><td>${r.kind.toUpperCase()}</td><td>${esc(r.engineName)}</td><td>${esc(r.voice || '')}</td><td class="muted">${esc((r.input || '').slice(0, 50))}</td><td>${r.firstMs != null ? r.firstMs + ' ms first · ' : ''}${r.totalMs} ms</td><td>${r.rtf != null ? r.rtf : ''}</td><td>${r.rating ? '★'.repeat(0) + r.rating + '/5' : '–'}</td><td>${S.keep[r.kind + ':' + r.engine] ? '<span style="color:#f2c14e">★</span>' : ''}</td></tr>`).join('');
+  const kept = Object.keys(S.keep).filter(k => S.keep[k]);
+  $('picksNote').textContent = S.results.length ? `${S.results.length} runs · ${kept.length} kept` : 'nothing yet';
+}
+$('exportBtn').onclick = async () => {
+  const by = {}; S.results.forEach(r => { const k = r.kind + ':' + r.engine; (by[k] = by[k] || { kind: r.kind, engine: r.engine, runs: 0, ratings: [], ms: [], rtf: [] }); const o = by[k]; o.runs++; if (r.rating) o.ratings.push(r.rating); o.ms.push(r.firstMs != null ? r.firstMs : r.totalMs); if (r.rtf != null) o.rtf.push(r.rtf); });
+  const picks = Object.keys(by).map(k => { const o = by[k]; return { kind: o.kind, engine: o.engine, kept: !!S.keep[k], avgRating: o.ratings.length ? +avg(o.ratings) : null, runs: o.runs, avgLatencyMs: Math.round(o.ms.reduce((a, b) => a + b, 0) / o.ms.length), avgRtf: o.rtf.length ? +(o.rtf.reduce((a, b) => a + b, 0) / o.rtf.length).toFixed(2) : null }; });
+  Object.keys(S.keep).filter(k => S.keep[k] && !by[k]).forEach(k => picks.push({ kind: k.split(':')[0], engine: k.split(':').slice(1).join(':'), kept: true, runs: 0 }));
+  const json = JSON.stringify({ exportedAt: new Date().toISOString(), keep: Object.keys(S.keep).filter(k => S.keep[k]), picks, results: S.results.map(({ id, kind, engine, voice, input, firstMs, totalMs, rtf, rating, text }) => ({ id, kind, engine, voice, input, firstMs, totalMs, rtf, rating, text })) }, null, 2);
+  $('export').value = json;
+  try { await navigator.clipboard.writeText(json); $('picksNote').textContent = 'copied to clipboard'; } catch (_) { $('export').select(); try { document.execCommand('copy'); $('picksNote').textContent = 'copied'; } catch (__) { $('picksNote').textContent = 'select the text below and copy it'; } }
+};
+
+// ---- TTS ----
+function ratingCell(r) { return `<div class="row" style="margin-bottom:0">${starsHtml(r)}</div>`; }
+async function runTts(k) {
+  const eng = engById($('eng' + k).value), voice = $('voice' + k).value, text = $('ttsText').value.trim(), out = $('out' + k);
+  if (!eng || !text) return;
+  out.innerHTML = `<h3>${esc(eng.name)}</h3><span class="muted">generating…</span>`;
+  const t0 = performance.now();
+  try {
+    const r = await labFetch('/tts', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ engine: eng.id, text, voice }) });
+    if (!r.ok) { let m = ''; try { m = (j => j.detail || j.error)(await r.json()); } catch (_) {} throw new Error('HTTP ' + r.status + ' ' + (m || '')); }
+    const blob = await r.blob(); const wall = Math.round(performance.now() - t0);
+    const h = n => { try { return r.headers.get(n); } catch (_) { return null; } };
+    const first = h('x-time-to-first-audio-ms'), total = h('x-total-ms'), rtf = h('x-rtf'), secs = h('x-audio-seconds');
+    const url = URL.createObjectURL(blob); S.lastTts = blob;
+    const res = addResult({ kind: 'tts', engine: eng.id, engineName: eng.name, voice, input: text, text, firstMs: first != null ? +first : null, totalMs: total != null ? +total : wall, rtf: rtf != null ? +rtf : null });
+    out.innerHTML = `<h3>${esc(eng.name)} <span class="muted">· ${esc(voice)}</span></h3>
+      <div class="met">first audio <b>${first != null ? first + ' ms' : '–'}</b> · total <b>${total != null ? total : wall} ms</b> · audio <b>${secs || '?'} s</b> · RTF <b>${rtf || '–'}</b> · round trip <b>${wall} ms</b></div>
+      <audio controls src="${url}"></audio><div style="margin-top:6px">${ratingCell(res)}</div>`;
+    out.querySelector('audio').play().catch(() => {});
+    return out.querySelector('audio');
+  } catch (err) { out.innerHTML = `<h3>${esc(eng.name)}</h3><span class="err">${esc(err.message)}</span>`; }
+}
+$('play').onclick = async () => {
+  $('play').disabled = true; $('ttsStatus').textContent = 'working…';
+  await runTts('A');
+  if ($('cmp').checked) await runTts('B');      // sequential so CPU contention does not skew the latency comparison
+  $('play').disabled = false; $('ttsStatus').textContent = '';
+};
+$('cloneBtn').onclick = async () => {
+  const f = $('cloneFile').files[0], name = $('cloneName').value.trim(); if (!f || !name) { $('cloneMsg').textContent = 'pick a name and a file'; return; }
+  const fd = new FormData(); fd.append('name', name); fd.append('file', f);
+  $('cloneMsg').textContent = 'uploading…';
+  try { const r = await labFetch('/voices', { method: 'POST', body: fd }); const j = await r.json(); $('cloneMsg').textContent = r.ok ? 'saved as ' + j.voice : (j.detail || j.error || "failed"); fillVoices('A'); fillVoices('B'); }
+  catch (err) { $('cloneMsg').textContent = err.message; }
+};
+
+// ---- STT ----
+function updSttBtn() { $('sttRun').disabled = !S.sttBlob || !document.querySelector('.sttPick:checked'); }
+function setStt(blob) { S.sttBlob = blob; const a = $('sttAudio'); a.src = URL.createObjectURL(blob); a.style.display = ''; updSttBtn(); }
+let mic = null;
+$('recBtn').onclick = async () => {
+  if (!mic) {
+    try { mic = labMic(); await mic.start(); $('recBtn').textContent = '■ Stop'; $('recBtn').classList.add('rec'); $('recStatus').textContent = 'recording…'; }
+    catch (err) { mic = null; $('recStatus').textContent = 'mic unavailable: ' + err.message; }
+  } else {
+    const m = mic; mic = null; $('recBtn').textContent = '● Record'; $('recBtn').classList.remove('rec');
+    try { const b = await m.stop(); setStt(b); $('recStatus').textContent = 'recorded ' + (b.size / 1024).toFixed(0) + ' KB'; } catch (err) { $('recStatus').textContent = err.message; }
+  }
+};
+$('sttFile').onchange = () => { const f = $('sttFile').files[0]; if (f) { setStt(f); $('recStatus').textContent = 'loaded ' + f.name; } };
+$('useTts').onclick = () => { if (S.lastTts) { setStt(S.lastTts); $('recStatus').textContent = 'using last TTS audio'; } else $('recStatus').textContent = 'no TTS audio yet'; };
+$('sttRun').onclick = async () => {
+  const ids = [...document.querySelectorAll('.sttPick:checked')].map(c => c.value);
+  $('sttRun').disabled = true; $('sttStatus').textContent = 'running…';
+  $('sttOut').innerHTML = ids.map(id => `<div class="out" id="so_${id}"><h3>${esc(engById(id).name)}</h3><span class="muted">waiting…</span></div>`).join('');
+  for (const id of ids) {                         // sequential for fair latency
+    const e = engById(id), box = $('so_' + id); box.querySelector('span').textContent = 'transcribing…';
+    const t0 = performance.now();
+    try {
+      const r = await labFetch('/stt?engine=' + encodeURIComponent(id), { method: 'POST', headers: { 'content-type': S.sttBlob.type || 'application/octet-stream' }, body: S.sttBlob });
+      const j = await r.json(); if (!r.ok) throw new Error(j.detail || j.error || "HTTP " + r.status);
+      const res = addResult({ kind: 'stt', engine: id, engineName: e.name, voice: '', input: j.audio_seconds + ' s of audio', text: j.text, firstMs: null, totalMs: j.ms, rtf: j.rtf });
+      box.innerHTML = `<h3>${esc(e.name)}</h3><div class="txt">${esc(j.text) || '<span class="muted">(empty)</span>'}</div><div class="met"><b>${j.ms} ms</b> · RTF <b>${j.rtf}</b> · round trip <b>${Math.round(performance.now() - t0)} ms</b></div><div style="margin-top:6px">${ratingCell(res)}</div>`;
+    } catch (err) { box.innerHTML = `<h3>${esc(e.name)}</h3><span class="err">${esc(err.message)}</span>`; }
+  }
+  $('sttStatus').textContent = ''; updSttBtn();
+};
+
+$('reload').onclick = loadEngines;
+loadEngines(); renderResults();
+</script>
+</body></html>

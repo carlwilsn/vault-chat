@@ -10,6 +10,8 @@ import REAL_SVG from "./visual-real-model.svg?raw";
 // The sample mockup: the app's composer with its real classes, linking the app's stylesheet (src/inlineHtml.ts).
 import SAMPLE_HTML from "./inline-html-sample.html?raw";
 import LIVE_HTML from "./live-chat-demo.html?raw";
+// A copy of the vault page .vault-chat/visuals/voice-lab.html (tool:voice-lab.*, mic): its calls reach the real lab service.
+import LAB_HTML from "./voice-lab.html?raw";
 
 const CONV = "c-visual-bfs";
 const PATH = ".vault-chat/visuals/bfs-closest-pair.svg";
@@ -197,6 +199,19 @@ export const visualScenarios: Scenario[] = [
     llm: { scripts: [{ id: "live-ask", match: /./, steps: [{ text: "Hi! I'm answering through vc.ask: an ephemeral, read-only side session on the box, streamed into this page. Nothing here touched your vault or your chat list." }] }] },
     activeConversation: "c-live-page",
     open: [{ file: ".vault-chat/visuals/live-chat-demo.html" }, { sleep: 1500 }],
+    surfaces: ["desktop"],
+  },
+  {
+    id: "live-page-voice-lab",
+    title: "Voice lab — a live page with tool:voice-lab.* compares TTS/STT engines on the box (vc.tool, vc.mic)",
+    group: "Chat",
+    notes:
+      "voice-lab.html declares mic + tool:voice-lab.*; after the one-time Allow its calls go to the box's /api/v2/lab/* route (here: the real lab proxy and the real local service). Needs the service on 127.0.0.1:8871.",
+    build: (ctx: BuildCtx) => {
+      ctx.write(".vault-chat/visuals/voice-lab.html", LAB_HTML);
+    },
+    host: () => ({ sync: { box: { box: "https://thinkbox.tail0a1b2.ts.net", vault: "summer-demo" } } }),
+    open: [{ file: ".vault-chat/visuals/voice-lab.html" }, { sleep: 1500 }],
     surfaces: ["desktop"],
   },
   {

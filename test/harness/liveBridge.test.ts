@@ -97,3 +97,104 @@ test("the gateway: a token is minted only for the page as it is, and scopes ever
   assert.equal((await g(tc, "/api/v1/side", "POST", { bodyBase64: Buffer.from(JSON.stringify({ text: "x" })).toString("base64") })).status, 403);
   rmSync(dir, { recursive: true, force: true });
 });
+
+test("the voice-lab tool: only a voice-lab grant reaches the one local service, only its four operations, bounded, binary through", async () => {
+  const { createServer } = await import("node:http");
+  const { labTarget } = await import("../../server/labProxy.ts");
+  const seen: { method?: string; url?: string; ct?: string; len: number }[] = [];
+  const wav = Buffer.from([0x52, 0x49, 0x46, 0x46, 0, 255, 128, 1, 2, 3]);
+  const svc = createServer((req, res) => {
+    const chunks: Buffer[] = [];
+    req.on("data", (c) => chunks.push(c));
+    req.on("end", () => {
+      seen.push({ method: req.method, url: req.url, ct: req.headers["content-type"], len: Buffer.concat(chunks).length });
+      if (req.url === "/tts") {
+        res.writeHead(200, { "content-type": "audio/wav", "x-total-ms": "12", "x-rtf": "0.5", "x-secret": "no" });
+        return void res.end(wav);
+      }
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end("[]");
+    });
+  });
+  await new Promise<void>((r) => svc.listen(0, "127.0.0.1", () => r()));
+  labTarget.port = (svc.address() as { port: number }).port;
+  const dir = mkdtempSync(join(tmpdir(), "live-lab-"));
+  const vault = join(dir, "v");
+  mkdirSync(vault);
+  const mk = (name: string, caps: string) => {
+    writeFileSync(join(vault, name), `<meta name="vc-capabilities" content="${caps}"><p>${name}</p>`);
+    const m = liveManifest(vault, name)!;
+    return (liveToken(vault, { path: name, hash: m.hash, caps: m.caps }).body as { token: string }).token;
+  };
+  try {
+    const lab = mk("lab.html", "mic, tool:voice-lab.*");
+    const askOnly = mk("ask.html", "ask");
+    const ttsOnly = mk("tts.html", "tool:voice-lab.tts");
+    const g = (token: string, path: string, method = "GET", extra: Record<string, unknown> = {}) => liveGateway(vault, null, { token, path, method, ...extra });
+    const b64 = (s: string | Buffer) => Buffer.from(s).toString("base64");
+    // a page without the grant gets nothing
+    assert.equal((await g(askOnly, "/api/v2/lab/engines")).status, 403);
+    assert.equal((await g(lab.slice(0, -2) + "xx", "/api/v2/lab/engines")).status, 401);
+    // a narrower grant opens only its own tool
+    const r0 = await g(ttsOnly, "/api/v2/lab/engines");
+    assert.equal((r0.body as any).status, 403);
+    // engines: a plain GET
+    const r1 = (await g(lab, "/api/v2/lab/engines")).body as any;
+    assert.equal(r1.status, 200);
+    assert.equal(Buffer.from(r1.bodyBase64, "base64").toString(), "[]");
+    // tts: JSON in, binary audio and the timing headers (only those) out
+    const r2 = (await g(lab, "/api/v2/lab/tts", "POST", { headers: { "content-type": "application/json" }, bodyBase64: b64('{"engine":"piper","text":"hi"}') })).body as any;
+    assert.equal(r2.status, 200);
+    assert.deepEqual(Buffer.from(r2.bodyBase64, "base64"), wav);
+    assert.equal(r2.headers["content-type"], "audio/wav");
+    assert.equal(r2.headers["x-rtf"], "0.5");
+    assert.equal(r2.headers["x-secret"], undefined);
+    assert.equal(seen.at(-1)!.method, "POST");
+    // stt: engine in the query, audio bytes through
+    const audio = Buffer.from(new Uint8Array(5000).map((_, i) => i % 256));
+    const r3 = (await g(lab, "/api/v2/lab/stt?engine=whisper-tiny.en", "POST", { headers: { "content-type": "audio/webm" }, bodyBase64: b64(audio) })).body as any;
+    assert.equal(r3.status, 200);
+    assert.deepEqual({ url: seen.at(-1)!.url, ct: seen.at(-1)!.ct, len: seen.at(-1)!.len }, { url: "/stt?engine=whisper-tiny.en", ct: "audio/webm", len: 5000 });
+    // only the fixed operations, methods and parameters
+    const before = seen.length;
+    for (const [p, m] of [
+      ["/api/v2/lab/health", "GET"], ["/api/v2/lab/../x", "GET"], ["/api/v2/lab/", "GET"], ["/api/v2/lab/engines", "POST"], ["/api/v2/lab/tts", "GET"],
+      ["/api/v2/lab/stt", "POST"], ["/api/v2/lab/stt?engine=a/b", "POST"], ["/api/v2/lab/stt?engine=a&host=evil", "POST"], ["/api/v2/lab/tts?stream=1", "POST"],
+    ] as const) {
+      const out = await g(lab, p, m, { bodyBase64: b64("{}") });
+      const st = out.status === 200 ? (out.body as any).status : out.status;
+      assert.ok([400, 403, 404, 405].includes(st), `${m} ${p} -> ${st}`);
+    }
+    // absolute URLs and other ports are not paths the gateway forwards anywhere
+    for (const p of ["http://127.0.0.1:8857/api/v2/lab/engines", "//evil/api/v2/lab/engines", "/api/v2/lab/engines/../../x"]) assert.notEqual(((await g(lab, p)).body as any)?.status, 200, p);
+    assert.equal(seen.length, before, "none of the refused calls reached the service");
+    // size limits
+    const big = Buffer.alloc(70 * 1024, 1);
+    assert.equal(((await g(lab, "/api/v2/lab/tts", "POST", { bodyBase64: b64(big) })).body as any).status, 413);
+    // a service that is down is a clear error, not a hang
+    const dead = labTarget.port;
+    await new Promise((r) => svc.close(r));
+    const r5 = (await g(lab, "/api/v2/lab/engines")).body as any;
+    assert.equal(r5.status, 502);
+    assert.match(Buffer.from(r5.bodyBase64, "base64").toString(), /not reachable/);
+    assert.ok(dead > 0);
+  } finally {
+    labTarget.port = 8871;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("vc.tool names only the voice lab and becomes a fetch to its route", () => {
+  const src = /<script data-vc-live-script>([\s\S]*?)<\/script>/.exec(liveScript())![1]!;
+  const win: any = { innerWidth: 300, innerHeight: 200, document: { documentElement: { style: { setProperty() {} } } }, parent: { postMessage() {} } };
+  win.window = win;
+  vm.runInNewContext(src, { ...win, window: win, setInterval: () => 1, clearInterval() {}, addEventListener() {}, innerWidth: 300, innerHeight: 200, Promise, Symbol, Headers: class {}, Response: class {}, Blob: class {}, TextEncoder, URLSearchParams, Object });
+  const calls: any[] = [];
+  win.vc.fetch = (p: string, i: any) => (calls.push([p, i]), Promise.resolve("ok"));
+  win.vc.tool("voice-lab.tts", { json: { engine: "piper", text: "hi" } });
+  win.vc.tool("voice-lab.stt", { query: { engine: "x" }, body: "b", headers: { "content-type": "audio/wav" } });
+  win.vc.tool("voice-lab.engines");
+  assert.deepEqual(calls.map((c) => [c[0], c[1].method]), [["/api/v2/lab/tts", "POST"], ["/api/v2/lab/stt?engine=x", "POST"], ["/api/v2/lab/engines", "GET"]]);
+  assert.equal(calls[0][1].headers["content-type"], "application/json");
+  return win.vc.tool("other.thing").then(() => assert.fail("should reject"), (e: Error) => assert.match(e.message, /unknown tool/));
+});
