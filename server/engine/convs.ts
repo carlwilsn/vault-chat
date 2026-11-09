@@ -71,13 +71,15 @@ export async function readConv(vault: string, id: string): Promise<EngineConv | 
   return p ? toEngineConv(p) : null;
 }
 
-/** Every conversation (older files are imported on the way). */
-export async function allConvs(vault: string): Promise<EngineConv[]> {
+/** Every conversation (older files are imported on the way); a deleted one only with `withDeleted`. */
+export async function allConvs(vault: string, o: { withDeleted?: boolean } = {}): Promise<EngineConv[]> {
   const log = convLog(vault);
   const out: EngineConv[] = [];
   for (const r of log.rows()) {
+    // A deleted chat's row says so: it stays where it is (an older one is not imported just to be skipped).
+    if (r.deleted && !o.withDeleted) continue;
     const p = pictureOf(vault, r.id);
-    if (p) out.push(toEngineConv(p));
+    if (p && (o.withDeleted || !p.meta.deleted)) out.push(toEngineConv(p));
   }
   return out;
 }

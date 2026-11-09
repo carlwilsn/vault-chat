@@ -60,6 +60,11 @@ describe("Deleting chats", () => {
     expect(out).toContain("sep-agent: not deleted (this is the chat you are in)");
     expect(listed()).not.toContain("sep-old");
     expect(listed()).toContain("sep-agent");
+    // Gone from the agent's own lists too.
+    const other = await turn("What else is there?", "sep-other");
+    expect(JSON.stringify(await rig.backend.call(other.tid, "ListConversations", { limit: 100 }))).not.toContain("sep-old");
+    expect(JSON.stringify(await rig.backend.call(other.tid, "ListConversations", { limit: 100 }))).toContain("sep-agent");
+    expect(JSON.stringify(await rig.backend.call(other.tid, "ReadConversation", { conversation_id: "sep-old" }))).toContain("No other chat");
     const list = JSON.stringify(await rig.backend.call(m.tid, "RestoreConversation", {}));
     expect(list).toContain("id sep-old");
     expect(JSON.stringify(await rig.backend.call(m.tid, "RestoreConversation", { id: "sep-old" }))).toContain("Restored chat sep-old");

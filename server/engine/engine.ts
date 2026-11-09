@@ -2840,7 +2840,7 @@ export class Engine {
         }
         case "Cost": {
           if (a.project) {
-            const pc = projectCost(String(a.project), (await allConvs(vault)) as any);
+            const pc = projectCost(String(a.project), (await allConvs(vault, { withDeleted: true })) as any);
             return text(pc ? `Project ${pc.name}: $${pc.totalUsd.toFixed(4)} over ${pc.parts.length} conversation(s)${pc.missingCalls ? ` (${pc.missingCalls} call(s) without a cost)` : ""}.` : `No project "${a.project}".`);
           }
           const target = a.conversation ? await readConv(vault, String(a.conversation)) : conv.id ? conv : null;
