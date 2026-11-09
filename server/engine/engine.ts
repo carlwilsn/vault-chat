@@ -1706,6 +1706,7 @@ export class Engine {
   private titling = new Set<string>();
   private async autoTitle(convId: string): Promise<void> {
     if (threadKindOf({ id: convId }) === "main" || threadKindOf({ id: convId }) === "project" || this.titling.has(convId)) return;
+    if (TITLE_MODEL === "off" && !this.d.titleWith) return;
     const p = this.picture(convId);
     if (!p || p.meta.deleted || p.meta.titleBy === "carl") return;
     const asks = p.items.filter((i) => i.kind === "user" && (i.text ?? "").trim() && !["wake", "nudge", "resume", "job", "handoff"].includes(i.via ?? ""));

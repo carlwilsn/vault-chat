@@ -175,6 +175,8 @@ export async function startServer(e: ServerEnv & { bundle?: string }): Promise<R
     HOME: e.home,
     USERPROFILE: e.home,
     VC_HOST: "127.0.0.1",
+    // A summary title is a model call of its own: it would eat a scripted reply meant for a turn.
+    VC_TITLE_MODEL: "off",
     VC_PORT: String(port),
     VC_VOICE_PORT: voicePort,
     VC_VOICE_PIPELINE_PORT: voicePort,
