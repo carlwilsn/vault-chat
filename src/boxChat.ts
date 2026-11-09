@@ -440,12 +440,16 @@ class BoxChatSession {
   }
 
   /** The list from the box (rows folded up to `seq`); the open conversations again from their checkpoints. */
+  /** Chats the box says are deleted (the list's `deleted` ids): dropped from the screen and the cache. */
+  private deletedIds = new Set<string>();
+
   private async resync(): Promise<void> {
     const r = await httpGet(this.link, "/api/v2/conversations", 20_000);
     if (!this.live()) return;
     this.setReach(true);
     this.epoch = String(r.epoch ?? "");
     this.rows = new Map((Array.isArray(r.rows) ? r.rows : []).map((x: RowState) => [x.id, x]));
+    this.deletedIds = new Set((Array.isArray(r.deleted) ? r.deleted : []).filter((x: unknown): x is string => typeof x === "string"));
     this.cursor = Number(r.seq) || 0;
     vlog("box.feed", { state: "resync", cursor: this.cursor, epoch: this.epoch, rows: this.rows.size });
     // Pictures from another log (or an older cursor) are not this one's: fetched again.
@@ -681,7 +685,7 @@ class BoxChatSession {
       }
       if (runtime) patch.convRuntime = runtime;
       if (conversations) {
-        const gone = new Set([...this.rows.values()].filter((r) => (r as Deletable).deleted).map((r) => r.id));
+        const gone = new Set([...this.rows.values()].filter((r) => (r as Deletable).deleted).map((r) => r.id).concat([...this.deletedIds]));
         if (s.activeConversationId && gone.has(s.activeConversationId)) queueMicrotask(() => this.leaveDeleted(s.activeConversationId!));
         patch.conversations = (conversations as Conversation[]).filter((c) => !gone.has(c.id)).sort((a, b) => b.lastActivityAt - a.lastActivityAt);
       }

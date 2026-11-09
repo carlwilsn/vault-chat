@@ -672,9 +672,10 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
   if (path === "/api/v2/conversations" && method === "GET") {
     const log = globalFeed(open.path);
     const seq = log.latest();
-    // Deleted chats' rows go out too, marked deleted: a client drops a marked row (and the cached chat it had for
-    // it). Left out, a client that had the chat (its cache, a list from before) never hears it is gone and keeps it.
-    return json(res, 200, { rows: log.rows(), seq, epoch: log.epoch });
+    // Deleted chats are not rows, but their ids go out beside them: a client that had one (its cache, a list from
+    // before the delete) drops it. Left out, such a client never hears it is gone and keeps it.
+    const all = log.rows();
+    return json(res, 200, { rows: all.filter((r) => !(r as any).deleted), deleted: all.filter((r) => (r as any).deleted).map((r) => r.id), seq, epoch: log.epoch });
   }
   const v2 = /^\/api\/v2\/conversations\/([^/]+)\/(events|checkpoint)$/.exec(path);
   if (v2 && method === "GET") {

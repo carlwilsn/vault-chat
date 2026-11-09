@@ -1,4 +1,4 @@
-// A deleted chat's row reaches every client marked deleted (the client drops it, and the copy it had cached), so
+// A deleted chat's id reaches every client in the list's `deleted` (the client drops it, and the copy it had cached), so
 // a chat Carl deleted never comes back on a surface that reloads its list. Left out of the list, a client that
 // had it (its cache, a list from before the delete) kept showing it.
 import { it, expect, afterAll } from "vitest";
@@ -16,7 +16,7 @@ afterAll(async () => {
   cleanup(home);
 });
 
-it("the list carries a deleted chat's row, marked deleted; Main and the others unmarked", async () => {
+it("the list names a deleted chat in `deleted`, not as a row; Main and the others stay rows", async () => {
   home = tmp("vcdellist-");
   const vault = makeVault(join(home, "vault"));
   const secrets = await makeKeyStore(join(home, "secrets"), { "service.claude-code": "sk-ant-oat01-canary-not-real" });
@@ -29,9 +29,10 @@ it("the list carries a deleted chat's row, marked deleted; Main and the others u
   log.emit("gone-1", { type: "meta", patch: { deleted: true, deletedAt: now, deletedBy: "test" } });
   log.close();
   srv = await startServer({ home, vault, secrets, anthropic: api.url });
-  const rows = (await (await fetch(srv.base + "/api/v2/conversations")).json()).rows as { id: string; deleted?: boolean }[];
-  const by = new Map(rows.map((r) => [r.id, r]));
-  expect(by.get("gone-1")?.deleted).toBe(true);
-  expect(by.get("keep-1")?.deleted).toBeUndefined();
-  expect(by.get("main")?.deleted).toBeUndefined();
+  const body = await (await fetch(srv.base + "/api/v2/conversations")).json();
+  const ids = (body.rows as { id: string }[]).map((r) => r.id);
+  expect(body.deleted).toEqual(["gone-1"]);
+  expect(ids).not.toContain("gone-1");
+  expect(ids).toContain("keep-1");
+  expect(ids).toContain("main");
 });
