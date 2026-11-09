@@ -47,6 +47,7 @@ import { isArchivedThread, ARCHIVED_THREAD, OLDER_CHAT } from "./conversations";
 import { isOlderChat } from "./threads";
 import { newChatHere } from "./chat-controller";
 import { ChatModelPicker } from "./ChatModelPicker";
+import { UsagePopover } from "./UsagePopover";
 import { ClaudeSignInPrompt, useAiBlocked } from "./ClaudeCodeSignIn";
 import { useFittedPlaceholder } from "./fitPlaceholder";
 
@@ -1473,13 +1474,18 @@ export function ChatPane() {
             <div className="flex items-center gap-2">
               {busy && <ElapsedTimer />}
               {lastContext > 0 && (
-                <div
-                  className="flex items-center gap-1.5"
+                <UsagePopover
                   title={contextTitle(lastContext, ctxWindow)}
-                >
-                  <TokenRing used={lastContext} limit={ctxWindow.tokens} size={14} />
-                  <span>{formatTokens(lastContext)}</span>
-                </div>
+                  used={lastContext}
+                  limit={ctxWindow.tokens}
+                  known={ctxWindow.known}
+                  ring={
+                    <>
+                      <TokenRing used={lastContext} limit={ctxWindow.tokens} size={14} />
+                      <span>{formatTokens(lastContext)}</span>
+                    </>
+                  }
+                />
               )}
               {!archived && (
                 <button

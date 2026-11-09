@@ -85,6 +85,7 @@ export const SHORTCUTS = [
       "src/ProjectChip.tsx",
       "src/SettingsPane.tsx",
       "src/ChatModelPicker.tsx",
+      "src/UsagePopover.tsx",
       "src/ChatPane.tsx",
       "src/PdfView.tsx",
       "src/HtmlView.tsx",

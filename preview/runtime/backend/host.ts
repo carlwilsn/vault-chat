@@ -412,6 +412,11 @@ export const hostCommands: Record<string, (a: Record<string, any>) => unknown> =
         }),
       };
     }
+    if (u.pathname === "/api/v1/usage") {
+      // Carl's plan usage (server/planUsage.ts): the 5-hour window and the weekly limit.
+      fakeBox(u);
+      return { status: 200, body: JSON.stringify({ fiveHour: { percent: 42, resetsAt: Date.now() + 2 * 3600_000 + 14 * 60_000 }, weekly: { percent: 18, resetsAt: Date.now() + 3 * 86400_000 }, at: Date.now(), source: "usage" }) };
+    }
     if (u.pathname === "/api/v1/vaults") {
       const b = fakeBox(u);
       return { status: 200, body: JSON.stringify({ vaults: (b.vaults ?? []).map((name, i) => ({ name, main: i === 0, syncing: true })) }) };

@@ -29,6 +29,7 @@ export type FixtureMessage = {
   rollover?: { recap?: string };
   askOptions?: { answer: string }[];
   costUsd?: number;
+  usage?: { context?: number };
 };
 
 type Block = { ts: number; ci: number; kind: "assistant" | "thinking"; text: string };
@@ -220,7 +221,8 @@ export class MemoryBox {
       for (const { id, t } of calls) content.push({ type: "toolCall", id, name: t.name, arguments: t.input ?? {} });
       const askId = `${base}:ask`;
       if (asking) content.push({ type: "toolCall", id: askId, name: "AskUser", arguments: { question: m.content ?? "", options: m.askOptions!.map((x) => x.answer) } });
-      if (content.length) this.entry(conv, { type: "message", message: { role: "assistant", content, stopReason: calls.length || asking ? "toolUse" : "stop", timestamp: this.stamp() } as PiMessage });
+      const ctx = Number(m.usage?.context ?? 0);
+      if (content.length) this.entry(conv, { type: "message", message: { role: "assistant", content, stopReason: calls.length || asking ? "toolUse" : "stop", timestamp: this.stamp(), ...(ctx > 0 ? { usage: { input: ctx } } : {}) } as PiMessage });
       for (const { id, t } of calls) if (t.result !== undefined) this.toolResult(conv, id, t.name, t.result);
       for (const { id, t } of calls) if (t.subagents?.length) this.applyMeta(conv, { subagents: t.subagents.map((s) => ({ threadId: s, toolCallId: id })) });
       if (asking) {
