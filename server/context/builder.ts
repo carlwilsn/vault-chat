@@ -192,8 +192,9 @@ export function machineText(o: { chrome: string | null; work: string | null; key
   const parts = ["# This machine"];
   if (o.work) {
     parts.push(
-      `Your sandbox: your home directory is read-only, and credentials (SSH keys, tokens) and private vault state are not visible. ` +
-        `You can write to registered vaults' ordinary synced content (not service-owned project sources), to /tmp, and to your work area \`${o.work}/\` — use it for code checkouts, builds, ` +
+      `No sandbox: you run as Carl's user with the whole box — systemctl --user, sudo, the journal, any file. ` +
+        `Never read or print credentials (SSH keys, tokens, env files), and leave other vaults' .vault-chat alone. ` +
+        `Use your work area \`${o.work}/\` for code checkouts, builds, ` +
         `virtualenvs and scratch that don't belong in the vault (point caches there or at /tmp, e.g. \`npm_config_cache=/tmp/npm-cache\`). ` +
         `Backups, checkpoints, archives and other bulk output go there too, never in the vault: every file in the vault is committed and ` +
         `backed up to GitHub, and archives (.zip, .tar.gz, …) are kept out of sync anyway. The vault's history is already its backup.`,

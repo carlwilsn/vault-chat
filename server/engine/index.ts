@@ -199,6 +199,12 @@ export function jobWrap(outer: string[] | null): string[] | null {
   return outer ? outer.filter((x) => x !== "--die-with-parent") : null;
 }
 
+/** The agent runs unsandboxed: Carl wants no bounds on it (a bypass-permissions agent with the
+ *  whole box, systemctl and its session bus included). VC_AGENT_SANDBOX=1 puts the bubblewrap layer back. */
+export function agentOuter(sb: Sandbox): string[] | null {
+  return process.env.VC_AGENT_SANDBOX === "1" ? outerWith(sb) : null;
+}
+
 /** The server's own environment file (systemd's EnvironmentFile holds tokens): VC_ENV_FILE, else the unit's default. */
 export function serverEnvFile(home: string): string {
   return process.env.VC_ENV_FILE || join(home, ".config", "vault-chat-server.env");
@@ -376,7 +382,7 @@ export async function startEngine(b: EngineBoot): Promise<EngineHandle> {
       logDir: st.jobs,
       // Jobs outlive turns: the same registered content and private-state walls as pi's sandbox, in a pid namespace of their own.
       get wrap() {
-        return jobWrap(outerWith(sandbox));
+        return jobWrap(agentOuter(sandbox));
       },
       // Read at each StartJob: the keys as they are now (server/keys.ts agentKeyEnv), written to the job's env file.
       get env() {
@@ -407,7 +413,7 @@ export async function startEngine(b: EngineBoot): Promise<EngineHandle> {
           mcp: new McpRuntime(),
           toolTimeoutMs: Number(process.env.VC_CLAUDE_TOOL_TIMEOUT_MS) || 6 * 3_600_000,
           // The same outer layer pi gets, read at each session start.
-          sandbox: () => outerWith(sandbox),
+          sandbox: () => agentOuter(sandbox),
           // The box's one-shots (a note's title, spoken maths) run on the fast model.
           fastModel: process.env.VC_CLAUDE_FAST_MODEL || "haiku",
           idleMs: Number(process.env.VC_CLAUDE_IDLE_MS) || 10 * 60_000,
@@ -435,7 +441,7 @@ export async function startEngine(b: EngineBoot): Promise<EngineHandle> {
       onFilesWritten: (paths) => b.onFilesWritten?.(v.name, paths),
       vaultName: v.name,
       // The vault's own tools use the same registered content capabilities as commands.
-      shell: () => outerWith(sandbox),
+      shell: () => agentOuter(sandbox),
       // One line per turn: the full record in <state>/logs/turns.jsonl, a summary in the journal.
       turnLog: (line) => {
         boxLogs(b.stateDir).turns.append(line);
