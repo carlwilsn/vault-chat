@@ -273,6 +273,8 @@ export function ThreadRow({
   // closing the panel, the other list surface and a restart all keep it.
   const [opened, setOpened] = usePlaceOpen(entry.id);
   const shown = opened ?? active;
+  // A project's spinner shows only while it is collapsed: open, its own chats show theirs (Carl, 2026-11-10).
+  const spinning = running && (isMain || !shown);
   const [menu, setMenu] = useState(false);
   const [mode, setMode] = useState<null | "rename" | "confirm">(null);
   const [draft, setDraft] = useState(name);
@@ -352,7 +354,7 @@ export function ThreadRow({
         <span data-el="place-chats" className="shrink-0 -ml-2 mr-0.5 h-4 w-4 flex items-center justify-center rounded text-muted-foreground">
           <ChevronRight className={cn("h-3 w-3 transition-transform", shown && "rotate-90")} />
         </span>
-        {running ? (
+        {spinning ? (
           <Spinner className={isMain ? "h-3.5 w-3.5" : "h-3 w-3"} />
         ) : isMain ? (
           <Home className="h-3.5 w-3.5 text-foreground/80 shrink-0" />

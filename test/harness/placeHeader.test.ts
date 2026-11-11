@@ -31,3 +31,22 @@ for (const type of ["main", "project"] as const) {
     assert.ok(!html.includes(">New chat<"));
   });
 }
+
+for (const [opened, expectSpinner] of [[true, false], [false, true]] as const) {
+  test(`project ${opened ? "expanded" : "collapsed"}: its loader ${expectSpinner ? "shows" : "is hidden"} while a chat works`, () => {
+    const html = renderToStaticMarkup(
+      createElement(ThreadRow, {
+        entry: {
+          type: "project", id: "p-loader", title: "P", slug: "fixture", active: opened, running: true, unread: false,
+          chats: [{ id: "c1", title: "A chat", active: false, running: true, unread: false, at: 1 }],
+        } as any,
+        name: "Place",
+        onOpenChat: () => {},
+        onNewChat: () => {},
+      }),
+    );
+    const header = html.slice(0, html.indexOf('data-el="place-chat-list"') >= 0 ? html.indexOf('data-el="place-chat-list"') : undefined);
+    assert.equal(header.includes('data-el="working"'), expectSpinner);
+    if (opened) assert.ok(html.includes('data-el="working"'), "the chat inside still shows its own loader");
+  });
+}
