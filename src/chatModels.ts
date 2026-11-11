@@ -77,7 +77,7 @@ export async function setChatModel(vault: string, _convId: string | null, patch:
   return r.ok ? null : (r.error ?? "the box refused");
 }
 
-/** The global model, effort and list, kept fresh: read on mount, every 15 s, and when the window regains focus. */
+/** The global model, effort and list, kept fresh: read on mount, every 15 s (every 5 s until a list arrives), and when the window regains focus. */
 export function useChatModels(): Snapshot {
   const vault = useStore((s) => s.vaultPath);
   const on = useStore((s) => !!s.boxChat?.on);
@@ -94,9 +94,12 @@ export function useChatModels(): Snapshot {
     const go = () => void refreshChatModels(vault);
     go();
     const t = setInterval(go, 15_000);
+    // Until a list has arrived (box starting, engine not up) look again every 5 s.
+    const quick = setInterval(() => snap.models.length || go(), 5_000);
     window.addEventListener("focus", go);
     return () => {
       clearInterval(t);
+      clearInterval(quick);
       window.removeEventListener("focus", go);
     };
   }, [on, vault]);
