@@ -1,8 +1,7 @@
 // The composer's two small menus, beside Send: what THIS chat runs on, and how
 // hard it thinks.
 //
-// Per chat, not per box (Carl: a picker in the composer, switchable mid-chat) —
-// so a quick question can sit on Haiku while the chat next to it thinks on Opus.
+// One global setting, identical in every chat and on every device (Carl, 2026-11-10).
 // Real names only, no search box, no prices and no providers: four models and
 // four levels is a list you read, not one you query.
 //
@@ -12,7 +11,7 @@
 import { useEffect, useRef, useState } from "react";
 import { cn } from "./lib/utils";
 import { useStore } from "./store";
-import { defaultModel, EFFORTS, EFFORT_LABEL, labelFor, setChatModel, useChatModels, type Effort } from "./chatModels";
+import { EFFORTS, EFFORT_LABEL, labelFor, setChatModel, useChatModels, type Effort } from "./chatModels";
 
 /** A menu that opens upwards over the composer, closing on a click outside. */
 function Menu({ label, title, children, el }: { label: string; title: string; children: (close: () => void) => React.ReactNode; el: string }) {
@@ -58,21 +57,22 @@ const Row = ({ on, onClick, children }: { on: boolean; onClick: () => void; chil
 );
 
 /**
- * `convId`: the chat the picker sets. `model`/`effort`: what it is on now — the
- * conversation's own fields, or the box's default, in which case the menu shows
- * what is running rather than an empty label.
+ * `convId`: the chat the picker is open in (its running session takes a change at
+ * once), or null on a new chat. Model and effort are the box's one global setting
+ * (src/chatModels.ts), so this always renders: from the cache and a placeholder
+ * name when the box has not answered yet.
  */
-export function ChatModelPicker({ convId, model, effort }: { convId: string | null; model?: string; effort?: Effort }) {
+export function ChatModelPicker({ convId }: { convId: string | null }) {
   const vault = useStore((s) => s.vaultPath);
-  const models = useChatModels();
+  const { models, model, effort } = useChatModels();
   const [error, setError] = useState<string | null>(null);
-  if (!models.length || !convId) return null;
-  // What it is on, which is not always a row: a chat that has chosen nothing runs
-  // on the box's last choice, and one left on last generation's model keeps
-  // running on that until he picks. Either way it is named as what it is.
-  const on = model ?? defaultModel();
-  const current = models.find((m) => m.id === on) ?? { id: on || models[0]!.id, name: labelFor(models, on) ?? models[0]!.name, efforts: models[0]!.efforts };
-  const efforts = current.efforts.length ? EFFORTS.filter((e) => current.efforts.includes(e)) : [];
+  // What it runs on, which is not always a row: a model left over from an earlier
+  // generation keeps running until he picks, and is named as what it is.
+  const first = models[0];
+  const on = model || first?.id || "";
+  const found = models.find((m) => m.id === on);
+  const name = found?.name ?? labelFor(models, on) ?? "Model";
+  const efforts = (found ?? first)?.efforts.length ? EFFORTS.filter((e) => (found ?? first)!.efforts.includes(e)) : [];
   const set = (patch: { model?: string; effort?: Effort | null }) =>
     void setChatModel(vault ?? "", convId, patch).then((e) => setError(e));
 
@@ -80,27 +80,31 @@ export function ChatModelPicker({ convId, model, effort }: { convId: string | nu
     <div data-el="chat-model-picker" className="flex items-center gap-1.5">
       <Menu
         el="chat-model"
-        label={current.name}
-        title={error ? `Not changed: ${error}` : `This chat runs on ${current.name}. A new chat starts on what you pick last.`}
+        label={name}
+        title={error ? `Not changed: ${error}` : `Every chat runs on ${name}.`}
       >
         {(close) =>
-          models.map((m) => (
-            <Row
-              key={m.id}
-              on={m.id === current.id}
-              onClick={() => {
-                close();
-                if (m.id !== current.id) set({ model: m.id });
-              }}
-            >
-              {m.name}
-            </Row>
-          ))
+          models.length ? (
+            models.map((m) => (
+              <Row
+                key={m.id}
+                on={m.id === on}
+                onClick={() => {
+                  close();
+                  if (m.id !== on) set({ model: m.id });
+                }}
+              >
+                {m.name}
+              </Row>
+            ))
+          ) : (
+            <div className="px-3 py-1.5 text-[11px] text-muted-foreground">Models load when the box answers</div>
+          )
         }
       </Menu>
-      {efforts.length > 0 && (
-        <Menu el="chat-effort" label={effort ? EFFORT_LABEL[effort] : "Effort"} title={`How hard ${current.name} thinks in this chat`}>
-          {(close) =>
+      <Menu el="chat-effort" label={effort ? EFFORT_LABEL[effort] : "Effort"} title={`How hard ${name} thinks, in every chat`}>
+        {(close) =>
+          efforts.length ? (
             efforts.map((e) => (
               <Row
                 key={e}
@@ -113,9 +117,11 @@ export function ChatModelPicker({ convId, model, effort }: { convId: string | nu
                 {EFFORT_LABEL[e]}
               </Row>
             ))
-          }
-        </Menu>
-      )}
+          ) : (
+            <div className="px-3 py-1.5 text-[11px] text-muted-foreground">Levels load when the box answers</div>
+          )
+        }
+      </Menu>
     </div>
   );
 }

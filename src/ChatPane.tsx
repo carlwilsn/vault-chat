@@ -1494,7 +1494,7 @@ export function ChatPane() {
           <div className="flex items-center justify-between px-1 pt-1.5 text-[11px] text-muted-foreground">
             <div className="flex items-center gap-3 min-w-0">
               {/* What this chat runs on, and how hard it thinks (src/chatModels.ts). */}
-              {!archived && !aiBlocked && <ChatModelPicker convId={activeConversationId} model={activeConv?.model} effort={activeConv?.effort} />}
+              <ChatModelPicker convId={activeConversationId} />
               {boxDown && (
                 <span className="truncate text-amber-500/90" data-el="box-unreachable" title={boxChat?.reason || undefined}>
                   {BOX_UNREACHABLE}: {downWhy}

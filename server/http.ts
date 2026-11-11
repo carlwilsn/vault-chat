@@ -77,8 +77,10 @@ export type ServerHooks = {
     models: () => unknown;
     /** The model a chat that has made no choice of its own runs on. */
     defaultModel?: () => string;
+    /** The one effort every chat runs at (undefined: the model decides). */
+    defaultEffort?: () => string | undefined;
     /** POST /api/v1/conversations/<id>/model {model, effort}: the composer's picker, for one chat. */
-    chatModel?: (v: VaultScope, convId: string, b: { model?: unknown; effort?: unknown }) => Promise<Record<string, unknown>>;
+    chatModel?: (v: VaultScope, convId: string | null, b: { model?: unknown; effort?: unknown }) => Promise<Record<string, unknown>>;
     message: (v: VaultScope, b: any, viewerRoot?: string) => Promise<Record<string, unknown> | null>;
     answer: (v: VaultScope, b: any) => Promise<Record<string, unknown> | null>;
     kill: (v: VaultScope, b: any) => Promise<Record<string, unknown> | null>;
@@ -514,15 +516,15 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
   // What the composer's picker offers: the models a chat can run on, by name,
   // and the one a chat that has not chosen runs on (the box's last choice).
   if (path === "/api/v1/models" && method === "GET") {
-    return hooks.engine ? json(res, 200, { models: hooks.engine.models(), ...(hooks.engine.defaultModel ? { default: hooks.engine.defaultModel() } : {}) }) : json(res, 503, { error: "engine not running" });
+    return hooks.engine ? json(res, 200, { models: hooks.engine.models(), ...(hooks.engine.defaultModel ? { default: hooks.engine.defaultModel() } : {}), effort: hooks.engine.defaultEffort?.() ?? null }) : json(res, 503, { error: "engine not running" });
   }
-  // One chat's model and effort (the picker beside Send). Per conversation, so
-  // the phone and the laptop see the same choice and it outlives a restart.
-  const modelM = /^\/api\/v1\/conversations\/([^/]+)\/model$/.exec(path);
+  // The model and effort (the picker beside Send): one global setting, so every chat
+  // and device sees the same choice and it outlives a restart.
+  const modelM = /^\/api\/v1\/(?:conversations\/([^/]+)\/)?model$/.exec(path);
   if (modelM && method === "POST") {
     if (!hooks.engine?.chatModel) return json(res, 503, { error: "engine not running" });
     const b = (await jsonBody(req)) ?? {};
-    const out = await hooks.engine.chatModel(scope, decodeURIComponent(modelM[1]!), b);
+    const out = await hooks.engine.chatModel(scope, modelM[1] ? decodeURIComponent(modelM[1]) : null, b);
     return json(res, out.ok ? 200 : 400, out);
   }
   // Steer or stop one running subagent of a conversation.

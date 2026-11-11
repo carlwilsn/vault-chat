@@ -98,7 +98,7 @@ describe("Main over HTTP", () => {
     expect(texts, JSON.stringify(texts)).toContain("What was I saying?");
   });
 
-  it("the model is the chat's OWN (the composer's picker): this chat's next turn runs on it, and a new chat starts from the last choice", async () => {
+  it("the model is ONE global setting (the composer's picker): every chat's next turn runs on it, new or old, and /models reports it", async () => {
     // The list the picker draws: real names, never a raw id or a provider.
     const answer = await get("/api/v1/models");
     const list = answer.models as { id: string; name: string; efforts: string[] }[];
@@ -112,8 +112,8 @@ describe("Main over HTTP", () => {
     expect(await post("/api/v1/conversations/main/model", { model: "not a model" })).toMatchObject({ ok: false });
     expect(await post("/api/v1/conversations/main/model", { model: "openai/gpt-6.1-sol" })).toMatchObject({ ok: false });
     expect(await post("/api/v1/conversations/main/model", { model: "opus", effort: "high" })).toMatchObject({ ok: true, model: "opus", effort: "high" });
-    // It is the conversation's own field, so every client reads it off the feed.
-    expect((await picture("main")).meta).toMatchObject({ model: "opus", effort: "high" });
+    // It is global: the box reports it back to every client, not a field of this chat.
+    expect(await get("/api/v1/models")).toMatchObject({ default: "opus", effort: "high" });
 
     const calls0 = or.calls.length;
     await post("/api/v2/intent", { type: "send", clientId: "c-model", text: "Which model are you?" });
@@ -126,9 +126,13 @@ describe("Main over HTTP", () => {
     await waitFor(() => idle("chat-after-the-pick"), 30_000);
     expect(or.calls.slice(calls1).some((c: any) => /opus/.test(String(c.model))), JSON.stringify(or.calls.slice(calls1).map((c: any) => c.model))).toBe(true);
 
-    // And one chat's choice is not every chat's: this one goes back on its own.
-    expect(await post("/api/v1/conversations/main/model", { model: "haiku", effort: null })).toMatchObject({ ok: true, model: "haiku" });
-    expect((await picture("main")).meta.effort ?? null).toBe(null);
+    // Set with no chat at all (a new-chat composer): the same one setting.
+    expect(await post("/api/v1/model", { model: "haiku", effort: null })).toMatchObject({ ok: true, model: "haiku" });
+    expect(await get("/api/v1/models")).toMatchObject({ default: "haiku", effort: null });
+    const calls2 = or.calls.length;
+    await post("/api/v2/intent", { type: "send", clientId: "c-old-chat", text: "Still you?" });
+    await waitFor(() => idle("main"), 30_000);
+    expect(or.calls.slice(calls2).some((c: any) => /haiku/.test(String(c.model))), JSON.stringify(or.calls.slice(calls2).map((c: any) => c.model))).toBe(true);
   });
 
   it("+ New project makes the project and its thread; a send to a project carries its memory", async () => {
