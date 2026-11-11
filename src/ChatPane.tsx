@@ -138,15 +138,22 @@ const ChatImage = memo(function ChatImage({
       if (prev) URL.revokeObjectURL(prev.url);
     };
     (async () => {
-      const image = await readChatImage(cleaned, vaultPath, files, {
-        local: (path) => invoke<number[]>("read_binary_file", { path }),
-        box: async () => {
-          const link = await boxLinkFor(vaultPath);
-          // No local or viewer-root fallback once this is a box conversation.
-          // The existing backend log is the authority for convId's asset root.
-          return link ? (path) => convId ? fetchBoxFile(link, path, convId) : Promise.resolve(null) : null;
-        },
-      });
+      // A box fetch can fail for a moment (link not up yet, 10 s timeout, conversation not
+      // indexed yet): retry a few times before showing "image not found" for good.
+      let image = null;
+      for (let attempt = 0; attempt < 4 && !image; attempt++) {
+        if (attempt) await new Promise((r) => setTimeout(r, [0, 1000, 3000, 8000][attempt]));
+        if (cancelled) return;
+        image = await readChatImage(cleaned, vaultPath, files, {
+          local: (path) => invoke<number[]>("read_binary_file", { path }),
+          box: async () => {
+            const link = await boxLinkFor(vaultPath);
+            // No local or viewer-root fallback once this is a box conversation.
+            // The existing backend log is the authority for convId's asset root.
+            return link ? (path) => convId ? fetchBoxFile(link, path, convId) : Promise.resolve(null) : null;
+          },
+        });
+      }
       if (cancelled) return;
       if (image) {
         show(image.path, image.bytes);
