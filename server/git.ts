@@ -304,7 +304,40 @@ export async function ensureLfsFilter(repo: string): Promise<void> {
     const r = await runGit(repo, ["config", "--local", "--get", k]);
     if (r.stdout.replace(/\r?\n$/, "") !== v) await git(repo, ["config", "--local", k, v]);
   }
+  removeGitLfsHooks(join(repo, ".git"));
   lfsConfigured.set(lockKey(repo), key);
+}
+
+const GIT_LFS_HOOKS = ["pre-push", "post-checkout", "post-commit", "post-merge"];
+
+/** The hooks a machine-wide git-lfs writes into a repo whose filter it ran: its pre-push sends every push's LFS
+ * objects to an LFS server, and the hub (a local path) has none, so each push failed ("does not support the Git LFS
+ * locking API") and the repo stopped syncing. Only git-lfs's own generated hooks go; any other hook stays. */
+export function removeGitLfsHooks(gitDir: string): string[] {
+  const removed: string[] = [];
+  for (const name of GIT_LFS_HOOKS) {
+    const p = join(gitDir, "hooks", name);
+    let body: string;
+    try {
+      body = readFileSync(p, "utf8");
+    } catch {
+      continue;
+    }
+    const own = body.includes("This repository is configured for Git LFS") && new RegExp(`^git lfs ${name} "\\$@"\\s*$`, "m").test(body);
+    const other = body
+      .split("\n")
+      .map((l) => l.trim())
+      .filter((l) => l && !l.startsWith("#") && !/^git lfs /.test(l) && !/git-lfs|Git LFS|exit 2|^}|^\{|printf/.test(l));
+    if (!own || other.length) continue;
+    try {
+      rmSync(p, { force: true });
+      removed.push(name);
+    } catch {
+      /* the next cycle tries again */
+    }
+  }
+  if (removed.length) console.warn(`[sync] removed git-lfs hooks (${removed.join(", ")}) from ${gitDir}: the hub has no LFS server`);
+  return removed;
 }
 
 /** The conversation event log (server/convlog). */

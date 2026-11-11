@@ -1,7 +1,7 @@
 // The box sync loop against two local repos: the bare hub and the box's
 // working copy, plus a "laptop" clone playing the other side.
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { writeFileSync, readFileSync, existsSync, mkdirSync, openSync, closeSync, ftruncateSync, utimesSync } from "node:fs";
+import { writeFileSync, readFileSync, existsSync, mkdirSync, openSync, closeSync, ftruncateSync, utimesSync, chmodSync, statSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { BoxSync } from "../sync";
 import { tmp, cleanup, makeVault, git, sh, waitFor } from "./helpers";
@@ -131,6 +131,38 @@ describe("box sync loop", () => {
     expect(alerts).toEqual([]);
     await sync.runOnce();
     expect(git(box, "status", "--porcelain").trim()).toBe("");
+  });
+
+  it("a machine-wide git-lfs cannot take a repo over: its process filter is replaced, its hooks removed, the push goes through", async () => {
+    // What a git-lfs install leaves: filter.lfs.process (git prefers it over clean/smudge) and hooks whose
+    // pre-push asks the hub (a local path, no LFS server) for its locking API, so every push failed.
+    git(box, "config", "--local", "filter.lfs.process", "false");
+    const lfsHook = (name: string) =>
+      `#!/bin/sh\ncommand -v git-lfs >/dev/null 2>&1 || { echo >&2 "\\nThis repository is configured for Git LFS but 'git-lfs' was not found on your path.\\n"; exit 2; }\ngit lfs ${name} "$@"\n`;
+    mkdirSync(join(box, ".git", "hooks"), { recursive: true });
+    // Without git-lfs on PATH the exact hook exits 2; with it, the push fails on the locking API: either way, kept, it fails the push.
+    for (const name of ["pre-push", "post-merge"]) {
+      writeFileSync(join(box, ".git", "hooks", name), lfsHook(name));
+      chmodSync(join(box, ".git", "hooks", name), 0o755);
+    }
+    // A hook someone extended is theirs: it stays.
+    writeFileSync(join(box, ".git", "hooks", "post-commit"), lfsHook("post-commit") + "echo mine\n");
+    const big = join(box, "huge.bin");
+    const fd = openSync(big, "w");
+    ftruncateSync(fd, 50 * 1024 * 1024 + 1);
+    closeSync(fd);
+    await sync.runOnce();
+    expect(sync.status.lastError).toBeNull();
+    expect(sync.status.ok).toBe(true);
+    expect(sh(bare, "git", ["show", "box:huge.bin"])).toMatch(/^version https:\/\/git-lfs\.github\.com\/spec\/v1\noid sha256:[0-9a-f]{64}\nsize 52428801\n$/);
+    expect(git(box, "config", "--local", "--get", "filter.lfs.process")).toMatch(/vault-chat-lfs-filter\.mjs" process/);
+    expect(existsSync(join(box, ".git", "hooks", "post-merge"))).toBe(false);
+    expect(existsSync(join(box, ".git", "hooks", "post-commit"))).toBe(true);
+    expect(existsSync(join(box, ".git", "hooks", "pre-push"))).toBe(false);
+    // The process filter round-trips the bytes on checkout.
+    rmSync(big);
+    git(box, "checkout", "--", "huge.bin");
+    expect(statSync(big).size).toBe(50 * 1024 * 1024 + 1);
   });
 
   it("never commits a new archive: excluded for good, reported, one alert naming the work area", async () => {
