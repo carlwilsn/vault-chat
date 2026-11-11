@@ -285,23 +285,14 @@ describe("vault-scoped routes (the real server)", () => {
     expect((await post("/notes?vault=physics", { text: "x" })).status).toBe(200);
   });
 
-  it("a chat's model is set on the vault that owns the chat, not the one the request names", async () => {
+  it("the old per-chat model route still sets the one global model", async () => {
     // The picker beside Send posts to /conversations/<id>/model. Without the id
     // being read out of the PATH, the main vault's engine would answer for a
     // conversation it does not hold, and Carl's pick would come back "not found".
     const r = await (await post("/api/v1/conversations/cphys/model", { model: "haiku", effort: "low" })).json();
     expect(r).toMatchObject({ ok: true, convId: "cphys", model: "haiku", effort: "low" });
-    // The record is in the physics vault's own feed, and nowhere else.
-    const feed = (v: string) => {
-      const dir = join(v, ".vault-chat", "events");
-      const walk = (d: string): string[] =>
-        existsSync(d)
-          ? readdirSync(d, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? walk(join(d, e.name)) : [readFileSync(join(d, e.name), "utf8")]))
-          : [];
-      return walk(dir).join("\n");
-    };
-    expect(feed(join(home, "physics"))).toContain('"model":"haiku"');
-    expect(feed(main)).not.toContain('"model":"haiku"');
+    // The model is global, not a field of the chat: the feed does not carry it.
+    expect(await (await fetch(srv.base + "/api/v1/models")).json()).toMatchObject({ default: "haiku", effort: "low" });
     // And a model this engine cannot run is refused where Carl can be told.
     expect(await (await post("/api/v1/conversations/cphys/model", { model: "openai/gpt-6.1-sol" })).json()).toMatchObject({ ok: false });
   });

@@ -77,7 +77,7 @@ async function main(): Promise<void> {
   // Every agent turn runs in pi (server/engine). The old in-process loop
   // stays in the bundle for legacy mission threads until Phase 3 removes it.
   const { notificationAppend } = await import("./commands/phone");
-  const { startEngine, engineModel, engineShuttingDown } = await import("./engine");
+  const { startEngine, engineModel, engineEffort, engineShuttingDown } = await import("./engine");
   const { startBoxSync, syncStatus, syncSummary, triggerSync, syncNow, listVaults, addVault, vaultPaths } = await import("./sync");
   // An agent's edits reach the laptop's open file in seconds: commit + publish, then /poll "vault_changed".
   const { LiveEdits } = await import("./liveEdits");
@@ -313,6 +313,7 @@ async function main(): Promise<void> {
       : {
           models: () => (engine.engine && engine.models ? engine.models() : []),
           defaultModel: () => engineModel(),
+          defaultEffort: () => engineEffort(),
           chatModel: async (v, convId, body) => (await engineOf(v)).setChatModel(convId, body),
           message: async (v, b, viewerRoot) => (await engineOf(v)).message(b, viewerRoot),
           answer: async (v, b) => (await engineOf(v)).answerRoute(b),

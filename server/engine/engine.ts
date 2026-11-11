@@ -1338,20 +1338,19 @@ export class Engine {
   }
 
   /**
-   * POST /api/v1/conversations/:id/model — the composer's picker, for THIS chat.
+   * POST /api/v1/model (and the older /conversations/:id/model) — the composer's picker.
    *
-   * The choice is the conversation's own field, so every client sees it (the
-   * laptop, the phone and the board read the same feed) and it survives a
-   * restart. It is also kept as the box's last choice, which is where a NEW chat
-   * starts from: Carl picks once and the next chat is already on it.
+   * Model and effort are ONE setting for the whole box, the same in every chat and
+   * on every device (Carl, 2026-11-10): it is stored once (rememberModel/Effort)
+   * and every chat, new or old, runs on it. A conversation's own model/effort
+   * fields are no longer read.
    *
    * A model change reaches a running session live (setModel); effort is a start
    * option the runtime has no control request for, so the session ends and the
-   * next turn resumes it — see ClaudeCodeBackend.resumeThread.
+   * next turn resumes it — see ClaudeCodeBackend.resumeThread. `convId` (optional)
+   * is the chat the picker was open in: its running session takes the change now.
    */
-  async setChatModel(convId: string, body: { model?: unknown; effort?: unknown }): Promise<Record<string, unknown>> {
-    const conv = await readConv(this.d.vault, convId);
-    if (!conv) return { ok: false, error: `conversation ${convId} not found` };
+  async setChatModel(convId: string | null, body: { model?: unknown; effort?: unknown }): Promise<Record<string, unknown>> {
     const patch: Record<string, unknown> = {};
     if (body.model !== undefined) {
       const m = String(body.model ?? "").trim();
@@ -1359,25 +1358,22 @@ export class Engine {
       patch.model = m;
     }
     if (body.effort !== undefined) {
-      // null clears it: the chat goes back to the model's own default.
+      // null clears it: the model's own default.
       if (body.effort === null || body.effort === "") patch.effort = null;
       else if (!isEffort(body.effort)) return { ok: false, error: `"${String(body.effort).slice(0, 40)}" is not an effort level` };
       else patch.effort = body.effort;
     }
     if (!Object.keys(patch).length) return { ok: false, error: "nothing to set" };
-    await patchMeta(this.d.vault, convId, patch);
     if (patch.model) this.d.rememberModel?.(String(patch.model));
     if (patch.effort !== undefined) this.d.rememberEffort?.(patch.effort === null ? null : String(patch.effort));
-    // A thread already running this chat takes the change now, so his next turn
-    // (or the turn running) is on what he just picked.
-    if (conv.threadId) {
-      const next = { ...conv, ...patch } as EngineConv;
-      const { model, effort } = this.chatModel(next);
+    const conv = convId ? await readConv(this.d.vault, convId) : null;
+    if (conv?.threadId) {
+      const { model, effort } = this.chatModel(conv);
       await this.d.backend
         .resumeThread(conv.threadId, { model, effort, subagents: capabilitiesOf(model).subagents, cwd: this.cwdOf(conv) })
         .catch((e) => this.log(`model change on ${convId}: ${(e as Error).message}`));
     }
-    return { ok: true, convId, ...(patch.model ? { model: patch.model } : {}), ...(patch.effort !== undefined ? { effort: patch.effort } : {}) };
+    return { ok: true, ...(convId ? { convId } : {}), ...(patch.model ? { model: patch.model } : {}), ...(patch.effort !== undefined ? { effort: patch.effort } : {}) };
   }
 
   /** POST /api/v1/conversations/:id/subagents/:sid/{steer,stop}. */
@@ -2170,11 +2166,10 @@ export class Engine {
    * picker, kept in the conversation's own fields), or the box's last choice,
    * which is what a chat he has not chosen for starts from.
    */
-  private chatModel(conv: EngineConv): { model: string; effort?: Effort } {
-    const own = typeof (conv as { model?: unknown }).model === "string" ? String((conv as { model?: unknown }).model) : "";
-    const effort = (conv as { effort?: unknown }).effort;
-    const ownEffort = isEffort(effort) ? effort : effort === null ? undefined : this.d.effort?.();
-    return { model: own && isClaudeModel(own) ? own : this.d.model(), ...(ownEffort ? { effort: ownEffort } : {}) };
+  /** The one model and effort every chat runs on (setChatModel); the conversation's own fields are not read. */
+  private chatModel(_conv: EngineConv): { model: string; effort?: Effort } {
+    const effort = this.d.effort?.();
+    return { model: this.d.model(), ...(effort ? { effort } : {}) };
   }
 
   private async ensureThread(conv: EngineConv, current: string | null = null): Promise<{ threadId: string; fresh: boolean }> {
