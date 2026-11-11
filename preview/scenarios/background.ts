@@ -1,6 +1,6 @@
 // Long work in the background, as Claude Code's background tasks (Carl, 2026-10-26: "I both could not speak to
 // the agent and didn't see it running"). Box mode, Main. Carl asks for a guided physics animation; the agent says
-// one line, hands it to Delegate and its turn ENDS. A chip above the composer shows the task moving — its latest
+// one line, hands it to a background Agent and its turn ENDS. A chip above the composer shows the task moving — its latest
 // step from the worker's own pi events, steps done, the time, a pulse. Carl asks for something else meanwhile and
 // is answered at once. He opens the chip: the task's row with Stop and Steer. The task ends: its row in the thread
 // ("Background task finished · …") and the agent tells him the result in its own words; the chip folds under the
@@ -24,11 +24,11 @@ const task = (patch: Record<string, unknown>, id = "w-physics") => (b: Box) => {
 const devServer = { threadId: "dev-1", kind: "job", title: "dev server", task: "npm run dev", state: "running", status: "running", background: true, activity: "ready on http://localhost:5173" };
 
 const steps: BoxStep[] = [
-  // 1. The agent: one line, Delegate, the turn ends; the worker runs.
+  // 1. The agent: one line, background Agent, the turn ends; the worker runs.
   {
     log: (b) => {
       b.say("main", "On it — I'm building it in the background. Keep talking to me; I'll tell you when it's ready.");
-      b.tool("main", "d1", "Delegate", { title: TITLE, task: "Build physics.html: a 6–8 minute guided projectile-motion animation with narration cues…", expect: "long" }, `Started in the background ("${TITLE}").`);
+      b.tool("main", "d1", "Agent", { description: TITLE, prompt: "Build physics.html: a 6–8 minute guided projectile-motion animation with narration cues…", run_in_background: true }, `Started in the background ("${TITLE}").`);
       b.emit("main", { type: "meta", patch: { subagents: [{ ...devServer, startedAt: Date.now() - 2 * 3600_000 }, { threadId: "w-physics", title: TITLE, task: "Build physics.html…", agent: "worker", model: "openai/gpt-6.1-sol", state: "running", status: "running", background: true, startedAt: Date.now(), toolCallId: "d1", activity: "starting", steps: 0 }] } });
       b.endTurn("main");
     },
@@ -68,7 +68,7 @@ export const backgroundScenarios: Scenario[] = [
     group: "Chat · while it works",
     clock: "2026-10-26T00:25:00",
     notes:
-      "Box mode, Main. A dev server the agent started earlier runs. The agent hands a long job to Delegate and its turn ends at once. One compact line above the composer shows the running tasks (the newest one's latest step, its time, a pulse); a click opens the list (Stop, Steer), a second click, Esc or a click elsewhere folds it. Carl asks something else and is answered at once. When the job ends it leaves the screen: the agent's own message carries the result (a failed task would be one quiet line). The dev server stays in the one line; once it stops, the line is gone.",
+      "Box mode, Main. A dev server the agent started earlier runs. The agent hands a long job to a background Agent and its turn ends at once. One compact line above the composer shows the running tasks (the newest one's latest step, its time, a pulse); a click opens the list (Stop, Steer), a second click, Esc or a click elsewhere folds it. Carl asks something else and is answered at once. When the job ends it leaves the screen: the agent's own message carries the result (a failed task would be one quiet line). The dev server stays in the one line; once it stops, the line is gone.",
     build: P3.build,
     host: () => ({
       sync: {

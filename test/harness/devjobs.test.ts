@@ -47,7 +47,7 @@ test("the voice's waiting line never waits on a dev server", () => {
   const r = waitInputs({ running: false, tools: [], subagents: [job, worker] as any, now });
   assert.deepEqual(r.works.map((w) => w.key), ["w1"]);
   const ended = waitInputs({ running: false, tools: [], subagents: [{ ...job, state: "stopped", endedAt: now }] as any, now });
-  assert.deepEqual(ended.samples.Delegate, []);
+  assert.deepEqual(ended.samples.worker, []);
 });
 
 test("phone: a video in a reply plays inline from the box's file route; an image stays an image", () => {

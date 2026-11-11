@@ -10,22 +10,22 @@ test("nothing running: no line", () => {
   assert.equal(waitView({ works: [], calib: {}, now: T0 }), null);
 });
 
-test("a quick read is short, a Delegate worker is long, by default", () => {
+test("a quick read is short, a background worker is long, by default", () => {
   assert.deepEqual(waitView({ works: [{ key: "t", kind: "turn", startedAt: T0 }], calib: {}, now: T0 + 500 }), { frac: null, pace: "short" });
-  assert.deepEqual(waitView({ works: [{ key: "d", kind: "Delegate", startedAt: T0 }], calib: {}, now: T0 + 500 }), { frac: null, pace: "long" });
+  assert.deepEqual(waitView({ works: [{ key: "d", kind: "worker", startedAt: T0 }], calib: {}, now: T0 + 500 }), { frac: null, pace: "long" });
 });
 
 test("the agent's word decides, unless history says that kind of work is systematically long", () => {
-  const w = { key: "d", kind: "Delegate", startedAt: T0, expect: "short" as const };
+  const w = { key: "d", kind: "worker", startedAt: T0, expect: "short" as const };
   assert.equal(waitView({ works: [w], calib: {}, now: T0 + 1000 })!.pace, "short");
-  const calib = calibFrom({ Delegate: [70_000, 80_000, 90_000, 65_000, 75_000] });
+  const calib = calibFrom({ worker: [70_000, 80_000, 90_000, 65_000, 75_000] });
   assert.equal(waitView({ works: [w], calib, now: T0 + 1000 })!.pace, "long");
   assert.ok(expectedMs(w, calib) >= LONG_MS);
 });
 
 test("calibration: a kind that usually takes seconds is short without a word from the agent", () => {
-  const calib = calibFrom({ Delegate: [6_000, 7_000, 9_000, 8_000] });
-  assert.equal(waitView({ works: [{ key: "d", kind: "Delegate", startedAt: T0 }], calib, now: T0 + 1000 })!.pace, "short");
+  const calib = calibFrom({ worker: [6_000, 7_000, 9_000, 8_000] });
+  assert.equal(waitView({ works: [{ key: "d", kind: "worker", startedAt: T0 }], calib, now: T0 + 1000 })!.pace, "short");
 });
 
 test("overrun: short work that runs past its expectation turns long (never stuck at 99%)", () => {
@@ -42,13 +42,13 @@ test("determinate only with real steps; all steps done but still working is inde
 });
 
 test("several jobs are one line: long if any is long", () => {
-  const v = waitView({ works: [{ key: "t", kind: "turn", startedAt: T0 }, { key: "d", kind: "Delegate", startedAt: T0 }], calib: {}, now: T0 + 100 });
+  const v = waitView({ works: [{ key: "t", kind: "turn", startedAt: T0 }, { key: "d", kind: "worker", startedAt: T0 }], calib: {}, now: T0 + 100 });
   assert.deepEqual(v, { frac: null, pace: "long" });
 });
 
 test("lifecycle: running → complete (held) → gone when the voice speaks", () => {
   const tr = new WaitTracker();
-  const works = [{ key: "d", kind: "Delegate", startedAt: T0 }];
+  const works = [{ key: "d", kind: "worker", startedAt: T0 }];
   assert.deepEqual(tr.update({ works, calib: {}, now: T0 + 100, speaking: false }), { frac: null, pace: "long" });
   // The work ends: the line completes and stays complete while the result is on its way (he may be talking).
   assert.deepEqual(tr.update({ works: [], calib: {}, now: T0 + 5_000, speaking: false }), { frac: 1, pace: "long" });
@@ -84,7 +84,7 @@ test("between its tool calls the turn is still working: no 'complete' until it e
 
 test("the gaps between the spoken pieces of one reply never bring the line back (it flickered on in each while a worker ran)", () => {
   const tr = new WaitTracker();
-  const works = [{ key: "d", kind: "Delegate", startedAt: T0 }];
+  const works = [{ key: "d", kind: "worker", startedAt: T0 }];
   assert.equal(tr.update({ works, calib: {}, now: T0 + 1_000, speaking: true }), null);
   assert.equal(tr.update({ works, calib: {}, now: T0 + 1_400, speaking: false }), null);
   assert.equal(tr.update({ works, calib: {}, now: T0 + 1_800, speaking: true }), null);

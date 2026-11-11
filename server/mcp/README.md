@@ -44,7 +44,7 @@ Native pi's explicit active-tool allowlist contains only `mcp__vault_chat__...`
 names: no duplicate native read/write/edit/bash tools. Chat retains its coding
 loadout; side queries retain read/grep/find/ls; worker definitions retain their
 explicit tools. Missing tools are refused before dispatch. Voice talkers cannot
-write/edit **or bash around the write gate** and must Delegate. Explicit voice
+write/edit **or bash around the write gate** and must use a background Agent. Explicit voice
 action side runs and authorized workers retain their write authority.
 `http.ts` is the SDK's stateful Streamable HTTP transport. Every request,
 including cancellation, GET and DELETE, is authenticated. Sessions are bound to
@@ -72,7 +72,7 @@ configuration; the one-shots with no host tools use `--no-mcp`.
 The extension retains the private incremental-context service
 `POST /context/you`, when the host explicitly enables it. Native conversation
 parents also bind `POST /context/continuation-wait`: it validates an existing
-job/delegate/user-requested wake against its owning conversation before the
+job/worker/user-requested wake against its owning conversation before the
 parent records a bounded wait in its native session branch. It creates no work,
 timers or delivery state. Neither endpoint is a discoverable agent tool; external
 MCP and side/worker scopes do not receive the continuation service. Command-key env and write-authorization callbacks now

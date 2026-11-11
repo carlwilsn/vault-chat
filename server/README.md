@@ -315,8 +315,8 @@ headless. pdf.js prints one warning at start ("Cannot load @napi-rs/canvas") and
 ### Public web research
 
 Pi is the research agent: discover with WebSearch, read primary pages with WebFetch,
-follow source links, compare and cite the URLs actually read. Long work uses existing
-Delegate workers (same tools); no separate research session/job service. Search still
+follow source links, compare and cite the URLs actually read. Long work uses the Agent tool
+in background mode; no separate research session/job service. Search still
 uses the configured `VC_WEBSEARCH_MODEL` and OpenRouter web plugin, max_results=5,
 max_tokens=1200; no automatic provider/model switch, new paid account or unlimited
 quota promise. Provider-generated summaries are discovery leads, not primary evidence.

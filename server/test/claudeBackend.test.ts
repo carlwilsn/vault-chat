@@ -572,7 +572,7 @@ describe("a conversation on Claude Code", () => {
     }
   }, 240_000);
 
-  it("Delegate runs a real worker: its own Claude Code session, whose report comes back", async () => {
+  it("a worker runs as a real session: its own Claude Code session, whose report comes back", async () => {
     // Carl's agent said "this engine has no workers of its own" and could not
     // delete a file. A worker is its own session in the same sandbox, with the
     // shell; it runs to one answer, and that answer is the report.

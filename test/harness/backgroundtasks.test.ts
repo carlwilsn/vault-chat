@@ -117,7 +117,7 @@ before(async () => {
   box.user("main", "u1", "make four things");
   box.tool("main", "plan1", "TodoWrite", { todos: [1, 2, 3, 4].map((i) => ({ content: `step ${i}`, status: "completed" })) });
   box.toolDone("main", "plan1", "ok");
-  box.tool("main", "d1", "Delegate", { title: "four things", task: "x" });
+  box.tool("main", "d1", "Agent", { description: "four things", prompt: "x" });
   box.toolDone("main", "d1", "Started in the background");
   box.stream("main", "assistant", "all four are on their way");
   box.endTurn("main");

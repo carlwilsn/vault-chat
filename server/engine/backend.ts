@@ -265,7 +265,7 @@ export type EngineBackend = {
   readonly paths: { sessionsDir: string; instrDir: string };
 
   // -- background work inside a turn
-  /** Start children for a parent thread (the agent's own Delegate/BoardMake call). */
+  /** Start children for a parent thread (the agent's own BoardMake call). */
   background(parentThreadId: string, a: Record<string, unknown>, onStarted?: (id: string) => void, boardMake?: NotifyScope["boardMake"]): Promise<Record<string, unknown>>;
   subagentControl(childId: string, op: "steer" | "stop", text?: string): Promise<{ ok: boolean; error?: string }>;
   /** The parent stopped waiting: its still-running children, which report when they finish. */

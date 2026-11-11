@@ -225,7 +225,7 @@ requested page 1 of the refreshed four-page README PDF. Native provider tests
 also verify requested slice bytes. Filesystem subprocess startup adds overhead;
 large results retain pi's tail/full-output-file behavior and output/transport
 limits. Handlers without abort APIs are not magically cancellable. Voice talkers
-cannot bash/write/edit around Delegate; authorized action sides/workers retain
+cannot bash/write/edit around the write gate; authorized action sides/workers retain
 their explicit authority. This refresh demonstrates voice read, not a new
 voice-action write or live PDF layout/vision flow.
 
@@ -258,7 +258,7 @@ kept whole to preserve request/result context.
 | 00:25.25 | `final-voice-native-mcp.mp4` | Actual microphone/WebRTC/Pipecat/ElevenLabs STT → pi shared read → TTS. Harmless synthesized speech fed to mic, not scripted transcript. |
 | 01:05.50 | `final-ctrl-k-native-mcp.mp4` | Actual editor shortcut, shared read, replacement preview; not accepted into source. |
 | 01:19.75 | `final-ctrl-l-native-mcp.mp4` | Actual query shortcut and shared read; returns SDK witness heading. |
-| 01:34.00 | `final-background-native-mcp.mp4` | Delegate, worker's independent session read + Notify, parent wake/report. |
+| 01:34.00 | `final-background-native-mcp.mp4` | BoardMake worker's independent session read + Notify, parent wake/report. |
 | 02:01.25 | `final-independent-filesystem-client.mp4` | Separate official-SDK process; custom read-only status view shows actual protocol results, not a mock app or laptop authentication. |
 | 02:14.25 | `streaming-native-mcp.mp4` | Real app shows first stdout during 12-second bash sleep, then both final lines. |
 

@@ -10,12 +10,12 @@
 //            talker model while the call is live; pi's text deltas stream
 //            back as completion chunks, cut into speakable sentences.
 //   Anything else the conversation says during the call (a typed turn, a
-//   Delegate result's turn) streams to the pipeline's speak channel
+//   background agent's report turn) streams to the pipeline's speak channel
 //   (GET /api/v1/brain/call/<id>/speak, SSE) and is spoken the same way.
 //
 // One record: every line, typed or spoken, is a turn of the pi session; the
 // pipeline keeps no memory of its own (it sends only Carl's newest words).
-// Slow work goes to Delegate (a background pi subagent) and comes back as a
+// Slow work goes to the Agent tool in background mode and comes back as a
 // turn of the conversation; the waiting-on line reads meta.subagents.
 //
 // Routes:
@@ -94,7 +94,7 @@ async function pipelineUp(d: BrainDeps): Promise<boolean> {
 }
 /**
  * The talker: a fast model for turns while a call is live (the conversation's own
- * model does the delegated work). Claude Code names its models itself, so this
+ * model does the background work). Claude Code names its models itself, so this
  * is one of its aliases — the fast one, since a spoken reply wants little.
  */
 export const talkerModel = (): string => process.env.VC_CLAUDE_VOICE_TALKER_MODEL || "haiku";
@@ -108,8 +108,8 @@ const DEVICES: Device[] = ["laptop", "board", "phone"];
 export function voiceCallRules(device: Device): string {
   const where = device === "board" ? "his iPad board" : device === "phone" ? "his phone" : "his laptop";
   // One reply, written as always (markdown); the voice reads it aloud as written (server/speakable.ts). Only a light
-  // nudge on length, and the one rule a live call needs: slow work goes to Delegate, so the voice never goes quiet.
-  return `[A voice call is live on ${where}: your replies are shown as always and also read aloud as written. Keep them short: two or three spoken sentences answer what he asked (offer more, don't give it); when he is thinking aloud rather than asking, a line at most. A lookup in his notes is one Lookup {query} call (it finds and reads together); independent calls go at once, not one after another. Anything that takes more than a few seconds goes to Delegate. A change to a file (making, editing or rebuilding one: a PDF, a sheet, a page) always does, at once: call Delegate with his words and the file — don't read or edit it yourself first. Delegate {title, task, expect: "short" or "long"}: say in a line that you've sent it and carry on; its report comes back to you as a "Delegated work finished" turn, then tell him the result. Say something was done only when it was.]`;
+  // nudge on length, and the one rule a live call needs: slow work goes to the Agent tool, so the voice never goes quiet.
+  return `[A voice call is live on ${where}: your replies are shown as always and also read aloud as written. Keep them short: two or three spoken sentences answer what he asked (offer more, don't give it); when he is thinking aloud rather than asking, a line at most. A lookup in his notes is one Lookup {query} call (it finds and reads together); independent calls go at once, not one after another. Anything that takes more than a few seconds goes to the Agent tool in background mode (it notifies you when it completes or fails). A change to a file (making, editing or rebuilding one: a PDF, a sheet, a page) always does, at once: start an Agent in the background with his words and the file — don't read or edit it yourself first. Say in a line that you've sent it and carry on; when it reports back, tell him the result. Say something was done only when it was.]`;
 }
 
 // ---------------------------------------------------------------- calls
@@ -468,7 +468,7 @@ function onPi(d: BrainDeps, c: Call, ev: any): void {
     if (c.sink && !c.sink.done) {
       log(d, { ev: "turn.tool", call: c.id, req: c.sink.id, tool: String(ev.toolName ?? ""), spokeFirst: c.sink.sent > 0, afterMs: Date.now() - c.sink.t0 });
     }
-    // The reply's spoken part is over once it calls a tool after saying something ("on it", then Delegate):
+    // The reply's spoken part is over once it calls a tool after saying something ("on it", then a background Agent):
     // the pipeline's response ends here, so the voice is free; what the turn says later goes to the channel.
     if (c.sink && (c.sink.sent > 0 || c.sink.queued?.length)) finishSink(c, c.sink);
   } else if (ev?.type === "vc_turn_end") {

@@ -91,7 +91,7 @@ export const voiceScenarios: Scenario[] = [
       waitCaption("1 · Done: the line completes, then the voice speaks"),
       { sleep: 1200 },
       ...waitSpeak(1600),
-      waitCaption("2 · Delegated, expected long: a slow line"),
+      waitCaption("2 · Background agent, expected long: a slow line"),
       waitConv(() => ({ subagents: [{ threadId: "w1", title: "Sectioned PDF of lecture 7", state: "running", startedAt: Date.now(), expect: "long" }] })),
       { sleep: 4500 },
       waitCaption("3 · A plan: the line fills by its real steps"),

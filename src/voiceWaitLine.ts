@@ -3,7 +3,7 @@
 // voice talks back. So it never lies:
 //   • determinate only when real steps exist (the agent's plan: done / total), never a made-up percentage;
 //   • otherwise indeterminate, its pace the only hint of how long: quick (seconds) or slow (a minute or more);
-//   • the expectation is the agent's own word (Delegate {expect}) or, without one, what such work took before
+//   • the expectation is the agent's own word (a worker's {expect}) or, without one, what such work took before
 //     (calibration from the box's turn log and this conversation's history), corrected when the word is off;
 //   • work that runs past its expectation turns slow; it never sits at 99%;
 //   • when the work ends the line completes, and stays complete until the voice speaks (then it goes), or until it is
@@ -11,10 +11,10 @@
 // Several jobs at once are one line. Pure logic (WaitTracker) plus one DOM renderer (renderWaitLine) every surface uses.
 
 export type Expect = "short" | "long";
-/** Something the voice is waiting on: the running turn's tools, a Delegate worker, a Classic Ask. */
+/** Something the voice is waiting on: the running turn's tools, a background worker, a Classic Ask. */
 export type WaitWork = { key: string; kind: string; startedAt: number; expect?: Expect };
 export type WaitPlan = { done: number; total: number };
-/** What such work took before, by kind: "turn" (a voice turn with tools), "Delegate", "VoiceAsk", a tool's name. */
+/** What such work took before, by kind: "turn" (a voice turn with tools), "worker", "VoiceAsk", a tool's name. */
 export type WaitCalib = Record<string, { n: number; p50Ms: number; p90Ms: number }>;
 /** frac: 0..1 (1 = complete) or null (indeterminate). */
 export type WaitView = { frac: number | null; pace: Expect };
@@ -23,7 +23,7 @@ export type WaitView = { frac: number | null; pace: Expect };
 export const LONG_MS = 20_000;
 /** A completed line waits this long for the voice to speak before it goes (never a stale "done" left up). */
 export const COMPLETE_HOLD_MS = 30_000;
-const DEFAULT_MS: Record<string, number> = { turn: 8_000, VoiceAsk: 15_000, Delegate: 60_000 };
+const DEFAULT_MS: Record<string, number> = { turn: 8_000, VoiceAsk: 15_000, worker: 60_000 };
 const MIN_SAMPLES = 3;
 
 /** How long this work should take (ms), from its declaration and the calibration. Pure. */
@@ -114,7 +114,7 @@ export function waitInputs(o: {
   // A StartJob job (a dev server) is not work the voice waits on.
   for (const a of o.subagents ?? []) {
     if (a.kind === "job") continue;
-    if ((a.state ?? a.status) === "running" && a.startedAt) works.push({ key: a.threadId, kind: "Delegate", startedAt: a.startedAt, ...(a.expect ? { expect: a.expect } : {}) });
+    if ((a.state ?? a.status) === "running" && a.startedAt) works.push({ key: a.threadId, kind: "worker", startedAt: a.startedAt, ...(a.expect ? { expect: a.expect } : {}) });
   }
   for (const m of o.messages ?? []) {
     if (m.voiceAsk?.running && m.voiceAsk.startedAt) works.push({ key: m.mid ?? m.voiceAsk.request, kind: "VoiceAsk", startedAt: m.voiceAsk.startedAt });
@@ -122,13 +122,13 @@ export function waitInputs(o: {
   const todos = o.todos ?? [];
   const plan = tools.length && todos.some((t) => t.status === "in_progress") ? { done: todos.filter((t) => t.status === "completed").length, total: todos.length } : null;
   const samples = {
-    Delegate: (o.subagents ?? []).filter((a) => a.kind !== "job" && a.startedAt && a.endedAt).map((a) => a.endedAt! - a.startedAt!),
+    worker: (o.subagents ?? []).filter((a) => a.kind !== "job" && a.startedAt && a.endedAt).map((a) => a.endedAt! - a.startedAt!),
     VoiceAsk: (o.messages ?? []).filter((m) => m.voiceAsk && !m.voiceAsk.running && m.voiceAsk.ms).map((m) => m.voiceAsk!.ms!),
   };
   return { works, plan, samples, running: o.running };
 }
 
-/** Calibration from history this surface can see (finished Delegate workers, finished Classic Asks), merged over the
+/** Calibration from history this surface can see (finished background workers, finished Classic Asks), merged over the
  *  box's (GET /api/v1/brain/expect). */
 export function calibFrom(samples: Record<string, number[]>, base: WaitCalib = {}): WaitCalib {
   const out: WaitCalib = { ...base };

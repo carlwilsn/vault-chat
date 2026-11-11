@@ -89,7 +89,7 @@ function VoiceWaves() {
 let boxCalib: { at: number; calib: WaitCalib } | null = null;
 
 /** What the voice is waiting on, as one line: the running turn's tools (with the agent's plan, if it made one), the
- *  work it handed off (Delegate workers), plus historical call rows. Gone when the voice
+ *  work it handed off (background workers), plus historical call rows. Gone when the voice
  *  speaks. Read from the store every 250 ms; drawn by renderWaitLine. */
 function WaitLine() {
   const ref = useRef<HTMLDivElement | null>(null);

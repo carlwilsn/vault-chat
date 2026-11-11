@@ -625,8 +625,8 @@ describe("voice with one brain", () => {
     expect(lastUserText({ messages: [{ role: "user", content: [{ type: "text", text: "hello" }] }] })).toBe("hello");
   });
 
-  it("the rules say slow work goes to Delegate and the voice never goes quiet on it", () => {
-    expect(voiceCallRules("phone")).toMatch(/Delegate/);
+  it("the rules say slow work goes to a background Agent and the voice never goes quiet on it", () => {
+    expect(voiceCallRules("phone")).toMatch(/Agent tool in background mode/);
   });
 });
 

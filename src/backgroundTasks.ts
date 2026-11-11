@@ -1,5 +1,5 @@
-// Background tasks, as Claude Code shows them: the agent's workers (Delegate, or a `subagent` call moved to the
-// background when Carl wrote) are one compact chip in the chat ("2 background tasks: 1 running, 1 done"), which
+// Background tasks, as Claude Code shows them: the agent's workers (a `subagent` call moved to the
+// background) are one compact chip in the chat ("2 background tasks: 1 running, 1 done"), which
 // opens to the list: each task's name, status, elapsed time and what it is doing now (its latest step, from its
 // own pi events on the box: server/engine/pi/subagents.ts), with Stop and Steer. A finished task's result is the
 // agent's next message, never shown raw here. With the chat closed, the titlebar says "1 running".

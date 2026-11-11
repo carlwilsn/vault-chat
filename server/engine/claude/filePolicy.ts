@@ -16,9 +16,9 @@ import { join } from "node:path";
 // @ts-ignore a plain .mjs — vault-chat's own policy, kept when pi went
 import { guardToolCall, isUnder, realish, resolveList } from "../policy.mjs";
 
-/** Why a write is refused while a voice call is live: the talker delegates it. */
+/** Why a write is refused while a voice call is live: the talker hands it to a background agent. */
 export const CALL_WRITE_REASON =
-  "Not on a live call: you don't edit files yourself while a voice call is live. Call Delegate {title, task, expect} now with this change — the worker makes it and checks it.";
+  "Not on a live call: you don't edit files yourself while a voice call is live. Use the Agent tool in background mode now with this change — it makes it and checks it, and notifies you when done or failed.";
 
 /**
  * The deny lists, from the sandbox alone. Both engines read them from here so
@@ -43,7 +43,7 @@ export function wallsOf(sandbox: {
 
 /**
  * The calls the voice gate covers. On a live call the agent does not change
- * files itself — it delegates — and that includes a shell line, which could
+ * files itself — it hands them off — and that includes a shell line, which could
  * write around the rule. Claude Code's own tools are gated by the same rule as
  * vault-chat's own file tools did, in the same words.
  */

@@ -2060,7 +2060,7 @@ function LiveToolTicker({ tools }: { tools: LiveTool[] }) {
   if (!latest) return null;
   const running = !latest.result;
   // A subagent call waiting on its children: the background-tasks chip shows them moving, not a bare timer.
-  if (running && (latest.name === "subagent" || latest.name === "Delegate")) return null;
+  if (running && latest.name === "subagent") return null;
   return (
     <div className="space-y-1">
     <div data-el="live-tool" className="flex items-center gap-2 text-[11px] font-mono text-muted-foreground overflow-hidden">

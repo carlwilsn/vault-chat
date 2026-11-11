@@ -88,13 +88,13 @@ export const APP_ONLY_TOOLS: readonly string[] = [
   "TodoWrite", "ScheduleWakeup", "CronCreate", "CronDelete", "CronList",
 ];
 
-/** Every built-in a conversation (and a Delegate worker) has. */
+/** Every built-in a conversation (and a worker) has. */
 export const OWN_TOOLS: readonly string[] = CLAUDE_BUILTINS_OFF.filter((n) => !APP_ONLY_TOOLS.includes(n));
 
 /** Conversation tools a worker never gets: they belong to the turn that started it. */
-const NOT_FOR_WORKERS = new Set(["AskUser", "SubmitChange", "TodoWrite", "BoardMake", "Delegate", "ScheduleWake"]);
+const NOT_FOR_WORKERS = new Set(["AskUser", "SubmitChange", "TodoWrite", "BoardMake", "ScheduleWake"]);
 
-/** A Delegate/BoardMake worker: its own Claude Code session, run to one result. */
+/** A BoardMake worker: its own Claude Code session, run to one result. */
 type Worker = {
   id: string;
   parent: string;
@@ -642,7 +642,7 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
   private workers = new Map<string, Worker>();
 
   /**
-   * Delegate and BoardMake: a worker is its own Claude Code session in the
+   * BoardMake: a worker is its own Claude Code session in the
    * same sandbox, with the same tools a conversation has (shell included) and
    * the worker's prompt, run until it answers once. Its report is the result;
    * the engine turns that into the conversation's next turn.
@@ -762,7 +762,7 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
     return [];
   }
 
-  /** A conversation's running Delegate/BoardMake workers (Claude Code's own subagents are its own). */
+  /** A conversation's running BoardMake workers (Claude Code's own subagents are its own). */
   liveChildren(parentThreadId: string): LiveChild[] {
     return [...this.workers.values()].filter((w) => w.parent === parentThreadId && !w.endedAt).map((w) => this.childOf(w));
   }

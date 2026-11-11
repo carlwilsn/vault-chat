@@ -176,32 +176,6 @@ describe("engine guards", () => {
     expect(await engine.stopWork(r.convId)).toBe(2);
   });
 
-  it("he adds to a request mid-turn (his steer delivered) and it delegates again: the running worker gets the addition, no second worker", async () => {
-    const before = backend.turns.length;
-    const r = await engine.message({ text: "Make me a full midterm study guide for CS 336." });
-    await until(() => backend.turns.length === before + 1);
-    const tid = backend.turns[before].threadId;
-    const first = await backend.h.toolCall(tid, "Delegate", { title: "Midterm guide", task: "A study guide, as a PDF." });
-    expect(JSON.stringify(first)).toContain("Started in the background");
-    expect(backend.background_.map((b) => b.title)).toEqual(["Midterm guide"]);
-    const { patchMeta } = await import("../engine/convs");
-    await patchMeta(vault, r.convId, { subagents: [{ threadId: "w-guide", title: "Midterm guide", state: "running", startedAt: Date.now() }] });
-    await until(() => (engine.picture(r.convId)?.meta.subagents ?? []).some((x: any) => x.threadId === "w-guide"));
-    // A second job he asked for (not the rest of his line): its own worker.
-    await new Promise((res) => setTimeout(res, 5));
-    await backend.h.toolCall(tid, "Delegate", { title: "Flashcards", task: "Flashcards for lecture 7." });
-    expect(backend.background_).toHaveLength(2);
-    // The last worker is the flashcards now; the rest of his first line refines the guide, so make it the last again.
-    await backend.h.toolCall(tid, "Delegate", { title: "Midterm guide", task: "A study guide, as a PDF." });
-    expect(backend.background_).toHaveLength(3);
-    // "… all seven lectures, one section per lecture" arrives as a steer; the turn delegates the same request again.
-    await engine.message({ convId: r.convId, text: "All seven lectures, one section per lecture.", continues: true });
-    const again = await backend.h.toolCall(tid, "Delegate", { title: "Midterm guide, one section per lecture", task: "All seven lectures, one section per lecture." });
-    expect(JSON.stringify(again), JSON.stringify(again)).toContain("no second worker");
-    expect(backend.background_).toHaveLength(3);
-    expect(backend.steered).toEqual([{ threadId: "w-guide", text: "Carl added to this request: All seven lectures, one section per lecture." }]);
-  });
-
   it("native parallel questions cannot replace each other and SDK cancellation clears only its own question", async () => {
     const before = backend.turns.length;
     const r = await engine.message({ convId: "question-cancel", text: "Choose one." });

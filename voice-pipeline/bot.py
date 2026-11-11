@@ -8,7 +8,7 @@ The brain is one of:
   pi    the conversation's own pi agent, through the vault-chat server on loopback
         (POST /v1/chat/completions with the call's token; server/voiceBrain.ts). Only
         Carl's newest words go; pi has the whole record. What the conversation says
-        outside a request (a typed turn, a Delegate result) arrives on the call's
+        outside a request (a typed turn, a background agent report) arrives on the call's
         speak channel and is said when Carl is quiet.
   echo  says back what it heard (step 1: proves transport, turn-taking and barge-in).
 

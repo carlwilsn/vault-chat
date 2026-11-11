@@ -82,7 +82,7 @@ describe("the voice gate's reach", () => {
   it("covers a shell line as well as a write, because that is the way around it", () => {
     // Not a path rule — a rule about what the agent does at all while Carl is on
     // a call. Bash is in the list for the same reason vault-chat's own tools put
-    // it there: without it, `bash -c 'echo … > file'` writes around Delegate.
+    // it there: without it, `bash -c 'echo … > file'` writes around the write gate.
     expect(WRITING_TOOLS).toContain("Bash");
     expect(WRITING_TOOLS).toEqual(expect.arrayContaining(["Write", "Edit", "NotebookEdit"]));
     // Reading is not gated: the agent may still look things up mid-call.

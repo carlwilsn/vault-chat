@@ -87,7 +87,7 @@ const ENGINE_VIA = new Set(["wake", "nudge", "resume", "job", "delegate"]);
 
 export type JobEnd = { id: string; name: string; status: string; failed: boolean; output: string; task?: boolean };
 
-/** A background worker's report turn (Delegate, server/engine/engine.ts reportWhenDone): "Delegated work <how>: "<title>"".
+/** A background worker's report turn (server/engine/engine.ts reportWhenDone): "Delegated work <how>: "<title>"".
  *  Its row says which task ended and how; the report itself is the agent's to tell (its next message), never shown raw. */
 export function taskEndOf(text: string): JobEnd | null {
   const m = /^Delegated work (finished|failed(?: \(([^)]*)\))?): "([^"\n]*)"/.exec(text.trim());

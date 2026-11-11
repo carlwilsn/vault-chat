@@ -297,26 +297,26 @@ export const ENGINE_TOOL_SPECS = [
     type: "function",
     name: "JobList",
     readOnly: true,
-    description: "This conversation's background work: its running Delegate workers (id, title, what each is doing now) and its StartJob jobs (all: true for every job in the vault): id, state, age, command.",
+    description: "This conversation's background work: its running background workers (id, title, what each is doing now) and its StartJob jobs (all: true for every job in the vault): id, state, age, command.",
     inputSchema: { type: "object", properties: { all: { type: "boolean" } }, additionalProperties: false },
   },
   {
     type: "function",
     name: "JobStop",
-    description: "Stop a running Delegate worker or StartJob job by its id (JobList). A stopped worker's turn still follows, saying it was stopped.",
+    description: "Stop a running background worker or StartJob job by its id (JobList). A stopped worker's turn still follows, saying it was stopped.",
     inputSchema: { type: "object", properties: { id: { type: "string" } }, required: ["id"], additionalProperties: false },
   },
   {
     type: "function",
     name: "JobStatus",
     readOnly: true,
-    description: "What a Delegate worker is doing now (its latest step, steps done, time), or a StartJob job's state and last output lines.",
+    description: "What a background worker is doing now (its latest step, steps done, time), or a StartJob job's state and last output lines.",
     inputSchema: { type: "object", properties: { id: { type: "string" }, tail: { type: "number" } }, required: ["id"], additionalProperties: false },
   },
   {
     type: "function",
     name: "JobSteer",
-    description: "Pass Carl's change to a running Delegate worker (\"make it shorter\"): it takes it up after its current step and keeps going. The id is from JobList.",
+    description: "Pass Carl's change to a running background worker (\"make it shorter\"): it takes it up after its current step and keeps going. The id is from JobList.",
     inputSchema: { type: "object", properties: { id: { type: "string" }, message: { type: "string" } }, required: ["id", "message"], additionalProperties: false },
   },
   {
@@ -499,23 +499,6 @@ export const ENGINE_TOOL_SPECS = [
       additionalProperties: false,
     },
   },
-  {
-    type: "function",
-    name: "Delegate",
-    description:
-      "Hand slow work to a background worker (its own Claude Code session in this vault, with file, shell, PDF and web tools) and keep talking: edits across files, research, builds, anything over a few seconds. Returns at once. When the worker finishes, its report comes back to you as a new turn (\"Delegated work finished: ...\"): then tell Carl the result. Several can run at once; git-project workers each get an independent branch/worktree from committed source, never the shared coordinator checkout. Never wait for one, and never say it is done before its report arrives.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        title: { type: "string", description: "What it is doing, in a few words, for Carl's waiting-on line (\"Pulling the lecture notes\")." },
-        cwd: { type: "string", description: "Optional exact working directory. For code projects use a separate existing agent checkout in the owning work area; omit to get a fresh branch/worktree automatically." },
-        task: { type: "string", description: "The whole task with everything the worker needs: it does not see this conversation. Say what to report back." },
-        expect: { type: "string", enum: ["short", "long"], description: "How long you expect it to take: short (seconds) or long (a minute or more). Sets the pace of Carl's waiting line." },
-      },
-      required: ["title", "task"],
-      additionalProperties: false,
-    },
-  },
 ];
 
 /** Every vault-chat tool the agent has (Carl's own vault tools are added per thread). */
@@ -527,7 +510,7 @@ export function sideToolSpecs(): ToolSpec[] {
   return agentToolSpecs().filter((t) => t.readOnly === true);
 }
 /** The agent's tools a side thread can't use: they belong to a turn (its question, plan, background maker, job, wake). */
-const TURN_ONLY_TOOLS = new Set(["AskUser", "SubmitChange", "TodoWrite", "BoardMake", "Delegate", "StartJob", "JobStop", "JobSteer", "ScheduleWake"]);
+const TURN_ONLY_TOOLS = new Set(["AskUser", "SubmitChange", "TodoWrite", "BoardMake", "StartJob", "JobStop", "JobSteer", "ScheduleWake"]);
 /** Voice's Ask (server/voice.ts), a side thread: a question has the read-only tools and Show; an action every tool a
  *  side thread can use (BoardSend, Show, the notes …), with pi's own file tools (sideStart). */
 export function voiceSideToolSpecs(act: boolean): ToolSpec[] {
@@ -543,9 +526,6 @@ export function toolAnswer(r: any): import("./backend").ToolAnswer {
   const images = items.filter((c) => c?.type === "inputImage" && typeof c.data === "string" && c.data).map((c) => ({ data: String(c.data), mimeType: String(c.mimeType || "image/png") }));
   return { ok: r?.success !== false, text: items.filter((c) => c?.type !== "inputImage").map((c) => c?.text ?? "").join("\n"), ...(images.length ? { images } : {}), ...(r?.resources ? { resources: r.resources } : {}) };
 }
-
-/** A Delegate worker's instructions (on top of the subagent preamble). */
-const DELEGATE_WORKER_PROMPT = `You do one piece of work for vault-chat's agent, in Carl's vault, in the background while it keeps talking with him. Do it fully and carefully, in place (git autosave is the undo). Read back what you changed. If you change a source that something he views is built from (a .tex and its PDF), rebuild it. End with a short report the agent can say aloud in two or three sentences: what you did or found, and what you checked; then any detail it may need.`;
 
 /** pi's own tools (and the subagent tool): a vault tool of the same name is not registered over them. */
 const PI_BUILTIN_TOOLS = ["read", "write", "edit", "bash", "grep", "find", "ls", "subagent"];
@@ -1075,11 +1055,9 @@ export class Engine {
     client?: string;
     /** How the message shows (its item's `via`): "voice-ask" for a request voice handed over (server/voice.ts Ask). */
     via?: string;
-    /** The rest of his previous line (a pause on a call cut it in two): a Delegate for it refines the worker he just
-     *  started instead of starting another. */
+    /** The rest of his previous line (a pause on a call cut it in two): it steers the running turn. */
     continues?: boolean;
   }, viewerRoot = this.d.vault): Promise<Record<string, unknown> | null> {
-    if (body.continues && body.convId) this.continuedAt.set(body.convId, Date.now());
     const clientId = typeof body.clientMsgId === "string" && body.clientMsgId.trim() ? body.clientMsgId.trim().slice(0, 80) : newMessageId();
     if (typeof body?.unqueue === "string" && body.convId) return this.takeBack(body.convId, body.unqueue);
     const textIn = String(body?.text ?? "").trim();
@@ -1185,7 +1163,7 @@ export class Engine {
       // A new spoken turn is Send now, not a cross-surface follow-up or a
       // steer stuck behind a foreground tool. Reuse that native interrupt path:
       // the SAME pi session keeps its history and pending inputs; detached and
-      // Delegate workers keep running and report through their existing path.
+      // Background workers keep running and report through their existing path.
       // A continuation of a split utterance still refines the current turn.
       if (body.source === "voice" && !body.continues && l.started) {
         return this.sendNow(id, clientId);
@@ -1677,8 +1655,8 @@ export class Engine {
     }
   }
 
-  /** "Stop" / "never mind" on a call: the running turn stops and so does the work it handed off (its Delegate
-   *  workers, background or not). How many workers were stopped. */
+  /** "Stop" / "never mind" on a call: the running turn stops and so does the work it handed off (its background
+   *  workers). How many workers were stopped. */
   async stopWork(convId: string, since?: number, stopped?: string[]): Promise<number> {
     const turn = await this.interrupt(convId, true).catch(() => false);
     const running = ((this.picture(convId)?.meta.subagents ?? []) as { threadId: string; state?: string; status?: string; startedAt?: number; kind?: string }[]).filter((s) => (s.state ?? s.status) === "running" && s.kind !== "job");
@@ -1699,9 +1677,6 @@ export class Engine {
   }
 
   private waitView = makeChatView();
-  /** The last worker a conversation started (Delegate), and when his last line that continued the one before came. */
-  private lastDelegate = new Map<string, { title: string; at: number }>();
-  private continuedAt = new Map<string, number>();
   /** Workers he stopped on a call ("never mind"; the voice already told him): their report is not a turn. */
   private stoppedOnHisWord = new Set<string>();
   /** What a voice on `convId` is waiting on (src/voiceWaitLine.ts), for a surface with no feed of its own (the board). */
@@ -2335,13 +2310,6 @@ export class Engine {
           const p = writtenPath(this.d.vault, input);
           if (p) this.d.onFilesWritten?.([p]);
         }
-        if (o?.name === "Delegate" && !ev.isError) {
-          const output = (ev.result?.content ?? []).filter((b: any) => b.type === "text").map((b: any) => String(b.text ?? "")).join("\n");
-          try {
-            const child = JSON.parse(output.split("\n")[0]!).nativeWorkerId;
-            if (typeof child === "string" && this.childOf.get(child) === l.convId) this.updateSubagent(l.convId, child, { toolCallId: id });
-          } catch { /* Historical/steered Delegate results have no spawned child identity. */ }
-        }
         l.open.delete(id);
         break;
       }
@@ -2451,7 +2419,7 @@ export class Engine {
       .catch(() => undefined);
   }
 
-  /** A background worker's report (Delegate's, or a `subagent` call moved to the background) comes back to its
+  /** A background worker's report (a `subagent` call moved to the background, or any worker) comes back to its
    *  conversation as one new turn, "Delegated work finished: …" — exactly once. If that turn cannot start, the
    *  report is still written into the conversation as a line, never dropped. */
   private reportWhenDone(convId: string, title: string, result: Promise<Record<string, unknown>>, workerId?: Promise<string>): void {
@@ -2748,41 +2716,6 @@ export class Engine {
         }
         case "Lookup":
           return text(await lookupAll(vault, a));
-        case "Delegate": {
-          const title = String(a.title ?? "").trim().slice(0, 120);
-          const task = String(a.task ?? "").trim();
-          if (!title || !task) return text("Delegate needs a title and a task.");
-          // He went on after asking (a pause cut his request in two; the rest reached this turn as a steer) and the
-          // turn delegates again: that is the same request, refined — the worker already on it gets the addition
-          // (roleplay: "make me a midterm guide" … "all seven lectures, one section each" started two workers).
-          const prior = this.lastDelegate.get(convId);
-          if (prior && (this.continuedAt.get(convId) ?? 0) >= prior.at && Date.now() - prior.at < 120_000) {
-            const subs = ((this.picture(convId)?.meta.subagents ?? []) as { threadId: string; title?: string; state?: string; status?: string }[]).filter((x) => (x.state ?? x.status) === "running" && x.title === prior.title && (x as { kind?: string }).kind !== "job");
-            const sid = subs.at(-1)?.threadId;
-            const r = sid ? await this.d.backend.subagentControl(sid, "steer", `Carl added to this request: ${task}`).catch(() => ({ ok: false })) : { ok: false };
-            if (r.ok) {
-              prior.at = Date.now();
-              return text(`He was still adding to the request he made a moment ago, so this went to "${prior.title}" (already running) as an addition; no second worker started. Say in a line that it's included.`);
-            }
-          }
-          this.lastDelegate.set(convId, { title, at: Date.now() });
-          let workerStarted!: (id: string) => void;
-          const workerId = new Promise<string>((resolve) => { workerStarted = resolve; });
-          const started = this.d.backend.background(p.threadId, {
-            agent: { name: "worker", systemPrompt: DELEGATE_WORKER_PROMPT, tools: ["read", "bash", "edit", "write", "grep", "find", "ls", "Notify", "PdfRead", "WebFetch", "BoardSend"] },
-            task,
-            ...(typeof a.cwd === "string" ? { cwd: a.cwd } : {}),
-            // The conversation's own model, not a live call's talker: the work wants the strong one.
-            model: this.d.model(),
-            title,
-            ...(a.expect === "short" || a.expect === "long" ? { expect: a.expect } : {}),
-          }, workerStarted);
-          this.reportWhenDone(convId, title, started, Promise.race([workerId, started.then(() => "")]));
-          // The native child id travels in this exact tool result, not an MCP request id
-          // or a guess based on the latest open call/title. Wait for spawn, never completion.
-          const id = await Promise.race([workerId, started.then(() => "")]);
-          return text(`${id ? JSON.stringify({ nativeWorkerId: id }) + "\n" : ""}Started in the background ("${title}"). Its report comes back to you as a new turn when it is done; JobList shows it running. If you already told Carl you sent it, end your turn now without another line; otherwise say so in one short line, then end your turn.`);
-        }
         case "BoardMake": {
           const request = String(a.request ?? "").trim();
           const title = String(a.title ?? "").trim();
@@ -2909,7 +2842,7 @@ export class Engine {
         case "JobList": {
           const workers = this.workerList(convId);
           const jobs = jobList(this.d.jobEnv, convId, a.all === true);
-          return text(workers ? `Background workers (Delegate):\n${workers}\n\nShell jobs (StartJob):\n${jobs}` : jobs);
+          return text(workers ? `Background workers:\n${workers}\n\nShell jobs (StartJob):\n${jobs}` : jobs);
         }
         case "JobStop": {
           const id = String(a.id ?? "").trim();
