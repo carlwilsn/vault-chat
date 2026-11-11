@@ -595,9 +595,35 @@ export function ChatPane() {
     setShowJumpToLatest(false);
   }, [messages.length]);
 
+  // Pasting an image adds a thumbnail row above the composer, which resizes the thread box
+  // (twice: once when the row appears, once when the picture decodes). The thread must stay
+  // exactly where it was, at the bottom or wherever he had scrolled to, and never jump to the top.
+  const heldScrollRef = useRef<{ top: number; pinned: boolean; until: number } | null>(null);
+  const holdScroll = () => {
+    const el = scrollRef.current;
+    if (!el) return;
+    heldScrollRef.current = { top: el.scrollTop, pinned: pinnedToBottomRef.current, until: Date.now() + 1500 };
+  };
+  const restoreHeldScroll = () => {
+    const el = scrollRef.current;
+    const h = heldScrollRef.current;
+    if (!el || !h) return false;
+    if (Date.now() > h.until) {
+      heldScrollRef.current = null;
+      return false;
+    }
+    pinnedToBottomRef.current = h.pinned;
+    el.scrollTop = h.pinned ? el.scrollHeight : h.top;
+    return true;
+  };
+  useLayoutEffect(() => {
+    restoreHeldScroll();
+  }, [pendingImages]);
+
   const onScroll = () => {
     const el = scrollRef.current;
     if (!el) return;
+    if (restoreHeldScroll()) return;
     const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
     const atBottom = distanceFromBottom < 40;
     pinnedToBottomRef.current = atBottom;
@@ -830,6 +856,7 @@ export function ChatPane() {
     ));
     if (blobs.length === 0 && others.length === 0 && inline.length === 0) return;
     e.preventDefault();
+    holdScroll();
     if (inline.length) setPendingImages((prev) => [...prev, ...inline.map(imageDataUrl => ({ imageDataUrl }))]);
     // A file copied in Explorer and pasted here: attached like a dropped one.
     if (others.length) void Promise.all(others.map((f) => attachBlob(f.name, f))).then(addAttached);
@@ -1110,6 +1137,8 @@ export function ChatPane() {
         className="flex-1 min-h-0 overflow-auto px-3 py-4 pb-8 relative"
         ref={scrollRef}
         onScroll={onScroll}
+        onWheel={() => { heldScrollRef.current = null; }}
+        onTouchStart={() => { heldScrollRef.current = null; }}
       >
         <div className="max-w-[820px] mx-auto space-y-4">
         {messages.length === 0 && !streamingText && boxDown && (
@@ -1343,6 +1372,7 @@ export function ChatPane() {
                         src={img.imageDataUrl}
                         alt={`captured ${i + 1}`}
                         className="max-h-[72px] rounded border border-border/60"
+                        onLoad={() => { restoreHeldScroll(); }}
                       />
                       {name && (
                         <span className="text-[9.5px] text-muted-foreground font-mono">
