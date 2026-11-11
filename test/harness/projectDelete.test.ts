@@ -96,7 +96,7 @@ test("deleting the project he is in: one intent to the box, the thread leaves th
   const n = box.intents.length;
   const r = await projects.deleteProject("coconut");
   assert.deepEqual(r, { ok: true });
-  assert.deepEqual(box.intents.slice(n), [{ type: "deleteProject", slug: "coconut", client: "laptop" }]);
+  assert.deepEqual(box.intents.slice(n).map(({ rid: _r, ...i }) => i), [{ type: "deleteProject", slug: "coconut", client: "laptop" }]);
   assert.equal(S().activeConversationId, "main");
   await waitFor("row gone", () => !S().conversations.some((c) => c.id === "project-coconut"));
 });
@@ -135,7 +135,7 @@ test("Rename: the name changes here at once; the thread, its id and this screen 
   const n = box.intents.length;
   const r = await projects.renameProject("thesis", "  Thesis draft ");
   assert.deepEqual(r, { ok: true, name: "Thesis draft" });
-  assert.deepEqual(box.intents.slice(n), [{ type: "renameProject", slug: "thesis", name: "Thesis draft", client: "laptop" }]);
+  assert.deepEqual(box.intents.slice(n).map(({ rid: _r, ...i }) => i), [{ type: "renameProject", slug: "thesis", name: "Thesis draft", client: "laptop" }]);
   assert.equal(S().conversations.find((c) => c.id === "project-thesis")?.title, "Thesis draft");
   assert.equal(S().activeConversationId, "project-thesis");
 });

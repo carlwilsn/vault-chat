@@ -164,7 +164,7 @@ test("/compact is a command to the box, not a message", async () => {
   const sent0 = box.intents.length;
   await chat.sendMessage("/compact keep the essay plan");
   await waitFor("compact intent", () => box.intents.length > sent0);
-  assert.deepEqual(box.intents.at(-1), { type: "compact", convId: "main", focus: "keep the essay plan", client: "laptop" });
+  assert.deepEqual({ ...box.intents.at(-1), rid: undefined }, { rid: undefined, type: "compact", convId: "main", focus: "keep the essay plan", client: "laptop" });
   assert.ok(!S().messages.some((m) => m.content.startsWith("/compact")));
 });
 
