@@ -441,7 +441,9 @@ export async function startEngine(b: EngineBoot): Promise<EngineHandle> {
       onFilesWritten: (paths) => b.onFilesWritten?.(v.name, paths),
       vaultName: v.name,
       // The vault's own tools use the same registered content capabilities as commands.
-      shell: () => agentOuter(sandbox),
+      // Vault tools served to external MCP clients keep the bubblewrap layer: that is their
+      // authority boundary (server/mcp/recordUI.ts), not a bound on Carl's agent.
+      shell: () => outerWith(sandbox),
       // One line per turn: the full record in <state>/logs/turns.jsonl, a summary in the journal.
       turnLog: (line) => {
         boxLogs(b.stateDir).turns.append(line);
