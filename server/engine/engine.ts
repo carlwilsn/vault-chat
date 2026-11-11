@@ -1386,6 +1386,7 @@ export class Engine {
     // A live page's vc.ask (src/liveBridge.ts): always a fresh read-only ask, tagged with the page; nothing else of the
     // request is used (no conversation to fork or write to, no images, no tools, no continued thread), and rate-limited here too.
     const page = typeof b?.page === "string" && b.page.trim() ? b.page.trim().slice(0, 200) : null;
+    let pagePrompt = "";
     if (page) {
       const times = this.pageAsks.get(page) ?? [];
       this.pageAsks.set(page, times);
@@ -1393,6 +1394,7 @@ export class Engine {
       const prompt = typeof b.text === "string" ? b.text : "";
       const system = typeof b.system === "string" ? b.system : "";
       if (prompt.length > LIVE_LIMITS.promptChars || system.length > LIVE_LIMITS.systemChars) return { error: "ask too large" };
+      pagePrompt = prompt;
       b = { kind: "ask", text: liveAskText(page, system, prompt) };
     }
     const text = typeof b?.text === "string" ? b.text : "";
@@ -1435,10 +1437,24 @@ export class Engine {
         s = await side.start({ kind, context, fork: src?.file ?? null, instr, cwd: src?.cwd || this.d.vault, model, tools, hostTools, hostLoadout, sessionDir: dir(conv?.id ?? "none"), text, images, you: { convId: conv?.id ?? null }, log: this.sideLog(conv?.id ?? null, page ? `page:${page}` : String(b.kind ?? kind).slice(0, 40), tools) });
       }
       this.log(`side ${kind} ${s.id}${conv ? ` (forked from ${conv.id})` : ""} on ${model}${s.file ? `: ${s.file}` : ""}`);
+      if (page) this.recordPageAsk(side, s.id, page, pagePrompt);
       return { ok: true, id: s.id, v: s.v };
     } catch (e) {
       return { error: String((e as Error)?.message ?? e).slice(0, 300) };
     }
+  }
+
+  /**
+   * A live page's ask goes into the shared activity stream (what RecentActivity reads) once it ends: one entry with
+   * the page, Carl's prompt and the reply (each clipped in sanitizeEntry). It makes no chat or conversation.
+   */
+  private recordPageAsk(side: { wait(id: string): Promise<SideState> }, id: string, page: string, prompt: string): void {
+    const write = (reply: string) =>
+      appendActivity(this.d.vault, { kind: "ask", modality: "page", text: `live page asked: ${prompt.replace(/\s+/g, " ").trim().slice(0, 100)}`, path: page, prompt, reply });
+    side.wait(id).then(
+      (st) => void write(st.text ?? ""),
+      () => void write(""),
+    );
   }
 
   /** GET /api/v1/side/:id?after=v: the answer so far, once it changed (long poll). */

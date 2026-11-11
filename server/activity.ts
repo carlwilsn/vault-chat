@@ -190,7 +190,7 @@ export function searchActivity(vault: string, o: { query?: string; hours?: numbe
   const query = String(o.query ?? "").trim();
   const words = query.toLowerCase().split(/\s+/).filter(Boolean);
   const hits = readActivity(vault, now, hours * 3_600_000).filter((e) => {
-    const hay = [e.text, e.detail, e.path, e.where, e.project].filter(Boolean).join(" ").toLowerCase();
+    const hay = [e.text, e.detail, e.path, e.where, e.project, e.prompt, e.reply].filter(Boolean).join(" ").toLowerCase();
     return words.every((w) => hay.includes(w));
   });
   const span = `the last ${hours} h${query ? ` matching "${query}"` : ""}`;

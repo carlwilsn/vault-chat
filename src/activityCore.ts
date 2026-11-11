@@ -17,8 +17,8 @@ export type ActivityKind = "focus" | "edit" | "ask" | "capture" | "voice" | "cha
 export const ACTIVITY_KINDS: readonly ActivityKind[] = ["focus", "edit", "ask", "capture", "voice", "chat", "inbox"];
 
 /** Where an entry came from (the surface Carl used). */
-export type ActivityModality = "editor" | "ctrl-k" | "ctrl-l" | "capture" | "voice" | "chat" | "inbox";
-const MODALITIES: readonly ActivityModality[] = ["editor", "ctrl-k", "ctrl-l", "capture", "voice", "chat", "inbox"];
+export type ActivityModality = "editor" | "ctrl-k" | "ctrl-l" | "capture" | "voice" | "chat" | "inbox" | "page";
+const MODALITIES: readonly ActivityModality[] = ["editor", "ctrl-k", "ctrl-l", "capture", "voice", "chat", "inbox", "page"];
 const DEFAULT_MODALITY: Record<ActivityKind, ActivityModality> = {
   focus: "editor",
   edit: "ctrl-k",
@@ -57,7 +57,13 @@ export type ActivityEntry = {
   outcome?: "accepted" | "rejected";
   /** The device it happened on (the laptop for the editor, Ctrl+K, Ctrl+L and captures). */
   device?: Device;
+  /** A live page's vc.ask (modality "page", path = the page): Carl's prompt and the reply, each clipped to PAGE_ASK_CHARS. */
+  prompt?: string;
+  reply?: string;
 };
+
+/** A live-page ask entry keeps this much of the prompt and of the reply. */
+export const PAGE_ASK_CHARS = 4000;
 
 export const ACTIVITY_DIR = ".vault-chat/local";
 export const ACTIVITY_LOG = `${ACTIVITY_DIR}/activity.jsonl`;
@@ -67,6 +73,8 @@ export const CAPTURES_DIR = `${ACTIVITY_DIR}/captures`;
 export const LOG_MAX_BYTES = 256 * 1024;
 /** No single line over this. */
 export const ENTRY_MAX_BYTES = 2048;
+/** A live-page ask carries a prompt and a reply (PAGE_ASK_CHARS each, JSON-escaped). */
+export const PAGE_ENTRY_MAX_BYTES = 40 * 1024;
 export const CAPS = { text: 300, detail: 600, path: 240, where: 80, project: 64, convId: 80, image: 200 } as const;
 /** A capture older than this is not "the image" a request refers to. */
 export const DEFAULT_WINDOW_MS = 30 * 60_000;
@@ -147,6 +155,13 @@ export function sanitizeEntry(raw: unknown, now: number): ActivityEntry | null {
   if (r.outcome === "accepted" || r.outcome === "rejected") e.outcome = r.outcome;
   if (DEVICES.includes(r.device as Device)) e.device = r.device as Device;
   else if (LAPTOP_ONLY.has(modality)) e.device = "laptop";
+  if (modality === "page" && kind === "ask") {
+    const prompt = clean(r.prompt, PAGE_ASK_CHARS, false);
+    if (prompt) e.prompt = prompt;
+    const reply = clean(r.reply, PAGE_ASK_CHARS, false);
+    if (reply) e.reply = reply;
+    return JSON.stringify(e).length > PAGE_ENTRY_MAX_BYTES ? null : e;
+  }
   // A last guard on the line's size (the caps above keep it far under).
   let line = JSON.stringify(e);
   if (line.length > ENTRY_MAX_BYTES && e.detail) {
@@ -233,6 +248,7 @@ const SURFACE: Record<ActivityModality, string> = {
   voice: "Voice",
   chat: "Chat",
   inbox: "Board inbox",
+  page: "Live page ask",
 };
 
 const clip = (l: string, n = LINE_MAX) => (l.length > n ? `${l.slice(0, n - 1)}…` : l);
@@ -270,6 +286,11 @@ function imageLine(e: ActivityEntry, now: number): string {
 export function activityLine(e: ActivityEntry, now: number): string {
   if (e.kind === "chat") return clip(chatPointer(e, now));
   if (e.kind === "capture") return imageLine(e, now);
+  if (e.modality === "page") {
+    // The whole exchange (RecentActivity is where the agent reads it), unlike the you layer's one line.
+    const q = (v: string | undefined) => (v ? JSON.stringify(v) : "(none)");
+    return `[${ago(now - e.ts)}] Live page ask · ${e.path ?? "?"}: Carl's page asked ${q(e.prompt)} → reply ${q(e.reply)}`;
+  }
   return otherLine(e, now);
 }
 
