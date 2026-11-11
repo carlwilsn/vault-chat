@@ -33,3 +33,13 @@ test("only size reports are heights, clamped", () => {
   assert.equal(inlineHtmlHeight(null), null);
   assert.ok(isHtmlSrc(".vault-chat/visuals/a.html") && isHtmlSrc("a.HTM?x=1") && !isHtmlSrc("a.html.png") && !isHtmlSrc("a.svg"));
 });
+
+test("an inline page collapses to the note only when chat and the viewer showing it are visible together", async () => {
+  const { inlineHtmlCollapses: c } = await import("../../src/inlineHtml.ts");
+  const split = { chatFullscreen: false, rightCollapsed: false, popoutOpen: false };
+  assert.equal(c(split, true), true, "viewer beside chat: note");
+  assert.equal(c(split, false), false, "file not open in the viewer: page");
+  assert.equal(c({ ...split, rightCollapsed: true }, true), false, "viewer fullscreen (chat hidden): page");
+  assert.equal(c({ ...split, chatFullscreen: true }, true), false, "chat fullscreen (viewer hidden): page");
+  assert.equal(c({ ...split, popoutOpen: true }, true), true, "chat popped out beside the viewer: note");
+});

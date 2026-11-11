@@ -58,3 +58,13 @@ export function inlineHtmlDocument(html: string, opts: { css: string; theme?: st
   // Standards mode, as the app renders: a fragment without a doctype gets one.
   return doctype ? out : `<!doctype html>${out}`;
 }
+
+/** The layout rule for a page that is also open in the viewer: the inline page collapses to an "Open in viewer" note ONLY
+ *  while the chat and a viewer showing that same file are on screen together (so the page is not shown twice).
+ *  Viewer fullscreen (chat hidden) or fullscreen chat / viewer closed (viewer hidden): the page shows inline. */
+export function inlineHtmlCollapses(l: { chatFullscreen: boolean; rightCollapsed: boolean; popoutOpen: boolean }, openInViewer: boolean): boolean {
+  const chatOnly = l.chatFullscreen && !l.popoutOpen; // fullscreen chat covers the window: no viewer on screen
+  const chatShown = chatOnly || !l.rightCollapsed || l.popoutOpen;
+  const viewerShown = !chatOnly;
+  return openInViewer && chatShown && viewerShown;
+}

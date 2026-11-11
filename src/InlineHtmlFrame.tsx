@@ -14,7 +14,7 @@ import { insideVault } from "./liveBridge";
 import { isNewestEmbed, newestEmbed, registerEmbed, subscribeEmbeds } from "./inlineEmbeds";
 import { changedRev, useChangedFiles } from "./liveReload";
 import { appPageTheme, PAGE_FRAME_ATTR } from "./pageTheme";
-import { HTML_DEFAULT_H, inlineHtmlDocument, inlineHtmlHeight } from "./inlineHtml";
+import { HTML_DEFAULT_H, inlineHtmlCollapses, inlineHtmlDocument, inlineHtmlHeight } from "./inlineHtml";
 
 let appStyles: Promise<string> | null = null;
 
@@ -110,9 +110,10 @@ function LiveInlineHtml({ src, alt }: { src: string; alt?: string }) {
   const vaultPath = useStore((s) => s.vaultPath);
   const files = useStore((s) => s.files);
   const convId = useStore((s) => s.activeConversationId);
+  // Collapse only while chat and the viewer showing this file are on screen together (inlineHtmlCollapses).
   const inViewer = useStore((s) => {
     const path = viewerPath(src, s.vaultPath);
-    return samePath(s.currentFile, path) || s.panes.some((p) => samePath(p.file, path));
+    return inlineHtmlCollapses(s, samePath(s.currentFile, path) || s.panes.some((p) => samePath(p.file, path)));
   });
   const [state, setState] = useState<{ key: string; html: string | null; css: string } | null>(null);
   const key = JSON.stringify([src, vaultPath, convId]);
@@ -171,7 +172,7 @@ function LiveInlineHtml({ src, alt }: { src: string; alt?: string }) {
       </span>
     );
   }
-  // Open in the viewer: one live copy, not two. Closing the file there brings the inline page back.
+  // Chat and viewer both showing this file: one live copy, not two. Closing the file or hiding either side brings the inline page back.
   if (inViewer) {
     return (
       <button type="button" onClick={() => openInViewer(src, live.html ?? "", vaultPath)} className="flex items-center gap-1.5 my-2 px-2 py-1 rounded-md border border-border/60 bg-muted/40 text-[11.5px] text-muted-foreground hover:text-foreground max-w-full" data-el="chat-html-in-viewer" title="Bring it to the front in the viewer">
