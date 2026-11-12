@@ -2,8 +2,8 @@
 // Inside pi's sandbox a background `&`, setsid or tmux dies with the turn's pid
 // namespace, and the user's systemd bus is hidden from the agent (it would
 // escape the sandbox). So the SERVER starts the job: `systemd-run --user`
-// (survives turns and server restarts) wrapping bubblewrap with the same hiding
-// as the agent's shell (no key store, no tokens, scrubbed env), with a time
+// (survives turns and server restarts) wrapping bubblewrap, when the agent runs sandboxed, with the same hiding
+// as the agent's shell (no key store, no tokens, scrubbed env); unsandboxed, the unit runs the shell directly. Either way with a time
 // limit (RuntimeMaxSec), a memory ceiling and a low CPU/IO share. The server
 // keeps a registry (<logDir>/jobs.json): which conversation started which job,
 // so a finished job wakes its conversation, and at most `max` run at once.
@@ -17,7 +17,9 @@ import { asksAllInterfaces, DEV_HOST_ENV } from "../devProxy";
 
 export type JobEnv = {
   logDir: string;
-  /** bubblewrap argv ending in "--" (the agent's shell sandbox, minus the pid namespace), or null. */
+  /** bubblewrap argv ending in "--" (the agent's shell sandbox, minus the pid namespace), or null when the
+   *  agent runs unsandboxed (the default now): the job then runs as the user's own systemd unit, with the same
+   *  time limit, memory ceiling and low CPU/IO share (those are systemd's, they need no bubblewrap). */
   wrap: string[] | null;
   /** Env names to keep (everything else is dropped). */
   env: Record<string, string>;
@@ -204,7 +206,8 @@ export function sweepJobEnvFiles(dir: string = jobEnvDir(), olderMs = 60_000): n
  */
 export function jobArgv(env: JobEnv, cwd: string, id: string, shell: string, timeoutS: number, envFile: string): string[] {
   // The log dir must be writable inside the sandbox even though the state dir is read-only there.
-  const wrap = [...env.wrap!.slice(0, -1), "--bind", env.logDir, env.logDir, "--"];
+  // Unsandboxed (wrap null): the shell runs directly in the unit.
+  const wrap = env.wrap ? [...env.wrap.slice(0, -1), "--bind", env.logDir, env.logDir, "--"] : [];
   const memory = env.memoryMax ?? process.env.VC_JOB_MEMORY_MAX ?? "75%";
   return [
     "--user",
@@ -238,8 +241,7 @@ export function startJobWith(env: JobEnv, cwd: string, a: { command?: string; na
   const no = (text: string) => ({ text });
   const cmd = String(a?.command ?? "").trim();
   if (!cmd) return no("StartJob needs a command.");
-  if (process.platform !== "linux" && !env.exec) return no("StartJob needs Linux (systemd + bubblewrap).");
-  if (!env.wrap) return no("StartJob is unavailable: bubblewrap was not found on the box.");
+  if (process.platform !== "linux" && !env.exec) return no("StartJob needs Linux (systemd).");
   const max = env.max ?? (Number(process.env.VC_JOB_MAX) || 4);
   const running = runningJobs(env);
   if (running.length >= max) {

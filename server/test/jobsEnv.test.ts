@@ -5,7 +5,7 @@ import { existsSync, mkdtempSync, readFileSync, readdirSync, statSync, utimesSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { cleanup } from "./helpers";
-import { startJob, sweepJobEnvFiles, writeJobEnvFile, jobArgv } from "../engine/jobs";
+import { startJob, sweepJobEnvFiles, writeJobEnvFile, jobArgv, readJobs } from "../engine/jobs";
 
 const root = mkdtempSync(join(tmpdir(), "vc-jobenv-"));
 afterAll(() => cleanup(root));
@@ -101,5 +101,48 @@ describe("job environment file", () => {
     expect(sweepJobEnvFiles(dir, 0)).toBe(1);
     expect(existsSync(fresh)).toBe(false);
     expect(sweepJobEnvFiles(join(root, "missing"))).toBe(0);
+  });
+
+  it("unsandboxed agent (wrap null): StartJob still starts, as a plain systemd unit that keeps its time limit, memory ceiling and low CPU/IO share", () => {
+    const calls: { cmd: string; args: string[] }[] = [];
+    const env = {
+      logDir: join(root, "logs-nowrap"),
+      wrap: null,
+      envDir: join(root, "run-nowrap"),
+      env: { PATH: "/bin", HOME: "/home/c" },
+      exec: (cmd: string, args: string[]) => {
+        calls.push({ cmd, args });
+        return { status: 0, stdout: "", stderr: "" };
+      },
+    };
+    const out = startJob(env, "/vault", { command: "python3 -m http.server 4321 --bind 127.0.0.1", name: "dev" });
+    expect(out).toMatch(/^Started job dev-/);
+    expect(out).not.toMatch(/bubblewrap/);
+    const argv = calls.find((c) => c.cmd === "systemd-run")!.args;
+    expect(argv).toContain("--property=MemoryMax=75%");
+    expect(argv).toContain("--property=CPUWeight=20");
+    expect(argv).toContain("--property=IOWeight=20");
+    expect(argv).toContain("--property=RuntimeMaxSec=86400");
+    expect(argv.some((a) => /bwrap|bubblewrap/.test(a))).toBe(false);
+    expect(argv.slice(-3, -1)).toEqual(["sh", "-c"]);
+    expect(argv.indexOf("sh")).toBe(argv.findIndex((a) => a.startsWith("--property=EnvironmentFile=")) + 1);
+    expect(readJobs(env).map((j) => j.state)).toEqual(["running"]);
+    // A memory ceiling is never dropped, with or without a sandbox.
+    expect(jobArgv({ ...env, memoryMax: "2G" }, "/vault", "x-1", "true", 60, "/e")).toContain("--property=MemoryMax=2G");
+  });
+
+  it("the engine hands jobs no wrapper when the agent runs unsandboxed, the bubblewrap layer back with VC_AGENT_SANDBOX=1", async () => {
+    const { jobWrap, agentOuter } = await import("../engine/index");
+    const sb = { vault: "/v", outer: ["bwrap", "--die-with-parent", "--"], shell: null, denyRead: [], denyWrite: [] } as any;
+    const prev = process.env.VC_AGENT_SANDBOX;
+    try {
+      delete process.env.VC_AGENT_SANDBOX;
+      expect(jobWrap(agentOuter(sb))).toBeNull();
+      process.env.VC_AGENT_SANDBOX = "1";
+      expect(jobWrap(agentOuter(sb))).toEqual(["bwrap", "--"]);
+    } finally {
+      if (prev === undefined) delete process.env.VC_AGENT_SANDBOX;
+      else process.env.VC_AGENT_SANDBOX = prev;
+    }
   });
 });
