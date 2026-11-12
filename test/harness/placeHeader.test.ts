@@ -32,12 +32,12 @@ for (const type of ["main", "project"] as const) {
   });
 }
 
-for (const [opened, expectSpinner] of [[true, false], [false, true]] as const) {
-  test(`project ${opened ? "expanded" : "collapsed"}: its loader ${expectSpinner ? "shows" : "is hidden"} while a chat works`, () => {
+for (const [kind, opened, expectSpinner] of [["project", true, false], ["project", false, true], ["main", true, false], ["main", false, true]] as const) {
+  test(`${kind} ${opened ? "expanded" : "collapsed"}: its loader ${expectSpinner ? "shows" : "is hidden"} while a chat works`, () => {
     const html = renderToStaticMarkup(
       createElement(ThreadRow, {
         entry: {
-          type: "project", id: "p-loader", title: "P", slug: "fixture", active: opened, running: true, unread: false,
+          type: kind, id: "p-loader", title: "P", slug: "fixture", active: opened, running: true, unread: false,
           chats: [{ id: "c1", title: "A chat", active: false, running: true, unread: false, at: 1 }],
         } as any,
         name: "Place",

@@ -276,8 +276,8 @@ export function ThreadRow({
   // closing the panel, the other list surface and a restart all keep it.
   const [opened, setOpened] = usePlaceOpen(entry.id);
   const shown = opened ?? active;
-  // A project's spinner shows only while it is collapsed: open, its own chats show theirs (Carl, 2026-11-10).
-  const spinning = running && (isMain || !shown);
+  // A place's spinner (Main's too) shows only while it is collapsed: open, its own chats show theirs (Carl, 2026-11-10, 2026-11-12).
+  const spinning = running && !shown;
   const [, bump] = useState(0);
   const level = chatLevels.get(entry.id) ?? 0;
   const vis = visibleChats(chats, level);
