@@ -7,7 +7,7 @@
 // file chose one (`<html data-theme="light">`), and a script that tells the chat
 // its content height so the frame fits it.
 
-import { liveScript, parseLiveManifest } from "./liveBridge";
+import { declaresServices, liveScript } from "./liveBridge";
 import { modeOf, pageThemeFor, pageThemeHead, type PageTheme } from "./pageTheme";
 
 /** Optional: the stylesheet a page links to get the app's real CSS (Tailwind build, theme variables, fonts). */
@@ -45,7 +45,7 @@ export function inlineHtmlDocument(html: string, opts: { css: string; theme?: st
   const styles = `<style data-vc-app-styles>${safeCss}</style><style>html,body{height:auto;overflow:visible}</style>`;
   const body = html.replace(LINK_RE, () => styles);
   const head =
-    `<meta http-equiv="Content-Security-Policy" content="${HTML_CSP}">` + pageThemeHead(opts.pageTheme ?? pageThemeFor(modeOf(opts.theme === "graphite" ? "dark" : opts.theme))) + (opts.live && parseLiveManifest(html).length ? liveScript() : "") + sizeScript(opts.theme ?? null);
+    `<meta http-equiv="Content-Security-Policy" content="${HTML_CSP}">` + pageThemeHead(opts.pageTheme ?? pageThemeFor(modeOf(opts.theme === "graphite" ? "dark" : opts.theme))) + (opts.live && declaresServices(html) ? liveScript() : "") + sizeScript(opts.theme ?? null);
   // The CSP first in <head>, after any doctype (a tag before the doctype would put the page in quirks mode).
   const insertAfter = (m: RegExpExecArray, s: string) => body.slice(0, m.index + m[0].length) + s + body.slice(m.index + m[0].length);
   const headTag = /<head\b[^>]*>/i.exec(body);

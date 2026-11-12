@@ -21,7 +21,7 @@
  "describe persist -> Start real conversations in your chat list",
  "describe tool:voice-lab.* -> Use the box's voice lab: text-to-speech and speech-to-text engines running on the box (sends it the text or audio you give the page)",
  "describe tool:voice-lab.tts -> Use the box's voice lab: text-to-speech and speech-to-text engines running on the box (sends it the text or audio you give the page)",
- "describe tool:* -> Use the tool *",
+ "describe tool:* -> Use the box's voice lab: text-to-speech and speech-to-text engines running on the box (sends it the text or audio you give the page)",
  "manifest ask -> [\"ask\"]",
  "token ask wrong hash -> 409",
  "token ask extra cap -> 409",

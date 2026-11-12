@@ -4,14 +4,16 @@
 // This is a fixed allow-list, not a proxy: one host and port, four operations with their methods, a few query
 // parameters, bounded bodies/replies, and only the reply headers the page's UI shows.
 import { request as httpRequest } from "node:http";
-import { LIVE_LIMITS, toolAllowed } from "../src/liveBridge";
+import { LIVE_LIMITS } from "../src/liveBridge";
+import { toolAllowed, VOICE_LAB_OPS } from "../src/liveServices";
 
 export const LAB_PORT = 8871;
 /** Test knob only: the port the fixed host 127.0.0.1 is reached on. Never 8848/8857 (the live app). */
 export const labTarget = { port: LAB_PORT };
 
 type Op = { method: "GET" | "POST"; path: string; query: Record<string, RegExp>; bodyBytes: number };
-const OPS: Record<string, Op> = {
+/** Exactly the operations the service registry names (src/liveServices.ts VOICE_LAB_OPS). */
+const OPS: Record<(typeof VOICE_LAB_OPS)[number], Op> = {
   engines: { method: "GET", path: "/engines", query: {}, bodyBytes: 0 },
   tts: { method: "POST", path: "/tts", query: { fmt: /^(wav|mp3)$/ }, bodyBytes: 64 * 1024 },
   stt: { method: "POST", path: "/stt", query: { engine: /^[A-Za-z0-9_.-]{1,60}$/ }, bodyBytes: LIVE_LIMITS.requestBytes },
@@ -30,7 +32,7 @@ export async function labCall(caps: readonly string[], method: string, path: str
   const m = /^\/api\/v2\/lab\/([a-z]{1,12})(?:\?(.*))?$/.exec(path);
   if (!m) return null;
   const opName = m[1]!;
-  const op = Object.hasOwn(OPS, opName) ? OPS[opName]! : null;
+  const op = Object.hasOwn(OPS, opName) ? OPS[opName as keyof typeof OPS] : null;
   if (!op) return err(404, "no such lab operation");
   if (!toolAllowed(caps, `voice-lab.${opName}`)) return err(403, `this page was not allowed to use the tool voice-lab.${opName}`);
   // voices is GET (list) or POST (save a clone reference clip); the rest have one method.

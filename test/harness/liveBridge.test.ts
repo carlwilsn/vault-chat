@@ -258,3 +258,169 @@ test("one grant prompt per page path + hash, however many frames handshake at on
   assert.equal(prompts.length, 1, "no second prompt after Not now");
   stop();
 });
+
+// ---- the service registry (src/liveServices.ts) ----
+
+test("Carl's real pages (html-lab, voice-chat) declare the same grant as before the registry", async () => {
+  const { readFileSync } = await import("node:fs");
+  const { parseLiveNeeds } = await import("../../src/liveBridge.ts");
+  for (const f of ["html-lab.html", "voice-chat.html"]) {
+    const html = readFileSync(join(import.meta.dirname, "fixtures", "live-pages", f), "utf8");
+    assert.deepEqual(parseLiveManifest(html), ["ask", "mic", "tool:voice-lab.*"], f);
+    assert.deepEqual(parseLiveNeeds(html), { caps: ["ask", "mic", "tool:voice-lab.*"], refused: [] }, f);
+  }
+});
+
+test("the registry: one entry per service, every box route has a handler, every page function exists", async () => {
+  const { LIVE_SERVICES, serviceNamed, serviceOfCap, servicesFor } = await import("../../src/liveServices.ts");
+  const { HANDLERS } = await import("../../server/liveProxy.ts");
+  assert.deepEqual(LIVE_SERVICES.map((s) => s.name), ["ask", "mic", "persist", "voice-lab", "theme"]);
+  for (const s of LIVE_SERVICES) {
+    assert.ok(s.description.length > 10, s.name);
+    if (s.supplier === "box" && s.grantable && s.routes.length) assert.equal(typeof HANDLERS[s.name], "function", `${s.name} has a box handler`);
+    if (s.supplier === "host") assert.equal(s.routes.length, 0, `${s.name} is host-side`);
+  }
+  // persist: declared and described, but no box opens a route for it (change 1.3 lifts that).
+  const persist = serviceNamed("persist")!;
+  assert.ok(!persist.grantable && persist.routes.length === 0);
+  // The old spellings are aliases of the registered services.
+  assert.equal(serviceOfCap("tool:voice-lab.*")?.name, "voice-lab");
+  assert.equal(serviceOfCap("tool:voice-lab.tts")?.name, "voice-lab");
+  assert.equal(serviceOfCap("tool:other.thing"), null);
+  assert.equal(serviceNamed("voice-lab")?.name, "voice-lab");
+  assert.deepEqual(servicesFor(["ask", "tool:voice-lab.tts"]).map((s) => s.name), ["ask", "voice-lab", "theme"]);
+  // The page script has every function the registry points at.
+  const src = /<script data-vc-live-script>([\s\S]*?)<\/script>/.exec(liveScript())![1]!;
+  const win: any = { innerWidth: 300, innerHeight: 200, document: { documentElement: { style: { setProperty() {} } } }, parent: { postMessage() {} } };
+  vm.runInNewContext(src, { ...win, window: win, setInterval: () => 1, clearInterval() {}, addEventListener() {}, Promise, Symbol, Headers: class {}, Response: class {}, Blob: class {}, TextEncoder });
+  for (const s of LIVE_SERVICES) if (s.page) assert.equal(typeof win.vc[s.page], "function", `vc.${s.page} for ${s.name}`);
+});
+
+test("an unknown service is refused: dropped from the grant, reported to the page, and the box will not mint it", async () => {
+  const { parseLiveNeeds, describeCap } = await import("../../src/liveBridge.ts");
+  // registered names and the old spellings are granted; unknown names are refused; noise is dropped
+  assert.deepEqual(parseLiveNeeds('<meta name="vc-capabilities" content="ask, calendar, tool:other.x, voice-lab, theme, fs, tool:../x">'), {
+    caps: ["ask", "tool:voice-lab.*"],
+    refused: ["calendar", "fs", "tool:other.x"],
+  });
+  assert.deepEqual(parseLiveManifest('<meta name="vc-capabilities" content="tool:other.x">'), [], "an unknown tool is not a grant");
+  assert.equal(describeCap("tool:voice-lab.*"), "Use the box's voice lab: text-to-speech and speech-to-text engines running on the box (sends it the text or audio you give the page)");
+  // A page that names only unknown services still gets window.vc, to hear what it was refused.
+  assert.ok(inlineHtmlDocument('<meta name="vc-capabilities" content="calendar"><p>x</p>', { css: "", live: true }).includes("data-vc-live-script"));
+  const dir = mkdtempSync(join(tmpdir(), "live-svc-"));
+  const vault = join(dir, "v");
+  mkdirSync(vault);
+  try {
+    writeFileSync(join(vault, "u.html"), '<meta name="vc-capabilities" content="calendar">');
+    writeFileSync(join(vault, "m.html"), '<meta name="vc-capabilities" content="ask, calendar">');
+    const u = liveManifest(vault, "u.html")!;
+    assert.deepEqual([u.caps, u.refused], [[], ["calendar"]]);
+    assert.equal(liveToken(vault, { path: "u.html", hash: u.hash, caps: [] }).status, 404, "nothing to grant");
+    assert.equal(liveToken(vault, { path: "u.html", hash: u.hash, caps: ["calendar"] }).status, 403, "no token for an unknown service");
+    const m = liveManifest(vault, "m.html")!;
+    assert.deepEqual([m.caps, m.refused], [["ask"], ["calendar"]]);
+    assert.equal(liveToken(vault, { path: "m.html", hash: m.hash, caps: ["ask", "calendar"] }).status, 403);
+    assert.equal(liveToken(vault, { path: "m.html", hash: m.hash, caps: ["ask"] }).status, 200, "the known part is granted");
+    // A token holding a service this box does not know (registered when minted, gone now): every call is refused.
+    const { LIVE_SERVICES } = await import("../../src/liveServices.ts");
+    const list = LIVE_SERVICES as any[];
+    list.push({ name: "gone", description: "A service that goes away", supplier: "box", routes: [], grantable: true, capOf: (w: string) => (w === "gone" ? "gone" : null), owns: (c: string) => c === "gone" });
+    writeFileSync(join(vault, "g.html"), '<meta name="vc-capabilities" content="ask, gone">');
+    const gm = liveManifest(vault, "g.html")!;
+    const gt = (liveToken(vault, { path: "g.html", hash: gm.hash, caps: gm.caps }).body as { token: string }).token;
+    list.pop();
+    const out = await liveGateway(vault, null, { token: gt, path: "/api/v1/side/x", method: "GET" });
+    assert.deepEqual([out.status, (out.body as any).error], [403, "no such service: gone"]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("vc.service(name) returns the same functions as vc.ask/vc.tool/vc.mic; vc.services and vc.refused come from the host", () => {
+  const src = /<script data-vc-live-script>([\s\S]*?)<\/script>/.exec(liveScript())![1]!;
+  let onMsg: ((e: any) => void) | null = null;
+  const parent = { postMessage() {} };
+  const win: any = { innerWidth: 300, innerHeight: 200, document: { documentElement: { style: { setProperty() {} } } }, parent };
+  vm.runInNewContext(src, { ...win, window: win, parent, setInterval: () => 1, clearInterval() {}, addEventListener: (k: string, f: any) => k === "message" && (onMsg = f), Promise, Symbol, Headers: class {}, Response: class {}, Blob: class {}, TextEncoder });
+  const vc = win.vc;
+  assert.equal(vc.service("ask"), null, "nothing before the host answers");
+  assert.equal(JSON.stringify([vc.services, vc.refused]), "[[],[]]"); // arrays from the page's own realm
+  onMsg!({ source: parent, data: { "vc-live": 1, ev: "env", caps: ["ask", "tool:voice-lab.*"], services: [{ name: "ask", description: "a" }, { name: "voice-lab", description: "v" }, { name: "theme", description: "t" }], refused: ["calendar"], mode: "dark" } });
+  assert.equal(vc.service("ask"), vc.ask);
+  assert.equal(vc.service("voice-lab"), vc.tool);
+  assert.equal(vc.service("theme"), vc.onTheme);
+  assert.equal(vc.service("mic"), null, "not granted");
+  assert.equal(vc.service("calendar"), null);
+  assert.equal(JSON.stringify(vc.caps), '["ask","tool:voice-lab.*"]');
+  assert.equal(JSON.stringify(vc.refused), '["calendar"]');
+  assert.equal(vc.services.map((s: any) => s.name).join(), "ask,voice-lab,theme");
+});
+
+test("the host: the prompt lists the registry's lines, the grant is remembered per path + hash, a page of unknown services is told without a prompt", async () => {
+  const { installLiveBridge } = await import("../../src/liveBridge.ts");
+  const listeners: Record<string, (e: any) => void> = {};
+  const prompts: any[] = [];
+  const mkFrame = (page: string) => {
+    const posted: any[] = [];
+    const cw = { postMessage: (m: any) => posted.push(m) };
+    return { posted, cw, getAttribute: () => page, contentWindow: cw, getBoundingClientRect: () => ({ left: 0, top: 0, width: 400, height: 300 }) } as any;
+  };
+  const frames: any[] = [];
+  const mkEl = (): any => {
+    const el: any = { style: {}, children: [] as any[], attrs: {} as any, textContent: "", setAttribute(k: string, v: string) { el.attrs[k] = v; }, append(...c: any[]) { el.children.push(...c); }, remove() { el.removed = true; } };
+    return el;
+  };
+  const doc: any = {
+    defaultView: { getComputedStyle: () => ({ getPropertyValue: () => "" }), MutationObserver: class { observe() {} disconnect() {} }, addEventListener: (k: string, fn: any) => { listeners[k] = fn; }, removeEventListener() {}, innerHeight: 800 },
+    documentElement: { dataset: {} },
+    createElement: () => mkEl(),
+    body: { append: (b: any) => { if (b.attrs["data-el"] === "live-grant") prompts.push(b); } },
+    querySelectorAll: () => frames,
+  };
+  const manifests: Record<string, any> = { "lab.html": { caps: ["ask", "mic", "tool:voice-lab.*"], hash: "h1" }, "u.html": { caps: [], refused: ["calendar"], hash: "h2" } };
+  const host = { post: async (p: string, b: any) => (p.endsWith("manifest") ? { status: 200, json: manifests[b.path] } : { status: 200, json: { token: "t", exp: Date.now() + 600_000 } }) };
+  const store: Record<string, string> = {};
+  (globalThis as any).localStorage = { getItem: (k: string) => store[k] ?? null, setItem: (k: string, v: string) => { store[k] = v; } };
+  (globalThis as any).window = { innerHeight: 800 };
+  const hello = (f: any) => listeners.message({ data: { "vc-live": 1, op: "hello" }, origin: "null", source: f.cw });
+  const tick = () => new Promise((r) => setTimeout(r, 10));
+  let stop = installLiveBridge(host as any, doc);
+  const lab = mkFrame("lab.html");
+  frames.push(lab);
+  hello(lab);
+  await tick();
+  assert.equal(prompts.length, 1);
+  assert.deepEqual(prompts[0].children[1].children.map((li: any) => li.textContent), [
+    "Ask the AI questions (read-only; nothing in your vault or chats changes)",
+    "Use your microphone while you press its record button",
+    "Use the box's voice lab: text-to-speech and speech-to-text engines running on the box (sends it the text or audio you give the page)",
+  ]);
+  prompts[0].children[2].children[1].onclick(); // Allow
+  await tick();
+  const env = lab.posted.find((m: any) => m.ev === "env");
+  assert.deepEqual(env.caps, ["ask", "mic", "tool:voice-lab.*"]);
+  assert.deepEqual(env.services.map((s: any) => s.name), ["ask", "mic", "voice-lab", "theme"]);
+  assert.deepEqual(env.refused, []);
+  assert.deepEqual(JSON.parse(store["vc-live-grants"]!), { "lab.html|h1": ["ask", "mic", "tool:voice-lab.*"] }, "remembered as before");
+  stop();
+  // A fresh window: the remembered grant holds, no prompt.
+  stop = installLiveBridge(host as any, doc);
+  const again = mkFrame("lab.html");
+  frames.splice(0, frames.length, again);
+  hello(again);
+  await tick();
+  assert.equal(prompts.length, 1, "no second prompt for the same page and hash");
+  assert.ok(again.posted.some((m: any) => m.ev === "env"));
+  // Only unknown services: told so, no prompt, no token, no calls.
+  const u = mkFrame("u.html");
+  frames.push(u);
+  hello(u);
+  await tick();
+  assert.equal(prompts.length, 1, "nothing to allow");
+  const uenv = u.posted.find((m: any) => m.ev === "env");
+  assert.deepEqual([uenv.caps, uenv.refused, uenv.services.map((s: any) => s.name)], [[], ["calendar"], ["theme"]]);
+  listeners.message({ data: { "vc-live": 1, op: "fetch", id: 1, path: "/api/v1/side", method: "GET" }, origin: "null", source: u.cw });
+  await tick();
+  assert.match(u.posted.find((m: any) => m.id === 1)?.error ?? "", /not been allowed/);
+  stop();
+});

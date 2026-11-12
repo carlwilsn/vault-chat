@@ -7,7 +7,7 @@ import * as fs from "../shims/memfs";
 import { gitDirty } from "./memgit";
 import { MemoryBox } from "../../../src/convlog/memoryBox";
 import { answerComplete } from "../llm";
-import { parseLiveManifest } from "../../../src/liveBridge";
+import { parseLiveNeeds } from "../../../src/liveBridge";
 
 /** [roleplay] A REAL box behind the preview: a scenario whose box is http://realbox.localhost sends every box request
  *  to the dev server's /__realbox proxy (VC_REALBOX, e.g. an ssh tunnel to a throwaway test instance), so the real
@@ -540,11 +540,12 @@ export const hostCommands: Record<string, (a: Record<string, any>) => unknown> =
     // Live pages (server/liveProxy.ts): the manifest from the vault's file, a token, and the side protocol through the gateway.
     if (path === "/api/v2/live/manifest" || path === "/api/v2/live/token") {
       const html = fs.readText(`${laptopVault}/${String(b.path ?? "")}`) ?? "";
-      const caps = parseLiveManifest(html);
+      const { caps, refused } = parseLiveNeeds(html);
       let h = 0;
       for (let i = 0; i < html.length; i++) h = (h * 31 + html.charCodeAt(i)) | 0;
-      if (!caps.length) return { status: 404, body: JSON.stringify({ error: "not a live page" }) };
-      return { status: 200, body: JSON.stringify(path.endsWith("manifest") ? { caps, hash: String(h) } : { token: "preview-token", exp: Date.now() + 900_000 }) };
+      const isManifest = path.endsWith("manifest");
+      if (!caps.length && !(isManifest && refused.length)) return { status: 404, body: JSON.stringify({ error: "not a live page" }) };
+      return { status: 200, body: JSON.stringify(isManifest ? { caps, hash: String(h), ...(refused.length ? { refused } : {}) } : { token: "preview-token", exp: Date.now() + 900_000 }) };
     }
     if (path === "/api/v2/live/fetch") {
       if (b.token !== "preview-token") return { status: 401, body: JSON.stringify({ error: "bad token" }) };

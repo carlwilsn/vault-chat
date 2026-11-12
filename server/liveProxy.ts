@@ -8,14 +8,17 @@
 //   POST /api/v2/live/revoke {path}                   → {ok}           (that page's tokens stop working at once)
 //   POST /api/v2/live/fetch {token, path, method, headers?, bodyBase64?} → {ok, status, headers, bodyBase64}
 //
-// What `tool:voice-lab.*` covers: /api/v2/lab/{engines,tts,stt,voices} (server/labProxy.ts), nothing else.
+// Which routes a capability opens is declared once, in the service registry (src/liveServices.ts): the gateway hands a
+// call to a granted service whose declared routes match it, through that service's handler here (HANDLERS), else 403.
+// What `voice-lab` (tool:voice-lab.*) covers: /api/v2/lab/{engines,tts,stt,voices} (server/labProxy.ts), nothing else.
 // What `ask` covers: POST /api/v1/side (always an ephemeral read-only side session tagged with the page: no
 // conversation, no chat-list entry, no writes; `persist` is refused), and reading/stopping the sessions that token
 // started. Nothing else is reachable with it.
 import { createHmac, createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { readFileSync, statSync } from "node:fs";
 import { request as httpRequest } from "node:http";
-import { LIVE_LIMITS, LIVE_REQUEST_HEADERS, parseLiveManifest } from "../src/liveBridge";
+import { LIVE_LIMITS, LIVE_REQUEST_HEADERS, parseLiveNeeds } from "../src/liveBridge";
+import { LIVE_SERVICES, serviceOfCap, type LiveService } from "../src/liveServices";
 import { loadConfig } from "./config";
 import { phoneToken } from "./auth";
 import { withinVault } from "./phoneData";
@@ -31,16 +34,18 @@ const sessions = new Map<string, Set<string>>();
 const b64 = (b: Buffer | string) => Buffer.from(b).toString("base64url");
 const sign = (payload: string) => createHmac("sha256", SECRET).update(payload).digest("base64url");
 
-/** A vault page's manifest and content hash as it is now. */
-export function liveManifest(vault: string, rel: unknown): { caps: string[]; hash: string } | null {
+/** A vault page's manifest and content hash as it is now; `refused`: service names it declares that no registry entry knows. */
+export function liveManifest(vault: string, rel: unknown): { caps: string[]; hash: string; refused?: string[] } | null {
   if (typeof rel !== "string" || !/\.html?$/i.test(rel)) return null;
   const full = withinVault(vault, rel);
   if (!full) return null;
   try {
     if (statSync(full).size > 8 * 1024 * 1024) return null;
     const html = readFileSync(full, "utf8");
-    const caps = parseLiveManifest(html);
-    return caps.length ? { caps, hash: createHash("sha256").update(html).digest("hex") } : null;
+    const { caps, refused } = parseLiveNeeds(html);
+    if (!caps.length && !refused.length) return null;
+    const hash = createHash("sha256").update(html).digest("hex");
+    return refused.length ? { caps, hash, refused } : { caps, hash };
   } catch {
     return null;
   }
@@ -48,8 +53,10 @@ export function liveManifest(vault: string, rel: unknown): { caps: string[]; has
 
 export function liveToken(vault: string, b: { path?: unknown; hash?: unknown; caps?: unknown }): LiveOut {
   const m = liveManifest(vault, b.path);
-  if (!m) return { status: 404, body: { error: "not a live page" } };
   const caps = Array.isArray(b.caps) ? b.caps.map(String).sort() : [];
+  const unknown = caps.find((c) => !serviceOfCap(c));
+  if (unknown) return { status: 403, body: { error: `no such service: ${unknown}` } };
+  if (!m || !m.caps.length) return { status: 404, body: { error: "not a live page" } };
   if (b.hash !== m.hash || caps.join(",") !== m.caps.join(",")) return { status: 409, body: { error: "the page changed since it was allowed" } };
   const exp = Date.now() + LIVE_LIMITS.tokenSeconds * 1000;
   const claims: Claims = { p: String(b.path), h: m.hash, c: caps, e: exp, j: randomUUID() };
@@ -119,10 +126,82 @@ function loopback(method: string, path: string, headers: Record<string, string>,
 const reply = (u: Upstream): LiveOut => ({ status: 200, body: { ok: true, status: u.status, headers: u.headers, bodyBase64: u.body.toString("base64") } });
 const json = (status: number, v: unknown): Upstream => ({ status, headers: { "content-type": "application/json" }, body: Buffer.from(JSON.stringify(v)) });
 
+/** One call a granted service's route matched: what its handler gets. */
+type Call = { c: Claims; own: Set<string>; method: "GET" | "POST"; path: string; headers: Record<string, string>; body: Buffer | null; vaultParam: string | null };
+/** A service's box side: its answer, or null when it does not take this call after all (the gateway goes on, then 403). */
+type Handler = (call: Call) => Promise<LiveOut | null>;
+
+/** `ask`: a new ephemeral read-only ask, or reading/stopping a session this same token started. */
+const askHandler: Handler = async ({ c, own, method, path, body, vaultParam }) => {
+  const side = /^\/api\/v1\/side(?:\/([A-Za-z0-9_-]{1,120})(\/stop)?)?(?:\?(.*))?$/.exec(path);
+  if (!side) return null;
+  const [, sid, stop, query] = side;
+  if (!sid && method === "POST") {
+    let req: Record<string, unknown> = {};
+    try {
+      req = JSON.parse(body?.toString("utf8") || "{}");
+    } catch {
+      return { status: 400, body: { error: "bad JSON" } };
+    }
+    // `persist` is a registered service no box grants yet (src/liveServices.ts): an ask is always ephemeral.
+    if (req.persist) return { status: 403, body: { error: "this box does not start conversations for pages yet; an ask is ephemeral" } };
+    const text = typeof req.text === "string" ? req.text : "";
+    const system = typeof req.system === "string" ? req.system : "";
+    if (!text.trim()) return { status: 400, body: { error: "missing text" } };
+    if (text.length > LIVE_LIMITS.promptChars || system.length > LIVE_LIMITS.systemChars) return { status: 413, body: { error: "ask too large" } };
+    // Only these fields, whatever else the page sent: always an ephemeral ask tagged with the page.
+    const up = await loopback("POST", "/api/v1/side", { "content-type": "application/json" }, Buffer.from(JSON.stringify({ kind: "ask", text, system, page: c.p })), vaultParam);
+    try {
+      const id = JSON.parse(up.body.toString("utf8"))?.id;
+      if (typeof id === "string") own.add(id);
+    } catch {
+      /* an error body */
+    }
+    return reply(up);
+  }
+  if (sid && !own.has(sid)) return { status: 403, body: { error: "not a session this page started" } };
+  if (sid && stop && method === "POST") return reply(await loopback("POST", `/api/v1/side/${sid}/stop`, { "content-type": "application/json" }, Buffer.from("{}"), vaultParam));
+  if (sid && !stop && method === "GET") {
+    const q = new URLSearchParams(query ?? "");
+    const num = (k: string, d: number) => (Number.isFinite(Number(q.get(k))) ? Math.trunc(Number(q.get(k))) : d);
+    const up = await loopback("GET", `/api/v1/side/${sid}?after=${num("after", -1)}&wait=${Math.max(0, Math.min(num("wait", 20_000), 25_000))}`, {}, null, vaultParam);
+    try {
+      const j = JSON.parse(up.body.toString("utf8"));
+      if (typeof j?.text === "string" && j.text.length > LIVE_LIMITS.replyChars) {
+        j.text = j.text.slice(0, LIVE_LIMITS.replyChars);
+        j.done = true;
+        return reply(json(up.status, j));
+      }
+    } catch {
+      /* pass the body through */
+    }
+    return reply(up);
+  }
+  return null;
+};
+
+/** `voice-lab`: /api/v2/lab/<op> to the one local lab service (server/labProxy.ts: fixed operations, methods, parameters). */
+const voiceLabHandler: Handler = async ({ c, method, path, headers, body }) => {
+  const out = await labCall(c.c, method, path, headers, body);
+  return out ? reply(out) : null;
+};
+
+/** The box side of every registered box service that opens routes (src/liveServices.ts). */
+export const HANDLERS: Readonly<Record<string, Handler>> = { ask: askHandler, "voice-lab": voiceLabHandler };
+
+/** The services a call may go to: granted by the token, opened by the box, with a declared route matching the call. */
+function servicesTaking(c: Claims, method: "GET" | "POST", path: string): LiveService[] {
+  return LIVE_SERVICES.filter(
+    (s) => s.supplier === "box" && s.grantable && c.c.some((cap) => s.owns(cap)) && s.routes.some((r) => r.methods.includes(method) && r.path.test(path)),
+  );
+}
+
 /** A page's call, checked against its token's capabilities, then answered by this same server over loopback. */
 export async function liveGateway(vault: string, vaultParam: string | null, b: Record<string, unknown>): Promise<LiveOut> {
   const c = claimsOf(vault, b.token);
   if (!c) return { status: 401, body: { error: "the page's token is not valid (expired, revoked, or the page changed)" } };
+  const unknown = c.c.find((cap) => !serviceOfCap(String(cap)));
+  if (unknown) return { status: 403, body: { error: `no such service: ${unknown}` } };
   const method = b.method === "GET" || b.method === "POST" ? b.method : null;
   if (!method) return { status: 405, body: { error: "GET or POST only" } };
   const path = typeof b.path === "string" && b.path.length < 2000 && !/[\\\u0000-\u001f]/.test(b.path) ? b.path : null;
@@ -142,57 +221,10 @@ export async function liveGateway(vault: string, vaultParam: string | null, b: R
   const own = sessions.get(c.j) ?? new Set<string>();
   sessions.set(c.j, own);
   try {
-    if (c.c.includes("ask")) {
-      const side = /^\/api\/v1\/side(?:\/([A-Za-z0-9_-]{1,120})(\/stop)?)?(?:\?(.*))?$/.exec(path);
-      if (side) {
-        const [, sid, stop, query] = side;
-        if (!sid && method === "POST") {
-          let req: Record<string, unknown> = {};
-          try {
-            req = JSON.parse(body?.toString("utf8") || "{}");
-          } catch {
-            return { status: 400, body: { error: "bad JSON" } };
-          }
-          if (req.persist) return { status: 403, body: { error: "this box does not start conversations for pages yet; an ask is ephemeral" } };
-          const text = typeof req.text === "string" ? req.text : "";
-          const system = typeof req.system === "string" ? req.system : "";
-          if (!text.trim()) return { status: 400, body: { error: "missing text" } };
-          if (text.length > LIVE_LIMITS.promptChars || system.length > LIVE_LIMITS.systemChars) return { status: 413, body: { error: "ask too large" } };
-          // Only these fields, whatever else the page sent: always an ephemeral ask tagged with the page.
-          const up = await loopback("POST", "/api/v1/side", { "content-type": "application/json" }, Buffer.from(JSON.stringify({ kind: "ask", text, system, page: c.p })), vaultParam);
-          try {
-            const id = JSON.parse(up.body.toString("utf8"))?.id;
-            if (typeof id === "string") own.add(id);
-          } catch {
-            /* an error body */
-          }
-          return reply(up);
-        }
-        if (sid && !own.has(sid)) return { status: 403, body: { error: "not a session this page started" } };
-        if (sid && stop && method === "POST") return reply(await loopback("POST", `/api/v1/side/${sid}/stop`, { "content-type": "application/json" }, Buffer.from("{}"), vaultParam));
-        if (sid && !stop && method === "GET") {
-          const q = new URLSearchParams(query ?? "");
-          const num = (k: string, d: number) => (Number.isFinite(Number(q.get(k))) ? Math.trunc(Number(q.get(k))) : d);
-          const up = await loopback("GET", `/api/v1/side/${sid}?after=${num("after", -1)}&wait=${Math.max(0, Math.min(num("wait", 20_000), 25_000))}`, {}, null, vaultParam);
-          try {
-            const j = JSON.parse(up.body.toString("utf8"));
-            if (typeof j?.text === "string" && j.text.length > LIVE_LIMITS.replyChars) {
-              j.text = j.text.slice(0, LIVE_LIMITS.replyChars);
-              j.done = true;
-              return reply(json(up.status, j));
-            }
-          } catch {
-            /* pass the body through */
-          }
-          return reply(up);
-        }
-      }
-    }
-    // Step 2: registered tools. `tool:voice-lab.*` opens /api/v2/lab/<op> (server/labProxy.ts: one fixed local service,
-    // a fixed set of operations); no other tool exists, and no capability opens any other host or path.
-    if (c.c.some((x) => x.startsWith("tool:")) && path.startsWith("/api/v2/lab/")) {
-      const out = await labCall(c.c, method, path, headers, body);
-      if (out) return reply(out);
+    // In registry order (ask, then voice-lab): the first service that takes the call answers it.
+    for (const s of servicesTaking(c, method, path)) {
+      const out = await HANDLERS[s.name]?.({ c, own, method, path, headers, body, vaultParam });
+      if (out) return out;
     }
   } catch (e) {
     return { status: 502, body: { error: String((e as Error)?.message ?? e) } };

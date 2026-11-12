@@ -5,7 +5,7 @@ import { isUnreadableAsText } from "./fileKind";
 import { openUrl, isExternalHref } from "./opener";
 import { InlineEditPrompt, type InlineEditRequest } from "./InlineEditPrompt";
 import { useStore } from "./store";
-import { insideVault, liveScript, parseLiveManifest, vaultRelative } from "./liveBridge";
+import { declaresServices, insideVault, liveScript, vaultRelative } from "./liveBridge";
 import { reportScroll, scrollHtmlWith } from "./scrollTarget";
 import { decodeTarget } from "./viewTarget";
 import { appPageTheme, pageThemeHead, PAGE_FRAME_ATTR } from "./pageTheme";
@@ -361,7 +361,7 @@ export function HtmlView({ content, path }: { content: string; path?: string | n
   const base = usePageBase(path);
   // A page inside the vault is a live page: window.vc (src/liveBridge.ts), answered by the app.
   const vaultRoot = useStore((s) => s.vaultPath);
-  const live = insideVault(path, vaultRoot) && parseLiveManifest(content).length > 0;
+  const live = insideVault(path, vaultRoot) && declaresServices(content);
   const srcDoc = useMemo(() => {
     if (base === undefined) return null;
     const html = path ? rewriteAssetUrls(content, path, !base) : content;

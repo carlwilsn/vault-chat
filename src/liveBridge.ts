@@ -12,9 +12,14 @@
 //                                   e.g. vc.tool("voice-lab.tts", {json:{engine,text}}) → audio; voice-lab.{engines,tts,stt,voices}
 //          vc.mic({mimeType?})    → Promise<{ stop(): Promise<Blob>, cancel(), ondata, mimeType }>   (cap: mic)
 //          vc.play(blobOrUrl), vc.caps (granted), vc.theme {mode, vars}, vc.size {w,h}, vc.ready, vc.path
+//          vc.services [{name, description}] (granted, and those every page has), vc.refused [names no registry knows],
+//          vc.service(name) → that service's vc function (ask → vc.ask, mic → vc.mic, voice-lab → vc.tool, theme →
+//                                   vc.onTheme), null when it is not granted. Services: src/liveServices.ts
 //   host:  installLiveBridge(host) once; an iframe takes part by `data-vc-live="<vault path>"`. The host asks the box for
 //          the page's manifest + content hash, asks Carl once (remembered per path + hash; a changed page asks again),
 //          has the box mint the token, and answers only that iframe's window (event.source, origin "null").
+
+import { pageFunctions, readNeed, serviceOfCap, servicesFor, toolAllowed } from "./liveServices";
 
 /** Every message either way carries this marker. */
 export const LIVE = "vc-live";
@@ -40,41 +45,48 @@ export const LIVE_THEME_VARS = [
   "destructive-foreground", "border", "input", "ring", "radius",
 ] as const;
 
-/** A capability a manifest may name: ask, mic, persist (not yet granted by any box), tool:<name or glob>. */
-const CAP_RE = /^(?:ask|mic|persist|tool:[A-Za-z0-9_.*-]{1,80})$/;
+/** The most grant entries (and, separately, refused names) one manifest yields. */
+const MANIFEST_MAX = 20;
 
-/** The capabilities a page declares (`<meta name="vc-capabilities" content="ask, mic">`): normalised, deduped, sorted; none = not a live page. */
-export function parseLiveManifest(html: string): string[] {
+/**
+ * What a page declares (`<meta name="vc-capabilities" content="ask, mic">`), read against the service registry
+ * (src/liveServices.ts): `caps`, the grant entries of registered services (normalised, deduped, sorted; ask, mic,
+ * persist, tool:<name or glob> exactly as before, plus the registered names such as `voice-lab`), and `refused`, the
+ * service names no registry entry knows (dropped from the grant; the page sees them as vc.refused).
+ */
+export function parseLiveNeeds(html: string): { caps: string[]; refused: string[] } {
   const out = new Set<string>();
+  const refused = new Set<string>();
   for (const m of html.matchAll(/<meta\b[^>]*>/gi)) {
     const tag = m[0];
     if (!/\bname\s*=\s*["']?vc-capabilities["']?(?=[\s>/"'])/i.test(tag)) continue;
     const c = /\bcontent\s*=\s*(?:"([^"]*)"|'([^']*)')/i.exec(tag);
     for (const raw of (c?.[1] ?? c?.[2] ?? "").split(/[\s,]+/)) {
-      const cap = raw.trim().toLowerCase();
-      if (CAP_RE.test(cap)) out.add(cap);
-      if (out.size >= 20) break;
+      const need = readNeed(raw.trim().toLowerCase());
+      if (need && "cap" in need) out.add(need.cap);
+      else if (need && "refused" in need && refused.size < MANIFEST_MAX) refused.add(need.refused);
+      if (out.size >= MANIFEST_MAX) break;
     }
   }
-  return [...out].sort();
+  return { caps: [...out].sort(), refused: [...refused].sort() };
 }
 
-/** Whether a tool name is covered by a granted `tool:` capability (exact, or a glob with `*`). */
-export function toolAllowed(caps: readonly string[], name: string): boolean {
-  return caps.some((c) => {
-    if (!c.startsWith("tool:")) return false;
-    const g = c.slice(5);
-    return g === name || (g.includes("*") && new RegExp("^" + g.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*") + "$").test(name));
-  });
+/** The grant entries a page declares (parseLiveNeeds' caps); none = not a live page. */
+export function parseLiveManifest(html: string): string[] {
+  return parseLiveNeeds(html).caps;
 }
 
-/** One line per capability, for the grant prompt. */
+/** Whether a page declares services at all (granted or refused): it gets window.vc, so it can see what it was refused. */
+export function declaresServices(html: string): boolean {
+  const n = parseLiveNeeds(html);
+  return n.caps.length > 0 || n.refused.length > 0;
+}
+
+export { toolAllowed };
+
+/** One line per grant entry, for the grant prompt: the registered service's description. */
 export function describeCap(cap: string): string {
-  if (cap === "ask") return "Ask the AI questions (read-only; nothing in your vault or chats changes)";
-  if (cap === "mic") return "Use your microphone while you press its record button";
-  if (cap === "persist") return "Start real conversations in your chat list";
-  if (cap.startsWith("tool:voice-lab")) return "Use the box's voice lab: text-to-speech and speech-to-text engines running on the box (sends it the text or audio you give the page)";
-  return `Use the tool ${cap.slice(5)}`;
+  return serviceOfCap(cap)?.description ?? `Use ${cap.startsWith("tool:") ? `the tool ${cap.slice(5)}` : cap}`;
 }
 
 export const LIVE_REQUEST_HEADERS = ["content-type", "accept"];
@@ -112,13 +124,13 @@ export type LiveHost = { post(path: string, body: unknown): Promise<{ status: nu
 
 const PAGE_SCRIPT = String.raw`(function(){
 if(window.vc)return;
-var M=${JSON.stringify(LIVE)},seq=0,wait={},themeFns=[],sizeFns=[],readyFn,helloTimer,tries=0;
+var M=${JSON.stringify(LIVE)},FNS=${JSON.stringify(pageFunctions())},seq=0,wait={},themeFns=[],sizeFns=[],readyFn,helloTimer,tries=0;
 var ready=new Promise(function(r){readyFn=r;});
-var vc={path:"",caps:[],theme:{mode:"dark",vars:{}},size:{w:innerWidth,h:innerHeight},ready:ready,live:false};
+var vc={path:"",caps:[],services:[],refused:[],theme:{mode:"dark",vars:{}},size:{w:innerWidth,h:innerHeight},ready:ready,live:false};
 function post(m,tr){m[M]=1;parent.postMessage(m,"*",tr||[]);}
 function call(m,tr,on){var id=++seq;m.id=id;wait[id]=on;post(m,tr);return id;}
 function apply(m){
-  vc.live=true;vc.path=m.path||vc.path;vc.caps=m.caps||[];
+  vc.live=true;vc.path=m.path||vc.path;vc.caps=m.caps||[];vc.services=m.services||[];vc.refused=m.refused||[];
   if(m.mode){vc.theme.mode=m.mode;}
   if(m.vars){vc.theme.vars=m.vars;var s=document.documentElement.style;for(var k in m.vars)s.setProperty("--"+k,m.vars[k]);}
   if(m.w){vc.size.w=m.w;vc.size.h=m.h;}
@@ -203,6 +215,11 @@ vc.mic=async function(o){
     });
   });
 };
+vc.service=function(name){
+  var n=String(name).toLowerCase(),f=FNS[n];
+  for(var i=0;i<vc.services.length;i++)if(vc.services[i].name===n)return f&&typeof vc[f]==="function"?vc[f]:null;
+  return null;
+};
 vc.play=function(src){
   return new Promise(function(res,rej){
     var url=typeof src==="string"?src:URL.createObjectURL(src),a=new Audio(url);
@@ -277,7 +294,8 @@ export function forgetLiveGrant(path: string): void {
   }
 }
 
-type Grant = { caps: string[]; token: string; exp: number } | null;
+/** caps: the grant entries; refused: what the page named that no service registry knows; token "": nothing granted (only refusals to report). */
+type Grant = { caps: string[]; refused: string[]; token: string; exp: number } | null;
 type PageState = {
   grant: Promise<Grant> | null;
   denied: boolean;
@@ -358,7 +376,8 @@ export function installLiveBridge(host: LiveHost, doc: Document = document): () 
     if (!s) pages.set(w, (s = { grant: null, denied: false, askTimes: [], active: 0, mic: null, ro: null }));
     return s;
   };
-  const env = (f: HTMLIFrameElement, caps: string[]) => {
+  const env = (f: HTMLIFrameElement, g: NonNullable<Grant>) => {
+    const caps = g.caps;
     const cs = win.getComputedStyle(doc.documentElement);
     const vars: Record<string, string> = {};
     for (const n of LIVE_THEME_VARS) {
@@ -366,7 +385,7 @@ export function installLiveBridge(host: LiveHost, doc: Document = document): () 
       if (v) vars[n] = v;
     }
     const r = f.getBoundingClientRect();
-    return { ev: "env", caps, mode: doc.documentElement.dataset.theme === "light" ? "light" : "dark", vars, w: Math.round(r.width), h: Math.round(r.height), path: f.getAttribute(LIVE_ATTR) ?? "" };
+    return { ev: "env", caps, services: servicesFor(caps), refused: g.refused, mode: doc.documentElement.dataset.theme === "light" ? "light" : "dark", vars, w: Math.round(r.width), h: Math.round(r.height), path: f.getAttribute(LIVE_ATTR) ?? "" };
   };
   const reply = (f: HTMLIFrameElement, m: Record<string, unknown>, transfer: Transferable[] = []) => {
     try {
@@ -381,6 +400,9 @@ export function installLiveBridge(host: LiveHost, doc: Document = document): () 
     const m = await host.post("/api/v2/live/manifest", { path: page });
     const caps: string[] = Array.isArray(m.json?.caps) ? m.json.caps : [];
     const hash = String(m.json?.hash ?? "");
+    const refused: string[] = Array.isArray(m.json?.refused) ? m.json.refused.map(String) : [];
+    // Only unknown services: nothing to ask Carl or the box for, but the page hears what it was refused.
+    if (m.status === 200 && !caps.length && refused.length && hash) return { caps: [], refused, token: "", exp: Date.now() + LIVE_LIMITS.tokenSeconds * 1000 };
     if (m.status !== 200 || !caps.length || !hash) return null;
     if (!grantedFor(page, hash, caps)) {
       const key = grantKey(page, hash);
@@ -413,7 +435,7 @@ export function installLiveBridge(host: LiveHost, doc: Document = document): () 
     }
     const t = await host.post("/api/v2/live/token", { path: page, hash, caps });
     if (t.status !== 200 || !t.json?.token) return null;
-    return { caps, token: String(t.json.token), exp: Number(t.json.exp) || Date.now() + LIVE_LIMITS.tokenSeconds * 1000 };
+    return { caps, refused, token: String(t.json.token), exp: Number(t.json.exp) || Date.now() + LIVE_LIMITS.tokenSeconds * 1000 };
   };
   const grantOf = (f: HTMLIFrameElement, st: PageState, page: string, refresh = false): Promise<Grant> => {
     if (refresh || !st.grant) {
@@ -440,15 +462,15 @@ export function installLiveBridge(host: LiveHost, doc: Document = document): () 
 
     switch (d.op) {
       case "hello": {
-        if (st.grant) return void st.grant.then((g) => g && reply(f, env(f, g.caps)));
+        if (st.grant) return void st.grant.then((g) => g && reply(f, env(f, g)));
         void grantOf(f, st, page).then((g) => {
           if (!g) return;
-          reply(f, env(f, g.caps));
+          reply(f, env(f, g));
           if (!st.ro && typeof ResizeObserver !== "undefined") {
             let t: ReturnType<typeof setTimeout> | null = null;
             st.ro = new ResizeObserver(() => {
               if (t) clearTimeout(t);
-              t = setTimeout(() => reply(f, env(f, g.caps)), 120);
+              t = setTimeout(() => reply(f, env(f, g)), 120);
             });
             st.ro.observe(f);
           }
@@ -482,14 +504,14 @@ export function installLiveBridge(host: LiveHost, doc: Document = document): () 
         void (async () => {
           try {
             let g = await grantOf(f, st, page);
-            if (!g) return fail(id, "this page has not been allowed to do that");
+            if (!g?.token) return fail(id, "this page has not been allowed to do that");
             const go = (token: string) => host.post("/api/v2/live/fetch", { token, path, method, headers, bodyBase64: body && body.length ? bytesToBase64(body) : "" });
             let r = await go(g.token);
             if (r.status === 401) {
               // Expired, revoked, or the page changed since: ask the box again (and Carl, when the page changed).
               st.denied = false;
               g = await grantOf(f, st, page, true);
-              if (!g) return fail(id, "this page has not been allowed to do that");
+              if (!g?.token) return fail(id, "this page has not been allowed to do that");
               r = await go(g.token);
             }
             if (r.status !== 200 || !r.json?.ok) return fail(id, String(r.json?.error ?? `the box refused (${r.status})`));
@@ -524,7 +546,7 @@ export function installLiveBridge(host: LiveHost, doc: Document = document): () 
   const onTheme = () => {
     for (const f of Array.from(doc.querySelectorAll<HTMLIFrameElement>(`iframe[${LIVE_ATTR}]`))) {
       const st = f.contentWindow ? pages.get(f.contentWindow) : null;
-      if (st?.grant) void st.grant.then((g) => g && reply(f, env(f, g.caps)));
+      if (st?.grant) void st.grant.then((g) => g && reply(f, env(f, g)));
     }
   };
   const mo = new win.MutationObserver(onTheme);

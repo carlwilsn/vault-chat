@@ -44,4 +44,6 @@ phone web app, iPad whiteboard and voice. It is not AgentOS.
   components in the preview harness (preview/, `npm run preview`, `?scenario=`) shot with RecordUI.
 - Live pages (src/liveBridge.ts): a vault .html that declares `<meta name="vc-capabilities" content="ask, mic">` gets `window.vc` after Carl's one-time Allow
   (per path + content hash): `vc.ask(prompt,{system})` streams an ephemeral read-only AI reply (`for await`, `.text()`), `vc.fetch(path, init)` reaches only what the
-  granted capabilities cover (box-checked token), `vc.mic()`/`vc.play()`, `vc.theme`/`vc.size`; no `<form>` (sandboxed), buttons + keydown. Example: .vault-chat/visuals/live-chat-demo.html.
+  granted capabilities cover (box-checked token), `vc.mic()`/`vc.play()`, `vc.theme`/`vc.size`; no `<form>` (sandboxed), buttons + keydown. The services a page may name
+  (ask, mic, voice-lab = `tool:voice-lab.*`, persist (refused for now), theme) are declared once in src/liveServices.ts; an unknown
+  name is refused (`vc.refused`); `vc.services` lists what was granted, `vc.service(name)` returns its function. Example: .vault-chat/visuals/live-chat-demo.html.
