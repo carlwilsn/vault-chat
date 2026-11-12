@@ -3,6 +3,7 @@ import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRe
 import { Markdown, StreamingMarkdown } from "./Markdown";
 import { clipboardImageDataUrls, readChatImage } from "./chatImage";
 import { InlineHtmlFrame } from "./InlineHtmlFrame";
+import { VideoPlayer } from "./VideoPlayer";
 import { isHtmlSrc } from "./inlineHtml";
 import { localPathFromUrl } from "./mdPipeline";
 import { planDone, planCards, currentPlan, type PlanCard } from "./planPlace";
@@ -184,12 +185,8 @@ const ChatImage = memo(function ChatImage({
       </span>
     );
   }
-  // No autoplay: the user's native Play gesture starts video AND audio.
-  // Keep an ordinary download link available if this platform lacks the codec.
-  if (isVideoSrc(src)) return <span>
-    <video src={url} controls playsInline preload="metadata" title={alt} data-el="chat-video" className="max-w-full rounded-md border border-border/60" />
-    <a href={url} download={src?.split(/[\\/]/).pop()?.split(/[?#]/)[0]} className="text-xs text-muted-foreground underline" data-el="video-fallback">Download video</a>
-  </span>;
+  // No autoplay: Carl's own Play starts video AND audio. The app's player, not the webview's controls.
+  if (isVideoSrc(src)) return <VideoPlayer src={url ?? ""} title={alt} dataEl="chat-video" />;
   return <img src={url} alt={alt} {...rest} />;
 });
 

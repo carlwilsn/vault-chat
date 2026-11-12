@@ -100,6 +100,13 @@ export const SHORTCUTS = [
   { id: "edit.marquee", keys: ["Mod+M"], label: "Capture a region", group: "Editing", where: "a PDF, HTML page or image", files: ["src/MarkdownView.tsx"] },
   { id: "edit.confirm", keys: ["Enter"], label: "Confirm a name", group: "Editing", where: "rename, new project, a key", files: ["src/FileTree.tsx", "src/ChatsPanel.tsx", "src/NewProjectForm.tsx", "src/VaultPicker.tsx", "src/ProjectChip.tsx", "src/SettingsPane.tsx", "src/ClaudeCodeSignIn.tsx"] },
 
+  // ---- A video (the app's own player, src/VideoPlayer.tsx)
+  { id: "video.play", keys: [" "], label: "Play / pause", group: "Views & windows", where: "a video with focus", files: ["src/VideoPlayer.tsx"] },
+  { id: "video.back", keys: ["ArrowLeft"], label: "Back 5 seconds", group: "Views & windows", where: "a video with focus", files: ["src/VideoPlayer.tsx"] },
+  { id: "video.forward", keys: ["ArrowRight"], label: "Forward 5 seconds", group: "Views & windows", where: "a video with focus", files: ["src/VideoPlayer.tsx"] },
+  { id: "video.mute", keys: ["M"], label: "Mute video", group: "Views & windows", where: "a video with focus", files: ["src/VideoPlayer.tsx"] },
+  { id: "video.full", keys: ["F"], label: "Video full screen", group: "Views & windows", where: "a video with focus", files: ["src/VideoPlayer.tsx"] },
+
   // ---- Files
   { id: "files.note", keys: ["Mod+N"], label: "New note", group: "Files", where: "anywhere, with a vault", files: ["src/App.tsx"] },
 
@@ -163,7 +170,7 @@ export function monacoKeys(id: ShortcutId, m: { KeyMod: { CtrlCmd: number; WinCt
 
 export const IS_MAC = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.userAgent);
 
-const KEY_NAMES: Record<string, string> = { ArrowUp: "↑", ArrowDown: "↓", Enter: "Enter", Esc: "Esc", Tab: "Tab" };
+const KEY_NAMES: Record<string, string> = { ArrowUp: "↑", ArrowDown: "↓", ArrowLeft: "←", ArrowRight: "→", " ": "Space", Enter: "Enter", Esc: "Esc", Tab: "Tab" };
 
 /** A chord as key caps for this platform: ["Ctrl", "Shift", "F"] or ["⌘", "⇧", "F"]. */
 export function chordLabel(chord: string, mac = IS_MAC): string[] {

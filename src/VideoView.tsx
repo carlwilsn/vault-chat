@@ -2,6 +2,7 @@ import { useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { ExternalLink, FolderOpen, Film } from "lucide-react";
 import { openPathWithDefaultApp, revealInFileExplorer } from "./opener";
+import { VideoPlayer } from "./VideoPlayer";
 
 // Streams the file via Tauri's asset:// protocol so the browser does
 // range-request seeking and buffered playback.
@@ -78,24 +79,27 @@ export function VideoView({ path }: { path: string }) {
   }
 
   return (
-    <div className="flex-1 flex flex-col overflow-hidden bg-black relative">
-      <video
+    <div className="flex-1 flex flex-col overflow-hidden bg-black">
+      <VideoPlayer
         key={path}
         src={src}
-        controls
-        preload="metadata"
-        className="flex-1 min-h-0 w-full object-contain"
+        fill
+        dataEl="viewer-video"
         onError={() => setCodecError(true)}
+        extra={
+          // Escape hatch even when the video loads: open it in VLC and the like
+          // without navigating away from the vault.
+          <button
+            type="button"
+            onClick={openWith}
+            title="Open with system player"
+            aria-label="Open with system player"
+            className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-foreground/80 transition-colors hover:bg-accent hover:text-accent-foreground"
+          >
+            <ExternalLink className="h-3.5 w-3.5" />
+          </button>
+        }
       />
-      {/* Escape hatch even when the video loads — lets the user open in VLC
-          for full-screen playback without navigating away from the vault. */}
-      <button
-        onClick={openWith}
-        title="Open with system player"
-        className="absolute bottom-10 right-2 flex items-center gap-1 px-2 py-1 rounded bg-black/60 text-white/70 hover:text-white text-[11px] opacity-0 hover:opacity-100 focus:opacity-100 transition-opacity"
-      >
-        <ExternalLink className="h-3 w-3" /> system player
-      </button>
     </div>
   );
 }
