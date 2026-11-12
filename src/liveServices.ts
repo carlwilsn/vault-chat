@@ -68,7 +68,8 @@ export const LIVE_SERVICES: readonly LiveService[] = [
     grantable: true,
     page: "mic",
   }),
-  // Declared and shown, but no box opens it yet: an ask with `persist` is refused (lifting that is change 1.3).
+  // An older word, kept exactly as it was (declared and shown, opens nothing; an ask with `persist` is refused): a page
+  // starts real conversations through `converse` (change 1.3).
   named({
     name: "persist",
     description: "Start real conversations in your chat list",
@@ -118,6 +119,20 @@ export const LIVE_SERVICES: readonly LiveService[] = [
     routes: [{ methods: ["POST"], path: /^\/api\/v2\/plugin\/log$/ }],
     grantable: true,
     page: "log",
+  }),
+  // Real conversations in Carl's chat list (src/pluginConverse.ts): start one, send to one, list them, read one.
+  named({
+    name: "converse",
+    description: "Start conversations in your chat list, send messages to them, and read your chats",
+    supplier: "box",
+    // start/send (POST an intent: only those two), the chat list, and one chat's records after N.
+    routes: [
+      { methods: ["POST"], path: /^\/api\/v2\/intent$/ },
+      { methods: ["GET"], path: /^\/api\/v2\/conversations$/ },
+      { methods: ["GET"], path: /^\/api\/v2\/conversations\/[A-Za-z0-9_-]{1,120}\/events(?:\?[^/]*)?$/ },
+    ],
+    grantable: true,
+    page: "converse",
   }),
 ];
 

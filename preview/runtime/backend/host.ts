@@ -9,6 +9,7 @@ import { MemoryBox } from "../../../src/convlog/memoryBox";
 import { answerComplete } from "../llm";
 import { parseLiveNeeds } from "../../../src/liveBridge";
 import { foldPluginState, logSignal, stateQuery, stateSignal, type PluginState } from "../../../src/pluginRecords";
+import { converseAfter, converseIntent } from "../../../src/pluginConverse";
 
 /** [roleplay] A REAL box behind the preview: a scenario whose box is http://realbox.localhost sends every box request
  *  to the dev server's /__realbox proxy (VC_REALBOX, e.g. an ssh tunnel to a throwaway test instance), so the real
@@ -580,6 +581,28 @@ export const hostCommands: Record<string, (a: Record<string, any>) => unknown> =
         const r = await pluginCall(b.token.slice("preview-token|".length), String(b.method), String(b.path), atob(String(b.bodyBase64 || "")));
         if (r.status !== 200) return { status: r.status, body: r.body };
         return { status: 200, body: JSON.stringify({ ok: true, status: 200, headers: { "content-type": "application/json" }, bodyBase64: btoa(r.body) }) };
+      }
+      const conv = /^\/api\/v2\/(?:intent$|conversations(?:$|\/([A-Za-z0-9_-]{1,120})\/events(?:\?(.*))?$))/.exec(String(b.path));
+      if (conv) {
+        // converse (change 1.3): the page's start/send become the fake box's own send intent, as on the box; list and read are its routes.
+        const page = b.token.slice("preview-token|".length);
+        const caps = parseLiveNeeds(fs.readText(`${laptopVault}/${page}`) ?? "").caps;
+        const ok = (status: number, v: unknown) => ({ status: 200, body: JSON.stringify({ ok: true, status, headers: { "content-type": "application/json" }, bodyBase64: btoa(JSON.stringify(v)) }) });
+        if (!caps.includes("converse")) return ok(403, { error: "this page was not allowed to do that" });
+        if (b.method === "GET" && String(b.path) === "/api/v2/conversations") {
+          const r = await box.route("GET", "/api/v2/conversations", new URLSearchParams(), null);
+          return ok(r!.status, r!.body);
+        }
+        if (b.method === "GET" && conv[1]) {
+          const r = await box.route("GET", `/api/v2/conversations/${conv[1]}/events`, new URLSearchParams({ after: String(converseAfter(conv[2] ?? "")) }), null);
+          return ok(r!.status, r!.body);
+        }
+        if (b.method !== "POST" || conv[1] || String(b.path) !== "/api/v2/intent") return ok(403, { error: "this page was not allowed to do that" });
+        const made = converseIntent(page, atob(String(b.bodyBase64 || "")), () => crypto.randomUUID());
+        if ("error" in made) return { status: made.status, body: JSON.stringify({ error: made.error }) };
+        if (made.kind === "send" && !box.picture(made.intent.convId)) return { status: 404, body: JSON.stringify({ error: "no such conversation" }) };
+        const r = await box.route("POST", "/api/v2/intent", new URLSearchParams(), made.intent);
+        return ok(r!.status, r!.body);
       }
       if (String(b.path).startsWith("/api/v2/lab/")) {
         // The voice lab: the dev server runs the real lab proxy against the real local service.

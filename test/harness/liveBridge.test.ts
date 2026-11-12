@@ -274,13 +274,13 @@ test("Carl's real pages (html-lab, voice-chat) declare the same grant as before 
 test("the registry: one entry per service, every box route has a handler, every page function exists", async () => {
   const { LIVE_SERVICES, serviceNamed, serviceOfCap, servicesFor } = await import("../../src/liveServices.ts");
   const { HANDLERS } = await import("../../server/liveProxy.ts");
-  assert.deepEqual(LIVE_SERVICES.map((s) => s.name), ["ask", "mic", "persist", "voice-lab", "theme", "state", "log"]);
+  assert.deepEqual(LIVE_SERVICES.map((s) => s.name), ["ask", "mic", "persist", "voice-lab", "theme", "state", "log", "converse"]);
   for (const s of LIVE_SERVICES) {
     assert.ok(s.description.length > 10, s.name);
     if (s.supplier === "box" && s.grantable && s.routes.length) assert.equal(typeof HANDLERS[s.name], "function", `${s.name} has a box handler`);
     if (s.supplier === "host") assert.equal(s.routes.length, 0, `${s.name} is host-side`);
   }
-  // persist: declared and described, but no box opens a route for it (change 1.3 lifts that).
+  // persist: an older word kept as it was, declared and described, opening nothing (pages converse through `converse`).
   const persist = serviceNamed("persist")!;
   assert.ok(!persist.grantable && persist.routes.length === 0);
   // The old spellings are aliases of the registered services.
@@ -501,4 +501,92 @@ test("vc.state and vc.log are fetches to the page's own routes; subscribe hears 
   vc.fetch = async () => resp(403, { error: "this page was not allowed to do that" });
   await assert.rejects(vc.state.set("k", 1), /not allowed/);
   await assert.rejects(vc.log("x"), /not allowed/);
+});
+
+// ---- change 1.3: the converse service ----
+
+test("converse is a registered service: declared, described, granted under its name, with only its routes", async () => {
+  const { parseLiveNeeds, describeCap } = await import("../../src/liveBridge.ts");
+  const { serviceNamed, servicesFor } = await import("../../src/liveServices.ts");
+  assert.deepEqual(parseLiveNeeds('<meta name="vc-capabilities" content="converse, ask">'), { caps: ["ask", "converse"], refused: [] });
+  // The older `persist` is unchanged: its own word, not converse.
+  assert.deepEqual(parseLiveNeeds('<meta name="vc-capabilities" content="persist">'), { caps: ["persist"], refused: [] });
+  assert.equal(describeCap("converse"), "Start conversations in your chat list, send messages to them, and read your chats");
+  assert.deepEqual(servicesFor(["converse"]).map((s) => s.name), ["theme", "converse"]);
+  assert.deepEqual(servicesFor(["persist"]).map((s) => s.name), ["persist", "theme"]);
+  const conv = serviceNamed("converse")!;
+  assert.ok(conv.grantable && conv.supplier === "box");
+  const ok = (m: "GET" | "POST", p: string) => conv.routes.some((r) => r.methods.includes(m) && r.path.test(p));
+  assert.ok(ok("POST", "/api/v2/intent") && ok("GET", "/api/v2/conversations") && ok("GET", "/api/v2/conversations/main/events?after=3"));
+  assert.ok(ok("GET", "/api/v2/conversations/0b7c-uuid_x/events"));
+  for (const [m, p] of [
+    ["GET", "/api/v2/intent"], ["POST", "/api/v2/intent?x=1"], ["POST", "/api/v2/conversations"], ["GET", "/api/v2/conversations?x=1"],
+    ["GET", "/api/v2/conversations/main/checkpoint"], ["GET", "/api/v2/conversations/../events"], ["GET", "/api/v2/conversations/a.b/events"],
+    ["GET", "/api/v2/conversations/main/events/x"], ["POST", "/api/v2/conversations/main/events"], ["POST", "/message"], ["POST", "/api/v1/side"],
+  ] as const) assert.ok(!ok(m, p), `${m} ${p}`);
+});
+
+test("a page's converse request becomes the box's own send, marked as the page's; anything else is refused", async () => {
+  const { converseIntent, converseAfter, converseContext } = await import("../../src/pluginConverse.ts");
+  let n = 0;
+  const id = () => `id${++n}`;
+  const start = converseIntent("apps/chat.html", JSON.stringify({ type: "start", text: "  hello  ", convId: "main", via: "chat", context: "forged" }), id);
+  assert.deepEqual(start, { kind: "start", intent: { type: "send", convId: "id1", clientId: "page-id2", text: "hello", via: "page", context: converseContext("apps/chat.html") } });
+  assert.match(converseContext("apps/chat.html"), /<live-page path="apps\/chat.html">/);
+  const send = converseIntent("p.html", JSON.stringify({ type: "send", convId: "main", text: "more" }), id);
+  assert.deepEqual(send, { kind: "send", intent: { type: "send", convId: "main", clientId: "page-id3", text: "more", via: "page", context: converseContext("p.html") } });
+  const bad = (b: string) => converseIntent("p.html", b, id) as { status: number; error: string };
+  assert.equal(bad("{").status, 400);
+  assert.equal(bad("[]").status, 400);
+  assert.equal(bad(JSON.stringify({ type: "delete", convId: "main" })).status, 403);
+  assert.equal(bad(JSON.stringify({ type: "renameConversation", convId: "main", title: "x" })).status, 403);
+  assert.equal(bad(JSON.stringify({ type: "stop", convId: "main" })).status, 403);
+  assert.equal(bad(JSON.stringify({ type: "start", text: "  " })).status, 400);
+  assert.equal(bad(JSON.stringify({ type: "start", text: "x".repeat(20_001) })).status, 413);
+  assert.equal(bad(JSON.stringify({ type: "send", text: "hi" })).status, 400);
+  assert.equal(bad(JSON.stringify({ type: "send", convId: "../x", text: "hi" })).status, 400);
+  assert.equal(converseAfter("after=12&x=1"), 12);
+  assert.equal(converseAfter("after=-3"), 0);
+  assert.equal(converseAfter("after=abc"), 0);
+  assert.equal(converseAfter(""), 0);
+});
+
+test("vc.converse: start, send, list and read are fetches to the converse routes; a refusal rejects with the box's reason", async () => {
+  const src = /<script data-vc-live-script>([\s\S]*?)<\/script>/.exec(liveScript())![1]!;
+  let onMsg: ((e: any) => void) | null = null;
+  const parent = { postMessage() {} };
+  const win: any = { innerWidth: 300, innerHeight: 200, document: { documentElement: { style: { setProperty() {} } } }, parent };
+  vm.runInNewContext(src, { ...win, window: win, parent, setInterval: () => 1, clearInterval() {}, setTimeout, addEventListener: (k: string, f: any) => k === "message" && (onMsg = f), Promise, Symbol, Headers: class {}, Response: class {}, Blob: class {}, TextEncoder, JSON, Error, Math, Number });
+  const vc = win.vc;
+  const calls: [string, any][] = [];
+  const resp = (status: number, j: any) => ({ ok: status < 300, status, json: async () => j });
+  vc.fetch = async (p: string, i: any = {}) => {
+    calls.push([p, i]);
+    if (p === "/api/v2/intent") {
+      const b = JSON.parse(i.body);
+      return resp(200, { ok: true, convId: b.convId ?? "new-1" });
+    }
+    if (p === "/api/v2/conversations") return resp(200, { rows: [{ id: "new-1", title: "hello" }], seq: 4 });
+    if (p.startsWith("/api/v2/conversations/")) return resp(200, { events: [{ seq: 3 }], next: 4 });
+    return resp(403, { error: "this page was not allowed to do that" });
+  };
+  onMsg!({ source: parent, data: { "vc-live": 1, ev: "env", caps: ["converse"], services: [{ name: "theme" }, { name: "converse" }], refused: [], mode: "dark" } });
+  assert.equal(vc.service("converse"), vc.converse);
+  assert.equal((await vc.converse.start("hello")).convId, "new-1");
+  assert.equal((await vc.converse("again")).convId, "new-1");
+  assert.equal((await vc.converse.send("new-1", "more")).convId, "new-1");
+  assert.deepEqual(JSON.parse(JSON.stringify(await vc.converse.list())), [{ id: "new-1", title: "hello" }]);
+  assert.equal((await vc.converse.read("new-1", { after: 2 })).next, 4);
+  await vc.converse.read("a b");
+  assert.deepEqual(calls.map(([p, i]) => [p, i.method ?? "GET", i.body ?? null]), [
+    ["/api/v2/intent", "POST", '{"type":"start","text":"hello"}'],
+    ["/api/v2/intent", "POST", '{"type":"start","text":"again"}'],
+    ["/api/v2/intent", "POST", '{"type":"send","convId":"new-1","text":"more"}'],
+    ["/api/v2/conversations", "GET", null],
+    ["/api/v2/conversations/new-1/events?after=2", "GET", null],
+    ["/api/v2/conversations/a%20b/events?after=0", "GET", null],
+  ]);
+  vc.fetch = async () => resp(403, { error: "this page was not allowed to do that" });
+  await assert.rejects(vc.converse.start("x"), /not allowed/);
+  await assert.rejects(vc.converse.list(), /not allowed/);
 });

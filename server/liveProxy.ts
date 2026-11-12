@@ -16,6 +16,8 @@
 // started. Nothing else is reachable with it.
 // What `state` and `log` cover (change 1.2, server/pluginState.ts): GET/POST /api/v2/plugin/state and POST
 // /api/v2/plugin/log, always for the token's own page (the plugin id), never another; records in the one log.
+// What `converse` covers (change 1.3, src/pluginConverse.ts): POST /api/v2/intent of type start or send only (made into
+// the box's own send intent, marked as the page's), GET /api/v2/conversations and GET /api/v2/conversations/<id>/events.
 import { createHmac, createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { readFileSync, statSync } from "node:fs";
 import { request as httpRequest } from "node:http";
@@ -27,6 +29,7 @@ import { withinVault } from "./phoneData";
 import { labCall } from "./labProxy";
 import { PLUGIN_LIMITS, stateQuery } from "../src/pluginRecords";
 import { appendPluginLog, awaitPluginState, setPluginState } from "./pluginState";
+import { converseAfter, converseIntent } from "../src/pluginConverse";
 
 export type LiveOut = { status: number; body: unknown };
 type Claims = { p: string; h: string; c: string[]; e: number; j: string };
@@ -147,7 +150,7 @@ const askHandler: Handler = async ({ c, own, method, path, body, vaultParam }) =
     } catch {
       return { status: 400, body: { error: "bad JSON" } };
     }
-    // `persist` is a registered service no box grants yet (src/liveServices.ts): an ask is always ephemeral.
+    // An ask is always ephemeral (`persist` opens nothing, src/liveServices.ts): a page starts real chats with `converse`.
     if (req.persist) return { status: 403, body: { error: "this box does not start conversations for pages yet; an ask is ephemeral" } };
     const text = typeof req.text === "string" ? req.text : "";
     const system = typeof req.system === "string" ? req.system : "";
@@ -219,8 +222,27 @@ const logHandler: Handler = async ({ vault, c, method, path, body }) => {
   return tooMany(pluginId(c.p)) ?? written(appendPluginLog(vault, pluginId(c.p), body?.toString("utf8") ?? ""));
 };
 
+/** `converse`: start a chat or send to one (the box's own send intent, marked as the page's), list the chats, read one. */
+const converseHandler: Handler = async ({ c, method, path, body, vaultParam }) => {
+  if (method === "GET" && path === "/api/v2/conversations") return reply(await loopback("GET", path, {}, null, vaultParam));
+  const ev = /^\/api\/v2\/conversations\/([A-Za-z0-9_-]{1,120})\/events(?:\?(.*))?$/.exec(path);
+  if (ev && method === "GET") return reply(await loopback("GET", `/api/v2/conversations/${ev[1]}/events?after=${converseAfter(ev[2] ?? "")}`, {}, null, vaultParam));
+  if (method !== "POST" || path !== "/api/v2/intent") return null;
+  const page = pluginId(c.p);
+  const made = converseIntent(page, body?.toString("utf8") ?? "", randomUUID);
+  if ("error" in made) return { status: made.status, body: { error: made.error } };
+  const busy = tooMany(page);
+  if (busy) return busy;
+  if (made.kind === "send") {
+    // Into a chat that exists (an unknown id would make a new one: that is start).
+    const there = await loopback("GET", `/api/v2/conversations/${made.intent.convId}/events?after=${Number.MAX_SAFE_INTEGER}`, {}, null, vaultParam);
+    if (there.status === 404) return { status: 404, body: { error: "no such conversation" } };
+  }
+  return reply(await loopback("POST", "/api/v2/intent", { "content-type": "application/json" }, Buffer.from(JSON.stringify(made.intent)), vaultParam));
+};
+
 /** The box side of every registered box service that opens routes (src/liveServices.ts). */
-export const HANDLERS: Readonly<Record<string, Handler>> = { ask: askHandler, "voice-lab": voiceLabHandler, state: stateHandler, log: logHandler };
+export const HANDLERS: Readonly<Record<string, Handler>> = { ask: askHandler, "voice-lab": voiceLabHandler, state: stateHandler, log: logHandler, converse: converseHandler };
 
 /** The services a call may go to: granted by the token, opened by the box, with a declared route matching the call. */
 function servicesTaking(c: Claims, method: "GET" | "POST", path: string): LiveService[] {

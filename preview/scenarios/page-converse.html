@@ -1,0 +1,57 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="vc-capabilities" content="converse">
+<title>Start a chat</title>
+<style>
+  body { margin: 0; font: 14px/1.45 system-ui, sans-serif; background: hsl(var(--background, 0 0% 10%)); color: hsl(var(--foreground, 0 0% 92%)); }
+  .wrap { padding: 16px 18px; display: grid; gap: 10px; }
+  .row { display: flex; gap: 8px; }
+  input { flex: 1; font: inherit; padding: 8px 10px; border-radius: 8px; border: 1px solid hsl(var(--border, 0 0% 30%)); background: hsl(var(--card, 0 0% 13%)); color: inherit; }
+  button { font: inherit; padding: 8px 14px; border-radius: 8px; border: 1px solid hsl(var(--border, 0 0% 30%)); background: hsl(var(--primary, 0 0% 85%)); color: hsl(var(--primary-foreground, 0 0% 10%)); cursor: pointer; }
+  .hint, .status { color: hsl(var(--muted-foreground, 0 0% 60%)); font-size: 12px; }
+  ul { margin: 0; padding-left: 18px; }
+  li.new { font-weight: 600; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="hint">This page starts real chats in your chat list (vc.converse).</div>
+  <div class="row">
+    <input id="text" value="Plan my week around the problem sets">
+    <button id="go">Start a chat</button>
+  </div>
+  <div class="status" id="status"></div>
+  <div class="hint">Your chats, as the page reads them:</div>
+  <ul id="list"></ul>
+</div>
+<script>
+  let fresh = null;
+  async function refresh() {
+    const rows = await vc.converse.list();
+    const ul = document.getElementById("list");
+    ul.textContent = "";
+    for (const r of rows.slice(0, 6)) {
+      const li = document.createElement("li");
+      li.textContent = r.title || r.id;
+      if (r.id === fresh) li.className = "new";
+      ul.append(li);
+    }
+  }
+  vc.ready.then(refresh);
+  document.getElementById("go").onclick = async () => {
+    const text = document.getElementById("text").value;
+    const st = document.getElementById("status");
+    try {
+      const r = await vc.converse.start(text);
+      fresh = r.convId;
+      st.textContent = "Started a chat: it is in your chat list now.";
+      await refresh();
+    } catch (e) {
+      st.textContent = "Could not start: " + e.message;
+    }
+  };
+</script>
+</body>
+</html>

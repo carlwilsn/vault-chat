@@ -15,6 +15,8 @@ import LIVE_HTML from "./live-chat-demo.html?raw";
 import LAB_HTML from "./voice-lab.html?raw";
 // A counter that keeps its number with the state service (change 1.2): every view of it shows the same number.
 import STATE_HTML from "./page-state.html?raw";
+// A page that starts real chats with the converse service (change 1.3): the new chat appears in the chat list.
+import CONVERSE_HTML from "./page-converse.html?raw";
 
 const CONV = "c-visual-bfs";
 const PATH = ".vault-chat/visuals/bfs-closest-pair.svg";
@@ -305,6 +307,45 @@ export const visualScenarios: Scenario[] = [
     }),
     activeConversation: "c-page-state",
     open: [{ chat: true }, { conversation: "c-page-state" }, { sleep: 1200 }],
+    surfaces: ["desktop"],
+  },
+  {
+    id: "page-converse",
+    title: "Page converse — a page starts a real chat (vc.converse.start): it appears in the chat list",
+    group: "Chat",
+    notes:
+      "The page declares converse. After the one-time Allow, Start a chat sends its text as a start: the box makes a new chat (marked as the page's), the chat list shows it, and the page lists it from vc.converse.list().",
+    build: (ctx: BuildCtx) => {
+      ctx.write(".vault-chat/visuals/start-chat.html", CONVERSE_HTML);
+      ctx.conversations([{
+        id: "c-page-converse", title: "Chat starter page", source: "manual", status: "idle", unread: false,
+        createdAt: ctx.now - 5 * MIN, lastActivityAt: ctx.now - MIN,
+        messages: [
+          { role: "user", content: "make me a page that can start a chat for me" },
+          { role: "assistant", content: "Here it is; what you type there becomes a new chat:\n\n![Start a chat](.vault-chat/visuals/start-chat.html)" },
+        ],
+      }]);
+    },
+    host: (now: number) => ({
+      sync: {
+        box: { box: "https://thinkbox.tail0a1b2.ts.net", vault: "summer-demo" },
+        boxChat: {
+          convs: {
+            "c-page-converse": {
+              title: "Chat starter page", source: "manual", status: "idle",
+              meta: { unread: false, createdAt: now - 5 * MIN, lastActivityAt: now - MIN },
+              messages: [
+                { role: "user", content: "make me a page that can start a chat for me" },
+                { role: "assistant", content: "Here it is; what you type there becomes a new chat:\n\n![Start a chat](.vault-chat/visuals/start-chat.html)" },
+              ],
+            },
+          } as any,
+          steps: [],
+        },
+      },
+    }),
+    activeConversation: "c-page-converse",
+    open: [{ chat: true }, { conversation: "c-page-converse" }, { sleep: 1200 }],
     surfaces: ["desktop"],
   },
   {

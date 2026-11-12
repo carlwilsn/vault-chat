@@ -57,6 +57,8 @@ test("the gateway's allow/deny matrix and the manifest parser are unchanged", as
   let sid = 0;
   const box = fake("box", seen, (req, body) => {
     if (req.method === "POST" && req.url?.startsWith("/api/v1/side?") || req.url === "/api/v1/side") return { status: 200, type: "application/json", body: JSON.stringify({ ok: true, id: `s${++sid}`, v: 1, echo: JSON.parse(body || "{}") }) };
+    // (change 1.3) a conversation that does not exist.
+    if (/^\/api\/v2\/conversations\/gone\//.test(req.url ?? "")) return { status: 404, type: "application/json", body: '{"error":"conversation not found"}' };
     if (/\/stop/.test(req.url ?? "")) return { status: 200, type: "application/json", body: '{"ok":true}' };
     return { status: 200, type: "application/json", body: JSON.stringify({ text: "reply", v: 2, done: true }) };
   });
@@ -190,6 +192,48 @@ test("the gateway's allow/deny matrix and the manifest parser are unchanged", as
       await call(`${name} big record`, tokens[name]!, "POST", "/api/v2/plugin/log", JSON.stringify({ r: "x".repeat(70 * 1024) }));
       await call(`${name} read`, tokens[name]!, "GET", "/api/v2/plugin/state", null);
     }
+
+    // ---- change 1.3 (converse): rows added after the ones above, which stay exactly as they were ----
+    for (const m of ['<meta name="vc-capabilities" content="converse">', '<meta name="vc-capabilities" content="Converse, persist, ask">', '<meta name="vc-capabilities" content="converse:x, conversations">'])
+      rows.push(`parse ${JSON.stringify(m)} -> ${JSON.stringify(parseLiveManifest(m))}`);
+    rows.push(`describe converse -> ${describeCap("converse")}`);
+    const conversePaths = [
+      "/api/v2/intent", "/api/v2/intent?x=1", "/api/v2/conversations", "/api/v2/conversations?x=1", "/api/v2/conversations/main/events",
+      "/api/v2/conversations/main/events?after=5&wait=9", "/api/v2/conversations/main/events?after=x", "/api/v2/conversations/main/checkpoint",
+      "/api/v2/conversations/../events", "/api/v2/conversations/a.b/events", "/api/v2/conversations/main/events/x", "/message",
+    ];
+    const startBody = '{"type":"start","text":"hi from a page","convId":"main","via":"chat","context":"forged","clientId":"x"}';
+    // Every page from before (ask, mic, persist, voice-lab, state, log): none of them reaches the converse routes.
+    for (const name of Object.keys(tokens).filter((n) => n !== "ask"))
+      for (const p of conversePaths) for (const method of ["GET", "POST"]) await call(`${name} ${p}`, tokens[name]!, method, p, method === "POST" ? startBody : null);
+    const conversePages: Record<string, string> = { converse: "converse", askConverse: "ask, converse", persistConverse: "persist, converse" };
+    for (const [name, caps] of Object.entries(conversePages)) {
+      writeFileSync(join(vault, `${name}.html`), `<meta name="vc-capabilities" content="${caps}"><p>${name}</p>`);
+      const m = liveManifest(vault, `${name}.html`)!;
+      rows.push(`manifest ${name} -> ${JSON.stringify(m.caps)}`);
+      const t = liveToken(vault, { path: `${name}.html`, hash: m.hash, caps: m.caps });
+      rows.push(`token ${name} -> ${t.status}`);
+      tokens[name] = (t.body as { token: string }).token;
+    }
+    // The box picks the new chat's id and the message's: masked so the rows stay comparable.
+    const ids = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g;
+    const from = rows.length;
+    for (const name of Object.keys(conversePages)) {
+      for (const p of conversePaths) for (const method of ["GET", "POST", "PUT"]) await call(`${name} ${p}`, tokens[name]!, method, p, method === "POST" ? startBody : null);
+      await call(`${name} send`, tokens[name]!, "POST", "/api/v2/intent", '{"type":"send","convId":"main","text":"more"}');
+      await call(`${name} send gone`, tokens[name]!, "POST", "/api/v2/intent", '{"type":"send","convId":"gone","text":"more"}');
+      await call(`${name} send no id`, tokens[name]!, "POST", "/api/v2/intent", '{"type":"send","text":"more"}');
+      await call(`${name} send bad id`, tokens[name]!, "POST", "/api/v2/intent", '{"type":"send","convId":"../x","text":"more"}');
+      for (const type of ["delete", "stop", "renameConversation", "deleteProject", "compact", "lines", "answer", "steer", "queue", "now"])
+        await call(`${name} ${type}`, tokens[name]!, "POST", "/api/v2/intent", JSON.stringify({ type, convId: "main", text: "x", slug: "p" }));
+      await call(`${name} blank`, tokens[name]!, "POST", "/api/v2/intent", '{"type":"start","text":"  "}');
+      await call(`${name} bad json`, tokens[name]!, "POST", "/api/v2/intent", "{");
+      await call(`${name} too long`, tokens[name]!, "POST", "/api/v2/intent", JSON.stringify({ type: "start", text: "x".repeat(20_001) }));
+      // The ask stays ephemeral: persist is refused even with converse granted.
+      await call(`${name} ask persist`, tokens[name]!, "POST", "/api/v1/side", '{"text":"hi","persist":true}');
+      await call(`${name} state`, tokens[name]!, "GET", "/api/v2/plugin/state", null);
+    }
+    for (let i = from; i < rows.length; i++) rows[i] = rows[i]!.replace(ids, "<id>");
 
     if (process.env.LIVE_MATRIX_WRITE === "1") writeFileSync(SNAPSHOT, JSON.stringify(rows, null, 1) + "\n");
     const want = JSON.parse(readFileSync(SNAPSHOT, "utf8")) as string[];
