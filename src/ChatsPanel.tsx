@@ -352,7 +352,11 @@ export function ThreadRow({
       <button
         data-el="place-toggle"
         // Only shows or hides the chats: never opens the place or switches chat.
-        onClick={() => setOpened(!shown)}
+        onClick={() => {
+          // Closing the place also closes its "Show more": opening it again starts at the short list.
+          if (shown) chatLevels.delete(entry.id);
+          setOpened(!shown);
+        }}
         aria-label={shown ? `Hide ${name}'s chats` : `Show ${name}'s chats`}
         aria-expanded={shown}
         className={cn("flex-1 text-left px-4 flex items-center min-w-0", isMain ? "py-2 gap-2.5" : "py-1.5 gap-2")}

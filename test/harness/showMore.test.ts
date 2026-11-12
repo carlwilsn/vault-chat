@@ -38,3 +38,11 @@ test("open, working and unseen chats stay visible past the limit, in order", () 
   assert.equal(v.hidden, 12);
   assert.equal(v.next, "more");
 });
+
+test("closing a place forgets its Show more, so it reopens at the short list", async () => {
+  const { readFileSync } = await import("node:fs");
+  const src = readFileSync(new URL("../../src/ChatsPanel.tsx", import.meta.url), "utf8");
+  const toggle = /data-el="place-toggle"[\s\S]*?onClick=\{\(\) => \{([\s\S]*?)\}\}/.exec(src)?.[1] ?? "";
+  assert.match(toggle, /if \(shown\) chatLevels\.delete\(entry\.id\)/);
+  assert.match(toggle, /setOpened\(!shown\)/);
+});
