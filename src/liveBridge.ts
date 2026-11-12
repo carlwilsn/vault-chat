@@ -93,6 +93,25 @@ export function declaresServices(html: string): boolean {
 
 export { toolAllowed };
 
+/**
+ * Where a page's code runs (`<meta name="vc-mount" content="in-process">`): "iframe", the default and every page
+ * written so far (a sandboxed frame, window.vc through the bridge above); "in-process", the page's module is loaded
+ * into the app itself and its `mount(el, api)` called (src/mountHost.ts), inside an error boundary. A word no host
+ * knows is the default.
+ */
+export const LIVE_MOUNTS = ["iframe", "in-process"] as const;
+export type LiveMount = (typeof LIVE_MOUNTS)[number];
+export function parseLiveMount(html: string): LiveMount {
+  for (const m of html.matchAll(/<meta\b[^>]*>/gi)) {
+    const tag = m[0];
+    if (!/\bname\s*=\s*["']?vc-mount["']?(?=[\s>/"'])/i.test(tag)) continue;
+    const c = /\bcontent\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/i.exec(tag);
+    const word = (c?.[1] ?? c?.[2] ?? c?.[3] ?? "").trim().toLowerCase();
+    return (LIVE_MOUNTS as readonly string[]).includes(word) ? (word as LiveMount) : "iframe";
+  }
+  return "iframe";
+}
+
 /** One line per grant entry, for the grant prompt: the registered service's description. */
 export function describeCap(cap: string): string {
   return serviceOfCap(cap)?.description ?? `Use ${cap.startsWith("tool:") ? `the tool ${cap.slice(5)}` : cap}`;

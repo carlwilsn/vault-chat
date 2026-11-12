@@ -5,7 +5,8 @@ import { isUnreadableAsText } from "./fileKind";
 import { openUrl, isExternalHref } from "./opener";
 import { InlineEditPrompt, type InlineEditRequest } from "./InlineEditPrompt";
 import { useStore } from "./store";
-import { declaresServices, insideVault, liveScript, vaultRelative } from "./liveBridge";
+import { declaresServices, insideVault, liveScript, parseLiveMount, vaultRelative } from "./liveBridge";
+import { PluginMount } from "./PluginMount";
 import { reportScroll, scrollHtmlWith } from "./scrollTarget";
 import { decodeTarget } from "./viewTarget";
 import { appPageTheme, pageThemeHead, PAGE_FRAME_ATTR } from "./pageTheme";
@@ -362,6 +363,8 @@ export function HtmlView({ content, path }: { content: string; path?: string | n
   // A page inside the vault is a live page: window.vc (src/liveBridge.ts), answered by the app.
   const vaultRoot = useStore((s) => s.vaultPath);
   const live = insideVault(path, vaultRoot) && declaresServices(content);
+  // A page that declares an in-process mount runs in the app itself (src/mountHost.ts), not in a frame.
+  const inProcess = parseLiveMount(content) === "in-process";
   const srcDoc = useMemo(() => {
     if (base === undefined) return null;
     const html = path ? rewriteAssetUrls(content, path, !base) : content;
@@ -611,7 +614,10 @@ export function HtmlView({ content, path }: { content: string; path?: string | n
   return (
     <div className="flex-1 flex flex-col overflow-hidden bg-background relative">
       <div className="flex-1 relative">
-        {srcDoc !== null && <iframe
+        {inProcess && (
+          <PluginMount html={content} path={path ? vaultRelative(path, vaultRoot) : "page.html"} className="absolute inset-0 overflow-auto bg-background" />
+        )}
+        {!inProcess && srcDoc !== null && <iframe
           ref={iframeRef}
           data-look-frame
           {...(live && path ? { "data-vc-live": vaultRelative(path, vaultRoot) } : {})}

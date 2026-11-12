@@ -17,6 +17,9 @@ import LAB_HTML from "./voice-lab.html?raw";
 import STATE_HTML from "./page-state.html?raw";
 // A page that starts real chats with the converse service (change 1.3): the new chat appears in the chat list.
 import CONVERSE_HTML from "./page-converse.html?raw";
+// Pages that declare an in-process mount (change 1.5, src/mountHost.ts): one that works, one whose mount() throws.
+import PLUGIN_COUNTER_HTML from "./plugin-counter.html?raw";
+import PLUGIN_BROKEN_HTML from "./plugin-broken.html?raw";
 
 const CONV = "c-visual-bfs";
 const PATH = ".vault-chat/visuals/bfs-closest-pair.svg";
@@ -346,6 +349,46 @@ export const visualScenarios: Scenario[] = [
     }),
     activeConversation: "c-page-converse",
     open: [{ chat: true }, { conversation: "c-page-converse" }, { sleep: 1200 }],
+    surfaces: ["desktop"],
+  },
+  {
+    id: "plugin-mount",
+    title: "In-process mount — a page that declares vc-mount: in-process runs in the app itself (no iframe); one that throws becomes an error card and the app stands",
+    group: "Chat",
+    notes:
+      "Two pages with <meta name=\"vc-mount\" content=\"in-process\">, inline in a reply. The counter's mount(el, api) runs in the app's own document (a shadow root, no iframe): +1 counts. The broken one's mount() throws: its box shows 'Broken widget stopped' with the error and a Reload, and the chat, the composer and the counter keep working.",
+    build: (ctx: BuildCtx) => {
+      ctx.write(".vault-chat/visuals/plugin-counter.html", PLUGIN_COUNTER_HTML);
+      ctx.write(".vault-chat/visuals/plugin-broken.html", PLUGIN_BROKEN_HTML);
+      ctx.conversations([{
+        id: "c-plugin-mount", title: "In-process plugins", source: "manual", status: "idle", unread: false,
+        createdAt: ctx.now - 5 * MIN, lastActivityAt: ctx.now - MIN,
+        messages: [
+          { role: "user", content: "mount a plugin without an iframe, and show me what happens when one is broken" },
+          { role: "assistant", content: "A counter, mounted in the app itself:\n\n![Counter](.vault-chat/visuals/plugin-counter.html)\n\nAnd one whose mount() throws:\n\n![Broken widget](.vault-chat/visuals/plugin-broken.html)" },
+        ],
+      }]);
+    },
+    host: (now: number) => ({
+      sync: {
+        box: { box: "https://thinkbox.tail0a1b2.ts.net", vault: "summer-demo" },
+        boxChat: {
+          convs: {
+            "c-plugin-mount": {
+              title: "In-process plugins", source: "manual", status: "idle",
+              meta: { unread: false, createdAt: now - 5 * MIN, lastActivityAt: now - MIN },
+              messages: [
+                { role: "user", content: "mount a plugin without an iframe, and show me what happens when one is broken" },
+                { role: "assistant", content: "A counter, mounted in the app itself:\n\n![Counter](.vault-chat/visuals/plugin-counter.html)\n\nAnd one whose mount() throws:\n\n![Broken widget](.vault-chat/visuals/plugin-broken.html)" },
+              ],
+            },
+          } as any,
+          steps: [],
+        },
+      },
+    }),
+    activeConversation: "c-plugin-mount",
+    open: [{ chat: true }, { conversation: "c-plugin-mount" }, { sleep: 1200 }],
     surfaces: ["desktop"],
   },
   {

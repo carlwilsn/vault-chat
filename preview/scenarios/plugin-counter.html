@@ -1,0 +1,30 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="vc-mount" content="in-process">
+<title>Counter</title>
+<style>
+  .wrap { display: flex; align-items: center; gap: 16px; padding: 18px 20px; font: 14px/1.4 system-ui, sans-serif; color: hsl(var(--foreground)); }
+  .n { font-size: 40px; font-weight: 700; min-width: 64px; text-align: center; font-variant-numeric: tabular-nums; }
+  button { font: inherit; padding: 8px 16px; border-radius: 8px; border: 1px solid hsl(var(--border)); background: hsl(var(--primary)); color: hsl(var(--primary-foreground)); cursor: pointer; }
+  .hint { color: hsl(var(--muted-foreground)); font-size: 12px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="n">0</div>
+  <button class="plus">+1</button>
+  <div class="hint"></div>
+</div>
+<script type="module">
+  export function mount(el, api) {
+    let count = 0;
+    const n = el.querySelector(".n");
+    el.querySelector(".plus").onclick = () => { n.textContent = String(++count); };
+    el.querySelector(".hint").textContent = `Mounted in the app itself, no iframe (in an iframe: ${window.self !== window.top}). Theme: ${api.theme.mode}.`;
+    api.onTheme((t) => { el.querySelector(".hint").textContent = `Theme now: ${t.mode}.`; });
+  }
+</script>
+</body>
+</html>

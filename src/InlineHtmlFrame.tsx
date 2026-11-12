@@ -10,7 +10,8 @@ import { useStore } from "./store";
 import { readChatImage } from "./chatImage";
 import { localPathFromUrl } from "./mdPipeline";
 import { boxLinkFor, fetchBoxFile } from "./boxChat";
-import { insideVault } from "./liveBridge";
+import { insideVault, parseLiveMount } from "./liveBridge";
+import { PluginMount } from "./PluginMount";
 import { isNewestEmbed, newestEmbed, registerEmbed, subscribeEmbeds } from "./inlineEmbeds";
 import { changedRev, useChangedFiles } from "./liveReload";
 import { appPageTheme, PAGE_FRAME_ATTR } from "./pageTheme";
@@ -188,7 +189,12 @@ function LiveInlineHtml({ src, alt }: { src: string; alt?: string }) {
           <PanelRight className="h-3 w-3" /> Open in viewer
         </button>
       </span>
-      <Frame doc={doc} title={title} live={pagePath ?? undefined} />
+      {live.html != null && parseLiveMount(live.html) === "in-process" ? (
+        // A page that declares an in-process mount runs in the app itself (src/mountHost.ts), not in a frame.
+        <PluginMount html={live.html} path={pagePath ?? localPathFromUrl(src)} className="block bg-background" />
+      ) : (
+        <Frame doc={doc} title={title} live={pagePath ?? undefined} />
+      )}
     </span>
   );
 }
