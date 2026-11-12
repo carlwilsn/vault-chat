@@ -1061,6 +1061,10 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
       case "live":
         this.ev({ kind: "pi", threadId, ev: e.ev });
         return;
+      case "workerNotice":
+        // A quiet "⏰" line (via wake, like the old delegate reports), in the log before the reply it wakes.
+        this.writeUserEntry(t, e.text, { v: 1, clientId: `worker-${randomUUID()}`, via: "wake" }, []);
+        return;
       case "usage":
         this.ev({ kind: "usage", threadId, usage: e.usage });
         return;

@@ -46,6 +46,11 @@ export type NewEntry = Omit<PiEntry, "id" | "parentId" | "timestamp">;
 export type Emit =
   /** One live event in pi's shape: the engine sends it on as {kind:"pi"}. */
   | { kind: "live"; ev: Record<string, unknown> }
+  /**
+   * A background worker (SDK task) reported — a quiet line for the chat, written before the reply
+   * that follows it. `text` is the line without its clock ("Worker finished: ...").
+   */
+  | { kind: "workerNotice"; taskId: string; text: string }
   /** One pi-format entry for the thread's session file, appended before any later live event. */
   | { kind: "entry"; entry: NewEntry }
   /** The context size of the last model call, and the model's window. */
@@ -119,6 +124,24 @@ const textOf = (content: unknown): string => {
   return content.map((b: any) => (typeof b?.text === "string" ? b.text : "")).join("");
 };
 
+/**
+ * The quiet line for a background worker's notification, or "" for one that says nothing.
+ * `completed` with a summary saying the worker has not delivered yet ("waiting on its own background work")
+ * is interim: the real report comes in a later notification for the same task.
+ */
+export function workerNoticeText(description: string, status: string, summary: string, reason?: unknown): string {
+  const first = (x: string) => x.replace(/\s+/g, " ").trim().slice(0, 160);
+  const what = first(description) || first(summary);
+  const tail = what ? `: ${what}` : "";
+  if (status === "completed") {
+    if (/not reported yet|waiting on (its own|agents|background)|still (running|waiting|working)|background work/i.test(summary)) return `Worker still working (interim notice)${tail}`;
+    return `Worker finished${tail}`;
+  }
+  if (status === "failed") return `Worker failed${tail}`;
+  if (status === "stopped") return `Worker stopped${reason === "worker_restart" ? " by a restart" : ""}${tail}`;
+  return "";
+}
+
 /** The tool results of a `user` message, and nothing else (the SDK puts them in message.content). */
 function toolResults(m: any): { id: string; isError: boolean; content: { type: "text"; text: string }[] }[] {
   const content = Array.isArray(m?.message?.content) ? m.message.content : [];
@@ -146,6 +169,10 @@ export class ClaudeTranslator {
   private held: Emit[] = [];
   /** A retry Claude Code reported and the clients are showing as "Retrying…". */
   private retrying = false;
+  /** Background tasks by id: what each was asked to do (task_started's description). */
+  private tasks = new Map<string, string>();
+  /** Notices already given (a task can be reported twice by two paths). */
+  private noticed = new Set<string>();
   /** The host asked for this turn to end (see expectInterrupt). */
   private stopping = false;
 
@@ -169,7 +196,8 @@ export class ClaudeTranslator {
       case "assistant":
         return m.parent_tool_use_id ? [] : this.assistant(m);
       case "user":
-        return m.parent_tool_use_id ? [] : this.toolResult(m);
+        // A replayed task-notification (the same report the system message carries) is the same notice.
+        return m.parent_tool_use_id ? [] : [...this.notificationText(m), ...this.toolResult(m)];
       case "system":
         return this.system(m);
       case "tool_progress":
@@ -410,7 +438,34 @@ export class ClaudeTranslator {
     return [{ kind: "live", ev: { type: "tool_execution_update", toolCallId: id, partialResult: { content: [{ type: "text", text: `still running (${secs}s)` }] } } }];
   }
 
+  /** A user message that carries the model-facing <task-notification> block (replays only; the system message is the normal path). */
+  private notificationText(m: any): Emit[] {
+    if (m.parent_tool_use_id || (m.origin?.kind !== "task-notification" && !m.isReplay)) return [];
+    const text = textOf(m.message?.content);
+    if (!text.includes("<task-notification>")) return [];
+    const tag = (n: string) => new RegExp(`<${n}>([\\s\\S]*?)</${n}>`).exec(text)?.[1]?.trim() ?? "";
+    const status = tag("status");
+    if (!status) return [];
+    return this.workerNotice({ task_id: tag("task-id") || tag("task_id"), status, summary: tag("summary") });
+  }
+
+  private workerNotice(m: any): Emit[] {
+    if (m.ambient || m.skip_transcript) return [];
+    const taskId = String(m.task_id ?? "");
+    const text = workerNoticeText(this.tasks.get(taskId) ?? "", String(m.status ?? ""), String(m.summary ?? ""), m.reason);
+    const key = `${taskId}\n${text}`;
+    if (!text || this.noticed.has(key)) return [];
+    this.noticed.add(key);
+    return [{ kind: "workerNotice", taskId, text }];
+  }
+
   private system(m: any): Emit[] {
+    if (m.subtype === "task_started") {
+      // Remember what the worker was asked to do: the notice names it by that, not by its report.
+      if (m.task_id && !m.ambient && !m.skip_transcript) this.tasks.set(String(m.task_id), String(m.description ?? "").trim());
+      return [];
+    }
+    if (m.subtype === "task_notification") return this.workerNotice(m);
     if (m.subtype === "init") return m.session_id ? [{ kind: "session", id: String(m.session_id) }] : [];
     if (m.subtype === "api_retry") return this.apiRetry(m);
     if (m.subtype === "compact_boundary") {

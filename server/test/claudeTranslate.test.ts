@@ -230,3 +230,22 @@ describe("a Claude Code turn said in pi's words", () => {
     ]);
   });
 });
+
+describe("a background worker's notification", () => {
+  it("becomes one quiet notice per report, before the reply, with interim ones marked", () => {
+    const { emits } = replay(stream("claude-task-notification.jsonl"));
+    const notices = emits.filter((e) => e.kind === "workerNotice").map((e: any) => e.text);
+    expect(notices).toEqual([
+      "Worker finished: Check the rainfall data", // the repeat of the same notice is dropped
+      "Worker still working (interim notice): Build the thing",
+      "Worker failed: Build the thing",
+      "Worker stopped: Agent \"Old job\" was stopped", // never started here: the summary names it
+      "Worker finished: Agent \"Replayed one\" completed", // the replayed <task-notification> user message
+    ]);
+    // The first notice is in the stream before the reply's message_start.
+    const first = emits.findIndex((e) => e.kind === "workerNotice");
+    const live = emits.findIndex((e) => e.kind === "live" && (e as any).ev.type === "message_start");
+    expect(first).toBeGreaterThanOrEqual(0);
+    expect(live === -1 || first < live).toBe(true);
+  });
+});

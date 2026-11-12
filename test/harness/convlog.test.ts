@@ -517,3 +517,16 @@ test("native delivered queue ownership is the original input device, not a viewe
   assert.equal(delivered.length, 3);
   log.sim.close();
 });
+
+test("a finished background worker's notice is a quiet clock line, never Carl's words", () => {
+  const rec = (seq: number, text: string, via: string, role = "user"): any => ({
+    seq, conv: C, at: 1000 + seq, type: "entry", file: "f", clientId: `c${seq}`, shown: text, via,
+    entry: { type: "message", id: `e${seq}`, timestamp: "t", message: { role, content: [{ type: "text", text }], timestamp: 1000 + seq } },
+  });
+  const ms = messagesOf(fold([rec(1, "Worker finished: Check the rainfall data", "wake"), rec(2, "Worker still working (interim notice): Build it", "wake"), rec(3, "Worker failed: Build it", "wake")], C));
+  assert.deepEqual(ms.map((m) => [m.system, m.role, m.content]), [
+    [true, "user", "⏰ Worker finished: Check the rainfall data"],
+    [true, "user", "⏰ Worker still working (interim notice): Build it"],
+    [true, "user", "⏰ Worker failed: Build it"],
+  ]);
+});
