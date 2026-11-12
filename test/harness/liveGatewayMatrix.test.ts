@@ -235,6 +235,34 @@ test("the gateway's allow/deny matrix and the manifest parser are unchanged", as
     }
     for (let i = from; i < rows.length; i++) rows[i] = rows[i]!.replace(ids, "<id>");
 
+    // ---- change 1.4 (catalog): rows added after the ones above, which stay exactly as they were ----
+    for (const m of ['<meta name="vc-capabilities" content="catalog">', '<meta name="vc-capabilities" content="Catalog, converse, ask">', '<meta name="vc-capabilities" content="catalog:x, catalogue">'])
+      rows.push(`parse ${JSON.stringify(m)} -> ${JSON.stringify(parseLiveManifest(m))}`);
+    rows.push(`describe catalog -> ${describeCap("catalog")}`);
+    const catalogPaths = ["/api/v2/plugin/catalog", "/api/v2/plugin/catalog?x=1", "/api/v2/plugin/catalog/x", "/api/v2/plugin/catalogs", "/api/v2/plugin/../plugin/catalog"];
+    // Every page from before (ask … converse): none of them reaches the catalog.
+    for (const name of Object.keys(tokens).filter((n) => n !== "ask"))
+      for (const p of catalogPaths) for (const method of ["GET", "POST"]) await call(`${name} ${p}`, tokens[name]!, method, p, method === "POST" ? "{}" : null);
+    const catalogPages: Record<string, string> = { catalog: "catalog", askCatalog: "ask, catalog", stateCatalog: "state, catalog" };
+    for (const [name, caps] of Object.entries(catalogPages)) {
+      writeFileSync(join(vault, `${name}.html`), `<meta name="vc-capabilities" content="${caps}"><p>${name}</p>`);
+      const m = liveManifest(vault, `${name}.html`)!;
+      rows.push(`manifest ${name} -> ${JSON.stringify(m.caps)}`);
+      const t = liveToken(vault, { path: `${name}.html`, hash: m.hash, caps: m.caps });
+      rows.push(`token ${name} -> ${t.status}`);
+      tokens[name] = (t.body as { token: string }).token;
+    }
+    for (const name of Object.keys(catalogPages)) {
+      for (const p of catalogPaths) for (const method of ["GET", "POST", "PUT"]) await call(`${name} ${p}`, tokens[name]!, method, p, method === "POST" ? "{}" : null);
+      // The plugins part of the answer: every page this test wrote, as the catalog reads them.
+      const o = await liveGateway(vault, null, { token: tokens[name]!, path: "/api/v2/plugin/catalog", method: "GET" });
+      const cat = JSON.parse(Buffer.from((o.body as any).bodyBase64, "base64").toString("utf8"));
+      rows.push(`${name} catalog services -> ${cat.services.map((s: { name: string }) => s.name).join(",")}`);
+      rows.push(`${name} catalog plugins -> ${cat.plugins.map((p: { id: string; needs: string[] }) => `${p.id}:${p.needs.join("+")}`).join(" ")}`);
+      await call(`${name} intent`, tokens[name]!, "POST", "/api/v2/intent", '{"type":"start","text":"hi"}');
+      await call(`${name} conversations`, tokens[name]!, "GET", "/api/v2/conversations", null);
+    }
+
     if (process.env.LIVE_MATRIX_WRITE === "1") writeFileSync(SNAPSHOT, JSON.stringify(rows, null, 1) + "\n");
     const want = JSON.parse(readFileSync(SNAPSHOT, "utf8")) as string[];
     assert.equal(rows.length, want.length, "same number of rows");

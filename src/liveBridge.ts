@@ -14,7 +14,7 @@
 //          vc.play(blobOrUrl), vc.caps (granted), vc.theme {mode, vars}, vc.size {w,h}, vc.ready, vc.path
 //          vc.services [{name, description}] (granted, and those every page has), vc.refused [names no registry knows],
 //          vc.service(name) → that service's vc function (ask → vc.ask, mic → vc.mic, voice-lab → vc.tool, theme →
-//                                   vc.onTheme, state → vc.state, log → vc.log, converse → vc.converse), null when it is not granted. Services: src/liveServices.ts
+//                                   vc.onTheme, state → vc.state, log → vc.log, converse → vc.converse, catalog → vc.catalog), null when it is not granted. Services: src/liveServices.ts
 //          vc.state.get(key?) → Promise<value | {key: value}>, vc.state.set(key, value) → Promise<seq> (null removes),
 //          vc.state.subscribe(fn(state, seq)) → unsubscribe   (cap: state) the page's own state, records in the box's one
 //                                   log: every view of the page (viewer, chat, phone) shows the same; fn runs at once, then on each change
@@ -24,6 +24,9 @@
 //                                   → Promise<{ok, convId}> into a chat that exists; vc.converse.list() → Promise<rows>
 //                                   (the chat list); vc.converse.read(convId, {after?}) → Promise<{events, next}> (its
 //                                   records after `after`, the box's log). src/pluginConverse.ts
+//          vc.catalog() → Promise<{services, plugins}>   (cap: catalog) every registered service {name, description,
+//                                   supplier, grantable, always, call} and the vault's plugins {id, name, mount, needs,
+//                                   refused} (pages with a vc-capabilities / vc-mount manifest). src/pluginCatalog.ts
 //   host:  installLiveBridge(host) once; an iframe takes part by `data-vc-live="<vault path>"`. The host asks the box for
 //          the page's manifest + content hash, asks Carl once (remembered per path + hash; a changed page asks again),
 //          has the box mint the token, and answers only that iframe's window (event.source, origin "null").
@@ -265,6 +268,7 @@ vc.converse.start=function(text){return jfetch("/api/v2/intent",{method:"POST",h
 vc.converse.send=function(convId,text){return jfetch("/api/v2/intent",{method:"POST",headers:JSONH,body:JSON.stringify({type:"send",convId:String(convId),text:String(text)})});};
 vc.converse.list=function(){return jfetch("/api/v2/conversations").then(function(j){return j.rows||[];});};
 vc.converse.read=function(convId,o){var a=Math.max(0,Math.trunc(Number(o&&o.after)||0));return jfetch("/api/v2/conversations/"+encodeURIComponent(String(convId))+"/events?after="+a);};
+vc.catalog=function(){return jfetch("/api/v2/plugin/catalog");};
 vc.service=function(name){
   var n=String(name).toLowerCase(),f=FNS[n];
   for(var i=0;i<vc.services.length;i++)if(vc.services[i].name===n)return f&&typeof vc[f]==="function"?vc[f]:null;

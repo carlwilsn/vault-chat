@@ -20,6 +20,8 @@ import CONVERSE_HTML from "./page-converse.html?raw";
 // Pages that declare an in-process mount (change 1.5, src/mountHost.ts): one that works, one whose mount() throws.
 import PLUGIN_COUNTER_HTML from "./plugin-counter.html?raw";
 import PLUGIN_BROKEN_HTML from "./plugin-broken.html?raw";
+// A page that reads the catalog (change 1.4): the registered services and the plugins in the vault.
+import CATALOG_HTML from "./page-catalog.html?raw";
 
 const CONV = "c-visual-bfs";
 const PATH = ".vault-chat/visuals/bfs-closest-pair.svg";
@@ -310,6 +312,25 @@ export const visualScenarios: Scenario[] = [
     }),
     activeConversation: "c-page-state",
     open: [{ chat: true }, { conversation: "c-page-state" }, { sleep: 1200 }],
+    surfaces: ["desktop"],
+  },
+  {
+    id: "page-catalog",
+    title: "Page catalog — a page lists the registered services and the vault's plugins (vc.catalog)",
+    group: "Chat",
+    notes:
+      "The page declares catalog. After the one-time Allow, Read the catalog fetches GET /api/v2/plugin/catalog: every registered service (who supplies it, its line) and every page in the vault with a vc-capabilities or vc-mount manifest (its name, where it runs, what it needs). The plain picture page is not a plugin and is not listed.",
+    build: (ctx: BuildCtx) => {
+      ctx.write(".vault-chat/visuals/plugin-catalog.html", CATALOG_HTML);
+      ctx.write(".vault-chat/visuals/counter.html", STATE_HTML);
+      ctx.write(".vault-chat/visuals/start-chat.html", CONVERSE_HTML);
+      ctx.write(".vault-chat/visuals/voice-lab.html", LAB_HTML);
+      ctx.write(".vault-chat/visuals/live-chat-demo.html", LIVE_HTML);
+      ctx.write(".vault-chat/visuals/plugin-counter.html", PLUGIN_COUNTER_HTML);
+      ctx.write(".vault-chat/visuals/inline-html-sample.html", SAMPLE_HTML);
+    },
+    host: () => ({ sync: { box: { box: "https://thinkbox.tail0a1b2.ts.net", vault: "summer-demo" }, boxChat: { convs: {} as any, steps: [] } } }),
+    open: [{ file: ".vault-chat/visuals/plugin-catalog.html" }, { sleep: 1500 }],
     surfaces: ["desktop"],
   },
   {

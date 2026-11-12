@@ -10,6 +10,7 @@ import { answerComplete } from "../llm";
 import { parseLiveNeeds } from "../../../src/liveBridge";
 import { foldPluginState, logSignal, stateQuery, stateSignal, type PluginState } from "../../../src/pluginRecords";
 import { converseAfter, converseIntent } from "../../../src/pluginConverse";
+import { catalogPlugin, catalogReads, catalogServices } from "../../../src/pluginCatalog";
 
 /** [roleplay] A REAL box behind the preview: a scenario whose box is http://realbox.localhost sends every box request
  *  to the dev server's /__realbox proxy (VC_REALBOX, e.g. an ssh tunnel to a throwaway test instance), so the real
@@ -576,6 +577,17 @@ export const hostCommands: Record<string, (a: Record<string, any>) => unknown> =
     }
     if (path === "/api/v2/live/fetch") {
       if (typeof b.token !== "string" || !b.token.startsWith("preview-token|")) return { status: 401, body: JSON.stringify({ error: "bad token" }) };
+      if (String(b.path) === "/api/v2/plugin/catalog") {
+        // catalog (change 1.4): the registered services and the plugins in the preview's vault, read as the box reads them.
+        const caps = parseLiveNeeds(fs.readText(`${laptopVault}/${b.token.slice("preview-token|".length)}`) ?? "").caps;
+        const allowed = caps.includes("catalog") && b.method === "GET";
+        const plugins = fs.listFiles(String(laptopVault)).filter(catalogReads).flatMap((p) => catalogPlugin(p, fs.readText(`${laptopVault}/${p}`) ?? "") ?? []);
+        const body = JSON.stringify(allowed ? { services: catalogServices(), plugins } : { error: "this page was not allowed to do that" });
+        const bytes = new TextEncoder().encode(body);
+        let bin = "";
+        for (const x of bytes) bin += String.fromCharCode(x);
+        return { status: 200, body: JSON.stringify({ ok: true, status: allowed ? 200 : 403, headers: { "content-type": "application/json" }, bodyBase64: btoa(bin) }) };
+      }
       if (String(b.path).startsWith("/api/v2/plugin/")) {
         // state / log (change 1.2): the page's own records, as the box keeps them.
         const r = await pluginCall(b.token.slice("preview-token|".length), String(b.method), String(b.path), atob(String(b.bodyBase64 || "")));

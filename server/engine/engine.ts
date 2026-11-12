@@ -68,6 +68,8 @@ import { isOpen, pendingOf, type Picture } from "../../src/convlog/reduce";
 import { makeChatView, toolName } from "../../src/convlog/view";
 import { waitInputs } from "../../src/voiceWaitLine";
 import { lookupAll } from "./lookup";
+import { pluginCatalog } from "../pluginCatalog";
+import { catalogText } from "../../src/pluginCatalog";
 import { attachmentAt, attachmentsNote } from "../attachments";
 import { readEntries } from "../convlog/piSession";
 import { PiFeed, type Expected, type UserRequest } from "./piFeed";
@@ -495,6 +497,14 @@ export const ENGINE_TOOL_SPECS = [
       required: ["query"],
       additionalProperties: false,
     },
+  },
+  {
+    type: "function",
+    name: "Catalog",
+    readOnly: true,
+    description:
+      "What vault-chat's pages can be built from: every registered service a page can name in its <meta name=\"vc-capabilities\"> manifest (what each does, who supplies it, its vc.<fn>), and the plugins in this vault (.html pages with a vc-capabilities or vc-mount manifest: path, name, where it runs, the services it needs). Use it for \"what services exist?\" or \"what plugins do I have?\". Read-only.",
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
   },
   {
     type: "function",
@@ -2837,6 +2847,8 @@ export class Engine {
         }
         case "Lookup":
           return text(await lookupAll(vault, a));
+        case "Catalog":
+          return text(catalogText(pluginCatalog(vault)));
         case "BoardMake": {
           const request = String(a.request ?? "").trim();
           const title = String(a.title ?? "").trim();

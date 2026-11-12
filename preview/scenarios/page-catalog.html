@@ -1,0 +1,56 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="vc-capabilities" content="catalog">
+<title>What can I build with?</title>
+<style>
+  body { margin: 0; font: 14px/1.45 system-ui, sans-serif; background: hsl(var(--background, 0 0% 10%)); color: hsl(var(--foreground, 0 0% 92%)); }
+  .wrap { padding: 16px 20px; display: grid; gap: 12px; }
+  h2 { font-size: 13px; margin: 6px 0 0; color: hsl(var(--muted-foreground, 0 0% 60%)); text-transform: uppercase; letter-spacing: .05em; }
+  button { justify-self: start; font: inherit; padding: 8px 14px; border-radius: 8px; border: 1px solid hsl(var(--border, 0 0% 30%)); background: hsl(var(--primary, 0 0% 85%)); color: hsl(var(--primary-foreground, 0 0% 10%)); cursor: pointer; }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  td { padding: 4px 8px 4px 0; border-bottom: 1px solid hsl(var(--border, 0 0% 25%)); vertical-align: top; }
+  td:first-child { font-weight: 600; white-space: nowrap; }
+  .tag { display: inline-block; font-size: 11px; padding: 0 6px; border-radius: 6px; border: 1px solid hsl(var(--border, 0 0% 30%)); color: hsl(var(--muted-foreground, 0 0% 60%)); }
+  .status { color: hsl(var(--muted-foreground, 0 0% 60%)); font-size: 12px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="status">This page reads the box's catalog (vc.catalog): the registered services and the plugins in your vault.</div>
+  <button id="go">Read the catalog</button>
+  <div class="status" id="status"></div>
+  <h2 id="sh" hidden>Services</h2>
+  <table id="services"></table>
+  <h2 id="ph" hidden>Plugins in this vault</h2>
+  <table id="plugins"></table>
+</div>
+<script>
+  const row = (cells) => {
+    const tr = document.createElement("tr");
+    for (const c of cells) {
+      const td = document.createElement("td");
+      if (c instanceof Node) td.append(c); else td.textContent = c;
+      tr.append(td);
+    }
+    return tr;
+  };
+  const tag = (t) => Object.assign(document.createElement("span"), { className: "tag", textContent: t });
+  document.getElementById("go").onclick = async () => {
+    const st = document.getElementById("status");
+    try {
+      const c = await vc.catalog();
+      const s = document.getElementById("services"), p = document.getElementById("plugins");
+      s.textContent = ""; p.textContent = "";
+      for (const x of c.services) s.append(row([x.name, tag(x.always ? "every page" : x.grantable ? x.supplier : "opens nothing"), x.description]));
+      for (const x of c.plugins) p.append(row([x.name, tag(x.mount), x.needs.length ? "needs " + x.needs.join(", ") : "needs nothing"]));
+      document.getElementById("sh").hidden = document.getElementById("ph").hidden = false;
+      st.textContent = c.services.length + " services, " + c.plugins.length + " plugins.";
+    } catch (e) {
+      st.textContent = "Could not read it: " + e.message;
+    }
+  };
+</script>
+</body>
+</html>

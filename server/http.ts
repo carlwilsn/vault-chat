@@ -17,6 +17,7 @@ import { authorize, isDirectLoopback, phoneToken, tailnetIdentity } from "./auth
 import { PAGE_LINK_PREFIX, pageLinkDocument, pageLinkId } from "./pageLink";
 import { appCss } from "./appCss";
 import { liveGateway, liveManifest, liveRevoke, liveToken } from "./liveProxy";
+import { pluginCatalog } from "./pluginCatalog";
 import { APP_STYLES_HREF, HTML_CSP, inlineHtmlDocument, isHtmlSrc } from "../src/inlineHtml";
 import { createExternalMcpHandler, type ExternalContext } from "./mcp/external";
 import { externalMcpHosts } from "./mcp/hosts";
@@ -718,6 +719,9 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
     const out = id ? pageLinkDocument(open.path, id, open.main ? null : open.name) : { status: 404, error: "no such page" };
     return out.html ? send(res, 200, "text/html; charset=utf-8", out.html, { "X-Content-Type-Options": "nosniff" }) : json(res, out.status, { error: out.error });
   }
+  // The catalog (src/pluginCatalog.ts): the registered services and this vault's plugins. A page reaches it through
+  // the gateway with `catalog` granted; this is the app's and a loopback caller's way in.
+  if (path === "/api/v2/plugin/catalog" && method === "GET") return json(res, 200, pluginCatalog(open.path));
   // Live pages (src/liveBridge.ts; server/liveProxy.ts): a page's manifest, Carl's grant minted into a scoped token, and its calls.
   if (path.startsWith("/api/v2/live/") && method === "POST") {
     const b = await jsonBody(req, 12 * 1024 * 1024);

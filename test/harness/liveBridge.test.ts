@@ -274,7 +274,7 @@ test("Carl's real pages (html-lab, voice-chat) declare the same grant as before 
 test("the registry: one entry per service, every box route has a handler, every page function exists", async () => {
   const { LIVE_SERVICES, serviceNamed, serviceOfCap, servicesFor } = await import("../../src/liveServices.ts");
   const { HANDLERS } = await import("../../server/liveProxy.ts");
-  assert.deepEqual(LIVE_SERVICES.map((s) => s.name), ["ask", "mic", "persist", "voice-lab", "theme", "state", "log", "converse"]);
+  assert.deepEqual(LIVE_SERVICES.map((s) => s.name), ["ask", "mic", "persist", "voice-lab", "theme", "state", "log", "converse", "catalog"]);
   for (const s of LIVE_SERVICES) {
     assert.ok(s.description.length > 10, s.name);
     if (s.supplier === "box" && s.grantable && s.routes.length) assert.equal(typeof HANDLERS[s.name], "function", `${s.name} has a box handler`);
@@ -589,4 +589,109 @@ test("vc.converse: start, send, list and read are fetches to the converse routes
   vc.fetch = async () => resp(403, { error: "this page was not allowed to do that" });
   await assert.rejects(vc.converse.start("x"), /not allowed/);
   await assert.rejects(vc.converse.list(), /not allowed/);
+});
+
+// ---- change 1.4: the catalog service ----
+
+test("catalog is a registered service: declared, described, granted under its name, with only its one read route", async () => {
+  const { parseLiveNeeds, describeCap } = await import("../../src/liveBridge.ts");
+  const { serviceNamed, servicesFor } = await import("../../src/liveServices.ts");
+  assert.deepEqual(parseLiveNeeds('<meta name="vc-capabilities" content="Catalog, ask">'), { caps: ["ask", "catalog"], refused: [] });
+  assert.deepEqual(parseLiveNeeds('<meta name="vc-capabilities" content="catalogue, catalog:x">'), { caps: [], refused: ["catalog:x", "catalogue"] });
+  assert.match(describeCap("catalog"), /services pages can use and the plugin pages in your vault/);
+  assert.deepEqual(servicesFor(["catalog"]).map((s) => s.name), ["theme", "catalog"]);
+  const cat = serviceNamed("catalog")!;
+  assert.ok(cat.grantable && cat.supplier === "box" && cat.page === "catalog");
+  const ok = (m: "GET" | "POST", p: string) => cat.routes.some((r) => r.methods.includes(m) && r.path.test(p));
+  assert.ok(ok("GET", "/api/v2/plugin/catalog"));
+  for (const [m, p] of [["POST", "/api/v2/plugin/catalog"], ["GET", "/api/v2/plugin/catalog?x=1"], ["GET", "/api/v2/plugin/catalog/x"], ["GET", "/api/v2/plugin/state"], ["GET", "/api/v2/conversations"]] as const)
+    assert.ok(!ok(m, p), `${m} ${p}`);
+});
+
+test("the catalog lists every registered service, and reads a page's manifest as a plugin (name, mount, needs)", async () => {
+  const { catalogServices, catalogPlugin, catalogText } = await import("../../src/pluginCatalog.ts");
+  const { LIVE_SERVICES } = await import("../../src/liveServices.ts");
+  const services = catalogServices();
+  assert.deepEqual(services.map((s) => s.name), LIVE_SERVICES.map((s) => s.name));
+  assert.deepEqual(services.find((s) => s.name === "ask"), { name: "ask", description: LIVE_SERVICES[0]!.description, supplier: "box", grantable: true, always: false, call: "vc.ask" });
+  assert.equal(services.find((s) => s.name === "voice-lab")!.call, "vc.tool");
+  assert.ok(services.find((s) => s.name === "theme")!.always && services.find((s) => s.name === "mic")!.supplier === "host");
+  assert.ok(!services.find((s) => s.name === "persist")!.grantable && services.find((s) => s.name === "persist")!.call === null);
+  // A page with services: its needs by service name (voice-lab's tool: spelling read back as voice-lab), unknown ones kept apart.
+  assert.deepEqual(catalogPlugin("apps/lab.html", '<title> Voice &amp; <b>lab</b> </title><meta name="vc-capabilities" content="ask, tool:voice-lab.*, voice-lab, theme, fs">'), {
+    id: "apps/lab.html", name: "Voice & lab", mount: "iframe", needs: ["ask", "voice-lab"], refused: ["fs"],
+  });
+  // An in-process page (change 1.5) needs nothing and is still a plugin; no title: its file name.
+  assert.deepEqual(catalogPlugin("./w\\clock.html", '<meta name="vc-mount" content="in-process"><script type="module">export function mount(){}</script>'), {
+    id: "w/clock.html", name: "clock.html", mount: "in-process", needs: [], refused: [],
+  });
+  assert.equal(catalogPlugin("x.html", '<meta name=vc-mount content=sideways>')!.mount, "iframe");
+  assert.equal(catalogPlugin("x.html", '<meta name="vc-capabilities" content="">')!.needs.length, 0);
+  // Not plugins: no manifest, or another meta.
+  assert.equal(catalogPlugin("a.html", "<title>a</title><p>plain</p>"), null);
+  assert.equal(catalogPlugin("a.html", '<meta name="viewport" content="ask">'), null);
+  const text = catalogText({ services, plugins: [catalogPlugin("apps/lab.html", '<title>Lab</title><meta name="vc-capabilities" content="ask, fs">')!] });
+  assert.match(text, /^Services a page can name/);
+  assert.match(text, /- ask \(the box; Carl allows it once per page; vc\.ask\): /);
+  assert.match(text, /- theme \(the app\/phone; every page has it, no grant; vc\.onTheme\)/);
+  assert.match(text, /- persist \(the box; declared, opens nothing\)/);
+  assert.match(text, /Plugins in this vault \(1\)/);
+  assert.match(text, /- apps\/lab\.html "Lab": iframe; needs ask; unknown: fs/);
+  assert.match(catalogText({ services, plugins: [], truncated: true }), /\(0, list cut short\)[^\n]*\n- none$/);
+  const { catalogReads } = await import("../../src/pluginCatalog.ts");
+  for (const p of ["a.html", "A/b.HTM", ".vault-chat/visuals/x.html", ".vault-chat/visuals/sub/x.html", "notes/vault-chat/a.html"]) assert.ok(catalogReads(p), p);
+  for (const p of ["a.md", ".vault-chat/x.html", ".vault-chat/conversations/x.html", ".git/x.html", "a/.hidden/x.html", "a/node_modules/x.html", "build/x.html"]) assert.ok(!catalogReads(p), p);
+});
+
+test("vc.catalog is a fetch to the catalog route; a refusal rejects with the box's reason", async () => {
+  const src = /<script data-vc-live-script>([\s\S]*?)<\/script>/.exec(liveScript())![1]!;
+  let onMsg: ((e: any) => void) | null = null;
+  const parent = { postMessage() {} };
+  const win: any = { innerWidth: 300, innerHeight: 200, document: { documentElement: { style: { setProperty() {} } } }, parent };
+  vm.runInNewContext(src, { ...win, window: win, parent, setInterval: () => 1, clearInterval() {}, setTimeout, addEventListener: (k: string, f: any) => k === "message" && (onMsg = f), Promise, Symbol, Headers: class {}, Response: class {}, Blob: class {}, TextEncoder, JSON, Error, Math, Number });
+  const vc = win.vc;
+  const calls: [string, any][] = [];
+  const resp = (status: number, j: any) => ({ ok: status < 300, status, json: async () => j });
+  vc.fetch = async (p: string, i: any = {}) => {
+    calls.push([p, i]);
+    return p === "/api/v2/plugin/catalog" ? resp(200, { services: [{ name: "ask" }], plugins: [{ id: "a.html" }] }) : resp(403, { error: "no" });
+  };
+  onMsg!({ source: parent, data: { "vc-live": 1, ev: "env", caps: ["catalog"], services: [{ name: "theme" }, { name: "catalog" }], refused: [], mode: "dark" } });
+  assert.equal(vc.service("catalog"), vc.catalog);
+  const c = await vc.catalog();
+  assert.deepEqual(JSON.parse(JSON.stringify(c)), { services: [{ name: "ask" }], plugins: [{ id: "a.html" }] });
+  assert.deepEqual(calls.map(([p, i]) => [p, i?.method ?? "GET"]), [["/api/v2/plugin/catalog", "GET"]]);
+  vc.fetch = async () => resp(403, { error: "this page was not allowed to do that" });
+  await assert.rejects(vc.catalog(), /not allowed/);
+});
+
+test("the box's catalog walks the vault: pages in folders and .vault-chat/visuals, not other hidden or dependency folders", async () => {
+  const { pluginCatalog } = await import("../../server/pluginCatalog.ts");
+  const dir = mkdtempSync(join(tmpdir(), "vc-catalog-"));
+  try {
+    const put = (rel: string, html: string) => {
+      mkdirSync(join(dir, rel, ".."), { recursive: true });
+      writeFileSync(join(dir, rel), html);
+    };
+    put(".vault-chat/visuals/html-lab.html", '<title>HTML lab</title><meta name="vc-capabilities" content="ask, voice-lab">');
+    put(".vault-chat/visuals/plain.html", "<p>a picture, no manifest</p>");
+    put("Apps/clock.htm", '<meta name="vc-mount" content="in-process">');
+    put("Apps/notes.md", '<meta name="vc-capabilities" content="ask">');
+    put("a.html", '<meta name="vc-capabilities" content="state, catalog">');
+    put(".vault-chat/conversations/x.html", '<meta name="vc-capabilities" content="ask">');
+    put(".vault-chat/top.html", '<meta name="vc-capabilities" content="ask">');
+    put(".git/x.html", '<meta name="vc-capabilities" content="ask">');
+    put(".hidden/x.html", '<meta name="vc-capabilities" content="ask">');
+    put("proj/node_modules/pkg/x.html", '<meta name="vc-capabilities" content="ask">');
+    const c = pluginCatalog(dir);
+    assert.equal(c.truncated, undefined);
+    assert.deepEqual(c.services.map((s) => s.name), ["ask", "mic", "persist", "voice-lab", "theme", "state", "log", "converse", "catalog"]);
+    assert.deepEqual(c.plugins, [
+      { id: ".vault-chat/visuals/html-lab.html", name: "HTML lab", mount: "iframe", needs: ["ask", "voice-lab"], refused: [] },
+      { id: "Apps/clock.htm", name: "clock.htm", mount: "in-process", needs: [], refused: [] },
+      { id: "a.html", name: "a.html", mount: "iframe", needs: ["catalog", "state"], refused: [] },
+    ]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

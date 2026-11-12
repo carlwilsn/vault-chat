@@ -18,6 +18,7 @@
 // /api/v2/plugin/log, always for the token's own page (the plugin id), never another; records in the one log.
 // What `converse` covers (change 1.3, src/pluginConverse.ts): POST /api/v2/intent of type start or send only (made into
 // the box's own send intent, marked as the page's), GET /api/v2/conversations and GET /api/v2/conversations/<id>/events.
+// What `catalog` covers (change 1.4, server/pluginCatalog.ts): GET /api/v2/plugin/catalog, the services and plugins.
 import { createHmac, createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { readFileSync, statSync } from "node:fs";
 import { request as httpRequest } from "node:http";
@@ -30,6 +31,7 @@ import { labCall } from "./labProxy";
 import { PLUGIN_LIMITS, stateQuery } from "../src/pluginRecords";
 import { appendPluginLog, awaitPluginState, setPluginState } from "./pluginState";
 import { converseAfter, converseIntent } from "../src/pluginConverse";
+import { pluginCatalog } from "./pluginCatalog";
 
 export type LiveOut = { status: number; body: unknown };
 type Claims = { p: string; h: string; c: string[]; e: number; j: string };
@@ -241,8 +243,11 @@ const converseHandler: Handler = async ({ c, method, path, body, vaultParam }) =
   return reply(await loopback("POST", "/api/v2/intent", { "content-type": "application/json" }, Buffer.from(JSON.stringify(made.intent)), vaultParam));
 };
 
+/** `catalog`: the registered services and the vault's plugins (read-only). */
+const catalogHandler: Handler = async ({ vault, method, path }) => (method === "GET" && path === "/api/v2/plugin/catalog" ? reply(json(200, pluginCatalog(vault))) : null);
+
 /** The box side of every registered box service that opens routes (src/liveServices.ts). */
-export const HANDLERS: Readonly<Record<string, Handler>> = { ask: askHandler, "voice-lab": voiceLabHandler, state: stateHandler, log: logHandler, converse: converseHandler };
+export const HANDLERS: Readonly<Record<string, Handler>> = { ask: askHandler, "voice-lab": voiceLabHandler, state: stateHandler, log: logHandler, converse: converseHandler, catalog: catalogHandler };
 
 /** The services a call may go to: granted by the token, opened by the box, with a declared route matching the call. */
 function servicesTaking(c: Claims, method: "GET" | "POST", path: string): LiveService[] {

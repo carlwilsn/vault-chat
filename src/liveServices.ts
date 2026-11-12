@@ -134,6 +134,15 @@ export const LIVE_SERVICES: readonly LiveService[] = [
     grantable: true,
     page: "converse",
   }),
+  // What the system can do (src/pluginCatalog.ts): these services, and the plugins (manifest pages) in the vault.
+  named({
+    name: "catalog",
+    description: "See the services pages can use and the plugin pages in your vault (their names and what they declare)",
+    supplier: "box",
+    routes: [{ methods: ["GET"], path: /^\/api\/v2\/plugin\/catalog$/ }],
+    grantable: true,
+    page: "catalog",
+  }),
 ];
 
 /** The service a grant entry belongs to, if any is registered. */
