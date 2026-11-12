@@ -343,3 +343,37 @@ describe("the background workers a session still has at work", () => {
     expect(seen).toEqual([1, 0, 0, 0, 1, 1, 0, 0, 0, 0]);
   });
 });
+
+describe("Carl's usage limit", () => {
+  // The shape Claude Code gives it (seen in this box's session files on 2026-11-12): a synthetic
+  // assistant message with `error: "rate_limit"` (its transcript adds apiError
+  // "usage_limit_reached"), then a result that is_error, with the reset only in the words.
+  const words = "You've hit your 5-hour limit · resets 1:30am (America/Chicago)";
+  const limited = [
+    { type: "rate_limit_event", rate_limit_info: { status: "rejected", resetsAt: 1_794_195_000, rateLimitType: "five_hour" } },
+    { type: "assistant", parent_tool_use_id: null, error: "rate_limit", message: { model: "<synthetic>", role: "assistant", content: [{ type: "text", text: words }] } },
+    { type: "result", subtype: "success", is_error: true, result: words },
+  ];
+
+  it("ends the turn as held for the limit, keyed on the structured error, with the reset in ms", () => {
+    const { emits, picture } = replay(limited);
+    expect(emits.find((e) => e.kind === "rateLimit")).toMatchObject({ status: "rejected", resetsAt: 1_794_195_000_000, kindOfLimit: "five_hour" });
+    expect(emits.find((e) => e.kind === "done")).toMatchObject({ status: "failed", limited: true });
+    // One quiet line, not a red "Couldn't get a reply".
+    const notices = picture.items.filter((x) => x.kind === "notice");
+    expect(notices).toHaveLength(1);
+    expect(notices[0]).toMatchObject({ level: "info", text: "Usage limit reached. I'll pick this up at 1:30am (America/Chicago)." });
+  });
+
+  it("the same words without the structured error stay an ordinary failure", () => {
+    const { emits, picture } = replay([{ type: "result", subtype: "success", is_error: true, result: words }]);
+    expect((emits.find((e) => e.kind === "done") as any).limited).toBeUndefined();
+    expect(picture.items.find((x) => x.kind === "notice")).toMatchObject({ level: "error" });
+  });
+
+  it("a rejection that paid overage carries is not a limit", () => {
+    const t = new ClaudeTranslator();
+    expect(t.step({ type: "rate_limit_event", rate_limit_info: { status: "rejected", overageStatus: "allowed", resetsAt: 1_794_195_000 } })[0]).toMatchObject({ status: "allowed_warning" });
+    expect(t.step({ type: "result", subtype: "success", is_error: false, result: "ok" }).find((e) => e.kind === "done")).not.toHaveProperty("limited");
+  });
+});

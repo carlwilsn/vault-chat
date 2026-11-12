@@ -314,6 +314,26 @@ test("AskUser and an error: the question waits, Carl's answer is his line under 
   assert.ok(!shown(p).some(isOpen));
 });
 
+test("the usage limit: one quiet line for the messages sent at it, his messages kept, then the reply at the reset", () => {
+  const log = new Log();
+  created(log);
+  const words = "You've hit your 5-hour limit · resets 1:30am (America/Chicago)";
+  // claude/translate.ts: the refused request's message carries usageLimit (the structured error), its reset as worded.
+  const refused = (): any => ({ type: "message_end", message: { role: "assistant", content: [], stopReason: "error", errorMessage: words, usageLimit: { resets: "1:30am (America/Chicago)" }, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } } });
+  for (const [i, q] of ["First?", "Second?", "Third?"].entries()) turn(log, `t${i}`, q, [...userMsg(q), { type: "message_start", message: { role: "assistant", content: [], stopReason: "pending" } }, refused()]);
+  const line = "system:Usage limit reached. I'll pick this up at 1:30am (America/Chicago).";
+  assert.deepEqual(view(log.recs), ["user:First?", "user:Second?", "user:Third?", line]);
+  const m = messagesOf(fold(log.recs, C)).at(-1)!;
+  assert.ok(!m.failed && !m.retry, "a quiet line: no red, no Try again");
+  // At the reset the box takes them up as one turn.
+  turn(log, "t9", "Carl's usage limit has reset.", [...userMsg("Carl's usage limit has reset."), ...assistant([{ text: "All three, answered." }])], { kind: "resume", via: "resume", shown: "Usage limit reset: picking up where it stopped" });
+  assert.deepEqual(view(log.recs).slice(3), [line, "system:↻ Usage limit reset: picking up where it stopped", "assistant:All three, answered."]);
+  // A later limit is a line of its own: the earlier one stays where it was.
+  turn(log, "t10", "Fourth?", [...userMsg("Fourth?"), { type: "message_start", message: { role: "assistant", content: [], stopReason: "pending" } }, refused()]);
+  assert.deepEqual(view(log.recs).filter((x) => x === line).length, 2);
+  assert.ok(!view(log.recs).some((x) => /Couldn't get a reply/.test(x)));
+});
+
 test("a compaction, a wake turn and a subagent", () => {
   const log = new Log();
   seqCompactionWakeSubagent(log);

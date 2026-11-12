@@ -719,6 +719,8 @@ export function ChatPane() {
 
   const planInline = uiChoice("todos") === "inline";
   const verdict = activeConv?.state === "done" ? activeConv.verdict : undefined;
+  // Held for the usage limit (the box picks it up at the reset): Stop cancels that, as it stops a run.
+  const held = !busy && activeConv?.state === "sleeping" && !!messages[messages.length - 1]?.mid?.startsWith("limit:");
   const totalCost = uiChoice("cost") === "total" ? formatCost(activeConv?.costUsd ?? messages.reduce((n, m) => n + (m.costUsd ?? m.usage?.costUsd ?? 0), 0)) : undefined;
   let lastVisible = -1;
   for (let i = messages.length - 1; i >= 0; i--) if (!messages[i]!.hidden && !messages[i]!.system) { lastVisible = i; break; }
@@ -935,7 +937,7 @@ export function ChatPane() {
       void send();
       return;
     }
-    if (busy && e.key === "Escape") {
+    if ((busy || held) && e.key === "Escape") {
       e.preventDefault();
       stop();
     }
@@ -1467,13 +1469,13 @@ export function ChatPane() {
                 )}
                 {/* As in Claude Code: with something to send the button is Send (while the agent works too: it reads
                     the message at its next step); with nothing typed while it works, Stop. */}
-                {busy && !hasDraft ? (
+                {(busy || held) && !hasDraft ? (
                   <Button
                     size="icon"
                     variant="secondary"
                     onClick={stop}
                     className="h-7 w-7 rounded-lg"
-                    title="Stop the agent (Esc)"
+                    title={held ? "Don't pick it up at the reset (Esc)" : "Stop the agent (Esc)"}
                     data-el="composer-stop"
                   >
                     <Square className="h-3 w-3 fill-current" />

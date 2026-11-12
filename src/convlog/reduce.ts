@@ -141,8 +141,29 @@ function blocksOf(m: PiMessage, at: number, status: ItemStatus, running = false)
       out.push({ id: String(b.id), kind: "tool", status: "pending", name: hostToolName(b.name) || "tool", args: b.arguments ?? {}, at });
     }
   });
-  if (m.stopReason === "error") out.push({ id: failId(m.timestamp), kind: "notice", status: running ? "pending" : "done", level: "error", text: failText(m.errorMessage), at });
+  // Refused for Carl's usage limit (the box holds it for the reset, server/engine/engine.ts): one quiet line, not a red one.
+  if (m.stopReason === "error" && m.usageLimit) out.push({ id: `limit:${m.timestamp}`, kind: "notice", status: "done", level: "info", text: limitText(m.usageLimit as { resets?: string | null }), at });
+  else if (m.stopReason === "error") out.push({ id: failId(m.timestamp), kind: "notice", status: running ? "pending" : "done", level: "error", text: failText(m.errorMessage), at });
   return out;
+}
+
+/** The usage limit's line, with the reset as the SDK words it ("1:30am (America/Chicago)"). */
+function limitText(l: { resets?: string | null }): string {
+  return `Usage limit reached. I'll pick this up ${l.resets ? `at ${l.resets}` : "when it resets"}.`;
+}
+
+const isLimitLine = (it: Item) => it.kind === "notice" && it.id.startsWith("limit:");
+
+/** One limit line for a run of messages sent at the limit: an earlier one with nothing but his messages after it goes. */
+function dropEarlierLimitLine(d: Draft): void {
+  for (let i = d.items.length - 1; i >= 0; i--) {
+    const it = d.items[i]!;
+    if (isLimitLine(it)) {
+      d.items.splice(i, 1);
+      return;
+    }
+    if (it.kind !== "user") return;
+  }
 }
 
 /** A failed request, said once and plainly (pi's own text, its first line, capped). */
@@ -161,6 +182,7 @@ function dropFailLines(d: Draft): void {
 function place(d: Draft, items: Item[]): void {
   for (const it of items) {
     const f = find(d, it.id);
+    if (f?.list !== d.items && isLimitLine(it)) dropEarlierLimitLine(d);
     if (f && f.list === d.items) {
       const cur = f.list[f.i]!;
       // A tool call's run (live) is kept over the call's own "pending".

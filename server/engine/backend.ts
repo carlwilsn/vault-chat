@@ -40,7 +40,7 @@ export type BackendEvent =
   /** The parent spawned/messaged subagents. */
   | { kind: "subagents"; threadId: string; itemId: string; children: string[]; op: string; prompt?: string; model?: string | null; done: boolean; ok: boolean }
   | { kind: "subagentStatus"; threadId: string; child: string; status: string; path?: string; patch?: Record<string, unknown> }
-  | { kind: "turnCompleted"; threadId: string; turnId: string | null; status: "completed" | "interrupted" | "failed" | string; error: string | null }
+  | { kind: "turnCompleted"; threadId: string; turnId: string | null; status: "completed" | "interrupted" | "failed" | string; error: string | null; /** It failed on Carl's usage limit (claude/translate.ts): held for the reset, not an error. */ limited?: boolean }
   /** One thread's runtime died mid-turn while the rest of the runtime is fine (pi: one process per thread).
    * The engine marks that turn cut and resumes it, as it does for all turns on "down". */
   | { kind: "threadLost"; threadId: string }

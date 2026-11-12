@@ -65,7 +65,7 @@ export type Emit =
    * half-way through an answer). A tool's output that happens to say "401"
    * therefore cannot sign Carl out.
    */
-  | { kind: "done"; status: "completed" | "interrupted" | "failed"; error: string | null; refused?: boolean }
+  | { kind: "done"; status: "completed" | "interrupted" | "failed"; error: string | null; refused?: boolean; limited?: boolean }
   /** Claude Code's own rate limit: the host backs wakes and schedules off until `resetsAt`. */
   | { kind: "rateLimit"; status: string; resetsAt: number | null; kindOfLimit: string | null }
   /** The API refused the sign-in (claude/auth.ts). The host stops the turn: the
@@ -190,6 +190,13 @@ export class ClaudeTranslator {
   private running = new Set<string>();
   /** The host asked for this turn to end (see expectInterrupt). */
   private stopping = false;
+  /**
+   * This turn was refused for Carl's usage limit: the SDK's synthetic assistant
+   * message carried `error: "rate_limit"` (its text is "You've hit your 5-hour
+   * limit · resets 1:30am (America/Chicago)"), or a rate_limit_event said
+   * "rejected". The failure is then a wait, not an error (engine.ts holds it).
+   */
+  private limited = false;
 
   constructor(private readonly now: () => number = () => Date.now()) {}
 
@@ -224,10 +231,18 @@ export class ClaudeTranslator {
         // read as `rate_limit` here, so every event looked like "allowed" and
         // the box never backed off a subscription that had said no.
         const info = m.rate_limit_info ?? m.rate_limit ?? m;
+        // Rejected, but paid overage carries on: not a limit that stops work.
+        const overage = info.overageStatus === "allowed" || info.overageStatus === "allowed_warning";
+        const rejected = info.status === "rejected" && !overage;
+        if (rejected) this.limited = true;
+        // The SDK's resetsAt is unix SECONDS (the CLI computes it from the
+        // `anthropic-ratelimit-unified-reset` header): held as ms like every
+        // other time here, or usageLimit() would read every reset as past.
+        const at = Number(info.resetsAt) || 0;
         return [{
           kind: "rateLimit",
-          status: String(info.status ?? "allowed"),
-          resetsAt: Number(info.resetsAt) || null,
+          status: rejected ? "rejected" : info.status === "rejected" ? "allowed_warning" : String(info.status ?? "allowed"),
+          resetsAt: at ? (at < 1e12 ? at * 1000 : at) : null,
           kindOfLimit: info.rateLimitType ?? null,
         }];
       }
@@ -340,6 +355,7 @@ export class ClaudeTranslator {
     const blocks: PiBlock[] = Array.isArray(m?.message?.content) ? m.message.content : [];
     if (m?.error) {
       const text = String(m.message?.content?.find?.((b: any) => b?.type === "text")?.text ?? m.error);
+      if (m.error === "rate_limit") this.limited = true;
       if (o) {
         o.errorMessage = text;
         o.stopReason = "error";
@@ -400,6 +416,7 @@ export class ClaudeTranslator {
       content,
       stopReason: stopOf(o.stopReason ?? (content.some((b) => b.type === "toolCall") ? "tool_use" : null), !!o.errorMessage),
       ...(o.errorMessage ? { errorMessage: o.errorMessage } : {}),
+      ...(o.errorMessage && this.limited ? { usageLimit: limitOf(o.errorMessage) } : {}),
       usage: { input: o.usage.input, output: o.usage.output, cacheRead: o.usage.cacheRead, cacheWrite: o.usage.cacheWrite },
     };
     out.push({ kind: "entry", entry: { type: "message", message } }, { kind: "live", ev: { type: "message_end", message } });
@@ -548,6 +565,8 @@ export class ClaudeTranslator {
     const terminal = String(m.terminal_reason ?? "");
     const asked = this.stopping;
     this.stopping = false;
+    const limited = this.limited;
+    this.limited = false;
     const reported = terminal === "cancelled" || terminal === "interrupted" || subtype === "interrupted" ? "interrupted" : m.is_error || subtype.startsWith("error") ? "failed" : "completed";
     // Claude Code reports a turn the host aborted as a failure of its own; the
     // host knows better, because the host asked. Without this the chat shows a
@@ -567,13 +586,23 @@ export class ClaudeTranslator {
     // reply, written the way one the model's own message carried is written, so
     // the chat shows ONE red line — with Try again — and not a bare error.
     if (status === "failed" && !wasOpen && error) {
-      const message: PiMessage = { role: "assistant", timestamp: this.stamp(), content: [], stopReason: "error", errorMessage: shown ?? error, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
+      const message: PiMessage = { role: "assistant", timestamp: this.stamp(), content: [], stopReason: "error", errorMessage: shown ?? error, ...(limited ? { usageLimit: limitOf(error) } : {}), usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
       out.push({ kind: "entry", entry: { type: "message", message } }, { kind: "live", ev: { type: "message_end", message } });
     }
     out.push(...this.held.splice(0));
-    out.push({ kind: "done", status, error, ...(refused ? { refused: true } : {}) });
+    out.push({ kind: "done", status, error, ...(refused ? { refused: true } : {}), ...(limited && status === "failed" ? { limited: true } : {}) });
     return out;
   }
+}
+
+/**
+ * A usage-limit failure as the chat keeps it: the reset as the SDK words it
+ * ("1:30am (America/Chicago)"), for the quiet line only — what the host does
+ * keys on the structured error, never on this text.
+ */
+export function limitOf(text: string): { resets: string | null } {
+  const m = /\bresets\s+(.+?)\s*$/i.exec(String(text ?? "").split(/\r?\n/)[0] ?? "");
+  return { resets: m ? m[1]!.slice(0, 80) : null };
 }
 
 /** A tool call's input from its streamed JSON; `{}` if the stream was cut mid-object. */

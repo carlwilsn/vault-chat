@@ -271,6 +271,7 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
   private compactWaits = new Map<string, () => void>();
   /** The last rate limit Claude Code reported (the host backs wakes off until it resets). */
   private limit: { status: string; resetsAt: number | null; kindOfLimit: string | null } | null = null;
+  private limitAt = 0;
   /**
    * What the API said about this box's sign-in, last time it said anything: null
    * until a turn (or a check) has been answered at all. `ok: false` is a REFUSAL,
@@ -446,6 +447,9 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
     const l = this.limit;
     if (!l || l.status !== "rejected") return null;
     if (l.resetsAt && l.resetsAt <= Date.now()) return null;
+    // No reset named: held a few minutes at most (the engine backs off on its
+    // own), never for good — nothing would run to hear it had lifted.
+    if (!l.resetsAt && Date.now() - this.limitAt > 5 * 60_000) return null;
     return { resetsAt: l.resetsAt, kind: l.kindOfLimit };
   }
 
@@ -1095,6 +1099,7 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
         return;
       case "rateLimit":
         this.limit = { status: e.status, resetsAt: e.resetsAt, kindOfLimit: e.kindOfLimit };
+        this.limitAt = Date.now();
         this.emit("rateLimit", this.limit);
         return;
       case "done": {
@@ -1103,12 +1108,14 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
         // that finished says the token is good.
         if (e.refused) this.auth = { ok: false, error: String(e.error ?? "").slice(0, 300) || null };
         else if (e.status === "completed") this.auth = { ok: true, error: null };
+        // A turn that got its answer is room again, whatever the last event said.
+        if (e.status === "completed" && this.limit?.status === "rejected") this.limit = { ...this.limit, status: "allowed" };
         // What is still pending was never consumed by this turn (it is queued
         // for the next one, or was taken back), so nothing is delivered here.
         // Only Claude Code's own uuid stamp says a message has been taken.
         const turnId = live.turnId;
         live.turnId = null;
-        this.ev({ kind: "turnCompleted", threadId, turnId, status: e.status, error: e.error });
+        this.ev({ kind: "turnCompleted", threadId, turnId, status: e.status, error: e.error, ...(e.limited ? { limited: true } : {}) });
         return;
       }
     }
