@@ -101,6 +101,24 @@ export const LIVE_SERVICES: readonly LiveService[] = [
     capOf: () => null,
     owns: () => false,
   },
+  // The page's own state, kept as records in the one log (src/pluginRecords.ts): every view of the page reads the same.
+  named({
+    name: "state",
+    description: "Keep its own saved state on the box (the same in every place the page is open)",
+    supplier: "box",
+    // Read it (GET, `?after=<seq>&wait=<ms>` waits for a change: subscribe) or set one key (POST {key, value}).
+    routes: [{ methods: ["GET"], path: /^\/api\/v2\/plugin\/state(?:\?[^/]*)?$/ }, { methods: ["POST"], path: /^\/api\/v2\/plugin\/state$/ }],
+    grantable: true,
+    page: "state",
+  }),
+  named({
+    name: "log",
+    description: "Add records of what it does to your vault's log",
+    supplier: "box",
+    routes: [{ methods: ["POST"], path: /^\/api\/v2\/plugin\/log$/ }],
+    grantable: true,
+    page: "log",
+  }),
 ];
 
 /** The service a grant entry belongs to, if any is registered. */

@@ -695,6 +695,11 @@ export class ConvLog {
     return { next: more ? next : Math.max(next, latest), events, ...(more ? { more: true } : {}) };
   }
 
+  /** Every vault-level signal after `after`, from its file (oldest first). */
+  signals(after = 0): LogRecord[] {
+    return existsSync(this.signalsFile) ? readRecords(this.signalsFile, after) : [];
+  }
+
   /** Resolve when a record is written or after `ms`. */
   wait(ms: number): Promise<void> {
     return new Promise((resolve) => {
@@ -924,12 +929,17 @@ export function ownerVault(id: string, fallback: string): string | null {
   return null;
 }
 
+/** The log that holds `vault`'s signals (after the global cutover, a legacy vault's go to the main vault's). */
+export function signalLog(vault: string): ConvLog {
+  return convLog(feed && globalCutover(feed.main)?.legacyRoots.includes(vault) ? feed.main : vault);
+}
+
 /** A vault-level signal on /poll (the vault changed, a file changed, the inbox, notifications, a project). */
-export function signal(vault: string, ev: Record<string, unknown>): void {
+export function signal(vault: string, ev: Record<string, unknown>): LogRecord | null {
   try {
-    const owner = feed && globalCutover(feed.main)?.legacyRoots.includes(vault) ? feed.main : vault;
-    convLog(owner).emit(null, { type: "signal", signal: ev });
+    return signalLog(vault).emit(null, { type: "signal", signal: ev });
   } catch (e) {
     console.warn("[convlog] signal failed:", (e as Error).message);
+    return null;
   }
 }

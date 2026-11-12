@@ -1,0 +1,31 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="vc-capabilities" content="state, log">
+<title>Counter</title>
+<style>
+  body { margin: 0; font: 14px/1.4 system-ui, sans-serif; background: hsl(var(--background, 0 0% 10%)); color: hsl(var(--foreground, 0 0% 92%)); }
+  .wrap { display: flex; align-items: center; gap: 16px; padding: 18px 20px; }
+  .n { font-size: 40px; font-weight: 700; min-width: 64px; text-align: center; font-variant-numeric: tabular-nums; }
+  button { font: inherit; padding: 8px 16px; border-radius: 8px; border: 1px solid hsl(var(--border, 0 0% 30%)); background: hsl(var(--primary, 0 0% 85%)); color: hsl(var(--primary-foreground, 0 0% 10%)); cursor: pointer; }
+  .hint { color: hsl(var(--muted-foreground, 0 0% 60%)); font-size: 12px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="n" id="n">…</div>
+  <button id="plus">+1</button>
+  <div class="hint">One counter, kept by the box: every place this page is open shows the same number.</div>
+</div>
+<script>
+  let count = 0;
+  const show = (s) => { count = Number(s.count || 0); document.getElementById("n").textContent = String(count); };
+  vc.ready.then(() => vc.state.subscribe(show));
+  document.getElementById("plus").onclick = async () => {
+    await vc.state.set("count", count + 1);
+    vc.log({ did: "plus", to: count + 1 });
+  };
+</script>
+</body>
+</html>

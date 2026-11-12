@@ -14,7 +14,11 @@
 //          vc.play(blobOrUrl), vc.caps (granted), vc.theme {mode, vars}, vc.size {w,h}, vc.ready, vc.path
 //          vc.services [{name, description}] (granted, and those every page has), vc.refused [names no registry knows],
 //          vc.service(name) → that service's vc function (ask → vc.ask, mic → vc.mic, voice-lab → vc.tool, theme →
-//                                   vc.onTheme), null when it is not granted. Services: src/liveServices.ts
+//                                   vc.onTheme, state → vc.state, log → vc.log), null when it is not granted. Services: src/liveServices.ts
+//          vc.state.get(key?) → Promise<value | {key: value}>, vc.state.set(key, value) → Promise<seq> (null removes),
+//          vc.state.subscribe(fn(state, seq)) → unsubscribe   (cap: state) the page's own state, records in the box's one
+//                                   log: every view of the page (viewer, chat, phone) shows the same; fn runs at once, then on each change
+//          vc.log(record) (= vc.log.append) → Promise<seq>   (cap: log) a record of what the page did, in the same log
 //   host:  installLiveBridge(host) once; an iframe takes part by `data-vc-live="<vault path>"`. The host asks the box for
 //          the page's manifest + content hash, asks Carl once (remembered per path + hash; a changed page asks again),
 //          has the box mint the token, and answers only that iframe's window (event.source, origin "null").
@@ -215,6 +219,23 @@ vc.mic=async function(o){
     });
   });
 };
+function jfetch(path,init){return vc.fetch(path,init).then(function(r){return r.json().catch(function(){return {};}).then(function(j){if(!r.ok){var e=new Error(j.error||("the box refused ("+r.status+")"));e.status=r.status;throw e;}return j;});});}
+var JSONH={"content-type":"application/json"};
+vc.state=function(key){return vc.state.get(key);};
+vc.state.get=function(key){return jfetch("/api/v2/plugin/state").then(function(j){var s=j.state||{};return key==null?s:s[String(key)];});};
+vc.state.set=function(key,value){return jfetch("/api/v2/plugin/state",{method:"POST",headers:JSONH,body:JSON.stringify({key:String(key),value:value===undefined?null:value})}).then(function(j){return j.seq;});};
+vc.state.subscribe=function(fn){
+  var on=true,after=-1;
+  (async function(){
+    while(on){
+      try{var j=await jfetch("/api/v2/plugin/state?after="+after+"&wait=20000");if(!on)return;if(j.seq!==after){after=j.seq;try{fn(j.state||{},j.seq);}catch(e){}}}
+      catch(e){if(!on||e.status===403)return;await new Promise(function(r){setTimeout(r,2000);});}
+    }
+  })();
+  return function(){on=false;};
+};
+vc.log=function(record){return jfetch("/api/v2/plugin/log",{method:"POST",headers:JSONH,body:JSON.stringify(record===undefined?null:record)}).then(function(j){return j.seq;});};
+vc.log.append=vc.log;
 vc.service=function(name){
   var n=String(name).toLowerCase(),f=FNS[n];
   for(var i=0;i<vc.services.length;i++)if(vc.services[i].name===n)return f&&typeof vc[f]==="function"?vc[f]:null;

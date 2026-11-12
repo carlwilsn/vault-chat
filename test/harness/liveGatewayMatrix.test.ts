@@ -158,6 +158,39 @@ test("the gateway's allow/deny matrix and the manifest parser are unchanged", as
     writeFileSync(join(vault, "ask.html"), '<meta name="vc-capabilities" content="ask"><p>changed</p>');
     await call("changed page", tokens.ask!, "GET", `/api/v1/side/${own.ask}`, null);
 
+    // ---- change 1.2 (state, log): rows added after the ones above, which stay exactly as they were ----
+    for (const m of ['<meta name="vc-capabilities" content="state">', '<meta name="vc-capabilities" content="log, state, ask">', '<meta name="vc-capabilities" content="STATE, plugin.state, log:x">'])
+      rows.push(`parse ${JSON.stringify(m)} -> ${JSON.stringify(parseLiveManifest(m))}`);
+    for (const c of ["state", "log"]) rows.push(`describe ${c} -> ${describeCap(c)}`);
+    const pluginPaths = [
+      "/api/v2/plugin/state", "/api/v2/plugin/state?after=-1&wait=0", "/api/v2/plugin/state?after=x", "/api/v2/plugin/state/x", "/api/v2/plugin/states",
+      "/api/v2/plugin/log", "/api/v2/plugin/log?x=1", "/api/v2/plugin/log/x", "/api/v2/plugin/", "/api/v2/plugin/state/../log",
+    ];
+    const setBody = '{"key":"count","value":1,"plugin":"forged.html"}';
+    // Every page from before (ask, mic, persist, voice-lab): none of them reaches the new routes.
+    for (const name of Object.keys(pages).filter((n) => n !== "ask"))
+      for (const p of pluginPaths) for (const method of ["GET", "POST"]) await call(`${name} ${p}`, tokens[name]!, method, p, method === "POST" ? setBody : null);
+    const newPages: Record<string, string> = { state: "state", log: "log", stateLog: "state, log", askState: "ask, state" };
+    for (const [name, caps] of Object.entries(newPages)) {
+      writeFileSync(join(vault, `${name}.html`), `<meta name="vc-capabilities" content="${caps}"><p>${name}</p>`);
+      const m = liveManifest(vault, `${name}.html`)!;
+      rows.push(`manifest ${name} -> ${JSON.stringify(m.caps)}`);
+      const t = liveToken(vault, { path: `${name}.html`, hash: m.hash, caps: m.caps });
+      rows.push(`token ${name} -> ${t.status}`);
+      tokens[name] = (t.body as { token: string }).token;
+    }
+    for (const name of Object.keys(newPages)) {
+      for (const p of pluginPaths) for (const method of ["GET", "POST", "PUT"]) await call(`${name} ${p}`, tokens[name]!, method, p, method === "POST" ? (p.includes("log") ? '{"did":"x"}' : setBody) : null);
+      await call(`${name} side`, tokens[name]!, "POST", "/api/v1/side", ask);
+      await call(`${name} lab`, tokens[name]!, "GET", "/api/v2/lab/engines", null);
+      await call(`${name} bad json`, tokens[name]!, "POST", "/api/v2/plugin/state", "{");
+      await call(`${name} no key`, tokens[name]!, "POST", "/api/v2/plugin/state", '{"value":1}');
+      await call(`${name} remove`, tokens[name]!, "POST", "/api/v2/plugin/state", '{"key":"count","value":null}');
+      await call(`${name} big value`, tokens[name]!, "POST", "/api/v2/plugin/state", JSON.stringify({ key: "k", value: "x".repeat(70 * 1024) }));
+      await call(`${name} big record`, tokens[name]!, "POST", "/api/v2/plugin/log", JSON.stringify({ r: "x".repeat(70 * 1024) }));
+      await call(`${name} read`, tokens[name]!, "GET", "/api/v2/plugin/state", null);
+    }
+
     if (process.env.LIVE_MATRIX_WRITE === "1") writeFileSync(SNAPSHOT, JSON.stringify(rows, null, 1) + "\n");
     const want = JSON.parse(readFileSync(SNAPSHOT, "utf8")) as string[];
     assert.equal(rows.length, want.length, "same number of rows");

@@ -14,15 +14,19 @@
 // What `ask` covers: POST /api/v1/side (always an ephemeral read-only side session tagged with the page: no
 // conversation, no chat-list entry, no writes; `persist` is refused), and reading/stopping the sessions that token
 // started. Nothing else is reachable with it.
+// What `state` and `log` cover (change 1.2, server/pluginState.ts): GET/POST /api/v2/plugin/state and POST
+// /api/v2/plugin/log, always for the token's own page (the plugin id), never another; records in the one log.
 import { createHmac, createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { readFileSync, statSync } from "node:fs";
 import { request as httpRequest } from "node:http";
-import { LIVE_LIMITS, LIVE_REQUEST_HEADERS, parseLiveNeeds } from "../src/liveBridge";
+import { LIVE_LIMITS, LIVE_REQUEST_HEADERS, allowRate, parseLiveNeeds } from "../src/liveBridge";
 import { LIVE_SERVICES, serviceOfCap, type LiveService } from "../src/liveServices";
 import { loadConfig } from "./config";
 import { phoneToken } from "./auth";
 import { withinVault } from "./phoneData";
 import { labCall } from "./labProxy";
+import { PLUGIN_LIMITS, stateQuery } from "../src/pluginRecords";
+import { appendPluginLog, awaitPluginState, setPluginState } from "./pluginState";
 
 export type LiveOut = { status: number; body: unknown };
 type Claims = { p: string; h: string; c: string[]; e: number; j: string };
@@ -127,7 +131,7 @@ const reply = (u: Upstream): LiveOut => ({ status: 200, body: { ok: true, status
 const json = (status: number, v: unknown): Upstream => ({ status, headers: { "content-type": "application/json" }, body: Buffer.from(JSON.stringify(v)) });
 
 /** One call a granted service's route matched: what its handler gets. */
-type Call = { c: Claims; own: Set<string>; method: "GET" | "POST"; path: string; headers: Record<string, string>; body: Buffer | null; vaultParam: string | null };
+type Call = { vault: string; c: Claims; own: Set<string>; method: "GET" | "POST"; path: string; headers: Record<string, string>; body: Buffer | null; vaultParam: string | null };
 /** A service's box side: its answer, or null when it does not take this call after all (the gateway goes on, then 403). */
 type Handler = (call: Call) => Promise<LiveOut | null>;
 
@@ -186,8 +190,37 @@ const voiceLabHandler: Handler = async ({ c, method, path, headers, body }) => {
   return out ? reply(out) : null;
 };
 
+/** Writes per page path in the last minute (state sets and log appends together). */
+const writeTimes = new Map<string, number[]>();
+const tooMany = (page: string): LiveOut | null => {
+  let times = writeTimes.get(page);
+  if (!times) writeTimes.set(page, (times = []));
+  return allowRate(times, PLUGIN_LIMITS.writesPerMinute) ? null : { status: 429, body: { error: `at most ${PLUGIN_LIMITS.writesPerMinute} writes a minute` } };
+};
+const written = (w: ReturnType<typeof setPluginState>): LiveOut => ("error" in w ? { status: w.status, body: { error: w.error } } : reply(json(200, { ok: true, seq: w.seq })));
+
+/** The plugin a token's page is: its vault path, spelled one way whichever view (viewer, chat, phone) asked. */
+const pluginId = (page: string) => page.replace(/\\/g, "/").replace(/^(?:\.\/)+/, "");
+
+/** `state`: the token's page reads its state (GET, `?after=<seq>&wait=<ms>`: when it changes) or sets one key (POST). */
+const stateHandler: Handler = async ({ vault, c, method, path, body }) => {
+  const m = /^\/api\/v2\/plugin\/state(?:\?(.*))?$/.exec(path);
+  if (!m) return null;
+  if (method === "GET") {
+    const { after, wait } = stateQuery(m[1] ?? "");
+    return reply(json(200, await awaitPluginState(vault, pluginId(c.p), after, wait)));
+  }
+  return tooMany(pluginId(c.p)) ?? written(setPluginState(vault, pluginId(c.p), body?.toString("utf8") ?? ""));
+};
+
+/** `log`: the token's page appends one record (the body) to the log. */
+const logHandler: Handler = async ({ vault, c, method, path, body }) => {
+  if (method !== "POST" || path !== "/api/v2/plugin/log") return null;
+  return tooMany(pluginId(c.p)) ?? written(appendPluginLog(vault, pluginId(c.p), body?.toString("utf8") ?? ""));
+};
+
 /** The box side of every registered box service that opens routes (src/liveServices.ts). */
-export const HANDLERS: Readonly<Record<string, Handler>> = { ask: askHandler, "voice-lab": voiceLabHandler };
+export const HANDLERS: Readonly<Record<string, Handler>> = { ask: askHandler, "voice-lab": voiceLabHandler, state: stateHandler, log: logHandler };
 
 /** The services a call may go to: granted by the token, opened by the box, with a declared route matching the call. */
 function servicesTaking(c: Claims, method: "GET" | "POST", path: string): LiveService[] {
@@ -223,7 +256,7 @@ export async function liveGateway(vault: string, vaultParam: string | null, b: R
   try {
     // In registry order (ask, then voice-lab): the first service that takes the call answers it.
     for (const s of servicesTaking(c, method, path)) {
-      const out = await HANDLERS[s.name]?.({ c, own, method, path, headers, body, vaultParam });
+      const out = await HANDLERS[s.name]?.({ vault, c, own, method, path, headers, body, vaultParam });
       if (out) return out;
     }
   } catch (e) {

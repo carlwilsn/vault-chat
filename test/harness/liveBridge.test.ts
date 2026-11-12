@@ -274,7 +274,7 @@ test("Carl's real pages (html-lab, voice-chat) declare the same grant as before 
 test("the registry: one entry per service, every box route has a handler, every page function exists", async () => {
   const { LIVE_SERVICES, serviceNamed, serviceOfCap, servicesFor } = await import("../../src/liveServices.ts");
   const { HANDLERS } = await import("../../server/liveProxy.ts");
-  assert.deepEqual(LIVE_SERVICES.map((s) => s.name), ["ask", "mic", "persist", "voice-lab", "theme"]);
+  assert.deepEqual(LIVE_SERVICES.map((s) => s.name), ["ask", "mic", "persist", "voice-lab", "theme", "state", "log"]);
   for (const s of LIVE_SERVICES) {
     assert.ok(s.description.length > 10, s.name);
     if (s.supplier === "box" && s.grantable && s.routes.length) assert.equal(typeof HANDLERS[s.name], "function", `${s.name} has a box handler`);
@@ -423,4 +423,82 @@ test("the host: the prompt lists the registry's lines, the grant is remembered p
   await tick();
   assert.match(u.posted.find((m: any) => m.id === 1)?.error ?? "", /not been allowed/);
   stop();
+});
+
+// ---- change 1.2: the state and log services ----
+
+test("state and log are registered services: declared, described, granted under their names", async () => {
+  const { parseLiveNeeds, describeCap } = await import("../../src/liveBridge.ts");
+  const { serviceNamed, servicesFor } = await import("../../src/liveServices.ts");
+  assert.deepEqual(parseLiveNeeds('<meta name="vc-capabilities" content="state, log, ask">'), { caps: ["ask", "log", "state"], refused: [] });
+  assert.deepEqual(parseLiveNeeds('<meta name="vc-capabilities" content="State">'), { caps: ["state"], refused: [] });
+  assert.equal(describeCap("state"), "Keep its own saved state on the box (the same in every place the page is open)");
+  assert.equal(describeCap("log"), "Add records of what it does to your vault's log");
+  assert.deepEqual(servicesFor(["state"]).map((s) => s.name), ["theme", "state"]);
+  const state = serviceNamed("state")!;
+  const ok = (m: "GET" | "POST", p: string) => state.routes.some((r) => r.methods.includes(m) && r.path.test(p));
+  assert.ok(ok("GET", "/api/v2/plugin/state") && ok("GET", "/api/v2/plugin/state?after=3&wait=20000") && ok("POST", "/api/v2/plugin/state"));
+  assert.ok(!ok("POST", "/api/v2/plugin/state?x=1") && !ok("GET", "/api/v2/plugin/state/../log") && !ok("GET", "/api/v2/plugin/states"));
+});
+
+test("vc.state and vc.log are fetches to the page's own routes; subscribe hears each change once and stops when told", async () => {
+  const src = /<script data-vc-live-script>([\s\S]*?)<\/script>/.exec(liveScript())![1]!;
+  let onMsg: ((e: any) => void) | null = null;
+  const parent = { postMessage() {} };
+  const win: any = { innerWidth: 300, innerHeight: 200, document: { documentElement: { style: { setProperty() {} } } }, parent };
+  vm.runInNewContext(src, { ...win, window: win, parent, setInterval: () => 1, clearInterval() {}, setTimeout, addEventListener: (k: string, f: any) => k === "message" && (onMsg = f), Promise, Symbol, Headers: class {}, Response: class {}, Blob: class {}, TextEncoder, JSON, Error });
+  const vc = win.vc;
+  const calls: [string, any][] = [];
+  let st: { seq: number; state: any } = { seq: 0, state: {} };
+  const waiters: (() => void)[] = [];
+  const resp = (status: number, j: any) => ({ ok: status < 300, status, json: async () => j });
+  vc.fetch = async (p: string, i: any = {}) => {
+    calls.push([p, i]);
+    if (p === "/api/v2/plugin/state" && i.method === "POST") {
+      const b = JSON.parse(i.body);
+      st = { seq: st.seq + 1, state: { ...st.state, [b.key]: b.value } };
+      waiters.splice(0).forEach((w) => w());
+      return resp(200, { ok: true, seq: st.seq });
+    }
+    if (p.startsWith("/api/v2/plugin/state")) {
+      const after = Number(/after=(-?\d+)/.exec(p)?.[1] ?? NaN);
+      if (after === st.seq) await new Promise<void>((r) => waiters.push(r));
+      return resp(200, st);
+    }
+    if (p === "/api/v2/plugin/log") return resp(200, { ok: true, seq: 99 });
+    return resp(403, { error: "this page was not allowed to do that" });
+  };
+  onMsg!({ source: parent, data: { "vc-live": 1, ev: "env", caps: ["log", "state"], services: [{ name: "theme" }, { name: "state" }, { name: "log" }], refused: [], mode: "dark" } });
+  assert.equal(vc.service("state"), vc.state);
+  assert.equal(vc.service("log"), vc.log);
+  assert.equal(vc.log.append, vc.log);
+  const heard: any[] = [];
+  const stop = vc.state.subscribe((s: any, seq: number) => heard.push([seq, JSON.stringify(s)]));
+  const tick = () => new Promise((r) => setTimeout(r, 5));
+  await tick();
+  assert.deepEqual(heard, [[0, "{}"]], "the current state at once");
+  assert.equal(await vc.state.set("count", 1), 1);
+  await tick();
+  assert.equal(await vc.state.set("count", 2), 2);
+  await tick();
+  assert.deepEqual(heard, [[0, "{}"], [1, '{"count":1}'], [2, '{"count":2}']]);
+  assert.equal(await vc.state.get("count"), 2);
+  assert.equal(JSON.stringify(await vc.state()), '{"count":2}');
+  stop();
+  await vc.state.set("count", 3);
+  await tick();
+  assert.equal(heard.length, 3, "nothing after unsubscribe");
+  assert.equal(await vc.log({ did: "click" }), 99);
+  const posts = calls.filter(([, i]) => i.method === "POST").map(([p, i]) => [p, i.body, i.headers["content-type"]]);
+  assert.deepEqual(posts, [
+    ["/api/v2/plugin/state", '{"key":"count","value":1}', "application/json"],
+    ["/api/v2/plugin/state", '{"key":"count","value":2}', "application/json"],
+    ["/api/v2/plugin/state", '{"key":"count","value":3}', "application/json"],
+    ["/api/v2/plugin/log", '{"did":"click"}', "application/json"],
+  ]);
+  assert.ok(calls.some(([p]) => p === "/api/v2/plugin/state?after=-1&wait=20000"));
+  // A refused call rejects with the box's reason.
+  vc.fetch = async () => resp(403, { error: "this page was not allowed to do that" });
+  await assert.rejects(vc.state.set("k", 1), /not allowed/);
+  await assert.rejects(vc.log("x"), /not allowed/);
 });

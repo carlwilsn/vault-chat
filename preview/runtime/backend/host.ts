@@ -8,6 +8,7 @@ import { gitDirty } from "./memgit";
 import { MemoryBox } from "../../../src/convlog/memoryBox";
 import { answerComplete } from "../llm";
 import { parseLiveNeeds } from "../../../src/liveBridge";
+import { foldPluginState, logSignal, stateQuery, stateSignal, type PluginState } from "../../../src/pluginRecords";
 
 /** [roleplay] A REAL box behind the preview: a scenario whose box is http://realbox.localhost sends every box request
  *  to the dev server's /__realbox proxy (VC_REALBOX, e.g. an ssh tunnel to a throwaway test instance), so the real
@@ -23,6 +24,30 @@ async function realBox(url: string, method: string, body?: string): Promise<{ st
 /** The box's side threads (server/engine/pi/side.ts): Ctrl+K / Ctrl+L and the one-shots, answered by the scenario's scripts. */
 type PreviewSide = { sys: string; text: string; v: number; done: boolean; error: string | null; wait: Promise<void> };
 const sides = new Map<string, PreviewSide>();
+
+/** The fake box's plugin records (server/pluginState.ts): one log of plugin.* signals, folded the box's way. */
+const pluginLog: { seq: number; type: "signal"; signal: Record<string, unknown> }[] = [];
+const pluginStates = new Map<string, PluginState>();
+const pluginWaiters = new Set<() => void>();
+async function pluginCall(page: string, method: string, path: string, body: string): Promise<{ status: number; body: string }> {
+  const out = (status: number, v: unknown) => ({ status, body: JSON.stringify(v) });
+  const st = /^\/api\/v2\/plugin\/state(?:\?(.*))?$/.exec(path);
+  if (st && method === "GET") {
+    const { after, wait } = stateQuery(st[1] ?? "");
+    const now = () => pluginStates.get(page) ?? { seq: 0, state: {} };
+    const t0 = Date.now();
+    while (after !== null && now().seq === after && Date.now() - t0 < wait) await new Promise<void>((r) => { pluginWaiters.add(r); setTimeout(r, wait); });
+    return out(200, now());
+  }
+  const sig = st && method === "POST" ? stateSignal(page, body) : path === "/api/v2/plugin/log" && method === "POST" ? logSignal(page, body) : null;
+  if (!sig) return out(403, { error: "this page was not allowed to do that" });
+  if ("error" in sig) return out(sig.status, { error: sig.error });
+  const rec = { seq: pluginLog.length + 1, type: "signal" as const, signal: sig as unknown as Record<string, unknown> };
+  pluginLog.push(rec);
+  foldPluginState(pluginStates, rec);
+  for (const w of [...pluginWaiters]) { pluginWaiters.delete(w); w(); }
+  return out(200, { ok: true, seq: rec.seq });
+}
 
 export type BoxReport = {
   configured: boolean;
@@ -545,10 +570,17 @@ export const hostCommands: Record<string, (a: Record<string, any>) => unknown> =
       for (let i = 0; i < html.length; i++) h = (h * 31 + html.charCodeAt(i)) | 0;
       const isManifest = path.endsWith("manifest");
       if (!caps.length && !(isManifest && refused.length)) return { status: 404, body: JSON.stringify({ error: "not a live page" }) };
-      return { status: 200, body: JSON.stringify(isManifest ? { caps, hash: String(h), ...(refused.length ? { refused } : {}) } : { token: "preview-token", exp: Date.now() + 900_000 }) };
+      // The token names its page (the plugin id the box takes from a real token's claims).
+      return { status: 200, body: JSON.stringify(isManifest ? { caps, hash: String(h), ...(refused.length ? { refused } : {}) } : { token: `preview-token|${String(b.path ?? "")}`, exp: Date.now() + 900_000 }) };
     }
     if (path === "/api/v2/live/fetch") {
-      if (b.token !== "preview-token") return { status: 401, body: JSON.stringify({ error: "bad token" }) };
+      if (typeof b.token !== "string" || !b.token.startsWith("preview-token|")) return { status: 401, body: JSON.stringify({ error: "bad token" }) };
+      if (String(b.path).startsWith("/api/v2/plugin/")) {
+        // state / log (change 1.2): the page's own records, as the box keeps them.
+        const r = await pluginCall(b.token.slice("preview-token|".length), String(b.method), String(b.path), atob(String(b.bodyBase64 || "")));
+        if (r.status !== 200) return { status: r.status, body: r.body };
+        return { status: 200, body: JSON.stringify({ ok: true, status: 200, headers: { "content-type": "application/json" }, bodyBase64: btoa(r.body) }) };
+      }
       if (String(b.path).startsWith("/api/v2/lab/")) {
         // The voice lab: the dev server runs the real lab proxy against the real local service.
         const r = await fetch(`${import.meta.env.BASE_URL}__preview/lab`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ method: b.method, path: b.path, headers: b.headers, bodyBase64: b.bodyBase64 }) });

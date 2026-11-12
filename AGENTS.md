@@ -45,5 +45,5 @@ phone web app, iPad whiteboard and voice. It is not AgentOS.
 - Live pages (src/liveBridge.ts): a vault .html that declares `<meta name="vc-capabilities" content="ask, mic">` gets `window.vc` after Carl's one-time Allow
   (per path + content hash): `vc.ask(prompt,{system})` streams an ephemeral read-only AI reply (`for await`, `.text()`), `vc.fetch(path, init)` reaches only what the
   granted capabilities cover (box-checked token), `vc.mic()`/`vc.play()`, `vc.theme`/`vc.size`; no `<form>` (sandboxed), buttons + keydown. The services a page may name
-  (ask, mic, voice-lab = `tool:voice-lab.*`, persist (refused for now), theme) are declared once in src/liveServices.ts; an unknown
-  name is refused (`vc.refused`); `vc.services` lists what was granted, `vc.service(name)` returns its function. Example: .vault-chat/visuals/live-chat-demo.html.
+  (ask, mic, voice-lab = `tool:voice-lab.*`, persist (refused for now), theme, state, log) are declared once in src/liveServices.ts; an unknown
+  name is refused (`vc.refused`); `vc.services` lists what was granted, `vc.service(name)` returns its function. `state`: `vc.state.get/set/subscribe`, the page's own state as plugin.state records in the box's one log (src/pluginRecords.ts, server/pluginState.ts), the same in every view; `log`: `vc.log(record)` appends a plugin.log record. Example: .vault-chat/visuals/live-chat-demo.html.

@@ -13,6 +13,8 @@ import THEME_HTML from "./page-theme.html?raw";
 import LIVE_HTML from "./live-chat-demo.html?raw";
 // A copy of the vault page .vault-chat/visuals/voice-lab.html (tool:voice-lab.*, mic): its calls reach the real lab service.
 import LAB_HTML from "./voice-lab.html?raw";
+// A counter that keeps its number with the state service (change 1.2): every view of it shows the same number.
+import STATE_HTML from "./page-state.html?raw";
 
 const CONV = "c-visual-bfs";
 const PATH = ".vault-chat/visuals/bfs-closest-pair.svg";
@@ -264,6 +266,45 @@ export const visualScenarios: Scenario[] = [
     llm: { scripts: [{ id: "live-ask", match: /./, steps: [{ text: "Hi! I'm answering through vc.ask: an ephemeral, read-only side session on the box, streamed into this page. Nothing here touched your vault or your chat list." }] }] },
     activeConversation: "c-live-page",
     open: [{ file: ".vault-chat/visuals/live-chat-demo.html" }, { sleep: 1500 }],
+    surfaces: ["desktop"],
+  },
+  {
+    id: "page-state",
+    title: "Page state — a counter page keeps its number in the box's log (vc.state): the chat's copy and the viewer show one counter",
+    group: "Chat",
+    notes:
+      "The page declares state, log. After the one-time Allow, +1 in the chat's inline copy sets the count through vc.state.set; Open in viewer mounts a second view that reads the same state; +1 there, close the viewer, and the chat's copy shows the new number (vc.state.subscribe).",
+    build: (ctx: BuildCtx) => {
+      ctx.write(".vault-chat/visuals/counter.html", STATE_HTML);
+      ctx.conversations([{
+        id: "c-page-state", title: "Counter page", source: "manual", status: "idle", unread: false,
+        createdAt: ctx.now - 5 * MIN, lastActivityAt: ctx.now - MIN,
+        messages: [
+          { role: "user", content: "make me a click counter that is the same everywhere I open it" },
+          { role: "assistant", content: "Here it is; its number lives on the box:\n\n![Counter](.vault-chat/visuals/counter.html)" },
+        ],
+      }]);
+    },
+    host: (now: number) => ({
+      sync: {
+        box: { box: "https://thinkbox.tail0a1b2.ts.net", vault: "summer-demo" },
+        boxChat: {
+          convs: {
+            "c-page-state": {
+              title: "Counter page", source: "manual", status: "idle",
+              meta: { unread: false, createdAt: now - 5 * MIN, lastActivityAt: now - MIN },
+              messages: [
+                { role: "user", content: "make me a click counter that is the same everywhere I open it" },
+                { role: "assistant", content: "Here it is; its number lives on the box:\n\n![Counter](.vault-chat/visuals/counter.html)" },
+              ],
+            },
+          } as any,
+          steps: [],
+        },
+      },
+    }),
+    activeConversation: "c-page-state",
+    open: [{ chat: true }, { conversation: "c-page-state" }, { sleep: 1200 }],
     surfaces: ["desktop"],
   },
   {
