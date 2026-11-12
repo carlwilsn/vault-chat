@@ -9,6 +9,7 @@ import { cn } from "./lib/utils";
 import { isUnreadableAsText } from "./fileKind";
 import { revealInFileExplorer } from "./opener";
 import { commitFsAction } from "./commit-controller";
+import { entryName } from "./entryName";
 
 type PendingKind = "file" | "folder";
 type Menu = { x: number; y: number; entry: FileEntry | null } | null;
@@ -709,7 +710,7 @@ function VaultTree() {
 
   const commitRename = async () => {
     if (!renaming) return;
-    const next = renaming.value.trim();
+    const next = entryName(renaming.value) ?? "";
     const cur = renaming.path.split("/").pop() ?? "";
     if (!next || next === cur) {
       setRenaming(null);
