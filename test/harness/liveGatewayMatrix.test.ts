@@ -68,6 +68,10 @@ test("the gateway's allow/deny matrix and the manifest parser are unchanged", as
   mkdirSync(vault);
   // The loopback goes to this fake box, with a made-up app token (never the real one, never a live port).
   writeFileSync(join(dir, "token"), "test-app-token");
+  // Hermetic: whatever VC_* the runner has (a ship gate sets ports, voice ports, state dirs) must not shape this config.
+  for (const k of Object.keys(process.env)) if (k.startsWith("VC_")) delete process.env[k];
+  process.env.VC_STATE_DIR = join(dir, "state");
+  process.env.VC_VAULT = vault;
   process.env.VC_PORT = String(boxPort);
   process.env.VC_TOKEN_FILE = join(dir, "token");
   process.env.VC_VOICE_PORT = String(labPort); // never bound here; loadConfig wants one named off the live ports
