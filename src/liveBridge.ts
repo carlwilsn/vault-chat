@@ -329,6 +329,9 @@ function askCarl(doc: Document, frame: HTMLIFrameElement, page: string, caps: st
 export function installLiveBridge(host: LiveHost, doc: Document = document): () => void {
   const win = doc.defaultView!;
   const pages = new WeakMap<Window, PageState>();
+  // One prompt per page path + content hash, however many frames/handshakes ask at once (viewer + chat copy, remounts).
+  const asking = new Map<string, Promise<boolean>>();
+  const declined = new Set<string>();
 
   const frameOf = (w: MessageEventSource | null): HTMLIFrameElement | null => {
     if (!w) return null;
@@ -365,12 +368,23 @@ export function installLiveBridge(host: LiveHost, doc: Document = document): () 
     const hash = String(m.json?.hash ?? "");
     if (m.status !== 200 || !caps.length || !hash) return null;
     if (!grantedFor(page, hash, caps)) {
-      if (st.denied && !fresh) return null;
-      if (!(await askCarl(doc, f, page, caps))) {
+      const key = grantKey(page, hash);
+      if ((st.denied || declined.has(key)) && !fresh) return null;
+      if (fresh) declined.delete(key);
+      let q = asking.get(key);
+      if (!q) {
+        q = askCarl(doc, f, page, caps).then((ok) => {
+          asking.delete(key);
+          if (ok) saveGrant(page, hash, caps);
+          else declined.add(key);
+          return ok;
+        });
+        asking.set(key, q);
+      }
+      if (!(await q)) {
         st.denied = true;
         return null;
       }
-      saveGrant(page, hash, caps);
     }
     const t = await host.post("/api/v2/live/token", { path: page, hash, caps });
     if (t.status !== 200 || !t.json?.token) return null;

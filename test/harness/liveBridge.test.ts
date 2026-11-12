@@ -198,3 +198,55 @@ test("vc.tool names only the voice lab and becomes a fetch to its route", () => 
   assert.equal(calls[0][1].headers["content-type"], "application/json");
   return win.vc.tool("other.thing").then(() => assert.fail("should reject"), (e: Error) => assert.match(e.message, /unknown tool/));
 });
+
+test("one grant prompt per page path + hash, however many frames handshake at once; a decline is remembered", async () => {
+  const { installLiveBridge } = await import("../../src/liveBridge.ts");
+  const prompts: any[] = [];
+  const listeners: Record<string, (e: any) => void> = {};
+  const mkFrame = () => {
+    const posted: any[] = [];
+    const cw = { postMessage: (m: any) => posted.push(m) };
+    return { posted, cw, getAttribute: () => "pages/lab.html", contentWindow: cw, getBoundingClientRect: () => ({ left: 0, top: 0, width: 400, height: 300 }) };
+  };
+  const frames = [mkFrame(), mkFrame()];
+  const mkEl = (): any => {
+    const el: any = { style: {}, children: [] as any[], attrs: {} as any, setAttribute(k: string, v: string) { el.attrs[k] = v; }, append(...c: any[]) { el.children.push(...c); }, remove() { el.removed = true; } };
+    return el;
+  };
+  const doc: any = {
+    defaultView: {
+      getComputedStyle: () => ({ getPropertyValue: () => "" }),
+      MutationObserver: class { observe() {} disconnect() {} },
+      addEventListener: (k: string, fn: any) => { listeners[k] = fn; },
+      removeEventListener() {},
+      innerHeight: 800,
+    },
+    documentElement: { dataset: {} },
+    createElement: () => mkEl(),
+    body: { append: (b: any) => { if (b.attrs["data-el"] === "live-grant") prompts.push(b); } },
+    querySelectorAll: () => frames,
+  };
+  const host = { post: async (p: string) => (p.endsWith("manifest") ? { status: 200, json: { caps: ["ask"], hash: "h1" } } : { status: 200, json: { token: "t", exp: Date.now() + 600_000 } }) };
+  const store: Record<string, string> = {};
+  (globalThis as any).localStorage = { getItem: (k: string) => store[k] ?? null, setItem: (k: string, v: string) => { store[k] = v; } };
+  (globalThis as any).window = { innerHeight: 800 };
+  const stop = installLiveBridge(host as any, doc);
+  const hello = (f: any) => listeners.message({ data: { "vc-live": 1, op: "hello" }, origin: "null", source: f.cw });
+  const tick = () => new Promise((r) => setTimeout(r, 10));
+  hello(frames[0]);
+  hello(frames[1]);
+  hello(frames[0]);
+  await tick();
+  assert.equal(prompts.length, 1, "two frames, one prompt");
+  // Not now: nobody asks again, even a fresh handshake from a remounted frame.
+  const deny = prompts[0].children[2].children[0];
+  deny.onclick();
+  await tick();
+  const third = mkFrame();
+  frames.push(third);
+  hello(third);
+  hello(frames[1]);
+  await tick();
+  assert.equal(prompts.length, 1, "no second prompt after Not now");
+  stop();
+});
