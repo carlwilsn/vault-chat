@@ -34,6 +34,7 @@ import { projectForSend } from "./projects";
 import { useStore, type ChatAttachment, type ChatMessage, type FileUpload, type LiveTool } from "./store";
 import { readBoxConfig, boxSyncNow } from "./vaultSync";
 import { boxFileChanged } from "./liveReload";
+import { foldSupervisorRecords } from "./pluginSupervisorApp";
 import type { Conversation } from "./conversations";
 import type { LogRecord, PollAnswer } from "./convlog/protocol";
 import { emptyPicture, emptyRow, foldInto, pendingOf, reduceRow, type Picture, type RowState } from "./convlog/reduce";
@@ -535,6 +536,8 @@ class BoxChatSession {
   apply(records: LogRecord[]): void {
     const touched = new Set<string>();
     const byConv = new Map<string, LogRecord[]>();
+    // The plugins' desired-state records (src/pluginSupervisorApp.ts): every view of a plugin follows them.
+    foldSupervisorRecords(records);
     for (const r of records) {
       if (r.conv === null) {
         this.signal(r.type === "signal" ? r.signal : {});

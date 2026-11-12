@@ -6,7 +6,14 @@
 // same way (a `mount` export, `default.mount`, or a default function). `mount` may return a cleanup function (or a
 // promise of one); unmount runs it.
 //
-//   api: size() → {w, h}, onResize(fn), theme {mode, vars}, onTheme(fn), path
+//   api: size() → {w, h}, onResize(fn), theme {mode, vars}, onTheme(fn), path,
+//        listen(target, type, fn, opts) → off, timer(fn, ms, repeat?) → cancel, effect(undo) → undo now   (change 1.6)
+//
+// Everything a run does to the app is a revertible effect (src/pluginSupervisor.ts Effects): its markup, the host's
+// listeners and observer, the module's URL, the plugin's own listeners and timers made through the api, its cleanup.
+// Unmount (the supervisor stopping it, the page closing, a failure, a reload) reverts them newest first, so a stopped
+// plugin leaves nothing behind. (A listener the plugin adds with window.addEventListener itself is its own to remove in
+// its cleanup; through api.listen the host removes it.)
 //
 // The error boundary: whatever the plugin throws (the module failing to parse or load, mount throwing or rejecting, a
 // callback the host runs, or later on its own from a handler or timer, told apart by the module's URL) is caught,
@@ -15,6 +22,7 @@
 // Pages without the declaration are iframes exactly as before (HtmlView, InlineHtmlFrame).
 
 import { LIVE_THEME_VARS } from "./liveBridge";
+import { Effects } from "./pluginSupervisor";
 
 export type PluginTheme = { mode: "light" | "dark"; vars: Record<string, string> };
 export type PluginApi = {
@@ -24,6 +32,12 @@ export type PluginApi = {
   onResize(fn: (size: { w: number; h: number }) => void): void;
   theme: PluginTheme;
   onTheme(fn: (theme: PluginTheme) => void): void;
+  /** addEventListener on any target, removed when the plugin stops. Returns a function that removes it now. */
+  listen(target: EventTarget, type: string, fn: (e: any) => void, opts?: boolean | AddEventListenerOptions): () => void;
+  /** setTimeout (or setInterval with `repeat`), cleared when the plugin stops. Returns a function that clears it now. */
+  timer(fn: () => void, ms: number, repeat?: boolean): () => void;
+  /** Any other effect: `undo` runs when the plugin stops (newest first). Returns a function that runs it now. */
+  effect(undo: () => void): () => void;
 };
 /** Load the module's code: the module, the URL it was loaded from (errors name it), and a release of that URL. */
 export type LoadModule = (code: string) => Promise<{ module: any; url: string; dispose(): void }>;
@@ -35,6 +49,8 @@ export type PluginHandle = {
   setTheme(theme: PluginTheme): void;
   reload(): Promise<void>;
   unmount(): void;
+  /** What the current run still has in effect on the app (labels; empty once it is unmounted). */
+  readonly effects: readonly string[];
 };
 type Win = Pick<Window, "addEventListener" | "removeEventListener"> & { DOMParser: typeof DOMParser };
 
@@ -98,8 +114,8 @@ export function mountPlugin(
   let gen = 0;
   let error: string | null = null;
   let theme = opts.theme();
-  // What the current run holds, undone by stop().
-  type Run = { cleanup: (() => void) | null; url: string; dispose: () => void; resizeFns: ((s: { w: number; h: number }) => void)[]; themeFns: ((t: PluginTheme) => void)[]; ro: ResizeObserver | null };
+  // What the current run holds: its effects, undone by stop() newest first.
+  type Run = { effects: Effects; url: string; resizeFns: ((s: { w: number; h: number }) => void)[]; themeFns: ((t: PluginTheme) => void)[] };
   let run: Run | null = null;
   let parts: ReturnType<typeof pluginParts> | null = null;
 
@@ -118,16 +134,7 @@ export function mountPlugin(
   const stop = () => {
     const r = run;
     run = null;
-    win.removeEventListener("error", onWinError as EventListener);
-    win.removeEventListener("unhandledrejection", onRejection as EventListener);
-    if (!r) return;
-    r.ro?.disconnect();
-    try {
-      r.cleanup?.();
-    } catch {
-      /* its cleanup is its own; it is being taken down anyway */
-    }
-    r.dispose();
+    r?.effects.revert();
   };
   const clear = () => {
     while (shadow.firstChild) shadow.removeChild(shadow.firstChild);
@@ -186,10 +193,13 @@ export function mountPlugin(
       if (!parts.code.trim()) throw new Error('the page has no <script type="module"> exporting mount(el, api)');
       const loaded = await load(parts.code);
       if (my !== gen) return loaded.dispose();
-      const r: Run = { cleanup: null, url: loaded.url, dispose: loaded.dispose, resizeFns: [], themeFns: [], ro: null };
+      const fx = new Effects();
+      const r: Run = { effects: fx, url: loaded.url, resizeFns: [], themeFns: [] };
       run = r;
-      win.addEventListener("error", onWinError as EventListener);
-      win.addEventListener("unhandledrejection", onRejection as EventListener);
+      fx.add("module", loaded.dispose);
+      fx.add("markup", clear);
+      fx.listen(win, "error", onWinError);
+      fx.listen(win, "unhandledrejection", onRejection);
       const m = loaded.module ?? {};
       const f = typeof m.mount === "function" ? m.mount : m.default && typeof m.default.mount === "function" ? m.default.mount : typeof m.default === "function" ? m.default : null;
       if (!f) throw new Error("the module exports no mount(el, api)");
@@ -202,13 +212,17 @@ export function mountPlugin(
           return theme;
         },
         onTheme: (fn) => void (typeof fn === "function" && r.themeFns.push(fn)),
+        // The plugin's own effects: guarded (a throw is its failure, not the app's) and reverted when it stops.
+        listen: (target, type, fn, o) => (run === r ? fx.listen(target, String(type), guard(fn), o) : () => {}),
+        timer: (fn, ms, repeat) => (run === r ? fx.timer(guard(fn), Math.max(0, Number(ms) || 0), !!repeat) : () => {}),
+        effect: (undo) => (run === r && typeof undo === "function" ? fx.add("effect", undo) : () => {}),
       };
       if (typeof ResizeObserver !== "undefined") {
         const ro = new ResizeObserver(guard(() => {
           for (const fn of r.resizeFns) fn(size());
         }));
         ro.observe(root);
-        r.ro = ro;
+        fx.add("resize observer", () => ro.disconnect());
       }
       let out = f.call(m, root, api);
       if (out && typeof out.then === "function") out = await out;
@@ -217,7 +231,7 @@ export function mountPlugin(
         if (typeof out === "function") guard(out)();
         return;
       }
-      if (typeof out === "function") r.cleanup = out;
+      if (typeof out === "function") fx.add("cleanup", out);
     } catch (e) {
       if (my === gen) fail(e);
     }
@@ -240,6 +254,9 @@ export function mountPlugin(
       if (r) guard(() => { for (const fn of r.themeFns) fn(t); })();
     },
     reload,
+    get effects() {
+      return run?.effects.live ?? [];
+    },
     unmount() {
       gen++;
       stop();

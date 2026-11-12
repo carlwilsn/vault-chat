@@ -262,6 +262,22 @@ test("the gateway's allow/deny matrix and the manifest parser are unchanged", as
       await call(`${name} intent`, tokens[name]!, "POST", "/api/v2/intent", '{"type":"start","text":"hi"}');
       await call(`${name} conversations`, tokens[name]!, "GET", "/api/v2/conversations", null);
     }
+    // ---- change 1.6 (supervisor): rows added after the ones above, which stay exactly as they were ----
+    // Every page turned off (a plugin.desired record): no token, and every call of every token refused before it
+    // reaches anything (nothing upstream); turned on again, the same tokens work as above.
+    const { setPluginDesired } = await import("../../server/supervisor.ts");
+    const stopPaths = ["/api/v1/side", "/api/v2/lab/engines", "/api/v2/plugin/state", "/api/v2/plugin/log", "/api/v2/intent", "/api/v2/conversations", "/"];
+    const all = Object.keys(tokens).filter((n) => n !== "ask");
+    for (const name of all) rows.push(`stop ${name} -> ${setPluginDesired(vault, { plugin: `${name}.html`, state: "stopped" }, "carl").status}`);
+    for (const name of all) {
+      const m = liveManifest(vault, `${name}.html`)!;
+      rows.push(`token ${name} stopped -> ${liveToken(vault, { path: `${name}.html`, hash: m.hash, caps: m.caps }).status}`);
+      for (const p of stopPaths) for (const method of ["GET", "POST"]) await call(`${name} stopped ${p}`, tokens[name]!, method, p, method === "POST" ? "{}" : null);
+    }
+    for (const name of all) rows.push(`start ${name} -> ${setPluginDesired(vault, { plugin: `${name}.html`, state: "running" }, "carl").status}`);
+    const from2 = rows.length;
+    for (const name of all) await call(`${name} running again`, tokens[name]!, "POST", "/api/v1/side", ask);
+    for (let i = from2; i < rows.length; i++) rows[i] = rows[i]!.replace(/"id":"s\d+"/g, '"id":"<s>"');
 
     if (process.env.LIVE_MATRIX_WRITE === "1") writeFileSync(SNAPSHOT, JSON.stringify(rows, null, 1) + "\n");
     const want = JSON.parse(readFileSync(SNAPSHOT, "utf8")) as string[];

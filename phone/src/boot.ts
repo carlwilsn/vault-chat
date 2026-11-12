@@ -14,6 +14,7 @@ import { VoiceLogShipper } from "../../src/voiceShip";
 import { BrainConversation } from "../../src/voiceBrainClient";
 import { WaitTracker, calibFrom, renderWaitLine, waitInputs, type WaitCalib } from "../../src/voiceWaitLine";
 import type { LogRecord } from "../../src/convlog/protocol";
+import { pluginIdOf } from "../../src/pluginSupervisor";
 import { emptyPicture, emptyRow, foldInto, pendingOf, reduceRow, shown, type Picture, type RowState } from "../../src/convlog/reduce";
 import { RETRY_TEXT, makeChatView, type ChatView } from "../../src/convlog/view";
 import { filesLine, splitFilesLine } from "../../src/filesLine";
@@ -1281,6 +1282,16 @@ export function boot(): void {
       } catch { offlineStreak++; if (offlineStreak >= 2) setOffline(true); await new Promise((res) => setTimeout(res, 3000)); }
     }
   }
+  function reloadPluginFrames(plugin: string, seq: number) {
+    for (const f of Array.from(document.querySelectorAll<HTMLIFrameElement>("iframe[data-vc-live]"))) {
+      if (pluginIdOf(f.getAttribute("data-vc-live") ?? "") !== pluginIdOf(plugin)) continue;
+      try {
+        const u = new URL(f.src, location.href);
+        u.searchParams.set("sv", String(seq));
+        f.src = u.pathname + u.search;
+      } catch { /* not a URL this phone can reload */ }
+    }
+  }
   function applyRecords(recs: LogRecord[]) {
     let mineChanged = false;
     let listChanged = false;
@@ -1297,6 +1308,9 @@ export function boot(): void {
           listChanged = true;
         }
         else if (s.type === "show" && s.to === "phone" && s.id) void showOnPhone(s);
+        // A plugin turned off or on (change 1.6, src/pluginSupervisor.ts): its copies here load again; the box serves a
+        // stopped plugin's page as the one "turned off" line, and the page itself once it runs again.
+        else if (s.type === "plugin.desired" && typeof s.plugin === "string") reloadPluginFrames(s.plugin, rec.seq);
         // Carl asked to work in another thread (the agent's OpenProject): the phone follows.
         else if (s.type === "follow" && typeof s.convId === "string" && s.convId) { void loadProjects(); if (s.convId !== convId) void openThread(s.convId, typeof s.title === "string" ? s.title : undefined); }
         continue;

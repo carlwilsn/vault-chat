@@ -32,6 +32,7 @@ import { PLUGIN_LIMITS, stateQuery } from "../src/pluginRecords";
 import { appendPluginLog, awaitPluginState, setPluginState } from "./pluginState";
 import { converseAfter, converseIntent } from "../src/pluginConverse";
 import { pluginCatalog } from "./pluginCatalog";
+import { measurePluginCall, pluginStopped } from "./supervisor";
 
 export type LiveOut = { status: number; body: unknown };
 type Claims = { p: string; h: string; c: string[]; e: number; j: string };
@@ -67,6 +68,8 @@ export function liveToken(vault: string, b: { path?: unknown; hash?: unknown; ca
   if (unknown) return { status: 403, body: { error: `no such service: ${unknown}` } };
   if (!m || !m.caps.length) return { status: 404, body: { error: "not a live page" } };
   if (b.hash !== m.hash || caps.join(",") !== m.caps.join(",")) return { status: 409, body: { error: "the page changed since it was allowed" } };
+  // A stopped plugin (change 1.6, server/supervisor.ts) gets nothing from the box.
+  if (pluginStopped(vault, String(b.path))) return { status: 403, body: { error: "this page is turned off" } };
   const exp = Date.now() + LIVE_LIMITS.tokenSeconds * 1000;
   const claims: Claims = { p: String(b.path), h: m.hash, c: caps, e: exp, j: randomUUID() };
   const payload = b64(JSON.stringify(claims));
@@ -260,6 +263,8 @@ function servicesTaking(c: Claims, method: "GET" | "POST", path: string): LiveSe
 export async function liveGateway(vault: string, vaultParam: string | null, b: Record<string, unknown>): Promise<LiveOut> {
   const c = claimsOf(vault, b.token);
   if (!c) return { status: 401, body: { error: "the page's token is not valid (expired, revoked, or the page changed)" } };
+  // The supervisor (change 1.6): a stopped plugin's calls are refused; each call is measured against its budget, if any.
+  if (!measurePluginCall(vault, c.p)) return { status: 403, body: { error: "this page is turned off" } };
   const unknown = c.c.find((cap) => !serviceOfCap(String(cap)));
   if (unknown) return { status: 403, body: { error: `no such service: ${unknown}` } };
   const method = b.method === "GET" || b.method === "POST" ? b.method : null;

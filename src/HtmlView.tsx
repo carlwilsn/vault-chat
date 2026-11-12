@@ -7,6 +7,8 @@ import { InlineEditPrompt, type InlineEditRequest } from "./InlineEditPrompt";
 import { useStore } from "./store";
 import { declaresServices, insideVault, liveScript, parseLiveMount, vaultRelative } from "./liveBridge";
 import { PluginMount } from "./PluginMount";
+import { PluginOff } from "./PluginOff";
+import { usePluginDesired } from "./pluginSupervisorApp";
 import { reportScroll, scrollHtmlWith } from "./scrollTarget";
 import { decodeTarget } from "./viewTarget";
 import { appPageTheme, pageThemeHead, PAGE_FRAME_ATTR } from "./pageTheme";
@@ -365,6 +367,10 @@ export function HtmlView({ content, path }: { content: string; path?: string | n
   const live = insideVault(path, vaultRoot) && declaresServices(content);
   // A page that declares an in-process mount runs in the app itself (src/mountHost.ts), not in a frame.
   const inProcess = parseLiveMount(content) === "in-process";
+  // A vault page is a plugin (its id: its vault path): the supervisor may have it stopped (src/pluginSupervisorApp.ts).
+  const pluginId = path && insideVault(path, vaultRoot) ? vaultRelative(path, vaultRoot) : null;
+  const desired = usePluginDesired(pluginId);
+  const off = pluginId !== null && desired.state === "stopped";
   const srcDoc = useMemo(() => {
     if (base === undefined) return null;
     const html = path ? rewriteAssetUrls(content, path, !base) : content;
@@ -614,10 +620,11 @@ export function HtmlView({ content, path }: { content: string; path?: string | n
   return (
     <div className="flex-1 flex flex-col overflow-hidden bg-background relative">
       <div className="flex-1 relative">
-        {inProcess && (
+        {off && <PluginOff path={pluginId!} desired={desired} className="absolute inset-x-0 top-0" />}
+        {!off && inProcess && (
           <PluginMount html={content} path={path ? vaultRelative(path, vaultRoot) : "page.html"} className="absolute inset-0 overflow-auto bg-background" />
         )}
-        {!inProcess && srcDoc !== null && <iframe
+        {!off && !inProcess && srcDoc !== null && <iframe
           ref={iframeRef}
           data-look-frame
           {...(live && path ? { "data-vc-live": vaultRelative(path, vaultRoot) } : {})}

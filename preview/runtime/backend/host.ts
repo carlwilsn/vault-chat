@@ -9,6 +9,7 @@ import { MemoryBox } from "../../../src/convlog/memoryBox";
 import { answerComplete } from "../llm";
 import { parseLiveNeeds } from "../../../src/liveBridge";
 import { foldPluginState, logSignal, stateQuery, stateSignal, type PluginState } from "../../../src/pluginRecords";
+import { budgetSignal, desiredSignal, Supervisor } from "../../../src/pluginSupervisor";
 import { converseAfter, converseIntent } from "../../../src/pluginConverse";
 import { catalogPlugin, catalogReads, catalogServices } from "../../../src/pluginCatalog";
 
@@ -492,6 +493,12 @@ export const hostCommands: Record<string, (a: Record<string, any>) => unknown> =
       await sleep(1500);
       throw `error sending request for url (${u.href}): operation timed out`;
     }
+    if (p === "/api/v2/supervisor") {
+      // The supervisor's records (server/supervisor.ts): the fake box's log, folded the box's way.
+      const sup = new Supervisor();
+      for (const r of box.recs) if (r.conv === null) sup.fold(r);
+      return ok({ seq: sup.seq, records: sup.records() });
+    }
     if (p === "/poll" && boxPollDelay) await sleep(boxPollDelay);
     const routed = await box.route("GET", p, u.searchParams, null, 2500);
     // A restart (or an outage) while it waited: the old process's answer never comes (the connection drops).
@@ -563,6 +570,13 @@ export const hostCommands: Record<string, (a: Record<string, any>) => unknown> =
       if (!inBoxFolder(at) || typeof b.text !== "string") return { status: 403, body: JSON.stringify({ error: `${at} is not in a project's folder` }) };
       boxDisk.set(at, b.text);
       return { status: 200, body: JSON.stringify({ ok: true, path: at, size: b.text.length }) };
+    }
+    if (path === "/api/v2/supervisor") {
+      // Carl's word on a plugin (server/supervisor.ts): a record in the fake box's log, on /poll like the box's.
+      const sig = b && "callsPerMinute" in b ? budgetSignal(b, "carl", Date.now()) : desiredSignal(b, "carl", Date.now());
+      if ("error" in sig) return { status: sig.status, body: JSON.stringify({ error: sig.error }) };
+      const rec = box.emit(null, { type: "signal", signal: sig } as any);
+      return { status: 200, body: JSON.stringify({ ok: true, seq: rec.seq }) };
     }
     // Live pages (server/liveProxy.ts): the manifest from the vault's file, a token, and the side protocol through the gateway.
     if (path === "/api/v2/live/manifest" || path === "/api/v2/live/token") {

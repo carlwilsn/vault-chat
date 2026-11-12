@@ -55,6 +55,7 @@ import { externalRecordUI } from "../mcp/recordUI";
 import { loadConfig } from "../config";
 import { ENGINE_ROLE_PROMPT } from "./prompt";
 import { isNoteTool, noteTool, noteToolSpecs } from "../notesTools";
+import { PLUGIN_TOOL, pluginTool, pluginToolSpecs } from "../supervisorTools";
 import { capabilitiesOf, capabilityNote } from "./capabilities";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { projectFolderOf, reviveFolder } from "../projectFolders";
@@ -526,7 +527,7 @@ export const ENGINE_TOOL_SPECS = [
 
 /** Every vault-chat tool the agent has (Carl's own vault tools are added per thread). */
 export function agentToolSpecs(): ToolSpec[] {
-  return [...ENGINE_TOOL_SPECS, pdfPagesSpec, ...noteToolSpecs, ...contextToolSpecs] as ToolSpec[];
+  return [...ENGINE_TOOL_SPECS, pdfPagesSpec, ...noteToolSpecs, ...contextToolSpecs, ...pluginToolSpecs] as ToolSpec[];
 }
 /** Ctrl+K / Ctrl+L: the agent's tools that change nothing (marked readOnly where they are defined). */
 export function sideToolSpecs(): ToolSpec[] {
@@ -2764,6 +2765,11 @@ export class Engine {
       // The notes tools: the same code voice runs (server/notesTools.ts), every result read back from the file.
       if (isNoteTool(name)) {
         const r = await noteTool(vault, name, a);
+        return { success: r.ok, contentItems: [{ type: "inputText", text: r.text }] };
+      }
+      // A plugin turned off or on (server/supervisorTools.ts): a record in the log every view follows.
+      if (name === PLUGIN_TOOL) {
+        const r = pluginTool(vault, a);
         return { success: r.ok, contentItems: [{ type: "inputText", text: r.text }] };
       }
       switch (name) {

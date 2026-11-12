@@ -11,11 +11,16 @@
 // server/auth.ts tailnetIdentity). A request without it is refused, from loopback or with a phone token too.
 // Exposure: the box's existing serve mapping (https://<box>.<tailnet>.ts.net/ → the box's port) already carries /p/;
 // nothing is added to `tailscale serve`. Another vault on the box: /p/<id>/?vault=<name>.
+//
+// The supervisor (change 1.6): the host script follows the plugin's desired state (GET /api/v2/supervisor) and takes the
+// page's frame down when it is stopped, or puts it back when it runs again. A plugin stopped when the link is opened is
+// served with its frame in a <template> (it does not run) and the one "turned off" line in its place.
 import { readFileSync, statSync } from "node:fs";
 import HOST_JS from "vc:page-link-host";
 import { withinVault } from "./phoneData";
 import { appCss } from "./appCss";
 import { APP_STYLES_HREF, inlineHtmlDocument, isHtmlSrc } from "../src/inlineHtml";
+import { pluginStopped } from "./supervisor";
 
 export const PAGE_LINK_PREFIX = "/p/";
 /** The largest page the link serves (as a live page's manifest reads at most). */
@@ -61,12 +66,13 @@ export function pageLinkDocument(vault: string, id: string, vaultName: string | 
   const title = id.split("/").pop()!.replace(/\.html?$/i, "");
   // The page as the chat shows it inline, in the device's theme (the host script follows it and tells the page).
   const page = inlineHtmlDocument(html, { css: appCss(), live: true });
+  const frame = (f: string) => (pluginStopped(vault, id) ? `<template data-vc-page>${f}</template>` : f);
   const shell =
     `<!doctype html><html data-theme="dark"${vaultName ? ` data-vc-vault="${attr(vaultName)}"` : ""}><head><meta charset="utf-8">` +
     `<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>${attr(title)}</title>` +
     `<link rel="stylesheet" href="${APP_STYLES_HREF}">` +
     `<style>html,body{margin:0;height:100%;overflow:hidden;background:hsl(var(--background))}iframe{display:block;border:0;width:100%;height:100%}</style>` +
-    `</head><body><iframe sandbox="allow-scripts" allow="autoplay" title="${attr(title)}" data-vc-live="${attr(id)}" srcdoc="${attr(page)}"></iframe>` +
+    `</head><body>${frame(`<iframe sandbox="allow-scripts" allow="autoplay" title="${attr(title)}" data-vc-live="${attr(id)}" srcdoc="${attr(page)}"></iframe>`)}` +
     `<script data-vc-link-host>${HOST_JS}</script></body></html>`;
   return { status: 200, html: shell };
 }

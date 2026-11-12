@@ -18,6 +18,7 @@ import { PAGE_LINK_PREFIX, pageLinkDocument, pageLinkId } from "./pageLink";
 import { appCss } from "./appCss";
 import { liveGateway, liveManifest, liveRevoke, liveToken } from "./liveProxy";
 import { pluginCatalog } from "./pluginCatalog";
+import { offDocument, pluginDesired, supervisorRoute } from "./supervisor";
 import { APP_STYLES_HREF, HTML_CSP, inlineHtmlDocument, isHtmlSrc } from "../src/inlineHtml";
 import { createExternalMcpHandler, type ExternalContext } from "./mcp/external";
 import { externalMcpHosts } from "./mcp/hosts";
@@ -722,6 +723,11 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
   // The catalog (src/pluginCatalog.ts): the registered services and this vault's plugins. A page reaches it through
   // the gateway with `catalog` granted; this is the app's and a loopback caller's way in.
   if (path === "/api/v2/plugin/catalog" && method === "GET") return json(res, 200, pluginCatalog(open.path));
+  // The supervisor (server/supervisor.ts): the plugins' desired-state records, and Carl's word on one.
+  if (path === "/api/v2/supervisor" && (method === "GET" || method === "POST")) {
+    const out = await supervisorRoute(vault, method, url.searchParams, method === "POST" ? await jsonBody(req) : null);
+    return json(res, out.status, out.body);
+  }
   // Live pages (src/liveBridge.ts; server/liveProxy.ts): a page's manifest, Carl's grant minted into a scoped token, and its calls.
   if (path.startsWith("/api/v2/live/") && method === "POST") {
     const b = await jsonBody(req, 12 * 1024 * 1024);
@@ -1041,6 +1047,9 @@ function serveVaultFile(req: IncomingMessage, res: ServerResponse, vault: string
   const html = isHtmlSrc(full);
   // A vault page never runs as the box: always sandboxed (scripts, no same-origin, so no token or API).
   const sandbox = html ? { "Content-Security-Policy": "sandbox allow-scripts" } : {};
+  // A stopped plugin's page is not served (change 1.6): the one "turned off" line stands where it was.
+  const desired = html ? pluginDesired(vault, p) : null;
+  if (desired?.state === "stopped") return send(res, 200, "text/html; charset=utf-8", offDocument(p, desired), { "Content-Security-Policy": `sandbox allow-scripts; ${HTML_CSP}`, "X-Content-Type-Options": "nosniff", "Cache-Control": "no-store" });
   if (html && url.searchParams.get("inline") === "1") {
     // Inline in a chat message (phone; src/inlineHtml.ts): the app's styles, the theme, the size reports, nothing from the network.
     try {

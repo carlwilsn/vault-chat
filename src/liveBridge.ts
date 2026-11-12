@@ -32,6 +32,7 @@
 //          has the box mint the token, and answers only that iframe's window (event.source, origin "null").
 
 import { pageFunctions, readNeed, serviceOfCap, servicesFor, toolAllowed } from "./liveServices";
+import { pluginIdOf } from "./pluginSupervisor";
 
 /** Every message either way carries this marker. */
 export const LIVE = "vc-live";
@@ -413,9 +414,14 @@ function askCarl(doc: Document, framesOf: () => HTMLIFrameElement[], page: strin
   });
 }
 
+/** The event a host's reconciler sends when it stops a plugin (src/pluginSupervisor.ts): detail {plugin}. */
+export const PLUGIN_STOPPED_EVENT = "vc-plugin-stopped";
+
 export function installLiveBridge(host: LiveHost, doc: Document = document): () => void {
   const win = doc.defaultView!;
   const pages = new WeakMap<Window, PageState>();
+  // The frames the bridge holds something for (an observer, a recording), so a stopped plugin's can be let go.
+  const held = new Map<HTMLIFrameElement, PageState>();
   // One prompt per page path + content hash, however many frames/handshakes ask at once (viewer + chat copy, remounts).
   const asking = new Map<string, Promise<boolean>>();
   const declined = new Set<string>();
@@ -512,6 +518,8 @@ export function installLiveBridge(host: LiveHost, doc: Document = document): () 
     const page = f.getAttribute(LIVE_ATTR) ?? "";
     if (!page) return;
     const st = stateOf(f.contentWindow);
+    held.set(f, st);
+    for (const x of held.keys()) if (x.isConnected === false) held.delete(x);
     const fail = (id: unknown, error: string) => isId(id) && reply(f, { id, ev: "error", error });
 
     switch (d.op) {
@@ -605,9 +613,26 @@ export function installLiveBridge(host: LiveHost, doc: Document = document): () 
   };
   const mo = new win.MutationObserver(onTheme);
   mo.observe(doc.documentElement, { attributes: true, attributeFilter: ["data-theme", "class"] });
+  // A plugin the supervisor stopped (change 1.6): whatever the bridge holds for its frames goes (its frames go too).
+  const release = (st: PageState) => {
+    st.ro?.disconnect();
+    st.ro = null;
+    st.mic?.stop();
+    st.grant = null;
+  };
+  const onStopped = (e: Event) => {
+    const plugin = pluginIdOf(String((e as CustomEvent<{ plugin?: unknown }>).detail?.plugin ?? ""));
+    for (const [f, st] of [...held]) {
+      if (pluginIdOf(f.getAttribute(LIVE_ATTR) ?? "") !== plugin) continue;
+      held.delete(f);
+      release(st);
+    }
+  };
   win.addEventListener("message", onMessage);
+  win.addEventListener(PLUGIN_STOPPED_EVENT, onStopped);
   return () => {
     win.removeEventListener("message", onMessage);
+    win.removeEventListener(PLUGIN_STOPPED_EVENT, onStopped);
     mo.disconnect();
   };
 }

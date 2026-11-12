@@ -1,0 +1,25 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>HTML lab</title>
+<style>
+  body { margin: 0; font: 14px/1.4 system-ui, sans-serif; background: hsl(var(--background, 0 0% 10%)); color: hsl(var(--foreground, 0 0% 92%)); }
+  .wrap { padding: 18px 20px; display: flex; gap: 18px; align-items: center; }
+  .dot { width: 46px; height: 46px; border-radius: 50%; background: hsl(var(--primary, 210 80% 60%)); animation: pulse 1.4s ease-in-out infinite; }
+  @keyframes pulse { 50% { transform: scale(.6); opacity: .5; } }
+  .t { font-size: 18px; font-weight: 600; }
+  .hint { color: hsl(var(--muted-foreground, 0 0% 60%)); font-size: 12px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="dot"></div>
+  <div><div class="t">HTML lab</div><div class="hint">An ordinary page in its iframe. Running for <span id="s">0</span> s.</div></div>
+</div>
+<script>
+  let s = 0;
+  setInterval(() => { document.getElementById("s").textContent = String(++s); }, 1000);
+</script>
+</body>
+</html>

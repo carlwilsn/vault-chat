@@ -12,6 +12,8 @@ import { localPathFromUrl } from "./mdPipeline";
 import { boxLinkFor, fetchBoxFile } from "./boxChat";
 import { insideVault, parseLiveMount } from "./liveBridge";
 import { PluginMount } from "./PluginMount";
+import { PluginOff } from "./PluginOff";
+import { usePluginDesired } from "./pluginSupervisorApp";
 import { isNewestEmbed, newestEmbed, registerEmbed, subscribeEmbeds } from "./inlineEmbeds";
 import { changedRev, useChangedFiles } from "./liveReload";
 import { appPageTheme, PAGE_FRAME_ATTR } from "./pageTheme";
@@ -164,6 +166,15 @@ function LiveInlineHtml({ src, alt }: { src: string; alt?: string }) {
   const doc = useMemo(() => (live?.html != null ? inlineHtmlDocument(live.html, { css: live.css, theme: themeNow(), pageTheme: appPageTheme(), live: pagePath !== null }) : null), [live, pagePath]);
   const name = src.split(/[\\/]/).pop()?.split(/[?#]/)[0] ?? src;
   const title = alt || name;
+  // A vault page is a plugin: stopped by the supervisor (src/pluginSupervisorApp.ts), its copy here is taken down too.
+  const desired = usePluginDesired(pagePath);
+  if (pagePath !== null && desired.state === "stopped") {
+    return (
+      <span className="block my-2 rounded-md border border-border/60 bg-muted/40" data-el="chat-html-wrap">
+        <PluginOff path={pagePath} desired={desired} />
+      </span>
+    );
+  }
 
   if (!live) return <span className="block text-[11.5px] text-muted-foreground italic" data-el="chat-html-loading">Loading {name}…</span>;
   if (doc === null) {

@@ -3,7 +3,7 @@
 // inline in the chat reply, through the chat's own image renderer (ChatImage),
 // not ASCII art and not a send to the iPad across the room
 // (server/engine/prompt.ts "Visuals", server/boardGuard.ts).
-import type { BuildCtx, Scenario } from "./types";
+import type { BuildCtx, Scenario, Step } from "./types";
 import type * as W from "./world";
 // What the real model (GPT-6.1 Sol, the box's throwaway instance, 2026-10-26) wrote and replied for this ask.
 import REAL_SVG from "./visual-real-model.svg?raw";
@@ -22,10 +22,35 @@ import PLUGIN_COUNTER_HTML from "./plugin-counter.html?raw";
 import PLUGIN_BROKEN_HTML from "./plugin-broken.html?raw";
 // A page that reads the catalog (change 1.4): the registered services and the plugins in the vault.
 import CATALOG_HTML from "./page-catalog.html?raw";
+// An ordinary iframe page (change 1.6): turned off and on with the in-process counter by the supervisor's records.
+import PLUGIN_LAB_HTML from "./plugin-lab.html?raw";
 
 const CONV = "c-visual-bfs";
 const PATH = ".vault-chat/visuals/bfs-closest-pair.svg";
 const MIN = 60_000;
+
+/** Carl asks, the agent's Plugins tool writes the records (server/supervisorTools.ts), on the fake box's log. */
+function supervise(ask: string, state: "running" | "stopped", reply: string): Step {
+  return {
+    run: () => {
+      const conv = "c-plugin-supervisor";
+      (window as any).__preview.boxPlay({
+        log: (box: any) => {
+          box.startTurn(conv);
+          box.userLine(conv, `u-${state}`, ask);
+          for (const [i, plugin] of [".vault-chat/visuals/html-lab.html", ".vault-chat/visuals/plugin-counter.html"].entries()) {
+            const id = `plug-${state}-${i}`;
+            box.tool(conv, id, "Plugins", { action: state === "stopped" ? "disable" : "enable", plugin: plugin.split("/").pop()!.replace(/\.html$/, "") });
+            box.emit(null, { type: "signal", signal: { type: "plugin.desired", plugin, state, at: Date.now(), by: "agent" } });
+            box.toolDone(conv, id, `${plugin}: ${state === "stopped" ? "off" : "on"} (by agent)`);
+          }
+          box.say(conv, reply);
+          box.endTurn(conv);
+        },
+      });
+    },
+  };
+}
 
 /** The counterexample the agent drew: BFS from s, a and b both at level 4, two edges apart through z. */
 export const BFS_SVG = (() => {
@@ -370,6 +395,55 @@ export const visualScenarios: Scenario[] = [
     }),
     activeConversation: "c-page-converse",
     open: [{ chat: true }, { conversation: "c-page-converse" }, { sleep: 1200 }],
+    surfaces: ["desktop"],
+  },
+  {
+    id: "plugin-supervisor",
+    title: "Supervisor — 'disable html-lab and the counter': both are taken down in the viewer and the chat (iframe and in-process alike); 'enable' brings them back",
+    group: "Chat",
+    notes:
+      "The viewer shows html-lab.html (an iframe page); the chat shows the in-process counter inline (and html-lab collapsed to its viewer link). Carl asks to disable both: the agent's Plugins tool writes two plugin.desired records (stopped) to the box's log; every view follows (src/pluginSupervisorApp.ts) and shows 'is turned off' in its place. Then enable: two more records, and both run again, fresh.",
+    build: (ctx: BuildCtx) => {
+      ctx.write(".vault-chat/visuals/html-lab.html", PLUGIN_LAB_HTML);
+      ctx.write(".vault-chat/visuals/plugin-counter.html", PLUGIN_COUNTER_HTML);
+      ctx.conversations([{
+        id: "c-plugin-supervisor", title: "Plugins on and off", source: "manual", status: "idle", unread: false,
+        createdAt: ctx.now - 5 * MIN, lastActivityAt: ctx.now - MIN,
+        messages: [
+          { role: "user", content: "show me the lab page and the counter" },
+          { role: "assistant", content: "The lab page:\n\n![HTML lab](.vault-chat/visuals/html-lab.html)\n\nAnd the counter, mounted in the app itself:\n\n![Counter](.vault-chat/visuals/plugin-counter.html)" },
+        ],
+      }]);
+    },
+    host: (now: number) => ({
+      sync: {
+        box: { box: "https://thinkbox.tail0a1b2.ts.net", vault: "summer-demo" },
+        boxChat: {
+          convs: {
+            "c-plugin-supervisor": {
+              title: "Plugins on and off", source: "manual", status: "idle",
+              meta: { unread: false, createdAt: now - 5 * MIN, lastActivityAt: now - MIN },
+              messages: [
+                { role: "user", content: "show me the lab page and the counter" },
+                { role: "assistant", content: "The lab page:\n\n![HTML lab](.vault-chat/visuals/html-lab.html)\n\nAnd the counter, mounted in the app itself:\n\n![Counter](.vault-chat/visuals/plugin-counter.html)" },
+              ],
+            },
+          } as any,
+          steps: [{ status: { "c-plugin-supervisor": "idle" } }],
+        },
+      },
+    }),
+    activeConversation: "c-plugin-supervisor",
+    open: [
+      { chat: true },
+      { conversation: "c-plugin-supervisor" },
+      { file: ".vault-chat/visuals/html-lab.html" },
+      { sleep: 6000 },
+      supervise("disable html-lab and the counter", "stopped", "Turned off both: html-lab.html and plugin-counter.html are off in every view (the viewer, this chat, the phone, their links)."),
+      { sleep: 6000 },
+      supervise("enable them again", "running", "Both are on again."),
+      { sleep: 4000 },
+    ],
     surfaces: ["desktop"],
   },
   {
