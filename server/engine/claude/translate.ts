@@ -197,6 +197,8 @@ export class ClaudeTranslator {
    * "rejected". The failure is then a wait, not an error (engine.ts holds it).
    */
   private limited = false;
+  /** Claude Code said it is summarizing the session (status "compacting"; it repeats that every 30 s). */
+  private compacting = false;
 
   constructor(private readonly now: () => number = () => Date.now()) {}
 
@@ -513,14 +515,34 @@ export class ClaudeTranslator {
     if (m.subtype === "task_notification") return this.workerNotice(m);
     if (m.subtype === "init") return m.session_id ? [{ kind: "session", id: String(m.session_id) }] : [];
     if (m.subtype === "api_retry") return this.apiRetry(m);
+    if (m.subtype === "status") {
+      // Summarizing takes one to several minutes, and Claude Code says so when it
+      // starts (status "compacting", then again every 30 s) and, when it fails,
+      // with compact_result "failed". The clients draw the "Summarizing…" line on
+      // compaction_start and take it down on compaction_end (a failure is a line).
+      if (m.status === "compacting" && !this.compacting) {
+        this.compacting = true;
+        return [{ kind: "live", ev: { type: "compaction_start" } }];
+      }
+      if (m.compact_result === "failed") {
+        this.compacting = false;
+        const why = String(m.compact_error ?? "").replace(/^Error during compaction:\s*/i, "").trim() || "Claude Code could not write the summary";
+        return [{ kind: "live", ev: { type: "compaction_end", aborted: false, errorMessage: why.slice(0, 500) } }];
+      }
+      return [];
+    }
     if (m.subtype === "compact_boundary") {
+      this.compacting = false;
       // Claude Code reports the boundary, not the summary it wrote, so the
       // transcript's divider says what happened in vault-chat's own words.
+      // post_tokens is the context's size right after: the dial's new reading.
       const meta = m.compact_metadata ?? {};
       const before = Number(meta.pre_tokens) || 0;
-      const summary = `Summarized the earlier conversation${meta.trigger === "manual" ? "" : " automatically"}${before ? ` at ${before.toLocaleString("en-US")} tokens` : ""}.`;
+      const after = Number(meta.post_tokens) || 0;
+      const n = (x: number) => x.toLocaleString("en-US");
+      const summary = `Summarized the earlier conversation${meta.trigger === "manual" ? "" : " automatically"}${before ? ` at ${n(before)} tokens` : ""}${after ? `, down to ${n(after)}` : ""}.`;
       return [
-        { kind: "entry", entry: { type: "compaction", summary } },
+        { kind: "entry", entry: { type: "compaction", summary, ...(before ? { tokensBefore: before } : {}), ...(after ? { tokensAfter: after } : {}) } },
         { kind: "live", ev: { type: "compaction_end", aborted: false, result: { ok: true } } },
       ];
     }

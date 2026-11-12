@@ -181,6 +181,32 @@ export class MemoryBox {
     this.userLine(conv, id, x.text, x.kind);
   }
 
+  /** Conversations being summarized (/compact): a message sent meanwhile waits for it (the engine's compact()). */
+  private compactingConvs = new Set<string>();
+
+  /**
+   * The summary of a /compact lands (the engine: Claude Code's boundary, its divider, the context's size after),
+   * or fails (`fail`: why, one line); then what Carl sent meanwhile runs, in order.
+   */
+  compacted(conv: string, o: { before?: number; after?: number; fail?: string } = {}): void {
+    if (o.fail) this.live(conv, { type: "compaction_end", aborted: false, errorMessage: o.fail });
+    else {
+      const n = (x: number) => x.toLocaleString("en-US");
+      const summary = `Summarized the earlier conversation${o.before ? ` at ${n(o.before)} tokens` : ""}${o.after ? `, down to ${n(o.after)}` : ""}.`;
+      this.entry(conv, { type: "compaction", summary, ...(o.before ? { tokensBefore: o.before } : {}), ...(o.after ? { tokensAfter: o.after } : {}) } as Omit<PiEntry, "id">);
+      this.live(conv, { type: "compaction_end", aborted: false, result: { ok: true } });
+    }
+    this.compactingConvs.delete(conv);
+    const held = pendingOf(this.picture(conv) ?? emptyPicture(conv));
+    if (!held.length) return;
+    this.meta(conv, { pending: null });
+    this.startTurn(conv);
+    for (const x of held) {
+      this.userLine(conv, x.id, x.text);
+      this.onSend(conv, { type: "send", convId: conv, clientId: x.id, text: x.text });
+    }
+  }
+
   private setPending(conv: string, add?: PendingInput, remove?: string): void {
     const cur = pendingOf(this.picture(conv) ?? emptyPicture(conv)).filter((x) => x.id !== remove);
     const next = add ? [...cur, add] : cur;
@@ -389,6 +415,10 @@ export class MemoryBox {
         if (!p) this.create(conv, conv === "main" ? { title: "Main", source: "main", kind: "main" } : { kind: "separate", ...(b.project ? { project: String(b.project) } : {}) });
         if (p?.meta.asking) return this.intent({ ...b, type: "answer", convId: conv });
         if (p?.meta.running) return this.intent({ ...b, type: "steer", convId: conv });
+        if (this.compactingConvs.has(conv)) {
+          this.setPending(conv, { id: b.clientId, kind: "queue", text: String(b.text ?? ""), at: this.now() });
+          return { ok: true, convId: conv, queued: true, qid: b.clientId };
+        }
         this.startTurn(conv);
         const images: ItemImage[] = (b.images ?? []).map((i: any) => ({ path: "", dataUrl: `data:${i.mime};base64,${i.dataBase64}` }));
         this.userLine(conv, b.clientId, String(b.text ?? "").trim() || "(image)", typeof b.via === "string" && b.via ? b.via : "chat", images);
@@ -427,6 +457,14 @@ export class MemoryBox {
         if (ask) this.meta(conv, { asking: null });
         return { ok: true, convId: conv, answered: true };
       }
+      case "compact":
+        // The engine answers at once and the thread says the rest (the line now, the divider when it lands).
+        if (!p || !shown(p).length) return { ok: true, convId: conv, compacted: false, note: "nothing to compact yet" };
+        if (!this.compactingConvs.has(conv)) {
+          this.compactingConvs.add(conv);
+          this.live(conv, { type: "compaction_start", reason: "manual" });
+        }
+        return { ok: true, convId: conv, started: true };
       case "lines":
         if (!p) this.create(conv, { source: "manual" });
         (b.lines ?? []).forEach((l: any, i: number) => {

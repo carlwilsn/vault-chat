@@ -117,6 +117,8 @@ export type ChatMessage = {
   failed?: boolean;
   // The failed line of a box turn that ended on it, the last thing in the chat: offers Try again (src/convlog/view.ts).
   retry?: boolean;
+  // A system line for work under way (the box summarizing the earlier conversation): the working spinner and its time.
+  working?: { since?: number };
   // Stable per-message id, minted at creation (release 1 of the message-identity
   // cure). Optional — legacy messages on disk lack it; readers must tolerate its
   // absence. INERT for now (no merge logic reads it yet); it just rides on disk

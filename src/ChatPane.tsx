@@ -1737,6 +1737,16 @@ export const MessageBubble = memo(function MessageBubble({
   // A job's or a background task's end is a system line of its own kind (before the generic notice).
   // A finished one says nothing here (the agent's reply carries the result); a failed or stopped one is one quiet line.
   if (message.job) return message.job.failed || message.job.status === "stopped" ? <JobRow job={message.job} /> : null;
+  if (message.system && message.working) {
+    // Work under way that is not a reply (the box summarizing the earlier conversation): the working spinner and its time.
+    return (
+      <div className="flex items-center gap-1.5 text-[11px] leading-snug text-muted-foreground min-w-0" data-el="notice" data-working="1">
+        <Loader2 className="h-3 w-3 shrink-0 animate-spin" />
+        <span className="break-words min-w-0">{message.content}</span>
+        {message.working.since ? <Elapsed since={message.working.since} /> : null}
+      </div>
+    );
+  }
   if (message.system) {
     // A quiet notice (voice ended, an error): left, in the tool rows' small muted type.
     return (

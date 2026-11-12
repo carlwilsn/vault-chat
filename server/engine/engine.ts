@@ -64,7 +64,7 @@ import { WRITE_TOOLS, writtenPath } from "../liveEdits";
 import { appendActivity, contextImage, searchActivity, youLayer } from "../activity";
 import { CAPTURE_FRESH_MS, chatPointerEntry } from "../../src/activityCore";
 import type { EventBody, ItemImage, PendingInput } from "../../src/convlog/protocol";
-import { pendingOf, type Picture } from "../../src/convlog/reduce";
+import { isOpen, pendingOf, type Picture } from "../../src/convlog/reduce";
 import { makeChatView, toolName } from "../../src/convlog/view";
 import { waitInputs } from "../../src/voiceWaitLine";
 import { lookupAll } from "./lookup";
@@ -173,7 +173,7 @@ type Live = {
 
 };
 
-type TurnOpts = { completion?: import("./backend").NativeCompletion; /** Send now replays the existing feed directly into Pi before its replacement prompt can settle. */ replay?: Expected[]; /** Existing host-owned job/wake identity, never a push arm. */ pushWorkId?: string; images?: string[]; context?: string; hostContext?: string; itemImages?: ItemImage[]; clientId?: string; /** What the chat shows (Carl's answer to a question asked before a restart). */ shown?: string; device?: "laptop" | "phone" | "board" | null; via?: string; /** Which client sent it (the turn log's `via`: laptop, phone, voice …). */ origin?: string; /** A wake, job or resume of something Carl started. */ byCarl?: boolean; /** An engine input that runs as its own turn once the running one ends, never folded into it (a background report: pi may settle the turn before a follow-up is taken, and a turn parked on a question takes none). */ ownTurn?: boolean; /** The backend already started this turn by itself (a queued message it took, a background task that finished): open the turn around it instead of sending a prompt. */ adopt?: boolean; /** The retry of work held for the usage limit (its hold's count): failing on the limit again waits for the next reset, longer. */ limitTries?: number };
+type TurnOpts = { completion?: import("./backend").NativeCompletion; /** Send now replays the existing feed directly into Pi before its replacement prompt can settle. */ replay?: Expected[]; /** Existing host-owned job/wake identity, never a push arm. */ pushWorkId?: string; images?: string[]; context?: string; hostContext?: string; itemImages?: ItemImage[]; clientId?: string; /** What the chat shows (Carl's answer to a question asked before a restart). */ shown?: string; device?: "laptop" | "phone" | "board" | null; via?: string; /** Which client sent it (the turn log's `via`: laptop, phone, voice …). */ origin?: string; /** A wake, job or resume of something Carl started. */ byCarl?: boolean; /** An engine input that runs as its own turn once the running one ends, never folded into it (a background report: pi may settle the turn before a follow-up is taken, and a turn parked on a question takes none). */ ownTurn?: boolean; /** The backend already started this turn by itself (a queued message it took, a background task that finished): open the turn around it instead of sending a prompt. */ adopt?: boolean; /** The retry of work held for the usage limit (its hold's count): failing on the limit again waits for the next reset, longer. */ limitTries?: number; /** Carl's message held (shown waiting) while the conversation was being summarized: not run if he took it back meanwhile. */ held?: boolean };
 
 const RESUME_TEXT =
   "The box restarted (or the engine stopped) while your last turn was running, so any command it was running was killed and may not have finished. Re-check reality (files, processes, logs), then continue from where you were.";
@@ -994,8 +994,17 @@ export class Engine {
         }
         return { ok: true, convId: id };
       }
-      case "compact":
-        return this.compact(String(b.convId ?? "") || MAIN_ID, typeof b.focus === "string" ? b.focus : undefined);
+      case "compact": {
+        // Answered at once: the summary takes minutes (a client's request would time out waiting for it).
+        // The thread says the rest: "Summarizing the earlier conversation…", then the divider or why not.
+        const id = String(b.convId ?? "") || MAIN_ID;
+        if (!this.picture(id)) return { ok: false, error: `conversation ${id} not found` };
+        if (!(await readConv(this.d.vault, id))?.threadId) return { ok: true, convId: id, compacted: false, note: "nothing to compact yet" };
+        void this.compact(id, typeof b.focus === "string" ? b.focus : undefined).then((r) => {
+          if (r && r.ok === false) this.log(`compact on ${id}: ${String(r.error)}`);
+        });
+        return { ok: true, convId: id, started: true };
+      }
       case "deleteProject":
         return this.deleteProject(String(b.slug ?? ""), { folder: b.folder === true });
       case "restoreProject":
@@ -1198,8 +1207,12 @@ export class Engine {
         return { ok: false, convId: id, error: `the running turn did not take it: ${(e as Error).message}` };
       }
     }
-    void this.run(id, shown, "user", { images: paths, hostContext, itemImages, clientId, origin, device: validDevice(device), ...(body.via ? { via: body.via } : {}) }).catch((e) => this.log(`turn failed: ${e}`));
-    return { ok: true, convId: id };
+    // The conversation is being summarized (/compact, minutes): his message waits for it, shown waiting on
+    // every surface (Cancel takes it back), and runs the moment the summary lands.
+    const held = this.compacting.has(id);
+    if (held) this.setPending(id, { id: clientId, kind: "queue", text: shown, at: Date.now() });
+    void this.run(id, shown, "user", { images: paths, hostContext, itemImages, clientId, origin, device: validDevice(device), ...(body.via ? { via: body.via } : {}), ...(held ? { held: true } : {}) }).catch((e) => this.log(`turn failed: ${e}`));
+    return { ok: true, convId: id, ...(held ? { queued: true, qid: clientId } : {}) };
   }
 
   /** Take back a message pi has not delivered yet: pi's queue is cleared and the others go back in, in order. */
@@ -1674,19 +1687,49 @@ export class Engine {
     const threadId = String(conv?.threadId ?? "");
     const file = String(conv?.threadPath ?? "");
     if (!conv || !threadId) return { ok: true, convId, compacted: false, note: "nothing to compact yet" };
+    // Its runtime's word about this compaction comes by thread (a server just started has not mapped it yet).
+    this.byThread.set(threadId, convId);
+    // Said at once, on every surface: the summary takes minutes, and the runtime
+    // may first have to start. The runtime's own word, when it comes, is the same line.
+    this.emit(convId, { type: "live", ev: { type: "compaction_start", reason: "manual" } });
+    let failed: string | null = null;
     try {
       const { model: cModel, effort: cEffort } = this.chatModel(conv);
       await this.d.backend.resumeThread(threadId, { model: cModel, effort: cEffort, subagents: capabilitiesOf(cModel).subagents, cwd: this.cwdOf(conv) });
       const r = await this.d.backend.compact(threadId, focus?.trim() ? `Carl asked to compact now. Keep in particular: ${focus.trim().slice(0, 500)}` : undefined);
+      if (r.error || r.pending) {
+        failed = r.error ?? "no word from the runtime after 10 minutes (the divider appears here if the summary still lands)";
+        this.log(`compact ${convId}: ${failed}`);
+        return { ok: false, convId, error: failed };
+      }
       this.log(`compacted ${convId}${focus ? ` (focus: ${focus.slice(0, 80)})` : ""}${r.tokensBefore ? ` from ${r.tokensBefore} tokens` : ""}`);
       return { ok: true, convId, compacted: true, ...(r.tokensBefore ? { tokensBefore: r.tokensBefore } : {}) };
     } catch (e) {
-      return { ok: false, convId, error: `the engine did not compact: ${(e as Error).message}` };
+      failed = `the engine did not compact: ${(e as Error).message}`;
+      return { ok: false, convId, error: failed };
     } finally {
       // The summary may have dropped the turn sections (memory, project.md): the next turn sends them again.
       this.sectionsSent.delete(threadId);
       if (file) this.catchUp(convId, file);
+      // Never a "Summarizing…" line left spinning: the divider took it down, or the runtime's own
+      // failure did; otherwise it ends here, saying why.
+      if ((this.picture(convId)?.inflight ?? []).some((x) => x.kind === "compaction" && isOpen(x))) {
+        this.emit(convId, { type: "live", ev: { type: "compaction_end", aborted: false, errorMessage: (failed ?? "the runtime ended it without a summary").slice(0, 500) } });
+      }
     }
+  }
+
+  /** A compaction's live event when no turn of the host's is open (see onEvent). */
+  private compactionOutsideTurn(threadId: string, ev: any): void {
+    const convId = this.byThread.get(threadId);
+    const p = convId ? this.picture(convId) : null;
+    if (!convId || !p) return;
+    if (ev.type === "compaction_end") {
+      this.sectionsSent.delete(threadId);
+      const file = p.meta.threadPath;
+      if (typeof file === "string" && file) this.catchUp(convId, file);
+    }
+    this.emit(convId, { type: "live", ev: ev.type === "compaction_start" ? { type: ev.type, ...(ev.reason ? { reason: ev.reason } : {}) } : { type: ev.type, aborted: !!ev.aborted, ...(ev.result ? { result: { ok: true } } : {}), ...(ev.errorMessage ? { errorMessage: String(ev.errorMessage).slice(0, 500) } : {}) } });
   }
 
   /** "Stop" / "never mind" on a call: the running turn stops and so does the work it handed off (its background
@@ -1889,6 +1932,8 @@ export class Engine {
     // his three (MAX_RESUMES) again rather than meeting a chat that refuses.
     if (kind === "user") this.resumes.delete(convId);
     return this.serial(convId, async () => {
+      // Held behind a summary, and taken back meanwhile (Cancel, Edit): it does not run.
+      if (opts.held && !pendingOf(this.picture(convId) ?? ({ meta: {} } as Picture)).some((x) => x.id === opts.clientId)) return;
       // Nothing to run it on: not signed in, or no Claude Code on this box.
       // A wake waits quietly — it fires on a schedule, and filing the same
       // failure every time is what buried Carl's chat. Something he typed says
@@ -1897,6 +1942,7 @@ export class Engine {
       if (cannot) {
         if (kind === "user") await this.sayCannotRun(convId, cannot);
         else this.log(`${convId}: ${kind} held — ${cannot}`);
+        if (opts.held && opts.clientId) this.setPending(convId, undefined, opts.clientId);
         return;
       }
       const existing = this.live.get(convId);
@@ -1945,6 +1991,7 @@ export class Engine {
         const lines: NoteData[] = kind === "user" ? [{ kind: "line", role: "user", text: shownInput.shown, via: shownInput.via, clientId, ...(opts.itemImages?.length ? { images: opts.itemImages } : {}) }] : [];
         await this.note(convId, [...lines, { kind: "notice", text, level: "error" }]);
         this.emit(convId, { type: "meta", patch: { running: null, state: "idle" } });
+        if (opts.held && opts.clientId) this.setPending(convId, undefined, opts.clientId);
       };
       if (!existsSync(this.d.vault) || !statSync(this.d.vault).isDirectory()) {
         await fail(`⚠️ The vault ${this.d.vault} is missing on the box; no turn was run.`);
@@ -2270,6 +2317,12 @@ export class Engine {
       return;
     }
     const l = this.liveByThread(e.threadId);
+    if (!l && e.kind === "pi" && (e.ev?.type === "compaction_start" || e.ev?.type === "compaction_end")) {
+      // A compaction with no turn of the host's around it (/compact, the runtime's own while idle): straight
+      // to the conversation, or the chat would show nothing for minutes. At its end the divider first.
+      this.compactionOutsideTurn(e.threadId, e.ev);
+      return;
+    }
     if (!l) {
       // A turn the backend started by itself: a queued message it has taken, or
       // a background task of its own that finished while nothing was running.

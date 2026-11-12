@@ -349,7 +349,8 @@ export function boot(): void {
       const r = await api("/api/v2/intent", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ type: "compact", convId, client: "phone", ...(m[1] && m[1].trim() ? { focus: m[1].trim() } : {}) }) });
       const d = await r.json();
       if (!r.ok || d.error || d.ok === false) throw new Error(d.error || r.status);
-      toast(d.compacted === false ? "Nothing to compact yet." : "Compacted.");
+      // Started: the thread says it ("Summarizing the earlier conversation…", then the divider).
+      if (d.compacted === false) toast("Nothing to compact yet.");
     } catch (e: any) {
       toast("Not compacted: " + (e.message || e));
     }
@@ -929,6 +930,7 @@ export function boot(): void {
       o.optionsLive = !chosen && last;
     }
     const el = bubble(m.role, m.content, (m.toolCalls || []).map((t) => t.name), o);
+    if (m.system && m.working) el.classList.add("working");
     if (live) el.classList.add("pending");
     if (m.__pending) {
       el.classList.add("queued");

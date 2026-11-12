@@ -181,6 +181,8 @@ export type ClaudeBackendOptions = {
   idleMs?: number;
   /** Sessions alive at once on the box (a subscription has usage limits). */
   maxSessions?: number;
+  /** How long a /compact is waited for before the host says it has no word (default 10 min). */
+  compactWaitMs?: number;
   log?: (s: string) => void;
 };
 
@@ -267,8 +269,8 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
   private h: Handlers | null = null;
   private started = false;
   private reaper: NodeJS.Timeout | null = null;
-  /** Compacting a thread, waiting for the boundary Claude Code reports. */
-  private compactWaits = new Map<string, () => void>();
+  /** Compacting a thread: waiting for the end of Claude Code's /compact, and what it said on the way. */
+  private compactWaits = new Map<string, { end: () => void; landed: boolean; error: string | null }>();
   /** The last rate limit Claude Code reported (the host backs wakes off until it resets). */
   private limit: { status: string; resetsAt: number | null; kindOfLimit: string | null } | null = null;
   private limitAt = 0;
@@ -519,25 +521,38 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
     return true;
   }
 
-  async compact(threadId: string, customInstructions?: string): Promise<{ tokensBefore?: number; summary?: string }> {
+  async compact(threadId: string, customInstructions?: string): Promise<{ tokensBefore?: number; summary?: string; error?: string; pending?: boolean }> {
     const live = await this.open(threadId);
     if (!live) throw new ThreadUnknownError(`no Claude Code thread ${threadId}`);
-    // Claude Code summarises on its own command; the boundary it reports becomes
-    // the divider the clients already draw (translate.ts). Its summary is a turn
-    // of its own, so this waits for that boundary — the host draws the divider
-    // from the transcript the moment compacting returns, and would otherwise
-    // look before there was anything to see.
-    const landed = new Promise<void>((r) => this.compactWaits.set(threadId, r));
+    // Claude Code summarises on its own command, as a turn of its own with no
+    // model message: "compacting" status, the boundary (the divider the clients
+    // draw, translate.ts), then its own result. This waits for that RESULT, not
+    // the boundary: the result follows the boundary by a moment, and a turn the
+    // host started in that moment (Carl's message, held until the summary
+    // landed) would take it as its own end.
+    let w!: { end: () => void; landed: boolean; error: string | null };
+    const ended = new Promise<void>((r) => {
+      w = { end: r, landed: false, error: null };
+      this.compactWaits.set(threadId, w);
+    });
     live.session.send({ text: customInstructions?.trim() ? `/compact ${customInstructions.trim()}` : "/compact" });
+    let timedOut = false;
     try {
-      await Promise.race([landed, new Promise<void>((r) => {
-        const t = setTimeout(r, 120_000);
+      await Promise.race([ended, new Promise<void>((r) => {
+        const t = setTimeout(() => {
+          timedOut = true;
+          r();
+        }, this.o.compactWaitMs ?? 10 * 60_000);
         t.unref?.();
       })]);
     } finally {
-      this.compactWaits.delete(threadId);
+      if (this.compactWaits.get(threadId) === w) this.compactWaits.delete(threadId);
     }
-    return {};
+    if (w.landed) return {};
+    if (w.error) return { error: w.error };
+    if (timedOut) return { pending: true };
+    // It ended without a summary and without saying why (nothing to summarise yet).
+    return { error: "Claude Code ended the compaction without a summary" };
   }
 
   // ------------------------------------------------------------------ turns
@@ -1073,12 +1088,18 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
     switch (e.kind) {
       case "entry":
         appendEntries(t.file, [e.entry]);
-        // Compacting waits for its own boundary (see compact()).
-        if ((e.entry as { type?: string }).type === "compaction") this.compactWaits.get(threadId)?.();
+        // What compact() waits for (it returns at the command's own end).
+        if ((e.entry as { type?: string }).type === "compaction") {
+          const w = this.compactWaits.get(threadId);
+          if (w) w.landed = true;
+        }
         return;
-      case "live":
+      case "live": {
+        const w = this.compactWaits.get(threadId);
+        if (w && e.ev.type === "compaction_end" && e.ev.errorMessage) w.error = String(e.ev.errorMessage);
         this.ev({ kind: "pi", threadId, ev: e.ev });
         return;
+      }
       case "workerNotice":
         // A quiet "⏰" line (via wake, like the old delegate reports), in the log before the reply it wakes.
         this.writeUserEntry(t, e.text, { v: 1, clientId: `worker-${randomUUID()}`, via: "wake" }, []);
@@ -1115,6 +1136,8 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
         // Only Claude Code's own uuid stamp says a message has been taken.
         const turnId = live.turnId;
         live.turnId = null;
+        // A /compact is a turn with no model message (no turn id): its end is compact()'s.
+        if (!turnId) this.compactWaits.get(threadId)?.end();
         this.ev({ kind: "turnCompleted", threadId, turnId, status: e.status, error: e.error, ...(e.limited ? { limited: true } : {}) });
         return;
       }

@@ -246,6 +246,10 @@ function onEntry(d: Draft, r: Extract<LogRecord, { type: "entry" }>): void {
   if (e.type === "compaction") {
     d.inflight = d.inflight.filter((x) => x.kind !== "compaction");
     place(d, [{ id: e.id, kind: "compaction", status: "done", text: String(e.summary ?? ""), at: r.at }]);
+    // The context is the summary now: its size when the runtime reports it (Claude
+    // Code's post_tokens), else unknown until the next reply — never the old size.
+    const after = Number(e.tokensAfter ?? 0);
+    d.usage = { context: after > 0 ? after : 0 };
     return;
   }
   // A line said on a voice call: in pi's context (a custom_message), shown as the line it is.
@@ -360,6 +364,8 @@ function onLive(d: Draft, r: Extract<LogRecord, { type: "live" }>): void {
       return;
     }
     case "compaction_start":
+      // Said again (the runtime repeats it while it works, the host says it first): the one line, from when it began.
+      if (d.inflight.some((x) => x.kind === "compaction" && isOpen(x))) return;
       d.inflight = [...d.inflight.filter((x) => x.kind !== "compaction"), { id: `compacting:${r.seq}`, kind: "compaction", status: "streaming", at: r.at }];
       return;
     case "compaction_end":

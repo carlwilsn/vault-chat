@@ -270,11 +270,15 @@ describe("one context, several surfaces: Clear is per surface, /compact compacts
     // There is no clear intent any more: the box has nothing to clear.
     expect((await rig.engine.intent({ type: "clear", convId: "main" })).error).toMatch(/unknown intent/);
 
+    // The intent answers at once (the summary takes minutes); the thread says the rest.
+    const n0 = (rig.backend as any).compactions?.length ?? 0;
     const r = await rig.engine.intent({ type: "compact", convId: "main", focus: "the essay deadline" });
-    expect(r).toMatchObject({ ok: true, compacted: true });
+    expect(r).toMatchObject({ ok: true, started: true });
+    await until(() => ((rig.backend as any).compactions?.length ?? 0) > n0 && readFileSync(file, "utf8").includes('"type":"compaction"'));
     expect((rig.backend as any).compactions.at(-1)).toMatchObject({ threadId: tid, customInstructions: expect.stringContaining("the essay deadline") });
     const entries = readFileSync(file, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l));
     expect(entries.some((e) => e.type === "compaction")).toBe(true);
+    await until(() => reduce.shown(convs.pictureOf(rig.vault, "main")!).some((x) => x.kind === "compaction" && x.status === "done"));
     // The raw history stays, and the thread still shows it (no surface's Clear is the box's).
     expect(readFileSync(file, "utf8")).toContain("CLEARMARK");
     expect(reduce.shown(convs.pictureOf(rig.vault, "main")!).some((x) => (x.text ?? "").includes("CLEARMARK"))).toBe(true);

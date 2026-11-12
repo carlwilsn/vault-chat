@@ -238,8 +238,11 @@ export type EngineBackend = {
   threadSource(threadId: string): { file: string; instr: string; cwd: string } | null;
   /** Write one of vault-chat's own lines (a notice) into the thread's transcript. False: it could not. */
   note(threadId: string, data: Record<string, unknown>): Promise<boolean>;
-  /** Summarise the thread now; `tokensBefore` and the summary when the runtime reports them. */
-  compact(threadId: string, customInstructions?: string): Promise<{ tokensBefore?: number; summary?: string }>;
+  /**
+   * Summarise the thread now; `tokensBefore` and the summary when the runtime reports them. `error`: it
+   * said it could not; `pending`: no word after the wait (it may still land: the divider comes when it does).
+   */
+  compact(threadId: string, customInstructions?: string): Promise<{ tokensBefore?: number; summary?: string; error?: string; pending?: boolean }>;
 
   // -- turns
   /** Start a turn. `turnId` is the engine's; a runtime that names turns itself returns its own. */

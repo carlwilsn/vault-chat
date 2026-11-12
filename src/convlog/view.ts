@@ -38,6 +38,8 @@ export type ViewMessage = {
   voiceAsk?: { request: string; result: string; failed: boolean; act?: boolean };
   /** The failed line of the turn that ended on it, the last thing in the chat: offers Try again (RETRY_TEXT). */
   retry?: boolean;
+  /** A line for work under way (the conversation being summarized): drawn with the working spinner and its time. */
+  working?: { since?: number };
 };
 
 /** What Try again sends (a "send" intent with via "retry"): shown as a quiet system line, not as Carl's words. */
@@ -148,7 +150,7 @@ function messagesOfItem(it: Item, retry = false): ViewMessage[] {
     case "thinking":
       return (it.text ?? "").trim() ? [{ role: "assistant", content: "", thinking: it.text, mid: it.id }] : [];
     case "compaction":
-      if (isOpen(it)) return [{ role: "assistant", system: true, content: "Summarizing the earlier conversation…", mid: it.id }];
+      if (isOpen(it)) return [{ role: "assistant", system: true, content: "Summarizing the earlier conversation…", mid: it.id, working: { since: it.at } }];
       return it.rollover
         ? [{ role: "assistant", system: true, content: DIVIDER_TEXT, mid: it.id, rollover: { recap: it.text ?? "", at: it.at } }]
         : [{ role: "assistant", system: true, content: DIVIDER_TEXT, mid: it.id, compaction: { summary: it.text ?? "", at: it.at } }];

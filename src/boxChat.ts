@@ -662,8 +662,10 @@ class BoxChatSession {
         // What this surface cleared is not shown here (the conversation, and every other surface, still has it).
         const base = (view?.messages ?? prev?.messages.filter((m) => !m.boxPending && !m.boxLocal) ?? []) as ChatMessage[];
         const messages = this.overlay(id, base, view?.pending ?? (p ? pendingOf(p) : []), !!(view ? view.running : row.running));
-        // Sending: running as far as this client knows, until the log says so.
-        const sending = (this.outgoing.get(id) ?? []).some((o) => !o.failed && (o.role ?? "user") === "user" && !o.line && (!o.steer || !!o.now));
+        // Sending: running as far as this client knows, until the log says so. One the box holds (sent while
+        // it summarizes the conversation) is waiting, not running: that line is what is under way.
+        const held = new Set((view?.pending ?? (p ? pendingOf(p) : [])).map((x) => x.id));
+        const sending = (this.outgoing.get(id) ?? []).some((o) => !o.failed && (o.role ?? "user") === "user" && !o.line && (!o.steer || !!o.now) && !held.has(o.id));
         const running = (view ? view.running : row.running && !row.asking) || sending;
         const ask = p?.meta.asking ?? (row.asking && prev?.pendingAsk ? prev.pendingAsk : undefined);
         const next = {
@@ -700,13 +702,14 @@ class BoxChatSession {
             streamingText: live?.text ?? "",
             streamingReasoning: live?.reasoning ?? "",
             liveTools: (live?.tools ?? []) as LiveTool[],
-            ...(view?.context ? { lastContext: view.context } : {}),
+            // 0 after a compaction whose size is not known: the old figure is not shown (the dial waits for the next reply).
+            ...(view && view.context !== null ? { lastContext: view.context } : {}),
           });
         }
         // A background run's live view (the chats list's dot, a switch back to it).
         if (view && running && s.activeConversationId !== id) {
           runtime ??= { ...s.convRuntime };
-          runtime[id] = { streamingText: view.live.text, streamingReasoning: view.live.reasoning, liveTools: view.live.tools as LiveTool[], ...(view.startedAt ? { startedAt: view.startedAt } : {}), ...(view.context ? { lastContext: view.context } : {}), ...(view.window ? { contextWindow: view.window } : {}) };
+          runtime[id] = { streamingText: view.live.text, streamingReasoning: view.live.reasoning, liveTools: view.live.tools as LiveTool[], ...(view.startedAt ? { startedAt: view.startedAt } : {}), ...(view.context !== null ? { lastContext: view.context } : {}), ...(view.window ? { contextWindow: view.window } : {}) };
         } else if (id in (runtime ?? s.convRuntime)) {
           runtime ??= { ...s.convRuntime };
           delete runtime[id];
@@ -768,7 +771,8 @@ class BoxChatSession {
     for (const n of notes) anchor(n.after, [{ role: "assistant", system: true, boxLocal: true, content: n.text, mid: n.id }]);
     const mine: ChatMessage[] = [];
     for (const o of still) {
-      const waiting = !!o.steer && !o.failed && !o.now;
+      // Waiting: sent into a running turn, or held by the box (a message sent while it summarizes the conversation).
+      const waiting = (!!o.steer || waitingIds.has(o.id)) && !o.failed && !o.now;
       const msg: ChatMessage = { role: o.role ?? "user", content: o.text, mid: o.id, ...(o.failed ? { boxLocal: true } : { boxPending: true }), ...(waiting ? { waiting: true } : {}), ...(o.attachments?.length ? { attachments: o.attachments } : {}) };
       if (o.failed) anchor(o.after, [msg, { role: "assistant", system: true, boxLocal: true, content: o.failed, mid: `${o.id}:failed` }]);
       else mine.push(msg);

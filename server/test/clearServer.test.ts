@@ -67,7 +67,8 @@ describe("Main over HTTP", () => {
 
   it("/compact: the engine compacts Main's context now (a compaction entry in the session file, the raw history kept); the thread shows the summary divider", async () => {
     const r = await post("/api/v2/intent", { type: "compact", convId: "main", focus: "the Friday deadline" });
-    expect(r).toMatchObject({ ok: true, compacted: true });
+    // Answered at once: the summary takes minutes, and the thread says the rest.
+    expect(r).toMatchObject({ ok: true, started: true });
     const dir = join(vault, ".vault-chat", "events", "sessions");
     // The runtime summarises on its own command, so the boundary lands after the
     // intent returns — in the same transcript, which still holds the raw history.
@@ -80,7 +81,7 @@ describe("Main over HTTP", () => {
       30_000,
     );
     expect(body.split("\n").filter(Boolean).map((l) => JSON.parse(l)).some((e) => e.type === "compaction")).toBe(true);
-    await waitFor(async () => shown(await picture("main")).some((x) => x.kind === "compaction"), 10_000);
+    await waitFor(async () => shown(await picture("main")).some((x) => x.kind === "compaction" && x.status === "done"), 10_000);
     // Clear is not the box's: there is no such intent.
     expect((await post("/api/v2/intent", { type: "clear", convId: "main" })).error).toMatch(/unknown intent/);
   });

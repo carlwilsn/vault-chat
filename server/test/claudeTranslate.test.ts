@@ -177,6 +177,39 @@ describe("a Claude Code turn said in pi's words", () => {
     expect(div.map((d: any) => [d.status, d.text])).toEqual([["done", "Summarized the earlier conversation automatically at 123,456 tokens."]]);
   });
 
+  // The messages Claude Code 2.1.321 (SDK 0.3.321) sends for a /compact, as recorded on this box
+  // against a scripted API: "compacting" at the start (again every 30 s while it works), then a
+  // status with compact_result, the boundary with the size before AND after, and the command's result.
+  const compacting = { type: "system", subtype: "status", status: "compacting", session_id: "s", uuid: "u1" };
+  it("a /compact shows from its start: one Summarizing line, then the divider with the size after (the dial's new reading)", () => {
+    const { picture, emits } = replay([
+      ...messages,
+      compacting,
+      { ...compacting, uuid: "u2" },
+      { type: "system", subtype: "status", status: null, compact_result: "success", session_id: "s", uuid: "u3" },
+      { type: "system", subtype: "compact_boundary", compact_metadata: { trigger: "manual", pre_tokens: 3250, post_tokens: 2507, duration_ms: 3026 }, session_id: "s", uuid: "u4" },
+      { type: "result", subtype: "success", is_error: false, result: "", session_id: "s", uuid: "u5" },
+    ]);
+    const live = emits.filter((e) => e.kind === "live" && /^compaction_/.test(String((e as any).ev.type))).map((e) => (e as any).ev.type);
+    expect(live).toEqual(["compaction_start", "compaction_end"]);
+    const div = picture.items.filter((i: any) => i.kind === "compaction");
+    expect(div.map((d: any) => [d.status, d.text])).toEqual([["done", "Summarized the earlier conversation at 3,250 tokens, down to 2,507."]]);
+    expect(picture.usage?.context).toBe(2507);
+  });
+
+  it("while it summarizes, the picture has the open line; a failed summary takes it down and says why, once", () => {
+    const during = replay([...messages, compacting]).picture;
+    expect([...during.items, ...during.inflight].filter((i: any) => i.kind === "compaction").map((i: any) => i.status)).toEqual(["streaming"]);
+    const { picture } = replay([
+      ...messages,
+      compacting,
+      { type: "system", subtype: "status", status: null, compact_result: "failed", compact_error: "Error during compaction: API Error: 400 refused", session_id: "s", uuid: "u3" },
+      { type: "result", subtype: "success", is_error: false, result: "Error during compaction: API Error: 400 refused", session_id: "s", uuid: "u5" },
+    ]);
+    expect([...picture.items, ...picture.inflight].filter((i: any) => i.kind === "compaction")).toEqual([]);
+    expect(picture.items.filter((i: any) => i.kind === "notice").map((i: any) => i.text)).toEqual(["Summarizing the earlier conversation failed: API Error: 400 refused"]);
+  });
+
   it("a subagent's own stream is never folded in as the parent's reply", () => {
     const t = new ClaudeTranslator();
     const child = messages.filter((m) => m.type === "stream_event" || m.type === "assistant" || m.type === "user").map((m) => ({ ...m, parent_tool_use_id: "toolu_parent" }));
