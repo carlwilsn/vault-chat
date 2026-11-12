@@ -2,6 +2,7 @@ import { defineConfig } from "vitest/config";
 import { fileURLToPath } from "node:url";
 import { inlinedKatexCss } from "./katexCssGen.mjs";
 import { appCss } from "./appCssGen.mjs";
+import { pageLinkHostJs } from "./pageLinkHostGen.mjs";
 
 /** Timing-sensitive files: they pass alone and race under parallel load. */
 const SERIAL = ["server/test/updaterHttpDeadline.test.ts"];
@@ -20,9 +21,11 @@ export default defineConfig({
         if (id === "pdfjs-dist") return shim("pdfjs.ts");
         if (id === "vc:katex-css") return "\0vc-katex";
         if (id === "vc:app-css") return "\0vc-app-css";
+        if (id === "vc:page-link-host") return "\0vc-page-link-host";
         return null;
       },
       async load(id: string) {
+        if (id === "\0vc-page-link-host") return `export default ${JSON.stringify(await pageLinkHostJs(fileURLToPath(new URL("..", import.meta.url))))};`;
         if (id === "\0vc-app-css") return `export default ${JSON.stringify(await appCss(fileURLToPath(new URL("..", import.meta.url))))};`;
         if (id === "\0vc-katex") return `export default ${JSON.stringify(inlinedKatexCss(fileURLToPath(new URL("..", import.meta.url))))};`;
         return id === "\0vc-url" ? "export default '';" : null;

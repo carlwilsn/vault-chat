@@ -13,7 +13,8 @@ import { loadConfig, SERVER_VERSION, SERVER_REV } from "./config";
 import { legacyPushEnabled, setLegacyPushEnabled } from "./pushPreferences";
 import { trackWrites } from "./drain";
 import { inputSurface, noteInput } from "./presence";
-import { authorize, isDirectLoopback, phoneToken } from "./auth";
+import { authorize, isDirectLoopback, phoneToken, tailnetIdentity } from "./auth";
+import { PAGE_LINK_PREFIX, pageLinkDocument, pageLinkId } from "./pageLink";
 import { appCss } from "./appCss";
 import { liveGateway, liveManifest, liveRevoke, liveToken } from "./liveProxy";
 import { APP_STYLES_HREF, HTML_CSP, inlineHtmlDocument, isHtmlSrc } from "../src/inlineHtml";
@@ -365,6 +366,10 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
     }
   }
 
+  // A page's own link (server/pageLink.ts) opens only for a person `tailscale serve` names: no loopback, no token.
+  if (path.startsWith(PAGE_LINK_PREFIX) && !tailnetIdentity(req)) {
+    return send(res, 401, "text/plain; charset=utf-8", "This page's link opens only through Tailscale, signed in as Carl.\n");
+  }
   const auth = authorize(req, url);
   if (!auth.ok) return json(res, 401, { error: "unauthorized" });
   // Carl's input keeps the box from self-updating under him (server/presence.ts, the health's busy).
@@ -706,6 +711,12 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
     if (!b.dataBase64) return json(res, 413, { error: `the file did not arrive (too big? an attachment can be at most ${mb(ATTACH_MAX_BYTES)})` });
     const out = saveAttachment(vault, b);
     return out.ok ? json(res, 200, out) : json(res, out.status, { error: out.error });
+  }
+  // A page at its own link: the shell that hosts it (server/pageLink.ts); its calls come back to /api/v2/live/* below.
+  if (path.startsWith(PAGE_LINK_PREFIX) && method === "GET") {
+    const id = pageLinkId(path);
+    const out = id ? pageLinkDocument(open.path, id, open.main ? null : open.name) : { status: 404, error: "no such page" };
+    return out.html ? send(res, 200, "text/html; charset=utf-8", out.html, { "X-Content-Type-Options": "nosniff" }) : json(res, out.status, { error: out.error });
   }
   // Live pages (src/liveBridge.ts; server/liveProxy.ts): a page's manifest, Carl's grant minted into a scoped token, and its calls.
   if (path.startsWith("/api/v2/live/") && method === "POST") {

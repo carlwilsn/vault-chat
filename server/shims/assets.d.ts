@@ -37,3 +37,9 @@ declare module "vc:app-css" {
   const css: string;
   export default css;
 }
+
+/** A page's own link's host script, bundled for the browser (server/pageLinkHostGen.mjs): inlined into /p/<id>/. */
+declare module "vc:page-link-host" {
+  const js: string;
+  export default js;
+}

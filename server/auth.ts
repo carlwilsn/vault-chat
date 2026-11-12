@@ -61,7 +61,13 @@ export function tailnetLoginOk(req: IncomingMessage): boolean {
   return loadConfig().allowedLogins.includes(login.trim().toLowerCase());
 }
 
-export type AuthResult = { ok: boolean; via: "loopback" | "tailscale" | "token" | null };
+/** Who is at the other end, by Tailscale identity alone: the allowed login `tailscale serve` vouched for, else null. No
+ *  loopback, no phone token: a page's own link (/p/<id>/, server/pageLink.ts) opens only for a person serve names. */
+export function tailnetIdentity(req: IncomingMessage): string | null {
+  return tailnetLoginOk(req) ? String(header(req, "tailscale-user-login")).trim().toLowerCase() : null;
+}
+
+export type AuthResult ={ ok: boolean; via: "loopback" | "tailscale" | "token" | null };
 
 export function authorize(req: IncomingMessage, url: URL): AuthResult {
   if (isDirectLoopback(req)) return { ok: true, via: "loopback" };

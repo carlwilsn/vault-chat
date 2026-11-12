@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join, relative } from "node:path";
 import { inlinedKatexCss } from "./katexCssGen.mjs";
 import { appCss } from "./appCssGen.mjs";
+import { pageLinkHostJs } from "./pageLinkHostGen.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const shims = join(root, "server", "shims");
@@ -69,6 +70,8 @@ const webApps = {
     b.onResolve({ filter: /^vc:(phone|board)-app$/ }, (a) => ({ path: a.path.slice(3), namespace: "vc-web-app" }));
     b.onResolve({ filter: /^vc:katex-css$/ }, () => ({ path: "katex-css", namespace: "vc-katex" }));
     b.onResolve({ filter: /^vc:app-css$/ }, () => ({ path: "app-css", namespace: "vc-app-css" }));
+    b.onResolve({ filter: /^vc:page-link-host$/ }, () => ({ path: "page-link-host", namespace: "vc-page-link-host" }));
+    b.onLoad({ filter: /.*/, namespace: "vc-page-link-host" }, async () => ({ contents: `export default ${JSON.stringify(await pageLinkHostJs(root))};`, loader: "js" }));
     b.onLoad({ filter: /.*/, namespace: "vc-app-css" }, async () => ({ contents: `export default ${JSON.stringify(await appCss(root))};`, loader: "js" }));
     b.onLoad({ filter: /.*/, namespace: "vc-katex" }, () => ({ contents: `export default ${JSON.stringify(inlinedKatexCss(root))};`, loader: "js" }));
     b.onLoad({ filter: /.*/, namespace: "vc-web-app" }, (a) => ({ contents: `export default ${JSON.stringify(appFiles(a.path))};`, loader: "js" }));
