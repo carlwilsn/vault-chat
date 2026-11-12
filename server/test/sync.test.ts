@@ -129,6 +129,10 @@ describe("box sync loop", () => {
     expect(sh(bare, "git", ["show", "box:.gitattributes"])).toContain("/data/huge.bin filter=lfs diff=lfs merge=lfs -text");
     expect(readFileSync(big).length).toBe(50 * 1024 * 1024 + 1);
     expect(alerts).toEqual([]);
+    // The box's own filter runs even beside a machine-wide `git lfs install`: git-lfs never ran here, so it never
+    // put the push hook in the working copy that broke every push to the bare repo.
+    expect(git(box, "config", "--local", "filter.lfs.process")).toContain("vault-chat-lfs-filter.mjs");
+    expect(existsSync(join(box, ".git", "hooks", "pre-push"))).toBe(false);
     await sync.runOnce();
     expect(git(box, "status", "--porcelain").trim()).toBe("");
   });

@@ -382,7 +382,9 @@ exit 0
   private async pushBox(): Promise<void> {
     const s = this.status;
     try {
-      const r = await runGit(this.vault, ["push", "-q", this.bare, `refs/heads/${this.BRANCH}:refs/heads/${BOX_BRANCH}`], {
+      // --no-verify: a pre-push hook in the working copy is never the box's (a machine-wide git-lfs puts its own
+      // there, which then fails every push to the local bare repo); the box's own guard is the bare's pre-receive.
+      const r = await runGit(this.vault, ["push", "-q", "--no-verify", this.bare, `refs/heads/${this.BRANCH}:refs/heads/${BOX_BRANCH}`], {
         env: { VC_PUSHER: "box" },
       });
       if (r.code !== 0) throw new Error(`git push ${this.BRANCH === BOX_BRANCH ? BOX_BRANCH : `${this.BRANCH} → ${BOX_BRANCH}`} (exit ${r.code}): ${r.stderr.trim()}`);
@@ -403,7 +405,8 @@ exit 0
     s.master = await rp(this.HUB_REF);
     if (s.box && s.master) {
       const r = await runGit(this.vault, ["rev-list", "--left-right", "--count", `HEAD...${this.HUB_REF}`]);
-      const [a, b] = r.stdout.trim().split(/\s+/).map(Number);
+      // A failed rev-list prints nothing, and Number("") is 0: unknown, never "in step".
+      const [a, b] = r.code === 0 ? r.stdout.trim().split(/\s+/).map(Number) : [];
       s.ahead = Number.isFinite(a) ? a! : null;
       s.behind = Number.isFinite(b) ? b! : null;
     } else {
