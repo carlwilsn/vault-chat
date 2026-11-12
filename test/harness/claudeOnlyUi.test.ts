@@ -145,6 +145,17 @@ test("a family the code has never heard of appears, after the known ones, and th
   assert.equal(modelName({ value: "zephyr", resolvedModel: "claude-zephyr-6-1", displayName: "Zephyr" }), "Zephyr 6.1");
 });
 
+test("Fable 5.2 replaces Fable 5.1 when the runtime lists both, under its own name", () => {
+  const rows = [
+    { id: "claude-fable-5-1", name: "Fable 5.1", efforts: [...EFFORTS] },
+    { id: "claude-fable-5-2", name: "Fable 5.2", efforts: [...EFFORTS] },
+    { id: "opus", name: "Opus 5.5", efforts: [...EFFORTS] },
+  ];
+  assert.deepEqual(pickerModels(rows).map((m) => m.name), ["Opus 5.5", "Fable 5.2"]);
+  assert.deepEqual(pickerModels([...rows].reverse()).map((m) => m.name), ["Opus 5.5", "Fable 5.2"], "order of the runtime's answer does not matter");
+  assert.equal(modelName({ value: "claude-fable-5-2", displayName: "Fable" }), "Fable 5.2", "a bare display name gets its version from the id");
+});
+
 test("what Carl reads is the runtime's name, never the id behind it", () => {
   const list = [
     { id: "opus", name: "Opus 5.5", efforts: [...EFFORTS] },

@@ -443,6 +443,18 @@ describe("a conversation on Claude Code", () => {
     expect(said(sentText())).toBe(1);
   }, 180_000);
 
+  it("a model the runtime starts listing appears in the picker without a restart, under its own name", async () => {
+    const b = new ClaudeCodeBackend({ ...claudeOpts(), log: () => {} }) as any;
+    const row = (value: string, displayName: string) => ({ value, displayName, description: "", supportsEffort: true });
+    const sessionWith = (rows: any[]) => ({ models: async () => rows });
+    await b.learnModels(sessionWith([row("opus", "Opus 5.5"), row("claude-fable-5-1", "Fable 5.1")]));
+    expect(b.models().map((m: any) => m.name)).toEqual(["Opus 5.5", "Fable 5.1"]);
+    // An hour later a new session asks again and the runtime knows a new model.
+    b.modelsAskedAt = Date.now() - 61 * 60 * 1000;
+    await b.learnModels(sessionWith([row("opus", "Opus 5.5"), row("claude-fable-5-1", "Fable 5.1"), row("claude-fable-5-2", "Fable"), row("claude-zephyr-6-0", "Zephyr 6")]));
+    expect(b.models().map((m: any) => m.name)).toEqual(["Opus 5.5", "Fable 5.2", "Zephyr 6"]);
+  });
+
   it("a restart resumes the thread from box state: same session, same transcript file", async () => {
     const convId = "cc-conv-1";
     const before = await readConv(vault, convId);
