@@ -302,6 +302,15 @@ describe("the background workers a session still has at work", () => {
     expect(t.workers()).toBe(0);
   });
 
+  it("a background shell command ends without a notice line, but an agent still gets one", () => {
+    const t = new ClaudeTranslator();
+    t.step(started("sh", { task_type: "local_bash", description: "npm run test:server" }));
+    t.step(started("ag"));
+    const out = [...t.step(notice("sh", "completed")), ...t.step(notice("ag", "completed"))].filter((e) => e.kind === "workerNotice").map((e: any) => e.text);
+    expect(out).toEqual(["Worker finished: do ag"]);
+    expect(t.workers()).toBe(0);
+  });
+
   it("an interim `completed` (it has not reported yet) keeps it live; its real report ends it", () => {
     const t = new ClaudeTranslator();
     t.step(started("a"));

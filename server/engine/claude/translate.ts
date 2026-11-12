@@ -179,6 +179,8 @@ export class ClaudeTranslator {
   private held: Emit[] = [];
   /** A retry Claude Code reported and the clients are showing as "Retrying…". */
   private retrying = false;
+  /** Background shell commands and monitors: they end without a notice line. */
+  private silent = new Set<string>();
   /** Background tasks by id: what each was asked to do (task_started's description). */
   private tasks = new Map<string, string>();
   /** Notices already given (a task can be reported twice by two paths). */
@@ -495,7 +497,7 @@ export class ClaudeTranslator {
     // Its final report ends it; an interim "not reported yet" keeps it live. Before the
     // ambient check: a task that ended is over whatever its notice is flagged as.
     if (finalNotice(status, summary)) this.running.delete(taskId);
-    if (m.ambient || m.skip_transcript) return [];
+    if (m.ambient || m.skip_transcript || this.silent.has(taskId)) return [];
     const text = workerNoticeText(this.tasks.get(taskId) ?? "", status, summary, m.reason);
     const key = `${taskId}\n${text}`;
     if (!text || this.noticed.has(key)) return [];
@@ -509,6 +511,8 @@ export class ClaudeTranslator {
       if (m.task_id && !m.ambient && !m.skip_transcript) {
         this.tasks.set(String(m.task_id), String(m.description ?? "").trim());
         this.running.add(String(m.task_id));
+        // A shell command or monitor running in the background is not a worker: its end is no news in the chat.
+        if (/^(local_bash|monitor|monitor_mcp)/.test(String(m.task_type ?? ""))) this.silent.add(String(m.task_id));
       }
       return [];
     }
