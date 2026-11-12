@@ -55,3 +55,5 @@ existing paired Tailscale transport. Reading/writing telemetry does not mark
 user activity. Browser proof only verifies wiring. Actual Carl-laptop measurements
 remain pending until installed production reports arrive. No regression is fixed
 or claimed by this probe.
+
+To summarize and compare the stored records (median, p95, count per metric; baseline vs now) see `docs/perf-baseline.md`.
