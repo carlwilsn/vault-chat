@@ -74,7 +74,7 @@ server/
   {folder}` ("Make this a project", a folder relative to the vault-chat folder) or `{name}` (a new folder in the open
   vault); `POST /api/v1/folders {op: rename|delete, path, name?}` (a folder that is not a project; recoverable:
   `server/folderOps.ts`); `POST /conversation/project {convId, project}`. See "Folders and projects" below.
-- **`GET /api/v1/health`** → `{ok, version, rev, vault, git:"ok"|"missing", keys:{openrouter}, busy:{runs}, conversations, sync:{…}}`
+- **`GET /api/v1/health`** → `{ok, version, rev, vault, git:"ok"|"missing", keys:{openrouter}, busy:{runs, workers, inputs}, conversations, sync:{…}}`
 - **`POST /api/v1/alert`** `{title, body, tag?}` → Web Push to every subscribed phone → `{ok, sent}`
 - **`GET /api/v1/sync`** → full sync status (every step with its full stderr on failure).
 - **`/git/<vault>.git/*`** → `git http-backend` on the bare repo. A push of `master` triggers a sync cycle.

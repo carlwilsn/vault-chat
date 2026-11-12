@@ -413,9 +413,23 @@ export class ClaudeCodeBackend extends EventEmitter implements EngineBackend {
       cli: this.o.install.cli,
       source: this.o.install.source,
       sessions: this.live.size,
+      workers: this.liveWorkers(),
       threads: Object.keys(this.threads).length,
       ...(this.limit ? { rateLimit: this.limit } : {}),
     };
+  }
+
+  /**
+   * Background workers started and not finished: the live sessions' own background tasks
+   * (Claude Code's subagents and shells, translate.ts) plus the BoardMake workers running
+   * in sessions of their own. A session that ends takes its count with it. The updater
+   * waits for this to be 0 (health busy.workers): a restart kills them mid-work.
+   */
+  liveWorkers(): number {
+    let n = 0;
+    for (const live of this.live.values()) n += live.translator.workers();
+    for (const w of this.workers.values()) if (!w.endedAt) n += 1;
+    return n;
   }
 
   /** The last rate limit Claude Code reported, for the host's back-off. */

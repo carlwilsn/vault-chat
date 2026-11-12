@@ -63,6 +63,8 @@ export type EngineHandle = {
   engine: Engine | null;
   error: string | null;
   health: () => Record<string, unknown>;
+  /** Background workers live across every vault's engine (health's busy.workers: the updater waits for 0). */
+  workers?: () => number;
   /** The models the box runs: the chat agent, the vision fallback, the subagent child's default. */
   roles?: () => { chat: string; vision: string; subagent: string };
   /**
@@ -482,6 +484,7 @@ export async function startEngine(b: EngineBoot): Promise<EngineHandle> {
       version: claudeInstall.version,
       ...(engines.size > 1 ? { vaults: Object.fromEntries([...engines].filter(([n]) => n !== mainRef.name).map(([n, e]) => [n, e.health()])) } : {}),
     }),
+    workers: () => [...engines.values()].reduce((n, e) => n + e.workers(), 0),
     // A child runs on the same model as its parent unless it was given one.
     roles: () => ({ chat: engineModel(), vision: visionModel, subagent: process.env.VC_SUBAGENT_MODEL || engineModel() }),
     /** What a chat can run on, by name: the runtime's own list (GET /api/v1/models). */

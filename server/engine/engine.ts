@@ -893,6 +893,11 @@ export class Engine {
     };
   }
 
+  /** Background workers of this vault's engine that a restart would kill (health's busy.workers). */
+  workers(): number {
+    return this.d.backend.liveWorkers?.() ?? 0;
+  }
+
   isRunning(convId: string): boolean {
     const l = this.live.get(convId);
     return !!l && !l.ask;

@@ -249,3 +249,97 @@ describe("a background worker's notification", () => {
     expect(live === -1 || first < live).toBe(true);
   });
 });
+
+// What the box's updater waits for (health busy.workers): a restart kills a worker mid-work.
+describe("the background workers a session still has at work", () => {
+  const started = (task_id: string, extra: Record<string, unknown> = {}) => ({ type: "system", subtype: "task_started", task_id, description: `do ${task_id}`, task_type: "local_agent", ...extra });
+  const notice = (task_id: string, status: string, summary = `Agent "do ${task_id}" ${status}`, extra: Record<string, unknown> = {}) => ({ type: "system", subtype: "task_notification", task_id, status, summary, output_file: "/tmp/x", ...extra });
+  const INTERIM = "This agent has not reported yet: it is waiting on its own background work and will deliver its report through a later notification";
+
+  it("a worker is live from its start to its final report, whichever way it ends", () => {
+    const t = new ClaudeTranslator();
+    expect(t.workers()).toBe(0);
+    for (const id of ["a", "b", "c"]) t.step(started(id));
+    expect(t.workers()).toBe(3);
+    t.step(notice("a", "completed"));
+    expect(t.workers()).toBe(2);
+    t.step(notice("b", "failed"));
+    expect(t.workers()).toBe(1);
+    t.step(notice("c", "stopped", undefined, { reason: "worker_restart" }));
+    expect(t.workers()).toBe(0);
+  });
+
+  it("an interim `completed` (it has not reported yet) keeps it live; its real report ends it", () => {
+    const t = new ClaudeTranslator();
+    t.step(started("a"));
+    t.step(notice("a", "completed", INTERIM));
+    expect(t.workers()).toBe(1);
+    t.step(notice("a", "completed", INTERIM));
+    expect(t.workers()).toBe(1);
+    t.step(notice("a", "completed"));
+    expect(t.workers()).toBe(0);
+  });
+
+  it("a start said twice is one worker, and a report said twice (or for a worker never started here) never goes below zero", () => {
+    const t = new ClaudeTranslator();
+    t.step(started("a"));
+    t.step(started("a"));
+    expect(t.workers()).toBe(1);
+    t.step(notice("a", "completed"));
+    t.step(notice("a", "completed"));
+    t.step(notice("never-started", "stopped"));
+    expect(t.workers()).toBe(0);
+    // The other started worker is untouched by a stranger's report.
+    t.step(started("b"));
+    t.step(notice("never-started", "failed"));
+    expect(t.workers()).toBe(1);
+    // The same worker resumed (a new run of the same task) is live again.
+    t.step(started("a"));
+    expect(t.workers()).toBe(2);
+  });
+
+  it("the replayed <task-notification> user message ends it as the system message does", () => {
+    const t = new ClaudeTranslator();
+    t.step(started("zz9"));
+    const replayed = (status: string, summary: string) => ({ type: "user", message: { role: "user", content: `<task-notification>\n<task-id>zz9</task-id>\n<status>${status}</status>\n<summary>${summary}</summary>\n</task-notification>` }, origin: { kind: "task-notification" }, isReplay: true, parent_tool_use_id: null });
+    t.step(replayed("completed", INTERIM));
+    expect(t.workers()).toBe(1);
+    t.step(replayed("completed", "Agent \"do zz9\" completed"));
+    expect(t.workers()).toBe(0);
+  });
+
+  it("ambient and housekeeping tasks are not workers", () => {
+    const t = new ClaudeTranslator();
+    t.step(started("watcher", { ambient: true }));
+    t.step(started("housekeeping", { skip_transcript: true }));
+    t.step({ type: "system", subtype: "task_started", description: "no id" });
+    expect(t.workers()).toBe(0);
+    // And an ambient report takes nothing from a real worker's count, nor says anything.
+    t.step(started("a"));
+    expect(t.step(notice("watcher", "completed", "watcher done", { ambient: true }))).toEqual([]);
+    expect(t.workers()).toBe(1);
+  });
+
+  it("a turn that ends, or is interrupted, leaves its background workers live", () => {
+    const t = new ClaudeTranslator();
+    t.step(started("a"));
+    t.step({ type: "result", subtype: "success", is_error: false, result: "ok" });
+    expect(t.workers()).toBe(1);
+    t.expectInterrupt();
+    t.step({ type: "result", subtype: "error_during_execution", is_error: true, terminal_reason: "interrupted" });
+    expect(t.workers()).toBe(1);
+    t.step(notice("a", "stopped"));
+    expect(t.workers()).toBe(0);
+  });
+
+  it("the recorded stream ends with nothing left at work", () => {
+    const t = new ClaudeTranslator();
+    const seen: number[] = [];
+    for (const m of stream("claude-task-notification.jsonl")) {
+      t.step(m);
+      seen.push(t.workers());
+    }
+    // a1b2c3 starts and finishes (twice said); d4 starts, is interim, then fails; the rest never started here.
+    expect(seen).toEqual([1, 0, 0, 0, 1, 1, 0, 0, 0, 0]);
+  });
+});

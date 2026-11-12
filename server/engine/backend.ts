@@ -217,6 +217,8 @@ export type EngineBackend = {
   /** One tiny real call to find out whether the sign-in actually works. */
   checkToken?(): Promise<{ ok: boolean | null; error: string | null }>;
   health(): Record<string, unknown>;
+  /** Background workers started and not finished (health's busy.workers: the updater waits for 0). */
+  liveWorkers?(): number;
 
   // -- threads
   /** Open a session for a conversation and return the engine's handle on it (`ref`: where its transcript lives).

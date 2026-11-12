@@ -134,12 +134,22 @@ export function workerNoticeText(description: string, status: string, summary: s
   const what = first(description) || first(summary);
   const tail = what ? `: ${what}` : "";
   if (status === "completed") {
-    if (/not reported yet|waiting on (its own|agents|background)|still (running|waiting|working)|background work/i.test(summary)) return `Worker still working (interim notice)${tail}`;
+    if (interimNotice(status, summary)) return `Worker still working (interim notice)${tail}`;
     return `Worker finished${tail}`;
   }
   if (status === "failed") return `Worker failed${tail}`;
   if (status === "stopped") return `Worker stopped${reason === "worker_restart" ? " by a restart" : ""}${tail}`;
   return "";
+}
+
+/** A `completed` notice whose summary says the worker has not delivered yet: the task is still live. */
+export function interimNotice(status: string, summary: string): boolean {
+  return status === "completed" && /not reported yet|waiting on (its own|agents|background)|still (running|waiting|working)|background work/i.test(summary);
+}
+
+/** A notice that ends its task: the worker is done, for good or ill (an interim `completed` is not). */
+export function finalNotice(status: string, summary: string): boolean {
+  return status === "failed" || status === "stopped" || (status === "completed" && !interimNotice(status, summary));
 }
 
 /** The tool results of a `user` message, and nothing else (the SDK puts them in message.content). */
@@ -173,6 +183,11 @@ export class ClaudeTranslator {
   private tasks = new Map<string, string>();
   /** Notices already given (a task can be reported twice by two paths). */
   private noticed = new Set<string>();
+  /**
+   * Background tasks started and not reported finished yet. The box's updater waits for
+   * these (health busy.workers): a restart would kill them mid-work.
+   */
+  private running = new Set<string>();
   /** The host asked for this turn to end (see expectInterrupt). */
   private stopping = false;
 
@@ -449,10 +464,20 @@ export class ClaudeTranslator {
     return this.workerNotice({ task_id: tag("task-id") || tag("task_id"), status, summary: tag("summary") });
   }
 
+  /** Background workers started in this session and not finished: live from task_started to the final notice. */
+  workers(): number {
+    return this.running.size;
+  }
+
   private workerNotice(m: any): Emit[] {
-    if (m.ambient || m.skip_transcript) return [];
     const taskId = String(m.task_id ?? "");
-    const text = workerNoticeText(this.tasks.get(taskId) ?? "", String(m.status ?? ""), String(m.summary ?? ""), m.reason);
+    const status = String(m.status ?? "");
+    const summary = String(m.summary ?? "");
+    // Its final report ends it; an interim "not reported yet" keeps it live. Before the
+    // ambient check: a task that ended is over whatever its notice is flagged as.
+    if (finalNotice(status, summary)) this.running.delete(taskId);
+    if (m.ambient || m.skip_transcript) return [];
+    const text = workerNoticeText(this.tasks.get(taskId) ?? "", status, summary, m.reason);
     const key = `${taskId}\n${text}`;
     if (!text || this.noticed.has(key)) return [];
     this.noticed.add(key);
@@ -462,7 +487,10 @@ export class ClaudeTranslator {
   private system(m: any): Emit[] {
     if (m.subtype === "task_started") {
       // Remember what the worker was asked to do: the notice names it by that, not by its report.
-      if (m.task_id && !m.ambient && !m.skip_transcript) this.tasks.set(String(m.task_id), String(m.description ?? "").trim());
+      if (m.task_id && !m.ambient && !m.skip_transcript) {
+        this.tasks.set(String(m.task_id), String(m.description ?? "").trim());
+        this.running.add(String(m.task_id));
+      }
       return [];
     }
     if (m.subtype === "task_notification") return this.workerNotice(m);

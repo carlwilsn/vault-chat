@@ -260,11 +260,13 @@ async function main(): Promise<void> {
       // (server/deploy/vault-chat-update.sh), so it never restarts under someone talking.
       // It also waits for busy.inputs == 0: no surface Carl used in the last 10 minutes
       // (server/presence.ts: board saves, typed messages, voice, the phone, `input`: seconds ago).
+      // And for busy.workers == 0: background workers outlive the turn that started them
+      // (Claude Code's subagents and shells, BoardMake workers), across every vault's engine.
       busy: (() => {
         const agent = activeRuns().length;
         const voice = activeVoiceSessions();
         const input = recentInput();
-        return { runs: agent + voice, agent, voice, inputs: Object.keys(input).length, input };
+        return { runs: agent + voice, agent, voice, workers: engine.workers?.() ?? 0, inputs: Object.keys(input).length, input };
       })(),
       conversations: convLog(cfg.vault).rows().length,
       sync: syncSummary(),

@@ -6,9 +6,10 @@
 #      (or one that already failed its health check here);
 #   2. download vault-chat-server.mjs (+ its .sha256), server-version.json and the
 #      phone assets tarball (+ .sha256) into versions/<ver>/, refusing any bad sha;
-#   3. wait until /api/v1/health reports busy.runs == 0 and busy.inputs == 0 — agent runs,
-#      live voice sessions and any surface Carl used in the last 10 minutes (board saves,
-#      typed messages, voice, the phone) all count (at most 2 h, then go anyway: the
+#   3. wait until /api/v1/health reports busy.runs == 0, busy.workers == 0 and
+#      busy.inputs == 0 — agent runs, live voice sessions, background workers still at
+#      work (a restart kills them) and any surface Carl used in the last 10 minutes (board
+#      saves, typed messages, voice, the phone) all count (at most 2 h, then go anyway: the
 #      server drains writes in flight on SIGTERM and the board keeps unsaved work on the iPad);
 #   4. swap the `current` symlink to versions/<ver> and restart the server unit;
 #   5. /api/v1/health must report <ver> within 90 s — otherwise swap the symlink back,
@@ -390,14 +391,17 @@ if [ -n "$cur" ]; then
       break
     fi
     runs="$(printf '%s' "$h" | json_field busy.runs)"
+    # Background workers still at work (a restart kills them mid-work): wait too. A server
+    # that predates the field does not report it: that is 0.
+    workers="$(printf '%s' "$h" | json_field busy.workers)"
     # Carl's input on any surface in the last 10 minutes (board, typed, voice, phone): wait too.
     inputs="$(printf '%s' "$h" | json_field busy.inputs)"
-    [ "${runs:-0}" = 0 ] && [ "${inputs:-0}" = 0 ] && break
+    [ "${runs:-0}" = 0 ] && [ "${workers:-0}" = 0 ] && [ "${inputs:-0}" = 0 ] && break
     if [ "$(date +%s)" -ge "$deadline" ]; then
-      log "still busy ($runs runs, ${inputs:-0} surfaces in use) after ${BUSY_MAX_S}s — updating anyway"
+      log "still busy (${runs:-0} runs, ${workers:-0} background workers, ${inputs:-0} surfaces in use) after ${BUSY_MAX_S}s — updating anyway"
       break
     fi
-    [ "$said" = 0 ] && { log "server busy ($runs runs, ${inputs:-0} surfaces in use) — waiting for it to go idle"; said=1; }
+    [ "$said" = 0 ] && { log "server busy (${runs:-0} runs, ${workers:-0} background workers, ${inputs:-0} surfaces in use) — waiting for it to go idle"; said=1; }
     sleep "$BUSY_POLL_S"
   done
 fi

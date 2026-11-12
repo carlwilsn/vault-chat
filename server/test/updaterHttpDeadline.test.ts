@@ -28,4 +28,8 @@ it.each([
   "test_term_and_ctrl_c_cleanup_active_curl",
   "test_current_symlink_is_not_actual_http_readiness",
   "test_failed_restart_cannot_accept_a_stale_healthy_daemon",
+  // The wait before the restart (busy.runs, busy.workers, busy.inputs), on the real entry.
+  "test_busy_wait_holds_for_background_workers",
+  "test_busy_wait_reads_a_server_without_the_workers_field_as_zero",
+  "test_busy_wait_deadline_updates_despite_live_workers",
 ])("bounded owned HTTP updater: %s", async name => { await cases(name); });

@@ -589,22 +589,55 @@ describe("a conversation on Claude Code", () => {
     // delete a file. A worker is its own session in the same sandbox, with the
     // shell; it runs to one answer, and that answer is the report.
     let seen: string | null = null;
+    const before = claude.liveWorkers();
+    let whileRunning = -1;
     const ended = claude.background("cc-no-such-parent", {
       agent: { name: "worker", systemPrompt: "You are a background worker. Do the task, then report." },
       task: "WORKER-TASK-7 please report back",
       title: "A test worker",
       model: "haiku",
-    }, (id) => (seen = id));
+    }, (id) => {
+      seen = id;
+      whileRunning = claude.liveWorkers();
+    });
     const r = (await ended) as { ok: boolean; state: string; text: string };
     expect(seen).toMatch(/^cc-worker-/);
     expect(r).toMatchObject({ ok: true, state: "done" });
     expect(r.text).toContain("WORKER-TASK-7");
+    // At work it is one of the workers the updater waits for (health busy.workers); ended, it is not.
+    expect(whileRunning).toBe(before + 1);
+    expect(claude.liveWorkers()).toBe(before);
     // Ended, so no longer a live child; its end is on record.
     expect(claude.liveChild(seen!)).toBeNull();
     expect(claude.endedChild(seen!)).toMatchObject({ state: "done" });
     // It was offered the shell, like its conversation.
     const tools: string[] = (api.requests.find((q: any) => JSON.stringify(q.messages).includes("WORKER-TASK-7"))?.tools ?? []).map((x: any) => x.name);
     expect(tools).toContain("Bash");
+  }, 180_000);
+
+  it("a session's background workers count until their final report, and go with the session", async () => {
+    // What health's busy.workers is made of: the updater must not restart the box under a
+    // worker Claude Code started in the background, which outlives the turn that started it.
+    const r = await engine.message({ text: "start some work", convId: "cc-conv-workers" });
+    await answered(r.convId, "start some work");
+    const threadId = (await readConv(vault, r.convId)).threadId;
+    const before = claude.liveWorkers();
+    // The runtime's own task messages, through the backend's own message path.
+    const say = (m: Record<string, unknown>) => (claude as any).onMessage(threadId, { type: "system", session_id: "s", uuid: "u", ...m });
+    say({ subtype: "task_started", task_id: "bg-1", description: "Check the rainfall data", task_type: "local_agent", is_backgrounded: true });
+    say({ subtype: "task_started", task_id: "bg-2", description: "Build the thing", task_type: "local_agent", is_backgrounded: true });
+    expect(claude.liveWorkers()).toBe(before + 2);
+    expect(claude.health().workers).toBe(before + 2);
+    // The engine reports its backend's count: this is what the server sums over vaults.
+    expect(engine.workers()).toBe(before + 2);
+    // The turn that started them is over: the conversation is idle, and they are still at work.
+    expect((await readConv(vault, r.convId)).state).toBe("idle");
+    say({ subtype: "task_notification", task_id: "bg-1", status: "completed", summary: 'Agent "Check the rainfall data" completed', output_file: "/tmp/bg-1" });
+    expect(claude.liveWorkers()).toBe(before + 1);
+    // A session that ends takes its workers with it (they died with it): nothing is left to wait for.
+    (claude as any).closeLive(threadId);
+    expect(claude.liveWorkers()).toBe(before);
+    expect(engine.workers()).toBe(before);
   }, 180_000);
 
   it("health names the engine, and the backend says which one it is", () => {

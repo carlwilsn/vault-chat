@@ -31,6 +31,10 @@ class Fixture:
         self.disconnected = threading.Event()
         self.disconnected_at = None
         self.state = None
+        # Mode "busy": the busy document of each health poll of the running 1.0.0, in order
+        # (the last one repeats), and how many of them were served.
+        self.busy = []
+        self.polls = 0
         self.release = {}
         self.bundle = b"// inert owned release fixture; never executed\n"
         self.meta = json.dumps({"version": "1.0.1", "rev": REV,
@@ -89,6 +93,9 @@ class Fixture:
                                 data["releaseReadiness"] = {"status": "pending" if mode == "fallback-pending" else "failed"}
                         else:
                             data["releaseReadiness"] = {"status": "failed", "binaryFallback": False}
+                    if mode == "busy" and (owner.state / "current").readlink() == Path("versions/1.0.0"):
+                        data.update(version="1.0.0", rev="b" * 40, busy=owner.busy[min(owner.polls, len(owner.busy) - 1)])
+                        owner.polls += 1
                     if mode == "old":
                         data["rev"] = "b" * 40
                     if mode == "oldversion":
@@ -364,6 +371,72 @@ class Readiness(unittest.TestCase):
                     self.assertEqual(json.loads(next((state / "release-failures").glob("*.json")).read_text())["revision"], REV)
                 for call in self.calls.read_text().splitlines():
                     self.assertEqual(json.loads(call), ["--user", "--no-block", "restart", "owned-fixture.service"])
+
+    def busy_update(self, name, busy, max_s="30"):
+        # The real updater entry against a running 1.0.0 whose health answers the scripted busy
+        # documents, one per poll, until `current` is swapped to the 1.0.1 release (then: healthy).
+        with Fixture("busy") as fixture:
+            state = self.root / name
+            old = state / "versions/1.0.0"
+            old.mkdir(parents=True)
+            (old / "server-version.json").write_text(json.dumps({"version": "1.0.0", "rev": "b" * 40}))
+            (state / "current").symlink_to("versions/1.0.0")
+            fixture.state, fixture.busy = state, busy
+            env = dict(self.env, VC_UPDATE_API=fixture.url + "/release", VC_SERVER_URL=fixture.url,
+                       VC_SERVER_STATE=str(state), VC_SERVER_UNIT="owned-fixture.service",
+                       VC_UPDATE_HEALTH_WAIT_S="3", VC_UPDATE_HEALTH_POLL_S="0.03",
+                       VC_UPDATE_BUSY_POLL_S="0.02", VC_UPDATE_BUSY_MAX_S=max_s,
+                       VC_UPDATE_BIN_DIR=str(self.root / "installed-bin"),
+                       VC_UPDATE_UNITS_DIR=str(self.root / "installed-units"))
+            before_calls = len(self.calls.read_text().splitlines()) if self.calls.exists() else 0
+            result = subprocess.run(["bash", str(SCRIPT)], env=env, capture_output=True, timeout=12)
+            out = result.stdout.decode()
+            # However long it waited, it then updated: once, to the release, and healthy.
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual((state / "current").readlink(), Path("versions/1.0.1"))
+            self.assertEqual(self.calls.read_text().splitlines()[before_calls:],
+                             [json.dumps(["--user", "--no-block", "restart", "owned-fixture.service"])])
+            self.assertIn("actual box readiness", out)
+            return out, fixture.polls
+
+    def test_busy_wait_holds_for_background_workers(self):
+        # Nothing but background workers (no run, no input on a surface): the restart that would
+        # kill them waits until health says none is left — one poll each for 2, 1 and 0.
+        out, polls = self.busy_update("workers", [{"runs": 0, "workers": w, "inputs": 0} for w in (2, 1, 0)])
+        self.assertEqual(polls, 3)
+        self.assertIn("server busy (0 runs, 2 background workers, 0 surfaces in use) — waiting for it to go idle", out)
+        self.assertNotIn("updating anyway", out)
+        # Workers and a run together: both must end (the run first here, then the worker).
+        out, polls = self.busy_update("run-and-workers", [{"runs": 1, "workers": 1, "inputs": 0},
+                                                         {"runs": 0, "workers": 1, "inputs": 0},
+                                                         {"runs": 0, "workers": 0, "inputs": 0}])
+        self.assertEqual(polls, 3)
+        self.assertIn("server busy (1 runs, 1 background workers, 0 surfaces in use)", out)
+        # Idle: no wait at all.
+        out, polls = self.busy_update("idle", [{"runs": 0, "workers": 0, "inputs": 0}])
+        self.assertEqual(polls, 1)
+        self.assertNotIn("server busy", out)
+
+    def test_busy_wait_reads_a_server_without_the_workers_field_as_zero(self):
+        # A server that predates busy.workers never reports it: that is 0 workers, not a wait
+        # and not an error…
+        out, polls = self.busy_update("old-idle", [{"runs": 0, "inputs": 0}])
+        self.assertEqual(polls, 1)
+        self.assertNotIn("server busy", out)
+        # …and what it does report still holds the update back, as before.
+        out, polls = self.busy_update("old-run", [{"runs": 1, "inputs": 0}, {"runs": 0, "inputs": 1}, {"runs": 0, "inputs": 0}])
+        self.assertEqual(polls, 3)
+        self.assertIn("server busy (1 runs, 0 background workers, 0 surfaces in use) — waiting for it to go idle", out)
+        self.assertNotIn("updating anyway", out)
+
+    def test_busy_wait_deadline_updates_despite_live_workers(self):
+        # Workers that never finish get the same maximum wait as a run, then it updates anyway.
+        start = time.monotonic()
+        out, polls = self.busy_update("stuck", [{"runs": 0, "workers": 3, "inputs": 0}], max_s="1")
+        self.assertGreaterEqual(polls, 2)
+        self.assertIn("server busy (0 runs, 3 background workers, 0 surfaces in use) — waiting for it to go idle", out)
+        self.assertIn("still busy (0 runs, 3 background workers, 0 surfaces in use) after 1s — updating anyway", out)
+        self.assertLess(time.monotonic() - start, 8)
 
 
 if __name__ == "__main__":
