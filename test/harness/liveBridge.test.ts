@@ -206,7 +206,7 @@ test("one grant prompt per page path + hash, however many frames handshake at on
   const mkFrame = () => {
     const posted: any[] = [];
     const cw = { postMessage: (m: any) => posted.push(m) };
-    return { posted, cw, getAttribute: () => "pages/lab.html", contentWindow: cw, getBoundingClientRect: () => ({ left: 0, top: 0, width: 400, height: 300 }) };
+    return { posted, cw, getAttribute: () => "pages/lab.html", contentWindow: cw, rect: { left: 0, top: 0, width: 400, height: 300 }, getBoundingClientRect() { return this.rect; } } as any;
   };
   const frames = [mkFrame(), mkFrame()];
   const mkEl = (): any => {
@@ -238,6 +238,14 @@ test("one grant prompt per page path + hash, however many frames handshake at on
   hello(frames[0]);
   await tick();
   assert.equal(prompts.length, 1, "two frames, one prompt");
+  // Page hidden (another file in the viewer): the prompt hides; it returns with the page.
+  frames[0].rect = { left: 0, top: 0, width: 0, height: 0 };
+  frames[1].rect = { left: 0, top: 0, width: 0, height: 0 };
+  await new Promise((r) => setTimeout(r, 450));
+  assert.equal(prompts[0].style.display, "none", "page hidden, prompt hidden");
+  frames[1].rect = { left: 5, top: 5, width: 400, height: 300 };
+  await new Promise((r) => setTimeout(r, 450));
+  assert.equal(prompts[0].style.display, "", "one copy back on screen, prompt back");
   // Not now: nobody asks again, even a fresh handshake from a remounted frame.
   const deny = prompts[0].children[2].children[0];
   deny.onclick();

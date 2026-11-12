@@ -290,9 +290,10 @@ type PageState = {
 const isId = (v: unknown): v is number => typeof v === "number" && Number.isSafeInteger(v) && v > 0;
 
 /** The one-time prompt, over the frame: what the page wants, Allow / Not now. Resolves true on Allow. */
-function askCarl(doc: Document, frame: HTMLIFrameElement, page: string, caps: string[]): Promise<boolean> {
+function askCarl(doc: Document, framesOf: () => HTMLIFrameElement[], page: string, caps: string[]): Promise<boolean> {
   return new Promise((resolve) => {
-    const r = frame.getBoundingClientRect();
+    const shown = () => framesOf().find((f) => f.isConnected !== false && f.getBoundingClientRect().width > 0 && f.getBoundingClientRect().height > 0) ?? null;
+    const r = (shown() ?? framesOf()[0]).getBoundingClientRect();
     const box = doc.createElement("div");
     box.setAttribute("data-el", "live-grant");
     const w = Math.min(340, Math.max(220, r.width - 16));
@@ -315,6 +316,7 @@ function askCarl(doc: Document, frame: HTMLIFrameElement, page: string, caps: st
       b.setAttribute("data-el", ok ? "live-grant-allow" : "live-grant-deny");
       b.style.cssText = `border:1px solid hsl(var(--border,0 0% 30%));border-radius:8px;padding:4px 12px;font:inherit;cursor:pointer;background:${primary ? "hsl(var(--primary,0 0% 85%))" : "transparent"};color:${primary ? "hsl(var(--primary-foreground,0 0% 10%))" : "inherit"}`;
       b.onclick = () => {
+        clearInterval(watch);
         box.remove();
         resolve(ok);
       };
@@ -323,6 +325,19 @@ function askCarl(doc: Document, frame: HTMLIFrameElement, page: string, caps: st
     row.append(mk("Not now", false, false), mk("Allow", true, true));
     box.append(title, list, row);
     doc.body.append(box);
+    // The prompt belongs to the page: hidden while no copy of it (viewer tab, inline chat copy) is on screen, back when one returns.
+    const watch = setInterval(() => {
+      const f = shown();
+      box.style.display = f ? "" : "none";
+      if (f) {
+        const fr = f.getBoundingClientRect();
+        box.style.left = `${Math.max(8, fr.left + (fr.width - w) / 2)}px`;
+        box.style.top = `${Math.max(8, Math.min(fr.top + 12, window.innerHeight - 260))}px`;
+      }
+    }, 200);
+    (watch as any).unref?.();
+    const first = shown();
+    if (!first) box.style.display = "none";
   });
 }
 
@@ -373,10 +388,20 @@ export function installLiveBridge(host: LiveHost, doc: Document = document): () 
       if (fresh) declined.delete(key);
       let q = asking.get(key);
       if (!q) {
-        q = askCarl(doc, f, page, caps).then((ok) => {
+        const framesOf = () => Array.from(doc.querySelectorAll<HTMLIFrameElement>(`iframe[${LIVE_ATTR}]`)).filter((x) => x.getAttribute(LIVE_ATTR) === page);
+        q = askCarl(doc, () => { const l = framesOf(); return l.length ? l : [f]; }, page, caps).then((ok) => {
           asking.delete(key);
           if (ok) saveGrant(page, hash, caps);
-          else declined.add(key);
+          else {
+            // Not now holds for the session, until the page is closed everywhere and opened again.
+            declined.add(key);
+            const gone = setInterval(() => {
+              if (framesOf().some((x) => x.isConnected !== false)) return;
+              declined.delete(key);
+              clearInterval(gone);
+            }, 500);
+            (gone as any).unref?.();
+          }
           return ok;
         });
         asking.set(key, q);
