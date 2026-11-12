@@ -1,0 +1,154 @@
+<!doctype html>
+<html><head><meta charset="utf-8">
+<meta name="vc-capabilities" content="ask, mic, tool:voice-lab.*">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Voice chat</title>
+<style>
+  :root { color-scheme: light dark; --a:#a78bfa; --on-a:#17132b; }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body { margin: 0; background: var(--vc-bg, #fff); color: var(--vc-fg, #18181b); font: 14px/1.5 var(--vc-font, system-ui, sans-serif); display: flex; flex-direction: column; }
+  header { display: flex; align-items: center; gap: 12px; padding: 12px 18px; border-bottom: 1px solid var(--vc-border, #e7e7ea); }
+  header h1 { font-size: 16px; margin: 0; color: var(--a); letter-spacing: -.01em; }
+  header .sp { flex: 1; }
+  label.tg { display: flex; align-items: center; gap: 6px; color: var(--vc-muted, #71717a); font-size: 12.5px; cursor: pointer; }
+  label.tg input { accent-color: var(--a); }
+  #log { flex: 1; overflow-y: auto; padding: 18px; display: flex; flex-direction: column; gap: 10px; }
+  .msg { max-width: 82%; padding: 9px 13px; border-radius: 14px; white-space: pre-wrap; word-wrap: break-word; }
+  .me { align-self: flex-end; background: var(--a); color: var(--on-a); border-bottom-right-radius: 4px; }
+  .bot { align-self: flex-start; background: var(--vc-surface, #f6f6f7); border: 1px solid var(--vc-border, #e7e7ea); border-bottom-left-radius: 4px; }
+  .sys { align-self: center; color: var(--vc-muted, #71717a); font-size: 12.5px; text-align: center; }
+  .err { color: #e5484d; }
+  footer { padding: 12px 18px 16px; border-top: 1px solid var(--vc-border, #e7e7ea); }
+  #status { min-height: 18px; font-size: 12.5px; color: var(--vc-muted, #71717a); margin-bottom: 6px; }
+  .bar { display: flex; gap: 10px; align-items: flex-end; }
+  textarea { flex: 1; resize: none; max-height: 120px; font: inherit; color: inherit; background: var(--vc-surface, #f6f6f7); border: 1px solid var(--vc-border, #e7e7ea); border-radius: 12px; padding: 9px 12px; outline: none; }
+  textarea:focus { border-color: var(--a); }
+  button { font: inherit; border: 0; cursor: pointer; }
+  button:disabled { opacity: .45; cursor: default; }
+  #mic { flex: none; width: 46px; height: 46px; border-radius: 50%; background: var(--vc-surface, #f6f6f7); color: var(--a); border: 1px solid var(--a); display: grid; place-items: center; transition: transform .1s; }
+  #mic svg { width: 20px; height: 20px; fill: currentColor; }
+  #mic.rec { background: #e5484d; color: #fff; border-color: #e5484d; animation: pulse 1.1s ease-in-out infinite; }
+  @keyframes pulse { 50% { transform: scale(1.09); } }
+  #send { flex: none; height: 46px; padding: 0 18px; border-radius: 12px; background: var(--a); color: var(--on-a); font-weight: 600; }
+</style></head>
+<body>
+<header>
+  <h1>Voice chat</h1>
+  <span class="sp"></span>
+  <label class="tg"><input type="checkbox" id="speak" checked> Speak replies</label>
+</header>
+<div id="log"><div class="sys">Type, or tap the mic, talk, and tap it again to send.</div></div>
+<footer>
+  <div id="status"></div>
+  <div class="bar">
+    <button id="mic" title="Talk"><svg viewBox="0 0 24 24"><path d="M12 15a3.5 3.5 0 0 0 3.5-3.5v-6a3.5 3.5 0 0 0-7 0v6A3.5 3.5 0 0 0 12 15zm6-3.5a1 1 0 0 0-2 0 4 4 0 0 1-8 0 1 1 0 0 0-2 0 6 6 0 0 0 5 5.9V20H9a1 1 0 0 0 0 2h6a1 1 0 0 0 0-2h-2v-2.6a6 6 0 0 0 5-5.9z"/></svg></button>
+    <textarea id="in" rows="1" placeholder="Message"></textarea>
+    <button id="send">Send</button>
+  </div>
+</footer>
+<script>
+function paintAccent(mode){var d=mode==='dark',r=document.documentElement.style;r.setProperty('--a',d?'#a78bfa':'#6d28d9');r.setProperty('--on-a',d?'#17132b':'#ffffff');}
+(function(){var m=(window.vc&&window.vc.theme&&window.vc.theme.mode)||(matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light');paintAccent(m);
+ addEventListener('vc-theme',function(e){var t=e.detail||{};if(t.mode)paintAccent(t.mode);});
+ if(window.vc&&window.vc.onTheme)window.vc.onTheme(function(t){paintAccent(t.mode);});})();
+const $ = id => document.getElementById(id);
+const log = $('log'), statusEl = $('status');
+const STT_ENGINES = ['moonshine-base', 'whisper-base', 'whisper-small'];
+const SYSTEM = 'You are a voice assistant talking with Carl. Reply in short, natural spoken sentences: no markdown, no lists, no emoji. Keep it brief unless he asks for detail.';
+const history = [];
+let engines = [], busy = false, mic = null, audio = new Audio(), playChain = Promise.resolve(), cancelled = 0;
+
+function add(cls, text) { const d = document.createElement('div'); d.className = 'msg ' + cls; d.textContent = text; log.appendChild(d); log.scrollTop = log.scrollHeight; return d; }
+function sys(text, err) { const d = document.createElement('div'); d.className = 'sys' + (err ? ' err' : ''); d.textContent = text; log.appendChild(d); log.scrollTop = log.scrollHeight; }
+function setStatus(t) { statusEl.textContent = t || ''; }
+
+async function tool(name, opts) {
+  if (!(window.vc && window.vc.tool)) throw new Error('Open this page in vault-chat to use the voice tools.');
+  for (let n = 0; ; n++) {
+    try { const r = await window.vc.tool('voice-lab.' + name, opts); return r; }
+    catch (e) { if (n >= 2 || !/error sending request|unreachable|network|fetch/i.test(String(e && e.message))) throw e; await new Promise(r => setTimeout(r, 1200 * (n + 1))); }
+  }
+}
+async function loadEngines() {
+  try { const r = await tool('engines', {}); engines = await r.json(); } catch (e) { engines = []; }
+}
+const ready = (id) => engines.find(e => e.id === id && e.status === 'ready');
+function ttsChoice() {
+  if (ready('elevenlabs')) { const e = ready('elevenlabs'); return { engine: 'elevenlabs', voice: (e.voices && (e.voices.find(v => /rachel/i.test(v)) || e.voices[0])) || undefined }; }
+  const k = ready('kokoro'); if (k) return { engine: 'kokoro', voice: k.voices.includes('af_heart') ? 'af_heart' : k.voices[0] };
+  const p = ready('piper'); if (p) return { engine: 'piper', voice: p.voices && p.voices[0] };
+  return null;
+}
+function sttChoice() { if (ready('elevenlabs-scribe')) return 'elevenlabs-scribe'; return STT_ENGINES.find(ready) || null; }
+
+// ---- speaking: sentences are fetched as the reply streams in and played in order ----
+function enqueueSpeech(sentence, token) {
+  const c = ttsChoice(); if (!c || !$('speak').checked) return;
+  const body = { engine: c.engine, text: sentence }; if (c.voice) body.voice = c.voice;
+  const fetched = tool('tts', { method: 'POST', json: body }).then(r => r.ok ? r.blob() : null).catch(() => null);
+  playChain = playChain.then(async () => {
+    const blob = await fetched; if (!blob || token !== cancelled) return;
+    const url = URL.createObjectURL(blob); audio.src = url;
+    await new Promise(res => { audio.onended = audio.onerror = res; audio.play().catch(res); });
+    URL.revokeObjectURL(url);
+  });
+}
+function stopSpeech() { cancelled++; audio.pause(); audio.removeAttribute('src'); playChain = Promise.resolve(); }
+
+// ---- sending ----
+async function send(text) {
+  text = text.trim(); if (!text || busy) return;
+  busy = true; $('send').disabled = true; stopSpeech(); const token = cancelled;
+  add('me', text); history.push({ role: 'user', text });
+  const out = add('bot', '…'); let full = '', spoken = 0;
+  try {
+    if (!(window.vc && window.vc.ask)) throw new Error('Open this page in vault-chat (you will be asked once to allow it).');
+    const convo = history.slice(-12).map(m => (m.role === 'user' ? 'Carl: ' : 'You: ') + m.text).join('\n');
+    const prompt = (history.length > 1 ? 'Conversation so far:\n' + convo.split('\n').slice(0, -1).join('\n') + '\n\n' : '') + 'Carl just said: ' + text + '\nReply to him now.';
+    setStatus('Thinking…');
+    const stream = window.vc.ask(prompt, { system: SYSTEM });
+    for await (const d of stream) {
+      full += d; out.textContent = full; log.scrollTop = log.scrollHeight;
+      const m = /^[\s\S]*?[.!?](?=\s|$)/.exec(full.slice(spoken));
+      if (m && m[0].trim().length > 12) { enqueueSpeech(m[0].trim(), token); spoken += m[0].length; setStatus('Speaking…'); }
+    }
+    const rest = full.slice(spoken).trim(); if (rest) enqueueSpeech(rest, token);
+    if (!full) out.textContent = '(no reply)';
+    history.push({ role: 'bot', text: full });
+    await playChain; setStatus('');
+  } catch (e) { out.textContent = String(e && e.message || e); out.classList.add('err'); setStatus(''); }
+  busy = false; $('send').disabled = false;
+}
+
+// ---- mic ----
+async function micToggle() {
+  if (mic) {
+    const m = mic; mic = null; $('mic').classList.remove('rec'); setStatus('Transcribing…');
+    try {
+      const blob = await m.stop(); const eng = sttChoice();
+      if (!eng) throw new Error('No speech-to-text engine is ready on the box.');
+      const r = await tool('stt', { method: 'POST', query: { engine: eng }, headers: { 'content-type': blob.type || 'application/octet-stream' }, body: blob });
+      const j = await r.json(); if (!r.ok) throw new Error(j.detail || j.error || 'HTTP ' + r.status);
+      const t = (j.text || '').trim();
+      if (!t) { setStatus(''); sys('Did not hear anything. Try a full sentence close to the mic.'); return; }
+      setStatus(''); send(t);
+    } catch (e) { setStatus(''); sys(String(e && e.message || e), true); }
+    return;
+  }
+  try {
+    if (!(window.vc && window.vc.mic)) throw new Error('Open this page in vault-chat to use the mic.');
+    stopSpeech(); mic = await window.vc.mic(); $('mic').classList.add('rec'); setStatus('Listening… tap the mic again to send.');
+  } catch (e) { mic = null; sys(String(e && e.message || e), true); }
+}
+
+$('mic').onclick = micToggle;
+$('send').onclick = () => { const t = $('in').value; $('in').value = ''; $('in').style.height = 'auto'; send(t); };
+$('in').addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); $('send').click(); } });
+$('in').addEventListener('input', () => { const i = $('in'); i.style.height = 'auto'; i.style.height = Math.min(i.scrollHeight, 120) + 'px'; });
+loadEngines().then(() => {
+  const t = ttsChoice(), s = sttChoice();
+  if (window.vc) sys('Voice: ' + (t ? t.engine : 'no speech engine') + ' / ' + (s || 'no transcriber') + (t && t.engine === 'elevenlabs' ? '' : ' (ElevenLabs is used automatically once it is connected)'));
+});
+</script>
+</body></html>

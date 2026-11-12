@@ -1,0 +1,108 @@
+<!doctype html>
+<html><head><meta charset="utf-8">
+<meta name="vc-capabilities" content="ask, mic, tool:voice-lab.*">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HTML lab</title>
+<style>
+  :root { color-scheme: light dark; --a:#a78bfa; --on-a:#17132b; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--vc-bg,#fff); color:var(--vc-fg,#18181b); font:14px/1.5 var(--vc-font,system-ui,sans-serif); }
+  .wrap { max-width:640px; margin:0 auto; padding:26px 20px 60px; }
+  h1 { font-size:22px; margin:0 0 2px; letter-spacing:-.02em; color:var(--a); }
+  .muted { color:var(--vc-muted,#71717a); }
+  .chips { display:flex; gap:6px; flex-wrap:wrap; margin:10px 0 4px; }
+  .chip { font-size:11.5px; padding:2px 9px; border-radius:99px; border:1px solid var(--vc-border,#e7e7ea); color:var(--vc-muted,#71717a); }
+  .chip.on { border-color:var(--a); color:var(--a); }
+  .card { background:var(--vc-surface,#f6f6f7); border:1px solid var(--vc-border,#e7e7ea); border-left:3px solid var(--a); border-radius:12px; padding:14px 16px; margin:14px 0; }
+  .card h2 { font-size:13px; margin:0 0 8px; text-transform:uppercase; letter-spacing:.06em; color:var(--a); }
+  .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  input[type=text], select { flex:1; min-width:140px; font:inherit; color:inherit; background:var(--vc-bg,#fff); border:1px solid var(--vc-border,#e7e7ea); border-radius:9px; padding:7px 10px; outline:none; }
+  input[type=text]:focus, select:focus { border-color:var(--a); }
+  button { font:inherit; font-weight:600; cursor:pointer; color:var(--on-a); background:var(--a); border:0; border-radius:9px; padding:7px 14px; }
+  button.ghost { background:transparent; color:var(--a); border:1px solid var(--a); }
+  button:disabled { opacity:.45; cursor:default; }
+  button.rec { background:#e5484d; color:#fff; }
+  .out { margin-top:10px; white-space:pre-wrap; min-height:20px; }
+  .err { color:#e5484d; }
+  code { font-family:var(--vc-mono,ui-monospace,monospace); }
+  .swatches { display:flex; gap:6px; flex-wrap:wrap; margin-top:8px; }
+  .sw { flex:1 1 70px; padding:8px; border-radius:8px; border:1px solid var(--vc-border,#e7e7ea); font-size:12px; }
+</style></head>
+<body><div class="wrap">
+  <h1>HTML lab</h1>
+  <div class="muted">One page that tests everything a vault page can do. Written <code id="built"></code>.</div>
+  <div class="chips" id="chips"></div>
+
+  <div class="card"><h2>1 · Theme</h2>
+    <div>App mode: <b id="mode">?</b>. Flip the app between light and dark; this should change with no reload.</div>
+    <div class="swatches">
+      <div class="sw" style="background:var(--vc-bg)">bg</div>
+      <div class="sw" style="background:var(--vc-surface)">surface</div>
+      <div class="sw" style="color:var(--vc-muted)">muted</div>
+      <div class="sw" style="background:var(--a);color:var(--on-a);border-color:var(--a)">brand</div>
+    </div></div>
+
+  <div class="card"><h2>2 · Ask</h2>
+    <div class="row"><input type="text" id="q" placeholder="Ask me anything (read-only)" value="Say hello to Carl in one short sentence."><button id="askBtn">Ask</button></div>
+    <div class="out" id="askOut"></div></div>
+
+  <div class="card"><h2>3 · Speak (ElevenLabs)</h2>
+    <div class="row"><input type="text" id="say" value="This is a test of the voice, running from a page in your vault."></div>
+    <div class="row" style="margin-top:8px"><select id="voice"></select><button id="playBtn">Play</button></div>
+    <div class="out" id="playOut"></div></div>
+
+  <div class="card"><h2>4 · Listen (mic)</h2>
+    <div class="row"><button id="micBtn">Record</button><span class="muted" id="micHint">Tap, speak, tap again.</span></div>
+    <div class="out" id="micOut"></div></div>
+
+  <div class="card"><h2>5 · Scripts and state</h2>
+    <div class="row"><button class="ghost" id="cnt">clicked 0 times</button><span class="muted">Each copy of a page (viewer, chat) has its own counter.</span></div></div>
+</div>
+<script>
+function paintAccent(mode){var d=mode==='dark',r=document.documentElement.style;r.setProperty('--a',d?'#a78bfa':'#6d28d9');r.setProperty('--on-a',d?'#17132b':'#ffffff');var m=document.getElementById('mode');if(m)m.textContent=mode;}
+(function(){var m=(window.vc&&window.vc.theme&&window.vc.theme.mode)||(matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light');paintAccent(m);
+ addEventListener('vc-theme',function(e){var t=e.detail||{};if(t.mode)paintAccent(t.mode);});
+ if(window.vc&&window.vc.onTheme)window.vc.onTheme(function(t){paintAccent(t.mode);});})();
+
+const $=id=>document.getElementById(id);
+$('built').textContent='20:49';
+const caps=(window.vc&&window.vc.caps)||[];
+[['live page',!!(window.vc&&window.vc.live!==false&&window.vc)],['ask',caps.includes('ask')],['mic',caps.includes('mic')],['voice tools',caps.some(c=>/^tool:voice-lab/.test(c))]].forEach(([n,on])=>{const c=document.createElement('span');c.className='chip'+(on?' on':'');c.textContent=n+(on?' ✓':' –');$('chips').appendChild(c);});
+setTimeout(()=>{ $('chips').innerHTML=''; const cs=(window.vc&&window.vc.caps)||[]; [['ask',cs.includes('ask')],['mic',cs.includes('mic')],['voice tools',cs.some(c=>/^tool:voice-lab/.test(c))]].forEach(([n,on])=>{const c=document.createElement('span');c.className='chip'+(on?' on':'');c.textContent=n+(on?' granted':' not granted');$('chips').appendChild(c);}); },1500);
+
+let n=0;$('cnt').onclick=()=>{n++;$('cnt').textContent='clicked '+n+' time'+(n===1?'':'s');};
+
+async function tool(name,opts){if(!(window.vc&&window.vc.tool))throw new Error('Open this page in vault-chat and allow it when asked.');return window.vc.tool('voice-lab.'+name,opts);}
+
+$('askBtn').onclick=async()=>{const out=$('askOut');out.className='out';out.textContent='…';$('askBtn').disabled=true;
+  try{if(!(window.vc&&window.vc.ask))throw new Error('Open this page in vault-chat and allow it when asked.');
+    let full='';for await(const d of window.vc.ask($('q').value,{system:'Reply briefly.'})){full+=d;out.textContent=full;}
+    if(!full)out.textContent='(no reply)';}
+  catch(e){out.className='out err';out.textContent=String(e&&e.message||e);}
+  $('askBtn').disabled=false;};
+
+(async()=>{try{const r=await tool('engines',{});const es=await r.json();const el=es.find(e=>e.id==='elevenlabs');
+  const eng=(el&&el.status==='ready')?el:es.find(e=>e.id==='kokoro');
+  window.__eng=eng;(eng&&eng.voices||[]).forEach(v=>{const o=document.createElement('option');o.value=v;o.textContent=v+(eng.id!=='elevenlabs'?' ('+eng.id+')':'');$('voice').appendChild(o);});
+  if(!eng)$('playOut').textContent='No speech engine ready.';}catch(e){$('playOut').className='out err';$('playOut').textContent=String(e&&e.message||e);}})();
+
+const audio=new Audio();
+$('playBtn').onclick=async()=>{const out=$('playOut');out.className='out';out.textContent='Generating…';$('playBtn').disabled=true;
+  try{const eng=window.__eng;if(!eng)throw new Error('No speech engine ready.');
+    const r=await tool('tts',{method:'POST',json:{engine:eng.id,text:$('say').value,voice:$('voice').value}});
+    if(!r.ok)throw new Error('HTTP '+r.status);const b=await r.blob();audio.src=URL.createObjectURL(b);await audio.play();out.textContent='Playing with '+eng.id+' / '+$('voice').value;}
+  catch(e){out.className='out err';out.textContent=String(e&&e.message||e);}
+  $('playBtn').disabled=false;};
+
+let mic=null;
+$('micBtn').onclick=async()=>{const out=$('micOut');
+  if(mic){const m=mic;mic=null;$('micBtn').className='';$('micBtn').textContent='Record';$('micHint').textContent='Transcribing…';
+    try{const blob=await m.stop();const r=await tool('stt',{method:'POST',query:{engine:'elevenlabs-scribe'},headers:{'content-type':blob.type||'application/octet-stream'},body:blob});
+      const j=await r.json();if(!r.ok)throw new Error(j.detail||j.error||'HTTP '+r.status);out.className='out';out.textContent=j.text||'(no speech heard)';}
+    catch(e){out.className='out err';out.textContent=String(e&&e.message||e);}
+    $('micHint').textContent='Tap, speak, tap again.';return;}
+  try{if(!(window.vc&&window.vc.mic))throw new Error('Open this page in vault-chat and allow it when asked.');
+    mic=await window.vc.mic();$('micBtn').className='rec';$('micBtn').textContent='Stop';$('micHint').textContent='Listening…';}
+  catch(e){mic=null;out.className='out err';out.textContent=String(e&&e.message||e);}};
+</script>
+</body></html>
