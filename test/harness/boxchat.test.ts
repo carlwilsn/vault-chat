@@ -367,7 +367,8 @@ test("cache waits for feed quiescence, keeps its exact old cursor, and cancels o
   assert.deepEqual(bc.readBoxCache(key), first);
   box.down = false;
   bc._boxChatSession()!.kick();
-  await waitFor("old cursor caught up", () => S().conversations.some(c => c.id === c1 && c.title === "cache burst 4"));
+  // The list row follows the replayed tail at once; the picture arrives with its own checkpoint load, so wait for it too.
+  await waitFor("old cursor caught up", () => S().conversations.some(c => c.id === c1 && c.title === "cache burst 4") && bc._boxChatSession()!.picture(c1) !== undefined);
   assert.deepEqual(JSON.parse(JSON.stringify(bc._boxChatSession()!.picture(c1))), JSON.parse(JSON.stringify(box.picture(c1))));
   const beforeStop = localStorage.getItem("vault-chat:box-log:" + key);
   bc.stopBoxChat();
