@@ -8,6 +8,7 @@ import { LIVE_SERVICES, serviceOfCap } from "./liveServices";
 import { parseLiveMount, parseLiveNeeds, type LiveMount } from "./liveBridge";
 import { APP_PLUGINS } from "./appPlugins";
 import { VAULT_PLUGIN_DIR } from "./vaultPlugins";
+import { parsePinned } from "./pinnedApps";
 
 export type CatalogService = {
   name: string;
@@ -35,6 +36,8 @@ export type CatalogPlugin = {
   needs: string[];
   /** Names its manifest gives that no registered service has. */
   refused: string[];
+  /** A pinned app (`<meta name="vc-pinned">`): started with the app, kept running in the background. */
+  pinned?: boolean;
 };
 
 /** A part of the app that is a plugin (src/appPlugins.ts): turned off and on like a page, by its id. */
@@ -98,7 +101,8 @@ const ENTITIES: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: '"'
 export function catalogPlugin(path: string, html: string): CatalogPlugin | null {
   const { caps, refused } = parseLiveNeeds(html);
   const mounted = metaNamed(html, "vc-mount");
-  if (!caps.length && !refused.length && !mounted && !metaNamed(html, "vc-capabilities")) return null;
+  const pinned = parsePinned(html);
+  if (!caps.length && !refused.length && !mounted && !pinned && !metaNamed(html, "vc-capabilities")) return null;
   const id = path.replace(/\\/g, "/").replace(/^(?:\.\/)+/, "");
   const t = /<title\b[^>]*>([\s\S]*?)<\/title>/i.exec(html)?.[1] ?? "";
   const title = t
@@ -112,7 +116,7 @@ export function catalogPlugin(path: string, html: string): CatalogPlugin | null 
     const s = serviceOfCap(cap)?.name;
     if (s && !needs.includes(s)) needs.push(s);
   }
-  return { id, name: title || id.split("/").pop() || id, mount: parseLiveMount(html), needs, refused };
+  return { id, name: title || id.split("/").pop() || id, mount: parseLiveMount(html), needs, refused, pinned };
 }
 
 /** The catalog as text, for the agent. */
@@ -125,7 +129,7 @@ export function catalogText(c: Catalog): string {
   lines.push("", `Plugins in this vault (${c.plugins.length}${c.truncated ? ", list cut short" : ""}): .html pages with a vc-capabilities or vc-mount manifest, and code files in ${VAULT_PLUGIN_DIR}/ (live, no app update)`);
   if (!c.plugins.length) lines.push("- none");
   for (const p of c.plugins) {
-    lines.push(p.mount === "module" ? `- ${p.id}${p.name !== p.id.split("/").pop() ? ` "${p.name}"` : ""}: code file, mounted in the app${p.description ? `; ${p.description}` : ""}` : `- ${p.id}${p.name !== p.id.split("/").pop() ? ` "${p.name}"` : ""}: ${p.mount}; needs ${p.needs.length ? p.needs.join(", ") : "nothing"}${p.refused.length ? `; unknown: ${p.refused.join(", ")}` : ""}`);
+    lines.push(p.mount === "module" ? `- ${p.id}${p.name !== p.id.split("/").pop() ? ` "${p.name}"` : ""}: code file, mounted in the app${p.description ? `; ${p.description}` : ""}` : `- ${p.id}${p.name !== p.id.split("/").pop() ? ` "${p.name}"` : ""}: ${p.mount}${p.pinned ? " (pinned app)" : ""}; needs ${p.needs.length ? p.needs.join(", ") : "nothing"}${p.refused.length ? `; unknown: ${p.refused.join(", ")}` : ""}`);
   }
   if (c.app?.length) {
     lines.push("", `Parts of the app that are plugins (${c.app.length}; the Plugins tool turns them off and on by id or name):`);

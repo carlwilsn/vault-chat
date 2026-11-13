@@ -7,6 +7,7 @@ import { InlineEditPrompt, type InlineEditRequest } from "./InlineEditPrompt";
 import { useStore } from "./store";
 import { declaresServices, insideVault, liveScript, parseLiveMount, vaultRelative } from "./liveBridge";
 import { PluginMount } from "./PluginMount";
+import { PINNED_CHANGED_EVENT, parsePinned, setPinned } from "./pinnedApps";
 import { PluginOff } from "./PluginOff";
 import { usePluginDesired } from "./pluginSupervisorApp";
 import { reportScroll, scrollHtmlWith } from "./scrollTarget";
@@ -617,8 +618,29 @@ export function HtmlView({ content, path }: { content: string; path?: string | n
     };
   }, [marqueeOn]);
 
+  // A vault page can be pinned as an app (src/pinnedApps.ts): the toggle edits its `<meta name="vc-pinned">`.
+  const pinned = parsePinned(content);
+  const togglePin = () => {
+    if (!path) return;
+    void invoke("write_text_file", { path, contents: setPinned(content, !pinned) })
+      .then(() => window.dispatchEvent(new CustomEvent(PINNED_CHANGED_EVENT)))
+      .catch((e) => console.warn("[pin] could not write", path, e));
+  };
+
   return (
     <div className="flex-1 flex flex-col overflow-hidden bg-background relative">
+      {pluginId !== null && (
+        <button
+          type="button"
+          data-el="pin-toggle"
+          aria-pressed={pinned}
+          onClick={togglePin}
+          title={pinned ? "Pinned as an app: runs in the background. Click to unpin" : "Pin as an app: start with the app and keep running in the background"}
+          className={`absolute top-1 right-3 z-30 rounded-md border border-border/60 bg-card/90 px-2 py-0.5 text-[11px] ${pinned ? "text-foreground" : "text-muted-foreground"} hover:text-foreground`}
+        >
+          {pinned ? "Pinned" : "Pin as app"}
+        </button>
+      )}
       <div className="flex-1 relative">
         {off && <PluginOff path={pluginId!} desired={desired} className="absolute inset-x-0 top-0" />}
         {!off && inProcess && (

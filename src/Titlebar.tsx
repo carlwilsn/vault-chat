@@ -9,6 +9,7 @@ import { runningTaskCount } from "./backgroundTasks";
 import { openChatPopout } from "./sync";
 import { VoiceCockpit, VoiceMicGroup } from "./VoiceCockpit";
 import { VaultPicker } from "./VaultPicker";
+import { AppsLauncher } from "./AppsLauncher";
 import { subscribeBoxSync, openTailscale, boxSyncNow, type BoxSyncState } from "./vaultSync";
 import { openTerminal, subscribeTerminalNote, terminalBoxName, terminalTitle } from "./terminal";
 
@@ -166,6 +167,7 @@ export function Titlebar() {
                 <span className="absolute top-0.5 right-0.5 h-1.5 w-1.5 rounded-full bg-primary" />
               )}
             </button>}
+            <AppsLauncher />
             <VoiceMicGroup />
           </>
         )}

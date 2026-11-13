@@ -14,6 +14,7 @@ import { NotePopup } from "./NotePopup";
 import { VoiceTextPanel } from "./VoiceTextPanel";
 import { AppPluginMount } from "./PluginMount";
 import { VaultPlugins } from "./VaultPluginHost";
+import { PinnedApps } from "./PinnedApps";
 import { NOTES_PLUGIN } from "./appPlugins";
 import * as notesPlugin from "./plugins/notes";
 import { ChatsPanel } from "./ChatsPanel";
@@ -464,6 +465,7 @@ export default function App() {
       <AppPluginMount plugin={NOTES_PLUGIN} module={notesPlugin} />
       {/* Plugins that are code files in .vault-chat/plugins: live as they are added, changed or removed. */}
       <VaultPlugins />
+      <PinnedApps />
       <VoiceTextPanel />
       <UpdateBanner />
       <ShortcutSheet />
