@@ -12,7 +12,7 @@ import { NotesPanel } from "./NotesPanel";
 export function mount(el: HTMLElement, api: PluginApi): () => void {
   // A render error the panel does not catch is the plugin's failure (its error card), not the app's.
   const root = createRoot(el, { onUncaughtError: (e) => api.error(e) });
-  root.render(<NotesPanel />);
+  root.render(<NotesPanel host={api.host} />);
   // The host may run this while the app's React is committing; a root is unmounted outside of that.
   return () => queueMicrotask(() => root.unmount());
 }

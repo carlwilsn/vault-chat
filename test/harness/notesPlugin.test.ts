@@ -111,11 +111,15 @@ test("the app mounts the Notes panel only through the plugin host; the old direc
 test("the plugin's view is the panel as it was: open from the store, its rows, counts and empty line; closed, nothing", async () => {
   const { NotesPanel } = await import("../../src/plugins/notes/NotesPanel.tsx");
   const { useStore } = await import("../../src/store.ts");
+  const { createHostApi } = await import("../../src/hostApi.ts");
+  const { appHostBackend } = await import("../../src/hostBackend.ts");
+  const { Effects } = await import("../../src/pluginSupervisor.ts");
+  const host = createHostApi(appHostBackend, new Effects(), () => true, (f) => f);
   const snapshot = useStore.getInitialState();
   Object.assign(snapshot, { vaultPath: vault, showNotesPanel: false, notes: [note("n1", "open", "check the sign in eq 3"), note("n2", "resolved", "done"), note("n3", "cleared", "gone")] });
-  assert.equal(renderToStaticMarkup(createElement(NotesPanel)), "", "closed: nothing");
+  assert.equal(renderToStaticMarkup(createElement(NotesPanel, { host })), "", "closed: nothing");
   Object.assign(snapshot, { showNotesPanel: true });
-  const html = renderToStaticMarkup(createElement(NotesPanel));
+  const html = renderToStaticMarkup(createElement(NotesPanel, { host }));
   assert.match(html, /^<div class="fixed inset-0 z-40 flex justify-end pointer-events-none"><div class="h-full w-\[420px\] max-w-\[92vw\] bg-card border-l border-border shadow-xl flex flex-col pointer-events-auto">/);
   assert.match(html, />Notes<\/span>/);
   assert.match(html, />1 of 2<\/span>/, "N of M: open shown, open + resolved counted");
@@ -125,7 +129,7 @@ test("the plugin's view is the panel as it was: open from the store, its rows, c
   assert.match(html, /hw4\.md · Problem 2/);
   assert.match(html, /title="Close \(Esc\)"/);
   Object.assign(snapshot, { notes: [] });
-  assert.match(renderToStaticMarkup(createElement(NotesPanel)), /No notes yet\. Ctrl\+N to capture one\./);
+  assert.match(renderToStaticMarkup(createElement(NotesPanel, { host })), /No notes yet\. Ctrl\+N to capture one\./);
   Object.assign(snapshot, { showNotesPanel: false });
 });
 

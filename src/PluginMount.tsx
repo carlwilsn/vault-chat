@@ -8,6 +8,7 @@
 import { Component, useEffect, useMemo, useRef, type ReactNode } from "react";
 import { hostTheme, mountPlugin, type AppPluginSource, type PluginHandle } from "./mountHost";
 import type { AppPluginInfo } from "./appPlugins";
+import { appHostBackend } from "./hostBackend";
 import { usePluginDesired } from "./pluginSupervisorApp";
 
 class PluginBoundary extends Component<{ path: string; children: ReactNode }, { failed: string | null }> {
@@ -38,7 +39,7 @@ function Mount({ html, path, className }: { html: string | AppPluginSource; path
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
-    const h = (handle.current = mountPlugin(el, html, { path, theme: () => hostTheme(), onError: (m) => console.warn(`[plugin] ${path} stopped:`, m) }));
+    const h = (handle.current = mountPlugin(el, html, { path, theme: () => hostTheme(), host: appHostBackend, onError: (m) => console.warn(`[plugin] ${path} stopped:`, m) }));
     return () => {
       h.unmount();
       if (handle.current === h) handle.current = null;

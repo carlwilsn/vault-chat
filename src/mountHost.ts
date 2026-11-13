@@ -29,6 +29,7 @@
 
 import { LIVE_THEME_VARS } from "./liveBridge";
 import { Effects } from "./pluginSupervisor";
+import { createHostApi, noHost, type HostApi, type HostBackend } from "./hostApi";
 
 export type PluginTheme = { mode: "light" | "dark"; vars: Record<string, string> };
 export type PluginApi = {
@@ -44,6 +45,8 @@ export type PluginApi = {
   timer(fn: () => void, ms: number, repeat?: boolean): () => void;
   /** Any other effect: `undo` runs when the plugin stops (newest first). Returns a function that runs it now. */
   effect(undo: () => void): () => void;
+  /** The narrow, versioned app API (src/hostApi.ts): selectors, actions and events; every subscription is undone on stop. */
+  host: HostApi;
   /** Report a failure the plugin caught itself: the host takes it down and shows its error card. */
   error(e: unknown): void;
 };
@@ -116,7 +119,7 @@ const HOST_CSS = `:host{display:block;position:relative}[data-el="plugin-root"]{
 export function mountPlugin(
   host: HTMLElement,
   source: string | AppPluginSource,
-  opts: { path: string; theme: () => PluginTheme; win?: Win; load?: LoadModule; onError?: (message: string) => void },
+  opts: { path: string; theme: () => PluginTheme; win?: Win; load?: LoadModule; onError?: (message: string) => void; host?: HostBackend },
 ): PluginHandle {
   const win = opts.win ?? (window as unknown as Win);
   const load = opts.load ?? blobLoad;
@@ -240,6 +243,7 @@ export function mountPlugin(
         listen: (target, type, fn, o) => (run === r ? fx.listen(target, String(type), guard(fn), o) : () => {}),
         timer: (fn, ms, repeat) => (run === r ? fx.timer(guard(fn), Math.max(0, Number(ms) || 0), !!repeat) : () => {}),
         effect: (undo) => (run === r && typeof undo === "function" ? fx.add("effect", undo) : () => {}),
+        host: createHostApi(opts.host ?? noHost, fx, () => run === r, guard),
         error: (e) => void (run === r && fail(e)),
       };
       if (typeof ResizeObserver !== "undefined") {

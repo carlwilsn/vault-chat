@@ -1,6 +1,5 @@
-import { useCallback, useEffect, useState } from "react";
-import { readTextAt, boxPathOf } from "../../boxFiles";
-import { writeAllNotes } from "../../notes";
+import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
+import type { HostApi } from "../../hostApi";
 import {
   StickyNote,
   CheckCircle2,
@@ -14,13 +13,11 @@ import {
   RefreshCw,
   ExternalLink as ExternalLinkIcon,
 } from "lucide-react";
-import { useStore } from "../../store";
 import type { Note, NoteAnchor } from "../../notes";
 import { noteIsSummarizable, anchorImages } from "../../notes";
 
 type NoteAnchorLike = Pick<NoteAnchor, "source_path" | "source_anchor">;
 import { cn } from "../../lib/utils";
-import { isUnreadableAsText } from "../../fileKind";
 import { MessageSquare } from "lucide-react";
 
 // Slide-in review panel for vault notes. Shows active by default;
@@ -33,16 +30,14 @@ import { MessageSquare } from "lucide-react";
 // store.showNotesPanel); it stays mounted while closed, so its filter, search
 // and expanded card are kept between openings, as before.
 
-export function NotesPanel() {
-  const open = useStore((s) => s.showNotesPanel);
-  const setShowNotesPanel = useStore((s) => s.setShowNotesPanel);
-  const onClose = useCallback(() => setShowNotesPanel(false), [setShowNotesPanel]);
-  const notes = useStore((s) => s.notes);
-  const deleteNote = useStore((s) => s.deleteNote);
-  const setNoteStatus = useStore((s) => s.setNoteStatus);
-  const clearResolvedNotes = useStore((s) => s.clearResolvedNotes);
-  const reformatNote = useStore((s) => s.reformatNote);
-  const setCurrentFile = useStore((s) => s.setCurrentFile);
+export function NotesPanel({ host }: { host: HostApi }) {
+  // Only the plugin host API (api.host): this plugin does not import the store.
+  const { notesPanelOpen: open, notes } = useSyncExternalStore(host.subscribe, host.state, host.state);
+  const onClose = useCallback(() => host.panel.close(), [host]);
+  const deleteNote = host.notes.remove;
+  const setNoteStatus = host.notes.setStatus;
+  const clearResolvedNotes = host.notes.clearResolved;
+  const reformatNote = host.notes.reformat;
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [showRawId, setShowRawId] = useState<string | null>(null);
   const [filter, setFilter] = useState<"active" | "resolved">("active");
@@ -157,42 +152,18 @@ export function NotesPanel() {
     const primaryName = primary?.source_path.split("/").pop();
     const assistantBubble = `Context loaded${primaryName ? ` from **${primaryName}**` : ""}.`;
 
-    const store = useStore.getState();
-    // Box mode: the box writes the chat; these lines go to it as they are.
-    const { boxLines } = await import("../../boxChat");
-    if (
-      await boxLines([
-        { role: "user", text: preamble, hidden: true },
-        { role: "user", text: userBubble },
-        { role: "assistant", text: assistantBubble },
-      ])
-    ) {
-      if (store.rightCollapsed) store.toggleRight();
-      onClose();
-      return;
-    }
-    store.appendMessage({ role: "user", content: preamble, hidden: true });
-    store.appendMessage({ role: "user", content: userBubble });
-    store.appendMessage({ role: "assistant", content: assistantBubble });
-    if (store.rightCollapsed) store.toggleRight();
+    await host.chat.prime([
+      { role: "user", text: preamble, hidden: true },
+      { role: "user", text: userBubble },
+      { role: "assistant", text: assistantBubble },
+    ]);
     onClose();
   };
 
   const openAnchorAt = async (anchor: NoteAnchorLike, origin?: string) => {
     if (!anchor || !anchor.source_path) return;
     try {
-      const path = origin ? boxPathOf(anchor.source_path.startsWith("/") ? anchor.source_path : `${origin}/${anchor.source_path}`) : anchor.source_path;
-      if (isUnreadableAsText(path)) {
-        setCurrentFile(path, "");
-      } else {
-        const content = await readTextAt(path);
-        setCurrentFile(path, content);
-      }
-      if (anchor.source_anchor) {
-        useStore
-          .getState()
-          .requestScrollAnchor(path, anchor.source_anchor);
-      }
+      await host.openFile(anchor.source_path, { anchor: anchor.source_anchor ?? undefined, origin });
     } catch (e) {
       console.error("[notes] open anchor failed:", e);
     }
@@ -291,6 +262,7 @@ export function NotesPanel() {
                 }
                 onDelete={() => deleteNote(n.id)}
                 onChat={() => discussInChat(n)}
+                host={host}
               />
             ))
           )}
@@ -323,6 +295,7 @@ function NoteCard({
   onToggleStatus,
   onDelete,
   onChat,
+  host,
 }: {
   note: Note;
   expanded: boolean;
@@ -335,16 +308,15 @@ function NoteCard({
   onToggleStatus: () => void;
   onDelete: () => void;
   onChat: () => void;
+  host: HostApi;
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
   const [error, setError] = useState("");
   const saveEdit = async () => {
-    const s = useStore.getState();
-    if (!s.vaultPath || !draft.trim()) return;
+    if (!draft.trim()) return;
     try {
-      await writeAllNotes(s.vaultPath, s.notes.map(n => n.id === note.id ? { ...n, user_draft: draft.trim(), turns: [], formatted: null, title: null, last_updated: new Date().toISOString() } : n));
-      await s.loadNotes();
+      await host.notes.saveDraft(note.id, draft);
       setEditing(false);
     } catch (e) { setError(String(e)); }
   };
