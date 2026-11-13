@@ -22,6 +22,7 @@ const boxReqs: { method: string; url: string; body: any }[] = [];
 let boxUrl = "";
 let onStartReply: (() => void) | null = null;
 let stream = ["# Sh", "# Short", "# Short title"];
+let proposals: { newText: string }[] | undefined;
 const sides = new Map<string, { texts: string[]; stopped: boolean }>();
 const box = http.createServer((req, res) => {
   let raw = "";
@@ -44,7 +45,7 @@ const box = http.createServer((req, res) => {
       const sd = sides.get(decodeURIComponent(poll[1]!))!;
       const v = Number(poll[2]) + 1;
       const done = sd.stopped || v >= sd.texts.length;
-      res.end(JSON.stringify({ id: poll[1], v, text: sd.texts[Math.min(v, sd.texts.length) - 1], done, error: sd.stopped ? "stopped" : null }));
+      res.end(JSON.stringify({ id: poll[1], v, text: sd.texts[Math.min(v, sd.texts.length) - 1], done, error: sd.stopped ? "stopped" : null, ...(done && proposals ? { proposals } : {}) }));
     } else res.end(JSON.stringify({ ok: true }));
   });
 });
@@ -63,7 +64,7 @@ fake.setHandler("box_get_json", async ({ url }) => {
 const { useStore } = await import("../../src/store.ts");
 const activity = await import("../../src/activity.ts");
 const core = await import("../../src/activityCore.ts");
-const { runInlineEdit, runInlineAsk, buildInlineAskRequest } = await import("../../src/inlineEdit.ts");
+const { runInline, buildInlineRequest } = await import("../../src/inlineEdit.ts");
 const { complete } = await import("../../src/complete.ts");
 const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
 
@@ -116,21 +117,23 @@ test("entries are posted to the box's vault (the image as data for it to store)"
   assert.ok(!fs.existsSync(logPath(boxVault)), "nothing is written on the laptop");
 });
 
-test("Ctrl+K: a side thread of the open conversation on the box; the replacement streams in", async () => {
+test("Ctrl+K / Ctrl+L: one input, a side thread of the open conversation on the box; the reply streams in", async () => {
   useStore.setState({ vaultPath: boxVault } as any);
   boxReqs.length = 0;
   stream = ["# Sh", "# Short", "# Short title"];
   const seen: string[] = [];
-  const out = await runInlineEdit({ prompt: "undo the edit I just made", selection: "# A very long title", before: "", after: "\nbody\n", convId: "conv-7" }, { onText: (t) => seen.push(t) });
+  const out = await runInline({ prompt: "undo the edit I just made", selection: "# A very long title", before: "", after: "\nbody\n", convId: "conv-7" }, { onText: (t) => seen.push(t) });
   assert.deepEqual(out, { text: "# Short title", side: "side-1" });
   // What the popover shows as it comes: each version of pi's text, in order.
   assert.deepEqual(seen, ["# Sh", "# Short", "# Short title"]);
   const req = boxReqs.find((r) => r.method === "POST" && r.url.startsWith("/api/v1/side"))!;
   assert.equal(req.url, "/api/v1/side?vault=physics");
-  assert.equal(req.body.kind, "edit");
+  assert.equal(req.body.kind, "inline");
+  assert.equal(req.body.editable, true, "an editor can take a proposed edit");
+  assert.equal(req.body.model, undefined, "no pick: the box's default (Haiku 5.5)");
   assert.equal(req.body.convId, "conv-7");
-  assert.ok(req.body.text.startsWith("# Ctrl+K: an inline edit"), "the edit's own rules first");
-  assert.ok(req.body.text.includes("You are an inline editor"));
+  assert.ok(req.body.text.startsWith("# Ctrl+K / Ctrl+L: Carl is talking to you"), "one input, no edit/ask toggle");
+  assert.ok(req.body.text.includes("call ProposeEdit(newText)"));
   assert.ok(req.body.text.includes("INSTRUCTION:\nundo the edit I just made"));
   // The context (the conversation, the activity stream) is the box's: none of it is sent from here.
   assert.ok(!req.body.text.includes("Context from Carl's other surfaces"));
@@ -140,20 +143,36 @@ test("Ctrl+K: a side thread of the open conversation on the box; the replacement
   assert.ok(polls.every((r) => new URL(r.url, "http://test").searchParams.get("convId") === "conv-7"));
 });
 
+test("Ctrl+K / Ctrl+L: an edit the agent proposed (ProposeEdit) comes back with the reply, and a pick of model is sent", async () => {
+  boxReqs.length = 0;
+  stream = ["Shortened it."];
+  proposals = [{ newText: "# Short title" }];
+  try {
+    const out = await runInline({ prompt: "shorten", selection: "# A very long title", before: "", after: "", convId: "conv-7", model: "opus" });
+    assert.equal(out.text, "Shortened it.");
+    assert.deepEqual(out.proposals, [{ newText: "# Short title" }]);
+    const req = boxReqs.find((r) => r.method === "POST" && r.url.startsWith("/api/v1/side"))!;
+    assert.equal(req.body.model, "opus");
+    assert.equal(buildInlineRequest({ prompt: "x", selection: "", before: "", after: "", editable: false }).editable, false);
+  } finally {
+    proposals = undefined;
+  }
+});
+
 test("Ctrl+L: the marquee's image goes with the first request; a follow-up continues the same side thread", async () => {
   boxReqs.length = 0;
   stream = ["It is", "It is a circle."];
-  const answer = await runInlineAsk({ prompt: "what did I just circle?", selection: "", before: "", after: "", convId: "conv-7", imageDataUrl: `data:image/png;base64,${PNG}` });
+  const answer = await runInline({ prompt: "what did I just circle?", selection: "", before: "", after: "", convId: "conv-7", imageDataUrl: `data:image/png;base64,${PNG}` });
   assert.equal(answer.text, "It is a circle.");
   const req = boxReqs.find((r) => r.method === "POST" && r.url.startsWith("/api/v1/side"))!;
-  assert.equal(req.body.kind, "ask");
-  assert.ok(req.body.text.startsWith("# Ctrl+L: a question about the file"));
-  assert.ok(req.body.text.includes("look it up with your read-only tools (files in the vault, PDFs with PdfRead"));
+  assert.equal(req.body.kind, "inline");
+  assert.ok(req.body.text.startsWith("# Ctrl+K / Ctrl+L: Carl is talking to you"));
+  assert.ok(req.body.text.includes("look it up with your tools (files in the vault, PDFs with PdfRead"));
   assert.ok(req.body.text.includes("Never ask Carl for a screenshot"));
   assert.deepEqual(req.body.images, [`data:image/png;base64,${PNG}`]);
   // The popover's next request: only what is new, in the same side thread.
-  const refine = buildInlineAskRequest({ prompt: "shorter", selection: "x", before: "", after: "", side: answer.side, convId: "conv-7", imageDataUrl: `data:image/png;base64,${PNG}` });
-  assert.deepEqual(refine, { kind: "ask", side: answer.side, convId: "conv-7", text: "shorter" });
+  const refine = buildInlineRequest({ prompt: "shorter", selection: "x", before: "", after: "", side: answer.side, convId: "conv-7", imageDataUrl: `data:image/png;base64,${PNG}` });
+  assert.deepEqual(refine, { kind: "inline", editable: true, side: answer.side, convId: "conv-7", text: "shorter" });
 });
 
 test("Esc during start retains the captured conversation and file workspace after a vault switch", async () => {
@@ -167,7 +186,7 @@ test("Esc during start retains the captured conversation and file workspace afte
     ac.abort();
   };
   try {
-    await runInlineAsk({ prompt: "explain", selection: "", before: "", after: "", convId: "original-owner" }, { vaultPath: boxVault, signal: ac.signal, onText: t => seen.push(t) });
+    await runInline({ prompt: "explain", selection: "", before: "", after: "", convId: "original-owner" }, { vaultPath: boxVault, signal: ac.signal, onText: t => seen.push(t) });
     const controls = boxReqs.filter(r => /^\/api\/v1\/side\//.test(r.url));
     assert.ok(controls.some(r => r.method === "POST" && r.url.includes("/stop")));
     assert.ok(controls.every(r => new URL(r.url, "http://test").searchParams.get("convId") === "original-owner"));
@@ -184,7 +203,7 @@ test("Esc: the side thread is stopped on the box", async () => {
   stream = ["a", "ab", "abc", "abcd", "abcde"];
   const ac = new AbortController();
   const seen: string[] = [];
-  await runInlineAsk({ prompt: "explain", selection: "", before: "", after: "", convId: "conv-original" }, { signal: ac.signal, onText: (t) => {
+  await runInline({ prompt: "explain", selection: "", before: "", after: "", convId: "conv-original" }, { signal: ac.signal, onText: (t) => {
     seen.push(t);
     // A project switch while streaming must not change poll/abort ownership.
     useStore.setState({ activeConversationId: "conv-other", vaultPath: vault } as any);
@@ -210,7 +229,7 @@ test("a one-shot (a note's title, spoken math) is a side request too, and return
 
 test("no box, or the box unreachable: Ctrl+K and Ctrl+L say so, in the chat's words", async () => {
   useStore.setState({ vaultPath: vault } as any);
-  await assert.rejects(runInlineEdit({ prompt: "x", selection: "", before: "", after: "" }), /Connect your box to chat/);
+  await assert.rejects(runInline({ prompt: "x", selection: "", before: "", after: "" }), /Connect your box to chat/);
   // A box that does not answer: a closed port.
   const closed = http.createServer();
   await new Promise<void>((r) => closed.listen(0, "127.0.0.1", () => r()));
@@ -227,11 +246,11 @@ test("no box, or the box unreachable: Ctrl+K and Ctrl+L say so, in the chat's wo
     }
   });
   useStore.setState({ vaultPath: deadVault } as any);
-  await assert.rejects(runInlineAsk({ prompt: "x", selection: "", before: "", after: "" }), /^Error: Box unreachable: the box is down or restarting\.$/);
+  await assert.rejects(runInline({ prompt: "x", selection: "", before: "", after: "" }), /^Error: Box unreachable: the box is down or restarting\.$/);
   // The box answers but refuses (its engine is down): its own words.
   useStore.setState({ vaultPath: boxVault } as any);
   fake.setHandler("box_post_json", async () => ({ status: 503, body: JSON.stringify({ error: "engine not running" }) }));
-  await assert.rejects(runInlineEdit({ prompt: "x", selection: "", before: "", after: "" }), /The box could not answer: engine not running/);
+  await assert.rejects(runInline({ prompt: "x", selection: "", before: "", after: "" }), /The box could not answer: engine not running/);
   useStore.setState({ vaultPath: vault } as any);
 });
 

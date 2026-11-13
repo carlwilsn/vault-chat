@@ -55,6 +55,7 @@ import { externalRecordUI } from "../mcp/recordUI";
 import { loadConfig } from "../config";
 import { ENGINE_ROLE_PROMPT } from "./prompt";
 import { isNoteTool, noteTool, noteToolSpecs } from "../notesTools";
+import { proposeEditSpec } from "./proposeEdit";
 import { PLUGIN_TOOL, pluginTool, pluginToolSpecs } from "../supervisorTools";
 import { capabilitiesOf, capabilityNote } from "./capabilities";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
@@ -529,7 +530,9 @@ export const ENGINE_TOOL_SPECS = [
 export function agentToolSpecs(): ToolSpec[] {
   return [...ENGINE_TOOL_SPECS, pdfPagesSpec, ...noteToolSpecs, ...contextToolSpecs, ...pluginToolSpecs] as ToolSpec[];
 }
-/** Ctrl+K / Ctrl+L: the agent's tools that change nothing (marked readOnly where they are defined). */
+/** The model Ctrl+K / Ctrl+L runs on unless Carl picks another: small interactions want speed. */
+export const INLINE_DEFAULT_MODEL = "claude-haiku-5-5";
+/** The agent's tools that change nothing (marked readOnly where they are defined). */
 export function sideToolSpecs(): ToolSpec[] {
   return agentToolSpecs().filter((t) => t.readOnly === true);
 }
@@ -1441,9 +1444,12 @@ export class Engine {
     }
     const text = typeof b?.text === "string" ? b.text : "";
     if (!text.trim()) return { error: "missing text" };
-    const kind = b.kind === "once" ? "once" : b.kind === "edit" ? "edit" : "ask";
+    // "inline" is Ctrl+K / Ctrl+L (one input): the agent answers, proposes an edit (ProposeEdit) or acts with its tools.
+    // "edit" / "ask" are what older clients send, and still work as before.
+    const kind = b.kind === "once" ? "once" : b.kind === "inline" ? "inline" : b.kind === "edit" ? "edit" : "ask";
+    const editable = b.editable === true;
     const images: string[] = (Array.isArray(b.images) ? b.images : []).filter((u: unknown) => typeof u === "string" && u.startsWith("data:image/"));
-    let model = kind === "once" && onceModel ? onceModel : kind === "once" && b.fast ? ctxConfig().recapModel : this.d.model();
+    let model = kind === "once" && onceModel ? onceModel : kind === "once" && b.fast ? ctxConfig().recapModel : kind === "inline" ? (typeof b.model === "string" && b.model.trim() ? b.model.trim() : INLINE_DEFAULT_MODEL) : this.d.model();
     if (images.length && !capabilitiesOf(model).images) model = this.d.visionModel ?? model;
     const dir = (parent: string) => join(this.d.backend.paths.sessionsDir, "side", parent);
     const side = this.d.backend.side;
@@ -1453,7 +1459,8 @@ export class Engine {
       if (kind === "once") {
         s = await side.start({ kind, system: String(b.system ?? ""), cwd: this.d.vault, model, tools: [], ephemeral: true, thinking: "off", sessionDir: dir("once"), text, images, log: this.sideLog(null, "once", []) });
       } else if (typeof b.side === "string" && b.side) {
-        s = await side.start({ kind, side: b.side, cwd: this.d.vault, model, tools: READ_ONLY_TOOLS, hostLoadout: "readOnly", hostTools: sideToolSpecs(), sessionDir: "", text, images });
+        const inlineTools = kind === "inline" ? await this.inlineHostTools(editable) : null;
+        s = await side.start({ kind, side: b.side, cwd: this.d.vault, model, tools: READ_ONLY_TOOLS, hostLoadout: kind === "inline" ? "voiceAct" : "readOnly", hostTools: inlineTools ?? sideToolSpecs(), sessionDir: "", text, images });
       } else {
         conv = typeof b.convId === "string" && b.convId ? await readConv(this.d.vault, b.convId) : null;
         const src = conv?.threadId ? this.d.backend.threadSource(conv.threadId) : null;
@@ -1471,8 +1478,8 @@ export class Engine {
         const act = voice && b.tools === "act";
         const tools = act ? [...READ_ONLY_TOOLS, "bash", "edit", "write"] : READ_ONLY_TOOLS;
         // Voice's Asks also have Carl's own vault tools (his calendar …): voice reached them through the agent before.
-        const hostLoadout: HostLoadout = voice ? (act ? "voiceAct" : "voiceRead") : "readOnly";
-        const hostTools = await this.hostToolCatalog(hostLoadout);
+        const hostLoadout: HostLoadout = voice ? (act ? "voiceAct" : "voiceRead") : kind === "inline" ? "voiceAct" : "readOnly";
+        const hostTools = kind === "inline" ? await this.inlineHostTools(editable) : await this.hostToolCatalog(hostLoadout);
         const context = viewerRoot !== this.d.vault
           ? `<file-context conversation=${JSON.stringify(conv?.id ?? null)}>Viewer/file-context vault root: ${viewerRoot}/. Conversation owner: ${this.d.vault}/. Resolve viewer-relative file references under that viewer root; relative tools still use the thread/project cwd. This is the captured side-request file context, not later viewer state.</file-context>`
           : undefined;
@@ -2223,6 +2230,11 @@ export class Engine {
       out.push(x.text);
     }
     return out.join("\n\n");
+  }
+
+  /** Ctrl+K / Ctrl+L: the tools a side thread can use (notes, Show …, Carl's own vault tools), and ProposeEdit when the open file can take an edit. */
+  private async inlineHostTools(editable: boolean): Promise<ToolSpec[]> {
+    return [...(await this.hostToolCatalog("voiceAct")), ...(editable ? [proposeEditSpec] : [])];
   }
 
   /** One current host policy for new and resumed sessions; vault tools keep collision checks. */

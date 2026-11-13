@@ -94,8 +94,8 @@ export const SHORTCUTS = [
   },
 
   // ---- Editing
-  { id: "edit.inline", keys: ["Mod+K"], label: "Edit selection", group: "Editing", where: "an editor", files: ["src/LiveEditor.tsx", "src/MonacoEditor.tsx"] },
-  { id: "edit.ask", keys: ["Mod+L"], label: "Ask about it", group: "Editing", where: "a file", files: ["src/LiveEditor.tsx", "src/MonacoEditor.tsx", "src/MarkdownView.tsx"] },
+  { id: "edit.inline", keys: ["Mod+K"], label: "Ask or edit", group: "Editing", where: "an editor", files: ["src/LiveEditor.tsx", "src/MonacoEditor.tsx"] },
+  { id: "edit.ask", keys: ["Mod+L"], label: "Ask or edit", group: "Editing", where: "a file", files: ["src/LiveEditor.tsx", "src/MonacoEditor.tsx", "src/MarkdownView.tsx"] },
   { id: "edit.mode", keys: ["Mod+E"], label: "Edit / view", group: "Editing", where: "an open file", files: ["src/App.tsx"] },
   { id: "edit.marquee", keys: ["Mod+M"], label: "Capture a region", group: "Editing", where: "a PDF, HTML page or image", files: ["src/MarkdownView.tsx"] },
   { id: "edit.confirm", keys: ["Enter"], label: "Confirm a name", group: "Editing", where: "rename, new project, a key", files: ["src/FileTree.tsx", "src/ChatsPanel.tsx", "src/NewProjectForm.tsx", "src/VaultPicker.tsx", "src/ProjectChip.tsx", "src/SettingsPane.tsx", "src/ClaudeCodeSignIn.tsx"] },

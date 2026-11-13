@@ -8,13 +8,11 @@ import { decodeTarget, landLines } from "./viewTarget";
 import { extToMonacoLang } from "./monaco-setup";
 import {
   InlineEditPrompt,
-  type InlineEditMode,
   type InlineEditRequest,
 } from "./InlineEditPrompt";
 
 type MonacoInlineEdit = InlineEditRequest & {
   range: monaco.IRange;
-  mode: InlineEditMode;
 };
 
 export function MonacoEditor({
@@ -96,7 +94,7 @@ export function MonacoEditor({
     monacoNs: typeof monaco,
   ) => {
     editorRef.current = editor;
-    const openInline = (mode: InlineEditMode) => {
+    const openInline = () => {
       const model = editor.getModel();
       if (!model) return;
       const selection = editor.getSelection();
@@ -140,12 +138,11 @@ export function MonacoEditor({
         after,
         language: ext,
         anchor,
-        mode,
       });
     };
 
-    editor.addCommand(monacoKeys("edit.inline", monacoNs), () => openInline("edit"));
-    editor.addCommand(monacoKeys("edit.ask", monacoNs), () => openInline("ask"));
+    editor.addCommand(monacoKeys("edit.inline", monacoNs), () => openInline());
+    editor.addCommand(monacoKeys("edit.ask", monacoNs), () => openInline());
 
     // Push the Monaco selection into the store so Ctrl+N can pick it
     // up as the note's source_selection. window.getSelection() doesn't
@@ -228,7 +225,7 @@ export function MonacoEditor({
       {inlineEdit && (
         <InlineEditPrompt
           request={inlineEdit}
-          initialMode={inlineEdit.mode}
+          editable
           onAccept={acceptInlineEdit}
           onCancel={cancelInlineEdit}
         />

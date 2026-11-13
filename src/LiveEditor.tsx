@@ -19,7 +19,6 @@ import { indentUnit } from "@codemirror/language";
 import { history, historyKeymap, defaultKeymap, indentWithTab } from "@codemirror/commands";
 import {
   InlineEditPrompt,
-  type InlineEditMode,
   type InlineEditRequest,
 } from "./InlineEditPrompt";
 import { useStore } from "./store";
@@ -244,7 +243,6 @@ const liveTheme = EditorView.theme({
 type InlineEditContext = InlineEditRequest & {
   from: number;
   to: number;
-  mode: InlineEditMode;
 };
 
 export function LiveEditor({
@@ -288,7 +286,7 @@ export function LiveEditor({
           key: cmKey("edit.inline"),
           preventDefault: true,
           run: (view) => {
-            setInlineEdit(buildInlineEditContext(view, "md", "edit"));
+            setInlineEdit(buildInlineEditContext(view, "md"));
             return true;
           },
         },
@@ -296,7 +294,7 @@ export function LiveEditor({
           key: cmKey("edit.ask"),
           preventDefault: true,
           run: (view) => {
-            setInlineEdit(buildInlineEditContext(view, "md", "ask"));
+            setInlineEdit(buildInlineEditContext(view, "md"));
             return true;
           },
         },
@@ -451,7 +449,7 @@ export function LiveEditor({
       {inlineEdit && (
         <InlineEditPrompt
           request={inlineEdit}
-          initialMode={inlineEdit.mode}
+          editable
           onAccept={acceptInlineEdit}
           onCancel={cancelInlineEdit}
         />
@@ -463,7 +461,6 @@ export function LiveEditor({
 function buildInlineEditContext(
   view: EditorView,
   language: string,
-  mode: InlineEditMode,
 ): InlineEditContext {
   const sel = view.state.selection.main;
   const from = sel.from;
@@ -478,5 +475,5 @@ function buildInlineEditContext(
     ? { left: coords.left, top: coords.top, bottom: coords.bottom }
     : { left: 100, top: 100, bottom: 120 };
 
-  return { from, to, selection, before, after, language, anchor, mode };
+  return { from, to, selection, before, after, language, anchor };
 }

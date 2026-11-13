@@ -331,9 +331,12 @@ describe("what each mode sends", () => {
       const o = backend.sides[backend.sides.length - 1];
       expect(o.fork).toMatch(/\.jsonl$/);
       expect(o.tools).toEqual(["read", "grep", "find", "ls"]);
-      // …and the agent's read-only vault-chat tools (PdfRead for a PDF), never one that writes.
-      expect(o.hostTools.map((t: any) => t.name)).toEqual(expect.arrayContaining(["PdfRead", "WebFetch", "ListNotes"]));
-      expect(o.hostTools.every((t: any) => t.readOnly === true)).toBe(true);
+      // …and the agent's vault-chat tools: the read-only ones (PdfRead for a PDF), the notes tools for bigger asks, and
+      // ProposeEdit, which writes nothing (Carl accepts it); on Haiku 5.5 unless he picked another model.
+      const names = o.hostTools.map((t: any) => t.name);
+      expect(names).toEqual(expect.arrayContaining(["PdfRead", "WebFetch", "ListNotes", "CreateNote", "ProposeEdit"]));
+      expect(names).not.toContain("AskUser");
+      expect(o.model).toBe("claude-haiku-5-5");
       return o.text as string;
     };
     // What pi's extension adds after the request (before_agent_start): the layer since the chat's last one,
@@ -346,7 +349,7 @@ describe("what each mode sends", () => {
       const c: any = await readConv(vault, convId);
       return act.youLayer(vault, { convId, since: youSince(readEntries(c.threadPath)) }).text;
     };
-    const k = inline.buildInlineEditRequest({
+    const k = inline.buildInlineRequest({
       prompt: "make this shorter",
       selection: "We tile each orthomosaic into 1024 px squares with 128 px of overlap so that coconuts on tile edges are seen whole at least once.",
       before: "# Coconut\n\n## What\n\nDetect coconuts in drone images.\n\n## How\n\n",
@@ -359,7 +362,7 @@ describe("what each mode sends", () => {
       { label: "side request (after the chat's instructions and history)", text: await sent(k) },
       { label: "you layer (pi's extension, after the request)", text: await layerFor() },
     ]);
-    const l = inline.buildInlineAskRequest({
+    const l = inline.buildInlineRequest({
       prompt: "why is the overlap 128?",
       selection: "128 px of overlap",
       before: "We tile each orthomosaic into 1024 px squares with ",

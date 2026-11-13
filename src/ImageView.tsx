@@ -417,8 +417,6 @@ export function ImageView({ path, rev = 0 }: { path: string; rev?: number }) {
       {inlineAsk && (
         <InlineEditPrompt
           request={inlineAsk}
-          initialMode="ask"
-          askOnly
           onAccept={() => setInlineAsk(null)}
           onCancel={() => setInlineAsk(null)}
         />

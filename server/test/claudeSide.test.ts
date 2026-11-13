@@ -9,6 +9,7 @@ import { fakeAnthropic, type FakeApi } from "./claudeFakeApi";
 import { findClaude } from "../engine/claude/install";
 import { ClaudeSideRuns, isClaudeSide } from "../engine/claude/side";
 import type { Handlers, SideStart, ToolSpec } from "../engine/backend";
+import { proposeEditSpec } from "../engine/proposeEdit";
 import { McpRuntime } from "../mcp/runtime";
 
 const root = tmp("vccsd-");
@@ -106,6 +107,18 @@ describe("a side thread on Claude Code", () => {
     expect(toolCalls).toEqual(["ReadConversation@the-chat"]);
     // It was told what Carl did elsewhere, as of that chat.
     expect(JSON.stringify(api.requests[api.requests.length - 1].messages)).toContain("renamed a note");
+  }, 180_000);
+
+  it("ProposeEdit writes nothing: the proposal rides on the run's state for the popover to accept or reject", async () => {
+    toolCalls.length = 0;
+    const r = await side.start(base({ kind: "inline", text: 'CALL mcp__vault_chat__ProposeEdit {"newText":"# Short title","note":"shorter"}', hostTools: [...READ_ONLY, proposeEditSpec], you: { convId: "the-chat" } }));
+    const done = await side.wait(r.id);
+    expect(done.error).toBeNull();
+    expect(done.proposals).toEqual([{ newText: "# Short title", note: "shorter" }]);
+    expect(toolCalls).toEqual([]);
+    // A refinement starts with none.
+    const again = await side.start(base({ kind: "inline", side: r.id, text: "thanks", hostTools: [...READ_ONLY, proposeEditSpec] }));
+    expect((await side.wait(again.id)).proposals).toBeUndefined();
   }, 180_000);
 
   it("a one-shot has its own prompt, no tools and nothing kept", async () => {

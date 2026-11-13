@@ -1,6 +1,6 @@
 // The app's model requests, all in pi on the box (server/engine/pi/side.ts):
 //
-//  - side(): Ctrl+K / Ctrl+L — a side thread of the open conversation (pi forks
+//  - side(): Ctrl+K / Ctrl+L (one input) — a side thread of the open conversation (pi forks
 //    its session: the same agent, the same context) with pi's read-only tools.
 //    The answer streams (`onText`); a popover's next request continues the
 //    same side thread (`side`).
@@ -23,7 +23,11 @@ export type CompleteRequest = {
 export type Complete = (req: CompleteRequest) => Promise<string>;
 
 export type SideRequest = {
-  kind: "edit" | "ask";
+  kind: "inline";
+  /** Whether the open file can take an edit (the agent gets ProposeEdit). */
+  editable?: boolean;
+  /** Carl's pick; unset, the box uses its default for Ctrl+K / Ctrl+L. */
+  model?: string;
   text: string;
   /** data: URLs. */
   images?: string[];
@@ -33,8 +37,10 @@ export type SideRequest = {
   side?: string | null;
 };
 
-export type SideResult = { text: string; side: string };
-export type SideOpts = { onText?: (text: string) => void; signal?: AbortSignal; /** Captured file workspace, independent of conversation owner. */ vaultPath?: string | null };
+/** An edit the agent proposed (ProposeEdit): `newText` replaces the selection (or goes at the cursor). */
+export type EditProposal = { newText: string; note?: string };
+export type SideResult = { text: string; side: string; proposals?: EditProposal[] };
+export type SideOpts = { onText?: (text: string, proposals?: EditProposal[]) => void; signal?: AbortSignal; /** Captured file workspace, independent of conversation owner. */ vaultPath?: string | null };
 
 let impl: Complete | null = null;
 

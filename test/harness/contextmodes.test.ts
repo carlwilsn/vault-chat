@@ -40,7 +40,7 @@ fake.setHandler("box_get_json", async ({ url }) => {
 });
 
 const activity = await import("../../src/activity.ts");
-const { buildInlineEditRequest, buildInlineAskRequest } = await import("../../src/inlineEdit.ts");
+const { buildInlineRequest } = await import("../../src/inlineEdit.ts");
 
 before(async () => {
   await new Promise<void>((r) => box.listen(0, "127.0.0.1", () => r()));
@@ -64,12 +64,12 @@ test("the image comes from the box's captures (one POST, this vault's)", async (
 test("Ctrl+K and Ctrl+L carry the capture as an image, captioned with what it is", async () => {
   const img = (await activity.contextImageFor(boxVault, "what does this figure show?"))!;
   const extra = { imageDataUrl: img.dataUrl, caption: img.caption };
-  const k = buildInlineEditRequest({ prompt: "describe the figure here", selection: "", before: "", after: "", extraImages: [extra] });
+  const k = buildInlineRequest({ prompt: "describe the figure here", selection: "", before: "", after: "", extraImages: [extra] });
   assert.deepEqual(k.images, [img.dataUrl]);
   assert.ok(k.text.includes(`Image 1: ${img.caption}`));
-  const l = buildInlineAskRequest({ prompt: "what does this figure show?", selection: "", before: "", after: "", extraImages: [extra] });
+  const l = buildInlineRequest({ prompt: "what does this figure show?", selection: "", before: "", after: "", extraImages: [extra] });
   assert.deepEqual(l.images, [img.dataUrl]);
   assert.ok(l.text.includes("Image 1: [Attached: Carl's latest image capture"));
   // No image: none sent.
-  assert.equal(buildInlineEditRequest({ prompt: "x", selection: "", before: "", after: "" }).images, undefined);
+  assert.equal(buildInlineRequest({ prompt: "x", selection: "", before: "", after: "" }).images, undefined);
 });

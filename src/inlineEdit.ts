@@ -1,5 +1,6 @@
-// Ctrl+K (rewrite the selection) and Ctrl+L (ask about it): requests to the
-// agent on the box, as a side thread of the open conversation (src/complete.ts
+// Ctrl+K and Ctrl+L are one input: Carl talking to the agent, with his selection, the open file and his cursor
+// as context. The agent decides per message: answer, propose an edit (the ProposeEdit tool: server/engine/proposeEdit.ts),
+// or do more with its tools. Requests to the agent on the box, as a side thread of the open conversation (src/complete.ts
 // side(); server/engine/pi/side.ts: pi forks the conversation's session, with
 // pi's read-only tools). The conversation's history, the agent's instructions
 // and what Carl did elsewhere come from the box; this module builds what the
@@ -12,24 +13,6 @@ function prependNorthStar(base: string, northStar?: string): string {
   const block = northStarPromptBlock(northStar ?? "");
   return block ? `${block}\n\n${base}` : base;
 }
-
-const EDIT_HEADER = `# Ctrl+K: an inline edit
-Carl pressed Ctrl+K in the file he has open. This is a side request beside his conversation: your final message goes into the file, not the chat.`;
-
-const SYSTEM = `You are an inline editor inside a text/code file. The user presses Ctrl+K and gives you an instruction plus context from the surrounding file.
-
-Your output replaces the SELECTION they had highlighted, or — when SELECTION is empty — is inserted at the cursor.
-
-Strict output rules:
-- Output ONLY the replacement / insertion text. No prose, no preamble, no explanation.
-- Do NOT wrap your output in markdown code fences (\`\`\`) unless the surrounding file is itself a markdown file and fences are genuinely part of the authored content.
-- Match the surrounding style: indentation, quoting, comment style, prose tone.
-- Preserve leading/trailing whitespace contract of the original selection where relevant.
-- Keep the output self-contained — no cross-references to the chat, no "here is your code".
-
-When the edit needs more than you were given, look it up with your read-only tools (files, PDFs with PdfRead, images, the web); never ask Carl for a screenshot or a copy of anything in his vault. Your final message is still only the replacement text.
-
-If Carl refines the edit in a later message, it refines the same edit. Re-emit the entire replacement, not a diff or a description of changes.`;
 
 export type InlineTurn = { prompt: string; result: string };
 
@@ -51,6 +34,10 @@ export type InlineEditParams = {
   /** Per-vault north-star brief, prepended to the request's rules so the
    *  inline editor honors the vault's declared mode. */
   northStar?: string;
+  /** Whether the open file can take an edit (false for a PDF, image, rendered page): no ProposeEdit then. Default true. */
+  editable?: boolean;
+  /** The model Carl picked for this input; unset, the box's default for it (Haiku 5.5). */
+  model?: string;
 };
 
 export type CapturedExtra = {
@@ -75,17 +62,6 @@ function oneMessage(text: string, images: CapturedExtra[]): { text: string; imag
 /** Where the request goes: a new side thread of the open conversation, or the popover's own. */
 function target(p: InlineEditParams): Pick<SideRequest, "convId" | "side"> {
   return { convId: p.convId ?? null, ...(p.side ? { side: p.side } : {}) };
-}
-
-/** Exactly what a Ctrl+K request sends. */
-export function buildInlineEditRequest(p: InlineEditParams): SideRequest {
-  const text = p.side ? p.prompt : `${prependNorthStar(`${EDIT_HEADER}\n\n${SYSTEM}`, p.northStar)}\n\n${buildContextBody(p, p.prompt)}`;
-  return { kind: "edit", ...target(p), ...oneMessage(text, p.extraImages ?? []) };
-}
-
-/** Ctrl+K: the replacement text (streamed to `onText`), and the side thread a refinement continues. */
-export function runInlineEdit(p: InlineEditParams, opts: SideOpts = {}): Promise<SideResult> {
-  return side(buildInlineEditRequest(p), opts);
 }
 
 type Attached = Array<{ rel: string; path: string; content?: string | null }>;
@@ -119,16 +95,16 @@ function buildContextBody(p: InlineEditParams, instruction: string, attached?: A
   return parts.join("\n\n");
 }
 
-const ASK_HEADER = `# Ctrl+L: a question about the file
-Carl pressed Ctrl+L in the file he has open. This is a side request beside his conversation: your answer shows in a popover over the file.`;
+const INLINE_HEADER = `# Ctrl+K / Ctrl+L: Carl is talking to you from the file he has open
+This is one input: Carl's message, with his selection, the open file and his cursor as context. It is a side request beside his conversation; your reply shows in a small popover over the file and is not added to the chat.
+Decide from what he says:
+- A question: answer in markdown, concisely. Use fenced code blocks for code and $$...$$ for display math (inline $...$ does not render here). Start from the context you are given (the file excerpt, the page text, attached files and images); when it is not enough, look it up with your tools (files in the vault, PDFs with PdfRead, images, the web). Never ask Carl for a screenshot or a copy of anything in his vault: read it yourself.
+- A change to the file: call ProposeEdit(newText). It replaces his SELECTION (or is inserted at his CURSOR when the selection is empty). newText is only the replacement, in the surrounding style, without code fences unless fences belong in the file. Nothing is written until he accepts. Then say in one line what you proposed.
+- Something bigger ("clean this up and move it into a note"): do it with the tools you have (ProposeEdit, CreateNote, and so on), then say what you did in a line.
+When he has captured a region from a PDF (a LOCATION line is present and an image is attached), the image is the primary subject: describe what is visible first, then bring in page text as support. The LOCATION line tells you exactly which page he is on; trust it, and prefer the CURRENT PAGE text over PREV/NEXT. Do not invent theorem numbers or labels that are not visible.
+If he refines in a later message, it refines the same work; propose the whole new replacement again.`;
 
-const ASK_SYSTEM = `You are an assistant inside a text/code file viewer. The user highlights a selection (or puts their cursor on a line) and asks a question about it.
-
-Start from the context you are given (the file excerpt, the page text, any attached files and images). When it is not enough, look it up with your read-only tools (files in the vault, PDFs with PdfRead, images, the web). Never ask Carl for a screenshot or a copy of anything in his vault: read it yourself. If it is still missing, say what is missing.
-
-When the user has captured a region from a PDF (a LOCATION line is present and an image is attached), the captured image is the primary subject of the question. Lead with what is visible in the image — describe the marqueed content first, then bring in surrounding-page text only as supporting context. The LOCATION line tells you exactly which page the user is on; trust it over any pattern-matching impulse from training data, and prefer the labeled CURRENT PAGE text over PREV/NEXT when they conflict. Do not invent theorem numbers, equation labels, or proof structure that isn't visible in the image or in the labeled page text.
-
-Answer in markdown. Be concise — this renders in a small popover. Use fenced code blocks for code. Use $$...$$ for display math (inline $...$ does not render here).`;
+const READ_ONLY_FILE = "\nThis file cannot be edited from here: ProposeEdit is not available. Answer in words, or use your other tools.";
 
 // Structured page-keyed context for PDF marquees. Fixes the old
 // behavior where surrounding context was sliced from a single joined
@@ -145,7 +121,7 @@ export type PdfAskContext = {
   nextPageText: string | null;
 };
 
-export type InlineAskParams = InlineEditParams & {
+export type InlineParams = InlineEditParams & {
   // Optional region screenshot (data URL) to attach to the first user
   // message alongside the text context. Used by the PDF marquee so the
   // model can see math, tables, and diagrams that text extraction
@@ -164,23 +140,23 @@ export type InlineAskParams = InlineEditParams & {
 };
 
 /** Ctrl+L: the answer (markdown, streamed to `onText`), and the side thread a follow-up continues. */
-export function runInlineAsk(p: InlineAskParams, opts: SideOpts = {}): Promise<SideResult> {
-  return side(buildInlineAskRequest(p), opts);
+export function runInline(p: InlineParams, opts: SideOpts = {}): Promise<SideResult> {
+  return side(buildInlineRequest(p), opts);
 }
 
-/** Exactly what a Ctrl+L request sends. */
-export function buildInlineAskRequest(p: InlineAskParams): SideRequest {
+/** Exactly what a Ctrl+K / Ctrl+L request sends. */
+export function buildInlineRequest(p: InlineParams): SideRequest {
   let text: string;
   if (p.side) {
     // A follow-up in the same side thread: only what is new.
     text = [p.prompt, attachedBlock(p.attachedFiles)].filter(Boolean).join("\n\n");
   } else {
     const body = p.pdfContext ? buildPdfContextBody(p, p.prompt, p.pdfContext, p.attachedFiles) : buildContextBody(p, p.prompt, p.attachedFiles);
-    text = `${prependNorthStar(`${ASK_HEADER}\n\n${ASK_SYSTEM}`, p.northStar)}\n\n${body}`;
+    text = `${prependNorthStar(p.editable === false ? INLINE_HEADER + READ_ONLY_FILE : INLINE_HEADER, p.northStar)}\n\n${body}`;
   }
   // The marquee's region first (with the first request), then images captured in the popover.
   const images: CapturedExtra[] = [...(p.imageDataUrl && !p.side ? [{ imageDataUrl: p.imageDataUrl }] : []), ...(p.extraImages ?? [])];
-  return { kind: "ask", ...target(p), ...oneMessage(text, images) };
+  return { kind: "inline", editable: p.editable !== false, ...(p.model ? { model: p.model } : {}), ...target(p), ...oneMessage(text, images) };
 }
 
 // Build the first request's content for a PDF marquee ask. Layout:
@@ -191,7 +167,7 @@ export function buildInlineAskRequest(p: InlineAskParams): SideRequest {
 //   model order is: location label → image → labeled page texts →
 //   question. The QUESTION lands last because recency pulls a stronger
 //   signal from later content in the prompt.
-function buildPdfContextBody(p: InlineAskParams, instruction: string, ctx: PdfAskContext, attached?: Attached): string {
+function buildPdfContextBody(p: InlineParams, instruction: string, ctx: PdfAskContext, attached?: Attached): string {
   const parts: string[] = [];
   parts.push(
     `LOCATION: page ${ctx.pageNum} of ${ctx.totalPages} in ${ctx.fileName}`,

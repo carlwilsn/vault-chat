@@ -8,17 +8,12 @@ import { isUnreadableAsText } from "./fileKind";
 import { fileKind } from "./fileKind";
 import { cn } from "./lib/utils";
 import type { NoteAnchor } from "./notes";
-import {
-  runInlineEdit,
-  runInlineAsk,
-  stripCodeFence,
-  type InlineTurn,
-} from "./inlineEdit";
+import { runInline, stripCodeFence, type InlineTurn } from "./inlineEdit";
+import type { EditProposal } from "./complete";
+import { useChatModels } from "./chatModels";
 import { loadVaultNorthStar } from "./meta";
 import { contextImageFor, flushActivity, recordActivity } from "./activity";
 import { editSummary } from "./activityCore";
-
-export type InlineEditMode = "edit" | "ask";
 
 export type InlineEditAnchor = {
   left: number;
@@ -57,7 +52,7 @@ export type InlineEditRequest = {
   after: string;
   language?: string;
   // Optional screenshot (data URL) sent to the agent alongside the
-  // text context in ask mode. Not shown to the user.
+  // text context. Not shown to the user.
   imageDataUrl?: string;
   // Optional source-location hint for when this request later becomes
   // a note — e.g. "page=3" for a PDF marquee, "L42" for a code cursor.
@@ -67,20 +62,20 @@ export type InlineEditRequest = {
   pdfContext?: PdfContext;
 };
 
+const INLINE_MODEL_KEY = "vault-chat.inline-model";
 const POPOVER_WIDTH = 416;
 const MARGIN = 8;
 const MIN_VERTICAL_SPACE = 160;
 
 export function InlineEditPrompt({
   request,
-  initialMode = "edit",
-  askOnly = false,
+  editable = false,
   onAccept,
   onCancel,
 }: {
   request: InlineEditRequest;
-  initialMode?: InlineEditMode;
-  askOnly?: boolean;
+  /** The open file takes an edit here (an editor): the agent may ProposeEdit, and Accept applies it. */
+  editable?: boolean;
   onAccept: (result: string) => void;
   onCancel: () => void;
 }) {
@@ -99,7 +94,18 @@ export function InlineEditPrompt({
   }, []);
   const files = useStore((s) => s.files);
   const openNoteComposer = useStore((s) => s.openNoteComposer);
-  const [mode, setMode] = useState<InlineEditMode>(askOnly ? "ask" : initialMode);
+  // The edit the agent proposed (ProposeEdit), waiting for Carl to accept or reject it.
+  const [proposal, setProposal] = useState<EditProposal | null>(null);
+  // The model for this input: Haiku unless Carl picks another (kept across popovers).
+  const models = useChatModels();
+  const [pickedModel, setPickedModel] = useState(() => {
+    try {
+      return localStorage.getItem(INLINE_MODEL_KEY) ?? "";
+    } catch {
+      return "";
+    }
+  });
+  const modelValue = pickedModel || models.models.find((m) => /haiku/i.test(m.id))?.id || "";
   const northStarRef = useRef<string>("");
   useEffect(() => {
     let cancelled = false;
@@ -116,7 +122,7 @@ export function InlineEditPrompt({
   const [error, setError] = useState<string | null>(null);
   const [priorTurns, setPriorTurns] = useState<InlineTurn[]>([]);
   const [lastPrompt, setLastPrompt] = useState<string | null>(null);
-  // @mention autocomplete (ask mode only — edit mode stays surgical).
+  // @mention autocomplete.
   const [fileMention, setFileMention] = useState<{ query: string; start: number } | null>(null);
   const [fileMentionIdx, setFileMentionIdx] = useState(0);
   const [attachedMentions, setAttachedMentions] = useState<
@@ -236,10 +242,6 @@ export function InlineEditPrompt({
 
   const onPromptChange = (v: string) => {
     setPrompt(v);
-    if (mode !== "ask") {
-      setFileMention(null);
-      return;
-    }
     const el = inputRef.current;
     const caret = el?.selectionStart ?? v.length;
     const upToCaret = v.slice(0, caret);
@@ -320,8 +322,8 @@ export function InlineEditPrompt({
 
   const submit = async () => {
     if (!prompt.trim() || streaming) return;
-    if (mode === "ask" && !vaultPath) {
-      setError("Open a vault first — ask mode uses it for file context.");
+    if (!vaultPath) {
+      setError("Open a vault first — it gives the agent the file context.");
       return;
     }
 
@@ -339,6 +341,7 @@ export function InlineEditPrompt({
     setPrompt("");
     setError(null);
     setResult("");
+    setProposal(null);
     setStreaming(true);
     const ac = new AbortController();
     abortRef.current = ac;
@@ -350,14 +353,16 @@ export function InlineEditPrompt({
     await flushActivity().catch(() => undefined);
     const sideId = nextPrior.length > 0 ? sideRef.current : null;
     // The answer streams in where it shows now.
-    const onText = (t: string) => {
-      if (!ac.signal.aborted) setResult(t);
+    const onText = (t: string, proposals?: EditProposal[]) => {
+      if (ac.signal.aborted) return;
+      setResult(t);
+      if (proposals?.length) setProposal(proposals[proposals.length - 1]!);
     };
     // "This figure", "what I circled": the latest capture itself, when the
     // request is about it and carries no image of its own (one, capped, once
     // per popover). With a selection, "this" is the selection, not an image.
     let turnImages = extraImages;
-    if (extraImages.length === 0 && !(mode === "ask" && request.imageDataUrl)) {
+    if (extraImages.length === 0 && !request.imageDataUrl) {
       const img = await contextImageFor(vaultPath, currentPrompt, { deictic: !request.selection?.trim(), exclude: imagesGivenRef.current });
       if (img) {
         imagesGivenRef.current.push(img.path);
@@ -365,56 +370,39 @@ export function InlineEditPrompt({
       }
     }
     try {
-      if (mode === "edit") {
-        const out = await runInlineEdit(
-          {
-            prompt: currentPrompt,
-            selection: request.selection,
-            before: request.before,
-            after: request.after,
-            language: request.language,
-            side: sideId,
-            convId,
-            extraImages: turnImages,
-            northStar: northStarRef.current,
-          },
-          { onText, signal: ac.signal, vaultPath },
-        );
-        if (ac.signal.aborted) return;
-        sideRef.current = out.side;
-        setResult(out.text);
-      } else {
-        const attachedFiles = await resolveAttachedFiles(currentPrompt);
-        const out = await runInlineAsk(
-          {
-            prompt: currentPrompt,
-            selection: request.selection,
-            before: request.before,
-            after: request.after,
-            language: request.language,
-            imageDataUrl: request.imageDataUrl,
-            pdfContext: request.pdfContext,
-            attachedFiles,
-            side: sideId,
-            convId,
-            extraImages: turnImages,
-            northStar: northStarRef.current,
-          },
-          { onText, signal: ac.signal, vaultPath },
-        );
-        if (ac.signal.aborted) return;
-        sideRef.current = out.side;
-        const acc = out.text;
-        setResult(acc);
-        if (acc.trim()) {
-          recordActivity(vaultPath, {
-            kind: "ask",
-            modality: "ctrl-l",
-            text: `asked "${currentPrompt}"${request.selection ? ` about "${request.selection.slice(0, 120)}"` : ""}`,
-            detail: `answer: ${acc}`,
-            ...activityWhere(),
-          });
-        }
+      const attachedFiles = await resolveAttachedFiles(currentPrompt);
+      const out = await runInline(
+        {
+          prompt: currentPrompt,
+          selection: request.selection,
+          before: request.before,
+          after: request.after,
+          language: request.language,
+          imageDataUrl: request.imageDataUrl,
+          pdfContext: request.pdfContext,
+          attachedFiles,
+          side: sideId,
+          convId,
+          extraImages: turnImages,
+          northStar: northStarRef.current,
+          editable,
+          model: pickedModel || undefined,
+        },
+        { onText, signal: ac.signal, vaultPath },
+      );
+      if (ac.signal.aborted) return;
+      sideRef.current = out.side;
+      setResult(out.text);
+      const prop = out.proposals?.length ? out.proposals[out.proposals.length - 1]! : null;
+      if (prop) setProposal(prop);
+      if (out.text.trim() || prop) {
+        recordActivity(vaultPath, {
+          kind: "ask",
+          modality: "ctrl-l",
+          text: `asked "${currentPrompt}"${request.selection ? ` about "${request.selection.slice(0, 120)}"` : ""}`,
+          detail: `answer: ${out.text}${prop ? `\nproposed edit: ${editSummary(request.selection, prop.newText)}` : ""}`,
+          ...activityWhere(),
+        });
       }
     } catch (e: any) {
       if (!ac.signal.aborted) setError(e?.message ?? String(e));
@@ -425,16 +413,6 @@ export function InlineEditPrompt({
       // turn doesn't double-include them.
       setExtraImages([]);
     }
-  };
-
-  const switchMode = (next: InlineEditMode) => {
-    if (next === mode || streaming) return;
-    setMode(next);
-    sideRef.current = null;
-    setPriorTurns([]);
-    setLastPrompt(null);
-    setResult("");
-    setError(null);
   };
 
   // Where a Ctrl+K / Ctrl+L entry points: the file (vault-relative) and the spot in it.
@@ -460,9 +438,9 @@ export function InlineEditPrompt({
   };
 
   const accept = () => {
-    if (!result || streaming) return;
-    const out = stripCodeFence(result);
-    if (mode === "edit") recordEdit("accepted", out);
+    if (!proposal || streaming) return;
+    const out = stripCodeFence(proposal.newText);
+    recordEdit("accepted", out);
     onAccept(out);
   };
 
@@ -554,7 +532,7 @@ export function InlineEditPrompt({
 
   const cancel = () => {
     abortRef.current?.abort();
-    if (mode === "edit" && result && !streaming) recordEdit("rejected", stripCodeFence(result));
+    if (proposal && !streaming) recordEdit("rejected", stripCodeFence(proposal.newText));
     onCancel();
   };
 
@@ -593,7 +571,7 @@ export function InlineEditPrompt({
       e.stopPropagation();
       if (streaming) return;
       if (prompt.trim()) submit();
-      else if (result) accept();
+      else if (proposal) accept();
     }
   };
 
@@ -830,17 +808,13 @@ export function InlineEditPrompt({
           value={prompt}
           onChange={(e) => onPromptChange(e.target.value)}
           placeholder={
-            result
-              ? mode === "edit"
-                ? "Refine, or Enter to accept…"
-                : "Follow-up…"
-              : mode === "ask"
-                ? request.selection
-                  ? "Ask about the selection…"
-                  : "Ask about this file…"
+            proposal
+              ? "Refine, or Enter to accept…"
+              : result
+                ? "Follow-up…"
                 : request.selection
-                  ? "Edit the selection…"
-                  : "Generate at cursor…"
+                  ? "Ask or tell it what to do with the selection…"
+                  : "Ask, or tell it what to do here…"
           }
           disabled={streaming}
           className="flex-1 min-w-0 resize-none overflow-y-auto bg-transparent p-1 text-[13px] text-foreground outline-none placeholder:text-muted-foreground/60"
@@ -854,7 +828,7 @@ export function InlineEditPrompt({
             <CornerDownLeft className="h-3 w-3" />
           </button>
         )}
-        {!streaming && !prompt.trim() && result && mode === "edit" && (
+        {!streaming && !prompt.trim() && proposal && (
           <button
             onClick={accept}
             className="h-6 px-2 flex items-center gap-1 rounded bg-primary/90 text-[11px] text-primary-foreground hover:bg-primary"
@@ -864,7 +838,7 @@ export function InlineEditPrompt({
             accept
           </button>
         )}
-        {!streaming && result && mode === "ask" && (
+        {!streaming && result && (
           <button
             onClick={sendToChat}
             className="h-6 w-6 flex items-center justify-center rounded text-muted-foreground hover:bg-accent/60 hover:text-foreground"
@@ -873,7 +847,7 @@ export function InlineEditPrompt({
             <MessageSquare className="h-3 w-3" />
           </button>
         )}
-        {!streaming && mode === "ask" && (
+        {!streaming && (
           <button
             onClick={saveAsNote}
             className="h-6 w-6 flex items-center justify-center rounded text-muted-foreground hover:bg-accent/60 hover:text-foreground"
@@ -931,7 +905,7 @@ export function InlineEditPrompt({
           })}
         </div>
       )}
-      {(streaming || result || error) && (
+      {(streaming || result || proposal || error) && (
         <div
           ref={resultRef}
           className="prose-chat min-h-0 overflow-auto border-t border-border/60 px-3 py-2 text-foreground/90"
@@ -949,11 +923,22 @@ export function InlineEditPrompt({
               {streaming && !result && (
                 <div className="flex items-center gap-2 text-muted-foreground">
                   <Loader2 className="h-3 w-3 animate-spin" />
-                  <span>{mode === "ask" ? "Thinking…" : "Writing…"}</span>
+                  <span>Thinking…</span>
                 </div>
               )}
               {result && (
                 <StreamingMarkdown text={result} />
+              )}
+              {proposal && (
+                <div className="mt-2 rounded border border-border/60" data-testid="proposed-edit">
+                  <div className="border-b border-border/60 px-2 py-0.5 text-[10.5px] text-muted-foreground">
+                    Proposed edit{proposal.note ? ` · ${proposal.note}` : ""} · Enter accepts, Esc rejects
+                  </div>
+                  {request.selection && (
+                    <pre className="m-0 max-h-[160px] overflow-auto whitespace-pre-wrap bg-destructive/10 px-2 py-1 text-[12px] text-foreground/70 line-through">{request.selection}</pre>
+                  )}
+                  <pre className="m-0 max-h-[240px] overflow-auto whitespace-pre-wrap bg-primary/10 px-2 py-1 text-[12px] text-foreground">{stripCodeFence(proposal.newText)}</pre>
+                </div>
               )}
             </>
           )}
@@ -961,39 +946,32 @@ export function InlineEditPrompt({
       )}
       <div className="flex items-center justify-between border-t border-border/60 px-3 py-1 text-[10.5px] text-muted-foreground shrink-0">
         <div className="flex items-center gap-1">
-          {!askOnly && (
-            <>
-              <button
-                onClick={() => switchMode("edit")}
-                disabled={streaming}
-                className={
-                  mode === "edit"
-                    ? "px-1.5 py-0.5 rounded text-foreground"
-                    : "px-1.5 py-0.5 rounded opacity-60 hover:opacity-100 disabled:opacity-40"
-                }
-              >
-                edit
-              </button>
-              <span className="opacity-40">·</span>
-              <button
-                onClick={() => switchMode("ask")}
-                disabled={streaming}
-                className={
-                  mode === "ask"
-                    ? "px-1.5 py-0.5 rounded text-foreground"
-                    : "px-1.5 py-0.5 rounded opacity-60 hover:opacity-100 disabled:opacity-40"
-                }
-              >
-                ask
-              </button>
-            </>
-          )}
-          {askOnly && <span className="text-foreground">ask</span>}
+          <select
+            value={modelValue}
+            onChange={(e) => {
+              setPickedModel(e.target.value);
+              try {
+                localStorage.setItem(INLINE_MODEL_KEY, e.target.value);
+              } catch {
+                /* the pick stays for this popover */
+              }
+            }}
+            disabled={streaming || models.models.length === 0}
+            title="The model for Ctrl+K / Ctrl+L (Haiku unless you pick another)"
+            className="max-w-[110px] truncate rounded bg-transparent px-1 py-0.5 text-foreground outline-none hover:bg-accent/60 disabled:opacity-60"
+          >
+            {models.models.length === 0 && <option value="">Haiku</option>}
+            {models.models.map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.name}
+              </option>
+            ))}
+          </select>
           <span className="ml-2 opacity-50">
             {request.selection
               ? `${request.selection.length} char selection`
-              : mode === "edit"
-                ? "empty cursor → insert"
+              : editable
+                ? "cursor"
                 : "no selection"}
           </span>
           {priorTurns.length > 0 && (

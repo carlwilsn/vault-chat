@@ -663,8 +663,6 @@ export function HtmlView({ content, path }: { content: string; path?: string | n
       {inlineAsk && (
         <InlineEditPrompt
           request={inlineAsk}
-          initialMode="ask"
-          askOnly
           onAccept={() => setInlineAsk(null)}
           onCancel={() => setInlineAsk(null)}
         />

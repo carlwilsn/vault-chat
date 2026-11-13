@@ -207,8 +207,8 @@ async function httpPost(link: Link, path: string, payload: Record<string, unknow
  *  Throws with the reason when there is no box or it does not answer. */
 export async function boxSide(
   req: Record<string, unknown>,
-  o: { onText?: (text: string) => void; signal?: AbortSignal; vaultPath?: string | null } = {},
-): Promise<{ text: string; side: string }> {
+  o: { onText?: (text: string, proposals?: { newText: string; note?: string }[]) => void; signal?: AbortSignal; vaultPath?: string | null } = {},
+): Promise<{ text: string; side: string; proposals?: { newText: string; note?: string }[] }> {
   // Capture before the first await: changing the viewer or active project must
   // not move a running side thread (or its abort) to another conversation.
   const convId = typeof req.convId === "string" ? req.convId : null;
@@ -226,7 +226,7 @@ export async function boxSide(
   if (o.signal?.aborted) stop();
   try {
     for (;;) {
-      let s: { text?: string; v?: number; done?: boolean; error?: string | null };
+      let s: { text?: string; v?: number; done?: boolean; error?: string | null; proposals?: { newText: string; note?: string }[] };
       try {
         s = await httpGet(link, `${sidePath()}?after=${v}&wait=20000${context ? `&${context}` : ""}`, 35_000);
       } catch (e) {
@@ -235,10 +235,10 @@ export async function boxSide(
       }
       v = Number(s.v ?? v);
       const text = String(s.text ?? "");
-      if (!o.signal?.aborted) o.onText?.(text);
+      if (!o.signal?.aborted) o.onText?.(text, s.proposals);
       if (s.done) {
         if (s.error && !o.signal?.aborted) throw new Error(`The box could not answer: ${s.error}`);
-        return { text, side: id };
+        return { text, side: id, ...(s.proposals?.length ? { proposals: s.proposals } : {}) };
       }
     }
   } finally {

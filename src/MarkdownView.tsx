@@ -725,8 +725,6 @@ export function MarkdownView({ paneId }: Props) {
       {inlineAsk && (
         <InlineEditPrompt
           request={inlineAsk}
-          initialMode="ask"
-          askOnly
           onAccept={() => setInlineAsk(null)}
           onCancel={() => setInlineAsk(null)}
         />

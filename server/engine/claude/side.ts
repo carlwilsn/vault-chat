@@ -17,7 +17,8 @@ import { randomUUID } from "node:crypto";
 import { query, type Options, type SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { ProcessServices } from "../../mcp/runtime";
 import type { McpRuntime } from "../../mcp/runtime";
-import type { Handlers, SideLog, SideRunner, SideStart, SideState, ToolSpec } from "../backend";
+import { PROPOSE_EDIT } from "../proposeEdit";
+import type { EditProposal, Handlers, ToolAnswer, SideLog, SideRunner, SideStart, SideState, ToolSpec } from "../backend";
 import { TurnRecorder } from "../turnLog";
 import { CLAUDE_BUILTINS_OFF } from "./session";
 
@@ -36,6 +37,7 @@ type Run = {
   v: number;
   done: boolean;
   error: string | null;
+  proposals: EditProposal[];
   busy: boolean;
   endedAt: number;
   waiters: Set<() => void>;
@@ -93,6 +95,7 @@ export class ClaudeSideRuns implements SideRunner {
         v: 0,
         done: false,
         error: null,
+        proposals: [],
         busy: false,
         endedAt: 0,
         waiters: new Set(),
@@ -112,6 +115,7 @@ export class ClaudeSideRuns implements SideRunner {
       run.meta.hostTools = o.hostTools ?? run.meta.hostTools;
     }
     run.text = "";
+    run.proposals = [];
     run.error = null;
     run.done = false;
     run.busy = true;
@@ -244,7 +248,14 @@ export class ClaudeSideRuns implements SideRunner {
     const services: ProcessServices = { env: () => ({}) };
     const convId = run.meta.convId;
     const scope = await this.o.mcp.bind(
-      { specs, call: (name, args, context) => h.sideTool!(convId, name, args, context.signal) },
+      {
+        specs,
+        call: (name, args, context) => {
+          // ProposeEdit changes nothing here: the proposal goes to the popover, where Carl accepts or rejects it.
+          if (name === PROPOSE_EDIT) return this.propose(run, args);
+          return h.sideTool!(convId, name, args, context.signal);
+        },
+      },
       services,
     );
     return {
@@ -259,6 +270,15 @@ export class ClaudeSideRuns implements SideRunner {
       allowed: ["mcp__vault_chat"],
       revoke: scope.revoke,
     };
+  }
+
+  /** The agent's ProposeEdit: kept on the run for the popover to show. */
+  private async propose(run: Run, args: unknown): Promise<ToolAnswer> {
+    const a = (args ?? {}) as { newText?: unknown; note?: unknown };
+    if (typeof a.newText !== "string") return { ok: false, text: "ProposeEdit needs newText (a string)." };
+    run.proposals.push({ newText: a.newText, ...(typeof a.note === "string" && a.note.trim() ? { note: a.note.trim().slice(0, 300) } : {}) });
+    this.bump(run);
+    return { ok: true, text: "Proposed. Carl sees it as an edit he can accept or reject; the file is unchanged until he accepts. Say briefly what you proposed." };
   }
 
   /** What Carl did elsewhere, as of the conversation this was opened from. */
@@ -293,7 +313,7 @@ export class ClaudeSideRuns implements SideRunner {
   }
 
   private state(run: Run): SideState {
-    return { id: run.id, text: run.text, v: run.v, done: run.done, error: run.error, file: null };
+    return { id: run.id, text: run.text, v: run.v, done: run.done, error: run.error, file: null, ...(run.proposals.length ? { proposals: run.proposals } : {}) };
   }
 
   private reap(): void {

@@ -154,7 +154,10 @@ export type SideStart = {
 /** `act`: the side thread has write tools; `allowed`: the backend built-ins it was given (its line shows both). */
 export type SideLog = { vault: string; conv: string | null; via: string; version: string; act?: boolean; allowed?: string[]; write: (line: TurnLine) => void };
 
-export type SideState = { id: string; text: string; v: number; done: boolean; error: string | null; file: string | null };
+/** An edit the agent proposed with ProposeEdit (Ctrl+K / Ctrl+L): the open file's selection (or the cursor) becomes `newText` when Carl accepts. */
+export type EditProposal = { newText: string; note?: string };
+
+export type SideState = { id: string; text: string; v: number; done: boolean; error: string | null; file: string | null; proposals?: EditProposal[] };
 
 /** The side-thread runs of one backend, as /api/v1/side drives them. */
 export type SideRunner = {
